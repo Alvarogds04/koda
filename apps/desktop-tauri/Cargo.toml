@@ -1,0 +1,132 @@
+[package]
+name = "abito-island"
+version = "0.1.0"
+edition = "2021"
+description = "Abito island — Electron to Rust+Tauri migration, unit M2 (host/bridge + Pi transport receiver)"
+publish = false
+default-run = "abito-island"
+
+[features]
+# Test/probe scaffolding (fake backend/model, read-back probe). Always on in debug
+# builds; OFF in the packaged release so `--probe`/ABITO_PROBE cannot do anything.
+probe = []
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# Dependency policy (#467, owner decision): new crates are allowed only for functions Abito
+# did not have and the owner asked for (key store: keyring; dictation: cpal, sherpa-onnx,
+# reqwest 0.12). Each one is added in its own reviewed commit with the reason next to it.
+# Everything else still reuses what Cargo.lock already resolves.
+# OS-neutral: these compile for x86_64-pc-windows-msvc as they are.
+tauri = { version = "2", features = ["tray-icon"] }
+# GitHub OAuth device flow (#503 / 0.2): the OAuth 2.0 client Abito would otherwise hand-write (device authorization,
+# polling with authorization_pending / slow_down, typed errors). Reason for a new crate: a function Abito did not have and the
+# owner asked for (design odd/connectors-oauth-design.md, section 0). MIT OR Apache-2.0. reqwest 0.12 + rustls only (the stack the
+# dictation download already resolves): no native-tls, no openssl.
+oauth2 = { version = "5", default-features = false, features = ["reqwest", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# M1b lifecycle: a second launch focuses/shows the running island and exits.
+tauri-plugin-single-instance = "2"
+# M2 transport: peer credentials + SIGINT/SIGTERM cleanup (libc), sha256 project
+# id — byte-identical to core.cjs projectId (sha2 hex). The libc CRATE builds on
+# Windows; it is the Unix-only *calls* that src/platform/ gates (U1b..).
+libc = "0.2"
+sha2 = "0.10"
+# Already locked transitively at 2.6.1; constant-time OAuth state equality.
+subtle = "=2.6.1"
+# #343: image attachments ride to the local model as data URLs. base64 is
+# ALREADY in Cargo.lock as a transitive dependency (0.22.1); declaring it
+# here adds only this crate's edge — the lock gains exactly one line (the
+# dependency edge), no new packages, no version changes.
+base64 = "0.22"
+# Cloud chat and subscription OAuth use the existing rustls stack on every platform.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+futures-util = { version = "0.3", default-features = false }
+tokio = { version = "1", default-features = false, features = ["rt", "time", "net", "io-util", "sync", "macros"] }
+
+# Dictation (#467): speech to text on this computer. sherpa-onnx (Apache-2.0)
+# with NVIDIA's Parakeet, linked statically (onnxruntime included). The models
+# are downloaded only on the user's explicit click. Build needs
+# SHERPA_ONNX_LIB_DIR (or network) for the prebuilt static libs.
+sherpa-onnx = { version = "1.13.8", default-features = false, features = ["static"] }
+# Model download over HTTPS (only on the user's click). reqwest 0.12, not the
+# 0.13 Tauri already pulls: 0.13's rustls needs aws-lc-rs + rustls-platform-verifier,
+# which are not available offline; 0.12's rustls-tls is ring + webpki-roots.
+# Dictation (#467): the microphone. Apache-2.0. PulseAudio (or PipeWire's
+# PulseAudio server) for the device list on Linux.
+cpal = "0.18"
+
+# #490 mail: SMTP + MIME for sending from the island with the user's own account (owner decision:
+# a mature implementation beats a hand-written one for AUTH, TLS and MIME encoding). rustls only
+# (no native-tls/openssl), no default features.
+lettre = { version = "0.11", default-features = false, features = ["smtp-transport", "builder", "tokio1", "tokio1-rustls-tls"] }
+
+# #490 IMAP inbox: a hand-written minimal client over TLS (the Rust IMAP crates are alpha or
+# native-tls based). rustls with the ring provider and webpki roots are ALREADY resolved through
+# reqwest/lettre; these are direct edges only. Implicit TLS (993) only, no plaintext.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+webpki-roots = "1"
+# #490 phone link (LAN only, off by default): the self-signed pinned certificate and the pairing QR.
+# rcgen was a dev-dependency for the mail tests; the phone link needs it at run time. qrcode renders
+# the pairing link as SVG (no image crates). ring is already resolved (rustls); direct edge only.
+rcgen = { version = "0.13", default-features = false, features = ["ring"] }
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
+ring = "0.17"
+# The phone finds this computer again when its address changes: announced on the local network only
+# while the phone link is on. Pure Rust, no async runtime, default features off.
+mdns-sd = { version = "0.21", default-features = false }
+
+# ---- Linux-only platform layer ----------------------------------------------
+# x11rb/zbus/gtk are X11, XDG portal and GTK: they do not exist on macOS or Windows (the crate
+# was uncompilable there). XTest (synthetic input) is deliberately NOT here: it lives in the
+# dev set below so the shipped binary never compiles the input-injection module.
+[target.'cfg(target_os = "linux")'.dependencies]
+x11rb = { version = "0.13", features = ["xkb"] }
+# #305b: the XDG GlobalShortcuts portal client. NOT ashpd (absent from the
+# offline registry, downloads are forbidden): zbus is ALREADY compiled in via
+# tauri-plugin-single-instance, so this declares the same crate/version/features
+# and adds nothing to Cargo.lock.
+zbus = { version = "5.19", default-features = true }
+# Read-only native audit uses the exact GTK already resolved by Tauri.
+gtk = "=0.18.2"
+# #467 key store: Secret Service (GNOME Keyring, KWallet) over D-Bus. NEW packages
+# (keyring + dbus-secret-service + libdbus-sys + crypto-rust deps), same features as Coucou.
+keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
+# Dictation (#467): PulseAudio (or PipeWire's PulseAudio server) for the device list on Linux;
+# the other platforms use cpal's default backend (CoreAudio, WASAPI). Features are additive.
+cpal = { version = "0.18", features = ["pulseaudio"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# #503 key store on macOS: the Keychain (same `keyring` API as Linux/Windows; this build is not compiled in CI yet).
+keyring = { version = "3", features = ["apple-native"] }
+# HU-049/HU-050: frontmost app (NSWorkspace) and activate (NSRunningApplication); already in Cargo.lock via tauri/tao.
+core-foundation = "0.10"
+core-graphics = "0.25"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "libc", "NSWorkspace", "NSRunningApplication"] }
+
+[target.'cfg(windows)'.dependencies]
+# #467 key store: Windows Credential Manager.
+keyring = { version = "3", features = ["windows-native"] }
+# U3a: the Win32 global-hotkey bindings (RegisterHotKey + message pump). Not
+# libc (it exposes none of these), not raw FFI (~80 lines of hand-written ABI
+# nothing but the VM could verify): windows-sys 0.61.2 is ALREADY in Cargo.lock
+# and in the xbuild registry volume, and its only dependency windows-link 0.2.1
+# too — same offline story as zbus above: zero new packages, the lock only
+# gains this crate's edge. Features are the minimal set for the hotkey seam
+# (U3a) plus Gdi for the work-area seam (U3b: MonitorFromWindow/GetMonitorInfoW,
+# both user32-backed; symbols verified against the cached source before
+# declaring; features are not recorded in Cargo.lock, so the one-edge diff
+# stands).
+# T2/S6 notice receiver additions (same crate, feature gates only): IO for
+# OVERLAPPED/GetOverlappedResult/CancelIoEx, Storage_FileSystem for
+# ReadFile/WriteFile/MoveFileExW, Security_Cryptography for BCryptGenRandom
+# (128-bit pipe instance). Symbols verified against the cached 0.61.2 source.
+windows-sys = { version = "0.61.2", default-features = false, features = ["Win32_Foundation", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging", "Win32_System_Threading", "Win32_Graphics_Gdi", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Diagnostics_ToolHelp", "Win32_Security_Authorization", "Win32_System_Pipes", "Win32_System_IO", "Win32_Storage_FileSystem", "Win32_Security_Cryptography", "Win32_Graphics_Dwm"] }
+
+[target.'cfg(unix)'.dev-dependencies]
+# tests only: fake key presses on a PRIVATE Xvfb (tests/hotkey_x11.rs). Never shipped.
+x11rb = { version = "0.13", features = ["xtest"] }

@@ -1,0 +1,4 @@
+/* #486: transparent 120x120 window; the character fills it. */
+html, body { margin: 0; width: 120px; height: 120px; background: transparent; overflow: hidden; user-select: none; -webkit-user-select: none; }
+#clay { width: 120px; height: 120px; display: block; cursor: grab; touch-action: none; }
+#clay.dragging { cursor: grabbing; }

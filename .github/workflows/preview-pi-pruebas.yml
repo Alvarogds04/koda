@@ -1,0 +1,184 @@
+name: Preview Pi companion (pruebas)
+
+# HU-054: the WHOLE apps/desktop-pi suite (plus the harness hook config) on real Linux, macOS and Windows, each over its own
+# transport (Unix socket on Linux/macOS, named pipe on Windows), with the real Pi installed from npm so the two real-loader
+# tests (pi-loader, pi-confirm) RUN on all three OS instead of skipping. Node only: no Rust, no sherpa. Free standard runners.
+# Also runs the Rust receiver integration tests on macOS (transport_receiver) and Windows (windows_notice).
+# Triggers ONLY for branches named preview/*-pruebas.
+#
+# What this does NOT prove: that the packaged island's native relay talks to a real Pi (the Rust tests and the Windows runtime
+# smoke cover the relay); here the island side is a fake receiver on the same transport.
+on:
+  push:
+    branches: ['preview/*-pruebas']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pi-pruebas-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pi-suite:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-26, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install the real Pi (loader tests must run, never skip)
+        shell: bash
+        run: |
+          # Pinned: the Pi version the tests were developed and verified against (a new Pi release must not silently change what CI
+          # tests; bump it on purpose). Retried ONLY on registry/network errors (e.g. ETARGET while a transitive version propagates,
+          # seen on run 40748226941); any other npm failure fails at once.
+          PI_VERSION=1.4.0
+          for attempt in 1 2 3 4 5 6; do
+            if npm i -g "@earendil-works/pi-coding-agent@$PI_VERSION" 2>&1 | tee "$RUNNER_TEMP/npm-pi.log"; then break; fi
+            if ! grep -qE 'npm error code (ETARGET|ETIMEDOUT|ECONNRESET|ECONNREFUSED|EAI_AGAIN|ENOTFOUND|E5[0-9][0-9]|ESOCKETTIMEDOUT|EPIPE)|network (timeout|socket)' "$RUNNER_TEMP/npm-pi.log"; then
+              echo "npm failed with a non-network error: not retrying"; exit 1
+            fi
+            if [ "$attempt" = 6 ]; then echo "npm install of Pi kept failing on network errors"; exit 1; fi
+            echo "registry/network error on attempt $attempt; retrying in $((attempt * 20))s"; sleep $((attempt * 20))
+          done
+          # npm's own report: no path handling, so it is identical on Git-Bash/Windows and Unix
+          INSTALLED="$(npm ls -g @earendil-works/pi-coding-agent --depth=0 --json | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>console.log(JSON.parse(d).dependencies["@earendil-works/pi-coding-agent"].version))')"
+          test "$INSTALLED" = "$PI_VERSION"
+          ROOT="$(npm root -g)/@earendil-works/pi-coding-agent"
+          test -f "$ROOT/dist/core/extensions/loader.js"
+          echo "PI_CODING_AGENT_ROOT=$ROOT" >> "$GITHUB_ENV"
+      - name: desktop-pi full suite
+        env:
+          ABITO_TEST_DIAG: '1'
+        working-directory: apps/desktop-pi
+        shell: bash
+        run: |
+          node --test --test-reporter=tap test/*.test.cjs 2>&1 | tee "$RUNNER_TEMP/pi.log"
+          test "${PIPESTATUS[0]}" -eq 0
+          # A skip is allowed ONLY by explicit name: the Windows-only twin on Linux/macOS, and the live Unix-pid probe on Windows
+          # (its twin is the Windows handoff test). Any other skip, including the real-Pi loader tests, fails the job.
+          skipped="$(grep -E '^[[:space:]]*(ok|not ok) [0-9]+ - .*# SKIP' "$RUNNER_TEMP/pi.log" || true)"
+          unexpected="$(printf '%s\n' "$skipped" | grep -v '^$' | grep -v -E 'Windows twin|a live process writing an island-like endpoint.json' || true)"
+          echo "skips: ${skipped:-none}"
+          if [ -n "$unexpected" ]; then echo "UNEXPECTED SKIP:"; echo "$unexpected"; exit 1; fi
+
+  # HU-062 / HU-065: the Rust receiver integration tests on the OSes that never ran them.
+  rust-macos:
+    runs-on: macos-26
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: apps/desktop-tauri
+    env:
+      SHERPA_VERSION: "1.13.8"
+      SHERPA_SHA256: >-
+        9091bf160dc7fdacedbc906b212badf53c2993f4e5277a0e03998e96c31d60da
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Fetch sherpa-onnx static libs (pinned sha256)
+        run: |
+          set -euo pipefail
+          A="sherpa-onnx-v${SHERPA_VERSION}-osx-arm64-static-lib.tar.bz2"
+          URL="https://github.com/k2-fsa/sherpa-onnx/releases/download"
+          curl -fsSL -o "$RUNNER_TEMP/$A" "$URL/v${SHERPA_VERSION}/$A"
+          echo "${SHERPA_SHA256}  $RUNNER_TEMP/$A" | shasum -a 256 -c -
+          tar -xjf "$RUNNER_TEMP/$A" -C "$RUNNER_TEMP"
+          LIB="$RUNNER_TEMP/sherpa-onnx-v${SHERPA_VERSION}-osx-arm64-static-lib"
+          echo "SHERPA_ONNX_LIB_DIR=$LIB/lib" >> "$GITHUB_ENV"
+      - name: transport_receiver on macOS (Node producer vs real receiver, no-origin pin)
+        run: |
+          cargo test --locked --test transport_receiver -- --nocapture
+
+  rust-windows:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: pwsh
+        working-directory: apps/desktop-tauri
+    env:
+      CARGO_TERM_COLOR: never
+      RUST_BACKTRACE: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop-tauri
+          cache-on-failure: true
+      - name: Fetch pinned Windows sherpa static library
+        run: |
+          $text = Get-Content packaging/windows/sherpa-onnx.sha256
+          $pin = $text.Trim() -split '\s+'
+          $archive = Join-Path $env:RUNNER_TEMP $pin[1]
+          $base = 'https://github.com/k2-fsa/sherpa-onnx/releases/download'
+          Invoke-WebRequest "$base/v1.13.8/$($pin[1])" -OutFile $archive
+          $hash = (Get-FileHash $archive -Algorithm SHA256).Hash
+          if ($hash.ToLowerInvariant() -ne $pin[0]) {
+            throw 'sherpa archive SHA256 mismatch'
+          }
+          tar -xjf $archive -C $env:RUNNER_TEMP
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $folder = $pin[1] -replace '\.tar\.bz2$', ''
+          $lib = Join-Path $env:RUNNER_TEMP "$folder/lib"
+          if (-not (Test-Path (Join-Path $lib 'sherpa-onnx-c-api.lib'))) {
+            throw 'Pinned sherpa archive lacks sherpa-onnx-c-api.lib'
+          }
+          "SHERPA_ONNX_LIB_DIR=$lib" >> $env:GITHUB_ENV
+          "SHERPA_ONNX_ARCHIVE_DIR=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
+      - name: windows_notice (named pipe receiver, relay, no-origin pin)
+        run: |
+          cargo test --locked --test windows_notice -- --nocapture
+          exit $LASTEXITCODE
+
+  # HU-062: the Claude Code / Codex / Copilot / OpenCode hook clients and their installers (apps/desktop-harness) on all three OS.
+  # Windows is NOT in this matrix yet: ~300 failures in 28 files are handed over (HANDOFF-abito-harness-win.md).
+  harness-suite:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-26, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Windows install layout for the harness suite (real ACL helper + manifest)
+        if: runner.os == 'Windows'
+        working-directory: apps/desktop-tauri
+        shell: bash
+        run: |
+          # The checkout is laid out like the install (apps/desktop-harness next to the helper and abito-install.json), so the
+          # installer tests run the real HU-047 Windows path: the native helper, hash-checked against a manifest written by the
+          # SAME generator the installer build uses (packaging/windows/install-manifest.cjs).
+          cargo build --locked --bin abito-private-session
+          cp target/debug/abito-private-session.exe ../abito-private-session.exe
+          node packaging/windows/install-manifest.cjs --dist ../
+          echo "ABITO_TEST_HELPER=$(cd .. && pwd -W)/abito-private-session.exe" >> "$GITHUB_ENV"
+      - name: desktop-harness full suite
+        working-directory: apps/desktop-harness
+        shell: bash
+        run: |
+          npm test 2>&1 | tee "$RUNNER_TEMP/harness.log"
+          status="${PIPESTATUS[0]}"
+          echo "---- failing tests ----"
+          grep -E '^[[:space:]]*not ok ' "$RUNNER_TEMP/harness.log" | cut -c1-200 || true
+          echo "---- skipped tests ----"
+          grep -E '# SKIP' "$RUNNER_TEMP/harness.log" | cut -c1-200 || true
+          exit "$status"

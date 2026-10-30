@@ -1,0 +1,170 @@
+name: Preview native tests (litellm)
+
+# HU-041: the custom gateway wire frames and account path (Rust)
+# and the daemon suite (guarded transport, recovery) on real
+# Windows, macOS and Linux. The REAL-pi proofs run on all three
+# OS: pi is installed and ABITO_REQUIRE_PI=1 makes a missing pi a
+# failure. The tests spawn node + the package CLI like the
+# product, never the sh shim. Triggers ONLY for preview/*-litellm.
+on:
+  push:
+    branches: ['preview/*-litellm']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-tests-litellm-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: pwsh
+        working-directory: apps/desktop-tauri
+    env:
+      CARGO_TERM_COLOR: never
+      RUST_BACKTRACE: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop-tauri
+          cache-on-failure: true
+      - name: Fetch pinned Windows sherpa static library
+        run: |
+          $text = Get-Content packaging/windows/sherpa-onnx.sha256
+          $pin = $text.Trim() -split '\s+'
+          $archive = Join-Path $env:RUNNER_TEMP $pin[1]
+          $base = 'https://github.com/k2-fsa/sherpa-onnx/releases/download'
+          Invoke-WebRequest "$base/v1.13.8/$($pin[1])" -OutFile $archive
+          $hash = (Get-FileHash $archive -Algorithm SHA256).Hash
+          if ($hash.ToLowerInvariant() -ne $pin[0]) {
+            throw 'sherpa archive SHA256 mismatch'
+          }
+          tar -xjf $archive -C $env:RUNNER_TEMP
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $folder = $pin[1] -replace '\.tar\.bz2$', ''
+          $lib = Join-Path $env:RUNNER_TEMP "$folder/lib"
+          if (-not (Test-Path (Join-Path $lib 'sherpa-onnx-c-api.lib'))) {
+            throw 'Pinned sherpa archive lacks sherpa-onnx-c-api.lib'
+          }
+          "SHERPA_ONNX_LIB_DIR=$lib" >> $env:GITHUB_ENV
+          "SHERPA_ONNX_ARCHIVE_DIR=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
+      - name: Custom gateway wire frames and account path (lib crate)
+        run: |
+          cargo test --locked --lib -- agentclient --nocapture
+          exit $LASTEXITCODE
+      - name: Install the pi CLI the real-transport proofs run against (pinned)
+        run: |
+          npm install -g @earendil-works/pi-coding-agent@1.4.0
+          exit $LASTEXITCODE
+      - name: Diagnostics - where pi is installed (HU-062, Windows package discovery)
+        if: ${{ !cancelled() }}
+        run: |
+          $root = (npm root -g).Trim()
+          Write-Host "npm root -g = $root"
+          Write-Host "npm prefix -g = $((npm prefix -g).Trim())"
+          Get-ChildItem -Force $root | Select-Object Name | Format-Table | Out-String | Write-Host
+          $pkg = Join-Path $root '@earendil-works/pi-coding-agent'
+          Write-Host "pkg exists: $(Test-Path $pkg)"
+          if (Test-Path $pkg) { Get-ChildItem -Force $pkg | Select-Object Name | Format-Table | Out-String | Write-Host; Get-Content (Join-Path $pkg 'package.json') -TotalCount 12 }
+          Get-Command pi -ErrorAction SilentlyContinue | Format-List | Out-String | Write-Host
+          Get-ChildItem -Force (Split-Path (Get-Command pi).Source) -ErrorAction SilentlyContinue | Select-Object Name | Format-Table | Out-String | Write-Host
+          node -e "console.log(process.platform, process.version, process.env.APPDATA, process.env.npm_config_prefix)"
+      - name: Windows install layout for the daemon suite (real ACL helper + manifest)
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          # HU-061: same layout as the harness job (apps/abito-private-session.exe + apps/abito-install.json) so the daemon
+          # writes its credential files through the verified HU-047 helper, exactly like an install.
+          cargo build --locked --bin abito-private-session
+          cp target/debug/abito-private-session.exe ../abito-private-session.exe
+          node packaging/windows/install-manifest.cjs --dist ../
+          echo "ABITO_TEST_HELPER=$(cd .. && pwd -W)/abito-private-session.exe" >> "$GITHUB_ENV"
+      - name: Daemon suite (custom provider, profiles, protocol)
+        if: ${{ !cancelled() }}
+        working-directory: apps/desktop-daemon
+        env:
+          ABITO_REQUIRE_PI: "1"
+        run: >-
+          node --test --test-timeout=180000
+          test/custom-provider.test.cjs
+          test/custom-provider-extension.test.cjs
+          test/profiles.test.cjs test/protocol.test.cjs
+          test/auth.test.cjs test/server.test.cjs
+          test/win-fixture.test.cjs test/win-private-fs.test.cjs
+
+  macos:
+    runs-on: macos-26
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: apps/desktop-tauri
+    env:
+      SHERPA_VERSION: "1.13.8"
+      SHERPA_SHA256: >-
+        9091bf160dc7fdacedbc906b212badf53c2993f4e5277a0e03998e96c31d60da
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Fetch sherpa-onnx static libs (pinned sha256)
+        run: |
+          set -euo pipefail
+          A="sherpa-onnx-v${SHERPA_VERSION}-osx-arm64-static-lib.tar.bz2"
+          URL="https://github.com/k2-fsa/sherpa-onnx/releases/download"
+          curl -fsSL -o "$RUNNER_TEMP/$A" "$URL/v${SHERPA_VERSION}/$A"
+          echo "${SHERPA_SHA256}  $RUNNER_TEMP/$A" | shasum -a 256 -c -
+          tar -xjf "$RUNNER_TEMP/$A" -C "$RUNNER_TEMP"
+          LIB="$RUNNER_TEMP/sherpa-onnx-v${SHERPA_VERSION}-osx-arm64-static-lib"
+          echo "SHERPA_ONNX_LIB_DIR=$LIB/lib" >> "$GITHUB_ENV"
+      - name: Custom gateway wire frames and account path (lib crate)
+        run: |
+          cargo test --locked --lib -- agentclient --nocapture
+      - name: Install the pi CLI the real-transport proofs run against (pinned)
+        run: npm install -g @earendil-works/pi-coding-agent@1.4.0
+      - name: Daemon suite (custom provider, profiles, protocol)
+        if: ${{ !cancelled() }}
+        working-directory: apps/desktop-daemon
+        env:
+          ABITO_REQUIRE_PI: "1"
+        run: >-
+          node --test --test-timeout=180000
+          test/custom-provider.test.cjs
+          test/custom-provider-extension.test.cjs
+          test/profiles.test.cjs test/protocol.test.cjs
+          test/auth.test.cjs test/server.test.cjs
+
+  linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: apps/desktop-daemon
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install the pi CLI the real-transport proofs run against (pinned)
+        run: npm install -g @earendil-works/pi-coding-agent@1.4.0
+      - name: Daemon suite (custom provider, profiles, protocol)
+        env:
+          ABITO_REQUIRE_PI: "1"
+        run: >-
+          node --test --test-timeout=180000
+          test/custom-provider.test.cjs
+          test/custom-provider-extension.test.cjs
+          test/profiles.test.cjs test/protocol.test.cjs
+          test/auth.test.cjs test/server.test.cjs

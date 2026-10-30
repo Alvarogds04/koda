@@ -1,0 +1,20 @@
+// Visual-compare harness page for the Coucou reference tree (copied into eval/windows/dev/ at run time).
+// Same wiring as src/main.ts minus the greeting/zoom/tray; exposes the island so the runner can drive states.
+import "../src/style.css";
+import { Bridge } from "../src/core/bridge";
+import { State } from "../src/core/state";
+import { Island } from "../src/island/island";
+import { registerHookHandlers } from "../src/island/hooks";
+import { Recap } from "../src/recap/recap";
+import { registerSpotifyHandlers, applySpotify } from "../src/island/spotify";
+
+const root = document.getElementById("root")!;
+const island = new Island(root);
+const boot = await Bridge.boot();
+if (boot) State.settings = { ...State.settings, ...boot.settings };
+island.applySettings();
+State.loadIntegrationTasks();
+registerHookHandlers(island);
+registerSpotifyHandlers(island);
+(window as any).__vcCoucou = { island, State, applySpotify: (s: any) => applySpotify(island, s), Recap };
+(window as any).__vcReady = true;

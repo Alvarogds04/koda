@@ -1,0 +1,174 @@
+/* HU-063 T1 «Ajustes · sidebar Koda» (design/hu-060-ajustes-avisos/02-sidebar-koda.html). ADDITIVE layer: loaded after the vendor
+   sheets (settings.css, hub.css, abito.css), which stay byte-identical; every rule outranks them with `body.hub-window` selectors
+   or re-points their custom properties on the body. Dark is the default; theme.js sets html[data-theme] for light.
+   Type scale 13 / 12 / 11. No url() but the Koda sheet set by settings-nusa-mount.js, no stylesheet imports, no remote font. */
+
+body.hub-window {
+  --win-bg: #000;
+  --side-bg: #0a0d1c;
+  --win-card: rgba(255, 255, 255, 0.05);
+  --win-line: rgba(255, 255, 255, 0.1);
+  --veil-a: 0.85;
+  --nusa-veil: #4d9fff;
+  --ink: #f5f6f8;
+  --dim: #9398a1;
+  --dim-2: #6b7079;
+  --bg: #000;
+  --card: rgba(255, 255, 255, 0.05);
+  --hairline: rgba(255, 255, 255, 0.1);
+  --hub-panel: #000;
+  --hub-card: rgba(255, 255, 255, 0.05);
+  --hub-field: rgba(255, 255, 255, 0.07);
+  --hub-line: rgba(255, 255, 255, 0.1);
+  --hub-text: #f5f6f8;
+  --hub-body: #e1e3e6;
+  --hub-secondary: #9398a1;
+  --hub-muted: #8a8f98;
+  color-scheme: dark;
+}
+html[data-theme="light"] body.hub-window {
+  --win-bg: #f4efe3;
+  --side-bg: #ebe3d0;
+  --win-card: rgba(0, 0, 0, 0.045);
+  --win-line: rgba(0, 0, 0, 0.12);
+  --veil-a: 0.6;
+  --ink: #1a1915;
+  --dim: #55524b;
+  --dim-2: #6a665d;
+  --bg: #f4efe3;
+  --card: rgba(0, 0, 0, 0.045);
+  --hairline: rgba(0, 0, 0, 0.12);
+  --hub-panel: #f4efe3;
+  --hub-card: rgba(0, 0, 0, 0.045);
+  --hub-field: rgba(0, 0, 0, 0.06);
+  --hub-line: rgba(0, 0, 0, 0.12);
+  --hub-text: #1a1915;
+  --hub-body: #2a2822;
+  --hub-secondary: #55524b;
+  --hub-muted: #5f5b52;
+  --hub-green: #1d6b3f;
+  --hub-red: #b3122f;
+  color-scheme: light;
+}
+
+/* window + sidebar (196px, side background, hairline) */
+body.hub-window,
+html[data-theme="light"] body.hub-window.settings-window { background: var(--win-bg); color: var(--ink); font: 400 12px/1.4 var(--font); }
+body.hub-window #hub { background: var(--win-bg); }
+body.hub-window .hub-side {
+  position: relative;
+  width: 196px;
+  flex: 0 0 196px;
+  gap: 2px;
+  padding: 14px 10px 10px;
+  background: var(--side-bg);
+  border-right: 1px solid var(--win-line);
+  color: var(--ink);
+}
+body.hub-window .hub-side > :not(.nusa-koda) { position: relative; }
+body.hub-window .hub-brand { display: none; }
+body.hub-window .hub-group { font: 700 11px/1.2 var(--font); letter-spacing: 0.07em; padding: 10px 12px 4px; color: var(--dim); }
+body.hub-window .hub-item {
+  height: 36px;
+  gap: 10px;
+  padding: 0 12px;
+  border-radius: 99px;
+  color: var(--ink);
+  font: 400 12px var(--font);
+  background: transparent;
+}
+body.hub-window .hub-item:hover:not(:disabled) { background: var(--win-card); }
+body.hub-window .hub-item.on { background: var(--ink); color: var(--win-bg); font-weight: 700; }
+body.hub-window .hub-item svg { width: 15px; height: 15px; flex-basis: 15px; }
+body.hub-window .hub-status { background: var(--win-card); color: var(--dim); font-size: 11px; }
+body.hub-window .hub-version { color: var(--dim); font-size: 11px; }
+
+/* Koda x3 over the agent veil */
+.nusa-koda {
+  position: relative;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  margin: -14px -10px 10px;
+  padding: 14px 10px 0;
+  min-height: 176px;
+  overflow: hidden;
+}
+.nusa-veil {
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 200px;
+  background: radial-gradient(90% 90% at 50% 40%, color-mix(in srgb, var(--nusa-veil) 38%, transparent), transparent 72%);
+  opacity: var(--veil-a);
+  pointer-events: none;
+  transition: background 0.4s;
+}
+.nusa-sprite { position: relative; flex: none; background-repeat: no-repeat; image-rendering: pixelated; }
+.nusa-voice { position: relative; margin: 0; min-height: 3em; max-width: 160px; font: 400 11px/1.35 var(--font); color: var(--dim); text-align: center; }
+
+/* panel: the window itself, no floating rounded frame */
+body.hub-window .hub-panel { margin: 0; border: 0; border-radius: 0; background: var(--win-bg); }
+body.hub-window .hub-scroll { padding: 16px 24px 20px; }
+body.hub-window .hub-page { gap: 10px; }
+
+/* cards as rounded groups */
+body.hub-window .hub-page section,
+body.hub-window .hub-page .hub-card,
+body.hub-window .hub-page section.abito-card {
+  background: var(--win-card);
+  border: 0;
+  border-radius: 14px;
+  padding: 12px 14px 10px;
+  gap: 6px;
+}
+body.hub-window .hub-page section > h2,
+body.hub-window .hub-page .hub-card h2 { font: 700 11px/1.2 var(--font); letter-spacing: 0.07em; text-transform: uppercase; color: var(--dim); }
+body.hub-window .hub-page .hint,
+body.hub-window .hub-page .hub-note,
+body.hub-window .hub-row .detail { font-size: 11px; color: var(--dim); }
+body.hub-window .row > label,
+body.hub-window .hub-row .title { font-size: 12px; font-weight: 400; color: var(--ink); }
+body.hub-window .hub-page button { font-size: 12px; }
+body.hub-window .hub-page button:not(.primary):not(.danger):not(.hub-btn.primary) { background: var(--win-card); color: var(--ink); }
+body.hub-window .hub-page button:hover:not(:disabled):not(.primary) { background: var(--win-line); }
+body.hub-window .hub-page button.primary,
+body.hub-window .hub-page button.hub-btn.primary { background: var(--ink); color: var(--win-bg); }
+body.hub-window .hub-keycap { background: var(--win-card); font-size: 11px; }
+
+/* page header band: compact, text only (the vendor mochi hero is untouched, only calmed) */
+body.hub-window .hub-hero { background: transparent; }
+/* the vendor hero band paints its own dark scene: its text stays light in both themes */
+body.hub-window .hub-hero h1 { color: #f5f6f8; }
+body.hub-window .hub-hero p { color: #a9aeb7; }
+body.hub-window .hub-hero h1 { font-size: 13px; font-weight: 700; }
+body.hub-window .hub-hero p { font-size: 11px; }
+/* human comments 4/5/7 (29-oct): no big Abito illustration (Koda is in the sidebar) and a compact title row.
+   Only the art layer is hidden (display:none also stops its painting); title, subtitle and any hero action stay. */
+body.hub-window .hub-hero svg.troupe { display: none; }
+body.hub-window .hub-hero, body.hub-window .hub-hero.compact { height: auto; min-height: 0; max-height: 64px; }
+body.hub-window .hub-hero .copy, body.hub-window .hub-hero.compact .copy {
+  height: auto; max-width: 100%; padding: 10px 14px; gap: 2px;
+  flex-direction: row; flex-wrap: wrap; align-items: baseline; column-gap: 12px;
+}
+body.hub-window .hub-hero .copy .actions { margin: 0 0 0 auto; }
+body.hub-window .hub-hero h1, body.hub-window .hub-hero.compact h1 { line-height: 1.2; }
+
+@media (prefers-reduced-motion: reduce) { .nusa-veil { transition: none; } }
+
+/* HU-063 T2: page «Isla» — live preview of the notch scale (settings-isla-mount.js sets --k on .isla-notch) */
+body.hub-window .isla-stage {
+  display: flex; align-items: flex-start; justify-content: center;
+  height: 64px; padding-top: 8px; overflow: hidden;
+  border-radius: 10px; background: var(--win-bg); border: 1px solid var(--win-line);
+}
+body.hub-window .isla-notch {
+  --k: 1;
+  width: calc(var(--k) * 144px); max-width: 100%; height: calc(var(--k) * 26px);
+  border-radius: 0 0 calc(var(--k) * 14px) calc(var(--k) * 14px);
+  margin-top: -8px; background: #000; box-shadow: 0 0 0 1px var(--win-line);
+  transition: width 0.25s, height 0.25s;
+}
+@media (prefers-reduced-motion: reduce) { body.hub-window .isla-notch { transition: none; } }
+body.hub-window .hub-page .hub-segmented button.on:not(.primary):not(.danger):not(.hub-btn.primary) { background: var(--ink); color: var(--win-bg); font-weight: 700; }

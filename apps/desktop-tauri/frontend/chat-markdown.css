@@ -1,0 +1,98 @@
+/* F025 is scoped to message content; no island, R6 or header geometry changes. */
+#chat-log :is(li.user, li.assistant) > :first-child { margin-top: 0; }
+#chat-log :is(li.user, li.assistant) > :last-child { margin-bottom: 0; }
+#chat-log :is(li.user, li.assistant) p { margin: 0 0 8px; white-space: pre-wrap; }
+#chat-log :is(h1, h2, h3, h4, h5, h6) { margin: 12px 0 6px; line-height: 1.3; text-wrap: balance; }
+#chat-log h1, #chat-log h2 { font-size: 16px; }
+#chat-log :is(h3, h4, h5, h6) { font-size: 14px; }
+#chat-log code { font: 12px/1.5 ui-monospace, monospace; background: rgba(255,255,255,.07); border-radius: 4px; padding: 1px 4px; }
+#chat-log .md-fence { min-width: 0; max-width: 100%; margin: 8px 0; border-radius: 10px; background: rgba(255,255,255,.05); box-shadow: inset 0 0 0 1px rgba(255,255,255,.08); overflow: hidden; white-space: normal; }
+#chat-log .md-code-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding-left: 10px; }
+#chat-log .md-language { color: var(--island-muted); font: 11px/1.3 ui-monospace, monospace; overflow-wrap: anywhere; min-width: 0; }
+#chat-log pre { overflow: auto; max-width: 100%; margin: 0; padding: 10px; white-space: pre; }
+#chat-log pre code { background: none; padding: 0; border-radius: 0; }
+#chat-log .md-item { display: flex; gap: 8px; margin: 3px 0; }
+#chat-log .md-item > :last-child { min-width: 0; }
+#chat-log .md-marker { flex: none; color: var(--island-muted); font-variant-numeric: tabular-nums; }
+#chat-log blockquote { border-left: 2px solid var(--island-muted); margin: 8px 0; padding: 0 0 0 10px; color: var(--island-muted); }
+#chat-log hr { border: 0; height: 1px; margin: 12px 0; background: rgba(255,255,255,.15); }
+#chat-log .md-link, #chat-log .md-copy { min-height: 44px; min-width: 44px; max-width: 100%; padding: 4px 8px; font: inherit; color: var(--island-ink); border: 0; border-radius: 6px; background: transparent; cursor: pointer; overflow-wrap: anywhere; white-space: normal; }
+#chat-log .md-link { display: inline-flex; align-items: center; box-sizing: border-box; color: var(--island-live); text-decoration: underline; text-underline-offset: 3px; }
+#chat-log .md-copy { flex: none; font-size: 11px; }
+#chat-log :is(.md-link, .md-copy):hover { background: rgba(255,255,255,.09); }
+#chat-log :is(.md-link, .md-copy):focus-visible { outline: 2px solid var(--island-live); outline-offset: -2px; }
+
+/* #343: the composer's attachment strip and picker button. Both are appended
+   to the composer form by chat.js; flex `order` places the strip under the
+   draft row and the paperclip after the send button, without touching any
+   existing rule. */
+#chat-attachments {
+  order: 11; /* after the clip (10): draft, send and clip stay on line one */
+  flex-basis: 100%;
+  min-width: 0;
+  max-height: 84px; /* a few chip rows, then scroll: never push the composer out of the window */
+  overflow-y: auto;
+  overflow-x: hidden;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 4px 2px 0;
+}
+/* T7.3 (design isla-chat-att1/att5): a 28px chip, r10, on the surface tone: name + ×. */
+.composer-attachment {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  min-width: 0;
+  min-height: 28px;
+  padding: 0 4px 0 10px;
+  border-radius: 10px;
+  background: var(--surface);
+  font: 400 var(--fs-caption)/1.2 var(--font-ui);
+}
+.composer-attachment-name { min-width: 0; max-width: 96px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.composer-attachment-size { display: none; } /* design: icon, name, × only; the size stays in the data */
+/* error chip (design isla-chat-atterr): red ring + ONE reason line under the strip */
+.composer-attachment-error { box-shadow: inset 0 0 0 1px var(--red-11); }
+.composer-attachment-reason { flex-basis: 100%; margin: 0; color: var(--red-11); font-size: var(--fs-caption); line-height: 1.2; }
+.composer-attachment-remove {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  min-width: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+.composer-attachment-remove::after { content: ''; position: absolute; inset: -11px; } /* 44px touch target */
+.composer-attachment-remove svg { width: 13px; height: 13px; }
+.composer-attachment-remove:hover { background: rgba(255, 255, 255, .1); }
+#chat-attach { order: 10; }
+#chat-attach svg { width: 16px; height: 16px; }
+
+/* #371 (OD002/OD024/GD031): tool-call receipts and approval-decision cards in
+   the transcript. The same card language as the rest of the log, built only
+   from the themed tokens (style.css owns the palettes; html[data-theme] flips
+   them for light and dark), so no rule here may hardcode a colour or read the
+   OS media query. The status icon's colour follows the machine state the row
+   carries in dataset.state / dataset.decision. */
+#chat-log li.tool, #chat-log li.approval { max-width: 88%; }
+#chat-log .chat-card { min-width: 0; max-width: 100%; padding: 6px 10px; border-radius: 10px; background: var(--fill-alt); box-shadow: inset 0 0 0 1px var(--line-faint); }
+#chat-log .chat-card-head { display: flex; align-items: center; gap: 6px; min-width: 0; }
+#chat-log .chat-card-head .ico { flex: none; }
+#chat-log .chat-card-head .ico svg { width: 14px; height: 14px; }
+#chat-log .chat-card-name { font: 600 12px/1.35 var(--font-ui); color: var(--island-ink); overflow-wrap: anywhere; min-width: 0; }
+#chat-log .chat-card-state { margin-left: auto; flex: none; font: 600 11px/1.35 var(--font-ui); color: var(--island-muted); font-variant-numeric: tabular-nums; }
+#chat-log .chat-card-summary { margin-top: 2px; font: 400 12px/1.45 var(--font-ui); color: var(--island-muted); overflow-wrap: anywhere; }
+#chat-log li.tool[data-state="running"] .ico { color: var(--island-live); }
+#chat-log li.tool[data-state="done"] .ico { color: var(--go); }
+#chat-log li.tool[data-state="failed"] .ico, #chat-log li.approval[data-decision="denied"] .ico { color: var(--red-11); }
+#chat-log li.tool[data-state="unknown"] .ico, #chat-log li.approval[data-decision="unknown"] .ico { color: var(--island-muted); }
+#chat-log li.approval[data-decision="approved"] .ico { color: var(--go); }
+#chat-log li.approval[data-decision="expired"] .ico { color: var(--sun); }

@@ -1,0 +1,6 @@
+{
+  "identifier": "island-capability",
+  "description": "M1b least privilege: the island and settings webviews may only subscribe/unsubscribe the desktop:state event. Host actions go through the app's own desktop_action/drag/evidence commands (app commands are gated by origin, not by plugin ACL); no window, path, image, menu, tray, shell, http or fs core commands are exposed, and permissions are denied everywhere else.",
+  "windows": ["main", "settings"],
+  "permissions": ["core:event:allow-listen", "core:event:allow-unlisten"]
+}

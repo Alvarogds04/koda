@@ -1,0 +1,172 @@
+/* Abito-only CSP adaptation of settings.html's inline styles. */
+body.settings-window { background: #000; color: #f5f6f8; }
+.hub-loading { padding: 24px; }
+/* Plain band retained; Abito SVG uses upstream canvas positioning/sizing verbatim. */
+.hub-hero { background: #000; }
+.hub-brand svg { width: 28px; height: 28px; }
+.hub-hero svg.troupe { position: absolute; inset: 0; width: 100%; height: 100%; }
+/* Per-mount status must not create an empty extra settings row. */
+.abito-settings-feedback:empty { display: none; }
+/* Coucou sizes the empty-state character's canvas at 64px (hub.css .hub-empty canvas); Abito's character is an SVG. */
+.hub-empty svg { width: 64px; height: 64px; }
+/* #503 S18+ (Ajustes, chosen designs): each task group is a titled card; rows are at least 44px tall and every
+   switch keeps a 44px hit area (touch-target-size) without changing its drawn size. */
+body.hub-window section.abito-card { gap: 6px; }
+body.hub-window section.abito-card > .row { min-height: 44px; }
+body.hub-window section.abito-card .switch::before { content: ""; position: absolute; inset: -12px -6px; }
+
+/* #503 S19 (Pestañas activas, Opción A): each row = dot, name, state as icon + word, switch, one contextual action.
+   The state is never colour alone; rows and their buttons are 44px high (touch-target-size). */
+.pill-row { min-height: 44px; }
+.pill-row .state { display: inline-flex; align-items: center; gap: 6px; }
+.pill-row .state-ico { font-weight: 700; width: 1em; text-align: center; }
+.pill-row .state.ok { color: var(--green); }
+.pill-row .state.missing { color: var(--amber); }
+.pill-row .state.main { color: var(--dim); }
+.pill-row .hub-btn { min-height: 32px; }
+.pill-row .pill-more { min-width: 44px; min-height: 44px; font-size: 18px; background: transparent; border: 0; color: var(--dim); }
+.pill-row .switch { position: relative; }
+.pill-row .switch::before { content: ""; position: absolute; inset: -12px -6px; }
+
+/* #503 S20 (Agentes, Opción B): a compact table, one 40px row per agent: name | state (icon + word) | «En isla» | actions. */
+.agent-table { display: flex; flex-direction: column; }
+.agent-row { display: grid; grid-template-columns: minmax(120px, 1.2fr) minmax(130px, 1.2fr) 72px minmax(120px, 1fr); align-items: center; gap: 12px; min-height: 40px; border-bottom: 1px solid var(--hairline); }
+.agent-head { min-height: 28px; font: 600 11px var(--font); color: var(--dim); }
+.agent-name { font-size: 12.5px; }
+.agent-state { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; }
+.agent-state .state-ico { font-weight: 700; width: 1em; text-align: center; }
+.agent-island { display: inline-flex; }
+.agent-island .switch { position: relative; }
+.agent-island .switch::before { content: ""; position: absolute; inset: -12px -6px; }
+.agent-actions { display: inline-flex; justify-content: flex-end; gap: 8px; }
+.agent-more { min-width: 44px; min-height: 40px; font-size: 18px; background: transparent; border: 0; color: var(--dim); }
+.agent-menu { display: flex; gap: 8px; justify-content: flex-end; padding: 6px 0; }
+.agent-menu:empty { display: none; }
+.agent-entry > .agent-row:last-child { border-bottom: 0; }
+
+/* #503 S21 (Chat, Opción A): provider cards. The state badge sits on the card title row, the key field has its show/hide
+   and its inline error right under it, and the controls keep a 44px target. */
+section.abito-card > h2 { gap: 8px; }
+.card-state { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; font: 500 12px var(--font); }
+.card-state .state-ico { font-weight: 700; width: 1em; text-align: center; }
+.card-state.ok { color: var(--green); } .card-state.missing { color: var(--amber); } .card-state.unknown { color: var(--dim); }
+.field-error { color: var(--red, #f4505e); min-height: 0; }
+.field-error:empty { display: none; }
+.key-eye { min-width: 44px; min-height: 36px; background: transparent; border: 0; color: var(--dim); }
+.key-eye[aria-pressed="true"] { color: var(--ink); }
+
+/* #503 S22 (OK Abito, Opción A): live status banner (icon + word, never colour alone), numeric sensitivity, folded privacy. */
+.voice-status { display: flex; align-items: center; gap: 8px; margin: 12px 0 4px; padding: 10px 14px; border-radius: 12px; background: var(--hub-card); font: 600 13px var(--font); }
+.voice-status .state-ico { width: 1em; text-align: center; }
+.voice-status.on { color: var(--green); } .voice-status.busy { color: var(--amber); } .voice-status.error { color: var(--red, #f4505e); } .voice-status.off, .voice-status.unknown { color: var(--dim); }
+.voice-sensitivity-value { min-width: 4ch; text-align: right; font: 600 12px var(--font); font-variant-numeric: tabular-nums; }
+.voice-privacy > summary { min-height: 44px; display: flex; align-items: center; cursor: pointer; font: 600 13px var(--font); }
+.voice-privacy[open] > summary { margin-bottom: 6px; }
+
+/* #503 S23 (Integraciones, Opción A): one card per service: head (switch, colour, name, state, actions), a key panel that
+   opens on demand and a plain-text «¿Dónde?». Targets keep 44px; the state is icon + word, never colour alone. */
+#integration-list { gap: 10px !important; }
+.int-card { gap: 8px; }
+.int-head { display: grid; grid-template-columns: minmax(120px, 1fr) 128px max-content; align-items: center; gap: 10px 14px; min-height: 44px; }
+.int-id { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.int-head .card-state { margin-left: 0; }
+.int-name { font-size: 13px; font-weight: 600; min-width: 96px; }
+.int-actions { display: grid; grid-template-columns: 90px 66px 106px; gap: 6px; align-items: center; justify-content: end; }
+.int-actions .int-slot-1 { grid-column: 1; } .int-actions .int-slot-2 { grid-column: 2; } .int-actions .int-slot-3 { grid-column: 3; }
+.int-actions .hub-btn { white-space: nowrap; padding-inline: 10px; min-width: 0; }
+@media (max-width: 860px) { .int-head { grid-template-columns: minmax(130px, 1fr) max-content; } .int-head .card-state { grid-column: 2; } .int-actions { grid-column: 1 / -1; justify-content: start; } }
+.int-actions .hub-btn { min-height: 36px; }
+.int-connect { padding-top: 4px; border-top: 1px solid var(--hairline); }
+.int-connect[hidden], .int-where[hidden], .int-card [hidden] { display: none !important; }
+.int-verdict:empty { display: none; }
+.int-head .switch { position: relative; }
+.int-head .switch::before { content: ""; position: absolute; inset: -12px -6px; }
+
+/* #503 S24 (Teléfono, Opción A, sin QR en 0.2): status line, numbered steps, an honest code area and an empty devices list.
+   Everything is inert; the state is icon + word and the security notes sit at the top, readable. */
+.phone-status { display: flex; align-items: center; gap: 8px; font: 600 13px var(--font); color: var(--dim); }
+.phone-security { display: flex; flex-direction: column; gap: 2px; padding: 8px 12px; border-radius: 10px; background: rgba(255,255,255,0.04); }
+.phone-steps { margin: 4px 0 0 20px; display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; }
+.phone-devices { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; min-height: 44px; }
+.phone-confirm { display: flex; align-items: center; gap: 8px; }
+.phone-confirm[hidden] { display: none !important; }
+
+/* #503 S25 (Atajos, Opción A): a table Acción | Tecla | Estado. DOM order keeps the switch first and the keycap last (the
+   existing contract); the visual order is Acción, Tecla, Estado. Rows are 44px; the state is icon + word. */
+.shortcut-table { display: flex; flex-direction: column; }
+.shortcut-table .shortcut { display: grid; grid-template-columns: 44px minmax(140px, 1.4fr) minmax(130px, 1fr) minmax(120px, 1fr); align-items: center; gap: 12px; min-height: 44px; border-bottom: 1px solid var(--hairline); }
+.shortcut-table .shortcut-head { min-height: 28px; grid-template-columns: 44px minmax(140px, 1.4fr) minmax(130px, 1fr) minmax(120px, 1fr); font: 600 11px var(--font); color: var(--dim); }
+.shortcut-table .shortcut-head > :first-child { grid-column: 1 / 3; } /* «Acción» heads the switch AND the name: the switch is part of the action */
+.shortcut-table .shortcut .keycap { grid-column: 3; grid-row: 1; justify-self: start; min-height: 36px; }
+.shortcut-table .shortcut .shortcut-state { grid-column: 4; grid-row: 1; display: inline-flex; align-items: center; gap: 6px; font-size: 12px; }
+.shortcut-head > :nth-child(2) { grid-column: 3; } .shortcut-head > :nth-child(3) { grid-column: 4; }
+.shortcut-state .state-ico { font-weight: 700; width: 1em; text-align: center; }
+.shortcut-state.ok { color: var(--green); } .shortcut-state.warn { color: var(--amber); } .shortcut-state.err { color: var(--red, #f4505e); } .shortcut-state.off, .shortcut-state.unknown, .shortcut-state.none { color: var(--dim); }
+.capture-help { color: var(--ink); font-weight: 600; }
+.capture-help[hidden], #shortcut-reset-confirm[hidden] { display: none !important; }
+#shortcut-reset-confirm { gap: 8px; }
+.shortcut-table .switch { position: relative; } .shortcut-table .switch::before { content: ""; position: absolute; inset: -12px -6px; }
+
+/* #503 S26 (Cuentas / Conexiones, Opción A): the engine's state first (icon + word), then one card per provider. */
+.engine-status { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 4px 0 8px; padding: 10px 14px; border-radius: 12px; background: var(--hub-card); font: 600 13px var(--font); min-height: 44px; }
+.engine-status .state-ico { width: 1em; text-align: center; }
+.engine-status.on { color: var(--green); } .engine-status.busy { color: var(--amber); } .engine-status.error { color: var(--red, #f4505e); } .engine-status.off { color: var(--dim); }
+.engine-status .hint { flex: 1 1 200px; font-weight: 400; }
+
+/* #503 S27 (Dictado, Opción B): the «Probar» area above the settings: instruction, the last dictation, and what is ready. */
+.dictation-try { display: flex; flex-direction: column; gap: 8px; padding: 14px 16px; border-radius: 14px; background: var(--hub-card); }
+.mic-meter { display: flex; align-items: center; gap: 10px; font: 500 12px var(--font); color: var(--muted, #9a9a9a); }
+.mic-segs { display: inline-flex; gap: 3px; }
+.mic-seg { width: 14px; height: 10px; border-radius: 3px; background: rgba(255,255,255,.12); }
+.mic-seg.on { background: var(--accent, #6fd36f); }
+.mic-meter[data-state=none] .mic-meter-word { color: var(--warn, #e0a030); }
+.dictation-try-title { font: 700 14px var(--font); }
+.dictation-try textarea { width: 100%; min-height: 64px; resize: none; }
+.dictation-checks { display: flex; flex-wrap: wrap; gap: 6px 16px; }
+.dictation-check { display: inline-flex; align-items: center; gap: 6px; font: 500 12px var(--font); }
+.dictation-check .state-ico { font-weight: 700; width: 1em; text-align: center; }
+.dictation-check.ok { color: var(--green); } .dictation-check.bad { color: var(--amber); }
+
+/* 0.2.1 Ajustes (S7): the ⓘ tip. Shown on hover and on keyboard focus, hidden when either leaves; Escape dismisses it. */
+.hub-info-wrap { position: relative; display: inline-flex; align-items: center; margin-left: 6px; }
+.hub-info { min-width: 24px; min-height: 24px; padding: 0; background: transparent; border: 0; border-radius: 50%; color: var(--dim); font: 500 13px var(--font); cursor: help; }
+.hub-info:hover, .hub-info:focus-visible { color: var(--ink); }
+.hub-info:focus-visible { outline: 2px solid var(--green, #4ade80); outline-offset: 1px; }
+.hub-tip { display: none; position: absolute; z-index: 20; left: 50%; top: calc(100% + 6px); transform: translateX(-50%); width: max-content; max-width: 260px;
+  padding: 8px 10px; border-radius: 8px; background: var(--hub-card, #1b1d22); border: 1px solid var(--hairline, #2a2d34); color: var(--ink, #f5f6f8);
+  font: 400 12px/1.4 var(--font); text-align: left; white-space: normal; box-shadow: 0 6px 18px rgba(0,0,0,.45); pointer-events: none; }
+.hub-info-wrap:hover > .hub-tip, .hub-info-wrap:focus-within > .hub-tip { display: block; }
+.hub-info-wrap.dismissed > .hub-tip { display: none; }
+.hub-titled { display: inline-flex; align-items: center; }
+
+/* 0.2.1 (Chat, L2 «Proveedores plegables»): the fold button sits at the end of the provider title row. */
+.card-fold { margin-left: 6px; min-width: 32px; min-height: 32px; background: transparent; border: 0; color: var(--dim); font: 500 14px var(--font); cursor: pointer; }
+.card-fold:hover, .card-fold:focus-visible { color: var(--ink); }
+.voice-advanced > summary { cursor: pointer; font: 600 13px var(--font); padding: 8px 0; }
+
+section.abito-card > [hidden] { display: none !important; }
+/* HU-044: a folded apartado shows its title row (and its state badge) only; the title row is the click target */
+section.foldable.folded > :not(h2):not(.card-state) { display: none !important; }
+section.foldable > h2 { cursor: pointer; }
+/* abito-pausa 0.1.2: dictation is paused, so its sidebar status line is hidden (hub.css gives .hub-status its own display) */
+.hub-status[hidden] { display: none !important; }
+/* Indeterminate: one install has no percentage, so a bar slides until it finishes. */
+.hub-progress.indeterminate > i {
+  width: 40%;
+  animation: hub-progress-slide 1.1s ease-in-out infinite;
+}
+
+@keyframes hub-progress-slide {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(250%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hub-progress.indeterminate > i { width: 100%; opacity: 0.6; animation: none; }
+}
+
+.agent-progress {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}

@@ -1,0 +1,1993 @@
+/* M1a island styles. Tokens reused from the legacy Electron island contract
+   (colors, radii, easing durations); geometry and motion are driven per-frame
+   by island.js: grow = spring response 0.5s / damping 0.72, shrink = 340ms
+   cubic-bezier(.45,0,.2,1), Abito's own reduced-motion state snaps instantly. Fonts use
+   the system stack on purpose: the legacy woff2 files are not copied. */
+
+:root {
+  --island: #000;
+  --island-ink: #fff;
+  --island-muted: #a1a1aa;
+  --go: #b8ff2e;
+  --focus-ring: rgba(255, 255, 255, 0.55); /* the text fields' focus edge: thin and muted, like Coucou's; the lime --go stays for controls */
+  --sun: #ffe100;        /* waits for your yes */
+  --red-11: #ff5c75;     /* real error */
+  --island-live: #2eb4ff; /* in progress */
+  --faint: #6f6d66;      /* off / inert: shapes only, never words */
+  /* #384: the Dot's own colour family. These are IDENTITY colours (who the Dot is), not the
+     status colours above (what is happening): they never carry a state, and the default green
+     needs no override selector — it is the frozen engine's own paint, reproduced below only
+     so the Ajustes swatch can show it. */
+  --dot-green-1: #d8ff7a;  --dot-green-2: #8dff2b;  --dot-green-3: #3fe00f;  /* neon lime: vivid on the black island */
+  --dot-blue-1: #a8d8ff;   --dot-blue-2: #2ea8ff;  --dot-blue-3: #0a6dff;  /* neon blue */
+  --dot-mint-1: #b4ffe3;   --dot-mint-2: #2dffac;  --dot-mint-3: #00d482;  /* neon mint */
+  --dot-orange-1: #ffd08a; --dot-orange-2: #ff8a00; --dot-orange-3: #e05a00;  /* neon orange */
+  --dot-purple-1: #e3c4ff; --dot-purple-2: #b04dff; --dot-purple-3: #7000ff;  /* neon purple */
+  --font-ui: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --radius-xl: .75rem;
+  --radius-2xl: 1.125rem;
+  --radius-full: 999px;
+  --ease-out: cubic-bezier(.23, 1, .32, 1);
+  --dur-press: 120ms;
+  --dur-state: 160ms;
+  /* §9.2 motion table. CSS has no spring: cubic-bezier(.25,.9,.35,1.03) is the
+     closest monotone-then-tiny-overshoot curve (damping 0.8 overshoots ~1.5%).
+     View enter = 400ms spring after a 160ms delay; view exit = 160ms ease-in;
+     control change = 300ms spring. Only opacity/transform (+ visibility timing). */
+  --spring: cubic-bezier(.25, .9, .35, 1.03);
+  --ease-in: cubic-bezier(.4, 0, 1, 1);
+  --dur-view-delay: 160ms;
+  --dur-view-in: 400ms;
+  --dur-view-out: 160ms;
+  --dur-control: 300ms;
+  --dur-focus: 120ms;
+  /* N8: the chat (and its models panel) travel VERTICALLY along the docked edge:
+     they start --view-shift closer to the edge they grow from (above when docked
+     at the top, below when docked at the bottom) and settle with the view spring.
+     Reference (gentle-dot, MIT, read-only): --ease cubic-bezier(.2,.8,.2,1) and
+     180ms ease-out for expand/collapse; its panel is a native window, so only the
+     timing is taken. The R6 contract (160ms delay, 400ms spring, 160ms exit) rules. */
+  --view-shift: 16px;
+}
+/* T6.1 type + space scale (design §1), right after the first :root and still BEFORE every rule
+   that uses them (the V1 block used to declare the ramp late, ~line 917). One variable per role;
+   spacing base 4/8. Light and dark safe: values are theme-independent; themes only recolour. */
+:root { --fs-title: 16px; --fs-body: 14px; --fs-label: 13px; --fs-caption: 12px; --space-4: 4px; --space-8: 8px; --space-12: 12px; --space-16: 16px; --space-20: 20px; --space-24: 24px; --space-32: 32px; }
+:root { --cc-fs-name: 12px; --cc-fs-detail: 11px; --cc-fs-chip: 11.5px; --cc-fs-body: 12.5px; --cc-fs-state: 13px; --cc-fs-note: 10.5px; }
+#capsule[data-edge="top"] { --view-dir: -1; }
+#capsule[data-edge="bottom"] { --view-dir: 1; }
+
+* { box-sizing: border-box; }
+html {
+  height: 100%;
+  background: transparent;
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+body {
+  margin: 0;
+  height: 100dvh;
+  background: transparent;
+  color: var(--island-ink);
+  font: 400 14px/1.4 var(--font-ui);
+  -webkit-user-select: none;
+  user-select: none;
+  cursor: grab;
+  overscroll-behavior: none;
+}
+body.is-dragging { cursor: grabbing; }
+/* Probe-only capture background (UI.1 visual contract): the probe adds this
+   class around each x11grab so radius/margins/contour are visible, and
+   removes it right after. Production code never sets it. */
+body.probe-capture-bg { background: #d8c9a3; }
+[hidden] { display: none !important; }
+
+/* Full-window capsule; #island is the visible black shape (288x32 r14 at
+   rest, 640x160 r22 overview), centred horizontally and anchored to the
+   docked vertical edge (top/bottom gap of 6px/8px inside the native window). */
+#capsule { position: absolute; inset: 0; }
+#island {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--island);
+}
+#compact-flag { position: absolute; z-index: 2; left: 40px; top: 1px; width: 14px; height: 14px; display: none; place-items: center; pointer-events: none; }
+#compact-flag .ico svg { width: 11px; height: 11px; }
+#compact-flag[data-tone="sun"] { color: var(--sun); }
+#compact-flag[data-tone="red"] { color: var(--red-11); }
+#capsule[data-phase="compact"] #compact-flag:not([hidden]) { display: grid; }
+#clay {
+  position: absolute;
+  left: 50%;
+  display: block;
+  /* §9.2 hover: ~1.06 in 160ms, back on leave; no meaning, no pose change.
+     --hover is set by island.js (1 unless the pointer is over the character
+     and the system does not ask for reduced motion). */
+  transform: translateX(-50%) scale(var(--hover, 1));
+  transition: transform var(--dur-state) var(--ease-out);
+  pointer-events: none;
+}
+/* #384: the human's colour for the Dot (Ajustes). It overrides the THREE stops of the frozen
+   engine's own SKIN gradient — a presentation attribute always loses to CSS — so the engine's bytes,
+   the R6 geometry, the poses and the transparent island are untouched. The selector is scoped to
+   `[id$="skin"]` on purpose: the engine's other gradient is the drop shadow, whose own paint this
+   feature must not touch. The default green has no data-dot-color attribute, so it gets this base rule
+   (same three stops, now the neon --dot-green-*); the four attribute tints below are MORE specific and win.
+   The engine file itself is not edited: its bytes stay pinned by hash. */
+#island #clay radialGradient[id$="skin"] stop:nth-child(1) { stop-color: var(--dot-green-1); }
+#island #clay radialGradient[id$="skin"] stop:nth-child(2) { stop-color: var(--dot-green-2); }
+#island #clay radialGradient[id$="skin"] stop:nth-child(3) { stop-color: var(--dot-green-3); }
+#island[data-dot-color="blue"] #clay radialGradient[id$="skin"] stop:nth-child(1) { stop-color: var(--dot-blue-1); }
+#island[data-dot-color="blue"] #clay radialGradient[id$="skin"] stop:nth-child(2) { stop-color: var(--dot-blue-2); }
+#island[data-dot-color="blue"] #clay radialGradient[id$="skin"] stop:nth-child(3) { stop-color: var(--dot-blue-3); }
+#island[data-dot-color="mint"] #clay radialGradient[id$="skin"] stop:nth-child(1) { stop-color: var(--dot-mint-1); }
+#island[data-dot-color="mint"] #clay radialGradient[id$="skin"] stop:nth-child(2) { stop-color: var(--dot-mint-2); }
+#island[data-dot-color="mint"] #clay radialGradient[id$="skin"] stop:nth-child(3) { stop-color: var(--dot-mint-3); }
+#island[data-dot-color="orange"] #clay radialGradient[id$="skin"] stop:nth-child(1) { stop-color: var(--dot-orange-1); }
+#island[data-dot-color="orange"] #clay radialGradient[id$="skin"] stop:nth-child(2) { stop-color: var(--dot-orange-2); }
+#island[data-dot-color="orange"] #clay radialGradient[id$="skin"] stop:nth-child(3) { stop-color: var(--dot-orange-3); }
+#island[data-dot-color="purple"] #clay radialGradient[id$="skin"] stop:nth-child(1) { stop-color: var(--dot-purple-1); }
+#island[data-dot-color="purple"] #clay radialGradient[id$="skin"] stop:nth-child(2) { stop-color: var(--dot-purple-2); }
+#island[data-dot-color="purple"] #clay radialGradient[id$="skin"] stop:nth-child(3) { stop-color: var(--dot-purple-3); }
+
+/* #384: named 44px radio targets; selection and keyboard focus have separate rings. */
+.scolors { flex-wrap: wrap; }
+.sdot-options { display: inline-flex; flex-wrap: wrap; gap: 6px; margin-left: auto; padding: 4px; }
+.sdot { min-width: 44px; min-height: 44px; display: inline-flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; padding: 4px 6px; color: var(--island-ink); background: transparent; border: 2px solid var(--island-muted); border-radius: 8px; cursor: pointer; }
+.sdot-swatch { width: 20px; height: 20px; border-radius: 50%; }
+.sdot-label { font-size: 11px; line-height: 14px; }
+.sdot[data-color="green"] .sdot-swatch { background: var(--dot-green-2); }
+.sdot[data-color="blue"] .sdot-swatch { background: var(--dot-blue-2); }
+.sdot[data-color="mint"] .sdot-swatch { background: var(--dot-mint-2); }
+.sdot[data-color="orange"] .sdot-swatch { background: var(--dot-orange-2); }
+.sdot[data-color="purple"] .sdot-swatch { background: var(--dot-purple-2); }
+.sdot[aria-checked="true"] { border-color: var(--island-ink); box-shadow: inset 0 0 0 1px var(--island-ink); }
+.sdot:focus-visible { outline: 2px solid var(--go); outline-offset: 2px; }
+.sdot-error { flex-basis: 100%; color: var(--red-11); font-size: 13px; line-height: 1.4; }
+/* #380: the theme picker — three fixed choices, same 44px target language as .sdot.
+   Selection never rides on colour alone: the chosen one is FILLED (shape + contrast) and
+   carries aria-checked + roving tabindex; focus ring stays --go on both palettes. */
+.stheme-options { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.stheme {
+  min-width: 44px; min-height: 44px; padding: 0 14px;
+  border-radius: var(--radius-full); border: 1px solid var(--line);
+  background: transparent; color: var(--island-ink); cursor: pointer;
+  font: 600 13px/1.2 var(--font-ui);
+  transition: background-color var(--dur-state) var(--ease-out), border-color var(--dur-state) var(--ease-out);
+}
+.stheme-label { display: inline-block; }
+.stheme[aria-checked="true"] { background: var(--go); border-color: var(--go); color: #000; }
+/* T7.2 design (ajustes-ventana-apariencia-*.png): the tab's theme picker is THREE LIVE
+   THUMBNAILS (Sistema / Claro / Oscuro) instead of text pills. The quick panel keeps the text
+   pill (.stheme base above). The card variant draws a mini preview of each theme: dot, ink
+   line, muted line, two chips. Sistema follows the CURRENT theme tokens; Claro/Oscuro are the
+   literal palettes of DESIGN-NOTES §1 — a preview must not flip with the theme it sits in,
+   so these few raw colours are the design's own values, not theme tokens. Selection is the
+   design's 2px live ring on the thumbnail (words still carry the state; never colour alone). */
+.stheme.stheme-card {
+  flex-direction: column; gap: 6px; min-width: 92px; min-height: 44px; padding: 0;
+  border: 0; border-radius: 14px; background: transparent; color: var(--island-ink);
+}
+.stheme.stheme-card[aria-checked="true"] { background: transparent; color: var(--island-ink); }
+.stheme-thumb { display: flex; flex-direction: column; gap: 4px; width: 92px; height: 64px; padding: 10px; box-sizing: border-box; border-radius: 14px; background: var(--card-bg); border: 1px solid var(--line); }
+.stheme[aria-checked="true"] .stheme-thumb { border-color: transparent; box-shadow: 0 0 0 2px var(--island-live); }
+.stheme-thumb .t-dot { width: 12px; height: 12px; border-radius: 50%; background: var(--island-live); }
+.stheme-thumb .t-line { height: 4px; border-radius: 2px; background: var(--island-ink); }
+.stheme-thumb .t-line-1 { width: 60%; }
+.stheme-thumb .t-line-2 { width: 82%; background: var(--island-muted); }
+.stheme-thumb .t-chips { display: flex; gap: 4px; margin-top: auto; }
+.stheme-thumb .t-chips span { width: 16px; height: 10px; border-radius: 3px; background: var(--island-muted); opacity: .75; }
+.stheme[data-mode="light"] .stheme-thumb { background: #F7F2E7; border-color: rgba(26, 25, 21, .08); }
+.stheme[data-mode="light"] .stheme-thumb .t-dot { background: #2F6FB8; }
+.stheme[data-mode="light"] .stheme-thumb .t-line { background: #1A1915; }
+.stheme[data-mode="light"] .stheme-thumb .t-line-2, .stheme[data-mode="light"] .stheme-thumb .t-chips span { background: #5F5C54; }
+.stheme[data-mode="dark"] .stheme-thumb { background: #141518; border-color: rgba(245, 246, 248, .08); }
+.stheme[data-mode="dark"] .stheme-thumb .t-dot { background: #63B3FF; }
+.stheme[data-mode="dark"] .stheme-thumb .t-line { background: #F5F6F8; }
+.stheme[data-mode="dark"] .stheme-thumb .t-line-2, .stheme[data-mode="dark"] .stheme-thumb .t-chips span { background: #8E939C; }
+.stheme:focus-visible { outline: 2px solid var(--go); outline-offset: 2px; }
+html[data-motion="reduce"] .stheme { transition: none; }
+#theme-error:empty { display: none; }
+
+/* UI.1: visual overview. R6 (128px, left; 72px with a card) is placed by
+   island.js. Right of it: status chip + «i», the Sileo pill, and the primary
+   «Conversar» bubble. Containers are pointer-dead; only controls take clicks.
+   Visible only in the overview (data-phase="expanded"), so an invisible
+   control can never be clicked. */
+.ico { display: inline-flex; flex: none; }
+.ico svg { width: 20px; height: 20px; display: block; }
+.chip { display: inline-flex; align-items: center; gap: 6px; min-height: 28px; font: 600 13px/1 var(--font-ui); color: var(--island-ink); }
+.chip .ico { color: var(--island-muted); }
+#bridge, #card-bridge, #hotkey { margin-left: 4px; }
+[data-tone="go"] .ico { color: var(--go); }
+[data-tone="sun"] .ico { color: var(--sun); }
+[data-tone="red"] .ico { color: var(--red-11); }
+[data-tone="live"] .ico { color: var(--island-live); }
+[data-tone="faint"] .ico { color: var(--faint); }
+.dot { width: 10px; height: 10px; margin: 5px; border-radius: 50%; background: var(--sun); }
+.ico .dot { background: currentColor; }
+@keyframes spin { to { transform: rotate(360deg); } }
+[data-kind="busy"] .ico svg { animation: spin 900ms linear infinite; } /* in-flight ring; still under reduced motion (see @media below): the blue open arc is the cue */
+.icon-btn {
+  display: inline-grid; place-items: center;
+  min-width: 44px; min-height: 44px; padding: 0;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--line);
+  background: transparent; color: var(--island-ink); cursor: pointer;
+}
+.icon-btn:hover { background: var(--fill-hover); }
+.icon-btn[aria-expanded="true"] { border-color: var(--go); color: var(--go); }
+
+#notices { position: absolute; /* 96px = row 44 + 4px gap + pill 44 + 4px slac: /* 96px = row 44 + 4px gap + pill 44 + 4px slack; the «i» and cross circles never touc: the «i» and cross circles never touch; stops 8px before the bubble column (16+48) */
+  pointer-events: none; opacity: 0; visibility: hidden; transform: translateY(6px); transition: opacity var(--dur-view-out) var(--ease-in), transform var(--dur-view-out) var(--ease-in), visibility 0s linear var(--dur-view-out); }
+#notices > * { pointer-events: auto; }
+#capsule[data-phase="expanded"] #notices { opacity: 1; visibility: visible; transform: none; transition: opacity var(--dur-state) var(--ease-out) var(--dur-view-delay), transform var(--dur-view-in) var(--spring) var(--dur-view-delay), visibility 0s; }
+#notice-row { display: flex; align-items: center; justify-content: space-between; min-height: 44px; }
+#notice-pill {
+  display: flex; align-items: center; gap: 8px; margin-top: 4px; padding: 0 0 0 10px;
+  /* #437: the design band is 40 px (D11: the design wins over the old 44). */
+  min-height: 40px; border-radius: var(--radius-full); background: var(--surface);
+}
+#notice-ring { display: inline-grid; place-items: center; color: var(--go); }
+#notice-title { font-size: 13px; font-weight: 600; white-space: nowrap; }
+/* #373 GD032: the strip wears the notice severity — error red, warning sun;
+   info keeps the neutral green ring (existing notices render unchanged). */
+#notices[data-tone="red"] #notice-ring, #notices[data-tone="red"] #notice-title { color: var(--red-11); }
+#notices[data-tone="sun"] #notice-ring, #notices[data-tone="sun"] #notice-title { color: var(--sun); }
+/* #437: the design band carries the severity as its own 1 px tone ring. */
+#notices[data-tone="red"] #notice-pill { border-color: var(--red-11); }
+#notices[data-tone="sun"] #notice-pill { border-color: var(--sun); }
+#notice-dismiss { margin-left: auto; }
+#notice-detail, #card-reason {
+  margin: 0; font-size: 12px; line-height: 1.35; color: var(--island-muted); overflow-wrap: anywhere;
+}
+#card-reason:not(.sr-only) { position: absolute; left: 0; right: 0; top: 48px; padding: 6px 8px; background: var(--island); z-index: 1; }
+#notice-detail { position: absolute; left: 0; right: 56px; top: 48px; padding: 6px 8px; background: var(--island); z-index: 1; }
+
+/* M3: approval card — the human's decision. R6 shrinks to 72px at the left
+   and the card takes the stage; the notices strip steps aside (its text is
+   still announced by #notice-live). BLOCKER 1 fix: no max-height, no
+   overflow, no default <p> margins — a flex column whose actions row is
+   always visible. */
+#permission { position: absolute; display: flex; flex-direction: column; pointer-events: none; opacity: 0; visibility: hidden; transform: translateY(6px); transition: opacity var(--dur-view-out) var(--ease-in), transform var(--dur-view-out) var(--ease-in), visibility 0s linear var(--dur-view-out); }
+#permission > * { pointer-events: auto; }
+#capsule[data-phase="expanded"] #permission { opacity: 1; visibility: visible; transform: none; transition: opacity var(--dur-state) var(--ease-out) var(--dur-view-delay), transform var(--dur-view-in) var(--spring) var(--dur-view-delay), visibility 0s; }
+#capsule[data-card][data-phase="expanded"] #notices { opacity: 0; visibility: hidden; transform: translateY(6px); transition: opacity var(--dur-view-out) var(--ease-in), transform var(--dur-view-out) var(--ease-in), visibility 0s linear var(--dur-view-out); }
+#card-head { display: flex; align-items: center; }
+#card-info { margin-left: auto; min-height: 44px; min-width: 44px; }
+#card-conn { margin-left: 4px; }
+#permission #operation { overflow-wrap: anywhere; }
+#card-actions { display: flex; }
+#allow, #deny { display: inline-flex; align-items: center; justify-content: center; min-width: 44px; border: 1px solid var(--line); background: transparent; color: var(--island-ink); cursor: pointer; }
+#allow { border-color: var(--go); color: var(--go); }
+#allow:hover:not(:disabled), #deny:hover:not(:disabled) { background: var(--fill-hover); }
+#allow:disabled, #deny:disabled { cursor: default; }
+/* The card state is also the island's contour: sun = waits for your yes. */
+#capsule[data-card-tone="sun"] #island { box-shadow: inset 0 0 0 2px var(--sun); }
+#capsule[data-phase="expanded"][data-card-tone="go"] #island { box-shadow: inset 0 0 0 2px var(--go); }
+#capsule[data-phase="expanded"][data-card-tone="red"] #island { box-shadow: inset 0 0 0 2px var(--red-11); }
+#capsule[data-phase="expanded"][data-card-tone="faint"] #island { box-shadow: inset 0 0 0 2px var(--faint); }
+#capsule[data-phase="expanded"][data-card-tone="live"] #island { box-shadow: inset 0 0 0 2px var(--island-live); }
+
+/* #304: Abito decides its own motion. island.js sets <html data-motion="full|reduce">
+   (default full: Abito always animates; the SYSTEM preference, which WebKit derives from
+   GtkSettings and which can be «off» in a session without the human asking for it, is
+   honored only when the human opts in). No rule below uses the system media query. */
+html[data-motion="reduce"] #notices, html[data-motion="reduce"] #permission, html[data-motion="reduce"] #open-chat, html[data-motion="reduce"] #chat, html[data-motion="reduce"] #models, html[data-motion="reduce"] #chat-body, html[data-motion="reduce"] #question { transition: none !important; transform: none !important; }
+html[data-motion="reduce"] #clay { transition: none !important; }
+html[data-motion="reduce"] #chat-state[data-kind="busy"] .ico svg, html[data-motion="reduce"] #chat-state[data-kind="checking"] .ico svg, html[data-motion="reduce"] [data-kind="checking"] .ico svg { animation: none; }
+/* Contract §4: no meaning depends on animation. The in-flight ring stays
+   still: the blue open arc (shape + --island-live) is the cue. */
+html[data-motion="reduce"] [data-kind="busy"] .ico svg { animation: none; }
+
+/* ---- U1: chat in the island ------------------------------------------- */
+.sr-only {
+  position: absolute !important;
+  width: 1px; height: 1px;
+  margin: -1px; padding: 0; border: 0;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap;
+}
+/* Overview blocks show only in the overview view of the expanded island. */
+#capsule[data-view="chat"] #notices,
+#capsule[data-view="chat"] #permission,
+#capsule[data-view="chat"] #island { box-shadow: none; }
+#capsule[data-view="chat"] #notices,
+#capsule[data-view="chat"] #permission { opacity: 0; visibility: hidden; transform: translateY(6px); transition: opacity var(--dur-view-out) var(--ease-in), transform var(--dur-view-out) var(--ease-in), visibility 0s linear var(--dur-view-out); }
+
+/* Primary overview control: the «Conversar» bubble, --go, 48x48 (>=44),
+   bottom-right of the island. Its name lives in aria-label. */
+#open-chat {
+  position: absolute;
+  right: 16px;
+  bottom: 12px;
+  display: grid; place-items: center;
+  width: 48px; height: 48px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-full);
+  background: var(--go);
+  color: #000;
+  cursor: pointer;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(6px);
+  transition: opacity var(--dur-view-out) var(--ease-in), transform var(--dur-view-out) var(--ease-in), visibility 0s linear var(--dur-view-out);
+}
+#capsule[data-phase="expanded"][data-view="overview"] #open-chat { opacity: 1; visibility: visible; transform: none; transition: opacity var(--dur-state) var(--ease-out) var(--dur-view-delay), transform var(--dur-view-in) var(--spring) var(--dur-view-delay), visibility 0s; }
+#open-chat:hover { filter: brightness(1.08); }
+
+:where(button, textarea) { outline: 2px solid transparent; outline-offset: 2px; transition: outline-color var(--dur-focus) var(--ease-out); }
+:focus-visible { outline: 2px solid var(--go); outline-offset: 2px; }
+/* A text field already has a visible edge: its focus is a 1px muted ring ON that edge, not a 2px lime halo floating around it. */
+#question-text:focus-visible { outline: 1px solid var(--focus-ring); outline-offset: 0; }
+/* Design 14 (option A): the chat field's focus is a 1px ACCENT edge on its own border (not the lime halo, not a muted white). */
+#chat-input:focus-visible { outline: 1px solid var(--island-live); outline-offset: 0; }
+
+#chat {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 6px 12px 12px; /* #309: a narrow column spends no gutter; the character sits in the header row */
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(calc(var(--view-dir) * var(--view-shift)));
+  transition: opacity var(--dur-view-out) var(--ease-in), transform var(--dur-view-out) var(--ease-in), visibility 0s linear var(--dur-view-out);
+}
+#capsule[data-phase="expanded"][data-view="chat"] #chat { opacity: 1; visibility: visible; transform: none; transition: opacity var(--dur-state) var(--ease-out) var(--dur-view-delay), transform var(--dur-view-in) var(--spring) var(--dur-view-delay), visibility 0s; }
+#chat-header { display: flex; align-items: center; gap: 4px; min-height: 48px; padding-left: 52px; /* room for the scaled R6 */ }
+#chat-header .icon-btn:first-of-type { margin-left: auto; }
+/* Only a visible specialist needs the second identity row; keep the R6 gutter
+   and all five 44px controls, without changing the principal-only header. */
+#chat-header:has(#chat-specialist:not([hidden])) {
+  display: grid; grid-template-columns: repeat(5, minmax(44px, 1fr));
+  grid-template-rows: 44px 56px; gap: 4px;
+}
+#chat-header:has(#chat-specialist:not([hidden])) .icon-btn {
+  grid-row: 1; width: 44px; margin-left: 0; justify-self: end;
+}
+#chat-header:has(#chat-specialist:not([hidden])) #chat-target-chip {
+  grid-row: 2; grid-column: 1 / 3;
+}
+#chat-header:has(#chat-specialist:not([hidden])) #chat-specialist {
+  grid-row: 2; grid-column: 3 / 6; min-width: 0;
+}
+#chat-header:has(#chat-specialist:not([hidden])) #chat-specialist .ico { flex: none; }
+#chat-header:has(#chat-specialist:not([hidden])) #chat-specialist .word {
+  min-width: 0; overflow-wrap: anywhere; line-height: 1.2;
+}
+/* Settings is absolute: move it below both rows only while that chip exists. */
+#chat:has(#chat-specialist:not([hidden])) #settings { top: 114px; }
+/* #309: the agent state (ready / thinking / writing / down) is a strip of its own, full width,
+   so a long state word never fights the model and back buttons for the header row. */
+#chat-status-strip { display: flex; align-items: center; min-height: 24px; padding: 0 4px 4px; }
+/* #310: the calm state is invisible but KEEPS its row: a strip that appeared and disappeared moved the whole history */
+#chat-status-strip:has(#chat-state[data-kind=""]) { visibility: hidden; }
+#chat-target-chip .ico { color: var(--island-muted); }
+#capsule[data-chat-availability="unavailable"] #chat-state .word,
+#capsule[data-chat-availability="blocked"] #chat-state .word { color: var(--red-11); }
+/* Spins ONLY while Abito's own motion state is «full» (the blue open arc is the still cue). */
+html[data-motion="full"] #chat-state[data-kind="busy"] .ico svg, html[data-motion="full"] #chat-state[data-kind="checking"] .ico svg { animation: spin 900ms linear infinite; }
+#chat-body { position: relative; flex: 1; display: flex; flex-direction: column; min-height: 0; }
+#chat-log {
+  flex: 1;
+  min-height: 0;
+  margin: 0;
+  padding: 4px 4px 8px 0;
+  gap: 2px;
+  list-style: none;
+  display: flex; flex-direction: column;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-user-select: text;
+  user-select: text;
+  cursor: text;
+  font-size: 13px;
+  line-height: 1.4;
+}
+#chat-log li { margin: 0 0 6px; white-space: pre-wrap; overflow-wrap: anywhere; }
+/* UI.2: «Vos»/«Abito» labels are gone: you sit on the right (tinted bubble),
+   Abito on the left (plain). Notes/errors are icon + one word. */
+#chat-log li.user { margin-left: 0; padding: 8px 12px; border-radius: 14px 14px 4px 14px; background: var(--bubble); color: var(--island-ink); width: fit-content; max-width: 88%; align-self: flex-end; }
+#chat-log li.assistant { max-width: 100%; color: var(--island-ink); }
+#chat-log li.note, #chat-log li.error { display: flex; align-items: center; gap: 6px; font: 600 12px/1.2 var(--font-ui); color: var(--island-muted); white-space: normal; }
+#chat-log li.note .ico svg, #chat-log li.error .ico svg { width: 16px; height: 16px; }
+#chat-log li.error { color: var(--red-11); }
+#chat-log li.error .ico { color: var(--red-11); }
+#chat-log li.empty { display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 12px; height: 100%; min-height: 80px; color: var(--island-muted); }
+/* F027: the lock + eye-off pair is the neutral state, unchanged; an explicit display
+   name adds «Hola, <nombre>.» below it as plain text (13 px, ink) — no name, no line. */
+#chat-log li.empty .empty-icons { display: flex; align-items: center; gap: 18px; }
+#chat-log li.empty .ico svg { width: 28px; height: 28px; }
+#chat-log li.empty .empty-greeting { margin: 0; font: 600 13px/1.35 var(--font-ui); color: var(--island-ink); text-align: center; }
+/* F024 — the model row above the composer: one button (dot, model name, caret)
+   with its picker panel above it. The name and the rows are plain text from
+   chat-view; there is no provider colour here because the chat lane is local. */
+#chat-model-row { position: relative; display: flex; align-items: center; gap: 6px; margin-top: 6px; }
+#chat-model-btn {
+  display: inline-flex; align-items: center; gap: 6px; max-width: 100%; min-height: 26px;
+  padding: 3px 10px; border-radius: var(--radius-full);
+  border: 1px solid var(--line-soft); background: var(--fill);
+  color: var(--island-muted); font: 600 11px/1.3 var(--font-ui); cursor: pointer;
+  transition: color var(--dur-state) var(--ease-out), background var(--dur-state) var(--ease-out);
+}
+#chat-model-btn:hover:not(:disabled) { color: var(--island-ink); }
+#chat-model-btn:focus-visible { outline: 2px solid var(--island-live); outline-offset: 2px; }
+#chat-model-btn:disabled { opacity: .55; cursor: default; }
+#chat-model-btn .word { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 220px; }
+#chat-model-btn .model-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--faint); flex: none; }
+/* The dot carries the availability the row already announces (never a provider). */
+#chat-model-btn[data-avail="ready"] .model-dot, #chat-model-btn[data-avail="busy"] .model-dot { background: var(--go); }
+#chat-model-btn[data-avail="unchecked"] .model-dot { background: var(--island-live); }
+#chat-model-btn[data-avail="unavailable"] .model-dot, #chat-model-btn[data-avail="blocked"] .model-dot { background: var(--red-11); }
+#chat-model-btn .model-caret {
+  width: 0; height: 0; flex: none;
+  border-left: 4px solid transparent; border-right: 4px solid transparent; border-top: 4px solid currentColor;
+  transition: transform var(--dur-state) var(--ease-out);
+}
+#chat-model-btn[aria-expanded="true"] .model-caret { transform: rotate(180deg); }
+#chat-model-picker {
+  position: absolute; left: 0; right: 0; bottom: calc(100% + 6px); z-index: 3;
+  display: flex; flex-direction: column; gap: 2px; padding: 6px;
+  border: 1px solid var(--line-soft); border-radius: 16px; background: var(--card-bg);
+  max-height: 46vh; overflow-y: auto;
+}
+#chat-model-picker[hidden] { display: none; }
+#chat-model-picker .picker-note { margin: 0; padding: 2px 6px 4px; color: var(--island-muted); font: 400 11px/1.4 var(--font-ui); }
+#chat-model-picker .picker-row {
+  display: flex; align-items: center; gap: 8px; width: 100%; padding: 8px 10px;
+  border: 0; border-radius: 10px; background: transparent; color: var(--island-ink);
+  font: 500 12px/1.35 var(--font-ui); text-align: left; cursor: pointer;
+}
+#chat-model-picker .picker-row:hover:not(:disabled) { background: var(--fill-alt); }
+#chat-model-picker .picker-row[aria-pressed="true"] { background: var(--fill-alt); }
+#chat-model-picker .picker-row:disabled { color: var(--island-muted); cursor: default; }
+#chat-model-picker .picker-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#chat-model-picker .picker-state { margin-left: auto; color: var(--island-muted); font-size: 11px; flex: none; }
+html[data-motion="reduce"] #chat-model-btn, html[data-motion="reduce"] #chat-model-btn .model-caret { transition: none; }
+#chat-composer { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px; margin-top: 6px; }
+#chat-input {
+  flex: 1;
+  min-height: 44px;
+  max-height: 120px;
+  resize: none;
+  overflow-y: auto;
+  padding: 12px 14px;
+  border-radius: var(--radius-2xl);
+  border: 1px solid var(--line-soft);
+  background: var(--fill);
+  color: var(--island-ink);
+  font: 400 13.5px/1.35 var(--font-ui);
+  -webkit-user-select: text;
+  user-select: text;
+  cursor: text;
+}
+#chat-input::placeholder { color: var(--island-muted); }
+#chat-new {
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0 16px;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--island-ink);
+  font: 600 13px/1 var(--font-ui);
+  cursor: pointer;
+}
+#chat-composer .round {
+  display: grid; place-items: center; width: 44px; height: 44px; min-width: 44px; padding: 0;
+  border-radius: var(--radius-full); border: 1px solid var(--line); background: transparent; color: var(--island-ink); cursor: pointer;
+}
+#chat-send { background: var(--go) !important; border-color: var(--go) !important; color: #000 !important; }
+#chat-send:disabled { opacity: .4; cursor: default; }
+#chat-input[data-invalid="true"] { border-color: var(--red-11); }
+#chat-draft-word { position: absolute; right: 108px; bottom: 56px; padding: 2px 8px; border-radius: 10px; background: var(--surface); color: var(--red-11); }
+#chat-new .dot { background: var(--island-live); }
+@keyframes row-in { from { opacity: 0; transform: translateY(4px); } }
+#chat-log li.enter { animation: row-in 160ms var(--ease-out); }
+html[data-motion="reduce"] #chat-log li.enter { animation: none; }
+#chat-new {
+  display: inline-flex; align-items: center; gap: 2px;
+  position: absolute;
+  left: 50%;
+  bottom: 56px;
+  transform: translateX(-50%);
+  background: var(--surface);
+}
+
+html[data-motion="reduce"] #chat-log { scroll-behavior: auto; }
+
+/* ---- U2: model picker (internal panel of the chat view) --------------- */
+/* Panels swap with the §9.2 motion (no display:none): the chat body leaves in
+   160ms ease-in and the models panel enters after the 160ms delay. */
+#chat-body { transition: opacity var(--dur-state) var(--ease-out) var(--dur-view-delay), visibility 0s; }
+#capsule[data-models="open"] #chat-status-strip, #capsule[data-settings="open"] #chat-status-strip { opacity: 0; visibility: hidden; } /* #309: never over a panel */
+#capsule[data-models="open"] #chat-body { opacity: 0; visibility: hidden; transition: opacity var(--dur-view-out) var(--ease-in), visibility 0s linear var(--dur-view-out); }
+/* UI.2 — visual model view (docs/desktop-visual-language.md §2.4). Panel =
+   one 44px bar (count chip, «i», three meters, refresh, done) + a scrolling
+   list of 44px rows. Rows are never clipped by a fixed height: the list
+   scrolls and every row keeps its full height (BLOCKER 2 of the review). */
+#models {
+  position: absolute; left: 12px; right: 12px; top: 56px; bottom: 12px; /* #309: the whole column below the header */
+  display: flex; flex-direction: column; gap: 4px; color: var(--island-muted);
+  opacity: 0; visibility: hidden; transform: translateY(calc(var(--view-dir) * var(--view-shift)));
+  transition: opacity var(--dur-view-out) var(--ease-in), transform var(--dur-view-out) var(--ease-in), visibility 0s linear var(--dur-view-out);
+}
+#models[data-open="true"] {
+  opacity: 1; visibility: visible; transform: none;
+  transition: opacity var(--dur-state) var(--ease-out) var(--dur-view-delay), transform var(--dur-view-in) var(--spring) var(--dur-view-delay), visibility 0s;
+}
+#models-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; min-height: 44px; }
+#models-bar .icon-btn:first-of-type { margin-left: 0; }
+#models-refresh { margin-left: auto; } /* refresh + done are pinned to the right of row 1 */
+#models-meters { display: flex; flex: 0 0 100%; order: 2; gap: 14px; margin: 0; padding: 0 2px; list-style: none; }
+.meter { display: inline-flex; align-items: center; gap: 6px; color: var(--island-muted); }
+.meter-label { font: 600 11px/1 var(--font-ui); color: var(--island-ink); }
+.meter-bar { display: inline-flex; }
+.meter[data-known="false"] { color: var(--faint); }
+#models-note:not(.sr-only) {
+  position: absolute; left: 0; right: 0; top: 48px; z-index: 2; margin: 0; padding: 8px 10px;
+  background: var(--surface); border-radius: var(--radius-xl); color: var(--island-ink); font-size: 12px; line-height: 1.35;
+}
+#models-list { flex: 1; min-height: 0; margin: 0; padding: 0; list-style: none; overflow-y: auto; overscroll-behavior: contain; scroll-snap-type: y proximity; }
+#models-list li { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 0 0 0 2px; scroll-snap-align: start; }
+#models-list li[aria-label] { cursor: default; }
+.model-title { flex: none; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--island-ink); font: 600 13px/1.2 var(--font-ui); }
+.model-chips { flex: 1; min-width: 0; display: flex; align-items: center; gap: 10px; overflow: hidden; }
+.model-chips .chip { min-height: 24px; font-size: 12px; }
+.model-chips .chip .ico svg { width: 16px; height: 16px; }
+.model-word { flex: none; }
+.model-word .word { color: var(--island-ink); }
+.model-ok { flex: none; width: 10px; height: 10px; margin: 0 5px; border-radius: 50%; background: var(--go); }
+#models-list li.disabled .model-title, #models-list li.disabled .model-chips { opacity: .6; }
+#models-list .choose, .models-prov .choose {
+  flex: none; display: grid; place-items: center; width: 44px; height: 44px; padding: 0;
+  border-radius: var(--radius-full); border: 0; background: transparent; color: #000; cursor: pointer; position: relative;
+}
+/* the circle itself is the control's shape: hollow ring = pick it, lime check = chosen */
+#models-list .choose::before, .models-prov .choose::before {
+  content: ""; position: absolute; width: 28px; height: 28px; border-radius: 50%;
+  border: 2px solid var(--line-ring); box-sizing: border-box;
+}
+#models-list .choose[aria-pressed="true"]::before, .models-prov .choose[aria-pressed="true"]::before { background: var(--go); border-color: var(--go); }
+#models-list .choose:hover:not(:disabled)::before, .models-prov .choose:hover:not(:disabled)::before { border-color: var(--island-ink); }
+#models-list .choose:disabled:not([aria-pressed="true"]) { cursor: default; }
+#models-list .choose:disabled:not([aria-pressed="true"])::before { border-color: var(--faint); }
+#models-list .choose .ico, .models-prov .choose .ico { position: relative; z-index: 1; }
+#models-list .choose .ico svg, .models-prov .choose .ico svg { width: 18px; height: 18px; }
+@keyframes control-pop { from { opacity: 0; transform: scale(.6); } }
+#models-list .choose[aria-pressed="true"] .ico { animation: control-pop var(--dur-control) var(--spring); }
+#models-list .choose::before { transition: background-color var(--dur-state) var(--ease-out), border-color var(--dur-state) var(--ease-out); }
+.icon-btn { transition: background-color var(--dur-press) var(--ease-out), border-color var(--dur-state) var(--ease-out); }
+#models-list .skeleton { height: 44px; margin: 0 0 4px; border-radius: var(--radius-xl); background: rgba(99, 179, 255, .16); }
+@keyframes pulse { 50% { opacity: .45; } }
+#models-list .skeleton { animation: pulse 1200ms ease-in-out infinite; }
+html[data-motion="reduce"] #models-list .skeleton, html[data-motion="reduce"] #models-list .choose[aria-pressed="true"] .ico, html[data-motion="reduce"] .models-prov .choose[aria-pressed="true"] .ico { animation: none; }
+html[data-motion="reduce"] #models-list .choose::before, html[data-motion="reduce"] .models-prov .choose::before, html[data-motion="reduce"] .icon-btn, html[data-motion="reduce"] :where(button, textarea) { transition: none; }
+
+/* ---- #414/T7.2: Ajustes → Modelos — one flat radio-row list above the local picker ----
+   Design ajustes-ventana-modelos-*.png: group label «Cuentas conectadas», one row per model
+   (radio + name + provider chip + capability chips); a disconnected provider draws nothing
+   (the old per-provider group + hint rules are gone). */
+.models-prov { flex: 0 0 auto; margin: 0; padding: 0 0 8px; border-bottom: 1px solid var(--line-ring); }
+.models-prov-title { margin: 2px 0 4px; color: var(--island-muted); font: 600 var(--fs-caption)/1.3 var(--font-ui); text-transform: uppercase; letter-spacing: .04em; }
+.models-prov-models { margin: 0 0 4px; padding: 0; list-style: none; }
+.models-prov-model { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 0 0 0 2px; }
+.models-prov-model .model-titles { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.models-prov-model .model-title { max-width: none; }
+.model-sub { color: var(--island-muted); font: 400 var(--fs-caption)/1.2 var(--font-ui); }
+.models-prov-chip { flex: none; min-height: 24px; max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-caption); }
+.models-local-label { margin: 10px 0 4px; color: var(--island-muted); font: 600 var(--fs-caption)/1.3 var(--font-ui); text-transform: uppercase; letter-spacing: .04em; }
+
+/* ---- Q1: keyboard focus of the island itself -------------------------- */
+#capsule:has(#island-toggle:focus-visible) #island { outline: 2px solid var(--go); outline-offset: 2px; }
+
+/* ---- N6: Pi question / notification with 1..N reply options ---------------
+   Same stage as the approval card (R6 shrinks to 72px at the left, border
+   --sun while it waits for your yes), but visibly its own view: «Pi pregunta»
+   never reuses Permitir/Denegar. Motion: §9.2 view enter/exit, opacity+transform
+   only. Sileo is a reference for the notice shape only; nothing is copied. */
+#question { position: absolute; z-index: 7; display: flex; flex-direction: column; pointer-events: none; opacity: 0; visibility: hidden; transform: translateY(6px); transition: opacity var(--dur-view-out) var(--ease-in), transform var(--dur-view-out) var(--ease-in), visibility 0s linear var(--dur-view-out); }
+#question > * { pointer-events: auto; }
+#capsule[data-phase="expanded"][data-question]:not([data-question=""]):not([data-card]) #question {
+  opacity: 1; visibility: visible; transform: none;
+  transition: opacity var(--dur-state) var(--ease-out) var(--dur-view-delay), transform var(--dur-view-in) var(--spring) var(--dur-view-delay), visibility 0s;
+}
+#capsule[data-question="pending"]:not([data-card]) #notices, #capsule[data-question="outcome"]:not([data-card]) #notices { opacity: 0; visibility: hidden; }
+
+/* One 44px row: [asker] [expiry/state] question text ............ [Omitir]; the
+   options (up to two rows of 44px) fit under it inside the 160px island. */
+#question-head { align-items: center; }
+#question-skip { flex: none; margin-left: auto; display: inline-flex; align-items: center; gap: 6px; min-height: 44px; min-width: 44px; border-radius: var(--radius-full); border: 1px solid var(--line); background: transparent; cursor: pointer; }
+#question-skip:disabled { opacity: .45; cursor: default; }
+#question-body { flex: 1; min-width: 0; margin: 0; overflow-wrap: anywhere; overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; text-overflow: ellipsis; }
+#question-asker, #question-expiry, #question-state { flex: none; }
+#question-asker:empty { display: none; } /* only a pending notification shows an asker */
+#question-options { display: flex; flex-direction: column; }
+.q-option { display: inline-flex; flex-wrap: wrap; align-items: center; height: auto; min-width: 44px; max-width: 100%; border: 1px solid var(--line-mid); background: transparent; color: var(--island-ink); cursor: pointer; text-align: left; }
+.q-option:hover:not(:disabled) { background: var(--fill-hover); }
+.q-option:disabled { opacity: .45; cursor: default; }
+.q-key { display: inline-grid; place-items: center; }
+.q-label { overflow-wrap: anywhere; white-space: normal; text-align: left; }
+.q-desc { display: block; flex: 0 0 100%; font: 400 11px/1.3 var(--font); color: var(--dim-2); overflow-wrap: anywhere; white-space: normal; text-align: left; }
+#question-freeform { display: flex; align-items: flex-end; gap: 8px; margin: 0; }
+#question-text {
+  flex: 1; min-height: 44px; max-height: 120px; resize: none; overflow-y: hidden; padding: 12px 14px; box-sizing: border-box; border-radius: var(--radius-2xl);
+  border: 1px solid var(--line-soft); background: var(--fill); color: var(--island-ink); font: 400 13.5px/1.35 var(--font-ui);
+  -webkit-user-select: text; user-select: text; cursor: text;
+}
+#question-text[data-invalid="true"] { border-color: var(--red-11); }
+#question-send {
+  display: grid; place-items: center; width: 44px; height: 44px; padding: 0; border-radius: var(--radius-full);
+  border: 1px solid var(--go); background: var(--go); color: #000; cursor: pointer;
+}
+#question-send:disabled { opacity: .4; cursor: default; }
+#question-word { position: absolute; right: 64px; bottom: 50px; padding: 2px 8px; border-radius: 10px; background: var(--surface); color: var(--red-11); }
+#question-state[data-kind="sent"] .ico { color: var(--island-live); }
+
+/* ---- #306: settings (gear in the overview + an internal panel of the chat view) ---------------
+   Same motion as the model picker (inert + visibility/opacity, §9.2); controls >= 44px;
+   every state is icon + one word; nothing here depends on hover. */
+#open-settings {
+  position: absolute; right: 72px; bottom: 12px; display: grid; place-items: center; width: 48px; height: 48px; padding: 0;
+  border-radius: var(--radius-full); border: 1px solid var(--line); background: transparent; color: var(--island-ink); cursor: pointer;
+  opacity: 0; visibility: hidden; transform: translateY(6px);
+  transition: opacity var(--dur-view-out) var(--ease-in), transform var(--dur-view-out) var(--ease-in), visibility 0s linear var(--dur-view-out);
+}
+#capsule[data-phase="expanded"][data-view="overview"] #open-settings {
+  opacity: 1; visibility: visible; transform: none;
+  transition: opacity var(--dur-state) var(--ease-out) var(--dur-view-delay), transform var(--dur-view-in) var(--spring) var(--dur-view-delay), visibility 0s;
+}
+/* S10 (L22): the gear and the chat tab stay in the header on every card state, as in Coucou. */
+#open-settings:hover { background: var(--fill-hover); }
+#settings {
+  position: absolute; left: 12px; right: 12px; top: 58px; bottom: 12px; z-index: 3; /* below the chat header, which stays visible */ display: flex; flex-direction: column; gap: 4px;
+  background: var(--island); color: var(--island-muted);
+  opacity: 0; visibility: hidden; transform: translateY(calc(var(--view-dir) * var(--view-shift)));
+  transition: opacity var(--dur-view-out) var(--ease-in), transform var(--dur-view-out) var(--ease-in), visibility 0s linear var(--dur-view-out);
+}
+#settings[data-open="true"] {
+  opacity: 1; visibility: visible; transform: none;
+  transition: opacity var(--dur-state) var(--ease-out) var(--dur-view-delay), transform var(--dur-view-in) var(--spring) var(--dur-view-delay), visibility 0s;
+}
+/* #310: the chat HEADER stays visible with a screen open (gentle-dot): its buttons switch screens with the pointer */
+#capsule[data-settings="open"] #chat-body, #capsule[data-settings="open"] #models { opacity: 0; visibility: hidden; }
+#settings-bar { display: flex; align-items: center; gap: 8px; min-height: 44px; }
+/* #310: the screen title (gentle-dot's «Accounts» / «Connectors» / «Settings»), one row with the close button */
+#settings-title { flex: 1 1 auto; min-width: 0; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--island-ink); font: 700 16px/1.2 var(--font-ui); }
+#settings-conn { margin-left: 0; flex: 0 0 auto; }
+#settings-close { margin-left: auto; flex: 0 0 auto; } /* always inside, pinned to the right */
+#settings-hint { margin: 0 0 6px; }
+#settings-body { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; display: flex; flex-direction: column; gap: 0; padding-right: 2px; }
+.srows { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--space-8); }
+.srow { display: flex; align-items: center; gap: var(--space-8); min-height: 40px; padding: 0 2px; flex-wrap: wrap; } /* design §3: row 40 */
+.srow-title { color: var(--island-ink); font: 600 var(--fs-label)/1.2 var(--font-ui); }
+.srow-sub { font-size: var(--fs-caption); color: var(--island-muted); }
+.srow-actions { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; }
+.sempty, .snote { margin: 0; font-size: var(--fs-caption); color: var(--island-muted); line-height: 1.35; }
+.sline { margin: 0; font-size: var(--fs-body); color: var(--island-ink); line-height: 1.35; overflow-wrap: anywhere; }
+.sline.sub { font-size: var(--fs-caption); color: var(--island-muted); }
+.slink { font-size: var(--fs-caption); color: var(--island-ink); text-decoration: underline; overflow-wrap: anywhere; cursor: pointer; -webkit-user-select: text; user-select: text; }
+.scode { align-self: flex-start; padding: 4px 10px; border-radius: 8px; background: var(--surface); color: var(--island-ink); font: 700 15px/1.2 ui-monospace, monospace; letter-spacing: .08em; -webkit-user-select: text; user-select: text; cursor: text; }
+.sflow { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; border-radius: var(--radius-xl); border: 1px solid var(--island-live); }
+.sform { display: flex; align-items: center; gap: var(--space-8); margin: 0; flex-wrap: wrap; }
+.sfield {
+  /* T6.1: field 32px visual inside a 44px hit area — the 6px border is the invisible hit ring,
+     the background clips to the padding box so the visible field stays 32px (r10 = 16 − 6). */
+  flex: 1; min-width: 132px; min-height: 44px; padding: 0 14px; border: 6px solid transparent; border-radius: 16px;
+  background: var(--fill) padding-box; box-shadow: inset 0 0 0 1px var(--line-soft);
+  color: var(--island-ink); font: 400 var(--fs-body)/1.35 var(--font-ui); -webkit-user-select: text; user-select: text; cursor: text;
+  color-scheme: dark;
+}
+select.sfield { appearance: none; -webkit-appearance: none; cursor: pointer; padding-right: 34px;
+  background-image: linear-gradient(45deg, transparent 50%, var(--island-ink) 50%), linear-gradient(135deg, var(--island-ink) 50%, transparent 50%);
+  background-position: calc(100% - 18px) 50%, calc(100% - 13px) 50%; background-size: 5px 5px; background-repeat: no-repeat; }
+select.sfield option { background: var(--surface); color: var(--island-ink); }
+/* #309: in the 400 column the name field takes its own row, so its placeholder is never cut */
+#settings-body .sform .sfield[type="text"] { flex: 1 1 100%; order: 1; }
+#settings-body .sform select.sfield { flex: 1 1 100%; }
+#settings-body .sform .sbtn { order: 2; margin-left: auto; }
+.sbtn {
+  /* T6.1: button 32px visual inside a 44px hit area — the pill is drawn on the ::after inset
+     layer, so hover/primary paint the visible layer (z-index: 0 keeps the layer inside the
+     button's own stacking context). */
+  position: relative; z-index: 0; display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 44px; min-width: 44px; padding: 0 20px 0 16px;
+  border: 0; background: transparent; color: var(--island-ink); font: 600 var(--fs-label)/1.2 var(--font-ui); cursor: pointer;
+}
+.sbtn::after { content: ""; position: absolute; inset: 6px; z-index: -1; border-radius: 10px; border: 1px solid var(--line); background: transparent; }
+.sbtn:hover::after { background: var(--fill-hover); }
+.sname-form { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+.sname-form .sfield { width: 100%; min-width: 0; flex: none; }
+.sname-form .sbtn { align-self: flex-end; }
+#settings-name-error:empty { display: none; }
+#settings-name-error { color: var(--red-11); }
+#settings-display-name[aria-invalid="true"] { box-shadow: inset 0 0 0 1px var(--red-11); } /* rings the VISIBLE field, not the hit ring */
+.sbtn.primary { color: #000; }
+.sbtn.primary::after { background: var(--go); border-color: var(--go); }
+.sbtn:disabled { opacity: .4; cursor: default; }
+.skbd { padding: 4px 10px; border-radius: 8px; border: 1px solid var(--line-mid); background: var(--surface); color: var(--island-ink); font: 700 12px/1.2 ui-monospace, monospace; }
+.switch {
+  position: relative; margin-left: auto; width: 56px; height: 44px; padding: 0; border: 0; background: transparent; cursor: pointer;
+}
+.switch::before { content: ""; position: absolute; left: 4px; top: 10px; width: 48px; height: 24px; border-radius: 12px; border: 2px solid var(--line-track); box-sizing: border-box; transition: background-color var(--dur-state) var(--ease-out), border-color var(--dur-state) var(--ease-out); }
+.switch[aria-checked="true"]::before { background: var(--go); border-color: var(--go); }
+.switch .knob { position: absolute; top: 14px; left: 10px; width: 16px; height: 16px; border-radius: 50%; background: var(--island-ink); transition: transform var(--dur-state) var(--ease-out); }
+.switch[aria-checked="true"] .knob { transform: translateX(24px); background: #000; }
+html[data-motion="reduce"] #open-settings, html[data-motion="reduce"] #settings { transition: none !important; transform: none !important; }
+html[data-motion="reduce"] .switch::before, html[data-motion="reduce"] .switch .knob { transition: none; }
+
+/* ---- #310: settings screens, copied from gentle-dot (MIT): sections with a small uppercase heading,
+   method cards, provider rows, agent cards. Every control >= 44px; every state is icon + one word. */
+.ssec { margin-top: 14px; }
+.ssec:first-child { margin-top: 4px; }
+.ssection { margin: 0 0 2px; font: 600 var(--fs-caption)/18px var(--font-ui); letter-spacing: .06em; text-transform: uppercase; color: var(--island-muted); } /* design §3: 12/600 sans, not 11 mono */
+.ssec > .snote { margin: 2px 0 6px; }
+.smethods { display: flex; flex-direction: column; gap: 10px; margin-top: 10px; }
+.smethod {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 4px; min-height: 44px; padding: 12px 14px; text-align: left;
+  border-radius: var(--radius-xl); border: 1px solid var(--line-soft); background: var(--fill-soft); color: var(--island-ink); cursor: pointer;
+}
+.smethod b { font: 700 var(--fs-body)/1.2 var(--font-ui); }
+.smethod span { font: 400 var(--fs-caption)/1.4 var(--font-ui); color: var(--island-muted); }
+.smethod:hover b { color: var(--go); }
+.sback { align-self: flex-start; margin: 2px 0 8px; }
+#settings-filter { flex: 0 0 auto; width: 100%; height: 44px; min-height: 44px; max-height: 44px; margin-bottom: 4px; }
+.sagent { flex-direction: column; align-items: stretch; gap: 4px; padding: 8px 0; border-top: 1px solid var(--line-faint); }
+.sagent:first-child { border-top: 0; }
+.sagent-head { display: flex; align-items: center; gap: 8px; }
+.sagent .srow-actions { margin-left: 0; justify-content: flex-end; }
+.splan { margin: 2px 0 0; font: 400 var(--fs-caption)/1.4 var(--font-ui); color: var(--island-ink); }
+.strust { color: var(--sun); }
+
+/* ---- #327: manual specialists — the section lives in Ajustes and the chat shows the role in use.
+   Same shapes as the rest of the panel: every control >= 44px, and no colour of its own (the avatar
+   panel resolves colours for the same id). */
+#specialists-section .sagent-head { flex-wrap: wrap; }
+#specialists-section .sagent-head .srow-title { flex: 1 1 auto; min-width: 0; }
+#specialists-section .sagent-head .chip { min-height: 24px; font-size: 12px; }
+#settings-body textarea.sfield { border: 0; border-radius: 16px; min-height: 76px; padding: 10px 14px; resize: vertical; line-height: 1.35; }
+/* Identity colour never replaces the existing user icon, name or checked/focus shape. */
+#chat-specialist .ico { color: var(--identity-color, var(--island-muted)); }
+#chat-specialist[data-color="green"], .srole-dot[data-color="green"], .scolors[data-color="green"] { --identity-color: var(--dot-green-2); }
+#chat-specialist[data-color="blue"], .srole-dot[data-color="blue"], .scolors[data-color="blue"] { --identity-color: var(--dot-blue-2); }
+#chat-specialist[data-color="mint"], .srole-dot[data-color="mint"], .scolors[data-color="mint"] { --identity-color: var(--dot-mint-2); }
+#chat-specialist[data-color="orange"], .srole-dot[data-color="orange"], .scolors[data-color="orange"] { --identity-color: var(--dot-orange-2); }
+#chat-specialist[data-color="purple"], .srole-dot[data-color="purple"], .scolors[data-color="purple"] { --identity-color: var(--dot-purple-2); }
+.scolors .srow-title { border-left: 4px solid var(--identity-color); padding-left: 6px; }
+/* #327 radiogroup: Abito first, exactly one checked. Shape (filled dot) + word carry the state, never colour alone. */
+.sroles { display: flex; flex-direction: column; gap: 2px; margin-top: 6px; }
+.srole { display: flex; flex-direction: column; gap: 2px; padding: 2px 0; border-top: 1px solid var(--line-faint); }
+.srole:first-child { border-top: 0; }
+.srole-pick { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-8); width: 100%; min-height: 40px; padding: 0 4px; border: 0; background: transparent; color: var(--island-ink); text-align: left; cursor: pointer; font: inherit; }
+.srole-pick:disabled { opacity: .5; cursor: default; }
+.srole-pick .srow-title { flex: 1 1 auto; min-width: 0; }
+.srole-pick .chip { min-height: 24px; font-size: 12px; }
+.srole-dot { flex: none; width: 18px; height: 18px; border-radius: 50%; border: 2px solid var(--line-ring); box-sizing: border-box; }
+.srole-dot[data-color] { border-color: var(--identity-color); }
+.srole[data-checked="true"] .srole-dot { border-color: var(--identity-color, var(--go)); background: radial-gradient(circle, var(--identity-color, var(--go)) 0 45%, transparent 50%); }
+.srole .srow-sub { margin: 0 4px; }
+.srole .srow-actions { margin: 0 0 4px auto; }
+#specialists-problem { margin: 0; }
+
+/* Coucou presentation port (approved CSS c2b52bfb). Native geometry remains
+   authoritative: dot 66, overview 640x160, work-area-sized tall chat. The
+   disconnected preview's reducers, fixtures and harness never ship here. */
+:root {
+  --island-bg: #000;
+  --island-bg-glass: rgba(0, 0, 0, .74);
+  --card-bg: #141518;
+  --card-line: rgba(255, 255, 255, .035);
+  --ink: #F5F6F8;
+  --ink-2: #F1F2F4;
+  --muted: #8E939C;
+  --muted-2: #9398A1;
+  --hdr-muted: #7B8089;
+  --tab-on: #1D1F23;
+  --btn-bg: rgba(255, 255, 255, .09);
+  --btn-bg-hover: rgba(255, 255, 255, .15);
+  --primary-bg: #F5F6F8;
+  --primary-ink: #0B0C0E;
+  --spr: cubic-bezier(.32, 1.22, .42, 1);
+  --close: cubic-bezier(.45, 0, .2, 1);
+  --font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --island-ink: var(--ink);
+  --island-muted: var(--muted);
+}
+body { color: var(--ink); -webkit-font-smoothing: antialiased; }
+#island { background: var(--island-bg); }
+/* S28: the EXPANDED island is slightly see-through like Ghostty (88 %); only this surface, text/controls/mascot stay opaque */
+#capsule[data-phase="expanded"] #island { background: var(--island-bg-glass); }
+#clay { z-index: 4; }
+#island-header { position: absolute; z-index: 5; display: flex; opacity: 0; visibility: hidden; pointer-events: none; transition: opacity var(--dur-state) var(--ease-out), visibility 0s linear var(--dur-state); }
+#capsule[data-phase="expanded"] #island-header { opacity: 1; visibility: visible; pointer-events: auto; }
+.tabs { display: flex; }
+#island-header .tab, #island-header .hdr-action { position: relative; display: grid; place-items: center; padding: 0; border: 0; cursor: pointer; opacity: 1; visibility: visible; transform: none; bottom: auto; right: auto; }
+#island-header #open-chat, #island-header #open-settings { position: relative; }
+
+#island-header .ico svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+#island-header button::after { position: absolute; top: 50%; left: 0; width: 44px; height: 44px; content: ""; transform: translateY(-50%); }
+#island-header button:active { scale: .96; }
+/* S10 (L22): Coucou shows its header in every expanded state, cards included (island.css lays it out). */
+
+#overview-view { position: absolute; opacity: 0; visibility: hidden; pointer-events: none; }
+#capsule[data-phase="expanded"][data-view="overview"]:not([data-card]):not([data-question="pending"]):not([data-question="expired"]):not([data-question="outcome"]) #overview-view { opacity: 1; visibility: visible; }
+.card { overflow: hidden; }
+.card-left { position: absolute; }
+.agentline { position: absolute; display: flex; align-items: center; font-size: 12px; }
+
+.source { color: var(--muted); }
+.overview-detail { position: absolute; margin: 0; text-wrap: pretty; }
+#notices { box-shadow: inset 0 0 0 1px var(--card-line); border-radius: 20px; background: var(--card-bg); } /* #335: the band's ring is an INSET shadow, not a border — the 44px band must give its full 44px to content, so a real 1px border would leave a 42px inner box (2px phantom scroll, clipped pill) */
+#notice-row { gap: 4px; min-width: 0; }
+
+#notice-info { flex: 0 0 44px; border: 0; }
+#notice-pill { gap: 0; padding: 0; min-height: 40px; border: 1px solid var(--card-line); background: var(--fill-alt); } /* #437: the design's 40 px band with its 1 px ring (tone variants above) */
+#notice-open { display: flex; align-items: center; gap: 8px; flex: 1 1 auto; min-width: 0; min-height: 40px; padding: 0 8px; border: 0; border-radius: 18px; background: transparent; color: var(--ink); cursor: pointer; text-align: left; font: inherit; }
+#notice-open:hover:not(:disabled) { background: var(--btn-bg); }
+#notice-open:disabled { cursor: default; }
+.notice-text { display: flex; flex-direction: column; justify-content: center; gap: 0; min-width: 0; }
+#notice-title { overflow: hidden; text-overflow: ellipsis; font-weight: 600; } /* #437: the design title is 13/600 */
+#notice-sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-caption); line-height: 1.25; color: var(--island-muted); }
+#notice-action { flex: 0 0 auto; min-height: 28px; padding: 0 12px; border: 0; border-radius: 9px; background: var(--btn-bg); color: var(--ink-2); font: 600 var(--fs-caption)/1.2 var(--font-ui); cursor: pointer; }
+#notice-action:hover { background: var(--fill-hover); }
+#notice-action:disabled { opacity: .4; cursor: default; }
+#notice-ring { flex: 0 0 24px; }
+#notice-dismiss { flex: 0 0 44px; border: 0; color: var(--muted); }
+#notice-detail { z-index: 6; border-radius: 10px; background: var(--card-bg); }
+/* ---- #437: the notices LIST view («Avisos · N» + «Descartar todos», 32 px rows).
+   Presentation only: rows never answer, approve or navigate; the × dismisses the
+   EXACT notice through the closed verb. Tokens only, so «claro» y «oscuro» both work. */
+#notice-list { display: flex; flex-direction: column; gap: 6px; min-height: 0; }
+#notice-list[hidden] { display: none; }
+#notice-list-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 32px; padding: 0 2px; }
+#notice-list-title { color: var(--island-ink); font: 600 var(--fs-label)/1.2 var(--font-ui); }
+#notice-clear { flex: 0 0 auto; min-height: 28px; padding: 0 12px; border: 0; border-radius: 9px; background: var(--btn-bg); color: var(--ink-2); font: 600 var(--fs-caption)/1.2 var(--font-ui); cursor: pointer; }
+#notice-clear:hover { background: var(--fill-hover); }
+#notice-rows { display: flex; flex-direction: column; gap: 4px; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: none; }
+.notice-list-row { display: flex; align-items: center; gap: 8px; min-height: 32px; padding: 0 8px; border-radius: 10px; border: 1px solid var(--card-line); background: var(--fill-alt); }
+.notice-list-dot { flex: 0 0 8px; width: 8px; height: 8px; border-radius: var(--radius-full); background: var(--go); }
+.notice-list-row[data-tone="sun"] .notice-list-dot { background: var(--sun); }
+.notice-list-row[data-tone="red"] .notice-list-dot { background: var(--red-11); }
+.notice-list-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--island-ink); font: 500 var(--fs-label)/1.2 var(--font-ui); }
+.notice-list-time { flex: 0 0 auto; color: var(--island-muted); font-size: var(--fs-caption); font-variant-numeric: tabular-nums; }
+.notice-list-dismiss { flex: 0 0 28px; width: 28px; height: 28px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 8px; background: transparent; color: var(--island-muted); cursor: pointer; }
+.notice-list-dismiss:hover { background: var(--fill-hover); color: var(--island-ink); }
+/* Confirmed finished-click lane never shows/answers a covered question. */
+#capsule[data-phase="expanded"][data-notice-view="notices"] #notices { opacity: 1; visibility: visible; transform: none; }
+#capsule[data-notice-view="notices"] #question, #capsule[data-notice-view="notices"] #overview-view { opacity: 0; visibility: hidden; pointer-events: none; }
+
+#permission::before, #question::before { position: absolute; inset: 0; content: ""; pointer-events: none; }
+
+#permission > *, #question > * { position: relative; z-index: 1; }
+#card-reason { position: absolute; }
+#card-actions { flex-direction: row-reverse; justify-content: flex-end; }
+#allow, #deny, .q-option, #question-skip { border: 0; border-radius: 9px; background: var(--btn-bg); color: var(--ink-2); }
+#allow { background: var(--primary-bg); color: var(--primary-ink); }
+#deny:hover:not(:disabled), .q-option:hover:not(:disabled), #question-skip:hover:not(:disabled) { background: var(--btn-bg-hover); }
+#allow:hover:not(:disabled) { background: var(--primary-hover); }
+
+#card-head .chip, #question-head .chip { font-variant-numeric: tabular-nums; }
+
+/* Tall chat keeps the host's work-area dimensions and real transcript. */
+#chat { padding: 36px 10px 10px; }
+#chat-header { min-height: 44px; padding-left: 0; }
+#chat-header .icon-btn { border: 0; color: var(--muted); }
+#chat-status-strip { min-height: 24px; padding-bottom: 4px; }
+#chat-body { border-radius: 20px; background: var(--card-bg); padding: 12px 20px 14px; }
+#chat-body::before { position: absolute; inset: 0; border-radius: inherit; background: radial-gradient(280px 280px at 50% calc(100% + 58px), rgba(99, 102, 241, .5), transparent 70%); content: ""; pointer-events: none; }
+#chat-body > * { z-index: 1; }
+#chat-log { position: relative; gap: 6px; }
+#chat-log li.user { border-radius: 14px; background: var(--fill-q); }
+#chat-log li.assistant { max-width: 92%; }
+#chat-composer { position: relative; gap: 6px; margin-left: 42px; }
+#chat-input { min-width: 0; border: 0; border-radius: 20px; background: var(--fill-alt); padding: 10px 12px; }
+#chat-send { background: var(--primary-bg) !important; border: 0 !important; color: var(--primary-ink) !important; }
+#chat-composer .round { border-radius: 10px; width: 44px; min-width: 44px; height: 44px; }
+#chat-composer .round .ico svg { width: 16px; height: 16px; }
+
+/* Vertical live Model: search above real rows, actions remain in their own
+   contained row. Readiness and selection still come exclusively from models.js. */
+#models, #settings { top: 84px; left: 10px; right: 10px; bottom: 10px; border-radius: 20px; background: var(--card-bg); padding: 12px 16px; }
+/* Visual correction V1: the character moves to the chat header ONLY while the chat view shows a panel.
+   Unscoped, a panel left open when the island collapsed pinned the dot's character 34px too low. */
+#capsule[data-phase="expanded"][data-view="chat"][data-models="open"] #clay, #capsule[data-phase="expanded"][data-view="chat"][data-settings="open"] #clay { top: 13px !important; }
+#models-bar { flex: 0 0 auto; }
+#models-bar .icon-btn { border: 0; }
+#models-meters { font-variant-numeric: tabular-nums; }
+.models-search-field { display: flex; align-items: center; width: 100%; flex: 0 0 auto; height: 44px; margin: 4px 0; padding: 0 10px; border-radius: 12px; background: var(--fill-q); }
+#models-search { width: 100%; min-width: 0; height: 44px; padding: 0; border: 0; outline: 0; background: transparent; color: var(--ink); font: 400 13px/20px var(--font); }
+.models-search-field:focus-within { outline: 2px solid var(--go); outline-offset: 2px; }
+#models-search::placeholder { color: var(--muted); }
+#models-list li { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) 44px; gap: 4px 8px; padding: 6px 10px; margin: 2px 0; border-radius: 8px; background: var(--fill-alt); }
+#models-list .model-title { max-width: none; grid-column: 1; grid-row: 1; }
+#models-list .model-chips { grid-column: 1; grid-row: 2; flex-wrap: wrap; gap: 8px; }
+#models-list .choose { grid-column: 2; grid-row: 1 / 3; align-self: center; }
+#models-list li[hidden] { display: none; }
+#settings-title { font-weight: 600; font-size: var(--fs-title); }
+#settings-close { border: 0; }
+.ssection { color: var(--muted); letter-spacing: .06em; }
+.smethod { border-color: var(--card-line); background: var(--fill-alt); border-radius: 12px; }
+#settings-body { padding-right: 2px; }
+#settings-hint { text-wrap: pretty; }
+html[data-motion="reduce"] #island-header, html[data-motion="reduce"] #island-header button { transition: none; scale: 1; }
+
+/* ===================================================================
+   Visual correction V1 (TaskView #328, VISUAL-AUDIT.md). Native geometry stays
+   authoritative: dot 66, overview 640x160, chat 400x640, 72px right gutter,
+   R6 ~128px (plain overview) / ~72px (with a card). Space is won INSIDE those
+   rectangles: the view switches become a 56px rail that lives in the 72px
+   gutter, cards use the full 140px height, the chat has ONE header row, type is
+   13-15px (12px floor) and every control stays >= 44px.
+   ========================================================================== */
+/* Type ramp tokens (Visual correction V1) moved to the TOP of the file (T6.1, design §1): one
+   variable per role so a future user typography setting is a one-variable change; no setting
+   exists yet. They are declared before the rules that use them now. */
+/* ---- overview: rail in the gutter, two cards, 10px frame --------------- */
+
+#island-header button::after { display: none; }
+#island-header .ico svg { width: 18px; height: 18px; }
+#capsule[data-phase="expanded"]:not([data-view="chat"]) #island-header { opacity: 1; visibility: visible; pointer-events: auto; }
+#capsule[data-phase="expanded"][data-view="chat"] #island-header { opacity: 0; visibility: hidden; pointer-events: none; }
+
+.agentline { font-size: var(--fs-label); }
+.overview-detail { display: -webkit-box; -webkit-box-orient: vertical; overflow: hidden; }
+#notices { display: flex; flex-direction: column; gap: 8px; }
+#notice-row { position: static; flex-wrap: wrap; justify-content: flex-start; gap: 4px 10px; min-height: 44px; padding-right: 48px; /* align-content left to its default (stretch): in the 44px band the single row stretches and the chips centre; wrapped content packs from the start and scrolls inside the band */ }
+#notice-row button.chip { appearance: none; background: transparent; border: 0; padding: 0 6px; font: inherit; }
+#notice-row button.chip:not(:disabled) { cursor: pointer; text-decoration: underline dotted; text-underline-offset: 3px; }
+#notice-row button.chip:not(:disabled):hover { color: var(--dim-2); }
+#notice-row button.chip:focus-visible { outline: 2px solid var(--dim-2); outline-offset: 1px; border-radius: 6px; }
+#notice-row .chip { min-height: 28px; white-space: nowrap; margin-left: 0; }
+#bridge, #card-bridge, #hotkey { margin-left: 0; }
+#notice-info { position: absolute; top: 0; right: 4px; flex: none; } /* top 0: the 44px control fills the 44px band exactly, no phantom overflow scroll */
+#notice-pill { margin-top: auto; min-height: 40px; order: -1; margin-right: 48px; } /* #437: the actionable design band (40 px, D11) is the FIRST thing in the 44px band container, clear of the «i» column */
+#notice-title { font-size: var(--fs-body); }
+#notice-open { gap: 10px; padding: 0 10px; }
+#notice-detail { left: 8px; right: 8px; top: 52px; padding: 8px 10px; font-size: var(--fs-label); }
+
+/* ---- question / permission: same stage, gutter kept, one 44px control row --- */
+
+#question-head { align-items: center; }
+#question-asker { font-size: var(--fs-label); }
+#question-expiry, #question-state { justify-self: start; font-size: var(--fs-label); }
+#question-body { align-self: start; }
+#question-skip { grid-area: skip; align-self: start; }
+#question-options { display: flex; flex-direction: column; }
+.q-option { flex: 0 1 auto; min-width: 0; width: 100%; }
+
+.q-label { min-width: 0; }
+/* the outcome keeps the question card's box (no layout to animate): same frame, centred content */
+#capsule[data-question="outcome"]:not([data-card]) #question { justify-content: center; }
+#capsule[data-question="outcome"] #question-head { grid-template-areas: "expiry"; grid-template-columns: 1fr; align-items: center; }
+#capsule[data-question="outcome"] #question-body, #capsule[data-question="outcome"] #question-asker, #capsule[data-question="outcome"] #question-options { display: none; }
+#question-state { font-size: var(--fs-title); font-weight: 600; gap: 10px; }
+#question-state .ico svg { width: 22px; height: 22px; }
+
+#card-info { position: absolute; top: 4px; right: 8px; margin: 0; }
+/* F014 (#338): the fold control sits left of #card-info inside the strip the
+   head already clears for absolute controls (48px for one, 104px for two). */
+#card-fold { position: absolute; top: 4px; right: 60px; margin: 0; }
+
+/* ---- chat: ONE header row, a roomier transcript card ------------------- */
+#chat { padding: 8px 10px 10px; }
+#chat-header { min-height: 56px; gap: 4px; padding-left: 16px; }
+#capsule[data-models="open"] #chat-header, #capsule[data-settings="open"] #chat-header { padding-left: 72px; }
+#chat-header .chip { font-size: var(--fs-body); }
+#chat-status-strip { position: absolute; z-index: 3; top: 70px; left: 50%; min-height: 0; padding: 4px 12px; transform: translateX(-50%); border-radius: 999px; background: var(--surface); }
+#chat-body { padding: 16px 16px 14px; }
+#chat-log { gap: 8px; font-size: var(--fs-body); line-height: 1.45; padding: 4px 2px 10px 0; }
+#chat-log li { margin: 0; }
+#chat-log li.user { padding: 10px 14px; }
+#chat-log li.note, #chat-log li.error { font-size: var(--fs-label); }
+#chat-composer { margin-left: 60px; gap: 8px; margin-top: 8px; }
+#chat-input { font-size: var(--fs-body); padding: 11px 14px; }
+/* ---- model / settings panels: one vertical column under the header ------ */
+#models, #settings { top: 72px; left: 10px; right: 10px; bottom: 10px; padding: 16px; gap: 8px; }
+#models-bar { gap: 8px 12px; }
+#models-meters { gap: 18px; padding: 4px 2px 0; }
+.meter-label { font-size: var(--fs-caption); }
+.models-search-field { margin: 4px 0 8px; }
+#models-search { font-size: var(--fs-body); }
+#models-list li { gap: 6px 10px; padding: 10px 12px; margin: 0 0 8px; }
+#models-list .model-title { font-size: var(--fs-body); }
+.model-chips { gap: 10px; }
+.model-chips .chip { font-size: var(--fs-label); }
+#settings-bar { gap: 10px; }
+#settings-hint, .snote, .sempty { font-size: var(--fs-label); line-height: 1.45; }
+#settings-hint { margin: 0 0 10px; }
+.ssec { margin-top: 20px; }
+.ssection { font-size: var(--fs-caption); letter-spacing: .06em; line-height: 18px; margin-bottom: 4px; }
+.srow { gap: var(--space-8); min-height: 40px; padding: 2px 0; } /* design §3: row 40, gap 8 */
+.srow-title { font-size: var(--fs-label); }
+.sline { font-size: var(--fs-body); }
+.srow-sub, .sline.sub { font-size: var(--fs-caption); }
+.srows { gap: var(--space-8); }
+.smethod { padding: 14px 16px; gap: 6px; }
+.smethod span { font-size: var(--fs-label); }
+.sbtn { font-size: var(--fs-label); } /* design §1: label 13 for buttons */
+
+/* ==========================================================================
+   Flash fix V2 (installed-build report: flicker while the island compresses/expands).
+   Frame evidence: VISUAL-AUDIT.md "Flash investigation". Two frontend causes, both fixed here:
+   (1) #overview-view had NO transition, so its card popped in/out while the notices pane faded
+       on a 160ms delay (three layers out of step on expand, collapse and the outcome auto-return);
+   (2) overview layers were anchored to the island's EDGES, so they stretched (chat open) and
+       squeezed (collapse) with the animated island instead of keeping their layout.
+   Layers are pinned to the 640x160 overview box centred on the island, and the island clips
+   them (a clean wipe). Only existing --dur-* / --ease-* tokens; geometry numbers unchanged.
+   ========================================================================== */
+#island { overflow: hidden; overflow: clip; } /* clip is NOT a scroll container: scrollIntoView() on a control can no longer move the island's content (it shifted every card 31px up) */
+#overview-view {
+  transition: opacity var(--dur-view-out) var(--ease-in), visibility 0s linear var(--dur-view-out);
+}
+#capsule[data-phase="expanded"][data-view="overview"]:not([data-card]):not([data-question="pending"]):not([data-question="expired"]):not([data-question="outcome"]) #overview-view {
+  transition: opacity var(--dur-state) var(--ease-out) var(--dur-view-delay), visibility 0s;
+}
+html[data-motion="reduce"] #overview-view { transition: none !important; }
+/* top+height (left+width) over-constrain the box, so bottom (right) are ignored by CSS; they stay numeric
+   because the overview contract checks read them. */
+
+#notices { overflow-x: hidden; overflow-y: auto; } /* #335 F002 option A: the strip is a 44px band aligned to the card below (island x340..568); stacked content (row 44 + gap 8 + pill 44 = 96px) scrolls INSIDE it — it can never grow toward the grid */
+ /* notices-lane keeps the full pane: the band geometry above applies only to the plain overview */
+#capsule[data-phase="expanded"][data-notice-view="notices"] #notice-pill { order: 0; margin-right: 0; }
+#capsule[data-phase="expanded"][data-notice-view="notices"] #notice-info { top: 4px; }
+
+/* #444: isla-ov-several/list use x152..568 of the 640px island. The
+   LOCAL list is not native-confirmed notice navigation: no admission changes,
+   no native resize. Its 144px pane fits inside the existing 160px overview
+   (672x176 native); eight rows scroll INSIDE the remaining row viewport. */
+#capsule[data-view="overview"] #notices[data-grouped="true"],
+#capsule[data-view="overview"] #notices[data-list="open"] { bottom: auto; overflow: visible; background: transparent; box-shadow: none; }
+#capsule[data-view="overview"] #notices[data-grouped="true"] #notice-pill {
+  margin: 0; width: 100%; height: 40px; flex: 0 0 40px;
+  background: var(--card-bg); /* opaque design band: overview text must not bleed through */
+}
+#capsule[data-view="overview"] #notices[data-grouped="true"] #notice-row,
+#capsule[data-view="overview"] #notices[data-list="open"] #notice-row { display: none; }
+
+#capsule[data-view="overview"] #notices[data-list="open"] #notice-list { flex: 1 1 auto; height: 100%; min-height: 0; }
+#capsule[data-view="overview"] #notices[data-list="open"] #notice-list-head { flex: 0 0 32px; }
+#capsule[data-view="overview"] #notices[data-list="open"] #notice-rows { flex: 1 1 auto; min-height: 0; }
+#capsule[data-view="overview"] #notices[data-list="open"] .notice-list-row { flex: 0 0 32px; }
+#capsule[data-view="overview"][data-notice-list="open"] #island #overview-view { opacity: 0; visibility: hidden; pointer-events: none; transition: none; }
+
+/* #345 + #335 F002: fit the catalog into the existing 558x140 overview, no native
+   geometry or character changes. F002 option A (S6.1/S6.2): the notices strip owns
+   its own 44px band on top of the right card (island y10..54), so the grid owns the
+   card below it — overview y48..140 = exactly two 40px rows + gap + 4px padding —
+   and renders the FIRST FOUR of pills.visible(): visible() returns mainPill first
+   (pills.js order(), rank -2) and then the declarations in CATALOG order, untouched
+   (#345 normalize/valid/toggle never change); the fifth stays in the data only and
+   Ajustes (pill-settings) keeps managing all five. The content column keeps a
+   bounded slot: name+state share one line, the detail clamps to one, and max-height
+   ends at y106 — 4px above the mini-bots band at y110 (R2/R3: zero overlap). */
+.pill-summary { position: absolute; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.pill-summary strong, .pill-summary .source { display: inline; margin-right: 6px; }
+.pill-summary p { overflow: hidden; text-overflow: ellipsis; }
+#overview-detail { -webkit-line-clamp: 1; }
+#pill-choices { position: absolute; display: grid; overflow: hidden; pointer-events: auto; }
+.pill-choice { min-width: 0; display: flex; align-items: center; cursor: pointer; }
+.pill-choice .ico { width: 16px; height: 16px; flex: none; }
+
+/* #442: the actual island agents wear the same closed skin palette as Settings. */
+.island-agent-clay { flex: none; }
+.island-agent-clay[data-color="green"] radialGradient[id$="skin"] stop:nth-child(1) { stop-color: var(--dot-green-1); }
+.island-agent-clay[data-color="green"] radialGradient[id$="skin"] stop:nth-child(2) { stop-color: var(--dot-green-2); }
+.island-agent-clay[data-color="green"] radialGradient[id$="skin"] stop:nth-child(3) { stop-color: var(--dot-green-3); }
+.island-agent-clay[data-color="blue"] radialGradient[id$="skin"] stop:nth-child(1) { stop-color: var(--dot-blue-1); }
+.island-agent-clay[data-color="blue"] radialGradient[id$="skin"] stop:nth-child(2) { stop-color: var(--dot-blue-2); }
+.island-agent-clay[data-color="blue"] radialGradient[id$="skin"] stop:nth-child(3) { stop-color: var(--dot-blue-3); }
+.island-agent-clay[data-color="mint"] radialGradient[id$="skin"] stop:nth-child(1) { stop-color: var(--dot-mint-1); }
+.island-agent-clay[data-color="mint"] radialGradient[id$="skin"] stop:nth-child(2) { stop-color: var(--dot-mint-2); }
+.island-agent-clay[data-color="mint"] radialGradient[id$="skin"] stop:nth-child(3) { stop-color: var(--dot-mint-3); }
+.island-agent-clay[data-color="orange"] radialGradient[id$="skin"] stop:nth-child(1) { stop-color: var(--dot-orange-1); }
+.island-agent-clay[data-color="orange"] radialGradient[id$="skin"] stop:nth-child(2) { stop-color: var(--dot-orange-2); }
+.island-agent-clay[data-color="orange"] radialGradient[id$="skin"] stop:nth-child(3) { stop-color: var(--dot-orange-3); }
+.island-agent-clay[data-color="purple"] radialGradient[id$="skin"] stop:nth-child(1) { stop-color: var(--dot-purple-1); }
+.island-agent-clay[data-color="purple"] radialGradient[id$="skin"] stop:nth-child(2) { stop-color: var(--dot-purple-2); }
+.island-agent-clay[data-color="purple"] radialGradient[id$="skin"] stop:nth-child(3) { stop-color: var(--dot-purple-3); }
+
+/* ---- #346 F033: per-pill palette override — closed data-color set (avatar-colors.js PALETTE);
+   the identity colours are NEVER themed, so both #380 palettes paint the same name. Only an
+   already-validated name can put the attribute on the element (pills-view.js / pill-settings.js).
+   Borders only: hover/pressed above keep their background and box-shadow untouched. ---- */
+.pill-choice[data-color="green"] { border: 1.5px solid var(--dot-green-2); }
+.pill-choice[data-color="blue"] { border: 1.5px solid var(--dot-blue-2); }
+.pill-choice[data-color="mint"] { border: 1.5px solid var(--dot-mint-2); }
+.pill-choice[data-color="orange"] { border: 1.5px solid var(--dot-orange-2); }
+.pill-choice[data-color="purple"] { border: 1.5px solid var(--dot-purple-2); }
+#pill-settings-rows .srow[data-color] .srow-title { border-left: 4px solid transparent; padding-left: 6px; }
+#pill-settings-rows .srow[data-color="green"] .srow-title { border-left-color: var(--dot-green-2); }
+#pill-settings-rows .srow[data-color="blue"] .srow-title { border-left-color: var(--dot-blue-2); }
+#pill-settings-rows .srow[data-color="mint"] .srow-title { border-left-color: var(--dot-mint-2); }
+#pill-settings-rows .srow[data-color="orange"] .srow-title { border-left-color: var(--dot-orange-2); }
+#pill-settings-rows .srow[data-color="purple"] .srow-title { border-left-color: var(--dot-purple-2); }
+#pill-settings-rows .pill-color { flex: none; width: 150px; }
+
+/* outcome -> overview is a cross-fade (no delay); the island ring eases instead of cutting */
+#capsule[data-crossfade][data-phase="expanded"][data-view="overview"]:not([data-card]):not([data-question="pending"]):not([data-question="expired"]):not([data-question="outcome"]) #overview-view {
+  transition: opacity var(--dur-state) var(--ease-out), visibility 0s;
+}
+#capsule[data-crossfade][data-phase="expanded"] #notices {
+  transition: opacity var(--dur-state) var(--ease-out), transform var(--dur-view-in) var(--spring), visibility 0s;
+}
+#island { transition: box-shadow var(--dur-state) var(--ease-out); }
+html[data-motion="reduce"] #island { transition: none; }
+/* the view rail enters with the cards (same --dur-view-delay), not 130ms ahead of them */
+#capsule[data-phase="expanded"]:not([data-view="chat"]) #island-header {
+  transition: opacity var(--dur-state) var(--ease-out) var(--dur-view-delay), visibility 0s;
+}
+html[data-motion="reduce"] #capsule #island-header { transition: none; }
+
+/* #341: conversation controls and local list use the existing island surface. */
+#chat-history-controls { display: flex; flex: 0 0 auto; justify-content: flex-end; gap: 6px; min-height: 44px; }
+#chat-history-controls .icon-btn, #conversations-close { min-width: 40px; min-height: 40px; }
+#chat-history-warning { margin: 0 10px 6px; color: var(--muted); font-size: var(--fs-caption); }
+#conversations[hidden] { display: none; }
+#conversations { position: absolute; z-index: 4; top: 100px; bottom: 10px; left: 10px; right: 10px; display: flex; flex-direction: column; padding: 12px 16px; border-radius: 20px; background: var(--card-bg); }
+#conversations-bar { display: flex; align-items: center; justify-content: space-between; }
+#conversations h2 { font-size: var(--fs-title); margin: 0; text-wrap: balance; }
+#conversations-note { color: var(--muted); font-size: var(--fs-caption); }
+#conversations h3 { font-size: var(--fs-body); margin: 8px 0 4px; color: var(--muted); font-weight: 600; }
+#specialists-list { list-style: none; margin: 0 0 8px; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+#specialists-list button { min-height: 44px; padding: 8px 14px; color: inherit; background: transparent; border: 1px solid var(--muted); border-radius: 999px; font: inherit; font-size: var(--fs-body); overflow-wrap: anywhere; }
+#specialists-list button:hover, #specialists-list button:focus-visible { background: rgba(255, 255, 255, .08); }
+#specialists-list button[aria-current="true"] { border-color: var(--text, currentColor); }
+#conversations-list { list-style: none; margin: 0; padding: 0; overflow-y: auto; }
+#conversations-list button { width: 100%; min-height: 44px; padding: 10px; text-align: left; color: inherit; background: transparent; border: 1px solid transparent; border-radius: 10px; overflow-wrap: anywhere; font: inherit; font-size: var(--fs-body); font-variant-numeric: tabular-nums; }
+#conversations-list button:hover, #conversations-list button:focus-visible { background: rgba(255, 255, 255, .08); }
+#conversations-list button[aria-current="true"] { border-color: var(--muted); }
+
+/* ---- #380 system / light / dark theme ----------------------------------------------------------
+   Two palettes, ONE design. DARK is Abito's own shipped palette, verbatim: every value below is
+   the literal that used to sit in the rules above (`#18181b` panels, white-alpha lines and fills),
+   so the default looks exactly as it did. LIGHT is derived from it — same roles, same alphas,
+   warm sand surfaces taken from Abito's own clay (`#d8c9a3`), never a second style:
+     island (warm paper) < card < surface (lightest), mirroring dark's #000 < #141518 < #18181b.
+   Role colours (--go, --sun, --red-11, --island-live, --faint), the Dot identity colours, the
+   motion policy and the radii are NEVER themed: they mean the same thing on both palettes.
+   The mode itself is painted on <html data-theme> by theme.js (default `system`), and
+   `color-scheme` follows it so native fields, scrollbars and select options agree with the page.
+   This section owns the palette only; no rule below may read the OS media query. */
+:root {
+  color-scheme: dark;
+  --surface: #18181b;                 /* pills, code, kbd, options, strips (on the island) */
+  --line: rgba(255, 255, 255, .25);   /* control borders */
+  --line-soft: rgba(255, 255, 255, .22);  /* inputs and method cards */
+  --line-mid: rgba(255, 255, 255, .3);    /* question buttons, kbd */
+  --line-key: rgba(255, 255, 255, .35);   /* the small key ring */
+  --line-ring: rgba(255, 255, 255, .45);  /* hollow pick rings */
+  --line-track: rgba(255, 255, 255, .4);  /* switch track */
+  --line-faint: rgba(255, 255, 255, .08); /* row separators */
+  --fill: rgba(255, 255, 255, .06);       /* text fields */
+  --fill-soft: rgba(255, 255, 255, .04);  /* method cards */
+  --fill-alt: rgba(255, 255, 255, .05);   /* list rows, pill, compact inputs */
+  --fill-q: rgba(255, 255, 255, .07);     /* key cell, user bubble, search field */
+  --fill-hover: rgba(255, 255, 255, .08); /* hover and header action */
+  --bubble: rgba(255, 255, 255, .1);      /* your own message */
+  --hdr-ink: #C9CCD2;                     /* header action label */
+  --primary-hover: #fff;                  /* the primary button on hover */
+}
+html[data-theme="light"] {
+  color-scheme: light;
+  /* surfaces: warm sand, derived from the clay the character is made of */
+  --island: #ece4d2;
+  --island-bg: #ece4d2;
+  --island-bg-glass: rgba(236, 228, 210, .76);
+  --surface: #fbf8f1;
+  --card-bg: #f7f2e7;
+  --tab-on: #e7e0d0;
+  /* ink: the dark palette's neutrals, inverted in lightness, same warm cast */
+  --ink: #1a1915;
+  --ink-2: #2a2823;
+  --island-ink: #1a1915;
+  --muted: #5f5c54;
+  --muted-2: #55524b;
+  --hdr-muted: #6b675e;
+  --island-muted: #5f5c54;
+  --hdr-ink: #4d4a42;
+  /* lines and fills: identical alphas over ink instead of over paper */
+  --card-line: rgba(0, 0, 0, .07);
+  --line: rgba(0, 0, 0, .28);
+  --line-soft: rgba(0, 0, 0, .22);
+  --line-mid: rgba(0, 0, 0, .26);
+  --line-key: rgba(0, 0, 0, .3);
+  --line-ring: rgba(0, 0, 0, .35);
+  --line-track: rgba(0, 0, 0, .3);
+  --line-faint: rgba(0, 0, 0, .08);
+  --fill: rgba(0, 0, 0, .05);
+  --fill-soft: rgba(0, 0, 0, .04);
+  --fill-alt: rgba(0, 0, 0, .05);
+  --fill-q: rgba(0, 0, 0, .06);
+  --fill-hover: rgba(0, 0, 0, .07);
+  --bubble: rgba(0, 0, 0, .07);
+  --btn-bg: rgba(0, 0, 0, .06);
+  --btn-bg-hover: rgba(0, 0, 0, .12);
+  /* the primary («Permitir») button mirrors the dark one instead of vanishing on paper */
+  --primary-bg: #201f1b;
+  --primary-ink: #f7f4ec;
+  --primary-hover: #000;
+  /* native controls follow the page */
+  color-scheme: light;
+}
+/* The form fields carry their own `color-scheme: dark` (the white-select fix of #309):
+   the light palette overrides it so native selects, options and carets flip with the theme. */
+html[data-theme="light"] .sfield { color-scheme: light; }
+
+/* ---- #408: Ajustes sub-tabs. A tablist (wraps in the narrow column), every tab >= 44px, icon + word,
+   selection shown by border + colour + aria-selected (never colour alone: the selected tab is also bold). */
+#settings-tabs { display: flex; flex-wrap: wrap; gap: 4px; margin: 0 0 4px; }
+.stab {
+  /* T6.1: tab 36px visual r10 inside a 44px hit area — the tab is drawn on the ::after inset
+     layer, so hover/selected paint the visible layer. */
+  position: relative; z-index: 0; display: inline-flex; align-items: center; gap: 6px; min-height: 44px; min-width: 44px; padding: 0 18px 0 14px;
+  border: 0; background: transparent; color: var(--island-muted); font: 600 var(--fs-label)/1.2 var(--font-ui); cursor: pointer;
+}
+.stab::after { content: ""; position: absolute; inset: 4px; z-index: -1; border-radius: 10px; border: 1px solid var(--line-soft); }
+.stab:hover { color: var(--island-ink); }
+.stab:hover::after { background: var(--fill-hover); }
+.stab[aria-selected="true"] { color: var(--go); font-weight: 700; }
+.stab[aria-selected="true"]::after { border-color: var(--go); }
+.stab:focus-visible { outline: 2px solid var(--go); outline-offset: 2px; }
+/* ---- #352: Integraciones — service cards (frontend/integrations-view.js, FAKE provider).
+   APPEND-ONLY block: theme tokens only (--surface/--line/--fill/--go/--sun/--red-11/--muted,
+   --radius/--fs), so light and dark resolve them with zero raw colors. The module is inert
+   until index.html carries <section id="integrations" hidden> + one script tag (mount
+   contract in the module header). textContent only; 44px click targets like Ajustes. */
+/* T7.2 design (ajustes-ventana-conexiones-*.png): Servicios as 3-column cards (auto-fill keeps
+   three at the 728 window and folds in the narrow island column), avatar + name over the state
+   sub + a «demo» badge on EVERY card (R7). The enable/refresh/pause/open controls stay reachable
+   in a compact row; they are 32px visual inside a 44px hit area (T6.1 ::after pattern). */
+#integrations { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 8px; }
+#integrations[hidden] { display: none; }
+.int-service {
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; column-gap: 10px;
+  padding: 10px 12px; border-radius: var(--radius-xl);
+  border: 1px solid var(--line-faint); background: var(--fill-alt);
+}
+.int-avatar { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 8px; background: var(--fill-hover); color: var(--island-ink); font: 700 var(--fs-label)/1 var(--font-ui); }
+.int-info { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.int-name { font: 600 var(--fs-label)/1.2 var(--font-ui); color: var(--island-ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.int-state { font: 400 var(--fs-caption)/1.2 var(--font-ui); color: var(--muted); white-space: nowrap; }
+.int-state--connected { color: var(--go); }
+.int-state--error { color: var(--red-11); }
+.int-state--paused { color: var(--sun); }
+.int-demo { padding: 0 8px; min-height: 24px; display: inline-flex; align-items: center; border-radius: var(--radius-full); background: var(--fill-hover); color: var(--island-muted); font: 400 var(--fs-caption)/1 var(--font-ui); }
+.int-actions { grid-column: 1 / -1; display: flex; gap: 0; flex-wrap: wrap; margin-top: 2px; }
+.int-actions button {
+  position: relative; z-index: 0; min-height: 44px; min-width: 44px; padding: 0 10px; border: 0; background: transparent;
+  color: var(--island-muted); font: 600 var(--fs-caption)/1.2 var(--font-ui); cursor: pointer;
+}
+.int-actions button::after { content: ""; position: absolute; inset: 6px 2px; z-index: -1; border-radius: 10px; border: 1px solid var(--line-soft); background: transparent; }
+.int-actions button:hover:not(:disabled)::after { background: var(--fill-hover); }
+.int-actions button:hover:not(:disabled) { color: var(--island-ink); }
+.int-actions button:focus-visible { outline: 2px solid var(--go); outline-offset: 2px; }
+.int-actions button:disabled { opacity: .45; cursor: default; }
+.int-actions .int-enable[aria-pressed="true"] { color: var(--go); font-weight: 700; }
+.int-actions .int-enable[aria-pressed="true"]::after { border-color: var(--go); }
+.int-actions .int-open { color: var(--island-ink); }
+
+/* ---- #355/#370: Correo + Mail cards (append-only; theme tokens only, so light + dark resolve with no raw colour).
+   Kept BEFORE the #410 compact block: that block is sliced from its first rule to EOF by a test. */
+#integrations-email, #integrations-mail { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+#integrations-email[hidden], #integrations-mail[hidden] { display: none; }
+.em-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.em-title { font: 700 var(--fs-label)/1.2 var(--font-ui); color: var(--island-ink); }
+.em-total, .em-sender-ago, .em-count-label, .em-senders-title { font: 600 var(--fs-caption)/1.2 var(--font-ui); color: var(--muted); }
+.em-fake { margin: 0; font: 600 var(--fs-caption)/1.3 var(--font-ui); color: var(--sun); }
+.em-pulse { display: flex; align-items: flex-end; gap: 2px; height: 36px; padding: 4px; border-radius: var(--radius-xl); background: var(--fill-alt); }
+.em-bar { flex: 1; min-width: 2px; border-radius: 2px; background: var(--faint); height: 3px; }
+.em-bar--1 { height: 25%; background: var(--island-muted); }
+.em-bar--2 { height: 50%; background: var(--island-muted); }
+.em-bar--3 { height: 75%; background: var(--go); }
+.em-bar--4 { height: 100%; background: var(--go); }
+.em-counts { display: flex; gap: 8px; margin: 0; }
+.em-count { flex: 1; display: flex; flex-direction: column-reverse; align-items: flex-start; padding: 6px 8px; border-radius: var(--radius-xl); background: var(--fill-alt); }
+.em-count-value { margin: 0; font: 700 var(--fs-label)/1.2 var(--font-ui); color: var(--island-ink); }
+.em-count-label { margin: 0; }
+.em-senders-title { margin: 0; }
+.em-senders { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.em-sender { display: flex; justify-content: space-between; gap: 8px; padding: 4px 0; border-bottom: 1px solid var(--line-faint); }
+.em-sender-name { font: 600 var(--fs-label)/1.2 var(--font-ui); color: var(--island-ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ml-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.ml-title { font: 700 var(--fs-label)/1.2 var(--font-ui); color: var(--island-ink); }
+.ml-unread, .ml-row-ago, .ml-open-meta, .ml-row-preview { font: 600 var(--fs-caption)/1.3 var(--font-ui); color: var(--muted); }
+.ml-fake { margin: 0; font: 600 var(--fs-caption)/1.3 var(--font-ui); color: var(--sun); }
+.ml-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.ml-item { border-bottom: 1px solid var(--line-faint); }
+.ml-row { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; width: 100%; min-height: 44px; padding: 6px 8px; text-align: left;
+  border: 0; border-radius: var(--radius-xl); background: transparent; color: var(--island-ink); cursor: pointer; }
+.ml-row:hover { background: var(--fill-hover); }
+.ml-row:focus-visible, .ml-back:focus-visible, .ml-send:focus-visible { outline: 2px solid var(--go); outline-offset: 2px; }
+.ml-row-from { font: 600 var(--fs-label)/1.2 var(--font-ui); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ml-row--unread .ml-row-from, .ml-row--unread .ml-row-subject { font-weight: 800; }
+.ml-row--unread .ml-row-from::before { content: ""; display: inline-block; width: 6px; height: 6px; margin-right: 6px; border-radius: var(--radius-full); background: var(--go); }
+.ml-row-subject, .ml-row-preview { grid-column: 1 / -1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 600 var(--fs-caption)/1.3 var(--font-ui); }
+.ml-open { display: flex; flex-direction: column; gap: 6px; padding: 8px; border-radius: var(--radius-xl); background: var(--fill-alt); }
+.ml-open-subject { margin: 0; font: 700 var(--fs-label)/1.2 var(--font-ui); color: var(--island-ink); }
+.ml-open-meta, .ml-open-body { margin: 0; }
+.ml-open-body { font: 500 var(--fs-label)/1.4 var(--font-ui); color: var(--island-ink); white-space: pre-wrap; overflow-wrap: anywhere; }
+.ml-compose { display: flex; flex-direction: column; gap: 6px; }
+.ml-compose-title { margin: 0; font: 700 var(--fs-label)/1.2 var(--font-ui); color: var(--island-ink); }
+.ml-field { display: flex; flex-direction: column; gap: 2px; }
+.ml-label { font: 600 var(--fs-caption)/1.2 var(--font-ui); color: var(--muted); }
+.ml-field input, .ml-field textarea { box-sizing: border-box; width: 100%; min-height: 44px; padding: 6px 10px; border: 1px solid var(--line-soft);
+  border-radius: var(--radius-xl); background: var(--fill); color: var(--island-ink); font: 500 var(--fs-label)/1.3 var(--font-ui); resize: vertical; }
+.ml-field input:focus-visible, .ml-field textarea:focus-visible { outline: 2px solid var(--go); outline-offset: 1px; }
+.ml-field [aria-invalid="true"] { border-color: var(--red-11); }
+.ml-error { margin: 0; font: 600 var(--fs-caption)/1.3 var(--font-ui); color: var(--red-11); }
+.ml-refusal { margin: 0; font: 600 var(--fs-caption)/1.3 var(--font-ui); color: var(--sun); }
+.ml-back, .ml-send { align-self: flex-start; min-height: 44px; min-width: 44px; padding: 0 12px; border-radius: var(--radius-full);
+  border: 1px solid var(--line-soft); background: transparent; color: var(--island-ink); font: 600 var(--fs-label)/1.2 var(--font-ui); cursor: pointer; }
+.ml-back:hover, .ml-send:hover { background: var(--fill-hover); }
+
+/* the model picker lives inside Ajustes now: in flow, no overlay of its own */
+#settings #models { position: static; padding: 0; background: none; border-radius: 0; flex: 1; min-height: 0; transform: none; transition: none; opacity: 1; visibility: visible; }
+#settings #models:not([data-open="true"]) { display: none; }
+
+/* #366 F093 — Ajustes in its own window: the SAME page runs there, but only
+   Ajustes is the window. The Rust-created window (label "settings") sets
+   body[data-window="settings"] from settings.js; every rule here is scoped to
+   that flag, so the island (the default #408 placement) is byte-identical. */
+body[data-window="settings"] { cursor: default; background: var(--card-bg); }
+body[data-window="settings"] #island-header,
+body[data-window="settings"] #clay,
+body[data-window="settings"] #compact-flag,
+body[data-window="settings"] #chat,
+body[data-window="settings"] #overview-view,
+body[data-window="settings"] #notices,
+body[data-window="settings"] #permission,
+body[data-window="settings"] #question { display: none !important; }
+/* the island shape becomes the window: no centring, no compact size, no radius */
+body[data-window="settings"] #island {
+  position: absolute; inset: 0; left: 0; transform: none !important;
+  width: 100% !important; height: 100% !important; border-radius: 0;
+  will-change: auto;
+}
+/* the panel and its own model-picker fill the window (the #408 island offsets
+   — top 58/72/84px, left/right 10–12px — are island-size business) */
+body[data-window="settings"] #settings,
+body[data-window="settings"] #models {
+  position: absolute; inset: 0; top: 0; left: 0; right: 0; bottom: 0;
+  border-radius: 0; opacity: 1; visibility: visible; transform: none;
+}
+
+/* Adapted from Coucou windows/src/hub/shell.ts: sidebar + page only.
+   Copyright (c) 2026 Louis Raillé, MIT. Colors and icons remain Abito's. */
+body:not([data-window="settings"]) #settings { display: none !important; }
+body[data-window="settings"] #capsule { display: none !important; }
+body[data-window="settings"] #settings {
+  display: grid; grid-template-columns: 180px minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr); gap: 0;
+  width: 100%; height: 100%; padding: 0; background: var(--card-bg);
+}
+body[data-window="settings"] #settings-tabs {
+  grid-column: 1; grid-row: 1 / -1; display: flex; flex-direction: column;
+  flex-wrap: nowrap; align-items: stretch; width: auto; padding: 20px 10px;
+  border-right: 1px solid var(--line-soft); overflow-y: auto;
+}
+body[data-window="settings"] #settings-tabs .stab { flex: none; width: 100%; justify-content: flex-start; }
+body[data-window="settings"] #settings-bar { grid-column: 2; padding: 16px 24px 8px; }
+body[data-window="settings"] #settings-hint { grid-column: 2; margin: 0; padding: 0 24px; }
+body[data-window="settings"] #settings-body,
+body[data-window="settings"] #settings #models {
+  grid-column: 2; grid-row: 3; position: static; min-width: 0; min-height: 0;
+  overflow-y: auto; padding: 16px 24px; width: auto;
+}
+
+/* #366 F094 — the quick panel popover inside the island (scoped to its own id). */
+#settings-quick { position: absolute; z-index: 6; top: 48px; right: 12px; width: 260px; max-width: calc(100% - 24px); display: flex; flex-direction: column; gap: 6px; padding: 12px; border-radius: 16px; background: var(--card-bg); color: var(--island-muted); box-shadow: 0 6px 24px rgba(0,0,0,.35); }
+/* ---- #423: the notice title keeps a readable width in the 228px overview band. Measured in Chromium:
+   the classic scrollbar (15px), the roomy pill padding and the «1» badge left «Avisos caídos» a 15px box.
+   Band-only (the notices lane keeps its full pane); the scroll itself still works by wheel and keys. */
+body #capsule:not([data-notice-view="notices"]) #notices { scrollbar-width: none; }
+body #capsule:not([data-notice-view="notices"]) #notice-open { padding-inline: 6px; gap: 6px; }
+
+/* ---- T6.3 #434: Ajustes → General (design ajustes-ventana-general-{dark,light}.png). Groups
+   Perfil / Isla / Sonido y atajo, volume as a native range slider, segmented auto-close.
+   Placed BEFORE the #410 compact block, which a test slices from its first rule to EOF. ---- */
+/* Perfil: the name form renders as one 40px row (label left, field right), not a stacked form. */
+.sperfil-form { display: flex; flex-direction: row; align-items: center; flex-wrap: wrap; gap: var(--space-8); margin-top: 0; }
+.sperfil-form > .srow-title { flex: none; }
+.sperfil-form .sfield { flex: 1 1 220px; min-width: 0; }
+.sperfil-form .sbtn { align-self: center; }
+.sperfil-form .snote { flex: 1 1 100%; margin: 0; }
+/* Sonido y atajo: the shortcut row keeps its title and the one allowed hint stacked. */
+.srow-titles { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.srow-titles .srow-sub { margin: 0; }
+/* Volumen: native range (keyboard arrows for free), 32 visual inside the 44 hit height; the
+   accent paints the filled track in both themes because the ink flips with the theme. */
+.srange { flex: 0 1 180px; width: 180px; min-width: 0; padding: 0; border: 0; background: transparent; box-shadow: none; cursor: pointer; accent-color: var(--island-ink); }
+.svolume-value { flex: none; min-width: 40px; text-align: right; font: 600 var(--fs-caption)/1.2 var(--font-ui); color: var(--island-ink); font-variant-numeric: tabular-nums; }
+/* Auto-cierre: segmented radiogroup, 32 visual inside a 44 hit, selected segment carries the
+   surface tone; «Nunca» renders disabled until the contract knows it. */
+.sseg { margin-left: auto; display: inline-flex; align-items: center; gap: 4px; }
+.sseg-btn {
+  min-width: 44px; min-height: 44px; padding: 0 12px; border: 0; border-radius: var(--radius-full);
+  background: transparent; color: var(--island-muted); cursor: pointer;
+  font: 600 var(--fs-label)/1.2 var(--font-ui); font-variant-numeric: tabular-nums;
+  transition: background-color var(--dur-state) var(--ease-out), color var(--dur-state) var(--ease-out);
+}
+.sseg-btn:hover { background: var(--fill-hover); color: var(--island-ink); }
+.sseg-btn[aria-checked="true"] { background: var(--surface); box-shadow: inset 0 0 0 1px var(--line-soft); color: var(--island-ink); }
+.sseg-btn:disabled { cursor: default; opacity: .5; }
+.sseg-btn:disabled:hover { background: transparent; color: var(--island-muted); }
+.sseg-btn:focus-visible { outline: 2px solid var(--go); outline-offset: 2px; }
+html[data-motion="reduce"] .sseg-btn { transition: none; }
+
+/* HU-063 (decision A): the question wins over an open chat; the chat stays visible but dimmed and unclickable (inert is set by island-nusa-mount.js) */
+#capsule[data-view="chat"]:is([data-question="pending"],[data-question="expired"],[data-question="outcome"],[data-card]) #chat { opacity: .45; pointer-events: none; }
+
+/* ---- #410 r2: the compact Conexiones LIST. One row per provider: name + status chip, the two
+   connect words (API / Auth) from the view-model, and the row's own flow (code/URL) wrapped below.
+   All rules live in the #410 compact block below, so the rail keeps its cascade position. */
+.sproblem { color: var(--red-11); }
+
+/* ---- #408: at the Settings size the tabs become a LEFT vertical rail (settings.js sets data-rail from the
+   panel width); the 400 column keeps the wrapping row. */
+#settings[data-rail="true"] {
+  display: grid; grid-template-columns: 184px minmax(0, 1fr); grid-template-rows: auto auto minmax(0, 1fr) auto; column-gap: 16px;
+  padding: 20px 24px; /* design §3: rail 184, padding 24 side / 20 top */
+}
+#settings[data-rail="true"] #settings-bar { grid-column: 1 / -1; }
+#settings[data-rail="true"] #settings-hint { grid-column: 2; grid-row: 2; }
+#settings[data-rail="true"] #settings-tabs { grid-column: 1; grid-row: 2 / 4; flex-direction: column; flex-wrap: nowrap; align-self: start; gap: 6px; }
+#settings[data-rail="true"] .stab { justify-content: flex-start; width: 100%; min-height: 44px; } /* design §3: tab 36 visual on ::after, r10 */
+#settings[data-rail="true"] #settings-body, #settings[data-rail="true"] #models { grid-column: 2; grid-row: 3; min-height: 0; }
+#settings[data-rail="true"] #settings-live { grid-column: 1 / -1; }
+
+/* #347 mini-bots: noninteractive strip of neutral mini-Abitos, one per active chat turn (overview only).
+   #335 F002: right: 254 pins them to the content column (x148..304 of the 558px box, same right edge as
+   .pill-summary) so they never draw over the now-visible right card; their band anchor (bottom:6, 24px row) is #347's. */
+#minibots { position: absolute; margin: 0; padding: 0; list-style: none; display: flex; pointer-events: none; }
+#minibots[hidden] { display: none; }
+.minibot { display: flex; align-items: center; gap: 4px; color: var(--muted); font-size: var(--fs-label); line-height: 18px; }
+.minibot svg { width: 24px; height: 24px; flex: 0 0 24px; }
+
+#settings[data-rail="true"] #settings-hint { margin: 0 0 12px; }
+#settings[data-rail="true"] .ssec { margin-top: 20px; }
+#settings[data-rail="true"] .ssec:first-child { margin-top: 4px; }
+#settings[data-rail="true"] .ssection { margin-bottom: 8px; }
+#settings[data-rail="true"] .sagent { padding: 12px 0; }
+#settings[data-rail="true"] #settings-body { padding-right: 8px; gap: 0; }
+#settings[data-rail="true"] .sconn-row .srow-actions { margin-left: 0; justify-content: flex-end; }
+
+/* ---- #419: visual auto-close countdown (decoration only) ----------------
+   A quiet thin bar at the island's inner bottom edge that shrinks with the
+   published inactivity countdown fraction (0..1) as the island approaches
+   its auto-close. aria-hidden, hidden by default, absolutely positioned:
+   it never reflows the island, never intercepts input and never decides
+   anything — the close stays the module's autoClose verb. Tokens only, so
+   «claro» y «oscuro» both keep working. */
+#island-countdown {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 4px;
+  /* #437 D11: the design draws a 3 px countdown bar (was 2 px). */
+  height: 3px;
+  border-radius: var(--radius-full);
+  background: var(--faint);
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 1;
+}
+#island-countdown::before {
+  content: "";
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--island-live);
+  transform: scaleX(var(--island-countdown-fraction, 1));
+  transform-origin: center;
+  transition: transform var(--dur-state) linear;
+}
+html[data-motion="reduce"] #island-countdown::before { transition: none; }
+
+/* ---- #357/#358/#359: Notion, n8n and Calendario service cards (frontend/integrations-{notion,n8n,calendar}.js,
+   FAKE providers). APPEND-ONLY block, placed BEFORE the #410 compact slice (a #410 test slices style.css from
+   that marker to EOF). Theme tokens only, so light and dark resolve with zero raw colors; 44px targets. */
+#integrations-notion { display: grid; gap: 8px; }
+#integrations-notion[hidden] { display: none; }
+.intn-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.intn-title { font: 700 var(--fs-body)/1.2 var(--font-ui); color: var(--island-ink); }
+.intn-count, .intn-age { font: 400 var(--fs-label)/1.2 var(--font-ui); color: var(--muted); white-space: nowrap; }
+.intn-fake { margin: 0; font: 600 var(--fs-label)/1.4 var(--font-ui); color: var(--sun); }
+.intn-empty { margin: 0; font: 400 var(--fs-label)/1.4 var(--font-ui); color: var(--muted); }
+.intn-list { margin: 0; padding: 0; list-style: none; display: grid; gap: 4px; }
+.intn-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px; width: 100%;
+  min-height: 44px; padding: 0 12px; border-radius: var(--radius-xl); text-align: left;
+  border: 1px solid var(--line-faint); background: var(--fill-alt); color: var(--island-ink);
+  font: 600 var(--fs-label)/1.2 var(--font-ui); cursor: pointer;
+}
+.intn-row-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.intn-row:hover, .intn-back:hover { background: var(--fill-hover); }
+.intn-row:focus-visible, .intn-back:focus-visible { outline: 2px solid var(--go); outline-offset: 2px; }
+.intn-card { display: grid; gap: 6px; padding: 10px 12px; border-radius: var(--radius-xl); border: 1px solid var(--line-faint); background: var(--fill-alt); }
+.intn-card-title { margin: 0; font: 700 var(--fs-body)/1.2 var(--font-ui); color: var(--island-ink); overflow-wrap: anywhere; }
+.intn-card-body { margin: 0; font: 400 var(--fs-label)/1.4 var(--font-ui); color: var(--island-ink); overflow-wrap: anywhere; }
+.intn-back {
+  justify-self: start; min-height: 44px; min-width: 44px; padding: 0 12px; border-radius: var(--radius-full);
+  border: 1px solid var(--line-soft); background: transparent; color: var(--island-muted);
+  font: 600 var(--fs-label)/1.2 var(--font-ui); cursor: pointer;
+}
+
+#integrations-n8n { display: grid; gap: 8px; }
+#integrations-n8n[hidden] { display: none; }
+.intw-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.intw-title { font: 700 var(--fs-body)/1.2 var(--font-ui); color: var(--island-ink); }
+.intw-count, .intw-meta { font: 400 var(--fs-label)/1.2 var(--font-ui); color: var(--muted); white-space: nowrap; }
+.intw-fake { margin: 0; font: 600 var(--fs-label)/1.4 var(--font-ui); color: var(--sun); }
+.intw-empty { margin: 0; font: 400 var(--fs-label)/1.4 var(--font-ui); color: var(--muted); }
+.intw-list { margin: 0; padding: 0; list-style: none; display: grid; gap: 4px; }
+.intw-row {
+  display: flex; align-items: center; gap: 10px; width: 100%; min-height: 44px; padding: 0 12px;
+  border-radius: var(--radius-xl); text-align: left; border: 1px solid var(--line-faint);
+  background: var(--fill-alt); color: var(--island-ink); font: 600 var(--fs-label)/1.2 var(--font-ui); cursor: pointer;
+}
+.intw-row-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.intw-status { font: 600 var(--fs-caption)/1.2 var(--font-ui); color: var(--muted); white-space: nowrap; }
+.intw-status--success { color: var(--go); }
+.intw-status--error { color: var(--red-11); }
+.intw-status--waiting { color: var(--sun); }
+.intw-card { display: grid; gap: 6px; padding: 10px 12px; border-radius: var(--radius-xl); border: 1px solid var(--line-faint); background: var(--fill-alt); }
+.intw-card-title { margin: 0; font: 700 var(--fs-body)/1.2 var(--font-ui); color: var(--island-ink); overflow-wrap: anywhere; }
+.intw-card-body { margin: 0; font: 400 var(--fs-label)/1.4 var(--font-ui); color: var(--island-ink); overflow-wrap: anywhere; }
+.intw-open, .intw-back {
+  min-height: 44px; min-width: 44px; padding: 0 12px; border-radius: var(--radius-full);
+  border: 1px solid var(--line-soft); background: transparent; color: var(--island-muted);
+  font: 600 var(--fs-label)/1.2 var(--font-ui); cursor: pointer;
+}
+.intw-back { justify-self: start; }
+.intw-open { border-color: var(--line); color: var(--island-ink); }
+.intw-row:hover, .intw-open:hover, .intw-back:hover { background: var(--fill-hover); }
+.intw-row:focus-visible, .intw-open:focus-visible, .intw-back:focus-visible { outline: 2px solid var(--go); outline-offset: 2px; }
+
+#integrations-calendar { display: grid; gap: 8px; }
+#integrations-calendar[hidden] { display: none; }
+.intc-head { display: flex; align-items: baseline; gap: 10px; }
+.intc-title { font: 700 var(--fs-body)/1.2 var(--font-ui); color: var(--island-ink); }
+.intc-meta { font: 400 var(--fs-label)/1.2 var(--font-ui); color: var(--muted); white-space: nowrap; }
+.intc-fake { margin: 0; font: 600 var(--fs-label)/1.4 var(--font-ui); color: var(--sun); }
+.intc-empty, .intc-sub { margin: 0; font: 400 var(--fs-label)/1.4 var(--font-ui); color: var(--muted); }
+.intc-nav-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.intc-month { font: 700 var(--fs-label)/1.2 var(--font-ui); color: var(--island-ink); }
+.intc-nav, .intc-day {
+  min-height: 44px; min-width: 44px; padding: 0 12px; border-radius: var(--radius-full);
+  border: 1px solid var(--line-soft); background: transparent; color: var(--island-muted);
+  font: 600 var(--fs-label)/1.2 var(--font-ui); cursor: pointer;
+}
+.intc-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 2px; }
+.intc-wd { text-align: center; font: 600 var(--fs-caption)/1.2 var(--font-ui); color: var(--muted); }
+.intc-day { padding: 0; border-radius: var(--radius-xl); border-color: var(--line-faint); background: var(--fill-alt); color: var(--island-ink); }
+.intc-day[data-count] { border-color: var(--go); }
+.intc-day--today { font-weight: 700; color: var(--go); }
+.intc-day--sel, .intc-day[aria-pressed="true"] { background: var(--fill-hover); border-color: var(--go); }
+.intc-list { margin: 0; padding: 0; list-style: none; display: grid; gap: 4px; }
+.intc-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px; width: 100%; min-height: 44px; padding: 0 12px;
+  border-radius: var(--radius-xl); text-align: left; border: 1px solid var(--line-faint);
+  background: var(--fill-alt); color: var(--island-ink); font: 600 var(--fs-label)/1.2 var(--font-ui); cursor: pointer;
+}
+.intc-row-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.intc-card { display: grid; gap: 6px; padding: 10px 12px; border-radius: var(--radius-xl); border: 1px solid var(--line-faint); background: var(--fill-alt); }
+.intc-card-title { margin: 0; font: 700 var(--fs-body)/1.2 var(--font-ui); color: var(--island-ink); overflow-wrap: anywhere; }
+.intc-card .intc-nav { justify-self: start; }
+.intc-nav:hover, .intc-day:hover, .intc-row:hover { background: var(--fill-hover); color: var(--island-ink); }
+.intc-nav:focus-visible, .intc-day:focus-visible, .intc-row:focus-visible { outline: 2px solid var(--go); outline-offset: 2px; }
+/* ---- #353: GitHub service card (frontend/integrations-github.js, FAKE dataset).
+   APPEND-ONLY block, placed BEFORE the #410 compact slice (a #410 test slices style.css from
+   that marker to EOF). Theme tokens only, so light and dark resolve with zero raw colors;
+   the grid intensity rides on opacity of --go, never on a raw color. Inert until
+   <section id="integrations-github" hidden> exists (mount contract in the module header). */
+#integrations-github { display: grid; gap: 8px; }
+#integrations-github[hidden] { display: none; }
+.ig-title, .ig-sub { margin: 0; font: 700 var(--fs-body)/1.2 var(--font-ui); color: var(--island-ink); }
+.ig-sub { font-size: var(--fs-label); color: var(--muted); }
+.ig-fake { margin: 0; font: 600 var(--fs-label)/1.4 var(--font-ui); color: var(--sun); }
+.ig-ci { margin: 0; font: 400 var(--fs-label)/1.2 var(--font-ui); color: var(--muted); }
+.ig-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.ig-row {
+  display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
+  padding: 8px 12px; border-radius: var(--radius-xl);
+  border: 1px solid var(--line-faint); background: var(--fill-alt);
+}
+.ig-num { font: 600 var(--fs-caption)/1.2 var(--font-ui); color: var(--muted); }
+.ig-name { flex: 1; min-width: 0; font: 600 var(--fs-label)/1.2 var(--font-ui); color: var(--island-ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ig-meta { font: 400 var(--fs-caption)/1.2 var(--font-ui); color: var(--muted); }
+.ig-chip { font: 600 var(--fs-caption)/1.2 var(--font-ui); color: var(--muted); white-space: nowrap; }
+.ig-chip--pass { color: var(--go); }
+.ig-chip--fail { color: var(--red-11); }
+.ig-chip--pending { color: var(--sun); }
+.ig-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; max-width: 320px; }
+.ig-day {
+  min-height: 44px; border-radius: var(--radius-full); padding: 0; cursor: pointer;
+  border: 1px solid var(--line-soft); background: var(--fill-hover);
+}
+.ig-day--1, .ig-day--2, .ig-day--3, .ig-day--4 { background: var(--go); }
+.ig-day--1 { opacity: .35; }
+.ig-day--2 { opacity: .55; }
+.ig-day--3 { opacity: .8; }
+.ig-day:hover { border-color: var(--island-ink); }
+.ig-day:focus-visible { outline: 2px solid var(--go); outline-offset: 2px; }
+.ig-day[aria-pressed="true"] { border-color: var(--island-ink); border-width: 2px; }
+.ig-detail { display: flex; gap: 10px; flex-wrap: wrap; align-items: baseline; padding: 8px 12px; border-radius: var(--radius-xl); border: 1px solid var(--line); }
+.ig-detail-title { font: 700 var(--fs-label)/1.2 var(--font-ui); color: var(--island-ink); }
+
+/* ---- #354: Deployments service card (frontend/integrations-deployments.js, FAKE dataset).
+   Same append-only region as #353, still BEFORE the #410 compact slice. Tokens only; inert
+   until <section id="integrations-deployments" hidden> exists. */
+#integrations-deployments { display: grid; gap: 8px; }
+#integrations-deployments[hidden] { display: none; }
+.id-title { margin: 0; font: 700 var(--fs-body)/1.2 var(--font-ui); color: var(--island-ink); }
+.id-fake { margin: 0; font: 600 var(--fs-label)/1.4 var(--font-ui); color: var(--sun); }
+.id-status { margin: 0; font: 400 var(--fs-label)/1.3 var(--font-ui); color: var(--muted); }
+.id-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.id-row {
+  display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; width: 100%; min-height: 44px;
+  padding: 8px 12px; border-radius: var(--radius-xl); text-align: left; cursor: pointer;
+  border: 1px solid var(--line-faint); background: var(--fill-alt); color: var(--island-ink);
+}
+.id-row:hover { background: var(--fill-hover); }
+.id-row:focus-visible { outline: 2px solid var(--go); outline-offset: 2px; }
+.id-row[aria-pressed="true"] { border-color: var(--go); }
+.id-name { flex: 1; min-width: 0; font: 600 var(--fs-label)/1.2 var(--font-ui); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.id-meta { font: 400 var(--fs-caption)/1.2 var(--font-ui); color: var(--muted); }
+.id-chip { font: 600 var(--fs-caption)/1.2 var(--font-ui); color: var(--muted); white-space: nowrap; }
+.id-chip--ready { color: var(--go); }
+.id-chip--error { color: var(--red-11); }
+.id-chip--building, .id-chip--queued { color: var(--sun); }
+.id-detail { display: grid; gap: 4px; padding: 8px 12px; border-radius: var(--radius-xl); border: 1px solid var(--line); }
+.id-detail-title { font: 700 var(--fs-label)/1.2 var(--font-ui); color: var(--island-ink); }
+/* ---- #356/#369: money cards — Pagos (integrations-payments.js) and Finanzas (integrations-finance.js),
+   FAKE providers, read-only. APPEND-ONLY block placed BEFORE the #410 compact slice (a #410 test slices
+   style.css from that block to EOF). Theme tokens only, so light and dark resolve with zero raw colors;
+   44px click targets like Ajustes. */
+#integrations-payments { display: grid; gap: 8px; }
+#integrations-payments[hidden] { display: none; }
+.pay-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.pay-title { font: 700 var(--fs-body)/1.2 var(--font-ui); color: var(--island-ink); flex: 1; }
+.pay-state { font: 600 var(--fs-caption)/1.2 var(--font-ui); color: var(--muted); white-space: nowrap; }
+.pay-state--connected { color: var(--go); }
+.pay-state--error { color: var(--red-11); }
+.pay-state--paused { color: var(--sun); }
+.pay-fake { margin: 0; font: 600 var(--fs-label)/1.4 var(--font-ui); color: var(--sun); }
+.pay-note { margin: 0; font: 400 var(--fs-label)/1.4 var(--font-ui); color: var(--muted); }
+.pay-sums { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 6px; }
+.pay-sum {
+  display: grid; gap: 2px; padding: 8px 10px; border-radius: var(--radius-xl);
+  border: 1px solid var(--line-faint); background: var(--fill-alt);
+}
+.pay-sum-label { font: 600 var(--fs-caption)/1.2 var(--font-ui); color: var(--muted); }
+.pay-sum-amount { font: 700 var(--fs-label)/1.2 var(--font-ui); color: var(--island-ink); font-variant-numeric: tabular-nums; }
+.pay-sum--failed .pay-sum-amount { color: var(--red-11); }
+.pay-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.pay-row {
+  display: flex; align-items: baseline; gap: 8px; padding: 6px 10px; min-width: 0;
+  border-radius: var(--radius-xl); border: 1px solid var(--line-faint); background: var(--fill-alt);
+}
+.pay-label { font: 600 var(--fs-label)/1.2 var(--font-ui); color: var(--island-ink); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pay-status { font: 600 var(--fs-caption)/1.2 var(--font-ui); color: var(--muted); white-space: nowrap; }
+.pay-status--succeeded { color: var(--go); }
+.pay-status--failed { color: var(--red-11); }
+.pay-status--pending { color: var(--sun); }
+.pay-amount { font: 600 var(--fs-label)/1.2 var(--font-ui); color: var(--island-ink); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.pay-refresh, .fin-refresh {
+  min-height: 44px; min-width: 44px; padding: 0 12px; border-radius: var(--radius-full);
+  border: 1px solid var(--line-soft); background: transparent; color: var(--island-muted);
+  font: 600 var(--fs-label)/1.2 var(--font-ui); cursor: pointer;
+}
+.pay-refresh:hover, .fin-refresh:hover { background: var(--fill-hover); color: var(--island-ink); }
+.pay-refresh:focus-visible, .fin-refresh:focus-visible { outline: 2px solid var(--go); outline-offset: 2px; }
+
+#integrations-finance { display: grid; gap: 8px; }
+#integrations-finance[hidden] { display: none; }
+.fin-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.fin-title { font: 700 var(--fs-body)/1.2 var(--font-ui); color: var(--island-ink); flex: 1; }
+.fin-subtitle { margin: 0; font: 700 var(--fs-label)/1.2 var(--font-ui); color: var(--island-ink); }
+.fin-state { font: 600 var(--fs-caption)/1.2 var(--font-ui); color: var(--muted); white-space: nowrap; }
+.fin-state--connected { color: var(--go); }
+.fin-state--error { color: var(--red-11); }
+.fin-state--paused { color: var(--sun); }
+.fin-fake { margin: 0; font: 600 var(--fs-label)/1.4 var(--font-ui); color: var(--sun); }
+.fin-note { margin: 0; font: 400 var(--fs-label)/1.4 var(--font-ui); color: var(--muted); }
+.fin-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 6px; }
+.fin-tile {
+  display: grid; gap: 2px; padding: 8px 10px; min-width: 0; border-radius: var(--radius-xl);
+  border: 1px solid var(--line-faint); background: var(--fill-alt);
+}
+.fin-tile--alert { border-color: var(--sun); }
+.fin-tile-top { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+.fin-symbol { font: 700 var(--fs-label)/1.2 var(--font-ui); color: var(--island-ink); }
+.fin-name { font: 400 var(--fs-caption)/1.2 var(--font-ui); color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fin-price { font: 700 var(--fs-body)/1.2 var(--font-ui); color: var(--island-ink); font-variant-numeric: tabular-nums; }
+.fin-change { font: 600 var(--fs-caption)/1.2 var(--font-ui); color: var(--muted); font-variant-numeric: tabular-nums; }
+.fin-spark { font: 400 var(--fs-body)/1 var(--font-mono, monospace); color: var(--go); letter-spacing: 1px; overflow: hidden; white-space: nowrap; }
+.fin-alert { font: 600 var(--fs-caption)/1.3 var(--font-ui); color: var(--sun); }
+.fin-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.fin-row {
+  display: flex; align-items: baseline; gap: 8px; padding: 6px 10px; min-width: 0;
+  border-radius: var(--radius-xl); border: 1px solid var(--line-faint); background: var(--fill-alt);
+}
+.fin-label { font: 600 var(--fs-label)/1.2 var(--font-ui); color: var(--island-ink); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fin-kind { font: 600 var(--fs-caption)/1.2 var(--font-ui); color: var(--muted); white-space: nowrap; }
+.fin-balance, .fin-total { font: 600 var(--fs-label)/1.2 var(--font-ui); color: var(--island-ink); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.fin-totals { display: flex; gap: 12px; flex-wrap: wrap; justify-content: flex-end; }
+
+/* ---- Ajustes -> Conexiones: group «Servicios (datos de ejemplo)» (FAKE integration cards). Appended BEFORE the
+   #410 compact block (a test slices style.css from that marker to EOF). Tokens only. */
+#connections-more { display: flex; flex-direction: column; gap: 14px; margin-top: 12px; }
+#connections-more[hidden] { display: none; }
+#connections-more > section[hidden] { display: none; }
+#connections-more > section { padding: 10px 0; border-top: 1px solid var(--line); }
+#connections-more > h3 { margin: 0; }
+
+/* ---- #436 T6.5: the specialist card's colour swatches. Same visual language as the
+   Apariencia dots (#384), compact for the card: 44px hit target, 16px swatch, and the
+   current colour repeated as a word so the meaning never rides on colour alone.
+   Append-only block placed BEFORE the #410 compact slice (a #410 test slices style.css
+   from that marker to EOF). Tokens only, so «claro» y «oscuro» both keep working. */
+.srole-colors { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 4px; padding: 0 4px; }
+.srole-colors .sdot.sm { flex-direction: row; padding: 0 10px; }
+.srole-colors .sdot.sm .sdot-swatch { width: 16px; height: 16px; }
+.srole-colors .sdot.sm .sdot-label { display: none; }
+.srole-colors .srole-color-word { font: 400 var(--fs-caption)/1.2 var(--font-ui); color: var(--island-muted); }
+
+/* ---- #442: Blobs = agents (page «3 Blobs», DESIGN-NOTES §4). Scoped to the Blobs tab via
+   body.dataset.screen. Measures from the design: content = list + 16 gap + editor 308, principal card
+   80, tile 124x150, strip tiles with a 24 character, swatches are 28 px characters, editor head 72.
+   Every blob is the clay character (SVG from the shared engine): its colour is tinted HERE from the
+   closed --dot-* palette over the engine's own skin gradient, exactly as the island does, so the
+   engine file stays untouched. Reduced motion is Abito's OWN html[data-motion="reduce"] (#304).
+   APPEND-ONLY region BEFORE the #410 compact slice (a test slices style.css from that marker). */
+#settings-body[data-screen="pills"] .pills-layout { display: grid; grid-template-columns: minmax(0, 1fr) 308px; gap: var(--space-16); align-items: start; margin-top: var(--space-8); }
+#settings-body[data-screen="pills"] .blob-clay { display: block; flex: none; width: 56px; height: 56px; overflow: visible; }
+#settings-body[data-screen="pills"] .blob-clay[data-color="green"] radialGradient[id$="skin"] stop:nth-child(1) { stop-color: var(--dot-green-1); }
+#settings-body[data-screen="pills"] .blob-clay[data-color="green"] radialGradient[id$="skin"] stop:nth-child(2) { stop-color: var(--dot-green-2); }
+#settings-body[data-screen="pills"] .blob-clay[data-color="green"] radialGradient[id$="skin"] stop:nth-child(3) { stop-color: var(--dot-green-3); }
+#settings-body[data-screen="pills"] .blob-clay[data-color="blue"] radialGradient[id$="skin"] stop:nth-child(1) { stop-color: var(--dot-blue-1); }
+#settings-body[data-screen="pills"] .blob-clay[data-color="blue"] radialGradient[id$="skin"] stop:nth-child(2) { stop-color: var(--dot-blue-2); }
+#settings-body[data-screen="pills"] .blob-clay[data-color="blue"] radialGradient[id$="skin"] stop:nth-child(3) { stop-color: var(--dot-blue-3); }
+#settings-body[data-screen="pills"] .blob-clay[data-color="mint"] radialGradient[id$="skin"] stop:nth-child(1) { stop-color: var(--dot-mint-1); }
+#settings-body[data-screen="pills"] .blob-clay[data-color="mint"] radialGradient[id$="skin"] stop:nth-child(2) { stop-color: var(--dot-mint-2); }
+#settings-body[data-screen="pills"] .blob-clay[data-color="mint"] radialGradient[id$="skin"] stop:nth-child(3) { stop-color: var(--dot-mint-3); }
+#settings-body[data-screen="pills"] .blob-clay[data-color="orange"] radialGradient[id$="skin"] stop:nth-child(1) { stop-color: var(--dot-orange-1); }
+#settings-body[data-screen="pills"] .blob-clay[data-color="orange"] radialGradient[id$="skin"] stop:nth-child(2) { stop-color: var(--dot-orange-2); }
+#settings-body[data-screen="pills"] .blob-clay[data-color="orange"] radialGradient[id$="skin"] stop:nth-child(3) { stop-color: var(--dot-orange-3); }
+#settings-body[data-screen="pills"] .blob-clay[data-color="purple"] radialGradient[id$="skin"] stop:nth-child(1) { stop-color: var(--dot-purple-1); }
+#settings-body[data-screen="pills"] .blob-clay[data-color="purple"] radialGradient[id$="skin"] stop:nth-child(2) { stop-color: var(--dot-purple-2); }
+#settings-body[data-screen="pills"] .blob-clay[data-color="purple"] radialGradient[id$="skin"] stop:nth-child(3) { stop-color: var(--dot-purple-3); }
+
+/* The PRINCIPAL card: Abito, always on the island. */
+#settings-body[data-screen="pills"] .blob-principal { display: flex; align-items: center; gap: var(--space-16); min-height: 80px; padding: var(--space-12) var(--space-16); border: 1px solid var(--line-soft); border-radius: 14px; background: var(--card-bg); color: var(--island-ink); text-align: left; cursor: pointer; }
+#settings-body[data-screen="pills"] .blob-principal:hover { border-color: var(--line); }
+#settings-body[data-screen="pills"] .blob-principal[aria-pressed="true"] { border-color: transparent; box-shadow: 0 0 0 2px var(--island-live); }
+#settings-body[data-screen="pills"] .blob-principal-text { display: flex; flex-direction: column; gap: var(--space-8); min-width: 0; }
+#settings-body[data-screen="pills"] .blob-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+#settings-body[data-screen="pills"] .blob-chips .chip, #settings-body[data-screen="pills"] .blob-tile .chip { min-height: 24px; padding: 0 8px; border-radius: 12px; background: var(--fill); font: 400 var(--fs-caption)/1 var(--font-ui); color: var(--island-muted); }
+#settings-body[data-screen="pills"] .blob-chips .chip[data-tone="go"], #settings-body[data-screen="pills"] .blob-tile .chip[data-tone="go"] { color: var(--island-ink); }
+#settings-body[data-screen="pills"] .blob-name { font: 600 var(--fs-body)/1.2 var(--font-ui); color: var(--island-ink); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#settings-body[data-screen="pills"] .blob-principal .ico { margin-left: auto; color: var(--sun); flex: none; }
+
+/* Agent tiles 124 x 150, the «Nuevo agente» slot, the 2px live ring on the selection, the lifted drag state. */
+#settings-body[data-screen="pills"] .pills-grid { display: grid; grid-template-columns: repeat(3, 124px); gap: var(--space-8); }
+#settings-body[data-screen="pills"] .blob-tile, #settings-body[data-screen="pills"] .blob-tile-new { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; width: 124px; min-height: 150px; padding: var(--space-8) 10px; border: 1px solid var(--line-soft); border-radius: 14px; background: var(--card-bg); color: var(--island-ink); cursor: pointer; }
+#settings-body[data-screen="pills"] .blob-tile:hover { border-color: var(--line); }
+#settings-body[data-screen="pills"] .blob-tile[aria-pressed="true"], #settings-body[data-screen="pills"] .blob-tile-new[aria-pressed="true"] { border-color: transparent; box-shadow: 0 0 0 2px var(--island-live); }
+#settings-body[data-screen="pills"] .blob-tile .blob-name { font-size: var(--fs-label); }
+#settings-body[data-screen="pills"] .blob-role { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 400 var(--fs-caption)/1.2 var(--font-ui); color: var(--island-muted); }
+#settings-body[data-screen="pills"] .blob-tile-new { border-style: dashed; color: var(--island-muted); }
+#settings-body[data-screen="pills"] .blob-tile[data-dragging] { transform: translateY(-2px) scale(1.04); box-shadow: 0 6px 16px rgba(0,0,0,.35); border-color: var(--line); z-index: 1; }
+#settings-body[data-screen="pills"] .blob-tile { transition: transform 120ms cubic-bezier(.25,.9,.35,1.03), box-shadow 120ms cubic-bezier(.25,.9,.35,1.03); }
+html[data-motion="reduce"] #settings-body[data-screen="pills"] .blob-tile { transition: none; }
+html[data-motion="reduce"] #settings-body[data-screen="pills"] .blob-tile[data-dragging] { transform: none; }
+#blob-count[data-tone="sun"] { color: var(--sun); }
+#settings-body[data-screen="pills"] .blob-hint { font: 400 var(--fs-caption)/1.2 var(--font-ui); color: var(--island-muted); }
+
+/* «Guardados» (kept beyond three) and «Guardados de antes» (stored before the merge): one small row each. */
+#settings-body[data-screen="pills"] .blob-stored, #settings-body[data-screen="pills"] .blob-saved { display: flex; flex-direction: column; gap: var(--space-8); }
+#settings-body[data-screen="pills"] .blob-stored-row, #settings-body[data-screen="pills"] .blob-saved-row { display: flex; align-items: center; gap: var(--space-12); min-height: 40px; }
+#settings-body[data-screen="pills"] .blob-stored-row .blob-clay, #settings-body[data-screen="pills"] .blob-saved-row .blob-clay { width: 28px; height: 28px; }
+#settings-body[data-screen="pills"] .blob-stored-row .blob-name, #settings-body[data-screen="pills"] .blob-saved-row .blob-name { flex: 1; min-width: 0; font-size: var(--fs-label); }
+
+/* «Así se ve en la isla»: principal + agents, 92 x 56 tiles on the island background. */
+#settings-body[data-screen="pills"] .pill-strip { display: flex; gap: var(--space-8); padding: var(--space-12); border-radius: 22px; background: #000; border: 1px solid var(--line-soft); overflow: hidden; }
+#settings-body[data-screen="pills"] .blob-strip-item { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; width: 92px; height: 56px; border-radius: 12px; background: var(--card-bg); }
+#settings-body[data-screen="pills"] .blob-strip-item .blob-clay { width: 24px; height: 24px; }
+#settings-body[data-screen="pills"] .blob-strip-item .blob-name { font: 400 var(--fs-caption)/1 var(--font-ui); }
+
+/* The editor panel (308): header with the clay 72 + «Animado como Abito» + Reposo|Trabaja, fields, swatches, toggle, actions. */
+#settings-body[data-screen="pills"] .pills-editor { display: flex; flex-direction: column; gap: var(--space-12); padding: var(--space-16); border: 1px solid var(--line-soft); border-radius: var(--radius-2xl); background: var(--card-bg); }
+#settings-body[data-screen="pills"] .blob-editor-danger { box-shadow: 0 0 0 2px var(--red-11); border-color: transparent; align-items: center; text-align: center; }
+#settings-body[data-screen="pills"] .blob-editor-head { display: flex; align-items: center; gap: var(--space-12); }
+#settings-body[data-screen="pills"] .blob-editor-head .blob-clay { width: 72px; height: 72px; }
+#settings-body[data-screen="pills"] .blob-editor-title { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; min-width: 0; }
+#settings-body[data-screen="pills"] .blob-editor-title .chip { min-height: 24px; padding: 0 8px; border-radius: 12px; background: var(--fill); font: 400 var(--fs-caption)/1 var(--font-ui); color: var(--island-ink); }
+#settings-body[data-screen="pills"] .blob-clay-preview { width: 64px; height: 64px; align-self: center; }
+#settings-body[data-screen="pills"] .blob-editor-danger .blob-clay { width: 72px; height: 72px; }
+#settings-body[data-screen="pills"] .blob-field { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
+#settings-body[data-screen="pills"] .blob-field .chip { min-height: 24px; padding: 0 8px; border-radius: 12px; background: var(--fill); font: 400 var(--fs-caption)/1 var(--font-ui); color: var(--island-muted); }
+#settings-body[data-screen="pills"] .pills-editor textarea.sfield { min-height: 64px; resize: vertical; font-family: var(--font-ui); }
+#settings-body[data-screen="pills"] .swatch-row { display: flex; gap: var(--space-8); flex-wrap: wrap; }
+#settings-body[data-screen="pills"] .swatch { width: 28px; height: 28px; padding: 0; border: 0; border-radius: 50%; background: transparent; cursor: pointer; }
+#settings-body[data-screen="pills"] .swatch .blob-clay { width: 28px; height: 28px; }
+#settings-body[data-screen="pills"] .swatch[aria-checked="true"] { box-shadow: 0 0 0 2px var(--card-bg), 0 0 0 4px var(--island-ink); }
+#settings-body[data-screen="pills"] .blob-toggle { display: flex; align-items: center; justify-content: space-between; min-height: 32px; width: 100%; padding: 0; border: 0; background: transparent; color: var(--island-ink); cursor: pointer; }
+#settings-body[data-screen="pills"] .blob-switch { position: relative; width: 40px; height: 24px; border-radius: 12px; background: var(--fill-hover); transition: background 120ms; }
+#settings-body[data-screen="pills"] .blob-switch::after { content: ""; position: absolute; top: 3px; left: 3px; width: 18px; height: 18px; border-radius: 50%; background: var(--island-ink); transition: transform 120ms; }
+#settings-body[data-screen="pills"] .blob-toggle[aria-checked="true"] .blob-switch { background: var(--dot-green-2); }
+#settings-body[data-screen="pills"] .blob-toggle[aria-checked="true"] .blob-switch::after { transform: translateX(16px); }
+#settings-body[data-screen="pills"] .blob-toggle:disabled { opacity: .5; cursor: default; }
+html[data-motion="reduce"] #settings-body[data-screen="pills"] .blob-toggle .blob-switch, html[data-motion="reduce"] #settings-body[data-screen="pills"] .blob-toggle .blob-switch::after { transition: none; }
+html[data-motion="reduce"] #settings-body[data-screen="pills"] .blob-toggle { transition: none; }
+#settings-body[data-screen="pills"] .pills-main { display: flex; flex-direction: column; gap: var(--space-8); min-width: 0; }
+#settings-body[data-screen="pills"] .psection-label { font: 600 var(--fs-caption)/1.2 var(--font-ui); letter-spacing: .06em; text-transform: uppercase; color: var(--island-muted); margin-top: var(--space-8); }
+#settings-body[data-screen="pills"] .psection-label:first-child { margin-top: 0; }
+#settings-body[data-screen="pills"] .pills-declared-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-8); }
+#settings-body[data-screen="pills"] .pills-declared-head .psection-label { margin-top: 0; }
+#settings-body[data-screen="pills"] .pill-count { font: 600 var(--fs-caption)/1 var(--font-ui); color: var(--island-muted); padding: 4px 10px; border-radius: 10px; background: var(--surface); }
+#settings-body[data-screen="pills"] .pill-plus { font: 400 20px/1 var(--font-ui); }
+#settings-body[data-screen="pills"] .segmented { display: flex; gap: 2px; min-height: 32px; padding: 2px; border-radius: 10px; background: var(--fill); }
+#settings-body[data-screen="pills"] .segmented .seg { flex: 1; min-height: 0; padding: 0 8px; border: 0; border-radius: 8px; background: transparent; color: var(--island-muted); font: 400 var(--fs-label)/1.2 var(--font-ui); cursor: pointer; }
+#settings-body[data-screen="pills"] .segmented .seg[aria-pressed="true"] { background: var(--surface); color: var(--island-ink); font-weight: 600; }
+#settings-body[data-screen="pills"] .pill-catalog-cats { display: flex; flex-wrap: wrap; gap: 4px; }
+#settings-body[data-screen="pills"] .pill-catalog-cat { min-height: 24px; padding: 0 8px; border: 0; border-radius: 12px; background: var(--fill); color: var(--island-muted); font: 400 var(--fs-caption)/1 var(--font-ui); cursor: pointer; }
+#settings-body[data-screen="pills"] .pill-catalog-cat[aria-pressed="true"] { background: var(--surface); color: var(--island-ink); font-weight: 600; }
+#settings-body[data-screen="pills"] .pill-catalog-list { display: flex; flex-direction: column; gap: 2px; flex: 1 1 auto; min-height: 0; max-height: 300px; overflow-y: auto; scrollbar-width: none; }
+#settings-body[data-screen="pills"] .pill-catalog-list::-webkit-scrollbar { display: none; }
+#settings-body[data-screen="pills"] .pill-catalog-row { display: flex; align-items: center; gap: var(--space-8); min-height: 36px; padding: 0 8px; border: 0; border-radius: 10px; background: transparent; color: var(--island-ink); font: 400 var(--fs-label)/1.2 var(--font-ui); text-align: left; }
+#settings-body[data-screen="pills"] .pill-catalog-row:hover { background: var(--fill-hover); }
+#settings-body[data-screen="pills"] .pill-catalog-row[aria-pressed="true"] { background: var(--surface); box-shadow: inset 0 0 0 1px var(--island-live); }
+#settings-body[data-screen="pills"] .pill-catalog-row[aria-pressed="true"] .ico { color: var(--island-live); margin-left: auto; flex: none; }
+#settings-body[data-screen="pills"] .pill-catalog-blob { width: 20px; height: 20px; }
+#settings-body[data-screen="pills"] .pill-catalog-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#settings-body[data-screen="pills"] .pill-catalog-row .chip { min-height: 24px; font-size: var(--fs-caption); color: var(--island-muted); flex: none; }
+#settings-body[data-screen="pills"] .pill-catalog-empty { padding: 12px 8px; color: var(--island-muted); font-size: var(--fs-label); text-align: center; }
+#settings-body[data-screen="pills"] .pill-catalog-note { font-size: var(--fs-caption); color: var(--island-muted); }
+#settings-body[data-screen="pills"] .pill-catalog-search { flex: none; width: 100%; min-width: 0; }
+#settings-body[data-screen="pills"] .pills-editor .srow-title { font-size: var(--fs-caption); color: var(--island-muted); }
+#settings-body[data-screen="pills"] .pills-editor .sfield { flex: none; width: 100%; min-width: 0; }
+#settings-body[data-screen="pills"] .editor-actions { display: flex; flex-wrap: wrap; gap: var(--space-8); margin-top: var(--space-8); }
+#settings-body[data-screen="pills"] .editor-actions .sbtn { padding: 0 12px; }
+#settings-body[data-screen="pills"] .pill-editor-question { font: 600 var(--fs-body)/1.3 var(--font-ui); overflow-wrap: anywhere; }
+#settings-body[data-screen="pills"] .pill-editor-detail { font-size: var(--fs-caption); color: var(--island-muted); }
+#settings-body[data-screen="pills"] .sbtn.danger::after { border-color: var(--red-11); }
+#settings-body[data-screen="pills"] .sbtn.danger { color: var(--red-11); }
+/* the own window uses the same panel */
+#settings[data-rail="true"] #settings-body[data-screen="pills"] .pills-layout { grid-template-columns: minmax(0, 1fr) 308px; }
+
+/* ---- T7.3 island controls (design §1/§2, island PNGs): every island control is 32px VISUAL
+   inside its 44px HIT area — the T6.1 hit-ring pattern, so the visible pill is drawn on the
+   ::after inset layer and the button keeps its full 44px click target. The rail tab is 36px
+   visual (design §1: rail tab 36); the chat composer row is 36px. Scoped to the island's own
+   selectors: Ajustes controls (.sbtn/.sfield/.stab) keep their T7.2 rules. Tokens only (a V1
+   test slices style.css from its marker to EOF). ---- */
+#island-header .tab, #island-header .hdr-action { position: relative; z-index: 0; }
+
+.icon-btn { position: relative; z-index: 0; } /* base class (0,1,0): ids such as #card-fold keep their absolute placement */
+#capsule .icon-btn { border: 0; background: transparent; }
+#capsule .icon-btn::after { content: ""; position: absolute; inset: 6px; z-index: -1; border-radius: 10px; border: 1px solid var(--line); background: transparent; }
+#capsule .icon-btn:hover::after { background: var(--fill-hover); }
+#capsule .icon-btn[aria-expanded="true"]::after { border-color: var(--go); }
+
+.q-option, #question-skip, #allow, #deny { position: relative; z-index: 0; background: transparent; border: 0; border-radius: 0; }
+.q-option::after, #question-skip::after, #allow::after, #deny::after { content: ""; position: absolute; inset: 6px; z-index: -1; border-radius: 10px; border: 0; background: var(--btn-bg); }
+#allow::after { background: var(--primary-bg); }
+#allow:hover:not(:disabled)::after { background: var(--primary-hover); }
+#deny:hover:not(:disabled)::after, .q-option:hover:not(:disabled)::after, #question-skip:hover:not(:disabled)::after { background: var(--btn-bg-hover); }
+.q-option, #question-skip, #allow, #deny { color: var(--ink-2); }
+#allow { color: var(--primary-ink); }
+
+#chat-composer .round { position: relative; z-index: 0; border: 0; background: transparent; }
+#chat-composer .round::after { content: ""; position: absolute; inset: 4px; z-index: -1; border-radius: 10px; border: 1px solid var(--line); background: transparent; }
+#chat-send::after { background: var(--primary-bg); border: 0; }
+#chat-send:disabled::after { opacity: .4; }
+#chat-input, #question-text { min-height: 36px; }
+
+/* ---- T7.3 approval card (design isla-approval): chip «Decisión pendiente», the command in a surface
+   strip, «Permitir» (primary) + «Rechazar» + the fold chevron on ONE row, «Espera tu respuesta» 12 px. ---- */
+
+#card-actions { flex-direction: row; justify-content: flex-start; }
+#card-fold { position: relative; top: auto; right: auto; }
+
+#card-wait[hidden] { display: none; }
+ /* only «i» is pinned to the corner now; the fold moved to the action row */
+
+/* ---- T7.3 drag-over card (design isla-chat-drag): one card replaces the body while a file is dragged over. ---- */
+#chat-drop { position: absolute; inset: 0; z-index: 4; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; border: 2px solid var(--island-live); border-radius: 16px; background: var(--card-bg); text-align: center; pointer-events: none; }
+#chat-drop[hidden] { display: none; }
+#chat-drop strong { font: 600 var(--fs-label)/1.2 var(--font-ui); color: var(--island-ink); }
+#chat-drop span { font-size: var(--fs-caption); color: var(--island-muted); }
+
+/* ---- T7.3 chat top bar (design isla-chat-*): the title «Abito» sits right of the character, buttons right. ---- */
+#chat-title { margin: 0 auto 0 0; padding-left: 40px; font-size: var(--fs-body); font-weight: 600; line-height: 1.2; color: var(--island-ink); }
+
+/* ---- T7.3 chat (design isla-chat-*): «Conectado» chip in flow under the header, «+»/history/label row
+   at the top of the body card, model chip 24 high on the caption step. ---- */
+#chat-status-strip { position: static; transform: none; min-height: 24px; padding: 0 4px 4px; background: transparent; border-radius: 0; }
+#chat-history-controls { justify-content: flex-start; align-items: center; }
+#chat-history-label { color: var(--island-muted); font-size: var(--fs-caption); line-height: 1.2; }
+#chat-history-label[hidden] { display: none; }
+#chat-model-btn { min-height: 24px; font: 600 var(--fs-caption)/1.2 var(--font-ui); background: var(--surface); }
+
+/* ---- #410: Conexiones compacta (TaskView #410, S1-S3). Denser ONLY inside the Conexiones tab:
+   settings.js publishes the open sub-tab on the tabpanel (body.dataset.screen) and every rule below
+   is scoped to it, so the other Ajustes tabs keep their look. Type steps ONE V1 token down per role
+   (--fs-label 13px / --fs-caption 12px, 12px floor, no raw px font-size) while the 44px click target
+   of every control stays exactly where the rest of Ajustes keeps it. Written AFTER the #408 rail
+   block so it wins at equal specificity (both are id + attribute + class). */
+
+/* #467 Spotify card (provisional placement; look adapted from Coucou src/views/spotify.ts, MIT, Copyright (c) 2026 Louis Raillé). Theme tokens only. */
+.spotify-card { position: absolute; align-items: center; gap: 10px; pointer-events: auto; }
+
+.spotify-text { flex: 1; min-width: 0; display: flex; gap: 6px; align-items: baseline; font-size: var(--fs-label); white-space: nowrap; overflow: hidden; }
+.spotify-title, .spotify-artist { overflow: hidden; text-overflow: ellipsis; }
+.spotify-artist { color: var(--muted); }
+.spotify-controls { display: flex; gap: 4px; }
+.spotify-btn { min-width: 30px; min-height: 30px; border: 1px solid var(--card-line); border-radius: 15px; background: var(--card-bg); color: inherit; cursor: pointer; }
+.spotify-btn:disabled { opacity: .4; cursor: default; }
+
+/* Chosen hex stops only; legacy CSS defaults and the frozen engine remain unchanged. */
+#island[data-dot-color^="#"] #clay radialGradient[id$="skin"] stop:nth-child(1), .island-agent-clay[data-color^="#"] radialGradient[id$="skin"] stop:nth-child(1), #settings-body[data-screen="pills"] .blob-clay[data-color^="#"] radialGradient[id$="skin"] stop:nth-child(1) { stop-color: var(--chosen-1); }
+#island[data-dot-color^="#"] #clay radialGradient[id$="skin"] stop:nth-child(2), .island-agent-clay[data-color^="#"] radialGradient[id$="skin"] stop:nth-child(2), #settings-body[data-screen="pills"] .blob-clay[data-color^="#"] radialGradient[id$="skin"] stop:nth-child(2) { stop-color: var(--chosen-2); }
+#island[data-dot-color^="#"] #clay radialGradient[id$="skin"] stop:nth-child(3), .island-agent-clay[data-color^="#"] radialGradient[id$="skin"] stop:nth-child(3), #settings-body[data-screen="pills"] .blob-clay[data-color^="#"] radialGradient[id$="skin"] stop:nth-child(3) { stop-color: var(--chosen-3); }
+[data-color^="#"].sdot .sdot-swatch { background: var(--chosen-2); }
+[data-color^="#"].pill-choice { border: 1.5px solid var(--chosen-2); }
+#pill-settings-rows .srow[data-color^="#"] .srow-title { border-left-color: var(--chosen-2); }
+
+/* ==========================================================================
+   Coucou island type scale (S10). The owner asked for a smaller font on the
+   island; the sizes are Coucou's own, copied value for value.
+   Adapted from Coucou windows/src/style.css @434d6a2b, Copyright (c) 2026
+   Louis Raillé, MIT: .who .name 12, .who .tool 11, .chip 11.5, .btn and
+   .bubble 12.5, status 13, .diff-note 10.5. This supersedes the 12px floor of
+   the V1 ramp ONLY for the island surfaces below (overview, notices, approval,
+   question, pills, Spotify); the chat, Ajustes and Modelos keep --fs-*.
+   ========================================================================== */
+.agentline { font-size: var(--cc-fs-name); }
+
+.minibot { font-size: var(--cc-fs-detail); }
+
+#notice-title { font-size: var(--cc-fs-name); }
+#notice-sub { font-size: var(--cc-fs-detail); }
+#notice-detail { font-size: var(--cc-fs-detail); }
+#notice-action { font-size: var(--cc-fs-detail); }
+#notice-list-title { font-size: var(--cc-fs-name); }
+#notice-clear { font-size: var(--cc-fs-detail); }
+.notice-list-title { font-size: var(--cc-fs-name); }
+.notice-list-time { font-size: var(--cc-fs-detail); }
+
+#question-asker { font-size: var(--cc-fs-chip); }
+#question-expiry, #question-state { font-size: var(--cc-fs-chip); }
+#question-state { font-size: var(--cc-fs-state); }
+
+#settings-body[data-screen="accounts"] .ssec { margin-top: 20px; } /* design §3: group gap 20 */
+#settings-body[data-screen="accounts"] .ssec:first-child { margin-top: 2px; }
+#settings-body[data-screen="accounts"] .ssec > .snote { margin: 0 0 4px; }
+#settings-body[data-screen="accounts"] .ssection { line-height: 18px; margin-bottom: 2px; }
+#settings-body[data-screen="accounts"] .srows { gap: var(--space-8); }
+#settings-body[data-screen="accounts"] .srow { gap: var(--space-8); min-height: 40px; padding: 0; }
+
+#settings-body[data-screen="accounts"] .srow-title { font-size: var(--fs-label); }
+#settings-body[data-screen="accounts"] .snote, #settings-body[data-screen="accounts"] .sempty { font-size: var(--fs-caption); }
+#settings-body[data-screen="accounts"] .sline { font-size: var(--fs-label); }
+#settings-body[data-screen="accounts"] .srow-actions { gap: 4px; }
+#settings-body[data-screen="accounts"] .sbtn { min-height: 44px; min-width: 44px; gap: 4px; padding: 0 16px 0 14px; font: 600 var(--fs-label)/1.2 var(--font-ui); }
+#settings-body[data-screen="accounts"] .sbtn .ico svg { width: 16px; height: 16px; }
+#settings-body[data-screen="accounts"] .sagent { gap: 2px; padding: 6px 0; }
+#settings-body[data-screen="accounts"] .sagent-head { gap: 6px; }
+#settings-body[data-screen="accounts"] .chip { min-height: 24px; font-size: var(--fs-caption); }
+#settings-body[data-screen="accounts"] .chip .ico svg { width: 16px; height: 16px; }
+
+/* ---- #410 r2: the compact LIST itself. One row per provider: name + state on the left, its two
+   connect words (API / Auth) on the right; a live login or a long name wraps to a second line.
+   Tokens only, so «claro» y «oscuro» both keep working (S5). */
+#settings-body[data-screen="accounts"] .sconn { margin: 0; }
+#settings-body[data-screen="accounts"] .sconn-row { flex-wrap: wrap; }
+#settings-body[data-screen="accounts"] .sconn-head { display: flex; align-items: center; gap: 6px; min-width: 0; }
+#settings-body[data-screen="accounts"] .sconn-head .srow-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#settings-body[data-screen="accounts"] .sconn-row .srow-actions { justify-content: flex-end; }
+#settings-body[data-screen="accounts"] .sconn-row .sflow { border: 0; padding: 4px 0 0; width: 100%; }
+#settings-body[data-screen="accounts"] .sconn-row .sline.sub { overflow-wrap: anywhere; -webkit-user-select: text; user-select: text; }

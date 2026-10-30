@@ -1,0 +1,138 @@
+/* Sileo-style question toast (port of hiaaryan/sileo styles.css, MIT): spring easing, 350x40 pill, gooey body, badge + title header.
+   Sits BELOW the island (top: island bottom + gap); the island itself is untouched. */
+:root {
+  --sileo-spring-easing: linear(0, 0.002 0.6%, 0.007 1.2%, 0.015 1.8%, 0.026 2.4%, 0.041 3.1%, 0.06 3.8%, 0.108 5.3%, 0.157 6.6%, 0.214 8%, 0.467 13.7%, 0.577 16.3%, 0.631 17.7%, 0.682 19.1%, 0.73 20.5%, 0.771 21.8%, 0.808 23.1%, 0.844 24.5%, 0.874 25.8%, 0.903 27.2%, 0.928 28.6%, 0.952 30.1%, 0.972 31.6%, 0.988 33.1%, 1.01 35.7%, 1.025 38.5%, 1.034 41.6%, 1.038 45%, 1.035 50.1%, 1.012 64.2%, 1.003 73%, 0.999 83.7%, 1);
+  --sileo-duration: 600ms;
+  /* SN6 measured timings (mirrors TIMING in question-toast.js; question-toast-sileo-check compares them) */
+  --sileo-content-in: 360ms; --sileo-content-in-delay: 180ms; --sileo-content-out: 48ms; --sileo-content-out-delay: 24ms; --sileo-presence: 396ms;
+  --sileo-height: 40px;
+  --sileo-width: 350px;
+  --sileo-state-action: oklch(0.623 0.214 259.815);
+  --sileo-state-warning: oklch(0.795 0.184 86.047);
+  --sileo-state-neutral: oklch(0.82 0.01 260); /* finished / outcomes: informative, never a success green */
+}
+.q-toast {
+  position: absolute; z-index: 40; left: 50%; top: 0; width: var(--sileo-width); height: var(--sileo-height);
+  margin: 0 0 0 calc(var(--sileo-width) / -2); padding: 0; border: 0; background: transparent; color: #fff; text-align: left; cursor: pointer;
+  opacity: 0; transform-origin: center top; overflow: visible; transition: opacity var(--sileo-presence) var(--sileo-spring-easing);
+  font: 500 13px/16px var(--font, system-ui, sans-serif);
+}
+.q-toast[hidden] { display: none; }
+.q-toast[data-ready="true"] { opacity: 1; }
+/* the SHAPE travels (gooey morph out of the island, driven by the spring in JS); the box only has to be there */
+.q-toast[data-ready="true"][data-expanded="true"] { height: 96px; }
+.q-toast[data-exiting="true"] { pointer-events: none; }
+@media (prefers-reduced-motion: reduce) { .q-toast, .q-toast[data-ready="true"] { transition: opacity 0.01ms; } }
+.q-toast:focus-visible { outline: 2px solid var(--dim-2, #9aa0a8); outline-offset: 3px; border-radius: 18px; }
+.q-toast-canvas { position: absolute; left: 0; top: 0; right: 0; pointer-events: none; overflow: visible; }
+.q-toast-svg { overflow: visible; }
+.q-toast-neck, .q-toast-pill, .q-toast-bodyrect { fill: #000; }
+.q-toast-canvas { top: -12px; } /* human 26-oct «sin transparencia»: SVG y=0 (the island's bottom edge, NECK_H 12 above) = the toast's top, so the
+   pill and body are drawn exactly under the header and body text, never offset with text over the background */
+.q-toast-header { position: absolute; z-index: 20; left: 0; top: 0; display: flex; align-items: center; justify-content: center; gap: 8px; height: var(--sileo-height); padding: 6px 8px; max-width: 100%; box-sizing: border-box; overflow: hidden; animation: q-toast-header-in var(--sileo-duration) var(--sileo-spring-easing) both; }
+.q-toast-badge { order: 0; } .q-toast-dot { order: 1; } .q-toast-title { order: 2; } .q-toast-queue { order: 3; }
+.q-toast-dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--q-accent, #4d9fff); box-shadow: 0 0 8px var(--q-accent, #4d9fff); }
+.q-toast-badge { display: flex; width: 28px; height: 28px; flex: none; align-items: center; justify-content: center; padding: 2px; box-sizing: border-box; border-radius: 9999px; color: var(--q-title, #fff); background: color-mix(in oklch, var(--q-title, #fff) 20%, transparent); }
+.q-toast-badge svg { width: 16px; height: 16px; }
+/* the actual Abito (clay-engine SVG): fills the compact 28px badge, decorative (the toast button carries the label) */
+.q-toast-badge[data-pose] { padding: 0; }
+.q-toast-badge .q-toast-abito { display: block; width: 28px; height: 28px; overflow: visible; }
+.q-toast-title { font-size: 13px; line-height: 16px; font-weight: 600; color: var(--q-title, #fff); white-space: nowrap; }
+.q-toast-queue { font-size: 11px; color: rgba(255, 255, 255, 0.55); white-space: nowrap; }
+.q-toast-queue[hidden] { display: none; }
+.q-toast[data-state="action"] { --q-tone: var(--sileo-state-action); }
+.q-toast[data-state="warning"] { --q-tone: var(--sileo-state-warning); }
+.q-toast[data-state="neutral"] { --q-tone: var(--sileo-state-neutral); }
+/* informational toasts (terminó / outcomes) answer nothing and open nothing: no pointer affordance */
+.q-toast[data-actionable="false"] { cursor: default; }
+.q-toast-content { position: absolute; z-index: 10; left: 0; top: var(--sileo-height); width: 100%; box-sizing: border-box; padding: 2px 14px 10px; opacity: 0; pointer-events: none; transition: opacity var(--sileo-content-out) ease var(--sileo-content-out-delay); }
+.q-toast[data-expanded="true"] .q-toast-content { opacity: 1; transition: opacity var(--sileo-content-in) ease var(--sileo-content-in-delay); }
+.q-toast-body { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; font-size: 12px; line-height: 1.15rem; color: rgba(255, 255, 255, 0.78); font-weight: 400; }
+@keyframes q-toast-header-in { from { opacity: 0; filter: blur(6px); } to { opacity: 1; filter: blur(0); } }
+/* SN5: reduced motion = no morph, no stretch, no spring, no animation anywhere in the toast: it appears/disappears with at most an opacity change */
+@media (prefers-reduced-motion: reduce) {
+  .q-toast *, .q-toast *::before, .q-toast *::after { animation: none; transition: none; }
+}
+html[data-motion="reduce"] .q-toast, html[data-motion="reduce"] .q-toast * { animation: none; transition: none; }
+
+/* S13 (13 Sileo, A): a thin progress bar on the pill; it pauses with hover/focus (JS keeps the matching timer) */
+.q-toast-progress { position: absolute; left: 10px; right: 10px; bottom: 2px; height: 2px; border-radius: 1px; background: var(--q-accent, #4d9fff); opacity: .5; transform-origin: left center; animation: q-toast-progress 8s linear forwards; pointer-events: none; }
+.q-toast:hover .q-toast-progress, .q-toast:focus-visible .q-toast-progress, .q-toast:focus-within .q-toast-progress { animation-play-state: paused; }
+@keyframes q-toast-progress { from { transform: scaleX(1); } to { transform: scaleX(0); } }
+html[data-motion="reduce"] .q-toast-progress { animation: none; transform: none; opacity: .35; }
+@media (prefers-reduced-motion: reduce) { .q-toast-progress { animation: none; transform: none; opacity: .35; } }
+
+/* T4/S5: the questionnaire / multi-select navigation (Atrás · Siguiente · Hecho · Enviar) is a touch target like every other
+   control on the question card. The vendored island.css gave it 36px; this sheet loads after it (index.html) and the id-qualified
+   selector wins without editing the vendor file. Kept out of style.css, whose tail is the Ajustes #410 compact block. */
+#question #question-nav button { min-height: 44px; min-width: 44px; }
+
+/* F7 (SN2: «terminó» no es éxito): the vendored Coucou sheet marks a finished/info notice and Abito's finished badge with a green ✓,
+   which reads as «salió bien». A finished turn proves nothing about the result, so both read as a neutral notice («i», grey).
+   Warning «!» and error «✕» keep their own tones; the vendor file is not edited (this sheet loads after it). */
+#notices:not([data-tone="sun"]):not([data-tone="red"]) { --notice-tone: var(--dim-2); }
+#notices #notice-ring::after { content: "i"; }
+#clay-badge[data-kind="finished"] { box-shadow: none; }
+#clay-badge[data-kind="finished"] i { background: var(--dim-2); }
+#clay-badge[data-kind="finished"] i::before { content: "i"; }
+
+/* S1 (abito-avisos-ux): «Avisos · N» was a 288x44 capsule over the sessions column. It now takes the bottom slot «Sin cuenta» uses
+   (700x32 under the overview, island +36), with the same look; a notice outranks the engine/account band there. */
+#capsule[data-view="overview"][data-notice-strip="on"] #notices[data-grouped="true"] { left: calc(50% - 350px); right: auto; width: 700px; top: 178px; height: 32px; padding: 0; }
+#capsule[data-view="overview"][data-notice-strip="on"] #notices[data-grouped="true"] #notice-pill {
+  margin: 0; width: 100%; height: 32px; min-height: 32px; flex: 0 0 32px; box-sizing: border-box; padding: 0 8px 0 14px; border-radius: 16px; background: var(--card);
+}
+#capsule[data-view="overview"][data-notice-strip="on"] #notices[data-grouped="true"] #notice-open { min-height: 32px; flex: 1 1 auto; justify-content: flex-start; text-align: left; gap: 8px; }
+#capsule[data-view="overview"][data-notice-strip="on"] #notices[data-grouped="true"] #notice-open > * { margin-left: 0; margin-right: 0; }
+#capsule[data-view="overview"][data-notice-strip="on"] #notices[data-grouped="true"] #notice-title { flex: 1 1 auto; text-align: left; }
+#capsule[data-view="overview"][data-notice-strip="on"] #notices[data-grouped="true"] #notice-pill::after { display: none; }
+#capsule[data-notice-strip="on"] #engine-band { display: none !important; }
+
+/* S2 (abito-avisos-ux): «Recibida». Abito comes in front of the card (it nods, see island.js) and the word is the content: no wash,
+   no tiny header line. Only the plain outcome view; a pending card is unchanged. */
+#capsule[data-question="outcome"][data-outcome="answered"] #clay { z-index: 8; }
+#capsule[data-question="outcome"] #question::before { opacity: 0; }
+#capsule[data-question="outcome"]:not([data-card]) #question { align-content: center; grid-template-rows: auto; }
+#capsule[data-question="outcome"] #question-skip, #capsule[data-question="outcome"] #question-fold { display: none; }
+#capsule[data-question="outcome"] #question-state { font-size: 20px; gap: 10px; }
+#capsule[data-question="outcome"][data-outcome="answered"] #question-state { color: var(--ink); }
+
+/* human 26-oct «que no tengan transparencia»: text on the toast follows the island ink, so it stays readable on the solid fill in
+   both themes (white text on the light island was as good as invisible) */
+/* HU-063 S3 (direction B): the body is BLACK in both themes, so the toast and its decision buttons carry their own white ink and black face
+   (not the themed island tokens: the light island is sand). White 78% / 55% over #000 stay >= 4.5:1. */
+.q-toast, .q-toast-actions { --ink: #fff; --island: #000; --island-ink: #fff; }
+.q-toast { color: #fff; }
+.q-toast-body { color: rgba(255, 255, 255, 0.78); }
+.q-toast-queue { color: rgba(255, 255, 255, 0.6); }
+
+/* HU-063 T3: «Rechazar» / «Aprobar» over the expanded body (a sibling of the toast: a button cannot contain buttons). Same host path as
+   the permission card. The body keeps ONE line while a decision is on offer so the 32px buttons fit inside the existing 96px area
+   (pill 40 + body 56: 1 line to ~62, buttons 62..94). Abito scale 13/12/11; Aprobar primary (ink on island ink), Rechazar neutral. */
+.q-toast[data-decide="true"] .q-toast-body { display: block; -webkit-line-clamp: unset; overflow: visible; } /* R1: never clamp what is being approved; the text is one short line by construction (TOAST.decideMax) */
+.q-toast[data-fullview="true"] .q-toast-body { -webkit-line-clamp: 1; } /* the card shows it all; «Ver todo» sits under this teaser */
+.q-toast-viewall { color: var(--ink, #fff); background: color-mix(in srgb, var(--ink, #fff) 14%, transparent); border: 1px solid color-mix(in srgb, var(--ink, #fff) 28%, transparent); }
+.q-toast-act[hidden] { display: none; }
+.q-toast-actions {
+  position: absolute; z-index: 41; left: 50%; top: 0; width: var(--sileo-width); height: 32px; margin: 0 0 0 calc(var(--sileo-width) / -2);
+  box-sizing: border-box; padding: 0 16px; display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 32px; gap: 8px; align-items: center;
+}
+.q-toast-actions[hidden] { display: none; }
+/* SN1: the reference's numbered rows, side by side (the 56px body has room for ONE row of 32px under the text line): «1. Aprobar» left, «2. Rechazar» right.
+   DOM order stays reject, approve (handlers and tests); the grid cell places them. */
+.q-toast-act {
+  position: relative; grid-row: 1; height: 32px; min-width: 0; padding: 0 10px 0 32px; box-sizing: border-box; border-radius: 16px; cursor: pointer; text-align: left;
+  font: 600 12px/16px var(--font, system-ui, sans-serif); letter-spacing: 0; white-space: nowrap; background: transparent;
+}
+.q-toast-act::after { content: ""; position: absolute; inset: -6px -2px; } /* 44px hit area around the 32px control */
+.q-toast-approve { grid-column: 1; color: #b8ff2e; background: rgba(184, 255, 46, 0.08); border: 1px solid #b8ff2e; }
+.q-toast-reject { grid-column: 2; color: var(--ink, #fff); background: transparent; border: 1px solid rgba(255, 255, 255, 0.28); }
+.q-toast-viewall { grid-column: 1 / -1; justify-self: center; min-width: 120px; padding: 0 14px; text-align: center; }
+.q-toast-ord { position: relative; z-index: 2; grid-row: 1; align-self: center; justify-self: start; margin-left: 13px; pointer-events: none; font: 600 11px/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.q-toast-ord[hidden] { display: none; }
+.q-toast-ord-approve { grid-column: 1; color: #b8ff2e; }
+.q-toast-ord-reject { grid-column: 2; color: #a1a1aa; }
+.q-toast-act:hover:not(:disabled) { filter: brightness(1.08); }
+.q-toast-act:focus-visible { outline: 2px solid #fff; outline-offset: 1px; } /* the reference's focus ring: the border keeps its colour, a white ring surrounds it */
+.q-toast-act:disabled { opacity: .5; cursor: default; }
+html[data-motion="reduce"] .q-toast-act { transition: none; }

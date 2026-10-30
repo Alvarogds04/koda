@@ -1,0 +1,19 @@
+<!doctype html>
+<!-- Adapted from Coucou settings.html @434d6a2b, Copyright (c) 2026 Louis Raillé, MIT -->
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!-- Strict CSP from tauri.conf.json, identical to index.html: self scripts/styles only. -->
+    <title>Ajustes</title>
+    <link rel="stylesheet" href="vendor/coucou/settings/settings.css" />
+    <link rel="stylesheet" href="vendor/coucou/hub/hub.css" />
+    <link rel="stylesheet" href="vendor/coucou/hub/abito.css" />
+    <link rel="stylesheet" href="settings-nusa.css" />
+  </head>
+  <body class="settings-window hub-window">
+    <div id="hub"><p class="hub-loading">Cargando…</p></div>
+    <script src="./clay-engine.js"></script>
+    <script type="module" src="./settings-app.js"></script>
+  </body>
+</html>

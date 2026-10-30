@@ -1,0 +1,7 @@
+{
+  "uuid": "abito-context@abito",
+  "name": "Koda window context",
+  "description": "Tells Koda which window you were using before it (app and title), over the session D-Bus. The extension never sends data to the network. Koda asks for automatic chat context only with «Contexto de la ventana activa» on, or for explicit window drags and per-app dictation styles.",
+  "shell-version": ["45", "46", "47", "48", "49", "50"],
+  "version": 2
+}

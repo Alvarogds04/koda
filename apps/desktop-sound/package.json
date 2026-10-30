@@ -1,0 +1,10 @@
+{
+  "name": "abito-desktop-sound",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Abito island sound engine (#313): dependency-free UMD, WebAudio-synthesized cues, no audio files.",
+  "main": "sound-engine.js",
+  "scripts": {
+    "test": "node --test test/engine.test.cjs test/limiter.test.cjs test/synthesis.test.cjs test/render.test.cjs test/docs.test.cjs test/robustness.test.cjs"
+  }
+}

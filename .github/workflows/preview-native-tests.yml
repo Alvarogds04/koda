@@ -1,0 +1,134 @@
+name: Preview native tests (avisos)
+
+# Runs the NATIVE unit tests of the v0.1.2 republish changes on real Windows and macOS: the click-through decision (HU-043), the tray menu
+# (HU-048) and the «Instalar Pi» install flow (HU-046). The two existing preview workflows build and smoke the packaged app, but their test
+# steps are filtered by name and never run these. It triggers ONLY for branches named preview/*-avisos (for example preview/mac-avisos), so
+# another session's preview push never starts it.
+#
+# What this does NOT prove: that a click outside the pill really reaches the window below, that the tray icon shows in the notification area
+# or menu bar, that «Instalar Pi» installs anything. Those need a human on a real machine (the preview workflows upload the installer) or a
+# dedicated probe.
+on:
+  push:
+    branches: ['preview/*-avisos']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: pwsh
+        working-directory: apps/desktop-tauri
+    env:
+      CARGO_TERM_COLOR: never
+      RUST_BACKTRACE: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop-tauri
+          cache-on-failure: true
+      - name: Fetch pinned Windows sherpa static library
+        run: |
+          $text = Get-Content packaging/windows/sherpa-onnx.sha256
+          $pin = $text.Trim() -split '\s+'
+          $archive = Join-Path $env:RUNNER_TEMP $pin[1]
+          $base = 'https://github.com/k2-fsa/sherpa-onnx/releases/download'
+          Invoke-WebRequest "$base/v1.13.8/$($pin[1])" -OutFile $archive
+          $hash = (Get-FileHash $archive -Algorithm SHA256).Hash
+          if ($hash.ToLowerInvariant() -ne $pin[0]) {
+            throw 'sherpa archive SHA256 mismatch'
+          }
+          tar -xjf $archive -C $env:RUNNER_TEMP
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $folder = $pin[1] -replace '\.tar\.bz2$', ''
+          $lib = Join-Path $env:RUNNER_TEMP "$folder/lib"
+          if (-not (Test-Path (Join-Path $lib 'sherpa-onnx-c-api.lib'))) {
+            throw 'Pinned sherpa archive lacks sherpa-onnx-c-api.lib'
+          }
+          "SHERPA_ONNX_LIB_DIR=$lib" >> $env:GITHUB_ENV
+          "SHERPA_ONNX_ARCHIVE_DIR=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
+      - name: Install flow with a real node.exe (a missing Node FAILS here, it never skips)
+        run: |
+          node --version
+          cargo test --locked --lib piinstall -- --nocapture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # HU-069: Node lookup in version-manager layouts, verified Node download core, and the Finder/Explorer-minimal-environment flow
+          cargo test --locked --lib -- nodefinder nodeinstall gui_launch --nocapture
+          exit $LASTEXITCODE
+      - name: Click-through decision, island shape, tray menu, install host (app crate)
+        if: ${{ !cancelled() }}
+        run: |
+          cargo test --locked --bin abito-island -- islandhit islandclick islandshape tray pihost --nocapture
+          exit $LASTEXITCODE
+      - name: Page logic of «Instalar Pi» on Windows Node
+        if: ${{ !cancelled() }}
+        run: |
+          node test-node/pi-install-check.cjs
+          exit $LASTEXITCODE
+      - name: Pi companion tests (desktop-pi, full suite, HU-054) on Windows Node
+        if: ${{ !cancelled() }}
+        working-directory: apps/desktop-pi
+        run: |
+          # The WHOLE suite (HU-054): each OS exercises its real transport (named pipe on Windows, Unix socket elsewhere).
+          npm test
+          exit $LASTEXITCODE
+
+  macos:
+    runs-on: macos-26
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: apps/desktop-tauri
+    env:
+      SHERPA_VERSION: "1.13.8"
+      SHERPA_SHA256: >-
+        9091bf160dc7fdacedbc906b212badf53c2993f4e5277a0e03998e96c31d60da
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Fetch sherpa-onnx static libs (pinned sha256)
+        run: |
+          set -euo pipefail
+          A="sherpa-onnx-v${SHERPA_VERSION}-osx-arm64-static-lib.tar.bz2"
+          URL="https://github.com/k2-fsa/sherpa-onnx/releases/download"
+          curl -fsSL -o "$RUNNER_TEMP/$A" "$URL/v${SHERPA_VERSION}/$A"
+          echo "${SHERPA_SHA256}  $RUNNER_TEMP/$A" | shasum -a 256 -c -
+          tar -xjf "$RUNNER_TEMP/$A" -C "$RUNNER_TEMP"
+          LIB="$RUNNER_TEMP/sherpa-onnx-v${SHERPA_VERSION}-osx-arm64-static-lib"
+          echo "SHERPA_ONNX_LIB_DIR=$LIB/lib" >> "$GITHUB_ENV"
+      - name: Install flow with a real node (a missing Node FAILS here, it never skips)
+        run: |
+          node --version
+          cargo test --locked --lib piinstall -- --nocapture
+          # HU-069: Node lookup in version-manager layouts, verified Node download core, and the Finder/Explorer-minimal-environment flow
+          cargo test --locked --lib -- nodefinder nodeinstall gui_launch --nocapture
+      - name: Click-through decision, island shape, tray menu, install host (app crate)
+        if: ${{ !cancelled() }}
+        run: |
+          cargo test --locked --bin abito-island -- islandhit islandclick islandshape tray pihost --nocapture
+      - name: Page logic of «Instalar Pi» on macOS Node
+        if: ${{ !cancelled() }}
+        run: |
+          node test-node/pi-install-check.cjs
+      - name: Pi companion tests (desktop-pi, full suite, HU-054) on macOS Node
+        if: ${{ !cancelled() }}
+        working-directory: apps/desktop-pi
+        run: |
+          npm test

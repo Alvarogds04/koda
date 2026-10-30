@@ -1,0 +1,174 @@
+{
+ "_note": "The SAME data drives both apps. Coucou receives it as hook events, Abito as host snapshots.",
+ "agents": [
+  {
+   "id": "claude",
+   "kind": "claude-code",
+   "label": "Claude Code",
+   "project": "my-project",
+   "cwd": "/home/dev/my-project",
+   "sessionId": "sess-claude-0001",
+   "prompt": "Refactor the island layout",
+   "tool": "Edit",
+   "toolInput": {
+    "file_path": "/home/dev/my-project/island.css"
+   }
+  },
+  {
+   "id": "codex",
+   "kind": "codex",
+   "label": "Codex",
+   "project": "abito",
+   "cwd": "/home/dev/abito",
+   "sessionId": "sess-codex-0002",
+   "prompt": "Fix the settings tabs",
+   "tool": "Bash",
+   "toolInput": {
+    "command": "npm test"
+   }
+  }
+ ],
+ "approval": {
+  "agent": "claude",
+  "requestId": "req-approval-1",
+  "tool": "Bash",
+  "command": "npm run build && npm test"
+ },
+ "question": {
+  "agent": "claude",
+  "requestId": "req-question-1",
+  "text": "Which database should the new service use?",
+  "options": [
+   {
+    "label": "PostgreSQL",
+    "description": "Relational, already in the stack"
+   },
+   {
+    "label": "SQLite",
+    "description": "Embedded, zero setup"
+   },
+   {
+    "label": "Redis",
+    "description": "In-memory key/value"
+   }
+  ]
+ },
+ "finished": {
+  "agent": "claude",
+  "title": "Claude Code finished",
+  "message": "Done: the island layout is refactored and all 42 tests pass."
+ },
+ "spotify": {
+  "title": "Midnight City",
+  "artist": "M83",
+  "album": "Hurry Up, We're Dreaming",
+  "durationSec": 243,
+  "positionSec": 96,
+  "playing": true
+ },
+ "github": {
+  "login": "dev",
+  "totalRepos": 14,
+  "totalStars": 342,
+  "myPRs": [
+   {
+    "id": "dev/abito#12",
+    "title": "Fix the settings tabs",
+    "url": "https://github.com/dev/abito/pull/12",
+    "repo": "dev/abito",
+    "number": 12,
+    "isDraft": false,
+    "ci": "failure",
+    "review": "pending",
+    "headSha": null
+   },
+   {
+    "id": "dev/abito#15",
+    "title": "Island notch geometry",
+    "url": "https://github.com/dev/abito/pull/15",
+    "repo": "dev/abito",
+    "number": 15,
+    "isDraft": true,
+    "ci": "success",
+    "review": "pending",
+    "headSha": null
+   }
+  ],
+  "toReview": [
+   {
+    "id": "dev/api#7",
+    "title": "Add pagination",
+    "url": "https://github.com/dev/api/pull/7",
+    "repo": "dev/api",
+    "number": 7,
+    "isDraft": false,
+    "ci": "pending",
+    "review": "pending",
+    "headSha": null
+   }
+  ],
+  "mainCI": [
+   {
+    "repo": "dev/abito",
+    "url": "https://github.com/dev/abito",
+    "branch": "main",
+    "ci": "success",
+    "headSha": null
+   }
+  ]
+ },
+ "recap": {
+  "turns": [
+   {
+    "agent": "integration_claude",
+    "project": "abito",
+    "startDay": 0,
+    "startHour": 9,
+    "hours": 2.5,
+    "filesChanged": 8,
+    "linesAdded": 312,
+    "linesRemoved": 87,
+    "commandsRun": 14,
+    "questions": 2
+   },
+   {
+    "agent": "integration_claude",
+    "project": "abito",
+    "startDay": 2,
+    "startHour": 10,
+    "hours": 2,
+    "filesChanged": 3,
+    "linesAdded": 95,
+    "linesRemoved": 20,
+    "commandsRun": 5,
+    "questions": 0
+   },
+   {
+    "agent": "agent_codex",
+    "project": "api",
+    "startDay": 3,
+    "startHour": 14,
+    "hours": 1,
+    "filesChanged": 2,
+    "linesAdded": 50,
+    "linesRemoved": 10,
+    "commandsRun": 3,
+    "questions": 1
+   }
+  ],
+  "decisions": [
+   {
+    "agent": "integration_claude",
+    "day": 0,
+    "hour": 9.5,
+    "decision": "allow"
+   },
+   {
+    "agent": "integration_claude",
+    "day": 2,
+    "hour": 10.5,
+    "decision": "deny"
+   }
+  ]
+ }
+}

@@ -1,0 +1,7 @@
+/target/
+/gen/schemas/
+# M2 transport runtime (private 0700 socket dirs, never committed)
+/.runtime*/
+/dist/
+/target-ship/
+/target-smoke/

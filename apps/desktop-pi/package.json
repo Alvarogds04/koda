@@ -1,0 +1,14 @@
+{
+  "name": "abito-desktop-pi",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local opt-in Pi companion producer; no desktop runtime",
+  "scripts": {
+    "test": "node --test test/*.test.cjs"
+  },
+  "pi": {
+    "extensions": [
+      "./pi-extension.ts"
+    ]
+  }
+}

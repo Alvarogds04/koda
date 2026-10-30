@@ -1,0 +1,407 @@
+<!doctype html>
+<html lang="es" data-motion="full">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <!-- M1b: strict CSP in tauri.conf.json — no remote origins, no
+       unsafe-eval, no inline script/style (this file carries none). -->
+  <title>Koda</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="chat-markdown.css">
+  <!-- S10: Coucou island geometry (MIT, adapted), after the base styles so it wins at equal specificity. -->
+  <link rel="stylesheet" href="vendor/coucou/island/island.css">
+  <link rel="stylesheet" href="island-integrations.css">
+  <link rel="stylesheet" href="question-toast.css">
+  <!-- HU-056: Koda replaces the Dot visually (the Dot keeps running underneath, hidden). -->
+  <link rel="stylesheet" href="koda-skin.css">
+  <!-- HU-057 T1/T2: the Nusa notch (expanded idle overview), after the skins so it wins at equal specificity. -->
+  <link rel="stylesheet" href="island-nusa.css">
+  <!-- MIT settings/frame styling; enabled only by the settings window label. -->
+  <link rel="stylesheet" id="coucou-settings-style" href="vendor/coucou/settings/settings.css" media="not all">
+  <!-- R7 clay character (sha256 40625d7f…): Abito's own SVG-DOM, no reserved assets. -->
+  <script defer src="clay-engine.js"></script>
+  <script defer src="koda-catalog.js"></script>
+  <script defer src="koda-logic.js"></script>
+  <script defer src="koda-skin.js"></script>
+  <!-- window.desktop facade must exist before the island boots. -->
+  <script defer src="desktop.js"></script>
+  <!-- UI.1: own icons + pure overview view-model, before the island boots. -->
+  <script defer src="icons.js"></script>
+  <!-- #384: the Dot's colour contract (pure) — loaded before the island and the settings panel,
+       the two places that consume it. -->
+  <script defer src="avatar-colors.js"></script>
+  <!-- #380: system/light/dark theme — paints <html data-theme> from the saved preference
+       before the island draws, so the palette is never flashed wrong. -->
+  <script defer src="theme.js"></script>
+  <script defer src="overview-view.js"></script>
+  <!-- #345 catalog choices are local preferences, never live connector claims. -->
+  <script defer src="pill-catalog.js"></script>
+  <script defer src="pills.js"></script>
+  <script defer src="pills-view.js"></script>
+  <script defer src="island-layout.js"></script>
+  <script defer src="island-nusa.js"></script>
+  <script defer src="island-nusa-bodies.js"></script>
+  <script defer src="island-nusa-mount.js"></script>
+  <script defer src="paused.js"></script>
+  <script defer src="spotify-view.js"></script>
+  <!-- N6: notification with 1..N reply options (Pi questions QP/1 are one case). -->
+  <script defer src="notify-view.js"></script>
+  <script defer src="character-motion.js"></script>
+  <script defer src="character-minibots.js"></script>
+  <script defer src="sound-engine.js"></script>
+  <script defer src="sound-wiring.js"></script>
+  <!-- #336 F003/F004: policy/scheduler for the inactivity interaction — loads
+       BEFORE island.js (defer keeps document order) and creates no listener,
+       timer or host call by itself. -->
+  <script defer src="island-interaction.js"></script>
+  <!-- S31: the expanded island folds after 30 s without interaction (pure rule + timer; loads before island.js) -->
+  <script defer src="island-idle.js"></script>
+  <!-- #486: the desktop character (Coucou DesktopMochi); loads before island.js, creates nothing until the host answers. -->
+  <script defer src="character-desktop-logic.js"></script>
+  <script defer src="island-desktop.js"></script>
+  <script defer src="island.js"></script>
+  <!-- S10: Coucou header icons + the "+" and mute controls (loaded after island.js). -->
+  <script defer src="island-header.js"></script>
+  <!-- S10 (L30): plan usage pills + card (Coucou views/usage), fed by plan_action; off until the human turns it on. -->
+  <script defer src="island-plan.js"></script>
+  <!-- S10 (L30): GitHub card (Coucou views/github), fed by github_action; shown only for the main pill integration_github. -->
+  <script defer src="island-github.js"></script>
+  <script defer src="island-integrations.js"></script>
+  <!-- S10 (L30): weekly recap card (Coucou views/recap), fed by recap_action; opens on its own once a week (Monday, calm island). -->
+  <script defer src="island-recap.js"></script>
+  <!-- S10 (L30): the dictation pill (Coucou pill/main.ts) in the expanded header, fed by dictation:* events and dictation_action. -->
+  <script defer src="island-dictation.js"></script>
+  <!-- U1: pure chat view helpers + the chat surface (same island). -->
+  <script defer src="chat-markdown.js"></script>
+  <script defer src="chat-view.js"></script>
+  <script defer src="chat-cards.js"></script>
+  <script defer src="chat.js"></script>
+  <script defer src="models.js"></script>
+  <!-- #306: settings panel (providers, connectors, general). -->
+  <script defer src="specialists-view.js"></script>
+  <script defer src="pill-settings.js"></script>
+  <script defer src="settings-view.js"></script>
+  <script defer src="settings.js"></script>
+  <!-- #327: manual specialists — the pure view-model first, then its section in Ajustes. -->
+  <script defer src="specialists.js"></script>
+  <script defer src="notify.js"></script>
+  <script defer src="question-toast.js"></script>
+  <!-- #360: live agent sessions ticker — one file: pure view + self-mounting poll (provisional placement). -->
+  <script defer src="sessions-ticker.js"></script>
+  <!-- Ajustes -> Conexiones: dormant FAKE integration cards (framework first, then each card). -->
+  <script defer src="integrations-view.js"></script>
+  <script defer src="integrations-github.js"></script>
+  <script defer src="integrations-deployments.js"></script>
+  <script defer src="integrations-email.js"></script>
+  <script defer src="integrations-mail.js"></script>
+  <script defer src="integrations-payments.js"></script>
+  <script defer src="integrations-finance.js"></script>
+  <script defer src="integrations-notion.js"></script>
+  <script defer src="integrations-n8n.js"></script>
+  <script defer src="integrations-calendar.js"></script>
+</head>
+<body>
+  <main id="capsule" data-phase="compact" data-edge="top">
+    <div id="island">
+      <!-- Q1: the island's own keyboard control (visually it IS the island:
+           its focus ring is drawn on #island). Enter/Space opens the
+           overview from compact; in the overview it closes it. -->
+      <button id="island-toggle" type="button" class="sr-only" aria-expanded="false">Abrir Koda</button>
+      <svg id="clay" aria-hidden="true" focusable="false"></svg>
+      <div id="island-tip" role="tooltip" hidden></div>
+      <span id="compact-badge" aria-hidden="true" hidden></span>
+      <span id="compact-activity" class="compact-activity"></span>
+      <button id="compact-reply" type="button" hidden>Responder</button>
+      <!-- S11 (11 error/sin motor, B): a band under the overview, only while something needs attention; «Omitir» silences that problem -->
+      <div id="engine-band" role="status" hidden><span class="eb-icon" aria-hidden="true"></span><span id="engine-band-label"></span><button id="engine-band-link" type="button"></button><button id="engine-band-skip" type="button">Omitir</button></div>
+      <div id="mini-grid" aria-hidden="true"></div>
+      <!-- S1 (01 oculta, A): the hidden island is ONE thread; its colour is the most urgent state (island-layout.js edgeStripView) -->
+      <div id="edge-strip" data-state="rest" data-pulse="false" role="img" aria-label="Koda, en reposo"></div>
+      <!-- S10 (L22): Coucou's state badge on the character («!» approval, «?» question, ✓ finished); decoration only. -->
+      <span id="clay-badge" aria-hidden="true" hidden><i></i></span>
+      <!-- #419: visual auto-close countdown — pure decoration (aria-hidden,
+           hidden by default). The interaction adapter renders the published
+           countdown fraction into it; it never drives the close. -->
+      <div id="island-countdown" aria-hidden="true" hidden></div>
+      <!-- UI.1: visual overview (docs/desktop-visual-language.md). Icons come
+           from icons.js (own inline SVG); every icon-only control has an
+           aria-label; long sentences live behind the «i» buttons. -->
+      <!-- U1: the overview's primary control. Opens the chat view of THIS
+           island (no other window). Enter in the overview does the same. -->
+      <header id="island-header" class="hdr" aria-label="Vistas de Koda">
+        <!-- S10 (L22): Coucou's header in every expanded state: home / chat / + on the left, gear / mute on the right.
+             Icons are drawn by island-header.js from the vendored Coucou icon paths (MIT). -->
+        <div class="tabs" role="group" aria-label="Vistas">
+          <button id="home-tab" class="tab on" type="button" aria-label="Vista general" aria-pressed="true"><span class="ico" data-cc-icon="house"></span></button>
+          <button id="open-chat" class="tab" type="button" hidden aria-label="Conversar con Koda" aria-describedby="open-chat-hint" aria-pressed="false"><span class="ico" data-cc-icon="bubble"></span></button>
+          <button id="open-new" class="tab" type="button" aria-label="Nueva conversación" aria-pressed="false"><span class="ico" data-cc-icon="plus"></span></button>
+        </div>
+        <div class="header-actions">
+          <button id="open-settings" class="hdr-action" type="button" aria-label="Ajustes"><span class="ico" data-cc-icon="gear"></span></button>
+          <button id="toggle-sound" class="hdr-action" type="button" aria-label="Silenciar" aria-pressed="false"><span class="ico" data-cc-icon="speakerOn"></span></button>
+          <button id="header-fold" class="hdr-action" type="button" aria-label="Minimizar Koda" title="Minimizar Koda"><span class="ico" data-cc-icon="chevronUp"></span></button>
+        </div>
+      </header>
+      <!-- HU-057 T1/T2: the Nusa notch (pure model: island-nusa.js; mount: island-nusa-mount.js). Shown only in the idle expanded overview. -->
+      <section id="nusa" aria-label="Isla Koda" data-veil="idle" data-tab="inicio">
+        <div id="nusa-veil" aria-hidden="true"></div>
+        <div id="nusa-head">
+          <span id="nusa-title">Inicio</span>
+          <div id="nusa-clock" aria-hidden="true">
+            <svg id="nusa-ring" width="16" height="16" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-opacity=".25" stroke-width="2"/><circle id="nusa-ring-arc" cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" pathLength="100" stroke-dasharray="0 100" transform="rotate(-90 8 8)"/></svg>
+            <span id="nusa-date"></span><b id="nusa-time"></b>
+          </div>
+          <span id="nusa-bars" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span>
+        </div>
+        <button id="nusa-prev" class="nusa-arrow" type="button" aria-label="Pestaña anterior" hidden><svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M6.5 1.5 3 5l3.5 3.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+        <button id="nusa-next" class="nusa-arrow" type="button" aria-label="Pestaña siguiente"><svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M3.5 1.5 7 5 3.5 8.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+        <div id="nusa-body">
+          <div id="nusa-panel" role="tabpanel" aria-labelledby="nusa-tab-inicio"></div>
+          <div id="nusa-right"><div id="nusa-state" class="nusa-chip" hidden></div></div>
+        </div>
+        <div id="nusa-dots" role="tablist" aria-label="Vistas de la isla">
+          <button id="nusa-tab-inicio" type="button" role="tab" data-tab="inicio" aria-selected="true" aria-label="Inicio"><i class="nd"></i><span class="ni" aria-hidden="true"></span></button>
+          <button id="nusa-tab-agentes" type="button" role="tab" data-tab="agentes" aria-selected="false" aria-label="Agentes" tabindex="-1"><i class="nd"></i><span class="ni" aria-hidden="true"></span></button>
+          <button id="nusa-tab-avisos" type="button" role="tab" data-tab="avisos" aria-selected="false" aria-label="Avisos" tabindex="-1"><i class="nd"></i><span class="ni" aria-hidden="true"></span></button>
+        </div>
+      </section>
+      <section id="overview-view" aria-label="Vista general">
+        <div class="card card-left">
+          <!-- A+E: Abito's global status (real active sessions / real queue), fed by island-layout.js -->
+          <div id="col-status" class="col-status" role="status" aria-live="off"></div>
+          <!-- S10 (L22): Coucou's empty card («Nothing running right now.» + [Ask]); shown while no session runs (island.css). -->
+          <div id="overview-empty" class="stack-empty">
+            <div class="title">Nada en ejecución ahora mismo.</div>
+            <div class="sub">Soltá un archivo o preguntame lo que quieras.</div>
+            <div id="overview-engine" class="engine-row" hidden><span class="engine-dot" aria-hidden="true"></span><span id="overview-engine-label" class="engine-label"></span><button id="overview-engine-link" class="engine-link" type="button"></button></div>
+            <button id="overview-ask" class="btn primary" type="button"><span>Preguntar</span></button>
+          </div>
+          <!-- A+E centre: the FOCUSED session with its real state + real tool steps (island-layout.js), or the calm empty state + CTA -->
+          <div id="col-centre" class="col-centre">
+            <div id="centre-state" class="centre-state" hidden><span class="centre-name"></span><span class="centre-agent"></span><span class="centre-word"></span><span class="centre-count" hidden></span></div>
+            <ol id="centre-steps" class="centre-steps" aria-label="Pasos de herramientas" hidden></ol>
+            <div id="centre-empty" class="centre-empty" hidden><strong class="centre-empty-title"></strong><span class="centre-empty-sub"></span><button id="centre-cta" class="btn primary" type="button"><span></span></button></div>
+            <div id="centre-foot" class="centre-foot">
+              <div id="overview-engine-live" class="engine-row engine-row-live" hidden><span class="engine-dot" aria-hidden="true"></span><span id="overview-engine-live-label" class="engine-label"></span><button id="overview-engine-live-link" class="engine-link" type="button"></button></div>
+            </div>
+          </div>
+          <div class="agentline"><strong>Koda</strong><span id="overview-status" class="source"></span></div>
+          <p id="overview-detail" class="overview-detail"></p>
+          <div class="pill-summary">
+            <strong id="pill-name"></strong><span id="pill-state" class="source"></span>
+            <p id="pill-detail"></p>
+          </div>
+        </div>
+        <span id="pill-live" class="sr-only" role="status" aria-live="polite"></span>
+        <ul id="minibots" aria-label="Turnos activos" hidden></ul>
+        <div id="spotify-card" class="spotify-card" role="group" hidden></div>
+      </section>
+      <!-- A+E right column: the blobs (agent sessions AND declared pills), one per row, scrolling. Its own element so focus mode can
+           keep it (as a mascot column) while the question/approval card takes left + centre. -->
+      <div id="blobs" class="card">
+        <div id="pill-choices" role="group" aria-label="Blobs"></div>
+        <div id="blobs-footer"><span id="blobs-more" hidden></span><button id="blobs-all" class="see-all" type="button" hidden></button></div>
+        <div id="blobs-links" hidden></div>
+      </div>
+      <span id="open-chat-hint" class="sr-only">Abre la conversación con el modelo local dentro de la isla.</span>
+      <!-- M2: Sileo-style notice, display only (own code, silence).
+           A notice never decides or approves anything. -->
+      <div id="notices" hidden>
+        <div id="notice-row">
+          <button id="connection" class="chip" type="button" disabled><span class="ico" id="connection-icon"></span><span class="word" id="connection-word"></span></button>
+          <span id="hotkey" class="chip" role="img" hidden><span class="ico" id="hotkey-icon"></span><span class="word" id="hotkey-word"></span></span>
+          <span id="bridge" class="chip" role="img" hidden><span class="ico" id="bridge-icon"></span><span class="word" id="bridge-word"></span></span>
+          <button id="notice-info" class="icon-btn" type="button" aria-label="Ver detalle de la conexión" aria-expanded="false" aria-controls="notice-detail"><span class="ico" data-icon="info"></span></button>
+        </div>
+        <div id="notice-pill" role="group" hidden>
+          <button id="notice-open" type="button" aria-label="Abrir aviso en Koda" aria-describedby="notice-title notice-detail">
+            <span id="notice-ring"></span>
+            <strong id="notice-title"></strong>
+            <span id="notice-count"></span>
+          </button>
+          <button id="notice-dismiss" class="icon-btn" type="button" aria-label="Descartar aviso"><span class="ico" data-icon="cross"></span></button>
+        </div>
+        <p id="notice-detail" hidden></p>
+        <!-- S10 (L22): Coucou's finished card, shown only in the confirmed-notice lane (island.js fills it). -->
+        <div id="notice-card" hidden>
+          <div class="who-row"><span class="dot" aria-hidden="true"></span><strong id="notice-card-name"></strong><span id="notice-card-verb"></span></div>
+          <div id="notice-card-message" class="one-line"></div>
+          <div class="actions"><button id="notice-card-terminal" class="btn primary" type="button" aria-label="Abrir terminal"><span>Ver</span></button><button id="notice-card-ok" class="btn secondary" type="button"><span>OK</span></button></div>
+        </div>
+      </div>
+      <!-- Q1: notices are announced once to screen readers (polite). -->
+      <p id="notice-live" class="sr-only" role="status" aria-live="polite"></p>
+      <!-- M3: approval card — DISPLAY only. The renderer sends nothing but
+           the human's click (`allow`/`deny`, zero arguments); Rust
+           re-validates card id, expiry and payload_hash before any
+           /execute. An untrusted or stale click can never approve. -->
+      <div id="permission" class="card full wash" hidden aria-label="Decisión pendiente">
+        <div id="card-head">
+          <span id="card-status" class="chip" role="img"><span class="ico" id="card-status-icon"></span><strong id="card-agent">Koda</strong><span class="word" id="card-status-word"></span></span>
+          <span id="card-expiry" class="chip" role="img"><span class="ico" data-icon="clock"></span><time class="word" id="expiry"></time></span>
+          <span id="card-conn" class="chip" role="img" hidden><span class="ico" id="card-conn-icon"></span><span class="word" id="card-conn-word"></span></span>
+          <span id="card-bridge" class="chip" role="img" hidden><span class="ico" id="card-bridge-icon"></span><span class="word" id="card-bridge-word"></span></span>
+          <button id="card-info" class="icon-btn" type="button" aria-label="Ver detalle de la decisión" aria-expanded="false" aria-controls="card-reason"><span class="ico" data-icon="info"></span></button>
+        </div>
+        <p id="operation"></p>
+        <p id="card-reason" role="status" hidden></p>
+        <div id="card-actions">
+          <button id="allow" type="button" disabled aria-describedby="card-reason" aria-keyshortcuts="Y"><span class="ico" data-icon="check"></span><span class="btn-word">Permitir</span><span class="kbd" aria-hidden="true">Y</span></button>
+          <button id="deny" type="button" disabled aria-describedby="card-reason" aria-keyshortcuts="N"><span class="ico" data-icon="cross"></span><span class="btn-word">Rechazar</span><span class="kbd" aria-hidden="true">N</span></button>
+          <!-- T7.3: the fold sits in the action row (isla-approval). -->
+          <!-- F014 (#338): fold the waiting card down to the compact island
+               WITHOUT deciding it (upstream `foldApproval`, windows
+               /src/island/island.ts:144-154): the host keeps the card, the
+               request keeps waiting, reopening shows it again. -->
+          <button id="card-fold" class="icon-btn" type="button" aria-label="Plegar la tarjeta y dejar la solicitud esperando"><span class="ico" data-cc-icon="chevronUp"></span></button>
+          <span id="card-wait">Espera tu respuesta</span>
+        </div>
+      </div>
+      <!-- N6: Pi question / notification with 1..N reply options. DISPLAY only:
+           the renderer sends nothing but the human's trusted click or key
+           (index, text or decline); Rust validates id, scope, expiry and size.
+           It is NOT an Abito approval: it authorizes nothing in the backend.
+           All text is written with textContent. -->
+      <div id="question" class="card full wash" inert aria-label="Pi pregunta">
+        <div id="question-head">
+          <span id="question-asker" class="chip"><span class="dot" aria-hidden="true"></span><strong id="question-asker-name"></strong><span id="question-asker-verb">pregunta</span><span id="question-queue" hidden></span></span>
+          <span id="question-expiry" class="chip" role="img"><span class="ico" data-icon="clock"></span><time class="word" id="question-expiry-word"></time></span>
+          <span id="question-state" class="chip" role="img" hidden><span class="ico" id="question-state-icon"></span><span class="word" id="question-state-word"></span></span>
+          <p id="question-body"></p>
+          <button id="question-skip" type="button"><span class="ico" data-icon="cross"></span><span class="btn-word">Omitir</span></button>
+        </div>
+        <div id="question-step" hidden><span id="question-step-header" class="chip"></span></div>
+        <div id="question-summary" role="list" aria-label="Resumen de tus respuestas" hidden></div>
+        <div id="question-approval" hidden>
+          <span id="question-approval-badge" aria-hidden="true">!</span>
+          <div id="question-approval-body"><span id="question-approval-title"></span><code id="question-approval-cmd" class="q-cmd"></code><span id="question-approval-note" hidden>Se ocultaron datos secretos del comando.</span></div>
+          <div id="question-approval-actions"></div>
+        </div>
+        <div id="question-options" role="group" aria-label="Opciones de respuesta"></div>
+        <div id="question-nav" hidden>
+          <span id="question-reason" hidden></span>
+          <button id="question-prev" type="button">Atrás</button>
+          <button id="question-primary" type="button" disabled>Siguiente</button>
+        </div>
+        <button id="question-fold" class="icon-btn" type="button" aria-label="Plegar la pregunta y dejarla esperando"><span class="ico" data-cc-icon="chevronUp"></span></button>
+        <form id="question-freeform" hidden novalidate>
+          <label for="question-text" class="sr-only">Tu respuesta</label>
+          <textarea id="question-text" rows="1" maxlength="2000" spellcheck="true" placeholder="Escribí…" aria-describedby="question-word"></textarea>
+          <span id="question-word" class="chip" data-tone="red" hidden></span>
+          <button id="question-send" type="submit" disabled aria-label="Enviar respuesta"><span class="ico" data-icon="arrow-up"></span></button>
+        </form>
+        <p id="question-live" class="sr-only" role="status" aria-live="polite"></p>
+      </div>
+      <!-- #309: chat view — a vertical column of the same island (geometry::chat_visible: 400 wide, height from the work area).
+           Every text below is written with textContent: plain text only. -->
+      <section id="chat" inert aria-label="Conversación con Koda">
+        <header id="chat-header">
+          <h2 id="chat-title">Koda</h2>
+          <span id="chat-target-chip" class="chip" role="img"><span class="ico" data-icon="lock"></span><span class="word">local</span></span>
+          <span id="chat-target" class="sr-only"></span>
+          <!-- #327: the role in use, when the human chose one. Status only: the role itself is
+               chosen in Ajustes -> Especialistas, and a role never appears here by itself. -->
+          <span id="chat-specialist" class="chip" role="img" hidden><span class="ico" id="chat-specialist-icon" data-icon="user"></span><span class="word" id="chat-specialist-word"></span></span>
+          <p id="chat-status" class="sr-only"></p>
+          <span id="chat-state" class="chip" role="img"><span class="ico" id="chat-state-icon"></span><span class="word" id="chat-state-word"></span></span>
+          <button id="open-screen-settings" class="icon-btn" type="button" aria-label="Ajustes" aria-expanded="false" aria-controls="settings"><span class="ico" data-icon="gear"></span></button>
+          <button id="chat-back" class="icon-btn" type="button" aria-label="Volver"><span class="ico" data-icon="arrow-left"></span></button>
+        </header>
+        <p id="chat-history-warning" role="status" hidden></p>
+        <div id="conversations" role="dialog" aria-label="Conversaciones guardadas" hidden inert>
+          <div id="conversations-bar"><h2>Conversaciones</h2><button id="conversations-close" class="icon-btn" type="button" aria-label="Volver al chat"><span class="ico" data-icon="cross"></span></button></div>
+          <p id="conversations-note" role="status"></p>
+          <h3 id="specialists-title">Hablar con…</h3>
+          <ul id="specialists-list" aria-labelledby="specialists-title"></ul>
+          <ul id="conversations-list" aria-label="Conversaciones guardadas"></ul>
+        </div>
+        <div id="chat-body">
+          <div id="chat-drop" hidden aria-hidden="true"><strong>Soltá para adjuntar</strong><span>Imágenes y texto</span></div>
+          <div id="chat-history-controls" role="group" aria-label="Conversaciones">
+            <button id="chat-create" class="icon-btn" type="button" aria-label="Nueva conversación (Ctrl+N)" title="Nueva conversación (Ctrl+N)"><span class="ico" data-icon="plus"></span></button>
+            <button id="chat-conversations" class="icon-btn" type="button" aria-label="Conversaciones guardadas" aria-expanded="false" aria-controls="conversations"><span class="ico" data-icon="clock"></span></button>
+            <span id="chat-history-label">Conversación nueva</span>
+          </div>
+          <ol id="chat-log" tabindex="0" aria-label="Historial de la conversación"></ol>
+          <button id="chat-new" type="button" hidden aria-label="Respuesta nueva"><span class="ico" data-icon="arrow-down"></span><span class="dot"></span></button>
+          <!-- F024: the model row above the composer — the LOCAL model of the NEXT turn
+               (chat:state.target, already resolved by Rust) and its picker. The picker reads
+               the SAME closed `models_action` set as Ajustes → Modelos (list/select): it can
+               never name an endpoint, a key, an account or a provider (S5). Plain text only. -->
+          <div id="chat-model-row">
+            <button id="chat-model-btn" type="button" disabled aria-expanded="false" aria-controls="chat-model-picker">
+              <span class="model-dot" aria-hidden="true"></span>
+              <span class="word" id="chat-model-name"></span>
+              <span class="model-caret" aria-hidden="true"></span>
+            </button>
+            <div id="chat-model-picker" role="group" aria-label="Modelos locales" hidden inert>
+              <p id="chat-model-note" class="picker-note"></p>
+            </div>
+          </div>
+          <form id="chat-composer" novalidate>
+            <label for="chat-input" class="sr-only">Mensaje para Koda</label>
+            <textarea id="chat-input" rows="1" maxlength="8000" spellcheck="true"
+              aria-describedby="chat-help chat-problem" placeholder="Escribí…"></textarea>
+            <span id="chat-draft-word" class="chip" data-tone="red" hidden></span>
+            <span id="chat-help" class="sr-only">Enter envía. Mayúsculas más Enter agrega una línea. Ctrl+N crea una conversación sin borrar el historial. Escape sale del campo; otro Escape cierra la isla.</span>
+            <button id="chat-cancel" class="round" type="button" hidden aria-label="Cancelar"><span class="ico" data-icon="square"></span></button>
+            <button id="chat-mic" class="round" type="button" hidden aria-label="Dictar con el micrófono"><span class="ico" data-icon="mic"></span></button>
+            <button id="chat-send" class="round" type="submit" disabled aria-label="Enviar"><span class="ico" data-icon="arrow-up"></span></button>
+          </form>
+          <p id="chat-problem" class="sr-only" aria-live="polite"></p>
+        </div>
+        <!-- #408: ONE Ajustes entry (the gear) with sub-tabs (settings-view.js TABS: Cuentas, Conectores, Modelos,
+             Especialistas, Pills, Apariencia, General); the panel covers the chat body with a title, a tablist, a close button and a one-line hint. Plain text
+             only (textContent); a key is typed into a masked field, sent once as `auth_reply` and cleared. -->
+        <div id="settings" inert role="dialog" aria-labelledby="settings-title" aria-label="Ajustes">
+          <div id="settings-bar">
+            <h2 id="settings-title"></h2>
+            <span id="settings-conn" class="chip" role="img" hidden><span class="ico" id="settings-conn-icon"></span><span class="word" id="settings-conn-word"></span></span>
+            <button id="settings-close" class="icon-btn" type="button" aria-label="Cerrar ajustes"><span class="ico" data-icon="cross"></span></button>
+          </div>
+          <div id="settings-tabs" role="tablist" aria-label="Secciones de Ajustes" aria-orientation="horizontal"></div>
+          <p id="settings-hint" class="snote"></p>
+          <div id="settings-body" tabindex="-1" role="tabpanel"></div>
+          <!-- Servicios (datos de ejemplo): FAKE cards. settings.js re-appends this group to the body only on the Conexiones tab (render() wipes the body). -->
+          <div id="connections-more" hidden>
+            <h3 class="ssection">Servicios · Datos de ejemplo</h3>
+            <section id="integrations" hidden></section>
+            <section id="integrations-github" hidden></section>
+            <section id="integrations-deployments" hidden></section>
+            <section id="integrations-email" hidden></section>
+            <section id="integrations-mail" hidden></section>
+            <section id="integrations-payments" hidden></section>
+            <section id="integrations-finance" hidden></section>
+            <section id="integrations-notion" hidden></section>
+            <section id="integrations-n8n" hidden></section>
+            <section id="integrations-calendar" hidden></section>
+          </div><!-- /connections-more -->
+          <!-- U2: self-hosted model choice — an internal panel of the same
+               island (replaces the transcript while open). Local only, no
+               keys; listed is never shown as ready. -->
+          <div id="models" inert role="tabpanel" aria-labelledby="settings-tab-models" aria-label="Modelo local">
+            <!-- #309: the buttons come first so wrapping pushes the meters to a second row, never a button out of the island -->
+            <div id="models-bar">
+              <span id="models-count" class="chip" role="img"><span class="ico" data-icon="chip"></span><span class="word" id="models-count-word"></span></span>
+              <button id="models-info" class="icon-btn" type="button" aria-label="Ver detalle de los modelos" aria-expanded="false" aria-controls="models-note"><span class="ico" data-icon="info"></span></button>
+              <button id="models-refresh" class="icon-btn" type="button" aria-label="Actualizar modelos locales"><span class="ico" data-icon="refresh"></span></button>
+              <ul id="models-meters" aria-label="Recursos de esta máquina"></ul>
+            </div>
+            <p id="models-note" class="sr-only"></p>
+            <label class="models-search-field" for="models-search"><span class="sr-only">Buscar modelos locales</span><input id="models-search" type="search" placeholder="Buscar modelos" autocomplete="off"></label>
+            <ul id="models-list" aria-label="Modelos locales"></ul>
+            <p id="models-resources" class="sr-only"></p>
+          </div>
+          <p id="settings-live" class="sr-only" role="status" aria-live="polite"></p>
+        </div>
+        <p id="chat-live" class="sr-only" role="status" aria-live="polite"></p>
+      </section>
+    </div>
+    <!-- UI.2: compact indicator (§6): sun dot = something waits for your yes,
+         red triangle = channel down. Shape + colour; never text. T7.3 (design
+         isla-compacta-sun/red): it sits OVER the disc rim, so it lives in #capsule
+         after #island (which clips its children), not inside it. -->
+    <span id="compact-flag" role="img" hidden><span class="ico" id="compact-flag-icon"></span></span>
+  </main>
+</body>
+</html>

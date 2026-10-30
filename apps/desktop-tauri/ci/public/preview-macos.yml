@@ -1,0 +1,92 @@
+name: Preview macOS runtime
+on:
+  push:
+    branches: ['preview/mac', 'preview/mac-*']
+permissions:
+  contents: read
+concurrency:
+  group: preview-macos-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  macos:
+    runs-on: macos-26
+    timeout-minutes: 90
+    defaults:
+      run:
+        working-directory: apps/desktop-tauri
+    env:
+      SHERPA_VERSION: "1.13.8"
+      SHERPA_SHA256: >-
+        9091bf160dc7fdacedbc906b212badf53c2993f4e5277a0e03998e96c31d60da
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Fetch sherpa-onnx static libs (pinned sha256)
+        run: |
+          set -euo pipefail
+          A="sherpa-onnx-v${SHERPA_VERSION}-osx-arm64-static-lib.tar.bz2"
+          URL="https://github.com/k2-fsa/sherpa-onnx/releases/download"
+          curl -fsSL -o "$RUNNER_TEMP/$A" "$URL/v${SHERPA_VERSION}/$A"
+          echo "${SHERPA_SHA256}  $RUNNER_TEMP/$A" | shasum -a 256 -c -
+          tar -xjf "$RUNNER_TEMP/$A" -C "$RUNNER_TEMP"
+          LIB="$RUNNER_TEMP/sherpa-onnx-v${SHERPA_VERSION}-osx-arm64-static-lib"
+          echo "SHERPA_ONNX_LIB_DIR=$LIB/lib" >> "$GITHUB_ENV"
+      - name: macOS unit tests and installed runtime lookup
+        run: |
+          cargo test --lib --locked -- daemonhost transport agentconn handoff
+          # Installed behavior: release excludes Linux-only debug probes.
+          cargo test --release --locked --test platform_runtime
+      - name: Build .app and .dmg (unsigned)
+        run: |
+          npx --yes @tauri-apps/cli@2 build --ci --bundles app,dmg \
+            --config "$(node packaging/macos-config.cjs)" \
+            -- --locked
+      - name: Verify bundle seal and Info.plist
+        run: |
+          set -euo pipefail
+          app=$(ls -d target/release/bundle/macos/*.app)
+          codesign --verify --deep --strict --verbose=2 "$app"
+          codesign -dv "$app" 2>&1 | tee "$RUNNER_TEMP/codesign.txt"
+          grep -q '^Signature=adhoc' "$RUNNER_TEMP/codesign.txt"
+          test -d "$app/Contents/_CodeSignature"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :LSUIElement' "$app/Contents/Info.plist")" = true
+          /usr/libexec/PlistBuddy -c 'Print :NSMicrophoneUsageDescription' "$app/Contents/Info.plist" >/dev/null
+          want=$(node -p "require('./tauri.conf.json').version")
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")" = "$want"
+          # A quarantined download must be assessable (unsigned-developer path), never rejected as damaged.
+          spctl --assess --type execute -vv "$app" 2>&1 || true
+      - name: Package
+        run: |
+          set -euo pipefail
+          out="$GITHUB_WORKSPACE/out"; mkdir -p "$out"
+          (cd target/release/bundle/macos
+           ditto -c -k --keepParent *.app "$out/Koda-macos-arm64.zip")
+          cp target/release/bundle/dmg/*.dmg "$out/Koda-macos-arm64.dmg"
+          (cd "$out"
+           shasum -a 256 Koda-macos-arm64.* > SHA256SUMS-macos.txt
+           cat SHA256SUMS-macos.txt)
+      - name: Install isolated smoke runtimes
+        run: |
+          mkdir -p "$RUNNER_TEMP/smoke-home/.npm-global/bin"
+          chmod 700 "$RUNNER_TEMP/smoke-home"
+          prefix="$RUNNER_TEMP/smoke-home/.npm-global"
+          npm install --global --prefix "$prefix" \
+            @earendil-works/pi-coding-agent
+          ln -s "$(command -v node)" "$prefix/bin/node"
+      - name: Smoke packaged binary with Finder environment
+        run: |
+          python3 ci/public/smoke-macos.py \
+            target/release/bundle/macos/abito-island.app \
+            "$RUNNER_TEMP/smoke-home"
+      - name: Upload package and smoke logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Abito-preview-mac
+          path: |
+            out/*
+            ${{ runner.temp }}/smoke-home/*.log
+          if-no-files-found: error

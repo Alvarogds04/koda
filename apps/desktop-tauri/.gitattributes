@@ -1,0 +1,8 @@
+# Keep hashed runtime/source bytes identical on Windows and Unix.
+*.js -text
+*.cjs -text
+*.ts -text
+*.json -text
+*.md -text
+*.mjs -text
+frontend/clay-engine.js -text

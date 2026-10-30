@@ -1,0 +1,9 @@
+/* HU-056 Koda skin. The Dot keeps running underneath, invisible: layout and hit areas stay exactly as the app built them.
+   Pixel art stays crisp: integer scale only (koda-skin.js), nearest-neighbour sampling. */
+html[data-koda] #clay { visibility: hidden !important; }
+html[data-koda] .q-toast-abito,
+html[data-koda] .pill-choice[data-pill-id="abito"] svg.island-agent-clay { display: none !important; }
+.koda-sprite { position: absolute; z-index: 4; pointer-events: none; background-repeat: no-repeat; image-rendering: crisp-edges; image-rendering: pixelated; transform: none; }
+.koda-sprite[hidden] { display: none; }
+.koda-sprite[data-koda-slot="toast"], .koda-sprite[data-koda-slot="pill"] { position: relative; z-index: auto; flex: none; margin: 2px; }
+.koda-sprite[data-koda-slot="nusa"] { position: relative; z-index: auto; flex: none; }

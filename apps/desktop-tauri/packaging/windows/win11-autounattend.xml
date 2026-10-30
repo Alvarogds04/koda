@@ -1,0 +1,168 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Unattended Windows 11 install for the Abito island Windows-port test VM.
+  Consumed by `packaging/windows/vm.sh` (attached as a second CD-ROM so setup
+  finds it at $WINDOWS$~BT\Sources\Panther\unattend.xml via autounattend name).
+
+  Scope: local KVM VM only (qemu:///session, swtpm emulator + OVMF Secure
+  Boot, NAT). No product key, no Microsoft account, no activation — an
+  unactivated build is enough to verify the port. Nothing here reaches the
+  host's own data: the disk is a qcow2 in the VM's own directory.
+
+  Partition layout follows Microsoft's documented clean UEFI layout: the EFI
+  system partition and the MSR are created with their real GPT type GUIDs and
+  Windows lands in a Microsoft Basic Data partition, so setup never has to
+  reclaim a mis-created MSR (which is what leaves an installed-but-unbootable
+  system).
+-->
+<unattend xmlns="urn:schemas-microsoft-com:unattend"
+          xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State"
+          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+
+  <settings pass="windowsPE">
+    <component name="Microsoft-Windows-International-Core-WinPE" processorArchitecture="amd64"
+               publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <SetupUILanguage>
+        <UILanguage>en-US</UILanguage>
+      </SetupUILanguage>
+      <InputLocale>0c0a:0000040a</InputLocale>
+      <SystemLocale>en-US</SystemLocale>
+      <UILanguage>en-US</UILanguage>
+      <UserLocale>es-AR</UserLocale>
+    </component>
+
+    <component name="Microsoft-Windows-Setup" processorArchitecture="amd64"
+               publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <ProductKey>
+        <Key>VK7JG-NPHTM-C97JM-9MPGT-3V66T</Key>
+        <WillWipeDisk>true</WillWipeDisk>
+      </ProductKey>
+      <ImageInstall>
+        <OSImage>
+          <InstallFrom>
+            <MetaData wcm:action="add">
+              <Key>/IMAGE/NAME</Key>
+              <Value>Windows 11 Pro</Value>
+            </MetaData>
+          </InstallFrom>
+          <InstallTo>
+            <DiskID>0</DiskID>
+            <PartitionID>3</PartitionID>
+          </InstallTo>
+        </OSImage>
+      </ImageInstall>
+      <DiskConfiguration>
+        <Disk wcm:action="add">
+          <DiskID>0</DiskID>
+          <WillWipeDisk>true</WillWipeDisk>
+          <CreatePartitions>
+            <!-- 1: EFI System Partition -->
+            <CreatePartition wcm:action="add">
+              <Order>1</Order>
+              <Type>Primary</Type>
+              <Size>200</Size>
+            </CreatePartition>
+            <!-- 2: Microsoft Reserved Partition -->
+            <CreatePartition wcm:action="add">
+              <Order>2</Order>
+              <Type>Primary</Type>
+              <Size>16</Size>
+            </CreatePartition>
+            <!-- 3: Windows (Microsoft Basic Data) -->
+            <CreatePartition wcm:action="add">
+              <Order>3</Order>
+              <Type>Primary</Type>
+              <Extend>true</Extend>
+            </CreatePartition>
+          </CreatePartitions>
+          <ModifyPartitions>
+            <ModifyPartition wcm:action="add">
+              <Order>1</Order>
+              <PartitionID>1</PartitionID>
+              <Format>FAT32</Format>
+              <Label>System</Label>
+              <TypeID>C12A7328-F81F-4D20-A34B-074A672E74F8</TypeID>
+            </ModifyPartition>
+            <ModifyPartition wcm:action="add">
+              <Order>2</Order>
+              <PartitionID>2</PartitionID>
+              <TypeID>E3C9E316-0B5C-4DB8-8100-F3C92D85429F</TypeID>
+            </ModifyPartition>
+            <ModifyPartition wcm:action="add">
+              <Order>3</Order>
+              <PartitionID>3</PartitionID>
+              <Format>NTFS</Format>
+              <Label>Windows</Label>
+              <Letter>C</Letter>
+              <TypeID>0657FD6D-A4AB-43C4-84E5-0933C84B4F5F</TypeID>
+            </ModifyPartition>
+          </ModifyPartitions>
+        </Disk>
+      </DiskConfiguration>
+      <DynamicUpdate>
+        <Enable>false</Enable>
+      </DynamicUpdate>
+      <UI>
+        <EULA>
+          <Accept>true</Accept>
+        </EULA>
+      </UI>
+    </component>
+  </settings>
+
+  <settings pass="oobeSystem">
+    <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64"
+               publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <OOBE>
+        <HideEULAPage>true</HideEULAPage>
+        <HideOEMRegistrationScreen>true</HideOEMRegistrationScreen>
+        <HideOnlineAccountScreens>true</HideOnlineAccountScreens>
+        <HideLocalAccountScreen>true</HideLocalAccountScreen>
+        <HideWirelessSetupInOOBE>true</HideWirelessSetupInOOBE>
+        <NetworkLocation>Work</NetworkLocation>
+        <!-- 3 = do not run automatic customer-experience actions in a test VM -->
+        <ProtectYourPC>3</ProtectYourPC>
+      </OOBE>
+      <UserAccounts>
+        <LocalAccounts>
+          <LocalAccount wcm:action="add">
+            <Name>abito</Name>
+            <Group>Administrators</Group>
+            <Description>Local test account for the Abito Windows-port VM.</Description>
+            <Password>
+              <Value>abito-test</Value>
+              <PlainText>true</PlainText>
+            </Password>
+          </LocalAccount>
+        </LocalAccounts>
+      </UserAccounts>
+      <TimeZone>Argentina Standard Time</TimeZone>
+      <AutoLogon>
+        <Enabled>true</Enabled>
+        <Username>abito</Username>
+        <Password>
+          <Value>abito-test</Value>
+          <PlainText>true</PlainText>
+        </Password>
+        <LogonCount>3</LogonCount>
+      </AutoLogon>
+      <FirstLogonCommands>
+        <!-- Find the ABITO_SETUP answer CD (DriveType 5) and run vm-setup.ps1.
+             vm-setup.ps1 copies itself, registers the poll task, tries OpenSSH
+             (best effort), and writes a status note to COM1. -->
+        <SynchronousCommand wcm:action="add">
+          <Order>1</Order>
+          <RequiresUserInput>false</RequiresUserInput>
+          <CommandLine>powershell -NoProfile -ExecutionPolicy Bypass -Command &quot;$cd=Get-CimInstance Win32_LogicalDisk -Filter &apos;DriveType=5&apos; | Where-Object {$_.VolumeName -eq &apos;ABITO_SETUP&apos;} | Select-Object -First 1; if($cd){$f=($cd.DeviceID + &apos;\\&apos;) + &apos;vm-setup.ps1&apos;; if(Test-Path $f){powershell -NoProfile -ExecutionPolicy Bypass -File $f -Wait}}&quot;</CommandLine>
+        </SynchronousCommand>
+        <!-- Backup: if the CD could not be found, try to install OpenSSH directly. -->
+        <SynchronousCommand wcm:action="add">
+          <Order>2</Order>
+          <RequiresUserInput>false</RequiresUserInput>
+          <CommandLine>powershell -NoProfile -ExecutionPolicy Bypass -Command &quot;Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0 2&gt;&amp;1 | Out-Null; Set-Service -Name sshd -StartupType Automatic 2&gt;&amp;1 | Out-Null; Start-Service sshd 2&gt;&amp;1 | Out-Null&quot;</CommandLine>
+        </SynchronousCommand>
+      </FirstLogonCommands>
+    </component>
+  </settings>
+
+</unattend>

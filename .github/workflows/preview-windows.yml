@@ -1,0 +1,188 @@
+name: Preview Windows runtime
+
+on:
+  push:
+    branches: ['preview/**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-preview-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: pwsh
+        working-directory: apps/desktop-tauri
+    env:
+      CARGO_TERM_COLOR: never
+      RUST_BACKTRACE: '1'
+    steps:
+      - name: Require disposable hosted Windows before setup
+        working-directory: ${{ runner.temp }}
+        run: |
+          if (-not $IsWindows -or $env:GITHUB_ACTIONS -ne 'true' -or
+              $env:RUNNER_ENVIRONMENT -ne 'github-hosted') {
+            throw 'Windows preview requires a disposable hosted runner'
+          }
+          git config --global core.autocrlf false
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git config --global core.eol lf
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/checkout@v4
+      - name: Parse Windows scripts before any account operation
+        shell: pwsh -NoProfile -File {0}
+        run: |
+          foreach ($script in @('foreign-user.ps1', 'smoke-windows.ps1')) {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              (Join-Path $PWD "ci/public/$script"),
+              [ref]$tokens, [ref]$errors) | Out-Null
+            if ($errors.Count -gt 0) {
+              $errors | ForEach-Object { Write-Host $_.Message }
+              throw "Windows script syntax check failed: $script"
+            }
+          }
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop-tauri
+          cache-on-failure: true
+      - name: Fetch pinned Windows sherpa static library
+        run: |
+          $text = Get-Content packaging/windows/sherpa-onnx.sha256
+          $pin = $text.Trim() -split '\s+'
+          $archive = Join-Path $env:RUNNER_TEMP $pin[1]
+          $base = 'https://github.com/k2-fsa/sherpa-onnx/releases/download'
+          Invoke-WebRequest "$base/v1.13.8/$($pin[1])" -OutFile $archive
+          $hash = (Get-FileHash $archive -Algorithm SHA256).Hash
+          if ($hash.ToLowerInvariant() -ne $pin[0]) {
+            throw 'sherpa archive SHA256 mismatch'
+          }
+          # Pin the actual link directory, not profile-specific auto-extraction.
+          tar -xjf $archive -C $env:RUNNER_TEMP
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $folder = $pin[1] -replace '\.tar\.bz2$', ''
+          $lib = Join-Path $env:RUNNER_TEMP "$folder/lib"
+          if (-not (Test-Path (Join-Path $lib 'sherpa-onnx-c-api.lib'))) {
+            throw 'Pinned sherpa archive lacks sherpa-onnx-c-api.lib'
+          }
+          "SHERPA_ONNX_LIB_DIR=$lib" >> $env:GITHUB_ENV
+          "SHERPA_ONNX_ARCHIVE_DIR=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
+      - name: Windows policy unit tests
+        run: |
+          cargo test --locked --lib winipc::tests
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --locked --lib winpolicy::tests
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --locked --lib winfs::native_tests
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --locked --lib identity::windows_path_tests
+          exit $LASTEXITCODE
+      - name: Native receiver and authenticated relay integration
+        timeout-minutes: 10
+        run: |
+          cargo test --locked --test windows_directory -- `
+            --test-threads=1 --nocapture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --locked --test windows_notice -- `
+            --test-threads=1 --nocapture
+          exit $LASTEXITCODE
+      - name: Native daemon session security and runtime discovery
+        id: native-daemon
+        timeout-minutes: 10
+        run: |
+          cargo test --locked --bin abito-private-session
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --locked --test windows_daemon -- `
+            --test-threads=1 --nocapture
+          exit $LASTEXITCODE
+      - name: Prepare run-owned foreign-user probe account
+        run: pwsh -NoProfile -File ci/public/foreign-user.ps1 setup
+      - name: Actual foreign-SID receiver, relay and private-file probes
+        timeout-minutes: 10
+        env:
+          ABITO_FOREIGN_USER_TEST: '1'
+        run: |
+          cargo test --locked --test windows_foreign_user -- `
+            --test-threads=1 --nocapture
+          exit $LASTEXITCODE
+      - name: Remove only this run's owned probe account
+        if: always()
+        run: pwsh -NoProfile -File ci/public/foreign-user.ps1 cleanup
+      - name: Build native release island and helpers
+        id: release-build
+        if: ${{ !cancelled() && steps.native-daemon.outcome == 'success' }}
+        run: |
+          cargo build --release --locked --bins --features tauri/custom-protocol
+          exit $LASTEXITCODE
+      - name: Stage closed runtime and build full installer
+        id: installer-build
+        if: ${{ !cancelled() && steps.release-build.outcome == 'success' }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          node test-node/windows-runtime-check.cjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node packaging/windows/stage-runtime.cjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $bins = @('abito-island', 'abito-notice-relay',
+            'abito-private-session')
+          foreach ($bin in $bins) {
+            Copy-Item "target/release/$bin.exe" "dist/$bin.exe"
+          }
+          node packaging/windows/install-manifest.cjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $nsis = 'C:\Program Files (x86)\NSIS\makensis.exe'
+          if (-not (Test-Path -LiteralPath $nsis)) {
+            $command = Get-Command makensis -ErrorAction SilentlyContinue
+            if ($command) { $nsis = $command.Source }
+            else {
+              choco install nsis --version=3.11 -y --no-progress
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            }
+          }
+          & $nsis /VERSION
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $config = Get-Content -Raw tauri.conf.json | ConvertFrom-Json
+          $version = $config.version
+          $dist = (Resolve-Path dist).Path
+          $icon = (Resolve-Path icons/icon.ico).Path
+          Get-ChildItem -Recurse dist | Select-Object FullName,Length
+          Test-Path dist/windows-runtime/runtime.nsh
+          Get-Content dist/windows-runtime/runtime.nsh -TotalCount 5
+          Write-Host "NSIS argument: [/DRUNTIMEDIR=$dist\windows-runtime]"
+          & $nsis /V2 "/DVERSION=$version" "/DBINDIR=$dist" `
+            "/DRUNTIMEDIR=$dist\windows-runtime" `
+            "/DICON=$icon" "/DOUTDIR=$dist" packaging/windows/abito.nsi
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node packaging/windows/stage-win.cjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node packaging/windows/stage-win.cjs --check
+          exit $LASTEXITCODE
+      - name: Full install, hooks, diagnostics and uninstall smoke
+        if: ${{ !cancelled() && steps.installer-build.outcome == 'success' }}
+        timeout-minutes: 15
+        run: |
+          $config = Get-Content -Raw tauri.conf.json | ConvertFrom-Json
+          $setup = "dist/koda-$($config.version)-win-x64-setup.exe"
+          ./ci/public/smoke-windows.ps1 -Setup $setup
+      - name: Upload Windows installer and smoke evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-runtime-install
+          retention-days: 3
+          path: |
+            apps/desktop-tauri/dist/*setup.exe
+            apps/desktop-tauri/dist/receipt-windows.json
+            ${{ runner.temp }}/abito-installed-smoke/*.log
