@@ -263,6 +263,10 @@ fn start_transport(app: &AppHandle) {
             if accepted && message.kind == "settled" {
                 recaphost::note_settled(&notice_app, &state.project);
             }
+            // K2-03/T1: one content-free line per accepted settled notice; the installer smokes wait for it.
+            if let Some(line) = protocol::accepted_notice_log_line(&message, accepted) {
+                eprintln!("{line}");
+            }
             publish(&notice_app, &state);
         })
         .on_connections(move |count| {

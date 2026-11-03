@@ -20,8 +20,8 @@ Copy-Item -LiteralPath (Get-Command node.exe).Source -Destination $node
 & npm.cmd install --global --prefix (Join-Path $roaming 'npm') '@earendil-works/pi-coding-agent'
 if ($LASTEXITCODE -ne 0) { throw 'Isolated Pi installation failed' }
 $localData = [Environment]::GetFolderPath('LocalApplicationData')
-$recap = Join-Path $localData 'com.abitog.AbitoTauri/recap.json'
-if (Test-Path -LiteralPath $recap) { throw 'Runner already has island recap data; refusing smoke against existing state' }
+$islandData = Join-Path $localData 'com.abitog.AbitoTauri'
+if (Test-Path -LiteralPath $islandData) { throw 'Runner already has island user data; refusing smoke against existing state' }
 if (Test-Path -LiteralPath (Join-Path $localData 'Abito')) { throw 'Runner already has island runtime data; refusing reuse' }
 $originalEnv = @{}
 foreach ($key in @('PATH', 'HOME', 'USERPROFILE', 'ABITO_ISLAND_EXE', 'APPDATA', 'LOCALAPPDATA', 'ProgramFiles', 'ABITO_PROJECT_ROOT', 'ABITO_ISLAND_DIR', 'ABITO_DESKTOP_SOCKET')) {
@@ -185,19 +185,14 @@ try {
     $payload = @{ hook_event_name = 'Stop'; cwd = $workspace; session_id = 'ci4-installed-stop'; stop_hook_active = $false } | ConvertTo-Json -Compress
     $hookOutput = $payload | & $node (Join-Path $install 'desktop-harness/bin/abito-hook.cjs') claude stop 2> (Join-Path $root 'hook.stderr.log')
     if ($LASTEXITCODE -ne 0 -or $hookOutput -or (Get-Item -LiteralPath (Join-Path $root 'hook.stderr.log')).Length -ne 0) { throw 'Installed hook contract failed' }
-    # Only the island's accepted settled callback writes this turn. CLI exit alone is NOT proof.
-    # Tauri's Windows Known Folder lookup may use the actual profile or the child LOCALAPPDATA.
-    $recapCandidates = @($recap, (Join-Path $env:LOCALAPPDATA 'com.abitog.AbitoTauri/recap.json')) | Select-Object -Unique
-    Wait-For {
-        foreach ($candidate in $recapCandidates) {
-            if (Test-Path -LiteralPath $candidate) {
-                $history = Get-Content -Raw -LiteralPath $candidate | ConvertFrom-Json
-                if (@($history.turns).Count -eq 1) { $script:acceptedRecap = $candidate; return $true }
-            }
-        }
-        return $false
-    } 'island persisted installed hook receipt'
-    Write-Host 'PASS installed hook -> installed authenticated relay -> receiver -> island persisted turn'
+    # K2-03: only the island's accepted settled callback writes this content-free line (src/protocol.rs
+    # SETTLED_NOTICE_LOG_LINE). CLI exit alone is NOT proof; exactly one line for exactly one Stop is.
+    $settledLine = 'island: settled notice accepted'
+    $settledCount = { @(Get-Content -LiteralPath (Join-Path $root 'ready.stderr.log') | Where-Object { $_ -ceq $settledLine }).Count }
+    Wait-For { (& $settledCount) -ge 1 } 'island accepted installed hook notice'
+    Start-Sleep -Seconds 2
+    if ((& $settledCount) -ne 1) { throw "Island logged $(& $settledCount) accepted settled notices instead of exactly 1" }
+    Write-Host 'PASS installed hook -> installed authenticated relay -> receiver -> island accepted exactly one settled notice'
     Stop-Island
 
     # HU-047: install hooks and the Pi extension from the INSTALLED runtime with Windows ACL checks.
@@ -309,14 +304,20 @@ try {
     }
     $unrelated = Join-Path $install 'desktop-daemon/src/user-note.txt'
     [IO.File]::WriteAllText($unrelated, 'must survive uninstall')
-    $recapHash = (Get-FileHash -LiteralPath $script:acceptedRecap).Hash
+    # Island user data (whatever the installed island wrote, plus a planted fixture) must survive uninstall byte for byte.
+    # Tauri's Windows Known Folder lookup may use the actual profile or the child LOCALAPPDATA.
+    $islandDataDirs = @($islandData, (Join-Path $env:LOCALAPPDATA 'com.abitog.AbitoTauri')) | Select-Object -Unique
+    New-Item -ItemType Directory -Force -Path $islandData | Out-Null
+    [IO.File]::WriteAllText((Join-Path $islandData 'smoke-user-data.txt'), 'island user data must survive uninstall')
+    $islandDataHashes = { @(foreach ($dir in $islandDataDirs) { if (Test-Path -LiteralPath $dir) { Get-ChildItem -LiteralPath $dir -File -Recurse | ForEach-Object { "$($_.FullName)=$((Get-FileHash -LiteralPath $_.FullName).Hash)" } } }) -join ';' }
+    $userDataBefore = & $islandDataHashes
     $uninstaller = Start-Process -FilePath (Join-Path $install 'uninstall.exe') -ArgumentList '/S' -PassThru -Wait
     if ($uninstaller.ExitCode -ne 0) { throw "Uninstaller failed: $($uninstaller.ExitCode)" }
     Wait-For { -not (Test-Path -LiteralPath (Join-Path $install 'uninstall.exe')) } 'uninstaller completion'
     foreach ($file in $expected) { if (Test-Path -LiteralPath (Join-Path $install $file)) { throw "Uninstall left shipped file: $file" } }
     if ([IO.File]::ReadAllText($unrelated) -ne 'must survive uninstall') { throw 'Uninstall changed unrelated file' }
-    if ((Get-FileHash -LiteralPath $script:acceptedRecap).Hash -ne $recapHash) { throw 'Uninstall changed island user data' }
-    Write-Host 'PASS preserving uninstall: shipped files removed, unrelated fixture and recap unchanged'
+    if ((& $islandDataHashes) -ne $userDataBefore) { throw 'Uninstall changed island user data' }
+    Write-Host 'PASS preserving uninstall: shipped files removed, unrelated fixture and island user data unchanged'
     if ($runtimeFailures.Count -gt 0) { throw ($runtimeFailures -join '; ') }
     Write-Host 'PASS full install, native runtime, missing runtimes and exact preserving uninstall'
 } catch {

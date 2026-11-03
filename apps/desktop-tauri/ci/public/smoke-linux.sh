@@ -18,8 +18,10 @@
 #                  cannot observe reliably, and the probe build already proves that
 #                  scene (bandeja-menu) from inside the page.
 #   (d) notice     the INSTALLED desktop-harness/bin/abito-hook.cjs receives a
-#                  Claude «Stop» payload and the island persists EXACTLY one turn
-#                  in recap.json — the same proof ci/public/smoke-windows.ps1 runs.
+#                  Claude «Stop» payload and the island log carries EXACTLY one
+#                  content-free «island: settled notice accepted» line (src/protocol.rs
+#                  SETTLED_NOTICE_LOG_LINE) — the same proof ci/public/smoke-windows.ps1
+#                  and smoke-macos-installed.py run.
 #
 # Registered human gaps (NOT proven here, by construction):
 #   * answering a question through the shipped binary (needs a human answering);
@@ -489,18 +491,10 @@ else
 fi
 
 # ------------------------------------------------------------------ (d) ------
-say '== (d) notice: installed hook «Stop» -> island persisted exactly one turn'
-RECAPS="$XDG_DATA/com.abitog.AbitoTauri/recap.json $SMOKE_HOME/.local/share/com.abitog.AbitoTauri/recap.json"
-recap_state() { # prints the turn count of the first existing recap.json, or «none»
-  for file in $RECAPS; do
-    if [ -f "$file" ]; then
-      node -e 'const fs=require("fs");const h=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));process.stdout.write(String(Array.isArray(h.turns)?h.turns.length:-1))' "$file" 2>/dev/null || printf '?'
-      return 0
-    fi
-  done
-  printf 'none'
-}
-recap_one_turn() { [ "$(recap_state)" = 1 ]; }
+say '== (d) notice: installed hook «Stop» -> island accepted exactly one settled notice'
+SETTLED_LINE='island: settled notice accepted'
+settled_count() { grep -c -x -F "$SETTLED_LINE" "$WORK/island.log" || true; }
+settled_seen() { [ "$(settled_count)" -ge 1 ]; }
 
 PAYLOAD=$(printf '{"hook_event_name":"Stop","cwd":"%s","session_id":"ci-linux-installed-stop","stop_hook_active":false}' "$PROJECT")
 REASON=''
@@ -511,11 +505,16 @@ if [ "$hook_exit" -ne 0 ]; then
   REASON="the installed hook exited $hook_exit"
 elif [ -s "$WORK/hook.stdout.log" ] || [ -s "$WORK/hook.stderr.log" ]; then
   REASON="the installed hook was not silent: stdout='$(cat "$WORK/hook.stdout.log")' stderr='$(cat "$WORK/hook.stderr.log")'"
-elif ! wait_for 60 'the island to persist exactly one recap turn' recap_one_turn; then
-  REASON="recap.json has $(recap_state) turns instead of exactly 1 ($REASON)"
+elif ! wait_for 60 'the island to accept the settled notice' settled_seen; then
+  REASON="island.log has no «$SETTLED_LINE» line ($REASON)"
+else
+  sleep 2 # a duplicate acceptance would land right behind the first
+  if [ "$(settled_count)" != 1 ]; then
+    REASON="island.log has $(settled_count) «$SETTLED_LINE» lines instead of exactly 1"
+  fi
 fi
 if [ -z "$REASON" ]; then
-  pass "(d) notice: the installed hook sent a Claude Stop notice and the island persisted exactly one turn in $(for file in $RECAPS; do [ -f "$file" ] && { printf '%s' "$file"; break; }; done) (CLI exit and stdout/stderr alone are not proof; the persisted turn is)"
+  pass "(d) notice: the installed hook sent a Claude Stop notice and the island logged exactly one content-free «$SETTLED_LINE» (CLI exit and stdout/stderr alone are not proof; the island's own acceptance is)"
 else
   fail "(d) notice — $REASON"
   diag

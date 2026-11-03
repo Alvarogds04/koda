@@ -13,8 +13,8 @@ Prints one line per criterion part and exits non-zero if any part fails:
                Accessibility or Screen Recording permission);
   (c-tray)     the tray was constructed (no «tray unavailable:» in the log). This is NOT proof that a
                person sees the menu-bar icon: that stays a registered human gap;
-  (d) notice:  a Claude Code `Stop` through the INSTALLED hook reaches the island, which persists exactly
-               one turn (same proof as smoke-windows.ps1).
+  (d) notice:  a Claude Code `Stop` through the INSTALLED hook reaches the island, which logs exactly one
+               content-free «island: settled notice accepted» line (same proof as smoke-windows.ps1).
 Answering a question through the shipped app is not machine-checked here (registered human gap).
 Gatekeeper is not exercised: the copy is not quarantined, as in any unsigned CI build.
 Only disposable GitHub-hosted macOS runners are supported; never run it on a person's Mac.
@@ -27,6 +27,8 @@ import sys
 import time
 
 APP_ID = "com.abitog.AbitoTauri"
+# K2-03: the island's one content-free line per accepted settled notice (src/protocol.rs SETTLED_NOTICE_LOG_LINE).
+SETTLED_LINE = "island: settled notice accepted"
 results = []
 
 
@@ -101,9 +103,9 @@ def main():
     node = home / ".npm-global/bin/node"
     if not dmg.is_file() or not node.exists() or not (home / ".npm-global/bin/pi").exists():
         sys.exit(f"missing input: dmg={dmg.is_file()} node={node.exists()} under {home}")
-    recap = home / "Library/Application Support" / APP_ID / "recap.json"
-    if recap.exists():
-        sys.exit(f"refusing to smoke against existing island data: {recap}")
+    island_data = home / "Library/Application Support" / APP_ID
+    if island_data.exists():
+        sys.exit(f"refusing to smoke against existing island data: {island_data}")
 
     # (a) install the way a person does: from the dmg into an Applications folder.
     try:
@@ -161,7 +163,8 @@ def main():
             report("c-tray", tray_ok, "tray constructed (no «tray unavailable:»); seeing the menu-bar icon stays a human gap"
                    if tray_ok else "the log reports «tray unavailable:» or the app exited")
 
-            # (d) a Claude Code Stop through the INSTALLED hook becomes exactly one persisted island turn.
+            # (d) a Claude Code Stop through the INSTALLED hook becomes exactly one content-free island log line
+            # (src/protocol.rs SETTLED_NOTICE_LOG_LINE); hook exit and silence alone are not proof.
             workspace = work / "workspace"
             workspace.mkdir()
             payload = json.dumps({"hook_event_name": "Stop", "cwd": str(workspace),
@@ -170,16 +173,16 @@ def main():
                                       capture_output=True, text=True, timeout=60)
             contract = hook_run.returncode == 0 and hook_run.stdout == "" and hook_run.stderr == ""
 
-            def one_turn():
-                try:
-                    return len(json.loads(recap.read_text()).get("turns", [])) == 1
-                except (OSError, ValueError):
-                    return False
+            def settled_count():
+                return log_path.read_text().splitlines().count(SETTLED_LINE)
 
-            persisted = contract and wait_for(one_turn, 30)
-            report("d", persisted, "installed hook -> island persisted exactly one turn" if persisted else
+            seen = contract and wait_for(lambda: settled_count() >= 1, 30)
+            if seen:
+                time.sleep(2)  # a duplicate acceptance would land right behind the first
+            accepted = seen and settled_count() == 1
+            report("d", accepted, "installed hook -> island accepted exactly one settled notice" if accepted else
                    f"hook exit={hook_run.returncode} stdout={hook_run.stdout[:200]!r} stderr={hook_run.stderr[:200]!r}, "
-                   f"recap exists={recap.exists()}")
+                   f"«{SETTLED_LINE}» lines={settled_count()}")
         finally:
             process.terminate()
             try:
