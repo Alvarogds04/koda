@@ -166,8 +166,11 @@ fn one_frozen_role_supplies_both_model_and_instructions() {
 
 #[test]
 fn ipc_dispatcher_persists_before_events_and_failure_keeps_disk_and_roles() {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../evidence/integration-327-342-384/runtime");
-    let dir = root.join(format!("host-{}", std::process::id()));
+    // K2-03: the test must never write inside the repository checkout.
+    let repo_evidence = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../evidence");
+    let repo_evidence_existed = repo_evidence.exists();
+    let dir = std::env::temp_dir().join(format!("specialists-host-ipc-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     #[cfg(unix)] {
         use std::os::unix::fs::PermissionsExt;
@@ -193,6 +196,7 @@ fn ipc_dispatcher_persists_before_events_and_failure_keeps_disk_and_roles() {
     assert_eq!(events, 1);
     assert_eq!(specialists::read_file(&dir).unwrap(), before);
     std::fs::remove_dir_all(dir).unwrap();
+    assert!(repo_evidence_existed || !repo_evidence.exists(), "the test wrote under the repository: {}", repo_evidence.display());
 }
 
 fn principal_test_state(instructions: &str) -> AppState {
