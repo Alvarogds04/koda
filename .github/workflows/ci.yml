@@ -1,0 +1,206 @@
+name: CI (Linux, macOS, Windows)
+
+# K2-01: every Koda suite on every push to main and every pull request, on real Linux, macOS and Windows.
+# fail-fast is off and each suite is its own step, so the result of every suite on every OS is visible in GitHub.
+# Free: the repository is public and only GitHub-hosted standard runners are used.
+#
+# Suites: desktop-daemon, desktop-harness (agent hooks), desktop-pi (Pi extension), desktop-sound, the island's
+# Node checks (apps/desktop-tauri/test-node) and the island's Rust tests (cargo test).
+# A skip is allowed only where a test names its OS mechanism and its twin runs on the other OS (see each suite).
+# Also on every branch push (preview/** keeps its own workflows), so a feature branch is proven on the 3 OS before its PR.
+# workflow_dispatch only works once this file is on the default branch.
+on:
+  push:
+    branches-ignore: ['preview/**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Pinned on purpose: a new Pi or Playwright release must not silently change what CI tests.
+  PI_VERSION: '1.4.0'
+  PLAYWRIGHT_VERSION: '1.62.1'
+  SHERPA_VERSION: '1.13.8'
+
+jobs:
+  node-suites:
+    name: Node suites (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-26, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install the real Pi (real-Pi tests must run, never skip)
+        shell: bash
+        run: |
+          # Retried ONLY on registry/network errors; any other npm failure fails at once.
+          for attempt in 1 2 3 4 5 6; do
+            if npm i -g "@earendil-works/pi-coding-agent@$PI_VERSION" 2>&1 | tee "$RUNNER_TEMP/npm-pi.log"; then break; fi
+            if ! grep -qE 'npm error code (ETARGET|ETIMEDOUT|ECONNRESET|ECONNREFUSED|EAI_AGAIN|ENOTFOUND|E5[0-9][0-9]|ESOCKETTIMEDOUT|EPIPE)|network (timeout|socket)' "$RUNNER_TEMP/npm-pi.log"; then
+              echo "npm failed with a non-network error: not retrying"; exit 1
+            fi
+            if [ "$attempt" = 6 ]; then echo "npm install of Pi kept failing on network errors"; exit 1; fi
+            echo "registry/network error on attempt $attempt; retrying in $((attempt * 20))s"; sleep $((attempt * 20))
+          done
+          ROOT="$(npm root -g)/@earendil-works/pi-coding-agent"
+          test -f "$ROOT/dist/core/extensions/loader.js"
+          echo "PI_CODING_AGENT_ROOT=$ROOT" >> "$GITHUB_ENV"
+      - name: Windows install layout for the harness suite (real ACL helper + manifest)
+        if: runner.os == 'Windows'
+        working-directory: apps/desktop-tauri
+        shell: bash
+        run: |
+          # The checkout is laid out like the install, so the installer tests run the real Windows path: the native helper,
+          # hash-checked against a manifest written by the same generator the installer build uses.
+          cargo build --locked --bin abito-private-session
+          cp target/debug/abito-private-session.exe ../abito-private-session.exe
+          node packaging/windows/install-manifest.cjs --dist ../
+          echo "ABITO_TEST_HELPER=$(cd .. && pwd -W)/abito-private-session.exe" >> "$GITHUB_ENV"
+      - name: desktop-daemon
+        if: ${{ !cancelled() }}
+        working-directory: apps/desktop-daemon
+        shell: bash
+        env:
+          ABITO_REQUIRE_PI: '1'
+        run: npm test
+      - name: desktop-harness (agent hooks)
+        if: ${{ !cancelled() }}
+        working-directory: apps/desktop-harness
+        shell: bash
+        run: npm test
+      - name: desktop-pi (Pi extension)
+        if: ${{ !cancelled() }}
+        working-directory: apps/desktop-pi
+        shell: bash
+        run: |
+          node --test --test-reporter=tap test/*.test.cjs 2>&1 | tee "$RUNNER_TEMP/pi.log"
+          test "${PIPESTATUS[0]}" -eq 0
+          # Allowed skips, by name only: the Windows-only twins on Linux/macOS and the live Unix-pid probe on Windows.
+          skipped="$(grep -E '^[[:space:]]*(ok|not ok) [0-9]+ - .*# SKIP' "$RUNNER_TEMP/pi.log" || true)"
+          unexpected="$(printf '%s\n' "$skipped" | grep -v '^$' | grep -v -E 'Windows twin|a live process writing an island-like endpoint.json' || true)"
+          echo "skips: ${skipped:-none}"
+          if [ -n "$unexpected" ]; then echo "UNEXPECTED SKIP:"; echo "$unexpected"; exit 1; fi
+      - name: desktop-sound
+        if: ${{ !cancelled() }}
+        working-directory: apps/desktop-sound
+        shell: bash
+        run: npm test
+
+  island-checks:
+    name: Island Node checks (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-26, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install pinned Playwright and its Chromium (the browser checks need it)
+        shell: bash
+        run: |
+          npm i -g "playwright@$PLAYWRIGHT_VERSION"
+          ROOT="$(npm root -g)"
+          if [ "$RUNNER_OS" = Linux ]; then npx --yes "playwright@$PLAYWRIGHT_VERSION" install --with-deps chromium
+          else npx --yes "playwright@$PLAYWRIGHT_VERSION" install chromium; fi
+          echo "PLAYWRIGHT_PATH=$ROOT/playwright" >> "$GITHUB_ENV"
+          echo "NODE_PATH=$ROOT" >> "$GITHUB_ENV"
+      - name: apps/desktop-tauri/test-node checks
+        shell: bash
+        run: node run-node-checks.cjs
+
+  rust:
+    name: Island Rust tests (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-26, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    defaults:
+      run:
+        working-directory: apps/desktop-tauri
+    env:
+      CARGO_TERM_COLOR: never
+      RUST_BACKTRACE: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop-tauri
+          cache-on-failure: true
+      - name: Linux system libraries (Tauri, tray, audio, keyring) and a virtual display
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev \
+            libxdo-dev libssl-dev libpulse-dev libasound2-dev libdbus-1-dev xvfb dbus-x11
+      - name: Fetch pinned sherpa-onnx static libs (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          A="sherpa-onnx-v${SHERPA_VERSION}-linux-x64-static-lib.tar.bz2"
+          curl -fsSL -o "$RUNNER_TEMP/$A" "https://github.com/k2-fsa/sherpa-onnx/releases/download/v${SHERPA_VERSION}/$A"
+          echo "e1fdc5b67530e15741ef897fa5ffff297056f3bf0c6d829a27af9225a4c4b5a6  $RUNNER_TEMP/$A" | sha256sum -c -
+          tar -xjf "$RUNNER_TEMP/$A" -C "$RUNNER_TEMP"
+          echo "SHERPA_ONNX_LIB_DIR=$RUNNER_TEMP/sherpa-onnx-v${SHERPA_VERSION}-linux-x64-static-lib/lib" >> "$GITHUB_ENV"
+      - name: Fetch pinned sherpa-onnx static libs (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          A="sherpa-onnx-v${SHERPA_VERSION}-osx-arm64-static-lib.tar.bz2"
+          curl -fsSL -o "$RUNNER_TEMP/$A" "https://github.com/k2-fsa/sherpa-onnx/releases/download/v${SHERPA_VERSION}/$A"
+          echo "9091bf160dc7fdacedbc906b212badf53c2993f4e5277a0e03998e96c31d60da  $RUNNER_TEMP/$A" | shasum -a 256 -c -
+          tar -xjf "$RUNNER_TEMP/$A" -C "$RUNNER_TEMP"
+          echo "SHERPA_ONNX_LIB_DIR=$RUNNER_TEMP/sherpa-onnx-v${SHERPA_VERSION}-osx-arm64-static-lib/lib" >> "$GITHUB_ENV"
+      - name: Fetch pinned sherpa-onnx static libs (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $pin = (Get-Content packaging/windows/sherpa-onnx.sha256).Trim() -split '\s+'
+          $archive = Join-Path $env:RUNNER_TEMP $pin[1]
+          Invoke-WebRequest "https://github.com/k2-fsa/sherpa-onnx/releases/download/v$env:SHERPA_VERSION/$($pin[1])" -OutFile $archive
+          if ((Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne $pin[0]) { throw 'sherpa archive SHA256 mismatch' }
+          tar -xjf $archive -C $env:RUNNER_TEMP
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $lib = Join-Path $env:RUNNER_TEMP (($pin[1] -replace '\.tar\.bz2$', '') + '/lib')
+          if (-not (Test-Path (Join-Path $lib 'sherpa-onnx-c-api.lib'))) { throw 'Pinned sherpa archive lacks sherpa-onnx-c-api.lib' }
+          "SHERPA_ONNX_LIB_DIR=$lib" >> $env:GITHUB_ENV
+          "SHERPA_ONNX_ARCHIVE_DIR=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
+      - name: cargo test (Linux, on a virtual display with a session bus)
+        if: runner.os == 'Linux'
+        run: dbus-run-session -- xvfb-run -a cargo test --locked --no-fail-fast
+      - name: cargo test (macOS)
+        if: runner.os == 'macOS'
+        run: cargo test --locked --no-fail-fast
+      - name: cargo test (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cargo test --locked --no-fail-fast
+          exit $LASTEXITCODE
