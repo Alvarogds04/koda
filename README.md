@@ -51,6 +51,7 @@ Each agent row in *Ajustes → Agentes* works on its own: Claude Code and Codex 
 | `apps/desktop-harness` | Claude Code / Codex hook handlers (Node) |
 | `apps/desktop-pi` | Pi extension |
 | `apps/desktop-sound` | sound engine |
+| `assets/koda` | Koda's 42 animations as transparent 512×512 GIF and animated WebP (stickers, wallpapers, avatars): [gallery](assets/koda/README.md) |
 
 Internal names (the `abito-island` binary, `~/.abito-island` data folder, `ABITO_*` variables, the protocol) still carry the
 old name; renaming them is planned separately so existing installs keep working.
