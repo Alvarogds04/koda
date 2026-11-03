@@ -91,13 +91,16 @@ GUI installs on macOS/Windows use the canonical home directory only when
 invalid settings still fail, debug roots remain unchanged, and Linux still
 requires its launcher-provided setting.
 
-`ci/public/preview-macos.yml` tests on standard `macos-26`, builds the unsigned
-app/dmg, and runs `smoke-macos.py` with a minimal OS-only environment. It verifies
-both daemon readiness and notice transport startup, then missing-Pi advice with
-notices still available. The smoke script refuses non-CI hosts and installs no
-hooks. Logs and bundles are uploaded even on a failed smoke. The matching
-`release-macos.yml` uses the identical bundle config. CI execution does not prove
-Finder interaction, Gatekeeper acceptance, or a human-installed Mac launch.
+`.github/workflows/ci.yml` (job «Installer smoke (macos-26)») builds the unsigned
+app/dmg on standard `macos-26`, verifies its ad-hoc seal and Info.plist, installs the
+`.app` from the `.dmg` into a private Applications folder and runs
+`ci/public/smoke-macos-installed.py` on the installed copy with a minimal OS-only
+environment: daemon readiness, an on-screen island window, the tray, and a Claude
+`Stop` notice persisted by the island. `ci/public/smoke-macos.py` then checks the
+missing-Pi advice with notices still available. Both smoke scripts refuse non-CI
+hosts. Logs are uploaded even on a failed smoke. `release-macos.yml` uses the
+identical bundle config. CI execution does not prove Finder interaction, Gatekeeper
+acceptance, or a human-installed Mac launch.
 
 ## Recursive verification envelope
 

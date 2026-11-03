@@ -7,7 +7,8 @@ name: CI (Linux, macOS, Windows)
 # Suites: desktop-daemon, desktop-harness (agent hooks), desktop-pi (Pi extension), desktop-sound, the island's
 # Node checks (apps/desktop-tauri/test-node) and the island's Rust tests (cargo test).
 # A skip is allowed only where a test names its OS mechanism and its twin runs on the other OS (see each suite).
-# Also on every branch push (preview/** keeps its own workflows), so a feature branch is proven on the 3 OS before its PR.
+# Also on every branch push (except preview/**, which only triggers preview-windows.yml), so a feature branch is proven on
+# the 3 OS before its PR.
 # workflow_dispatch only works once this file is on the default branch.
 on:
   push:
@@ -304,6 +305,20 @@ jobs:
           npx --yes @tauri-apps/cli@2 build --ci --bundles app,dmg \
             --config "$(node packaging/macos-config.cjs)" \
             -- --locked
+      - name: Verify bundle seal, Info.plist and the version the app shows
+        run: |
+          set -euo pipefail
+          app=$(ls -d target/release/bundle/macos/*.app)
+          codesign --verify --deep --strict --verbose=2 "$app"
+          codesign -dv "$app" 2>&1 | tee "$RUNNER_TEMP/codesign.txt"
+          grep -q '^Signature=adhoc' "$RUNNER_TEMP/codesign.txt"
+          test -d "$app/Contents/_CodeSignature"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :LSUIElement' "$app/Contents/Info.plist")" = true
+          /usr/libexec/PlistBuddy -c 'Print :NSMicrophoneUsageDescription' "$app/Contents/Info.plist" >/dev/null
+          want=$(node -p "require('./tauri.conf.json').version")
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")" = "$want"
+      - name: Installed runtime lookup in a release build
+        run: cargo test --release --locked --test platform_runtime
       - name: Isolated home with the pinned Pi and a node link
         run: |
           prefix="$RUNNER_TEMP/koda-smoke/home/.npm-global"
@@ -316,15 +331,20 @@ jobs:
           set -euo pipefail
           dmg=$(ls target/release/bundle/dmg/*.dmg)
           python3 ci/public/smoke-macos-installed.py "$dmg" "$RUNNER_TEMP/koda-smoke"
+      - name: Missing-Pi advice with notices still available (installed copy)
+        if: ${{ !cancelled() }}
+        run: python3 ci/public/smoke-macos.py "$(ls -d "$RUNNER_TEMP"/koda-smoke/Applications/*.app)" "$RUNNER_TEMP/koda-smoke/home"
       - name: Upload smoke log
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
           name: installer-smoke-macos
-          path: ${{ runner.temp }}/koda-smoke/*.log
+          path: |
+            ${{ runner.temp }}/koda-smoke/*.log
+            ${{ runner.temp }}/koda-smoke/home/*.log
           if-no-files-found: warn
 
   installer-smoke-windows:
     name: Installer smoke (windows-latest)
-    # The full Windows installer build + install/hooks/uninstall smoke already lives in preview-windows.yml.
+    # The full Windows installer build + install/hooks/uninstall smoke lives in preview-windows.yml (workflow_call).
     uses: ./.github/workflows/preview-windows.yml

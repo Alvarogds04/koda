@@ -1,6 +1,6 @@
 'use strict';
 // Windows CI lays the checkout out like an install (apps/abito-private-session.exe + apps/abito-install.json written by
-// packaging/windows/install-manifest.cjs; see the «Windows install layout» step of preview-pi-pruebas.yml) so the installer tests run the
+// packaging/windows/install-manifest.cjs; see the «Windows install layout» step of .github/workflows/ci.yml) so the installer tests run the
 // real HU-047 path. If that layout is missing the install tests would all fail with helper_untrusted for the wrong reason: fail here, loudly,
 // never skip. Linux/macOS never use the helper; this test is the Windows twin of «the installer has a trusted backend».
 const { test } = require('node:test');
