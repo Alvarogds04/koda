@@ -1,0 +1,6 @@
+# GitHub Actions workflows: long shell lines are normal, `on:` is a key (not a boolean), no document marker.
+extends: default
+rules:
+  line-length: {max: 200}
+  truthy: {check-keys: false}
+  document-start: disable

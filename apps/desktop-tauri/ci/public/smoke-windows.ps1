@@ -175,6 +175,10 @@ try {
     }
     Start-Island 'ready'
     Wait-For { (Get-Content -Raw -LiteralPath (Join-Path $root 'ready.stderr.log')) -match 'abito-island-daemon: running' } 'installed daemon startup'
+    # K2-01a: the installed island shows a top-level window and builds its tray (a person must still SEE them).
+    Wait-For { (Get-Process -Id $script:process.Id).MainWindowHandle -ne [IntPtr]::Zero } 'installed island window'
+    if ((Get-Content -Raw -LiteralPath (Join-Path $root 'ready.stderr.log')) -match 'tray unavailable:') { throw 'Installed island could not build its tray' }
+    Write-Host 'PASS installed island owns a top-level window and built its tray (no «tray unavailable:»)'
     # Public installed daemon status performs the native authenticated session checks.
     & $node (Join-Path $install 'desktop-daemon/src/cli.cjs') status
     if ($LASTEXITCODE -ne 0) { throw 'Installed daemon status refused' }
