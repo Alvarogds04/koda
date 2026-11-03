@@ -17,7 +17,7 @@ foreach ($dir in @($workspace, $nodeDir, $roaming, $empty)) { New-Item -ItemType
 $node = Join-Path $nodeDir 'node.exe'
 Copy-Item -LiteralPath (Get-Command node.exe).Source -Destination $node
 # Pi is a real package, isolated from the runner's global npm prefix. No model call.
-& npm.cmd install --global --prefix (Join-Path $roaming 'npm') '@earendil-works/pi-coding-agent'
+& npm.cmd install --global --prefix (Join-Path $roaming 'npm') '@earendil-works/pi-coding-agent@1.4.0'
 if ($LASTEXITCODE -ne 0) { throw 'Isolated Pi installation failed' }
 $localData = [Environment]::GetFolderPath('LocalApplicationData')
 $recap = Join-Path $localData 'com.abitog.AbitoTauri/recap.json'
