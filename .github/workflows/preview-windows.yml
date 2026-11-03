@@ -4,6 +4,8 @@ on:
   push:
     branches: ['preview/**']
   workflow_dispatch:
+  # K2-01a: ci.yml calls this job as the Windows installer smoke on every branch push and pull request.
+  workflow_call:
 
 permissions:
   contents: read

@@ -229,3 +229,102 @@ jobs:
         run: |
           cargo test --locked --no-fail-fast
           exit $LASTEXITCODE
+
+  # K2-01a criterion 2: the installer of each OS, installed the way a person installs it, starts, shows the island and
+  # its tray, and an agent notice reaches it. What only a person can see (the tray icon, answering a question through
+  # the shipped app, Gatekeeper/SmartScreen on first launch) is a registered human gap, printed by each smoke.
+  installer-smoke-linux:
+    name: Installer smoke (ubuntu-latest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: System libraries, a virtual display, a window manager and a session bus
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev \
+            libxdo-dev libssl-dev libpulse-dev libasound2-dev libdbus-1-dev xvfb dbus-x11 \
+            openbox x11-utils dbus python3-gi gir1.2-glib-2.0 procps
+      - name: Fetch pinned sherpa-onnx static libs (Linux)
+        run: |
+          set -euo pipefail
+          A="sherpa-onnx-v${SHERPA_VERSION}-linux-x64-static-lib.tar.bz2"
+          curl -fsSL -o "$RUNNER_TEMP/$A" "https://github.com/k2-fsa/sherpa-onnx/releases/download/v${SHERPA_VERSION}/$A"
+          echo "e1fdc5b67530e15741ef897fa5ffff297056f3bf0c6d829a27af9225a4c4b5a6  $RUNNER_TEMP/$A" | sha256sum -c -
+          tar -xjf "$RUNNER_TEMP/$A" -C "$RUNNER_TEMP"
+          echo "SHERPA_ONNX_LIB_DIR=$RUNNER_TEMP/sherpa-onnx-v${SHERPA_VERSION}-linux-x64-static-lib/lib" >> "$GITHUB_ENV"
+      - name: Pinned Pi (the app-owned daemon refuses to start without one, as on a user machine)
+        run: npm i -g "@earendil-works/pi-coding-agent@$PI_VERSION"
+      - name: Warm the cargo registry (build.cjs builds --offline --locked)
+        working-directory: apps/desktop-tauri
+        run: cargo fetch --locked
+      - name: Build, install and smoke the shipped Linux package
+        run: |
+          sh apps/desktop-tauri/ci/public/smoke-linux.sh --app "$GITHUB_WORKSPACE/apps/desktop-tauri" \
+            --work "$RUNNER_TEMP/koda-smoke" --pi "$(command -v pi)"
+      - name: Upload smoke logs
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: installer-smoke-linux
+          path: ${{ runner.temp }}/koda-smoke/**/*.log
+          if-no-files-found: warn
+
+  installer-smoke-macos:
+    name: Installer smoke (macos-26)
+    runs-on: macos-26
+    timeout-minutes: 75
+    defaults:
+      run:
+        working-directory: apps/desktop-tauri
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Fetch pinned sherpa-onnx static libs (macOS)
+        run: |
+          set -euo pipefail
+          A="sherpa-onnx-v${SHERPA_VERSION}-osx-arm64-static-lib.tar.bz2"
+          curl -fsSL -o "$RUNNER_TEMP/$A" "https://github.com/k2-fsa/sherpa-onnx/releases/download/v${SHERPA_VERSION}/$A"
+          echo "9091bf160dc7fdacedbc906b212badf53c2993f4e5277a0e03998e96c31d60da  $RUNNER_TEMP/$A" | shasum -a 256 -c -
+          tar -xjf "$RUNNER_TEMP/$A" -C "$RUNNER_TEMP"
+          echo "SHERPA_ONNX_LIB_DIR=$RUNNER_TEMP/sherpa-onnx-v${SHERPA_VERSION}-osx-arm64-static-lib/lib" >> "$GITHUB_ENV"
+      - name: Build .app and .dmg (unsigned, ad-hoc; no Apple account)
+        run: |
+          npx --yes @tauri-apps/cli@2 build --ci --bundles app,dmg \
+            --config "$(node packaging/macos-config.cjs)" \
+            -- --locked
+      - name: Isolated home with the pinned Pi and a node link
+        run: |
+          prefix="$RUNNER_TEMP/koda-smoke/home/.npm-global"
+          mkdir -p "$prefix/bin"
+          chmod 700 "$RUNNER_TEMP/koda-smoke" "$RUNNER_TEMP/koda-smoke/home"
+          npm install --global --prefix "$prefix" "@earendil-works/pi-coding-agent@$PI_VERSION"
+          ln -s "$(command -v node)" "$prefix/bin/node"
+      - name: Install from the .dmg and smoke the installed app
+        run: |
+          set -euo pipefail
+          dmg=$(ls target/release/bundle/dmg/*.dmg)
+          python3 ci/public/smoke-macos-installed.py "$dmg" "$RUNNER_TEMP/koda-smoke"
+      - name: Upload smoke log
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: installer-smoke-macos
+          path: ${{ runner.temp }}/koda-smoke/*.log
+          if-no-files-found: warn
+
+  installer-smoke-windows:
+    name: Installer smoke (windows-latest)
+    # The full Windows installer build + install/hooks/uninstall smoke already lives in preview-windows.yml.
+    uses: ./.github/workflows/preview-windows.yml
