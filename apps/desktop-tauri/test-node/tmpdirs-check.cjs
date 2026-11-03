@@ -57,6 +57,27 @@ test('dirs of DEAD runs are swept on the next use; dirs of LIVE processes and fo
   fs.rmSync(b, { recursive: true, force: true }); fs.rmSync(outside, { recursive: true, force: true });
 });
 
+test('K2-01b: liveness does not depend on /proc — on a system without it (macOS) a LIVE process\'s dir survives the sweep', () => {
+  // Simulate macOS: no /proc entries exist. The sweep must still recognise the live parent and keep its dir.
+  const b = base();
+  const dead = deadPid();
+  const mk = n => { const p = path.join(b, n); fs.mkdirSync(p, { mode: 0o700 }); return p; };
+  const parent = mk(`abito-m-${process.ppid}-QqQqQq`);
+  const abandoned = mk(`abito-m-${dead}-AbCdEf`);
+  const zero = mk('abito-m-0-ZzZzZz');                       // pid 0 / huge pids address process groups in kill(2): never "alive"
+  const huge = mk(`abito-m-${2 ** 32}-HhHhHh`);
+  const realExists = fs.existsSync;
+  fs.existsSync = (p) => (String(p).startsWith('/proc/') ? false : realExists(p));
+  let fresh;
+  try { fresh = T.make('abito-m-', { base: b }); } finally { fs.existsSync = realExists; }
+  assert.ok(fs.existsSync(parent), 'the live parent\'s dir is kept without /proc');
+  assert.equal(fs.existsSync(abandoned), false, 'a dead run\'s dir is still swept');
+  assert.equal(fs.existsSync(zero), true, 'pid 0 never matches the sweep (as before)');
+  assert.equal(fs.existsSync(huge), false, 'an impossible pid is not alive: its leftover dir is swept');
+  assert.ok(fs.existsSync(fresh));
+  fs.rmSync(b, { recursive: true, force: true });
+});
+
 test('repeated runs do not pile up: after 3 child runs the base is empty', () => {
   const b = base();
   for (let i = 0; i < 3; i++) cp.spawnSync(process.execPath, ['-e', `const T=require(${JSON.stringify(path.join(__dirname, 'tmpdirs.cjs'))}); for (let i=0;i<20;i++) T.make('abito-r-',{base:${JSON.stringify(b)}});`]);

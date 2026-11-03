@@ -13,6 +13,10 @@ const { AgentsManager } = require("../src/agents.cjs");
 const { win, unixOnly } = require("./platform-env.cjs");
 
 const FIXTURE = path.join(__dirname, "fixtures", "fake-installer.cjs");
+// macOS injects __CF_USER_TEXT_ENCODING into every process at exec (CoreFoundation); the fake
+// installer records its own process.env, so on darwin this key appears although the product passed
+// an allowlisted env. It is OS-injected and never comes from the parent environment — not a leak.
+const OS_INJECTED_ENV = process.platform === "darwin" ? ["__CF_USER_TEXT_ENCODING"] : [];
 const HASH_A = "a".repeat(64);
 const HASH_B = "b".repeat(64);
 const HASH_R = "c".repeat(64);
@@ -356,7 +360,7 @@ test("child env: allowlist + ABITO_ISLAND_EXE only, HOME is the real home passed
 	}
 	assert.equal(s.calls().length, 7);
 	for (const call of s.calls()) {
-		for (const k of Object.keys(call.env)) assert.ok(["PATH", "HOME", "LANG", "ABITO_ISLAND_EXE"].includes(k), `unexpected env ${k}`);
+		for (const k of Object.keys(call.env)) assert.ok(["PATH", "HOME", "LANG", "ABITO_ISLAND_EXE", ...OS_INJECTED_ENV].includes(k), `unexpected env ${k}`);
 		assert.equal(call.env.PATH, `${path.dirname(process.execPath)}:/usr/bin:/bin`, "the Node that runs the installer leads PATH (K2-02)");
 		assert.equal(call.env.HOME, s.home);
 		assert.equal(call.env.ABITO_ISLAND_EXE, fs.realpathSync(process.execPath));

@@ -31,7 +31,14 @@ function ours(dir) {
   try { st = fs.lstatSync(dir); } catch { return false; }
   return st.isDirectory() && !st.isSymbolicLink() && st.uid === process.getuid() && (st.mode & 0o777) === 0o700;
 }
-const alive = (pid) => fs.existsSync(`/proc/${pid}`);
+// Liveness without /proc (macOS has none; K2-01b): signal 0 checks existence only and sends nothing. EPERM = a live
+// process we may not signal; ESRCH (or anything else) = gone. 0, negative and values beyond a pid_t would address a
+// process GROUP in kill(2) — like the missing /proc/<pid> they are not alive.
+const MAX_PID = 2 ** 31 - 1;
+function alive(pid) {
+  if (!Number.isSafeInteger(pid) || pid <= 0 || pid > MAX_PID) return false;
+  try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; }
+}
 
 /** Remove dirs of dead runs that match `<prefix><pid>-<6>` exactly. */
 function sweep(prefix, base) {

@@ -24,11 +24,17 @@ const mtimeOf = (file) => {
 };
 const REAL = [path.join(os.homedir(), ".claude", "settings.json"), path.join(os.homedir(), ".codex", "hooks.json")];
 
-/** Private copy of bin/ + src/ with 0644/0755 modes: the use-time trust check refuses group-writable scripts. */
+/** Private copy of the PACKAGED layout with 0644/0755 modes: the use-time trust check refuses
+ *  group-writable scripts, and the harness's darwin parent-identity probe (installer-platform.cjs)
+ *  requires ../../desktop-daemon/src/procinfo.cjs to resolve exactly as it does in the bundled app
+ *  (packaging/lib.cjs stages desktop-harness/ next to desktop-daemon/src/procinfo.cjs). */
 function copyInstaller(dest) {
 	for (const sub of ["bin", "src"]) {
-		fs.cpSync(path.join(HARNESS, sub), path.join(dest, sub), { recursive: true });
+		fs.cpSync(path.join(HARNESS, sub), path.join(dest, "desktop-harness", sub), { recursive: true });
 	}
+	fs.mkdirSync(path.join(dest, "desktop-daemon", "src"), { recursive: true, mode: 0o755 });
+	fs.copyFileSync(path.join(__dirname, "..", "src", "procinfo.cjs"), path.join(dest, "desktop-daemon", "src", "procinfo.cjs"));
+	fs.chmodSync(path.join(dest, "desktop-daemon", "src", "procinfo.cjs"), 0o644);
 	const walk = (dir) => {
 		fs.chmodSync(dir, 0o755);
 		for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -37,9 +43,9 @@ function copyInstaller(dest) {
 			else fs.chmodSync(p, 0o644);
 		}
 	};
-	walk(path.join(dest, "bin"));
-	walk(path.join(dest, "src"));
-	return path.join(dest, "bin", "abito-hook.cjs");
+	walk(path.join(dest, "desktop-harness", "bin"));
+	walk(path.join(dest, "desktop-harness", "src"));
+	return path.join(dest, "desktop-harness", "bin", "abito-hook.cjs");
 }
 
 const THIRD = { hooks: { PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "/usr/bin/true" }] }] }, theme: "dark" };

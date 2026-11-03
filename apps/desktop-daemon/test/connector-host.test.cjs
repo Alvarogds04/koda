@@ -16,12 +16,18 @@ const unixOnly = (twin = TWIN) => ({ skip: WIN && `Unix mechanism (AF_UNIX, mode
 const winOnly = { skip: !WIN && "Windows-only twin of the Unix-mechanism connector-host tests" };
 
 const FIXTURE = path.join(__dirname, "fixtures", "fake-connector-host.cjs");
+// macOS injects __CF_USER_TEXT_ENCODING into every process at exec (CoreFoundation); the fixture
+// records its own process.env, so on darwin this key appears although the supervisor passed an
+// allowlisted env. It is OS-injected and never comes from the parent environment — not a leak.
+const OS_INJECTED_ENV = process.platform === "darwin" ? ["__CF_USER_TEXT_ENCODING"] : [];
 function setup(t, mode = {}, overrides = {}) {
-	const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "abito-host-")));
-	const island = path.join(root, "island");
-	fs.mkdirSync(island, { mode: 0o700 });
+	// Socket-path budget: validateEndpoint allows 107 bytes and macOS binds at most 103 (sun_path).
+	// The macOS CI temp prefix (/private/var/folders/<2>/<31>/T/) is already 58 bytes, so the island
+	// IS the short temp root: <island>/connector-host-run/p-XXXXXX/s stays ≤ 103 bytes everywhere.
+	// Same layout and behaviour on Linux and Windows; only the temp root is shorter.
+	const island = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "k-")));
 	fs.mkdirSync(path.join(island, "home"), { mode: 0o700 });
-	const bin = path.join(root, "host");
+	const bin = path.join(island, "host");
 	fs.copyFileSync(FIXTURE, bin);
 	fs.chmodSync(bin, 0o700);
 	fs.writeFileSync(path.join(island, ".fake-host-mode.json"), JSON.stringify(mode), { mode: 0o600 });
@@ -34,9 +40,9 @@ function setup(t, mode = {}, overrides = {}) {
 			const deadline = Date.now() + 1000;
 			while (Date.now() < deadline && (() => { try { process.kill(child.pid, 0); return true; } catch { return false; } })()) await new Promise((r) => setTimeout(r, 10));
 		}
-		fs.rmSync(root, { recursive: true, force: true });
+		fs.rmSync(island, { recursive: true, force: true });
 	});
-	return { root, island, bin, host, logs };
+	return { root: island, island, bin, host, logs };
 }
 
 test("trusted binary validation rejects unsafe paths and modes before spawning", unixOnly(), async (t) => {
@@ -100,11 +106,12 @@ test("spawn is direct, argv is exact, and the child environment is allowlisted",
 		assert.equal(child.spawnfile, bin);
 		assert.deepEqual(child.spawnargs.slice(1), ["--island", island, "--parent", String(process.pid)]);
 		assert.equal(procIdentity(child.pid).ppid, process.pid);
-		const env = fs.readFileSync(`/proc/${child.pid}/environ`).toString("utf8").split("\0").filter(Boolean);
-		assert.deepEqual(env.map((entry) => entry.slice(0, entry.indexOf("="))).sort(), ["HOME", "LANG", "PATH"]);
-		assert.ok(env.includes(`HOME=${path.join(island, "home")}`));
-		assert.ok(env.includes(`PATH=${childPathWithNodeFirst(path.dirname(process.execPath))}`));
-		assert.ok(!env.join("\n").includes("canary"));
+		// The fixture records its own process.env (0600) because /proc/<pid>/environ is Linux-only.
+		const entries = JSON.parse(fs.readFileSync(path.join(island, ".fake-host-env.json"), "utf8"));
+		assert.deepEqual(entries.map(([key]) => key).sort(), ["HOME", "LANG", "PATH", ...OS_INJECTED_ENV]);
+		assert.ok(entries.some(([key, value]) => key === "HOME" && value === path.join(island, "home")));
+		assert.ok(entries.some(([key, value]) => key === "PATH" && value === childPathWithNodeFirst(path.dirname(process.execPath))), "the daemon's own node leads the child PATH (K2-02)");
+		assert.ok(!entries.map(([, value]) => value).join("\n").includes("canary"));
 	} finally { await host.stop(); }
 });
 
