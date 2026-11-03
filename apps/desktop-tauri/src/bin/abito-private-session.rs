@@ -134,7 +134,7 @@ fn parent_evidence(pid: u32) -> Option<Value> {
 fn target_parts(args: &[String]) -> Option<&'static [&'static str]> {
     if args.len() != 2 || args[0] != "--check-target" { return None; }
     match args[1].as_str() {
-        "claude" | "recap" | "statusline" => Some(&[".claude", "settings.json"]),
+        "claude" | "statusline" => Some(&[".claude", "settings.json"]),
         "codex" => Some(&[".codex", "hooks.json"]),
         "copilot" => Some(&[".copilot", "hooks", "abito-island.json"]),
         "opencode" => Some(&[".config", "opencode", "plugins", "abito-island.js"]),
@@ -155,7 +155,7 @@ fn target_private(target: &std::path::Path, sid: &str) -> bool {
 fn run() -> i32 {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.as_slice() == ["--help"] {
-        println!("Usage: abito-private-session [--verify | --parent-check <pid> | --check-target <agent-id> | --check-path <p> | ...]\nNo arguments: publish bounded session JSON from stdin.\n--verify: read-only canonical session ACL/server identity/hello-ready check; silent exit 0 on success, 1 on refusal. No path arguments.\n--parent-check <pid>: Windows own-user process image/SID evidence as bounded JSON; silent exit 1 if unavailable.\n--check-path|--make-dir|--delete <abs path>, --move <from> <to>, --write-private <path> --expect none|<sha256> (stdin): Windows installer filesystem operations with owner/DACL/reparse checks; one JSON line abito-fs/1, exit 1 on refusal.\n--check-target <agent-id>: read-only Windows default hook target owner/DACL/reparse check (claude, codex, copilot, opencode, recap, statusline); silent exit 0 when private, 1 otherwise. Does not authorize installation or check audit/side files.");
+        println!("Usage: abito-private-session [--verify | --parent-check <pid> | --check-target <agent-id> | --check-path <p> | ...]\nNo arguments: publish bounded session JSON from stdin.\n--verify: read-only canonical session ACL/server identity/hello-ready check; silent exit 0 on success, 1 on refusal. No path arguments.\n--parent-check <pid>: Windows own-user process image/SID evidence as bounded JSON; silent exit 1 if unavailable.\n--check-path|--make-dir|--delete <abs path>, --move <from> <to>, --write-private <path> --expect none|<sha256> (stdin): Windows installer filesystem operations with owner/DACL/reparse checks; one JSON line abito-fs/1, exit 1 on refusal.\n--check-target <agent-id>: read-only Windows default hook target owner/DACL/reparse check (claude, codex, copilot, opencode, statusline); silent exit 0 when private, 1 otherwise. Does not authorize installation or check audit/side files.");
         return 0;
     }
     if args.first().map(String::as_str) == Some("--parent-check") {
