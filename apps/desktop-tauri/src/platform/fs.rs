@@ -113,16 +113,33 @@ mod tests {
     fn sibling_temp_survives_a_path_without_a_name() {
         // Written against measured std behaviour, not remembered spec:
         // `file_name()` ignores a trailing separator ("/etc/abito/" IS "abito"),
-        // and `Path::new("/").parent()` is None — so the name-less root falls
-        // back to the path itself and the dotfile stays absolute beside it,
-        // never in the current directory. Must not panic either way.
-        let tmp = sibling_temp(Path::new("/"));
+        // and a bare filesystem root ("/" on POSIX, "C:\\" on Windows) has
+        // `file_name() == None` and `parent() == None` — so the name-less root
+        // falls back to the path itself and the dotfile stays absolute beside
+        // it, never in the current directory. Must not panic either way. The
+        // root is taken from the OS (the temp dir's own root) because
+        // `Path::new("/")` is NOT absolute on Windows (no drive prefix): the
+        // same property is checked on every OS with its own root.
+        let temp = std::env::temp_dir();
+        let root = temp.ancestors().last().expect("every path bottoms out at its filesystem root");
+        let tmp = sibling_temp(&root);
         assert!(tmp.is_absolute(), "temp escaped to CWD: {}", tmp.display());
-        assert!(tmp.to_string_lossy().starts_with("/.abito-island.tmp."));
+        let name = tmp
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .expect("the name-less root keeps the fallback dot-name");
+        assert!(name.starts_with(".abito-island.tmp."), "got {name}");
+        let pid = name.rsplit('.').next().unwrap();
+        assert_eq!(pid.parse::<u32>().unwrap(), std::process::id());
+        assert_eq!(tmp.parent(), Some(root), "the dotfile stays beside the root");
         // A trailing separator is NOT the name-less case — it keeps the real name.
-        assert!(sibling_temp(Path::new("/etc/abito/"))
-            .to_string_lossy()
-            .starts_with("/etc/.abito."));
+        let base = std::env::temp_dir().join("abito");
+        let with_trailing =
+            std::path::PathBuf::from(format!("{}{}", base.display(), std::path::MAIN_SEPARATOR));
+        let tmp = sibling_temp(&with_trailing);
+        let name = tmp.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(name.starts_with(".abito."), "got {name}");
+        assert_eq!(tmp.parent(), Some(std::env::temp_dir().as_path()));
     }
 
     #[test]
