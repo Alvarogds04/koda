@@ -48,6 +48,7 @@ RequestExecutionLevel user
 Section "Koda"
   SetOutPath "$INSTDIR"
   !insertmacro AbitoInstallPayload
+  !insertmacro AbitoInstallRuntime
   SetOutPath "$INSTDIR"
   WriteUninstaller "$INSTDIR\uninstall.exe"
   ; Koda 0.1: an upgrade replaces the old «Abito Island» Start-menu entry with «Koda» (same binary, same install dir).
@@ -64,6 +65,7 @@ SectionEnd
 
 Section "Uninstall"
   !insertmacro AbitoUninstallPayload
+  !insertmacro AbitoUninstallRuntime
   Delete "$INSTDIR\uninstall.exe"
   RMDir "$INSTDIR" ; succeeds only when the folder is empty — never silent-recursion
   Delete "$SMPROGRAMS\Koda\Koda.lnk"

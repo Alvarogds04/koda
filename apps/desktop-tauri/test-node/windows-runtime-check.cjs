@@ -13,6 +13,7 @@ const out = path.join(scratch, 'payload');
 const files = [...L.DAEMON_FILES.map(f => `desktop-daemon/${f}`), ...L.HARNESS_FILES.map(f => `desktop-harness/${f}`), ...L.PI_FILES.map(f => `desktop-pi/${f}`)].sort();
 const bins = ['abito-island.exe', 'abito-notice-relay.exe', 'abito-private-session.exe', 'abito-install.json'];
 function run(...args) { return spawnSync(process.execPath, [script, '--out', out, ...args], { encoding: 'utf8' }); }
+function runOut(dest, ...args) { return spawnSync(process.execPath, [script, '--out', dest, ...args], { encoding: 'utf8' }); }
 function entries(dir, prefix = '') { return fs.readdirSync(dir).flatMap(n => fs.statSync(path.join(dir, n)).isDirectory() ? entries(path.join(dir, n), `${prefix}${n}/`) : [`${prefix}${n}`]).sort(); }
 // HU-062: test-only helpers of the harness suite (the pipe preload, fake receivers, fixtures) are never part of the shipped closed list,
 // and no shipped file references the preload or its switch.
@@ -115,5 +116,98 @@ try {
   fs.appendFileSync(path.join(fixtureCrate, 'packaging/windows/xbuild.sh'), '\n# changed input\n');
   r = receiptRun('--check'); assert.equal(r.status, 1); assert.equal(r.stdout, ''); assert.match(r.stderr, /inputs hash mismatch: packaging\/windows\/xbuild.sh/);
   assert.deepEqual(fs.readFileSync(receiptFile), originalReceipt);
+  // K2-02 T2 (decision B): the Windows installer ships the bundled Node+Pi runtime as ONE
+  // sha256-verified archive. Every contract line is checked as its own rule so each shows
+  // its own RED/GREEN; the archive fixture is plain bytes (no extraction happens here).
+  const crypto = require('node:crypto');
+  const sha256 = (f) => crypto.createHash('sha256').update(fs.readFileSync(f)).digest('hex');
+  const outArchive = path.join(scratch, 'payload-archive');
+  const archiveSource = path.join(scratch, 'koda-runtime-win-x64.tar.gz');
+  fs.writeFileSync(archiveSource, 'fixture runtime archive: plain bytes, not a real tar.gz');
+  const stagedArchive = path.join(outArchive, 'koda-runtime.tar.gz');
+  const runtimeNsh = () => fs.readFileSync(path.join(outArchive, 'runtime.nsh'), 'utf8');
+  const rules = [];
+  const rule = (name, fn) => rules.push([name, fn]);
+  rule('stage-runtime --runtime-archive stages the archive and embeds its sha256 at stage time', () => {
+    const r = runOut(outArchive, '--runtime-archive', archiveSource);
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, new RegExp(`runtime archive: koda-runtime\\.tar\\.gz sha256 ${sha256(stagedArchive)}`));
+    assert.deepEqual(entries(outArchive), [...files, 'koda-runtime.tar.gz', 'runtime.nsh'].sort());
+    assert.match(runtimeNsh(), new RegExp(`^!define KODA_RUNTIME_SHA256 ${sha256(stagedArchive)}$`, 'm'));
+  });
+  rule('runtime.nsh: the install macro Files the archive, verifies it with quoted certutil, extracts it with quoted System32 tar, aborts on any failure and never leaves the archive behind', () => {
+    const nsh = runtimeNsh();
+    assert.ok(nsh.includes('  File "/ONAME=koda-runtime.tar.gz" "${RUNTIMEDIR}\\koda-runtime.tar.gz"'), 'archive is File\'d under $INSTDIR');
+    assert.ok(nsh.includes(`nsExec::ExecToStack 'certutil -hashfile "$INSTDIR\\koda-runtime.tar.gz" SHA256'`), 'quoted certutil hash check');
+    assert.ok(nsh.includes(`nsExec::Exec '"$SYSDIR\\tar.exe" -xzf "$INSTDIR\\koda-runtime.tar.gz" -C "$INSTDIR\\runtime.new"'`), 'quoted System32 tar extraction into a fresh directory');
+    assert.ok((nsh.match(/Abort "/g) || []).length >= 3, 'abort on certutil failure, hash mismatch and tar failure');
+    assert.ok((nsh.match(/Delete "\$INSTDIR\\koda-runtime\.tar\.gz"/g) || []).length >= 2, 'archive deleted on mismatch and after success');
+    assert.match(nsh, /Rename "\$INSTDIR\\runtime\.new" "\$INSTDIR\\runtime"\s+\$\{If\} \$\{Errors\}/, 'extracted directory is swapped into place, failing closed');
+  });
+  rule('runtime.nsh: every RMDir /r is guarded — never an empty $INSTDIR or a drive root, never a reparse point or junction — and the uninstaller uses the same guarded removal', () => {
+    const nsh = runtimeNsh();
+    const start = nsh.indexOf('!macro AbitoRuntimeGuardedRmDirR');
+    assert.ok(start >= 0, 'guarded removal macro exists');
+    const end = nsh.indexOf('!macroend', start);
+    const guard = nsh.slice(start, end);
+    assert.equal((nsh.match(/RMDir \/r/g) || []).length, 1, 'the only RMDir /r lives inside the guarded macro');
+    assert.ok(nsh.indexOf('RMDir /r') > start && nsh.indexOf('RMDir /r') < end);
+    assert.match(guard, /StrLen \$R0 "\$INSTDIR"/);
+    assert.match(guard, /\$R0 <= 3/, 'refuse an empty $INSTDIR or a drive root');
+    assert.match(guard, /GetFileAttributesW/);
+    assert.match(guard, /& 0x400/, 'refuse FILE_ATTRIBUTE_REPARSE_POINT');
+    assert.deepEqual((nsh.match(/!insertmacro AbitoRuntimeGuardedRmDirR "[^"]*"/g) || []).map((m) => m.split('"')[1]),
+      ['$INSTDIR\\runtime.new', '$INSTDIR\\runtime.new', '$INSTDIR\\runtime', '$INSTDIR\\runtime'],
+      'stale runtime.new before extracting, runtime.new after a failed extract, old runtime swap-out and uninstall all use the guard');
+    assert.match(nsh, /!macro AbitoUninstallRuntime\s+!insertmacro AbitoRuntimeGuardedRmDirR "\$INSTDIR\\runtime"\s+!macroend/);
+  });
+  rule('runtime.nsh: a failed extract removes the archive and the partial runtime.new before aborting; the swap clears stale errors first', () => {
+    const nsh = runtimeNsh();
+    const failed = nsh.slice(nsh.indexOf('-C "$INSTDIR\\runtime.new"'), nsh.indexOf('could not extract the bundled runtime'));
+    assert.match(failed, /Delete "\$INSTDIR\\koda-runtime\.tar\.gz"\s+!insertmacro AbitoRuntimeGuardedRmDirR "\$INSTDIR\\runtime\.new"\s+Abort "Koda: $/);
+    assert.match(nsh, /ClearErrors\s+Rename "\$INSTDIR\\runtime\.new" "\$INSTDIR\\runtime"\s+\$\{If\} \$\{Errors\}/);
+  });
+  rule('nsisInclude() regenerates the staged runtime.nsh byte-for-byte (stage-win receipt equivalence)', () => {
+    const { nsisInclude: include } = require('../packaging/windows/stage-runtime.cjs');
+    assert.equal(include(outArchive), runtimeNsh());
+  });
+  rule('stage-runtime refuses a missing runtime archive with exit code 1 and an exact message', () => {
+    const absent = path.join(scratch, 'absent-koda-runtime.tar.gz');
+    const r = runOut(outArchive, '--runtime-archive', absent);
+    assert.equal(r.status, 1);
+    assert.equal(r.stdout, '');
+    assert.equal(r.stderr, `not a regular file: ${path.resolve(absent)}\n`);
+  });
+  rule('an unexpected staged entry still fails when the archive is staged, and nothing is removed', () => {
+    fs.writeFileSync(path.join(outArchive, 'unlisted.txt'), 'unlisted');
+    const r = runOut(outArchive, '--runtime-archive', archiveSource);
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /unexpected staged entry: unlisted\.txt/);
+    assert.equal(fs.readFileSync(path.join(outArchive, 'unlisted.txt'), 'utf8'), 'unlisted');
+  });
+  rule('abito-install.json lists runtime/node.exe with its sha256 via --runtime, and the previous entries are unchanged without it', () => {
+    const distA = path.join(scratch, 'dist-manifest-runtime');
+    const distB = path.join(scratch, 'dist-manifest-plain');
+    const runtimeDir = path.join(scratch, 'runtime-fixture');
+    fs.mkdirSync(distA); fs.mkdirSync(distB); fs.mkdirSync(runtimeDir);
+    fs.writeFileSync(path.join(runtimeDir, 'node.exe'), 'pinned node fixture');
+    for (const d of [distA, distB]) fs.writeFileSync(path.join(d, 'abito-private-session.exe'), 'helper fixture');
+    const runManifest = (dist, ...extra) => {
+      const r = spawnSync(process.execPath, [path.join(crate, 'packaging/windows/install-manifest.cjs'), '--dist', dist, ...extra], { encoding: 'utf8' });
+      assert.equal(r.status, 0, r.stderr);
+      return JSON.parse(fs.readFileSync(path.join(dist, 'abito-install.json'), 'utf8'));
+    };
+    const plain = runManifest(distB);
+    const withRuntime = runManifest(distA, '--runtime', runtimeDir);
+    assert.equal(withRuntime.schema, 'abito-install/1');
+    assert.deepEqual(Object.keys(withRuntime.files).sort(), [...Object.keys(plain.files), 'runtime/node.exe'].sort());
+    assert.equal(withRuntime.files['runtime/node.exe'], sha256(path.join(runtimeDir, 'node.exe')));
+    assert.deepEqual(Object.keys(plain.files).sort(), ['abito-private-session.exe', ...files].sort());
+  });
+  let failedRules = 0;
+  for (const [name, fn] of rules) {
+    try { fn(); console.log(`PASS: ${name}`); } catch (e) { failedRules += 1; console.log(`FAIL: ${name}\n      ${String(e.message).split('\n')[0]}`); }
+  }
+  if (failedRules > 0) { console.error(`FAIL: ${failedRules} runtime-archive rule(s) failed`); process.exitCode = 1; }
   console.log('PASS: Windows runtime closed set, require closure, NSIS equivalence, preservation, rejection and receipt CLI');
 } finally { fs.rmSync(scratch, { recursive: true, force: true }); }

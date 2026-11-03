@@ -41,7 +41,7 @@ jobs:
       - name: Parse Windows scripts before any account operation
         shell: pwsh -NoProfile -File {0}
         run: |
-          foreach ($script in @('foreign-user.ps1', 'smoke-windows.ps1')) {
+          foreach ($script in @('foreign-user.ps1', 'smoke-windows.ps1', 'smoke-windows-runtime.ps1')) {
             $tokens = $null
             $errors = $null
             [System.Management.Automation.Language.Parser]::ParseFile(
@@ -135,14 +135,20 @@ jobs:
           $ErrorActionPreference = 'Stop'
           node test-node/windows-runtime-check.cjs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          node packaging/windows/stage-runtime.cjs
+          # K2-02 T2 (decision B): build the pinned Node+Pi runtime first — one tar.gz whose
+          # sha256 stage-runtime embeds in runtime.nsh for the makensis-time verification.
+          $runtimeOut = "$env:RUNNER_TEMP\koda-runtime"
+          $runtimeArchive = "$env:RUNNER_TEMP\koda-runtime-win-x64.tar.gz"
+          node packaging/runtime/build-runtime.cjs --target win-x64 --out "$runtimeOut" --cache "$env:RUNNER_TEMP\koda-runtime-cache" --self-check --archive "$runtimeArchive"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node packaging/windows/stage-runtime.cjs --runtime-archive "$runtimeArchive"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $bins = @('abito-island', 'abito-notice-relay',
             'abito-private-session')
           foreach ($bin in $bins) {
             Copy-Item "target/release/$bin.exe" "dist/$bin.exe"
           }
-          node packaging/windows/install-manifest.cjs
+          node packaging/windows/install-manifest.cjs --runtime "$runtimeOut"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $nsis = 'C:\Program Files (x86)\NSIS\makensis.exe'
           if (-not (Test-Path -LiteralPath $nsis)) {
@@ -178,6 +184,18 @@ jobs:
           $config = Get-Content -Raw tauri.conf.json | ConvertFrom-Json
           $setup = "dist/koda-$($config.version)-win-x64-setup.exe"
           ./ci/public/smoke-windows.ps1 -Setup $setup
+      - name: Bundled runtime install and uninstall smoke
+        # K2-02 T2: proves the shipped runtime (decision B) natively: the installer's
+        # certutil check and System32 tar extraction run on a real runner, runtime\node.exe
+        # and the bundled Pi answer with the pinned versions, the archive is gone and the
+        # uninstaller removes $INSTDIR\runtime. Own install dir: the full smoke owns and
+        # uninstalls its own.
+        if: ${{ !cancelled() && steps.installer-build.outcome == 'success' }}
+        timeout-minutes: 10
+        run: |
+          $config = Get-Content -Raw tauri.conf.json | ConvertFrom-Json
+          $setup = "dist/koda-$($config.version)-win-x64-setup.exe"
+          ./ci/public/smoke-windows-runtime.ps1 -Setup $setup
       - name: Upload Windows installer and smoke evidence
         if: always()
         uses: actions/upload-artifact@v4

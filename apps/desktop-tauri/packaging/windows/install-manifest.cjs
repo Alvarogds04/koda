@@ -4,6 +4,9 @@
 // It lists the sha256 of the native ACL helper and of every closed runtime file, so the installer only executes
 // the helper and only registers scripts that are byte-identical to what this build shipped. Run after the native
 // binaries are copied into dist/ and before makensis; NSIS installs it next to the binaries.
+// K2-02 T2: with --runtime <dir> (the build-runtime --out folder) it also pins the bundled
+// runtime's node.exe as runtime/node.exe (win-fs.cjs only requires hex sha256 values, so the
+// extra entry needs no parser change).
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
@@ -12,7 +15,7 @@ const { RUNTIME_FILES } = require('./stage-runtime.cjs');
 const SCHEMA = 'abito-install/1';
 const HELPER = 'abito-private-session.exe';
 const sha = f => crypto.createHash('sha256').update(fs.readFileSync(f)).digest('hex');
-function build(dist) {
+function build(dist, runtime) {
   const helper = path.join(dist, HELPER);
   if (!fs.lstatSync(helper).isFile()) throw new Error(`not a regular file: ${HELPER}`);
   const files = { [HELPER]: sha(helper) };
@@ -21,17 +24,28 @@ function build(dist) {
     if (!fs.lstatSync(src).isFile()) throw new Error(`not a regular file: ${f}`);
     files[f] = sha(src);
   }
+  if (runtime) {
+    const rel = 'runtime/node.exe';
+    const src = path.join(runtime, 'node.exe');
+    if (!fs.lstatSync(src, { throwIfNoEntry: false })?.isFile()) throw new Error(`not a regular file: ${src}`);
+    files[rel] = sha(src);
+  }
   const sorted = Object.fromEntries(Object.entries(files).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
   return JSON.stringify({ schema: SCHEMA, files: sorted }) + '\n';
 }
 if (require.main === module) {
   const args = process.argv.slice(2);
-  if (args.length && !(args.length === 2 && args[0] === '--dist' && args[1])) { console.error('Usage: install-manifest.cjs [--dist DIRECTORY]'); process.exitCode = 2; }
-  else {
+  let dist, runtime;
+  for (let i = 0; i < args.length; i += 1) {
+    if (args[i] === '--dist' && args[i + 1]) [dist] = [args[(i += 1)]];
+    else if (args[i] === '--runtime' && args[i + 1]) [runtime] = [args[(i += 1)]];
+    else { console.error('Usage: install-manifest.cjs [--dist DIRECTORY] [--runtime DIRECTORY]'); process.exitCode = 2; break; }
+  }
+  if (process.exitCode !== 2) {
     try {
-      const dist = path.resolve(args[1] || path.join(crate, 'dist'));
-      fs.writeFileSync(path.join(dist, 'abito-install.json'), build(dist));
-      console.log(`manifest: ${RUNTIME_FILES.length + 1} files`);
+      const distDir = path.resolve(dist || path.join(crate, 'dist'));
+      fs.writeFileSync(path.join(distDir, 'abito-install.json'), build(distDir, runtime ? path.resolve(runtime) : undefined));
+      console.log(`manifest: ${runtime ? RUNTIME_FILES.length + 2 : RUNTIME_FILES.length + 1} files`);
     } catch (e) { console.error(e.message); process.exitCode = 1; }
   }
 }

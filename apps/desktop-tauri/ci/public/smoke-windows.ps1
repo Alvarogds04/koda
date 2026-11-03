@@ -166,7 +166,8 @@ try {
     $expectedJson = & $node -e 'const s=require("./packaging/windows/stage-runtime.cjs"); console.log(JSON.stringify([...s.BINARY_FILES,...s.RUNTIME_FILES,"uninstall.exe"].sort()))'
     if ($LASTEXITCODE -ne 0) { throw 'Cannot load expected installed file set' }
     $expected = @($expectedJson | ConvertFrom-Json)
-    $actual = @(Get-ChildItem -LiteralPath $install -File -Recurse | ForEach-Object { [IO.Path]::GetRelativePath($install, $_.FullName).Replace('\', '/') } | Sort-Object)
+    # K2-02: the bundled Node+Pi under runtime/ ships as one verified archive; ci/public/smoke-windows-runtime.ps1 proves it.
+    $actual = @(Get-ChildItem -LiteralPath $install -File -Recurse | ForEach-Object { [IO.Path]::GetRelativePath($install, $_.FullName).Replace('\', '/') } | Where-Object { -not $_.StartsWith('runtime/') } | Sort-Object)
     if (@(Compare-Object $expected $actual).Count -ne 0) { throw 'Installed payload differs from closed file set' }
     foreach ($file in $expected) {
         if ($file -eq 'uninstall.exe') { continue }
