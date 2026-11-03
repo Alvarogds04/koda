@@ -251,7 +251,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev \
             libxdo-dev libssl-dev libpulse-dev libasound2-dev libdbus-1-dev xvfb dbus-x11 \
-            openbox x11-utils dbus python3-gi gir1.2-glib-2.0 procps
+            openbox x11-utils dbus python3-gi gir1.2-glib-2.0 procps strace
       - name: Fetch pinned sherpa-onnx static libs (Linux)
         run: |
           set -euo pipefail
@@ -276,12 +276,21 @@ jobs:
           sh apps/desktop-tauri/ci/public/smoke-linux.sh --app "$GITHUB_WORKSPACE/apps/desktop-tauri" \
             --work "$RUNNER_TEMP/koda-smoke" --pi "$(command -v pi)" \
             --runtime-archive "$RUNNER_TEMP/koda-runtime-linux-x64.tar.gz"
+      - name: "No Node, no Pi: install and run on Koda's own runtime (K2-02 S1, S3; removes the runner's Node)"
+        if: ${{ !cancelled() }}
+        run: |
+          STAGE=$(find "$RUNNER_TEMP/koda-smoke/stage/abito-island" -mindepth 1 -maxdepth 1 -type d | head -n 1)
+          sh apps/desktop-tauri/ci/public/smoke-linux-no-node.sh --app "$GITHUB_WORKSPACE/apps/desktop-tauri" \
+            --stage "$STAGE" --work "$RUNNER_TEMP/koda-no-node"
       - name: Upload smoke logs
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
           name: installer-smoke-linux
-          path: ${{ runner.temp }}/koda-smoke/**/*.log
+          path: |
+            ${{ runner.temp }}/koda-smoke/**/*.log
+            ${{ runner.temp }}/koda-no-node/*.log
+            ${{ runner.temp }}/koda-no-node/connect.trace
           if-no-files-found: warn
 
   installer-smoke-macos:
@@ -353,6 +362,11 @@ jobs:
       - name: Missing-Pi advice with notices still available (installed copy)
         if: ${{ !cancelled() }}
         run: python3 ci/public/smoke-macos.py "$(ls -d "$RUNNER_TEMP"/koda-smoke/Applications/*.app)" "$RUNNER_TEMP/koda-smoke/home"
+      - name: "No Node, no Pi: install from the dmg and run on Koda's own runtime (K2-02 S1; removes the runner's Node)"
+        if: ${{ !cancelled() }}
+        run: |
+          dmg=$(ls target/release/bundle/dmg/*.dmg)
+          python3 ci/public/smoke-macos-no-node.py "$dmg" "$RUNNER_TEMP/koda-no-node"
       - name: Upload smoke log
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
@@ -361,6 +375,7 @@ jobs:
           path: |
             ${{ runner.temp }}/koda-smoke/*.log
             ${{ runner.temp }}/koda-smoke/home/*.log
+            ${{ runner.temp }}/koda-no-node/*.log
           if-no-files-found: warn
 
   installer-smoke-windows:

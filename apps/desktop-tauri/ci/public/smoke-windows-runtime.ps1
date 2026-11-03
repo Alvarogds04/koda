@@ -20,7 +20,7 @@ $nodeVersion = $nodePin[1] -replace '^node-v', '' -replace '-win-x64\.zip$', ''
 $piVersion = (Get-Content -Raw packaging/runtime/package.json | ConvertFrom-Json).dependencies.'@earendil-works/pi-coding-agent'
 if (-not $piVersion) { throw 'Cannot read the pinned Pi version from packaging/runtime/package.json' }
 $savedEnv = @{}
-foreach ($key in @('HOME', 'USERPROFILE', 'APPDATA', 'PI_OFFLINE', 'PI_SKIP_VERSION_CHECK', 'PI_TELEMETRY')) {
+foreach ($key in @('HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'PATH', 'PI_OFFLINE', 'PI_SKIP_VERSION_CHECK', 'PI_TELEMETRY')) {
     $savedEnv[$key] = [Environment]::GetEnvironmentVariable($key, 'Process')
 }
 try {
@@ -58,6 +58,62 @@ try {
     $piOut = & $runtimeNode $piCli --version
     if ($LASTEXITCODE -ne 0 -or $piOut -ne $piVersion) { throw "Bundled Pi printed '$piOut', expected $piVersion" }
     Write-Host "PASS bundled Pi answers $piVersion offline with a private empty profile"
+    # K2-02 T5 (S1): NO Node and NO Pi on this disposable runner. Every node/npm/npx/pi/corepack the runner has is renamed
+    # out of reach (nothing is restored: this is the last step that needs them) and the npm global prefix leaves PATH;
+    # then the INSTALLED island must start its daemon on <install>\runtime\node.exe. S3 (no pi.dev) for Windows is
+    # proven by apps/desktop-daemon/test/pi-offline.test.cjs in the node-suites job (no free connect() tracer here).
+    foreach ($tool in @('node', 'npm', 'npx', 'pi', 'corepack')) {
+        foreach ($hit in @(Get-Command $tool -All -ErrorAction SilentlyContinue | Where-Object { $_.Source } | ForEach-Object { $_.Source })) {
+            if (Test-Path -LiteralPath $hit) { Rename-Item -LiteralPath $hit -NewName ((Split-Path -Leaf $hit) + '.k2-02-quarantined') -Force }
+        }
+    }
+    # The runner's own npm global prefix (APPDATA was pointed at the private home above for the version checks).
+    $npmPrefix = Join-Path $savedEnv['APPDATA'] 'npm'
+    $env:PATH = (@($env:PATH -split ';') | Where-Object { $_ -and ($_ -notlike "$npmPrefix*") -and ($_ -notmatch '\\nodejs\\?$') }) -join ';'
+    if (Get-Command node -ErrorAction SilentlyContinue) { throw "node is still reachable: $((Get-Command node).Source)" }
+    if (Get-Command pi -ErrorAction SilentlyContinue) { throw "pi is still reachable: $((Get-Command pi).Source)" }
+    Write-Host 'PASS no node and no pi reachable on this runner (renamed, npm prefix off PATH; nothing restored)'
+    # A fresh, user-only data root (same recipe as smoke-windows.ps1's fresh roots): the daemon refuses a profile
+    # directory other principals can write.
+    $localData = Join-Path $root 'localappdata'
+    New-Item -ItemType Directory -Path $localData | Out-Null
+    $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+    $acl = [System.Security.AccessControl.DirectorySecurity]::new()
+    $acl.SetOwner($sid)
+    $acl.SetAccessRuleProtection($true, $false)
+    $acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($sid, 'FullControl', 'ContainerInherit, ObjectInherit', 'None', 'Allow'))
+    Set-Acl -LiteralPath $localData -AclObject $acl
+    $env:LOCALAPPDATA = $localData
+    $islandErr = Join-Path $root 'no-node.stderr.log'
+    $island = Start-Process -FilePath (Join-Path $install 'abito-island.exe') -WorkingDirectory $privateHome -PassThru `
+        -RedirectStandardOutput (Join-Path $root 'no-node.stdout.log') -RedirectStandardError $islandErr
+    try {
+        $deadline = [DateTime]::UtcNow.AddSeconds(180)
+        $daemonPid = $null
+        do {
+            Start-Sleep -Milliseconds 500
+            $text = if (Test-Path -LiteralPath $islandErr) { Get-Content -Raw -LiteralPath $islandErr } else { '' }
+            if ($text -match 'abito-island-daemon: running \(pid (\d+)\)') { $daemonPid = [int]$Matches[1]; break }
+            if ($island.HasExited) { break }
+        } while ([DateTime]::UtcNow -lt $deadline)
+        if ($null -eq $daemonPid) { throw "Installed island did not start its daemon with no Node on the machine:`n$text" }
+        if ($text -match 'island host: no_daemon') { throw 'Installed island reported no_daemon' }
+        $daemonExe = (Get-Process -Id $daemonPid).Path
+        if ($daemonExe -ne $runtimeNode) { throw "Daemon runs on '$daemonExe', expected $runtimeNode" }
+        Write-Host "PASS the installed daemon (pid $daemonPid) runs on $daemonExe with no Node and no Pi on the machine"
+        $status = & $runtimeNode (Join-Path $install 'desktop-daemon/src/cli.cjs') status
+        if ($LASTEXITCODE -ne 0 -or -not ($status -match '"running":true')) { throw "Installed daemon status failed: $status" }
+        Write-Host 'PASS installed daemon status (run by the bundled node.exe): running:true'
+    } finally {
+        if (-not $island.HasExited) { $island.Kill($true) }
+        [void]$island.WaitForExit(15000)
+        # The uninstaller must not race a daemon that still holds runtime\node.exe open.
+        if ($null -ne $daemonPid) {
+            $gone = [DateTime]::UtcNow.AddSeconds(30)
+            while ((Get-Process -Id $daemonPid -ErrorAction SilentlyContinue) -and [DateTime]::UtcNow -lt $gone) { Start-Sleep -Milliseconds 250 }
+            if (Get-Process -Id $daemonPid -ErrorAction SilentlyContinue) { Stop-Process -Id $daemonPid -Force }
+        }
+    }
     # Preserving uninstall: the guarded recursive removal takes $INSTDIR\runtime with it.
     $uninstaller = Start-Process -FilePath (Join-Path $install 'uninstall.exe') -ArgumentList '/S' -PassThru -Wait
     if ($uninstaller.ExitCode -ne 0) { throw "Uninstaller failed: $($uninstaller.ExitCode)" }
