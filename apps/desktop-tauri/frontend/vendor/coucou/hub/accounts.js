@@ -3,7 +3,6 @@ import { h, clear } from "../views/dom.js";
 import { card, row, select, label } from "./ui.js";
 import { notchCard, notchRow } from "./notch.js";
 import { action, field, note, section, status, trusted, session, preserveFocus, foldable } from "./runtime.js";
-import { piInstallControl } from "./piinstall.js";
 const PRESETS = [
   ["anthropic", "Anthropic", "https://api.anthropic.com/v1", "anthropic-messages"],
   ["google", "Google", "https://generativelanguage.googleapis.com/v1beta", "google-generative-ai"],
@@ -30,7 +29,6 @@ async function renderAccounts({ invoke, V, listen, timers, page = "all", keys: s
   let filter = "", flow = null, flowKey = "", waiting = null, lastKey = "";
   let keyPresence = null, keyBusy = "", keyError = "";
   const keys = h("section", {});
-  const piControl = piInstallControl({ call, watch, work, onDone: () => work(() => agent({ action: "view" }), (next) => apply(next)) });
   const withoutError = (st) => JSON.stringify({ ...st, last_error: null });
   function apply(next) {
     if (!s.alive() || !next || typeof next !== "object") return;
@@ -302,10 +300,6 @@ async function renderAccounts({ invoke, V, listen, timers, page = "all", keys: s
       ...retry ? [retry] : chat ? [restart] : []
     );
     if (page !== "integrations") root.append(engine);
-    if (chat) {
-      piControl.update(state);
-      root.append(piControl.element);
-    }
     if (!chat && page !== "integrations") root.append(section("Motor", row(d.rowTitle, conn?.aria || d.rowSub, restart)));
     const ownedSec = chat ? notchCard("Otros endpoints") : section("Configuración de proveedores");
     if (form) ownedSec.append(card(form));

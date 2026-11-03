@@ -48,7 +48,6 @@ mod voicehost;
 mod settingshost;
 mod islandhit;
 mod islandclick;
-mod pihost;
 mod settingswindow;
 mod integrationshost;
 mod spotifyhost;
@@ -1990,7 +1989,6 @@ fn main() {
             voicehost::voice_action,
             settingshost::settings_view,
             settingshost::daemon_action,
-            pihost::pi_install_action,
             settingswindow::settings_window_action,
             specialistshost::specialists_action,
             record_facade_evidence,

@@ -57,7 +57,6 @@ FRONTEND_FILES.push(
   'vendor/coucou/hub/notch.ts', 'vendor/coucou/hub/notch.js',
   'vendor/coucou/hub/agents.ts', 'vendor/coucou/hub/agents.js',
   'vendor/coucou/hub/chat.ts', 'vendor/coucou/hub/chat.js',
-  'vendor/coucou/hub/piinstall.ts', 'vendor/coucou/hub/piinstall.js', // HU-046: imported by accounts.js and agents.js
   'vendor/coucou/hub/integrations.ts', 'vendor/coucou/hub/integrations.js',
   'vendor/coucou/hub/shortcuts.ts', 'vendor/coucou/hub/shortcuts.js',
   'vendor/coucou/hub/recap.ts', 'vendor/coucou/hub/recap.js',

@@ -5,6 +5,7 @@
    Run: node apps/desktop-tauri/test-node/bundled-runtime-invalid-check.cjs */
 const assert = require('node:assert/strict');
 const S = require('../frontend/settings-view.js');
+const O = require('../frontend/overview-view.js');
 
 const SENTENCE = 'La instalación de Koda está dañada: volvé a instalar Koda.';
 const state = (code) => ({ connection: 'no_daemon', last_error: { code, n: 1 } });
@@ -25,5 +26,16 @@ test('Ajustes: node_missing, pi_missing and a plain no_daemon are unchanged', ()
   assert.equal(S.connectionView(state(null)).word, 'Sin motor');
   assert.equal(S.connectionView({ connection: 'lost', last_error: { code: 'bundled_runtime_invalid' } }).word, 'Motor caído', 'only a no_daemon start failure is a broken install');
   assert.equal(S.connectionView({ connection: 'connected', last_error: { code: 'bundled_runtime_invalid' } }), null);
+});
+test('island row: bundled_runtime_invalid mirrors «Falta Node.js» — label «Instalación dañada», the sentence, the generic «Revisar» link to Ajustes → Motor', () => {
+  const row = O.engineRowView({ kind: 'down' }, state('bundled_runtime_invalid'));
+  assert.deepEqual(row, { kind: 'engine', label: 'Instalación dañada', link: 'Revisar', target: 'accounts:motor',
+    aria: `Instalación dañada: ${SENTENCE} Revisar Pi: abrir Ajustes → Motor` });
+});
+test('island row: node_missing, pi_missing and a plain no_daemon are unchanged', () => {
+  assert.deepEqual(O.engineRowView({ kind: 'down' }, state('node_missing')), { kind: 'engine', label: 'Falta Node.js', link: 'Revisar', target: 'accounts:motor',
+    aria: 'Falta Node.js: instalalo desde nodejs.org. Revisar Pi: abrir Ajustes → Motor' });
+  assert.equal(O.engineRowView({ kind: 'down' }, state('pi_missing')).label, 'Falta Pi');
+  assert.equal(O.engineRowView({ kind: 'down' }, state(null)).label, 'Sin motor');
 });
 console.log(`bundled-runtime-invalid-check: ${passed} passed`);
