@@ -21,7 +21,8 @@ test('make() creates a private dir named <prefix><pid>-<random> inside the base'
   const d = T.make('abito-x-', { base: b });
   assert.equal(path.dirname(d), b);
   assert.match(path.basename(d), new RegExp(`^abito-x-${process.pid}-[A-Za-z0-9]{6}$`));
-  assert.equal(fs.statSync(d).mode & 0o777, 0o700);
+  // 0700 is the POSIX privacy; NTFS reports no mode bits (privacy is the per-user %TEMP% ACL), so Windows checks the kind only.
+  if (process.platform === 'win32') assert.ok(fs.statSync(d).isDirectory()); else assert.equal(fs.statSync(d).mode & 0o777, 0o700);
   fs.rmSync(d, { recursive: true }); fs.rmdirSync(b);
 });
 
@@ -76,6 +77,35 @@ test('K2-01b: liveness does not depend on /proc — on a system without it (macO
   assert.equal(fs.existsSync(huge), false, 'an impossible pid is not alive: its leftover dir is swept');
   assert.ok(fs.existsSync(fresh));
   fs.rmSync(b, { recursive: true, force: true });
+});
+
+test('K2-01b: Windows ownership without uid/mode — only marked dirs in the per-user temp are swept; anything unprovable stays', () => {
+  // Driven with the platform seam so it runs on every OS. Windows has no process.getuid and no mode bits: a dir is
+  // provably ours only when it is a real dir (no link/junction), carries the marker make() writes there, and sits in
+  // the per-user temp dir. Everything else is left alone (fail closed).
+  const realGetuid = process.getuid;
+  process.getuid = () => { throw new Error('getuid must not be called on Windows'); };
+  const tmp = fs.realpathSync.native(os.tmpdir());
+  const dead = deadPid();
+  const made = [];
+  try {
+    const mine = T.make('abito-w-', { platform: 'win32' });              // marker written
+    made.push(mine);
+    assert.ok(fs.existsSync(path.join(mine, T.MARKER)), 'make() marks its dir on Windows');
+    const abandoned = path.join(tmp, `abito-w-${dead}-AbCdEf`); fs.mkdirSync(abandoned); fs.writeFileSync(path.join(abandoned, T.MARKER), ''); made.push(abandoned);
+    const unmarked = path.join(tmp, `abito-w-${dead}-UnMaRk`); fs.mkdirSync(unmarked); made.push(unmarked);   // another run/tool: not provably ours
+    const outsideBase = fs.mkdtempSync(path.join(tmp, 'tmpdirs-wbase-')); made.push(outsideBase);
+    const foreignBase = path.join(outsideBase, `abito-w-${dead}-FoReIg`); fs.mkdirSync(foreignBase); fs.writeFileSync(path.join(foreignBase, T.MARKER), '');
+    T.sweep('abito-w-', outsideBase, { platform: 'win32' });            // not the per-user temp: never swept
+    assert.ok(fs.existsSync(foreignBase), 'a marked dir outside the per-user temp is not provably ours');
+    const fresh = T.make('abito-w-', { platform: 'win32' }); made.push(fresh); // sweeps the per-user temp
+    assert.equal(fs.existsSync(abandoned), false, 'a marked dead run is swept');
+    assert.ok(fs.existsSync(unmarked), 'an unmarked dir of another run is left untouched');
+    assert.ok(fs.existsSync(mine), 'our own live dir is kept');
+  } finally {
+    process.getuid = realGetuid;
+    for (const d of made) fs.rmSync(d, { recursive: true, force: true });
+  }
 });
 
 test('repeated runs do not pile up: after 3 child runs the base is empty', () => {

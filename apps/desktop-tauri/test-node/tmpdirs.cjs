@@ -26,10 +26,22 @@ function hook() {
 
 const SHAPE = (prefix) => new RegExp(`^${prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(\\d+)-[A-Za-z0-9]{6}$`);
 
-function ours(dir) {
+// Windows (K2-01b): no process.getuid and no mode bits. make() writes this marker inside each dir it creates there, and
+// only marked real dirs directly in the per-user temp dir (private by its profile ACL) are provably ours. Anything else
+// (unmarked, a link/junction, another base) is NOT swept: fail closed.
+const MARKER = '.abito-tmpdirs';
+const perUserTemp = () => { try { return fs.realpathSync.native(os.tmpdir()); } catch { return null; } };
+function ours(dir, platform = process.platform) {
   let st;
   try { st = fs.lstatSync(dir); } catch { return false; }
-  return st.isDirectory() && !st.isSymbolicLink() && st.uid === process.getuid() && (st.mode & 0o777) === 0o700;
+  if (!st.isDirectory() || st.isSymbolicLink()) return false;
+  if (platform === 'win32') {
+    const temp = perUserTemp();
+    let real, mark;
+    try { real = fs.realpathSync.native(dir); mark = fs.lstatSync(path.join(dir, MARKER)); } catch { return false; }
+    return temp !== null && path.dirname(real).toLowerCase() === temp.toLowerCase() && mark.isFile() && !mark.isSymbolicLink();
+  }
+  return st.uid === process.getuid() && (st.mode & 0o777) === 0o700;
 }
 // Liveness without /proc (macOS has none; K2-01b): signal 0 checks existence only and sends nothing. EPERM = a live
 // process we may not signal; ESRCH (or anything else) = gone. 0, negative and values beyond a pid_t would address a
@@ -41,7 +53,8 @@ function alive(pid) {
 }
 
 /** Remove dirs of dead runs that match `<prefix><pid>-<6>` exactly. */
-function sweep(prefix, base) {
+function sweep(prefix, base, opts) {
+  const platform = (opts && opts.platform) || process.platform;
   const re = SHAPE(prefix);
   let entries;
   try { entries = fs.readdirSync(base); } catch { return; }
@@ -51,19 +64,21 @@ function sweep(prefix, base) {
     const pid = Number(m[1]);
     if (!Number.isSafeInteger(pid) || pid <= 0 || pid === process.pid || alive(pid)) continue;
     const dir = path.join(base, name);
-    if (ours(dir)) removeTree(dir);
+    if (ours(dir, platform)) removeTree(dir);
   }
 }
 
 function make(prefix, opts) {
   const base = (opts && opts.base) || os.tmpdir();
+  const platform = (opts && opts.platform) || process.platform;
   hook();
-  sweep(prefix, base);
+  sweep(prefix, base, { platform });
   const rand = () => Array.from({ length: 6 }, () => 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'[Math.floor(Math.random() * 62)]).join('');
   for (let i = 0; i < 20; i += 1) {
     const dir = path.join(base, `${prefix}${process.pid}-${rand()}`);
     try {
       fs.mkdirSync(dir, { mode: 0o700 });
+      if (platform === 'win32') fs.writeFileSync(path.join(dir, MARKER), '', { flag: 'wx' });
       const real = fs.realpathSync(dir);
       mine.add(real);
       return real;
@@ -74,4 +89,4 @@ function make(prefix, opts) {
   throw new Error('could not create a unique temp dir');
 }
 
-module.exports = { make, sweep };
+module.exports = { make, sweep, MARKER };
