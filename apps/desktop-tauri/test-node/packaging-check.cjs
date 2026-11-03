@@ -267,6 +267,40 @@ test('verify: a pristine stage passes; tampering is caught without launching any
   assert.match(L.verifyStage(w).join(), /writable/);
   fs.rmSync(w, { recursive: true });
 });
+// K2-02 (windows-latest, K2-01b CI): NTFS has no POSIX permission bits; Node reports every file and directory as
+// 0o666 (0o444 read-only) with no exec bits. The POSIX mode rules (group/world writable, executable binary) are
+// unix rules: on Windows they must not refuse an otherwise valid stage, while hashes, links, the closed file set and
+// the templates still hold there. Reproduced on ANY OS by giving lib.cjs Windows' platform and NTFS-shaped modes.
+function asWindows(fn) {
+  const real = { lstat: fs.lstatSync, stat: fs.statSync, platform: Object.getOwnPropertyDescriptor(process, 'platform') };
+  const ntfs = (st) => { if (st && typeof st.mode === 'number') Object.defineProperty(st, 'mode', { value: (st.mode & 0o170000) | 0o666 }); return st; };
+  fs.lstatSync = function (...a) { return ntfs(real.lstat.apply(this, a)); };
+  fs.statSync = function (...a) { return ntfs(real.stat.apply(this, a)); };
+  Object.defineProperty(process, 'platform', { value: 'win32' });
+  try { return fn(); } finally { fs.lstatSync = real.lstat; fs.statSync = real.stat; Object.defineProperty(process, 'platform', real.platform); }
+}
+test('Windows (NTFS modes 0o666, no exec bits): a valid stage verifies and its installed layout is accepted', () => {
+  const d = fakeStage();
+  assert.deepEqual(asWindows(() => L.verifyStage(d, { sourceCrate: crate })), []);
+  assert.deepEqual(asWindows(() => L.checkInstalledLayout(d).filter((p) => !/unexpected installed file: receipt|runtime/.test(p))), []);
+});
+test('Windows: a tampered stage is still refused (hash, extra entry), only the POSIX mode rules are unix-only', () => {
+  const d = fakeStage();
+  fs.appendFileSync(path.join(d, 'abito-island'), 'x');
+  fs.writeFileSync(path.join(d, 'extra'), 'x');
+  const problems = asWindows(() => L.verifyStage(d)).join('\n');
+  assert.match(problems, /abito-island hash differs from the receipt/);
+  assert.match(problems, /unexpected stage entries/);
+  assert.doesNotMatch(problems, /writable|not executable/);
+});
+test('unix keeps the POSIX mode rules (twin of the Windows case): group/world writable and a non-executable binary are refused', () => {
+  if (process.platform === 'win32') return; // the rule is unix-only by design; the Windows twin is above
+  const w = fakeStage(); fs.chmodSync(path.join(w, 'abito-island'), 0o664);
+  const problems = L.verifyStage(w).join('\n');
+  assert.match(problems, /abito-island is group\/world writable/);
+  assert.match(problems, /binary is not executable/);
+});
+
 test('verify: devtools markers and an embedded source-tree path fail the stage', () => {
   for (const [marker, expect] of [['--remote-debugging-port', /devtools/], [crate, /source-tree path/]]) {
     const d = fakeStage();

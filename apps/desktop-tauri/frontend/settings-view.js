@@ -62,6 +62,10 @@
       const help = missing === 'node_missing' ? 'instalalo desde nodejs.org.' : 'instalalo con npm install -g @earendil-works/pi-coding-agent.';
       return { kind: c, word, icon: 'plug-off', tone: 'faint', aria: `${word}: ${help}` };
     }
+    // K2-02 D1: Koda's own runtime folder is present but broken (daemonhost BUNDLED_RUNTIME_INVALID_SENTENCE).
+    if (missing === 'bundled_runtime_invalid') {
+      return { kind: c, word: 'Instalación dañada', icon: 'plug-off', tone: 'faint', aria: 'Instalación dañada: La instalación de Koda está dañada: volvé a instalar Koda.' };
+    }
     const row = Object.prototype.hasOwnProperty.call(CONNECTION, c) ? CONNECTION[c] : CONNECTION.no_daemon;
     return { kind: c in CONNECTION ? c : 'no_daemon', word: row[0], icon: row[1], tone: row[2], aria: `${row[0]}: ${row[3]}` };
   }

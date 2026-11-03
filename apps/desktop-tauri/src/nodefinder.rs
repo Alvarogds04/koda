@@ -99,6 +99,119 @@ pub fn candidates(name: &str, os: Os, env: &Env) -> Vec<PathBuf> {
     candidate_dirs(os, env).into_iter().map(|d| d.join(file)).collect()
 }
 
+// ---- K2-02 (S1, S2): the bundled runtime folder Koda ships beside its own executable ----
+
+/// The runtime folder's name in the install layout built by
+/// `apps/desktop-tauri/packaging/runtime/build-runtime.cjs` (T1/T2 contract).
+pub const RUNTIME_DIR: &str = "runtime";
+
+/// Everything discovery needs from the bundled runtime once it validated.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BundledRuntime {
+    /// The runtime folder itself: a real directory, never a symlink.
+    pub dir: PathBuf,
+    /// This OS's Node binary inside it (`node.exe` on Windows).
+    pub node: PathBuf,
+    /// What discovery hands callers for `pi`: the `pi` launcher (Linux, macOS) or the
+    /// package CLI JS (Windows, spawned with node.exe), always inside `dir`.
+    pub pi: PathBuf,
+}
+
+/// The outcome of looking for the bundled runtime beside the running executable.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Bundled {
+    /// No runtime folder beside the executable: dev builds, `cargo run`, tests.
+    /// Discovery keeps its previous (session PATH + canonical locations) behaviour.
+    Absent,
+    /// A valid bundled runtime: it must win over any Node or Pi on the machine (S2).
+    Valid(BundledRuntime),
+    /// The folder is there but fails validation: a broken install. Fail closed —
+    /// never silently fall back to a system Node (that would make S2 untrue).
+    Invalid,
+}
+
+/// Where the bundled runtime folder sits for `exe`, per OS install layout: Linux and
+/// Windows put it beside the binary; macOS beside `Contents/MacOS/<bin>` means
+/// `Contents/Resources/runtime` (the same place Tauri puts other resources). Pure, so
+/// every OS's layout is derived and testable on every OS.
+pub fn bundled_runtime_dir(exe: &Path, os: Os) -> Option<PathBuf> {
+    let dir = exe.parent()?;
+    if dir.as_os_str().is_empty() { return None }
+    let base = if os == Os::Mac { dir.parent()?.join("Resources") } else { dir.to_path_buf() };
+    Some(base.join(RUNTIME_DIR))
+}
+
+/// The `koda-runtime.json` `target` this build expects, from the compile-time OS and
+/// arch (the same names `build-runtime.cjs` writes; a runtime for another target
+/// cannot run here and must fail closed).
+pub fn current_runtime_target() -> &'static str {
+    match (cfg!(target_os = "linux"), cfg!(target_os = "macos"), cfg!(windows)) {
+        (true, _, _) => if cfg!(target_arch = "aarch64") { "linux-arm64" } else { "linux-x64" },
+        (_, true, _) => if cfg!(target_arch = "aarch64") { "darwin-arm64" } else { "darwin-x64" },
+        (_, _, true) => if cfg!(target_arch = "aarch64") { "win-arm64" } else { "win-x64" },
+        _ => "unknown",
+    }
+}
+
+/// Looks for and validates the bundled runtime beside `exe` (K2-02 S1/S2). The folder
+/// must be a real directory (never a symlink), `node` a real executable file (never a
+/// symlink), `koda-runtime.json` must parse and name this OS target, the Pi CLI path
+/// must stay inside the folder and exist, and on Linux/macOS the `pi` launcher must be
+/// a real executable file too. A missing folder is [`Bundled::Absent`]; anything else
+/// that is not fully valid is [`Bundled::Invalid`] (fail closed).
+pub fn bundled_runtime(exe: &Path, os: Os, target: &str) -> Bundled {
+    let Some(dir) = bundled_runtime_dir(exe, os) else { return Bundled::Absent };
+    let Ok(meta) = fs::symlink_metadata(&dir) else { return Bundled::Absent };
+    if meta.is_symlink() || !meta.is_dir() { return Bundled::Invalid }
+    let node = dir.join(if os == Os::Windows { "node.exe" } else { "node" });
+    if !regular_executable(&node) { return Bundled::Invalid }
+    let Ok(manifest) = fs::read_to_string(dir.join("koda-runtime.json")) else { return Bundled::Invalid };
+    let Ok(manifest) = serde_json::from_str::<serde_json::Value>(&manifest) else { return Bundled::Invalid };
+    if manifest.get("target").and_then(serde_json::Value::as_str) != Some(target) { return Bundled::Invalid }
+    let Some(pi_cli) = manifest.get("piCli").and_then(serde_json::Value::as_str) else { return Bundled::Invalid };
+    let Some(cli) = inside_file(&dir, pi_cli) else { return Bundled::Invalid };
+    let pi = if os == Os::Windows {
+        cli
+    } else {
+        let launcher = dir.join("pi");
+        if !regular_executable(&launcher) { return Bundled::Invalid }
+        launcher
+    };
+    Bundled::Valid(BundledRuntime { dir, node, pi })
+}
+
+/// A regular file (never a symlink) that is executable: Unix exec bits; on Windows
+/// being a regular file is all the executable-ness a binary needs.
+fn regular_executable(path: &Path) -> bool {
+    let Ok(meta) = fs::symlink_metadata(path) else { return false };
+    if meta.is_symlink() || !meta.is_file() { return false }
+    #[cfg(unix)]
+    { use std::os::unix::fs::PermissionsExt; meta.permissions().mode() & 0o111 != 0 }
+    #[cfg(not(unix))]
+    { true }
+}
+
+/// Resolves `relative` inside `dir`, refusing absolute paths, empty strings,
+/// `..`/root components and anything that is not a real regular file reached without
+/// crossing a symlink (the CLI must stay inside the runtime folder, period).
+fn inside_file(dir: &Path, relative: &str) -> Option<PathBuf> {
+    if relative.is_empty() || Path::new(relative).is_absolute() { return None }
+    let mut resolved = dir.to_path_buf();
+    for part in Path::new(relative).components() {
+        match part {
+            std::path::Component::Normal(p) => resolved.push(p),
+            std::path::Component::CurDir => {}
+            _ => return None,
+        }
+        // Every step must be reached without a symlink taking us outside.
+        if resolved != *dir {
+            let Ok(meta) = fs::symlink_metadata(&resolved) else { return None };
+            if meta.is_symlink() { return None }
+        }
+    }
+    fs::symlink_metadata(&resolved).ok().filter(|m| m.is_file()).map(|_| resolved)
+}
+
 fn version(text: &str) -> Option<(u32, u32, u32)> {
     let mut parts = text.strip_prefix('v').unwrap_or(text).split('.');
     let mut number = || {
@@ -141,6 +254,8 @@ fn nvm_bin(nvm: &Path) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
     use std::{fs, path::PathBuf};
 
     struct Home(PathBuf);
@@ -271,5 +386,173 @@ mod tests {
         assert!(candidates("node", Os::Linux, &relative).is_empty());
         for n in 0..129 { home.nvm(&format!("v30.0.{n}")); }
         assert_eq!(nvm_bin(&home.0.join(".nvm")), None, "overflow fails closed instead of scanning unbounded versions");
+    }
+
+    // ---- K2-02 (S1, S2): the bundled runtime folder beside the executable ----
+
+    struct Rt(PathBuf);
+    impl Rt {
+        fn new(tag: &str) -> Self {
+            let path = std::env::temp_dir().join(format!("abito-bundled-{}-{tag}", std::process::id()));
+            let _ = fs::remove_dir_all(&path);
+            fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+        fn dir(&self, rel: &str) -> PathBuf { let d = self.0.join(rel); fs::create_dir_all(&d).unwrap(); d }
+        fn exe(&self, rel: &str) -> PathBuf {
+            self.dir(rel).join(if cfg!(windows) { "abito-island.exe" } else { "abito-island" })
+        }
+    }
+    impl Drop for Rt { fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); } }
+
+    const PI_CLI: &str = "node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js";
+
+    /// A fully valid runtime folder for `os` (its files are plain files: the layout,
+    /// not the platform, is what is under test here). Returns (exe, runtime dir, node path).
+    fn write_runtime(root: &Rt, exe_rel: &str, os: Os, target: &str) -> (PathBuf, PathBuf, PathBuf) {
+        let exe = root.exe(exe_rel);
+        let dir = bundled_runtime_dir(&exe, os).unwrap();
+        fs::create_dir_all(&dir).unwrap();
+        let node = dir.join(if os == Os::Windows { "node.exe" } else { "node" });
+        fs::write(&node, b"node").unwrap();
+        #[cfg(unix)]
+        fs::set_permissions(&node, fs::Permissions::from_mode(0o755)).unwrap();
+        let cli = dir.join(PI_CLI);
+        fs::create_dir_all(cli.parent().unwrap()).unwrap();
+        fs::write(&cli, b"cli").unwrap();
+        if os != Os::Windows {
+            let pi = dir.join("pi");
+            fs::write(&pi, b"#!/bin/sh\n").unwrap();
+            #[cfg(unix)]
+            fs::set_permissions(&pi, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        fs::write(dir.join("koda-runtime.json"),
+            format!("{{\"target\":\"{target}\",\"node\":\"22.23.4\",\"pi\":\"1.4.0\",\"piCli\":\"{PI_CLI}\"}}")).unwrap();
+        (exe, dir, node)
+    }
+
+    #[test]
+    fn the_bundled_runtime_folder_sits_beside_the_binary_on_every_os() {
+        // Pure layout derivation: every OS's install layout is derived on every OS.
+        let exe = Path::new("/prefix/bin").join("abito-island");
+        assert_eq!(bundled_runtime_dir(&exe, Os::Linux), Some(PathBuf::from("/prefix/bin/runtime")));
+        let win_exe = Path::new("/prefix/bin").join("abito-island.exe");
+        assert_eq!(bundled_runtime_dir(&win_exe, Os::Windows), Some(PathBuf::from("/prefix/bin/runtime")));
+        let mac_exe = Path::new("/Applications/Abito.app/Contents/MacOS").join("abito-island");
+        assert_eq!(bundled_runtime_dir(&mac_exe, Os::Mac),
+            Some(PathBuf::from("/Applications/Abito.app/Contents/Resources/runtime")),
+            "macOS: Tauri puts resources beside MacOS/, so runtime lives in Resources");
+        assert_eq!(bundled_runtime_dir(Path::new("abito-island"), Os::Linux), None, "no parent, no derivation");
+    }
+
+    #[test]
+    fn a_valid_bundled_runtime_validates_for_every_os_layout() {
+        for (os, target, exe_rel) in [
+            (Os::Linux, "linux-x64", "app/bin"),
+            (Os::Mac, "darwin-arm64", "Abito.app/Contents/MacOS"),
+            (Os::Windows, "win-x64", "app/bin"),
+        ] {
+            let root = Rt::new(&format!("valid-{:?}", os));
+            let (exe, dir, node) = write_runtime(&root, exe_rel, os, target);
+            let Bundled::Valid(rt) = bundled_runtime(&exe, os, target) else {
+                panic!("{os:?}: a complete runtime folder must validate");
+            };
+            assert_eq!(rt.dir, dir);
+            assert_eq!(rt.node, node);
+            if os == Os::Windows {
+                assert_eq!(rt.pi, dir.join(PI_CLI), "Windows: the package CLI JS is what the daemon spawns with node.exe");
+            } else {
+                assert_eq!(rt.pi, dir.join("pi"), "{os:?}: the sh launcher is what PATH hands to children");
+            }
+        }
+    }
+
+    #[test]
+    fn a_missing_runtime_folder_is_absent_for_every_os() {
+        for os in [Os::Linux, Os::Mac, Os::Windows] {
+            let root = Rt::new(&format!("absent-{:?}", os));
+            let exe = root.exe("app/bin");
+            root.dir("app/bin");
+            assert_eq!(bundled_runtime(&exe, os, "whatever"), Bundled::Absent);
+        }
+    }
+
+    #[test]
+    fn a_broken_bundled_runtime_fails_closed_for_every_broken_shape() {
+        let broken = |mutate: &dyn Fn(&Rt, Os, &PathBuf)| {
+            for (os, target, exe_rel) in [
+                (Os::Linux, "linux-x64", "app/bin"),
+                (Os::Mac, "darwin-arm64", "Abito.app/Contents/MacOS"),
+                (Os::Windows, "win-x64", "app/bin"),
+            ] {
+                let root = Rt::new("broken");
+                let (exe, dir, _) = write_runtime(&root, exe_rel, os, target);
+                mutate(&root, os, &dir);
+                assert_eq!(bundled_runtime(&exe, os, target), Bundled::Invalid, "{os:?}");
+                // A manifest naming ANOTHER OS's target is invalid for this one too.
+                let other = match os { Os::Linux => "win-x64", Os::Mac => "linux-x64", Os::Windows => "darwin-arm64" };
+                assert_eq!(bundled_runtime(&exe, os, other), Bundled::Invalid, "{os:?}: manifest for another target");
+            }
+        };
+        // node binary removed
+        broken(&|_, _, dir| { fs::remove_file(dir.join("node.exe")).ok(); fs::remove_file(dir.join("node")).ok(); });
+        // node is a directory, not a regular executable file
+        broken(&|root, _, dir| {
+            let name = if dir.join("node.exe").exists() { "node.exe" } else { "node" };
+            fs::remove_file(dir.join(name)).unwrap();
+            fs::create_dir_all(dir.join(name)).unwrap();
+            let _ = root;
+        });
+        // manifest missing
+        broken(&|_, _, dir| { fs::remove_file(dir.join("koda-runtime.json")).unwrap(); });
+        // manifest unparseable
+        broken(&|_, _, dir| { fs::write(dir.join("koda-runtime.json"), "{not json").unwrap(); });
+        // piCli missing from the manifest
+        broken(&|_, _, dir| { fs::write(dir.join("koda-runtime.json"), "{\"target\":\"x\"}").unwrap(); });
+        // piCli is an absolute path
+        broken(&|_, _, dir| { fs::write(dir.join("koda-runtime.json"),
+            format!("{{\"target\":\"x\",\"piCli\":\"{}\"}}", Path::new("/etc").join("passwd").display().to_string().replace('\\', "\\\\"))).unwrap(); });
+        // piCli escapes the runtime folder
+        broken(&|_, _, dir| { fs::write(dir.join("koda-runtime.json"),
+            "{\"target\":\"x\",\"piCli\":\"../../../outside/cli.js\"}").unwrap(); });
+        // piCli does not exist
+        broken(&|_, _, dir| { fs::write(dir.join("koda-runtime.json"),
+            "{\"target\":\"x\",\"piCli\":\"node_modules/missing/cli.js\"}").unwrap(); });
+        // (unix only, its own mechanism) the runtime folder itself is a symlink: not a real directory
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+            let root = Rt::new("broken-symlink");
+            let (exe, dir, _) = write_runtime(&root, "app/bin", Os::Linux, "linux-x64");
+            fs::remove_dir_all(&dir).unwrap();
+            symlink(root.0.join("elsewhere"), &dir).unwrap();
+            assert_eq!(bundled_runtime(&exe, Os::Linux, "linux-x64"), Bundled::Invalid, "a symlinked runtime folder is not a real install");
+        }
+        // the runtime entry is a regular FILE, not a directory
+        {
+            let root = Rt::new("broken-file");
+            let exe = root.exe("app/bin");
+            let dir = bundled_runtime_dir(&exe, Os::Linux).unwrap();
+            fs::write(&dir, b"not a directory").unwrap();
+            assert_eq!(bundled_runtime(&exe, Os::Linux, "linux-x64"), Bundled::Invalid);
+        }
+        // (unix only) node without any exec bit is not an executable file
+        #[cfg(unix)]
+        {
+            let root = Rt::new("broken-noexec");
+            let (exe, _, node) = write_runtime(&root, "app/bin", Os::Linux, "linux-x64");
+            fs::set_permissions(&node, fs::Permissions::from_mode(0o644)).unwrap();
+            assert_eq!(bundled_runtime(&exe, Os::Linux, "linux-x64"), Bundled::Invalid);
+        }
+    }
+
+    #[test]
+    fn the_expected_manifest_target_matches_the_compile_time_os_and_arch() {
+        let known = ["linux-x64", "linux-arm64", "darwin-x64", "darwin-arm64", "win-x64", "win-arm64"];
+        assert!(known.contains(&current_runtime_target()), "unknown target name {}", current_runtime_target());
+        if cfg!(target_os = "linux") && cfg!(target_arch = "x86_64") { assert_eq!(current_runtime_target(), "linux-x64"); }
+        if cfg!(target_os = "linux") && cfg!(target_arch = "aarch64") { assert_eq!(current_runtime_target(), "linux-arm64"); }
+        if cfg!(target_os = "macos") && cfg!(target_arch = "aarch64") { assert_eq!(current_runtime_target(), "darwin-arm64"); }
+        if cfg!(windows) && cfg!(target_arch = "x86_64") { assert_eq!(current_runtime_target(), "win-x64"); }
     }
 }

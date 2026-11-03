@@ -6,7 +6,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const util = require("node:util");
-const { ConnectorHostSupervisor, assertTrustedBinary, procIdentity, readHandoff } = require("../src/connector-host.cjs");
+const { ConnectorHostSupervisor, assertTrustedBinary, childPathWithNodeFirst, procIdentity, readHandoff } = require("../src/connector-host.cjs");
 
 const FIXTURE = path.join(__dirname, "fixtures", "fake-connector-host.cjs");
 function setup(t, mode = {}, overrides = {}) {
@@ -96,9 +96,61 @@ test("spawn is direct, argv is exact, and the child environment is allowlisted",
 		const env = fs.readFileSync(`/proc/${child.pid}/environ`).toString("utf8").split("\0").filter(Boolean);
 		assert.deepEqual(env.map((entry) => entry.slice(0, entry.indexOf("="))).sort(), ["HOME", "LANG", "PATH"]);
 		assert.ok(env.includes(`HOME=${path.join(island, "home")}`));
-		assert.ok(env.includes("PATH=/usr/bin:/bin"));
+		assert.ok(env.includes(`PATH=${childPathWithNodeFirst(path.dirname(process.execPath))}`));
 		assert.ok(!env.join("\n").includes("canary"));
 	} finally { await host.stop(); }
+});
+
+// K2-02 (S2): any `node` a connector host child looks up must resolve to the Node running
+// the daemon (the bundled one on a bundled install), never the user's own.
+test("the child PATH leads with the daemon's own node directory", () => {
+	const nodeDir = path.dirname(process.execPath);
+	const host = new ConnectorHostSupervisor({ islandDir: path.join(os.tmpdir(), "abito-host-env") });
+	const env = host.childEnvironment();
+	assert.equal(env.PATH, childPathWithNodeFirst(nodeDir));
+});
+
+// K2-02 (S1, S2) — the CI failure K2-01b saw (run 41718553579): the host binary is `#!/usr/bin/env node`, so it only
+// starts when a `node` is on the CHILD's PATH. With the historical "/usr/bin:/bin" it never starts where Node lives
+// elsewhere (the runner's toolcache; Koda's bundled runtime). This machine may have a /usr/bin/node that would mask
+// the bug, so the host here is a wrapper that records WHICH `node` its shebang resolved and starts the real fixture
+// only when that node is the daemon's own (a copy of this Node outside /usr/bin): with the old PATH it never starts.
+test("a `#!/usr/bin/env node` connector host is started by the daemon's own Node even when it lives outside /usr/bin", { skip: process.platform === "win32" && "POSIX shebang mechanism; Windows starts node.exe + the host script directly (no shebang lookup)" }, async (t) => {
+	const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "abito-host-nodeless-")));
+	t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+	const runtime = path.join(root, "runtime");
+	fs.mkdirSync(runtime, { mode: 0o700 });
+	const daemonNode = path.join(runtime, "node");
+	fs.copyFileSync(process.execPath, daemonNode);
+	fs.chmodSync(daemonNode, 0o700);
+	const island = path.join(root, "island");
+	fs.mkdirSync(island, { mode: 0o700 });
+	fs.mkdirSync(path.join(island, "home"), { mode: 0o700 });
+	fs.writeFileSync(path.join(island, ".fake-host-mode.json"), "{}", { mode: 0o600 });
+	const seen = path.join(root, "resolved-node.txt");
+	const bin = path.join(root, "host");
+	fs.writeFileSync(bin, `#!/usr/bin/env node\n"use strict";\nrequire("node:fs").writeFileSync(${JSON.stringify(seen)}, process.execPath);\n` +
+		`if (process.execPath !== ${JSON.stringify(daemonNode)}) process.exit(3);\nrequire(${JSON.stringify(FIXTURE)});\n`, { mode: 0o700 });
+	fs.chmodSync(bin, 0o700);
+	const empty = path.join(root, "empty-path-dir");
+	fs.mkdirSync(empty, { mode: 0o700 });
+	const driver = `
+		const { ConnectorHostSupervisor } = require(${JSON.stringify(path.join(__dirname, "..", "src", "connector-host.cjs"))});
+		const host = new ConnectorHostSupervisor({ binPath: ${JSON.stringify(bin)}, islandDir: ${JSON.stringify(island)}, backoffMs: [20, 40], stableMs: 80, startTimeoutMs: 5000, requestTimeoutMs: 300, stopTimeoutMs: 300, log: () => {} });
+		host.start().then(async () => { const st = await host.client.status(); console.log(JSON.stringify({ status: host.status, protocol: st.protocol })); await host.stop(); },
+			(e) => { console.log(JSON.stringify({ error: e.message })); process.exitCode = 1; });`;
+	const { spawnSync } = require("node:child_process");
+	// The daemon runs on the copied Node; its own env PATH holds no node at all.
+	const r = spawnSync(daemonNode, ["-e", driver], { encoding: "utf8", env: { PATH: empty, HOME: root }, timeout: 20_000 });
+	assert.equal(r.status, 0, `stdout=${r.stdout}\nstderr=${r.stderr}\nresolved node=${fs.existsSync(seen) ? fs.readFileSync(seen, "utf8") : "(host never ran)"}`);
+	assert.deepEqual(JSON.parse(r.stdout.trim().split("\n").pop()), { status: "ready", protocol: "abito-connector-host/1" });
+	assert.equal(fs.readFileSync(seen, "utf8"), daemonNode, "the host's shebang resolved the daemon's own Node");
+});
+
+test("childPathWithNodeFirst uses the right separator on every platform", () => {
+	assert.equal(childPathWithNodeFirst("/koda/runtime", ":"), "/koda/runtime:/usr/bin:/bin");
+	assert.equal(childPathWithNodeFirst("C:\\koda\\runtime", ";"), "C:\\koda\\runtime;/usr/bin:/bin");
+	assert.equal(childPathWithNodeFirst("/koda/runtime"), `/koda/runtime${path.delimiter}/usr/bin:/bin`);
 });
 
 test("refusal exit 1 rejects initial start without a restart loop", async (t) => {

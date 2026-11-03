@@ -320,6 +320,23 @@ test("argv is exactly the contract: preview, apply with --audit-dir, optional --
 	assert.deepEqual(t2.calls().find((c) => c.argv[1] === "claude").argv, ["install", "claude", "--user", "--timeout-sec", "12", "--json"]);
 });
 
+test("K2-02 (S2): the Node that runs the installer leads its PATH, so a bare `node` resolves to Koda's, never the user's", { skip: process.platform === "win32" && "POSIX branch; the Windows branch keeps PATH=System32 only (twin: the Windows HU-047 test above)" }, async (t) => {
+	const s0 = setup(t, { claude: { preview: { exit: 0, stdout: preview() } } });
+	// A fake bundled runtime dir: its `node` is a wrapper around this Node, so the installer really runs.
+	const runtimeDir = path.join(s0.base, "koda-runtime");
+	fs.mkdirSync(runtimeDir);
+	const nodeExe = path.join(runtimeDir, "node");
+	fs.writeFileSync(nodeExe, `#!/bin/sh\nexec '${process.execPath}' "$@"\n`, { mode: 0o755 });
+	const s = setup(t, { claude: { preview: { exit: 0, stdout: preview() } } }, { nodeExe });
+	await s.manager.list();
+	const calls = s.calls();
+	assert.ok(calls.length >= 1, "the installer ran through the bundled node");
+	for (const call of calls) {
+		assert.equal(call.env.PATH, `${runtimeDir}:/usr/bin:/bin`);
+		assert.equal(call.env.ABITO_ISLAND_EXE, fs.realpathSync(nodeExe), "hooks are written with the bundled node path (new installs)");
+	}
+});
+
 test("child env: allowlist + ABITO_ISLAND_EXE only, HOME is the real home passed in", async (t) => {
 	const s = setup(t, { claude: { preview: { exit: 0, stdout: preview() } }, codex: { preview: { exit: 0, stdout: preview({ harness: "codex" }) } } });
 	const names = ["PI_SESSION_ID", "OPENAI_API_KEY", "CLAUDECODE", "CODEX_THREAD_ID", "GENTLE_PI_SESSION", "ABITO_SOCKET_DIR"];
@@ -336,7 +353,7 @@ test("child env: allowlist + ABITO_ISLAND_EXE only, HOME is the real home passed
 	assert.equal(s.calls().length, 7);
 	for (const call of s.calls()) {
 		for (const k of Object.keys(call.env)) assert.ok(["PATH", "HOME", "LANG", "ABITO_ISLAND_EXE"].includes(k), `unexpected env ${k}`);
-		assert.equal(call.env.PATH, "/usr/bin:/bin");
+		assert.equal(call.env.PATH, `${path.dirname(process.execPath)}:/usr/bin:/bin`, "the Node that runs the installer leads PATH (K2-02)");
 		assert.equal(call.env.HOME, s.home);
 		assert.equal(call.env.ABITO_ISLAND_EXE, fs.realpathSync(process.execPath));
 		assert.equal(call.ppid, process.pid, "direct child of the daemon process");

@@ -25,7 +25,7 @@ fn executable(path: &Path, text: &str) {
 
 #[test]
 fn discovery_orders_session_path_before_canonical_fallbacks() {
-    let _guard = PROCESS_TEST_LOCK.lock().unwrap();
+    let _guard = PROCESS_TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let root = TestDir::new().unwrap();
     let home = root.path().join("home");
     let bin = root.path().join("bin");
@@ -33,7 +33,17 @@ fn discovery_orders_session_path_before_canonical_fallbacks() {
     executable(&bin.join("pi"), "#!/bin/sh\nexit 0\n");
     assert_eq!(discover("pi", Some(bin.as_os_str()), Some(home.as_os_str())).unwrap(), bin.join("pi"));
     assert_eq!(discover("pi", Some(std::ffi::OsStr::new("/usr/local/bin:/usr/bin:/bin")), Some(home.as_os_str())).unwrap(), home.join(".local/bin/pi"));
-    assert_eq!(discover("node", Some(std::ffi::OsStr::new("/not-present")), None).unwrap(), Path::new("/usr/bin/node"));
+    // The canonical fallbacks are tried in this order; the runner decides which exist (hosted Ubuntu has
+    // /usr/local/bin/node, many desktops only /usr/bin/node). Assert the ORDER, never one machine's layout (K2-01b CI).
+    // No version-manager environment (the runner's NVM_DIR etc. must not decide this either).
+    let no_managers = abito_island::nodefinder::Env::default();
+    let canonical = [Path::new("/usr/local/bin/node"), Path::new("/usr/bin/node")];
+    let runnable = |p: &Path| fs::metadata(p).map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0).unwrap_or(false);
+    let found = abito_island::daemonhost::discover_in("node", Some(std::ffi::OsStr::new("/not-present")), None, &no_managers);
+    match canonical.iter().copied().find(|p| runnable(p)) {
+        Some(first) => assert_eq!(found.unwrap(), first, "the first runnable canonical location wins"),
+        None => assert!(found.is_err(), "no canonical node on this machine: discovery reports it missing"),
+    }
     assert!(discover("missing-runtime", Some(bin.as_os_str()), Some(home.as_os_str())).unwrap_err().contains("missing-runtime missing"));
     let child_path = abito_island::daemonhost::runtime_path(
         Some(std::ffi::OsStr::new(".:relative::/usr/bin")), Path::new("/usr/bin/node"), Path::new("/canonical/pi"),
@@ -79,7 +89,7 @@ fn named_runtime_failure_is_in_existing_no_daemon_state_channel() {
 
 #[test]
 fn normal_drop_terminates_and_reaps_owned_host() {
-    let _guard = PROCESS_TEST_LOCK.lock().unwrap();
+    let _guard = PROCESS_TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let root = TestDir::new().unwrap();
     let script = root.path().join("host.sh");
     executable(&script, "#!/bin/sh\ntrap 'exit 0' TERM INT\nwhile :; do sleep 1; done\n");
@@ -94,7 +104,7 @@ fn normal_drop_terminates_and_reaps_owned_host() {
 // (Characterization of existing APIs: passes before AND after the slice-B sources — a pin, not a RED.)
 #[test]
 fn stop_then_start_yields_a_fresh_reaped_child() {
-    let _guard = PROCESS_TEST_LOCK.lock().unwrap();
+    let _guard = PROCESS_TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let root = TestDir::new().unwrap();
     let bin = root.path().join("bin");
     let home = root.path().join("home");
@@ -123,7 +133,7 @@ fn stop_then_start_yields_a_fresh_reaped_child() {
 // A separate process is essential: SIGKILL must bypass destructors exactly as an app crash does.
 #[test]
 fn crash_helper() {
-    let _guard = PROCESS_TEST_LOCK.lock().unwrap();
+    let _guard = PROCESS_TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let Some(dir) = std::env::var_os("ISLAND_HOST_TEST_HELPER") else { return };
     let dir = std::path::PathBuf::from(dir);
     if std::env::var_os("ISLAND_HOST_TEST_RESTART").is_some() {
@@ -201,7 +211,7 @@ fn crash_helper() {
 
 #[test]
 fn killed_app_cannot_leave_a_live_host() {
-    let _guard = PROCESS_TEST_LOCK.lock().unwrap();
+    let _guard = PROCESS_TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let root = TestDir::new().unwrap();
     executable(&root.path().join("host.sh"), "#!/bin/sh\nexec sleep 120\n");
     let mut app = Command::new(std::env::current_exe().unwrap()).args(["--exact", "crash_helper", "--nocapture"])
@@ -223,7 +233,7 @@ fn killed_app_cannot_leave_a_live_host() {
 
 #[test]
 fn missing_process_group_cannot_hang_app_exit() {
-    let _guard = PROCESS_TEST_LOCK.lock().unwrap();
+    let _guard = PROCESS_TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let root = TestDir::new().unwrap();
     let mut app = Command::new(std::env::current_exe().unwrap()).args(["--exact", "crash_helper", "--nocapture"])
         .env("ISLAND_HOST_TEST_HELPER", root.path()).env("ISLAND_HOST_TEST_DROP", "1")
@@ -243,7 +253,7 @@ fn missing_process_group_cannot_hang_app_exit() {
 
 #[test]
 fn host_failure_does_not_exit_its_app_or_restart_host() {
-    let _guard = PROCESS_TEST_LOCK.lock().unwrap();
+    let _guard = PROCESS_TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut cmd = Command::new("/bin/sh"); cmd.args(["-c", "exit 17"]);
     let mut host = Host::spawn_command(cmd).unwrap();
     std::thread::sleep(std::time::Duration::from_millis(50));
@@ -257,7 +267,7 @@ fn host_failure_does_not_exit_its_app_or_restart_host() {
 // visible through the slot. Explicit bound, no unbounded waits.
 #[test]
 fn early_child_exit_is_reaped_at_runtime_and_reported() {
-    let _guard = PROCESS_TEST_LOCK.lock().unwrap();
+    let _guard = PROCESS_TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let root = TestDir::new().unwrap();
     let script = root.path().join("host.sh");
     executable(&script, "#!/bin/sh\nexit 17\n");
@@ -298,7 +308,7 @@ fn early_child_exit_is_reaped_at_runtime_and_reported() {
 #[test]
 fn a_successful_start_forgets_the_failure_of_an_earlier_one() {
     use abito_island::daemonhost::{HostSlot, StartupFailure};
-    let _guard = PROCESS_TEST_LOCK.lock().unwrap();
+    let _guard = PROCESS_TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let root = TestDir::new().unwrap();
     let script = root.path().join("host.sh");
     executable(&script, "#!/bin/sh\ntrap 'exit 0' TERM INT\nwhile :; do sleep 1; done\n");

@@ -205,13 +205,17 @@ const STAGED_DIRS = ['desktop-pi', 'desktop-daemon', 'desktop-daemon/src', 'desk
 // `prune` names ONE top-level directory whose contents are not enumerated: only PREFIX/runtime
 // uses it (K2-02 T2). Its integrity comes from the hash-verified runtime archive, not from the
 // per-file walk; the directory itself must still be a real, non-linked, non-writable directory.
+// POSIX permission rules (group/world writable, executable binary) are unix rules: NTFS has no such bits and Node
+// reports every Windows file and directory as 0o666 with no exec bits. On Windows they would refuse every valid stage,
+// so they apply on unix only; hashes, links, the closed file set and the templates hold on every OS (K2-02).
+const POSIX_MODES = () => process.platform !== 'win32';
 function stageEntries(dir, problems, prefix = '', prune = '') {
   const files = [], dirs = [];
   for (const name of fs.readdirSync(dir)) {
     const rel = prefix + name;
     const stat = fs.lstatSync(path.join(dir, name));
     if (stat.isSymbolicLink()) { problems.push(`${rel} is a symlink`); continue; }
-    if (stat.mode & 0o022) problems.push(`${rel} is group/world writable`);
+    if (POSIX_MODES() && (stat.mode & 0o022)) problems.push(`${rel} is group/world writable`);
     if (prune && rel === prune) {
       if (stat.isDirectory()) dirs.push(rel);
       else problems.push(`${rel} is not a directory`);
@@ -283,7 +287,7 @@ function verifyStage(dir, { sourceCrate } = {}) {
     if (!fs.existsSync(file)) { problems.push(`${name} missing`); continue; }
     const stat = fs.lstatSync(file);
     if (!stat.isFile()) problems.push(`${name} is not a regular file`);
-    if (stat.mode & 0o022) problems.push(`${name} is group/world writable`);
+    if (POSIX_MODES() && (stat.mode & 0o022)) problems.push(`${name} is group/world writable`);
     if (sha256File(file) !== (receipt.files || {})[name]) problems.push(`${name} hash differs from the receipt`);
   }
   if (fs.existsSync(path.join(dir, 'abito-island-launcher')) && fs.readFileSync(path.join(dir, 'abito-island-launcher'), 'utf8') !== launcherText()) problems.push('launcher differs from the closed template');
@@ -295,7 +299,7 @@ function verifyStage(dir, { sourceCrate } = {}) {
     if (sourceCrate && bytes.includes(Buffer.from(sourceCrate))) problems.push('binary embeds the source-tree path');
     for (const marker of ['--remote-debugging', 'devtools://', 'Prueba M3: propuesta servida por el backend falso', 'ABITO_PROBE', 'XTEST', 'abito-validator-fake-terminal-launcher']) if (bytes.includes(Buffer.from(marker))) problems.push(`binary contains «${marker}» (devtools/probe/fake)`);
     for (const prefix of [process.env.HOME && `${process.env.HOME}/.cargo`, process.env.HOME && `${process.env.HOME}/Apps`].filter(Boolean)) if (bytes.includes(Buffer.from(prefix))) problems.push(`binary embeds the build machine path ${prefix}…`);
-    if (!(fs.statSync(bin).mode & 0o100)) problems.push('binary is not executable');
+    if (POSIX_MODES() && !(fs.statSync(bin).mode & 0o100)) problems.push('binary is not executable');
   }
   return problems;
 }

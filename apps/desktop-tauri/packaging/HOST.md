@@ -51,7 +51,20 @@ same archive; macOS ships the extracted folder as bundle resources instead.
 
 ## Runtime discovery
 
-The app tries the inherited session PATH first (absolute entries only), then:
+**Bundled first (K2-02).** When Koda's own runtime folder sits next to the running
+executable — `<exe dir>/runtime` on Linux and Windows, `<App>.app/Contents/Resources/runtime`
+on macOS, derived from the canonicalised executable path, never from an environment
+variable — its `node` and its Pi are used and win over any Node or Pi on PATH, nvm,
+Volta, Homebrew or `%AppData%\npm`. The folder is validated: a real directory (not a
+link), `node` a regular executable file, `koda-runtime.json` naming this OS target,
+and a Pi CLI path that stays inside the folder. A folder that is present but invalid
+fails closed with `bundled_runtime_invalid`: Koda never falls back to the user's Node
+or Pi in that case. That runtime folder also leads the daemon child's PATH, and the
+daemon puts its own Node's directory first on every PATH it gives a child (Pi,
+connectors, hook installers).
+
+Without a bundled runtime folder (development builds, `cargo run`), discovery is
+unchanged: the app tries the inherited session PATH first (absolute entries only), then:
 
 | Runtime | Canonical fallback order |
 |---|---|
@@ -67,9 +80,13 @@ SDK credentials from the user's own agent directory.
 
 Startup failures reach stderr and the existing `agent:state` channel as
 `connection: "no_daemon"` plus `last_error: {code, n: 1}`. Closed local codes are
-`node_missing`, `pi_missing`, `host_missing`, `host_spawn_failed`, and
-`host_platform_unsupported`. No paths, raw exceptions or secrets enter this state.
-The settings and island views name missing Node or Pi and show installation
+`node_missing`, `pi_missing`, `bundled_runtime_invalid`, `host_missing`,
+`host_spawn_failed`, and `host_platform_unsupported`. No paths, raw exceptions or
+secrets enter this state. On Linux, macOS and Windows alike, stderr prints the code
+line plus a sentence, and the settings and island views show the same words:
+`bundled_runtime_invalid` reads «Instalación dañada» with «La instalación de Koda está
+dañada: volvé a instalar Koda.»; `node_missing` and `pi_missing` (development builds
+only, since an installed Koda ships both) name the missing runtime with installation
 advice (`nodejs.org` or `npm install -g @earendil-works/pi-coding-agent`). Unknown
 startup errors retain the existing generic disconnected state.
 
