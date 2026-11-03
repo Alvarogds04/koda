@@ -118,6 +118,22 @@ test("unknown keys, wrong types and bad command are rejected with the field name
 	rejects(() => load(root), "config.json");
 });
 
+test("registered gap K2-01b: an absolute Windows engine command path is refused (validateCommand POSIX-only)", () => {
+	// Today's fail-closed outcome, pinned on all three OS: on Unix a drive path is not absolute and fails the
+	// bare-name rule; on Windows it is absolute but fails the POSIX-shaped absolute rule. Either way the
+	// ConfigError names only the field and never echoes the value. Plan: a drive-letter path rule mirroring
+	// fs_path_ok. Asserted on the exported validator directly so the field-level rule is pinned on its own, independent
+	// of how config.json is read (readPrivateJson; Windows branch via the verified helper, see config-private.test.cjs).
+	for (const value of ["C:\\Program Files\\nodejs\\node.exe", "C:\\tools\\pi.exe"]) {
+		rejects(() => config.validateCommand(value), "command");
+		try {
+			config.validateCommand(value);
+		} catch (error) {
+			assert.ok(!String(error.message).includes("node.exe") && !String(error.message).includes("pi.exe"), "the value must never be echoed");
+		}
+	}
+});
+
 test("config.json must be a private regular file", () => {
 	const root = island();
 	writeConfig(root, { command: "pi" }, 0o644);
