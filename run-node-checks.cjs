@@ -53,8 +53,12 @@ function runOne(file) {
     if (code === 0) { console.log(`ok   ${file} (${secs}s)`); continue; }
     failed += 1;
     console.log(`FAIL(${code === 124 ? `timeout ${cap}s` : code}) ${file} (${secs}s)`);
-    const lines = out.split(/\r?\n/).filter((l) => /FAIL|Error|FATAL|not ok/.test(l)).slice(0, 5);
-    for (const l of lines) console.log(`    ${l.slice(0, 220)}`);
+    // Every failing line, then the tail, so a CI failure can be diagnosed from the log alone.
+    const all = out.split(/\r?\n/);
+    const lines = all.filter((l) => /FAIL|Error|FATAL|not ok|assert/i.test(l)).slice(0, 40);
+    for (const l of lines) console.log(`    ${l.slice(0, 600)}`);
+    console.log('    --- last lines ---');
+    for (const l of all.slice(-15)) console.log(`    ${l.slice(0, 600)}`);
   }
   console.log(`node-checks: ${files.length} run, ${failed} failed`);
   process.exit(Math.min(failed, 125));

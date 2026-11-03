@@ -115,6 +115,15 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - name: Pinned esbuild 0.28.2 (the coucou build check needs it; never downloaded by the build itself)
+        shell: bash
+        run: |
+          npm i -g esbuild@0.28.2
+          ROOT="$(npm root -g)"
+          BIN="$ROOT/esbuild/bin/esbuild"; [ -f "$BIN.exe" ] && BIN="$BIN.exe"
+          if [ "$RUNNER_OS" = Windows ]; then BIN="$(cygpath -w "$BIN")"; fi
+          "$BIN" --version
+          echo "ESBUILD_BINARY_PATH=$BIN" >> "$GITHUB_ENV"
       - name: Install pinned Playwright and its Chromium (the browser checks need it)
         shell: bash
         run: |
@@ -124,9 +133,16 @@ jobs:
           else npx --yes "playwright@$PLAYWRIGHT_VERSION" install chromium; fi
           echo "PLAYWRIGHT_PATH=$ROOT/playwright" >> "$GITHUB_ENV"
           echo "NODE_PATH=$ROOT" >> "$GITHUB_ENV"
-      - name: apps/desktop-tauri/test-node checks
+      - name: apps/desktop-tauri/test-node checks (with a shared headless Chromium on 127.0.0.1:9222)
         shell: bash
-        run: node run-node-checks.cjs
+        run: |
+          # notification-card-shared-browser-check ATTACHES over CDP and never launches a browser, like on a dev machine.
+          CHROME="$(node -p "require(process.env.PLAYWRIGHT_PATH).chromium.executablePath()")"
+          "$CHROME" --headless=new --no-sandbox --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222 \
+            --user-data-dir="$RUNNER_TEMP/shared-chrome" about:blank > "$RUNNER_TEMP/shared-chrome.log" 2>&1 &
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:9222/json/version > /dev/null && break; sleep 1; done
+          curl -sf http://127.0.0.1:9222/json/version
+          node run-node-checks.cjs
 
   rust:
     name: Island Rust tests (${{ matrix.os }})
@@ -150,6 +166,15 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - name: Pinned esbuild 0.28.2 (the coucou build check needs it; never downloaded by the build itself)
+        shell: bash
+        run: |
+          npm i -g esbuild@0.28.2
+          ROOT="$(npm root -g)"
+          BIN="$ROOT/esbuild/bin/esbuild"; [ -f "$BIN.exe" ] && BIN="$BIN.exe"
+          if [ "$RUNNER_OS" = Windows ]; then BIN="$(cygpath -w "$BIN")"; fi
+          "$BIN" --version
+          echo "ESBUILD_BINARY_PATH=$BIN" >> "$GITHUB_ENV"
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: apps/desktop-tauri
