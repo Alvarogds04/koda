@@ -8,8 +8,11 @@ Prints one line per criterion part and exits non-zero if any part fails:
   (a) install: mount the .dmg read-only, copy the .app with ditto into <work-dir>/Applications, detach;
   (b) start:   the INSTALLED binary, Finder-minimal environment, reaches «abito-island-daemon: running»
                and publishes its endpoint handoff;
-  (c) tray:    the tray was constructed (no «tray unavailable:» in the log). This is NOT proof that a
-               person sees the island or the menu-bar icon: that stays a registered human gap;
+  (c-island)   the installed app owns an on-screen window with a real size, read from the window server
+               (CGWindowListCopyWindowInfo through JXA: owner pid, bounds and on-screen state need no
+               Accessibility or Screen Recording permission);
+  (c-tray)     the tray was constructed (no «tray unavailable:» in the log). This is NOT proof that a
+               person sees the menu-bar icon: that stays a registered human gap;
   (d) notice:  a Claude Code `Stop` through the INSTALLED hook reaches the island, which persists exactly
                one turn (same proof as smoke-windows.ps1).
 Answering a question through the shipped app is not machine-checked here (registered human gap).
@@ -39,6 +42,35 @@ def wait_for(predicate, seconds):
             return True
         time.sleep(0.5)
     return predicate()
+
+
+# Window-server query for one pid: owner pid, bounds and on-screen state only (no titles, no pixels), so no
+# Accessibility or Screen Recording permission is involved. Prints a JSON list of the pid's windows.
+WINDOWS_JXA = """
+ObjC.import('CoreGraphics');
+function run(argv) {
+  const pid = Number(argv[0]);
+  const all = ObjC.deepUnwrap(ObjC.castRefToObject(
+    $.CGWindowListCopyWindowInfo($.kCGWindowListOptionAll, $.kCGNullWindowID))) || [];
+  return JSON.stringify(all.filter(w => w.kCGWindowOwnerPID === pid).map(w => ({
+    layer: w.kCGWindowLayer, onscreen: !!w.kCGWindowIsOnscreen, bounds: w.kCGWindowBounds })));
+}
+"""
+
+
+def island_windows(pid):
+    """The on-screen windows with a real size owned by pid, plus the raw query output for the log."""
+    run = subprocess.run(["/usr/bin/osascript", "-l", "JavaScript", "-e", WINDOWS_JXA, str(pid)],
+                         capture_output=True, text=True, timeout=30)
+    if run.returncode != 0:
+        return [], f"osascript exit {run.returncode}: {run.stderr.strip()[:300]}"
+    try:
+        windows = json.loads(run.stdout)
+    except ValueError:
+        return [], f"unreadable window list: {run.stdout[:300]!r}"
+    shown = [w for w in windows if w.get("onscreen") and (w.get("bounds") or {}).get("Width", 0) > 0
+             and (w.get("bounds") or {}).get("Height", 0) > 0]
+    return shown, run.stdout.strip()[:600]
 
 
 def install(dmg, applications):
@@ -93,7 +125,9 @@ def main():
     for key in ("USER", "LOGNAME", "TMPDIR"):
         if key in os.environ:
             env[key] = os.environ[key]
-    runtime = pathlib.Path(os.path.realpath(env.get("TMPDIR", "/tmp"))) / "abito-island"
+    if not env.get("TMPDIR"):
+        sys.exit("TMPDIR is not set: a Finder launch always has one, so this runner is not a normal macOS session")
+    runtime = pathlib.Path(os.path.realpath(env["TMPDIR"])) / "abito-island"
     log_path = work / "installed-island.log"
 
     with log_path.open("w") as log:
@@ -108,10 +142,23 @@ def main():
             report("b", ready and published and alive,
                    f"daemon ready={ready}, endpoint.json published={published}, app alive={alive}")
 
-            # (c) tray constructed; whether a person sees it is a registered human gap.
+            # (c-island) the window server shows an on-screen window of the installed app.
+            found = []
+            raw = ""
+
+            def has_window():
+                nonlocal found, raw
+                found, raw = island_windows(process.pid)
+                return bool(found)
+
+            shown = alive and wait_for(has_window, 30)
+            report("c-island", shown, f"installed app owns {len(found)} on-screen window(s): {found[:2]}" if shown
+                   else f"no on-screen window owned by pid {process.pid}; window server said: {raw}")
+
+            # (c-tray) tray constructed; whether a person sees the menu-bar icon is a registered human gap.
             text = log_path.read_text()
             tray_ok = alive and "tray unavailable:" not in text
-            report("c", tray_ok, "tray constructed (no «tray unavailable:»); visual island/menu-bar check stays a human gap"
+            report("c-tray", tray_ok, "tray constructed (no «tray unavailable:»); seeing the menu-bar icon stays a human gap"
                    if tray_ok else "the log reports «tray unavailable:» or the app exited")
 
             # (d) a Claude Code Stop through the INSTALLED hook becomes exactly one persisted island turn.
@@ -141,7 +188,7 @@ def main():
                 os.killpg(process.pid, 9)
                 process.wait()
     print(log_path.read_text(), flush=True)
-    return 0 if all(results) and len(results) == 4 else 1
+    return 0 if all(results) and len(results) == 5 else 1
 
 
 if __name__ == "__main__":
