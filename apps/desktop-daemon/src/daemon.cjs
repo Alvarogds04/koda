@@ -499,6 +499,9 @@ class Daemon extends EventEmitter {
 		}
 		this.wroteSession = true;
 		this.recordLaunch({ reason: replaced ? "stale_replaced" : "ok", outcome: "started", ...(replaced ? { incumbentPid: existing.pid } : {}) });
+		// K2-03 T3 (S2): take the removed Recap's 0.1 hooks out of ~/.claude/settings.json. Off the boot path: never awaited,
+		// never throws, logs fixed strings only, retried at the next start when refused. TODO(K2-03 follow-up): drop with it.
+		void this.agents?.removeLegacyRecap?.();
 		// R5: a boot never consumes the interrupted-work record; it is exposed
 		// once through the ready frame and consumed only after interrupted_ack.
 	}

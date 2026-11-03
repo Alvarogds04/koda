@@ -336,7 +336,7 @@ test('audit rotation: > 1 MiB rotates to hook-installs.jsonl.1 (replaced, 0600) 
   ui.appendAudit(dir, { ts: 8 }); assert.equal(fs.readFileSync(f, 'utf8').trim().split('\n').length, 2); // below the cap: no rotation
 });
 
-for (const harness of ['recap', 'statusline']) test(`${harness}: user preview, bound apply, audit and marker-only removal`, async t => {
+for (const harness of ['statusline']) test(`${harness}: user preview, bound apply, audit and marker-only removal`, async t => {
   const d = tmp(t); fs.mkdirSync(path.join(d, '.claude'));
   const p = path.join(d, '.claude/settings.json'), audit = path.join(d, 'audit');
   const original = '{"model":"keep","statusLine":{"type":"command","command":"mine"},"hooks":{"Stop":[{"hooks":[{"type":"command","command":"third"}]}]}}\n';
@@ -345,7 +345,7 @@ for (const harness of ['recap', 'statusline']) test(`${harness}: user preview, b
   const call = more => run([harness, '--user', ...more, '--json'], opts);
   let r = await call([]);
   assert.equal(r.code, 0, r.lines[0]);
-  assert.deepEqual(r.json.entries.map(e => e.event), harness === 'recap' ? ['UserPromptSubmit', 'PostToolUse', 'Stop'] : ['statusLine']);
+  assert.deepEqual(r.json.entries.map(e => e.event), ['statusLine']);
   assert.equal(fs.readFileSync(p, 'utf8'), original);
   assert.deepEqual(ls(d), ['.claude']);
   const apply = hash => call(['--apply-plan', hash, '--audit-dir', audit]);
@@ -374,6 +374,30 @@ for (const harness of ['recap', 'statusline']) test(`${harness}: user preview, b
   assert.deepEqual(JSON.parse(fs.readFileSync(p)), JSON.parse(original));
   assert.equal((await call(['--remove'])).json.changed, false);
   assert.doesNotMatch(JSON.stringify(auditLines(audit)), /mine|third|model|command/);
+});
+
+// K2-03 T3 (S2): the island path the daemon drives at start. Recap is removal-only: the 0.1 entries go through a bound,
+// audited apply with a backup; the user's own hooks stay; an install preview is refused.
+test('recap (legacy, removal-only): bound apply removes the 0.1 entries with a backup and an audit; install is refused', async t => {
+  const d = tmp(t); fs.mkdirSync(path.join(d, '.claude'));
+  const p = path.join(d, '.claude/settings.json'), audit = path.join(d, 'audit');
+  const old = { hooks: [{ type: 'command', command: '/usr/bin/node', args: ['/opt/koda-0.1/desktop-harness/bin/abito-recap-hook.cjs'], timeout: 5 }] };
+  const mine = '{"model":"keep","hooks":{"Stop":[{"hooks":[{"type":"command","command":"third"}]}]}}\n';
+  const original = JSON.stringify({ model: 'keep', hooks: { Stop: [{ hooks: [{ type: 'command', command: 'third' }] }, old], UserPromptSubmit: [old], PostToolUse: [old] } }) + '\n';
+  fs.writeFileSync(p, original); fs.mkdirSync(audit, { mode: 0o700 });
+  const opts = { env: { HOME: d, ABITO_ISLAND_EXE: EXE }, homedir: () => d, readExe: () => EXE };
+  const call = more => run(['recap', '--user', ...more, '--json'], opts);
+  assert.equal((await call([])).json.code, 'usage');
+  const rm = await call(['--remove']);
+  assert.equal(rm.code, 0, rm.lines[0]);
+  assert.deepEqual(rm.json.entries, [{ event: 'UserPromptSubmit', op: 'remove' }, { event: 'PostToolUse', op: 'remove' }, { event: 'Stop', op: 'remove' }]);
+  assert.equal(fs.readFileSync(p, 'utf8'), original, 'the preview writes nothing');
+  const r = await call(['--remove', '--apply-plan', rm.json.plan_hash, '--audit-dir', audit]);
+  assert.equal(r.code, 0, r.lines[0]);
+  assert.equal(fs.readFileSync(r.json.backup, 'utf8'), original, 'backup of the original first');
+  assert.deepEqual(JSON.parse(fs.readFileSync(p)), JSON.parse(mine), 'only the recap entries went');
+  assert.equal((await call(['--remove'])).json.changed, false, 'idempotent');
+  assert.doesNotMatch(JSON.stringify(auditLines(audit)), /third|model|abito-recap-hook/);
 });
 
 test('BIN path constant in preview is this package bin', async t => {

@@ -68,7 +68,7 @@ test('Windows UI install with an unverifiable install manifest refuses before re
   }
   for (const harness of ['claude', 'codex', 'copilot', 'opencode', 'recap', 'statusline']) {
     for (const extra of [[], ['--apply-plan', 'a'.repeat(64), '--audit-dir', path.join(dir, 'audit')]]) {
-      const args = ['install', harness, '--settings', settings, '--json', ...extra];
+      const args = ['install', harness, '--settings', settings, ...(harness === 'recap' ? ['--remove'] : []), '--json', ...extra]; // recap: removal-only (K2-03)
       const script = "Object.defineProperty(process,'platform',{value:'win32'}); process.getuid=undefined; process.argv=[process.execPath,...JSON.parse(process.argv[1])]; require(process.argv[1]);";
       const result = spawnSync(process.execPath, ['-e', script, JSON.stringify([bin, ...args])], {encoding:'utf8', timeout:5000});
       assert.equal(result.status, 65, result.stdout + result.stderr);
