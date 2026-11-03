@@ -401,15 +401,21 @@ pub(crate) fn check_ancestors(fs: &dyn AncestorFs, dir: &Path) -> io::Result<()>
         Name(OsString),
     }
     fn steps(p: &Path) -> Vec<Step> {
-        let mut out: Vec<Step> = p
-            .components()
-            .filter_map(|c| match c {
-                Component::Prefix(_) | Component::RootDir => Some(Step::Root(c.as_os_str().to_owned())),
-                Component::CurDir => None,
-                Component::ParentDir => Some(Step::Up),
-                Component::Normal(n) => Some(Step::Name(n.to_owned())),
-            })
-            .collect();
+        // The path's root is ONE step: a Windows prefix (C:, \\server\share, \\?\C:) and the RootDir that follows it
+        // stay together, so walking a link target that restarts at a root never drops the prefix.
+        let mut out: Vec<Step> = Vec::new();
+        for c in p.components() {
+            match c {
+                Component::Prefix(_) => out.push(Step::Root(c.as_os_str().to_owned())),
+                Component::RootDir => match out.last_mut() {
+                    Some(Step::Root(prefix)) => prefix.push(c.as_os_str()),
+                    _ => out.push(Step::Root(c.as_os_str().to_owned())),
+                },
+                Component::CurDir => {}
+                Component::ParentDir => out.push(Step::Up),
+                Component::Normal(n) => out.push(Step::Name(n.to_owned())),
+            }
+        }
         out.reverse();
         out
     }
@@ -419,12 +425,8 @@ pub(crate) fn check_ancestors(fs: &dyn AncestorFs, dir: &Path) -> io::Result<()>
     while let Some(step) = pending.pop() {
         let name = match step {
             Step::Root(r) => {
-                // "C:" then "\\" on Windows build one root; on unix "/" (re)starts the walk at the root.
-                if current.as_os_str().is_empty() || current.has_root() {
-                    current = PathBuf::from(&r);
-                } else {
-                    current.push(&r);
-                }
+                // A root (with its Windows prefix, if any) always restarts the walk there.
+                current = PathBuf::from(&r);
                 continue;
             }
             Step::Up => {

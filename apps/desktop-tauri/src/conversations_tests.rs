@@ -416,3 +416,46 @@ mod trusted_links {
         assert!(check_ancestors(&RealFs, &probe).is_ok(), "{probe:?}");
     }
 }
+
+// --- K2-01b verify should-fix: the ancestor walk keeps the path's own root -----------------------
+// Every component the walk inspects must be the real path prefix of the input: a drive (C:\), a UNC share
+// (\\server\share\) or a verbatim prefix (\\?\C:\) must never be dropped, or later components are checked on the
+// wrong path. Not unix-only: the unix cases run everywhere; the Windows-shaped cases are cfg(windows) because a
+// non-Windows `Path` parses `C:\a` as ONE plain component, so it cannot represent them.
+mod ancestor_walk {
+    use super::super::{check_ancestors, AncestorFs, Node};
+    use std::cell::RefCell;
+    use std::path::{Path, PathBuf};
+    /// Every component is an existing directory; records each path the walk asks about.
+    struct Recording(RefCell<Vec<PathBuf>>);
+    impl AncestorFs for Recording {
+        fn node(&self, p: &Path) -> std::io::Result<Option<Node>> {
+            self.0.borrow_mut().push(p.to_path_buf());
+            Ok(Some(Node { uid: 0, mode: 0o755, is_dir: true, link: None }))
+        }
+    }
+    fn walked(p: &str) -> Vec<PathBuf> {
+        let fs = Recording(RefCell::new(Vec::new()));
+        check_ancestors(&fs, Path::new(p)).expect("an all-directory path is accepted");
+        fs.0.into_inner()
+    }
+    fn expect(p: &str, want: &[&str]) {
+        assert_eq!(walked(p), want.iter().map(PathBuf::from).collect::<Vec<_>>(), "{p}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn every_component_keeps_the_root_on_unix() {
+        expect("/a/b", &["/a", "/a/b"]);
+        expect("/a/./b/../c", &["/a", "/a/b", "/a/c"]);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn every_component_keeps_the_drive_unc_and_verbatim_prefix_on_windows() {
+        expect(r"C:\a\b", &[r"C:\a", r"C:\a\b"]);
+        expect(r"\\server\share\a\b", &[r"\\server\share\a", r"\\server\share\a\b"]);
+        expect(r"\\?\C:\a\b", &[r"\\?\C:\a", r"\\?\C:\a\b"]);
+        expect(r"\\?\UNC\server\share\a", &[r"\\?\UNC\server\share\a"]);
+    }
+}
