@@ -125,7 +125,7 @@ keyring = { version = "3", features = ["windows-native"] }
 # OVERLAPPED/GetOverlappedResult/CancelIoEx, Storage_FileSystem for
 # ReadFile/WriteFile/MoveFileExW, Security_Cryptography for BCryptGenRandom
 # (128-bit pipe instance). Symbols verified against the cached 0.61.2 source.
-windows-sys = { version = "0.61.2", default-features = false, features = ["Win32_Foundation", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging", "Win32_System_Threading", "Win32_Graphics_Gdi", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Diagnostics_ToolHelp", "Win32_Security_Authorization", "Win32_System_Pipes", "Win32_System_IO", "Win32_Storage_FileSystem", "Win32_Security_Cryptography", "Win32_Graphics_Dwm"] }
+windows-sys = { version = "0.61.2", default-features = false, features = ["Win32_Foundation", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging", "Win32_System_Threading", "Win32_Graphics_Gdi", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Diagnostics_ToolHelp", "Win32_System_SystemInformation", "Win32_Security_Authorization", "Win32_System_Pipes", "Win32_System_IO", "Win32_Storage_FileSystem", "Win32_Security_Cryptography", "Win32_Graphics_Dwm"] }
 
 [target.'cfg(unix)'.dev-dependencies]
 # tests only: fake key presses on a PRIVATE Xvfb (tests/hotkey_x11.rs). Never shipped.
