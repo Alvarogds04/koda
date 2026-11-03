@@ -7,7 +7,8 @@ name: CI (Linux, macOS, Windows)
 # Suites: desktop-daemon, desktop-harness (agent hooks), desktop-pi (Pi extension), desktop-sound, the island's
 # Node checks (apps/desktop-tauri/test-node) and the island's Rust tests (cargo test).
 # A skip is allowed only where a test names its OS mechanism and its twin runs on the other OS (see each suite).
-# Also on every branch push (preview/** keeps its own workflows), so a feature branch is proven on the 3 OS before its PR.
+# Also on every branch push (except preview/**, which only triggers preview-windows.yml), so a feature branch is proven on
+# the 3 OS before its PR.
 # workflow_dispatch only works once this file is on the default branch.
 on:
   push:
