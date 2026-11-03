@@ -2116,6 +2116,15 @@ fn main() {
             // #306 settings prefs: `settingshost::start` runs before the island is placed (#264)
             specialistshost::start(&handle); // #327: the manual specialists (empty = the principal)
             chathost::start_history(&handle); // #341: isolated private conversation store
+            // K2-03 T3 (S2, S4): delete the removed weekly Recap's data (exact files only), off the startup path.
+            let data_dir = handle.path().app_local_data_dir().ok();
+            std::thread::spawn(move || {
+                let runtime = abito_island::transport::resolve_runtime().ok();
+                let outcome = abito_island::legacy_recap::cleanup(data_dir.as_deref(), runtime.as_deref());
+                if let Some(line) = outcome.log_line() {
+                    eprintln!("{line}");
+                }
+            });
             // M2: local notice transport + SIGINT/SIGTERM socket cleanup
             // (main.cjs creates the transport after the window loads; here it
             // starts before the probe so the probe can use its endpoint).
