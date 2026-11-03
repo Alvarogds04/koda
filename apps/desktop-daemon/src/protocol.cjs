@@ -42,10 +42,10 @@ const BASE64 = /^[A-Za-z0-9+/]+={0,2}$/;
 /** Any control character (tabs and newlines included) is refused in short labels/ids. */
 const CONTROL = /[\u0000-\u001f\u007f]/;
 /** Hook-managed agents (agents.cjs); the closed set of agent_connect/agent_disconnect targets. */
-const AGENT_IDS = Object.freeze(["pi", "claude-code", "codex", "recap", "statusline", "copilot-cli", "opencode"]);
+const AGENT_IDS = Object.freeze(["pi", "claude-code", "codex", "statusline", "copilot-cli", "opencode"]);
 const PLAN_HASH = /^[0-9a-f]{64}$/;
 /** #361 agent hooks catalogue: harness-driven (claude-code, codex) plus native adapters. */
-const HOOK_CLIENT_IDS = Object.freeze(["claude-code", "codex", "recap", "statusline", "gemini-cli", "copilot-cli", "opencode", "amp", "cursor"]);
+const HOOK_CLIENT_IDS = Object.freeze(["claude-code", "codex", "statusline", "gemini-cli", "copilot-cli", "opencode", "amp", "cursor"]);
 const CONNECTOR_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 const PROPOSAL_ID = /^ap-[0-9a-f]{28,}$/;
 const DIGEST = /^[0-9a-f]{64}$/i;
@@ -222,7 +222,7 @@ function validateClientFrame(raw) {
 		case "agent_disconnect": {
 			// Reachable ONLY through this authenticated channel (see agents.cjs). Closed id set; unknown keys dropped.
 			if (typeof raw.agentId !== "string" || !AGENT_IDS.includes(raw.agentId)) return undefined;
-			if (raw.type === "agent_connect" && ["recap", "statusline"].includes(raw.agentId) && raw.plan_hash === undefined) return undefined;
+			if (raw.type === "agent_connect" && raw.agentId === "statusline" && raw.plan_hash === undefined) return undefined;
 			const frame = { type: raw.type, agentId: raw.agentId };
 			if (raw.type === "agent_connect" && raw.plan_hash !== undefined) {
 				if (typeof raw.plan_hash !== "string" || !PLAN_HASH.test(raw.plan_hash)) return undefined;
@@ -574,7 +574,7 @@ function pendingFrame(data) {
 }
 
 /** Fixed agent table: names never come from the dependency. */
-const AGENT_NAMES = Object.freeze({ pi: "Pi", "claude-code": "Claude Code", codex: "Codex", recap: "Resumen semanal", statusline: "Uso del plan (relay)", "copilot-cli": "Copilot CLI", opencode: "OpenCode" });
+const AGENT_NAMES = Object.freeze({ pi: "Pi", "claude-code": "Claude Code", codex: "Codex", statusline: "Uso del plan (relay)", "copilot-cli": "Copilot CLI", opencode: "OpenCode" });
 const AGENT_STATES = new Set(["not_connected", "connected", "outdated", "working", "unavailable", "error"]);
 const AGENT_DETAILS = new Set(["config_invalid", "not_writable", "foreign_extension", "unsafe_folder", "backup_failed", "plan_changed", "audit_unavailable", "install_failed", "unsupported_platform", "unsafe_target", "install_unverified"]);
 const AGENT_SUMMARY_MAX = 400;

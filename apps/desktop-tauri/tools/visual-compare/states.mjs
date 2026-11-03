@@ -25,7 +25,7 @@ export function buildStates(f) {
   const spotState = `{ running:true, installed:true, playing:${spot.playing}, track:{ id:'t1', title:${JSON.stringify(spot.title)}, artist:${JSON.stringify(spot.artist)}, album:${JSON.stringify(spot.album)}, duration:${spot.durationSec} } }`;
   // 1:1 with Coucou's sidebar order (Flow x7, Notch x8); Abito-only pages follow with coucou = null.
   const settingsPages = [
-    ['dictation', 'Dictation'], ['notes', 'Notetaker'], ['insights', 'Statistics'], ['dictionary', 'Dictionary'],
+    ['dictation', 'Dictation'], ['insights', 'Statistics'], ['dictionary', 'Dictionary'],
     ['snippets', 'Snippets'], ['styles', 'Styles'], ['flowsettings', 'Flow settings'],
     ['general', 'General'], ['pills', 'Active pills'], ['agents', 'Agents'], ['chat', 'Chat'], ['voice', 'OK Coucou (voice)'],
     ['integrations', 'Integrations'], ['phone', 'Android phone'], ['shortcuts', 'Shortcuts'],
@@ -51,7 +51,7 @@ export function buildStates(f) {
       coucou: { page: 'island', settings: { activeIntegrations: ['integration_spotify'], mainPill: 'integration_spotify' },
         run: `__vcEmit('spotify', { running:true, installed:true, track:{ id:'t1', title:${JSON.stringify(spot.title)}, artist:${JSON.stringify(spot.artist)}, album:${JSON.stringify(spot.album)}, durationSec:${spot.durationSec}, artUrl:'' }, playing:true, position:${spot.positionSec}, positionAt:Date.now(), shuffle:false, repeat:false, volume:50 });__vcCoucou.State.setFocus('integration_spotify');__vcCoucou.island.expand('overview');` },
       abito: { label: 'main', run: aSet(`{ ${expanded}, spotify:${spotState}, prefs:{ ...__vcAbito.prefs, mainPill:'integration_spotify', declaredPills:['integration_spotify'] } }`, 'overview'), settle: 1500 } },
-    // ── L32 zones: usage pill + card, GitHub card, weekly recap, dictation pill ──
+    // ── L32 zones: usage pill + card, GitHub card, dictation pill ──
     { id: 'usage', title: 'Plan usage pill + card', ...ISLAND,
       coucou: { page: 'island', run: cAll(f) + `const S=__vcCoucou.State; S.settings={...S.settings,showPlanInNotch:true,planRelayInstalled:true}; S.planUsage={updatedAt:Date.now(),fiveHour:{usedPct:42,resetsAt:Date.now()+3600e3},sevenDay:{usedPct:61,resetsAt:Date.now()+2*86400e3}}; S.planDetailIsCodex=false; S.showingPlanDetail=true; __vcCoucou.island.expand('overview'); S.notify();`, settle: 2500 },
       abito: { label: 'main', run: aSet(`{ ${expanded}, sessions:${sessions}, prefs:{ ...__vcAbito.prefs, showPlanInNotch:true } }`, 'overview') + `setTimeout(()=>{const b=[...document.querySelectorAll('.plan-pill')].find(x=>x.style.display!=='none'); if(b) b.click();},2500);`, settle: 4500 } },
@@ -59,9 +59,6 @@ export function buildStates(f) {
       coucou: { page: 'island', settings: { activeIntegrations: ['integration_github'], mainPill: 'integration_github' },
         run: cAll(f) + `__vcEmit('integration',{id:'integration_github',data:__vcGithub(),error:null,event:null}); __vcCoucou.island.expand('overview'); __vcCoucou.State.setFocus('integration_github');`, settle: 2500 },
       abito: { label: 'main', run: aSet(`{ ${expanded}, sessions:${sessions}, prefs:{ ...__vcAbito.prefs, mainPill:'integration_github', declaredPills:['integration_github'] } }`, 'overview'), settle: 4500 } },
-    { id: 'recap', title: 'Weekly recap card', ...ISLAND,
-      coucou: { page: 'island', run: cAll(f) + `(async()=>{await __vcCoucou.Recap.load(); __vcCoucou.island.expand('recap');})();`, settle: 2500 },
-      abito: { label: 'main', run: aSet(`{ ${expanded}, sessions:${sessions} }`, 'overview') + `setTimeout(()=>window.AbitoIslandRecap && window.AbitoIslandRecap.open(),1500);`, settle: 4000 } },
     { id: 'dictation', title: 'Dictation pill (hands-free)', w: 720, h: 140, expected: 'Coucou draws the pill in its own window on a screen edge; Abito draws it in the expanded island header: compare the look, not the %.',
       coucou: { page: 'pill', run: `setTimeout(()=>__vcEmit('pill-bands',[0.2,0.5,0.9,0.4,0.7,0.3,0.8,0.1,0.6]),600);`, settle: 2000 },
       abito: { label: 'main', run: `window.__VC_DICTATION=true; ` + aSet(`{ ${expanded}, sessions:${sessions} }`, 'overview') + `setTimeout(()=>{__vcEmit('dictation:phase',{phase:'locked'});__vcEmit('dictation:bands',{bands:[0.2,0.5,0.9,0.4,0.7,0.3,0.8,0.1,0.6]});},1500);`, settle: 3500 } },
@@ -88,7 +85,7 @@ export function buildStates(f) {
   const click = (i, id) => `(document.querySelector('[data-page="${id}"]') || document.querySelectorAll('.hub-item')[${i}]).click();`;
   settingsPages.forEach(([id, title], i) => {
     states.push({ id: `settings-${id}`, title: `Settings · ${title}`, ...SETTINGS,
-      coucou: i < 15 ? { page: 'settings', run: click(i, id), settle: 1500 } : null,
+      coucou: i < 14 ? { page: 'settings', run: click(i, id), settle: 1500 } : null,
       abito: { label: 'settings', url: 'settings.html', run: click(i, id), settle: 1500 } });
   });
   // Chat tab of the island (Coucou: prompt view; Abito: chat column).

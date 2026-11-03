@@ -56,7 +56,6 @@
   // Coucou's corners 0 0 14 14; Rust pins every view with geometry::island_window_rect.
   const GAP_TOP = 0; // S29 (human: «No lo separes, me gusta que esté pegada»): the shell is flush to the top edge again
   const OVERVIEW = { w: 720, h: 150, r: 26, gap: 0, clay: 64, clayX: 598, cy: 74 }; // HU-057 Nusa notch (bottom corners only)
-  const RECAP_H = 208; // Coucou VIEW_LAYOUTS.recap: the recap card needs two more text lines than the overview card
   const QUESTION_H = 224; // default; a long question grows it (abito:question-size), capped by the fixed window
   let questionH = QUESTION_H;
   let compactW = COMPACT.w; // S2/S3: the compact pill widens for the minis, the activity line and a waiting question (island-layout.js compactView)
@@ -169,7 +168,6 @@
   const easeShrink = cubicBezier(0.45, 0, 0.2, 1);
 
   let cardShown = false; // UI.1: a valid approval card is on screen
-  let recapShown = false; // L32: the weekly recap card is open (Coucou's recap view is 184 high)
   let questionShown = false; // N6: a Pi question/notification is on screen (R6 shrinks like with a card)
   let p = 0;            // progress 0 = compact, 1 = overview
   let v = 0;            // spring velocity
@@ -272,7 +270,7 @@
     const w = fitOn ? fitW : lerp(compactW, lerp(OVERVIEW.w, CHAT.w, q.x), p);
     const compactClayX = fitOn ? (compactHasText() ? window.AbitoNusa.COMPACT.padLeft + window.AbitoNusa.COMPACT.koda / 2 : fitW / 2) /* #clay is translated -50% by the vendor sheet: `left` is its CENTRE */ : COMPACT.clayX;
     if ((capsule.dataset.pillBare === 'true') !== (fitOn && !compactHasText())) capsule.dataset.pillBare = String(fitOn && !compactHasText());
-    const overviewHeight = recapShown ? RECAP_H : questionShown ? questionH : cardShown && cardH ? cardH : (noticeLane && noticeLane.view === 'notices' ? finishedH : 0) || (engineBandOn || noticeStripOn ? OVERVIEW.h + FINISHED_BAND_H : OVERVIEW.h);
+    const overviewHeight = questionShown ? questionH : cardShown && cardH ? cardH : (noticeLane && noticeLane.view === 'notices' ? finishedH : 0) || (engineBandOn || noticeStripOn ? OVERVIEW.h + FINISHED_BAND_H : OVERVIEW.h);
     const h = lerp(COMPACT.h, lerp(overviewHeight, CHAT.h, q.x), p);
     const QT = window.AbitoQuestionToast, withToast = (shape) => (QT && toastShown ? QT.shapeWithToast(shape, true) : shape);
     reportShape(withToast([lerp(compactW, lerp(OVERVIEW.w, CHAT.w, q.target), target),
@@ -282,7 +280,7 @@
     const rBottom = lerp(COMPACT.r, OVERVIEW.r, p), rTop = lerp(COMPACT.r, 0, p), rTopUsed = fitOn ? 0 : rTop; // S12: the fitted pill hangs from the edge, bottom corners only
     const gap = lerp(COMPACT.gap, OVERVIEW.gap, p);
     // the question card is 148 high (200 island): the character centres on it, 15px lower than on the 108 cards
-    const ovBase = recapShown ? { ...OVERVIEW_CARD, cy: 42 + (RECAP_H - 52) / 2 } : questionShown ? { ...OVERVIEW_CARD, cy: OVERVIEW_CARD.cy + (questionH - LEGACY_CARD_H) / 2 } : cardShown ? OVERVIEW_CARD : OVERVIEW;
+    const ovBase = questionShown ? { ...OVERVIEW_CARD, cy: OVERVIEW_CARD.cy + (questionH - LEGACY_CARD_H) / 2 } : cardShown ? OVERVIEW_CARD : OVERVIEW;
     // the confirmed finished-notice lane (pane starts at x=108) uses the small R6 too, or the 128px blob covers the pane
     const ov = (noticeLane && noticeLane.view === 'notices') ? OVERVIEW_CARD : ovBase;
     const cs = lerp(COMPACT.clay, ov.clay, p);
@@ -1510,11 +1508,6 @@
 
   // U1: the card's actionability depends on the visible view too.
   document.addEventListener('island:view', () => { if (current) renderCard(); });
-  // L32: the recap card (island-recap.js) asks for its own 184px island; closing gives the overview height back
-  document.addEventListener('abito:recap', event => {
-    const show = !!(event.detail && event.detail.show);
-    if (show !== recapShown) { recapShown = show; render(); }
-  });
   // Sileo-style toast (question-toast.js) below the island: a trusted click opens the island on the question; the card answers.
   let toastShown = false;
   document.addEventListener('abito:question-toast', event => {

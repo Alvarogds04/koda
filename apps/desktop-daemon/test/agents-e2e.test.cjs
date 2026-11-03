@@ -92,7 +92,7 @@ test('packaged installer: Claude preview in a private HOME never reports install
  assert.equal(fs.existsSync(path.join(home, '.claude/settings.json')), false);
 });
 
-test('real recap/statusline CLI: preview is read-only, coexist, hash-bound apply and marker-only remove', async t => {
+test('real statusline CLI: preview is read-only, coexist, hash-bound apply and marker-only remove', async t => {
  const s = setup(t);
  const original = { ...THIRD, statusLine: { type: 'command', command: 'mine' } };
  fs.writeFileSync(s.claudeFile, JSON.stringify(original) + '\n');
@@ -100,7 +100,7 @@ test('real recap/statusline CLI: preview is read-only, coexist, hash-bound apply
  let list = await s.manager.list();
  assert.equal(fs.readFileSync(s.claudeFile, 'utf8'), before);
  assert.equal(s.audit().length, 0);
- for (const id of ['recap', 'statusline']) {
+ for (const id of ['statusline']) {
   s.manager.invalidate(); list = await s.manager.list();
   assert.equal(byId(list, id).state, id === 'statusline' ? 'outdated' : 'not_connected');
   const hash = byId(list, id).plan_hash;
@@ -108,12 +108,11 @@ test('real recap/statusline CLI: preview is read-only, coexist, hash-bound apply
   assert.equal(byId(await s.manager.connect(id, hash), id).state, 'connected');
  }
  const installed = JSON.parse(fs.readFileSync(s.claudeFile));
- assert.ok(installed.hooks.UserPromptSubmit && installed.hooks.PostToolUse && installed.hooks.Stop);
  assert.match(installed.statusLine.command, /abito-statusline\.cjs/);
  assert.equal(JSON.parse(fs.readFileSync(path.join(s.home, '.abito/statusline-previous.json'))).command, 'mine');
- for (const id of ['recap', 'statusline']) assert.equal(byId(await s.manager.disconnect(id), id).state, id === 'statusline' ? 'outdated' : 'not_connected');
+ for (const id of ['statusline']) assert.equal(byId(await s.manager.disconnect(id), id).state, id === 'statusline' ? 'outdated' : 'not_connected');
  assert.deepEqual(JSON.parse(fs.readFileSync(s.claudeFile)), original);
- assert.deepEqual(s.audit().map(x => x.event), ['intent', 'result', 'intent', 'result', 'intent', 'result', 'intent', 'result']);
+ assert.deepEqual(s.audit().map(x => x.event), ['intent', 'result', 'intent', 'result']);
  assert.doesNotMatch(JSON.stringify(s.audit()), /mine|PreToolUse|theme|command/);
 });
 

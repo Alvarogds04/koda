@@ -148,7 +148,7 @@ const alive = (pid) => {
 };
 const keepKeep = (harness) => ({ exit: 0, stdout: preview({ harness, ops: ["keep", "keep"] }) });
 
-for (const [id, events] of [['recap', ['UserPromptSubmit', 'PostToolUse', 'Stop']], ['statusline', ['statusLine']]]) {
+for (const [id, events] of [['statusline', ['statusLine']]]) {
  test(`${id}: closed wire, event contract, exact argv/env and stale plan refusal`, async t => {
   const P = require('../src/protocol.cjs');
   const frame = P.validateClientFrame({ type: 'agent_connect', agentId: id, plan_hash: HASH_A, argv: ['--apply'], env: { EVIL: '1' } });
@@ -179,11 +179,27 @@ for (const [id, events] of [['recap', ['UserPromptSubmit', 'PostToolUse', 'Stop'
    assert.equal(byId(await s.manager.list(), id).detail, 'install_failed');
   }
  });
-}
+ }
+
+// K2-03 S1: Recap is gone, not paused: `agent_connect` naming it is refused at the door (unknown id) and
+// the manager refuses it like any id outside the closed set, with or without a plan hash.
+test('recap is no longer an agent: the protocol and the manager refuse it like any unknown id', async t => {
+	const P = require('../src/protocol.cjs');
+	assert.equal(P.validateClientFrame({ type: 'agent_connect', agentId: 'recap', plan_hash: HASH_A }), undefined);
+	assert.equal(P.validateClientFrame({ type: 'agent_disconnect', agentId: 'recap' }), undefined);
+	assert.equal(P.validateClientFrame({ type: 'hooks_install', clientId: 'recap', plan_hash: HASH_A }), undefined);
+	assert.equal(P.validateClientFrame({ type: 'hooks_remove', clientId: 'recap', plan_hash: HASH_A }), undefined);
+	const s = setup(t, {});
+	await assert.rejects(s.manager.connect('recap', HASH_A), e => e.code === 'bad_request');
+	await assert.rejects(s.manager.connect('recap'), e => e.code === 'bad_request');
+	await assert.rejects(s.manager.disconnect('recap'), e => e.code === 'bad_request');
+	assert.ok(!s.calls().length, 'nothing reached the installer');
+	assert.ok(!(await s.manager.list()).some(a => a.id === 'recap'), 'no recap row in the agents list');
+});
 
 test("installerBin unset: every agent unavailable, no spawn", async () => {
 	const m = new AgentsManager({ home: os.tmpdir(), islandDir: os.tmpdir(), run: () => { assert.fail('must never spawn without installerBin'); } });
-	for (const id of ['recap', 'statusline']) {
+	for (const id of ['statusline']) {
 		assert.equal(byId(await m.connect(id, HASH_A), id).state, 'unavailable');
 		assert.equal(byId(await m.disconnect(id), id).state, 'unavailable');
 	}
@@ -193,7 +209,6 @@ test("installerBin unset: every agent unavailable, no spawn", async () => {
 		[
 			["claude-code", "Claude Code", "unavailable", null, false],
 			["codex", "Codex", "unavailable", null, false],
-			["recap", "Resumen semanal", "unavailable", null, false],
 			["statusline", "Uso del plan (relay)", "unavailable", null, false],
 			["copilot-cli", "Copilot CLI", "unavailable", null, false],
 			["opencode", "OpenCode", "unavailable", null, false],
@@ -219,7 +234,7 @@ test("state mapping: not_connected with plan_hash and closed summaries", async (
 	assert.equal(codex.trust_review, true);
 	assert.equal(byId(list, "opencode").state, "unavailable", "no OpenCode settings dir in the private HOME: not installed");
 	assert.equal(byId(list, "copilot-cli").state, "unavailable");
-	assert.equal(s.calls().length, 7, "one read-only preview per agent");
+	assert.equal(s.calls().length, 6, "one read-only preview per agent");
 });
 
 test("state mapping: connected has no plan fields; replace and mixed ops are outdated", async (t) => {
@@ -300,13 +315,13 @@ test("list is cached for 1 s and concurrent calls are single-flight", async (t) 
 	const [a, b, c] = await Promise.all([s.manager.list(), s.manager.list(), s.manager.list()]);
 	assert.deepEqual(a, b);
 	assert.deepEqual(b, c);
-	assert.equal(s.calls().length, 7);
+	assert.equal(s.calls().length, 6);
 	clock += 900;
 	await s.manager.list();
-	assert.equal(s.calls().length, 7, "served from cache inside 1 s");
+	assert.equal(s.calls().length, 6, "served from cache inside 1 s");
 	clock += 200;
 	await s.manager.list();
-	assert.equal(s.calls().length, 14, "expired cache re-previews");
+	assert.equal(s.calls().length, 12, "expired cache re-previews");
 });
 
 test("argv is exactly the contract: preview, apply with --audit-dir, optional --timeout-sec", async (t) => {
@@ -333,7 +348,7 @@ test("child env: allowlist + ABITO_ISLAND_EXE only, HOME is the real home passed
 			else process.env[k] = saved[k];
 		}
 	}
-	assert.equal(s.calls().length, 7);
+	assert.equal(s.calls().length, 6);
 	for (const call of s.calls()) {
 		for (const k of Object.keys(call.env)) assert.ok(["PATH", "HOME", "LANG", "ABITO_ISLAND_EXE"].includes(k), `unexpected env ${k}`);
 		assert.equal(call.env.PATH, "/usr/bin:/bin");

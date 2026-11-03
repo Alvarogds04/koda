@@ -15,8 +15,6 @@
       case 'custom_sounds': return [];
       case 'phone_link_status': return { enabled: false, running: false, port: 0, host: '', name: 'Desk', clients: 0, error: null, relayState: 'off' };
       case 'spotify_refresh': return null;
-      case 'recap_history': return window.__vcRecapHistory();
-      case 'recap_prefs': return { enabled: true, hideProjects: false, lastShownWeek: '' };
       case 'github_refresh': return null;
       case 'pill_state': return { phase: 'locked', edge: 'bottom', key: 'right_ctrl', noteStartedAt: null, announcement: null, enabled: true, voice: null };
       case 'flow_status': return { platform: 'linux', prefs: { enabled: true } };

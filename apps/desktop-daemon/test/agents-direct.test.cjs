@@ -15,11 +15,10 @@ const WIRE = {
 	codex: ["PermissionRequest", "PreToolUse", "PostToolUse", "Stop"],
 	copilot: ["permissionRequest", "sessionEnd"],
 	opencode: ["permission.ask", "event"],
-	recap: ["UserPromptSubmit", "PostToolUse", "Stop"],
 	statusline: ["statusLine"],
 	pi: ["extension"],
 };
-const FILES = { pi: ".pi/agent/extensions/abito-island", claude: ".claude/settings.json", codex: ".codex/hooks.json", copilot: ".copilot/hooks/abito-island.json", opencode: ".config/opencode/plugins/abito-island.js", recap: ".claude/settings.json", statusline: ".claude/settings.json" };
+const FILES = { pi: ".pi/agent/extensions/abito-island", claude: ".claude/settings.json", codex: ".codex/hooks.json", copilot: ".copilot/hooks/abito-island.json", opencode: ".config/opencode/plugins/abito-island.js", statusline: ".claude/settings.json" };
 
 /** Fake installer: `installed` = harnesses whose hooks are already there; `broken` = harnesses that refuse. */
 function fakeRun(home, { installed = [], broken = [] } = {}, seen = []) {
@@ -110,12 +109,16 @@ test("connect: previews again, applies only the plan the human saw, then reports
 	assert.ok(apply.includes("--audit-dir") && apply.includes(path.join(s.island, "audit")));
 });
 
-test("disconnect and notify-only ids go through the same guard (recap needs the shown plan)", async (t) => {
+test("disconnect and notify-only ids go through the same guard (a hashless statusline connect is refused; recap is unknown)", async (t) => {
 	const s = setup(t);
 	const seen = [];
 	const gone = await s.run(["disconnect", "claude-code"], { installed: ["claude"] }, seen);
 	assert.equal(gone.code, 0);
 	assert.ok(seen.some((a) => a.includes("--remove") && a.includes("--apply-plan")));
+	const relay = await s.run(["connect", "statusline"], {});
+	assert.equal(relay.code, 2);
+	assert.deepEqual(relay.json, { error: "bad_request" });
+	// K2-03 S1: Recap is removed, so the CLI route treats it like any unknown id.
 	const recap = await s.run(["connect", "recap"], {});
 	assert.equal(recap.code, 2);
 	assert.deepEqual(recap.json, { error: "bad_request" });

@@ -329,11 +329,11 @@ test("service routes harness ids to AgentsManager and requires a hash for instal
 test('notify integrations are composed, routable and accepted in the bounded hooks frame', async () => {
  const agents = fakeAgents();
  const oldList = agents.list;
- agents.list = async () => [...await oldList(), ...['recap', 'statusline'].map(id => ({ id, name: id, state: 'not_connected', detail: null, backup: false, plan_hash: 'a'.repeat(64), summary: 'A backup is made first.', reviewable: true }))];
+ agents.list = async () => [...await oldList(), ...['statusline'].map(id => ({ id, name: id, state: 'not_connected', detail: null, backup: false, plan_hash: 'a'.repeat(64), summary: 'A backup is made first.', reviewable: true }))];
  const svc = createAgentHooks({ home: tmp(), nodeExe: NODE, platform: 'linux', agents });
  const data = await svc.preview();
- assert.equal(P.hooksFrame(data).clients.length, 9);
- for (const id of ['recap', 'statusline']) {
+ assert.equal(P.hooksFrame(data).clients.length, 8);
+ for (const id of ['statusline']) {
   assert.deepEqual(P.validateClientFrame({ type: 'hooks_install', clientId: id, plan_hash: 'a'.repeat(64), argv: ['evil'], env: { EVIL: '1' } }), { type: 'hooks_install', clientId: id, plan_hash: 'a'.repeat(64) });
   await svc.install(id, 'a'.repeat(64));
   assert.deepEqual(agents.calls.at(-1), ['connect', id, 'a'.repeat(64)]);

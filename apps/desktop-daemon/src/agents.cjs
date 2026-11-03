@@ -63,7 +63,6 @@ const REFUSAL_DETAIL = Object.freeze({
 const AGENTS = Object.freeze([
 	Object.freeze({ id: "claude-code", name: "Claude Code", harness: "claude", dir: ".claude", file: "settings.json", events: EVENTS, wireEvents: CLAUDE_EVENTS, migratedEvents: MIGRATED_EVENTS }),
 	Object.freeze({ id: "codex", name: "Codex", harness: "codex", dir: ".codex", file: "hooks.json", events: EVENTS, wireEvents: CODEX_EVENTS }),
-	Object.freeze({ id: "recap", name: "Resumen semanal", harness: "recap", dir: ".claude", file: "settings.json", events: Object.freeze(["UserPromptSubmit", "PostToolUse", "Stop"]) }),
 	Object.freeze({ id: "statusline", name: "Uso del plan (relay)", harness: "statusline", dir: ".claude", file: "settings.json", events: Object.freeze(["statusLine"]) }),
 	// Copilot CLI: the hooks file Abito owns under ~/.copilot/hooks; OpenCode: the plugin Abito owns under ~/.config/opencode/plugins.
 	// Both answer permissions from the island and notify on session end (apps/desktop-harness install copilot|opencode).
@@ -221,7 +220,7 @@ class AgentsManager extends EventEmitter {
 	async operate(id, planHash, remove) {
 		const agent = AGENTS.find((a) => a.id === id);
 		if (!agent || (planHash !== undefined && !HASH.test(planHash))) throw new AgentsError("bad_request");
-		if (!remove && ["recap", "statusline"].includes(id) && planHash === undefined) throw new AgentsError("bad_request");
+		if (!remove && id === "statusline" && planHash === undefined) throw new AgentsError("bad_request");
 		if (!["linux", "darwin", "win32"].includes(this.platform)) return this.list();
 		if (!agent.harness || !this.available) return this.list(); // nothing to run: the agent reads unavailable
 		if (this.op) throw new AgentsError("busy");
@@ -364,7 +363,6 @@ class AgentsManager extends EventEmitter {
 				: `Adds the Abito hooks (${agent.events.join(", ")}) to ${file}. A backup is made first.`;
 		if (agent.id === "pi") summary = "Installs the Abito Pi extension in the default ~/.pi/agent directory. A backup is made first.";
 		if (agent.id === "opencode") summary = state === "outdated" ? `Updates the Abito plugin in ${file}. A backup is made first.` : `Adds the Abito plugin to ${file}. A backup is made first.`;
-		if (agent.id === "recap") summary = "Adds notify-only hooks that only count activity for the weekly recap. No command text, path or prompt is kept. A backup is made first.";
 		if (agent.id === "statusline") summary = "Adds the status-line relay in ~/.claude/settings.json. An existing status line keeps working (the relay prints it). A backup is made first.";
 		if (trust) summary += " Codex will ask you to trust them in /hooks.";
 		if (!reviewable) summary += " This change is large: review it in the file.";

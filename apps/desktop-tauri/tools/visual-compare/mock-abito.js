@@ -11,7 +11,7 @@
     spotify: { running: true, track: null, playing: false },
   };
   // The settings window starts from the same state Coucou's mock boots with (sound off, the four default pills
-  // declared, weekly recap on), so the settings pages measure layout and not data. The island keeps its own defaults.
+  // declared), so the settings pages measure layout and not data. The island keeps its own defaults.
   const winLabel = window.__TAURI_INTERNALS__?.metadata?.currentWindow?.label;
   if (winLabel === 'settings') Object.assign(st.prefs, { sound: false, declaredPills: ['integration_resend', 'integration_n8n', 'integration_vercel', 'integration_github'] });
   window.__vcAbito = st;
@@ -39,7 +39,6 @@
           default: return { ok: true };
         }
       }
-      case 'recap_action': return p.action === 'prefs' ? { enabled: window.__VC_RECAP_AUTO === true, hideProjects: false, lastShownWeek: '' } : p.action === 'view' ? window.__vcRecapHistory() : { ok: true };
       case 'github_action': { const g = window.__vcGithub(); return p.section === 'activity' ? { available: true, fetched: true, activity: g.activity } : { available: true, fetched: true, pulse: g.pulse }; }
       case 'plan_action': return p.action === 'claude'
         ? { available: true, updatedAt: Date.now(), fiveHour: { usedPct: 42, resetsAt: Date.now() + 3600e3 }, sevenDay: { usedPct: 61, resetsAt: Date.now() + 86400e3 } }
