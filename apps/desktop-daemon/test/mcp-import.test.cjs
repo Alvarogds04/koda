@@ -246,9 +246,18 @@ test("malformed json, non-object root, duplicate keys, unreadable", () => {
 	// A duplicate object key anywhere rejects the whole document (reference semantics).
 	write(home, ".cursor/mcp.json", '{"mcpServers":{"a":{"command":"x"}},"mcpServers":{"b":{"command":"y"}}}');
 	write(home, ".config/Code/User/mcp.json", "{}");
-	fs.chmodSync(path.join(home, ".config/Code/User/mcp.json"), 0o000);
+	// The scanner must report a file it cannot read as `unreadable`, not crash. POSIX: strip every mode bit.
+	// Windows has no mode bits to strip (chmod 000 keeps the file readable), so the twin refuses the read by
+	// putting a directory at the scanned path (EISDIR).
+	const vscodeFile = path.join(home, ".config", "Code", "User", "mcp.json");
+	if (process.platform === "win32") {
+		fs.rmSync(vscodeFile);
+		fs.mkdirSync(vscodeFile);
+	} else {
+		fs.chmodSync(vscodeFile, 0o000);
+	}
 	const result = scanMcpConfigs({ home, platform: "linux" });
-	fs.chmodSync(path.join(home, ".config/Code/User/mcp.json"), 0o600);
+	if (process.platform !== "win32") fs.chmodSync(vscodeFile, 0o600);
 	assert.deepEqual(
 		result.files.map((f) => [f.source, f.status]).sort(),
 		[["claude-code", "malformed"], ["claude-desktop", "malformed"], ["cursor", "malformed"], ["vscode", "unreadable"]],

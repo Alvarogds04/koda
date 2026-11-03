@@ -87,7 +87,9 @@ test("sessionHelperCandidates is fixed (no PATH, no CWD) and empty off Windows",
 });
 
 test("publishSessionWindows fails closed without a helper", () => {
-	assert.throws(() => publishSessionWindows(os.tmpdir(), PAYLOAD(), { helperPath: undefined }), /helper not found/);
+	// resolveHelper is the product's injection seam: injecting "nothing found" makes the no-helper case
+	// deterministic on every OS (on Windows the real installed helper would otherwise be found first).
+	assert.throws(() => publishSessionWindows(os.tmpdir(), PAYLOAD(), { helperPath: undefined, resolveHelper: () => undefined }), /helper not found/);
 });
 
 test("publishSessionWindows refuses a non-zero helper exit", () => {
@@ -188,9 +190,14 @@ test("windowsIslandRootViolation mirrors the canonical policy (win semantics)", 
 	}
 	// Missing LOCALAPPDATA: nothing canonical to anchor on — refused.
 	assert.match(windowsIslandRootViolation(path.join(local, "Abito"), {}, win.platform), /LOCALAPPDATA/);
-	// Off Windows (and by default): no Windows rule, root passes through.
+	// Off Windows (injected platform): no Windows rule, root passes through.
 	assert.equal(windowsIslandRootViolation("/any/root", {}, "linux"), null);
-	assert.equal(windowsIslandRootViolation("/any/root"), null);
+	// The DEFAULT platform call must accept the canonical root of THIS platform (a POSIX path is only
+	// acceptable where the POSIX rule applies; Windows requires the %LOCALAPPDATA%\Abito anchor).
+	const defaultRoot = process.platform === "win32"
+		? path.join(process.env.LOCALAPPDATA, "Abito")
+		: "/any/root";
+	assert.equal(windowsIslandRootViolation(defaultRoot), null);
 });
 
 test("Daemon refuses a forbidden Windows root BEFORE creating anything", async () => {

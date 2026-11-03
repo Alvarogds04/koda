@@ -11,6 +11,7 @@ const os = require("node:os");
 const path = require("node:path");
 
 const { AgentsManager } = require("../src/agents.cjs");
+const { win } = require("./platform-env.cjs");
 
 const HARNESS = path.join(__dirname, "..", "..", "desktop-harness");
 const byId = (list, id) => list.find((a) => a.id === id);
@@ -57,7 +58,9 @@ function setup(t) {
 	const islandDir = path.join(base, "island");
 	fs.mkdirSync(islandDir, { mode: 0o700 });
 	const installerBin = copyInstaller(base);
-	const manager = new AgentsManager({ installerBin, home, islandDir });
+	// Windows: the product trusts the installer through the install manifest (HU-047); a test copy is never in
+	// it, so the tests inject the product's verifier seam (the POSIX trust check stays real on Linux/macOS).
+	const manager = new AgentsManager({ installerBin, home, islandDir, ...(win ? { verifyBundled: () => {} } : {}) });
 	const audit = () => {
 		const file = path.join(islandDir, "audit", "hook-installs.jsonl");
 		return fs.existsSync(file) ? fs.readFileSync(file, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)) : [];
@@ -80,9 +83,12 @@ test('packaged installer: Claude preview in a private HOME never reports install
   // Model a group-writable checkout independently of the developer's umask.
   fs.chmodSync(source, 0o664);
   require('../../desktop-tauri/packaging/validate/layout.cjs').copyRuntimeFile(source, dest);
-  assert.equal(fs.statSync(dest).mode & 0o777, 0o644);
+  // Mode 0o644 of the packaged copy is a Unix fact (non-group-writable); Windows lstat has no POSIX bits,
+  // so there the twin assertion is that the packaged bytes are the checkout bytes.
+  if (win) assert.equal(fs.readFileSync(dest, "utf8"), fs.readFileSync(source, "utf8"));
+  else assert.equal(fs.statSync(dest).mode & 0o777, 0o644);
  }
- const manager = new AgentsManager({installerBin:path.join(packaged, 'bin/abito-hook.cjs'), home, islandDir:s.islandDir});
+ const manager = new AgentsManager({installerBin:path.join(packaged, 'bin/abito-hook.cjs'), home, islandDir:s.islandDir, ...(win ? { verifyBundled: () => {} } : {})});
  const list = await manager.list();
  const claude = byId(list, 'claude-code');
  assert.notEqual(claude.detail, 'install_failed');

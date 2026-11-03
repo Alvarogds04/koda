@@ -10,6 +10,7 @@ const os = require("node:os");
 const path = require("node:path");
 
 const { AgentsManager } = require("../src/agents.cjs");
+const { win, unixOnly } = require("./platform-env.cjs");
 
 const FIXTURE = path.join(__dirname, "fixtures", "fake-installer.cjs");
 const HASH_A = "a".repeat(64);
@@ -93,7 +94,10 @@ function setup(t, scenario = {}, extra = {}) {
 	const installerBin = path.join(base, "installer.cjs");
 	fs.writeFileSync(installerBin, `require(${JSON.stringify(FIXTURE)})(${JSON.stringify(scenarioFile)});\n`, { mode: 0o644 });
 	fs.chmodSync(installerBin, 0o644);
-	const manager = new AgentsManager({ installerBin, home, islandDir, ...extra });
+	// The product's Windows trust path verifies the script against the install manifest (HU-047); a test
+	// fixture is never in that manifest, so on Windows the tests inject the product's own verifier seam.
+	// The POSIX ownership/mode trust check below stays the real one on Linux/macOS.
+	const manager = new AgentsManager({ installerBin, home, islandDir, ...(win ? { verifyBundled: () => {} } : {}), ...extra });
 	const calls = () => (fs.existsSync(`${scenarioFile}.calls`) ? fs.readFileSync(`${scenarioFile}.calls`, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
 	return { base, home, islandDir, manager, write, calls, installerBin, scenarioFile };
 }
@@ -502,7 +506,7 @@ test("oversized stdout and stderr floods fail generically and leave no process",
 	}
 });
 
-test("installer trust check: group-writable or symlinked script is refused before spawning", async (t) => {
+test("installer trust check: group-writable or symlinked script is refused before spawning", unixOnly("Windows (HU-047): an installer script that fails the manifest check never runs"), async (t) => {
 	const s = setup(t, { claude: { preview: { exit: 0, stdout: preview() } } });
 	fs.chmodSync(s.installerBin, 0o664);
 	let a = byId(await s.manager.list(), "claude-code");

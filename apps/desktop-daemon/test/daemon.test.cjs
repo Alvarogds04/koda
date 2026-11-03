@@ -12,6 +12,7 @@ const { spawn, spawnSync } = require("node:child_process");
 
 const { Daemon, classifySession, isDaemonProcess, pidAlive, procStartTicks, readSession } = require("../src/daemon.cjs");
 const { writePrivateFile } = require("../src/isolation.cjs");
+const { win, assertMode, unixOnly } = require("./platform-env.cjs");
 
 /** The #390 launch ledger, one JSON object per line; [] when the daemon never booted here. */
 function ledgerLines(root) {
@@ -33,9 +34,19 @@ async function waitFor(fn, ms = 5000) {
 	assert.ok(fn(), "waitFor timed out");
 }
 function tmp() {
-	const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "abito-d-")));
+	// native: os.tmpdir() is the 8.3 short form on Windows runners; %LOCALAPPDATA% fixtures want the canonical
+	// long path (identity on Linux/macOS).
+	const base = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "abito-d-")));
 	TEST_BASES.add(base);
 	return base;
+}
+/** The daemon's island root: on Windows it MUST sit inside the private `%LOCALAPPDATA%\Abito` canonical root. */
+function islandRoot(base) {
+	return win ? path.join(base, "Abito", "i") : path.join(base, "i");
+}
+/** The daemon env: on Windows %LOCALAPPDATA% anchors the canonical island root (a private temp dir, never the real one). */
+function daemonEnv(base, extra = {}) {
+	return { PATH: process.env.PATH, ...(win ? { LOCALAPPDATA: base } : {}), ...extra };
 }
 /** Kills (if needed) and waits for a child's exit so nothing leaks. */
 async function reap(child) {
@@ -48,12 +59,12 @@ async function reap(child) {
 
 function make(extra = {}) {
 	const base = tmp();
-	const root = path.join(base, "i");
+	const root = islandRoot(base);
 	const logs = [];
 	const evidence = { cwd: path.join(base, "cwd.txt"), cmd: path.join(base, "cmd.log"), spawn: path.join(base, "spawn.log") };
 	const daemon = new Daemon({
 		root,
-		env: { PATH: process.env.PATH, ...(extra.env ?? {}) },
+		env: daemonEnv(base, extra.env ?? {}),
 		log: (line) => logs.push(String(line)),
 		engineOptions: {
 			command: process.execPath,
@@ -94,7 +105,7 @@ test("start writes a private session.json, serves the protocol, stop removes it"
 	await daemon.start();
 	try {
 		const file = path.join(root, "runtime", "session.json");
-		assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+		assertMode(file, 0o600);
 		const session = JSON.parse(fs.readFileSync(file, "utf8"));
 		assert.deepEqual(Object.keys(session).sort(), ["endpoint", "pid", "ppid", "procStart", "protocol", "startedAt", "token"]);
 		assert.equal(session.protocol, "island-agent/1");
@@ -264,7 +275,7 @@ test("MCP: a valid private source is projected into the agent dir; an unsafe one
 	writePrivateFile(path.join(a.root, "config.json"), JSON.stringify({ mcpConfigPath: good }));
 	await a.daemon.start();
 	const projected = path.join(a.root, "agent", "mcp.json");
-	assert.equal(fs.statSync(projected).mode & 0o777, 0o600);
+	assertMode(projected, 0o600);
 	assert.deepEqual(Object.keys(JSON.parse(fs.readFileSync(projected, "utf8")).mcpServers), ["notes"]);
 	assert.equal(a.daemon.status().mcpServers, 1);
 	await a.daemon.stop();
@@ -288,14 +299,37 @@ test("a config error at start aborts before any process is spawned", async () =>
 });
 
 function wrapperFor(base, name, spawnLog) {
-	const wrapper = path.join(base, name);
-	fs.writeFileSync(wrapper, `#!/bin/sh\nexec "${process.execPath}" "${FAKE}" --spawn-log "${spawnLog}" "$@"\n`, { mode: 0o755 });
-	return wrapper;
+	// POSIX: an absolute #!/bin/sh wrapper is a valid config command. Windows: config.cjs refuses absolute drive
+	// paths (validateCommand is POSIX-shaped), so the command is the product's BARE-NAME path instead: the engine
+	// resolves it through %AppData%\npm (windowsPackageCliJs) to a generated pi package whose bin entry runs the
+	// same fake agent with the same per-command spawn log. See windowsPiPackage below.
+	const file = path.join(base, name);
+	fs.writeFileSync(file, `#!/bin/sh\nexec "${process.execPath}" "${FAKE}" --spawn-log "${spawnLog}" "$@"\n`, { mode: 0o755 });
+	return file;
 }
-function bareDaemon(root) {
+/**
+ * Windows only: a private npm prefix holding a fake `@earendil-works/pi-coding-agent` package whose `bin`
+ * entries are generated runners. The engine resolves a bare config command name through %AppData%\npm
+ * (src/runtime.cjs windowsPackageCliJs) and spawns [node, <entry.cjs>, --mode rpc, ...]; each runner injects
+ * the same --spawn-log evidence the POSIX wrappers pass on argv, then requires the shared fake agent.
+ * The resolver reads the daemon process env, so the caller points process.env.AppData at the returned prefix.
+ */
+function windowsPiPackage(base, entries) {
+	const appData = path.join(base, "appdata");
+	const packageDir = path.join(appData, "npm", "node_modules", "@earendil-works", "pi-coding-agent");
+	fs.mkdirSync(packageDir, { recursive: true });
+	const bin = {};
+	for (const [name, spawnLog] of Object.entries(entries)) {
+		fs.writeFileSync(path.join(packageDir, `${name}.cjs`), `process.argv.push("--spawn-log", ${JSON.stringify(spawnLog)});\nrequire(${JSON.stringify(FAKE)});\n`, { mode: 0o644 });
+		bin[name] = `${name}.cjs`;
+	}
+	fs.writeFileSync(path.join(packageDir, "package.json"), JSON.stringify({ name: "@earendil-works/pi-coding-agent", version: "0.0.0-test", bin }), "utf8");
+	return appData;
+}
+function bareDaemon(root, base) {
 	return new Daemon({
 		root,
-		env: { PATH: process.env.PATH },
+		env: daemonEnv(base),
 		engineOptions: { backoffMs: [20], stopTimeoutMs: 500, requestTimeoutMs: 3000, startTimeoutMs: 5000 },
 	});
 }
@@ -357,8 +391,8 @@ test("an explicit engine cwd is the effective cwd: a workspace change does not r
 	fs.mkdirSync(fixed);
 	const evidence = { cwd: path.join(base, "cwd.txt"), spawn: path.join(base, "spawn.log") };
 	const daemon = new Daemon({
-		root: path.join(base, "i"),
-		env: { PATH: process.env.PATH },
+		root: islandRoot(base),
+		env: daemonEnv(base),
 		engineOptions: { command: process.execPath, commandArgs: [FAKE, "--cwd-out", evidence.cwd, "--spawn-log", evidence.spawn], cwd: fixed, backoffMs: [20], stopTimeoutMs: 500, startTimeoutMs: 5000 },
 	});
 	await daemon.start();
@@ -371,14 +405,19 @@ test("an explicit engine cwd is the effective cwd: a workspace change does not r
 	await daemon.stop();
 });
 
-test("SIGHUP/applyConfig restarts the engine when command changes", async () => {
+test("SIGHUP/applyConfig restarts the engine when command changes", async (t) => {
 	const base = tmp();
-	const root = path.join(base, "i");
-	const a = wrapperFor(base, "a.sh", path.join(base, "a.log"));
-	const b = wrapperFor(base, "b.sh", path.join(base, "b.log"));
-	fs.mkdirSync(root, { mode: 0o700 });
+	const root = islandRoot(base);
+	// Windows: the bare-name command resolves through the private %AppData%\npm prefix (see windowsPiPackage);
+	// the resolver reads the daemon (test) process env, so point process.env.AppData at it for the duration.
+	const savedAppData = process.env.AppData;
+	if (win) process.env.AppData = windowsPiPackage(base, { "abito-fake-a": path.join(base, "a.log"), "abito-fake-b": path.join(base, "b.log") });
+	t.after(() => { process.env.AppData = savedAppData; });
+	const a = win ? "abito-fake-a" : wrapperFor(base, "a.sh", path.join(base, "a.log"));
+	const b = win ? "abito-fake-b" : wrapperFor(base, "b.sh", path.join(base, "b.log"));
+	fs.mkdirSync(root, { recursive: true, mode: 0o700 });
 	writePrivateFile(path.join(root, "config.json"), JSON.stringify({ command: a }));
-	const daemon = bareDaemon(root);
+	const daemon = bareDaemon(root, base);
 	await daemon.start();
 	assert.equal((await daemon.applyConfig()).restarted, false);
 	writePrivateFile(path.join(root, "config.json"), JSON.stringify({ command: b }));
@@ -389,10 +428,13 @@ test("SIGHUP/applyConfig restarts the engine when command changes", async () => 
 	await daemon.stop();
 });
 
-test("SIGHUP/applyConfig re-projects MCP and restarts when mcpConfigPath changes; a bad source changes nothing", async () => {
+test("SIGHUP/applyConfig re-projects MCP and restarts when mcpConfigPath changes; a bad source changes nothing", async (t) => {
 	const base = tmp();
-	const root = path.join(base, "i");
-	const wrapper = wrapperFor(base, "w.sh", path.join(base, "w.log"));
+	const root = islandRoot(base);
+	const savedAppData = process.env.AppData;
+	if (win) process.env.AppData = windowsPiPackage(base, { "abito-fake-w": path.join(base, "w.log") });
+	t.after(() => { process.env.AppData = savedAppData; });
+	const wrapper = win ? "abito-fake-w" : wrapperFor(base, "w.sh", path.join(base, "w.log"));
 	const src = (name, id) => {
 		const file = path.join(base, name);
 		fs.writeFileSync(file, JSON.stringify({ mcpServers: { [id]: { type: "http", url: "http://127.0.0.1:1/x", headers: { Authorization: "Bearer cap_abcdef123456" } } } }), { mode: 0o600 });
@@ -400,9 +442,9 @@ test("SIGHUP/applyConfig re-projects MCP and restarts when mcpConfigPath changes
 	};
 	const one = src("one.json", "one");
 	const two = src("two.json", "two");
-	fs.mkdirSync(root, { mode: 0o700 });
+	fs.mkdirSync(root, { recursive: true, mode: 0o700 });
 	writePrivateFile(path.join(root, "config.json"), JSON.stringify({ command: wrapper, mcpConfigPath: one }));
-	const daemon = bareDaemon(root);
+	const daemon = bareDaemon(root, base);
 	await daemon.start();
 	const projected = path.join(root, "agent", "mcp.json");
 	writePrivateFile(path.join(root, "config.json"), JSON.stringify({ command: wrapper, mcpConfigPath: two }));
@@ -435,7 +477,7 @@ function withMcp(extra = {}) {
 test("MCP projection: written 0600 at boot, deleted by stop, regenerated by the next boot", async () => {
 	const m = withMcp();
 	await m.daemon.start();
-	assert.equal(fs.statSync(m.file).mode & 0o777, 0o600);
+	assertMode(m.file, 0o600);
 	assert.deepEqual(Object.keys(JSON.parse(fs.readFileSync(m.file, "utf8")).mcpServers), ["notes"]);
 	await m.daemon.stop();
 	assert.equal(fs.existsSync(m.file), false);
@@ -510,7 +552,7 @@ test("hotkey: status, getHotkey/setHotkey, and the settings frames are wired thr
 	assert.equal(daemon.getHotkey(), "Ctrl+Alt+Space");
 	assert.equal(daemon.status().hotkey, "Ctrl+Alt+Space");
 	assert.equal(JSON.parse(fs.readFileSync(path.join(root, "config.json"), "utf8")).hotkey, "Ctrl+Alt+Space");
-	assert.equal(fs.statSync(path.join(root, "config.json")).mode & 0o777, 0o600);
+	assertMode(path.join(root, "config.json"), 0o600);
 	assert.equal((await rpc(session, { type: "settings_get" }, (f) => f.type === "settings")).hotkey, "Ctrl+Alt+Space");
 	a.socket.write(`${JSON.stringify({ type: "settings_set", hotkey: "Space" })}\n`);
 	await waitFor(() => a.frames.some((f) => f.type === "error"));
@@ -608,7 +650,7 @@ test("connectors_list through the daemon: fake CLI, private 0700 dir created at 
 		assert.equal(frame.schema, "abito-connectors/view/1");
 		assert.equal(frame.catalog.length, 6);
 		assert.equal(frame.connectors.length, 4);
-		assert.equal(fs.statSync(dir).mode & 0o777, 0o700);
+		assertMode(dir, 0o700);
 		const argv = fs.readFileSync(path.join(base, "cargv.log"), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
 		assert.ok(argv.some((a) => a.argv[0] === "status" && a.argv[2] === dir));
 		assert.ok(argv.every((a) => fs.realpathSync(a.cwd) === fs.realpathSync(root)));
@@ -820,7 +862,7 @@ test("GD029 check (1): a healthy session is never overwritten; the refusal is re
 		const incumbent = JSON.parse(fs.readFileSync(file, "utf8"));
 		const b = new Daemon({
 			root: a.root,
-			env: { PATH: process.env.PATH },
+			env: daemonEnv(a.base),
 			log: () => {},
 			engineOptions: { command: process.execPath, commandArgs: [FAKE, "--cwd-out", path.join(a.base, "b.cwd"), "--cmd-log", path.join(a.base, "b.cmd"), "--spawn-log", path.join(a.base, "b.spawn")], backoffMs: [20], stopTimeoutMs: 500, requestTimeoutMs: 3000, startTimeoutMs: 5000 },
 		});
@@ -838,10 +880,26 @@ test("GD029 check (1): a healthy session is never overwritten; the refusal is re
 		assert.equal(typeof last.pid, "number");
 		assert.equal(typeof last.procStart, "string");
 		const ledger = path.join(a.root, "runtime", "launches.jsonl");
-		assert.equal(fs.statSync(ledger).mode & 0o777, 0o600);
+		assertMode(ledger, 0o600);
 		assert.ok(!fs.readFileSync(ledger, "utf8").includes(incumbent.token), "the ledger never carries a token");
 	} finally {
 		await a.daemon.stop();
+	}
+});
+
+// Registered gap K2-01b: recordLaunch fstat-checks POSIX 0600 bits the NTFS mode emulation never reports,
+// so on Windows the ledger records nothing and logs the skip. Unix counterpart: the 0600 ledger assertion
+// in "GD029 check (1)". Plan: write the ledger through the native helper (win-fs write-private).
+test("registered gap K2-01b: the launch ledger records nothing on Windows (fstat 0600 never true) and logs it", { skip: win ? false : "needs real Windows; the Unix counterpart is the 0600 ledger assertion in GD029 check (1)" }, async () => {
+	const { daemon, root, logs } = make();
+	await daemon.start();
+	try {
+		const ledger = path.join(root, "runtime", "launches.jsonl");
+		// The refusal must not leave a record behind (the O_CREAT open may leave an empty file).
+		assert.ok(!fs.existsSync(ledger) || fs.readFileSync(ledger, "utf8") === "", "no launch record may be written on Windows");
+		assert.ok(logs.some((l) => l.startsWith("launch record skipped: launches.jsonl is not our private regular file")), logs.join("\n"));
+	} finally {
+		await daemon.stop();
 	}
 });
 
@@ -865,7 +923,7 @@ test("#385 OD066: stop with a busy turn and an open ask records the interrupted 
 		socket.destroy();
 		await a.daemon.stop();
 		const file = path.join(a.root, "runtime", "interrupted.json");
-		assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+		assertMode(file, 0o600);
 		const record = interruptedRecord(a.root);
 		assert.deepEqual(Object.keys(record).sort(), ["asks", "at", "consumed", "pid", "procStart", "turnActive"]);
 		assert.equal(typeof record.at, "number");
@@ -997,8 +1055,8 @@ test("mcp_import_preview through the daemon: reads the real HOME configs read-on
 
 	const { daemon, root, base } = make();
 	const home = path.join(base, "realhome");
-	// boot() reads this.env: HOME must be set before start()
-	daemon.env = { PATH: process.env.PATH, HOME: home };
+	// boot() reads this.env: HOME must be set before start(); %LOCALAPPDATA% keeps the Windows canonical root.
+	daemon.env = daemonEnv(base, { HOME: home });
 	fs.mkdirSync(path.join(home, ".cursor"), { recursive: true });
 	fs.writeFileSync(path.join(home, ".cursor", "mcp.json"), JSON.stringify({ mcpServers: { fs: { command: "npx" } } }));
 	fs.writeFileSync(path.join(home, ".claude.json"), "{broken");
@@ -1034,7 +1092,7 @@ test("pause: set_paused persists to config.json, refuses admission, and is resto
 		a.socket.write(`${JSON.stringify({ type: "set_paused", paused: true })}\n`);
 		await waitFor(() => a.frames.some((f) => f.type === "agent_state" && f.paused === true));
 		assert.equal(JSON.parse(fs.readFileSync(path.join(root, "config.json"), "utf8")).paused, true);
-		assert.equal(fs.statSync(path.join(root, "config.json")).mode & 0o777, 0o600);
+		assertMode(path.join(root, "config.json"), 0o600);
 		assert.equal(daemon.status().paused, true);
 		a.socket.write(`${JSON.stringify({ type: "send", text: "hi" })}\n`);
 		await waitFor(() => a.frames.some((f) => f.type === "error"));
@@ -1096,7 +1154,7 @@ test("a configured but untrusted connector host does not prevent daemon startup"
 	} finally { await daemon.stop(); }
 });
 
-test("H2c controls reach the fake host through a real daemon and teardown clears setup state", async (t) => {
+test("H2c controls reach the fake host through a real daemon and teardown clears setup state", unixOnly("connector host is fail-closed on Windows (registered gap K2-01b, decision 1a: named-pipe endpoint + ACL via helper + process identity); twin: connector-host.test.cjs «Windows twin: the supervisor refuses an untrusted host binary, never spawns and stays fail-closed»"), async (t) => {
 	const { ConnectorsView } = require("../src/connectors.cjs");
 	const configured = make({ options: { connectorHostOptions: { backoffMs: [20], stableMs: 100, startTimeoutMs: 5000, requestTimeoutMs: 3000, stopTimeoutMs: 3000 } } });
 	t.after(async () => { await configured.daemon.stop(); fs.rmSync(configured.base, { recursive: true, force: true }); });

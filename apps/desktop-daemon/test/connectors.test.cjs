@@ -9,7 +9,8 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const { ConnectorsView, SCHEMA, buildCatalog, buildConnectors } = require("../src/connectors.cjs");
+const { ConnectorsError, ConnectorsView, SCHEMA, buildCatalog, buildConnectors } = require("../src/connectors.cjs");
+const { win } = require("./platform-env.cjs");
 
 const FAKE = path.join(__dirname, "fixtures", "fake-connectors.cjs");
 const FIXTURES = path.join(__dirname, "fixtures", "connectors");
@@ -58,9 +59,24 @@ function view(s, extra = {}) {
 	return v;
 }
 
+// Registered Windows gap K2-01b «Windows: connectors CLI trust + spawn (assertTrustedCommand POSIX-only); plan: manifest/helper
+// trust like agents verifyBundled». ConnectorsView spawns the CLI directly and assertTrustedCommand requires POSIX mode bits no
+// NTFS file has, so today NO CLI can run on Windows. The happy-path tests below need a runnable CLI; on Windows their twin pins
+// today's fail-closed outcome instead (so the fix flips a test, not a silence).
+const WINDOWS_TWIN = "Windows twin: «registered gap K2-01b: on Windows connectors_list fails closed — generic failure, nothing spawned»";
+const needsSpawnTwin = win ? { skip: `needs a runnable connectors CLI; ${WINDOWS_TWIN}` } : {};
+
+test("registered gap K2-01b: on Windows connectors_list fails closed — generic failure, nothing spawned", { skip: !win && "Windows-only twin of the happy-path connectors tests (they run here)" }, async (t) => {
+	const s = shim(t);
+	const v = view(s);
+	await assert.rejects(v.snapshot(), (error) => error instanceof ConnectorsError && error.message === "connectors unavailable");
+	assert.equal(fs.existsSync(s.evidence.spawns), false, "the CLI never ran: no invocation was logged");
+	assert.ok(v.logs.every((line) => !line.includes(s.base)), "no path reaches the log");
+});
+
 const EXPECTED_CATALOG_KEYS = ["auth", "fields", "key", "label", "read_only_tools_count", "reads", "sends"];
 
-test("golden catalog + status round trip equals the sanitized shape", async (t) => {
+test("golden catalog + status round trip equals the sanitized shape", needsSpawnTwin, async (t) => {
 	const s = shim(t);
 	const result = await view(s).snapshot();
 	assert.deepEqual(Object.keys(result).sort(), ["catalog", "connectors"]);
@@ -78,7 +94,7 @@ test("golden catalog + status round trip equals the sanitized shape", async (t) 
 	assert.ok(lines.every((l) => fs.realpathSync(l.cwd) === s.cwd));
 });
 
-test("poisoned output: every unknown key is dropped at every level, nothing secret-looking survives", async (t) => {
+test("poisoned output: every unknown key is dropped at every level, nothing secret-looking survives", needsSpawnTwin, async (t) => {
 	const s = shim(t, { FAKE_MODE: "poison" });
 	const result = await view(s).snapshot();
 	assert.deepEqual(result.catalog, golden("catalog").entries);
@@ -117,7 +133,7 @@ test("R1: bare names and relative commands are refused (no PATH lookup)", async 
 	assert.equal(spawnCount(s.evidence), 0);
 });
 
-test("R1: spawn-time target checks: symlink-to-dir, directory, non-exec, group/world-writable, writable parent", async (t) => {
+test("R1: spawn-time target checks: symlink-to-dir, directory, non-exec, group/world-writable, writable parent", needsSpawnTwin, async (t) => {
 	const refuse = async (s, label) => {
 		await assert.rejects(() => view(s).snapshot(), GENERIC, label);
 		assert.equal(spawnCount(s.evidence), 0, label);
@@ -170,12 +186,12 @@ test("a missing/unrunnable command is a generic failure", async (t) => {
 	await assert.rejects(() => view(s, { command: path.join(s.base, "does-not-exist") }).snapshot(), GENERIC);
 });
 
-test("a missing trailing newline is tolerated (still exactly one JSON value)", async (t) => {
+test("a missing trailing newline is tolerated (still exactly one JSON value)", needsSpawnTwin, async (t) => {
 	const s = shim(t, { FAKE_MODE: "noeol" });
 	assert.equal((await view(s).snapshot()).catalog.length, 6);
 });
 
-test("hang: SIGKILL at the hard timeout, generic failure, no leaked process", async (t) => {
+test("hang: SIGKILL at the hard timeout, generic failure, no leaked process", needsSpawnTwin, async (t) => {
 	const s = shim(t, { FAKE_MODE: "hang", FAKE_ONLY: "status" });
 	const started = Date.now();
 	await assert.rejects(() => view(s, { timeoutMs: 300 }).snapshot(), GENERIC);
@@ -203,7 +219,7 @@ test("oversize stdout: killed and failed once the cap is exceeded", async (t) =>
 	await assert.rejects(() => view(s2, { maxBytes: 1024 }).snapshot(), GENERIC);
 });
 
-test("child environment: allowlist only, private HOME, no PI_*/provider keys", async (t) => {
+test("child environment: allowlist only, private HOME, no PI_*/provider keys", needsSpawnTwin, async (t) => {
 	const s = shim(t);
 	const base = {
 		PATH: process.env.PATH,
