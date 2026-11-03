@@ -80,18 +80,19 @@ function nodeArchive(dir, target) {
 }
 
 /* A builder copy next to fixture pins: the script reads its pins from its own directory. */
-function fixture(targets = ['linux-x64', 'darwin-arm64', 'win-x64']) {
+function fixture(targets = ['linux-x64', 'darwin-arm64', 'win-x64'], opts = {}) {
   const dir = T.make('koda-runtime-build-');
   const pins = path.join(dir, 'pins');
   fs.mkdirSync(pins);
   fs.copyFileSync(BUILDER, path.join(pins, 'build-runtime.cjs'));
+  fs.cpSync(path.join(path.dirname(BUILDER), 'licenses'), path.join(pins, 'licenses'), { recursive: true });
   const archives = {};
   for (const t of targets) archives[t] = nodeArchive(dir, t);
   fs.writeFileSync(path.join(pins, 'node.sha256'), targets.map((t) => `${sha256(archives[t])}  ${path.basename(archives[t])}\n`).join(''));
   // A fake Pi package: its CLI prints the version, and with KODA_REPORT=1 also which Node runs it.
   const pkgSrc = path.join(dir, 'pi-src', 'package');
   fs.mkdirSync(path.join(pkgSrc, 'dist', 'bundle'), { recursive: true });
-  fs.writeFileSync(path.join(pkgSrc, 'package.json'), JSON.stringify({ name: '@earendil-works/pi-coding-agent', version: '1.4.0', bin: { pi: 'dist/bundle/cli.js' } }));
+  fs.writeFileSync(path.join(pkgSrc, 'package.json'), JSON.stringify({ name: '@earendil-works/pi-coding-agent', version: '1.4.0', license: opts.piLicense || 'MIT', author: 'Mario Zechner', repository: { url: 'git+https://github.com/earendil-works/pi.git' }, bin: { pi: 'dist/bundle/cli.js' } }));
   fs.writeFileSync(path.join(pkgSrc, 'dist', 'bundle', 'cli.js'),
     "console.log(process.env.KODA_REPORT === '1' ? `1.4.0 node=${process.env.KODA_NODE || 'other'}` : '1.4.0');\n");
   const tgz = path.join(dir, 'pi-1.4.0.tgz');
@@ -131,7 +132,7 @@ for (const target of ['linux-x64', 'darwin-arm64', 'win-x64']) {
     assert.equal(r.status, 0, `exit ${r.status}\nstdout=${r.stdout}\nstderr=${r.stderr}`);
     assert.match(r.stdout, new RegExp(`^runtime ${target}: Node ${NODE_VERSION} \\+ Pi 1\\.4\\.0 -> `));
     const exe = target === 'win-x64' ? 'node.exe' : 'node';
-    const expected = [exe, 'LICENSE.node', 'koda-runtime.json',
+    const expected = [exe, 'LICENSE.node', 'THIRD-PARTY-NOTICES.md', 'koda-runtime.json',
       'node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js', 'node_modules/@earendil-works/pi-coding-agent/package.json'];
     if (target !== 'win-x64') expected.push('pi');
     assert.deepEqual(tree(out), expected.sort(), 'no npm, npx, corepack, .bin symlink or npm bookkeeping');
@@ -178,6 +179,35 @@ test(`${hostTarget} (this OS): --archive packs the runtime folder into one tar.g
   assert.deepEqual(tree(unpacked), tree(out), 'the archive holds exactly the runtime folder, at its root');
   for (const f of tree(out)) assert.equal(sha256(path.join(unpacked, f)), sha256(path.join(out, f)), f);
   if (!isWin) assert.equal(fs.statSync(path.join(unpacked, 'node')).mode & 0o111, 0o111, 'node stays executable');
+});
+
+test('the runtime ships THIRD-PARTY-NOTICES.md: Node, then every package with its licence (a package without a licence file gets its declared author and the canonical text)', () => {
+  const notices = fs.readFileSync(path.join(fx.dir, 'out-linux-x64', 'THIRD-PARTY-NOTICES.md'), 'utf8');
+  assert.match(notices, /^# Third-party notices: Koda's bundled runtime\n/);
+  assert.ok(notices.includes(`## Node.js ${NODE_VERSION}\n\nLicense: MIT (with bundled components). Full text: \`LICENSE.node\` in this folder.\n`));
+  assert.ok(notices.includes('## @earendil-works/pi-coding-agent 1.4.0\n\nLicense: MIT\nAuthor (from package.json): Mario Zechner\nRepository: git+https://github.com/earendil-works/pi.git\nThe package ships no licence file; the MIT License text is reproduced under «License texts» below.\n'));
+  const mit = fs.readFileSync(path.join(path.dirname(BUILDER), 'licenses', 'MIT.txt'), 'utf8');
+  assert.ok(notices.includes(`## License texts\n\n### MIT\n\n\`\`\`text\n${mit.trimEnd()}\n\`\`\`\n`), 'canonical MIT text once, verbatim');
+  assert.equal((notices.match(/^### MIT$/gm) || []).length, 1);
+});
+
+test('a package whose licence has no file in the package and no canonical text in licenses/ fails closed: exit 1, exact message, no output', () => {
+  const f3 = fixture(['linux-x64'], { piLicense: 'WTFPL' });
+  const out = path.join(f3.dir, 'out');
+  const r = build(f3, ['--target', 'linux-x64', '--out', out, '--node-archive', f3.archives['linux-x64']], { npm_config_cache: path.join(f3.dir, 'c') });
+  assert.equal(r.status, 1, r.stdout);
+  assert.equal(r.stdout, '');
+  assert.equal(r.stderr, 'build-runtime: @earendil-works/pi-coding-agent@1.4.0 is WTFPL, ships no licence file, and packaging/runtime/licenses/ has no WTFPL text: refusing to ship it without its licence\n');
+  assert.equal(fs.existsSync(out), false);
+});
+
+test('the canonical licence texts are the official ones, byte for byte (Apache-2.0 from apache.org, MIT from the SPDX list)', () => {
+  // Coverage of the real pinned tree is enforced by the build itself (it refuses a package with no file and no text);
+  // the real build of every target is the evidence (odd-evidence/t4b-real-notices.txt).
+  const dir = path.join(path.dirname(BUILDER), 'licenses');
+  assert.deepEqual(fs.readdirSync(dir).sort(), ['Apache-2.0.txt', 'MIT.txt', 'README.md']);
+  assert.equal(sha256(path.join(dir, 'Apache-2.0.txt')), 'cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30');
+  assert.equal(sha256(path.join(dir, 'MIT.txt')), 'b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5');
 });
 
 test('a Node archive whose sha256 differs from the pin fails closed and leaves the existing output untouched', () => {

@@ -14,6 +14,8 @@
    Output (<out>, created only when every step succeeds; a failed build leaves <out> untouched):
      node | node.exe       the pinned Node binary only: no npm, npx or corepack
      LICENSE.node          Node's licence (MIT plus its bundled components)
+     THIRD-PARTY-NOTICES.md  Node and every shipped package with its licence (texts from licenses/ for packages
+                           that ship no licence file; a licence with no text there fails the build)
      node_modules/...      Pi and its dependencies, install scripts not run, no .bin symlinks, no symlink at all
      pi                    (Linux, macOS) launcher that runs Pi with THIS Node; Windows needs none: the daemon starts
                            node.exe with Pi's own CLI JS resolved next to it (desktop-daemon runtime.cjs)
@@ -182,6 +184,66 @@ function installPi(dest, cache) {
   return { version: manifest.version, cli: path.relative(dest, cli).split(path.sep).join('/') };
 }
 
+/* Every package under node_modules (nested ones too), sorted by name then version. */
+function packagesIn(root) {
+  const found = [];
+  const walk = (dir) => {
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (!e.isDirectory()) continue;
+      const p = path.join(dir, e.name);
+      if (e.name.startsWith('@')) { walk(p); continue; }
+      const manifest = path.join(p, 'package.json');
+      if (!fs.existsSync(manifest)) continue;
+      found.push({ dir: p, manifest: readJson(manifest) });
+      if (fs.existsSync(path.join(p, 'node_modules'))) walk(path.join(p, 'node_modules'));
+    }
+  };
+  walk(root);
+  return found.sort((a, b) => `${a.manifest.name}@${a.manifest.version}`.localeCompare(`${b.manifest.name}@${b.manifest.version}`));
+}
+
+function licenseId(manifest) {
+  if (typeof manifest.license === 'string') return manifest.license;
+  if (manifest.license && typeof manifest.license.type === 'string') return manifest.license.type;
+  if (Array.isArray(manifest.licenses)) return manifest.licenses.map((l) => l && l.type).filter(Boolean).join(' OR ');
+  return 'UNKNOWN';
+}
+
+const author = (manifest) => (typeof manifest.author === 'string' ? manifest.author : manifest.author && manifest.author.name) || 'not declared';
+const repository = (manifest) => (typeof manifest.repository === 'string' ? manifest.repository : manifest.repository && manifest.repository.url) || 'not declared';
+
+/* THIRD-PARTY-NOTICES.md for the runtime folder: Node first, then every package with its declared licence and the
+   path of the licence file it ships. A package that ships no licence file gets its author and repository from its
+   package.json and the canonical text from licenses/<id>.txt, reproduced once; with no such text the build fails. */
+function writeNotices(dest, nodeVersion) {
+  const lines = ['# Third-party notices: Koda\'s bundled runtime', '',
+    'Koda ships its own Node.js and Pi in this folder (K2-02). Their licences and those of every package they include follow.', '',
+    `## Node.js ${nodeVersion}`, '', 'License: MIT (with bundled components). Full text: `LICENSE.node` in this folder.', ''];
+  const texts = new Map();
+  for (const { dir, manifest } of packagesIn(path.join(dest, 'node_modules'))) {
+    const id = licenseId(manifest);
+    const file = fs.readdirSync(dir).find((n) => /^(licen[cs]e|copying)(\.|-|$)/i.test(n) && fs.lstatSync(path.join(dir, n)).isFile());
+    lines.push(`## ${manifest.name} ${manifest.version}`, '', `License: ${id}`);
+    if (file) {
+      lines.push(`Licence file: \`${path.relative(dest, path.join(dir, file)).split(path.sep).join('/')}\``);
+    } else {
+      const canonical = path.join(HERE, 'licenses', `${id}.txt`);
+      if (!/^[A-Za-z0-9.-]+$/.test(id) || !fs.existsSync(canonical)) {
+        throw new Fail(`${manifest.name}@${manifest.version} is ${id}, ships no licence file, and packaging/runtime/licenses/ has no ${id} text: refusing to ship it without its licence`);
+      }
+      texts.set(id, fs.readFileSync(canonical, 'utf8'));
+      lines.push(`Author (from package.json): ${author(manifest)}`, `Repository: ${repository(manifest)}`,
+        `The package ships no licence file; the ${id} License text is reproduced under «License texts» below.`);
+    }
+    lines.push('');
+  }
+  if (texts.size) {
+    lines.push('## License texts', '');
+    for (const [id, text] of [...texts].sort(([a], [b]) => a.localeCompare(b))) lines.push(`### ${id}`, '', '```text', text.trimEnd(), '```', '');
+  }
+  fs.writeFileSync(path.join(dest, 'THIRD-PARTY-NOTICES.md'), lines.join('\n'), { mode: 0o644 });
+}
+
 function noSymlinks(dir) {
   for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
     const p = path.join(dir, e.name);
@@ -262,6 +324,7 @@ async function main() {
     fs.mkdirSync(partial, { mode: 0o755 });
     extractNode(archive, pin, opts.target, partial);
     const pi = installPi(partial, cache);
+    writeNotices(partial, pin.version);
     if (t.platform !== 'win32') fs.writeFileSync(path.join(partial, 'pi'), piLauncher(pi.cli), { mode: 0o755 });
     fs.writeFileSync(path.join(partial, 'koda-runtime.json'), `${JSON.stringify({ target: opts.target, node: pin.version, pi: pi.version, piCli: pi.cli }, null, 2)}\n`, { mode: 0o644 });
     noSymlinks(partial);
