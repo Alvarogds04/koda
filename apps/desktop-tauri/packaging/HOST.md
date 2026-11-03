@@ -3,9 +3,9 @@
 The user-local Linux install includes `desktop-daemon/` beside `abito-island`.
 The first instance starts `node desktop-daemon/src/cli.cjs run --app-owned` during
 Tauri setup. A second instance does not reach setup and creates no second host.
-No service, global installation, downloaded runtime, or new `ABITO_*` override is
-introduced. The existing private-root override is for disposable development runs;
-the production launcher still accepts only `ABITO_PROJECT_ROOT`.
+No service, global installation, or new `ABITO_*` override is introduced. The
+existing private-root override is for disposable development runs; the production
+launcher still accepts only `ABITO_PROJECT_ROOT`.
 
 ## Lifetime and supervisor boundaries
 
@@ -33,6 +33,22 @@ macOS uses the existing stdin lease, kqueue sentinel, and daemon parent-pid
 watch instead of Linux's parent-death signal. This change does not modify those
 lifetime mechanisms. Windows support is maintained separately.
 
+## Bundled runtime (Linux, K2-02 decision A)
+
+The Linux installer no longer needs, uses or looks up a Node on the machine.
+`packaging/runtime/build-runtime.cjs --archive` packs the pinned Node 22 and the
+pinned Pi 1.4.0 into ONE archive (`koda-runtime-linux-x64.tar.gz`, ~68 MB);
+`packaging/build.cjs --runtime-archive <file>` stages and hashes it like every
+other shipped file. `packaging/install.sh` verifies the archive's sha256 against
+`receipt.json` (`sha256sum`/`shasum` only), audits every tar member with
+`tar -tvzf` (absolute paths, «..» components and symlink/hardlink/device/fifo
+members are refused BEFORE extraction), extracts it into a private (0700) temp
+dir on the PREFIX filesystem, and uses the extracted `node` — never a system
+Node — to run the closed-set verification. The runtime moves into place as
+`PREFIX/runtime` by atomic rename; uninstall removes it only when it is a real
+directory directly inside PREFIX (a symlink is left alone). Windows stages the
+same archive; macOS ships the extracted folder as bundle resources instead.
+
 ## Runtime discovery
 
 The app tries the inherited session PATH first (absolute entries only), then:
@@ -57,9 +73,9 @@ The settings and island views name missing Node or Pi and show installation
 advice (`nodejs.org` or `npm install -g @earendil-works/pi-coding-agent`). Unknown
 startup errors retain the existing generic disconnected state.
 
-This unsandboxed user-local installation intentionally does not bundle Node or Pi.
-A hermetic runtime bundle becomes necessary if distribution is sandboxed: a
-Flatpak cannot execute the host's Node. The other Abito Flatpak is not modified.
+This unsandboxed user-local installation no longer requires a Node or Pi on the
+machine (see «Bundled runtime» above); discovery of system runtimes stays as a
+compatibility path, and the bundled `PREFIX/runtime` is what the island starts.
 
 ## macOS app bundle
 
@@ -105,7 +121,8 @@ acceptance, or a human-installed Mac launch.
 ## Recursive verification envelope
 
 `lib.cjs` declares every shipped file in `STAGED`, including each daemon source,
-package metadata, identity and third-party notice. `receipt.files` is the exact
+package metadata, identity and third-party notice, and the runtime archive
+(`koda-runtime-linux-x64.tar.gz`). `receipt.files` is the exact
 flattened map of relative path → SHA-256. The declared directories are exactly
 `desktop-daemon` and `desktop-daemon/src`. Recursive enumeration rejects extra
 files, missing files, extra empty directories, symlinks anywhere, writable files
@@ -124,13 +141,18 @@ checkout. This checks runtime module closure, not a release build or live connec
 functionality; the Rust connector-host binary is not bundled by this source-list
 change and must still be explicitly configured if installed later.
 
-The installer now needs Node and its sibling `lib.cjs`; the former standalone
-flat-file shell envelope intentionally becomes a recursive closed-set envelope.
-It verifies before touching installation state, checks destination ancestor chains
-and rejects undeclared installed entries. Each installed file retains temp-copy,
-re-hash, then same-directory rename atomicity. This is **per-file** atomicity, not
+The installer needs no Node on the machine: it parses `receipt.json` in pure sh,
+re-hashes every staged file (the runtime archive included), audits the runtime
+archive members, and then uses the EXTRACTED runtime's node for the closed-set
+lib.cjs verification (`verifyStage` on the stage, `checkInstalledLayout` on the
+destination). It verifies before touching installation state, checks destination
+ancestor chains and rejects undeclared installed entries; `PREFIX/runtime` is the
+one installed directory whose contents are not enumerated (its integrity comes
+from the hash-verified archive). Each installed file retains temp-copy, re-hash,
+then same-directory rename atomicity. This is **per-file** atomicity, not
 an all-files transaction. The application desktop directory may retain other apps.
-Uninstall removes only declared files and prunes owned directories only when empty.
+Uninstall removes only declared files and prunes owned directories only when empty;
+it removes `PREFIX/runtime` only when it is a real directory, not a symlink.
 
 Tests in `test-node/install-check.cjs` exercise daemon-file tampering, extra and
 missing nested files, file/directory symlinks, an extra empty directory, receipt

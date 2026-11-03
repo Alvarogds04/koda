@@ -262,13 +262,20 @@ jobs:
           echo "SHERPA_ONNX_LIB_DIR=$RUNNER_TEMP/sherpa-onnx-v${SHERPA_VERSION}-linux-x64-static-lib/lib" >> "$GITHUB_ENV"
       - name: Pinned Pi (the app-owned daemon refuses to start without one, as on a user machine)
         run: npm i -g "@earendil-works/pi-coding-agent@$PI_VERSION"
+      - name: Bundled runtime archive (pinned Node 22 + Pi 1.4.0, sha256-verified by install.sh)
+        working-directory: apps/desktop-tauri
+        run: |
+          node packaging/runtime/build-runtime.cjs --target linux-x64 --out "$RUNNER_TEMP/koda-runtime" \
+            --cache "$RUNNER_TEMP/koda-runtime-cache" --self-check \
+            --archive "$RUNNER_TEMP/koda-runtime-linux-x64.tar.gz"
       - name: Warm the cargo registry (build.cjs builds --offline --locked)
         working-directory: apps/desktop-tauri
         run: cargo fetch --locked
       - name: Build, install and smoke the shipped Linux package
         run: |
           sh apps/desktop-tauri/ci/public/smoke-linux.sh --app "$GITHUB_WORKSPACE/apps/desktop-tauri" \
-            --work "$RUNNER_TEMP/koda-smoke" --pi "$(command -v pi)"
+            --work "$RUNNER_TEMP/koda-smoke" --pi "$(command -v pi)" \
+            --runtime-archive "$RUNNER_TEMP/koda-runtime-linux-x64.tar.gz"
       - name: Upload smoke logs
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4

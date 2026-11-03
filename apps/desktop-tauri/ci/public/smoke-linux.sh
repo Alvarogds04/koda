@@ -29,7 +29,8 @@
 #     compact view is drawn in, plus always-on-top.
 #
 # Usage:
-#   sh smoke-linux.sh --app <repo>/apps/desktop-tauri --work <empty dir> --pi <pi bin>
+#   sh smoke-linux.sh --app <repo>/apps/desktop-tauri --work <empty dir> --pi <pi bin> \
+#     --runtime-archive <koda-runtime-linux-x64.tar.gz>
 #
 #   --app   the desktop-tauri crate checkout. It must be a CLEAN git tree: build.cjs
 #           refuses uncommitted product bytes (crate + shipped daemon/harness).
@@ -46,6 +47,11 @@
 #           (`island host: no_daemon (pi_missing)`), exactly like a user machine.
 #           CI installs the pinned Pi (PI_VERSION in .github/workflows/ci.yml) and
 #           passes "$(command -v pi)". No model call is ever made.
+#   --runtime-archive  the bundled runtime archive (pinned Node 22 + Pi) built by
+#           `node packaging/runtime/build-runtime.cjs --target linux-x64 --archive`
+#           (K2-02, decision A): build.cjs stages it and install.sh verifies its
+#           sha256 against receipt.json and its tar members before extracting it
+#           to PREFIX/runtime — with NO Node on the machine required for that.
 #
 # Environment the caller provides:
 #   SHERPA_ONNX_LIB_DIR  directory with the pinned sherpa-onnx static libs (the
@@ -75,6 +81,7 @@ umask 077
 APP=''
 WORK=''
 PI=''
+RUNTIME_ARCHIVE=''
 REASON=''
 
 say() { printf '%s\n' "$*"; }
@@ -82,13 +89,14 @@ pass() { printf 'PASS %s\n' "$*"; }
 fail() { printf 'FAIL %s\n' "$*"; }
 die() { printf 'smoke-linux: %s\n' "$*" >&2; exit 2; }
 
-usage() { sed -n '29,46p' "$0"; }
+usage() { sed -n '29,53p' "$0"; }
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --app) [ "$#" -ge 2 ] || die "--app needs a directory"; APP=$2; shift 2 ;;
     --work) [ "$#" -ge 2 ] || die "--work needs a directory"; WORK=$2; shift 2 ;;
     --pi) [ "$#" -ge 2 ] || die "--pi needs an executable"; PI=$2; shift 2 ;;
+    --runtime-archive) [ "$#" -ge 2 ] || die "--runtime-archive needs a file"; RUNTIME_ARCHIVE=$2; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown argument: $1 (see --help)" ;;
   esac
@@ -97,6 +105,7 @@ done
 [ -n "$APP" ] || die "--app is required (see --help)"
 [ -n "$WORK" ] || die "--work is required (see --help)"
 [ -n "$PI" ] || die "--pi is required (see --help)"
+[ -n "$RUNTIME_ARCHIVE" ] || die "--runtime-archive is required: run packaging/runtime/build-runtime.cjs --archive first (see --help)"
 
 # ---------------------------------------------------------------- preflight --
 [ "$(id -u)" -ne 0 ] || die "this is a user-local install; do not run it as root"
@@ -117,6 +126,10 @@ APP=$(cd "$APP" && pwd -P)
 [ -x "$PI" ] || die "--pi is not an executable: $PI"
 PI=$(cd "$(dirname "$PI")" && pwd -P)/$(basename "$PI")
 PI_DIR=$(dirname "$PI")
+
+[ -f "$RUNTIME_ARCHIVE" ] || die "--runtime-archive is not a file: $RUNTIME_ARCHIVE"
+[ "$(basename "$RUNTIME_ARCHIVE")" = "koda-runtime-linux-x64.tar.gz" ] || die "--runtime-archive must be named koda-runtime-linux-x64.tar.gz: $(basename "$RUNTIME_ARCHIVE")"
+RUNTIME_ARCHIVE=$(cd "$(dirname "$RUNTIME_ARCHIVE")" && pwd -P)/$(basename "$RUNTIME_ARCHIVE")
 
 [ -n "${SHERPA_ONNX_LIB_DIR:-}" ] || die "SHERPA_ONNX_LIB_DIR is required: point it at the pinned sherpa-onnx static libs (the archive the ci.yml rust job fetches and sha256-checks)"
 [ -d "$SHERPA_ONNX_LIB_DIR" ] || die "SHERPA_ONNX_LIB_DIR is not a directory: $SHERPA_ONNX_LIB_DIR"
@@ -305,7 +318,7 @@ json_ok() { # reads a {"ok":true|false} document on stdin
 # ------------------------------------------------------------------ (a) ------
 say "smoke-linux: app=$APP work=$WORK pi=$PI"
 say '== (a) install: build.cjs + install.sh into a private prefix'
-if ( cd "$APP" && node packaging/build.cjs --out "$WORK/stage" ) > "$WORK/build.log" 2>&1; then
+if ( cd "$APP" && node packaging/build.cjs --out "$WORK/stage" --runtime-archive "$RUNTIME_ARCHIVE" ) > "$WORK/build.log" 2>&1; then
   STAGE=$(find "$WORK/stage/abito-island" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | head -n 1 || true)
   if [ -z "$STAGE" ] || [ ! -f "$STAGE/receipt.json" ]; then
     fail "(a) install — build.cjs produced no stage with a receipt"
@@ -318,11 +331,13 @@ if ( cd "$APP" && node packaging/build.cjs --out "$WORK/stage" ) > "$WORK/build.
      && grep -q "Installed Abito (Tauri) in $PREFIX" "$WORK/install.log" \
      && [ -x "$PREFIX/abito-island" ] && [ -x "$PREFIX/abito-island-launcher" ] \
      && [ -f "$PREFIX/receipt.json" ] && [ -f "$APPS/com.abitog.AbitoTauri.desktop" ] \
+     && [ -d "$PREFIX/runtime" ] && [ ! -L "$PREFIX/runtime" ] \
+     && [ -x "$PREFIX/runtime/node" ] && [ -x "$PREFIX/runtime/pi" ] \
      && grep -q '"features": "tauri/custom-protocol (no probe)"' "$PREFIX/receipt.json" \
      && [ "$(sha256sum "$STAGE/abito-island" | cut -d' ' -f1)" = "$(sha256sum "$PREFIX/abito-island" | cut -d' ' -f1)" ]; then
     EXEC=$(sed -n 's/^Exec=//p' "$APPS/com.abitog.AbitoTauri.desktop")
     if [ "$EXEC" = "env ABITO_PROJECT_ROOT=$PROJECT \"$PREFIX/abito-island-launcher\"" ]; then
-      pass "(a) install: build.cjs staged $(basename "$STAGE") offline (receipt: no probe feature); install.sh re-verified every hash against receipt.json and installed it in $PREFIX (binary sha256 $(sha256sum "$PREFIX/abito-island" | cut -d' ' -f1))"
+      pass "(a) install: build.cjs staged $(basename "$STAGE") offline with the verified runtime archive (receipt: no probe feature); install.sh re-verified every hash against receipt.json, audited the runtime members, extracted the bundled Node+Pi to $PREFIX/runtime and installed the app in $PREFIX (binary sha256 $(sha256sum "$PREFIX/abito-island" | cut -d' ' -f1))"
     else
       fail "(a) install — the generated .desktop Exec line is not the expected one: $EXEC"
       fail_rest "(a)" "(b) start" "(c-island) show" "(c-tray) tray" "(d) notice"
