@@ -35,8 +35,6 @@ FRONTEND_FILES.push(
   'vendor/coucou/core/diff.js', 'vendor/coucou/core/diff.ts',
   'vendor/coucou/core/github.js', 'vendor/coucou/core/github.ts',
   'vendor/coucou/views/github.js', 'vendor/coucou/views/github.ts',
-  'vendor/coucou/recap/summary.js', 'vendor/coucou/recap/summary.ts',
-  'vendor/coucou/views/recap.js', 'vendor/coucou/views/recap.ts',
   'vendor/coucou/core/plan.js', 'vendor/coucou/core/plan.ts',
   'vendor/coucou/views/usage.js', 'vendor/coucou/views/usage.ts',
   'settings.html', 'settings-app.js',
@@ -60,7 +58,6 @@ FRONTEND_FILES.push(
   'vendor/coucou/hub/piinstall.ts', 'vendor/coucou/hub/piinstall.js', // HU-046: imported by accounts.js and agents.js
   'vendor/coucou/hub/integrations.ts', 'vendor/coucou/hub/integrations.js',
   'vendor/coucou/hub/shortcuts.ts', 'vendor/coucou/hub/shortcuts.js',
-  'vendor/coucou/hub/recap.ts', 'vendor/coucou/hub/recap.js',
 );
 const EXPECTED_WINDOWS = ['main', 'settings'];
 const EXPECTED_PERMISSIONS = ['core:event:allow-listen', 'core:event:allow-unlisten'];

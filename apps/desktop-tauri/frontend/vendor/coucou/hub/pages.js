@@ -1,7 +1,7 @@
-// Adapted from Coucou src/hub/pages/{dictation,notes,insights,words,styles,flowsettings,voice}.ts @434d6a2b, Copyright (c) 2026 Louis Raillé, MIT.
+// Adapted from Coucou src/hub/pages/{dictation,insights,words,styles,flowsettings,voice}.ts @434d6a2b, Copyright (c) 2026 Louis Raillé, MIT.
 import { h } from "../views/dom.js";
 import { card, row, button, keyLabel, label, divider, toggle, segmented } from "./ui.js";
-import { notchSection, notchRow, notchHint, infoTip } from "./notch.js";
+import { notchSection, notchRow, notchHint } from "./notch.js";
 import { t } from "./i18n-es.js";
 import { mount, modelsControl } from "./dictation-pages.js";
 const definitions = {
@@ -69,14 +69,9 @@ function renderUnavailable(page) {
   control.disabled = true;
   return card(row(page === "phone" ? "No disponible" : "pendiente de conectar", null, control));
 }
-const NOT_YET = "No disponible todavía";
 function modelControl(container, ctx) {
   const life = mount(container, ctx);
   return modelsControl(ctx, life);
-}
-function notesPage(container, ctx) {
-  container.append(ctx.hero("notes", t("Notetaker"), null, [], true));
-  container.append(card(row("No disponible todavía", null, infoTip("Transcribir llamadas persona por persona, con resumen y tareas, llegará en una versión futura. Todo se hará en este ordenador; avisá a quienes estén en la llamada de que grabás.", "Más información: Notetaker"))));
 }
 const inactivePages = Object.fromEntries(
   Object.entries(definitions).map(([page, [title, subtitle, action]]) => [page, (container, ctx) => {
@@ -112,11 +107,10 @@ const inactivePages = Object.fromEntries(
     });
     control.disabled = true;
     const key = keyLabel(ctx.status.prefs.key, ctx.status.platform);
-    container.append(ctx.hero(page, t(title), subtitle ? t(subtitle, { 0: key }) : null, [], page === "notes"));
+    container.append(ctx.hero(page, t(title), subtitle ? t(subtitle, { 0: key }) : null, []));
     container.append(h("div", { id: "settings-root" }, card(row("pendiente de conectar", null, control))));
   }])
 );
-inactivePages.notes = notesPage;
 export {
   inactivePages,
   renderUnavailable

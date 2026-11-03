@@ -1,6 +1,5 @@
 // Adapted from Coucou src/settings/main.ts generalSection @434d6a2b, Copyright (c) 2026 Louis Raillé, MIT.
 import { h, clear } from "../views/dom.js";
-import { renderRecapRows } from "./recap.js";
 import { createBridge } from "../bridge-abito.js";
 import { toggle, select, button, segmented } from "./ui.js";
 import { t, LANGUAGES } from "./i18n-es.js";
@@ -46,7 +45,6 @@ async function renderGeneral({ invoke, V, navigate }) {
   let prefs = await invoke("prefs_action", { payload: { action: "view" } });
   let autostart = await invoke("prefs_action", { payload: { action: "autostart_view" } });
   let hotkey = await invoke("hotkey_action", { payload: { action: "view" } });
-  const recap = await renderRecapRows({ invoke });
   let queue = Promise.resolve(), issue = "", nameDraft = null, capturing = false;
   const root = h("div", {});
   const send = (cmd, payload) => invoke(cmd, { payload });
@@ -229,8 +227,7 @@ async function renderGeneral({ invoke, V, navigate }) {
         notchTipRow("Ocultar plegada tras (s)", "Segundos con la isla plegada; vuelve al acercar el mouse, con un aviso o con una pregunta.", absence),
         row(t("Island lives on"), screen),
         // L2 «General: A» / propuesta: the global shortcut is edited in ONE place, Atajos. Same pref, same hotkey_action.
-        notchTipRow("Atajo global", (g.hotkey?.note || (g.hotkey?.backendLabel ? `Se registra como: ${g.hotkey.backendLabel}.` : "Combinación que abre o cierra la isla desde cualquier app.")) + " Se edita en Atajos.", h("span", { class: "keycap static", text: hotkey.combo || "—" }), trusted(button("Ir a Atajos", () => navigate?.("shortcuts")))),
-        recap
+        notchTipRow("Atajo global", (g.hotkey?.note || (g.hotkey?.backendLabel ? `Se registra como: ${g.hotkey.backendLabel}.` : "Combinación que abre o cierra la isla desde cualquier app.")) + " Se edita en Atajos.", h("span", { class: "keycap static", text: hotkey.combo || "—" }), trusted(button("Ir a Atajos", () => navigate?.("shortcuts"))))
       ),
       notchCard(
         "Sonido",
@@ -244,9 +241,9 @@ async function renderGeneral({ invoke, V, navigate }) {
     }
   }
   paint();
-  return Object.assign(root, { dispose: () => recap.dispose(), settled: async () => {
+  return Object.assign(root, { dispose: () => {
+  }, settled: async () => {
     await queue;
-    await recap.settled();
   } });
 }
 export {

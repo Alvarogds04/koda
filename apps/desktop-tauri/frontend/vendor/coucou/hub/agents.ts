@@ -68,7 +68,7 @@ export async function renderAgentSettings({ invoke, V, P, listen, timers }: any)
     }, install ? 'primary' : 'danger');
     body.append(h('div', { class: 'row' }, confirm, button('Cancel', () => { reviewing = false; redraw(); })));
   }
-  // The notify-only Claude Code integrations (weekly recap hooks, status-line relay). Same review and confirm flow as the hooks
+  // The notify-only Claude Code integration (status-line relay). Same review and confirm flow as the hooks
   // (summary + the hash the user saw, dated backup, marker-only removal); no paths or relay rows.
   function integrationBlock(id: string, name: string, tip: string) {
     const r = V.agentsView(state, { timedOut: true }).rows?.find((a: any) => a.id === id);
@@ -164,8 +164,7 @@ export async function renderAgentSettings({ invoke, V, P, listen, timers }: any)
     plan.append(row('Claude Code · uso del plan', planTip, planSwitch), integrationBlock('statusline', 'Relay', 'Lee el uso del plan; tu línea de estado sigue igual.'));
     root.append(
       notchTipSection(t('Agents'), 'Koda agrega sus entradas a la configuración de cada agente. Desinstalar quita solo lo que Koda agregó; antes se guarda un respaldo.', table, actionStatus),
-      section(t('Plan usage'), plan),
-      section(t('Weekly recap'), integrationBlock('recap', t('Weekly recap'), 'Cuenta tu actividad de Claude Code; nunca guarda comandos ni prompts.')), s.message);
+      section(t('Plan usage'), plan), s.message);
   }
   const apply = (next: any) => { state = { ...state, ...next }; paint(); };
   paint(); watch('agent:state', apply); watch('prefs:state', next => { prefs = next; prefsKnown = true; paint(); });

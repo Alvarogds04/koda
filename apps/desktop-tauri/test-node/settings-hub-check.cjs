@@ -34,12 +34,12 @@ const text = e => [e.textContent || '', ...e.children.map(text)].join(' ');
   const { renderGeneral } = await import(pathToFileURL(path.join(base, 'general.js')));
   const hash = text => crypto.createHash('sha256').update(text).digest('hex');
   const css = fs.readFileSync(path.join(base, 'hub.css'), 'utf8').split('\n').slice(1).join('\n');
-  assert.equal(hash(css), '9f63d2944c7e4e267c863a8121b48e64a3cf7609fcaf24573f84c87c182f2ed8');
+  assert.equal(hash(css), '3d2ec6194891a08e51573f188e6ad8dec1230f0e972b1e30f53d4ed4fefdc6e0');
   const upstreamUi = fs.readFileSync(path.join(base, 'ui.ts'), 'utf8').split('\n').slice(1).join('\n')
     .replace('"../views/dom.js"', '"../views/dom"').replace('"./i18n-es.js"', '"../i18n/i18n"')
     .replace('"./flow-shim.js"', '"../core/flow"').replace('the keys the app suggests.', 'the keys Coucou suggests.');
   assert.equal(hash(upstreamUi), '67c5f63da4a672ddc74649f28fe17f032d49af5bbb1efcddbbc6eaea46ea6269');
-  assert.deepEqual(FLOW_PAGES.map(p => [p.id, p.icon]), [['dictation','mic'],['notes','record'],['insights','chart'],['dictionary','book'],['snippets','bolt'],['styles','text'],['flowsettings','sliders']]);
+  assert.deepEqual(FLOW_PAGES.map(p => [p.id, p.icon]), [['dictation','mic'],['insights','chart'],['dictionary','book'],['snippets','bolt'],['styles','text'],['flowsettings','sliders']]);
   assert.deepEqual(NOTCH_PAGES.map(p => [p.id,p.icon]), [['general','gear'],['integrations','puzzle'],['agents','terminal'],['chat','chat'],['voice','wave'],['phone','phone'],['shortcuts','keyboard'],['privacy','lock']]);
   const events = {};
   global.window = { __TAURI__: { event: { listen: async (name, handler) => { events[name] = handler; return () => {}; } } } };
@@ -103,7 +103,7 @@ const text = e => [e.textContent || '', ...e.children.map(text)].join(' ');
   assert.doesNotMatch(entry, /version:\s*['"]\d/, 'no hardcoded version literal in Ajustes');
   assert.match(entry, /version:\s*window\.__abitoVersion\b/, 'the shell gets the package version Rust hands the window');
   assert(entry.includes("import { renderAgentSettings }")); assert(entry.includes("import { renderChatSettings }"));
-  assert.equal(entry.match(/const allowed = new Set\(([^;]+)\);/)[1], "['prefs_action', 'hotkey_action', 'settings_window_action', 'agent_action', 'secret_action', 'oauth_action', 'models_action', 'specialists_action', 'daemon_action', 'pi_install_action', 'plan_action', 'recap_action', 'monitor_action', 'sound_action', 'dictation_action', 'voice_action', 'failure_action']", 'only closed host commands, including subscription OAuth and the closed «Instalar Pi» command of HU-046');
+  assert.equal(entry.match(/const allowed = new Set\(([^;]+)\);/)[1], "['prefs_action', 'hotkey_action', 'settings_window_action', 'agent_action', 'secret_action', 'oauth_action', 'models_action', 'specialists_action', 'daemon_action', 'pi_install_action', 'plan_action', 'monitor_action', 'sound_action', 'dictation_action', 'voice_action', 'failure_action']", 'only closed host commands, including subscription OAuth and the closed «Instalar Pi» command of HU-046');
   const guardCalls = [], guardContext = { window: { __TAURI__: { core: { invoke: async (...args) => guardCalls.push(args) } } }, document: {getElementById: () => ({})},
     setInvoke() {}, dictationPage() {}, flowSettingsPage() {}, dictionaryPage() {}, snippetsPage() {}, stylesPage() {}, insightsPage() {}, voicePage() {}, inactivePages: {}, startHub: async () => {}, TextEncoder };
   require('node:vm').runInNewContext(entry.replace(/^import .*;\n/gm, '') + '\nglobalThis.closedInvoke = invoke;', guardContext);
@@ -123,10 +123,9 @@ const text = e => [e.textContent || '', ...e.children.map(text)].join(' ');
   }
   for(const payload of [{action:'autostart_view',enabled:false},{action:'set_autostart',enabled:'yes'},{action:'set_autostart',enabled:true,extra:1},{action:'set_open_settings_at_launch',enabled:null}]) await assert.rejects(guardContext.closedInvoke('prefs_action',{payload}));
   assert.deepEqual(guardCalls,[],'startup malformed payloads never cross IPC');
-  assert(entry.includes("command === 'recap_action'"), 'closed recap guard');
   assert(entry.includes("['claude', 'codex'].includes(args.payload.action)"), 'plan_action payload guard');
   assert(entry.includes('set_show_plan_in_notch') && entry.includes('set_show_codex_plan_in_notch'), 'exact plan-in-notch pref guards');
-  for (const file of ['agents.ts','chat.ts','integrations.ts','shortcuts.ts','recap.ts']) {
+  for (const file of ['agents.ts','chat.ts','integrations.ts','shortcuts.ts']) {
     const source = fs.readFileSync(path.join(base,file),'utf8');
     assert(!/innerHTML|setAttribute\(['"]style|console\.|localStorage|sessionStorage/.test(source), file);
     assert(!/call\(['"](?:hooks_apply|statusline_preview|statusline_apply|local_connect|open_chat_url)/.test(source), file);
@@ -142,7 +141,6 @@ const text = e => [e.textContent || '', ...e.children.map(text)].join(' ');
     calls.push([cmd, p]);
     if (cmd === 'prefs_action' && p.action === 'autostart_view') return {enabled:autostart};
     if (cmd === 'prefs_action' && p.action === 'set_autostart') { if(rejectAutostart) throw Error('write refused'); autostart=p.enabled; return {enabled:autostart}; }
-    if (cmd === 'recap_action') return p.action === 'prefs' ? {enabled:true} : {ok:true};
     if (cmd === 'monitor_action') return { monitors: [{ key: 'DP-1', x: 0, y: 0, width: 1920, height: 1080 }, { key: 'HDMI-1', x: 1920, y: 0, width: 1280, height: 720 }] };
     if (cmd === 'sound_action' && p.action === 'reveal' && rejectReveal) throw Error('xdg-open failed');
     if (cmd === 'sound_action') return p.action === 'list' ? { names: customSounds } : { ok: true };
@@ -159,13 +157,12 @@ const text = e => [e.textContent || '', ...e.children.map(text)].join(' ');
     return structuredClone(prefs);
   };
   const ui = await renderGeneral({ invoke, V }); await ui.settled();
-  assert(calls.some(([c,p])=>c==='recap_action'&&p.action==='prefs'));
   assert(calls.some(([c,p])=>c==='monitor_action'&&p.action==='list'&&Object.keys(p).length===1), 'real display list');
   assert(calls.some(([c,p])=>c==='sound_action'&&p.action==='list'&&Object.keys(p).length===1), 'custom sound count');
   calls.length = 0;
   assert.equal(ui.firstChild.tagName, 'section', 'General is made of settings sections (#503 S18: three task cards)');
   assert.deepEqual(all(ui).filter(e => e.tagName === 'h2').map(text), [' Apariencia', ' Isla', ' Sonido']);
-  assert.deepEqual(all(ui).filter(e => e.tagName === 'label').map(e => e.textContent), ['Idioma','Tema','Nombre visible','Abrir al iniciar sesión','Abrir Ajustes al abrir Koda','Abrir al pasar el cursor','Plegar tras (s)','Ocultar plegada tras (s)','La isla vive en','Atajo global','Resumen semanal','','Sonido']);
+  assert.deepEqual(all(ui).filter(e => e.tagName === 'label').map(e => e.textContent), ['Idioma','Tema','Nombre visible','Abrir al iniciar sesión','Abrir Ajustes al abrir Koda','Abrir al pasar el cursor','Plegar tras (s)','Ocultar plegada tras (s)','La isla vive en','Atajo global','Sonido']);
   // #503 S18: the theme IS a segmented control now (the MD's «Oscuro / Claro / Sistema»); it must be the only one
   assert.equal(all(ui).filter(e => e.className === 'hub-segmented').length, 1);
   for (const id of ['hub-language']) {
@@ -210,10 +207,6 @@ const text = e => [e.textContent || '', ...e.children.map(text)].join(' ');
   assert.deepEqual(calls.splice(0), [['sound_action', { action: 'reload' }], ['sound_action', { action: 'list' }]]);
   assert(text(ui).includes('1 personalizados'));
   calls.length = 0;
-  field('hub-recap').fire('click',false);await ui.settled();assert.deepEqual(calls,[]);
-  field('hub-recap').fire('click');await ui.settled();assert.deepEqual(calls.pop(),['recap_action',{action:'set_enabled',enabled:false}]);
-  field('hub-recap-clear').fire('click',false);await ui.settled();assert.deepEqual(calls,[]);
-  field('hub-recap-clear').fire('click');await ui.settled();assert.deepEqual(calls.pop(),['recap_action',{action:'clear'}]);
   field('hub-sound').fire('click', false); await ui.settled(); assert.deepEqual(calls, []);
   field('hub-sound').fire('click'); await ui.settled(); assert.deepEqual(calls.pop(), ['prefs_action', { action: 'sound_off' }]);
   field('hub-sound').fire('click'); await ui.settled(); assert.deepEqual(calls.pop(), ['prefs_action', { action: 'sound_on' }]);
@@ -254,7 +247,7 @@ const text = e => [e.textContent || '', ...e.children.map(text)].join(' ');
   rejectGain = true; field('hub-volume').value = '0.1'; field('hub-volume').fire('change'); await ui.settled();
   assert(text(ui).includes('No se pudo guardar.'));
   assert.equal(field('hub-volume').attrs.value, '0.06');
-  assert(calls.every(([cmd]) => ['prefs_action','hotkey_action','recap_action','monitor_action','sound_action'].includes(cmd)));
+  assert(calls.every(([cmd]) => ['prefs_action','hotkey_action','monitor_action','sound_action'].includes(cmd)));
   assert(entry.includes("command === 'monitor_action'") && entry.includes("command === 'sound_action'"), '5a closed guards');
   assert(!/action: 'read'|'read'/.test(fs.readFileSync(path.join(base,'general.ts'),'utf8')), 'general never reads sound bytes');
   const abitoCss = fs.readFileSync(path.join(base, 'abito.css'), 'utf8');

@@ -86,7 +86,7 @@ function backdrop(canvas: HTMLCanvasElement, color: string, pointerFrom: HTMLEle
 }
 // The page colours of Coucou's THEMES (colours only).
 const COLORS: Record<string, string> = {
-  dictation: '#FB923C', notes: '#3B9EFF', insights: '#34D399', dictionary: '#A78BFA', snippets: '#F7B32B', styles: '#F472B6',
+  dictation: '#FB923C', insights: '#34D399', dictionary: '#A78BFA', snippets: '#F7B32B', styles: '#F472B6',
   flowsettings: '#8E939C', general: '#8E939C', pills: '#F5A524', agents: '#3B9EFF', chat: '#E07950', integrations: '#7C5CFF',
   phone: '#3DDC84', voice: '#F97316', shortcuts: '#6366F1',
 };

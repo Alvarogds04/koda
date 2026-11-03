@@ -5,22 +5,9 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
-const { execFileSync } = require('node:child_process');
-const { all, text, dom, Element } = require('./settings-accounts-check.cjs');
 const root = path.resolve(__dirname, '..');
+const { all, text, dom, Element } = require('./settings-accounts-check.cjs');
 
-// Koda 0.1 T2: the visible rename legitimately edits vendor/ and settings-view.js. "Untouched" now means: the only change is Abito -> Koda in text
-// (every removed line equals its added line once «Abito» becomes «Koda»); anything else still fails.
-function onlyRenamed(files) {
-  const out = [];
-  for (const p of files) {
-    const d = execFileSync('git', ['diff', '-U0', 'HEAD', '--', require('node:path').join(root, '..', '..', p)], { cwd: root, encoding: 'utf8' }).split('\n');
-    const minus = d.filter(l => l.startsWith('-') && !l.startsWith('---')).map(l => l.slice(1).replace(/Abito|Koda/g, 'N'));
-    const plus = d.filter(l => l.startsWith('+') && !l.startsWith('+++')).map(l => l.slice(1).replace(/Abito|Koda/g, 'N'));
-    if (JSON.stringify(minus) !== JSON.stringify(plus)) out.push(p);
-  }
-  return out;
-}
 const read = f => fs.readFileSync(path.join(root, f), 'utf8');
 const I = require('../frontend/settings-isla.js');
 const N = require('../frontend/island-nusa.js');
@@ -56,7 +43,6 @@ assert.deepEqual([...I.IDS], N.SIZES.map(s => s.id), 'same closed set as the isl
   const invoke = async (cmd, { payload: p }) => {
     calls.push([cmd, p]);
     if (cmd === 'prefs_action' && p.action === 'autostart_view') return { enabled: false };
-    if (cmd === 'recap_action') return p.action === 'prefs' ? { enabled: true } : { ok: true };
     if (cmd === 'monitor_action') return { monitors: [{ key: 'DP-1' }] };
     if (cmd === 'sound_action') return p.action === 'list' ? { names: [] } : { ok: true };
     if (cmd === 'hotkey_action') return { combo: 'Ctrl+Space', enabled: true, status: 'active', backend: 'portal' };
@@ -84,9 +70,9 @@ assert.deepEqual([...I.IDS], N.SIZES.map(s => s.id), 'same closed set as the isl
   const rawGeneral = await renderGeneral({ invoke, V }); await rawGeneral.settled();
   const rawPills = await renderPills({ ...personal, part: 'abito' }); await rawPills.settled();
   const moved = { isla: sig(isla(rawGeneral)), colours: sig(colours(rawPills)) };
-  assert.ok(moved.isla.ids.includes('hub-hover') && moved.isla.ids.includes('hub-absence') && moved.isla.ids.includes('hub-screen') && moved.isla.ids.includes('hub-recap') && moved.isla.ids.includes('hub-recap-clear'), 'inventory sanity: the Isla card has hover, plegar, ocultar, pantalla, resumen, borrar');
-  for (const l of ['Abrir al pasar el cursor', 'Plegar tras (s)', 'Ocultar plegada tras (s)', 'La isla vive en', 'Atajo global', 'Resumen semanal']) assert.ok(moved.isla.labels.includes(l), l);
-  assert.ok(moved.isla.buttons.includes('Ir a Atajos') && moved.isla.buttons.includes('Borrar historial'), moved.isla.buttons.join('|'));
+  assert.ok(moved.isla.ids.includes('hub-hover') && moved.isla.ids.includes('hub-absence') && moved.isla.ids.includes('hub-screen'), 'inventory sanity: the Isla card has hover, plegar, ocultar, pantalla');
+  for (const l of ['Abrir al pasar el cursor', 'Plegar tras (s)', 'Ocultar plegada tras (s)', 'La isla vive en', 'Atajo global']) assert.ok(moved.isla.labels.includes(l), l);
+  assert.ok(moved.isla.buttons.includes('Ir a Atajos'), moved.isla.buttons.join('|'));
   assert.ok(moved.colours.ids.some(i => i.startsWith('identity-abito-')), 'inventory sanity: the colour swatches');
   const stay = { // General keeps these
     general: ['hub-sound', 'hub-volume', 'hub-theme', 'hub-language', 'hub-autostart', 'hub-open-at-launch', 'hub-sounds-folder', 'hub-sounds-reload'],
@@ -145,7 +131,7 @@ assert.deepEqual([...I.IDS], N.SIZES.map(s => s.id), 'same closed set as the isl
   calls.length = 0;
   by('hub-hover').fire('click', false); await tick(); assert.deepEqual(calls, [], 'synthetic gestures stay inert');
   by('hub-hover').fire('click'); await tick(); assert.equal(calls.length > 0, true); assert.ok(calls.some(([c, p]) => c === 'prefs_action' || c === 'settings_window_action' || p.action), JSON.stringify(calls));
-  calls.length = 0; by('hub-recap-clear').fire('click'); await tick(); assert.ok(calls.some(([c, p]) => c === 'recap_action' && p.action === 'clear'), JSON.stringify(calls));
+  calls.length = 0;
   const swatch = all(page).find(e => (e.attrs.id || '').startsWith('identity-abito-')); calls.length = 0; swatch.fire('click'); await tick();
   assert.deepEqual(calls.find(([, p]) => p.action === 'set_avatar_color'), ['prefs_action', { action: 'set_avatar_color', identity: 'abito', color: swatch.attrs.id.replace('identity-abito-', '') }]);
   assert.ok(all(page).some(e => e.tagName === 'button' && e.textContent === 'Ir a Atajos')); all(page).find(e => e.textContent === 'Ir a Atajos').fire('click'); assert.deepEqual(navs, ['shortcuts'], '«Ir a Atajos» asks the vendor hub to navigate');
@@ -189,8 +175,9 @@ assert.deepEqual([...I.IDS], N.SIZES.map(s => s.id), 'same closed set as the isl
   assert.ok(/setProperty\('--k'/.test(read('frontend/settings-isla-mount.js')));
   assert.ok(/isla-notch/.test(read('frontend/settings-nusa.css')) && !/url\(\s*['"]?https?:/.test(read('frontend/settings-nusa.css')));
   assert.equal(require('../frontend/settings-nusa.js').pageVoice('isla').phrase, require('../frontend/settings-nusa.js').pageVoice('island').phrase, 'the Isla rail id has its own Koda phrase');
-  const changed = execFileSync('git', ['diff', '--name-only', 'HEAD', '--', '.'], { cwd: root, encoding: 'utf8' }).split('\n').filter(Boolean);
-  assert.deepEqual(onlyRenamed(changed.filter(p => /\/vendor\//.test(p) || /settings-view\.js$|\/settings\.js$/.test(p))), [], 'R1: vendor, settings-view.js and settings.js untouched except Abito -> Koda (Koda 0.1 T2)');
+  // R1 (restored by K2-03): vendor, settings-view.js and settings.js untouched except Abito -> Koda and the listed K2-03 removals.
+  const R1 = require('./settings-vendor-r1.cjs');
+  assert.deepEqual(R1.check(root, p => /\/vendor\//.test(p) || /settings-view\.js$|\/settings\.js$/.test(p)), [], 'R1: vendor, settings-view.js and settings.js untouched except Abito -> Koda (Koda 0.1 T2) and the K2-03 list (settings-vendor-r1.cjs)');
   const lib = read('packaging/lib.cjs');
   for (const f of ['settings-isla.js', 'settings-isla-mount.js']) assert.ok(lib.includes(`'${f}'`), `packaging lists ${f}`);
   console.log('settings-isla-check ok');

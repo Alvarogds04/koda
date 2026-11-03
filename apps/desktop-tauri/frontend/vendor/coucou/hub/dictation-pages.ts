@@ -147,7 +147,7 @@ export async function flowSettingsPage(page: HTMLElement, ctx: HubContext, _invo
   page.append(label("Audio"));
   const mics: [string, string][] = [["", t("System default")], ...status.mics.map((m): [string, string] => [m.name, m.name])];
   if (prefs.mic && !mics.some(([id]) => id === prefs.mic)) mics.push([prefs.mic, prefs.mic]);
-  // The ONE place where dictation gets prepared (0.2.1, L2): Dictado only links here. Parakeet is shared with Notetaker and OK Koda.
+  // The ONE place where dictation gets prepared (0.2.1, L2): Dictado only links here. Parakeet is shared with OK Koda.
   const toVoice = trusted(h('button', { class: 'hub-link', text: 'Administrar en OK Koda', onclick: () => ctx.navigate('voice') }));
   page.append(card(
     row(t("Microphone"), null, trusted(select(mics, prefs.mic, (mic) => save((p) => (p.mic = mic)))), infoTip(t("The one Koda listens to for dictation and calls."), "Más información: Micrófono")),
@@ -182,7 +182,7 @@ export async function flowSettingsPage(page: HTMLElement, ctx: HubContext, _invo
 export async function dictationPage(page: HTMLElement, ctx: HubContext) {
   const life = mount(page, ctx), status = await ctx.refresh(), key = 'Ctrl+Alt+V';
   if (!life.alive()) return;
-  // 0.2.1 (L2 «Dictado: A · Historial solo»): history and search first. The call-recording button and the Notetaker promo are gone.
+  // 0.2.1 (L2 «Dictado: A · Historial solo»): history and search first. The call-recording button and its promo are gone.
   page.append(ctx.hero('dictation', 'Dictado', null));
   if (!status.prefs.enabled || status.models.parakeet.state !== 'ready') {
     // One preparation, in Ajustes de dictado: here only a link, with no second switch or download.

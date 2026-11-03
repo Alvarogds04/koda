@@ -24,7 +24,6 @@ test('S18 General: three titled cards (Apariencia, Isla, Sonido), every control 
   let prefs = { sound: true, gain: .12, autoCloseSeconds: 15, openOnHover: false, declaredPills: [], pillColors: {}, mainPill: 'integration_claude', theme: 'system', displayName: '', monitor: null, absenceSeconds: 10 };
   const invoke = async (cmd, { payload: p }) => {
     if (cmd === 'prefs_action' && p.action === 'autostart_view') return { enabled: false };
-    if (cmd === 'recap_action') return p.action === 'prefs' ? { enabled: true } : { ok: true };
     if (cmd === 'monitor_action') return { monitors: [{ key: 'DP-1' }] };
     if (cmd === 'sound_action') return p.action === 'list' ? { names: [] } : { ok: true };
     if (cmd === 'hotkey_action') return { combo: 'Ctrl+Space', enabled: true, status: 'active', backend: 'portal' };
@@ -39,20 +38,21 @@ test('S18 General: three titled cards (Apariencia, Isla, Sonido), every control 
   assert.deepEqual(look.slice(0, 2), ['Idioma', 'Tema'], 'Apariencia opens with Idioma and Tema, as in the wireframe');
   for (const l of ['Nombre visible', 'Abrir al iniciar sesión']) assert(look.includes(l), l);
   assert.deepEqual(island.slice(0, 3), ['Abrir al pasar el cursor', 'Plegar tras (s)', 'Ocultar plegada tras (s)']);
-  for (const l of ['La isla vive en', 'Atajo global', 'Resumen semanal']) assert(island.includes(l), l);
+  for (const l of ['La isla vive en', 'Atajo global']) assert(island.includes(l), l);
   assert.deepEqual(sound.slice(0, 1), ['Sonido']);
   assert(byId(c[2], 'hub-volume') && byId(c[2], 'hub-sounds-folder') && byId(c[2], 'hub-sounds-reload'), 'Volumen, Abrir carpeta y Recargar live in Sonido');
   assert(byId(c[0], 'hub-language') && byId(c[0], 'hub-autostart'));
   assert(byId(c[1], 'hub-hover') && byId(c[1], 'hub-absence') && byId(c[1], 'hub-screen'));
   // nothing that existed disappeared
-  for (const id of ['hub-sound', 'hub-volume', 'hub-hover', 'hub-absence', 'hub-screen', 'hub-language', 'hub-autostart', 'hub-sounds-folder', 'hub-sounds-reload', 'hub-recap', 'hub-recap-clear']) assert(byId(ui, id), id);
+  for (const id of ['hub-sound', 'hub-volume', 'hub-hover', 'hub-absence', 'hub-screen', 'hub-language', 'hub-autostart', 'hub-sounds-folder', 'hub-sounds-reload']) assert(byId(ui, id), id);
   for (const label of ['Nombre visible', 'Atajo global', 'Cierre automático en segundos', 'Segundos antes de ocultar la isla plegada']) assert(all(ui).some(e => e.attrs['aria-label'] === label || e.textContent === label), label);
   // visible helper text under the fields (input-helper-text), and the one status line is outside the cards
   assert(all(ui).some(e => e.attrs.role === 'tooltip' && e.textContent.includes('Sistema sigue el tema de tu escritorio.')), '0.2.1 S7: an ⓘ');
   // the mechanism that registers the global shortcut is a sentence, never a bare label with nothing to show
   assert(!all(ui).some(e => e.className === 'hint' && /^Atajo (del sistema|de GNOME|de X11|de Windows|limitado)/.test(e.textContent || '')), 'no bare backend label');
   assert(all(ui).some(e => e.attrs.role === 'tooltip' && e.textContent.includes('Se registra como: Atajo del sistema')), 'the mechanism reads as a sentence (in the ⓘ)');
-  assert(c.every(card => all(card).some(e => e.className === 'hint')), 'every card carries helper text');
+  // helper text = a visible hint line or an ⓘ tooltip (the Isla card's rows are all ⓘ since K2-03 removed the recap rows)
+  assert(c.every(card => all(card).some(e => e.className === 'hint' || e.className === 'hub-info-wrap')), 'every card carries helper text');
   assert(ui.children.at(-1).className === 'hub-note' && ui.children.at(-1).attrs.role === 'status', 'the one global status line is the last child, outside every card');
   ui.dispose();
 });

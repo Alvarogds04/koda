@@ -9,7 +9,7 @@ import { hero, liveMochi } from "./hero.js";
 import { icon, keyLabel } from "./ui.js";
 
 export type PageId =
-  | "dictation" | "notes" | "insights" | "dictionary" | "snippets" | "styles" | "flowsettings"
+  | "dictation" | "insights" | "dictionary" | "snippets" | "styles" | "flowsettings"
   | "general" | "agents" | "chat" | "voice" | "integrations" | "phone" | "shortcuts" | "privacy";
 
 interface PageDef {
@@ -22,7 +22,6 @@ interface PageDef {
 
 export const FLOW_PAGES: PageDef[] = [
   { id: "dictation", icon: "mic", title: () => t("Dictation") },
-  { id: "notes", icon: "record", title: () => t("Notetaker") },
   { id: "insights", icon: "chart", title: () => t("Statistics") },
   { id: "dictionary", icon: "book", title: () => t("Dictionary") },
   { id: "snippets", icon: "bolt", title: () => t("Snippets") },

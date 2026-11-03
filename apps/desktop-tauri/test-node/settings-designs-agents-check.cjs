@@ -33,7 +33,7 @@ const button = (scope, word) => all(scope).find(e => e.tagName === 'button' && (
 
 test('S20 Agentes: the table has the four columns and the rows in the wireframe order, and the plan is its own section below', async () => {
   const { ui } = await mount();
-  assert.deepEqual(heads(ui).map(h => h.replace(/\s*ⓘ.*$/, '')), ['Agentes', 'Uso del plan', 'Resumen semanal'], 'Claude Code is a row now, the plan keeps its own section after the table');
+  assert.deepEqual(heads(ui).map(h => h.replace(/\s*ⓘ.*$/, '')), ['Agentes', 'Uso del plan'], 'Claude Code is a row now, the plan keeps its own section after the table');
   const table = all(ui).find(e => e.attrs.role === 'table'); assert(table, 'a real table role');
   assert.deepEqual(all(table).filter(e => e.attrs.role === 'columnheader').map(e => e.textContent), ['Agente', 'Estado', 'En isla', 'Acciones']);
   const list = all(ui).find(e => e.attrs.id === 'agent-hook-list');
@@ -126,12 +126,12 @@ test('Agentes: Instalar…/Actualizar… is ONE trusted click: it writes the pla
   assert.deepEqual(calls.filter(([c]) => c === 'agent_action'), [['agent_action', { action: 'agent_connect', agentId: 'codex', plan_hash: hash }]], 'exactly the plan the row showed');
 });
 
-test('S20 Agentes: how to undo is stated next to the table, and the plan section, recap and relay survive intact', async () => {
+test('S20 Agentes: how to undo is stated next to the table, and the plan section and relay survive intact (no recap block: K2-03)', async () => {
   const { ui } = await mount();
   assert(!all(ui.children[0]).some(e => e.className === 'hint' && e.attrs.id !== 'agent-action-status' && !/^Con respaldo\.$/.test(e.textContent)), 'S7: no standing explanation next to the table (the host row note stays)');
   assert(all(ui.children[0]).some(e => e.attrs.role === 'tooltip' && e.textContent.includes('Desinstalar quita solo lo que Koda agregó; antes se guarda un respaldo.')), 'how to undo is an ⓘ');
   assert(all(ui).some(e => e.attrs.id === 'agent-integration-statusline'), 'the relay is still installable from the plan section');
-  assert(all(ui).some(e => e.attrs.id === 'agent-integration-recap'), 'the weekly recap block is still there');
+  assert(!all(ui).some(e => e.attrs.id === 'agent-integration-recap'), 'no weekly recap block (K2-03: Recap removed)');
   const plan = ui.children[1]; assert.equal(all(plan).filter(e => e.tagName === 'button' && String(e.className).includes('switch')).length, 1, 'S5/L4: only Claude Code plan usage; Codex is for 0.3');
 });
 
