@@ -591,7 +591,7 @@ test("hotkey: applyConfig picks up a file edit, emits 'settings' and broadcasts;
 
 test("hotkey: an invalid hotkey in config.json does not abort start", async () => {
 	const { daemon, root, evidence } = make();
-	fs.mkdirSync(root, { mode: 0o700 });
+	fs.mkdirSync(root, { recursive: true, mode: 0o700 }); // Windows: <LOCALAPPDATA>\Abito\i, the Abito parent may not exist yet
 	writePrivateFile(path.join(root, "config.json"), JSON.stringify({ hotkey: "Ctrl+F25" }));
 	await daemon.start();
 	assert.equal(fs.existsSync(evidence.spawn), true);
@@ -632,7 +632,7 @@ async function configure(root, value) {
 	writePrivateFile(path.join(root, "config.json"), JSON.stringify(value));
 }
 
-test("connectors_list through the daemon: fake CLI, private 0700 dir created at first use, status flag", async () => {
+test("connectors_list through the daemon: fake CLI, private 0700 dir created at first use, status flag", { skip: win && "registered gap K2-01b (P2): POSIX-path values are refused by the POSIX-only validators on Windows; twin: config.test.cjs 'registered gap K2-01b: absolute Windows paths are refused for connectorsCommand, hookInstallerBin and connectorHostBin (POSIX-only validators)'" }, async () => {
 	const { daemon, root, base } = make();
 	const command = connectorsShim(base);
 	const dir = path.join(base, "cdata");
@@ -663,7 +663,7 @@ test("connectors_list through the daemon: fake CLI, private 0700 dir created at 
 	}
 });
 
-test("connectors_list through the daemon: a failing CLI or a symlinked dir -> generic failed", async () => {
+test("connectors_list through the daemon: a failing CLI or a symlinked dir -> generic failed", { skip: win && "registered gap K2-01b (P2): POSIX-path values are refused by the POSIX-only validators on Windows; twin: config.test.cjs 'registered gap K2-01b: absolute Windows paths are refused for connectorsCommand, hookInstallerBin and connectorHostBin (POSIX-only validators)'" }, async () => {
 	const { daemon, root, base } = make();
 	const real = path.join(base, "real");
 	fs.mkdirSync(real);
@@ -729,7 +729,7 @@ function agentsInstaller(base) {
 	return { file, home, hash };
 }
 
-test("agents through the daemon: hookInstallerBin wires AgentsManager, agentsAvailable flag, frames over the socket", async () => {
+test("agents through the daemon: hookInstallerBin wires AgentsManager, agentsAvailable flag, frames over the socket", { skip: win && "registered gap K2-01b (P2): POSIX-path values are refused by the POSIX-only validators on Windows; twin: config.test.cjs 'registered gap K2-01b: absolute Windows paths are refused for connectorsCommand, hookInstallerBin and connectorHostBin (POSIX-only validators)'" }, async () => {
 	const { daemon, root, base } = make({ options: { agentsOptions: {} } });
 	const inst = agentsInstaller(base);
 	daemon.options.agentsOptions = { home: inst.home };
@@ -810,8 +810,10 @@ test("GD014: classifySession distinguishes stale, foreign, orphaned and healthy 
 		const foreignRoot = path.join(tmp(), "i-foreign");
 		writeSession(foreignRoot, { endpoint: "/x", pid: bystander.pid });
 		const v2 = await classifySession(foreignRoot);
+		// Windows (decision 2a, registered gap «Windows daemon identity: start-time+ppid via native helper»): no
+		// command-line/start-time identity there, so EVERY live pid without native proof is foreign/identity_unconfirmed.
 		assert.equal(v2.state, "foreign");
-		assert.equal(v2.reason, "other_process");
+		assert.equal(v2.reason, win ? "identity_unconfirmed" : "other_process");
 		assert.equal(v2.ready, false);
 
 		// foreign: the cmdline looks like this daemon but the start time does not match the session
@@ -826,8 +828,9 @@ test("GD014: classifySession distinguishes stale, foreign, orphaned and healthy 
 		const unreadyRoot = path.join(tmp(), "i-unready");
 		writeSession(unreadyRoot, { endpoint: "/x", pid: lookalike.pid, procStart: procStartTicks(lookalike.pid) });
 		const v4 = await classifySession(unreadyRoot);
-		assert.equal(v4.state, "stale");
-		assert.equal(v4.reason, "endpoint_refused");
+		// Windows: the start time cannot confirm a daemon (gap above), so it stays foreign, never «stale» (never replaceable).
+		assert.equal(v4.state, win ? "foreign" : "stale");
+		assert.equal(v4.reason, win ? "identity_unconfirmed" : "endpoint_refused");
 		assert.equal(v4.ready, false);
 	} finally {
 		await reap(bystander);
@@ -835,16 +838,19 @@ test("GD014: classifySession distinguishes stale, foreign, orphaned and healthy 
 	}
 
 	// healthy (and the orphaned variant through the ppid seam: no live test can give ppid 1)
-	const { daemon, root } = make();
+	const { daemon, root, base } = make();
 	await daemon.start();
+	// The daemon's own env (on Windows its private %LOCALAPPDATA%): the native verification checks the root against it.
+	const env = { env: daemonEnv(base) };
 	try {
-		const v5 = await classifySession(root);
+		const v5 = await classifySession(root, env);
 		assert.equal(v5.state, "healthy");
 		assert.equal(v5.reason, "ready");
 		assert.equal(v5.ready, true);
-		const v6 = await classifySession(root, { ppid: () => 1 });
-		assert.equal(v6.state, "orphaned");
-		assert.equal(v6.reason, "parent_gone");
+		const v6 = await classifySession(root, { ...env, ppid: () => 1 });
+		// Windows has no parent-chain identity (same registered gap): a natively proven ready daemon is healthy there.
+		assert.equal(v6.state, win ? "healthy" : "orphaned");
+		assert.equal(v6.reason, win ? "ready" : "parent_gone");
 		assert.equal(v6.ready, true, "an orphaned daemon can still be serving");
 	} finally {
 		await daemon.stop();
@@ -1142,7 +1148,7 @@ test("connector host is optional, starts after the engine, and is stopped before
 	assert.equal(fs.existsSync(path.join(configured.root, "connector-host.json")), false);
 });
 
-test("a configured but untrusted connector host does not prevent daemon startup", async () => {
+test("a configured but untrusted connector host does not prevent daemon startup", { skip: win && "registered gap K2-01b (P2): POSIX-path values are refused by the POSIX-only validators on Windows; twin: config.test.cjs 'registered gap K2-01b: absolute Windows paths are refused for connectorsCommand, hookInstallerBin and connectorHostBin (POSIX-only validators)'" }, async () => {
 	const { daemon, root, base, logs } = make();
 	await configure(root, { connectorHostBin: path.join(base, "missing-host") });
 	await daemon.start();

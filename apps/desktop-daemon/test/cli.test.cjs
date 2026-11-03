@@ -12,6 +12,7 @@ const { spawn, spawnSync } = require("node:child_process");
 
 const CLI = path.join(__dirname, "..", "src", "cli.cjs");
 const FAKE = path.join(__dirname, "fixtures", "fake-agent.cjs");
+const { assertMode } = require("./platform-env.cjs");
 const { pidState, procStartTicks } = require("../src/daemon.cjs");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const tempDirs = new Set();
@@ -76,6 +77,9 @@ function islandRoot() {
 	if (!WIN) return path.join(tmp(), "i");
 	const local = fs.realpathSync.native(fs.mkdtempSync(path.join(tmpBase(), "abito-local-")));
 	tempDirs.add(local);
+	// The app creates the protected root and the island inside it (ensureIsland); the fixture mirrors that
+	// layout so the single-component mkdir of `i` below (fakeIsland, explicit mkdirs) always has its parent.
+	fs.mkdirSync(path.join(local, "Abito"), { mode: 0o700 });
 	return path.join(local, "Abito", "i");
 }
 /** Child env for `root`: private HOME, ABITO_ISLAND_DIR, and on Windows the private LOCALAPPDATA. */
@@ -207,7 +211,7 @@ test("config get prints the effective config; set-workspace persists it", () => 
 	r = cli(root, ["config", "set-workspace", ws]);
 	assert.equal(r.status, 0, r.stderr);
 	assert.equal(JSON.parse(cli(root, ["config", "get"]).stdout).workspace, ws);
-	assert.equal(fs.statSync(path.join(root, "config.json")).mode & 0o777, 0o600);
+	assertMode(path.join(root, "config.json"), 0o600);
 	r = cli(root, ["config", "set-workspace", "relative"]);
 	assert.equal(r.status, 1);
 	assert.match(r.stderr, /invalid config: workspace/);
@@ -229,9 +233,12 @@ test("stale session.json of a dead pid: status 3 and stop 3, never a bare-pid co
 	const status = cli(root, ["status"]);
 	assert.equal(status.status, 3, status.stderr);
 	assert.match(status.stderr, /pid_dead/, "the classification names the dead pid, never a bare-pid confirmation");
+	assert.equal(fs.existsSync(sessionOf(root)), WIN, WIN ? "Windows status is read-only: the stale file survives status" : "POSIX status cleans the stale session (liveSession)");
 	const stop = cli(root, ["stop"]);
 	assert.equal(stop.status, 3, stop.stderr);
-	assert.equal(fs.existsSync(sessionOf(root)), WIN, WIN ? "Windows status is read-only: the stale file is kept, never POSIX-unlinked" : "the stale file is cleaned");
+	// stop() classifies the dead pid through liveSession on every OS and removes the confirmed-stale file
+	// before reporting «not running» (cli.cjs stop has no Windows gate; observed in CI run 41718553579).
+	assert.equal(fs.existsSync(sessionOf(root)), false, "the stale file is gone after stop on every OS");
 });
 
 test("stop refuses a live pid that is not the daemon (ownership check)", async () => {
@@ -434,7 +441,7 @@ test("config set-hotkey: set, show in config get, clear, invalid and usage exit 
 	assert.equal(r.status, 0, r.stderr);
 	assert.deepEqual(JSON.parse(r.stdout), { hotkey: "Ctrl+Alt+Space", changed: true, appliedToRunningDaemon: false });
 	assert.equal(JSON.parse(cli(root, ["config", "get"]).stdout).hotkey, "Ctrl+Alt+Space");
-	assert.equal(fs.statSync(path.join(root, "config.json")).mode & 0o777, 0o600);
+	assertMode(path.join(root, "config.json"), 0o600);
 	r = cli(root, ["config", "set-hotkey", "Ctrl+Alt+Space"]);
 	assert.equal(r.status, 0);
 	assert.equal(JSON.parse(r.stdout).changed, false);

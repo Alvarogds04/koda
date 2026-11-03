@@ -31,7 +31,7 @@ function preview({ harness = "claude", action = "install", ops = ["add", "add"],
 		mode: "preview",
 		harness,
 		action,
-		target: target ?? `@HOME@/${dir}/${file}`,
+		target: target ?? path.join("@HOME@", dir, file),
 		exists: true,
 		changed: changed ?? ops.some((o) => o !== "keep"),
 		entries: {
@@ -71,7 +71,7 @@ const applied = (o = {}) => ({
 	mode: "applied",
 	harness: o.harness ?? "claude",
 	action: o.action ?? "install",
-	target: "@HOME@/.claude/settings.json",
+	target: path.join("@HOME@", ".claude", "settings.json"),
 	plan_hash: o.hash ?? HASH_A,
 	changed: true,
 	backup: null,
@@ -91,7 +91,11 @@ function setup(t, scenario = {}, extra = {}) {
 	fs.mkdirSync(islandDir, { mode: 0o700 });
 	const scenarioFile = path.join(base, "scenario.json");
 	const write = (s) => {
-		const text = JSON.stringify({ pidFile: path.join(base, "grandchild.pid"), ...s }).replaceAll("@HOME@", home);
+		// The @HOME@ placeholder is replaced INSIDE JSON string values, so the home path must be JSON-escaped:
+		// a raw Windows path (C:\Users\...) puts invalid \U escapes into scenario.json and the fake installer
+		// dies on JSON.parse before recording or answering anything (the whole Windows failure class of CI run
+		// 41718553579). JSON.stringify-escaping is identity on Linux/macOS (no backslashes or quotes in paths).
+		const text = JSON.stringify({ pidFile: path.join(base, "grandchild.pid"), ...s }).replaceAll("@HOME@", JSON.stringify(home).slice(1, -1));
 		fs.writeFileSync(scenarioFile, text);
 	};
 	write(scenario);
@@ -179,7 +183,10 @@ for (const [id, events] of [['recap', ['UserPromptSubmit', 'PostToolUse', 'Stop'
   assert.ok(calls.every(c => !c.argv.includes('--apply-plan')));
   const call = calls.find(c => c.argv[2] === id);
   assert.deepEqual(call.argv, [s.installerBin, 'install', id, '--user', '--json']);
-  assert.ok(Object.keys(call.env).every(k => ['PATH', 'HOME', 'LANG', 'ABITO_ISLAND_EXE'].includes(k)));
+  // The recorded child env is each platform's own closed allowlist: POSIX PATH+HOME (+LANG), the Windows
+  // SystemRoot-shaped env with USERPROFILE (the product's HU-047 contract, asserted the same way above).
+  const allowedEnv = win ? ['HOME', 'USERPROFILE', 'SystemRoot', 'PATH', 'LANG', 'ABITO_ISLAND_EXE'] : ['PATH', 'HOME', 'LANG', 'ABITO_ISLAND_EXE'];
+  assert.ok(Object.keys(call.env).every(k => allowedEnv.includes(k)));
   await assert.rejects(s.manager.connect(id), e => e.code === 'bad_request');
   for (const entries of [events.slice(1).map(event => ({ event, op: 'add' })), events.map(event => ({ event, op: 'execute' })), events.map(() => ({ event: 'PermissionRequest', op: 'add' }))]) {
    s.manager.runner = async () => ({ exit: 0, stdout: Buffer.from(JSON.stringify({ ...preview({ harness: id, target: path.join(s.home, '.claude/settings.json') }), entries })) });
@@ -359,10 +366,18 @@ test("child env: allowlist + ABITO_ISLAND_EXE only, HOME is the real home passed
 		}
 	}
 	assert.equal(s.calls().length, 7);
+	// Same closed allowlist as the HU-047 tests: POSIX PATH+HOME (+LANG), Windows USERPROFILE+SystemRoot with
+	// the System32 PATH. Each OS asserts its own real mechanism; neither leaks anything else.
+	const allowedEnv = ["HOME", "ABITO_ISLAND_EXE", "LANG", ...(win ? ["USERPROFILE", "SystemRoot", "PATH"] : ["PATH"]), ...OS_INJECTED_ENV];
 	for (const call of s.calls()) {
-		for (const k of Object.keys(call.env)) assert.ok(["PATH", "HOME", "LANG", "ABITO_ISLAND_EXE", ...OS_INJECTED_ENV].includes(k), `unexpected env ${k}`);
-		assert.equal(call.env.PATH, `${path.dirname(process.execPath)}:/usr/bin:/bin`, "the Node that runs the installer leads PATH (K2-02)");
+		for (const k of Object.keys(call.env)) assert.ok(allowedEnv.includes(k), `unexpected env ${k}`);
 		assert.equal(call.env.HOME, s.home);
+		if (win) {
+			assert.equal(call.env.USERPROFILE, s.home);
+			assert.equal(call.env.PATH, path.win32.join(process.env.SystemRoot, "System32"));
+		} else {
+			assert.equal(call.env.PATH, `${path.dirname(process.execPath)}:/usr/bin:/bin`, "the Node that runs the installer leads PATH (K2-02)");
+		}
 		assert.equal(call.env.ABITO_ISLAND_EXE, fs.realpathSync(process.execPath));
 		assert.equal(call.ppid, process.pid, "direct child of the daemon process");
 	}

@@ -197,7 +197,8 @@ test("writePrivateFile refuses symlinked targets and leaves the victim intact", 
 	fs.writeFileSync(victim, "keep\n");
 	const target = path.join(dir, "f");
 	fs.symlinkSync(victim, target);
-	assert.throws(() => writePrivateFile(target, "evil\n"), /symlink/);
+	// Same refusal rule, platform message: POSIX names the symlink, the Windows helper names the reparse point.
+	assert.throws(() => writePrivateFile(target, "evil\n"), win ? /reparse/ : /symlink/);
 	assert.equal(fs.readFileSync(victim, "utf8"), "keep\n");
 	assert.ok(fs.lstatSync(target).isSymbolicLink(), "symlink must be left in place, not replaced");
 });
