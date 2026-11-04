@@ -185,10 +185,14 @@ test('the runtime ships THIRD-PARTY-NOTICES.md: Node, then every package with it
   const notices = fs.readFileSync(path.join(fx.dir, 'out-linux-x64', 'THIRD-PARTY-NOTICES.md'), 'utf8');
   assert.match(notices, /^# Third-party notices: Koda's bundled runtime\n/);
   assert.ok(notices.includes(`## Node.js ${NODE_VERSION}\n\nLicense: MIT (with bundled components). Full text: \`LICENSE.node\` in this folder.\n`));
-  assert.ok(notices.includes('## @earendil-works/pi-coding-agent 1.4.0\n\nLicense: MIT\nAuthor (from package.json): Mario Zechner\nRepository: git+https://github.com/earendil-works/pi.git\nThe package ships no licence file; the MIT License text is reproduced under «License texts» below.\n'));
+  // RDD advisory 2: MIT keeps «the above copyright notice», so the text a package without its own file is shipped under
+  // names the copyright holder that package declares, never the SPDX template placeholder.
   const mit = fs.readFileSync(path.join(path.dirname(BUILDER), 'licenses', 'MIT.txt'), 'utf8');
-  assert.ok(notices.includes(`## License texts\n\n### MIT\n\n\`\`\`text\n${mit.trimEnd()}\n\`\`\`\n`), 'canonical MIT text once, verbatim');
-  assert.equal((notices.match(/^### MIT$/gm) || []).length, 1);
+  const withHolder = mit.replace('Copyright (c) <year> <copyright holders>', 'Copyright (c) Mario Zechner').trimEnd();
+  assert.ok(notices.includes('## @earendil-works/pi-coding-agent 1.4.0\n\nLicense: MIT\nAuthor (from package.json): Mario Zechner\nRepository: git+https://github.com/earendil-works/pi.git\n' +
+    `The package ships no licence file; the MIT License text follows, with the copyright holder its package.json declares:\n\n\`\`\`text\n${withHolder}\n\`\`\`\n`));
+  assert.doesNotMatch(notices, /<year>|<copyright holders>/, 'no template placeholder is shipped');
+  assert.ok(mit.includes('Copyright (c) <year> <copyright holders>'), 'the pinned canonical file itself stays the verbatim SPDX text');
 });
 
 test('a package whose licence has no file in the package and no canonical text in licenses/ fails closed: exit 1, exact message, no output', () => {

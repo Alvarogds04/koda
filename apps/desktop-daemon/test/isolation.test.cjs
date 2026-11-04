@@ -15,6 +15,7 @@ const {
 	defaultIslandRoot,
 	ensureIsland,
 	ensurePrivateDir,
+	islandPaths,
 	isolatedEnv,
 	pathWithNodeFirst,
 	writePrivateFile,
@@ -102,8 +103,9 @@ test("isolatedEnv allowlists only OS essentials and applies explicit private ove
 
 // K2-02 (S2): with no inherited PATH the engine child still gets the daemon's node dir first.
 test("the engine child PATH fallback leads with the daemon node dir and keeps the offline markers", (t) => {
-	const base = tmpBase(t);
-	const island = ensureIsland(path.join(base, "island"));
+	// isolatedEnv only reads the island PATHS: they are computed, never created, so the result does not depend on the
+	// machine's temp layout (macOS /var -> /private/var, Windows profile ACLs; CI 41733396427).
+	const island = islandPaths(path.join(tmpBase(t), "island"));
 	const env = isolatedEnv({ HOME: "/home/user" }, island, {});
 	const nodeDir = path.dirname(process.execPath);
 	assert.equal(env.PATH, pathWithNodeFirst(nodeDir, undefined));

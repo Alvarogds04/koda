@@ -507,17 +507,31 @@ mod tests {
         broken(&|_, _, dir| { fs::remove_file(dir.join("koda-runtime.json")).unwrap(); });
         // manifest unparseable
         broken(&|_, _, dir| { fs::write(dir.join("koda-runtime.json"), "{not json").unwrap(); });
+        // piCli cases (RDD advisory 3): the manifest keeps the RIGHT target for the OS under test, so only the piCli rule
+        // can refuse it — a wrong target would refuse it first and make these cases vacuous.
+        let manifest = |os: Os, pi_cli: Option<String>| {
+            let target = match os { Os::Linux => "linux-x64", Os::Mac => "darwin-arm64", Os::Windows => "win-x64" };
+            match pi_cli {
+                Some(cli) => format!("{{\"target\":\"{target}\",\"piCli\":{}}}", serde_json::Value::String(cli)),
+                None => format!("{{\"target\":\"{target}\"}}"),
+            }
+        };
         // piCli missing from the manifest
-        broken(&|_, _, dir| { fs::write(dir.join("koda-runtime.json"), "{\"target\":\"x\"}").unwrap(); });
+        broken(&|_, os, dir| { fs::write(dir.join("koda-runtime.json"), manifest(os, None)).unwrap(); });
         // piCli is an absolute path
-        broken(&|_, _, dir| { fs::write(dir.join("koda-runtime.json"),
-            format!("{{\"target\":\"x\",\"piCli\":\"{}\"}}", Path::new("/etc").join("passwd").display().to_string().replace('\\', "\\\\"))).unwrap(); });
+        broken(&|_, os, dir| { fs::write(dir.join("koda-runtime.json"),
+            manifest(os, Some(Path::new("/etc").join("passwd").display().to_string()))).unwrap(); });
         // piCli escapes the runtime folder
-        broken(&|_, _, dir| { fs::write(dir.join("koda-runtime.json"),
-            "{\"target\":\"x\",\"piCli\":\"../../../outside/cli.js\"}").unwrap(); });
+        broken(&|_, os, dir| { fs::write(dir.join("koda-runtime.json"), manifest(os, Some("../../../outside/cli.js".into()))).unwrap(); });
         // piCli does not exist
-        broken(&|_, _, dir| { fs::write(dir.join("koda-runtime.json"),
-            "{\"target\":\"x\",\"piCli\":\"node_modules/missing/cli.js\"}").unwrap(); });
+        broken(&|_, os, dir| { fs::write(dir.join("koda-runtime.json"), manifest(os, Some("node_modules/missing/cli.js".into()))).unwrap(); });
+        // control: the same helper with the real piCli VALIDATES, so each case above is refused by the piCli rule alone
+        for (os, target, exe_rel) in [(Os::Linux, "linux-x64", "app/bin"), (Os::Mac, "darwin-arm64", "Abito.app/Contents/MacOS"), (Os::Windows, "win-x64", "app/bin")] {
+            let root = Rt::new("picli-control");
+            let (exe, dir, _) = write_runtime(&root, exe_rel, os, target);
+            fs::write(dir.join("koda-runtime.json"), manifest(os, Some(PI_CLI.into()))).unwrap();
+            assert!(matches!(bundled_runtime(&exe, os, target), Bundled::Valid(_)), "{os:?}: control manifest must validate");
+        }
         // (unix only, its own mechanism) the runtime folder itself is a symlink: not a real directory
         #[cfg(unix)]
         {

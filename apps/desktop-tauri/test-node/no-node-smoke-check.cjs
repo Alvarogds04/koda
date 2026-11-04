@@ -10,7 +10,8 @@ const path = require('node:path');
 
 const crate = path.resolve(__dirname, '..');
 const repo = path.resolve(crate, '..', '..');
-const read = (p) => fs.readFileSync(p, 'utf8');
+// A Windows checkout may convert these text files to CRLF (core.autocrlf); the rules are about content, not line endings.
+const read = (p) => fs.readFileSync(p, 'utf8').replace(/\r\n/g, '\n');
 let passed = 0;
 const test = (name, fn) => {
   try { fn(); passed += 1; } catch (e) { e.message = `${name}: ${e.message}`; throw e; }
@@ -55,7 +56,7 @@ test('Linux: installs the shipped stage with install.sh, launches it, and assert
   assert.match(linux, /"\$PREFIX\/runtime\/node" "\$PREFIX\/desktop-daemon\/src\/cli\.cjs" status/);
 });
 test('Linux: records every connect() of the launched tree with strace and refuses any non-loopback address', () => {
-  assert.match(linux, /strace -f -qq -e trace=connect -o "\$WORK\/connect\.trace"/);
+  assert.match(linux, /strace -f -qq -e trace=connect(,execve)? -o "\$WORK\/connect\.trace"/);
   assert.match(linux, /sin_addr=inet_addr\("127\.|inet_pton\(AF_INET6, "::1"/);
   assert.match(linux, /pi\.dev/);
 });
@@ -70,6 +71,21 @@ test('ci.yml installer-smoke-linux: installs strace, then runs the no-node smoke
   assert.match(step, /STAGE=\$\(find "\$RUNNER_TEMP\/koda-smoke\/stage\/abito-island" -mindepth 1 -maxdepth 1 -type d/, 'the stage the existing smoke built');
   assert.match(step, /--stage "\$STAGE" --work "\$RUNNER_TEMP\/koda-no-node"/);
   assert.match(j, /koda-no-node\/\*\.log/, 'its logs are uploaded');
+});
+
+test('Linux S3 window (RDD advisory 8): the trace also records execve, proves the bundled Pi actually ran inside it, and waits on evidence, not a fixed sleep', () => {
+  assert.match(linux, /strace -f -qq -e trace=connect,execve -o "\$WORK\/connect\.trace"/);
+  // The smoke itself greps the trace for the bundled node exec-ing Pi's CLI (S1 + S3: the traced window covers Pi).
+  assert.ok(linux.includes('grep -q "execve(\\"$PREFIX/runtime/node\\".*pi-coding-agent/dist/bundle/cli.js" "$WORK/connect.trace"'),
+    'Pi was exec-ed by the bundled node, inside the traced window');
+  assert.doesNotMatch(linux, /\nsleep 5 #/, 'no blind fixed sleep');
+  assert.match(linux, /PI_CHECK_WINDOW=\d+/, 'a named, bounded observation window after the daemon is ready');
+});
+test('Linux: a failed part exits non-zero even though the EXIT trap runs cleanup (the trap never resets the status)', () => {
+  const cleanup = linux.slice(linux.indexOf('cleanup() {'), linux.indexOf('trap cleanup EXIT INT TERM'));
+  assert.match(cleanup, /trap - EXIT INT TERM/);
+  assert.doesNotMatch(cleanup, /\bexit 0\b/, 'cleanup never forces a success status');
+  assert.match(linux, /failx\(\) \{ printf 'FAIL %s\\n' "\$\*"; diag; exit 1; \}/);
 });
 
 /* ---------------- macOS ---------------- */
@@ -130,6 +146,16 @@ test('Windows: the installed island starts with no node anywhere; its daemon run
   assert.ok(win.indexOf('Get-Process -Id $daemonPid') < win.indexOf("Join-Path $install 'uninstall.exe'"), 'checked before uninstall');
   assert.match(win, /\$island\.Kill\(\$true\)/, 'the island tree is stopped before uninstalling');
   assert.match(win, /pi-offline\.test\.cjs/, 'names where S3 is proven for Windows');
+});
+
+/* ---------------- this check itself runs in CI (RDD advisory 7) ---------------- */
+test('this check runs in CI on all 3 OS: run-node-checks.cjs (no arguments) selects it, and island-checks runs exactly that', () => {
+  const runner = read(path.join(repo, 'run-node-checks.cjs'));
+  assert.match(runner, /\.filter\(\(f\) => f\.endsWith\('-check\.cjs'\) && f !== 'producer-check\.cjs'\)/, 'the default set is every *-check.cjs but producer-check');
+  assert.ok(fs.readdirSync(path.join(crate, 'test-node')).includes('no-node-smoke-check.cjs'));
+  const checks = job('island-checks');
+  assert.match(checks, /os: \[ubuntu-latest, macos-26, windows-latest\]/);
+  assert.match(checks, /^\s+node run-node-checks\.cjs\s*$/m, 'island-checks runs the runner with no argument (the whole default set)');
 });
 
 console.log(`no-node-smoke-check: ${passed} passed`);

@@ -21,10 +21,17 @@ const RUNTIME_DIRS = [...new Set(RUNTIME_FILES.flatMap(f => {
 function regular(file) {
   if (!fs.lstatSync(file, { throwIfNoEntry: false })?.isFile()) throw new Error(`not a regular file: ${file}`);
 }
+// The directory itself (when it exists) must be a real directory, never a link: it is what we write into or read
+// from, and everything inside it is walked with lstat (a link there is an unexpected entry). Its ANCESTORS are system
+// layout outside our closed set: they only have to resolve to directories, so a platform link such as macOS
+// /var -> /private/var (every macOS temp dir) is followed instead of refused (K2-01b CI, windows-runtime-check on macOS).
 function directoryChain(dir) {
-  for (let d = path.resolve(dir); ; d = path.dirname(d)) {
-    try { if (!fs.lstatSync(d).isDirectory()) throw new Error(`not a real directory: ${d}`); }
-    catch (e) { if (e.code !== 'ENOENT') throw e; }
+  const start = path.resolve(dir);
+  const own = fs.lstatSync(start, { throwIfNoEntry: false });
+  if (own && !own.isDirectory()) throw new Error(`not a real directory: ${start}`);
+  for (let d = path.dirname(start); ; d = path.dirname(d)) {
+    const st = fs.statSync(d, { throwIfNoEntry: false });
+    if (st && !st.isDirectory()) throw new Error(`not a real directory: ${d}`);
     if (d === path.dirname(d)) break;
   }
 }

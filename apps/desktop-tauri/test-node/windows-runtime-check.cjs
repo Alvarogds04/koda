@@ -204,6 +204,22 @@ try {
     assert.equal(withRuntime.files['runtime/node.exe'], sha256(path.join(runtimeDir, 'node.exe')));
     assert.deepEqual(Object.keys(plain.files).sort(), ['abito-private-session.exe', ...files].sort());
   });
+  rule('macOS /var -> /private/var (K2-01b CI): a symlinked ANCESTOR of the output dir (outside the stage) is accepted, while a symlink inside the stage is still refused', () => {
+    if (process.platform === 'win32') return; // creating a POSIX symlink ancestor needs unix (the macOS layout is the case)
+    const real = path.join(scratch, 'real-var');
+    fs.mkdirSync(real);
+    const linkedVar = path.join(scratch, 'var'); // like macOS /var: a symlink to the real directory, ABOVE the stage
+    fs.symlinkSync(real, linkedVar);
+    const dest = path.join(linkedVar, 'folders', 'x', 'payload');
+    const ok = runOut(dest);
+    assert.equal(ok.status, 0, `stdout=${ok.stdout}\nstderr=${ok.stderr}`);
+    assert.match(ok.stdout, /^staged: \d+ runtime files\n/);
+    // inside the stage, a symlink is still an unexpected entry (closed set, never followed)
+    fs.symlinkSync(real, path.join(dest, 'desktop-daemon', 'linked'));
+    const bad = runOut(dest);
+    assert.equal(bad.status, 1);
+    assert.equal(bad.stderr, 'unexpected staged entry: desktop-daemon/linked\n');
+  });
   let failedRules = 0;
   for (const [name, fn] of rules) {
     try { fn(); console.log(`PASS: ${name}`); } catch (e) { failedRules += 1; console.log(`FAIL: ${name}\n      ${String(e.message).split('\n')[0]}`); }

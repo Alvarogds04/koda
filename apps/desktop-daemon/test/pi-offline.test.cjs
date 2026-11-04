@@ -52,11 +52,15 @@ function findPiRoot() {
 }
 
 const piRoot = findPiRoot();
-const piSkip = piRoot
-	? undefined
-	: process.env.ABITO_REQUIRE_PI === "1"
-		? false
-		: "Installed Pi not found; set PI_CODING_AGENT_ROOT";
+// No real Pi: a dev machine reports the real-Pi tests as SKIPPED with this reason (never a bare pass); with
+// ABITO_REQUIRE_PI=1 (every CI desktop-daemon job) the run FAILS instead: the S3 proof may never be silently absent.
+const PI_MISSING = "Installed Pi not found; set PI_CODING_AGENT_ROOT";
+if (!piRoot && process.env.ABITO_REQUIRE_PI === "1") {
+	test("a real Pi is required here (ABITO_REQUIRE_PI=1)", () => {
+		assert.fail("ABITO_REQUIRE_PI=1 but no installed Pi was found (set PI_CODING_AGENT_ROOT or put `pi` on PATH)");
+	});
+}
+const piSkip = piRoot ? undefined : PI_MISSING;
 
 function sleep(ms) {
 	return new Promise((resolve) => setTimeout(resolve, ms));
@@ -143,7 +147,11 @@ function makeTemp(tag) {
 	return base;
 }
 
-if (!piSkip) {
+if (piSkip) {
+	// Report BOTH real-Pi proofs as skipped (with the reason) instead of declaring nothing.
+	test("real pi: a Koda launch of Pi reaches no pi.dev host (PI_OFFLINE/PI_SKIP_VERSION_CHECK/PI_TELEMETRY kept)", { skip: piSkip }, () => {});
+	test("the env Koda builds carries exactly the three offline switches", { skip: piSkip }, () => {});
+} else {
 	const cli = path.join(piRoot, "dist", "bundle", "cli.js");
 	if (!fs.existsSync(cli)) throw new Error(`PI_CODING_AGENT_ROOT has no dist/bundle/cli.js: ${piRoot}`);
 

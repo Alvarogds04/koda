@@ -66,4 +66,13 @@ test('the Windows installed smoke installs that same pinned Pi, never an unpinne
   assert.ok(npmInstalls.length >= 1, 'the smoke installs Pi');
   for (const line of npmInstalls) assert.ok(line.includes(`'${PI}@${piVersion}'`), `pinned: ${line.trim()}`);
 });
+test('hash-pinned inputs keep their bytes on a Windows checkout (no CRLF conversion): .gitattributes marks them -text', () => {
+  // CI 41733396427 (windows-latest): with core.autocrlf the licence texts got CRLF, so their pinned sha256 broke (and a
+  // Windows-built runtime would ship CRLF notices). Every hash-pinned input is checked out byte-for-byte on every OS.
+  const files = ['packaging/runtime/licenses/Apache-2.0.txt', 'packaging/runtime/licenses/MIT.txt', 'packaging/runtime/node.sha256'];
+  const r = require('node:child_process').spawnSync('git', ['check-attr', 'text', '--', ...files], { cwd: crate, encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stderr);
+  const seen = new Set(r.stdout.split('\n'));
+  for (const f of files) assert.ok(seen.has(`${f}: text: unset`), `${f} is checked out without CRLF conversion`);
+});
 console.log(`runtime-pins-check: ${passed} passed`);

@@ -19,7 +19,9 @@
 #                   image (/proc/<pid>/exe) must be <prefix>/runtime/node.
 #   (t) status      the installed `daemon status` (run by <prefix>/runtime/node) exits 0.
 #   (n) network     every connect() of the launched tree goes to a local socket or a
-#                   loopback address; none to pi.dev or any other host (S3).
+#                   loopback address; none to pi.dev or any other host (S3). The trace also
+#                   records execve: it must show the bundled node exec-ing Pi's CLI (so the
+#                   window covers Pi's start-up), then PI_CHECK_WINDOW more seconds are observed.
 #
 # Usage:
 #   sh smoke-linux-no-node.sh --app <repo>/apps/desktop-tauri --stage <stage dir> --work <empty dir>
@@ -156,7 +158,7 @@ smoke_env openbox --sm-disable > "$WORK/openbox.log" 2>&1 &
 WM_PID=$!
 EXEC=$(sed -n 's/^Exec=//p' "$APPS/com.abitog.AbitoTauri.desktop")
 [ -n "$EXEC" ] || failx "(s) start — no Exec line in the installed .desktop entry"
-smoke_env strace -f -qq -e trace=connect -o "$WORK/connect.trace" sh -c "$EXEC" > "$WORK/island.log" 2>&1 &
+smoke_env strace -f -qq -e trace=connect,execve -o "$WORK/connect.trace" sh -c "$EXEC" > "$WORK/island.log" 2>&1 &
 ISLAND_PID=$!
 wait_for 180 grep -q 'abito-island-daemon: running (pid ' "$WORK/island.log" \
   || failx "(s) start — no «abito-island-daemon: running (pid » line: the daemon did not start on the bundled runtime"
@@ -181,8 +183,15 @@ fi
 
 # ------------------------------------------------------------------ (n) ------
 say '== (n) network: every connect() is local (S3: never pi.dev)'
-sleep 5 # Pi's own start-up checks (version, catalog, telemetry) would fire in this window if not disabled
+# The window covers Pi's whole start-up: the daemon only reports running after Pi answered get_state, and Pi's own
+# version check, model-catalog refresh and telemetry would fire at that start-up. The trace must SHOW Pi ran inside it
+# (the bundled node exec-ing Pi's CLI), then the tree is observed PI_CHECK_WINDOW more seconds for anything deferred.
+PI_CHECK_WINDOW=20
 [ -s "$WORK/connect.trace" ] || failx "(n) network — strace recorded nothing (the trace is not running)"
+grep -q "execve(\"$PREFIX/runtime/node\".*pi-coding-agent/dist/bundle/cli.js" "$WORK/connect.trace" \
+  || failx "(n) network — the trace shows no execve of the bundled node running Pi's CLI: the window did not cover Pi"
+sleep "$PI_CHECK_WINDOW"
+kill -0 "$ISLAND_PID" 2>/dev/null || failx "(n) network — the launched tree exited during the observation window"
 remote=$(grep 'connect(' "$WORK/connect.trace" | grep -v 'sa_family=AF_UNIX' \
   | grep -v 'sin_addr=inet_addr("127\.' | grep -v 'inet_pton(AF_INET6, "::1"' | grep -v 'sa_family=AF_NETLINK' \
   | grep -v 'sa_family=AF_UNSPEC' || true)

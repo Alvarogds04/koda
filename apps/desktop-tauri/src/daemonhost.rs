@@ -587,48 +587,31 @@ mod bundled_runtime_tests {
 
     #[test]
     fn the_daemon_child_path_puts_the_bundled_runtime_dir_first() {
-        let session = Path::new("/session/bin");
-        let node = Path::new("/koda/runtime").join("node");
+        // Absolute on THIS OS (RDD advisory 4): `/koda/runtime` has no drive letter, so on Windows it is NOT absolute and
+        // `runtime_path_with` rightly ignores it; the fixture must be a real absolute path of the platform under test.
+        let abs = |p: &str| if cfg!(windows) { PathBuf::from(format!("C:\\{}", p.replace('/', "\\"))) } else { PathBuf::from(format!("/{p}")) };
+        let session = abs("session/bin");
+        let runtime = abs("koda/runtime");
+        assert!(session.is_absolute() && runtime.is_absolute(), "fixtures are absolute on this OS");
+        let node = runtime.join("node");
         let dirs = std::env::split_paths(
-            runtime_path_with(
-                Some(session.as_os_str()),
-                &node,
-                &Path::new("/koda/runtime").join("pi"),
-                Some(Path::new("/koda/runtime")),
-            )
-            .unwrap()
-            .as_os_str(),
+            runtime_path_with(Some(session.as_os_str()), &node, &runtime.join("pi"), Some(&runtime)).unwrap().as_os_str(),
         )
         .collect::<Vec<_>>();
-        assert_eq!(
-            dirs.first().unwrap(),
-            Path::new("/koda/runtime"),
-            "the bundled runtime shadows every same-named binary"
-        );
-        assert!(
-            dirs.contains(&session.to_path_buf()),
-            "the session PATH dirs are kept behind it"
-        );
-        assert_eq!(
-            dirs.iter()
-                .filter(|d| *d == Path::new("/koda/runtime"))
-                .count(),
-            1,
-            "no duplicate runtime entry"
-        );
+        assert_eq!(dirs.first().unwrap(), &runtime, "the bundled runtime shadows every same-named binary");
+        assert!(dirs.contains(&session), "the session PATH dirs are kept behind it");
+        assert_eq!(dirs.iter().filter(|d| **d == runtime).count(), 1, "no duplicate runtime entry");
         // Without a bundled runtime, the historical shape: runtime dirs appended at the end.
-        let appended = std::env::split_paths(
-            runtime_path(
-                Some(session.as_os_str()),
-                &node,
-                &Path::new("/koda/runtime").join("pi"),
-            )
-            .unwrap()
-            .as_os_str(),
+        let appended = std::env::split_paths(runtime_path(Some(session.as_os_str()), &node, &runtime.join("pi")).unwrap().as_os_str())
+            .collect::<Vec<_>>();
+        assert_eq!(appended.last().unwrap(), &runtime);
+        assert_eq!(appended.first().unwrap(), &session);
+        // A relative "first" dir is never put on the child PATH (no working-directory execution, on any OS).
+        let relative = std::env::split_paths(
+            runtime_path_with(Some(session.as_os_str()), &node, &runtime.join("pi"), Some(Path::new("relative/runtime"))).unwrap().as_os_str(),
         )
         .collect::<Vec<_>>();
-        assert_eq!(appended.last().unwrap(), Path::new("/koda/runtime"));
-        assert_eq!(appended.first().unwrap(), session);
+        assert!(!relative.iter().any(|d| d == Path::new("relative/runtime")));
     }
 
     #[test]

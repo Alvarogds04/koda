@@ -6,12 +6,12 @@
    on the Chat and Agents pages — with the engine reporting Pi missing and with it connected —
    and asserts that no install control renders and that the closed `pi_install_action`
    command no longer exists anywhere in the shipped frontend.
-   Run: node test-node/no-install-buttons-check.cjs  (SKIPs loudly without playwright). */
+   Run: node test-node/no-install-buttons-check.cjs  (the static half always runs; the rendered half SKIPs loudly
+   without playwright). */
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const H = require('./settings-layout-harness.cjs');
-if (!H.findPlaywright()) { console.log('SKIPPED no-install-buttons-check: playwright is not installed here (no real layout engine) — NOT a pass'); process.exit(0); }
 
 const FORBIDDEN = ['Instalar Pi', 'Instalar Node'];
 
@@ -33,7 +33,12 @@ async function assertStaticFrontendIsClean() {
 }
 
 (async () => {
+  // The static half needs no browser: it always runs (RDD advisory 5); only the rendered half needs playwright.
   await assertStaticFrontendIsClean();
+  if (!H.findPlaywright()) {
+    console.log('no-install-buttons-check: static frontend clean; rendered pages SKIPPED: playwright is not installed here (no real layout engine) — NOT a pass of the rendered half');
+    return;
+  }
   // Engine reports Pi missing: the pages where «Instalar Pi» used to live.
   let f = await H.open({ width: 960, height: 760, piMissing: true });
   try {

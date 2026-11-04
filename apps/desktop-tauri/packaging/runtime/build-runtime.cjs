@@ -231,9 +231,18 @@ function writeNotices(dest, nodeVersion) {
       if (!/^[A-Za-z0-9.-]+$/.test(id) || !fs.existsSync(canonical)) {
         throw new Fail(`${manifest.name}@${manifest.version} is ${id}, ships no licence file, and packaging/runtime/licenses/ has no ${id} text: refusing to ship it without its licence`);
       }
-      texts.set(id, fs.readFileSync(canonical, 'utf8'));
-      lines.push(`Author (from package.json): ${author(manifest)}`, `Repository: ${repository(manifest)}`,
-        `The package ships no licence file; the ${id} License text is reproduced under «License texts» below.`);
+      const text = fs.readFileSync(canonical, 'utf8');
+      lines.push(`Author (from package.json): ${author(manifest)}`, `Repository: ${repository(manifest)}`);
+      if (id === 'MIT') {
+        // MIT keeps «the above copyright notice»: the SPDX template's placeholder line is filled with the holder this
+        // package declares, so the text shipped for it is that package's own notice (RDD advisory 2).
+        const holder = author(manifest);
+        lines.push('The package ships no licence file; the MIT License text follows, with the copyright holder its package.json declares:', '',
+          '```text', text.replace('Copyright (c) <year> <copyright holders>', `Copyright (c) ${holder}`).trimEnd(), '```');
+      } else {
+        texts.set(id, text);
+        lines.push(`The package ships no licence file; the ${id} License text is reproduced under «License texts» below.`);
+      }
     }
     lines.push('');
   }
