@@ -121,9 +121,11 @@ jobs:
         run: |
           npm i -g esbuild@0.28.2
           ROOT="$(npm root -g)"
-          BIN="$ROOT/esbuild/bin/esbuild"; [ -f "$BIN.exe" ] && BIN="$BIN.exe"
+          # The NATIVE binary of this OS (@esbuild/<platform>-<arch>), never the bin/esbuild JS shim: Windows cannot
+          # execute the shim directly (K2-01b). The resolver only looks at what npm just installed.
+          BIN="$(node "$GITHUB_WORKSPACE/apps/desktop-tauri/scripts/esbuild-native.cjs" "$ROOT")"
           if [ "$RUNNER_OS" = Windows ]; then BIN="$(cygpath -w "$BIN")"; fi
-          "$BIN" --version
+          test "$("$BIN" --version)" = 0.28.2
           echo "ESBUILD_BINARY_PATH=$BIN" >> "$GITHUB_ENV"
       - name: Install pinned Playwright and its Chromium (the browser checks need it)
         shell: bash
@@ -172,9 +174,11 @@ jobs:
         run: |
           npm i -g esbuild@0.28.2
           ROOT="$(npm root -g)"
-          BIN="$ROOT/esbuild/bin/esbuild"; [ -f "$BIN.exe" ] && BIN="$BIN.exe"
+          # The NATIVE binary of this OS (@esbuild/<platform>-<arch>), never the bin/esbuild JS shim: Windows cannot
+          # execute the shim directly (K2-01b). The resolver only looks at what npm just installed.
+          BIN="$(node "$GITHUB_WORKSPACE/apps/desktop-tauri/scripts/esbuild-native.cjs" "$ROOT")"
           if [ "$RUNNER_OS" = Windows ]; then BIN="$(cygpath -w "$BIN")"; fi
-          "$BIN" --version
+          test "$("$BIN" --version)" = 0.28.2
           echo "ESBUILD_BINARY_PATH=$BIN" >> "$GITHUB_ENV"
       - uses: Swatinem/rust-cache@v2
         with:
