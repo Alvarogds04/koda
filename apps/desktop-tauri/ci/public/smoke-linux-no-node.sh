@@ -158,7 +158,7 @@ smoke_env openbox --sm-disable > "$WORK/openbox.log" 2>&1 &
 WM_PID=$!
 EXEC=$(sed -n 's/^Exec=//p' "$APPS/com.abitog.AbitoTauri.desktop")
 [ -n "$EXEC" ] || failx "(s) start — no Exec line in the installed .desktop entry"
-smoke_env strace -f -qq -e trace=connect,execve -o "$WORK/connect.trace" sh -c "$EXEC" > "$WORK/island.log" 2>&1 &
+smoke_env strace -f -qq -s 4096 -e trace=connect,execve -o "$WORK/connect.trace" sh -c "$EXEC" > "$WORK/island.log" 2>&1 &
 ISLAND_PID=$!
 wait_for 180 grep -q 'abito-island-daemon: running (pid ' "$WORK/island.log" \
   || failx "(s) start — no «abito-island-daemon: running (pid » line: the daemon did not start on the bundled runtime"

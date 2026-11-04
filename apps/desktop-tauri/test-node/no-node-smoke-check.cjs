@@ -56,7 +56,7 @@ test('Linux: installs the shipped stage with install.sh, launches it, and assert
   assert.match(linux, /"\$PREFIX\/runtime\/node" "\$PREFIX\/desktop-daemon\/src\/cli\.cjs" status/);
 });
 test('Linux: records every connect() of the launched tree with strace and refuses any non-loopback address', () => {
-  assert.match(linux, /strace -f -qq -e trace=connect(,execve)? -o "\$WORK\/connect\.trace"/);
+  assert.match(linux, /strace -f -qq (-s \d+ )?-e trace=connect(,execve)? -o "\$WORK\/connect\.trace"/);
   assert.match(linux, /sin_addr=inet_addr\("127\.|inet_pton\(AF_INET6, "::1"/);
   assert.match(linux, /pi\.dev/);
 });
@@ -74,7 +74,7 @@ test('ci.yml installer-smoke-linux: installs strace, then runs the no-node smoke
 });
 
 test('Linux S3 window (RDD advisory 8): the trace also records execve, proves the bundled Pi actually ran inside it, and waits on evidence, not a fixed sleep', () => {
-  assert.match(linux, /strace -f -qq -e trace=connect,execve -o "\$WORK\/connect\.trace"/);
+  assert.match(linux, /strace -f -qq -s 4096 -e trace=connect,execve -o "\$WORK\/connect\.trace"/);
   // The smoke itself greps the trace for the bundled node exec-ing Pi's CLI (S1 + S3: the traced window covers Pi).
   assert.ok(linux.includes('grep -q "execve(\\"$PREFIX/runtime/node\\".*pi-coding-agent/dist/bundle/cli.js" "$WORK/connect.trace"'),
     'Pi was exec-ed by the bundled node, inside the traced window');
