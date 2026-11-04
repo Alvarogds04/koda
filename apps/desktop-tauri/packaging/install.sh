@@ -235,6 +235,7 @@ count="$(printf '%s\n' "$types_list" | wc -l | tr -d ' ')"
 pairs="$({ printf '%s\n' "$count"; printf '%s\n' "$types_list"; printf '%s\n' "$names_list"; } | awk '
   NR == 1 { n = $0 + 0; next }
   NR <= n + 1 { t[NR - 1] = $0; next }
+  $0 == "" { exit 3 }
   { i = NR - n - 1; printf "%s %s\n", t[i], $0 }
   END { if (NR - n - 1 != n) exit 3 }')" \
   || die "the runtime archive $RUNTIME_ARCHIVE has member names that tar cannot list one per line"

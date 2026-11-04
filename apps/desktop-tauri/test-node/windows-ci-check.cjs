@@ -131,6 +131,13 @@ ciRule('smoke-windows.ps1 (K2-02): the missing-runtime case is a BROKEN BUNDLED 
   assert.match(block, /-match 'abito-island-daemon: running'\) \{ throw /, 'the daemon must not start');
   assert.match(block, /finally \{[^}]*Rename-Item -LiteralPath \$moved/, 'the manifest is restored in a finally');
 });
+ciRule('smoke-windows.ps1 broken-runtime (RDD advisories): the manifest is restored even if Stop-Island throws, and both stderr lines are WAITED for (no read-before-write race)', () => {
+  const block = smoke.slice(smoke.indexOf("mode = 'broken-runtime'"), smoke.indexOf('$unrelated = '));
+  // restore in its OWN finally that runs regardless of Stop-Island: try { Stop-Island } finally { <restore> }
+  assert.match(block, /try \{ Stop-Island \} finally \{\s*(#[^\n]*\n\s*)*if \(Test-Path -LiteralPath \$moved\) \{ Rename-Item -LiteralPath \$moved/, 'restore is independent of Stop-Island');
+  // the wait covers BOTH strings, so the code-line assertion never reads stderr before the line is written
+  assert.match(block, /Wait-For \{ \$t = Get-Content -Raw -LiteralPath [^}]*\$t -like "\*\$\(\$case\.message\)\*" -and \$t\.Contains\(\$case\.code\) \}/, 'one wait for the code line AND the sentence');
+});
 let ciFailed = 0;
 for (const [name, fn] of ciRules) {
   try { fn(); console.log(`PASS: ${name}`); } catch (e) { ciFailed += 1; console.log(`FAIL: ${name}\n      ${String(e.message).split('\n')[0]}`); }

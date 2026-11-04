@@ -249,7 +249,8 @@ try {
         try {
             Rename-Item -LiteralPath $manifest -NewName (Split-Path -Leaf $moved)
             Start-Island $case.mode
-            Wait-For { (Get-Content -Raw -LiteralPath (Join-Path $root "$($case.mode).stderr.log")) -like "*$($case.message)*" } $case.message
+            # Wait for BOTH lines: the code line and the sentence are separate writes, so reading after only one is a race.
+            Wait-For { $t = Get-Content -Raw -LiteralPath (Join-Path $root "$($case.mode).stderr.log") -ErrorAction SilentlyContinue; $t -like "*$($case.message)*" -and $t.Contains($case.code) } "$($case.code) + $($case.message)"
             $stderr = Get-Content -Raw -LiteralPath (Join-Path $root "$($case.mode).stderr.log")
             if (-not $stderr.Contains($case.code)) { throw "Missing the code line: $($case.code)" }
             if ($stderr -match 'abito-island-daemon: running') { throw 'Daemon unexpectedly started on a broken bundled runtime' }
@@ -258,9 +259,10 @@ try {
             $runtimeFailures.Add("$($case.mode): $($_.Exception.Message)")
             Show-SmokeDiagnostics
         } finally {
-            Stop-Island
-            # Put the shipped manifest back so the uninstall check below still sees the exact shipped set.
-            if (Test-Path -LiteralPath $moved) { Rename-Item -LiteralPath $moved -NewName (Split-Path -Leaf $manifest) }
+            try { Stop-Island } finally {
+                # Put the shipped manifest back even if Stop-Island throws: the uninstall check below needs the exact shipped set.
+                if (Test-Path -LiteralPath $moved) { Rename-Item -LiteralPath $moved -NewName (Split-Path -Leaf $manifest) }
+            }
         }
     }
     $unrelated = Join-Path $install 'desktop-daemon/src/user-note.txt'

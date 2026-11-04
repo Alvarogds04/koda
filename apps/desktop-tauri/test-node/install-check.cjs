@@ -282,6 +282,16 @@ test('the member audit passes no member-derived list on a command line (Linux ca
   assert.doesNotMatch(audit, /awk[^\n|]*-v [a-z_]+="\$(types|names|types_list|names_list)"/, 'no list handed to awk with -v');
   assert.doesNotMatch(audit, /\$\{?(types|names)_?list\}?"? *[|]? *xargs/, 'no list expanded into argv');
 });
+test('the pairing refuses an empty member name and a names/types count mismatch (RDD advisory)', () => {
+  const src = fs.readFileSync(SCRIPT, 'utf8');
+  const pairing = src.slice(src.indexOf('pairs="$('), src.indexOf('while IFS= read -r pair; do'));
+  const awkProg = /awk '([\s\S]*?)'\)"/.exec(pairing)[1];
+  const run = (input) => cp.spawnSync('awk', [awkProg], { input, encoding: 'utf8' });
+  assert.equal(run('2\n-\nd\n./a\n./b\n').status, 0, 'a well-formed listing pairs');
+  assert.notEqual(run('3\n-\nd\n-\n./a\n./b\n').status, 0, 'fewer names than types is refused');
+  assert.notEqual(run('1\n-\n./a\n./b\n').status, 0, 'more names than types is refused');
+  assert.notEqual(run('2\n-\n-\n./a\n\n').status, 0, 'an empty name line is refused, never audited as a member');
+});
 test('the member audit of a 16 000-member archive stays well below the quadratic 16 s (linear in the member count)', () => {
   const dir = tmp();
   const root = path.join(dir, 'runtime');
