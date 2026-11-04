@@ -15,7 +15,7 @@
 #   1. VERIFY STAGE: receipt.json is parsed in pure sh and EVERY file it lists —
 #      including the runtime archive — is re-hashed against it; the receipt must
 #      name this app's identity, a git HEAD and a clean tree.
-#   2. VERIFY RUNTIME ARCHIVE MEMBERS: `tar -tvzf` lists every member; any
+#   2. VERIFY RUNTIME ARCHIVE MEMBERS: `tar -tzf` (names) + `tar -tvzf` (types) list every member; any
 #      absolute path, any «..» component and any non-regular/non-directory member
 #      (symlink, hardlink, device, fifo) is refused BEFORE extracting anything.
 #   3. EXTRACT the runtime into a private (0700) temp dir on the same filesystem
@@ -222,17 +222,24 @@ ARCHIVE_WANT="$(printf '%s\n' "$parsed" | sed -n "s|^$RUNTIME_ARCHIVE \([0-9a-f]
 note "Stage verified against receipt.json ($STAGE)."
 
 # ---- 2. runtime archive members: refuse anything but regular files and dirs --------------
-listing="$(tar -tvzf "$STAGE/$RUNTIME_ARCHIVE" 2>/dev/null)" || die "cannot list the runtime archive $RUNTIME_ARCHIVE (corrupt, or tar is missing)"
-[ -n "$listing" ] || die "the runtime archive $RUNTIME_ARCHIVE is empty"
-while IFS= read -r line; do
-  first=${line%"${line#?}"}
+# Tar-agnostic (GNU tar on Linux, bsdtar on macOS): member NAMES come from `tar -tzf` (one per line, the same on both),
+# member TYPES from the first character of each `tar -tvzf` line (the mode string, the same on both). Never parse the
+# -tv columns: their number differs between tars (GNU 5 before the name, bsdtar 8).
+names_list="$(tar -tzf "$STAGE/$RUNTIME_ARCHIVE" 2>/dev/null)" || die "cannot list the runtime archive $RUNTIME_ARCHIVE (corrupt, or tar is missing)"
+types_list="$(tar -tvzf "$STAGE/$RUNTIME_ARCHIVE" 2>/dev/null | cut -c1)" || die "cannot list the runtime archive $RUNTIME_ARCHIVE (corrupt, or tar is missing)"
+[ -n "$names_list" ] || die "the runtime archive $RUNTIME_ARCHIVE is empty"
+[ "$(printf '%s\n' "$names_list" | wc -l)" -eq "$(printf '%s\n' "$types_list" | wc -l)" ] \
+  || die "the runtime archive $RUNTIME_ARCHIVE has member names that tar cannot list one per line"
+i=0
+while IFS= read -r member; do
+  i=$((i + 1))
+  first="$(printf '%s\n' "$types_list" | sed -n "${i}p")"
   case "$first" in
-    -|d*) ;; # regular file or directory
-    *) die "refusing runtime archive member «$(printf '%s' "$line" | sed 's/^[^ ]*[ ]*[^ ]*[ ]*[^ ]*[ ]*[^ ]*[ ]*[^ ]*[ ]*//')»: not a regular file or directory (symlink/hardlink/device/fifo)" ;;
+    -|d) ;; # regular file or directory
+    *) die "refusing runtime archive member «$member»: not a regular file or directory (symlink/hardlink/device/fifo)" ;;
   esac
-  member="$(printf '%s\n' "$line" | sed 's/^[^ ]*[ ]*[^ ]*[ ]*[^ ]*[ ]*[^ ]*[ ]*[^ ]*[ ]*//')"
   case "$member" in
-    /*|//*) die "refusing runtime archive member «$member»: absolute member paths are not allowed" ;;
+    /*) die "refusing runtime archive member «$member»: absolute member paths are not allowed" ;;
   esac
   comp=${member#./}
   case "$comp" in
@@ -242,9 +249,9 @@ while IFS= read -r line; do
     .|./|./*) ;; # members are relative to the runtime root (as build-runtime.cjs packs them)
     *) die "refusing runtime archive member «$member»: not relative to the runtime root" ;;
   esac
-done <<EOF
-$listing
-EOF
+done <<MEMBERS
+$names_list
+MEMBERS
 
 # ---- 3. extract into a private temp dir, then verify with THAT node ----------------------
 mkdir -p "$TMPBASE" || die "cannot create $TMPBASE"

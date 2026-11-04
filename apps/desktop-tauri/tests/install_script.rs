@@ -1,6 +1,9 @@
 //! N9: run the installer behaviour checks
 //! (`test-node/install-check.cjs`) under plain `node` (no npm, no
 //! network). Fails when node is absent: a missing runner must never read as green.
+//! Unix only: `packaging/install.sh` is the Linux installer (POSIX sh, POSIX paths). Its Windows twin is the NSIS
+//! payload check `test-node/windows-runtime-check.cjs` plus the installed smokes in `ci/public/smoke-windows*.ps1`.
+#![cfg(unix)]
 
 use std::path::Path;
 use std::process::Command;

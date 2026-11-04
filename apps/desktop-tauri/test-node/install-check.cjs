@@ -8,6 +8,13 @@
    PREFIX/runtime, and refuses symlink/absolute/.. members. */
 const assert = require('node:assert/strict');
 const cp = require('node:child_process');
+// install.sh is the LINUX installer (POSIX sh, absolute POSIX paths, ~/.local/share): it never runs on Windows, where
+// paths are C:\... and the installer is NSIS. Its Windows twin is test-node/windows-runtime-check.cjs (the NSIS
+// payload/runtime macros) plus ci/public/smoke-windows*.ps1 (the installed app). macOS ships a .app (macos-runtime-check).
+if (process.platform === 'win32') {
+  console.log('install-check: 0 passed — SKIPPED on Windows: install.sh is the Linux installer; its Windows twin is windows-runtime-check.cjs + the installed smokes');
+  process.exit(0);
+}
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -206,11 +213,11 @@ test('a tampered runtime archive (one byte) is refused with the exact hash line 
 
 test('adversarial runtime archives: symlink, absolute, «..» and hardlink members are each refused BEFORE extraction, with the hash check passing', () => {
   const cases = {
-    // GNU tar -tv prints link members with an «-> target» suffix; the refusal is on the member TYPE.
-    'symlink member': { members: [{ name: './evil', type: '2', mode: '0000777', linkname: '/etc/passwd' }], die: 'install.sh: refusing runtime archive member «./evil -> /etc/passwd»: not a regular file or directory (symlink/hardlink/device/fifo)\n' },
+    // The refusal is on the member TYPE; the name is tar -tzf's, the same on GNU tar and bsdtar (no «-> target» suffix).
+    'symlink member': { members: [{ name: './evil', type: '2', mode: '0000777', linkname: '/etc/passwd' }], die: 'install.sh: refusing runtime archive member «./evil»: not a regular file or directory (symlink/hardlink/device/fifo)\n' },
     'absolute member': { members: [{ name: '/absolute/evil', type: '0', data: Buffer.from('x') }], die: 'install.sh: refusing runtime archive member «/absolute/evil»: absolute member paths are not allowed\n' },
     '.. member': { members: [{ name: '../evil', type: '0', data: Buffer.from('x') }], die: 'install.sh: refusing runtime archive member «../evil»: «..» components are not allowed\n' },
-    'hardlink member': { members: [{ name: './node', type: '0', data: Buffer.from('x') }, { name: './dup', type: '1', mode: '0000755', linkname: './node' }], die: 'install.sh: refusing runtime archive member «./dup link to ./node»: not a regular file or directory (symlink/hardlink/device/fifo)\n' },
+    'hardlink member': { members: [{ name: './node', type: '0', data: Buffer.from('x') }, { name: './dup', type: '1', mode: '0000755', linkname: './node' }], die: 'install.sh: refusing runtime archive member «./dup»: not a regular file or directory (symlink/hardlink/device/fifo)\n' },
   };
   for (const [name, { members, die }] of Object.entries(cases)) {
     const st = stage(), e = env(); fs.mkdirSync(e.apps, { recursive: true });
@@ -226,6 +233,40 @@ test('adversarial runtime archives: symlink, absolute, «..» and hardlink membe
     assert.equal(fs.existsSync(e.prefix), false, name);
     assert.deepEqual(runtimeTempLeftovers(e), [], `${name}: nothing extracted`);
   }
+});
+
+/* macOS bsdtar (CI 41733396427, macos-26): `tar -tv` prints EIGHT columns before the name (perms, links, owner, group,
+   size, month, day, time), GNU tar five. A `tar` shim that rewrites GNU's -tv listing into bsdtar's shape (and passes
+   every other call straight to the real tar) proves the member audit does not depend on one tar's column layout. */
+function bsdtarShapedBin() {
+  const bin = noNodeBin();
+  const realTar = fs.existsSync('/usr/bin/tar') ? '/usr/bin/tar' : '/bin/tar';
+  fs.rmSync(path.join(bin, 'tar'), { force: true });
+  fs.writeFileSync(path.join(bin, 'tar'), `#!/bin/sh
+case "$1" in
+  -tvzf|-tvf) "${realTar}" "$@" | awk '{ t = substr($1, 1, 1); n = $0; sub(/^[^ ]+ +[^ ]+ +[^ ]+ +[^ ]+ +[^ ]+ +/, "", n); split($2, o, "/");
+      printf "%s  0 %s %s %8s Nov  3 23:24 %s\\n", $1, (o[1] == "" ? "root" : o[1]), (o[2] == "" ? "root" : o[2]), $3, n }' ;;
+  *) exec "${realTar}" "$@" ;;
+esac
+`, { mode: 0o755 });
+  return bin;
+}
+test('the runtime member audit works with bsdtar\'s -tv columns too (macOS tar), not only GNU tar\'s', () => {
+  const st = stage(), e = env();
+  const r = cp.spawnSync('/bin/sh', [SCRIPT, st, '--prefix', e.prefix, '--applications-dir', e.apps, '--project-root', e.root],
+    { encoding: 'utf8', env: { PATH: bsdtarShapedBin(), HOME: e.home } });
+  assert.equal(r.status, 0, r.stderr);
+  assert.ok(fs.existsSync(path.join(e.prefix, 'runtime', 'node')), 'the runtime was installed');
+  // and the refusals still hold under that layout
+  const bad = stage(), e2 = env(); fs.mkdirSync(e2.apps, { recursive: true });
+  craftedTarGz(path.join(bad, ARCHIVE), [{ name: './evil', type: '2', mode: '0000777', linkname: '/etc/passwd' }]);
+  const r0 = receipt(bad); r0.files[ARCHIVE] = sha(fs.readFileSync(path.join(bad, ARCHIVE)));
+  fs.writeFileSync(path.join(bad, 'receipt.json'), JSON.stringify(r0, null, 2) + '\n');
+  const refused = cp.spawnSync('/bin/sh', [SCRIPT, bad, '--prefix', e2.prefix, '--applications-dir', e2.apps, '--project-root', e2.root],
+    { encoding: 'utf8', env: { PATH: bsdtarShapedBin(), HOME: e2.home } });
+  assert.equal(refused.status, 1);
+  assert.match(refused.stderr, /^install\.sh: refusing runtime archive member «\.\/evil»: not a regular file or directory \(symlink\/hardlink\/device\/fifo\)\n$/);
+  assert.equal(fs.existsSync(e2.prefix), false);
 });
 
 test('uninstall removes PREFIX/runtime when it is a real directory inside PREFIX, and leaves a PREFIX/runtime symlink alone', () => {
