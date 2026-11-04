@@ -144,7 +144,9 @@ try {
     assert.ok((nsh.match(/Delete "\$INSTDIR\\koda-runtime\.tar\.gz"/g) || []).length >= 2, 'archive deleted on mismatch and after success');
     assert.match(nsh, /Rename "\$INSTDIR\\runtime\.new" "\$INSTDIR\\runtime"\s+\$\{If\} \$\{Errors\}/, 'extracted directory is swapped into place, failing closed');
   });
-  rule('runtime.nsh: every RMDir /r is guarded — never an empty $INSTDIR or a drive root, never a reparse point or junction — and the uninstaller uses the same guarded removal', () => {
+  const macroBody = (nsh, name) => { const a = nsh.indexOf(`!macro ${name}`); assert.ok(a >= 0, `${name} macro exists`); return nsh.slice(a, nsh.indexOf('!macroend', a)); };
+  const guardedTargets = (text) => (text.match(/!insertmacro AbitoRuntimeGuardedRmDirR "[^"]*"/g) || []).map((m) => m.split('"')[1]);
+  rule('runtime.nsh: every RMDir /r is guarded — the TARGET is never empty, a drive root or outside $INSTDIR, never a reparse point or junction — and the uninstaller uses the same guarded removal (R1-001)', () => {
     const nsh = runtimeNsh();
     const start = nsh.indexOf('!macro AbitoRuntimeGuardedRmDirR');
     assert.ok(start >= 0, 'guarded removal macro exists');
@@ -152,20 +154,103 @@ try {
     const guard = nsh.slice(start, end);
     assert.equal((nsh.match(/RMDir \/r/g) || []).length, 1, 'the only RMDir /r lives inside the guarded macro');
     assert.ok(nsh.indexOf('RMDir /r') > start && nsh.indexOf('RMDir /r') < end);
-    assert.match(guard, /StrLen \$R0 "\$INSTDIR"/);
-    assert.match(guard, /\$R0 <= 3/, 'refuse an empty $INSTDIR or a drive root');
+    // the guard checks ${_dir} itself, so a future caller cannot bypass it
+    assert.match(guard, /StrLen \$R0 "\$\{_dir\}"\s+\$\{If\} \$R0 <= 3/, 'refuse an empty target or a drive root (C:, C:\\)');
+    assert.match(guard, /StrLen \$R2 "\$INSTDIR"\s+\$\{If\} \$R2 <= 3/, 'still refuse an empty $INSTDIR or a drive root');
+    assert.match(guard, /StrCpy \$R3 "\$\{_dir\}" \$R2\s+\$\{If\} \$R3 != "\$INSTDIR"/, 'the target must start with $INSTDIR');
+    assert.match(guard, /StrCpy \$R3 "\$\{_dir\}" 1 \$R2\s+\$\{If\} \$R3 != "\\"/, 'followed by a path separator (not a sibling such as $INSTDIR-evil)');
+    assert.match(guard, /IntOp \$R2 \$R2 \+ 1\s+\$\{If\} \$R0 <= \$R2/, 'and a non-empty name after it (never $INSTDIR itself)');
+    assert.ok(guard.indexOf('$R0 <= $R2') < guard.indexOf('GetFileAttributesW'), 'all path checks precede the attribute check');
+    assert.ok(guard.indexOf('RMDir /r') > guard.indexOf('GetFileAttributesW'));
     assert.match(guard, /GetFileAttributesW/);
     assert.match(guard, /& 0x400/, 'refuse FILE_ATTRIBUTE_REPARSE_POINT');
-    assert.deepEqual((nsh.match(/!insertmacro AbitoRuntimeGuardedRmDirR "[^"]*"/g) || []).map((m) => m.split('"')[1]),
-      ['$INSTDIR\\runtime.new', '$INSTDIR\\runtime.new', '$INSTDIR\\runtime', '$INSTDIR\\runtime'],
-      'stale runtime.new before extracting, runtime.new after a failed extract, old runtime swap-out and uninstall all use the guard');
-    assert.match(nsh, /!macro AbitoUninstallRuntime\s+!insertmacro AbitoRuntimeGuardedRmDirR "\$INSTDIR\\runtime"\s+!macroend/);
+    // every refusal restores the four pushed registers before aborting
+    assert.equal((guard.match(/Push \$R\d/g) || []).length, 4);
+    for (const m of guard.matchAll(/((?:    Pop \$R\d\n){4})\s+Abort/g)) assert.equal(m[1].split('\n').filter(Boolean).length, 4);
+    assert.equal((guard.match(/Abort "/g) || []).length, 6, 'six refusals: empty/drive root target, bad $INSTDIR, outside $INSTDIR, no separator after it, $INSTDIR itself, reparse point');
+    assert.match(nsh, /!macro AbitoUninstallRuntime\s+!insertmacro AbitoRuntimeGuardedRmDirR "\$INSTDIR\\runtime"\s+; [^\n]*\s+!insertmacro AbitoRuntimeGuardedRmDirR "\$INSTDIR\\runtime\.old"\s+!insertmacro AbitoRuntimeGuardedRmDirR "\$INSTDIR\\runtime\.new"\s+Delete "\$INSTDIR\\koda-runtime\.tar\.gz"\s+!macroend/,
+      'uninstall removes the runtime and any leftover runtime.old/runtime.new/archive of a failed install, all through the guard');
+    assert.deepEqual(guardedTargets(macroBody(nsh, 'AbitoInstallRuntime')),
+      ['$INSTDIR\\runtime.new', '$INSTDIR\\runtime.new', '$INSTDIR\\runtime.old', '$INSTDIR\\runtime.new', '$INSTDIR\\runtime.new', '$INSTDIR\\runtime.old'],
+      'stale runtime.new, failed extract, stale runtime.old, failed move-aside, failed activate and the success cleanup all use the guard');
+  });
+  rule('R4-upgrade-runtime-swap-not-atomic: the old runtime is renamed aside to runtime.old, never deleted before the new one is in place; a failed activation restores it', () => {
+    const body = macroBody(runtimeNsh(), 'AbitoInstallRuntime');
+    const aside = body.indexOf('Rename "$INSTDIR\\runtime" "$INSTDIR\\runtime.old"');
+    const activate = body.indexOf('Rename "$INSTDIR\\runtime.new" "$INSTDIR\\runtime"');
+    const restore = body.indexOf('Rename "$INSTDIR\\runtime.old" "$INSTDIR\\runtime"');
+    assert.ok(aside > 0 && activate > aside && restore > activate, 'aside, then activate, then (on failure) restore');
+    assert.doesNotMatch(body, /AbitoRuntimeGuardedRmDirR "\$INSTDIR\\runtime"\n/, 'the live runtime is never removed by the installer');
+    assert.match(body, /\$\{If\} \$\{FileExists\} "\$INSTDIR\\runtime"\s+ClearErrors\s+Rename "\$INSTDIR\\runtime" "\$INSTDIR\\runtime\.old"\s+\$\{If\} \$\{Errors\}\s+Delete "\$INSTDIR\\koda-runtime\.tar\.gz"\s+!insertmacro AbitoRuntimeGuardedRmDirR "\$INSTDIR\\runtime\.new"\s+Abort "Koda: could not move the current runtime aside[^"]*"/,
+      'a failed move-aside aborts with the current runtime untouched');
+    assert.match(body, /ClearErrors\s+Rename "\$INSTDIR\\runtime\.new" "\$INSTDIR\\runtime"\s+\$\{If\} \$\{Errors\}\s+Delete "\$INSTDIR\\koda-runtime\.tar\.gz"\s+\$\{If\} \$\{FileExists\} "\$INSTDIR\\runtime\.old"\s+ClearErrors\s+Rename "\$INSTDIR\\runtime\.old" "\$INSTDIR\\runtime"\s+\$\{If\} \$\{Errors\}\s+Abort "Koda: could not restore the previous runtime[^"]*runtime\.old[^"]*"\s+\$\{EndIf\}\s+\$\{EndIf\}\s+!insertmacro AbitoRuntimeGuardedRmDirR "\$INSTDIR\\runtime\.new"\s+Abort "Koda: could not activate the extracted runtime directory[^"]*"/,
+      'a failed activation restores runtime.old, then cleans runtime.new and aborts');
+    const tail = body.slice(activate);
+    assert.match(tail, /\$\{EndIf\}\s+!insertmacro AbitoRuntimeGuardedRmDirR "\$INSTDIR\\runtime\.old"\s+Delete "\$INSTDIR\\koda-runtime\.tar\.gz"\s*$/, 'on success runtime.old goes through the guard, then the archive is deleted');
+    assert.ok(body.indexOf('AbitoRuntimeGuardedRmDirR "$INSTDIR\\runtime.old"') < aside, 'a stale runtime.old of an earlier failed run is cleared before moving the live runtime aside');
+  });
+  rule('R4-abort-after-payload-orphans-files: the archive is File\'d and hash-verified by AbitoVerifyRuntime BEFORE any payload is written; AbitoInstallRuntime only extracts and swaps', () => {
+    const nsh = runtimeNsh();
+    const verify = macroBody(nsh, 'AbitoVerifyRuntime');
+    const install = macroBody(nsh, 'AbitoInstallRuntime');
+    assert.ok(verify.includes('  File "/ONAME=koda-runtime.tar.gz" "${RUNTIMEDIR}\\koda-runtime.tar.gz"'));
+    assert.ok(verify.includes(`nsExec::ExecToStack 'certutil -hashfile "$INSTDIR\\koda-runtime.tar.gz" SHA256'`));
+    assert.match(verify, /Abort "Koda: the bundled runtime archive failed its SHA256 check[^"]*Nothing was changed\."/);
+    assert.match(verify, /Abort "Koda: could not hash the bundled runtime archive[^"]*Nothing was changed\."/);
+    assert.doesNotMatch(verify, /tar\.exe|Rename|RMDir/, 'verifying never extracts or swaps');
+    assert.doesNotMatch(install, /File |certutil|KODA_RUNTIME_SHA256/, 'the install half only extracts and swaps the already verified archive');
+    assert.ok(install.includes('tar.exe'));
+    assert.ok(nsh.indexOf('!macro AbitoVerifyRuntime') < nsh.indexOf('!macro AbitoInstallRuntime'));
+    const nsis = fs.readFileSync(path.join(crate, 'packaging/windows/abito.nsi'), 'utf8');
+    const section = nsis.slice(nsis.indexOf('Section "Koda"'), nsis.indexOf('SectionEnd'));
+    const at = (needle) => { const i = section.indexOf(needle); assert.ok(i >= 0, `${needle} present in Section "Koda"`); return i; };
+    assert.ok(at('!insertmacro AbitoVerifyRuntime') < at('!insertmacro AbitoInstallPayload'), 'verify first: a bad archive aborts with no payload written');
+    assert.ok(at('!insertmacro AbitoInstallPayload') < at('WriteUninstaller'), 'uninstaller written right after the payload');
+    assert.ok(at('WriteUninstaller') < at('!insertmacro AbitoInstallRuntime'), 'and BEFORE the extract/swap, so a failed extract is still removable with uninstall.exe');
+    assert.equal((section.match(/!insertmacro AbitoVerifyRuntime/g) || []).length, 1);
+    assert.equal((section.match(/!insertmacro AbitoInstallRuntime/g) || []).length, 1);
+  });
+  rule('R3-nsi-unconditional-runtime-macro: abito.nsi fails the BUILD with a clear message when no runtime archive was staged (no KODA_RUNTIME_SHA256)', () => {
+    const nsis = fs.readFileSync(path.join(crate, 'packaging/windows/abito.nsi'), 'utf8');
+    const inc = nsis.indexOf('!include "${RUNTIMEDIR}\\runtime.nsh"');
+    const guard = '!ifndef KODA_RUNTIME_SHA256\n!error "K2-02: the runtime archive was not staged (stage-runtime.cjs --runtime-archive)"\n!endif';
+    assert.ok(nsis.includes(guard), 'ifndef/!error guard with the exact message');
+    assert.ok(nsis.indexOf(guard) > inc, 'checked right after runtime.nsh is included');
+    assert.ok(nsis.indexOf(guard) < nsis.indexOf('Section "Koda"'), 'and before any use of the macros');
+    // Without an archive the generated include still carries no runtime macros, so the guard is what fires.
+    assert.doesNotMatch(fs.readFileSync(path.join(out, 'runtime.nsh'), 'utf8'), /KODA_RUNTIME_SHA256|AbitoVerifyRuntime|AbitoInstallRuntime/);
+  });
+  rule('R3-stale-archive-reuse: staging WITHOUT --runtime-archive into a dir that still holds koda-runtime.tar.gz is refused (exit 1, exact message), nothing removed or rewritten', () => {
+    const stale = path.join(scratch, 'payload-stale');
+    let r = runOut(stale, '--runtime-archive', archiveSource);
+    assert.equal(r.status, 0, r.stderr);
+    const nshBefore = fs.readFileSync(path.join(stale, 'runtime.nsh'));
+    const archiveBefore = fs.readFileSync(path.join(stale, 'koda-runtime.tar.gz'));
+    r = runOut(stale);
+    assert.equal(r.status, 1);
+    assert.equal(r.stdout, '');
+    assert.equal(r.stderr, `stale runtime archive in the output directory: ${path.join(stale, 'koda-runtime.tar.gz')} (stage with --runtime-archive to replace it, or remove it yourself; it is never reused silently)\n`);
+    assert.deepEqual(fs.readFileSync(path.join(stale, 'runtime.nsh')), nshBefore, 'runtime.nsh untouched');
+    assert.deepEqual(fs.readFileSync(path.join(stale, 'koda-runtime.tar.gz')), archiveBefore, 'archive not removed');
+    // restaging WITH an archive still works, and a dir without a stale archive stages as before
+    r = runOut(stale, '--runtime-archive', archiveSource); assert.equal(r.status, 0, r.stderr);
+    fs.unlinkSync(path.join(stale, 'koda-runtime.tar.gz'));
+    r = runOut(stale); assert.equal(r.status, 0, r.stderr);
+    assert.doesNotMatch(fs.readFileSync(path.join(stale, 'runtime.nsh'), 'utf8'), /KODA_RUNTIME_SHA256/);
   });
   rule('runtime.nsh: a failed extract removes the archive and the partial runtime.new before aborting; the swap clears stale errors first', () => {
     const nsh = runtimeNsh();
     const failed = nsh.slice(nsh.indexOf('-C "$INSTDIR\\runtime.new"'), nsh.indexOf('could not extract the bundled runtime'));
     assert.match(failed, /Delete "\$INSTDIR\\koda-runtime\.tar\.gz"\s+!insertmacro AbitoRuntimeGuardedRmDirR "\$INSTDIR\\runtime\.new"\s+Abort "Koda: $/);
     assert.match(nsh, /ClearErrors\s+Rename "\$INSTDIR\\runtime\.new" "\$INSTDIR\\runtime"\s+\$\{If\} \$\{Errors\}/);
+  });
+  rule('README documents the install order, the failure leftovers and the TOCTOU known limit of the guarded removal (R1-001, R4)', () => {
+    const readme = fs.readFileSync(path.join(crate, 'packaging/windows/README.md'), 'utf8');
+    assert.match(readme, /Known limit \(R1-001\)[^\n]*TOCTOU[^\n]*same-user/);
+    assert.match(readme, /AbitoVerifyRuntime[^\n]*before[^\n]*payload/i);
+    assert.match(readme, /runtime\.old/);
+    assert.match(readme, /KODA_RUNTIME_SHA256[^\n]*fails the build|fails the build[^\n]*KODA_RUNTIME_SHA256/i);
+    assert.match(readme, /stale[^\n]*koda-runtime\.tar\.gz[^\n]*refus|refus[^\n]*stale[^\n]*koda-runtime\.tar\.gz/i);
   });
   rule('nsisInclude() regenerates the staged runtime.nsh byte-for-byte (stage-win receipt equivalence)', () => {
     const { nsisInclude: include } = require('../packaging/windows/stage-runtime.cjs');

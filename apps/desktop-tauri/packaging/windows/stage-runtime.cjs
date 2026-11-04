@@ -58,39 +58,71 @@ function sha256File(file) {
 /* Decision B, verbatim: hash embedded at makensis time, certutil -hashfile SHA256 check,
    $SYSDIR\tar.exe extract, abort on mismatch or tar failure, archive deleted after success,
    guarded RMDir /r (never an empty $INSTDIR or a drive root, never a reparse point).
-   Requires LogicLib, which abito.nsi provides through MUI2.nsh before including this file. */
+   Requires LogicLib, which abito.nsi provides through MUI2.nsh before including this file.
+
+   Order the installer Section uses (abito.nsi) and why (K2-02 slice10, R4):
+     1. AbitoVerifyRuntime  - File + certutil. A bad archive aborts here with NO payload written.
+     2. AbitoInstallPayload - the per-file daemon/harness/Pi payload.
+     3. WriteUninstaller    - before the runtime swap, so a failed extract/swap is still removable.
+     4. AbitoInstallRuntime - extract into runtime.new, move the live runtime aside, activate.
+   What remains if step 4 fails: the payload and uninstall.exe (no Start-menu or Add/Remove entry
+   yet); on a fresh install there is no runtime, on an upgrade the previous runtime is kept (or
+   restored). The archive and runtime.new are removed before aborting. */
+function abortBlock(indent, pops, message) {
+  return [...pops.map(r => `${indent}Pop ${r}`), `${indent}Abort "${message}"`];
+}
 function runtimeArchiveMacros(archiveSha) {
+  const guard = (target) => `  !insertmacro AbitoRuntimeGuardedRmDirR "$INSTDIR\\${target}"`;
+  const regs = ['$R3', '$R2', '$R1', '$R0'];
   return [
     '; K2-02, decision B: the bundled Node+Pi runtime ships as ONE tar.gz whose sha256 is',
-    '; embedded below at makensis time. Install verifies it with certutil, extracts it with',
-    '; System32 tar.exe into a fresh directory, swaps it into place and never leaves the',
-    '; archive behind. Recursive removal is guarded: never when $INSTDIR is empty or a drive',
-    '; root, never when the target is a reparse point or junction.',
+    '; embedded below at makensis time. AbitoVerifyRuntime Files and verifies it with certutil',
+    '; BEFORE any payload is written; AbitoInstallRuntime extracts it with System32 tar.exe into a',
+    '; fresh directory, moves the live runtime aside, activates the new one and never leaves the',
+    '; archive behind. Recursive removal is guarded: never an empty target or drive root, never a',
+    '; target outside $INSTDIR, never when $INSTDIR is empty or a drive root, never a reparse',
+    '; point or junction.',
     `!define KODA_RUNTIME_SHA256 ${archiveSha}`,
     '!macro AbitoRuntimeGuardedRmDirR _dir',
     '  Push $R0',
     '  Push $R1',
-    '  StrLen $R0 "$INSTDIR"',
+    '  Push $R2',
+    '  Push $R3',
+    '  StrLen $R0 "${_dir}"',
     '  ${If} $R0 <= 3',
-    '    Pop $R1',
-    '    Pop $R0',
-    '    Abort "Koda: refusing recursive removal, the install directory is empty or a drive root."',
+    ...abortBlock('    ', regs, 'Koda: refusing recursive removal, the target is empty or a drive root.'),
+    '  ${EndIf}',
+    '  StrLen $R2 "$INSTDIR"',
+    '  ${If} $R2 <= 3',
+    ...abortBlock('    ', regs, 'Koda: refusing recursive removal, the install directory is empty or a drive root.'),
+    '  ${EndIf}',
+    '  StrCpy $R3 "${_dir}" $R2',
+    '  ${If} $R3 != "$INSTDIR"',
+    ...abortBlock('    ', regs, 'Koda: refusing recursive removal, ${_dir} is outside the install directory.'),
+    '  ${EndIf}',
+    '  StrCpy $R3 "${_dir}" 1 $R2',
+    '  ${If} $R3 != "\\"',
+    ...abortBlock('    ', regs, 'Koda: refusing recursive removal, ${_dir} is outside the install directory.'),
+    '  ${EndIf}',
+    '  IntOp $R2 $R2 + 1',
+    '  ${If} $R0 <= $R2',
+    ...abortBlock('    ', regs, 'Koda: refusing recursive removal, ${_dir} is the install directory itself.'),
     '  ${EndIf}',
     '  Push "${_dir}"',
     "  System::Call 'kernel32::GetFileAttributesW(ts)i.R1'",
     '  ${If} $R1 != -1',
     '    IntOp $R0 $R1 & 0x400',
     '    ${If} $R0 != 0',
-    '      Pop $R1',
-    '      Pop $R0',
-    '      Abort "Koda: refusing recursive removal, ${_dir} is a reparse point or junction."',
+    ...abortBlock('      ', regs, 'Koda: refusing recursive removal, ${_dir} is a reparse point or junction.'),
     '    ${EndIf}',
     '  ${EndIf}',
     '  RMDir /r "${_dir}"',
+    '  Pop $R3',
+    '  Pop $R2',
     '  Pop $R1',
     '  Pop $R0',
     '!macroend',
-    '!macro AbitoInstallRuntime',
+    '!macro AbitoVerifyRuntime',
     '  SetOutPath "$INSTDIR"',
     `  File "/ONAME=${ARCHIVE_NAME}" "\${RUNTIMEDIR}\\${ARCHIVE_NAME}"`,
     `  nsExec::ExecToStack 'certutil -hashfile "$INSTDIR\\${ARCHIVE_NAME}" SHA256'`,
@@ -138,26 +170,53 @@ function runtimeArchiveMacros(archiveSha) {
     `    Delete "$INSTDIR\\${ARCHIVE_NAME}"`,
     '    Abort "Koda: the bundled runtime archive failed its SHA256 check (got $R2, wanted ${KODA_RUNTIME_SHA256}). Nothing was changed."',
     '  ${EndIf}',
-    '  !insertmacro AbitoRuntimeGuardedRmDirR "$INSTDIR\\runtime.new"',
+    '!macroend',
+    '!macro AbitoInstallRuntime',
+    '  ; The archive was verified by AbitoVerifyRuntime before the payload was written.',
+    guard('runtime.new'),
     '  CreateDirectory "$INSTDIR\\runtime.new"',
     `  nsExec::Exec '"$SYSDIR\\tar.exe" -xzf "$INSTDIR\\${ARCHIVE_NAME}" -C "$INSTDIR\\runtime.new"'`,
     '  Pop $R0',
     '  ${If} $R0 == "error"',
     '  ${OrIf} $R0 != 0',
     `    Delete "$INSTDIR\\${ARCHIVE_NAME}"`,
-    '    !insertmacro AbitoRuntimeGuardedRmDirR "$INSTDIR\\runtime.new"',
-    '    Abort "Koda: could not extract the bundled runtime (tar reported $R0). Installation stopped."',
+    '  ' + guard('runtime.new'),
+    '    Abort "Koda: could not extract the bundled runtime (tar reported $R0). Installation stopped. Any previous runtime was not touched."',
     '  ${EndIf}',
-    '  !insertmacro AbitoRuntimeGuardedRmDirR "$INSTDIR\\runtime"',
+    '  ; Swap with a way back: the live runtime is renamed aside, never deleted before the new one is in place.',
+    guard('runtime.old'),
+    '  ${If} ${FileExists} "$INSTDIR\\runtime"',
+    '    ClearErrors',
+    '    Rename "$INSTDIR\\runtime" "$INSTDIR\\runtime.old"',
+    '    ${If} ${Errors}',
+    `      Delete "$INSTDIR\\${ARCHIVE_NAME}"`,
+    '    ' + guard('runtime.new'),
+    '      Abort "Koda: could not move the current runtime aside (is Koda running?). The current runtime was not changed. Installation stopped."',
+    '    ${EndIf}',
+    '  ${EndIf}',
     '  ClearErrors',
     '  Rename "$INSTDIR\\runtime.new" "$INSTDIR\\runtime"',
     '  ${If} ${Errors}',
-    '    Abort "Koda: could not activate the extracted runtime directory. Installation stopped."',
+    `    Delete "$INSTDIR\\${ARCHIVE_NAME}"`,
+    '    ${If} ${FileExists} "$INSTDIR\\runtime.old"',
+    '      ClearErrors',
+    '      Rename "$INSTDIR\\runtime.old" "$INSTDIR\\runtime"',
+    '      ${If} ${Errors}',
+    '        Abort "Koda: could not restore the previous runtime; it is kept in $INSTDIR\\runtime.old. Installation stopped."',
+    '      ${EndIf}',
+    '    ${EndIf}',
+    '  ' + guard('runtime.new'),
+    '    Abort "Koda: could not activate the extracted runtime directory. The previous runtime was restored if there was one. Installation stopped."',
     '  ${EndIf}',
+    guard('runtime.old'),
     `  Delete "$INSTDIR\\${ARCHIVE_NAME}"`,
     '!macroend',
     '!macro AbitoUninstallRuntime',
-    '  !insertmacro AbitoRuntimeGuardedRmDirR "$INSTDIR\\runtime"',
+    guard('runtime'),
+    '  ; leftovers of an interrupted install: the previous runtime kept aside, a partial extract, the archive',
+    guard('runtime.old'),
+    guard('runtime.new'),
+    `  Delete "$INSTDIR\\${ARCHIVE_NAME}"`,
     '!macroend',
   ];
 }
@@ -184,6 +243,12 @@ function stage(out, runtimeArchive) {
   // Preflight every source and ancestor before changing the output.
   for (const f of RUNTIME_FILES) {
     const src = path.join(crate, '..', f); directoryChain(path.dirname(src)); regular(src);
+  }
+  // A koda-runtime.tar.gz left by an earlier run must never be picked up silently by nsisInclude(): refuse
+  // (nothing is removed, like every other unknown entry) unless a new archive is being staged over it.
+  const leftover = path.join(out, ARCHIVE_NAME);
+  if (!runtimeArchive && fs.lstatSync(leftover, { throwIfNoEntry: false })) {
+    throw new Error(`stale runtime archive in the output directory: ${leftover} (stage with --runtime-archive to replace it, or remove it yourself; it is never reused silently)`);
   }
   let archiveSrc = null;
   if (runtimeArchive) { archiveSrc = path.resolve(runtimeArchive); regular(archiveSrc); }
