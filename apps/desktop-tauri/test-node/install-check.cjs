@@ -276,7 +276,13 @@ test('the member audit is linear: one tar listing walked once, never a per-membe
   assert.doesNotMatch(audit, /sed -n "\$\{i\}p"/, 'no per-member sed over the whole listing (16 585 members took 16.6 s)');
   assert.doesNotMatch(audit, /\$\(\(i \+ 1\)\)/, 'no per-member counter used to index into a list');
 });
-test('the member audit of a 16 000-member archive finishes in a few seconds (linear in the member count)', () => {
+test('the member audit passes no member-derived list on a command line (Linux caps ONE argument at 128 KiB: ~131 000 members broke it)', () => {
+  const src = fs.readFileSync(SCRIPT, 'utf8');
+  const audit = src.slice(src.indexOf('# ---- 2. runtime archive members'), src.indexOf('# ---- 3. extract into a private temp dir'));
+  assert.doesNotMatch(audit, /awk[^\n|]*-v [a-z_]+="\$(types|names|types_list|names_list)"/, 'no list handed to awk with -v');
+  assert.doesNotMatch(audit, /\$\{?(types|names)_?list\}?"? *[|]? *xargs/, 'no list expanded into argv');
+});
+test('the member audit of a 16 000-member archive stays well below the quadratic 16 s (linear in the member count)', () => {
   const dir = tmp();
   const root = path.join(dir, 'runtime');
   fs.mkdirSync(path.join(root, 'node_modules'), { recursive: true });
@@ -296,7 +302,8 @@ test('the member audit of a 16 000-member archive finishes in a few seconds (lin
   const secs = (Date.now() - started) / 1000;
   assert.equal(r.status, 0, r.stderr);
   assert.equal(r.stdout, 'audited\n');
-  assert.ok(secs < 5, `16 161 members audited in ${secs.toFixed(1)} s (must be < 5 s)`);
+  // A loose bound (slow CI runners vary): the quadratic version took 16.6 s for 16 585 members; linear is ~1-2 s.
+  assert.ok(secs < 12, `16 161 members audited in ${secs.toFixed(1)} s (must be < 12 s)`);
 });
 
 test('uninstall removes PREFIX/runtime when it is a real directory inside PREFIX, and leaves a PREFIX/runtime symlink alone', () => {

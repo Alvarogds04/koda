@@ -228,10 +228,15 @@ note "Stage verified against receipt.json ($STAGE)."
 names_list="$(tar -tzf "$STAGE/$RUNTIME_ARCHIVE" 2>/dev/null)" || die "cannot list the runtime archive $RUNTIME_ARCHIVE (corrupt, or tar is missing)"
 types_list="$(tar -tvzf "$STAGE/$RUNTIME_ARCHIVE" 2>/dev/null | cut -c1)" || die "cannot list the runtime archive $RUNTIME_ARCHIVE (corrupt, or tar is missing)"
 [ -n "$names_list" ] || die "the runtime archive $RUNTIME_ARCHIVE is empty"
-# Pair each name with its type in ONE linear pass (awk walks the names once; the types are one string, one char per
-# member), then audit the pairs in a single loop: linear in the member count (~16 000 for the real runtime).
-types="$(printf '%s\n' "$types_list" | tr -d '\n')"
-pairs="$(printf '%s\n' "$names_list" | awk -v types="$types" '{ printf "%s %s\n", substr(types, NR, 1), $0 } END { if (NR != length(types)) exit 3 }')" \
+# Pair each name with its type in ONE linear pass, then audit the pairs in a single loop (linear in the member count,
+# ~16 000 for the real runtime). Everything reaches awk on STDIN, never on its command line: Linux caps one argument at
+# 128 KiB, which an archive of ~131 000 members would exceed. Input: the type count, the types, then the names.
+count="$(printf '%s\n' "$types_list" | wc -l | tr -d ' ')"
+pairs="$({ printf '%s\n' "$count"; printf '%s\n' "$types_list"; printf '%s\n' "$names_list"; } | awk '
+  NR == 1 { n = $0 + 0; next }
+  NR <= n + 1 { t[NR - 1] = $0; next }
+  { i = NR - n - 1; printf "%s %s\n", t[i], $0 }
+  END { if (NR - n - 1 != n) exit 3 }')" \
   || die "the runtime archive $RUNTIME_ARCHIVE has member names that tar cannot list one per line"
 while IFS= read -r pair; do
   first=${pair%"${pair#?}"}
