@@ -583,6 +583,7 @@ test("#390 GD029 check (3): a live pid whose endpoint refuses is never replaced;
 			// Windows twin of the POSIX ledger token-hygiene assert below (the ledger records nothing on
 			// Windows — registered gap — so the hygiene assert moves to the runtime directory itself).
 			assert.deepEqual(fs.readdirSync(path.join(root, "runtime")).filter((n) => n !== "launches.jsonl").sort(), ["session.json"], "the refused run wrote nothing into runtime");
+			assert.ok(!`${r.stdout}${r.stderr}`.includes("ttttt"), "the refused run never prints the incumbent token");
 		} else {
 			const text = fs.readFileSync(ledger, "utf8");
 			const last = text.trim().split("\n").map((line) => JSON.parse(line)).at(-1);

@@ -80,7 +80,7 @@ function setup(t) {
 	const islandDir = path.join(base, "island");
 	fs.mkdirSync(islandDir, { mode: 0o700 });
 	const installerBin = copyInstaller(base);
-	if (win) stageHelper(base); // the copied layout resolves its own helper through src/../.. — see stageHelper
+	if (win && hasHelper()) stageHelper(base); // the copied layout resolves its own helper through src/../.. — see stageHelper (review: setup is shared, never crash when the exe is absent)
 	// Windows: the product trusts the installer through the install manifest (HU-047); a test copy is never in
 	// it, so the tests inject the product's verifier seam (the POSIX trust check stays real on Linux/macOS).
 	const manager = new AgentsManager({ installerBin, home, islandDir, ...(win ? { verifyBundled: () => {} } : {}) });
@@ -111,7 +111,7 @@ test('packaged installer: Claude preview in a private HOME never reports install
   if (win) assert.equal(fs.readFileSync(dest, "utf8"), fs.readFileSync(source, "utf8"));
   else assert.equal(fs.statSync(dest).mode & 0o777, 0o644);
  }
- if (win) stageHelper(path.join(s.base, 'package')); // the packaged layout resolves its own helper through desktop-harness/src/../.. — see stageHelper
+ if (win && hasHelper()) stageHelper(path.join(s.base, 'package')); // the packaged layout resolves its own helper through desktop-harness/src/../.. — see stageHelper
  const manager = new AgentsManager({installerBin:path.join(packaged, 'bin/abito-hook.cjs'), home, islandDir:s.islandDir, ...(win ? { verifyBundled: () => {} } : {})});
  const list = await manager.list();
  const claude = byId(list, 'claude-code');

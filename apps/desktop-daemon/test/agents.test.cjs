@@ -377,7 +377,11 @@ test("child env: allowlist + ABITO_ISLAND_EXE only, HOME is the real home passed
 	// The product allowlist is DERIVED from src/agents.cjs childEnv (never guessed): what the manager
 	// passes is exactly childEnv(), plus the OS-injected keys above (the real spawn's child process
 	// environment carries them on Windows; the injected-run HU-047 tests pin the option itself).
-	const allowedEnv = [...Object.keys(s.manager.childEnv()), ...OS_INJECTED_ENV];
+	// Review (non-tautological): the CLOSED set is pinned here as literals per OS. A key added to childEnv() itself must
+	// fail this test, not widen it; the derived set must equal the pinned one, and the recorded child env stays inside it.
+	const PINNED_ENV = (win ? ["HOME", "USERPROFILE", "SystemRoot", "PATH", "ABITO_ISLAND_EXE"] : ["PATH", "HOME", "ABITO_ISLAND_EXE"]).concat(process.env.LANG ? ["LANG"] : []);
+	assert.deepEqual(Object.keys(s.manager.childEnv()).sort(), [...PINNED_ENV].sort(), "the product's child env is exactly the pinned closed set");
+	const allowedEnv = [...PINNED_ENV, ...OS_INJECTED_ENV];
 	for (const call of s.calls()) {
 		for (const k of Object.keys(call.env)) assert.ok(allowedEnv.includes(k), `unexpected env ${k}`);
 		assert.equal(call.env.HOME, s.home);

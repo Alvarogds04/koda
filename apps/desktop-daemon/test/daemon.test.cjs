@@ -877,8 +877,11 @@ test("GD014: classifySession distinguishes stale, foreign, orphaned and healthy 
 		// on Windows)», which passes there; this test asserts the classification SHAPE through the
 		// product's own verification seam (windows-runtime.test.cjs does the same). POSIX keeps the real
 		// hello→ready probe against the live socket, unchanged.
-		const healthyDeps = win ? { nativeVerify: () => true } : {};
+		// Review: the seam still has to be ASKED about this root (it never short-circuits the native step).
+		const verified = [];
+		const healthyDeps = win ? { nativeVerify: (r) => (verified.push(r), true) } : {};
 		const v5 = await classifySession(root, healthyDeps);
+		if (win) assert.deepEqual(verified, [root], "the native verification is consulted for this exact root");
 		assert.equal(v5.state, "healthy");
 		assert.equal(v5.reason, "ready");
 		assert.equal(v5.ready, true);
@@ -1469,14 +1472,26 @@ test("the daemon wires a sessions provider: sessions_list answers a sessions fra
 test("K2-01b: mcp_import_preview reads the daemon's OWN env (its %APPDATA% on Windows), never this process's", { skip: !win && "Windows %APPDATA% location; Linux/macOS locations are home-relative and covered by «mcp_import_preview through the daemon» and mcp-import.test.cjs (win32 rows driven on every OS there)" }, async () => {
 	// Public preview output only: a Claude Desktop config placed under the daemon env's %APPDATA% is found, while this
 	// process's real %APPDATA% is never consulted (it holds no such server).
-	const { daemon, base } = make();
+	const { daemon, root, base } = make();
 	const home = path.join(base, "realhome");
 	const appData = path.join(base, "appdata");
 	fs.mkdirSync(path.join(appData, "Claude"), { recursive: true });
 	fs.writeFileSync(path.join(appData, "Claude", "claude_desktop_config.json"), JSON.stringify({ mcpServers: { desk: { command: "d" } } }));
 	fs.mkdirSync(home, { recursive: true });
+	// Review: driven through the protocol (mcp_import_preview frame), exactly like «mcp_import_preview through the daemon».
 	daemon.env = daemonEnv(base, { HOME: home, APPDATA: appData });
-	const preview = await daemon.makeMcpImport().preview();
-	assert.deepEqual(preview.files, [{ source: "claude-desktop", status: "ok" }]);
-	assert.deepEqual(preview.servers.map((s) => [s.source, s.name]), [["claude-desktop", "desk"]]);
+	await daemon.start();
+	try {
+		const { socket, frames } = await connect(readSession(root));
+		await waitFor(() => frames.some((f) => f.type === "ready"));
+		socket.write(`${JSON.stringify({ type: "mcp_import_preview" })}\n`);
+		await waitFor(() => frames.some((f) => f.type === "mcp_import" || f.type === "error"));
+		const frame = frames.find((f) => f.type === "mcp_import");
+		assert.ok(frame, JSON.stringify(frames));
+		assert.deepEqual(frame.files, [{ source: "claude-desktop", status: "ok" }]);
+		assert.deepEqual(frame.servers.map((s) => [s.source, s.name]), [["claude-desktop", "desk"]]);
+		socket.destroy();
+	} finally {
+		await daemon.stop();
+	}
 });

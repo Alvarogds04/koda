@@ -9,10 +9,12 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const T = require('./tmpdirs.cjs');
-let passed = 0;
-const test = (name, fn) => { fn(); passed += 1; };
-// the harness has no node:test: a skip just prints and is not counted as passed
-const skip = (name, reason) => console.log(`skip  ${name} — ${reason}`);
+let passed = 0, skipped = 0;
+// The harness has no node:test. A body that returns SKIPPED was skipped: it prints «SKIP», is counted as skipped and never as
+// passed (review K2-01b), so the summary line says how many ran.
+const SKIPPED = Symbol('skipped');
+const test = (name, fn) => { if (fn() === SKIPPED) skipped += 1; else passed += 1; };
+const skip = (name, reason) => { console.log(`SKIP  ${name} — ${reason}`); return SKIPPED; };
 const base = () => fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'tmpdirs-test-')));
 const names = b => fs.readdirSync(b).sort();
 // the pid of a process that has already exited (so /proc/<pid> is gone)
@@ -41,9 +43,8 @@ test('a child process that makes dirs leaves NONE behind when it exits, even aft
 
 test('dirs of DEAD runs are swept on the next use; dirs of LIVE processes and foreign shapes are never touched', () => {
   if (process.platform === 'win32') {
-    skip('dirs of DEAD runs are swept on the next use; dirs of LIVE processes and foreign shapes are never touched',
+    return skip('dirs of DEAD runs are swept on the next use; dirs of LIVE processes and foreign shapes are never touched',
       'POSIX sweep premises (uid + 0700 mode ownership, sub-base sweeping); on Windows ownership is the MARKER in the per-user temp and a dir in a sub-base is by design not swept — Windows twin test: «K2-01b: Windows ownership without uid/mode — only marked dirs in the per-user temp are swept; anything unprovable stays»');
-    return;
   }
   const b = base();
   const dead = deadPid();
@@ -67,9 +68,8 @@ test('dirs of DEAD runs are swept on the next use; dirs of LIVE processes and fo
 
 test('K2-01b: liveness does not depend on /proc — on a system without it (macOS) a LIVE process\'s dir survives the sweep', () => {
   if (process.platform === 'win32') {
-    skip('K2-01b: liveness does not depend on /proc — on a system without it (macOS) a LIVE process\'s dir survives the sweep',
+    return skip('K2-01b: liveness does not depend on /proc — on a system without it (macOS) a LIVE process\'s dir survives the sweep',
       'POSIX liveness premises (kill(2), /proc simulation, 0700 mode); on Windows ownership is the MARKER in the per-user temp — Windows twin test: «K2-01b: Windows ownership without uid/mode — only marked dirs in the per-user temp are swept; anything unprovable stays»');
-    return;
   }
   // Simulate macOS: no /proc entries exist. The sweep must still recognise the live parent and keep its dir.
   const b = base();
@@ -135,4 +135,4 @@ test('the node checks themselves use the helper (no raw mkdtemp left behind)', (
   }
 });
 
-console.log(`tmpdirs-check: ${passed} passed`);
+console.log(`tmpdirs-check: ${passed} passed${skipped ? `, ${skipped} skipped (SKIP lines above)` : ''}`);
