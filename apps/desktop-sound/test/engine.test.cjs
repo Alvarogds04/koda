@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const { makeHarness, createSoftContext, createFakeTime } = require('./support/soft-audio.cjs');
 const AbitoSound = require('../sound-engine.js');
 
-const IDS = ['snd.notice', 'snd.attention', 'snd.confirm', 'snd.reject', 'snd.error', 'snd.sent', 'snd.think', 'snd.reply', 'snd.listen', 'snd.expired', 'snd.open', 'snd.close', 'snd.peek', 'snd.hover', 'snd.pop', 'snd.tick', 'snd.love'];
+const IDS = ['snd.notice', 'snd.attention', 'snd.confirm', 'snd.reject', 'snd.error', 'snd.sent', 'snd.think', 'snd.reply', 'snd.listen', 'snd.expired', 'snd.open', 'snd.close', 'snd.peek', 'snd.hover', 'snd.pop', 'snd.tick', 'snd.love', 'snd.blip', 'snd.slap', 'snd.annoyed', 'snd.dizzy', 'snd.greet', 'snd.work', 'snd.finish', 'snd.approval', 'snd.question', 'snd.approve', 'snd.gulp', 'snd.send', 'snd.proud', 'snd.wink', 'snd.yawn', 'snd.attach', 'snd.search', 'snd.rate', 'snd.sleep', 'snd.greeting'];
 
 test('samples replace notes with the same gain, gates and limiter; clearing restores synthesis', async () => {
   const time = createFakeTime();
@@ -62,7 +62,7 @@ test('samples obey outranking, inactive and three-voice limits', async () => {
   e.close();
 });
 
-test('catalog: 17 cues, frozen exports, closed reasons', () => {
+test('catalog: 37 cues, frozen exports, closed reasons', () => {
   assert.deepEqual([...AbitoSound.CUE_IDS].sort(), [...IDS].sort());
   assert.ok(Object.isFrozen(AbitoSound) && Object.isFrozen(AbitoSound.CUES) && Object.isFrozen(AbitoSound.CUE_IDS));
   assert.ok(Object.isFrozen(AbitoSound.CUES['snd.notice']) && Object.isFrozen(AbitoSound.CUES['snd.notice'].notes) && Object.isFrozen(AbitoSound.CUES['snd.notice'].notes[0]));

@@ -2,7 +2,7 @@
 
 Fuente de verdad: `CUES` en `sound-engine.js`. Un test (`test/docs.test.cjs`) analiza esta tabla y la compara con el código (id, nombre, duración, nivel y prioridad), así que no puede divergir. Los sonidos incorporados se **sintetizan** con osciladores y envolventes; no se distribuyen archivos y nunca se usan bytes de Coucou. El host puede inyectar una muestra ya decodificada con `setSample(id, bufferOrNull)`; sustituye las notas con la misma ganancia y compuertas. `clearSamples()` restaura la síntesis. Las duraciones y envolventes de esta tabla describen los cues sintetizados, no los archivos propios. Los parámetros son un punto de partida: el humano los afina de oído.
 
-Nivel = `cue.level` (0..1). El pico real de una voz es `gain × level × note.peak`, con `gain` por defecto 0,12 y máximo 0,2. Prioridad: número mayor gana (`PRIORITY`): error 5 > attention 4 > confirm = reject 3 > notice = expired 2 > sent 1 > think = reply = listen 0 > pop -1 > open = close = peek = hover = tick = love -2.
+Nivel = `cue.level` (0..1). El pico real de una voz es `gain × level × note.peak`, con `gain` por defecto 0,12 y máximo 0,2. Prioridad: número mayor gana (`PRIORITY`): error 5 > attention = approval = question 4 > confirm = reject = approve 3 > notice = expired = finish 2 > sent = send 1 > think = reply = listen 0 > pop -1 > open = close = peek = hover = tick = love y los demás cues de `abito:cue` -2.
 
 | Id | Nombre | Disparador | Síntesis | Duración (ms) | Nivel | Prioridad |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -23,6 +23,33 @@ Nivel = `cue.level` (0..1). El pico real de una voz es `gain × level × note.pe
 | `snd.pop` | Elegir | abito:cue tras elegir opción (productor pendiente) | glissando senoidal ascendente, 580 a 1160 Hz | 100 | 0.28 | -1 |
 | `snd.tick` | Paso | abito:cue en progreso de adjunto o activar atajo (productor pendiente) | clic triangular muy breve, 3000 Hz | 80 | 0.1 | -2 |
 | `snd.love` | Cariño | hover continuo de 1900 ms | arpegio senoidal suave, 600, 750 y 900 Hz | 290 | 0.2 | -2 |
+| `snd.blip` | Toque | Evento abito:cue explícito | nota senoidal 920 Hz con glissando ascendente a 1150 Hz | 160 | 0.2 | -2 |
+| `snd.slap` | Golpe | Evento abito:cue explícito | nota senoidal 180 Hz con glissando ascendente a 225 Hz | 160 | 0.2 | -2 |
+| `snd.annoyed` | Molestia | Evento abito:cue explícito | nota senoidal 210 Hz con glissando ascendente a 262,5 Hz | 160 | 0.2 | -2 |
+| `snd.dizzy` | Mareo | Evento abito:cue explícito | nota senoidal 330 Hz con glissando ascendente a 412,5 Hz | 160 | 0.2 | -2 |
+| `snd.greet` | Saludo | Evento abito:cue explícito | nota senoidal 760 Hz con glissando ascendente a 950 Hz | 160 | 0.2 | -2 |
+| `snd.work` | Trabajo | Evento abito:cue explícito | nota senoidal 400 Hz con glissando ascendente a 500 Hz | 160 | 0.2 | -2 |
+| `snd.finish` | Terminado | Evento abito:cue explícito | nota senoidal 1040 Hz con glissando ascendente a 1300 Hz | 160 | 0.2 | 2 |
+| `snd.approval` | Aprobación pendiente | Evento abito:cue explícito | nota senoidal 620 Hz con glissando ascendente a 775 Hz | 160 | 0.2 | 4 |
+| `snd.question` | Pregunta | Evento abito:cue explícito | nota senoidal 840 Hz con glissando ascendente a 1050 Hz | 160 | 0.2 | 4 |
+| `snd.approve` | Aprobado | Evento abito:cue explícito | nota senoidal 1240 Hz con glissando ascendente a 1550 Hz | 160 | 0.2 | 3 |
+| `snd.gulp` | Recibir | Evento abito:cue explícito | nota senoidal 260 Hz con glissando ascendente a 325 Hz | 160 | 0.2 | -2 |
+| `snd.send` | Enviar | Evento abito:cue explícito | nota senoidal 2200 Hz con glissando ascendente a 2750 Hz | 160 | 0.2 | 1 |
+| `snd.proud` | Orgullo | Evento abito:cue explícito | nota senoidal 980 Hz con glissando ascendente a 1225 Hz | 160 | 0.2 | -2 |
+| `snd.wink` | Guiño | Evento abito:cue explícito | nota senoidal 1450 Hz con glissando ascendente a 1812,5 Hz | 160 | 0.2 | -2 |
+| `snd.yawn` | Bostezo | Evento abito:cue explícito | nota senoidal 290 Hz con glissando ascendente a 362,5 Hz | 160 | 0.2 | -2 |
+| `snd.attach` | Adjuntar | Evento abito:cue explícito | nota senoidal 1100 Hz con glissando ascendente a 1375 Hz | 160 | 0.2 | -2 |
+| `snd.search` | Buscar | Evento abito:cue explícito | nota senoidal 560 Hz con glissando ascendente a 700 Hz | 160 | 0.2 | -2 |
+| `snd.rate` | Valorar | Evento abito:cue explícito | nota senoidal 1300 Hz con glissando ascendente a 1625 Hz | 160 | 0.2 | -2 |
+| `snd.sleep` | Dormir | Evento abito:cue explícito | nota senoidal 200 Hz con glissando ascendente a 250 Hz | 160 | 0.2 | -2 |
+| `snd.greeting` | Bienvenida | Evento abito:cue explícito | nota senoidal 680 Hz con glissando ascendente a 850 Hz | 160 | 0.2 | -2 |
+
+Los veinte últimos cues son las identidades sintetizadas de reserva para los nombres heredados de Abito y para
+los archivos propios (`greet`, `greeting`): identidades independientes, no alias, con búfer y compuerta de ritmo
+propios. El motor sólo los reproduce ante un evento `abito:cue` explícito con el id exacto; no hay productores
+instalados y no se inventan disparadores. Todos comparten nivel 0,2 y una sola nota senoidal de 160 ms
+(ataque 10 ms, relajación 100 ms) con glissando ascendente de f a f × 1,25. Su prioridad es -2, salvo
+`snd.approval` y `snd.question` (4), `snd.approve` (3), `snd.finish` (2) y `snd.send` (1).
 
 `desktop:state` contiene el snapshot del host: `payload.state` es exactamente `compact`, `expanded` o `hidden`.
 La primera observación válida sólo fija una línea base. `hidden → expanded` produce **peek solamente**, no open.

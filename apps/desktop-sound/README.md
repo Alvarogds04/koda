@@ -1,6 +1,6 @@
 # abito-desktop-sound — motor de sonido de la isla (#313)
 
-Un único archivo UMD sin dependencias, `sound-engine.js`, que sintetiza los 17 cues del catálogo (`docs/desktop-sound-catalog.md`) con un subconjunto de WebAudio (osciladores y ganancias). **Sin acceso a archivos, sin DOM, sin red.** Admite muestras opcionales ya decodificadas, inyectadas por el host; sin ellas usa la síntesis propia. Apagado por defecto. Parámetros por cue: `docs/CUES.md`.
+Un único archivo UMD sin dependencias, `sound-engine.js`, que sintetiza los 37 cues del catálogo (`docs/desktop-sound-catalog.md`) con un subconjunto de WebAudio (osciladores y ganancias). **Sin acceso a archivos, sin DOM, sin red.** Admite muestras opcionales ya decodificadas, inyectadas por el host; sin ellas usa la síntesis propia. Apagado por defecto. Parámetros por cue: `docs/CUES.md`.
 
 Este paquete no toca `apps/desktop-tauri`; el carril de Tauri integra según este contrato.
 
@@ -56,7 +56,7 @@ La detección de eventos vive en la página (`notify.js`, `chat.js`, `island.js`
 document.addEventListener('abito:cue', (e) => { engine.play(e.detail); }); // fire-and-forget: nunca lanza ni rechaza
 ```
 
-El motor acepta únicamente los 17 ids del catálogo (cualquier otro valor, incluidos `__proto__` o no strings, resuelve `unknown_cue`) y mantiene su propio limitador como segunda línea (250 ms global, 2 s por id, prioridad `error` > `attention` > `confirm`/`reject` > `notice`/`expired` > `sent` > `think`/`reply`/`listen` > `pop` > `open`/`close`/`peek`/`hover`/`tick`/`love`). Por eso `sent` seguido de `think` a menos de 250 ms suena como `sent` y descarta `think`, tal como pide `odd/tasks/island-sounds.md`; no se fusionan ni se encolan.
+El motor acepta únicamente los 37 ids del catálogo (cualquier otro valor, incluidos `__proto__` o no strings, resuelve `unknown_cue`) y mantiene su propio limitador como segunda línea (250 ms global, 2 s por id, prioridad `error` > `attention` = `approval` = `question` > `confirm`/`reject` = `approve` > `notice`/`expired` = `finish` > `sent` = `send` > `think`/`reply`/`listen` > `pop` > `open`/`close`/`peek`/`hover`/`tick`/`love` y los demás cues de `abito:cue`). Por eso `sent` seguido de `think` a menos de 250 ms suena como `sent` y descarta `think`, tal como pide `odd/tasks/island-sounds.md`; no se fusionan ni se encolan.
 
 **Modo de fallo más probable: el silencio.** El motor arranca APAGADO y NO REPRODUCE NADA hasta que se cumplan las dos condiciones: `applyPrefs({v:1,sound:true})` (o `setEnabled(true)`) **y** `ready()`. Si el cableado olvida una de las dos, todos los `play()` resuelven `disabled` o `not_ready` sin error. Durante la integración conviene pasar `onDiagnostic` y comprobar `engine.state()`.
 
@@ -75,11 +75,11 @@ El motor acepta únicamente los 17 ids del catálogo (cualquier otro valor, incl
 
 ## Muestras propias opcionales (#467)
 
-`engine.setSample(id, bufferOrNull)` acepta sólo los diecisiete ids del catálogo y un AudioBuffer-like con `duration` finita positiva y `getChannelData()`; devuelve `true` al instalarlo o quitarlo con `null`, `false` ante valores inválidos o motor cerrado. No decodifica ni lee archivos. `engine.clearSamples()` quita todas las muestras (devuelve `undefined`); `close()` también las libera. Ninguno lanza excepciones.
+`engine.setSample(id, bufferOrNull)` acepta sólo los treinta y siete ids del catálogo y un AudioBuffer-like con `duration` finita positiva y `getChannelData()`; devuelve `true` al instalarlo o quitarlo con `null`, `false` ante valores inválidos o motor cerrado. No decodifica ni lee archivos. `engine.clearSamples()` quita todas las muestras (devuelve `undefined`); `close()` también las libera. Ninguno lanza excepciones.
 
 Una muestra sustituye las notas, no las compuertas: apagado, ready, quiet, inactive, prioridad, duplicados, ritmo y máximo de tres voces siguen iguales. Se conecta por ganancia `gain × cue.level`, y se detiene/desconecta con el mismo ciclo de vida que la síntesis. La duración de la muestra es la del archivo decodificado, no la de las notas del catálogo.
 
-En Tauri, `frontend/sound-wiring.js` obtiene `sound_action {action:'list'}` al arrancar y por cada `sounds:changed`; sólo lee los diecisiete stems conocidos mediante `{action:'read',name}`. Valida base64 no vacío de hasta 2 MiB, decodifica con el AudioContext compartido del motor e inyecta el buffer. Los reloads se serializan; cada uno borra las muestras anteriores, así que una eliminación o fallo de lectura/decodificación vuelve al cue sintetizado. Sin invoke o AudioContext no registra el lector. No se distribuyen archivos de audio ni bytes de Coucou.
+En Tauri, `frontend/sound-wiring.js` obtiene `sound_action {action:'list'}` al arrancar y por cada `sounds:changed`; sólo lee los stems conocidos del catálogo mediante `{action:'read',name}`. Valida base64 no vacío de hasta 2 MiB, decodifica con el AudioContext compartido del motor e inyecta el buffer. Los reloads se serializan; cada uno borra las muestras anteriores, así que una eliminación o fallo de lectura/decodificación vuelve al cue sintetizado. Sin invoke o AudioContext no registra el lector. No se distribuyen archivos de audio ni bytes de Coucou.
 
 ## API
 
@@ -103,7 +103,7 @@ Orden de comprobación en `play()`: `closed`, `unknown_cue`, `disabled`, `not_re
 | `no_audio` | No se pudo crear o usar el contexto. |
 | `closed` | El motor está cerrado. |
 
-Limitador global: nunca encola ni interrumpe; los cues pedidos con menos de `coalesceMs` entre sí se agrupan y gana el de mayor prioridad (error > attention > confirm = reject > notice = expired > sent > think = reply = listen > pop > open = close = peek = hover = tick = love). Si un contexto suspendido tarda en reanudarse, al terminar la espera acotada se vuelven a comprobar todas las compuertas y el limitador; los tiempos de 250 ms y 2 s se estampan en el instante del commit al grafo, no al recibir la petición.
+Limitador global: nunca encola ni interrumpe; los cues pedidos con menos de `coalesceMs` entre sí se agrupan y gana el de mayor prioridad (error > attention = approval = question > confirm = reject = approve > notice = expired = finish > sent = send > think = reply = listen > pop > open = close = peek = hover = tick = love y los demás cues de `abito:cue`). Si un contexto suspendido tarda en reanudarse, al terminar la espera acotada se vuelven a comprobar todas las compuertas y el limitador; los tiempos de 250 ms y 2 s se estampan en el instante del commit al grafo, no al recibir la petición.
 
 ### Diagnósticos
 
@@ -159,6 +159,40 @@ document.dispatchEvent(new CustomEvent('abito:cue', { detail: 'snd.tick' }));
 No se modifican esos productores en este carril. Las preferencias sound=false y gain=0 silencian también estas
 interacciones; la ganancia del usuario se aplica como `gain × cue.level`. Los stems de override nuevos son
 `open`, `close`, `peek`, `hover`, `pop`, `tick`, `love`; requieren la ampliación paralela de STEMS en Rust por el padre.
+
+### Cues de `abito:cue` (nombres heredados de Abito y archivos propios)
+
+Además de los diecisiete anteriores, el catálogo tiene veinte identidades sintetizadas de reserva: los nombres
+heredados de Abito y los stems de los archivos propios (`greet`, `greeting`). Son identidades independientes,
+no alias: cada una conserva su búfer y su compuerta de ritmo. Parámetros completos: `docs/CUES.md`.
+
+El motor sólo los reproduce ante un evento `abito:cue` explícito con el id exacto. No hay productores instalados
+y no se inventan disparadores: los nombres sugieren el evento, pero el disparador real lo decide quien emita el
+evento. Todos comparten nivel 0,2, una sola nota senoidal de 160 ms (ataque 10 ms, relajación 100 ms) con
+glissando ascendente de f a f × 1,25, y prioridad -2 salvo los excepcionales:
+
+| Cue | Nombre | Prioridad |
+| --- | --- | --- |
+| `snd.blip` | Toque | -2 |
+| `snd.slap` | Golpe | -2 |
+| `snd.annoyed` | Molestia | -2 |
+| `snd.dizzy` | Mareo | -2 |
+| `snd.greet` | Saludo | -2 |
+| `snd.work` | Trabajo | -2 |
+| `snd.finish` | Terminado | 2 |
+| `snd.approval` | Aprobación pendiente | 4 |
+| `snd.question` | Pregunta | 4 |
+| `snd.approve` | Aprobado | 3 |
+| `snd.gulp` | Recibir | -2 |
+| `snd.send` | Enviar | 1 |
+| `snd.proud` | Orgullo | -2 |
+| `snd.wink` | Guiño | -2 |
+| `snd.yawn` | Bostezo | -2 |
+| `snd.attach` | Adjuntar | -2 |
+| `snd.search` | Buscar | -2 |
+| `snd.rate` | Valorar | -2 |
+| `snd.sleep` | Dormir | -2 |
+| `snd.greeting` | Bienvenida | -2 |
 
 ### Lo que NUNCA debe sonar
 
