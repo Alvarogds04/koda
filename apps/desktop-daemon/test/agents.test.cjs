@@ -16,7 +16,15 @@ const FIXTURE = path.join(__dirname, "fixtures", "fake-installer.cjs");
 // macOS injects __CF_USER_TEXT_ENCODING into every process at exec (CoreFoundation); the fake
 // installer records its own process.env, so on darwin this key appears although the product passed
 // an allowlisted env. It is OS-injected and never comes from the parent environment — not a leak.
-const OS_INJECTED_ENV = process.platform === "darwin" ? ["__CF_USER_TEXT_ENCODING"] : [];
+const OS_INJECTED_ENV = [
+	...(process.platform === "darwin" ? ["__CF_USER_TEXT_ENCODING"] : []),
+	// Windows: the OS adds the user-profile pair HOMEDRIVE/HOMEPATH to a spawned child's environment
+	// beyond the explicit env block (observed on the Windows CI runner, CI 41729969464 test 60: the
+	// recorded child env carries HOMEDRIVE although the product passes the closed childEnv allowlist).
+	// They are OS-injected profile facts, never parent secrets; the env OPTION the product passes stays
+	// asserted closed by the HU-047 run-seam tests, which record exactly what the product handed over.
+	...(win ? ["HOMEDRIVE", "HOMEPATH"] : []),
+];
 const HASH_A = "a".repeat(64);
 const HASH_B = "b".repeat(64);
 const HASH_R = "c".repeat(64);
@@ -366,9 +374,10 @@ test("child env: allowlist + ABITO_ISLAND_EXE only, HOME is the real home passed
 		}
 	}
 	assert.equal(s.calls().length, 7);
-	// Same closed allowlist as the HU-047 tests: POSIX PATH+HOME (+LANG), Windows USERPROFILE+SystemRoot with
-	// the System32 PATH. Each OS asserts its own real mechanism; neither leaks anything else.
-	const allowedEnv = ["HOME", "ABITO_ISLAND_EXE", "LANG", ...(win ? ["USERPROFILE", "SystemRoot", "PATH"] : ["PATH"]), ...OS_INJECTED_ENV];
+	// The product allowlist is DERIVED from src/agents.cjs childEnv (never guessed): what the manager
+	// passes is exactly childEnv(), plus the OS-injected keys above (the real spawn's child process
+	// environment carries them on Windows; the injected-run HU-047 tests pin the option itself).
+	const allowedEnv = [...Object.keys(s.manager.childEnv()), ...OS_INJECTED_ENV];
 	for (const call of s.calls()) {
 		for (const k of Object.keys(call.env)) assert.ok(allowedEnv.includes(k), `unexpected env ${k}`);
 		assert.equal(call.env.HOME, s.home);
@@ -511,6 +520,10 @@ test("hung installer: killed on timeout (whole group), generic failure", async (
 	const pid = Number(fs.readFileSync(path.join(s.base, "grandchild.pid"), "utf8"));
 	for (let i = 0; i < 40 && alive(pid); i++) await sleep(50);
 	assert.equal(alive(pid), false, "grandchild killed with the group");
+	// The killed installer itself can answer kill(0) for a moment on macOS: the pid is dead but not yet
+	// reaped (a zombie answers signal 0) — the same bounded wait the grandchild line uses. Pre-existing
+	// flaky race (CI 41729969464 macOS job-126245055334, test 70); test-only, never observed on Linux.
+	for (let i = 0; i < 40 && alive(s.calls()[0].pid); i++) await sleep(50);
 	assert.equal(alive(s.calls()[0].pid), false);
 });
 

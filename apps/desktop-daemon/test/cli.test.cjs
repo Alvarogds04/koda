@@ -577,7 +577,12 @@ test("#390 GD029 check (3): a live pid whose endpoint refuses is never replaced;
 		const ledger = path.join(root, "runtime", "launches.jsonl");
 		if (WIN) {
 			assert.ok(!fs.existsSync(ledger) || fs.readFileSync(ledger, "utf8").trim() === "", "no ledger record without a private (0600) file");
-			assert.ok(!fs.readFileSync(file, "utf8").includes("ttttt"), "the session never carries the token it was written with");
+			// The refused run wrote nothing anywhere else. The incumbent session — planted by this test,
+			// token included — is untouched (the ino/pid asserts above), so the only file in runtime that
+			// still carries the token is that untouched session; nothing NEW carries it. This is the
+			// Windows twin of the POSIX ledger token-hygiene assert below (the ledger records nothing on
+			// Windows — registered gap — so the hygiene assert moves to the runtime directory itself).
+			assert.deepEqual(fs.readdirSync(path.join(root, "runtime")).filter((n) => n !== "launches.jsonl").sort(), ["session.json"], "the refused run wrote nothing into runtime");
 		} else {
 			const text = fs.readFileSync(ledger, "utf8");
 			const last = text.trim().split("\n").map((line) => JSON.parse(line)).at(-1);

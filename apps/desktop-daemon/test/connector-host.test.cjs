@@ -384,21 +384,33 @@ test("handoff identity: a DIRECT child of this daemon whose /proc state is Z (or
 	assert.ok(["S", "R"].includes(real.state), "premise: genuinely alive");
 	const file = await validHandoff(t, island, child.pid, real.start);
 	assert.equal(readHandoff(file, island, child, real.start).pid, child.pid, "control: accepted while the state is S/R");
+	// The state letter comes from /proc/<pid>/stat on Linux and from /bin/ps (src/procinfo.cjs runPs, looked up at call
+	// time) on macOS: intercept exactly that one source per OS, so the same refusal is proven on both.
+	const procinfo = require("../src/procinfo.cjs");
 	const statPath = `/proc/${child.pid}/stat`;
 	const original = fs.readFileSync;
-	t.after(() => { fs.readFileSync = original; });
+	const originalPs = procinfo.runPs;
+	const restore = () => { fs.readFileSync = original; procinfo.runPs = originalPs; };
+	t.after(restore);
 	for (const letter of ["Z", "X"]) {
-		fs.readFileSync = function patched(target, ...rest) {
-			const text = original.call(this, target, ...rest);
-			if (target !== statPath || typeof text !== "string") return text;
-			const close = text.lastIndexOf(")");
-			return `${text.slice(0, close + 2)}${letter}${text.slice(close + 3)}`;
-		};
-		assert.equal(procIdentity(child.pid).state, letter, `premise: /proc now reports ${letter}`);
+		if (process.platform === "darwin") {
+			procinfo.runPs = (pid, ...rest) => {
+				const info = originalPs(pid, ...rest);
+				return pid === child.pid && info ? { ...info, state: letter } : info;
+			};
+		} else {
+			fs.readFileSync = function patched(target, ...rest) {
+				const text = original.call(this, target, ...rest);
+				if (target !== statPath || typeof text !== "string") return text;
+				const close = text.lastIndexOf(")");
+				return `${text.slice(0, close + 2)}${letter}${text.slice(close + 3)}`;
+			};
+		}
+		assert.equal(procIdentity(child.pid).state, letter, `premise: the process source now reports ${letter}`);
 		assert.equal(procIdentity(child.pid).ppid, process.pid, "premise: parent unchanged");
 		assert.equal(procIdentity(child.pid).start, real.start, "premise: start time unchanged");
 		assert.throws(() => readHandoff(file, island, child, real.start), /connector host unavailable/, `state ${letter} refused`);
-		fs.readFileSync = original;
+		restore();
 	}
 });
 
