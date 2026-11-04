@@ -269,6 +269,36 @@ test('the runtime member audit works with bsdtar\'s -tv columns too (macOS tar),
   assert.equal(fs.existsSync(e2.prefix), false);
 });
 
+test('the member audit is linear: one tar listing walked once, never a per-member rescan of the type list (RDD advisory: quadratic)', () => {
+  const src = fs.readFileSync(SCRIPT, 'utf8');
+  const audit = src.slice(src.indexOf('# ---- 2. runtime archive members'), src.indexOf('# ---- 3. extract into a private temp dir'));
+  assert.ok(audit.length > 0, 'audit section found');
+  assert.doesNotMatch(audit, /sed -n "\$\{i\}p"/, 'no per-member sed over the whole listing (16 585 members took 16.6 s)');
+  assert.doesNotMatch(audit, /\$\(\(i \+ 1\)\)/, 'no per-member counter used to index into a list');
+});
+test('the member audit of a 16 000-member archive finishes in a few seconds (linear in the member count)', () => {
+  const dir = tmp();
+  const root = path.join(dir, 'runtime');
+  fs.mkdirSync(path.join(root, 'node_modules'), { recursive: true });
+  for (let d = 0; d < 160; d += 1) {
+    const sub = path.join(root, 'node_modules', `p${d}`);
+    fs.mkdirSync(sub);
+    for (let f = 0; f < 100; f += 1) fs.writeFileSync(path.join(sub, `f${f}.js`), '');
+  }
+  const archive = path.join(dir, 'many.tar.gz');
+  assert.equal(cp.spawnSync('tar', ['-czf', archive, '-C', root, '.']).status, 0);
+  const src = fs.readFileSync(SCRIPT, 'utf8');
+  const audit = src.slice(src.indexOf('# ---- 2. runtime archive members'), src.indexOf('# ---- 3. extract into a private temp dir'));
+  const harness = path.join(dir, 'audit.sh');
+  fs.writeFileSync(harness, `set -eu\ndie() { printf 'install.sh: %s\\n' "$*" >&2; exit 1; }\nSTAGE=${JSON.stringify(dir)}\nRUNTIME_ARCHIVE=many.tar.gz\n${audit}\necho audited\n`);
+  const started = Date.now();
+  const r = cp.spawnSync('/bin/sh', [harness], { encoding: 'utf8', timeout: 60_000 });
+  const secs = (Date.now() - started) / 1000;
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.stdout, 'audited\n');
+  assert.ok(secs < 5, `16 161 members audited in ${secs.toFixed(1)} s (must be < 5 s)`);
+});
+
 test('uninstall removes PREFIX/runtime when it is a real directory inside PREFIX, and leaves a PREFIX/runtime symlink alone', () => {
   const st = stage(), e = env();
   assert.equal(install(st, e).status, 0);

@@ -228,12 +228,14 @@ note "Stage verified against receipt.json ($STAGE)."
 names_list="$(tar -tzf "$STAGE/$RUNTIME_ARCHIVE" 2>/dev/null)" || die "cannot list the runtime archive $RUNTIME_ARCHIVE (corrupt, or tar is missing)"
 types_list="$(tar -tvzf "$STAGE/$RUNTIME_ARCHIVE" 2>/dev/null | cut -c1)" || die "cannot list the runtime archive $RUNTIME_ARCHIVE (corrupt, or tar is missing)"
 [ -n "$names_list" ] || die "the runtime archive $RUNTIME_ARCHIVE is empty"
-[ "$(printf '%s\n' "$names_list" | wc -l)" -eq "$(printf '%s\n' "$types_list" | wc -l)" ] \
+# Pair each name with its type in ONE linear pass (awk walks the names once; the types are one string, one char per
+# member), then audit the pairs in a single loop: linear in the member count (~16 000 for the real runtime).
+types="$(printf '%s\n' "$types_list" | tr -d '\n')"
+pairs="$(printf '%s\n' "$names_list" | awk -v types="$types" '{ printf "%s %s\n", substr(types, NR, 1), $0 } END { if (NR != length(types)) exit 3 }')" \
   || die "the runtime archive $RUNTIME_ARCHIVE has member names that tar cannot list one per line"
-i=0
-while IFS= read -r member; do
-  i=$((i + 1))
-  first="$(printf '%s\n' "$types_list" | sed -n "${i}p")"
+while IFS= read -r pair; do
+  first=${pair%"${pair#?}"}
+  member=${pair#??}
   case "$first" in
     -|d) ;; # regular file or directory
     *) die "refusing runtime archive member «$member»: not a regular file or directory (symlink/hardlink/device/fifo)" ;;
@@ -250,7 +252,7 @@ while IFS= read -r member; do
     *) die "refusing runtime archive member «$member»: not relative to the runtime root" ;;
   esac
 done <<MEMBERS
-$names_list
+$pairs
 MEMBERS
 
 # ---- 3. extract into a private temp dir, then verify with THAT node ----------------------
