@@ -27,6 +27,23 @@ assert.equal(capped.view(), null, 'an exhausted dedupe budget reports unavailabl
 const { IslandServer } = require('../../desktop-daemon/src/server.cjs');
 (async () => {
   const engine = { pid: process.pid, sessionFile: 'fixture-session', sessionEpoch: 0, status: 'ready' };
+  if (process.platform !== 'linux') {
+    // macOS/Windows: /proc identity does not exist there (registered gap «sessions list
+    // macOS/Windows»; daemon identity off Linux is start-time+ppid, Q2a), so sessionIdForPid
+    // is honestly null and the daemon claims NO tool stream. Pin today's fail-closed outcome:
+    // the frame itself stays valid, and no session ever carries a guessed tool stream.
+    assert.equal(S.sessionIdForPid(process.pid), null, 'off Linux /proc identity does not exist: honest null, never a guess');
+    const own = { ...row, id: 's-0123abcd' }; delete own.tools;
+    const foreign = { ...row, id: 's-ffffffff', kind: 'codex' }; delete foreign.tools;
+    const server = new IslandServer({ token: 'fixture-token-not-a-secret', runtimeDir: '/tmp/unused-session-tools', engine, sessions: { snapshot: async () => ({ sessions: [own, foreign], truncated: false }) } });
+    server.onEngineEvent(event('tool_execution_start', 'a'));
+    server.onEngineEvent(event('tool_execution_end', 'a'));
+    const result = await server.sessionsOutcome();
+    assert.equal(result.sessions[0].tools, undefined, 'no /proc identity: no tool stream is claimed, the frame stays valid');
+    assert.equal(result.sessions[1].tools, undefined);
+    console.log('session-tools-check: ingestion, cache overlay, isolation, lifecycle and bounds pass (off Linux: fail-closed frame, no /proc identity, no tool stream)');
+    return;
+  }
   const own = { ...row, id: S.sessionIdForPid(process.pid) }; delete own.tools;
   const foreign = { ...row, id: 's-ffffffff', kind: 'codex' }; delete foreign.tools;
   const server = new IslandServer({ token: 'fixture-token-not-a-secret', runtimeDir: '/tmp/unused-session-tools', engine, sessions: { snapshot: async () => ({ sessions: [own, foreign], truncated: false }) } });

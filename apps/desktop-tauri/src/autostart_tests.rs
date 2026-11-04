@@ -31,6 +31,24 @@ fn sample_exe() -> std::path::PathBuf {
     }
 }
 
+/// Expected `Exec` argument list for a path text, derived with the SAME
+/// Desktop Entry Spec rule the template applies: the whole path as ONE
+/// argument inside double quotes, escaping the four reserved characters
+/// (`\`, `"`, `$`, `` ` ``) with a backslash. On Windows this doubles every
+/// separator backslash — the naive `Exec="{exe}"` interpolation without this
+/// rule is what failed Windows CI 41729969464. The hand-written literals in
+/// the tests pin the rule itself, so a shared drift is still caught.
+fn spec_quoted(text: &str) -> String {
+    let escaped: String = text
+        .chars()
+        .flat_map(|c| match c {
+            '\\' | '"' | '$' | '`' => vec!['\\', c],
+            c => vec![c],
+        })
+        .collect();
+    format!("\"{escaped}\"")
+}
+
 // --- pure template -----------------------------------------------------------
 
 #[test]
@@ -41,7 +59,7 @@ fn entry_is_the_closed_template() {
     let mut lines = text.lines();
     assert_eq!(lines.next(), Some("[Desktop Entry]"), "entry must start with the section header");
     let rest: Vec<&str> = lines.collect();
-    let exec = format!("Exec=\"{}\" --autostart", exe.to_str().expect("utf-8 sample"));
+    let exec = format!("Exec={} --autostart", spec_quoted(exe.to_str().expect("utf-8 sample")));
     let icon = format!("Icon={}", icon.to_str().expect("utf-8 sample"));
     for key in [
         "Type=Application",
@@ -58,6 +76,13 @@ fn entry_is_the_closed_template() {
     }
     assert_eq!(rest.len(), 9, "no extra keys beyond the closed template");
     assert!(text.ends_with('\n'), "desktop entries end with a newline");
+    // Pinned literal (not derived through spec_quoted): on Windows the spec
+    // escaping doubles every separator backslash inside the quoted Exec value.
+    #[cfg(windows)]
+    assert!(
+        text.contains(r#"Exec="C:\\Program Files\\Koda\\bin\\abito-island.exe" --autostart"#),
+        "pinned Windows Exec literal — got:\n{text}"
+    );
 }
 
 #[test]
@@ -70,7 +95,10 @@ fn entry_quoting_escapes_and_refuses_hostile_paths() {
         std::path::PathBuf::from("/opt/Abito Apps/island")
     };
     let text = desktop_entry(&spaced).expect("path with a space is quotable");
-    assert!(text.contains(&format!("Exec=\"{}\"", spaced.to_str().expect("utf-8"))), "{text}");
+    assert!(
+        text.contains(&format!("Exec={} --autostart", spec_quoted(spaced.to_str().expect("utf-8")))),
+        "{text}"
+    );
     // the spec escapes backslash, double quote, dollar and backtick inside
     // quotes. On Windows the backslash IS a separator, so the path exercises
     // its doubling; on POSIX the classic specials path does all four.
@@ -81,6 +109,21 @@ fn entry_quoting_escapes_and_refuses_hostile_paths() {
     };
     let text = desktop_entry(std::path::Path::new(tricky)).expect("escapable specials");
     assert!(text.contains(&format!("Exec={exec} --autostart")), "{text}");
+    // Windows-shaped proof that also runs on POSIX hosts: a leading-slash path
+    // whose components carry backslashes is absolute on Linux/macOS, and the
+    // quoted Exec value must double every backslash — the exact rule a native
+    // `C:\…` path exercises where the backslash IS the separator. Pinned as a
+    // literal so the doubling is never derived from the code it tests.
+    if !cfg!(windows) {
+        let win_shape = "/opt/C:\\Program Files\\Koda\\bin\\abito-island.exe";
+        let text = desktop_entry(std::path::Path::new(win_shape)).expect("absolute on POSIX");
+        assert!(
+            text.contains(
+                r#"Exec="/opt/C:\\Program Files\\Koda\\bin\\abito-island.exe" --autostart"#
+            ),
+            "Windows-shaped backslashes double through the real template — got:\n{text}"
+        );
+    }
     // control characters can never cross a .desktop value honestly
     for bad in ["/opt/a\nb", "/opt/a\rb", "/opt/a\tb", "\u{7}"] {
         assert!(desktop_entry(std::path::Path::new(bad)).is_none(), "{bad:?} refused");
@@ -195,7 +238,13 @@ fn the_visible_app_name_is_koda() {
     let text = super::desktop_entry(&exe).unwrap();
     assert!(text.contains("\nName=Koda\n"), "{text}");
     assert!(text.contains("\nComment=Koda\n"), "{text}");
-    assert!(text.contains(&format!("\"{}\" --autostart", exe.to_str().expect("utf-8"))), "the launcher keeps its internal name: {text}");
+    assert!(
+        text.contains(&format!(
+            "Exec={} --autostart",
+            spec_quoted(exe.to_str().expect("utf-8"))
+        )),
+        "the launcher keeps its internal name: {text}"
+    );
     assert!(!text.contains("Tauri"), "{text}");
 }
 
@@ -207,7 +256,7 @@ fn login_entry_identifies_itself_so_settings_stays_closed_at_login() {
         std::path::PathBuf::from("/private/Abito")
     };
     let text = desktop_entry(&exe).unwrap();
-    assert!(text.lines().any(|line| line == format!("Exec=\"{}\" --autostart", exe.to_str().expect("utf-8"))));
+    assert!(text.lines().any(|line| line == format!("Exec={} --autostart", spec_quoted(exe.to_str().expect("utf-8")))));
 }
 
 /// The Windows twin of the autostart mechanism: there is no XDG autostart off

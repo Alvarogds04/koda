@@ -11,6 +11,8 @@ const path = require('node:path');
 const T = require('./tmpdirs.cjs');
 let passed = 0;
 const test = (name, fn) => { fn(); passed += 1; };
+// the harness has no node:test: a skip just prints and is not counted as passed
+const skip = (name, reason) => console.log(`skip  ${name} — ${reason}`);
 const base = () => fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'tmpdirs-test-')));
 const names = b => fs.readdirSync(b).sort();
 // the pid of a process that has already exited (so /proc/<pid> is gone)
@@ -38,6 +40,11 @@ test('a child process that makes dirs leaves NONE behind when it exits, even aft
 });
 
 test('dirs of DEAD runs are swept on the next use; dirs of LIVE processes and foreign shapes are never touched', () => {
+  if (process.platform === 'win32') {
+    skip('dirs of DEAD runs are swept on the next use; dirs of LIVE processes and foreign shapes are never touched',
+      'POSIX sweep premises (uid + 0700 mode ownership, sub-base sweeping); on Windows ownership is the MARKER in the per-user temp and a dir in a sub-base is by design not swept — Windows twin test: «K2-01b: Windows ownership without uid/mode — only marked dirs in the per-user temp are swept; anything unprovable stays»');
+    return;
+  }
   const b = base();
   const dead = deadPid();
   const mk = n => { const p = path.join(b, n); fs.mkdirSync(p, { mode: 0o700 }); fs.writeFileSync(path.join(p, 'junk'), 'x'); return p; };
@@ -59,6 +66,11 @@ test('dirs of DEAD runs are swept on the next use; dirs of LIVE processes and fo
 });
 
 test('K2-01b: liveness does not depend on /proc — on a system without it (macOS) a LIVE process\'s dir survives the sweep', () => {
+  if (process.platform === 'win32') {
+    skip('K2-01b: liveness does not depend on /proc — on a system without it (macOS) a LIVE process\'s dir survives the sweep',
+      'POSIX liveness premises (kill(2), /proc simulation, 0700 mode); on Windows ownership is the MARKER in the per-user temp — Windows twin test: «K2-01b: Windows ownership without uid/mode — only marked dirs in the per-user temp are swept; anything unprovable stays»');
+    return;
+  }
   // Simulate macOS: no /proc entries exist. The sweep must still recognise the live parent and keep its dir.
   const b = base();
   const dead = deadPid();
