@@ -124,6 +124,9 @@ async function open(scenario = {}) {
       event: { listen: async (name, fn) => { (listeners[name] ||= []).push(fn); return () => {}; } },
     };
     window.__emit = (name, payload) => (listeners[name] || []).forEach(fn => fn({ payload }));
+    // K2-01b: `scenario.css` (test-only) is applied before the island renders, to stand in for another system font
+    // (the island must hold with ANY font: Noto here, DejaVu on the Ubuntu runner, SF on macOS, Segoe on Windows).
+    if (scenario.css) document.addEventListener('DOMContentLoaded', () => { const st = document.createElement('style'); st.textContent = scenario.css; document.head.appendChild(st); });
   }, { scenario, SESSIONS, UUID });
   if (scenario.fakeClock) await page.clock.install({ time: 0 }); // time still flows; runFor() jumps it (before any page script runs)
   await page.goto(`${base}/index.html`);

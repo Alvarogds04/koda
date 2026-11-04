@@ -158,7 +158,7 @@ html #capsule[data-view="overview"][data-notice-strip="on"] #notices[data-groupe
 #capsule[data-edge-hidden="true"] #edge-strip[data-state="error"] { background: var(--red-11); }
 #capsule[data-edge-hidden="true"] #edge-strip[data-state="working"] { background: var(--pill-dot, var(--island-live)); }
 /* question / permission pill (560 box): the text ellipsises 10px before the «Responder» button (vendor reserved 90, the button starts 88 from the edge) */
-#capsule[data-compact-ask="true"] #compact-activity { right: 100px; }
+#capsule[data-compact-ask="true"] #compact-activity { right: var(--compact-reply-reserve, 100px); } /* K2-01b: island.js measures the real button (any system font); 100px is the vendor fallback */
 /* nothing to show: a small capsule with only Koda, no dot and no text */
 #capsule[data-pill-bare="true"] #island::after { display: none; }
 #capsule[data-pill-fit="true"] #island::after { content: ""; position: absolute; left: 38px; top: 13px; width: 6px; height: 6px; border-radius: 50%;
