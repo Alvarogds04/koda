@@ -211,7 +211,8 @@ try {
     assert.equal((section.match(/!insertmacro AbitoInstallRuntime/g) || []).length, 1);
   });
   rule('R3-nsi-unconditional-runtime-macro: abito.nsi fails the BUILD with a clear message when no runtime archive was staged (no KODA_RUNTIME_SHA256)', () => {
-    const nsis = fs.readFileSync(path.join(crate, 'packaging/windows/abito.nsi'), 'utf8');
+    // A Windows checkout may give abito.nsi CRLF line endings (core.autocrlf); the rule is about content.
+    const nsis = fs.readFileSync(path.join(crate, 'packaging/windows/abito.nsi'), 'utf8').replace(/\r\n/g, '\n');
     const inc = nsis.indexOf('!include "${RUNTIMEDIR}\\runtime.nsh"');
     const guard = '!ifndef KODA_RUNTIME_SHA256\n!error "K2-02: the runtime archive was not staged (stage-runtime.cjs --runtime-archive)"\n!endif';
     assert.ok(nsis.includes(guard), 'ifndef/!error guard with the exact message');

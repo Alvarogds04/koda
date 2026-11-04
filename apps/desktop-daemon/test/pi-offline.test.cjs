@@ -22,6 +22,10 @@
 // runs on Linux, macOS and Windows there; with ABITO_REQUIRE_PI=1 absence FAILS instead.
 // Only private temp dirs are used: the island HOME/agent dir is isolatedEnv's own; the
 // user's ~/.pi and real config are never read or written.
+// Windows CI note (K2-02, CI 41853593735): on windows-latest these tests fail with `unsafe_path` from win-fs.cjs
+// checkPath <- isolation.ensureIsland, because the runner's temp dir is the 8.3 short path C:\Users\RUNNER~1\... and
+// win-fs refuses `~`. That is the same failure main has in every ensureIsland test on Windows (105 there), owned by
+// K2-01b and fixed by bb5bc69 (8.3 names resolved to their long form), which merges before K2-02. Green after that rebase.
 
 const test = require("node:test");
 const assert = require("node:assert/strict");

@@ -57,9 +57,11 @@ assert.doesNotMatch(smoke, /Wait-For \{ \(Test-Path[^\n]*endpoint\.json/);
 assert.match(smoke, /\} catch \{\s+Show-SmokeDiagnostics\s+throw\s+\} finally/);
 assert.match(smoke, /Get-Content -LiteralPath \$log.FullName -Tail 80/);
 assert.doesNotMatch(smoke, /Get-Content[^\n]*session\.json/);
-assert.match(smoke, /Get-Command node -All -ErrorAction SilentlyContinue/);
-assert.match(smoke, /'\/d', '\/c', 'set PATH&set ProgramFiles'/);
-assert.match(smoke, /Test-Path -LiteralPath \$candidate -PathType Leaf/);
+// K2-02: the no-node discovery diagnostics went with the no-node case (an installed Koda never looks up a system Node);
+// «no node/pi reachable» is now proven by smoke-windows-runtime.ps1, which quarantines them and checks the daemon's exe.
+const runtimeSmoke = fs.readFileSync(path.join(ci, 'smoke-windows-runtime.ps1'), 'utf8');
+assert.match(runtimeSmoke, /Get-Command \$tool -All -ErrorAction SilentlyContinue/);
+assert.match(runtimeSmoke, /if \(\$daemonExe -ne \$runtimeNode\) \{ throw /);
 assert.match(smoke, /\$runtimeFailures\.Add/);
 assert.ok(smoke.indexOf("PASS preserving uninstall") < smoke.indexOf('if ($runtimeFailures.Count -gt 0)'), 'uninstall must precede aggregated runtime failure');
 // K2-02 T2 (decision B): the installer stage builds the pinned runtime archive first and every
@@ -113,6 +115,21 @@ ciRule('smoke-windows-runtime.ps1 checks runtime\\node.exe against abito-install
   const install = script.indexOf('Start-Process -FilePath (Resolve-Path');
   assert.ok(script.indexOf("'runtime/node.exe'") > install && script.indexOf('ReparsePoint') > install, 'checked on the installed tree');
   assert.ok(script.indexOf('ReparsePoint') < script.indexOf("& $runtimeNode --version"), 'before the bundled node is executed');
+});
+ciRule('smoke-windows.ps1 (K2-02): the missing-runtime case is a BROKEN BUNDLED RUNTIME, never the 0.1 «Falta Pi/Node» advice an installed Koda can no longer show', () => {
+  // CI 41853593735: with the bundled runtime the daemon STARTED in the old no-pi/no-node cases (correct), so waiting for
+  // «Falta Pi…»/«Falta Node.js…» timed out. The failure path is now: the installed runtime manifest is removed, the
+  // island must report bundled_runtime_invalid with the reinstall sentence, the daemon must NOT start, and the manifest
+  // is restored in a finally so the uninstall check still sees the shipped set.
+  assert.doesNotMatch(smoke, /Falta Pi: instalalo|Falta Node\.js: instalalo/, 'no 0.1 missing-runtime advice expected from an installed Koda');
+  assert.doesNotMatch(smoke, /Hide-CanonicalNode|Restore-CanonicalNode|Show-NodeDiscovery/, 'the system-Node hiding helpers are gone with the no-node case');
+  const block = smoke.slice(smoke.indexOf("mode = 'broken-runtime'"), smoke.indexOf('$unrelated = '));
+  assert.ok(block.length > 0, 'a broken-runtime case exists before the uninstall section');
+  assert.match(block, /Rename-Item -LiteralPath \$manifest/, 'the installed runtime manifest is moved away');
+  assert.ok(block.includes("island host: no_daemon (bundled_runtime_invalid)"), 'exact code line');
+  assert.ok(block.includes('La instalación de Koda está dañada: volvé a instalar Koda.'), 'exact sentence');
+  assert.match(block, /-match 'abito-island-daemon: running'\) \{ throw /, 'the daemon must not start');
+  assert.match(block, /finally \{[^}]*Rename-Item -LiteralPath \$moved/, 'the manifest is restored in a finally');
 });
 let ciFailed = 0;
 for (const [name, fn] of ciRules) {
