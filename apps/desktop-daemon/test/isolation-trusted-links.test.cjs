@@ -34,7 +34,11 @@ function fakeFs(tree) {
 	const readlinkSync = (p) => {
 		const n = nodes.get(p);
 		if (!n || n.link === undefined) throw Object.assign(new Error(`EINVAL: ${p}`), { code: "EINVAL" });
-		return n.link;
+		// Link targets are written POSIX-style. On Windows an ABSOLUTE target gets this OS's drive root and its separators
+		// WITHOUT path normalization, so a `..` stays a component the walk must traverse; relative targets keep their shape.
+		// (CI 41802045346: unresolved "/home/evil" missed the tree on Windows, so the refusals were never reached.)
+		const parts = n.link.split("/").join(path.sep);
+		return n.link.startsWith("/") ? path.resolve("/").replace(/[\\/]+$/, "") + parts : parts;
 	};
 	return { lstatSync, readlinkSync };
 }
