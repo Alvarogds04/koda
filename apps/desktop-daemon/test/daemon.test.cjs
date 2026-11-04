@@ -1465,3 +1465,18 @@ test("the daemon wires a sessions provider: sessions_list answers a sessions fra
 		await daemon.stop();
 	}
 });
+
+test("K2-01b: mcp_import_preview reads the daemon's OWN env (its %APPDATA% on Windows), never this process's", { skip: !win && "Windows %APPDATA% location; Linux/macOS locations are home-relative and covered by «mcp_import_preview through the daemon» and mcp-import.test.cjs (win32 rows driven on every OS there)" }, async () => {
+	// Public preview output only: a Claude Desktop config placed under the daemon env's %APPDATA% is found, while this
+	// process's real %APPDATA% is never consulted (it holds no such server).
+	const { daemon, base } = make();
+	const home = path.join(base, "realhome");
+	const appData = path.join(base, "appdata");
+	fs.mkdirSync(path.join(appData, "Claude"), { recursive: true });
+	fs.writeFileSync(path.join(appData, "Claude", "claude_desktop_config.json"), JSON.stringify({ mcpServers: { desk: { command: "d" } } }));
+	fs.mkdirSync(home, { recursive: true });
+	daemon.env = daemonEnv(base, { HOME: home, APPDATA: appData });
+	const preview = await daemon.makeMcpImport().preview();
+	assert.deepEqual(preview.files, [{ source: "claude-desktop", status: "ok" }]);
+	assert.deepEqual(preview.servers.map((s) => [s.source, s.name]), [["claude-desktop", "desk"]]);
+});

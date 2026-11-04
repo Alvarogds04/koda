@@ -647,7 +647,7 @@ class Daemon extends EventEmitter {
 			return undefined; // no usable HOME: mcp_import_preview answers "unavailable"
 		}
 		const homeDir = home;
-		return { preview: async () => scanMcpConfigs({ home: homeDir }) };
+		return { preview: async () => scanMcpConfigs({ home: homeDir, env: this.env }) }; // K2-01b: its own %APPDATA% on Windows
 	}
 
 	/**

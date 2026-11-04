@@ -61,8 +61,63 @@ test("darwin locations", () => {
 
 test("unsupported platform scans nothing; missing files are simply absent", () => {
 	const home = tmp();
-	assert.deepEqual(scanMcpConfigs({ home, platform: "win32" }), { files: [], servers: [], truncated: false });
+	assert.deepEqual(scanMcpConfigs({ home, platform: "freebsd" }), { files: [], servers: [], truncated: false });
 	assert.deepEqual(scanMcpConfigs({ home, platform: "linux" }), { files: [], servers: [], truncated: false });
+	assert.deepEqual(scanMcpConfigs({ home, platform: "win32", env: {} }), { files: [], servers: [], truncated: false });
+});
+
+// K2-01b: Windows keeps Claude Desktop and VS Code under %APPDATA% (Roaming), read from the INJECTED env (the
+// daemon's own, never this test process's); Claude Code and Cursor stay home-relative. Same preview contract.
+test("win32 locations: claude desktop and vscode under %APPDATA%, claude code and cursor under home; secrets redacted", () => {
+	const home = tmp();
+	const appData = tmp();
+	write(appData, "Claude/claude_desktop_config.json", JSON.stringify({ mcpServers: { a: { command: "x", env: { API_KEY: "sk-win-secret" } } } }));
+	write(appData, "Code/User/mcp.json", JSON.stringify({ servers: { d: { type: "http", url: "https://mcp.example.com/mcp", headers: { Authorization: "Bearer win-bearer-secret" } } } }));
+	write(home, ".claude.json", JSON.stringify({ mcpServers: { b: { command: "y" } } }));
+	write(home, ".cursor/mcp.json", JSON.stringify({ mcpServers: { c: { command: "z" } } }));
+	// a Linux-layout file in home is NOT a Windows location
+	write(home, ".config/Claude/claude_desktop_config.json", JSON.stringify({ mcpServers: { linuxonly: { command: "q" } } }));
+
+	const result = scanMcpConfigs({ home, platform: "win32", env: { APPDATA: appData } });
+	assert.deepEqual(
+		result.files.map((f) => [f.source, f.status]).sort(),
+		[["claude-code", "ok"], ["claude-desktop", "ok"], ["cursor", "ok"], ["vscode", "ok"]],
+	);
+	assert.deepEqual(
+		result.servers.map((s) => [s.source, s.name]).sort(),
+		[["claude-code", "b"], ["claude-desktop", "a"], ["cursor", "c"], ["vscode", "d"]],
+	);
+	const text = JSON.stringify(result);
+	assert.ok(!text.includes("sk-win-secret"), "env value leaked");
+	assert.ok(!text.includes("win-bearer-secret"), "header value leaked");
+	assert.ok(!text.includes("linuxonly"));
+});
+
+test("win32 without a usable %APPDATA%: the APPDATA rows scan nothing (never the cwd or home), home rows still scan", () => {
+	const home = tmp();
+	write(home, ".cursor/mcp.json", JSON.stringify({ mcpServers: { c: { command: "z" } } }));
+	// a planted file where a cwd- or home-relative fallback would look
+	write(home, "Claude/claude_desktop_config.json", JSON.stringify({ mcpServers: { planted: { command: "p" } } }));
+	const cwd = process.cwd();
+	process.chdir(home);
+	try {
+		for (const env of [{}, { APPDATA: "" }, { APPDATA: "relative\\AppData" }, { APPDATA: `${home}${path.sep}..${path.sep}x` }, { APPDATA: 7 }]) {
+			const result = scanMcpConfigs({ home, platform: "win32", env });
+			assert.deepEqual(result.files, [{ source: "cursor", status: "ok" }], JSON.stringify(env));
+			assert.deepEqual(result.servers.map((s) => s.name), ["c"], JSON.stringify(env));
+		}
+	} finally {
+		process.chdir(cwd);
+	}
+});
+
+test("the env option only feeds %APPDATA% on win32: linux and darwin ignore it", () => {
+	const home = tmp();
+	const appData = tmp();
+	write(appData, "Claude/claude_desktop_config.json", JSON.stringify({ mcpServers: { a: { command: "x" } } }));
+	for (const platform of ["linux", "darwin"]) {
+		assert.deepEqual(scanMcpConfigs({ home, platform, env: { APPDATA: appData } }), { files: [], servers: [], truncated: false }, platform);
+	}
 });
 
 // --- mapping: ready / rejected --------------------------------------------
