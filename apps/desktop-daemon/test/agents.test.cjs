@@ -197,6 +197,66 @@ test('recap is no longer an agent: the protocol and the manager refuse it like a
 	assert.ok(!(await s.manager.list()).some(a => a.id === 'recap'), 'no recap row in the agents list');
 });
 
+// ----- K2-03 T3 (S2): removeLegacyRecap through the installer seam (same on Linux, macOS and Windows) -------------------
+// The file effects (only the 0.1 recap entries go, backup first, everything else byte-identical) are proven through the
+// REAL installer by desktop-harness test/install-recap.test.cjs and test/install-ui.test.cjs on all three OS. Here: the
+// daemon side asks for a REMOVAL preview, applies exactly that plan only when it changes something, and never rejects.
+const recapPreview = (changed, hash = HASH_R) => ({ schema: SCHEMA, ok: true, mode: "preview", harness: "recap", action: "remove", target: "x", exists: true, changed,
+	entries: ["UserPromptSubmit", "PostToolUse", "Stop"].map((event) => ({ event, op: changed ? "remove" : "keep" })), backup_path: null,
+	diff: { lines: [], hidden: 0, outside_hooks_changed_lines: 0 }, requires_trust_review: false, plan_hash: hash, notes: [] });
+function legacy(t, answer) {
+	const argvs = [], logs = [];
+	const s = setup(t, {}, { verifyBundled: () => {}, log: (l) => logs.push(l), run: async (argv) => {
+		argvs.push(argv.slice(1));
+		const out = answer(argv);
+		if (out instanceof Error) throw out;
+		return { exit: out.exit ?? (out.ok === false ? 65 : 0), stdout: Buffer.from(typeof out === "string" ? out : `${JSON.stringify(out.stdout ?? out)}\n`) };
+	} });
+	return { s, argvs, logs };
+}
+const PREVIEW_ARGS = ["install", "recap", "--user", "--remove", "--json"];
+
+test("legacy recap: preview removes something -> apply that exact plan (hash, audit dir), removed, one fixed log line", async (t) => {
+	const { s, argvs, logs } = legacy(t, (argv) => (argv.includes("--apply-plan") ? applied({ harness: "recap", action: "remove", hash: HASH_R }) : recapPreview(true)));
+	assert.equal(await s.manager.removeLegacyRecap(), "removed");
+	assert.deepEqual(argvs, [PREVIEW_ARGS, ["install", "recap", "--user", "--remove", "--apply-plan", HASH_R, "--audit-dir", path.join(s.islandDir, "audit"), "--json"]]);
+	assert.deepEqual(logs, ["legacy recap hooks removed"]);
+});
+
+test("legacy recap: nothing to remove -> clean, no apply, nothing logged (a second start is a no-op)", async (t) => {
+	const { s, argvs, logs } = legacy(t, () => recapPreview(false));
+	assert.equal(await s.manager.removeLegacyRecap(), "clean");
+	assert.deepEqual(argvs, [PREVIEW_ARGS]);
+	assert.deepEqual(logs, []);
+});
+
+test("legacy recap: an installer refusal (preview or apply) writes nothing more, logs a fixed line and is retried next start", async (t) => {
+	const atPreview = legacy(t, () => ({ ok: false, schema: SCHEMA, code: "refused", message: "fixed" }));
+	assert.equal(await atPreview.s.manager.removeLegacyRecap(), "refused");
+	assert.deepEqual(atPreview.argvs, [PREVIEW_ARGS], "no apply after a refused preview");
+	assert.deepEqual(atPreview.logs, ["legacy recap hooks: cleanup refused; retrying next start"]);
+	const atApply = legacy(t, (argv) => (argv.includes("--apply-plan") ? { ok: false, schema: SCHEMA, code: "plan_changed", message: "fixed" } : recapPreview(true)));
+	assert.equal(await atApply.s.manager.removeLegacyRecap(), "refused");
+	assert.equal(atApply.argvs.length, 2);
+	assert.ok(!atApply.logs.join("").includes(atApply.s.home), "no path in the log");
+});
+
+test("legacy recap: an install-shaped or mismatched answer is never applied", async (t) => {
+	const install = legacy(t, () => ({ ...recapPreview(true), action: "install" }));
+	assert.equal(await install.s.manager.removeLegacyRecap(), "failed");
+	assert.deepEqual(install.argvs, [PREVIEW_ARGS], "an install preview is never applied");
+	const mismatch = legacy(t, (argv) => (argv.includes("--apply-plan") ? applied({ harness: "recap", action: "remove", hash: HASH_B }) : recapPreview(true)));
+	assert.equal(await mismatch.s.manager.removeLegacyRecap(), "failed", "an apply answer for another plan is not success");
+});
+
+test("legacy recap: never rejects — garbage, a throwing run and a throwing logger all resolve (the daemon's void call is safe)", async (t) => {
+	assert.equal(await legacy(t, () => "garbage, not one JSON line\n").s.manager.removeLegacyRecap(), "failed");
+	assert.equal(await legacy(t, () => new Error("spawn exploded")).s.manager.removeLegacyRecap(), "failed");
+	const s = setup(t, {}, { verifyBundled: () => {}, run: async () => { throw new Error("x"); }, log: () => { throw new Error("log exploded"); } });
+	assert.equal(await s.manager.removeLegacyRecap(), "failed");
+	assert.equal(await new AgentsManager({ home: s.home, islandDir: s.islandDir, run: () => assert.fail("must not spawn") }).removeLegacyRecap(), "unavailable");
+});
+
 test("installerBin unset: every agent unavailable, no spawn", async () => {
 	const m = new AgentsManager({ home: os.tmpdir(), islandDir: os.tmpdir(), run: () => { assert.fail('must never spawn without installerBin'); } });
 	for (const id of ['statusline']) {
