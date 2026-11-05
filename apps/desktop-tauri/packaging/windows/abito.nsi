@@ -31,6 +31,11 @@ Unicode true
 !define RUNTIMEDIR "${BINDIR}\windows-runtime"
 !endif
 !include "${RUNTIMEDIR}\runtime.nsh"
+; A shipped Koda MUST carry its runtime: runtime.nsh defines the runtime macros only when
+; stage-runtime.cjs staged an archive, so fail the BUILD loudly instead of at an undefined macro.
+!ifndef KODA_RUNTIME_SHA256
+!error "K2-02: the runtime archive was not staged (stage-runtime.cjs --runtime-archive)"
+!endif
 
 Name "Koda"
 OutFile "${OUTDIR}\koda-${VERSION}-win-x64-setup.exe"
@@ -47,9 +52,14 @@ RequestExecutionLevel user
 
 Section "Koda"
   SetOutPath "$INSTDIR"
+  ; Order (K2-02 slice10): verify the runtime archive BEFORE writing anything, so a bad archive aborts
+  ; with nothing changed; write the uninstaller before the runtime swap, so a failed extract is removable.
+  !insertmacro AbitoVerifyRuntime
   !insertmacro AbitoInstallPayload
   SetOutPath "$INSTDIR"
   WriteUninstaller "$INSTDIR\uninstall.exe"
+  !insertmacro AbitoInstallRuntime
+  SetOutPath "$INSTDIR"
   ; Koda 0.1: an upgrade replaces the old «Abito Island» Start-menu entry with «Koda» (same binary, same install dir).
   Delete "$SMPROGRAMS\Abito Island\Abito Island.lnk"
   RMDir "$SMPROGRAMS\Abito Island"
@@ -64,6 +74,7 @@ SectionEnd
 
 Section "Uninstall"
   !insertmacro AbitoUninstallPayload
+  !insertmacro AbitoUninstallRuntime
   Delete "$INSTDIR\uninstall.exe"
   RMDir "$INSTDIR" ; succeeds only when the folder is empty — never silent-recursion
   Delete "$SMPROGRAMS\Koda\Koda.lnk"

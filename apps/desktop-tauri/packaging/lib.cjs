@@ -57,7 +57,6 @@ FRONTEND_FILES.push(
   'vendor/coucou/hub/notch.ts', 'vendor/coucou/hub/notch.js',
   'vendor/coucou/hub/agents.ts', 'vendor/coucou/hub/agents.js',
   'vendor/coucou/hub/chat.ts', 'vendor/coucou/hub/chat.js',
-  'vendor/coucou/hub/piinstall.ts', 'vendor/coucou/hub/piinstall.js', // HU-046: imported by accounts.js and agents.js
   'vendor/coucou/hub/integrations.ts', 'vendor/coucou/hub/integrations.js',
   'vendor/coucou/hub/shortcuts.ts', 'vendor/coucou/hub/shortcuts.js',
   'vendor/coucou/hub/recap.ts', 'vendor/coucou/hub/recap.js',
@@ -194,17 +193,33 @@ const HARNESS_FILES = ['bin/abito-hook.cjs', 'bin/abito-recap-hook.cjs', 'bin/ab
   'src/opencode.cjs', 'src/projection.cjs', 'src/recap-hook.cjs', 'src/redact.cjs', 'src/security.cjs', 'src/statusline.cjs', 'src/title-cache.cjs', 'src/windows-transport.cjs'];
 // Host modules come from Pi; no npm payload or dependency installation.
 const PI_FILES = ['pi-extension.ts', 'adapter.cjs', 'ask-tool.cjs', 'config.cjs', 'native-ask.cjs', 'questions.cjs', 'security.cjs', 'windows-transport.cjs'];
-const STAGED = ['abito-island', 'abito-island-launcher', 'abito-island.png', `${IDENTIFIER}.desktop`,
+// K2-02 T2 (decision A): the bundled runtime ships as ONE tar.gz, staged and hashed like every
+// other file; the Linux installer verifies its sha256 and its members before extracting it to
+// PREFIX/runtime. Windows stages the same archive; macOS ships the extracted folder instead.
+const RUNTIME_ARCHIVE = 'koda-runtime-linux-x64.tar.gz';
+const STAGED = ['abito-island', 'abito-island-launcher', 'abito-island.png', `${IDENTIFIER}.desktop`, RUNTIME_ARCHIVE,
   ...DAEMON_FILES.map(f => `desktop-daemon/${f}`), ...HARNESS_FILES.map(f => `desktop-harness/${f}`), ...PI_FILES.map(f => `desktop-pi/${f}`)];
 const STAGED_DIRS = ['desktop-pi', 'desktop-daemon', 'desktop-daemon/src', 'desktop-harness', 'desktop-harness/bin', 'desktop-harness/src'];
 // Enumerate the complete tree without following links, including empty directories.
-function stageEntries(dir, problems, prefix = '') {
+// `prune` names ONE top-level directory whose contents are not enumerated: only PREFIX/runtime
+// uses it (K2-02 T2). Its integrity comes from the hash-verified runtime archive, not from the
+// per-file walk; the directory itself must still be a real, non-linked, non-writable directory.
+// POSIX permission rules (group/world writable, executable binary) are unix rules: NTFS has no such bits and Node
+// reports every Windows file and directory as 0o666 with no exec bits. On Windows they would refuse every valid stage,
+// so they apply on unix only; hashes, links, the closed file set and the templates hold on every OS (K2-02).
+const POSIX_MODES = () => process.platform !== 'win32';
+function stageEntries(dir, problems, prefix = '', prune = '') {
   const files = [], dirs = [];
   for (const name of fs.readdirSync(dir)) {
     const rel = prefix + name;
     const stat = fs.lstatSync(path.join(dir, name));
     if (stat.isSymbolicLink()) { problems.push(`${rel} is a symlink`); continue; }
-    if (stat.mode & 0o022) problems.push(`${rel} is group/world writable`);
+    if (POSIX_MODES() && (stat.mode & 0o022)) problems.push(`${rel} is group/world writable`);
+    if (prune && rel === prune) {
+      if (stat.isDirectory()) dirs.push(rel);
+      else problems.push(`${rel} is not a directory`);
+      continue;
+    }
     if (stat.isDirectory()) {
       dirs.push(rel);
       const nested = stageEntries(path.join(dir, name), problems, rel + '/');
@@ -229,10 +244,10 @@ function checkInstalledLayout(dir) {
   const audit = path.join(dir, USER_AUDIT_DIR);
   let keepAudit = false;
   try { keepAudit = isUserAuditDir(audit); } catch { keepAudit = false; }
-  const entries = stageEntries(dir, problems);
+  const entries = stageEntries(dir, problems, '', 'runtime'); // PREFIX/runtime is the one unenumerated dir
   const ours = file => keepAudit && (file === USER_AUDIT_DIR || file.startsWith(USER_AUDIT_DIR + '/'));
   for (const file of entries.files) if (![...STAGED, 'receipt.json'].includes(file) && !ours(file)) problems.push(`unexpected installed file: ${file}`);
-  for (const sub of entries.dirs) if (!STAGED_DIRS.includes(sub) && !ours(sub)) problems.push(`unexpected installed directory: ${sub}`);
+  for (const sub of entries.dirs) if (!STAGED_DIRS.includes(sub) && sub !== 'runtime' && !ours(sub)) problems.push(`unexpected installed directory: ${sub}`);
   return problems;
 }
 // Abito 0.1.2 wrote its hook-install audit log into the install prefix (`<prefix>/audit/*.jsonl`). An upgrade keeps those
@@ -271,7 +286,7 @@ function verifyStage(dir, { sourceCrate } = {}) {
     if (!fs.existsSync(file)) { problems.push(`${name} missing`); continue; }
     const stat = fs.lstatSync(file);
     if (!stat.isFile()) problems.push(`${name} is not a regular file`);
-    if (stat.mode & 0o022) problems.push(`${name} is group/world writable`);
+    if (POSIX_MODES() && (stat.mode & 0o022)) problems.push(`${name} is group/world writable`);
     if (sha256File(file) !== (receipt.files || {})[name]) problems.push(`${name} hash differs from the receipt`);
   }
   if (fs.existsSync(path.join(dir, 'abito-island-launcher')) && fs.readFileSync(path.join(dir, 'abito-island-launcher'), 'utf8') !== launcherText()) problems.push('launcher differs from the closed template');
@@ -283,7 +298,7 @@ function verifyStage(dir, { sourceCrate } = {}) {
     if (sourceCrate && bytes.includes(Buffer.from(sourceCrate))) problems.push('binary embeds the source-tree path');
     for (const marker of ['--remote-debugging', 'devtools://', 'Prueba M3: propuesta servida por el backend falso', 'ABITO_PROBE', 'XTEST', 'abito-validator-fake-terminal-launcher']) if (bytes.includes(Buffer.from(marker))) problems.push(`binary contains «${marker}» (devtools/probe/fake)`);
     for (const prefix of [process.env.HOME && `${process.env.HOME}/.cargo`, process.env.HOME && `${process.env.HOME}/Apps`].filter(Boolean)) if (bytes.includes(Buffer.from(prefix))) problems.push(`binary embeds the build machine path ${prefix}…`);
-    if (!(fs.statSync(bin).mode & 0o100)) problems.push('binary is not executable');
+    if (POSIX_MODES() && !(fs.statSync(bin).mode & 0o100)) problems.push('binary is not executable');
   }
   return problems;
 }
@@ -307,5 +322,5 @@ function requireClean(crate) {
   return p;
 }
 
-module.exports = { provenance, requireClean, FORBIDDEN_ENV_PATTERN, ALLOWED_ABITO, R6_PREFIX, IDENTIFIER, FRONTEND_FILES, EXPECTED_PERMISSIONS, DAEMON_FILES, HARNESS_FILES, PI_FILES, STAGED, STAGED_DIRS, checkInstalledLayout, sha256, sha256File,
+module.exports = { provenance, requireClean, FORBIDDEN_ENV_PATTERN, ALLOWED_ABITO, R6_PREFIX, IDENTIFIER, FRONTEND_FILES, EXPECTED_PERMISSIONS, DAEMON_FILES, HARNESS_FILES, PI_FILES, RUNTIME_ARCHIVE, STAGED, STAGED_DIRS, checkInstalledLayout, sha256, sha256File,
   checkR6, checkFrontend, checkConfig, launcherText, desktopText, verifyStage };

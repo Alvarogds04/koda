@@ -17,7 +17,7 @@ foreach ($dir in @($workspace, $nodeDir, $roaming, $empty)) { New-Item -ItemType
 $node = Join-Path $nodeDir 'node.exe'
 Copy-Item -LiteralPath (Get-Command node.exe).Source -Destination $node
 # Pi is a real package, isolated from the runner's global npm prefix. No model call.
-& npm.cmd install --global --prefix (Join-Path $roaming 'npm') '@earendil-works/pi-coding-agent'
+& npm.cmd install --global --prefix (Join-Path $roaming 'npm') '@earendil-works/pi-coding-agent@1.4.0'
 if ($LASTEXITCODE -ne 0) { throw 'Isolated Pi installation failed' }
 $localData = [Environment]::GetFolderPath('LocalApplicationData')
 $recap = Join-Path $localData 'com.abitog.AbitoTauri/recap.json'
@@ -57,69 +57,13 @@ function Wait-For([scriptblock]$Condition, [string]$Description) {
     } while ([DateTime]::UtcNow -lt $deadline)
     throw "Timed out waiting for $Description"
 }
-# HU-060: the island resolves the canonical `%ProgramFiles%\nodejs\node.exe` from the ProgramFiles it inherits. The smoke sets
-# ProgramFiles to an empty directory, but the child process still reports the runner's real `C:\Program Files` (see the
-# no-node.environment.log of CI run 40742299960: the cmd.exe child printed ProgramFiles=C:\Program Files), and actions/setup-node
-# installs Node right there, so the island legitimately found a Node, passed the Node gate and failed on Pi (pi_missing) instead of
-# Node. The product is right; the smoke must make Node REALLY absent. For the no-node case the runner's canonical Node folder is moved
-# aside and always put back (Stop-Island runs in every case's finally and again at the end).
-$script:hiddenNode = $null
-function Hide-CanonicalNode {
-    $real = $originalEnv['ProgramFiles']
-    if ([string]::IsNullOrWhiteSpace($real)) { return }
-    $dir = Join-Path $real 'nodejs'
-    if (-not (Test-Path -LiteralPath $dir -PathType Container)) { return }
-    $aside = "$dir.abito-smoke-hidden"
-    if (Test-Path -LiteralPath $aside) { throw "Refusing to reuse $aside" }
-    Move-Item -LiteralPath $dir -Destination $aside
-    $script:hiddenNode = @{ Dir = $dir; Aside = $aside }
-    Write-Host "no-node: moved the runner's canonical Node folder aside ($dir)"
-}
-function Restore-CanonicalNode {
-    if ($null -eq $script:hiddenNode) { return }
-    $h = $script:hiddenNode; $script:hiddenNode = $null
-    Move-Item -LiteralPath $h.Aside -Destination $h.Dir
-    # Proven, not assumed: the next case (and the uninstall) must find the runner exactly as it was.
-    if (-not (Test-Path -LiteralPath (Join-Path $h.Dir 'node.exe') -PathType Leaf) -or (Test-Path -LiteralPath $h.Aside)) {
-        throw "no-node: the runner's canonical Node was NOT restored ($($h.Dir))"
-    }
-    Write-Host "no-node: restored the runner's canonical Node folder (node.exe is back, the aside folder is gone)"
-}
 function Stop-Island {
-    Restore-CanonicalNode
     if ($null -ne $script:process) {
         if (-not $script:process.HasExited) { $script:process.Kill($true) }
         if (-not $script:process.WaitForExit(10000)) { throw 'Owned island did not exit' }
         $script:process.Dispose()
         $script:process = $null
     }
-}
-function Show-NodeDiscovery {
-    Write-Host "no-node parent PATH=$env:PATH"
-    Write-Host "no-node parent ProgramFiles=$env:ProgramFiles"
-    Get-Command node -All -ErrorAction SilentlyContinue | Select-Object Name,CommandType,Source | Format-Table | Out-String | Write-Host
-    $systemNode = $false
-    foreach ($directory in @($env:PATH -split ';')) {
-        if (-not [IO.Path]::IsPathFullyQualified($directory)) { continue }
-        $candidate = Join-Path $directory 'node.exe'
-        $exists = Test-Path -LiteralPath $candidate -PathType Leaf
-        Write-Host "discover_node candidate: $candidate exists=$exists"
-        if ($exists -and ($directory -eq "$env:SystemRoot\System32" -or $directory -eq $env:SystemRoot)) { $systemNode = $true }
-    }
-    $candidate = Join-Path $env:ProgramFiles 'nodejs/node.exe'
-    Write-Host "discover_node candidate: $candidate exists=$(Test-Path -LiteralPath $candidate -PathType Leaf)"
-    $real = Join-Path $originalEnv['ProgramFiles'] 'nodejs/node.exe'
-    Write-Host "discover_node candidate (real ProgramFiles, as the child sees it): $real exists=$(Test-Path -LiteralPath $real -PathType Leaf)"
-    if ($systemNode) {
-        $env:PATH = $empty
-        Write-Host 'Runner has Node in a Windows system directory; no-node PATH now contains only the empty smoke directory.'
-    }
-    # Never dump all environment variables: only discovery-relevant path names.
-    $diagnostic = Start-Process -FilePath (Join-Path $env:SystemRoot 'System32/cmd.exe') -WorkingDirectory $workspace `
-        -ArgumentList @('/d', '/c', 'set PATH&set ProgramFiles') -PassThru -Wait `
-        -RedirectStandardOutput (Join-Path $root 'no-node.environment.log') -RedirectStandardError (Join-Path $root 'no-node.environment.stderr.log')
-    if ($diagnostic.ExitCode -ne 0) { throw 'Child discovery environment diagnostic failed' }
-    Get-Content -LiteralPath (Join-Path $root 'no-node.environment.log') | ForEach-Object { Write-Host $_ }
 }
 function Start-Island([string]$Mode) {
     # The ready scenario must prove the real default profile ACL works. Never
@@ -140,12 +84,11 @@ function Start-Island([string]$Mode) {
     $env:APPDATA = if ($ready) { $roaming } else { $empty }
     $env:ProgramFiles = $empty
     $systemPath = "$env:SystemRoot\System32;$env:SystemRoot"
-    $env:PATH = if ($Mode -eq 'no-node') { $systemPath } else { "$nodeDir;$systemPath" }
+    $env:PATH = "$nodeDir;$systemPath"
     if ($Mode -eq 'explicit-root') { $env:ABITO_PROJECT_ROOT = $workspace }
     else { Remove-Item Env:ABITO_PROJECT_ROOT -ErrorAction SilentlyContinue }
     Remove-Item Env:ABITO_ISLAND_DIR -ErrorAction SilentlyContinue
     Remove-Item Env:ABITO_DESKTOP_SOCKET -ErrorAction SilentlyContinue
-    if ($Mode -eq 'no-node') { Hide-CanonicalNode; Show-NodeDiscovery }
     $script:process = Start-Process -FilePath (Join-Path $install 'abito-island.exe') -WorkingDirectory $workspace -PassThru `
         -RedirectStandardOutput (Join-Path $root "$Mode.stdout.log") -RedirectStandardError (Join-Path $root "$Mode.stderr.log")
     # A forced stop can leave the previous process's metadata. Wait for this
@@ -166,7 +109,8 @@ try {
     $expectedJson = & $node -e 'const s=require("./packaging/windows/stage-runtime.cjs"); console.log(JSON.stringify([...s.BINARY_FILES,...s.RUNTIME_FILES,"uninstall.exe"].sort()))'
     if ($LASTEXITCODE -ne 0) { throw 'Cannot load expected installed file set' }
     $expected = @($expectedJson | ConvertFrom-Json)
-    $actual = @(Get-ChildItem -LiteralPath $install -File -Recurse | ForEach-Object { [IO.Path]::GetRelativePath($install, $_.FullName).Replace('\', '/') } | Sort-Object)
+    # K2-02: the bundled Node+Pi under runtime/ ships as one verified archive; ci/public/smoke-windows-runtime.ps1 proves it.
+    $actual = @(Get-ChildItem -LiteralPath $install -File -Recurse | ForEach-Object { [IO.Path]::GetRelativePath($install, $_.FullName).Replace('\', '/') } | Where-Object { -not $_.StartsWith('runtime/') } | Sort-Object)
     if (@(Compare-Object $expected $actual).Count -ne 0) { throw 'Installed payload differs from closed file set' }
     foreach ($file in $expected) {
         if ($file -eq 'uninstall.exe') { continue }
@@ -293,19 +237,33 @@ try {
     Write-Host 'PASS installed receiver and daemon with explicit Windows project root'
     Stop-Island
     $runtimeFailures = [System.Collections.Generic.List[string]]::new()
+    # K2-02: an installed Koda ships its own Node and Pi, so it can no longer be «missing» them (the daemon starts on
+    # runtime\node.exe even with no Node or Pi on the machine; smoke-windows-runtime.ps1 proves that with both quarantined).
+    # Its failure path is a BROKEN bundled runtime: discovery fails closed with bundled_runtime_invalid and the reinstall
+    # sentence, and never falls back to a system Node or Pi.
     foreach ($case in @(
-        @{ mode = 'no-pi'; message = 'Falta Pi: instalalo con npm install -g @earendil-works/pi-coding-agent.' },
-        @{ mode = 'no-node'; message = 'Falta Node.js: instalalo desde nodejs.org.' }
+        @{ mode = 'broken-runtime'; code = 'island host: no_daemon (bundled_runtime_invalid)'; message = 'La instalación de Koda está dañada: volvé a instalar Koda.' }
     )) {
+        $manifest = Join-Path $install 'runtime\koda-runtime.json'
+        $moved = "$manifest.k2-02-smoke-moved"
         try {
+            Rename-Item -LiteralPath $manifest -NewName (Split-Path -Leaf $moved)
             Start-Island $case.mode
-            Wait-For { (Get-Content -Raw -LiteralPath (Join-Path $root "$($case.mode).stderr.log")) -like "*$($case.message)*" } $case.message
-            if ((Get-Content -Raw -LiteralPath (Join-Path $root "$($case.mode).stderr.log")) -match 'abito-island-daemon: running') { throw 'Daemon unexpectedly started without runtime' }
-            Write-Host "PASS installed missing-runtime diagnostic: $($case.message)"
+            # Wait for BOTH lines: the code line and the sentence are separate writes, so reading after only one is a race.
+            Wait-For { $t = Get-Content -Raw -LiteralPath (Join-Path $root "$($case.mode).stderr.log") -ErrorAction SilentlyContinue; $t -like "*$($case.message)*" -and $t.Contains($case.code) } "$($case.code) + $($case.message)"
+            $stderr = Get-Content -Raw -LiteralPath (Join-Path $root "$($case.mode).stderr.log")
+            if (-not $stderr.Contains($case.code)) { throw "Missing the code line: $($case.code)" }
+            if ($stderr -match 'abito-island-daemon: running') { throw 'Daemon unexpectedly started on a broken bundled runtime' }
+            Write-Host "PASS installed broken-runtime diagnostic: $($case.code) + $($case.message)"
         } catch {
             $runtimeFailures.Add("$($case.mode): $($_.Exception.Message)")
             Show-SmokeDiagnostics
-        } finally { Stop-Island }
+        } finally {
+            try { Stop-Island } finally {
+                # Put the shipped manifest back even if Stop-Island throws: the uninstall check below needs the exact shipped set.
+                if (Test-Path -LiteralPath $moved) { Rename-Item -LiteralPath $moved -NewName (Split-Path -Leaf $manifest) }
+            }
+        }
     }
     $unrelated = Join-Path $install 'desktop-daemon/src/user-note.txt'
     [IO.File]::WriteAllText($unrelated, 'must survive uninstall')

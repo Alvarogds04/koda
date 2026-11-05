@@ -22,11 +22,14 @@ use std::sync::{Arc, Mutex};
 const REAP_POLL: std::time::Duration = std::time::Duration::from_millis(50);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum StartupFailure { NodeMissing, PiMissing, HostMissing, SpawnFailed, Unsupported }
+/// `BundledRuntimeInvalid` (K2-02 S2): Koda's own runtime folder exists beside the executable but fails validation
+/// (broken install): startup fails closed instead of silently using a system Node or Pi.
+pub enum StartupFailure { NodeMissing, PiMissing, BundledRuntimeInvalid, HostMissing, SpawnFailed, Unsupported }
 impl StartupFailure {
     pub fn code(self) -> &'static str {
         match self {
             Self::NodeMissing => "node_missing", Self::PiMissing => "pi_missing",
+            Self::BundledRuntimeInvalid => "bundled_runtime_invalid",
             Self::HostMissing => "host_missing", Self::SpawnFailed => "host_spawn_failed",
             Self::Unsupported => "host_platform_unsupported",
         }
@@ -65,13 +68,7 @@ impl HostSlot {
         }
     }
     fn note_failure(&self, reason: StartupFailure) {
-        eprintln!("island host: no_daemon ({})", reason.code());
-        #[cfg(any(target_os = "macos", windows))]
-        match reason {
-            StartupFailure::NodeMissing => eprintln!("Falta Node.js: instalalo desde nodejs.org."),
-            StartupFailure::PiMissing => eprintln!("Falta Pi: instalalo con npm install -g @earendil-works/pi-coding-agent."),
-            _ => {}
-        }
+        for line in failure_lines(reason, crate::nodefinder::Os::current()) { eprintln!("{line}") }
         crate::failure::report("daemon", "daemon-start", crate::failure::Reason::DaemonStartFailed, None);
         *self.failure.lock().expect("host failure lock") = Some(reason);
     }
@@ -115,18 +112,83 @@ impl HostSlot {
     }
 }
 
+/// K2-02 D1 (human decision «2a»): what a person reads when Koda's own runtime folder is present but broken.
+/// Koda never falls back to a system Node or Pi in that case: reinstalling Koda is the fix.
+pub const BUNDLED_RUNTIME_INVALID_SENTENCE: &str = "La instalación de Koda está dañada: volvé a instalar Koda.";
+
+/// The exact stderr lines for a startup failure: the code line, then its sentence when it has one. The same on
+/// Linux, macOS and Windows (K2-02 D1 parity); `_os` keeps the per-OS seam explicit for the tests.
+pub fn failure_lines(reason: StartupFailure, _os: crate::nodefinder::Os) -> Vec<String> {
+    let mut lines = vec![format!("island host: no_daemon ({})", reason.code())];
+    if let Some(sentence) = failure_sentence(reason) { lines.push(sentence.to_owned()) }
+    lines
+}
+
+/// The sentence printed for a startup failure, if it has one.
+pub fn failure_sentence(reason: StartupFailure) -> Option<&'static str> {
+    match reason {
+        // K2-02 (S4): with the bundled runtime these two are DEV-BUILD-ONLY paths (a release install always has the runtime
+        // folder beside the executable); the «Instalar Pi» / «Instalar Node» buttons are gone, the sentences stay as they were.
+        StartupFailure::NodeMissing => Some("Falta Node.js: instalalo desde nodejs.org."),
+        StartupFailure::PiMissing => Some("Falta Pi: instalalo con npm install -g @earendil-works/pi-coding-agent."),
+        StartupFailure::BundledRuntimeInvalid => Some(BUNDLED_RUNTIME_INVALID_SENTENCE),
+        _ => None,
+    }
+}
+
+/// What `discover` can fail with. `Missing` is the historical fail-closed answer (no candidate matched); a bundled runtime
+/// folder that EXISTS but fails validation is its own error, so startup never falls back to a system Node (K2-02 S2).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DiscoverError { Missing(String), BundledRuntimeInvalid }
+impl std::ops::Deref for DiscoverError {
+    type Target = str;
+    /// The historical message text is kept verbatim, so callers that read it as a string keep working.
+    fn deref(&self) -> &str {
+        match self {
+            Self::Missing(message) => message,
+            Self::BundledRuntimeInvalid => "the bundled runtime folder beside the executable is present but invalid",
+        }
+    }
+}
+
 /// Session PATH first; only these canonical locations are tried afterwards.
 /// Empty/relative PATH components are ignored: no working-directory execution.
-pub fn discover(name: &str, path: Option<&OsStr>, home: Option<&OsStr>) -> Result<PathBuf, String> {
+pub fn discover(name: &str, path: Option<&OsStr>, home: Option<&OsStr>) -> Result<PathBuf, DiscoverError> {
     discover_in(name, path, home, &crate::nodefinder::Env::from_process())
 }
 /// [`discover`] with the version-manager environment given explicitly (tests build it; the app passes the process's own).
-pub fn discover_in(name: &str, path: Option<&OsStr>, home: Option<&OsStr>, finder: &crate::nodefinder::Env) -> Result<PathBuf, String> {
+pub fn discover_in(name: &str, path: Option<&OsStr>, home: Option<&OsStr>, finder: &crate::nodefinder::Env) -> Result<PathBuf, DiscoverError> {
+    discover_with_runtime(name, path, home, finder, running_executable().as_deref())
+}
+/// The canonicalised path of the running executable: the bundled runtime is looked up beside it, never from an
+/// environment variable a user could set.
+fn running_executable() -> Option<PathBuf> {
+    std::env::current_exe().ok().and_then(|exe| exe.canonicalize().ok())
+}
+/// [`discover_in`] with the running executable given (tests inject a fake install layout; the app derives it from
+/// `std::env::current_exe()`). `None` skips the bundled-runtime lookup entirely.
+pub fn discover_with_runtime(name: &str, path: Option<&OsStr>, home: Option<&OsStr>, finder: &crate::nodefinder::Env, exe: Option<&Path>) -> Result<PathBuf, DiscoverError> {
+    // K2-02 (S1, S2): BUNDLED-FIRST on every OS. The runtime folder beside our own executable, when it validates, wins
+    // over PATH, nvm, Volta, Homebrew and %AppData%\npm; present but broken fails closed; absent falls through unchanged.
+    if let Some(exe) = exe {
+        match crate::nodefinder::bundled_runtime(exe, crate::nodefinder::Os::current(), crate::nodefinder::current_runtime_target()) {
+            crate::nodefinder::Bundled::Valid(rt) => return match name {
+                "node" => Ok(rt.node),
+                // Windows keeps the daemon's engine command bare "pi" (config.cjs validateCommand refuses absolute paths
+                // there, K2-01b): the daemon resolves the package CLI JS next to the bundled node.exe itself
+                // (runtime.cjs windowsPackageCliJs). This path is only the island-side gate and a PATH input.
+                "pi" => Ok(rt.pi),
+                _ => Err(DiscoverError::Missing(format!("{name} has no bundled lookup"))),
+            },
+            crate::nodefinder::Bundled::Invalid => return Err(DiscoverError::BundledRuntimeInvalid),
+            crate::nodefinder::Bundled::Absent => {}
+        }
+    }
     // Windows lookup lives entirely in `daemonhost_win.rs` (node.exe and the
     // npm package CLI JS — never a .cmd shim); the unix/macOS logic below is
     // untouched.
     #[cfg(windows)]
-    return win::discover(name, path, home, finder);
+    return win::discover(name, path, home, finder).map_err(DiscoverError::Missing);
     #[cfg(not(windows))]
     {
         let mut candidates: Vec<PathBuf> = path.map(std::env::split_paths).into_iter().flatten()
@@ -152,7 +214,7 @@ pub fn discover_in(name: &str, path: Option<&OsStr>, home: Option<&OsStr>, finde
             }
             _ => {}
         }
-        candidates.into_iter().find(|p| executable(p)).ok_or_else(|| format!("{name} missing (PATH and canonical locations)"))
+        candidates.into_iter().find(|p| executable(p)).ok_or_else(|| DiscoverError::Missing(format!("{name} missing (PATH and canonical locations)")))
     }
 }
 fn executable(path: &Path) -> bool {
@@ -166,8 +228,14 @@ fn executable(path: &Path) -> bool {
 /// Use the same absolute-only PATH search for Pi/SDK subprocesses as discovery.
 /// Keeping a relative entry here would undo discover()'s no-CWD-execution rule.
 pub fn runtime_path(path: Option<&OsStr>, node: &Path, pi: &Path) -> Result<std::ffi::OsString, std::env::JoinPathsError> {
+    runtime_path_with(path, node, pi, None)
+}
+/// [`runtime_path`] with an optional directory forced to the FRONT: when the bundled runtime is in use, its folder
+/// shadows any same-named binary on the session PATH (K2-02 S2), so a child's bare `node`/`pi` resolves to Koda's own.
+pub fn runtime_path_with(path: Option<&OsStr>, node: &Path, pi: &Path, first: Option<&Path>) -> Result<std::ffi::OsString, std::env::JoinPathsError> {
     let mut dirs: Vec<PathBuf> = path.map(std::env::split_paths).into_iter().flatten()
         .filter(|p| p.is_absolute()).collect();
+    if let Some(dir) = first.filter(|d| d.is_absolute()) { if !dirs.iter().any(|d| d == dir) { dirs.insert(0, dir.to_path_buf()); } }
     for runtime in [node, pi] {
         if let Some(dir) = runtime.parent() { if !dirs.iter().any(|d| d == dir) { dirs.push(dir.to_owned()); } }
     }
@@ -190,14 +258,23 @@ fn start() -> Result<Host, StartupFailure> {
     let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"));
     #[cfg(not(windows))]
     let home = std::env::var_os("HOME");
-    let node = discover("node", path.as_deref(), home.as_deref()).map_err(|_| StartupFailure::NodeMissing)?;
-    let pi = discover("pi", path.as_deref(), home.as_deref()).map_err(|_| StartupFailure::PiMissing)?;
+    let exe = running_executable();
+    let bundled = exe.as_deref().map(|exe| crate::nodefinder::bundled_runtime(exe, crate::nodefinder::Os::current(), crate::nodefinder::current_runtime_target()));
+    let finder = crate::nodefinder::Env::from_process();
+    let failure = |missing: StartupFailure| move |reason: DiscoverError| match reason {
+        DiscoverError::BundledRuntimeInvalid => StartupFailure::BundledRuntimeInvalid,
+        DiscoverError::Missing(_) => missing,
+    };
+    let node = discover_with_runtime("node", path.as_deref(), home.as_deref(), &finder, exe.as_deref()).map_err(failure(StartupFailure::NodeMissing))?;
+    let pi = discover_with_runtime("pi", path.as_deref(), home.as_deref(), &finder, exe.as_deref()).map_err(failure(StartupFailure::PiMissing))?;
     let exe = std::env::current_exe().map_err(|_| StartupFailure::HostMissing)?;
     let mut cli = installed_daemon_cli(&exe).ok_or(StartupFailure::HostMissing)?;
     #[cfg(debug_assertions)]
     if !cli.is_file() { cli = Path::new(env!("CARGO_MANIFEST_DIR")).join("../desktop-daemon/src/cli.cjs"); }
     if !cli.is_file() { return Err(StartupFailure::HostMissing) }
-    let child_path = runtime_path(path.as_deref(), &node, &pi).map_err(|_| StartupFailure::SpawnFailed)?;
+    // The bundled runtime folder leads the child PATH (K2-02 S2): a child's bare `node`/`pi` resolves to Koda's own.
+    let first = match &bundled { Some(crate::nodefinder::Bundled::Valid(rt)) => Some(rt.dir.as_path()), _ => None };
+    let child_path = runtime_path_with(path.as_deref(), &node, &pi, first).map_err(|_| StartupFailure::SpawnFailed)?;
     let mut command = std::process::Command::new(node);
     command.arg(cli).args(["run", "--app-owned"]).env("PATH", child_path);
     Host::spawn_command(command).map_err(|_| StartupFailure::SpawnFailed)
@@ -260,7 +337,7 @@ impl Drop for Host {
     }
 }
 
-/// HU-069 T3 / rule 12: «Instalar Pi» and the chat host must work when the app is started from Finder / Explorer / a desktop launcher,
+/// HU-069 T3 / rule 12: the chat host must work when the app is started from Finder / Explorer / a desktop launcher,
 /// i.e. with NO Node on PATH and no shell setup, whenever Node lives where a version manager keeps it. The same test runs on Linux,
 /// macOS and Windows CI (only the manager layout differs). The Node binary used is the runner's own, copied into the fake layout.
 #[cfg(test)]
@@ -272,7 +349,7 @@ mod gui_launch_tests {
         std::env::split_paths(&std::env::var_os("PATH")?).filter(|d| d.is_absolute()).map(|d| d.join(name)).find(|p| p.is_file())
     }
     #[test]
-    fn node_and_npm_are_found_and_used_with_the_minimal_finder_explorer_environment() {
+    fn node_is_found_with_the_minimal_finder_explorer_environment() {
         let Some(real) = real_node() else {
             assert!(std::env::var_os("CI").is_none(), "CI has Node: this test must not skip silently");
             eprintln!("skipped: no node on PATH");
@@ -285,41 +362,315 @@ mod gui_launch_tests {
         let no_program_files = root.join("no-program-files");
         for d in [&home, &empty_path, &no_program_files] { std::fs::create_dir_all(d).unwrap(); }
         // The layout each OS's version manager really uses, with a Node newer than the minimum.
-        let (node_dir, npm_cli_dir) = if cfg!(windows) {
-            let dir = home.join("AppData/Roaming/fnm/node-versions/v22.21.0/installation");
-            (dir.clone(), dir.join("node_modules/npm/bin"))
+        let node_dir = if cfg!(windows) {
+            home.join("AppData/Roaming/fnm/node-versions/v22.21.0/installation")
         } else {
-            let prefix = home.join(".nvm/versions/node/v26.13.0");
-            (prefix.join("bin"), prefix.join("lib/node_modules/npm/bin"))
+            home.join(".nvm/versions/node/v26.13.0/bin")
         };
         std::fs::create_dir_all(&node_dir).unwrap();
-        std::fs::create_dir_all(&npm_cli_dir).unwrap();
         let node = node_dir.join(real.file_name().unwrap());
         std::fs::copy(&real, &node).unwrap();
-        let record = root.join("seen.json");
-        std::fs::write(npm_cli_dir.join("npm-cli.js"), format!("require('fs').writeFileSync({:?}, JSON.stringify(process.argv.slice(2)));", record)).unwrap();
 
         // The Finder/Explorer environment, built explicitly: no process-wide variable is touched (other tests read HOME in parallel).
         let finder = crate::nodefinder::Env { home: Some(home.clone()), app_data: Some(home.join("AppData/Roaming")),
             local_app_data: Some(home.join("AppData/Local")), program_files: Some(no_program_files.clone()), ..Default::default() };
         let found = discover_in("node", Some(empty_path.as_os_str()), Some(home.as_os_str()), &finder).expect("Node must be found without PATH");
         assert_eq!(std::fs::canonicalize(&found).unwrap(), std::fs::canonicalize(&node).unwrap());
-        // «Instalar Pi» then runs npm with that Node, with nothing from the shell
-        let cli = crate::piinstall::npm_cli(&found).expect("npm sits next to the managed Node");
-        let vars: Vec<(String, String)> = ["SystemRoot", "TEMP", "TMP", "TMPDIR", "PATH"].iter().filter_map(|k| std::env::var(k).ok().map(|v| (k.to_string(), v))).collect();
-        let env = crate::piinstall::env(&found, &vars);
-        let outcome = crate::piinstall::run(&found, &cli, &env, Some(&home), std::time::Duration::from_secs(30));
-        if outcome.is_err() {
-            // npm's own output is never shown to users; in CI the reason must be visible.
-            let direct = std::process::Command::new(&found).arg(&cli).args(["install", "-g", "x"]).current_dir(&home).output();
-            eprintln!("DIAG node={found:?} cli={cli:?} direct={direct:?}");
-        }
-        assert_eq!(outcome, Ok(()));
-        let seen: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&record).unwrap()).unwrap();
-        assert_eq!(seen, serde_json::json!(["install", "-g", "@earendil-works/pi-coding-agent"]));
+        // K2-02 (S4): the old «Instalar Pi» npm-install half of this test is gone with piinstall/nodeinstall:
+        // Koda ships its own Node and Pi; the app never runs npm.
         // the daemon would be started with that absolute Node first on its PATH
         let child_path = runtime_path(Some(empty_path.as_os_str()), &found, &found).unwrap();
         assert_eq!(std::env::split_paths(&child_path).last().unwrap(), found.parent().unwrap());
         let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+/// K2-02 (S1, S2): discovery is BUNDLED-FIRST. When the runtime folder Koda ships beside its
+/// own executable exists and validates, ITS node and ITS pi win over anything on PATH, nvm,
+/// Volta, Homebrew, %AppData%\npm; when it exists but is broken, startup fails closed instead
+/// of silently using a system Node (that would make S2 untrue in a broken install); when it
+/// is absent (dev builds, `cargo run`, tests) discovery is exactly what it was before.
+#[cfg(test)]
+mod bundled_runtime_tests {
+    use super::*;
+    use std::fs;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+
+    const PI_CLI: &str = "node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js";
+
+    struct Rt(PathBuf);
+    impl Rt {
+        fn new(tag: &str) -> Self {
+            let path = std::env::temp_dir()
+                .join(format!("abito-bundled-host-{}-{tag}", std::process::id()));
+            let _ = fs::remove_dir_all(&path);
+            fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+        fn dir(&self, rel: &str) -> PathBuf {
+            let d = self.0.join(rel);
+            fs::create_dir_all(&d).unwrap();
+            d
+        }
+        fn exe(&self, rel: &str) -> PathBuf {
+            self.dir(rel).join(if cfg!(windows) {
+                "abito-island.exe"
+            } else {
+                "abito-island"
+            })
+        }
+    }
+    impl Drop for Rt {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// A valid runtime folder for THIS running OS (the discovery dispatch always uses
+    /// `Os::current()`), with a rival node/pi installed on a fake PATH.
+    fn bundled_with_rival(tag: &str) -> (Rt, PathBuf, PathBuf) {
+        let root = Rt::new(tag);
+        let exe = root.exe("app/bin");
+        let runtime =
+            crate::nodefinder::bundled_runtime_dir(&exe, crate::nodefinder::Os::current()).unwrap();
+        fs::create_dir_all(&runtime).unwrap();
+        let node_name = if cfg!(windows) { "node.exe" } else { "node" };
+        let node = runtime.join(node_name);
+        fs::write(&node, b"node").unwrap();
+        #[cfg(unix)]
+        fs::set_permissions(&node, fs::Permissions::from_mode(0o755)).unwrap();
+        let cli = runtime.join(PI_CLI);
+        fs::create_dir_all(cli.parent().unwrap()).unwrap();
+        fs::write(&cli, b"cli").unwrap();
+        if !cfg!(windows) {
+            let pi = runtime.join("pi");
+            fs::write(&pi, b"#!/bin/sh\n").unwrap();
+            #[cfg(unix)]
+            fs::set_permissions(&pi, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        fs::write(runtime.join("koda-runtime.json"),
+            format!("{{\"target\":\"{}\",\"node\":\"22.23.4\",\"pi\":\"1.4.0\",\"piCli\":\"{PI_CLI}\"}}", crate::nodefinder::current_runtime_target())).unwrap();
+        // The rival install: a different node and pi, first on a fake session PATH.
+        let rival = root.dir("rival/bin");
+        for name in [node_name, "pi"] {
+            let file = rival.join(name);
+            fs::write(&file, b"rival").unwrap();
+            #[cfg(unix)]
+            fs::set_permissions(&file, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        (root, exe, rival)
+    }
+
+    fn env_without_home() -> crate::nodefinder::Env {
+        crate::nodefinder::Env::default()
+    }
+
+    #[test]
+    fn a_valid_bundled_runtime_wins_over_any_node_or_pi_on_the_session_path() {
+        let (_root, exe, rival) = bundled_with_rival("wins");
+        let path = std::env::join_paths([&rival]).unwrap();
+        for name in ["node", "pi"] {
+            let found = discover_with_runtime(
+                name,
+                Some(path.as_os_str()),
+                None,
+                &env_without_home(),
+                Some(&exe),
+            )
+            .expect(name);
+            let expected = crate::nodefinder::bundled_runtime(
+                &exe,
+                crate::nodefinder::Os::current(),
+                crate::nodefinder::current_runtime_target(),
+            );
+            match expected {
+                crate::nodefinder::Bundled::Valid(rt) => {
+                    assert_eq!(
+                        found,
+                        if name == "node" { rt.node } else { rt.pi },
+                        "{name}"
+                    );
+                    assert!(
+                        found.starts_with(&rt.dir),
+                        "{name}: must come from the bundled runtime folder"
+                    );
+                }
+                _ => panic!("the runtime we just wrote must validate"),
+            }
+            assert_ne!(
+                found,
+                rival.join(if cfg!(windows) && name == "node" {
+                    "node.exe"
+                } else {
+                    name
+                }),
+                "{name}: never the rival on PATH"
+            );
+        }
+    }
+
+    #[test]
+    fn a_broken_bundled_runtime_fails_closed_even_when_a_node_is_on_the_path() {
+        let (_root, exe, rival) = bundled_with_rival("broken");
+        // Break the manifest: the folder is present but names another OS's target.
+        let runtime =
+            crate::nodefinder::bundled_runtime_dir(&exe, crate::nodefinder::Os::current()).unwrap();
+        fs::write(
+            runtime.join("koda-runtime.json"),
+            r#"{"target":"not-this-os","piCli":"x.js"}"#,
+        )
+        .unwrap();
+        let path = std::env::join_paths([&rival]).unwrap();
+        for name in ["node", "pi"] {
+            assert_eq!(
+                discover_with_runtime(
+                    name,
+                    Some(path.as_os_str()),
+                    None,
+                    &env_without_home(),
+                    Some(&exe)
+                ),
+                Err(DiscoverError::BundledRuntimeInvalid),
+                "{name}: a broken install must never silently fall back to a system Node (S2)"
+            );
+        }
+    }
+
+    #[test]
+    fn with_no_bundled_runtime_discovery_is_exactly_what_it_was() {
+        let root = Rt::new("absent");
+        let exe = root.exe("app/bin");
+        let rival = root.dir("rival/bin");
+        let node_name = if cfg!(windows) { "node.exe" } else { "node" };
+        for name in [node_name, "pi"] {
+            let file = rival.join(name);
+            fs::write(&file, b"rival").unwrap();
+            #[cfg(unix)]
+            fs::set_permissions(&file, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let path = std::env::join_paths([&rival]).unwrap();
+        let found = discover_with_runtime(
+            "node",
+            Some(path.as_os_str()),
+            None,
+            &env_without_home(),
+            Some(&exe),
+        )
+        .expect("previous behaviour: the session PATH is searched");
+        assert_eq!(found, rival.join(node_name));
+        // And with nothing on PATH, the historical fail-closed answer stands: only the
+        // canonical locations may answer (the runner may legitimately have /usr/bin/node).
+        let empty = root.dir("empty");
+        match discover_with_runtime(
+            "node",
+            Some(empty.as_os_str()),
+            None,
+            &env_without_home(),
+            Some(&exe),
+        ) {
+            Ok(found) => {
+                let canonical = [
+                    Path::new("/usr/local/bin/node"),
+                    Path::new("/usr/bin/node"),
+                    Path::new("/opt/homebrew/bin/node"),
+                ];
+                assert!(
+                    canonical.contains(&found.as_path()),
+                    "no bundled runtime: only the canonical fallback may answer, got {found:?}"
+                );
+            }
+            Err(DiscoverError::Missing(_)) => {}
+            Err(other) => panic!("previous behaviour: missing stays missing, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_daemon_child_path_puts_the_bundled_runtime_dir_first() {
+        // Absolute on THIS OS (RDD advisory 4): `/koda/runtime` has no drive letter, so on Windows it is NOT absolute and
+        // `runtime_path_with` rightly ignores it; the fixture must be a real absolute path of the platform under test.
+        let abs = |p: &str| if cfg!(windows) { PathBuf::from(format!("C:\\{}", p.replace('/', "\\"))) } else { PathBuf::from(format!("/{p}")) };
+        let session = abs("session/bin");
+        let runtime = abs("koda/runtime");
+        assert!(session.is_absolute() && runtime.is_absolute(), "fixtures are absolute on this OS");
+        let node = runtime.join("node");
+        let dirs = std::env::split_paths(
+            runtime_path_with(Some(session.as_os_str()), &node, &runtime.join("pi"), Some(&runtime)).unwrap().as_os_str(),
+        )
+        .collect::<Vec<_>>();
+        assert_eq!(dirs.first().unwrap(), &runtime, "the bundled runtime shadows every same-named binary");
+        assert!(dirs.contains(&session), "the session PATH dirs are kept behind it");
+        assert_eq!(dirs.iter().filter(|d| **d == runtime).count(), 1, "no duplicate runtime entry");
+        // Without a bundled runtime, the historical shape: runtime dirs appended at the end.
+        let appended = std::env::split_paths(runtime_path(Some(session.as_os_str()), &node, &runtime.join("pi")).unwrap().as_os_str())
+            .collect::<Vec<_>>();
+        assert_eq!(appended.last().unwrap(), &runtime);
+        assert_eq!(appended.first().unwrap(), &session);
+        // A relative "first" dir is never put on the child PATH (no working-directory execution, on any OS).
+        let relative = std::env::split_paths(
+            runtime_path_with(Some(session.as_os_str()), &node, &runtime.join("pi"), Some(Path::new("relative/runtime"))).unwrap().as_os_str(),
+        )
+        .collect::<Vec<_>>();
+        assert!(!relative.iter().any(|d| d == Path::new("relative/runtime")));
+    }
+
+    #[test]
+    fn the_broken_runtime_is_its_own_startup_failure_code() {
+        assert_eq!(
+            StartupFailure::BundledRuntimeInvalid.code(),
+            "bundled_runtime_invalid"
+        );
+    }
+
+    #[test]
+    fn the_broken_runtime_prints_the_reinstall_sentence_and_the_two_missing_sentences_are_unchanged(
+    ) {
+        // K2-02 D1 (human decision «2a»): the exact sentence note_failure prints for bundled_runtime_invalid.
+        assert_eq!(
+            failure_sentence(StartupFailure::BundledRuntimeInvalid),
+            Some("La instalación de Koda está dañada: volvé a instalar Koda.")
+        );
+        // The exact lines note_failure prints, the same on all three OS (K2-02 D1 parity: Linux too).
+        use crate::nodefinder::Os;
+        for os in [Os::Linux, Os::Mac, Os::Windows] {
+            assert_eq!(
+                failure_lines(StartupFailure::BundledRuntimeInvalid, os),
+                vec![
+                    "island host: no_daemon (bundled_runtime_invalid)".to_owned(),
+                    "La instalación de Koda está dañada: volvé a instalar Koda.".to_owned()
+                ]
+            );
+            assert_eq!(
+                failure_lines(StartupFailure::PiMissing, os),
+                vec![
+                    "island host: no_daemon (pi_missing)".to_owned(),
+                    "Falta Pi: instalalo con npm install -g @earendil-works/pi-coding-agent."
+                        .to_owned()
+                ]
+            );
+            assert_eq!(
+                failure_lines(StartupFailure::HostMissing, os),
+                vec![format!(
+                    "island host: no_daemon ({})",
+                    StartupFailure::HostMissing.code()
+                )]
+            );
+        }
+
+        assert_eq!(
+            failure_sentence(StartupFailure::NodeMissing),
+            Some("Falta Node.js: instalalo desde nodejs.org.")
+        );
+        assert_eq!(
+            failure_sentence(StartupFailure::PiMissing),
+            Some("Falta Pi: instalalo con npm install -g @earendil-works/pi-coding-agent.")
+        );
+        for other in [
+            StartupFailure::HostMissing,
+            StartupFailure::SpawnFailed,
+            StartupFailure::Unsupported,
+        ] {
+            assert_eq!(failure_sentence(other), None);
+        }
     }
 }

@@ -15,7 +15,9 @@ const {
 	defaultIslandRoot,
 	ensureIsland,
 	ensurePrivateDir,
+	islandPaths,
 	isolatedEnv,
+	pathWithNodeFirst,
 	writePrivateFile,
 } = require("../src/isolation.cjs");
 
@@ -91,10 +93,31 @@ test("isolatedEnv allowlists only OS essentials and applies explicit private ove
 		}
 	}
 	// OS essentials survive, and explicit overrides are honoured.
-	assert.equal(env.PATH, "/usr/local/bin:/usr/bin:/bin");
+	// K2-02 (S2): the Node running the daemon leads the child PATH, so any `node` a
+	// child resolves is Koda's own (bundled on a bundled install), never the user's.
+	assert.equal(env.PATH, pathWithNodeFirst(path.dirname(process.execPath), "/usr/local/bin:/usr/bin:/bin"));
 	assert.equal(env.LANG, "es_ES.UTF-8");
 	assert.equal(env.SHELL, "/bin/zsh");
 	assert.equal(env.ABITO_MEMORY_PROJECT, "abito-island");
+});
+
+// K2-02 (S2): with no inherited PATH the engine child still gets the daemon's node dir first.
+test("the engine child PATH fallback leads with the daemon node dir and keeps the offline markers", (t) => {
+	// isolatedEnv only reads the island PATHS: they are computed, never created, so the result does not depend on the
+	// machine's temp layout (macOS /var -> /private/var, Windows profile ACLs; CI 41733396427).
+	const island = islandPaths(path.join(tmpBase(t), "island"));
+	const env = isolatedEnv({ HOME: "/home/user" }, island, {});
+	const nodeDir = path.dirname(process.execPath);
+	assert.equal(env.PATH, pathWithNodeFirst(nodeDir, undefined));
+	assert.equal(env.PI_OFFLINE, "1");
+	assert.equal(env.PI_SKIP_VERSION_CHECK, "1");
+	assert.equal(env.PI_TELEMETRY, "0");
+});
+
+test("pathWithNodeFirst uses the right separator on every platform", () => {
+	assert.equal(pathWithNodeFirst("/koda/runtime", "/usr/bin:/bin", ":"), "/koda/runtime:/usr/bin:/bin");
+	assert.equal(pathWithNodeFirst("C:\\koda\\runtime", undefined, ";"), "C:\\koda\\runtime;/usr/bin:/bin");
+	assert.equal(pathWithNodeFirst("/koda/runtime", undefined), `/koda/runtime${path.delimiter}/usr/bin:/bin`);
 });
 
 test("defaultIslandRoot honours ABITO_ISLAND_DIR and defaults to ~/.abito-island", () => {

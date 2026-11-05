@@ -221,7 +221,7 @@ test("child environment: allowlist only, private HOME, no PI_*/provider keys", a
 	const dumped = JSON.parse(fs.readFileSync(s.evidence.env, "utf8"));
 	assert.equal(dumped.HOME, s.home);
 	assert.equal(dumped.LANG, "C.UTF-8");
-	assert.equal(dumped.PATH, "/usr/bin:/bin", "PATH is fixed, never inherited");
+	assert.equal(dumped.PATH, `${path.dirname(process.execPath)}:/usr/bin:/bin`, "PATH is fixed, never inherited; the daemon's Node leads it (K2-02 S2)");
 	for (const key of Object.keys(dumped)) {
 		assert.ok(!/^PI_|KEY|TOKEN|SECRET|^ABITO|CAPABILITY/i.test(key) || key.startsWith("FAKE_"), `unexpected env key ${key}`);
 	}

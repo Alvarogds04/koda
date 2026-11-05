@@ -1,7 +1,10 @@
 #!/usr/bin/env node
 'use strict';
-/* Re-hash a staged (or user-installed) directory against its receipt WITHOUT
-   launching anything. Usage: node packaging/verify.cjs <stage-dir> */
+/* Re-hash a STAGED directory against its receipt WITHOUT launching anything.
+   Usage: node packaging/verify.cjs <stage-dir>
+   (K2-02 T2: the stage carries the runtime archive as a hashed file. An INSTALLED
+   prefix is verified by install.sh/checkInstalledLayout instead: there runtime/
+   replaces the archive, so the stage's exact file set does not apply.) */
 const path = require('node:path');
 const L = require('./lib.cjs');
 const dir = process.argv[2];

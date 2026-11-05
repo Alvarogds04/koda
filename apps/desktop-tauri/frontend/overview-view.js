@@ -339,11 +339,19 @@
       const code = p.last_error.code;
       if (code === 'node_missing' || code === 'pi_missing') {
         const label = code === 'node_missing' ? 'Falta Node.js' : 'Falta Pi';
-        // HU-046 (parent seq36): the island has no install button. For a missing Pi its link points to Ajustes → Chat, where «Instalar Pi» is
-        // (every engine deep link opens Ajustes on the Chat page); the command line lives there, not here.
-        const help = code === 'node_missing' ? 'instalalo desde nodejs.org.' : '«Instalar Pi» está en Ajustes → Chat.';
+        // K2-02 (S4): both «Falta…» states are now DEV-BUILD-ONLY paths (a release install ships its own Node and Pi, so
+        // discovery cannot miss them). The «Instalar Pi» / «Instalar Node» buttons are gone from Ajustes; the island keeps
+        // the plain label and, for a missing Pi, the plain «Abrir Chat» link (the old pointer to «Instalar Pi» is dropped).
+        const help = code === 'node_missing' ? 'instalalo desde nodejs.org.' : '';
         const view = row('engine', label, code === 'pi_missing' ? 'Abrir Chat' : 'Revisar', 'accounts:motor', code === 'pi_missing' ? 'Chat' : 'Motor');
-        view.aria = `${label}: ${help} ${view.aria}`;
+        view.aria = help ? `${label}: ${help} ${view.aria}` : `${label}: ${view.aria}`;
+        return view;
+      }
+      // K2-02 D1: Koda's own runtime folder is present but broken. Mirrors «Falta Node.js»: the generic «Revisar» link to
+      // Ajustes → Motor, where the same word and sentence are shown (settings-view connectionView).
+      if (code === 'bundled_runtime_invalid') {
+        const view = row('engine', 'Instalación dañada', 'Revisar', 'accounts:motor', 'Motor');
+        view.aria = `Instalación dañada: La instalación de Koda está dañada: volvé a instalar Koda. ${view.aria}`;
         return view;
       }
     }

@@ -339,6 +339,17 @@ function ensureIsland(root, options = {}) {
 }
 
 /**
+ * K2-02 (S2): the Node running the daemon leads the engine child's PATH (`pathWithNodeFirst`),
+ * so any `node` a child looks up resolves to Koda's own Node — the bundled one when the daemon
+ * runs on the bundled runtime — never the user's. `delimiter` is path.delimiter (';' on Windows,
+ * ':' elsewhere); with no inherited PATH the historical fallback tail is kept unchanged.
+ */
+const PATH_FALLBACK = "/usr/bin:/bin";
+function pathWithNodeFirst(nodeDir, existing, delimiter = path.delimiter) {
+	return `${nodeDir}${delimiter}${existing || PATH_FALLBACK}`;
+}
+
+/**
  * The engine child's environment: allowlisted OS essentials from `base`,
  * the private HOME/XDG/TMPDIR, the explicit private pi agent directory, and
  * offline/no-telemetry markers. Provider credentials, the parent's PI_*
@@ -352,7 +363,7 @@ function isolatedEnv(base, paths, overrides = {}) {
 		const value = base[key];
 		if (typeof value === "string" && value !== "") env[key] = value;
 	}
-	if (!env.PATH) env.PATH = "/usr/bin:/bin";
+	env.PATH = pathWithNodeFirst(path.dirname(process.execPath), env.PATH);
 	const realHome = base.HOME || homedir();
 	env.HOME = paths.home;
 	env.TMPDIR = paths.tmp;
@@ -385,6 +396,7 @@ module.exports = {
 	ensurePrivateDir,
 	islandPaths,
 	isolatedEnv,
+	pathWithNodeFirst,
 	windowsIslandRootViolation,
 	writePrivateFile,
 };

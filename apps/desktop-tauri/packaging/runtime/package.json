@@ -1,0 +1,9 @@
+{
+  "name": "koda-runtime",
+  "private": true,
+  "description": "The Pi that Koda ships inside every installer (K2-02). Pinned exactly; the lockfile pins every package by sha512.",
+  "license": "MIT",
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "1.4.0"
+  }
+}

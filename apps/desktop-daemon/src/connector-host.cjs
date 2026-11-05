@@ -30,6 +30,18 @@ function procIdentity(pid) {
 function procStartTicks(pid) { return procIdentity(pid)?.start; }
 function fail() { throw new Error("connector host unavailable"); }
 
+/** The historical child PATH tail, kept verbatim on every platform. */
+const DAEMON_CHILD_PATH_FALLBACK = "/usr/bin:/bin";
+/**
+ * K2-02 (S2): the Node running the daemon leads every child's PATH, so any `node` a child
+ * (a connector, Pi) looks up resolves to Koda's own Node — the bundled one when the daemon
+ * runs on the bundled runtime — never the user's. `path.delimiter` is ';' on Windows and
+ * ':' elsewhere; the fallback tail is the historical value and is kept unchanged.
+ */
+function childPathWithNodeFirst(nodeDir, delimiter = path.delimiter) {
+	return `${nodeDir}${delimiter}${DAEMON_CHILD_PATH_FALLBACK}`;
+}
+
 function assertTrustedDirectoryChain(parent) {
 	const currentUid = uid();
 	let current = path.parse(parent).root;
@@ -150,7 +162,7 @@ class ConnectorHostSupervisor extends EventEmitter {
 	}
 
 	childEnvironment() {
-		const env = { PATH: "/usr/bin:/bin", HOME: this.home };
+		const env = { PATH: childPathWithNodeFirst(path.dirname(process.execPath)), HOME: this.home };
 		if (typeof this.baseEnv.LANG === "string" && this.baseEnv.LANG !== "" && !this.baseEnv.LANG.includes("\0")) env.LANG = this.baseEnv.LANG;
 		return env;
 	}
@@ -382,4 +394,4 @@ class ConnectorHostSupervisor extends EventEmitter {
 	setMode(id, mode, revision) { return this.client ? this.client.setMode(id, mode, revision) : this.unavailable(); }
 }
 
-module.exports = { ConnectorHostSupervisor, assertTrustedBinary, procIdentity, procStartTicks, readHandoff, validateEndpoint };
+module.exports = { ConnectorHostSupervisor, assertTrustedBinary, childPathWithNodeFirst, procIdentity, procStartTicks, readHandoff, validateEndpoint };

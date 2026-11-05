@@ -3,7 +3,6 @@
    anything (a fake stage dir). Run: node apps/desktop-tauri/test-node/packaging-check.cjs */
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const L = require('../packaging/lib.cjs');
 for (const f of ['desktop-highlight.html', 'desktop-highlight.css']) {
@@ -21,7 +20,7 @@ function readJson(file) {
 }
 const crate = path.resolve(__dirname, '..');
 let passed = 0;
-const test = (name, fn) => { fn(); passed += 1; };
+const test = (_name, fn) => { fn(); passed += 1; };
 
 function vendorFixture() {
   const dir = copyCrate();
@@ -38,19 +37,58 @@ test('curated gate names a missing nested file', () => {
   fs.unlinkSync(path.join(d, 'frontend/vendor/coucou/settings/colors.js'));
   assert.throws(() => L.checkFrontend(d), /missing=\[vendor\/coucou\/settings\/colors\.js\]/);
 });
-test('build receipt hashes every curated path, including nested vendor files', () => {
+test('K2-02 T2: the stage carries the runtime archive; the installed layout tolerates exactly a real runtime/ dir, never a link or a file', () => {
+  const d = fakeStage();
+  assert.deepEqual(L.verifyStage(d, { sourceCrate: crate }), []);
+  // installed form: the archive is replaced by the extracted runtime/ tree (not enumerated)
+  fs.rmSync(path.join(d, L.RUNTIME_ARCHIVE));
+  fs.mkdirSync(path.join(d, 'runtime'), { mode: 0o700 });
+  fs.writeFileSync(path.join(d, 'runtime/node'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+  fs.writeFileSync(path.join(d, 'runtime/pi'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+  assert.deepEqual(L.checkInstalledLayout(d), [], 'runtime/ (real dir) is the one allowed unenumerated directory');
+  fs.rmSync(path.join(d, 'runtime'), { recursive: true, force: true });
+  fs.symlinkSync('/etc', path.join(d, 'runtime'));
+  assert.match(L.checkInstalledLayout(d).join(), /runtime is a symlink/);
+  fs.rmSync(path.join(d, 'runtime'), { force: true });
+  fs.writeFileSync(path.join(d, 'runtime'), 'not a directory');
+  assert.match(L.checkInstalledLayout(d).join(), /runtime is not a directory/);
+  fs.rmSync(path.join(d, 'runtime'), { force: true });
+  fs.mkdirSync(path.join(d, 'runtime'), { mode: 0o700 });
+  fs.writeFileSync(path.join(d, 'runtime/node'), 'x', { mode: 0o700 });
+  // runtime/ contents are NOT enumerated at all (decision A): their integrity comes
+  // from the hash-verified archive, so an extra file inside runtime/ is not flagged.
+  fs.writeFileSync(path.join(d, 'runtime/whatever'), 'x');
+  assert.deepEqual(L.checkInstalledLayout(d), [], 'runtime/ contents are not enumerated');
+});
+
+function buildFixture() {
+  const arcDir = T.make('koda-arc-');
+  const archive = path.join(arcDir, 'koda-runtime-linux-x64.tar.gz');
+  fs.writeFileSync(archive, 'runtime archive bytes\n');
+  return archive;
+}
+function runBuild(argv) {
   const vm = require('node:vm');
-  let receipt;
+  let receipt; let code = null; let err = '';
   const fakeFs = { ...fs, existsSync: () => true, mkdirSync() {}, rmSync() {}, copyFileSync() {}, chmodSync() {},
     writeFileSync(file, text) { if (file.endsWith('receipt.json')) receipt = JSON.parse(text); } };
   const fakeLib = { ...L, requireClean: () => ({ head: 'a'.repeat(40), clean: true }), verifyStage: () => [],
     sha256File: file => file.includes(`${path.sep}frontend${path.sep}`) ? L.sha256File(file) : 'stub' };
-  vm.runInNewContext(fs.readFileSync(path.join(crate, 'packaging/build.cjs'), 'utf8'), {
-    __dirname: path.join(crate, 'packaging'), console: { log() {} },
-    process: { argv: ['node', 'build.cjs', '--skip-cargo'], env: {} },
-    require: name => name === 'node:fs' ? fakeFs : name === './lib.cjs' ? fakeLib
-      : name === 'node:child_process' ? { spawnSync: () => ({ stdout: 'stub' }) } : require(name),
-  });
+  try {
+    vm.runInNewContext(fs.readFileSync(path.join(crate, 'packaging/build.cjs'), 'utf8'), {
+      __dirname: path.join(crate, 'packaging'), console: { log() {}, error(m) { err += `${m}\n`; } },
+      process: { argv: ['node', 'build.cjs', ...argv], env: {}, exit(c) { code = c; throw new Error(`__exit__${c}`); } },
+      require: name => name === 'node:fs' ? fakeFs : name === './lib.cjs' ? fakeLib
+        : name === 'node:child_process' ? { spawnSync: () => ({ stdout: 'stub' }) } : require(name),
+    });
+  } catch (e) { if (!/^__exit__/.test(String(e.message))) throw e; }
+  return { code, err, receipt };
+}
+
+test('build receipt hashes every curated path, including nested vendor files, and the runtime archive is staged + hashed like every file', () => {
+  const receipt = runBuild(['--skip-cargo', '--runtime-archive', buildFixture()]).receipt;
+  assert.ok(receipt, 'the build ran to completion and wrote a receipt');
+  assert.equal(receipt.files['koda-runtime-linux-x64.tar.gz'], 'stub', 'the runtime archive is in the receipt files map (K2-02 T2)');
   for (const nested of ['vendor/coucou/settings/colors.js', 'settings.html', 'settings-app.js',
     'vendor/coucou/hub/shell.js', 'vendor/coucou/hub/ui.js', 'vendor/coucou/hub/general.js',
     'vendor/coucou/hub/hub.css', 'vendor/coucou/hub/abito.css',
@@ -70,6 +108,21 @@ test('build receipt hashes every curated path, including nested vendor files', (
     assert.equal(receipt.inputs.frontend[nested], L.sha256File(path.join(crate, 'frontend', nested)));
   }
   assert.deepEqual(Object.keys(receipt.inputs.frontend).sort(), [...L.FRONTEND_FILES].sort());
+});
+
+test('build.cjs: --runtime-archive is required; a wrong name or a missing file is refused before anything is staged', () => {
+  let r = runBuild(['--skip-cargo']);
+  assert.equal(r.code, 2, r.err);
+  assert.equal(r.err, 'build.cjs: --runtime-archive <file> is required: the installer ships the runtime as ONE verified archive (run packaging/runtime/build-runtime.cjs --archive first)\n');
+  const wrong = path.join(T.make('koda-arc-'), 'wrong-name.tar.gz');
+  fs.writeFileSync(wrong, 'x');
+  r = runBuild(['--skip-cargo', '--runtime-archive', wrong]);
+  assert.equal(r.code, 1, r.err);
+  assert.equal(r.err, 'build.cjs: the runtime archive must be named koda-runtime-linux-x64.tar.gz, got wrong-name.tar.gz\n');
+  r = runBuild(['--skip-cargo', '--runtime-archive', path.join(T.make('koda-arc-'), 'koda-runtime-linux-x64.tar.gz')]); // correctly named but absent
+  assert.equal(r.code, 1, r.err);
+  assert.match(r.err, /not a regular file/);
+  assert.equal(r.receipt, undefined, 'no receipt was written');
 });
 
 test('source gates pass on the real crate (R6 pin, curated frontend, config, capabilities, no devtools)', () => {
@@ -150,6 +203,9 @@ function fakeStage({ crateDir: _crateDir = crate } = {}) {
     const file = path.join(dir, 'desktop-pi', name); fs.mkdirSync(path.dirname(file), {recursive:true,mode:0o755});
     fs.copyFileSync(path.join(__dirname, '..', '..', 'desktop-pi', name), file); fs.chmodSync(file, 0o644);
   }
+  // K2-02 T2: the runtime archive is a staged file like any other (verifyStage hashes it; only
+  // install.sh parses it, which install-check covers with a real tar.gz).
+  fs.writeFileSync(path.join(dir, 'koda-runtime-linux-x64.tar.gz'), 'runtime archive bytes (lib-level fixture)\n', { mode: 0o644 });
   const files = {};
   for (const n of L.STAGED) files[n] = L.sha256File(path.join(dir, n));
   fs.writeFileSync(path.join(dir, 'receipt.json'), JSON.stringify({ identifier: L.IDENTIFIER, r6_sha256: L.checkR6(crate), provenance: { head: 'a'.repeat(40), clean: true }, files }), { mode: 0o644 });
@@ -211,6 +267,40 @@ test('verify: a pristine stage passes; tampering is caught without launching any
   assert.match(L.verifyStage(w).join(), /writable/);
   fs.rmSync(w, { recursive: true });
 });
+// K2-02 (windows-latest, K2-01b CI): NTFS has no POSIX permission bits; Node reports every file and directory as
+// 0o666 (0o444 read-only) with no exec bits. The POSIX mode rules (group/world writable, executable binary) are
+// unix rules: on Windows they must not refuse an otherwise valid stage, while hashes, links, the closed file set and
+// the templates still hold there. Reproduced on ANY OS by giving lib.cjs Windows' platform and NTFS-shaped modes.
+function asWindows(fn) {
+  const real = { lstat: fs.lstatSync, stat: fs.statSync, platform: Object.getOwnPropertyDescriptor(process, 'platform') };
+  const ntfs = (st) => { if (st && typeof st.mode === 'number') Object.defineProperty(st, 'mode', { value: (st.mode & 0o170000) | 0o666 }); return st; };
+  fs.lstatSync = function (...a) { return ntfs(real.lstat.apply(this, a)); };
+  fs.statSync = function (...a) { return ntfs(real.stat.apply(this, a)); };
+  Object.defineProperty(process, 'platform', { value: 'win32' });
+  try { return fn(); } finally { fs.lstatSync = real.lstat; fs.statSync = real.stat; Object.defineProperty(process, 'platform', real.platform); }
+}
+test('Windows (NTFS modes 0o666, no exec bits): a valid stage verifies and its installed layout is accepted', () => {
+  const d = fakeStage();
+  assert.deepEqual(asWindows(() => L.verifyStage(d, { sourceCrate: crate })), []);
+  assert.deepEqual(asWindows(() => L.checkInstalledLayout(d).filter((p) => !/unexpected installed file: receipt|runtime/.test(p))), []);
+});
+test('Windows: a tampered stage is still refused (hash, extra entry), only the POSIX mode rules are unix-only', () => {
+  const d = fakeStage();
+  fs.appendFileSync(path.join(d, 'abito-island'), 'x');
+  fs.writeFileSync(path.join(d, 'extra'), 'x');
+  const problems = asWindows(() => L.verifyStage(d)).join('\n');
+  assert.match(problems, /abito-island hash differs from the receipt/);
+  assert.match(problems, /unexpected stage entries/);
+  assert.doesNotMatch(problems, /writable|not executable/);
+});
+test('unix keeps the POSIX mode rules (twin of the Windows case): group/world writable and a non-executable binary are refused', () => {
+  if (process.platform === 'win32') return; // the rule is unix-only by design; the Windows twin is above
+  const w = fakeStage(); fs.chmodSync(path.join(w, 'abito-island'), 0o664);
+  const problems = L.verifyStage(w).join('\n');
+  assert.match(problems, /abito-island is group\/world writable/);
+  assert.match(problems, /binary is not executable/);
+});
+
 test('verify: devtools markers and an embedded source-tree path fail the stage', () => {
   for (const [marker, expect] of [['--remote-debugging-port', /devtools/], [crate, /source-tree path/]]) {
     const d = fakeStage();

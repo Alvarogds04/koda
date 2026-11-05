@@ -50,8 +50,6 @@ pub mod github;
 pub mod githubcmd;
 pub mod daemonhost;
 pub mod nodefinder;
-pub mod nodeinstall;
-pub mod piinstall;
 #[cfg(any(debug_assertions, feature = "probe"))]
 pub mod fakebridge;
 #[cfg(any(debug_assertions, feature = "probe"))]

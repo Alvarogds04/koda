@@ -30,7 +30,7 @@ const { spawn } = require("node:child_process");
 const { EventEmitter } = require("node:events");
 const fs = require("node:fs");
 const path = require("node:path");
-const { assertSecurePath } = require("./isolation.cjs");
+const { assertSecurePath, pathWithNodeFirst } = require("./isolation.cjs");
 
 const SCHEMA = "abito-hook-install/1";
 const DEFAULTS = Object.freeze({ timeoutMs: 10_000, maxBytes: 256 * 1024, cacheMs: 1000 });
@@ -418,7 +418,7 @@ class AgentsManager extends EventEmitter {
 	childEnv() {
 		const env = this.platform === "win32"
 			? { HOME: this.home, USERPROFILE: this.home, ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot, PATH: path.win32.join(process.env.SystemRoot, "System32") } : {}) }
-			: { PATH: CHILD_PATH, HOME: this.home };
+			: { PATH: pathWithNodeFirst(path.dirname(this.nodeExe), CHILD_PATH, ":"), HOME: this.home }; // K2-02: the Node running the installer leads PATH
 		if (typeof process.env.LANG === "string" && process.env.LANG !== "") env.LANG = process.env.LANG;
 		env.ABITO_ISLAND_EXE = fs.realpathSync(this.nodeExe);
 		return env;
