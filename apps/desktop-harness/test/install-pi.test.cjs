@@ -1,7 +1,28 @@
 'use strict';
 const { tmpBase } = require('./platform-env.cjs');
 // HU-015 unit B: exercise the shipped installer CLI on isolated user directories only.
-const { test } = require('node:test');
+const { test: baseTest } = require('node:test');
+// K2-01b: these tests drive the POSIX Pi installer (mode bits, rename publication, POSIX folders); on Windows the
+// installer goes through install-pi-win.cjs + the native helper and refuses them (exit 65, CI 42075103014). The file
+// joined npm test only in K2-01b, so they never ran on Windows before: they stay pinned on Linux/macOS and skip on
+// Windows BY NAME (registered gap «Windows: Pi installer tests»; its twin is win-install-fake.test.cjs, outside npm test).
+const WIN_POSIX_INSTALLER = new Set([
+  "Pi preview writes nothing; confirmed install owns a closed loadable payload; remove keeps unrelated user files",
+  "Pi names a hand-copied extension folder (no manifest) as foreign_extension, preview and apply, and never touches it",
+  "Pi keeps the generic refusal for a symlink target and for a modified Abito copy (only a folder WITHOUT a manifest is foreign_extension)",
+  "Pi rejects stale shown plans before changing the target",
+  "Pi refuses unknown entries and changed shipped payload without changing user data",
+  "Pi failed replacement restores the prior owned directory and preserves unrelated files",
+  "installed Pi payload loads through the real offline Pi extension loader",
+  "Pi discovery sees one extension after upgrade and zero after removal, never backups",
+  "Pi post-publication verification failure quarantines new bytes and restores prior payload",
+  "Pi rejects hardlinks and conflicting target options without changing installed files",
+  "Pi refuses cross-device publication and preserves foreign backup entries when pruning",
+  "Pi upgrades an older owned payload with backup and refuses modified or unlisted files"
+]);
+const test = (name, ...rest) => (process.platform === 'win32' && WIN_POSIX_INSTALLER.has(name)
+  ? baseTest(name, { skip: 'POSIX Pi installer; Windows: registered gap «Windows: Pi installer tests» (install-pi-win.cjs, twin win-install-fake.test.cjs)' }, rest[rest.length - 1])
+  : baseTest(name, ...rest));
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');

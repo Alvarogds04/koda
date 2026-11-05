@@ -4,7 +4,11 @@
 // "the hook is gone" must mean "the connection closes": the island sees the close (adapter: broker.finish on
 // 'close') and revokes the card. This file proves it against a real AF_UNIX fake receiver with a real process,
 // for both the question path and the permission path: a killed hook prints nothing and leaves no connection.
-const { test } = require('node:test');
+const { test: baseTest } = require('node:test');
+// K2-01b: SIGTERM + a real AF_UNIX receiver are Unix mechanisms. The file joined npm test only in K2-01b; on Windows it
+// skips by name (registered gap «Windows: hook cancel (S3) twin — named pipe + TerminateProcess»).
+const { unixTest } = require('./platform-env.cjs');
+const test = unixTest(baseTest, 'registered gap «Windows: hook cancel (S3) twin — named pipe + TerminateProcess»');
 const assert = require('node:assert/strict');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
