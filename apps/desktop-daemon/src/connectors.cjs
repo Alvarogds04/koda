@@ -17,7 +17,7 @@ const crypto = require("node:crypto");
 const util = require("node:util");
 const { accessSync, constants, lstatSync, realpathSync } = require("node:fs");
 const path = require("node:path");
-const { assertSecurePath } = require("./isolation.cjs");
+const { assertSecurePath, pathWithNodeFirst } = require("./isolation.cjs");
 
 const SCHEMA = "abito-connectors/view/1";
 const DEFAULTS = Object.freeze({ timeoutMs: 5000, maxBytes: 256 * 1024 });
@@ -194,7 +194,7 @@ class ConnectorsView {
 			const value = this.baseEnv[key];
 			if (typeof value === "string" && value !== "") env[key] = value;
 		}
-		env.PATH = CHILD_PATH;
+		env.PATH = pathWithNodeFirst(path.dirname(process.execPath), CHILD_PATH, ":"); // K2-02: the daemon's Node leads PATH
 		env.HOME = this.home;
 		env.TMPDIR = this.home;
 		return env;

@@ -20,9 +20,11 @@ Get the latest build from **[Releases](https://github.com/Alvarogds04/koda/relea
 
 The macOS build is ad-hoc signed but not notarized; the Windows build is not signed. They are meant for testing.
 
-**Agents need [Node.js](https://nodejs.org).** If it is missing, *Ajustes → Agentes* offers to download the official installer.
-Chat also needs Pi (*Ajustes → Agentes → Instalar Pi*, or `npm install -g @earendil-works/pi-coding-agent`); Claude Code and Codex
-hooks do not. Without them the island still opens and shows notices, and Koda says which one is missing.
+**Nothing else to install.** Every installer carries Koda's own Node.js (22, pinned) and Pi (1.4.0, pinned), so the island,
+chat and agent hooks work on a machine with neither. Koda always uses its own copies and never changes a Node or Pi you already
+have, and it launches Pi offline: no version check, no model-catalog refresh and no telemetry to pi.dev. Their licences ship
+next to them in `runtime/THIRD-PARTY-NOTICES.md`. If that bundled runtime is damaged, Koda says «La instalación de Koda está
+dañada: volvé a instalar Koda.» instead of falling back to another Node or Pi.
 
 **Upgrading from Abito:** install Koda over it; settings, accounts and agent hooks are kept (internal names are unchanged).
 Restart any open Pi session afterwards so it loads the updated extension.
@@ -60,7 +62,7 @@ Each agent row in *Ajustes → Agentes* works on its own: Claude Code and Codex 
 Internal names (the `abito-island` binary, `~/.abito-island` data folder, `ABITO_*` variables, the protocol) still carry the
 old name; renaming them is planned separately so existing installs keep working.
 
-Build on Linux: `cd apps/desktop-tauri && node packaging/build.cjs --out dist`. Tests: `../../run-node-checks.sh` (Node) and
+Build on Linux: `cd apps/desktop-tauri && node packaging/runtime/build-runtime.cjs --target linux-x64 --out /tmp/koda-runtime --archive /tmp/koda-runtime-linux-x64.tar.gz && node packaging/build.cjs --out dist --runtime-archive /tmp/koda-runtime-linux-x64.tar.gz` (the first command downloads the pinned Node and Pi and checks their hashes). Tests: `../../run-node-checks.sh` (Node) and
 `cargo test --offline`.
 
 ## License

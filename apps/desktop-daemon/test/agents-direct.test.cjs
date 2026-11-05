@@ -7,6 +7,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { parseArgs, main, packagedInstallerBin } = require("../src/agents-direct.cjs");
+const { win } = require("./platform-env.cjs");
 
 const HASH = "a".repeat(64);
 const SCHEMA = "abito-hook-install/1";
@@ -46,9 +47,13 @@ function setup(t) {
 	const env = { HOME: home, ABITO_ISLAND_DIR: island };
 	const installerBin = path.join(base, "installer.cjs");
 	fs.writeFileSync(installerBin, "// fake\n", { mode: 0o644 });
+	// On Windows the product verifies the installer bytes against the install manifest (HU-047) before every
+	// call; a test fixture is never in that manifest, so the tests inject the product's own verifier seam (the
+	// shipped installer IS bundled in a real install). The POSIX ownership/mode trust check stays the real one.
 	const run = async (argv, behaviour, seen) => {
 		let text = "";
-		const code = await main(argv, env, { write: (s) => (text += s) }, { installerBin, agentsOptions: { run: fakeRun(home, behaviour, seen) } });
+		const agentsOptions = { run: fakeRun(home, behaviour, seen), ...(win ? { verifyBundled: () => {} } : {}) };
+		const code = await main(argv, env, { write: (s) => (text += s) }, { installerBin, agentsOptions });
 		assert.equal(text.split("\n").filter(Boolean).length, 1, "exactly one output line");
 		return { code, json: JSON.parse(text) };
 	};

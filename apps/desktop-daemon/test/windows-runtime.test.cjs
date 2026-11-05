@@ -87,7 +87,9 @@ test("sessionHelperCandidates is fixed (no PATH, no CWD) and empty off Windows",
 });
 
 test("publishSessionWindows fails closed without a helper", () => {
-	assert.throws(() => publishSessionWindows(os.tmpdir(), PAYLOAD(), { helperPath: undefined }), /helper not found/);
+	// resolveHelper is the product's injection seam: injecting "nothing found" makes the no-helper case
+	// deterministic on every OS (on Windows the real installed helper would otherwise be found first).
+	assert.throws(() => publishSessionWindows(os.tmpdir(), PAYLOAD(), { helperPath: undefined, resolveHelper: () => undefined }), /helper not found/);
 });
 
 test("publishSessionWindows refuses a non-zero helper exit", () => {
@@ -188,9 +190,14 @@ test("windowsIslandRootViolation mirrors the canonical policy (win semantics)", 
 	}
 	// Missing LOCALAPPDATA: nothing canonical to anchor on — refused.
 	assert.match(windowsIslandRootViolation(path.join(local, "Abito"), {}, win.platform), /LOCALAPPDATA/);
-	// Off Windows (and by default): no Windows rule, root passes through.
+	// Off Windows (injected platform): no Windows rule, root passes through.
 	assert.equal(windowsIslandRootViolation("/any/root", {}, "linux"), null);
-	assert.equal(windowsIslandRootViolation("/any/root"), null);
+	// The DEFAULT platform call must accept the canonical root of THIS platform (a POSIX path is only
+	// acceptable where the POSIX rule applies; Windows requires the %LOCALAPPDATA%\Abito anchor).
+	const defaultRoot = process.platform === "win32"
+		? path.join(process.env.LOCALAPPDATA, "Abito")
+		: "/any/root";
+	assert.equal(windowsIslandRootViolation(defaultRoot), null);
 });
 
 test("Daemon refuses a forbidden Windows root BEFORE creating anything", async () => {
@@ -261,4 +268,41 @@ test("live helper writes the canonical session file and refuses unsafe input", {
 	} finally {
 		fs.rmSync(base, { recursive: true, force: true });
 	}
+});
+
+// K2-01b P1: the daemon validates its island root against ITS env's %LOCALAPPDATA% (options.env), so the native helper,
+// which re-checks the same canonical-root policy, must be given that same LOCALAPPDATA — not the process's. Production
+// passes process.env, so the helper env stays exactly process.env + ABITO_ISLAND_DIR there.
+test("K2-01b: the session helper gets the daemon env's LOCALAPPDATA; without an injected env it is process.env + ABITO_ISLAND_DIR", async () => {
+	const { verifySessionWindows, classifySession } = require("../src/daemon.cjs");
+	const root = path.join(os.tmpdir(), "abito-p1-root");
+	const env = { LOCALAPPDATA: "C:\\Users\\a\\AppData\\Local-private", PATH: "x" };
+	const seen = [];
+	const spawnSync = (exe, args, opts) => (seen.push(opts.env), { status: 0, stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) });
+	publishSessionWindows(root, PAYLOAD(), { spawnSync, helperPath: "H.exe", env });
+	assert.equal(verifySessionWindows(root, { spawnSync, helperPath: "H.exe", env }), true);
+	for (const e of seen) {
+		assert.equal(e.LOCALAPPDATA, env.LOCALAPPDATA, "the helper checks the root against the daemon's LOCALAPPDATA");
+		assert.equal(e.ABITO_ISLAND_DIR, path.resolve(root));
+	}
+	// An injected env WITHOUT LOCALAPPDATA never inherits the process's: the helper fails closed like the daemon did.
+	seen.length = 0;
+	publishSessionWindows(root, PAYLOAD(), { spawnSync, helperPath: "H.exe", env: { PATH: "x" } });
+	assert.equal("LOCALAPPDATA" in seen[0], false);
+	// Production: no env injected -> exactly process.env plus ABITO_ISLAND_DIR.
+	seen.length = 0;
+	publishSessionWindows(root, PAYLOAD(), { spawnSync, helperPath: "H.exe" });
+	verifySessionWindows(root, { spawnSync, helperPath: "H.exe" });
+	for (const e of seen) assert.deepEqual(e, { ...process.env, ABITO_ISLAND_DIR: path.resolve(root) });
+	// classifySession forwards its env to the native verification (a well-formed session file makes it ask).
+	const island = fs.mkdtempSync(path.join(os.tmpdir(), "abito-p1-"));
+	fs.mkdirSync(path.join(island, "runtime"), { mode: 0o700 });
+	fs.writeFileSync(path.join(island, "runtime", "session.json"), JSON.stringify({ protocol: PROTOCOL, endpoint: "x", token: "t", pid: 2, startedAt: 1 }), { mode: 0o600 });
+	const verified = [];
+	try {
+		await classifySession(island, { platform: "win32", env, nativeVerify: (r, deps) => (verified.push([r, deps && deps.env]), false) });
+	} finally {
+		fs.rmSync(island, { recursive: true, force: true });
+	}
+	assert.deepEqual(verified, [[island, env]]);
 });

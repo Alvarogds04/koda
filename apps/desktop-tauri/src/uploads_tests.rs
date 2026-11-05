@@ -150,19 +150,35 @@ fn attachments_dir_uses_the_configured_workspace_and_falls_back() {
         assert_eq!(fs::metadata(&dir).unwrap().permissions().mode() & 0o777, 0o700);
     }
 
-    // A valid configured workspace wins.
+    // A valid configured workspace wins. The config is written through the
+    // JSON encoder, not string interpolation: on Windows the absolute temp
+    // path carries backslashes, and an unescaped `\U`/`\R`/… is an INVALID
+    // JSON escape, so the product would honestly fall back for a file it
+    // cannot parse (that premise, not an 8.3 rule, caused the Windows CI
+    // failure).
     let other = root.join("mi trabajo");
     fs::create_dir_all(&other).unwrap();
     fs::write(
         island.join("config.json"),
-        format!("{{\"workspace\": \"{}\"}}", other.display()),
+        serde_json::to_vec(&serde_json::json!({"workspace": other.to_string_lossy()})).unwrap(),
     )
     .unwrap();
     assert_eq!(attachments_dir(&island).unwrap(), other.join("uploads"));
 
-    // Invalid workspaces fall back: relative, `..`, missing, wrong type.
-    for bad in ["../escape", "relativo", "/definitivamente/inesistente"] {
-        fs::write(island.join("config.json"), format!("{{\"workspace\": \"{bad}\"}}")).unwrap();
+    // Invalid workspaces fall back: relative, `..`, missing, wrong type. The
+    // absolute-missing case uses the host's own absolute shape (a leading
+    // `/` is not absolute on Windows).
+    let absolute_missing = if cfg!(windows) {
+        r"C:\definitivamente\inesistente".to_string()
+    } else {
+        "/definitivamente/inesistente".to_string()
+    };
+    for bad in ["../escape", "relativo", &absolute_missing] {
+        fs::write(
+            island.join("config.json"),
+            serde_json::to_vec(&serde_json::json!({"workspace": bad})).unwrap(),
+        )
+        .unwrap();
         assert_eq!(attachments_dir(&island).unwrap(), island.join("workspace").join("uploads"), "{bad}");
     }
     fs::write(island.join("config.json"), b"{ not json").unwrap();

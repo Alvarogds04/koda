@@ -43,6 +43,9 @@ try {
     const file = path.join(stage, 'desktop-pi', name); fs.mkdirSync(path.dirname(file), {recursive:true,mode:0o755});
     fs.copyFileSync(path.join(crate, '..', 'desktop-pi', name), file); fs.chmodSync(file, 0o644);
   }
+  // K2-02 T2 (parent-approved minimal addition): the runtime archive is part of the closed staged set;
+  // this structural fixture only needs its bytes present for the receipt/verifyStage hashing.
+  fs.writeFileSync(path.join(stage, 'koda-runtime-linux-x64.tar.gz'), 'runtime archive fixture (structural test only; install.sh parses the real archive)\n', { mode: 0o644 });
   const receipt = {
     fixture: 'PRE-COMMIT STRUCTURAL TEST ONLY; toy executable, synthetic provenance, NOT RELEASE EVIDENCE',
     identifier: L.IDENTIFIER, version: L.checkConfig(crate).version,

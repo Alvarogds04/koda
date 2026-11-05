@@ -330,14 +330,9 @@ fn private_file(path: &Path, write: bool, create: bool) -> io::Result<File> {
     Ok(f)
 }
 fn directory(dir: &Path) -> io::Result<()> {
-    // Reject symlink ancestors as well as the leaf; never chmod an unrelated directory.
-    for p in dir.ancestors() {
-        if let Ok(m) = fs::symlink_metadata(p) {
-            if !m.is_dir() || m.file_type().is_symlink() {
-                return Err(invalid());
-            }
-        }
-    }
+    // Reject symlink ancestors as well as the leaf (except a trusted system link ancestor, see check_ancestors);
+    // never chmod an unrelated directory.
+    check_ancestors(&RealFs, dir)?;
     if !dir.exists() {
         let mut b = fs::DirBuilder::new();
         b.recursive(true);
@@ -357,6 +352,115 @@ fn directory(dir: &Path) -> io::Result<()> {
         }
     }
     Ok(())
+}
+/// One existing path component as `check_ancestors` sees it (lstat facts; `link` is the raw readlink target).
+pub(crate) struct Node {
+    pub uid: u32,
+    pub mode: u32,
+    pub is_dir: bool,
+    pub link: Option<PathBuf>,
+}
+/// The file-system facts `check_ancestors` needs; injected in tests.
+pub(crate) trait AncestorFs {
+    /// `Ok(None)` when the component does not exist or cannot be inspected (the previous rule skipped those too).
+    fn node(&self, p: &Path) -> io::Result<Option<Node>>;
+}
+pub(crate) struct RealFs;
+impl AncestorFs for RealFs {
+    fn node(&self, p: &Path) -> io::Result<Option<Node>> {
+        let Ok(m) = fs::symlink_metadata(p) else { return Ok(None) };
+        let link = if m.file_type().is_symlink() { Some(fs::read_link(p)?) } else { None };
+        #[cfg(unix)]
+        let (uid, mode) = {
+            use std::os::unix::fs::MetadataExt;
+            (m.uid(), m.mode())
+        };
+        // No POSIX owner off unix: never root, so no link is ever trusted there (Windows keeps the old rule).
+        #[cfg(not(unix))]
+        let (uid, mode) = (u32::MAX, 0);
+        Ok(Some(Node { uid, mode, is_dir: m.is_dir(), link }))
+    }
+}
+/// Bound on followed trusted links (a loop of root-owned links is refused, never spun on).
+const MAX_TRUSTED_LINK_HOPS: usize = 40;
+
+/// Every existing component of `dir`, from the root down, must be a directory and not a symlink - except (K2-01b,
+/// same rule as the daemon's isolation.cjs assertSecurePath) a TRUSTED SYSTEM LINK ancestor: the link is owned by root
+/// and its parent directory is owned by root and not group/world-writable, so no other user can have planted or swapped
+/// it (macOS /var -> private/var, /tmp, /etc; merged-usr /lib -> usr/lib). The walk then continues on the link's target,
+/// component by component as the OS traverses it (a `..` applies after the components before it are checked), under
+/// this same rule. The leaf itself is never allowed to be a symlink. Non-link components keep the previous rule exactly
+/// (an existing directory; ownership and mode are checked on the leaf by `directory`).
+pub(crate) fn check_ancestors(fs: &dyn AncestorFs, dir: &Path) -> io::Result<()> {
+    use std::ffi::OsString;
+    use std::path::Component;
+    // A stack of owned components, next one on top: `Root` restarts the walk at a root, `Up` is `..`.
+    enum Step {
+        Root(OsString),
+        Up,
+        Name(OsString),
+    }
+    fn steps(p: &Path) -> Vec<Step> {
+        // The path's root is ONE step: a Windows prefix (C:, \\server\share, \\?\C:) and the RootDir that follows it
+        // stay together, so walking a link target that restarts at a root never drops the prefix.
+        let mut out: Vec<Step> = Vec::new();
+        for c in p.components() {
+            match c {
+                Component::Prefix(_) => out.push(Step::Root(c.as_os_str().to_owned())),
+                Component::RootDir => match out.last_mut() {
+                    Some(Step::Root(prefix)) => prefix.push(c.as_os_str()),
+                    _ => out.push(Step::Root(c.as_os_str().to_owned())),
+                },
+                Component::CurDir => {}
+                Component::ParentDir => out.push(Step::Up),
+                Component::Normal(n) => out.push(Step::Name(n.to_owned())),
+            }
+        }
+        out.reverse();
+        out
+    }
+    let mut pending = steps(dir);
+    let mut current = PathBuf::new();
+    let mut hops = 0;
+    while let Some(step) = pending.pop() {
+        let name = match step {
+            Step::Root(r) => {
+                // A root (with its Windows prefix, if any) always restarts the walk there.
+                current = PathBuf::from(&r);
+                continue;
+            }
+            Step::Up => {
+                current.pop();
+                continue;
+            }
+            Step::Name(n) => n,
+        };
+        let parent = current.clone();
+        current.push(&name);
+        // Nothing below a missing component exists: the previous rule stopped checking there too.
+        let Some(node) = fs.node(&current)? else { return Ok(()) };
+        if let Some(target) = &node.link {
+            let leaf = pending.is_empty();
+            if leaf || hops >= MAX_TRUSTED_LINK_HOPS || !trusted_system_link(fs, &node, &parent)? {
+                return Err(invalid());
+            }
+            hops += 1;
+            // Relative targets re-walk from the already verified parent; absolute ones from their root.
+            current = if target.is_absolute() { PathBuf::new() } else { parent };
+            pending.extend(steps(target));
+            continue;
+        }
+        if !node.is_dir {
+            return Err(invalid());
+        }
+    }
+    Ok(())
+}
+fn trusted_system_link(fs: &dyn AncestorFs, link: &Node, parent: &Path) -> io::Result<bool> {
+    if link.uid != 0 || parent.as_os_str().is_empty() {
+        return Ok(false);
+    }
+    Ok(fs.node(parent)?.is_some_and(|p| p.link.is_none() && p.is_dir && p.uid == 0 && p.mode & 0o022 == 0))
 }
 fn sync_directory(dir: &Path) -> io::Result<()> {
     #[cfg(unix)]

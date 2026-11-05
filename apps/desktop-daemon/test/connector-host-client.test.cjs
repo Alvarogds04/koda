@@ -7,10 +7,15 @@ const net = require("node:net");
 const os = require("node:os");
 const path = require("node:path");
 const { ConnectorHostClient, ConnectorHostError } = require("../src/connector-host-client.cjs");
+const { win } = require("./platform-env.cjs");
 
 async function server(t, respond) {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "abito-client-"));
-	const endpoint = path.join(dir, "s");
+	// Windows has no AF_UNIX listen: the same net server listens on a private named pipe, and the client
+	// just net.connects to the endpoint string (what the product does with the host's pipe endpoint there).
+	const dir = win ? undefined : fs.mkdtempSync(path.join(os.tmpdir(), "abito-client-"));
+	const endpoint = win
+		? `\\\\.\\pipe\\abito-test-${require("node:crypto").randomBytes(16).toString("hex")}`
+		: path.join(dir, "s");
 	const srv = net.createServer((socket) => {
 		let buf = "";
 		socket.on("error", () => {});
@@ -28,7 +33,7 @@ async function server(t, respond) {
 	await new Promise((resolve) => srv.listen(endpoint, resolve));
 	t.after(async () => {
 		await new Promise((resolve) => srv.close(resolve));
-		fs.rmSync(dir, { recursive: true, force: true });
+		if (dir) fs.rmSync(dir, { recursive: true, force: true });
 	});
 	return endpoint;
 }

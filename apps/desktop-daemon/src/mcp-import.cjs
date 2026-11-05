@@ -426,7 +426,10 @@ function mapServer(source, name, scope, raw, syntax, inputs, home) {
 	return rejected("invalid_entry");
 }
 
-/** Where each client keeps its MCP config, per supported platform. */
+/**
+ * Where each client keeps its MCP config, per supported platform. Rows are relative to the user home unless
+ * `base: "appdata"` (Windows %APPDATA%, the Roaming profile dir, taken from the env the caller passes).
+ */
 const LOCATIONS = Object.freeze({
 	linux: Object.freeze([
 		{ source: "claude-desktop", rel: ".config/Claude/claude_desktop_config.json" },
@@ -440,7 +443,23 @@ const LOCATIONS = Object.freeze({
 		{ source: "cursor", rel: ".cursor/mcp.json" },
 		{ source: "vscode", rel: "Library/Application Support/Code/User/mcp.json" },
 	]),
+	// K2-01b: the same four clients on Windows (mirrors the desktop-connectors importer's Windows paths).
+	win32: Object.freeze([
+		{ source: "claude-desktop", base: "appdata", rel: "Claude/claude_desktop_config.json" },
+		{ source: "claude-code", rel: ".claude.json" },
+		{ source: "cursor", rel: ".cursor/mcp.json" },
+		{ source: "vscode", base: "appdata", rel: "Code/User/mcp.json" },
+	]),
 });
+
+/** %APPDATA% when it is a usable absolute, clean folder (the same shape rule as the home); otherwise null. */
+function usableAppData(value) {
+	try {
+		return validateHome(value);
+	} catch {
+		return null;
+	}
+}
 
 /** Extracts the `mcpServers`-style map of a document for one client; undefined when absent. */
 function serversMap(root, keys) {
@@ -533,7 +552,10 @@ function boundedOption(value, fallback, name) {
  *
  * @param {object} options
  * @param {string} options.home  absolute, clean user home folder (never read from the environment here)
- * @param {string} [options.platform]  "linux" | "darwin"; anything else scans nothing
+ * @param {string} [options.platform]  "linux" | "darwin" | "win32"; anything else scans nothing
+ * @param {object} [options.env]  win32 only: the environment whose %APPDATA% locates Claude Desktop and VS Code
+ *   (the daemon passes its own env; default process.env). A missing, relative, unclean or non-string APPDATA makes
+ *   those two rows scan NOTHING (never the cwd or home); Claude Code and Cursor stay home-relative on every OS.
  * @param {number} [options.maxFileBytes]  per-file read cap (default 2 MiB); larger files report "too_large"
  * @param {number} [options.maxServers]  preview cap (default 128); exceeding it sets `truncated`
  * @returns {{files: {source: string, status: string}[], servers: object[], truncated: boolean}}
@@ -552,9 +574,12 @@ function scanMcpConfigs(options = {}) {
 	let truncated = false;
 	const locations = LOCATIONS[platform];
 	if (!locations) return { files, servers, truncated };
+	const appData = platform === "win32" ? usableAppData((options.env ?? process.env).APPDATA) : null;
 
 	for (const loc of locations) {
-		const file = path.join(home, loc.rel);
+		const base = loc.base === "appdata" ? appData : home;
+		if (base === null) continue; // no usable %APPDATA%: this row scans nothing
+		const file = path.join(base, loc.rel);
 		let text;
 		try {
 			const stat = lstatSync(file); // R22: never follow a symlinked foreign config

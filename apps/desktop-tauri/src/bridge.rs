@@ -654,20 +654,44 @@ mod tests {
     fn sender_rejects_wrong_label_or_origin() {
         assert!(sender_ok("second", "tauri://localhost").is_err());
         assert!(sender_ok("", "tauri://localhost").is_err());
-        // origin variants Electron would never have accepted either
+        // origin variants Electron would never have accepted either. The
+        // Windows webview origin (`http://tauri.localhost/`, #503 T1) is
+        // admitted by design on Windows, so it is asserted separately below:
+        // this list stays the refusal set of Linux/macOS and of every OS for
+        // the look-alikes. The product's acceptance is never widened here.
         for url in [
             "https://evil.example/",
             "file:///app/index.html",
             "tauri://localhost/index.html#extra",
             "tauri://localhost/index.html?x=1",
             "tauri://localhost.evil/",
-            "http://tauri.localhost/",
             "tauri://localhost/other.html",
             "",
         ] {
             let err = sender_ok("main", url).expect_err(url);
             assert_eq!(err.code, "denied", "{url}");
             assert!(err.message.contains("origin"), "{url}: {err}");
+        }
+        // The Windows origin: refused wherever Windows does not serve it
+        // (Linux/macOS), and the look-alikes stay refused on Windows too
+        // (`windows_origin_reaches_the_gate_only_on_windows` pins the exact
+        // Windows acceptance).
+        if !cfg!(windows) {
+            let err = sender_ok("main", "http://tauri.localhost/").expect_err("http://tauri.localhost/");
+            assert_eq!(err.code, "denied");
+            assert!(err.message.contains("origin"), "{err}");
+        } else {
+            for url in [
+                "http://tauri.localhost.evil.com/",
+                "http://tauri.localhost.evil/",
+                "http://tauri.localhost@evil.com/",
+                "http://tauri.localhost",
+                "https://tauri.localhost/",
+            ] {
+                let err = sender_ok("main", url).expect_err(url);
+                assert_eq!(err.code, "denied", "{url}");
+                assert!(err.message.contains("origin"), "{url}: {err}");
+            }
         }
     }
 

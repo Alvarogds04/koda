@@ -4,7 +4,6 @@ import { statusDot } from "../settings/parts.js";
 import { toggle } from "./ui.js";
 import { notchSection as section, notchTipRow as row, notchHint as hint, infoTip, notchTipSection } from "./notch.js";
 import { session, trusted } from "./runtime.js";
-import { piInstallControl } from "./piinstall.js";
 import { t } from "./i18n-es.js";
 const UNAVAILABLE = "No disponible todavía";
 const NOT_IN_VERSION = "No disponible en esta versión";
@@ -42,10 +41,6 @@ async function renderAgentSettings({ invoke, V, P, listen, timers }) {
   s.message.className = "abito-settings-feedback notice err";
   let state = null, reviewing = false, busy = false;
   const actionStatus = h("div", { id: "agent-action-status", class: "hint", role: "status", "aria-live": "polite" });
-  const piControl = piInstallControl({ call, watch, work, onDone: () => work(() => call("agent_action", { action: "view" }), (next) => {
-    state = { ...state, ...next };
-    paint();
-  }) });
   let prefs = {}, prefsKnown = false;
   function applyNow(cell, r, label) {
     if (busy || !r?.primary?.command?.plan_hash || !r.summary || !r.reviewable) return;
@@ -167,10 +162,6 @@ async function renderAgentSettings({ invoke, V, P, listen, timers }) {
       actions
     );
     entry.append(line, menu, detail);
-    if (id === "pi") {
-      piControl.update(state);
-      entry.append(piControl.element);
-    }
     const redraw = () => {
       clear(actions);
       clear(menu);

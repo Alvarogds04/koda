@@ -230,48 +230,9 @@ test('HU-045: the sidebar shows the real package version (tauri.conf.json), neve
   assert.equal((await r.page.locator('.hub-version').textContent()).trim(), `Koda ${want}`);
 });
 
-// HU-046 (human, verbatim option chosen: «Botón «Instalar Pi» (recomendado)»): when the chat engine has no Pi, the Chat page AND the Pi row of
-// Agentes offer «Instalar Pi». Nothing is installed here: the host command is a stub that counts calls.
-test('HU-046 Chat: with Pi missing the page explains why and offers «Instalar Pi»; a first click only shows the plan, the second runs it once', async r => {
-  await r.close();
-  const f = await H.open({ width: 960, height: 760, piMissing: true });
-  try {
-    await f.go('Chat'); await f.page.waitForTimeout(1200);
-    const box = f.page.locator('#pi-install');
-    assert.equal(await box.isVisible(), true, 'the control is on the Chat page');
-    assert.match(await box.textContent(), /funciona con Pi/); assert.match(await box.textContent(), /npm install -g @earendil-works\/pi-coding-agent/);
-    await box.getByRole('button', { name: 'Instalar Pi' }).click(); await f.page.waitForTimeout(200);
-    assert.equal(await f.page.evaluate(() => window.__piRuns || 0), 0, 'the first click only shows what will run');
-    assert.match(await f.page.locator('#pi-install-plan').textContent(), /Se va a ejecutar: npm install -g @earendil-works\/pi-coding-agent/);
-    if (process.env.ABITO_SHOT_DIR) await f.page.screenshot({ path: require('node:path').join(process.env.ABITO_SHOT_DIR, 'pi-install-chat.png') });
-    await box.getByRole('button', { name: 'Instalar ahora' }).click(); await f.page.waitForTimeout(300);
-    assert.equal(await f.page.evaluate(() => window.__piRuns), 1, 'the second click runs it exactly once');
-    assert.match(await box.textContent(), /Instalando Pi/); assert.equal(await box.getByRole('button').count(), 0, 'no second install while one runs');
-    await f.page.evaluate(() => window.__emit('pi-install:state', { action: 'status', phase: 'failed', reason: 'install_failed', say: 'No se pudo instalar Pi. Si Node.js está en una carpeta del sistema, instalalo desde una terminal con permisos o configurá una carpeta propia para npm.' }));
-    await f.page.waitForTimeout(200);
-    assert.match(await box.textContent(), /No se pudo instalar Pi/); assert.equal(await box.getByRole('button', { name: 'Reintentar' }).count(), 1, 'a failure can be retried and Pi is not shown as installed');
-    assert.doesNotMatch(await box.textContent(), /quedó instalado/);
-  } finally { await f.close(); }
-});
-
-test('HU-046 Agentes: the Pi row offers «Instalar Pi» when Pi is missing; Claude Code and Codex rows never do and the page never says «Falta Pi»', async r => {
-  await r.close();
-  const f = await H.open({ width: 960, height: 760, piMissing: true });
-  try {
-    await f.go('Agentes'); await f.page.waitForTimeout(1200);
-    const pi = f.page.locator('#agent-row-pi');
-    assert.equal(await pi.locator('#pi-install').isVisible(), true, 'the Pi row carries the control');
-    assert.equal(await pi.getByRole('button', { name: 'Instalar Pi' }).count(), 1);
-    for (const id of ['claude-code', 'codex']) assert.equal(await f.page.locator(`#agent-row-${id} #pi-install`).count(), 0, `${id}: no Pi install control`);
-    assert.equal(await f.page.locator('#pi-install').count(), 1, 'exactly one control on the page');
-    assert.doesNotMatch(await f.page.locator('.hub-page').textContent(), /Falta Pi/, 'Agentes never shows the general «Falta Pi»');
-    if (process.env.ABITO_SHOT_DIR) await f.page.screenshot({ path: require('node:path').join(process.env.ABITO_SHOT_DIR, 'pi-install-agentes.png') });
-  } finally { await f.close(); }
-});
-
-test('HU-046: with Pi present (engine connected) neither page shows the control', async r => {
-  for (const title of ['Chat', 'Agentes']) { await r.go(title); await r.page.waitForTimeout(800); assert.equal(await r.page.locator('#pi-install').isVisible().catch(() => false), false, title); }
-});
+// K2-02 (S4): the «Instalar Pi» control and the closed `pi_install_action` command are GONE (Koda ships its own
+// Node and Pi). The RED-first proof that no install control renders on Chat or Agentes lives in
+// no-install-buttons-check.cjs; the old HU-046 install-flow tests were removed with the code.
 
 test('0.1.2 paused pages are hidden: the sidebar lists exactly the active pages, no grey «En pausa» row (visual check: hub-side screenshot)', async r => {
   const items = await navTitles(r.page);

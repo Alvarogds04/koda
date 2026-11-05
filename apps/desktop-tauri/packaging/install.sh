@@ -5,19 +5,29 @@
 #   sh install.sh --uninstall [--prefix DIR] [--applications-dir DIR]
 #
 # <stage-dir> is what packaging/build.cjs stages (dist/abito-island/<version>) or a
-# copy of it (artifacts/abito-island-<version>-<commit>). POSIX sh, no dependencies
-# beyond Node (PATH then /usr/bin/node), coreutils + sha256sum (or shasum).
-# Keep install.sh beside lib.cjs. No root, no network.
+# copy of it (artifacts/abito-island-<version>-<commit>). POSIX sh; coreutils +
+# tar + sha256sum (or shasum). Keep install.sh beside lib.cjs. No root, no network.
+# NO NODE IS REQUIRED, USED OR LOOKED UP on the machine (K2-02, decision A): the
+# stage carries the bundled runtime archive (koda-runtime-linux-x64.tar.gz) and the
+# `node` extracted from it is what runs the closed-set verification and the host.
 #
-# Order of work (nothing is touched until step 1 passes):
-#   1. VERIFY: receipt.json is read and EVERY file is re-hashed against it; the
-#      stage must hold exactly the expected files (no extras, no symlinks), the
-#      receipt must name this app's identity, a git HEAD and a clean tree.
-#   2. Install binary, launcher, icon (+ the .desktop template and receipt.json, so
-#      the installed copy can be re-verified with packaging/verify.cjs) into
-#      PREFIX; each file lands via temp-file + rename, so a RUNNING binary can be
-#      replaced and an interrupted install never leaves a half-written file.
-#   3. Write ~/.local/share/applications/com.abitog.AbitoTauri.desktop with
+# Order of work (nothing is replaced until every step passes):
+#   1. VERIFY STAGE: receipt.json is parsed in pure sh and EVERY file it lists —
+#      including the runtime archive — is re-hashed against it; the receipt must
+#      name this app's identity, a git HEAD and a clean tree.
+#   2. VERIFY RUNTIME ARCHIVE MEMBERS: `tar -tzf` (names) + `tar -tvzf` (types) list every member; any
+#      absolute path, any «..» component and any non-regular/non-directory member
+#      (symlink, hardlink, device, fifo) is refused BEFORE extracting anything.
+#   3. EXTRACT the runtime into a private (0700) temp dir on the same filesystem
+#      as PREFIX (its parent), then use THAT node — never a system Node — to run
+#      the lib.cjs closed-set verification (verifyStage + checkInstalledLayout).
+#   4. INSTALL binary, launcher, icon, daemon, harness, Pi payload (+ the .desktop
+#      template and receipt.json) via temp-file + re-hash + rename, so a RUNNING
+#      binary can be replaced and an interrupted install never leaves a half-written
+#      file; the extracted runtime moves into place as PREFIX/runtime by atomic
+#      rename (an old runtime is moved aside, then removed). On any failure nothing
+#      is replaced and every temp dir is removed.
+#   5. Write ~/.local/share/applications/com.abitog.AbitoTauri.desktop with
 #      @INSTALL_DIR@ resolved and Exec=env ABITO_PROJECT_ROOT=<project root> "<launcher>"
 #      (the one variable the closed launcher accepts).
 #
@@ -27,21 +37,18 @@
 #   PROJECT ROOT  required: --project-root DIR (the folder your agent sessions run in;
 #                 the island derives its project id from this directory).
 #
-# Idempotent: reinstalling over itself (or from the installed dir) is a no-op that
-# succeeds. --uninstall removes exactly the installed files and the .desktop, and
-# the install dir only when it is then empty. It never touches the Preview or
-# com.abitog.Abito roots.
+# Idempotent: reinstalling over itself is a no-op that succeeds. --uninstall removes
+# exactly the installed files, PREFIX/runtime (only when it is a REAL directory
+# directly inside PREFIX — a symlink is left alone) and the .desktop, and the install
+# dir only when it is then empty. It never touches the Preview or com.abitog.Abito roots.
 set -eu
 umask 022
 
 ID="com.abitog.AbitoTauri"
 DESKTOP="$ID.desktop"
-# Node is also the installed host runtime. PATH first, canonical fallback only.
-NODE="$(command -v node || true)"
-[ -n "$NODE" ] || { [ ! -x /usr/bin/node ] || NODE=/usr/bin/node; }
-[ -n "$NODE" ] || { echo 'install.sh: node missing (PATH, /usr/bin/node)' >&2; exit 1; }
-LIB="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)/lib.cjs"
-FILES="$("$NODE" -e 'process.stdout.write(require(process.argv[1]).STAGED.join(" "))' "$LIB")"
+RUNTIME_ARCHIVE="koda-runtime-linux-x64.tar.gz"
+# Closed-set verifier beside this script; run by the EXTRACTED runtime's node.
+LIB="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)/lib.cjs"
 EXEC_FILES="abito-island abito-island-launcher"
 
 die() { printf 'install.sh: %s\n' "$*" >&2; exit 1; }
@@ -60,13 +67,16 @@ Abito (Tauri) one-command installer (user-local, no root, no network).
   --project-root DIR    (required) ABITO_PROJECT_ROOT written into the launcher entry:
                         the folder your agent sessions run in
   --applications-dir D  where the .desktop goes (default: ~/.local/share/applications)
-  --uninstall           remove the installed files and the .desktop entry
+  --uninstall           remove the installed files, PREFIX/runtime and the .desktop entry
   -h, --help            this text
 
-Node (PATH then /usr/bin/node) and the sibling lib.cjs are required.
-Every shipped file, including desktop-daemon/src, is recursively re-hashed
-against receipt.json BEFORE anything is installed; no symlinks or extras. Any
-mismatch aborts without touching the system. Reinstalling is safe (idempotent).
+No Node is required on the machine: the stage ships the bundled runtime archive
+(koda-runtime-linux-x64.tar.gz). Its sha256 is verified against receipt.json, its
+tar members are audited (no absolute paths, no «..», no symlinks/hardlinks/devices),
+it is extracted into a private 0700 temp dir, and the extracted `node` is what runs
+the closed-set verification. Every shipped file is re-hashed BEFORE anything is
+installed; no symlinks or extras. Any mismatch aborts without touching the system.
+Reinstalling is safe (idempotent).
 USAGE
 }
 
@@ -126,14 +136,45 @@ refresh_desktop_db() {
   if command -v update-desktop-database >/dev/null 2>&1; then update-desktop-database "$APPS" >/dev/null 2>&1 || true; fi
 }
 
+# ---- temp paths and cleanup (same filesystem as PREFIX: atomic renames) -------------
+TMP_SUFFIX=".new.$$"
+TMPBASE="$(dirname "$PREFIX")"
+RUNTIME_TMP="$TMPBASE/.runtime.new.$$"
+RUNTIME_OLD="$TMPBASE/.runtime.old.$$"
+cleanup() {
+  trap - EXIT INT TERM
+  if [ -d "$RUNTIME_TMP" ]; then rm -rf "$RUNTIME_TMP"; fi
+  # a crash after the old runtime was moved aside but before the new one moved in:
+  # put the old one back, nothing is lost.
+  if [ -d "$RUNTIME_OLD" ]; then mv "$RUNTIME_OLD" "$PREFIX/runtime" 2>/dev/null || true; fi
+  for f in ${INSTALL_FILES:-} receipt.json; do rm -f "$PREFIX/$f$TMP_SUFFIX" 2>/dev/null || true; done
+  rm -f "$APPS/.new.$$.$DESKTOP" 2>/dev/null || true
+}
+trap cleanup EXIT INT TERM
+
 # ---- uninstall ------------------------------------------------------------------------
 if [ "$UNINSTALL" -eq 1 ]; then
   [ -z "$STAGE" ] || die "--uninstall takes no stage directory"
+  # The file list comes from the bundled runtime's node, or from the installed
+  # receipt; without either, only what is surely ours is removed.
+  UN_FILES=""
+  if [ -d "$PREFIX/runtime" ] && [ ! -L "$PREFIX/runtime" ] && [ -f "$PREFIX/runtime/node" ] && [ ! -L "$PREFIX/runtime/node" ]; then
+    UN_FILES="$("$PREFIX/runtime/node" -e 'process.stdout.write(require(process.argv[1]).STAGED.join(" "))' "$LIB" 2>/dev/null)" || UN_FILES=""
+  elif [ -f "$PREFIX/receipt.json" ] && [ ! -L "$PREFIX/receipt.json" ]; then
+    UN_FILES="$(awk '/^  "files": \{$/{f=1;next} f&&/^  \}/{f=0} f' "$PREFIX/receipt.json" | sed -n 's/^    "\([^"]*\)": "\([0-9a-f]\{64\}\)",\{0,1\}$/\1/p')" || UN_FILES=""
+  fi
   removed=""
-  for f in $FILES receipt.json; do
+  for f in $UN_FILES receipt.json; do
     if [ -e "$PREFIX/$f" ] || [ -L "$PREFIX/$f" ]; then rm -f "$PREFIX/$f"; removed="$removed $f"; fi
   done
   if [ -e "$APPS/$DESKTOP" ] || [ -L "$APPS/$DESKTOP" ]; then rm -f "$APPS/$DESKTOP"; removed="$removed $DESKTOP(applications)"; fi
+  # PREFIX/runtime is removed only when it is a REAL directory directly inside PREFIX.
+  if [ -d "$PREFIX/runtime" ] && [ ! -L "$PREFIX/runtime" ]; then
+    rm -rf "$PREFIX/runtime"
+    removed="$removed runtime/"
+  elif [ -L "$PREFIX/runtime" ]; then
+    note "Kept $PREFIX/runtime: it is a symlink, not ours to remove."
+  fi
   rmdir "$PREFIX/desktop-daemon/src" "$PREFIX/desktop-daemon" "$PREFIX/desktop-harness/bin" "$PREFIX/desktop-harness/src" "$PREFIX/desktop-harness" "$PREFIX/desktop-pi" "$PREFIX" 2>/dev/null || true
   refresh_desktop_db
   if [ -n "$removed" ]; then note "Removed:$removed"; else note "Nothing to remove (not installed under $PREFIX)."; fi
@@ -143,6 +184,9 @@ if [ "$UNINSTALL" -eq 1 ]; then
 fi
 
 # ---- 1. VERIFY FIRST --------------------------------------------------------------------
+for tool in tar awk sed grep cut wc; do
+  command -v "$tool" >/dev/null 2>&1 || die "required tool missing: $tool (also needed: sha256sum or shasum)"
+done
 [ -n "$STAGE" ] || { usage >&2; exit 2; }
 [ -n "$ROOT" ] || die "--project-root DIR is required (the folder your agent sessions run in)"
 safe_path "$ROOT" || die "--project-root must be an absolute, normalized path made of [A-Za-z0-9_./-]: $ROOT"
@@ -151,9 +195,6 @@ safe_path "$ROOT" || die "--project-root must be an absolute, normalized path ma
 STAGE="$(cd "$STAGE" && pwd -P)"
 RECEIPT="$STAGE/receipt.json"
 [ -f "$RECEIPT" ] && [ ! -L "$RECEIPT" ] || die "no receipt.json in $STAGE"
-
-# Recursive, closed-set verification; no symlinks, including empty extra dirs.
-"$NODE" -e 'const L=require(process.argv[1]); const p=L.verifyStage(process.argv[2]); if(p.length){console.error(p.join("\n"));process.exit(1)}' "$LIB" "$STAGE" || die "stage verification failed: nothing was installed"
 
 grep -q "^  \"identifier\": \"$ID\",\$" "$RECEIPT" || die "receipt identifier is not $ID"
 grep -q '^    "head": "[0-9a-f]\{40\}",$' "$RECEIPT" || die "receipt carries no git HEAD"
@@ -164,26 +205,81 @@ block="$(awk '/^  "files": \{$/{f=1;next} f&&/^  \}/{f=0} f' "$RECEIPT")"
 [ -n "$block" ] || die "receipt has no files block"
 parsed="$(printf '%s\n' "$block" | sed -n 's/^    "\([^"]*\)": "\([0-9a-f]\{64\}\)",\{0,1\}$/\1 \2/p')"
 [ "$(printf '%s\n' "$block" | wc -l)" -eq "$(printf '%s\n' "$parsed" | wc -l)" ] || die "receipt files block is malformed"
-[ "$(printf '%s\n' "$parsed" | wc -l)" -eq "$(printf '%s\n' $FILES | wc -l)" ] || die "receipt lists a different set of files"
-for f in $FILES; do
+names="$(printf '%s\n' "$parsed" | cut -d' ' -f1)"
+[ -n "$names" ] || die "receipt lists no files"
+
+# every file the receipt names — the runtime archive included — is hashed here
+for f in $names; do
   want="$(printf '%s\n' "$parsed" | sed -n "s|^$(printf '%s' "$f" | sed 's/[.]/\\./g') \\([0-9a-f]\\{64\\}\\)\$|\\1|p")"
   [ -n "$want" ] || die "receipt has no hash for $f"
+  [ -f "$STAGE/$f" ] && [ ! -L "$STAGE/$f" ] || die "$f is missing from the stage (or is not a regular file)"
   got="$(sha_of "$STAGE/$f")"
   [ "$got" = "$want" ] || die "HASH MISMATCH for $f (receipt $want, file $got): nothing was installed"
 done
+ARCHIVE_WANT="$(printf '%s\n' "$parsed" | sed -n "s|^$RUNTIME_ARCHIVE \([0-9a-f]\{64\}\)\$|\1|p")"
+[ -n "$ARCHIVE_WANT" ] || die "receipt has no hash for $RUNTIME_ARCHIVE (this installer requires the bundled runtime archive)"
+
 note "Stage verified against receipt.json ($STAGE)."
+
+# ---- 2. runtime archive members: refuse anything but regular files and dirs --------------
+# Tar-agnostic (GNU tar on Linux, bsdtar on macOS): member NAMES come from `tar -tzf` (one per line, the same on both),
+# member TYPES from the first character of each `tar -tvzf` line (the mode string, the same on both). Never parse the
+# -tv columns: their number differs between tars (GNU 5 before the name, bsdtar 8).
+names_list="$(tar -tzf "$STAGE/$RUNTIME_ARCHIVE" 2>/dev/null)" || die "cannot list the runtime archive $RUNTIME_ARCHIVE (corrupt, or tar is missing)"
+types_list="$(tar -tvzf "$STAGE/$RUNTIME_ARCHIVE" 2>/dev/null | cut -c1)" || die "cannot list the runtime archive $RUNTIME_ARCHIVE (corrupt, or tar is missing)"
+[ -n "$names_list" ] || die "the runtime archive $RUNTIME_ARCHIVE is empty"
+# Pair each name with its type in ONE linear pass, then audit the pairs in a single loop (linear in the member count,
+# ~16 000 for the real runtime). Everything reaches awk on STDIN, never on its command line: Linux caps one argument at
+# 128 KiB, which an archive of ~131 000 members would exceed. Input: the type count, the types, then the names.
+count="$(printf '%s\n' "$types_list" | wc -l | tr -d ' ')"
+pairs="$({ printf '%s\n' "$count"; printf '%s\n' "$types_list"; printf '%s\n' "$names_list"; } | awk '
+  NR == 1 { n = $0 + 0; next }
+  NR <= n + 1 { t[NR - 1] = $0; next }
+  $0 == "" { exit 3 }
+  { i = NR - n - 1; printf "%s %s\n", t[i], $0 }
+  END { if (NR - n - 1 != n) exit 3 }')" \
+  || die "the runtime archive $RUNTIME_ARCHIVE has member names that tar cannot list one per line"
+while IFS= read -r pair; do
+  first=${pair%"${pair#?}"}
+  member=${pair#??}
+  case "$first" in
+    -|d) ;; # regular file or directory
+    *) die "refusing runtime archive member «$member»: not a regular file or directory (symlink/hardlink/device/fifo)" ;;
+  esac
+  case "$member" in
+    /*) die "refusing runtime archive member «$member»: absolute member paths are not allowed" ;;
+  esac
+  comp=${member#./}
+  case "$comp" in
+    ..|../*|*/..|*/../*) die "refusing runtime archive member «$member»: «..» components are not allowed" ;;
+  esac
+  case "$member" in
+    .|./|./*) ;; # members are relative to the runtime root (as build-runtime.cjs packs them)
+    *) die "refusing runtime archive member «$member»: not relative to the runtime root" ;;
+  esac
+done <<MEMBERS
+$pairs
+MEMBERS
+
+# ---- 3. extract into a private temp dir, then verify with THAT node ----------------------
+mkdir -p "$TMPBASE" || die "cannot create $TMPBASE"
+mkdir -m 700 "$RUNTIME_TMP" || die "cannot create the private runtime temp dir: $RUNTIME_TMP"
+got="$(sha_of "$STAGE/$RUNTIME_ARCHIVE")"
+[ "$got" = "$ARCHIVE_WANT" ] || die "the runtime archive changed while installing: aborting before extracting anything"
+tar -xzf "$STAGE/$RUNTIME_ARCHIVE" -C "$RUNTIME_TMP" || die "cannot extract the runtime archive into $RUNTIME_TMP"
+[ -f "$RUNTIME_TMP/node" ] && [ ! -L "$RUNTIME_TMP/node" ] || die "the runtime archive holds no regular node binary"
+[ -x "$RUNTIME_TMP/node" ] || die "the extracted node is not executable"
+
+"$RUNTIME_TMP/node" -e 'const L=require(process.argv[1]); const p=L.verifyStage(process.argv[2]); if(p.length){console.error(p.join("\n"));process.exit(1)}' "$LIB" "$STAGE" || die "stage verification failed: nothing was installed"
 # Applications may contain unrelated desktop entries, so validate its ancestor
-# chain only; PREFIX must not contain any undeclared installed entry.
-"$NODE" -e 'const L=require(process.argv[1]);const fs=require("node:fs"),path=require("node:path");const p=L.checkInstalledLayout(process.argv[2]);for(let d=path.resolve(process.argv[3]);;d=path.dirname(d)){try{if(fs.lstatSync(d).isSymbolicLink())p.push(d+" is a symlink")}catch(e){if(e.code!=="ENOENT")throw e}if(path.dirname(d)===d)break}if(p.length){console.error(p.join("\n"));process.exit(1)}' "$LIB" "$PREFIX" "$APPS" || die "unsafe installed layout: nothing was installed"
+# chain only; PREFIX must not contain any undeclared installed entry (runtime/ aside).
+"$RUNTIME_TMP/node" -e 'const L=require(process.argv[1]);const fs=require("node:fs"),path=require("node:path");const p=L.checkInstalledLayout(process.argv[2]);for(let d=path.resolve(process.argv[3]);;d=path.dirname(d)){try{if(fs.lstatSync(d).isSymbolicLink())p.push(d+" is a symlink")}catch(e){if(e.code!=="ENOENT")throw e}if(path.dirname(d)===d)break}if(p.length){console.error(p.join("\n"));process.exit(1)}' "$LIB" "$PREFIX" "$APPS" || die "unsafe installed layout: nothing was installed"
 
-# ---- 2. stage everything in temp files next to the targets, re-verify, then rename -----------
-TMP_SUFFIX=".new.$$"
-cleanup() {
-  for f in $FILES receipt.json; do rm -f "$PREFIX/$f$TMP_SUFFIX" 2>/dev/null || true; done
-  rm -f "$APPS/.new.$$.$DESKTOP" 2>/dev/null || true
-}
-trap cleanup EXIT INT TERM
+# the closed set is now proven: the receipt names exactly lib.cjs' STAGED files
+INSTALL_FILES=""
+for f in $names; do [ "$f" = "$RUNTIME_ARCHIVE" ] || INSTALL_FILES="$INSTALL_FILES $f"; done
 
+# ---- 4. stage everything in temp files next to the targets, re-verify, then rename -----------
 # the .desktop is generated and validated BEFORE any file is replaced
 mkdir -p "$PREFIX" "$APPS"
 sed -e "s|^Exec=.*|Exec=env ABITO_PROJECT_ROOT=$ROOT \"$PREFIX/abito-island-launcher\"|" \
@@ -193,27 +289,38 @@ if command -v desktop-file-validate >/dev/null 2>&1; then
   desktop-file-validate "$APPS/.new.$$.$DESKTOP" || die "the generated .desktop is not valid"
 fi
 
-for f in $FILES receipt.json; do
+for f in $INSTALL_FILES receipt.json; do
   mkdir -p "$(dirname "$PREFIX/$f")"
   cp "$STAGE/$f" "$PREFIX/$f$TMP_SUFFIX"
   case " $EXEC_FILES " in *" $f "*) chmod 755 "$PREFIX/$f$TMP_SUFFIX" ;; *) chmod 644 "$PREFIX/$f$TMP_SUFFIX" ;; esac
 done
 # TOCTOU guard: what was copied is what the receipt names
-for f in $FILES; do
+for f in $INSTALL_FILES; do
   want="$(printf '%s\n' "$parsed" | sed -n "s|^$(printf '%s' "$f" | sed 's/[.]/\\./g') \\([0-9a-f]\\{64\\}\\)\$|\\1|p")"
   [ "$(sha_of "$PREFIX/$f$TMP_SUFFIX")" = "$want" ] || die "the copy of $f changed while installing: aborting before replacing anything"
 done
 chmod 644 "$APPS/.new.$$.$DESKTOP"
 
-for f in $FILES receipt.json; do mv -f "$PREFIX/$f$TMP_SUFFIX" "$PREFIX/$f"; done
+for f in $INSTALL_FILES receipt.json; do mv -f "$PREFIX/$f$TMP_SUFFIX" "$PREFIX/$f"; done
 mv -f "$APPS/.new.$$.$DESKTOP" "$APPS/$DESKTOP"
 refresh_desktop_db
 
-# ---- 3. report ----------------------------------------------------------------------------------
+# the runtime: atomic rename into place (an old runtime is moved aside, then removed)
+if [ -e "$PREFIX/runtime" ] || [ -L "$PREFIX/runtime" ]; then
+  if [ -d "$PREFIX/runtime" ] && [ ! -L "$PREFIX/runtime" ]; then
+    mv "$PREFIX/runtime" "$RUNTIME_OLD" || die "cannot move the old $PREFIX/runtime aside"
+  else
+    die "$PREFIX/runtime exists and is not a real directory; refusing to replace it"
+  fi
+fi
+mv "$RUNTIME_TMP" "$PREFIX/runtime" || die "cannot move the extracted runtime into $PREFIX/runtime"
+if [ -d "$RUNTIME_OLD" ]; then rm -rf "$RUNTIME_OLD"; fi
+
+# ---- 5. report ----------------------------------------------------------------------------------
 note ""
 note "Installed Abito (Tauri) in $PREFIX"
-for f in $FILES; do printf '  %-34s %s\n' "$f" "$(sha_of "$PREFIX/$f")"; done
-note "  (+ receipt.json, so the install can be re-verified with packaging/verify.cjs)"
+for f in $INSTALL_FILES; do printf '  %-34s %s\n' "$f" "$(sha_of "$PREFIX/$f")"; done
+note "  (+ receipt.json; runtime/ holds the bundled Node + Pi extracted from the verified $RUNTIME_ARCHIVE)"
 note "Menu entry: $APPS/$DESKTOP  — «Abito (Tauri)»"
 note "Project root: $ROOT"
 note ""

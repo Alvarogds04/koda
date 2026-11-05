@@ -1545,7 +1545,18 @@
     capsule.dataset.compactAsk = v.reply ? 'true' : 'false';
     compactAsk = !!v.reply;
     compactW = next; render(); // always: the fitted pill follows the text, not only the reported width
+    reserveForReply();
   });
+  // K2-01b: the text ellipsises 10px before the «Responder» button WHEREVER the button starts. The vendor sheet reserves a fixed
+  // 100px (an 88px button under one font), but the label's width follows the system font (DejaVu, SF, Segoe…): the reserve is
+  // the button's real rendered width + its 10px right inset + 10px of air, measured once it is laid out (and on font load).
+  function reserveForReply() {
+    const reply = $('compact-reply');
+    if (!compactAsk || !reply || reply.hidden || !reply.offsetWidth) { capsule.style.removeProperty('--compact-reply-reserve'); return; }
+    capsule.style.setProperty('--compact-reply-reserve', Math.ceil(reply.getBoundingClientRect().width) + 20 + 'px');
+  }
+  if (document.fonts && document.fonts.addEventListener) document.fonts.addEventListener('loadingdone', reserveForReply);
+  if (window.ResizeObserver && $('compact-reply')) new ResizeObserver(reserveForReply).observe($('compact-reply'));
   // S3: «Responder» on the widened pill opens the island on the question (the same verb the toast used)
   const compactReply = $('compact-reply');
   if (compactReply) compactReply.addEventListener('click', event => {

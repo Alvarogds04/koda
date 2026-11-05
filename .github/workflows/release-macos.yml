@@ -51,10 +51,14 @@ jobs:
           cargo test --lib --locked -- daemonhost transport agentconn
           # Installed behavior: release excludes Linux-only debug probes.
           cargo test --release --locked --test platform_runtime
+      - name: Koda's own Node + Pi (pinned sha256 + lockfile; K2-02)
+        run: |
+          node packaging/runtime/build-runtime.cjs --target darwin-arm64 \
+            --out "$RUNNER_TEMP/koda-runtime" --cache "$RUNNER_TEMP/koda-runtime-cache" --self-check
       - name: Build .app and .dmg (unsigned)
         run: |
           npx --yes @tauri-apps/cli@2 build --ci --bundles app,dmg \
-            --config "$(node packaging/macos-config.cjs)" \
+            --config "$(node packaging/macos-config.cjs --runtime "$RUNNER_TEMP/koda-runtime")" \
             -- --locked
       - name: Verify bundle seal and Info.plist
         run: |
@@ -68,6 +72,14 @@ jobs:
           /usr/libexec/PlistBuddy -c 'Print :NSMicrophoneUsageDescription' "$app/Contents/Info.plist" >/dev/null
           want=$(node -p "require('./tauri.conf.json').version")
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")" = "$want"
+          # K2-02: the bundled Node is a signed Mach-O inside the seal, and the bundled Node + Pi run from the .app.
+          rt="$app/Contents/Resources/runtime"
+          codesign -dv "$rt/node" 2>&1 | tee "$RUNNER_TEMP/codesign-node.txt"
+          grep -q '^Identifier=' "$RUNNER_TEMP/codesign-node.txt"
+          want_node="v$(sed -n 's/.*node-v\([0-9.]*\)-darwin-arm64\.tar\.gz$/\1/p' packaging/runtime/node.sha256)"
+          test "$(env -i PATH=/usr/bin:/bin "$rt/node" --version)" = "$want_node"
+          h=$(mktemp -d)
+          test "$(env -i PATH=/usr/bin:/bin HOME="$h" PI_OFFLINE=1 PI_SKIP_VERSION_CHECK=1 PI_TELEMETRY=0 "$rt/pi" --version)" = 1.4.0
           # A quarantined download must be assessable (unsigned-developer path), never rejected as damaged.
           spctl --assess --type execute -vv "$app" 2>&1 || true
       - name: Package

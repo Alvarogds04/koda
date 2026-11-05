@@ -9,8 +9,12 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const T = require('./tmpdirs.cjs');
-let passed = 0;
-const test = (name, fn) => { fn(); passed += 1; };
+let passed = 0, skipped = 0;
+// The harness has no node:test. A body that returns SKIPPED was skipped: it prints «SKIP», is counted as skipped and never as
+// passed (review K2-01b), so the summary line says how many ran.
+const SKIPPED = Symbol('skipped');
+const test = (name, fn) => { if (fn() === SKIPPED) skipped += 1; else passed += 1; };
+const skip = (name, reason) => { console.log(`SKIP  ${name} — ${reason}`); return SKIPPED; };
 const base = () => fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'tmpdirs-test-')));
 const names = b => fs.readdirSync(b).sort();
 // the pid of a process that has already exited (so /proc/<pid> is gone)
@@ -21,7 +25,8 @@ test('make() creates a private dir named <prefix><pid>-<random> inside the base'
   const d = T.make('abito-x-', { base: b });
   assert.equal(path.dirname(d), b);
   assert.match(path.basename(d), new RegExp(`^abito-x-${process.pid}-[A-Za-z0-9]{6}$`));
-  assert.equal(fs.statSync(d).mode & 0o777, 0o700);
+  // 0700 is the POSIX privacy; NTFS reports no mode bits (privacy is the per-user %TEMP% ACL), so Windows checks the kind only.
+  if (process.platform === 'win32') assert.ok(fs.statSync(d).isDirectory()); else assert.equal(fs.statSync(d).mode & 0o777, 0o700);
   fs.rmSync(d, { recursive: true }); fs.rmdirSync(b);
 });
 
@@ -37,6 +42,10 @@ test('a child process that makes dirs leaves NONE behind when it exits, even aft
 });
 
 test('dirs of DEAD runs are swept on the next use; dirs of LIVE processes and foreign shapes are never touched', () => {
+  if (process.platform === 'win32') {
+    return skip('dirs of DEAD runs are swept on the next use; dirs of LIVE processes and foreign shapes are never touched',
+      'POSIX sweep premises (uid + 0700 mode ownership, sub-base sweeping); on Windows ownership is the MARKER in the per-user temp and a dir in a sub-base is by design not swept — Windows twin test: «K2-01b: Windows ownership without uid/mode — only marked dirs in the per-user temp are swept; anything unprovable stays»');
+  }
   const b = base();
   const dead = deadPid();
   const mk = n => { const p = path.join(b, n); fs.mkdirSync(p, { mode: 0o700 }); fs.writeFileSync(path.join(p, 'junk'), 'x'); return p; };
@@ -57,6 +66,60 @@ test('dirs of DEAD runs are swept on the next use; dirs of LIVE processes and fo
   fs.rmSync(b, { recursive: true, force: true }); fs.rmSync(outside, { recursive: true, force: true });
 });
 
+test('K2-01b: liveness does not depend on /proc — on a system without it (macOS) a LIVE process\'s dir survives the sweep', () => {
+  if (process.platform === 'win32') {
+    return skip('K2-01b: liveness does not depend on /proc — on a system without it (macOS) a LIVE process\'s dir survives the sweep',
+      'POSIX liveness premises (kill(2), /proc simulation, 0700 mode); on Windows ownership is the MARKER in the per-user temp — Windows twin test: «K2-01b: Windows ownership without uid/mode — only marked dirs in the per-user temp are swept; anything unprovable stays»');
+  }
+  // Simulate macOS: no /proc entries exist. The sweep must still recognise the live parent and keep its dir.
+  const b = base();
+  const dead = deadPid();
+  const mk = n => { const p = path.join(b, n); fs.mkdirSync(p, { mode: 0o700 }); return p; };
+  const parent = mk(`abito-m-${process.ppid}-QqQqQq`);
+  const abandoned = mk(`abito-m-${dead}-AbCdEf`);
+  const zero = mk('abito-m-0-ZzZzZz');                       // pid 0 / huge pids address process groups in kill(2): never "alive"
+  const huge = mk(`abito-m-${2 ** 32}-HhHhHh`);
+  const realExists = fs.existsSync;
+  fs.existsSync = (p) => (String(p).startsWith('/proc/') ? false : realExists(p));
+  let fresh;
+  try { fresh = T.make('abito-m-', { base: b }); } finally { fs.existsSync = realExists; }
+  assert.ok(fs.existsSync(parent), 'the live parent\'s dir is kept without /proc');
+  assert.equal(fs.existsSync(abandoned), false, 'a dead run\'s dir is still swept');
+  assert.equal(fs.existsSync(zero), true, 'pid 0 never matches the sweep (as before)');
+  assert.equal(fs.existsSync(huge), false, 'an impossible pid is not alive: its leftover dir is swept');
+  assert.ok(fs.existsSync(fresh));
+  fs.rmSync(b, { recursive: true, force: true });
+});
+
+test('K2-01b: Windows ownership without uid/mode — only marked dirs in the per-user temp are swept; anything unprovable stays', () => {
+  // Driven with the platform seam so it runs on every OS. Windows has no process.getuid and no mode bits: a dir is
+  // provably ours only when it is a real dir (no link/junction), carries the marker make() writes there, and sits in
+  // the per-user temp dir. Everything else is left alone (fail closed).
+  const realGetuid = process.getuid;
+  process.getuid = () => { throw new Error('getuid must not be called on Windows'); };
+  const tmp = fs.realpathSync.native(os.tmpdir());
+  const dead = deadPid();
+  const made = [];
+  try {
+    const mine = T.make('abito-w-', { platform: 'win32' });              // marker written
+    made.push(mine);
+    assert.ok(fs.existsSync(path.join(mine, T.MARKER)), 'make() marks its dir on Windows');
+    const abandoned = path.join(tmp, `abito-w-${dead}-AbCdEf`); fs.mkdirSync(abandoned); fs.writeFileSync(path.join(abandoned, T.MARKER), ''); made.push(abandoned);
+    const unmarked = path.join(tmp, `abito-w-${dead}-UnMaRk`); fs.mkdirSync(unmarked); made.push(unmarked);   // another run/tool: not provably ours
+    const outsideBase = fs.mkdtempSync(path.join(tmp, 'tmpdirs-wbase-')); made.push(outsideBase);
+    const foreignBase = path.join(outsideBase, `abito-w-${dead}-FoReIg`); fs.mkdirSync(foreignBase); fs.writeFileSync(path.join(foreignBase, T.MARKER), '');
+    T.sweep('abito-w-', outsideBase, { platform: 'win32' });            // not the per-user temp: never swept
+    assert.ok(fs.existsSync(foreignBase), 'a marked dir outside the per-user temp is not provably ours');
+    const fresh = T.make('abito-w-', { platform: 'win32' }); made.push(fresh); // sweeps the per-user temp
+    assert.equal(fs.existsSync(abandoned), false, 'a marked dead run is swept');
+    assert.ok(fs.existsSync(unmarked), 'an unmarked dir of another run is left untouched');
+    assert.ok(fs.existsSync(mine), 'our own live dir is kept');
+  } finally {
+    process.getuid = realGetuid;
+    for (const d of made) fs.rmSync(d, { recursive: true, force: true });
+  }
+});
+
 test('repeated runs do not pile up: after 3 child runs the base is empty', () => {
   const b = base();
   for (let i = 0; i < 3; i++) cp.spawnSync(process.execPath, ['-e', `const T=require(${JSON.stringify(path.join(__dirname, 'tmpdirs.cjs'))}); for (let i=0;i<20;i++) T.make('abito-r-',{base:${JSON.stringify(b)}});`]);
@@ -72,4 +135,4 @@ test('the node checks themselves use the helper (no raw mkdtemp left behind)', (
   }
 });
 
-console.log(`tmpdirs-check: ${passed} passed`);
+console.log(`tmpdirs-check: ${passed} passed${skipped ? `, ${skipped} skipped (SKIP lines above)` : ''}`);

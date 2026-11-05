@@ -15,9 +15,12 @@ const {
 	defaultIslandRoot,
 	ensureIsland,
 	ensurePrivateDir,
+	islandPaths,
 	isolatedEnv,
+	pathWithNodeFirst,
 	writePrivateFile,
 } = require("../src/isolation.cjs");
+const { win, assertMode, unixOnly } = require("./platform-env.cjs");
 
 function tmpBase(t) {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "abito-island-test-"));
@@ -32,11 +35,11 @@ test("ensureIsland creates a private 0700 layout with the pinned memory project"
 	const island = ensureIsland(path.join(base, "island"));
 
 	for (const dir of [island.root, island.home, island.agentDir, island.sessions, island.workspace, island.tmp]) {
-		assert.equal(fs.statSync(dir).mode & 0o777, 0o700, `0700 expected for ${dir}`);
+		assertMode(dir, 0o700);
 	}
 	// XDG directories live inside the private home.
 	for (const dir of [".config", ".cache", path.join(".local", "share"), path.join(".local", "state")]) {
-		assert.equal(fs.statSync(path.join(island.home, dir)).mode & 0o777, 0o700);
+		assertMode(path.join(island.home, dir), 0o700);
 	}
 	// The owned default workspace pins the memory project.
 	const config = JSON.parse(fs.readFileSync(path.join(island.workspace, ".engram", "config.json"), "utf8"));
@@ -91,10 +94,31 @@ test("isolatedEnv allowlists only OS essentials and applies explicit private ove
 		}
 	}
 	// OS essentials survive, and explicit overrides are honoured.
-	assert.equal(env.PATH, "/usr/local/bin:/usr/bin:/bin");
+	// K2-02 (S2): the Node running the daemon leads the child PATH, so any `node` a
+	// child resolves is Koda's own (bundled on a bundled install), never the user's.
+	assert.equal(env.PATH, pathWithNodeFirst(path.dirname(process.execPath), "/usr/local/bin:/usr/bin:/bin"));
 	assert.equal(env.LANG, "es_ES.UTF-8");
 	assert.equal(env.SHELL, "/bin/zsh");
 	assert.equal(env.ABITO_MEMORY_PROJECT, "abito-island");
+});
+
+// K2-02 (S2): with no inherited PATH the engine child still gets the daemon's node dir first.
+test("the engine child PATH fallback leads with the daemon node dir and keeps the offline markers", (t) => {
+	// isolatedEnv only reads the island PATHS: they are computed, never created, so the result does not depend on the
+	// machine's temp layout (macOS /var -> /private/var, Windows profile ACLs; CI 41733396427).
+	const island = islandPaths(path.join(tmpBase(t), "island"));
+	const env = isolatedEnv({ HOME: "/home/user" }, island, {});
+	const nodeDir = path.dirname(process.execPath);
+	assert.equal(env.PATH, pathWithNodeFirst(nodeDir, undefined));
+	assert.equal(env.PI_OFFLINE, "1");
+	assert.equal(env.PI_SKIP_VERSION_CHECK, "1");
+	assert.equal(env.PI_TELEMETRY, "0");
+});
+
+test("pathWithNodeFirst uses the right separator on every platform", () => {
+	assert.equal(pathWithNodeFirst("/koda/runtime", "/usr/bin:/bin", ":"), "/koda/runtime:/usr/bin:/bin");
+	assert.equal(pathWithNodeFirst("C:\\koda\\runtime", undefined, ";"), "C:\\koda\\runtime;/usr/bin:/bin");
+	assert.equal(pathWithNodeFirst("/koda/runtime", undefined), `/koda/runtime${path.delimiter}/usr/bin:/bin`);
 });
 
 test("defaultIslandRoot honours ABITO_ISLAND_DIR and defaults to ~/.abito-island", () => {
@@ -120,7 +144,7 @@ test("refuses to follow a symlinked island root itself", (t) => {
 	assert.throws(() => ensureIsland(link), /symlink/);
 });
 
-test("refuses world-writable path components without the sticky bit", (t) => {
+test("refuses world-writable path components without the sticky bit", unixOnly("Windows: the native helper refuses non-private ancestors (win-fs parent_ok / not-private refusals)"), (t) => {
 	const base = tmpBase(t);
 	const open = path.join(base, "open");
 	fs.mkdirSync(open);
@@ -129,7 +153,7 @@ test("refuses world-writable path components without the sticky bit", (t) => {
 });
 
 test("fails closed when the island root is owned by another user (root)", (t) => {
-	if (!POSIX) t.skip("POSIX ownership checks");
+	if (!POSIX) return t.skip("POSIX ownership checks");
 	const base = tmpBase(t);
 	const root = path.join(base, "island");
 	fs.mkdirSync(root, { mode: 0o700 });
@@ -143,7 +167,7 @@ test("tightens an existing 0755 island root to 0700", (t) => {
 	const root = path.join(base, "island");
 	fs.mkdirSync(root, { mode: 0o755 });
 	const island = ensureIsland(root);
-	assert.equal(fs.statSync(island.root).mode & 0o777, 0o700);
+	assertMode(island.root, 0o700);
 });
 
 test("assertSecurePath accepts normal absolute system paths", () => {
@@ -157,11 +181,11 @@ test("writePrivateFile writes 0600 atomically and re-enforces 0600 on permissive
 	fs.mkdirSync(dir, { mode: 0o700 });
 	const target = path.join(dir, "f.json");
 	writePrivateFile(target, '{"a":1}\n');
-	assert.equal(fs.statSync(target).mode & 0o777, 0o600);
+	assertMode(target, 0o600);
 	assert.equal(fs.readFileSync(target, "utf8"), '{"a":1}\n');
 	fs.chmodSync(target, 0o644);
 	writePrivateFile(target, '{"a":2}\n');
-	assert.equal(fs.statSync(target).mode & 0o777, 0o600);
+	assertMode(target, 0o600);
 	assert.equal(fs.readFileSync(target, "utf8"), '{"a":2}\n');
 });
 
@@ -173,7 +197,8 @@ test("writePrivateFile refuses symlinked targets and leaves the victim intact", 
 	fs.writeFileSync(victim, "keep\n");
 	const target = path.join(dir, "f");
 	fs.symlinkSync(victim, target);
-	assert.throws(() => writePrivateFile(target, "evil\n"), /symlink/);
+	// Same refusal rule, platform message: POSIX names the symlink, the Windows helper names the reparse point.
+	assert.throws(() => writePrivateFile(target, "evil\n"), win ? /reparse/ : /symlink/);
 	assert.equal(fs.readFileSync(victim, "utf8"), "keep\n");
 	assert.ok(fs.lstatSync(target).isSymbolicLink(), "symlink must be left in place, not replaced");
 });
@@ -187,6 +212,7 @@ test("ensureIsland refuses a .engram/config.json replaced by a symlink and leave
 	const config = path.join(island.workspace, ".engram", "config.json");
 	fs.rmSync(config);
 	fs.symlinkSync(victim, config);
-	assert.throws(() => ensureIsland(root), /symlink/);
+	// Same refusal rule, platform message: POSIX says symlink, the Windows helper says reparse point.
+	assert.throws(() => ensureIsland(root), win ? /reparse/ : /symlink/);
 	assert.equal(fs.readFileSync(victim, "utf8"), '{"project_name":"other"}\n');
 });

@@ -22,6 +22,10 @@ module.exports = function main(scenarioFile) {
 	const harness = argv[1];
 	const kind = `${argv.includes("--apply-plan") ? "apply" : "preview"}${argv.includes("--remove") ? "Remove" : ""}`;
 	const spec = scenario[harness]?.[kind] ?? scenario[kind] ?? { exit: 65, stdout: { schema: "abito-hook-install/1", ok: false, code: "refused", message: "input or settings file refused" } };
+	const writeOut = () => {
+		const out = typeof spec.stdout === "string" ? spec.stdout : `${JSON.stringify(spec.stdout)}\n`;
+		process.stdout.write(out, () => process.exit(spec.exit ?? 0));
+	};
 	const finish = () => {
 		if (spec.stderr) process.stderr.write(spec.stderr);
 		if (spec.mode === "hang") {
@@ -33,9 +37,16 @@ module.exports = function main(scenarioFile) {
 			process.stdout.write("x".repeat(2 * 1024 * 1024), () => process.exit(spec.exit ?? 0));
 			return;
 		}
-		if (spec.mode === "stderr-flood") process.stderr.write("E".repeat(2 * 1024 * 1024));
-		const out = typeof spec.stdout === "string" ? spec.stdout : `${JSON.stringify(spec.stdout)}\n`;
-		process.stdout.write(out, () => process.exit(spec.exit ?? 0));
+		if (spec.mode === "stderr-flood") {
+			// The valid answer may leave only AFTER the whole flood has been written: a partial flush
+			// followed by exit races the reader's byte cap (a pipe delivers a bounded prefix and exit
+			// discards the unsent rest; macOS buffers are smaller), which made «oversized stderr fails»
+			// OS-dependent. If the reader kills us at its cap, the cap was hit; if it tolerates the
+			// flood, the answer follows the full flood — the same contract on every OS.
+			process.stderr.write("E".repeat(2 * 1024 * 1024), writeOut);
+			return;
+		}
+		writeOut();
 	};
 	if (spec.delayMs) setTimeout(finish, spec.delayMs);
 	else finish();

@@ -34,6 +34,8 @@ const path = require("node:path");
 
 const { MEMORY_PROJECT, assertSecurePath, islandPaths, writePrivateFile } = require("./isolation.cjs");
 const { THINKING_LEVELS, isStrictProfileId } = require("./profiles.cjs");
+// K2-01b: on Windows private files are judged by the verified HU-047 helper (null off Windows; see readPrivateJson).
+const winfs = require("./win-fs.cjs");
 
 const WORKSPACE_ENV = "ABITO_WORKSPACE";
 const ALLOWED_KEYS = ["workspace", "command", "thinking", "profile", "mcpConfigPath", "hotkey", "paused", "connectorsCommand", "connectorsDir", "hookInstallerBin", "connectorHostBin", "rotation"];
@@ -170,8 +172,63 @@ function validateHotkey(value) {
 	return [...HOTKEY_MODIFIERS.filter((m) => seen.has(m)), canonicalKey].join("+");
 }
 
+/**
+ * K2-01b (Windows): NTFS has no POSIX mode bits (lstat reports 0o666), so privacy is a fact of the verified HU-047
+ * helper, never a mode comparison. Exists → must be a regular, single-link, non-reparse file private to this user under
+ * a private parent, within maxBytes; absent → null (as on POSIX). Any helper failure, an untrusted helper or facts about
+ * another path is the same ConfigError(field): fail closed, never a fall-back to the mode check. The bytes read are those
+ * of exactly the path the helper checked (its long form when `file` used an 8.3 name), bounded by maxBytes.
+ */
+function winReadPrivateJson(w, file, field, maxBytes) {
+	let facts;
+	try {
+		facts = w.checkPath(file);
+	} catch {
+		throw new ConfigError(field);
+	}
+	if (!facts || typeof facts !== "object" || facts.ok !== true || typeof facts.path !== "string") throw new ConfigError(field);
+	if (facts.path !== file && facts.path !== winfs.longPath(file)) throw new ConfigError(field);
+	if (facts.exists === false && facts.kind === "none") return null;
+	if (facts.exists !== true || facts.kind !== "file" || facts.reparse !== false || facts.private !== true || facts.nlink !== 1 || facts.parent_ok !== true) throw new ConfigError(field);
+	if (!Number.isSafeInteger(facts.size) || facts.size > maxBytes) throw new ConfigError(field);
+	let text;
+	try {
+		const fd = fs.openSync(facts.path, "r");
+		try {
+			const buf = Buffer.alloc(maxBytes + 1);
+			let length = 0;
+			for (let n; length < buf.length && (n = fs.readSync(fd, buf, length, buf.length - length, null)) > 0; ) length += n;
+			if (length > maxBytes) throw new ConfigError(field);
+			text = buf.subarray(0, length).toString("utf8");
+		} finally {
+			fs.closeSync(fd);
+		}
+	} catch {
+		throw new ConfigError(field);
+	}
+	let value;
+	try {
+		value = JSON.parse(text);
+	} catch {
+		throw new ConfigError(field);
+	}
+	if (value === null || typeof value !== "object" || Array.isArray(value)) throw new ConfigError(field);
+	return value;
+}
+
+/** The verified Windows helper backend, null off Windows; an untrusted helper is ConfigError(field), never a fall-back. */
+function activeWinFs(field) {
+	try {
+		return winfs.active();
+	} catch {
+		throw new ConfigError(field);
+	}
+}
+
 /** Reads a private JSON object file; `null` when absent. Throws ConfigError(field) otherwise. */
 function readPrivateJson(file, field, maxBytes) {
+	const w = activeWinFs(field);
+	if (w) return winReadPrivateJson(w, file, field, maxBytes);
 	let stats;
 	try {
 		stats = fs.lstatSync(file);

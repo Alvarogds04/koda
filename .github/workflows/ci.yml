@@ -37,7 +37,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-26, windows-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    timeout-minutes: 75 # K2-01b: the daemon now really boots on Windows; per-file cap in desktop-daemon npm test
     steps:
       - uses: actions/checkout@v4
         with:
@@ -121,9 +121,11 @@ jobs:
         run: |
           npm i -g esbuild@0.28.2
           ROOT="$(npm root -g)"
-          BIN="$ROOT/esbuild/bin/esbuild"; [ -f "$BIN.exe" ] && BIN="$BIN.exe"
+          # The NATIVE binary of this OS (@esbuild/<platform>-<arch>), never the bin/esbuild JS shim: Windows cannot
+          # execute the shim directly (K2-01b). The resolver only looks at what npm just installed.
+          BIN="$(node "$GITHUB_WORKSPACE/apps/desktop-tauri/scripts/esbuild-native.cjs" "$ROOT")"
           if [ "$RUNNER_OS" = Windows ]; then BIN="$(cygpath -w "$BIN")"; fi
-          "$BIN" --version
+          test "$("$BIN" --version)" = 0.28.2
           echo "ESBUILD_BINARY_PATH=$BIN" >> "$GITHUB_ENV"
       - name: Install pinned Playwright and its Chromium (the browser checks need it)
         shell: bash
@@ -172,9 +174,11 @@ jobs:
         run: |
           npm i -g esbuild@0.28.2
           ROOT="$(npm root -g)"
-          BIN="$ROOT/esbuild/bin/esbuild"; [ -f "$BIN.exe" ] && BIN="$BIN.exe"
+          # The NATIVE binary of this OS (@esbuild/<platform>-<arch>), never the bin/esbuild JS shim: Windows cannot
+          # execute the shim directly (K2-01b). The resolver only looks at what npm just installed.
+          BIN="$(node "$GITHUB_WORKSPACE/apps/desktop-tauri/scripts/esbuild-native.cjs" "$ROOT")"
           if [ "$RUNNER_OS" = Windows ]; then BIN="$(cygpath -w "$BIN")"; fi
-          "$BIN" --version
+          test "$("$BIN" --version)" = 0.28.2
           echo "ESBUILD_BINARY_PATH=$BIN" >> "$GITHUB_ENV"
       - uses: Swatinem/rust-cache@v2
         with:
@@ -251,7 +255,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev \
             libxdo-dev libssl-dev libpulse-dev libasound2-dev libdbus-1-dev xvfb dbus-x11 \
-            openbox x11-utils dbus python3-gi gir1.2-glib-2.0 procps
+            openbox x11-utils dbus python3-gi gir1.2-glib-2.0 procps strace
       - name: Fetch pinned sherpa-onnx static libs (Linux)
         run: |
           set -euo pipefail
@@ -262,19 +266,35 @@ jobs:
           echo "SHERPA_ONNX_LIB_DIR=$RUNNER_TEMP/sherpa-onnx-v${SHERPA_VERSION}-linux-x64-static-lib/lib" >> "$GITHUB_ENV"
       - name: Pinned Pi (the app-owned daemon refuses to start without one, as on a user machine)
         run: npm i -g "@earendil-works/pi-coding-agent@$PI_VERSION"
+      - name: Bundled runtime archive (pinned Node 22 + Pi 1.4.0, sha256-verified by install.sh)
+        working-directory: apps/desktop-tauri
+        run: |
+          node packaging/runtime/build-runtime.cjs --target linux-x64 --out "$RUNNER_TEMP/koda-runtime" \
+            --cache "$RUNNER_TEMP/koda-runtime-cache" --self-check \
+            --archive "$RUNNER_TEMP/koda-runtime-linux-x64.tar.gz"
       - name: Warm the cargo registry (build.cjs builds --offline --locked)
         working-directory: apps/desktop-tauri
         run: cargo fetch --locked
       - name: Build, install and smoke the shipped Linux package
         run: |
           sh apps/desktop-tauri/ci/public/smoke-linux.sh --app "$GITHUB_WORKSPACE/apps/desktop-tauri" \
-            --work "$RUNNER_TEMP/koda-smoke" --pi "$(command -v pi)"
+            --work "$RUNNER_TEMP/koda-smoke" --pi "$(command -v pi)" \
+            --runtime-archive "$RUNNER_TEMP/koda-runtime-linux-x64.tar.gz"
+      - name: "No Node, no Pi: install and run on Koda's own runtime (K2-02 S1, S3; removes the runner's Node)"
+        if: ${{ !cancelled() }}
+        run: |
+          STAGE=$(find "$RUNNER_TEMP/koda-smoke/stage/abito-island" -mindepth 1 -maxdepth 1 -type d | head -n 1)
+          sh apps/desktop-tauri/ci/public/smoke-linux-no-node.sh --app "$GITHUB_WORKSPACE/apps/desktop-tauri" \
+            --stage "$STAGE" --work "$RUNNER_TEMP/koda-no-node"
       - name: Upload smoke logs
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
           name: installer-smoke-linux
-          path: ${{ runner.temp }}/koda-smoke/**/*.log
+          path: |
+            ${{ runner.temp }}/koda-smoke/**/*.log
+            ${{ runner.temp }}/koda-no-node/*.log
+            ${{ runner.temp }}/koda-no-node/connect.trace
           if-no-files-found: warn
 
   installer-smoke-macos:
@@ -300,10 +320,14 @@ jobs:
           echo "9091bf160dc7fdacedbc906b212badf53c2993f4e5277a0e03998e96c31d60da  $RUNNER_TEMP/$A" | shasum -a 256 -c -
           tar -xjf "$RUNNER_TEMP/$A" -C "$RUNNER_TEMP"
           echo "SHERPA_ONNX_LIB_DIR=$RUNNER_TEMP/sherpa-onnx-v${SHERPA_VERSION}-osx-arm64-static-lib/lib" >> "$GITHUB_ENV"
+      - name: Koda's own Node + Pi (pinned sha256 + lockfile; K2-02)
+        run: |
+          node packaging/runtime/build-runtime.cjs --target darwin-arm64 \
+            --out "$RUNNER_TEMP/koda-runtime" --cache "$RUNNER_TEMP/koda-runtime-cache" --self-check
       - name: Build .app and .dmg (unsigned, ad-hoc; no Apple account)
         run: |
           npx --yes @tauri-apps/cli@2 build --ci --bundles app,dmg \
-            --config "$(node packaging/macos-config.cjs)" \
+            --config "$(node packaging/macos-config.cjs --runtime "$RUNNER_TEMP/koda-runtime")" \
             -- --locked
       - name: Verify bundle seal, Info.plist and the version the app shows
         run: |
@@ -317,6 +341,14 @@ jobs:
           /usr/libexec/PlistBuddy -c 'Print :NSMicrophoneUsageDescription' "$app/Contents/Info.plist" >/dev/null
           want=$(node -p "require('./tauri.conf.json').version")
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")" = "$want"
+          # K2-02: the bundled Node is a signed Mach-O inside the seal, and the bundled Node + Pi run from the .app.
+          rt="$app/Contents/Resources/runtime"
+          codesign -dv "$rt/node" 2>&1 | tee "$RUNNER_TEMP/codesign-node.txt"
+          grep -q '^Identifier=' "$RUNNER_TEMP/codesign-node.txt"
+          want_node="v$(sed -n 's/.*node-v\([0-9.]*\)-darwin-arm64\.tar\.gz$/\1/p' packaging/runtime/node.sha256)"
+          test "$(env -i PATH=/usr/bin:/bin "$rt/node" --version)" = "$want_node"
+          h=$(mktemp -d)
+          test "$(env -i PATH=/usr/bin:/bin HOME="$h" PI_OFFLINE=1 PI_SKIP_VERSION_CHECK=1 PI_TELEMETRY=0 "$rt/pi" --version)" = 1.4.0
       - name: Installed runtime lookup in a release build
         run: cargo test --release --locked --test platform_runtime
       - name: Isolated home with the pinned Pi and a node link
@@ -334,6 +366,11 @@ jobs:
       - name: Missing-Pi advice with notices still available (installed copy)
         if: ${{ !cancelled() }}
         run: python3 ci/public/smoke-macos.py "$(ls -d "$RUNNER_TEMP"/koda-smoke/Applications/*.app)" "$RUNNER_TEMP/koda-smoke/home"
+      - name: "No Node, no Pi: install from the dmg and run on Koda's own runtime (K2-02 S1; removes the runner's Node)"
+        if: ${{ !cancelled() }}
+        run: |
+          dmg=$(ls target/release/bundle/dmg/*.dmg)
+          python3 ci/public/smoke-macos-no-node.py "$dmg" "$RUNNER_TEMP/koda-no-node"
       - name: Upload smoke log
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
@@ -342,6 +379,7 @@ jobs:
           path: |
             ${{ runner.temp }}/koda-smoke/*.log
             ${{ runner.temp }}/koda-smoke/home/*.log
+            ${{ runner.temp }}/koda-no-node/*.log
           if-no-files-found: warn
 
   installer-smoke-windows:

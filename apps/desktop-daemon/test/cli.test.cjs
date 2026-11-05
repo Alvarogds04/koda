@@ -12,9 +12,21 @@ const { spawn, spawnSync } = require("node:child_process");
 
 const CLI = path.join(__dirname, "..", "src", "cli.cjs");
 const FAKE = path.join(__dirname, "fixtures", "fake-agent.cjs");
+const { assertMode } = require("./platform-env.cjs");
 const { pidState, procStartTicks } = require("../src/daemon.cjs");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const tempDirs = new Set();
+
+const WIN = process.platform === "win32";
+// /proc identity and POSIX signals (SIGTERM/SIGINT graceful stop, the POSIX stale-file cleanup)
+// are Unix mechanisms; every other behaviour here is daemon LIFECYCLE and runs on all 3 OS. On
+// Windows the fake agent is provisioned through the product's real npm-prefix spawn path
+// (windowsPackageCliJs, private AppData) and the native session helper publishes/verifies the
+// session, so lifecycle tests exercise the real boot there too. The unixOnly tests skip on
+// Windows and name their twin; twins assert Q2a product contracts: status/stop never confirm a
+// daemon by a bare pid and never signal it.
+const unixOnly = (twin) => ({ skip: WIN && `Unix mechanism (/proc identity, POSIX signals); Windows: ${twin}` });
+const winOnly = (why = "needs Windows + the compiled, manifest-trusted abito-private-session.exe (present on the Windows CI runner)") => ({ skip: !WIN && why });
 
 test.after(() => {
 	for (const dir of tempDirs) fs.rmSync(dir, { recursive: true, force: true });
@@ -50,13 +62,47 @@ async function helloProbe(endpoint, token) {
 }
 
 function tmp() {
-	const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "abito-cli-")));
+	const dir = fs.realpathSync(fs.mkdtempSync(path.join(tmpBase(), "abito-cli-")));
 	tempDirs.add(dir);
 	return dir;
 }
+const tmpBase = () => fs.realpathSync.native(os.tmpdir());
+/**
+ * Island root for direct staging (no fake agent). On Windows an island may only live inside the
+ * canonical protected %LOCALAPPDATA%\Abito root (windowsIslandRootViolation), so every island
+ * gets a PRIVATE LOCALAPPDATA temp dir and sits at `<LOCALAPPDATA>\Abito\i`; cliEnv() puts the
+ * matching LOCALAPPDATA into the child env. Linux/macOS: `<tmp>/i`, env unchanged as before.
+ */
+function islandRoot() {
+	if (!WIN) return path.join(tmp(), "i");
+	const local = fs.realpathSync.native(fs.mkdtempSync(path.join(tmpBase(), "abito-local-")));
+	tempDirs.add(local);
+	// The app creates the protected root and the island inside it (ensureIsland); the fixture mirrors that
+	// layout so the single-component mkdir of `i` below (fakeIsland, explicit mkdirs) always has its parent.
+	fs.mkdirSync(path.join(local, "Abito"), { mode: 0o700 });
+	return path.join(local, "Abito", "i");
+}
+/** Child env for `root`: private HOME, ABITO_ISLAND_DIR, and on Windows the private LOCALAPPDATA. */
+function cliEnv(root, extra = {}) {
+	const env = { PATH: process.env.PATH, HOME: tmp(), ABITO_ISLAND_DIR: root, ...extra };
+	if (WIN) {
+		// A child node cannot bootstrap without the Windows system variables; everything
+		// user-identifying stays private: LOCALAPPDATA (and TEMP/TMP) point at the private
+		// temp dirs, never at the runner's real profile.
+		for (const key of ["SystemRoot", "windir", "SystemDrive", "ComSpec", "PATHEXT", "OS", "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE"]) {
+			if (process.env[key] !== undefined && env[key] === undefined) env[key] = process.env[key];
+		}
+		if (env.ABITO_ISLAND_DIR === root) env.LOCALAPPDATA = path.dirname(path.dirname(root)); // <local>\Abito\i -> <local>
+		const privateTemp = path.join(path.dirname(env.HOME), "tmp");
+		fs.mkdirSync(privateTemp, { recursive: true });
+		env.TEMP = privateTemp;
+		env.TMP = privateTemp;
+	}
+	return env;
+}
 function cli(root, args, extraEnv = {}) {
 	return spawnSync(process.execPath, [CLI, ...args], {
-		env: { PATH: process.env.PATH, HOME: tmp(), ABITO_ISLAND_DIR: root, ...extraEnv },
+		env: cliEnv(root, extraEnv),
 		encoding: "utf8",
 		timeout: 60000,
 	});
@@ -77,16 +123,26 @@ async function reap(child) {
 		await exited;
 	}
 }
-/** Island whose config.json points `command` at a wrapper script running the fake agent. */
+/** Island running the fake agent. On Windows the REAL product spawn path is used: the daemon
+ * resolves bare `pi` through the npm prefixes (env.AppData\npm first, windowsPackageCliJs), so the
+ * island gets a PRIVATE AppData npm prefix containing the fake agent as the package's `pi` bin —
+ * never the runner's real AppData. Linux/macOS: a `#!/bin/sh` wrapper (the Unix exec mechanism). */
 function fakeIsland(extraConfig = {}) {
-	const base = tmp();
-	const root = path.join(base, "i");
+	const root = islandRoot();
+	const base = path.dirname(root);
+	fs.mkdirSync(root, { mode: 0o700 });
+	if (WIN) {
+		const packageDir = path.join(base, "AppData", "npm", "node_modules", "@earendil-works", "pi-coding-agent");
+		fs.mkdirSync(packageDir, { recursive: true });
+		fs.writeFileSync(path.join(packageDir, "package.json"), JSON.stringify({ name: "@earendil-works/pi-coding-agent", bin: { pi: "fake-agent.cjs" } }));
+		fs.copyFileSync(FAKE, path.join(packageDir, "fake-agent.cjs")); // only requires node:fs and node:path
+		fs.writeFileSync(path.join(root, "config.json"), JSON.stringify(extraConfig), { mode: 0o600 });
+		return { root, env: cliEnv(root, { AppData: path.join(base, "AppData") }) };
+	}
 	const wrapper = path.join(base, "fake-pi.sh");
 	fs.writeFileSync(wrapper, `#!/bin/sh\nexec "${process.execPath}" "${FAKE}" "$@"\n`, { mode: 0o755 });
-	fs.mkdirSync(root, { mode: 0o700 });
 	fs.writeFileSync(path.join(root, "config.json"), JSON.stringify({ command: wrapper, ...extraConfig }), { mode: 0o600 });
-	const env = { PATH: process.env.PATH, HOME: tmp(), ABITO_ISLAND_DIR: root };
-	return { root, env };
+	return { root, env: cliEnv(root) };
 }
 const sessionOf = (root) => path.join(root, "runtime", "session.json");
 async function waitForSessionPid(root, pid) {
@@ -124,7 +180,7 @@ test("app-owned run with immediate EOF never publishes a live session", async ()
 });
 
 test("usage errors exit 2 with a generic message", () => {
-	const root = path.join(tmp(), "i");
+	const root = islandRoot();
 	for (const args of [[], ["bogus"], ["config"], ["config", "set-workspace"], ["config", "nope"], ["run", "--x"]]) {
 		const r = cli(root, args);
 		assert.equal(r.status, 2, args.join(" "));
@@ -133,7 +189,7 @@ test("usage errors exit 2 with a generic message", () => {
 });
 
 test("config errors exit 1 naming only the field", () => {
-	const root = path.join(tmp(), "i");
+	const root = islandRoot();
 	fs.mkdirSync(root, { mode: 0o700 });
 	fs.writeFileSync(path.join(root, "config.json"), JSON.stringify({ workspace: "/SECRET-VALUE/../x" }), { mode: 0o600 });
 	for (const args of [["config", "get"], ["run"]]) {
@@ -145,7 +201,7 @@ test("config errors exit 1 naming only the field", () => {
 });
 
 test("config get prints the effective config; set-workspace persists it", () => {
-	const root = path.join(tmp(), "i");
+	const root = islandRoot();
 	const ws = tmp();
 	let r = cli(root, ["config", "get"]);
 	assert.equal(r.status, 0);
@@ -155,7 +211,7 @@ test("config get prints the effective config; set-workspace persists it", () => 
 	r = cli(root, ["config", "set-workspace", ws]);
 	assert.equal(r.status, 0, r.stderr);
 	assert.equal(JSON.parse(cli(root, ["config", "get"]).stdout).workspace, ws);
-	assert.equal(fs.statSync(path.join(root, "config.json")).mode & 0o777, 0o600);
+	assertMode(path.join(root, "config.json"), 0o600);
 	r = cli(root, ["config", "set-workspace", "relative"]);
 	assert.equal(r.status, 1);
 	assert.match(r.stderr, /invalid config: workspace/);
@@ -163,24 +219,30 @@ test("config get prints the effective config; set-workspace persists it", () => 
 });
 
 test("status and stop with no daemon exit 3", () => {
-	const root = path.join(tmp(), "i");
+	const root = islandRoot();
 	assert.equal(cli(root, ["status"]).status, 3);
 	assert.equal(cli(root, ["stop"]).status, 3);
 });
 
-test("stale session.json of a dead pid: status 3, stop 3 and the stale file is cleaned", () => {
-	const root = path.join(tmp(), "i");
+test("stale session.json of a dead pid: status 3 and stop 3, never a bare-pid confirmation", () => {
+	const root = islandRoot();
 	cli(root, ["config", "get"]);
 	const dead = spawnSync(process.execPath, ["-e", ""]).pid;
 	fs.mkdirSync(path.join(root, "runtime"), { recursive: true, mode: 0o700 });
 	fs.writeFileSync(sessionOf(root), JSON.stringify({ protocol: "island-agent/1", endpoint: "/x", token: "t".repeat(40), pid: dead, startedAt: 1 }), { mode: 0o600 });
-	assert.equal(cli(root, ["status"]).status, 3);
-	assert.equal(cli(root, ["stop"]).status, 3);
-	assert.equal(fs.existsSync(sessionOf(root)), false);
+	const status = cli(root, ["status"]);
+	assert.equal(status.status, 3, status.stderr);
+	assert.match(status.stderr, /pid_dead/, "the classification names the dead pid, never a bare-pid confirmation");
+	assert.equal(fs.existsSync(sessionOf(root)), WIN, WIN ? "Windows status is read-only: the stale file survives status" : "POSIX status cleans the stale session (liveSession)");
+	const stop = cli(root, ["stop"]);
+	assert.equal(stop.status, 3, stop.stderr);
+	// stop() classifies the dead pid through liveSession on every OS and removes the confirmed-stale file
+	// before reporting «not running» (cli.cjs stop has no Windows gate; observed in CI run 41718553579).
+	assert.equal(fs.existsSync(sessionOf(root)), false, "the stale file is gone after stop on every OS");
 });
 
 test("stop refuses a live pid that is not the daemon (ownership check)", async () => {
-	const root = path.join(tmp(), "i");
+	const root = islandRoot();
 	cli(root, ["config", "get"]);
 	const bystander = spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"], { stdio: "ignore" });
 	try {
@@ -195,7 +257,7 @@ test("stop refuses a live pid that is not the daemon (ownership check)", async (
 });
 
 test("stop does not SIGTERM a same-user `node .../cli.cjs` sleeper that merely has a session.json pointing at it", async () => {
-	const root = path.join(tmp(), "i");
+	const root = islandRoot();
 	cli(root, ["config", "get"]);
 	const dir = path.join(tmp(), "x");
 	fs.mkdirSync(dir);
@@ -218,22 +280,24 @@ test("stop does not SIGTERM a same-user `node .../cli.cjs` sleeper that merely h
 	}
 });
 
-test("SIGKILLed daemon leaves a stale session.json that status classifies and unlinks", async () => {
+test("a hard-killed daemon leaves a stale session.json that status classifies (POSIX cleans it; Windows status keeps it)", async () => {
 	const { root, env } = fakeIsland();
 	const child = spawn(process.execPath, [CLI, "run"], { env, stdio: "ignore", timeout: 120000 });
 	try {
 		await waitForSessionPid(root, child.pid);
-		child.kill("SIGKILL");
+		child.kill("SIGKILL"); // hard kill works on every OS; no shutdown handler can run
 		await waitFor(() => child.exitCode !== null || child.signalCode !== null);
-		assert.equal(fs.existsSync(sessionOf(root)), true, "SIGKILL cannot be handled");
-		assert.equal(cli(root, ["status"], env).status, 3);
-		assert.equal(fs.existsSync(sessionOf(root)), false);
+		assert.equal(fs.existsSync(sessionOf(root)), true, "a hard kill cannot be handled: the file stays");
+		const st = cli(root, ["status"], env);
+		assert.equal(st.status, 3, st.stderr);
+		assert.match(st.stderr, /pid_dead/, `the exit-3 message must name the classification: ${st.stderr}`);
+		assert.equal(fs.existsSync(sessionOf(root)), WIN, WIN ? "Windows status is read-only: the stale file is kept, never POSIX-unlinked" : "the stale session is still cleaned");
 	} finally {
 		await reap(child);
 	}
 });
 
-test("run (foreground) -> status -> stop; SIGTERM shuts down gracefully and removes session.json", async () => {
+test("run (foreground) -> status -> stop; SIGTERM shuts down gracefully and removes session.json", unixOnly("POSIX SIGTERM graceful stop; Windows twins: app-owned EOF clean shutdown + native-proof status with stop refusal"), async () => {
 	const ws = tmp();
 	const { root, env } = fakeIsland();
 	assert.equal(cli(root, ["config", "set-workspace", ws]).status, 0);
@@ -262,7 +326,7 @@ test("run (foreground) -> status -> stop; SIGTERM shuts down gracefully and remo
 	}
 });
 
-test("SIGINT also shuts down cleanly", async () => {
+test("SIGINT also shuts down cleanly", unixOnly("POSIX SIGINT; Windows twin: app-owned run stops cleanly on stdin EOF, without signals"), async () => {
 	const { root, env } = fakeIsland();
 	const child = spawn(process.execPath, [CLI, "run"], { env, stdio: ["ignore", "ignore", "pipe"], timeout: 120000 });
 	let stderr = "";
@@ -294,7 +358,43 @@ test("a second run while one is live exits 1", async () => {
 	}
 });
 
-test("MCP projection: deleted on SIGTERM; after SIGKILL it stays and the next start overwrites it (known limit)", async () => {
+test("MCP projection: written from mcpConfigPath, kept across a hard kill, overwritten by the next start, removed on a clean stop", async () => {
+	const src = path.join(tmp(), "mcp-src.json");
+	const entry = (id) => JSON.stringify({ mcpServers: { [id]: { type: "http", url: "http://127.0.0.1:4821/n", headers: { Authorization: "Bearer cap_abcdef123456" } } } });
+	fs.writeFileSync(src, entry("first"), { mode: 0o600 });
+	const { root, env } = fakeIsland({ mcpConfigPath: src });
+	const projected = path.join(root, "agent", "mcp.json");
+	const children = [];
+	const runOwned = () => {
+		const child = spawn(process.execPath, [CLI, "run", "--app-owned"], { env, stdio: ["pipe", "pipe", "pipe"] });
+		children.push(child);
+		return child;
+	};
+	try {
+		let child = runOwned();
+		await waitForSessionPid(root, child.pid);
+		assert.equal(fs.existsSync(projected), true, "the boot writes the projection from mcpConfigPath");
+		if (!WIN) assert.equal(fs.statSync(projected).mode & 0o777, 0o600, "the projection is private");
+		assert.deepEqual(Object.keys(JSON.parse(fs.readFileSync(projected, "utf8")).mcpServers), ["first"]);
+		child.kill("SIGKILL"); // hard kill works on every OS; nothing can clean up
+		await waitFor(() => child.exitCode !== null || child.signalCode !== null);
+		assert.equal(fs.existsSync(projected), true, "a hard kill cannot be handled: the projection stays");
+
+		fs.writeFileSync(src, entry("second"), { mode: 0o600 });
+		child = runOwned();
+		// The hard kill left a stale session.json: wait for THIS child's own session.
+		await waitForSessionPid(root, child.pid);
+		assert.deepEqual(Object.keys(JSON.parse(fs.readFileSync(projected, "utf8")).mcpServers), ["second"], "next start overwrites the stale projection");
+		child.stdin.end(); // clean stop, no POSIX signals
+		await waitFor(() => child.exitCode !== null);
+		assert.equal(child.exitCode, 0);
+		assert.equal(fs.existsSync(projected), false, "a clean stop removes the projection");
+	} finally {
+		for (const child of children) await reap(child);
+	}
+});
+
+test("MCP projection: deleted on SIGTERM; after SIGKILL it stays and the next start overwrites it (known limit)", unixOnly("POSIX SIGTERM graceful deletion; Windows twin: the projection lifecycle above (create, hard-kill, overwrite, clean-stop removal)"), async () => {
 	const src = path.join(tmp(), "mcp-src.json");
 	const entry = (id) => JSON.stringify({ mcpServers: { [id]: { type: "http", url: "http://127.0.0.1:4821/n", headers: { Authorization: "Bearer cap_abcdef123456" } } } });
 	fs.writeFileSync(src, entry("first"), { mode: 0o600 });
@@ -335,13 +435,13 @@ test("MCP projection: deleted on SIGTERM; after SIGKILL it stays and the next st
 });
 
 test("config set-hotkey: set, show in config get, clear, invalid and usage exit codes", () => {
-	const root = path.join(tmp(), "i");
+	const root = islandRoot();
 	assert.equal(JSON.parse(cli(root, ["config", "get"]).stdout).hotkey, null);
 	let r = cli(root, ["config", "set-hotkey", "ctrl+alt+space"]);
 	assert.equal(r.status, 0, r.stderr);
 	assert.deepEqual(JSON.parse(r.stdout), { hotkey: "Ctrl+Alt+Space", changed: true, appliedToRunningDaemon: false });
 	assert.equal(JSON.parse(cli(root, ["config", "get"]).stdout).hotkey, "Ctrl+Alt+Space");
-	assert.equal(fs.statSync(path.join(root, "config.json")).mode & 0o777, 0o600);
+	assertMode(path.join(root, "config.json"), 0o600);
 	r = cli(root, ["config", "set-hotkey", "Ctrl+Alt+Space"]);
 	assert.equal(r.status, 0);
 	assert.equal(JSON.parse(r.stdout).changed, false);
@@ -363,14 +463,14 @@ test("config set-hotkey: set, show in config get, clear, invalid and usage exit 
 });
 
 test("config set-hotkey does not echo the rejected value", () => {
-	const root = path.join(tmp(), "i");
+	const root = islandRoot();
 	const r = cli(root, ["config", "set-hotkey", "Ctrl+SECRETVALUE"]);
 	assert.equal(r.status, 1);
 	assert.ok(!r.stderr.includes("SECRETVALUE") && !r.stdout.includes("SECRETVALUE"));
 });
 
 test("invalid hotkey in config.json never locks the CLI: get warns, set-workspace drops, --clear repairs", () => {
-	const root = path.join(tmp(), "i");
+	const root = islandRoot();
 	cli(root, ["config", "get"]);
 	const file = path.join(root, "config.json");
 	const write = () => fs.writeFileSync(file, JSON.stringify({ hotkey: "Ctrl+SECRETVALUE" }), { mode: 0o600 });
@@ -395,26 +495,61 @@ test("invalid hotkey in config.json never locks the CLI: get warns, set-workspac
 
 // ---- #390 GD014/GD029: status health fields, arbitration and the launch ledger ----
 
-test("#390 GD014: status reports state/reason/ready, and a killed daemon explains itself", async () => {
+test("#390 GD014: status reports state/reason/ready for a RUNNING daemon (native proof on Windows)", async () => {
 	const { root, env } = fakeIsland();
-	const child = spawn(process.execPath, [CLI, "run"], { env, stdio: "ignore" });
+	const child = spawn(process.execPath, [CLI, "run", "--app-owned"], { env, stdio: ["pipe", "pipe", "pipe"] });
 	try {
-		await waitFor(() => fs.existsSync(sessionOf(root)));
+		await waitForSessionPid(root, child.pid);
 		const st = cli(root, ["status"], env);
 		assert.equal(st.status, 0, st.stderr);
 		const out = JSON.parse(st.stdout);
 		assert.equal(out.running, true);
+		assert.equal(out.pid, child.pid);
 		assert.equal(out.state, "healthy");
 		assert.equal(out.reason, "ready");
 		assert.equal(out.ready, true);
+		const token = JSON.parse(fs.readFileSync(sessionOf(root), "utf8")).token;
+		assert.ok(!st.stdout.includes(token), "status must not print the token");
+	} finally {
+		child.stdin.end();
+		await reap(child);
+	}
+});
 
-		child.kill("SIGKILL");
+test("#390 GD014: a hard-killed daemon explains itself (stale: pid_dead)", async () => {
+	const { root, env } = fakeIsland();
+	const child = spawn(process.execPath, [CLI, "run", "--app-owned"], { env, stdio: ["pipe", "pipe", "pipe"] });
+	try {
+		await waitForSessionPid(root, child.pid);
+		child.kill("SIGKILL"); // hard kill works on every OS
 		await waitFor(() => child.exitCode !== null || child.signalCode !== null);
 		const st2 = cli(root, ["status"], env);
-		assert.equal(st2.status, 3);
+		assert.equal(st2.status, 3, st2.stderr);
 		assert.match(st2.stderr, /pid_dead/, `the exit-3 message must name the classification: ${st2.stderr}`);
-		assert.equal(fs.existsSync(sessionOf(root)), false, "the stale session is still cleaned");
 	} finally {
+		await reap(child);
+	}
+});
+
+test("Windows twin: status confirms a live daemon only through the native helper, and stop still refuses the bare pid", winOnly(), async () => {
+	// Q2a product contract: confirmation NEVER comes from the bare pid. The helper proves file ACL,
+	// pipe server identity and hello→ready; stop on Windows never signals (isDaemonProcess is
+	// always false there), even for a daemon status has just confirmed as healthy.
+	const { root, env } = fakeIsland();
+	const child = spawn(process.execPath, [CLI, "run", "--app-owned"], { env, stdio: ["pipe", "pipe", "pipe"] });
+	try {
+		await waitForSessionPid(root, child.pid);
+		const st = cli(root, ["status"], env);
+		assert.equal(st.status, 0, st.stderr);
+		const out = JSON.parse(st.stdout);
+		assert.equal(out.running, true);
+		assert.equal(out.pid, child.pid);
+		const stop = cli(root, ["stop"], env);
+		assert.equal(stop.status, 1, stop.stderr);
+		assert.equal(child.exitCode, null, "the daemon was not signalled");
+		assert.equal(process.kill(child.pid, 0), true, "the daemon is still alive after the refused stop");
+	} finally {
+		child.stdin.end();
 		await reap(child);
 	}
 });
@@ -436,22 +571,36 @@ test("#390 GD029 check (3): a live pid whose endpoint refuses is never replaced;
 		assert.equal(JSON.parse(fs.readFileSync(file, "utf8")).pid, bystander.pid, "the incumbent session is untouched");
 		assert.equal(bystander.exitCode, null);
 		assert.equal(process.kill(bystander.pid, 0), true, "the bystander must survive");
+		// The launch ledger is a POSIX 0600 private append-only file. On Windows the daemon cannot
+		// make it private, so it refuses to record (fail closed): assert exactly that instead of
+		// the 0600 record shape (registered gap: Windows daemon identity via the native helper).
 		const ledger = path.join(root, "runtime", "launches.jsonl");
-		const text = fs.readFileSync(ledger, "utf8");
-		const last = text.trim().split("\n").map((line) => JSON.parse(line)).at(-1);
-		assert.equal(last.outcome, "refused");
-		assert.equal(last.reason, "foreign_session");
-		assert.equal(last.incumbentPid, bystander.pid);
-		assert.equal(typeof last.pid, "number");
-		assert.equal(typeof last.procStart, "string");
-		assert.equal(fs.statSync(ledger).mode & 0o777, 0o600);
-		assert.ok(!text.includes("ttttt"), "the ledger never carries the token");
+		if (WIN) {
+			assert.ok(!fs.existsSync(ledger) || fs.readFileSync(ledger, "utf8").trim() === "", "no ledger record without a private (0600) file");
+			// The refused run wrote nothing anywhere else. The incumbent session — planted by this test,
+			// token included — is untouched (the ino/pid asserts above), so the only file in runtime that
+			// still carries the token is that untouched session; nothing NEW carries it. This is the
+			// Windows twin of the POSIX ledger token-hygiene assert below (the ledger records nothing on
+			// Windows — registered gap — so the hygiene assert moves to the runtime directory itself).
+			assert.deepEqual(fs.readdirSync(path.join(root, "runtime")).filter((n) => n !== "launches.jsonl").sort(), ["session.json"], "the refused run wrote nothing into runtime");
+			assert.ok(!`${r.stdout}${r.stderr}`.includes("ttttt"), "the refused run never prints the incumbent token");
+		} else {
+			const text = fs.readFileSync(ledger, "utf8");
+			const last = text.trim().split("\n").map((line) => JSON.parse(line)).at(-1);
+			assert.equal(last.outcome, "refused");
+			assert.equal(last.reason, "foreign_session");
+			assert.equal(last.incumbentPid, bystander.pid);
+			assert.equal(typeof last.pid, "number");
+			assert.equal(typeof last.procStart, "string");
+			assert.equal(fs.statSync(ledger).mode & 0o777, 0o600);
+			assert.ok(!text.includes("ttttt"), "the ledger never carries the token");
+		}
 	} finally {
 		await reap(bystander);
 	}
 });
 
-test("#390 check (5): a restart leaves the old pid dead, a fresh procStart and the old token refused", async () => {
+test("#390 check (5): a restart leaves the old pid dead, a fresh procStart and the old token refused", unixOnly("POSIX SIGTERM stop + /proc procStart identity; Windows twin: native-proof status with stop refusal"), async () => {
 	const { root, env } = fakeIsland();
 	const child1 = spawn(process.execPath, [CLI, "run"], { env, stdio: "ignore" });
 	let child2;

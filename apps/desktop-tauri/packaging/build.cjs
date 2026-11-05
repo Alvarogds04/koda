@@ -2,8 +2,10 @@
 'use strict';
 /* M4 format A build: OFFLINE release build + stage + receipt. Stages files
    only: it installs nothing, touches no installed app and never launches the
-   binary. Usage: node packaging/build.cjs [--out <dir>] [--skip-cargo] [--smoke-variant]
-   (--skip-cargo reuses target/release/abito-island, for re-staging). */
+   binary. Usage: node packaging/build.cjs --runtime-archive <file> [--out <dir>] [--skip-cargo] [--smoke-variant]
+   (--skip-cargo reuses target/release/abito-island, for re-staging). The runtime
+   archive comes from packaging/runtime/build-runtime.cjs --archive (CI runs it
+   first; this build stays offline) and is staged + hashed like every other file. */
 const fs = require('node:fs');
 const path = require('node:path');
 const cp = require('node:child_process');
@@ -13,6 +15,25 @@ const crate = path.resolve(__dirname, '..');
 const args = process.argv.slice(2);
 const outIdx = args.indexOf('--out');
 const outRoot = path.resolve(outIdx >= 0 ? args[outIdx + 1] : path.join(crate, 'dist'));
+
+// K2-02 T2 (decision A): the stage carries the bundled runtime as ONE verified archive.
+// Required and validated BEFORE anything is built or staged.
+const runtimeIdx = args.indexOf('--runtime-archive');
+if (runtimeIdx < 0 || !args[runtimeIdx + 1]) {
+  console.error('build.cjs: --runtime-archive <file> is required: the installer ships the runtime as ONE verified archive (run packaging/runtime/build-runtime.cjs --archive first)');
+  process.exit(2);
+}
+const runtimeArchive = path.resolve(args[runtimeIdx + 1]);
+if (path.basename(runtimeArchive) !== L.RUNTIME_ARCHIVE) {
+  console.error(`build.cjs: the runtime archive must be named ${L.RUNTIME_ARCHIVE}, got ${path.basename(runtimeArchive)}`);
+  process.exit(1);
+}
+let runtimeStat = null;
+try { runtimeStat = fs.statSync(runtimeArchive); } catch { /* reported below */ }
+if (!runtimeStat || !runtimeStat.isFile()) {
+  console.error(`build.cjs: runtime archive is not a regular file: ${runtimeArchive}`);
+  process.exit(1);
+}
 
 const prov = L.requireClean(crate);
 L.requireClean(path.join(crate, '..', 'desktop-daemon')); L.requireClean(path.join(crate, '..', 'desktop-harness')); // the hook installer ships too (L42 F1) // shipped host bytes are product inputs too // fail BEFORE building when the tree has uncommitted product changes
@@ -68,6 +89,9 @@ for (const name of L.PI_FILES) {
   fs.mkdirSync(path.dirname(dest), { recursive:true, mode:0o755 });
   fs.copyFileSync(path.join(crate, '..', 'desktop-pi', name), dest); fs.chmodSync(dest, 0o644);
 }
+
+fs.copyFileSync(runtimeArchive, path.join(stage, L.RUNTIME_ARCHIVE));
+fs.chmodSync(path.join(stage, L.RUNTIME_ARCHIVE), 0o644);
 
 const rustc = cp.spawnSync('rustc', ['--version'], { encoding: 'utf8' }).stdout.trim();
 const files = {};

@@ -5,7 +5,6 @@ import { statusDot } from '../settings/parts.js';
 import { toggle } from './ui.js';
 import { notchSection as section, notchTipRow as row, notchHint as hint, infoTip, notchTipSection } from './notch.js';
 import { session, trusted } from './runtime.js';
-import { piInstallControl } from './piinstall.js';
 import { t } from './i18n-es.js';
 const UNAVAILABLE = 'No disponible todavía';
 // 0.2.1 (S2, L1): Agentes = the five CLI agents Abito can hook. Everything else is visible but disabled, with no install button.
@@ -31,9 +30,6 @@ export async function renderAgentSettings({ invoke, V, P, listen, timers }: any)
   s.message.className = 'abito-settings-feedback notice err';
   let state: any = null, reviewing = false, busy = false;
   const actionStatus = h('div', { id: 'agent-action-status', class: 'hint', role: 'status', 'aria-live': 'polite' });
-  // HU-046: the chat engine runs on the Pi CLI; when it is missing, the Pi row offers «Instalar Pi» (a different thing from the row's own
-  // «Instalar…», which installs Abito's Pi EXTENSION). Same control, same trusted two-step click as on the Chat page.
-  const piControl = piInstallControl({ call, watch, work, onDone: () => work(() => call('agent_action', { action: 'view' }), (next: any) => { state = { ...state, ...next }; paint(); }) });
   let prefs: any = {}, prefsKnown = false;
   // One trusted click installs or updates (human request 23-oct: one button and a progress bar): it writes exactly
   // the plan this row showed (plan_hash), the installer still backs the file up first, and a progress bar replaces the
@@ -117,7 +113,6 @@ export async function renderAgentSettings({ invoke, V, P, listen, timers }: any)
     const line = h('div', { class: 'agent-row', role: 'row' }, h('span', { class: 'agent-name', role: 'cell', text: name }),
       !r || (unknown && !['node_missing', 'failed'].includes(state?.agentsRuntime)) ? stateCell('·', UNAVAILABLE) : stateCell(TONE_ICON[r.tone] || '○', r.word), islandSwitch(id, installed), actions);
     entry.append(line, menu, detail);
-    if (id === 'pi') { piControl.update(state); entry.append(piControl.element); }
     const redraw = () => {
       clear(actions); clear(menu); clear(detail);
       const installable = !!r?.primary?.command?.plan_hash && !!r?.summary && r?.reviewable && !busy;

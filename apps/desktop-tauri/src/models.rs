@@ -611,14 +611,73 @@ pub fn write_saved_file(dir: &std::path::Path, profile_id: &str) -> Result<(), S
 // --- local reads (read-only, no network) -----------------------------------------
 
 pub fn read_resources() -> Resources {
-    let (mem_total, mem_available) = std::fs::read_to_string("/proc/meminfo")
-        .map(|t| parse_meminfo(&t))
-        .unwrap_or((None, None));
+    let (mem_total, mem_available) = read_memory();
     Resources {
         mem_total,
         mem_available,
         gpu: read_gpu(),
     }
+}
+
+/// `(total, available)` RAM in bytes. Linux (and any other unix): `/proc/meminfo`. Each OS call that fails is `None`,
+/// never a panic, so the text falls back to «RAM: desconocida».
+#[cfg(not(any(target_os = "macos", windows)))]
+fn read_memory() -> (Option<u64>, Option<u64>) {
+    std::fs::read_to_string("/proc/meminfo")
+        .map(|t| parse_meminfo(&t))
+        .unwrap_or((None, None))
+}
+
+/// macOS (K2-01b): total from `sysctlbyname("hw.memsize")`; available = free + speculative + inactive pages from
+/// `host_statistics64(HOST_VM_INFO64)` (the pages the system can hand out without swapping), capped at the total.
+/// libc only, no subprocess.
+#[cfg(target_os = "macos")]
+fn read_memory() -> (Option<u64>, Option<u64>) {
+    let total = {
+        let mut value: u64 = 0;
+        let mut len = std::mem::size_of::<u64>();
+        // SAFETY: the name is NUL-terminated and `value`/`len` describe a writable u64.
+        let rc = unsafe { libc::sysctlbyname(c"hw.memsize".as_ptr(), (&mut value as *mut u64).cast(), &mut len, std::ptr::null_mut(), 0) };
+        (rc == 0 && len == std::mem::size_of::<u64>() && value > 0).then_some(value)
+    };
+    let available = mac_available_pages().and_then(|pages| {
+        // SAFETY: sysconf has no preconditions.
+        let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+        u64::try_from(page).ok().filter(|p| *p > 0).and_then(|p| pages.checked_mul(p))
+    });
+    let available = match (total, available) {
+        (Some(t), Some(a)) => Some(a.min(t)),
+        (_, a) => a,
+    };
+    (total, available)
+}
+
+#[cfg(target_os = "macos")]
+#[allow(deprecated)] // libc marks the mach host calls deprecated in favour of the mach2 crate; no new crate is added.
+fn mac_available_pages() -> Option<u64> {
+    use std::sync::OnceLock;
+    // One send right for the process: repeated mach_host_self() calls would keep adding user references.
+    static HOST: OnceLock<libc::mach_port_t> = OnceLock::new();
+    // SAFETY: mach_host_self has no preconditions.
+    let host = *HOST.get_or_init(|| unsafe { libc::mach_host_self() });
+    // SAFETY: zeroed is a valid vm_statistics64 (plain integers).
+    let mut stats: libc::vm_statistics64 = unsafe { std::mem::zeroed() };
+    let mut count = libc::HOST_VM_INFO64_COUNT;
+    // SAFETY: `stats` is a vm_statistics64 and `count` its size in natural_t units, as HOST_VM_INFO64 requires.
+    let rc = unsafe { libc::host_statistics64(host, libc::HOST_VM_INFO64, (&mut stats as *mut libc::vm_statistics64).cast(), &mut count) };
+    (rc == libc::KERN_SUCCESS).then(|| u64::from(stats.free_count) + u64::from(stats.speculative_count) + u64::from(stats.inactive_count))
+}
+
+/// Windows (K2-01b): `GlobalMemoryStatusEx` total and available physical memory.
+#[cfg(windows)]
+fn read_memory() -> (Option<u64>, Option<u64>) {
+    use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+    let mut status = MEMORYSTATUSEX { dwLength: std::mem::size_of::<MEMORYSTATUSEX>() as u32, ..Default::default() };
+    // SAFETY: `status` is a MEMORYSTATUSEX whose dwLength is set, as the API requires.
+    if unsafe { GlobalMemoryStatusEx(&mut status) } == 0 || status.ullTotalPhys == 0 {
+        return (None, None);
+    }
+    (Some(status.ullTotalPhys), Some(status.ullAvailPhys.min(status.ullTotalPhys)))
 }
 
 fn read_gpu() -> Option<Gpu> {

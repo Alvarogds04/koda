@@ -17,7 +17,15 @@ const { fakeBackend } = require("./win-fake-backend.cjs");
 // The fake backend judges POSIX mode bits, which NTFS does not have (lstat reports 0o666/0o777): on Windows the REAL helper is exercised by the
 // twins in auth.test.cjs / profiles.test.cjs (assertPrivate) instead.
 const test = (name, fn) => baseTest(name, { skip: process.platform === "win32" && "fake POSIX backend; Windows twins use the real helper (auth.test.cjs, profiles.test.cjs)" }, fn);
-const root0 = () => mkdtempSync(path.join(realpathSync.native(os.tmpdir()), "abito-winfs-test-"));
+// The fake backend judges the PARENT's mode like the real helper judges its DACL: a root directly in a shared, world-writable
+// /tmp (CI runners) has a non-private parent and every write is refused. Each test therefore works one level down, inside
+// its own private 0700 temp dir — the same shape as a real island under a private profile dir.
+const root0 = () => {
+	const holder = mkdtempSync(path.join(realpathSync.native(os.tmpdir()), "abito-winfs-test-"));
+	const root = path.join(holder, "r");
+	mkdirSync(root, { mode: 0o700 });
+	return root;
+};
 const sha = (s) => winfs.sha256(Buffer.from(s));
 
 /** Fake backend wrapped with a spy over every mutating call. */
@@ -55,7 +63,7 @@ test("writePrivateFile goes through the helper: every missing dir via makeDir ou
 			assert.equal(readFileSync(target, "utf8"), "{}\n");
 		});
 	} finally {
-		rmSync(root, { recursive: true, force: true });
+		rmSync(path.dirname(root), { recursive: true, force: true });
 	}
 });
 
@@ -73,7 +81,7 @@ test("writePrivateFile overwrites with the expect hash of what it read", async (
 			assert.equal(readFileSync(target, "utf8"), "two\n");
 		});
 	} finally {
-		rmSync(root, { recursive: true, force: true });
+		rmSync(path.dirname(root), { recursive: true, force: true });
 	}
 });
 
@@ -95,7 +103,7 @@ test("writePrivateFile retries a bounded number of times on mismatch, then fails
 		});
 		assert.equal(existsSync(path.join(root, "s.json")), false);
 	} finally {
-		rmSync(root, { recursive: true, force: true });
+		rmSync(path.dirname(root), { recursive: true, force: true });
 	}
 });
 
@@ -113,7 +121,7 @@ test("writePrivateFile refuses a symlinked target and leaves the victim intact",
 		assert.equal(readFileSync(victim, "utf8"), "VICTIM\n");
 		assert.equal(statSync(victim).mode & 0o777, 0o644);
 	} finally {
-		rmSync(root, { recursive: true, force: true });
+		rmSync(path.dirname(root), { recursive: true, force: true });
 	}
 });
 
@@ -130,7 +138,7 @@ test("writePrivateFile refuses a loose existing target it cannot read privately"
 		});
 		assert.equal(readFileSync(target, "utf8"), "SECRET\n");
 	} finally {
-		rmSync(root, { recursive: true, force: true });
+		rmSync(path.dirname(root), { recursive: true, force: true });
 	}
 });
 
@@ -146,7 +154,7 @@ test("writePrivateFile refuses content over the 1 MiB helper cap (no loose fallb
 			assert.equal(statSync(path.join(root, "edge.json")).size, winfs.MAX_FILE);
 		});
 	} finally {
-		rmSync(root, { recursive: true, force: true });
+		rmSync(path.dirname(root), { recursive: true, force: true });
 	}
 });
 
@@ -163,7 +171,7 @@ test("when the helper cannot be trusted, writePrivateFile and ensurePrivateDir t
 		assert.equal(existsSync(path.join(root, "e")), false);
 	} finally {
 		winfs.active = original;
-		rmSync(root, { recursive: true, force: true });
+		rmSync(path.dirname(root), { recursive: true, force: true });
 	}
 });
 
@@ -182,7 +190,7 @@ test("ensurePrivateDir verifies the result and fails closed when the helper repo
 			assert.equal(statSync(dir).mode & 0o777, 0o700);
 		});
 	} finally {
-		rmSync(root, { recursive: true, force: true });
+		rmSync(path.dirname(root), { recursive: true, force: true });
 	}
 });
 
@@ -205,7 +213,7 @@ test("device-id path: created through the helper; a symlinked device-id is refus
 			assert.equal(statSync(victim).mode & 0o777, 0o644);
 		});
 	} finally {
-		rmSync(root, { recursive: true, force: true });
+		rmSync(path.dirname(root), { recursive: true, force: true });
 	}
 });
 
@@ -234,7 +242,7 @@ test("re-assert REFUSES a loose auth.json (the helper cannot tighten an entry) a
 		assert.deepEqual(calls, [], "no mutating helper call: nothing is rewritten, deleted or moved");
 		assert.deepEqual(require("node:fs").readdirSync(dir), ["auth.json"]);
 	} finally {
-		rmSync(root, { recursive: true, force: true });
+		rmSync(path.dirname(root), { recursive: true, force: true });
 	}
 });
 
@@ -248,7 +256,7 @@ test("re-assert leaves a private auth.json alone and does nothing when it is abs
 		await withBackend(backend, () => manager(root).enforceCredentialPermissions("acc"));
 		assert.deepEqual(calls, []);
 	} finally {
-		rmSync(root, { recursive: true, force: true });
+		rmSync(path.dirname(root), { recursive: true, force: true });
 	}
 });
 
@@ -274,7 +282,7 @@ test("re-assert refuses a symlinked auth.json, a hard-linked one and a non-priva
 		assert.equal(readFileSync(victim, "utf8"), "{}\n");
 		assert.equal(statSync(victim).mode & 0o777, 0o644);
 	} finally {
-		rmSync(root, { recursive: true, force: true });
+		rmSync(path.dirname(root), { recursive: true, force: true });
 	}
 });
 
@@ -297,7 +305,7 @@ test("a refused credential store is a CredentialStoreError{store_not_private} wi
 			assert.doesNotMatch(error.message, /SECRET/);
 		});
 	} finally {
-		rmSync(root, { recursive: true, force: true });
+		rmSync(path.dirname(root), { recursive: true, force: true });
 	}
 });
 
@@ -314,6 +322,6 @@ test("a login flow whose store is refused ends with the Spanish instruction, not
 		await withBackend(backend, () => m.onLoginResult({ id: "f", accountId: "acc", finished: false }, { ok: true }));
 		assert.deepEqual(ended, [{ ok: false, message: STORE_NOT_PRIVATE_MESSAGE }]);
 	} finally {
-		rmSync(root, { recursive: true, force: true });
+		rmSync(path.dirname(root), { recursive: true, force: true });
 	}
 });

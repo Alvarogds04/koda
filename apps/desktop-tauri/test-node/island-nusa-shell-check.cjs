@@ -20,7 +20,7 @@ const none = async () => {};
 // kind: 'expanded' (ears required) | 'pill' (compact capsule hanging from the edge). w/h: measured on the tree BEFORE this change (720x150 notch, etc.).
 const PHASES = [
   { name: 'compact idle', kind: 'pill', sc: { quick: true, sessions: [] }, drive: compact, w: 40, h: 32 },
-  { name: 'compact text', kind: 'pill', sc: { quick: true, sessions: [] }, w: 168, h: 32, drive: async p => { await compact(p); await p.evaluate(s => window.__emit('desktop:state', s), snap('compact', [])); await p.waitForTimeout(500); await p.evaluate(s => window.__emit('desktop:state', s), snap('compact', [NOTICE('Pi terminó su turno')])); await p.waitForTimeout(1200); } },
+  { name: 'compact text', kind: 'pill', textPill: true, sc: { quick: true, sessions: [] }, w: 168, h: 32, drive: async p => { await compact(p); await p.evaluate(s => window.__emit('desktop:state', s), snap('compact', [])); await p.waitForTimeout(500); await p.evaluate(s => window.__emit('desktop:state', s), snap('compact', [NOTICE('Pi terminó su turno')])); await p.waitForTimeout(1200); } },
   { name: 'expanded Inicio', kind: 'expanded', sc: {}, drive: none, w: 720, h: 150 },
   { name: 'expanded Agentes', kind: 'expanded', sc: {}, drive: tab('agentes'), w: 720, h: 150 },
   { name: 'expanded Avisos', kind: 'expanded', sc: { notices: 2 }, drive: tab('avisos'), w: 720, h: 186 },
@@ -30,15 +30,21 @@ const PHASES = [
   { name: 'error notice', kind: 'expanded', sc: { noticeRows: [ERR], sessions: [], quick: true, windowCap: 340 }, w: 720, h: 148, drive: async p => { await p.evaluate(id => window.__emit('desktop:notice-open', { id, kind: 'finished' }), ERR.id); await p.waitForTimeout(1500); } },
   { name: 'chat', kind: 'expanded', sc: { chat: true }, drive: none, w: 720, h: 240 },
   { name: 'chat + pending question (dimmed, inert)', kind: 'expanded', sc: { question: 'plain' }, w: 720, h: 240, drive: async p => { await p.evaluate(() => window.__islandSetView('chat', 720, 240)); await p.waitForTimeout(1200); } },
-  { name: 'hidden strip (island concealed)', kind: 'pill', sc: { quick: true }, w: 137, h: 32, drive: async p => { await compact(p); await p.waitForTimeout(800); await p.evaluate(() => window.__islandConceal(true)); await p.waitForTimeout(1200); } },
+  { name: 'hidden strip (island concealed)', kind: 'pill', textPill: true, sc: { quick: true }, w: 137, h: 32, drive: async p => { await compact(p); await p.waitForTimeout(800); await p.evaluate(() => window.__islandConceal(true)); await p.waitForTimeout(1200); } },
 ];
+// K2-01b: the same two text pills under ANOTHER font family on every OS (the generic monospace differs from each OS's UI font),
+// so the size rule above is proven for a font other than this machine's — the frozen pixel width of one font no longer passes it.
+const OTHER_FONT = ':root, #capsule { --font-ui: monospace !important; --font: monospace !important; }';
+for (const ph of PHASES.filter(p => p.textPill)) PHASES.push({ ...ph, name: `${ph.name} (other font)`, sc: { ...ph.sc, css: OTHER_FONT } });
 
 const probe = page => page.evaluate(() => {
   const isl = document.getElementById('island'), cap = document.getElementById('capsule'), ear = document.getElementById('nusa-ear');
   const s = getComputedStyle(isl), b = isl.getBoundingClientRect(), cb = cap.getBoundingClientRect();
   const e = ear && { op: +getComputedStyle(ear).opacity, on: ear.dataset.on, box: ear.getBoundingClientRect(), kids: ear.children.length };
+  const act = document.getElementById('compact-activity'), rg = document.createRange(); if (act) rg.selectNodeContents(act);
+  const textW = act && act.textContent ? rg.getBoundingClientRect().width : 0;
   return { w: b.width, h: b.height, l: b.left, t: b.top, bg: s.backgroundColor, tl: parseFloat(s.borderTopLeftRadius), tr: parseFloat(s.borderTopRightRadius),
-    bl: parseFloat(s.borderBottomLeftRadius), br: parseFloat(s.borderBottomRightRadius), shadow: s.boxShadow, ear: e || null, cap: { l: cb.left, t: cb.top, r: cb.right, b: cb.bottom }, phase: cap.dataset.phase, view: cap.dataset.view };
+    bl: parseFloat(s.borderBottomLeftRadius), br: parseFloat(s.borderBottomRightRadius), shadow: s.boxShadow, ear: e || null, textW, cap: { l: cb.left, t: cb.top, r: cb.right, b: cb.bottom }, phase: cap.dataset.phase, view: cap.dataset.view };
 });
 // outer (non-inset) shadow layers must be a DARK drop shadow; the inset state veil/ring is the colour of the state, not a halo
 function outerShadowsDark(sh) {
@@ -61,7 +67,13 @@ const isBlack = bg => /^rgb\(0, 0, 0\)$/.test(bg) || /^rgba\(0, 0, 0, 1\)$/.test
       if (m.tl !== 0 || m.tr !== 0) fail(`top corners ${m.tl}/${m.tr} are not square`);
       if (!(m.bl > 0 && m.br > 0)) fail(`bottom corners ${m.bl}/${m.br} must be rounded`);
       if (!outerShadowsDark(m.shadow)) fail(`light halo in box-shadow: ${m.shadow}`);
-      if (Math.abs(m.w - ph.w) > 0.5 || Math.abs(m.h - ph.h) > 0.5) fail(`box ${m.w}x${m.h} differs from the frozen ${ph.w}x${ph.h}`);
+      // K2-01b: a pill that carries TEXT is as wide as its text under the system font (Noto, DejaVu, SF, Segoe…): its CHROME is
+      // frozen (8 left + 24 Koda + 16 dot gap + 10 right = 58, clamped 96..420), and the text's own rendered width is measured
+      // in the page (a DOM Range, independent of the product's canvas measurement). Every other box keeps its frozen size.
+      const want = ph.textPill ? Math.max(96, Math.min(420, 58 + Math.ceil(m.textW))) : ph.w;
+      const tol = ph.textPill ? 1.01 : 0.5;
+      if (ph.textPill && !(m.textW > 0)) fail('premise: the text pill shows no text');
+      if (Math.abs(m.w - want) > tol || Math.abs(m.h - ph.h) > 0.5) fail(`box ${m.w}x${m.h} differs from the frozen ${want}x${ph.h}${ph.textPill ? ` (58 chrome + text ${m.textW})` : ''}`);
       if (ph.kind === 'expanded') {
         const e = m.ear;
         if (!e) fail('the ear element #nusa-ear is missing');

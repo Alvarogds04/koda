@@ -326,3 +326,136 @@ fn unsafe_cards_are_refused_on_write_and_forged_records_are_skipped_on_read() {
         assert!(page.turns.is_empty(), "{from}: forged record is skipped");
     }
 }
+
+// --- K2-01b C1 (human decision «1a»): trusted system symlink ancestors --------------------------
+// Same link rule as the daemon's isolation.cjs assertSecurePath: a symlink ANCESTOR is followed only when the link is
+// owned by root and its parent directory is owned by root and not group/world-writable; the target is walked again under
+// the same rule. A user/foreign-owned link, a link in a writable or sticky dir, a symlink leaf, a non-directory and an
+// untrusted link inside the target stay refused. Driven through `check_ancestors` with an injected file system so every
+// case runs on every unix; the last test uses a real root-owned system link when the machine has one.
+#[cfg(unix)]
+mod trusted_links {
+    use super::super::{check_ancestors, AncestorFs, Node, RealFs};
+    use std::collections::HashMap;
+    use std::path::{Path, PathBuf};
+    const ME: u32 = 501;
+    const FILE: u32 = 0o100000;
+    type Entry = (&'static str, u32, u32, Option<&'static str>);
+    struct Fake(HashMap<PathBuf, (u32, u32, Option<&'static str>)>);
+    impl AncestorFs for Fake {
+        fn node(&self, p: &Path) -> std::io::Result<Option<Node>> {
+            Ok(self.0.get(p).map(|&(uid, mode, link)| Node { uid, mode, is_dir: link.is_none() && mode & FILE == 0, link: link.map(PathBuf::from) }))
+        }
+    }
+    fn ok(entries: &[Entry], p: &str) -> bool {
+        let fake = Fake(entries.iter().map(|&(p, uid, mode, link)| (PathBuf::from(p), (uid, mode, link))).collect());
+        check_ancestors(&fake, Path::new(p)).is_ok()
+    }
+    fn mac() -> Vec<Entry> {
+        vec![
+            ("/", 0, 0o755, None),
+            ("/var", 0, 0o755, Some("private/var")),
+            ("/private", 0, 0o755, None),
+            ("/private/var", 0, 0o755, None),
+            ("/private/var/folders", 0, 0o755, None),
+            ("/private/var/folders/xy", ME, 0o700, None),
+        ]
+    }
+
+    #[test]
+    fn a_root_owned_system_link_ancestor_is_followed() {
+        assert!(ok(&mac(), "/var/folders/xy/history"));
+        assert!(ok(&mac(), "/var/folders/xy"));
+        let mut lib = vec![("/", 0, 0o755, None), ("/usr", 0, 0o755, None), ("/usr/lib", 0, 0o755, None), ("/lib", 0, 0o777, Some("usr/lib"))];
+        assert!(ok(&lib, "/lib/x"));
+        lib.push(("/usr/local", 0, 0o755, None));
+        lib.push(("/usr/local/l", 0, 0o777, Some("../lib")));
+        assert!(ok(&lib, "/usr/local/l/x"), "relative target with `..`, then a second trusted link");
+    }
+
+    #[test]
+    fn untrusted_links_stay_refused() {
+        for uid in [ME, 777] {
+            let t = [("/", 0, 0o755, None), ("/u", 0, 0o755, None), ("/u/real", ME, 0o700, None), ("/u/link", uid, 0o755, Some("/u/real"))];
+            assert!(!ok(&t, "/u/link/h"), "link owned by {uid}");
+        }
+        let t = [("/", 0, 0o755, None), ("/u", ME, 0o700, None), ("/u/real", ME, 0o700, None), ("/u/link", 0, 0o755, Some("/u/real"))];
+        assert!(!ok(&t, "/u/link/h"), "root-owned link in a user-owned parent (swappable)");
+        for mode in [0o1777, 0o775, 0o1775, 0o765] {
+            let t = [("/", 0, 0o755, None), ("/tmp", 0, mode, None), ("/opt", 0, 0o755, None), ("/opt/real", ME, 0o700, None), ("/tmp/l", 0, 0o777, Some("/opt/real"))];
+            assert!(!ok(&t, "/tmp/l/h"), "link in a {mode:o} dir");
+        }
+    }
+
+    #[test]
+    fn the_leaf_non_directories_and_bad_targets_stay_refused() {
+        assert!(!ok(&mac(), "/var"), "the leaf is never a symlink");
+        let inner = [("/", 0, 0o755, None), ("/opt", 0, 0o755, None), ("/home", 0, 0o755, None), ("/home/me", ME, 0o700, None), ("/home/me/real", ME, 0o700, None),
+            ("/home/me/hop", ME, 0o755, Some("/home/me/real")), ("/opt/l", 0, 0o755, Some("/home/me/hop"))];
+        assert!(!ok(&inner, "/opt/l/h"), "an untrusted link inside the target");
+        let looped = [("/", 0, 0o755, None), ("/a", 0, 0o755, Some("/b")), ("/b", 0, 0o755, Some("/a"))];
+        assert!(!ok(&looped, "/a/h"), "a loop of trusted links is refused, not spun on");
+        let dotdot = [("/", 0, 0o755, None), ("/opt", 0, 0o755, None), ("/home", 0, 0o755, None), ("/home/me", ME, 0o700, None), ("/home/me/real", ME, 0o700, None),
+            ("/elsewhere", 0, 0o755, None), ("/home/me/hop", ME, 0o755, Some("/elsewhere")), ("/opt/l", 0, 0o755, Some("/home/me/hop/../real"))];
+        assert!(!ok(&dotdot, "/opt/l/h"), "`..` never skips checking the hop before it");
+        let file = [("/", 0, 0o755, None), ("/f", ME, FILE | 0o600, None)];
+        assert!(!ok(&file, "/f/h"), "a non-directory ancestor");
+        let target_file = [("/", 0, 0o755, None), ("/opt", 0, 0o755, None), ("/opt/f", ME, FILE | 0o600, None), ("/opt/l", 0, 0o755, Some("/opt/f"))];
+        assert!(!ok(&target_file, "/opt/l/h"), "a trusted link to a file");
+    }
+
+    #[test]
+    fn a_real_root_owned_system_link_on_this_machine_is_followed() {
+        // macOS: /var -> private/var (the CI temp dir); Ubuntu: /lib -> usr/lib. Returns early only when none exists.
+        use std::os::unix::fs::MetadataExt;
+        let real = ["/var", "/tmp", "/etc", "/lib", "/bin"].into_iter().map(Path::new).find(|p| {
+            std::fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_symlink() && m.uid() == 0) && p.is_dir()
+        });
+        let Some(link) = real else { return };
+        let probe = link.join("abito-k2-01b-does-not-exist").join("history");
+        assert!(check_ancestors(&RealFs, &probe).is_ok(), "{probe:?}");
+    }
+}
+
+// --- K2-01b verify should-fix: the ancestor walk keeps the path's own root -----------------------
+// Every component the walk inspects must be the real path prefix of the input: a drive (C:\), a UNC share
+// (\\server\share\) or a verbatim prefix (\\?\C:\) must never be dropped, or later components are checked on the
+// wrong path. Not unix-only: the unix cases run everywhere; the Windows-shaped cases are cfg(windows) because a
+// non-Windows `Path` parses `C:\a` as ONE plain component, so it cannot represent them.
+mod ancestor_walk {
+    use super::super::{check_ancestors, AncestorFs, Node};
+    use std::cell::RefCell;
+    use std::path::{Path, PathBuf};
+    /// Every component is an existing directory; records each path the walk asks about.
+    struct Recording(RefCell<Vec<PathBuf>>);
+    impl AncestorFs for Recording {
+        fn node(&self, p: &Path) -> std::io::Result<Option<Node>> {
+            self.0.borrow_mut().push(p.to_path_buf());
+            Ok(Some(Node { uid: 0, mode: 0o755, is_dir: true, link: None }))
+        }
+    }
+    fn walked(p: &str) -> Vec<PathBuf> {
+        let fs = Recording(RefCell::new(Vec::new()));
+        check_ancestors(&fs, Path::new(p)).expect("an all-directory path is accepted");
+        fs.0.into_inner()
+    }
+    fn expect(p: &str, want: &[&str]) {
+        assert_eq!(walked(p), want.iter().map(PathBuf::from).collect::<Vec<_>>(), "{p}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn every_component_keeps_the_root_on_unix() {
+        expect("/a/b", &["/a", "/a/b"]);
+        expect("/a/./b/../c", &["/a", "/a/b", "/a/c"]);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn every_component_keeps_the_drive_unc_and_verbatim_prefix_on_windows() {
+        expect(r"C:\a\b", &[r"C:\a", r"C:\a\b"]);
+        expect(r"\\server\share\a\b", &[r"\\server\share\a", r"\\server\share\a\b"]);
+        expect(r"\\?\C:\a\b", &[r"\\?\C:\a", r"\\?\C:\a\b"]);
+        expect(r"\\?\UNC\server\share\a", &[r"\\?\UNC\server\share\a"]);
+    }
+}
