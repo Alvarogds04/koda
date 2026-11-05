@@ -202,7 +202,12 @@ fn accept_loop(inner: Arc<Inner>) {
         let accepted = {
             let guard = inner.listener.lock().expect("listener");
             match guard.as_ref().expect("listener alive").accept() {
-                Ok((stream, _)) => Some(stream),
+                Ok((stream, _)) => {
+                    // K2-01b: macOS/BSD hand the accepted socket the listener's non-blocking mode (Linux does not); the
+                    // per-connection reader relies on a blocking read with its own timeout, so make that explicit on every OS.
+                    let _ = stream.set_nonblocking(false);
+                    Some(stream)
+                }
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => None,
                 Err(_) => None,
             }
@@ -527,4 +532,27 @@ fn http_response(status: u16, content_type: &str, body: &str) -> String {
         "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Read, Write};
+
+    /// K2-01b (macOS CI flake «known_rejected_requests_run_the_bounded_403_ladder»: 0 requests logged): on BSD/macOS
+    /// an accepted socket INHERITS the listener's non-blocking mode, so a request that has not arrived yet made
+    /// `read` fail with WouldBlock and the fake dropped the connection unlogged. A client that sends a little after
+    /// connecting must still get its answer, on every OS.
+    #[test]
+    fn a_client_that_sends_after_connecting_still_gets_its_answer() {
+        let fake = FakeBackend::start(FakeConfig::default());
+        let mut stream = TcpStream::connect(fake.origin().trim_start_matches("http://")).expect("connect");
+        std::thread::sleep(Duration::from_millis(150)); // accepted before the request bytes exist
+        write!(stream, "GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").expect("send");
+        let mut answer = String::new();
+        let _ = stream.read_to_string(&mut answer);
+        assert!(answer.starts_with("HTTP/1.1 "), "the late request was answered: {answer:?}");
+        assert_eq!(fake.log().len(), 1, "and logged");
+        fake.stop();
+    }
 }

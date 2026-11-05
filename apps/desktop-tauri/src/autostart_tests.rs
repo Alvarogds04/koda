@@ -17,20 +17,56 @@ fn unique_dir(tag: &str) -> std::path::PathBuf {
 
 const EXE: &str = "/opt/abito/bin/abito-island";
 
+/// A per-OS absolute binary path. `desktop_entry` is a pure text function,
+/// but its absoluteness rule is the HOST's own (POSIX wants a leading `/`,
+/// Windows a drive prefix — `Path::is_absolute` on Windows refuses "/opt/…"
+/// because it has no prefix). The template tests feed the path shape each
+/// OS can actually run, so the same closed-template properties are asserted
+/// on Linux, macOS and Windows instead of being a POSIX-only premise.
+fn sample_exe() -> std::path::PathBuf {
+    if cfg!(windows) {
+        std::path::PathBuf::from(r"C:\Program Files\Koda\bin\abito-island.exe")
+    } else {
+        std::path::PathBuf::from(EXE)
+    }
+}
+
+/// Expected `Exec` argument list for a path text, derived with the SAME
+/// Desktop Entry Spec rule the template applies: the whole path as ONE
+/// argument inside double quotes, escaping the four reserved characters
+/// (`\`, `"`, `$`, `` ` ``) with a backslash. On Windows this doubles every
+/// separator backslash — the naive `Exec="{exe}"` interpolation without this
+/// rule is what failed Windows CI 41729969464. The hand-written literals in
+/// the tests pin the rule itself, so a shared drift is still caught.
+fn spec_quoted(text: &str) -> String {
+    let escaped: String = text
+        .chars()
+        .flat_map(|c| match c {
+            '\\' | '"' | '$' | '`' => vec!['\\', c],
+            c => vec![c],
+        })
+        .collect();
+    format!("\"{escaped}\"")
+}
+
 // --- pure template -----------------------------------------------------------
 
 #[test]
 fn entry_is_the_closed_template() {
-    let text = desktop_entry(std::path::Path::new(EXE)).expect("valid exe");
+    let exe = sample_exe();
+    let icon = exe.parent().expect("the sample has a parent").join("abito-island.png");
+    let text = desktop_entry(&exe).expect("valid exe");
     let mut lines = text.lines();
     assert_eq!(lines.next(), Some("[Desktop Entry]"), "entry must start with the section header");
     let rest: Vec<&str> = lines.collect();
+    let exec = format!("Exec={} --autostart", spec_quoted(exe.to_str().expect("utf-8 sample")));
+    let icon = format!("Icon={}", icon.to_str().expect("utf-8 sample"));
     for key in [
         "Type=Application",
         "Name=Koda",
         "Comment=Koda",
-        "Exec=\"/opt/abito/bin/abito-island\" --autostart",
-        "Icon=/opt/abito/bin/abito-island.png",
+        exec.as_str(),
+        icon.as_str(),
         "Terminal=false",
         "Categories=Utility;",
         "StartupWMClass=Abito-island",
@@ -40,18 +76,54 @@ fn entry_is_the_closed_template() {
     }
     assert_eq!(rest.len(), 9, "no extra keys beyond the closed template");
     assert!(text.ends_with('\n'), "desktop entries end with a newline");
+    // Pinned literal (not derived through spec_quoted): on Windows the spec
+    // escaping doubles every separator backslash inside the quoted Exec value.
+    #[cfg(windows)]
+    assert!(
+        text.contains(r#"Exec="C:\\Program Files\\Koda\\bin\\abito-island.exe" --autostart"#),
+        "pinned Windows Exec literal — got:\n{text}"
+    );
 }
 
 #[test]
 fn entry_quoting_escapes_and_refuses_hostile_paths() {
-    // spaces are safe inside the quoted Exec value
-    let text = desktop_entry(std::path::Path::new("/opt/Abito Apps/island"))
-        .expect("path with a space is quotable");
-    assert!(text.contains("Exec=\"/opt/Abito Apps/island\""), "{text}");
-    // the spec escapes backslash, double quote, dollar and backtick inside quotes
-    let text = desktop_entry(std::path::Path::new("/opt/a\"b\\c$d`e"))
-        .expect("escapable specials");
-    assert!(text.contains("Exec=\"/opt/a\\\"b\\\\c\\$d\\`e\""), "{text}");
+    // spaces are safe inside the quoted Exec value — an absolute path of the
+    // host's own shape, since absoluteness is judged per OS
+    let spaced = if cfg!(windows) {
+        std::path::PathBuf::from(r"C:\opt\Abito Apps\island")
+    } else {
+        std::path::PathBuf::from("/opt/Abito Apps/island")
+    };
+    let text = desktop_entry(&spaced).expect("path with a space is quotable");
+    assert!(
+        text.contains(&format!("Exec={} --autostart", spec_quoted(spaced.to_str().expect("utf-8")))),
+        "{text}"
+    );
+    // the spec escapes backslash, double quote, dollar and backtick inside
+    // quotes. On Windows the backslash IS a separator, so the path exercises
+    // its doubling; on POSIX the classic specials path does all four.
+    let (tricky, exec) = if cfg!(windows) {
+        (r"C:\opt\a$b`c", r#""C:\\opt\\a\$b\`c""#)
+    } else {
+        ("/opt/a\"b\\c$d`e", r#""/opt/a\"b\\c\$d\`e""#)
+    };
+    let text = desktop_entry(std::path::Path::new(tricky)).expect("escapable specials");
+    assert!(text.contains(&format!("Exec={exec} --autostart")), "{text}");
+    // Windows-shaped proof that also runs on POSIX hosts: a leading-slash path
+    // whose components carry backslashes is absolute on Linux/macOS, and the
+    // quoted Exec value must double every backslash — the exact rule a native
+    // `C:\…` path exercises where the backslash IS the separator. Pinned as a
+    // literal so the doubling is never derived from the code it tests.
+    if !cfg!(windows) {
+        let win_shape = "/opt/C:\\Program Files\\Koda\\bin\\abito-island.exe";
+        let text = desktop_entry(std::path::Path::new(win_shape)).expect("absolute on POSIX");
+        assert!(
+            text.contains(
+                r#"Exec="/opt/C:\\Program Files\\Koda\\bin\\abito-island.exe" --autostart"#
+            ),
+            "Windows-shaped backslashes double through the real template — got:\n{text}"
+        );
+    }
     // control characters can never cross a .desktop value honestly
     for bad in ["/opt/a\nb", "/opt/a\rb", "/opt/a\tb", "\u{7}"] {
         assert!(desktop_entry(std::path::Path::new(bad)).is_none(), "{bad:?} refused");
@@ -158,15 +230,49 @@ fn enable_creates_a_missing_autostart_directory() {
 /// Koda 0.1 — Human 30-oct («Vamosa a cerrar esta version cambiar el nombre del repo por Koda y apartir de aqui empezaremos esta sera la version 0.1» → «Todo se llama Koda, repo nuevo desde 0.1» + «Solo lo visible»): the visible launcher name is «Koda»; the binary, icon file and class stay internal.
 #[test]
 fn the_visible_app_name_is_koda() {
-    let text = super::desktop_entry(std::path::Path::new("/opt/abito/abito-island-launcher")).unwrap();
+    let exe = if cfg!(windows) {
+        std::path::PathBuf::from(r"C:\opt\abito\abito-island-launcher.exe")
+    } else {
+        std::path::PathBuf::from("/opt/abito/abito-island-launcher")
+    };
+    let text = super::desktop_entry(&exe).unwrap();
     assert!(text.contains("\nName=Koda\n"), "{text}");
     assert!(text.contains("\nComment=Koda\n"), "{text}");
-    assert!(text.contains("abito-island-launcher\" --autostart"), "the launcher keeps its internal name: {text}");
+    assert!(
+        text.contains(&format!(
+            "Exec={} --autostart",
+            spec_quoted(exe.to_str().expect("utf-8"))
+        )),
+        "the launcher keeps its internal name: {text}"
+    );
     assert!(!text.contains("Tauri"), "{text}");
 }
 
 #[test]
 fn login_entry_identifies_itself_so_settings_stays_closed_at_login() {
-    let text = desktop_entry(std::path::Path::new("/private/Abito")).unwrap();
-    assert!(text.lines().any(|line| line == "Exec=\"/private/Abito\" --autostart"));
+    let exe = if cfg!(windows) {
+        std::path::PathBuf::from(r"C:\Program Files\Koda\Abito.exe")
+    } else {
+        std::path::PathBuf::from("/private/Abito")
+    };
+    let text = desktop_entry(&exe).unwrap();
+    assert!(text.lines().any(|line| line == format!("Exec={} --autostart", spec_quoted(exe.to_str().expect("utf-8")))));
+}
+
+/// The Windows twin of the autostart mechanism: there is no XDG autostart off
+/// Unix, and the product says so honestly instead of pretending (a corrupt
+/// stub would silently claim an entry that was never written). Linux/macOS
+/// keep the real file effects in the `cfg(unix)` tests above.
+#[cfg(not(unix))]
+#[test]
+fn non_unix_enable_refuses_honestly_and_never_writes() {
+    let root = unique_dir("stub");
+    let path = root.join("autostart").join("abito-island.desktop");
+    let err = set_enabled_at(&path, true, &sample_exe()).expect_err("non-Unix autostart must refuse");
+    assert!(matches!(err, AutostartError::Unsupported), "got {err:?}");
+    assert!(!is_enabled_at(&path), "nothing may be written by the stub");
+    let err = set_enabled_at(&path, false, &sample_exe()).expect_err("disable refuses too");
+    assert!(matches!(err, AutostartError::Unsupported), "got {err:?}");
+    assert!(!path.exists(), "no file, no directory: the stub is inert");
+    let _ = std::fs::remove_dir_all(&root);
 }

@@ -29,6 +29,7 @@ const {
 	lstatSync,
 	mkdirSync,
 	openSync,
+	readlinkSync,
 	renameSync,
 	unlinkSync,
 	writeSync,
@@ -148,43 +149,90 @@ function islandPaths(root) {
 }
 
 /**
- * Fail-closed path check. Walks every component of `target` (deepest first)
+ * Fail-closed path check. Walks every component of `target` from the root down
  * and refuses the path when an existing component:
- * - is a symbolic link,
+ * - is a symbolic link — except (K2-01b, not on Windows) a TRUSTED SYSTEM LINK
+ *   ancestor: the link is owned by root and its parent directory is owned by
+ *   root and not group/world-writable, so no other user can have planted or
+ *   swapped it (macOS /var → private/var, /tmp, /etc; merged-usr /lib → usr/lib).
+ *   The walk then continues on the link's target, which must pass this whole
+ *   rule again. The LEAF is never allowed to be a symlink;
  * - is world-writable without the sticky bit (no planted shared dirs), or
  * - is owned by neither the current user nor root.
- * Returns the resolved absolute path.
+ * Returns the resolved absolute path (as given, not the link target).
+ * `options.fs` / `options.platform` are test seams (an injected lstat/readlink and platform).
  */
 function assertSecurePath(target, options = {}) {
 	const uid = options.uid ?? currentUid();
+	const lstat = options.fs?.lstatSync ?? lstatSync;
+	const readlink = options.fs?.readlinkSync ?? readlinkSync;
+	const platform = options.platform ?? process.platform;
 	const absolute = path.resolve(target);
-	const components = [];
-	let probe = absolute;
-	while (true) {
-		components.push(probe);
-		const parent = path.dirname(probe);
-		if (parent === probe) break;
-		probe = parent;
+	let pending = absolute;
+	for (let hops = 0; ; hops++) {
+		const next = walkSecure(pending, { uid, lstat, readlink, platform, followLinks: hops < MAX_TRUSTED_LINK_HOPS });
+		if (next === null) return absolute;
+		pending = next;
 	}
-	for (const dir of components) {
+}
+
+/** Bound on followed trusted links (a loop of root-owned links is refused, never spun on). */
+const MAX_TRUSTED_LINK_HOPS = 40;
+
+/**
+ * One top-down pass over `absolute`. Returns null when every existing component passes, or the path to walk next
+ * when a trusted system link ancestor was met (its target joined with the remaining components). Throws on refusal.
+ */
+function walkSecure(absolute, { uid, lstat, readlink, platform, followLinks }) {
+	const { root } = path.parse(absolute);
+	const parts = absolute.slice(root.length).split(path.sep).filter(Boolean);
+	const dirs = [root, ...parts.map((_, i) => path.join(root, ...parts.slice(0, i + 1)))];
+	for (let i = 0; i < dirs.length; i++) {
+		const dir = dirs[i];
 		let stats;
 		try {
-			stats = lstatSync(dir);
+			stats = lstat(dir);
 		} catch (error) {
-			if (error.code === "ENOENT") continue;
+			if (error.code === "ENOENT") return null; // nothing below a missing component exists either
 			if (error.code === "EACCES") throw new Error(`refusing island path: cannot inspect ${dir}`);
 			throw error;
 		}
-		if (stats.isSymbolicLink()) throw new Error(`refusing symlink component in island path: ${dir}`);
+		if (stats.isSymbolicLink()) {
+			const leaf = i === dirs.length - 1;
+			if (leaf || !followLinks || !trustedSystemLink(stats, dirs[i - 1], lstat, platform)) {
+				throw new Error(`refusing symlink component in island path: ${dir}`);
+			}
+			// Compose without normalizing: a `..` in the target must be walked AFTER the components before it, exactly as the
+			// OS traverses them (path.resolve would collapse `hop/..` and skip checking `hop`).
+			const linkTarget = readlink(dir);
+			const base = path.isAbsolute(linkTarget) ? linkTarget : `${dirs[i - 1]}${path.sep}${linkTarget}`;
+			return [base, ...parts.slice(i)].join(path.sep); // dirs[i] is parts[i - 1]: the rest starts at parts[i]
+		}
 		// Windows has no POSIX mode bits (lstat reports 0o666/0o777): privacy there comes from the profile ACL.
-		if (process.platform !== "win32" && (stats.mode & 0o002) !== 0 && (stats.mode & 0o1000) === 0) {
+		if (platform !== "win32" && (stats.mode & 0o002) !== 0 && (stats.mode & 0o1000) === 0) {
 			throw new Error(`refusing world-writable component without the sticky bit: ${dir}`);
 		}
 		if (uid !== undefined && stats.uid !== uid && stats.uid !== 0) {
 			throw new Error(`refusing component owned by uid ${stats.uid}: ${dir}`);
 		}
 	}
-	return absolute;
+	return null;
+}
+
+/**
+ * K2-01b: a symlink the system owns — root-owned link in a root-owned parent that is not group/world-writable.
+ * Never on Windows (lstat reports uid 0 for every file there; junctions stay refused as before). `parent` is the
+ * already-verified real parent directory of the link.
+ */
+function trustedSystemLink(stats, parent, lstat, platform) {
+	if (platform === "win32" || stats.uid !== 0 || parent === undefined) return false;
+	let parentStats;
+	try {
+		parentStats = lstat(parent);
+	} catch {
+		return false;
+	}
+	return !parentStats.isSymbolicLink() && parentStats.uid === 0 && (parentStats.mode & 0o022) === 0;
 }
 
 /**

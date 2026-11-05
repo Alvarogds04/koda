@@ -28,7 +28,35 @@ function pathOk(p) {
   if (typeof p !== 'string' || p.length > 520 || !/^[A-Za-z]:\\/.test(p) || p.length < 4) return false;
   return p.slice(3).split('\\').every(c => c !== '' && c !== '.' && c !== '..' && !/[ .]$/.test(c) && !/[\x00-\x1f<>:"|?*/~]/.test(c) && !RESERVED.test(c.split('.')[0]));
 }
-const need = p => { if (!pathOk(p)) throw new WinFsError('unsafe_path'); return p; };
+// K2-01b: Windows hands out 8.3 short names (%TEMP% is C:\Users\RUNNER~1\... for a long user name). A textual policy cannot
+// trust them (one file, several spellings), so pathOk refuses `~`. longPath expands each `~` component to the ONE entry
+// of its parent that is the same file (lstat dev+ino, never following a link or junction); every other lexical rule is
+// checked first, before the disk is touched, and the long result must pass the strict pathOk. Anything that cannot be
+// proven (missing, ambiguous, a link, no file ids) is null: refused exactly as before. Returns p unchanged without `~`.
+// It does NOT vet ancestors: a non-~ ancestor that is a symlink/junction is never examined here, so C:\link\RUNNER~1 ends
+// exactly like its long spelling C:\link\runneradmin, and the helper's reparse/parent_ok checks decide, as for any path.
+const realResolve = { lstat: p => fs.lstatSync(p, { bigint: true }), readdir: p => fs.readdirSync(p) };
+function longPath(p, { lstat, readdir } = realResolve) {
+  if (typeof p !== 'string') return null;
+  if (!p.includes('~')) return pathOk(p) ? p : null;
+  if (!pathOk(p.replaceAll('~', '_'))) return null;
+  const parts = p.split('\\');
+  let current = parts[0] + '\\';
+  try {
+    for (const part of parts.slice(1)) {
+      if (!part.includes('~')) { current = path.win32.join(current, part); continue; }
+      const target = lstat(path.win32.join(current, part));
+      if (target.isSymbolicLink() || !target.ino) return null;
+      const same = readdir(current).filter(name => {
+        try { const s = lstat(path.win32.join(current, name)); return s.dev === target.dev && s.ino === target.ino; } catch { return false; }
+      });
+      if (same.length !== 1) return null;
+      current = path.win32.join(current, same[0]);
+    }
+  } catch { return null; }
+  return pathOk(current) ? current : null;
+}
+const needWith = resolve => p => { const long = longPath(p, resolve); if (!long) throw new WinFsError('unsafe_path'); return long; };
 
 const FACT_KEYS = ['schema', 'ok', 'path', 'parent_ok', 'exists', 'kind', 'reparse', 'private', 'nlink', 'size', 'mtime_ms', 'elevated'].sort().join(',');
 function parseLine(raw) {
@@ -41,7 +69,8 @@ function closed(value) {
   return value;
 }
 
-function createWinFs({ helper, exec = execFileSync, verify = () => {} }) {
+function createWinFs({ helper, exec = execFileSync, verify = () => {}, resolve = realResolve }) {
+  const need = needWith(resolve);
   function run(args, input) {
     // M2: re-hash the helper immediately before EVERY spawn. Node cannot deny writes to the file, so the window between
     // this check and CreateProcess is the documented residual (same-user race), not a cached verdict.
@@ -61,7 +90,7 @@ function createWinFs({ helper, exec = execFileSync, verify = () => {} }) {
   }
   const booleans = ['ok', 'parent_ok', 'exists', 'reparse', 'private', 'elevated'];
   function checkPath(p) {
-    need(p);
+    p = need(p);
     const v = run(['--check-path', p]);
     const intOk = k => Number.isSafeInteger(v[k]) && v[k] >= 0;
     if (Object.keys(v).sort().join(',') !== FACT_KEYS || v.path !== p || v.ok !== true || !booleans.every(k => typeof v[k] === 'boolean')
@@ -76,7 +105,7 @@ function createWinFs({ helper, exec = execFileSync, verify = () => {} }) {
     if (f.reparse) throw new WinFsError('reparse');
     if (f.kind !== 'file' || !f.private || f.nlink !== 1) throw new WinFsError('not_private');
     if (f.size > MAX_FILE) throw new WinFsError('too_large');
-    const buf = readFile(p);
+    const buf = readFile(f.path); // exactly the (long) path the helper checked
     if (buf.length > MAX_FILE) throw new WinFsError('too_large');
     return { buf, sha256: sha256(buf), size: buf.length, mtimeMs: f.mtime_ms };
   }
@@ -86,14 +115,14 @@ function createWinFs({ helper, exec = execFileSync, verify = () => {} }) {
     throw new WinFsError('bad_expect');
   };
   function writePrivate(p, data, expect) {
-    need(p);
+    p = need(p);
     const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
     if (buf.length > MAX_FILE) throw new WinFsError('too_large');
     const v = run(['--write-private', p, '--expect', expectArg(expect)], buf);
     if (v.ok !== true || v.sha256 !== sha256(buf) || v.size !== buf.length) throw new WinFsError('helper_failed', 'helper write result mismatch');
     return { sha256: v.sha256 };
   }
-  const simple = flag => (...ps) => { ps.forEach(need); const v = run([flag, ...ps]); if (v.ok !== true) throw new WinFsError('helper_failed'); return v; };
+  const simple = flag => (...ps) => { const long = ps.map(need); const v = run([flag, ...long]); if (v.ok !== true) throw new WinFsError('helper_failed'); return v; };
   return {
     checkPath, readPrivate, writePrivate,
     makeDir: p => { const v = simple('--make-dir')(p); return { created: v.created === true }; },
@@ -170,7 +199,8 @@ function defaultRoot() { return path.resolve(__dirname, '..', '..'); }
 // ---- active backend: real on win32, injectable in tests ----
 let forced = null, cached = null;
 function active() {
-  if (forced) return forced;
+  // Tests may force a backend object, or a factory called on each use (e.g. one that throws like an untrusted helper).
+  if (forced) return typeof forced === 'function' ? forced() : forced;
   if (process.platform !== 'win32') return null;
   if (!cached) { const helper = trustedHelper(); cached = createWinFs({ helper, verify: () => { if (trustedHelper() !== helper) throw new WinFsError('helper_untrusted'); } }); }
   return cached;
@@ -178,4 +208,4 @@ function active() {
 function useForTests(backend) { forced = backend; }
 const uidOf = () => (active() ? 'win' : process.getuid());
 
-module.exports = { resolveHelper, quoteWindowsCommandPath, readVerified, verifyBundled, relativeToRoot, WinFsError, createWinFs, trustedHelper, verifyScript, pathOk, active, useForTests, uidOf, sha256, MANIFEST_FILE, MANIFEST_SCHEMA, HELPER_NAME, MAX_FILE };
+module.exports = { resolveHelper, quoteWindowsCommandPath, readVerified, verifyBundled, relativeToRoot, WinFsError, createWinFs, trustedHelper, verifyScript, pathOk, longPath, active, useForTests, uidOf, sha256, MANIFEST_FILE, MANIFEST_SCHEMA, HELPER_NAME, MAX_FILE };

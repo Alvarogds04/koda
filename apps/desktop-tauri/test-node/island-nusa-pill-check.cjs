@@ -45,6 +45,11 @@ const VARIANTS = [
   ['notice-long', { quick: true, sessions: [] }, withNotice('Pi terminó su turno y dejó la migración aplicada con 14 tests pasando en el repositorio api'), false],
   ['question', { compact: true, question: 'plain' }, compact, false],
   ['permission', { compact: true, question: 'approvalPi' }, compact, false],
+  // K2-01b (CI, Ubuntu's DejaVu Sans): the «Responder» label is wider under another system font, and the text ran under the
+  // button. Stand-in for ANY wider font on every OS: the button's own label is drawn larger, so the button is wider than the
+  // vendor's 88px reserve. The text must still end before it (ellipsis), whatever width the button's font gives it.
+  ['question-wide-button', { compact: true, question: 'plain', css: '#compact-reply { font-size: 17px !important; }' }, compact, false],
+  ['permission-wide-button', { compact: true, question: 'approvalPi', css: '#compact-reply { font-size: 17px !important; }' }, compact, false],
 ];
 
 (async () => {
@@ -70,6 +75,7 @@ const VARIANTS = [
           assert.ok(gap >= 8, `${tag}: >= 8px between Koda's box and the text (${gap})`);
           assert.ok(m.act.r <= m.island.r + 0.5, `${tag}: the text stays inside the pill`);
           if (m.reply) assert.ok(m.reply.l - m.act.r >= 8 || m.act.r <= m.reply.l, `${tag}: the text does not run under the button`);
+          if (m.reply && name.endsWith('-wide-button')) assert.ok(m.reply.w > 100, `${tag}: premise — the button is wider than the vendor's reserve (${m.reply.w})`);
         }
         // the pill never exceeds the reported box (width of the shape the host receives) and the idle Koda-only capsule is 40
         if (m.shapes) { const rw = Array.isArray(m.shapes) ? m.shapes[0] : m.shapes.w; if (rw) assert.ok(m.island.w <= rw + 0.5, `${tag}: pill ${m.island.w} <= reported ${rw}`); }

@@ -757,10 +757,23 @@ pub fn write_file(dir: &Path, store: &Store) -> Result<(), String> {
     }
     #[cfg(not(unix))]
     {
+        use std::io::Write;
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
         let tmp = dir.join(format!(".{FILE}.{}.tmp", std::process::id()));
-        std::fs::write(&tmp, text).map_err(|e| e.to_string())?;
-        std::fs::rename(&tmp, dir.join(FILE)).map_err(|e| e.to_string())
+        // K2-01b: create_new, as on Unix — a leftover or planted temp file refuses the write and is never
+        // truncated or written through (create_new fails on any existing name, links included).
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)
+            .map_err(|e| e.to_string())?;
+        let written = file.write_all(text.as_bytes()).and_then(|()| file.sync_all());
+        drop(file); // Windows cannot rename a file that is still open
+        if let Err(e) = written.and_then(|()| std::fs::rename(&tmp, dir.join(FILE))) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(e.to_string());
+        }
+        Ok(())
     }
 }
 

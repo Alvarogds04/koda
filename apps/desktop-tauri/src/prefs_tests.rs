@@ -757,10 +757,32 @@ fn a_damaged_position_never_panics_and_never_costs_the_other_preferences() {
 fn f032_optional_defaults_and_saved_normalization() {
     let old = Prefs::from_text(Some(r#"{"v":1,"sound":true,"future_unvalidated":{"secret":"not retained"}}"#));
     assert_eq!(old.to_text(), r#"{"sound":true,"v":1}"#);
-    let raw = r#"{"v":1,"sound":true,"main_pill":"ai_google","declared_pills":["unknown","integration_claude","agent_gemini","agent_gemini","ai_google","agent_amp","integration_notion","integration_spotify",7,"integration_music","agent_claude-desktop"]}"#;
+    let raw = r#"{"v":1,"sound":true,"main_pill":"ai_google","declared_pills":["unknown","integration_claude","agent_gemini","agent_gemini","ai_google","agent_amp","integration_notion","integration_spotify",7,"integration_music","agent_claude-desktop","integration_resend"]}"#;
     let loaded = Prefs::from_text(Some(raw));
     let v: Value = serde_json::from_str(&loaded.to_text()).unwrap();
-    assert_eq!(v["declared_pills"], json!(["agent_gemini","ai_google","agent_amp","integration_notion","integration_spotify"]), "S32: the fifth is kept, not dropped for being the fifth");
+    // The offered catalog is per-OS BY DESIGN (`pill_offered`): claude-desktop
+    // is offered on Windows only, spotify on Linux only. `ai_google` is not a
+    // MAIN_PILL, so the stored main_pill falls back to the default
+    // `integration_claude`, which drops the stored "integration_claude" twin.
+    // What survives, in first-occurrence order:
+    //   Linux   [gemini, ai_google, amp, notion, spotify, resend]
+    //   Windows [gemini, ai_google, amp, notion, claude-desktop, resend]
+    //   macOS   [gemini, ai_google, amp, notion, resend]
+    // Every OS keeps a real fifth id — S32's point (the fifth is kept, not
+    // dropped for being the fifth) is asserted on all three, never weakened:
+    // `integration_resend` is offered everywhere and closes the macOS gap.
+    let expected: Vec<&str> = match () {
+        _ if cfg!(target_os = "linux") => {
+            ["agent_gemini", "ai_google", "agent_amp", "integration_notion", "integration_spotify", "integration_resend"].to_vec()
+        }
+        _ if cfg!(target_os = "windows") => {
+            ["agent_gemini", "ai_google", "agent_amp", "integration_notion", "agent_claude-desktop", "integration_resend"].to_vec()
+        }
+        _ => {
+            ["agent_gemini", "ai_google", "agent_amp", "integration_notion", "integration_resend"].to_vec()
+        }
+    };
+    assert_eq!(v["declared_pills"], json!(expected), "S32: the fifth is kept, not dropped for being the fifth");
     assert!(loaded.sound);
     assert_eq!(Prefs::from_text(Some(&loaded.to_text())), loaded);
     for raw in [r#"{"v":1,"main_pill":"unknown","declared_pills":false}"#,

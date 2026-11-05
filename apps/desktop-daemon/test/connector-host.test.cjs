@@ -8,13 +8,26 @@ const path = require("node:path");
 const util = require("node:util");
 const { ConnectorHostSupervisor, assertTrustedBinary, childPathWithNodeFirst, procIdentity, readHandoff } = require("../src/connector-host.cjs");
 
+const WIN = process.platform === "win32";
+// The connector host is Unix-only by design (Q1a: AF_UNIX endpoint, mode/uid checks, /proc|ps identity);
+// on Windows it stays FAIL-CLOSED. The Unix-mechanism tests skip there and name their twin.
+const TWIN = "Windows twin: the supervisor refuses an untrusted host binary, never spawns and stays fail-closed";
+const unixOnly = (twin = TWIN) => ({ skip: WIN && `Unix mechanism (AF_UNIX, mode/uid, /proc); Windows: ${twin}` });
+const winOnly = { skip: !WIN && "Windows-only twin of the Unix-mechanism connector-host tests" };
+
 const FIXTURE = path.join(__dirname, "fixtures", "fake-connector-host.cjs");
+// macOS injects __CF_USER_TEXT_ENCODING into every process at exec (CoreFoundation); the fixture
+// records its own process.env, so on darwin this key appears although the supervisor passed an
+// allowlisted env. It is OS-injected and never comes from the parent environment — not a leak.
+const OS_INJECTED_ENV = process.platform === "darwin" ? ["__CF_USER_TEXT_ENCODING"] : [];
 function setup(t, mode = {}, overrides = {}) {
-	const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "abito-host-")));
-	const island = path.join(root, "island");
-	fs.mkdirSync(island, { mode: 0o700 });
+	// Socket-path budget: validateEndpoint allows 107 bytes and macOS binds at most 103 (sun_path).
+	// The macOS CI temp prefix (/private/var/folders/<2>/<31>/T/) is already 58 bytes, so the island
+	// IS the short temp root: <island>/connector-host-run/p-XXXXXX/s stays ≤ 103 bytes everywhere.
+	// Same layout and behaviour on Linux and Windows; only the temp root is shorter.
+	const island = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "k-")));
 	fs.mkdirSync(path.join(island, "home"), { mode: 0o700 });
-	const bin = path.join(root, "host");
+	const bin = path.join(island, "host");
 	fs.copyFileSync(FIXTURE, bin);
 	fs.chmodSync(bin, 0o700);
 	fs.writeFileSync(path.join(island, ".fake-host-mode.json"), JSON.stringify(mode), { mode: 0o600 });
@@ -27,12 +40,12 @@ function setup(t, mode = {}, overrides = {}) {
 			const deadline = Date.now() + 1000;
 			while (Date.now() < deadline && (() => { try { process.kill(child.pid, 0); return true; } catch { return false; } })()) await new Promise((r) => setTimeout(r, 10));
 		}
-		fs.rmSync(root, { recursive: true, force: true });
+		fs.rmSync(island, { recursive: true, force: true });
 	});
-	return { root, island, bin, host, logs };
+	return { root: island, island, bin, host, logs };
 }
 
-test("trusted binary validation rejects unsafe paths and modes before spawning", async (t) => {
+test("trusted binary validation rejects unsafe paths and modes before spawning", unixOnly(), async (t) => {
 	const cases = [
 		["symlinked binary", ({ root, bin, host }) => { const link = path.join(root, "host-link"); fs.symlinkSync(bin, link); host.binPath = link; }],
 		["setuid binary", ({ bin }) => fs.chmodSync(bin, 0o4700)],
@@ -63,12 +76,12 @@ test("trusted binary validation rejects unsafe paths and modes before spawning",
 	}
 });
 
-test("a clean private binary path is accepted unchanged", (t) => {
+test("a clean private binary path is accepted unchanged", unixOnly(), (t) => {
 	const { bin } = setup(t);
 	assert.equal(assertTrustedBinary(bin), bin);
 });
 
-test("fake host starts only after strict handoff and hello, then acknowledges shutdown and removes files", async (t) => {
+test("fake host starts only after strict handoff and hello, then acknowledges shutdown and removes files", unixOnly(), async (t) => {
 	const { island, host, logs } = setup(t);
 	const states = [];
 	host.on("status", (state) => states.push(state));
@@ -85,7 +98,7 @@ test("fake host starts only after strict handoff and hello, then acknowledges sh
 	assert.ok(!logs.includes("connector host exited uncleanly; files left for recovery"));
 });
 
-test("spawn is direct, argv is exact, and the child environment is allowlisted", async (t) => {
+test("spawn is direct, argv is exact, and the child environment is allowlisted", unixOnly(), async (t) => {
 	const { host, island, bin } = setup(t, {}, { env: { PATH: "/untrusted", HOME: "/untrusted", LANG: "C.UTF-8", PI_SESSION_ID: "pi-canary", OPENAI_API_KEY: "provider-canary", CLAUDECODE: "agent-canary" } });
 	await host.start();
 	try {
@@ -93,11 +106,12 @@ test("spawn is direct, argv is exact, and the child environment is allowlisted",
 		assert.equal(child.spawnfile, bin);
 		assert.deepEqual(child.spawnargs.slice(1), ["--island", island, "--parent", String(process.pid)]);
 		assert.equal(procIdentity(child.pid).ppid, process.pid);
-		const env = fs.readFileSync(`/proc/${child.pid}/environ`).toString("utf8").split("\0").filter(Boolean);
-		assert.deepEqual(env.map((entry) => entry.slice(0, entry.indexOf("="))).sort(), ["HOME", "LANG", "PATH"]);
-		assert.ok(env.includes(`HOME=${path.join(island, "home")}`));
-		assert.ok(env.includes(`PATH=${childPathWithNodeFirst(path.dirname(process.execPath))}`));
-		assert.ok(!env.join("\n").includes("canary"));
+		// The fixture records its own process.env (0600) because /proc/<pid>/environ is Linux-only.
+		const entries = JSON.parse(fs.readFileSync(path.join(island, ".fake-host-env.json"), "utf8"));
+		assert.deepEqual(entries.map(([key]) => key).sort(), ["HOME", "LANG", "PATH", ...OS_INJECTED_ENV]);
+		assert.ok(entries.some(([key, value]) => key === "HOME" && value === path.join(island, "home")));
+		assert.ok(entries.some(([key, value]) => key === "PATH" && value === childPathWithNodeFirst(path.dirname(process.execPath))), "the daemon's own node leads the child PATH (K2-02)");
+		assert.ok(!entries.map(([, value]) => value).join("\n").includes("canary"));
 	} finally { await host.stop(); }
 });
 
@@ -161,7 +175,7 @@ test("childPathWithNodeFirst uses the right separator on every platform", () => 
 	assert.equal(childPathWithNodeFirst("/koda/runtime"), `/koda/runtime${path.delimiter}/usr/bin:/bin`);
 });
 
-test("refusal exit 1 rejects initial start without a restart loop", async (t) => {
+test("refusal exit 1 rejects initial start without a restart loop", unixOnly(), async (t) => {
 	const { host, island } = setup(t, { refuse: true });
 	await assert.rejects(host.start(), /connector host unavailable/);
 	await new Promise((r) => setTimeout(r, 80));
@@ -169,7 +183,7 @@ test("refusal exit 1 rejects initial start without a restart loop", async (t) =>
 	assert.equal(fs.existsSync(path.join(island, "connector-host.json")), false);
 });
 
-test("request validation rejects unsafe ids, revisions, digests, values and reserved keys before write", async (t) => {
+test("request validation rejects unsafe ids, revisions, digests, values and reserved keys before write", unixOnly(), async (t) => {
 	const { host } = setup(t);
 	await host.start();
 	try {
@@ -184,7 +198,7 @@ test("request validation rejects unsafe ids, revisions, digests, values and rese
 	} finally { await host.stop(); }
 });
 
-test("supervisor and client diagnostics never expose the handoff token or endpoint", async (t) => {
+test("supervisor and client diagnostics never expose the handoff token or endpoint", unixOnly(), async (t) => {
 	const { host, island } = setup(t);
 	await host.start();
 	const handoff = JSON.parse(fs.readFileSync(path.join(island, "connector-host.json"), "utf8"));
@@ -213,7 +227,7 @@ test("supervisor and client diagnostics never expose the handoff token or endpoi
 	await host.stop();
 });
 
-test("connect values never reach logs, errors, emitted events, environment or argv", async (t) => {
+test("connect values never reach logs, errors, emitted events, environment or argv", unixOnly(), async (t) => {
 	const { host, logs } = setup(t);
 	await host.start();
 	const secret = "NEVER-LEAK-CONNECT-CANARY";
@@ -225,7 +239,7 @@ test("connect values never reach logs, errors, emitted events, environment or ar
 	await host.stop();
 });
 
-test("handoff validation rejects malformed, noncanonical and unsafe metadata", async (t) => {
+test("handoff validation rejects malformed, noncanonical and unsafe metadata", unixOnly(), async (t) => {
 	for (const mode of [
 		{ extraKey: true }, { wrongToken: true }, { badToken: true }, { wrongTokenReply: true }, { badMode: true }, { escapedKey: true },
 		{ bomHandoff: true }, { noHandoffLf: true }, { crlfHandoff: true }, { doubleHandoffLf: true }, { prettyHandoff: true }, { reverseHandoffKeys: true },
@@ -237,7 +251,7 @@ test("handoff validation rejects malformed, noncanonical and unsafe metadata", a
 	}
 });
 
-test("handoff rejects a wrong-owner stub without needing to change file ownership", async (t) => {
+test("handoff rejects a wrong-owner stub without needing to change file ownership", unixOnly(), async (t) => {
 	const { host, island } = setup(t);
 	await host.start();
 	const file = path.join(island, "connector-host.json");
@@ -246,13 +260,13 @@ test("handoff rejects a wrong-owner stub without needing to change file ownershi
 	await host.stop();
 });
 
-test("startup timeout kills a host that never publishes its endpoint", async (t) => {
+test("startup timeout kills a host that never publishes its endpoint", unixOnly(), async (t) => {
 	const { host } = setup(t, { hangStartup: true }, { startTimeoutMs: 300 });
 	await assert.rejects(host.start(), /connector host unavailable/);
 	assert.equal(host.status, "stopped");
 });
 
-test("shutdown uses the verified SIGTERM then SIGKILL ladder", async (t) => {
+test("shutdown uses the verified SIGTERM then SIGKILL ladder", unixOnly(), async (t) => {
 	const signals = [];
 	const { host, logs } = setup(t, { neverAckShutdown: true, ignoreTerm: true }, { signal: (pid, signal) => { signals.push([pid, signal]); process.kill(pid, signal); } });
 	await host.start();
@@ -263,7 +277,7 @@ test("shutdown uses the verified SIGTERM then SIGKILL ladder", async (t) => {
 	assert.ok(logs.includes("connector host exited uncleanly; files left for recovery"));
 });
 
-test("PID reuse simulation prevents both stop signals", async (t) => {
+test("PID reuse simulation prevents both stop signals", unixOnly(), async (t) => {
 	let reused = false;
 	const actual = require("../src/connector-host.cjs").procStartTicks;
 	const signals = [];
@@ -279,7 +293,7 @@ test("PID reuse simulation prevents both stop signals", async (t) => {
 	assert.equal(host.child, undefined);
 });
 
-test("supervisor restarts an unexpected host crash", async (t) => {
+test("supervisor restarts an unexpected host crash", unixOnly(), async (t) => {
 	const { host } = setup(t, { crashAfterMs: 200 });
 	await host.start();
 	await new Promise((resolve, reject) => {
@@ -328,7 +342,7 @@ async function validHandoff(t, island, pid, start) {
 	return file;
 }
 
-test("handoff identity: a live direct child is ACCEPTED (control for the zombie and wrong-parent tests)", async (t) => {
+test("handoff identity: a live direct child is ACCEPTED (control for the zombie and wrong-parent tests)", unixOnly(), async (t) => {
 	const { island } = setup(t);
 	const child = spawn(process.execPath, ["-e", "setTimeout(()=>{},20000)"], { stdio: "ignore" });
 	t.after(() => { try { child.kill("SIGKILL"); } catch {} });
@@ -340,7 +354,7 @@ test("handoff identity: a live direct child is ACCEPTED (control for the zombie 
 	assert.equal(ok.pid, child.pid);
 });
 
-test("handoff identity: a ZOMBIE with the exact pid and start time is refused by the state check alone", { skip: HAVE_PYTHON ? false : "python3 is needed to build a real zombie" }, async (t) => {
+test("handoff identity: a ZOMBIE with the exact pid and start time is refused by the state check alone", { skip: WIN ? `Unix mechanism (fork, /proc); Windows: ${TWIN}` : (HAVE_PYTHON ? false : "python3 is needed to build a real zombie") }, async (t) => {
 	const { island } = setup(t);
 	// Node and sh reap their children; python3 after os.fork() does not, so the child stays a real zombie.
 	// The zombie's parent is the python process, so the PARENT check would also reject it: the mutation run proves which
@@ -359,7 +373,7 @@ test("handoff identity: a ZOMBIE with the exact pid and start time is refused by
 	assert.throws(() => readHandoff(file, island, { pid }, id.start), /connector host unavailable/);
 });
 
-test("handoff identity: a DIRECT child of this daemon whose /proc state is Z (or X) is refused by the state check alone", async (t) => {
+test("handoff identity: a DIRECT child of this daemon whose /proc state is Z (or X) is refused by the state check alone", unixOnly(), async (t) => {
 	const { island } = setup(t);
 	// Isolates the state branch: the pid, the start time and the parent are all REAL and correct (a live direct child of
 	// this process); only the state letter /proc reports is changed, by intercepting the read of that one stat file.
@@ -370,25 +384,37 @@ test("handoff identity: a DIRECT child of this daemon whose /proc state is Z (or
 	assert.ok(["S", "R"].includes(real.state), "premise: genuinely alive");
 	const file = await validHandoff(t, island, child.pid, real.start);
 	assert.equal(readHandoff(file, island, child, real.start).pid, child.pid, "control: accepted while the state is S/R");
+	// The state letter comes from /proc/<pid>/stat on Linux and from /bin/ps (src/procinfo.cjs runPs, looked up at call
+	// time) on macOS: intercept exactly that one source per OS, so the same refusal is proven on both.
+	const procinfo = require("../src/procinfo.cjs");
 	const statPath = `/proc/${child.pid}/stat`;
 	const original = fs.readFileSync;
-	t.after(() => { fs.readFileSync = original; });
+	const originalPs = procinfo.runPs;
+	const restore = () => { fs.readFileSync = original; procinfo.runPs = originalPs; };
+	t.after(restore);
 	for (const letter of ["Z", "X"]) {
-		fs.readFileSync = function patched(target, ...rest) {
-			const text = original.call(this, target, ...rest);
-			if (target !== statPath || typeof text !== "string") return text;
-			const close = text.lastIndexOf(")");
-			return `${text.slice(0, close + 2)}${letter}${text.slice(close + 3)}`;
-		};
-		assert.equal(procIdentity(child.pid).state, letter, `premise: /proc now reports ${letter}`);
+		if (process.platform === "darwin") {
+			procinfo.runPs = (pid, ...rest) => {
+				const info = originalPs(pid, ...rest);
+				return pid === child.pid && info ? { ...info, state: letter } : info;
+			};
+		} else {
+			fs.readFileSync = function patched(target, ...rest) {
+				const text = original.call(this, target, ...rest);
+				if (target !== statPath || typeof text !== "string") return text;
+				const close = text.lastIndexOf(")");
+				return `${text.slice(0, close + 2)}${letter}${text.slice(close + 3)}`;
+			};
+		}
+		assert.equal(procIdentity(child.pid).state, letter, `premise: the process source now reports ${letter}`);
 		assert.equal(procIdentity(child.pid).ppid, process.pid, "premise: parent unchanged");
 		assert.equal(procIdentity(child.pid).start, real.start, "premise: start time unchanged");
 		assert.throws(() => readHandoff(file, island, child, real.start), /connector host unavailable/, `state ${letter} refused`);
-		fs.readFileSync = original;
+		restore();
 	}
 });
 
-test("handoff identity: a start time that differs from the one recorded at spawn is refused by the identity check alone", async (t) => {
+test("handoff identity: a start time that differs from the one recorded at spawn is refused by the identity check alone", unixOnly(), async (t) => {
 	const { island } = setup(t);
 	const child = spawn(process.execPath, ["-e", "setTimeout(()=>{},20000)"], { stdio: "ignore" });
 	t.after(() => { try { child.kill("SIGKILL"); } catch {} });
@@ -404,7 +430,7 @@ test("handoff identity: a start time that differs from the one recorded at spawn
 	assert.throws(() => readHandoff(file, island, child, recorded), /connector host unavailable/, "recorded start differs from /proc");
 });
 
-test("handoff identity: a process whose parent is NOT this daemon is refused even when pid and start time match", async (t) => {
+test("handoff identity: a process whose parent is NOT this daemon is refused even when pid and start time match", unixOnly(), async (t) => {
 	const { island } = setup(t);
 	// An intermediate starts a detached sleeper and exits, so the sleeper is re-parented away from this process.
 	const intermediate = spawn(process.execPath, ["-e", "const {spawn}=require('node:child_process');const c=spawn(process.execPath,['-e','setTimeout(()=>{},20000)'],{stdio:'ignore',detached:true});process.stdout.write(String(c.pid));c.unref();"], { stdio: ["ignore", "pipe", "ignore"] });
@@ -420,7 +446,7 @@ test("handoff identity: a process whose parent is NOT this daemon is refused eve
 	assert.throws(() => readHandoff(file, island, { pid }, id.start), /connector host unavailable/);
 });
 
-test("binary trust: each unsafe shape is refused BY assertTrustedBinary on its own, and a clean one is accepted", (t) => {
+test("binary trust: each unsafe shape is refused BY assertTrustedBinary on its own, and a clean one is accepted", unixOnly(), (t) => {
 	const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "abito-host-")));
 	t.after(() => fs.rmSync(root, { recursive: true, force: true }));
 	fs.chmodSync(root, 0o700);
@@ -440,7 +466,7 @@ test("binary trust: each unsafe shape is refused BY assertTrustedBinary on its o
 	assert.throws(() => assertTrustedBinary(clean), /connector host unavailable/, "setuid binary refused");
 });
 
-test("binary swap: the supervisor re-checks the SAME path right before spawn (check-then-use window narrowed, NOT eliminated)", async (t) => {
+test("binary swap: the supervisor re-checks the SAME path right before spawn (check-then-use window narrowed, NOT eliminated)", unixOnly(), async (t) => {
 	const { host, bin } = setup(t);
 	let spawned = 0;
 	let swapAt;
@@ -466,6 +492,20 @@ test("binary swap: the supervisor re-checks the SAME path right before spawn (ch
 	fs.lstatSync = islandCheck;
 	assert.equal(swapAt, "after first check, before second", "premise: the file was made unsafe between the two checks");
 	assert.equal(spawned, 0, "the second check caught the change, so nothing was spawned");
+});
+
+test("Windows twin: the supervisor refuses an untrusted host binary, never spawns and stays fail-closed", winOnly, async (t) => {
+	// connector-host.cjs is Unix-only by design (AF_UNIX endpoint, mode/uid trust checks, /proc|ps
+	// identity). On Windows every start must therefore fail CLOSED with `connector host unavailable`
+	// BEFORE any process is spawned — the same premise every unixOnly test above relies on there.
+	const spawned = [];
+	const { host, bin } = setup(t, {}, { spawn: (...args) => { spawned.push(args); throw new Error("unexpected spawn"); } });
+	assert.throws(() => assertTrustedBinary(bin), /connector host unavailable/, "even a clean-looking binary is refused: no Unix trust mechanism exists on win32");
+	await assert.rejects(host.start(), /connector host unavailable/);
+	assert.equal(host.status, "stopped", "status ends unavailable, never ready");
+	assert.equal(spawned.length, 0, "nothing was ever spawned");
+	await host.stop();
+	assert.equal(host.status, "stopped");
 });
 
 test("LIMIT (documented, not claimed fixed): the check-then-use window after the last binary check is recorded honestly in the README", () => {

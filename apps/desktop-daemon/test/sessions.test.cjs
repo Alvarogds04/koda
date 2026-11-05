@@ -18,14 +18,20 @@ function tmp() {
 	return fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "abito-sessions-")));
 }
 
-/** One fake /proc/<pid> entry: cmdline (NUL-separated), stat line, optional cwd symlink and comm. */
+/** One fake /proc/<pid> entry: cmdline (NUL-separated), stat line, optional cwd link and comm. */
 function proc(root, pid, { cmdline, stat, cwd, comm } = {}) {
 	const dir = path.join(root, String(pid));
 	fs.mkdirSync(dir, { recursive: true });
 	if (cmdline !== undefined) fs.writeFileSync(path.join(dir, "cmdline"), cmdline);
 	if (stat !== undefined) fs.writeFileSync(path.join(dir, "stat"), stat);
 	if (comm !== undefined) fs.writeFileSync(path.join(dir, "comm"), comm);
-	if (cwd !== undefined) fs.symlinkSync(cwd, path.join(dir, "cwd"));
+	if (cwd !== undefined) {
+		// The parser reads this link with fs.readlinkSync. On Windows a symbolic link needs
+		// privileges; a junction does not, and readlinkSync returns its (absolute) target —
+		// exactly what the parser consumes (the basename is all that can ever travel).
+		try { fs.symlinkSync(cwd, path.join(dir, "cwd"), "junction"); }
+		catch { fs.symlinkSync(cwd, path.join(dir, "cwd")); }
+	}
 }
 
 // pi agent under tmux; claude agent under a bare zsh; an unrelated vim process.
@@ -53,6 +59,12 @@ function fixture(root) {
 	proc(root, 300, { cmdline: "vim\0notes.txt\0", stat: "300 (vim) S 1 300 300 0 -1 4194560 0 0 0 0 1 0 0 0 20 0 1 0 600 1 1 18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0", comm: "vim" });
 }
 
+// Every scan below pins platform:"linux" so the /proc PARSER (fixture procs in a fake procDir)
+// is exercised identically on Linux, macOS and Windows. The PRODUCT discovery stays Linux-only:
+// "non-linux platforms scan nothing" below pins the honest empty result for darwin and win32.
+
+const PROC = { platform: "linux" };
+
 // --- discovery ---------------------------------------------------------------
 
 test("schema constant is stable", () => {
@@ -62,7 +74,7 @@ test("schema constant is stable", () => {
 test("discovers a running pi session with closed fields only", () => {
 	const root = tmp();
 	fixture(root);
-	const result = scanSessions({ procDir: root });
+	const result = scanSessions({ procDir: root, ...PROC });
 	assert.equal(result.truncated, false);
 	const pi = result.sessions.find((s) => s.kind === "pi");
 	assert.ok(pi, "pi session listed");
@@ -71,14 +83,14 @@ test("discovers a running pi session with closed fields only", () => {
 	assert.equal(pi.state, "sleeping");
 	assert.equal(pi.origin, "tmux", "terminal host from the parent chain");
 	// the derived id is stable for the same pid+starttime
-	const again = scanSessions({ procDir: root });
+	const again = scanSessions({ procDir: root, ...PROC });
 	assert.equal(again.sessions.find((s) => s.kind === "pi").id, pi.id);
 });
 
 test("the full cwd path and the command line never reach the output", () => {
 	const root = tmp();
 	fixture(root);
-	const out = JSON.stringify(scanSessions({ procDir: root }));
+	const out = JSON.stringify(scanSessions({ procDir: root, ...PROC }));
 	assert.ok(!out.includes("alvaro"), "no home fragment, not even in a path");
 	assert.ok(!out.includes("proyectos"), "no path fragment with a separator: the basename alone travels");
 	assert.ok(!out.includes("cmdline") && !out.includes("--mode"), "no command line data");
@@ -101,7 +113,7 @@ test("closed kind table: pi first, then the other known agents; unknown processe
 	add("opencode", "opencode");
 	add("gemini", "gemini");
 	add("vim", null);
-	const result = scanSessions({ procDir: root });
+	const result = scanSessions({ procDir: root, ...PROC });
 	assert.deepEqual(result.sessions.map((s) => s.kind).sort(), ["claude-code", "codex", "gemini", "opencode", "pi"]);
 });
 
@@ -113,14 +125,14 @@ test("node-shebang style invocation (binary as second argument) is still classif
 		stat: "42 (node) S 1 42 42 0 -1 4194560 0 0 0 0 1 0 0 0 20 0 1 0 420 1 1 18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0",
 		cwd: "/home/dev/Apps/mi-proyecto",
 	});
-	const result = scanSessions({ procDir: root });
+	const result = scanSessions({ procDir: root, ...PROC });
 	assert.deepEqual(result.sessions.map((s) => [s.kind, s.cwd]), [["pi", "mi-proyecto"]]);
 });
 
 test("terminal origin: known host on the parent chain; null when there is none", () => {
 	const root = tmp();
 	fixture(root);
-	const result = scanSessions({ procDir: root });
+	const result = scanSessions({ procDir: root, ...PROC });
 	assert.equal(result.sessions.find((s) => s.kind === "pi").origin, "tmux");
 	assert.equal(result.sessions.find((s) => s.kind === "claude-code").origin, null);
 });
@@ -133,7 +145,7 @@ test("process state maps to the closed list (R, S, D, Z, T)", () => {
 		stat: `${pid} (pi) ${stateChar} 1 ${pid} ${pid} 0 -1 4194560 0 0 0 0 1 0 0 0 20 0 1 0 ${pid} 1 1 18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0`,
 	});
 	mk(11, "R"); mk(12, "S"); mk(13, "D"); mk(14, "Z"); mk(15, "T");
-	const rows = scanSessions({ procDir: root }).sessions;
+	const rows = scanSessions({ procDir: root, ...PROC }).sessions;
 	assert.deepEqual(rows.map((s) => s.state), ["running", "sleeping", "running", "zombie", "stopped"]);
 });
 
@@ -146,7 +158,7 @@ test("caps: at most 64 sessions, truncated=true when there are more", () => {
 			stat: `${pid} (pi) S 1 ${pid} ${pid} 0 -1 4194560 0 0 0 0 1 0 0 0 20 0 1 0 ${pid} 1 1 18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0`,
 		});
 	}
-	const result = scanSessions({ procDir: root });
+	const result = scanSessions({ procDir: root, ...PROC });
 	assert.equal(result.sessions.length, 64);
 	assert.equal(result.truncated, true);
 	assert.equal(result.total, 70, "the scan counts every session it saw past the cap");
@@ -155,7 +167,7 @@ test("caps: at most 64 sessions, truncated=true when there are more", () => {
 test("total is absent unless the result was truncated", () => {
 	const root = tmp();
 	proc(root, 100, { cmdline: "pi\0", stat: "100 (pi) S 1 100 100 0 -1 4194560 0 0 0 0 1 0 0 0 20 0 1 0 100 1 1 18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0" });
-	const result = scanSessions({ procDir: root });
+	const result = scanSessions({ procDir: root, ...PROC });
 	assert.equal(result.truncated, false);
 	assert.equal("total" in result, false);
 });
@@ -168,17 +180,20 @@ test("broken entries are skipped, unreadable cwd becomes null, and a missing pro
 	proc(root, 112, { cmdline: "pi\0" }); // no stat
 	const withCwd = { cmdline: "pi\0", stat: "113 (pi) S 1 113 113 0 -1 4194560 0 0 0 0 1 0 0 0 20 0 1 0 113 1 1 18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0" };
 	proc(root, 113, withCwd);
-	const result = scanSessions({ procDir: root });
+	const result = scanSessions({ procDir: root, ...PROC });
 	assert.equal(result.sessions.length, 1);
 	assert.equal(result.sessions[0].cwd, null);
 	assert.equal(result.sessions[0].state, "sleeping");
-	assert.deepEqual(scanSessions({ procDir: path.join(root, "missing") }), { sessions: [], truncated: false });
+	assert.deepEqual(scanSessions({ procDir: path.join(root, "missing"), ...PROC }), { sessions: [], truncated: false });
 });
 
 test("non-linux platforms scan nothing (honest empty result)", () => {
 	const root = tmp();
 	fixture(root);
+	// Product behaviour on both gap systems: live discovery is Linux-only, and macOS/Windows
+	// get an honest empty result (registered gap: ps / Toolhelp32 discovery).
 	assert.deepEqual(scanSessions({ procDir: root, platform: "darwin" }), { sessions: [], truncated: false });
+	assert.deepEqual(scanSessions({ procDir: root, platform: "win32" }), { sessions: [], truncated: false });
 });
 
 // --- strict frame builders (protocol-side revalidation) ----------------------
@@ -218,13 +233,13 @@ test("scopePid keeps only sessions whose ancestor chain contains that pid, howev
 	proc(root, 101, { cmdline: "codex\0", stat: stat(101, 60), cwd: "/work/nested" });
 	proc(root, 200, { cmdline: "pi\0", stat: stat(200, 1), cwd: "/work/foreign-a" });   // the human's own sessions
 	proc(root, 201, { cmdline: "claude\0", stat: stat(201, 77), cwd: "/work/foreign-b" });
-	const all = scanSessions({ procDir: root }).sessions.map((s) => s.cwd).sort();
+	const all = scanSessions({ procDir: root, ...PROC }).sessions.map((s) => s.cwd).sort();
 	assert.deepEqual(all, ["direct", "foreign-a", "foreign-b", "nested"], "unscoped: everything, as in production");
-	const scoped = scanSessions({ procDir: root, scopePid: 50 });
+	const scoped = scanSessions({ procDir: root, scopePid: 50, ...PROC });
 	assert.deepEqual(scoped.sessions.map((s) => s.cwd).sort(), ["direct", "nested"]);
 	assert.equal(scoped.truncated, false);
 	// the root itself is not a member of its own scope unless it is a session
-	assert.deepEqual(scanSessions({ procDir: root, scopePid: 999 }).sessions, []);
+	assert.deepEqual(scanSessions({ procDir: root, scopePid: 999, ...PROC }).sessions, []);
 });
 
 test("scopePid is exact and safe: a cycle in the parent chain, a bad value or none never widens the scan", () => {
@@ -234,9 +249,9 @@ test("scopePid is exact and safe: a cycle in the parent chain, a bad value or no
 	proc(root, 300, { cmdline: "pi\0", stat: stat(300, 301), cwd: "/work/loop" });
 	proc(root, 301, { stat: stat(301, 300) });                         // 300 <-> 301
 	proc(root, 400, { cmdline: "pi\0", stat: stat(400, 1), cwd: "/work/plain" });
-	assert.deepEqual(scanSessions({ procDir: root, scopePid: 50 }).sessions, [], "a cycle terminates and is not in scope");
+	assert.deepEqual(scanSessions({ procDir: root, scopePid: 50, ...PROC }).sessions, [], "a cycle terminates and is not in scope");
 	for (const bad of [0, -1, 1.5, NaN, "50", null, 4194305]) {
-		assert.equal(scanSessions({ procDir: root, scopePid: bad }).sessions.length, 2, `${bad}: ignored, never a filter that hides or widens by accident`);
+		assert.equal(scanSessions({ procDir: root, scopePid: bad, ...PROC }).sessions.length, 2, `${bad}: ignored, never a filter that hides or widens by accident`);
 	}
 });
 

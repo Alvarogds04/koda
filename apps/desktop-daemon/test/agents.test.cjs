@@ -10,8 +10,21 @@ const os = require("node:os");
 const path = require("node:path");
 
 const { AgentsManager } = require("../src/agents.cjs");
+const { win, unixOnly } = require("./platform-env.cjs");
 
 const FIXTURE = path.join(__dirname, "fixtures", "fake-installer.cjs");
+// macOS injects __CF_USER_TEXT_ENCODING into every process at exec (CoreFoundation); the fake
+// installer records its own process.env, so on darwin this key appears although the product passed
+// an allowlisted env. It is OS-injected and never comes from the parent environment — not a leak.
+const OS_INJECTED_ENV = [
+	...(process.platform === "darwin" ? ["__CF_USER_TEXT_ENCODING"] : []),
+	// Windows: the OS adds the user-profile pair HOMEDRIVE/HOMEPATH to a spawned child's environment
+	// beyond the explicit env block (observed on the Windows CI runner, CI 41729969464 test 60: the
+	// recorded child env carries HOMEDRIVE although the product passes the closed childEnv allowlist).
+	// They are OS-injected profile facts, never parent secrets; the env OPTION the product passes stays
+	// asserted closed by the HU-047 run-seam tests, which record exactly what the product handed over.
+	...(win ? ["HOMEDRIVE", "HOMEPATH"] : []),
+];
 const HASH_A = "a".repeat(64);
 const HASH_B = "b".repeat(64);
 const HASH_R = "c".repeat(64);
@@ -26,7 +39,7 @@ function preview({ harness = "claude", action = "install", ops = ["add", "add"],
 		mode: "preview",
 		harness,
 		action,
-		target: target ?? `@HOME@/${dir}/${file}`,
+		target: target ?? path.join("@HOME@", dir, file),
 		exists: true,
 		changed: changed ?? ops.some((o) => o !== "keep"),
 		entries: {
@@ -66,7 +79,7 @@ const applied = (o = {}) => ({
 	mode: "applied",
 	harness: o.harness ?? "claude",
 	action: o.action ?? "install",
-	target: "@HOME@/.claude/settings.json",
+	target: path.join("@HOME@", ".claude", "settings.json"),
 	plan_hash: o.hash ?? HASH_A,
 	changed: true,
 	backup: null,
@@ -86,14 +99,21 @@ function setup(t, scenario = {}, extra = {}) {
 	fs.mkdirSync(islandDir, { mode: 0o700 });
 	const scenarioFile = path.join(base, "scenario.json");
 	const write = (s) => {
-		const text = JSON.stringify({ pidFile: path.join(base, "grandchild.pid"), ...s }).replaceAll("@HOME@", home);
+		// The @HOME@ placeholder is replaced INSIDE JSON string values, so the home path must be JSON-escaped:
+		// a raw Windows path (C:\Users\...) puts invalid \U escapes into scenario.json and the fake installer
+		// dies on JSON.parse before recording or answering anything (the whole Windows failure class of CI run
+		// 41718553579). JSON.stringify-escaping is identity on Linux/macOS (no backslashes or quotes in paths).
+		const text = JSON.stringify({ pidFile: path.join(base, "grandchild.pid"), ...s }).replaceAll("@HOME@", JSON.stringify(home).slice(1, -1));
 		fs.writeFileSync(scenarioFile, text);
 	};
 	write(scenario);
 	const installerBin = path.join(base, "installer.cjs");
 	fs.writeFileSync(installerBin, `require(${JSON.stringify(FIXTURE)})(${JSON.stringify(scenarioFile)});\n`, { mode: 0o644 });
 	fs.chmodSync(installerBin, 0o644);
-	const manager = new AgentsManager({ installerBin, home, islandDir, ...extra });
+	// The product's Windows trust path verifies the script against the install manifest (HU-047); a test
+	// fixture is never in that manifest, so on Windows the tests inject the product's own verifier seam.
+	// The POSIX ownership/mode trust check below stays the real one on Linux/macOS.
+	const manager = new AgentsManager({ installerBin, home, islandDir, ...(win ? { verifyBundled: () => {} } : {}), ...extra });
 	const calls = () => (fs.existsSync(`${scenarioFile}.calls`) ? fs.readFileSync(`${scenarioFile}.calls`, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
 	return { base, home, islandDir, manager, write, calls, installerBin, scenarioFile };
 }
@@ -171,7 +191,10 @@ for (const [id, events] of [['recap', ['UserPromptSubmit', 'PostToolUse', 'Stop'
   assert.ok(calls.every(c => !c.argv.includes('--apply-plan')));
   const call = calls.find(c => c.argv[2] === id);
   assert.deepEqual(call.argv, [s.installerBin, 'install', id, '--user', '--json']);
-  assert.ok(Object.keys(call.env).every(k => ['PATH', 'HOME', 'LANG', 'ABITO_ISLAND_EXE'].includes(k)));
+  // The recorded child env is each platform's own closed allowlist: POSIX PATH+HOME (+LANG), the Windows
+  // SystemRoot-shaped env with USERPROFILE (the product's HU-047 contract, asserted the same way above).
+  const allowedEnv = win ? ['HOME', 'USERPROFILE', 'SystemRoot', 'PATH', 'LANG', 'ABITO_ISLAND_EXE'] : ['PATH', 'HOME', 'LANG', 'ABITO_ISLAND_EXE'];
+  assert.ok(Object.keys(call.env).every(k => allowedEnv.includes(k)));
   await assert.rejects(s.manager.connect(id), e => e.code === 'bad_request');
   for (const entries of [events.slice(1).map(event => ({ event, op: 'add' })), events.map(event => ({ event, op: 'execute' })), events.map(() => ({ event: 'PermissionRequest', op: 'add' }))]) {
    s.manager.runner = async () => ({ exit: 0, stdout: Buffer.from(JSON.stringify({ ...preview({ harness: id, target: path.join(s.home, '.claude/settings.json') }), entries })) });
@@ -351,10 +374,23 @@ test("child env: allowlist + ABITO_ISLAND_EXE only, HOME is the real home passed
 		}
 	}
 	assert.equal(s.calls().length, 7);
+	// The product allowlist is DERIVED from src/agents.cjs childEnv (never guessed): what the manager
+	// passes is exactly childEnv(), plus the OS-injected keys above (the real spawn's child process
+	// environment carries them on Windows; the injected-run HU-047 tests pin the option itself).
+	// Review (non-tautological): the CLOSED set is pinned here as literals per OS. A key added to childEnv() itself must
+	// fail this test, not widen it; the derived set must equal the pinned one, and the recorded child env stays inside it.
+	const PINNED_ENV = (win ? ["HOME", "USERPROFILE", "SystemRoot", "PATH", "ABITO_ISLAND_EXE"] : ["PATH", "HOME", "ABITO_ISLAND_EXE"]).concat(process.env.LANG ? ["LANG"] : []);
+	assert.deepEqual(Object.keys(s.manager.childEnv()).sort(), [...PINNED_ENV].sort(), "the product's child env is exactly the pinned closed set");
+	const allowedEnv = [...PINNED_ENV, ...OS_INJECTED_ENV];
 	for (const call of s.calls()) {
-		for (const k of Object.keys(call.env)) assert.ok(["PATH", "HOME", "LANG", "ABITO_ISLAND_EXE"].includes(k), `unexpected env ${k}`);
-		assert.equal(call.env.PATH, `${path.dirname(process.execPath)}:/usr/bin:/bin`, "the Node that runs the installer leads PATH (K2-02)");
+		for (const k of Object.keys(call.env)) assert.ok(allowedEnv.includes(k), `unexpected env ${k}`);
 		assert.equal(call.env.HOME, s.home);
+		if (win) {
+			assert.equal(call.env.USERPROFILE, s.home);
+			assert.equal(call.env.PATH, path.win32.join(process.env.SystemRoot, "System32"));
+		} else {
+			assert.equal(call.env.PATH, `${path.dirname(process.execPath)}:/usr/bin:/bin`, "the Node that runs the installer leads PATH (K2-02)");
+		}
 		assert.equal(call.env.ABITO_ISLAND_EXE, fs.realpathSync(process.execPath));
 		assert.equal(call.ppid, process.pid, "direct child of the daemon process");
 	}
@@ -488,6 +524,10 @@ test("hung installer: killed on timeout (whole group), generic failure", async (
 	const pid = Number(fs.readFileSync(path.join(s.base, "grandchild.pid"), "utf8"));
 	for (let i = 0; i < 40 && alive(pid); i++) await sleep(50);
 	assert.equal(alive(pid), false, "grandchild killed with the group");
+	// The killed installer itself can answer kill(0) for a moment on macOS: the pid is dead but not yet
+	// reaped (a zombie answers signal 0) — the same bounded wait the grandchild line uses. Pre-existing
+	// flaky race (CI 41729969464 macOS job-126245055334, test 70); test-only, never observed on Linux.
+	for (let i = 0; i < 40 && alive(s.calls()[0].pid); i++) await sleep(50);
 	assert.equal(alive(s.calls()[0].pid), false);
 });
 
@@ -502,7 +542,7 @@ test("oversized stdout and stderr floods fail generically and leave no process",
 	}
 });
 
-test("installer trust check: group-writable or symlinked script is refused before spawning", async (t) => {
+test("installer trust check: group-writable or symlinked script is refused before spawning", unixOnly("Windows (HU-047): an installer script that fails the manifest check never runs"), async (t) => {
 	const s = setup(t, { claude: { preview: { exit: 0, stdout: preview() } } });
 	fs.chmodSync(s.installerBin, 0o664);
 	let a = byId(await s.manager.list(), "claude-code");

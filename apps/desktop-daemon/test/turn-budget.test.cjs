@@ -8,6 +8,16 @@ const path = require("node:path");
 const net = require("node:net");
 const { AgentEngine } = require("../src/runtime.cjs");
 const { IslandServer } = require("../src/server.cjs");
+const { win } = require("./platform-env.cjs");
+
+/** Daemon island root + env for Windows parity: the root must sit inside the private `%LOCALAPPDATA%\Abito`. */
+function daemonRootEnv(dir) {
+	const base = fs.realpathSync.native(dir); // canonical long form (identity on Linux/macOS)
+	return {
+		root: win ? path.join(base, "Abito", "i") : path.join(base, "i"),
+		env: { PATH: process.env.PATH, ...(win ? { LOCALAPPDATA: base } : {}) },
+	};
+}
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function until(fn, ms = 5000) {
@@ -196,9 +206,9 @@ test("socket budget cancellation closes asks, preserves busy guards, sanitizes o
 test("daemon's existing workspace/config/status guards stay busy through cancellation and replacement readiness", async (t) => {
 	const { Daemon, readSession } = require("../src/daemon.cjs");
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "abito-dturn-"));
-	const root = path.join(dir, "i");
+	const { root, env } = daemonRootEnv(dir);
 	const log = path.join(dir, "commands");
-	const daemon = new Daemon({ root, env: { PATH: process.env.PATH }, engineOptions: {
+	const daemon = new Daemon({ root, env, engineOptions: {
 		command: process.execPath,
 		commandArgs: [path.join(__dirname, "fixtures", "turn-agent.cjs"), "--command-log", log],
 		identityPath: null, turnTimeoutMs: 10000, abortGraceMs: 250, backoffMs: [30], stopTimeoutMs: 50,
@@ -245,9 +255,9 @@ test("rejected legacy frames leave persisted session, action counts and public s
 async function resetDaemon(t, flags = [], options = {}) {
 	const { Daemon, readSession } = require("../src/daemon.cjs");
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "abito-reset-"));
-	const root = path.join(dir, "i");
+	const { root, env } = daemonRootEnv(dir);
 	const log = path.join(dir, "commands");
-	const daemon = new Daemon({ root, env: { PATH: process.env.PATH }, engineOptions: {
+	const daemon = new Daemon({ root, env, engineOptions: {
 		command: process.execPath,
 		commandArgs: [path.join(__dirname, "fixtures", "turn-agent.cjs"), "--command-log", log, ...flags],
 		identityPath: null, turnTimeoutMs: 10000, stopTimeoutMs: 50, backoffMs: [100],

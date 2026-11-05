@@ -6,13 +6,30 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const crypto = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
 const { AgentsManager } = require("../src/agents.cjs");
+const { win } = require("./platform-env.cjs");
 
 const HARNESS = path.join(__dirname, "..", "..", "desktop-harness");
+// Windows (HU-047): the REAL installer process does its filesystem work through the native helper
+// (win-fs active(): the installed sibling abito-private-session.exe whose sha256 matches
+// abito-install.json next to the harness's src/.. root). A copied packaged layout has neither, so
+// every preview refuses with install_unverified there (CI 41729969464 tests 44/46). The fixture
+// therefore stages the real helper + a manifest naming it into the layout root — exactly what the
+// Windows CI layout provides at apps/. Without the compiled exe the live tests skip (the POSIX twin
+// is the real ownership/mode trust check, which stays the only mechanism on Linux/macOS).
+const HELPER_SRC = path.join(__dirname, "..", "..", "abito-private-session.exe");
+const hasHelper = () => fs.existsSync(HELPER_SRC);
+const helperSkip = "needs Windows + the compiled, manifest-trusted abito-private-session.exe (present on the Windows CI runner); POSIX twin: the real ownership/mode trust check exercised by these same tests";
+function stageHelper(root) {
+	const exe = path.join(root, "abito-private-session.exe");
+	fs.copyFileSync(HELPER_SRC, exe);
+	fs.writeFileSync(path.join(root, "abito-install.json"), JSON.stringify({ schema: "abito-install/1", files: { "abito-private-session.exe": crypto.createHash("sha256").update(fs.readFileSync(exe)).digest("hex") } }));
+}
 const byId = (list, id) => list.find((a) => a.id === id);
 const mtimeOf = (file) => {
 	try {
@@ -23,11 +40,17 @@ const mtimeOf = (file) => {
 };
 const REAL = [path.join(os.homedir(), ".claude", "settings.json"), path.join(os.homedir(), ".codex", "hooks.json")];
 
-/** Private copy of bin/ + src/ with 0644/0755 modes: the use-time trust check refuses group-writable scripts. */
+/** Private copy of the PACKAGED layout with 0644/0755 modes: the use-time trust check refuses
+ *  group-writable scripts, and the harness's darwin parent-identity probe (installer-platform.cjs)
+ *  requires ../../desktop-daemon/src/procinfo.cjs to resolve exactly as it does in the bundled app
+ *  (packaging/lib.cjs stages desktop-harness/ next to desktop-daemon/src/procinfo.cjs). */
 function copyInstaller(dest) {
 	for (const sub of ["bin", "src"]) {
-		fs.cpSync(path.join(HARNESS, sub), path.join(dest, sub), { recursive: true });
+		fs.cpSync(path.join(HARNESS, sub), path.join(dest, "desktop-harness", sub), { recursive: true });
 	}
+	fs.mkdirSync(path.join(dest, "desktop-daemon", "src"), { recursive: true, mode: 0o755 });
+	fs.copyFileSync(path.join(__dirname, "..", "src", "procinfo.cjs"), path.join(dest, "desktop-daemon", "src", "procinfo.cjs"));
+	fs.chmodSync(path.join(dest, "desktop-daemon", "src", "procinfo.cjs"), 0o644);
 	const walk = (dir) => {
 		fs.chmodSync(dir, 0o755);
 		for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -36,9 +59,9 @@ function copyInstaller(dest) {
 			else fs.chmodSync(p, 0o644);
 		}
 	};
-	walk(path.join(dest, "bin"));
-	walk(path.join(dest, "src"));
-	return path.join(dest, "bin", "abito-hook.cjs");
+	walk(path.join(dest, "desktop-harness", "bin"));
+	walk(path.join(dest, "desktop-harness", "src"));
+	return path.join(dest, "desktop-harness", "bin", "abito-hook.cjs");
 }
 
 const THIRD = { hooks: { PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "/usr/bin/true" }] }] }, theme: "dark" };
@@ -57,7 +80,10 @@ function setup(t) {
 	const islandDir = path.join(base, "island");
 	fs.mkdirSync(islandDir, { mode: 0o700 });
 	const installerBin = copyInstaller(base);
-	const manager = new AgentsManager({ installerBin, home, islandDir });
+	if (win && hasHelper()) stageHelper(base); // the copied layout resolves its own helper through src/../.. — see stageHelper (review: setup is shared, never crash when the exe is absent)
+	// Windows: the product trusts the installer through the install manifest (HU-047); a test copy is never in
+	// it, so the tests inject the product's verifier seam (the POSIX trust check stays real on Linux/macOS).
+	const manager = new AgentsManager({ installerBin, home, islandDir, ...(win ? { verifyBundled: () => {} } : {}) });
 	const audit = () => {
 		const file = path.join(islandDir, "audit", "hook-installs.jsonl");
 		return fs.existsSync(file) ? fs.readFileSync(file, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)) : [];
@@ -65,7 +91,7 @@ function setup(t) {
 	return { base, home, claudeFile, codexFile, islandDir, manager, audit };
 }
 
-test('packaged installer: Claude preview in a private HOME never reports install_failed', async t => {
+test('packaged installer: Claude preview in a private HOME never reports install_failed', { skip: win && !hasHelper() && helperSkip }, async t => {
  const s = setup(t);
  // A fresh user has the directory, but no settings file yet (as in validation).
  const home = path.join(s.base, 'fresh-home');
@@ -80,9 +106,13 @@ test('packaged installer: Claude preview in a private HOME never reports install
   // Model a group-writable checkout independently of the developer's umask.
   fs.chmodSync(source, 0o664);
   require('../../desktop-tauri/packaging/validate/layout.cjs').copyRuntimeFile(source, dest);
-  assert.equal(fs.statSync(dest).mode & 0o777, 0o644);
+  // Mode 0o644 of the packaged copy is a Unix fact (non-group-writable); Windows lstat has no POSIX bits,
+  // so there the twin assertion is that the packaged bytes are the checkout bytes.
+  if (win) assert.equal(fs.readFileSync(dest, "utf8"), fs.readFileSync(source, "utf8"));
+  else assert.equal(fs.statSync(dest).mode & 0o777, 0o644);
  }
- const manager = new AgentsManager({installerBin:path.join(packaged, 'bin/abito-hook.cjs'), home, islandDir:s.islandDir});
+ if (win && hasHelper()) stageHelper(path.join(s.base, 'package')); // the packaged layout resolves its own helper through desktop-harness/src/../.. — see stageHelper
+ const manager = new AgentsManager({installerBin:path.join(packaged, 'bin/abito-hook.cjs'), home, islandDir:s.islandDir, ...(win ? { verifyBundled: () => {} } : {})});
  const list = await manager.list();
  const claude = byId(list, 'claude-code');
  assert.notEqual(claude.detail, 'install_failed');
@@ -117,7 +147,7 @@ test('real recap/statusline CLI: preview is read-only, coexist, hash-bound apply
  assert.doesNotMatch(JSON.stringify(s.audit()), /mine|PreToolUse|theme|command/);
 });
 
-test("real installer end-to-end: list, connect with the shown plan, tamper, disconnect, codex trust, busy", async (t) => {
+test("real installer end-to-end: list, connect with the shown plan, tamper, disconnect, codex trust, busy", { skip: win && !hasHelper() && helperSkip }, async (t) => {
 	const before = REAL.map(mtimeOf);
 	const s = setup(t);
 	const originalClaude = fs.readFileSync(s.claudeFile, "utf8");

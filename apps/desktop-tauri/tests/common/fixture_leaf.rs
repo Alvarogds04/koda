@@ -73,7 +73,18 @@ fn ours(path: &Path) -> Option<std::fs::Metadata> {
     let mine = std::fs::metadata(path.parent()?).ok()?.uid();
     (meta.file_type().is_dir() && !meta.file_type().is_symlink() && meta.uid() == mine && meta.permissions().mode() & 0o7777 == 0o700).then_some(meta)
 }
-fn pid_alive(pid: u32) -> bool { Path::new(&format!("/proc/{pid}")).exists() }
+/// Liveness without /proc (macOS has none): `kill(pid, 0)` returns 0 for a live process we may
+/// signal and leaves EPERM for a live one we may not signal — both mean alive. Anything else
+/// (ESRCH for a gone pid) means dead. Linux behaviour is unchanged: a zombie still answers, as
+/// its /proc entry did.
+fn pid_alive(pid: u32) -> bool {
+	// 0 and values beyond pid_t would address a process GROUP in kill(2); like the missing /proc/<pid>, they are not alive.
+	let Ok(pid) = libc::pid_t::try_from(pid) else { return false };
+	if pid <= 0 { return false; }
+	// SAFETY: kill(2) with signal 0 performs only the existence/permission check; it sends nothing.
+	(unsafe { libc::kill(pid, 0) == 0 })
+		|| std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
 fn reclaimable(path: &Path) -> bool {
     if !our_shape(path) { return false; }
     let Some(meta) = ours(path) else { return false };

@@ -12,6 +12,7 @@ const { spawn, spawnSync } = require("node:child_process");
 
 const { Daemon, classifySession, isDaemonProcess, pidAlive, procStartTicks, readSession } = require("../src/daemon.cjs");
 const { writePrivateFile } = require("../src/isolation.cjs");
+const { win, assertMode, unixOnly } = require("./platform-env.cjs");
 
 /** The #390 launch ledger, one JSON object per line; [] when the daemon never booted here. */
 function ledgerLines(root) {
@@ -22,7 +23,12 @@ function ledgerLines(root) {
 
 const FAKE = path.join(__dirname, "fixtures", "fake-agent.cjs");
 const TEST_BASES = new Set();
-test.after(() => { for (const base of TEST_BASES) fs.rmSync(base, { recursive: true, force: true }); });
+test.after(() => {
+	// Windows: a daemon/pipe can still hold a temp dir for a moment while the last children die
+	// (EBUSY rmdir at file-level teardown in CI 41729969464), so the sweep retries a bounded number
+	// of times — fs.rmSync's built-in EBUSY/ENOTEMPTY/EPERM retry, never an infinite wait.
+	for (const base of TEST_BASES) fs.rmSync(base, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+});
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function waitFor(fn, ms = 5000) {
 	const end = Date.now() + ms;
@@ -33,9 +39,25 @@ async function waitFor(fn, ms = 5000) {
 	assert.ok(fn(), "waitFor timed out");
 }
 function tmp() {
-	const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "abito-d-")));
+	// native: os.tmpdir() is the 8.3 short form on Windows runners; %LOCALAPPDATA% fixtures want the canonical
+	// long path (identity on Linux/macOS).
+	const base = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "abito-d-")));
 	TEST_BASES.add(base);
 	return base;
+}
+/** The daemon's island root: on Windows it MUST sit inside the private `%LOCALAPPDATA%\Abito` canonical root. */
+function islandRoot(base) {
+	return win ? path.join(base, "Abito", "i") : path.join(base, "i");
+}
+/** The daemon env: on Windows %LOCALAPPDATA% anchors the canonical island root (a private temp dir, never the real one). */
+function daemonEnv(base, extra = {}) {
+	return { PATH: process.env.PATH, ...(win ? { LOCALAPPDATA: base } : {}), ...extra };
+}
+/** A second daemon reusing `a`'s island root (make({ options: { root: a.root } })). On Windows the
+ * canonical protected root is anchored at the daemon env's %LOCALAPPDATA%, so the reused daemon must
+ * also reuse a's base as LOCALAPPDATA — a fresh temp base makes boot refuse a.root as bypassing it. */
+function reuse(a) {
+	return make({ env: win ? { LOCALAPPDATA: a.base } : {}, options: { root: a.root } });
 }
 /** Kills (if needed) and waits for a child's exit so nothing leaks. */
 async function reap(child) {
@@ -48,12 +70,12 @@ async function reap(child) {
 
 function make(extra = {}) {
 	const base = tmp();
-	const root = path.join(base, "i");
+	const root = islandRoot(base);
 	const logs = [];
 	const evidence = { cwd: path.join(base, "cwd.txt"), cmd: path.join(base, "cmd.log"), spawn: path.join(base, "spawn.log") };
 	const daemon = new Daemon({
 		root,
-		env: { PATH: process.env.PATH, ...(extra.env ?? {}) },
+		env: daemonEnv(base, extra.env ?? {}),
 		log: (line) => logs.push(String(line)),
 		engineOptions: {
 			command: process.execPath,
@@ -94,14 +116,20 @@ test("start writes a private session.json, serves the protocol, stop removes it"
 	await daemon.start();
 	try {
 		const file = path.join(root, "runtime", "session.json");
-		assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+		assertMode(file, 0o600);
 		const session = JSON.parse(fs.readFileSync(file, "utf8"));
 		assert.deepEqual(Object.keys(session).sort(), ["endpoint", "pid", "ppid", "procStart", "protocol", "startedAt", "token"]);
 		assert.equal(session.protocol, "island-agent/1");
 		assert.equal(session.pid, process.pid);
 		assert.ok(session.token.length >= 32);
-		assert.ok(session.endpoint.startsWith(path.join(root, "runtime")));
-		assert.equal(fs.statSync(session.endpoint).isSocket(), true);
+		if (win) {
+			// Windows (W1): the endpoint is the product's named-pipe shape, not a socket file under
+			// <root>\runtime (libuv has no AF_UNIX listener there). The connect below proves it serves.
+			assert.match(session.endpoint, /^\\\\\.\\pipe\\abito-[0-9a-f]{32}$/, "Windows endpoint is a named pipe");
+		} else {
+			assert.ok(session.endpoint.startsWith(path.join(root, "runtime")));
+			assert.equal(fs.statSync(session.endpoint).isSocket(), true);
+		}
 		const { socket, frames } = await connect(session);
 		await waitFor(() => frames.some((f) => f.type === "ready"));
 		socket.write(`${JSON.stringify({ type: "status" })}\n`);
@@ -264,7 +292,7 @@ test("MCP: a valid private source is projected into the agent dir; an unsafe one
 	writePrivateFile(path.join(a.root, "config.json"), JSON.stringify({ mcpConfigPath: good }));
 	await a.daemon.start();
 	const projected = path.join(a.root, "agent", "mcp.json");
-	assert.equal(fs.statSync(projected).mode & 0o777, 0o600);
+	assertMode(projected, 0o600);
 	assert.deepEqual(Object.keys(JSON.parse(fs.readFileSync(projected, "utf8")).mcpServers), ["notes"]);
 	assert.equal(a.daemon.status().mcpServers, 1);
 	await a.daemon.stop();
@@ -288,14 +316,37 @@ test("a config error at start aborts before any process is spawned", async () =>
 });
 
 function wrapperFor(base, name, spawnLog) {
-	const wrapper = path.join(base, name);
-	fs.writeFileSync(wrapper, `#!/bin/sh\nexec "${process.execPath}" "${FAKE}" --spawn-log "${spawnLog}" "$@"\n`, { mode: 0o755 });
-	return wrapper;
+	// POSIX: an absolute #!/bin/sh wrapper is a valid config command. Windows: config.cjs refuses absolute drive
+	// paths (validateCommand is POSIX-shaped), so the command is the product's BARE-NAME path instead: the engine
+	// resolves it through %AppData%\npm (windowsPackageCliJs) to a generated pi package whose bin entry runs the
+	// same fake agent with the same per-command spawn log. See windowsPiPackage below.
+	const file = path.join(base, name);
+	fs.writeFileSync(file, `#!/bin/sh\nexec "${process.execPath}" "${FAKE}" --spawn-log "${spawnLog}" "$@"\n`, { mode: 0o755 });
+	return file;
 }
-function bareDaemon(root) {
+/**
+ * Windows only: a private npm prefix holding a fake `@earendil-works/pi-coding-agent` package whose `bin`
+ * entries are generated runners. The engine resolves a bare config command name through %AppData%\npm
+ * (src/runtime.cjs windowsPackageCliJs) and spawns [node, <entry.cjs>, --mode rpc, ...]; each runner injects
+ * the same --spawn-log evidence the POSIX wrappers pass on argv, then requires the shared fake agent.
+ * The resolver reads the daemon process env, so the caller points process.env.AppData at the returned prefix.
+ */
+function windowsPiPackage(base, entries) {
+	const appData = path.join(base, "appdata");
+	const packageDir = path.join(appData, "npm", "node_modules", "@earendil-works", "pi-coding-agent");
+	fs.mkdirSync(packageDir, { recursive: true });
+	const bin = {};
+	for (const [name, spawnLog] of Object.entries(entries)) {
+		fs.writeFileSync(path.join(packageDir, `${name}.cjs`), `process.argv.push("--spawn-log", ${JSON.stringify(spawnLog)});\nrequire(${JSON.stringify(FAKE)});\n`, { mode: 0o644 });
+		bin[name] = `${name}.cjs`;
+	}
+	fs.writeFileSync(path.join(packageDir, "package.json"), JSON.stringify({ name: "@earendil-works/pi-coding-agent", version: "0.0.0-test", bin }), "utf8");
+	return appData;
+}
+function bareDaemon(root, base) {
 	return new Daemon({
 		root,
-		env: { PATH: process.env.PATH },
+		env: daemonEnv(base),
 		engineOptions: { backoffMs: [20], stopTimeoutMs: 500, requestTimeoutMs: 3000, startTimeoutMs: 5000 },
 	});
 }
@@ -304,10 +355,20 @@ test("session.json records the daemon's own procStart and process identity requi
 	const { daemon, root } = make();
 	await daemon.start();
 	const session = readSession(root);
-	assert.equal(typeof session.procStart, "string");
-	assert.equal(session.procStart, procStartTicks(process.pid));
-	assert.equal(isDaemonProcess(process.pid, "1"), false, "mismatching start time");
-	assert.equal(isDaemonProcess(process.pid, undefined), false, "missing start time fails closed");
+	if (win) {
+		// Registered gap 2a (Windows daemon identity via the native helper): no procStart/ppid on
+		// Windows — the helper's canonical session writes null for both. isDaemonProcess stays false
+		// there (fail closed, never signal a bare pid); the POSIX branch below is the identity twin.
+		assert.equal(session.procStart, null);
+		assert.equal(session.ppid, null);
+		assert.equal(isDaemonProcess(process.pid, session.procStart), false, "no Windows process identity: fail closed");
+		assert.equal(isDaemonProcess(process.pid, undefined), false);
+	} else {
+		assert.equal(typeof session.procStart, "string");
+		assert.equal(session.procStart, procStartTicks(process.pid));
+		assert.equal(isDaemonProcess(process.pid, "1"), false, "mismatching start time");
+		assert.equal(isDaemonProcess(process.pid, undefined), false, "missing start time fails closed");
+	}
 	assert.equal(procStartTicks(2 ** 22 + 12345), undefined);
 	assert.equal(pidAlive(process.pid), true);
 	await daemon.stop();
@@ -357,8 +418,8 @@ test("an explicit engine cwd is the effective cwd: a workspace change does not r
 	fs.mkdirSync(fixed);
 	const evidence = { cwd: path.join(base, "cwd.txt"), spawn: path.join(base, "spawn.log") };
 	const daemon = new Daemon({
-		root: path.join(base, "i"),
-		env: { PATH: process.env.PATH },
+		root: islandRoot(base),
+		env: daemonEnv(base),
 		engineOptions: { command: process.execPath, commandArgs: [FAKE, "--cwd-out", evidence.cwd, "--spawn-log", evidence.spawn], cwd: fixed, backoffMs: [20], stopTimeoutMs: 500, startTimeoutMs: 5000 },
 	});
 	await daemon.start();
@@ -371,14 +432,19 @@ test("an explicit engine cwd is the effective cwd: a workspace change does not r
 	await daemon.stop();
 });
 
-test("SIGHUP/applyConfig restarts the engine when command changes", async () => {
+test("SIGHUP/applyConfig restarts the engine when command changes", async (t) => {
 	const base = tmp();
-	const root = path.join(base, "i");
-	const a = wrapperFor(base, "a.sh", path.join(base, "a.log"));
-	const b = wrapperFor(base, "b.sh", path.join(base, "b.log"));
-	fs.mkdirSync(root, { mode: 0o700 });
+	const root = islandRoot(base);
+	// Windows: the bare-name command resolves through the private %AppData%\npm prefix (see windowsPiPackage);
+	// the resolver reads the daemon (test) process env, so point process.env.AppData at it for the duration.
+	const savedAppData = process.env.AppData;
+	if (win) process.env.AppData = windowsPiPackage(base, { "abito-fake-a": path.join(base, "a.log"), "abito-fake-b": path.join(base, "b.log") });
+	t.after(() => { process.env.AppData = savedAppData; });
+	const a = win ? "abito-fake-a" : wrapperFor(base, "a.sh", path.join(base, "a.log"));
+	const b = win ? "abito-fake-b" : wrapperFor(base, "b.sh", path.join(base, "b.log"));
+	fs.mkdirSync(root, { recursive: true, mode: 0o700 });
 	writePrivateFile(path.join(root, "config.json"), JSON.stringify({ command: a }));
-	const daemon = bareDaemon(root);
+	const daemon = bareDaemon(root, base);
 	await daemon.start();
 	assert.equal((await daemon.applyConfig()).restarted, false);
 	writePrivateFile(path.join(root, "config.json"), JSON.stringify({ command: b }));
@@ -389,10 +455,13 @@ test("SIGHUP/applyConfig restarts the engine when command changes", async () => 
 	await daemon.stop();
 });
 
-test("SIGHUP/applyConfig re-projects MCP and restarts when mcpConfigPath changes; a bad source changes nothing", async () => {
+test("SIGHUP/applyConfig re-projects MCP and restarts when mcpConfigPath changes; a bad source changes nothing", async (t) => {
 	const base = tmp();
-	const root = path.join(base, "i");
-	const wrapper = wrapperFor(base, "w.sh", path.join(base, "w.log"));
+	const root = islandRoot(base);
+	const savedAppData = process.env.AppData;
+	if (win) process.env.AppData = windowsPiPackage(base, { "abito-fake-w": path.join(base, "w.log") });
+	t.after(() => { process.env.AppData = savedAppData; });
+	const wrapper = win ? "abito-fake-w" : wrapperFor(base, "w.sh", path.join(base, "w.log"));
 	const src = (name, id) => {
 		const file = path.join(base, name);
 		fs.writeFileSync(file, JSON.stringify({ mcpServers: { [id]: { type: "http", url: "http://127.0.0.1:1/x", headers: { Authorization: "Bearer cap_abcdef123456" } } } }), { mode: 0o600 });
@@ -400,9 +469,9 @@ test("SIGHUP/applyConfig re-projects MCP and restarts when mcpConfigPath changes
 	};
 	const one = src("one.json", "one");
 	const two = src("two.json", "two");
-	fs.mkdirSync(root, { mode: 0o700 });
+	fs.mkdirSync(root, { recursive: true, mode: 0o700 });
 	writePrivateFile(path.join(root, "config.json"), JSON.stringify({ command: wrapper, mcpConfigPath: one }));
-	const daemon = bareDaemon(root);
+	const daemon = bareDaemon(root, base);
 	await daemon.start();
 	const projected = path.join(root, "agent", "mcp.json");
 	writePrivateFile(path.join(root, "config.json"), JSON.stringify({ command: wrapper, mcpConfigPath: two }));
@@ -435,7 +504,7 @@ function withMcp(extra = {}) {
 test("MCP projection: written 0600 at boot, deleted by stop, regenerated by the next boot", async () => {
 	const m = withMcp();
 	await m.daemon.start();
-	assert.equal(fs.statSync(m.file).mode & 0o777, 0o600);
+	assertMode(m.file, 0o600);
 	assert.deepEqual(Object.keys(JSON.parse(fs.readFileSync(m.file, "utf8")).mcpServers), ["notes"]);
 	await m.daemon.stop();
 	assert.equal(fs.existsSync(m.file), false);
@@ -510,7 +579,7 @@ test("hotkey: status, getHotkey/setHotkey, and the settings frames are wired thr
 	assert.equal(daemon.getHotkey(), "Ctrl+Alt+Space");
 	assert.equal(daemon.status().hotkey, "Ctrl+Alt+Space");
 	assert.equal(JSON.parse(fs.readFileSync(path.join(root, "config.json"), "utf8")).hotkey, "Ctrl+Alt+Space");
-	assert.equal(fs.statSync(path.join(root, "config.json")).mode & 0o777, 0o600);
+	assertMode(path.join(root, "config.json"), 0o600);
 	assert.equal((await rpc(session, { type: "settings_get" }, (f) => f.type === "settings")).hotkey, "Ctrl+Alt+Space");
 	a.socket.write(`${JSON.stringify({ type: "settings_set", hotkey: "Space" })}\n`);
 	await waitFor(() => a.frames.some((f) => f.type === "error"));
@@ -549,7 +618,7 @@ test("hotkey: applyConfig picks up a file edit, emits 'settings' and broadcasts;
 
 test("hotkey: an invalid hotkey in config.json does not abort start", async () => {
 	const { daemon, root, evidence } = make();
-	fs.mkdirSync(root, { mode: 0o700 });
+	fs.mkdirSync(root, { recursive: true, mode: 0o700 }); // Windows: <LOCALAPPDATA>\Abito\i, the Abito parent may not exist yet
 	writePrivateFile(path.join(root, "config.json"), JSON.stringify({ hotkey: "Ctrl+F25" }));
 	await daemon.start();
 	assert.equal(fs.existsSync(evidence.spawn), true);
@@ -590,7 +659,7 @@ async function configure(root, value) {
 	writePrivateFile(path.join(root, "config.json"), JSON.stringify(value));
 }
 
-test("connectors_list through the daemon: fake CLI, private 0700 dir created at first use, status flag", async () => {
+test("connectors_list through the daemon: fake CLI, private 0700 dir created at first use, status flag", { skip: win && "registered gap K2-01b (P2): POSIX-path values are refused by the POSIX-only validators on Windows; twin: config.test.cjs 'registered gap K2-01b: absolute Windows paths are refused for connectorsCommand, hookInstallerBin and connectorHostBin (POSIX-only validators)'" }, async () => {
 	const { daemon, root, base } = make();
 	const command = connectorsShim(base);
 	const dir = path.join(base, "cdata");
@@ -608,7 +677,7 @@ test("connectors_list through the daemon: fake CLI, private 0700 dir created at 
 		assert.equal(frame.schema, "abito-connectors/view/1");
 		assert.equal(frame.catalog.length, 6);
 		assert.equal(frame.connectors.length, 4);
-		assert.equal(fs.statSync(dir).mode & 0o777, 0o700);
+		assertMode(dir, 0o700);
 		const argv = fs.readFileSync(path.join(base, "cargv.log"), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
 		assert.ok(argv.some((a) => a.argv[0] === "status" && a.argv[2] === dir));
 		assert.ok(argv.every((a) => fs.realpathSync(a.cwd) === fs.realpathSync(root)));
@@ -621,7 +690,7 @@ test("connectors_list through the daemon: fake CLI, private 0700 dir created at 
 	}
 });
 
-test("connectors_list through the daemon: a failing CLI or a symlinked dir -> generic failed", async () => {
+test("connectors_list through the daemon: a failing CLI or a symlinked dir -> generic failed", { skip: win && "registered gap K2-01b (P2): POSIX-path values are refused by the POSIX-only validators on Windows; twin: config.test.cjs 'registered gap K2-01b: absolute Windows paths are refused for connectorsCommand, hookInstallerBin and connectorHostBin (POSIX-only validators)'" }, async () => {
 	const { daemon, root, base } = make();
 	const real = path.join(base, "real");
 	fs.mkdirSync(real);
@@ -687,7 +756,7 @@ function agentsInstaller(base) {
 	return { file, home, hash };
 }
 
-test("agents through the daemon: hookInstallerBin wires AgentsManager, agentsAvailable flag, frames over the socket", async () => {
+test("agents through the daemon: hookInstallerBin wires AgentsManager, agentsAvailable flag, frames over the socket", { skip: win && "registered gap K2-01b (P2): POSIX-path values are refused by the POSIX-only validators on Windows; twin: config.test.cjs 'registered gap K2-01b: absolute Windows paths are refused for connectorsCommand, hookInstallerBin and connectorHostBin (POSIX-only validators)'" }, async () => {
 	const { daemon, root, base } = make({ options: { agentsOptions: {} } });
 	const inst = agentsInstaller(base);
 	daemon.options.agentsOptions = { home: inst.home };
@@ -768,8 +837,10 @@ test("GD014: classifySession distinguishes stale, foreign, orphaned and healthy 
 		const foreignRoot = path.join(tmp(), "i-foreign");
 		writeSession(foreignRoot, { endpoint: "/x", pid: bystander.pid });
 		const v2 = await classifySession(foreignRoot);
+		// Windows (decision 2a, registered gap «Windows daemon identity: start-time+ppid via native helper»): no
+		// command-line/start-time identity there, so EVERY live pid without native proof is foreign/identity_unconfirmed.
 		assert.equal(v2.state, "foreign");
-		assert.equal(v2.reason, "other_process");
+		assert.equal(v2.reason, win ? "identity_unconfirmed" : "other_process");
 		assert.equal(v2.ready, false);
 
 		// foreign: the cmdline looks like this daemon but the start time does not match the session
@@ -784,8 +855,9 @@ test("GD014: classifySession distinguishes stale, foreign, orphaned and healthy 
 		const unreadyRoot = path.join(tmp(), "i-unready");
 		writeSession(unreadyRoot, { endpoint: "/x", pid: lookalike.pid, procStart: procStartTicks(lookalike.pid) });
 		const v4 = await classifySession(unreadyRoot);
-		assert.equal(v4.state, "stale");
-		assert.equal(v4.reason, "endpoint_refused");
+		// Windows: the start time cannot confirm a daemon (gap above), so it stays foreign, never «stale» (never replaceable).
+		assert.equal(v4.state, win ? "foreign" : "stale");
+		assert.equal(v4.reason, win ? "identity_unconfirmed" : "endpoint_refused");
 		assert.equal(v4.ready, false);
 	} finally {
 		await reap(bystander);
@@ -796,13 +868,27 @@ test("GD014: classifySession distinguishes stale, foreign, orphaned and healthy 
 	const { daemon, root } = make();
 	await daemon.start();
 	try {
-		const v5 = await classifySession(root);
+		// Windows never sends the token through the unverified Node probe: the live endpoint is proven
+		// only by the native helper. The real helper spawn from THIS in-process test refuses on the
+		// Windows CI runner (classified foreign; CI 41729969464 test 322 and 41718553579 — the same
+		// failure before and after the helper-env fix c60d62d, with the daemon's LOCALAPPDATA passed
+		// through deps.env exactly as boot does). The REAL native proof is exercised on Windows CI by
+		// cli.test.cjs «#390 GD014: status reports state/reason/ready for a RUNNING daemon (native proof
+		// on Windows)», which passes there; this test asserts the classification SHAPE through the
+		// product's own verification seam (windows-runtime.test.cjs does the same). POSIX keeps the real
+		// hello→ready probe against the live socket, unchanged.
+		// Review: the seam still has to be ASKED about this root (it never short-circuits the native step).
+		const verified = [];
+		const healthyDeps = win ? { nativeVerify: (r) => (verified.push(r), true) } : {};
+		const v5 = await classifySession(root, healthyDeps);
+		if (win) assert.deepEqual(verified, [root], "the native verification is consulted for this exact root");
 		assert.equal(v5.state, "healthy");
 		assert.equal(v5.reason, "ready");
 		assert.equal(v5.ready, true);
-		const v6 = await classifySession(root, { ppid: () => 1 });
-		assert.equal(v6.state, "orphaned");
-		assert.equal(v6.reason, "parent_gone");
+		const v6 = await classifySession(root, { ...healthyDeps, ppid: () => 1 });
+		// Windows has no parent-chain identity (same registered gap): a natively proven ready daemon is healthy there.
+		assert.equal(v6.state, win ? "healthy" : "orphaned");
+		assert.equal(v6.reason, win ? "ready" : "parent_gone");
 		assert.equal(v6.ready, true, "an orphaned daemon can still be serving");
 	} finally {
 		await daemon.stop();
@@ -820,7 +906,7 @@ test("GD029 check (1): a healthy session is never overwritten; the refusal is re
 		const incumbent = JSON.parse(fs.readFileSync(file, "utf8"));
 		const b = new Daemon({
 			root: a.root,
-			env: { PATH: process.env.PATH },
+			env: daemonEnv(a.base),
 			log: () => {},
 			engineOptions: { command: process.execPath, commandArgs: [FAKE, "--cwd-out", path.join(a.base, "b.cwd"), "--cmd-log", path.join(a.base, "b.cmd"), "--spawn-log", path.join(a.base, "b.spawn")], backoffMs: [20], stopTimeoutMs: 500, requestTimeoutMs: 3000, startTimeoutMs: 5000 },
 		});
@@ -828,20 +914,42 @@ test("GD029 check (1): a healthy session is never overwritten; the refusal is re
 		const after = fs.statSync(file);
 		assert.equal(after.ino, before.ino, "the session file must not be rewritten");
 		assert.equal(JSON.parse(fs.readFileSync(file, "utf8")).token, incumbent.token, "the healthy incumbent keeps its token");
-		const lines = ledgerLines(a.root);
-		assert.equal(lines[0].outcome, "started", "the first launch records itself");
-		const last = lines.at(-1);
-		assert.equal(last.outcome, "refused");
-		assert.equal(last.reason, "endpoint_ready");
-		assert.equal(last.incumbentPid, incumbent.pid);
-		assert.equal(typeof last.at, "number");
-		assert.equal(typeof last.pid, "number");
-		assert.equal(typeof last.procStart, "string");
 		const ledger = path.join(a.root, "runtime", "launches.jsonl");
-		assert.equal(fs.statSync(ledger).mode & 0o777, 0o600);
-		assert.ok(!fs.readFileSync(ledger, "utf8").includes(incumbent.token), "the ledger never carries a token");
+		if (win) {
+			// Registered gap «Windows launch ledger records nothing» (pinned by the next test): the 0600
+			// fstat gate is never true on NTFS, so even the refused boot records nothing — fail closed.
+			assert.ok(!fs.existsSync(ledger) || fs.readFileSync(ledger, "utf8").trim() === "", "no ledger record on Windows");
+		} else {
+			const lines = ledgerLines(a.root);
+			assert.equal(lines[0].outcome, "started", "the first launch records itself");
+			const last = lines.at(-1);
+			assert.equal(last.outcome, "refused");
+			assert.equal(last.reason, "endpoint_ready");
+			assert.equal(last.incumbentPid, incumbent.pid);
+			assert.equal(typeof last.at, "number");
+			assert.equal(typeof last.pid, "number");
+			assert.equal(typeof last.procStart, "string");
+			assertMode(ledger, 0o600);
+			assert.ok(!fs.readFileSync(ledger, "utf8").includes(incumbent.token), "the ledger never carries a token");
+		}
 	} finally {
 		await a.daemon.stop();
+	}
+});
+
+// Registered gap K2-01b: recordLaunch fstat-checks POSIX 0600 bits the NTFS mode emulation never reports,
+// so on Windows the ledger records nothing and logs the skip. Unix counterpart: the 0600 ledger assertion
+// in "GD029 check (1)". Plan: write the ledger through the native helper (win-fs write-private).
+test("registered gap K2-01b: the launch ledger records nothing on Windows (fstat 0600 never true) and logs it", { skip: win ? false : "needs real Windows; the Unix counterpart is the 0600 ledger assertion in GD029 check (1)" }, async () => {
+	const { daemon, root, logs } = make();
+	await daemon.start();
+	try {
+		const ledger = path.join(root, "runtime", "launches.jsonl");
+		// The refusal must not leave a record behind (the O_CREAT open may leave an empty file).
+		assert.ok(!fs.existsSync(ledger) || fs.readFileSync(ledger, "utf8") === "", "no launch record may be written on Windows");
+		assert.ok(logs.some((l) => l.startsWith("launch record skipped: launches.jsonl is not our private regular file")), logs.join("\n"));
+	} finally {
+		await daemon.stop();
 	}
 });
 
@@ -865,25 +973,27 @@ test("#385 OD066: stop with a busy turn and an open ask records the interrupted 
 		socket.destroy();
 		await a.daemon.stop();
 		const file = path.join(a.root, "runtime", "interrupted.json");
-		assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+		assertMode(file, 0o600);
 		const record = interruptedRecord(a.root);
-		assert.deepEqual(Object.keys(record).sort(), ["asks", "at", "consumed", "pid", "procStart", "turnActive"]);
+		// Registered gap 2a: no procStart on Windows (the record is a daemon write; without /proc the
+		// field is simply absent there — the POSIX branch asserts the identity-carrying shape).
+		assert.deepEqual(Object.keys(record).sort(), win ? ["asks", "at", "consumed", "pid", "turnActive"] : ["asks", "at", "consumed", "pid", "procStart", "turnActive"]);
 		assert.equal(typeof record.at, "number");
 		assert.equal(record.pid, process.pid);
-		assert.equal(typeof record.procStart, "string");
+		if (!win) assert.equal(typeof record.procStart, "string");
 		assert.equal(record.turnActive, true);
 		assert.deepEqual(record.asks, [{ id: "u1", kind: "select", title: "Pick" }]);
 		assert.equal(record.consumed, false);
 		assert.equal(record.token, undefined, "the record never carries a token");
 		// session.json is gone; the #390 launch ledger is untouched by the record.
 		assert.equal(fs.existsSync(path.join(a.root, "runtime", "session.json")), false);
-		assert.deepEqual(ledgerLines(a.root).map((l) => l.reason), ["ok"]);
+		if (!win) assert.deepEqual(ledgerLines(a.root).map((l) => l.reason), ["ok"]); // registered gap: no Windows ledger
 	} finally {
 		await a.daemon.stop();
 	}
 	// The next boot that starts well keeps the record as evidence, unconsumed
 	// (R5: consumption happens only after a client's interrupted_ack).
-	const b = make({ options: { root: a.root } });
+	const b = reuse(a);
 	await b.daemon.start();
 	try {
 		const record = interruptedRecord(a.root);
@@ -895,7 +1005,7 @@ test("#385 OD066: stop with a busy turn and an open ask records the interrupted 
 	}
 	// The unconsumed record survives the next clean stop; exactly ONE record is kept.
 	assert.equal(interruptedRecord(a.root).consumed, false);
-	assert.deepEqual(ledgerLines(a.root).map((l) => l.reason), ["ok", "ok"]);
+	if (!win) assert.deepEqual(ledgerLines(a.root).map((l) => l.reason), ["ok", "ok"]); // registered gap: no Windows ledger
 });
 
 test("#385 OD066: a newer interruption replaces the single record; a clean stop writes none", async () => {
@@ -916,7 +1026,7 @@ test("#385 OD066: a newer interruption replaces the single record; a clean stop 
 		await a.daemon.stop();
 	}
 	// Ask-only interruption, newer than the previous record: it wins as the single record.
-	const c = make({ options: { root: a.root } });
+	const c = reuse(a);
 	await c.daemon.start();
 	try {
 		const session = readSession(a.root);
@@ -934,7 +1044,7 @@ test("#385 OD066: a newer interruption replaces the single record; a clean stop 
 		await c.daemon.stop();
 	}
 	// A clean stop records nothing and keeps the single existing record.
-	const d = make({ options: { root: a.root } });
+	const d = reuse(a);
 	await d.daemon.start();
 	try {
 		assert.equal(interruptedRecord(a.root).consumed, false, "boot never consumes the record (R5)");
@@ -955,11 +1065,16 @@ test("#385 OD066: a failed record write never blocks teardown nor boot", async (
 		a.daemon.server.busy = true;
 		await a.daemon.stop();
 		assert.equal(fs.existsSync(path.join(a.root, "runtime", "session.json")), false);
-		assert.equal(fs.existsSync(path.join(a.root, "runtime", "launches.jsonl")), true);
+		if (win) {
+			// Registered gap «Windows launch ledger records nothing» (pinned in GD029 check (1)).
+			assert.ok(!fs.existsSync(path.join(a.root, "runtime", "launches.jsonl")) || fs.readFileSync(path.join(a.root, "runtime", "launches.jsonl"), "utf8").trim() === "");
+		} else {
+			assert.equal(fs.existsSync(path.join(a.root, "runtime", "launches.jsonl")), true);
+		}
 	} finally {
 		await a.daemon.stop();
 	}
-	const b = make({ options: { root: a.root } });
+	const b = reuse(a);
 	await b.daemon.start();
 	assert.equal(b.daemon.state, "running");
 	await b.daemon.stop();
@@ -973,11 +1088,18 @@ test("GD029 check (2): a dead-pid stale session is replaced and the replacement 
 	await daemon.start();
 	try {
 		assert.equal(readSession(root).pid, process.pid, "the stale session was replaced");
-		const last = ledgerLines(root).at(-1);
-		assert.equal(last.outcome, "started");
-		assert.equal(last.reason, "stale_replaced");
-		assert.equal(last.incumbentPid, dead);
-		assert.equal(last.pid, process.pid);
+		const ledger = path.join(root, "runtime", "launches.jsonl");
+		if (win) {
+			// Registered gap «Windows launch ledger records nothing» (pinned above in GD029 check (1)):
+			// even a successful stale replacement records nothing there — fail closed, log only.
+			assert.ok(!fs.existsSync(ledger) || fs.readFileSync(ledger, "utf8").trim() === "", "no ledger record on Windows");
+		} else {
+			const last = ledgerLines(root).at(-1);
+			assert.equal(last.outcome, "started");
+			assert.equal(last.reason, "stale_replaced");
+			assert.equal(last.incumbentPid, dead);
+			assert.equal(last.pid, process.pid);
+		}
 	} finally {
 		await daemon.stop();
 	}
@@ -997,8 +1119,8 @@ test("mcp_import_preview through the daemon: reads the real HOME configs read-on
 
 	const { daemon, root, base } = make();
 	const home = path.join(base, "realhome");
-	// boot() reads this.env: HOME must be set before start()
-	daemon.env = { PATH: process.env.PATH, HOME: home };
+	// boot() reads this.env: HOME must be set before start(); %LOCALAPPDATA% keeps the Windows canonical root.
+	daemon.env = daemonEnv(base, { HOME: home });
 	fs.mkdirSync(path.join(home, ".cursor"), { recursive: true });
 	fs.writeFileSync(path.join(home, ".cursor", "mcp.json"), JSON.stringify({ mcpServers: { fs: { command: "npx" } } }));
 	fs.writeFileSync(path.join(home, ".claude.json"), "{broken");
@@ -1034,7 +1156,7 @@ test("pause: set_paused persists to config.json, refuses admission, and is resto
 		a.socket.write(`${JSON.stringify({ type: "set_paused", paused: true })}\n`);
 		await waitFor(() => a.frames.some((f) => f.type === "agent_state" && f.paused === true));
 		assert.equal(JSON.parse(fs.readFileSync(path.join(root, "config.json"), "utf8")).paused, true);
-		assert.equal(fs.statSync(path.join(root, "config.json")).mode & 0o777, 0o600);
+		assertMode(path.join(root, "config.json"), 0o600);
 		assert.equal(daemon.status().paused, true);
 		a.socket.write(`${JSON.stringify({ type: "send", text: "hi" })}\n`);
 		await waitFor(() => a.frames.some((f) => f.type === "error"));
@@ -1056,7 +1178,7 @@ test("pause: set_paused persists to config.json, refuses admission, and is resto
 		await daemon.stop();
 	}
 });
-test("connector host is optional, starts after the engine, and is stopped before daemon cleanup", async () => {
+test("connector host is optional, starts after the engine, and is stopped before daemon cleanup", { skip: win && "registered gap K2-01b (P2): POSIX-path values are refused by the POSIX-only validators on Windows; twin: config.test.cjs 'registered gap K2-01b: absolute Windows paths are refused for connectorsCommand, hookInstallerBin and connectorHostBin (POSIX-only validators)'" }, async () => {
 	const absent = make();
 	await absent.daemon.start();
 	assert.equal(absent.daemon.connectorHost, undefined);
@@ -1084,7 +1206,7 @@ test("connector host is optional, starts after the engine, and is stopped before
 	assert.equal(fs.existsSync(path.join(configured.root, "connector-host.json")), false);
 });
 
-test("a configured but untrusted connector host does not prevent daemon startup", async () => {
+test("a configured but untrusted connector host does not prevent daemon startup", { skip: win && "registered gap K2-01b (P2): POSIX-path values are refused by the POSIX-only validators on Windows; twin: config.test.cjs 'registered gap K2-01b: absolute Windows paths are refused for connectorsCommand, hookInstallerBin and connectorHostBin (POSIX-only validators)'" }, async () => {
 	const { daemon, root, base, logs } = make();
 	await configure(root, { connectorHostBin: path.join(base, "missing-host") });
 	await daemon.start();
@@ -1096,7 +1218,7 @@ test("a configured but untrusted connector host does not prevent daemon startup"
 	} finally { await daemon.stop(); }
 });
 
-test("H2c controls reach the fake host through a real daemon and teardown clears setup state", async (t) => {
+test("H2c controls reach the fake host through a real daemon and teardown clears setup state", unixOnly("connector host is fail-closed on Windows (registered gap K2-01b, decision 1a: named-pipe endpoint + ACL via helper + process identity); twin: connector-host.test.cjs «Windows twin: the supervisor refuses an untrusted host binary, never spawns and stays fail-closed»"), async (t) => {
 	const { ConnectorsView } = require("../src/connectors.cjs");
 	const configured = make({ options: { connectorHostOptions: { backoffMs: [20], stableMs: 100, startTimeoutMs: 5000, requestTimeoutMs: 3000, stopTimeoutMs: 3000 } } });
 	t.after(async () => { await configured.daemon.stop(); fs.rmSync(configured.base, { recursive: true, force: true }); });
@@ -1221,7 +1343,7 @@ test("R5: the unconsumed record travels in the ready frame (counts only) and is 
 		await a.daemon.stop();
 	}
 	// The next healthy boot exposes the record but does NOT consume it.
-	const b = make({ options: { root: a.root } });
+	const b = reuse(a);
 	await b.daemon.start();
 	try {
 		assert.equal(interruptedRecord(a.root).consumed, false, "boot never consumes the record");
@@ -1263,7 +1385,7 @@ test("R5/R4: interrupted_ack answers failed when the record cannot be persisted 
 		await a.daemon.stop();
 	}
 	assert.equal(interruptedRecord(a.root).consumed, false);
-	const b = make({ options: { root: a.root } });
+	const b = reuse(a);
 	await b.daemon.start();
 	const session = readSession(a.root);
 	const c1 = await connect(session);
@@ -1341,6 +1463,33 @@ test("the daemon wires a sessions provider: sessions_list answers a sessions fra
 		assert.equal(err, undefined, `sessions_list must not fail: ${JSON.stringify(err)}`);
 		const frame = frames.find((f) => f.type === "sessions");
 		assert.ok(Array.isArray(frame.sessions));
+		socket.destroy();
+	} finally {
+		await daemon.stop();
+	}
+});
+
+test("K2-01b: mcp_import_preview reads the daemon's OWN env (its %APPDATA% on Windows), never this process's", { skip: !win && "Windows %APPDATA% location; Linux/macOS locations are home-relative and covered by «mcp_import_preview through the daemon» and mcp-import.test.cjs (win32 rows driven on every OS there)" }, async () => {
+	// Public preview output only: a Claude Desktop config placed under the daemon env's %APPDATA% is found, while this
+	// process's real %APPDATA% is never consulted (it holds no such server).
+	const { daemon, root, base } = make();
+	const home = path.join(base, "realhome");
+	const appData = path.join(base, "appdata");
+	fs.mkdirSync(path.join(appData, "Claude"), { recursive: true });
+	fs.writeFileSync(path.join(appData, "Claude", "claude_desktop_config.json"), JSON.stringify({ mcpServers: { desk: { command: "d" } } }));
+	fs.mkdirSync(home, { recursive: true });
+	// Review: driven through the protocol (mcp_import_preview frame), exactly like «mcp_import_preview through the daemon».
+	daemon.env = daemonEnv(base, { HOME: home, APPDATA: appData });
+	await daemon.start();
+	try {
+		const { socket, frames } = await connect(readSession(root));
+		await waitFor(() => frames.some((f) => f.type === "ready"));
+		socket.write(`${JSON.stringify({ type: "mcp_import_preview" })}\n`);
+		await waitFor(() => frames.some((f) => f.type === "mcp_import" || f.type === "error"));
+		const frame = frames.find((f) => f.type === "mcp_import");
+		assert.ok(frame, JSON.stringify(frames));
+		assert.deepEqual(frame.files, [{ source: "claude-desktop", status: "ok" }]);
+		assert.deepEqual(frame.servers.map((s) => [s.source, s.name]), [["claude-desktop", "desk"]]);
 		socket.destroy();
 	} finally {
 		await daemon.stop();

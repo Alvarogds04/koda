@@ -85,11 +85,25 @@ function publishSessionWindows(root, payload, deps = {}) {
 		input,
 		timeout: SESSION_HELPER_TIMEOUT_MS,
 		windowsHide: true,
-		env: { ...process.env, ABITO_ISLAND_DIR: path.resolve(root) },
+		env: helperEnv(root, deps.env),
 	});
 	if (result.error) throw new Error("native session helper failed to run");
 	if (result.status !== 0) throw new Error("native session helper refused the session");
 	return true;
+}
+
+/**
+ * The helper's environment (K2-01b): the process env plus the daemon root, with %LOCALAPPDATA% taken from the env the
+ * daemon validated its root against (`daemonEnv`, i.e. `options.env`) — the helper re-checks the same canonical-root
+ * policy, so it must see the same LOCALAPPDATA. Without an injected env this is exactly process.env + ABITO_ISLAND_DIR.
+ */
+function helperEnv(root, daemonEnv) {
+	const env = { ...process.env, ABITO_ISLAND_DIR: path.resolve(root) };
+	if (daemonEnv && daemonEnv !== process.env) {
+		delete env.LOCALAPPDATA;
+		if (typeof daemonEnv.LOCALAPPDATA === "string") env.LOCALAPPDATA = daemonEnv.LOCALAPPDATA;
+	}
+	return env;
 }
 
 /** Read-only native ACL/server identity/ready proof. No token leaves Node. */
@@ -100,7 +114,7 @@ function verifySessionWindows(root, deps = {}) {
         const result = (deps.spawnSync ?? require("node:child_process").spawnSync)(exe, ["--verify"], {
             timeout: SESSION_HELPER_TIMEOUT_MS, windowsHide: true,
             stdio: ["ignore", "pipe", "pipe"], maxBuffer: 4096,
-            env: { ...process.env, ABITO_ISLAND_DIR: path.resolve(root) },
+            env: helperEnv(root, deps.env),
         });
         return !result.error && result.status === 0 && !result.stdout?.length && !result.stderr?.length;
     } catch { return false; }
@@ -277,7 +291,7 @@ async function classifySession(root, deps = {}) {
 	// Windows never sends the token through the unverified Node probe. The
 	// native helper checks file ACL + pipe server pid/SID before hello→ready.
 	const ready = platform === "win32"
-		? (deps.nativeVerify ?? verifySessionWindows)(root) === true
+		? (deps.nativeVerify ?? verifySessionWindows)(root, { env: deps.env }) === true
 		: (await probeEndpoint(session)) === "ready";
 	if (pidState(session.pid) !== "alive") return { state: "stale", reason: "pid_dead", ready };
 	if (platform === "win32") {
@@ -363,7 +377,7 @@ class Daemon extends EventEmitter {
 		// dead. Every attempt is recorded in the launch ledger.
 		let replaced = false;
 		if (existing) {
-			const verdict = await classifySession(this.root);
+			const verdict = await classifySession(this.root, { env: this.env });
 			if (verdict.ready) {
 				this.recordLaunch({ reason: "endpoint_ready", outcome: "refused", incumbentPid: existing.pid });
 				throw new Error("daemon already running");
@@ -493,7 +507,7 @@ class Daemon extends EventEmitter {
 		};
 		if (process.platform === "win32") {
 			// Windows (L6): the native helper owns the token file's protected DACL.
-			publishSessionWindows(this.root, session);
+			publishSessionWindows(this.root, session, { env: this.env });
 		} else {
 			writePrivateFile(this.sessionFile, `${JSON.stringify(session)}\n`);
 		}
@@ -633,7 +647,7 @@ class Daemon extends EventEmitter {
 			return undefined; // no usable HOME: mcp_import_preview answers "unavailable"
 		}
 		const homeDir = home;
-		return { preview: async () => scanMcpConfigs({ home: homeDir }) };
+		return { preview: async () => scanMcpConfigs({ home: homeDir, env: this.env }) }; // K2-01b: its own %APPDATA% on Windows
 	}
 
 	/**

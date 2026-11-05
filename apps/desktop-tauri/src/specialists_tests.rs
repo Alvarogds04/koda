@@ -597,17 +597,31 @@ fn a_failed_write_keeps_the_previous_role_and_never_claims_a_saved_one() {
     let before = store_with_active();
     let current = Mutex::new(before.clone());
     let persisted = AtomicBool::new(true);
-    // a group/world-writable directory is refused: the store must stay exactly as it was
+    // A write that must fail leaves the store exactly as it was. Unix makes
+    // the failure real with its privacy guard (a group/world-writable
+    // directory is refused); off Unix there are no mode bits, so the twin
+    // failure is the OS's own: a FILE where the store's directory must be
+    // makes every create/write fail honestly. Same contract, per-OS failure.
     let bad = tmpdir("writefail");
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&bad, std::fs::Permissions::from_mode(0o777)).unwrap();
     }
+    #[cfg(not(unix))]
+    {
+        std::fs::remove_dir_all(&bad).unwrap();
+        std::fs::write(&bad, b"no es un directorio").unwrap();
+    }
     assert!(commit(&current, &persisted, Some(&bad), store()).is_err());
     assert_eq!(*current.lock().unwrap(), before, "a refused write changes nothing in memory");
     assert!(!persisted.load(Ordering::SeqCst), "and it is not advertised as saved");
     let _ = std::fs::remove_dir_all(&bad);
+    #[cfg(not(unix))]
+    {
+        // `bad` is a file off Unix; remove_dir_all refuses to delete it.
+        std::fs::remove_file(&bad).unwrap();
+    }
 
     // a private directory: the file is written first and the memory follows
     let good = tmpdir("writeok");

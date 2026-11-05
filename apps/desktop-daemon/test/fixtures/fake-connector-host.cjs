@@ -5,19 +5,33 @@
 const fs = require("node:fs");
 const net = require("node:net");
 const path = require("node:path");
+const { execFileSync } = require("node:child_process");
 const island = process.argv[process.argv.indexOf("--island") + 1];
 const parent = process.argv[process.argv.indexOf("--parent") + 1];
 const modeFile = path.join(island, ".fake-host-mode.json");
 let mode = {};
 try { mode = JSON.parse(fs.readFileSync(modeFile, "utf8")); } catch {}
 if (Number(parent) !== process.ppid) process.exit(1);
+// The child records its own environment (0600, private) so the supervisor test can assert the
+// allowlist on every OS: /proc/<pid>/environ exists on Linux only.
+fs.writeFileSync(path.join(island, ".fake-host-env.json"), JSON.stringify(Object.entries(process.env).sort()), { mode: 0o600 });
 if (mode.refuse) process.exit(1);
 if (mode.ignoreTerm) process.on("SIGTERM", () => {});
 if (mode.hangStartup) { setInterval(() => {}, 1000); return; }
 
 function procStart(pid) {
-	const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8");
-	return Number(stat.slice(stat.lastIndexOf(")") + 2).split(/\s+/)[19]);
+	try {
+		const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8");
+		return Number(stat.slice(stat.lastIndexOf(")") + 2).split(/\s+/)[19]);
+	} catch {
+		// No /proc on macOS: the same fact the supervisor's procIdentity reads there (src/procinfo.cjs
+		// runPs) — /bin/ps lstart in the C locale is always exactly 24 characters, and the start time is
+		// whole seconds since the epoch, the value readHandoff compares the handoff against.
+		try {
+			const line = execFileSync("/bin/ps", ["-ww", "-o", "lstart=", "-p", String(pid)], { encoding: "utf8", env: { LC_ALL: "C", PATH: "/usr/bin:/bin" }, timeout: 2000, stdio: ["ignore", "pipe", "ignore"], maxBuffer: 8192 });
+			return Math.floor(Date.parse(line.trim()) / 1000);
+		} catch { return undefined; }
+	}
 }
 const runRoot = path.join(island, "connector-host-run");
 fs.mkdirSync(runRoot, { recursive: true, mode: 0o700 });

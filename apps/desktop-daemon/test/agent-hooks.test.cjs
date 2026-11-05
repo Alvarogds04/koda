@@ -16,6 +16,7 @@ const os = require("node:os");
 const path = require("node:path");
 
 const { SCHEMA, CLIENT_IDS, scanAgentHooks, installAgentHook, removeAgentHook } = require("../src/agent-hooks.cjs");
+const { win, assertMode } = require("./platform-env.cjs");
 
 const NODE = "/usr/bin/node-fake";
 const HEX = /^[0-9a-f]{64}$/;
@@ -219,9 +220,10 @@ test("install backs up the replaced marker-tagged file with the old bytes", () =
 	assert.equal(done.ok, true);
 	const backups = fs.readdirSync(path.join(home, ".copilot/hooks")).filter((n) => n.includes(".abito-backup-"));
 	assert.deepEqual(backups, ["abito-island.json.abito-backup-2026-01-02T03-04-05-000Z"]);
-	assert.equal(fs.readFileSync(path.join(home, ".copilot/hooks", backups[0]), "utf8"), `${old.trimEnd()}\n// local edit\n`);
-	const mode = fs.statSync(path.join(home, ".copilot/hooks", backups[0])).mode & 0o777;
-	assert.equal(mode, 0o600);
+	const backup = path.join(home, ".copilot/hooks", backups[0]);
+	assert.equal(fs.readFileSync(backup, "utf8"), `${old.trimEnd()}\n// local edit\n`);
+	// 0600 backup on Unix; the same owner-only privacy through the real DACL on Windows.
+	assertMode(backup, 0o600);
 });
 
 // --- remove: marker-only, hash-bound, script kept while a dependent remains ------
@@ -391,7 +393,7 @@ test("backup of a 0644 source is exactly 0600 and an existing backup name is nev
 	assert.equal(fs.readFileSync(taken, "utf8"), "precious");
 	const backups = fs.readdirSync(dir).filter((n) => n.includes(".abito-backup-") && path.join(dir, n) !== taken);
 	assert.equal(backups.length, 1);
-	assert.equal(fs.statSync(path.join(dir, backups[0])).mode & 0o777, 0o600);
+	assertMode(path.join(dir, backups[0]), 0o600);
 });
 
 // --- cursor (#467): ~/.cursor/hooks.json is the USER'S file, merged not owned ------------
@@ -543,7 +545,10 @@ test("R17: a quote in HOME or the node path cannot break out of the gemini hook 
 test("R17: control characters in the node path or HOME are refused and nothing is written", () => {
 	const home = tmp();
 	assert.throws(() => scan(home, { nodeExe: "/usr/bin/no\nde" }), /invalid nodeExe/);
-	const evil = path.join(home, "a\nb");
+	// The refusal rule is any control character (\p{Cc}). NTFS cannot create a directory with \n through the
+	// Win32 API (EINVAL), so the Windows fixture uses DEL (0x7F): a control char the filesystem accepts and
+	// the same validation refuses.
+	const evil = path.join(home, win ? "a\u007fb" : "a\nb");
 	fs.mkdirSync(evil);
 	assert.throws(() => scanAgentHooks({ home: evil, platform: "linux", nodeExe: NODE }), /invalid home/);
 	assert.deepEqual(fs.readdirSync(evil), []);
