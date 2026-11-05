@@ -37,7 +37,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-26, windows-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 75 # K2-01b: the daemon now really boots on Windows; per-test cap in desktop-daemon npm test
+    timeout-minutes: 75 # K2-01b: the daemon now really boots on Windows; per-file cap in desktop-daemon npm test
     steps:
       - uses: actions/checkout@v4
         with:
