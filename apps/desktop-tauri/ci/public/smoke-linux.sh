@@ -26,7 +26,7 @@
 # Registered human gaps (NOT proven here, by construction):
 #   * answering a question through the shipped binary (needs a human answering);
 #   * seeing the tray icon with your own eyes;
-#   * the in-page compact-pill measurement (288x32): only the probe build can read
+#   * the in-page compact-disc measurement (40x32): only the probe build can read
 #     the page. This smoke asserts the native stage (geometry::ISLAND_WINDOW) the
 #     compact view is drawn in, plus always-on-top.
 #
@@ -248,7 +248,7 @@ REAL_BEFORE=$(real_state)
 # cannot drift from the code. Xvfb has no scaling: logical px == physical px.
 EXPECT_W=$(sed -n 's/^pub const ISLAND_WINDOW: (i32, i32) = (\([0-9]*\), \([0-9]*\));$/\1/p' "$APP/src/geometry.rs" | head -n 1)
 EXPECT_H=$(sed -n 's/^pub const ISLAND_WINDOW: (i32, i32) = (\([0-9]*\), \([0-9]*\));$/\2/p' "$APP/src/geometry.rs" | head -n 1)
-COMPACT=$(sed -n 's/^pub const COMPACT_BAR: (i32, i32) = (\([0-9]*\), \([0-9]*\));$/\1x\2/p' "$APP/src/geometry.rs" | head -n 1)
+COMPACT=$(sed -n 's/^pub const COMPACT_DOT: (i32, i32) = (\([0-9]*\), \([0-9]*\));$/\1x\2/p' "$APP/src/geometry.rs" | head -n 1)
 [ -n "$EXPECT_W" ] && [ -n "$EXPECT_H" ] || die "cannot read ISLAND_WINDOW from $APP/src/geometry.rs"
 
 DISPLAY_NUM=''
@@ -477,7 +477,7 @@ WIDTH=$(printf '%s\n' "$INFO" | sed -n 's/^ *Width: *\([0-9]*\)$/\1/p')
 HEIGHT=$(printf '%s\n' "$INFO" | sed -n 's/^ *Height: *\([0-9]*\)$/\1/p')
 ABOVE=$(smoke_env xprop -id "$WIN" _NET_WM_STATE | grep -c '_NET_WM_STATE_ABOVE' || true)
 if [ "$ABOVE" -ge 1 ] && [ "$WIDTH" = "$EXPECT_W" ] && [ "$HEIGHT" = "$EXPECT_H" ]; then
-  pass "(c-island) show: island window $WIN is mapped viewable at the native stage size ${WIDTH}x${HEIGHT} (src/geometry.rs ISLAND_WINDOW) with _NET_WM_STATE_ABOVE; the ${COMPACT:-288x32} compact pill inside it is only readable from the probe build"
+  pass "(c-island) show: island window $WIN is mapped viewable at the native stage size ${WIDTH}x${HEIGHT} (src/geometry.rs ISLAND_WINDOW) with _NET_WM_STATE_ABOVE; the ${COMPACT:-40x32} compact disc inside it is only readable from the probe build"
 else
   fail "(c-island) show — window $WIN: above=$ABOVE size=${WIDTH}x${HEIGHT} expected ${EXPECT_W}x${EXPECT_H}"
   fail_rest "(c-island)" "(c-tray) tray" "(d) notice"

@@ -108,8 +108,9 @@
       <svg id="clay" aria-hidden="true" focusable="false"></svg>
       <div id="island-tip" role="tooltip" hidden></div>
       <span id="compact-badge" aria-hidden="true" hidden></span>
-      <span id="compact-activity" class="compact-activity"></span>
-      <button id="compact-reply" type="button" hidden>Responder</button>
+      <!-- island-free-drag S3/S5: the disc is the whole compact island, so it has no room for a text line or a «Responder» pill;
+           a pending question/permission rides it as a state signal and is READ when the island is opened. -->
+      <span id="compact-activity" class="compact-activity" hidden></span>
       <!-- S11 (11 error/sin motor, B): a band under the overview, only while something needs attention; «Omitir» silences that problem -->
       <div id="engine-band" role="status" hidden><span class="eb-icon" aria-hidden="true"></span><span id="engine-band-label"></span><button id="engine-band-link" type="button"></button><button id="engine-band-skip" type="button">Omitir</button></div>
       <div id="mini-grid" aria-hidden="true"></div>

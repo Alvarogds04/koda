@@ -31,14 +31,14 @@ const state = (s, notices) => ({ state: s, notices, card: null, request: null, r
     }));
     assert.ok(!after.calls.includes('expand'), `S4: no automatic expand (${after.calls})`);
     assert.equal(after.phase, 'compact', 'S4: still compact');
-    // HU-057 S12: the compact pill FITS its content (min 96, max 420), so a notice line may widen it; it still stays 32 high and compact
-    assert.equal(after.h, before.h, 'S4: the island did not grow taller');
-    assert.ok(after.w >= 96 && after.w <= 420, `S12: the pill fits its content within 96..420 (${after.w})`);
-    assert.equal(after.activity, 'Pi terminó su turno', 'S4: the notice reads inside the compact pill');
-    assert.ok(after.shown, 'S4: the line is visible');
-    assert.deepEqual([after.badge, after.badgeHidden], ['finished', false]);
-    // S6: the human's own press on the pill opens it, through the same host verb
-    const box = await page.evaluate(() => { const b = document.getElementById('island').getBoundingClientRect(); return { x: b.right - 20, y: b.top + b.height / 2 }; });
+    // island-free-drag S3/S5: compact is the DISC (40x32) in every state — a notice never widens it and never draws its text; the
+    // disc carries the notice as its own state signal (--pill-dot tone) and the text is read when the human opens the island.
+    assert.deepEqual([after.w, after.h], [40, 32], `S3: the disc, unchanged (${after.w}x${after.h})`);
+    assert.equal(after.activity, '', 'S3: no compact text line');
+    assert.equal(after.shown, false, 'S3: and it is never drawn');
+    assert.deepEqual([after.badge, after.badgeHidden], ['finished', false], 'S5: the model still publishes the signal kind');
+    // S6 + S3: the human's own press on the DISC opens it, through the same host verb (a click, under the 6 px move threshold)
+    const box = await page.evaluate(() => { const b = document.getElementById('island').getBoundingClientRect(); return { x: b.left + b.width / 2, y: b.top + b.height / 2 }; });
     await page.mouse.click(box.x, box.y);
     await page.waitForTimeout(300);
     assert.ok((await page.evaluate(() => (window.__desktopCalls || []).map(c => c.action))).includes('expand'), 'S6: the press expands');

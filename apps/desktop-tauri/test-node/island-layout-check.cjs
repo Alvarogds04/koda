@@ -535,44 +535,38 @@ test('S1 edgeStripView: ONE strip whose colour is the most urgent state (reposo 
   assert.equal(L.edgeStripView(null).state, 'rest');
   assert.deepEqual(L.EDGE_STRIP, { w: 160, h: 3, zone: 8 });
 });
-test('S2 compactView: up to 3 coloured minis + «+N», the activity line from REAL data, the status badge, and the width it needs', () => {
+test('S3 compactView: compact is ONLY the disc — a state badge and never a widened bar (island-free-drag L6/L7)', () => {
   const rows = [row({ id: 's-0000000a', kindLabel: 'Pi', cwd: 'workspace', state: 'running', tools: { total: 2, steps: [{ index: 1, name: 'read', state: 'done' }, { index: 2, name: 'bash', state: 'running' }] }, color: 'green' }),
-    row({ id: 's-0000000b', kindLabel: 'Claude Code', cwd: 'api', color: 'orange' }), row({ id: 's-0000000c', kindLabel: 'Codex', cwd: 'web', color: 'purple' }),
-    row({ id: 's-0000000d', kindLabel: 'Gemini', cwd: 'docs', color: 'mint' }), row({ id: 's-0000000e', kindLabel: 'OpenCode', cwd: 'x', color: 'blue' })];
-  const c = L.compactView({ rows, focusId: 's-0000000a', pending: null });
-  assert.deepEqual(c.minis.map(m => [m.id, m.color]), [['s-0000000a', 'green'], ['s-0000000b', 'orange'], ['s-0000000c', 'purple']]);
-  assert.equal(c.more, 2, '5 sessions: 3 minis + «+2»');
-  assert.equal(c.activity, 'workspace · bash…', 'the real running tool of the focused session, never an invented verb');
-  assert.equal(c.badge, 'working');
-  assert.equal(c.width, 440);
+    row({ id: 's-0000000b', kindLabel: 'Claude Code', cwd: 'api', color: 'orange' })];
+  const dot = L.COMPACT_DOT;
+  assert.deepEqual([dot.w, dot.h], [40, 32], 'the disc is the box the bare pill already drew (geometry::COMPACT_DOT)');
+  const busy = L.compactView({ rows, focusId: 's-0000000a', pending: null });
+  assert.deepEqual([busy.width, busy.activity, busy.minis, busy.more, busy.reply], [dot.w, '', [], 0, false], 'a running session never widens the disc');
+  assert.equal(busy.badge, 'working', 'it still reaches the disc as its own state signal');
   const idle = L.compactView({ rows: rows.slice(1, 2), focusId: 's-0000000b', pending: null });
-  assert.deepEqual([idle.activity, idle.badge, idle.more, idle.minis.length], ['api', '', 0, 1], 'idle: the session name only, no «…» and no badge');
+  assert.deepEqual([idle.width, idle.activity, idle.badge], [dot.w, '', ''], 'an idle session shows nothing but the disc');
   const none = L.compactView({ rows: [], focusId: null, pending: null });
-  assert.deepEqual([none.minis, none.more, none.activity, none.badge, none.width], [[], 0, '', '', 288], 'nothing running: the plain 288 pill');
-  assert.equal(L.compactView({ rows, focusId: null, pending: { kind: 'question', agent: 'pi', text: '¿Qué editor?' } }).badge, 'question');
-  const ask = L.compactView({ rows, focusId: null, pending: { kind: 'question', agent: 'pi', text: '¿Qué editor preferís?\nvim o emacs' } });
-  assert.deepEqual([ask.width, ask.activity, ask.reply, ask.minis.length, ask.more], [560, '¿Qué editor preferís?', true, 0, 0], 'S3: a question widens the pill, shows its first line + «Responder», drops the minis');
+  assert.deepEqual([none.minis, none.more, none.activity, none.badge, none.width], [[], 0, '', '', dot.w], 'nothing running: the bare disc');
+  const question = L.compactView({ rows, focusId: null, pending: { kind: 'question', agent: 'pi', text: '¿Qué editor preferís?\nvim o emacs' } });
+  assert.deepEqual([question.width, question.activity, question.reply, question.badge], [dot.w, '', false, 'question'], 'S5: a question is a SIGNAL on the disc, never a wide bar with «Responder»');
   const perm = L.compactView({ rows: [], focusId: null, pending: { kind: 'question', agent: 'claude-code', text: 'Claude Code asks permission: Bash: rm -rf build/', options: [{ index: 0, label: 'Allow once' }, { index: 1, label: 'Deny' }] } });
-  assert.equal(perm.badge, 'approval'); assert.match(perm.activity, /^Ejecutar: rm -rf build/);
-  assert.equal(L.compactView({ rows, focusId: null, pending: null }).reply, false);
-  assert.equal(L.compactView(null).width, 288);
+  assert.deepEqual([perm.badge, perm.width, perm.activity], ['approval', dot.w, ''], 'a permission is the approval signal, no text');
+  assert.equal(L.compactView(null).width, dot.w);
+  assert.equal(L.COMPACT_WIDTHS, undefined, 'the bar widths (288/440/560) are gone');
 });
-test('HU-006 S4 compactView: a notice shows inside the compact pill without widening it; a waiting question still wins', () => {
+test('HU-006 S4 + island-free-drag S5 compactView: a notice never widens the island; its tone is the disc signal; a waiting question wins', () => {
+  const dot = L.COMPACT_DOT.w;
   const done = L.compactView({ rows: [], focusId: null, pending: null, notice: { kind: 'settled', title: 'Terminó: tests verdes' } });
-  assert.deepEqual([done.activity, done.badge, done.width, done.reply], ['Terminó: tests verdes', 'finished', 288, false]);
+  assert.deepEqual([done.activity, done.badge, done.width, done.reply], ['', 'finished', dot, false]);
   const busy = [row({ id: 's-0000000a', kindLabel: 'Pi', cwd: 'workspace', state: 'running' })];
   const withRows = L.compactView({ rows: busy, focusId: 's-0000000a', pending: null, notice: { kind: 'attention', title: 'Codex te pide permiso' } });
-  assert.deepEqual([withRows.activity, withRows.badge, withRows.width], ['Codex te pide permiso', 'attention', 440], 'same width as without the notice');
+  assert.deepEqual([withRows.activity, withRows.badge, withRows.width], ['', 'attention', dot], 'the same disc, only its tone changes');
   const ask = L.compactView({ rows: busy, focusId: null, pending: { kind: 'question', agent: 'pi', text: '¿Seguro?' }, notice: { kind: 'settled', title: 'x' } });
-  assert.deepEqual([ask.badge, ask.activity], ['question', '¿Seguro?']);
-  const long = L.compactView({ rows: [], pending: null, notice: { kind: 'settled', title: 'x'.repeat(200) } });
-  assert.ok(long.activity.length <= 44, 'bounded');
+  assert.deepEqual([ask.badge, ask.activity], ['question', ''], 'a waiting question outranks a notice');
   for (const bad of [{ kind: 'evil', title: 'x' }, { kind: 'settled', title: 7 }, { kind: 'settled', title: '' }, 'text']) {
     const v = L.compactView({ rows: [], pending: null, notice: bad });
     assert.deepEqual([v.activity, v.badge], ['', ''], JSON.stringify(bad));
   }
-  const css = fs.readFileSync(path.join(frontend, 'vendor/coucou/island/island.css'), 'utf8');
-  for (const kind of ['finished', 'attention']) assert.match(css, new RegExp(`#compact-badge\\[data-kind="${kind}"\\]::before`), kind);
 });
 test('S1/S2 wiring + CSS: the strip element, the 8px activation zone (24px hidden offset), the mini row and the activity line exist', () => {
   const html = fs.readFileSync(path.join(frontend, 'index.html'), 'utf8');

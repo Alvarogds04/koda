@@ -121,10 +121,15 @@ test('index.html loads the logic and the adapter before island.js', () => {
   assert.ok(scripts.indexOf('character-desktop-logic.js') < scripts.indexOf('island-desktop.js'));
 });
 
-test('island.js: only a press ON the character, with the feature available, is held back from drag_press', () => {
+test('island.js: only a press ON the character of the OPEN island, with the feature available, is held back from drag_press', () => {
+  // island-free-drag S4: the gate (canPickUp + the OPEN phase, through the one declared decision) sits just above the listener
+  const gate = src.slice(src.indexOf('const characterPickable'), src.indexOf("window.addEventListener('pointerdown'"));
+  assert.match(gate, /canPickUp\(\)/, 'the feature must be available');
+  assert.match(gate, /pickUpDecision/, 'one declared rule (island-desktop.js), not a second copy');
+  assert.match(gate, /expandedNow\(\)/, 'the island must be OPEN: compact never pulls the pet out');
   const down = src.slice(src.indexOf("window.addEventListener('pointerdown'"), src.indexOf('// §9.2 hover on the character'));
   assert.match(down, /onCharacter\(e\)/);
-  assert.match(down, /canPickUp\(\)/);
+  assert.match(down, /pickingUp/, 'the gate decides the press');
   // the island drag verb is still sent for every other press
   assert.match(down, /else send\('drag_press'/);
 });
@@ -136,10 +141,13 @@ test('island.js: the pinned release line is untouched and the pick-up never reac
   assert.match(move, /return;/);
 });
 
-test('behaviour: the hook decides pick-up vs island drag', () => {
+test('behaviour: the hook decides pick-up vs island drag, and compact NEVER picks the pet up (S4)', () => {
   // Evaluate just the pure decision the hook shares with the adapter.
-  assert.equal(D.pickUpDecision({ onCharacter: true, available: true }), 'pickup');
-  assert.equal(D.pickUpDecision({ onCharacter: true, available: false }), 'island');
-  assert.equal(D.pickUpDecision({ onCharacter: false, available: true }), 'island');
-  assert.equal(D.pickUpDecision({ onCharacter: false, available: false }), 'island');
+  assert.equal(D.pickUpDecision({ onCharacter: true, available: true, expanded: true }), 'pickup');
+  assert.equal(D.pickUpDecision({ onCharacter: true, available: false, expanded: true }), 'island');
+  assert.equal(D.pickUpDecision({ onCharacter: false, available: true, expanded: true }), 'island');
+  assert.equal(D.pickUpDecision({ onCharacter: false, available: false, expanded: false }), 'island');
+  // S4: the compact island is only the disc — the pet leaves only from the OPEN island
+  assert.equal(D.pickUpDecision({ onCharacter: true, available: true, expanded: false }), 'island');
+  assert.equal(D.pickUpDecision({ onCharacter: true, available: true }), 'island', 'no phase: fail closed to the island drag');
 });

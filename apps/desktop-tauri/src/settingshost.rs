@@ -252,6 +252,27 @@ pub fn save_desktop_character(app: &AppHandle, on: bool, spot: Option<(i32, i32)
     .is_ok()
 }
 
+/// #264: where the human last dragged the island (window top-left, physical px), or None for the top-centre default.
+pub fn island_position(app: &AppHandle) -> Option<(i32, i32)> {
+    let state = app.state::<AppState>();
+    let saved = state.settings.prefs.lock().expect("prefs lock").position;
+    saved
+}
+
+/// #264: commit the dragged island position through the same gate and atomic writer as every other preference.
+/// Rust-internal (the pill drag release), never a wire command; no publication: the page never sees it.
+pub fn save_island_position(app: &AppHandle, at: (i32, i32)) -> bool {
+    let state = app.state::<AppState>();
+    prefs::transact(
+        &state.settings.prefs_serial,
+        &state.settings.prefs,
+        &prefs::Command::SetPosition(at.0, at.1),
+        |p| persist_prefs(app, p),
+        |_| {},
+    )
+    .is_ok()
+}
+
 /// T6.2: commit the size the human resized the own Ajustes window to, through
 /// the SAME `prefs::transact` gate, file and atomic writer as every other
 /// preference — so a settings change after a resize can never drop this, and

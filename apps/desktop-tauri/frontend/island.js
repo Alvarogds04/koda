@@ -45,9 +45,11 @@
   reduced.addEventListener('change', applyMotion);
 
   // Visible geometry inside the ONE 672x340 logical native window (geometry.rs).
-  // The resting island is Coucou's 288x32 bar, square on top, radius 14 below.
-  // The character keeps Coucou's botPosition('compact'): cx 40, cy 16, diameter 20.
-  const COMPACT = { w: 288, h: 32, r: 16, gap: 0, clay: 23, clayX: 40, drop: 1 };
+  // island-free-drag S3 (human: «que no aparezca la barra y que directamente sea nada más el circulito»): the compact island is
+  // Koda's disc and nothing else — 40x32, the same box the bare pill already drew (island-layout.js COMPACT_DOT_W/H = geometry::
+  // COMPACT_DOT). No activity line, no minis, no «Responder», in NO compact state. #clay is translated -50% by the vendor sheet, so
+  // clayX is its CENTRE: the disc's centre. The expanded island keeps Coucou's notch geometry untouched.
+  const COMPACT = { w: 40, h: 32, r: 16, gap: 0, clay: 23, clayX: 20, drop: 1 };
   // S10 (L19): Coucou's own bot placement (core/layout.ts VIEW_LAYOUTS): overview botX 68 / diameter 58,
   // approval, question, error and finished botX 62 / diameter 56, centred on the 84pt card row
   // (cy 101 from the island top). The box is diameter * 128/112 because the engine draws ~112 of 128
@@ -58,7 +60,7 @@
   const OVERVIEW = { w: 720, h: 150, r: 26, gap: 0, clay: 64, clayX: 598, cy: 74 }; // HU-057 Nusa notch (bottom corners only)
   const QUESTION_H = 224; // default; a long question grows it (abito:question-size), capped by the fixed window
   let questionH = QUESTION_H;
-  let compactW = COMPACT.w; // S2/S3: the compact pill widens for the minis, the activity line and a waiting question (island-layout.js compactView)
+  let compactW = COMPACT.w; // S3: the compact island IS the disc; the layout model's width is advisory and never widens it
   let engineBandOn = false; // S11: the engine/account band under the overview (+36px island)
   let noticeStripOn = false; // S1 (abito-avisos-ux): the Avisos strip takes the same bottom slot (+36px island)
   let cardH = 0; // the island height the desktop bridge approval card needs in the Nusa take-over (0 = the normal overview)
@@ -251,25 +253,13 @@
     if (conceal.moving && !raf) raf = requestAnimationFrame(tick);
   }
 
-  let compactAsk = false, measureCtx = null;
-  const compactHasText = () => { const a = $('compact-activity'); return !!(a && a.textContent); };
-  function compactTextWidth() {
-    const a = $('compact-activity'); if (!a || !a.textContent) return 0;
-    try {
-      measureCtx = measureCtx || document.createElement('canvas').getContext('2d');
-      const cs = getComputedStyle(a); measureCtx.font = `${cs.fontWeight} 12px ${cs.fontFamily}`;
-      return measureCtx.measureText(a.textContent).width;
-    } catch { return a.textContent.length * 7; }
-  }
   function render() {
-    // HU-057 S12: the compact pill fits its text + Koda (AbitoNusa.compactWidth). Visual only: the reported shape keeps the
-    // island-layout widths (288/440/560), so geometry::COMPACT_WIDTHS and the native input shape do not move.
-    const fitOn = !!window.AbitoNusa && compactAsk === false && p < 0.001 && q.x < 0.001;
-    const fitW = fitOn ? window.AbitoNusa.compactWidth(compactTextWidth()) : 0;
-    if ((capsule.dataset.pillFit === 'true') !== fitOn) capsule.dataset.pillFit = String(fitOn);
-    const w = fitOn ? fitW : lerp(compactW, lerp(OVERVIEW.w, CHAT.w, q.x), p);
-    const compactClayX = fitOn ? (compactHasText() ? window.AbitoNusa.COMPACT.padLeft + window.AbitoNusa.COMPACT.koda / 2 : fitW / 2) /* #clay is translated -50% by the vendor sheet: `left` is its CENTRE */ : COMPACT.clayX;
-    if ((capsule.dataset.pillBare === 'true') !== (fitOn && !compactHasText())) capsule.dataset.pillBare = String(fitOn && !compactHasText());
+    // S3: the compact island is the disc, in EVERY compact state (island-layout.js compactView). `compactDisc` only marks that the
+    // island is settled at its DISC size, which is what the compact CSS and the Koda sprite's centring key on.
+    const settledCompact = p < 0.001 && q.x < 0.001;
+    if ((capsule.dataset.compactDisc === 'true') !== settledCompact) capsule.dataset.compactDisc = String(settledCompact);
+    const w = lerp(compactW, lerp(OVERVIEW.w, CHAT.w, q.x), p);
+    const compactClayX = COMPACT.clayX;
     const overviewHeight = questionShown ? questionH : cardShown && cardH ? cardH : (noticeLane && noticeLane.view === 'notices' ? finishedH : 0) || (engineBandOn || noticeStripOn ? OVERVIEW.h + FINISHED_BAND_H : OVERVIEW.h);
     const h = lerp(COMPACT.h, lerp(overviewHeight, CHAT.h, q.x), p);
     const QT = window.AbitoQuestionToast, withToast = (shape) => (QT && toastShown ? QT.shapeWithToast(shape, true) : shape);
@@ -277,7 +267,7 @@
       lerp(COMPACT.h, lerp(overviewHeight, CHAT.h, q.target), target) + GAP_TOP * (1 - conceal.target) - 24 * conceal.target]), withToast([w, h + GAP_TOP * (1 - conceal.x) - 24 * conceal.x]), mode === 'idle' && q.mode === 'idle' && !conceal.moving);
     // corners (HU-057): the compact pill is r16 on all four; the expanded island is the Nusa notch, square on top (the ears are
     // drawn by island-nusa-mount.js) and r26 (OVERVIEW.r) at the bottom.
-    const rBottom = lerp(COMPACT.r, OVERVIEW.r, p), rTop = lerp(COMPACT.r, 0, p), rTopUsed = fitOn ? 0 : rTop; // S12: the fitted pill hangs from the edge, bottom corners only
+    const rBottom = lerp(COMPACT.r, OVERVIEW.r, p), rTop = lerp(COMPACT.r, 0, p); // the disc is round on all four corners; the notch is square on top
     const gap = lerp(COMPACT.gap, OVERVIEW.gap, p);
     // the question card is 148 high (200 island): the character centres on it, 15px lower than on the 108 cards
     const ovBase = questionShown ? { ...OVERVIEW_CARD, cy: OVERVIEW_CARD.cy + (questionH - LEGACY_CARD_H) / 2 } : cardShown ? OVERVIEW_CARD : OVERVIEW;
@@ -286,7 +276,7 @@
     const cs = lerp(COMPACT.clay, ov.clay, p);
     put(island, 'width', w + 'px');
     put(island, 'height', h + 'px');
-    put(island, 'borderRadius', `${rTopUsed}px ${rTopUsed}px ${rBottom}px ${rBottom}px`);
+    put(island, 'borderRadius', `${rTop}px ${rTop}px ${rBottom}px ${rBottom}px`);
     put(island, 'top', (gap * (1 - conceal.x) - 24 * conceal.x - 0 * conceal.x) + 'px');
     put(island, 'bottom', 'auto');
     // R6 is only scaled and positioned (never redrawn): centred in the
@@ -492,13 +482,66 @@
   };
   const onCharacter = e => !!(e.target && e.target.closest && e.target.closest('#clay'));
   const PICKUP_THRESHOLD = 3; // Coucou DRAG_THRESHOLD
+  // Koda: a press on the island itself (not a control, a link or selectable text, and not inside a scrolling area) moves it anywhere
+  // on the screen once it travels MOVE_THRESHOLD px; shorter, it stays a click (and a compact click opens the island on release).
+  const MOVE_THRESHOLD = 6; // geometry::CLICK_THRESHOLD_PX
+  const NOT_A_HANDLE = 'button, a, input, textarea, select, label, summary, [contenteditable], [role="button"], [role="link"], [role="slider"], [role="textbox"], [data-no-move]';
+  let islandPress = null;
+  const movableFrom = e => {
+    const t = e.target;
+    if (!t || !t.closest || t.closest(NOT_A_HANDLE)) return false;
+    try {
+      const style = typeof getComputedStyle === 'function' ? getComputedStyle(t) : null;
+      if (style && (style.userSelect === 'text' || style.webkitUserSelect === 'text')) return false;
+      // a press inside anything that scrolls belongs to that scroll, never to an island move
+      for (let el = t; el && el.nodeType === 1 && typeof getComputedStyle === 'function'; el = el.parentElement) {
+        const s = getComputedStyle(el);
+        if ((/(auto|scroll)/.test(s.overflowY) && el.scrollHeight > el.clientHeight)
+          || (/(auto|scroll)/.test(s.overflowX) && el.scrollWidth > el.clientWidth)) return false;
+      }
+    } catch { /* no style: the pill is a handle */ }
+    return true;
+  };
+  const endIslandPress = cancelled => {
+    const p = islandPress;
+    islandPress = null;
+    if (!p) return false;
+    if (p.moving) {
+      document.body.classList.remove('is-moving');
+      send('island_move_end', {});
+    } else if (!cancelled && p.compact && window.desktop) {
+      window.desktop.expand().catch(err => console.error('expand', err));
+    }
+    return true;
+  };
+  // island-free-drag S4 (choice A): the pet may leave ONLY from the OPEN island. A press on the character of the COMPACT disc is the
+  // disc's own handle — it opens on a click and moves on a drag, exactly like the rest of the disc, and the pet never comes out.
+  const expandedNow = () => !!(current && current.state === 'expanded');
+  // the native snapshot is the truth; without one, the phase the page itself settled on decides (fail closed to «open»)
+  const compactNow = () => (current ? current.state === 'compact' : (capsule.dataset.phase || 'expanded') !== 'expanded');
+  // ONE rule, declared in island-desktop.js (pickUpDecision): the pet leaves only from the OPEN island, and only while it is available.
+  const characterPickable = () => {
+    if (!desktopCharacter || typeof desktopCharacter.canPickUp !== 'function') return false;
+    const available = desktopCharacter.canPickUp();
+    const D = window.AbitoIslandDesktopFactory;
+    return D && typeof D.pickUpDecision === 'function'
+      ? D.pickUpDecision({ onCharacter: true, available, expanded: expandedNow() }) === 'pickup'
+      : !!(available && expandedNow()); // no adapter factory (tests only): the same rule, failing closed to «island»
+  };
   window.addEventListener('pointerdown', e => {
     if (e.button !== 0 || !e.isPrimary) return;
-    // Coucou's positive state model: a collapsed bar opens on press; an
-    // expanded island leaves every control (including divs) alone. Only #clay
-    // participates in the independent desktop-character pickup/slap path.
-    if (!onCharacter(e)) {
-      if (current && current.state === 'compact' && window.desktop) {
+    // Coucou's positive state model: a compact island (the disc) opens on a click; an expanded island leaves every control
+    // (including divs) alone. Only the character of the OPEN island participates in the desktop-character pickup path.
+    const pickingUp = onCharacter(e) && characterPickable();
+    if (!pickingUp) {
+      const compact = compactNow();
+      if (movableFrom(e)) {
+        islandPress = { x: e.screenX, y: e.screenY, compact, moving: false };
+        try { if (e.target.setPointerCapture) e.target.setPointerCapture(e.pointerId); }
+        catch { /* pointer capture is best-effort; X11 has an implicit grab */ }
+        return;
+      }
+      if (compact && window.desktop) {
         window.desktop.expand().catch(err => console.error('expand', err));
       }
       return;
@@ -514,10 +557,10 @@
     document.body.classList.add('is-dragging');
     try { if (e.target.setPointerCapture) e.target.setPointerCapture(e.pointerId); }
     catch { /* pointer capture is best-effort; X11 has an implicit grab */ }
-    // #486: a press that starts ON the character may become a drag out to the desktop (Coucou); it is held
-    // back from click reporting until it moves. A character click is reported
-    // to Rust, which can open a compact island but never collapse an expanded one.
-    if (onCharacter(e) && desktopCharacter && desktopCharacter.canPickUp()) botPress = { x: e.clientX, y: e.clientY };
+    // #486 + S4: a press that starts ON the character of the OPEN island may become a drag out to the desktop (Coucou); it is
+    // held back from click reporting until it moves. Any other press is the island's own click/drag pair (Rust never collapses an
+    // expanded island on a release).
+    if (pickingUp) botPress = { x: e.clientX, y: e.clientY };
     else send('drag_press', { x: e.clientX, y: e.clientY });
   });
   // §9.2 hover on the character: scale only (pure O.hoverScale), no state.
@@ -533,6 +576,17 @@
     character.hover(!!point && !pressed && next > 1);
   }
   window.addEventListener('pointermove', e => {
+    if (islandPress) {
+      if (typeof e.buttons === 'number' && (e.buttons & 1) === 0) { endIslandPress(true); return; } // the release was lost
+      if (!islandPress.moving) {
+        if (!(Math.hypot(e.screenX - islandPress.x, e.screenY - islandPress.y) >= MOVE_THRESHOLD)) return;
+        islandPress.moving = true;
+        document.body.classList.add('is-moving');
+        send('island_move_begin', { x: islandPress.x, y: islandPress.y });
+      }
+      send('island_move', { x: e.screenX, y: e.screenY });
+      return;
+    }
     if (!pressed) { updateHover({ x: e.clientX, y: e.clientY }); return; }
     updateHover(null);
     lastPoint = { x: e.clientX, y: e.clientY };
@@ -548,10 +602,13 @@
     send('drag_move', { x: e.clientX, y: e.clientY });
   });
   document.addEventListener('pointerleave', () => updateHover(null));
-  window.addEventListener('pointerup', e => release({ x: e.clientX, y: e.clientY }, false));
-  window.addEventListener('pointercancel', e => release({ x: e.clientX, y: e.clientY }, true));
+  window.addEventListener('pointerup', e => { if (!endIslandPress(false)) release({ x: e.clientX, y: e.clientY }, false); });
+  // Moving the window under the pointer makes WebKitGTK fire pointercancel/blur (seen live on X11): once a move has started
+  // only the button decides when it ends (pointerup, or the next move seen without the button held).
+  const moving = () => !!(islandPress && islandPress.moving);
+  window.addEventListener('pointercancel', e => { if (moving()) return; if (!endIslandPress(true)) release({ x: e.clientX, y: e.clientY }, true); });
   // Focus loss mid-drag (e.g. alt-tab): reconcile without toggling.
-  window.addEventListener('blur', () => release(lastPoint, true));
+  window.addEventListener('blur', () => { if (moving()) return; endIslandPress(true); release(lastPoint, true); });
 
   // ---- #336 F003/F004: the inactivity interaction feed (T1b-b) -------------
   // One controller from the T1a module (policy/scheduler only): the module
@@ -1537,31 +1594,13 @@
   // S2/S3 (02 compacta A, 03 alerta A): the compact pill's width follows what it shows; the layout module computes it from real data.
   document.addEventListener('abito:compact-view', event => {
     const v = event.detail || {};
-    const next = Number.isFinite(v.width) && v.width >= COMPACT.w ? v.width : COMPACT.w;
+    // S3: the disc is the WHOLE compact island in every state. The model publishes its shape, but no compact state may widen it, so
+    // the width is the disc's and only the badge (the S5 signal) follows the model (island-layout.js compactView).
+    compactW = COMPACT.w;
     const badge = $('compact-badge'), act = $('compact-activity');
-    if (act && act.textContent !== (v.activity || '')) act.textContent = v.activity || '';
+    if (act && act.textContent !== '') act.textContent = '';
     if (badge) { badge.hidden = !v.badge; badge.dataset.kind = v.badge || ''; }
-    const reply = $('compact-reply'); if (reply) reply.hidden = !v.reply;
-    capsule.dataset.compactAsk = v.reply ? 'true' : 'false';
-    compactAsk = !!v.reply;
-    compactW = next; render(); // always: the fitted pill follows the text, not only the reported width
-    reserveForReply();
-  });
-  // K2-01b: the text ellipsises 10px before the «Responder» button WHEREVER the button starts. The vendor sheet reserves a fixed
-  // 100px (an 88px button under one font), but the label's width follows the system font (DejaVu, SF, Segoe…): the reserve is
-  // the button's real rendered width + its 10px right inset + 10px of air, measured once it is laid out (and on font load).
-  function reserveForReply() {
-    const reply = $('compact-reply');
-    if (!compactAsk || !reply || reply.hidden || !reply.offsetWidth) { capsule.style.removeProperty('--compact-reply-reserve'); return; }
-    capsule.style.setProperty('--compact-reply-reserve', Math.ceil(reply.getBoundingClientRect().width) + 20 + 'px');
-  }
-  if (document.fonts && document.fonts.addEventListener) document.fonts.addEventListener('loadingdone', reserveForReply);
-  if (window.ResizeObserver && $('compact-reply')) new ResizeObserver(reserveForReply).observe($('compact-reply'));
-  // S3: «Responder» on the widened pill opens the island on the question (the same verb the toast used)
-  const compactReply = $('compact-reply');
-  if (compactReply) compactReply.addEventListener('click', event => {
-    event.stopPropagation();
-    if (event.isTrusted === true) document.dispatchEvent(new CustomEvent('abito:question-open', { detail: { id: 'compact' } }));
+    render();
   });
   document.addEventListener('abito:question-size', event => {
     const h = Number(event.detail && event.detail.islandH);

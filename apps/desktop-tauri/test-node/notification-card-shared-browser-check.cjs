@@ -70,7 +70,8 @@ const uid = n => `0b3a5c9e-8f27-4d11-9a0e-${String(n).padStart(12, '0')}`;
     await page.waitForTimeout(200);
     await page.evaluate(p => __emit({ available: true, pending: p, queued: [], queued_count: 0, notice: null }), p);
     await page.waitForTimeout(700);
-    if (await page.evaluate(() => document.getElementById('capsule').dataset.phase) !== 'expanded') await page.click('#compact-reply');
+    // island-free-drag S3: the compact island is only the disc, and a click on the disc opens it on the question
+    if (await page.evaluate(() => document.getElementById('capsule').dataset.phase) !== 'expanded') await page.click('#island');
     await page.waitForFunction(() => { const c = document.getElementById('capsule'); return c.dataset.phase === 'expanded' && c.dataset.question === 'pending'; }, null, { timeout: 5000 });
     await page.waitForTimeout(700);
   };

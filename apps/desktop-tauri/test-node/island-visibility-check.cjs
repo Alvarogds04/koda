@@ -17,7 +17,7 @@ class Element {
   remove() {}
 }
 
-test('B1 reproduction: expand then collapse settles the visible island and input report at 288x32', () => {
+test('B1 reproduction: expand then collapse settles the visible island and input report at the DISC (40x32)', () => {
   const source = fs.readFileSync(path.join(frontend, 'island.js'), 'utf8');
   const capsule = new Element(), island = new Element(), clayEl = new Element();
   const calls = [], frames = new Map(); let serial = 0, now = 0;
@@ -39,8 +39,10 @@ test('B1 reproduction: expand then collapse settles the visible island and input
   context.window.__islandSetState('compact'); drain();
   console.log('B1 rendered:', capsule.dataset.phase, island.style.width, island.style.height, 'shape:', JSON.stringify(calls.at(-1)));
   assert.equal(capsule.dataset.phase, 'compact');
-  assert.equal(island.style.width, '288px'); assert.equal(island.style.height, '32px');
-  assert.deepEqual(JSON.parse(JSON.stringify(calls.at(-1))), ['island_shape', { payload: { w: 288, h: 32, settled: true } }]);
+  // island-free-drag S3: compact is Koda's disc (geometry::COMPACT_DOT) — no bar, in any compact state
+  assert.equal(island.style.width, '40px'); assert.equal(island.style.height, '32px');
+  assert.equal(island.style.borderRadius, '16px 16px 16px 16px', 'the disc is round on all four corners');
+  assert.deepEqual(JSON.parse(JSON.stringify(calls.at(-1))), ['island_shape', { payload: { w: 40, h: 32, settled: true } }]);
 });
 
 test('B1 click: a named header fold control collapses through the guarded host verb, never an arbitrary control press', async () => {

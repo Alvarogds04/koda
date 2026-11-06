@@ -75,7 +75,7 @@ body {
   cursor: grab;
   overscroll-behavior: none;
 }
-body.is-dragging { cursor: grabbing; }
+body.is-dragging, body.is-moving { cursor: grabbing; }
 /* Probe-only capture background (UI.1 visual contract): the probe adds this
    class around each x11grab so radius/margins/contour are visible, and
    removes it right after. Production code never sets it. */

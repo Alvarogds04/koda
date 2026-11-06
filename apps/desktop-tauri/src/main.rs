@@ -92,7 +92,9 @@ fn ensure_island_window(app: &AppHandle) -> Rect {
     // No monitor (no RandR output: the virtual screen-share monitor was removed) means GDK's scale 1 is a fallback, not a reading,
     // and the work area is a stale X value: keep where the window is and place again when a monitor or another scale shows up
     // (the work-area watcher and ScaleFactorChanged both call this funnel).
-    let Some(wanted) = geometry::island_window_rect_for(monitor, area, io.scale(), state.window_h.load(Ordering::SeqCst)) else {
+    let placed = state.island_origin.lock().unwrap_or_else(|e| e.into_inner())
+        .map(|origin| geometry::Placed { origin, expanded: state.island_open.load(Ordering::SeqCst) });
+    let Some(wanted) = geometry::island_window_rect_where(monitor, area, io.scale(), state.window_h.load(Ordering::SeqCst), placed) else {
         let (w, h) = io.size();
         let (x, y) = io.outer_position();
         return Rect { x, y, w, h };
@@ -100,7 +102,9 @@ fn ensure_island_window(app: &AppHandle) -> Rect {
     if io.size() != (wanted.w, wanted.h) {
         io.set_size(wanted.w, wanted.h);
     }
-    if io.outer_position() != (wanted.x, wanted.y) {
+    // A pill drag owns the position until its release settles it here.
+    let dragging = state.island_drag.lock().unwrap_or_else(|e| e.into_inner()).is_some();
+    if !dragging && io.outer_position() != (wanted.x, wanted.y) {
         io.set_outer_position(wanted.x, wanted.y);
     }
     islandshape::apply(app, None);
@@ -335,6 +339,13 @@ struct AppState {
     /// Logical height of the native island window: the fixed 340 unless a long question asked for more
     /// (island_window_height); Rust clamps it to 70% of the work area and ensure_island_window applies it.
     window_h: AtomicI32,
+    /// Where the human dragged the island (window top-left, physical px); None keeps the top-centre default. Loaded from
+    /// prefs at launch and replaced only by `island_move_end`.
+    island_origin: Mutex<Option<(i32, i32)>>,
+    /// The pill drag in progress: (screen pointer at the press, logical px; window origin at the press, physical px).
+    island_drag: Mutex<Option<((f64, f64), (f64, f64))>>,
+    /// Mirrors `core.expanded` for placement without taking the core lock (written by `apply_plan`, the single toggle funnel).
+    island_open: AtomicBool,
     /// Bumped on every plan application; stale click plans and startup
     /// placement requests must not replace a newer transition.
     generation: AtomicU64,
@@ -575,6 +586,7 @@ fn apply_plan(app: &AppHandle, state: &AppState, plan: TogglePlan) {
         IslandState::Compact
     };
     *state.phase.lock().expect("phase lock") = next;
+    state.island_open.store(plan.is_expand(), Ordering::SeqCst);
     let (w, h) = plan.size();
     let r = plan.rect();
     let edge = plan.edge();
@@ -979,6 +991,8 @@ fn drag_press(app: AppHandle, webview: tauri::Webview, state: State<AppState>, x
     // #366: island-only; the settings window runs the same page and must not drive the island.
     if settingswindow::main_window_only(webview.label()).is_err() { return; }
     state.user_touch.store(true, Ordering::SeqCst);
+    // A pill drag whose release never arrived (reload, lost capture) must not keep placement frozen.
+    state.island_drag.lock().unwrap_or_else(|e| e.into_inner()).take();
     islandclick::DRAGGING.store(true, Ordering::SeqCst); // HU-043: a press must never find the window click-through
     let Some(win) = main_window(&app) else { return };
     let io = TauriIo(&win);
@@ -1033,6 +1047,51 @@ fn drag_release(app: AppHandle, webview: tauri::Webview, state: State<AppState>,
     // Never publish under question/approval admission guards.
     if outcome == "toggle" { publish(&app, &state); }
     outcome.to_string()
+}
+
+/// The pill was grabbed (not the character, not a control): move the island with the pointer. Screen coordinates in logical
+/// px (`PointerEvent.screenX/Y`), so the window moving under the pointer never feeds back into the math.
+#[tauri::command]
+fn island_move_begin(app: AppHandle, webview: tauri::Webview, state: State<AppState>, x: f64, y: f64) {
+    if settingswindow::main_window_only(webview.label()).is_err() { return; }
+    let Some(press) = abito_island::characterwin::valid_point(x, y) else { return };
+    let Some(win) = main_window(&app) else { return };
+    let (ox, oy) = TauriIo(&win).outer_position();
+    state.user_touch.store(true, Ordering::SeqCst);
+    islandclick::DRAGGING.store(true, Ordering::SeqCst); // HU-043: never click-through under the pointer mid-drag
+    *state.island_drag.lock().unwrap_or_else(|e| e.into_inner()) = Some((press, (f64::from(ox), f64::from(oy))));
+}
+
+#[tauri::command]
+fn island_move(app: AppHandle, webview: tauri::Webview, state: State<AppState>, x: f64, y: f64) {
+    if settingswindow::main_window_only(webview.label()).is_err() { return; }
+    let Some(now) = abito_island::characterwin::valid_point(x, y) else { return };
+    let Some((press, origin)) = *state.island_drag.lock().unwrap_or_else(|e| e.into_inner()) else { return };
+    let Some(win) = main_window(&app) else { return };
+    let io = TauriIo(&win);
+    let (nx, ny) = abito_island::characterwin::drag_top_left(origin, now, press, io.scale());
+    io.set_outer_position(nx.round() as i32, ny.round() as i32);
+}
+
+/// The pill was released: remember the spot (clamped so the bar stays on screen), persist it, and settle the window there.
+#[tauri::command]
+fn island_move_end(app: AppHandle, webview: tauri::Webview, state: State<AppState>) {
+    if settingswindow::main_window_only(webview.label()).is_err() { return; }
+    let drag = state.island_drag.lock().unwrap_or_else(|e| e.into_inner()).take();
+    islandclick::DRAGGING.store(false, Ordering::SeqCst);
+    if drag.is_none() { return; }
+    let Some(win) = main_window(&app) else { return };
+    let io = TauriIo(&win);
+    let area = refresh_work_area(&app, &state);
+    let compact = geometry::Placed { origin: io.outer_position(), expanded: false };
+    let anchor = geometry::island_window_rect_placed(compact, area, io.scale(), state.window_h.load(Ordering::SeqCst));
+    *state.island_origin.lock().unwrap_or_else(|e| e.into_inner()) = Some((anchor.x, anchor.y));
+    if !settingshost::save_island_position(&app, (anchor.x, anchor.y)) {
+        eprintln!("island position not saved");
+    }
+    let safe = ensure_island_window(&app);
+    store_requested(&state, "drag", Some((safe.x, safe.y)), Some((safe.w, safe.h)));
+    publish(&app, &state);
 }
 
 /// F025: only a trusted local sender may ask the host to open a parsed web
@@ -1271,6 +1330,7 @@ fn dispatch_click(app: &AppHandle, state: &AppState, click: bridge::Click) -> Re
             let (w, h) = plan.size();
             let r = plan.rect();
             store_requested(state, "expand", Some((r.x, r.y)), Some((w, h)));
+            state.island_open.store(true, Ordering::SeqCst);
             ensure_island_window(app);
             push_phase(app, "overview", plan.edge());
         }
@@ -1279,6 +1339,7 @@ fn dispatch_click(app: &AppHandle, state: &AppState, click: bridge::Click) -> Re
             let r = plan.rect;
             let (vw, vh) = plan.visible;
             store_requested(state, "overview", Some((r.x, r.y)), Some((w, h)));
+            state.island_open.store(true, Ordering::SeqCst);
             ensure_island_window(app);
             let _ = win.eval(format!(
                 "window.__islandSetView && window.__islandSetView('overview',{vw},{vh});"
@@ -1906,6 +1967,9 @@ fn main() {
         chat_cloud: Mutex::new(None),
         chat_rate: Mutex::new(bridge::RateLimiter::new()),
         window_h: AtomicI32::new(geometry::ISLAND_WINDOW.1),
+        island_origin: Mutex::new(None),
+        island_drag: Mutex::new(None),
+        island_open: AtomicBool::new(false),
         hotkey: hotkeyhost::HotkeyHost::default(),
         settings: settingshost::SettingsHost::default(),
         specialists: specialistshost::SpecialistsHost::default(),
@@ -1946,6 +2010,9 @@ fn main() {
             drag_release,
             island_shape,
             island_window_height,
+            island_move_begin,
+            island_move,
+            island_move_end,
             desktop_action,
             open_chat_url,
             characterhost::character_info,
@@ -2060,9 +2127,9 @@ fn main() {
         .setup(|app| {
             let handle = app.handle().clone();
             let win = main_window(&handle).ok_or("main window unavailable")?;
-            // Load preferences before placement so the chosen monitor is available.
-            // The legacy position preference stays on disk but is never applied.
+            // Load preferences before placement so the chosen monitor is available, and the spot the human dragged the island to.
             settingshost::start(&handle);
+            *app.state::<AppState>().island_origin.lock().unwrap_or_else(|e| e.into_inner()) = settingshost::island_position(&handle);
             islandclick::start(&handle); // HU-043: Windows/macOS only (no-op on Linux, which has the GDK input region)
             dictationhost::start(&handle);
             voicehost::start(&handle);

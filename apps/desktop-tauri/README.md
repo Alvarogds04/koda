@@ -302,6 +302,8 @@ Wayland + XWayland, Tauri 2.12.1, GTK 3.24.52, WebKitGTK 2.52.6):
    bottom `[934,1036]` (chosen X kept), expand bottom-anchored `[750,904]`
    (904+176 = work-area bottom: grows upward), collapse back to `[934,1036]`,
    drag + snap top `[934,32]`. All sizes land exactly 288x32 (Coucou's bar since L34; it was a 44x44 disc, and 304x44 before #302) / 672x208.
+   *Later (island-free-drag S3), compact is only Koda's disc: `geometry::COMPACT_DOT` = 40×32, and the native input
+   shape/placement keep that box. This paragraph is the historical probe record of the bar era, not today's geometry.*
 2. **Tauri's `outer_position` getter reports a constant Y offset of −37px**
    (X is correct, setters are correct). The drag math therefore reads the
    origin from the X server (`workarea::x11_window_origin`); the getter
@@ -311,7 +313,7 @@ Wayland + XWayland, Tauri 2.12.1, GTK 3.24.52, WebKitGTK 2.52.6):
    `_NET_WM_STATE_ABOVE` set** (`net_wm_state_above: true` at every step):
    the window really is above others; the getter does not reflect it.
 4. **WebKitGTK inflates the very first map** (it was 304x81 instead of 304x44
-   for the old pill; the compact window is now 288x32) and
+   for the old pill; the compact window was 288x32 then, and is Koda’s 40x32 disc now, island-free-drag S3) and
    a plain `set_size(78,78)` is refused until the widget has been grown
    once. The app pins the contract geometry after page load with a silent
    height-only grow→shrink (the island is top-anchored and the width does not
@@ -1323,6 +1325,24 @@ and T4 owns independent integrated review. No real model calls belong to T1 chec
 ## #264 — the remembered position (GD049, "Persist panel position")
 
 Inventory GD049: *"Load and save the assistant's desktop position across launches."*
+
+> **Current behaviour (Koda, disc drag).** The bullets below describe the original #264 path, which Abito 0.3 retired
+> (`Core::drag` only tracks click travel). Koda moves the island again, compact or expanded, from its own body
+> — never from a control, link or selectable text, and never from a scrolling area. **Compact Koda is only the disc**
+> (`geometry::COMPACT_DOT`, 40×32, round on all four corners; `island-layout.js COMPACT_DOT_W/H`): no bar, no activity
+> line, no mini mascots and no «Responder» pill in ANY compact state, whatever is running or waiting. A click (< 6 px of
+> travel) on the disc opens the island (`window.desktop.expand()` — the native click path no longer toggles from the
+> disc); a drag moves it. A pending question/permission rides the disc as its state dot (sun = waiting, red = error; the
+> visually hidden `#compact-flag` keeps the accessible name «Pi espera tu respuesta») and the question itself is read
+> when the human opens the island. The pet may leave ONLY from the OPEN island, by dragging the character there
+> (`island-desktop.js pickUpDecision`); compact never pulls it out.
+> `island.js` reports screen coordinates through three main-window-only commands: `island_move_begin` once the
+> press travels 6 px (a shorter press stays a click, and a compact click opens the island on release), `island_move` per
+> pointer move, and `island_move_end`. The release stores the window origin in `AppState::island_origin` and persists it
+> with `settingshost::save_island_position` (`Command::SetPosition`); launch reads it back before the first placement.
+> `ensure_island_window` then places through `geometry::island_window_rect_placed`: compact, only the DISC (40×32) must
+> stay inside the work area, so the disc reaches every edge; expanded, the whole window must fit, so near an edge it
+> shifts just enough and collapsing returns it to the saved spot. With no saved origin the island stays top-centre.
 
 - **Saved on release.** The one event that decides where the island lives is a drag
   release: `drag_release` → `ReleaseOutcome::Snapped` → `settingshost::save_position`,

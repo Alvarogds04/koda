@@ -14,7 +14,8 @@ if (!H.findPlaywright()) { console.log('SKIPPED: no playwright — NOT a pass');
         return { top: b.top, bottom: b.bottom, w: b.width, op: +c.opacity, bg: c.backgroundColor, islandBottom: i.bottom, hidden: document.getElementById('capsule').dataset.edgeHidden, state: s.dataset.state }; });
       assert.equal(m.hidden, 'true', `${name}: hidden`);
       assert.ok(Math.abs(m.islandBottom - 8) < 0.6, `${name}: island bottom is 8 (${m.islandBottom})`);
-      assert.ok(m.top >= -0.5 && m.bottom <= 8.5 && m.w >= 150, `${name}: the thread is on screen inside the 8px zone [${m.top},${m.bottom}] w ${m.w}`);
+      // S3 (island-free-drag): the concealed island is the disc's own width (geometry::COMPACT_DOT 40), not the old 288 bar.
+      assert.ok(m.top >= -0.5 && m.bottom <= 8.5 && m.w >= 38 && m.w <= 42, `${name}: the thread is on screen inside the 8px zone [${m.top},${m.bottom}] w ${m.w}`);
       assert.ok(m.op >= 0.4 && !/rgba\(0, 0, 0, 0\)/.test(m.bg), `${name}: opaque enough (${m.op} ${m.bg})`);
       if (name === 'question') assert.equal(m.state, 'question');
       const hit = await r.page.evaluate(() => { const b = document.getElementById('edge-strip').getBoundingClientRect(); return document.elementFromPoint(b.left + b.width / 2, Math.max(0.5, b.top + 1.5)) !== null; });

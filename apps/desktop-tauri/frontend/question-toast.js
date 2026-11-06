@@ -325,9 +325,10 @@ function mount(T) {
   }
   let transientView = null, transientTimer = 0, serial = 0;
   let snapshot = null, view = null, dismissedId = null, shownId = null, expandTimer = 0, collapseTimer = 0, hot = false;
-  // S3: compact uses its pill; expanded questions paint above every view (R23).
-  const onScreen = () => (capsule.dataset.phase === 'expanded' && !capsule.dataset.card)
-    || (capsule.dataset.phase === 'compact' && capsule.dataset.compactAsk === 'true' && capsule.dataset.edgeHidden !== 'true');
+  // S3 + island-free-drag S5: only the EXPANDED island shows the question card, and it paints above every view (R23). Compact is
+  // Koda's disc: it carries the question as its state signal, so no compact pill shows the card any more (the toast is consulted only
+  // while the island is hidden — islandHidden() below — where the disc is concealed).
+  const onScreen = () => capsule.dataset.phase === 'expanded' && !capsule.dataset.card;
   const reduced = () => doc.documentElement.dataset.motion === 'reduce' || (typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches);
   const clear = () => { clearTimeout(expandTimer); clearTimeout(collapseTimer); };
   // S13 countdown: remaining ms survive a pause (hover / focus); the bar is a CSS animation that pauses with it
@@ -514,6 +515,6 @@ function mount(T) {
   document.addEventListener('abito:notice-arrival', event => { const d = event && event.detail; pushTransient(d && d.kind === 'attention' ? T.attentionToast(d) : T.finishedToast(d)); });
   if (listen) listen('question:state', event => apply(event && event.payload)).catch(() => {});
   if (invoke) invoke('question_action', { payload: { action: 'view' } }).then(apply, () => {});
-  new MutationObserver(render).observe(capsule, { attributes: true, attributeFilter: ['data-phase', 'data-view', 'data-card', 'data-compact-ask', 'data-edge-hidden'] });
+  new MutationObserver(render).observe(capsule, { attributes: true, attributeFilter: ['data-phase', 'data-view', 'data-card', 'data-edge-hidden'] });
   setInterval(() => { if (view) render(); }, 5000); // local expiry hides it without a host event
 }

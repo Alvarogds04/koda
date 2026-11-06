@@ -12,9 +12,11 @@ impl Rect {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Edge { #[default] Top, Bottom }
 
-pub const COMPACT_BAR: (i32, i32) = (288, 32);
-/// The compact pill's widths in logical px: at rest, and widened for session rows, or 560 for a pending question/permission (island-layout.js COMPACT_W / COMPACT_WIDE / COMPACT_ASK; a test keeps the two in step).
-pub const COMPACT_WIDTHS: [i32; 3] = [288, 440, 560];
+/// The whole compact island, in logical px: Koda's DISC and nothing else — no bar, no activity line, no mini mascots, no «Responder»
+/// pill, in NO compact state (island-free-drag S3/S5: the human's «que no aparezca la barra y que directamente sea nada más el
+/// circulito»). A pending question/permission rides it as a state signal and is read when the island is opened. The page draws this
+/// box (island-layout.js COMPACT_DOT_W / COMPACT_DOT_H) and a test keeps the two declarations in step.
+pub const COMPACT_DOT: (i32, i32) = (40, 32);
 pub const OVERVIEW_VISIBLE: (i32, i32) = (720, 150);
 /// One logical native window for compact, overview, question and chat.
 pub const ISLAND_WINDOW: (i32, i32) = (752, 340);
@@ -32,7 +34,7 @@ pub enum View { Compact, Overview, Chat }
 /// `(native window, visible island)` in logical pixels. Settings has its own window.
 pub fn view_sizes(view: View, _area_w_phys: i32, area_h_phys: i32, scale: f64) -> ((i32, i32), (i32, i32)) {
     let visible = match view {
-        View::Compact => COMPACT_BAR,
+        View::Compact => COMPACT_DOT,
         View::Overview => OVERVIEW_VISIBLE,
         View::Chat => chat_visible(area_h_phys, scale),
     };
@@ -109,6 +111,28 @@ pub fn island_window_rect_for(monitor: Option<Rect>, area: Rect, reported_scale:
     let scale = effective_scale(reported_scale, monitor)?;
     Some(island_window_rect_on(monitor?, area, scale, height))
 }
+/// Where the human dragged the island: the window's top-left in physical px, and whether it is expanded now.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Placed { pub origin: (i32, i32), pub expanded: bool }
+/// The island at the spot the human dragged it to, kept usable inside `area`. Compact, only the DISC (hanging centred from the
+/// window's top) has to stay on screen, so the transparent rest of the window may leave it and the disc reaches every edge.
+/// Expanded, the whole window has to fit: near an edge it shifts just enough, and collapsing returns it to `origin`.
+pub fn island_window_rect_placed(placed: Placed, area: Rect, scale: f64, height: i32) -> Rect {
+    let (w, h) = scaled_size((ISLAND_WINDOW.0, height), scale);
+    let keep = if placed.expanded { (w, h) } else { scaled_size(COMPACT_DOT, scale) };
+    let (kw, kh) = (keep.0.min(w), keep.1.min(h));
+    let side = (w - kw) / 2;
+    let kept = clamp_rect(Rect { x: placed.origin.0 + side, y: placed.origin.1, w: kw, h: kh }, area);
+    Rect { x: kept.x - side, y: kept.y, w, h }
+}
+/// `island_window_rect_for`, or the dragged placement when the human moved the island. No monitor still means «wait».
+pub fn island_window_rect_where(monitor: Option<Rect>, area: Rect, reported_scale: f64, height: i32, placed: Option<Placed>) -> Option<Rect> {
+    let scale = effective_scale(reported_scale, monitor)?;
+    Some(match placed {
+        Some(placed) => island_window_rect_placed(placed, area, scale, height),
+        None => island_window_rect_on(monitor?, area, scale, height),
+    })
+}
 /// A long question may grow the native window up to this share of the work-area height (human: «abito se ajusta al tamaño»).
 pub const WINDOW_GROWTH_PERCENT: i32 = 70;
 /// The page asks for a logical height; Rust decides: never below the fixed window, never above 70% of the work area.
@@ -117,9 +141,9 @@ pub fn clamp_window_height(desired: i32, area_h_phys: i32, scale: f64) -> i32 {
     let cap = (i64::from(area_h) * i64::from(WINDOW_GROWTH_PERCENT) / 100) as i32;
     desired.max(ISLAND_WINDOW.1).min(cap.max(ISLAND_WINDOW.1))
 }
-/// Page-reported logical dimensions are bounded by the bar and the actual window.
+/// Page-reported logical dimensions are bounded by the DISC (the smallest compact island) and the actual window.
 pub fn clamp_island_shape(w: i32, h: i32, window: (i32, i32)) -> (i32, i32) {
-    (w.max(COMPACT_BAR.0).min(window.0.max(0)), h.max(COMPACT_BAR.1).min(window.1.max(0)))
+    (w.max(COMPACT_DOT.0).min(window.0.max(0)), h.max(COMPACT_DOT.1).min(window.1.max(0)))
 }
 /// GDK input rectangle in window-local logical pixels.
 pub fn island_shape_rect(shape: (i32, i32), window: (i32, i32)) -> (i32, i32, i32, i32) {
@@ -142,14 +166,52 @@ mod tests {
     fn area() -> Rect { Rect { x: 0, y: 32, w: 1920, h: 1048 } }
 
     #[test]
+    fn a_dragged_island_stays_where_it_was_released() {
+        let placed = Placed { origin: (100, 500), expanded: false };
+        assert_eq!(island_window_rect_placed(placed, area(), 1.0, ISLAND_WINDOW.1), Rect { x: 100, y: 500, w: 752, h: 340 });
+        // expanded at the same spot: the whole window fits, so nothing moves either
+        let open = Placed { origin: (100, 500), expanded: true };
+        assert_eq!(island_window_rect_placed(open, area(), 1.0, ISLAND_WINDOW.1), Rect { x: 100, y: 500, w: 752, h: 340 });
+    }
+    #[test]
+    fn a_compact_island_may_reach_any_edge_while_the_disc_stays_on_screen() {
+        // S3: compact is only the disc, so the DISC (not a bar) is what placement keeps inside the work area
+        let side = (ISLAND_WINDOW.0 - COMPACT_DOT.0) / 2; // transparent air beside the disc
+        let compact = |origin| island_window_rect_placed(Placed { origin, expanded: false }, area(), 1.0, ISLAND_WINDOW.1);
+        assert_eq!(compact((-5000, 500)), Rect { x: -side, y: 500, w: 752, h: 340 }, "left edge");
+        assert_eq!(compact((5000, 500)), Rect { x: 1920 - 752 + side, y: 500, w: 752, h: 340 }, "right edge");
+        assert_eq!(compact((500, 5000)), Rect { x: 500, y: 1080 - COMPACT_DOT.1, w: 752, h: 340 }, "bottom edge: the disc, not the window");
+        assert_eq!(compact((500, -5000)), Rect { x: 500, y: 32, w: 752, h: 340 }, "never above the top panel");
+    }
+    #[test]
+    fn an_expanded_island_near_an_edge_shifts_just_enough_to_show_everything() {
+        let open = |origin| island_window_rect_placed(Placed { origin, expanded: true }, area(), 1.0, ISLAND_WINDOW.1);
+        assert_eq!(open((500, 1060)), Rect { x: 500, y: 1080 - 340, w: 752, h: 340 });
+        assert_eq!(open((-300, 500)), Rect { x: 0, y: 500, w: 752, h: 340 });
+        assert_eq!(open((1900, 500)), Rect { x: 1920 - 752, y: 500, w: 752, h: 340 });
+        // a scaled screen keeps physical origins and scales the kept box
+        let hidpi = island_window_rect_placed(Placed { origin: (5000, 5000), expanded: false }, area(), 2.0, ISLAND_WINDOW.1);
+        // compact at scale 2: the 80x64 disc is what stays on screen; the 1504-wide window may hang off it
+        assert_eq!(hidpi, Rect { x: 1920 - 80 - (1504 - 80) / 2, y: 1080 - 64, w: 1504, h: 680 });
+    }
+    #[test]
+    fn without_a_dragged_origin_the_island_is_placed_top_centre_as_before() {
+        let monitor = Rect { x: 0, y: 0, w: 1920, h: 1080 };
+        assert_eq!(island_window_rect_where(Some(monitor), area(), 1.0, ISLAND_WINDOW.1, None), island_window_rect_for(Some(monitor), area(), 1.0, ISLAND_WINDOW.1));
+        let placed = Placed { origin: (100, 500), expanded: false };
+        assert_eq!(island_window_rect_where(Some(monitor), area(), 1.0, ISLAND_WINDOW.1, Some(placed)), Some(Rect { x: 100, y: 500, w: 752, h: 340 }));
+        assert_eq!(island_window_rect_where(None, area(), 1.0, ISLAND_WINDOW.1, Some(placed)), None, "no monitor: keep the last placement");
+    }
+
+    #[test]
     fn scaled_size_applies_scale_factor() {
-        assert_eq!(scaled_size(COMPACT_BAR, 1.0), (288, 32));
+        assert_eq!(scaled_size(COMPACT_DOT, 1.0), (40, 32));
         assert_eq!(scaled_size(ISLAND_WINDOW, 1.0), (752, 340));
-        assert_eq!(scaled_size(COMPACT_BAR, 2.0), (576, 64));
-        assert_eq!(scaled_size(COMPACT_BAR, 1.25), (360, 40));
+        assert_eq!(scaled_size(COMPACT_DOT, 2.0), (80, 64));
+        assert_eq!(scaled_size(COMPACT_DOT, 1.25), (50, 40));
         assert_eq!(scaled_size((304, 44), 1.25), (380, 55));
         for bad in [0.0, -1.0, f64::NAN, f64::INFINITY] {
-            assert_eq!(scaled_size(COMPACT_BAR, bad), COMPACT_BAR);
+            assert_eq!(scaled_size(COMPACT_DOT, bad), COMPACT_DOT);
         }
     }
     #[test]
@@ -239,12 +301,12 @@ mod tests {
     }
     #[test]
     fn approved_overview_and_compact_are_untouched_by_the_chat_view() {
-        assert_eq!(OVERVIEW_VISIBLE,(720, 150)); assert_eq!(COMPACT_BAR,(288,32));
+        assert_eq!(OVERVIEW_VISIBLE,(720, 150)); assert_eq!(COMPACT_DOT,(40,32));
         assert_eq!(CHAT_COLUMN_W,OVERVIEW_VISIBLE.0); assert!(CHAT_MIN_H > OVERVIEW_VISIBLE.1);
     }
     #[test]
     fn the_view_table_agrees_with_the_per_view_functions() {
-        assert_eq!(view_sizes(View::Compact,1920,1048,1.0),(ISLAND_WINDOW,COMPACT_BAR));
+        assert_eq!(view_sizes(View::Compact,1920,1048,1.0),(ISLAND_WINDOW,COMPACT_DOT));
         assert_eq!(view_sizes(View::Overview,1920,1048,1.0),(ISLAND_WINDOW,OVERVIEW_VISIBLE));
         assert_eq!(view_sizes(View::Chat,1920,1048,1.0),(ISLAND_WINDOW,chat_visible(1048,1.0)));
     }
@@ -262,12 +324,12 @@ mod tests {
     }
     #[test]
     fn transition_input_shape_holds_both_endpoints_and_spring_air() {
-        assert_eq!(transition_shape((288, 32), (720, 150), ISLAND_WINDOW), (752, 166));
-        assert_eq!(transition_shape((720, 300), (288, 32), ISLAND_WINDOW), (752, 316));
+        assert_eq!(transition_shape((40, 32), (720, 150), ISLAND_WINDOW), (752, 166));
+        assert_eq!(transition_shape((720, 300), (40, 32), ISLAND_WINDOW), (752, 316));
         assert_eq!(transition_shape((752, 340), (720, 300), ISLAND_WINDOW), ISLAND_WINDOW);
-        assert_eq!(transition_shape((720, 300), (288, 32), (500, 200)), (500, 200));
-        assert_eq!(transition_shape((720, 150), (288, 32), ISLAND_WINDOW),
-            transition_shape((288, 32), (720, 150), ISLAND_WINDOW));
+        assert_eq!(transition_shape((720, 300), (40, 32), (500, 200)), (500, 200));
+        assert_eq!(transition_shape((720, 150), (40, 32), ISLAND_WINDOW),
+            transition_shape((40, 32), (720, 150), ISLAND_WINDOW));
     }
 
     // --- #493 step B (human: «Fija arriba al centro, como Coucou»): ONE fixed window ------------------------------------
@@ -280,7 +342,7 @@ mod tests {
             assert_eq!(window, ISLAND_WINDOW, "{view:?}: the native window never changes with the view");
             assert!(visible.0 <= window.0 && visible.1 <= window.1 - 16, "{view:?}: the visible island fits inside with air");
         }
-        assert_eq!(view_sizes(View::Compact, 1920, 1048, 1.0).1, COMPACT_BAR);
+        assert_eq!(view_sizes(View::Compact, 1920, 1048, 1.0).1, COMPACT_DOT);
         assert_eq!(view_sizes(View::Overview, 1920, 1048, 1.0).1, OVERVIEW_VISIBLE);
         assert_eq!(view_sizes(View::Chat, 1920, 1048, 1.0).1, (720, 240));
     }
@@ -305,16 +367,16 @@ mod tests {
 
     #[test]
     fn the_input_shape_is_the_visible_island_clamped_between_the_bar_and_the_window() {
-        // the page reports what it draws; Rust never lets it make the island unclickable (below the bar) or larger than the window
-        for (asked, expected) in [((288, 32), (288, 32)), ((720, 150), (720, 150)), ((720, 300), (720, 300)), ((0, 0), (288, 32)), ((-5, 9), (288, 32)),
-            ((10_000, 10_000), (752, 340)), ((720, 5_000), (720, 340)), ((100, 200), (288, 200))] {
+        // the page reports what it draws; Rust never lets it make the island unclickable (below the DISC) or larger than the window
+        for (asked, expected) in [((40, 32), (40, 32)), ((720, 150), (720, 150)), ((720, 300), (720, 300)), ((0, 0), (40, 32)), ((-5, 9), (40, 32)),
+            ((10_000, 10_000), (752, 340)), ((720, 5_000), (720, 340)), ((100, 200), (100, 200))] {
             assert_eq!(clamp_island_shape(asked.0, asked.1, ISLAND_WINDOW), expected, "{asked:?}");
         }
         // a window clamped by a small screen bounds it too
         assert_eq!(clamp_island_shape(720, 300, (500, 300)), (500, 300));
-        // and the rect inside the window: horizontally centred, glued to the top
+        // and the rect inside the window: horizontally centred, glued to the top — the disc's own box in compact
         assert_eq!(island_shape_rect((720, 150), ISLAND_WINDOW), (16, 0, 720, 150));
-        assert_eq!(island_shape_rect((288, 32), ISLAND_WINDOW), (232, 0, 288, 32));
+        assert_eq!(island_shape_rect(COMPACT_DOT, ISLAND_WINDOW), ((752 - COMPACT_DOT.0) / 2, 0, COMPACT_DOT.0, COMPACT_DOT.1));
         assert_eq!(island_shape_rect((752, 340), ISLAND_WINDOW), (0, 0, 752, 340));
     }
 
@@ -425,26 +487,18 @@ mod tests {
 
 
     #[test]
-    fn every_compact_width_the_island_page_declares_is_known_here() {
-        // One source of truth: island-layout.js declares the compact pill's widths (COMPACT_W, COMPACT_WIDE, COMPACT_ASK, ...); the
-        // hidden strip's input zone in islandshape.rs only recognises the widths listed in COMPACT_WIDTHS. A width added on the page
-        // and not here silently gave the strip a 32 px input zone instead of the drawn 8 (it happened with 440).
+    fn the_disc_the_island_page_declares_is_the_one_geometry_keeps_on_screen() {
+        // One source of truth: island-layout.js declares the disc's box as COMPACT_DOT_W / COMPACT_DOT_H, and geometry::COMPACT_DOT
+        // (the native input shape, the placement keep-box and the hidden strip's activation zone) is exactly that box. A page disc
+        // that moved without this constant silently shrank the clickable island (or kept a bar on screen that is not drawn).
         let js = include_str!("../frontend/island-layout.js");
-        let mut declared: Vec<i32> = Vec::new();
-        for (at, _) in js.match_indices("COMPACT_") {
-            let rest = &js[at + "COMPACT_".len()..];
-            let name_end = rest.find(|c: char| !(c.is_ascii_uppercase() || c == '_')).unwrap_or(0);
-            let after = rest[name_end..].trim_start();
-            if name_end == 0 || !after.starts_with('=') || after.starts_with("==") { continue; }
-            let digits: String = after[1..].trim_start().chars().take_while(|c| c.is_ascii_digit()).collect();
-            if let Ok(w) = digits.parse::<i32>() { declared.push(w); }
-        }
-        declared.sort_unstable();
-        declared.dedup();
-        assert!(declared.len() >= 3, "the page declares its compact widths as COMPACT_* = N constants: found {declared:?}");
-        let mut known = COMPACT_WIDTHS.to_vec();
-        known.sort_unstable();
-        assert_eq!(declared, known, "island-layout.js compact widths vs geometry::COMPACT_WIDTHS");
-        assert!(COMPACT_WIDTHS.iter().all(|&w| w <= ISLAND_WINDOW.0), "every compact pill fits the window");
+        let declared = |name: &str| -> i32 {
+            let at = js.find(&format!("const {name} = ")).unwrap_or_else(|| panic!("island-layout.js declares {name}"));
+            js[at..].split_once('=').expect("a value").1.trim_start().chars().take_while(|c| c.is_ascii_digit()).collect::<String>()
+                .parse::<i32>().unwrap_or_else(|_| panic!("{name} is a decimal constant"))
+        };
+        assert_eq!((declared("COMPACT_DOT_W"), declared("COMPACT_DOT_H")), COMPACT_DOT,
+            "island-layout.js COMPACT_DOT_W / COMPACT_DOT_H vs geometry::COMPACT_DOT");
+        assert!(COMPACT_DOT.0 <= ISLAND_WINDOW.0 && COMPACT_DOT.1 <= ISLAND_WINDOW.1, "the disc fits the window");
     }
 }

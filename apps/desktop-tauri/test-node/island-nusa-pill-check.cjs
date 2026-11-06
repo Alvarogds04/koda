@@ -24,7 +24,7 @@ const probe = () => page => page.evaluate(async () => {
   const reply = document.getElementById('compact-reply'), rv = reply && reply.offsetWidth ? R(reply) : null;
   const strip = document.getElementById('edge-strip'), cs = getComputedStyle(strip), cap = document.getElementById('capsule');
   return { island: ib, koda: kb, ink, act: act.textContent ? R(act) : null, text: act.textContent, scrollW: act.scrollWidth, clientW: act.clientWidth, reply: rv,
-    fit: cap.dataset.pillFit, phase: cap.dataset.phase, strip: { op: cs.opacity, disp: cs.display, bg: cs.backgroundColor, state: strip.dataset.state },
+    fit: cap.dataset.compactDisc, phase: cap.dataset.phase, strip: { op: cs.opacity, disp: cs.display, bg: cs.backgroundColor, state: strip.dataset.state },
     shapes: (window.__shapes || []).slice(-1)[0] || null };
 });
 const P = probe();

@@ -29,7 +29,11 @@ const strays = page => page.evaluate(() => {
   }
   return out;
 });
-const flagBox = page => page.evaluate(() => { const f = document.getElementById('compact-flag'), s = getComputedStyle(f), b = f.getBoundingClientRect(); return { shown: s.display !== 'none' && s.visibility !== 'hidden' && b.width > 0 && b.height > 0, hidden: f.hidden, box: [b.left, b.top, b.width, b.height].map(Math.round) }; });
+// island-free-drag S5: the loose flag is never DRAWN (it is a visually hidden name for AT: clipped to 1px and its glyph does not lay
+// out), so «shown» means «paints something a human could see» — a clipped 1x1 box is not a stray dot.
+const flagBox = page => page.evaluate(() => { const f = document.getElementById('compact-flag'), s = getComputedStyle(f), b = f.getBoundingClientRect();
+  const clipped = (s.clipPath && s.clipPath !== 'none') || (s.clip && s.clip !== 'auto');
+  return { shown: !clipped && s.display !== 'none' && s.visibility !== 'hidden' && b.width > 0 && b.height > 0, clipped, hidden: f.hidden, box: [b.left, b.top, b.width, b.height].map(Math.round) }; });
 
 (async () => {
   // ── (1) expanded bridge card, both themes
@@ -77,7 +81,7 @@ const flagBox = page => page.evaluate(() => { const f = document.getElementById(
       await drive(r.page); ran++;
       const f = await flagBox(r.page); if (f.shown) bad.push(`${t}: #compact-flag visible at ${f.box}`);
       const s = await strays(r.page); if (s.length) bad.push(`${t}: stray warm element(s) outside island/toast: ${s.join(' ')}`);
-      const dot = await r.page.evaluate(() => { const c = document.getElementById('capsule'); return { pill: c.style.getPropertyValue('--pill-dot'), fit: c.dataset.pillFit, aft: getComputedStyle(document.getElementById('island'), '::after').content }; });
+      const dot = await r.page.evaluate(() => { const c = document.getElementById('capsule'); return { pill: c.style.getPropertyValue('--pill-dot'), fit: c.dataset.compactDisc, aft: getComputedStyle(document.getElementById('island'), '::after').content }; });
       if (warmDot && !/sun/i.test(dot.pill)) bad.push(`${t}: pill dot is '${dot.pill}', expected the sun colour`);
       if (!theme.startsWith('x') && dot.fit === 'true' && dot.aft === 'none') bad.push(`${t}: fitted pill lost its own dot`);
       await r.screenshot(`/tmp/bridge-fix-${name.replace(/[^a-z]+/g, '-')}-${theme}.png`);

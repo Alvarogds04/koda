@@ -88,17 +88,12 @@ test('S9: size setting S/M/L/Auto scales the notch, bigger on wide monitors, nev
   assert.ok(N.sizeScale('l', 800, 800) < 1.25);
   assert.equal(N.sizeScale('zzz', 1920, 1920), 1, 'unknown setting falls back to M'); assert.equal(N.sizeScale('m', 0, 0), 1);
 });
-test('S12: the compact pill fits its content: width = padding + text + Koda, bounded', () => {
-  // HU-057 (human, 28-oct): with nothing to show the pill shrinks to a small capsule the size of compact Koda, no text
-  assert.equal(N.compactWidth(0), N.COMPACT.kodaOnly);
-  assert.equal(N.COMPACT.kodaOnly, 8 + 24 + 8);
-  assert.ok(N.COMPACT.kodaOnly < N.COMPACT.min + 1);
-  assert.equal(N.compactWidth(1), N.COMPACT.min, 'any text keeps the readable minimum');
-  assert.equal(N.compactWidth(100), 8 + 24 + 16 + 100 + 10, 'padLeft + Koda + gap (dot) + text + padRight');
-  assert.ok(N.COMPACT.gap >= 8, 'Koda and the text keep at least 8px apart');
-  assert.ok(N.COMPACT.max <= 440, 'bounded by the narrowest reported wide box');
-  assert.equal(N.compactWidth(9999), N.COMPACT.max);
-  assert.equal(N.COMPACT.h, 32); assert.equal(N.COMPACT.radius, 16);
+test('island-free-drag S3: there is no fitted compact pill any more, and the disc has ONE size declaration', () => {
+  // the fitted pill (HU-057 S12) is retired: compact is only the disc, so no width model survives here
+  assert.equal(N.compactWidth, undefined, 'the text-fitted compact width is gone');
+  assert.equal(N.COMPACT, undefined, 'and with it the pill chrome constants');
+  const L = require('../frontend/island-layout.js');
+  assert.deepEqual([L.COMPACT_DOT.w, L.COMPACT_DOT.h], [40, 32], 'the disc box lives in island-layout.js (geometry::COMPACT_DOT)');
 });
 
 const ROWS = [

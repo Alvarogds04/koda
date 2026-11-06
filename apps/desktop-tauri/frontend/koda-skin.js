@@ -142,12 +142,11 @@
     if (!px || !shown) return;
     mainSlot.el.style.left = Math.round(r.left + r.width / 2 - ir.left - px / 2) + 'px';
     mainSlot.el.style.top = Math.round(r.top + r.height / 2 - ir.top - px / 2) + 'px';
-    if (cap() && cap().dataset.pillFit === 'true' && cap().dataset.phase === 'compact') { // fitted pill: the drawn pixels, not the cell, are centred
-      const k = mainSlot.k || 1, ink = inkOf(id, { cell: mainSlot.cell }), N = window.AbitoNusa;
+    if (cap() && cap().dataset.compactDisc === 'true' && cap().dataset.phase === 'compact') { // the DISC: the drawn pixels, not the cell, are centred (island-free-drag S3: it is bare in every compact state, so the ink is centred both ways)
+      const k = mainSlot.k || 1, ink = inkOf(id, { cell: mainSlot.cell });
       if (ink) {
         mainSlot.el.style.top = Math.round(ir.height / 2 - (ink.t + ink.b) / 2 * k) + 'px';
-        const bare = cap().dataset.pillBare === 'true', pad = N && N.COMPACT ? N.COMPACT.padLeft : 8;
-        mainSlot.el.style.left = Math.round(bare ? ir.width / 2 - (ink.l + ink.r) / 2 * k : pad - ink.l * k) + 'px';
+        mainSlot.el.style.left = Math.round(ir.width / 2 - (ink.l + ink.r) / 2 * k) + 'px';
       }
     }
   }

@@ -2608,7 +2608,7 @@ fn island_validation(app: &AppHandle) {
     };
     let compact = page_state("compact");
     let visible = compact.first().and_then(|v| v["visible"].as_array());
-    let small = visible.map_or(false, |v| (v[0].as_f64().unwrap_or(0.0) - geometry::COMPACT_BAR.0 as f64).abs() <= 0.5 && (v[1].as_f64().unwrap_or(0.0) - geometry::COMPACT_BAR.1 as f64).abs() <= 0.5);
+    let small = visible.map_or(false, |v| (v[0].as_f64().unwrap_or(0.0) - geometry::COMPACT_DOT.0 as f64).abs() <= 0.5 && (v[1].as_f64().unwrap_or(0.0) - geometry::COMPACT_DOT.1 as f64).abs() <= 0.5);
     scene("isla-compacta", compact_size && small, "tamaño compacto no observado", json!({"page":compact,"native_expected":[native_size.0,native_size.1]}));
     let above = wait(&|| abito_island::workarea::x11_find_own_window(abito_island::workarea::WINDOW_TITLE).map(|w| w.wm_state_above == Some(true)).unwrap_or(false));
     scene("isla-siempre-encima", above, "falta _NET_WM_STATE_ABOVE al arrancar", json!({"above":above}));
