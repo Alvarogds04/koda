@@ -42,13 +42,17 @@ const runtimes = fs.mkdtempSync(path.join(os.tmpdir(), 'abito-macos-runtime-'));
 function fakeRuntime(name, target) {
   const r = path.join(runtimes, name);
   fs.mkdirSync(r);
-  fs.writeFileSync(path.join(r, 'koda-runtime.json'), JSON.stringify({ target, node: '22.23.4', pi: '1.4.0', piCli: 'node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js', gentlePi: '4.3.0', gentleShell: 'node_modules/gentle-pi/bin/gentle-shell.mjs' }));
+  fs.mkdirSync(path.join(r, 'bin'), { recursive: true });
+  // K2-05 T1b fixture parity: the real build emits bin/engram and manifest keys engram/engramBin next to pi/gentleShell.
+  fs.writeFileSync(path.join(r, 'koda-runtime.json'), JSON.stringify({ target, node: '22.23.4', pi: '1.4.0', piCli: 'node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js', gentlePi: '4.3.0', gentleShell: 'node_modules/gentle-pi/bin/gentle-shell.mjs', engram: '3.4.0', engramBin: 'bin/engram' }));
   for (const f of ['node', 'pi', 'gentle-shell']) fs.writeFileSync(path.join(r, f), '#!/bin/sh\n', { mode: 0o755 });
+  fs.writeFileSync(path.join(r, 'bin', 'engram'), '#!/bin/sh\n', { mode: 0o755 });
   return r;
 }
 const generate = (args) => cp.spawnSync(process.execPath, [path.join(crate, 'packaging/macos-config.cjs'), ...args], { cwd: dir, encoding: 'utf8' });
 try {
   const runtime = fakeRuntime('darwin', 'darwin-arm64');
+  assert.ok(fs.existsSync(path.join(runtime, 'bin/engram')), 'the fixture fake runtime carries bin/engram (K2-05 T1b parity)');
   const result = generate(['--runtime', runtime]);
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stderr, '');

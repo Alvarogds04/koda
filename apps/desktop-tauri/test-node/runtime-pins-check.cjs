@@ -17,6 +17,9 @@ const test = (name, fn) => {
 
 const PI = '@earendil-works/pi-coding-agent';
 const nodePins = read(path.join(crate, 'packaging/runtime/node.sha256')).trim().split(/\r?\n/).map((l) => l.split(/\s+/));
+// K2-05 T1b (S5): the Engram memory engine ships as the prebuilt GitHub release binary (never built from Go),
+// pinned like Node: one asset per Koda target with its sha256, from the release's own checksums.txt.
+const engramPins = read(path.join(crate, 'packaging/runtime/engram.sha256')).trim().split(/\r?\n/).map((l) => l.split(/\s+/));
 // a malformed pin file must fail the check with the file named, not with a bare SyntaxError
 function readJson(file) {
   try { return JSON.parse(read(file)); } catch (e) { throw new Error(`cannot read JSON ${file}: ${e.message}`); }
@@ -47,12 +50,43 @@ test('Pi is pinned to exactly 1.4.0', () => {
   assert.equal(pkg.dependencies[PI], '1.4.0');
   assert.equal(lock.packages[`node_modules/${PI}`].version, '1.4.0');
 });
-test('the runtime dependencies are exactly Pi, gentle-pi, and the peers gentle-pi declares (Pi is the only agent dependency)', () => {
+test('one Engram pin per shipped installer target: linux-x64, darwin-arm64 and win-x64, nothing else (K2-05 T1b)', () => {
+  const names = engramPins.map(([, name]) => name).sort();
+  assert.deepEqual(names, ['engram_3.4.0_darwin_arm64.tar.gz', 'engram_3.4.0_linux_amd64.tar.gz', 'engram_3.4.0_windows_amd64.zip']);
+});
+test('every Engram pin is a sha256 of one prebuilt 3.4.0 release asset, one version for every OS (never built from Go)', () => {
+  const versions = new Set();
+  for (const [sha, name] of engramPins) {
+    assert.match(sha, /^[0-9a-f]{64}$/, `sha256 for ${name}`);
+    const m = /^engram_([\d.]+)_(linux_amd64|darwin_arm64|windows_amd64)\.(tar\.gz|zip)$/.exec(name);
+    assert.ok(m, `engram release asset name: ${name}`);
+    assert.match(m[3], m[2] === 'windows_amd64' ? /^zip$/ : /^tar\.gz$/, m[2]);
+    versions.add(m[1]);
+  }
+  assert.equal(versions.size, 1, 'one Engram version for every OS');
+  assert.equal([...versions][0], '3.4.0', 'pinned 3.4.0 like gentle-pi installer-downloads (K2-02: Koda pins, never floats)');
+});
+test('the Engram companion gentle-engram is pinned exactly 0.4.2 next to Pi (K2-05 T1b)', () => {
+  assert.equal(pkg.dependencies['gentle-engram'], '0.4.2');
+  const entry = lock.packages['node_modules/gentle-engram'];
+  assert.equal(entry.version, '0.4.2');
+  assert.match(entry.resolved, /^https:\/\/registry\.npmjs\.org\//);
+  assert.match(entry.integrity, /^sha512-/);
+});
+test('every peer gentle-engram declares is pinned at the root to a version that satisfies it', () => {
+  const engram = lock.packages['node_modules/gentle-engram'];
+  assert.ok(engram.peerDependencies, 'gentle-engram declares peers');
+  for (const [name] of Object.entries(engram.peerDependencies)) {
+    assert.ok(pkg.dependencies[name], `the root pins gentle-engram's peer ${name}`);
+  }
+});
+test('the runtime dependencies are exactly Pi, gentle-pi, gentle-engram, and the peers gentle-pi declares (Pi is the only agent dependency)', () => {
   // The exact set, not a subset: a new dependency must be added here deliberately, never silently.
   assert.deepEqual(Object.entries(pkg.dependencies).sort(), [
     ['@earendil-works/pi-ai', '1.4.0'],
     ['@earendil-works/pi-coding-agent', '1.4.0'],
     ['@earendil-works/pi-tui', '1.4.0'],
+    ['gentle-engram', '0.4.2'],
     ['gentle-pi', '4.3.0'],
     ['typebox', '1.3.27'],
   ]);
@@ -97,7 +131,7 @@ test('the Windows installed smoke installs that same pinned Pi, never an unpinne
 test('hash-pinned inputs keep their bytes on a Windows checkout (no CRLF conversion): .gitattributes marks them -text', () => {
   // CI 41733396427 (windows-latest): with core.autocrlf the licence texts got CRLF, so their pinned sha256 broke (and a
   // Windows-built runtime would ship CRLF notices). Every hash-pinned input is checked out byte-for-byte on every OS.
-  const files = ['packaging/runtime/licenses/Apache-2.0.txt', 'packaging/runtime/licenses/MIT.txt', 'packaging/runtime/node.sha256'];
+  const files = ['packaging/runtime/licenses/Apache-2.0.txt', 'packaging/runtime/licenses/MIT.txt', 'packaging/runtime/node.sha256', 'packaging/runtime/engram.sha256'];
   const r = require('node:child_process').spawnSync('git', ['check-attr', 'text', '--', ...files], { cwd: crate, encoding: 'utf8' });
   assert.equal(r.status, 0, r.stderr);
   const seen = new Set(r.stdout.split('\n'));

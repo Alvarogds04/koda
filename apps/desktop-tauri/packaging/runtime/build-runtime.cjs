@@ -5,13 +5,18 @@
    installed on the machine.
 
    Usage: node packaging/runtime/build-runtime.cjs --target <linux-x64|darwin-arm64|win-x64> --out <dir>
-            [--node-archive <file>] [--cache <dir>] [--self-check] [--archive <file.tar.gz>]
+            [--node-archive <file>] [--engram-archive <file>] [--cache <dir>] [--self-check] [--archive <file.tar.gz>]
 
    Inputs, all pinned in this directory:
    - node.sha256: one official Node archive per target with its sha256 (the lines of the release's signed SHASUMS256.txt).
      The archive comes from --node-archive (offline) or from https://nodejs.org/dist/; a sha256 mismatch fails closed.
    - package.json + package-lock.json: Pi, gentle-pi and every peer gentle-pi declares, pinned exactly; npm ci installs
      every package against its lockfile sha512.
+   - engram.sha256 (K2-05 T1b, S5): one PREBUILT release asset of the Gentleman-Programming/engram binary per target
+     (linux-x64 -> linux_amd64.tar.gz, darwin-arm64 -> darwin_arm64.tar.gz, win-x64 -> windows_amd64.zip; the release
+     lists exactly one supported Windows archive, the same rule Gentle Dot applies), never built from Go. The archive
+     comes from --engram-archive (offline) or from the GitHub release; a sha256 mismatch fails closed. Only the single
+     engram/engram.exe member is extracted to <out>/bin/ (mode 0755); the release's extra members (tools/…) never ship.
    A CROSS-TARGET BUILD (--target other than the build host) is audited after npm ci: every installed package that
    declares os/cpu/libc must run on the --target, because npm installs native optionals for the host alone and such a
    build would silently ship the host's native files; the mismatch names the package and the target and fails the
@@ -27,11 +32,13 @@
                            node.exe with Pi's own CLI JS resolved next to it (desktop-daemon runtime.cjs)
      gentle-shell          (Linux, macOS) launcher of the same shape that runs gentle-pi's bin/gentle-shell.mjs with THIS
                            Node; Windows gets none (T2 resolves node.exe + the script in the daemon)
-     koda-runtime.json     {target, node, pi, piCli, gentlePi, gentleShell}
+     bin/engram | bin\\engram.exe  the pinned Engram binary (K2-05 T1b)
+     koda-runtime.json     {target, node, pi, piCli, gentlePi, gentleShell, engram, engramBin}
    --archive also packs <out> into ONE tar.gz (members relative to the runtime folder's root, no links) and prints its
    sha256: the single file the Linux and Windows installers ship and verify before extracting. macOS ships the folder.
-   --self-check runs the built Pi (`pi --version`) and the built gentle-shell offline (an RPC get_state answered with
-   success:true over stdin, no auto-setup, PI_CODING_AGENT_DIR unset) with an empty private HOME; only on this OS.
+   --self-check runs the built Pi (`pi --version`), the built Engram (`bin/engram version`, offline, requires the pinned
+   version) and the built gentle-shell offline (an RPC get_state answered with success:true over stdin, no auto-setup,
+   PI_CODING_AGENT_DIR unset) with an empty private HOME; only on this OS.
    KODA_RUNTIME_SELF_CHECK_TIMEOUT_MS (TESTS ONLY — never set it on a real build) overrides both gentle-shell
    self-check bounds: the wait for the get_state answer and the wait for gentle-shell's exit after it answers;
    any other value than a positive integer fails the build. */
@@ -45,10 +52,14 @@ const HERE = __dirname;
 const PI = '@earendil-works/pi-coding-agent';
 const GENTLE = 'gentle-pi';
 const TARGETS = {
-  'linux-x64': { platform: 'linux', arch: 'x64', ext: '.tar.gz', exe: 'node' },
-  'darwin-arm64': { platform: 'darwin', arch: 'arm64', ext: '.tar.gz', exe: 'node' },
-  'win-x64': { platform: 'win32', arch: 'x64', ext: '.zip', exe: 'node.exe' },
+  'linux-x64': { platform: 'linux', arch: 'x64', ext: '.tar.gz', exe: 'node', engramAsset: 'linux_amd64.tar.gz', engramExe: 'engram' },
+  'darwin-arm64': { platform: 'darwin', arch: 'arm64', ext: '.tar.gz', exe: 'node', engramAsset: 'darwin_arm64.tar.gz', engramExe: 'engram' },
+  'win-x64': { platform: 'win32', arch: 'x64', ext: '.zip', exe: 'node.exe', engramAsset: 'windows_amd64.zip', engramExe: 'engram.exe' },
 };
+const ENGRAM_RELEASE = 'https://github.com/Gentleman-Programming/engram/releases';
+// K2-05 T1b: the prebuilt binary ships no licence file; these facts come from the repository's LICENSE at tag v3.4.0
+// (https://raw.githubusercontent.com/Gentleman-Programming/engram/v3.4.0/LICENSE), not from the release archive.
+const ENGRAM_LICENCE = { id: 'MIT', holder: '2026 Alan Buscaglia', repository: 'https://github.com/Gentleman-Programming/engram' };
 
 class Fail extends Error {
   constructor(message, code = 1) { super(message); this.code = code; }
@@ -56,11 +67,11 @@ class Fail extends Error {
 
 function parseArgs(argv) {
   const opts = { selfCheck: false };
-  const takes = { '--target': 'target', '--out': 'out', '--node-archive': 'nodeArchive', '--cache': 'cache', '--archive': 'archive' };
+  const takes = { '--target': 'target', '--out': 'out', '--node-archive': 'nodeArchive', '--engram-archive': 'engramArchive', '--cache': 'cache', '--archive': 'archive' };
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
     if (a === '--self-check') { opts.selfCheck = true; continue; }
-    if (!takes[a] || i + 1 >= argv.length) throw new Fail(`usage: build-runtime.cjs --target <${Object.keys(TARGETS).join('|')}> --out <dir> [--node-archive <file>] [--cache <dir>] [--self-check] [--archive <file.tar.gz>] (bad argument: ${a})`, 2);
+    if (!takes[a] || i + 1 >= argv.length) throw new Fail(`usage: build-runtime.cjs --target <${Object.keys(TARGETS).join('|')}> --out <dir> [--node-archive <file>] [--engram-archive <file>] [--cache <dir>] [--self-check] [--archive <file.tar.gz>] (bad argument: ${a})`, 2);
     opts[takes[a]] = argv[(i += 1)];
   }
   if (!opts.target || !opts.out) throw new Fail('usage: build-runtime.cjs --target <target> --out <dir> (both are required)', 2);
@@ -88,6 +99,24 @@ function nodePin(target) {
   return { sha, name, version: m[1], dir: name.slice(0, -t.ext.length) };
 }
 
+/* K2-05 T1b (S5): the Engram pin, the same shape as nodePin: one prebuilt release asset per target, whose sha256 is
+   the line of the release's own checksums.txt (cross-checked at pin time against gentle-pi 4.3.0's
+   installer-downloads.mjs). The Windows release lists exactly one supported archive (zip, no tar.gz) — the same
+   ambiguity rule Gentle Dot's packager applies. Engram is never built from Go. */
+function engramPin(target) {
+  const t = TARGETS[target];
+  let lines;
+  try { lines = fs.readFileSync(path.join(HERE, 'engram.sha256'), 'utf8').trim().split(/\r?\n/); }
+  catch (e) { throw new Fail(`cannot read engram.sha256 next to this script (${e.code})`); }
+  const suffix = `_${t.engramAsset}`;
+  const pins = lines.map((l) => l.trim().split(/\s+/)).filter(([, name]) => name && name.endsWith(suffix));
+  if (pins.length !== 1) throw new Fail(`engram.sha256 must pin exactly one archive for ${target}, found ${pins.length}`);
+  const [sha, name] = pins[0];
+  const m = /^engram_(\d+\.\d+\.\d+)_/.exec(name);
+  if (!/^[0-9a-f]{64}$/.test(sha) || !m) throw new Fail(`malformed engram.sha256 line for ${target}`);
+  return { sha, name, version: m[1] };
+}
+
 async function download(url, dest) {
   const res = await fetch(url, { redirect: 'follow' });
   if (!res.ok) throw new Fail(`download failed: ${url} (HTTP ${res.status})`);
@@ -111,6 +140,25 @@ async function nodeArchive(pin, opts, cache) {
   return file;
 }
 
+/* The Engram release asset: the same acquisition rules as Node's (offline --engram-archive, else the GitHub release;
+   sha256 fail-closed, a bad download never stays in the cache). */
+async function engramArchive(pin, opts, cache) {
+  let file = opts.engramArchive ? path.resolve(opts.engramArchive) : path.join(cache, pin.name);
+  if (!opts.engramArchive && !fs.existsSync(file)) {
+    const partial = `${file}.partial-${process.pid}`;
+    await download(`${ENGRAM_RELEASE}/download/v${pin.version}/${pin.name}`, partial);
+    fs.renameSync(partial, file);
+  }
+  if (!fs.existsSync(file)) throw new Fail(`Engram archive not found: ${file}`);
+  if (path.basename(file) !== pin.name) throw new Fail(`Engram archive must be ${pin.name}, got ${path.basename(file)}`);
+  const got = sha256File(file);
+  if (got !== pin.sha) {
+    if (!opts.engramArchive) fs.rmSync(file, { force: true }); // never keep a bad download in the cache
+    throw new Fail(`Engram archive SHA256 mismatch for ${pin.name}: expected ${pin.sha}, got ${got}`);
+  }
+  return file;
+}
+
 function run(cmd, args, options = {}, label = `${path.basename(cmd)} ${args[0]}`) {
   const r = cp.spawnSync(cmd, args, { encoding: 'utf8', windowsHide: true, ...options });
   if (r.error || r.status !== 0) {
@@ -121,6 +169,40 @@ function run(cmd, args, options = {}, label = `${path.basename(cmd)} ${args[0]}`
 }
 
 /* Only the Node binary and its licence leave the archive: npm, npx, corepack, headers and docs never do. */
+
+/* K2-05 T1b (S5): only the SINGLE engram / engram.exe member leaves the release archive (the release also carries
+   tools/cloud-sync-projects.* and could carry anything); it lands at <out>/bin/<engram.exe>, mode 0755, and a
+   symlink member is never extracted (lstat must say regular file). */
+function extractEngram(archive, pin, target, dest) {
+  const t = TARGETS[target];
+  const scratch = fs.mkdtempSync(path.join(path.dirname(dest), '.engram-extract-'));
+  try {
+    const member = t.engramExe;
+    const extract = (label, cmd, args) => {
+      // A release archive that lacks the member fails closed with the controlled message (tar itself would die with
+      // its own "member not found" exit; the fail-closed contract names the archive and the member instead).
+      try { run(cmd, args); } catch (e) {
+        // Bounded detail only (the first line): tar's own stderr is localized, so the fail-closed message stays stable.
+        throw new Fail(`Engram archive ${pin.name} lacks a regular file ${member} (extraction: ${e.message.split('\n')[0]})`);
+      }
+    };
+    if (process.platform === 'win32') {
+      const tar = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe');
+      extract('tar', tar, ['-xf', archive, '-C', scratch, member]);
+    } else if (t.ext === '.zip' && process.platform === 'linux') {
+      extract('unzip', 'unzip', ['-q', archive, member, '-d', scratch]); // GNU tar does not read zip
+    } else {
+      extract('tar', 'tar', ['-xf', archive, '-C', scratch, member]);
+    }
+    const st = fs.lstatSync(path.join(scratch, member), { throwIfNoEntry: false });
+    if (!st || !st.isFile()) throw new Fail(`Engram archive ${pin.name} lacks a regular file ${member}`);
+    fs.mkdirSync(path.join(dest, 'bin'), { recursive: true });
+    fs.copyFileSync(path.join(scratch, member), path.join(dest, 'bin', member));
+    fs.chmodSync(path.join(dest, 'bin', member), 0o755);
+  } finally {
+    fs.rmSync(scratch, { recursive: true, force: true });
+  }
+}
 /* Tests only: shortens BOTH gentle-shell self-check bounds (the wait for the get_state answer and the wait for the
    exit after the answer) so a self-check regression fails in seconds, not in two minutes. A number, nothing else. */
 function selfCheckTimeoutMs() {
@@ -285,9 +367,9 @@ const repository = (manifest) => (typeof manifest.repository === 'string' ? mani
 /* THIRD-PARTY-NOTICES.md for the runtime folder: Node first, then every package with its declared licence and the
    path of the licence file it ships. A package that ships no licence file gets its author and repository from its
    package.json and the canonical text from licenses/<id>.txt, reproduced once; with no such text the build fails. */
-function writeNotices(dest, nodeVersion) {
+function writeNotices(dest, nodeVersion, engram) {
   const lines = ['# Third-party notices: Koda\'s bundled runtime', '',
-    'Koda ships Node.js, Pi and Gentle Shell (gentle-pi) in this folder (K2-02, K2-05). Their licences and those of every package they include follow.', '',
+    'Koda ships Node.js, Pi, Gentle Shell (gentle-pi) and Engram in this folder (K2-02, K2-05). Their licences and those of every package they include follow.', '',
     `## Node.js ${nodeVersion}`, '', 'License: MIT (with bundled components). Full text: `LICENSE.node` in this folder.', ''];
   const texts = new Map();
   for (const { dir, manifest } of packagesIn(path.join(dest, 'node_modules'))) {
@@ -316,11 +398,33 @@ function writeNotices(dest, nodeVersion) {
     }
     lines.push('');
   }
+  engramNotice(lines, engram, texts); // K2-05 T1b: the shipped engram binary gets its own notice, like every package
   if (texts.size) {
     lines.push('## License texts', '');
     for (const [id, text] of [...texts].sort(([a], [b]) => a.localeCompare(b))) lines.push(`### ${id}`, '', '```text', text.trimEnd(), '```', '');
   }
   fs.writeFileSync(path.join(dest, 'THIRD-PARTY-NOTICES.md'), lines.join('\n'), { mode: 0o644 });
+}
+/* K2-05 T1b (S5): Engram ships as the prebuilt release binary, which carries no licence file, so its licence text
+   comes from packaging/runtime/licenses/ (the canonical text of its repository LICENSE, pinned to v3.4.0) under its
+   own copyright holder — exactly the treatment a node_modules package with no licence file gets. */
+function engramNotice(lines, engram, texts) {
+  const id = ENGRAM_LICENCE.id;
+  lines.push(`## Engram ${engram.version}`, '', `License: ${id}`, `Repository: ${ENGRAM_LICENCE.repository}`);
+  const canonical = path.join(HERE, 'licenses', `${id}.txt`);
+  if (!/^[A-Za-z0-9.-]+$/.test(id) || !fs.existsSync(canonical)) {
+    throw new Fail(`Engram is ${id}, ships no licence file, and packaging/runtime/licenses/ has no ${id} text: refusing to ship it without its licence`);
+  }
+  const text = fs.readFileSync(canonical, 'utf8');
+  if (id === 'MIT') {
+    const holder = ENGRAM_LICENCE.holder;
+    lines.push('The prebuilt engram binary ships no licence file; the MIT License text follows, with the copyright holder the repository\'s LICENSE ' +
+      `(tag ${engram.version}) declares:`, '', '```text', text.replace('Copyright (c) <year> <copyright holders>', `Copyright (c) ${holder}`).trimEnd(), '```');
+  } else {
+    texts.set(`${id} (Engram)`, text);
+    lines.push(`The prebuilt engram binary ships no licence file; the ${id} License text is reproduced under «License texts» below.`);
+  }
+  lines.push('');
 }
 
 function noSymlinks(dir) {
@@ -358,11 +462,28 @@ async function selfCheck(dest, target, piVersion) {
       : run(path.join(dest, 'pi'), ['--version'], { env, cwd: home });
     const out = `${r.stdout}${r.stderr}`.trim();
     if (out !== piVersion) throw new Fail(`self-check: built Pi printed ${JSON.stringify(out)}, expected ${piVersion}`);
+    engramSelfCheck(dest, t, home, env); // K2-05 T1b: offline, read-only, only on this OS
     await gentleSelfCheck(dest, t, home, env);
   } finally {
     // Best effort only: a failed cleanup here must never mask the primary error (an EBUSY from a briefly held
     // home used to replace the real self-check failure). With the whole-tree kill above this is belt and braces.
     try { fs.rmSync(home, { recursive: true, force: true }); } catch { /* the primary error is what matters */ }
+  }
+}
+
+/* K2-05 T1b (S5): the built Engram answers `version` offline with its own empty private HOME: a read-only run that
+   must report the pinned version. Only reached on the build host (selfCheck refuses others) — `version` touches no
+   network, and the PI_OFFLINE switches stay set like for Pi and Gentle Shell. */
+function engramSelfCheck(dest, t, home, baseEnv) {
+  const manifest = readJson(path.join(dest, 'koda-runtime.json'));
+  const env = { ...baseEnv };
+  delete env.PI_CODING_AGENT_DIR; // engram is not Pi; it must not see Pi's home switch
+  const r = run(path.join(dest, manifest.engramBin), ['version'], { env, cwd: home });
+  const out = `${r.stdout}${r.stderr}`.trim();
+  const want = manifest.engram;
+  const escaped = want.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  if (!new RegExp(`(^|[^0-9.])${escaped}([^0-9.]|$)`).test(out)) {
+    throw new Fail(`self-check: built engram printed ${JSON.stringify(out)}, expected version ${want}`);
   }
 }
 
@@ -474,22 +595,25 @@ async function main() {
   const partial = `${out}.partial-${process.pid}`;
   fs.rmSync(partial, { recursive: true, force: true });
   try {
+    const engram = engramPin(opts.target); // before any download: a bad pin file refuses without touching the network
     const archive = await nodeArchive(pin, opts, cache);
+    const engramFile = await engramArchive(engram, opts, cache);
     fs.mkdirSync(partial, { mode: 0o755 });
     extractNode(archive, pin, opts.target, partial);
+    extractEngram(engramFile, engram, opts.target, partial);
     const pi = installPi(partial, cache, opts.target, t);
-    writeNotices(partial, pin.version);
+    writeNotices(partial, pin.version, engram);
     if (t.platform !== 'win32') {
       fs.writeFileSync(path.join(partial, 'pi'), piLauncher(pi.pi.cli, 'Pi (K2-02)'), { mode: 0o755 });
       fs.writeFileSync(path.join(partial, 'gentle-shell'), piLauncher(pi.gentle.cli, 'Gentle Shell (K2-05)'), { mode: 0o755 });
     }
-    fs.writeFileSync(path.join(partial, 'koda-runtime.json'), `${JSON.stringify({ target: opts.target, node: pin.version, pi: pi.pi.version, piCli: pi.pi.cli, gentlePi: pi.gentle.version, gentleShell: pi.gentle.cli }, null, 2)}\n`, { mode: 0o644 });
+    fs.writeFileSync(path.join(partial, 'koda-runtime.json'), `${JSON.stringify({ target: opts.target, node: pin.version, pi: pi.pi.version, piCli: pi.pi.cli, gentlePi: pi.gentle.version, gentleShell: pi.gentle.cli, engram: engram.version, engramBin: `bin/${t.engramExe}` }, null, 2)}\n`, { mode: 0o644 });
     noSymlinks(partial);
     if (opts.selfCheck) await selfCheck(partial, opts.target, pi.pi.version);
     fs.rmSync(out, { recursive: true, force: true });
     fs.renameSync(partial, out);
     const s = sizeOf(out);
-    console.log(`runtime ${opts.target}: Node ${pin.version} + Pi ${pi.pi.version} + gentle-pi ${pi.gentle.version} -> ${out} (${s.files} files, ${(s.bytes / 1048576).toFixed(1)} MiB)${opts.selfCheck ? ', self-check ok' : ''}`);
+    console.log(`runtime ${opts.target}: Node ${pin.version} + Pi ${pi.pi.version} + gentle-pi ${pi.gentle.version} + engram ${engram.version} -> ${out} (${s.files} files, ${(s.bytes / 1048576).toFixed(1)} MiB)${opts.selfCheck ? ', self-check ok' : ''}`);
     if (opts.archive) {
       const archive = path.resolve(opts.archive);
       const a = packArchive(out, archive);

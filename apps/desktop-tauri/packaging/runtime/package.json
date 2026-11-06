@@ -1,12 +1,13 @@
 {
   "name": "koda-runtime",
   "private": true,
-  "description": "The Pi and Gentle Shell that Koda ships inside every installer (K2-02, K2-05). Pinned exactly; the lockfile pins every package by sha512, including gentle-pi's optional Pi-family peers.",
+  "description": "The Pi and Gentle Shell that Koda ships inside every installer (K2-02, K2-05). Pinned exactly; the lockfile pins every package by sha512, including gentle-pi's optional Pi-family peers and the Engram companion gentle-engram (K2-05 T1b).",
   "license": "MIT",
   "dependencies": {
     "@earendil-works/pi-ai": "1.4.0",
     "@earendil-works/pi-coding-agent": "1.4.0",
     "@earendil-works/pi-tui": "1.4.0",
+    "gentle-engram": "0.4.2",
     "gentle-pi": "4.3.0",
     "typebox": "1.3.27"
   }

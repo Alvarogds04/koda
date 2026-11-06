@@ -79,6 +79,59 @@ function nodeArchive(dir, target) {
   return file;
 }
 
+/* A fake Engram release archive (K2-05 T1b): the binary member (engram / engram.exe) plus the extra members the real
+   release carries (tools/cloud-sync-projects.*), which must never ship. On the host target the fake binary really runs
+   and prints its version (enough for `engram version`); other targets: inert bytes. opts.engramMode breaks it:
+   'no-member' (the archive lacks the binary), 'symlink-member' (the binary is a symlink), 'bad-version' (prints the
+   wrong version, so --self-check must fail). */
+const ENGRAM_VERSION = '3.4.0';
+const ENGRAM_ASSET = { 'linux-x64': 'linux_amd64.tar.gz', 'darwin-arm64': 'darwin_arm64.tar.gz', 'win-x64': 'windows_amd64.zip' };
+const engramExeFor = (target) => (target === 'win-x64' ? 'engram.exe' : 'engram');
+const winEngramExes = new Map(); // line -> PE bytes (compiled once per message; a .exe cannot be a script)
+function compileFakeEngramExe(dir, line) {
+  if (winEngramExes.has(line)) return winEngramExes.get(line);
+  // Windows needs a runnable PE: compiled with the .NET Framework compiler (csc.exe) that every Windows runner and
+  // desktop with .NET ships — there is no script trick for a .exe spawned directly.
+  const root = process.env.SystemRoot || 'C:\\Windows';
+  const csc = ['Framework64', 'Framework'].map((f) => path.join(root, 'Microsoft.NET', f, 'v4.0.30319', 'csc.exe')).find((c) => fs.existsSync(c));
+  assert.ok(csc, 'this Windows host has no .NET Framework csc.exe to compile the fake engram.exe with');
+  const src = path.join(dir, 'engram-src.cs');
+  fs.writeFileSync(src, `class P { static void Main() { System.Console.WriteLine(${JSON.stringify(line)}); } }`);
+  const out = path.join(dir, 'engram.exe');
+  const r = cp.spawnSync(csc, ['/nologo', `/out:${out}`, src], { encoding: 'utf8' });
+  assert.equal(r.status, 0, `csc failed: ${r.stderr}${r.stdout}`);
+  const bytes = fs.readFileSync(out);
+  winEngramExes.set(line, bytes);
+  return bytes;
+}
+function fakeEngramBytes(target, dir, mode = '') {
+  if (target !== hostTarget) return Buffer.from(`fake engram for ${target}\n`);
+  const line = mode === 'bad-version' ? 'engram 9.9.9' : `engram ${ENGRAM_VERSION}`;
+  return isWin ? compileFakeEngramExe(dir, line) : Buffer.from(`#!/bin/sh\necho ${JSON.stringify(line)}\n`);
+}
+function engramArchive(dir, target, mode = '') {
+  const name = `engram_${ENGRAM_VERSION}_${ENGRAM_ASSET[target]}`;
+  const binName = engramExeFor(target);
+  const extras = [['tools/cloud-sync-projects.sh', Buffer.from('sync tool\n')], ['tools/cloud-sync-projects.ps1', Buffer.from('sync tool\n')]];
+  if (target === 'win-x64') {
+    const files = mode === 'no-member' ? extras : [[binName, fakeEngramBytes(target, dir, mode), 0o100755], ...extras];
+    const file = path.join(dir, name);
+    zipStored(file, files);
+    return file;
+  }
+  const src = path.join(dir, `engram-src-${target}-${mode || 'good'}-${Math.random().toString(36).slice(2)}`);
+  // The real release archive has the binary and its extras at the archive ROOT (verified against engram_3.4.0's
+  // assets: `engram`, `tools/cloud-sync-projects.*`), no wrapping folder — so the fixture packs the same shape.
+  fs.mkdirSync(path.join(src, 'tools'), { recursive: true });
+  if (mode === 'symlink-member') fs.symlinkSync('/etc/passwd', path.join(src, binName));
+  else if (mode !== 'no-member') fs.writeFileSync(path.join(src, binName), fakeEngramBytes(target, dir, mode), { mode: 0o755 });
+  for (const [rel, data] of extras) fs.writeFileSync(path.join(src, rel), data);
+  const file = path.join(dir, name);
+  const entries = ['tools', 'tools/cloud-sync-projects.sh', 'tools/cloud-sync-projects.ps1'];
+  if (mode !== 'no-member') entries.unshift(binName); // 'no-member': the archive must genuinely lack the binary
+  tarGz(src, file, entries);
+  return file;
+}
 /* A builder copy next to fixture pins: the script reads its pins from its own directory. */
 function fixture(targets = ['linux-x64', 'darwin-arm64', 'win-x64'], opts = {}) {
   const dir = T.make('koda-runtime-build-');
@@ -89,6 +142,12 @@ function fixture(targets = ['linux-x64', 'darwin-arm64', 'win-x64'], opts = {}) 
   const archives = {};
   for (const t of targets) archives[t] = nodeArchive(dir, t);
   fs.writeFileSync(path.join(pins, 'node.sha256'), targets.map((t) => `${sha256(archives[t])}  ${path.basename(archives[t])}\n`).join(''));
+  const engramArchives = {};
+  for (const t of targets) engramArchives[t] = engramArchive(dir, t, opts.engramMode);
+  let engramLines = targets.map((t) => `${sha256(engramArchives[t])}  ${path.basename(engramArchives[t])}\n`);
+  if (opts.engramPin === 'malformed') engramLines = [`${'z'.repeat(64)}  ${path.basename(engramArchives[targets[0]])}\n`];
+  if (opts.engramPin === 'duplicate') engramLines = engramLines.concat(engramLines);
+  if (opts.engramPin !== 'missing') fs.writeFileSync(path.join(pins, 'engram.sha256'), engramLines.join(''));
   // A fake Pi package: its CLI prints the version, and with KODA_REPORT=1 also which Node runs it.
   const pkgSrc = path.join(dir, 'pi-src', 'package');
   fs.mkdirSync(path.join(pkgSrc, 'dist', 'bundle'), { recursive: true });
@@ -209,10 +268,14 @@ function fixture(targets = ['linux-x64', 'darwin-arm64', 'win-x64'], opts = {}) 
       ...(nativeEntry ? { 'node_modules/fake-native': { version: '1.0.0', resolved: nativeEntry.spec, integrity: nativeEntry.integrity } } : {}),
     },
   }));
-  return { dir, pins, archives, nativeEntry };
+  return { dir, pins, archives, engramArchives, nativeEntry };
 }
 function build(fx, args, env = {}, spawnTimeoutMs = 120_000) {
-  return cp.spawnSync(process.execPath, [path.join(fx.pins, 'build-runtime.cjs'), ...args], {
+  // Every fixture build takes its OWN fake engram archive (the GitHub download is never exercised here); tests that
+  // drive the engram archive itself pass --engram-archive explicitly, which wins.
+  const target = args[args.indexOf('--target') + 1];
+  const all = args.includes('--engram-archive') ? args : [...args, '--engram-archive', fx.engramArchives[target]];
+  return cp.spawnSync(process.execPath, [path.join(fx.pins, 'build-runtime.cjs'), ...all], {
     encoding: 'utf8', env: { ...process.env, npm_config_offline: 'true', ...env }, timeout: spawnTimeoutMs,
   });
 }
@@ -236,18 +299,22 @@ for (const target of ['linux-x64', 'darwin-arm64', 'win-x64']) {
     const out = path.join(fx.dir, `out-${target}`);
     const r = build(fx, ['--target', target, '--out', out, '--node-archive', fx.archives[target]]);
     assert.equal(r.status, 0, `exit ${r.status}\nstdout=${r.stdout}\nstderr=${r.stderr}`);
-    assert.match(r.stdout, new RegExp(`^runtime ${target}: Node ${NODE_VERSION} \\+ Pi 1\\.4\\.0 \\+ gentle-pi 4\\.3\\.0 -> `));
+    assert.match(r.stdout, new RegExp(`^runtime ${target}: Node ${NODE_VERSION} \\+ Pi 1\\.4\\.0 \\+ gentle-pi 4\\.3\\.0 \\+ engram 3\\.4\\.0 -> `));
     const exe = target === 'win-x64' ? 'node.exe' : 'node';
-    const expected = [exe, 'LICENSE.node', 'THIRD-PARTY-NOTICES.md', 'koda-runtime.json',
+    const engramExe = engramExeFor(target);
+    const expected = [`bin/${engramExe}`, exe, 'LICENSE.node', 'THIRD-PARTY-NOTICES.md', 'koda-runtime.json',
       'node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js', 'node_modules/@earendil-works/pi-coding-agent/package.json',
       'node_modules/gentle-pi/bin/gentle-shell.mjs', 'node_modules/gentle-pi/package.json'];
     if (target !== 'win-x64') expected.push('pi', 'gentle-shell');
-    assert.deepEqual(tree(out), expected.sort(), 'no npm, npx, corepack, .bin symlink or npm bookkeeping');
+    assert.deepEqual(tree(out), expected.sort(), 'no npm, npx, corepack, .bin symlink or npm bookkeeping; the engram release\'s extra tools/ members never ship');
     assert.deepEqual(readJson(path.join(out, 'koda-runtime.json')),
       { target, node: NODE_VERSION, pi: '1.4.0', piCli: 'node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js',
-        gentlePi: '4.3.0', gentleShell: 'node_modules/gentle-pi/bin/gentle-shell.mjs' });
+        gentlePi: '4.3.0', gentleShell: 'node_modules/gentle-pi/bin/gentle-shell.mjs', engram: ENGRAM_VERSION, engramBin: `bin/${engramExe}` });
     assert.equal(fs.readFileSync(path.join(out, 'LICENSE.node'), 'utf8'), 'Node licence\n');
-    if (!isWin) assert.equal(fs.statSync(path.join(out, exe)).mode & 0o111, 0o111, 'node is executable');
+    if (!isWin) {
+      assert.equal(fs.statSync(path.join(out, exe)).mode & 0o111, 0o111, 'node is executable');
+      assert.equal(fs.statSync(path.join(out, 'bin', engramExe)).mode & 0o111, 0o111, 'engram is executable (0755)');
+    }
   });
 }
 
@@ -316,8 +383,8 @@ test(`${hostTarget} (this OS): --archive packs the runtime folder into one tar.g
 test('the runtime ships THIRD-PARTY-NOTICES.md: Node, then every package with its licence (a package without a licence file gets its declared author and the canonical text)', () => {
   const notices = fs.readFileSync(path.join(fx.dir, 'out-linux-x64', 'THIRD-PARTY-NOTICES.md'), 'utf8');
   assert.match(notices, /^# Third-party notices: Koda's bundled runtime\n/);
-  assert.ok(notices.includes('Koda ships Node.js, Pi and Gentle Shell (gentle-pi) in this folder (K2-02, K2-05). Their licences and those of every package they include follow.\n'),
-    'the header names everything the runtime bundles, including Gentle Shell (K2-05 T1 finding 6)');
+  assert.ok(notices.includes('Koda ships Node.js, Pi, Gentle Shell (gentle-pi) and Engram in this folder (K2-02, K2-05). Their licences and those of every package they include follow.\n'),
+    'the header names everything the runtime bundles, including Gentle Shell (K2-05 T1 finding 6) and Engram (K2-05 T1b)');
   assert.ok(notices.includes(`## Node.js ${NODE_VERSION}\n\nLicense: MIT (with bundled components). Full text: \`LICENSE.node\` in this folder.\n`));
   assert.ok(notices.includes('## gentle-pi 4.3.0\n\nLicense: MIT\n'), 'gentle-pi ships with its licence in the notices (K2-05)');
   // RDD advisory 2: MIT keeps «the above copyright notice», so the text a package without its own file is shipped under
@@ -328,6 +395,11 @@ test('the runtime ships THIRD-PARTY-NOTICES.md: Node, then every package with it
     `The package ships no licence file; the MIT License text follows, with the copyright holder its package.json declares:\n\n\`\`\`text\n${withHolder}\n\`\`\`\n`));
   assert.doesNotMatch(notices, /<year>|<copyright holders>/, 'no template placeholder is shipped');
   assert.ok(mit.includes('Copyright (c) <year> <copyright holders>'), 'the pinned canonical file itself stays the verbatim SPDX text');
+  // K2-05 T1b (S5): Engram ships as the prebuilt binary, which carries no licence file; its canonical MIT text (the
+  // repository LICENSE at tag v3.4.0) is reproduced with the copyright holder that licence declares.
+  assert.ok(notices.includes(`## Engram ${ENGRAM_VERSION}\n\nLicense: MIT\nRepository: https://github.com/Gentleman-Programming/engram\n`), 'engram has its own notice');
+  const withEngram = mit.replace('Copyright (c) <year> <copyright holders>', 'Copyright (c) 2026 Alan Buscaglia').trimEnd();
+  assert.ok(notices.includes(`The prebuilt engram binary ships no licence file; the MIT License text follows, with the copyright holder the repository's LICENSE (tag ${ENGRAM_VERSION}) declares:\n\n\`\`\`text\n${withEngram}\n\`\`\`\n`));
 });
 
 test('a package whose licence has no file in the package and no canonical text in licenses/ fails closed: exit 1, exact message, no output', () => {
@@ -363,6 +435,100 @@ test('a Node archive whose sha256 differs from the pin fails closed and leaves t
   assert.match(r.stderr, new RegExp(`^build-runtime: Node archive SHA256 mismatch for node-v${NODE_VERSION}-linux-x64\\.tar\\.gz: expected [0-9a-f]{64}, got ${sha256(tampered)}\\n$`));
   assert.deepEqual(tree(out), ['previous']);
   assert.deepEqual(fs.readdirSync(fx.dir).filter((n) => n.includes('.partial-')), [], 'no partial output left behind');
+});
+
+test('an engram archive whose sha256 differs from the pin fails closed and leaves the existing output untouched (K2-05 T1b)', () => {
+  const out = path.join(fx.dir, 'out-engram-keep');
+  fs.mkdirSync(out);
+  fs.writeFileSync(path.join(out, 'previous'), 'previous runtime');
+  const bad = path.join(fx.dir, 'bad-engram');
+  fs.mkdirSync(bad);
+  const tampered = path.join(bad, path.basename(fx.engramArchives['linux-x64']));
+  fs.writeFileSync(tampered, Buffer.concat([fs.readFileSync(fx.engramArchives['linux-x64']), Buffer.from('x')]));
+  const pin = fs.readFileSync(path.join(fx.pins, 'engram.sha256'), 'utf8').trim().split(/\r?\n/)[0].split(/\s+/);
+  const got = sha256(tampered);
+  const r = build(fx, ['--target', 'linux-x64', '--out', out, '--node-archive', fx.archives['linux-x64'], '--engram-archive', tampered]);
+  assert.equal(r.status, 1);
+  assert.equal(r.stdout, '');
+  assert.equal(r.stderr, `build-runtime: Engram archive SHA256 mismatch for engram_3.4.0_linux_amd64.tar.gz: expected ${pin[0]}, got ${got}\n`);
+  assert.deepEqual(tree(out), ['previous']);
+  assert.deepEqual(fs.readdirSync(fx.dir).filter((n) => n.includes('.partial-')), [], 'no partial output left behind');
+});
+
+test('an engram archive with the wrong name for the target is refused (K2-05 T1b)', () => {
+  const r = build(fx, ['--target', 'darwin-arm64', '--out', path.join(fx.dir, 'x2'), '--node-archive', fx.archives['darwin-arm64'], '--engram-archive', fx.engramArchives['linux-x64']]);
+  assert.equal(r.status, 1);
+  assert.equal(r.stderr, 'build-runtime: Engram archive must be engram_3.4.0_darwin_arm64.tar.gz, got engram_3.4.0_linux_amd64.tar.gz\n');
+  assert.equal(fs.existsSync(path.join(fx.dir, 'x2')), false);
+});
+
+test('an engram archive without the binary member fails closed: exit 1, exact message, no output (K2-05 T1b)', () => {
+  const f6 = fixture(['linux-x64'], { engramMode: 'no-member' });
+  const out = path.join(f6.dir, 'out');
+  const r = build(f6, ['--target', 'linux-x64', '--out', out, '--node-archive', f6.archives['linux-x64']]);
+  assert.equal(r.status, 1);
+  assert.equal(r.stdout, '');
+  assert.match(r.stderr, /^build-runtime: Engram archive engram_3\.4\.0_linux_amd64\.tar\.gz lacks a regular file engram \(extraction: tar -xf failed: exit 2\)\n$/);
+  assert.equal(fs.existsSync(out), false);
+});
+
+test('an engram whose binary member is a SYMLINK fails closed: never extracted, no symlink in the runtime (K2-05 T1b)', () => {
+  if (isWin) return; // tar symlinks are crafted on Unix; the Windows zips in this suite carry real files
+  const f6 = fixture(['linux-x64'], { engramMode: 'symlink-member' });
+  const out = path.join(f6.dir, 'out');
+  const r = build(f6, ['--target', 'linux-x64', '--out', out, '--node-archive', f6.archives['linux-x64']]);
+  assert.equal(r.status, 1);
+  assert.equal(r.stdout, '');
+  assert.equal(r.stderr, 'build-runtime: Engram archive engram_3.4.0_linux_amd64.tar.gz lacks a regular file engram\n');
+  assert.equal(fs.existsSync(path.join(out, 'bin', 'engram')), false, 'the symlink member was never extracted into bin/');
+});
+
+test('a malformed engram.sha256 line fails closed with the target named: exit 1, exact message, no output (K2-05 T1b)', () => {
+  const f7 = fixture(['linux-x64'], { engramPin: 'malformed' });
+  const out = path.join(f7.dir, 'out');
+  const r = build(f7, ['--target', 'linux-x64', '--out', out, '--node-archive', f7.archives['linux-x64']]);
+  assert.equal(r.status, 1);
+  assert.equal(r.stdout, '');
+  assert.equal(r.stderr, 'build-runtime: malformed engram.sha256 line for linux-x64\n');
+  assert.equal(fs.existsSync(out), false);
+});
+
+test('engram.sha256 must pin exactly one asset per target: a duplicated entry is refused (K2-05 T1b)', () => {
+  const f7 = fixture(['linux-x64'], { engramPin: 'duplicate' });
+  const out = path.join(f7.dir, 'out');
+  const r = build(f7, ['--target', 'linux-x64', '--out', out, '--node-archive', f7.archives['linux-x64']]);
+  assert.equal(r.status, 1);
+  assert.equal(r.stdout, '');
+  assert.equal(r.stderr, 'build-runtime: engram.sha256 must pin exactly one archive for linux-x64, found 2\n');
+  assert.equal(fs.existsSync(out), false);
+});
+
+test('a missing engram.sha256 fails closed before any download: Engram is always shipped (K2-05 T1b)', () => {
+  const f7 = fixture(['linux-x64'], { engramPin: 'missing' });
+  const out = path.join(f7.dir, 'out');
+  const r = build(f7, ['--target', 'linux-x64', '--out', out, '--node-archive', f7.archives['linux-x64']]);
+  assert.equal(r.status, 1);
+  assert.equal(r.stdout, '', 'no npm run, no network attempt');
+  assert.equal(r.stderr, 'build-runtime: cannot read engram.sha256 next to this script (ENOENT)\n');
+  assert.equal(fs.existsSync(out), false);
+});
+
+test(`${hostTarget} (this OS): --self-check runs the built engram version offline and requires ${ENGRAM_VERSION} (K2-05 T1b)`, () => {
+  const out = path.join(fx.dir, 'out-self-engram');
+  const r = build(fx, ['--target', hostTarget, '--out', out, '--node-archive', fx.archives[hostTarget], '--self-check']);
+  assert.equal(r.status, 0, `exit ${r.status}\nstderr=${r.stderr}`);
+  assert.match(r.stdout, /, self-check ok\n$/);
+  assert.equal(r.stderr, '');
+});
+
+test(`${hostTarget} (this OS): an engram that reports a WRONG version fails the self-check closed: exit 1, exact message, no output (K2-05 T1b)`, () => {
+  const f8 = fixture([hostTarget], { engramMode: 'bad-version' });
+  const out = path.join(f8.dir, 'out');
+  const r = build(f8, ['--target', hostTarget, '--out', out, '--node-archive', f8.archives[hostTarget], '--self-check']);
+  assert.equal(r.status, 1, `exit ${r.status}\nstdout=${r.stdout}\nstderr=${r.stderr}`);
+  assert.equal(r.stdout, '');
+  assert.equal(r.stderr, 'build-runtime: self-check: built engram printed "engram 9.9.9", expected version 3.4.0\n');
+  assert.equal(fs.existsSync(out), false);
 });
 
 test('a Pi tarball that does not match its lockfile integrity fails and leaves no output', () => {
