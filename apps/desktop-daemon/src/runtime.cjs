@@ -21,7 +21,8 @@
 const { EventEmitter } = require("node:events");
 const { performance } = require("node:perf_hooks");
 const { spawn } = require("node:child_process");
-const { existsSync, lstatSync, readFileSync } = require("node:fs");
+const { existsSync, lstatSync, readFileSync, readdirSync, rmSync } = require("node:fs");
+const { homedir } = require("node:os");
 const path = require("node:path");
 
 const {
@@ -29,6 +30,7 @@ const {
 	claimEngineHome,
 	defaultIslandRoot,
 	ensureIsland,
+	ensurePrivateDir,
 	isolatedEnv,
 	writePrivateFile,
 } = require("./isolation.cjs");
@@ -96,6 +98,190 @@ function windowsPackageCliJs(binName, deps = {}) {
 	return undefined;
 }
 
+/** The parsed `koda-runtime.json` of `runtime`, or undefined when absent/unreadable. */
+function readRuntimeManifest(runtime, deps = {}) {
+	try {
+		return JSON.parse((deps.readFileSync ?? readFileSync)(path.join(runtime, RUNTIME_MANIFEST), "utf8"));
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * T1b-b (S5): the `engramBin` of the runtime's manifest, validated like the
+ * gentleShell script (relative, inside the runtime, real file, no symlinks).
+ * Throws on a manifest that names an invalid one; callers skip the call when
+ * the manifest does not name one at all.
+ */
+function engramBinPath(manifest, runtime, deps) {
+	return runtimeScript(manifest?.engramBin, runtime, deps, "engramBin");
+}
+
+/**
+ * T1b-b (S5): the memory environment of Koda's DEFAULT bundled engine, in the
+ * shape of Gentle Dot's isolatedAgentEnv (isolation.ts:131-137, 212-214): the
+ * bundled Engram binary from the runtime manifest, and the memory store is the
+ * user's OWN one (`ENGRAM_DATA_DIR` = their real `~/.engram`, or the parent's
+ * ENGRAM_DATA_DIR when it already moved it), so the user's existing memories —
+ * the `abito-island` project among them — stay where they are. The parent's
+ * ENGRAM_URL / ENGRAM_PORT pass through when set (their own Engram server is
+ * honoured). GENTLE_SHELL_PREFIX is NEVER set: the engine's companion comes
+ * from the island seed, not from a user prefix. This env is only ever built
+ * for the default engine (see spawnChild); a foreign `command` never learns
+ * where the user's memory store lives.
+ */
+function bundledMemoryEnv(baseEnv, runtime, deps = {}) {
+	const platform = deps.platform ?? process.platform;
+	const env = {};
+	if (runtime !== undefined) {
+		const manifest = readRuntimeManifest(runtime, deps);
+		if (manifest !== undefined && manifest?.engramBin !== undefined) {
+			env.ENGRAM_BIN = engramBinPath(manifest, runtime, deps);
+		}
+	}
+	const realHome = platform === "win32" ? baseEnv.USERPROFILE || baseEnv.HOME || homedir() : baseEnv.HOME || homedir();
+	env.ENGRAM_DATA_DIR =
+		typeof baseEnv.ENGRAM_DATA_DIR === "string" && baseEnv.ENGRAM_DATA_DIR !== ""
+			? baseEnv.ENGRAM_DATA_DIR
+			: path.join(realHome, ".engram");
+	if (typeof baseEnv.ENGRAM_URL === "string" && baseEnv.ENGRAM_URL !== "") env.ENGRAM_URL = baseEnv.ENGRAM_URL;
+	if (typeof baseEnv.ENGRAM_PORT === "string" && baseEnv.ENGRAM_PORT !== "") env.ENGRAM_PORT = baseEnv.ENGRAM_PORT;
+	return env;
+}
+
+/**
+ * T1b-b (S5): seeds the bundled Engram companion into the island's agent dir
+ * before the first spawn, the result gentle-shell's auto-setup would produce
+ * (Gentle Dot isolation.ts:104-137, 208-217) but offline: the companion
+ * `<runtime>/node_modules/gentle-engram` is copied — real files, never links,
+ * any symlink refused, everything through the fail-closed private writes — to
+ * `<agentDir>/npm/node_modules/gentle-engram`, and
+ * `packages: ["npm:gentle-engram@<version>"]` is merged into
+ * `<agentDir>/settings.json` (PI_OFFLINE makes Pi load it with no network;
+ * profiles.cjs preserves foreign keys when it writes its model defaults).
+ * An installed copy of a DIFFERENT version is refreshed; the same version is
+ * left as it is. Idempotent. Throws on refused/refusing targets (a planted
+ * symlink is never written through); a runtime without the companion is a
+ * `{ ok: false }` report, never a hard error (the engine still starts).
+ */
+function seedEngramCompanion(runtime, agentDir, deps = {}) {
+	const lstat = deps.lstatSync ?? lstatSync;
+	const readFile = deps.readFileSync ?? readFileSync;
+	const source = path.join(runtime, "node_modules", "gentle-engram");
+	let sourceStats;
+	try {
+		sourceStats = lstat(source);
+	} catch (error) {
+		return { ok: false, reason: `the bundled runtime has no gentle-engram companion (${error.code ?? error.message})` };
+	}
+	if (sourceStats.isSymbolicLink() || !sourceStats.isDirectory()) {
+		return { ok: false, reason: "the bundled gentle-engram companion is not a real directory" };
+	}
+	let pkg;
+	try {
+		pkg = JSON.parse(readFile(path.join(source, "package.json"), "utf8"));
+	} catch (error) {
+		return { ok: false, reason: `cannot read the companion's package.json: ${error.message}` };
+	}
+	if (pkg?.name !== "gentle-engram" || typeof pkg.version !== "string" || pkg.version === "") {
+		return { ok: false, reason: "the bundled companion package.json does not name gentle-engram" };
+	}
+	const target = path.join(agentDir, "npm", "node_modules", "gentle-engram");
+	let installedVersion;
+	try {
+		const stats = lstat(target);
+		if (stats.isSymbolicLink()) throw new Error(`refusing symlinked companion target: ${target}`);
+		if (stats.isDirectory()) {
+			try {
+				installedVersion = JSON.parse(readFile(path.join(target, "package.json"), "utf8"))?.version;
+			} catch {
+				installedVersion = undefined; // partial or corrupt copy: refresh it whole
+			}
+		} else {
+			throw new Error(`refusing non-directory companion target: ${target}`);
+		}
+	} catch (error) {
+		if (error?.code !== "ENOENT") throw error;
+	}
+	if (installedVersion !== pkg.version) {
+		// Real copy, refreshed whole when the bundled version differs; rmSync here
+		// is the version refresh of a directory this daemon owns (never a link).
+		// The source tree is validated BEFORE anything is written, so a refused
+		// copy leaves the island without a partial companion.
+		validateRealTree(source, deps);
+		rmSync(target, { recursive: true, force: true });
+		copyPrivateTree(source, target, deps);
+	}
+	mergeCompanionSettings(agentDir, pkg.version, deps);
+	return { ok: true };
+}
+
+/** Refuses any symlink (or non-regular, non-directory entry) inside `dir`. */
+function validateRealTree(dir, deps) {
+	const lstat = deps.lstatSync ?? lstatSync;
+	const readdir = deps.readdirSync ?? readdirSync;
+	const stats = lstat(dir);
+	if (stats.isSymbolicLink()) throw new Error(`refusing symlink in the companion: ${dir}`);
+	if (!stats.isDirectory()) {
+		if (!stats.isFile()) throw new Error(`refusing non-regular companion entry: ${dir}`);
+		return;
+	}
+	for (const entry of readdir(dir)) validateRealTree(path.join(dir, entry), deps);
+}
+
+/** Recursively copies a real file tree through the fail-closed private writes. */
+function copyPrivateTree(source, target, deps) {
+	const lstat = deps.lstatSync ?? lstatSync;
+	const readFile = deps.readFileSync ?? readFileSync;
+	const readdir = deps.readdirSync ?? readdirSync;
+	const stats = lstat(source);
+	if (stats.isSymbolicLink()) throw new Error(`refusing symlink in the companion: ${source}`);
+	if (stats.isDirectory()) {
+		ensurePrivateDir(target);
+		for (const entry of readdir(source)) copyPrivateTree(path.join(source, entry), path.join(target, entry), deps);
+		return;
+	}
+	if (!stats.isFile()) throw new Error(`refusing non-regular companion entry: ${source}`);
+	writePrivateFile(target, readFile(source), { mode: 0o600 });
+}
+
+/**
+ * Merges the pinned companion into `<agentDir>/settings.json`: every other key
+ * is preserved, stale `npm:gentle-engram@…` pins are replaced by the bundled
+ * one, and anything else in `packages` (and every other key — the model
+ * defaults profiles.cjs writes, gentle-shell's own `extensions` entries) stays.
+ */
+function mergeCompanionSettings(agentDir, version, deps = {}) {
+	const settingsFile = path.join(agentDir, "settings.json");
+	// Fail closed before reading: a symlink planted at settings.json is never
+	// followed (its content would land in the parse error otherwise).
+	const lstat = deps.lstatSync ?? lstatSync;
+	let existing;
+	try {
+		existing = lstat(settingsFile);
+	} catch (error) {
+		if (error?.code !== "ENOENT") throw error;
+	}
+	if (existing !== undefined && (existing.isSymbolicLink() || !existing.isFile())) {
+		throw new Error(`refusing to merge through a non-regular settings.json: ${settingsFile}`);
+	}
+	let settings = {};
+	try {
+		const parsed = JSON.parse((deps.readFileSync ?? readFileSync)(settingsFile, "utf8"));
+		if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+			throw new Error("settings.json is not an object; refusing to touch it");
+		}
+		settings = parsed;
+	} catch (error) {
+		if (error?.code !== "ENOENT") throw error;
+	}
+	const pin = `npm:gentle-engram@${version}`;
+	const packages = Array.isArray(settings.packages) ? settings.packages.filter((entry) => !/^npm:gentle-engram@/.test(typeof entry === "string" ? entry : entry?.source ?? "")) : [];
+	if (!packages.some((entry) => (typeof entry === "string" ? entry : entry?.source) === pin)) packages.push(pin);
+	settings.packages = packages;
+	writePrivateFile(settingsFile, `${JSON.stringify(settings, null, 2)}\n`);
+}
+
 function positiveBudget(value, name, max = 2_147_483_647) {
 	if (!Number.isSafeInteger(value) || value < 1 || value > max) throw new Error(`invalid ${name}`);
 	return value;
@@ -128,22 +314,21 @@ function isRealFile(file, deps) {
 }
 
 /**
- * The script `koda-runtime.json` names with `gentleShell` (T1): a relative path
- * inside the runtime that must be a real file — anything else is refused
- * (undefined shape, fail closed, like windowsPackageCliJs). A symlink at ANY
- * path segment between the runtime root and the script is refused too (like
- * the Rust runtime's inside_file): a link part-way down could redirect the
- * script outside the runtime.
+ * A relative path inside the runtime that must be a real file — anything else
+ * is refused (undefined shape, fail closed, like windowsPackageCliJs). A
+ * symlink at ANY path segment between the runtime root and the file is refused
+ * too (like the Rust runtime's inside_file): a link part-way down could
+ * redirect the file outside the runtime. `what` names the manifest key in
+ * errors ("gentleShell", "engramBin").
  */
-function gentleShellScript(manifest, runtime, deps) {
-	const rel = manifest?.gentleShell;
+function runtimeScript(rel, runtime, deps, what) {
 	if (typeof rel !== "string" || rel.length === 0 || path.isAbsolute(rel)) {
-		throw new Error(`${RUNTIME_MANIFEST} names no gentleShell script`);
+		throw new Error(`${RUNTIME_MANIFEST} names no ${what}`);
 	}
 	const script = path.resolve(runtime, rel);
 	const within = path.relative(runtime, script);
 	if (within === "" || within === ".." || within.startsWith(`..${path.sep}`) || path.isAbsolute(within)) {
-		throw new Error(`${RUNTIME_MANIFEST} names a gentleShell script outside the runtime`);
+		throw new Error(`${RUNTIME_MANIFEST} names a ${what} outside the runtime`);
 	}
 	const lstat = deps.lstatSync ?? lstatSync;
 	const parts = within.split(path.sep);
@@ -156,13 +341,17 @@ function gentleShellScript(manifest, runtime, deps) {
 			throw new Error(`the bundled runtime is missing ${parts.slice(0, i + 1).join(path.sep)} (${error.code ?? error.message})`);
 		}
 		if (stats.isSymbolicLink()) {
-			throw new Error(`${RUNTIME_MANIFEST} names a gentleShell script behind a symlink: ${segment}`);
+			throw new Error(`${RUNTIME_MANIFEST} names a ${what} behind a symlink: ${segment}`);
 		}
 	}
 	if (!isRealFile(script, deps)) {
 		throw new Error(`the bundled runtime is missing ${rel}`);
 	}
 	return script;
+}
+
+function gentleShellScript(manifest, runtime, deps) {
+	return runtimeScript(manifest?.gentleShell, runtime, deps, "gentleShell");
 }
 
 /**
@@ -436,6 +625,21 @@ class AgentEngine extends EventEmitter {
 		// and Koda writes auth/mcp/extension files there first. Informational,
 		// logged-only on failure; an existing marker is left as it is.
 		claimEngineHome(this.island.agentDir, gentlePiVersion(), this.log);
+		// T1b-b (S5): seed the bundled Engram companion into the engine's home
+		// before the first spawn — the offline equivalent of gentle-shell's auto
+		// setup. Only for Koda's own default engine, only from the bundled
+		// runtime. Logged-only on failure: the chat still works without memory.
+		if (this.command === DEFAULT_COMMAND) {
+			const runtime = runtimeRoot(this.runtimeDeps);
+			if (runtime !== undefined) {
+				try {
+					const seeded = seedEngramCompanion(runtime, this.island.agentDir, this.runtimeDeps);
+					if (!seeded.ok) this.log(`could not seed the bundled memory companion: ${seeded.reason}`);
+				} catch (error) {
+					this.log(`could not seed the bundled memory companion: ${error.message}`);
+				}
+			}
+		}
 		this.setStatus("starting");
 		try {
 			await this.spawnAndInitialize();
@@ -759,6 +963,9 @@ class AgentEngine extends EventEmitter {
 			...isolatedEnv(this.baseEnv, this.island, {
 				ABITO_MEMORY_PROJECT: MEMORY_PROJECT,
 				...(defaultEngine ? {} : { PI_CODING_AGENT_DIR: this.island.agentDir }),
+				// T1b-b (S5): the bundled Engram binary and the user's own memory
+				// store travel ONLY with Koda's default engine.
+				...(defaultEngine ? bundledMemoryEnv(this.baseEnv, runtimeRoot(this.runtimeDeps), this.runtimeDeps) : {}),
 				...this.envOverrides,
 			}),
 		};
@@ -884,4 +1091,4 @@ class AgentEngine extends EventEmitter {
 	}
 }
 
-module.exports = { AgentEngine, JsonlDecoder, DEFAULT_COMMAND, bundledGentleShell, encodeRecord, gentlePiVersion, runtimeRoot, windowsPackageCliJs };
+module.exports = { AgentEngine, JsonlDecoder, DEFAULT_COMMAND, bundledGentleShell, bundledMemoryEnv, encodeRecord, gentlePiVersion, runtimeRoot, seedEngramCompanion, windowsPackageCliJs };

@@ -511,3 +511,213 @@ test("restart ignores persisted session paths outside the island sessions dir", 
 	assert.equal(readCommands(cmdLog).filter((c) => c.type === "switch_session").length, 0);
 	await engine.stop();
 });
+
+// ----- T1b-b: the engine uses the bundled Engram (companion seeding + env) ----
+
+const { bundledMemoryEnv, seedEngramCompanion } = require("../src/runtime.cjs");
+const { islandPaths } = require("../src/isolation.cjs");
+
+/** A minimal but real-shaped gentle-engram companion inside a fake runtime. */
+function fakeCompanion(runtime, version = "0.4.2") {
+	const root = path.join(runtime, "node_modules", "gentle-engram");
+	fs.mkdirSync(path.join(root, "assets"), { recursive: true });
+	fs.writeFileSync(path.join(root, "package.json"), `${JSON.stringify({ name: "gentle-engram", version, engram: { startupPolicy: 1 } })}\n`);
+	fs.writeFileSync(path.join(root, "index.ts"), "export default () => {};\n");
+	fs.writeFileSync(path.join(root, "assets", "logo.svg"), "<svg/>\n");
+	return root;
+}
+
+function fakeRuntimeWithEngram(t, { version = "0.4.2", engramBin = "bin/engram" } = {}) {
+	const runtime = fs.mkdtempSync(path.join(os.tmpdir(), "abito-engram-runtime-"));
+	t.after(() => fs.rmSync(runtime, { recursive: true, force: true }));
+	fakeCompanion(runtime, version);
+	if (engramBin !== null) {
+		fs.mkdirSync(path.join(runtime, "bin"), { recursive: true });
+		fs.writeFileSync(path.join(runtime, "bin", process.platform === "win32" ? "engram.exe" : "engram"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+	}
+	fs.writeFileSync(
+		path.join(runtime, "koda-runtime.json"),
+		`${JSON.stringify({ gentlePi: "4.3.0", gentleShell: "node_modules/gentle-pi/bin/gentle-shell.mjs", engram: version, ...(engramBin === null ? {} : { engramBin }) })}\n`,
+	);
+	return runtime;
+}
+
+const runtimeDepsFor = (runtime) => ({ execPath: path.join(runtime, "node"), existsSync: fs.existsSync, lstatSync: fs.lstatSync, readFileSync: fs.readFileSync });
+
+test("seedEngramCompanion copies the bundled companion into the island and pins it in settings.json", (t) => {
+	const runtime = fakeRuntimeWithEngram(t);
+	const island = ensureIsland(path.join(fs.mkdtempSync(path.join(os.tmpdir(), "abito-engram-island-")), "island"));
+	t.after(() => fs.rmSync(path.join(island.root, ".."), { recursive: true, force: true }));
+
+	const result = seedEngramCompanion(runtime, island.agentDir, runtimeDepsFor(runtime));
+	assert.deepEqual(result, { ok: true });
+
+	const target = path.join(island.agentDir, "npm", "node_modules", "gentle-engram");
+	assert.equal(JSON.parse(fs.readFileSync(path.join(target, "package.json"), "utf8")).version, "0.4.2");
+	assert.equal(fs.readFileSync(path.join(target, "index.ts"), "utf8"), "export default () => {};\n");
+	assert.equal(fs.readFileSync(path.join(target, "assets", "logo.svg"), "utf8"), "<svg/>\n");
+	// Real copies, never links, private modes.
+	assert.equal(fs.lstatSync(target).isSymbolicLink(), false);
+	assert.equal(fs.lstatSync(path.join(target, "index.ts")).isSymbolicLink(), false);
+	assert.equal(fs.statSync(path.join(target, "index.ts")).mode & 0o777, 0o600);
+	assert.equal(fs.statSync(target).mode & 0o777, 0o700);
+
+	// settings.json: the pinned companion, every other key preserved.
+	const settings = JSON.parse(fs.readFileSync(path.join(island.agentDir, "settings.json"), "utf8"));
+	assert.deepEqual(settings.packages, ["npm:gentle-engram@0.4.2"]);
+	assert.equal(fs.statSync(path.join(island.agentDir, "settings.json")).mode & 0o777, 0o600);
+});
+
+test("seedEngramCompanion is idempotent and refreshes when the bundled version differs", (t) => {
+	const runtime = fakeRuntimeWithEngram(t);
+	const island = ensureIsland(path.join(fs.mkdtempSync(path.join(os.tmpdir(), "abito-engram-island2-")), "island"));
+	t.after(() => fs.rmSync(path.join(island.root, ".."), { recursive: true, force: true }));
+	const deps = runtimeDepsFor(runtime);
+	const target = path.join(island.agentDir, "npm", "node_modules", "gentle-engram");
+	const settingsFile = path.join(island.agentDir, "settings.json");
+
+	assert.deepEqual(seedEngramCompanion(runtime, island.agentDir, deps), { ok: true });
+	// Simulate the profile store writing its model defaults beside our pin
+	// (profiles.cjs spreads the existing settings): the merge must keep both.
+	fs.writeFileSync(settingsFile, `${JSON.stringify({ defaultProvider: "anthropic", defaultModel: "claude-x", packages: ["npm:gentle-engram@0.4.2"] }, null, 2)}\n`, { mode: 0o600 });
+	const indexBytes = fs.readFileSync(path.join(target, "index.ts"), "utf8");
+
+	assert.deepEqual(seedEngramCompanion(runtime, island.agentDir, deps), { ok: true });
+	assert.deepEqual(JSON.parse(fs.readFileSync(settingsFile, "utf8")).packages, ["npm:gentle-engram@0.4.2"], "no duplicate pin");
+	assert.equal(JSON.parse(fs.readFileSync(settingsFile, "utf8")).defaultProvider, "anthropic", "other keys survive");
+	assert.equal(fs.readFileSync(path.join(target, "index.ts"), "utf8"), indexBytes, "same version: no rewrite churn");
+
+	// A different bundled version refreshes the copy and the pin.
+	fs.writeFileSync(path.join(runtime, "node_modules", "gentle-engram", "package.json"), `${JSON.stringify({ name: "gentle-engram", version: "0.5.0" })}\n`);
+	fs.writeFileSync(path.join(runtime, "node_modules", "gentle-engram", "extra.mjs"), "export const fresh = true;\n");
+	assert.deepEqual(seedEngramCompanion(runtime, island.agentDir, deps), { ok: true });
+	assert.equal(JSON.parse(fs.readFileSync(path.join(target, "package.json"), "utf8")).version, "0.5.0");
+	assert.ok(fs.existsSync(path.join(target, "extra.mjs")));
+	assert.deepEqual(JSON.parse(fs.readFileSync(settingsFile, "utf8")).packages, ["npm:gentle-engram@0.5.0"], "stale pins are replaced");
+});
+
+test("seedEngramCompanion refuses symlinks in the companion and a planted settings link", (t) => {
+	const runtime = fakeRuntimeWithEngram(t);
+	const island = ensureIsland(path.join(fs.mkdtempSync(path.join(os.tmpdir(), "abito-engram-island3-")), "island"));
+	t.after(() => fs.rmSync(path.join(island.root, ".."), { recursive: true, force: true }));
+	const deps = runtimeDepsFor(runtime);
+	const outside = fs.mkdtempSync(path.join(os.tmpdir(), "abito-engram-outside-"));
+	t.after(() => fs.rmSync(outside, { recursive: true, force: true }));
+	fs.writeFileSync(path.join(outside, "evil.ts"), "pwned\n");
+
+	// A symlink inside the bundled companion tree is refused, nothing copied.
+	fs.rmSync(path.join(runtime, "node_modules", "gentle-engram", "assets", "logo.svg"));
+	fs.symlinkSync(path.join(outside, "evil.ts"), path.join(runtime, "node_modules", "gentle-engram", "assets", "logo.svg"));
+	assert.throws(() => seedEngramCompanion(runtime, island.agentDir, deps), /symlink/);
+	assert.equal(fs.existsSync(path.join(island.agentDir, "npm", "node_modules", "gentle-engram")), false);
+	fs.unlinkSync(path.join(runtime, "node_modules", "gentle-engram", "assets", "logo.svg"));
+
+	// A settings.json replaced by a symlink is never written through.
+	fs.symlinkSync(path.join(outside, "evil.ts"), path.join(island.agentDir, "settings.json"));
+	assert.throws(() => seedEngramCompanion(runtime, island.agentDir, deps), /symlink|refusing/);
+	assert.equal(fs.readFileSync(path.join(outside, "evil.ts"), "utf8"), "pwned\n", "the victim is intact");
+});
+
+test("seedEngramCompanion reports a runtime without the companion instead of failing the engine", (t) => {
+	const runtime = fs.mkdtempSync(path.join(os.tmpdir(), "abito-engram-empty-"));
+	t.after(() => fs.rmSync(runtime, { recursive: true, force: true }));
+	const island = islandPaths(path.join(fs.mkdtempSync(path.join(os.tmpdir(), "abito-engram-island4-")), "island"));
+	t.after(() => fs.rmSync(path.join(island.root, ".."), { recursive: true, force: true }));
+	assert.deepEqual(seedEngramCompanion(runtime, island.agentDir, runtimeDepsFor(runtime)).ok, false);
+});
+
+test("bundledMemoryEnv names the bundled binary and the user's own memory store, never GENTLE_SHELL_PREFIX", (t) => {
+	const runtime = fakeRuntimeWithEngram(t);
+	const deps = runtimeDepsFor(runtime);
+
+	const env = bundledMemoryEnv(
+		{ HOME: "/home/user", ENGRAM_URL: "http://127.0.0.1:9999", ENGRAM_PORT: "7777", GENTLE_SHELL_PREFIX: "/evil/prefix" },
+		runtime,
+		deps,
+	);
+	assert.equal(env.ENGRAM_BIN, path.join(runtime, "bin", "engram"));
+	assert.equal(env.ENGRAM_DATA_DIR, path.join("/home/user", ".engram"));
+	assert.equal(env.ENGRAM_URL, "http://127.0.0.1:9999");
+	assert.equal(env.ENGRAM_PORT, "7777");
+	assert.equal(env.GENTLE_SHELL_PREFIX, undefined, "GENTLE_SHELL_PREFIX is never set");
+
+	// The parent's own ENGRAM_DATA_DIR wins (the user may already move their store).
+	assert.equal(bundledMemoryEnv({ HOME: "/home/user", ENGRAM_DATA_DIR: "/data/engram" }, runtime, deps).ENGRAM_DATA_DIR, "/data/engram");
+
+	// Windows resolves the real home through USERPROFILE (Gentle Dot isolation).
+	// The Windows manifest names engram.exe; point the fake runtime at it.
+	fs.mkdirSync(path.join(runtime, "bin"), { recursive: true });
+	fs.writeFileSync(path.join(runtime, "bin", "engram.exe"), "#!exit\n", { mode: 0o755 });
+	fs.writeFileSync(path.join(runtime, "koda-runtime.json"), `${JSON.stringify({ gentlePi: "4.3.0", gentleShell: "node_modules/gentle-pi/bin/gentle-shell.mjs", engramBin: "bin/engram.exe" })}\n`);
+	const win = bundledMemoryEnv({ USERPROFILE: "C:\\Users\\u" }, runtime, { ...deps, platform: "win32" });
+	assert.equal(win.ENGRAM_DATA_DIR, path.join("C:\\Users\\u", ".engram"));
+	assert.equal(win.ENGRAM_BIN, path.join(runtime, "bin", "engram.exe"));
+
+	// A manifest without engramBin (pre-T1b runtimes, test doubles) sets no binary.
+	const noBin = fakeRuntimeWithEngram(t, { engramBin: null });
+	assert.equal(bundledMemoryEnv({ HOME: "/home/user" }, noBin, runtimeDepsFor(noBin)).ENGRAM_BIN, undefined);
+	assert.equal(bundledMemoryEnv({ HOME: "/home/user" }, noBin, runtimeDepsFor(noBin)).ENGRAM_DATA_DIR, path.join("/home/user", ".engram"));
+});
+
+test("bundledMemoryEnv fails closed on a bad or symlinked engramBin in the manifest", (t) => {
+	const runtime = fakeRuntimeWithEngram(t);
+	const deps = runtimeDepsFor(runtime);
+	for (const bad of ["../evil/engram", "/evil/engram", ""]) {
+		fs.writeFileSync(path.join(runtime, "koda-runtime.json"), `${JSON.stringify({ gentlePi: "4.3.0", gentleShell: "node_modules/gentle-pi/bin/gentle-shell.mjs", engramBin: bad })}\n`);
+		assert.throws(() => bundledMemoryEnv({ HOME: "/home/user" }, runtime, deps), /engramBin/);
+	}
+	// A symlinked binary is refused too.
+	fs.writeFileSync(path.join(runtime, "koda-runtime.json"), `${JSON.stringify({ gentlePi: "4.3.0", gentleShell: "node_modules/gentle-pi/bin/gentle-shell.mjs", engramBin: "bin/engram" })}\n`);
+	fs.rmSync(path.join(runtime, "bin", "engram"));
+	fs.symlinkSync("/evil/engram", path.join(runtime, "bin", "engram"));
+	assert.throws(() => bundledMemoryEnv({ HOME: "/home/user" }, runtime, deps), /symlink|missing/);
+});
+
+test("the default engine's child gets the memory env and the seeded companion; a custom command gets neither", unixOnly("needs a #!/bin/sh fake runtime launcher; the env rules are platform-independent (bundledMemoryEnv tests above pin the Windows mapping)"), async (t) => {
+	const runtime = fakeRuntimeWithEngram(t);
+	const scriptRel = "node_modules/gentle-pi/bin/gentle-shell.mjs";
+	fs.mkdirSync(path.join(runtime, "node_modules", "gentle-pi", "bin"), { recursive: true });
+	fs.writeFileSync(path.join(runtime, ...scriptRel.split("/")), "");
+	const launcher = path.join(runtime, "gentle-shell");
+	fs.writeFileSync(launcher, `#!/bin/sh\nexec '${process.execPath}' '${FAKE_AGENT}' "$@"\n`);
+	fs.chmodSync(launcher, 0o755);
+
+	const home = fs.mkdtempSync(path.join(os.tmpdir(), "abito-engram-home-"));
+	t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+	const { engine, envOut } = makeEngine(t, {
+		command: "gentle-shell",
+		commandArgs: [],
+		runtimeDeps: runtimeDepsFor(runtime),
+		env: { HOME: home, PATH: process.env.PATH, ENGRAM_DATA_DIR: path.join(home, "store"), GENTLE_SHELL_PREFIX: "/evil/prefix" },
+	});
+	try {
+		await engine.start();
+		const childEnv = JSON.parse(fs.readFileSync(envOut, "utf8"));
+		assert.equal(childEnv.ENGRAM_BIN, path.join(runtime, "bin", "engram"));
+		assert.equal(childEnv.ENGRAM_DATA_DIR, path.join(home, "store"));
+		assert.equal(childEnv.ABITO_MEMORY_PROJECT, "abito-island");
+		assert.equal(childEnv.GENTLE_SHELL_PREFIX, undefined, "never GENTLE_SHELL_PREFIX");
+		// The companion was seeded into the engine's own home before the first spawn.
+		assert.equal(JSON.parse(fs.readFileSync(path.join(engine.island.agentDir, "npm", "node_modules", "gentle-engram", "package.json"), "utf8")).version, "0.4.2");
+		assert.deepEqual(JSON.parse(fs.readFileSync(path.join(engine.island.agentDir, "settings.json"), "utf8")).packages, ["npm:gentle-engram@0.4.2"]);
+		// The memory project pin is untouched.
+		assert.equal(JSON.parse(fs.readFileSync(path.join(engine.island.workspace, ".engram", "config.json"), "utf8")).project_name, "abito-island");
+	} finally {
+		await engine.stop().catch(() => {});
+	}
+
+	// A custom (non-default) command gets NO memory env at all: the bundled
+	// Engram travels only with Koda's own engine.
+	const plain = makeEngine(t, {
+		env: { HOME: home, PATH: process.env.PATH, ENGRAM_DATA_DIR: path.join(home, "store") },
+	});
+	try {
+		await plain.engine.start();
+		const plainEnv = JSON.parse(fs.readFileSync(plain.envOut, "utf8"));
+		assert.equal(plainEnv.ENGRAM_BIN, undefined);
+		assert.equal(plainEnv.ENGRAM_DATA_DIR, undefined, "the user's store is never exposed to a foreign command");
+		assert.equal(plainEnv.ABITO_MEMORY_PROJECT, "abito-island");
+	} finally {
+		await plain.engine.stop().catch(() => {});
+	}
+});
