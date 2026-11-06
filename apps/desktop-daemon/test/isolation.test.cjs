@@ -63,6 +63,9 @@ test("isolatedEnv allowlists only OS essentials and applies explicit private ove
 			PI_SESSION_ID: "parent-session",
 			PI_SESSION_FILE: "/home/user/.pi/sessions/x.jsonl",
 			GENTLE_PI_AGENT_HOME: "/home/user/.gentle",
+			GENTLE_SHELL_PI: "/home/user/.local/bin/pi/dist/cli.js",
+			GENTLE_SHELL_CONFIG: "/home/user/.gentle-shell",
+			GENTLE_PI_AGENTS_CHILD: "1",
 			ENGRAM_PORT: "7437",
 		},
 		island,
@@ -75,22 +78,33 @@ test("isolatedEnv allowlists only OS essentials and applies explicit private ove
 	assert.equal(env.XDG_DATA_HOME, path.join(island.home, ".local", "share"));
 	assert.equal(env.XDG_CACHE_HOME, path.join(island.home, ".cache"));
 	assert.equal(env.XDG_STATE_HOME, path.join(island.home, ".local", "state"));
-	assert.equal(env.PI_CODING_AGENT_DIR, island.agentDir);
+	// T2: the engine home travels on --home; PI_CODING_AGENT_DIR is never set.
+	assert.equal(env.PI_CODING_AGENT_DIR, undefined);
 	assert.equal(env.PI_OFFLINE, "1");
 	assert.equal(env.PI_SKIP_VERSION_CHECK, "1");
 	assert.equal(env.PI_TELEMETRY, "0");
+	// T2: gentle-shell's launch-time provisioning gates and gentle-ai's own config home.
+	assert.equal(env.GENTLE_SHELL_NO_AUTO_SETUP, "1");
+	assert.equal(env.GENTLE_PI_SKIP_GENTLE_AI_INSTALL, "1");
+	assert.equal(env.GENTLE_PI_CONFIG_HOME, path.join(island.root, "gentle-ai"));
 
 	// Inherited secrets, parent Pi setup, session state and foreign settings are dropped.
 	assert.equal(env.ANTHROPIC_API_KEY, undefined);
 	assert.equal(env.OPENAI_API_KEY, undefined);
 	assert.equal(env.GENTLE_PI_AGENT_HOME, undefined);
+	// gentle-shell would let GENTLE_SHELL_PI override Koda's bundled Pi (verifier
+	// finding on gentle-pi lib/gentle-shell-launcher.ts); the user's own Gentle
+	// Shell config and subagent variables never reach the engine either.
+	assert.equal(env.GENTLE_SHELL_PI, undefined);
+	assert.equal(env.GENTLE_SHELL_CONFIG, undefined);
+	assert.equal(env.GENTLE_PI_AGENTS_CHILD, undefined);
 	assert.equal(env.ENGRAM_PORT, undefined);
 	for (const key of Object.keys(env)) {
 		if (key.startsWith("PI_")) {
 			assert.ok(
-				["PI_CODING_AGENT_DIR", "PI_OFFLINE", "PI_SKIP_VERSION_CHECK", "PI_TELEMETRY"].includes(key),
+				["PI_OFFLINE", "PI_SKIP_VERSION_CHECK", "PI_TELEMETRY"].includes(key),
 				`unexpected inherited PI_ variable: ${key}`,
-			);
+				);
 		}
 	}
 	// OS essentials survive, and explicit overrides are honoured.

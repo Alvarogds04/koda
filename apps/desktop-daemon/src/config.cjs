@@ -11,7 +11,8 @@
  *
  * Schema (all optional):
  *   workspace      absolute existing directory (see validateWorkspace)
- *   command        executable name or absolute path, default "pi"
+ *   command        executable name or absolute path; default "gentle-shell" (T2:
+ *                  resolved by the runtime from Koda's bundled runtime, never PATH)
  *   thinking       default thinking level (profiles.cjs THINKING_LEVELS)
  *   profile        saved profile id activated at daemon start
  *   mcpConfigPath  absolute path of a private MCP source file (projectMcpConfig)
@@ -32,6 +33,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 
+const { DEFAULT_COMMAND } = require("./runtime.cjs");
 const { MEMORY_PROJECT, assertSecurePath, islandPaths, writePrivateFile } = require("./isolation.cjs");
 const { THINKING_LEVELS, isStrictProfileId } = require("./profiles.cjs");
 // K2-01b: on Windows private files are judged by the verified HU-047 helper (null off Windows; see readPrivateJson).
@@ -39,7 +41,8 @@ const winfs = require("./win-fs.cjs");
 
 const WORKSPACE_ENV = "ABITO_WORKSPACE";
 const ALLOWED_KEYS = ["workspace", "command", "thinking", "profile", "mcpConfigPath", "hotkey", "paused", "connectorsCommand", "connectorsDir", "hookInstallerBin", "connectorHostBin", "rotation"];
-const DEFAULT_COMMAND = "pi";
+// T2: the default engine is Koda's bundled Gentle Shell (resolved by the
+// runtime from the bundled runtime folder); re-exported from runtime.cjs.
 const MAX_CONFIG_BYTES = 16 * 1024;
 const MAX_MCP_BYTES = 64 * 1024;
 
@@ -482,9 +485,9 @@ function projectMcpConfig(file) {
 
 /**
  * Writes the projection to `<island>/agent/mcp.json` — the user-level MCP file
- * of the engine's private pi agent dir (`PI_CODING_AGENT_DIR`), which pi reads
- * natively (see docs/mcp.md). With no source it writes an empty projection so
- * a stale one never lingers.
+ * of the engine's own home (the directory passed to `--home`, T2), which the
+ * engine reads natively (see docs/mcp.md). With no source it writes an empty
+ * projection so a stale one never lingers.
  */
 function writeMcpProjection(islandRoot, sourceFile) {
 	const projection = sourceFile ? projectMcpConfig(sourceFile) : { mcpServers: {} };

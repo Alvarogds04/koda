@@ -3,17 +3,20 @@
 ## Gentle Dot (adapted code)
 
 Parts of this package are adapted from the Gentle Dot project
-(`packages/daemon`: `supervisor.ts`, `isolation.ts`, `jsonl.ts`, and the product
-identity document `identity.md`), used as the MIT-licensed reference for the
-supervised isolated RPC runtime, fail-closed private directory checks, strict JSONL
-fring, and product-identity approach.
+(`packages/daemon`: `supervisor.ts`, `isolation.ts`, `jsonl.ts`, `white-label.ts`,
+and the product identity document `identity.md`), used as the MIT-licensed
+reference for the supervised isolated RPC runtime, fail-closed private directory
+checks, strict JSONL framing, the user-facing white-label rewriting of internal
+names, and the product-identity approach.
 
-- Files adapted: `src/isolation.cjs`, `src/runtime.cjs` (in part), `test/fixtures` and
-  `identity.md` (concept), `README.md` (in part)
-- Changes: rewritten in plain Node CJS with no third-party dependencies; Abito
-  identity, island paths, environment allowlist and fail-closed path rules differ from
-  the original; supervision state machine and JSONL framing closely follow the
-  original.
+- Files adapted: `src/isolation.cjs` (including the engine-home marker logic
+  from `claimEngineHome`), `src/runtime.cjs` (in part, including the bundled
+  default-engine resolution from `bundledGentleShell`), `src/white-label.cjs`,
+  `test/fixtures` and `identity.md` (text), `README.md` (in part)
+- Changes: rewritten in plain Node CJS with no third-party dependencies; Koda
+  identity, island paths, environment allowlist and fail-closed path rules differ
+  from the original; supervision state machine and JSONL framing closely follow
+  the original; the hidden-name list adds Koda's own internal names (Abito, Pi).
 
 Gentle Dot is distributed under the MIT License:
 

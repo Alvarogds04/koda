@@ -206,7 +206,8 @@ test("config get prints the effective config; set-workspace persists it", () => 
 	let r = cli(root, ["config", "get"]);
 	assert.equal(r.status, 0);
 	const got = JSON.parse(r.stdout);
-	assert.equal(got.command, "pi");
+	// T2: the default engine is Koda's bundled Gentle Shell; config.json still overrides.
+	assert.equal(got.command, "gentle-shell");
 	assert.equal(got.workspaceSource, "default");
 	r = cli(root, ["config", "set-workspace", ws]);
 	assert.equal(r.status, 0, r.stderr);

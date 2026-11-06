@@ -5,11 +5,11 @@
  *
  * Everything the island agent touches lives under one private root
  * (`~/.abito-island` by default, overridable with `ABITO_ISLAND_DIR`):
- * its own HOME, XDG directories, agent directory for the installed pi
- * (`PI_CODING_AGENT_DIR`; pi has no supported `--home` flag), private
- * sessions and a private temp directory. The user's own Pi setup,
- * extensions, auth and provider variables are never inherited: the child
- * environment is built from a small allowlist plus explicit overrides.
+ * its own HOME, XDG directories, the engine home for the bundled Gentle Shell
+ * (passed to the engine as `--home`; T2), private sessions and a private temp
+ * directory. The user's own Pi/Gentle Shell setup, extensions, auth and
+ * provider variables are never inherited: the child environment is built from
+ * a small allowlist plus explicit overrides.
  *
  * Paths fail closed: any symlink component, world-writable component
  * without the sticky bit, or component owned by a foreign user is refused;
@@ -145,6 +145,8 @@ function islandPaths(root) {
 		workspace: path.join(absolute, "workspace"),
 		tmp: path.join(absolute, "tmp"),
 		configFile: path.join(absolute, "config.json"),
+		/** gentle-ai's own config home inside the island (T2). */
+		gentleAi: path.join(absolute, "gentle-ai"),
 	};
 }
 
@@ -398,10 +400,11 @@ function pathWithNodeFirst(nodeDir, existing, delimiter = path.delimiter) {
 }
 
 /**
- * The engine child's environment: allowlisted OS essentials from `base`,
- * the private HOME/XDG/TMPDIR, the explicit private pi agent directory, and
- * offline/no-telemetry markers. Provider credentials, the parent's PI_*
- * variables and foreign agent settings never pass through. `overrides`
+ * The engine's environment: allowlisted OS essentials from `base`, the private
+ * HOME/XDG/TMPDIR, the offline/no-telemetry markers and the Gentle Shell launch
+ * gates. Provider credentials, the parent's PI_* and GENTLE_* variables
+ * (including GENTLE_SHELL_PI, which gentle-shell would honour over Koda's
+ * bundled Pi) and foreign agent settings never pass through. `overrides`
  * carries explicit engine-owned additions (memory project pin now, provider
  * auth in U2) and always wins.
  */
@@ -419,13 +422,19 @@ function isolatedEnv(base, paths, overrides = {}) {
 	env.XDG_DATA_HOME = path.join(paths.home, ".local", "share");
 	env.XDG_CACHE_HOME = path.join(paths.home, ".cache");
 	env.XDG_STATE_HOME = path.join(paths.home, ".local", "state");
-	// The installed pi keeps its agent directory here; the unsupported
-	// `--home` flag is never used.
-	env.PI_CODING_AGENT_DIR = paths.agentDir;
+	// T2: the engine home travels on the `--home` argv flag (Gentle Dot's shape);
+	// PI_CODING_AGENT_DIR is never set and never inherited (the allowlist drops it).
 	// Offline by default: no model catalog refreshes, no version check, no telemetry.
 	env.PI_OFFLINE = "1";
 	env.PI_SKIP_VERSION_CHECK = "1";
 	env.PI_TELEMETRY = "0";
+	// gentle-shell's first-run companion provisioning gate and its missing
+	// package-local gentle-ai self-heal/installer gate (Gentle Dot agentSpawnEnv):
+	// the installed engine must never try to install or self-heal anything.
+	env.GENTLE_SHELL_NO_AUTO_SETUP = "1";
+	env.GENTLE_PI_SKIP_GENTLE_AI_INSTALL = "1";
+	// gentle-ai's own config home inside the island.
+	env.GENTLE_PI_CONFIG_HOME = paths.gentleAi;
 	// Keep the user's git identity without exposing their real HOME.
 	if (!base.GIT_CONFIG_GLOBAL) {
 		const gitConfig = path.join(realHome, ".gitconfig");
@@ -434,11 +443,55 @@ function isolatedEnv(base, paths, overrides = {}) {
 	return { ...env, ...overrides };
 }
 
+/** The file gentle-shell writes into a home it created (gentle-pi `bin/gentle-shell.mjs`). */
+const ENGINE_HOME_MARKER = ".gentle-shell-home";
+
+/**
+ * Marks Koda's own engine home (`<island>/agent`, the directory passed to
+ * `--home`) as gentle-shell's, before the engine's first spawn (Gentle Dot
+ * `claimEngineHome`): gentle-shell runs its first-run setup only in a home it
+ * created — one that holds its marker. Koda writes auth/mcp/extension files
+ * there before the engine's first start, so without the marker the engine took
+ * the home for someone else's. The marker has gentle-shell's own format
+ * (`{"createdBy":"gentle-shell","version":…}`; it checks only that the file
+ * exists); `version` is the bundled runtime's gentle-pi version, informational
+ * only. One already there is left exactly as it is. Called ONLY for Koda's own
+ * island agent dir — never for any other home. Written through the same
+ * fail-closed private write as identity.md; a failure is logged, never fatal
+ * (the launch gates in `isolatedEnv` keep the engine from provisioning anyway).
+ */
+function claimEngineHome(agentDir, version, log = () => {}) {
+	const marker = path.join(agentDir, ENGINE_HOME_MARKER);
+	let existing;
+	try {
+		existing = lstatSync(marker);
+	} catch (error) {
+		if (error.code !== "ENOENT") {
+			log(`could not mark the engine's home as its own: ${error.message}`);
+			return false;
+		}
+	}
+	if (existing) {
+		if (existing.isFile()) return false; // already claimed: left as it is
+		log(`could not mark the engine's home as its own: ${marker} exists and is not a regular file`);
+		return false;
+	}
+	try {
+		writePrivateFile(marker, `${JSON.stringify({ createdBy: "gentle-shell", version })}\n`, { mode: 0o600 });
+		return true;
+	} catch (error) {
+		log(`could not mark the engine's home as its own: ${error.message}`);
+		return false;
+	}
+}
+
 module.exports = {
+	ENGINE_HOME_MARKER,
 	ENV_ALLOWLIST,
 	ISLAND_ROOT_ENV,
 	MEMORY_PROJECT,
 	assertSecurePath,
+	claimEngineHome,
 	defaultIslandRoot,
 	ensureIsland,
 	ensurePrivateDir,

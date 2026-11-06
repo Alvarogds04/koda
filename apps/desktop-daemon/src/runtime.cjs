@@ -21,10 +21,17 @@
 const { EventEmitter } = require("node:events");
 const { performance } = require("node:perf_hooks");
 const { spawn } = require("node:child_process");
-const { lstatSync, readFileSync } = require("node:fs");
+const { existsSync, lstatSync, readFileSync } = require("node:fs");
 const path = require("node:path");
 
-const { MEMORY_PROJECT, defaultIslandRoot, ensureIsland, isolatedEnv, writePrivateFile } = require("./isolation.cjs");
+const {
+	MEMORY_PROJECT,
+	claimEngineHome,
+	defaultIslandRoot,
+	ensureIsland,
+	isolatedEnv,
+	writePrivateFile,
+} = require("./isolation.cjs");
 
 const DEFAULT_BACKOFF_MS = [1000, 2000, 4000, 8000, 16000, 30000];
 const DEFAULT_REQUEST_TIMEOUT_MS = 300_000;
@@ -37,8 +44,17 @@ const DEFAULT_TURN_TIMEOUT_MS = 300_000;
 const DEFAULT_MAX_TURN_ITERATIONS = 32;
 const DEFAULT_ABORT_GRACE_MS = 2_000;
 
-/** The npm global package that provides Pi on Windows (T2/S4). */
+/** The npm global package that provides Pi on Windows (custom bare commands only since T2). */
 const PI_PACKAGE_SEGMENTS = ["node_modules", "@earendil-works", "pi-coding-agent"];
+
+/**
+ * The default engine (T2): Gentle Shell, Koda's bundled Gentle Pi. Never a
+ * binary from PATH or an npm prefix; config.json `command` overrides it.
+ */
+const DEFAULT_COMMAND = "gentle-shell";
+
+/** The manifest T1 ships in Koda's bundled runtime folder. */
+const RUNTIME_MANIFEST = "koda-runtime.json";
 
 /**
  * Windows (T2): Pi's npm install is a `.cmd` shim backed by JS. A shim is NEVER
@@ -83,6 +99,106 @@ function windowsPackageCliJs(binName, deps = {}) {
 function positiveBudget(value, name, max = 2_147_483_647) {
 	if (!Number.isSafeInteger(value) || value < 1 || value > max) throw new Error(`invalid ${name}`);
 	return value;
+}
+
+/**
+ * Koda's bundled runtime root (T1): the directory of the Node running the
+ * daemon when it carries `koda-runtime.json` — the installed app always runs
+ * the daemon on its own bundled Node, so this finds the runtime without any
+ * PATH or npm-prefix search. Pure and injectable for tests; undefined when the
+ * daemon does not run on a bundled runtime (a dev checkout).
+ */
+function runtimeRoot(deps = {}) {
+	const execPath = deps.execPath ?? process.execPath;
+	const exists = deps.existsSync ?? existsSync;
+	if (typeof execPath === "string" && path.isAbsolute(execPath) && exists(path.join(path.dirname(execPath), RUNTIME_MANIFEST))) {
+		return path.dirname(execPath);
+	}
+	return undefined;
+}
+
+/** A real, non-symlink regular file (the runtime build ships no links; fail closed). */
+function isRealFile(file, deps) {
+	try {
+		const stats = (deps.lstatSync ?? lstatSync)(file);
+		return stats.isFile() && !stats.isSymbolicLink();
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * The script `koda-runtime.json` names with `gentleShell` (T1): a relative path
+ * inside the runtime that must be a real file — anything else is refused
+ * (undefined shape, fail closed, like windowsPackageCliJs).
+ */
+function gentleShellScript(manifest, runtime, deps) {
+	const rel = manifest?.gentleShell;
+	if (typeof rel !== "string" || rel.length === 0 || path.isAbsolute(rel)) {
+		throw new Error(`${RUNTIME_MANIFEST} names no gentleShell script`);
+	}
+	const script = path.resolve(runtime, rel);
+	const within = path.relative(runtime, script);
+	if (within === "" || within === ".." || within.startsWith(`..${path.sep}`) || path.isAbsolute(within)) {
+		throw new Error(`${RUNTIME_MANIFEST} names a gentleShell script outside the runtime`);
+	}
+	if (!isRealFile(script, deps)) {
+		throw new Error(`the bundled runtime is missing ${rel}`);
+	}
+	return script;
+}
+
+/**
+ * The engine Koda launches by default: Gentle Shell from Koda's own bundled
+ * runtime, never one from PATH or an npm prefix (Gentle Dot
+ * `bundledGentleShell`). Linux/macOS: the runtime's `gentle-shell` launcher.
+ * Windows: the bundled node.exe plus the script `koda-runtime.json` names
+ * (`gentleShell`), mirroring how the old default `pi` resolved on Windows.
+ * Anything missing from an existing runtime is a hard error, never a fall-back.
+ * Pure and injectable for tests.
+ */
+function bundledGentleShell(deps = {}) {
+	const platform = deps.platform ?? process.platform;
+	const runtime = runtimeRoot(deps);
+	if (!runtime) {
+		throw new Error(
+			`no bundled runtime found next to the daemon's Node (${deps.execPath ?? process.execPath}); set "command" in the island config.json to override the default engine`,
+		);
+	}
+	if (platform === "win32") {
+		const nodeExe = path.join(runtime, "node.exe");
+		if (!isRealFile(nodeExe, deps)) {
+			throw new Error(`the bundled runtime is missing node.exe: ${runtime}`);
+		}
+		let manifest;
+		try {
+			manifest = JSON.parse((deps.readFileSync ?? readFileSync)(path.join(runtime, RUNTIME_MANIFEST), "utf8"));
+		} catch (error) {
+			throw new Error(`cannot read ${path.join(runtime, RUNTIME_MANIFEST)}: ${error.message}`);
+		}
+		return { command: nodeExe, commandArgs: [gentleShellScript(manifest, runtime, deps)] };
+	}
+	const launcher = path.join(runtime, "gentle-shell");
+	if (!isRealFile(launcher, deps)) {
+		throw new Error(`the bundled runtime is missing the gentle-shell launcher: ${runtime}`);
+	}
+	return { command: launcher, commandArgs: [] };
+}
+
+/**
+ * The bundled runtime's gentle-pi version (T1 manifest), or undefined when the
+ * daemon is not on a bundled runtime or the manifest cannot be read:
+ * informational only (the `.gentle-shell-home` marker names it).
+ */
+function gentlePiVersion(deps = {}) {
+	const runtime = runtimeRoot(deps);
+	if (!runtime) return undefined;
+	try {
+		const manifest = JSON.parse((deps.readFileSync ?? readFileSync)(path.join(runtime, RUNTIME_MANIFEST), "utf8"));
+		return typeof manifest.gentlePi === "string" ? manifest.gentlePi : undefined;
+	} catch {
+		return undefined;
+	}
 }
 /** Cap for one unframed child record; anything larger is discarded, never buffered. */
 const DEFAULT_MAX_RECORD_BYTES = 1_048_576;
@@ -292,6 +408,11 @@ class AgentEngine extends EventEmitter {
 		// a child that reached ready is supervised with crash restarts.
 		this.initialStartPending = true;
 		this.island = ensureIsland(this.root);
+		// Mark Koda's own engine home as gentle-shell's BEFORE the first spawn
+		// (T2): gentle-shell runs its first-run setup only in a home it created,
+		// and Koda writes auth/mcp/extension files there first. Informational,
+		// logged-only on failure; an existing marker is left as it is.
+		claimEngineHome(this.island.agentDir, gentlePiVersion(), this.log);
 		this.setStatus("starting");
 		try {
 			await this.spawnAndInitialize();
@@ -567,13 +688,21 @@ class AgentEngine extends EventEmitter {
 	}
 
 	/**
-	 * The argv prefix that starts the engine: the command itself — except on
-	 * Windows with a bare command name, where the default `pi` resolves to Node
-	 * + the npm package's CLI JS (a `.cmd` shim is never executed, and spawn
-	 * without a shell cannot run one). Fails closed when it cannot resolve.
+	 * The argv prefix that starts the engine. An absolute command runs as it is.
+	 * The default `gentle-shell` (T2) resolves ONLY from Koda's bundled runtime —
+	 * the launcher on Linux/macOS, node.exe + the manifest script on Windows —
+	 * and fails closed when the runtime is absent or incomplete: never a PATH or
+	 * npm search. Any other bare command name keeps the historical Windows
+	 * resolution through the npm package's own CLI JS (a `.cmd` shim is never
+	 * executed), and fails closed when it cannot resolve.
 	 */
 	spawnCommandPrefix() {
-		if (process.platform !== "win32" || path.isAbsolute(this.command)) return [this.command];
+		if (path.isAbsolute(this.command)) return [this.command];
+		if (this.command === DEFAULT_COMMAND) {
+			const resolved = bundledGentleShell();
+			return [resolved.command, ...resolved.commandArgs];
+		}
+		if (process.platform !== "win32") return [this.command];
 		const cli = windowsPackageCliJs(this.command);
 		if (!cli) {
 			throw new Error(`the "${this.command}" command is not available on Windows; install it with npm install -g @earendil-works/pi-coding-agent`);
@@ -588,6 +717,10 @@ class AgentEngine extends EventEmitter {
 		this.prepareSpawn();
 		const args = [
 			...this.commandArgs,
+			// T2 (Gentle Dot's argv shape): the engine's own home inside the island —
+			// the same directory Koda writes auth/mcp/extension files into.
+			"--home",
+			this.island.agentDir,
 			"--mode",
 			"rpc",
 			"--session-dir",
@@ -720,4 +853,4 @@ class AgentEngine extends EventEmitter {
 	}
 }
 
-module.exports = { AgentEngine, JsonlDecoder, encodeRecord, windowsPackageCliJs };
+module.exports = { AgentEngine, JsonlDecoder, DEFAULT_COMMAND, bundledGentleShell, encodeRecord, gentlePiVersion, runtimeRoot, windowsPackageCliJs };

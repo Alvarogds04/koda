@@ -60,6 +60,32 @@ jobs:
           ROOT="$(npm root -g)/@earendil-works/pi-coding-agent"
           test -f "$ROOT/dist/core/extensions/loader.js"
           echo "PI_CODING_AGENT_ROOT=$ROOT" >> "$GITHUB_ENV"
+      - name: Install the real engine (Gentle Shell, pinned by Koda's own runtime lockfile; the offline proof must run, never skip)
+        shell: bash
+        run: |
+          # K2-05 T2: the daemon's engine is Koda's bundled Gentle Shell, so CI proves the real engine
+          # with the exact pins the shipped runtime carries (gentle-pi 4.3.0 + Pi 1.4.0 and every peer,
+          # sha512-pinned in packaging/runtime/package-lock.json). npm ci installs exactly that closure
+          # (install scripts not run, as in the runtime build itself); GENTLE_PI_ROOT points the
+          # real-engine tests at it and ABITO_REQUIRE_GENTLE=1 (below) makes absence fail the job.
+          DIR="$RUNNER_TEMP/gentle-engine"
+          mkdir -p "$DIR"
+          cp apps/desktop-tauri/packaging/runtime/package.json apps/desktop-tauri/packaging/runtime/package-lock.json "$DIR/"
+          # Retried ONLY on registry/network errors; any other npm failure fails at once (same policy as the Pi install above).
+          for attempt in 1 2 3 4 5 6; do
+            if (cd "$DIR" && npm ci --ignore-scripts --omit=dev --no-audit --no-fund 2>&1 | tee "$RUNNER_TEMP/npm-gentle.log"); then break; fi
+            if ! grep -qE 'npm error code (ETARGET|ETIMEDOUT|ECONNRESET|ECONNREFUSED|EAI_AGAIN|ENOTFOUND|E5[0-9][0-9]|ESOCKETTIMEDOUT|EPIPE)|network (timeout|socket)' \
+              "$RUNNER_TEMP/npm-gentle.log"; then
+              echo "npm failed with a non-network error: not retrying"; exit 1
+            fi
+            if [ "$attempt" = 6 ]; then echo "npm install of the engine kept failing on network errors"; exit 1; fi
+            echo "registry/network error on attempt $attempt; retrying in $((attempt * 20))s"; sleep $((attempt * 20))
+          done
+          ROOT="$DIR/node_modules/gentle-pi"
+          test -f "$ROOT/bin/gentle-shell.mjs"
+          test -d "$DIR/node_modules/@earendil-works/pi-coding-agent"
+          test "$(node -p "require('$ROOT/package.json').version")" = 4.3.0
+          echo "GENTLE_PI_ROOT=$ROOT" >> "$GITHUB_ENV"
       - name: Windows install layout for the harness suite (real ACL helper + manifest)
         if: runner.os == 'Windows'
         working-directory: apps/desktop-tauri
@@ -77,6 +103,7 @@ jobs:
         shell: bash
         env:
           ABITO_REQUIRE_PI: '1'
+          ABITO_REQUIRE_GENTLE: '1'
         run: npm test
       - name: desktop-harness (agent hooks)
         if: ${{ !cancelled() }}

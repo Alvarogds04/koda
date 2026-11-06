@@ -1,31 +1,36 @@
 "use strict";
 
-// K2-02 S3: «Dado que uso Koda, cuando abro el asistente, entonces Koda no se conecta a pi.dev.»
+// K2-05 T2 (S1) + K2-02 S3: the engine Koda launches reaches no pi.dev host.
 //
-// The REAL Pi is launched EXACTLY the way Koda launches it: the daemon's AgentEngine
-// (src/runtime.cjs) spawning Node with the package's own CLI JS — the same argv shape
-// runtime.cjs builds on Windows and the same entry the POSIX `pi` shim runs — with the
-// environment `isolatedEnv` builds (private HOME, private PI_CODING_AGENT_DIR and the three
-// offline switches PI_OFFLINE=1, PI_SKIP_VERSION_CHECK=1, PI_TELEMETRY=0). A test-only
-// preload (--require, the only injection) records EVERY outbound network attempt the child
-// makes (dns.lookup, dns.resolve*, net.connect, net.createConnection, tls.connect, fetch)
-// while Pi starts and serves a model-free RPC exchange (get_state).
+// The REAL engine is launched EXACTLY the way Koda launches it: the daemon's
+// AgentEngine (src/runtime.cjs) spawns Gentle Shell (the bundled gentle-pi) with
+// the argv the engine builds itself (--home <island>/agent --mode rpc
+// --session-dir ... --append-system-prompt identity; T2 replaced
+// PI_CODING_AGENT_DIR with --home) and the environment isolatedEnv builds
+// (private HOME, the offline switches PI_OFFLINE=1, PI_SKIP_VERSION_CHECK=1,
+// PI_TELEMETRY=0 and the launch gates GENTLE_SHELL_NO_AUTO_SETUP=1,
+// GENTLE_PI_SKIP_GENTLE_AI_INSTALL=1 plus GENTLE_PI_CONFIG_HOME). A test-only
+// preload (--require, the only injection) records EVERY outbound network
+// attempt the child makes (dns.lookup, dns.resolve*, net.connect,
+// net.createConnection, tls.connect, fetch) while the engine starts and serves
+// a model-free RPC exchange (get_state).
 //
 // Assert: no attempt reaches any pi.dev host — ideally no outbound attempt at all.
 //
-// RED: with ABITO_PI_OFFLINE_RED=1 the same spawn is run with the three offline switches
-// REMOVED from the env; the same assertion is then expected to FAIL and name the pi.dev
-// attempt (run once by hand for evidence; never part of the default suite).
+// RED: with ABITO_PI_OFFLINE_RED=1 the same spawn is run with the three offline
+// switches REMOVED from the env; the same assertion is then expected to FAIL and
+// name the pi.dev attempt (run once by hand for evidence; never part of the
+// default suite).
 //
-// Skipped (never silently passed) when no real Pi is available: PI_CODING_AGENT_ROOT, then
-// the installed `pi` on PATH (pi-loader convention). CI installs Pi on all 3 OS, so the test
-// runs on Linux, macOS and Windows there; with ABITO_REQUIRE_PI=1 absence FAILS instead.
-// Only private temp dirs are used: the island HOME/agent dir is isolatedEnv's own; the
-// user's ~/.pi and real config are never read or written.
-// Windows CI note (K2-02, CI 41853593735): on windows-latest these tests fail with `unsafe_path` from win-fs.cjs
-// checkPath <- isolation.ensureIsland, because the runner's temp dir is the 8.3 short path C:\Users\RUNNER~1\... and
-// win-fs refuses `~`. That is the same failure main has in every ensureIsland test on Windows (105 there), owned by
-// K2-01b and fixed by bb5bc69 (8.3 names resolved to their long form), which merges before K2-02. Green after that rebase.
+// Engine discovery: Koda's bundled runtime (koda-runtime.json next to the
+// daemon's Node — the installed app's layout), else GENTLE_PI_ROOT (a gentle-pi
+// package directory, the CI convention like PI_CODING_AGENT_ROOT). Skipped
+// (never silently passed) when neither exists: a dev machine reports the
+// real-engine test as SKIPPED with this reason; with ABITO_REQUIRE_GENTLE=1
+// absence FAILS instead. CI note (reported, not editable here): the
+// desktop-daemon CI job must install gentle-pi and set ABITO_REQUIRE_GENTLE=1.
+// Only private temp dirs are used: the island HOME/agent dir is isolatedEnv's
+// own; the user's ~/.pi, ~/.gentle* and real config are never read or written.
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
@@ -34,43 +39,45 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
 
-const { AgentEngine } = require("../src/runtime.cjs");
+const { AgentEngine, runtimeRoot } = require("../src/runtime.cjs");
 const { ensureIsland, isolatedEnv } = require("../src/isolation.cjs");
 
 const BOOT_TIMEOUT_MS = 90_000;
 
-function findPiRoot() {
-	if (process.env.PI_CODING_AGENT_ROOT) return process.env.PI_CODING_AGENT_ROOT;
-	// pi-loader convention: resolve the installed `pi` launcher back to its package directory.
-	const marker = "/@earendil-works/pi-coding-agent/";
-	for (const dir of (process.env.PATH || "").split(path.delimiter)) {
+/** A gentle-pi package directory (it holds bin/gentle-shell.mjs), or undefined. */
+function findGentleRoot() {
+	if (process.env.GENTLE_PI_ROOT) return process.env.GENTLE_PI_ROOT;
+	const runtime = runtimeRoot();
+	if (runtime) {
 		try {
-			const real = fs.realpathSync(path.join(dir, "pi"));
-			const i = real.indexOf(marker);
-			if (i >= 0) return real.slice(0, i + marker.length - 1);
+			const manifest = JSON.parse(fs.readFileSync(path.join(runtime, "koda-runtime.json"), "utf8"));
+			// gentleShell is the script path relative to the runtime root (T1); its
+			// package directory is two levels up (.../node_modules/gentle-pi).
+			return path.dirname(path.dirname(path.join(runtime, manifest.gentleShell)));
 		} catch {
-			// read-only discovery: keep looking
+			// read-only discovery: fall through
 		}
 	}
 	return undefined;
 }
 
-const piRoot = findPiRoot();
-// No real Pi: a dev machine reports the real-Pi tests as SKIPPED with this reason (never a bare pass); with
-// ABITO_REQUIRE_PI=1 (every CI desktop-daemon job) the run FAILS instead: the S3 proof may never be silently absent.
-const PI_MISSING = "Installed Pi not found; set PI_CODING_AGENT_ROOT";
-if (!piRoot && process.env.ABITO_REQUIRE_PI === "1") {
-	test("a real Pi is required here (ABITO_REQUIRE_PI=1)", () => {
-		assert.fail("ABITO_REQUIRE_PI=1 but no installed Pi was found (set PI_CODING_AGENT_ROOT or put `pi` on PATH)");
+const gentleRoot = findGentleRoot();
+// No real engine: a dev machine reports the real-engine test as SKIPPED with this
+// reason (never a bare pass); with ABITO_REQUIRE_GENTLE=1 the run FAILS instead:
+// the S1/S3 proof may never be silently absent.
+const GENTLE_MISSING = "Gentle Shell (gentle-pi) not found; set GENTLE_PI_ROOT or build the bundled runtime";
+if (!gentleRoot && process.env.ABITO_REQUIRE_GENTLE === "1") {
+	test("Gentle Shell is required here (ABITO_REQUIRE_GENTLE=1)", () => {
+		assert.fail("ABITO_REQUIRE_GENTLE=1 but no Gentle Shell was found (set GENTLE_PI_ROOT or build the bundled runtime)");
 	});
 }
-const piSkip = piRoot ? undefined : PI_MISSING;
+const gentleSkip = gentleRoot ? undefined : GENTLE_MISSING;
 
 function sleep(ms) {
 	return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/** The test-only network recorder, injected with --require BEFORE Pi's code runs. */
+/** The test-only network recorder, injected with --require BEFORE the engine's code runs. */
 function writePreload(dir) {
 	const preload = path.join(dir, "net-recorder.cjs");
 	fs.writeFileSync(
@@ -142,7 +149,7 @@ function readAttempts(file) {
 }
 
 function makeTemp(tag) {
-	const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), `abito-pi-offline-${tag}-`)));
+	const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), `abito-gentle-offline-${tag}-`)));
 	process.on("exit", () => {
 		try {
 			fs.rmSync(base, { recursive: true, force: true });
@@ -151,22 +158,55 @@ function makeTemp(tag) {
 	return base;
 }
 
-if (piSkip) {
-	// Report BOTH real-Pi proofs as skipped (with the reason) instead of declaring nothing.
-	test("real pi: a Koda launch of Pi reaches no pi.dev host (PI_OFFLINE/PI_SKIP_VERSION_CHECK/PI_TELEMETRY kept)", { skip: piSkip }, () => {});
-	test("the env Koda builds carries exactly the three offline switches", { skip: piSkip }, () => {});
-} else {
-	const cli = path.join(piRoot, "dist", "bundle", "cli.js");
-	if (!fs.existsSync(cli)) throw new Error(`PI_CODING_AGENT_ROOT has no dist/bundle/cli.js: ${piRoot}`);
+/** The gentle-shell entry script of the discovered engine (bin/gentle-shell.mjs). */
+function gentleScript(root) {
+	const script = path.join(root, "bin", "gentle-shell.mjs");
+	if (!fs.existsSync(script)) throw new Error(`gentle-pi root has no bin/gentle-shell.mjs: ${root}`);
+	return script;
+}
 
-	test("real pi: a Koda launch of Pi reaches no pi.dev host (PI_OFFLINE/PI_SKIP_VERSION_CHECK/PI_TELEMETRY kept)", { skip: piSkip, timeout: BOOT_TIMEOUT_MS }, async () => {
+// The env test needs no engine binary: it always runs, on every machine.
+test("the env Koda builds keeps the offline switches and adds the Gentle Shell gates", () => {
+	const base = makeTemp("env");
+	const island = ensureIsland(path.join(base, "island"));
+	const env = isolatedEnv({ PATH: process.env.PATH, HOME: base }, island);
+	assert.equal(env.PI_OFFLINE, "1");
+	assert.equal(env.PI_SKIP_VERSION_CHECK, "1");
+	assert.equal(env.PI_TELEMETRY, "0");
+	// T2: the engine home travels on --home; PI_CODING_AGENT_DIR is never set.
+	assert.equal(env.PI_CODING_AGENT_DIR, undefined);
+	assert.equal(env.GENTLE_SHELL_NO_AUTO_SETUP, "1");
+	assert.equal(env.GENTLE_PI_SKIP_GENTLE_AI_INSTALL, "1");
+	assert.equal(env.GENTLE_PI_CONFIG_HOME, path.join(island.root, "gentle-ai"));
+	assert.equal(env.HOME, island.home);
+	for (const key of Object.keys(env)) {
+		if (key.startsWith("PI_")) {
+			assert.ok(
+				["PI_OFFLINE", "PI_SKIP_VERSION_CHECK", "PI_TELEMETRY"].includes(key),
+				`unexpected child PI_ variable: ${key}`,
+			);
+		}
+	}
+});
+
+if (gentleSkip) {
+	// Report the real-engine proof as skipped (with the reason) instead of declaring nothing.
+	test("real engine: a Koda launch of Gentle Shell reaches no pi.dev host (offline switches and launch gates kept)", { skip: gentleSkip }, () => {});
+} else {
+	const script = gentleScript(gentleRoot);
+
+	test("real engine: a Koda launch of Gentle Shell reaches no pi.dev host (offline switches and launch gates kept)", { skip: gentleSkip, timeout: BOOT_TIMEOUT_MS }, async () => {
 		const base = makeTemp("green");
 		const netLog = path.join(base, "net-attempts.jsonl");
 		const preload = writePreload(base);
 		const engine = new AgentEngine({
+			// Exactly the daemon's default launch shape: the daemon's Node running the
+			// gentle-shell entry script (the POSIX launcher is a pure `exec "$here/node"
+			// "$here/<script>" "$@"`, so this is the same process shape) — the test-only
+			// recorder rides --require, the only injection. The engine itself appends
+			// --home/--mode rpc/--session-dir/--append-system-prompt as production does.
 			command: process.execPath,
-			// Exactly the daemon's argv shape for the real package CLI, plus the test-only recorder.
-			commandArgs: ["--require", preload, cli],
+			commandArgs: ["--require", preload, script],
 			root: path.join(base, "island"),
 			env: { PATH: process.env.PATH, HOME: base },
 			envOverrides: { ABITO_NET_LOG: netLog },
@@ -185,7 +225,7 @@ if (piSkip) {
 			const response = await engine.request({ type: "get_state" });
 			assert.equal(response.success, true);
 			assert.equal(response.command, "get_state");
-			await sleep(4_000); // a window for anything Pi does after the first exchange
+			await sleep(4_000); // a window for anything the engine does after the first exchange
 		} finally {
 			await engine.stop();
 		}
@@ -194,33 +234,14 @@ if (piSkip) {
 		assert.deepEqual(
 			piDev,
 			[],
-			`Koda's launch of Pi contacted pi.dev: ${JSON.stringify(piDev)} (all attempts: ${JSON.stringify(attempts)})`,
+			`Koda's launch of the engine contacted pi.dev: ${JSON.stringify(piDev)} (all attempts: ${JSON.stringify(attempts)})`,
 		);
-		// Ideally there is NO outbound attempt at all while Pi boots and serves get_state.
+		// Ideally there is NO outbound attempt at all while the engine boots and serves get_state.
 		assert.deepEqual(
 			attempts,
 			[],
-			`Koda's launch of Pi made outbound network attempts: ${JSON.stringify(attempts)}`,
+			`Koda's launch of the engine made outbound network attempts: ${JSON.stringify(attempts)}`,
 		);
-	});
-
-	test("the env Koda builds carries exactly the three offline switches", { skip: piSkip }, () => {
-		const base = makeTemp("env");
-		const island = ensureIsland(path.join(base, "island"));
-		const env = isolatedEnv({ PATH: process.env.PATH, HOME: base }, island);
-		assert.equal(env.PI_OFFLINE, "1");
-		assert.equal(env.PI_SKIP_VERSION_CHECK, "1");
-		assert.equal(env.PI_TELEMETRY, "0");
-		assert.equal(env.PI_CODING_AGENT_DIR, island.agentDir);
-		assert.equal(env.HOME, island.home);
-		for (const key of Object.keys(env)) {
-			if (key.startsWith("PI_")) {
-				assert.ok(
-					["PI_CODING_AGENT_DIR", "PI_OFFLINE", "PI_SKIP_VERSION_CHECK", "PI_TELEMETRY"].includes(key),
-					`unexpected child PI_ variable: ${key}`,
-				);
-			}
-		}
 	});
 
 	// RED harness: never part of the default suite. Same spawn, same argv, same env builder —
@@ -236,7 +257,8 @@ if (piSkip) {
 		delete env.PI_TELEMETRY;
 		const child = spawn(
 			process.execPath,
-			["--require", preload, cli, "--mode", "rpc", "--session-dir", island.sessions],
+			// The same argv the engine builds: --home (T2), rpc mode, private sessions.
+			["--require", preload, script, "--home", island.agentDir, "--mode", "rpc", "--session-dir", island.sessions],
 			{ cwd: island.workspace, env, stdio: ["pipe", "pipe", "pipe"] },
 		);
 		let stderr = "";
@@ -256,12 +278,12 @@ if (piSkip) {
 			}
 		});
 		// The engine sends get_state as soon as the child is spawned (rawRequest in spawnAndInitialize);
-		// real Pi in rpc mode is silent until a request arrives, so send immediately and await the answer.
+		// the engine in rpc mode is silent until a request arrives, so send immediately and await the answer.
 		child.stdin.write(`${JSON.stringify({ id: "s", type: "get_state" })}\n`);
 		const deadline = Date.now() + 60_000;
 		while (!records.some((r) => r.id === "s" && r.success)) {
-			assert.ok(Date.now() < deadline, `real pi never answered get_state; stderr=${stderr.slice(0, 400)}`);
-			if (child.exitCode !== null) assert.fail(`real pi exited early (${child.exitCode}); stderr=${stderr.slice(0, 400)}`);
+			assert.ok(Date.now() < deadline, `the engine never answered get_state; stderr=${stderr.slice(0, 400)}`);
+			if (child.exitCode !== null) assert.fail(`the engine exited early (${child.exitCode}); stderr=${stderr.slice(0, 400)}`);
 			await sleep(50);
 		}
 		// The same model-free exchange the GREEN run makes, plus a set_model like the daemon can send:
@@ -275,8 +297,8 @@ if (piSkip) {
 		assert.deepEqual(
 			piDev,
 			[],
-			`with the offline switches removed Pi contacted pi.dev: ${JSON.stringify(piDev)} (all attempts: ${JSON.stringify(attempts)})`,
+			`with the offline switches removed the engine contacted pi.dev: ${JSON.stringify(piDev)} (all attempts: ${JSON.stringify(attempts)})`,
 		);
-		assert.deepEqual(attempts, [], `with the offline switches removed Pi made outbound network attempts: ${JSON.stringify(attempts)}`);
+		assert.deepEqual(attempts, [], `with the offline switches removed the engine made outbound network attempts: ${JSON.stringify(attempts)}`);
 	});
 }
