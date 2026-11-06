@@ -224,3 +224,110 @@ test("createTextFilter never rewrites a word cut at a delta boundary (F1)", () =
 		assert.equal(parts.join(""), presentText(`${pad} ${a}${b}`), JSON.stringify({ a, b, parts }));
 	}
 });
+
+// ----- F1 re-verify: the stream must be EXACTLY presentText(whole) -----------
+
+/** Deterministic PRNG (mulberry32) so the property test is reproducible. */
+function mulberry32(seed) {
+	return function () {
+		seed |= 0;
+		seed = (seed + 0x6d2b79f5) | 0;
+		let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+		t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+		return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+	};
+}
+
+/** The stream of `text` split into deltas of `size`, plus flush, concatenated. */
+const streamFor = (text, size) => {
+	const f = createTextFilter();
+	const parts = [];
+	for (let i = 0; i < text.length; i += size) parts.push(f.push(text.slice(i, i + size)));
+	parts.push(f.flush());
+	return parts.join("");
+};
+
+// The verifier's exact reproductions, as named tests.
+test("F1: «hola engram» + «s…» shows exactly presentText(whole) — no «memorys»", () => {
+	const text = "hola engram" + "s" + "y".repeat(31);
+	const f = createTextFilter();
+	const parts = [f.push("hola engram"), f.push("s" + "y".repeat(31)), f.flush()];
+	assert.equal(parts.join(""), presentText(text));
+	assert.ok(parts.join("").includes("engrams"), JSON.stringify(parts));
+	for (const size of [1, 2, 3, 5, 7, 11]) assert.equal(streamFor(text, size), presentText(text), `split ${size}`);
+});
+
+test("F1: «Los engramas son…» in fixed-size deltas 1..12 stays «engramas»", () => {
+	const text = "Los engramas son recuerdos que Koda guarda en mi memoria. 🚀 y así. ";
+	for (let size = 1; size <= 12; size++) {
+		assert.equal(streamFor(text, size), presentText(text), `split ${size}`);
+	}
+});
+
+test("F1: «ODDS|Pi coding agent» cuts never split a word into a phantom rewrite", () => {
+	for (const text of ["ODDSPi coding agent", "ODDS Pi coding agent", "ODDS ODD Pi agent. engramas ODDITY GentlePie"]) {
+		for (const size of [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 26, 27, 32, 33, 64]) {
+			assert.equal(streamFor(text, size), presentText(text), `split ${size} of ${JSON.stringify(text)}`);
+		}
+	}
+});
+
+test("F1: surrogate pairs are never split by the cut (emoji survive every split)", () => {
+	const text = "Guardado 🙂🙂 con 👍🏽 y 𝄞 en mi memoria. ODD y RDD quedan como review. ";
+	for (let size = 1; size <= 8; size++) {
+		assert.equal(streamFor(text, size), presentText(text), `split ${size}`);
+	}
+});
+
+test("F1: a removed /gentle: token never leaves double spaces in the stream", () => {
+	for (const text of ["Run /gentle:memory-save now", "a /gentle:x  b", "x  /gentle:abc  y", " /gentle:x", "/gentle:x", "hola /gentle:"])
+		for (const size of [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 26, 27, 32, 33, 64])
+			assert.equal(streamFor(text, size), presentText(text), `split ${size} of ${JSON.stringify(text)}`);
+});
+
+// The design property: for EVERY way of splitting ANY stream into deltas, the
+// concatenated stream is EXACTLY presentText(wholeText). 200000 seeded random
+// streams (vocabulary covers every hidden name, near-miss words, /gentle:
+// tokens, spaces, punctuation, accented letters and emoji) split at random
+// positions. Seed 0x6b6f6461 ("koda") — reproducible with mulberry32 above.
+test("F1 property: 200000 seeded random streams equal presentText(whole) for every random split", () => {
+	const TOKENS = [
+		// every hidden name
+		"Gentle Shell", "gentle-shell", "GentleShell", "el Gentleman", "Gentle AI", "gentle-ai", "gentle pi",
+		"pi-coding-agent", "Pi coding agent", "Pi agent", "Pi runtime", "Pi harness", "Abito island",
+		"abito-island", "engram", "Engram", "ODD", "organic driven development",
+		"/gentle:", "/gentle:memory-save", "/gentle:x", "RDD", "receipt-driven development",
+		// near misses the old filter corrupted
+		"engramas", "engrams", "ODDS", "ODDITY", "Pipe", "pico", "Gentleman's", "GentlePie", "xengram",
+		"engramx", "Abito", "abitolateral", "Raspberry Pi", "paid", "RDDs", "PI", "engramá",
+		// ordinary filler
+		"hola", "Los", "son", "recuerdos", "the", "and", "memory", "setup", "x", "y", "abc", "word",
+		// punctuation and whitespace runs
+		".", ",", ";", ":", "!", "?", "-", " ", "  ", "   ",
+		// accented letters and emoji (surrogate pairs)
+		"á", "éíóúñ", "ç", "ü", "🙂", "👍🏽", "🚀", "𝄞",
+	];
+	const rand = mulberry32(0x6b6f6461);
+	const pick = () => TOKENS[Math.floor(rand() * TOKENS.length)];
+	const STREAMS = 200_000;
+	for (let i = 0; i < STREAMS; i++) {
+		const tokenCount = 2 + Math.floor(rand() * 9);
+		const parts = [];
+		for (let k = 0; k < tokenCount; k++) parts.push(pick());
+		const text = parts.join("");
+		const f = createTextFilter();
+		const out = [];
+		const deltas = 1 + Math.floor(rand() * 5);
+		let at = 0;
+		for (let d = 0; d < deltas; d++) {
+			const cut = at + 1 + Math.floor(rand() * 12);
+			if (cut >= text.length) break;
+			out.push(f.push(text.slice(at, cut)));
+			at = cut;
+		}
+		out.push(f.push(text.slice(at)));
+		out.push(f.flush());
+		const want = presentText(text);
+		assert.equal(out.join(""), want, `stream ${i}: ${JSON.stringify({ text })}`);
+	}
+});

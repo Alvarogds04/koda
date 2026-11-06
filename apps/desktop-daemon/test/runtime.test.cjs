@@ -746,6 +746,53 @@ test("a copy that fails midway leaves no partial target and repairs on a later s
 	assert.deepEqual(JSON.parse(fs.readFileSync(path.join(island.agentDir, "settings.json"), "utf8")).packages, ["npm:gentle-engram@0.4.2"]);
 });
 
+// F4 re-verify (verifier): the fingerprint was only `path:size`, so a
+// companion upgrade with SAME-SIZE files (0.4.2 -> 0.4.3) kept the old copy
+// while settings.json pinned the new version, and a zero-filled same-size
+// file was never repaired. The fingerprint must include the package version
+// AND a sha256 content hash of every file.
+test("a same-size version bump refreshes the companion copy and the pin (F4)", (t) => {
+	const runtime = fakeRuntimeWithEngram(t);
+	const island = ensureIsland(path.join(fs.mkdtempSync(path.join(os.tmpdir(), "abito-engram-island9-")), "island"));
+	t.after(() => fs.rmSync(path.join(island.root, ".."), { recursive: true, force: true }));
+	const deps = runtimeDepsFor(runtime);
+	const target = path.join(island.agentDir, "npm", "node_modules", "gentle-engram");
+	assert.deepEqual(seedEngramCompanion(runtime, island.agentDir, deps), { ok: true });
+	// 0.4.2 -> 0.4.3: same file sizes everywhere, version is the only change.
+	fs.writeFileSync(path.join(runtime, "node_modules", "gentle-engram", "package.json"), `${JSON.stringify({ name: "gentle-engram", version: "0.4.3", engram: { startupPolicy: 1 } })}\n`);
+	assert.deepEqual(seedEngramCompanion(runtime, island.agentDir, deps), { ok: true });
+	assert.equal(JSON.parse(fs.readFileSync(path.join(target, "package.json"), "utf8")).version, "0.4.3", "the same-size upgrade was copied");
+	assert.deepEqual(JSON.parse(fs.readFileSync(path.join(island.agentDir, "settings.json"), "utf8")).packages, ["npm:gentle-engram@0.4.3"], "the pin follows the copied version");
+});
+
+test("a same-size corrupted file is repaired (F4)", (t) => {
+	const runtime = fakeRuntimeWithEngram(t);
+	const island = ensureIsland(path.join(fs.mkdtempSync(path.join(os.tmpdir(), "abito-engram-island10-")), "island"));
+	t.after(() => fs.rmSync(path.join(island.root, ".."), { recursive: true, force: true }));
+	const deps = runtimeDepsFor(runtime);
+	const target = path.join(island.agentDir, "npm", "node_modules", "gentle-engram");
+	assert.deepEqual(seedEngramCompanion(runtime, island.agentDir, deps), { ok: true });
+	// Zero-fill style corruption: same byte length, different content.
+	const original = fs.readFileSync(path.join(target, "index.ts"), "utf8");
+	fs.writeFileSync(path.join(target, "index.ts"), "0".repeat(original.length));
+	assert.deepEqual(seedEngramCompanion(runtime, island.agentDir, deps), { ok: true });
+	assert.equal(fs.readFileSync(path.join(target, "index.ts"), "utf8"), "export default () => {};\n", "the zero-filled same-size file was repaired");
+});
+
+test("an unchanged companion tree is a no-op: nothing is re-copied (F4)", (t) => {
+	const runtime = fakeRuntimeWithEngram(t);
+	const island = ensureIsland(path.join(fs.mkdtempSync(path.join(os.tmpdir(), "abito-engram-island11-")), "island"));
+	t.after(() => fs.rmSync(path.join(island.root, ".."), { recursive: true, force: true }));
+	const deps = runtimeDepsFor(runtime);
+	const target = path.join(island.agentDir, "npm", "node_modules", "gentle-engram");
+	assert.deepEqual(seedEngramCompanion(runtime, island.agentDir, deps), { ok: true });
+	const before = fs.lstatSync(target).ino;
+	const fileBefore = fs.lstatSync(path.join(target, "index.ts")).ino;
+	assert.deepEqual(seedEngramCompanion(runtime, island.agentDir, deps), { ok: true });
+	assert.equal(fs.lstatSync(target).ino, before, "the directory was not replaced (no copy happened)");
+	assert.equal(fs.lstatSync(path.join(target, "index.ts")).ino, fileBefore, "no file was rewritten");
+});
+
 test("bundledMemoryEnv names the bundled binary and the user's own memory store, never GENTLE_SHELL_PREFIX", (t) => {
 	const runtime = fakeRuntimeWithEngram(t);
 	// The user's own machine is never probed in tests: no login shell, no known

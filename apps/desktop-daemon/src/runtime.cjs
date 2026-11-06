@@ -23,6 +23,7 @@ const { performance } = require("node:perf_hooks");
 const { execFileSync } = require("node:child_process");
 const { spawn } = require("node:child_process");
 const { accessSync, constants, existsSync, lstatSync, readFileSync, readdirSync, renameSync, rmSync, statSync } = require("node:fs");
+const { createHash } = require("node:crypto");
 const { homedir } = require("node:os");
 const path = require("node:path");
 
@@ -265,17 +266,22 @@ function validateRealSegments(base, parts, deps) {
 }
 
 /**
- * F4: a content-shaped fingerprint of a real file tree — one line per file as
- * `<relative-path>:<size>` (sorted), computed with lstat only (a symlink or a
- * non-regular entry anywhere, or an unreadable tree, yields undefined so the
- * caller treats it as "not equal" and repairs). The seed idempotency check
- * compares the bundled companion's fingerprint with the installed one, so a
- * partial or corrupt copy is always repaired instead of surviving on version
- * equality alone.
+ * F4 (re-verified): a content-shaped fingerprint of a real file tree — the
+ * package version plus one line per file as `<relative-path>:<size>:<sha256>`
+ * (sorted), hashed once, computed with lstat + file reads (a symlink or a
+ * non-regular entry anywhere, or an unreadable/unhashable tree, yields
+ * undefined so the caller treats it as "not equal" and repairs). Size alone is
+ * NOT enough: a companion upgrade with same-size files (0.4.2 → 0.4.3) and a
+ * zero-filled same-size file must both fail the equality and be repaired; the
+ * version is folded in so a version bump can never pass on identical bytes.
+ * The seed idempotency check compares the bundled companion's fingerprint with
+ * the installed one, so a partial or corrupt copy is always repaired instead
+ * of surviving on version or size equality alone.
  */
-function treeFingerprint(dir, deps = {}) {
+function treeFingerprint(dir, deps = {}, version = "") {
 	const lstat = deps.lstatSync ?? lstatSync;
 	const readdir = deps.readdirSync ?? readdirSync;
+	const readFile = deps.readFileSync ?? readFileSync;
 	try {
 		const stats = lstat(dir);
 		if (stats.isSymbolicLink() || !stats.isDirectory()) return undefined;
@@ -290,14 +296,15 @@ function treeFingerprint(dir, deps = {}) {
 					const nested = walk(child, childRel);
 					if (nested === undefined) return undefined;
 				} else {
-					lines.push(`${childRel}:${childStats.size}`);
+					const hash = createHash("sha256").update(readFile(child)).digest("hex");
+					lines.push(`${childRel}:${childStats.size}:${hash}`);
 				}
 			}
 			return lines;
 		};
 		const out = walk(dir, "");
 		if (out === undefined) return undefined;
-		return out.sort().join("\n");
+		return createHash("sha256").update(`${version}\n${out.sort().join("\n")}`).digest("hex");
 	} catch {
 		return undefined;
 	}
@@ -378,9 +385,9 @@ function seedEngramCompanion(runtime, agentDir, deps = {}) {
 	}
 	if (existing?.isSymbolicLink()) throw new Error(`refusing symlinked companion target: ${target}`);
 	if (existing && !existing.isDirectory()) throw new Error(`refusing non-directory companion target: ${target}`);
-	// F4: same tree (relative paths + sizes) -> nothing to repair.
-	const sourceFingerprint = treeFingerprint(source, deps);
-	if (existing && sourceFingerprint !== undefined && treeFingerprint(target, deps) === sourceFingerprint) {
+	// F4: same version + same content (sha256 per file) -> nothing to repair.
+	const sourceFingerprint = treeFingerprint(source, deps, pkg.version);
+	if (existing && sourceFingerprint !== undefined && treeFingerprint(target, deps, pkg.version) === sourceFingerprint) {
 		mergeCompanionSettings(agentDir, pkg.version, deps);
 		return { ok: true };
 	}
@@ -392,7 +399,7 @@ function seedEngramCompanion(runtime, agentDir, deps = {}) {
 	const staging = path.join(modules, `.gentle-engram.new-${process.pid}-${Date.now()}`);
 	try {
 		copyPrivateTree(source, staging, deps);
-		if (sourceFingerprint === undefined || treeFingerprint(staging, deps) !== sourceFingerprint) {
+		if (sourceFingerprint === undefined || treeFingerprint(staging, deps, pkg.version) !== sourceFingerprint) {
 			throw new Error("the staged companion copy does not match the bundled one");
 		}
 	} catch (error) {

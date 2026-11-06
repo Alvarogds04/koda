@@ -64,8 +64,38 @@ const safeLabel = (v) => isString(v, 80) && v.trim() !== "" && !CONTROL.test(v);
 const clip = (v, max) => {
 	const s = typeof v === "string" ? v : v === undefined || v === null ? "" : String(v);
 	// Control characters (except tab/newline) never travel to the UI.
-	return s.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "").slice(0, max);
+	const clean = s.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "");
+	if (clean.length <= max) return clean;
+	// Re-verify finding: the cut must never land between the two halves of a
+	// UTF-16 surrogate pair — the island would render a lone half as U+FFFD.
+	let end = max;
+	if (end > 0) {
+		const prev = clean.charCodeAt(end - 1);
+		const next = clean.charCodeAt(end);
+		if (prev >= 0xd800 && prev <= 0xdbff && next >= 0xdc00 && next <= 0xdfff) end -= 1;
+	}
+	return clean.slice(0, end);
 };
+
+/**
+ * Re-verify finding: shown select labels must be unique and non-empty, because
+ * the answer is matched against what was SHOWN — duplicates made the answer
+ * pick the wrong original and an empty label (a fully rewritten /gentle:
+ * option) could collide with another empty one. Duplicates get a positional
+ * suffix «label (2)», «label (3)»…; an empty label becomes a neutral
+ * placeholder «Option <position>» (1-based, so the first option never needs
+ * one). Everything stays within `max` chars.
+ */
+function uniqueShownLabels(labels, max) {
+	const seen = new Map();
+	return labels.map((label, i) => {
+		let shown = label === "" ? `Option ${i + 1}` : label;
+		const count = seen.get(shown) ?? 0;
+		seen.set(shown, count + 1);
+		if (count > 0) shown = clip(`${shown} (${count + 1})`, max);
+		return shown;
+	});
+}
 
 // ----- local OpenAI-compatible endpoint (V5) ---------------------------------
 
@@ -900,8 +930,15 @@ function translateUiRequest(event) {
 			// text, but the PENDING ask keeps the engine's original strings too — the
 			// answer is mapped back BY POSITION (buildUiResponse), never sent back as
 			// the rewritten label. The wire never carries the originals (askFrame).
+			// Re-verify finding: rewrite FIRST, clip SECOND — clipping first could cut
+			// a hidden name in half («…memory engr») so the rewrite no longer matched.
+			// The stored original stays untouched for the B2 round trip.
 			const originalOptions = event.options.filter((o) => typeof o === "string").slice(0, LIMITS.maxOptions);
-			const options = originalOptions.map((o) => presentText(clip(o, LIMITS.maxOptionChars)));
+			// Re-verify finding: two options that rewrite to the same shown label
+			// («Koda setup» twice, or two /gentle: options → "") made the answer, matched
+			// by value, pick the wrong original. Every shown label is made unique and
+			// non-empty, so the answer maps back to the right original by position.
+			const options = uniqueShownLabels(originalOptions.map((o) => clip(presentText(o), LIMITS.maxOptionChars)), LIMITS.maxOptionChars);
 			return { frames: [], ask: { id: event.id, kind: "select", title: presentText(clip(event.title, LIMITS.maxTitleChars)), options, originalOptions } };
 		}
 		case "confirm":

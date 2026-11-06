@@ -117,7 +117,7 @@ test("buildUiResponse maps a shown select answer back to the engine's original o
 		options: ["Install engram", "/gentle:memory-save", long],
 	}).ask;
 	assert.equal(shown.options[0], "Install memory", "the shown option is white-labelled");
-	assert.equal(shown.options[1], "", "an internal command option is presented empty");
+	assert.equal(shown.options[1], "Option 2", "an internal command option presents a neutral non-empty placeholder");
 	assert.ok(shown.options[2].length <= 200 && shown.options[2] !== long, "a long option is shown truncated");
 
 	const answer = (ask, value) => P.buildUiResponse(ask, { value });
@@ -240,6 +240,59 @@ test("translateEvent: info toasts are dropped; warning toasts are rewritten (T2)
 	assert.deepEqual(warn.frames, [{ type: "toast", level: "warning", message: "Koda was updated" }]);
 	const err = P.translateEvent({ type: "extension_ui_request", id: "u9", method: "notify", message: "falló", notifyType: "error" });
 	assert.deepEqual(err.frames, [{ type: "toast", level: "error", message: "falló" }]);
+});
+
+// F2 re-verify (clip-before-rewrite): clipping BEFORE presentText can cut a
+// hidden name in half (e.g. 260 chars ending in «…memory engr»), leaving a
+// partial internal name in the shown label. presentText must run FIRST and the
+// clip second; the cut must never land inside a surrogate pair.
+test("select options are rewritten before they are clipped, never showing a partial hidden name", () => {
+	// The verifier's repro: a long option whose clip boundary falls INSIDE a
+	// hidden name (…memory en|gram) used to show the fragment «…memory engr».
+	const leaky = `${"palabra ".repeat(24)}via engram now`; // 206 chars: the maxOptionChars boundary falls inside «engram»
+	const ask = P.translateEvent({ type: "extension_ui_request", id: "uc", method: "select", title: "Pick", options: [leaky] }).ask;
+	assert.ok(ask.options[0].length <= P.LIMITS.maxOptionChars, "the shown option is still clipped");
+	assert.ok(!/eng/i.test(ask.options[0]), `partial hidden name shown: ${JSON.stringify(ask.options[0].slice(-20))}`);
+	// The original still round-trips untouched (B2).
+	assert.deepEqual(P.buildUiResponse(ask, { value: ask.options[0] }), { type: "extension_ui_response", id: "uc", value: leaky });
+});
+
+// Clipping never cuts inside a UTF-16 surrogate pair (a lone half would reach
+// the island as U+FFFD or an invalid sequence): an ask title of 299 chars ends
+// right between the pair's halves.
+test("clip never splits a surrogate pair at the boundary", () => {
+	const emoji = "🙂"; // one surrogate pair
+	const title = "x".repeat(299) + emoji;
+	const ask = P.translateEvent({ type: "extension_ui_request", id: "uf", method: "input", title }).ask;
+	const shown = ask.title;
+	assert.ok(shown.length <= P.LIMITS.maxTitleChars);
+	for (const ch of shown) {
+		const code = ch.codePointAt(0);
+		const lone = (code >= 0xd800 && code <= 0xdbff) || (code >= 0xdc00 && code <= 0xdfff);
+		assert.equal(lone, false, `lone surrogate in clipped title: ${JSON.stringify(shown.slice(-5))}`);
+	}
+});
+
+// Finding 3: two options that rewrite to the same shown label made the answer
+// map back to the wrong original (first indexOf match). Every shown label must
+// be unique AND non-empty, so the answer maps back by position.
+test("select options that rewrite to the same label are made unique and non-empty", () => {
+	const ask = P.translateEvent({
+		type: "extension_ui_request",
+		id: "ud",
+		method: "select",
+		title: "Setup",
+		options: ["Gentle Shell setup", "Gentle AI setup", "/gentle:memory-save", "/gentle:memory-search"],
+	}).ask;
+	assert.deepEqual(ask.originalOptions, ["Gentle Shell setup", "Gentle AI setup", "/gentle:memory-save", "/gentle:memory-search"]);
+	const unique = new Set(ask.options);
+	assert.equal(unique.size, ask.options.length, `duplicate shown labels: ${JSON.stringify(ask.options)}`);
+	for (const option of ask.options) assert.ok(option !== "", `empty shown label: ${JSON.stringify(ask.options)}`);
+	// Position mapping: each shown label answers with ITS OWN original.
+	assert.deepEqual(P.buildUiResponse(ask, { value: ask.options[0] }), { type: "extension_ui_response", id: "ud", value: "Gentle Shell setup" });
+	assert.deepEqual(P.buildUiResponse(ask, { value: ask.options[1] }), { type: "extension_ui_response", id: "ud", value: "Gentle AI setup" });
+	assert.deepEqual(P.buildUiResponse(ask, { value: ask.options[2] }), { type: "extension_ui_response", id: "ud", value: "/gentle:memory-save" });
+	assert.deepEqual(P.buildUiResponse(ask, { value: ask.options[3] }), { type: "extension_ui_response", id: "ud", value: "/gentle:memory-search" });
 });
 
 test("translateEvent: ask titles and options are rewritten (T2)", () => {
