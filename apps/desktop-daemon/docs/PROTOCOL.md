@@ -410,30 +410,43 @@ Everything else (thinking deltas, `turn_end`, `tool_execution_update`, unknown) 
 - Stale `p-*` socket dirs of dead servers (connection refused) are removed at start, with dev/ino checks.
 - `ui_response` and `send` are not tied to the originating client; all clients share one session (max 2).
 
-## Continuous conversation rotation (additive, #386)
+## Continuous conversation rotation (K2-05 T3, on by default)
 
-Opt-in via the strict `rotation` config key (`enabled` strict boolean, default **false**; `thresholdPercent`
-50..100, default 85; `keepTurns` 1..100, default 12). Disabled by default: zero-config behavior is unchanged.
+One continuous chat that never grows unbounded: when the open session file passes a limit, the daemon
+replaces it the way Gentle Dot does (its `packages/daemon/src/rotation.ts`, MIT) and the island sees
+nothing. There is no opt-in step and no visible summary frame — #386's opt-in rotation
+(`thresholdPercent`/`keepTurns`, Spanish framing block prepended to the next prompt by
+`promptDecorator`) is GONE: a v0.1.0 config with those keys still boots (they are ignored, with a
+one-line log notice), and any other unknown `rotation` subkey is still refused.
 
-- **Trigger.** After every natural `agent_settled`, the daemon reads Pi `get_session_stats`; when
-  `contextUsage.percent >= thresholdPercent` it rotates to a fresh session (`new_session`) seeded by the
-  NEXT user prompt. Rotation itself issues NO model request: only `get_session_stats`, `get_messages`
-  and `new_session`.
-- **Summary.** Deterministic and bounded (`buildSummary` over `get_messages`): only `user`/`assistant`
-  visible text becomes turns; the last `keepTurns` turns are ALWAYS retained (per-message truncation
-  only); older turns are dropped newest-first while the total character cap holds, and the dropped count
-  is stated in the summary. Same messages in, same summary out.
-- **Delivery.** The summary is stored pending and prepended (with a Spanish voseo framing block) to the
-  user's NEXT `send` frame by the server's `promptDecorator`, exactly once, then cleared. A deliberate
-  `new_conversation` drops an undelivered summary. No new frames: the summary travels inside the
-  existing `prompt` message.
-- **Failure keeps history.** Any summary failure (request error, unexpected shape, empty result) aborts
-  the rotation and keeps the old session. A failed `new_session` recovers the previous session through
-  the engine's existing reset recovery; nothing is left pending. Missing/null `contextUsage.percent`
-  (no model, or right after a compaction) never rotates.
-- **Guards.** Rotation is skipped while the engine is busy or not ready, while the global pause (#379)
-  is active, while a summary is still pending (never overwritten), and for a session file that was
-  already rotated (loop protection). Rotation runs at most once per settled turn, serialized.
+- **Config.** The strict `rotation` key: `enabled` (strict boolean, default **true**), `bytes`
+  (1024..2147483647, default 20971520 = 20 MB) and `compactions` (1..1000000, default 10). The env
+  `ABITO_ROTATE_BYTES` / `ABITO_ROTATE_COMPACTIONS` overrides win over the file; only plain positive
+  decimal integers are accepted (no `1e3`, `0x10` or spaces), and `ABITO_ROTATE_BYTES` keeps the same
+  1024-byte minimum. An invalid env value never wins; the file/default stands.
+- **Trigger.** After every natural `agent_settled` (while idle, not paused, nothing in flight) the
+  daemon checks the open session file: past `bytes` of file size OR `compactions` compaction entries
+  it rotates. Rotation itself issues NO model request: only `switch_session`, `get_messages` and, on
+  failure, one fallback `new_session`.
+- **Handoff.** The daemon writes a NEW session file next to the open one holding ONE hidden custom
+  message (`customType: "abito.handoff"`, `display: false`) that carries the earlier conversation:
+  the latest engine compaction summary, or — before any compaction or with an empty summary — the
+  previous handoff plus the last 12 user/assistant messages truncated at 2000 chars. The seed links
+  the previous file (`parentSession`), the daemon links the chain (`previousSessions`/`state.json`),
+  and history keeps reading across the rotation. The engine is switched with `switch_session` and
+  the daemon verifies the handoff is in the engine's context before it calls the rotation done.
+  state.json only ever names a session the engine actually holds: a failed switch never leaves the
+  persisted pointer at the seed.
+- **Failure.** A seed-write failure, an unparseable or wrong-version session header (fail closed),
+  or a failed fallback leaves the chat where it was and logs it. A failed switch or verification
+  falls back to `new_session` seeded the same way (Gentle Dot's fallback), removes the orphan handoff
+  file the attempt created (exactly that file), and links the fresh session into the chain — no retry
+  storm: never more than one orphan seed per attempt window, and the fresh session is not oversized.
+- **Prompt during a rotation.** A `send` that arrives while the switch is in flight is HELD (one per
+  client, in order) and delivered once the rotation settles or fails — the user is never told to
+  resend; a second prompt while one is already held still answers `busy`.
+- **Guards.** Rotation is skipped while the engine is busy or not ready and while the global pause
+  (#379) is active; at most one rotation runs at a time, at most one per settled turn.
 
 ## Obtaining endpoint and token (U4)
 

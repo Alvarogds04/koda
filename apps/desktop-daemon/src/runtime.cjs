@@ -845,7 +845,13 @@ class AgentEngine extends EventEmitter {
 		const chain = previous.filter((p) => typeof p === "string");
 		if (chain.length === 0) return;
 		this.chains[sessionFile] = chain;
-		this.persistSession(sessionFile);
+		// Gentle Dot (supervisor.ts:137): linking alone never persists the seed.
+		// state.json keeps pointing at the session the engine actually holds, so
+		// a crash or a failed switch before the seed is opened makes the next
+		// boot reopen the USER's session, never an orphan seed. When the engine
+		// confirms the switch (changeSession / startup reopen), persistSession
+		// writes the new open session together with the chain.
+		if (this.sessionFile) this.persistSession(this.sessionFile);
 	}
 
 	/** Ensures the private island, spawns the agent and waits for its first `get_state`. */
@@ -915,7 +921,10 @@ class AgentEngine extends EventEmitter {
 	}
 
 	async changeSession(command, timeoutMs) {
-		const change = { child: this.child, sessionFile: this.sessionFile };
+		// K2-05 F3: only a switch_session (the rotation's move; no server verb ever
+		// sends one) marks a holdable switch. A user reset (new_session, the
+		// new_conversation verb) keeps answering busy with no side effects.
+		const change = { child: this.child, sessionFile: this.sessionFile, switching: command.type === "switch_session" };
 		this.sessionChange = change; // Acquire before the first write/await.
 		this.emit("status", { state: this.status }); // Canonical daemon/server busy guard.
 		const checkGeneration = () => {

@@ -146,8 +146,6 @@ class IslandServer {
 	 * @param {object} [options.settings]  {get(): {hotkey}, setHotkey(value)}; a ConfigError from setHotkey -> bad_request
 	 * @param {boolean} [options.paused]   #379 initial global pause state (restored from config at daemon boot)
 	 * @param {object} [options.pausedStore] {get(): boolean, set(value)} persistence for the pause switch; a throw -> failed and no change
-	 * @param {((message:string)=>string|{message:string,commit?:()=>void})} [options.promptDecorator] #386 (R6: may return {message, commit}; commit runs after the engine accepted the prompt): rewrites the send frame's message just before the prompt (pending rotation summary); no decorator = identity
-	 * @param {(()=>void)} [options.onNewConversation] #386: called after a successful new_conversation (drops an undelivered summary)
  * @param {(()=>({at:number,turnActive:boolean,asks:number}|undefined))} [options.interruptedRecord] R5: reads the unconsumed interrupted-work record (bounded closed fields); exposed once in the ready frame
  * @param {(()=>boolean)} [options.onInterruptedAck] R5: marks the exposed record consumed; runs only after a client sends interrupted_ack. R4 (RDD): returns true on success (or when nothing is left to consume); a false result or a throw makes the server answer the failed error frame and keep the record pending for a retry
 	 */
@@ -166,11 +164,9 @@ class IslandServer {
 		this.agents = options.agents;
 		this.agentHooks = options.agentHooks; // #361 {preview(), install(id, hash), remove(id, hash)}
 		this.paused = options.paused === true; // #379 global pause switch; admission guards in handle()
-		this.promptDecorator = options.promptDecorator; // #386 pending rotation summary (no decorator = identity)
 		this.interruptedRecord = options.interruptedRecord; // R5
 		this.onInterruptedAck = options.onInterruptedAck; // R5
 		this.pendingInterrupted = undefined;
-		this.onNewConversation = options.onNewConversation; // #386 drops an undelivered summary
 		this.pausedStore = options.pausedStore;
 		this.connectorsFlight = undefined; // the single in-flight snapshot promise (shared by all clients)
 		this.connectorsLast = undefined; // {at, outcome: Promise-settled frame | undefined}
@@ -512,6 +508,37 @@ class IslandServer {
 		if (out.cancelUi) this.safeSend({ type: "extension_ui_response", id: out.cancelUi, cancelled: true });
 	}
 
+	/**
+	 * K2-05 F3: delivers the prompt a client typed during a rotation switch,
+	 * once the switch has settled (or failed and recovered). One held prompt per
+	 * client; the delivery follows the same optimistic-busy path as a normal
+	 * send. No-op while a switch is still in flight or a turn runs.
+	 */
+	flushHeldPrompts() {
+		if (!this.engine || this.engine.sessionChange || this.state().busy) return;
+		for (const client of [...this.clients]) {
+			const held = client.heldPrompt;
+			if (!held) continue;
+			client.heldPrompt = undefined;
+			this.busy = true; // optimistic: the agent_start event confirms
+			this.broadcastState();
+			const command = { type: "prompt", message: held.text };
+			if (held.images?.length) command.images = held.images;
+			this.engine.request(command).catch(() => {
+				// A lost ACK may already have started Pi work; the runtime owns
+				// cutoff/recovery. An old rejection cannot free a new turn.
+				if (this.engine && this.engine.status === "ready" && this.engine.busy !== true) this.busy = false;
+				this.broadcastState();
+				this.sendTo(client, P.errorFrame("failed"));
+			}).then(() => {
+				if (this.engine && this.engine.status === "ready" && this.engine.busy !== true && this.busy) {
+					this.busy = false;
+					this.broadcastState();
+				}
+			});
+		}
+	}
+
 	onEngineStatus(exited = false) {
 		const status = this.engine?.status;
 		if (exited || status !== "ready") {
@@ -524,6 +551,8 @@ class IslandServer {
 			this.busy = this.engine.busy; // Readiness/verified session, not an ACK alone.
 		}
 		this.broadcastState();
+		// F3: the rotation switch settled (or failed and recovered) — held prompts go now.
+		this.flushHeldPrompts();
 	}
 
 	safeSend(record) {
@@ -636,19 +665,25 @@ class IslandServer {
 			case "send": {
 				// T2: blocked input was already refused above, before every gate.
 				if (!ready()) return fail("unavailable");
+				// K2-05 F3 (Gentle Dot bridge.ts:404): a prompt typed while a ROTATION
+				// switch is in flight is HELD — one per client, in order — and delivered
+				// once the switch settles, instead of a busy bounce the user would have
+				// to resend. A second prompt while one is already held is still refused
+				// (Gentle Dot holds exactly one). A NON-rotation session change (a user
+				// reset, new_conversation) is never held: it answers busy as always.
+				if (this.engine?.sessionChange?.switching === true) {
+					if (client.heldPrompt) return fail("busy");
+					client.heldPrompt = { text: frame.text, images: frame.images };
+					return undefined;
+				}
 				if (this.state().busy) return fail("busy");
 				this.busy = true; // optimistic: the agent_start event confirms
 				this.broadcastState();
 				try {
-					// #386: the pending rotation summary (if any) prepends here, exactly once.
-					// R6: a decorator may return { message, commit }; commit runs only after the engine accepted the prompt.
-					const decorated = this.promptDecorator ? this.promptDecorator(frame.text) : frame.text;
-					const message = typeof decorated === "string" ? decorated : decorated.message;
-					const command = { type: "prompt", message };
-					if (frame.images.length) command.images = frame.images;
 					// The response only acknowledges the prompt; completion is agent_settled.
+					const command = { type: "prompt", message: frame.text };
+					if (frame.images.length) command.images = frame.images;
 					await this.engine.request(command);
-					if (typeof decorated !== "string") decorated.commit?.();
 				} catch {
 					// A lost ACK may already have started Pi work; the runtime owns
 					// cutoff/recovery. An old rejection cannot free a new turn.
@@ -677,8 +712,6 @@ class IslandServer {
 					await run(async () => {
 						await this.engine.request({ type: "new_session" });
 						this.messageCounter += 1;
-						// #386: a deliberate new conversation drops an undelivered summary.
-						this.onNewConversation?.();
 					});
 				} finally {
 					if (this.switching === switching) {

@@ -19,9 +19,10 @@
  * handoff plus the last 12 user/assistant messages truncated at 2000 chars.
  *
  * Everything the rotation touches is deterministic and fail-closed: a failed
- * seed write, switch, or verification leaves the chat in the current session
- * (the engine's own recovery reopens the previous session), and a session
- * header whose format version is not the engine's own skips the rotation.
+ * seed write skips the rotation; a failed switch or verification falls back to
+ * a `new_session` seeded the same way (Gentle Dot's own fallback) and removes
+ * the orphan handoff file it created, so the chat never stays behind in an
+ * oversized session and never retries in a storm.
  */
 
 const { randomUUID } = require("node:crypto");
@@ -46,19 +47,25 @@ const MESSAGE_CHARS = 2000;
 const HANDOFF_INTRO =
 	"This conversation continues from an earlier session that grew too long. The user sees one continuous chat and cannot see this note; carry on naturally and do not mention it.";
 
+/**
+ * Rotation limits: the ABITO_ROTATE_* environment wins over the config values,
+ * the config wins over the defaults (an invalid value never wins, like Gentle
+ * Dot's GENTLE_DOT_ROTATE_*). F7: an env value is accepted only as a plain
+ * positive decimal integer (no 1e3, 0x10 or spaces), and ABITO_ROTATE_BYTES
+ * keeps the same 1024-byte minimum the config has — a smaller value never wins.
+ */
+const MIN_ROTATE_BYTES = 1024;
+
 const intFromEnv = (value) => {
+	if (typeof value !== "string" || !/^[0-9]+$/.test(value)) return undefined;
 	const number = Number(value);
 	return Number.isSafeInteger(number) && number > 0 ? number : undefined;
 };
 
-/**
- * Rotation limits: the ABITO_ROTATE_* environment wins over the config values,
- * the config wins over the defaults (an invalid value never wins, like Gentle
- * Dot's GENTLE_DOT_ROTATE_*).
- */
 function rotationLimits(env = process.env, config = {}) {
+	const envBytes = intFromEnv(env.ABITO_ROTATE_BYTES);
 	return {
-		bytes: intFromEnv(env.ABITO_ROTATE_BYTES) ?? config.bytes ?? DEFAULT_ROTATION.bytes,
+		bytes: (envBytes !== undefined && envBytes >= MIN_ROTATE_BYTES ? envBytes : undefined) ?? config.bytes ?? DEFAULT_ROTATION.bytes,
 		compactions: intFromEnv(env.ABITO_ROTATE_COMPACTIONS) ?? config.compactions ?? DEFAULT_ROTATION.compactions,
 	};
 }
@@ -80,13 +87,15 @@ function entries(file, mark) {
 /**
  * What the new session needs to know: the latest compaction summary (the
  * engine already wrote it, so no extra model call), or, before any
- * compaction, the previous handoff plus the last messages.
+ * compaction, the previous handoff plus the last messages. Like Gentle Dot,
+ * the truthiness of the summary decides (F4): an EMPTY summary is no summary
+ * and the handoff falls back to the recent messages instead of shipping empty.
  */
 function handoffText(file) {
 	const summary = entries(file, '"compaction"')
 		.filter((e) => e.type === "compaction" && typeof e.summary === "string")
 		.at(-1)?.summary;
-	if (typeof summary === "string") return `${HANDOFF_INTRO}\n\nSummary of the conversation so far:\n\n${summary}`;
+	if (summary) return `${HANDOFF_INTRO}\n\nSummary of the conversation so far:\n\n${summary}`;
 	const previous = entries(file, HANDOFF_TYPE)
 		.filter((e) => e.type === "custom_message" && e.customType === HANDOFF_TYPE)
 		.at(-1);
@@ -206,9 +215,10 @@ async function writeHandoffSession(previousFile, text, cwd = process.cwd()) {
  * the seed's own `parentSession`), and history keeps reading across them.
  *
  * Triggered by the daemon after every settled turn; `canRotate()` must hold
- * (nothing paused, nothing on its way). Every failure — a seed write, the
- * switch, or the verification — reports `false` and leaves the chat where it
- * was; no data is ever lost.
+ * (nothing paused, nothing on its way). A failed seed write reports `false`;
+ * a failed switch or verification falls back to a fresh session (never more
+ * than one orphan seed per attempt window, which is removed on failure); no
+ * data is ever lost.
  */
 class SessionRotator {
 	/**
@@ -221,6 +231,8 @@ class SessionRotator {
 		/** True while the island is not paused and nothing else forbids a rotation. */
 		this.canRotate = options.canRotate ?? (() => true);
 		this.cwd = options.cwd;
+		/** How long a failed-switch fallback waits for the engine's own recovery. */
+		this.idleTimeoutMs = options.idleTimeoutMs ?? 60_000;
 		this.log = options.log ?? (() => {});
 		this.rotating = false;
 		/** Compactions counted so far in one file, read incrementally. */
@@ -262,8 +274,10 @@ class SessionRotator {
 		// Fail closed on session-format drift: the engine's own files are version
 		// 3 in pi-coding-agent 1.0.4-1.4.0; anything else on disk is not touched.
 		const version = headerVersion(file);
-		if (version !== undefined && version !== SESSION_VERSION) {
-			this.log(`rotation skipped, the chat stays in ${file}: its session format is version ${version}, not ${SESSION_VERSION}`);
+		if (version !== SESSION_VERSION) {
+			// F4 fail closed: a header that cannot be parsed (undefined) is as
+			// foreign as a wrong version — the rotation is skipped and logged.
+			this.log(`rotation skipped, the chat stays in ${file}: its session format is ${version === undefined ? "unparseable" : `version ${version}`}, not ${SESSION_VERSION}`);
 			return false;
 		}
 		const previous = [...(this.engine.previousSessions ?? []), file];
@@ -274,23 +288,52 @@ class SessionRotator {
 			this.log(`rotation skipped, the chat stays in ${file}: ${error.message}`);
 			return false;
 		}
-		// Link before switching: whatever happens below, a chat that ends up in
-		// the seed keeps its chain (Gentle Dot links first for the same reason).
+		// Link before switching (the chain of the session that ends up open keeps
+		// its history); linking alone never persists the seed (F1: Gentle Dot
+		// persists the OPEN session only).
 		this.engine.linkSessions?.(seed, previous);
 		try {
 			await this.engine.request({ type: "switch_session", sessionPath: seed });
 			await this.verify(seed);
 		} catch (error) {
-			// The engine's session format may have drifted; never leave the user
-			// without their conversation. Stay: a failed switch already put the
-			// engine on its own recovery path back to the previous session, and a
-			// failed verification switches back explicitly.
-			this.log(`rotation aborted, the chat stays in ${file}: ${error.message}`);
-			await this.stayIn(file);
-			return false;
+			// F2 (Gentle Dot, rotation.ts:212-215): a switch or verification failure
+			// does not leave the chat in the OVERSIZED session to retry forever —
+			// a `new_session` seeded the same way continues it. The orphan seed of
+			// the failed attempt is removed first (exactly that file, in the
+			// sessions dir, regular and owned: never anything else).
+			this.log(`rotation: the engine did not load the handoff session ${seed} (${error.message}); starting a fresh session without it`);
+			this.removeOrphanSeed(seed, file);
+			try {
+				// A failed switch may have put the engine on its own recovery
+				// path (the child is recycled and the previous session reopens);
+				// the fallback goes once it is ready again.
+				await this.waitForIdle();
+				await this.engine.request({ type: "new_session", parentSession: file });
+			} catch (fallbackError) {
+				this.log(`rotation fallback failed, the chat stays in ${file}: ${fallbackError.message}`);
+				return false;
+			}
+			const fresh = this.engine.sessionFile;
+			if (fresh && fresh !== file) this.engine.linkSessions?.(fresh, previous);
+			this.log(`rotation: the chat continues in ${fresh}`);
+			return true;
 		}
 		this.log(`rotation: the chat continues in ${seed}`);
 		return true;
+	}
+
+	/**
+	 * Waits, bounded, until the engine can take a session request again: after a
+	 * failed switch it may be recycling the child and reopening the previous
+	 * session. A timeout throws so the caller reports the failure and stops.
+	 */
+	async waitForIdle(timeoutMs = this.idleTimeoutMs) {
+		const deadline = Date.now() + timeoutMs;
+		while (Date.now() < deadline) {
+			if (this.engine.status === "ready" && !this.engine.busy) return;
+			await new Promise((resolve) => setTimeout(resolve, 10));
+		}
+		throw new Error(`the engine did not become ready again within ${timeoutMs} ms`);
 	}
 
 	/** The engine opened the handoff session and its context holds the handoff. */
@@ -305,13 +348,23 @@ class SessionRotator {
 		}
 	}
 
-	/** Best effort: the current session is the one the chat came from. */
-	async stayIn(file) {
-		if (this.engine.sessionFile === file) return;
+	/**
+	 * Removes the orphan handoff session a failed attempt created — ONLY that
+	 * exact file: resolved inside the previous session's directory (the engine's
+	 * private sessions dir), a regular non-symlink file owned by this user.
+	 * Best effort: a failure is logged, never thrown.
+	 */
+	removeOrphanSeed(seed, previousFile) {
 		try {
-			await this.engine.request({ type: "switch_session", sessionPath: file });
+			const resolved = path.resolve(seed);
+			if (resolved === path.resolve(previousFile)) return;
+			if (path.dirname(resolved) !== path.resolve(path.dirname(previousFile))) return;
+			const stats = fs.lstatSync(resolved);
+			if (stats.isSymbolicLink() || !stats.isFile()) return;
+			if (typeof process.getuid === "function" && stats.uid !== process.getuid()) return;
+			fs.unlinkSync(resolved);
 		} catch (error) {
-			this.log(`rotation: could not switch back to ${file} (${error.message}); the engine's own recovery owns the session`);
+			this.log(`rotation: could not remove the orphan handoff session ${seed}: ${error.message}`);
 		}
 	}
 
@@ -326,7 +379,7 @@ class SessionRotator {
 			try {
 				fd = fs.openSync(file, "r");
 				fs.readSync(fd, buffer, 0, buffer.length, this.counted.offset);
-			} catch (error) {
+			} catch {
 				this.counted = { file, offset: 0, count: 0, rest: "" };
 				// An unreadable file counts as no compactions: the size limit still applies.
 				return 0;

@@ -43,9 +43,16 @@ const winfs = require("./win-fs.cjs");
 
 /** K2-05 T3: a positive safe integer from the env, or undefined when it is absent or invalid. */
 const intFromEnv = (value) => {
+	if (typeof value !== "string" || !/^[0-9]+$/.test(value)) return undefined;
 	const number = Number(value);
 	return Number.isSafeInteger(number) && number > 0 ? number : undefined;
 };
+
+/** F7: the same 1024-byte minimum the rotation enforces for the env bytes override. */
+const MIN_ROTATE_BYTES = 1024;
+
+/** The v0.1.0 #386 rotation keys (B1): accepted and IGNORED, never a config error. */
+const OBSOLETE_ROTATION_KEYS = ["thresholdPercent", "keepTurns"];
 
 const WORKSPACE_ENV = "ABITO_WORKSPACE";
 const ALLOWED_KEYS = ["workspace", "command", "thinking", "profile", "mcpConfigPath", "hotkey", "paused", "connectorsCommand", "connectorsDir", "hookInstallerBin", "connectorHostBin", "rotation"];
@@ -266,11 +273,22 @@ const ROTATION_DEFAULTS = { enabled: true, bytes: 20 * 1024 * 1024, compactions:
  * K2-05 T3 `rotation`: strict object with known optional subkeys only —
  * `enabled` (strict boolean), `bytes` (1024..2147483647) and `compactions`
  * (1..1000000). Unknown or mistyped subkeys are a config error, never a silent
- * flip. (#386's `thresholdPercent`/`keepTurns` are gone with the visible frame.)
+ * flip. EXCEPTION (B1): the v0.1.0 #386 keys `thresholdPercent`/`keepTurns` are
+ * accepted and IGNORED — their old types/ranges are not validated and they can
+ * never fail the daemon; a one-line notice says they are obsolete. Any OTHER
+ * unknown subkey keeps the strict refusal.
  */
-function validateRotation(raw) {
+function validateRotation(raw, log = () => {}) {
 	if (raw === null || typeof raw !== "object" || Array.isArray(raw)) throw new ConfigError("rotation");
-	for (const key of Object.keys(raw)) if (key !== "enabled" && key !== "bytes" && key !== "compactions") throw new ConfigError("rotation");
+	const obsolete = Object.keys(raw).filter((key) => OBSOLETE_ROTATION_KEYS.includes(key));
+	for (const key of Object.keys(raw)) {
+		if (key === "enabled" || key === "bytes" || key === "compactions" || obsolete.includes(key)) continue;
+		throw new ConfigError("rotation");
+	}
+	if (obsolete.length > 0) {
+		// Logged once per load; the file itself is never rewritten behind the user's back.
+		log(`config rotation: ${obsolete.join(", ")} ${obsolete.length === 1 ? "is" : "are"} obsolete (the visible-summary rotation is gone) and ignored; the chat rotates by size and compaction count`);
+	}
 	const out = {};
 	if (raw.enabled !== undefined) {
 		if (typeof raw.enabled !== "boolean") throw new ConfigError("rotation");
@@ -285,7 +303,7 @@ function validateRotation(raw) {
 }
 
 /** The raw, validated file content (no defaults, no env). */
-function readConfigFile(islandRoot) {
+function readConfigFile(islandRoot, log = () => {}) {
 	// Same parent-chain policy as writes: no symlinked/world-writable/foreign-owned island path.
 	try {
 		assertSecurePath(path.dirname(islandPaths(islandRoot).configFile));
@@ -318,7 +336,7 @@ function readConfigFile(islandRoot) {
 		if (typeof raw.paused !== "boolean") throw new ConfigError("paused");
 		out.paused = raw.paused;
 	}
-	if (raw.rotation !== undefined) out.rotation = validateRotation(raw.rotation);
+	if (raw.rotation !== undefined) out.rotation = validateRotation(raw.rotation, log);
 	if (raw.connectorHostBin !== undefined) out.connectorHostBin = validateConnectorHostBin(raw.connectorHostBin);
 	if (raw.hotkey !== undefined) {
 		// Inert metadata: an invalid value must never lock the user out of recovery. Drop it, flag it.
@@ -334,7 +352,7 @@ function readConfigFile(islandRoot) {
 /** Effective config: file values, defaults, and the ABITO_WORKSPACE override (which wins). */
 function loadConfig(islandRoot, options = {}) {
 	const env = options.env ?? process.env;
-	const file = readConfigFile(islandRoot);
+	const file = readConfigFile(islandRoot, options.log ?? (() => {}));
 	const fileRotation = file.rotation ?? {};
 	const cfg = {
 		command: file.command ?? DEFAULT_COMMAND,
@@ -351,7 +369,12 @@ function loadConfig(islandRoot, options = {}) {
 			enabled: fileRotation.enabled ?? ROTATION_DEFAULTS.enabled,
 			// The ABITO_ROTATE_* env overrides win over the file (rotationLimits); an
 			// invalid value never wins, like ABITO_WORKSPACE never flips silently.
-			bytes: intFromEnv(env.ABITO_ROTATE_BYTES) ?? fileRotation.bytes ?? ROTATION_DEFAULTS.bytes,
+			bytes: (() => {
+			// F7: the env override keeps the same 1024-byte minimum as the config;
+			// a smaller or non-decimal value never wins (like ABITO_WORKSPACE).
+			const fromEnv = intFromEnv(env.ABITO_ROTATE_BYTES);
+			return (fromEnv !== undefined && fromEnv >= MIN_ROTATE_BYTES ? fromEnv : undefined) ?? fileRotation.bytes ?? ROTATION_DEFAULTS.bytes;
+		})(),
 			compactions: intFromEnv(env.ABITO_ROTATE_COMPACTIONS) ?? fileRotation.compactions ?? ROTATION_DEFAULTS.compactions,
 		},
 		...(file.hotkeyInvalid ? { hotkeyInvalid: true } : {}),

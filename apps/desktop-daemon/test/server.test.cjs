@@ -37,6 +37,13 @@ class FakeEngine extends EventEmitter {
 		this.turnActive = false;
 		this.interruptedWith = undefined;
 		this.stuckAfterInterrupt = false;
+		// K2-05 F3: a session switch in flight (a rotation); the server holds a
+		// prompt typed during it instead of answering busy.
+		this.sessionChange = undefined;
+	}
+	/** The server's busy guard reads this: true only while a switch is in flight. */
+	get busy() {
+		return this.sessionChange !== undefined;
 	}
 	/** Intercepts fake agent records to track the turn lifecycle without registering a listener. */
 	emit(type, payload) {
@@ -589,6 +596,62 @@ test("a failed selection releases the switch guard", async (t) => {
 const types = (c, type) => c.frames.filter((f) => f.type === type);
 const errorCodes = (c) => types(c, "error").map((f) => f.code);
 const nextError = async (c, from) => (await c.wait((f) => f.type === "error" && c.frames.indexOf(f) >= from)).code;
+
+// ----- K2-05 T3: a prompt during a rotation is held, not bounced (F3) --------
+
+test("a prompt typed during a rotation switch is held and sent when the switch ends (F3)", async (t) => {
+	const { engine, endpoint } = await setup(t);
+	const c = await login(t, endpoint);
+	// A rotation switch is in flight (the daemon's rotator owns it).
+	engine.sessionChange = { switching: true };
+	c.send({ type: "send", text: "durante" });
+	await sleep(100);
+	assert.equal(errorCodes(c).includes("busy"), false, "the prompt is held, not bounced with busy");
+	assert.deepEqual(engine.requests, [], "and nothing reaches the engine while the switch runs");
+	// When the switch finishes (or fails) the engine says so (a status event,
+	// exactly what changeSession emits), and the held prompt is sent, once.
+	engine.sessionChange = undefined;
+	engine.emit("status", {});
+	await waitFor(() => engine.requests.some((r) => r.type === "prompt" && r.message === "durante"));
+	await sleep(50);
+	assert.equal(engine.requests.filter((r) => r.type === "prompt").length, 1, "exactly one held prompt is delivered");
+});
+
+test("at most one held prompt per client; a busy turn is still refused (F3)", async (t) => {
+	const { server, engine, endpoint } = await setup(t);
+	const c = await login(t, endpoint);
+	engine.sessionChange = { switching: true };
+	c.send({ type: "send", text: "primero" });
+	await sleep(50);
+	c.send({ type: "send", text: "segundo" });
+	await c.wait((f) => f.type === "error" && f.code === "busy");
+	assert.equal(engine.requests.length, 0, "the second prompt was not held");
+	engine.sessionChange = undefined;
+	engine.emit("status", {});
+	await waitFor(() => engine.requests.some((r) => r.type === "prompt" && r.message === "primero"));
+	await sleep(50);
+	assert.equal(engine.requests.filter((r) => r.type === "prompt").length, 1, "only the held prompt was sent");
+	// A busy TURN (no switch in flight) keeps the classic busy refusal: steer owns it.
+	engine.emit("event", { type: "agent_start" });
+	await waitFor(() => server.state().busy === true);
+	c.send({ type: "send", text: "en turno" });
+	await c.wait((f) => f.type === "error" && f.code === "busy");
+	assert.equal(engine.requests.filter((r) => r.type === "prompt").length, 1, "nothing extra was sent during the turn");
+});
+
+test("a prompt during a NON-rotation session change (a user reset) is still busy, never held (F3 regression)", async (t) => {
+	const { engine, endpoint } = await setup(t);
+	const c = await login(t, endpoint);
+	// A user-driven new_session reset is in flight (new_conversation): no hold.
+	engine.sessionChange = { switching: false };
+	c.send({ type: "send", text: "denied" });
+	await c.wait((f) => f.type === "error" && f.code === "busy");
+	assert.equal(engine.requests.length, 0, "nothing was held or sent for a non-rotation change");
+	engine.sessionChange = undefined;
+	engine.emit("status", {});
+	await sleep(50);
+	assert.equal(engine.requests.filter((r) => r.type === "prompt").length, 0, "no held prompt materialises after the reset");
+});
 
 test("account_create: replies account to the caller and broadcasts accounts to every client; extras never reach the store", async (t) => {
 	const { endpoint, accounts } = await setup(t);

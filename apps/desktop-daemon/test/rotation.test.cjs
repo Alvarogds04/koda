@@ -115,6 +115,13 @@ test("Gentle Dot's limits: 20 MB or 10 compactions, env-overridable", () => {
 	);
 	// Invalid values fall back to the default, never to zero or nonsense.
 	assert.deepEqual(rotationLimits({ ABITO_ROTATE_BYTES: "lots", ABITO_ROTATE_COMPACTIONS: "0" }), DEFAULT_ROTATION);
+	// F7: only plain positive decimal integers — no 1e3, no 0x10, no spaces.
+	assert.deepEqual(rotationLimits({ ABITO_ROTATE_BYTES: "1e3", ABITO_ROTATE_COMPACTIONS: "0x10" }), DEFAULT_ROTATION);
+	assert.deepEqual(rotationLimits({ ABITO_ROTATE_BYTES: " 4096", ABITO_ROTATE_COMPACTIONS: "2 " }), DEFAULT_ROTATION);
+	// F7: ABITO_ROTATE_BYTES keeps the 1024-byte minimum; a smaller env value never wins.
+	assert.deepEqual(rotationLimits({ ABITO_ROTATE_BYTES: "1024" }), { bytes: 1024, compactions: 10 });
+	assert.deepEqual(rotationLimits({ ABITO_ROTATE_BYTES: "512" }), DEFAULT_ROTATION);
+	assert.deepEqual(rotationLimits({ ABITO_ROTATE_BYTES: "512" }, { bytes: 4096 }), { bytes: 4096, compactions: 10 });
 	// A config value wins over the default; the env wins over the config.
 	assert.deepEqual(rotationLimits({}, { bytes: 1000, compactions: 2 }), { bytes: 1000, compactions: 2 });
 	assert.deepEqual(
@@ -180,6 +187,28 @@ test("fail closed: a session header of another version skips rotation", async (t
 	assert.equal(await rotator.maybeRotate(), true);
 });
 
+test("fail closed: a header that cannot be parsed skips rotation (F4)", async (t) => {
+	const dir = tmp("abito-rot-hbad-");
+	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+	const messagesFile = writeHandoffMessages(dir);
+	const logs = [];
+	const { engine, rotator, commands } = await rig(t, { rotatorLimits: { bytes: 100 }, rotatorOptions: { log: (line) => logs.push(line) } }, ["--messages-file", messagesFile]);
+	const first = engine.sessionFile;
+	fs.writeFileSync(first, "not a session header at all\n");
+	bloat(engine);
+	assert.equal(await rotator.maybeRotate(), false, "an unparseable header is never rotated (fail closed)");
+	assert.equal(switches(commands).length, 0, "nothing was switched");
+	assert.ok(logs.some((line) => line.includes("version") || line.includes("format")), "the skip is logged");
+	assert.equal(
+		fs.readdirSync(path.dirname(first)).filter((f) => f.endsWith(".jsonl")).length,
+		1,
+		"nothing was seeded either",
+	);
+	// Control: with the engine's own header the same session rotates.
+	fs.writeFileSync(first, `${JSON.stringify({ type: "session", version: SESSION_VERSION, id: "p", timestamp: new Date().toISOString(), cwd: dir })}\n`);
+	assert.equal(await rotator.maybeRotate(), true);
+});
+
 test("rotation is skipped while the engine is busy or the chat is not idle", async (t) => {
 	const dir = tmp("abito-rot-busy-");
 	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
@@ -207,7 +236,7 @@ test("only one rotation at a time; a session already rotated is left alone", asy
 	const dir = tmp("abito-rot-once-");
 	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
 	const messagesFile = writeHandoffMessages(dir);
-	const { engine, rotator, commands } = await rig(t, { rotatorLimits: { bytes: 100 } }, ["--messages-file", messagesFile]);
+	const { engine, rotator } = await rig(t, { rotatorLimits: { bytes: 100 } }, ["--messages-file", messagesFile]);
 	const first = engine.sessionFile;
 	bloat(engine);
 	assert.equal(await rotator.maybeRotate(), true);
@@ -258,6 +287,16 @@ test("handoffText links the previous handoff so history keeps crossing rotations
 	assert.ok(text.includes("Antes del rotado anterior."), "the previous handoff's knowledge survives");
 	assert.ok(text.includes("User: hola"), "the latest messages ride along");
 	assert.equal(text.split("This conversation continues").length - 1, 1, "exactly one intro line");
+});
+
+test("handoffText falls back to the recent messages when the latest summary is empty (F4)", async (t) => {
+	const dir = tmp("abito-rot-hempty-");
+	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+	const file = writeSessionFile(dir, "s.jsonl", [{ type: "compaction", summary: "" }, ...twentyMessages()]);
+	const text = handoffText(file);
+	assert.ok(!text.includes("Summary of the conversation so far:"), "an empty summary is no summary: no empty handoff");
+	assert.ok(text.includes("User: mensaje usuario 20"), "the recent messages carry the handoff instead");
+	assert.ok(text.startsWith("This conversation continues from an earlier session"), "Gentle Dot's intro");
 });
 
 test("handoffText skips torn or non-message lines", async (t) => {
@@ -330,21 +369,35 @@ test("rotate: switch_session is verified against the engine's context", async (t
 	assert.deepEqual(state.chains, { [seed]: [first] }, "the chain survives on disk");
 });
 
-test("verify failure: the chat goes back to the previous session, nothing is lost", async (t) => {
+test("verify failure: a fresh session continues the chat and the orphan seed is removed (F2)", async (t) => {
 	const dir = tmp("abito-rot-verfail-");
 	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
 	const logs = [];
 	// The engine never reports the handoff in its context (--messages-file absent → empty).
-	const { engine, rotator, commands } = await rig(t, { rotatorLimits: { bytes: 100 }, rotatorOptions: { log: (line) => logs.push(line) } });
+	const { engine, rotator, commands } = await rig(t, { rotatorLimits: { bytes: 1000 }, rotatorOptions: { log: (line) => logs.push(line) } });
 	const first = engine.sessionFile;
 	bloat(engine);
+	// Gentle Dot's fallback (rotation.ts:212-215): the failed handoff does not
+	// leave the chat in the oversized session to retry forever — a fresh session
+	// seeded the same way continues it.
+	assert.equal(await rotator.maybeRotate(), true, "the fallback lands the chat in a fresh session");
+	assert.equal(switches(commands).length, 1, "the failed switch was attempted once");
+	assert.equal(resets(commands).length, 1, "exactly one fallback new_session");
+	assert.notEqual(engine.sessionFile, first, "the chat left the oversized session");
+	assert.equal(fs.existsSync(switches(commands)[0].sessionPath), false, "the orphan seed of the failed attempt was removed");
+	// Never more than one orphan seed per attempt window: only the previous and
+	// the fresh session file remain in the sessions dir.
+	assert.deepEqual(
+		fs.readdirSync(path.dirname(first)).filter((f) => f.endsWith(".jsonl")).sort(),
+		[path.basename(first), path.basename(engine.sessionFile)].sort(),
+	);
+	assert.deepEqual(engine.previousSessions, [first], "the chain keeps history continuous across the fallback");
+	// No retry storm: the fresh session is below the limits, so a second settle attempts nothing.
 	assert.equal(await rotator.maybeRotate(), false);
-	assert.ok(switches(commands).length >= 1, "the switch was attempted");
-	assert.equal(engine.sessionFile, first, "the chat stays in the previous session");
-	assert.ok(logs.some((line) => line.includes("context") || line.includes("handoff")), "the failure is logged");
-	// The chat still works: a prompt arrives on the previous session undecorated.
+	assert.equal(resets(commands).length, 1, "no second attempt");
+	// The chat still works: a prompt reaches the fresh session undecorated.
 	await engine.request({ type: "prompt", message: "seguimos" });
-	assert.equal(prompts(commands).at(-1).sessionFile, first);
+	assert.equal(prompts(commands).at(-1).sessionFile, engine.sessionFile);
 	assert.equal(prompts(commands).at(-1).message, "seguimos");
 });
 
@@ -379,20 +432,22 @@ test("write failure: the rotation is skipped, the session and its history stay",
 	assert.equal(prompts(commands).at(-1).message, "aún aquí", "the chat keeps working");
 });
 
-test("switch failure: the engine recovers the previous session and the chat continues", async (t) => {
+test("switch failure: the chat continues in a fresh session and the orphan seed is removed (F2)", async (t) => {
 	const dir = tmp("abito-rot-sfail-");
 	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
 	const messagesFile = writeHandoffMessages(dir);
 	const logs = [];
-	const { engine, rotator, commands } = await rig(t, { rotatorLimits: { bytes: 100 }, rotatorOptions: { log: (line) => logs.push(line) } }, ["--messages-file", messagesFile, "--switch-unconfirm-once"]);
+	const { engine, rotator, commands } = await rig(t, { rotatorLimits: { bytes: 1000 }, rotatorOptions: { log: (line) => logs.push(line) } }, ["--messages-file", messagesFile, "--switch-unconfirm-once"]);
 	const first = engine.sessionFile;
 	bloat(engine);
-	assert.equal(await rotator.maybeRotate(), false);
+	assert.equal(await rotator.maybeRotate(), true, "the fallback lands the chat in a fresh session");
+	await until(() => engine.status === "ready" && !engine.busy, 8000);
+	assert.notEqual(engine.sessionFile, first, "the chat left the oversized session");
+	assert.equal(resets(commands).length, 1, "exactly one fallback new_session");
+	assert.equal(fs.existsSync(switches(commands)[0].sessionPath), false, "the failed attempt's orphan seed is gone");
 	assert.ok(logs.some((line) => line.includes("rotation")), "the failure is logged");
-	await until(() => engine.status === "ready" && engine.sessionFile === first, 8000);
-	await until(() => !engine.busy, 8000);
 	await engine.request({ type: "prompt", message: "de nuevo" });
-	assert.equal(prompts(commands).at(-1).message, "de nuevo");
+	assert.equal(prompts(commands).at(-1).sessionFile, engine.sessionFile, "the chat continues in the fresh session");
 });
 
 // ------------------------------------------------------- settle trigger (B2)
@@ -436,9 +491,11 @@ test("config rotation key: ON by default with Gentle Dot's limits, strict valida
 	cfg = loadConfig(dir, { env: { ABITO_ROTATE_BYTES: "8192", ABITO_ROTATE_COMPACTIONS: "5" } });
 	assert.deepEqual(cfg.rotation, { enabled: true, bytes: 8192, compactions: 5 });
 	// Invalid subkey, type or range -> ConfigError("rotation"), never a silent flip.
+	// (The v0.1.0 #386 keys thresholdPercent/keepTurns are NO LONGER here: B1 accepts
+	// and ignores them — see the obsolete-keys test below.)
 	for (const rotation of [
 		{ nope: 1 }, { enabled: "yes" }, { bytes: 0 }, { bytes: 1.5 }, { bytes: 10 }, { compactions: 0 },
-		{ compactions: 2 ** 53 }, { thresholdPercent: 85 }, { keepTurns: 12 }, "yes",
+		{ compactions: 2 ** 53 }, "yes",
 	]) {
 		writePrivateFile(path.join(dir, "config.json"), `${JSON.stringify({ rotation })}\n`);
 		assert.throws(() => loadConfig(dir), (error) => error.name === "ConfigError" && error.field === "rotation");
@@ -447,6 +504,35 @@ test("config rotation key: ON by default with Gentle Dot's limits, strict valida
 	writePrivateFile(path.join(dir, "config.json"), `${JSON.stringify({ rotation: { bytes: 4096 } })}\n`);
 	cfg = loadConfig(dir, { env: { ABITO_ROTATE_BYTES: "lots" } });
 	assert.deepEqual(cfg.rotation, { enabled: true, bytes: 4096, compactions: 10 });
+	// F7 at the config level too: non-decimal env values and a bytes value under
+	// the 1024 minimum never win over the file.
+	cfg = loadConfig(dir, { env: { ABITO_ROTATE_BYTES: "1e3", ABITO_ROTATE_COMPACTIONS: "0x10" } });
+	assert.deepEqual(cfg.rotation, { enabled: true, bytes: 4096, compactions: 10 });
+	cfg = loadConfig(dir, { env: { ABITO_ROTATE_BYTES: "512" } });
+	assert.deepEqual(cfg.rotation, { enabled: true, bytes: 4096, compactions: 10 });
+});
+
+test("obsolete v0.1 #386 rotation keys are accepted, ignored and logged once (B1)", () => {
+	const dir = tmp("abito-rot-old-");
+	process.on("exit", () => { try { fs.rmSync(dir, { recursive: true, force: true }); } catch {} });
+	const logs = [];
+	// The exact v0.1.0 shape: the old #386 keys never make loadConfig throw.
+	writePrivateFile(path.join(dir, "config.json"), `${JSON.stringify({ rotation: { thresholdPercent: 85, keepTurns: 12 } })}\n`);
+	let cfg = loadConfig(dir, { log: (line) => logs.push(line) });
+	assert.deepEqual(cfg.rotation, { enabled: true, bytes: 20 * 1024 * 1024, compactions: 10 }, "the old keys are ignored, the defaults stand");
+	// Their old types/ranges are not validated any more: they can never fail the daemon.
+	writePrivateFile(path.join(dir, "config.json"), `${JSON.stringify({ rotation: { enabled: true, thresholdPercent: "85%", keepTurns: -12 } })}\n`);
+	cfg = loadConfig(dir, { log: (line) => logs.push(line) });
+	assert.equal(cfg.rotation.enabled, true);
+	assert.equal("thresholdPercent" in cfg.rotation, false, "ignored means ignored: never in the effective config");
+	assert.equal("keepTurns" in cfg.rotation, false, "ignored means ignored: never in the effective config");
+	// The notice is logged once per load, and the config file is not rewritten.
+	const notices = logs.filter((line) => line.includes("thresholdPercent"));
+	assert.equal(notices.length, 2, "one obsolete notice per load");
+	assert.equal(JSON.parse(fs.readFileSync(path.join(dir, "config.json"), "utf8")).rotation.keepTurns, -12, "the file is left as it is");
+	// Any OTHER unknown subkey is still a strict refusal.
+	writePrivateFile(path.join(dir, "config.json"), `${JSON.stringify({ rotation: { nope: 1 } })}\n`);
+	assert.throws(() => loadConfig(dir), (error) => error.name === "ConfigError" && error.field === "rotation");
 });
 
 // ------------------------------------------------- Daemon wiring (default ON)
@@ -617,4 +703,103 @@ test("the chain of session files survives an engine restart", async (t) => {
 	assert.deepEqual(again.previousSessions, [first], "the chain is restored");
 	await again.stop();
 	fs.rmSync(dir, { recursive: true, force: true });
+});
+
+// ------------------------------------------------------- verifier findings
+
+test("state.json never points at the seed; a failed switch reopens the user's session on the next boot (F1)", async (t) => {
+	const dir = tmp("abito-rot-f1-");
+	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+	const messagesFile = writeHandoffMessages(dir);
+	const root = path.join(dir, "island");
+	const engineOptions = () => ({
+		command: process.execPath,
+		commandArgs: [FAKE, "--command-log", path.join(dir, "commands"), "--messages-file", messagesFile, "--switch-unconfirm-once", "--reset-fail"],
+		root, identityPath: null,
+		backoffMs: [10], startTimeoutMs: 2000, stopTimeoutMs: 50, requestTimeoutMs: 2000,
+		turnTimeoutMs: 10_000, abortGraceMs: 100,
+	});
+	const engine = new AgentEngine(engineOptions());
+	t.after(async () => { await engine.stop(); });
+	await engine.start();
+	const first = engine.sessionFile;
+	const stateFile = path.join(root, "state.json");
+	// Gentle Dot (supervisor.ts:137): linking alone persists only the OPEN session.
+	engine.linkSessions(path.join(path.dirname(first), "never-used.jsonl"), [first]);
+	assert.equal(JSON.parse(fs.readFileSync(stateFile, "utf8")).sessionFile, first, "the seed is not persisted before the switch confirms");
+	// The switch fails AND the fallback fails: the chat recovers in the user's session.
+	bloat(engine);
+	const logs = [];
+	const rotator = new SessionRotator(engine, { limits: { ...DEFAULT_ROTATION, bytes: 100 }, log: (line) => logs.push(line) });
+	t.after(() => rotator.stop());
+	assert.equal(await rotator.maybeRotate(), false, "both the switch and the fallback failed");
+	await until(() => engine.status === "ready" && !engine.busy, 8000);
+	assert.equal(engine.sessionFile, first, "the engine recovered the user's session");
+	assert.equal(JSON.parse(fs.readFileSync(stateFile, "utf8")).sessionFile, first, "state.json never pointed at the seed");
+	// Next boot: the user's session reopens, never a seed.
+	await engine.stop();
+	const again = new AgentEngine(engineOptions());
+	t.after(async () => { await again.stop(); });
+	await again.start();
+	assert.equal(again.sessionFile, first, "the next boot reopens the user's session");
+});
+
+test("daemon wiring: a prompt typed during the rotation is held and delivered after it (F3)", async (t) => {
+	const base = tmp("abito-rot-hold-");
+	t.after(() => fs.rmSync(base, { recursive: true, force: true }));
+	const root = path.join(base, "i");
+	const commandLog = path.join(base, "commands");
+	const messagesFile = writeHandoffMessages(base, "contexto previo de la conversación");
+	const daemon = new Daemon({
+		root,
+		env: { PATH: process.env.PATH },
+		log: () => {},
+		engineOptions: {
+			command: process.execPath,
+			commandArgs: [FAKE, "--command-log", commandLog, "--messages-file", messagesFile, "--settle-all", "--switch-delay", "600"],
+			backoffMs: [20], stopTimeoutMs: 500, requestTimeoutMs: 3000, startTimeoutMs: 5000,
+			turnTimeoutMs: 10_000, abortGraceMs: 200,
+		},
+	});
+	t.after(async () => { await daemon.stop(); });
+	writePrivateFile(path.join(root, "config.json"), `${JSON.stringify({ rotation: { bytes: 1024 } })}\n`);
+	await daemon.start();
+	const session = readSession(root);
+	const { frames, send } = await socketClient(t, session.endpoint, session.token);
+	const commands = () => fs.readFileSync(commandLog, "utf8").trim().split("\n").filter(Boolean).map(JSON.parse);
+	bloat(daemon.engine, 4096);
+	send({ type: "send", text: "primero" });
+	await until(() => prompts(commands).some((c) => c.message === "primero"));
+	// The settle of the first prompt starts the rotation; the switch is held open by the fixture.
+	await until(() => daemon.engine.sessionChange !== undefined, 8000);
+	send({ type: "send", text: "segundo" });
+	await sleep(200);
+	assert.equal(frames.filter((f) => f.type === "error" && f.code === "busy").length, 0, "no busy bounce: the prompt is held");
+	const seed = switches(commands)[0].sessionPath;
+	await until(() => prompts(commands).some((c) => c.message === "segundo" && c.sessionFile === seed), 8000);
+	assert.deepEqual(prompts(commands).map((c) => c.message), ["primero", "segundo"], "the held prompt goes once the rotation finishes, in order");
+});
+
+test("daemon boots on a v0.1 #386 config; an unknown rotation subkey still refuses (B1)", async (t) => {
+	const base = tmp("abito-rot-oldboot-");
+	t.after(() => fs.rmSync(base, { recursive: true, force: true }));
+	const engineOptions = (commandLog) => ({
+		command: process.execPath,
+		commandArgs: [FAKE, "--command-log", commandLog, "--settle-all"],
+		backoffMs: [20], stopTimeoutMs: 500, requestTimeoutMs: 3000, startTimeoutMs: 5000,
+		turnTimeoutMs: 10_000, abortGraceMs: 200,
+	});
+	// The exact v0.1.0 shape: the daemon STARTS, rotation still on.
+	const oldRoot = path.join(base, "old");
+	writePrivateFile(path.join(oldRoot, "config.json"), `${JSON.stringify({ rotation: { thresholdPercent: 85, keepTurns: 12 } })}\n`);
+	const oldDaemon = new Daemon({ root: oldRoot, env: { PATH: process.env.PATH }, log: () => {}, engineOptions: engineOptions(path.join(base, "old-commands")) });
+	t.after(async () => { await oldDaemon.stop(); });
+	await oldDaemon.start();
+	assert.ok(oldDaemon.rotator, "rotation is still on: the obsolete keys change nothing");
+	// Any OTHER unknown subkey keeps the strict refusal.
+	const refusedRoot = path.join(base, "refused");
+	writePrivateFile(path.join(refusedRoot, "config.json"), `${JSON.stringify({ rotation: { nope: 1 } })}\n`);
+	const refused = new Daemon({ root: refusedRoot, env: { PATH: process.env.PATH }, log: () => {}, engineOptions: engineOptions(path.join(base, "refused-commands")) });
+	t.after(async () => { await refused.stop(); });
+	await assert.rejects(refused.start(), (error) => error.name === "ConfigError");
 });

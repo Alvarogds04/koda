@@ -370,7 +370,7 @@ class Daemon extends EventEmitter {
 		const violation = windowsIslandRootViolation(this.root, this.env, this.platform);
 		if (violation) throw new Error(`refusing island root: ${violation}`);
 		ensureIsland(this.root);
-		const cfg = config.loadConfig(this.root, { env: this.env }); // fail-closed before anything spawns
+		const cfg = config.loadConfig(this.root, { env: this.env, log: (line) => this.log(line) }); // fail-closed before anything spawns
 		const existing = readSession(this.root);
 		// #390 GD029 arbitration: NEVER replace a session whose endpoint answers
 		// `ready`; replace only when the endpoint refuses AND the pid is confirmed
@@ -869,7 +869,7 @@ class Daemon extends EventEmitter {
 	}
 
 	async restartIfWorkspaceMoved() {
-		const next = config.loadConfig(this.root, { env: this.env });
+		const next = config.loadConfig(this.root, { env: this.env, log: (line) => this.log(line) });
 		const engine = this.engine;
 		const overrides = this.options.engineOptions ?? {};
 		const effective = (workspace) => engine.cwdOption ?? workspace ?? engine.island.workspace;
