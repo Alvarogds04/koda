@@ -129,8 +129,9 @@ app/dmg on standard `macos-26`, verifies its ad-hoc seal and Info.plist, install
 `.app` from the `.dmg` into a private Applications folder and runs
 `ci/public/smoke-macos-installed.py` on the installed copy with a minimal OS-only
 environment: daemon readiness, an on-screen island window, the tray, and a Claude
-`Stop` notice persisted by the island. `ci/public/smoke-macos.py` then checks the
-missing-Pi advice with notices still available. Both smoke scripts refuse non-CI
+`Stop` notice persisted by the island. `ci/public/smoke-macos.py` then breaks the
+installed copy's bundled runtime manifest and checks that Koda fails closed with the
+reinstall advice while notices stay available. Both smoke scripts refuse non-CI
 hosts. Logs are uploaded even on a failed smoke. `release-macos.yml` uses the
 identical bundle config. CI execution does not prove Finder interaction, Gatekeeper
 acceptance, or a human-installed Mac launch.
