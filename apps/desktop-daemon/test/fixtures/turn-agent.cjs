@@ -4,7 +4,9 @@ const fs = require("node:fs");
 const path = require("node:path");
 const readline = require("node:readline");
 const args = process.argv;
-const arg = (name) => args[args.indexOf(name) + 1];
+// Absent flags answer undefined, never argv[0]: an unsigned index would make
+// `--messages-file` point at node itself (ELF bytes) and crash the child.
+const arg = (name) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined; };
 const log = arg("--command-log");
 const sessions = arg("--session-dir");
 // #386 rotation fixture extensions (all optional):
@@ -46,6 +48,9 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
 			if (c.type === "switch_session" && args.includes("--reopen-crash-once") &&
 				fs.readFileSync(log, "utf8").trim().split("\n").map(JSON.parse).filter((r) => r.type === "switch_session").length === 1) process.exit(1);
 			if (c.type === "switch_session" && args.includes("--switch-unconfirmed")) return reply(c);
+			// The FIRST switch fails to confirm; later ones (the recovery reopen) succeed.
+			if (c.type === "switch_session" && args.includes("--switch-unconfirm-once") &&
+				fs.readFileSync(log, "utf8").trim().split("\n").map(JSON.parse).filter((r) => r.type === "switch_session").length === 1) return reply(c);
 			if (c.type === "new_session" && args.includes("--reset-fail")) return write({ type: "response", id: c.id, command: c.type, success: false, error: "reset failed" });
 			sessionFile = c.type === "switch_session" ? c.sessionPath : path.join(sessions, `new-${process.pid}-${++sessionCounter}.jsonl`);
 			if (!lazy || c.type === "switch_session") touch();

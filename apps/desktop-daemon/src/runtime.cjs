@@ -805,6 +805,10 @@ class AgentEngine extends EventEmitter {
 		this.turn = undefined;
 		this.recycling = false;
 		this.sessionFile = undefined;
+		// K2-05 T3 (S2): the earlier session files of the open chat, oldest first
+		// (Gentle Dot's chains): rotation links the files so history keeps reading
+		// across the boundary, and the chain survives restarts in state.json.
+		this.chains = {};
 		this.sessionChange = undefined;
 		this.recoverySessionFile = undefined;
 		this.sessionEpoch = 0;
@@ -828,6 +832,20 @@ class AgentEngine extends EventEmitter {
 
 	get pid() {
 		return this.child?.pid;
+	}
+
+	/** The earlier session files of the open chat, oldest first (K2-05 T3 rotation chains). */
+	get previousSessions() {
+		return (this.sessionFile && this.chains[this.sessionFile]) || [];
+	}
+
+	/** Records that `sessionFile` continues the chat held in `previous` (oldest first). */
+	linkSessions(sessionFile, previous) {
+		if (typeof sessionFile !== "string" || !Array.isArray(previous) || previous.length === 0) return;
+		const chain = previous.filter((p) => typeof p === "string");
+		if (chain.length === 0) return;
+		this.chains[sessionFile] = chain;
+		this.persistSession(sessionFile);
 	}
 
 	/** Ensures the private island, spawns the agent and waits for its first `get_state`. */
@@ -1045,10 +1063,22 @@ class AgentEngine extends EventEmitter {
 		}
 	}
 
-	/** The persisted session file of the open conversation, if any. */
+	/** The persisted session file of the open conversation, if any; the rotation chains ride along. */
 	readPersistedSession() {
 		try {
 			const saved = JSON.parse(readFileSync(path.join(this.island.root, "state.json"), "utf8"));
+			// K2-05 T3: every restored chain entry must be an owned session path —
+			// anything else is dropped, never honoured.
+			if (saved.chains && typeof saved.chains === "object" && !Array.isArray(saved.chains)) {
+				for (const [file, previous] of Object.entries(saved.chains)) {
+					if (
+						Array.isArray(previous) && previous.length > 0 && previous.every((p) => typeof p === "string")
+						&& this.isOwnedSessionFile(file, true) && previous.every((p) => this.isOwnedSessionFile(p, true))
+					) {
+						this.chains[file] = previous;
+					}
+				}
+			}
 			return typeof saved.sessionFile === "string" ? saved.sessionFile : undefined;
 		} catch {
 			return undefined;
@@ -1077,7 +1107,7 @@ class AgentEngine extends EventEmitter {
 	persistSession(sessionFile) {
 		if (typeof sessionFile !== "string" || sessionFile === "") return;
 		try {
-			writePrivateFile(path.join(this.island.root, "state.json"), `${JSON.stringify({ sessionFile })}\n`);
+			writePrivateFile(path.join(this.island.root, "state.json"), `${JSON.stringify({ sessionFile, chains: this.chains })}\n`);
 		} catch (error) {
 			this.log(`could not persist the session file: ${error.message}`);
 		}

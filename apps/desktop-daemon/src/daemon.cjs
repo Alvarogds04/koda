@@ -31,7 +31,7 @@ const { scanSessions, sessionScope } = require("./sessions.cjs");
 const { runPs } = require("./procinfo.cjs");
 const { AgentEngine } = require("./runtime.cjs");
 const { defaultIslandRoot } = require("./isolation.cjs");
-// #386: continuous conversation rotation (opt-in via config `rotation`).
+// K2-05 T3 (S2): Gentle Dot's transparent rotation (rotation on by default).
 const { SessionRotator } = require("./rotation.cjs");
 const { IslandServer } = require("./server.cjs");
 
@@ -458,17 +458,23 @@ class Daemon extends EventEmitter {
 		this.agents = this.makeAgents(cfg);
 		this.agentHooks = this.makeAgentHooks();
 		this.token = IslandServer.generateToken();
-		// #386: rotation runs only when the user opted in; the summary travels
-		// with the user's NEXT prompt, never as a daemon-issued model request.
-		this.rotator = cfg.rotation?.enabled === true
-			? new SessionRotator({
-				engine,
+		// K2-05 T3 (S2): Gentle Dot's transparent rotation, ON by default (config
+		// `rotation.enabled: false` opts out). When the open session file passes the
+		// size/compaction limits, the rotator writes a new session seeded with ONE
+		// hidden handoff message, switches the engine to it and verifies the handoff
+		// reached the engine's context. The island keeps ONE continuous chat: no
+		// visible frame, no extra user message, nothing to decorate a prompt with.
+		if (cfg.rotation?.enabled === true) {
+			this.rotator = new SessionRotator(engine, {
+				limits: { bytes: cfg.rotation.bytes, compactions: cfg.rotation.compactions },
+				// The island's pause holds the rotation back, like every other turn.
+				canRotate: () => this.server?.paused !== true,
+				// The engine refuses to open a session whose stored cwd is missing; a
+				// previous session always carries its own cwd, this is only a fallback.
+				cwd: cfg.workspace,
 				log: (line) => this.log(line),
-				isPaused: () => this.server?.paused === true,
-				...(cfg.rotation.thresholdPercent !== undefined ? { thresholdPercent: cfg.rotation.thresholdPercent } : {}),
-				...(cfg.rotation.keepTurns !== undefined ? { keepTurns: cfg.rotation.keepTurns } : {}),
-			})
-			: undefined;
+			});
+		}
 		this.server = new IslandServer({
 			runtimeDir,
 			token: this.token,
@@ -484,10 +490,8 @@ class Daemon extends EventEmitter {
 			settings: { get: () => ({ hotkey: this.getHotkey() }), setHotkey: (value) => this.persistHotkey(value) },
 			paused: cfg.paused === true, // #379: the persisted pause is restored at every boot
 			pausedStore: { get: () => this.cfg?.paused === true, set: (value) => this.persistPaused(value) },
-			promptDecorator: (message) => this.rotator?.beginPrompt(message) ?? message, // #386 (R6: committed only after the engine accepts the prompt)
 			interruptedRecord: () => this.readInterruptedSummary(), // R5: bounded closed summary of the unconsumed record
 			onInterruptedAck: () => this.consumeInterruptedRecord(), // R5: consumption happens only after a client ack
-			onNewConversation: () => this.rotator?.discardPending(), // #386
 			log: (line) => this.log(line),
 			...(this.options.serverOptions ?? {}),
 		});
@@ -763,7 +767,7 @@ class Daemon extends EventEmitter {
 	}
 
 	async teardown() {
-		this.rotator?.stop(); // #386: detach before the engine goes down
+		this.rotator?.stop(); // K2-05 T3: detach the settle listener before the engine goes down
 		if (this.wroteSession) {
 			try {
 				const current = readSession(this.root);

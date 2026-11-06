@@ -3,16 +3,20 @@
 ## Gentle Dot (adapted code)
 
 Parts of this package are adapted from the Gentle Dot project
-(`packages/daemon`: `supervisor.ts`, `isolation.ts`, `jsonl.ts`, `white-label.ts`,
-and the product identity document `identity.md`), used as the MIT-licensed
-reference for the supervised isolated RPC runtime, fail-closed private directory
-checks, strict JSONL framing, the user-facing white-label rewriting of internal
-names, and the product-identity approach.
+(`packages/daemon`: `supervisor.ts`, `isolation.ts`, `jsonl.ts`, `rotation.ts`,
+`white-label.ts`, and the product identity document `identity.md`), used as the
+MIT-licensed reference for the supervised isolated RPC runtime, fail-closed
+private directory checks, strict JSONL framing, transparent session rotation
+(hidden handoff message, session-file chains, 20 MB / 10 compaction limits),
+the user-facing white-label rewriting of internal names, and the
+product-identity approach.
 
 - Files adapted: `src/isolation.cjs` (including the engine-home marker logic
   from `claimEngineHome`), `src/runtime.cjs` (in part, including the bundled
-  default-engine resolution from `bundledGentleShell`), `src/white-label.cjs`,
-  `test/fixtures` and `identity.md` (text), `README.md` (in part)
+  default-engine resolution from `bundledGentleShell` and the session chains
+  from the supervisor's session persistence), `src/rotation.cjs` (from
+  `src/rotation.ts`), `src/white-label.cjs`, `test/fixtures` and `identity.md`
+  (text), `README.md` (in part)
 - Changes: rewritten in plain Node CJS with no third-party dependencies; Koda
   identity, island paths, environment allowlist and fail-closed path rules differ
   from the original; supervision state machine and JSONL framing closely follow

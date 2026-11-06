@@ -22,9 +22,11 @@
  *   connectorHostBin   ABSOLUTE normalized path of the abito-connector-host binary; NO default (unset => no host is spawned)
  *   hotkey         global show/hide combo, e.g. "Ctrl+Alt+Space" (validateHotkey); stored only, never captured here
  *   paused         global pause switch (#379): strict boolean, false when absent; stored only, restored at the next boot
- *   rotation       continuous conversation rotation (#386): object with optional subkeys
- *                  `enabled` (strict boolean, default FALSE: opt-in), `thresholdPercent` (50..100,
- *                  default 85) and `keepTurns` (1..100, default 12); unknown subkeys are rejected
+ *   rotation       continuous conversation rotation (K2-05 T3, Gentle Dot's form): object with
+ *                  optional subkeys `enabled` (strict boolean, default TRUE: rotation is on by
+ *                  default), `bytes` (1024..2147483647 session-file bytes, default 20 MB) and
+ *                  `compactions` (1..1000000, default 10); unknown subkeys are rejected; the env
+ *                  ABITO_ROTATE_BYTES / ABITO_ROTATE_COMPACTIONS overrides win over the file
  *
  * `ABITO_WORKSPACE` (the Abito analogue of Gentle Dot's GENTLE_DOT_WORKSPACE)
  * overrides the file's workspace and is validated the same way.
@@ -38,6 +40,12 @@ const { MEMORY_PROJECT, assertSecurePath, islandPaths, writePrivateFile } = requ
 const { THINKING_LEVELS, isStrictProfileId } = require("./profiles.cjs");
 // K2-01b: on Windows private files are judged by the verified HU-047 helper (null off Windows; see readPrivateJson).
 const winfs = require("./win-fs.cjs");
+
+/** K2-05 T3: a positive safe integer from the env, or undefined when it is absent or invalid. */
+const intFromEnv = (value) => {
+	const number = Number(value);
+	return Number.isSafeInteger(number) && number > 0 ? number : undefined;
+};
 
 const WORKSPACE_ENV = "ABITO_WORKSPACE";
 const ALLOWED_KEYS = ["workspace", "command", "thinking", "profile", "mcpConfigPath", "hotkey", "paused", "connectorsCommand", "connectorsDir", "hookInstallerBin", "connectorHostBin", "rotation"];
@@ -251,23 +259,24 @@ function readPrivateJson(file, field, maxBytes) {
 	return value;
 }
 
-/** #386 rotation defaults: disabled until the user opts in. */
-const ROTATION_DEFAULTS = { enabled: false, thresholdPercent: 85, keepTurns: 12 };
+/** K2-05 T3 defaults: rotation ON, Gentle Dot's limits (20 MB per session file or 10 compactions). */
+const ROTATION_DEFAULTS = { enabled: true, bytes: 20 * 1024 * 1024, compactions: 10 };
 
 /**
- * #386 `rotation`: strict object with known optional subkeys only — `enabled`
- * (strict boolean), `thresholdPercent` (50..100) and `keepTurns` (1..100).
- * Unknown or mistyped subkeys are a config error, never a silent flip.
+ * K2-05 T3 `rotation`: strict object with known optional subkeys only —
+ * `enabled` (strict boolean), `bytes` (1024..2147483647) and `compactions`
+ * (1..1000000). Unknown or mistyped subkeys are a config error, never a silent
+ * flip. (#386's `thresholdPercent`/`keepTurns` are gone with the visible frame.)
  */
 function validateRotation(raw) {
 	if (raw === null || typeof raw !== "object" || Array.isArray(raw)) throw new ConfigError("rotation");
-	for (const key of Object.keys(raw)) if (key !== "enabled" && key !== "thresholdPercent" && key !== "keepTurns") throw new ConfigError("rotation");
+	for (const key of Object.keys(raw)) if (key !== "enabled" && key !== "bytes" && key !== "compactions") throw new ConfigError("rotation");
 	const out = {};
 	if (raw.enabled !== undefined) {
 		if (typeof raw.enabled !== "boolean") throw new ConfigError("rotation");
 		out.enabled = raw.enabled;
 	}
-	for (const [key, min, max] of [["thresholdPercent", 50, 100], ["keepTurns", 1, 100]]) {
+	for (const [key, min, max] of [["bytes", 1024, 2_147_483_647], ["compactions", 1, 1_000_000]]) {
 		if (raw[key] === undefined) continue;
 		if (!Number.isSafeInteger(raw[key]) || raw[key] < min || raw[key] > max) throw new ConfigError("rotation");
 		out[key] = raw[key];
@@ -326,6 +335,7 @@ function readConfigFile(islandRoot) {
 function loadConfig(islandRoot, options = {}) {
 	const env = options.env ?? process.env;
 	const file = readConfigFile(islandRoot);
+	const fileRotation = file.rotation ?? {};
 	const cfg = {
 		command: file.command ?? DEFAULT_COMMAND,
 		thinking: file.thinking,
@@ -337,7 +347,13 @@ function loadConfig(islandRoot, options = {}) {
 		hookInstallerBin: file.hookInstallerBin,
 		connectorHostBin: file.connectorHostBin,
 		connectorsDir: file.connectorsDir ?? path.join(islandPaths(islandRoot).root, "connectors"),
-		rotation: { ...ROTATION_DEFAULTS, ...(file.rotation ?? {}) },
+		rotation: {
+			enabled: fileRotation.enabled ?? ROTATION_DEFAULTS.enabled,
+			// The ABITO_ROTATE_* env overrides win over the file (rotationLimits); an
+			// invalid value never wins, like ABITO_WORKSPACE never flips silently.
+			bytes: intFromEnv(env.ABITO_ROTATE_BYTES) ?? fileRotation.bytes ?? ROTATION_DEFAULTS.bytes,
+			compactions: intFromEnv(env.ABITO_ROTATE_COMPACTIONS) ?? fileRotation.compactions ?? ROTATION_DEFAULTS.compactions,
+		},
 		...(file.hotkeyInvalid ? { hotkeyInvalid: true } : {}),
 		workspace: islandPaths(islandRoot).workspace,
 		workspaceSource: "default",
