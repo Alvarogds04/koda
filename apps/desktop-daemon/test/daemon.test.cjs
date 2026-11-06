@@ -780,7 +780,7 @@ test("agents through the daemon: hookInstallerBin wires AgentsManager, agentsAva
 
 // K2-03 T3 (S2): every daemon start asks the installer to take out the removed Recap's 0.1 hooks (removal-only legacy
 // profile, preview first). It never blocks the start: the daemon is ready while the cleanup runs, and a refusal is logged.
-test("agents: daemon start runs the legacy recap hook cleanup once, removal-only, without blocking", async () => {
+test("agents: daemon start runs the legacy recap hook cleanup once, removal-only, without blocking", { skip: win && "registered gap K2-01b (P2): POSIX-path values are refused by the POSIX-only validators on Windows; twin: config.test.cjs 'registered gap K2-01b: absolute Windows paths are refused for connectorsCommand, hookInstallerBin and connectorHostBin (POSIX-only validators)'" }, async () => {
 	const { daemon, root, base, logs } = make({ options: { agentsOptions: {} } });
 	const inst = agentsInstaller(base);
 	daemon.options.agentsOptions = { home: inst.home };
@@ -800,7 +800,7 @@ test("agents: daemon start runs the legacy recap hook cleanup once, removal-only
 	}
 });
 
-test("agents: a legacy recap cleanup whose installer answers garbage leaves the daemon running and serving", async () => {
+test("agents: a legacy recap cleanup whose installer answers garbage leaves the daemon running and serving", { skip: win && "registered gap K2-01b (P2): POSIX-path values are refused by the POSIX-only validators on Windows; twin: config.test.cjs 'registered gap K2-01b: absolute Windows paths are refused for connectorsCommand, hookInstallerBin and connectorHostBin (POSIX-only validators)'" }, async () => {
 	const { daemon, root, base, logs } = make({ options: { agentsOptions: {} } });
 	const inst = agentsInstaller(base);
 	const scenarioFile = path.join(base, "agents-scenario.json");

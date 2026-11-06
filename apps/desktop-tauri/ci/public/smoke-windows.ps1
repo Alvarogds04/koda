@@ -263,11 +263,12 @@ try {
     $unrelated = Join-Path $install 'desktop-daemon/src/user-note.txt'
     [IO.File]::WriteAllText($unrelated, 'must survive uninstall')
     # Island user data (whatever the installed island wrote, plus a planted fixture) must survive uninstall byte for byte.
-    # Tauri's Windows Known Folder lookup may use the actual profile or the child LOCALAPPDATA.
+    # Tauri's Windows Known Folder lookup may use the actual profile or the child LOCALAPPDATA. EBWebView is WebView2's own
+    # browser cache (not the person's data) and a lingering msedgewebview2 keeps files there locked (CI 42207296565).
     $islandDataDirs = @($islandData, (Join-Path $env:LOCALAPPDATA 'com.abitog.AbitoTauri')) | Select-Object -Unique
     New-Item -ItemType Directory -Force -Path $islandData | Out-Null
     [IO.File]::WriteAllText((Join-Path $islandData 'smoke-user-data.txt'), 'island user data must survive uninstall')
-    $islandDataHashes = { @(foreach ($dir in $islandDataDirs) { if (Test-Path -LiteralPath $dir) { Get-ChildItem -LiteralPath $dir -File -Recurse | ForEach-Object { "$($_.FullName)=$((Get-FileHash -LiteralPath $_.FullName).Hash)" } } }) -join ';' }
+    $islandDataHashes = { @(foreach ($dir in $islandDataDirs) { if (Test-Path -LiteralPath $dir) { Get-ChildItem -LiteralPath $dir -File -Recurse | Where-Object { -not $_.FullName.Contains('\EBWebView\') } | ForEach-Object { "$($_.FullName)=$((Get-FileHash -LiteralPath $_.FullName).Hash)" } } }) -join ';' }
     $userDataBefore = & $islandDataHashes
     $uninstaller = Start-Process -FilePath (Join-Path $install 'uninstall.exe') -ArgumentList '/S' -PassThru -Wait
     if ($uninstaller.ExitCode -ne 0) { throw "Uninstaller failed: $($uninstaller.ExitCode)" }
