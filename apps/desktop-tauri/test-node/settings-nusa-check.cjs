@@ -3,21 +3,8 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { execFileSync } = require('node:child_process');
 const root = path.resolve(__dirname, '..');
 
-// Koda 0.1 T2: the visible rename legitimately edits vendor/ and settings-view.js. "Untouched" now means: the only change is Abito -> Koda in text
-// (every removed line equals its added line once «Abito» becomes «Koda»); anything else still fails.
-function onlyRenamed(files) {
-  const out = [];
-  for (const p of files) {
-    const d = execFileSync('git', ['diff', '-U0', 'HEAD', '--', require('node:path').join(root, '..', '..', p)], { cwd: root, encoding: 'utf8' }).split('\n');
-    const minus = d.filter(l => l.startsWith('-') && !l.startsWith('---')).map(l => l.slice(1).replace(/Abito|Koda/g, 'N'));
-    const plus = d.filter(l => l.startsWith('+') && !l.startsWith('+++')).map(l => l.slice(1).replace(/Abito|Koda/g, 'N'));
-    if (JSON.stringify(minus) !== JSON.stringify(plus)) out.push(p);
-  }
-  return out;
-}
 const read = f => fs.readFileSync(path.join(root, 'frontend', f), 'utf8');
 const N = require('../frontend/settings-nusa.js');
 const { CATALOG } = require('../frontend/koda-catalog.js');
@@ -66,9 +53,12 @@ const css = read('settings-nusa.css');
 assert.ok(/196px/.test(css) && /html\[data-theme=["']?light/.test(css) && /body\.hub-window/.test(css));
 assert.ok(!/url\(\s*['"]?https?:/.test(css) && !/@import/.test(css));
 
-// R1: nothing under vendor/ was touched, and the new files ship
-const changed = execFileSync('git', ['diff', '--name-only', 'HEAD', '--', '.'], { cwd: root, encoding: 'utf8' }).split('\n').filter(Boolean);
-assert.deepEqual(onlyRenamed(changed.filter(p => /\/vendor\//.test(p))), [], 'vendor/ must stay untouched except Abito -> Koda (Koda 0.1 T2)');
+// R1 (restored by K2-03): nothing under vendor/ changed except Abito -> Koda and the listed K2-03 removals.
+const R1 = require('./settings-vendor-r1.cjs');
+assert.deepEqual(R1.check(root, p => /\/vendor\//.test(p)), [], 'vendor/ must stay untouched except Abito -> Koda (Koda 0.1 T2) and the K2-03 list (settings-vendor-r1.cjs)');
+// the gate itself: an unlisted vendor edit is a violation, a listed one or a pure rename is not, and no checkout fails loudly
+assert.deepEqual(R1.violations(['apps/desktop-tauri/frontend/vendor/coucou/hub/notch.ts', 'apps/desktop-tauri/frontend/vendor/coucou/hub/shell.ts', 'apps/desktop-tauri/frontend/vendor/coucou/hub/ui.ts'], p => /\/vendor\//.test(p), p => p.endsWith('ui.ts')), ['apps/desktop-tauri/frontend/vendor/coucou/hub/notch.ts']);
+assert.throws(() => R1.changedSinceHead(require('node:os').tmpdir()), /R1 needs a git checkout/);
 const lib = fs.readFileSync(path.join(root, 'packaging/lib.cjs'), 'utf8');
 for (const f of ['settings-nusa.css', 'settings-nusa.js', 'settings-nusa-mount.js']) assert.ok(lib.includes(`'${f}'`), `packaging lists ${f}`);
 console.log('settings-nusa-check ok');

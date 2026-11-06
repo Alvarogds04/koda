@@ -199,7 +199,7 @@ fn the_hidden_strip_input_zone_is_the_drawn_8px_at_every_compact_width_and_never
 #[test]
 fn the_input_region_covers_exactly_what_is_drawn_for_every_native_size_of_the_island() {
     // The island's full size list (logical px, inside the fixed 752x340 window): compact pill 288/440/560 x 32; hidden strip: same
-    // widths x 8; expanded 720x184, 720x220 with the «terminó»/problem band; question 224; recap 208; chat 720 x 240..300.
+    // widths x 8; expanded 720x184, 720x220 with the «terminó»/problem band; question 224; chat 720 x 240..300.
     let window = (752, 340);
     let centred = |w: i32| (window.0 - w) / 2;
     for w in abito_island::geometry::COMPACT_WIDTHS {

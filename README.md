@@ -29,9 +29,13 @@ dañada: volvé a instalar Koda.» instead of falling back to another Node or Pi
 **Upgrading from Abito:** install Koda over it; settings, accounts and agent hooks are kept (internal names are unchanged).
 Restart any open Pi session afterwards so it loads the updated extension.
 
+**Upgrading from Koda 0.1 with Recap:** Recap was removed in 0.2. At start Koda takes the old Recap hooks out of
+`~/.claude/settings.json` (backup first) and deletes only Recap's own data files; your other hooks and data, and any
+recap images you saved, are untouched.
+
 ## Windows limitations
 
-Hooks (Claude Code, Codex, Copilot CLI, OpenCode, weekly recap, status-line relay) and the Pi extension can be installed from *Ajustes · Agentes* on Windows. Koda only writes a configuration file or folder that is private to your Windows user (owner = you, no write access for other accounts, no links or junctions), keeps a backup, writes atomically and records a private audit entry. If any check fails, nothing is written and Ajustes says why. Installed files are verified against an install manifest; if you modify the installation, reinstall Koda.
+Hooks (Claude Code, Codex, Copilot CLI, OpenCode, status-line relay) and the Pi extension can be installed from *Ajustes · Agentes* on Windows. Koda only writes a configuration file or folder that is private to your Windows user (owner = you, no write access for other accounts, no links or junctions), keeps a backup, writes atomically and records a private audit entry. If any check fails, nothing is written and Ajustes says why. Installed files are verified against an install manifest; if you modify the installation, reinstall Koda.
 
 Known limit: a program running as the same Windows user can still race the folder check, and could replace Koda's own files together with their manifest; both are planned fixes and give that program nothing it could not already do by editing your configuration directly.
 

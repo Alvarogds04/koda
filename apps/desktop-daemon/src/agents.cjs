@@ -63,7 +63,6 @@ const REFUSAL_DETAIL = Object.freeze({
 const AGENTS = Object.freeze([
 	Object.freeze({ id: "claude-code", name: "Claude Code", harness: "claude", dir: ".claude", file: "settings.json", events: EVENTS, wireEvents: CLAUDE_EVENTS, migratedEvents: MIGRATED_EVENTS }),
 	Object.freeze({ id: "codex", name: "Codex", harness: "codex", dir: ".codex", file: "hooks.json", events: EVENTS, wireEvents: CODEX_EVENTS }),
-	Object.freeze({ id: "recap", name: "Resumen semanal", harness: "recap", dir: ".claude", file: "settings.json", events: Object.freeze(["UserPromptSubmit", "PostToolUse", "Stop"]) }),
 	Object.freeze({ id: "statusline", name: "Uso del plan (relay)", harness: "statusline", dir: ".claude", file: "settings.json", events: Object.freeze(["statusLine"]) }),
 	// Copilot CLI: the hooks file Abito owns under ~/.copilot/hooks; OpenCode: the plugin Abito owns under ~/.config/opencode/plugins.
 	// Both answer permissions from the island and notify on session end (apps/desktop-harness install copilot|opencode).
@@ -216,12 +215,53 @@ class AgentsManager extends EventEmitter {
 		return this.operate(id, undefined, true);
 	}
 
+	/**
+	 * K2-03 T3 (S2, S4): take the Koda 0.1 weekly-recap hooks out of ~/.claude/settings.json. Recap was removed in 0.2 with
+	 * its hook script, so those entries would make Claude Code call a deleted file. Runs once per daemon start, needs no
+	 * click (the human approved the removal, K2-03 L3 «1b»), and goes through the installer's removal-only `recap` profile:
+	 * preview first; apply (dated backup first, audited, marker-only) only when the preview removes something. A refusal
+	 * (unparseable settings, foreign layout, ...) writes nothing and is retried next start. Logs are fixed strings only.
+	 * Resolves "unavailable" | "clean" | "removed" | "refused" | "failed"; never throws.
+	 * TODO(K2-03 follow-up): remove one version after K2-03 ships, with desktop-harness/src/install-recap.cjs.
+	 */
+	async removeLegacyRecap() {
+		if (!this.available || !["linux", "darwin", "win32"].includes(this.platform)) return "unavailable";
+		const base = ["install", "recap", "--user", "--remove"];
+		// The daemon calls this with `void`: nothing here may reject, not even a broken logger.
+		const say = (line) => {
+			try {
+				this.log(line);
+			} catch {}
+		};
+		const refused = () => {
+			say("legacy recap hooks: cleanup refused; retrying next start");
+			return "refused";
+		};
+		try {
+			const pv = await this.call(undefined, [...base, "--json"]);
+			if (!pv.ok) return refused();
+			const preview = pv.json;
+			if (preview.mode !== "preview" || preview.harness !== "recap" || preview.action !== "remove" || typeof preview.changed !== "boolean") fail();
+			if (!preview.changed) return "clean";
+			if (!HASH.test(preview.plan_hash) || !Array.isArray(preview.entries) || !preview.entries.every((e) => isObject(e) && (e.op === "remove" || e.op === "keep"))) fail();
+			const result = await this.call(undefined, [...base, "--apply-plan", preview.plan_hash, "--audit-dir", path.join(this.islandDir, "audit"), "--json"]);
+			if (!result.ok) return refused();
+			if (result.json.mode !== "applied" || result.json.plan_hash !== preview.plan_hash || result.json.action !== "remove") fail();
+			this.invalidate();
+			say("legacy recap hooks removed");
+			return "removed";
+		} catch {
+			say("legacy recap hooks: cleanup failed; retrying next start");
+			return "failed";
+		}
+	}
+
 	// ----- operations ----------------------------------------------------------------
 
 	async operate(id, planHash, remove) {
 		const agent = AGENTS.find((a) => a.id === id);
 		if (!agent || (planHash !== undefined && !HASH.test(planHash))) throw new AgentsError("bad_request");
-		if (!remove && ["recap", "statusline"].includes(id) && planHash === undefined) throw new AgentsError("bad_request");
+		if (!remove && id === "statusline" && planHash === undefined) throw new AgentsError("bad_request");
 		if (!["linux", "darwin", "win32"].includes(this.platform)) return this.list();
 		if (!agent.harness || !this.available) return this.list(); // nothing to run: the agent reads unavailable
 		if (this.op) throw new AgentsError("busy");
@@ -364,7 +404,6 @@ class AgentsManager extends EventEmitter {
 				: `Adds the Abito hooks (${agent.events.join(", ")}) to ${file}. A backup is made first.`;
 		if (agent.id === "pi") summary = "Installs the Abito Pi extension in the default ~/.pi/agent directory. A backup is made first.";
 		if (agent.id === "opencode") summary = state === "outdated" ? `Updates the Abito plugin in ${file}. A backup is made first.` : `Adds the Abito plugin to ${file}. A backup is made first.`;
-		if (agent.id === "recap") summary = "Adds notify-only hooks that only count activity for the weekly recap. No command text, path or prompt is kept. A backup is made first.";
 		if (agent.id === "statusline") summary = "Adds the status-line relay in ~/.claude/settings.json. An existing status line keeps working (the relay prints it). A backup is made first.";
 		if (trust) summary += " Codex will ask you to trust them in /hooks.";
 		if (!reviewable) summary += " This change is large: review it in the file.";

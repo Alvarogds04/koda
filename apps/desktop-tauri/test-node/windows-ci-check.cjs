@@ -138,6 +138,15 @@ ciRule('smoke-windows.ps1 broken-runtime (RDD advisories): the manifest is resto
   // the wait covers BOTH strings, so the code-line assertion never reads stderr before the line is written
   assert.match(block, /Wait-For \{ \$t = Get-Content -Raw -LiteralPath [^}]*\$t -like "\*\$\(\$case\.message\)\*" -and \$t\.Contains\(\$case\.code\) \}/, 'one wait for the code line AND the sentence');
 });
+ciRule('smoke-windows.ps1 (K2-03): the preserving-uninstall hash skips WebView2\'s own EBWebView cache, which a lingering msedgewebview2 keeps locked', () => {
+  // CI 42207296565: Get-FileHash failed on com.abitog.AbitoTauri\EBWebView\BrowserMetrics\*.pma «because it is being used by
+  // another process». That folder is the embedded browser's cache, not the person's island data; everything else is hashed.
+  const line = smoke.split('\n').find((l) => l.includes('$islandDataHashes = {'));
+  assert.ok(line, 'the island user data hash exists');
+  assert.ok(line.includes("Where-Object { -not $_.FullName.Contains('\\EBWebView\\') }"), 'EBWebView is excluded before hashing');
+  assert.ok(line.indexOf('EBWebView') < line.indexOf('Get-FileHash'), 'excluded before Get-FileHash runs');
+  assert.match(line, /-join ';'/, 'compared as one string, not as arrays');
+});
 let ciFailed = 0;
 for (const [name, fn] of ciRules) {
   try { fn(); console.log(`PASS: ${name}`); } catch (e) { ciFailed += 1; console.log(`FAIL: ${name}\n      ${String(e.message).split('\n')[0]}`); }

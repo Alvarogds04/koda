@@ -10,7 +10,7 @@ const { dom, Element, all, text } = require('./settings-accounts-check.cjs');
   const base = path.resolve(__dirname, '../frontend/vendor/coucou/hub');
   const { inactivePages, renderUnavailable } = await import(pathToFileURL(path.join(base, 'pages.js')));
   const { hero } = await import(pathToFileURL(path.join(base, 'hero.js')));
-  const ids = ['dictation','notes','insights','dictionary','snippets','styles','flowsettings','general','integrations','agents','chat','voice','phone','shortcuts'];
+  const ids = ['dictation','insights','dictionary','snippets','styles','flowsettings','general','integrations','agents','chat','voice','phone','shortcuts'];
   const invoked = [], disposed = [];
   let config;
   const fake = name => async opts => { invoked.push([name, opts.page]); return Object.assign(new Element('section'), { dispose() { disposed.push(name); } }); };
@@ -29,12 +29,10 @@ const { dom, Element, all, text } = require('./settings-accounts-check.cjs');
   // Main-pill configuration is dormant in Settings, even if a retained renderer tries the old action.
   await assert.rejects(context.closedInvoke('prefs_action', {payload:{action:'set_main_pill',id:'agent_codex'}}), /No disponible/);
   assert.equal(rawCalls.length, 0, 'set_main_pill never crosses the Settings bridge');
-  for (const payload of [{action:'prefs'},{action:'set_enabled',enabled:true},{action:'set_enabled',enabled:false},{action:'clear'}]) {
-    await context.closedInvoke('recap_action',{payload});assert.deepEqual(rawCalls.pop(),['recap_action',{payload}]);
-  }
-  for (const args of [undefined,{}, {payload:{action:'view',since:0}}, {payload:{action:'clear',extra:1}}, {payload:{action:'set_enabled',enabled:1}}, {payload:{action:'set_enabled'}}, {payload:{action:'prefs'},extra:1}]) await assert.rejects(context.closedInvoke('recap_action',args));
+  // K2-03 S1: recap_action is GONE from the closed allowed set — it is refused like any unknown command.
+  for (const payload of [{action:'prefs'},{action:'set_enabled',enabled:true},{action:'clear'}]) await assert.rejects(context.closedInvoke('recap_action',{payload}));
   for (const command of ['shortcuts_action','spotify_action','flow_status','phone_link_status']) await assert.rejects(context.closedInvoke(command,{}));
-  assert.equal(rawCalls.length,0,'unreachable commands and out-of-slice recap verbs never cross IPC');
+  assert.equal(rawCalls.length,0,'unreachable commands and removed verbs never cross IPC');
   for (const id of ids) {
     const container = new Element('div');
     invoked.length = 0;
@@ -48,22 +46,7 @@ const { dom, Element, all, text } = require('./settings-accounts-check.cjs');
     } else if (config.flowPages[id]) {
       await config.flowPages[id](container, { hero, status: { prefs: { key: 'right_ctrl' }, platform: 'linux', models: { parakeet: { state: 'missing' }, downloadMb: 670 } }, navigate() {}, set onLeave(_) {} });
       assert(all(container).some(e => e.className.includes('hub-hero')), id);
-      assert(text(container).includes(id === 'notes' ? 'No disponible todavía' : 'pendiente de conectar'), id);
-      if (id === 'notes') {
-        // 0.2.1 (propuesta «Notetaker»): «No disponible todavía», nothing that looks like it can record or download.
-        assert(all(container).some(e => e.className === 'hub-hero compact'), 'compact band');
-        assert(text(container).includes('No disponible todavía'));
-        assert(!all(container).some(e => e.tagName === 'button' && !String(e.className).includes('hub-info')), 'no record or download button');
-        assert(!all(container).some(e => e.className === 'hub-notes'), 'no calls layout');
-      }
-      if (id === 'voice') {
-        assert.deepEqual(all(container).filter(e=>e.className==='hub-label').map(text),['Escucha','Respuestas','Privacidad']);
-        assert.equal(all(container).filter(e=>e.className==='hub-card').length,3);
-        assert(text(container).includes('Escuchar « OK Koda »'));
-        assert(text(container).includes('Parakeet, en tu ordenador'));
-        assert(text(container).includes('Koda responde en voz alta'));
-        assert(text(container).includes('Koda nunca envía un correo'));
-      }
+      assert(text(container).includes('pendiente de conectar'), id);
     } else {
       const cleanup = await config.renderNotch(id, container);
       const expected = {general:[['general',undefined],['pills',undefined]], chat:[['chat-settings',undefined],['accounts','chat'],['models',undefined]], integrations:[['integrations',undefined]], agents:[['pills',undefined],['agent-settings',undefined],['pills',undefined]], shortcuts:[['shortcuts',undefined]]}[id];
@@ -79,13 +62,13 @@ const { dom, Element, all, text } = require('./settings-accounts-check.cjs');
         }
       }
     }
-    // L42: the voice-model control (Notetaker, OK Koda) is live; everything else is disabled
-    for (const e of all(container).filter(e => ['button','input','select','textarea'].includes(e.tagName) && !String(e.className).includes('hub-info') && !(['notes','voice'].includes(id) && String(e.textContent || '').trim() === 'Descargar'))) assert.equal(e.disabled, true, id);
+    // L42: the voice-model control (OK Koda) is live; everything else is disabled
+    for (const e of all(container).filter(e => ['button','input','select','textarea'].includes(e.tagName) && !String(e.className).includes('hub-info') && !(id === 'voice' && String(e.textContent || '').trim() === 'Descargar'))) assert.equal(e.disabled, true, id);
   }
   assert(source.includes("page === 'agents'") && source.includes("part: 'tools'") && source.includes("part: 'island'") && source.includes("part: 'abito'"), '0.2.1 S1 (option B): Agentes composes the main tool, the CLI table, the island switches and the Abito part; Integraciones is the services only');
   assert(disposed.includes('agent-settings') && disposed.includes('chat-settings'), 'new page adapters are disposed');
   const generalSource = fs.readFileSync(path.join(base,'general.ts'),'utf8');
-  assert(generalSource.includes('renderRecapRows({ invoke })'), 'General reuses the wired upstream recap rows in their original position');
+  assert(!generalSource.includes('renderRecapRows'), 'General has no recap rows (K2-03: Recap removed)');
   assert(disposed.includes('accounts') && disposed.includes('models') && disposed.includes('pills'));
-  console.log('PASS settings-pages: 16 routes, mapped renderer lifecycles, inactive controls and hero bands');
+  console.log('PASS settings-pages: 15 routes, mapped renderer lifecycles, inactive controls and hero bands');
 })().catch(e => { console.error(e); process.exitCode = 1; });

@@ -7,7 +7,6 @@ import { hero, liveMochi } from "./hero.js";
 import { icon, keyLabel } from "./ui.js";
 const FLOW_PAGES = [
   { id: "dictation", icon: "mic", title: () => t("Dictation") },
-  { id: "notes", icon: "record", title: () => t("Notetaker") },
   { id: "insights", icon: "chart", title: () => t("Statistics") },
   { id: "dictionary", icon: "book", title: () => t("Dictionary") },
   { id: "snippets", icon: "bolt", title: () => t("Snippets") },

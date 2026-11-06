@@ -1,8 +1,8 @@
 'use strict';
-// L42: Notetaker and OK Koda showed a static, disabled «Descargar» button even with the voice model installed, so a human
+// L42: OK Koda showed a static, disabled «Descargar» button even with the voice model installed, so a human
 // who had downloaded it from Dictado read it as «the model is not there» / «I cannot download». The model is the SAME
-// Parakeet the dictation uses: both pages now show the real control (download with progress, «Instalado», remove) and
-// follow dictation:models without reopening Ajustes. Everything else on those pages stays disabled (no backend).
+// Parakeet the dictation uses: the page now shows the real control (download with progress, «Instalado», remove) and
+// follows dictation:models without reopening Ajustes. Everything else on the page stays disabled (no backend).
 const assert = require('node:assert/strict');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
@@ -26,8 +26,8 @@ const { dom, all, text, Element } = require('./settings-accounts-check.cjs');
   const ctx = { hero, status: { prefs: { key: 'right_ctrl', enabled: false }, platform: 'linux', models },
     navigate() {}, refresh: async () => ctx.status, updateModels(m) { models = m; ctx.status.models = m; }, set onLeave(fn) { leave = fn; } };
   const find = (root, label) => all(root).find(e => e.tagName === 'button' && String(e.textContent || '').trim() === label);
-  // 0.2.1: Notetaker is «No disponible todavía» (propuesta): no model row there; the shared model is managed from OK Koda
-  { const root = new Element('div'); await inactivePages.notes(root, ctx); assert(!find(root, 'Descargar') && text(root).includes('No disponible todavía'), 'notes: no download, honest unavailable'); }
+  // K2-03 S1: the Notetaker page is REMOVED (not paused): the hub has no «notes» route at all.
+  assert.equal(inactivePages.notes, undefined, 'no notes page');
   for (const page of ['voice']) {
     calls.length = 0; models = { parakeet: { state: 'missing' }, downloadMb: 670 }; ctx.status.models = models; events.clear();
     const root = new Element('div');
@@ -47,5 +47,5 @@ const { dom, all, text, Element } = require('./settings-accounts-check.cjs');
     assert(others.length > 0 && others.every(b => b.disabled), `${page}: the rest of the page stays disabled`);
     leave && leave();
   }
-  console.log('PASS settings-model-rows: Notetaker and OK Koda carry the real model control (download, progress, installed), the rest stays disabled');
+  console.log('PASS settings-model-rows: OK Koda carries the real model control (download, progress, installed), the rest stays disabled');
 })().catch(e => { console.error(e); process.exitCode = 1; });

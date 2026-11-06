@@ -113,61 +113,7 @@
     "url": "https://github.com/dev/abito",
     "branch": "main",
     "ci": "success",
-    "headSha": null
-   }
-  ]
- },
- "recap": {
-  "turns": [
-   {
-    "agent": "integration_claude",
-    "project": "abito",
-    "startDay": 0,
-    "startHour": 9,
-    "hours": 2.5,
-    "filesChanged": 8,
-    "linesAdded": 312,
-    "linesRemoved": 87,
-    "commandsRun": 14,
-    "questions": 2
-   },
-   {
-    "agent": "integration_claude",
-    "project": "abito",
-    "startDay": 2,
-    "startHour": 10,
-    "hours": 2,
-    "filesChanged": 3,
-    "linesAdded": 95,
-    "linesRemoved": 20,
-    "commandsRun": 5,
-    "questions": 0
-   },
-   {
-    "agent": "agent_codex",
-    "project": "api",
-    "startDay": 3,
-    "startHour": 14,
-    "hours": 1,
-    "filesChanged": 2,
-    "linesAdded": 50,
-    "linesRemoved": 10,
-    "commandsRun": 3,
-    "questions": 1
-   }
-  ],
-  "decisions": [
-   {
-    "agent": "integration_claude",
-    "day": 0,
-    "hour": 9.5,
-    "decision": "allow"
-   },
-   {
-    "agent": "integration_claude",
-    "day": 2,
-    "hour": 10.5,
-    "decision": "deny"
+     "headSha": null
    }
   ]
  }

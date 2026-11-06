@@ -30,7 +30,6 @@ const PHASES = [
   { name: 'error notice', kind: 'expanded', sc: { noticeRows: [ERR], sessions: [], quick: true, windowCap: 340 }, w: 720, h: 148, drive: async p => { await p.evaluate(id => window.__emit('desktop:notice-open', { id, kind: 'finished' }), ERR.id); await p.waitForTimeout(1500); } },
   { name: 'chat', kind: 'expanded', sc: { chat: true }, drive: none, w: 720, h: 240 },
   { name: 'chat + pending question (dimmed, inert)', kind: 'expanded', sc: { question: 'plain' }, w: 720, h: 240, drive: async p => { await p.evaluate(() => window.__islandSetView('chat', 720, 240)); await p.waitForTimeout(1200); } },
-  { name: 'recap (island grown for it)', kind: 'expanded', sc: {}, w: 720, h: 208, drive: async p => { await p.evaluate(() => document.dispatchEvent(new CustomEvent('abito:recap', { detail: { show: true } }))); await p.waitForTimeout(1200); } },
   { name: 'hidden strip (island concealed)', kind: 'pill', textPill: true, sc: { quick: true }, w: 137, h: 32, drive: async p => { await compact(p); await p.waitForTimeout(800); await p.evaluate(() => window.__islandConceal(true)); await p.waitForTimeout(1200); } },
 ];
 // K2-01b: the same two text pills under ANOTHER font family on every OS (the generic monospace differs from each OS's UI font),

@@ -53,7 +53,7 @@ export async function renderPills({ invoke, listen, V, S, A, P, C, part = 'tools
   const s = session(invoke, listen), { root, call, work, watch, message } = s;
   // Product/Pestañas-activas: keep the selector below for a future release, unreachable for now.
   if (part === 'tools') {
-    // Same non-interactive card/row pattern and wording as Notetaker in pages.ts.
+    // Same non-interactive card/row pattern and wording as the paused pages in pages.ts.
     // HU-076: the main-tool selector is not available in this version, so nothing is shown (it used to say so in a card).
     return s.finish();
   }
