@@ -1,8 +1,8 @@
 'use strict';
-/* K2-02 T1 (S1, S2): packaging/runtime/build-runtime.cjs, run as a user would run it (a child process), fully offline:
-   the script is copied next to fixture pins (a fake Node archive with its sha256, a fake Pi tarball pinned by sha512 in
-   a lockfile), so no network and no real Node/Pi download is involved. The real pins are checked by
-   runtime-pins-check.cjs and proven against the real downloads by the installer builds.
+/* K2-02 T1 (S1, S2) + K2-05 T1 (S1): packaging/runtime/build-runtime.cjs, run as a user would run it (a child process),
+   fully offline: the script is copied next to fixture pins (a fake Node archive with its sha256, fake Pi and gentle-pi
+   tarballs pinned by sha512 in a lockfile), so no network and no real Node/Pi download is involved. The real pins are
+   checked by runtime-pins-check.cjs and proven against the real downloads by the installer builds.
    Every target (linux-x64, darwin-arm64, win-x64) is built on every OS; the built Pi is run on the host target.
    Run: node apps/desktop-tauri/test-node/runtime-build-check.cjs */
 const assert = require('node:assert/strict');
@@ -99,12 +99,34 @@ function fixture(targets = ['linux-x64', 'darwin-arm64', 'win-x64'], opts = {}) 
   tarGz(path.join(dir, 'pi-src'), tgz, ['package']);
   const integrity = `sha512-${crypto.createHash('sha512').update(fs.readFileSync(tgz)).digest('base64')}`;
   const spec = `file:${tgz.split(path.sep).join('/')}`;
-  fs.writeFileSync(path.join(pins, 'package.json'), JSON.stringify({ name: 'koda-runtime', private: true, dependencies: { '@earendil-works/pi-coding-agent': spec } }));
+  // A fake gentle-pi package (K2-05): its gentle-shell.mjs answers a get_state frame on stdin (RPC), and with
+  // KODA_REPORT=1 also which Node runs it. opts.noGentleBin ships the bin entry without the file (fail closed).
+  const gentleSrc = path.join(dir, 'gentle-src', 'package');
+  fs.mkdirSync(path.join(gentleSrc, 'bin'), { recursive: true });
+  fs.writeFileSync(path.join(gentleSrc, 'package.json'), JSON.stringify({ name: 'gentle-pi', version: '4.3.0', license: 'MIT', author: 'Gentleman Programming', repository: { url: 'git+https://github.com/Gentleman-Programming/gentle-shell.git' }, bin: { 'gentle-shell': 'bin/gentle-shell.mjs' }, peerDependencies: { '@earendil-works/pi-coding-agent': '>=1.2.0', '@earendil-works/pi-ai': '*', '@earendil-works/pi-tui': '*', typebox: '*' }, peerDependenciesMeta: { '@earendil-works/pi-coding-agent': { optional: true }, '@earendil-works/pi-ai': { optional: true }, '@earendil-works/pi-tui': { optional: true }, typebox: { optional: true } } }));
+  if (!opts.noGentleBin) fs.writeFileSync(path.join(gentleSrc, 'bin', 'gentle-shell.mjs'), [
+    'let buffered = \'\';',
+    'process.stdin.setEncoding(\'utf8\');',
+    'process.stdin.on(\'data\', (chunk) => {',
+    '  buffered += chunk;',
+    '  if (buffered.includes(\'\\n\')) {',
+    '    if (process.env.KODA_REPORT === \'1\') process.stdout.write(`4.3.0 node=${process.env.KODA_NODE || \'other\'}` + "\\n");',
+    '    else process.stdout.write(\'{"type":"response","command":"get_state","success":true}\\n\');',
+    '  }',
+    '});',
+    'process.stdin.on(\'end\', () => {});',
+  ].join('\n'));
+  const gentleTgz = path.join(dir, 'gentle-pi-4.3.0.tgz');
+  tarGz(path.join(dir, 'gentle-src'), gentleTgz, ['package']);
+  const gentleIntegrity = `sha512-${crypto.createHash('sha512').update(fs.readFileSync(gentleTgz)).digest('base64')}`;
+  const gentleSpec = `file:${gentleTgz.split(path.sep).join('/')}`;
+  fs.writeFileSync(path.join(pins, 'package.json'), JSON.stringify({ name: 'koda-runtime', private: true, dependencies: { '@earendil-works/pi-coding-agent': spec, 'gentle-pi': gentleSpec } }));
   fs.writeFileSync(path.join(pins, 'package-lock.json'), JSON.stringify({
     name: 'koda-runtime', lockfileVersion: 3, requires: true,
     packages: {
-      '': { name: 'koda-runtime', dependencies: { '@earendil-works/pi-coding-agent': spec } },
+      '': { name: 'koda-runtime', dependencies: { '@earendil-works/pi-coding-agent': spec, 'gentle-pi': gentleSpec } },
       'node_modules/@earendil-works/pi-coding-agent': { version: '1.4.0', resolved: spec, integrity, bin: { pi: 'dist/bundle/cli.js' } },
+      'node_modules/gentle-pi': { version: '4.3.0', resolved: gentleSpec, integrity: gentleIntegrity, bin: { 'gentle-shell': 'bin/gentle-shell.mjs' }, peerDependencies: { '@earendil-works/pi-coding-agent': '>=1.2.0', '@earendil-works/pi-ai': '*', '@earendil-works/pi-tui': '*', typebox: '*' }, peerDependenciesMeta: { '@earendil-works/pi-coding-agent': { optional: true }, '@earendil-works/pi-ai': { optional: true }, '@earendil-works/pi-tui': { optional: true }, typebox: { optional: true } } },
     },
   }));
   return { dir, pins, archives };
@@ -130,14 +152,16 @@ for (const target of ['linux-x64', 'darwin-arm64', 'win-x64']) {
     const out = path.join(fx.dir, `out-${target}`);
     const r = build(fx, ['--target', target, '--out', out, '--node-archive', fx.archives[target]]);
     assert.equal(r.status, 0, `exit ${r.status}\nstdout=${r.stdout}\nstderr=${r.stderr}`);
-    assert.match(r.stdout, new RegExp(`^runtime ${target}: Node ${NODE_VERSION} \\+ Pi 1\\.4\\.0 -> `));
+    assert.match(r.stdout, new RegExp(`^runtime ${target}: Node ${NODE_VERSION} \\+ Pi 1\\.4\\.0 \\+ gentle-pi 4\\.3\\.0 -> `));
     const exe = target === 'win-x64' ? 'node.exe' : 'node';
     const expected = [exe, 'LICENSE.node', 'THIRD-PARTY-NOTICES.md', 'koda-runtime.json',
-      'node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js', 'node_modules/@earendil-works/pi-coding-agent/package.json'];
-    if (target !== 'win-x64') expected.push('pi');
+      'node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js', 'node_modules/@earendil-works/pi-coding-agent/package.json',
+      'node_modules/gentle-pi/bin/gentle-shell.mjs', 'node_modules/gentle-pi/package.json'];
+    if (target !== 'win-x64') expected.push('pi', 'gentle-shell');
     assert.deepEqual(tree(out), expected.sort(), 'no npm, npx, corepack, .bin symlink or npm bookkeeping');
     assert.deepEqual(readJson(path.join(out, 'koda-runtime.json')),
-      { target, node: NODE_VERSION, pi: '1.4.0', piCli: 'node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js' });
+      { target, node: NODE_VERSION, pi: '1.4.0', piCli: 'node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js',
+        gentlePi: '4.3.0', gentleShell: 'node_modules/gentle-pi/bin/gentle-shell.mjs' });
     assert.equal(fs.readFileSync(path.join(out, 'LICENSE.node'), 'utf8'), 'Node licence\n');
     if (!isWin) assert.equal(fs.statSync(path.join(out, exe)).mode & 0o111, 0o111, 'node is executable');
   });
@@ -151,6 +175,24 @@ test(`${hostTarget} (this OS): --self-check runs the built Pi with the built Nod
   assert.equal(r.stderr, '');
 });
 
+test(`${hostTarget} (this OS): --self-check also runs the built gentle-shell offline and gets its get_state response (K2-05 T1)`, () => {
+  const out = path.join(fx.dir, 'out-self-gentle');
+  const r = build(fx, ['--target', hostTarget, '--out', out, '--node-archive', fx.archives[hostTarget], '--self-check']);
+  assert.equal(r.status, 0, `exit ${r.status}\nstderr=${r.stderr}`);
+  assert.match(r.stdout, /, self-check ok\n$/);
+  assert.equal(r.stderr, '');
+});
+
+test('a gentle-pi package whose bin/gentle-shell.mjs is missing fails closed: exit 1, exact message, no output (K2-05 T1)', () => {
+  const f3 = fixture(['linux-x64'], { noGentleBin: true });
+  const out = path.join(f3.dir, 'out');
+  const r = build(f3, ['--target', 'linux-x64', '--out', out, '--node-archive', f3.archives['linux-x64']], { npm_config_cache: path.join(f3.dir, 'c') });
+  assert.equal(r.status, 1, r.stdout);
+  assert.equal(r.stdout, '');
+  assert.equal(r.stderr, 'build-runtime: gentle-pi bin bin/gentle-shell.mjs is not a file inside the package\n');
+  assert.equal(fs.existsSync(out), false);
+});
+
 test('the Pi launcher (Linux, macOS) uses the Node next to it, never the node on PATH (Windows: the daemon, T3)', () => {
   if (isWin) return; // Windows ships no launcher: the daemon starts node.exe + Pi's CLI JS, covered in desktop-daemon.
   const decoy = path.join(fx.dir, 'decoy');
@@ -161,6 +203,12 @@ test('the Pi launcher (Linux, macOS) uses the Node next to it, never the node on
   });
   assert.equal(r.status, 0, r.stderr);
   assert.equal(r.stdout, '1.4.0 node=bundled\n');
+  // and the gentle-shell launcher (K2-05) has the same shape: THIS folder's node, never a node from PATH
+  const g = cp.spawnSync(path.join(fx.dir, `out-${hostTarget}`, 'gentle-shell'), [], {
+    encoding: 'utf8', input: '{"type":"get_state","id":"1"}\n', env: { PATH: `${decoy}:/usr/bin:/bin`, KODA_REPORT: '1' },
+  });
+  assert.equal(g.status, 0, g.stderr);
+  assert.equal(g.stdout, '4.3.0 node=bundled\n');
 });
 
 test(`${hostTarget} (this OS): --archive packs the runtime folder into one tar.gz with its sha256, and it unpacks to the same tree`, () => {
@@ -185,6 +233,7 @@ test('the runtime ships THIRD-PARTY-NOTICES.md: Node, then every package with it
   const notices = fs.readFileSync(path.join(fx.dir, 'out-linux-x64', 'THIRD-PARTY-NOTICES.md'), 'utf8');
   assert.match(notices, /^# Third-party notices: Koda's bundled runtime\n/);
   assert.ok(notices.includes(`## Node.js ${NODE_VERSION}\n\nLicense: MIT (with bundled components). Full text: \`LICENSE.node\` in this folder.\n`));
+  assert.ok(notices.includes('## gentle-pi 4.3.0\n\nLicense: MIT\n'), 'gentle-pi ships with its licence in the notices (K2-05)');
   // RDD advisory 2: MIT keeps «the above copyright notice», so the text a package without its own file is shipped under
   // names the copyright holder that package declares, never the SPDX template placeholder.
   const mit = fs.readFileSync(path.join(path.dirname(BUILDER), 'licenses', 'MIT.txt'), 'utf8');

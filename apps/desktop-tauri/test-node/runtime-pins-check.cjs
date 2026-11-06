@@ -1,6 +1,7 @@
 'use strict';
-/* K2-02 T1 (S1, S2): the Node and the Pi that Koda ships are pinned, one pin per shipped OS/arch, with a sha256 for every
-   download, and every place that installs Pi for Koda's checks uses the same Pi version. Reads the pin files only.
+/* K2-02 T1 (S1, S2) + K2-05 T1 (S1): the Node, the Pi and Gentle Shell that Koda ships are pinned, one pin per shipped
+   OS/arch, with a sha256 for every download, and every place that installs Pi for Koda's checks uses the same Pi version.
+   Reads the pin files only.
    Run: node apps/desktop-tauri/test-node/runtime-pins-check.cjs */
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -22,6 +23,7 @@ function readJson(file) {
 }
 const pkg = readJson(path.join(crate, 'packaging/runtime/package.json'));
 const lock = readJson(path.join(crate, 'packaging/runtime/package-lock.json'));
+const GENTLE = 'gentle-pi';
 const piVersion = pkg.dependencies[PI];
 
 test('one Node pin per shipped installer target: linux-x64, darwin-arm64 and win-x64, nothing else', () => {
@@ -41,9 +43,25 @@ test('every Node pin is a sha256 of a single Node 22 release that Pi accepts (>=
   const [major, minor] = [...versions][0].split('.').map(Number);
   assert.ok(major === 22 && minor >= 19, `Node ${[...versions][0]} is 22.x >= 22.19.0`);
 });
-test('Pi is pinned to exactly 1.4.0, and it is the only dependency', () => {
-  assert.deepEqual(pkg.dependencies, { [PI]: '1.4.0' });
+test('Pi is pinned to exactly 1.4.0', () => {
+  assert.equal(pkg.dependencies[PI], '1.4.0');
   assert.equal(lock.packages[`node_modules/${PI}`].version, '1.4.0');
+});
+test('gentle-pi 4.3.0 is pinned exactly next to Pi (K2-05 T1)', () => {
+  assert.equal(pkg.dependencies[GENTLE], '4.3.0');
+  const entry = lock.packages[`node_modules/${GENTLE}`];
+  assert.equal(entry.version, '4.3.0');
+  assert.equal(entry.bin && entry.bin['gentle-shell'], 'bin/gentle-shell.mjs');
+});
+test('every peer gentle-pi declares is pinned at the root to the exact version the lockfile installs (npm cannot drift)', () => {
+  const gentle = lock.packages[`node_modules/${GENTLE}`];
+  assert.ok(gentle.peerDependencies, 'gentle-pi declares peers');
+  for (const [name, range] of Object.entries(gentle.peerDependencies)) {
+    const pinned = pkg.dependencies[name];
+    assert.ok(pinned, `the root pins peer ${name} (${range})`);
+    assert.match(pinned, /^[\d.]+$/, `peer ${name} is pinned exactly, not a range: ${pinned}`);
+    assert.equal(lock.packages[`node_modules/${name}`].version, pinned, `lockfile installs ${name} at the pinned version`);
+  }
 });
 test('the lockfile pins every package to the npm registry with a sha512 integrity', () => {
   assert.equal(lock.lockfileVersion, 3);

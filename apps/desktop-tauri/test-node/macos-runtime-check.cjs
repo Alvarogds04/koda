@@ -42,8 +42,8 @@ const runtimes = fs.mkdtempSync(path.join(os.tmpdir(), 'abito-macos-runtime-'));
 function fakeRuntime(name, target) {
   const r = path.join(runtimes, name);
   fs.mkdirSync(r);
-  fs.writeFileSync(path.join(r, 'koda-runtime.json'), JSON.stringify({ target, node: '22.23.4', pi: '1.4.0', piCli: 'node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js' }));
-  for (const f of ['node', 'pi']) fs.writeFileSync(path.join(r, f), '#!/bin/sh\n', { mode: 0o755 });
+  fs.writeFileSync(path.join(r, 'koda-runtime.json'), JSON.stringify({ target, node: '22.23.4', pi: '1.4.0', piCli: 'node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js', gentlePi: '4.3.0', gentleShell: 'node_modules/gentle-pi/bin/gentle-shell.mjs' }));
+  for (const f of ['node', 'pi', 'gentle-shell']) fs.writeFileSync(path.join(r, f), '#!/bin/sh\n', { mode: 0o755 });
   return r;
 }
 const generate = (args) => cp.spawnSync(process.execPath, [path.join(crate, 'packaging/macos-config.cjs'), ...args], { cwd: dir, encoding: 'utf8' });
@@ -80,6 +80,10 @@ try {
   bad = generate(['--runtime', noPi]);
   assert.equal(bad.status, 1);
   assert.equal(bad.stderr, `macos-config: ${fs.realpathSync(noPi)} lacks the executable file pi\n`);
+  // K2-05 T1: the fake runtime now has the manifest shape and the gentle-shell launcher the real build emits;
+  // the bundle generator ships the folder whole, so gentle-shell travels with it. Whether macos-config itself must
+  // REFUSE a runtime without gentle-shell (like it refuses one without pi) is OUTSIDE this task's edit surfaces:
+  // reported to the parent (macos-config.cjs).
   assert.equal(config.bundle.active, true);
   assert.equal(config.bundle.macOS.minimumSystemVersion, '12.0');
   // Ad-hoc seal of the whole bundle (no Apple account): Gatekeeper reports «unidentified developer», never «damaged».

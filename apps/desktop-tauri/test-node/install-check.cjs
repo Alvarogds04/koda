@@ -39,12 +39,17 @@ function receipt(st) {
 function runtimeArchive(outDir) {
   const root = path.join(T.make('koda-rt-src-'), 'rt');
   fs.mkdirSync(path.join(root, 'node_modules', '@earendil-works', 'pi-coding-agent', 'dist', 'bundle'), { recursive: true });
+  fs.mkdirSync(path.join(root, 'node_modules', 'gentle-pi', 'bin'), { recursive: true });
   fs.writeFileSync(path.join(root, 'node'), `#!/bin/sh\necho koda-runtime-node-ran >&2\nexec ${JSON.stringify(process.execPath)} "$@"\n`, { mode: 0o755 });
   fs.writeFileSync(path.join(root, 'pi'), `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(path.join(root, 'node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js'))} "$@"\n`, { mode: 0o755 });
+  // K2-05 T1: the runtime also carries gentle-pi and a gentle-shell launcher of the same shape as pi's.
+  fs.writeFileSync(path.join(root, 'gentle-shell'), `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(path.join(root, 'node_modules/gentle-pi/bin/gentle-shell.mjs'))} "$@"\n`, { mode: 0o755 });
   fs.writeFileSync(path.join(root, 'LICENSE.node'), 'Node licence\n');
-  fs.writeFileSync(path.join(root, 'koda-runtime.json'), JSON.stringify({ target: 'linux-x64', node: '22.23.4', pi: '1.4.0', piCli: 'node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js' }));
+  fs.writeFileSync(path.join(root, 'koda-runtime.json'), JSON.stringify({ target: 'linux-x64', node: '22.23.4', pi: '1.4.0', piCli: 'node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js', gentlePi: '4.3.0', gentleShell: 'node_modules/gentle-pi/bin/gentle-shell.mjs' }));
   fs.writeFileSync(path.join(root, 'node_modules/@earendil-works/pi-coding-agent/package.json'), JSON.stringify({ name: '@earendil-works/pi-coding-agent', version: '1.4.0', bin: { pi: 'dist/bundle/cli.js' } }));
   fs.writeFileSync(path.join(root, 'node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js'), "console.log('1.4.0');\n");
+  fs.writeFileSync(path.join(root, 'node_modules/gentle-pi/package.json'), JSON.stringify({ name: 'gentle-pi', version: '4.3.0', bin: { 'gentle-shell': 'bin/gentle-shell.mjs' } }));
+  fs.writeFileSync(path.join(root, 'node_modules/gentle-pi/bin/gentle-shell.mjs'), 'process.stdout.write(JSON.stringify({type:"response",command:"get_state",success:true}) + "\\n");\n');
   const out = path.join(outDir, ARCHIVE);
   let r = cp.spawnSync('tar', ['-czf', out, '--owner=0', '--group=0', '--numeric-owner', '--sort=name', '-C', root, '.'], { encoding: 'utf8' });
   if (r.status !== 0) r = cp.spawnSync('tar', ['-czf', out, '-C', root, '.'], { encoding: 'utf8' }); // bsdtar has no --sort
@@ -150,10 +155,11 @@ test('happy path: installs binary+launcher+png(+template+receipt), executable, h
   for (const n of [...L.STAGED, 'receipt.json']) if (n !== ARCHIVE) assert.ok(fs.existsSync(path.join(e.prefix, n)), n);
   assert.equal(fs.existsSync(path.join(e.prefix, ARCHIVE)), false, 'the runtime archive itself is not installed');
   // the bundled runtime: exactly the archive's tree, extracted at PREFIX/runtime
-  for (const n of ['node', 'pi', 'LICENSE.node', 'koda-runtime.json', 'node_modules/@earendil-works/pi-coding-agent/package.json', 'node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js']) {
+  for (const n of ['node', 'pi', 'gentle-shell', 'LICENSE.node', 'koda-runtime.json', 'node_modules/@earendil-works/pi-coding-agent/package.json', 'node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js', 'node_modules/gentle-pi/package.json', 'node_modules/gentle-pi/bin/gentle-shell.mjs']) {
     assert.ok(fs.existsSync(path.join(e.prefix, 'runtime', n)), `runtime/${n}`);
   }
   assert.ok(fs.statSync(path.join(e.prefix, 'runtime', 'node')).mode & 0o100, 'runtime/node executable');
+  assert.ok(fs.statSync(path.join(e.prefix, 'runtime', 'gentle-shell')).mode & 0o100, 'runtime/gentle-shell executable (K2-05)');
   assert.ok(fs.statSync(path.join(e.prefix, 'runtime')).isDirectory() && !fs.lstatSync(path.join(e.prefix, 'runtime')).isSymbolicLink(), 'runtime is a real dir');
   assert.deepEqual(L.checkInstalledLayout(e.prefix), [], 'the installed layout accepts exactly runtime/ as the unenumerated dir');
   assert.match(r.stderr, /koda-runtime-node-ran/, 'the extracted runtime node ran the verification');
@@ -169,7 +175,7 @@ test('happy path: installs binary+launcher+png(+template+receipt), executable, h
   assert.match(run2.stdout, /toy binary/);
 });
 
-const RUNTIME_FILES = ['node', 'pi', 'LICENSE.node', 'koda-runtime.json', 'node_modules/@earendil-works/pi-coding-agent/package.json'];
+const RUNTIME_FILES = ['node', 'pi', 'gentle-shell', 'LICENSE.node', 'koda-runtime.json', 'node_modules/@earendil-works/pi-coding-agent/package.json', 'node_modules/gentle-pi/package.json', 'node_modules/gentle-pi/bin/gentle-shell.mjs'];
 
 test('S1 (Linux mechanism): with NO Node anywhere on PATH (env -i, sparse PATH of tool symlinks), install.sh installs; the bundled runtime node is what ran', () => {
   if (process.platform === 'win32') return; // Windows ships its own runtime installer twin
@@ -185,6 +191,10 @@ test('S1 (Linux mechanism): with NO Node anywhere on PATH (env -i, sparse PATH o
   const pv = cp.spawnSync(path.join(e.prefix, 'runtime', 'pi'), ['--version'], { encoding: 'utf8', env: { PATH: '/usr/bin:/bin', HOME: e.home } });
   assert.equal(pv.status, 0, pv.stderr);
   assert.equal(pv.stdout, '1.4.0\n');
+  // K2-05 T1: the installed gentle-shell launcher runs too, through the runtime's own node
+  const gs = cp.spawnSync(path.join(e.prefix, 'runtime', 'gentle-shell'), [], { encoding: 'utf8', env: { PATH: '/usr/bin:/bin', HOME: e.home } });
+  assert.equal(gs.status, 0, gs.stderr);
+  assert.equal(gs.stdout, '{"type":"response","command":"get_state","success":true}\n');
 });
 
 test('a tampered runtime archive (one byte) is refused with the exact hash line — even with NO Node on PATH — and the prefix is untouched', () => {

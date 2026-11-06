@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 'use strict';
-/* K2-02 T1 (S1, S2): build the runtime folder Koda ships inside every installer: its own pinned Node and its own pinned Pi,
-   so Koda never needs (nor touches) a Node or a Pi installed on the machine.
+/* K2-02 T1 (S1, S2) + K2-05 T1 (S1): build the runtime folder Koda ships inside every installer: its own pinned Node,
+   its own pinned Pi and its own pinned gentle-pi (Gentle Shell), so Koda never needs (nor touches) a Node or a Pi
+   installed on the machine.
 
    Usage: node packaging/runtime/build-runtime.cjs --target <linux-x64|darwin-arm64|win-x64> --out <dir>
             [--node-archive <file>] [--cache <dir>] [--self-check] [--archive <file.tar.gz>]
@@ -9,20 +10,24 @@
    Inputs, all pinned in this directory:
    - node.sha256: one official Node archive per target with its sha256 (the lines of the release's signed SHASUMS256.txt).
      The archive comes from --node-archive (offline) or from https://nodejs.org/dist/; a sha256 mismatch fails closed.
-   - package.json + package-lock.json: Pi, pinned exactly; npm ci installs every package against its lockfile sha512.
+   - package.json + package-lock.json: Pi, gentle-pi and every peer gentle-pi declares, pinned exactly; npm ci installs
+     every package against its lockfile sha512.
 
    Output (<out>, created only when every step succeeds; a failed build leaves <out> untouched):
      node | node.exe       the pinned Node binary only: no npm, npx or corepack
      LICENSE.node          Node's licence (MIT plus its bundled components)
      THIRD-PARTY-NOTICES.md  Node and every shipped package with its licence (texts from licenses/ for packages
                            that ship no licence file; a licence with no text there fails the build)
-     node_modules/...      Pi and its dependencies, install scripts not run, no .bin symlinks, no symlink at all
+     node_modules/...      Pi, gentle-pi and their dependencies, install scripts not run, no .bin symlinks, no symlink at all
      pi                    (Linux, macOS) launcher that runs Pi with THIS Node; Windows needs none: the daemon starts
                            node.exe with Pi's own CLI JS resolved next to it (desktop-daemon runtime.cjs)
-     koda-runtime.json     {target, node, pi}
+     gentle-shell          (Linux, macOS) launcher of the same shape that runs gentle-pi's bin/gentle-shell.mjs with THIS
+                           Node; Windows gets none (T2 resolves node.exe + the script in the daemon)
+     koda-runtime.json     {target, node, pi, piCli, gentlePi, gentleShell}
    --archive also packs <out> into ONE tar.gz (members relative to the runtime folder's root, no links) and prints its
    sha256: the single file the Linux and Windows installers ship and verify before extracting. macOS ships the folder.
-   --self-check runs the built Pi (`pi --version`) with an empty private HOME, offline; only when the target is this OS. */
+   --self-check runs the built Pi (`pi --version`) and the built gentle-shell offline (an RPC get_state answered with
+   success:true over stdin, no auto-setup, PI_CODING_AGENT_DIR unset) with an empty private HOME; only on this OS. */
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -31,6 +36,7 @@ const cp = require('node:child_process');
 
 const HERE = __dirname;
 const PI = '@earendil-works/pi-coding-agent';
+const GENTLE = 'gentle-pi';
 const TARGETS = {
   'linux-x64': { platform: 'linux', arch: 'x64', ext: '.tar.gz', exe: 'node' },
   'darwin-arm64': { platform: 'darwin', arch: 'arm64', ext: '.tar.gz', exe: 'node' },
@@ -175,13 +181,27 @@ function installPi(dest, cache) {
   fs.rmSync(path.join(dest, 'node_modules', '.bin'), { recursive: true, force: true });
   fs.rmSync(path.join(dest, 'node_modules', '.package-lock.json'), { force: true });
   const pkgDir = path.join(dest, 'node_modules', ...PI.split('/'));
+  const piManifest = readJson(path.join(pkgDir, 'package.json'));
+  const gentleDir = path.join(dest, 'node_modules', GENTLE);
+  const gentleManifest = readJson(path.join(gentleDir, 'package.json'));
+  return {
+    pi: { version: piManifest.version, ...binInPackage(dest, pkgDir, 'pi', `${PI} declares no relative "pi" bin`) },
+    gentle: { version: gentleManifest.version, ...binInPackage(dest, gentleDir, 'gentle-shell', `${GENTLE} declares no relative "gentle-shell" bin`) },
+  };
+}
+
+/* A package's bin entry for `name`: relative, inside the package, a real regular file — anything else fails closed.
+   Returns the file's path relative to the runtime folder's root (forward slashes, for koda-runtime.json). */
+function binInPackage(dest, pkgDir, name, missingMessage) {
   const manifest = readJson(path.join(pkgDir, 'package.json'));
-  const bin = manifest && manifest.bin && manifest.bin.pi;
-  if (typeof bin !== 'string' || !bin || path.isAbsolute(bin)) throw new Fail(`${PI} declares no relative "pi" bin`);
+  const bin = manifest && manifest.bin && manifest.bin[name];
+  if (typeof bin !== 'string' || !bin || path.isAbsolute(bin)) throw new Fail(missingMessage);
   const cli = path.resolve(pkgDir, bin);
   const rel = path.relative(pkgDir, cli);
-  if (rel.startsWith('..') || path.isAbsolute(rel) || !fs.lstatSync(cli, { throwIfNoEntry: false })?.isFile()) throw new Fail(`${PI} bin ${bin} is not a file inside the package`);
-  return { version: manifest.version, cli: path.relative(dest, cli).split(path.sep).join('/') };
+  if (rel.startsWith('..') || path.isAbsolute(rel) || !fs.lstatSync(cli, { throwIfNoEntry: false })?.isFile()) {
+    throw new Fail(`${path.basename(pkgDir)} bin ${bin} is not a file inside the package`);
+  }
+  return { cli: path.relative(dest, cli).split(path.sep).join('/') };
 }
 
 /* Every package under node_modules (nested ones too), sorted by name then version. */
@@ -261,17 +281,17 @@ function noSymlinks(dir) {
   }
 }
 
-function piLauncher(cli) {
+function piLauncher(cli, why) {
   return [
     '#!/bin/sh',
-    '# Koda\'s own Pi (K2-02): always run by the Node in this folder, never by a Node or a Pi from PATH.',
+    `# Koda's own ${why}: always run by the Node in this folder, never by a Node or a Pi from PATH.`,
     'here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P) || exit 1',
     `exec "$here/node" "$here/${cli}" "$@"`,
     '',
   ].join('\n');
 }
 
-function selfCheck(dest, target, piVersion) {
+async function selfCheck(dest, target, piVersion) {
   const t = TARGETS[target];
   if (t.platform !== process.platform || t.arch !== process.arch) throw new Fail(`--self-check runs only on ${target}; this is ${process.platform}-${process.arch}`, 2);
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'koda-runtime-home-'));
@@ -282,14 +302,63 @@ function selfCheck(dest, target, piVersion) {
       PI_CODING_AGENT_DIR: path.join(home, 'pi'), PI_OFFLINE: '1', PI_SKIP_VERSION_CHECK: '1', PI_TELEMETRY: '0',
     };
     if (process.env.SystemRoot) env.SystemRoot = process.env.SystemRoot;
+    const manifest = readJson(path.join(dest, 'koda-runtime.json'));
     const r = t.platform === 'win32'
-      ? run(path.join(dest, t.exe), [path.join(dest, readJson(path.join(dest, 'koda-runtime.json')).piCli), '--version'], { env, cwd: home })
+      ? run(path.join(dest, t.exe), [path.join(dest, manifest.piCli), '--version'], { env, cwd: home })
       : run(path.join(dest, 'pi'), ['--version'], { env, cwd: home });
     const out = `${r.stdout}${r.stderr}`.trim();
     if (out !== piVersion) throw new Fail(`self-check: built Pi printed ${JSON.stringify(out)}, expected ${piVersion}`);
+    await gentleSelfCheck(dest, t, home, env);
   } finally {
     fs.rmSync(home, { recursive: true, force: true });
   }
+}
+
+/* K2-05 T1 (S1): the built Gentle Shell answers an RPC get_state offline — the L6 experiment, as a build gate.
+   No auto-setup (no Engram companion, no gentle-ai binary), PI_CODING_AGENT_DIR unset: gentle-shell resolves its
+   own --home, and Koda's daemon (T2) passes its own. The response must arrive within a bounded timeout; stdin is
+   closed only after it does, and the child must exit cleanly on that. */
+function gentleSelfCheck(dest, t, home, baseEnv) {
+  const manifest = readJson(path.join(dest, 'koda-runtime.json'));
+  const script = path.join(dest, manifest.gentleShell);
+  // The pi self-check's env sets PI_CODING_AGENT_DIR: gentle-shell must NOT see it (it resolves --home itself).
+  const env = { ...baseEnv };
+  delete env.PI_CODING_AGENT_DIR;
+  env.GENTLE_SHELL_NO_AUTO_SETUP = '1';
+  env.GENTLE_PI_SKIP_GENTLE_AI_INSTALL = '1';
+  const args = ['--home', path.join(home, 'agent'), '--mode', 'rpc', '--session-dir', path.join(home, 'sessions')];
+  const cmd = t.platform === 'win32' ? path.join(dest, t.exe) : path.join(dest, 'gentle-shell');
+  const child = t.platform === 'win32' ? cp.spawn(cmd, [script, ...args], { env, cwd: home, windowsHide: true }) : cp.spawn(cmd, args, { env, cwd: home });
+  const TIMEOUT_MS = 120_000;
+  return new Promise((resolve, reject) => {
+    let out = '';
+    let err = '';
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      child.kill();
+      reject(new Fail(`self-check: built gentle-shell did not answer get_state within ${TIMEOUT_MS / 1000}s (stdout so far: ${JSON.stringify(out.slice(-2000))}, stderr: ${JSON.stringify(err.slice(-2000))})`));
+    }, TIMEOUT_MS);
+    child.stderr.on('data', (chunk) => { err += chunk; });
+    child.stdout.on('data', (chunk) => {
+      out += chunk;
+      for (const line of out.split('\n')) {
+        let parsed;
+        try { parsed = JSON.parse(line); } catch { continue; }
+        if (parsed && parsed.type === 'response' && parsed.command === 'get_state' && parsed.success === true) {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          child.stdin.end(); // answered: only now is stdin closed (the experiment's order)
+          child.on('exit', (code) => code === 0 ? resolve() : reject(new Fail(`self-check: built gentle-shell exited ${code} after answering get_state (stderr: ${JSON.stringify(err.slice(-2000))})`)));
+        }
+      }
+    });
+    child.on('error', (e) => { if (!settled) { settled = true; clearTimeout(timer); reject(new Fail(`self-check: cannot run built gentle-shell: ${e.message}`)); } });
+    child.on('exit', (code) => { if (!settled) { settled = true; clearTimeout(timer); reject(new Fail(`self-check: built gentle-shell exited ${code} before answering get_state (stdout: ${JSON.stringify(out.slice(-2000))}, stderr: ${JSON.stringify(err.slice(-2000))})`)); } });
+    child.stdin.write(`${JSON.stringify({ type: 'get_state', id: '1' })}\n`);
+  });
 }
 
 /* System tar on every OS (Windows: System32 bsdtar, never a Git-for-Windows GNU tar). Members are `./...`: the runtime
@@ -334,14 +403,17 @@ async function main() {
     extractNode(archive, pin, opts.target, partial);
     const pi = installPi(partial, cache);
     writeNotices(partial, pin.version);
-    if (t.platform !== 'win32') fs.writeFileSync(path.join(partial, 'pi'), piLauncher(pi.cli), { mode: 0o755 });
-    fs.writeFileSync(path.join(partial, 'koda-runtime.json'), `${JSON.stringify({ target: opts.target, node: pin.version, pi: pi.version, piCli: pi.cli }, null, 2)}\n`, { mode: 0o644 });
+    if (t.platform !== 'win32') {
+      fs.writeFileSync(path.join(partial, 'pi'), piLauncher(pi.pi.cli, 'Pi (K2-02)'), { mode: 0o755 });
+      fs.writeFileSync(path.join(partial, 'gentle-shell'), piLauncher(pi.gentle.cli, 'Gentle Shell (K2-05)'), { mode: 0o755 });
+    }
+    fs.writeFileSync(path.join(partial, 'koda-runtime.json'), `${JSON.stringify({ target: opts.target, node: pin.version, pi: pi.pi.version, piCli: pi.pi.cli, gentlePi: pi.gentle.version, gentleShell: pi.gentle.cli }, null, 2)}\n`, { mode: 0o644 });
     noSymlinks(partial);
-    if (opts.selfCheck) selfCheck(partial, opts.target, pi.version);
+    if (opts.selfCheck) await selfCheck(partial, opts.target, pi.pi.version);
     fs.rmSync(out, { recursive: true, force: true });
     fs.renameSync(partial, out);
     const s = sizeOf(out);
-    console.log(`runtime ${opts.target}: Node ${pin.version} + Pi ${pi.version} -> ${out} (${s.files} files, ${(s.bytes / 1048576).toFixed(1)} MiB)${opts.selfCheck ? ', self-check ok' : ''}`);
+    console.log(`runtime ${opts.target}: Node ${pin.version} + Pi ${pi.pi.version} + gentle-pi ${pi.gentle.version} -> ${out} (${s.files} files, ${(s.bytes / 1048576).toFixed(1)} MiB)${opts.selfCheck ? ', self-check ok' : ''}`);
     if (opts.archive) {
       const archive = path.resolve(opts.archive);
       const a = packArchive(out, archive);
