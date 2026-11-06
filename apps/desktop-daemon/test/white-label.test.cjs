@@ -132,3 +132,67 @@ test("the port keeps its MIT provenance (Gentle Dot, white-label.ts)", () => {
 	assert.match(source, /MIT/);
 	assert.match(source, /Copyright \(c\) 2026 Gentleman/);
 });
+
+// ----- T2: the streaming filter (split hidden names across deltas) -----------
+
+const { createTextFilter } = require("../src/white-label.cjs");
+
+const joined = (filter, deltas) => {
+	const parts = deltas.map((d) => filter.push(d));
+	parts.push(filter.flush());
+	return parts.join("");
+};
+
+test("createTextFilter rewrites a whole hidden name inside one long delta", () => {
+	const f = createTextFilter();
+	const shown = joined(f, [`${"x".repeat(60)} Gentle Shell is ready. ${"y".repeat(60)}`]);
+	assert.ok(shown.includes("Koda is ready"), JSON.stringify(shown));
+	assert.ok(!/gentle/i.test(shown), JSON.stringify(shown));
+});
+
+test("createTextFilter keeps a name split across deltas hidden (bounded hold-back)", () => {
+	const f = createTextFilter();
+	const shown = joined(f, [`${"x".repeat(60)} and Gentle`, " Shell works. " + "y".repeat(60)]);
+	assert.ok(shown.includes("Koda works"), JSON.stringify(shown));
+	assert.ok(!/gentle/i.test(shown), JSON.stringify(shown));
+});
+
+test("createTextFilter holds a letter-by-letter name and flushes it rewritten", () => {
+	const f = createTextFilter();
+	const shown = joined(f, [..."Gentle Shell", " contestó."]);
+	assert.equal(shown, "Koda contestó.", JSON.stringify(shown));
+});
+
+test("createTextFilter never emits half of an open /gentle: command token", () => {
+	const f = createTextFilter();
+	const parts = [];
+	const text = `${"x".repeat(60)} /gentle:memory-save ahora. ${"y".repeat(60)}`;
+	for (let i = 0; i < text.length; i += 7) parts.push(f.push(text.slice(i, i + 7)));
+	parts.push(f.flush());
+	const shown = parts.join("");
+	assert.ok(!shown.includes("/gentle:"), JSON.stringify(shown));
+	assert.ok(shown.includes("ahora"), JSON.stringify(shown));
+});
+
+test("createTextFilter output is stable: nothing already emitted is ever changed by later text", () => {
+	// Property-style sweep: for ANY delta split, the concatenated visible stream
+	// must equal the full rewrite of the whole text — a prefix once emitted can
+	// never be contradicted by what arrives later.
+	const texts = [
+		"Trabajo con el Gentle Shell y con engram a diario, pero ODD y RDD son míos: pi-coding-agent no.",
+		"Gentle-pi, gentle-ai, el Gentleman, abito-island, /gentle:x, organic driven development.",
+		"texto normal sin nada que ocultar. " + "z".repeat(200),
+		"Gentle Shell",
+		"a /gentle:" + "w".repeat(80),
+	];
+	const splits = [1, 2, 3, 5, 7, 11, 13, 32, 64, 1000];
+	for (const text of texts) {
+		for (const size of splits) {
+			const f = createTextFilter();
+			const parts = [];
+			for (let i = 0; i < text.length; i += size) parts.push(f.push(text.slice(i, i + size)));
+			parts.push(f.flush());
+			assert.equal(parts.join(""), presentText(text), `split ${size} of ${JSON.stringify(text.slice(0, 40))}`);
+		}
+	}
+});

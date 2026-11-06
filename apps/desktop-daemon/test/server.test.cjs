@@ -324,10 +324,44 @@ test("prompt flow: busy rejected, deltas translated, settle frees the turn", asy
 	await waitFor(() => engine.requests.filter((r) => r.type === "prompt").length === 2);
 });
 
-test("steer needs a busy turn; abort and new_conversation reach the engine", async (t) => {
+test("the user's own prompt text reaches the engine untouched (T2)", async (t) => {
 	const { endpoint, engine } = await setup(t);
 	const c = await login(t, endpoint);
-	c.send({ type: "steer", text: "x" });
+	// T2: the user's own prompt text is never white-labelled — their words (their
+	// Raspberry Pi, their "gentle shell" mention, their abito) reach the engine
+	// exactly as typed. presentText is assistant/harness output only.
+	const raw = "cuéntame de Raspberry Pi, de mi abito y de Gentle Shell";
+	c.send({ type: "send", text: raw });
+	await waitFor(() => engine.requests.some((r) => r.type === "prompt" && r.message === raw));
+	assert.equal(engine.requests.filter((r) => r.type === "prompt").at(-1).message, raw);
+	await waitFor(() => c.frames.filter((f) => f.type === "agent_state").at(-1).busy === true);
+	engine.emit("event", { type: "agent_settled" });
+	await waitFor(() => c.frames.filter((f) => f.type === "agent_state").at(-1).busy === false);
+	});
+
+	test("internal /gentle: commands are refused with a fixed error and never reach the engine (T2)", async (t) => {
+	const { endpoint, engine } = await setup(t);
+	const c = await login(t, endpoint);
+	for (const text of ["/gentle:memory-save", "  /gentle:x", "/GENTLE:jobs"]) {
+	c.send({ type: "send", text });
+	await c.wait((f) => f.type === "error" && f.code === "bad_request");
+	}
+	assert.equal(engine.requests.filter((r) => r.type === "prompt").length, 0, "no /gentle: command reached the engine");
+	// Mid-turn steering refuses it too.
+	engine.emit("event", { type: "agent_start" });
+	await c.wait((f) => f.type === "agent_state" && f.busy);
+	c.send({ type: "steer", text: "/gentle:memory-search" });
+	await c.wait((f) => f.type === "error" && f.code === "bad_request");
+	assert.equal(engine.requests.filter((r) => r.type === "steer").length, 0, "no /gentle: steer reached the engine");
+	// Normal steering text still flows: the busy turn accepts it.
+	c.send({ type: "steer", text: "hola" });
+	await waitFor(() => engine.requests.some((r) => r.type === "steer" && r.message === "hola"));
+	});
+
+	test("steer needs a busy turn; abort and new_conversation reach the engine", async (t) => {
+const { endpoint, engine } = await setup(t);
+const c = await login(t, endpoint);
+c.send({ type: "steer", text: "x" });
 	await c.wait((f) => f.type === "error" && f.code === "not_busy");
 	engine.emit("event", { type: "agent_start" });
 	await c.wait((f) => f.type === "agent_state" && f.busy);

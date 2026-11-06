@@ -21,6 +21,10 @@ const net = require("node:net");
 const path = require("node:path");
 
 const P = require("./protocol.cjs");
+// T2 white-label: internal /gentle: commands are refused at the island's prompt
+// intake (Gentle Dot bridge.ts dispatch), with a fixed error, before any
+// admission check. The user's own text is never otherwise rewritten here.
+const { isBlockedInput } = require("./white-label.cjs");
 const { awaitSafePoint, closedToast } = require("./interrupt.cjs");
 
 const DEFAULTS = {
@@ -626,6 +630,10 @@ class IslandServer {
 				return undefined;
 			}
 			case "send": {
+				// T2: internal /gentle: commands are not part of the product. The fixed
+				// refusal (bad_request) is deterministic — before ready/busy admission —
+				// and the command never reaches the engine.
+				if (isBlockedInput(frame.text)) return fail("bad_request");
 				if (!ready()) return fail("unavailable");
 				if (this.state().busy) return fail("busy");
 				this.busy = true; // optimistic: the agent_start event confirms
@@ -650,6 +658,7 @@ class IslandServer {
 				return undefined;
 			}
 			case "steer":
+				if (isBlockedInput(frame.text)) return fail("bad_request");
 				if (!ready()) return fail("unavailable");
 				if (this.switching) return fail("busy");
 				if (!this.busy) return fail("not_busy");

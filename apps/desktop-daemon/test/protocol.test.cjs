@@ -44,7 +44,16 @@ test("server frames carry seq and end with a single LF", () => {
 test("translateEvent: allowlist, unknown dropped", () => {
 	assert.deepEqual(P.translateEvent({ type: "agent_start" }), { frames: [], busy: true });
 	assert.deepEqual(P.translateEvent({ type: "agent_settled" }), { frames: [], busy: false });
-	assert.deepEqual(P.translateEvent({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "hel" } }, "m3").frames, [{ type: "message_delta", messageId: "m3", text: "hel" }]);
+	// T2 white-label wiring: a short delta is HELD, not emitted — it could still
+	// be the start of a hidden name ("Gen"|"tle Shell"). It flushes on the
+	// assistant's message_end, before the message_done frame.
+	assert.deepEqual(P.translateEvent({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "hel" } }, "m3").frames, []);
+	const end3 = P.translateEvent({ type: "message_end", message: { role: "assistant", content: "full" } }, "m3");
+	assert.deepEqual(end3.frames, [
+		{ type: "message_delta", messageId: "m3", text: "hel" },
+		{ type: "message_done", messageId: "m3" },
+	]);
+	assert.equal(end3.messageDone, true);
 	assert.deepEqual(P.translateEvent({ type: "message_update", assistantMessageEvent: { type: "thinking_delta", delta: "secret thought" } }).frames, []);
 	assert.deepEqual(P.translateEvent({ type: "message_end", message: { role: "user" } }).frames, []);
 	assert.equal(P.translateEvent({ type: "message_end", message: { role: "assistant", content: "full" } }).messageDone, true);
@@ -115,6 +124,107 @@ test("auth passthrough frames are allowlisted", () => {
 	assert.equal(prompt.secret, true);
 });
 
+// ----- T2: white-label wiring (frames never carry a hidden name) ------------
+
+// The stream filter is keyed by messageId and reset by agent_start; each test
+// uses its own id and closes its stream with message_end so nothing leaks
+// between tests.
+const stream = (frames) =>
+	frames
+		.filter((f) => f.type === "message_delta")
+		.map((f) => f.text)
+		.join("");
+
+const noHiddenName = (frames, label) => {
+	const shown = stream(frames);
+	for (const name of ["gentle shell", "gentle-pi", "gentle-ai", "el gentleman", "pi-coding-agent", "engram", "abito-island", "organic driven development", "/gentle:"]) {
+		assert.ok(!shown.toLowerCase().includes(name), `${label}: hidden name "${name}" leaked in ${JSON.stringify(shown)}`);
+	}
+	return shown;
+};
+
+test("translateEvent: a whole hidden name inside the deltas is rewritten (T2)", () => {
+	// Long enough to stream (over the hold-back window), with the name well inside.
+	const pad = "x".repeat(60);
+	const out = P.translateEvent(
+		{ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: `${pad} Gentle Shell is ready. ${pad}` } },
+		"w1",
+	);
+	const shown = noHiddenName(out.frames, "single delta");
+	assert.ok(shown.includes("Koda is ready"), JSON.stringify(shown));
+	P.translateEvent({ type: "message_end", message: { role: "assistant" } }, "w1");
+});
+
+test("translateEvent: a hidden name split across deltas never reaches the user (T2)", () => {
+	// "Gentle" ends delta one, " Shell" starts delta two — the split must never
+	// show "Gentle" and then a non-sequitur.
+	const pad = "x".repeat(60);
+	const a = P.translateEvent(
+		{ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: `${pad} and Gentle` } },
+		"w2",
+	);
+	const b = P.translateEvent(
+		{ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: ` Shell works. ${pad}` } },
+		"w2",
+	);
+	const shown = noHiddenName([...a.frames, ...b.frames], "split name");
+	assert.ok(shown.includes("Koda works"), JSON.stringify(shown));
+	P.translateEvent({ type: "message_end", message: { role: "assistant" } }, "w2");
+});
+
+test("translateEvent: a name split letter by letter across many deltas stays hidden (T2)", () => {
+	const word = "Gentle Shell";
+	const frames = [];
+	for (const ch of word) {
+		frames.push(...P.translateEvent({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: ch } }, "w3").frames);
+	}
+	frames.push(...P.translateEvent({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: " contestó." } }, "w3").frames);
+	frames.push(...P.translateEvent({ type: "message_end", message: { role: "assistant" } }, "w3").frames);
+	assert.equal(stream(frames), "Koda contestó.", JSON.stringify(frames));
+});
+
+test("translateEvent: an open /gentle: command token is never split into the visible stream (T2)", () => {
+	const pad = "x".repeat(60);
+	const a = P.translateEvent(
+		{ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: `${pad} /gentle:` } },
+		"w4",
+	);
+	const b = P.translateEvent(
+		{ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: `memory-save ahora. ${pad}` } },
+		"w4",
+	);
+	const shown = noHiddenName([...a.frames, ...b.frames], "open token");
+	assert.ok(shown.includes("ahora"), JSON.stringify(shown));
+	P.translateEvent({ type: "message_end", message: { role: "assistant" } }, "w4");
+});
+
+test("translateEvent: agent_start resets the stream state (a new turn never replays a held tail)", () => {
+	P.translateEvent({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "held" } }, "w5");
+	assert.deepEqual(P.translateEvent({ type: "agent_start" }), { frames: [], busy: true });
+	assert.deepEqual(P.translateEvent({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "nuevo turno " } }, "w5").frames, []);
+	const end = P.translateEvent({ type: "message_end", message: { role: "assistant" } }, "w5");
+	assert.equal(stream(end.frames), "nuevo turno ", JSON.stringify(end.frames));
+});
+
+test("translateEvent: info toasts are dropped; warning toasts are rewritten (T2)", () => {
+	assert.deepEqual(
+		P.translateEvent({ type: "extension_ui_request", id: "u7", method: "notify", message: "saved via engram", notifyType: "info" }).frames,
+		[],
+	);
+	const warn = P.translateEvent({ type: "extension_ui_request", id: "u8", method: "notify", message: "Gentle Shell was updated", notifyType: "warning" });
+	assert.deepEqual(warn.frames, [{ type: "toast", level: "warning", message: "Koda was updated" }]);
+	const err = P.translateEvent({ type: "extension_ui_request", id: "u9", method: "notify", message: "falló", notifyType: "error" });
+	assert.deepEqual(err.frames, [{ type: "toast", level: "error", message: "falló" }]);
+});
+
+test("translateEvent: ask titles and options are rewritten (T2)", () => {
+	const ask = P.translateEvent({ type: "extension_ui_request", id: "ua", method: "select", title: "Gentle Shell asks", options: ["pi-coding-agent", "otro"] });
+	assert.equal(ask.ask.title, "Koda asks");
+	assert.deepEqual(ask.ask.options, ["assistant", "otro"]);
+	const confirm = P.translateEvent({ type: "extension_ui_request", id: "ub", method: "confirm", title: "el Gentleman lo autoriza" });
+	assert.equal(confirm.ask.title, "Koda lo autoriza");
+});
+
 // ----- v0.2: provider settings frames ---------------------------------------
 
 const PROFILE = { id: "work", label: "Work", role: "main", accountId: "acct", provider: "anthropic", modelId: "claude-x", thinkingLevel: "high" };
@@ -127,7 +237,7 @@ test("v0.2 client frames: valid ones are rebuilt, unknown fields dropped", () =>
 		assert.deepEqual(dec({ type, accountId: "mine-1", x: 1 }), { type, accountId: "mine-1" });
 	}
 	assert.deepEqual(dec({ type: "profile_save", ...PROFILE, apiKey: "sk-LEAK" }), { type: "profile_save", ...PROFILE });
-	const { thinkingLevel, ...noLevel } = PROFILE;
+	const { thinkingLevel: _thinkingLevel, ...noLevel } = PROFILE;
 	assert.deepEqual(dec({ type: "profile_save", ...noLevel }), { type: "profile_save", ...noLevel });
 	assert.deepEqual(dec({ type: "profile_remove", id: "work", z: 1 }), { type: "profile_remove", id: "work" });
 	assert.deepEqual(dec({ type: "profile_deactivate", id: "work" }), { type: "profile_deactivate" });

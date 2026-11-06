@@ -15,6 +15,9 @@
 const { SCHEMA: CONNECTORS_SCHEMA, buildCatalog, buildConnectors } = require("./connectors.cjs");
 const { SCHEMA: MCP_IMPORT_SCHEMA, buildFiles, buildServers } = require("./mcp-import.cjs");
 const { SCHEMA: SESSIONS_SCHEMA, buildSessions } = require("./sessions.cjs");
+// T2 white-label: only assistant/harness-generated text the island will show
+// passes through presentText; the user's own prompt text never does.
+const { createTextFilter, presentText, shouldShowToast } = require("./white-label.cjs");
 
 const PROTOCOL = "island-agent/1";
 
@@ -779,6 +782,31 @@ function deltaFrames(text, messageId) {
 	return frames;
 }
 
+// ----- T2 white-label delta streams -----------------------------------------
+
+// One filter per in-flight assistant message, keyed by the caller's messageId
+// (the server's `m<n>`). Bounded: entries are removed on the assistant's
+// message_end and everything is reset on agent_start; a stream that never ends
+// (a killed engine) is evicted oldest-first once the cap is reached.
+const STREAM_FILTERS = new Map();
+const STREAM_FILTERS_MAX = 64;
+
+function streamFilterFor(messageId) {
+	let filter = STREAM_FILTERS.get(messageId);
+	if (filter === undefined) {
+		if (STREAM_FILTERS.size >= STREAM_FILTERS_MAX) {
+			STREAM_FILTERS.delete(STREAM_FILTERS.keys().next().value);
+		}
+		filter = createTextFilter();
+		STREAM_FILTERS.set(messageId, filter);
+	}
+	return filter;
+}
+
+function resetStreamFilters() {
+	STREAM_FILTERS.clear();
+}
+
 /**
  * Translates one Pi RPC event. Returns
  *   { frames: [...], busy?: boolean, messageDone?: true, ask?: {...}, cancelUi?: id }
@@ -790,17 +818,30 @@ function translateEvent(event, messageId = "m0") {
 	if (!isObject(event) || typeof event.type !== "string") return none;
 	switch (event.type) {
 		case "agent_start":
+			// A new turn: held tails of previous turns are never replayed (T2).
+			resetStreamFilters();
 			return { frames: [], busy: true };
 		case "agent_settled":
 			return { frames: [], busy: false };
 		case "message_update": {
 			const inner = event.assistantMessageEvent;
 			if (!isObject(inner) || inner.type !== "text_delta" || typeof inner.delta !== "string" || inner.delta === "") return none;
-			return { frames: deltaFrames(clip(inner.delta, 1_000_000), messageId) };
+			// T2: the delta stream is white-labelled across chunk boundaries; a
+			// bounded tail is held back until it can no longer start a hidden name.
+			const visible = streamFilterFor(messageId).push(clip(inner.delta, 1_000_000));
+			return visible === "" ? none : { frames: deltaFrames(visible, messageId) };
 		}
-		case "message_end":
+		case "message_end": {
 			if (event.message?.role !== "assistant") return none;
-			return { frames: [{ type: "message_done", messageId }], messageDone: true };
+			// T2: flush whatever the stream still holds before the message ends.
+			const filter = STREAM_FILTERS.get(messageId);
+			STREAM_FILTERS.delete(messageId);
+			const tail = filter === undefined ? "" : filter.flush();
+			return {
+				frames: tail === "" ? [{ type: "message_done", messageId }] : [...deltaFrames(tail, messageId), { type: "message_done", messageId }],
+				messageDone: true,
+			};
+		}
 		case "tool_execution_start":
 			return { frames: [activityFrame(event, "running")] };
 		case "tool_execution_end":
@@ -826,25 +867,27 @@ function translateUiRequest(event) {
 	switch (event.method) {
 		case "notify": {
 			const level = event.notifyType === "error" ? "error" : event.notifyType === "warning" ? "warning" : "info";
-			return { frames: [{ type: "toast", level, message: clip(event.message, 300) }] };
+			// T2: informational toasts are harness chatter (Gentle Dot shouldShowToast).
+			if (!shouldShowToast(level)) return none;
+			return { frames: [{ type: "toast", level, message: presentText(clip(event.message, 300)) }] };
 		}
 		case "select": {
 			if (!Array.isArray(event.options)) return { frames: [], cancelUi: event.id };
 			const options = event.options
 				.filter((o) => typeof o === "string")
 				.slice(0, LIMITS.maxOptions)
-				.map((o) => clip(o, LIMITS.maxOptionChars));
-			return { frames: [], ask: { id: event.id, kind: "select", title: clip(event.title, LIMITS.maxTitleChars), options } };
+				.map((o) => presentText(clip(o, LIMITS.maxOptionChars)));
+			return { frames: [], ask: { id: event.id, kind: "select", title: presentText(clip(event.title, LIMITS.maxTitleChars)), options } };
 		}
 		case "confirm":
 			return {
 				frames: [],
-				ask: { id: event.id, kind: "confirm", title: clip(event.title, LIMITS.maxTitleChars), options: [] },
+				ask: { id: event.id, kind: "confirm", title: presentText(clip(event.title, LIMITS.maxTitleChars)), options: [] },
 			};
 		case "input":
 			return {
 				frames: [],
-				ask: { id: event.id, kind: "input", title: clip(event.title, LIMITS.maxTitleChars), options: [] },
+				ask: { id: event.id, kind: "input", title: presentText(clip(event.title, LIMITS.maxTitleChars)), options: [] },
 			};
 		case "editor":
 			// A dialog we cannot show must not hang the agent: the server cancels it.
