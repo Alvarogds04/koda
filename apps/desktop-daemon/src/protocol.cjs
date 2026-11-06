@@ -37,6 +37,8 @@ const LIMITS = Object.freeze({
 	maxIdChars: 128,
 });
 
+/** Page ids of the rotated chain: `s<file index>-<turn>` (T4 U1, Gentle Dot conversations.ts). */
+const HISTORY_BEFORE = /^s\d+-\d+$/;
 const IMAGE_MIMES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
 const STRICT_ID = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const SAFE_NAME = /^[A-Za-z0-9_.:-]{1,64}$/;
@@ -212,10 +214,20 @@ function validateClientFrame(raw) {
 			if (!isString(raw.text, LIMITS.maxTextChars) || raw.text.trim() === "") return undefined;
 			return { type: "steer", text: raw.text };
 		case "abort":
-		case "new_conversation":
 		case "status":
 		case "interrupted_ack": // R5: acknowledges the interrupted-work record exposed in the ready frame
+			return { type: raw.type };
+		case "new_conversation": // T4 U1: validated but refused by the server (conversations_off, one continuous chat)
+			return { type: "new_conversation" };
 
+		case "get_history": // T4 U1: read-only, no fields; references the open session only
+			return { type: "get_history" };
+		case "get_earlier": {
+			// One page id of the chain (`s<file>-<turn>`); anything else is bad_request at the
+			// protocol layer, while a VALID-looking id the chain does not know yields an empty page.
+			if (!isString(raw.before, LIMITS.maxIdChars) || !HISTORY_BEFORE.test(raw.before)) return undefined;
+			return { type: "get_earlier", before: raw.before };
+		}
 		case "accounts_list":
 		case "providers_list":
 		case "profiles_list":
@@ -433,6 +445,7 @@ function encodeServerFrame(frame, seq) {
 const EMITTED_ERROR_CODES = new Set([
 	"bad_request", "busy", "not_busy", "unavailable", "rate_limited", "unknown_ask", "paused", "failed",
 	"unknown_proposal", "digest_mismatch", "needs_setup", "signin_failed", "store_not_private",
+	"conversations_off", // T4 U1: one continuous chat; new_conversation is refused outright
 ]);
 // Recognized by the host's broader enum, but collapsed to stale/failed before H2c can emit them.
 const RESERVED_CONNECTOR_ERROR_CODES = new Set(["already_decided", "session_mismatch", "pending_full"]);
@@ -544,6 +557,69 @@ const mcpImportFrame = (data) => {
 	if (Buffer.byteLength(JSON.stringify(frame)) > MCP_IMPORT_EMIT.maxFrameBytes) throw new Error("mcp import frame too large");
 	return frame;
 };
+
+// ----- K2-05 T4 U1: history frames -----------------------------------------
+
+/**
+ * Emission bounds of a history/earlier page. The page itself is already cut by
+ * pageHistory (Gentle Dot's page size, 100); this is the allowlist rebuild plus
+ * a defense-in-depth byte cap. Nothing is truncated silently EXCEPT the text
+ * of a single message, whose ceiling is the same 64 KiB the `send` verb accepts.
+ */
+const HISTORY_EMIT = Object.freeze({
+	maxMessages: 100,
+	maxTextChars: 64 * 1024,
+	maxActivities: 100,
+	maxTitleChars: 300,
+	maxAttachments: 16,
+	maxFrameBytes: 1024 * 1024,
+});
+const HISTORY_ROLES = new Set(["user", "assistant"]);
+const ACTIVITY_KINDS = new Set(["read", "edit", "run", "search", "memory", "delegate", "other"]);
+const ACTIVITY_STATUSES = new Set(["running", "done", "failed"]);
+
+function historyMessageDto(m) {
+	if (!isObject(m) || !HISTORY_ROLES.has(m.role) || !isString(m.id, LIMITS.maxIdChars) || typeof m.text !== "string") return undefined;
+	const out = {
+		id: m.id,
+		role: m.role,
+		text: clip(m.text, LIMITS.maxTextChars),
+		activities: [],
+	};
+	if (Array.isArray(m.activities)) {
+		for (const a of m.activities.slice(0, HISTORY_EMIT.maxActivities)) {
+			if (!isObject(a) || !isString(a.id, LIMITS.maxIdChars) || !ACTIVITY_KINDS.has(a.kind) || !isString(a.title, HISTORY_EMIT.maxTitleChars) || !ACTIVITY_STATUSES.has(a.status)) continue;
+			out.activities.push({ id: clip(a.id, LIMITS.maxIdChars), kind: a.kind, title: clip(a.title, HISTORY_EMIT.maxTitleChars), status: a.status });
+		}
+	}
+	if (Array.isArray(m.attachments)) {
+		const chips = [];
+		for (const a of m.attachments.slice(0, HISTORY_EMIT.maxAttachments)) {
+			if (!isObject(a) || !isString(a.name, 128) || !Number.isSafeInteger(a.size) || a.size < 0 || !isString(a.mime, 64)) continue;
+			chips.push({ name: clip(a.name, 128), size: a.size, mime: clip(a.mime, 64) });
+		}
+		if (chips.length > 0) out.attachments = chips;
+	}
+	if (m.earlier === true) out.earlier = true;
+	return out;
+}
+
+function historyPageFrame(type, before, page) {
+	if (!isObject(page) || !Array.isArray(page.messages) || page.messages.length > HISTORY_EMIT.maxMessages) throw new Error("history frame invalid");
+	if (page.hasEarlier !== undefined && typeof page.hasEarlier !== "boolean") throw new Error("history frame invalid");
+	const messages = page.messages.map(historyMessageDto).filter(Boolean);
+	const frame = {
+		type,
+		...(before !== undefined ? { before: clip(before, LIMITS.maxIdChars) } : {}),
+		messages,
+		hasEarlier: page.hasEarlier === true,
+	};
+	if (Buffer.byteLength(JSON.stringify(frame)) > HISTORY_EMIT.maxFrameBytes) throw new Error("history frame invalid");
+	return frame;
+}
+
+const historyFrame = (page) => historyPageFrame("history", undefined, page);
+const earlierFrame = (before, page) => historyPageFrame("earlier", before, page);
 
 /**
  * Reply to sessions_list (#360): rebuilt field by field from the strict builders of
@@ -1003,6 +1079,9 @@ module.exports = {
 	pendingFrame,
 	agentsFrame,
 	hooksFrame,
+	HISTORY_EMIT,
+	historyFrame,
+	earlierFrame,
 	HOOK_CLIENT_IDS,
 	AGENT_IDS,
 	CONNECTORS_EMIT,

@@ -26,6 +26,9 @@ const P = require("./protocol.cjs");
 // admission check. The user's own text is never otherwise rewritten here.
 const { isBlockedInput } = require("./white-label.cjs");
 const { awaitSafePoint, closedToast } = require("./interrupt.cjs");
+// T4 U1: the history projection over the engine's rotated chain (Gentle Dot's
+// conversations.ts, MIT); see THIRD-PARTY-NOTICES.md.
+const { pageHistory } = require("./conversations.cjs");
 
 const DEFAULTS = {
 	handshakeMs: 3000,
@@ -40,6 +43,8 @@ const DEFAULTS = {
 	interruptSafePointMs: 30_000,
 	/** Minimum time between two /proc session scans (#360); the snapshot is cached for it. */
 	sessionsMinIntervalMs: 2000,
+	/** Messages per history page (T4 U1); Gentle Dot's HISTORY_PAGE. */
+	historyPage: 100,
 };
 /** sockaddr_un.sun_path holds 108 bytes including the NUL on Linux and 104 on macOS. */
 const MAX_SOCKET_PATH = process.platform === "darwin" ? 103 : 107;
@@ -55,11 +60,11 @@ const WIN_HANDSHAKE_MS = 2000;
 
 /**
  * #379 global pause: verbs refused with error{paused} while the switch is on —
- * agent-turn admission (send/steer/new_conversation) and every verb that spawns
+ * agent-turn admission (send/steer) and every verb that spawns
  * a process (agent_connect, connectors_list, agents_list). Stopping or reading
  * work (abort, agent_disconnect, every read-only query) stays allowed.
  */
-const PAUSED_REFUSED = new Set(["send", "steer", "new_conversation", "agent_connect", "hooks_install", "hooks_remove", "connectors_list", "agents_list"]);
+const PAUSED_REFUSED = new Set(["send", "steer", "agent_connect", "hooks_install", "hooks_remove", "connectors_list", "agents_list"]);
 
 const uid = () => (typeof process.getuid === "function" ? process.getuid() : undefined);
 
@@ -173,6 +178,7 @@ class IslandServer {
 		this.sessionsFlight = undefined; // #360: the single in-flight scan promise (shared by all clients)
 		this.sessionsLast = undefined; // #360: {at, promise} served from cache inside the min interval
 		this.opts = { ...DEFAULTS, ...(options.limits ?? {}) };
+		if (!Number.isSafeInteger(this.opts.historyPage) || this.opts.historyPage < 1) this.opts.historyPage = DEFAULTS.historyPage;
 		this.log = options.log ?? (() => {});
 		this.clients = new Set();
 		this.busy = false;
@@ -198,6 +204,17 @@ class IslandServer {
 
 	state() {
 		return { busy: this.busy || this.engine?.busy === true || this.switching !== undefined, status: this.engine?.status ?? "stopped", paused: this.paused === true };
+	}
+
+	/** The open chat's session files, oldest first (T4 U1, Gentle Dot bridge.ts chain()). */
+	historyChain() {
+		const file = this.engine?.sessionFile;
+		return file ? [...(this.engine.previousSessions ?? []), file] : [];
+	}
+
+	/** One history page of the open chat; unreadable chain files are skipped with a log line. */
+	historyPage(before) {
+		return pageHistory(this.historyChain(), this.opts.historyPage, before, (line) => this.log(line));
 	}
 
 	async start() {
@@ -275,6 +292,11 @@ class IslandServer {
 			// #378: the copy is fixed and sanitized; engine text never reaches a client.
 			this.broadcast(closedToast(reason));
 		});
+		// T4 U1: after a rotation the open session (and its chain) changes; every
+		// client gets the same chat again, now marked earlier (Gentle Dot
+		// bridge.ts:1124-1129). See onEngineHistoryEvent for which events qualify.
+		on(this.engine, "session_changed", (payload) => this.onEngineHistoryEvent("session_changed", payload));
+		on(this.engine, "sessions_linked", (payload) => this.onEngineHistoryEvent("sessions_linked", payload));
 		// Intermediate states (an operation started => "working") reach every client.
 		on(this.agents, "change", (entries) => {
 			try {
@@ -385,7 +407,9 @@ class IslandServer {
 			protocol: P.PROTOCOL,
 			state: this.state(),
 			limits: { maxFrameBytes: P.LIMITS.maxFrameBytes, maxClients: this.opts.maxClients },
-			features: { history: false },
+			// T4 U1: one continuous chat (L3/L4/L7, Gentle Dot's features shape).
+			// History reads the whole rotated chain; the conversation list is off.
+			features: { history: true, conversations: false },
 			// R5: the unconsumed interrupted-work record, bounded closed fields
 			// (counts and time only); absent once a client acknowledged it.
 			...(this.pendingInterrupted ? { interrupted: this.pendingInterrupted } : {}),
@@ -539,6 +563,33 @@ class IslandServer {
 		}
 	}
 
+	/**
+	 * T4 U1 (Gentle Dot bridge.ts:1124-1129): after a rotation every connected
+		 * client gets the same chat again, now marked earlier. Only a change of the
+		 * OPEN session that already carries its chain qualifies:
+		 * - `sessions_linked` fires when the rotator links a file; it is only
+		 *   broadcast when that file IS the open one (the rotation fallback links
+		 *   the fresh session right after it was created; the seed is linked while
+		 *   the old session is still open and stays silent).
+		 * - `session_changed` fires when the engine confirmed the open session; it
+		 *   is broadcast only when that session has a linked chain, so the
+		 *   fallback's window between the new session and its link never
+		 *   broadcasts an empty page that would clear the island's view.
+		 */
+	onEngineHistoryEvent(name, payload) {
+		const engine = this.engine;
+		if (!engine || engine.status !== "ready" || typeof engine.sessionFile !== "string") return;
+		const file = engine.sessionFile;
+		if (payload?.sessionFile !== undefined && payload.sessionFile !== file) return;
+		const linked = engine.chains?.[file];
+		if (name === "session_changed" && !(Array.isArray(linked) && linked.length > 0)) return;
+		try {
+			this.broadcast(P.historyFrame(this.historyPage(undefined)));
+		} catch {
+			this.log("history rebroadcast not sent");
+		}
+	}
+
 	onEngineStatus(exited = false) {
 		const status = this.engine?.status;
 		if (exited || status !== "ready") {
@@ -601,6 +652,11 @@ class IslandServer {
 		// refusal (bad_request) is deterministic and runs BEFORE every other gate
 		// (paused included), and the command never reaches the engine.
 		if ((frame.type === "send" || frame.type === "steer") && isBlockedInput(frame.text)) return fail("bad_request");
+		// T4 U1 (L3/L4/L7, Gentle Dot bridge.ts conversationsOn 476-482/677-682):
+		// the island keeps ONE continuous chat, so its conversation verbs are
+		// refused with this fixed error BEFORE every other gate (busy, paused
+		// included) and no command ever reaches the engine.
+		if (frame.type === "new_conversation") return fail("conversations_off");
 		// #379: while the global pause is on, nothing new is admitted (turns, spawns).
 		if (this.paused === true && PAUSED_REFUSED.has(frame.type)) return fail("paused");
 		const ready = () => this.engine?.status === "ready";
@@ -701,26 +757,26 @@ class IslandServer {
 			case "abort":
 				if (!ready()) return fail("unavailable");
 				return run(() => this.engine.request({ type: "abort" }));
-			case "new_conversation": {
-				if (!ready()) return fail("unavailable");
-				if (this.state().busy) return fail("busy");
-				const switching = {};
-				this.switching = switching;
-				this.busy = true; // Daemon config/workspace guards share this field.
-				this.broadcastState();
+			case "get_history": {
+				// T4 U1: a read-only page of the open chat (Gentle Dot waits for the engine
+				// to be ready; Koda answers unavailable instead so the island can retry,
+				// and NEVER an empty page that would clear what the island already shows).
+				if (!ready() || typeof this.engine?.sessionFile !== "string") return fail("unavailable");
 				try {
-					await run(async () => {
-						await this.engine.request({ type: "new_session" });
-						this.messageCounter += 1;
-					});
-				} finally {
-					if (this.switching === switching) {
-						this.switching = undefined;
-						this.busy = this.engine?.busy === true;
-						this.broadcastState();
-					}
+					return reply(P.historyFrame(this.historyPage(undefined)));
+				} catch {
+					this.log("command get_history failed");
+					return fail("failed");
 				}
-				return undefined;
+			}
+			case "get_earlier": {
+				if (!ready() || typeof this.engine?.sessionFile !== "string") return fail("unavailable");
+				try {
+					return reply(P.earlierFrame(frame.before, this.historyPage(frame.before)));
+				} catch {
+					this.log("command get_earlier failed");
+					return fail("failed");
+				}
 			}
 			case "ui_response": {
 				const ask = this.asks.get(frame.id);

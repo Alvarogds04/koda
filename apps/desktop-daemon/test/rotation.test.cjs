@@ -803,3 +803,50 @@ test("daemon boots on a v0.1 #386 config; an unknown rotation subkey still refus
 	t.after(async () => { await refused.stop(); });
 	await assert.rejects(refused.start(), (error) => error.name === "ConfigError");
 });
+
+// ------------------------------------------------- T4 U1: chain-change events
+
+test("a rotation emits sessions_linked then session_changed for the new open session (history re-broadcast hooks)", async (t) => {
+	const dir = tmp("abito-rot-emit-");
+	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+	const messagesFile = writeHandoffMessages(dir);
+	const { engine, rotator } = await rig(t, { rotatorLimits: { bytes: 1000 } }, ["--messages-file", messagesFile]);
+	const events = [];
+	engine.on("sessions_linked", (p) => events.push(["sessions_linked", p?.sessionFile]));
+	engine.on("session_changed", (p) => events.push(["session_changed", p?.sessionFile]));
+	const first = engine.sessionFile;
+	bloat(engine);
+	assert.equal(await rotator.maybeRotate(), true);
+	await until(() => engine.status === "ready" && !engine.busy, 8000);
+	assert.deepEqual(events, [["sessions_linked", engine.sessionFile], ["session_changed", engine.sessionFile]]);
+	assert.deepEqual(engine.previousSessions, [first], "the confirmed open session carries its chain for the rebroadcast");
+});
+
+test("the rotation fallback emits session_changed BEFORE its link, so no empty history is broadcast", async (t) => {
+	const dir = tmp("abito-rot-emit-fb-");
+	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+	const messagesFile = writeHandoffMessages(dir);
+	const { engine, rotator } = await rig(t, { rotatorLimits: { bytes: 1000 } }, ["--messages-file", messagesFile, "--switch-unconfirm-once"]);
+	const events = [];
+	engine.on("sessions_linked", (p) => events.push(["sessions_linked", p?.sessionFile, Array.isArray(engine.chains[p?.sessionFile])]));
+	engine.on("session_changed", (p) => events.push(["session_changed", p?.sessionFile, Array.isArray(engine.chains[p?.sessionFile])]));
+	const first = engine.sessionFile;
+	bloat(engine);
+	assert.equal(await rotator.maybeRotate(), true, "the fallback lands the chat in a fresh session");
+	await until(() => engine.status === "ready" && !engine.busy, 8000);
+	assert.notEqual(engine.sessionFile, first);
+	// Event sequence (final open file = fresh): the orphan seed is linked first (a
+	// listener ignores it: it is not and never becomes the open session), then the
+	// fresh session is confirmed, and only THEN is its chain linked — so no listener
+	// ever sees a confirmed-but-unlinked open session and broadcasts an empty page.
+	assert.deepEqual(
+		events.map(([name, file]) => [name, file === engine.sessionFile]),
+		[
+			["sessions_linked", false], // the orphan seed, never the open session
+			["session_changed", false], // the failed switch's recovery reopens the previous session
+			["session_changed", true], // the fallback's fresh session confirms BEFORE its chain is linked
+			["sessions_linked", true], // the link is the go signal for a history broadcast
+		],
+	);
+	assert.deepEqual(engine.previousSessions.slice(0, 1), [first], "the fallback keeps the earlier files");
+});

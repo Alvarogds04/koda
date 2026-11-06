@@ -4,10 +4,13 @@
 
 Parts of this package are adapted from the Gentle Dot project
 (`packages/daemon`: `supervisor.ts`, `isolation.ts`, `jsonl.ts`, `rotation.ts`,
-`white-label.ts`, and the product identity document `identity.md`), used as the
+`conversations.ts` (projection half) and `presentation.ts`/`uploads.ts` (via the
+projection), `white-label.ts`, and the product identity document `identity.md`), used as the
 MIT-licensed reference for the supervised isolated RPC runtime, fail-closed
 private directory checks, strict JSONL framing, transparent session rotation
 (hidden handoff message, session-file chains, 20 MB / 10 compaction limits),
+the read-only history projection over the rotated session chain (`pageHistory`,
+`historyFromMessages`, `describeTool`, `splitAttachments`; K2-05 T4 U1),
 the user-facing white-label rewriting of internal names, and the
 product-identity approach.
 
@@ -15,7 +18,10 @@ product-identity approach.
   from `claimEngineHome`), `src/runtime.cjs` (in part, including the bundled
   default-engine resolution from `bundledGentleShell` and the session chains
   from the supervisor's session persistence), `src/rotation.cjs` (from
-  `src/rotation.ts`), `src/white-label.cjs`, `test/fixtures` and `identity.md`
+  `src/rotation.ts`), `src/conversations.cjs` (from the projection half of
+  `src/conversations.ts` plus `describeTool`/`textOf` from `src/presentation.ts`
+  and `splitAttachments` from `src/uploads.ts`), `src/white-label.cjs`,
+  `test/fixtures` and `identity.md`
   (text), `README.md` (in part)
 - Changes: rewritten in plain Node CJS with no third-party dependencies; Koda
   identity, island paths, environment allowlist and fail-closed path rules differ

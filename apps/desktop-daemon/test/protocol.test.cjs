@@ -22,7 +22,7 @@ test("client frames: invalid, unknown and malformed are rejected without detail"
 		{ type: "profile_select", id: "../x" },
 		{ type: "auth_start", accountId: "a", method: "magic" },
 		{ type: "ui_response", id: "a1" },
-		{ type: "get_history" },
+		{ type: "get_earlier", before: "a1-2" }, // not a page id
 		{ type: "hello", protocol: P.PROTOCOL, token: "t" },
 		[],
 		null,
@@ -719,4 +719,70 @@ test("account DTO adds custom:true only for custom accounts and never a Base URL
 	assert.equal(JSON.stringify(dto).includes("gateway.example"), false);
 	assert.equal("custom" in P.accountDto({ accountId: "a", label: "A", provider: "p", configured: true }), false);
 	assert.equal("custom" in P.accountDto({ accountId: "a", label: "A", provider: "p", configured: true, custom: "yes" }), false);
+});
+
+// ----- K2-05 T4 U1: history frames -----------------------------------------
+
+const histMessage = (over = {}) => ({ id: "s0-1", role: "user", text: "hola", activities: [], ...over });
+const histActivity = (over = {}) => ({ id: "t1", kind: "read", title: "Read notas.md", status: "done", ...over });
+
+test("get_history / get_earlier validation: get_earlier needs a `before` page id", () => {
+	assert.deepEqual(P.validateClientFrame({ type: "get_history", junk: 1 }), { type: "get_history" }, "fieldless verb: extras dropped, like sessions_list");
+	assert.deepEqual(P.validateClientFrame({ type: "get_earlier", before: "s1-2" }), { type: "get_earlier", before: "s1-2" });
+	for (const bad of [
+		{ type: "get_earlier" },
+		{ type: "get_earlier", before: "nonsense" },
+		{ type: "get_earlier", before: 3 },
+		{ type: "get_earlier", before: "s-1" },
+		{ type: "get_earlier", before: "s1-2\n" },
+		{ type: "get_earlier", before: "x".repeat(200) },
+	]) assert.equal(P.validateClientFrame(bad), undefined, JSON.stringify(bad));
+});
+
+test("historyFrame rebuilds messages from an allowlist: closed role/kind/status, ids and text bounded, extras dropped", () => {
+	const page = {
+		hasEarlier: true,
+		messages: [
+			histMessage({ secret: "sk-SECRETMARK", text: "tú".padEnd(70_000, "x") }),
+			{
+				id: "s0-2",
+				role: "assistant",
+				text: "leo",
+				activities: [histActivity({ zzz: 1 }), { ...histActivity(), kind: "dancing", status: "vibrating", title: 5 }],
+				attachments: [{ name: "notas.txt", size: 12, mime: "text/plain", secret: "x" }, { name: 5 }, "nope"],
+			},
+			{ id: 7, role: "system", text: "nope" },
+		],
+	};
+	const frame = P.historyFrame(page);
+	assert.equal(frame.type, "history");
+	assert.equal(frame.hasEarlier, true);
+	assert.deepEqual(frame.messages.map((m) => m.role), ["user", "assistant"], "only user/assistant messages travel");
+	assert.equal(frame.messages[0].text.length, P.HISTORY_EMIT.maxTextChars, "text is bounded");
+	assert.ok(!JSON.stringify(frame).includes("SECRETMARK"));
+	const assistant = frame.messages[1];
+	assert.deepEqual(assistant.activities, [histActivity()], "off-vocabulary activities are dropped, extras with them");
+	assert.deepEqual(assistant.attachments, [{ name: "notas.txt", size: 12, mime: "text/plain" }]);
+});
+
+test("historyFrame bounds: 100 messages ok, 101 or a frame over 1 MiB -> throws", () => {
+	const many = (n) => ({ hasEarlier: false, messages: Array.from({ length: n }, (_, i) => histMessage({ id: `s0-${i}`, text: "a".repeat(4000) })) });
+	assert.equal(P.historyFrame(many(100)).messages.length, 100);
+	assert.throws(() => P.historyFrame(many(101)), /history frame invalid/);
+	assert.throws(() => P.historyFrame(undefined));
+	assert.throws(() => P.historyFrame({ messages: [], hasEarlier: "yes" }));
+	// 100 messages of 64 KiB text cannot legally fit in 1 MiB: the byte cap throws.
+	const huge = { hasEarlier: false, messages: Array.from({ length: 20 }, (_, i) => histMessage({ id: `s0-${i}`, text: "b".repeat(64 * 1024) })) };
+	assert.throws(() => P.historyFrame(huge), /history frame invalid/);
+});
+
+test("earlierFrame echoes the requested `before`; hasEarlier defaults to false", () => {
+	const page = { messages: [histMessage()], hasEarlier: true };
+	assert.deepEqual(P.earlierFrame("s2-1", page), { type: "earlier", before: "s2-1", hasEarlier: true, messages: page.messages });
+	const empty = { messages: [], hasEarlier: false };
+	assert.deepEqual(P.earlierFrame("s2-9", empty), { type: "earlier", before: "s2-9", hasEarlier: false, messages: [] });
+});
+
+test("conversations_off is an emitted error code (the island's new_conversation refusal)", () => {
+	assert.deepEqual(P.errorFrame("conversations_off"), { type: "error", code: "conversations_off" });
 });

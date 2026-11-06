@@ -40,10 +40,17 @@ class FakeEngine extends EventEmitter {
 		// K2-05 F3: a session switch in flight (a rotation); the server holds a
 		// prompt typed during it instead of answering busy.
 		this.sessionChange = undefined;
+		// K2-05 T4 U1: the rotated chain of the open session (real AgentEngine shape.
+		this.sessionFile = undefined;
+		this.chains = {};
 	}
 	/** The server's busy guard reads this: true only while a switch is in flight. */
 	get busy() {
 		return this.sessionChange !== undefined;
+	}
+	/** The earlier session files of the open chat, oldest first (runtime.cjs shape). */
+	get previousSessions() {
+		return this.chains[this.sessionFile] ?? [];
 	}
 	/** Intercepts fake agent records to track the turn lifecycle without registering a listener. */
 	emit(type, payload) {
@@ -383,7 +390,7 @@ test("a /gentle: command is bad_request even while paused (F3)", async (t) => {
 	assert.equal(engine.requests.filter((r) => r.type === "prompt").length, 0, "nothing reached the engine");
 });
 
-test("steer needs a busy turn; abort and new_conversation reach the engine", async (t) => {
+test("steer needs a busy turn; abort keeps working; new_conversation is refused conversations_off (T4 U1)", async (t) => {
 	const { endpoint, engine } = await setup(t);
 	const c = await login(t, endpoint);
 	c.send({ type: "steer", text: "x" });
@@ -393,12 +400,14 @@ test("steer needs a busy turn; abort and new_conversation reach the engine", asy
 	c.send({ type: "steer", text: "left" });
 	c.send({ type: "abort" });
 	await waitFor(() => engine.requests.some((r) => r.type === "abort") && engine.requests.some((r) => r.type === "steer"));
+	// T4 U1: conversations are always off — the refusal is fixed, busy included.
 	c.send({ type: "new_conversation" });
-	await c.wait((f) => f.type === "error" && f.code === "busy");
+	await c.wait((f) => f.type === "error" && f.code === "conversations_off");
 	engine.emit("event", { type: "agent_settled" });
 	await waitFor(() => c.frames.filter((f) => f.type === "agent_state").at(-1).busy === false);
 	c.send({ type: "new_conversation" });
-	await waitFor(() => engine.requests.some((r) => r.type === "new_session"));
+	await c.wait((f) => f.type === "error" && f.code === "conversations_off");
+	assert.equal(engine.requests.some((r) => r.type === "new_session"), false, "no conversation reset ever reaches the engine");
 });
 
 test("event allowlist on the wire: unknown dropped, tool args and secret markers never leak", async (t) => {
@@ -1578,13 +1587,15 @@ test("while paused, admission verbs are refused with error{paused} and change no
 	for (const frame of [
 		{ type: "send", text: "hi" },
 		{ type: "steer", text: "go" },
-		{ type: "new_conversation" },
 		{ type: "agent_connect", agentId: "claude-code" },
 		{ type: "connectors_list" },
 		{ type: "agents_list" },
 	]) a.send(frame);
-	await waitFor(() => a.frames.slice(before).filter((f) => f.type === "error").length >= 6);
+	await waitFor(() => a.frames.slice(before).filter((f) => f.type === "error").length >= 5);
 	assert.ok(a.frames.slice(before).filter((f) => f.type === "error").every((f) => f.code === "paused"), JSON.stringify(a.frames.slice(before)));
+	// T4 U1: new_conversation is refused conversations_off regardless of the pause state.
+	a.send({ type: "new_conversation" });
+	await a.wait((f) => f.type === "error" && f.code === "conversations_off");
 	// No turn was admitted, no process-spawning list ran, nothing was persisted again.
 	assert.deepEqual(engine.requests, []);
 	assert.deepEqual(connectorCalls, []);
@@ -1748,4 +1759,153 @@ test("a refused (non-private) credential store reaches the client as the closed 
 	const c = await login(t, endpoint);
 	c.send({ type: "account_create", label: "x", provider: "p" });
 	await c.wait((f) => f.type === "error" && f.code === "store_not_private");
+});
+
+// ----- K2-05 T4 U1: history ---------------------------------------------------
+
+test("ready features: history on, conversations off (one continuous chat)", async (t) => {
+	const { endpoint } = await setup(t);
+	const c = await login(t, endpoint);
+	assert.deepEqual(c.frames[0].features, { history: true, conversations: false });
+});
+
+/** A v3 session file whose message entries the projection reads back. */
+function writeChatSession(dir, name, messages) {
+	const file = path.join(dir, name);
+	const lines = [
+		JSON.stringify({ type: "session", version: 3, id: name, timestamp: new Date().toISOString(), cwd: dir }),
+		...messages.map((entry) => JSON.stringify(entry)),
+	];
+	fs.writeFileSync(file, `${lines.join("\n")}\n`);
+	return file;
+}
+
+test("get_history projects the whole rotated chain oldest first; assistant text is white-labelled, user text is not", async (t) => {
+	const { endpoint, engine, server } = await setup(t);
+	const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "abito-hist-")));
+	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+	const f1 = writeChatSession(dir, "one.jsonl", [
+		{ type: "message", message: { role: "user", content: "mi engram" } },
+		{ type: "message", message: { role: "assistant", content: "leo tu engram del Gentle Shell" } },
+	]);
+	const f2 = writeChatSession(dir, "two.jsonl", [
+		{ type: "message", message: { role: "user", content: "sigue" } },
+		{ type: "message", message: { role: "assistant", content: "ok" } },
+	]);
+	const f3 = writeChatSession(dir, "three.jsonl", [{ type: "message", message: { role: "user", content: "última" } }]);
+	engine.sessionFile = f3;
+	engine.chains[f3] = [f1, f2];
+	const c = await login(t, endpoint);
+	c.send({ type: "get_history" });
+	const frame = await c.wait((f) => f.type === "history");
+	assert.deepEqual(
+		frame.messages.map((m) => [m.id, m.role, m.text, m.earlier]),
+		[
+			["s0-1", "user", "mi engram", true],
+			["s0-2", "assistant", "leo tu memory del Koda", true],
+			["s1-1", "user", "sigue", true],
+			["s1-2", "assistant", "ok", true],
+			["s2-1", "user", "última", undefined],
+		],
+	);
+	assert.equal(frame.hasEarlier, false);
+	assert.equal(engine.requests.length, 0, "a read-only verb sends nothing to the engine");
+	await server.close();
+});
+
+test("get_earlier pages backwards; an unknown but valid before yields an empty page", async (t) => {
+	const { endpoint, engine } = await setup(t);
+	const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "abito-earlier-")));
+	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+	const f1 = writeChatSession(dir, "one.jsonl", [
+		{ type: "message", message: { role: "user", content: "a" } },
+		{ type: "message", message: { role: "assistant", content: "b" } },
+	]);
+	const f2 = writeChatSession(dir, "two.jsonl", [{ type: "message", message: { role: "user", content: "c" } }]);
+	engine.sessionFile = f2;
+	engine.chains[f2] = [f1];
+	const c = await login(t, endpoint);
+	c.send({ type: "get_earlier", before: "s1-1" });
+	const frame = await c.wait((f) => f.type === "earlier");
+	assert.equal(frame.before, "s1-1");
+	assert.deepEqual(frame.messages.map((m) => m.id), ["s0-1", "s0-2"]);
+	assert.equal(frame.hasEarlier, false);
+	c.send({ type: "get_earlier", before: "s9-9" });
+	const empty = await c.wait((f) => f.type === "earlier" && f.before === "s9-9");
+	assert.deepEqual(empty.messages, []);
+	assert.equal(empty.hasEarlier, false, "the island keeps what it already shows");
+	c.send({ type: "get_earlier", before: "garbage" });
+	await c.wait((f) => f.type === "error" && f.code === "bad_request");
+});
+
+test("get_history and get_earlier are unavailable without a ready engine or an open session", async (t) => {
+	const { endpoint, engine } = await setup(t);
+	const c = await login(t, endpoint);
+	c.send({ type: "get_history" });
+	await c.wait((f) => f.type === "error" && f.code === "unavailable");
+	engine.status = "ready";
+	c.send({ type: "get_earlier", before: "s0-1" });
+	await c.wait((f) => f.type === "error" && f.code === "unavailable", 3000);
+});
+
+test("new_conversation is refused conversations_off before any gate: idle, busy and paused; nothing reaches the engine", async (t) => {
+	const store = { paused: false, get() { return store.paused; }, set(value) { store.paused = value; } };
+	const { endpoint, engine } = await setup(t, { pausedStore: store });
+	const c = await login(t, endpoint);
+	// Idle.
+	c.send({ type: "new_conversation" });
+	await c.wait((f) => f.type === "error" && f.code === "conversations_off");
+	// Busy.
+	engine.emit("event", { type: "agent_start" });
+	await c.wait((f) => f.type === "agent_state" && f.busy);
+	c.send({ type: "new_conversation" });
+	await c.wait((f) => f.type === "error");
+	const busyRefusal = c.frames.filter((f) => f.type === "error").at(-1);
+	assert.equal(busyRefusal.code, "conversations_off");
+	// Paused.
+	c.send({ type: "set_paused", paused: true });
+	await c.wait((f) => f.type === "agent_state" && f.paused === true);
+	c.send({ type: "new_conversation" });
+	const pausedRefusal = await c.wait((f) => f.type === "error" && f.code === "conversations_off");
+	assert.equal(pausedRefusal.code, "conversations_off");
+	assert.equal(engine.requests.length, 0, "no new_session ever reaches the engine");
+	engine.emit("event", { type: "agent_settled" });
+});
+
+test("after a rotation the history is re-broadcast to every client, marked earlier (bridge.ts:1124-1129)", async (t) => {
+	const { endpoint, engine } = await setup(t);
+	const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "abito-rotb-")));
+	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+	const f1 = writeChatSession(dir, "one.jsonl", [{ type: "message", message: { role: "user", content: "antigua" } }]);
+	const f2 = writeChatSession(dir, "two.jsonl", [{ type: "message", message: { role: "user", content: "nueva" } }]);
+	engine.sessionFile = f2;
+	const a = await login(t, endpoint);
+	const b = await login(t, endpoint);
+	// A link for a session the engine does not hold yet (the rotation links before switching): silent.
+	engine.chains[f1] = [f1];
+	engine.emit("sessions_linked", { sessionFile: f1 });
+	await new Promise((r) => setTimeout(r, 50));
+	assert.equal(a.frames.some((f) => f.type === "history"), false);
+	// The switch confirms: the linked file IS the open one, and it carries its chain.
+	engine.chains[f2] = [f1];
+	engine.emit("session_changed", { sessionFile: f2 });
+	for (const c of [a, b]) {
+		const frame = await c.wait((f) => f.type === "history");
+		assert.deepEqual(
+			frame.messages.map((m) => [m.id, m.text, m.earlier]),
+			[["s0-1", "antigua", true], ["s1-1", "nueva", undefined]],
+			"the same chat, now marked earlier (the page limit keeps the entire small chain together)",
+		);
+		assert.equal(frame.hasEarlier, false, "the whole chain still fits one page");
+	}
+	// A session_changed without a linked chain (the rotation fallback's window) stays silent.
+	engine.chains[f2] = [];
+	engine.emit("session_changed", { sessionFile: f2 });
+	await new Promise((r) => setTimeout(r, 50));
+	assert.equal(a.frames.filter((f) => f.type === "history").length, 1);
+	// While the engine is not ready, nothing is broadcast.
+	engine.status = "restarting";
+	engine.emit("sessions_linked", { sessionFile: f2 });
+	await new Promise((r) => setTimeout(r, 50));
+	assert.equal(a.frames.filter((f) => f.type === "history").length, 1);
 });

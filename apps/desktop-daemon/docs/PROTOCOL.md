@@ -20,7 +20,9 @@ Implementation: `src/protocol.cjs` (codec/validators/translation), `src/server.c
 | `steer` | `text` | only while busy (`not_busy` otherwise) |
 | `abort` | – | Cancels a running turn; its child is recycled before another prompt. An ACK alone never frees busy. Idle abort still reaches Pi. |
 | `set_paused` | `paused: bool` | Global pause switch (#379); see "Global pause" |
-| `new_conversation` | – | refused while busy |
+| `new_conversation` | – | **Refused** with a fixed `error{conversations_off}` (K2-05 T4 U1): the island keeps ONE continuous chat (L3/L4/L7, Gentle Dot's `conversationsOn` gate). The refusal precedes every other gate (busy, paused included) and no command ever reaches the engine |
+| `get_history` | – | replies `history{messages,hasEarlier}` — the newest page of the open chat; see "History frames". `unavailable` while the engine is not ready or holds no open session |
+| `get_earlier` | `before: s<file>-<turn>` | replies `earlier{before,messages,hasEarlier}` — the page ending just before that message id. A valid-shaped `before` the chain does not know yields an empty page (the island keeps what it shows); a non-page-id `before` is `bad_request` |
 | `status` | – | replies `agent_state` |
 | `interrupted_ack` | – | acknowledges the interrupted-work record exposed in `ready.interrupted` (#385/R5): the daemon marks it consumed (never at boot) and replies `interrupted_acknowledged`; idempotent, allowed while paused; if persisting the record fails it replies the `error`/`failed` frame and the record stays pending so a retry can persist it (R4) |
 | `ui_response` | `id`, one of `value` / `confirmed` / `cancelled` | answers an `ask`; validated against the pending ask |
@@ -69,8 +71,10 @@ One global switch, backend only this round (a UI card comes later):
 Setting the same value again replies the current `agent_state` and changes nothing. While `paused` is true the
 daemon admits nothing new:
 
-- REFUSED with a new closed error code `error{paused}`: `send`, `steer`, `new_conversation` (agent-turn admission)
+- REFUSED with a new closed error code `error{paused}`: `send`, `steer` (agent-turn admission)
   and `agent_connect`, `connectors_list`, `agents_list` (each spawns a process: a tool/connector call).
+  `new_conversation` is NOT on this list since K2-05 T4 U1: it is refused `conversations_off` regardless of the
+  pause state (the refusal precedes every gate).
 - STILL ALLOWED: `abort` and `agent_disconnect` (stopping work is always possible), every read-only query
   (`status`, `accounts_list`, `providers_list`, `models_list`, `profiles_list`, `settings_get`, `mcp_import_preview`,
   `agents_list` while unpaused, `auth_state`), and all account/profile/settings/auth verbs. Scheduled tasks have no
@@ -341,7 +345,7 @@ Unknown/invalid post-handshake frames get `error{code:"bad_request"}`.
 
 | type | fields |
 |---|---|
-| `ready` | `protocol`, `state{busy,status,paused}`, `limits`, `features{history:false}`, `interrupted?` (`{at, turnActive, asks}` — bounded closed fields of the unconsumed interrupted-work record, counts and time only, never titles/ids/prompts/args/secrets; present until a client sends `interrupted_ack`) |
+| `ready` | `protocol`, `state{busy,status,paused}`, `limits`, `features{history:true,conversations:false}`, `interrupted?` (`{at, turnActive, asks}` — bounded closed fields of the unconsumed interrupted-work record, counts and time only, never titles/ids/prompts/args/secrets; present until a client sends `interrupted_ack`) |
 | `agent_state` | `busy`, `status` (`ready`, `restarting`, `stopped`…), `paused` |
 | `message_delta` | `messageId`, `text` (≤ 16 K chars each) |
 | `message_done` | `messageId` |
@@ -406,9 +410,45 @@ Everything else (thinking deltas, `turn_end`, `tool_execution_update`, unknown) 
   replay. The `account_logout` permission change is applied only AFTER the safe point (the canonical `state().busy`
   guard clears, bounded by `interruptSafePointMs`, default 30000 ms): on timeout it answers `busy` and the credential
   and the active profile are untouched. `profile_deactivate` and `agent_disconnect` keep their existing guards.
-- History/replay: **not implemented** (`features.history=false`); a late client only gets current state and open asks.
+- History/replay (K2-05 T4 U1): **implemented** as read-only pages of the open chat — see "History frames".
+  A late client asks `get_history` once it has Handshook; the daemon never pushes an unrequested full history
+  except after a rotation (below).
 - Stale `p-*` socket dirs of dead servers (connection refused) are removed at start, with dev/ino checks.
 - `ui_response` and `send` are not tied to the originating client; all clients share one session (max 2).
+
+### History frames (additive, read-only, K2-05 T4 U1)
+
+One continuous chat, read from the engine's whole rotated session chain (`engine.previousSessions` + the
+open `sessionFile`, oldest file first). Port of the projection half of Gentle Dot's
+`packages/daemon/src/conversations.ts` (MIT): user and assistant `type:"message"` records become display
+turns; hidden `custom_message` handoffs and every other context-only entry NEVER appear; tool calls become
+activities (closed kind `read/edit/run/search/memory/delegate/other`, title without tool names or
+arguments, status `done`/`failed` from the engine's failed results); consecutive assistant messages join
+into ONE turn; a user message's `<attachments>` block is split back into `text` and attachment chips.
+ALL assistant text passes the white-label rewriter (`presentText`); the user's own text never does.
+
+| frame | fields |
+|---|---|
+| `history` | `messages: HistoryMessage[]`, `hasEarlier: bool` |
+| `earlier` | `before: string`, `messages: HistoryMessage[]`, `hasEarlier: bool` (the page ends just BEFORE the requested id) |
+
+`HistoryMessage` = `{ id: "s<file>-<turn>", role: "user"\|"assistant", text, activities: Activity[],
+attachments?: [{name,size,mime}], earlier?: true }`. Ids are per-file (`s0-…` = the oldest file) and stay
+STABLE while the chain grows, so `get_earlier` cursors survive a rotation. Messages of every file but the
+last carry `earlier:true`.
+
+- **Bounds.** A page is at most 100 messages (Gentle Dot's `HISTORY_PAGE`); the frame rebuild clips each
+  text to 64 KiB (the same ceiling the `send` verb accepts), caps activities at 100 (closed vocabulary,
+  non-conforming entries dropped) and attachments at 16, and THROWS — the server answers `error{failed}` —
+  if a rebuilt page still exceeds 1 MiB. A chain file that is missing or unreadable is skipped with a one-line
+  daemon log; torn/corrupt lines inside a file are skipped (the engine rewrites them as it appends).
+- **Readiness.** While the engine is not `ready` or holds no open session, `get_history`/`get_earlier` answer
+  `error{unavailable}` (retryable) — never an empty page, which would clear what the island shows.
+- **Rotation re-broadcast.** When a rotation (or its fallback `new_session`) replaces the open session and
+  the new one already carries its chain, the daemon re-broadcasts ONE `history` frame to every connected
+  client: the same chat, now marked earlier (Gentle Dot bridge.ts:1124-1129). The broadcast fires on the
+  engine's `session_changed` (chain present) and `sessions_linked` (linked file == open session) events, so
+  the fallback's confirmed-but-unlinked window never broadcasts an empty page.
 
 ## Continuous conversation rotation (K2-05 T3, on by default)
 

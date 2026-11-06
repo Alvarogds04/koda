@@ -852,6 +852,10 @@ class AgentEngine extends EventEmitter {
 		// confirms the switch (changeSession / startup reopen), persistSession
 		// writes the new open session together with the chain.
 		if (this.sessionFile) this.persistSession(this.sessionFile);
+		// T4 U1: the server re-broadcasts history once the open session carries the
+		// linked chain (sessions_linked fires only when the linked file becomes or
+		// already is the open one; see server.cjs onEngineHistoryEvent).
+		this.emit("sessions_linked", { sessionFile });
 	}
 
 	/** Ensures the private island, spawns the agent and waits for its first `get_state`. */
@@ -948,6 +952,10 @@ class AgentEngine extends EventEmitter {
 			this.persistSession(sessionFile);
 			this.sessionChange = undefined;
 			this.emit("status", { state: this.status });
+			// T4 U1: the open session changed (a rotation switch confirmed, or the
+			// rotation fallback's fresh session). The server decides whether the
+			// change carries a chain worth re-broadcasting.
+			this.emit("session_changed", { sessionFile });
 			return response;
 		} catch (error) {
 			if (this.sessionChange === change && this.child === change.child && !this.stopping) {
@@ -1161,6 +1169,7 @@ class AgentEngine extends EventEmitter {
 			if (expected && this.sessionFile !== expected) throw new Error("agent recovery session was not confirmed");
 			this.sessionEpoch += 1;
 			this.persistSession(this.sessionFile);
+			this.emit("session_changed", { sessionFile: this.sessionFile });
 			this.initialStartPending = false;
 			this.spawnedAt = Date.now();
 			this.recycling = false;
