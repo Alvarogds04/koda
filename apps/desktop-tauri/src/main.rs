@@ -2113,6 +2113,17 @@ fn main() {
             hotkeyhost::start(&handle); // #305: global show/hide shortcut (config + X11 grab)
             // #306 settings prefs: `settingshost::start` runs before the island is placed (#264)
             specialistshost::start(&handle); // #327: the manual specialists (empty = the principal)
+            // K2-05 T5 (S3): delete Koda 0.1's stored conversations (exact files only) BEFORE the new
+            // store opens (Store::open creates the directory, so this runs synchronously on this startup
+            // thread, first). Test dirs (ABITO_CONVERSATIONS_DATA_DIR) and probe runs never touch data.
+            let conversations_dir = if std::env::var_os("ABITO_CONVERSATIONS_DATA_DIR").is_some() || probe_requested() {
+                None
+            } else {
+                handle.path().app_data_dir().ok().map(|p| p.join("conversations"))
+            };
+            if let Some(line) = abito_island::legacy_conversations::cleanup(conversations_dir.as_deref()).log_line() {
+                eprintln!("{line}");
+            }
             chathost::start_history(&handle); // #341: isolated private conversation store
             // K2-03 T3 (S2, S4): delete the removed weekly Recap's data (exact files only), off the startup path.
             let data_dir = handle.path().app_local_data_dir().ok();

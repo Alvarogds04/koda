@@ -84,6 +84,7 @@ pub mod plan_cmd;
 pub mod paused;
 pub mod prefs;
 pub mod protocol;
+pub mod legacy_conversations;
 pub mod legacy_recap;
 pub mod secrets;
 pub mod provider_oauth;
