@@ -784,6 +784,14 @@ function deltaFrames(text, messageId) {
 
 // ----- T2 white-label delta streams -----------------------------------------
 
+/**
+ * F2: the marker the daemon's runtime attaches to its one `message_flush`
+ * event when a turn is cancelled (abort/timeout/pause/iteration limit). A
+ * Symbol can never arrive through JSON.parse, so a child record of this type
+ * is inert even though runtime.cjs also drops it before forwarding.
+ */
+const MESSAGE_FLUSH = Symbol("abito.message_flush");
+
 // One filter per in-flight assistant message, keyed by the caller's messageId
 // (the server's `m<n>`). Bounded: entries are removed on the assistant's
 // message_end and everything is reset on agent_start; a stream that never ends
@@ -842,6 +850,21 @@ function translateEvent(event, messageId = "m0") {
 				messageDone: true,
 			};
 		}
+		case "message_flush": {
+			// F2: a cancelled turn never reaches message_end; the daemon emits ONE
+			// flush so the held tail still reaches the island. Daemon-only (the
+			// symbol marker cannot be forged by the child); a no-op when nothing is
+			// held — never fake done frames on a turn without a stream.
+			if (event.flush !== MESSAGE_FLUSH) return none;
+			const filter = STREAM_FILTERS.get(messageId);
+			if (filter === undefined) return none;
+			STREAM_FILTERS.delete(messageId);
+			const tail = filter.flush();
+			return {
+				frames: tail === "" ? [{ type: "message_done", messageId }] : [...deltaFrames(tail, messageId), { type: "message_done", messageId }],
+				messageDone: true,
+			};
+		}
 		case "tool_execution_start":
 			return { frames: [activityFrame(event, "running")] };
 		case "tool_execution_end":
@@ -873,11 +896,13 @@ function translateUiRequest(event) {
 		}
 		case "select": {
 			if (!Array.isArray(event.options)) return { frames: [], cancelUi: event.id };
-			const options = event.options
-				.filter((o) => typeof o === "string")
-				.slice(0, LIMITS.maxOptions)
-				.map((o) => presentText(clip(o, LIMITS.maxOptionChars)));
-			return { frames: [], ask: { id: event.id, kind: "select", title: presentText(clip(event.title, LIMITS.maxTitleChars)), options } };
+			// Gentle Dot bridge.ts (onUiRequest): what the island shows is the rewritten
+			// text, but the PENDING ask keeps the engine's original strings too — the
+			// answer is mapped back BY POSITION (buildUiResponse), never sent back as
+			// the rewritten label. The wire never carries the originals (askFrame).
+			const originalOptions = event.options.filter((o) => typeof o === "string").slice(0, LIMITS.maxOptions);
+			const options = originalOptions.map((o) => presentText(clip(o, LIMITS.maxOptionChars)));
+			return { frames: [], ask: { id: event.id, kind: "select", title: presentText(clip(event.title, LIMITS.maxTitleChars)), options, originalOptions } };
 		}
 		case "confirm":
 			return {
@@ -905,13 +930,22 @@ function buildUiResponse(ask, answer) {
 		return typeof answer.confirmed === "boolean" ? { type: "extension_ui_response", id: ask.id, confirmed: answer.confirmed } : undefined;
 	}
 	if (typeof answer.value !== "string") return undefined;
-	if (ask.kind === "select" && !ask.options.includes(answer.value)) return undefined;
+	if (ask.kind === "select") {
+		// B2: the island shows the rewritten (and length-clipped) options; the
+		// user's choice is matched against what was SHOWN and sent back as the
+		// engine's ORIGINAL string, by position (Gentle Dot bridge.ts:1326-1327).
+		// An answer that matches no shown option is refused.
+		const index = ask.options.indexOf(answer.value);
+		if (index === -1) return undefined;
+		return { type: "extension_ui_response", id: ask.id, value: ask.originalOptions?.[index] ?? answer.value };
+	}
 	return { type: "extension_ui_response", id: ask.id, value: answer.value };
 }
 
 module.exports = {
 	PROTOCOL,
 	LIMITS,
+	MESSAGE_FLUSH,
 	validateClientFrame,
 	validateLocalBaseUrl,
 	validateCustomBaseUrl,

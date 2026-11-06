@@ -177,13 +177,22 @@ test("createTextFilter never emits half of an open /gentle: command token", () =
 test("createTextFilter output is stable: nothing already emitted is ever changed by later text", () => {
 	// Property-style sweep: for ANY delta split, the concatenated visible stream
 	// must equal the full rewrite of the whole text — a prefix once emitted can
-	// never be contradicted by what arrives later.
+	// never be contradicted by what arrives later, and a word cut at a delta
+	// boundary must NOT be rewritten early (F1: «engram»+«as» stays "engramas",
+	// not "memoryas"). Held back is RAW text; rewriting happens only where the
+	// text can no longer change.
 	const texts = [
 		"Trabajo con el Gentle Shell y con engram a diario, pero ODD y RDD son míos: pi-coding-agent no.",
 		"Gentle-pi, gentle-ai, el Gentleman, abito-island, /gentle:x, organic driven development.",
 		"texto normal sin nada que ocultar. " + "z".repeat(200),
 		"Gentle Shell",
 		"a /gentle:" + "w".repeat(80),
+		// F1: the four boundary cuts the verifier reproduced (with a prefix long
+		// enough that the filter has already emitted something).
+		`${"x".repeat(60)} engramas`,
+		`${"x".repeat(60)} Pi agente`,
+		`${"x".repeat(60)} ODDITY`,
+		`${"x".repeat(60)} GentlePie`,
 	];
 	const splits = [1, 2, 3, 5, 7, 11, 13, 32, 64, 1000];
 	for (const text of texts) {
@@ -194,5 +203,24 @@ test("createTextFilter output is stable: nothing already emitted is ever changed
 			parts.push(f.flush());
 			assert.equal(parts.join(""), presentText(text), `split ${size} of ${JSON.stringify(text.slice(0, 40))}`);
 		}
+	}
+});
+
+// F1: the exact pairs the verifier reproduced («engram»|«as» → «memoryas»,
+// «Pi agent»|«e» → «assistante», «ODD»|«ITY» → «workflowITY», «GentlePi»|«e» →
+// «Kodae»), preceded by a pad long enough that the filter already emitted — the
+// broken filter stored the rewritten tail, so the next delta glued onto the
+// REWRITE instead of the raw word.
+test("createTextFilter never rewrites a word cut at a delta boundary (F1)", () => {
+	const pad = "x".repeat(60);
+	for (const [a, b] of [
+		["engram", "as"],
+		["Pi agent", "e"],
+		["ODD", "ITY"],
+		["GentlePi", "e"],
+	]) {
+		const f = createTextFilter();
+		const parts = [f.push(`${pad} ${a}`), f.push(b), f.flush()];
+		assert.equal(parts.join(""), presentText(`${pad} ${a}${b}`), JSON.stringify({ a, b, parts }));
 	}
 });

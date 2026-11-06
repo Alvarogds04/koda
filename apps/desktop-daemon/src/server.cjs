@@ -568,6 +568,10 @@ class IslandServer {
 	async handle(client, frame) {
 		const reply = (f) => this.sendTo(client, f);
 		const fail = (code) => reply(P.errorFrame(code));
+		// T2/F3: internal /gentle: commands are not part of the product. The fixed
+		// refusal (bad_request) is deterministic and runs BEFORE every other gate
+		// (paused included), and the command never reaches the engine.
+		if ((frame.type === "send" || frame.type === "steer") && isBlockedInput(frame.text)) return fail("bad_request");
 		// #379: while the global pause is on, nothing new is admitted (turns, spawns).
 		if (this.paused === true && PAUSED_REFUSED.has(frame.type)) return fail("paused");
 		const ready = () => this.engine?.status === "ready";
@@ -630,10 +634,7 @@ class IslandServer {
 				return undefined;
 			}
 			case "send": {
-				// T2: internal /gentle: commands are not part of the product. The fixed
-				// refusal (bad_request) is deterministic — before ready/busy admission —
-				// and the command never reaches the engine.
-				if (isBlockedInput(frame.text)) return fail("bad_request");
+				// T2: blocked input was already refused above, before every gate.
 				if (!ready()) return fail("unavailable");
 				if (this.state().busy) return fail("busy");
 				this.busy = true; // optimistic: the agent_start event confirms
@@ -658,7 +659,6 @@ class IslandServer {
 				return undefined;
 			}
 			case "steer":
-				if (isBlockedInput(frame.text)) return fail("bad_request");
 				if (!ready()) return fail("unavailable");
 				if (this.switching) return fail("busy");
 				if (!this.busy) return fail("not_busy");

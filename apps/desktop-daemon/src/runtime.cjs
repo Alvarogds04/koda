@@ -20,8 +20,9 @@
 
 const { EventEmitter } = require("node:events");
 const { performance } = require("node:perf_hooks");
+const { execFileSync } = require("node:child_process");
 const { spawn } = require("node:child_process");
-const { existsSync, lstatSync, readFileSync, readdirSync, rmSync } = require("node:fs");
+const { accessSync, constants, existsSync, lstatSync, readFileSync, readdirSync, renameSync, rmSync, statSync } = require("node:fs");
 const { homedir } = require("node:os");
 const path = require("node:path");
 
@@ -34,6 +35,9 @@ const {
 	isolatedEnv,
 	writePrivateFile,
 } = require("./isolation.cjs");
+// F2: the daemon-owned flush marker for a cancelled turn. A Symbol cannot be
+// produced by JSON.parse, so a child record can never forge this event.
+const { MESSAGE_FLUSH } = require("./protocol.cjs");
 
 const DEFAULT_BACKOFF_MS = [1000, 2000, 4000, 8000, 16000, 30000];
 const DEFAULT_REQUEST_TIMEOUT_MS = 300_000;
@@ -117,6 +121,86 @@ function engramBinPath(manifest, runtime, deps) {
 	return runtimeScript(manifest?.engramBin, runtime, deps, "engramBin");
 }
 
+// ----- F6: the Engram binary, resolved in Gentle Dot's order ----------------
+
+// Resolutión and folder layout ported from Gentle Dot's resolveEngramBin
+// (packages/daemon/src/runtime.ts:20-84, MIT, Copyright (c) 2026 Gentleman
+// Programming); see THIRD-PARTY-NOTICES.md. The user's own binary keeps
+// serving their own ~/.engram; Koda's bundled one is the LAST resort.
+const ENGRAM_LOGIN_TIMEOUT_MS = 5_000;
+const ENGRAM_SYSTEM_PATH = "/usr/bin:/bin:/usr/sbin:/sbin";
+
+/** A readable (Windows) or executable (Unix) regular file, like Gentle Dot. */
+function isExecutableFile(file, deps, platform) {
+	try {
+		(deps.accessSync ?? accessSync)(file, platform === "win32" ? constants.R_OK : constants.X_OK);
+		return ((deps.statSync ?? statSync)(file)).isFile();
+	} catch {
+		return false;
+	}
+}
+
+/** Where a user's own Engram usually lives, after the login PATH on Unix. */
+function engramKnownDirs(home, platform) {
+	if (platform === "win32") {
+		return [path.join(home, "go", "bin"), path.join(home, "AppData", "Local", "engram", "bin"), path.join(home, ".local", "bin")];
+	}
+	return [path.join(home, "go", "bin"), "/opt/homebrew/bin", "/usr/local/bin", path.join(home, ".local", "bin")];
+}
+
+/**
+ * The `engram` the user's login shell finds (Unix only — NEVER on Windows).
+ * The app starts with a fixed PATH, so the shell builds the user's own from
+ * their profile, starting from the system one. Bounded at 5 s.
+ */
+function loginShellEngram(env, home, deps, platform) {
+	if (platform === "win32") return undefined;
+	try {
+		const output = (deps.execFileSync ?? execFileSync)(typeof env.SHELL === "string" ? env.SHELL : "/bin/sh", ["-l", "-c", "command -v engram"], {
+			env: { ...env, HOME: home, PATH: ENGRAM_SYSTEM_PATH },
+			encoding: "utf8",
+			stdio: ["ignore", "pipe", "ignore"],
+			timeout: ENGRAM_LOGIN_TIMEOUT_MS,
+		});
+		const found = output.trim().split("\n").at(-1)?.trim() ?? "";
+		return path.isAbsolute(found) && isExecutableFile(found, deps, platform) ? found : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * F6 (L7 «igual que Gentle Dot»): the Engram binary in Gentle Dot's resolution
+ * order — 1. the user's ENGRAM_BIN (from the daemon's own env), 2. on Unix the
+ * user's login-shell `command -v engram`, 3. Gentle Dot's known dirs, and only
+ * then 4. Koda's bundled `<runtime>/<engramBin>` named and validated by the
+ * manifest. Koda's refinement: the bundled fallback only exists when the
+ * manifest names one (undefined otherwise — the caller degrades, F7: log, no
+ * ENGRAM_BIN, the chat still starts).
+ */
+function resolveEngramBin(baseEnv, manifest, runtime, deps = {}) {
+	if (typeof baseEnv.ENGRAM_BIN === "string" && baseEnv.ENGRAM_BIN !== "") return baseEnv.ENGRAM_BIN;
+	const platform = deps.platform ?? process.platform;
+	const home =
+		(platform === "win32" ? baseEnv.USERPROFILE || baseEnv.HOME : baseEnv.HOME) || (deps.homedir ?? homedir)();
+	const name = platform === "win32" ? "engram.exe" : "engram";
+	const fromLogin = loginShellEngram(baseEnv, home, deps, platform);
+	if (fromLogin) return fromLogin;
+	for (const dir of engramKnownDirs(home, platform)) {
+		const bin = path.join(dir, name);
+		if (isExecutableFile(bin, deps, platform)) return bin;
+	}
+	if (runtime !== undefined) {
+		try {
+			return engramBinPath(manifest, runtime, deps);
+		} catch (error) {
+			(deps.log ?? (() => {}))(`the bundled memory binary is not available (${error.message}); the chat starts without memory`);
+			return undefined;
+		}
+	}
+	return undefined;
+}
+
 /**
  * T1b-b (S5): the memory environment of Koda's DEFAULT bundled engine, in the
  * shape of Gentle Dot's isolatedAgentEnv (isolation.ts:131-137, 212-214): the
@@ -135,9 +219,12 @@ function bundledMemoryEnv(baseEnv, runtime, deps = {}) {
 	const env = {};
 	if (runtime !== undefined) {
 		const manifest = readRuntimeManifest(runtime, deps);
-		if (manifest !== undefined && manifest?.engramBin !== undefined) {
-			env.ENGRAM_BIN = engramBinPath(manifest, runtime, deps);
-		}
+		// F6/F7: Gentle Dot's resolution order; when nothing resolves — including
+		// a missing or invalid engramBin — the env simply carries no ENGRAM_BIN
+		// (the chat starts without memory tools, never blocked). The bundled
+		// fallback logs its refusal through deps.log when one is wired.
+		const engram = resolveEngramBin(baseEnv, manifest, runtime, deps);
+		if (engram !== undefined) env.ENGRAM_BIN = engram;
 	}
 	const realHome = platform === "win32" ? baseEnv.USERPROFILE || baseEnv.HOME || homedir() : baseEnv.HOME || homedir();
 	env.ENGRAM_DATA_DIR =
@@ -150,6 +237,73 @@ function bundledMemoryEnv(baseEnv, runtime, deps = {}) {
 }
 
 /**
+ * B1/F5: every path segment from `base` down through `parts` must be a real
+ * directory (never a symlink or a file that would redirect work outside
+ * `base`); absent segments are fine (they are created later, fail closed).
+ * Throws on any symlink or non-directory segment; a missing segment ends the
+ * walk (nothing can exist below it).
+ */
+function validateRealSegments(base, parts, deps) {
+	const lstat = deps.lstatSync ?? lstatSync;
+	const resolvedBase = path.resolve(base);
+	for (let i = 0; i <= parts.length; i++) {
+		const at = i === 0 ? resolvedBase : path.join(resolvedBase, ...parts.slice(0, i));
+		const rel = path.relative(resolvedBase, at);
+		if (rel === ".." || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) {
+			throw new Error(`refusing a path outside ${resolvedBase}`);
+		}
+		let stats;
+		try {
+			stats = lstat(at);
+		} catch (error) {
+			if (error?.code === "ENOENT") return; // later segments will be created
+			throw error;
+		}
+		if (stats.isSymbolicLink()) throw new Error(`refusing symlinked segment: ${at}`);
+		if (!stats.isDirectory()) throw new Error(`refusing non-directory segment: ${at}`);
+	}
+}
+
+/**
+ * F4: a content-shaped fingerprint of a real file tree — one line per file as
+ * `<relative-path>:<size>` (sorted), computed with lstat only (a symlink or a
+ * non-regular entry anywhere, or an unreadable tree, yields undefined so the
+ * caller treats it as "not equal" and repairs). The seed idempotency check
+ * compares the bundled companion's fingerprint with the installed one, so a
+ * partial or corrupt copy is always repaired instead of surviving on version
+ * equality alone.
+ */
+function treeFingerprint(dir, deps = {}) {
+	const lstat = deps.lstatSync ?? lstatSync;
+	const readdir = deps.readdirSync ?? readdirSync;
+	try {
+		const stats = lstat(dir);
+		if (stats.isSymbolicLink() || !stats.isDirectory()) return undefined;
+		const lines = [];
+		const walk = (abs, rel) => {
+			for (const entry of readdir(abs)) {
+				const child = path.join(abs, entry);
+				const childRel = rel === "" ? entry : `${rel}/${entry}`;
+				const childStats = lstat(child);
+				if (childStats.isSymbolicLink() || (!childStats.isDirectory() && !childStats.isFile())) return undefined;
+				if (childStats.isDirectory()) {
+					const nested = walk(child, childRel);
+					if (nested === undefined) return undefined;
+				} else {
+					lines.push(`${childRel}:${childStats.size}`);
+				}
+			}
+			return lines;
+		};
+		const out = walk(dir, "");
+		if (out === undefined) return undefined;
+		return out.sort().join("\n");
+	} catch {
+		return undefined;
+	}
+}
+
+/**
  * T1b-b (S5): seeds the bundled Engram companion into the island's agent dir
  * before the first spawn, the result gentle-shell's auto-setup would produce
  * (Gentle Dot isolation.ts:104-137, 208-217) but offline: the companion
@@ -159,20 +313,44 @@ function bundledMemoryEnv(baseEnv, runtime, deps = {}) {
  * `packages: ["npm:gentle-engram@<version>"]` is merged into
  * `<agentDir>/settings.json` (PI_OFFLINE makes Pi load it with no network;
  * profiles.cjs preserves foreign keys when it writes its model defaults).
- * An installed copy of a DIFFERENT version is refreshed; the same version is
- * left as it is. Idempotent. Throws on refused/refusing targets (a planted
- * symlink is never written through); a runtime without the companion is a
- * `{ ok: false }` report, never a hard error (the engine still starts).
+ *
+ * B1 (verifier): every component from the island's agent dir down to the
+ * target — and from the runtime root down to the source (F5) — is validated
+ * BEFORE any destructive operation, so a symlinked segment can never make the
+ * seed delete or write a gentle-engram folder outside the island. F4: the copy
+ * itself is atomic — staged in a temp sibling inside the validated parent,
+ * verified against the source's fingerprint, then renamed into place; a
+ * failing copy leaves no partial target, and the refresh never follows a link
+ * (an existing target is first renamed to a sibling of the validated parent,
+ * then removed — rmSync never walks a path that could leave the island).
+ * Idempotent: a tree-equal install is left as it is; anything else (a partial
+ * copy among them) is repaired whole. Throws on refused/refusing targets (a
+ * planted symlink is never written through); a runtime without the companion
+ * is a `{ ok: false }` report, never a hard error (the engine still starts).
  */
 function seedEngramCompanion(runtime, agentDir, deps = {}) {
 	const lstat = deps.lstatSync ?? lstatSync;
 	const readFile = deps.readFileSync ?? readFileSync;
 	const source = path.join(runtime, "node_modules", "gentle-engram");
+	// F5: validate the runtime side first, like runtimeScript validates
+	// gentleShell — missing segments mean no bundled companion (a report, not
+	// an error); a symlink there is a corrupted runtime and fails closed.
+	let sourceMissing = false;
+	try {
+		validateRealSegments(runtime, ["node_modules", "gentle-engram"], deps);
+	} catch (error) {
+		if (error?.code !== "ENOENT") throw error;
+		sourceMissing = true;
+	}
+	if (sourceMissing) {
+		return { ok: false, reason: `the bundled runtime has no gentle-engram companion (ENOENT)` };
+	}
 	let sourceStats;
 	try {
 		sourceStats = lstat(source);
 	} catch (error) {
-		return { ok: false, reason: `the bundled runtime has no gentle-engram companion (${error.code ?? error.message})` };
+		if (error?.code === "ENOENT") return { ok: false, reason: "the bundled runtime has no gentle-engram companion (ENOENT)" };
+		throw error;
 	}
 	if (sourceStats.isSymbolicLink() || !sourceStats.isDirectory()) {
 		return { ok: false, reason: "the bundled gentle-engram companion is not a real directory" };
@@ -186,31 +364,64 @@ function seedEngramCompanion(runtime, agentDir, deps = {}) {
 	if (pkg?.name !== "gentle-engram" || typeof pkg.version !== "string" || pkg.version === "") {
 		return { ok: false, reason: "the bundled companion package.json does not name gentle-engram" };
 	}
-	const target = path.join(agentDir, "npm", "node_modules", "gentle-engram");
-	let installedVersion;
+	// B1: validate the whole island path down to the parent BEFORE anything is
+	// read, renamed or destroyed: a symlinked <agentDir>/npm or .../node_modules
+	// is refused and the folder it leads to is never touched.
+	validateRealSegments(agentDir, ["npm", "node_modules"], deps);
+	const modules = path.join(agentDir, "npm", "node_modules");
+	const target = path.join(modules, "gentle-engram");
+	let existing;
 	try {
-		const stats = lstat(target);
-		if (stats.isSymbolicLink()) throw new Error(`refusing symlinked companion target: ${target}`);
-		if (stats.isDirectory()) {
-			try {
-				installedVersion = JSON.parse(readFile(path.join(target, "package.json"), "utf8"))?.version;
-			} catch {
-				installedVersion = undefined; // partial or corrupt copy: refresh it whole
-			}
-		} else {
-			throw new Error(`refusing non-directory companion target: ${target}`);
-		}
+		existing = lstat(target);
 	} catch (error) {
 		if (error?.code !== "ENOENT") throw error;
 	}
-	if (installedVersion !== pkg.version) {
-		// Real copy, refreshed whole when the bundled version differs; rmSync here
-		// is the version refresh of a directory this daemon owns (never a link).
-		// The source tree is validated BEFORE anything is written, so a refused
-		// copy leaves the island without a partial companion.
-		validateRealTree(source, deps);
-		rmSync(target, { recursive: true, force: true });
-		copyPrivateTree(source, target, deps);
+	if (existing?.isSymbolicLink()) throw new Error(`refusing symlinked companion target: ${target}`);
+	if (existing && !existing.isDirectory()) throw new Error(`refusing non-directory companion target: ${target}`);
+	// F4: same tree (relative paths + sizes) -> nothing to repair.
+	const sourceFingerprint = treeFingerprint(source, deps);
+	if (existing && sourceFingerprint !== undefined && treeFingerprint(target, deps) === sourceFingerprint) {
+		mergeCompanionSettings(agentDir, pkg.version, deps);
+		return { ok: true };
+	}
+	// Real copy, staged whole and renamed into place; the source tree is fully
+	// validated BEFORE anything is written, so a refused copy leaves the island
+	// untouched.
+	validateRealTree(source, deps);
+	ensurePrivateDir(modules);
+	const staging = path.join(modules, `.gentle-engram.new-${process.pid}-${Date.now()}`);
+	try {
+		copyPrivateTree(source, staging, deps);
+		if (sourceFingerprint === undefined || treeFingerprint(staging, deps) !== sourceFingerprint) {
+			throw new Error("the staged companion copy does not match the bundled one");
+		}
+	} catch (error) {
+		try {
+			rmSync(staging, { recursive: true, force: true });
+		} catch (cleanup) {
+			error.cleanUpError = cleanup;
+		}
+		throw error;
+	}
+	if (existing) {
+		// Refresh (F4/B1): the old tree is renamed to a sibling inside the
+		// validated parent and only then removed — never a path rmSync could
+		// follow out of the island, never a link followed.
+		const replaced = path.join(modules, `.gentle-engram.old-${process.pid}-${Date.now()}`);
+		renameSync(target, replaced);
+		try {
+			renameSync(staging, target);
+		} catch (error) {
+			try {
+				renameSync(replaced, target); // restore the previous install
+			} catch (restore) {
+				error.restoreError = restore;
+			}
+			throw error;
+		}
+		rmSync(replaced, { recursive: true, force: true });
+	} else {
+		renameSync(staging, target);
 	}
 	mergeCompanionSettings(agentDir, pkg.version, deps);
 	return { ok: true };
@@ -747,6 +958,11 @@ class AgentEngine extends EventEmitter {
 		this.recycling = true;
 		this.recoverySessionFile = turn.sessionFile;
 		clearTimeout(turn.timer);
+		// F2: a cancelled turn never reaches message_end, so the held delta tail
+		// the stream filter still holds would be dropped. Flush it once, as a
+		// final delta, BEFORE the rest of the turn is shut down. Daemon-owned: the
+		// marker is a Symbol and child records of this type are dropped below.
+		this.emit("event", { type: "message_flush", flush: MESSAGE_FLUSH });
 		// Admission closes synchronously, before any asynchronous abort ACK.
 		this.setStatus("restarting");
 		this.emit("turn_cancelled", { reason });
@@ -964,8 +1180,10 @@ class AgentEngine extends EventEmitter {
 				ABITO_MEMORY_PROJECT: MEMORY_PROJECT,
 				...(defaultEngine ? {} : { PI_CODING_AGENT_DIR: this.island.agentDir }),
 				// T1b-b (S5): the bundled Engram binary and the user's own memory
-				// store travel ONLY with Koda's default engine.
-				...(defaultEngine ? bundledMemoryEnv(this.baseEnv, runtimeRoot(this.runtimeDeps), this.runtimeDeps) : {}),
+				// store travel ONLY with Koda's default engine. F7: a missing or
+				// invalid engramBin never blocks the engine — the degradation (no
+				// ENGRAM_BIN) is logged by the resolution itself.
+				...(defaultEngine ? bundledMemoryEnv(this.baseEnv, runtimeRoot(this.runtimeDeps), { ...this.runtimeDeps, log: this.log }) : {}),
 				...this.envOverrides,
 			}),
 		};
@@ -1012,6 +1230,12 @@ class AgentEngine extends EventEmitter {
 			clearTimeout(pending.timer);
 			if (record.success) pending.resolve(record);
 			else pending.reject(new Error(record.error ?? `${record.command} failed`));
+			return;
+		}
+		if (record.type === "message_flush") {
+			// F2: `message_flush` belongs to the daemon (cancelTurn emits it); the
+			// child can never send it through.
+			this.log("agent wrote a daemon-reserved record (discarded)");
 			return;
 		}
 		if (this.sessionChange || (this.recycling && !this.turn)) return;
@@ -1091,4 +1315,4 @@ class AgentEngine extends EventEmitter {
 	}
 }
 
-module.exports = { AgentEngine, JsonlDecoder, DEFAULT_COMMAND, bundledGentleShell, bundledMemoryEnv, encodeRecord, gentlePiVersion, runtimeRoot, seedEngramCompanion, windowsPackageCliJs };
+module.exports = { AgentEngine, JsonlDecoder, DEFAULT_COMMAND, bundledGentleShell, bundledMemoryEnv, encodeRecord, engramKnownDirs, gentlePiVersion, resolveEngramBin, runtimeRoot, seedEngramCompanion, windowsPackageCliJs };

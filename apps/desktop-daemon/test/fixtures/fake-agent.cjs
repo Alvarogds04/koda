@@ -107,6 +107,12 @@ function handle(command) {
 				type: "message_update",
 				assistantMessageEvent: { type: "text_delta", delta: "hola 😀 línea\u2028separada\u2029fin" },
 			};
+			if (process.argv.includes("--prompt-holds")) {
+				// F2: the assistant message is mid-stream and never settles, like a
+				// real turn the daemon aborts/timeout-cancels mid-answer.
+				writeRecord(update);
+				break;
+			}
 			if (chunkedEvents) writeChunked(update, emitRest);
 			else {
 				writeRecord(update);

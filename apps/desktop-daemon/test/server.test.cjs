@@ -337,14 +337,14 @@ test("the user's own prompt text reaches the engine untouched (T2)", async (t) =
 	await waitFor(() => c.frames.filter((f) => f.type === "agent_state").at(-1).busy === true);
 	engine.emit("event", { type: "agent_settled" });
 	await waitFor(() => c.frames.filter((f) => f.type === "agent_state").at(-1).busy === false);
-	});
+});
 
-	test("internal /gentle: commands are refused with a fixed error and never reach the engine (T2)", async (t) => {
+test("internal /gentle: commands are refused with a fixed error and never reach the engine (T2)", async (t) => {
 	const { endpoint, engine } = await setup(t);
 	const c = await login(t, endpoint);
 	for (const text of ["/gentle:memory-save", "  /gentle:x", "/GENTLE:jobs"]) {
-	c.send({ type: "send", text });
-	await c.wait((f) => f.type === "error" && f.code === "bad_request");
+		c.send({ type: "send", text });
+		await c.wait((f) => f.type === "error" && f.code === "bad_request");
 	}
 	assert.equal(engine.requests.filter((r) => r.type === "prompt").length, 0, "no /gentle: command reached the engine");
 	// Mid-turn steering refuses it too.
@@ -356,12 +356,30 @@ test("the user's own prompt text reaches the engine untouched (T2)", async (t) =
 	// Normal steering text still flows: the busy turn accepts it.
 	c.send({ type: "steer", text: "hola" });
 	await waitFor(() => engine.requests.some((r) => r.type === "steer" && r.message === "hola"));
-	});
+});
 
-	test("steer needs a busy turn; abort and new_conversation reach the engine", async (t) => {
-const { endpoint, engine } = await setup(t);
-const c = await login(t, endpoint);
-c.send({ type: "steer", text: "x" });
+// F3 (verifier): the /gentle: refusal runs before the pause gate, so the
+// answer is always bad_request — never `paused`, and nothing ever queues it.
+test("a /gentle: command is bad_request even while paused (F3)", async (t) => {
+	const store = { paused: false, writes: [], get() { return store.paused; }, set(value) { store.writes.push(value); store.paused = value; } };
+	const { endpoint, engine } = await setup(t, { pausedStore: store });
+	const c = await login(t, endpoint);
+	c.send({ type: "set_paused", paused: true });
+	await c.wait((f) => f.type === "agent_state" && f.paused === true);
+	c.send({ type: "send", text: "/gentle:memory-save" });
+	await c.wait((f) => f.type === "error" && f.code === "bad_request");
+	c.send({ type: "steer", text: "/gentle:memory-search" });
+	await c.wait((f) => f.type === "error" && f.code === "bad_request");
+	// A normal send while paused is still refused with `paused`, not bad_request.
+	c.send({ type: "send", text: "hola" });
+	await c.wait((f) => f.type === "error" && f.code === "paused");
+	assert.equal(engine.requests.filter((r) => r.type === "prompt").length, 0, "nothing reached the engine");
+});
+
+test("steer needs a busy turn; abort and new_conversation reach the engine", async (t) => {
+	const { endpoint, engine } = await setup(t);
+	const c = await login(t, endpoint);
+	c.send({ type: "steer", text: "x" });
 	await c.wait((f) => f.type === "error" && f.code === "not_busy");
 	engine.emit("event", { type: "agent_start" });
 	await c.wait((f) => f.type === "agent_state" && f.busy);

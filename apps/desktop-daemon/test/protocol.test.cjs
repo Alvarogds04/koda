@@ -87,7 +87,7 @@ test("translateEvent: tool activity carries a sanitized callId and a closed summ
 
 test("translateEvent: extension UI requests", () => {
 	const sel = P.translateEvent({ type: "extension_ui_request", id: "u1", method: "select", title: "Pick", options: ["a", "b", 3] });
-	assert.deepEqual(sel.ask, { id: "u1", kind: "select", title: "Pick", options: ["a", "b"] });
+	assert.deepEqual(sel.ask, { id: "u1", kind: "select", title: "Pick", options: ["a", "b"], originalOptions: ["a", "b"] });
 	assert.equal(P.translateEvent({ type: "extension_ui_request", id: "u2", method: "confirm", title: "Sure?" }).ask.kind, "confirm");
 	assert.equal(P.translateEvent({ type: "extension_ui_request", id: "u3", method: "input", title: "Name" }).ask.kind, "input");
 	assert.equal(P.translateEvent({ type: "extension_ui_request", id: "u4", method: "editor" }).cancelUi, "u4");
@@ -102,6 +102,31 @@ test("buildUiResponse validates against the pending ask", () => {
 	assert.equal(P.buildUiResponse(sel, { value: "zzz" }), undefined);
 	assert.equal(P.buildUiResponse({ id: "c", kind: "confirm", options: [] }, { value: "yes" }), undefined);
 	assert.deepEqual(P.buildUiResponse(sel, { cancelled: true }), { type: "extension_ui_response", id: "u1", cancelled: true });
+});
+
+// B2 (verifier): the island shows the REWRITTEN options, but the user's choice
+// must reach the engine as its ORIGINAL text (Gentle Dot bridge.ts maps the
+// answer back by position). Truncated and rewritten options round-trip too.
+test("buildUiResponse maps a shown select answer back to the engine's original option (B2)", () => {
+	const long = ("palabra ").repeat(45).trimEnd(); // 360 chars: over maxOptionChars
+	const shown = P.translateEvent({
+		type: "extension_ui_request",
+		id: "um",
+		method: "select",
+		title: "Memory",
+		options: ["Install engram", "/gentle:memory-save", long],
+	}).ask;
+	assert.equal(shown.options[0], "Install memory", "the shown option is white-labelled");
+	assert.equal(shown.options[1], "", "an internal command option is presented empty");
+	assert.ok(shown.options[2].length <= 200 && shown.options[2] !== long, "a long option is shown truncated");
+
+	const answer = (ask, value) => P.buildUiResponse(ask, { value });
+	assert.deepEqual(answer(shown, shown.options[0]), { type: "extension_ui_response", id: "um", value: "Install engram" }, "rewritten shown option answers with the original");
+	assert.deepEqual(answer(shown, shown.options[1]), { type: "extension_ui_response", id: "um", value: "/gentle:memory-save" }, "an option that presents empty still round-trips to the original");
+	assert.deepEqual(answer(shown, shown.options[2]), { type: "extension_ui_response", id: "um", value: long }, "a truncated option round-trips to the original");
+	// Nothing shown is still refused (the user's own typed value is not an option).
+	assert.equal(answer(shown, "Install engram"), undefined, "the ORIGINAL text is not a shown option and is refused");
+	assert.equal(answer(shown, "otra cosa"), undefined);
 });
 
 test("DTO sanitizers drop everything outside the allowlist", () => {
@@ -223,6 +248,31 @@ test("translateEvent: ask titles and options are rewritten (T2)", () => {
 	assert.deepEqual(ask.ask.options, ["assistant", "otro"]);
 	const confirm = P.translateEvent({ type: "extension_ui_request", id: "ub", method: "confirm", title: "el Gentleman lo autoriza" });
 	assert.equal(confirm.ask.title, "Koda lo autoriza");
+});
+
+// F2 (verifier): on abort/timeout/pause the turn never reaches message_end,
+// so the daemon emits one `message_flush` (its own marker — a Symbol, which
+// JSON could never forge) and the held tail leaves as a final delta.
+test("translateEvent: a cancelled turn flushes the held tail as a final delta (F2)", () => {
+	P.translateEvent({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "guardado en engram" } }, "w6");
+	const out = P.translateEvent({ type: "message_flush", flush: P.MESSAGE_FLUSH }, "w6");
+	assert.deepEqual(out.frames, [
+		{ type: "message_delta", messageId: "w6", text: "guardado en memory" },
+		{ type: "message_done", messageId: "w6" },
+	]);
+	assert.equal(out.messageDone, true);
+	// Nothing held (no stream, or already ended): a no-op, never fake done frames.
+	assert.deepEqual(P.translateEvent({ type: "message_flush", flush: P.MESSAGE_FLUSH }, "w6"), { frames: [] });
+	assert.deepEqual(P.translateEvent({ type: "message_flush", flush: P.MESSAGE_FLUSH }, "w8"), { frames: [] });
+	// A forged child record without the symbol marker is dropped.
+	P.translateEvent({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "cola" } }, "w9");
+	assert.deepEqual(P.translateEvent({ type: "message_flush" }, "w9"), { frames: [] });
+	assert.deepEqual(P.translateEvent({ type: "message_flush", flush: "message_flush" }, "w9"), { frames: [] });
+	// …but the daemon's real marker still flushes that same held tail.
+	assert.deepEqual(
+		P.translateEvent({ type: "message_flush", flush: P.MESSAGE_FLUSH }, "w9").frames.map((f) => f.text ?? f.type),
+		["cola", "message_done"],
+	);
 });
 
 // ----- v0.2: provider settings frames ---------------------------------------

@@ -70,35 +70,39 @@ function presentText(text) {
 }
 
 /**
- * Streaming (T2): how much of a rewritten chunk may still be shown when more
- * text can arrive. Every rewrite match is bounded — the longest is 26 chars
- * ("organic driven development") — so holding back the last HOLD_MAX
- * characters guarantees that no bounded name is ever half-emitted: a name is
- * only emitted once its whole span is further than HOLD_MAX from the end, and
- * any partial match still open at the end of the text sits inside the held
- * tail. `/gentle:` is the one UNBOUNDED match (the command token can be any
- * length), so an open token is held from its `/` until it closes.
+ * Streaming (T2, corrected by F1): the filter holds RAW text and only rewrites
+ * what can no longer change. Every rewrite match is bounded — the longest is 26
+ * chars ("organic driven development") — so holding back the last HOLD_MAX RAW
+ * characters guarantees that any hidden name still forming, or any word that
+ * might still grow out of a boundary cut («engram» + «as»), sits inside the
+ * held tail: a name is only rewritten once it cannot keep growing. `/gentle:`
+ * is the one UNBOUNDED match (the command token can be any length), so an open
+ * token is held from its `/` until it closes. Trailing whitespace is held too:
+ * presentText collapses runs of spaces and strips a space before punctuation,
+ * and both can still change when more text arrives.
  */
 const HOLD_MAX = 32;
 const OPEN_COMMAND = /\/gentle:/i;
 const OPEN_COMMAND_TAIL = /^[\w:-]*$/;
 
-function stableLength(shown) {
-	let keep = shown.length - HOLD_MAX;
+function stableRawLength(pending) {
+	let keep = pending.length - HOLD_MAX;
 	if (keep <= 0) return 0;
-	const open = shown.toLowerCase().lastIndexOf("/gentle:");
-	if (open !== -1 && open < keep && OPEN_COMMAND_TAIL.test(shown.slice(open + "/gentle:".length))) {
-		keep = Math.min(keep, open);
+	// An open /gentle: token is held whole from its `/` while its tail is still
+	// only command-token characters, however long it grows.
+	const open = pending.toLowerCase().lastIndexOf("/gentle:");
+	if (open !== -1 && open < keep && OPEN_COMMAND_TAIL.test(pending.slice(open + "/gentle:".length))) {
+		keep = open;
 	}
-	// Defence in depth for a non-idempotent rewrite (the replacements never
-	// produce matchable text, so `shown` should not contain any): a complete
-	// match crossing the boundary is held whole instead of being split.
+	// A complete hidden name that crosses the boundary is held whole from its
+	// start, so it is rewritten once (with the arriving tail) instead of being
+	// emitted half.
 	for (;;) {
 		let crossed = false;
 		for (const [pattern] of REWRITES) {
 			const re = new RegExp(pattern.source, pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`);
 			let match;
-			while ((match = re.exec(shown)) !== null) {
+			while ((match = re.exec(pending)) !== null) {
 				const end = match.index + match[0].length;
 				if (match.index < keep && end > keep) {
 					keep = match.index;
@@ -107,26 +111,31 @@ function stableLength(shown) {
 				if (match.index === re.lastIndex) re.lastIndex++;
 			}
 		}
-		if (!crossed) return keep;
+		if (!crossed) break;
 	}
+	// Trailing whitespace must not be finalized: a run of spaces can still grow
+	// or meet punctuation, which presentText rewrites across its whole span.
+	while (keep > 0 && pending[keep - 1] === " ") keep -= 1;
+	return keep;
 }
 
 /**
  * A stateful delta-stream filter (T2): `push` returns the text that is safe to
  * show now (possibly ""), `flush` returns whatever is still held once no more
  * text can arrive (the end of the assistant's message). Only assistant/harness
- * deltas ever go through it; the user's own text never does.
+ * deltas ever go through it; the user's own text never does. The held tail is
+ * RAW text (F1): the rewrite decision is never made on text that can still
+ * change, so the stream equals presentText(whole) for every delta split.
  */
 function createTextFilter() {
 	let pending = "";
 	return {
 		push(delta) {
 			pending += delta;
-			const shown = presentText(pending);
-			const keep = stableLength(shown);
+			const keep = stableRawLength(pending);
 			if (keep <= 0) return "";
-			const out = shown.slice(0, keep);
-			pending = shown.slice(keep);
+			const out = presentText(pending.slice(0, keep));
+			pending = pending.slice(keep);
 			return out;
 		},
 		flush() {

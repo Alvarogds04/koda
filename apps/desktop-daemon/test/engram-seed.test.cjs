@@ -27,9 +27,12 @@
 // Engine discovery / skip-require gate: the same convention as
 // test/pi-offline.test.cjs — GENTLE_PI_ROOT (a gentle-pi package directory) or
 // a real bundled runtime; skipped with the reason when absent, FAILED under
-// ABITO_REQUIRE_GENTLE=1. The gentle-engram@0.4.2 package is fetched with
-// `npm pack` into a temp cache (registry network allowed for this proof) or
-// taken from ABITO_ENGRAM_PKG when set. Only private temp dirs are used.
+// ABITO_REQUIRE_GENTLE=1. The gentle-engram@0.4.2 package (F8) is NEVER fetched
+// with an unpinned `npm pack`: it comes from ABITO_ENGRAM_PKG when set, from
+// the sibling of an installed engine closure (CI: the runtime lockfile install
+// GENTLE_PI_ROOT points into), or is installed with `npm ci --ignore-scripts`
+// from Koda's OWN runtime lockfile (apps/desktop-tauri/packaging/runtime,
+// sha512-pinned). Only private temp dirs are used.
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
@@ -58,8 +61,10 @@ function makeTemp(tag) {
 }
 
 /**
- * The real gentle-engram package directory: ABITO_ENGRAM_PKG when set, else
- * `npm pack gentle-engram@<version>` into a temp cache and extract it.
+ * The real gentle-engram package directory (F8, sha512-checked only):
+ * ABITO_ENGRAM_PKG when set, else the sibling of an installed engine closure
+ * (CI: GENTLE_PI_ROOT points into the runtime lockfile install), else a fresh
+ * `npm ci --ignore-scripts` from Koda's runtime lockfile into a temp dir.
  */
 function engramPackageDir() {
 	if (process.env.ABITO_ENGRAM_PKG) {
@@ -68,19 +73,42 @@ function engramPackageDir() {
 		assert.equal(pkg.name, "gentle-engram");
 		return dir;
 	}
-	const cache = path.join(os.tmpdir(), "abito-engram-pkg-cache", `gentle-engram-${ENGRAM_VERSION}`);
-	const installed = path.join(cache, "package");
+	if (gentleRoot) {
+		const sibling = path.join(path.dirname(gentleRoot), "gentle-engram");
+		try {
+			const pkg = JSON.parse(fs.readFileSync(path.join(sibling, "package.json"), "utf8"));
+			if (pkg.name === "gentle-engram" && pkg.version === ENGRAM_VERSION) return sibling;
+		} catch {}
+	}
+	const lockDir = path.join(__dirname, "..", "..", "desktop-tauri", "packaging", "runtime");
+	const cache = path.join(os.tmpdir(), "abito-engram-pkg-cache", "ci-install");
+	const installed = path.join(cache, "node_modules", "gentle-engram");
 	try {
 		const pkg = JSON.parse(fs.readFileSync(path.join(installed, "package.json"), "utf8"));
 		if (pkg.name === "gentle-engram" && pkg.version === ENGRAM_VERSION) return installed;
 	} catch {}
+	const staging = fs.mkdtempSync(path.join(os.tmpdir(), "abito-engram-ci-"));
+	process.on("exit", () => {
+		try {
+			fs.rmSync(staging, { recursive: true, force: true });
+		} catch {}
+	});
+	fs.copyFileSync(path.join(lockDir, "package.json"), path.join(staging, "package.json"));
+	fs.copyFileSync(path.join(lockDir, "package-lock.json"), path.join(staging, "package-lock.json"));
+	execFileSync("npm", ["ci", "--ignore-scripts", "--omit=dev", "--no-audit", "--no-fund"], {
+		cwd: staging,
+		stdio: ["ignore", "ignore", "inherit"],
+		timeout: 300_000,
+	});
+	// Move the fresh install into the reused cache slot (a partial or stale one
+	// is replaced whole; this is the test's own /tmp cache, nothing else's).
 	fs.mkdirSync(cache, { recursive: true });
-	const tgz = execFileSync("npm", ["pack", `gentle-engram@${ENGRAM_VERSION}`, "--pack-destination", cache], {
-		encoding: "utf8",
-		stdio: ["ignore", "pipe", "ignore"],
-		timeout: 120_000,
-	}).trim().split("\n").at(-1);
-	execFileSync("tar", ["-xzf", path.join(cache, tgz), "-C", cache], { stdio: "ignore", timeout: 60_000 });
+	fs.rmSync(cache, { recursive: true, force: true });
+	fs.mkdirSync(cache, { recursive: true });
+	fs.renameSync(path.join(staging, "node_modules"), path.join(cache, "node_modules"));
+	const pkg = JSON.parse(fs.readFileSync(path.join(installed, "package.json"), "utf8"));
+	assert.equal(pkg.name, "gentle-engram");
+	assert.equal(pkg.version, ENGRAM_VERSION);
 	return installed;
 }
 
