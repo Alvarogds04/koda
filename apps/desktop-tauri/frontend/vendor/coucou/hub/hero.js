@@ -134,7 +134,6 @@ function backdrop(canvas, color, pointerFrom, radius = 18) {
 }
 const COLORS = {
   dictation: "#FB923C",
-  notes: "#3B9EFF",
   insights: "#34D399",
   dictionary: "#A78BFA",
   snippets: "#F7B32B",

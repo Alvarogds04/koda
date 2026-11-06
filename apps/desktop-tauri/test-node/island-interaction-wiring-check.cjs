@@ -283,7 +283,7 @@ test('edge diagnostic is mirrored and transparent window hover is not pill hover
 for (const [surface, button] of [
   ['header home tab', true], ['header chat tab', true], ['gear', true], ['mute', true],
   ['pill', false], ['pill choice', false], ['Spotify np-pill', false],
-  ['usage stat card', false], ['GitHub row', false], ['GitHub control', true], ['recap card', false], ['recap control', true],
+  ['usage stat card', false], ['GitHub row', false], ['GitHub control', true],
   ['notice band', false], ['notice open button', true], ['notice dismiss button', true], ['notice clear button', true],
   ['session row', false], ['session ticker', false],
 ]) test('expanded press preserves the ' + surface + ' action without toggling or collapsing', () => {

@@ -26,16 +26,6 @@ const messages = {
   // Design 16 (option A): PR list with CI state and an explicit action
   Open: "Abrir", "Open {ref} on GitHub": "Abrir {ref} en GitHub", "{count} PR": "{count} PR", "{count} PRs": "{count} PR",
   "{count} review": "{count} revisión", "{count} reviews": "{count} revisiones", "no CI": "sin CI", "See all ({count}) →": "Ver todas ({count}) →", "CI: {state}": "CI de la rama: {state}",
-  // S10 (L30): weekly recap (views/recap.ts, recap/summary.ts)
-  "Weekly recap": "Resumen semanal", "No activity last week": "Sin actividad la semana pasada",
-  "Koda counts your agent sessions as they happen — check back next Monday.": "Koda cuenta tus sesiones de agentes a medida que ocurren: volvé el próximo lunes.",
-  coding: "programando", session: "sesión", sessions: "sesiones", file: "archivo", files: "archivos", lines: "líneas", commands: "comandos",
-  "Top agent": "Agente principal", "Top project": "Proyecto principal", "Busiest day": "Día más activo", "Longest session": "Sesión más larga",
-  Permissions: "Permisos", "{allowed} allowed, {denied} denied": "{allowed} permitidos, {denied} denegados", Questions: "Preguntas",
-  "Share image": "Compartir imagen", "The share image is not available in Koda yet.": "La imagen para compartir todavía no está disponible en Koda.", OK: "OK",
-  Sunday: "domingo", Monday: "lunes", Tuesday: "martes", Wednesday: "miércoles", Thursday: "jueves", Friday: "viernes", Saturday: "sábado",
-  "{n}m": "{n} min", "{n}h": "{n} h", "{h}h {m}m": "{h} h {m} min",
-  "Unavailable features": "No disponible en Koda todavía: carpeta de sonidos; recarga y contador de sonidos; inicio automático; idioma; resumen.",
 } as const;
 /** `{name}` placeholders, filled from `vars` (Coucou's interpolate). A missing variable stays as written. */
 function interpolate(text: string, vars?: Record<string, string | number>): string {

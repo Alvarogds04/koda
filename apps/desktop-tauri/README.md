@@ -222,7 +222,7 @@ aparece pese a recibir datos del servicio falso bloquea la puerta.
 
 ## HU-015 — Ajustes → Agentes without the engine (daemon-free hook route)
 
-Each agent row (Claude Code, Codex, OpenCode, Copilot CLI, recap, status-line relay) depends only on **its own hooks**.
+Each agent row (Claude Code, Codex, OpenCode, Copilot CLI, status-line relay) depends only on **its own hooks**.
 Pi and the daemon are not involved: with no Pi (or no daemon) Claude Code and Codex are listed, installable and removable.
 
 - `agent_action` takes `agents_list`, `hooks_preview`, `agent_connect`, `agent_disconnect` in `src/agents_direct.rs`

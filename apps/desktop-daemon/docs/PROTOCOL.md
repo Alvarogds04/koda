@@ -254,7 +254,7 @@ the last outcome (frame or failure) is served from memory, so clients cannot mak
 | Client → server | Fields | Reply / errors |
 |---|---|---|
 | `agents_list` | – | reply `agents` to the caller; `unavailable` (no dependency), `failed` |
-| `agent_connect` | `agentId` ∈ `claude-code, codex, recap, statusline, opencode`, `plan_hash` (64 lowercase hex; required for recap/statusline, optional for legacy ids) | broadcast `agents` to ALL clients (first a `working` state, then the result); `busy` while any operation runs; `bad_request`, `unavailable`, `failed` |
+| `agent_connect` | `agentId` ∈ `claude-code, codex, statusline, opencode`, `plan_hash` (64 lowercase hex; required for statusline, optional for legacy ids) | broadcast `agents` to ALL clients (first a `working` state, then the result); `busy` while any operation runs; `bad_request`, `unavailable`, `failed` |
 | `agent_disconnect` | `agentId` | same |
 
 ```
@@ -266,7 +266,7 @@ the last outcome (frame or failure) is served from memory, so clients cannot mak
 - `state` ∈ `not_connected, connected, outdated, working, unavailable, error`. `detail` is `null` or the CLOSED set
   `config_invalid, not_writable, backup_failed, plan_changed, audit_unavailable, install_failed, unsupported_platform`. Windows automatic hook installation returns `unavailable` with `unsupported_platform` without spawning the installer; this is not evidence that hooks are installed. **Tauri lane: `plan_changed`,
   `audit_unavailable` and `install_failed` are new members of that set and must render.** Extra fields are additive.
-- Ids/names are a fixed table (`claude-code` "Claude Code", `codex` "Codex", `recap` "Resumen semanal", `statusline` "Uso del plan (relay)", `opencode` "OpenCode"). `opencode` is ALWAYS `unavailable`
+- Ids/names are a fixed table (`claude-code` "Claude Code", `codex` "Codex", `statusline` "Uso del plan (relay)", `opencode` "OpenCode"). `opencode` is ALWAYS `unavailable`
   (not installable yet) and never spawns anything. Without `hookInstallerBin` every agent is `unavailable` (`detail: null`).
 - `plan_hash`, `summary`, `reviewable`, `trust_review` appear only for `not_connected` / `outdated` (and on `error/plan_changed`, which hands back the NEW plan to re-show).
   `summary` is a closed template (never file content): `Adds the Abito hooks (PermissionRequest, Stop) to ~/.claude/settings.json. A backup is made first.`
@@ -275,17 +275,19 @@ the last outcome (frame or failure) is served from memory, so clients cannot mak
   `backup` is true when a `<target>.abito-backup-*` regular file exists next to the target. Right after a successful Codex connect the entry also carries `trust_review: true` (hooks stay inactive until trusted in `/hooks`).
 - **Plan shown when the button appeared.** The island keeps the `plan_hash` of the `agents` frame it rendered and sends it in `agent_connect`.
   The daemon previews again; a different fresh plan => `error/plan_changed`, NOTHING is applied, the new `plan_hash`/`summary` come back. Without
-  `plan_hash` the fresh preview is applied for legacy ids only (opt-in; the human then saw nothing). Recap/statusline reject a missing hash as `bad_request`. Disconnect applies the fresh REMOVE plan (backup first; other tools' hooks are never touched).
+  `plan_hash` the fresh preview is applied for legacy ids only (opt-in; the human then saw nothing). Statusline rejects a missing hash as `bad_request`. Disconnect applies the fresh REMOVE plan (backup first; other tools' hooks are never touched).
 - One operation at a time, GLOBALLY: while it runs the agent is `working` (`agents_list` shows it) and further connect/disconnect get `error busy`.
   `agents_list` is cached 1 s and single-flight (each list = one read-only preview per installable agent). Frames count toward the 240/min per-client limit.
 - Every failure is generic: no stderr, stdout text, path or file content reaches the wire.
 
-**Notify-only integrations (#467, L32e).** Both new ids use `~/.claude/settings.json`, through the same installer CLI with no wire-supplied paths/argv/env. Recap's ordered preview entries are `UserPromptSubmit`, `PostToolUse`, `Stop`; statusline has exactly one entry, `statusLine`. Each entry accepts only `add`, `replace`, `remove`, `keep` (removal without our marker is `keep`). All-keep means connected, all-add not_connected, otherwise outdated, exactly as for Claude/Codex. Recap's closed summary says it adds notify-only hooks that only count activity for the weekly recap, keeps no command text/path/prompt and makes a backup first. Statusline's summary says it adds the relay in `~/.claude/settings.json`, the existing status line keeps working because the relay prints it, and a backup is made first. The statusline installer saves/restores the previous status line at `~/.abito/statusline-previous.json` (0600), as in the interactive flow. Script paths are derived from the installer's package, never supplied by the wire. Neither new integration spawns when `hookInstallerBin` is unset.
+**Notify-only integration (#467, L32e).** Statusline uses `~/.claude/settings.json`, through the same installer CLI with no wire-supplied paths/argv/env; it has exactly one entry, `statusLine`. Each entry accepts only `add`, `replace`, `remove`, `keep` (removal without our marker is `keep`). All-keep means connected, all-add not_connected, otherwise outdated, exactly as for Claude/Codex. Statusline's summary says it adds the relay in `~/.claude/settings.json`, the existing status line keeps working because the relay prints it, and a backup is made first. The statusline installer saves/restores the previous status line at `~/.abito/statusline-previous.json` (0600), as in the interactive flow. Script paths are derived from the installer's package, never supplied by the wire. It does not spawn when `hookInstallerBin` is unset.
 
-The hooks catalogue also accepts `recap` and `statusline` in `hooks_install`/`hooks_remove`, delegates them to AgentsManager and emits them as `mechanism:"harness"`. Its closed client set has nine entries and its emission cap is nine (other byte/diff caps unchanged). Install requires a plan hash; removal uses the freshly previewed REMOVE hash, like the existing harness clients. Unknown keys are dropped; authentication and rate-limit accounting are unchanged. Existing agent summaries still contain no raw diff/file content; the catalogue harness plans retain the existing summary-only diff representation.
+**Recap (removed in 0.2).** `recap` is no longer an agent id: `agent_connect`/`agent_disconnect`/`hooks_install`/`hooks_remove` with it are refused like any unknown id. The only remaining recap installer path is the REMOVAL-ONLY legacy profile `install recap --user --remove [--apply]` (`apps/desktop-harness/src/install-recap.cjs`; install without `--remove` is a usage error, exit 64 / JSON `code:"usage"`), which `AgentsManager.removeLegacyRecap()` runs once per daemon start to take the Koda 0.1 recap hooks (`UserPromptSubmit`, `PostToolUse`, `Stop` entries calling the deleted `bin/abito-recap-hook.cjs`) out of `~/.claude/settings.json` — dated backup first, marker-only removal, fixed log lines only; a refusal writes nothing and is retried next start. TODO: remove one version after K2-03.
+
+The hooks catalogue also accepts `statusline` in `hooks_install`/`hooks_remove`, delegates it to AgentsManager and emits it as `mechanism:"harness"`. Its closed client set has eight entries; the emission cap stays nine (other byte/diff caps unchanged). Install requires a plan hash; removal uses the freshly previewed REMOVE hash, like the existing harness clients. Unknown keys are dropped; authentication and rate-limit accounting are unchanged. Existing agent summaries still contain no raw diff/file content; the catalogue harness plans retain the existing summary-only diff representation.
 
 **Hooks catalogue addendum (#467, `hooks_preview` / `hooks_install` / `hooks_remove`, `src/agent-hooks.cjs`).** `clientId` also accepts `cursor`
-(closed set: `claude-code, codex, recap, statusline, gemini-cli, copilot-cli, opencode, amp, cursor`). Cursor is the one MERGED client: `~/.cursor/hooks.json` belongs to the
+(closed set: `claude-code, codex, statusline, gemini-cli, copilot-cli, opencode, amp, cursor`). Cursor is the one MERGED client: `~/.cursor/hooks.json` belongs to the
 user, so install adds three marker-tagged notify-only entries (`sessionStart`, `sessionEnd`, `stop`; `{version:1,hooks:{<event>:[{command}]}}`) next to their
 hooks and creates the file with `version: 1` only when absent; remove deletes only the entries carrying `abito-island-hooks/1` (and the file only if nothing
 but our stub remains). Unparseable JSON or an unexpected `hooks` shape is `foreign_file` (never rewritten). Backup first, hash-bound plan, shared notify
@@ -302,8 +304,10 @@ inherited socket (no discoverable session file): a security follow-up, NOT done.
 
 **How the installer is run.** `hookInstallerBin` (absolute normalized path of `apps/desktop-harness/bin/abito-hook.cjs`, no default) is checked before every
 spawn (regular non-symlink file owned by you/root, not group/world-writable, secure parent chain; a checkout with mode 664 is refused) and spawned as
-`[node, installer, install <claude|codex|recap|statusline> --user [--remove] --json]` (preview) / `... --apply-plan <hash> --audit-dir <island>/audit --json` (apply):
-shell:false, own process group killed whole after 10 s, stdout capped at 256 KiB, stderr drained and never surfaced. The env is an ALLOWLIST
+`[node, installer, install <claude|codex|statusline> --user [--remove] --json]` (preview) / `... --apply-plan <hash> --audit-dir <island>/audit --json` (apply):
+shell:false, own process group killed whole after 10 s, stdout capped at 256 KiB, stderr drained and never surfaced. The removal-only legacy
+profile `install recap --user --remove [--apply]` (Koda 0.1 recap-hook cleanup; install without `--remove` is a usage error) runs through this same
+spawn path once per daemon start. The env is an ALLOWLIST
 (`PATH=/usr/bin:/bin`, `HOME` = the daemon's REAL home, `LANG`) plus `ABITO_ISLAND_EXE` = realpath of the daemon's node; no agent markers, `PI_*` or provider vars.
 The daemon is the authenticated caller, so installer guard (i) becomes "the parent is the daemon's node" (guard (ii) is satisfied by the scrubbed env).
 **Endpoint handoff consumed by hooks (enforced rules).** An explicit `ABITO_DESKTOP_SOCKET` wins after endpoint-shape validation and causes no `endpoint.json` read. Otherwise runtime selection is ordered: `ABITO_SOCKET_DIR` (when set, absolute, normalized and non-root), else `$XDG_RUNTIME_DIR/abito-island` only when `XDG_RUNTIME_DIR` is absolute, normalized and non-root, else `/run/user/<uid>/abito-island`.

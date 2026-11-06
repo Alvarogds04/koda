@@ -247,6 +247,7 @@ function parseUiArgs(argv) {
   if (!o || o.apply) return null;
   if (harness === 'pi' && (!o.user || o.timeoutSec !== null)) return null;
   if (['recap', 'statusline'].includes(harness) && o.timeoutSec !== null) return null;
+  if (harness === 'recap' && !o.remove) return null; // K2-03: removal-only legacy profile (src/install-recap.cjs)
   if (applyPlan !== null && (!json || auditDir === null)) return null;
   if (applyPlan === null && auditDir !== null) return null;
   return { harness, o, json, applyPlan, auditDir };

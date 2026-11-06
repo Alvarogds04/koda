@@ -857,7 +857,7 @@ function removeAgentHook(options = {}) {
 
 // copilot-cli and opencode moved to the harness installer (they now ANSWER permissions, not only notify). Their notify-only native
 // adapters stay below for the module API/tests, but the composed service never shows or drives them, so nothing owns a file twice.
-const HARNESS_IDS = Object.freeze(["claude-code", "codex", "recap", "statusline", "copilot-cli", "opencode"]);
+const HARNESS_IDS = Object.freeze(["claude-code", "codex", "statusline", "copilot-cli", "opencode"]);
 /** The full closed catalogue, in presentation order. */
 const CATALOGUE_IDS = Object.freeze([...new Set([...HARNESS_IDS, ...CLIENT_IDS])]);
 

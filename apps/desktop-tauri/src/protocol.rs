@@ -806,6 +806,17 @@ impl NoticeStore {
     }
 }
 
+/// K2-03/T1 (S3, S5): the island's one log line for an accepted `settled` notice. It is CONTENT-FREE on purpose — no
+/// project, session, event id, project name, agent or text — so the installer smokes on Linux, macOS and Windows can
+/// prove «a notice reached the island» from the island log alone, without any user data.
+pub const SETTLED_NOTICE_LOG_LINE: &str = "island: settled notice accepted";
+
+/// The line to log after `NoticeStore::accept` returned `accepted` for `event`: `Some` only for an accepted `settled`
+/// notice (never a deduped replay, an `attention` notice, its clearing frame, a hello or a heartbeat).
+pub fn accepted_notice_log_line(event: &Message, accepted: bool) -> Option<&'static str> {
+    (accepted && event.kind == KIND_SETTLED).then_some(SETTLED_NOTICE_LOG_LINE)
+}
+
 // --- tests: written first, RED then GREEN -----------------------------------
 
 #[cfg(test)]
@@ -1616,6 +1627,37 @@ mod tests {
         }
         assert!(notice_text_ok(&"é".repeat(ATTENTION_DETAIL_MAX), ATTENTION_DETAIL_MAX), "the bound counts chars, not bytes");
         assert!(!notice_text_ok(&"é".repeat(ATTENTION_DETAIL_MAX + 1), ATTENTION_DETAIL_MAX));
+    }
+
+    // --- K2-03/T1 (S3, S5): one content-free island log line per accepted settled notice -------
+
+    #[test]
+    fn accepted_settled_notice_logs_one_content_free_line() {
+        let project = project();
+        let identity = identity_of(&project);
+        let mut settled = settled_value(&project);
+        settled["projectName"] = json!("secret-project");
+        settled["agent"] = json!("claude-code");
+        let settled = parse(&settled, &project, Some(&identity), NOW).expect("settled");
+        let attention = parse(&attention_value("attn-1"), &project, Some(&identity), NOW).expect("attention");
+        let mut store = NoticeStore::new(project.clone());
+
+        let accepted = store.accept(&settled, NOW);
+        assert!(accepted);
+        assert_eq!(accepted_notice_log_line(&settled, accepted), Some(SETTLED_NOTICE_LOG_LINE));
+        // a replay is deduped: not accepted, so no line
+        let replay = store.accept(&settled, NOW);
+        assert_eq!(accepted_notice_log_line(&settled, replay), None);
+        // an accepted attention notice is not a settled turn: no line
+        let accepted_attention = store.accept(&attention, NOW);
+        assert!(accepted_attention);
+        assert_eq!(accepted_notice_log_line(&attention, accepted_attention), None);
+
+        // content-free: none of the event's project, session, id, name or agent appear
+        assert_eq!(SETTLED_NOTICE_LOG_LINE, "island: settled notice accepted");
+        for secret in [project.as_str(), "session-1", "event-1", "secret-project", "claude-code", "/project"] {
+            assert!(!SETTLED_NOTICE_LOG_LINE.contains(secret), "the line leaks {secret}");
+        }
     }
 
 }

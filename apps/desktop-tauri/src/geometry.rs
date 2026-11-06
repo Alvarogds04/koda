@@ -16,7 +16,7 @@ pub const COMPACT_BAR: (i32, i32) = (288, 32);
 /// The compact pill's widths in logical px: at rest, and widened for session rows, or 560 for a pending question/permission (island-layout.js COMPACT_W / COMPACT_WIDE / COMPACT_ASK; a test keeps the two in step).
 pub const COMPACT_WIDTHS: [i32; 3] = [288, 440, 560];
 pub const OVERVIEW_VISIBLE: (i32, i32) = (720, 150);
-/// One logical native window for compact, overview, question/recap and chat.
+/// One logical native window for compact, overview, question and chat.
 pub const ISLAND_WINDOW: (i32, i32) = (752, 340);
 pub const CHAT_COLUMN_W: i32 = 720;
 pub const CHAT_MIN_H: i32 = 240;

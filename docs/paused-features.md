@@ -11,13 +11,30 @@ General, never on a blank page.
 
 | Feature | Ajustes | Island | Inside |
 | --- | --- | --- | --- |
-| Dictado + Flow pages (Notetaker, Estadísticas, Diccionario, Fragmentos, Estilos, Ajustes de dictado) | hidden | no dictation pill | engine and `CTRL+ALT+v` portal key never start |
+| Dictado + Flow pages (Estadísticas, Diccionario, Fragmentos, Estilos, Ajustes de dictado) | hidden | no dictation pill | engine and `CTRL+ALT+v` portal key never start |
 | Voice wake word («Koda») | hidden | — | microphone listener never starts |
 | Integraciones (GitHub, n8n, Vercel, Stripe, Resend, Notion, Cal.com) | hidden | no rows, no cards | no poller threads, no network |
 | Spotify | (a service pill) | no card | `spotify_action` answers `paused` |
 | Teléfono Android | hidden | — | the link server never ran in production |
 
-Active: Chat, Agentes (sessions, Sileo questions/permissions/notices, recap, plan usage), General, Atajos, Privacidad.
+Active: Chat, Agentes (sessions, Sileo questions/permissions/notices, plan usage), General, Atajos, Privacidad.
+
+## Removed in 0.2 (not paused): Recap and Notetaker
+
+The weekly **Recap** and the **Notetaker** placeholder page were removed in Koda 0.2 — they are gone, not paused:
+there is no `recap` agent id and no `notes` hub page. What remains is legacy cleanup only:
+
+- At every daemon start, `AgentsManager.removeLegacyRecap()` (`apps/desktop-daemon/src/agents.cjs`) runs the
+  REMOVAL-ONLY installer profile `install recap --user --remove` (`apps/desktop-harness/src/install-recap.cjs`;
+  install is a usage error) to take the Koda 0.1 recap hooks (`UserPromptSubmit`, `PostToolUse`, `Stop` entries
+  calling the deleted `bin/abito-recap-hook.cjs`) out of `~/.claude/settings.json`: dated backup first, marker-only
+  removal, fixed log lines; a refusal writes nothing and is retried next start. TODO: remove one version after K2-03.
+- At island start (`apps/desktop-tauri/src/legacy_recap.rs`), Koda deletes ONLY `<app_local_data_dir>/recap.json`,
+  its `recap.json.corrupt-*` copies in that same dir and `<runtime>/recap-events.jsonl` — always as regular files,
+  never a symlink target, never a directory, never recursive. «Koda weekly recap» PNG images the user saved are
+  NOT deleted.
+- The island logs exactly one content-free stderr line, `island: settled notice accepted`, per accepted settled
+  notice; the installer smokes (Linux/macOS/Windows) wait for that line instead of `recap.json`.
 
 **Stored preferences are never rewritten.** A paused feature with its preference «on» simply does not start.
 

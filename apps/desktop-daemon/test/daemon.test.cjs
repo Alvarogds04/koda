@@ -778,6 +778,51 @@ test("agents through the daemon: hookInstallerBin wires AgentsManager, agentsAva
 	}
 });
 
+// K2-03 T3 (S2): every daemon start asks the installer to take out the removed Recap's 0.1 hooks (removal-only legacy
+// profile, preview first). It never blocks the start: the daemon is ready while the cleanup runs, and a refusal is logged.
+test("agents: daemon start runs the legacy recap hook cleanup once, removal-only, without blocking", { skip: win && "registered gap K2-01b (P2): POSIX-path values are refused by the POSIX-only validators on Windows; twin: config.test.cjs 'registered gap K2-01b: absolute Windows paths are refused for connectorsCommand, hookInstallerBin and connectorHostBin (POSIX-only validators)'" }, async () => {
+	const { daemon, root, base, logs } = make({ options: { agentsOptions: {} } });
+	const inst = agentsInstaller(base);
+	daemon.options.agentsOptions = { home: inst.home };
+	await configure(root, { hookInstallerBin: inst.file });
+	await daemon.start();
+	try {
+		const calls = () => (fs.existsSync(`${path.join(base, "agents-scenario.json")}.calls`) ? fs.readFileSync(`${path.join(base, "agents-scenario.json")}.calls`, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l).argv) : []);
+		await waitFor(() => calls().some((a) => a[1] === "recap"));
+		await waitFor(() => logs.some((l) => l.startsWith("legacy recap hooks")));
+		const recap = calls().filter((a) => a[1] === "recap");
+		assert.deepEqual(recap, [["install", "recap", "--user", "--remove", "--json"]], "one preview of the REMOVAL, never an install");
+		// the fake installer refuses unknown scenarios: nothing applied, a fixed content-free line logged
+		assert.ok(logs.includes("legacy recap hooks: cleanup refused; retrying next start"), JSON.stringify(logs));
+		assert.ok(!logs.join("").includes(base));
+	} finally {
+		await daemon.stop();
+	}
+});
+
+test("agents: a legacy recap cleanup whose installer answers garbage leaves the daemon running and serving", { skip: win && "registered gap K2-01b (P2): POSIX-path values are refused by the POSIX-only validators on Windows; twin: config.test.cjs 'registered gap K2-01b: absolute Windows paths are refused for connectorsCommand, hookInstallerBin and connectorHostBin (POSIX-only validators)'" }, async () => {
+	const { daemon, root, base, logs } = make({ options: { agentsOptions: {} } });
+	const inst = agentsInstaller(base);
+	const scenarioFile = path.join(base, "agents-scenario.json");
+	const scenario = JSON.parse(fs.readFileSync(scenarioFile, "utf8"));
+	scenario.recap = { previewRemove: { exit: 0, stdout: "garbage, not one JSON line\n" } };
+	fs.writeFileSync(scenarioFile, JSON.stringify(scenario));
+	daemon.options.agentsOptions = { home: inst.home };
+	await configure(root, { hookInstallerBin: inst.file });
+	await daemon.start();
+	try {
+		await waitFor(() => logs.includes("legacy recap hooks: cleanup failed; retrying next start"));
+		assert.equal(daemon.status().agentsAvailable, true);
+		const { socket, frames } = await connect(readSession(root));
+		await waitFor(() => frames.some((f) => f.type === "ready"));
+		socket.write(`${JSON.stringify({ type: "agents_list" })}\n`);
+		await waitFor(() => frames.some((f) => f.type === "agents"));
+		socket.destroy();
+	} finally {
+		await daemon.stop();
+	}
+});
+
 test("agents: no hookInstallerBin -> agentsAvailable false, every agent unavailable (no execution)", async () => {
 	const { daemon, root } = make();
 	await daemon.start();

@@ -168,7 +168,7 @@ const alive = (pid) => {
 };
 const keepKeep = (harness) => ({ exit: 0, stdout: preview({ harness, ops: ["keep", "keep"] }) });
 
-for (const [id, events] of [['recap', ['UserPromptSubmit', 'PostToolUse', 'Stop']], ['statusline', ['statusLine']]]) {
+for (const [id, events] of [['statusline', ['statusLine']]]) {
  test(`${id}: closed wire, event contract, exact argv/env and stale plan refusal`, async t => {
   const P = require('../src/protocol.cjs');
   const frame = P.validateClientFrame({ type: 'agent_connect', agentId: id, plan_hash: HASH_A, argv: ['--apply'], env: { EVIL: '1' } });
@@ -202,11 +202,87 @@ for (const [id, events] of [['recap', ['UserPromptSubmit', 'PostToolUse', 'Stop'
    assert.equal(byId(await s.manager.list(), id).detail, 'install_failed');
   }
  });
+ }
+
+// K2-03 S1: Recap is gone, not paused: `agent_connect` naming it is refused at the door (unknown id) and
+// the manager refuses it like any id outside the closed set, with or without a plan hash.
+test('recap is no longer an agent: the protocol and the manager refuse it like any unknown id', async t => {
+	const P = require('../src/protocol.cjs');
+	assert.equal(P.validateClientFrame({ type: 'agent_connect', agentId: 'recap', plan_hash: HASH_A }), undefined);
+	assert.equal(P.validateClientFrame({ type: 'agent_disconnect', agentId: 'recap' }), undefined);
+	assert.equal(P.validateClientFrame({ type: 'hooks_install', clientId: 'recap', plan_hash: HASH_A }), undefined);
+	assert.equal(P.validateClientFrame({ type: 'hooks_remove', clientId: 'recap', plan_hash: HASH_A }), undefined);
+	const s = setup(t, {});
+	await assert.rejects(s.manager.connect('recap', HASH_A), e => e.code === 'bad_request');
+	await assert.rejects(s.manager.connect('recap'), e => e.code === 'bad_request');
+	await assert.rejects(s.manager.disconnect('recap'), e => e.code === 'bad_request');
+	assert.ok(!s.calls().length, 'nothing reached the installer');
+	assert.ok(!(await s.manager.list()).some(a => a.id === 'recap'), 'no recap row in the agents list');
+});
+
+// ----- K2-03 T3 (S2): removeLegacyRecap through the installer seam (same on Linux, macOS and Windows) -------------------
+// The file effects (only the 0.1 recap entries go, backup first, everything else byte-identical) are proven through the
+// REAL installer by desktop-harness test/install-recap.test.cjs and test/install-ui.test.cjs on all three OS. Here: the
+// daemon side asks for a REMOVAL preview, applies exactly that plan only when it changes something, and never rejects.
+const recapPreview = (changed, hash = HASH_R) => ({ schema: SCHEMA, ok: true, mode: "preview", harness: "recap", action: "remove", target: "x", exists: true, changed,
+	entries: ["UserPromptSubmit", "PostToolUse", "Stop"].map((event) => ({ event, op: changed ? "remove" : "keep" })), backup_path: null,
+	diff: { lines: [], hidden: 0, outside_hooks_changed_lines: 0 }, requires_trust_review: false, plan_hash: hash, notes: [] });
+function legacy(t, answer) {
+	const argvs = [], logs = [];
+	const s = setup(t, {}, { verifyBundled: () => {}, log: (l) => logs.push(l), run: async (argv) => {
+		argvs.push(argv.slice(1));
+		const out = answer(argv);
+		if (out instanceof Error) throw out;
+		return { exit: out.exit ?? (out.ok === false ? 65 : 0), stdout: Buffer.from(typeof out === "string" ? out : `${JSON.stringify(out.stdout ?? out)}\n`) };
+	} });
+	return { s, argvs, logs };
 }
+const PREVIEW_ARGS = ["install", "recap", "--user", "--remove", "--json"];
+
+test("legacy recap: preview removes something -> apply that exact plan (hash, audit dir), removed, one fixed log line", async (t) => {
+	const { s, argvs, logs } = legacy(t, (argv) => (argv.includes("--apply-plan") ? applied({ harness: "recap", action: "remove", hash: HASH_R }) : recapPreview(true)));
+	assert.equal(await s.manager.removeLegacyRecap(), "removed");
+	assert.deepEqual(argvs, [PREVIEW_ARGS, ["install", "recap", "--user", "--remove", "--apply-plan", HASH_R, "--audit-dir", path.join(s.islandDir, "audit"), "--json"]]);
+	assert.deepEqual(logs, ["legacy recap hooks removed"]);
+});
+
+test("legacy recap: nothing to remove -> clean, no apply, nothing logged (a second start is a no-op)", async (t) => {
+	const { s, argvs, logs } = legacy(t, () => recapPreview(false));
+	assert.equal(await s.manager.removeLegacyRecap(), "clean");
+	assert.deepEqual(argvs, [PREVIEW_ARGS]);
+	assert.deepEqual(logs, []);
+});
+
+test("legacy recap: an installer refusal (preview or apply) writes nothing more, logs a fixed line and is retried next start", async (t) => {
+	const atPreview = legacy(t, () => ({ ok: false, schema: SCHEMA, code: "refused", message: "fixed" }));
+	assert.equal(await atPreview.s.manager.removeLegacyRecap(), "refused");
+	assert.deepEqual(atPreview.argvs, [PREVIEW_ARGS], "no apply after a refused preview");
+	assert.deepEqual(atPreview.logs, ["legacy recap hooks: cleanup refused; retrying next start"]);
+	const atApply = legacy(t, (argv) => (argv.includes("--apply-plan") ? { ok: false, schema: SCHEMA, code: "plan_changed", message: "fixed" } : recapPreview(true)));
+	assert.equal(await atApply.s.manager.removeLegacyRecap(), "refused");
+	assert.equal(atApply.argvs.length, 2);
+	assert.ok(!atApply.logs.join("").includes(atApply.s.home), "no path in the log");
+});
+
+test("legacy recap: an install-shaped or mismatched answer is never applied", async (t) => {
+	const install = legacy(t, () => ({ ...recapPreview(true), action: "install" }));
+	assert.equal(await install.s.manager.removeLegacyRecap(), "failed");
+	assert.deepEqual(install.argvs, [PREVIEW_ARGS], "an install preview is never applied");
+	const mismatch = legacy(t, (argv) => (argv.includes("--apply-plan") ? applied({ harness: "recap", action: "remove", hash: HASH_B }) : recapPreview(true)));
+	assert.equal(await mismatch.s.manager.removeLegacyRecap(), "failed", "an apply answer for another plan is not success");
+});
+
+test("legacy recap: never rejects — garbage, a throwing run and a throwing logger all resolve (the daemon's void call is safe)", async (t) => {
+	assert.equal(await legacy(t, () => "garbage, not one JSON line\n").s.manager.removeLegacyRecap(), "failed");
+	assert.equal(await legacy(t, () => new Error("spawn exploded")).s.manager.removeLegacyRecap(), "failed");
+	const s = setup(t, {}, { verifyBundled: () => {}, run: async () => { throw new Error("x"); }, log: () => { throw new Error("log exploded"); } });
+	assert.equal(await s.manager.removeLegacyRecap(), "failed");
+	assert.equal(await new AgentsManager({ home: s.home, islandDir: s.islandDir, run: () => assert.fail("must not spawn") }).removeLegacyRecap(), "unavailable");
+});
 
 test("installerBin unset: every agent unavailable, no spawn", async () => {
 	const m = new AgentsManager({ home: os.tmpdir(), islandDir: os.tmpdir(), run: () => { assert.fail('must never spawn without installerBin'); } });
-	for (const id of ['recap', 'statusline']) {
+	for (const id of ['statusline']) {
 		assert.equal(byId(await m.connect(id, HASH_A), id).state, 'unavailable');
 		assert.equal(byId(await m.disconnect(id), id).state, 'unavailable');
 	}
@@ -216,7 +292,6 @@ test("installerBin unset: every agent unavailable, no spawn", async () => {
 		[
 			["claude-code", "Claude Code", "unavailable", null, false],
 			["codex", "Codex", "unavailable", null, false],
-			["recap", "Resumen semanal", "unavailable", null, false],
 			["statusline", "Uso del plan (relay)", "unavailable", null, false],
 			["copilot-cli", "Copilot CLI", "unavailable", null, false],
 			["opencode", "OpenCode", "unavailable", null, false],
@@ -242,7 +317,7 @@ test("state mapping: not_connected with plan_hash and closed summaries", async (
 	assert.equal(codex.trust_review, true);
 	assert.equal(byId(list, "opencode").state, "unavailable", "no OpenCode settings dir in the private HOME: not installed");
 	assert.equal(byId(list, "copilot-cli").state, "unavailable");
-	assert.equal(s.calls().length, 7, "one read-only preview per agent");
+	assert.equal(s.calls().length, 6, "one read-only preview per agent");
 });
 
 test("state mapping: connected has no plan fields; replace and mixed ops are outdated", async (t) => {
@@ -323,13 +398,13 @@ test("list is cached for 1 s and concurrent calls are single-flight", async (t) 
 	const [a, b, c] = await Promise.all([s.manager.list(), s.manager.list(), s.manager.list()]);
 	assert.deepEqual(a, b);
 	assert.deepEqual(b, c);
-	assert.equal(s.calls().length, 7);
+	assert.equal(s.calls().length, 6);
 	clock += 900;
 	await s.manager.list();
-	assert.equal(s.calls().length, 7, "served from cache inside 1 s");
+	assert.equal(s.calls().length, 6, "served from cache inside 1 s");
 	clock += 200;
 	await s.manager.list();
-	assert.equal(s.calls().length, 14, "expired cache re-previews");
+	assert.equal(s.calls().length, 12, "expired cache re-previews");
 });
 
 test("argv is exactly the contract: preview, apply with --audit-dir, optional --timeout-sec", async (t) => {
@@ -373,7 +448,7 @@ test("child env: allowlist + ABITO_ISLAND_EXE only, HOME is the real home passed
 			else process.env[k] = saved[k];
 		}
 	}
-	assert.equal(s.calls().length, 7);
+	assert.equal(s.calls().length, 6);
 	// The product allowlist is DERIVED from src/agents.cjs childEnv (never guessed): what the manager
 	// passes is exactly childEnv(), plus the OS-injected keys above (the real spawn's child process
 	// environment carries them on Windows; the injected-run HU-047 tests pin the option itself).

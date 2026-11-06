@@ -124,6 +124,27 @@ test('ci.yml installer-smoke-macos: runs the no-node smoke AFTER the existing in
   assert.match(step, /python3 ci\/public\/smoke-macos-no-node\.py "\$dmg" "\$RUNNER_TEMP\/koda-no-node"/);
   assert.match(j, /koda-no-node\/\*\.log/, 'its log is uploaded');
 });
+test('smoke-macos.py (K2-02): the missing-runtime case is a BROKEN BUNDLED RUNTIME, never the 0.1 «Falta Pi» advice an installed Koda can no longer show', () => {
+  // CI 42109391233 (main d18404c): with the bundled runtime the daemon STARTED when the runner's Pi was hidden (correct), so
+  // waiting for «pi_missing»/«Falta Pi…» failed. The macOS twin of the Windows fix f94afcd: the installed runtime manifest is
+  // moved away, the island must print the exact code line and reinstall sentence, the daemon must NOT start, notices still
+  // work (the transport starts before and apart from the daemon), and the manifest is restored in a finally.
+  const smoke = read(path.join(crate, 'ci/public/smoke-macos.py'));
+  assert.doesNotMatch(smoke, /pi_missing|Falta Pi: instalalo|smoke-disabled/, 'no 0.1 missing-Pi expectation from an installed Koda');
+  const at = smoke.indexOf('manifest = app / "Contents/Resources/runtime/koda-runtime.json"');
+  assert.ok(at > 0, 'the case targets the installed Resources/runtime manifest');
+  const block = smoke.slice(at);
+  assert.match(block, /manifest\.rename\(moved\)/, 'the manifest is moved away');
+  assert.match(block, /broken = launch\("broken-runtime"\)/);
+  assert.ok(block.includes('"island host: no_daemon (bundled_runtime_invalid)" in broken'), 'exact code line');
+  assert.ok(block.includes('"La instalación de Koda está dañada: volvé a instalar Koda." in broken'), 'exact sentence');
+  assert.match(block, /"abito-island-daemon: running" not in broken/, 'the daemon must not start');
+  assert.match(block, /"ABITO_DESKTOP_SOCKET=" in broken/, 'notices still work on a broken runtime');
+  assert.match(block, /finally:\n\s+moved\.rename\(manifest\)/, 'the manifest is put back');
+  const j = job('installer-smoke-macos');
+  assert.match(j, /- name: Broken bundled runtime fails closed with notices still available \(installed copy\)\n/);
+  assert.doesNotMatch(j, /Missing-Pi advice/);
+});
 
 /* ---------------- Windows ---------------- */
 const winScript = path.join(crate, 'ci/public/smoke-windows-runtime.ps1');

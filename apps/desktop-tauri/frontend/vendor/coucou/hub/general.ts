@@ -1,7 +1,6 @@
 // Adapted from Coucou src/settings/main.ts generalSection @434d6a2b, Copyright (c) 2026 Louis Raillé, MIT.
-// Abito-owned persistence, name, theme, shortcut and recap wiring through existing closed hosts.
+// Abito-owned persistence, name, theme and shortcut wiring through existing closed hosts.
 import { h, clear } from '../views/dom.js';
-import { renderRecapRows } from './recap.js';
 import { createBridge } from '../bridge-abito.js';
 import { toggle, select, button, segmented } from './ui.js';
 import { t, LANGUAGES } from './i18n-es.js';
@@ -34,7 +33,6 @@ export async function renderGeneral({ invoke, V, navigate }: { invoke: (cmd: str
   let prefs = await invoke('prefs_action', { payload: { action: 'view' } });
   let autostart = await invoke('prefs_action', { payload: { action: 'autostart_view' } });
   let hotkey = await invoke('hotkey_action', { payload: { action: 'view' } });
-  const recap = await renderRecapRows({ invoke });
   let queue = Promise.resolve(), issue = '', nameDraft: string | null = null, capturing = false;
   const root = h('div', {});
   const send = (cmd: string, payload: any) => invoke(cmd, { payload });
@@ -159,8 +157,7 @@ export async function renderGeneral({ invoke, V, navigate }: { invoke: (cmd: str
         notchTipRow('Ocultar plegada tras (s)', 'Segundos con la isla plegada; vuelve al acercar el mouse, con un aviso o con una pregunta.', absence),
         row(t('Island lives on'), screen),
         // L2 «General: A» / propuesta: the global shortcut is edited in ONE place, Atajos. Same pref, same hotkey_action.
-        notchTipRow('Atajo global', (g.hotkey?.note || (g.hotkey?.backendLabel ? `Se registra como: ${g.hotkey.backendLabel}.` : 'Combinación que abre o cierra la isla desde cualquier app.')) + ' Se edita en Atajos.', h('span', { class: 'keycap static', text: hotkey.combo || '—' }), trusted(button('Ir a Atajos', () => navigate?.('shortcuts')))),
-        recap),
+        notchTipRow('Atajo global', (g.hotkey?.note || (g.hotkey?.backendLabel ? `Se registra como: ${g.hotkey.backendLabel}.` : 'Combinación que abre o cierra la isla desde cualquier app.')) + ' Se edita en Atajos.', h('span', { class: 'keycap static', text: hotkey.combo || '—' }), trusted(button('Ir a Atajos', () => navigate?.('shortcuts'))))),
       notchCard('Sonido',
         row(t('Sound'), sound, volume),
         h('div', { class: 'row' }, soundsFolder, soundsReload, infoTip(t("Drop a file named like one of el personaje's sounds (finish.wav, approval.mp3, greet.m4a…) in the sounds folder to replace it, then Reload."), 'Más información: Sonidos'), h('span', { class: 'hint', text: customCount > 0 ? t('{0} custom', { 0: customCount }) : '' }))),
@@ -168,5 +165,5 @@ export async function renderGeneral({ invoke, V, navigate }: { invoke: (cmd: str
     if (capturing) { capture.focus?.(); }
   }
   paint();
-  return Object.assign(root, { dispose: () => recap.dispose(), settled: async () => { await queue; await recap.settled(); } });
+  return Object.assign(root, { dispose: () => {}, settled: async () => { await queue; } });
 }

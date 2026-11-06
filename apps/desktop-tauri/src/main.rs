@@ -41,7 +41,6 @@ mod secretshost;
 mod oauthhost;
 mod soundshost;
 mod failurehost;
-mod recaphost;
 mod planhost;
 mod dictationhost;
 mod voicehost;
@@ -257,10 +256,9 @@ fn start_transport(app: &AppHandle) {
                 .lock()
                 .expect("notices lock")
                 .accept(&message, now_ms() as u64);
-            // S4/T2: only a `settled` turn is a finished turn for the recap. An `attention` notice (Codex asks in its
-            // own terminal) and its `attention_clear` frame change what the island shows, never the turn statistics.
-            if accepted && message.kind == "settled" {
-                recaphost::note_settled(&notice_app, &state.project);
+            // K2-03/T1: one content-free line per accepted settled notice; the installer smokes wait for it.
+            if let Some(line) = protocol::accepted_notice_log_line(&message, accepted) {
+                eprintln!("{line}");
             }
             publish(&notice_app, &state);
         })
@@ -1182,9 +1180,7 @@ async fn desktop_action(
         };
         let handle = app.clone();
         Ok(tauri::async_runtime::spawn_blocking(move || {
-            let allowed = decision == approval::Decision::Allow;
             approval::decide(&approval, decision, &hooks);
-            recaphost::note_decision(&handle, allowed);
             let state = handle.state::<AppState>();
             build_snapshot(&handle, &state)
         })
@@ -1670,9 +1666,7 @@ fn dispatch_action(
             } else {
                 approval::Decision::Deny
             };
-            let allowed = decision == approval::Decision::Allow;
             approval::decide(&state.approval, decision, &hooks);
-            recaphost::note_decision(app, allowed);
             Ok(build_snapshot(app, state))
         }
         Action::Choose => {
@@ -1946,7 +1940,6 @@ fn main() {
         .plugin(navigation_lock())
         .manage(state)
         .manage(abito_island::daemonhost::HostSlot::default())
-        .manage(recaphost::RecapSlot::default())
         .invoke_handler(tauri::generate_handler![
             drag_press,
             drag_move,
@@ -1983,7 +1976,6 @@ fn main() {
             monitorshost::monitor_action,
             soundshost::sound_action,
             failurehost::failure_action,
-            recaphost::recap_action,
             planhost::plan_action,
             dictationhost::dictation_action,
             voicehost::voice_action,
@@ -2122,6 +2114,15 @@ fn main() {
             // #306 settings prefs: `settingshost::start` runs before the island is placed (#264)
             specialistshost::start(&handle); // #327: the manual specialists (empty = the principal)
             chathost::start_history(&handle); // #341: isolated private conversation store
+            // K2-03 T3 (S2, S4): delete the removed weekly Recap's data (exact files only), off the startup path.
+            let data_dir = handle.path().app_local_data_dir().ok();
+            std::thread::spawn(move || {
+                let runtime = abito_island::transport::resolve_runtime().ok();
+                let outcome = abito_island::legacy_recap::cleanup(data_dir.as_deref(), runtime.as_deref());
+                if let Some(line) = outcome.log_line() {
+                    eprintln!("{line}");
+                }
+            });
             // M2: local notice transport + SIGINT/SIGTERM socket cleanup
             // (main.cjs creates the transport after the window loads; here it
             // starts before the probe so the probe can use its endpoint).

@@ -42,8 +42,8 @@ Only Claude's `PermissionRequest` reads `permission_suggestions`. These are perm
 | `src/codex.cjs` | Codex hook adapter: `handleCodexHook` — notice only (`apply_patch` always shows the fixed label). |
 | `src/install-claude.cjs` | Previewed Claude Code settings installer (`install claude`). |
 | `src/install-codex.cjs` | Previewed Codex `hooks.json` installer (`install codex`) — notice-only entries, 5 s timeouts, codex profile over the shared core in `install-claude.cjs`. |
-| `src/install-ui.cjs` | Island install mode for Claude/Codex, recap and statusline: `--json` preview with `plan_hash`, `--apply-plan` trusted-click apply with audit trail (see `docs/ISLAND-INSTALL.md`). |
-| `bin/abito-hook.cjs` | CLI entry: `abito-hook claude\|codex <event>`, `abito-hook copilot\|opencode permission-request` and `abito-hook install claude\|codex\|copilot\|opencode\|recap\|statusline`; stdin reader, watchdog, last-resort error handlers. |
+| `src/install-ui.cjs` | Island install mode for Claude/Codex and statusline (`recap` only as the removal-only legacy profile): `--json` preview with `plan_hash`, `--apply-plan` trusted-click apply with audit trail (see `docs/ISLAND-INSTALL.md`). |
+| `bin/abito-hook.cjs` | CLI entry: `abito-hook claude\|codex <event>`, `abito-hook copilot\|opencode permission-request` and `abito-hook install claude\|codex\|copilot\|opencode\|statusline`; `install recap --user --remove` is the removal-only legacy profile (`src/install-recap.cjs`: Recap was removed, only its old hooks can be taken out); stdin reader, watchdog, last-resort error handlers. |
 
 ## Windows notice transport
 
@@ -147,7 +147,7 @@ More than four questions, options outside 2–4, duplicate question keys, malfor
 
 ## Installing the Claude Code hook
 
-> **Island mode (no terminal):** `install claude|codex|recap|statusline --user --json` returns a read-only JSON preview with a `plan_hash`; `... --apply-plan <hash> --audit-dir <dir> --json` applies exactly that plan, only when called by the island executable. Contract, guards and limits: [docs/ISLAND-INSTALL.md](docs/ISLAND-INSTALL.md). The TTY flow below is unchanged.
+> **Island mode (no terminal):** `install claude|codex|statusline --user --json` returns a read-only JSON preview with a `plan_hash`; `... --apply-plan <hash> --audit-dir <dir> --json` applies exactly that plan, only when called by the island executable. `install recap` exists only as the removal-only legacy profile (`install recap --user --remove [--apply]`; install is a usage error). Contract, guards and limits: [docs/ISLAND-INSTALL.md](docs/ISLAND-INSTALL.md). The TTY flow below is unchanged.
 
 ```
 node bin/abito-hook.cjs install claude (--settings <abs path> | --user) [--timeout-sec N] [--remove] [--apply]
@@ -211,13 +211,17 @@ Claude uses this projection for its cards; Codex uses the same projection for it
 
 ## Notify-only Claude integrations
 
-`install recap --user --json` previews `UserPromptSubmit`, `PostToolUse`, `Stop`
-hooks that only count weekly-recap activity (no command text, path or prompt kept).
+Recap was removed in Koda 0.2. `install recap` is a REMOVAL-ONLY legacy profile (`src/install-recap.cjs`): it
+exists only to take the Koda 0.1 recap hooks out of `~/.claude/settings.json` — the `UserPromptSubmit`,
+`PostToolUse`, `Stop` entries that call the deleted `bin/abito-recap-hook.cjs` — with a dated backup first and
+marker-only removal. Install (without `--remove`) is a usage error (exit 64; JSON `code:"usage"`).
+It follows the shared preview / `--apply-plan` contract. TODO: remove one version after K2-03.
+
 `install statusline --user --json` previews the single `statusLine` relay, which
-keeps an existing status line running and prints it. Both accept
+keeps an existing status line running and prints it. It accepts
 `--apply-plan <hash> --audit-dir <dir> --json` through the shared island layer:
 guards, re-plan/hash match, audit, dated backup, verification, marker-only removal.
-Their sibling scripts are resolved relative to this package, not supplied by the UI.
+Its sibling script is resolved relative to this package, not supplied by the UI.
 The relay saves/restores the old status line in `~/.abito/statusline-previous.json`
 (0600), exactly as its interactive installer does. Neither accepts `--timeout-sec`.
 Interactive preview / `--apply` (TTY and typed word) remain unchanged. See

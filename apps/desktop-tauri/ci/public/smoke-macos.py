@@ -70,17 +70,21 @@ assert "endpoint handoff not published" not in healthy, "the handoff must be pub
 assert "abito-island-daemon: running (pid " in healthy, "daemon never became ready"
 assert "ABITO_DESKTOP_SOCKET=" in healthy, "notice transport never started"
 assert "no_daemon" not in healthy and "transport unavailable" not in healthy
-# Remove only the disposable install's executable link, leaving Node available.
-# Refuse a second globally installed Pi rather than pretending to test absence.
-for fallback in ("/opt/homebrew/bin/pi", "/usr/local/bin/pi", "/usr/bin/pi"):
-    assert not pathlib.Path(fallback).exists(), f"unexpected runner Pi: {fallback}"
-pi.rename(pi.with_name("pi.smoke-disabled"))
+# K2-02: an installed Koda ships its own Node and Pi (Contents/Resources/runtime), so hiding the runner's Pi no longer
+# makes it «missing»: the daemon starts on the bundled one (smoke-macos-no-node.py proves that with both quarantined).
+# Its failure path is a BROKEN bundled runtime: discovery fails closed with bundled_runtime_invalid and the reinstall
+# sentence, never falls back to the runner's Node or Pi, and notices keep working (the transport starts apart from the
+# daemon). Twin of the Windows broken-runtime case (smoke-windows.ps1, f94afcd).
+manifest = app / "Contents/Resources/runtime/koda-runtime.json"
+assert manifest.is_file(), f"no bundled runtime manifest at {manifest}"
+moved = manifest.with_name("koda-runtime.json.k2-02-smoke-moved")
+manifest.rename(moved)
 try:
-    missing = launch("pi-missing")
-    assert "pi_missing" in missing, "missing Pi was not identified"
-    assert "Falta Pi: instalalo con npm install -g @earendil-works/pi-coding-agent." in missing
-    assert "ABITO_DESKTOP_SOCKET=" in missing, "notices must work without Pi"
-    assert "abito-island-daemon: running" not in missing
+    broken = launch("broken-runtime")
+    assert "island host: no_daemon (bundled_runtime_invalid)" in broken, "broken runtime was not identified"
+    assert "La instalación de Koda está dañada: volvé a instalar Koda." in broken
+    assert "ABITO_DESKTOP_SOCKET=" in broken, "notices must work on a broken runtime"
+    assert "abito-island-daemon: running" not in broken, "daemon unexpectedly started on a broken bundled runtime"
 finally:
-    pi.with_name("pi.smoke-disabled").rename(pi)
-print("macOS smoke: bundled daemon + notice transport ready; missing-Pi advice verified")
+    moved.rename(manifest)
+print("macOS smoke: bundled daemon + notice transport ready; broken-runtime advice verified")

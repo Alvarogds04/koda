@@ -11,7 +11,7 @@ const R6_PREFIX = '40625d7f';
 const IDENTIFIER = 'com.abitog.AbitoTauri';
 const RESERVED = ['com.abitog.Abito', 'com.abitog.Abito.Preview', 'abito-desktop', 'abito-desktop-preview'];
 const FRONTEND_FILES = ['DESIGN.md', 'avatar-colors.js', 'character-desktop-logic.js', 'character-minibots.js', 'character-motion.js', 'chat-cards.js', 'chat-markdown.css', 'chat-markdown.js', 'chat-view.js', 'chat.js', 'clay-engine.js', 'desktop-character.css', 'desktop-character.html', 'desktop-character.js', 'desktop.js', 'icons.js', 'index.html', 'integrations-calendar.js', 'integrations-deployments.js', 'integrations-email.js', 'integrations-finance.js', 'integrations-github.js', 'integrations-mail.js', 'integrations-n8n.js',
-  'integrations-notion.js', 'integrations-payments.js', 'integrations-view.js', 'island-idle.js', 'island-integrations.js', 'island-integrations.css', 'island-header.js', 'island-github.js', 'island-desktop.js', 'island-dictation.js', 'island-voice.js', 'island-voice.css', 'island-plan.js', 'island-recap.js', 'island-interaction.js', 'island.js', 'models.js', 'notify-view.js', 'notify.js', 'overview-view.js', 'pill-catalog.js', 'pill-settings.js', 'pills-view.js', 'paused.js', 'spotify-view.js', 'pills.js', 'sessions-ticker.js', 'settings-view.js', 'settings.js', 'sound-engine.js', 'sound-wiring.js', 'specialists-view.js', 'specialists.js', 'style.css', 'theme.js'];
+  'integrations-notion.js', 'integrations-payments.js', 'integrations-view.js', 'island-idle.js', 'island-integrations.js', 'island-integrations.css', 'island-header.js', 'island-github.js', 'island-desktop.js', 'island-dictation.js', 'island-voice.js', 'island-voice.css', 'island-plan.js', 'island-interaction.js', 'island.js', 'models.js', 'notify-view.js', 'notify.js', 'overview-view.js', 'pill-catalog.js', 'pill-settings.js', 'pills-view.js', 'paused.js', 'spotify-view.js', 'pills.js', 'sessions-ticker.js', 'settings-view.js', 'settings.js', 'sound-engine.js', 'sound-wiring.js', 'specialists-view.js', 'specialists.js', 'style.css', 'theme.js'];
 FRONTEND_FILES.push('koda-catalog.js', 'koda-logic.js', 'koda-skin.js', 'koda-skin.css', 'koda/koda-chibi-24.png', 'koda/koda-chibi-32.png');
 FRONTEND_FILES.push('desktop-highlight.html', 'desktop-highlight.css', 'question-toast.css', 'question-toast.js', 'island-layout.js', 'island-nusa.js', 'island-nusa-bodies.js', 'island-nusa-mount.js', 'island-nusa.css', 'settings-nusa.css', 'settings-nusa.js', 'settings-nusa-mount.js', 'settings-isla.js', 'settings-isla-mount.js');
 // Every embedded vendor source, generated module and license is a closed input.
@@ -35,8 +35,6 @@ FRONTEND_FILES.push(
   'vendor/coucou/core/diff.js', 'vendor/coucou/core/diff.ts',
   'vendor/coucou/core/github.js', 'vendor/coucou/core/github.ts',
   'vendor/coucou/views/github.js', 'vendor/coucou/views/github.ts',
-  'vendor/coucou/recap/summary.js', 'vendor/coucou/recap/summary.ts',
-  'vendor/coucou/views/recap.js', 'vendor/coucou/views/recap.ts',
   'vendor/coucou/core/plan.js', 'vendor/coucou/core/plan.ts',
   'vendor/coucou/views/usage.js', 'vendor/coucou/views/usage.ts',
   'settings.html', 'settings-app.js',
@@ -59,7 +57,6 @@ FRONTEND_FILES.push(
   'vendor/coucou/hub/chat.ts', 'vendor/coucou/hub/chat.js',
   'vendor/coucou/hub/integrations.ts', 'vendor/coucou/hub/integrations.js',
   'vendor/coucou/hub/shortcuts.ts', 'vendor/coucou/hub/shortcuts.js',
-  'vendor/coucou/hub/recap.ts', 'vendor/coucou/hub/recap.js',
 );
 const EXPECTED_WINDOWS = ['main', 'settings'];
 const EXPECTED_PERMISSIONS = ['core:event:allow-listen', 'core:event:allow-unlisten'];
@@ -186,11 +183,11 @@ const DAEMON_FILES = ['package.json', 'identity.md', 'THIRD-PARTY-NOTICES.md',
   'src/sessions.cjs', 'src/procinfo.cjs', 'src/spaces.cjs', 'src/win-fs.cjs'];
 // L42 F1: the hook installer (apps/desktop-harness) ships NEXT TO the daemon: the daemon derives
 // <package>/desktop-harness/bin/abito-hook.cjs from its own location (src/cli.cjs packagedInstallerBin), so Ajustes can
-// install the Claude/Codex/recap/status-line hooks. Closed under require(): packaging-check pins that.
-const HARNESS_FILES = ['bin/abito-hook.cjs', 'bin/abito-recap-hook.cjs', 'bin/abito-statusline.cjs', 'package.json',
+// install the Claude/Codex/status-line hooks (and take out the removed Recap's 0.1 hooks, K2-03). Closed under require(): packaging-check pins that.
+const HARNESS_FILES = ['bin/abito-hook.cjs', 'bin/abito-statusline.cjs', 'package.json',
   'src/claude-ask.cjs', 'src/claude-suggestions.cjs', 'src/claude.cjs', 'src/client.cjs', 'src/codex.cjs', 'src/config.cjs', 'src/copilot.cjs', 'src/deadline.cjs', 'src/file-permission.cjs', 'src/hook-common.cjs', 'src/identity.cjs',
   'src/install-claude.cjs', 'src/install-codex.cjs', 'src/install-copilot.cjs', 'src/install-opencode.cjs', 'src/install-pi.cjs', 'src/install-pi-win.cjs', 'src/win-fs.cjs', 'src/install-recap.cjs', 'src/install-statusline.cjs', 'src/install-ui.cjs', 'src/installer-platform.cjs',
-  'src/opencode.cjs', 'src/projection.cjs', 'src/recap-hook.cjs', 'src/redact.cjs', 'src/security.cjs', 'src/statusline.cjs', 'src/title-cache.cjs', 'src/windows-transport.cjs'];
+  'src/opencode.cjs', 'src/projection.cjs', 'src/redact.cjs', 'src/security.cjs', 'src/statusline.cjs', 'src/title-cache.cjs', 'src/windows-transport.cjs'];
 // Host modules come from Pi; no npm payload or dependency installation.
 const PI_FILES = ['pi-extension.ts', 'adapter.cjs', 'ask-tool.cjs', 'config.cjs', 'native-ask.cjs', 'questions.cjs', 'security.cjs', 'windows-transport.cjs'];
 // K2-02 T2 (decision A): the bundled runtime ships as ONE tar.gz, staged and hashed like every

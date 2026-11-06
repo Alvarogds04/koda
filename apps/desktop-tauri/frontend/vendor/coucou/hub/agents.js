@@ -241,7 +241,6 @@ async function renderAgentSettings({ invoke, V, P, listen, timers }) {
     root.append(
       notchTipSection(t("Agents"), "Koda agrega sus entradas a la configuración de cada agente. Desinstalar quita solo lo que Koda agregó; antes se guarda un respaldo.", table, actionStatus),
       section(t("Plan usage"), plan),
-      section(t("Weekly recap"), integrationBlock("recap", t("Weekly recap"), "Cuenta tu actividad de Claude Code; nunca guarda comandos ni prompts.")),
       s.message
     );
   }

@@ -449,9 +449,10 @@ pub fn fold_direct(output: &Value) -> Option<Value> {
 }
 
 /// The code agents the island can connect (the installers exist for these).
-/// `recap` (weekly-recap hooks) and `statusline` (plan-usage relay) are the two notify-only Claude Code integrations the
-/// daemon installs with the same preview / hash / backup flow (L32e).
-pub const AGENT_IDS: [&str; 7] = ["pi", "claude-code", "codex", "copilot-cli", "opencode", "recap", "statusline"];
+/// `statusline` (plan-usage relay) is the notify-only Claude Code integration the daemon
+/// installs with the same preview / hash / backup flow (L32e). K2-03 removed the
+/// weekly-summary integration: its id is no longer a closed agent id.
+pub const AGENT_IDS: [&str; 6] = ["pi", "claude-code", "codex", "copilot-cli", "opencode", "statusline"];
 
 /// #436 T6.5: the six hook clients the daemon's `hooks` frame may name (its own closed
 /// list). Wider than AGENT_IDS on purpose: the page shows their state, and installs

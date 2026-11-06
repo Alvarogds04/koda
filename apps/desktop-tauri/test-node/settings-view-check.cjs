@@ -746,7 +746,7 @@ test('accounts: the connected list shows only signed-in accounts, with «Salir»
 // ---- Conectores: agents (one click, no terminal) + services ----------------------------------------
 const agentsState = (list, extra = {}) => state({ agents: list, ...extra });
 test('agents: known agents, names from OUR table, never from the engine payload', () => {
-  assert.deepEqual(S.AGENT_IDS, ['pi', 'claude-code', 'codex', 'copilot-cli', 'opencode', 'recap', 'statusline']);
+  assert.deepEqual(S.AGENT_IDS, ['pi', 'claude-code', 'codex', 'copilot-cli', 'opencode', 'statusline']);
   const v = S.agentsView(agentsState([{ id: 'claude-code', name: '<b>pwn</b>', state: 'not_connected', backup: false, detail: null }]));
   assert.equal(v.kind, 'ready');
   assert.equal(v.rows[0].name, 'Claude Code');
@@ -808,7 +808,7 @@ test('agents: all SIX clients render, in our closed order, with names derived fr
   assert.deepEqual(v.rows.map(r => r.id), ['claude-code', 'codex', 'gemini-cli', 'copilot-cli', 'opencode', 'amp', 'cursor']);
   assert.deepEqual(v.rows.map(r => r.name), ['Claude Code', 'Codex', 'Gemini CLI', 'Copilot CLI', 'OpenCode', 'Amp', 'Cursor']);
   // Pi adds an installable row; unsupported hook-only rows still have no button.
-  assert.deepEqual(S.AGENT_IDS, ['pi', 'claude-code', 'codex', 'copilot-cli', 'opencode', 'recap', 'statusline']);
+  assert.deepEqual(S.AGENT_IDS, ['pi', 'claude-code', 'codex', 'copilot-cli', 'opencode', 'statusline']);
   const extras = v.rows.filter(r => !S.AGENT_IDS.includes(r.id));
   assert.ok(extras.every(r => r.primary === null && r.secondary === null), 'state-only rows, no dead buttons');
 });

@@ -11,7 +11,7 @@ const tests = []; const test = (name, fn) => tests.push([name, fn]);
 // 0.1.2 (human: «vale todo lo que este en pausa se puede ocultar?» → yes): paused pages are HIDDEN from the menu. The paused list comes
 // from the single source of truth (hub/shell.js PAUSED_PAGES, pinned by paused-features-check); a page's own layout test runs again
 // by itself the day its page is active again, and until then it checks that the page is not in the menu.
-const PAGE_IDS = { Dictado: 'dictation', Notetaker: 'notes', 'Estadísticas': 'insights', Diccionario: 'dictionary', Fragmentos: 'snippets', Estilos: 'styles', Ajustes: 'flowsettings',
+const PAGE_IDS = { Dictado: 'dictation', 'Estadísticas': 'insights', Diccionario: 'dictionary', Fragmentos: 'snippets', Estilos: 'styles', Ajustes: 'flowsettings',
   General: 'general', Integraciones: 'integrations', Agentes: 'agents', Chat: 'chat', 'OK Koda': 'voice', 'Teléfono': 'phone', 'Teléfono Android': 'phone', Atajos: 'shortcuts', Privacidad: 'privacy' };
 let PAUSED = null;
 const isPaused = title => { assert(PAGE_IDS[title], title); return PAUSED.includes(PAGE_IDS[title]); };
@@ -316,21 +316,21 @@ test('0.2.1 ⓘ tip: hidden at rest, shown on hover AND on keyboard focus, hidde
   assert.equal(await tip.getAttribute('aria-describedby'), await box.getAttribute('id'));
 });
 
-test('0.2.1 General (L2 A, S6) + HU-063 S2: General keeps Instrucciones + manual-open; recap on/off + clear, Colores and the «Ir a Atajos» link live in Isla; no plan switch here', async r => {
+test('0.2.1 General (L2 A, S6) + HU-063 S2: General keeps Instrucciones + manual-open; Colores and the «Ir a Atajos» link live in Isla; no recap, no plan switch (K2-03: recap removed everywhere)', async r => {
   const read = () => r.page.evaluate(() => { const root = document.querySelector('.hub-page'); return { text: root.textContent.replace(/\s+/g, ' '), ids: ['hub-recap', 'hub-recap-clear', 'abito-instructions', 'hub-open-at-launch'].map(id => !!root.querySelector('#' + id)),
     colors: root.querySelectorAll('[id^="identity-"]').length, editor: [...root.querySelectorAll('button')].some(b => b.textContent === 'Cambiar' || b.textContent === 'Original'), link: [...root.querySelectorAll('button')].some(b => b.textContent === 'Ir a Atajos') }; });
   await r.go('General');
   const general = await read();
-  assert.deepEqual(general.ids, [false, false, true, true], 'General: Instrucciones + manual-open stay; recap moved to Isla');
+  assert.deepEqual(general.ids, [false, false, true, true], 'General: Instrucciones + manual-open stay; no recap anywhere');
   assert.equal(general.colors, 0, 'General: identity colours moved to Isla'); assert(!general.link, 'General: the shortcut link moved to Isla');
   await r.go('Isla');
   const page = await read();
-  assert.deepEqual(page.ids.slice(0, 2), [true, true], 'Isla: recap on/off + clear');
+  assert.deepEqual(page.ids.slice(0, 2), [false, false], 'Isla: no recap rows (K2-03)');
   assert(page.colors > 0, 'Isla: identity colours'); assert(!page.editor && page.link, 'Isla: shortcut is only a value and a link');
   assert.doesNotMatch(page.text, /Mostrar plan|uso del plan|Modelo principal/);
 });
 
-test('0.2.1 Atajos: no weekly recap rows (they live in General)', async r => {
+test('K2-03: no weekly recap rows anywhere in Ajustes', async r => {
   await r.go('Atajos');
   assert.equal(await r.page.evaluate(() => document.querySelectorAll('#hub-recap, #hub-recap-clear').length), 0);
 });
@@ -441,7 +441,7 @@ test('S26 deep link: an unknown or hostile page name falls back to the default p
 // Every Ajustes page, as the sidebar lists them. A card or input-looking box with nothing in it is a defect wherever it appears: the
 // human found it three times (Pills, Integraciones, Conexiones), each time by eye, each time the same pattern (a card created before
 // its children exist, then left empty by the state).
-const PAGES = ['Dictado', 'Notetaker', 'Estadísticas', 'Diccionario', 'Fragmentos', 'Estilos', 'Ajustes', 'General', 'Integraciones', 'Agentes', 'Chat', 'OK Koda', 'Teléfono Android', 'Atajos'];
+const PAGES = ['Dictado', 'Estadísticas', 'Diccionario', 'Fragmentos', 'Estilos', 'Ajustes', 'General', 'Integraciones', 'Agentes', 'Chat', 'OK Koda', 'Teléfono Android', 'Atajos'];
 const EMPTY_BOXES = () => [...document.querySelectorAll('.hub-page .hub-card, .hub-page section, .hub-page .abito-card, .hub-page .hub-row, .hub-page .row')].filter(el => {
   const b = el.getBoundingClientRect(); if (b.width < 40 || b.height < 8) return false;               // not drawn
   if (el.querySelector('input, select, textarea, button, a, svg, canvas, img, .switch, .keycap, .swatch, .hub-segmented')) return false;

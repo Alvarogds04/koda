@@ -525,7 +525,7 @@
   // ---- agents: connect Claude Code / Codex / OpenCode with ONE click (no terminal) -------------------------------------
   // The state comes from the engine's `agents` frame. Names and sentences are OURS: nothing the engine sends is
   // shown as text, only chosen from these closed tables.
-  const AGENT_NAMES = Object.freeze({ pi: 'Pi', 'claude-code': 'Claude Code', codex: 'Codex', 'copilot-cli': 'Copilot CLI', opencode: 'OpenCode', recap: 'Resumen semanal', statusline: 'Uso del plan (relay)' });
+  const AGENT_NAMES = Object.freeze({ pi: 'Pi', 'claude-code': 'Claude Code', codex: 'Codex', 'copilot-cli': 'Copilot CLI', opencode: 'OpenCode', statusline: 'Uso del plan (relay)' });
   const AGENT_IDS = Object.freeze(Object.keys(AGENT_NAMES));
   // #436 T6.5 (D7): all SEVEN hook clients the daemon's `hooks` frame may name. The three extra
   // ones are DISPLAY-ONLY (no install/remove exists for them; a dead button would be a lie),
@@ -568,7 +568,7 @@
   // the hooks frame fills the rest with honest state, and what nobody knows stays unknown.
   const mergeSix = (rows, hooks) => {
     const byId = new Map(rows.map(r => [r.id, r]));
-    const extra = rows.filter(r => r.id === 'recap' || r.id === 'statusline' || r.id === 'pi'); // L32e: engine-only integrations, after the six
+    const extra = rows.filter(r => r.id === 'statusline' || r.id === 'pi'); // L32e: engine-only integrations, after the six
     return [...HOOK_IDS, ...extra.map(r => r.id)].map(id => byId.get(id) || (hooks && hooks.get(id) ? hookRowOf(hooks.get(id)) : unknownRow(id)));
   };
   const AGENT_STATES = Object.freeze({
@@ -605,8 +605,6 @@
   const NOTIFY_PLANS = Object.freeze({
     'Installs the Abito Pi extension in the default ~/.pi/agent directory. A backup is made first.':
       'Instala la extensión de Koda en ~/.pi/agent. Antes se hace un respaldo. Reiniciá Pi para cargarla.',
-    'Adds notify-only hooks that only count activity for the weekly recap. No command text, path or prompt is kept. A backup is made first.':
-      'Agrega ganchos que solo cuentan tu actividad para el resumen semanal; no guardan comandos, rutas ni prompts. Antes se hace un respaldo.',
     'Adds the status-line relay in ~/.claude/settings.json. An existing status line keeps working (the relay prints it). A backup is made first.':
       'Agrega el relay de línea de estado en ~/.claude/settings.json. Si ya tenés una línea de estado, sigue funcionando (el relay la imprime). Antes se hace un respaldo.',
   });
@@ -636,7 +634,7 @@
     const kind = state.agentsRuntime;
     if (kind === 'node_missing' || kind === 'failed') {
       const [word, icon, tone] = kind === 'node_missing' ? ['Falta Node.js', 'plug-off', 'faint'] : ['No se pudo', 'triangle', 'red'];
-      return { kind: 'ready', rows: [...HOOK_IDS, 'recap', 'statusline', 'pi'].map(id => directRuntimeRow(id, word, tone, icon)) };
+      return { kind: 'ready', rows: [...HOOK_IDS, 'statusline', 'pi'].map(id => directRuntimeRow(id, word, tone, icon)) };
     }
     const own = { agents: state.directAgents, hooks: state.directHooks };
     const view = agentsView(Object.assign({ connection: 'connected' }, own, { last_error: null }), {});

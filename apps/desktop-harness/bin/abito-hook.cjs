@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 'use strict';
-// Install: node bin/abito-hook.cjs install <claude|codex|copilot|opencode|statusline|recap> (--settings <abs path> | --user) [--timeout-sec N] [--remove] [--apply]
+// Install: node bin/abito-hook.cjs install <claude|codex|copilot|opencode|statusline> (--settings <abs path> | --user) [--timeout-sec N] [--remove] [--apply]
+// Legacy:  node bin/abito-hook.cjs install recap --user --remove [--apply]   (K2-03: Recap was removed; only its 0.1 hooks can be taken out)
 // Usage: node bin/abito-hook.cjs <claude|codex> <permission-request|pre-tool-use|post-tool-use|session-start|stop> [--timeout-sec N]
 // stdout is either empty or exactly one hook JSON line; exit 0 always except usage errors (64).
 const { handleClaudeHook, parseArgs, watchdogMs, startWatchdog, MAX_STDIN_BYTES } = require('../src/claude.cjs');
@@ -85,7 +86,7 @@ async function runInstaller(argv) {
     return;
   }
   if (argv[0] === 'recap') {
-    // notify-only recap hooks (UserPromptSubmit/PostToolUse/Stop): same pattern (src/install-recap.cjs)
+    // K2-03: removal-only legacy profile for the 0.1 recap hooks (src/install-recap.cjs); install is a usage error
     process.exitCode = await require('../src/install-recap.cjs').runRecapInstall(argv.slice(1), { prompt });
     return;
   }

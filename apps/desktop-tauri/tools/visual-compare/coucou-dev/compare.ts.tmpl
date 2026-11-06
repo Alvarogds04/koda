@@ -5,7 +5,6 @@ import { Bridge } from "../src/core/bridge";
 import { State } from "../src/core/state";
 import { Island } from "../src/island/island";
 import { registerHookHandlers } from "../src/island/hooks";
-import { Recap } from "../src/recap/recap";
 import { registerSpotifyHandlers, applySpotify } from "../src/island/spotify";
 
 const root = document.getElementById("root")!;
@@ -16,5 +15,5 @@ island.applySettings();
 State.loadIntegrationTasks();
 registerHookHandlers(island);
 registerSpotifyHandlers(island);
-(window as any).__vcCoucou = { island, State, applySpotify: (s: any) => applySpotify(island, s), Recap };
+(window as any).__vcCoucou = { island, State, applySpotify: (s: any) => applySpotify(island, s) };
 (window as any).__vcReady = true;

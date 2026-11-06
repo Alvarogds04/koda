@@ -513,39 +513,6 @@ html[data-motion="reduce"] .shimmer { animation: none; }
 .gh-week { display: flex; flex-direction: column; gap: 1.5px; }
 .gh-cell.empty { background: transparent; }
 
-/* ── Weekly recap (style.css "Weekly recap" @434d6a2b): a wash'd card in the same box as the approval card ── */
-
-#recap-card {
-  position: absolute; left: calc(50% - 350px); width: 700px; top: 42px; height: 156px; z-index: 3; display: flex; flex-direction: column;
-  justify-content: center; overflow: hidden; border-radius: 20px; background: var(--card); border: 1px solid var(--hairline);
-}
-#recap-card[hidden] { display: none; }
-#recap-card > .card { position: relative; flex: 1; border: 0; border-radius: inherit; background: transparent; display: flex; flex-direction: column; justify-content: center; }
-#recap-card > .card::before { content: ""; position: absolute; inset: 0; pointer-events: none; background: radial-gradient(280px 280px at 50% 130%, var(--wash) 0%, rgba(0, 0, 0, 0) 70%); }
-#recap-card .stack { position: relative; z-index: 1; display: flex; flex-direction: column; justify-content: center; }
-.recap-stack { padding: 4px 16px 4px 116px; gap: 4px; }
-.recap-head { display: flex; align-items: baseline; gap: 6px; }
-.recap-head .grow { flex: 1; }
-.recap-title { font: 600 11px var(--font); color: #818cf8; }
-.recap-range { font: 400 10px var(--font); color: var(--dim-2); white-space: nowrap; }
-.recap-chips { display: flex; gap: 14px; white-space: nowrap; }
-.recap-chip .v { font: 700 17px var(--font); color: var(--ink-2); }
-.recap-chip .l { font: 400 9px var(--font); color: var(--dim-2); }
-.recap-meta { display: flex; gap: 5px; font: 400 11px var(--font); color: var(--dim-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.recap-meta .n { color: var(--ink-2); font-weight: 600; overflow: hidden; text-overflow: ellipsis; }
-.recap-meta .sep { color: var(--dim-4); }
-#recap-card .title { font: 600 15px var(--font); color: var(--ink); }
-#recap-card .sub { font: 400 13px var(--font); color: var(--dim); }
-#recap-card .actions { display: flex; gap: 8px; margin-top: 3px; }
-/* .btn 500 12.5px pill: 30px visual in a 44px hit (margin -7 keeps the card's height) */
-#recap-card .btn { position: relative; z-index: 0; min-height: 44px; margin: -7px 0; padding: 0 13px; border: 0; border-radius: 0; background: transparent; font: 500 12.5px var(--font); cursor: pointer; }
-#recap-card .btn::after { content: ""; position: absolute; inset: 7px 0; z-index: -1; border-radius: 999px; }
-#recap-card .btn.primary { color: #0b0c0e; } #recap-card .btn.primary::after { background: var(--ink); }
-#recap-card .btn.secondary { color: var(--ink-2); } #recap-card .btn.secondary::after { background: rgba(255, 255, 255, 0.09); }
-#recap-card .btn:disabled { opacity: 0.4; cursor: default; }
-/* it replaces the overview cards while it is open */
-#capsule[data-recap="on"] #overview-view, #capsule[data-recap="on"] #notices { visibility: hidden; pointer-events: none; }
-
 /* ── The dictation pill (pill/pill.css @434d6a2b): a see-through capsule, black once open, centred in the expanded header ── */
 
 .dpill { position: absolute; left: 50%; top: 0; transform: translateX(-50%); height: 34px; display: flex; align-items: center; gap: 8px; z-index: 6; }

@@ -13,7 +13,7 @@ const { dom, all, text } = require('./settings-accounts-check.cjs');
   const C = require('../frontend/chat-view.js');
   const calls = [], events = {};
   const hash = 'a'.repeat(64), hash2 = 'b'.repeat(64), hash3 = 'c'.repeat(64);
-  let state = { connection:'connected', agents:[{id:'claude-code',state:'not_connected',plan_hash:hash,summary:'Add managed hooks',reviewable:true},{id:'codex',state:'connected',backup:true},{id:'recap',state:'not_connected',plan_hash:hash2,summary:'Adds notify-only hooks that only count activity for the weekly recap. No command text, path or prompt is kept. A backup is made first.',reviewable:true},{id:'statusline',state:'not_connected',plan_hash:hash3,summary:'Adds the status-line relay in ~/.claude/settings.json. An existing status line keeps working (the relay prints it). A backup is made first.',reviewable:true}], providers:[],accounts:[],models:null };
+  let state = { connection:'connected', agents:[{id:'claude-code',state:'not_connected',plan_hash:hash,summary:'Add managed hooks',reviewable:true},{id:'codex',state:'connected',backup:true},{id:'statusline',state:'not_connected',plan_hash:hash3,summary:'Adds the status-line relay in ~/.claude/settings.json. An existing status line keeps working (the relay prints it). A backup is made first.',reviewable:true}], providers:[],accounts:[],models:null };
   const keychain = new Set();
   let ui, secretFailure = false, accountFailure = false; const planPrefs = { claude: false, codex: false };
   const soon = Date.now() + 3600e3;
@@ -38,7 +38,7 @@ const { dom, all, text } = require('./settings-accounts-check.cjs');
   const heads = () => all(ui).filter(e => e.tagName === 'h2').map(text).map(s=>s.trim());
   const button = (scope,word) => {const b=all(scope).find(e=>e.tagName==='button'&&e.textContent===word);assert(b,word);return b;};
   ui = await renderAgentSettings(opts); await ui.settled();
-  assert.deepEqual(heads().map(h=>h.replace(/\s*ⓘ.*$/,'')), ['Agentes','Uso del plan','Resumen semanal']); // #503 S20: Claude Code is a row of the Agentes table
+  assert.deepEqual(heads().map(h=>h.replace(/\s*ⓘ.*$/,'')), ['Agentes','Uso del plan']); // #503 S20: Claude Code is a row of the Agentes table
   assert(calls.some(([c,p])=>c==='agent_action'&&p.action==='hooks_preview'));
   assert(calls.some(([c,p])=>c==='agent_action'&&p.action==='agents_list'));
   const hookList=all(ui).find(e=>e.attrs.id==='agent-hook-list');
@@ -68,28 +68,17 @@ const { dom, all, text } = require('./settings-accounts-check.cjs');
   button(claude,'Instalar…').fire('click');await ui.settled(); // one trusted click writes the plan the row showed (23-oct)
   assert.deepEqual(calls.filter(([c])=>c==='agent_action'),[['agent_action',{action:'agent_connect',agentId:'claude-code',plan_hash:hash}]]);
   assert(!calls.some(([,p])=>p.action==='hooks_apply'));
-  // L32e: the recap hooks and the status-line relay install from Ajustes with the same review-and-confirm flow.
+  // L32e: the status-line relay installs from Ajustes with the same review-and-confirm flow. K2-03 S1:
+  // Recap is removed — no section, no block, no row.
   {
-    const section = title => all(ui).find(e=>e.tagName==='section'&&text(e).includes(title));
-    const recap = all(ui).find(e=>e.attrs.id==='agent-integration-recap'), relay = all(ui).find(e=>e.attrs.id==='agent-integration-statusline');
-    assert(recap&&relay,'both integrations render a block with a stable id');
+    const relay = all(ui).find(e=>e.attrs.id==='agent-integration-statusline');
+    assert(relay,'the relay renders a block with a stable id');
+    assert(!all(ui).some(e=>e.attrs.id==='agent-integration-recap') && !text(ui).includes('Resumen semanal'),'no recap integration anywhere');
     assert(text(relay).includes('Relay'));
-    calls.length=0;
-    button(recap,'Instalar…').fire('click',false);await ui.settled();assert.deepEqual(calls,[]);
-    button(recap,'Instalar…').fire('click');await ui.settled();assert.equal(calls.length,0,'opening the review writes nothing');
-    assert(text(recap).includes(V.planSummary('Adds notify-only hooks that only count activity for the weekly recap. No command text, path or prompt is kept. A backup is made first.')),'the plan summary is shown before anything is written');
-    button(recap,'Respaldar y escribir').fire('click',false);await ui.settled();assert.deepEqual(calls,[]);
-    button(recap,'Respaldar y escribir').fire('click');await ui.settled();
-    assert.deepEqual(calls,[['agent_action',{action:'agent_connect',agentId:'recap',plan_hash:hash2}]],'the click carries the hash the user saw');
     calls.length=0;
     button(relay,'Instalar…').fire('click');await ui.settled();button(relay,'Respaldar y escribir').fire('click');await ui.settled();
     assert.deepEqual(calls,[['agent_action',{action:'agent_connect',agentId:'statusline',plan_hash:hash3}]]);
-    state.agents.find(a=>a.id==='recap').state='connected';state.agents.find(a=>a.id==='recap').backup=true;
     ui.dispose();ui=await renderAgentSettings(opts);await ui.settled();
-    const recap2=all(ui).find(e=>e.attrs.id==='agent-integration-recap');calls.length=0;
-    button(recap2,'Desinstalar…').fire('click');await ui.settled();button(recap2,'Respaldar y quitar').fire('click');await ui.settled();
-    assert.deepEqual(calls,[['agent_action',{action:'agent_disconnect',agentId:'recap'}]]);
-    state.agents.find(a=>a.id==='recap').state='not_connected';ui.dispose();ui=await renderAgentSettings(opts);await ui.settled();
   }
   const codex = all(ui).find(e=>e.attrs.id==='agent-row-codex');
   calls.length=0;all(codex).find(e=>e.tagName==='button'&&e.attrs['aria-label']==='Más opciones de Codex').fire('click');button(codex,'Desinstalar…').fire('click');await ui.settled();assert.deepEqual(calls,[]);

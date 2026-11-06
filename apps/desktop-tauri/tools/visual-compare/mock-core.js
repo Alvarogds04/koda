@@ -28,15 +28,7 @@
   };
   window.__vcListeners = listeners;
   window.__vcCore = { callbacks, listeners };
-  // Shared fixtures that depend on the clock: last week's recap history (local Monday 00:00 + offsets) and the GitHub grid.
-  window.__vcRecapHistory = () => {
-    const now = new Date(), sinceMonday = (now.getDay() + 6) % 7;
-    const monday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - sinceMonday - 7);
-    const at = (day, hour) => Math.floor(new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + day, Math.floor(hour), Math.round((hour % 1) * 60)).getTime() / 1000);
-    const r = window.__VC_FIX.recap;
-    return { turns: r.turns.map((t) => ({ agent: t.agent, project: t.project, start: at(t.startDay, t.startHour), end: at(t.startDay, t.startHour + t.hours), filesChanged: t.filesChanged, linesAdded: t.linesAdded, linesRemoved: t.linesRemoved, commandsRun: t.commandsRun, questions: t.questions })),
-      decisions: r.decisions.map((d) => ({ agent: d.agent, date: at(d.day, d.hour), decision: d.decision })), prefs: { enabled: true, hideProjects: false, lastShownWeek: '' } };
-  };
+  // Shared fixture that depends on the clock: the GitHub grid.
   window.__vcGithub = () => {
     const g = window.__VC_FIX.github, weeks = [];
     for (let w = 0; w < 30; w++) { const wk = []; for (let d = 0; d < 7; d++) { const n = (w * 7 + d * 3) % 9; wk.push({ date: `2026-0${1 + (w % 9)}-${String(1 + d).padStart(2, '0')}`, count: n, level: n === 0 ? 0 : Math.min(4, 1 + (n >> 1)), weekday: d }); } weeks.push(wk); }

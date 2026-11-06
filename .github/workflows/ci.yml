@@ -390,7 +390,7 @@ jobs:
           set -euo pipefail
           dmg=$(ls target/release/bundle/dmg/*.dmg)
           python3 ci/public/smoke-macos-installed.py "$dmg" "$RUNNER_TEMP/koda-smoke"
-      - name: Missing-Pi advice with notices still available (installed copy)
+      - name: Broken bundled runtime fails closed with notices still available (installed copy)
         if: ${{ !cancelled() }}
         run: python3 ci/public/smoke-macos.py "$(ls -d "$RUNNER_TEMP"/koda-smoke/Applications/*.app)" "$RUNNER_TEMP/koda-smoke/home"
       - name: "No Node, no Pi: install from the dmg and run on Koda's own runtime (K2-02 S1; removes the runner's Node)"

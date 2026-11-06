@@ -1,14 +1,15 @@
 # Island install mode (`--json` / `--apply-plan`)
 
-The island (Tauri lane) installs and removes the Abito hooks of Claude Code and Codex, the weekly-recap hooks and the Claude status-line relay **without a terminal**. The human's confirmation is the **trusted click** on the diff the island shows. The TTY installers (`install <harness> --apply`, typed word) are unchanged and independent.
+The island (Tauri lane) installs and removes the Abito hooks of Claude Code and Codex and the Claude status-line relay **without a terminal**. The human's confirmation is the **trusted click** on the diff the island shows. The TTY installers (`install <harness> --apply`, typed word) are unchanged and independent. The `recap` harness id exists only as the REMOVAL-ONLY legacy profile that takes the Koda 0.1 recap hooks out (Recap was removed in Koda 0.2; see [Notify-only Claude integrations](#notify-only-claude-integrations)); installing Recap is refused.
 
 Two calls, both direct children of Abito's Node adapter (or compatibility daemon), on Linux/macOS:
 
 ```
-1. node bin/abito-hook.cjs install <claude|codex|recap|statusline> --user [--remove] --json
-2. node bin/abito-hook.cjs install <claude|codex|recap|statusline> --user [same args] --apply-plan <plan_hash> --audit-dir <abs dir> --json
+1. node bin/abito-hook.cjs install <claude|codex|statusline> --user [--remove] --json
+2. node bin/abito-hook.cjs install <claude|codex|statusline> --user [same args] --apply-plan <plan_hash> --audit-dir <abs dir> --json
 ```
 
+`recap` is accepted only as `install recap --user --remove [--apply]` (the removal-only legacy profile; install is a usage error).
 `--timeout-sec N` is optional for Claude/Codex only (never recap/statusline).
 `--settings <abs path>` may replace `--user` (tests, non-default locations). Order of flags is free. `--timeout-sec` and `--remove` are mutually exclusive, as in the TTY installer.
 
@@ -38,12 +39,12 @@ In JSON mode stdout is **exactly one JSON line** (terminated by `\n`), stderr is
 | `schema` | always `"abito-hook-install/1"` |
 | `ok` | `true` |
 | `mode` | `"preview"` |
-| `harness` | `"claude"`, `"codex"`, `"recap"` or `"statusline"` |
+| `harness` | `"claude"`, `"codex"`, `"recap"` (removal only) or `"statusline"` |
 | `action` | `"install"` or `"remove"` |
 | `target` | absolute normalized settings path |
 | `exists` | bool: the target file exists |
 | `changed` | bool: the plan would modify (or create) the file; `false` = nothing to do |
-| `entries` | Claude/Codex: `PermissionRequest`, `Stop`; recap: `UserPromptSubmit`, `PostToolUse`, `Stop`; statusline: exactly `statusLine`. Ordered; `op` in `add`, `replace`, `remove`, `keep` (`keep` includes removal when no marker exists) |
+| `entries` | Claude/Codex: `PermissionRequest`, `Stop`; recap (removal only): `UserPromptSubmit`, `PostToolUse`, `Stop`; statusline: exactly `statusLine`. Ordered; `op` in `add`, `replace`, `remove`, `keep` (`keep` includes removal when no marker exists); recap entries are only `remove`/`keep` |
 | `backup_path` | string or `null` (`null` when nothing changes or the file is new). The timestamp is **planned**; the one used at apply is the apply-time UTC time |
 | `diff.lines` | at most **200** strings, each at most **300** characters, control characters (C0, DEL, C1, U+2028/2029) replaced by `?`; `[]` when unchanged. First line is a `@@` header, then context (` `), `-` and `+` lines |
 | `diff.hidden` | integer >= 0: diff lines not shown. **`diff.hidden > 0` (or any line altered by sanitizing: control characters replaced by `?`, lines cut at 300 characters) means the preview is NOT fully human-reviewable: the island must warn and disable the 1-click apply in that case.** |
@@ -132,9 +133,12 @@ Refusals that happen after argument validation (`not_island`, `plan_changed`, `b
 
 ## Notify-only Claude integrations
 
-`recap` uses the shared hook planner with its own three-event profile and the sibling
-`bin/abito-recap-hook.cjs`. It only counts activity for the weekly recap: no command
-text, path or prompt is kept. It never answers a permission request.
+Recap was removed in Koda 0.2. The `recap` harness id remains only as the REMOVAL-ONLY legacy profile
+(`src/install-recap.cjs`): `install recap --user --remove [--apply]` takes the Koda 0.1 recap hooks out of
+`~/.claude/settings.json` — the `UserPromptSubmit`, `PostToolUse`, `Stop` entries that call the deleted
+`bin/abito-recap-hook.cjs` — with a dated backup first and marker-only removal; the preview's notes say so.
+Install (without `--remove`) is a usage error (exit 64; JSON `code:"usage"`). It never answers a permission
+request. TODO: remove one version after K2-03.
 
 `statusline` uses `install-statusline.cjs` and the sibling `bin/abito-statusline.cjs`.
 Only the top-level `statusLine` member is patched (not `hooks`). A user's existing
