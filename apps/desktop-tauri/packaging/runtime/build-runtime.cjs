@@ -12,6 +12,10 @@
      The archive comes from --node-archive (offline) or from https://nodejs.org/dist/; a sha256 mismatch fails closed.
    - package.json + package-lock.json: Pi, gentle-pi and every peer gentle-pi declares, pinned exactly; npm ci installs
      every package against its lockfile sha512.
+   A CROSS-TARGET BUILD (--target other than the build host) is audited after npm ci: every installed package that
+   declares os/cpu/libc must run on the --target, because npm installs native optionals for the host alone and such a
+   build would silently ship the host's native files; the mismatch names the package and the target and fails the
+   build closed (no output). Pure-JS trees cross-build freely.
 
    Output (<out>, created only when every step succeeds; a failed build leaves <out> untouched):
      node | node.exe       the pinned Node binary only: no npm, npx or corepack
@@ -27,7 +31,10 @@
    --archive also packs <out> into ONE tar.gz (members relative to the runtime folder's root, no links) and prints its
    sha256: the single file the Linux and Windows installers ship and verify before extracting. macOS ships the folder.
    --self-check runs the built Pi (`pi --version`) and the built gentle-shell offline (an RPC get_state answered with
-   success:true over stdin, no auto-setup, PI_CODING_AGENT_DIR unset) with an empty private HOME; only on this OS. */
+   success:true over stdin, no auto-setup, PI_CODING_AGENT_DIR unset) with an empty private HOME; only on this OS.
+   KODA_RUNTIME_SELF_CHECK_TIMEOUT_MS (TESTS ONLY — never set it on a real build) overrides both gentle-shell
+   self-check bounds: the wait for the get_state answer and the wait for gentle-shell's exit after it answers;
+   any other value than a positive integer fails the build. */
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -114,6 +121,17 @@ function run(cmd, args, options = {}, label = `${path.basename(cmd)} ${args[0]}`
 }
 
 /* Only the Node binary and its licence leave the archive: npm, npx, corepack, headers and docs never do. */
+/* Tests only: shortens BOTH gentle-shell self-check bounds (the wait for the get_state answer and the wait for the
+   exit after the answer) so a self-check regression fails in seconds, not in two minutes. A number, nothing else. */
+function selfCheckTimeoutMs() {
+  const raw = process.env.KODA_RUNTIME_SELF_CHECK_TIMEOUT_MS;
+  if (raw === undefined) return 120_000;
+  if (!/^\d+$/.test(raw) || Number(raw) < 1) {
+    throw new Fail(`KODA_RUNTIME_SELF_CHECK_TIMEOUT_MS must be a positive integer (tests only), got ${JSON.stringify(raw)}`, 2);
+  }
+  return Number(raw);
+}
+
 function extractNode(archive, pin, target, dest) {
   const t = TARGETS[target];
   const scratch = fs.mkdtempSync(path.join(path.dirname(dest), '.node-extract-'));
@@ -162,7 +180,7 @@ function npmCli() {
   return found;
 }
 
-function installPi(dest, cache) {
+function installPi(dest, cache, target, t) {
   for (const f of ['package.json', 'package-lock.json']) fs.copyFileSync(path.join(HERE, f), path.join(dest, f));
   // Private, empty npm configurations: no user or global .npmrc may redirect the registry or change what is installed.
   // Two files: npm refuses to load one file as both the user and the global config.
@@ -176,6 +194,7 @@ function installPi(dest, cache) {
     npm_config_update_notifier: 'false', npm_config_fund: 'false', npm_config_audit: 'false',
   };
   run(process.execPath, [npmCli(), 'ci', '--ignore-scripts', '--omit=dev', '--no-audit', '--no-fund', '--registry=https://registry.npmjs.org/'], { cwd: dest, env }, 'npm ci');
+  auditTargetPlatforms(dest, target, t);
   for (const f of ['package.json', 'package-lock.json']) fs.rmSync(path.join(dest, f));
   // npm-only bookkeeping and the .bin symlinks; Koda starts Pi through its own launcher (or the daemon on Windows).
   fs.rmSync(path.join(dest, 'node_modules', '.bin'), { recursive: true, force: true });
@@ -188,6 +207,37 @@ function installPi(dest, cache) {
     pi: { version: piManifest.version, ...binInPackage(dest, pkgDir, 'pi', `${PI} declares no relative "pi" bin`) },
     gentle: { version: gentleManifest.version, ...binInPackage(dest, gentleDir, 'gentle-shell', `${GENTLE} declares no relative "gentle-shell" bin`) },
   };
+}
+
+/* K2-05 T1 finding 3 (option C): npm installs a package's native optional dependencies for the BUILD HOST only.
+   A cross-target build would therefore silently bundle the host's native files (e.g. Linux binaries in a
+   win-x64 runtime). After npm ci, every installed package that declares os/cpu — or libc, which only npm on
+   Linux ever honours — must be able to run on the --target; anything else fails the build closed, naming the
+   package and the target, and leaves no output. Pure-JS trees (no os/cpu/libc declared) cross-build freely. */
+function listMatchesTarget(list, wanted) {
+  // npm's os/cpu semantics, small and strict: 'any' matches, a negation vetoes, and when any positive entry is
+  // declared at least one positive entry must match.
+  if (!Array.isArray(list)) list = [list];
+  let hasPositive = false;
+  for (const entry of list) {
+    if (typeof entry !== 'string') continue;
+    if (entry === 'any') return true;
+    if (entry.startsWith('!')) { if (entry.slice(1) === wanted) return false; continue; }
+    hasPositive = true;
+    if (entry === wanted) return true;
+  }
+  return !hasPositive; // only negations, and the target matches none of them
+}
+function auditTargetPlatforms(dest, target, t) {
+  for (const { manifest } of packagesIn(path.join(dest, 'node_modules'))) {
+    const problems = [];
+    if (manifest.os !== undefined && !listMatchesTarget(manifest.os, t.platform)) problems.push(`os ${JSON.stringify(manifest.os)}`);
+    if (manifest.cpu !== undefined && !listMatchesTarget(manifest.cpu, t.arch)) problems.push(`cpu ${JSON.stringify(manifest.cpu)}`);
+    if (manifest.libc !== undefined && t.platform !== 'linux') problems.push(`libc ${JSON.stringify(manifest.libc)}`);
+    if (problems.length) {
+      throw new Fail(`${manifest.name}@${manifest.version} runs on ${problems.join(', ')} — not on --target ${target} (${t.platform}-${t.arch}): cross-target builds ship only packages that run on the target`);
+    }
+  }
 }
 
 /* A package's bin entry for `name`: relative, inside the package, a real regular file — anything else fails closed.
@@ -237,7 +287,7 @@ const repository = (manifest) => (typeof manifest.repository === 'string' ? mani
    package.json and the canonical text from licenses/<id>.txt, reproduced once; with no such text the build fails. */
 function writeNotices(dest, nodeVersion) {
   const lines = ['# Third-party notices: Koda\'s bundled runtime', '',
-    'Koda ships its own Node.js and Pi in this folder (K2-02). Their licences and those of every package they include follow.', '',
+    'Koda ships Node.js, Pi and Gentle Shell (gentle-pi) in this folder (K2-02, K2-05). Their licences and those of every package they include follow.', '',
     `## Node.js ${nodeVersion}`, '', 'License: MIT (with bundled components). Full text: `LICENSE.node` in this folder.', ''];
   const texts = new Map();
   for (const { dir, manifest } of packagesIn(path.join(dest, 'node_modules'))) {
@@ -310,14 +360,19 @@ async function selfCheck(dest, target, piVersion) {
     if (out !== piVersion) throw new Fail(`self-check: built Pi printed ${JSON.stringify(out)}, expected ${piVersion}`);
     await gentleSelfCheck(dest, t, home, env);
   } finally {
-    fs.rmSync(home, { recursive: true, force: true });
+    // Best effort only: a failed cleanup here must never mask the primary error (an EBUSY from a briefly held
+    // home used to replace the real self-check failure). With the whole-tree kill above this is belt and braces.
+    try { fs.rmSync(home, { recursive: true, force: true }); } catch { /* the primary error is what matters */ }
   }
 }
 
 /* K2-05 T1 (S1): the built Gentle Shell answers an RPC get_state offline — the L6 experiment, as a build gate.
    No auto-setup (no Engram companion, no gentle-ai binary), PI_CODING_AGENT_DIR unset: gentle-shell resolves its
-   own --home, and Koda's daemon (T2) passes its own. The response must arrive within a bounded timeout; stdin is
-   closed only after it does, and the child must exit cleanly on that. */
+   own --home, and Koda's daemon (T2) passes its own. Every wait is bounded: the answer must arrive within the
+   timeout, and after it does, the child must still exit within the same bound. On any failure the child's WHOLE
+   process tree is killed (gentle-shell spawns Pi as its own child and forwards signals only to it — see
+   gentle-pi's bin/gentle-shell.mjs), and the self-check home is removed best effort so the cleanup can never
+   mask the primary failure. */
 function gentleSelfCheck(dest, t, home, baseEnv) {
   const manifest = readJson(path.join(dest, 'koda-runtime.json'));
   const script = path.join(dest, manifest.gentleShell);
@@ -328,17 +383,31 @@ function gentleSelfCheck(dest, t, home, baseEnv) {
   env.GENTLE_PI_SKIP_GENTLE_AI_INSTALL = '1';
   const args = ['--home', path.join(home, 'agent'), '--mode', 'rpc', '--session-dir', path.join(home, 'sessions')];
   const cmd = t.platform === 'win32' ? path.join(dest, t.exe) : path.join(dest, 'gentle-shell');
-  const child = t.platform === 'win32' ? cp.spawn(cmd, [script, ...args], { env, cwd: home, windowsHide: true }) : cp.spawn(cmd, args, { env, cwd: home });
-  const TIMEOUT_MS = 120_000;
+  // POSIX: gentle-shell runs detached, in its own process group, so the failure paths below can SIGKILL the whole
+  // group — gentle-shell itself, and the Pi process it spawns.
+  const child = cp.spawn(cmd, t.platform === 'win32' ? [script, ...args] : args, { env, cwd: home, windowsHide: true, detached: t.platform !== 'win32' });
+  const TIMEOUT_MS = selfCheckTimeoutMs();
   return new Promise((resolve, reject) => {
     let out = '';
     let err = '';
     let settled = false;
-    const timer = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      child.kill();
-      reject(new Fail(`self-check: built gentle-shell did not answer get_state within ${TIMEOUT_MS / 1000}s (stdout so far: ${JSON.stringify(out.slice(-2000))}, stderr: ${JSON.stringify(err.slice(-2000))})`));
+    let answered = false;
+    let bound = null;
+    function killTree() {
+      try {
+        if (typeof child.pid !== 'number') return;
+        if (t.platform === 'win32') {
+          // Windows has no process groups here: taskkill /T /F walks the whole tree.
+          cp.spawnSync('taskkill', ['/T', '/F', '/PID', String(child.pid)], { windowsHide: true });
+        } else {
+          process.kill(-child.pid, 'SIGKILL'); // negative pid: the detached process group
+        }
+      } catch { /* the tree may already be gone */ }
+    }
+    function settle(fn) { if (settled) return; settled = true; if (bound) clearTimeout(bound); fn(); }
+    function fail(message) { settle(() => { killTree(); reject(new Fail(message)); }); }
+    bound = setTimeout(() => {
+      fail(`self-check: built gentle-shell did not answer get_state within ${TIMEOUT_MS / 1000}s (stdout so far: ${JSON.stringify(out.slice(-2000))}, stderr: ${JSON.stringify(err.slice(-2000))})`);
     }, TIMEOUT_MS);
     child.stderr.on('data', (chunk) => { err += chunk; });
     child.stdout.on('data', (chunk) => {
@@ -347,16 +416,23 @@ function gentleSelfCheck(dest, t, home, baseEnv) {
         let parsed;
         try { parsed = JSON.parse(line); } catch { continue; }
         if (parsed && parsed.type === 'response' && parsed.command === 'get_state' && parsed.success === true) {
-          if (settled) return;
-          settled = true;
-          clearTimeout(timer);
+          if (settled || answered) return;
+          answered = true;
+          clearTimeout(bound);
           child.stdin.end(); // answered: only now is stdin closed (the experiment's order)
-          child.on('exit', (code) => code === 0 ? resolve() : reject(new Fail(`self-check: built gentle-shell exited ${code} after answering get_state (stderr: ${JSON.stringify(err.slice(-2000))})`)));
+          const EXIT_MS = TIMEOUT_MS; // bounded, too: the child must leave after it answered
+          bound = setTimeout(() => {
+            fail(`self-check: built gentle-shell did not exit within ${EXIT_MS / 1000}s after answering get_state (stdout so far: ${JSON.stringify(out.slice(-2000))}, stderr: ${JSON.stringify(err.slice(-2000))})`);
+          }, EXIT_MS);
         }
       }
     });
-    child.on('error', (e) => { if (!settled) { settled = true; clearTimeout(timer); reject(new Fail(`self-check: cannot run built gentle-shell: ${e.message}`)); } });
-    child.on('exit', (code) => { if (!settled) { settled = true; clearTimeout(timer); reject(new Fail(`self-check: built gentle-shell exited ${code} before answering get_state (stdout: ${JSON.stringify(out.slice(-2000))}, stderr: ${JSON.stringify(err.slice(-2000))})`)); } });
+    child.on('error', (e) => fail(`self-check: cannot run built gentle-shell: ${e.message}`));
+    child.on('exit', (code) => {
+      if (!answered) fail(`self-check: built gentle-shell exited ${code} before answering get_state (stdout: ${JSON.stringify(out.slice(-2000))}, stderr: ${JSON.stringify(err.slice(-2000))})`);
+      else if (code === 0) settle(() => resolve());
+      else fail(`self-check: built gentle-shell exited ${code} after answering get_state (stderr: ${JSON.stringify(err.slice(-2000))})`);
+    });
     child.stdin.write(`${JSON.stringify({ type: 'get_state', id: '1' })}\n`);
   });
 }
@@ -401,7 +477,7 @@ async function main() {
     const archive = await nodeArchive(pin, opts, cache);
     fs.mkdirSync(partial, { mode: 0o755 });
     extractNode(archive, pin, opts.target, partial);
-    const pi = installPi(partial, cache);
+    const pi = installPi(partial, cache, opts.target, t);
     writeNotices(partial, pin.version);
     if (t.platform !== 'win32') {
       fs.writeFileSync(path.join(partial, 'pi'), piLauncher(pi.pi.cli, 'Pi (K2-02)'), { mode: 0o755 });

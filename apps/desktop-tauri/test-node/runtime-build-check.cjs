@@ -100,41 +100,125 @@ function fixture(targets = ['linux-x64', 'darwin-arm64', 'win-x64'], opts = {}) 
   const integrity = `sha512-${crypto.createHash('sha512').update(fs.readFileSync(tgz)).digest('base64')}`;
   const spec = `file:${tgz.split(path.sep).join('/')}`;
   // A fake gentle-pi package (K2-05): its gentle-shell.mjs answers a get_state frame on stdin (RPC), and with
-  // KODA_REPORT=1 also which Node runs it. opts.noGentleBin ships the bin entry without the file (fail closed).
+  // KODA_REPORT=1 also which Node runs it. opts.noGentleBin ships the bin entry without the file (fail closed);
+  // opts.gentleBin replaces the bin path the package.json and lockfile declare (absolute / escaping, fail closed);
+  // opts.gentleEnvAssert makes the fake REFUSE to answer unless every env var the self-check must set is exact,
+  // and writes what it saw to koda-env-report.json next to its own package (a file that survives the build);
+  // opts.gentleMode forces a regression-shape behavior the self-check must fail closed on:
+  //   'answer-then-hang'         answers get_state and then never exits (the unbounded-wait defect)
+  //   'hang-with-grandchild'     never answers, spawns a same-process-group grandchild that outlives child.kill()
+  //   'exit-before-answer'       exits 3 without ever answering get_state
+  //   'answer-then-exit-nonzero' answers get_state and then exits 7 after stdin is closed
+  function gentleBinValue(opts = {}) {
+    return opts.gentleBin !== undefined ? opts.gentleBin : 'bin/gentle-shell.mjs';
+  }
+  function gentleShellScript(opts = {}) {
+    const head = opts.gentleEnvAssert ? [
+      'import { writeFileSync } from \'node:fs\';',
+      'import path from \'node:path\';',
+      'import { fileURLToPath } from \'node:url\';',
+      'const want = { GENTLE_SHELL_NO_AUTO_SETUP: \'1\', GENTLE_PI_SKIP_GENTLE_AI_INSTALL: \'1\', PI_OFFLINE: \'1\', PI_SKIP_VERSION_CHECK: \'1\', PI_TELEMETRY: \'0\' };',
+      'const bad = Object.entries(want).filter(([k, v]) => process.env[k] !== v).map(([k]) => `${k}=${JSON.stringify(process.env[k])} (want ${JSON.stringify(v)})`);',
+      'if (process.env.PI_CODING_AGENT_DIR !== undefined) bad.push(`PI_CODING_AGENT_DIR=${JSON.stringify(process.env.PI_CODING_AGENT_DIR)} (want unset)`);',
+      'try { writeFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), \'..\', \'koda-env-report.json\'), JSON.stringify({ ok: bad.length === 0, bad, env: { ...want, PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR === undefined ? null : process.env.PI_CODING_AGENT_DIR } })); } catch (e) {}',
+      'if (bad.length) { process.stderr.write(\'KODA-ENV-BAD: \' + bad.join(\', \') + \'\\n\'); process.exit(0); }',
+    ] : [];
+    if (opts.gentleMode === 'answer-then-hang') return [...head,
+      'let buffered = \'\';',
+      'process.stdin.setEncoding(\'utf8\');',
+      'process.stdin.on(\'data\', (chunk) => {',
+      '  buffered += chunk;',
+      '  if (buffered.includes(\'\\n\')) process.stdout.write(\'{"type":"response","command":"get_state","success":true}\\n\');',
+      '});',
+      'process.stdin.on(\'end\', () => {});',
+      'setInterval(() => {}, 1000);', // answers, then never exits
+    ];
+    if (opts.gentleMode === 'hang-with-grandchild') return [...head,
+      'import cp from \'node:child_process\';',
+      'import fs from \'node:fs\';',
+      'import path from \'node:path\';',
+      'import { fileURLToPath } from \'node:url\';',
+      // Same process group, never exits; its pid goes next to the FIXTURE (four levels up from bin/), a directory
+      // that survives both the success rename and the failure cleanup, so the test can find the pid either way.
+      'const grandchild = cp.spawn(process.execPath, [\'-e\', \'setInterval(() => {}, 1000)\'], { stdio: \'ignore\' });',
+      'try { fs.writeFileSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)), \'../../../..\', \'koda-grandchild-pid.txt\'), String(grandchild.pid)); } catch (e) {}',
+      'setInterval(() => {}, 1000);', // never answers, never exits
+    ];
+    if (opts.gentleMode === 'exit-before-answer') return [...head,
+      'process.stdout.write(\'noise before any answer\\n\');',
+      'setTimeout(() => process.exit(3), 50);',
+    ];
+    if (opts.gentleMode === 'answer-then-exit-nonzero') return [...head,
+      'let buffered = \'\';',
+      'process.stdin.setEncoding(\'utf8\');',
+      'process.stdin.on(\'data\', (chunk) => {',
+      '  buffered += chunk;',
+      '  if (buffered.includes(\'\\n\')) process.stdout.write(\'{"type":"response","command":"get_state","success":true}\\n\');',
+      '});',
+      'process.stdin.on(\'end\', () => { setTimeout(() => process.exit(7), 50); });', // exits 7 after the answer
+    ];
+    return [...head,
+      'let buffered = \'\';',
+      'process.stdin.setEncoding(\'utf8\');',
+      'process.stdin.on(\'data\', (chunk) => {',
+      '  buffered += chunk;',
+      '  if (buffered.includes(\'\\n\')) {',
+      '    if (process.env.KODA_REPORT === \'1\') process.stdout.write(`4.3.0 node=${process.env.KODA_NODE || \'other\'}` + "\\n");',
+      '    else process.stdout.write(\'{"type":"response","command":"get_state","success":true}\\n\');',
+      '  }',
+      '});',
+      'process.stdin.on(\'end\', () => {});',
+    ];
+  }
   const gentleSrc = path.join(dir, 'gentle-src', 'package');
   fs.mkdirSync(path.join(gentleSrc, 'bin'), { recursive: true });
-  fs.writeFileSync(path.join(gentleSrc, 'package.json'), JSON.stringify({ name: 'gentle-pi', version: '4.3.0', license: 'MIT', author: 'Gentleman Programming', repository: { url: 'git+https://github.com/Gentleman-Programming/gentle-shell.git' }, bin: { 'gentle-shell': 'bin/gentle-shell.mjs' }, peerDependencies: { '@earendil-works/pi-coding-agent': '>=1.2.0', '@earendil-works/pi-ai': '*', '@earendil-works/pi-tui': '*', typebox: '*' }, peerDependenciesMeta: { '@earendil-works/pi-coding-agent': { optional: true }, '@earendil-works/pi-ai': { optional: true }, '@earendil-works/pi-tui': { optional: true }, typebox: { optional: true } } }));
-  if (!opts.noGentleBin) fs.writeFileSync(path.join(gentleSrc, 'bin', 'gentle-shell.mjs'), [
-    'let buffered = \'\';',
-    'process.stdin.setEncoding(\'utf8\');',
-    'process.stdin.on(\'data\', (chunk) => {',
-    '  buffered += chunk;',
-    '  if (buffered.includes(\'\\n\')) {',
-    '    if (process.env.KODA_REPORT === \'1\') process.stdout.write(`4.3.0 node=${process.env.KODA_NODE || \'other\'}` + "\\n");',
-    '    else process.stdout.write(\'{"type":"response","command":"get_state","success":true}\\n\');',
-    '  }',
-    '});',
-    'process.stdin.on(\'end\', () => {});',
-  ].join('\n'));
+  fs.writeFileSync(path.join(gentleSrc, 'package.json'), JSON.stringify({ name: 'gentle-pi', version: '4.3.0', license: 'MIT', author: 'Gentleman Programming', repository: { url: 'git+https://github.com/Gentleman-Programming/gentle-shell.git' }, bin: { 'gentle-shell': gentleBinValue(opts) }, peerDependencies: { '@earendil-works/pi-coding-agent': '>=1.2.0', '@earendil-works/pi-ai': '*', '@earendil-works/pi-tui': '*', typebox: '*' }, peerDependenciesMeta: { '@earendil-works/pi-coding-agent': { optional: true }, '@earendil-works/pi-ai': { optional: true }, '@earendil-works/pi-tui': { optional: true }, typebox: { optional: true } } }));
+  if (!opts.noGentleBin) fs.writeFileSync(path.join(gentleSrc, 'bin', 'gentle-shell.mjs'), gentleShellScript(opts).join('\n'));
   const gentleTgz = path.join(dir, 'gentle-pi-4.3.0.tgz');
   tarGz(path.join(dir, 'gentle-src'), gentleTgz, ['package']);
   const gentleIntegrity = `sha512-${crypto.createHash('sha512').update(fs.readFileSync(gentleTgz)).digest('base64')}`;
   const gentleSpec = `file:${gentleTgz.split(path.sep).join('/')}`;
-  fs.writeFileSync(path.join(pins, 'package.json'), JSON.stringify({ name: 'koda-runtime', private: true, dependencies: { '@earendil-works/pi-coding-agent': spec, 'gentle-pi': gentleSpec } }));
+  // A fake native optional package (K2-05 T1 finding 3, option C): it declares the BUILD HOST's os/cpu, exactly the
+  // shape npm installs for the host alone — so a cross-target build would silently ship the host's native files
+  // unless the installed tree is audited against the --target.
+  let nativeEntry = null;
+  if (opts.native) {
+    const hostOs = { linux: 'linux', darwin: 'darwin', win32: 'win32' }[process.platform];
+    const hostCpu = { x64: 'x64', arm64: 'arm64' }[process.arch];
+    const nativeSrc = path.join(dir, 'native-src', 'package');
+    fs.mkdirSync(nativeSrc, { recursive: true });
+    fs.writeFileSync(path.join(nativeSrc, 'package.json'), JSON.stringify({ name: 'fake-native', version: '1.0.0', license: 'MIT', os: opts.native.os || [hostOs], cpu: opts.native.cpu || [hostCpu] }));
+    const nativeTgz = path.join(dir, 'fake-native-1.0.0.tgz');
+    tarGz(path.join(dir, 'native-src'), nativeTgz, ['package']);
+    const nativeIntegrity = `sha512-${crypto.createHash('sha512').update(fs.readFileSync(nativeTgz)).digest('base64')}`;
+    nativeEntry = {
+      spec: `file:${nativeTgz.split(path.sep).join('/')}`,
+      integrity: nativeIntegrity,
+      os: opts.native.os || [hostOs],
+      cpu: opts.native.cpu || [hostCpu],
+    };
+  }
+  const rootDeps = { '@earendil-works/pi-coding-agent': spec, 'gentle-pi': gentleSpec, ...(nativeEntry ? { 'fake-native': nativeEntry.spec } : {}) };
+  fs.writeFileSync(path.join(pins, 'package.json'), JSON.stringify({ name: 'koda-runtime', private: true, dependencies: rootDeps }));
   fs.writeFileSync(path.join(pins, 'package-lock.json'), JSON.stringify({
     name: 'koda-runtime', lockfileVersion: 3, requires: true,
     packages: {
-      '': { name: 'koda-runtime', dependencies: { '@earendil-works/pi-coding-agent': spec, 'gentle-pi': gentleSpec } },
+      '': { name: 'koda-runtime', dependencies: rootDeps },
       'node_modules/@earendil-works/pi-coding-agent': { version: '1.4.0', resolved: spec, integrity, bin: { pi: 'dist/bundle/cli.js' } },
-      'node_modules/gentle-pi': { version: '4.3.0', resolved: gentleSpec, integrity: gentleIntegrity, bin: { 'gentle-shell': 'bin/gentle-shell.mjs' }, peerDependencies: { '@earendil-works/pi-coding-agent': '>=1.2.0', '@earendil-works/pi-ai': '*', '@earendil-works/pi-tui': '*', typebox: '*' }, peerDependenciesMeta: { '@earendil-works/pi-coding-agent': { optional: true }, '@earendil-works/pi-ai': { optional: true }, '@earendil-works/pi-tui': { optional: true }, typebox: { optional: true } } },
+      'node_modules/gentle-pi': { version: '4.3.0', resolved: gentleSpec, integrity: gentleIntegrity, bin: { 'gentle-shell': gentleBinValue(opts) }, peerDependencies: { '@earendil-works/pi-coding-agent': '>=1.2.0', '@earendil-works/pi-ai': '*', '@earendil-works/pi-tui': '*', typebox: '*' }, peerDependenciesMeta: { '@earendil-works/pi-coding-agent': { optional: true }, '@earendil-works/pi-ai': { optional: true }, '@earendil-works/pi-tui': { optional: true }, typebox: { optional: true } } },
+      ...(nativeEntry ? { 'node_modules/fake-native': { version: '1.0.0', resolved: nativeEntry.spec, integrity: nativeEntry.integrity } } : {}),
     },
   }));
-  return { dir, pins, archives };
+  return { dir, pins, archives, nativeEntry };
 }
-function build(fx, args, env = {}) {
+function build(fx, args, env = {}, spawnTimeoutMs = 120_000) {
   return cp.spawnSync(process.execPath, [path.join(fx.pins, 'build-runtime.cjs'), ...args], {
-    encoding: 'utf8', env: { ...process.env, npm_config_offline: 'true', ...env }, timeout: 120_000,
+    encoding: 'utf8', env: { ...process.env, npm_config_offline: 'true', ...env }, timeout: spawnTimeoutMs,
   });
+}
+/* Reads a fake gentle-shell's env report (written next to its own package inside the built runtime folder). */
+function envReport(out) {
+  return JSON.parse(fs.readFileSync(path.join(out, 'node_modules', 'gentle-pi', 'koda-env-report.json'), 'utf8'));
 }
 function tree(dir, prefix = '') {
   return fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
@@ -232,6 +316,8 @@ test(`${hostTarget} (this OS): --archive packs the runtime folder into one tar.g
 test('the runtime ships THIRD-PARTY-NOTICES.md: Node, then every package with its licence (a package without a licence file gets its declared author and the canonical text)', () => {
   const notices = fs.readFileSync(path.join(fx.dir, 'out-linux-x64', 'THIRD-PARTY-NOTICES.md'), 'utf8');
   assert.match(notices, /^# Third-party notices: Koda's bundled runtime\n/);
+  assert.ok(notices.includes('Koda ships Node.js, Pi and Gentle Shell (gentle-pi) in this folder (K2-02, K2-05). Their licences and those of every package they include follow.\n'),
+    'the header names everything the runtime bundles, including Gentle Shell (K2-05 T1 finding 6)');
   assert.ok(notices.includes(`## Node.js ${NODE_VERSION}\n\nLicense: MIT (with bundled components). Full text: \`LICENSE.node\` in this folder.\n`));
   assert.ok(notices.includes('## gentle-pi 4.3.0\n\nLicense: MIT\n'), 'gentle-pi ships with its licence in the notices (K2-05)');
   // RDD advisory 2: MIT keeps «the above copyright notice», so the text a package without its own file is shipped under
@@ -316,6 +402,120 @@ test('--self-check for another OS is refused before anything is built', () => {
   assert.equal(r.status, 2);
   assert.match(r.stderr, new RegExp(`^build-runtime: --self-check runs only on ${other}; this is `));
   assert.equal(fs.existsSync(out), false);
+});
+
+test(`${hostTarget} (this OS): the gentle-shell self-check env is exactly what the build must set — the fake refuses to answer otherwise and reports what it saw (K2-05 T1)`, () => {
+  const f4 = fixture([hostTarget], { gentleEnvAssert: true });
+  const out = path.join(f4.dir, 'out-env');
+  const r = build(f4, ['--target', hostTarget, '--out', out, '--node-archive', f4.archives[hostTarget], '--self-check']);
+  assert.equal(r.status, 0, `exit ${r.status}\nstderr=${r.stderr}`);
+  assert.match(r.stdout, /, self-check ok\n$/);
+  assert.equal(r.stderr, '');
+  // the fake ran its env assertion (otherwise the report would not exist) and every value is exact:
+  const report = envReport(out);
+  assert.deepEqual(report, {
+    ok: true, bad: [],
+    env: {
+      GENTLE_SHELL_NO_AUTO_SETUP: '1', GENTLE_PI_SKIP_GENTLE_AI_INSTALL: '1',
+      PI_OFFLINE: '1', PI_SKIP_VERSION_CHECK: '1', PI_TELEMETRY: '0', PI_CODING_AGENT_DIR: null,
+    },
+  });
+});
+
+test(`${hostTarget} (this OS): a gentle-shell that answers get_state and then never exits fails the self-check within the bound: exit 1, exact message (K2-05 T1 finding 1)`, () => {
+  const f4 = fixture([hostTarget], { gentleMode: 'answer-then-hang' });
+  const out = path.join(f4.dir, 'out-hang');
+  const r = build(f4, ['--target', hostTarget, '--out', out, '--node-archive', f4.archives[hostTarget], '--self-check'],
+    { KODA_RUNTIME_SELF_CHECK_TIMEOUT_MS: '1500' }, 30_000);
+  assert.equal(r.status, 1, `exit ${r.status}\nstdout=${r.stdout}\nstderr=${r.stderr}`);
+  assert.equal(r.stdout, '');
+  assert.match(r.stderr, /^build-runtime: self-check: built gentle-shell did not exit within 1\.5s after answering get_state \(stdout so far: /);
+  assert.equal(fs.existsSync(out), false);
+});
+
+test(`${hostTarget} (this OS): a gentle-shell that never answers takes its whole process group down with it — the grandchild does not survive the self-check timeout (K2-05 T1 finding 2)`, () => {
+  const f4 = fixture([hostTarget], { gentleMode: 'hang-with-grandchild' });
+  const out = path.join(f4.dir, 'out-grandchild');
+  try {
+    const r = build(f4, ['--target', hostTarget, '--out', out, '--node-archive', f4.archives[hostTarget], '--self-check'],
+      { KODA_RUNTIME_SELF_CHECK_TIMEOUT_MS: '1500' }, 30_000);
+    // The fake reports its grandchild's pid as soon as it starts, in a file the fixture keeps whatever the build does.
+    const grandchildPid = Number(fs.readFileSync(path.join(f4.dir, 'koda-grandchild-pid.txt'), 'utf8').trim());
+    assert.ok(grandchildPid > 0, 'the fake reported its grandchild pid');
+    let alive = false;
+    try { process.kill(grandchildPid, 0); alive = true; } catch { /* dead: what the whole-tree kill promises */ }
+    if (alive) { try { process.kill(grandchildPid, 'SIGKILL'); } catch { /* gone */ } }
+    assert.ok(!alive, `the gentle-shell grandchild (pid ${grandchildPid}) survived the self-check timeout`);
+    assert.equal(r.status, 1, `exit ${r.status}\nstdout=${r.stdout}\nstderr=${r.stderr}`);
+    assert.match(r.stderr, /^build-runtime: self-check: built gentle-shell did not answer get_state within 1\.5s \(stdout so far: /);
+    assert.equal(fs.existsSync(out), false);
+  } finally {
+    // RED-phase leak guard: a build killed at the spawnSync cap leaves its fake shell behind; GREEN never does.
+    cp.spawnSync('pkill', ['-f', path.basename(f4.dir)], { stdio: 'ignore' });
+    try { fs.rmSync(path.join(f4.dir, 'koda-grandchild-pid.txt'), { force: true }); } catch { /* best effort */ }
+  }
+});
+
+test(`${hostTarget} (this OS): a gentle-shell that exits before answering fails closed: exit 1, exact message, no output (K2-05 T1)`, () => {
+  const f4 = fixture([hostTarget], { gentleMode: 'exit-before-answer' });
+  const out = path.join(f4.dir, 'out-early');
+  const r = build(f4, ['--target', hostTarget, '--out', out, '--node-archive', f4.archives[hostTarget], '--self-check']);
+  assert.equal(r.status, 1, `exit ${r.status}\nstdout=${r.stdout}\nstderr=${r.stderr}`);
+  assert.equal(r.stdout, '');
+  assert.equal(r.stderr, 'build-runtime: self-check: built gentle-shell exited 3 before answering get_state (stdout: "noise before any answer\\n", stderr: "")\n');
+  assert.equal(fs.existsSync(out), false);
+});
+
+test(`${hostTarget} (this OS): a gentle-shell that answers and then exits non-zero fails closed: exit 1, exact message (K2-05 T1)`, () => {
+  const f4 = fixture([hostTarget], { gentleMode: 'answer-then-exit-nonzero' });
+  const out = path.join(f4.dir, 'out-nonzero');
+  const r = build(f4, ['--target', hostTarget, '--out', out, '--node-archive', f4.archives[hostTarget], '--self-check']);
+  assert.equal(r.status, 1, `exit ${r.status}\nstdout=${r.stdout}\nstderr=${r.stderr}`);
+  assert.equal(r.stdout, '');
+  assert.match(r.stderr, /^build-runtime: self-check: built gentle-shell exited 7 after answering get_state \(stderr: /);
+  assert.equal(fs.existsSync(out), false);
+});
+
+test('a gentle-pi bin that escapes the package (../outside.mjs) fails closed: exit 1, exact message, no output (K2-05 T1)', () => {
+  const f4 = fixture(['linux-x64'], { gentleBin: '../outside.mjs' });
+  const out = path.join(f4.dir, 'out');
+  const r = build(f4, ['--target', 'linux-x64', '--out', out, '--node-archive', f4.archives['linux-x64']], { npm_config_cache: path.join(f4.dir, 'c') });
+  assert.equal(r.status, 1, `exit ${r.status}\nstdout=${r.stdout}\nstderr=${r.stderr}`);
+  assert.equal(r.stdout, '');
+  assert.equal(r.stderr, "build-runtime: gentle-pi bin ../outside.mjs is not a file inside the package\n");
+  assert.equal(fs.existsSync(out), false);
+});
+
+test('a gentle-pi bin that is absolute (/etc/evil.mjs) fails closed: exit 1, exact message, no output (K2-05 T1)', () => {
+  const f4 = fixture(['linux-x64'], { gentleBin: '/etc/evil.mjs' });
+  const out = path.join(f4.dir, 'out');
+  const r = build(f4, ['--target', 'linux-x64', '--out', out, '--node-archive', f4.archives['linux-x64']], { npm_config_cache: path.join(f4.dir, 'c') });
+  assert.equal(r.status, 1, `exit ${r.status}\nstdout=${r.stdout}\nstderr=${r.stderr}`);
+  assert.equal(r.stdout, '');
+  assert.equal(r.stderr, 'build-runtime: gentle-pi declares no relative "gentle-shell" bin\n');
+  assert.equal(fs.existsSync(out), false);
+});
+
+test('a cross-target build refuses a native package whose os/cpu belong to the build host: exit 1, exact message, no output (K2-05 T1 finding 3, option C)', () => {
+  // the other target has a DIFFERENT arch too, so both os and cpu mismatch and the message names both
+  const other = hostTarget === 'darwin-arm64' ? 'linux-x64' : 'darwin-arm64';
+  const f5 = fixture([hostTarget, other], { native: {} }); // fake-native declares the HOST's os/cpu
+  assert.ok(f5.nativeEntry, 'the fixture ships the fake native package');
+  const out = path.join(f5.dir, 'out-cross');
+  const r = build(f5, ['--target', other, '--out', out, '--node-archive', f5.archives[other]], { npm_config_cache: path.join(f5.dir, 'c') });
+  assert.equal(r.status, 1, `exit ${r.status}\nstdout=${r.stdout}\nstderr=${r.stderr}`);
+  assert.equal(r.stdout, '');
+  assert.equal(r.stderr,
+    `build-runtime: fake-native@1.0.0 runs on os ["${f5.nativeEntry.os[0]}"], cpu ["${f5.nativeEntry.cpu[0]}"] — not on --target ${other} (${other}): cross-target builds ship only packages that run on the target\n`);
+  assert.equal(fs.existsSync(out), false);
+});
+
+test(`a native package whose os/cpu match the --target still builds (the audit refuses only true mismatches, K2-05 T1 finding 3, option C)`, () => {
+  const f5 = fixture([hostTarget], { native: {} });
+  const out = path.join(f5.dir, 'out-match');
+  const r = build(f5, ['--target', hostTarget, '--out', out, '--node-archive', f5.archives[hostTarget]], { npm_config_cache: path.join(f5.dir, 'c') });
+  assert.equal(r.status, 0, `exit ${r.status}\nstderr=${r.stderr}`);
+  assert.ok(tree(out).includes('node_modules/fake-native/package.json'), 'the matching native package is shipped');
 });
 
 console.log(`runtime-build-check: ${passed} passed`);

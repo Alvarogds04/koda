@@ -47,6 +47,16 @@ test('Pi is pinned to exactly 1.4.0', () => {
   assert.equal(pkg.dependencies[PI], '1.4.0');
   assert.equal(lock.packages[`node_modules/${PI}`].version, '1.4.0');
 });
+test('the runtime dependencies are exactly Pi, gentle-pi, and the peers gentle-pi declares (Pi is the only agent dependency)', () => {
+  // The exact set, not a subset: a new dependency must be added here deliberately, never silently.
+  assert.deepEqual(Object.entries(pkg.dependencies).sort(), [
+    ['@earendil-works/pi-ai', '1.4.0'],
+    ['@earendil-works/pi-coding-agent', '1.4.0'],
+    ['@earendil-works/pi-tui', '1.4.0'],
+    ['gentle-pi', '4.3.0'],
+    ['typebox', '1.3.27'],
+  ]);
+});
 test('gentle-pi 4.3.0 is pinned exactly next to Pi (K2-05 T1)', () => {
   assert.equal(pkg.dependencies[GENTLE], '4.3.0');
   const entry = lock.packages[`node_modules/${GENTLE}`];
