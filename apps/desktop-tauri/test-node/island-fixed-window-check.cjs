@@ -54,7 +54,7 @@ test('island-free-drag S4: a press on #clay pulls the pet out ONLY on the open i
       invoke: (cmd, args) => { commands.push(cmd); return Promise.resolve(); }, console,
     });
     vm.runInContext(source.slice(start, end), context);
-    const target = { closest: selector => selector === '#clay' ? target : null, setPointerCapture() {} };
+    const target = { closest: selector => String(selector).split(',').map(x => x.trim()).includes('#clay') ? target : null, setPointerCapture() {} };
     handlers.pointerdown({ button: 0, isPrimary: true, clientX: 200, clientY: 16, screenX: 824, screenY: 16, target });
     handlers.pointermove({ clientX: 205, clientY: 20, screenX: 829, screenY: 20 });
     handlers.pointermove({ clientX: 240, clientY: 80, screenX: 864, screenY: 80 });
@@ -205,4 +205,11 @@ test('S5: the compact disc, and nothing else, carries the pending signal; the fl
   // no compact question UI in the markup any more: the question is read when the island is opened
   const html = fs.readFileSync(path.join(__dirname, '../frontend/index.html'), 'utf8');
   assert.doesNotMatch(html, /id="compact-reply"/, 'the «Responder» pill was the wide compact bar; the disc has no room for it');
+});
+
+test('T7: the open island lets a real pointer reach the Koda sprite (the compact one stays click-through to the disc)', () => {
+  const css = fs.readFileSync(path.join(__dirname, '../frontend/koda-skin.css'), 'utf8');
+  assert.match(css, /#capsule\[data-phase="expanded"\] \.koda-sprite\[data-koda-slot\^="nusa"\][^{]*\{[^}]*pointer-events:\s*auto/, 'the open island character is hit-testable');
+  assert.match(css, /\.koda-sprite \{[^}]*pointer-events: none/, 'every other sprite (compact disc, toast, pill) stays pointer-transparent');
+  assert.match(source, /const onCharacter = e => [^\n]*closest\('#clay, \.koda-sprite'\)/, 'a press on the sprite counts as the character');
 });

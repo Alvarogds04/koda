@@ -255,7 +255,11 @@ function engagementFixture(openOnHover, options) {
       target: { closest: sel => (String(sel).split(',').map(x => x.trim()).includes(tag) ? {} : null) } })); },
     // island-free-drag S3/S4: a press on the character itself (as a real hit-test on #clay reports it)
     pressCharacter(clientX, clientY, screenX, screenY) {
-      const target = { closest: sel => (sel === '#clay' ? {} : null), setPointerCapture() {} };
+      const target = { closest: sel => (String(sel).split(',').map(x => x.trim()).includes('#clay') ? {} : null), setPointerCapture() {} };
+      fire(windowListeners, 'pointerdown', pointer({ type: 'pointerdown', clientX, clientY, screenX, screenY, target })); },
+    // T7: under the Koda skin #clay is hidden; the character a human sees and grabs is the .koda-sprite drawn beside it
+    pressSprite(clientX, clientY, screenX, screenY) {
+      const target = { classList: { contains: c => c === 'koda-sprite' }, closest: sel => (String(sel).split(',').map(x => x.trim()).includes('.koda-sprite') ? {} : null), setPointerCapture() {} };
       fire(windowListeners, 'pointerdown', pointer({ type: 'pointerdown', clientX, clientY, screenX, screenY, target })); },
     movePointer(clientX, clientY, screenX, screenY, buttons = 1) {
       fire(windowListeners, 'pointermove', pointer({ type: 'pointermove', clientX, clientY, screenX, screenY, buttons })); },
@@ -611,6 +615,35 @@ test('S4: with no pet available (already out / feature off) the character of the
   f.pressCharacter(60, 80, 800, 80); f.movePointer(200, 160, 940, 160); f.release();
   assert.deepEqual(f.pet().picked, []);
   assert.deepEqual(f.moves().map(i => i.cmd), ['island_move_begin', 'island_move', 'island_move_end']);
+});
+
+test('T7: on the OPEN island the visible Koda sprite is the character: dragging it pulls the pet out', () => {
+  const f = engagementFixture(false, { pet: true }); f.mutate(); f.seed('expanded');
+  f.pressSprite(60, 80, 800, 80); f.movePointer(200, 160, 940, 160);
+  assert.deepEqual(f.pet().picked, [[60, 80]], 'grabbing the sprite of the open island pulls the pet out');
+  assert.deepEqual(f.moves(), [], 'and never moves the island');
+  f.release();
+});
+
+test('T7: on the compact disc the sprite is still the disc: dragging it moves the island, never the pet', () => {
+  const f = engagementFixture(false, { pet: true }); f.mutate();
+  f.pressSprite(20, 16, 960, 16); f.movePointer(20, 16, 1000, 300); f.release();
+  assert.deepEqual(f.pet().picked, []);
+  assert.deepEqual(f.moves().map(i => i.cmd), ['island_move_begin', 'island_move', 'island_move_end']);
+});
+
+test('T7: a focus blip (blur/pointercancel) while carrying the pet never drops it; the button release does, and a lost release ends it on the next move', () => {
+  const f = engagementFixture(false, { pet: true }); f.mutate(); f.seed('expanded');
+  f.pressSprite(60, 80, 800, 80); f.movePointer(200, 160, 940, 160);
+  f.cancel(); f.blur();
+  assert.equal(f.pet().ended.length, 0, 'the character window mapping under the pointer must not end the carry');
+  f.movePointer(400, 300, 1140, 300);
+  assert.deepEqual(f.pet().carried.slice(-1), [[400, 300]], 'it keeps following the pointer');
+  f.release();
+  assert.equal(f.pet().ended.length, 1, 'the real release ends it');
+  const g = engagementFixture(false, { pet: true }); g.mutate(); g.seed('expanded');
+  g.pressSprite(60, 80, 800, 80); g.movePointer(200, 160, 940, 160); g.movePointer(220, 180, 960, 180, 0);
+  assert.equal(g.pet().ended.length, 1, 'a move without the button ends a carry whose release was lost');
 });
 
 console.log(`island-interaction-wiring-check: ${passed} passed, ${failed} failed`);

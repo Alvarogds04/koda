@@ -480,7 +480,8 @@
     send('drag_release', { x: pt.x, y: pt.y, cancelled });
     syncInteraction();
   };
-  const onCharacter = e => !!(e.target && e.target.closest && e.target.closest('#clay'));
+  // T7: under the Koda skin #clay is hidden and the character a human sees is the .koda-sprite drawn beside it.
+  const onCharacter = e => !!(e.target && e.target.closest && e.target.closest('#clay, .koda-sprite'));
   const PICKUP_THRESHOLD = 3; // Coucou DRAG_THRESHOLD
   // Koda: a press on the island itself (not a control, a link or selectable text, and not inside a scrolling area) moves it anywhere
   // on the screen once it travels MOVE_THRESHOLD px; shorter, it stays a click (and a compact click opens the island on release).
@@ -590,7 +591,11 @@
     if (!pressed) { updateHover({ x: e.clientX, y: e.clientY }); return; }
     updateHover(null);
     lastPoint = { x: e.clientX, y: e.clientY };
-    if (botCarry) { desktopCharacter.carry(e.clientX, e.clientY); return; }
+    if (botCarry) {
+      // T7: a carry whose release was lost ends on the next move seen without the button, like an island move does
+      if (typeof e.buttons === 'number' && (e.buttons & 1) === 0) { release({ x: e.clientX, y: e.clientY }, false); return; }
+      desktopCharacter.carry(e.clientX, e.clientY); return;
+    }
     if (botPress) {
       if (Math.hypot(e.clientX - botPress.x, e.clientY - botPress.y) <= PICKUP_THRESHOLD) return;
       const at = botPress; botPress = null; botCarry = true;
@@ -605,7 +610,8 @@
   window.addEventListener('pointerup', e => { if (!endIslandPress(false)) release({ x: e.clientX, y: e.clientY }, false); });
   // Moving the window under the pointer makes WebKitGTK fire pointercancel/blur (seen live on X11): once a move has started
   // only the button decides when it ends (pointerup, or the next move seen without the button held).
-  const moving = () => !!(islandPress && islandPress.moving);
+  // T7: the desktop character window maps under the pointer when the pet is picked up, which fires the same blip.
+  const moving = () => !!(islandPress && islandPress.moving) || botCarry;
   window.addEventListener('pointercancel', e => { if (moving()) return; if (!endIslandPress(true)) release({ x: e.clientX, y: e.clientY }, true); });
   // Focus loss mid-drag (e.g. alt-tab): reconcile without toggling.
   window.addEventListener('blur', () => { if (moving()) return; endIslandPress(true); release(lastPoint, true); });

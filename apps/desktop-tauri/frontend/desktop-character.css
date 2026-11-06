@@ -2,3 +2,6 @@
 html, body { margin: 0; width: 120px; height: 120px; background: transparent; overflow: hidden; user-select: none; -webkit-user-select: none; }
 #clay { width: 120px; height: 120px; display: block; cursor: grab; touch-action: none; }
 #clay.dragging { cursor: grabbing; }
+/* island-free-drag S7: the Koda cat, drawn pixel-crisp under the transparent hit area (#clay keeps the pointer handlers). */
+#clay { position: absolute; left: 0; top: 0; z-index: 2; }
+.koda-sprite { position: absolute; z-index: 1; pointer-events: none; background-repeat: no-repeat; image-rendering: crisp-edges; image-rendering: pixelated; }
