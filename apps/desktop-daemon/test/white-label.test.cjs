@@ -29,7 +29,6 @@ test("hidden names cover the engine and every internal name T2 lists", () => {
 		"gentle-ai",
 		"gentle-pi",
 		"pi-coding-agent",
-		"Abito",
 		"abito-island",
 		"Engram",
 		"engram",
@@ -38,7 +37,6 @@ test("hidden names cover the engine and every internal name T2 lists", () => {
 		"organic driven development",
 		"RDD",
 		"/gentle:",
-		"Pi",
 	];
 	for (const name of names) {
 		assert.ok(
@@ -62,10 +60,8 @@ test("presentText rewrites every hidden name into Koda's voice", () => {
 		["saved via Engram", "saved via memory"],
 		["receipt-driven development note", "review note"],
 		["per RDD", "per review"],
-		["Abito greets you", "Koda greets you"],
 		["saved to abito-island", "saved to my memory"],
 		["the Abito island app", "the Koda app"],
-		["Pi knows", "assistant knows"],
 	];
 	for (const [input, expected] of cases) {
 		assert.equal(presentText(input), expected, input);
@@ -76,9 +72,27 @@ test("presentText rewrites every hidden name into Koda's voice", () => {
 	assert.equal(presentText("done ."), "done.");
 });
 
+// Koda's additions over upstream must never corrupt legitimate text: the bare
+// "Pi" → "assistant" and case-insensitive "Abito" rewrites were removed (B3) —
+// only product phrases ("Abito island") and the memory project identifier are
+// rewritten, and upstream's own phrase-bound rewrites stay exact.
+test("presentText leaves legitimate text that merely contains Pi or abito untouched", () => {
+	const cases = [
+		"Raspberry Pi 4",
+		"Pi-hole blocks ads",
+		"abito a Roma",
+		"Pi knows",
+		"Abito greets you",
+		"abito Island hops",
+	];
+	for (const input of cases) {
+		assert.equal(presentText(input), input, `must stay untouched: ${input}`);
+	}
+});
+
 test("presentText output never matches a hidden name (for the rewritten inputs)", () => {
 	for (const [input] of [
-		["Gentle Shell and gentle-pi with Pi"],
+		["Gentle Shell and gentle-pi"],
 		["Abito island, abito-island, Engram"],
 		["pi-coding-agent, ODD, RDD, /gentle:memory"],
 		["el Gentleman, Gentle AI, organic driven development"],
@@ -102,6 +116,13 @@ test("isBlockedInput blocks only the internal /gentle: commands", () => {
 	assert.equal(isBlockedInput("/GENTLE:x"), true);
 	assert.equal(isBlockedInput("/help"), false);
 	assert.equal(isBlockedInput("hola /gentle:"), false, "mid-sentence text is not a command");
+});
+
+test("presentText is documented as assistant/harness-only, never applied to the user's own text", () => {
+	// Gentle Dot bridge.ts applies presentText to queued user text too; Koda must
+	// not (the user's own words — their Raspberry Pi, their abito — are theirs).
+	const source = fs.readFileSync(path.join(__dirname, "..", "src", "white-label.cjs"), "utf8");
+	assert.match(source, /never[\s\S]*user's own text|user's own text[\s\S]*never/i);
 });
 
 test("the port keeps its MIT provenance (Gentle Dot, white-label.ts)", () => {

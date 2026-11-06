@@ -84,7 +84,7 @@ jobs:
           ROOT="$DIR/node_modules/gentle-pi"
           test -f "$ROOT/bin/gentle-shell.mjs"
           test -d "$DIR/node_modules/@earendil-works/pi-coding-agent"
-          test "$(node -p "require('$ROOT/package.json').version")" = 4.3.0
+          test "$(ROOT="$ROOT" node -p "require(require('path').join(process.env.ROOT, 'package.json')).version")" = 4.3.0
           echo "GENTLE_PI_ROOT=$ROOT" >> "$GITHUB_ENV"
       - name: Windows install layout for the harness suite (real ACL helper + manifest)
         if: runner.os == 'Windows'

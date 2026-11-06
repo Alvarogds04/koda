@@ -11,6 +11,7 @@ const path = require("node:path");
 
 const { AgentEngine, JsonlDecoder, bundledGentleShell, gentlePiVersion, runtimeRoot } = require("../src/runtime.cjs");
 const { ensureIsland } = require("../src/isolation.cjs");
+const { unixOnly } = require("./platform-env.cjs");
 
 const FAKE_AGENT = path.join(__dirname, "fixtures", "fake-agent.cjs");
 
@@ -96,26 +97,29 @@ test("start reaches ready and correlates a get_state request", async (t) => {
 	assert.equal(response.command, "get_state");
 	assert.ok(String(response.data.sessionFile).startsWith(engine.island.sessions));
 
-	// The real child argv carries the private engine home (--home), the private
-	// session dir and the private identity file (Gentle Dot's argv shape; T2).
+	// A custom `command` (this fake agent) keeps the pre-T2 argv shape (B2):
+	// NO --home (plain Pi refuses unknown options), the private session dir and
+	// the private identity file. Its engine home travels on PI_CODING_AGENT_DIR
+	// in the child env instead; --home is the default bundled Gentle Shell's
+	// shape only (see the default-engine test below).
 	const argv = JSON.parse(fs.readFileSync(argvOut, "utf8"));
-	const homeIdx = argv.indexOf("--home");
 	const sessionIdx = argv.indexOf("--session-dir");
 	const identityIdx = argv.indexOf("--append-system-prompt");
-	assert.ok(homeIdx > 0 && sessionIdx > homeIdx && identityIdx > sessionIdx, `argv: ${JSON.stringify(argv)}`);
-	assert.equal(argv[homeIdx + 1], engine.island.agentDir);
+	assert.equal(argv.indexOf("--home"), -1, `a custom command gets no --home: ${JSON.stringify(argv)}`);
+	assert.ok(sessionIdx > 0 && identityIdx > sessionIdx, `argv: ${JSON.stringify(argv)}`);
 	assert.equal(argv[sessionIdx + 1], engine.island.sessions);
 	assert.equal(argv[identityIdx + 1], path.join(engine.island.root, "identity.md"));
 	assert.ok(fs.existsSync(argv[identityIdx + 1]));
 	assert.equal(fs.statSync(argv[identityIdx + 1]).mode & 0o777, 0o600);
 
 	// The child environment is isolated from the parent's secrets and Pi setup:
-	// the engine home travels on --home, never on PI_CODING_AGENT_DIR (T2).
+	// a custom command keeps the pre-T2 home transport (B2) — PI_CODING_AGENT_DIR
+	// carries the island agent dir, never the parent's own value.
 	const childEnv = JSON.parse(fs.readFileSync(envOut, "utf8"));
 	assert.equal(childEnv.HOME, engine.island.home);
 	assert.equal(childEnv.TMPDIR, engine.island.tmp);
 	assert.equal(childEnv.XDG_CONFIG_HOME, path.join(engine.island.home, ".config"));
-	assert.equal(childEnv.PI_CODING_AGENT_DIR, undefined);
+	assert.equal(childEnv.PI_CODING_AGENT_DIR, engine.island.agentDir);
 	assert.equal(childEnv.GENTLE_SHELL_NO_AUTO_SETUP, "1");
 	assert.equal(childEnv.GENTLE_PI_SKIP_GENTLE_AI_INSTALL, "1");
 	assert.equal(childEnv.GENTLE_PI_CONFIG_HOME, path.join(engine.island.root, "gentle-ai"));
@@ -124,7 +128,7 @@ test("start reaches ready and correlates a get_state request", async (t) => {
 	for (const key of Object.keys(childEnv)) {
 		if (key.startsWith("PI_")) {
 			assert.ok(
-				["PI_OFFLINE", "PI_SKIP_VERSION_CHECK", "PI_TELEMETRY"].includes(key),
+				["PI_OFFLINE", "PI_SKIP_VERSION_CHECK", "PI_TELEMETRY", "PI_CODING_AGENT_DIR"].includes(key),
 				`unexpected child PI_ variable: ${key}`,
 				);
 		}
@@ -228,10 +232,14 @@ test("the engine child env never inherits GENTLE_SHELL_PI or the user's own Gent
 		"GENTLE_PI_AGENT_HOME",
 		"GENTLE_PI_AGENTS_CHILD",
 		"GENTLE_PI_AGENTS_PI",
-		"PI_CODING_AGENT_DIR",
 	]) {
 		assert.equal(childEnv[key], undefined, `${key} must never reach the engine child`);
 	}
+	// PI_CODING_AGENT_DIR: the parent's own value never reaches the child. A
+	// custom command (this fake) carries the island agent dir instead (B2);
+	// Koda's default engine gets none at all (--home transports it, see above).
+	assert.notEqual(childEnv.PI_CODING_AGENT_DIR, "/opt/user-pi-agent");
+	assert.equal(childEnv.PI_CODING_AGENT_DIR, engine.island.agentDir);
 	await engine.stop();
 });
 
@@ -308,6 +316,76 @@ test("bundledGentleShell fails closed on an incomplete runtime, never falls back
 		assert.throws(() => bundledGentleShell(deps({ platform: "win32" })), /missing/);
 	} finally {
 		fs.rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("the default engine (Koda's Gentle Shell) gets --home in the island and never PI_CODING_AGENT_DIR (B2)", unixOnly("needs a #!/bin/sh fake runtime launcher; the Windows twin resolves node.exe + the manifest script (pinned by the bundledGentleShell tests below), and the --home branch is platform-independent"), async (t) => {
+	// A fake bundled runtime: the launcher execs Koda's Node on the same fake
+	// RPC agent, so the recorded argv/env prove the default branch's shape.
+	const runtime = fs.mkdtempSync(path.join(os.tmpdir(), "abito-gentle-default-"));
+	t.after(() => fs.rmSync(runtime, { recursive: true, force: true }));
+	const scriptRel = "node_modules/gentle-pi/bin/gentle-shell.mjs";
+	fs.mkdirSync(path.join(runtime, "node_modules", "gentle-pi", "bin"), { recursive: true });
+	fs.writeFileSync(path.join(runtime, ...scriptRel.split("/")), "");
+	fs.writeFileSync(path.join(runtime, "koda-runtime.json"), `${JSON.stringify({ gentlePi: "4.3.0", gentleShell: scriptRel })}\n`);
+	const launcher = path.join(runtime, "gentle-shell");
+	fs.writeFileSync(launcher, `#!/bin/sh\nexec '${process.execPath}' '${FAKE_AGENT}' "$@"\n`);
+	fs.chmodSync(launcher, 0o755);
+
+	const { engine, argvOut, envOut } = makeEngine(t, {
+		command: "gentle-shell",
+		commandArgs: [],
+		runtimeDeps: { execPath: path.join(runtime, "node"), existsSync: fs.existsSync, lstatSync: fs.lstatSync, readFileSync: fs.readFileSync },
+	});
+	await engine.start();
+	assert.equal(engine.status, "ready");
+
+	// Gentle Dot's argv shape for Koda's own engine: --home is the island agent
+	// dir — the same directory Koda writes auth/mcp/extension files into.
+	const argv = JSON.parse(fs.readFileSync(argvOut, "utf8"));
+	const homeIdx = argv.indexOf("--home");
+	const sessionIdx = argv.indexOf("--session-dir");
+	assert.ok(homeIdx > 0 && sessionIdx > homeIdx, `argv: ${JSON.stringify(argv)}`);
+	assert.equal(argv[homeIdx + 1], engine.island.agentDir);
+	assert.equal(argv[sessionIdx + 1], engine.island.sessions);
+	// The parent's own PI_CODING_AGENT_DIR never reaches the default engine:
+	// --home is the only home transport for it.
+	const childEnv = JSON.parse(fs.readFileSync(envOut, "utf8"));
+	assert.equal(childEnv.PI_CODING_AGENT_DIR, undefined);
+	await engine.stop();
+});
+
+test("the bundled gentleShell script refuses a symlink at any path segment between the runtime root and the script", () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "abito-gentle-link-"));
+	const outside = fs.mkdtempSync(path.join(os.tmpdir(), "abito-gentle-outside-"));
+	try {
+		const scriptRel = "node_modules/gentle-pi/bin/gentle-shell.mjs";
+		fs.mkdirSync(path.join(root, "node_modules", "gentle-pi", "bin"), { recursive: true });
+		fs.writeFileSync(path.join(root, ...scriptRel.split("/")), "");
+		fs.writeFileSync(path.join(root, "koda-runtime.json"), `${JSON.stringify({ gentlePi: "4.3.0", gentleShell: scriptRel })}\n`);
+		fs.writeFileSync(path.join(root, "node.exe"), "");
+		const deps = { execPath: path.join(root, "node"), existsSync: fs.existsSync, lstatSync: fs.lstatSync, readFileSync: fs.readFileSync };
+		// Sanity: the intact runtime resolves (Windows shape, where the script runs).
+		assert.deepEqual(bundledGentleShell({ ...deps, platform: "win32" }), {
+			command: path.join(root, "node.exe"),
+			commandArgs: [path.join(root, ...scriptRel.split("/"))],
+		});
+		// A symlink at an INTERMEDIATE segment redirects the whole tail: refused,
+		// like the Rust runtime's inside_file check.
+		fs.rmSync(path.join(root, "node_modules"), { recursive: true, force: true });
+		fs.symlinkSync(path.join(outside, "node_modules"), path.join(root, "node_modules"));
+		assert.throws(() => bundledGentleShell({ ...deps, platform: "win32" }), /symlink/);
+		// A symlink at the LEAF (the script itself) is refused too.
+		fs.unlinkSync(path.join(root, "node_modules"));
+		fs.mkdirSync(path.join(root, "node_modules", "gentle-pi", "bin"), { recursive: true });
+		const leaf = path.join(root, ...scriptRel.split("/"));
+		fs.writeFileSync(leaf, "");
+		fs.rmSync(leaf);
+		fs.symlinkSync(path.join(outside, "evil.js"), leaf);
+		assert.throws(() => bundledGentleShell({ ...deps, platform: "win32" }), /symlink/);
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+		fs.rmSync(outside, { recursive: true, force: true });
 	}
 });
 

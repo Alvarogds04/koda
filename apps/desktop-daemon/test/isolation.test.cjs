@@ -10,8 +10,10 @@ const os = require("node:os");
 const path = require("node:path");
 
 const {
+	ENGINE_HOME_MARKER,
 	MEMORY_PROJECT,
 	assertSecurePath,
+	claimEngineHome,
 	defaultIslandRoot,
 	ensureIsland,
 	ensurePrivateDir,
@@ -138,6 +140,87 @@ test("pathWithNodeFirst uses the right separator on every platform", () => {
 test("defaultIslandRoot honours ABITO_ISLAND_DIR and defaults to ~/.abito-island", () => {
 	assert.equal(defaultIslandRoot({ ABITO_ISLAND_DIR: "/x/y" }), "/x/y");
 	assert.equal(defaultIslandRoot({ HOME: "/home/user" }), path.join("/home/user", ".abito-island"));
+});
+
+// Windows (Gentle Dot isolatedAgentEnv): the engine and its tools resolve the
+// home/profile through USERPROFILE/HOMEDRIVE+HOMEPATH and state folders through
+// APPDATA/LOCALAPPDATA/TEMP/TMP — with the parent's real profile they would
+// read and keep state in the user's own setup. Injected platform: the mapping
+// itself is proven on every OS (this is the Windows twin of the POSIX mapping
+// above, which asserts the same island-internal rule through HOME/XDG/TMPDIR).
+test("isolatedEnv maps the Windows profile variables into the island (win32, injected platform)", (t) => {
+	const base = tmpBase(t);
+	const island = ensureIsland(path.join(base, "island"));
+	const env = isolatedEnv(
+		{
+			PATH: "C:\\bin",
+			USERPROFILE: "C:\\Users\\a",
+			SystemRoot: "C:\\Windows",
+			windir: "C:\\Windows",
+			ComSpec: "C:\\Windows\\system32\\cmd.exe",
+			PATHEXT: ".COM;.EXE;.BAT",
+			APPDATA: "C:\\Users\\a\\AppData\\Roaming",
+			LOCALAPPDATA: "C:\\Users\\a\\AppData\\Local",
+			TEMP: "C:\\Users\\a\\AppData\\Local\\Temp",
+			TMP: "C:\\Users\\a\\AppData\\Local\\Temp",
+		},
+		island,
+		{},
+		{ platform: "win32" },
+	);
+	assert.equal(env.HOME, island.home);
+	assert.equal(env.USERPROFILE, island.home);
+	// TEMP/TMP/TMPDIR all point at the island's private temp dir.
+	assert.equal(env.TEMP, island.tmp);
+	assert.equal(env.TMP, island.tmp);
+	assert.equal(env.TMPDIR, island.tmp);
+	// The user's real Roaming/Local state is never inherited: the engine gets
+	// the island's own counterparts, created private like the rest of the home.
+	assert.equal(env.APPDATA, path.join(island.home, "AppData", "Roaming"));
+	assert.equal(env.LOCALAPPDATA, path.join(island.home, "AppData", "Local"));
+	assertMode(env.APPDATA, 0o700);
+	assertMode(env.LOCALAPPDATA, 0o700);
+	// Windows process-launch essentials survive (Gentle Dot keeps them).
+	assert.equal(env.SystemRoot, "C:\\Windows");
+	assert.equal(env.windir, "C:\\Windows");
+	assert.equal(env.ComSpec, "C:\\Windows\\system32\\cmd.exe");
+	assert.equal(env.PATHEXT, ".COM;.EXE;.BAT");
+});
+
+test("claimEngineHome creates the marker exclusively and never rewrites or writes through an existing one", (t) => {
+	const base = tmpBase(t);
+	const island = ensureIsland(path.join(base, "island"));
+	const marker = path.join(island.agentDir, ENGINE_HOME_MARKER);
+	const logs = [];
+	// Fresh: created exactly once, 0600, gentle-shell's own marker format.
+	assert.equal(claimEngineHome(island.agentDir, "4.3.0", (l) => logs.push(l)), true);
+	const claimed = JSON.parse(fs.readFileSync(marker, "utf8"));
+	assert.equal(claimed.createdBy, "gentle-shell");
+	assert.equal(claimed.version, "4.3.0");
+	assertMode(marker, 0o600);
+	// Already claimed: left byte-for-byte as it is, never rewritten.
+	const kept = `${JSON.stringify({ createdBy: "gentle-shell", version: "kept" })}\n`;
+	fs.writeFileSync(marker, kept, { mode: 0o600 });
+	logs.length = 0;
+	assert.equal(claimEngineHome(island.agentDir, "9.9.9", (l) => logs.push(l)), false);
+	assert.equal(logs.join("\n"), "", "an existing regular marker is not a problem to log");
+	assert.equal(fs.readFileSync(marker, "utf8"), kept);
+	// A symlink at the marker is never written through (fail closed).
+	const victim = path.join(base, "victim.json");
+	fs.writeFileSync(victim, "keep\n");
+	fs.rmSync(marker);
+	fs.symlinkSync(victim, marker);
+	logs.length = 0;
+	assert.equal(claimEngineHome(island.agentDir, "4.3.0", (l) => logs.push(l)), false);
+	assert.equal(fs.readFileSync(victim, "utf8"), "keep\n");
+	assert.ok(fs.lstatSync(marker).isSymbolicLink(), "the symlink stays in place");
+	assert.ok(logs.join("\n").includes(marker), "the refusal is logged for the operator");
+	// A non-regular marker (a directory) is refused too.
+	fs.rmSync(marker);
+	fs.mkdirSync(marker);
+	logs.length = 0;
+	assert.equal(claimEngineHome(island.agentDir, "4.3.0", (l) => logs.push(l)), false);
+	assert.ok(logs.join("\n").includes(marker));
 });
 
 test("refuses island roots behind symlink components", (t) => {

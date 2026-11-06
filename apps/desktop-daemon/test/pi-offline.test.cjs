@@ -6,7 +6,8 @@
 // AgentEngine (src/runtime.cjs) spawns Gentle Shell (the bundled gentle-pi) with
 // the argv the engine builds itself (--home <island>/agent --mode rpc
 // --session-dir ... --append-system-prompt identity; T2 replaced
-// PI_CODING_AGENT_DIR with --home) and the environment isolatedEnv builds
+// PI_CODING_AGENT_DIR with --home, and since B2 --home rides ONLY on the
+// default bundled-Gentle-Shell engine command) and the environment isolatedEnv builds
 // (private HOME, the offline switches PI_OFFLINE=1, PI_SKIP_VERSION_CHECK=1,
 // PI_TELEMETRY=0 and the launch gates GENTLE_SHELL_NO_AUTO_SETUP=1,
 // GENTLE_PI_SKIP_GENTLE_AI_INSTALL=1 plus GENTLE_PI_CONFIG_HOME). A test-only
@@ -39,10 +40,61 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
 
-const { AgentEngine, runtimeRoot } = require("../src/runtime.cjs");
+const { AgentEngine, DEFAULT_COMMAND, runtimeRoot } = require("../src/runtime.cjs");
 const { ensureIsland, isolatedEnv } = require("../src/isolation.cjs");
 
 const BOOT_TIMEOUT_MS = 90_000;
+
+/**
+ * A minimal fake Koda bundled runtime (T2-fix): the layout the engine's
+ * runtimeRoot/bundledGentleShell accept through the runtimeDeps seam, so the
+ * real-engine test drives the PRODUCTION launch path — `command` is
+ * DEFAULT_COMMAND, the engine resolves the runtime itself and appends
+ * --home <island>/agent (B2). The manifest's gentleShell is a real WRAPPER file
+ * (never a symlink: the engine refuses links) that injects the optional test
+ * preload and then imports the REAL gentle-shell entry, so the engine code
+ * under test is the real one. POSIX mirrors the shipped `gentle-shell` launcher
+ * (a real exec file, not a link); Windows mirrors node.exe + the manifest
+ * script.
+ */
+function fakeKodaRuntime(t, gentleRoot, preload) {
+	const runtime = fs.mkdtempSync(path.join(os.tmpdir(), "abito-fake-runtime-"));
+	t.after(() => fs.rmSync(runtime, { recursive: true, force: true }));
+	const scriptRel = "node_modules/gentle-pi/bin/gentle-shell.mjs";
+	const script = path.join(runtime, ...scriptRel.split("/"));
+	fs.mkdirSync(path.dirname(script), { recursive: true });
+	const realEntry = path.join(gentleRoot, "bin", "gentle-shell.mjs");
+	fs.writeFileSync(
+		script,
+		`// Test wrapper: inject the optional preload, then run the REAL engine entry.\n` +
+			`import { createRequire } from "node:module";\n` +
+			`import { pathToFileURL } from "node:url";\n` +
+			(preload ? `createRequire(import.meta.url)(${JSON.stringify(preload)});\n` : "") +
+			`await import(pathToFileURL(${JSON.stringify(realEntry)}).href);\n`,
+	);
+	fs.writeFileSync(
+		path.join(runtime, "koda-runtime.json"),
+		`${JSON.stringify({ gentlePi: "4.3.0", gentleShell: scriptRel })}\n`,
+	);
+	if (process.platform === "win32") {
+		// The shipped Windows runtime shape: the runtime's own node.exe runs the
+		// script the manifest names. A real copy (never a link).
+		fs.copyFileSync(process.execPath, path.join(runtime, "node.exe"));
+	} else {
+		const launcher = path.join(runtime, "gentle-shell");
+		fs.writeFileSync(launcher, `#!/bin/sh\nexec '${process.execPath}' '${script}' "$@"\n`);
+		fs.chmodSync(launcher, 0o755);
+	}
+	return {
+		runtime,
+		runtimeDeps: {
+			execPath: path.join(runtime, process.platform === "win32" ? "node.exe" : "node"),
+			existsSync: fs.existsSync,
+			lstatSync: fs.lstatSync,
+			readFileSync: fs.readFileSync,
+		},
+	};
+}
 
 /** A gentle-pi package directory (it holds bin/gentle-shell.mjs), or undefined. */
 function findGentleRoot() {
@@ -195,18 +247,21 @@ if (gentleSkip) {
 } else {
 	const script = gentleScript(gentleRoot);
 
-	test("real engine: a Koda launch of Gentle Shell reaches no pi.dev host (offline switches and launch gates kept)", { skip: gentleSkip, timeout: BOOT_TIMEOUT_MS }, async () => {
+	test("real engine: a Koda launch of Gentle Shell reaches no pi.dev host (offline switches and launch gates kept)", { skip: gentleSkip, timeout: BOOT_TIMEOUT_MS }, async (t) => {
 		const base = makeTemp("green");
 		const netLog = path.join(base, "net-attempts.jsonl");
 		const preload = writePreload(base);
+		const { runtimeDeps } = fakeKodaRuntime(t, gentleRoot, preload);
 		const engine = new AgentEngine({
-			// Exactly the daemon's default launch shape: the daemon's Node running the
-			// gentle-shell entry script (the POSIX launcher is a pure `exec "$here/node"
-			// "$here/<script>" "$@"`, so this is the same process shape) — the test-only
-			// recorder rides --require, the only injection. The engine itself appends
-			// --home/--mode rpc/--session-dir/--append-system-prompt as production does.
-			command: process.execPath,
-			commandArgs: ["--require", preload, script],
+			// Exactly the daemon's default launch shape (T2-fix): command =
+			// DEFAULT_COMMAND, so the engine itself resolves Koda's bundled runtime
+			// through runtimeDeps (here a fake runtime whose launcher/wrapper execs
+			// the REAL gentle-shell entry with the test-only net recorder injected —
+			// the only injection) and appends --home <island>/agent --mode rpc
+			// --session-dir/--append-system-prompt as production does (B2).
+			command: DEFAULT_COMMAND,
+			commandArgs: [],
+			runtimeDeps,
 			root: path.join(base, "island"),
 			env: { PATH: process.env.PATH, HOME: base },
 			envOverrides: { ABITO_NET_LOG: netLog },

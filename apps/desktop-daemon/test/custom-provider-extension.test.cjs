@@ -19,7 +19,56 @@ const { PROVIDER_ID, TEMPLATE, EXTENSION_FILE, RUNTIME_FILE, runtimeDocument } =
 const { ProfileStore } = require("../src/profiles.cjs");
 const { AccountManager, helperEnv } = require("../src/auth.cjs");
 const { discoverModels } = require("../src/custom-provider.cjs");
-const { AgentEngine, runtimeRoot } = require("../src/runtime.cjs");
+const { AgentEngine, DEFAULT_COMMAND, runtimeRoot } = require("../src/runtime.cjs");
+
+/**
+ * A minimal fake Koda bundled runtime (T2-fix): the layout the engine's
+ * runtimeRoot/bundledGentleShell accept through the runtimeDeps seam, so the
+ * real-engine test drives the PRODUCTION launch path — `command` is
+ * DEFAULT_COMMAND, the engine resolves the runtime itself and appends
+ * --home <island>/agent (B2), and gentle-shell derives PI_CODING_AGENT_DIR from
+ * that home for the Pi child it launches. The manifest's gentleShell is a real
+ * WRAPPER file (never a symlink: the engine refuses links) that imports the
+ * REAL gentle-shell entry, so the engine code under test is the real one.
+ * POSIX mirrors the shipped `gentle-shell` launcher (a real exec file, not a
+ * link); Windows mirrors node.exe + the manifest script.
+ */
+function fakeKodaRuntime(t, gentleRoot) {
+	const runtime = fs.mkdtempSync(path.join(os.tmpdir(), "abito-fake-runtime-"));
+	t.after(() => fs.rmSync(runtime, { recursive: true, force: true }));
+	const scriptRel = "node_modules/gentle-pi/bin/gentle-shell.mjs";
+	const script = path.join(runtime, ...scriptRel.split("/"));
+	fs.mkdirSync(path.dirname(script), { recursive: true });
+	const realEntry = path.join(gentleRoot, "bin", "gentle-shell.mjs");
+	fs.writeFileSync(
+		script,
+		`// Test wrapper: run the REAL engine entry from the fake runtime's path.\n` +
+			`import { pathToFileURL } from "node:url";\n` +
+			`await import(pathToFileURL(${JSON.stringify(realEntry)}).href);\n`,
+	);
+	fs.writeFileSync(
+		path.join(runtime, "koda-runtime.json"),
+		`${JSON.stringify({ gentlePi: "4.3.0", gentleShell: scriptRel })}\n`,
+	);
+	if (process.platform === "win32") {
+		// The shipped Windows runtime shape: the runtime's own node.exe runs the
+		// script the manifest names. A real copy (never a link).
+		fs.copyFileSync(process.execPath, path.join(runtime, "node.exe"));
+	} else {
+		const launcher = path.join(runtime, "gentle-shell");
+		fs.writeFileSync(launcher, `#!/bin/sh\nexec '${process.execPath}' '${script}' "$@"\n`);
+		fs.chmodSync(launcher, 0o755);
+	}
+	return {
+		runtime,
+		runtimeDeps: {
+			execPath: path.join(runtime, process.platform === "win32" ? "node.exe" : "node"),
+			existsSync: fs.existsSync,
+			lstatSync: fs.lstatSync,
+			readFileSync: fs.readFileSync,
+		},
+	};
+}
 
 const SECRET = "sk-fake-SECRET-2468-DO-NOT-LEAK";
 const FIXTURE = path.join(__dirname, "fixtures", "fake-auth.cjs");
@@ -941,13 +990,19 @@ test("REAL engine (Koda's launch): the extension inside Gentle Shell resolves th
 	if (!existsSync(script)) throw new Error(`GENTLE_PI_ROOT has no bin/gentle-shell.mjs: ${GENTLE_ROOT}`);
 	const r = await realSetup(t, (req, res) => (req.url === "/v1/chat/completions" ? okStream(res) : (res.writeHead(404), res.end())));
 	const events = [];
+	const { runtimeDeps } = fakeKodaRuntime(t, GENTLE_ROOT);
 	const engine = new AgentEngine({
-		// Exactly Koda's launch (T2): the daemon's Node with the gentle-shell entry
-		// script (the POSIX launcher is a pure exec of the same shape); the engine
-		// itself appends --home <island>/agent --mode rpc --session-dir … and builds
-		// isolatedEnv — which deliberately sets NO PI_CODING_AGENT_DIR.
-		command: process.execPath,
-		commandArgs: [script],
+		// Exactly Koda's production launch (T2-fix): command = DEFAULT_COMMAND, so
+		// the engine itself resolves Koda's bundled runtime through runtimeDeps
+		// (here a fake runtime whose launcher/wrapper execs the REAL gentle-shell
+		// entry) and appends --home <island>/agent --mode rpc --session-dir … and
+		// builds isolatedEnv — which deliberately sets NO PI_CODING_AGENT_DIR. The
+		// extension finds <agentDir>/custom-provider.json through PI_CODING_AGENT_DIR
+		// that gentle-shell itself derives from --home for the Pi child it launches
+		// (gentle-pi lib/gentle-shell-launcher.ts:1085).
+		command: DEFAULT_COMMAND,
+		commandArgs: [],
+		runtimeDeps,
 		root: r.island,
 		env: { PATH: process.env.PATH, HOME: r.home },
 		backoffMs: [10_000, 10_000],

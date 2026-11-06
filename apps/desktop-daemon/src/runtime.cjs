@@ -130,7 +130,10 @@ function isRealFile(file, deps) {
 /**
  * The script `koda-runtime.json` names with `gentleShell` (T1): a relative path
  * inside the runtime that must be a real file — anything else is refused
- * (undefined shape, fail closed, like windowsPackageCliJs).
+ * (undefined shape, fail closed, like windowsPackageCliJs). A symlink at ANY
+ * path segment between the runtime root and the script is refused too (like
+ * the Rust runtime's inside_file): a link part-way down could redirect the
+ * script outside the runtime.
  */
 function gentleShellScript(manifest, runtime, deps) {
 	const rel = manifest?.gentleShell;
@@ -141,6 +144,20 @@ function gentleShellScript(manifest, runtime, deps) {
 	const within = path.relative(runtime, script);
 	if (within === "" || within === ".." || within.startsWith(`..${path.sep}`) || path.isAbsolute(within)) {
 		throw new Error(`${RUNTIME_MANIFEST} names a gentleShell script outside the runtime`);
+	}
+	const lstat = deps.lstatSync ?? lstatSync;
+	const parts = within.split(path.sep);
+	for (let i = 0; i < parts.length; i++) {
+		const segment = path.join(runtime, ...parts.slice(0, i + 1));
+		let stats;
+		try {
+			stats = lstat(segment);
+		} catch (error) {
+			throw new Error(`the bundled runtime is missing ${parts.slice(0, i + 1).join(path.sep)} (${error.code ?? error.message})`);
+		}
+		if (stats.isSymbolicLink()) {
+			throw new Error(`${RUNTIME_MANIFEST} names a gentleShell script behind a symlink: ${segment}`);
+		}
 	}
 	if (!isRealFile(script, deps)) {
 		throw new Error(`the bundled runtime is missing ${rel}`);
@@ -345,8 +362,12 @@ function encodeRecord(record) {
 class AgentEngine extends EventEmitter {
 	constructor(options = {}) {
 		super();
-		/** Executable to run; the default `pi` assumes it is on PATH (configurable, not a direct model call). */
-		this.command = options.command ?? "pi";
+		/**
+		 * Executable to run. The default is Koda's own bundled Gentle Shell
+		 * (DEFAULT_COMMAND, resolved only from Koda's runtime, never PATH — see
+		 * spawnCommandPrefix); the island config.json `command` overrides it.
+		 */
+		this.command = options.command ?? DEFAULT_COMMAND;
 		this.commandArgs = options.commandArgs ?? [];
 		this.extraArgs = options.extraArgs ?? [];
 		/** Working directory override; defaults to the owned island workspace. */
@@ -362,6 +383,8 @@ class AgentEngine extends EventEmitter {
 		this.baseEnv = options.env ?? process.env;
 		this.envOverrides = options.envOverrides ?? {};
 		this.identityPath = options.identityPath ?? path.join(__dirname, "..", "identity.md");
+		/** Dependency injection for bundled-runtime resolution (tests); production resolves against the real process. */
+		this.runtimeDeps = options.runtimeDeps ?? {};
 		this.backoffMs = options.backoffMs ?? DEFAULT_BACKOFF_MS;
 		this.stableMs = options.stableMs ?? DEFAULT_STABLE_MS;
 		this.requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
@@ -699,7 +722,7 @@ class AgentEngine extends EventEmitter {
 	spawnCommandPrefix() {
 		if (path.isAbsolute(this.command)) return [this.command];
 		if (this.command === DEFAULT_COMMAND) {
-			const resolved = bundledGentleShell();
+			const resolved = bundledGentleShell(this.runtimeDeps);
 			return [resolved.command, ...resolved.commandArgs];
 		}
 		if (process.platform !== "win32") return [this.command];
@@ -715,12 +738,16 @@ class AgentEngine extends EventEmitter {
 		const cwd = this.cwdOption ?? this.workspacePath ?? this.island.workspace;
 		// Regenerate private files first so the identity argument can point at them.
 		this.prepareSpawn();
+		// Home transport (B2, Gentle Dot's shape): only Koda's default engine — the
+		// bundled Gentle Shell — gets its home on the argv (--home <island>/agent,
+		// the same directory Koda writes auth/mcp/extension files into) and never
+		// sees PI_CODING_AGENT_DIR. Any other `command` (a plain Pi override, for
+		// instance) refuses unknown options like --home, so it keeps the pre-T2
+		// transport: no --home, PI_CODING_AGENT_DIR=<agentDir> in the child env.
+		const defaultEngine = this.command === DEFAULT_COMMAND;
 		const args = [
 			...this.commandArgs,
-			// T2 (Gentle Dot's argv shape): the engine's own home inside the island —
-			// the same directory Koda writes auth/mcp/extension files into.
-			"--home",
-			this.island.agentDir,
+			...(defaultEngine ? ["--home", this.island.agentDir] : []),
 			"--mode",
 			"rpc",
 			"--session-dir",
@@ -729,7 +756,11 @@ class AgentEngine extends EventEmitter {
 			...this.extraArgs,
 		];
 		const env = {
-			...isolatedEnv(this.baseEnv, this.island, { ABITO_MEMORY_PROJECT: MEMORY_PROJECT, ...this.envOverrides }),
+			...isolatedEnv(this.baseEnv, this.island, {
+				ABITO_MEMORY_PROJECT: MEMORY_PROJECT,
+				...(defaultEngine ? {} : { PI_CODING_AGENT_DIR: this.island.agentDir }),
+				...this.envOverrides,
+			}),
 		};
 		const prefix = this.spawnCommandPrefix();
 		const child = spawn(prefix[0], [...prefix.slice(1), ...args], { cwd, env, stdio: ["pipe", "pipe", "pipe"] });

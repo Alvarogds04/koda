@@ -29,6 +29,7 @@ const {
 	lstatSync,
 	mkdirSync,
 	openSync,
+	readFileSync,
 	readlinkSync,
 	renameSync,
 	unlinkSync,
@@ -66,6 +67,9 @@ const ENV_ALLOWLIST = [
 	"COLORTERM",
 	"GIT_CONFIG_GLOBAL",
 ];
+
+/** Windows process-launch essentials, copied through on win32 (Gentle Dot keeps them). */
+const ENV_WINDOWS_ALLOWLIST = ["SystemRoot", "windir", "ComSpec", "PATHEXT"];
 
 function currentUid() {
 	return typeof process.getuid === "function" ? process.getuid() : undefined;
@@ -408,22 +412,41 @@ function pathWithNodeFirst(nodeDir, existing, delimiter = path.delimiter) {
  * carries explicit engine-owned additions (memory project pin now, provider
  * auth in U2) and always wins.
  */
-function isolatedEnv(base, paths, overrides = {}) {
+function isolatedEnv(base, paths, overrides = {}, options = {}) {
+	const platform = options.platform ?? process.platform;
 	const env = {};
-	for (const key of ENV_ALLOWLIST) {
+	const allowlist = platform === "win32" ? [...ENV_ALLOWLIST, ...ENV_WINDOWS_ALLOWLIST] : ENV_ALLOWLIST;
+	for (const key of allowlist) {
 		const value = base[key];
 		if (typeof value === "string" && value !== "") env[key] = value;
 	}
 	env.PATH = pathWithNodeFirst(path.dirname(process.execPath), env.PATH);
-	const realHome = base.HOME || homedir();
+	// On Windows the engine (and its tools) resolve the home and state folders
+	// through USERPROFILE/APPDATA/LOCALAPPDATA/TEMP/TMP, not HOME: without these
+	// the child would read and keep state in the user's real profile — the exact
+	// leak the private island exists to prevent (Gentle Dot isolatedAgentEnv, win32).
+	const realHome = platform === "win32" ? base.USERPROFILE || base.HOME || homedir() : base.HOME || homedir();
 	env.HOME = paths.home;
 	env.TMPDIR = paths.tmp;
 	env.XDG_CONFIG_HOME = path.join(paths.home, ".config");
 	env.XDG_DATA_HOME = path.join(paths.home, ".local", "share");
 	env.XDG_CACHE_HOME = path.join(paths.home, ".cache");
 	env.XDG_STATE_HOME = path.join(paths.home, ".local", "state");
-	// T2: the engine home travels on the `--home` argv flag (Gentle Dot's shape);
-	// PI_CODING_AGENT_DIR is never set and never inherited (the allowlist drops it).
+	if (platform === "win32") {
+		env.USERPROFILE = paths.home;
+		env.TEMP = env.TMP = paths.tmp;
+		// Windows' counterparts of the XDG folders, created private inside the
+		// island home so the engine's tools keep no state in the user's own.
+		env.APPDATA = path.join(paths.home, "AppData", "Roaming");
+		env.LOCALAPPDATA = path.join(paths.home, "AppData", "Local");
+		ensurePrivateDir(env.APPDATA);
+		ensurePrivateDir(env.LOCALAPPDATA);
+	}
+	// T2 (B2): for Koda's default bundled Gentle Shell the engine home travels on
+	// the `--home` argv flag (Gentle Dot's shape), so PI_CODING_AGENT_DIR is never
+	// set and never inherited here. A non-default `command` (a plain Pi override)
+	// cannot take --home and carries its home in PI_CODING_AGENT_DIR, which the
+	// engine's spawn adds as an explicit override for that branch only.
 	// Offline by default: no model catalog refreshes, no version check, no telemetry.
 	env.PI_OFFLINE = "1";
 	env.PI_SKIP_VERSION_CHECK = "1";
@@ -462,32 +485,49 @@ const ENGINE_HOME_MARKER = ".gentle-shell-home";
  */
 function claimEngineHome(agentDir, version, log = () => {}) {
 	const marker = path.join(agentDir, ENGINE_HOME_MARKER);
-	let existing;
+	// Exclusive create (no check-then-write window): the marker either does not
+	// exist and is created here, or something (another daemon, an attacker's
+	// planted link) already holds the name and is never touched. O_EXCL|O_NOFOLLOW
+	// keeps the fail-closed private-file semantics end to end.
 	try {
-		existing = lstatSync(marker);
+		const fd = openSync(marker, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | O_NOFOLLOW, 0o600);
+		try {
+			writeSync(fd, `${JSON.stringify({ createdBy: "gentle-shell", version })}\n`);
+			fchmodSync(fd, 0o600);
+		} finally {
+			closeSync(fd);
+		}
+		return true;
 	} catch (error) {
-		if (error.code !== "ENOENT") {
+		if (error?.code !== "EEXIST") {
 			log(`could not mark the engine's home as its own: ${error.message}`);
 			return false;
 		}
 	}
-	if (existing) {
-		if (existing.isFile()) return false; // already claimed: left as it is
-		log(`could not mark the engine's home as its own: ${marker} exists and is not a regular file`);
-		return false;
-	}
+	// The name is taken: refused unless it is exactly the marker this daemon
+	// (or a previous run of it) already wrote — a symlink, directory or any
+	// other file is never written through, and the refusal is logged.
+	let existing;
 	try {
-		writePrivateFile(marker, `${JSON.stringify({ createdBy: "gentle-shell", version })}\n`, { mode: 0o600 });
-		return true;
+		existing = lstatSync(marker);
 	} catch (error) {
 		log(`could not mark the engine's home as its own: ${error.message}`);
 		return false;
 	}
+	if (existing.isFile() && !existing.isSymbolicLink()) {
+		try {
+			const claimed = JSON.parse(readFileSync(marker, "utf8"));
+			if (claimed.createdBy === "gentle-shell") return false; // already claimed: left exactly as it is
+		} catch {}
+	}
+	log(`could not mark the engine's home as its own: ${marker} exists and is not gentle-shell's marker`);
+	return false;
 }
 
 module.exports = {
 	ENGINE_HOME_MARKER,
 	ENV_ALLOWLIST,
+	ENV_WINDOWS_ALLOWLIST,
 	ISLAND_ROOT_ENV,
 	MEMORY_PROJECT,
 	assertSecurePath,
