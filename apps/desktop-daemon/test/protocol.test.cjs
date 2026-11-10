@@ -737,6 +737,17 @@ test("get_history / get_earlier validation: get_earlier needs a `before` page id
 		{ type: "get_earlier", before: "s1-2\n" },
 		{ type: "get_earlier", before: "x".repeat(200) },
 	]) assert.equal(P.validateClientFrame(bad), undefined, JSON.stringify(bad));
+	// K2-05 T4 U1 verifier fix: ids are canonical — no leading zeros anywhere.
+	for (const bad of [
+		{ type: "get_earlier", before: "s00-1" },
+		{ type: "get_earlier", before: "s0-01" },
+		{ type: "get_earlier", before: "s01-2" },
+		{ type: "get_earlier", before: "s1-00" },
+	]) assert.equal(P.validateClientFrame(bad), undefined, `non-canonical: ${JSON.stringify(bad)}`);
+	// `sN-0` and a turn past the chain are canonical SHAPE: they pass validation and
+	// the history projection answers them with an empty page (never bad_request).
+	assert.deepEqual(P.validateClientFrame({ type: "get_earlier", before: "s0-0" }), { type: "get_earlier", before: "s0-0" });
+	assert.deepEqual(P.validateClientFrame({ type: "get_earlier", before: "s0-99" }), { type: "get_earlier", before: "s0-99" });
 });
 
 test("historyFrame rebuilds messages from an allowlist: closed role/kind/status, ids and text bounded, extras dropped", () => {

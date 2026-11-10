@@ -532,6 +532,29 @@ test("restart ignores persisted session paths outside the island sessions dir", 
 	await engine.stop();
 });
 
+// K2-05 T4 U1 verifier fix (S1/S2): a chain is read from the sessions dir only, so a
+// symlinked or outside path must never be persisted as a chain entry in the first place.
+test("linkSessions refuses chain entries that are not owned session files before persisting them", async (t) => {
+	const { engine, dir } = makeEngine(t);
+	try {
+		await engine.start();
+		const sessions = engine.island.sessions;
+		const good = path.join(sessions, "good-chain.jsonl");
+		fs.writeFileSync(good, "", { mode: 0o600 });
+		const outside = path.join(dir, "outside-secret.jsonl");
+		fs.writeFileSync(outside, "OUTSIDE-SECRET\n");
+		const planted = path.join(sessions, "planted.jsonl");
+		fs.symlinkSync(outside, planted);
+		engine.linkSessions(engine.sessionFile, [good, planted, outside]);
+		assert.deepEqual(engine.chains[engine.sessionFile], [good], "only the owned file enters the in-memory chain");
+		const saved = JSON.parse(fs.readFileSync(path.join(engine.island.root, "state.json"), "utf8"));
+		assert.deepEqual(saved.chains[engine.sessionFile], [good], "and the persisted chain carries only owned files");
+		assert.ok(!JSON.stringify(saved).includes("outside-secret"), "the planted path is never written to state.json");
+	} finally {
+		await engine.stop();
+	}
+});
+
 // ----- T1b-b: the engine uses the bundled Engram (companion seeding + env) ----
 
 const { bundledMemoryEnv, seedEngramCompanion } = require("../src/runtime.cjs");

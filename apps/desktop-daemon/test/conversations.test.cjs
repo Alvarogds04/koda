@@ -15,7 +15,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const { pageHistory, historyFromMessages, readSessionMessages, splitAttachments, textOf } = require("../src/conversations.cjs");
+const { pageHistory, historyFromMessages, readSessionMessages, splitAttachments } = require("../src/conversations.cjs");
 const { SESSION_VERSION } = require("../src/rotation.cjs");
 
 function tmp(prefix) {
@@ -243,5 +243,104 @@ test("historyFromMessages builds h-numbered turns when a raw engine answer is pr
 	assert.deepEqual(
 		turns.map((m) => [m.id, m.role, m.text]),
 		[["h1", "user", "hola"], ["h2", "assistant", "hola tú\n\nsegunda parte"]],
+	);
+});
+
+// ----- K2-05 T4 U1 verifier fixes -------------------------------------------
+
+/** The per-frame limit the island's reader enforces (agentclient.rs FrameError::TooLarge). */
+const ISLAND_FRAME_LIMIT = 256 * 1024;
+
+/** The user rows Gentle Dot keeps: a message with only image blocks still is one user turn. */
+const imageBlock = { type: "image", mimeType: "image/png", data: "aG9sYQ==" };
+
+/** The verifier's shape: a 60-turn chat whose answers carry ~2,700 chars plus tool activity rows. */
+function writeLongChat(dir) {
+	const entries = [];
+	for (let i = 1; i <= 60; i++) {
+		entries.push(user(`pregunta ${i} sobre el procedimiento completo de despliegue`));
+		entries.push(message("assistant", [
+			{ type: "text", text: `respuesta ${i}: ${"x".repeat(2700)}` },
+			...Array.from({ length: 20 }, (_, k) => toolCall(`t${i}-${k}`, "read", { path: `/proyecto/modulo${k}/componente/archivo-con-nombre-largo.ts` })),
+		]));
+	}
+	return writeSession(dir, "long.jsonl", entries);
+}
+
+const loneSurrogate = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+/** Numeric order of the page ids `s<file>-<turn>`. */
+const idOrder = (id) => {
+	const [, f, t] = /^(\d+)-(\d+)$/.exec(id.slice(1));
+	return Number(f) * 1e9 + Number(t);
+};
+
+test("a 60-turn chat of ~2,700-char answers (the verifier's 276,370-byte shape) builds a page that always fits", () => {
+	const dir = tmp("abito-conv-long-");
+	const file = writeLongChat(dir);
+	const unbounded = JSON.stringify(historyFromMessages(readSessionMessages(file)));
+	assert.ok(Buffer.byteLength(unbounded) > ISLAND_FRAME_LIMIT, `the fixture must reproduce an over-limit shape, got ${Buffer.byteLength(unbounded)}`);
+	const page = pageHistory([file], 100);
+	const frame = JSON.stringify(page);
+	assert.ok(Buffer.byteLength(frame) <= 192 * 1024, `the page must stay under the island-safe budget, got ${Buffer.byteLength(frame)}`);
+	assert.ok(page.messages.length > 0, "a bounded page is never empty when the chat has turns");
+	assert.equal(page.hasEarlier, true, "the walk continues exactly where the page stopped");
+});
+
+test("walking get_earlier over a long chat returns every turn exactly once, in order", () => {
+	const dir = tmp("abito-conv-walk-");
+	const file = writeLongChat(dir);
+	const all = [];
+	let page = pageHistory([file], 100);
+	for (let guard = 0; page.messages.length > 0; guard++) {
+		assert.ok(guard < 100, "the walk terminated");
+		assert.deepEqual(page.messages.map((m) => m.id), [...page.messages].sort((a, b) => idOrder(a.id) - idOrder(b.id)).map((m) => m.id), "each page is oldest first");
+		all.push(...page.messages);
+		if (!page.hasEarlier) break;
+		page = pageHistory([file], 100, page.messages[0].id);
+	}
+	const ids = all.map((m) => m.id);
+	assert.equal(new Set(ids).size, 120, "no turn is repeated or skipped across pages");
+	assert.deepEqual(
+		[...ids].sort((a, b) => idOrder(a) - idOrder(b)),
+		Array.from({ length: 120 }, (_, i) => `s0-${i + 1}`),
+		"every turn exactly once",
+	);
+});
+
+test("one huge message is clipped so its page fits: whole code points, white-labelled text, no split surrogate", () => {
+	const dir = tmp("abito-conv-huge-");
+	const file = writeSession(dir, "huge.jsonl", [
+		user("recita"),
+		message("assistant", [{ type: "text", text: `memory: ${" 𝐀".repeat(120_000)}` }]),
+		user("sigue"),
+		assistant("fin"),
+	]);
+	const page = pageHistory([file], 100);
+	assert.ok(Buffer.byteLength(JSON.stringify(page)) <= 192 * 1024, "the page with the clipped message fits");
+	assert.deepEqual(page.messages.map((m) => m.id), ["s0-1", "s0-2", "s0-3", "s0-4"], "the clipped giant message stays in its turn order, nothing dropped");
+	assert.equal(page.hasEarlier, false, "the whole (bounded) chat is one page");
+	const huge = page.messages[1];
+	assert.ok(huge.text.length < 120_000, "the oversized text was clipped");
+	assert.ok(!loneSurrogate.test(huge.text), "the clip never splits a surrogate pair");
+	assert.ok(huge.text.startsWith("memory: "), "the clip runs after white-labelling, never over a hidden name");
+	assert.deepEqual(page.messages[0].text, "recita", "the turns around the clipped one still project");
+});
+
+test("hand-made cursors: sN-0 and a turn beyond what the file ever held yield an empty page with hasEarlier false", () => {
+	const dir = tmp("abito-conv-cursors-");
+	const file = writeSession(dir, "small.jsonl", [user("uno"), assistant("dos"), user("tres")]);
+	assert.deepEqual(pageHistory([file], 100, "s0-0"), { messages: [], hasEarlier: false }, "turn 0 never existed");
+	assert.deepEqual(pageHistory([file], 100, "s0-99"), { messages: [], hasEarlier: false }, "a turn past the file never existed");
+	assert.deepEqual(pageHistory([file], 100, "s0-2").messages.map((m) => m.id), ["s0-1"], "a real turn id still pages backwards");
+});
+
+test("a user row that carries only images is kept, as Gentle Dot keeps it (empty text, no chips)", () => {
+	const turns = historyFromMessages([
+		{ role: "user", content: [imageBlock] },
+		{ role: "assistant", content: "la vi" },
+	]);
+	assert.deepEqual(
+		turns.map((m) => [m.role, m.text, m.attachments]),
+		[["user", "", undefined], ["assistant", "la vi", undefined]],
 	);
 });

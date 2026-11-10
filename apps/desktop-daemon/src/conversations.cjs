@@ -16,8 +16,13 @@
  *
  * Pure module, no I/O beyond reading the session files. Koda hardening over
  * upstream: a chain file that cannot be stat-ed or read (missing, unreadable,
- * planted) is skipped with a log line instead of crashing the request, and a
- * non-positive page limit yields an empty page instead of a broken slice.
+ * planted) is skipped with a log line instead of crashing the request, a
+ * non-positive page limit yields an empty page instead of a broken slice, one
+ * session file larger than MAX_SESSION_FILE_BYTES is skipped with a log line
+ * instead of blocking the read, and every page is byte-bounded to stay safely
+ * under the island reader's per-frame limit (K2-05 verifier fix: a 60-turn chat
+ * with ~2,700-char answers produced a 276,370-byte frame; pages over 1 MiB used
+ * to make get_history answer `failed` forever).
  */
 
 const fs = require("node:fs");
@@ -26,6 +31,28 @@ const { presentText } = require("./white-label.cjs");
 
 const PAGE_ID = /^s(\d+)-(\d+)$/;
 const CACHED_FILES = 8;
+
+/**
+ * Byte ceiling of one history page (K2-05 verifier fix, tied to the island's
+ * reader): the island accepts at most 256 KiB per frame — anything larger is a
+ * `FrameError::TooLarge` (apps/desktop-tauri/src/agentclient.rs:34,121) — so a
+ * page is cut at 192 KiB, safely below it, and a single message larger than
+ * that is clipped so one page always fits. Size never turns into a `failed`.
+ */
+const MAX_PAGE_BYTES = 192 * 1024;
+
+/**
+ * What ONE clipped message may occupy: the page budget minus headroom, so a
+ * clipped giant message still shares its page with a small neighbour instead
+ * of pushing it to the next page.
+ */
+const MAX_MESSAGE_BYTES = MAX_PAGE_BYTES - 4096;
+
+/**
+ * A single session file larger than this is skipped with a log line instead of
+ * blocking the read (a generous ceiling: real rotation files stay far below it).
+ */
+const MAX_SESSION_FILE_BYTES = 64 * 1024 * 1024;
 
 /** The attachment block Gentle Dot's composePrompt appends to a message with files. */
 const INTRO = "The user attached these files, saved in your workspace. Read them with your tools when needed.";
@@ -143,6 +170,10 @@ function sessionTurns(file, log) {
 		log?.(`history: a session file of the chain is unavailable, skipped: ${file} (${error.message})`);
 		return [];
 	}
+	if (stats.size > MAX_SESSION_FILE_BYTES) {
+		log?.(`history: a session file of the chain is over ${MAX_SESSION_FILE_BYTES} bytes, skipped: ${file}`);
+		return [];
+	}
 	const cached = turnCache.get(file);
 	if (cached?.size === stats.size && cached.mtimeMs === stats.mtimeMs) return cached.turns;
 	let turns;
@@ -158,12 +189,59 @@ function sessionTurns(file, log) {
 	return turns;
 }
 
+/** UTF-8 size of one page-entry shape, the same measure the island reader applies. */
+const frameBytes = (turn) => Buffer.byteLength(JSON.stringify(turn), "utf8");
+
+/** Cuts text on whole code points (never a split surrogate pair), under `maxBytes` of UTF-8. */
+function clipUtf8(text, maxBytes) {
+	if (maxBytes <= 0) return "";
+	let out = "";
+	let bytes = 0;
+	for (const ch of text) {
+		const size = Buffer.byteLength(ch, "utf8");
+		if (bytes + size > maxBytes) break;
+		out += ch;
+		bytes += size;
+	}
+	return out;
+}
+
+/**
+ * Clips one turn so it fits a page on its own: the text (always already
+ * white-labelled, so no internal name can be cut in half) goes first, cut on
+ * whole code points; giant activity lists and attachment chips are then
+ * shortened from the end. The result always serializes within MAX_PAGE_BYTES.
+ */
+function clipTurn(turn) {
+	if (frameBytes(turn) <= MAX_MESSAGE_BYTES) return turn;
+	const clipped = { ...turn };
+	if (typeof clipped.text === "string" && clipped.text !== "") {
+		const textBytes = Buffer.byteLength(clipped.text, "utf8");
+		clipped.text = clipUtf8(clipped.text, Math.max(0, textBytes - (frameBytes(clipped) - MAX_MESSAGE_BYTES) - 64));
+		// Escape expansion (control characters and line separators that JSON escapes)
+		// can leave the text over budget: halve until it fits or is gone.
+		while (frameBytes(clipped) > MAX_MESSAGE_BYTES && clipped.text !== "") {
+			clipped.text = clipUtf8(clipped.text, Math.floor(Buffer.byteLength(clipped.text, "utf8") / 2));
+		}
+	}
+	while (frameBytes(clipped) > MAX_MESSAGE_BYTES && Array.isArray(clipped.activities) && clipped.activities.length > 0) {
+		clipped.activities = clipped.activities.slice(0, -1);
+	}
+	if (frameBytes(clipped) > MAX_MESSAGE_BYTES) delete clipped.attachments;
+	return clipped;
+}
+
 /**
  * One page of the chat kept in `chain` (session files, oldest first; the last
  * one is open), ending just before the message `before`, or at the newest one.
- * Ids are `s<file index>-<turn number>`, which stay valid while the chain
- * grows. An unknown `before` yields an empty page; so does a non-positive
- * limit. Messages of every file but the last carry `earlier:true`.
+ * Ids are `s<file index>-<turn number>`, which stay valid while the chain grows.
+ * The page is built from the newest message backwards and stops before it would
+ * exceed MAX_PAGE_BYTES or the message limit; `hasEarlier` stays true and the
+ * oldest page id keeps `get_earlier` exactly where the page stopped. A `before`
+ * that names no turn — `sN-0`, a turn beyond what the file ever held, or an
+ * index past the chain — yields an empty page with `hasEarlier: false`, so a
+ * hand-made cursor cannot make the island walk forever. Messages of every file
+ * but the last carry `earlier:true`.
  */
 function pageHistory(chain, limit, before, log) {
 	if (!Array.isArray(chain) || !Number.isSafeInteger(limit) || limit < 1) return { messages: [], hasEarlier: false };
@@ -175,20 +253,35 @@ function pageHistory(chain, limit, before, log) {
 		file = Number(match[1]);
 		end = Number(match[2]) - 1;
 	}
+	if (end !== Number.POSITIVE_INFINITY) {
+		// An out-of-range cursor is an empty page (the normal walk's end too, but a
+		// hand-made one must never page into turns that never existed).
+		if (end < 0 || end >= sessionTurns(chain[file], log).length) return { messages: [], hasEarlier: false };
+	}
 	const page = [];
+	let bytes = 0;
+	let more = false;
 	for (; file >= 0; file--, end = Number.POSITIVE_INFINITY) {
 		const turns = sessionTurns(chain[file], log).slice(0, end);
-		const start = Math.max(0, turns.length - (limit - page.length));
 		const earlier = file < chain.length - 1 ? { earlier: true } : {};
-		page.unshift(
-			...turns.slice(start).map((turn, i) => ({ ...turn, id: `s${file}-${start + i + 1}`, ...earlier })),
-		);
-		if (page.length >= limit) {
-			const more = start > 0 || chain.slice(0, file).some((path) => sessionTurns(path, log).length > 0);
-			return { messages: page, hasEarlier: more };
+		let index = turns.length; // the next turn (from the newest side) to take
+		while (index > 0 && page.length < limit) {
+			const turn = clipTurn({ ...turns[index - 1], id: `s${file}-${index}`, ...earlier });
+			const size = frameBytes(turn);
+			// A single oversized turn is CLIPPED, never dropped, so the newest page
+			// is never empty because of one huge message (K2-05 verifier fix).
+			if (page.length > 0 && bytes + size > MAX_PAGE_BYTES) break;
+			bytes += size;
+			page.unshift(turn);
+			index -= 1;
+		}
+		if (index > 0) {
+			// The page stopped mid-file (limit or byte budget): earlier pages remain.
+			more = true;
+			break;
 		}
 	}
-	return { messages: page, hasEarlier: false };
+	return { messages: page, hasEarlier: more };
 }
 
 /**
@@ -210,7 +303,8 @@ function historyFromMessages(messages) {
 		const m = raw ?? {};
 		if (m.role === "user") {
 			const { text, attachments } = splitAttachments(textOf(m));
-			if (!text && !attachments.length) continue;
+			// Gentle Dot keeps a user row whose only content is images (empty text,
+			// no chips); Koda used to drop it — follow upstream (verifier fix 7).
 			history.push({
 				id: `h${++index}`,
 				role: "user",

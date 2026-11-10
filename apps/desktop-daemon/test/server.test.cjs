@@ -43,7 +43,12 @@ class FakeEngine extends EventEmitter {
 		// K2-05 T4 U1: the rotated chain of the open session (real AgentEngine shape.
 		this.sessionFile = undefined;
 		this.chains = {};
-	}
+		// K2-05 T4 U1 verifier fix: a private sessions dir + the ownership rule the real
+		// runtime enforces (isOwnedSessionFile), so history reads refuse planted files.
+		this.sessionsDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "abito-fake-engine-")));
+		this.pendingPersist = undefined; // freshness test hook: a reply persisted only when a get_state arrives
+	this.onGetState = undefined; // freshness test hook: an announcement during the round trip
+}
 	/** The server's busy guard reads this: true only while a switch is in flight. */
 	get busy() {
 		return this.sessionChange !== undefined;
@@ -51,6 +56,19 @@ class FakeEngine extends EventEmitter {
 	/** The earlier session files of the open chat, oldest first (runtime.cjs shape). */
 	get previousSessions() {
 		return this.chains[this.sessionFile] ?? [];
+	}
+	/** The ownership rule the real runtime enforces for session files (verifier fix 4). */
+	isOwnedSessionFile(file, allowMissing = false) {
+		if (typeof file !== "string") return false;
+		const resolved = path.resolve(file);
+		if (!resolved.startsWith(`${this.sessionsDir}${path.sep}`)) return false;
+		let stats;
+		try {
+			stats = fs.lstatSync(resolved);
+		} catch (error) {
+			return allowMissing && error?.code === "ENOENT" && path.dirname(resolved) === this.sessionsDir;
+		}
+		return !stats.isSymbolicLink() && stats.isFile();
 	}
 	/** Intercepts fake agent records to track the turn lifecycle without registering a listener. */
 	emit(type, payload) {
@@ -60,8 +78,23 @@ class FakeEngine extends EventEmitter {
 		}
 		return super.emit(type, payload);
 	}
-	async request(command) {
+async request(command) {
 		this.requests.push(command);
+		// Freshness test hooks (verifier fix 2): a pending reply is persisted only when a
+		// get_state round trip reaches it — a plain file read would miss it — and
+		// onGetState fires an announcement DURING the round trip so the retry re-reads.
+		if (command.type === "get_state") {
+				if (this.pendingPersist) {
+						const flush = this.pendingPersist;
+						this.pendingPersist = undefined;
+						flush();
+				}
+				if (this.onGetState) {
+						const announce = this.onGetState;
+						this.onGetState = undefined;
+						announce();
+				}
+		}
 		if (command.type === "prompt") {
 			this.turnActive = true;
 			if (this.hold) await new Promise(() => {});
@@ -167,6 +200,7 @@ async function setup(t, { limits = {}, token = TOKEN, paused = false, pausedStor
 	const profiles = new FakeProfiles();
 	const runtimeDir = tmpRuntime(t);
 	const server = new IslandServer({ runtimeDir, token, engine, accounts, profiles, limits, paused, ...(pausedStore ? { pausedStore } : {}), ...(connectors ? { connectors } : {}), ...(agents ? { agents } : {}) });
+	t.after(() => fs.rmSync(engine.sessionsDir, { recursive: true, force: true }));
 	const { endpoint } = await server.start();
 	t.after(() => server.close().catch(() => {}));
 	return { server, engine, accounts, profiles, endpoint, runtimeDir };
@@ -1782,8 +1816,7 @@ function writeChatSession(dir, name, messages) {
 
 test("get_history projects the whole rotated chain oldest first; assistant text is white-labelled, user text is not", async (t) => {
 	const { endpoint, engine, server } = await setup(t);
-	const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "abito-hist-")));
-	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+	const dir = engine.sessionsDir;
 	const f1 = writeChatSession(dir, "one.jsonl", [
 		{ type: "message", message: { role: "user", content: "mi engram" } },
 		{ type: "message", message: { role: "assistant", content: "leo tu engram del Gentle Shell" } },
@@ -1809,14 +1842,13 @@ test("get_history projects the whole rotated chain oldest first; assistant text 
 		],
 	);
 	assert.equal(frame.hasEarlier, false);
-	assert.equal(engine.requests.length, 0, "a read-only verb sends nothing to the engine");
+	assert.deepEqual(engine.requests, [{ type: "get_state" }], "the freshness round trip (Gentle Dot's currentHistory) is the only engine traffic");
 	await server.close();
 });
 
 test("get_earlier pages backwards; an unknown but valid before yields an empty page", async (t) => {
 	const { endpoint, engine } = await setup(t);
-	const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "abito-earlier-")));
-	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+	const dir = engine.sessionsDir;
 	const f1 = writeChatSession(dir, "one.jsonl", [
 		{ type: "message", message: { role: "user", content: "a" } },
 		{ type: "message", message: { role: "assistant", content: "b" } },
@@ -1874,8 +1906,7 @@ test("new_conversation is refused conversations_off before any gate: idle, busy 
 
 test("after a rotation the history is re-broadcast to every client, marked earlier (bridge.ts:1124-1129)", async (t) => {
 	const { endpoint, engine } = await setup(t);
-	const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "abito-rotb-")));
-	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+	const dir = engine.sessionsDir;
 	const f1 = writeChatSession(dir, "one.jsonl", [{ type: "message", message: { role: "user", content: "antigua" } }]);
 	const f2 = writeChatSession(dir, "two.jsonl", [{ type: "message", message: { role: "user", content: "nueva" } }]);
 	engine.sessionFile = f2;
@@ -1908,4 +1939,107 @@ test("after a rotation the history is re-broadcast to every client, marked earli
 	engine.emit("sessions_linked", { sessionFile: f2 });
 	await new Promise((r) => setTimeout(r, 50));
 	assert.equal(a.frames.filter((f) => f.type === "history").length, 1);
+});
+
+// ----- K2-05 T4 U1 verifier fixes -------------------------------------------
+
+/** The island reader's per-frame limit (agentclient.rs FrameError::TooLarge). */
+const ISLAND_FRAME_LIMIT = 256 * 1024;
+/** The daemon's own byte budget for one history page, safely below it. */
+const PAGE_BUDGET = 192 * 1024;
+/** Numeric order of the page ids `s<file>-<turn>`. */
+const idOrder = (id) => {
+	const [, f, t] = /^(\d+)-(\d+)$/.exec(id.slice(1));
+	return Number(f) * 1e9 + Number(t);
+};
+
+test("get_history frames never exceed the island reader's limit; walking get_earlier returns every turn exactly once", async (t) => {
+	const { endpoint, engine } = await setup(t);
+	const dir = engine.sessionsDir;
+	const lines = [JSON.stringify({ type: "session", version: 3, id: "long", timestamp: "t", cwd: dir })];
+	for (let i = 1; i <= 60; i++) {
+		lines.push(JSON.stringify({ type: "message", message: { role: "user", content: `pregunta ${i} sobre el procedimiento completo de despliegue` } }));
+		lines.push(JSON.stringify({
+			type: "message",
+			message: {
+				role: "assistant",
+				content: [
+					{ type: "text", text: `respuesta ${i}: ${"x".repeat(2700)}` },
+					...Array.from({ length: 20 }, (_, k) => ({ type: "toolCall", id: `t${i}-${k}`, name: "read", arguments: { path: `/proyecto/modulo${k}/archivo-con-nombre-largo.ts` } })),
+				],
+			},
+		}));
+	}
+	const file = path.join(dir, "long.jsonl");
+	fs.writeFileSync(file, `${lines.join("\n")}\n`);
+	engine.sessionFile = file;
+	const c = await login(t, endpoint);
+	c.send({ type: "get_history" });
+	const first = await c.wait((f) => f.type === "history");
+	assert.ok(Buffer.byteLength(JSON.stringify(first)) <= PAGE_BUDGET, `one page stays under the island-safe budget`);
+	assert.ok(Buffer.byteLength(JSON.stringify(first)) <= ISLAND_FRAME_LIMIT, `and under the island reader's own limit`);
+	assert.equal(first.hasEarlier, true, "a bounded long chat has earlier pages");
+	// Walk back exactly the way the island does: the oldest id of each page is the cursor.
+	const seen = [...first.messages];
+	let cursor = first.messages[0].id; // the OLDEST id of the page the island already shows
+	for (let guard = 0; cursor && guard < 100; guard++) {
+		c.send({ type: "get_earlier", before: cursor });
+		const frame = await c.wait((f) => f.type === "earlier" && f.before === cursor);
+		if (frame.messages.length === 0) {
+			assert.equal(frame.hasEarlier, false, "the walk ends with a consistent empty page");
+			break;
+		}
+		assert.ok(Buffer.byteLength(JSON.stringify(frame)) <= PAGE_BUDGET, `every frame fits (${seen.length} in)`);
+		seen.push(...frame.messages);
+		cursor = frame.messages[0].id;
+	}
+	const ids = seen.map((m) => m.id);
+	assert.equal(new Set(ids).size, ids.length, "no turn is repeated");
+	assert.deepEqual(
+		[...ids].sort((a, b) => idOrder(a) - idOrder(b)),
+		Array.from({ length: 120 }, (_, i) => `s0-${i + 1}`),
+		"every turn exactly once",
+	);
+});
+
+test("get_history includes a reply the engine announced but persisted late (Gentle Dot's currentHistory round trip)", async (t) => {
+	const { endpoint, engine } = await setup(t);
+	const dir = engine.sessionsDir;
+	const append = (text) => fs.appendFileSync(path.join(dir, "fresh.jsonl"), `${JSON.stringify({ type: "message", message: { role: "assistant", content: text } })}\n`);
+	const f1 = writeChatSession(dir, "fresh.jsonl", [{ type: "message", message: { role: "user", content: "primera" } }]);
+	engine.sessionFile = f1;
+	// The reply settles: the island hears the announcement (the engine event), but the
+	// session file only gains the message when a get_state round trip reaches the engine.
+	engine.emit("event", { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "tardía" } });
+	// A SECOND announcement lands while that round trip is in flight; its message is
+	// persisted only by the retry's own round trip, so the page must be read again.
+	engine.onGetState = () => {
+		engine.emit("event", { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "segunda" } });
+		engine.pendingPersist = () => append("respuesta segunda");
+	};
+	engine.pendingPersist = () => append("respuesta tardía");
+	const c = await login(t, endpoint);
+	c.send({ type: "get_history" });
+	const frame = await c.wait((f) => f.type === "history");
+	assert.equal(frame.messages.at(-1).text, "respuesta tardía\n\nrespuesta segunda", "both replies are in: the pre-read one and the one announced during the round trip (the retry)");
+	assert.equal(frame.messages.length, 2, "user + the merged assistant turn");
+});
+
+test("a chain entry that is a symlink or lives outside the sessions dir is never read, even holding a secret", async (t) => {
+	const { endpoint, engine } = await setup(t);
+	const dir = engine.sessionsDir;
+	const outside = path.join(dir, "..", "outside-secret.jsonl");
+	fs.writeFileSync(outside, `${JSON.stringify({ type: "message", message: { role: "user", content: "OUTSIDE-SECRET" } })}\n`);
+	t.after(() => fs.rmSync(outside, { force: true }));
+	const planted = path.join(dir, "planted.jsonl");
+	fs.symlinkSync(outside, planted);
+	const own = writeChatSession(dir, "own.jsonl", [{ type: "message", message: { role: "user", content: "propia" } }]);
+	engine.sessionFile = own;
+	engine.chains[own] = [planted, outside];
+	const c = await login(t, endpoint);
+	c.send({ type: "get_history" });
+	const frame = await c.wait((f) => f.type === "history");
+	assert.deepEqual(frame.messages.map((m) => [m.id, m.text]), [["s0-1", "propia"]], "only the owned session file projects");
+	assert.ok(!JSON.stringify(frame).includes("OUTSIDE-SECRET"), "the planted secret never reaches a client");
+	assert.equal(frame.hasEarlier, false, "refused entries do not invent earlier pages");
 });

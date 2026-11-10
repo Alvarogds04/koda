@@ -22,7 +22,7 @@ Implementation: `src/protocol.cjs` (codec/validators/translation), `src/server.c
 | `set_paused` | `paused: bool` | Global pause switch (#379); see "Global pause" |
 | `new_conversation` | – | **Refused** with a fixed `error{conversations_off}` (K2-05 T4 U1): the island keeps ONE continuous chat (L3/L4/L7, Gentle Dot's `conversationsOn` gate). The refusal precedes every other gate (busy, paused included) and no command ever reaches the engine |
 | `get_history` | – | replies `history{messages,hasEarlier}` — the newest page of the open chat; see "History frames". `unavailable` while the engine is not ready or holds no open session |
-| `get_earlier` | `before: s<file>-<turn>` | replies `earlier{before,messages,hasEarlier}` — the page ending just before that message id. A valid-shaped `before` the chain does not know yields an empty page (the island keeps what it shows); a non-page-id `before` is `bad_request` |
+| `get_earlier` | `before: s<file>-<turn>` | replies `earlier{before,messages,hasEarlier}` — the page ending just before that message id. Ids are canonical (no leading zeros): a non-canonical or non-page-id `before` is `bad_request`; a canonical id that names no turn — `sN-0`, a turn beyond what that file ever held, or an index past the chain — yields an EMPTY page with `hasEarlier:false` (the island keeps what it shows) |
 | `status` | – | replies `agent_state` |
 | `interrupted_ack` | – | acknowledges the interrupted-work record exposed in `ready.interrupted` (#385/R5): the daemon marks it consumed (never at boot) and replies `interrupted_acknowledged`; idempotent, allowed while paused; if persisting the record fails it replies the `error`/`failed` frame and the record stays pending so a retry can persist it (R4) |
 | `ui_response` | `id`, one of `value` / `confirmed` / `cancelled` | answers an `ask`; validated against the pending ask |
@@ -386,10 +386,13 @@ Everything else (thinking deltas, `turn_end`, `tool_execution_update`, unknown) 
   guarded until the replacement is actually ready. The private session persists,
   but no prompt is automatically replayed, including after ambiguous prompt ACK loss.
   Healthy natural `agent_settled` clears the timer without forced recycling.
-- `new_conversation` acquires the single-flight busy gate before sending Pi
-  `new_session`. Concurrent send/profile/workspace/config changes retain their
-  existing `busy` rejection and do not modify stored config or action counters.
-  The runtime also gates direct `new_session`/`switch_session` requests.
+- The island's `new_conversation` is REFUSED outright with the fixed `error{conversations_off}`
+  before every gate (busy, paused included): Koda keeps ONE continuous chat and no reset ever
+  reaches the engine from the island. The RUNTIME-level single-flight busy gate remains for the
+  engine's own `new_session`/`switch_session` requests (the rotation and its fallback): a request
+  during a cut-off generation or a session switch in flight is refused with `busy`/`not ready`, and
+  concurrent send/profile/workspace/config changes retain their existing `busy` rejection without
+  modifying stored config or action counters.
   A successful reset/switch response is checked against Pi's owned session
   identity via `get_state` before admission reopens; ordinary state reads remain
   usable. Lost ACK/timeout/failed response/child failure is ambiguous: the gate
@@ -437,18 +440,37 @@ attachments?: [{name,size,mime}], earlier?: true }`. Ids are per-file (`s0-…` 
 STABLE while the chain grows, so `get_earlier` cursors survive a rotation. Messages of every file but the
 last carry `earlier:true`.
 
-- **Bounds.** A page is at most 100 messages (Gentle Dot's `HISTORY_PAGE`); the frame rebuild clips each
-  text to 64 KiB (the same ceiling the `send` verb accepts), caps activities at 100 (closed vocabulary,
-  non-conforming entries dropped) and attachments at 16, and THROWS — the server answers `error{failed}` —
-  if a rebuilt page still exceeds 1 MiB. A chain file that is missing or unreadable is skipped with a one-line
-  daemon log; torn/corrupt lines inside a file are skipped (the engine rewrites them as it appends).
+- **Bounds.** A page is at most 100 messages (Gentle Dot's `HISTORY_PAGE`) and at most **192 KiB** of
+  serialized frame — a named ceiling tied to the island reader's per-frame limit of 256 KiB
+  (`FrameError::TooLarge` in `apps/desktop-tauri/src/agentclient.rs`), kept safely below it. The page is
+  built from the newest message backwards and stops before the budget is exceeded; a single message
+  larger than the budget is CLIPPED (its text, always already white-labelled, cut on whole code points;
+  never a partial hidden name or a split surrogate), so one page always fits and size never becomes
+  `error{failed}`. The frame rebuild clips each text to 64 KiB (the same ceiling the `send` verb
+  accepts), caps activities at 100 (closed vocabulary, non-conforming entries dropped) and attachments
+  at 16, and THROWS — the server answers `error{failed}` — if a rebuilt page still exceeds 1 MiB (a
+  defense-in-depth ceiling the byte-bounded build never reaches). A chain file that is missing or
+  unreadable is skipped with a one-line daemon log (one over 64 MiB is skipped instead of blocking the
+  read); torn/corrupt lines inside a file are skipped (the engine rewrites them as it appends).
 - **Readiness.** While the engine is not `ready` or holds no open session, `get_history`/`get_earlier` answer
   `error{unavailable}` (retryable) — never an empty page, which would clear what the island shows.
+- **Chain files are owned.** A chain file is read only when it is a regular, non-symlink, owned file
+  directly inside the engine's private sessions dir (the runtime's `isOwnedSessionFile` rule) — a
+  planted symlink or an outside path is dropped with a one-line log, never read — and `linkSessions`
+  refuses such paths BEFORE a chain entry is persisted to `state.json`.
+- **Freshness.** `get_history` carries Gentle Dot's `currentHistory` round trip (bridge.ts:1131-1145):
+  one engine `get_state` round trip makes sure every message announced so far is already on disk, and
+  the page is read again (bounded) when a message was announced during that round trip. `get_earlier`
+  reads directly, as upstream does.
 - **Rotation re-broadcast.** When a rotation (or its fallback `new_session`) replaces the open session and
-  the new one already carries its chain, the daemon re-broadcasts ONE `history` frame to every connected
-  client: the same chat, now marked earlier (Gentle Dot bridge.ts:1124-1129). The broadcast fires on the
-  engine's `session_changed` (chain present) and `sessions_linked` (linked file == open session) events, so
-  the fallback's confirmed-but-unlinked window never broadcasts an empty page.
+  the new one already carries its chain, the daemon re-broadcasts ONE `history` frame per confirmed
+  session change to every connected client: the same chat, now marked earlier (Gentle Dot
+  bridge.ts:1124-1129). The broadcast fires on the engine's `session_changed` (chain present, engine
+  ready — including a crash-recovery reopen, whose emit now fires only once ready) and `sessions_linked`
+  (linked file == open session) events, so the fallback's confirmed-but-unlinked window never
+  broadcasts an empty page. When the rotation's switch CONFIRMS but its verification fails and the
+  fallback runs, TWO frames are broadcast: the confirmed seed's session change, then the fallback's
+  linked fresh session.
 
 ## Continuous conversation rotation (K2-05 T3, on by default)
 

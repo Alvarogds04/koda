@@ -186,6 +186,7 @@ class IslandServer {
 		this.authFlow = undefined; // last sign-in flow seen: {flowId, accountId, method, phase}
 		this.authEarly = undefined; // phase of a flow whose auth_start reply has not landed yet
 		this.messageCounter = 0;
+		this.historySeq = 0; // T4 U1 freshness: bumped on every message announcement (Gentle Dot's nextMessage)
 		this.asks = new Map();
 		this.server = undefined;
 		this.endpoint = undefined;
@@ -206,15 +207,45 @@ class IslandServer {
 		return { busy: this.busy || this.engine?.busy === true || this.switching !== undefined, status: this.engine?.status ?? "stopped", paused: this.paused === true };
 	}
 
-	/** The open chat's session files, oldest first (T4 U1, Gentle Dot bridge.ts chain()). */
+	/**
+	 * The open chat's session files, oldest first (T4 U1, Gentle Dot bridge.ts chain()).
+	 * K2-05 verifier fix: a chain file is read only when it is a regular, non-symlink,
+	 * owned file directly inside the engine's private sessions dir — the same rule the
+	 * runtime enforces for open sessions (isOwnedSessionFile). A planted symlink (one
+	 * answered "OUTSIDE-SECRET" to the verifier) or an outside path is dropped with a
+	 * log line, never read; `allowMissing` keeps a not-yet-written open session legible.
+	 */
 	historyChain() {
 		const file = this.engine?.sessionFile;
-		return file ? [...(this.engine.previousSessions ?? []), file] : [];
+		if (typeof file !== "string") return [];
+		const owned = (p) => {
+			if (this.engine.isOwnedSessionFile?.(p, true)) return true;
+			this.log(`history: a chain file is not an owned session file, skipped: ${p}`);
+			return false;
+		};
+		return [...(this.engine.previousSessions ?? []).filter(owned), ...(owned(file) ? [file] : [])];
 	}
 
 	/** One history page of the open chat; unreadable chain files are skipped with a log line. */
 	historyPage(before) {
 		return pageHistory(this.historyChain(), this.opts.historyPage, before, (line) => this.log(line));
+	}
+
+	/**
+	 * T4 U1 freshness (K2-05 verifier fix, Gentle Dot bridge.ts:1131-1145 currentHistory):
+	 * history replaces what a window shows, so it must not be older than the messages
+	 * already announced — the engine writes a message to its session file right after
+	 * announcing it, so one get_state round trip makes sure everything announced so far
+	 * is on disk; when a message was announced DURING that round trip, the page is read
+	 * again (bounded, like upstream). `get_earlier` does not do this (upstream parity).
+	 */
+	async currentHistory(before) {
+		for (let attempt = 0; ; attempt++) {
+			const seen = this.historySeq;
+			await this.engine.request({ type: "get_state" });
+			const page = this.historyPage(before);
+			if (this.historySeq === seen || attempt >= 2) return page;
+		}
 	}
 
 	async start() {
@@ -521,6 +552,12 @@ class IslandServer {
 			if (id) this.toolStream = stream = { id, key: `${this.engine.pid}:${this.engine.sessionEpoch}:${this.engine.sessionFile}`, history: new ToolHistory() };
 		}
 		stream?.history.accept(event);
+		// T4 U1 freshness (Gentle Dot bridge.ts nextMessage): every message announcement
+		// bumps the sequence the history read compares across its get_state round trip.
+		if (event?.type === "message_start" || event?.type === "message_update" || event?.type === "message_end"
+			|| event?.type === "tool_execution_start" || event?.type === "tool_execution_end") {
+			this.historySeq += 1;
+		}
 		const out = P.translateEvent(event, this.messageId);
 		if (out.busy !== undefined && out.busy !== this.busy) {
 			this.busy = out.busy;
@@ -761,9 +798,10 @@ class IslandServer {
 				// T4 U1: a read-only page of the open chat (Gentle Dot waits for the engine
 				// to be ready; Koda answers unavailable instead so the island can retry,
 				// and NEVER an empty page that would clear what the island already shows).
+				// The read carries Gentle Dot's freshness round trip (currentHistory).
 				if (!ready() || typeof this.engine?.sessionFile !== "string") return fail("unavailable");
 				try {
-					return reply(P.historyFrame(this.historyPage(undefined)));
+					return reply(P.historyFrame(await this.currentHistory(undefined)));
 				} catch {
 					this.log("command get_history failed");
 					return fail("failed");

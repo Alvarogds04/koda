@@ -842,8 +842,16 @@ class AgentEngine extends EventEmitter {
 	/** Records that `sessionFile` continues the chat held in `previous` (oldest first). */
 	linkSessions(sessionFile, previous) {
 		if (typeof sessionFile !== "string" || !Array.isArray(previous) || previous.length === 0) return;
-		const chain = previous.filter((p) => typeof p === "string");
-		if (chain.length === 0) return;
+		// K2-05 T4 U1 verifier fix: only owned session files enter a chain — the same
+		// rule the history read applies (regular, non-symlink, inside the sessions dir)
+		// — so a planted symlink or an outside path is refused BEFORE it is ever
+		// persisted to state.json, not just skipped at read time.
+		const chain = previous.filter((p) => typeof p === "string" && this.isOwnedSessionFile(p));
+		if (chain.length === 0) {
+			this.log(`session chain refused: none of the ${previous.length} linked paths is an owned session file`);
+			return;
+		}
+		if (chain.length !== previous.length) this.log(`session chain: ${previous.length - chain.length} linked path(s) refused, not owned session files`);
 		this.chains[sessionFile] = chain;
 		// Gentle Dot (supervisor.ts:137): linking alone never persists the seed.
 		// state.json keeps pointing at the session the engine actually holds, so
@@ -1169,12 +1177,16 @@ class AgentEngine extends EventEmitter {
 			if (expected && this.sessionFile !== expected) throw new Error("agent recovery session was not confirmed");
 			this.sessionEpoch += 1;
 			this.persistSession(this.sessionFile);
-			this.emit("session_changed", { sessionFile: this.sessionFile });
 			this.initialStartPending = false;
 			this.spawnedAt = Date.now();
 			this.recycling = false;
 			this.recoverySessionFile = undefined;
 			this.setStatus("ready");
+			// K2-05 T4 U1 verifier fix: the reopen's session_changed fires only once the
+			// engine is ready — before, the server's history re-broadcast guard (status
+			// must be ready) dropped it silently. The server still decides whether the
+			// confirmed session carries a chain worth re-broadcasting.
+			this.emit("session_changed", { sessionFile: this.sessionFile });
 		};
 		initialization.promise = run().catch((error) => {
 			if (this.child === child) child.kill("SIGKILL");

@@ -806,6 +806,21 @@ test("daemon boots on a v0.1 #386 config; an unknown rotation subkey still refus
 
 // ------------------------------------------------- T4 U1: chain-change events
 
+// K2-05 T4 U1 verifier fix: the crash-recovery reopen's session_changed must fire when
+// the engine is already ready — before, the server's history guard dropped it silently.
+test("a crash-recovery reopen emits session_changed only once the engine is ready", async (t) => {
+	const { engine, commands } = await rig(t);
+	const statuses = [];
+	engine.on("session_changed", () => statuses.push(engine.status));
+	await engine.request({ type: "prompt", message: "held" });
+	process.kill(engine.pid, "SIGKILL");
+	await until(() => commands().some((c) => c.type === "switch_session") && engine.status === "ready", 8000);
+	await new Promise((r) => setTimeout(r, 100));
+	assert.equal(engine.status, "ready");
+	assert.ok(statuses.length >= 1, "a reopen emitted session_changed");
+	assert.ok(statuses.every((s) => s === "ready"), `every reopen emission is already ready (got ${statuses.join(",")})`);
+});
+
 test("a rotation emits sessions_linked then session_changed for the new open session (history re-broadcast hooks)", async (t) => {
 	const dir = tmp("abito-rot-emit-");
 	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));

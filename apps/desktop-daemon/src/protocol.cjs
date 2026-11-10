@@ -38,7 +38,8 @@ const LIMITS = Object.freeze({
 });
 
 /** Page ids of the rotated chain: `s<file index>-<turn>` (T4 U1, Gentle Dot conversations.ts). */
-const HISTORY_BEFORE = /^s\d+-\d+$/;
+/** One canonical page id `s<file>-<turn>`: no leading zeros anywhere (K2-05 verifier fix); `sN-0` and out-of-range turns pass shape and answer an empty page. */
+const HISTORY_BEFORE = /^s(0|[1-9]\d*)-(0|[1-9]\d*)$/;
 const IMAGE_MIMES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
 const STRICT_ID = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const SAFE_NAME = /^[A-Za-z0-9_.:-]{1,64}$/;

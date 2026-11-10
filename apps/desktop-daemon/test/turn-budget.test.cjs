@@ -194,6 +194,11 @@ test("socket budget cancellation closes asks, preserves busy guards, sanitizes o
 	assert.equal(profiles.selected, 0);
 	assert.ok(frames.filter((f) => f.type === "error").some((f) => f.code === "conversations_off"), "the conversation reset is refused");
 	assert.equal(commands().filter((c) => c.type === "new_session").length, 0, "a refusal never reaches the engine");
+	// K2-05 T4 U1 verifier fix: the ENGINE-level reset path is gated too — during the
+	// cut-off generation a new_session is refused (busy/recycling) and the count stays
+	// 0; only after the replacement is ready does the reset succeed (count 1, below).
+	await assert.rejects(engine.request({ type: "new_session" }), /busy|not ready/);
+	assert.equal(commands().filter((c) => c.type === "new_session").length, 0, "no engine reset during the cut-off generation");
 	assert.equal(commands().filter((c) => c.type === "prompt").length, 1);
 	assert.ok(!JSON.stringify(frames).includes("STALE"));
 	await replaced(pid);
