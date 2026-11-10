@@ -451,14 +451,17 @@ impl ChatConn {
             let mut chunk = [0u8; 8192];
             // the handshake burst: frames that arrived in the same read as `ready`
             if !pending.is_empty() {
+                // L3 (U2 re-verify): the fold bumps `ChatState::revision` only when the view
+                // changed, so the emit decision is one integer comparison — the whole chat
+                // state is serialized at most once per read, never twice. Keep in sync with
+                // the unix `agentconn.rs`.
                 let emit = {
                     let mut st = state.lock().expect("chat state lock");
-                    let before = serde_json::to_value(&*st).unwrap_or(Value::Null);
+                    let before = st.revision();
                     for f in &pending {
                         st.apply(f);
                     }
-                    let after = serde_json::to_value(&*st).unwrap_or(Value::Null);
-                    (before != after).then_some(after)
+                    (st.revision() != before).then(|| serde_json::to_value(&*st).unwrap_or(Value::Null))
                 };
                 if let Some(view) = emit {
                     changed(view);
@@ -479,15 +482,18 @@ impl ChatConn {
                             continue;
                         }
                         // emit the view only when at least one complete frame CHANGED the
-                        // state — bursts coalesce into one emission, idle reads into none
+                        // state — bursts coalesce into one emission, idle reads into none.
+                        // L3 (U2 re-verify): the change signal is `ChatState::revision`,
+                        // bumped by every fold that changes the view; the whole state is
+                        // serialized at most ONCE per read, only on an actual change. Keep
+                        // in sync with the unix `agentconn.rs`.
                         let emit = {
                             let mut st = state.lock().expect("chat state lock");
-                            let before = serde_json::to_value(&*st).unwrap_or(Value::Null);
+                            let before = st.revision();
                             for f in &frames {
                                 st.apply(f);
                             }
-                            let after = serde_json::to_value(&*st).unwrap_or(Value::Null);
-                            (before != after).then_some(after)
+                            (st.revision() != before).then(|| serde_json::to_value(&*st).unwrap_or(Value::Null))
                         };
                         if let Some(view) = emit {
                             changed(view);

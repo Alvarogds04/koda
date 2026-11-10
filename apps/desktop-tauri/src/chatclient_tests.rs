@@ -837,3 +837,74 @@ mod round_trip {
         conn.close();
     }
 }
+
+// ---- L3 (U2 re-verify): the revision change signal -----------------------------------------
+// The connection readers decide whether to emit by comparing `ChatState::revision` before and
+// after a read's frames, instead of serializing the whole chat state twice per read.
+
+#[test]
+fn a_noop_frame_never_bumps_the_chat_revision_but_a_real_change_does() {
+    let mut st = ChatState::connected();
+    let start = st.revision();
+    // Unknown frames, and frames that fold to the exact view the state already holds,
+    // are no-ops: the serialized view is unchanged AND the revision does not move.
+    let view = serde_json::to_value(&st).unwrap();
+    st.apply(&json!({"type":"totally_unknown"}));
+    assert_eq!(st.revision(), start, "an unknown frame never bumps");
+    st.apply(&json!({"type":"agent_state"})); // folds to the connected default (busy false, no status)
+    assert_eq!(st.revision(), start, "an agent_state identical to the current view never bumps");
+    assert_eq!(serde_json::to_value(&st).unwrap(), view, "a no-op frame leaves the view identical");
+    st.apply(&json!({"type":"message_delta","messageId":"m1","text":""}));
+    assert_eq!(st.revision(), start, "an empty delta never bumps");
+    st.apply(&json!({"type":"message_delta","messageId":"m1"}));
+    assert_eq!(st.revision(), start, "a delta without text never bumps");
+    st.apply(&json!({"type":"message_delta","messageId":"m1","text":"hola"}));
+    assert_eq!(st.revision(), start + 1, "a first delta for a new message bumps");
+    st.apply(&json!({"type":"message_done","messageId":"m1"}));
+    assert_eq!(st.revision(), start + 2, "landing a streamed message bumps");
+    st.apply(&json!({"type":"message_done","messageId":"m1"}));
+    assert_eq!(st.revision(), start + 2, "a duplicate done for an already-landed message never bumps");
+    let after_done = st.revision();
+    st.apply(&json!({"type":"ask","id":"bad id!","kind":"confirm","title":"t"}));
+    assert_eq!(st.revision(), after_done, "a malformed ask is dropped without a bump");
+    st.apply(&json!({"type":"ask_resolved","id":"never-seen"}));
+    assert_eq!(st.revision(), after_done, "resolving an ask the island never held never bumps");
+
+    // A real change bumps exactly once per changing fold, and the view moves with it.
+    st.apply(&json!({"type":"message_delta","messageId":"m2","text":"hola"}));
+    assert_eq!(st.revision(), after_done + 1, "a real change bumps");
+    let after = serde_json::to_value(&st).unwrap();
+    assert_ne!(after, view, "the changed view is really different");
+    st.apply(&json!({"type":"agent_state","state":{"busy":true,"status":"ready","paused":false}}));
+    assert_eq!(st.revision(), after_done + 2, "a state change bumps");
+    // ...and the SAME state again does not: emit-on-change semantics are preserved exactly.
+    st.apply(&json!({"type":"agent_state","state":{"busy":true,"status":"ready","paused":false}}));
+    assert_eq!(st.revision(), after_done + 2, "a repeated identical fold never bumps");
+}
+
+#[test]
+fn the_chat_revision_counter_never_leaks_into_the_serialized_view() {
+    let mut st = ChatState::connected();
+    st.apply(&json!({"type":"message_delta","messageId":"m1","text":"koda responde"}));
+    st.apply(&json!({"type":"agent_state","state":{"busy":true,"status":"ready","paused":false}}));
+    let bumped = serde_json::to_value(&st).unwrap();
+    assert!(st.revision() > 0);
+    assert!(bumped.get("revision").is_none(), "the change signal is internal: it must never reach the UI view");
+}
+
+// A trim/prepend/clear that lands on the same values still reports no change (the revision
+// stays where it was), so reconnects and repeat history pages never spam the UI.
+#[test]
+fn a_history_page_that_changes_nothing_never_bumps_the_chat_revision() {
+    let mut st = ChatState::connected();
+    st.apply(&json!({"type":"history","messages":[{"id":"m1","role":"user","text":"hola"}],"hasEarlier":false}));
+    let settled = st.revision();
+    st.apply(&json!({"type":"history","messages":[{"id":"m1","role":"user","text":"hola"}],"hasEarlier":false}));
+    assert_eq!(st.revision(), settled, "an identical history page never bumps");
+    // an earlier page that brings nothing new (everything already known) is a no-op too
+    st.apply(&json!({"type":"earlier","messages":[{"id":"m1","role":"user","text":"hola"}],"hasEarlier":false}));
+    assert_eq!(st.revision(), settled, "an earlier page without fresh messages never bumps");
+    // ...while a fresh page with new content does.
+    st.apply(&json!({"type":"history","messages":[{"id":"m1","role":"user","text":"hola"},{"id":"m2","role":"assistant","text":"Ka"}],"hasEarlier":false}));
+    assert!(st.revision() > settled, "a new page bumps");
+}

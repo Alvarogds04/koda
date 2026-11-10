@@ -239,6 +239,14 @@ pub struct ChatState {
     pub(crate) rate_window: Cell<Option<Instant>>,
     #[serde(skip)]
     pub(crate) rate_count: Cell<u32>,
+    /// L3 (U2 re-verify): the cheap change signal for the reader. Bumped by every
+    /// fold that changes the serialized view, never otherwise; never serialized
+    /// itself, so bumping it cannot churn the view. The connection readers
+    /// (`agentconn.rs`/`agentconn_win.rs`, keep in sync) compare this counter before
+    /// and after a read's frames instead of serializing the whole chat state twice
+    /// per read to decide whether to emit.
+    #[serde(skip)]
+    revision: u64,
 }
 
 impl ChatState {
@@ -258,6 +266,7 @@ impl ChatState {
             newer_trimmed: false,
             rate_window: Cell::new(None),
             rate_count: Cell::new(0),
+            revision: 0,
         }
     }
 
@@ -274,6 +283,11 @@ impl ChatState {
 
     /// The pending asks (transport-free surface for the Tauri command).
     pub fn asks(&self) -> &[ChatAsk] { &self.asks }
+
+    /// The change signal (L3): monotonically bumped by every fold that changes the
+    /// serialized view. The connection readers compare it before/after folding a
+    /// read's frames instead of serializing the whole state twice per read.
+    pub(crate) fn revision(&self) -> u64 { self.revision }
 
     /// The newest pending ask, or None. The daemon can hold up to 16; the UI
     /// answers the newest (the one the user is looking at).
@@ -305,41 +319,61 @@ impl ChatState {
         Ok(cmd)
     }
 
-    /// Fold one server frame in. Unknown or malformed frames change nothing.
+    /// Fold one server frame in. Unknown or malformed frames change nothing. Every
+    /// branch reports whether the fold CHANGED the serialized view; `apply` bumps
+    /// the `revision` counter exactly then, so the connection readers can decide
+    /// whether to emit with one integer comparison instead of serializing the whole
+    /// state twice per read (L3, U2 re-verify).
     pub fn apply(&mut self, frame: &Value) {
         let Some(t) = frame.get("type").and_then(Value::as_str) else { return };
-        match t {
+        let changed = match t {
             // `agent_state` updates the status live; `ready` carried the same state at
             // handshake time (nested under "state"). One closed status set.
             "ready" | "agent_state" => {
                 let s = frame.get("state").filter(|s| s.is_object()).unwrap_or(frame);
                 let status = s.get("status").and_then(Value::as_str).filter(|s| matches!(*s, "ready" | "restarting" | "stopped" | "starting" | "unavailable"));
-                self.agent = json!({
+                let agent = json!({
                     "busy": s.get("busy").and_then(Value::as_bool).unwrap_or(false),
                     "status": status,
                     "paused": s.get("paused").and_then(Value::as_bool).unwrap_or(false),
                 });
+                let mut changed = false;
+                if self.agent != agent {
+                    self.agent = agent;
+                    changed = true;
+                }
                 // a stopped or restarting engine can never finish a half-streamed message:
                 // drop it honestly instead of showing a tail that will never close
-                if matches!(status, Some("stopped" | "restarting")) { self.streaming.clear(); }
+                if matches!(status, Some("stopped" | "restarting")) && !self.streaming.is_empty() {
+                    self.streaming.clear();
+                    changed = true;
+                }
+                changed
             }
             "message_delta" => {
                 let (Some(id), Some(text)) = (id_field(frame, "messageId"), str_field(frame, "text")) else { return };
                 if text.is_empty() { return; }
                 if let Some(slot) = self.streaming.iter_mut().find(|s| s.id == id) {
+                    // A delta at the stream-text cap can clip back to the EXACT same string:
+                    // the bounded text changed only when its UTF-16 length moved (appends
+                    // grow it, the cap cut keeps at least the old clean prefix).
+                    let before = utf16_len(slot.text.as_str());
                     let mut acc = std::mem::take(&mut slot.text);
                     push_bounded(&mut acc, text, MAX_STREAM_CHARS);
+                    let after = utf16_len(acc.as_str());
                     slot.text = acc;
+                    after != before
                 } else {
                     if self.streaming.len() >= MAX_STREAM_MESSAGES { self.streaming.remove(0); }
                     let mut acc = String::new();
                     push_bounded(&mut acc, text, MAX_STREAM_CHARS);
                     self.streaming.push(StreamMessage { id: id.to_owned(), text: acc });
+                    true
                 }
             }
             "message_done" => {
                 let Some(id) = id_field(frame, "messageId") else { return };
-                let text = match self.streaming.iter().position(|s| s.id == id) {
+                let landed = match self.streaming.iter().position(|s| s.id == id) {
                     Some(at) => self.streaming.remove(at).text,
                     None => {
                         // a done for an id the island never streamed: land it honestly empty, once
@@ -350,7 +384,8 @@ impl ChatState {
                 };
                 if self.messages.len() >= MAX_MESSAGES { self.messages.remove(0); }
                 let activities = std::mem::take(&mut self.pending_activities);
-                self.messages.push(json!({"id": id, "role": "assistant", "text": text, "activities": activities}));
+                self.messages.push(json!({"id": id, "role": "assistant", "text": landed, "activities": activities}));
+                true
             }
             "activity" => self.fold_activity(frame),
             "history" => self.fold_history(frame, false),
@@ -358,23 +393,33 @@ impl ChatState {
             "ask" => {
                 let Some(ask) = ask_view(frame) else { return };
                 if self.asks.len() >= MAX_ASKS { return; } // past the bound: never registered, never answerable
-                self.pending_ask = serde_json::to_value(&ask).unwrap_or(Value::Null);
+                let pending = serde_json::to_value(&ask).unwrap_or(Value::Null);
+                let changed = self.pending_ask != pending;
+                self.pending_ask = pending;
                 self.asks.push(ask);
+                changed
             }
             "ask_resolved" => {
                 let Some(id) = id_field(frame, "id") else { return };
                 self.asks.retain(|a| a.id != id);
-                self.pending_ask = self.asks.last().map(|a| serde_json::to_value(a).unwrap_or(Value::Null)).unwrap_or(Value::Null);
+                let pending = self.asks.last().map(|a| serde_json::to_value(a).unwrap_or(Value::Null)).unwrap_or(Value::Null);
+                let changed = self.pending_ask != pending;
+                self.pending_ask = pending;
+                changed
             }
             "toast" => {
                 let Some(message) = frame.get("message").and_then(Value::as_str) else { return };
                 let Some(level) = frame.get("level").and_then(Value::as_str).filter(|l| matches!(*l, "info" | "warning" | "error")) else { return };
                 if self.toasts.len() >= MAX_TOASTS { self.toasts.remove(0); }
                 self.toasts.push(json!({"level": level, "message": clip_utf16(message, 300)}));
+                true
             }
             "queue" => {
                 let count = |k: &str| frame.get(k).and_then(Value::as_u64).unwrap_or(0).min(100);
-                self.queue = json!({"steering": count("steering"), "followUp": count("followUp")});
+                let queue = json!({"steering": count("steering"), "followUp": count("followUp")});
+                let changed = self.queue != queue;
+                self.queue = queue;
+                changed
             }
             "error" => {
                 let code = match frame.get("code").and_then(Value::as_str) {
@@ -383,8 +428,12 @@ impl ChatState {
                 };
                 let n = self.last_error["n"].as_u64().unwrap_or(0) + 1;
                 self.last_error = json!({"code": code, "n": n});
+                true
             }
-            _ => {}
+            _ => false,
+        };
+        if changed {
+            self.revision = self.revision.wrapping_add(1);
         }
     }
 
@@ -393,38 +442,51 @@ impl ChatState {
     /// protocol.cjs `ACTIVITY_STATUSES`); its live activity frames spell the failure
     /// state `error`, which folds to `failed` here. An off-vocabulary state, or a
     /// done/error with no prior running entry, is dropped — never guessed. The finished
-    /// entries attach to the next completed message (`message_done`).
-    fn fold_activity(&mut self, frame: &Value) {
-        let Some(name) = str_field(frame, "name") else { return };
-        let Some(state) = frame.get("state").and_then(Value::as_str).filter(|s| matches!(*s, "running" | "done" | "error" | "failed")) else { return };
+    /// entries attach to the next completed message (`message_done`). Returns whether
+    /// the fold changed the view (L3).
+    fn fold_activity(&mut self, frame: &Value) -> bool {
+        let Some(name) = str_field(frame, "name") else { return false };
+        let Some(state) = frame.get("state").and_then(Value::as_str).filter(|s| matches!(*s, "running" | "done" | "error" | "failed")) else { return false };
         let state = if state == "error" { "failed" } else { state };
-        let Some(call_id) = id_field(frame, "callId").filter(|c| safe_id_ok(c)) else { return };
+        let Some(call_id) = id_field(frame, "callId").filter(|c| safe_id_ok(c)) else { return false };
         let title = clip_utf16(name, 64);
         match state {
             "running" => {
                 let entry = json!({"id": call_id, "kind": "other", "title": title, "status": "running"});
                 match self.pending_activities.iter().position(|a| a["id"] == json!(call_id)) {
-                    Some(at) => self.pending_activities[at] = entry,
+                    Some(at) => {
+                        if self.pending_activities[at] == entry { return false; }
+                        self.pending_activities[at] = entry;
+                        true
+                    }
                     None => {
                         if self.pending_activities.len() >= HISTORY_PAGE { self.pending_activities.remove(0); }
                         self.pending_activities.push(entry);
+                        true
                     }
                 }
             }
             // done/failed completes the paired running entry; an unpaired one is dropped
             _ => {
                 if let Some(at) = self.pending_activities.iter().position(|a| a["id"] == json!(call_id)) {
+                    if self.pending_activities[at]["status"] == json!(state) { return false; }
                     self.pending_activities[at]["status"] = json!(state);
+                    true
+                } else {
+                    false
                 }
             }
         }
     }
 
-    /// Fold a `history` (replace) or `earlier` (prepend + dedupe by id) page.
-    fn fold_history(&mut self, frame: &Value, earlier: bool) {
-        let Some(page) = frame.get("messages").and_then(Value::as_array) else { return };
+    /// Fold a `history` (replace) or `earlier` (prepend + dedupe by id) page. Returns
+    /// whether the fold changed the view (L3).
+    fn fold_history(&mut self, frame: &Value, earlier: bool) -> bool {
+        let Some(page) = frame.get("messages").and_then(Value::as_array) else { return false };
         let messages: Vec<Value> = page.iter().take(HISTORY_PAGE).filter_map(history_message_view).collect();
-        self.has_earlier = frame.get("hasEarlier").and_then(Value::as_bool).unwrap_or(false);
+        let has_earlier = frame.get("hasEarlier").and_then(Value::as_bool).unwrap_or(false);
+        let mut changed = self.has_earlier != has_earlier;
+        self.has_earlier = has_earlier;
         if earlier {
             let mut fresh = Vec::with_capacity(messages.len());
             for m in messages {
@@ -432,26 +494,47 @@ impl ChatState {
                 let known = self.messages.iter().any(|x| x["id"] == id) || fresh.iter().any(|x: &Value| x["id"] == id);
                 if !known { fresh.push(m); }
             }
+            let fresh_len = fresh.len();
             let mut all = fresh;
             all.append(&mut self.messages);
             // NEVER drop what was just loaded: when the prepend pushes the view over the
             // cap, the NEWEST end is trimmed (the user scrolled to the OLDEST message;
             // U4 reloads the latest via `history` when they scroll back down) and the
             // view says so. Trimming the oldest instead made every earlier page vanish.
+            // NOTE: `append` MOVES the old messages out of `self.messages`, so the exact
+            // old content only exists inside `all` from here on: the change decision is
+            // made from what was prepended/trimmed, never by comparing against the
+            // emptied field.
             let excess = all.len().saturating_sub(MAX_MESSAGES);
             if excess > 0 {
                 all.truncate(all.len() - excess);
                 self.newer_trimmed = true;
             }
             self.messages = all;
+            if fresh_len > 0 || excess > 0 {
+                changed = true;
+            }
         } else {
-            self.messages = messages;
+            if self.messages != messages {
+                self.messages = messages;
+                changed = true;
+            }
             // a fresh page is the whole truth: a half-streamed message can never
             // finish against it, and the newest end is present again
-            self.streaming.clear();
-            self.pending_activities.clear();
-            self.newer_trimmed = false;
+            if !self.streaming.is_empty() {
+                self.streaming.clear();
+                changed = true;
+            }
+            if !self.pending_activities.is_empty() {
+                self.pending_activities.clear();
+                changed = true;
+            }
+            if self.newer_trimmed {
+                self.newer_trimmed = false;
+                changed = true;
+            }
         }
+        changed
     }
 }
 

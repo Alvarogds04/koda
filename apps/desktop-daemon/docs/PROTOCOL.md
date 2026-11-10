@@ -424,15 +424,23 @@ Everything else (thinking deltas, `turn_end`, `tool_execution_update`, unknown) 
 - Stale `p-*` socket dirs of dead servers (connection refused) are removed at start, with dev/ino checks.
 - `ui_response` and `send` are not tied to the originating client; all clients share one session.
 
-### Client slots (K2-05 U2 follow-up)
+### Client slots (K2-05 U2 follow-up, re-verified)
 
-The cap is **4 clients**: the island's settings window, the chat, one reconnect overlap, and the daemon's
-own health probe (`classifySession`'s hello→ready exchange, used by `abito-island-daemon status` and by the
-island to decide the daemon is alive). The cap counts clients that COMPLETED their handshake and is enforced
-only when a connection's own `hello` is validated — never at TCP-connect time — so the health probe's
-handshake is always answered before any count matters and the probe is never refused by the cap while
-settings and chat are connected. A client refused by the cap is closed silently right after its (validated)
-hello, like every other handshake failure.
+The cap is **4 clients**: the island's settings window, the chat, and one reconnect overlap, with the
+daemon's own health probe (`classifySession`'s hello→ready exchange, used by `abito-island-daemon
+status` and by the island to decide the daemon is alive) always answered. Three rules (F1, re-verify):
+
+- **The cap counts ONLY authenticated live clients** — a set filled when a handshake is admitted and
+  removed synchronously on close/destroy, so a dropped socket frees its slot immediately. Pre-hello
+  connections (the separate bound below) never count against the cap.
+- **The `ready` reply goes on the wire BEFORE the cap is evaluated.** A client the cap refuses
+  receives its `ready` frame first and is then closed silently, like every other refusal — so its
+  classification (the probe reads only that first frame) can never be `refused` by the cap while
+  settings and chat are connected, not even under a burst of concurrent probes.
+- **Pre-hello connections are bounded at connect time by a separate `maxHandshakes` bound (16)**,
+  each also bounded by the handshake timeout: a surplus connect is destroyed silently at connect and
+  is never counted anywhere. A hello'd client admitted by the cap releases its handshake-window
+  bound at admission.
 
 ### History frames (additive, read-only, K2-05 T4 U1)
 

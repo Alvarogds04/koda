@@ -288,22 +288,26 @@ test("rate limit closes a flooding client", async (t) => {
 	await waitFor(() => c.closed);
 });
 
-test("max clients is enforced (at hello: the handshake is answered, then the uncounted client is dropped) (F1)", async (t) => {
+test("max clients is enforced at hello AFTER the ready reply: the probe is always classified (F1)", async (t) => {
 	const { endpoint } = await setup(t, { limits: { maxClients: 1 } });
 	await login(t, endpoint);
 	const second = connect(endpoint);
 	await new Promise((r) => second.socket.once("connect", r));
-	// The cap counts AUTHENTICATED clients and is checked after this client's own hello is
-	// validated: a connect-time refusal used to hit the daemon's health probe (classifySession
-	// holds a real socket through its hello→ready exchange), so `status` reported
-	// stale/endpoint_refused while the settings window and the chat were both connected.
+	// The cap counts ONLY authenticated live clients. The `ready` reply goes on the wire BEFORE
+	// the cap is evaluated, so the daemon's own health probe (classifySession's hello→ready,
+	// which reads only the first frame) is never refused by the cap even when it is full — a
+	// connect-time refusal used to make `status` report stale/endpoint_refused while the
+	// settings window and the chat were both connected. The refused client is closed silently
+	// right after its ready frame, like every other refusal.
 	second.send(hello());
+	await second.wait((f) => f.type === "ready");
 	await waitFor(() => second.closed);
-	assert.equal(second.frames.length, 0, "refused silently, never a ready frame");
+	assert.equal(second.frames.length, 1, "ready first (the probe's classification), then a silent close");
 });
 
-// F1 (verifier): the island's settings window and the chat both stay connected; chat
-// reconnects must be accepted, and a 5th concurrent client is still refused.
+// F1 (re-verify): the island's settings window and the chat both stay connected; chat
+// reconnects must be accepted, and a 5th concurrent client is still refused — but its ready
+// frame always leaves first, so a probe sharing the burst is never left unclassified.
 test("the client cap is 4: a third and a fourth client are accepted, a 5th is refused (F1)", async (t) => {
 	const { endpoint } = await setup(t);
 	const a = await login(t, endpoint);
@@ -315,11 +319,84 @@ test("the client cap is 4: a third and a fourth client are accepted, a 5th is re
 	const fifth = connect(endpoint);
 	await new Promise((r) => fifth.socket.once("connect", r));
 	fifth.send(hello());
+	await fifth.wait((f) => f.type === "ready");
 	await waitFor(() => fifth.closed);
-	assert.equal(fifth.frames.length, 0, "the 5th client is refused");
+	assert.equal(fifth.frames.length, 1, "ready first, then the silent cap refusal");
 	// The four accepted clients keep working.
-	a.send({ type: "status" });
-	await a.wait((f) => f.type === "agent_state");
+	for (const client of [a, b]) {
+		client.send({ type: "status" });
+		await client.wait((f) => f.type === "agent_state");
+	}
+});
+
+// L1 (U2 re-verify): the cap counts ONLY authenticated live clients — pre-hello sockets never
+// count against it — so a burst of concurrent health probes (classifySession's hello→ready,
+// run by `abito-island-daemon status` and by the island) is entirely answered ready while the
+// settings window and the chat are connected: no probe can ever report the daemon
+// stale/endpoint_refused. Each probe reads at least its ready frame; a probe refused by the
+// cap simply gets ready and is closed right after, which classifySession reads as healthy.
+test("settings + chat + a burst of 8 concurrent probes: every probe reads a ready frame", async (t) => {
+	const { endpoint } = await setup(t);
+	const settings = await login(t, endpoint);
+	const chat = await login(t, endpoint);
+	const probes = [];
+	await Promise.all([...Array(8)].map(async (_, i) => {
+		const c = connect(endpoint);
+		t.after(() => c.socket.destroy());
+		await new Promise((r) => c.socket.once("connect", r));
+		c.send(hello());
+		probes[i] = c;
+	}));
+	for (const probe of probes) await probe.wait((f) => f.type === "ready");
+	assert.deepEqual(probes.map((probe) => probe.frames[0].type), Array(8).fill("ready"),
+		"every concurrent probe is classified: its first frame is ready");
+	// and both authenticated clients keep working
+	settings.send({ type: "status" });
+	chat.send({ type: "status" });
+	await settings.wait((f) => f.type === "agent_state");
+	await chat.wait((f) => f.type === "agent_state");
+});
+
+// L1 (U2 re-verify): pre-hello connections have their OWN bound (maxHandshakes; each is also
+// bounded by the handshake timeout). A surplus connect is destroyed silently at connect —
+// never counted anywhere — and the connected authenticated clients are unaffected.
+test("20 pre-hello sockets: the 17th+ are refused at connect, authenticated clients are unaffected", async (t) => {
+	const { endpoint, server } = await setup(t, { limits: { maxHandshakes: 16 } });
+	const settings = await login(t, endpoint);
+	const chat = await login(t, endpoint);
+	const sockets = [];
+	for (let i = 0; i < 20; i += 1) {
+		const socket = net.connect(endpoint);
+		t.after(() => socket.destroy());
+		await new Promise((r) => socket.once("connect", r));
+		sockets.push(socket);
+	}
+	// the first 16 hold their pre-hello slot; the remaining 4 were destroyed at connect
+	await waitFor(() => server.pending.size === 16, 5000);
+	assert.equal(server.pending.size, 16, "the 16th connect was the last one admitted pre-hello");
+	await waitFor(() => sockets.filter((s) => !s.destroyed && !s.readableEnded && s.readyState !== "closed").length <= 16, 5000);
+	// and the two authenticated clients still work
+	for (const c of [settings, chat]) {
+		c.send({ type: "status" });
+		await c.wait((f) => f.type === "agent_state");
+	}
+});
+
+// L1 (U2 re-verify): a dropped socket frees its slots SYNCHRONOUSLY — drop() deletes from
+// every accounting set before the close event ever fires, so the very next hello sees the room.
+test("a dropped client frees its slots immediately", async (t) => {
+	const { endpoint, server } = await setup(t, { limits: { maxClients: 1 } });
+	const first = await login(t, endpoint);
+	assert.equal(first.frames[0].type, "ready");
+	assert.equal(server.auth.size, 1, "the admitted handshake counts");
+	// Server-side drop (the same path every refusal, timeout and overflow uses):
+	server.drop([...server.auth][0]);
+	assert.equal(server.auth.size, 0, "the authenticated slot is free before any close event");
+	assert.equal(server.clients.size, 0, "the socket registry is free too");
+	const next = await login(t, endpoint);
+	assert.equal(next.frames[0].type, "ready", "the very next hello is admitted into the freed slot");
+	next.send({ type: "status" });
+	await next.wait((f) => f.type === "agent_state");
 });
 
 const WIN = process.platform === "win32";

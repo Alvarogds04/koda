@@ -32,10 +32,17 @@ const { pageHistory } = require("./conversations.cjs");
 
 const DEFAULTS = {
 	handshakeMs: 3000,
-	/** F1 (U2 verifier follow-up): the settings window + the chat + one reconnect overlap + the
-	 * daemon's own health probe (classifySession's hello→ready). Only clients that COMPLETED
-	 * their handshake count against the cap, so the probe is never refused at connect time. */
+	/** F1 (U2 re-verify): the cap counts ONLY authenticated live clients (the `auth` set,
+	 * filled when a handshake is admitted and removed synchronously on close/destroy): the
+	 * settings window + the chat + one reconnect overlap. A hello whose admission would
+	 * exceed the cap is still ANSWERED its `ready` first and only then dropped silently,
+	 * so the daemon's own health probe — and any burst of concurrent probes — is classified
+	 * healthy while settings and chat are connected. */
 	maxClients: 4,
+	/** F1 (U2 re-verify): independent bound for PRE-hello connections (each also bounded by
+	 * the handshake timeout): the connect-time client cap was removed in the U2 follow-up,
+	 * which left a connect burst unbounded until its handshake window closed it. */
+	maxHandshakes: 16,
 	framesPerMinute: 240,
 	maxOutboundBytes: 1024 * 1024,
 	askTimeoutMs: 120_000,
@@ -184,6 +191,12 @@ class IslandServer {
 		if (!Number.isSafeInteger(this.opts.historyPage) || this.opts.historyPage < 1) this.opts.historyPage = DEFAULTS.historyPage;
 		this.log = options.log ?? (() => {});
 		this.clients = new Set();
+		// F1 (U2 re-verify): separate accounting, both removed synchronously on close/destroy.
+		// `pending` holds PRE-hello connections (bounded by maxHandshakes); `auth` holds admitted
+		// handshakes and is the ONLY thing maxClients counts. `clients` stays the registry of
+		// every live socket (broadcast, held prompts, shutdown).
+		this.pending = new Set();
+		this.auth = new Set();
 		this.busy = false;
 		this.switching = undefined; // the single in-flight profile/role selection
 		this.authFlow = undefined; // last sign-in flow seen: {flowId, accountId, method, phase}
@@ -375,25 +388,36 @@ class IslandServer {
 	// ----- connections -------------------------------------------------------
 
 	onConnection(socket) {
-		// F1 (U2 verifier follow-up): the cap counts clients that completed their handshake,
-		// and is enforced when this connection's hello is answered (onHello) — never at connect
-		// time. A connect-time refusal answered the daemon's own health probe with a bare close
-		// while the settings window and the chat were connected, so the island was told the
-		// daemon was dead (stale/endpoint_refused) while it was perfectly alive. A probing
-		// socket holds a slot only for its handshake window (handshakeMs, bounded) and the
-		// pre-hello data caps still apply.
+		// F1 (U2 re-verify): two independent bounds. (a) PRE-hello connections are bounded HERE,
+		// at connect, by maxHandshakes — the connect-time client cap was removed in the U2
+		// follow-up, which left a connect burst unbounded until its handshake window closed it,
+		// and a surplus connect is destroyed silently (never counted, nothing sent).
+		// (b) The client cap itself counts only authenticated live clients and is evaluated in
+		// onHello, AFTER the ready reply is on the wire — a probing socket (classifySession's
+		// hello→ready, the island telling the daemon alive) holds a slot only for its handshake
+		// window (handshakeMs, bounded) and its classification can never be refused by the cap
+		// while settings and chat are connected. The pre-hello data caps still apply.
 		if (this.closing) {
+			socket.destroy();
+			return;
+		}
+		if (this.pending.size >= this.opts.maxHandshakes) {
 			socket.destroy();
 			return;
 		}
 		const client = { socket, ready: false, seq: 0, pending: Buffer.alloc(0), frames: 0, windowStart: Date.now(), dead: false };
 		this.clients.add(client);
+		this.pending.add(client);
 		client.handshake = setTimeout(() => this.drop(client), WIN ? Math.min(this.opts.handshakeMs, WIN_HANDSHAKE_MS) : this.opts.handshakeMs);
 		socket.on("error", () => this.drop(client));
 		socket.on("close", () => {
 			clearTimeout(client.handshake);
 			client.dead = true;
+			// every accounting set is freed here too: the close event is the backstop for any
+			// path the synchronous drop() could have missed (they are all idempotent deletes)
 			this.clients.delete(client);
+			this.pending.delete(client);
+			this.auth.delete(client);
 		});
 		socket.on("data", (chunk) => this.onData(client, chunk));
 	}
@@ -401,6 +425,11 @@ class IslandServer {
 	drop(client) {
 		client.dead = true;
 		clearTimeout(client.handshake);
+		// synchronous: a dropped socket frees its slots BEFORE the close event fires, so the
+		// very next hello sees the room (Sets also make the later close event a no-op)
+		this.clients.delete(client);
+		this.pending.delete(client);
+		this.auth.delete(client);
 		client.socket.destroy();
 	}
 
@@ -441,11 +470,14 @@ class IslandServer {
 		// Same silent close for every failure; compare the token even on protocol mismatch.
 		const tokenOk = decoded.frame ? tokensEqual(this.token, decoded.frame.token) : false;
 		if (!decoded.frame || decoded.frame.protocol !== P.PROTOCOL || !tokenOk) return this.drop(client);
-		// F1: authenticated clients count against the cap; the probe (this client) is dropped
-		// only AFTER its hello was validated, so classifySession always gets its ready answer.
-		if (this.clients.size > this.opts.maxClients) return this.drop(client);
-		clearTimeout(client.handshake);
-		client.ready = true;
+		// F1 (U2 re-verify): the `ready` reply goes on the wire BEFORE the cap is evaluated, and
+		// the cap counts ONLY authenticated live clients (`this.auth`, filled here for admitted
+		// handshakes, removed synchronously on close/destroy). The daemon's own health probe
+		// (classifySession's hello→ready) reads only this first frame, so a burst of concurrent
+		// probes is always classified while settings and chat are connected; pre-hello sockets
+		// (bounded separately by maxHandshakes) never count here. A client refused by the cap
+		// gets its ready frame and is then closed silently, like every other refusal.
+		const accepted = this.auth.size < this.opts.maxClients;
 		this.sendTo(client, {
 			type: "ready",
 			protocol: P.PROTOCOL,
@@ -458,6 +490,10 @@ class IslandServer {
 			// (counts and time only); absent once a client acknowledged it.
 			...(this.pendingInterrupted ? { interrupted: this.pendingInterrupted } : {}),
 		});
+		if (!accepted || client.dead) return this.drop(client);
+		clearTimeout(client.handshake);
+		client.ready = true;
+		this.auth.add(client);
 		for (const ask of this.asks.values()) this.sendTo(client, this.askFrame(ask));
 	}
 

@@ -116,8 +116,11 @@ pub struct FrameBuffer {
 
 impl FrameBuffer {
     /// Feed bytes; returns the complete frames (objects) found. LF is the only separator.
-    /// STRICT: the handshake path — an oversized or malformed line is a protocol error,
-    /// never a skip.
+    /// STRICT: an oversized or malformed line is a protocol error, never a skip. This is NOT
+    /// the handshake path — both connections (the unix [`crate::agentconn`] and the Windows
+    /// mirror) handshake AND read with [`FrameBuffer::push_lenient`] — the strict variant
+    /// only serves callers that must fail closed on any noise (the Windows native status
+    /// proof `agentconn_win::verify_session`, which answers a single hello→ready).
     pub fn push(&mut self, bytes: &[u8]) -> Result<Vec<Value>, FrameError> {
         self.pending.extend_from_slice(bytes);
         let mut out = Vec::new();
@@ -138,7 +141,8 @@ impl FrameBuffer {
         Ok(out)
     }
 
-    /// Feed bytes on the POST-HANDSHAKE read path: an oversized line (a hooks broadcast
+    /// Feed bytes on the read path (handshake AND post-handshake: `agentconn.rs:160`/`:368`
+    /// and their Windows mirror use it for both): an oversized line (a hooks broadcast
     /// up to the daemon's own 1 MiB history bound) or a malformed JSON line is SKIPPED —
     /// counted, never buffered past its bound, never fatal — so the connection stays up.
     /// Returns the complete frames found and how many lines were skipped.
