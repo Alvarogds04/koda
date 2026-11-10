@@ -60,10 +60,11 @@ const RECONNECT_GAP: Duration = Duration::from_secs(2);
 /// settle grace of a submitted turn is time-based, not frame-based).
 const KEEPER_TICK: Duration = Duration::from_millis(500);
 
-/// K2-05 T4 U3: the island's ONE chat connection to the daemon engine plus the host that
-/// routes the page verbs over it. Managed app state, created at setup by [`start_conn`].
+/// K2-05 T4 U3: the island's ONE chat connection to the daemon engine plus the feed (the
+/// host that routes the page verbs, and the last view the reader handed over). Managed app
+/// state, created at setup by [`start_conn`].
 pub struct ChatRoute {
-    host: chatclient::ChatHost,
+    feed: Arc<chatclient::ChatFeed>,
     conn: Arc<ChatConn>,
     /// When the last connection attempt started; `None` until the first one.
     last_try: Mutex<Option<Instant>>,
@@ -81,14 +82,16 @@ fn island_dir() -> Option<PathBuf> {
     )
 }
 
-fn connected(conn: &ChatConn) -> bool {
-    conn.view().get("connection").and_then(Value::as_str) == Some("connected")
+/// F7: the keeper's question is answered from the view the reader handed over, never by
+/// serializing the whole chat state again.
+fn connected(route: &ChatRoute) -> bool {
+    route.feed.connected()
 }
 
 /// Connect (or reconnect) when the chat is not connected and the gap elapsed. Blocking
 /// (bounded by the handshake wait): callers run it off the main thread.
 fn try_reconnect(route: &ChatRoute, gap: Duration) {
-    if QUITTING.load(Ordering::SeqCst) || connected(&route.conn) {
+    if QUITTING.load(Ordering::SeqCst) || connected(route) {
         return;
     }
     let Ok(_single) = route.connecting.try_lock() else { return };
@@ -105,12 +108,17 @@ fn try_reconnect(route: &ChatRoute, gap: Duration) {
 }
 
 /// Setup: ONE chat connection per app, next to the settings `AgentConn` (the daemon allows
-/// two clients), reconnecting in the background. Its frames re-publish `chat:state`.
+/// two clients), reconnecting in the background. Its frames re-publish `chat:state` through
+/// the production reader callback ([`chatclient::ChatFeed::reader_callback`], covered by
+/// `tests/chat_daemon.rs` against the real daemon).
 pub fn start_conn(app: &AppHandle) {
     let emitter = app.clone();
-    let conn = Arc::new(ChatConn::new(move |_view| publish_chat(&emitter)));
+    let feed = chatclient::ChatFeed::new(move |projection| publish_projection(&emitter, projection));
+    let conn = Arc::new(ChatConn::new(chatclient::ChatFeed::reader_callback(&feed)));
+    let link: Arc<dyn chatclient::ChatLink + Send + Sync> = conn.clone();
+    feed.bind(Arc::downgrade(&link));
     app.manage(ChatRoute {
-        host: chatclient::ChatHost::new(),
+        feed,
         conn,
         last_try: Mutex::new(None),
         connecting: Mutex::new(()),
@@ -121,7 +129,7 @@ pub fn start_conn(app: &AppHandle) {
         while !QUITTING.load(Ordering::SeqCst) {
             let route = keeper.state::<ChatRoute>();
             try_reconnect(&route, RECONNECT_GAP);
-            if route.host.has_live() {
+            if route.feed.host().has_live() {
                 publish_chat(&keeper);
             }
             std::thread::sleep(KEEPER_TICK);
@@ -140,7 +148,8 @@ pub fn stop_conn(app: &AppHandle) {
 /// disconnected projection before setup managed the route.
 fn conversation_view(app: &AppHandle) -> Value {
     match app.try_state::<ChatRoute>() {
-        Some(route) => route.host.project(&route.conn.view(), now_ms() as u64),
+        // F7: the view the reader handed over, never a fresh serialization of the state
+        Some(route) => route.feed.project(now_ms() as u64),
         None => {
             let off = abito_island::chatclient::ChatState::disconnected(abito_island::agentclient::Reason::NoDaemon);
             chatclient::ChatHost::new().project(&serde_json::to_value(off).unwrap_or(Value::Null), now_ms() as u64)
@@ -152,7 +161,11 @@ fn conversation_view(app: &AppHandle) -> Value {
 /// view, the chat geometry (from the ONE Rust constant) and the display name. `target` is
 /// null (the engine owns the model) and `producer.pi` is the real engine state.
 pub fn chat_view(app: &AppHandle, state: &AppState) -> Value {
-    let mut v = conversation_view(app);
+    with_page_keys(state, conversation_view(app))
+}
+
+/// The page keys around one conversation projection.
+fn with_page_keys(state: &AppState, mut v: Value) -> Value {
     v["display_name"] = json!(crate::settingshost::display_name(&state.settings));
     let chat_open = state.core.lock().expect("core lock").chat
         && *state.phase.lock().expect("phase lock") == IslandState::Expanded;
@@ -168,12 +181,24 @@ pub fn chat_view(app: &AppHandle, state: &AppState) -> Value {
     v
 }
 
+/// Re-publish `chat:state` (the keeper while a turn is live, view changes, resizes): the
+/// feed projects the last handed-over view (and sends the host's own history refresh when
+/// a turn settled), never a fresh serialization of the chat state (F7).
 pub fn publish_chat(app: &AppHandle) {
+    let projection = match app.try_state::<ChatRoute>() {
+        Some(route) => route.feed.publish(now_ms() as u64),
+        None => conversation_view(app),
+    };
+    publish_projection(app, projection);
+}
+
+/// Emit one projection as `chat:state` (skipping identical repeats).
+fn publish_projection(app: &AppHandle, projection: Value) {
     if QUITTING.load(Ordering::SeqCst) {
         return;
     }
     let state = app.state::<AppState>();
-    let v = chat_view(app, &state);
+    let v = with_page_keys(&state, projection);
     if let Some(route) = app.try_state::<ChatRoute>() {
         // `seq` advances on every projection: compare without it so identical
         // reconnect noise is not re-emitted
@@ -269,7 +294,8 @@ pub async fn chat_action(
             .try_state::<ChatRoute>()
             .ok_or_else(|| BridgeError::denied("chat unavailable"))?;
         route
-            .host
+            .feed
+            .host()
             .route(&*route.conn, &caller, &routed_command, now_ms() as u64)
             .map_err(chat_error)
     })
@@ -307,47 +333,13 @@ pub async fn chat_action(
     }
 }
 
-/// #343 — the island root that owns the attachments workspace:
-/// `ABITO_ISLAND_DIR` (absolute) or the user's `~/.abito-island`, same rule
-/// the agent connection uses. `None` = the island does not exist yet.
-fn island_root() -> Option<std::path::PathBuf> {
-    abito_island::agentconn::island_root(
-        std::env::var("ABITO_ISLAND_DIR").ok().as_deref(),
-        std::env::var("HOME").ok().as_deref(),
-    )
-}
+// K2-05 T4 U3 F8: attachments are refused until the attachments unit (L11 2a: daemon-side
+// uploads like Gentle Dot). Both commands keep their gates (island window, origin, rate)
+// and then refuse with the fixed `attachments_unavailable` (`chatclient::attachments_off()`):
+// nothing is read, nothing is written into the island's uploads folder, and a native drop is
+// never consumed.
 
-fn attach_error(e: chat::ChatError) -> BridgeError {
-    BridgeError { code: e.code, message: e.safe_message }
-}
-
-async fn store_attachment<F>(work: F) -> Result<Value, BridgeError>
-where
-    F: FnOnce(&std::path::Path) -> Result<chat::Attachment, chat::ChatError> + Send + 'static,
-{
-    let island = island_root().ok_or_else(|| {
-        attach_error(chat::ChatError::invalid_input(
-            "La carpeta de trabajo de Koda todavía no existe: abrí el chat cuando el motor esté disponible.",
-        ))
-    })?;
-    tauri::async_runtime::spawn_blocking(move || {
-        let dir = abito_island::uploads::attachments_dir(&island).map_err(attach_error)?;
-        let stored = work(&dir).map_err(attach_error)?;
-        serde_json::to_value(stored).map_err(|_| BridgeError::denied("attach failed"))
-    })
-    .await
-    .map_err(|_| BridgeError::denied("attach aborted"))?
-}
-
-/// #343 — `chat_attach`: one file DROPPED into the chat. The page only ever
-/// sends the path it received from the window's drag-drop event: Rust
-/// consumes it ONE-SHOT from the NATIVE drop set recorded by the main
-/// window's drag-drop event (see `NATIVE_DROPS`) — a path the OS never
-/// dropped is refused before anything is read. Then the path is read
-/// (capped, symlinks refused), validated against the allowlist and copied
-/// into the island's own uploads directory. The original path is never
-/// stored or referenced afterwards. Same gate and rate limit as every chat
-/// command.
+/// #343 — `chat_attach`: one file DROPPED into the chat. F8: refused.
 #[tauri::command]
 pub async fn chat_attach(
     webview: tauri::Webview,
@@ -358,36 +350,12 @@ pub async fn chat_attach(
     let url = webview.url().map(|u| u.to_string()).unwrap_or_default();
     bridge::sender_ok(webview.label(), &url)?;
     state.chat_rate.lock().expect("chat rate lock").check(now_ms())?;
-    let path = payload
-        .get("path")
-        .and_then(Value::as_str)
-        .filter(|p| !p.is_empty())
-        .ok_or_else(|| attach_error(chat::ChatError::invalid_input("Pedido de archivo inválido.")))?
-        .to_string();
-    // The page may only attach a path the OS actually dropped natively:
-    // consume it one-shot from the native drop set, refusing anything else
-    // BEFORE any read or write happens.
-    if !NATIVE_DROPS
-        .lock()
-        .expect("native drop paths lock")
-        .consume(std::path::Path::new(&path), now_ms() as u64)
-    {
-        return Err(attach_error(chat::ChatError::invalid_input(
-            "Ese archivo no llegó arrastrado a la ventana.",
-        )));
-    }
-    store_attachment(move |dir| {
-        let (name, bytes) = abito_island::uploads::read_dropped(std::path::Path::new(&path))?;
-        abito_island::uploads::attach(dir, &name, &bytes)
-    })
-    .await
+    let _ = payload;
+    Err(chat_error(chatclient::attachments_off()))
 }
 
-/// #343 — `chat_attach_data`: one file PICKED in the composer. The page
-/// sends raw bytes through Tauri's raw invoke (an ArrayBuffer payload): a
-/// one-line JSON header `{{"name":"…"}}`, LF, then the file bytes. Rust
-/// validates against the SAME allowlist and stores into the SAME uploads
-/// directory as `chat_attach` — the page never names a storage path.
+/// #343 — `chat_attach_data`: one file PICKED in the composer (raw bytes). F8: refused; the body
+/// is never parsed or stored.
 #[tauri::command]
 pub async fn chat_attach_data(
     webview: tauri::Webview,
@@ -398,17 +366,8 @@ pub async fn chat_attach_data(
     let url = webview.url().map(|u| u.to_string()).unwrap_or_default();
     bridge::sender_ok(webview.label(), &url)?;
     state.chat_rate.lock().expect("chat rate lock").check(now_ms())?;
-    let body = match request.body() {
-        tauri::ipc::InvokeBody::Raw(bytes) => bytes.clone(),
-        tauri::ipc::InvokeBody::Json(_) => {
-            return Err(attach_error(chat::ChatError::invalid_input("Pedido de archivo inválido.")));
-        }
-    };
-    store_attachment(move |dir| {
-        let (name, bytes) = abito_island::uploads::split_raw_body(&body)?;
-        abito_island::uploads::attach(dir, &name, bytes)
-    })
-    .await
+    let _ = request;
+    Err(chat_error(chatclient::attachments_off()))
 }
 
 /// Initialize private local history; probes are memory-only unless explicitly isolated.

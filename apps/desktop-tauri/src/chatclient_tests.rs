@@ -908,3 +908,63 @@ fn a_history_page_that_changes_nothing_never_bumps_the_chat_revision() {
     st.apply(&json!({"type":"history","messages":[{"id":"m1","role":"user","text":"hola"},{"id":"m2","role":"assistant","text":"Ka"}],"hasEarlier":false}));
     assert!(st.revision() > settled, "a new page bumps");
 }
+
+// ---- K2-05 T4 U3 F5/R3/F4: the error ledger, the read answers, the loaded flag ----------------
+
+#[test]
+fn errors_are_attributed_to_the_oldest_waiting_command_that_can_answer_them() {
+    let mut st = ChatState::connected();
+    st.apply(&json!({"type":"agent_state","busy":false,"status":"ready","paused":false}));
+    st.command("main", &json!({"action":"chat_history"})).unwrap();
+    st.command("main", &send_payload("hola")).unwrap();
+    // never a send's code: lastError moves, turnError does not
+    st.apply(&json!({"type":"error","code":"unknown_ask"}));
+    st.apply(&json!({"type":"error","code":"not_busy"}));
+    assert_eq!(view(&st)["turnError"], json!({"code":null,"n":0}));
+    assert_eq!(view(&st)["lastError"]["n"], json!(2));
+    // FIFO: the history read (older) takes the first `unavailable`
+    st.apply(&json!({"type":"error","code":"unavailable"}));
+    assert_eq!(view(&st)["turnError"]["n"], json!(0));
+    assert_eq!(view(&st)["reads"], json!({"answered":0,"failed":1}));
+    st.apply(&json!({"type":"error","code":"unavailable"}));
+    assert_eq!(view(&st)["turnError"], json!({"code":"unavailable","n":1}));
+    // nothing waits any more: a stray error is nobody's
+    st.apply(&json!({"type":"error","code":"failed"}));
+    assert_eq!(view(&st)["turnError"]["n"], json!(1));
+}
+
+#[test]
+fn an_accepted_turn_with_output_no_longer_claims_errors_but_a_silent_one_claims_failed() {
+    let mut st = ChatState::connected();
+    st.command("main", &send_payload("hola")).unwrap();
+    st.apply(&json!({"type":"agent_state","busy":true,"status":"ready","paused":false}));
+    st.apply(&json!({"type":"message_delta","messageId":"m1","text":"x"}));
+    st.apply(&json!({"type":"agent_state","busy":false,"status":"ready","paused":false}));
+    st.apply(&json!({"type":"error","code":"failed"}));
+    assert_eq!(view(&st)["turnError"]["n"], json!(0), "a turn that produced output is done");
+    // a prompt the engine rejected: busy then quiet with nothing, then `failed`
+    st.command("main", &send_payload("otra")).unwrap();
+    st.apply(&json!({"type":"agent_state","busy":true,"status":"ready","paused":false}));
+    st.apply(&json!({"type":"agent_state","busy":false,"status":"ready","paused":false}));
+    st.apply(&json!({"type":"error","code":"busy"}));
+    assert_eq!(view(&st)["turnError"]["n"], json!(0), "only `failed` can follow a settled turn");
+    st.apply(&json!({"type":"error","code":"failed"}));
+    assert_eq!(view(&st)["turnError"], json!({"code":"failed","n":1}));
+}
+
+#[test]
+fn requested_pages_count_as_answers_and_the_first_history_marks_the_view_loaded() {
+    let mut st = ChatState::connected();
+    assert_eq!(view(&st)["historyLoaded"], json!(false));
+    st.apply(&json!({"type":"history","messages":[],"hasEarlier":false}));
+    assert_eq!(view(&st)["historyLoaded"], json!(true), "an empty chat is a loaded chat");
+    assert_eq!(view(&st)["reads"]["answered"], json!(0), "an unsolicited page answers nothing");
+    st.command("main", &json!({"action":"chat_earlier","before":"s0-4"})).unwrap();
+    st.apply(&json!({"type":"history","messages":[],"hasEarlier":false}));
+    assert_eq!(view(&st)["reads"]["answered"], json!(0), "a broadcast history never answers an earlier read");
+    let before = st.revision();
+    st.apply(&json!({"type":"earlier","before":"s0-4","messages":[],"hasEarlier":false}));
+    assert_eq!(view(&st)["reads"]["answered"], json!(1), "an identical page still answers the read (R3)");
+    assert!(st.revision() > before, "and the answer is an event the reader emits");
+    assert_eq!(view(&ChatState::disconnected(Reason::Lost))["historyLoaded"], json!(false));
+}

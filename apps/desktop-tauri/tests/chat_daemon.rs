@@ -13,7 +13,7 @@
 
 use abito_island::agentconn::ChatConn;
 use abito_island::chat::{parse_command, Command};
-use abito_island::chatclient::{ChatHost, ChatLink, Routed, CHAT_CONVERSATION_ID};
+use abito_island::chatclient::{ChatFeed, ChatHost, ChatLink, Routed, CHAT_CONVERSATION_ID};
 use serde_json::{json, Value};
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
@@ -177,12 +177,13 @@ fn sweep_abandoned() {
     }
 }
 
-/// The chat as the island runs it: one `ChatConn`, one `ChatHost`, and every connection
-/// change re-projected like `chathost::publish_chat` (the `chat:state` emissions are
-/// recorded so the test can see what the page would have received).
+/// The chat as the island runs it (`chathost::start_conn`): one `ChatConn` whose reader
+/// callback is the PRODUCTION `ChatFeed::reader_callback` (R2), bound back to the
+/// connection for the host's own history refresh; the `chat:state` emissions are recorded
+/// so the test can see what the page would have received.
 struct Chat {
-    host: Arc<ChatHost>,
-    conn: ChatConn,
+    feed: Arc<ChatFeed>,
+    conn: Arc<ChatConn>,
     emitted: Arc<Mutex<Vec<Value>>>,
 }
 
@@ -192,27 +193,27 @@ fn now_ms() -> u64 {
 
 impl Chat {
     fn connect(island: &Island) -> Chat {
-        let host = Arc::new(ChatHost::new());
         let emitted = Arc::new(Mutex::new(Vec::new()));
-        let (h, e) = (host.clone(), emitted.clone());
-        let conn = ChatConn::new(move |view| {
-            let projected = h.project(&view, now_ms());
-            e.lock().unwrap().push(projected);
-        });
+        let e = emitted.clone();
+        let feed = ChatFeed::new(move |projected| e.lock().unwrap().push(projected));
+        let conn = Arc::new(ChatConn::new(ChatFeed::reader_callback(&feed)));
+        let link: Arc<dyn ChatLink + Send + Sync> = conn.clone();
+        feed.bind(Arc::downgrade(&link));
         conn.connect(&island.root);
         assert_eq!(conn.view()["connection"], json!("connected"), "the chat connection handshakes");
-        Chat { host, conn, emitted }
+        assert!(feed.connected(), "the reader handed the connected view to the feed");
+        Chat { feed, conn, emitted }
     }
 
     /// One page call, exactly as `chat_action` does it: the page payload through
     /// `chat::parse_command`, then the route with the caller's window label.
     fn action(&self, caller: &str, payload: Value) -> Result<Routed, String> {
         let cmd: Command = parse_command(&payload).map_err(|e| e.code)?;
-        self.host.route(&self.conn, caller, &cmd, now_ms()).map_err(|e| e.code)
+        self.feed.host().route(&*self.conn, caller, &cmd, now_ms()).map_err(|e| e.code)
     }
 
     fn state(&self) -> Value {
-        self.host.project(&ChatLink::view(&self.conn), now_ms())
+        self.feed.host().project(&ChatLink::view(&*self.conn), now_ms())
     }
 
     fn wait(&self, what: &str, pred: impl Fn(&Value) -> bool) -> Value {
@@ -222,7 +223,7 @@ impl Chat {
             if pred(&v) {
                 return v;
             }
-            assert!(Instant::now() < end, "timed out waiting for {what}; last chat:state: {v}; daemon chat view: {}", ChatLink::view(&self.conn));
+            assert!(Instant::now() < end, "timed out waiting for {what}; last chat:state: {v}; daemon chat view: {}", ChatLink::view(&*self.conn));
             std::thread::sleep(Duration::from_millis(40));
         }
     }
@@ -366,4 +367,34 @@ fn a_missing_daemon_reads_as_an_unavailable_engine_and_refuses_the_send() {
     let cmd = parse_command(&json!({"action": "submit", "text": "hola", "client_request_id": "req-chat-0004"})).unwrap();
     assert_eq!(host.route(&conn, "main", &cmd, now_ms()).unwrap_err().code, "engine_unavailable");
     assert_eq!(host.project(&ChatLink::view(&conn), now_ms())["turns"], json!([]));
+}
+
+/// F4 (verifier mwanung2-19-7bou): a daemon that goes away mid-turn interrupts the turn
+/// (never `completed` with an empty reply) and the island keeps showing the last known
+/// history instead of shrinking the view to its own turns.
+#[test]
+fn a_daemon_stop_mid_turn_interrupts_the_turn_and_keeps_the_last_known_history() {
+    let mut island = Island::start("--prompt-holds", false);
+    let chat = Chat::connect(&island);
+    chat.wait("the engine is ready", |v| v["producer"]["pi"] == json!("ready"));
+    let file = island.session_file();
+    let mut lines = session_line("user", "primera");
+    lines.push_str(&session_line("assistant", "respuesta primera"));
+    std::fs::write(&file, lines).unwrap();
+    chat.action("main", json!({"action": "history", "conversation_id": CHAT_CONVERSATION_ID, "before": null})).unwrap();
+    chat.wait("the daemon history", |v| v["turns"].as_array().is_some_and(|t| t.len() == 1));
+    let Routed::Answer(accepted) = chat.action("main", json!({"action": "submit", "text": "segunda", "client_request_id": "req-chat-0005"})).unwrap() else {
+        panic!("submit answers the page")
+    };
+    chat.wait("the turn runs", |v| v["producer"]["pi"] == json!("busy"));
+    island.stop_daemon();
+    let v = chat.wait("the turn is interrupted", |v| last_turn(v)["state"] == json!("error"));
+    let turns = v["turns"].as_array().unwrap();
+    assert_eq!(turns.len(), 2, "the last known history stays: {v}");
+    assert_eq!(turns[0]["user_text"], json!("primera"));
+    assert_eq!(turns[0]["reply"], json!("respuesta primera"));
+    assert_eq!(turns[1]["turn_id"], accepted["turn_id"]);
+    assert_eq!(turns[1]["error"]["code"], json!("interrupted"));
+    assert_eq!(v["producer"]["pi"], json!("unavailable"));
+    assert!(!chat.feed.connected(), "the keeper sees the loss from the handed-over view");
 }
