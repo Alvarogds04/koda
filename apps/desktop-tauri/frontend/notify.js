@@ -67,6 +67,21 @@
   let budget = null;
   let budgetSeq = 0;
   let renderedId = null;
+  // K2-08 S4: a key or click answers only the request that was RENDERED. When the head changes (answered, expired, replaced) input
+  // is ignored for HEAD_GUARD_MS, so a Y pressed as A resolves can never approve B, which appears under the same keys and buttons.
+  // The guard is ARMED whenever a head first becomes visible: a swap, the first head after an empty state, and every time a head comes
+  // (back) on screen. A monotonic clock (performance.now) so a wall-clock jump never shortens or skips it.
+  const HEAD_GUARD_MS = 500;
+  const tick = () => (typeof performance !== 'undefined' && performance && typeof performance.now === 'function' ? performance.now() : Date.now());
+  let headChangedAt = -Infinity, visibleId = null;
+  const inHeadGuard = () => tick() - headChangedAt < HEAD_GUARD_MS;
+  // Focus rules (S4/S5): a request never takes the focus out of a field the human is typing in outside the take-over, and keys answer
+  // the card only when the focus is inside #question or on the page itself (never from another editable field or control).
+  const editable = e => !!e && (/^(INPUT|TEXTAREA|SELECT)$/.test(e.tagName || '') || e.isContentEditable === true);
+  const inCard = e => !!e && typeof root.contains === 'function' && root.contains(e);
+  const focusFree = e => !e || e === document.body || e === document.documentElement;
+  const keysReachCard = () => { const at = document.activeElement; return focusFree(at) || inCard(at); };
+  let answered = null; // { id, role } of the last answer sent, for «Permitido. Siguiente: …» (S6)
   const limiter = N.createCueLimiter();
   const revealGate = N.createRevealGate ? N.createRevealGate() : null;
 
@@ -121,24 +136,53 @@
     const on = !!a && !isStructured(n);
     approvalEl.hidden = !on;
     root.dataset.look = on ? 'approval' : '';
-    if (!on) return false;
+    if (!on) { approvalFor = null; return false; }
     $('question-approval-title').textContent = a.title;
     const cmd = $('question-approval-cmd'); cmd.textContent = a.command; cmd.title = a.command;
     $('question-approval-note').hidden = !a.secretsHidden;
-    const box = $('question-approval-actions'); box.textContent = '';
+    const box = $('question-approval-actions');
+    // the buttons are rebuilt on every render: keep the focus on the same action OF THE SAME REQUEST (never carried to a new head)
+    const had = approvalFor === n.id && box.contains && box.contains(document.activeElement) ? document.activeElement.dataset.index : null;
+    box.textContent = '';
+    const forId = n.id; // S4: a button answers only the request it was drawn for
+    approvalFor = forId;
     for (const act of a.actions) {
       const b = el('button', `q-approval-btn q-${act.role}`);
       b.type = 'button'; b.disabled = !view.controlsEnabled; b.dataset.index = String(act.index);
       b.append(el('span', 'q-label', act.label), el('span', 'q-kbd', act.key));
       b.setAttribute('aria-label', `${act.label} (${act.key})`);
       b.setAttribute('aria-keyshortcuts', act.key);
-      b.addEventListener('click', event => choose(event, act.index));
+      b.addEventListener('click', event => { if (renderedId === forId) choose(event, act.index); });
       box.append(b);
+      if (had !== null && had === b.dataset.index) b.focus();
     }
     return true;
   }
-  let rowsKey = '';
-  function rowNode(r, enabled) {
+  // S5: a new head puts the focus on «Rechazar», never on the approve button (an extra Enter must not authorize)
+  let approvalFor = null; // the request the approval buttons were last built for
+  function focusReject() {
+    if (root.inert || !onScreen() || approvalEl.hidden) return false;
+    const at = document.activeElement;
+    if (editable(at) && !inCard(at)) return true; // the human is typing elsewhere: the head's focus turn is spent without moving it
+    const reject = [...$('question-approval-actions').querySelectorAll('button')].find(b => b.className.split(' ').includes('q-reject'));
+    if (reject) reject.focus();
+    return !!reject;
+  }
+  let focusedId = null; // the head that already got its focus (a new head, or the first time it is on screen)
+  // S3: the next head slides in from the right (island-nusa.css; none with reduced motion). Re-armed on every swap.
+  function slideIn() {
+    delete root.dataset.enter;
+    void root.offsetWidth;
+    root.dataset.enter = 'next';
+  }
+  function headSay(n) {
+    const last = answered; answered = null;
+    if (last && last.id !== n.id) return N.nextAnnouncement(last.role, n);
+    const look = isStructured(n) ? null : approvalOf(n);
+    return N.headAnnouncement(n, snapshot, look) || `${N.askedBy(n)}: ${n.text}`;
+  }
+  let rowsKey = '', rowsFor = null; // rowsFor: the request the numbered rows were last built for
+  function rowNode(r, enabled, forId) {
     const b = el('button', r.kind === 'other' ? 'q-option q-other' : 'q-option');
     b.type = 'button'; b.disabled = !enabled; b.dataset.number = String(r.number); b.dataset.kind = r.kind;
     if (r.kind === 'option') b.dataset.index = String(r.index);
@@ -154,21 +198,23 @@
     b.setAttribute('aria-label', r.description ? `${r.number}. ${r.label}. ${r.description}` : `${r.number}. ${r.label}`);
     b.setAttribute('aria-keyshortcuts', String(r.number));
     b.title = r.label;
-    b.addEventListener('click', event => activateRow(event, r));
+    b.addEventListener('click', event => { if (renderedId === forId) activateRow(event, r); }); // S4: a row answers only its own request
     return b;
   }
   function renderOptions(n, enabled) {
-    if (renderApproval(n, { controlsEnabled: enabled })) { rowsKey = ''; optionsEl.textContent = ''; return; }
+    if (renderApproval(n, { controlsEnabled: enabled })) { rowsKey = ''; rowsFor = null; optionsEl.textContent = ''; return; }
     const item = stepItem(n), draft = stepDraft(n);
-    if (!item) { rowsKey = ''; optionsEl.textContent = ''; if (n.form && wizard && wizard.review) renderSummary(n); return; }
+    if (!item) { rowsKey = ''; rowsFor = null; optionsEl.textContent = ''; if (n.form && wizard && wizard.review) renderSummary(n); return; }
     const model = N.optionRows(item, draft);
     // rebuilt only when what it shows changes: a rebuild between mouse-down and mouse-up would swallow the click
     const key = [n.id, n.form ? wizard.step : 0, enabled, model.rows.map(r => `${r.checked ? 1 : 0}${r.label}`).join('|')].join(':');
     if (key === rowsKey) return;
     rowsKey = key;
-    const focused = optionsEl.contains && optionsEl.contains(document.activeElement) ? document.activeElement.dataset && document.activeElement.dataset.number : null;
+    // the focus comes back to the same row only for the SAME request: row N of a new head never inherits it (S4)
+    const focused = rowsFor === n.id && optionsEl.contains && optionsEl.contains(document.activeElement) ? document.activeElement.dataset && document.activeElement.dataset.number : null;
     optionsEl.textContent = '';
-    for (const r of model.rows) optionsEl.append(rowNode(r, enabled));
+    rowsFor = n.id;
+    for (const r of model.rows) optionsEl.append(rowNode(r, enabled, n.id));
     if (focused && optionsEl.querySelectorAll) { const back = [...optionsEl.querySelectorAll('button')].find(b => b.dataset.number === focused); if (back) back.focus(); }
   }
   function renderSummary(n) {
@@ -183,7 +229,7 @@
   // one row was activated (trusted click, or the digit that names it)
   function activateRow(event, r) {
     const n = snapshot && N.fromPending(snapshot.pending);
-    if (!n || !N.trusted(event) || !onScreen()) return;
+    if (!n || !N.trusted(event) || !onScreen() || inHeadGuard() || n.id !== renderedId) return;
     const item = stepItem(n);
     if (!item) return;
     if (r.kind === 'other') { toggleOtherRow(n); return; }
@@ -192,7 +238,7 @@
   }
   function pick(index) {
     const n = snapshot && N.fromPending(snapshot.pending);
-    if (!n || !onScreen()) return;
+    if (!n || !onScreen() || inHeadGuard() || n.id !== renderedId) return;
     if (n.form) wizard = N.formReduce(n, wizard, { type: 'toggle', index });
     else multiDraft = N.toggleOption(stepItem(n), multiDraft, index);
     render();
@@ -251,7 +297,7 @@
   function cardKey(event) {
     const n = snapshot && N.fromPending(snapshot.pending);
     const view = current();
-    if (!n || !view.controlsEnabled || root.inert || !onScreen()) return false;
+    if (!n || !view.controlsEnabled || root.inert || !onScreen() || inHeadGuard()) return false;
     const ctx = keyContext(n);
     const intent = N.keyIntent(event, ctx);
     if (!intent) return false;
@@ -280,9 +326,9 @@
     if (intent.type === 'send') sendStructured(event, N.formPayload(n, wizard));
   }
   function sendStructured(event, payload) {
-    if (!N.trusted(event) || !onScreen() || !payload) return;
+    if (!N.trusted(event) || !onScreen() || !payload || inHeadGuard() || payload.id !== renderedId) return;
     const view = current();
-    if (!view.notification || !view.controlsEnabled) return;
+    if (!view.notification || !view.controlsEnabled || view.notification.id !== renderedId) return;
     const sent = pushSeq;
     inFlight = true; render();
     action(payload).then(next => finish(next, sent), error => { finish(null, sent); say((error && error.message) || 'No se pudo enviar.'); });
@@ -323,12 +369,18 @@
     // 200px height with the mascot 26px lower and the «?» badge (screen gate). Every change of data-question now tells it.
     announceShown();
     if (n) {
-      if (renderedId !== n.id) {
+      const fresh = renderedId !== n.id, swapped = fresh && renderedId !== null;
+      if (fresh) {
         renderedId = n.id; textEl.value = ''; budget = null; multiDraft = N.newDraft(); wizard = n.form ? N.formStart(n) : null; rowsKey = '';
-        say(`${N.askedBy(n)}: ${n.text}`);
+        say(headSay(n));
       }
       body.textContent = n.text;
       renderOptions(n, view.controlsEnabled); // keyed: rebuilt only when what it shows changes
+      // S4: a head that FIRST becomes visible (a swap, the first after an empty state, or coming back on screen) arms the guard
+      if (showing && visibleId !== n.id) { visibleId = n.id; headChangedAt = tick(); }
+      if (!showing) visibleId = null;
+      if (focusedId !== n.id && focusReject()) focusedId = n.id;
+      if (swapped) slideIn();
       // #266 S2: the visible asker, slug-derived via textContent only; display-only,
       // so a page without the chip must still answer (same guard style as island.js).
       if (askerName) askerName.textContent = N.askerLine(n); // Coucou's who-row: bold name + «pregunta» (askedBy stays the announcement text)
@@ -341,7 +393,8 @@
       expiryEl.setAttribute('aria-label', `Vence en ${N.expiryWord(n.expiresAt, Date.now())}`);
       expiryEl.dataset.tone = view.kind === 'expired' ? 'faint' : 'sun';
     } else {
-      renderedId = null; rowsKey = ''; body.textContent = ''; if (askerName) askerName.textContent = ''; if (queueEl) { queueEl.textContent = ''; queueEl.hidden = true; } optionsEl.textContent = ''; freeform.hidden = true; expiryEl.hidden = true; skipEl.disabled = true;
+      answered = null; focusedId = null; visibleId = null; delete root.dataset.enter;
+      renderedId = null; rowsKey = ''; rowsFor = null; approvalFor = null; body.textContent = ''; if (askerName) askerName.textContent = ''; if (queueEl) { queueEl.textContent = ''; queueEl.hidden = true; } optionsEl.textContent = ''; freeform.hidden = true; expiryEl.hidden = true; skipEl.disabled = true;
     }
     paintCard(n, view);
     skipEl.hidden = !n; // no pending notification: nothing to skip (outcome states show only icon + word)
@@ -433,27 +486,31 @@
   let pushSeq = 0;
   function choose(event, index) {
     if (!N.trusted(event)) return;
-    if (!onScreen()) return;
+    if (!onScreen() || inHeadGuard()) return;
     const view = current();
     if (!view.notification || !view.controlsEnabled) return;
     const sent = pushSeq;
+    const look = approvalOf(view.notification), act = look && look.actions.find(a => a.index === index);
+    answered = { id: view.notification.id, role: act ? act.role : 'option' };
     inFlight = true; render();
-    action({ action: 'answer', id: view.notification.id, index }).then(next => finish(next, sent), error => { finish(null, sent); say((error && error.message) || 'No se pudo enviar.'); });
+    // S6: a failed send was never an answer: no «Permitido. Siguiente: …» for it
+    action({ action: 'answer', id: view.notification.id, index }).then(next => finish(next, sent), error => { answered = null; finish(null, sent); say((error && error.message) || 'No se pudo enviar.'); });
   }
   function decline(event) {
     if (!N.trusted(event)) return;
-    if (!onScreen()) return;
+    if (!onScreen() || inHeadGuard()) return;
     const view = current();
     if (!view.notification || !view.controlsEnabled) return;
     const sent = pushSeq;
+    answered = { id: view.notification.id, role: 'decline' };
     inFlight = true; render();
-    action({ action: 'decline', id: view.notification.id }).then(next => finish(next, sent), error => { finish(null, sent); say((error && error.message) || 'No se pudo omitir.'); });
+    action({ action: 'decline', id: view.notification.id }).then(next => finish(next, sent), error => { answered = null; finish(null, sent); say((error && error.message) || 'No se pudo omitir.'); });
   }
   function submitText(event) {
     event.preventDefault();
-    if (!N.trusted(event) || !onScreen()) return;
+    if (!N.trusted(event) || !onScreen() || inHeadGuard()) return;
     const view = current();
-    if (!view.notification || !view.controlsEnabled || !N.canSendText(budget, textEl.value)) return;
+    if (!view.notification || !view.controlsEnabled || view.notification.id !== renderedId || !N.canSendText(budget, textEl.value)) return;
     const text = textEl.value;
     const sent = pushSeq;
     inFlight = true; render();
@@ -461,10 +518,12 @@
       error => { finish(null, sent); say((error && error.message) || 'No se pudo enviar.'); });
   }
   skipEl.addEventListener('click', decline);
-  prevEl.addEventListener('click', event => { const n = structuredNow(); if (n && N.trusted(event) && onScreen()) runIntent(event, n, { type: 'prev' }); });
+  // S4: «Atrás» / «Siguiente» / «Hecho» / «Enviar» act only on the rendered request and never inside the head-change guard
+  const structuredAct = event => { const n = structuredNow(); return n && n.id === renderedId && N.trusted(event) && onScreen() && !inHeadGuard() ? n : null; };
+  prevEl.addEventListener('click', event => { const n = structuredAct(event); if (n) runIntent(event, n, { type: 'prev' }); });
   primaryEl.addEventListener('click', event => {
-    const n = structuredNow();
-    if (n && N.trusted(event) && onScreen() && !primaryEl.disabled) runIntent(event, n, { type: primaryEl.dataset.kind || 'next' });
+    const n = structuredAct(event);
+    if (n && !primaryEl.disabled) runIntent(event, n, { type: primaryEl.dataset.kind || 'next' });
   });
   freeform.addEventListener('submit', submitText);
   const structuredNow = () => { const n = snapshot && N.fromPending(snapshot.pending); return isStructured(n) ? n : null; };
@@ -495,12 +554,17 @@
   // Digits 1..N pick an option (never while typing, never with modifiers).
   document.addEventListener('keydown', event => {
     const view = current();
-    if (!view.notification || !view.controlsEnabled || root.inert || !onScreen()) return;
-    if (/^(INPUT|TEXTAREA)$/.test((document.activeElement || {}).tagName || '') && document.activeElement !== textEl) return;
-    const pend = snapshot && N.fromPending(snapshot.pending), look = pend && approvalOf(pend);
+    if (!view.notification || !view.controlsEnabled || root.inert || !onScreen() || inHeadGuard()) return;
+    // S4: never from #chat-input or another editable field outside the take-over (input/textarea/select/contenteditable)
+    const at = document.activeElement;
+    if (editable(at) && !inCard(at)) return;
+    const pend = snapshot && N.fromPending(snapshot.pending), look = pend && pend.id === renderedId && approvalOf(pend);
     if (look && layout()) {
-      const at = layout().approvalKey(event, look, { typing: document.activeElement === textEl });
-      if (at >= 0) { event.preventDefault(); choose(event, at); return; }
+      // an approval (Y/N, and the digits that name its options) answers only with the focus inside #question or on the page itself,
+      // never from a control outside the take-over
+      if (!keysReachCard()) return;
+      const idx = layout().approvalKey(event, look, { typing: document.activeElement === textEl });
+      if (idx >= 0) { event.preventDefault(); choose(event, idx); return; }
     }
     cardKey(event);
   });
@@ -516,6 +580,9 @@
     // #313: the gate is the sound ENGINE (off until the human enables it, silent until ready), not a constant
     if (cue && limiter.allow(cue, Date.now())) document.dispatchEvent(new CustomEvent('abito:cue', { detail: cue }));
     render();
+    // S6: a request waiting BEHIND the head expired (the head stays): it went to its terminal; the counter already went down
+    const gone = N.hiddenExpired(previous, snapshot, Date.now()); // expires_at is wall-clock ms from the host
+    if (gone.length) say(N.hiddenExpiredAnnouncement(gone));
     // a pending question is also a compact signal (sun dot): island.js reads capsule.dataset.question
     // #266: a genuinely NEW live question additionally asks the island to reveal itself;
     // the pure gate says which snapshots are events (boot replays and churn are not).

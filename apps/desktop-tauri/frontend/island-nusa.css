@@ -401,3 +401,13 @@ html #capsule[data-notice-list="open"] #nusa :is(#nusa-dots, #nusa-prev, #nusa-n
 #capsule[data-crossfade][data-phase="expanded"]:not([data-question="pending"]):not([data-question="expired"]):not([data-question="outcome"]) #question {
   transition: none !important; opacity: 0 !important; visibility: hidden !important;
 }
+
+/* ── K2-08 «01 · Una a la vez con contador» (design/k2-08-fila-permisos/01-contador.html): requests wait in a FIFO queue; the who-row
+   ends with «1 de N» (N ≥ 2 only; notify.js hides it with one) — 11px at .62 (≈ 9:1 on black), after a 1px --line divider, like
+   Sileo's queue. The next head slides in from the right, 16px over 320ms; reduced motion (Koda's own html[data-motion] or the
+   system's) has no movement at all. */
+#question-queue:not([hidden]) { font-size: 11px; color: rgba(255,255,255,.62); font-variant-numeric: tabular-nums; white-space: nowrap; padding-left: 7px; border-left: 1px solid var(--line, rgba(255,255,255,.35)); }
+@keyframes k2-next-in { from { opacity: 0; transform: translateX(16px); } }
+#question[data-enter="next"] :is(#question-asker, #question-body, #question-approval, #question-options) { animation: k2-next-in .32s var(--ease-out); }
+html[data-motion="reduce"] #question[data-enter] :is(#question-asker, #question-body, #question-approval, #question-options) { animation: none; transform: none; }
+@media (prefers-reduced-motion: reduce) { #question[data-enter] :is(#question-asker, #question-body, #question-approval, #question-options) { animation: none; transform: none; } }

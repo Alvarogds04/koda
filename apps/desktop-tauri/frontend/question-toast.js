@@ -62,8 +62,7 @@
     const name = N.askerName(n);
     const steps = Array.isArray(n.form) ? n.form.length : 0;
     const title = approval ? `${name} pide permiso` : `${name} pregunta${steps ? ` (${steps} ${steps === 1 ? 'pregunta' : 'preguntas'})` : ''}`;
-    const queued = Number.isInteger(s.queued_count) && s.queued_count > 0 ? s.queued_count : 0;
-    const queue = queued ? `1 de ${queued + 1}` : null;
+    const queue = N.queueLabel(s) || null; // K2-08: the island's own «1 de N», one rule for both surfaces
     return { id: n.id, kind: n.kind, actionable: true, ms: TOAST.ms, tone: approval ? 'warning' : 'action', icon: approval ? 'lock' : 'bubble', title, body, queue,
       agent: n.agent, role: approval ? 'sun' : 'agent', accent: approval ? ROLE_ACCENT.sun : agentAccent(n.agent),
       aria: `${title}: ${body}${queue ? ` (${queue})` : ''}. Abrir la isla para responder.` };
