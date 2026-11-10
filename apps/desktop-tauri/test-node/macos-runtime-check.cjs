@@ -11,7 +11,7 @@ const O = require('../frontend/overview-view.js');
 const L = require('../packaging/lib.cjs');
 const messages = {
   node_missing: ['Falta Node.js', 'Falta Node.js: instalalo desde nodejs.org.'],
-  pi_missing: ['Falta Pi', 'Falta Pi: instalalo con npm install -g @earendil-works/pi-coding-agent.'],
+  pi_missing: ['Falta el motor de Koda', 'Falta el motor de Koda: La instalación de Koda está incompleta: falta el motor propio de Koda; volvé a instalar Koda.'],
 };
 for (const [code, [word, detail]] of Object.entries(messages)) {
   const state = { connection: 'no_daemon', last_error: { code, n: 1 } };
@@ -28,7 +28,7 @@ for (const [code, [word, detail]] of Object.entries(messages)) {
     assert.equal(row.target, 'accounts:motor', 'the existing link: settings.js opens Ajustes on the Chat page for every engine deep link');
     assert.ok(!row.aria.includes('npm install'), 'the island does not ask the human to type a command');
     assert.equal(row.link, 'Abrir Chat', 'a link, not an install button');
-    assert.ok(row.aria.includes('Falta Pi'), `the plain label stays: ${row.aria}`);
+    assert.ok(row.aria.includes('Falta el motor de Koda'), `the plain label stays: ${row.aria}`);
   }
 }
 assert.equal(S.connectionView({ connection: 'no_daemon' }).word, 'Sin motor');

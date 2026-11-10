@@ -883,7 +883,7 @@ test('agents: the deadline for the engine to answer is a named constant', () => 
   assert.ok(Number.isInteger(S.AGENTS_WAIT_MS) && S.AGENTS_WAIT_MS >= 2000 && S.AGENTS_WAIT_MS <= 10000);
 });
 
-test('settings never asks for a terminal except the explicitly requested missing-Pi install advice', () => {
+test('settings never asks for a terminal, not even for a missing engine (K2-05: Koda ships its own, no npm advice)', () => {
   const strip = t => t.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
   const literals = text => [...strip(text).matchAll(/(['"`])((?:\\.|(?!\1)[^\\\n])*)\1/g)].map(m => m[2]).filter(x => /[a-záéíóúñ]{3,}/i.test(x));
   const bad = /\b(terminal|consola|l[ií]nea de comandos|comando|shell|bash|cli|sudo|npm|install)\b/i;
@@ -891,12 +891,11 @@ test('settings never asks for a terminal except the explicitly requested missing
   // draws (Gemini CLI, Copilot CLI), not instructions to open a terminal; the guard keeps
   // watching every other fixed string.
   const CLIENT_NAMES = new Set(['claude-code', 'codex', 'opencode', 'gemini-cli', 'copilot-cli', 'Copilot CLI', 'amp', 'cursor', 'CLI']);
-  // S2: the owner explicitly requests how to install the missing runtime.
-  // Exempt only that exact advice, not arbitrary commands elsewhere.
-  const PI_INSTALL_ADVICE = 'instalalo con npm install -g @earendil-works/pi-coding-agent.';
+  // K2-05 (S1, S4): the 0.1 exemption for the npm install advice of a missing Pi is gone — the engine is Koda's own,
+  // bundled, and its missing state says to reinstall Koda. Nothing in Ajustes is exempt any more.
   const where = [];
   for (const f of ['settings.js', 'settings-view.js']) {
-    for (const lit of literals(fs.readFileSync(path.join(frontend, f), 'utf8'))) if (bad.test(lit) && !/^(agent_|abito:|settings|agents_)/.test(lit) && !CLIENT_NAMES.has(lit) && !(f === 'settings-view.js' && lit === PI_INSTALL_ADVICE)) where.push(`${f}: ${lit}`);
+    for (const lit of literals(fs.readFileSync(path.join(frontend, f), 'utf8'))) if (bad.test(lit) && !/^(agent_|abito:|settings|agents_)/.test(lit) && !CLIENT_NAMES.has(lit)) where.push(`${f}: ${lit}`);
   }
   const html = fs.readFileSync(path.join(frontend, 'index.html'), 'utf8');
   const sect = html.slice(html.indexOf('id="settings"'), html.indexOf('id="chat-live"'));
@@ -1751,7 +1750,7 @@ test('R16 cancel plan: binds to the flow this row started; no flow yet means a l
 const HU15_HASH = 'a'.repeat(64);
 const HU15_SUMMARY = 'Adds the Abito hooks (PermissionRequest, Stop) to ~/.claude/settings.json. A backup is made first.';
 const direct = (agents, extra = {}) => ({ agentsRuntime: 'ok', directAgents: agents, directHooks: [], ...extra });
-test('HU-015 S2: engine down, Pi missing — Claude Code and Codex are still installable, and nothing says «Falta Pi»', () => {
+test('HU-015 S2: engine down, engine missing — Claude Code and Codex are still installable, and nothing says «Falta el motor de Koda»', () => {
   const st = { connection: 'no_daemon', last_error: { code: 'pi_missing', n: 1 }, ...direct([
     { id: 'claude-code', state: 'not_connected', backup: false, detail: null, plan_hash: HU15_HASH, summary: HU15_SUMMARY, reviewable: true },
     { id: 'codex', state: 'not_connected', backup: false, detail: null, plan_hash: 'b'.repeat(64), summary: HU15_SUMMARY, reviewable: true }]) };
@@ -1761,7 +1760,7 @@ test('HU-015 S2: engine down, Pi missing — Claude Code and Codex are still ins
   assert.equal(by['claude-code'].primary.label, 'Agregar hooks');
   assert.deepEqual(by['claude-code'].primary.command, { action: 'agent_connect', agentId: 'claude-code', plan_hash: HU15_HASH });
   assert.equal(by['codex'].primary.label, 'Agregar hooks');
-  assert.ok(!JSON.stringify(v).includes('Falta Pi') && !JSON.stringify(v).includes('Sin motor'));
+  assert.ok(!JSON.stringify(v).includes('Falta el motor de Koda') && !JSON.stringify(v).includes('Sin motor'));
 });
 test('HU-015 S1/S3: each row depends only on its own hooks; an uninstalled agent reads disabled with the install action', () => {
   const v = S.agentsView(direct([
@@ -1788,14 +1787,15 @@ test('HU-015: missing Node.js is said per row (the only runtime message), never 
   const v = S.agentsView({ connection: 'no_daemon', agentsRuntime: 'node_missing', directAgents: [], directHooks: [] });
   assert.equal(v.kind, 'ready');
   assert.ok(v.rows.length >= 6 && v.rows.every(r => r.word === 'Falta Node.js' && !r.primary && !r.secondary));
-  assert.ok(!/Falta Pi/.test(JSON.stringify(v))); // Pi's own NAME is now a valid independent row.
+  assert.ok(!/Falta el motor de Koda/.test(JSON.stringify(v))); // the engine-missing word never reaches a row (Pi's bare NAME is a valid independent row).
   const failed = S.agentsView({ agentsRuntime: 'failed' });
   assert.ok(failed.rows.every(r => r.word === 'No se pudo'));
 });
-test('HU-015: the existing engine path (no direct answer yet) is unchanged — the chat diagnostics still say «Falta Pi»', () => {
+test('HU-015: the existing engine path (no direct answer yet) is unchanged — the chat diagnostics say «Falta el motor de Koda» (K2-05: Koda\'s own engine, never «Falta Pi»)', () => {
   assert.equal(S.agentsView(state({ connection: 'no_daemon', agents: null })).kind, 'no_engine');
   const missing = S.connectionView({ connection: 'no_daemon', last_error: { code: 'pi_missing', n: 1 } });
-  assert.equal(missing.word, 'Falta Pi');
+  assert.equal(missing.word, 'Falta el motor de Koda');
+  assert.ok(!/Falta Pi|npm install/.test(JSON.stringify(missing)), JSON.stringify(missing));
 });
 test('HU-015: a direct retry without a shown plan only refreshes the preview', () => {
   const row = S.agentsView(direct([{ id: 'codex', state: 'error', detail: 'install_failed' }])).rows.find(r => r.id === 'codex');

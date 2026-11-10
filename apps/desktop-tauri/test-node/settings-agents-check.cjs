@@ -120,7 +120,7 @@ const { dom, all, text } = require('./settings-accounts-check.cjs');
     }
     const codex=all(ui).find(e=>e.attrs.id==='agent-row-codex');
     assert.equal(all(codex).find(e=>String(e.className).includes('switch')).disabled,false);
-    assert(!text(ui).includes('Falta Pi'));
+    assert(!text(ui).includes('Falta el motor de Koda'));
     calls.length=0;
     button(all(ui).find(e=>e.attrs.id==='agent-row-copilot-cli'),'Instalar…').fire('click');await ui.settled();
     assert.deepEqual(calls,[['agent_action',{action:'agent_connect',agentId:'copilot-cli',plan_hash:hash2}]]);

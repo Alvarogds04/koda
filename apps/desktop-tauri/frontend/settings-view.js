@@ -58,8 +58,11 @@
     if (c === 'connected') return null;
     const missing = c === 'no_daemon' && state.last_error && state.last_error.code;
     if (missing === 'node_missing' || missing === 'pi_missing') {
-      const word = missing === 'node_missing' ? 'Falta Node.js' : 'Falta Pi';
-      const help = missing === 'node_missing' ? 'instalalo desde nodejs.org.' : 'instalalo con npm install -g @earendil-works/pi-coding-agent.';
+      const word = missing === 'node_missing' ? 'Falta Node.js' : 'Falta el motor de Koda';
+      // K2-05 (S1, S4): the engine is Koda's own, bundled — never named Pi. The detail is the daemon host's
+      // incomplete-install sentence (daemonhost.rs failure_sentence(PiMissing)), never npm advice: the user never
+      // installs an engine by hand. The code stays `pi_missing`.
+      const help = missing === 'node_missing' ? 'instalalo desde nodejs.org.' : 'La instalación de Koda está incompleta: falta el motor propio de Koda; volvé a instalar Koda.';
       return { kind: c, word, icon: 'plug-off', tone: 'faint', aria: `${word}: ${help}` };
     }
     // K2-02 D1: Koda's own runtime folder is present but broken (daemonhost BUNDLED_RUNTIME_INVALID_SENTENCE).
@@ -628,7 +631,7 @@
   // opts.askedAtError: the engine error counter when `agents_list` was sent; opts.timedOut: the wait ran out.
   // HU-015: Ajustes → Agentes is read and written through the daemon-free host route, whose answer carries
   // `agentsRuntime` ('ok' | 'node_missing' | 'failed') + `directAgents` / `directHooks`. The chat engine's connection
-  // (Pi, daemon) plays NO part in these rows: each row's state is its own hooks, never «Falta Pi» / «Sin motor».
+  // (Pi, daemon) plays NO part in these rows: each row's state is its own hooks, never «Falta el motor de Koda» / «Sin motor».
   const directRuntimeRow = (id, word, tone, icon) => displayRow(id, 'unknown', word, icon, tone, '');
   function directAgentsView(state) {
     const kind = state.agentsRuntime;

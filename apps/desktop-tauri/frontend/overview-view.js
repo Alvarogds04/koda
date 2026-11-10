@@ -338,10 +338,11 @@
     if (p && p.connection === 'no_daemon' && p.last_error) {
       const code = p.last_error.code;
       if (code === 'node_missing' || code === 'pi_missing') {
-        const label = code === 'node_missing' ? 'Falta Node.js' : 'Falta Pi';
+        const label = code === 'node_missing' ? 'Falta Node.js' : 'Falta el motor de Koda';
         // K2-02 (S4): both «Falta…» states are now DEV-BUILD-ONLY paths (a release install ships its own Node and Pi, so
         // discovery cannot miss them). The «Instalar Pi» / «Instalar Node» buttons are gone from Ajustes; the island keeps
         // the plain label and, for a missing Pi, the plain «Abrir Chat» link (the old pointer to «Instalar Pi» is dropped).
+        // K2-05 (S1, S4): the engine is Koda's own bundled Gentle Shell, so the `pi_missing` label names Koda's engine, never Pi.
         const help = code === 'node_missing' ? 'instalalo desde nodejs.org.' : '';
         const view = row('engine', label, code === 'pi_missing' ? 'Abrir Chat' : 'Revisar', 'accounts:motor', code === 'pi_missing' ? 'Chat' : 'Motor');
         view.aria = help ? `${label}: ${help} ${view.aria}` : `${label}: ${view.aria}`;
