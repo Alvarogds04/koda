@@ -2125,6 +2125,9 @@ fn main() {
                 eprintln!("{line}");
             }
             chathost::start_history(&handle); // #341: isolated private conversation store
+            // K2-05 T4 U3: the island chat talks to the daemon engine through ONE reconnecting
+            // chat connection (the settings window keeps its own AgentConn).
+            chathost::start_conn(&handle);
             // K2-03 T3 (S2, S4): delete the removed weekly Recap's data (exact files only), off the startup path.
             let data_dir = handle.path().app_local_data_dir().ok();
             std::thread::spawn(move || {
@@ -2170,6 +2173,7 @@ fn main() {
         .expect("error while building abito island")
         .run(|app, event| {
             if let tauri::RunEvent::Exit = event {
+                chathost::stop_conn(app);
                 app.state::<abito_island::daemonhost::HostSlot>().stop();
                 settingshost::stop(app);
                 close_transport(app);

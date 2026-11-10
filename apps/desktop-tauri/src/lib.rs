@@ -19,6 +19,11 @@ pub mod agents_direct;
 /// chat view) — separate from agentclient by design; its transport is
 /// `agentconn::ChatConn`, a second connection with its own fold callback.
 pub mod chatclient;
+/// K2-05 T4 U3: the chat host's routing tests (`ChatHost` lives in `chatclient`, the
+/// Tauri glue in the binary's `chathost.rs`, covered here by source guards).
+#[cfg(test)]
+#[path = "chathost_tests.rs"]
+mod chathost_tests;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod agentconn;
 #[cfg(windows)]

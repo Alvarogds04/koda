@@ -672,3 +672,632 @@ fn parse_chat_command(asks: &[ChatAsk], payload: &Value) -> Result<ChatCommand, 
     if cmd.line().len() > MAX_CLIENT_LINE_BYTES { return Err(CommandError); }
     Ok(cmd)
 }
+
+// ---- K2-05 T4 U3: the island chat host's route to the daemon engine ------------------------
+//
+// The island page keeps its closed `chat::Command` verb set and its `chat:state` shape (the
+// keys of `chat.rs` Conversation::view + `chatlane.rs` Lane::view); `ChatHost` routes those
+// verbs to the daemon through a `ChatLink` (production: `agentconn::ChatConn`) and projects
+// the daemon's `ChatState` back into that shape. Pure and transport-free so the unit tests and
+// `tests/chat_daemon.rs` drive the SAME code the Tauri command runs.
+//
+// Ownership: one continuous chat (L3/L4/L11) — `new`/`new_with`/`list`/`restore` are refused
+// with a fixed `conversations_off`; attachments are refused until the uploads unit. The window
+// gate stays where U2 put it: every command that reaches the daemon goes through
+// `ChatLink::command(caller, …)` with the caller's REAL window label.
+
+/// The ONE continuous conversation the island projects. Constant within and across
+/// launches, so the page never resets its view (and it passes `chat.rs`'s id shape).
+pub const CHAT_CONVERSATION_ID: &str = "c-koda";
+
+/// Grace after a submit before a quiet engine (not busy, nothing streamed) reads as a
+/// finished turn: the daemon's optimistic `busy` broadcast is still in flight.
+pub const PENDING_SETTLE_MS: u64 = 1_500;
+
+/// Minimum gap between two status reads sent for page views.
+const STATUS_GAP_MS: u64 = 2_000;
+/// How long a `history` page request waits for the daemon's answer frame.
+const HISTORY_WAIT_MS: u64 = 3_000;
+/// How long a newest-page refresh waits before answering with what the island has.
+const REFRESH_WAIT_MS: u64 = 1_000;
+/// First turn number handed out; earlier pages count DOWN from here, new turns UP, so
+/// the page's numeric `t-<n>` order (chat-view.js mergeHistory) is the chat order.
+const TURN_BASE: u64 = 1_000_000_000;
+/// Submitted turns kept by the host (the daemon's own history is the long-term record).
+const MAX_PENDING: usize = 200;
+
+fn chat_err(code: &str, message: &str, retryable: bool) -> crate::chat::ChatError {
+    crate::chat::ChatError { code: code.into(), safe_message: message.into(), retryable }
+}
+
+/// The fixed refusal of every conversation-list verb: one continuous chat.
+pub fn conversations_off() -> crate::chat::ChatError {
+    chat_err("conversations_off", "Koda tiene un solo chat continuo.", false)
+}
+
+/// The fixed refusal of a submit with attachments (daemon-side uploads come later).
+pub fn attachments_off() -> crate::chat::ChatError {
+    chat_err("attachments_unavailable", "Los archivos adjuntos todavía no están disponibles en este chat.", false)
+}
+
+fn engine_unavailable() -> crate::chat::ChatError {
+    chat_err("engine_unavailable", "El motor de Koda no está disponible todavía.", true)
+}
+
+fn send_refused() -> crate::chat::ChatError {
+    chat_err("send_refused", "No se pudo enviar el pedido al motor de Koda.", true)
+}
+
+fn history_unavailable() -> crate::chat::ChatError {
+    chat_err("history_unavailable", "No se pudo cargar el historial anterior.", true)
+}
+
+/// One closed sentence per daemon error code; never the daemon's own text.
+fn daemon_error_message(code: &str) -> &'static str {
+    match code {
+        "busy" => "El motor de Koda está atendiendo otro mensaje; probá de nuevo en un momento.",
+        "unavailable" => "El motor de Koda no está disponible.",
+        "paused" => "El chat está en pausa; reanudalo en Ajustes.",
+        "rate_limited" => "Demasiados mensajes seguidos; esperá un momento.",
+        "interrupted" => "Se interrumpió el turno.",
+        "needs_setup" | "signin_failed" => "La cuenta del motor de Koda necesita atención en Ajustes.",
+        _ => "No se pudo completar la respuesta.",
+    }
+}
+
+/// The transport the host routes through. `command` takes the caller's window label: the
+/// U2 gate in [`ChatState::command`] refuses anything but the main island window.
+pub trait ChatLink {
+    fn view(&self) -> Value;
+    fn command(&self, caller: &str, payload: &Value) -> Result<Value, CommandError>;
+}
+
+impl ChatLink for crate::agentconn::ChatConn {
+    fn view(&self) -> Value {
+        crate::agentconn::ChatConn::view(self)
+    }
+    fn command(&self, caller: &str, payload: &Value) -> Result<Value, CommandError> {
+        crate::agentconn::ChatConn::command(self, caller, payload)
+    }
+}
+
+/// What `chat_action` does after the route.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Routed {
+    /// Answer with the projected `chat:state` view.
+    View,
+    /// A local island verb (open/back/height): the host's window code handles it.
+    Local,
+    /// Answer with this value as is.
+    Answer(Value),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum TurnEnd {
+    /// The engine went quiet after the turn (a reply landed, or the settle grace passed).
+    Completed,
+    Cancelled,
+    Error(String),
+}
+
+/// A turn the island submitted. The daemon never echoes the prompt back, so the host shows
+/// it until the daemon's own history carries the same text (then that turn takes over,
+/// keeping this turn's number).
+#[derive(Debug, Clone)]
+struct Pending {
+    num: u64,
+    client_request_id: String,
+    text: String,
+    submitted_ms: u64,
+    /// The last non-empty reply seen (kept across a connection reset that drops the live
+    /// messages from the island's view).
+    reply: String,
+    /// The daemon error-frame counter already accounted for.
+    err_seen: u64,
+    ended: Option<TurnEnd>,
+}
+
+#[derive(Default)]
+struct HostInner {
+    pending: Vec<Pending>,
+    /// Daemon history message id (`s<file>-<turn>`) → turn number.
+    num_by_id: std::collections::HashMap<String, u64>,
+    id_by_num: std::collections::HashMap<u64, String>,
+    next_up: u64,
+    next_down: u64,
+    /// Live (streamed, not yet in history) assistant message id → owning pending turn
+    /// number; 0 = it predates every island submission.
+    live_owner: std::collections::HashMap<String, u64>,
+    /// Bumped on every projection: the page's `staleSnapshot` guard compares it.
+    generation: u64,
+    /// Whether the last projection had an active (thinking/streaming) turn.
+    live: bool,
+    /// When the last status line was sent for a view/check.
+    last_status_ms: Option<u64>,
+}
+
+/// The island's chat host: one per app, shared by the Tauri command and the event emitter.
+pub struct ChatHost {
+    inner: std::sync::Mutex<HostInner>,
+}
+
+impl Default for ChatHost {
+    fn default() -> Self {
+        ChatHost::new()
+    }
+}
+
+fn is_history_id(id: &str) -> bool {
+    id.starts_with('s') && page_id_ok(id)
+}
+
+fn chat_connected(chat: &Value) -> bool {
+    chat.get("connection").and_then(Value::as_str) == Some("connected")
+}
+
+fn chat_busy(chat: &Value) -> bool {
+    chat.pointer("/agent/busy").and_then(Value::as_bool).unwrap_or(false)
+}
+
+fn chat_messages(chat: &Value) -> Vec<Value> {
+    chat.get("messages").and_then(Value::as_array).cloned().unwrap_or_default()
+}
+
+/// The messages still streaming, as (daemon message id, text so far).
+fn live_streams(chat: &Value) -> Vec<(String, String)> {
+    chat.get("streaming")
+        .and_then(Value::as_array)
+        .map(|s| {
+            s.iter()
+                .filter_map(|m| Some((m.get("id")?.as_str()?.to_owned(), m.get("text")?.as_str()?.to_owned())))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn error_counter(chat: &Value) -> (u64, String) {
+    let n = chat.pointer("/lastError/n").and_then(Value::as_u64).unwrap_or(0);
+    let code = chat.pointer("/lastError/code").and_then(Value::as_str).unwrap_or("failed").to_owned();
+    (n, code)
+}
+
+fn join_reply(a: &str, b: &str) -> String {
+    match (a.is_empty(), b.is_empty()) {
+        (true, _) => b.to_owned(),
+        (_, true) => a.to_owned(),
+        _ => format!("{a}\n\n{b}"),
+    }
+}
+
+/// `availability` and `producer` from the REAL daemon/engine state. `availability.state`
+/// keeps the page's closed vocabulary (ready/busy/blocked/unavailable/unchecked);
+/// `producer.pi` is connected/ready/busy/unavailable. No sentence names the engine vendor.
+fn availability_and_producer(chat: &Value) -> (Value, Value) {
+    let note = "Chat con el motor de Koda.";
+    let pair = |state: &str, message: &str, producer: &str| {
+        (json!({"state": state, "message": message}), json!({"pi": producer, "note": note}))
+    };
+    if !chat_connected(chat) {
+        return pair("unavailable", "El motor de Koda no está disponible todavía.", "unavailable");
+    }
+    let status = chat.pointer("/agent/status").and_then(Value::as_str);
+    let paused = chat.pointer("/agent/paused").and_then(Value::as_bool).unwrap_or(false);
+    match status {
+        Some("restarting" | "stopped" | "unavailable") => {
+            pair("unavailable", "El motor de Koda se está reiniciando; probá de nuevo en unos segundos.", "unavailable")
+        }
+        Some("ready") if paused => pair("blocked", "El chat está en pausa; reanudalo en Ajustes.", "ready"),
+        Some("ready") if chat_busy(chat) => pair("busy", "El motor de Koda está respondiendo.", "busy"),
+        Some("ready") => pair("ready", "El motor de Koda está listo.", "ready"),
+        _ => pair("unchecked", "El motor de Koda está arrancando.", "connected"),
+    }
+}
+
+fn turn_view(num: u64, user_text: &str, reply: &str, state: &str, error: Value, seq: u64) -> Value {
+    json!({
+        "turn_id": format!("t-{num}"),
+        "request_id": Value::Null,
+        "state": state,
+        "seq": seq,
+        "user_text": user_text,
+        "reply": reply,
+        "finish_reason": Value::Null,
+        "error": error,
+        "trimmed_turns": 0,
+        "profile_id": Value::Null,
+        "profile_revision": Value::Null,
+        "attachments": [],
+    })
+}
+
+impl HostInner {
+    fn alloc_up(&mut self) -> u64 {
+        if self.next_up == 0 {
+            self.next_up = TURN_BASE;
+            self.next_down = TURN_BASE - 1;
+        }
+        let n = self.next_up;
+        self.next_up += 1;
+        n
+    }
+
+    fn alloc_down(&mut self) -> u64 {
+        if self.next_up == 0 {
+            self.next_up = TURN_BASE;
+            self.next_down = TURN_BASE - 1;
+        }
+        let n = self.next_down.max(1);
+        self.next_down = n.saturating_sub(1);
+        n
+    }
+
+    fn bind(&mut self, id: &str, num: u64) {
+        self.num_by_id.insert(id.to_owned(), num);
+        self.id_by_num.insert(num, id.to_owned());
+    }
+
+    /// Number every daemon history message: the ones before the first already-known id
+    /// count DOWN (an earlier page), the ones after count UP (new turns); a new user
+    /// message whose text is a submitted turn's text takes that turn's number.
+    fn number_history(&mut self, messages: &[Value]) {
+        let ids: Vec<(&str, &str, &str)> = messages
+            .iter()
+            .filter_map(|m| {
+                let id = m.get("id").and_then(Value::as_str)?;
+                is_history_id(id).then_some((
+                    id,
+                    m.get("role").and_then(Value::as_str).unwrap_or(""),
+                    m.get("text").and_then(Value::as_str).unwrap_or(""),
+                ))
+            })
+            .collect();
+        let first_known = ids.iter().position(|(id, _, _)| self.num_by_id.contains_key(*id));
+        let split = first_known.unwrap_or(0);
+        for (id, _, _) in ids[..split].iter().rev() {
+            let n = self.alloc_down();
+            self.bind(id, n);
+        }
+        for (id, role, text) in &ids[split..] {
+            if self.num_by_id.contains_key(*id) {
+                continue;
+            }
+            let claimed = (*role == "user")
+                .then(|| self.pending.iter().position(|p| p.text.trim() == text.trim()))
+                .flatten();
+            let n = match claimed {
+                Some(at) => self.pending.remove(at).num,
+                None => self.alloc_up(),
+            };
+            self.bind(id, n);
+        }
+    }
+
+    /// The `chat:state` conversation projection; also advances the submitted turns'
+    /// lifecycle (terminal states are kept, never resurrected).
+    fn project(&mut self, chat: &Value, now_ms: u64) -> Value {
+        self.generation += 1;
+        let seq = self.generation;
+        let messages = chat_messages(chat);
+        self.number_history(&messages);
+        let connected = chat_connected(chat);
+        let busy = chat_busy(chat);
+        let (err_n, err_code) = error_counter(chat);
+
+        // live output (landed assistant messages not yet in the daemon's history, and
+        // messages still streaming), each owned by the newest submission that preceded it
+        // (0 = it predates every submission on this island)
+        let streams = live_streams(chat);
+        let present: std::collections::HashSet<&str> = messages
+            .iter()
+            .filter_map(|m| m.get("id").and_then(Value::as_str))
+            .chain(streams.iter().map(|(id, _)| id.as_str()))
+            .collect();
+        self.live_owner.retain(|id, _| present.contains(id.as_str()));
+        let newest = self.pending.last().map(|p| p.num).unwrap_or(0);
+        // (owner, text, still streaming)
+        let mut live: Vec<(u64, String, bool)> = Vec::new();
+        for m in &messages {
+            let Some(id) = m.get("id").and_then(Value::as_str) else { continue };
+            if is_history_id(id) || m.get("role").and_then(Value::as_str) != Some("assistant") {
+                continue;
+            }
+            let owner = *self.live_owner.entry(id.to_owned()).or_insert(newest);
+            live.push((owner, m.get("text").and_then(Value::as_str).unwrap_or("").to_owned(), false));
+        }
+        for (id, text) in &streams {
+            let owner = *self.live_owner.entry(id.clone()).or_insert(newest);
+            live.push((owner, text.clone(), true));
+        }
+        let owned = |owner: u64| -> (String, bool) {
+            let parts: Vec<&str> = live.iter().filter(|l| l.0 == owner).map(|l| l.1.as_str()).collect();
+            (parts.join("\n\n"), live.iter().any(|l| l.0 == owner && l.2))
+        };
+
+        // history turns
+        let mut turns: Vec<(u64, String, String, &'static str, Value)> = Vec::new();
+        for m in &messages {
+            let Some(id) = m.get("id").and_then(Value::as_str).filter(|i| is_history_id(i)) else { continue };
+            let text = m.get("text").and_then(Value::as_str).unwrap_or("");
+            match m.get("role").and_then(Value::as_str) {
+                Some("user") => {
+                    let num = self.num_by_id.get(id).copied().unwrap_or(0);
+                    turns.push((num, text.to_owned(), String::new(), "completed", Value::Null));
+                }
+                Some("assistant") => {
+                    // a leading assistant message with no user message before it is not a turn
+                    if let Some(last) = turns.last_mut() {
+                        last.2 = join_reply(&last.2, text);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // live output nobody on this island submitted (a turn in flight when the island
+        // connected): it continues the newest history turn when no submission came after it
+        let (orphan, orphan_streaming) = owned(0);
+        if let Some(last) = turns.last_mut().filter(|_| self.pending.is_empty()) {
+            last.2 = join_reply(&last.2, &orphan);
+            if busy && orphan_streaming {
+                last.3 = "streaming";
+            } else if busy && orphan.is_empty() && last.2.is_empty() {
+                last.3 = "thinking";
+            }
+        }
+
+        // submitted turns
+        let count = self.pending.len();
+        for (i, p) in self.pending.iter_mut().enumerate() {
+            let is_last = i + 1 == count;
+            let (reply, streaming) = owned(p.num);
+            // the turn's own output, also after it ended: a cancelled turn's held tail
+            // still lands (the daemon flushes it once), and only this turn owns it
+            if !reply.is_empty() {
+                p.reply = reply;
+            }
+            let mut state: &'static str = "completed";
+            if p.ended.is_none() {
+                if !is_last {
+                    // the daemon runs one turn at a time: a later submission settled this one
+                    p.ended = Some(TurnEnd::Completed);
+                } else if !connected {
+                    p.ended = Some(TurnEnd::Error("unavailable".into()));
+                } else if err_n > p.err_seen && p.reply.is_empty() && !streaming {
+                    // an error frame after the submit, and nothing produced: the send failed
+                    p.ended = Some(TurnEnd::Error(err_code.clone()));
+                } else if busy && streaming {
+                    state = "streaming";
+                } else if busy || (p.reply.is_empty() && now_ms.saturating_sub(p.submitted_ms) < PENDING_SETTLE_MS) {
+                    // with nothing yet, the settle grace covers the optimistic busy in flight
+                    state = "thinking";
+                } else {
+                    // the engine is quiet: terminal, so a later busy (another client's turn)
+                    // never resurrects it; a stream the engine never closed ends here too
+                    p.ended = Some(TurnEnd::Completed);
+                }
+            }
+            let error = match &p.ended {
+                Some(TurnEnd::Error(code)) => {
+                    state = "error";
+                    json!({"code": code, "safe_message": daemon_error_message(code), "retryable": true})
+                }
+                Some(TurnEnd::Cancelled) => {
+                    state = "cancelled";
+                    Value::Null
+                }
+                Some(TurnEnd::Completed) | None => Value::Null,
+            };
+            turns.push((p.num, p.text.clone(), p.reply.clone(), state, error));
+        }
+
+        turns.sort_by_key(|t| t.0);
+        let active = turns
+            .last()
+            .filter(|t| matches!(t.3, "thinking" | "streaming"))
+            .map(|t| json!(format!("t-{}", t.0)))
+            .unwrap_or(Value::Null);
+        self.live = !active.is_null();
+        let history_before = if chat.get("hasEarlier").and_then(Value::as_bool) == Some(true) {
+            messages
+                .first()
+                .and_then(|m| m.get("id")?.as_str())
+                .and_then(|id| self.num_by_id.get(id))
+                .map(|n| json!(n))
+                .unwrap_or(Value::Null)
+        } else {
+            Value::Null
+        };
+        let (availability, producer) = availability_and_producer(chat);
+        let turns: Vec<Value> = turns.into_iter().map(|(n, u, r, s, e)| turn_view(n, &u, &r, s, e, seq)).collect();
+        json!({
+            "conversation_id": CHAT_CONVERSATION_ID,
+            "active_turn": active,
+            "turns": turns,
+            "evicted": 0,
+            "queue_note": Value::Null,
+            "availability": availability,
+            "history_before": history_before,
+            "history_skipped": 0,
+            "history_problem": Value::Null,
+            "history_persisted": true,
+            "conversation_specialist": Value::Null,
+            "target": Value::Null,
+            "producer": producer,
+        })
+    }
+}
+
+fn wait_view(link: &dyn ChatLink, wait_ms: u64, done: impl Fn(&Value) -> bool) -> (Value, bool) {
+    let end = Instant::now() + std::time::Duration::from_millis(wait_ms);
+    loop {
+        let v = link.view();
+        if done(&v) {
+            return (v, true);
+        }
+        if Instant::now() >= end {
+            return (v, false);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+impl ChatHost {
+    pub fn new() -> ChatHost {
+        ChatHost { inner: std::sync::Mutex::new(HostInner::default()) }
+    }
+
+    /// Whether a turn was live at the last projection: the host keeps re-publishing while
+    /// it is, because a submitted turn's settle grace ends by time, not by a frame.
+    pub fn has_live(&self) -> bool {
+        self.inner.lock().expect("chat host lock").live
+    }
+
+    /// The `chat:state` conversation keys over the daemon's chat view (`ChatLink::view`).
+    pub fn project(&self, chat: &Value, now_ms: u64) -> Value {
+        self.inner.lock().expect("chat host lock").project(chat, now_ms)
+    }
+
+    /// Route one page verb (already parsed by `chat::parse_command`) for the caller window.
+    pub fn route(&self, link: &dyn ChatLink, caller: &str, cmd: &crate::chat::Command, now_ms: u64) -> Result<Routed, crate::chat::ChatError> {
+        use crate::chat::Command;
+        match cmd {
+            Command::View | Command::Check => {
+                // the engine's real state: a status read through the gated parser, at most
+                // once per STATUS_GAP_MS (the daemon also pushes every change, and each
+                // line spends the chat's own per-minute budget); a refused or offline
+                // status never fails the view itself
+                let due = {
+                    let mut inner = self.inner.lock().expect("chat host lock");
+                    let due = inner.last_status_ms.is_none_or(|t| now_ms.saturating_sub(t) >= STATUS_GAP_MS);
+                    if due {
+                        inner.last_status_ms = Some(now_ms);
+                    }
+                    due
+                };
+                if due {
+                    let _ = link.command(caller, &json!({"action": "chat_status"}));
+                }
+                Ok(Routed::View)
+            }
+            Command::Open | Command::Back | Command::Height { .. } => Ok(Routed::Local),
+            Command::New | Command::NewWith { .. } | Command::List | Command::Restore { .. } => Err(conversations_off()),
+            Command::Submit { text, client_request_id, attachments } => {
+                if !attachments.is_empty() {
+                    return Err(attachments_off());
+                }
+                self.submit(link, caller, text, client_request_id, now_ms)
+            }
+            Command::Cancel { turn_id } => self.cancel(link, caller, turn_id, now_ms),
+            Command::History { conversation_id, before } => {
+                if conversation_id != CHAT_CONVERSATION_ID {
+                    return Err(crate::chat::ChatError::invalid_input("Pedido de chat inválido."));
+                }
+                self.history(link, caller, *before, now_ms)
+            }
+        }
+    }
+
+    fn submit(&self, link: &dyn ChatLink, caller: &str, text: &str, client_request_id: &str, now_ms: u64) -> Result<Routed, crate::chat::ChatError> {
+        let text = crate::chat::validate_text(text)?;
+        let before = link.view();
+        {
+            let mut inner = self.inner.lock().expect("chat host lock");
+            if let Some(p) = inner.pending.iter().find(|p| p.client_request_id == client_request_id) {
+                return Ok(Routed::Answer(json!({"turn_id": format!("t-{}", p.num), "duplicate": true})));
+            }
+            let current = inner.project(&before, now_ms);
+            if !current["active_turn"].is_null() || chat_busy(&before) {
+                return Err(crate::chat::ChatError::queue_full());
+            }
+        }
+        if !chat_connected(&before) {
+            return Err(engine_unavailable());
+        }
+        let payload = json!({"action": "chat_send", "text": text, "clientRequestId": client_request_id});
+        let mut inner = self.inner.lock().expect("chat host lock");
+        link.command(caller, &payload).map_err(|_| send_refused())?;
+        // live output already on screen never becomes this turn's reply
+        let owner = inner.pending.last().map(|p| p.num).unwrap_or(0);
+        let earlier_live: Vec<String> = chat_messages(&before)
+            .iter()
+            .filter_map(|m| m.get("id").and_then(Value::as_str).filter(|i| !is_history_id(i)).map(str::to_owned))
+            .chain(live_streams(&before).into_iter().map(|(id, _)| id))
+            .collect();
+        for id in earlier_live {
+            inner.live_owner.entry(id).or_insert(owner);
+        }
+        let num = inner.alloc_up();
+        let (err_seen, _) = error_counter(&before);
+        inner.pending.push(Pending {
+            num,
+            client_request_id: client_request_id.to_owned(),
+            text,
+            submitted_ms: now_ms,
+            reply: String::new(),
+            err_seen,
+            ended: None,
+        });
+        if inner.pending.len() > MAX_PENDING {
+            inner.pending.remove(0);
+        }
+        Ok(Routed::Answer(json!({"turn_id": format!("t-{num}"), "duplicate": false})))
+    }
+
+    fn cancel(&self, link: &dyn ChatLink, caller: &str, turn_id: &str, now_ms: u64) -> Result<Routed, crate::chat::ChatError> {
+        let view = link.view();
+        let mut inner = self.inner.lock().expect("chat host lock");
+        let current = inner.project(&view, now_ms);
+        if current["active_turn"].as_str() != Some(turn_id) {
+            return Ok(Routed::Answer(json!({"cancelled": false})));
+        }
+        link.command(caller, &json!({"action": "chat_abort"})).map_err(|_| send_refused())?;
+        if let Some(p) = inner.pending.last_mut().filter(|p| format!("t-{}", p.num) == turn_id && p.ended.is_none()) {
+            p.ended = Some(TurnEnd::Cancelled);
+        }
+        Ok(Routed::Answer(json!({"cancelled": true})))
+    }
+
+    fn history(&self, link: &dyn ChatLink, caller: &str, before: Option<u64>, now_ms: u64) -> Result<Routed, crate::chat::ChatError> {
+        let start = link.view();
+        let (err_before, _) = error_counter(&start);
+        let Some(n) = before else {
+            link.command(caller, &json!({"action": "chat_history"})).map_err(|_| send_refused())?;
+            let (v, _) = wait_view(link, REFRESH_WAIT_MS, |v| v.get("messages") != start.get("messages") || error_counter(v).0 > err_before);
+            let p = self.project(&v, now_ms);
+            return Ok(Routed::Answer(json!({"conversation_id": CHAT_CONVERSATION_ID, "turns": p["turns"], "before": p["history_before"], "skipped": 0})));
+        };
+        let cursor = self
+            .inner
+            .lock()
+            .expect("chat host lock")
+            .id_by_num
+            .get(&n)
+            .cloned()
+            .filter(|id| page_id_ok(id))
+            .ok_or_else(|| crate::chat::ChatError::invalid_input("Pedido de chat inválido."))?;
+        link.command(caller, &json!({"action": "chat_earlier", "before": cursor})).map_err(|_| send_refused())?;
+        let first_id = |v: &Value| v.pointer("/messages/0/id").and_then(Value::as_str).map(str::to_owned);
+        let first_before = first_id(&start);
+        let earlier_flag = |v: &Value| v.get("hasEarlier").and_then(Value::as_bool);
+        let flag_before = earlier_flag(&start);
+        // the page arrived when the oldest message or the has-earlier flag moved (an empty
+        // or fully-known page only flips the flag), or the daemon answered an error
+        let (v, arrived) = wait_view(link, HISTORY_WAIT_MS, |v| {
+            first_id(v) != first_before || earlier_flag(v) != flag_before || error_counter(v).0 > err_before
+        });
+        if !arrived || error_counter(&v).0 > err_before {
+            return Err(history_unavailable());
+        }
+        let p = self.project(&v, now_ms);
+        let older: Vec<Value> = p["turns"]
+            .as_array()
+            .map(|ts| {
+                ts.iter()
+                    .filter(|t| t["turn_id"].as_str().and_then(|id| id.strip_prefix("t-")?.parse::<u64>().ok()).is_some_and(|k| k < n))
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
+        Ok(Routed::Answer(json!({"conversation_id": CHAT_CONVERSATION_ID, "turns": older, "before": p["history_before"], "skipped": 0})))
+    }
+}

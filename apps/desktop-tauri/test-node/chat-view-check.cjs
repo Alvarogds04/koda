@@ -238,7 +238,7 @@ function cascadeAnimation(css, chain, reduced) {
   const plain = css.replace(/\/\*[\s\S]*?\*\//g, '');
   const rules = []; // {sel, value, spec, order}
   let order = 0;
-  const walk = (text, media) => {
+  const walk = (text, _media) => {
     let i = 0;
     while (i < text.length) {
       const open = text.indexOf('{', i);
@@ -754,3 +754,69 @@ test('chat height wiring: the page reports it through the closed `height` verb, 
   assert.match(chat, /view = next;\s*reportHeight\(\);/, 'every new conversation view is measured');
   assert.match(chat, /island:view[^\n]*reportedHeight = 0/, 'opening the chat measures it again');
 });
+
+// ---- K2-05 T4 U3: the daemon engine's chat:state renders through the SAME page helpers ----------------------------
+// The shape below is exactly what chatclient::ChatHost::project + chathost::chat_view emit (the Rust unit test
+// `chathost_the_projection_keeps_the_page_keys_and_turn_shape` pins the same key lists): one continuous chat
+// (`c-koda`), no local target (the engine owns the model), producer.pi = the real engine state, and turn ids
+// `t-<n>` numbered so older history pages sort first.
+const U3_KEYS = ['active_turn', 'availability', 'chat_visible', 'conversation_id', 'conversation_specialist', 'display_name', 'evicted',
+  'history_before', 'history_persisted', 'history_problem', 'history_skipped', 'producer', 'queue_note', 'target', 'turns', 'view'];
+const U3_TURN_KEYS = ['attachments', 'error', 'finish_reason', 'profile_id', 'profile_revision', 'reply', 'request_id', 'seq', 'state',
+  'trimmed_turns', 'turn_id', 'user_text'];
+const u3Turn = (n, user, reply, state, seq, error = null) => ({ turn_id: `t-${n}`, request_id: null, state, seq, user_text: user, reply,
+  finish_reason: null, error, trimmed_turns: 0, profile_id: null, profile_revision: null, attachments: [] });
+const u3State = (turns, over = {}) => ({ conversation_id: 'c-koda', active_turn: null, turns, evicted: 0, queue_note: null,
+  availability: { state: 'ready', message: 'El motor de Koda está listo.' }, history_before: null, history_skipped: 0, history_problem: null,
+  history_persisted: true, conversation_specialist: null, target: null, producer: { pi: 'ready', note: 'Chat con el motor de Koda.' },
+  display_name: null, view: 'chat', chat_visible: [400, 300], ...over });
+
+test('U3: the engine chat:state keeps the page keys and the turn shape', () => {
+  const v = u3State([u3Turn(1000000000, 'hola', 'buenas', 'completed', 4)]);
+  assert.deepEqual(Object.keys(v).sort(), U3_KEYS);
+  assert.deepEqual(Object.keys(v.turns[0]).sort(), U3_TURN_KEYS);
+});
+
+test('U3: a streamed engine reply renders, announces once and drives the controls', () => {
+  const thinking = u3State([u3Turn(1000000000, '¿Quién sos?', '', 'thinking', 3)], {
+    active_turn: 't-1000000000', availability: { state: 'busy', message: 'El motor de Koda está respondiendo.' }, producer: { pi: 'busy', note: 'Chat con el motor de Koda.' } });
+  const streaming = u3State([u3Turn(1000000000, '¿Quién sos?', 'Soy Ko', 'streaming', 4)], {
+    active_turn: 't-1000000000', availability: thinking.availability, producer: thinking.producer });
+  const done = u3State([u3Turn(1000000000, '¿Quién sos?', 'Soy Koda.', 'completed', 5)]);
+  assert.equal(V.activeTurn(streaming).turn_id, 't-1000000000');
+  assert.equal(V.sendState(streaming, 'otra', false).disabled, true, 'a running turn: cancel is the control');
+  assert.equal(V.poseFor(thinking), 'think');
+  assert.equal(V.poseFor(streaming), 'speak');
+  assert.deepEqual(V.turnRows(streaming.turns[0]).map(r => [r.kind, r.text]), [['user', '¿Quién sos?'], ['assistant', 'Soy Ko']]);
+  assert.equal(V.staleSnapshot(thinking, streaming), false);
+  assert.equal(V.staleSnapshot(done, streaming), true, 'an older push never resurrects the running turn');
+  assert.equal(V.announcement(thinking, streaming), 'Escribiendo…');
+  assert.equal(V.announcement(streaming, done), 'Koda respondió: Soy Koda.');
+  assert.equal(V.statusView(done).word, 'Conectado');
+  assert.equal(V.canSend(done, 'hola', false), true);
+  assert.equal(V.needsCheck(done), false, 'no local target: the page never loops on the local-model check');
+});
+
+test('U3: engine errors, cancellation and an unavailable engine use the existing rows and words', () => {
+  const err = u3State([u3Turn(1000000000, 'hola', '', 'error', 6, { code: 'busy', safe_message: 'El motor de Koda está atendiendo otro mensaje; probá de nuevo en un momento.', retryable: true })]);
+  assert.deepEqual(V.turnRows(err.turns[0]).map(r => r.kind), ['user', 'error']);
+  assert.equal(V.poseFor(err), 'error');
+  const cancelled = u3State([u3Turn(1000000000, 'hola', 'parte', 'cancelled', 7)]);
+  assert.deepEqual(V.turnRows(cancelled.turns[0]).map(r => r.kind), ['user', 'assistant', 'note']);
+  const down = u3State([], { availability: { state: 'unavailable', message: 'El motor de Koda no está disponible todavía.' }, producer: { pi: 'unavailable', note: 'Chat con el motor de Koda.' } });
+  assert.equal(V.statusView(down).kind, 'down');
+  assert.equal(V.statusLine(down), 'El motor de Koda no está disponible todavía.');
+  assert.ok(V.sendState(down, 'hola', false).blocked, 'pressing send says why');
+  assert.equal(V.canSend(down, 'hola', false), false);
+});
+
+test('U3: an earlier engine history page merges before the live turns', () => {
+  const live = [u3Turn(999999999, 'segunda', 'dos', 'completed', 9), u3Turn(1000000000, 'tercera', 'tres', 'completed', 9)];
+  const older = [u3Turn(999999998, 'primera', 'uno', 'completed', 10)];
+  assert.deepEqual(V.mergeHistory(older, live).map(t => t.user_text), ['primera', 'segunda', 'tercera']);
+  const chat = fs.readFileSync(path.join(__dirname, '..', 'frontend', 'chat.js'), 'utf8');
+  assert.match(chat, /action\(\{ action: 'history', conversation_id: id, before: historyBefore \}\)/, 'the page passes history_before back unchanged');
+  assert.match(chat, /historyBefore = page\.before \|\| null;/);
+});
+
+console.log(`chat-view-check (U3 engine shape): ${passed} passed`);
