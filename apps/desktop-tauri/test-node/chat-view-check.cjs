@@ -817,7 +817,8 @@ test('U3: an earlier engine history page joins the run before the live turns, in
   assert.match(chat, /historyBefore = page\.before \|\| null;/);
   // U4 (F2): the cursor follows every chat:state (the conversation id is the constant c-koda), not only a reset
   assert.match(chat, /followWindow\(next\);\s*view = next;/);
-  assert.match(chat, /if \(!olderTurns\.length\) \{ historyBefore = next\.history_before \|\| null; return; \}/);
+  // F2 follow-up: until an earlier page answered (even with no whole turn) the cursor follows the window
+  assert.match(chat, /if \(!runStarted\) \{ historyBefore = next\.history_before \|\| null; return; \}/);
 });
 
 test('S2 paging: turns that leave the live window keep their place; scroll-triggered pages are coalesced', () => {

@@ -82,7 +82,12 @@
   let historyBefore = null;
   let paging = false;
   let historyGeneration = 0;
-  let lastPage = 0, pageTimer = 0;
+  let lastPage = 0, pageTimer = 0, pendingPage = null;
+  // Once an earlier page answered (even with no whole turn), the cursor is the one the pages returned, never the
+  // window's again (F2: a page that adds no rows must not lose its place). `autoFor` = the cursor the page asked for by
+  // itself because the newest page held only a lone reply (F1: one read per such cursor, never a loop).
+  let runStarted = false, autoFor = null;
+  let pageProblem = ''; // F7: the paging error on screen, cleared when a page loads
   let following = true; // the log follows the newest message («Ir al final» hidden)
 
   function setLive(text) {
@@ -214,6 +219,8 @@
   // #310: the history is reconciled against what is drawn, never rebuilt. Measured before the fix: sending one
   // message removed 23 nodes to go from 2 to 4 rows and moved the first row twice (the flash).
   let drawn = [];            // the rows as last drawn, in order
+  let drawnKeys = [];        // F5: their keys, position-matched
+  let turnCache = new Map(); // F5: turn id -> { turn, rows, keys } as last drawn
   function paintRow(li, row) {
     li.className = row.kind;
     li.textContent = '';
@@ -257,13 +264,24 @@
     const pinned = V.atBottom(log.scrollTop, log.scrollHeight, log.clientHeight);
     const before = log.scrollHeight;
     const turns = V.mergeHistory(olderTurns, view && Array.isArray(view.turns) ? view.turns : []);
-    const rows = [];
-    for (const turn of turns) for (const row of V.turnRows(turn)) rows.push(row);
+    // F5: a turn the host re-sent unchanged keeps its rows and their keys; only a changed turn is rendered again
+    const rows = [], keys = [], cache = new Map();
+    for (const turn of turns) {
+      let entry = turnCache.get(turn.turn_id);
+      if (entry && V.sameTurn(entry.turn, turn)) entry.turn = turn;
+      else { const r = V.turnRows(turn); entry = { turn, rows: r, keys: r.map(V.rowKey) }; }
+      cache.set(turn.turn_id, entry);
+      for (let k = 0; k < entry.rows.length; k += 1) { rows.push(entry.rows[k]); keys.push(entry.keys[k]); }
+    }
+    turnCache = cache;
     const placeholder = log.querySelector('li.empty');
-    const g = turns.length ? null : V.emptyGreeting(view);
+    // F1: the greeting is for a chat with no history at all — never while earlier turns exist (a newest page that is
+    // only a lone reply has no whole turn yet, but its cursor says the history is there)
+    const empty = !turns.length && !historyBefore;
+    const g = empty ? V.emptyGreeting(view) : null;
     const historyLabel = $('chat-history-label'); // T7.3: «Conversación nueva» only while the conversation has no turns
-    if (historyLabel) historyLabel.hidden = turns.length > 0;
-    if (!turns.length) {
+    if (historyLabel) historyLabel.hidden = turns.length > 0 || !!historyBefore;
+    if (empty) {
       // §2.3: lock «local» + eye-off, centred; the whole sentence is aria.
       // F027: an explicit display name adds «Hola, <nombre>.» as visible text. The
       // name arrives with a later state push, so the row is redrawn whenever the
@@ -298,10 +316,10 @@
         }
         log.appendChild(li);
       }
-      drawn = [];
+      drawn = []; drawnKeys = [];
     } else {
-      if (placeholder) { placeholder.remove(); drawn = []; }
-      const plan = V.reconcileRows(drawn, rows);
+      if (placeholder) { placeholder.remove(); drawn = []; drawnKeys = []; }
+      const plan = V.reconcileRows(drawn, rows, drawnKeys, keys);
       const hadRows = drawn.length > 0;
       for (const { index, row } of plan.patch) paintRow(log.children[index], row);
       for (let k = 0; k < plan.remove; k += 1) log.lastElementChild.remove();
@@ -314,7 +332,7 @@
       if (plan.prepend) { // an earlier page: its rows go on top, nothing drawn is repainted
         log.prepend(...plan.prepend.map(row => { const li = document.createElement('li'); paintRow(li, row); return li; }));
       }
-      drawn = rows;
+      drawn = rows; drawnKeys = keys;
     }
     if (!turns.length) {
       newer.hidden = true; // nothing left to scroll to (conversation reset)
@@ -340,7 +358,7 @@
     send.disabled = V.sendState(view, input.value, inFlight).disabled;
     const draftIssue = input.value ? V.draftProblem(input.value) : null;
     const historyProblem = view && view.history_problem;
-    problem.textContent = localProblem || historyProblem || draftIssue || '';
+    problem.textContent = localProblem || pageProblem || historyProblem || draftIssue || '';
     if (loadEarlierButton) { loadEarlierButton.hidden = !historyBefore; loadEarlierButton.disabled = paging; }
     if ($('chat-history-warning')) {
       const warning = historyProblem || (view && view.history_skipped ? `Se omitieron ${view.history_skipped} registros dañados.` : '');
@@ -349,7 +367,7 @@
     }
     const availability = view && view.availability ? view.availability.state : 'unchecked';
     capsule.dataset.chatAvailability = availability;
-    status.textContent = localProblem || V.statusLine(view);
+    status.textContent = localProblem || pageProblem || V.statusLine(view);
     const sv = V.statusView(view);
     stateChip.dataset.tone = sv.tone;
     stateChip.dataset.kind = sv.kind;
@@ -371,7 +389,8 @@
 
   function resetHistory(next) {
     olderTurns = []; historyBefore = next.history_before || null; historyGeneration += 1; paging = false;
-    log.textContent = ''; drawn = [];
+    runStarted = false; autoFor = null; pageProblem = ''; clearTimeout(pageTimer); pageTimer = 0; pendingPage = null;
+    log.textContent = ''; drawn = []; drawnKeys = []; turnCache = new Map();
   }
   // S10 (L35): Coucou's growing chat. The page computes the height its conversation wants (240 + 40 per message, up to 300) and
   // reports it through the closed `height` verb; Rust clamps it again and resizes the native window. Only while the chat is the
@@ -422,6 +441,7 @@
     renderModelRow();
     scheduleCheck();
     if (capsule.dataset.view === 'chat') setLive(said);
+    autoPage();
     // #313: turns and the model going down become cues by TRANSITION (history and the first snapshot are baselines)
     try { const w = window.AbitoSoundWiringInstance; if (w) w.observeChat(next); } catch { /* sound never breaks the chat */ }
   }
@@ -431,41 +451,66 @@
   // cursor that page returned (the daemon's position of the run's first turn), so a page is only ever asked for
   // the turns right above the run: it always joins it. Turns that slide out of the live window stay in the run.
   function followWindow(next) {
-    if (!olderTurns.length) { historyBefore = next.history_before || null; return; }
+    if (!runStarted) { historyBefore = next.history_before || null; return; }
     const left = V.leftWindow(view && view.turns, next.turns);
     if (left.length) olderTurns = olderTurns.concat(left);
   }
-  // Scroll-triggered pages are coalesced: at most one request per V.PAGE_GAP_MS, never two in flight.
-  function schedulePage() {
-    if (pageTimer || paging || !historyBefore) return;
+  // Every page request — scroll, «Cargar anteriores» (F3) or the one extra after an empty page (F2) — is coalesced:
+  // at most one request per V.PAGE_GAP_MS, never two in flight. A press while a request is pending upgrades it to
+  // a control request (it no longer needs the reader at the top).
+  function schedulePage(mode, extra) {
+    if (paging || !historyBefore) return;
+    if (pageTimer) { if (mode === 'control' && pendingPage) pendingPage = { mode, extra: false }; return; }
     const wait = V.pageWait(Date.now(), lastPage);
-    if (!wait) { loadOlder(false); return; }
-    pageTimer = setTimeout(() => { pageTimer = 0; if (log.scrollTop <= 8) loadOlder(false); }, wait);
+    if (!wait) { loadOlder(mode, extra); return; }
+    pendingPage = { mode, extra: !!extra };
+    pageTimer = setTimeout(() => { pageTimer = 0; const p = pendingPage; pendingPage = null; if (p) loadOlder(p.mode, p.extra); }, wait);
   }
-  function loadOlder(byControl) {
-    if (!view || !historyBefore || paging || log.inert || (!byControl && log.scrollTop > 8)) return;
+  // F1: the newest page held only a lone reply (no whole turn, history behind it): ask for the ONE earlier page that
+  // holds its prompt, by itself — once per cursor, before any page was loaded, never a loop.
+  function autoPage() {
+    if (runStarted || paging || !view || !historyBefore || autoFor === historyBefore) return;
+    if (Array.isArray(view.turns) && view.turns.length) return;
+    autoFor = historyBefore;
+    loadOlder('auto', true);
+  }
+  // mode: 'scroll' (the reader is at the top), 'control' («Cargar anteriores»), 'auto' (F1). `extra` = this request
+  // is already the one follow-up a user action may get (F2), or needs none.
+  function loadOlder(mode, extra) {
+    if (!view || !historyBefore || paging || log.inert || (mode === 'scroll' && log.scrollTop > 8)) return;
     paging = true;
     lastPage = Date.now();
     renderControls();
     const id = view.conversation_id, generation = historyGeneration, cursor = historyBefore;
     const height = log.scrollHeight, top = log.scrollTop;
+    let again = false;
     action({ action: 'history', conversation_id: id, before: cursor }).then(page => {
       if (!view || view.conversation_id !== id || generation !== historyGeneration || cursor !== historyBefore) return;
+      const had = olderTurns.length;
       olderTurns = V.mergeHistory(page.turns, olderTurns);
       historyBefore = page.before || null;
+      runStarted = true;
+      pageProblem = ''; // F7: a page loaded, the earlier failure is over
       if (page.skipped) view.history_skipped = page.skipped;
       renderLog(); renderControls();
       log.scrollTop = top + log.scrollHeight - height; // keep the same message under the reader's eye
-      if (byControl) {
+      // F2: a page that added no rows leaves the reader where it was (no new scroll event): the next page is asked
+      // for once more by itself, inside the same rate limit — at most one extra per user action
+      again = !extra && olderTurns.length === had && !!historyBefore;
+      if (mode === 'control') {
         setLive(historyBefore ? 'Mensajes anteriores cargados.' : 'Mensajes anteriores cargados. Es el comienzo del chat.');
         if (!historyBefore) log.focus(); // the control went away: keep keyboard users in the history
       }
     }, error => {
       if (generation !== historyGeneration) return;
-      localProblem = error.message || 'No se pudo cargar el historial anterior.'; renderControls(); setLive(localProblem);
-    }).finally(() => { if (generation === historyGeneration) { paging = false; renderControls(); } });
+      pageProblem = (error && error.message) || 'No se pudo cargar el historial anterior.'; renderControls(); setLive(pageProblem);
+    }).finally(() => {
+      if (generation !== historyGeneration) return;
+      paging = false; renderControls();
+      if (again) schedulePage(mode, true);
+    });
   }
-  if (loadEarlierButton) loadEarlierButton.addEventListener('click', () => loadOlder(true));
+  if (loadEarlierButton) loadEarlierButton.addEventListener('click', () => schedulePage('control', false));
 
   // ---- open / back --------------------------------------------------------
   let openedByKeyboard = false;
@@ -715,7 +760,7 @@
     setFollowing(true);
   });
   log.addEventListener('scroll', () => {
-    if (log.scrollTop <= 8) schedulePage();
+    if (log.scrollTop <= 8) schedulePage('scroll', false);
     setFollowing(V.atBottom(log.scrollTop, log.scrollHeight, log.clientHeight));
   });
 

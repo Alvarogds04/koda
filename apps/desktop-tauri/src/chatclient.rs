@@ -196,6 +196,9 @@ pub struct ChatAsk {
 pub struct StreamMessage {
     pub id: String,
     pub text: String,
+    /// The engine cycle (`busyStarts`) the message started in: the host tells the island's
+    /// own turn's output from another client's by it (S2 follow-ups B2/F6).
+    pub turn: u64,
 }
 
 /// K2-05 T4 U3 F5: a chat command this client sent that still waits for its answer. The
@@ -330,7 +333,23 @@ pub struct ChatState {
     /// F4: whether a newest-history page arrived on this connection (until then the
     /// island keeps showing the last known chat instead of an empty one).
     history_loaded: bool,
+    /// S2 follow-ups (B2/F6): how many engine cycles started on this connection (every
+    /// `busy` false → true, the island's own sends and other clients' alike). Every live
+    /// message is stamped with the cycle it started in.
+    busy_starts: u64,
+    /// `busyStarts` when the last newest page (`history`) was folded: the cycles started
+    /// after it are the turns the island's known record does not carry yet.
+    history_starts: u64,
+    /// Whether that newest page was folded while the engine was busy (a cycle in flight: its
+    /// prompt may or may not be in it yet, so the page proves nothing about that cycle).
+    history_busy: bool,
+    /// This connection's identity (process-unique): the cycle counters above restart with
+    /// every connection, so the host only compares them within one.
+    conn: u64,
 }
+
+/// The next connection identity handed out by [`ChatState::new`].
+static NEXT_CONN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 impl ChatState {
     fn new(connection: &str) -> ChatState {
@@ -355,6 +374,10 @@ impl ChatState {
             reads: json!({"answered": 0, "failed": 0}),
             earlier_reads: json!({"answered": 0, "failed": 0}),
             history_loaded: false,
+            busy_starts: 0,
+            history_starts: 0,
+            history_busy: false,
+            conn: NEXT_CONN.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         }
     }
 
@@ -502,6 +525,10 @@ impl ChatState {
                     "paused": s.get("paused").and_then(Value::as_bool).unwrap_or(false),
                 });
                 let mut changed = false;
+                if agent["busy"] == json!(true) && self.agent["busy"] != json!(true) {
+                    self.busy_starts += 1;
+                    changed = true;
+                }
                 self.ledger_busy(agent["busy"] == json!(true));
                 if self.agent != agent {
                     self.agent = agent;
@@ -533,25 +560,28 @@ impl ChatState {
                     if self.streaming.len() >= MAX_STREAM_MESSAGES { self.streaming.remove(0); }
                     let mut acc = String::new();
                     push_bounded(&mut acc, text, MAX_STREAM_CHARS);
-                    self.streaming.push(StreamMessage { id: id.to_owned(), text: acc });
+                    self.streaming.push(StreamMessage { id: id.to_owned(), text: acc, turn: self.busy_starts });
                     true
                 }
             }
             "message_done" => {
                 let Some(id) = id_field(frame, "messageId") else { return };
                 self.ledger_output();
-                let landed = match self.streaming.iter().position(|s| s.id == id) {
-                    Some(at) => self.streaming.remove(at).text,
+                let (landed, turn) = match self.streaming.iter().position(|s| s.id == id) {
+                    Some(at) => {
+                        let s = self.streaming.remove(at);
+                        (s.text, s.turn)
+                    }
                     None => {
                         // a done for an id the island never streamed: land it honestly empty, once
                         let key = json!(id);
                         if self.messages.iter().any(|m| m["id"] == key) { return; }
-                        String::new()
+                        (String::new(), self.busy_starts)
                     }
                 };
                 if self.messages.len() >= MAX_MESSAGES { self.messages.remove(0); }
                 let activities = std::mem::take(&mut self.pending_activities);
-                self.messages.push(json!({"id": id, "role": "assistant", "text": landed, "activities": activities}));
+                self.messages.push(json!({"id": id, "role": "assistant", "text": landed, "activities": activities, "turn": turn}));
                 true
             }
             "activity" => {
@@ -691,6 +721,12 @@ impl ChatState {
             return true;
         }
         let mut changed = false;
+        let busy = self.agent["busy"] == json!(true);
+        if self.history_starts != self.busy_starts || self.history_busy != busy {
+            self.history_starts = self.busy_starts;
+            self.history_busy = busy;
+            changed = true;
+        }
         if self.has_earlier != has_earlier {
             self.has_earlier = has_earlier;
             changed = true;
@@ -987,8 +1023,18 @@ struct Pending {
     text: String,
     submitted_ms: u64,
     /// The newest record position the host had seen when it was sent: its prompt can only be
-    /// recorded after it, and an unrecorded turn sorts right after it.
+    /// recorded after it, and an unrecorded turn sorts right after it. B2: advanced past
+    /// every prompt recorded before the send as soon as a page shows it.
     after: u64,
+    /// The connection it was sent on and its engine cycle count (`busyStarts`) then: the
+    /// turn's own cycle is the next one, so output of a later cycle is never its own (F6),
+    /// and a newest page folded before that cycle started can only hold prompts recorded
+    /// before the send (B2).
+    conn: u64,
+    starts: u64,
+    /// Whether a page showed the prompt this turn took over (false = bound by its lone reply,
+    /// so the island keeps the prompt text until a newest page carries it: B1).
+    seen_prompt: bool,
     /// The last non-empty reply seen (kept across a connection reset that drops the live
     /// messages from the island's view).
     reply: String,
@@ -1006,6 +1052,8 @@ struct Settled {
     state: &'static str,
     error: Value,
     reply: String,
+    /// B1: the prompt text while no newest page carried the prompt (its lone reply did).
+    user: String,
 }
 
 /// One projected turn, with its place in the record: `(prompt position, 0, 0)` for a record
@@ -1053,6 +1101,9 @@ struct HostInner {
     live: bool,
     /// When the last status line was sent for a view/check.
     last_status_ms: Option<u64>,
+    /// F6: the (connection, cycle count) the last catch-up read was asked for: a cycle the
+    /// known record does not carry (another client's turn) is read once the engine is quiet.
+    asked_starts: Option<(u64, u64)>,
 }
 
 /// The island's chat host: one per app, shared by the Tauri command and the event emitter.
@@ -1123,16 +1174,68 @@ fn chat_messages(chat: &Value) -> Vec<Value> {
     chat.get("messages").and_then(Value::as_array).cloned().unwrap_or_default()
 }
 
-/// The messages still streaming, as (daemon message id, text so far).
-fn live_streams(chat: &Value) -> Vec<(String, String)> {
+/// The messages still streaming, as (daemon message id, text so far, engine cycle).
+fn live_streams(chat: &Value) -> Vec<(String, String, u64)> {
+    let starts = busy_starts(chat);
     chat.get("streaming")
         .and_then(Value::as_array)
         .map(|s| {
             s.iter()
-                .filter_map(|m| Some((m.get("id")?.as_str()?.to_owned(), m.get("text")?.as_str()?.to_owned())))
+                .filter_map(|m| Some((m.get("id")?.as_str()?.to_owned(), m.get("text")?.as_str()?.to_owned(), msg_turn(m, starts))))
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// The engine cycles started on the view's connection (`busyStarts`).
+fn busy_starts(chat: &Value) -> u64 {
+    chat.get("busyStarts").and_then(Value::as_u64).unwrap_or(0)
+}
+
+/// The view's connection identity (`conn`).
+fn chat_conn(chat: &Value) -> u64 {
+    chat.get("conn").and_then(Value::as_u64).unwrap_or(0)
+}
+
+/// Whether the view is a connected one whose own newest page arrived.
+fn chat_loaded(chat: &Value) -> bool {
+    chat_connected(chat) && chat.get("historyLoaded").and_then(Value::as_bool) == Some(true)
+}
+
+/// `busyStarts` when the view's newest page was folded (`historyStarts`).
+fn history_starts(chat: &Value) -> u64 {
+    chat.get("historyStarts").and_then(Value::as_u64).unwrap_or(0)
+}
+
+/// Whether the view's newest page carries every engine cycle that already started and
+/// ended (folded on a quiet engine, after the last cycle began).
+fn history_current(chat: &Value) -> bool {
+    busy_starts(chat) <= history_starts(chat) && chat.get("historyBusy").and_then(Value::as_bool) != Some(true)
+}
+
+/// The engine cycle a live message started in (`fallback` when unstamped).
+fn msg_turn(m: &Value, fallback: u64) -> u64 {
+    m.get("turn").and_then(Value::as_u64).unwrap_or(fallback)
+}
+
+/// B1: the daemon id of the prompt right before a history reply (the reply's own file, the
+/// index before it); None for the first message of a file (its prompt is in the file before).
+fn prompt_before(id: &str) -> Option<String> {
+    let (file, index) = history_pos(id)?;
+    (index >= 2).then(|| format!("s{file}-{}", index - 1))
+}
+
+/// B1: whether a recorded reply is the reply the island streamed for its own turn (the record
+/// may hold a clipped prefix of it; control characters are display-stripped on both sides).
+fn same_reply(live: &str, recorded: &Value) -> bool {
+    let clean = |t: &str| t.chars().filter(|c| !c.is_control() || matches!(c, '\t' | '\n' | '\r')).collect::<String>();
+    let (live, text) = (clean(live), clean(msg_text(recorded)));
+    let (live, text) = (live.trim_end(), text.trim_end());
+    if text.is_empty() {
+        return false;
+    }
+    let clipped = recorded.get("clipped").and_then(Value::as_bool) == Some(true) || utf16_len(text) + 1 >= MAX_TEXT_CHARS;
+    live == text || (clipped && live.starts_with(text))
 }
 
 /// F5: the errors correlated to the island's own send / turn (never a read's, an ask
@@ -1241,7 +1344,9 @@ impl HostInner {
     /// sent takes that turn over when its text is the turn's text — unless the turn was
     /// refused (it never reached the engine) or is already bound. The daemon records one
     /// turn at a time, so once the record carries island turn `m`, no island turn sent
-    /// before `m` can own a LATER record (the floor).
+    /// before `m` can own a LATER record (the floor). B2: `after` is the record position the
+    /// island knew at send time, kept current (see `catch_up` and `window`), so a prompt another
+    /// client recorded before the send is never taken, whatever its text.
     fn claim_prompts(&mut self, messages: &[Value]) {
         let mut floor = 0u64;
         for m in messages {
@@ -1257,10 +1362,34 @@ impl HostInner {
             });
             if let Some(at) = at {
                 self.pending[at].bound = true;
+                self.pending[at].seen_prompt = true;
                 let n = self.pending[at].num;
                 self.claim(id, n);
                 floor = n;
             }
+        }
+    }
+
+    /// B1: a newest page that starts with a lone reply (its prompt is the message right before
+    /// the page) whose text is the reply the island streamed for one of its own turns: that
+    /// turn took the prompt over (bound by its reply, the prompt text is the island's own).
+    fn claim_lone_head(&mut self, messages: &[Value]) {
+        let Some(head) = messages.iter().find(|m| msg_id(m).and_then(record_pos).is_some()) else { return };
+        if msg_role(head) != "assistant" {
+            return;
+        }
+        let Some(prompt) = msg_id(head).and_then(prompt_before) else { return };
+        let Some(pos) = record_pos(&prompt) else { return };
+        if self.claims.contains_key(&prompt) {
+            return;
+        }
+        let at = self.pending.iter().position(|p| {
+            !p.bound && pos > p.after && TurnEnd::may_be_recorded(&p.ended) && same_reply(&p.reply, head)
+        });
+        if let Some(at) = at {
+            self.pending[at].bound = true;
+            let n = self.pending[at].num;
+            self.claim(&prompt, n);
         }
     }
 
@@ -1276,7 +1405,23 @@ impl HostInner {
         let record: Vec<(&Value, &str, u64)> =
             messages.iter().filter_map(|m| msg_id(m).and_then(|id| record_pos(id).map(|p| (m, id, p)))).collect();
         let first_prompt = record.iter().position(|(m, _, _)| msg_role(m) == "user");
+        // B1: the newest page starts with the lone reply of a turn the island took over: that
+        // turn stays on the page (its prompt text is the island's own), with this one reply,
+        // and the page before ends right before its prompt
+        let head_turn = record
+            .first()
+            .filter(|(m, _, _)| answered.is_none() && msg_role(m) == "assistant")
+            .and_then(|(m, id, pos)| {
+                let num = *self.claims.get(&prompt_before(id)?)?;
+                let pending = self.pending.iter().find(|p| p.bound && p.num == num);
+                let user = match pending {
+                    Some(p) => p.text.clone(),
+                    None => self.settled.get(&num).map(|s| s.user.clone()).filter(|u| !u.is_empty())?,
+                };
+                Some((num, user, msg_text(m).to_owned(), pos - 1))
+            });
         let cursor = match (first_prompt, record.first()) {
+            _ if head_turn.is_some() => has_earlier.then(|| head_turn.as_ref().map(|h| h.3)).flatten(),
             (Some(at), _) => has_earlier.then_some(record[at].2),
             (None, Some((_, id, pos))) if has_earlier => {
                 let lone: Vec<&str> = record.iter().map(|(m, _, _)| msg_text(m)).collect();
@@ -1290,7 +1435,19 @@ impl HostInner {
             _ => None,
         };
         let live: std::collections::HashMap<u64, &Pending> = self.pending.iter().filter(|p| p.bound).map(|p| (p.num, p)).collect();
+        // a bound island turn still in `pending` renders from what the island saw (its end, if
+        // any): its reply is already whole, so the record's copy is never added to it
+        let island_row = |p: &Pending, order: (u64, u8, u64)| {
+            let (state, error) = p.ended.as_ref().map(end_view).unwrap_or((LIVE_ROW, Value::Null));
+            Row { order, num: p.num, user: p.text.clone(), reply: p.reply.clone(), state, error }
+        };
         let mut rows: Vec<Row> = Vec::new();
+        if let Some((num, user, reply, pos)) = head_turn {
+            rows.push(match live.get(&num) {
+                Some(p) => island_row(p, (pos, 0, 0)),
+                None => Row { order: (pos, 0, 0), num, user, reply, state: "completed", error: Value::Null },
+            });
+        }
         let mut prev: Option<(&str, bool)> = None; // (id, is a prompt)
         for (m, id, pos) in record.iter().skip(first_prompt.unwrap_or(record.len())) {
             let after_prompt = prev.is_some_and(|(p, prompt)| prompt && follows(p, id));
@@ -1298,12 +1455,14 @@ impl HostInner {
             match msg_role(m) {
                 "user" => {
                     let num = self.claims.get(*id).copied().unwrap_or(*pos);
-                    let row = match live.get(&num) {
-                        // still the island's turn: it renders from what the island saw (its end, if any)
-                        Some(p) => {
-                            let (state, error) = p.ended.as_ref().map(end_view).unwrap_or((LIVE_ROW, Value::Null));
-                            Row { order: (*pos, 0, 0), num, user: p.text.clone(), reply: p.reply.clone(), state, error }
+                    if answered.is_none() {
+                        // B1: a newest page carries this prompt: the island no longer keeps its text
+                        if let Some(s) = self.settled.get_mut(&num) {
+                            s.user = String::new();
                         }
+                    }
+                    let row = match live.get(&num) {
+                        Some(p) => island_row(p, (*pos, 0, 0)),
                         None => Row { order: (*pos, 0, 0), num, user: msg_text(m).to_owned(), reply: String::new(), state: "completed", error: Value::Null },
                     };
                     rows.push(row);
@@ -1316,10 +1475,11 @@ impl HostInner {
                 _ => {}
             }
         }
-        // the lone reply kept for the answered cursor completes the page's last turn
+        // the lone reply kept for the answered cursor completes the page's last turn — unless
+        // that turn is the island's own still in `pending`, whose reply already holds it (B1)
         if let (Some(answered), Some((_, last_id, _)), Some((_, true))) = (answered, record.last(), prev) {
             let head = self.heads.iter().find(|(h, _)| h == answered).map(|(_, text)| text.clone());
-            if let (Some(text), true, Some(last)) = (head, follows(last_id, answered), rows.last_mut()) {
+            if let (Some(text), true, Some(last)) = (head, follows(last_id, answered), rows.last_mut().filter(|r| !live.contains_key(&r.num))) {
                 last.reply = join_reply(&last.reply, &text);
             }
         }
@@ -1333,7 +1493,7 @@ impl HostInner {
                 // F6-edge: the record carries the reply now: only the end state is kept
                 s.reply = String::new();
             }
-            if s.state == "completed" && s.reply.is_empty() {
+            if s.state == "completed" && s.reply.is_empty() && s.user.is_empty() {
                 self.settled.remove(&row.num);
             }
         }
@@ -1396,12 +1556,27 @@ impl HostInner {
     /// resurrected).
     fn window(&mut self, chat: &Value, now_ms: u64) -> (Vec<Row>, Option<u64>) {
         let (messages, has_earlier) = self.shown_messages(chat);
+        let mut newest_pos = 0;
         for m in &messages {
             if let Some(pos) = msg_id(m).and_then(record_pos) {
-                self.max_seen = self.max_seen.max(pos);
+                newest_pos = newest_pos.max(pos);
+            }
+        }
+        self.max_seen = self.max_seen.max(newest_pos);
+        let conn = chat_conn(chat);
+        let loaded = chat_loaded(chat);
+        let starts_now = busy_starts(chat);
+        // B2: a newest page folded before a turn's own engine cycle started holds only prompts
+        // recorded before its send (the daemon broadcasts `busy` before it hands the prompt to
+        // the engine): the turn can only claim a prompt after all of them
+        if loaded && chat.get("historyBusy").and_then(Value::as_bool) != Some(true) {
+            let folded = history_starts(chat);
+            for p in self.pending.iter_mut().filter(|p| !p.bound && p.conn == conn && p.starts == folded) {
+                p.after = p.after.max(newest_pos);
             }
         }
         self.claim_prompts(&messages);
+        self.claim_lone_head(&messages);
         let connected = chat_connected(chat);
         let busy = chat_busy(chat);
         let engine_down = matches!(chat.pointer("/agent/status").and_then(Value::as_str), Some("restarting" | "stopped" | "unavailable"));
@@ -1412,10 +1587,20 @@ impl HostInner {
         // (0 = it predates every submission on this island)
         let streams = live_streams(chat);
         self.quiet = connected && !busy && streams.is_empty();
+        // F6: an engine cycle the known record does not carry (another client's turn, or the
+        // island's own) is read once the engine is quiet, so that turn shows where it was recorded
+        if self.quiet && loaded && !history_current(chat) && self.asked_starts != Some((conn, starts_now)) {
+            self.asked_starts = Some((conn, starts_now));
+            self.refresh_due = true;
+        }
         let present: std::collections::HashSet<&str> =
-            messages.iter().filter_map(msg_id).chain(streams.iter().map(|(id, _)| id.as_str())).collect();
+            messages.iter().filter_map(msg_id).chain(streams.iter().map(|(id, _, _)| id.as_str())).collect();
         self.live_owner.retain(|id, _| present.contains(id.as_str()));
-        let newest = self.pending.last().map(|p| p.num).unwrap_or(0);
+        // F6: live output belongs to the newest island turn only when it started in that turn's
+        // own engine cycle (the first one after its send) while the turn was running (or was
+        // cancelled: its held tail still lands); output of a later cycle is another client's
+        let newest = self.pending.last().filter(|p| p.conn == conn && matches!(p.ended, None | Some(TurnEnd::Cancelled))).map(|p| (p.num, p.starts));
+        let owner_of = |cycle: u64| newest.filter(|(_, starts)| cycle <= starts + 1).map(|(num, _)| num).unwrap_or(0);
         // (owner, text, still streaming)
         let mut live: Vec<(u64, String, bool)> = Vec::new();
         for m in &messages {
@@ -1423,11 +1608,11 @@ impl HostInner {
             if is_history_id(id) || msg_role(m) != "assistant" {
                 continue;
             }
-            let owner = *self.live_owner.entry(id.to_owned()).or_insert(newest);
+            let owner = *self.live_owner.entry(id.to_owned()).or_insert_with(|| owner_of(msg_turn(m, starts_now)));
             live.push((owner, msg_text(m).to_owned(), false));
         }
-        for (id, text) in &streams {
-            let owner = *self.live_owner.entry(id.clone()).or_insert(newest);
+        for (id, text, cycle) in &streams {
+            let owner = *self.live_owner.entry(id.clone()).or_insert_with(|| owner_of(*cycle));
             live.push((owner, text.clone(), true));
         }
         let owned = |owner: u64| -> (String, bool) {
@@ -1488,8 +1673,11 @@ impl HostInner {
             match (&p.ended, p.bound) {
                 (Some(end), true) => {
                     let (state, error) = end_view(end);
-                    if state != "completed" || !p.reply.is_empty() {
-                        self.settled.insert(p.num, Settled { state, error, reply: p.reply });
+                    // B1: bound by its lone reply, the prompt text is the island's own until a
+                    // newest page carries the prompt
+                    let user = if p.seen_prompt { String::new() } else { p.text };
+                    if state != "completed" || !p.reply.is_empty() || !user.is_empty() {
+                        self.settled.insert(p.num, Settled { state, error, reply: p.reply, user });
                     }
                 }
                 _ => keep.push(p),
@@ -1502,9 +1690,19 @@ impl HostInner {
             row.state = live_state.filter(|(n, _)| *n == row.num).map(|(_, s)| s).unwrap_or("thinking");
         }
         // live output nobody on this island submitted (a turn in flight when the island
-        // connected): it continues the newest history turn when no submission came after it
+        // connected): it continues the newest history turn only when that turn's prompt is the
+        // last message of the record (F6: never a turn whose reply is already recorded — another
+        // client's turn shows when its record arrives)
         let (orphan, orphan_streaming) = owned(0);
-        if let Some(last) = rows.last_mut().filter(|_| self.pending.is_empty()) {
+        let last_prompt = messages
+            .iter()
+            .rev()
+            .find(|m| msg_id(m).is_some_and(is_history_id))
+            .filter(|m| msg_role(m) == "user")
+            .and_then(msg_id)
+            .and_then(record_pos);
+        // (and never an island turn: its own output is owned by number, another cycle's is not its)
+        if let Some(last) = rows.last_mut().filter(|r| r.order.1 == 0 && r.num < LIVE_BASE && Some(r.order.0) == last_prompt) {
             last.reply = join_reply(&last.reply, &orphan);
             if busy && orphan_streaming {
                 last.state = "streaming";
@@ -1593,7 +1791,7 @@ impl ChatHost {
     /// (one `get_history`, exactly once per settle; a failed line is retried next time).
     /// `caller` is the window whose verb triggered it, or the main island window for the
     /// host's own refresh (a fixed, read-only line the page never shapes).
-    fn refresh_if_due(&self, link: &dyn ChatLink, caller: &str) {
+    fn refresh_if_due(&self, link: &dyn ChatLink, caller: &str) -> bool {
         let due = {
             let mut inner = self.inner.lock().expect("chat host lock");
             let due = inner.refresh_due && inner.quiet;
@@ -1604,7 +1802,30 @@ impl ChatHost {
         };
         if due && link.command(caller, &json!({"action": "chat_history"})).is_err() {
             self.inner.lock().expect("chat host lock").refresh_due = true;
+            return false;
         }
+        due
+    }
+
+    /// B2: before a send, the island's record must carry every engine cycle that already ran
+    /// (another client's turn, the island's own last one): otherwise a prompt recorded before
+    /// this send could look recorded after it. At most ONE newest-page read (or the wait for
+    /// the one the settle refresh just sent), bounded by `HISTORY_WAIT_MS`; a refused or late
+    /// read never blocks the send (the newest page folded before the turn's own cycle still
+    /// advances its claim floor, see `window`).
+    fn catch_up(&self, link: &dyn ChatLink, caller: &str, sent: bool) {
+        let v = link.view();
+        if !chat_loaded(&v) || chat_busy(&v) || history_current(&v) {
+            return;
+        }
+        let (answered, failed) = history_reads_counter(&v);
+        if !sent && link.command(caller, &json!({"action": "chat_history"})).is_err() {
+            return;
+        }
+        let _ = wait_view(link, HISTORY_WAIT_MS, |v| {
+            let (a, f) = history_reads_counter(v);
+            a > answered || f > failed || history_current(v)
+        });
     }
 
     /// Route one page verb (already parsed by `chat::parse_command`) for the caller window.
@@ -1636,7 +1857,8 @@ impl ChatHost {
                 if !attachments.is_empty() {
                     return Err(attachments_off());
                 }
-                self.refresh_if_due(link, caller);
+                let sent = self.refresh_if_due(link, caller);
+                self.catch_up(link, caller, sent);
                 self.submit(link, caller, text, client_request_id, now_ms)
             }
             Command::Cancel { turn_id } => self.cancel(link, caller, turn_id, now_ms),
@@ -1676,7 +1898,7 @@ impl ChatHost {
         let earlier_live: Vec<String> = chat_messages(&before)
             .iter()
             .filter_map(|m| msg_id(m).filter(|i| !is_history_id(i)).map(str::to_owned))
-            .chain(live_streams(&before).into_iter().map(|(id, _)| id))
+            .chain(live_streams(&before).into_iter().map(|(id, _, _)| id))
             .collect();
         for id in earlier_live {
             inner.live_owner.entry(id).or_insert(owner);
@@ -1690,6 +1912,9 @@ impl ChatHost {
             text,
             submitted_ms: now_ms,
             after,
+            conn: chat_conn(&before),
+            starts: busy_starts(&before),
+            seen_prompt: false,
             reply: String::new(),
             err_seen,
             ended: None,

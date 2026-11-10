@@ -1369,3 +1369,288 @@ fn paging_1500_turns_stays_within_the_islands_budget_and_a_send_still_goes_throu
     host.route(&*link, "main", &submit("al final", "req-b0000001"), T0 + 10).expect("a send is never refused because paging spent the budget");
     assert!(link.sent().iter().any(|c| matches!(c, ChatCommand::Send { .. })));
 }
+
+// ---- K2-05 T4 S2 paging follow-ups (verifier mwb2ywag-6-bm3h on ccbeab4: B1, B2, F6) -------------
+//
+// A fake daemon over a `Record` that also takes sends: the island's `send` (and another client's,
+// through `foreign`) appends its prompt (and, unless cancelled, its reply) and streams the frames
+// the daemon broadcasts. Comparisons are ORDER and CONTENT, never sorted.
+
+struct Live {
+    record: std::sync::Arc<Mutex<Record>>,
+    link: std::sync::Arc<FakeLink>,
+}
+
+impl Live {
+    /// `reply(text)`: the engine's reply to an island send (None = the island cancels it before
+    /// any output; `record_cancelled` = the engine recorded the cancelled prompt anyway).
+    fn new(log: Vec<(&'static str, String)>, reply: fn(&str) -> Option<String>, record_cancelled: bool) -> Live {
+        let record = std::sync::Arc::new(Mutex::new(Record { log, max: |_| 100 }));
+        let held = record.clone();
+        let mut link = FakeLink::answering(move |c| {
+            let mut r = held.lock().unwrap();
+            match c {
+                ChatCommand::Send { text, .. } => {
+                    let busy = json!({"type":"agent_state","busy":true,"status":"ready","paused":false});
+                    match reply(text) {
+                        Some(answer) => {
+                            r.log.push(("user", text.clone()));
+                            r.log.push(("assistant", answer.clone()));
+                            let id = format!("m{}", r.log.len());
+                            vec![busy, json!({"type":"message_delta","messageId":id,"text":answer}), json!({"type":"message_done","messageId":id}), json!({"type":"agent_state","busy":false,"status":"ready","paused":false})]
+                        }
+                        None => {
+                            if record_cancelled {
+                                r.log.push(("user", text.clone()));
+                            }
+                            vec![busy]
+                        }
+                    }
+                }
+                ChatCommand::Abort => vec![json!({"type":"agent_state","busy":false,"status":"ready","paused":false})],
+                ChatCommand::History => vec![r.history()],
+                ChatCommand::Earlier { before } => vec![r.earlier(before)],
+                _ => vec![],
+            }
+        });
+        link.unlimited = true;
+        Live { record, link: std::sync::Arc::new(link) }
+    }
+
+    /// Another client's whole turn: recorded by the daemon, broadcast to the island as busy,
+    /// its reply's stream, quiet. `seen` = the island's reader projects after every frame
+    /// (production: the reader callback), or only once at the end.
+    fn foreign(&self, host: &ChatHost, prompt: &str, reply: &str, seen: bool, now: u64) {
+        let id = {
+            let mut r = self.record.lock().unwrap();
+            r.log.push(("user", prompt.to_owned()));
+            r.log.push(("assistant", reply.to_owned()));
+            format!("x{}", r.log.len())
+        };
+        for f in [
+            json!({"type":"agent_state","busy":true,"status":"ready","paused":false}),
+            json!({"type":"message_delta","messageId":id,"text":reply}),
+            json!({"type":"message_done","messageId":id}),
+            json!({"type":"agent_state","busy":false,"status":"ready","paused":false}),
+        ] {
+            self.link.frame(f);
+            if seen {
+                self.publish(host, now);
+            }
+        }
+    }
+
+    /// The production reader callback's work: project the view, then the host's own refresh.
+    fn publish(&self, host: &ChatHost, now: u64) -> Value {
+        let v = host.project(&self.link.view(), now);
+        host.route(&*self.link, "main", &Command::View, now).unwrap();
+        v
+    }
+
+    /// The page's whole chat: the newest window, then every earlier page prepended (the page's
+    /// `mergeHistory`: one run, the live window wins on a shared id, a repeated id shown once).
+    fn whole_chat(&self, host: &ChatHost, now: u64) -> Vec<Value> {
+        let v = host.project(&self.link.view(), now);
+        let window = turns(&v);
+        let mut older: Vec<Value> = vec![];
+        let mut cursor = v["history_before"].clone();
+        let mut guard = 0;
+        while let Some(n) = cursor.as_u64() {
+            guard += 1;
+            assert!(guard < 100, "paging terminates");
+            let cmd = Command::History { conversation_id: CHAT_CONVERSATION_ID.into(), before: Some(n) };
+            let Routed::Answer(p) = host.route(&*self.link, "main", &cmd, now).unwrap() else { panic!() };
+            let mut next = turns(&p);
+            next.extend(older);
+            older = next;
+            cursor = p["before"].clone();
+        }
+        let ids: std::collections::HashSet<String> = window.iter().map(|t| t["turn_id"].as_str().unwrap().to_owned()).collect();
+        let mut seen = std::collections::HashSet::new();
+        let mut run: Vec<Value> = older.into_iter().filter(|t| {
+            let id = t["turn_id"].as_str().unwrap().to_owned();
+            !ids.contains(&id) && seen.insert(id)
+        }).collect();
+        run.extend(window);
+        run
+    }
+}
+
+fn shape(ts: &[Value]) -> Vec<(String, String, String)> {
+    ts.iter().map(|t| (t["user_text"].as_str().unwrap_or("?").to_owned(), t["reply"].as_str().unwrap_or("?").to_owned(), t["state"].as_str().unwrap_or("?").to_owned())).collect()
+}
+
+#[test]
+fn followups_b1_a_newest_page_holding_only_the_islands_own_reply_keeps_its_turn_with_one_reply() {
+    // the verifier's case: prompt ~7,905 chars, reply ~63,004 chars of 3-byte text (≈189 KB):
+    // the daemon's newest page (192 KiB) is the lone reply of the island's own turn
+    let prompt = "€".repeat(7_905);
+    let log = vec![("user", "hola".to_owned()), ("assistant", "buenas".to_owned())];
+    let live = Live::new(log, |_| Some("€".repeat(63_004)), false);
+    let reply = "€".repeat(63_004);
+    let host = ChatHost::new();
+    first_window(&host, &live.link);
+    live.publish(&host, T0);
+    let Routed::Answer(a) = host.route(&*live.link, "main", &submit(&prompt, "req-fb100001"), T0).unwrap() else { panic!() };
+    live.publish(&host, T0 + 10);
+    live.publish(&host, T0 + 20);
+    let page = live.link.view()["messages"].as_array().unwrap().clone();
+    assert_eq!(page.len(), 1, "the daemon's newest page is the lone reply");
+    assert_eq!(page[0]["role"], json!("assistant"));
+    let expected = vec![
+        ("hola".to_owned(), "buenas".to_owned(), "completed".to_owned()),
+        (prompt.clone(), reply.clone(), "completed".to_owned()),
+    ];
+    // the window still shows the island's own turn, once, with one copy of its reply
+    let v = host.project(&live.link.view(), T0 + 30);
+    let window = turns(&v);
+    assert_eq!(shape(&window), expected[1..].to_vec(), "the island's own turn stays visible: {} turns", window.len());
+    assert_eq!(window[0]["turn_id"], a["turn_id"]);
+    assert!(v["history_before"].as_u64().is_some(), "the history stays reachable");
+    // paging up: every turn once, the reply attached once to the right turn
+    let run = live.whole_chat(&host, T0 + 40);
+    assert_eq!(shape(&run), expected, "paging up: one copy of the reply, under its own prompt");
+    // the next pushes (the turn settles into the record) and a page reload walk again
+    for k in 0..2 {
+        live.publish(&host, T0 + 50 + k);
+        let run = live.whole_chat(&host, T0 + 60 + k);
+        assert_eq!(shape(&run), expected, "walk {k} after the record took the turn over");
+        assert!(run.iter().any(|t| t["turn_id"] == a["turn_id"]), "the island's turn keeps its id");
+    }
+}
+
+/// B2: another client's turn lands in the record first; then the island sends and cancels.
+fn b2_case(foreign_text: &str, island_text: &str, seen: bool, recorded: bool) {
+    let label = format!("foreign «{foreign_text}», island «{island_text}», reader saw it: {seen}, cancelled prompt recorded: {recorded}");
+    let log = vec![("user", "vieja".to_owned()), ("assistant", "r-vieja".to_owned())];
+    let live = Live::new(log, |_| None, recorded);
+    let host = ChatHost::new();
+    first_window(&host, &live.link);
+    live.publish(&host, T0);
+    live.foreign(&host, foreign_text, "r-otro", seen, T0 + 10);
+    let Routed::Answer(a) = host.route(&*live.link, "main", &submit(island_text, "req-fb200001"), T0 + 20).unwrap() else { panic!("{label}") };
+    let v = live.publish(&host, T0 + 30);
+    let active = v["active_turn"].as_str().unwrap_or_else(|| panic!("{label}: the island's turn runs: {v}")).to_owned();
+    assert_eq!(active, a["turn_id"].as_str().unwrap());
+    host.route(&*live.link, "main", &Command::Cancel { turn_id: active }, T0 + 40).unwrap();
+    let expected = vec![
+        ("vieja".to_owned(), "r-vieja".to_owned(), "completed".to_owned()),
+        (foreign_text.to_owned(), "r-otro".to_owned(), "completed".to_owned()),
+        (island_text.to_owned(), String::new(), "cancelled".to_owned()),
+    ];
+    for k in 0..3 {
+        live.publish(&host, T0 + 50 + k);
+        let ts = turns(&host.project(&live.link.view(), T0 + 60 + k));
+        assert_eq!(shape(&ts), expected, "{label}: pass {k}: the record's order, «Cancelado» under the island's own turn");
+        assert_eq!(ts[2]["turn_id"], a["turn_id"], "{label}: the island's turn keeps its id");
+        assert_ne!(ts[1]["turn_id"], a["turn_id"], "{label}: the other client's prompt never takes the island's turn");
+    }
+    // a page reload: the whole chat walked again from the window
+    assert_eq!(shape(&live.whole_chat(&host, T0 + 100)), expected, "{label}: after a page reload");
+}
+
+#[test]
+fn followups_b2_another_clients_identical_prompt_recorded_first_never_takes_the_islands_turn() {
+    for seen in [true, false] {
+        for recorded in [true, false] {
+            b2_case("hola", "hola", seen, recorded);
+        }
+    }
+}
+
+#[test]
+fn followups_b2_another_clients_different_prompt_recorded_first_keeps_the_records_order() {
+    for seen in [true, false] {
+        for recorded in [true, false] {
+            b2_case("otra cosa", "hola", seen, recorded);
+        }
+    }
+}
+
+#[test]
+fn followups_f6_another_clients_reply_never_joins_the_islands_newest_turn() {
+    let log = vec![("user", "vieja".to_owned()), ("assistant", "r-vieja".to_owned())];
+    let live = Live::new(log, |t| Some(format!("r-{t}")), false);
+    let host = ChatHost::new();
+    first_window(&host, &live.link);
+    live.publish(&host, T0);
+    host.route(&*live.link, "main", &submit("hola", "req-f6f00001"), T0).unwrap();
+    live.publish(&host, T0 + 10);
+    for refreshed in [false, true] {
+        // the island's own turn settled; its record may or may not have landed yet
+        if refreshed {
+            live.publish(&host, T0 + 20);
+        }
+        let label = format!("own record landed: {refreshed}");
+        let (other, theirs) = (format!("de otro {refreshed}"), format!("r-otro {refreshed}"));
+        // another client's turn streams: never under the island's turn
+        let id = {
+            let mut r = live.record.lock().unwrap();
+            r.log.push(("user", other.clone()));
+            r.log.push(("assistant", theirs.clone()));
+            format!("x{}", r.log.len())
+        };
+        live.link.frame(json!({"type":"agent_state","busy":true,"status":"ready","paused":false}));
+        live.link.frame(json!({"type":"message_delta","messageId":id,"text":theirs}));
+        let ts = turns(&host.project(&live.link.view(), T0 + 30));
+        assert!(ts.iter().all(|t| !t["reply"].as_str().unwrap().contains(theirs.as_str())), "{label}: streaming: {:?}", shape(&ts));
+        live.link.frame(json!({"type":"message_done","messageId":id}));
+        let ts = turns(&host.project(&live.link.view(), T0 + 40));
+        assert!(ts.iter().all(|t| !t["reply"].as_str().unwrap().contains(theirs.as_str())), "{label}: landed: {:?}", shape(&ts));
+        assert_eq!(ts.iter().find(|t| t["user_text"] == json!("hola")).map(|t| t["reply"].clone()), Some(json!("r-hola")), "{label}");
+        live.link.frame(json!({"type":"agent_state","busy":false,"status":"ready","paused":false}));
+        // the record arrives (the island asks for it once the engine is quiet): the other client's turn shows
+        live.publish(&host, T0 + 50);
+        let ts = turns(&live.publish(&host, T0 + 60));
+        let tail: Vec<_> = shape(&ts).into_iter().rev().skip_while(|t| t.0 != other).collect::<Vec<_>>().into_iter().rev().collect();
+        let tail = tail[tail.len() - 2..].to_vec();
+        assert_eq!(
+            tail,
+            vec![("hola".to_owned(), "r-hola".to_owned(), "completed".to_owned()), (other.clone(), theirs.clone(), "completed".to_owned())],
+            "{label}: the record's order once it arrives"
+        );
+        if !refreshed {
+            // second round: the island's turn, then another foreign turn after the record landed
+            host.route(&*live.link, "main", &submit("hola", "req-f6f00002"), T0 + 70).unwrap();
+            live.publish(&host, T0 + 80);
+        }
+    }
+}
+
+#[test]
+fn followups_b2_a_newest_page_read_while_another_turn_runs_never_sets_the_claim_floor() {
+    let log = vec![("user", "vieja".to_owned()), ("assistant", "r-vieja".to_owned())];
+    let live = Live::new(log, |_| None, true);
+    let host = ChatHost::new();
+    first_window(&host, &live.link);
+    live.publish(&host, T0);
+    // another client's turn starts; the island reads the newest page before that prompt is recorded
+    live.link.frame(json!({"type":"agent_state","busy":true,"status":"ready","paused":false}));
+    first_window(&host, &live.link);
+    live.publish(&host, T0 + 5);
+    {
+        let mut r = live.record.lock().unwrap();
+        r.log.push(("user", "hola".to_owned()));
+        r.log.push(("assistant", "r-otro".to_owned()));
+    }
+    live.link.frame(json!({"type":"message_delta","messageId":"x1","text":"r-otro"}));
+    live.link.frame(json!({"type":"message_done","messageId":"x1"}));
+    live.link.frame(json!({"type":"agent_state","busy":false,"status":"ready","paused":false}));
+    live.publish(&host, T0 + 10);
+    let Routed::Answer(a) = host.route(&*live.link, "main", &submit("hola", "req-fb2r0001"), T0 + 20).unwrap() else { panic!() };
+    let v = live.publish(&host, T0 + 30);
+    host.route(&*live.link, "main", &Command::Cancel { turn_id: v["active_turn"].as_str().unwrap().into() }, T0 + 40).unwrap();
+    for k in 0..3 {
+        live.publish(&host, T0 + 50 + k);
+    }
+    let ts = turns(&host.project(&live.link.view(), T0 + 60));
+    assert_eq!(
+        shape(&ts),
+        vec![
+            ("vieja".to_owned(), "r-vieja".to_owned(), "completed".to_owned()),
+            ("hola".to_owned(), "r-otro".to_owned(), "completed".to_owned()),
+            ("hola".to_owned(), String::new(), "cancelled".to_owned()),
+        ]
+    );
+    assert_eq!(ts[2]["turn_id"], a["turn_id"]);
+}

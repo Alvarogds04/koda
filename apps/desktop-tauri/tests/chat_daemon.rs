@@ -459,3 +459,44 @@ fn deep_paging_over_the_real_daemon_pages_reaches_every_turn_in_order_twice() {
     }
     println!("pass-1 host page sizes (turns): {page_sizes:?}");
 }
+
+/// S2 follow-up B2 (verifier mwb2ywag-6-bm3h): another client's «hola» lands in the record
+/// first; then the island sends the SAME text. Over the real daemon's broadcasts the island
+/// reads that other turn's record before its own send, so its turn claims only the prompt
+/// recorded after it: the island's turn id is on the SECOND «hola», never the other client's.
+#[test]
+fn another_clients_identical_prompt_recorded_first_never_takes_the_islands_turn() {
+    let island = Island::start("", true);
+    let chat = Chat::connect(&island);
+    chat.wait("the engine is ready", |v| v["producer"]["pi"] == json!("ready"));
+    let other = Chat::connect(&island);
+    other.wait("the engine is ready for the other client", |v| v["producer"]["pi"] == json!("ready"));
+    // the engine records the other client's turn (the fake engine does not write its session)
+    let file = island.session_file();
+    let mut lines = session_line("user", "hola");
+    lines.push_str(&session_line("assistant", REPLY));
+    std::fs::write(&file, &lines).unwrap();
+    other.action("main", json!({"action": "submit", "text": "hola", "client_request_id": "req-other-0001"})).unwrap();
+    other.wait("the other client's turn completed", |v| last_turn(v)["state"] == json!("completed") && last_turn(v)["reply"] == json!(REPLY));
+    chat.wait("the island saw the other turn end", |v| v["producer"]["pi"] == json!("ready"));
+    let Routed::Answer(accepted) = chat.action("main", json!({"action": "submit", "text": "hola", "client_request_id": "req-chat-b2001"})).unwrap() else {
+        panic!("submit answers the page")
+    };
+    chat.wait("the island's turn completed", |v| {
+        v["turns"].as_array().is_some_and(|ts| ts.iter().any(|t| t["turn_id"] == accepted["turn_id"] && t["state"] == json!("completed")))
+    });
+    lines.push_str(&session_line("user", "hola"));
+    lines.push_str(&session_line("assistant", REPLY));
+    std::fs::write(&file, &lines).unwrap();
+    for pass in 0..2 {
+        let Routed::Answer(page) = chat.action("main", json!({"action": "history", "conversation_id": CHAT_CONVERSATION_ID, "before": null})).unwrap() else {
+            panic!("a history page")
+        };
+        let turns = page["turns"].as_array().unwrap();
+        let shape: Vec<(String, String, String)> = turns.iter().map(|t| (t["user_text"].as_str().unwrap().into(), t["reply"].as_str().unwrap().into(), t["state"].as_str().unwrap().into())).collect();
+        let done = |u: &str| (u.to_owned(), REPLY.to_owned(), "completed".to_owned());
+        assert_eq!(shape, vec![done("hola"), done("hola")], "pass {pass}: the record's two turns, once each: {page}");
+        assert_eq!(turns[1]["turn_id"], accepted["turn_id"], "pass {pass}: the island's turn is the second «hola»: {page}");
+        assert_ne!(turns[0]["turn_id"], accepted["turn_id"], "pass {pass}: the other client's prompt never takes it");
+    }
+}

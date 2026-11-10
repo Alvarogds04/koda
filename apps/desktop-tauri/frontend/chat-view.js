@@ -197,21 +197,39 @@
   // every row flash and the first row jump. Rows are now compared by a key that covers everything drawn:
   // the unchanged prefix is left alone, a changed row is patched in place, new rows are appended.
   const rowKey = row => JSON.stringify([row.kind, row.text, row.short || '', row.icon || '']);
-  function reconcileRows(before, after) {
+  // S2 follow-up F5: the keys may come precomputed (the page keys each turn's rows once and reuses them while the turn
+  // is unchanged), so a push over a long loaded chat never re-serialises every row.
+  function reconcileRows(before, after, beforeKeys, afterKeys) {
     const a = Array.isArray(before) ? before : [];
     const b = Array.isArray(after) ? after : [];
+    const ka = Array.isArray(beforeKeys) && beforeKeys.length === a.length ? beforeKeys : a.map(rowKey);
+    const kb = Array.isArray(afterKeys) && afterKeys.length === b.length ? afterKeys : b.map(rowKey);
     let keep = 0;
-    while (keep < a.length && keep < b.length && rowKey(a[keep]) === rowKey(b[keep])) keep += 1;
+    while (keep < a.length && keep < b.length && ka[keep] === kb[keep]) keep += 1;
     // S2 paging: an earlier page adds rows ON TOP; when everything drawn is still the tail, only the new
     // rows are inserted before it (nothing already drawn is repainted, so the reader's place holds)
     const top = b.length - a.length;
-    if (keep < a.length && top > 0 && a.every((row, i) => rowKey(row) === rowKey(b[top + i]))) {
+    if (keep < a.length && top > 0 && ka.every((key, i) => key === kb[top + i])) {
       return { keep: a.length, patch: [], append: [], remove: 0, prepend: b.slice(0, top) };
     }
     const patch = [];
     let i = keep;
     for (; i < a.length && i < b.length; i += 1) patch.push({ index: i, row: b[i] });
     return { keep, patch, append: b.slice(i), remove: Math.max(0, a.length - b.length) };
+  }
+
+  // S2 follow-up F5: whether a turn draws exactly the same rows as before (everything turnRows reads). A turn the
+  // host re-sent unchanged keeps its drawn rows and their keys; only a changed turn is keyed again.
+  const sameList = (a, b) => (a === b) || (!a && !b) || (Array.isArray(a) && Array.isArray(b) && a.length === b.length && JSON.stringify(a) === JSON.stringify(b));
+  function sameTurn(a, b) {
+    if (a === b) return true;
+    if (!a || !b) return false;
+    const err = t => (t.error && t.error.safe_message) || '';
+    const ctx = t => (t.live_context && typeof t.live_context.text === 'string') ? `${t.live_context.text}\u0000${t.live_context.trimmed_lines}` : '';
+    return a.turn_id === b.turn_id && a.user_text === b.user_text && a.reply === b.reply && a.state === b.state &&
+      err(a) === err(b) && a.finish_reason === b.finish_reason && a.trimmed_turns === b.trimmed_turns && ctx(a) === ctx(b) &&
+      sameList(a.attachments && a.attachments.length ? a.attachments.map(x => x && x.name) : null, b.attachments && b.attachments.length ? b.attachments.map(x => x && x.name) : null) &&
+      sameList(a.tool_calls, b.tool_calls) && sameList(a.approvals, b.approvals);
   }
 
   // ---- #371 (OD002/OD024/GD031): tool-call receipts and approval cards ------
@@ -582,5 +600,5 @@
     return n;
   }
   function chatHeight(view) { return Math.min(CHAT_MAX_H, CHAT_MIN_H + messageCount(view) * CHAT_GROWTH); }
-  return { staleSnapshot, messageCount, chatHeight, CHAT_MIN_H, CHAT_MAX_H, mergeHistory, leftWindow, PAGE_GAP_MS, pageWait, reconcileRows, rowKey, poseFor, statusView, draftWord, targetAria, noticeAnnouncement, activates, gateLabel, filterChosen, modelRows, modelMeters, modelsInfo, modelsCount, emptyGreeting, cleanDisplayName, cleanLine, CARD_NAME_MAX, CARD_SUMMARY_MAX, DRAFT_MAX, stateLabel, scalarCount, draftProblem, canSend, sendState, needsCheck, checkPlan, statusLine, announcement, atBottom, newRequestId, turnRows, toolRows, approvalRows, activeTurn, activeRole, modelButtonLabel, modelButtonAria, modelButtonEnabled, modelRoleNote, formatSize };
+  return { staleSnapshot, messageCount, chatHeight, CHAT_MIN_H, CHAT_MAX_H, mergeHistory, leftWindow, PAGE_GAP_MS, pageWait, reconcileRows, rowKey, sameTurn, poseFor, statusView, draftWord, targetAria, noticeAnnouncement, activates, gateLabel, filterChosen, modelRows, modelMeters, modelsInfo, modelsCount, emptyGreeting, cleanDisplayName, cleanLine, CARD_NAME_MAX, CARD_SUMMARY_MAX, DRAFT_MAX, stateLabel, scalarCount, draftProblem, canSend, sendState, needsCheck, checkPlan, statusLine, announcement, atBottom, newRequestId, turnRows, toolRows, approvalRows, activeTurn, activeRole, modelButtonLabel, modelButtonAria, modelButtonEnabled, modelRoleNote, formatSize };
 });

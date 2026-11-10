@@ -6,6 +6,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 const assert = require('node:assert/strict');
 const frontend = path.join(__dirname, '..', 'frontend');
+const V = require(path.join(frontend, 'chat-view.js'));
 const turn = n => ({ turn_id: `t-${n}`, user_text: `question ${n}`, reply: `reply ${n}`, state: 'completed', seq: 2 });
 async function page() {
   const nodes = new Map(), calls = [], listeners = {};
@@ -42,6 +43,7 @@ async function page() {
   const advance=async ms=>{clock+=ms;for(;;){const due=timers.filter(t=>t.at<=clock).sort((a,b)=>a.at-b.at)[0];if(!due)break;timers.splice(timers.indexOf(due),1);due.fn();await settle();}};
   const sandbox={document,console,structuredClone,crypto:{getRandomValues:b=>b},Date:{now:()=>clock},setTimeout:(fn,ms)=>{timers.push({fn,at:clock+(Number(ms)||0),id:++timerId});return timerId;},clearTimeout(id){const at=timers.findIndex(t=>t.id===id);if(at>=0)timers.splice(at,1);},requestAnimationFrame:f=>f(),CustomEvent:class{constructor(type,o){this.type=type;this.detail=o.detail;}},DOMParser:class{parseFromString(){return {documentElement:null};}},__TAURI__:{core:{invoke},event:{listen:async(k,f)=>{listeners[k]=f;}}}};
   sandbox.window=sandbox; sandbox.self=sandbox; vm.createContext(sandbox);
+  document.__json=vm.runInContext('JSON',sandbox);
   for(const file of ['chat-view.js','chat.js']) vm.runInContext(fs.readFileSync(path.join(frontend,file),'utf8'),sandbox,{filename:file});
   document.getElementById('capsule').dataset.view='chat'; document.getElementById('capsule').dataset.phase='expanded'; await settle();
   return {nodes,document,calls,pages,fire,settle,advance,setInvoke:f=>{hostAnswer=f;},push:async s=>{state={...state,...s}; listeners['chat:state']({payload:state});await settle();},el:id=>document.getElementById(id)};
@@ -82,7 +84,7 @@ async function page() {
     p.pages.push(page2(34,34),page2(32,null));
     b.click();await p.settle();
     assert.deepEqual(p.calls.filter(x=>x.action==='history').map(x=>x.before),[36]);
-    assert.equal(b.hidden,false);b.click();await p.settle();
+    assert.equal(b.hidden,false);b.click();await p.advance(V.PAGE_GAP_MS); // F3: presses share the scroll coalescing
     assert.deepEqual(p.calls.filter(x=>x.action==='history').map(x=>x.before),[36,34],'the next page uses the cursor the last page returned');
     assert.equal(b.hidden,true,'nothing older: the control goes away');
     assert.equal(log.children.length,12);
@@ -141,7 +143,6 @@ async function page() {
     const toTop=async label=>{let guard=0;while(!p.el('chat-load-earlier').hidden){assert.ok(++guard<=4*chat.expected.length,`${label}: paging terminates`);await up();}};
     return {p,log,rows,reads,up,toTop,stamps};
   }
-  const V=require(path.join(frontend,'chat-view.js'));
   const uneven=end=>[48,47,45,48,31,48][end%6];
   const some=k=>k%7===3||k%11===5;
   await check('S2: 600 turns, 48-message and uneven daemon pages: up to the first turn and back down, twice — every turn once, in order, own reply, no gap',async()=>{
@@ -170,8 +171,9 @@ async function page() {
   await check('S2: a newest page holding only a lone reply (prompt ~9 KB, reply ~190 KB) still offers and pages the history',async()=>{
     const chat=daemonChat(3,{max:()=>100,big:k=>k===2?185*1024:0,ask:k=>k===2?9*1024:0});
     const view=chat.newest();assert.deepEqual(view.turns,[],'the daemon\'s newest page is the lone reply');assert.ok(view.history_before,'with a cursor');
-    const c=await pagedChat(chat);
-    assert.equal(c.p.el('chat-load-earlier').hidden,false,'«Cargar anteriores» is offered');
+    const c=await pagedChat(chat);await c.p.settle();
+    // F1 follow-up: the page asks for the one earlier page that holds the reply's prompt by itself
+    assert.equal(c.reads().length,1,'one read, by itself');
     await c.toTop('lone newest reply');
     assert.deepEqual(c.rows(),chat.expected);
   });
@@ -215,6 +217,81 @@ async function page() {
     c.p.el('chat-new').click();await c.p.settle();
     assert.equal(c.p.el('chat-new').hidden,true);assert.match(live.textContent,/Estás viendo lo último/);
     assert.equal(c.log.scrollTop,c.log.scrollHeight,'the log is at the newest message');
+  });
+  // ---- K2-05 S2 paging follow-ups (verifier mwb2ywag-6-bm3h on ccbeab4: F1, F2, F3, F5, F7) ---------------------------
+  await check('F1: a newest page that is only a lone reply never shows the empty greeting and asks for the ONE earlier page that holds it',async()=>{
+    const chat=daemonChat(3,{max:()=>100,big:k=>k===2?185*1024:0,ask:k=>k===2?9*1024:0});
+    const p=await page();
+    const log=p.el('chat-log');Object.defineProperty(log,'scrollHeight',{get:()=>log.children.length*100});
+    let release;const held=new Promise(r=>{release=r;});
+    p.setInvoke(q=>q.action==='history'&&q.before!==null?held.then(()=>chat.earlier(q.before)):undefined);
+    await p.push(chat.newest());
+    assert.equal(log.children.some(li=>li.className==='empty'),false,'no empty greeting while history exists');
+    assert.equal(p.el('chat-history-label').hidden,true,'not «Conversación nueva» while history exists');
+    assert.equal(p.calls.filter(c=>c.action==='history').length,1,'the one earlier page is asked for by itself');
+    release();await p.settle();await p.settle();
+    assert.deepEqual(log.children.filter(li=>li.className!=='empty').map(li=>li.textContent),chat.expected,'the reply under its own prompt');
+    await p.push(chat.newest());await p.advance(V.PAGE_GAP_MS*3);
+    assert.equal(p.calls.filter(c=>c.action==='history').length,1,'one read, never a loop');
+  });
+  await check('F1: an auto page that brings nothing never loops',async()=>{
+    const p=await page();
+    p.setInvoke(q=>q.action==='history'&&q.before!==null?{conversation_id:'c-koda',turns:[],before:q.before-1,skipped:0}:undefined);
+    await p.push({turns:[],history_before:50});await p.settle();
+    for(let k=0;k<5;k++){await p.push({turns:[],history_before:50});await p.advance(V.PAGE_GAP_MS);}
+    assert.equal(p.calls.filter(c=>c.action==='history').length,1,'one read for the lone newest reply');
+    assert.equal(p.el('chat-log').children.some(li=>li.className==='empty'),false,'still no greeting while history exists');
+  });
+  await check('F2: a scroll page that adds no rows asks for the next earlier page once more by itself (at most one extra per scroll)',async()=>{
+    const p=await page();const log=p.el('chat-log');Object.defineProperty(log,'scrollHeight',{get:()=>log.children.length*100});
+    const answers=[{turns:[],before:30},{turns:[],before:28},page2(26,24)];
+    p.setInvoke(q=>q.action==='history'&&q.before!==null?{conversation_id:'c-koda',skipped:0,...answers.shift()}:undefined);
+    log.scrollTop=0;p.fire(log,{type:'scroll'});await p.settle();
+    assert.deepEqual(p.calls.filter(c=>c.action==='history').map(c=>c.before),[36]);
+    await p.advance(V.PAGE_GAP_MS);
+    assert.deepEqual(p.calls.filter(c=>c.action==='history').map(c=>c.before),[36,30],'the empty page is followed by the next one, inside the rate limit');
+    await p.advance(V.PAGE_GAP_MS*4);
+    assert.deepEqual(p.calls.filter(c=>c.action==='history').map(c=>c.before),[36,30],'one extra per user action, never a loop');
+    log.scrollTop=0;p.fire(log,{type:'scroll'});await p.settle();
+    assert.deepEqual(p.calls.filter(c=>c.action==='history').map(c=>c.before),[36,30,28],'the next scroll pages again');
+    await p.advance(V.PAGE_GAP_MS*3);
+    assert.deepEqual(p.calls.filter(c=>c.action==='history').map(c=>c.before),[36,30,28],'a page that added rows asks nothing more by itself');
+    assert.equal(log.children.length,8,'the rows that finally came are drawn');
+  });
+  await check('F3: rapid «Cargar anteriores» presses use the same coalescing as scroll loads',async()=>{
+    const p=await page();const b=p.el('chat-load-earlier');
+    let n=36;p.setInvoke(q=>q.action==='history'&&q.before!==null?(n-=2,page2(n,n)):undefined);
+    for(let k=0;k<100;k++){b.click();await p.advance(50);}
+    const reads=p.calls.filter(c=>c.action==='history').length;
+    assert.ok(reads<=Math.ceil(5000/V.PAGE_GAP_MS)+1,`100 presses in 5 s: ${reads} reads`);
+    assert.ok(reads>=2,'presses still page');
+  });
+  await check('F7: «No se pudo cargar el historial anterior.» goes away after a successful retry',async()=>{
+    const p=await page();const b=p.el('chat-load-earlier');
+    let fail=true;p.setInvoke(q=>q.action==='history'&&q.before!==null?(fail?(fail=false,Promise.reject({message:'No se pudo cargar el historial anterior.'})):page2(34,null)):undefined);
+    b.click();await p.settle();await p.settle();
+    assert.equal(p.el('chat-problem').textContent,'No se pudo cargar el historial anterior.');
+    await p.advance(V.PAGE_GAP_MS);b.click();await p.settle();await p.settle();
+    assert.equal(p.el('chat-problem').textContent,'','the retry worked: the error is gone');
+  });
+  await check('F5: a chat:state push re-keys only the turns that changed, not every loaded row',async()=>{
+    const chat=daemonChat(1500,{max:()=>100,big:()=>4096});const c=await pagedChat(chat);
+    await c.toTop('1,500 turns, 4 KB replies');
+    assert.equal(c.rows().length,chat.expected.length);
+    const sandboxJSON=c.p.document.__json;
+    const view=chat.newest();const last=view.turns.at(-1);
+    let calls=0;const stringify=sandboxJSON.stringify;sandboxJSON.stringify=(...a)=>{calls+=1;return stringify.apply(sandboxJSON,a);};
+    const times=[];
+    for(let k=0;k<20;k++){
+      const turns=view.turns.slice(0,-1).concat({...last,reply:last.reply+' '+k,seq:3+k});
+      const t0=process.hrtime.bigint();await c.p.push({turns});times.push(Number(process.hrtime.bigint()-t0)/1e6);
+    }
+    sandboxJSON.stringify=stringify;
+    times.sort((a,b)=>a-b);
+    console.log(`  1,500 turns, 4 KB replies: push median ${times[10].toFixed(2)} ms, ${calls/20} row keys per push`);
+    assert.ok(calls/20<=10,`a push keys the changed turn's rows only: ${calls/20} per push`);
+    assert.deepEqual(c.rows().slice(0,-1),chat.expected.slice(0,-1),'the rest is untouched');
+    assert.equal(c.rows().at(-1),`${chat.expected.at(-1)} 19`,'the changed reply is drawn');
   });
   await check('Existing send wiring still invokes submit with exact draft',async()=>{
     const p=await page();p.el('chat-input').value='hello';p.fire(p.el('chat-input'),{type:'input'});p.fire(p.el('chat-composer'),{type:'submit'});await p.settle();assert.equal(p.calls.find(x=>x.action==='submit').text,'hello');
