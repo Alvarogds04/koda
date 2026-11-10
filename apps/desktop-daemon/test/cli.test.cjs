@@ -637,3 +637,48 @@ test("#390 check (5): a restart leaves the old pid dead, a fresh procStart and t
 		await reap(child1);
 	}
 });
+
+// F1 (verifier): with the island's settings window AND the chat connected, the client cap
+// used to be full, so the daemon's own health probe (classifySession's hello→ready, run by
+// `status`) was refused at connect time and the island was told the daemon was dead
+// (stale/endpoint_refused) while it was perfectly alive. The cap now counts clients that
+// completed their handshake and leaves room for the probe.
+test("F1: settings+chat connected -> status still classifies the daemon healthy", async () => {
+	const { root, env } = fakeIsland();
+	const child = spawn(process.execPath, [CLI, "run", "--app-owned"], { env, stdio: ["pipe", "pipe", "pipe"] });
+	const held = [];
+	try {
+		await waitForSessionPid(root, child.pid);
+		const session = JSON.parse(fs.readFileSync(sessionOf(root), "utf8"));
+		// Two clients (the settings window and the chat) hold their connections.
+		for (let i = 0; i < 2; i += 1) {
+			const socket = net.connect(session.endpoint);
+			await new Promise((resolve, reject) => {
+				socket.once("connect", resolve);
+				socket.once("error", reject);
+			});
+			socket.write(`${JSON.stringify({ type: "hello", protocol: "island-agent/1", token: session.token })}\n`);
+			await new Promise((resolve, reject) => {
+				socket.once("data", (chunk) => {
+					try {
+						assert.equal(JSON.parse(chunk.toString("utf8").split("\n")[0]).type, "ready");
+						resolve();
+					} catch (error) {
+						reject(error);
+					}
+				});
+				socket.once("error", reject);
+			});
+			held.push(socket);
+		}
+		const st = cli(root, ["status"], env);
+		assert.equal(st.status, 0, st.stderr);
+		const out = JSON.parse(st.stdout);
+		assert.equal(out.state, "healthy", `the daemon must classify healthy with both clients connected: ${JSON.stringify(out)}`);
+		assert.equal(out.ready, true);
+	} finally {
+		for (const socket of held) socket.destroy();
+		child.stdin.end();
+		await reap(child);
+	}
+});

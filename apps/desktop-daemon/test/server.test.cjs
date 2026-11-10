@@ -288,11 +288,38 @@ test("rate limit closes a flooding client", async (t) => {
 	await waitFor(() => c.closed);
 });
 
-test("max clients is enforced", async (t) => {
+test("max clients is enforced (at hello: the handshake is answered, then the uncounted client is dropped) (F1)", async (t) => {
 	const { endpoint } = await setup(t, { limits: { maxClients: 1 } });
 	await login(t, endpoint);
 	const second = connect(endpoint);
+	await new Promise((r) => second.socket.once("connect", r));
+	// The cap counts AUTHENTICATED clients and is checked after this client's own hello is
+	// validated: a connect-time refusal used to hit the daemon's health probe (classifySession
+	// holds a real socket through its hello→ready exchange), so `status` reported
+	// stale/endpoint_refused while the settings window and the chat were both connected.
+	second.send(hello());
 	await waitFor(() => second.closed);
+	assert.equal(second.frames.length, 0, "refused silently, never a ready frame");
+});
+
+// F1 (verifier): the island's settings window and the chat both stay connected; chat
+// reconnects must be accepted, and a 5th concurrent client is still refused.
+test("the client cap is 4: a third and a fourth client are accepted, a 5th is refused (F1)", async (t) => {
+	const { endpoint } = await setup(t);
+	const a = await login(t, endpoint);
+	const b = await login(t, endpoint);
+	const c = await login(t, endpoint); // a reconnecting chat client, slots were full
+	assert.equal(c.frames[0].type, "ready");
+	const d = await login(t, endpoint);
+	assert.equal(d.frames[0].type, "ready");
+	const fifth = connect(endpoint);
+	await new Promise((r) => fifth.socket.once("connect", r));
+	fifth.send(hello());
+	await waitFor(() => fifth.closed);
+	assert.equal(fifth.frames.length, 0, "the 5th client is refused");
+	// The four accepted clients keep working.
+	a.send({ type: "status" });
+	await a.wait((f) => f.type === "agent_state");
 });
 
 const WIN = process.platform === "win32";

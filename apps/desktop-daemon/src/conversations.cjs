@@ -223,6 +223,9 @@ function clipTurn(turn) {
 		while (frameBytes(clipped) > MAX_MESSAGE_BYTES && clipped.text !== "") {
 			clipped.text = clipUtf8(clipped.text, Math.floor(Buffer.byteLength(clipped.text, "utf8") / 2));
 		}
+		// F2 (U2 verifier follow-up): a text shortened by the page budget is MARKED
+		// (never silently clipped while live streaming shows much more).
+		clipped.textClipped = true;
 	}
 	while (frameBytes(clipped) > MAX_MESSAGE_BYTES && Array.isArray(clipped.activities) && clipped.activities.length > 0) {
 		clipped.activities = clipped.activities.slice(0, -1);

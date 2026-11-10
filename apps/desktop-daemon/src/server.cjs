@@ -32,7 +32,10 @@ const { pageHistory } = require("./conversations.cjs");
 
 const DEFAULTS = {
 	handshakeMs: 3000,
-	maxClients: 2,
+	/** F1 (U2 verifier follow-up): the settings window + the chat + one reconnect overlap + the
+	 * daemon's own health probe (classifySession's hello→ready). Only clients that COMPLETED
+	 * their handshake count against the cap, so the probe is never refused at connect time. */
+	maxClients: 4,
 	framesPerMinute: 240,
 	maxOutboundBytes: 1024 * 1024,
 	askTimeoutMs: 120_000,
@@ -372,7 +375,14 @@ class IslandServer {
 	// ----- connections -------------------------------------------------------
 
 	onConnection(socket) {
-		if (this.clients.size >= this.opts.maxClients || this.closing) {
+		// F1 (U2 verifier follow-up): the cap counts clients that completed their handshake,
+		// and is enforced when this connection's hello is answered (onHello) — never at connect
+		// time. A connect-time refusal answered the daemon's own health probe with a bare close
+		// while the settings window and the chat were connected, so the island was told the
+		// daemon was dead (stale/endpoint_refused) while it was perfectly alive. A probing
+		// socket holds a slot only for its handshake window (handshakeMs, bounded) and the
+		// pre-hello data caps still apply.
+		if (this.closing) {
 			socket.destroy();
 			return;
 		}
@@ -431,6 +441,9 @@ class IslandServer {
 		// Same silent close for every failure; compare the token even on protocol mismatch.
 		const tokenOk = decoded.frame ? tokensEqual(this.token, decoded.frame.token) : false;
 		if (!decoded.frame || decoded.frame.protocol !== P.PROTOCOL || !tokenOk) return this.drop(client);
+		// F1: authenticated clients count against the cap; the probe (this client) is dropped
+		// only AFTER its hello was validated, so classifySession always gets its ready answer.
+		if (this.clients.size > this.opts.maxClients) return this.drop(client);
 		clearTimeout(client.handshake);
 		client.ready = true;
 		this.sendTo(client, {

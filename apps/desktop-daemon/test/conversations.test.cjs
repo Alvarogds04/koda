@@ -16,6 +16,7 @@ const os = require("node:os");
 const path = require("node:path");
 
 const { pageHistory, historyFromMessages, readSessionMessages, splitAttachments } = require("../src/conversations.cjs");
+const P = require("../src/protocol.cjs");
 const { SESSION_VERSION } = require("../src/rotation.cjs");
 
 function tmp(prefix) {
@@ -267,6 +268,24 @@ function writeLongChat(dir) {
 	return writeSession(dir, "long.jsonl", entries);
 }
 
+// Every string reachable in a decoded frame, depth-first (B1 test helper).
+const frameStrings = (value, out = []) => {
+	if (typeof value === "string") out.push(value);
+	else if (Array.isArray(value)) for (const v of value) frameStrings(v, out);
+	else if (value !== null && typeof value === "object") for (const v of Object.values(value)) frameStrings(v, out);
+	return out;
+};
+const hasLoneSurrogate = (s) => {
+	for (let i = 0; i < s.length; i += 1) {
+		const c = s.charCodeAt(i);
+		if (c >= 0xd800 && c <= 0xdbff) {
+			const next = s.charCodeAt(i + 1);
+			if (!(next >= 0xdc00 && next <= 0xdfff)) return true;
+			i += 1;
+		} else if (c >= 0xdc00 && c <= 0xdfff) return true;
+	}
+	return false;
+};
 const loneSurrogate = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
 /** Numeric order of the page ids `s<file>-<turn>`. */
 const idOrder = (id) => {
@@ -323,6 +342,8 @@ test("one huge message is clipped so its page fits: whole code points, white-lab
 	assert.ok(huge.text.length < 120_000, "the oversized text was clipped");
 	assert.ok(!loneSurrogate.test(huge.text), "the clip never splits a surrogate pair");
 	assert.ok(huge.text.startsWith("memory: "), "the clip runs after white-labelling, never over a hidden name");
+	assert.equal(huge.textClipped, true, "the page-budget clip of the text is marked, never silent (F2)");
+	assert.equal(P.historyFrame(page).messages[1].clipped, true, "the DTO carries the marker as clipped:true (F2)");
 	assert.deepEqual(page.messages[0].text, "recita", "the turns around the clipped one still project");
 });
 
@@ -343,4 +364,25 @@ test("a user row that carries only images is kept, as Gentle Dot keeps it (empty
 		turns.map((m) => [m.role, m.text, m.attachments]),
 		[["user", "", undefined], ["assistant", "la vi", undefined]],
 	);
+});
+
+// B1 (verifier): a session file whose reply holds a lone surrogate (the JSON escape
+// reaches the daemon through JSON.parse) used to make every get_history frame encode a
+// lone-surrogate \udXXX escape — the island's serde_json rejects it and drops the
+// connection, forever. The single outbound encoder replaces it with U+FFFD.
+test("history from a session file holding a lone surrogate encodes U+FFFD, never the lone half (B1)", () => {
+	const dir = tmp("abito-conv-lone-");
+	const header = JSON.stringify({ type: "session", version: SESSION_VERSION, id: "lone", timestamp: new Date().toISOString(), cwd: dir });
+	// The raw file text carries the \ud800 ESCAPE; writeFileSync with a string that itself
+	// contains the backslash-u sequence (JSON.stringify would keep the lone surrogate as an
+	// escape too, so both spellings reach the daemon through JSON.parse).
+	const replyLine = `{"type":"message","message":{"role":"assistant","content":"antes \\ud800 después 😀"}}`;
+	const file = path.join(dir, "lone.jsonl");
+	fs.writeFileSync(file, `${header}\n${replyLine}\n`);
+	const page = pageHistory([file], 100);
+	assert.equal(page.messages.length, 1);
+	const parsed = JSON.parse(P.encodeServerFrame(P.historyFrame(page), 1).toString("utf8"));
+	for (const s of frameStrings(parsed)) assert.ok(!hasLoneSurrogate(s), "the encoded history line carries a lone surrogate");
+	assert.ok(parsed.messages[0].text.includes("\uFFFD"), "the lone surrogate was replaced with U+FFFD");
+	assert.ok(parsed.messages[0].text.includes("😀"), "the valid pair is untouched");
 });

@@ -277,7 +277,13 @@ THIRD-PARTY-NOTICES.md.
 
 `src/server.cjs` exports `IslandServer` (local 0600 Unix socket in a 0700 dir, token handshake,
 bounded JSONL) and `src/protocol.cjs` the pure codec/translation. Wire format, frame table and
-limits: [docs/PROTOCOL.md](docs/PROTOCOL.md). History replay is not implemented; the CLI is in the U4 section.
+limits: [docs/PROTOCOL.md](docs/PROTOCOL.md). The client cap is 4 (settings window + chat + one
+reconnect overlap + the daemon's own health probe): it counts clients that completed their
+handshake and is enforced when a connection's own `hello` is validated — never at connect time —
+so `abito-island-daemon status` still classifies the daemon healthy while the settings window and
+the chat are both connected. No outbound line ever carries a lone UTF-16 surrogate (replaced with
+U+FFFD by the single outbound encoder), and every chunk/clip of outbound text cuts on whole code
+points; a history message whose text was clipped carries `clipped: true`. History is served by `get_history` and `get_earlier` (see docs/PROTOCOL.md, History frames); the CLI is in the U4 section.
 
 ## User config, CLI and host handoff (U4)
 

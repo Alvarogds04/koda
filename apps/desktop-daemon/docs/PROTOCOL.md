@@ -2,7 +2,12 @@
 
 Transport: Unix-domain socket `<runtimeDir>/p-XXXXXX/s` (dir 0700, socket 0600, path ≤ 107 bytes).
 Framing: one JSON object per line, split on LF (0x0A) only. Inbound ≤ 256 KiB (hello ≤ 4 KiB),
-max 240 frames/min per client, max 2 clients, outbound queue ≤ 1 MiB (slow client is dropped).
+max 240 frames/min per client, max 4 clients (see "Client slots"), outbound queue ≤ 1 MiB (slow client is dropped).
+Outbound text invariant (K2-05 U2 follow-up): NO outbound line ever carries a lone UTF-16 surrogate —
+`encodeServerFrame`, the single outbound encoder, replaces any lone surrogate in any string with U+FFFD
+(a `\udXXX` escape for a lone half is what the island's serde_json rejects, dropping the connection),
+and every chunk/clip of outbound text (`message_delta` chunking, history clips) cuts on whole code points,
+never between the two halves of a surrogate pair.
 Implementation: `src/protocol.cjs` (codec/validators/translation), `src/server.cjs` (`IslandServer`).
 
 ## Handshake
@@ -347,11 +352,11 @@ Unknown/invalid post-handshake frames get `error{code:"bad_request"}`.
 |---|---|
 | `ready` | `protocol`, `state{busy,status,paused}`, `limits`, `features{history:true,conversations:false}`, `interrupted?` (`{at, turnActive, asks}` — bounded closed fields of the unconsumed interrupted-work record, counts and time only, never titles/ids/prompts/args/secrets; present until a client sends `interrupted_ack`) |
 | `agent_state` | `busy`, `status` (`ready`, `restarting`, `stopped`…), `paused` |
-| `message_delta` | `messageId`, `text` (≤ 16 K chars each) |
+| `message_delta` | `messageId`, `text` (≤ 16 K chars each; long texts are split into several deltas, every chunk cut on a whole code point — never inside a surrogate pair) |
 | `message_done` | `messageId` |
 | `activity` | `name` (sanitized tool name), `state: running\|done\|error`, optional `callId` (SAFE_ID, present only when the engine names the call) and optional closed `summary` (error only) — never arguments/results |
 | `queue` | `steering`, `followUp` (counts) |
-| `ask` / `ask_resolved` | `id`, `kind: select\|confirm\|input`, `title`, `options` / `id` |
+| `ask` / `ask_resolved` | `id`, `kind: select\|confirm\|input`, `title`, `options` / `id`. A `select` ask's `options` are the SHOWN labels: white-labelled, unique, non-empty, ≤ 200 chars, and free of C0/C1 control characters (each control run becomes a space; a label that is only controls presents as `Option <position>`). The island MUST answer a `select` ask with `ui_response{value}` set to the EXACT option string as sent in the ask frame — the daemon maps the answer back to the engine's original option BY POSITION; an answer matching no shown option is refused |
 | `toast` | `level`, `message` |
 | `settings` | `hotkey: string\|null` |
 | `connectors` | `schema`, `catalog[]`, `connectors[]` — see "Connectors frames" |
@@ -417,7 +422,17 @@ Everything else (thinking deltas, `turn_end`, `tool_execution_update`, unknown) 
   A late client asks `get_history` once it has Handshook; the daemon never pushes an unrequested full history
   except after a rotation (below).
 - Stale `p-*` socket dirs of dead servers (connection refused) are removed at start, with dev/ino checks.
-- `ui_response` and `send` are not tied to the originating client; all clients share one session (max 2).
+- `ui_response` and `send` are not tied to the originating client; all clients share one session.
+
+### Client slots (K2-05 U2 follow-up)
+
+The cap is **4 clients**: the island's settings window, the chat, one reconnect overlap, and the daemon's
+own health probe (`classifySession`'s hello→ready exchange, used by `abito-island-daemon status` and by the
+island to decide the daemon is alive). The cap counts clients that COMPLETED their handshake and is enforced
+only when a connection's own `hello` is validated — never at TCP-connect time — so the health probe's
+handshake is always answered before any count matters and the probe is never refused by the cap while
+settings and chat are connected. A client refused by the cap is closed silently right after its (validated)
+hello, like every other handshake failure.
 
 ### History frames (additive, read-only, K2-05 T4 U1)
 
@@ -436,7 +451,7 @@ ALL assistant text passes the white-label rewriter (`presentText`); the user's o
 | `earlier` | `before: string`, `messages: HistoryMessage[]`, `hasEarlier: bool` (the page ends just BEFORE the requested id) |
 
 `HistoryMessage` = `{ id: "s<file>-<turn>", role: "user"\|"assistant", text, activities: Activity[],
-attachments?: [{name,size,mime}], earlier?: true }`. Ids are per-file (`s0-…` = the oldest file) and stay
+attachments?: [{name,size,mime}], earlier?: true, clipped?: true }`. Ids are per-file (`s0-…` = the oldest file) and stay
 STABLE while the chain grows, so `get_earlier` cursors survive a rotation. Messages of every file but the
 last carry `earlier:true`.
 
@@ -449,7 +464,11 @@ last carry `earlier:true`.
   `error{failed}`. The frame rebuild clips each text to 64 KiB (the same ceiling the `send` verb
   accepts), caps activities at 100 (closed vocabulary, non-conforming entries dropped) and attachments
   at 16, and THROWS — the server answers `error{failed}` — if a rebuilt page still exceeds 1 MiB (a
-  defense-in-depth ceiling the byte-bounded build never reaches). A chain file that is missing or
+  defense-in-depth ceiling the byte-bounded build never reaches). A message whose text was clipped — by
+  the 64 KiB rebuild ceiling or by the page budget — carries `clipped: true` (K2-05 U2 follow-up: the
+  clip is MARKED, never silent, so the island can show that history shows less than the live stream did;
+  a text cut by the page budget is additionally marked `clipped: true` there too) — the cut always lands
+  on a whole code point. A chain file that is missing or
   unreadable is skipped with a one-line daemon log (one over 64 MiB is skipped instead of blocking the
   read); torn/corrupt lines inside a file are skipped (the engine rewrites them as it appends).
 - **Readiness.** While the engine is not `ready` or holds no open session, `get_history`/`get_earlier` answer
@@ -571,7 +590,7 @@ The daemon does not automatically assign `<island>/connectors/mcp-source.json` t
 
 ## Connectors control frames (H2c)
 
-These additive commands are available only after the authenticated `island-agent/1` hello. They are separate from `connectors_list`: that command still returns the persisted CLI view; control snapshots use the running host and their `connectors` frame has `live:true`. All newly defined request/result keys below use snake_case. Existing auth frames retain their shipped `flowId`/`promptId`/`accountId` spelling. Unknown request fields are dropped, except the forbidden setup-value keys on `connectors_connect`, which reject the entire frame as `bad_request`. Every request counts against the existing 240-frames/minute per-client limit (max two clients).
+These additive commands are available only after the authenticated `island-agent/1` hello. They are separate from `connectors_list`: that command still returns the persisted CLI view; control snapshots use the running host and their `connectors` frame has `live:true`. All newly defined request/result keys below use snake_case. Existing auth frames retain their shipped `flowId`/`promptId`/`accountId` spelling. Unknown request fields are dropped, except the forbidden setup-value keys on `connectors_connect`, which reject the entire frame as `bad_request`. Every request counts against the existing 240-frames/minute per-client limit (max four clients).
 
 ### Client → server
 

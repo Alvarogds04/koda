@@ -64,6 +64,8 @@ const isObject = (v) => v !== null && typeof v === "object" && !Array.isArray(v)
 const isString = (v, max) => typeof v === "string" && v.length <= max;
 const strictId = (v) => isString(v, 64) && STRICT_ID.test(v);
 const safeLabel = (v) => isString(v, 80) && v.trim() !== "" && !CONTROL.test(v);
+const isHighSurrogate = (code) => code >= 0xd800 && code <= 0xdbff;
+const isLowSurrogate = (code) => code >= 0xdc00 && code <= 0xdfff;
 const clip = (v, max) => {
 	const s = typeof v === "string" ? v : v === undefined || v === null ? "" : String(v);
 	// Control characters (except tab/newline) never travel to the UI.
@@ -88,11 +90,25 @@ const clip = (v, max) => {
  * suffix «label (2)», «label (3)»…; an empty label becomes a neutral
  * placeholder «Option <position>» (1-based, so the first option never needs
  * one). Everything stays within `max` chars.
+ *
+ * F3 (U2 verifier follow-up): the island strips C0/C1 control characters for
+ * display, so a label carrying one would be answered by the user with text the
+ * daemon never sent. The SHOWN labels — what the answer is matched against —
+ * are therefore cleaned here: every C0/C1 control character (and DEL) becomes
+ * a space before the uniqueness pass; a label that is only controls presents
+ * as the neutral placeholder, like an empty one. The stored ORIGINAL option is
+ * untouched (buildUiResponse maps the answer back by position).
  */
+const SHOW_CONTROL = /[\u0000-\u001f\u007f\u0080-\u009f]+/g;
 function uniqueShownLabels(labels, max) {
 	const seen = new Map();
 	return labels.map((label, i) => {
-		let shown = label === "" ? `Option ${i + 1}` : label;
+		// F3: controls become spaces BEFORE the clip (clip deletes them), and each
+		// shown label is length-clipped and trimmed here so what the island receives
+		// is already clean and bounded. A label that is only controls presents as the
+		// placeholder, like an empty one.
+		let shown = clip(typeof label === "string" ? label.replace(SHOW_CONTROL, " ") : "", max).trim();
+		if (shown === "") shown = `Option ${i + 1}`;
 		const count = seen.get(shown) ?? 0;
 		seen.set(shown, count + 1);
 		if (count > 0) shown = clip(`${shown} (${count + 1})`, max);
@@ -439,8 +455,44 @@ function decodeClientLine(bytes, { expectHello = false } = {}) {
 // ----- server -> client --------------------------------------------------
 
 /** Adds the per-client monotonic sequence number and frames the record with LF. */
+const SURROGATE = /[\uD800-\uDFFF]/;
+/** A valid surrogate pair, or any surrogate unit left over (a lone one). */
+const PAIRED_OR_LONE = /[\uD800-\uDBFF][\uDC00-\uDFFF]|[\uD800-\uDFFF]/g;
+
+/**
+ * B1 (U2 verifier follow-up), defence in depth: JSON.stringify serializes a lone UTF-16
+ * surrogate as a `\udXXX` escape, and the island's serde_json rejects it — dropping the
+ * connection (chat AND settings, frames are broadcast); a lone surrogate that reached the
+ * daemon from a session file made every get_history fail the same way, forever. The single
+ * outbound encoder therefore replaces any lone surrogate in ANY string of the frame with
+ * U+FFFD before serializing (chunk/clip boundaries additionally never split a pair).
+ * Inputs are returned untouched unless they actually contain a surrogate unit.
+ */
+function withoutLoneSurrogates(value) {
+	if (typeof value === "string") return SURROGATE.test(value) ? value.replace(PAIRED_OR_LONE, (m) => (m.length === 2 ? m : "\uFFFD")) : value;
+	if (Array.isArray(value)) {
+		let changed = false;
+		const out = new Array(value.length);
+		for (let i = 0; i < value.length; i += 1) {
+			out[i] = withoutLoneSurrogates(value[i]);
+			if (out[i] !== value[i]) changed = true;
+		}
+		return changed ? out : value;
+	}
+	if (isObject(value)) {
+		let changed = false;
+		const out = {};
+		for (const key of Object.keys(value)) {
+			out[key] = withoutLoneSurrogates(value[key]);
+			if (out[key] !== value[key]) changed = true;
+		}
+		return changed ? out : value;
+	}
+	return value;
+}
+
 function encodeServerFrame(frame, seq) {
-	return Buffer.from(`${JSON.stringify({ ...frame, seq })}\n`, "utf8");
+	return Buffer.from(`${JSON.stringify({ ...withoutLoneSurrogates(frame), seq })}\n`, "utf8");
 }
 
 const EMITTED_ERROR_CODES = new Set([
@@ -581,11 +633,17 @@ const ACTIVITY_STATUSES = new Set(["running", "done", "failed"]);
 
 function historyMessageDto(m) {
 	if (!isObject(m) || !HISTORY_ROLES.has(m.role) || !isString(m.id, LIMITS.maxIdChars) || typeof m.text !== "string") return undefined;
+	// F2 (U2 verifier follow-up): a text clipped here — or by the page-budget clip of
+	// clipTurn (conversations.cjs, marked `textClipped`) — is MARKED `clipped: true`, never
+	// silently shortened while live streaming shows much more. The cut itself is on whole
+	// code points (clip).
+	const clipped = m.text.length > LIMITS.maxTextChars || m.textClipped === true;
 	const out = {
 		id: m.id,
 		role: m.role,
 		text: clip(m.text, LIMITS.maxTextChars),
 		activities: [],
+		...(clipped ? { clipped: true } : {}),
 	};
 	if (Array.isArray(m.activities)) {
 		for (const a of m.activities.slice(0, HISTORY_EMIT.maxActivities)) {
@@ -880,11 +938,19 @@ function activityFrame(event, state) {
 	return frame;
 }
 
-/** Splits a long delta so no server frame exceeds LIMITS.maxDeltaChars. */
+/**
+ * Splits a long delta so no server frame exceeds LIMITS.maxDeltaChars (B1, U2 verifier
+ * follow-up: every chunk is cut on a CODE-POINT boundary — the old unit-based slice cut
+ * between the halves of a surrogate pair, and the island's serde_json rejected the lone
+ * half and dropped the connection).
+ */
 function deltaFrames(text, messageId) {
 	const frames = [];
-	for (let i = 0; i < text.length; i += LIMITS.maxDeltaChars) {
-		frames.push({ type: "message_delta", messageId, text: text.slice(i, i + LIMITS.maxDeltaChars) });
+	for (let i = 0; i < text.length; ) {
+		let end = Math.min(i + LIMITS.maxDeltaChars, text.length);
+		if (end < text.length && isHighSurrogate(text.charCodeAt(end - 1)) && isLowSurrogate(text.charCodeAt(end))) end -= 1;
+		frames.push({ type: "message_delta", messageId, text: text.slice(i, end) });
+		i = end;
 	}
 	return frames;
 }
@@ -1009,13 +1075,15 @@ function translateUiRequest(event) {
 			// the rewritten label. The wire never carries the originals (askFrame).
 			// Re-verify finding: rewrite FIRST, clip SECOND — clipping first could cut
 			// a hidden name in half («…memory engr») so the rewrite no longer matched.
-			// The stored original stays untouched for the B2 round trip.
+			// The stored original stays untouched for the B2 round trip. The clip and
+			// the F3 control cleaning happen inside uniqueShownLabels, after the
+			// rewrite, so every shown label is clean and bounded.
 			const originalOptions = event.options.filter((o) => typeof o === "string").slice(0, LIMITS.maxOptions);
 			// Re-verify finding: two options that rewrite to the same shown label
 			// («Koda setup» twice, or two /gentle: options → "") made the answer, matched
 			// by value, pick the wrong original. Every shown label is made unique and
 			// non-empty, so the answer maps back to the right original by position.
-			const options = uniqueShownLabels(originalOptions.map((o) => clip(presentText(o), LIMITS.maxOptionChars)), LIMITS.maxOptionChars);
+			const options = uniqueShownLabels(originalOptions.map((o) => presentText(o)), LIMITS.maxOptionChars);
 			return { frames: [], ask: { id: event.id, kind: "select", title: presentText(clip(event.title, LIMITS.maxTitleChars)), options, originalOptions } };
 		}
 		case "confirm":
@@ -1065,6 +1133,7 @@ module.exports = {
 	validateCustomBaseUrl,
 	validateLocalModelIds,
 	decodeClientLine,
+	deltaFrames,
 	encodeServerFrame,
 	errorFrame,
 	accountDto,

@@ -797,3 +797,127 @@ test("earlierFrame echoes the requested `before`; hasEarlier defaults to false",
 test("conversations_off is an emitted error code (the island's new_conversation refusal)", () => {
 	assert.deepEqual(P.errorFrame("conversations_off"), { type: "error", code: "conversations_off" });
 });
+
+// ----- K2-05 U2 follow-up (verifier): surrogate-safe outbound text (B1) -----
+
+// Every string reachable in a decoded frame, depth-first.
+const frameStrings = (value, out = []) => {
+	if (typeof value === "string") out.push(value);
+	else if (Array.isArray(value)) for (const v of value) frameStrings(v, out);
+	else if (value !== null && typeof value === "object") for (const v of Object.values(value)) frameStrings(v, out);
+	return out;
+};
+/** True when `s` contains a UTF-16 surrogate unit that is not half of a valid pair. */
+const hasLoneSurrogate = (s) => {
+	for (let i = 0; i < s.length; i += 1) {
+		const c = s.charCodeAt(i);
+		if (c >= 0xd800 && c <= 0xdbff) {
+			const next = s.charCodeAt(i + 1);
+			if (!(next >= 0xdc00 && next <= 0xdfff)) return true;
+			i += 1;
+		} else if (c >= 0xdc00 && c <= 0xdfff) return true;
+	}
+	return false;
+};
+
+// The island's serde_json rejects a lone surrogate (JSON.stringify serializes one as a
+// \udXXX escape); a chunk cut between the two halves of a pair made the island drop the
+// connection — chat AND settings, frames are broadcast. An emoji sits at EVERY cut
+// position, so the old unit-based slice is guaranteed to split a pair.
+test("deltaFrames cuts only on code-point boundaries: an emoji at every cut position (B1)", () => {
+	const max = P.LIMITS.maxDeltaChars;
+	// 50,001 units with an emoji straddling each cut boundary (high half at boundary-1).
+	let text = "x".repeat(50_001);
+	for (const cut of [3 * max, 2 * max, max]) {
+		if (cut >= text.length) continue;
+		text = text.slice(0, cut - 1) + "😀" + text.slice(cut + 1);
+	}
+	assert.equal(text.length, 50_001);
+	const frames = P.deltaFrames(text, "m1");
+	assert.equal(frames.length, Math.ceil(50_001 / max));
+	assert.equal(frames.map((f) => f.text).join(""), text, "the concatenation is exactly the input");
+	for (const frame of frames) {
+		assert.ok(frame.text.length <= max, "each chunk stays within the delta cap");
+		assert.ok(!hasLoneSurrogate(frame.text), `a chunk carries a split surrogate pair: ${JSON.stringify(frame.text.slice(-4))}`);
+	}
+	// Also: an emoji that STARTS exactly at a boundary and one that ENDS exactly at one.
+	for (const pos of [max - 2, max]) {
+		const t = "x".repeat(pos) + "😀" + "y".repeat(50_001 - pos - 2);
+		for (const frame of P.deltaFrames(t, "m2")) assert.ok(!hasLoneSurrogate(frame.text), "no chunk carries a split pair");
+	}
+});
+
+// Defence in depth: encodeServerFrame is the single outbound encoder; no encoded line may
+// ever carry a lone surrogate escape, whatever a DTO or a session file contained.
+test("property: no encoded line carries a lone surrogate (B1)", () => {
+	// Deterministic xorshift so failures reproduce.
+	let seed = 0x2f6e2b1;
+	const next = () => {
+		seed ^= seed << 13; seed ^= seed >>> 17; seed ^= seed << 5;
+		return (seed >>> 0) / 0x100000000;
+	};
+	const pieces = ["a", "b", " ", "ñ", "😀", "𝐀", "\ud800", "\udc00", "\ud83d\ude00", "fin", ""];
+	for (let i = 0; i < 300; i += 1) {
+		let text = "";
+		const parts = 1 + Math.floor(next() * 12);
+		for (let p = 0; p < parts; p += 1) text += pieces[Math.floor(next() * pieces.length)];
+		const frame = { type: "message_delta", messageId: "m1", text };
+		const parsed = JSON.parse(P.encodeServerFrame(frame, i + 1).toString("utf8"));
+		for (const s of frameStrings(parsed)) assert.ok(!hasLoneSurrogate(s), `iteration ${i}: an encoded line carried a lone surrogate: ${JSON.stringify(text)}`);
+		// Valid pairs survive untouched; lone ones become U+FFFD.
+		const cleaned = text.replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]|[\uD800-\uDFFF]/g, (m) => (m.length === 2 ? m : "\uFFFD"));
+		assert.equal(parsed.text, cleaned, `iteration ${i}: only lone surrogates were replaced`);
+	}
+});
+
+// A session file whose reply holds a lone surrogate (the escape reaches the daemon through
+// JSON.parse) used to make every get_history encode a lone-surrogate escape forever.
+test("historyFrame of a text holding a lone surrogate encodes U+FFFD, never the lone half (B1)", () => {
+	const frame = P.historyFrame({ hasEarlier: false, messages: [histMessage({ id: "s0-1", role: "assistant", text: "antes \ud800 después 😀" })] });
+	const parsed = JSON.parse(P.encodeServerFrame(frame, 1).toString("utf8"));
+	for (const s of frameStrings(parsed)) assert.ok(!hasLoneSurrogate(s), "the encoded history line carries a lone surrogate");
+	assert.ok(parsed.messages[0].text.includes("\uFFFD"), "the lone surrogate was replaced with U+FFFD");
+	assert.ok(parsed.messages[0].text.includes("😀"), "the valid pair right after it is untouched");
+});
+
+// ----- K2-05 U2 follow-up (verifier): a clipped history text is MARKED (F2) -----
+
+test("historyMessage marks a text clipped at 64 KiB with clipped:true, cut on a code-point boundary (F2)", () => {
+	const max = P.LIMITS.maxTextChars;
+	const clipped = P.historyFrame({ hasEarlier: false, messages: [histMessage({ id: "s0-1", role: "assistant", text: "x".repeat(max + 10) })] });
+	assert.equal(clipped.messages[0].clipped, true, "the clip is marked, never silent");
+	assert.ok(clipped.messages[0].text.length <= max);
+	// The cut must not split the pair an emoji places right at the boundary.
+	const straddling = P.historyFrame({ hasEarlier: false, messages: [histMessage({ id: "s0-1", role: "assistant", text: "a".repeat(max - 1) + "😀" })] });
+	assert.equal(straddling.messages[0].clipped, true);
+	assert.ok(!hasLoneSurrogate(straddling.messages[0].text), "the 64 KiB clip never splits a surrogate pair");
+	// An unclipped message carries no marker at all.
+	const whole = P.historyFrame({ hasEarlier: false, messages: [histMessage()] });
+	assert.equal("clipped" in whole.messages[0], false, "no marker when nothing was cut");
+	const earlier = P.earlierFrame("s0-2", { hasEarlier: false, messages: [histMessage({ id: "s0-1", role: "assistant", text: "y".repeat(max + 1) })] });
+	assert.equal(earlier.messages[0].clipped, true, "the earlier DTO marks the clip too");
+});
+
+// ----- K2-05 U2 follow-up (verifier): shown select labels are control-free (F3) -----
+
+// The island strips C0/C1 control characters for display; the shown labels the answer is
+// matched against must already be what the island displays, so the daemon replaces them
+// with a space itself. The answer still round-trips to the engine's ORIGINAL string.
+test("select ask: shown labels are free of C0/C1 control characters; answers round-trip (F3)", () => {
+	const ask = P.translateEvent({
+		type: "extension_ui_request",
+		id: "u9",
+		method: "select",
+		title: "Elige",
+		options: ["instalar\u0000ahora", "línea1\nlínea2\r\tx", "\u009fcentellear\u007f", "ok"],
+	}).ask;
+	for (const shown of ask.options) assert.ok(!/[\u0000-\u001f\u007f\u0080-\u009f]/.test(shown), `a shown label carries a control character: ${JSON.stringify(shown)}`);
+	assert.deepEqual(ask.options, ["instalar ahora", "línea1 línea2 x", "centellear", "ok"]);
+	// The user's answer (the shown string) still maps back to the engine's original by position.
+	assert.deepEqual(P.buildUiResponse(ask, { value: ask.options[0] }), { type: "extension_ui_response", id: "u9", value: "instalar\u0000ahora" });
+	assert.deepEqual(P.buildUiResponse(ask, { value: ask.options[3] }), { type: "extension_ui_response", id: "u9", value: "ok" });
+	// A label that is only control characters presents as a neutral placeholder, like an empty one.
+	const blank = P.translateEvent({ type: "extension_ui_request", id: "u10", method: "select", title: "t", options: ["\u0000\u0000", "real"] }).ask;
+	assert.equal(blank.options[0], "Option 1");
+	assert.equal(blank.options[1], "real");
+});
