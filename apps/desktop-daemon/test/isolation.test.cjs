@@ -327,7 +327,7 @@ test("ensureIsland refuses a .engram/config.json replaced by a symlink and leave
 // data identity (<island>/home/.engram/.instance-id) and a repeated stable
 // listener PID must match. A server that is not Koda's is never touched.
 
-const { PRIVATE_ENGRAM_PORT, PRIVATE_ENGRAM_PORT_ENV, privateMemory, privateMemoryPort } = require("../src/isolation.cjs");
+const { PRIVATE_ENGRAM_PORT, PRIVATE_ENGRAM_PORT_ENV, assertPrivateMemoryPort, privateMemory, privateMemoryPort } = require("../src/isolation.cjs");
 
 const INSTANCE_ID = "ab12".repeat(8); // 32 hex chars, like Engram writes it
 const PID = 4242;
@@ -509,4 +509,167 @@ test("privateMemory never stops a listener that is not Koda's own (instance id, 
 	// handover): the repeated-PID check refuses, nothing is signalled.
 	writeInstanceId(island);
 	assert.deepEqual(await stops(async () => ({ instance_id: INSTANCE_ID }), [String(PID), "9999"]), [], "an unstable listener pid is never signalled");
+});
+
+// ----- F2/F3 (verifier follow-ups, K2-05 T1c, commit e141ed1) ----------------
+
+test("privateMemory refuses the user's own Engram ports as a configuration error (F3)", async () => {
+	for (const reserved of ["7437", "7438"]) {
+		await assert.rejects(
+			() => privateMemory({ [PRIVATE_ENGRAM_PORT_ENV]: reserved }, "/tmp/nowhere", () => {}, {}),
+			new RegExp(`${reserved} belongs to the user's own Engram server`),
+			`port ${reserved} must be refused`,
+		);
+	}
+});
+
+test("a zero-padded port is refused, so it can never reach the user's 7437/7438 (F3 follow-up)", async () => {
+	// gentle-engram parses ENGRAM_PORT with Number.parseInt, so "07437" would mean the user's 7437.
+	for (const padded of ["07437", "007438", "07439", "0"]) {
+		await assert.rejects(
+			() => privateMemory({ [PRIVATE_ENGRAM_PORT_ENV]: padded }, "/tmp/nowhere", () => {}, {}),
+			/port must be an integer from 1 to 65535/,
+			`port ${padded} must be refused`,
+		);
+		assert.throws(() => assertPrivateMemoryPort(padded), /port must be an integer from 1 to 65535/);
+	}
+});
+
+test("privateMemory reclaims an orphaned listener that is provably Koda's own (F2)", async (t) => {
+	const island = ensureIsland(path.join(tmpBase(t), "island"));
+	writeInstanceId(island);
+	const seam = listenerSeam();
+	seam.occupied = [PID];
+	const kills = [];
+	const logs = [];
+	const memory = await privateMemory(
+		{},
+		island.root,
+		(line) => logs.push(line),
+		{
+			runListenerCommand: (command, args) => seam.lookup(command, args),
+			kill: (pid, signal) => kills.push({ pid, signal }),
+			health: async () => ({ instance_id: INSTANCE_ID }),
+		},
+	);
+	assert.ok(memory, "an orphaned server proven to be Koda's own (instance id + /health + stable pid) is reclaimed");
+	assert.ok(logs.some((line) => /reclaimed/.test(line)), JSON.stringify(logs));
+	await memory.stop();
+	assert.deepEqual(kills, [{ pid: PID, signal: "SIGTERM" }], "the reclaimed orphan is stopped at daemon shutdown");
+});
+
+test("privateMemory never reclaims a listener it cannot prove is Koda's own (F2)", async (t) => {
+	const kills = [];
+	const logs = [];
+	const refuse = async (island, seamOptions, health) => {
+		const memory = await privateMemory(
+			{},
+			island.root,
+			(line) => logs.push(line),
+			{ kill: (pid, signal) => kills.push({ pid, signal }), health, ...seamOptions },
+		);
+		assert.equal(memory, undefined);
+	};
+
+	// A listener without the island's identity file behind it: never proven Koda's own.
+	const bare = ensureIsland(path.join(tmpBase(t), "bare"));
+	await refuse(bare, { runListenerCommand: async () => ({ code: 0, stdout: String(PID), stderr: "" }) }, async () => ({ instance_id: INSTANCE_ID }));
+
+	// /health answers with a DIFFERENT instance id: a foreign server on the port.
+	const foreign = ensureIsland(path.join(tmpBase(t), "foreign"));
+	writeInstanceId(foreign);
+	await refuse(foreign, { runListenerCommand: async () => ({ code: 0, stdout: String(PID), stderr: "" }) }, async () => ({ instance_id: "f".repeat(32) }));
+
+	// The listener pid changed between the claim lookups: not a stable orphan.
+	const unstable = ensureIsland(path.join(tmpBase(t), "unstable"));
+	writeInstanceId(unstable);
+	let flip = false;
+	await refuse(unstable, {
+		runListenerCommand: async () => {
+			flip = !flip;
+			return { code: 0, stdout: flip ? String(PID) : "9999", stderr: "" };
+		},
+	}, async () => ({ instance_id: INSTANCE_ID }));
+
+	assert.ok(
+		logs.some((line) => /cannot read the private memory identity|serves other data|changed on port/.test(line)),
+		`every refusal is reported: ${JSON.stringify(logs)}`,
+	);
+	assert.deepEqual(kills, [], "nothing is ever signalled from an unproven claim");
+});
+
+/** An lsof-missing + ss-answer seam for the Linux fallback (F2). */
+function ssSeam({ ssCode = 0, ssStderr = "", ssLines = [], lsofMissing = true } = {}) {
+	const calls = [];
+	return {
+		calls,
+		runListenerCommand: async (command) => {
+			calls.push(command);
+			if (command === "lsof") return { code: lsofMissing ? -1 : 1, stdout: "", stderr: lsofMissing ? "" : "lsof complained", missing: lsofMissing };
+			if (command !== "ss") throw new Error(`unexpected command ${command}`);
+			return { code: ssCode, stdout: ssLines.join("\n"), stderr: ssStderr };
+		},
+	};
+}
+
+const SS_OWN = `LISTEN 0      4096        127.0.0.1:7439       0.0.0.0:*    users:(("engram",pid=${PID},fd=9))`;
+const SS_FOREIGN_PORT = `LISTEN 0      4096        127.0.0.1:7437       0.0.0.0:*    users:(("engram",pid=4347,fd=9))`;
+const SS_UNATTRIBUTABLE = "LISTEN 0      4096        0.0.0.0:7439         0.0.0.0:*";
+const SS_SHARED = `LISTEN 0      4096        127.0.0.1:7439       0.0.0.0:*    users:(("engram",pid=${PID},fd=9),("other",pid=777,fd=2))`;
+
+test("the listener lookup falls back to ss on Linux when lsof is missing, with the same fail-closed rules (F2)", async (t) => {
+	const island = ensureIsland(path.join(tmpBase(t), "island"));
+	writeInstanceId(island);
+	const kills = [];
+	const boot = async ({ seam, platform = "linux" }) =>
+		privateMemory({}, island.root, () => {}, { platform, kill: (pid, signal) => kills.push({ pid, signal }), health: async () => ({ instance_id: INSTANCE_ID }), runListenerCommand: seam.runListenerCommand });
+
+	// lsof missing + ss reports Koda's own orphan: reclaimed, stopped at shutdown.
+	{
+		const seam = ssSeam({ ssLines: [SS_OWN] });
+		const memory = await boot({ seam });
+		assert.deepEqual(seam.calls, ["lsof", "ss", "lsof", "ss"], "lsof first, then the ss fallback — for the claim lookup AND its stability re-check");
+		assert.ok(memory, "the ss-parsed pid is reclaimed like an lsof one");
+		await memory.stop();
+		assert.deepEqual(kills, [{ pid: PID, signal: "SIGTERM" }]);
+	}
+
+	// ss shows only a foreign port: our port is empty, so a fresh boot owns it.
+	{
+		const seam = ssSeam({ ssLines: [SS_FOREIGN_PORT] });
+		const memory = await boot({ seam });
+		assert.ok(memory, "a port that is free for Koda is owned");
+	}
+
+	// ss shows a listener on our port it cannot attribute (no pid visible):
+	// unknown state, never claimed, nothing signalled.
+	{
+		const logs = [];
+		const seam = ssSeam({ ssLines: [SS_UNATTRIBUTABLE] });
+		const memory = await privateMemory({}, island.root, (line) => logs.push(line), { platform: "linux", kill: (pid, signal) => kills.push({ pid, signal }), health: async () => ({ instance_id: INSTANCE_ID }), runListenerCommand: seam.runListenerCommand });
+		assert.equal(memory, undefined, "an unattributable ss listener refuses ownership");
+		assert.ok(logs.some((line) => /cannot verify private memory listener/.test(line) && /will not stop it/.test(line)), JSON.stringify(logs));
+	}
+
+	// ss shows TWO pids sharing our port: ambiguous, never claimed.
+	{
+		const seam = ssSeam({ ssLines: [SS_SHARED] });
+		const memory = await boot({ seam });
+		assert.equal(memory, undefined, "an ambiguous ss listener refuses ownership");
+	}
+
+	// ss itself is missing or fails: unknown state, never claimed.
+	for (const broken of [{ ssCode: -1, ssStderr: "", lsofMissing: true, missing: true }, { ssCode: 1, ssStderr: "ss complained" }]) {
+		const seam = ssSeam(broken);
+		const memory = await boot({ seam });
+		assert.equal(memory, undefined, `ss failure ${JSON.stringify(broken)} refuses ownership`);
+	}
+
+	// No platform crossover: without lsof on macOS the lookup is simply unknown.
+	{
+		const seam = ssSeam({ ssLines: [SS_OWN] });
+		const memory = await boot({ seam, platform: "darwin" });
+		assert.equal(memory, undefined, "the ss fallback is Linux-only");
+	}
+	assert.deepEqual(kills.slice(1), [], "refused shapes never signal anything");
 });

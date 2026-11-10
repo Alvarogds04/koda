@@ -1641,3 +1641,40 @@ test("a custom command gets no private memory ownership and no stop", async () =
 	await daemon.stop();
 	assert.equal(daemon.memory, undefined);
 });
+
+// F6 (verifier): a SIGHUP config reload switching from a custom command BACK to
+// Koda's own engine starts private memory inside the engine's spawn — but only
+// the boot path claimed the port's ownership, so that server was left running
+// at daemon stop. The switch must claim ownership exactly like boot.
+test("a SIGHUP switch from a custom command back to Koda's engine claims the private port (F6)", unixOnly("needs a #!/bin/sh fake runtime launcher"), async (t) => {
+	const base = tmp();
+	const root = islandRoot(base);
+	const { runtimeDeps } = fakeRuntime(t);
+	fs.mkdirSync(root, { recursive: true, mode: 0o700 });
+	// Boot with a CUSTOM command: no private memory ownership (same as boot today).
+	writePrivateFile(path.join(root, "config.json"), JSON.stringify({ command: wrapperFor(base, "c.sh", path.join(base, "c.log")) }));
+	const seam = memorySeam();
+	const daemon = new Daemon({
+		root,
+		env: daemonEnv(base),
+		log: (line) => seam.logs.push(String(line)),
+		engineOptions: { commandArgs: [], runtimeDeps, backoffMs: [20], stopTimeoutMs: 500, requestTimeoutMs: 3000, startTimeoutMs: 5000 },
+		memoryOptions: { runListenerCommand: seam.runListenerCommand, kill: seam.kill, health: seam.health },
+	});
+	await daemon.start();
+	assert.equal(daemon.memory, undefined, "a custom command owns no private memory");
+	assert.deepEqual(seam.kills, []);
+
+	// The user's edited config switches back to Koda's own engine; SIGHUP restarts it.
+	writePrivateFile(path.join(root, "config.json"), JSON.stringify({ command: DEFAULT_COMMAND }));
+	assert.equal((await daemon.applyConfig()).restarted, true, "the engine restarts on the command change");
+	assert.ok(daemon.memory, "the switch claims the private port exactly like at boot");
+
+	// The engine's own server appears; daemon stop must stop it (the F6 leak).
+	fs.mkdirSync(path.join(root, "home", ".engram"), { recursive: true, mode: 0o700 });
+	fs.writeFileSync(path.join(root, "home", ".engram", ".instance-id"), `${MEMORY_INSTANCE}\n`, { mode: 0o600 });
+	seam.occupied = true;
+	await daemon.stop();
+	assert.deepEqual(seam.kills, [{ pid: 4242, signal: "SIGTERM" }], "the server started by the switched engine is stopped on daemon shutdown");
+	assert.ok(!seam.logs.some((line) => /left running|serves other data/.test(line)), JSON.stringify(seam.logs));
+});

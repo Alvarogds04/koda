@@ -570,14 +570,46 @@ function runListenerCommand(command, args) {
 				let code = 0;
 				if (error && typeof error.code === "number") code = error.code;
 				else if (error) code = -1;
+				// F2: a missing binary (ENOENT) is reported distinctly — it is the one
+				// failure the Linux ss fallback may answer, never a listener fact.
 				resolve({
 					code,
 					stdout: String(stdout),
 					stderr: String(stderr),
+					missing: error !== undefined && error !== null && error.code === "ENOENT",
 				});
 			},
 		);
 	});
+}
+
+/**
+ * F2 (Linux only): parse `ss -ltnpH` when lsof is missing, keeping the same
+ * fail-closed rules as the lsof lookup — a listener on the port with no visible
+ * pid (a foreign process an unprivileged ss cannot attribute) is a FAILED
+ * lookup, never "empty"; two pids sharing the port are ambiguous; a missing or
+ * failing ss is a failure too. Every line is `State Recv-Q Send-Q Local:Port
+ * Peer:Port [Process]`; only lines whose LOCAL column ends in `:<port>` count.
+ */
+async function listeningPidViaSs(port, options) {
+	try {
+		const result = await (options.runListenerCommand ?? runListenerCommand)("ss", ["-ltnpH"]);
+		if (result.missing || result.code !== 0 || result.stderr.trim()) return { kind: "failed" };
+		const pids = new Set();
+		let sawPortListener = false;
+		for (const line of result.stdout.split(/\r?\n/)) {
+			const fields = line.trim().split(/\s+/);
+			if (fields.length < 4 || fields[0] !== "LISTEN" || !fields[3].endsWith(`:${port}`)) continue;
+			sawPortListener = true;
+			for (const match of fields.slice(4).join(" ").matchAll(/pid=(\d+)/g)) pids.add(Number(match[1]));
+		}
+		if (!sawPortListener) return { kind: "empty" };
+		if (pids.size === 0) return { kind: "failed" };
+		if (pids.size > 1) return { kind: "ambiguous" };
+		return { kind: "one", pid: [...pids][0] };
+	} catch {
+		return { kind: "failed" };
+	}
 }
 
 /** Enumerate Windows listeners before filtering, so an unused port is not a query error. */
@@ -595,6 +627,11 @@ async function listeningPid(port, options) {
 		: ["-w", "-t", "-n", "-P", `-iTCP:${port}`, "-sTCP:LISTEN"];
 	try {
 		const result = await (options.runListenerCommand ?? runListenerCommand)(command, args);
+		// F2: only a MISSING lsof on Linux may be answered by the ss fallback —
+		// every other lsof failure stays a failure (fail closed, same as before).
+		if (result.missing && (options.platform ?? process.platform) === "linux") {
+			return listeningPidViaSs(port, options);
+		}
 		const text = result.stdout.trim();
 		// lsof exits 1 for no matches. Missing commands, diagnostics and timeouts are failures.
 		if (!windows && result.code === 1 && !text && !result.stderr.trim()) return { kind: "empty" };
@@ -639,25 +676,54 @@ function readInstanceIdFile(file, options) {
 }
 
 /**
- * Owns cleanup of Koda's private memory only after confirming an EMPTY private
- * port before startup (Gentle Dot `privateMemory`, isolation.ts:155-300). A
- * failed or ambiguous lookup refuses ownership, not startup: the daemon starts,
- * logs it, and leaves that memory server running when it closes. An invalid
- * port is a configuration error and does stop startup. Before termination, both
- * the private data identity (`<dataDir>/home/.engram/.instance-id`) and a
- * repeated stable listener PID must match. PID reuse after the final check
- * remains possible; nothing is killed by name, and a server that is not Koda's
- * own is never touched. Pure seams (`options.runListenerCommand`, `options.kill`,
- * `options.health`, `options.fs`, `options.platform`) are for tests only.
+ * Owns cleanup of Koda's private memory: after confirming an EMPTY private port
+ * before startup (Gentle Dot `privateMemory`, isolation.ts:155-300), or — F2 —
+ * after reclaiming an orphaned server from a crashed daemon that is PROVEN to
+ * be Koda's own (same identity proof as the stop path). A failed or ambiguous
+ * lookup refuses ownership, not startup: the daemon starts, logs it, and leaves
+ * that memory server running when it closes. An invalid port (including the
+ * user's own Engram ports 7437/7438, F3) is a configuration error and does stop
+ * startup. Before termination, both the private data identity
+ * (`<dataDir>/home/.engram/.instance-id`) and a repeated stable listener PID
+ * must match. PID reuse after the final check remains possible; nothing is
+ * killed by name, and a server that is not Koda's own is never touched. Pure
+ * seams (`options.runListenerCommand`, `options.kill`, `options.health`,
+ * `options.fs`, `options.platform`) are for tests only.
  */
-async function privateMemory(base, dataDir, log = () => {}, options = {}) {
-	const port = privateMemoryPort(base);
-	if (!/^\d+$/.test(port) || !Number.isSafeInteger(Number(port)) || Number(port) < 1 || Number(port) > 65535) {
+/**
+ * F3: the port of Koda's private memory is validated wherever it is used — the
+ * lifecycle below and the engine env (runtime.cjs, defence in depth). Anything
+ * non-numeric is invalid; the USER's own Engram defaults (7437 global, 7438
+ * Gentle Dot's private port) are refused as a configuration error with a clear
+ * message, never silently inherited.
+ */
+const FORBIDDEN_PRIVATE_PORTS = new Set(["7437", "7438"]);
+function assertPrivateMemoryPort(port) {
+	// Canonical decimal only: no sign, no leading zeros. gentle-engram reads the port with
+	// Number.parseInt, so "07437" would silently mean the user's own 7437.
+	if (!/^[1-9]\d*$/.test(port) || !Number.isSafeInteger(Number(port)) || Number(port) > 65535) {
 		throw new Error("Cannot start private memory: port must be an integer from 1 to 65535");
 	}
+	if (FORBIDDEN_PRIVATE_PORTS.has(port)) {
+		throw new Error(`Cannot start private memory: port ${port} belongs to the user's own Engram server; set ${PRIVATE_ENGRAM_PORT_ENV} to another port`);
+	}
+}
+
+async function privateMemory(base, dataDir, log = () => {}, options = {}) {
+	const port = privateMemoryPort(base);
+	assertPrivateMemoryPort(port);
 	const before = await listeningPid(port, options);
-	if (before.kind === "one") return undefined;
-	if (before.kind !== "empty") {
+	if (before.kind === "one") {
+		// F2: an orphaned server left by a crashed daemon used to run until reboot
+		// (on Linux without lsof, a stop could never even look). Reclaim it ONLY
+		// with the same proof the stop path demands — the island's .instance-id, a
+		// matching /health and a stable listener pid; anything else is never ours.
+		if (await verifyOwnMemoryListener(port, dataDir, before.pid, options, log)) {
+			log(`reclaimed the private memory server of a previous run (pid ${before.pid})`);
+		} else {
+			return undefined;
+		}
+	} else if (before.kind !== "empty") {
 		// Not knowing is no reason to keep the assistant from starting, nor to claim the server.
 		log(`cannot verify private memory listener on port ${port} (${before.kind} lookup); will not stop it`);
 		return undefined;
@@ -671,21 +737,7 @@ async function privateMemory(base, dataDir, log = () => {}, options = {}) {
 				}
 				return;
 			}
-			const expected = readInstanceIdFile(path.join(dataDir, "home", ".engram", ".instance-id"), options);
-			if (!expected) {
-				log(`cannot read the private memory identity of port ${port}; left running`);
-				return;
-			}
-			const health = await (options.health ?? memoryHealth)(port).catch(() => undefined);
-			if (health?.instance_id !== expected) {
-				log(`the memory server on port ${port} serves other data; left running`);
-				return;
-			}
-			const again = await listeningPid(port, options);
-			if (again.kind !== "one" || again.pid !== listener.pid) {
-				log(`the private memory listener changed on port ${port}; left running`);
-				return;
-			}
+			if (!(await verifyOwnMemoryListener(port, dataDir, listener.pid, options, log))) return;
 			try {
 				(options.kill ?? process.kill)(listener.pid, "SIGTERM");
 				log(`stopped the private memory server (pid ${listener.pid})`);
@@ -696,6 +748,31 @@ async function privateMemory(base, dataDir, log = () => {}, options = {}) {
 	};
 }
 
+/**
+ * The ownership proof shared by the stop path and the F2 reclaim: the private
+ * data identity (`<dataDir>/home/.engram/.instance-id`), a matching /health and
+ * a repeated stable listener pid. Returns true only when every check passes;
+ * every refusal is logged and nothing is ever signalled.
+ */
+async function verifyOwnMemoryListener(port, dataDir, pid, options, log) {
+	const expected = readInstanceIdFile(path.join(dataDir, "home", ".engram", ".instance-id"), options);
+	if (!expected) {
+		log(`cannot read the private memory identity of port ${port}; left running`);
+		return false;
+	}
+	const health = await (options.health ?? memoryHealth)(port).catch(() => undefined);
+	if (health?.instance_id !== expected) {
+		log(`the memory server on port ${port} serves other data; left running`);
+		return false;
+	}
+	const again = await listeningPid(port, options);
+	if (again.kind !== "one" || again.pid !== pid) {
+		log(`the private memory listener changed on port ${port}; left running`);
+		return false;
+	}
+	return true;
+}
+
 module.exports = {
 	ENGINE_HOME_MARKER,
 	ENV_ALLOWLIST,
@@ -704,6 +781,7 @@ module.exports = {
 	MEMORY_PROJECT,
 	PRIVATE_ENGRAM_PORT,
 	PRIVATE_ENGRAM_PORT_ENV,
+	assertPrivateMemoryPort,
 	assertSecurePath,
 	claimEngineHome,
 	defaultIslandRoot,

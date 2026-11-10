@@ -842,6 +842,7 @@ test("bundledMemoryEnv runs Koda's private memory: the bundled binary, Koda's po
 	assert.equal(env.ENGRAM_DATA_DIR, undefined, "the user's store is never inherited: the store follows the island HOME");
 	assert.equal(env.GENTLE_SHELL_PREFIX, undefined, "GENTLE_SHELL_PREFIX is never set");
 	assert.equal(env.ENGRAM_NO_UPDATE_CHECK, "1", "the private memory never phones home for updates");
+	assert.equal(env.ENGRAM_STARTUP_POLICY, undefined, "with the bundled binary the startup policy stays unset (memory on)");
 	assert.equal(bundledMemoryEnv({ HOME: "/home/user" }, runtime, deps).ENGRAM_PORT, "7439", "default private port");
 
 	// Windows resolves the real home through USERPROFILE (Gentle Dot isolation)
@@ -854,6 +855,22 @@ test("bundledMemoryEnv runs Koda's private memory: the bundled binary, Koda's po
 	assert.equal(winEnv.ENGRAM_PORT, "7439");
 	assert.equal(winEnv.ENGRAM_DATA_DIR, undefined);
 	assert.equal(winEnv.ENGRAM_URL, undefined);
+	assert.equal(winEnv.ENGRAM_STARTUP_POLICY, undefined, "memory on: the policy is never set to disabled");
+});
+
+// F1 (verifier): without a usable engramBin the companion's ENGRAM_BIN falls
+// back to `engram` on the inherited PATH (gentle-engram index.ts:27), which on
+// a real machine resolves the USER's binary (~/.local/bin/engram) — breaking
+// «bundled pinned binary only» and making the «chat starts without memory»
+// log false. gentle-engram honours ENGRAM_STARTUP_POLICY (index.ts:30-31):
+// anything but unset/"allow" fails closed — no tools, no spawn, no PATH lookup
+// — so the degraded case pins the policy to "disabled" and the log stays true.
+test("bundledMemoryEnv pins ENGRAM_STARTUP_POLICY=disabled whenever ENGRAM_BIN cannot be resolved (F1)", () => {
+	const deps = { existsSync: fs.existsSync, lstatSync: fs.lstatSync, readFileSync: fs.readFileSync };
+	// No runtime at all.
+	const noRuntime = bundledMemoryEnv({ HOME: "/home/user" }, undefined, deps);
+	assert.equal(noRuntime.ENGRAM_BIN, undefined);
+	assert.equal(noRuntime.ENGRAM_STARTUP_POLICY, "disabled", "no bundled binary: the companion must never fall back to the PATH's engram");
 });
 
 // A manifest without engramBin (pre-T1b runtimes, test doubles): the private
@@ -864,6 +881,7 @@ test("bundledMemoryEnv without a manifest binary still runs the private memory",
 	assert.equal(env.ENGRAM_BIN, undefined);
 	assert.equal(env.ENGRAM_PORT, "7439");
 	assert.equal(env.ENGRAM_DATA_DIR, undefined, "the parent's ENGRAM_DATA_DIR is never honoured");
+	assert.equal(env.ENGRAM_STARTUP_POLICY, "disabled", "F1: no bundled binary — the companion is disabled, never the PATH's engram");
 });
 
 // F7: a bad or symlinked engramBin no longer fails the spawn (the old
@@ -879,12 +897,15 @@ test("bundledMemoryEnv degrades without ENGRAM_BIN on a bad or symlinked engramB
 		assert.equal(env.ENGRAM_BIN, undefined, `no ENGRAM_BIN for engramBin ${JSON.stringify(bad)}`);
 		assert.equal(env.ENGRAM_PORT, "7439", "the private memory env survives the degradation");
 		assert.equal(env.ENGRAM_DATA_DIR, undefined);
+		assert.equal(env.ENGRAM_STARTUP_POLICY, "disabled", "F1: the PATH fallback can never resolve the user's engram");
 	}
 	// A symlinked binary is refused too: refused as a BINARY, degraded as an env.
 	fs.writeFileSync(path.join(runtime, "koda-runtime.json"), `${JSON.stringify({ gentlePi: "4.3.0", gentleShell: "node_modules/gentle-pi/bin/gentle-shell.mjs", engramBin: "bin/engram" })}\n`);
 	fs.rmSync(path.join(runtime, "bin", "engram"));
 	fs.symlinkSync("/evil/engram", path.join(runtime, "bin", "engram"));
-	assert.equal(bundledMemoryEnv({ HOME: "/home/user" }, runtime, deps).ENGRAM_BIN, undefined);
+	const symlinked = bundledMemoryEnv({ HOME: "/home/user" }, runtime, deps);
+	assert.equal(symlinked.ENGRAM_BIN, undefined);
+	assert.equal(symlinked.ENGRAM_STARTUP_POLICY, "disabled");
 });
 
 // T1c (S5/L11): the F6 user-binary order (ENGRAM_BIN / login shell / known
@@ -916,6 +937,7 @@ test("a bad engramBin degrades: the engine starts without memory tools and says 
 	assert.equal(engine.status, "ready", "the engine starts with a broken engramBin");
 	const childEnv = JSON.parse(fs.readFileSync(envOut, "utf8"));
 	assert.equal(childEnv.ENGRAM_BIN, undefined, "no ENGRAM_BIN when the manifest's binary is absent");
+	assert.equal(childEnv.ENGRAM_STARTUP_POLICY, "disabled", "F1: the engine env disables the companion instead of inviting a PATH engram");
 	assert.ok(logs.some((l) => /memory/i.test(l)), `the degradation is logged: ${JSON.stringify(logs)}`);
 	const response = await engine.request({ type: "get_state" });
 	assert.equal(response.success, true, "the chat still works, no memory tools");
@@ -975,4 +997,80 @@ test("the default engine's child gets the memory env and the seeded companion; a
 	} finally {
 		await plain.engine.stop().catch(() => {});
 	}
+});
+
+// ----- F3/F4 (verifier follow-ups, K2-05 T1c, commit e141ed1) ----------------
+
+test("bundledMemoryEnv refuses the user's own Engram ports as a configuration error (F3)", (t) => {
+	const runtime = fakeRuntimeWithEngram(t);
+	const deps = runtimeDepsFor(runtime);
+	for (const reserved of ["7437", "7438"]) {
+		assert.throws(
+			() => bundledMemoryEnv({ HOME: "/home/user", ABITO_ENGRAM_PORT: reserved }, runtime, deps),
+			new RegExp(`${reserved} belongs to the user's own Engram server`),
+			`ABITO_ENGRAM_PORT=${reserved} must be refused, not inherited into the engine`,
+		);
+	}
+});
+
+// F4 (verifier): envOverrides is applied LAST in the child env, so a caller
+// re-adding ENGRAM_* there would silently break the «no user ENGRAM_* for the
+// default engine» rule the bundledMemoryEnv comment claims. Enforced, not just
+// documented: for Koda's own engine every ENGRAM_* caller override is dropped;
+// a custom command (no private memory) keeps the caller's env as before.
+test("the default engine drops ENGRAM_* caller overrides; a custom command keeps them (F4)", async (t) => {
+	const runtime = fakeRuntimeWithEngram(t);
+	const scriptRel = "node_modules/gentle-pi/bin/gentle-shell.mjs";
+	fs.mkdirSync(path.join(runtime, "node_modules", "gentle-pi", "bin"), { recursive: true });
+	fs.writeFileSync(path.join(runtime, ...scriptRel.split("/")), "");
+	const launcher = path.join(runtime, "gentle-shell");
+	fs.writeFileSync(launcher, `#!/bin/sh\nexec '${process.execPath}' '${FAKE_AGENT}' "$@"\n`);
+	fs.chmodSync(launcher, 0o755);
+	const overrides = { ENGRAM_BIN: "/custom/user-engram", ENGRAM_PORT: "7437", ENGRAM_URL: "http://127.0.0.1:9999", ENGRAM_DATA_DIR: "/home/user/.engram", ENGRAM_STARTUP_POLICY: "allow", ENGRAM_NO_UPDATE_CHECK: "0", ENGRAM_PI_SESSION_TRACE: "1", OTHER_OVERRIDE: "kept" };
+
+	const { engine, envOut } = makeEngine(t, {
+		command: "gentle-shell",
+		commandArgs: [],
+		runtimeDeps: runtimeDepsFor(runtime),
+		envOverrides: overrides,
+	});
+	try {
+		await engine.start();
+		const childEnv = JSON.parse(fs.readFileSync(envOut, "utf8"));
+		assert.equal(childEnv.ENGRAM_BIN, path.join(runtime, "bin", "engram"), "the bundled binary wins over the caller's ENGRAM_BIN");
+		assert.equal(childEnv.ENGRAM_PORT, "7439", "Koda's private port wins over the caller's ENGRAM_PORT");
+		assert.equal(childEnv.ENGRAM_URL, undefined, "the caller cannot re-add the user's server");
+		assert.equal(childEnv.ENGRAM_DATA_DIR, undefined, "the caller cannot re-add the user's store");
+		assert.equal(childEnv.ENGRAM_STARTUP_POLICY, undefined, "memory is on with the bundled binary; no caller policy");
+		assert.equal(childEnv.ENGRAM_NO_UPDATE_CHECK, "1", "the offline pin wins over the caller's ENGRAM_NO_UPDATE_CHECK");
+		assert.equal(childEnv.ENGRAM_PI_SESSION_TRACE, "1", "the diagnostic-only stderr trace flag still passes (F4 exception)");
+		assert.equal(childEnv.OTHER_OVERRIDE, "kept", "non-memory overrides still pass");
+	} finally {
+		await engine.stop().catch(() => {});
+	}
+
+	const plain = makeEngine(t, { envOverrides: overrides });
+	try {
+		await plain.engine.start();
+		const plainEnv = JSON.parse(fs.readFileSync(plain.envOut, "utf8"));
+		assert.equal(plainEnv.ENGRAM_PORT, "7437", "a custom command has no private memory; the caller's env passes unchanged");
+	} finally {
+		await plain.engine.stop().catch(() => {});
+	}
+});
+
+// F5 (verifier): the identity told the agent to «search broadly… the user keeps
+// knowledge from many projects there» — written for the OLD shared-store shape.
+// Koda's memory is now its own private store (T1c, L11) that starts empty, and
+// the hidden-names list stays intact. The SAVE rule (project abito-island,
+// never another) is a product decision (L5) and must stay byte-identical.
+test("identity.md fits the private memory store: no broad cross-project search, the save rule intact (F5)", () => {
+	const identity = fs.readFileSync(path.join(__dirname, "..", "identity.md"), "utf8");
+	assert.equal(
+		identity.split("\n").includes("- When you save a memory, always save it to the project `abito-island` and never pass a different one."),
+		true,
+		"the save rule stays byte-identical (L5)",
+	);
+	assert.doesNotMatch(identity, /all projects|match_mode|search broadly|knowledge from many projects/, "no shared-store cross-project search advice");
+	assert.match(identity, /abito-island/, "the memory rules still name the one project");
 });

@@ -907,6 +907,14 @@ class Daemon extends EventEmitter {
 		if (cwdMoved) config.clearSessionPointer(this.root);
 		engine.workspacePath = next.workspace;
 		if (commandMoved) engine.command = next.command;
+		// F6: switching a custom command BACK to Koda's own engine starts private
+		// memory inside the engine's spawn — without claiming the port's ownership
+		// here, that server was left running at daemon stop. Claim it exactly like
+		// the boot path does (empty port, or a proven-Koda orphan via the F2
+		// reclaim; an unproven port stays unowned and is never stopped).
+		if (commandMoved && engine.command === DEFAULT_COMMAND && !this.memory) {
+			this.memory = await privateMemory(this.env, this.root, (line) => this.log(line), this.options.memoryOptions ?? {});
+		}
 		this.cfg = { ...this.cfg, ...next };
 		await engine.start();
 		return true;

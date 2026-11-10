@@ -27,6 +27,7 @@ const path = require("node:path");
 
 const {
 	MEMORY_PROJECT,
+	assertPrivateMemoryPort,
 	claimEngineHome,
 	defaultIslandRoot,
 	ensureIsland,
@@ -41,6 +42,14 @@ const { MESSAGE_FLUSH } = require("./protocol.cjs");
 
 const DEFAULT_BACKOFF_MS = [1000, 2000, 4000, 8000, 16000, 30000];
 const DEFAULT_REQUEST_TIMEOUT_MS = 300_000;
+/**
+ * F4: the only ENGRAM_* keys a caller may still set on Koda's own engine —
+ * diagnostics that move no memory state (the companion logs richer stderr
+ * traces when set). Everything else ENGRAM_* is stripped from envOverrides for
+ * the default engine: the memory selection (binary, URL, data dir, port,
+ * socket, database URL, startup policy, update check) is daemon-owned.
+ */
+const ENGRAM_DIAGNOSTIC_OVERRIDES = new Set(["ENGRAM_PI_SESSION_TRACE"]);
 const DEFAULT_START_TIMEOUT_MS = 60_000;
 const DEFAULT_STOP_TIMEOUT_MS = 5_000;
 const DEFAULT_STABLE_MS = 30_000;
@@ -132,11 +141,12 @@ function engramBinPath(manifest, runtime, deps) {
  * pinned one its runtime manifest names (`engramBin`) — the former Gentle Dot
  * user-binary order (the parent's ENGRAM_BIN, the login shell, the known dirs)
  * is deleted, so the user's own Engram server and store (7437/7438, ~/.engram)
- * are never read, probed or inherited: the parent's ENGRAM_URL, ENGRAM_DATA_DIR
- * and ENGRAM_PORT are dropped here even if a caller re-added them, and the
- * allowlist in isolatedEnv never copies them in the first place. A missing or
- * invalid `engramBin` never blocks the engine (F7): the degradation (no
- * ENGRAM_BIN) is logged, and the chat starts without memory tools.
+ * are never read, probed or inherited: the allowlist in isolatedEnv never copies
+ * them in the first place, ENGRAM_* caller overrides are stripped for the
+ * default engine (spawnChild, F4), and a missing or invalid `engramBin` never
+ * blocks the engine (F7): the degradation (ENGRAM_STARTUP_POLICY=disabled, F1 —
+ * the companion never falls back to a PATH `engram`) is logged, and the chat
+ * starts without memory tools.
  * GENTLE_SHELL_PREFIX is NEVER set: the engine's companion comes from the
  * island seed, not from a user prefix. This env is only ever built for the
  * default engine (see spawnChild); a foreign `command` learns nothing about
@@ -144,18 +154,34 @@ function engramBinPath(manifest, runtime, deps) {
  */
 function bundledMemoryEnv(baseEnv, runtime, deps = {}) {
 	const env = {};
+	let bin;
 	if (runtime !== undefined) {
 		const manifest = readRuntimeManifest(runtime, deps);
 		try {
-			env.ENGRAM_BIN = engramBinPath(manifest, runtime, deps);
+			bin = engramBinPath(manifest, runtime, deps);
 		} catch (error) {
 			(deps.log ?? (() => {}))(`the bundled memory binary is not available (${error.message}); the chat starts without memory`);
 		}
+	} else {
+		(deps.log ?? (() => {}))("the bundled runtime is unavailable; the chat starts without memory");
 	}
-	env.ENGRAM_PORT = privateMemoryPort(baseEnv);
-	// The user's server and store never pass, whatever the caller's env held.
-	delete env.ENGRAM_URL;
-	delete env.ENGRAM_DATA_DIR;
+	if (bin !== undefined) {
+		env.ENGRAM_BIN = bin;
+	} else {
+		// F1: without the pinned binary the companion's ENGRAM_BIN would fall back
+		// to `engram` on the inherited PATH (gentle-engram index.ts:27) — the user's
+		// binary on a real machine. ENGRAM_STARTUP_POLICY=disabled makes the
+		// companion fail closed (index.ts:30-31): no tools, no server spawn, no
+		// PATH lookup — the bundled pinned binary stays the ONLY engram the default
+		// engine can ever run, and the degradation log above stays true.
+		env.ENGRAM_STARTUP_POLICY = "disabled";
+	}
+	// F3 (defence in depth): the port is validated here too, exactly like the
+	// lifecycle in isolation.cjs — the user's own Engram ports (7437/7438) and
+	// anything non-numeric are a configuration error, never an env the engine sees.
+	const port = privateMemoryPort(baseEnv);
+	assertPrivateMemoryPort(port);
+	env.ENGRAM_PORT = port;
 	// The private memory never phones home for updates (offline by design).
 	env.ENGRAM_NO_UPDATE_CHECK = "1";
 	return env;
@@ -1156,6 +1182,18 @@ class AgentEngine extends EventEmitter {
 		// instance) refuses unknown options like --home, so it keeps the pre-T2
 		// transport: no --home, PI_CODING_AGENT_DIR=<agentDir> in the child env.
 		const defaultEngine = this.command === DEFAULT_COMMAND;
+		// F4: envOverrides is applied last, so an ENGRAM_* key a caller re-added
+		// would silently break the «no user ENGRAM_* for the default engine» rule
+		// (the parent's server/store/binary choice must never reach Koda's own
+		// engine). Enforced, not just documented: for the default engine EVERY
+		// ENGRAM_* caller override is dropped except the diagnostic-only stderr
+		// trace flag (ENGRAM_PI_SESSION_TRACE moves no memory state); a custom
+		// command (no private memory) keeps the caller's env as is.
+		const callerOverrides = defaultEngine
+			? Object.fromEntries(
+					Object.entries(this.envOverrides).filter(([key]) => !key.startsWith("ENGRAM_") || ENGRAM_DIAGNOSTIC_OVERRIDES.has(key)),
+			  )
+			: this.envOverrides;
 		const args = [
 			...this.commandArgs,
 			...(defaultEngine ? ["--home", this.island.agentDir] : []),
@@ -1170,12 +1208,13 @@ class AgentEngine extends EventEmitter {
 			...isolatedEnv(this.baseEnv, this.island, {
 				ABITO_MEMORY_PROJECT: MEMORY_PROJECT,
 				...(defaultEngine ? {} : { PI_CODING_AGENT_DIR: this.island.agentDir }),
-				// T1b-b (S5): the bundled Engram binary and the user's own memory
-				// store travel ONLY with Koda's default engine. F7: a missing or
-				// invalid engramBin never blocks the engine — the degradation (no
-				// ENGRAM_BIN) is logged by the resolution itself.
+				// T1b-b/T1c (S5): the bundled Engram binary and Koda's private memory
+				// store and port travel ONLY with Koda's default engine. F7: a missing or
+				// invalid engramBin never blocks the engine — the degradation
+				// (ENGRAM_STARTUP_POLICY=disabled, F1) is logged by the resolution
+				// itself. F4: ENGRAM_* caller overrides are stripped above.
 				...(defaultEngine ? bundledMemoryEnv(this.baseEnv, runtimeRoot(this.runtimeDeps), { ...this.runtimeDeps, log: this.log }) : {}),
-				...this.envOverrides,
+				...callerOverrides,
 			}),
 		};
 		const prefix = this.spawnCommandPrefix();
