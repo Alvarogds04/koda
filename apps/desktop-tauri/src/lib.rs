@@ -15,6 +15,10 @@
 
 pub mod agentclient;
 pub mod agents_direct;
+/// K2-05 T4 U2: the island chat client (closed chat commands + the allowlisted
+/// chat view) — separate from agentclient by design; its transport is
+/// `agentconn::ChatConn`, a second connection with its own fold callback.
+pub mod chatclient;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod agentconn;
 #[cfg(windows)]

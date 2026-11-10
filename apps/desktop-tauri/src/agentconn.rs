@@ -6,6 +6,7 @@
 //! The daemon is NOT started here (that is the MCP/daemon spawner unit, not this one):
 //! when no daemon is running the state is `no_daemon` and the UI says so honestly.
 use crate::agentclient::{parse_ui_command, ClientState, CommandError, FrameBuffer, Reason, Session, UiCommand};
+use crate::chatclient::{ChatCommand, ChatState, CommandError as ChatCommandError};
 use serde_json::Value;
 use std::io::{Read, Write};
 use std::os::unix::fs::MetadataExt;
@@ -226,6 +227,160 @@ impl AgentConn {
 }
 
 impl Drop for AgentConn {
+    fn drop(&mut self) {
+        self.close();
+    }
+}
+
+// ---- K2-05 T4 U2: the SECOND connection (the chat) --------------------------------
+
+/// The island's chat connection: a SECOND connection to the same daemon endpoint
+/// (the settings window keeps its own through `AgentConn`; the daemon allows 2
+/// clients, PROTOCOL.md). It reuses the session.json / hello / reader-thread
+/// machinery of [`AgentConn`] unchanged, but folds frames into [`ChatState`]
+/// through its OWN callback, and sends only the closed chat command set
+/// ([`ChatCommand`], window-gated at parse time).
+pub struct ChatConn {
+    state: Arc<Mutex<ChatState>>,
+    writer: Arc<Mutex<Option<UnixStream>>>,
+    stop: Arc<AtomicBool>,
+    changed: Arc<dyn Fn(Value) + Send + Sync>,
+}
+
+impl ChatConn {
+    pub fn new(changed: impl Fn(Value) + Send + Sync + 'static) -> ChatConn {
+        ChatConn {
+            state: Arc::new(Mutex::new(ChatState::disconnected(Reason::NoDaemon))),
+            writer: Arc::new(Mutex::new(None)),
+            stop: Arc::new(AtomicBool::new(false)),
+            changed: Arc::new(changed),
+        }
+    }
+
+    pub fn view(&self) -> Value {
+        serde_json::to_value(&*self.state.lock().expect("chat state lock")).unwrap_or(Value::Null)
+    }
+
+    fn set(&self, s: ChatState) {
+        let view = serde_json::to_value(&s).unwrap_or(Value::Null);
+        *self.state.lock().expect("chat state lock") = s;
+        (self.changed)(view);
+    }
+
+    /// (Re)connect from the session file: read session.json, connect the second
+    /// socket, handshake, then fold `ready`-and-onward frames into the chat view.
+    pub fn connect(&self, island_root: &Path) {
+        self.close();
+        let session = match read_session(&session_path(island_root)) {
+            Ok(s) => s,
+            Err(reason) => return self.set(ChatState::disconnected(reason)),
+        };
+        let mut stream = match UnixStream::connect(&session.endpoint) {
+            Ok(s) => s,
+            Err(_) => return self.set(ChatState::disconnected(Reason::NoDaemon)),
+        };
+        let _ = stream.set_write_timeout(Some(HELLO_WAIT));
+        if stream.write_all(session.hello().as_bytes()).is_err() {
+            crate::failure::report("island", "agent-refused", crate::failure::Reason::AgentRefused, None);
+            return self.set(ChatState::disconnected(Reason::Refused));
+        }
+        let _ = stream.set_read_timeout(Some(HELLO_WAIT));
+        let mut buf = FrameBuffer::default();
+        let mut chunk = [0u8; 4096];
+        let first = loop {
+            match stream.read(&mut chunk) {
+                Ok(0) | Err(_) => {
+                    crate::failure::report("island", "agent-no-answer", crate::failure::Reason::AgentNoAnswer, None);
+                    return self.set(ChatState::disconnected(Reason::Refused));
+                }
+                Ok(n) => match buf.push(&chunk[..n]) {
+                    Ok(frames) if !frames.is_empty() => break frames,
+                    Ok(_) => continue,
+                    // frames over the island reader limit (256 KiB) fail as today
+                    Err(_) => return self.set(ChatState::disconnected(Reason::Refused)),
+                },
+            }
+        };
+        if first[0].get("type").and_then(Value::as_str) != Some("ready") {
+            return self.set(ChatState::disconnected(Reason::Refused));
+        }
+        self.stop.store(false, Ordering::SeqCst);
+        let reader = match stream.try_clone() {
+            Ok(r) => r,
+            Err(_) => return self.set(ChatState::disconnected(Reason::Lost)),
+        };
+        *self.writer.lock().expect("chat writer lock") = Some(stream);
+        self.set(ChatState::connected());
+        self.spawn_reader(reader, buf);
+        // the late client asks for the newest history page once it has handshook
+        let _ = self.send_line(&ChatCommand::History.line());
+    }
+
+    fn spawn_reader(&self, mut reader: UnixStream, mut buf: FrameBuffer) {
+        let (state, changed, stop, writer) = (self.state.clone(), self.changed.clone(), self.stop.clone(), self.writer.clone());
+        let _ = reader.set_read_timeout(Some(Duration::from_millis(500)));
+        std::thread::spawn(move || {
+            let mut chunk = [0u8; 8192];
+            loop {
+                if stop.load(Ordering::SeqCst) {
+                    return;
+                }
+                match reader.read(&mut chunk) {
+                    Ok(0) => break,
+                    Ok(n) => match buf.push(&chunk[..n]) {
+                        Ok(frames) => {
+                            let view = {
+                                let mut st = state.lock().expect("chat state lock");
+                                for f in &frames {
+                                    st.apply(f);
+                                }
+                                serde_json::to_value(&*st).unwrap_or(Value::Null)
+                            };
+                            changed(view);
+                        }
+                        Err(_) => break,
+                    },
+                    Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => continue,
+                    Err(_) => break,
+                }
+            }
+            if !stop.load(Ordering::SeqCst) {
+                *writer.lock().expect("chat writer lock") = None;
+                crate::failure::report("island", "agent-lost", crate::failure::Reason::AgentLost, None);
+                let lost = ChatState::disconnected(Reason::Lost);
+                let view = serde_json::to_value(&lost).unwrap_or(Value::Null);
+                *state.lock().expect("chat state lock") = lost;
+                changed(view);
+            }
+        });
+    }
+
+    fn send_line(&self, line: &str) -> Result<(), ChatCommandError> {
+        let mut guard = self.writer.lock().expect("chat writer lock");
+        let stream = guard.as_mut().ok_or(ChatCommandError)?;
+        stream.write_all(line.as_bytes()).map_err(|_| ChatCommandError)
+    }
+
+    /// Parse one chat command for the given caller window (the gate lives in the
+    /// parser: only the exact main island window may chat) and send its wire line.
+    pub fn command(&self, caller: &str, payload: &Value) -> Result<Value, ChatCommandError> {
+        let cmd = {
+            let state = self.state.lock().expect("chat state lock");
+            state.command(caller, payload)?
+        };
+        self.send_line(&cmd.line())?;
+        Ok(self.view())
+    }
+
+    pub fn close(&self) {
+        self.stop.store(true, Ordering::SeqCst);
+        if let Some(w) = self.writer.lock().expect("chat writer lock").take() {
+            let _ = w.shutdown(std::net::Shutdown::Both);
+        }
+    }
+}
+
+impl Drop for ChatConn {
     fn drop(&mut self) {
         self.close();
     }
