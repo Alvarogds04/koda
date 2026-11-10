@@ -80,6 +80,12 @@
   let historyBefore = null;
   let paging = false;
   let historyGeneration = 0;
+  // Page memory (U4 verifier follow-up): at most V.PAGE_TURNS_MAX turns stay loaded. Paging up past the cap drops
+  // the NEWEST end and the page is `detached`: it shows only its slice of loaded pages (never a gap before the live
+  // window). `droppedNewer` holds the NUMBERS of the turns between the slice and the live window (ascending); they
+  // come back through the host's cursor when the reader scrolls down, and «Ir al final» re-attaches at once.
+  let detached = false;
+  let droppedNewer = [];
 
   function setLive(text) {
     if (!text) return;
@@ -252,7 +258,7 @@
   function renderLog() {
     const pinned = V.atBottom(log.scrollTop, log.scrollHeight, log.clientHeight);
     const before = log.scrollHeight;
-    const turns = V.mergeHistory(olderTurns, (view && Array.isArray(view.turns)) ? view.turns : []);
+    const turns = V.mergeHistory(olderTurns, (!detached && view && Array.isArray(view.turns)) ? view.turns : []);
     const rows = [];
     for (const turn of turns) for (const row of V.turnRows(turn)) rows.push(row);
     const placeholder = log.querySelector('li.empty');
@@ -311,7 +317,7 @@
     }
     if (!turns.length) {
       newer.hidden = true; // nothing left to scroll to (conversation reset)
-    } else if (pinned) {
+    } else if (pinned && !detached) {
       log.scrollTop = log.scrollHeight;
       newer.hidden = true;
     } else if (log.scrollHeight > before) {
@@ -356,6 +362,7 @@
 
   function resetHistory(next) {
     olderTurns = []; historyBefore = next.history_before || null; historyGeneration += 1; paging = false;
+    detached = false; droppedNewer = [];
     log.textContent = ''; drawn = [];
   }
   // S10 (L35): Coucou's growing chat. The page computes the height its conversation wants (240 + 40 per message, up to 300) and
@@ -417,12 +424,43 @@
   // returned. The live window slides as new turns arrive: a turn that leaves it stays drawn (it joins the
   // loaded pages) whenever the reader already went back, so the chat never shows a gap.
   const turnNumber = t => Number(String(t && t.turn_id).slice(2));
+  const liveTurns = () => (view && Array.isArray(view.turns) ? view.turns : []);
+  const mergeNumbers = (a, b) => Array.from(new Set([...a, ...b])).sort((x, y) => x - y);
   function followWindow(next) {
     const nextTurns = Array.isArray(next.turns) ? next.turns : [];
-    if (!olderTurns.length) { historyBefore = next.history_before || null; return; }
+    if (!olderTurns.length && !detached) { historyBefore = next.history_before || null; return; }
     const first = nextTurns.length ? turnNumber(nextTurns[0]) : Infinity;
-    const left = ((view && Array.isArray(view.turns)) ? view.turns : []).filter(t => turnNumber(t) < first);
-    if (left.length) olderTurns = V.mergeHistory(olderTurns, left);
+    const left = liveTurns().filter(t => turnNumber(t) < first);
+    if (!left.length) return;
+    // detached: a turn leaving the (hidden) live window joins the turns still to bring back, never the slice
+    if (detached) { droppedNewer = mergeNumbers(droppedNewer, left.map(turnNumber)); return; }
+    olderTurns = V.mergeHistory(olderTurns, left);
+    trimOldest(nextTurns.length);
+  }
+  // Drops the far TOP end past the cap (the reader is below it); the cursor then fetches it back on scroll-up.
+  function trimOldest(liveCount) {
+    const cut = V.capPage(olderTurns, liveCount, V.PAGE_TURNS_MAX, 'oldest');
+    if (!cut.dropped.length) return false;
+    olderTurns = cut.kept;
+    historyBefore = olderTurns.length ? turnNumber(olderTurns[0]) : (view && view.history_before) || null;
+    return true;
+  }
+  // Drops the far BOTTOM end past the cap (the reader is paging up): the live window is hidden first.
+  function trimNewest() {
+    const live = liveTurns();
+    if (!detached && olderTurns.length + live.length <= V.PAGE_TURNS_MAX) return false;
+    const cut = V.capPage(olderTurns, 0, V.PAGE_TURNS_MAX, 'newest');
+    if (!detached) detached = true;
+    if (cut.dropped.length) { olderTurns = cut.kept; droppedNewer = mergeNumbers(droppedNewer, cut.dropped.map(turnNumber)); }
+    return true;
+  }
+  // Re-attach to the live window at once: the loaded pages go, the cursor is the live window's again.
+  function jumpToLatest() {
+    olderTurns = []; droppedNewer = []; detached = false; historyGeneration += 1; paging = false;
+    historyBefore = (view && view.history_before) || null;
+    renderLog(); renderControls();
+    log.scrollTop = log.scrollHeight;
+    newer.hidden = true;
   }
   function loadOlder(byControl) {
     if (!view || !historyBefore || paging || log.inert || (!byControl && log.scrollTop > 8)) return;
@@ -438,6 +476,8 @@
       renderLog(); renderControls();
       log.scrollTop = top + log.scrollHeight - height; // keep the same message under the reader's eye
       newer.hidden = true;
+      // past the cap the bottom end goes (rows removed BELOW the reader never move what is under the eye)
+      if (trimNewest()) { const keep = log.scrollTop; renderLog(); renderControls(); log.scrollTop = keep; newer.hidden = false; }
       if (byControl) {
         setLive(historyBefore ? 'Mensajes anteriores cargados.' : 'Mensajes anteriores cargados. Es el comienzo del chat.');
         if (!historyBefore) log.focus(); // the control went away: keep keyboard users in the history
@@ -448,6 +488,34 @@
     }).finally(() => { if (generation === historyGeneration) { paging = false; renderControls(); } });
   }
   if (loadEarlierButton) loadEarlierButton.addEventListener('click', () => loadOlder(true));
+  // Detached: scrolling to the bottom of the slice brings back the next newer turns through the host's cursor.
+  function loadNewer() {
+    if (!view || !detached || paging || log.inert) return;
+    const live = liveTurns();
+    const cursor = V.newerCursor(droppedNewer, live.length ? turnNumber(live[0]) : NaN);
+    if (!Number.isFinite(cursor)) { jumpToLatest(); return; }
+    paging = true;
+    renderControls();
+    const id = view.conversation_id, generation = historyGeneration;
+    action({ action: 'history', conversation_id: id, before: cursor }).then(page => {
+      if (!view || view.conversation_id !== id || generation !== historyGeneration) return;
+      const got = new Set((Array.isArray(page.turns) ? page.turns : []).map(turnNumber));
+      const left = droppedNewer.filter(n => !got.has(n));
+      // no progress (the record moved under the slice): never loop, re-attach to the live window instead
+      if (left.length === droppedNewer.length) { jumpToLatest(); return; }
+      olderTurns = V.mergeHistory(olderTurns, page.turns.filter(t => droppedNewer.includes(turnNumber(t))));
+      droppedNewer = left;
+      if (!droppedNewer.length) detached = false;
+      renderLog(); renderControls();
+      // the top end past the cap goes: content moves up by exactly the removed height
+      const height = log.scrollHeight, top = log.scrollTop;
+      if (trimOldest(detached ? 0 : liveTurns().length)) { renderLog(); renderControls(); log.scrollTop = Math.max(0, top - (height - log.scrollHeight)); }
+      newer.hidden = !detached;
+    }, error => {
+      if (generation !== historyGeneration) return;
+      localProblem = error.message || 'No se pudo cargar el historial.'; renderControls(); setLive(localProblem);
+    }).finally(() => { if (generation === historyGeneration) { paging = false; renderControls(); } });
+  }
 
   // ---- open / back --------------------------------------------------------
   let openedByKeyboard = false;
@@ -693,12 +761,15 @@
       () => action({ action: 'view' }).then(apply, () => {}), () => {});
   });
   newer.addEventListener('click', () => {
+    if (detached) { jumpToLatest(); return; }
     log.scrollTop = log.scrollHeight;
     newer.hidden = true;
   });
   log.addEventListener('scroll', () => {
     loadOlder(false);
-    if (V.atBottom(log.scrollTop, log.scrollHeight, log.clientHeight)) newer.hidden = true;
+    const bottom = V.atBottom(log.scrollTop, log.scrollHeight, log.clientHeight);
+    if (bottom && detached) loadNewer();
+    else if (bottom) newer.hidden = true;
   });
 
   // ---- keyboard: Enter opens from the overview, Escape steps out -----------

@@ -812,7 +812,32 @@ test('U3: an earlier engine history page merges before the live turns', () => {
   assert.match(chat, /historyBefore = page\.before \|\| null;/);
   // U4 (F2): the cursor follows every chat:state (the conversation id is the constant c-koda), not only a reset
   assert.match(chat, /followWindow\(next\);\s*view = next;/);
-  assert.match(chat, /if \(!olderTurns\.length\) \{ historyBefore = next\.history_before \|\| null; return; \}/);
+  assert.match(chat, /if \(!olderTurns\.length && !detached\) \{ historyBefore = next\.history_before \|\| null; return; \}/);
+});
+
+test('page memory: capPage drops the far end only, newerCursor walks the dropped turns back in host-page steps', () => {
+  const t = n => u3Turn(n, `q${n}`, `r${n}`, 'completed', 1);
+  const list = Array.from({ length: 280 }, (_, i) => t(100 + i));
+  assert.equal(V.PAGE_TURNS_MAX, 300);
+  assert.equal(V.PAGE_STEP, 50, 'one host page (chatclient.rs WINDOW_TURNS)');
+  const fits = V.capPage(list, 20, 300, 'oldest');
+  assert.equal(fits.kept, list, 'under the cap nothing moves');
+  assert.deepEqual(fits.dropped, []);
+  const top = V.capPage(list, 50, 300, 'oldest');
+  assert.deepEqual(top.kept.map(x => x.turn_id), list.slice(30).map(x => x.turn_id), 'reading the bottom: the TOP end goes, order kept');
+  assert.deepEqual(top.dropped.map(x => x.turn_id), list.slice(0, 30).map(x => x.turn_id));
+  const bottom = V.capPage(list, 0, 250, 'newest');
+  assert.deepEqual(bottom.kept.map(x => x.turn_id), list.slice(0, 250).map(x => x.turn_id), 'paging up: the BOTTOM end goes, order kept');
+  assert.deepEqual(bottom.dropped.map(x => x.turn_id), list.slice(250).map(x => x.turn_id));
+  const dropped = Array.from({ length: 120 }, (_, i) => 500 + i);
+  assert.equal(V.newerCursor(dropped, 900), 550, 'the host answers the 50 turns before it: exactly the first 50 dropped');
+  assert.equal(V.newerCursor(dropped.slice(0, 50), 900), 900, 'the rest fits one page: up to the live window');
+  assert.equal(V.newerCursor(dropped.slice(0, 50), NaN), 550, 'no live window: right after the last dropped turn');
+  assert.equal(V.newerCursor([], NaN), null);
+  const chat = fs.readFileSync(path.join(__dirname, '..', 'frontend', 'chat.js'), 'utf8');
+  assert.match(chat, /V\.capPage\(olderTurns, liveCount, V\.PAGE_TURNS_MAX, 'oldest'\)/, 'the live page trims its top end');
+  assert.match(chat, /V\.capPage\(olderTurns, 0, V\.PAGE_TURNS_MAX, 'newest'\)/, 'paging up trims the bottom end');
+  assert.match(chat, /V\.newerCursor\(droppedNewer,/, 'dropped turns come back through the host cursor');
 });
 
 console.log(`chat-view-check (U3 engine shape): ${passed} passed`);

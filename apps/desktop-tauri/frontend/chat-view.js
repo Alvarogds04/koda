@@ -472,6 +472,29 @@
     }
     return Array.from(turns.values()).sort((a,b) => Number(a.turn_id.slice(2)) - Number(b.turn_id.slice(2)));
   }
+  // K2-05 U4 (page memory): the most turns the page keeps (loaded earlier pages + the live window), and one host
+  // page (chatclient.rs WINDOW_TURNS). Past the cap the FAR end (from where the reader is) is dropped and comes
+  // back through the host's cursor when the reader scrolls back to it.
+  const PAGE_TURNS_MAX = 300;
+  const PAGE_STEP = 50;
+  // Keeps at most `max - liveCount` loaded turns, dropping from the top (`'oldest'`) or the bottom (`'newest'`).
+  function capPage(older, liveCount, max, end) {
+    const list = Array.isArray(older) ? older : [];
+    const room = Math.max(0, max - Math.max(0, Number(liveCount) || 0));
+    if (list.length <= room) return { kept: list, dropped: [] };
+    return end === 'newest'
+      ? { kept: list.slice(0, room), dropped: list.slice(room) }
+      : { kept: list.slice(list.length - room), dropped: list.slice(0, list.length - room) };
+  }
+  // The `before` cursor that brings back the dropped turns right after the shown slice (ascending numbers):
+  // the host answers the newest PAGE_STEP turns older than the cursor, so the cursor is the dropped turn
+  // PAGE_STEP places in, or the first live turn once the rest fits in one page.
+  function newerCursor(dropped, liveFirst) {
+    const d = Array.isArray(dropped) ? dropped : [];
+    if (d.length > PAGE_STEP) return d[PAGE_STEP];
+    if (Number.isFinite(liveFirst)) return liveFirst;
+    return d.length ? d[d.length - 1] + 1 : null;
+  }
   // K2-05 T4 U4: one continuous chat (L3/L4/L11) — the conversation list (conversationRows) and the «Hablar con…»
   // specialist rows (specialistRows) are gone with their UI.
 
@@ -559,5 +582,5 @@
     return n;
   }
   function chatHeight(view) { return Math.min(CHAT_MAX_H, CHAT_MIN_H + messageCount(view) * CHAT_GROWTH); }
-  return { staleSnapshot, messageCount, chatHeight, CHAT_MIN_H, CHAT_MAX_H, mergeHistory, reconcileRows, rowKey, poseFor, statusView, draftWord, targetAria, noticeAnnouncement, activates, gateLabel, filterChosen, modelRows, modelMeters, modelsInfo, modelsCount, emptyGreeting, cleanDisplayName, cleanLine, CARD_NAME_MAX, CARD_SUMMARY_MAX, DRAFT_MAX, stateLabel, scalarCount, draftProblem, canSend, sendState, needsCheck, checkPlan, statusLine, announcement, atBottom, newRequestId, turnRows, toolRows, approvalRows, activeTurn, activeRole, modelButtonLabel, modelButtonAria, modelButtonEnabled, modelRoleNote, formatSize };
+  return { staleSnapshot, messageCount, chatHeight, CHAT_MIN_H, CHAT_MAX_H, mergeHistory, PAGE_TURNS_MAX, PAGE_STEP, capPage, newerCursor, reconcileRows, rowKey, poseFor, statusView, draftWord, targetAria, noticeAnnouncement, activates, gateLabel, filterChosen, modelRows, modelMeters, modelsInfo, modelsCount, emptyGreeting, cleanDisplayName, cleanLine, CARD_NAME_MAX, CARD_SUMMARY_MAX, DRAFT_MAX, stateLabel, scalarCount, draftProblem, canSend, sendState, needsCheck, checkPlan, statusLine, announcement, atBottom, newRequestId, turnRows, toolRows, approvalRows, activeTurn, activeRole, modelButtonLabel, modelButtonAria, modelButtonEnabled, modelRoleNote, formatSize };
 });

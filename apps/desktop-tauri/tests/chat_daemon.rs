@@ -398,3 +398,64 @@ fn a_daemon_stop_mid_turn_interrupts_the_turn_and_keeps_the_last_known_history()
     assert_eq!(v["producer"]["pi"], json!("unavailable"));
     assert!(!chat.feed.connected(), "the keeper sees the loss from the handed-over view");
 }
+
+/// B1/B2 (U4 verifier): deep paging over the REAL daemon's `pageHistory` (byte budget
+/// 192 KiB: ~7 KB replies make ~48-message pages, uneven where turns have no reply).
+/// Two full passes newest → first: after every page the chat:state window is still the
+/// newest contiguous turns, and each pass reaches every turn exactly once, in order, each
+/// with its own reply (ORDER and CONTENT compared, never sorted).
+#[test]
+fn deep_paging_over_the_real_daemon_pages_reaches_every_turn_in_order_twice() {
+    const TOTAL: usize = 320;
+    let island = Island::start("", false);
+    let chat = Chat::connect(&island);
+    chat.wait("the engine is ready", |v| v["producer"]["pi"] == json!("ready"));
+    let pad = "x".repeat(7_000);
+    let mut lines = String::new();
+    let mut expected: Vec<(String, String)> = vec![];
+    for k in 0..TOTAL {
+        lines.push_str(&session_line("user", &format!("p{k}")));
+        let reply = if k % 7 == 3 || k % 11 == 5 { String::new() } else { format!("r-p{k} {pad}") };
+        if !reply.is_empty() {
+            lines.push_str(&session_line("assistant", &reply));
+        }
+        expected.push((format!("p{k}"), reply));
+    }
+    std::fs::write(island.session_file(), lines).unwrap();
+    chat.action("main", json!({"action": "history", "conversation_id": CHAT_CONVERSATION_ID, "before": null})).unwrap();
+    // the daemon's OWN newest page was cut by its byte budget, not by the 100-message limit
+    let daemon_page = ChatLink::view(&*chat.conn)["messages"].as_array().map(Vec::len).unwrap_or(0);
+    assert!(daemon_page > 0 && daemon_page < 100, "the byte budget, not the 100-message limit, cut the page: {daemon_page}");
+    println!("daemon newest page: {daemon_page} messages");
+    let texts = |ts: &[Value]| -> Vec<(String, String)> {
+        ts.iter().map(|t| (t["user_text"].as_str().unwrap_or("?").to_owned(), t["reply"].as_str().unwrap_or("?").to_owned())).collect()
+    };
+    let mut page_sizes = vec![];
+    for pass in 1..=2 {
+        let v = chat.state();
+        let mut shown = v["turns"].as_array().cloned().unwrap_or_default();
+        assert_eq!(texts(&shown), expected[TOTAL - shown.len()..].to_vec(), "pass {pass}: the newest window");
+        let mut cursor = v["history_before"].clone();
+        let mut pages = 0;
+        while let Some(n) = cursor.as_u64() {
+            pages += 1;
+            assert!(pages <= 60, "pass {pass}: paging terminates");
+            let Routed::Answer(p) = chat.action("main", json!({"action": "history", "conversation_id": CHAT_CONVERSATION_ID, "before": n})).unwrap() else {
+                panic!("a page")
+            };
+            let ts = p["turns"].as_array().cloned().unwrap_or_default();
+            assert!(!ts.is_empty(), "pass {pass}: a page with a cursor is never empty: {p}");
+            if pass == 1 {
+                page_sizes.push(ts.len());
+            }
+            let window = chat.state()["turns"].as_array().cloned().unwrap_or_default();
+            assert_eq!(texts(&window), expected[TOTAL - window.len()..].to_vec(), "pass {pass} page {pages}: chat:state stays the newest contiguous turns");
+            let mut next = ts;
+            next.extend(shown);
+            shown = next;
+            cursor = p["before"].clone();
+        }
+        assert_eq!(texts(&shown), expected, "pass {pass}: every turn once, in order, each with its own reply");
+    }
+    println!("pass-1 host page sizes (turns): {page_sizes:?}");
+}
