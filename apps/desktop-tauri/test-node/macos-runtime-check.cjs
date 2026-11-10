@@ -84,10 +84,34 @@ try {
   bad = generate(['--runtime', noPi]);
   assert.equal(bad.status, 1);
   assert.equal(bad.stderr, `macos-config: ${fs.realpathSync(noPi)} lacks the executable file pi\n`);
-  // K2-05 T1: the fake runtime now has the manifest shape and the gentle-shell launcher the real build emits;
-  // the bundle generator ships the folder whole, so gentle-shell travels with it. Whether macos-config itself must
-  // REFUSE a runtime without gentle-shell (like it refuses one without pi) is OUTSIDE this task's edit surfaces:
-  // reported to the parent (macos-config.cjs).
+  // K2-05 T2 (T4/T6 follow-up): the daemon's engine is the bundled Gentle Shell and the memory
+  // companion is the pinned bin/engram (T1/T1b), so a runtime without them is refused too,
+  // exactly like one without pi — fail-closed, nothing is bundled without Koda's own engine.
+  const noShell = fakeRuntime('noshell', 'darwin-arm64');
+  fs.rmSync(path.join(noShell, 'gentle-shell'));
+  bad = generate(['--runtime', noShell]);
+  assert.equal(bad.status, 1);
+  assert.equal(bad.stderr, `macos-config: ${fs.realpathSync(noShell)} lacks the executable file gentle-shell\n`);
+  const noEngram = fakeRuntime('noengram', 'darwin-arm64');
+  fs.rmSync(path.join(noEngram, 'bin', 'engram'));
+  bad = generate(['--runtime', noEngram]);
+  assert.equal(bad.status, 1);
+  assert.equal(bad.stderr, `macos-config: ${fs.realpathSync(noEngram)} lacks the executable file bin/engram\n`);
+  const noBinDir = fakeRuntime('nobindir', 'darwin-arm64');
+  fs.rmSync(path.join(noBinDir, 'bin'), { recursive: true });
+  bad = generate(['--runtime', noBinDir]);
+  assert.equal(bad.status, 1);
+  assert.equal(bad.stderr, `macos-config: ${fs.realpathSync(noBinDir)} lacks the real directory bin\n`);
+  // A symlinked engine launcher or Engram binary is not a real install either (no symlink at any segment).
+  const linked = fakeRuntime('linked', 'darwin-arm64');
+  fs.rmSync(path.join(linked, 'gentle-shell'));
+  fs.symlinkSync(path.join(linked, 'pi'), path.join(linked, 'gentle-shell'));
+  bad = generate(['--runtime', linked]);
+  assert.equal(bad.status, 1);
+  assert.equal(bad.stderr, `macos-config: ${fs.realpathSync(linked)} lacks the executable file gentle-shell\n`);
+  // K2-05 T1: the fake runtime has the manifest shape and the gentle-shell launcher + bin/engram the real
+  // build emits; macos-config REFUSES a runtime without them (like one without pi): the bundle generator
+  // ships the folder whole, so the engine and the memory binary travel with it or not at all.
   assert.equal(config.bundle.active, true);
   assert.equal(config.bundle.macOS.minimumSystemVersion, '12.0');
   // Ad-hoc seal of the whole bundle (no Apple account): Gatekeeper reports «unidentified developer», never «damaged».
@@ -110,4 +134,4 @@ assert.match(fs.readFileSync(path.join(crate, 'Cargo.toml'), 'utf8'), /^\[packag
 const plist = fs.readFileSync(path.join(crate, 'Info.plist'), 'utf8');
 assert.match(plist, /<key>LSUIElement<\/key>\s*<true\/>/);
 assert.match(plist, /<key>NSMicrophoneUsageDescription<\/key>/);
-console.log('macos-runtime: 8 rules passed (missing runtime UI, existing states, exact bundle resources, bundled runtime folder, ad-hoc seal, icns icon, main binary, no Dock icon)');
+console.log('macos-runtime: 8 rules passed (missing runtime UI, existing states, exact bundle resources, bundled runtime folder with engine+memory refusals, ad-hoc seal, icns icon, main binary, no Dock icon)');

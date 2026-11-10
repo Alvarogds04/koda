@@ -127,10 +127,12 @@ pub fn failure_lines(reason: StartupFailure, _os: crate::nodefinder::Os) -> Vec<
 /// The sentence printed for a startup failure, if it has one.
 pub fn failure_sentence(reason: StartupFailure) -> Option<&'static str> {
     match reason {
-        // K2-02 (S4): with the bundled runtime these two are DEV-BUILD-ONLY paths (a release install always has the runtime
-        // folder beside the executable); the «Instalar Pi» / «Instalar Node» buttons are gone, the sentences stay as they were.
+        // K2-05 (T2): the daemon's engine is the bundled Gentle Shell, so with the bundled runtime this is a
+        // DEV-BUILD-ONLY path (a release install always has the runtime folder beside the executable). Without
+        // it the installation is incomplete: Koda's own engine is missing, and Koda never asks for npm installs
+        // (K2-02 removed «Instalar Pi») — reinstalling Koda is the fix.
         StartupFailure::NodeMissing => Some("Falta Node.js: instalalo desde nodejs.org."),
-        StartupFailure::PiMissing => Some("Falta Pi: instalalo con npm install -g @earendil-works/pi-coding-agent."),
+        StartupFailure::PiMissing => Some("La instalación de Koda está incompleta: falta el motor propio de Koda; volvé a instalar Koda."),
         StartupFailure::BundledRuntimeInvalid => Some(BUNDLED_RUNTIME_INVALID_SENTENCE),
         _ => None,
     }
@@ -174,9 +176,10 @@ pub fn discover_with_runtime(name: &str, path: Option<&OsStr>, home: Option<&OsS
         match crate::nodefinder::bundled_runtime(exe, crate::nodefinder::Os::current(), crate::nodefinder::current_runtime_target()) {
             crate::nodefinder::Bundled::Valid(rt) => return match name {
                 "node" => Ok(rt.node),
-                // Windows keeps the daemon's engine command bare "pi" (config.cjs validateCommand refuses absolute paths
-                // there, K2-01b): the daemon resolves the package CLI JS next to the bundled node.exe itself
-                // (runtime.cjs windowsPackageCliJs). This path is only the island-side gate and a PATH input.
+                // K2-05 (T2): the daemon's engine is the bundled Gentle Shell, which the daemon resolves itself from the
+                // runtime next to the Node it runs on (runtime.cjs bundledGentleShell). This `pi` path is only the
+                // island-side gate and a PATH input; Windows keeps the daemon's `pi` command bare (config.cjs
+                // validateCommand refuses absolute paths there, K2-01b) and resolves the package CLI JS itself.
                 "pi" => Ok(rt.pi),
                 _ => Err(DiscoverError::Missing(format!("{name} has no bundled lookup"))),
             },
@@ -252,6 +255,24 @@ pub fn installed_daemon_cli(exe: &Path) -> Option<PathBuf> {
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+/// The `pi` the daemon child needs on its PATH (K2-05 T2). The daemon's engine is the bundled
+/// Gentle Shell, which the daemon resolves itself from the runtime next to the Node it runs on
+/// (apps/desktop-daemon/src/runtime.cjs bundledGentleShell) — read-only: the island never spawns
+/// it. So a VALID bundled runtime answers with its own `pi` and the island no longer refuses to
+/// start the daemon because `pi` is missing on PATH; only without a bundled runtime (dev builds,
+/// `cargo run`) is Pi still required, and there a missing Pi is an incomplete installation, not
+/// an npm request. A present-but-broken runtime stays [`StartupFailure::BundledRuntimeInvalid`].
+fn resolve_pi(
+    bundled: Option<&crate::nodefinder::Bundled>,
+    path: Option<&OsStr>, home: Option<&OsStr>, finder: &crate::nodefinder::Env, exe: Option<&Path>,
+) -> Result<PathBuf, StartupFailure> {
+    if let Some(crate::nodefinder::Bundled::Valid(rt)) = bundled { return Ok(rt.pi.clone()) }
+    discover_with_runtime("pi", path, home, finder, exe).map_err(|reason| match reason {
+        DiscoverError::BundledRuntimeInvalid => StartupFailure::BundledRuntimeInvalid,
+        DiscoverError::Missing(_) => StartupFailure::PiMissing,
+    })
+}
+
 fn start() -> Result<Host, StartupFailure> {
     let path = std::env::var_os("PATH");
     #[cfg(windows)]
@@ -266,13 +287,15 @@ fn start() -> Result<Host, StartupFailure> {
         DiscoverError::Missing(_) => missing,
     };
     let node = discover_with_runtime("node", path.as_deref(), home.as_deref(), &finder, exe.as_deref()).map_err(failure(StartupFailure::NodeMissing))?;
-    let pi = discover_with_runtime("pi", path.as_deref(), home.as_deref(), &finder, exe.as_deref()).map_err(failure(StartupFailure::PiMissing))?;
+    let pi = resolve_pi(bundled.as_ref(), path.as_deref(), home.as_deref(), &finder, exe.as_deref())?;
     let exe = std::env::current_exe().map_err(|_| StartupFailure::HostMissing)?;
     let mut cli = installed_daemon_cli(&exe).ok_or(StartupFailure::HostMissing)?;
     #[cfg(debug_assertions)]
     if !cli.is_file() { cli = Path::new(env!("CARGO_MANIFEST_DIR")).join("../desktop-daemon/src/cli.cjs"); }
     if !cli.is_file() { return Err(StartupFailure::HostMissing) }
     // The bundled runtime folder leads the child PATH (K2-02 S2): a child's bare `node`/`pi` resolves to Koda's own.
+    // K2-05 (T2): the engine is not a PATH lookup — the daemon resolves the bundled Gentle Shell itself
+    // (runtime.cjs bundledGentleShell) from the runtime next to the Node we spawn it on.
     let first = match &bundled { Some(crate::nodefinder::Bundled::Valid(rt)) => Some(rt.dir.as_path()), _ => None };
     let child_path = runtime_path_with(path.as_deref(), &node, &pi, first).map_err(|_| StartupFailure::SpawnFailed)?;
     let mut command = std::process::Command::new(node);
@@ -398,6 +421,7 @@ mod bundled_runtime_tests {
     use std::os::unix::fs::PermissionsExt;
 
     const PI_CLI: &str = "node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js";
+    const GENTLE_SHELL: &str = "node_modules/gentle-pi/bin/gentle-shell.mjs";
 
     struct Rt(PathBuf);
     impl Rt {
@@ -428,7 +452,8 @@ mod bundled_runtime_tests {
     }
 
     /// A valid runtime folder for THIS running OS (the discovery dispatch always uses
-    /// `Os::current()`), with a rival node/pi installed on a fake PATH.
+    /// `Os::current()`), with the engine shape the K2-05 build emits (Node, Pi and the
+    /// Gentle Shell engine), and a rival node/pi installed on a fake PATH.
     fn bundled_with_rival(tag: &str) -> (Rt, PathBuf, PathBuf) {
         let root = Rt::new(tag);
         let exe = root.exe("app/bin");
@@ -443,14 +468,19 @@ mod bundled_runtime_tests {
         let cli = runtime.join(PI_CLI);
         fs::create_dir_all(cli.parent().unwrap()).unwrap();
         fs::write(&cli, b"cli").unwrap();
+        let shell = runtime.join(GENTLE_SHELL);
+        fs::create_dir_all(shell.parent().unwrap()).unwrap();
+        fs::write(&shell, b"shell").unwrap();
         if !cfg!(windows) {
-            let pi = runtime.join("pi");
-            fs::write(&pi, b"#!/bin/sh\n").unwrap();
-            #[cfg(unix)]
-            fs::set_permissions(&pi, fs::Permissions::from_mode(0o755)).unwrap();
+            for launcher in ["pi", "gentle-shell"] {
+                let file = runtime.join(launcher);
+                fs::write(&file, b"#!/bin/sh\n").unwrap();
+                #[cfg(unix)]
+                fs::set_permissions(&file, fs::Permissions::from_mode(0o755)).unwrap();
+            }
         }
         fs::write(runtime.join("koda-runtime.json"),
-            format!("{{\"target\":\"{}\",\"node\":\"22.23.4\",\"pi\":\"1.4.0\",\"piCli\":\"{PI_CLI}\"}}", crate::nodefinder::current_runtime_target())).unwrap();
+            format!("{{\"target\":\"{}\",\"node\":\"22.23.4\",\"pi\":\"1.4.0\",\"piCli\":\"{PI_CLI}\",\"gentlePi\":\"4.3.0\",\"gentleShell\":\"{GENTLE_SHELL}\"}}", crate::nodefinder::current_runtime_target())).unwrap();
         // The rival install: a different node and pi, first on a fake session PATH.
         let rival = root.dir("rival/bin");
         for name in [node_name, "pi"] {
@@ -615,6 +645,95 @@ mod bundled_runtime_tests {
     }
 
     #[test]
+    fn with_the_bundled_runtime_the_daemon_starts_even_without_any_pi_on_the_path() {
+        // K2-05 (T2): the engine is the bundled Gentle Shell, resolved by the daemon itself —
+        // a valid runtime answers `pi` even when NOTHING named pi exists on the session PATH.
+        let (_root, exe, rival) = bundled_with_rival("no-pi-path");
+        let rival_pi = rival.join("pi");
+        if rival_pi.exists() { fs::remove_file(&rival_pi).unwrap(); }
+        let path = std::env::join_paths([&rival]).unwrap();
+        let found = discover_with_runtime("pi", Some(path.as_os_str()), None, &env_without_home(), Some(&exe))
+            .expect("the bundled runtime must answer pi without any pi on PATH");
+        match crate::nodefinder::bundled_runtime(&exe, crate::nodefinder::Os::current(), crate::nodefinder::current_runtime_target()) {
+            crate::nodefinder::Bundled::Valid(rt) => assert_eq!(found, rt.pi, "the runtime's own pi, not a PATH find"),
+            _ => panic!("the runtime we just wrote must validate"),
+        }
+    }
+
+    #[test]
+    fn without_a_bundled_runtime_a_missing_pi_is_an_incomplete_install_not_an_npm_request() {
+        // K2-05 (T2): K2-02 removed «Instalar Pi». With no runtime folder beside the exe (dev
+        // build) and no pi anywhere, the failure says Koda's own engine is missing and the
+        // installation is incomplete — never an npm install advice.
+        let root = Rt::new("no-runtime-no-pi");
+        let exe = root.exe("app/bin");
+        root.dir("app/bin");
+        let empty = root.dir("empty");
+        let path = std::env::join_paths([&empty]).unwrap();
+        match discover_with_runtime("pi", Some(path.as_os_str()), None, &env_without_home(), Some(&exe)) {
+            Err(DiscoverError::Missing(message)) => {
+                assert!(!message.contains("npm install"), "no npm advice: {message}");
+            }
+            // The runner may legitimately carry a canonical pi (/usr/bin, Homebrew): the
+            // historical fallback answer stands, the sentence below is what changed.
+            Ok(found) => {
+                let canonical = [
+                    Path::new("/usr/local/bin/pi"), Path::new("/usr/bin/pi"), Path::new("/opt/homebrew/bin/pi"),
+                ];
+                assert!(canonical.contains(&found.as_path()), "only the canonical fallback may answer, got {found:?}");
+            }
+            Err(other) => panic!("previous behaviour: missing stays missing, got {other:?}"),
+        }
+        let sentence = failure_sentence(StartupFailure::PiMissing).unwrap();
+        assert!(sentence.contains("La instalación de Koda está incompleta"), "{sentence}");
+        assert!(sentence.contains("falta el motor propio de Koda"), "{sentence}");
+        assert!(!sentence.contains("npm"), "no npm install advice: {sentence}");
+    }
+
+    #[test]
+    fn resolve_pi_takes_the_bundled_pi_without_reading_the_path_and_requires_pi_without_a_runtime() {
+        let finder = env_without_home();
+        // With a VALID runtime, the answer comes from the runtime itself, whatever the PATH holds.
+        let (_root, exe, rival) = bundled_with_rival("resolve-bundled");
+        let path = std::env::join_paths([&rival]).unwrap();
+        let rt = match crate::nodefinder::bundled_runtime(&exe, crate::nodefinder::Os::current(), crate::nodefinder::current_runtime_target()) {
+            crate::nodefinder::Bundled::Valid(rt) => rt,
+            _ => panic!("the runtime we just wrote must validate"),
+        };
+        assert_eq!(
+            resolve_pi(Some(&crate::nodefinder::Bundled::Valid(rt.clone())), Some(path.as_os_str()), None, &finder, Some(&exe)),
+            Ok(rt.pi)
+        );
+        // Without any runtime folder, `pi` on the session PATH still answers (dev builds).
+        let root = Rt::new("resolve-path");
+        let exe = root.exe("app/bin");
+        let bin = root.dir("bin");
+        let file = bin.join("pi");
+        fs::write(&file, b"#!/bin/sh\n").unwrap();
+        #[cfg(unix)]
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o755)).unwrap();
+        let path = std::env::join_paths([&bin]).unwrap();
+        assert_eq!(
+            resolve_pi(None, Some(path.as_os_str()), None, &finder, Some(&exe)),
+            Ok(bin.join("pi"))
+        );
+        // And with neither, the failure is the incomplete-install startup failure.
+        let empty = root.dir("empty");
+        let path = std::env::join_paths([&empty]).unwrap();
+        match resolve_pi(None, Some(path.as_os_str()), None, &finder, Some(&exe)) {
+            Err(StartupFailure::PiMissing) => {}
+            // A canonical pi on this machine would legitimately answer (see the sentence test above).
+            Ok(found) => {
+                let canonical = [
+                    Path::new("/usr/local/bin/pi"), Path::new("/usr/bin/pi"), Path::new("/opt/homebrew/bin/pi"),
+                ];
+                assert!(canonical.contains(&found.as_path()), "got {found:?}");
+            }
+            Err(other) => panic!("PiMissing expected, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn the_broken_runtime_is_its_own_startup_failure_code() {
         assert_eq!(
             StartupFailure::BundledRuntimeInvalid.code(),
@@ -644,7 +763,7 @@ mod bundled_runtime_tests {
                 failure_lines(StartupFailure::PiMissing, os),
                 vec![
                     "island host: no_daemon (pi_missing)".to_owned(),
-                    "Falta Pi: instalalo con npm install -g @earendil-works/pi-coding-agent."
+                    "La instalación de Koda está incompleta: falta el motor propio de Koda; volvé a instalar Koda."
                         .to_owned()
                 ]
             );
@@ -663,7 +782,7 @@ mod bundled_runtime_tests {
         );
         assert_eq!(
             failure_sentence(StartupFailure::PiMissing),
-            Some("Falta Pi: instalalo con npm install -g @earendil-works/pi-coding-agent.")
+            Some("La instalación de Koda está incompleta: falta el motor propio de Koda; volvé a instalar Koda.")
         );
         for other in [
             StartupFailure::HostMissing,
