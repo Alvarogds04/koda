@@ -45,7 +45,7 @@ the current user:
 
 | Path | Purpose |
 |---|---|
-| `<root>/home/` | The engine's private `HOME`, with the XDG tree (`.config`, `.cache`, `.local/share`, `.local/state`) under it |
+| `<root>/home/` | The engine's private `HOME`, with the XDG tree (`.config`, `.cache`, `.local/share`, `.local/state`) under it; `<root>/home/.engram/` holds the private memory store |
 | `<root>/agent/` | The installed pi's agent directory (`PI_CODING_AGENT_DIR`); no user Pi settings, extensions or auth are reused |
 | `<root>/sessions/` | Private RPC sessions (`--session-dir` is always passed explicitly) |
 | `<root>/workspace/` | The engine's owned default workspace; its `.engram/config.json` pins the memory project `abito-island` |
@@ -83,6 +83,12 @@ foreign agent homes never reach the child. Explicitly set:
 - `GIT_CONFIG_GLOBAL` → the user's real `~/.gitconfig` when it exists, so git
   identity works without exposing the real `HOME`
 - `ABITO_MEMORY_PROJECT=abito-island` — the memory project pin
+- `ENGRAM_PORT` → Koda's private memory port (`7439`; `ABITO_ENGRAM_PORT` in the parent env
+  overrides it for tests/embeddings), `ENGRAM_BIN` → the pinned Engram binary the bundled
+  runtime ships, `ENGRAM_NO_UPDATE_CHECK=1` — the private memory never phones home. The
+  parent's `ENGRAM_URL`, `ENGRAM_DATA_DIR` and `ENGRAM_PORT` are never inherited: Koda's
+  memory is ALWAYS private (no user-store mode), so the user's own Engram server and store
+  (`7437`/`7438`, `~/.engram`) are never read, probed or written
 
 The user's git identity is the only piece of the real home that crosses the boundary.
 
@@ -176,6 +182,29 @@ Behavior details:
   <island identity.md>` (plus configurable command/extra args).
 
 ## Memory
+
+Koda's memory is ALWAYS private — Gentle Dot's private mode is the only mode (K2-05 T1c,
+human decision L11: «esto sería un engram propio que tuviera aparte del que tenemos aquí»):
+
+- **Store**: inside the island. The engine's `HOME` is `<island>/home` and the child env
+  sets no `ENGRAM_DATA_DIR`, so Engram defaults its store to `<island>/home/.engram` —
+  exactly where Gentle Dot's private mode puts it. The user's own `~/.engram` is never
+  read or written.
+- **Server**: on Koda's OWN port `7439` (one above Gentle Dot's private port `7438`, which
+  is itself one above Engram's default `7437` — no collision with the user's servers).
+  `ABITO_ENGRAM_PORT` overrides it for tests/embeddings.
+- **Binary**: only the pinned Engram binary the bundled runtime ships (`engramBin` in
+  `koda-runtime.json`). The former user-binary resolution order (a parent `ENGRAM_BIN`,
+  the login shell, the known install dirs) is gone.
+- **Project**: `abito-island` (the owned workspace's `.engram/config.json` and the
+  `ABITO_MEMORY_PROJECT` + identity pin, unchanged).
+- **Lifecycle**: the daemon confirms the private port is EMPTY before the engine spawns and
+  owns cleanup only then — a pre-existing listener is never claimed, an unknown port state
+  refuses ownership (logged, engine still starts), and on daemon stop the listener is
+  verified to be Koda's own (the island's `.instance-id` + `GET /health`) with a stable PID
+  before any SIGTERM. A server that is not Koda's is never touched.
+- **Not migrated**: memories saved by Koda 0.1 in the user's own Engram stay there and are
+  NOT migrated into the island store (human decision L11). The island memory starts empty.
 
 The owned default workspace carries `.engram/config.json` with
 `project_name: "abito-island"`, and the child env pins `ABITO_MEMORY_PROJECT`. A

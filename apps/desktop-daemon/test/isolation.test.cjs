@@ -313,3 +313,200 @@ test("ensureIsland refuses a .engram/config.json replaced by a symlink and leave
 	assert.throws(() => ensureIsland(root), win ? /reparse/ : /symlink/);
 	assert.equal(fs.readFileSync(victim, "utf8"), '{"project_name":"other"}\n');
 });
+
+// ----- K2-05 T1c (S5/L11): Koda's private memory lifecycle ------------------
+//
+// Koda's memory is ALWAYS private (no user-store mode): the store lives inside
+// the island (the engine's HOME is <island>/home and Engram defaults its store
+// to <HOME>/.engram when ENGRAM_DATA_DIR is unset — exactly where Gentle Dot's
+// private mode puts it) and the server runs on Koda's own port. Ported from
+// Gentle Dot's privateMemory (packages/daemon/src/isolation.ts:155-300, MIT,
+// Copyright (c) 2026 Gentleman Programming): the daemon owns cleanup only
+// after confirming an EMPTY private port before startup; a failed or ambiguous
+// lookup refuses ownership, not startup; and before SIGTERM both the private
+// data identity (<island>/home/.engram/.instance-id) and a repeated stable
+// listener PID must match. A server that is not Koda's is never touched.
+
+const { PRIVATE_ENGRAM_PORT, PRIVATE_ENGRAM_PORT_ENV, privateMemory, privateMemoryPort } = require("../src/isolation.cjs");
+
+const INSTANCE_ID = "ab12".repeat(8); // 32 hex chars, like Engram writes it
+const PID = 4242;
+
+/**
+ * A programmable lsof-style listener lookup seam. `lookup()` answers like
+ * `lsof -w -t -n -P -iTCP:<port> -sTCP:LISTEN`: an empty stdout with exit 0
+ * when nothing listens, the pid(s) when one does, a nonzero exit + stderr on
+ * failure. `occupy(pids)` makes every later lookup answer those pids.
+ */
+function listenerSeam(extra = {}) {
+	const seam = {
+		calls: [],
+		occupied: [],
+		lookup: async (command, args) => {
+			seam.calls.push({ command, args });
+			const stdout = seam.occupied.join("\n");
+			return { code: stdout === "" ? (extra.emptyCode ?? 0) : 0, stdout, stderr: stdout === "" ? (extra.emptyStderr ?? "") : "" , ...extra.result };
+		},
+	};
+	return seam;
+}
+
+/** Writes the instance-id file the engine's own Engram server leaves behind. */
+function writeInstanceId(island, id = INSTANCE_ID) {
+	fs.mkdirSync(path.join(island.home, ".engram"), { recursive: true, mode: 0o700 });
+	fs.writeFileSync(path.join(island.home, ".engram", ".instance-id"), `${id}\n`, { mode: 0o600 });
+}
+
+test("privateMemoryPort defaults to Koda's private port and honours ABITO_ENGRAM_PORT", () => {
+	assert.equal(PRIVATE_ENGRAM_PORT, "7439", "one above Gentle Dot's own private port (7438): never the user's 7437/7438");
+	assert.equal(privateMemoryPort({}), "7439");
+	assert.equal(privateMemoryPort({ [PRIVATE_ENGRAM_PORT_ENV]: "7499" }), "7499");
+	assert.equal(privateMemoryPort({ [PRIVATE_ENGRAM_PORT_ENV]: "" }), "7439");
+});
+
+test("privateMemory refuses an invalid port as a configuration error", async () => {
+	for (const bad of ["0", "-1", "abc", "70000", "1.5"]) {
+		await assert.rejects(
+			() => privateMemory({ [PRIVATE_ENGRAM_PORT_ENV]: bad }, "/tmp/nowhere", () => {}, { runListenerCommand: async () => ({ code: 0, stdout: "", stderr: "" }) }),
+			/port/,
+			`port ${JSON.stringify(bad)} must be refused`,
+		);
+	}
+});
+
+test("privateMemory owns a confirmed-empty port and stops Koda's own listener after identity checks", async (t) => {
+	const island = ensureIsland(path.join(tmpBase(t), "island"));
+	writeInstanceId(island);
+	const seam = listenerSeam();
+	const kills = [];
+	const logs = [];
+	const memory = await privateMemory(
+		{},
+		island.root,
+		(line) => logs.push(line),
+		{
+			runListenerCommand: (command, args) => seam.lookup(command, args),
+			kill: (pid, signal) => kills.push({ pid, signal }),
+			health: async () => ({ instance_id: INSTANCE_ID }),
+		},
+	);
+	assert.ok(memory, "a confirmed-empty port is owned");
+	assert.equal(seam.calls.length, 1, "the port is checked once BEFORE startup");
+	// Now a listener appears (the engine's own Engram server), and the stop
+	// verifies it three ways: same pid, the island's instance id, /health.
+	seam.occupied = [PID];
+	await memory.stop();
+	assert.deepEqual(kills, [{ pid: PID, signal: "SIGTERM" }]);
+	assert.ok(!logs.some((line) => /left running|serves other data/.test(line)), JSON.stringify(logs));
+});
+
+test("privateMemory refuses ownership when the port state is unknown, and never kills anything", async (t) => {
+	const island = ensureIsland(path.join(tmpBase(t), "island"));
+	writeInstanceId(island);
+	for (const broken of [
+		{ code: 1, stdout: "", stderr: "lsof complained" }, // failed lookup
+		{ code: 0, stdout: "111\n222\n", stderr: "" }, // ambiguous: two listeners
+		{ code: 0, stdout: "not-a-pid\n", stderr: "" }, // unparseable output
+	]) {
+		const kills = [];
+		const logs = [];
+		const memory = await privateMemory(
+			{},
+			island.root,
+			(line) => logs.push(line),
+			{
+				runListenerCommand: async () => broken,
+				kill: (pid, signal) => kills.push({ pid, signal }),
+				health: async () => ({ instance_id: INSTANCE_ID }),
+			},
+		);
+		assert.equal(memory, undefined, `${JSON.stringify(broken)} owns nothing`);
+		assert.deepEqual(kills, [], "nothing is ever signalled from an unknown state");
+		assert.ok(
+			logs.some((line) => /cannot verify private memory listener/.test(line) && /will not stop it/.test(line)),
+			`the refusal is reported: ${JSON.stringify(logs)}`,
+		);
+	}
+});
+
+test("privateMemory never owns a port that already has a listener at startup", async (t) => {
+	const island = ensureIsland(path.join(tmpBase(t), "island"));
+	const seam = listenerSeam();
+	seam.occupied = [PID];
+	const kills = [];
+	const memory = await privateMemory(
+		{},
+		island.root,
+		() => {},
+		{
+			runListenerCommand: (command, args) => seam.lookup(command, args),
+			kill: (pid, signal) => kills.push({ pid, signal }),
+			health: async () => ({ instance_id: INSTANCE_ID }),
+		},
+	);
+	assert.equal(memory, undefined, "an existing listener is never claimed");
+	assert.deepEqual(kills, []);
+});
+
+test("privateMemory never stops a listener that is not Koda's own (instance id, /health, pid stability)", async (t) => {
+	const island = ensureIsland(path.join(tmpBase(t), "island"));
+
+	// No ownership at all: the port was not empty before startup, so stop() is
+	// never even reachable — a pre-taken port has no handle to stop.
+	{
+		const kills = [];
+		const memory = await privateMemory(
+			{},
+			island.root,
+			() => {},
+			{
+				runListenerCommand: async () => ({ code: 0, stdout: String(PID), stderr: "" }),
+				kill: (pid, signal) => kills.push({ pid, signal }),
+				health: async () => ({ instance_id: INSTANCE_ID }),
+			},
+		);
+		assert.equal(memory, undefined);
+		assert.deepEqual(kills, []);
+	}
+
+	// Owned at startup (empty port), then every stop-time refusal shape:
+	writeInstanceId(island, INSTANCE_ID);
+	// `stopLookups` feed the stop() lookups in order: first the listener pid,
+	// then the stability re-check. The creation lookup is always empty.
+	const stops = async (health, stopLookups) => {
+		const lookups = ["", ...stopLookups];
+		const owned = [];
+		const memory = await privateMemory(
+			{},
+			island.root,
+			() => {},
+			{
+				runListenerCommand: async () => ({ code: 0, stdout: lookups.length > 0 ? lookups.shift() : "", stderr: "" }),
+				kill: (pid, signal) => owned.push({ pid, signal }),
+				health,
+			},
+		);
+		assert.ok(memory, "the empty port at startup is owned");
+		await memory.stop();
+		return owned;
+	};
+	assert.deepEqual(await stops(async () => ({ instance_id: "f".repeat(32) }), [String(PID), String(PID)]), [], "a foreign /health identity is never signalled");
+	assert.deepEqual(await stops(async () => Promise.reject(new Error("boom")), [String(PID), String(PID)]), [], "an unreachable /health is never signalled");
+	assert.deepEqual(await stops(async () => ({ instance_id: undefined }), [String(PID), String(PID)]), [], "an identity-less /health is never signalled");
+	assert.deepEqual(
+		await stops(
+			async () => ({ instance_id: INSTANCE_ID }),
+			[""], // the stop-time lookup finds NOTHING: gone already, nothing to kill
+		),
+		[],
+		"a vanished listener is never signalled",
+	);
+	// The island identity file itself is gone (another daemon swept it, say):
+	// ownership cannot be proven, so nothing is signalled.
+	fs.rmSync(path.join(island.home, ".engram", ".instance-id"));
+	assert.deepEqual(await stops(async () => ({ instance_id: INSTANCE_ID }), [String(PID), String(PID)]), [], "a missing instance-id file is never signalled");
+	// The listener PID changed between the two stop-time lookups (pid reuse or a
+	// handover): the repeated-PID check refuses, nothing is signalled.
+	writeInstanceId(island);
+	assert.deepEqual(await stops(async () => ({ instance_id: INSTANCE_ID }), [String(PID), "9999"]), [], "an unstable listener pid is never signalled");
+});

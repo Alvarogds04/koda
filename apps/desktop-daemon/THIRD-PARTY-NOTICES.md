@@ -15,18 +15,22 @@ the user-facing white-label rewriting of internal names, and the
 product-identity approach.
 
 - Files adapted: `src/isolation.cjs` (including the engine-home marker logic
-  from `claimEngineHome`), `src/runtime.cjs` (in part, including the bundled
-  default-engine resolution from `bundledGentleShell` and the session chains
-  from the supervisor's session persistence), `src/rotation.cjs` (from
-  `src/rotation.ts`), `src/conversations.cjs` (from the projection half of
-  `src/conversations.ts` plus `describeTool`/`textOf` from `src/presentation.ts`
-  and `splitAttachments` from `src/uploads.ts`), `src/white-label.cjs`,
-  `test/fixtures` and `identity.md`
+  from `claimEngineHome` and the private memory lifecycle from
+  `privateMemory`/`listeningPid`/`memoryHealth`), `src/runtime.cjs` (in part,
+  including the bundled default-engine resolution from `bundledGentleShell` and
+  the session chains from the supervisor's session persistence),
+  `src/rotation.cjs` (from `src/rotation.ts`), `src/conversations.cjs` (from the
+  projection half of `src/conversations.ts` plus `describeTool`/`textOf` from
+  `src/presentation.ts` and `splitAttachments` from `src/uploads.ts`),
+  `src/white-label.cjs`, `test/fixtures` and `identity.md`
   (text), `README.md` (in part)
 - Changes: rewritten in plain Node CJS with no third-party dependencies; Koda
   identity, island paths, environment allowlist and fail-closed path rules differ
   from the original; supervision state machine and JSONL framing closely follow
-  the original; the hidden-name list adds Koda's own internal names (Abito, Pi).
+  the original; Koda's memory is ALWAYS private (no user-store mode: the store
+  lives in the island home, the port is Koda's own 7439, and only the bundled
+  binary is resolved — Gentle Dot's user-binary order is not ported); the
+  hidden-name list adds Koda's own internal names (Abito, Pi).
 
 Gentle Dot is distributed under the MIT License:
 

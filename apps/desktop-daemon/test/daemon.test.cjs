@@ -1540,3 +1540,104 @@ test("K2-01b: mcp_import_preview reads the daemon's OWN env (its %APPDATA% on Wi
 		await daemon.stop();
 	}
 });
+
+// ----- K2-05 T1c (S5/L11): the daemon owns the private memory lifecycle -----
+//
+// Koda's memory is ALWAYS private: the daemon takes the private port's
+// ownership before the default engine spawns, and stops the memory server on
+// daemon shutdown — but only after verifying it is Koda's own (the island's
+// .instance-id + GET /health) and that the listener pid is stable. A custom
+// `command` never gets private memory: no ownership, no stop.
+
+const { DEFAULT_COMMAND } = require("../src/runtime.cjs");
+
+/** A fake bundled runtime (POSIX launcher -> the FAKE agent) for default-engine boots. */
+function fakeRuntime(t) {
+	const runtime = fs.mkdtempSync(path.join(os.tmpdir(), "abito-d-memory-runtime-"));
+	t.after(() => fs.rmSync(runtime, { recursive: true, force: true }));
+	fs.writeFileSync(
+		path.join(runtime, "koda-runtime.json"),
+		`${JSON.stringify({ gentlePi: "4.3.0", gentleShell: "node_modules/gentle-pi/bin/gentle-shell.mjs" })}\n`,
+	);
+	const launcher = path.join(runtime, "gentle-shell");
+	fs.writeFileSync(launcher, `#!/bin/sh\nexec '${process.execPath}' '${FAKE}' "$@"\n`);
+	fs.chmodSync(launcher, 0o755);
+	return {
+		runtime,
+		runtimeDeps: { execPath: path.join(runtime, process.platform === "win32" ? "node.exe" : "node"), existsSync: fs.existsSync, lstatSync: fs.lstatSync, readFileSync: fs.readFileSync },
+	};
+}
+
+const MEMORY_INSTANCE = "cd34".repeat(8);
+
+/** A programmable private-memory seam: empty before boot, one listener later. */
+function memorySeam({ health = async () => ({ instance_id: MEMORY_INSTANCE }) } = {}) {
+	const seam = { lookups: [], occupied: false, pid: 4242, kills: [], logs: [] };
+	seam.runListenerCommand = async () => {
+		seam.lookups.push(seam.occupied);
+		return { code: 0, stdout: seam.occupied ? String(seam.pid) : "", stderr: "" };
+	};
+	seam.kill = (pid, signal) => seam.kills.push({ pid, signal });
+	seam.health = health;
+	return seam;
+}
+
+test("the default engine's daemon owns the private memory and stops its own listener on shutdown", unixOnly("needs a #!/bin/sh fake runtime launcher"), async (t) => {
+	const base = tmp();
+	const root = islandRoot(base);
+	const { runtimeDeps } = fakeRuntime(t);
+	const seam = memorySeam();
+	const daemon = new Daemon({
+		root,
+		env: daemonEnv(base, { ENGRAM_URL: "http://127.0.0.1:9999", ENGRAM_DATA_DIR: "/elsewhere", ENGRAM_PORT: "7437", ABITO_ENGRAM_PORT: "7499" }),
+		log: (line) => seam.logs.push(String(line)),
+		engineOptions: { command: DEFAULT_COMMAND, commandArgs: [], runtimeDeps, backoffMs: [20], stopTimeoutMs: 500, requestTimeoutMs: 3000, startTimeoutMs: 5000 },
+		memoryOptions: { runListenerCommand: seam.runListenerCommand, kill: seam.kill, health: seam.health },
+	});
+	try {
+		await daemon.start();
+		assert.ok(daemon.memory, "the daemon owns the private port for its default engine");
+		assert.deepEqual(seam.lookups, [false], "the port was checked once BEFORE the engine spawned");
+		assert.deepEqual(seam.kills, []);
+	} finally {
+		// The engine's own server has (in production) left its identity behind.
+		fs.mkdirSync(path.join(root, "home", ".engram"), { recursive: true, mode: 0o700 });
+		fs.writeFileSync(path.join(root, "home", ".engram", ".instance-id"), `${MEMORY_INSTANCE}\n`, { mode: 0o600 });
+		seam.occupied = true;
+		await daemon.stop();
+	}
+	assert.deepEqual(seam.kills, [{ pid: 4242, signal: "SIGTERM" }], "Koda's own listener is stopped on daemon shutdown");
+	assert.ok(!seam.logs.some((line) => /left running|serves other data/.test(line)), JSON.stringify(seam.logs));
+});
+
+test("the daemon never stops a listener that is not its own memory", unixOnly("needs a #!/bin/sh fake runtime launcher"), async (t) => {
+	const base = tmp();
+	const root = islandRoot(base);
+	const { runtimeDeps } = fakeRuntime(t);
+	// /health reports a DIFFERENT instance id: a foreign server on the port.
+	const seam = memorySeam({ health: async () => ({ instance_id: "f".repeat(32) }) });
+	const daemon = new Daemon({
+		root,
+		env: daemonEnv(base),
+		log: (line) => seam.logs.push(String(line)),
+		engineOptions: { command: DEFAULT_COMMAND, commandArgs: [], runtimeDeps, backoffMs: [20], stopTimeoutMs: 500, requestTimeoutMs: 3000, startTimeoutMs: 5000 },
+		memoryOptions: { runListenerCommand: seam.runListenerCommand, kill: seam.kill, health: seam.health },
+	});
+	await daemon.start();
+	assert.ok(daemon.memory);
+	// The island identity file is present, so the mismatch is /health's verdict.
+	fs.mkdirSync(path.join(root, "home", ".engram"), { recursive: true, mode: 0o700 });
+	fs.writeFileSync(path.join(root, "home", ".engram", ".instance-id"), `${MEMORY_INSTANCE}\n`, { mode: 0o600 });
+	seam.occupied = true;
+	await daemon.stop();
+	assert.deepEqual(seam.kills, [], "a foreign server is never signalled");
+	assert.ok(seam.logs.some((line) => /serves other data/.test(line)), `the refusal is reported: ${JSON.stringify(seam.logs)}`);
+});
+
+test("a custom command gets no private memory ownership and no stop", async () => {
+	const { daemon } = make(); // engine command: the fake agent (a custom command)
+	await daemon.start();
+	assert.equal(daemon.memory, undefined, "only Koda's own default engine gets private memory");
+	await daemon.stop();
+	assert.equal(daemon.memory, undefined);
+});

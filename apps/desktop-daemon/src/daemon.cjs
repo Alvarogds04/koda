@@ -25,11 +25,11 @@ const { createAgentHooks } = require("./agent-hooks.cjs");
 const { ConnectorsControl, ConnectorsView } = require("./connectors.cjs");
 const { AgentsManager } = require("./agents.cjs");
 const { ConnectorHostSupervisor } = require("./connector-host.cjs");
-const { ensureIsland, ensurePrivateDir, islandPaths, writePrivateFile, windowsIslandRootViolation } = require("./isolation.cjs");
+const { ensureIsland, ensurePrivateDir, islandPaths, privateMemory, writePrivateFile, windowsIslandRootViolation } = require("./isolation.cjs");
 const { ProfileStore } = require("./profiles.cjs");
 const { scanSessions, sessionScope } = require("./sessions.cjs");
 const { runPs } = require("./procinfo.cjs");
-const { AgentEngine } = require("./runtime.cjs");
+const { AgentEngine, DEFAULT_COMMAND } = require("./runtime.cjs");
 const { defaultIslandRoot } = require("./isolation.cjs");
 // K2-05 T3 (S2): Gentle Dot's transparent rotation (rotation on by default).
 const { SessionRotator } = require("./rotation.cjs");
@@ -343,6 +343,9 @@ class Daemon extends EventEmitter {
 		this.state = "stopped";
 		this.changing = Promise.resolve();
 		this.connectorsControl = undefined;
+		// K2-05 T1c (S5/L11): the private memory handle, taken at boot for Koda's
+		// own default engine only (see boot).
+		this.memory = undefined;
 	}
 
 	get sessionFile() {
@@ -403,6 +406,15 @@ class Daemon extends EventEmitter {
 			...(this.options.engineOptions ?? {}),
 		});
 		this.engine = engine;
+		// K2-05 T1c (S5/L11): Koda's memory is ALWAYS private, and the daemon owns
+		// its lifecycle — the port state is confirmed BEFORE the engine spawns, so
+		// cleanup is only ever taken for a port that was empty (a pre-existing
+		// listener is never claimed, an unknown state refuses ownership, and stop
+		// verifies the island identity + /health before any SIGTERM). Only Koda's
+		// own default engine gets private memory: a custom `command` never does.
+		this.memory = engine.command === DEFAULT_COMMAND
+			? await privateMemory(this.env, this.root, (line) => this.log(line), this.options.memoryOptions ?? {})
+			: undefined;
 		this.accounts = new AccountManager({
 			accountsRoot: path.join(this.root, "accounts"),
 			env: this.env,
@@ -785,6 +797,11 @@ class Daemon extends EventEmitter {
 		await this.connectorHost?.stop().catch(() => {});
 		await this.server?.close().catch(() => {});
 		await this.engine?.stop().catch(() => {});
+		// K2-05 T1c: the private memory server stops AFTER the engine is gone (its
+		// last user), and only when it was proven to be Koda's own (instance id +
+		// /health + stable pid): a foreign server is never touched.
+		await this.memory?.stop().catch(() => {});
+		this.memory = undefined;
 		// After the engine stop, so pi is gone before its MCP capability file is.
 		if (this.wroteMcp) {
 			config.removeMcpProjection(this.root);

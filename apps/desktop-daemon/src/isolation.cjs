@@ -35,6 +35,7 @@ const {
 	unlinkSync,
 	writeSync,
 } = require("node:fs");
+const { execFile } = require("node:child_process");
 const { homedir } = require("node:os");
 const path = require("node:path");
 // HU-061: on Windows (verified HU-047 helper) credential dirs/files are made and checked through the native helper.
@@ -524,12 +525,185 @@ function claimEngineHome(agentDir, version, log = () => {}) {
 	return false;
 }
 
+// ----- K2-05 T1c (S5/L11): Koda's private memory ----------------------------
+
+/**
+ * The memory server port of Koda's own private memory. Koda's memory is ALWAYS
+ * private (no user-store mode): the store lives inside the island — the engine's
+ * HOME is `<island>/home` and Engram defaults its store to `<HOME>/.engram` when
+ * `ENGRAM_DATA_DIR` is unset, exactly where Gentle Dot's private mode puts it —
+ * and the server runs on this port. 7439 is one above Gentle Dot's own private
+ * memory port (7438), which is itself one above Engram's global default (7437):
+ * a user's own Engram server on 7437/7438 can never collide with it, and the
+ * lifecycle below never touches a server that is not Koda's. Overridable for
+ * tests/embeddings with `ABITO_ENGRAM_PORT`.
+ */
+const PRIVATE_ENGRAM_PORT = "7439";
+
+/** The parent-env variable that overrides `PRIVATE_ENGRAM_PORT`. */
+const PRIVATE_ENGRAM_PORT_ENV = "ABITO_ENGRAM_PORT";
+
+/** The private memory port for `base`: the override, or Koda's default. */
+function privateMemoryPort(base = {}) {
+	const value = base[PRIVATE_ENGRAM_PORT_ENV];
+	return typeof value === "string" && value !== "" ? value : PRIVATE_ENGRAM_PORT;
+}
+
+/** The seams `privateMemory` accepts (all optional; production runs the real ones). */
+
+/** How long the listener lookup may take (Gentle Dot: Windows CIM is slow). */
+function listenerLookupTimeoutMs(platform) {
+	return platform === "win32" ? 15000 : 5000;
+}
+
+function runListenerCommand(command, args) {
+	return new Promise((resolve) => {
+		execFile(
+			command,
+			[...args],
+			{
+				encoding: "utf8",
+				timeout: listenerLookupTimeoutMs(command === "powershell.exe" ? "win32" : process.platform),
+				windowsHide: true,
+			},
+			(error, stdout, stderr) => {
+				let code = 0;
+				if (error && typeof error.code === "number") code = error.code;
+				else if (error) code = -1;
+				resolve({
+					code,
+					stdout: String(stdout),
+					stderr: String(stderr),
+				});
+			},
+		);
+	});
+}
+
+/** Enumerate Windows listeners before filtering, so an unused port is not a query error. */
+async function listeningPid(port, options) {
+	const windows = (options.platform ?? process.platform) === "win32";
+	const command = windows ? "powershell.exe" : "lsof";
+	const args = windows
+		? [
+				"-NoLogo",
+				"-NoProfile",
+				"-NonInteractive",
+				"-Command",
+				`$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; try { Get-NetTCPConnection -State Listen -ErrorAction Stop | Where-Object { $_.LocalPort -eq ${Number(port)} } | Select-Object -ExpandProperty OwningProcess } catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }`,
+			]
+		: ["-w", "-t", "-n", "-P", `-iTCP:${port}`, "-sTCP:LISTEN"];
+	try {
+		const result = await (options.runListenerCommand ?? runListenerCommand)(command, args);
+		const text = result.stdout.trim();
+		// lsof exits 1 for no matches. Missing commands, diagnostics and timeouts are failures.
+		if (!windows && result.code === 1 && !text && !result.stderr.trim()) return { kind: "empty" };
+		if (result.code !== 0 || result.stderr.trim()) return { kind: "failed" };
+		if (!text) return { kind: "empty" };
+		const values = text.split(/\r?\n/).map((value) => value.trim());
+		if (values.some((value) => !/^[1-9]\d*$/.test(value) || !Number.isSafeInteger(Number(value)))) {
+			return { kind: "failed" };
+		}
+		const pids = [...new Set(values.map(Number))];
+		return pids.length === 1 ? { kind: "one", pid: pids[0] } : { kind: "ambiguous" };
+	} catch {
+		return { kind: "failed" };
+	}
+}
+
+function memoryHealth(port) {
+	return fetch(`http://127.0.0.1:${port}/health`, { signal: AbortSignal.timeout(2000) })
+		.then((response) => response.json())
+		.catch(() => undefined);
+}
+
+/**
+ * The island identity file the engine's own Engram server leaves behind
+ * (`<island>/home/.engram/.instance-id`): read fail-closed — regular,
+ * non-symlink, owner-only, small, owned by the current user. Any refusal
+ * yields undefined, and undefined ownership never signals anything.
+ */
+function readInstanceIdFile(file, options) {
+	const fsOps = options.fs ?? { lstatSync, readFileSync };
+	try {
+		const stats = fsOps.lstatSync(file);
+		if (!stats.isFile() || stats.isSymbolicLink() || (process.platform !== "win32" && (stats.mode & 0o077) !== 0) || stats.size > 4096) {
+			return undefined;
+		}
+		if (typeof process.getuid === "function" && stats.uid !== process.getuid()) return undefined;
+		const value = fsOps.readFileSync(file, "utf8").trim();
+		return /^[0-9a-f]{32}$/i.test(value) ? value : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * Owns cleanup of Koda's private memory only after confirming an EMPTY private
+ * port before startup (Gentle Dot `privateMemory`, isolation.ts:155-300). A
+ * failed or ambiguous lookup refuses ownership, not startup: the daemon starts,
+ * logs it, and leaves that memory server running when it closes. An invalid
+ * port is a configuration error and does stop startup. Before termination, both
+ * the private data identity (`<dataDir>/home/.engram/.instance-id`) and a
+ * repeated stable listener PID must match. PID reuse after the final check
+ * remains possible; nothing is killed by name, and a server that is not Koda's
+ * own is never touched. Pure seams (`options.runListenerCommand`, `options.kill`,
+ * `options.health`, `options.fs`, `options.platform`) are for tests only.
+ */
+async function privateMemory(base, dataDir, log = () => {}, options = {}) {
+	const port = privateMemoryPort(base);
+	if (!/^\d+$/.test(port) || !Number.isSafeInteger(Number(port)) || Number(port) < 1 || Number(port) > 65535) {
+		throw new Error("Cannot start private memory: port must be an integer from 1 to 65535");
+	}
+	const before = await listeningPid(port, options);
+	if (before.kind === "one") return undefined;
+	if (before.kind !== "empty") {
+		// Not knowing is no reason to keep the assistant from starting, nor to claim the server.
+		log(`cannot verify private memory listener on port ${port} (${before.kind} lookup); will not stop it`);
+		return undefined;
+	}
+	return {
+		async stop() {
+			const listener = await listeningPid(port, options);
+			if (listener.kind !== "one") {
+				if (listener.kind !== "empty") {
+					log(`cannot verify private memory listener on port ${port}; left running`);
+				}
+				return;
+			}
+			const expected = readInstanceIdFile(path.join(dataDir, "home", ".engram", ".instance-id"), options);
+			if (!expected) {
+				log(`cannot read the private memory identity of port ${port}; left running`);
+				return;
+			}
+			const health = await (options.health ?? memoryHealth)(port).catch(() => undefined);
+			if (health?.instance_id !== expected) {
+				log(`the memory server on port ${port} serves other data; left running`);
+				return;
+			}
+			const again = await listeningPid(port, options);
+			if (again.kind !== "one" || again.pid !== listener.pid) {
+				log(`the private memory listener changed on port ${port}; left running`);
+				return;
+			}
+			try {
+				(options.kill ?? process.kill)(listener.pid, "SIGTERM");
+				log(`stopped the private memory server (pid ${listener.pid})`);
+			} catch (error) {
+				log(`could not stop private memory server (pid ${listener.pid}): ${String(error)}`);
+			}
+		},
+	};
+}
+
 module.exports = {
 	ENGINE_HOME_MARKER,
 	ENV_ALLOWLIST,
 	ENV_WINDOWS_ALLOWLIST,
 	ISLAND_ROOT_ENV,
 	MEMORY_PROJECT,
+	PRIVATE_ENGRAM_PORT,
+	PRIVATE_ENGRAM_PORT_ENV,
 	assertSecurePath,
 	claimEngineHome,
 	defaultIslandRoot,
@@ -538,6 +712,8 @@ module.exports = {
 	islandPaths,
 	isolatedEnv,
 	pathWithNodeFirst,
+	privateMemory,
+	privateMemoryPort,
 	windowsIslandRootViolation,
 	writePrivateFile,
 };

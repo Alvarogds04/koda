@@ -491,6 +491,23 @@ last carry `earlier:true`.
   fallback runs, TWO frames are broadcast: the confirmed seed's session change, then the fallback's
   linked fresh session.
 
+## Private memory (K2-05 T1c, the only mode)
+
+Koda's memory is ALWAYS private — Gentle Dot's private mode (its `packages/daemon/src/isolation.ts`,
+`privateMemory`, MIT), with no user-store mode. The engine child gets `ENGRAM_PORT` = Koda's own
+port **7439** (`ABITO_ENGRAM_PORT` in the parent env overrides it for tests/embeddings),
+`ENGRAM_BIN` = ONLY the pinned binary the bundled runtime manifest names, `ENGRAM_NO_UPDATE_CHECK=1`,
+and NO `ENGRAM_URL`/`ENGRAM_DATA_DIR`/inherited `ENGRAM_PORT`: the store follows the engine's island
+`HOME` (`<island>/home/.engram`), so the user's own Engram server and store (`7437`/`7438`,
+`~/.engram`) are never read, probed or inherited. The memory project stays `abito-island`
+(`<workspace>/.engram/config.json`, `ABITO_MEMORY_PROJECT` + identity pin). The daemon confirms the
+private port is EMPTY before the engine spawns and owns cleanup only then; a failed or ambiguous
+lookup refuses ownership (logged, the engine still starts); on daemon stop the listener is verified
+against the island's `.instance-id` + `GET /health` with a stable PID before any SIGTERM — a server
+that is not Koda's is never touched. **Koda 0.1 memories saved in the user's own Engram are NOT
+migrated** into the island store (human decision L11); the island memory starts empty. Only Koda's
+own default engine gets private memory: a custom `command` gets no memory env and no ownership.
+
 ## Continuous conversation rotation (K2-05 T3, on by default)
 
 One continuous chat that never grows unbounded: when the open session file passes a limit, the daemon

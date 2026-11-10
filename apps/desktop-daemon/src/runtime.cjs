@@ -20,11 +20,9 @@
 
 const { EventEmitter } = require("node:events");
 const { performance } = require("node:perf_hooks");
-const { execFileSync } = require("node:child_process");
 const { spawn } = require("node:child_process");
-const { accessSync, constants, existsSync, lstatSync, readFileSync, readdirSync, renameSync, rmSync, statSync } = require("node:fs");
+const { existsSync, lstatSync, readFileSync, readdirSync, renameSync, rmSync } = require("node:fs");
 const { createHash } = require("node:crypto");
-const { homedir } = require("node:os");
 const path = require("node:path");
 
 const {
@@ -34,6 +32,7 @@ const {
 	ensureIsland,
 	ensurePrivateDir,
 	isolatedEnv,
+	privateMemoryPort,
 	writePrivateFile,
 } = require("./isolation.cjs");
 // F2: the daemon-owned flush marker for a cancelled turn. A Symbol cannot be
@@ -122,118 +121,43 @@ function engramBinPath(manifest, runtime, deps) {
 	return runtimeScript(manifest?.engramBin, runtime, deps, "engramBin");
 }
 
-// ----- F6: the Engram binary, resolved in Gentle Dot's order ----------------
-
-// Resolutión and folder layout ported from Gentle Dot's resolveEngramBin
-// (packages/daemon/src/runtime.ts:20-84, MIT, Copyright (c) 2026 Gentleman
-// Programming); see THIRD-PARTY-NOTICES.md. The user's own binary keeps
-// serving their own ~/.engram; Koda's bundled one is the LAST resort.
-const ENGRAM_LOGIN_TIMEOUT_MS = 5_000;
-const ENGRAM_SYSTEM_PATH = "/usr/bin:/bin:/usr/sbin:/sbin";
-
-/** A readable (Windows) or executable (Unix) regular file, like Gentle Dot. */
-function isExecutableFile(file, deps, platform) {
-	try {
-		(deps.accessSync ?? accessSync)(file, platform === "win32" ? constants.R_OK : constants.X_OK);
-		return ((deps.statSync ?? statSync)(file)).isFile();
-	} catch {
-		return false;
-	}
-}
-
-/** Where a user's own Engram usually lives, after the login PATH on Unix. */
-function engramKnownDirs(home, platform) {
-	if (platform === "win32") {
-		return [path.join(home, "go", "bin"), path.join(home, "AppData", "Local", "engram", "bin"), path.join(home, ".local", "bin")];
-	}
-	return [path.join(home, "go", "bin"), "/opt/homebrew/bin", "/usr/local/bin", path.join(home, ".local", "bin")];
-}
-
 /**
- * The `engram` the user's login shell finds (Unix only — NEVER on Windows).
- * The app starts with a fixed PATH, so the shell builds the user's own from
- * their profile, starting from the system one. Bounded at 5 s.
- */
-function loginShellEngram(env, home, deps, platform) {
-	if (platform === "win32") return undefined;
-	try {
-		const output = (deps.execFileSync ?? execFileSync)(typeof env.SHELL === "string" ? env.SHELL : "/bin/sh", ["-l", "-c", "command -v engram"], {
-			env: { ...env, HOME: home, PATH: ENGRAM_SYSTEM_PATH },
-			encoding: "utf8",
-			stdio: ["ignore", "pipe", "ignore"],
-			timeout: ENGRAM_LOGIN_TIMEOUT_MS,
-		});
-		const found = output.trim().split("\n").at(-1)?.trim() ?? "";
-		return path.isAbsolute(found) && isExecutableFile(found, deps, platform) ? found : undefined;
-	} catch {
-		return undefined;
-	}
-}
-
-/**
- * F6 (L7 «igual que Gentle Dot»): the Engram binary in Gentle Dot's resolution
- * order — 1. the user's ENGRAM_BIN (from the daemon's own env), 2. on Unix the
- * user's login-shell `command -v engram`, 3. Gentle Dot's known dirs, and only
- * then 4. Koda's bundled `<runtime>/<engramBin>` named and validated by the
- * manifest. Koda's refinement: the bundled fallback only exists when the
- * manifest names one (undefined otherwise — the caller degrades, F7: log, no
- * ENGRAM_BIN, the chat still starts).
- */
-function resolveEngramBin(baseEnv, manifest, runtime, deps = {}) {
-	if (typeof baseEnv.ENGRAM_BIN === "string" && baseEnv.ENGRAM_BIN !== "") return baseEnv.ENGRAM_BIN;
-	const platform = deps.platform ?? process.platform;
-	const home =
-		(platform === "win32" ? baseEnv.USERPROFILE || baseEnv.HOME : baseEnv.HOME) || (deps.homedir ?? homedir)();
-	const name = platform === "win32" ? "engram.exe" : "engram";
-	const fromLogin = loginShellEngram(baseEnv, home, deps, platform);
-	if (fromLogin) return fromLogin;
-	for (const dir of engramKnownDirs(home, platform)) {
-		const bin = path.join(dir, name);
-		if (isExecutableFile(bin, deps, platform)) return bin;
-	}
-	if (runtime !== undefined) {
-		try {
-			return engramBinPath(manifest, runtime, deps);
-		} catch (error) {
-			(deps.log ?? (() => {}))(`the bundled memory binary is not available (${error.message}); the chat starts without memory`);
-			return undefined;
-		}
-	}
-	return undefined;
-}
-
-/**
- * T1b-b (S5): the memory environment of Koda's DEFAULT bundled engine, in the
- * shape of Gentle Dot's isolatedAgentEnv (isolation.ts:131-137, 212-214): the
- * bundled Engram binary from the runtime manifest, and the memory store is the
- * user's OWN one (`ENGRAM_DATA_DIR` = their real `~/.engram`, or the parent's
- * ENGRAM_DATA_DIR when it already moved it), so the user's existing memories —
- * the `abito-island` project among them — stay where they are. The parent's
- * ENGRAM_URL / ENGRAM_PORT pass through when set (their own Engram server is
- * honoured). GENTLE_SHELL_PREFIX is NEVER set: the engine's companion comes
- * from the island seed, not from a user prefix. This env is only ever built
- * for the default engine (see spawnChild); a foreign `command` never learns
- * where the user's memory store lives.
+ * T1b-b (S5), reshaped by T1c (S5/L11): the private memory environment of
+ * Koda's DEFAULT bundled engine, in the shape of Gentle Dot's private mode
+ * (isolation.ts:208-211). Koda's memory is ALWAYS private — there is no
+ * user-store mode anymore: the store follows the engine's own HOME
+ * (`<island>/home/.engram`, Engram's default when `ENGRAM_DATA_DIR` is unset),
+ * the server runs on Koda's own port (`privateMemoryPort`: 7439, or the
+ * parent's `ABITO_ENGRAM_PORT`), and the ONLY binary Koda resolves is the
+ * pinned one its runtime manifest names (`engramBin`) — the former Gentle Dot
+ * user-binary order (the parent's ENGRAM_BIN, the login shell, the known dirs)
+ * is deleted, so the user's own Engram server and store (7437/7438, ~/.engram)
+ * are never read, probed or inherited: the parent's ENGRAM_URL, ENGRAM_DATA_DIR
+ * and ENGRAM_PORT are dropped here even if a caller re-added them, and the
+ * allowlist in isolatedEnv never copies them in the first place. A missing or
+ * invalid `engramBin` never blocks the engine (F7): the degradation (no
+ * ENGRAM_BIN) is logged, and the chat starts without memory tools.
+ * GENTLE_SHELL_PREFIX is NEVER set: the engine's companion comes from the
+ * island seed, not from a user prefix. This env is only ever built for the
+ * default engine (see spawnChild); a foreign `command` learns nothing about
+ * Koda's memory.
  */
 function bundledMemoryEnv(baseEnv, runtime, deps = {}) {
-	const platform = deps.platform ?? process.platform;
 	const env = {};
 	if (runtime !== undefined) {
 		const manifest = readRuntimeManifest(runtime, deps);
-		// F6/F7: Gentle Dot's resolution order; when nothing resolves — including
-		// a missing or invalid engramBin — the env simply carries no ENGRAM_BIN
-		// (the chat starts without memory tools, never blocked). The bundled
-		// fallback logs its refusal through deps.log when one is wired.
-		const engram = resolveEngramBin(baseEnv, manifest, runtime, deps);
-		if (engram !== undefined) env.ENGRAM_BIN = engram;
+		try {
+			env.ENGRAM_BIN = engramBinPath(manifest, runtime, deps);
+		} catch (error) {
+			(deps.log ?? (() => {}))(`the bundled memory binary is not available (${error.message}); the chat starts without memory`);
+		}
 	}
-	const realHome = platform === "win32" ? baseEnv.USERPROFILE || baseEnv.HOME || homedir() : baseEnv.HOME || homedir();
-	env.ENGRAM_DATA_DIR =
-		typeof baseEnv.ENGRAM_DATA_DIR === "string" && baseEnv.ENGRAM_DATA_DIR !== ""
-			? baseEnv.ENGRAM_DATA_DIR
-			: path.join(realHome, ".engram");
-	if (typeof baseEnv.ENGRAM_URL === "string" && baseEnv.ENGRAM_URL !== "") env.ENGRAM_URL = baseEnv.ENGRAM_URL;
-	if (typeof baseEnv.ENGRAM_PORT === "string" && baseEnv.ENGRAM_PORT !== "") env.ENGRAM_PORT = baseEnv.ENGRAM_PORT;
+	env.ENGRAM_PORT = privateMemoryPort(baseEnv);
+	// The user's server and store never pass, whatever the caller's env held.
+	delete env.ENGRAM_URL;
+	delete env.ENGRAM_DATA_DIR;
+	// The private memory never phones home for updates (offline by design).
+	env.ENGRAM_NO_UPDATE_CHECK = "1";
 	return env;
 }
 
@@ -1382,4 +1306,4 @@ class AgentEngine extends EventEmitter {
 	}
 }
 
-module.exports = { AgentEngine, JsonlDecoder, DEFAULT_COMMAND, bundledGentleShell, bundledMemoryEnv, encodeRecord, engramKnownDirs, gentlePiVersion, resolveEngramBin, runtimeRoot, seedEngramCompanion, windowsPackageCliJs };
+module.exports = { AgentEngine, JsonlDecoder, DEFAULT_COMMAND, bundledGentleShell, bundledMemoryEnv, encodeRecord, gentlePiVersion, runtimeRoot, seedEngramCompanion, windowsPackageCliJs };

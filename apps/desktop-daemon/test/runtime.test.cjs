@@ -816,132 +816,81 @@ test("an unchanged companion tree is a no-op: nothing is re-copied (F4)", (t) =>
 	assert.equal(fs.lstatSync(path.join(target, "index.ts")).ino, fileBefore, "no file was rewritten");
 });
 
-test("bundledMemoryEnv names the bundled binary and the user's own memory store, never GENTLE_SHELL_PREFIX", (t) => {
-	const runtime = fakeRuntimeWithEngram(t);
-	// The user's own machine is never probed in tests: no login shell, no known
-	// dirs, so resolution lands on the bundled binary.
-	const deps = noUserEngram(runtimeDepsFor(runtime));
+// T1c (S5/L11): the user-binary resolution order is GONE — the ONLY engram
+// binary Koda ever uses is the pinned one its runtime ships. The user's own
+// Engram (their ~/.engram, their server on 7437/7438) is never read, probed
+// or inherited.
 
+test("bundledMemoryEnv runs Koda's private memory: the bundled binary, Koda's port, never the user's server or store", (t) => {
+	const runtime = fakeRuntimeWithEngram(t);
+	const deps = runtimeDepsFor(runtime);
 	const env = bundledMemoryEnv(
-		{ HOME: "/home/user", ENGRAM_URL: "http://127.0.0.1:9999", ENGRAM_PORT: "7777", GENTLE_SHELL_PREFIX: "/evil/prefix" },
+		{
+			HOME: "/home/user",
+			ENGRAM_URL: "http://127.0.0.1:9999",
+			ENGRAM_PORT: "7437",
+			ENGRAM_DATA_DIR: "/home/user/.engram",
+			ENGRAM_BIN: "/custom/user-engram",
+			ABITO_ENGRAM_PORT: "7499",
+		},
 		runtime,
 		deps,
 	);
-	assert.equal(env.ENGRAM_BIN, path.join(runtime, "bin", "engram"));
-	assert.equal(env.ENGRAM_DATA_DIR, path.join("/home/user", ".engram"));
-	assert.equal(env.ENGRAM_URL, "http://127.0.0.1:9999");
-	assert.equal(env.ENGRAM_PORT, "7777");
+	assert.equal(env.ENGRAM_BIN, path.join(runtime, "bin", "engram"), "ONLY the bundled binary: the parent's ENGRAM_BIN is ignored");
+	assert.equal(env.ENGRAM_PORT, "7499", "ABITO_ENGRAM_PORT overrides Koda's private port");
+	assert.equal(env.ENGRAM_URL, undefined, "the user's server is never inherited");
+	assert.equal(env.ENGRAM_DATA_DIR, undefined, "the user's store is never inherited: the store follows the island HOME");
 	assert.equal(env.GENTLE_SHELL_PREFIX, undefined, "GENTLE_SHELL_PREFIX is never set");
+	assert.equal(env.ENGRAM_NO_UPDATE_CHECK, "1", "the private memory never phones home for updates");
+	assert.equal(bundledMemoryEnv({ HOME: "/home/user" }, runtime, deps).ENGRAM_PORT, "7439", "default private port");
 
-	// The parent's own ENGRAM_DATA_DIR wins (the user may already move their store).
-	assert.equal(bundledMemoryEnv({ HOME: "/home/user", ENGRAM_DATA_DIR: "/data/engram" }, runtime, deps).ENGRAM_DATA_DIR, "/data/engram");
-
-	// Windows resolves the real home through USERPROFILE (Gentle Dot isolation).
-	// The Windows manifest names engram.exe; point the fake runtime at it.
+	// Windows resolves the real home through USERPROFILE (Gentle Dot isolation)
+	// and names engram.exe; the mapping is otherwise identical.
 	fs.mkdirSync(path.join(runtime, "bin"), { recursive: true });
 	fs.writeFileSync(path.join(runtime, "bin", "engram.exe"), "#!exit\n", { mode: 0o755 });
 	fs.writeFileSync(path.join(runtime, "koda-runtime.json"), `${JSON.stringify({ gentlePi: "4.3.0", gentleShell: "node_modules/gentle-pi/bin/gentle-shell.mjs", engramBin: "bin/engram.exe" })}\n`);
-	const win = bundledMemoryEnv({ USERPROFILE: "C:\\Users\\u" }, runtime, { ...deps, platform: "win32", execFileSync: () => { throw new Error("a login shell must never run on Windows"); } });
-	assert.equal(win.ENGRAM_DATA_DIR, path.join("C:\\Users\\u", ".engram"));
-	assert.equal(win.ENGRAM_BIN, path.join(runtime, "bin", "engram.exe"));
+	const winEnv = bundledMemoryEnv({ USERPROFILE: "C:\\Users\\u" }, runtime, { ...deps, platform: "win32" });
+	assert.equal(winEnv.ENGRAM_BIN, path.join(runtime, "bin", "engram.exe"));
+	assert.equal(winEnv.ENGRAM_PORT, "7439");
+	assert.equal(winEnv.ENGRAM_DATA_DIR, undefined);
+	assert.equal(winEnv.ENGRAM_URL, undefined);
+});
 
-	// A manifest without engramBin (pre-T1b runtimes, test doubles): the user's
-	// OWN Engram is still honoured first (Gentle Dot's order, F6); with none, no
-	// bundled fallback exists (the manifest never named one) -> no ENGRAM_BIN.
+// A manifest without engramBin (pre-T1b runtimes, test doubles): the private
+// memory env still travels (port, no user store) — only the binary degrades.
+test("bundledMemoryEnv without a manifest binary still runs the private memory", (t) => {
 	const noBin = fakeRuntimeWithEngram(t, { engramBin: null });
-	const neutral = noUserEngram(runtimeDepsFor(noBin));
-	assert.equal(bundledMemoryEnv({ HOME: "/home/user" }, noBin, neutral).ENGRAM_BIN, undefined);
-	assert.equal(bundledMemoryEnv({ HOME: "/home/user" }, noBin, neutral).ENGRAM_DATA_DIR, path.join("/home/user", ".engram"));
-	// The user's own binary (a known-dir hit) still wins without any manifest.
-	const userBin = noUserEngram({ ...runtimeDepsFor(noBin), accessSync: (f) => { if (f !== "/usr/local/bin/engram") throw new Error("no"); }, statSync: () => ({ isFile: () => true }) });
-	assert.equal(bundledMemoryEnv({ HOME: "/home/user" }, noBin, userBin).ENGRAM_BIN, "/usr/local/bin/engram");
+	const env = bundledMemoryEnv({ HOME: "/home/user", ENGRAM_DATA_DIR: "/data/engram" }, noBin, runtimeDepsFor(noBin));
+	assert.equal(env.ENGRAM_BIN, undefined);
+	assert.equal(env.ENGRAM_PORT, "7439");
+	assert.equal(env.ENGRAM_DATA_DIR, undefined, "the parent's ENGRAM_DATA_DIR is never honoured");
 });
 
 // F7: a bad or symlinked engramBin no longer fails the spawn (the old
 // hard-error pinned by the previous version of this test): it degrades — no
-// ENGRAM_BIN, chat still starts. Fail closed about WHAT is used, never about
-// WHETHER the engine runs.
+// ENGRAM_BIN, private memory env still travels, chat still starts. Fail closed
+// about WHAT is used, never about WHETHER the engine runs.
 test("bundledMemoryEnv degrades without ENGRAM_BIN on a bad or symlinked engramBin in the manifest", (t) => {
 	const runtime = fakeRuntimeWithEngram(t);
-	// Neutral user machine: only the manifest's binary can be the answer.
-	const deps = noUserEngram(runtimeDepsFor(runtime));
+	const deps = runtimeDepsFor(runtime);
 	for (const bad of ["../evil/engram", "/evil/engram", ""]) {
 		fs.writeFileSync(path.join(runtime, "koda-runtime.json"), `${JSON.stringify({ gentlePi: "4.3.0", gentleShell: "node_modules/gentle-pi/bin/gentle-shell.mjs", engramBin: bad })}\n`);
 		const env = bundledMemoryEnv({ HOME: "/home/user" }, runtime, deps);
 		assert.equal(env.ENGRAM_BIN, undefined, `no ENGRAM_BIN for engramBin ${JSON.stringify(bad)}`);
-		assert.equal(env.ENGRAM_DATA_DIR, path.join("/home/user", ".engram"), "the rest of the memory env survives the degradation");
+		assert.equal(env.ENGRAM_PORT, "7439", "the private memory env survives the degradation");
+		assert.equal(env.ENGRAM_DATA_DIR, undefined);
 	}
 	// A symlinked binary is refused too: refused as a BINARY, degraded as an env.
 	fs.writeFileSync(path.join(runtime, "koda-runtime.json"), `${JSON.stringify({ gentlePi: "4.3.0", gentleShell: "node_modules/gentle-pi/bin/gentle-shell.mjs", engramBin: "bin/engram" })}\n`);
 	fs.rmSync(path.join(runtime, "bin", "engram"));
 	fs.symlinkSync("/evil/engram", path.join(runtime, "bin", "engram"));
-	assert.equal(bundledMemoryEnv({ HOME: "/home/user", ENGRAM_URL: "http://127.0.0.1:9999" }, runtime, deps).ENGRAM_BIN, undefined);
+	assert.equal(bundledMemoryEnv({ HOME: "/home/user" }, runtime, deps).ENGRAM_BIN, undefined);
 });
 
-// ----- F6/F7: the Engram binary is resolved in Gentle Dot's order, and a bad
-// manifest degrades instead of blocking the chat.
-
-/** Neutral user machine: no shell finds engram, no known dir holds one.
- *  Tests may override any injected dependency — those wins come last. */
-const noUserEngram = (deps = {}) => ({
-	execFileSync: () => {
-		throw Object.assign(new Error("not found"), { code: "ENOENT" });
-	},
-	accessSync: () => {
-		throw Object.assign(new Error("not found"), { code: "ENOENT" });
-	},
-	statSync: () => {
-		throw Object.assign(new Error("not found"), { code: "ENOENT" });
-	},
-	...deps,
-});
-
-const { resolveEngramBin } = require("../src/runtime.cjs");
-
-test("resolveEngramBin follows Gentle Dot's order: env, login shell, known dirs, bundled binary (F6)", (t) => {
-	const runtime = fakeRuntimeWithEngram(t);
-	const manifest = JSON.parse(fs.readFileSync(path.join(runtime, "koda-runtime.json"), "utf8"));
-	const base = runtimeDepsFor(runtime);
-
-	// 1. The daemon's own env wins, and nothing else is ever consulted.
-	let shellCalls = 0;
-	const envDeps = noUserEngram({ ...base, execFileSync: () => { shellCalls += 1; throw new Error("must not run"); } });
-	assert.equal(resolveEngramBin({ ENGRAM_BIN: "/custom/engram" }, manifest, runtime, envDeps), "/custom/engram");
-	assert.equal(shellCalls, 0, "an env ENGRAM_BIN short-circuits the shell probe");
-
-	// 2. The user's login shell (Unix): the last non-empty line, absolute+executable.
-	const loginDeps = noUserEngram({ ...base, execFileSync: () => "/home/u/go/bin/engram\n", accessSync: (file) => { if (!file.endsWith("go/bin/engram")) throw new Error("no"); }, statSync: () => ({ isFile: () => true }) });
-	assert.equal(resolveEngramBin({ HOME: "/home/u" }, manifest, runtime, loginDeps), "/home/u/go/bin/engram");
-	// A relative answer is refused and resolution falls through to the bundled one.
-	const badLoginDeps = noUserEngram({ ...base, execFileSync: () => "engram\n", accessSync: () => { throw new Error("no"); }, statSync: () => { throw new Error("no"); } });
-	assert.equal(resolveEngramBin({ HOME: "/home/u" }, manifest, runtime, badLoginDeps), path.join(runtime, "bin", "engram"));
-
-	// 3. Gentle Dot's known dirs when the shell finds nothing.
-	const knownDeps = noUserEngram({ ...base, accessSync: (file) => { if (file !== "/usr/local/bin/engram") throw new Error("no"); }, statSync: () => ({ isFile: () => true }) });
-	assert.equal(resolveEngramBin({ HOME: "/home/u" }, manifest, runtime, knownDeps), "/usr/local/bin/engram");
-
-	// 4. Only then the bundled binary named by the manifest.
-	assert.equal(resolveEngramBin({ HOME: "/home/u" }, manifest, runtime, noUserEngram(base)), path.join(runtime, "bin", "engram"));
-
-	// A manifest that names nothing (or names a bad binary) degrades to undefined.
-	assert.equal(resolveEngramBin({ HOME: "/home/u" }, undefined, runtime, noUserEngram(base)), undefined);
-	const broken = { ...manifest, engramBin: "../evil/engram" };
-	assert.equal(resolveEngramBin({ HOME: "/home/u" }, broken, runtime, noUserEngram(base)), undefined);
-});
-
-test("resolveEngramBin on Windows skips the login shell and uses engram.exe (F6)", (t) => {
-	const runtime = fakeRuntimeWithEngram(t);
-	fs.mkdirSync(path.join(runtime, "bin"), { recursive: true });
-	fs.writeFileSync(path.join(runtime, "bin", "engram.exe"), "#!\n", { mode: 0o755 });
-	const manifest = { gentlePi: "4.3.0", engramBin: "bin/engram.exe" };
-	const base = runtimeDepsFor(runtime);
-	// The shell probe must NEVER run on Windows.
-	const winDeps = noUserEngram({ ...base, platform: "win32", execFileSync: () => { throw new Error("a login shell must never run on Windows"); } });
-	assert.equal(resolveEngramBin({ USERPROFILE: "C:\\Users\\u" }, manifest, runtime, winDeps), path.join(runtime, "bin", "engram.exe"));
-	// A readable known-dir hit wins over the bundled one.
-	const knownWin = noUserEngram({ ...base, platform: "win32", execFileSync: () => { throw new Error("a login shell must never run on Windows"); }, accessSync: (file) => { if (!file.endsWith(".local/bin/engram.exe")) throw new Error("no"); }, statSync: () => ({ isFile: () => true }) });
-	assert.equal(resolveEngramBin({ USERPROFILE: "C:\\Users\\u" }, manifest, runtime, knownWin), path.join("C:\\Users\\u", ".local", "bin", "engram.exe"));
-});
+// T1c (S5/L11): the F6 user-binary order (ENGRAM_BIN / login shell / known
+// dirs) is deleted together with its tests — the bundled binary named by the
+// runtime manifest is the ONLY one Koda resolves. Its former tests
+// (resolveEngramBin, engramKnownDirs) are gone with the code.
 
 // F7 (verifier): a missing/invalid engramBin used to throw at spawn so the
 // chat never started; instead it degrades like seeding: log, no ENGRAM_BIN,
@@ -960,7 +909,7 @@ test("a bad engramBin degrades: the engine starts without memory tools and says 
 	const { engine, envOut } = makeEngine(t, {
 		command: "gentle-shell",
 		commandArgs: [],
-		runtimeDeps: noUserEngram(runtimeDepsFor(runtime)),
+		runtimeDeps: runtimeDepsFor(runtime),
 		log: (line) => logs.push(line),
 	});
 	await engine.start();
@@ -984,18 +933,21 @@ test("the default engine's child gets the memory env and the seeded companion; a
 
 	const home = fs.mkdtempSync(path.join(os.tmpdir(), "abito-engram-home-"));
 	t.after(() => fs.rmSync(home, { recursive: true, force: true }));
-	// A neutral user machine: only the bundled binary can be the answer.
+	// The parent env carries the user's own Engram server/store: none of it may
+	// reach the child — the private memory replaces it (T1c).
 	const { engine, envOut } = makeEngine(t, {
 		command: "gentle-shell",
 		commandArgs: [],
-		runtimeDeps: noUserEngram(runtimeDepsFor(runtime)),
-		env: { HOME: home, PATH: process.env.PATH, ENGRAM_DATA_DIR: path.join(home, "store"), GENTLE_SHELL_PREFIX: "/evil/prefix" },
+		runtimeDeps: runtimeDepsFor(runtime),
+		env: { HOME: home, PATH: process.env.PATH, ENGRAM_DATA_DIR: path.join(home, "store"), ENGRAM_URL: "http://127.0.0.1:9999", ENGRAM_PORT: "7437", ENGRAM_BIN: "/custom/user-engram", GENTLE_SHELL_PREFIX: "/evil/prefix" },
 	});
 	try {
 		await engine.start();
 		const childEnv = JSON.parse(fs.readFileSync(envOut, "utf8"));
-		assert.equal(childEnv.ENGRAM_BIN, path.join(runtime, "bin", "engram"));
-		assert.equal(childEnv.ENGRAM_DATA_DIR, path.join(home, "store"));
+		assert.equal(childEnv.ENGRAM_BIN, path.join(runtime, "bin", "engram"), "only the bundled binary");
+		assert.equal(childEnv.ENGRAM_PORT, "7439", "Koda's private port, not the parent's ENGRAM_PORT");
+		assert.equal(childEnv.ENGRAM_DATA_DIR, undefined, "the user's store is never inherited");
+		assert.equal(childEnv.ENGRAM_URL, undefined, "the user's server is never inherited");
 		assert.equal(childEnv.ABITO_MEMORY_PROJECT, "abito-island");
 		assert.equal(childEnv.GENTLE_SHELL_PREFIX, undefined, "never GENTLE_SHELL_PREFIX");
 		// The companion was seeded into the engine's own home before the first spawn.
@@ -1017,6 +969,8 @@ test("the default engine's child gets the memory env and the seeded companion; a
 		const plainEnv = JSON.parse(fs.readFileSync(plain.envOut, "utf8"));
 		assert.equal(plainEnv.ENGRAM_BIN, undefined);
 		assert.equal(plainEnv.ENGRAM_DATA_DIR, undefined, "the user's store is never exposed to a foreign command");
+		assert.equal(plainEnv.ENGRAM_URL, undefined);
+		assert.equal(plainEnv.ENGRAM_PORT, undefined);
 		assert.equal(plainEnv.ABITO_MEMORY_PROJECT, "abito-island");
 	} finally {
 		await plain.engine.stop().catch(() => {});
