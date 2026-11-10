@@ -803,41 +803,39 @@ test('U3: engine errors, cancellation and an unavailable engine use the existing
   assert.equal(V.canSend(down, 'hola', false), false);
 });
 
-test('U3: an earlier engine history page merges before the live turns', () => {
-  const live = [u3Turn(999999999, 'segunda', 'dos', 'completed', 9), u3Turn(1000000000, 'tercera', 'tres', 'completed', 9)];
-  const older = [u3Turn(999999998, 'primera', 'uno', 'completed', 10)];
+test('U3: an earlier engine history page joins the run before the live turns, in the order given (never re-sorted)', () => {
+  const live = [u3Turn(40, 'segunda', 'dos', 'completed', 9), u3Turn(4503599627370497, 'tercera', 'tres', 'completed', 9)];
+  const older = [u3Turn(12, 'primera', 'uno', 'completed', 10)];
   assert.deepEqual(V.mergeHistory(older, live).map(t => t.user_text), ['primera', 'segunda', 'tercera']);
+  // an island turn the record does not carry sits where the host put it, even with a larger number
+  const island = [u3Turn(4503599627370490, 'rechazada', '', 'error', 3), u3Turn(20, 'después', 'r', 'completed', 3)];
+  assert.deepEqual(V.mergeHistory(island, live).map(t => t.user_text), ['rechazada', 'después', 'segunda', 'tercera']);
+  // the live window wins on a shared id, and a repeated id is shown once
+  assert.deepEqual(V.mergeHistory([u3Turn(40, 'vieja', '', 'completed', 1), ...older, ...older], live).map(t => t.user_text), ['primera', 'segunda', 'tercera']);
   const chat = fs.readFileSync(path.join(__dirname, '..', 'frontend', 'chat.js'), 'utf8');
-  assert.match(chat, /action\(\{ action: 'history', conversation_id: id, before: historyBefore \}\)/, 'the page passes history_before back unchanged');
+  assert.match(chat, /action\(\{ action: 'history', conversation_id: id, before: cursor \}\)/, 'the page passes the cursor back unchanged');
   assert.match(chat, /historyBefore = page\.before \|\| null;/);
   // U4 (F2): the cursor follows every chat:state (the conversation id is the constant c-koda), not only a reset
   assert.match(chat, /followWindow\(next\);\s*view = next;/);
-  assert.match(chat, /if \(!olderTurns\.length && !detached\) \{ historyBefore = next\.history_before \|\| null; return; \}/);
+  assert.match(chat, /if \(!olderTurns\.length\) \{ historyBefore = next\.history_before \|\| null; return; \}/);
 });
 
-test('page memory: capPage drops the far end only, newerCursor walks the dropped turns back in host-page steps', () => {
+test('S2 paging: turns that leave the live window keep their place; scroll-triggered pages are coalesced', () => {
   const t = n => u3Turn(n, `q${n}`, `r${n}`, 'completed', 1);
-  const list = Array.from({ length: 280 }, (_, i) => t(100 + i));
-  assert.equal(V.PAGE_TURNS_MAX, 300);
-  assert.equal(V.PAGE_STEP, 50, 'one host page (chatclient.rs WINDOW_TURNS)');
-  const fits = V.capPage(list, 20, 300, 'oldest');
-  assert.equal(fits.kept, list, 'under the cap nothing moves');
-  assert.deepEqual(fits.dropped, []);
-  const top = V.capPage(list, 50, 300, 'oldest');
-  assert.deepEqual(top.kept.map(x => x.turn_id), list.slice(30).map(x => x.turn_id), 'reading the bottom: the TOP end goes, order kept');
-  assert.deepEqual(top.dropped.map(x => x.turn_id), list.slice(0, 30).map(x => x.turn_id));
-  const bottom = V.capPage(list, 0, 250, 'newest');
-  assert.deepEqual(bottom.kept.map(x => x.turn_id), list.slice(0, 250).map(x => x.turn_id), 'paging up: the BOTTOM end goes, order kept');
-  assert.deepEqual(bottom.dropped.map(x => x.turn_id), list.slice(250).map(x => x.turn_id));
-  const dropped = Array.from({ length: 120 }, (_, i) => 500 + i);
-  assert.equal(V.newerCursor(dropped, 900), 550, 'the host answers the 50 turns before it: exactly the first 50 dropped');
-  assert.equal(V.newerCursor(dropped.slice(0, 50), 900), 900, 'the rest fits one page: up to the live window');
-  assert.equal(V.newerCursor(dropped.slice(0, 50), NaN), 550, 'no live window: right after the last dropped turn');
-  assert.equal(V.newerCursor([], NaN), null);
+  assert.deepEqual(V.leftWindow([t(1), t(2), t(3)], [t(2), t(3), t(4)]).map(x => x.turn_id), ['t-1']);
+  assert.deepEqual(V.leftWindow([t(1), t(2)], [t(1), t(2), t(3)]), [], 'a grown window drops nothing');
+  assert.deepEqual(V.leftWindow([t(1), t(2)], [t(9)]).map(x => x.turn_id), ['t-1', 't-2'], 'a window that moved past: all of it left');
+  assert.equal(V.pageWait(1000, 0), 0);
+  assert.equal(V.pageWait(1000, 1000), V.PAGE_GAP_MS);
+  assert.ok(60000 / V.PAGE_GAP_MS <= 100, 'paging stays inside the read share of the island budget (120 − 20 reserved)');
   const chat = fs.readFileSync(path.join(__dirname, '..', 'frontend', 'chat.js'), 'utf8');
-  assert.match(chat, /V\.capPage\(olderTurns, liveCount, V\.PAGE_TURNS_MAX, 'oldest'\)/, 'the live page trims its top end');
-  assert.match(chat, /V\.capPage\(olderTurns, 0, V\.PAGE_TURNS_MAX, 'newest'\)/, 'paging up trims the bottom end');
-  assert.match(chat, /V\.newerCursor\(droppedNewer,/, 'dropped turns come back through the host cursor');
+  assert.doesNotMatch(chat, /capPage|newerCursor|detached|droppedNewer/, 'no cap, no detached slice, no host-computed cursor');
 });
 
+test('S2 paging: an earlier page is inserted on top without repainting what is drawn', () => {
+  const r = (kind, text) => ({ kind, text });
+  const drawn = [r('user', 'c'), r('assistant', 'C')];
+  const plan = V.reconcileRows(drawn, [r('user', 'a'), r('assistant', 'A'), ...drawn]);
+  assert.deepEqual(plan, { keep: 2, patch: [], append: [], remove: 0, prepend: [r('user', 'a'), r('assistant', 'A')] });
+});
 console.log(`chat-view-check (U3 engine shape): ${passed} passed`);

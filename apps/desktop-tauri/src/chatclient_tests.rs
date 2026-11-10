@@ -187,7 +187,7 @@ fn deltas_stream_by_message_id_and_done_finalizes_the_message() {
 }
 
 #[test]
-fn history_replaces_the_view_and_earlier_prepends_deduped() {
+fn history_replaces_the_view_and_an_earlier_page_is_kept_whole_and_apart() {
     let mut st = ChatState::connected();
     st.apply(&json!({"type":"history","messages":[
         {"id":"s1-3","role":"assistant","text":"respuesta","activities":[{"id":"t1","kind":"read","title":"leyó notas.md","status":"done"}]},
@@ -204,15 +204,18 @@ fn history_replaces_the_view_and_earlier_prepends_deduped() {
     assert_eq!(v["messages"].as_array().unwrap().len(), 1, "history replaces, never appends");
     assert_eq!(v["streaming"].as_array().unwrap().len(), 0, "history replacing the view clears a half-streamed message: it can never finish");
 
-    // earlier prepends the page and dedupes by id
+    // Gentle Dot's model: an earlier page never enters the newest view; it is kept whole,
+    // with its cursor, for the read that asked for it
     st.apply(&json!({"type":"earlier","before":"s1-3","messages":[
-        {"id":"s0-9","role":"user","text":"más viejo","earlier":true},
-        {"id":"s1-3","role":"assistant","text":"respuesta"} // already shown: skipped
+        {"id":"s0-9","role":"user","text":"más viejo","earlier":true}
     ],"hasEarlier":false}));
     let v = view(&st);
     let ids: Vec<&str> = v["messages"].as_array().unwrap().iter().filter_map(|m| m["id"].as_str()).collect();
-    assert_eq!(ids, vec!["s0-9", "s1-3"], "earlier prepends without duplicating");
-    assert_eq!(v["hasEarlier"], json!(false));
+    assert_eq!(ids, vec!["s1-3"], "the newest view is untouched");
+    assert_eq!(v["hasEarlier"], json!(true), "the newest page's flag is untouched");
+    assert_eq!(v["earlierPage"]["before"], json!("s1-3"));
+    assert_eq!(v["earlierPage"]["messages"][0]["id"], json!("s0-9"));
+    assert_eq!(v["earlierPage"]["hasEarlier"], json!(false));
 }
 
 #[test]
@@ -352,24 +355,38 @@ fn the_view_stays_bounded() {
 // ---- K2-05 verifier findings: the island-side fixes ----------------------------------------
 
 #[test]
-fn loading_earlier_at_the_cap_trims_the_newest_end_and_sets_newer_trimmed() {
+fn an_earlier_page_without_a_cursor_is_ignored_and_never_reaches_the_newest_view() {
     let mut st = ChatState::connected();
-    for i in 0..MAX_MESSAGES {
-        st.apply(&json!({"type":"message_done","messageId":format!("m{i}")}));
+    st.apply(&json!({"type":"history","messages":[{"id":"s0-5","role":"user","text":"nueva"}],"hasEarlier":true}));
+    let before = st.revision();
+    for frame in [
+        json!({"type":"earlier","messages":[{"id":"s0-1","role":"user","text":"vieja"}],"hasEarlier":false}),
+        json!({"type":"earlier","before":"m1","messages":[{"id":"s0-1","role":"user","text":"vieja"}],"hasEarlier":false}),
+    ] {
+        st.apply(&frame);
     }
-    // one earlier page of the OLDEST messages, all new ids: at the cap the page just
-    // loaded must stay reachable, never be trimmed away by its own prepend
-    let page: Vec<Value> = (0..HISTORY_PAGE).map(|i| json!({"id":format!("old-{i}"),"role":"user","text":"más viejo"})).collect();
-    st.apply(&json!({"type":"earlier","before":"s0-1","messages":page,"hasEarlier":true}));
+    assert_eq!(st.revision(), before, "no cursor, no page");
     let v = view(&st);
-    let messages = v["messages"].as_array().unwrap();
-    assert_eq!(messages.len(), MAX_MESSAGES, "the view stays bounded");
-    assert_eq!(messages[0]["id"], json!("old-0"), "the first message of the chat is reachable");
-    assert_eq!(messages[HISTORY_PAGE - 1]["id"], json!("old-99"), "the whole page just loaded survived");
-    assert_eq!(v["newerTrimmed"], json!(true), "the view says the NEWEST end was trimmed (U4 reloads it via history)");
-    // a fresh history replace is a complete view again: the flag resets
-    st.apply(&json!({"type":"history","messages":[],"hasEarlier":false}));
-    assert_eq!(view(&st)["newerTrimmed"], json!(false));
+    assert_eq!(v["earlierPage"], json!(null));
+    assert_eq!(v["messages"].as_array().unwrap().len(), 1, "the newest view is untouched");
+}
+
+#[test]
+fn history_reads_never_spend_the_budget_reserved_for_send_and_abort() {
+    let st = ChatState::connected();
+    let ok = |payload: serde_json::Value| st.command(CHAT_WINDOW_LABEL, &payload);
+    let reads = CHAT_FRAMES_PER_MINUTE - CHAT_FRAMES_RESERVED;
+    for i in 0..reads {
+        assert!(ok(json!({"action":"chat_earlier","before":format!("s0-{}", i + 1)})).is_ok(), "read {i}");
+    }
+    for read in [json!({"action":"chat_earlier","before":"s0-1"}), json!({"action":"chat_history"}), json!({"action":"chat_status"})] {
+        assert!(ok(read.clone()).is_err(), "paging stops short of the reserve: {read}");
+    }
+    assert!(ok(json!({"action":"chat_send","text":"hola","clientRequestId":"req-00000001"})).is_ok(), "a send still goes through");
+    for _ in 1..CHAT_FRAMES_RESERVED {
+        assert!(ok(json!({"action":"chat_abort"})).is_ok());
+    }
+    assert!(ok(json!({"action":"chat_abort"})).is_err(), "the whole budget stays bounded");
 }
 
 #[test]

@@ -58,8 +58,11 @@ pub const MAX_STREAM_CHARS: usize = 300_000;
 /// The ONLY window label whose commands may chat: the main island window.
 pub const CHAT_WINDOW_LABEL: &str = "main";
 
-/// RED scaffold: the island's own chat rate limit (real gate comes with GREEN).
+/// The island's own chat rate limit (well below the daemon's 240 frames/minute drop).
 pub const CHAT_FRAMES_PER_MINUTE: u32 = 120;
+/// The part of that budget only send/steer/abort/answer may spend: history paging and
+/// status reads stop short of it, so paging can never make a send be refused.
+pub const CHAT_FRAMES_RESERVED: u32 = 20;
 /// The daemon's inbound client-frame bound (`LIMITS.maxFrameBytes`, measured in bytes
 /// after JSON escaping): a serialized line the daemon would reject — it KILLS the
 /// connection for any line over this — is refused by the island, never sent.
@@ -285,14 +288,15 @@ pub struct ChatState {
     toasts: Vec<Value>,
     /// The `queue` frame's counts.
     queue: Value,
-    /// Whether the daemon says older pages exist (`history`/`earlier` frames).
+    /// Whether the daemon says older pages exist before the newest page (`history`).
     has_earlier: bool,
     /// Live activities waiting for their message to finish. Never serialized.
     #[serde(skip_serializing)]
     pending_activities: Vec<Value>,
-    /// Whether the newest end of the log was trimmed by an `earlier` prepend at the
-    /// cap (U4 reloads the latest via `history` when the user scrolls back down).
-    newer_trimmed: bool,
+    /// The last `earlier` page, whole (`{before, messages, hasEarlier}`), for the host's
+    /// read that asked for it (Gentle Dot's model: an earlier page never enters the newest
+    /// view; the host turns it into older turns from its own messages). One page at most.
+    earlier_page: Value,
     /// The island's own chat-command rate window (well below the daemon's 240
     /// frames/minute drop, which KILLS the connection). Never serialized.
     #[serde(skip)]
@@ -342,7 +346,7 @@ impl ChatState {
             queue: json!({"steering": 0, "followUp": 0}),
             has_earlier: false,
             pending_activities: vec![],
-            newer_trimmed: false,
+            earlier_page: Value::Null,
             rate_window: Cell::new(None),
             rate_count: Cell::new(0),
             revision: 0,
@@ -392,7 +396,9 @@ impl ChatState {
         match self.rate_window.get() {
             Some(start) if now.duration_since(start) < WINDOW => {
                 let next = self.rate_count.get() + 1;
-                if next > CHAT_FRAMES_PER_MINUTE { return Err(CommandError); }
+                let read = matches!(cmd, ChatCommand::History | ChatCommand::Earlier { .. } | ChatCommand::Status);
+                let limit = if read { CHAT_FRAMES_PER_MINUTE - CHAT_FRAMES_RESERVED } else { CHAT_FRAMES_PER_MINUTE };
+                if next > limit { return Err(CommandError); }
                 self.rate_count.set(next);
             }
             _ => {
@@ -666,92 +672,41 @@ impl ChatState {
         }
     }
 
-    /// Fold a `history` (replace) or `earlier` (prepend + dedupe by id) page. Returns
-    /// whether the fold changed the view (L3).
+    /// Fold a `history` page (replaces the newest view, Gentle Dot's `history`) or an
+    /// `earlier` page (kept whole for the read that asked for it; it never enters the newest
+    /// view, so no store can ever hold two runs with a gap between them). Returns whether the
+    /// fold changed the view (L3).
     fn fold_history(&mut self, frame: &Value, earlier: bool) -> bool {
         let Some(page) = frame.get("messages").and_then(Value::as_array) else { return false };
         let messages: Vec<Value> = page.iter().take(HISTORY_PAGE).filter_map(history_message_view).collect();
         let has_earlier = frame.get("hasEarlier").and_then(Value::as_bool).unwrap_or(false);
-        let mut changed = false;
-        // B1 (U4 verifier): the stored messages are ALWAYS one contiguous run of the daemon's
-        // history. An `earlier` page ends right before its cursor (`before`): it continues the
-        // store only when that cursor is a message the store holds. A page for a cursor the
-        // store does not hold (deep paging after the newest page was reloaded) is NOT
-        // prepended across the gap: it replaces the store, whose newest end is then missing.
-        let before = frame.get("before").and_then(Value::as_str).filter(|b| is_history_id(b));
-        let holds_history = self.messages.iter().any(|m| m["id"].as_str().is_some_and(is_history_id));
-        let disjoint = earlier && holds_history && before.is_some_and(|b| !self.messages.iter().any(|m| m["id"].as_str() == Some(b)));
         if earlier {
-            if disjoint {
-                // the stored history run is dropped (it does not touch the page); the live
-                // (not yet recorded) messages stay after it, and the view says its newest
-                // end is missing (the host reloads it with `history`)
-                self.messages.retain(|m| !m["id"].as_str().is_some_and(is_history_id));
-                self.newer_trimmed = true;
-                changed = true;
+            // a page that names no cursor cannot answer any read: ignored
+            let Some(before) = frame.get("before").and_then(Value::as_str).filter(|b| is_history_id(b)) else { return false };
+            let page = json!({"before": before, "messages": messages, "hasEarlier": has_earlier});
+            if self.earlier_page == page {
+                return false;
             }
-            let messages_first = messages.first().and_then(|m| m["id"].as_str()).map(str::to_owned);
-            let mut fresh = Vec::with_capacity(messages.len());
-            for m in messages {
-                let id = m["id"].clone();
-                let known = self.messages.iter().any(|x| x["id"] == id) || fresh.iter().any(|x: &Value| x["id"] == id);
-                if !known { fresh.push(m); }
-            }
-            let fresh_len = fresh.len();
-            let mut all = fresh;
-            all.append(&mut self.messages);
-            // NEVER drop what was just loaded: when the prepend pushes the view over the
-            // cap, the NEWEST end is trimmed (the user scrolled to the OLDEST message;
-            // U4 reloads the latest via `history` when they scroll back down) and the
-            // view says so. Trimming the oldest instead made every earlier page vanish.
-            // NOTE: `append` MOVES the old messages out of `self.messages`, so the exact
-            // old content only exists inside `all` from here on: the change decision is
-            // made from what was prepended/trimmed, never by comparing against the
-            // emptied field.
-            let excess = all.len().saturating_sub(MAX_MESSAGES);
-            if excess > 0 {
-                all.truncate(all.len() - excess);
-                self.newer_trimmed = true;
-            }
-            self.messages = all;
-            if fresh_len > 0 || excess > 0 {
-                changed = true;
-            }
-            // `hasEarlier` speaks of what lies before THIS page: it is the store's flag only
-            // when the page reaches the store's oldest end (a page the store already held
-            // from further back never says «nothing older» for the whole store)
-            let oldest = self.messages.iter().filter_map(|m| m["id"].as_str()).find(|i| is_history_id(i));
-            let reaches = match messages_first.as_deref() {
-                Some(first) => oldest == Some(first),
-                None => before.is_some() && oldest == before,
-            };
-            if reaches && self.has_earlier != has_earlier {
-                self.has_earlier = has_earlier;
-                changed = true;
-            }
-        } else {
-            if self.has_earlier != has_earlier {
-                self.has_earlier = has_earlier;
-                changed = true;
-            }
-            if self.messages != messages {
-                self.messages = messages;
-                changed = true;
-            }
-            // a fresh page is the whole truth: a half-streamed message can never
-            // finish against it, and the newest end is present again
-            if !self.streaming.is_empty() {
-                self.streaming.clear();
-                changed = true;
-            }
-            if !self.pending_activities.is_empty() {
-                self.pending_activities.clear();
-                changed = true;
-            }
-            if self.newer_trimmed {
-                self.newer_trimmed = false;
-                changed = true;
-            }
+            self.earlier_page = page;
+            return true;
+        }
+        let mut changed = false;
+        if self.has_earlier != has_earlier {
+            self.has_earlier = has_earlier;
+            changed = true;
+        }
+        if self.messages != messages {
+            self.messages = messages;
+            changed = true;
+        }
+        // a fresh page is the whole truth: a half-streamed message can never finish against it
+        if !self.streaming.is_empty() {
+            self.streaming.clear();
+            changed = true;
+        }
+        if !self.pending_activities.is_empty() {
+            self.pending_activities.clear();
+            changed = true;
         }
         changed
     }
@@ -918,20 +873,21 @@ const STATUS_GAP_MS: u64 = 2_000;
 /// The longest a `history` page request waits for the daemon's answer frame (R3: the wait
 /// ends on the answer itself — `reads` moves — this is only the give-up bound).
 const HISTORY_WAIT_MS: u64 = 3_000;
-/// F6: the most turns one `chat:state` projection (and one history page answer) carries:
-/// the visible window; everything older stays reachable through `history_before` paging.
+/// F6: the most turns one `chat:state` projection carries (the visible window); everything
+/// older is reached through `history_before` paging, one daemon page per request.
 pub const WINDOW_TURNS: usize = 50;
-/// F4: the island's own memory of how settled turns ended (cancelled / interrupted /
-/// a reply the daemon's record lacks), kept once the daemon's history carries them.
-/// F6-edge (U4 verifier): no separate count bound — an entry lives exactly as long as its
-/// turn's number binding (`num_by_id`), so a deep, old cancelled turn never reads as
-/// completed; a plain completed turn with no reply of its own needs no entry at all.
-/// B2 (U4 verifier): the most extra `get_earlier` reads one page request makes when a
-/// daemon page held no whole turn (a lone reply), before handing the page a cursor.
-const MAX_EXTRA_READS: usize = 16;
-/// First turn number handed out; earlier pages count DOWN from here, new turns UP, so
-/// the page's numeric `t-<n>` order (chat-view.js mergeHistory) is the chat order.
-const TURN_BASE: u64 = 1_000_000_000;
+/// Turn numbers (S2 paging redesign, Gentle Dot's model): a history turn is numbered by the
+/// daemon's OWN id of its first message (`s<file>-<index>` → file·2^28 + index + 1), so the
+/// same turn has the same number on every page, pass and connection. Island turns (sent,
+/// not yet in the record) count up from `LIVE_BASE`, above every history number; the record
+/// takes such a turn over under the SAME number (`claimed`).
+const FILE_SHIFT: u32 = 28;
+const LIVE_BASE: u64 = 1 << 52;
+/// Island turn numbers a history prompt keeps, and their end states (F4/F6-edge).
+const MAX_CLAIMED: usize = 4_096;
+/// Cursors handed out whose daemon page started with lone replies (the run's head): those
+/// replies complete the turn the next earlier page ends with.
+const MAX_HEADS: usize = 64;
 /// Submitted turns kept by the host (the daemon's own history is the long-term record).
 const MAX_PENDING: usize = 200;
 
@@ -1022,22 +978,25 @@ impl TurnEnd {
 }
 
 /// A turn the island submitted. The daemon never echoes the prompt back, so the host shows
-/// it until the daemon's own history carries the same text (then that turn takes over,
-/// keeping this turn's number).
+/// it until the daemon's own history carries the same text (then that history prompt takes
+/// the turn over under the SAME number: `claims`).
 #[derive(Debug, Clone)]
 struct Pending {
     num: u64,
     client_request_id: String,
     text: String,
     submitted_ms: u64,
+    /// The newest record position the host had seen when it was sent: its prompt can only be
+    /// recorded after it, and an unrecorded turn sorts right after it.
+    after: u64,
     /// The last non-empty reply seen (kept across a connection reset that drops the live
     /// messages from the island's view).
     reply: String,
     /// The correlated turn-error counter (`turnError.n`) already accounted for.
     err_seen: u64,
     ended: Option<TurnEnd>,
-    /// The daemon history message that recorded this prompt is bound to `num`; the turn
-    /// keeps rendering from here until it ends, then the history turn takes over.
+    /// A daemon history prompt took this turn over; it keeps rendering from here until it
+    /// ends, then the history turn takes over.
     bound: bool,
 }
 
@@ -1049,26 +1008,35 @@ struct Settled {
     reply: String,
 }
 
-/// One projected turn: (number, user text, reply, state, error).
-type Row = (u64, String, String, &'static str, Value);
+/// One projected turn, with its place in the record: `(prompt position, 0, 0)` for a record
+/// turn, `(position seen at send, 1, number)` for an island turn the record does not carry.
+#[derive(Debug, Clone)]
+struct Row {
+    order: (u64, u8, u64),
+    num: u64,
+    user: String,
+    reply: String,
+    state: &'static str,
+    error: Value,
+}
 
 #[derive(Default)]
 struct HostInner {
     pending: Vec<Pending>,
-    /// Daemon history message id (`s<file>-<turn>`) → turn number.
-    num_by_id: std::collections::HashMap<String, u64>,
-    id_by_num: std::collections::BTreeMap<u64, String>,
-    next_up: u64,
-    next_down: u64,
+    next_live: u64,
+    /// History prompt id → the island turn number it took over (bounded, oldest first out).
+    claims: std::collections::HashMap<String, u64>,
+    claim_order: VecDeque<String>,
     /// Live (streamed, not yet in history) assistant message id → owning pending turn
     /// number; 0 = it predates every island submission.
     live_owner: std::collections::HashMap<String, u64>,
-    /// F4: how settled island turns ended, by turn number (F6-edge: kept while the turn is
-    /// in the store; a completed turn the record fully carries has no entry).
+    /// F4: how settled island turns ended, by turn number (lives as long as its claim).
     settled: std::collections::BTreeMap<u64, Settled>,
-    /// F1-edge: the numbers of island turns that claimed a history message (only those can
-    /// raise the claim floor; pruned below the oldest still-pending turn).
-    claimed: std::collections::BTreeSet<u64>,
+    /// Cursors handed out for daemon pages that held only a lone reply: that reply completes
+    /// the turn the next earlier page ends with (cursor id, reply text; bounded).
+    heads: VecDeque<(String, String)>,
+    /// The newest record position seen in a history page.
+    max_seen: u64,
     /// F4: the last daemon history the island saw on a loaded connection (shown while the
     /// daemon is down or a fresh connection has no page yet), its has-earlier flag, and a
     /// cheap signature so an unchanged page is not copied again.
@@ -1108,6 +1076,20 @@ fn history_pos(id: &str) -> Option<(u64, u64)> {
     Some((file.parse().ok()?, index.parse().ok()?))
 }
 
+/// A history id's place in the daemon's record (`file·2^28 + index + 1`, never 0): the turn
+/// number of the turn it starts, and the page cursor that ends right before it. `None` off
+/// the grammar.
+fn record_pos(id: &str) -> Option<u64> {
+    let (file, index) = history_pos(id)?;
+    (index + 1 < 1 << FILE_SHIFT && file < LIVE_BASE >> FILE_SHIFT).then_some((file << FILE_SHIFT) + index + 1)
+}
+
+/// The daemon id at a record position (the inverse of [`record_pos`]).
+fn record_id(pos: u64) -> Option<String> {
+    let index = (pos & ((1 << FILE_SHIFT) - 1)).checked_sub(1)?;
+    (pos < LIVE_BASE).then(|| format!("s{}-{index}", pos >> FILE_SHIFT))
+}
+
 /// B1 (U4 verifier): whether history message `next` directly follows `prev` in the daemon's
 /// record (the next index of the same session file, or the first of the next one).
 fn follows(prev: &str, next: &str) -> bool {
@@ -1119,6 +1101,14 @@ fn follows(prev: &str, next: &str) -> bool {
 
 fn msg_id(m: &Value) -> Option<&str> {
     m.get("id").and_then(Value::as_str)
+}
+
+fn msg_role(m: &Value) -> &str {
+    m.get("role").and_then(Value::as_str).unwrap_or("")
+}
+
+fn msg_text(m: &Value) -> &str {
+    m.get("text").and_then(Value::as_str).unwrap_or("")
 }
 
 fn chat_connected(chat: &Value) -> bool {
@@ -1153,28 +1143,17 @@ fn turn_error_counter(chat: &Value) -> (u64, String) {
     (n, code)
 }
 
-/// R3: (answered, refused) requested history pages.
-fn reads_counter(chat: &Value) -> (u64, u64) {
-    let get = |k: &str| chat.pointer(&format!("/reads/{k}")).and_then(Value::as_u64).unwrap_or(0);
-    (get("answered"), get("failed"))
-}
-
-/// B1: (answered, refused) `get_earlier` reads only.
-fn earlier_reads_counter(chat: &Value) -> (u64, u64) {
-    let get = |k: &str| chat.pointer(&format!("/earlierReads/{k}")).and_then(Value::as_u64).unwrap_or(0);
+/// R3: (answered, refused) requested pages of one kind: `earlierReads`, or every read.
+fn reads_counter(chat: &Value, kind: &str) -> (u64, u64) {
+    let get = |k: &str| chat.pointer(&format!("/{kind}/{k}")).and_then(Value::as_u64).unwrap_or(0);
     (get("answered"), get("failed"))
 }
 
 /// B1: (answered, refused) newest-page (`get_history`) reads only.
 fn history_reads_counter(chat: &Value) -> (u64, u64) {
-    let (a, f) = reads_counter(chat);
-    let (ea, ef) = earlier_reads_counter(chat);
+    let (a, f) = reads_counter(chat, "reads");
+    let (ea, ef) = reads_counter(chat, "earlierReads");
     (a.saturating_sub(ea), f.saturating_sub(ef))
-}
-
-/// The oldest daemon history message the chat view holds (where its contiguous run starts).
-fn oldest_history_id(chat: &Value) -> Option<String> {
-    chat.get("messages")?.as_array()?.iter().filter_map(msg_id).find(|i| is_history_id(i)).map(str::to_owned)
 }
 
 fn join_reply(a: &str, b: &str) -> String {
@@ -1209,16 +1188,16 @@ fn availability_and_producer(chat: &Value) -> (Value, Value) {
     }
 }
 
-fn turn_view(num: u64, user_text: &str, reply: &str, state: &str, error: &Value, seq: u64) -> Value {
+fn turn_view(row: &Row, seq: u64) -> Value {
     json!({
-        "turn_id": format!("t-{num}"),
+        "turn_id": format!("t-{}", row.num),
         "request_id": Value::Null,
-        "state": state,
+        "state": row.state,
         "seq": seq,
-        "user_text": user_text,
-        "reply": reply,
+        "user_text": row.user,
+        "reply": row.reply,
         "finish_reason": Value::Null,
-        "error": error,
+        "error": row.error,
         "trimmed_turns": 0,
         "profile_id": Value::Null,
         "profile_revision": Value::Null,
@@ -1230,111 +1209,167 @@ fn end_error(code: &str) -> Value {
     json!({"code": code, "safe_message": daemon_error_message(code), "retryable": true})
 }
 
-/// The full, ordered turn list of one view (before the F6 window).
-struct Turns {
-    rows: Vec<Row>,
-    has_earlier: bool,
+fn end_view(end: &TurnEnd) -> (&'static str, Value) {
+    match end {
+        TurnEnd::Completed => ("completed", Value::Null),
+        TurnEnd::Cancelled => ("cancelled", Value::Null),
+        TurnEnd::Error(code) => ("error", end_error(code)),
+    }
 }
 
+/// The row state of a bound island turn still running (rendered where its prompt was
+/// recorded, from what the island saw).
+const LIVE_ROW: &str = "live";
+
 impl HostInner {
-    fn alloc_up(&mut self) -> u64 {
-        if self.next_up == 0 {
-            self.next_up = TURN_BASE;
-            self.next_down = TURN_BASE - 1;
-        }
-        let n = self.next_up;
-        self.next_up += 1;
-        n
+    fn alloc_live(&mut self) -> u64 {
+        self.next_live = self.next_live.max(LIVE_BASE) + 1;
+        self.next_live
     }
 
-    fn alloc_down(&mut self) -> u64 {
-        if self.next_up == 0 {
-            self.next_up = TURN_BASE;
-            self.next_down = TURN_BASE - 1;
+    fn claim(&mut self, id: &str, num: u64) {
+        self.claims.insert(id.to_owned(), num);
+        self.claim_order.push_back(id.to_owned());
+        while self.claim_order.len() > MAX_CLAIMED {
+            if let Some(n) = self.claim_order.pop_front().and_then(|old| self.claims.remove(&old)) {
+                self.settled.remove(&n);
+            }
         }
-        let n = self.next_down.max(1);
-        self.next_down = n.saturating_sub(1);
-        n
     }
 
-    fn bind(&mut self, id: &str, num: u64) {
-        self.num_by_id.insert(id.to_owned(), num);
-        self.id_by_num.insert(num, id.to_owned());
-    }
-
-    /// Number every daemon history message: the ones before the first already-known id
-    /// count DOWN (an earlier page), the ones after count UP (new turns); a new user
-    /// message whose text is a submitted turn's text takes that turn's number — unless
-    /// that turn was refused (F1: it never reached the engine) or is already bound.
-    /// `older_when_unknown`: a view whose newest end was trimmed (F3) holds only OLDER
-    /// messages, so a batch with no known id counts down instead of up.
-    fn number_history(&mut self, messages: &[Value], older_when_unknown: bool) {
-        let ids: Vec<(&str, &str, &str)> = messages
-            .iter()
-            .filter_map(|m| {
-                let id = msg_id(m)?;
-                is_history_id(id).then_some((
-                    id,
-                    m.get("role").and_then(Value::as_str).unwrap_or(""),
-                    m.get("text").and_then(Value::as_str).unwrap_or(""),
-                ))
-            })
-            .collect();
-        let first_known = ids.iter().position(|(id, _, _)| self.num_by_id.contains_key(*id));
-        let split = first_known.unwrap_or(if older_when_unknown { ids.len() } else { 0 });
-        for (id, _, _) in ids[..split].iter().rev() {
-            let n = self.alloc_down();
-            self.bind(id, n);
-        }
-        // F1-edge (U4 verifier): claims follow the send order. The daemon records one turn at
-        // a time, so once the record carries an island turn `m`, no island turn sent before
-        // `m` (a smaller number) can own a LATER record: the newest island turn seen so far in
-        // the record is the floor a claiming turn must be above. (A message another client
-        // sent never raises it: its number says nothing about the island's send order.)
+    /// Order-aware claims (F1/F1-edge): a history prompt recorded after an island turn was
+    /// sent takes that turn over when its text is the turn's text — unless the turn was
+    /// refused (it never reached the engine) or is already bound. The daemon records one
+    /// turn at a time, so once the record carries island turn `m`, no island turn sent
+    /// before `m` can own a LATER record (the floor).
+    fn claim_prompts(&mut self, messages: &[Value]) {
         let mut floor = 0u64;
-        for (id, role, text) in &ids[split..] {
-            if let Some(&n) = self.num_by_id.get(*id) {
-                if *role == "user" && self.claimed.contains(&n) {
-                    floor = floor.max(n);
-                }
+        for m in messages {
+            let Some(id) = msg_id(m).filter(|_| msg_role(m) == "user") else { continue };
+            let Some(pos) = record_pos(id) else { continue };
+            if let Some(&n) = self.claims.get(id) {
+                floor = floor.max(n);
                 continue;
             }
-            let claimed = (*role == "user")
-                .then(|| {
-                    self.pending
-                        .iter()
-                        .position(|p| !p.bound && p.num > floor && TurnEnd::may_be_recorded(&p.ended) && p.text.trim() == text.trim())
-                })
-                .flatten();
-            let n = match claimed {
-                Some(at) => {
-                    self.pending[at].bound = true;
-                    let n = self.pending[at].num;
-                    self.claimed.insert(n);
-                    floor = floor.max(n);
-                    n
-                }
-                None => self.alloc_up(),
-            };
-            self.bind(id, n);
+            let text = msg_text(m).trim();
+            let at = self.pending.iter().position(|p| {
+                !p.bound && p.num > floor && pos > p.after && TurnEnd::may_be_recorded(&p.ended) && p.text.trim() == text
+            });
+            if let Some(at) = at {
+                self.pending[at].bound = true;
+                let n = self.pending[at].num;
+                self.claim(id, n);
+                floor = n;
+            }
         }
+    }
+
+    /// One daemon page → its turns in record order, and the cursor of the page before it.
+    /// Ids are the daemon's own (a turn's number is its prompt's record position, or the
+    /// island number its prompt took over), so a turn has the same id on every page. A page
+    /// starting with a lone reply (its prompt is on the page before) leaves it out and hands
+    /// back the cursor of its first prompt, so the next page carries the whole turn; a page
+    /// that is ONLY a lone reply hands back that reply's own cursor and keeps the reply for
+    /// the page before (`heads`). `answered` = the cursor this page answered: a lone reply
+    /// kept for it completes the page's last turn.
+    fn page_rows(&mut self, messages: &[Value], has_earlier: bool, answered: Option<&str>) -> (Vec<Row>, Option<u64>) {
+        let record: Vec<(&Value, &str, u64)> =
+            messages.iter().filter_map(|m| msg_id(m).and_then(|id| record_pos(id).map(|p| (m, id, p)))).collect();
+        let first_prompt = record.iter().position(|(m, _, _)| msg_role(m) == "user");
+        let cursor = match (first_prompt, record.first()) {
+            (Some(at), _) => has_earlier.then_some(record[at].2),
+            (None, Some((_, id, pos))) if has_earlier => {
+                let lone: Vec<&str> = record.iter().map(|(m, _, _)| msg_text(m)).collect();
+                self.heads.retain(|(h, _)| h != id);
+                self.heads.push_back(((*id).to_owned(), lone.join("\n\n")));
+                if self.heads.len() > MAX_HEADS {
+                    self.heads.pop_front();
+                }
+                Some(*pos)
+            }
+            _ => None,
+        };
+        let live: std::collections::HashMap<u64, &Pending> = self.pending.iter().filter(|p| p.bound).map(|p| (p.num, p)).collect();
+        let mut rows: Vec<Row> = Vec::new();
+        let mut prev: Option<(&str, bool)> = None; // (id, is a prompt)
+        for (m, id, pos) in record.iter().skip(first_prompt.unwrap_or(record.len())) {
+            let after_prompt = prev.is_some_and(|(p, prompt)| prompt && follows(p, id));
+            prev = Some((id, msg_role(m) == "user"));
+            match msg_role(m) {
+                "user" => {
+                    let num = self.claims.get(*id).copied().unwrap_or(*pos);
+                    let row = match live.get(&num) {
+                        // still the island's turn: it renders from what the island saw (its end, if any)
+                        Some(p) => {
+                            let (state, error) = p.ended.as_ref().map(end_view).unwrap_or((LIVE_ROW, Value::Null));
+                            Row { order: (*pos, 0, 0), num, user: p.text.clone(), reply: p.reply.clone(), state, error }
+                        }
+                        None => Row { order: (*pos, 0, 0), num, user: msg_text(m).to_owned(), reply: String::new(), state: "completed", error: Value::Null },
+                    };
+                    rows.push(row);
+                }
+                "assistant" if after_prompt => {
+                    if let Some(last) = rows.last_mut().filter(|r| !live.contains_key(&r.num)) {
+                        last.reply = join_reply(&last.reply, msg_text(m));
+                    }
+                }
+                _ => {}
+            }
+        }
+        // the lone reply kept for the answered cursor completes the page's last turn
+        if let (Some(answered), Some((_, last_id, _)), Some((_, true))) = (answered, record.last(), prev) {
+            let head = self.heads.iter().find(|(h, _)| h == answered).map(|(_, text)| text.clone());
+            if let (Some(text), true, Some(last)) = (head, follows(last_id, answered), rows.last_mut()) {
+                last.reply = join_reply(&last.reply, &text);
+            }
+        }
+        for row in rows.iter_mut() {
+            let Some(s) = self.settled.get_mut(&row.num) else { continue };
+            row.state = s.state;
+            row.error = s.error.clone();
+            if row.reply.is_empty() {
+                row.reply = s.reply.clone();
+            } else {
+                // F6-edge: the record carries the reply now: only the end state is kept
+                s.reply = String::new();
+            }
+            if s.state == "completed" && s.reply.is_empty() {
+                self.settled.remove(&row.num);
+            }
+        }
+        (rows, cursor)
+    }
+
+    /// The island turns the shown record does not carry: in the window (`live`), the running
+    /// one, last; anywhere, the ended unrecorded ones (a refused send) where they were sent,
+    /// when that is within `[lo, hi)` of the record. `shown` = numbers already rendered.
+    fn island_rows(&self, lo: u64, hi: u64, live: Option<Option<(u64, &'static str)>>, shown: &[u64]) -> Vec<Row> {
+        self.pending
+            .iter()
+            .filter(|p| !shown.contains(&p.num))
+            .filter_map(|p| {
+                let (order, state, error) = match (&p.ended, live) {
+                    (None, Some(state)) => {
+                        let state = state.filter(|(n, _)| *n == p.num).map(|(_, s)| s).unwrap_or("thinking");
+                        ((u64::MAX, 1, p.num), state, Value::Null)
+                    }
+                    (Some(end), _) if !p.bound && (lo..hi).contains(&p.after) => {
+                        let (state, error) = end_view(end);
+                        ((p.after, 1, p.num), state, error)
+                    }
+                    _ => return None,
+                };
+                Some(Row { order, num: p.num, user: p.text.clone(), reply: p.reply.clone(), state, error })
+            })
+            .collect()
     }
 
     /// F4: the history the projection shows. A loaded connection's own page is the truth
     /// (and becomes the last known chat); a lost connection, or a fresh one with no page
     /// yet, keeps showing the last known history plus whatever live output the view has.
-    /// F3: a view whose newest end was trimmed by deep paging is not the chat's newest end:
-    /// the projection keeps the last known history until the reloaded newest page lands
-    /// (`raw` = a history page answer, which reads the trimmed view as it is).
-    fn shown_messages(&mut self, chat: &Value, raw: bool) -> (Vec<Value>, bool) {
-        let trimmed = chat.get("newerTrimmed").and_then(Value::as_bool) == Some(true);
-        let loaded = chat_connected(chat) && chat.get("historyLoaded").and_then(Value::as_bool) == Some(true) && (raw || !trimmed);
+    fn shown_messages(&mut self, chat: &Value) -> (Vec<Value>, bool) {
+        let loaded = chat_connected(chat) && chat.get("historyLoaded").and_then(Value::as_bool) == Some(true);
         let view = chat.get("messages").and_then(Value::as_array);
-        if raw && trimmed {
-            let messages = view.cloned().unwrap_or_default();
-            let has_earlier = chat.get("hasEarlier").and_then(Value::as_bool) == Some(true);
-            return (messages, has_earlier);
-        }
         if loaded {
             let messages = view.cloned().unwrap_or_default();
             let has_earlier = chat.get("hasEarlier").and_then(Value::as_bool) == Some(true);
@@ -1356,16 +1391,17 @@ impl HostInner {
         (messages, self.known_has_earlier)
     }
 
-    /// Every turn of the view, in chat order, and the submitted turns' lifecycle (terminal
-    /// states are kept, never resurrected).
-    fn turns(&mut self, chat: &Value, now_ms: u64, raw: bool) -> Turns {
-        let trimmed = chat.get("newerTrimmed").and_then(Value::as_bool) == Some(true);
-        if trimmed && !raw {
-            // the trimmed view's older ids still get their (downward) numbers
-            self.number_history(&chat_messages(chat), true);
+    /// The newest turns of the view, in record order, and the cursor of the page before
+    /// them; advances the submitted turns' lifecycle (terminal states are kept, never
+    /// resurrected).
+    fn window(&mut self, chat: &Value, now_ms: u64) -> (Vec<Row>, Option<u64>) {
+        let (messages, has_earlier) = self.shown_messages(chat);
+        for m in &messages {
+            if let Some(pos) = msg_id(m).and_then(record_pos) {
+                self.max_seen = self.max_seen.max(pos);
+            }
         }
-        let (messages, has_earlier) = self.shown_messages(chat, raw);
-        self.number_history(&messages, raw && trimmed);
+        self.claim_prompts(&messages);
         let connected = chat_connected(chat);
         let busy = chat_busy(chat);
         let engine_down = matches!(chat.pointer("/agent/status").and_then(Value::as_str), Some("restarting" | "stopped" | "unavailable"));
@@ -1384,11 +1420,11 @@ impl HostInner {
         let mut live: Vec<(u64, String, bool)> = Vec::new();
         for m in &messages {
             let Some(id) = msg_id(m) else { continue };
-            if is_history_id(id) || m.get("role").and_then(Value::as_str) != Some("assistant") {
+            if is_history_id(id) || msg_role(m) != "assistant" {
                 continue;
             }
             let owner = *self.live_owner.entry(id.to_owned()).or_insert(newest);
-            live.push((owner, m.get("text").and_then(Value::as_str).unwrap_or("").to_owned(), false));
+            live.push((owner, msg_text(m).to_owned(), false));
         }
         for (id, text) in &streams {
             let owner = *self.live_owner.entry(id.clone()).or_insert(newest);
@@ -1445,18 +1481,13 @@ impl HostInner {
         if settled_now {
             self.refresh_due = true;
         }
-
         // a settled turn the daemon's history now carries: the history turn takes over,
         // and the island keeps how it really ended (F4: cancelled / interrupted / the reply)
         let mut keep = Vec::with_capacity(self.pending.len());
         for p in std::mem::take(&mut self.pending) {
             match (&p.ended, p.bound) {
                 (Some(end), true) => {
-                    let (state, error) = match end {
-                        TurnEnd::Completed => ("completed", Value::Null),
-                        TurnEnd::Cancelled => ("cancelled", Value::Null),
-                        TurnEnd::Error(code) => ("error", end_error(code)),
-                    };
+                    let (state, error) = end_view(end);
                     if state != "completed" || !p.reply.is_empty() {
                         self.settled.insert(p.num, Settled { state, error, reply: p.reply });
                     }
@@ -1465,82 +1496,35 @@ impl HostInner {
             }
         }
         self.pending = keep;
-        // F1-edge: a claimed number below every pending turn can no longer stop a claim
-        match self.pending.iter().map(|p| p.num).min() {
-            Some(min) => self.claimed.retain(|n| *n >= min),
-            None => self.claimed.clear(),
-        }
 
-        // history turns (a still-pending bound turn renders from its pending entry)
-        let mut rows: Vec<Row> = Vec::new();
-        // B1: the history id the last row's messages end with — a reply attaches to the turn
-        // before it ONLY when it directly follows it in the daemon's record, never across a
-        // discontinuity (a leading reply whose prompt is not shown is not a turn)
-        let mut prev_id: Option<&str> = None;
-        for m in &messages {
-            let Some(id) = msg_id(m).filter(|i| is_history_id(i)) else { continue };
-            let text = m.get("text").and_then(Value::as_str).unwrap_or("");
-            let contiguous = prev_id.is_some_and(|p| follows(p, id));
-            prev_id = Some(id);
-            match m.get("role").and_then(Value::as_str) {
-                Some("user") => {
-                    let num = self.num_by_id.get(id).copied().unwrap_or(0);
-                    if self.pending.iter().any(|p| p.num == num) {
-                        rows.push((0, String::new(), String::new(), "skip", Value::Null));
-                    } else {
-                        rows.push((num, text.to_owned(), String::new(), "completed", Value::Null));
-                    }
-                }
-                Some("assistant") if contiguous => {
-                    if let Some(last) = rows.last_mut() {
-                        last.2 = join_reply(&last.2, text);
-                    }
-                }
-                _ => {}
-            }
+        let (mut rows, cursor) = self.page_rows(&messages, has_earlier, None);
+        for row in rows.iter_mut().filter(|r| r.state == LIVE_ROW) {
+            row.state = live_state.filter(|(n, _)| *n == row.num).map(|(_, s)| s).unwrap_or("thinking");
         }
-        rows.retain(|r| r.3 != "skip");
-        for row in rows.iter_mut() {
-            if let Some(s) = self.settled.get_mut(&row.0) {
-                row.3 = s.state;
-                row.4 = s.error.clone();
-                if row.2.is_empty() {
-                    row.2 = s.reply.clone();
-                } else {
-                    // F6-edge: the daemon's record carries the reply now: the island's copy
-                    // is no longer needed (only the small end state is kept)
-                    s.reply = String::new();
-                }
-            }
-            if self.settled.get(&row.0).is_some_and(|s| s.state == "completed" && s.reply.is_empty()) {
-                // a completed turn the record fully carries needs no entry at all
-                self.settled.remove(&row.0);
-            }
-        }
-
         // live output nobody on this island submitted (a turn in flight when the island
         // connected): it continues the newest history turn when no submission came after it
         let (orphan, orphan_streaming) = owned(0);
         if let Some(last) = rows.last_mut().filter(|_| self.pending.is_empty()) {
-            last.2 = join_reply(&last.2, &orphan);
+            last.reply = join_reply(&last.reply, &orphan);
             if busy && orphan_streaming {
-                last.3 = "streaming";
-            } else if busy && orphan.is_empty() && last.2.is_empty() {
-                last.3 = "thinking";
+                last.state = "streaming";
+            } else if busy && orphan.is_empty() && last.reply.is_empty() {
+                last.state = "thinking";
             }
         }
-
-        for p in &self.pending {
-            let (state, error) = match &p.ended {
-                Some(TurnEnd::Error(code)) => ("error", end_error(code)),
-                Some(TurnEnd::Cancelled) => ("cancelled", Value::Null),
-                Some(TurnEnd::Completed) => ("completed", Value::Null),
-                None => (live_state.filter(|(n, _)| *n == p.num).map(|(_, s)| s).unwrap_or("thinking"), Value::Null),
-            };
-            rows.push((p.num, p.text.clone(), p.reply.clone(), state, error));
+        let shown: Vec<u64> = rows.iter().map(|r| r.num).collect();
+        rows.extend(self.island_rows(cursor.unwrap_or(0), u64::MAX, Some(live_state), &shown));
+        rows.sort_by_key(|r| r.order);
+        // F6: the newest WINDOW_TURNS turns, cut at a record turn (its prompt is the cursor)
+        let mut cut = rows.len().saturating_sub(WINDOW_TURNS);
+        while cut > 0 && rows[cut].order.1 != 0 {
+            cut -= 1;
         }
-        rows.sort_by_key(|r| r.0);
-        Turns { rows, has_earlier }
+        if cut == 0 {
+            return (rows, cursor);
+        }
+        let cursor = Some(rows[cut].order.0);
+        (rows.split_off(cut), cursor)
     }
 
     /// The `chat:state` conversation projection: the newest `WINDOW_TURNS` turns plus the
@@ -1548,20 +1532,15 @@ impl HostInner {
     fn project(&mut self, chat: &Value, now_ms: u64) -> Value {
         self.generation += 1;
         let seq = self.generation;
-        let Turns { rows, has_earlier } = self.turns(chat, now_ms, false);
+        let (rows, cursor) = self.window(chat, now_ms);
         let active = rows
             .last()
-            .filter(|t| matches!(t.3, "thinking" | "streaming"))
-            .map(|t| json!(format!("t-{}", t.0)))
+            .filter(|t| matches!(t.state, "thinking" | "streaming"))
+            .map(|t| json!(format!("t-{}", t.num)))
             .unwrap_or(Value::Null);
         self.live = !active.is_null();
-        let window = &rows[rows.len().saturating_sub(WINDOW_TURNS)..];
-        let history_before = match window.first() {
-            Some(first) if rows.len() > window.len() || has_earlier => json!(first.0),
-            _ => Value::Null,
-        };
         let (availability, producer) = availability_and_producer(chat);
-        let turns: Vec<Value> = window.iter().map(|(n, u, r, s, e)| turn_view(*n, u, r, s, e, seq)).collect();
+        let turns: Vec<Value> = rows.iter().map(|r| turn_view(r, seq)).collect();
         json!({
             "conversation_id": CHAT_CONVERSATION_ID,
             "active_turn": active,
@@ -1569,7 +1548,7 @@ impl HostInner {
             "evicted": 0,
             "queue_note": Value::Null,
             "availability": availability,
-            "history_before": history_before,
+            "history_before": cursor,
             "history_skipped": 0,
             "history_problem": Value::Null,
             "history_persisted": true,
@@ -1665,7 +1644,10 @@ impl ChatHost {
                 if conversation_id != CHAT_CONVERSATION_ID {
                     return Err(crate::chat::ChatError::invalid_input("Pedido de chat inválido."));
                 }
-                self.history(link, caller, *before, now_ms)
+                match before {
+                    None => self.newest(link, caller, now_ms),
+                    Some(n) => self.earlier(link, caller, *n),
+                }
             }
         }
     }
@@ -1699,13 +1681,15 @@ impl ChatHost {
         for id in earlier_live {
             inner.live_owner.entry(id).or_insert(owner);
         }
-        let num = inner.alloc_up();
+        let num = inner.alloc_live();
         let (err_seen, _) = turn_error_counter(&before);
+        let after = inner.max_seen;
         inner.pending.push(Pending {
             num,
             client_request_id: client_request_id.to_owned(),
             text,
             submitted_ms: now_ms,
+            after,
             reply: String::new(),
             err_seen,
             ended: None,
@@ -1732,85 +1716,53 @@ impl ChatHost {
         Ok(Routed::Answer(json!({"cancelled": true})))
     }
 
-    /// A history page for the page. `None` = the newest window; `Some(n)` = up to
-    /// `WINDOW_TURNS` turns older than turn `n`, read from the daemon before the oldest
-    /// message the island knows for that turn. Both wait for the daemon's ANSWER (R3: the
-    /// `reads` counters), never a fixed delay. F3: when the earlier page pushed the view
-    /// over its cap (the newest end trimmed), the newest page is reloaded right after the
-    /// answer, so the live chat never loses its latest turns.
-    fn history(&self, link: &dyn ChatLink, caller: &str, before: Option<u64>, now_ms: u64) -> Result<Routed, crate::chat::ChatError> {
-        let Some(n) = before else {
-            // B1: only a NEWEST-page answer ends this wait (an earlier page never does)
-            let start = link.view();
-            let (answered, failed) = history_reads_counter(&start);
-            link.command(caller, &json!({"action": "chat_history"})).map_err(|_| send_refused())?;
-            let (v, arrived) = wait_view(link, HISTORY_WAIT_MS, |v| {
-                let (a, f) = history_reads_counter(v);
-                a > answered || f > failed
-            });
-            if !arrived || history_reads_counter(&v).1 > failed {
-                return Err(history_unavailable());
-            }
-            let p = self.project(&v, now_ms);
-            return Ok(Routed::Answer(json!({"conversation_id": CHAT_CONVERSATION_ID, "turns": p["turns"], "before": p["history_before"], "skipped": 0})));
-        };
-        // the daemon cursor: the first history message the island bound at or after turn n
-        // (turn n's own prompt: the page ends exactly where the shown window starts)
-        let mut cursor = {
-            let inner = self.inner.lock().expect("chat host lock");
-            inner.id_by_num.range(n..).map(|(_, id)| id.clone()).find(|id| page_id_ok(id))
-        };
-        let mut v = link.view();
-        let mut reads = 0;
-        let (older, more, seq) = loop {
-            if let Some(c) = cursor.take() {
-                // B1: wait for THIS read's answer: an `earlier` answer (or refusal) only; the
-                // newest-page reload or a settle refresh landing meanwhile never ends the wait
-                let (answered, failed) = earlier_reads_counter(&v);
-                link.command(caller, &json!({"action": "chat_earlier", "before": c})).map_err(|_| send_refused())?;
-                let (next, arrived) = wait_view(link, HISTORY_WAIT_MS, |x| {
-                    let (a, f) = earlier_reads_counter(x);
-                    a > answered || f > failed
-                });
-                if !arrived || earlier_reads_counter(&next).1 > failed {
-                    return Err(history_unavailable());
-                }
-                v = next;
-                reads += 1;
-            }
-            let mut inner = self.inner.lock().expect("chat host lock");
-            inner.generation += 1;
-            let seq = inner.generation;
-            let Turns { rows, has_earlier } = inner.turns(&v, now_ms, true);
-            let older: Vec<Row> = rows.into_iter().filter(|r| r.0 < n).collect();
-            // B2: a daemon page that held no whole turn (a lone reply whose prompt is on the
-            // page before) is never handed to the page as an empty answer with no cursor: the
-            // next page is read right away, from where the island's record now starts
-            if older.is_empty() && has_earlier && reads > 0 && reads <= MAX_EXTRA_READS {
-                drop(inner);
-                cursor = oldest_history_id(&v);
-                if cursor.is_some() {
-                    continue;
-                }
-                inner = self.inner.lock().expect("chat host lock");
-            }
-            drop(inner);
-            let more = older.len() > WINDOW_TURNS || has_earlier;
-            let older = older[older.len().saturating_sub(WINDOW_TURNS)..].to_vec();
-            break (older, more, seq);
-        };
-        let before = match older.first() {
-            Some(first) if more => json!(first.0),
-            // B2: hasEarlier with no turn to anchor on: the cursor stays where it was asked
-            None if more => json!(n),
-            _ => Value::Null,
-        };
-        if v.get("newerTrimmed").and_then(Value::as_bool) == Some(true) {
-            // F3: reload the newest page (a failure only delays it to the next settle)
-            let _ = link.command(caller, &json!({"action": "chat_history"}));
+    /// The newest page: one `get_history`, answered with the window it projects (B1: only a
+    /// NEWEST-page answer ends this wait, never an earlier page).
+    fn newest(&self, link: &dyn ChatLink, caller: &str, now_ms: u64) -> Result<Routed, crate::chat::ChatError> {
+        let (answered, failed) = history_reads_counter(&link.view());
+        link.command(caller, &json!({"action": "chat_history"})).map_err(|_| history_unavailable())?;
+        let (v, arrived) = wait_view(link, HISTORY_WAIT_MS, |v| {
+            let (a, f) = history_reads_counter(v);
+            a > answered || f > failed
+        });
+        if !arrived || history_reads_counter(&v).1 > failed {
+            return Err(history_unavailable());
         }
-        let turns: Vec<Value> = older.iter().map(|(n, u, r, s, e)| turn_view(*n, u, r, s, e, seq)).collect();
-        Ok(Routed::Answer(json!({"conversation_id": CHAT_CONVERSATION_ID, "turns": turns, "before": before, "skipped": 0})))
+        let p = self.project(&v, now_ms);
+        Ok(Routed::Answer(json!({"conversation_id": CHAT_CONVERSATION_ID, "turns": p["turns"], "before": p["history_before"], "skipped": 0})))
+    }
+
+    /// An earlier page (Gentle Dot's `get_earlier`): exactly ONE daemon read with the cursor
+    /// the page passed back (a record position this host handed out), answered with that
+    /// page's turns and the daemon's own next cursor. Nothing is stored or windowed: the page
+    /// is turned into turns from its own messages, so a newest page or a reconnect landing
+    /// meanwhile cannot shift it, and a page holding no whole turn still advances.
+    fn earlier(&self, link: &dyn ChatLink, caller: &str, before: u64) -> Result<Routed, crate::chat::ChatError> {
+        let id = record_id(before).ok_or_else(|| crate::chat::ChatError::invalid_input("Pedido de chat inválido."))?;
+        let (answered, failed) = reads_counter(&link.view(), "earlierReads");
+        link.command(caller, &json!({"action": "chat_earlier", "before": id})).map_err(|_| history_unavailable())?;
+        let (v, arrived) = wait_view(link, HISTORY_WAIT_MS, |v| {
+            let (a, f) = reads_counter(v, "earlierReads");
+            f > failed || (a > answered && v.pointer("/earlierPage/before").and_then(Value::as_str) == Some(id.as_str()))
+        });
+        if !arrived || reads_counter(&v, "earlierReads").1 > failed {
+            return Err(history_unavailable());
+        }
+        let messages = chat_messages(&v["earlierPage"]);
+        let has_earlier = v.pointer("/earlierPage/hasEarlier").and_then(Value::as_bool) == Some(true);
+        let mut inner = self.inner.lock().expect("chat host lock");
+        inner.generation += 1;
+        let seq = inner.generation;
+        inner.claim_prompts(&messages);
+        let (mut rows, cursor) = inner.page_rows(&messages, has_earlier, Some(&id));
+        for row in rows.iter_mut().filter(|r| r.state == LIVE_ROW) {
+            row.state = "thinking";
+        }
+        let shown: Vec<u64> = rows.iter().map(|r| r.num).collect();
+        rows.extend(inner.island_rows(cursor.unwrap_or(0), before, None, &shown));
+        rows.sort_by_key(|r| r.order);
+        let turns: Vec<Value> = rows.iter().map(|r| turn_view(r, seq)).collect();
+        Ok(Routed::Answer(json!({"conversation_id": CHAT_CONVERSATION_ID, "turns": turns, "before": cursor, "skipped": 0})))
     }
 }
 

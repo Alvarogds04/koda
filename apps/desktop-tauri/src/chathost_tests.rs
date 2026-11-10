@@ -218,7 +218,7 @@ fn chathost_history_with_a_cursor_asks_the_daemon_for_the_page_before_the_oldest
     assert!(n(&turns[0]) < n(&first["turns"][0]), "an older turn sorts before (chat-view.js mergeHistory)");
     assert_eq!(page["before"], json!(null));
     let after = host.project(&link.view(), T0);
-    assert_eq!(after["turns"][1]["turn_id"], newest_id, "the turn already shown keeps its id across the prepend");
+    assert_eq!(after["turns"][0]["turn_id"], newest_id, "the turn already shown keeps its id after the earlier page");
 }
 
 #[test]
@@ -696,6 +696,7 @@ fn chathost_f6_f3_a_long_chat_stays_bounded_and_every_turn_stays_reachable_by_pa
     for t in turns(&v) {
         assert_eq!(t["reply"], json!(format!("r-{}", t["user_text"].as_str().unwrap())));
     }
+    let reloads = link.sent().iter().filter(|c| **c == ChatCommand::History).count();
     let mut cursor = v["history_before"].clone();
     let mut pages = 0;
     while let Some(n) = cursor.as_u64() {
@@ -718,7 +719,7 @@ fn chathost_f6_f3_a_long_chat_stays_bounded_and_every_turn_stays_reachable_by_pa
     // F3: paging deep never leaves the newest end trimmed from the chat
     let v = host.project(&link.view(), now);
     assert_eq!(last_turn(&v)["user_text"], json!(format!("t{}", N - 1)), "the newest turn is still on screen");
-    assert_eq!(link.view()["newerTrimmed"], json!(false), "the host reloaded the newest page");
+    assert_eq!(link.sent().iter().filter(|c| **c == ChatCommand::History).count(), reloads, "paging never reloads the newest page");
 }
 
 #[test]
@@ -810,8 +811,8 @@ fn chathost_r2_the_production_reader_callback_projects_emits_and_refreshes_on_th
 }
 
 #[test]
-fn chathost_f3_a_trimmed_view_never_takes_the_newest_turns_off_the_chat() {
-    // the daemon never answers the reload: the island must keep the newest window on its own
+fn chathost_f3_earlier_pages_never_take_the_newest_turns_off_the_chat() {
+    // Gentle Dot's model: an earlier page never enters the newest view, so no reload is needed
     let link = FakeLink::new();
     let rows = |from: usize, to: usize| -> Vec<Value> {
         (from..to).map(|i| json!({"id": format!("s0-{i}"), "role": if i % 2 == 0 { "user" } else { "assistant" }, "text": format!("m{i}")})).collect()
@@ -823,7 +824,7 @@ fn chathost_f3_a_trimmed_view_never_takes_the_newest_turns_off_the_chat() {
     for k in (0..5).rev() {
         link.frame(json!({"type":"earlier","before":format!("s0-{}", (k + 1) * 100),"messages":rows(k * 100, (k + 1) * 100),"hasEarlier":k > 0}));
     }
-    assert_eq!(link.view()["newerTrimmed"], json!(true), "the daemon view lost its newest end");
+    assert_eq!(link.view()["messages"].as_array().unwrap().len(), 100, "the newest view still holds only the newest page");
     let v = host.project(&link.view(), T0 + 10);
     assert_eq!(last_turn(&v)["turn_id"], newest["turn_id"], "the chat still ends with the newest turn: {}", last_turn(&v));
 }
@@ -875,59 +876,16 @@ fn texts(ts: &[Value]) -> Vec<(String, String)> {
     ts.iter().map(|t| (t["user_text"].as_str().unwrap_or("?").to_owned(), t["reply"].as_str().unwrap_or("?").to_owned())).collect()
 }
 
-/// One pass of the page from the newest window back to the first turn, exactly as chat.js
-/// pages (the cursor the host returns, passed back unchanged). After every page the
-/// `chat:state` window must still be the newest contiguous turns (B1), and a turn id must
-/// always carry the same turn (the page merges by id, live turns win: one id = one turn).
-fn pass(host: &ChatHost, link: &FakeLink, expected: &[(String, String)], ids: &mut std::collections::HashMap<String, (String, String)>, label: &str) {
-    let window = |v: &Value| {
-        let ts = turns(v);
-        assert!(!ts.is_empty() && ts.len() <= WINDOW_TURNS, "{label}: a bounded window ({})", ts.len());
-        assert_eq!(texts(&ts), expected[expected.len() - ts.len()..].to_vec(), "{label}: chat:state shows the NEWEST contiguous turns, in order, each with its own reply");
-        ts
-    };
-    let record = |ts: &[Value], ids: &mut std::collections::HashMap<String, (String, String)>| {
-        for t in ts {
-            let id = t["turn_id"].as_str().unwrap().to_owned();
-            let content = (t["user_text"].as_str().unwrap().to_owned(), t["reply"].as_str().unwrap().to_owned());
-            let known = ids.entry(id.clone()).or_insert_with(|| content.clone());
-            assert_eq!(*known, content, "{label}: turn id {id} always names the same turn");
-        }
-    };
-    let v = host.project(&link.view(), T0);
-    let mut shown = window(&v);
-    record(&shown, ids);
-    let mut cursor = v["history_before"].clone();
-    let mut pages = 0;
-    while let Some(n) = cursor.as_u64() {
-        pages += 1;
-        assert!(pages <= expected.len(), "{label}: paging terminates");
-        let cmd = Command::History { conversation_id: CHAT_CONVERSATION_ID.into(), before: Some(n) };
-        let Routed::Answer(p) = host.route(link, "main", &cmd, T0).unwrap() else { panic!("{label}: a page") };
-        let ts = turns(&p);
-        assert!(!ts.is_empty() && ts.len() <= WINDOW_TURNS, "{label}: a page with a cursor is never empty (B2): {p}");
-        assert_eq!(ts.last().unwrap()["turn_id"].as_str().map(|s| s[2..].parse::<u64>().unwrap()).unwrap() < n, true, "{label}: older than the cursor");
-        record(&ts, ids);
-        let mut next = ts;
-        next.extend(shown);
-        shown = next;
-        cursor = p["before"].clone();
-        window(&host.project(&link.view(), T0));
-    }
-    // ORDER and CONTENT, never sorted: every turn exactly once, in chat order, its own reply
-    assert_eq!(texts(&shown), expected.to_vec(), "{label}: the pass reaches every turn once, in order");
-    let nums: Vec<u64> = shown.iter().map(|t| t["turn_id"].as_str().unwrap()[2..].parse().unwrap()).collect();
-    assert!(nums.windows(2).all(|w| w[0] < w[1]), "{label}: turn ids follow the chat order (chat-view.js sorts by them)");
-}
-
 fn two_passes(total: usize, no_reply: fn(usize) -> bool, page_size: fn(usize) -> usize, label: &str) {
     let (link, expected) = daemon_link(total, no_reply, page_size);
     let host = ChatHost::new();
     let first = Command::History { conversation_id: CHAT_CONVERSATION_ID.into(), before: None };
     host.route(&link, "main", &first, T0).unwrap();
     let mut ids = std::collections::HashMap::new();
-    pass(&host, &link, &expected, &mut ids, &format!("{label} pass 1"));
-    pass(&host, &link, &expected, &mut ids, &format!("{label} pass 2"));
+    for pass in 1..=2 {
+        let (shown, _) = walk_up(&host, &link, &expected, &mut ids, &format!("{label} pass {pass}"));
+        assert!(shown.iter().all(|t| t["turn_id"].as_str().unwrap().len() <= 24), "{label}: chat.rs valid_turn_id");
+    }
 }
 
 fn some_without_reply(k: usize) -> bool {
@@ -1133,4 +1091,281 @@ fn chathost_f1_a_message_another_client_recorded_first_never_blocks_the_islands_
     let own = ts.iter().find(|t| t["turn_id"] == a["turn_id"]).expect("the island's turn is shown");
     assert_eq!((own["user_text"].clone(), own["reply"].clone(), own["state"].clone()), (json!("hola"), json!("r-hola"), json!("completed")), "the island's turn took its record over: {v}");
     assert!(ts.iter().any(|t| t["user_text"] == json!("otro cliente") && t["reply"] == json!("r-otro")));
+}
+
+// ---- K2-05 T4 S2 paging redesign (Gentle Dot's model): the re-verifier's cases ------------------
+//
+// A fake daemon that follows `conversations.cjs` `pageHistory`: ids `s0-<i>` (1-based), a page is
+// counted back from its end while it holds at most `max(end)` messages and at most 192 KiB (the
+// first message is always taken), and `hasEarlier` says messages remain before it. The host
+// under test is the real `ChatHost` over the real `ChatState` fold; every comparison is ORDER
+// and CONTENT, never sorted.
+
+const PAGE_BYTES: usize = 192 * 1024;
+
+struct Record {
+    log: Vec<(&'static str, String)>,
+    max: fn(usize) -> usize,
+}
+
+impl Record {
+    /// Turn `k` is the prompt `p<k>` and, unless `no_reply(k)`, the reply `r-p<k>`.
+    fn turns(total: usize, no_reply: fn(usize) -> bool, max: fn(usize) -> usize) -> (Record, Vec<(String, String)>) {
+        let mut log = vec![];
+        let mut expected = vec![];
+        for k in 0..total {
+            log.push(("user", format!("p{k}")));
+            let reply = if no_reply(k) { String::new() } else { format!("r-p{k}") };
+            if !reply.is_empty() {
+                log.push(("assistant", reply.clone()));
+            }
+            expected.push((format!("p{k}"), reply));
+        }
+        (Record { log, max }, expected)
+    }
+
+    fn message(&self, i: usize) -> Value {
+        json!({"id": format!("s0-{}", i + 1), "role": self.log[i].0, "text": self.log[i].1})
+    }
+
+    /// The page ending right before message index `end` (0-based, exclusive).
+    fn page(&self, end: usize) -> (Vec<Value>, bool) {
+        let (mut from, mut bytes) = (end, 0usize);
+        while from > 0 && end - from < (self.max)(end) {
+            let size = serde_json::to_string(&self.message(from - 1)).unwrap().len();
+            if from < end && bytes + size > PAGE_BYTES {
+                break;
+            }
+            bytes += size;
+            from -= 1;
+        }
+        ((from..end).map(|i| self.message(i)).collect(), from > 0)
+    }
+
+    fn history(&self) -> Value {
+        let (messages, more) = self.page(self.log.len());
+        json!({"type":"history","messages":messages,"hasEarlier":more})
+    }
+
+    fn earlier(&self, before: &str) -> Value {
+        let k: usize = before.strip_prefix("s0-").and_then(|k| k.parse().ok()).unwrap_or(0);
+        let (messages, more) = if k == 0 || k > self.log.len() { (vec![], false) } else { self.page(k - 1) };
+        json!({"type":"earlier","before":before,"messages":messages,"hasEarlier":more})
+    }
+}
+
+/// The fake daemon as a link. `after_earlier` frames are delivered right after every earlier
+/// answer (a newest page landing in the middle of deep paging).
+fn record_link(record: Record, after_earlier: bool, unlimited: bool) -> (std::sync::Arc<FakeLink>, std::sync::Arc<Mutex<Record>>) {
+    let record = std::sync::Arc::new(Mutex::new(record));
+    let held = record.clone();
+    let mut link = FakeLink::answering(move |c| {
+        let r = held.lock().unwrap();
+        match c {
+            ChatCommand::History => vec![r.history()],
+            ChatCommand::Earlier { before } if after_earlier => vec![r.earlier(before), r.history()],
+            ChatCommand::Earlier { before } => vec![r.earlier(before)],
+            _ => vec![],
+        }
+    });
+    link.unlimited = unlimited;
+    (std::sync::Arc::new(link), record)
+}
+
+/// The page's walk from the newest window to the first turn: every answer is prepended,
+/// its cursor passed back unchanged; an answer may hold no whole turn (a lone reply) as long
+/// as its cursor moves. Returns the whole chat as the page would show it and the number of
+/// page requests. After every answer the chat:state window is still the newest turns.
+fn walk_up(host: &ChatHost, link: &FakeLink, expected: &[(String, String)], ids: &mut std::collections::HashMap<String, (String, String)>, label: &str) -> (Vec<Value>, usize) {
+    let mut record = |ts: &[Value]| {
+        for t in ts {
+            let id = t["turn_id"].as_str().unwrap().to_owned();
+            let content = (t["user_text"].as_str().unwrap().to_owned(), t["reply"].as_str().unwrap().to_owned());
+            assert_eq!(*ids.entry(id.clone()).or_insert_with(|| content.clone()), content, "{label}: turn id {id} always names the same turn");
+        }
+    };
+    let window = |v: &Value| {
+        let ts = turns(v);
+        assert_eq!(texts(&ts), expected[expected.len() - ts.len()..].to_vec(), "{label}: chat:state shows the newest turns, in order");
+        ts
+    };
+    let v = host.project(&link.view(), T0);
+    let mut shown = window(&v);
+    record(&shown);
+    let mut cursor = v["history_before"].clone();
+    let mut requests = 0;
+    while let Some(n) = cursor.as_u64() {
+        requests += 1;
+        assert!(requests <= 4 * expected.len(), "{label}: paging terminates");
+        let cmd = Command::History { conversation_id: CHAT_CONVERSATION_ID.into(), before: Some(n) };
+        let r = host.route(link, "main", &cmd, T0);
+        let Ok(Routed::Answer(p)) = r else { panic!("{label}: page {requests} failed: {r:?}") };
+        let ts = turns(&p);
+        assert!(!ts.is_empty() || p["before"].as_u64().is_some_and(|b| b != n), "{label}: an answer with no whole turn still moves the cursor: {p}");
+        record(&ts);
+        let mut next = ts;
+        next.extend(shown);
+        shown = next;
+        cursor = p["before"].clone();
+        window(&host.project(&link.view(), T0));
+    }
+    assert_eq!(texts(&shown), expected.to_vec(), "{label}: every turn exactly once, in order, each with its own reply");
+    (shown, requests)
+}
+
+fn first_window(host: &ChatHost, link: &FakeLink) {
+    let cmd = Command::History { conversation_id: CHAT_CONVERSATION_ID.into(), before: None };
+    host.route(link, "main", &cmd, T0).unwrap();
+}
+
+#[test]
+fn paging_600_turns_with_48_message_and_uneven_pages_reaches_every_turn_twice() {
+    for (label, max) in [("48/page", (|_| 48) as fn(usize) -> usize), ("uneven", budget_pages)] {
+        for no_reply in [all_replied as fn(usize) -> bool, some_without_reply] {
+            let (record, expected) = Record::turns(600, no_reply, max);
+            let (link, _) = record_link(record, false, true);
+            let host = ChatHost::new();
+            first_window(&host, &link);
+            let mut ids = std::collections::HashMap::new();
+            walk_up(&host, &link, &expected, &mut ids, &format!("600 {label} pass 1"));
+            // «Ir al final»: the page drops what it loaded and walks again from the window
+            walk_up(&host, &link, &expected, &mut ids, &format!("600 {label} pass 2"));
+        }
+    }
+}
+
+#[test]
+fn paging_after_a_reconnect_never_uses_an_earlier_page_that_arrives_before_the_newest() {
+    let (record, expected) = Record::turns(600, some_without_reply, |_| 48);
+    let (link, record) = record_link(record, false, true);
+    let host = ChatHost::new();
+    first_window(&host, &link);
+    let v = host.project(&link.view(), T0);
+    let mut shown = turns(&v);
+    let mut cursor = v["history_before"].clone();
+    // page up past turn 350 (of 600)
+    while shown.len() < 250 {
+        let cmd = Command::History { conversation_id: CHAT_CONVERSATION_ID.into(), before: Some(cursor.as_u64().unwrap()) };
+        let Routed::Answer(p) = host.route(&*link, "main", &cmd, T0).unwrap() else { panic!() };
+        let mut next = turns(&p);
+        next.extend(shown);
+        shown = next;
+        cursor = p["before"].clone();
+    }
+    // the connection drops and comes back: a fresh chat view with no page yet; the newest page
+    // (the connect's get_history) lands only after the page's next earlier request was answered
+    {
+        let mut st = ChatState::connected();
+        st.apply(&json!({"type":"agent_state","busy":false,"status":"ready","paused":false}));
+        *link.state.lock().unwrap() = st;
+    }
+    let late = {
+        let (link, record) = (link.clone(), record.clone());
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            let frame = record.lock().unwrap().history();
+            link.frame(frame);
+        })
+    };
+    let mut attempts = 0;
+    while let Some(n) = cursor.as_u64() {
+        attempts += 1;
+        assert!(attempts < 400, "paging terminates");
+        let cmd = Command::History { conversation_id: CHAT_CONVERSATION_ID.into(), before: Some(n) };
+        match host.route(&*link, "main", &cmd, T0) {
+            Ok(Routed::Answer(p)) => {
+                let mut next = turns(&p);
+                next.extend(shown);
+                shown = next;
+                cursor = p["before"].clone();
+            }
+            // a refused page (the newest one not there yet) is retried with the same cursor
+            Err(e) => {
+                assert_eq!(e.code, "history_unavailable", "{e:?}");
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Ok(other) => panic!("{other:?}"),
+        }
+    }
+    late.join().unwrap();
+    assert_eq!(texts(&shown), expected, "every turn once, in order, own reply, never renumbered across the reconnect");
+    let ids: std::collections::HashSet<&str> = shown.iter().map(|t| t["turn_id"].as_str().unwrap()).collect();
+    assert_eq!(ids.len(), shown.len(), "one id per turn");
+    assert_eq!(texts(&turns(&host.project(&link.view(), T0))), expected[600 - turns(&host.project(&link.view(), T0)).len()..].to_vec());
+}
+
+#[test]
+fn paging_a_newest_page_landing_between_a_lone_reply_and_its_prompt_keeps_the_reply() {
+    // the older chat comes one message per page, so most earlier pages are a lone reply; a
+    // newest page lands right after EVERY earlier answer (a settle refresh while paging)
+    let (record, expected) = Record::turns(72, all_replied, |end| if end == 144 { 48 } else { 1 });
+    let (link, _) = record_link(record, true, true);
+    let host = ChatHost::new();
+    first_window(&host, &link);
+    let mut ids = std::collections::HashMap::new();
+    let (shown, _) = walk_up(&host, &link, &expected, &mut ids, "lone replies under newest pages");
+    assert!(shown.iter().all(|t| t["reply"].as_str().is_some_and(|r| !r.is_empty())), "no turn lost its reply");
+}
+
+#[test]
+fn paging_a_newest_page_holding_only_a_lone_reply_keeps_the_history_reachable() {
+    let big_prompt = "q".repeat(9 * 1024);
+    let big_reply = "r".repeat(185 * 1024);
+    let record = Record {
+        log: vec![("user", "hola".into()), ("assistant", "buenas".into()), ("user", big_prompt.clone()), ("assistant", big_reply.clone())],
+        max: |_| 100,
+    };
+    // the island shows a history text up to its own 64 Ki-unit ceiling (history_message_view)
+    let expected = vec![("hola".to_owned(), "buenas".to_owned()), (big_prompt, big_reply[..MAX_TEXT_CHARS].to_owned())];
+    let (link, _) = record_link(record, false, true);
+    let host = ChatHost::new();
+    first_window(&host, &link);
+    assert_eq!(link.view()["messages"].as_array().unwrap().len(), 1, "the daemon's newest page is the lone reply");
+    let v = host.project(&link.view(), T0);
+    assert!(v["history_before"].as_u64().is_some(), "a page holding only a lone reply still offers the history: {}", v["history_before"]);
+    let mut ids = std::collections::HashMap::new();
+    walk_up(&host, &link, &expected, &mut ids, "lone newest reply");
+}
+
+#[test]
+fn paging_another_clients_prompt_recorded_before_an_island_turn_keeps_the_records_order() {
+    let link = FakeLink::new();
+    page(&link, &[("s0-1", "user", "vieja"), ("s0-2", "assistant", "r-vieja")], false);
+    let host = ChatHost::new();
+    host.project(&link.view(), T0);
+    let Routed::Answer(a) = host.route(&link, "main", &submit("hola", "req-a0000001"), T0).unwrap() else { panic!() };
+    agent(&link, true, "ready");
+    link.frame(json!({"type":"message_delta","messageId":"m1","text":"r-hola"}));
+    link.frame(json!({"type":"message_done","messageId":"m1"}));
+    agent(&link, false, "ready");
+    host.project(&link.view(), T0 + 10);
+    // the record: another client's prompt landed BEFORE the island's
+    page(
+        &link,
+        &[("s0-1", "user", "vieja"), ("s0-2", "assistant", "r-vieja"), ("s0-3", "user", "otro cliente"), ("s0-4", "assistant", "r-otro"), ("s0-5", "user", "hola"), ("s0-6", "assistant", "r-hola")],
+        false,
+    );
+    let ts = turns(&host.project(&link.view(), T0 + 20));
+    assert_eq!(
+        texts(&ts),
+        vec![("vieja".into(), "r-vieja".into()), ("otro cliente".into(), "r-otro".into()), ("hola".into(), "r-hola".into())],
+        "the record's order"
+    );
+    assert_eq!(ts[2]["turn_id"], a["turn_id"], "the island turn keeps its id when the record takes it over");
+}
+
+#[test]
+fn paging_1500_turns_stays_within_the_islands_budget_and_a_send_still_goes_through() {
+    let (record, expected) = Record::turns(1_500, some_without_reply, |_| 48);
+    let (link, _) = record_link(record, false, false);
+    let host = ChatHost::new();
+    first_window(&host, &link);
+    let mut ids = std::collections::HashMap::new();
+    let (_, up) = walk_up(&host, &link, &expected, &mut ids, "1,500 turns");
+    let reads = link.sent().iter().filter(|c| matches!(c, ChatCommand::History | ChatCommand::Earlier { .. })).count();
+    println!("1,500 turns: {up} page requests, {reads} daemon reads");
+    assert!(reads <= CHAT_FRAMES_PER_MINUTE as usize, "one daemon read per page at most: {reads}");
+    // the way back down is the page's own scroll (everything it loaded stays): no request; then a send
+    host.route(&*link, "main", &submit("al final", "req-b0000001"), T0 + 10).expect("a send is never refused because paging spent the budget");
+    assert!(link.sent().iter().any(|c| matches!(c, ChatCommand::Send { .. })));
 }

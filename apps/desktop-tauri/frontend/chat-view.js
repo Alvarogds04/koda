@@ -202,6 +202,12 @@
     const b = Array.isArray(after) ? after : [];
     let keep = 0;
     while (keep < a.length && keep < b.length && rowKey(a[keep]) === rowKey(b[keep])) keep += 1;
+    // S2 paging: an earlier page adds rows ON TOP; when everything drawn is still the tail, only the new
+    // rows are inserted before it (nothing already drawn is repainted, so the reader's place holds)
+    const top = b.length - a.length;
+    if (keep < a.length && top > 0 && a.every((row, i) => rowKey(row) === rowKey(b[top + i]))) {
+      return { keep: a.length, patch: [], append: [], remove: 0, prepend: b.slice(0, top) };
+    }
     const patch = [];
     let i = keep;
     for (; i < a.length && i < b.length; i += 1) patch.push({ index: i, row: b[i] });
@@ -464,37 +470,31 @@
   }
   const activates = e => !!e && !e.isComposing && !e.repeat && (e.key === 'Enter' || e.key === ' ');
 
-  // History pages are presentation-only; live snapshots win on matching native turn IDs.
+  // S2 paging (Gentle Dot's model): the page holds ONE contiguous run of turns, oldest first: the earlier pages it
+  // loaded, then the live window. Turn ids are the daemon's own record positions, so the same turn has the same id
+  // on every page; the run is joined in the order the host gave it (never re-sorted: an unrecorded island turn sits
+  // where it was sent), and the live window wins on a shared id.
   function mergeHistory(older, current) {
-    const turns = new Map();
-    for (const t of [...(Array.isArray(older) ? older : []), ...(Array.isArray(current) ? current : [])]) {
-      if (t && /^t-\d+$/.test(t.turn_id)) turns.set(t.turn_id, t);
-    }
-    return Array.from(turns.values()).sort((a,b) => Number(a.turn_id.slice(2)) - Number(b.turn_id.slice(2)));
+    const valid = list => (Array.isArray(list) ? list : []).filter(t => t && /^t-\d+$/.test(t.turn_id));
+    const live = valid(current);
+    const ids = new Set(live.map(t => t.turn_id));
+    const seen = new Set();
+    const run = valid(older).filter(t => !ids.has(t.turn_id) && !seen.has(t.turn_id) && seen.add(t.turn_id));
+    return run.concat(live);
   }
-  // K2-05 U4 (page memory): the most turns the page keeps (loaded earlier pages + the live window), and one host
-  // page (chatclient.rs WINDOW_TURNS). Past the cap the FAR end (from where the reader is) is dropped and comes
-  // back through the host's cursor when the reader scrolls back to it.
-  const PAGE_TURNS_MAX = 300;
-  const PAGE_STEP = 50;
-  // Keeps at most `max - liveCount` loaded turns, dropping from the top (`'oldest'`) or the bottom (`'newest'`).
-  function capPage(older, liveCount, max, end) {
-    const list = Array.isArray(older) ? older : [];
-    const room = Math.max(0, max - Math.max(0, Number(liveCount) || 0));
-    if (list.length <= room) return { kept: list, dropped: [] };
-    return end === 'newest'
-      ? { kept: list.slice(0, room), dropped: list.slice(room) }
-      : { kept: list.slice(list.length - room), dropped: list.slice(0, list.length - room) };
+  // The turns of the previous live window that left it at its top (the window slides as new turns arrive).
+  function leftWindow(previous, next) {
+    const before = Array.isArray(previous) ? previous : [];
+    const after = Array.isArray(next) ? next : [];
+    const ids = new Set(after.map(t => t && t.turn_id));
+    const at = after.length ? before.findIndex(t => t && t.turn_id === after[0].turn_id) : -1;
+    return (at >= 0 ? before.slice(0, at) : before).filter(t => t && !ids.has(t.turn_id));
   }
-  // The `before` cursor that brings back the dropped turns right after the shown slice (ascending numbers):
-  // the host answers the newest PAGE_STEP turns older than the cursor, so the cursor is the dropped turn
-  // PAGE_STEP places in, or the first live turn once the rest fits in one page.
-  function newerCursor(dropped, liveFirst) {
-    const d = Array.isArray(dropped) ? dropped : [];
-    if (d.length > PAGE_STEP) return d[PAGE_STEP];
-    if (Number.isFinite(liveFirst)) return liveFirst;
-    return d.length ? d[d.length - 1] + 1 : null;
-  }
+  // One daemon page per request, and scroll-triggered requests at most one per PAGE_GAP_MS: a fast scroll through
+  // a long chat stays inside the island's read share (chatclient.rs CHAT_FRAMES_PER_MINUTE − CHAT_FRAMES_RESERVED =
+  // 100/min), so a send is never refused because paging spent the budget.
+  const PAGE_GAP_MS = 650;
+  const pageWait = (now, last) => Math.max(0, (Number(last) || 0) + PAGE_GAP_MS - now);
   // K2-05 T4 U4: one continuous chat (L3/L4/L11) — the conversation list (conversationRows) and the «Hablar con…»
   // specialist rows (specialistRows) are gone with their UI.
 
@@ -582,5 +582,5 @@
     return n;
   }
   function chatHeight(view) { return Math.min(CHAT_MAX_H, CHAT_MIN_H + messageCount(view) * CHAT_GROWTH); }
-  return { staleSnapshot, messageCount, chatHeight, CHAT_MIN_H, CHAT_MAX_H, mergeHistory, PAGE_TURNS_MAX, PAGE_STEP, capPage, newerCursor, reconcileRows, rowKey, poseFor, statusView, draftWord, targetAria, noticeAnnouncement, activates, gateLabel, filterChosen, modelRows, modelMeters, modelsInfo, modelsCount, emptyGreeting, cleanDisplayName, cleanLine, CARD_NAME_MAX, CARD_SUMMARY_MAX, DRAFT_MAX, stateLabel, scalarCount, draftProblem, canSend, sendState, needsCheck, checkPlan, statusLine, announcement, atBottom, newRequestId, turnRows, toolRows, approvalRows, activeTurn, activeRole, modelButtonLabel, modelButtonAria, modelButtonEnabled, modelRoleNote, formatSize };
+  return { staleSnapshot, messageCount, chatHeight, CHAT_MIN_H, CHAT_MAX_H, mergeHistory, leftWindow, PAGE_GAP_MS, pageWait, reconcileRows, rowKey, poseFor, statusView, draftWord, targetAria, noticeAnnouncement, activates, gateLabel, filterChosen, modelRows, modelMeters, modelsInfo, modelsCount, emptyGreeting, cleanDisplayName, cleanLine, CARD_NAME_MAX, CARD_SUMMARY_MAX, DRAFT_MAX, stateLabel, scalarCount, draftProblem, canSend, sendState, needsCheck, checkPlan, statusLine, announcement, atBottom, newRequestId, turnRows, toolRows, approvalRows, activeTurn, activeRole, modelButtonLabel, modelButtonAria, modelButtonEnabled, modelRoleNote, formatSize };
 });
