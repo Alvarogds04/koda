@@ -306,18 +306,12 @@
           <button id="chat-back" class="icon-btn" type="button" aria-label="Volver"><span class="ico" data-icon="arrow-left"></span></button>
         </header>
         <p id="chat-history-warning" role="status" hidden></p>
-        <div id="conversations" role="dialog" aria-label="Conversaciones guardadas" hidden inert>
-          <div id="conversations-bar"><h2>Conversaciones</h2><button id="conversations-close" class="icon-btn" type="button" aria-label="Volver al chat"><span class="ico" data-icon="cross"></span></button></div>
-          <p id="conversations-note" role="status"></p>
-          <h3 id="specialists-title">Hablar con…</h3>
-          <ul id="specialists-list" aria-labelledby="specialists-title"></ul>
-          <ul id="conversations-list" aria-label="Conversaciones guardadas"></ul>
-        </div>
         <div id="chat-body">
           <div id="chat-drop" hidden aria-hidden="true"><strong>Soltá para adjuntar</strong><span>Imágenes y texto</span></div>
-          <div id="chat-history-controls" role="group" aria-label="Conversaciones">
-            <button id="chat-create" class="icon-btn" type="button" aria-label="Nueva conversación (Ctrl+N)" title="Nueva conversación (Ctrl+N)"><span class="ico" data-icon="plus"></span></button>
-            <button id="chat-conversations" class="icon-btn" type="button" aria-label="Conversaciones guardadas" aria-expanded="false" aria-controls="conversations"><span class="ico" data-icon="clock"></span></button>
+          <!-- K2-05 T4 U4: ONE continuous chat (L3/L4/L11): no conversation list, no «new». Earlier turns load by
+               scrolling to the top or with «Cargar anteriores» (shown only while older turns exist). -->
+          <div id="chat-history-controls" role="group" aria-label="Historial">
+            <button id="chat-load-earlier" type="button" hidden aria-controls="chat-log">Cargar anteriores</button>
             <span id="chat-history-label">Conversación nueva</span>
           </div>
           <ol id="chat-log" tabindex="0" aria-label="Historial de la conversación"></ol>
@@ -341,7 +335,7 @@
             <textarea id="chat-input" rows="1" maxlength="8000" spellcheck="true"
               aria-describedby="chat-help chat-problem" placeholder="Escribí…"></textarea>
             <span id="chat-draft-word" class="chip" data-tone="red" hidden></span>
-            <span id="chat-help" class="sr-only">Enter envía. Mayúsculas más Enter agrega una línea. Ctrl+N crea una conversación sin borrar el historial. Escape sale del campo; otro Escape cierra la isla.</span>
+            <span id="chat-help" class="sr-only">Enter envía. Mayúsculas más Enter agrega una línea. Escape sale del campo; otro Escape cierra la isla.</span>
             <button id="chat-cancel" class="round" type="button" hidden aria-label="Cancelar"><span class="ico" data-icon="square"></span></button>
             <button id="chat-mic" class="round" type="button" hidden aria-label="Dictar con el micrófono"><span class="ico" data-icon="mic"></span></button>
             <button id="chat-send" class="round" type="submit" disabled aria-label="Enviar"><span class="ico" data-icon="arrow-up"></span></button>

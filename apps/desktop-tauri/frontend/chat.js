@@ -73,10 +73,9 @@
   let inFlight = false;
   let pendingId = null; // reused if the same draft is re-sent after an IPC failure
   let localProblem = '';
-  const createButton = $('chat-create');
-  const conversationsButton = $('chat-conversations');
-  const conversationsPanel = $('conversations');
-  const conversationsList = $('conversations-list');
+  // K2-05 T4 U4: ONE continuous chat (L3/L4/L11). Earlier turns load by scrolling to the top or with the
+  // visible «Cargar anteriores» control (keyboard users), using the cursor the host publishes.
+  const loadEarlierButton = $('chat-load-earlier');
   let olderTurns = [];
   let historyBefore = null;
   let paging = false;
@@ -327,8 +326,7 @@
     const draftIssue = input.value ? V.draftProblem(input.value) : null;
     const historyProblem = view && view.history_problem;
     problem.textContent = localProblem || historyProblem || draftIssue || '';
-    if (createButton) createButton.disabled = active !== null || inFlight;
-    if (conversationsButton) conversationsButton.disabled = active !== null || inFlight;
+    if (loadEarlierButton) { loadEarlierButton.hidden = !historyBefore; loadEarlierButton.disabled = paging; }
     if ($('chat-history-warning')) {
       const warning = historyProblem || (view && view.history_skipped ? `Se omitieron ${view.history_skipped} registros dañados.` : '');
       $('chat-history-warning').hidden = !warning;
@@ -400,6 +398,7 @@
       resetHistory(next);
       if (view) { input.value = ''; pendingId = null; localProblem = ''; autosize(); attachments = []; renderAttachments(); }
     }
+    followWindow(next);
     view = next;
     reportHeight();
     renderTarget();
@@ -412,73 +411,23 @@
     try { const w = window.AbitoSoundWiringInstance; if (w) w.observeChat(next); } catch { /* sound never breaks the chat */ }
   }
 
-  // ---- #341: local conversations -----------------------------------------
-  function closeConversations() {
-    if (!conversationsPanel) return;
-    conversationsPanel.hidden = true;
-    conversationsPanel.inert = true;
-    conversationsButton.setAttribute('aria-expanded', 'false');
-    log.inert = false; form.inert = false;
+  // ---- K2-05 T4 U4 (F2): load earlier turns ------------------------------------
+  // The host publishes `history_before` (the oldest turn of its live window) on every chat:state. While no
+  // older page is loaded, the page follows it; once pages are loaded, the cursor is the one the last page
+  // returned. The live window slides as new turns arrive: a turn that leaves it stays drawn (it joins the
+  // loaded pages) whenever the reader already went back, so the chat never shows a gap.
+  const turnNumber = t => Number(String(t && t.turn_id).slice(2));
+  function followWindow(next) {
+    const nextTurns = Array.isArray(next.turns) ? next.turns : [];
+    if (!olderTurns.length) { historyBefore = next.history_before || null; return; }
+    const first = nextTurns.length ? turnNumber(nextTurns[0]) : Infinity;
+    const left = ((view && Array.isArray(view.turns)) ? view.turns : []).filter(t => turnNumber(t) < first);
+    if (left.length) olderTurns = V.mergeHistory(olderTurns, left);
   }
-  function createConversation() {
-    if (inFlight || V.activeTurn(view)) return;
-    inFlight = true; renderControls();
-    action({ action: 'new' }).then(next => {
-      closeConversations(); apply(next); input.value = ''; pendingId = null; autosize(); input.focus();
-    }, error => { localProblem = error.message || 'No se pudo crear la conversación.'; setLive(localProblem); })
-      .finally(() => { inFlight = false; renderControls(); });
-  }
-  if (createButton) createButton.addEventListener('click', createConversation);
-  if (conversationsButton) conversationsButton.addEventListener('click', () => {
-    if (inFlight || V.activeTurn(view)) return;
-    action({ action: 'list' }).then(listing => {
-      conversationsList.replaceChildren();
-      for (const row of V.conversationRows(listing)) {
-        const li = document.createElement('li');
-        const button = document.createElement('button'); button.type = 'button';
-        button.textContent = row.text; button.setAttribute('aria-label', row.aria);
-        button.setAttribute('aria-current', row.id === (view && view.conversation_id) ? 'true' : 'false');
-        button.addEventListener('click', () => {
-          if (inFlight) return;
-          inFlight = true; renderControls();
-          action({ action: 'restore', conversation_id: row.id }).then(next => {
-            closeConversations(); resetHistory(next); input.value = ''; pendingId = null; localProblem = ''; autosize(); apply(next); log.focus();
-          }, error => { $('conversations-note').textContent = error.message || 'No se pudo abrir la conversación.'; })
-            .finally(() => { inFlight = false; renderControls(); });
-        });
-        li.append(button); conversationsList.append(li);
-      }
-      const specialistsList = $('specialists-list');
-      if (specialistsList) {
-        specialistsList.replaceChildren();
-        for (const row of V.specialistRows(specialistsView)) {
-          const li = document.createElement('li');
-          const button = document.createElement('button'); button.type = 'button';
-          button.textContent = row.text; button.setAttribute('aria-label', row.aria);
-          button.setAttribute('aria-current', row.current ? 'true' : 'false');
-          button.addEventListener('click', () => {
-            if (inFlight) return;
-            inFlight = true; renderControls();
-            action({ action: 'new_with', specialist_id: row.id }).then(next => {
-              closeConversations(); resetHistory(next); input.value = ''; pendingId = null; localProblem = ''; autosize(); apply(next); input.focus();
-            }, error => { $('conversations-note').textContent = error.message || 'No se pudo abrir la conversación.'; })
-              .finally(() => { inFlight = false; renderControls(); });
-          });
-          li.append(button); specialistsList.append(li);
-        }
-      }
-      let note = listing.conversations.length ? '' : 'Todavía no hay conversaciones guardadas.';
-      if (listing.skipped) note = `Se omitieron ${listing.skipped} registros o archivos dañados.`;
-      $('conversations-note').textContent = note;
-      conversationsPanel.hidden = false; conversationsPanel.inert = false;
-      conversationsButton.setAttribute('aria-expanded', 'true'); log.inert = true; form.inert = true;
-      $('conversations-close').focus();
-    }, error => { localProblem = error.message || 'No se pudo leer el historial.'; renderControls(); setLive(localProblem); });
-  });
-  if ($('conversations-close')) $('conversations-close').addEventListener('click', () => { closeConversations(); conversationsButton.focus(); });
-  function loadOlder() {
-    if (!view || !historyBefore || paging || log.scrollTop > 8 || log.inert) return;
+  function loadOlder(byControl) {
+    if (!view || !historyBefore || paging || log.inert || (!byControl && log.scrollTop > 8)) return;
     paging = true;
+    renderControls();
     const id = view.conversation_id, generation = historyGeneration;
     const height = log.scrollHeight, top = log.scrollTop;
     action({ action: 'history', conversation_id: id, before: historyBefore }).then(page => {
@@ -489,11 +438,16 @@
       renderLog(); renderControls();
       log.scrollTop = top + log.scrollHeight - height; // keep the same message under the reader's eye
       newer.hidden = true;
+      if (byControl) {
+        setLive(historyBefore ? 'Mensajes anteriores cargados.' : 'Mensajes anteriores cargados. Es el comienzo del chat.');
+        if (!historyBefore) log.focus(); // the control went away: keep keyboard users in the history
+      }
     }, error => {
       if (generation !== historyGeneration) return;
       localProblem = error.message || 'No se pudo cargar el historial anterior.'; renderControls(); setLive(localProblem);
-    }).finally(() => { if (generation === historyGeneration) paging = false; });
+    }).finally(() => { if (generation === historyGeneration) { paging = false; renderControls(); } });
   }
+  if (loadEarlierButton) loadEarlierButton.addEventListener('click', () => loadOlder(true));
 
   // ---- open / back --------------------------------------------------------
   let openedByKeyboard = false;
@@ -743,7 +697,7 @@
     newer.hidden = true;
   });
   log.addEventListener('scroll', () => {
-    loadOlder();
+    loadOlder(false);
     if (V.atBottom(log.scrollTop, log.scrollHeight, log.clientHeight)) newer.hidden = true;
   });
 
@@ -753,11 +707,7 @@
     const expanded = capsule.dataset.phase === 'expanded';
     const inChat = capsule.dataset.view === 'chat';
     const typing = document.activeElement === input;
-    if (expanded && inChat && event.ctrlKey && !event.altKey && !event.metaKey && String(event.key).toLowerCase() === 'n') {
-      event.preventDefault(); if (!event.repeat) createConversation(); return;
-    }
     if (event.key === 'Escape') {
-      if (conversationsPanel && !conversationsPanel.hidden) { event.preventDefault(); closeConversations(); conversationsButton.focus(); return; }
       if (pickerOpen) { event.preventDefault(); setPicker(false); modelBtn.focus(); return; } // F024: first Escape leaves the picker
       // #408: the model picker is a tab of Ajustes; settings.js closes Ajustes on Escape (capture phase) before this runs.
       if (typing) { input.blur(); log.focus(); event.preventDefault(); return; } // leave typing mode

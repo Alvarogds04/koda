@@ -31,11 +31,11 @@ test('Ajustes: node_missing, pi_missing (Koda\'s own engine, no npm advice) and 
 test('island row: bundled_runtime_invalid mirrors «Falta Node.js» — label «Instalación dañada», the sentence, the generic «Revisar» link to Ajustes → Motor', () => {
   const row = O.engineRowView({ kind: 'down' }, state('bundled_runtime_invalid'));
   assert.deepEqual(row, { kind: 'engine', label: 'Instalación dañada', link: 'Revisar', target: 'accounts:motor',
-    aria: `Instalación dañada: ${SENTENCE} Revisar Pi: abrir Ajustes → Motor` });
+    aria: `Instalación dañada: ${SENTENCE} Revisar: abrir Ajustes → Motor` });
 });
 test('island row: node_missing, pi_missing (Koda\'s own engine) and a plain no_daemon keep their own words', () => {
   assert.deepEqual(O.engineRowView({ kind: 'down' }, state('node_missing')), { kind: 'engine', label: 'Falta Node.js', link: 'Revisar', target: 'accounts:motor',
-    aria: 'Falta Node.js: instalalo desde nodejs.org. Revisar Pi: abrir Ajustes → Motor' });
+    aria: 'Falta Node.js: instalalo desde nodejs.org. Revisar: abrir Ajustes → Motor' });
   assert.equal(O.engineRowView({ kind: 'down' }, state('pi_missing')).label, 'Falta el motor de Koda');
   assert.equal(O.engineRowView({ kind: 'down' }, state(null)).label, 'Sin motor');
 });

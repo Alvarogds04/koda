@@ -472,21 +472,8 @@
     }
     return Array.from(turns.values()).sort((a,b) => Number(a.turn_id.slice(2)) - Number(b.turn_id.slice(2)));
   }
-  // S6 (#503): who the human can talk to: Abito first, then every specialist (valid id + name only).
-  function specialistRows(specialists) {
-    const list = specialists && Array.isArray(specialists.specialists) ? specialists.specialists : [];
-    const valid = list.filter(s => s && typeof s.id === 'string' && s.id && typeof s.name === 'string' && s.name.trim());
-    const active = specialists && valid.some(s => s.id === specialists.active) ? specialists.active : null;
-    return [{ id: null, text: 'Koda', aria: 'Hablar con Koda', current: active === null },
-      ...valid.map(s => ({ id: s.id, text: s.name.trim(), aria: `Hablar con ${s.name.trim()}`, current: s.id === active }))];
-  }
-  function conversationRows(listing) {
-    return ((listing && Array.isArray(listing.conversations)) ? listing.conversations : []).map(c => {
-      const specialist = c.specialist && c.specialist.name || 'Koda';
-      const activity = new Date(c.last_activity).toLocaleString('es-AR');
-      return { id: c.id, text: `${c.title} · ${specialist} · ${activity}`, aria: `${c.title}. ${specialist}. Última actividad: ${activity}` };
-    });
-  }
+  // K2-05 T4 U4: one continuous chat (L3/L4/L11) — the conversation list (conversationRows) and the «Hablar con…»
+  // specialist rows (specialistRows) are gone with their UI.
 
   // ---- F024: the model row above the composer --------------------------------
   // What the row shows and when it may be used. Pure text: the page writes it
@@ -572,5 +559,5 @@
     return n;
   }
   function chatHeight(view) { return Math.min(CHAT_MAX_H, CHAT_MIN_H + messageCount(view) * CHAT_GROWTH); }
-  return { staleSnapshot, messageCount, chatHeight, CHAT_MIN_H, CHAT_MAX_H, mergeHistory, conversationRows, reconcileRows, rowKey, poseFor, statusView, draftWord, targetAria, noticeAnnouncement, activates, gateLabel, filterChosen, modelRows, modelMeters, modelsInfo, modelsCount, emptyGreeting, cleanDisplayName, cleanLine, CARD_NAME_MAX, CARD_SUMMARY_MAX, DRAFT_MAX, stateLabel, scalarCount, draftProblem, canSend, sendState, needsCheck, checkPlan, statusLine, announcement, atBottom, newRequestId, turnRows, specialistRows, toolRows, approvalRows, activeTurn, activeRole, modelButtonLabel, modelButtonAria, modelButtonEnabled, modelRoleNote, formatSize };
+  return { staleSnapshot, messageCount, chatHeight, CHAT_MIN_H, CHAT_MAX_H, mergeHistory, reconcileRows, rowKey, poseFor, statusView, draftWord, targetAria, noticeAnnouncement, activates, gateLabel, filterChosen, modelRows, modelMeters, modelsInfo, modelsCount, emptyGreeting, cleanDisplayName, cleanLine, CARD_NAME_MAX, CARD_SUMMARY_MAX, DRAFT_MAX, stateLabel, scalarCount, draftProblem, canSend, sendState, needsCheck, checkPlan, statusLine, announcement, atBottom, newRequestId, turnRows, toolRows, approvalRows, activeTurn, activeRole, modelButtonLabel, modelButtonAria, modelButtonEnabled, modelRoleNote, formatSize };
 });

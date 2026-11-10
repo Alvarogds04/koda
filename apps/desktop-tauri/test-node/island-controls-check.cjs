@@ -94,15 +94,16 @@ test('chat top bar: visible title «Koda» before the gear/back buttons (design 
   assert.equal(t['font-size'], 'var(--fs-body)');
   assert.equal(t['font-weight'], '600');
 });
-test('chat body top row: «+» and history left-aligned, then the label «Conversación nueva» (existing verbs only)', () => {
+test('chat body top row (K2-05 T4 U4, one continuous chat): «Cargar anteriores» then the label «Conversación nueva», left-aligned; no «+»/history list', () => {
   const html = fs.readFileSync(path.join(dir, 'index.html'), 'utf8');
   const row = html.slice(html.indexOf('id="chat-history-controls"'), html.indexOf('<ol id="chat-log"'));
-  assert.match(row, /id="chat-create"[^>]*>[\s\S]*data-icon="plus"[\s\S]*id="chat-conversations"[\s\S]*id="chat-history-label"[^>]*>Conversación nueva</);
+  assert.match(row, /id="chat-load-earlier"[^>]*>Cargar anteriores<[\s\S]*id="chat-history-label"[^>]*>Conversación nueva</);
+  assert.doesNotMatch(row, /chat-create|chat-conversations/);
+  assert.equal(decls('#chat-load-earlier')['min-height'], '44px', 'the keyboard control keeps a 44px hit');
   assert.equal(decls('#chat-history-controls')['justify-content'], 'flex-start');
   assert.equal(decls('#chat-history-controls')['align-items'], 'center');
   assert.equal(decls('#chat-history-label')['font-size'], 'var(--fs-caption)');
   assert.match(fs.readFileSync(path.join(dir, 'chat.js'), 'utf8'), /chat-history-label[\s\S]{0,200}turns\.length/, 'the label shows only while the conversation has no turns');
-  assert.ok(require(path.join(dir, 'icons.js')).NAMES.includes('plus'));
 });
 test('chat model chip keeps its 24px chip and wears Coucou\'s model-btn tokens (500 10.5px, rgba .06 fill, r999) (S10 L22)', () => {
   const c = decls('#chat-model-btn');

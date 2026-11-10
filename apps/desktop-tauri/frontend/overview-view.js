@@ -331,7 +331,8 @@
   // agent state (connection, accounts) and the session list. Anything not distinguishable from that data yields null.
   // `pi` = { connection, accounts: [{configured, local}] | null, sessions: 'ready'|'error'|'pending' }.
   const ENGINE_BAD = { lost: 'Motor caído', refused: 'Motor no responde', bad_session: 'Sesión no válida', no_daemon: 'Sin motor' };
-  const row = (kind, label, link, target, where) => ({ kind, label, link, target, aria: `${link} Pi: abrir Ajustes → ${where}` });
+  // K2-05 T4 U4: the accessible text never names the engine vendor («Conectar: abrir Ajustes → Agentes»).
+  const row = (kind, label, link, target, where) => ({ kind, label, link, target, aria: `${link}: abrir Ajustes → ${where}` });
   function engineRowView(conn, pi) {
     if (!conn || conn.kind === 'unavailable') return null; // the notice channel is not Pi
     const p = pi && typeof pi === 'object' ? pi : null;

@@ -720,16 +720,9 @@ test('S3 (#503): a turn that carried live context gets a «Contexto» disclosure
   assert.match(chat, /row\.kind === 'context'/);
 });
 
-test('S6 (#503): the specialist picker lists Abito first, then each specialist, and marks the active one', () => {
-  assert.deepEqual(V.specialistRows(null), [{ id: null, text: 'Koda', aria: 'Hablar con Koda', current: true }]);
-  const sv = { active: 'esp-2', specialists: [{ id: 'esp-1', name: 'Revisor' }, { id: 'esp-2', name: 'Redactor' }, { id: 5, name: 'x' }, { id: 'esp-3', name: '' }] };
-  const rows = V.specialistRows(sv);
-  assert.deepEqual(rows.map(r => r.id), [null, 'esp-1', 'esp-2'], 'Koda + valid specialists only');
-  assert.deepEqual(rows.map(r => r.current), [false, false, true]);
-  assert.equal(rows[1].text, 'Revisor');
-  assert.equal(rows[1].aria, 'Hablar con Revisor');
-  assert.equal(V.specialistRows({ active: null, specialists: [] })[0].current, true);
-  assert.equal(V.specialistRows({ active: 'esp-9', specialists: [] })[0].current, true, 'an unknown active id means Koda');
+test('K2-05 T4 U4: one continuous chat — the conversation and specialist row helpers are gone (L3/L4/L11)', () => {
+  assert.equal(V.specialistRows, undefined);
+  assert.equal(V.conversationRows, undefined);
 });
 
 console.log(`chat-view-check: ${passed} passed`);
@@ -817,6 +810,9 @@ test('U3: an earlier engine history page merges before the live turns', () => {
   const chat = fs.readFileSync(path.join(__dirname, '..', 'frontend', 'chat.js'), 'utf8');
   assert.match(chat, /action\(\{ action: 'history', conversation_id: id, before: historyBefore \}\)/, 'the page passes history_before back unchanged');
   assert.match(chat, /historyBefore = page\.before \|\| null;/);
+  // U4 (F2): the cursor follows every chat:state (the conversation id is the constant c-koda), not only a reset
+  assert.match(chat, /followWindow\(next\);\s*view = next;/);
+  assert.match(chat, /if \(!olderTurns\.length\) \{ historyBefore = next\.history_before \|\| null; return; \}/);
 });
 
 console.log(`chat-view-check (U3 engine shape): ${passed} passed`);

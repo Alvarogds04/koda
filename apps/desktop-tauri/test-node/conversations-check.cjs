@@ -1,5 +1,6 @@
 'use strict';
-// #341: production chat scripts driven through their public DOM + IPC surface.
+// #341 → K2-05 T4 U4: production chat scripts driven through their public DOM + IPC surface. One continuous chat
+// (L3/L4/L11): no conversation list, no «new», no specialists; earlier turns load by scrolling up or with «Cargar anteriores».
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
@@ -25,49 +26,69 @@ async function page() {
     Object.defineProperty(e,'lastElementChild',{get:()=>e.children.at(-1)}); return e;
   };
   document = { ...make(), activeElement: null, body: make(), getElementById(id) { if (!nodes.has(id)) nodes.set(id,make(id)); return nodes.get(id); }, createElement: tag=>make(null,tag), importNode:n=>n, dispatchEvent(e) { fire(this,e); } };
-  let state = { conversation_id:'c-first', active_turn:null, availability:{state:'ready',message:'ready'}, turns:[turn(36),turn(37)], history_before:36 };
+  const pages = [];
+  let state = { conversation_id:'c-koda', active_turn:null, availability:{state:'ready',message:'ready'}, turns:[turn(36),turn(37)], history_before:36 };
   const settle = () => new Promise(resolve=>setImmediate(resolve));
   const invoke = async (_command, {payload:p}) => {
-    calls.push(JSON.parse(JSON.stringify(p)));
-    if(p.action === 'new') state={...state, conversation_id:'c-new', turns:[],history_before:null};
-    if(p.action === 'restore') state={...state,conversation_id:p.conversation_id,turns:[turn(36),turn(37)],history_before:36};
-    if(p.action === 'list') return {conversations:[{id:'c-first',title:'<img onerror=evil>',specialist:{name:'Writer'},last_activity:10}],skipped:1};
-    if(p.action === 'history') return {conversation_id:p.conversation_id,turns:[turn(34),turn(35)],before:null,skipped:0};
-    return JSON.parse(JSON.stringify(state));
+    calls.push(structuredClone(p));
+    if(p.action === 'history') return pages.shift() || {conversation_id:p.conversation_id,turns:[],before:null,skipped:0};
+    return structuredClone(state);
   };
-  const sandbox={document,console,crypto:{getRandomValues:b=>b},setTimeout:()=>0,clearTimeout(){},requestAnimationFrame:f=>f(),CustomEvent:class{constructor(type,o){this.type=type;this.detail=o.detail;}},DOMParser:class{parseFromString(){return {documentElement:null};}},__TAURI__:{core:{invoke},event:{listen:async(k,f)=>{listeners[k]=f;}}}};
+  const sandbox={document,console,structuredClone,crypto:{getRandomValues:b=>b},setTimeout:()=>0,clearTimeout(){},requestAnimationFrame:f=>f(),CustomEvent:class{constructor(type,o){this.type=type;this.detail=o.detail;}},DOMParser:class{parseFromString(){return {documentElement:null};}},__TAURI__:{core:{invoke},event:{listen:async(k,f)=>{listeners[k]=f;}}}};
   sandbox.window=sandbox; sandbox.self=sandbox; vm.createContext(sandbox);
   for(const file of ['chat-view.js','chat.js']) vm.runInContext(fs.readFileSync(path.join(frontend,file),'utf8'),sandbox,{filename:file});
   document.getElementById('capsule').dataset.view='chat'; document.getElementById('capsule').dataset.phase='expanded'; await settle();
-  return {nodes,document,calls,fire,settle,push:async s=>{state={...state,...s}; listeners['chat:state']({payload:state});await settle();},el:id=>document.getElementById(id)};
+  return {nodes,document,calls,pages,fire,settle,push:async s=>{state={...state,...s}; listeners['chat:state']({payload:state});await settle();},el:id=>document.getElementById(id)};
 }
 (async()=>{
   let passed=0;
   async function check(name, fn) { await fn(); passed++; console.log(`ok ${passed} - ${name}`); }
-  await check('New button clears draft and visible context; Ctrl+N uses the same IPC and respects IME',async()=>{
-    const p=await page(); p.el('chat-input').value='draft'; p.el('chat-create').click();await p.settle();
-    assert.equal(p.calls.filter(x=>x.action==='new').length,1);assert.equal(p.el('chat-input').value,'');assert.equal(p.el('chat-log').children.length,1);
-    const event=p.fire(p.document,{type:'keydown',key:'n',ctrlKey:true});await p.settle();assert.equal(event.defaultPrevented,true);assert.equal(p.calls.filter(x=>x.action==='new').length,2);
-    p.fire(p.document,{type:'keydown',key:'n',ctrlKey:true,isComposing:true});await p.settle();assert.equal(p.calls.filter(x=>x.action==='new').length,2);
+  const chatSrc=fs.readFileSync(path.join(frontend,'chat.js'),'utf8');
+  const html=fs.readFileSync(path.join(frontend,'index.html'),'utf8');
+  const page2=(n,before)=>({conversation_id:'c-koda',turns:[turn(n),turn(n+1)],before,skipped:0});
+  await check('one continuous chat: the page never calls new/new_with/list/restore, and Ctrl+N does nothing',async()=>{
+    // the chat verb set only (`action(...)` = chat_action; modelsAction({action:'list'}) is the model picker's own closed verb)
+    for(const verb of ['new','new_with','list','restore'])assert.doesNotMatch(chatSrc,new RegExp(`\\baction\\(\\{\\s*action:\\s*'${verb}'`),verb);
+    assert.doesNotMatch(chatSrc,/createConversation|conversationRows|specialistRows|conversationsPanel/);
+    const p=await page();p.el('chat-input').value='draft';
+    const event=p.fire(p.document,{type:'keydown',key:'n',ctrlKey:true});await p.settle();
+    assert.notEqual(event.defaultPrevented,true,'Ctrl+N is not taken');assert.equal(p.el('chat-input').value,'draft','the draft stays');
+    assert.deepEqual(p.calls.map(c=>c.action).filter(a=>['new','new_with','list','restore'].includes(a)),[],JSON.stringify(p.calls));
   });
-  await check('List shows plain title, specialist and activity; selecting restores and closes it',async()=>{
-    const p=await page();p.el('chat-conversations').click();await p.settle();assert.equal(p.calls.at(-1).action,'list');assert.equal(p.el('conversations').hidden,false);
-    const row=p.el('conversations-list').children[0];assert.ok(row);assert.match(row.children[0].textContent,/<img onerror=evil>/);assert.match(row.children[0].getAttribute('aria-label'),/Writer/);
-    row.children[0].click();await p.settle();assert.ok(p.calls.some(x=>x.action==='restore'&&x.conversation_id==='c-first'));assert.equal(p.el('conversations').hidden,true);
+  await check('no saved-conversations dialog, no «Hablar con…», no «+»/clock buttons, no Ctrl+N help',async()=>{
+    for(const id of ['conversations','conversations-list','conversations-close','conversations-note','specialists-list','specialists-title','chat-create','chat-conversations'])assert.ok(!html.includes(`id="${id}"`),id);
+    assert.ok(!html.includes('Hablar con'));assert.ok(!html.includes('Ctrl+N'));
+    assert.ok(html.indexOf('id="chat-load-earlier"')>html.indexOf('id="chat-history-controls"'),'«Cargar anteriores» lives in the history row');
   });
-  await check('Scroll-up pages older turns, preserves the scroll anchor and does not duplicate snapshots',async()=>{
-    const p=await page();const log=p.el('chat-log');Object.defineProperty(log,'scrollHeight',{get:()=>log.children.length*100});log.scrollTop=0;p.fire(log,{type:'scroll'});await p.settle();
-    assert.deepEqual(p.calls.find(x=>x.action==='history'),{action:'history',conversation_id:'c-first',before:36});assert.equal(log.children.length,8);assert.equal(log.scrollTop,400);
-    await p.push({turns:[turn(36),turn(37)]});assert.equal(log.children.length,8);p.fire(log,{type:'scroll'});await p.settle();assert.equal(p.calls.filter(x=>x.action==='history').length,1);
-    p.el('chat-conversations').click();await p.settle();p.el('conversations-list').children[0].children[0].click();await p.settle();assert.equal(log.children.length,4,'reopening the same ID resets loaded presentation pages');
-    await p.push({conversation_id:'c-other',turns:[turn(1)],history_before:null});assert.equal(log.children.length,2);
+  await check('F2: a cursor published AFTER the first view still pages older turns on scroll-up (the id never changes)',async()=>{
+    const p=await page();await p.push({history_before:null});
+    await p.push({history_before:36});
+    const log=p.el('chat-log');Object.defineProperty(log,'scrollHeight',{get:()=>log.children.length*100});
+    p.pages.push(page2(34,null));log.scrollTop=0;p.fire(log,{type:'scroll'});await p.settle();
+    assert.deepEqual(p.calls.find(x=>x.action==='history'),{action:'history',conversation_id:'c-koda',before:36});
+    assert.equal(log.children.length,8);assert.equal(log.scrollTop,400,'the same message stays under the eye');
+    await p.push({turns:[turn(36),turn(37)]});assert.equal(log.children.length,8,'a live push never duplicates loaded pages');
+    p.fire(log,{type:'scroll'});await p.settle();assert.equal(p.calls.filter(x=>x.action==='history').length,1,'nothing older: no more requests');
+  });
+  await check('«Cargar anteriores» is a visible keyboard control that pages without scrolling and hides at the start of the chat',async()=>{
+    const p=await page();const b=p.el('chat-load-earlier');const log=p.el('chat-log');log.scrollTop=500;
+    assert.equal(b.hidden,false,'shown while older turns exist');
+    p.pages.push(page2(34,34),page2(32,null));
+    b.click();await p.settle();
+    assert.deepEqual(p.calls.filter(x=>x.action==='history').map(x=>x.before),[36]);
+    assert.equal(b.hidden,false);b.click();await p.settle();
+    assert.deepEqual(p.calls.filter(x=>x.action==='history').map(x=>x.before),[36,34],'the next page uses the cursor the last page returned');
+    assert.equal(b.hidden,true,'nothing older: the control goes away');
+    assert.equal(log.children.length,12);
+  });
+  await check('a sliding live window never drops loaded history: turns that leave the window stay on the page',async()=>{
+    const p=await page();p.pages.push(page2(34,null));p.el('chat-load-earlier').click();await p.settle();
+    await p.push({turns:[turn(37),turn(38)],history_before:37});
+    const log=p.el('chat-log');assert.equal(log.children.length,10,'34..38 all still drawn');
+    assert.equal(p.el('chat-load-earlier').hidden,true,'the loaded pages already reach the start');
   });
   await check('Existing send wiring still invokes submit with exact draft',async()=>{
     const p=await page();p.el('chat-input').value='hello';p.fire(p.el('chat-input'),{type:'input'});p.fire(p.el('chat-composer'),{type:'submit'});await p.settle();assert.equal(p.calls.find(x=>x.action==='submit').text,'hello');
   });
-  const html=fs.readFileSync(path.join(frontend,'index.html'),'utf8');for(const id of ['chat-create','chat-conversations','conversations','conversations-list'])assert.ok(html.includes(`id="${id}"`),id);
-  assert.ok(html.indexOf('id="chat-create"')>html.indexOf('id="chat-body"'),'controls cannot live in the calm-state hidden status strip');
-  const icons=require('../frontend/icons.js');
-  for(const name of ['bubble','clock'])assert.ok(icons.NAMES.includes(name),name);
   console.log(`conversations-check: ${passed} passed`);
 })().catch(e=>{console.error(e);process.exitCode=1;});

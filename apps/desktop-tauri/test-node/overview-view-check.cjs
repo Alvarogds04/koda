@@ -992,7 +992,10 @@ test('Pi status row (Coucou idle card): one short line + one link per real faili
   const down = O.connectionView({ connections: 0 }), up = O.connectionView({ connections: 1 });
   const acct = [{ configured: true, local: false }];
   // not connected (existing): the Agentes row
-  assert.deepEqual(O.engineRowView(down), { kind: 'down', label: 'Sin motor', link: 'Conectar', target: 'accounts:agentes', aria: 'Conectar Pi: abrir Ajustes → Agentes' });
+  assert.deepEqual(O.engineRowView(down), { kind: 'down', label: 'Sin motor', link: 'Conectar', target: 'accounts:agentes', aria: 'Conectar: abrir Ajustes → Agentes' });
+  // K2-05 T4 U4: the island engine row never names the engine vendor in its accessible text
+  for (const r of [O.engineRowView(down), O.engineRowView(up, { connection: 'lost', accounts: null, sessions: 'error' }), O.engineRowView(up, { connection: 'connected', accounts: [], sessions: 'ready' }), O.engineRowView(up, { connection: 'connected', accounts: acct, sessions: 'error' }), O.engineRowView(down, { connection: 'no_daemon', last_error: { code: 'pi_missing' } })])
+    assert.doesNotMatch(r.aria, /\bPi\b/, r.aria);
   assert.deepEqual(O.engineRowView(down, { connection: 'connected', accounts: acct, sessions: 'ready' }).kind, 'down');
   // engine failures the agent state really reports -> the Motor card (Reiniciar)
   for (const [connection, label] of [['lost', 'Motor caído'], ['refused', 'Motor no responde'], ['bad_session', 'Sesión no válida'], ['no_daemon', 'Sin motor']]) {
