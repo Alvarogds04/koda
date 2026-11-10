@@ -27,6 +27,8 @@
 use crate::agentclient::Reason;
 use serde::Serialize;
 use serde_json::{json, Map, Value};
+use std::cell::Cell;
+use std::time::Instant;
 
 #[cfg(test)]
 #[path = "chatclient_tests.rs"]
@@ -55,13 +57,27 @@ pub const MAX_STREAM_CHARS: usize = 300_000;
 /// The ONLY window label whose commands may chat: the main island window.
 pub const CHAT_WINDOW_LABEL: &str = "main";
 
-/// The daemon's page-id grammar for `get_earlier` (`HISTORY_BEFORE`): `s<file>-<turn>`.
+/// RED scaffold: the island's own chat rate limit (real gate comes with GREEN).
+pub const CHAT_FRAMES_PER_MINUTE: u32 = 120;
+/// The daemon's inbound client-frame bound (`LIMITS.maxFrameBytes`, measured in bytes
+/// after JSON escaping): a serialized line the daemon would reject — it KILLS the
+/// connection for any line over this — is refused by the island, never sent.
+pub const MAX_CLIENT_LINE_BYTES: usize = 256 * 1024;
+
+/// The daemon's page-id grammar for `get_earlier` (`HISTORY_BEFORE` =
+/// `/^s(0|[1-9]\d*)-(0|[1-9]\d*)$/`): `s<file>-<turn>`, canonical — no leading zeros
+/// anywhere (`s0-0` is a real page, `s01` and `s0-01` never match the daemon).
 fn page_id_ok(s: &str) -> bool {
     let bytes = s.as_bytes();
     if bytes.is_empty() || bytes.len() > MAX_ID_CHARS || bytes[0] != b's' { return false; }
     let mut parts = bytes[1..].split(|b| *b == b'-');
     let (Some(file), Some(turn), None) = (parts.next(), parts.next(), parts.next()) else { return false };
-    !file.is_empty() && !turn.is_empty() && file.iter().all(|b| b.is_ascii_digit()) && turn.iter().all(|b| b.is_ascii_digit())
+    let canonical = |p: &[u8]| match p {
+        [b'0'] => true,
+        [] | [b'0', ..] => false,
+        rest => rest.iter().all(|b| b.is_ascii_digit()),
+    };
+    canonical(file) && canonical(turn)
 }
 
 /// The daemon's `SAFE_ID` (ask ids, call ids): `[A-Za-z0-9_.:-]{1,128}`.
@@ -123,14 +139,14 @@ impl ChatAnswer {
         }
     }
 }
-
 /// The closed set of chat commands. Parsed ONLY through [`ChatState::command`],
 /// which gates on the caller's window label first.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ChatCommand {
     /// Prompt the agent. `client_request_id` is the island's own correlation id:
-    /// it never travels on the wire (the daemon de-dupes `send` on its side and
-    /// ties the answer to the shared session, not to a client request id).
+    /// it never travels on the wire. The daemon has NO request-id dedupe — every
+    /// `send` opens a turn — so an answer is tied to the shared session, not to a
+    /// client request id; the id exists so the page can match its own replies.
     Send { text: String, client_request_id: String },
     Steer { text: String },
     Abort,
@@ -161,7 +177,14 @@ pub struct ChatAsk {
     pub id: String,
     pub kind: String,
     pub title: String,
+    /// The shown options: display-clean (control characters stripped). Serialized.
     pub options: Vec<String>,
+    /// The EXACT strings the ask frame carried, position-matched to `options`:
+    /// an answer travels as received — control characters are stripped for display
+    /// only, never in the answer (the daemon matches its pending ask against what
+    /// it sent). Never serialized.
+    #[serde(skip)]
+    wire_options: Vec<String>,
 }
 
 /// An assistant message still streaming, keyed by the daemon's message id.
@@ -207,6 +230,15 @@ pub struct ChatState {
     /// Live activities waiting for their message to finish. Never serialized.
     #[serde(skip_serializing)]
     pending_activities: Vec<Value>,
+    /// Whether the newest end of the log was trimmed by an `earlier` prepend at the
+    /// cap (U4 reloads the latest via `history` when the user scrolls back down).
+    newer_trimmed: bool,
+    /// The island's own chat-command rate window (well below the daemon's 240
+    /// frames/minute drop, which KILLS the connection). Never serialized.
+    #[serde(skip)]
+    pub(crate) rate_window: Cell<Option<Instant>>,
+    #[serde(skip)]
+    pub(crate) rate_count: Cell<u32>,
 }
 
 impl ChatState {
@@ -223,6 +255,9 @@ impl ChatState {
             queue: json!({"steering": 0, "followUp": 0}),
             has_earlier: false,
             pending_activities: vec![],
+            newer_trimmed: false,
+            rate_window: Cell::new(None),
+            rate_count: Cell::new(0),
         }
     }
 
@@ -247,24 +282,46 @@ impl ChatState {
     /// Parse and dispatch one UI command for the given caller window. The label
     /// is part of the API on purpose: only the exact main island window may chat
     /// (the settings window keeps its own connection, and its gate offers no
-    /// chat verbs), so the Tauri command cannot forget the check.
+    /// chat verbs), so the Tauri command cannot forget the check. A command that
+    /// parses is also the island's own rate-limit budget: only sendable commands
+    /// consume it (refused ones are never sent), and the limit stays well below
+    /// the daemon's own 240 frames/minute drop.
     pub fn command(&self, caller: &str, payload: &Value) -> Result<ChatCommand, CommandError> {
         if caller != CHAT_WINDOW_LABEL { return Err(CommandError); }
-        parse_chat_command(&self.asks, payload)
+        let cmd = parse_chat_command(&self.asks, payload)?;
+        const WINDOW: std::time::Duration = std::time::Duration::from_secs(60);
+        let now = Instant::now();
+        match self.rate_window.get() {
+            Some(start) if now.duration_since(start) < WINDOW => {
+                let next = self.rate_count.get() + 1;
+                if next > CHAT_FRAMES_PER_MINUTE { return Err(CommandError); }
+                self.rate_count.set(next);
+            }
+            _ => {
+                self.rate_window.set(Some(now));
+                self.rate_count.set(1);
+            }
+        }
+        Ok(cmd)
     }
 
     /// Fold one server frame in. Unknown or malformed frames change nothing.
     pub fn apply(&mut self, frame: &Value) {
         let Some(t) = frame.get("type").and_then(Value::as_str) else { return };
         match t {
-            "agent_state" => {
-                // a closed status set; anything else reads as the honest null
-                let status = frame.get("status").and_then(Value::as_str).filter(|s| matches!(*s, "ready" | "restarting" | "stopped" | "starting" | "unavailable"));
+            // `agent_state` updates the status live; `ready` carried the same state at
+            // handshake time (nested under "state"). One closed status set.
+            "ready" | "agent_state" => {
+                let s = frame.get("state").filter(|s| s.is_object()).unwrap_or(frame);
+                let status = s.get("status").and_then(Value::as_str).filter(|s| matches!(*s, "ready" | "restarting" | "stopped" | "starting" | "unavailable"));
                 self.agent = json!({
-                    "busy": frame.get("busy").and_then(Value::as_bool).unwrap_or(false),
+                    "busy": s.get("busy").and_then(Value::as_bool).unwrap_or(false),
                     "status": status,
-                    "paused": frame.get("paused").and_then(Value::as_bool).unwrap_or(false),
+                    "paused": s.get("paused").and_then(Value::as_bool).unwrap_or(false),
                 });
+                // a stopped or restarting engine can never finish a half-streamed message:
+                // drop it honestly instead of showing a tail that will never close
+                if matches!(status, Some("stopped" | "restarting")) { self.streaming.clear(); }
             }
             "message_delta" => {
                 let (Some(id), Some(text)) = (id_field(frame, "messageId"), str_field(frame, "text")) else { return };
@@ -331,13 +388,16 @@ impl ChatState {
         }
     }
 
-    /// Live activities pair running→done/error by the engine's `callId`. An
-    /// off-vocabulary state, or a done/error with no prior running entry, is
-    /// dropped — never guessed. The finished entries attach to the next
-    /// completed message (`message_done`).
+    /// Live activities pair running→done/failed by the engine's `callId`. The view has
+    /// ONE closed status set — the daemon's history vocabulary (`running`/`done`/`failed`,
+    /// protocol.cjs `ACTIVITY_STATUSES`); its live activity frames spell the failure
+    /// state `error`, which folds to `failed` here. An off-vocabulary state, or a
+    /// done/error with no prior running entry, is dropped — never guessed. The finished
+    /// entries attach to the next completed message (`message_done`).
     fn fold_activity(&mut self, frame: &Value) {
         let Some(name) = str_field(frame, "name") else { return };
-        let Some(state) = frame.get("state").and_then(Value::as_str).filter(|s| matches!(*s, "running" | "done" | "error")) else { return };
+        let Some(state) = frame.get("state").and_then(Value::as_str).filter(|s| matches!(*s, "running" | "done" | "error" | "failed")) else { return };
+        let state = if state == "error" { "failed" } else { state };
         let Some(call_id) = id_field(frame, "callId").filter(|c| safe_id_ok(c)) else { return };
         let title = clip_utf16(name, 64);
         match state {
@@ -351,7 +411,7 @@ impl ChatState {
                     }
                 }
             }
-            // done/error completes the paired running entry; an unpaired one is dropped
+            // done/failed completes the paired running entry; an unpaired one is dropped
             _ => {
                 if let Some(at) = self.pending_activities.iter().position(|a| a["id"] == json!(call_id)) {
                     self.pending_activities[at]["status"] = json!(state);
@@ -374,13 +434,23 @@ impl ChatState {
             }
             let mut all = fresh;
             all.append(&mut self.messages);
-            // keep the newest bound: the oldest of the merged log fall off
+            // NEVER drop what was just loaded: when the prepend pushes the view over the
+            // cap, the NEWEST end is trimmed (the user scrolled to the OLDEST message;
+            // U4 reloads the latest via `history` when they scroll back down) and the
+            // view says so. Trimming the oldest instead made every earlier page vanish.
             let excess = all.len().saturating_sub(MAX_MESSAGES);
-            all.drain(..excess);
+            if excess > 0 {
+                all.truncate(all.len() - excess);
+                self.newer_trimmed = true;
+            }
             self.messages = all;
         } else {
             self.messages = messages;
+            // a fresh page is the whole truth: a half-streamed message can never
+            // finish against it, and the newest end is present again
+            self.streaming.clear();
             self.pending_activities.clear();
+            self.newer_trimmed = false;
         }
     }
 }
@@ -406,11 +476,19 @@ fn ask_view(frame: &Value) -> Option<ChatAsk> {
     let id = id_field(frame, "id").filter(|i| safe_id_ok(i))?;
     let kind = frame.get("kind").and_then(Value::as_str).filter(|k| matches!(*k, "select" | "confirm" | "input"))?;
     let title = frame.get("title").and_then(Value::as_str).map(|t| clip_utf16(t, 300)).unwrap_or_default();
-    let options = match frame.get("options").and_then(Value::as_array) {
-        Some(opts) if kind == "select" => opts.iter().take(50).filter_map(|o| o.as_str().map(|o| clip_utf16(o, 200))).collect(),
-        _ => vec![],
-    };
-    Some(ChatAsk { id: id.to_owned(), kind: kind.to_owned(), title, options })
+    // The daemon's own option clip (LIMITS.maxOptionChars = 200) bounds every option it
+    // sends; anything longer or non-string is a malformed ask: dropped entirely, never
+    // answerable. Both lists stay position-aligned: shown (display-clean) and exact.
+    let mut options = Vec::new();
+    let mut wire_options = Vec::new();
+    if kind == "select" {
+        for o in frame.get("options").and_then(Value::as_array)?.iter().take(50) {
+            let raw = o.as_str().filter(|r| utf16_len(r) <= 200)?;
+            options.push(clip_utf16(raw, 200));
+            wire_options.push(raw.to_owned());
+        }
+    }
+    Some(ChatAsk { id: id.to_owned(), kind: kind.to_owned(), title, options, wire_options })
 }
 
 /// The closed rebuild of one history message (the daemon already allowlisted its
@@ -431,7 +509,13 @@ fn history_message_view(m: &Value) -> Option<Value> {
             Some(json!({"id": id, "kind": kind, "title": title, "status": status}))
         }).collect()
     }).unwrap_or_default();
-    Some(json!({"id": id, "role": role, "text": text, "activities": activities}))
+    let mut view = json!({"id": id, "role": role, "text": text, "activities": activities});
+    // the daemon's own booleans, allowlisted: `earlier` marks rows the engine loaded
+    // from older chain files; `clipped` says the daemon cut the text (protocol.cjs
+    // historyMessageDto). True only — never a string or a number.
+    if m.get("earlier").and_then(Value::as_bool) == Some(true) { view["earlier"] = json!(true); }
+    if m.get("clipped").and_then(Value::as_bool) == Some(true) { view["clipped"] = json!(true); }
+    Some(view)
 }
 
 // ---- command parsing (window-gated) -------------------------------------------------------
@@ -448,24 +532,24 @@ fn parse_chat_command(asks: &[ChatAsk], payload: &Value) -> Result<ChatCommand, 
         Ok(t.to_owned())
     };
     let exact = |n: usize| if map.len() == n { Ok(()) } else { Err(CommandError) };
-    match action {
+    let cmd = match action {
         "chat_send" => {
             exact(3)?;
             let text = text_of(MAX_TEXT_CHARS)?;
             let id = map.get("clientRequestId").and_then(Value::as_str).filter(|i| safe_id_ok(i)).ok_or(CommandError)?;
-            Ok(ChatCommand::Send { text, client_request_id: id.to_owned() })
+            ChatCommand::Send { text, client_request_id: id.to_owned() }
         }
         "chat_steer" => {
             exact(2)?;
-            Ok(ChatCommand::Steer { text: text_of(MAX_TEXT_CHARS)? })
+            ChatCommand::Steer { text: text_of(MAX_TEXT_CHARS)? }
         }
-        "chat_abort" => exact(1).map(|_| ChatCommand::Abort),
-        "chat_history" => exact(1).map(|_| ChatCommand::History),
-        "chat_status" => exact(1).map(|_| ChatCommand::Status),
+        "chat_abort" => exact(1).map(|_| ChatCommand::Abort)?,
+        "chat_history" => exact(1).map(|_| ChatCommand::History)?,
+        "chat_status" => exact(1).map(|_| ChatCommand::Status)?,
         "chat_earlier" => {
             exact(2)?;
             let before = map.get("before").and_then(Value::as_str).filter(|b| page_id_ok(b)).ok_or(CommandError)?;
-            Ok(ChatCommand::Earlier { before: before.to_owned() })
+            ChatCommand::Earlier { before: before.to_owned() }
         }
         "chat_ui_response" => {
             exact(3)?;
@@ -481,16 +565,27 @@ fn parse_chat_command(asks: &[ChatAsk], payload: &Value) -> Result<ChatCommand, 
                 Some(Value::String(v)) => {
                     if utf16_len(v) > MAX_ANSWER_CHARS { return Err(CommandError); }
                     match ask.kind.as_str() {
-                        // a select answer must be one of the SHOWN options
-                        "select" if ask.options.iter().any(|o| o == v) => ChatAnswer::Value(v.clone()),
+                        // a select answer must be one of the SHOWN options; the wire
+                        // carries the EXACT string the ask frame received (position-
+                        // matched), never a display-stripped rewrite
+                        "select" => {
+                            let Some(at) = ask.options.iter().position(|o| o == v) else { return Err(CommandError) };
+                            let Some(exact) = ask.wire_options.get(at) else { return Err(CommandError) };
+                            ChatAnswer::Value(exact.clone())
+                        }
                         "input" => ChatAnswer::Value(v.clone()),
                         _ => return Err(CommandError),
                     }
                 }
                 _ => return Err(CommandError),
             };
-            Ok(ChatCommand::UiResponse { ask_id: ask_id.to_owned(), answer })
+            ChatCommand::UiResponse { ask_id: ask_id.to_owned(), answer }
         }
-        _ => Err(CommandError),
-    }
+        _ => return Err(CommandError),
+    };
+    // the daemon drops the connection for any client line over its inbound byte bound
+    // (server.cjs measures the raw line): measure the SERIALIZED line in bytes, after
+    // JSON escaping, and refuse locally anything the daemon would reject
+    if cmd.line().len() > MAX_CLIENT_LINE_BYTES { return Err(CommandError); }
+    Ok(cmd)
 }

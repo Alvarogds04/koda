@@ -144,6 +144,11 @@ fn get_earlier_requires_a_daemon_page_id() {
         assert!(ok(json!({"action":"chat_earlier","before":bad})).is_err(), "must refuse {bad:?}");
     }
     assert!(ok(json!({"action":"chat_earlier","before":7})).is_err());
+    // the canonical rule (`HISTORY_BEFORE` = /^s(0|[1-9]\d*)-(0|[1-9]\d*)$/):
+    // no leading zeros anywhere — `s01-2` and `s0-01` never match the daemon's grammar
+    for bad in ["s01-2", "s0-01", "s00-0", "s010-1"] {
+        assert!(ok(json!({"action":"chat_earlier","before":bad})).is_err(), "must refuse {bad:?}");
+    }
     // an id longer than the daemon's 128-char bound is refused
     let long = format!("s0-{}", "1".repeat(MAX_ID_CHARS));
     assert!(ok(json!({"action":"chat_earlier","before":long})).is_err());
@@ -197,7 +202,7 @@ fn history_replaces_the_view_and_earlier_prepends_deduped() {
     st.apply(&json!({"type":"history","messages":[{"id":"s1-3","role":"assistant","text":"respuesta"}],"hasEarlier":true}));
     let v = view(&st);
     assert_eq!(v["messages"].as_array().unwrap().len(), 1, "history replaces, never appends");
-    assert_eq!(v["streaming"].as_array().unwrap().len(), 1, "a live turn keeps streaming across a history replace");
+    assert_eq!(v["streaming"].as_array().unwrap().len(), 0, "history replacing the view clears a half-streamed message: it can never finish");
 
     // earlier prepends the page and dedupes by id
     st.apply(&json!({"type":"earlier","before":"s1-3","messages":[
@@ -344,6 +349,135 @@ fn the_view_stays_bounded() {
     assert!(st4.command(CHAT_WINDOW_LABEL, &json!({"action":"chat_ui_response","askId":format!("a-{}", MAX_ASKS + 4),"answer":"x"})).is_err(), "an ask past the bound never registers");
 }
 
+// ---- K2-05 verifier findings: the island-side fixes ----------------------------------------
+
+#[test]
+fn loading_earlier_at_the_cap_trims_the_newest_end_and_sets_newer_trimmed() {
+    let mut st = ChatState::connected();
+    for i in 0..MAX_MESSAGES {
+        st.apply(&json!({"type":"message_done","messageId":format!("m{i}")}));
+    }
+    // one earlier page of the OLDEST messages, all new ids: at the cap the page just
+    // loaded must stay reachable, never be trimmed away by its own prepend
+    let page: Vec<Value> = (0..HISTORY_PAGE).map(|i| json!({"id":format!("old-{i}"),"role":"user","text":"más viejo"})).collect();
+    st.apply(&json!({"type":"earlier","before":"s0-1","messages":page,"hasEarlier":true}));
+    let v = view(&st);
+    let messages = v["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), MAX_MESSAGES, "the view stays bounded");
+    assert_eq!(messages[0]["id"], json!("old-0"), "the first message of the chat is reachable");
+    assert_eq!(messages[HISTORY_PAGE - 1]["id"], json!("old-99"), "the whole page just loaded survived");
+    assert_eq!(v["newerTrimmed"], json!(true), "the view says the NEWEST end was trimmed (U4 reloads it via history)");
+    // a fresh history replace is a complete view again: the flag resets
+    st.apply(&json!({"type":"history","messages":[],"hasEarlier":false}));
+    assert_eq!(view(&st)["newerTrimmed"], json!(false));
+}
+
+#[test]
+fn ready_and_stopped_engine_states_clear_half_streamed_messages() {
+    let mut st = ChatState::connected();
+    st.apply(&json!({"type":"message_delta","messageId":"m1","text":"a medias"}));
+    // the daemon's `ready` carries the agent state at handshake time: it folds like agent_state
+    st.apply(&json!({"type":"ready","protocol":"island-agent/1","state":{"busy":false,"status":"starting","paused":false}}));
+    assert_eq!(view(&st)["agent"], json!({"busy":false,"status":"starting","paused":false}));
+    assert_eq!(view(&st)["streaming"].as_array().unwrap().len(), 1, "a live turn keeps streaming while the engine runs");
+    // the engine stops: a half-streamed message can never finish, drop it honestly
+    st.apply(&json!({"type":"agent_state","busy":false,"status":"stopped","paused":false}));
+    assert_eq!(view(&st)["streaming"].as_array().unwrap().len(), 0);
+    st.apply(&json!({"type":"message_delta","messageId":"m2","text":"otra"}));
+    st.apply(&json!({"type":"agent_state","busy":false,"status":"restarting","paused":false}));
+    assert_eq!(view(&st)["streaming"].as_array().unwrap().len(), 0, "a restart drops the half stream too");
+    // a normal agent_state keeps streaming
+    st.apply(&json!({"type":"message_delta","messageId":"m3","text":"tercera"}));
+    st.apply(&json!({"type":"agent_state","busy":true,"status":"ready","paused":false}));
+    assert_eq!(view(&st)["streaming"].as_array().unwrap().len(), 1);
+    // and history replacing the view clears half streams as well
+    st.apply(&json!({"type":"history","messages":[{"id":"s0-1","role":"user","text":"hola"}],"hasEarlier":false}));
+    assert_eq!(view(&st)["streaming"].as_array().unwrap().len(), 0);
+}
+
+#[test]
+fn history_rows_keep_the_earlier_and_clipped_flags() {
+    let mut st = ChatState::connected();
+    st.apply(&json!({"type":"history","messages":[
+        {"id":"s0-1","role":"user","text":"hola","earlier":true},
+        {"id":"s0-2","role":"assistant","text":"respuesta muy larga…","clipped":true}
+    ],"hasEarlier":true}));
+    let messages = view(&st)["messages"].as_array().unwrap().clone();
+    assert_eq!(messages[0]["earlier"], json!(true), "the daemon's earlier flag travels to the UI");
+    assert_eq!(messages[1]["clipped"], json!(true), "the daemon's clipped flag travels to the UI");
+    // off-vocabulary flags never appear (booleans only)
+    st.apply(&json!({"type":"history","messages":[{"id":"s0-3","role":"user","text":"x","earlier":"yes","clipped":1}],"hasEarlier":false}));
+    let m = view(&st)["messages"][0].clone();
+    assert!(m.get("earlier").is_none() && m.get("clipped").is_none(), "only the true booleans are allowlisted: {m}");
+}
+
+#[test]
+fn live_tool_statuses_use_the_daemons_one_closed_vocabulary() {
+    let mut st = ChatState::connected();
+    // the daemon's live activity frames say `error`; its history rows say `failed`.
+    // The view has ONE closed set (running/done/failed, historyMessageDto): no split.
+    st.apply(&json!({"type":"activity","name":"run","state":"running","callId":"t1"}));
+    st.apply(&json!({"type":"activity","name":"run","state":"error","callId":"t1"}));
+    st.apply(&json!({"type":"activity","name":"read","state":"running","callId":"t2"}));
+    st.apply(&json!({"type":"activity","name":"read","state":"failed","callId":"t2"}));
+    st.apply(&json!({"type":"message_done","messageId":"m1"}));
+    let activities = view(&st)["messages"][0]["activities"].as_array().unwrap().clone();
+    assert_eq!(activities.len(), 2, "both live activities paired and landed");
+    assert_eq!(activities[0], json!({"id":"t1","kind":"other","title":"run","status":"failed"}), "one closed status set, no error-vs-failed split");
+    assert_eq!(activities[1], json!({"id":"t2","kind":"other","title":"read","status":"failed"}));
+    // an off-vocabulary activity state is still dropped, never guessed
+    let mut st2 = ChatState::connected();
+    st2.apply(&json!({"type":"activity","name":"read","state":"weird","callId":"t2"}));
+    st2.apply(&json!({"type":"message_done","messageId":"m9"}));
+    assert!(view(&st2)["messages"][0]["activities"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn a_line_the_daemon_would_drop_is_refused_by_the_island() {
+    let ok = |payload: serde_json::Value| ChatState::connected().command(CHAT_WINDOW_LABEL, &payload);
+    // 60,001 control characters: within the 64 Ki UTF-16 text cap, but 6 bytes each on the
+    // wire once JSON-escaped — far over the daemon's 256 KiB inbound line bound, whose
+    // excess the daemon answers by KILLING the connection. The island refuses locally.
+    let bell: String = "\u{7}".repeat(60_001);
+    assert!(ok(send_payload(&bell)).is_err(), "the serialized client line must be measured in bytes and refused");
+    // ordinary text of the same UTF-16 length travels fine
+    let plain: String = "a".repeat(60_001);
+    assert!(ok(send_payload(&plain)).is_ok());
+}
+
+#[test]
+fn ui_response_answers_with_the_exact_option_string_received() {
+    let mut st = ChatState::connected();
+    // control characters are stripped for DISPLAY only; the answer must carry the exact
+    // string the ask frame had — the daemon matches its pending ask against what it sent
+    st.apply(&json!({"type":"ask","id":"a-1","kind":"select","title":"¿Seguir?","options":["Sí\u{7}","No"]}));
+    let v = view(&st);
+    assert_eq!(v["pendingAsk"]["options"], json!(["Sí", "No"]), "the shown options are display-clean");
+    // the page answers the shown label; the wire carries the exact string the frame received
+    let cmd = st.command(CHAT_WINDOW_LABEL, &json!({"action":"chat_ui_response","askId":"a-1","answer":"Sí"})).unwrap();
+    assert_eq!(cmd.line(), "{\"type\":\"ui_response\",\"id\":\"a-1\",\"value\":\"Sí\\u0007\"}\n");
+    // an unaltered option answers as itself
+    let cmd = st.command(CHAT_WINDOW_LABEL, &json!({"action":"chat_ui_response","askId":"a-1","answer":"No"})).unwrap();
+    assert_eq!(cmd.line(), "{\"type\":\"ui_response\",\"id\":\"a-1\",\"value\":\"No\"}\n");
+}
+
+#[test]
+fn chat_commands_are_rate_limited_well_below_the_daemons_frame_drop() {
+    let st = ChatState::connected();
+    let ok = |payload: serde_json::Value| st.command(CHAT_WINDOW_LABEL, &payload);
+    for i in 0..CHAT_FRAMES_PER_MINUTE {
+        assert!(ok(json!({"action":"chat_abort"})).is_ok(), "command {i} within the island's own limit");
+    }
+    assert!(ok(json!({"action":"chat_abort"})).is_err(), "one more command trips the island's own limit, never the daemon's 240/min drop");
+    // a fresh window lets the page chat again
+    st.rate_window.set(None);
+    assert!(ok(json!({"action":"chat_abort"})).is_ok());
+    // refused commands are never sent: they consume no budget
+    assert!(ok(json!({"action":"chat_send","text":""})).is_err());
+    st.rate_window.set(None);
+    assert!(ok(json!({"action":"chat_abort"})).is_ok(), "a refused command consumed no budget");
+}
+
 // ---- transport: a second connection for chat (unix round trip) --------------
 
 #[cfg(unix)]
@@ -470,6 +604,236 @@ mod round_trip {
         let text = serde_json::to_string(&conn.view()).unwrap();
         assert!(!text.contains("t0k3n") && !text.contains("p-AbCdEf"), "the chat view never leaks session material: {text}");
 
+        conn.close();
+    }
+
+    /// A fresh island dir with a session.json pointing at a freshly bound socket.
+    fn island_dir(tag: &str) -> (PathBuf, UnixListener) {
+        let dir = std::env::temp_dir().join(format!("abito-chatclient-{}-{}", std::process::id(), N.fetch_add(1, Ordering::SeqCst)));
+        let leaf = format!("p-AbCdE{tag}");
+        std::fs::create_dir_all(dir.join("runtime").join(&leaf)).unwrap();
+        std::fs::set_permissions(dir.join("runtime"), std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::set_permissions(dir.join("runtime").join(&leaf), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let endpoint = dir.join("runtime").join(&leaf).join("s");
+        let listener = UnixListener::bind(&endpoint).expect("fake socket");
+        let session = json!({"protocol":"island-agent/1","endpoint":endpoint.to_str().unwrap(),"token":"t0k3n","pid":std::process::id()});
+        let session_path = dir.join("runtime/session.json");
+        std::fs::write(&session_path, session.to_string()).unwrap();
+        std::fs::set_permissions(&session_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        (dir, listener)
+    }
+
+    /// The verifier's connect shape: `ready`, the pending ask and the history page
+    /// travel in ONE write — every complete line after `ready` must reach the fold.
+    fn fake_daemon_burst(listener: UnixListener, received: std::sync::mpsc::Sender<String>) {
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            reader.read_line(&mut line).expect("hello");
+            let _ = received.send(line.trim().to_string());
+            stream.write_all(concat!(
+                "{\"type\":\"ready\",\"seq\":1,\"state\":{\"busy\":false,\"status\":\"ready\",\"paused\":false},\"features\":{\"history\":true,\"conversations\":false}}\n",
+                "{\"type\":\"ask\",\"seq\":2,\"id\":\"a-9\",\"kind\":\"confirm\",\"title\":\"¿Seguir?\"}\n",
+                "{\"type\":\"history\",\"seq\":3,\"messages\":[{\"id\":\"s0-1\",\"role\":\"user\",\"text\":\"hola anterior\"}],\"hasEarlier\":true}\n",
+            ).as_bytes()).unwrap();
+            loop {
+                line.clear();
+                match reader.read_line(&mut line) {
+                    Ok(0) | Err(_) => return,
+                    Ok(_) => { let _ = received.send(line.trim().to_string()); }
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn ready_and_later_frames_in_one_write_all_reach_the_view() {
+        let (dir, listener) = island_dir("1");
+        let _tidy = Tmp(dir.clone());
+        let (tx, rx) = std::sync::mpsc::channel::<String>();
+        fake_daemon_burst(listener, tx);
+        let conn = ChatConn::new(|_| {});
+        conn.connect(&dir);
+        // the ask that arrived in the same read as `ready` is registered and answerable
+        wait_for(&conn, "pending ask from the burst", |v| v["pendingAsk"]["id"] == json!("a-9"));
+        // the history page of the same burst folded too
+        let v = wait_for(&conn, "history from the burst", |v| v["messages"].as_array().is_some_and(|m| !m.is_empty()));
+        assert_eq!(v["messages"][0]["text"], json!("hola anterior"));
+        // the agent status the `ready` frame carried folded as well
+        assert_eq!(v["agent"]["status"], json!("ready"));
+        // connect requested the newest history AND the agent status
+        let lines: Vec<String> = rx.try_iter().collect();
+        assert!(lines.iter().any(|l| l.contains("\"type\":\"get_history\"")), "{lines:?}");
+        assert!(lines.iter().any(|l| l.contains("\"type\":\"status\"")), "status is requested on connect: {lines:?}");
+        conn.close();
+    }
+
+    /// After the handshake the daemon sends one line over the island's 256 KiB reader
+    /// bound (a hooks broadcast up to the daemon's own 1 MiB history bound), one
+    /// malformed line, and then a frame that must still arrive.
+    fn fake_daemon_noisy(listener: UnixListener, received: std::sync::mpsc::Sender<String>) {
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            reader.read_line(&mut line).expect("hello");
+            let _ = received.send(line.trim().to_string());
+            stream.write_all(b"{\"type\":\"ready\",\"seq\":1,\"state\":{\"busy\":false,\"status\":\"ready\",\"paused\":false},\"features\":{\"history\":true,\"conversations\":false}}\n").unwrap();
+            std::thread::sleep(Duration::from_millis(80));
+            let mut oversized = vec![b'x'; 280 * 1024];
+            oversized.push(b'\n');
+            let _ = stream.write_all(&oversized);
+            let _ = stream.write_all(b"not json at all\n");
+            let _ = stream.write_all(b"{\"type\":\"agent_state\",\"seq\":2,\"busy\":true,\"status\":\"starting\",\"paused\":false}\n");
+            loop {
+                line.clear();
+                match reader.read_line(&mut line) {
+                    Ok(0) | Err(_) => return,
+                    Ok(_) => { let _ = received.send(line.trim().to_string()); }
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn oversized_and_malformed_lines_never_end_the_connection() {
+        let (dir, listener) = island_dir("2");
+        let _tidy = Tmp(dir.clone());
+        let (tx, _rx) = std::sync::mpsc::channel::<String>();
+        fake_daemon_noisy(listener, tx);
+        let conn = ChatConn::new(|_| {});
+        conn.connect(&dir);
+        wait_for(&conn, "connected", |v| v["connection"] == json!("connected"));
+        // the valid frame after the noise still folds
+        let v = wait_for(&conn, "agent_state after the noise", |v| v["agent"]["busy"] == json!(true));
+        assert_eq!(v["agent"]["status"], json!("starting"));
+        // the connection is still up: a command travels, the view stays connected
+        conn.command("main", &json!({"action":"chat_status"})).unwrap();
+        std::thread::sleep(Duration::from_millis(150));
+        assert_eq!(conn.view()["connection"], json!("connected"), "the connection survived oversized and malformed lines");
+        conn.close();
+    }
+
+    /// Two identical `agent_state` frames, far enough apart to land in separate reads:
+    /// the second must not emit the view again — bursts coalesce, unchanged folds don't.
+    fn fake_daemon_echo_state(listener: UnixListener) {
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            reader.read_line(&mut line).expect("hello");
+            stream.write_all(b"{\"type\":\"ready\",\"seq\":1,\"state\":{\"busy\":false,\"status\":\"ready\",\"paused\":false},\"features\":{\"history\":true,\"conversations\":false}}\n").unwrap();
+            let state_frame = |seq: u64| format!("{{\"type\":\"agent_state\",\"seq\":{seq},\"busy\":true,\"status\":\"starting\",\"paused\":false}}\n");
+            std::thread::sleep(Duration::from_millis(120));
+            stream.write_all(state_frame(2).as_bytes()).unwrap();
+            std::thread::sleep(Duration::from_millis(200));
+            stream.write_all(state_frame(3).as_bytes()).unwrap();
+            std::thread::sleep(Duration::from_millis(200));
+            stream.write_all(b"{\"type\":\"agent_state\",\"seq\":4,\"busy\":false,\"status\":\"ready\",\"paused\":false}\n").unwrap();
+            loop {
+                line.clear();
+                match reader.read_line(&mut line) {
+                    Ok(0) | Err(_) => return,
+                    Ok(_) => {}
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn the_view_is_emitted_only_when_a_frame_changed_the_state() {
+        let (dir, listener) = island_dir("3");
+        let _tidy = Tmp(dir.clone());
+        fake_daemon_echo_state(listener);
+        let seen: std::sync::Arc<std::sync::Mutex<Vec<Value>>> = std::sync::Arc::default();
+        let sink = seen.clone();
+        let conn = ChatConn::new(move |v| { sink.lock().expect("seen lock").push(v); });
+        conn.connect(&dir);
+        wait_for(&conn, "final state", |v| v["agent"]["status"] == json!("ready") && v["agent"]["busy"] == json!(false));
+        std::thread::sleep(Duration::from_millis(150));
+        let seen = seen.lock().expect("seen lock").clone();
+        for w in seen.windows(2) {
+            assert_ne!(w[0], w[1], "an unchanged fold must never be emitted again: {seen:?}");
+        }
+        conn.close();
+    }
+
+    /// A daemon that answers the handshake and then broadcasts `agent_state` every
+    /// 10 ms until told to stop (which closes the socket). The old reader's `changed`
+    /// callback sleeps 300 ms on those views, so it is reliably INSIDE its emit when
+    /// the next connect runs — after which the reconnect's stop flag is reset again:
+    /// with one shared flag the old reader wakes, sees the reset flag and wipes the
+    /// NEW connection's writer. Each connection's own flag/generation must prevent it.
+    fn fake_daemon_broadcaster(listener: UnixListener, stop: std::sync::Arc<std::sync::atomic::AtomicBool>) {
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            stream.set_read_timeout(Some(Duration::from_millis(20))).unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            if reader.read_line(&mut line).is_ok() {}
+            stream.write_all(b"{\"type\":\"ready\",\"seq\":1,\"state\":{\"busy\":false,\"status\":\"ready\",\"paused\":false},\"features\":{\"history\":true,\"conversations\":false}}\n").unwrap();
+            let mut seq = 1u64;
+            loop {
+                line.clear();
+                match reader.read_line(&mut line) {
+                    Ok(0) => return,
+                    Ok(_) => {}
+                    Err(_) => {}
+                }
+                if stop.load(Ordering::SeqCst) { return; } // closes the socket: EOF for the old reader
+                seq += 1;
+                let _ = stream.write_all(format!("{{\"type\":\"agent_state\",\"seq\":{seq},\"busy\":true,\"status\":\"starting\",\"paused\":false}}\n").as_bytes());
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        });
+    }
+
+    #[test]
+    fn a_reconnect_never_lets_an_old_reader_touch_the_new_connection() {
+        let dir = std::env::temp_dir().join(format!("abito-chatclient-{}-{}", std::process::id(), N.fetch_add(1, Ordering::SeqCst)));
+        std::fs::create_dir_all(dir.join("runtime")).unwrap();
+        std::fs::set_permissions(dir.join("runtime"), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let _tidy = Tmp(dir.clone());
+        let conn = ChatConn::new(|v: Value| {
+            // the old reader parks here on the old daemon's broadcast views, so it is
+            // reliably INSIDE its emit when the next connect runs and resets the flag
+            if v["agent"]["busy"] == json!(true) && v["agent"]["status"] == json!("starting") {
+                std::thread::sleep(Duration::from_millis(300));
+            }
+        });
+        let mut current_stop: Option<std::sync::Arc<std::sync::atomic::AtomicBool>> = None;
+        for round in 0..3u32 {
+            let leaf = format!("p-AbCdE{round}");
+            std::fs::create_dir_all(dir.join("runtime").join(&leaf)).unwrap();
+            std::fs::set_permissions(dir.join("runtime").join(&leaf), std::fs::Permissions::from_mode(0o700)).unwrap();
+            let endpoint = dir.join("runtime").join(&leaf).join("s");
+            let listener = UnixListener::bind(&endpoint).expect("fake socket");
+            let session = json!({"protocol":"island-agent/1","endpoint":endpoint.to_str().unwrap(),"token":"t0k3n","pid":std::process::id()});
+            let session_path = dir.join("runtime/session.json");
+            std::fs::write(&session_path, session.to_string()).unwrap();
+            std::fs::set_permissions(&session_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+            let (_tx, _rx) = std::sync::mpsc::channel::<String>();
+            let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            fake_daemon_broadcaster(listener, stop.clone());
+            conn.connect(&dir);
+            wait_for(&conn, &format!("connected (round {round})"), |v| v["connection"] == json!("connected"));
+            // the new connection's writer works
+            conn.command("main", &json!({"action":"chat_status"})).unwrap();
+            // the PREVIOUS daemon keeps broadcasting across this connect and only now
+            // closes; its old reader, parked inside the emit callback, resumes onto a
+            // reset stop flag
+            if let Some(old) = current_stop.replace(stop) {
+                old.store(true, Ordering::SeqCst);
+            }
+            // give the old reader time to observe the EOF (and, broken, to wipe us)
+            std::thread::sleep(Duration::from_millis(500));
+            assert_eq!(conn.view()["connection"], json!("connected"), "round {round}: the reconnect survived the old reader");
+            conn.command("main", &json!({"action":"chat_status"})).unwrap();
+        }
         conn.close();
     }
 }

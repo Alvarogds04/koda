@@ -109,10 +109,15 @@ pub enum FrameError {
 #[derive(Default)]
 pub struct FrameBuffer {
     pending: Vec<u8>,
+    /// Lenient-read state: a line already past the daemon's own frame bound with no LF
+    /// in sight is discarded as it arrives, until the next newline ends it.
+    discarding: bool,
 }
 
 impl FrameBuffer {
     /// Feed bytes; returns the complete frames (objects) found. LF is the only separator.
+    /// STRICT: the handshake path — an oversized or malformed line is a protocol error,
+    /// never a skip.
     pub fn push(&mut self, bytes: &[u8]) -> Result<Vec<Value>, FrameError> {
         self.pending.extend_from_slice(bytes);
         let mut out = Vec::new();
@@ -131,6 +136,46 @@ impl FrameBuffer {
             return Err(FrameError::TooLarge);
         }
         Ok(out)
+    }
+
+    /// Feed bytes on the POST-HANDSHAKE read path: an oversized line (a hooks broadcast
+    /// up to the daemon's own 1 MiB history bound) or a malformed JSON line is SKIPPED —
+    /// counted, never buffered past its bound, never fatal — so the connection stays up.
+    /// Returns the complete frames found and how many lines were skipped.
+    pub fn push_lenient(&mut self, bytes: &[u8]) -> (Vec<Value>, u64) {
+        let mut out = Vec::new();
+        let mut skipped = 0u64;
+        let mut rest = bytes;
+        if self.discarding {
+            // bounded discard: bytes flow through, only the next newline ends the skip
+            match rest.iter().position(|b| *b == b'\n') {
+                Some(at) => {
+                    self.discarding = false;
+                    rest = &rest[at + 1..];
+                    skipped += 1;
+                }
+                None => return (out, skipped),
+            }
+        }
+        self.pending.extend_from_slice(rest);
+        while let Some(at) = self.pending.iter().position(|b| *b == b'\n') {
+            let line: Vec<u8> = self.pending.drain(..=at).collect();
+            if line.len() > MAX_FRAME_BYTES + 1 {
+                skipped += 1; // already drained: the oversized bytes were never kept
+                continue;
+            }
+            match serde_json::from_slice::<Value>(&line[..line.len() - 1]) {
+                Ok(v) if v.is_object() => out.push(v),
+                _ => skipped += 1, // malformed JSON or not an object
+            }
+        }
+        if self.pending.len() > MAX_FRAME_BYTES {
+            // no LF and already past the daemon's own bound: the eventual line can only
+            // be oversized — stop buffering it, discard until the next newline
+            self.pending.clear();
+            self.discarding = true;
+        }
+        (out, skipped)
     }
 }
 
