@@ -20,10 +20,11 @@
 //!   the page can never invent an ask id or an option;
 //! - server frames are folded into allowlisted fields; unknown frames, unknown
 //!   keys and off-vocabulary values change nothing (never forwarded raw);
-//! - attachments are NOT in this unit (decision 2a adds daemon-side uploads in a
-//!   later unit): the command set and the view have no attachment field yet, so
-//!   there is no dead code and no half-open path. The single extension point is
-//!   [`history_message_view`], where the daemon's attachment chips would fold.
+//! - attachments (K2-05, decision 2a, Gentle Dot's model): a file reaches the DAEMON as
+//!   `upload` chunks over this same connection and is stored in the engine workspace;
+//!   the daemon answers the last chunk with an opaque id (`a-<16 hex>`) issued to this
+//!   client only. A `send` names files by those ids only — never a path, never a name —
+//!   and the island stores nothing itself.
 use crate::agentclient::Reason;
 use serde::Serialize;
 use serde_json::{json, Map, Value};
@@ -63,6 +64,21 @@ pub const CHAT_FRAMES_PER_MINUTE: u32 = 120;
 /// The part of that budget only send/steer/abort/answer may spend: history paging and
 /// status reads stop short of it, so paging can never make a send be refused.
 pub const CHAT_FRAMES_RESERVED: u32 = 20;
+/// K2-05 attachments: the island's own budget for `upload` chunks (the daemon drops a client
+/// past 720 a minute; chunks never spend the chat budget above, so paging and sends keep theirs).
+pub const UPLOAD_FRAMES_PER_MINUTE: u32 = 600;
+/// K2-05 attachments: the daemon's `LIMITS.maxUploadChunkChars` (base64 text of one chunk).
+pub const MAX_UPLOAD_CHUNK_CHARS: usize = 192 * 1024;
+/// File bytes per chunk: exactly one maximal base64 chunk.
+pub const UPLOAD_CHUNK_BYTES: usize = MAX_UPLOAD_CHUNK_CHARS / 4 * 3;
+/// Gentle Dot's `ATTACHMENT_LIMITS.fileBytes` (uploads.cjs): 25 MB per file.
+pub const MAX_UPLOAD_FILE_BYTES: usize = 25 * 1024 * 1024;
+/// The daemon's `LIMITS.maxUploadNameChars`.
+pub const MAX_UPLOAD_NAME_CHARS: usize = 255;
+/// The daemon's `LIMITS.maxAttachments` (Gentle Dot's files per message).
+pub const MAX_SEND_ATTACHMENTS: usize = 10;
+/// The upload answers the view keeps (newest last).
+pub const MAX_UPLOAD_ANSWERS: usize = 32;
 /// The daemon's inbound client-frame bound (`LIMITS.maxFrameBytes`, measured in bytes
 /// after JSON escaping): a serialized line the daemon would reject — it KILLS the
 /// connection for any line over this — is refused by the island, never sent.
@@ -109,6 +125,27 @@ pub fn fresh_request_id() -> String {
     }
     let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
     format!("i{hex}")
+}
+
+/// The daemon's own opaque id of one stored upload (`uploads.cjs` `UPLOAD_ID`): `a-` + 16 lowercase hex.
+pub fn upload_id_ok(s: &str) -> bool {
+    s.len() == 18 && s.starts_with("a-") && s[2..].bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+/// Standard base64 text as the daemon accepts it (`BASE64`, length a multiple of 4).
+fn base64_ok(s: &str) -> bool {
+    let b = s.as_bytes();
+    let pad = b.iter().rev().take_while(|c| **c == b'=').count();
+    !b.is_empty() && b.len().is_multiple_of(4) && pad <= 2
+        && b[..b.len() - pad].iter().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'+' | b'/'))
+}
+
+/// One attachment chip as the daemon describes a stored file (`{name,size,mime}`), allowlisted.
+fn chip_view(a: &Value) -> Option<Value> {
+    let name = a.get("name").and_then(Value::as_str).filter(|n| !n.is_empty() && utf16_len(n) <= 128 && !n.chars().any(char::is_control))?;
+    let size = a.get("size").and_then(Value::as_u64)?;
+    let mime = a.get("mime").and_then(Value::as_str).filter(|m| m.len() <= 64 && !m.chars().any(char::is_control))?;
+    Some(json!({"name": name, "size": size, "mime": mime}))
 }
 
 /// JS `String.length`: the daemon measures text in UTF-16 code units.
@@ -172,7 +209,11 @@ pub enum ChatCommand {
     /// on the wire. `request_id` does (Gentle Dot's `send{requestId}`): the daemon ignores a
     /// repeated one and echoes it, to this client only, on the `user_message` of the prompt the
     /// engine recorded for this send — the ONLY way an island turn binds to its record.
-    Send { text: String, client_request_id: String, request_id: String },
+    Send { text: String, client_request_id: String, request_id: String, attachments: Vec<String> },
+    /// K2-05 attachments: one base64 chunk of one file, in order (the daemon's `upload`).
+    Upload { request_id: String, name: String, size: u64, offset: u64, data: String },
+    /// K2-05 attachments: the user removed an unsent file (the daemon deletes it).
+    Discard { id: String },
     Steer { text: String, request_id: String },
     Abort,
     UiResponse { ask_id: String, answer: ChatAnswer },
@@ -185,7 +226,18 @@ impl ChatCommand {
     /// The wire line. `client_request_id` deliberately never appears; `request_id` does.
     pub fn line(&self) -> String {
         match self {
-            ChatCommand::Send { text, request_id, .. } => ordered(&[("type", "send"), ("text", text), ("requestId", request_id)]),
+            ChatCommand::Send { text, request_id, attachments, .. } if attachments.is_empty() => ordered(&[("type", "send"), ("text", text), ("requestId", request_id)]),
+            ChatCommand::Send { text, request_id, attachments, .. } => {
+                let head = ordered(&[("type", "send"), ("text", text), ("requestId", request_id)]);
+                format!("{},\"attachments\":{}}}\n", &head[..head.len() - 2], serde_json::to_string(attachments).unwrap_or_default())
+            }
+            ChatCommand::Upload { request_id, name, size, offset, data } => format!(
+                "{{\"type\":\"upload\",\"requestId\":{},\"name\":{},\"size\":{size},\"offset\":{offset},\"data\":{}}}\n",
+                serde_json::to_string(request_id).unwrap_or_default(),
+                serde_json::to_string(name).unwrap_or_default(),
+                serde_json::to_string(data).unwrap_or_default(),
+            ),
+            ChatCommand::Discard { id } => ordered(&[("type", "upload_discard"), ("id", id)]),
             ChatCommand::Steer { text, request_id } => ordered(&[("type", "steer"), ("text", text), ("requestId", request_id)]),
             ChatCommand::Abort => ordered(&[("type", "abort")]),
             ChatCommand::UiResponse { ask_id, answer } => answer.wire(ask_id),
@@ -261,7 +313,7 @@ impl Awaiting {
     /// `failed`/`rate_limited` are the generic answers every command can get).
     fn can_answer(self, code: &str) -> bool {
         match self {
-            Awaiting::Send | Awaiting::Turn { .. } => matches!(code, "bad_request" | "paused" | "unavailable" | "busy" | "failed" | "rate_limited"),
+            Awaiting::Send | Awaiting::Turn { .. } => matches!(code, "bad_request" | "paused" | "unavailable" | "busy" | "failed" | "rate_limited" | "attachment_not_found" | "message_too_large"),
             Awaiting::Settled => code == "failed",
             Awaiting::Read(_) => matches!(code, "unavailable" | "failed" | "rate_limited"),
             Awaiting::Answer => matches!(code, "unknown_ask" | "bad_request" | "unavailable" | "failed" | "rate_limited"),
@@ -285,8 +337,9 @@ impl Awaiting {
             ChatCommand::UiResponse { .. } => Some(Awaiting::Answer),
             ChatCommand::History => Some(Awaiting::Read(false)),
             ChatCommand::Earlier { .. } => Some(Awaiting::Read(true)),
-            // `status` never fails on the daemon (its answer is a plain agent_state)
-            ChatCommand::Status => None,
+            // `status` never fails on the daemon (its answer is a plain agent_state); an upload's
+            // answer (uploaded or its error) names its own requestId and folds into `uploads`
+            ChatCommand::Status | ChatCommand::Upload { .. } | ChatCommand::Discard { .. } => None,
         }
     }
 }
@@ -297,10 +350,12 @@ const MAX_AWAITING: usize = 32;
 pub const MAX_RECORDED: usize = 64;
 
 /// The daemon's recognized error codes (anything else folds to `failed`).
-const ERROR_CODES: [&str; 15] = [
+const ERROR_CODES: [&str; 20] = [
     "bad_request", "busy", "not_busy", "unavailable", "rate_limited", "unknown_ask", "paused", "failed",
     "unknown_proposal", "digest_mismatch", "needs_setup", "signin_failed", "store_not_private", "conversations_off",
     "interrupted",
+    // K2-05 attachments (uploads.cjs refusals)
+    "file_too_large", "message_too_large", "too_many_files", "upload_failed", "attachment_not_found",
 ];
 
 /// The allowlisted, serializable chat view. The ONLY type that ever reaches the
@@ -387,6 +442,17 @@ pub struct ChatState {
     /// messages); cleared when the engine goes quiet. Never serialized itself.
     #[serde(skip)]
     prompt: Option<String>,
+    /// K2-05 attachments: the daemon's answers to this client's uploads, newest last (bounded):
+    /// `{requestId, attachment:{id,name,size,mime}}` or `{requestId, code}`. Never a path.
+    uploads: Vec<Value>,
+    /// The uploads this client started and the daemon has not answered (their requestIds).
+    #[serde(skip)]
+    upload_requests: RefCell<VecDeque<String>>,
+    /// The island's own upload-chunk budget window (separate from the chat budget).
+    #[serde(skip)]
+    pub(crate) upload_window: Cell<Option<Instant>>,
+    #[serde(skip)]
+    pub(crate) upload_count: Cell<u32>,
 }
 
 impl ChatState {
@@ -416,6 +482,10 @@ impl ChatState {
             history_loaded: false,
             recorded: vec![],
             prompt: None,
+            uploads: vec![],
+            upload_requests: RefCell::new(VecDeque::new()),
+            upload_window: Cell::new(None),
+            upload_count: Cell::new(0),
         }
     }
 
@@ -459,6 +529,27 @@ impl ChatState {
         }
         const WINDOW: std::time::Duration = std::time::Duration::from_secs(60);
         let now = Instant::now();
+        // K2-05 attachments: an upload chunk spends its OWN budget (the daemon counts it apart too)
+        if let ChatCommand::Upload { request_id, offset, .. } = &cmd {
+            match self.upload_window.get() {
+                Some(start) if now.duration_since(start) < WINDOW => {
+                    let next = self.upload_count.get() + 1;
+                    if next > UPLOAD_FRAMES_PER_MINUTE { return Err(CommandError); }
+                    self.upload_count.set(next);
+                }
+                _ => {
+                    self.upload_window.set(Some(now));
+                    self.upload_count.set(1);
+                }
+            }
+            if *offset == 0 {
+                let mut started = self.upload_requests.borrow_mut();
+                started.retain(|r| r != request_id);
+                if started.len() >= MAX_UPLOAD_ANSWERS { started.pop_front(); }
+                started.push_back(request_id.clone());
+            }
+            return Ok(cmd);
+        }
         match self.rate_window.get() {
             Some(start) if now.duration_since(start) < WINDOW => {
                 let next = self.rate_count.get() + 1;
@@ -665,6 +756,19 @@ impl ChatState {
                 }
                 self.fold_history(frame, t == "earlier") | asked | loaded
             }
+            "uploaded" => {
+                // K2-05 attachments: the daemon stored one of this client's files (by its requestId)
+                let Some(rid) = str_field(frame, "requestId").filter(|r| request_id_ok(r)) else { return };
+                let Some(attachment) = frame.get("attachment").and_then(|a| {
+                    let id = a.get("id").and_then(Value::as_str).filter(|i| upload_id_ok(i))?;
+                    let mut chip = chip_view(a)?;
+                    chip["id"] = json!(id);
+                    Some(chip)
+                }) else { return };
+                if !self.take_upload_request(rid) { return; }
+                self.push_upload(json!({"requestId": rid, "attachment": {"id": attachment["id"], "name": attachment["name"], "size": attachment["size"], "mime": attachment["mime"]}}));
+                true
+            }
             "user_message" => {
                 // K2-05 bind by id: a prompt the engine recorded, by the daemon's own record id; the
                 // requestId only when it was this client's request (anything off-grammar: dropped)
@@ -733,6 +837,14 @@ impl ChatState {
                 self.last_error = json!({"code": code, "n": n});
                 // review F6: the request the daemon says this error answers (off-grammar: unnamed)
                 let request = frame.get("requestId").and_then(Value::as_str).filter(|r| request_id_ok(r));
+                // K2-05 attachments: a refused upload of this client: its answer, never a turn error
+                if let Some(rid) = request.filter(|r| self.upload_requests.borrow().iter().any(|u| u == r)) {
+                    let rid = rid.to_owned();
+                    self.take_upload_request(&rid);
+                    self.push_upload(json!({"requestId": rid, "code": code}));
+                    self.revision = self.revision.wrapping_add(1);
+                    return;
+                }
                 match self.attribute_error(code, request) {
                     // K2-05 U4b: the daemon refused this client's answer: `unknown_ask` = it no longer
                     // holds the ask (the card goes away); any other refusal frees it for a retry
@@ -762,6 +874,19 @@ impl ChatState {
         if changed {
             self.revision = self.revision.wrapping_add(1);
         }
+    }
+
+    /// K2-05 attachments: an upload this client started is answered (once).
+    fn take_upload_request(&mut self, rid: &str) -> bool {
+        let started = self.upload_requests.get_mut();
+        let Some(at) = started.iter().position(|r| r == rid) else { return false };
+        started.remove(at);
+        true
+    }
+
+    fn push_upload(&mut self, entry: Value) {
+        if self.uploads.len() >= MAX_UPLOAD_ANSWERS { self.uploads.remove(0); }
+        self.uploads.push(entry);
     }
 
     /// K2-05 U4b verifier F3: the wire write of a command [`ChatState::command`] accepted failed (the
@@ -944,6 +1069,9 @@ fn history_message_view(m: &Value) -> Option<Value> {
     // historyMessageDto). True only — never a string or a number.
     if m.get("earlier").and_then(Value::as_bool) == Some(true) { view["earlier"] = json!(true); }
     if m.get("clipped").and_then(Value::as_bool) == Some(true) { view["clipped"] = json!(true); }
+    // K2-05 attachments (Gentle Dot splitAttachments): the chips of the files a prompt carried
+    let chips: Vec<Value> = m.get("attachments").and_then(Value::as_array).map(|list| list.iter().take(16).filter_map(chip_view).collect()).unwrap_or_default();
+    if !chips.is_empty() { view["attachments"] = json!(chips); }
     Some(view)
 }
 
@@ -968,10 +1096,43 @@ fn parse_chat_command(asks: &[ChatAsk], payload: &Value) -> Result<ChatCommand, 
     let exact = |n: usize| if map.len() == n { Ok(()) } else { Err(CommandError) };
     let cmd = match action {
         "chat_send" => {
-            exact(4)?;
-            let text = text_of(MAX_TEXT_CHARS)?;
+            // K2-05 attachments: 1..10 distinct daemon ids (never a path); with files the text may be empty
+            let attachments: Vec<String> = match map.get("attachments") {
+                None => { exact(4)?; vec![] }
+                Some(Value::Array(ids)) => {
+                    exact(5)?;
+                    if ids.is_empty() || ids.len() > MAX_SEND_ATTACHMENTS { return Err(CommandError); }
+                    let ids: Vec<String> = ids.iter().map(|i| i.as_str().filter(|i| upload_id_ok(i)).map(str::to_owned).ok_or(CommandError)).collect::<Result<_, _>>()?;
+                    if ids.iter().enumerate().any(|(n, i)| ids[..n].contains(i)) { return Err(CommandError); }
+                    ids
+                }
+                Some(_) => return Err(CommandError),
+            };
+            let text = if attachments.is_empty() {
+                text_of(MAX_TEXT_CHARS)?
+            } else {
+                let t = map.get("text").and_then(Value::as_str).ok_or(CommandError)?;
+                if utf16_len(t) > MAX_TEXT_CHARS { return Err(CommandError); }
+                t.to_owned()
+            };
             let id = map.get("clientRequestId").and_then(Value::as_str).filter(|i| safe_id_ok(i)).ok_or(CommandError)?;
-            ChatCommand::Send { text, client_request_id: id.to_owned(), request_id: request_id_of(map)? }
+            ChatCommand::Send { text, client_request_id: id.to_owned(), request_id: request_id_of(map)?, attachments }
+        }
+        "chat_upload" => {
+            exact(6)?;
+            let request_id = request_id_of(map)?;
+            let name = map.get("name").and_then(Value::as_str).filter(|n| !n.is_empty() && utf16_len(n) <= MAX_UPLOAD_NAME_CHARS && !n.contains('\0')).ok_or(CommandError)?;
+            let size = map.get("size").and_then(Value::as_u64).filter(|n| *n < (1u64 << 53)).ok_or(CommandError)?;
+            let offset = map.get("offset").and_then(Value::as_u64).filter(|o| *o <= size).ok_or(CommandError)?;
+            let data = map.get("data").and_then(Value::as_str).ok_or(CommandError)?;
+            let shaped = if data.is_empty() { size == 0 } else { data.len() <= MAX_UPLOAD_CHUNK_CHARS && base64_ok(data) };
+            if !shaped { return Err(CommandError); }
+            ChatCommand::Upload { request_id, name: name.to_owned(), size, offset, data: data.to_owned() }
+        }
+        "chat_upload_discard" => {
+            exact(2)?;
+            let id = map.get("id").and_then(Value::as_str).filter(|i| upload_id_ok(i)).ok_or(CommandError)?;
+            ChatCommand::Discard { id: id.to_owned() }
         }
         "chat_steer" => {
             exact(3)?;
@@ -1077,9 +1238,31 @@ pub fn conversations_off() -> crate::chat::ChatError {
     chat_err("conversations_off", "Koda tiene un solo chat continuo.", false)
 }
 
-/// The fixed refusal of a submit with attachments (daemon-side uploads come later).
-pub fn attachments_off() -> crate::chat::ChatError {
-    chat_err("attachments_unavailable", "Los archivos adjuntos todavía no están disponibles en este chat.", false)
+/// K2-05 attachments: one closed Spanish sentence per upload refusal (the daemon's codes, Gentle
+/// Dot's limits: 25 MB per file, 50 MB and 10 files waiting per message).
+pub fn upload_error(code: &str) -> crate::chat::ChatError {
+    let (code, message) = match code {
+        "file_too_large" => ("file_too_large", "El archivo es demasiado grande: hasta 25 MB por archivo."),
+        "message_too_large" => ("message_too_large", "Los archivos juntos son demasiado grandes: hasta 50 MB por mensaje."),
+        "too_many_files" => ("too_many_files", "Demasiados archivos: hasta 10 por mensaje."),
+        "attachment_not_found" => ("attachment_not_found", "Un archivo adjunto ya no está disponible; adjuntalo de nuevo."),
+        "rate_limited" => ("rate_limited", "Demasiados archivos seguidos; esperá un momento."),
+        "unavailable" => ("engine_unavailable", "El motor de Koda no está disponible todavía."),
+        _ => ("upload_failed", "No se pudo guardar el archivo; probá de nuevo."),
+    };
+    chat_err(code, message, code != "file_too_large")
+}
+
+/// The last path segment of a file name, without control characters (the daemon sanitizes again).
+fn display_name(raw: &str) -> String {
+    let base = raw.rsplit(['/', '\\']).next().unwrap_or("");
+    let clean: String = base.chars().filter(|c| !c.is_control()).collect();
+    let mut out = String::new();
+    for c in clean.chars() {
+        if utf16_len(&out) + c.len_utf16() > MAX_UPLOAD_NAME_CHARS { break; }
+        out.push(c);
+    }
+    if out.trim().is_empty() { "archivo".to_owned() } else { out }
 }
 
 fn engine_unavailable() -> crate::chat::ChatError {
@@ -1172,6 +1355,8 @@ struct Pending {
     /// The `requestId` its send carried on the wire (fresh per send).
     request_id: String,
     text: String,
+    /// K2-05 attachments: the chips of the files it sent (`{name,size,mime}`), shown on its row.
+    chips: Vec<Value>,
     /// When the send went out (the settle grace runs from here).
     submitted_ms: u64,
     /// NEW-2: where the turn shows while the record does not name it: right after the newest record
@@ -1202,6 +1387,8 @@ struct Settled {
     reply: String,
     /// B1: the prompt text, kept until a newest page carries the prompt itself.
     user: String,
+    /// K2-05 attachments: its chips, kept with the prompt text.
+    chips: Vec<Value>,
 }
 
 /// One projected turn, with its place in the record: `(prompt position, 0, 0)` for a record
@@ -1211,6 +1398,8 @@ struct Row {
     order: (u64, u8, u64),
     num: u64,
     user: String,
+    /// K2-05 attachments: the chips of the files its prompt carried.
+    chips: Vec<Value>,
     reply: String,
     state: &'static str,
     error: Value,
@@ -1256,6 +1445,9 @@ struct HostInner {
     reads_failed_seen: u64,
     retry_after_ms: u64,
     retries: u32,
+    /// K2-05 attachments: the chips of the files the daemon stored for this island and not sent
+    /// yet, by the daemon's id (bounded): a submit shows them on its row.
+    uploaded: VecDeque<(String, Value)>,
 }
 
 /// F2: the live messages one unbound island turn may own.
@@ -1318,6 +1510,11 @@ fn msg_role(m: &Value) -> &str {
 
 fn msg_text(m: &Value) -> &str {
     m.get("text").and_then(Value::as_str).unwrap_or("")
+}
+
+/// K2-05 attachments: the chips a history message carries (already allowlisted by the fold).
+fn msg_chips(m: &Value) -> Vec<Value> {
+    m.get("attachments").and_then(Value::as_array).cloned().unwrap_or_default()
 }
 
 fn chat_connected(chat: &Value) -> bool {
@@ -1494,7 +1691,7 @@ fn turn_view(row: &Row, seq: u64) -> Value {
         "trimmed_turns": 0,
         "profile_id": Value::Null,
         "profile_revision": Value::Null,
-        "attachments": [],
+        "attachments": row.chips,
     })
 }
 
@@ -1569,14 +1766,14 @@ impl HostInner {
             .and_then(|(m, id, pos)| {
                 let num = *self.claims.get(&prompt_before(id)?)?;
                 let pending = self.pending.iter().find(|p| p.record.is_some() && p.num == num);
-                let user = match pending {
-                    Some(p) => p.text.clone(),
-                    None => self.settled.get(&num).map(|s| s.user.clone()).filter(|u| !u.is_empty())?,
+                let (user, chips) = match pending {
+                    Some(p) => (p.text.clone(), p.chips.clone()),
+                    None => self.settled.get(&num).filter(|s| !s.user.is_empty() || !s.chips.is_empty()).map(|s| (s.user.clone(), s.chips.clone()))?,
                 };
-                Some((num, user, msg_text(m).to_owned(), pos - 1))
+                Some((num, user, chips, msg_text(m).to_owned(), pos - 1))
             });
         let cursor = match (first_prompt, record.first()) {
-            _ if head_turn.is_some() => has_earlier.then(|| head_turn.as_ref().map(|h| h.3)).flatten(),
+            _ if head_turn.is_some() => has_earlier.then(|| head_turn.as_ref().map(|h| h.4)).flatten(),
             (Some(at), _) => has_earlier.then_some(record[at].2),
             (None, Some((_, id, pos))) if has_earlier => {
                 let lone: Vec<&str> = record.iter().map(|(m, _, _)| msg_text(m)).collect();
@@ -1594,13 +1791,13 @@ impl HostInner {
         // any): its reply is already whole, so the record's copy is never added to it
         let island_row = |p: &Pending, order: (u64, u8, u64)| {
             let (state, error) = p.ended.as_ref().map(end_view).unwrap_or((LIVE_ROW, Value::Null));
-            Row { order, num: p.num, user: p.text.clone(), reply: p.reply.clone(), state, error }
+            Row { order, num: p.num, user: p.text.clone(), chips: p.chips.clone(), reply: p.reply.clone(), state, error }
         };
         let mut rows: Vec<Row> = Vec::new();
-        if let Some((num, user, reply, pos)) = head_turn {
+        if let Some((num, user, chips, reply, pos)) = head_turn {
             rows.push(match live.get(&num) {
                 Some(p) => island_row(p, (pos, 0, 0)),
-                None => Row { order: (pos, 0, 0), num, user, reply, state: "completed", error: Value::Null },
+                None => Row { order: (pos, 0, 0), num, user, chips, reply, state: "completed", error: Value::Null },
             });
         }
         let mut prev: Option<(&str, bool)> = None; // (id, is a prompt)
@@ -1614,11 +1811,12 @@ impl HostInner {
                         // B1: a newest page carries this prompt: the island no longer keeps its text
                         if let Some(s) = self.settled.get_mut(&num) {
                             s.user = String::new();
+                            s.chips = vec![];
                         }
                     }
                     let row = match live.get(&num) {
                         Some(p) => island_row(p, (*pos, 0, 0)),
-                        None => Row { order: (*pos, 0, 0), num, user: msg_text(m).to_owned(), reply: String::new(), state: "completed", error: Value::Null },
+                        None => Row { order: (*pos, 0, 0), num, user: msg_text(m).to_owned(), chips: msg_chips(m), reply: String::new(), state: "completed", error: Value::Null },
                     };
                     rows.push(row);
                 }
@@ -1648,7 +1846,7 @@ impl HostInner {
                 // F6-edge: the record carries the reply now: only the end state is kept
                 s.reply = String::new();
             }
-            if s.state == "completed" && s.reply.is_empty() && s.user.is_empty() {
+            if s.state == "completed" && s.reply.is_empty() && s.user.is_empty() && s.chips.is_empty() {
                 self.settled.remove(&row.num);
             }
         }
@@ -1676,7 +1874,7 @@ impl HostInner {
                     }
                     _ => return None,
                 };
-                Some(Row { order, num: p.num, user: p.text.clone(), reply: p.reply.clone(), state, error })
+                Some(Row { order, num: p.num, user: p.text.clone(), chips: p.chips.clone(), reply: p.reply.clone(), state, error })
             })
             .collect()
     }
@@ -1894,7 +2092,7 @@ impl HostInner {
             match (&p.ended, reached) {
                 (Some(end), true) => {
                     let (state, error) = end_view(end);
-                    self.settled.insert(p.num, Settled { state, error, reply: p.reply, user: p.text });
+                    self.settled.insert(p.num, Settled { state, error, reply: p.reply, user: p.text, chips: p.chips });
                 }
                 _ => keep.push(p),
             }
@@ -2054,14 +2252,18 @@ impl ChatHost {
             Command::Open | Command::Back | Command::Height { .. } => Ok(Routed::Local),
             Command::New | Command::NewWith { .. } | Command::List | Command::Restore { .. } => Err(conversations_off()),
             Command::Submit { text, client_request_id, attachments } => {
-                if !attachments.is_empty() {
-                    return Err(attachments_off());
-                }
                 if let Some(dup) = self.duplicate(client_request_id) {
                     return Ok(Routed::Answer(dup));
                 }
                 self.refresh_if_due(link, caller);
-                self.submit(link, caller, text, client_request_id, now_ms)
+                self.submit(link, caller, text, client_request_id, attachments, now_ms)
+            }
+            Command::Discard { id } => {
+                // K2-05 attachments: the user removed an unsent file: the daemon deletes it (only an
+                // id it issued to this island can name one); the chip leaves the host's memory
+                self.inner.lock().expect("chat host lock").uploaded.retain(|(u, _)| u != id);
+                link.command(caller, &json!({"action": "chat_upload_discard", "id": id})).map_err(|_| send_refused())?;
+                Ok(Routed::Answer(json!({"discarded": true})))
             }
             Command::Cancel { turn_id } => self.cancel(link, caller, turn_id, now_ms),
             Command::Answer { ask_id, answer } => Self::answer(link, caller, ask_id, answer),
@@ -2090,8 +2292,9 @@ impl ChatHost {
     /// The send carries a fresh `requestId`: the daemon echoes it on the `user_message` of the
     /// prompt the engine records for it, and only that binds the turn. A send the island cannot
     /// make is refused here (the page keeps the draft and shows the refusal), never invented.
-    fn submit(&self, link: &dyn ChatLink, caller: &str, text: &str, client_request_id: &str, now_ms: u64) -> Result<Routed, crate::chat::ChatError> {
-        let text = crate::chat::validate_text(text)?;
+    fn submit(&self, link: &dyn ChatLink, caller: &str, text: &str, client_request_id: &str, attachments: &[String], now_ms: u64) -> Result<Routed, crate::chat::ChatError> {
+        // K2-05 attachments (Gentle Dot parseClientMessage): a message with files may have no text
+        let text = if !attachments.is_empty() && text.trim().is_empty() { String::new() } else { crate::chat::validate_text(text)? };
         let mut inner = self.inner.lock().expect("chat host lock");
         if let Some(p) = inner.pending.iter().find(|p| p.client_request_id == client_request_id) {
             return Ok(Routed::Answer(json!({"turn_id": format!("t-{}", p.num), "duplicate": true})));
@@ -2105,8 +2308,13 @@ impl ChatHost {
             return Err(engine_unavailable());
         }
         let request_id = fresh_request_id();
-        let payload = json!({"action": "chat_send", "text": text, "clientRequestId": client_request_id, "requestId": request_id});
+        let mut payload = json!({"action": "chat_send", "text": text, "clientRequestId": client_request_id, "requestId": request_id});
+        if !attachments.is_empty() {
+            payload["attachments"] = json!(attachments);
+        }
         link.command(caller, &payload).map_err(|_| send_refused())?;
+        let chips: Vec<Value> = attachments.iter().filter_map(|id| inner.uploaded.iter().find(|(u, _)| u == id).map(|(_, c)| c.clone())).collect();
+        inner.uploaded.retain(|(u, _)| !attachments.contains(u));
         let num = inner.alloc_live();
         let after = inner.max_known;
         inner.pending.push(Pending {
@@ -2114,6 +2322,7 @@ impl ChatHost {
             client_request_id: client_request_id.to_owned(),
             request_id,
             text,
+            chips,
             submitted_ms: now_ms,
             after,
             record: None,
@@ -2129,6 +2338,62 @@ impl ChatHost {
         // the keeper re-publishes while a turn is live (its settle grace ends by time)
         inner.live = true;
         Ok(Routed::Answer(json!({"turn_id": format!("t-{num}"), "duplicate": false})))
+    }
+
+    /// K2-05 attachments (L11 2a, Gentle Dot's `POST /upload` over the island socket): sends one
+    /// file the user picked, dropped or pasted to the DAEMON, in base64 chunks through the chat
+    /// client (its window gate, its own upload budget), and waits — at most `wait_ms` after the
+    /// last chunk — for the daemon's answer. Returns the stored file as its chip shows it plus the
+    /// daemon's opaque id (`{id,name,size,mime}`); never a path. The island stores nothing. Blocks:
+    /// callers run it off the main thread, never under the host lock.
+    pub fn upload(&self, link: &dyn ChatLink, caller: &str, raw_name: &str, bytes: &[u8], wait_ms: u64) -> Result<Value, crate::chat::ChatError> {
+        use base64::Engine as _;
+        if !chat_connected(&link.view()) {
+            return Err(engine_unavailable());
+        }
+        if bytes.len() > MAX_UPLOAD_FILE_BYTES {
+            return Err(upload_error("file_too_large"));
+        }
+        let name = display_name(raw_name);
+        let request_id = fresh_request_id();
+        let answer = |view: &Value| -> Option<Value> {
+            view.get("uploads").and_then(Value::as_array)?.iter().rev().find(|u| u["requestId"] == json!(request_id)).cloned()
+        };
+        let parts: Vec<&[u8]> = if bytes.is_empty() { vec![&[][..]] } else { bytes.chunks(UPLOAD_CHUNK_BYTES).collect() };
+        let mut offset = 0u64;
+        let mut got = None;
+        for part in parts {
+            let data = base64::engine::general_purpose::STANDARD.encode(part);
+            let payload = json!({"action": "chat_upload", "requestId": request_id, "name": name, "size": bytes.len() as u64, "offset": offset, "data": data});
+            let view = link.command(caller, &payload).map_err(|_| if offset == 0 { send_refused() } else { upload_error("rate_limited") })?;
+            offset += part.len() as u64;
+            // a refusal answers early (the daemon ignores the rest of a refused upload)
+            if let Some(a) = answer(&view) {
+                got = Some(a);
+                break;
+            }
+        }
+        let deadline = Instant::now() + Duration::from_millis(wait_ms);
+        while got.is_none() {
+            let view = link.view();
+            got = answer(&view);
+            if got.is_some() { break; }
+            if !chat_connected(&view) { return Err(engine_unavailable()); }
+            if Instant::now() >= deadline { return Err(upload_error("upload_failed")); }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let got = got.unwrap_or(Value::Null);
+        if let Some(code) = got.get("code").and_then(Value::as_str) {
+            return Err(upload_error(code));
+        }
+        let attachment = got.get("attachment").cloned().filter(|a| a.get("id").and_then(Value::as_str).is_some_and(upload_id_ok)).ok_or_else(|| upload_error("upload_failed"))?;
+        let id = attachment["id"].as_str().unwrap_or_default().to_owned();
+        let chip = json!({"name": attachment["name"], "size": attachment["size"], "mime": attachment["mime"]});
+        let mut inner = self.inner.lock().expect("chat host lock");
+        inner.uploaded.retain(|(u, _)| *u != id);
+        if inner.uploaded.len() >= MAX_UPLOAD_ANSWERS { inner.uploaded.pop_front(); }
+        inner.uploaded.push_back((id, chip));
+        Ok(attachment)
     }
 
     /// K2-05 U4b: one answer to a pending ask, as ONE `ui_response` through the chat client (its

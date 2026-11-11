@@ -229,6 +229,24 @@
     delete li.dataset.state; delete li.dataset.decision; // #371: a patched row never keeps the previous card's state
     if ((row.kind === 'tool' || row.kind === 'approval') && Cards) {
       Cards.render(li, row, iconNode);
+    } else if (row.kind === 'attachments') { // K2-05: the files the message carried (Gentle Dot's chips)
+      li.setAttribute('aria-label', row.text);
+      const list = document.createElement('ul');
+      list.className = 'message-attachments';
+      for (const file of row.files) {
+        const chip = document.createElement('li');
+        chip.className = 'message-attachment';
+        const name = document.createElement('span');
+        name.className = 'message-attachment-name';
+        name.textContent = file.name; // text, never markup
+        name.setAttribute('title', file.name);
+        const size = document.createElement('span');
+        size.className = 'message-attachment-size';
+        size.textContent = file.size;
+        chip.append(name, size);
+        list.append(chip);
+      }
+      li.append(list);
     } else if (row.kind === 'context') { // S3 (#503): a closed disclosure with the exact text the model got
       const d = document.createElement('details');
       const s = document.createElement('summary');
@@ -360,7 +378,7 @@
   function renderControls() {
     const active = V.activeTurn(view);
     cancel.hidden = !active;
-    send.disabled = V.sendState(view, input.value, inFlight).disabled;
+    send.disabled = V.sendState(view, input.value, inFlight, attachments.length).disabled;
     const draftIssue = input.value ? V.draftProblem(input.value) : null;
     const historyProblem = view && view.history_problem;
     problem.textContent = localProblem || pageProblem || historyProblem || draftIssue || '';
@@ -802,16 +820,23 @@
     input.style.height = Math.max(MIN_INPUT, Math.min(MAX_INPUT, input.scrollHeight)) + 'px';
   }
 
-  // ---- #343: file attachments in the composer ------------------------------
-  // Dropped or picked files never become page data: Rust validates (MIME
-  // allowlist, size cap) and stores them in the island's OWN uploads
-  // directory — a dropped path goes to `chat_attach`, a picked file as raw
-  // bytes (`chat_attach_data`: one-line JSON header, LF, file bytes). The
-  // composer only holds the returned metadata; the ids ride with the next
-  // submit. A REJECTED file calls nothing, stores nothing, shows no chip.
-  const ATTACH_MAX = 5; // mirrors chat.rs MAX_ATTACHMENTS_PER_TURN
+  // ---- K2-05 attachments (L11 2a, like Gentle Dot) ---------------------------
+  // Any file. A dropped path goes to `chat_attach` (Rust reads it only when the OS reported it
+  // dropped on the island), a picked or pasted file as raw bytes (`chat_attach_data`: one-line JSON
+  // header, LF, file bytes). Rust hands the file to the DAEMON, which stores it in the engine
+  // workspace and answers its own opaque id; the composer only holds that id plus the chip
+  // (name, size). The ids ride with the next submit; a removed chip asks the daemon to delete its
+  // file. Gentle Dot's limits are checked here first (the daemon enforces them again): a refused
+  // file is read by nobody, sent nowhere and shows no chip.
+  // files per message: chat.rs MAX_ATTACHMENTS_PER_TURN (5, pinned by chat_tests.rs) — stricter than
+  // Gentle Dot's 10, which the daemon allows; raising it needs chat.rs + its test together.
+  const ATTACH_MAX = 5;
+  const ATTACH_FILE_BYTES = 25 * 1024 * 1024;    // per file
+  const ATTACH_MESSAGE_BYTES = 50 * 1024 * 1024; // together
+  const ATTACH_TOO_LARGE = 'El archivo es demasiado grande: hasta 25 MB por archivo.';
+  const ATTACH_TOO_LARGE_TOGETHER = 'Los archivos juntos son demasiado grandes: hasta 50 MB por mensaje.';
   const PAPERCLIP_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M13.5 7l-5.2 5.2a1.8 1.8 0 0 0 2.5 2.5l5.7-5.7a4 4 0 0 0-5.7-5.7L5 9.1a6.2 6.2 0 0 0 8.8 8.8"/></svg>';
-  const ATTACH_TOO_MANY = 'Son demasiados archivos adjuntos: hasta 5 por mensaje.';
+  const ATTACH_TOO_MANY = 'Demasiados archivos: hasta 5 por mensaje.';
   let attachments = []; // metadata only, page memory like the draft
   const attachStrip = document.createElement('div');
   attachStrip.id = 'chat-attachments';
@@ -883,22 +908,29 @@
         attachments = attachments.filter(other => other.id !== a.id);
         attachError = null;
         renderAttachments();
+        renderControls();
+        // the daemon deletes the unsent file it stored for this island (only its own id can name it)
+        action({ action: 'discard', id: a.id }).catch(() => {});
       });
       chip.append(name, size, remove);
       attachStrip.append(chip);
     }
     if (attachError) attachStrip.append(...errorChip());
   }
+  // A refusal is cleared by an attach STARTED after it, never by one already on its way (several
+  // files picked at once: the over-limit one must stay explained while the others finish).
+  let refusals = 0;
   function refuse(name, error) {
+    refusals += 1;
     const reason = (error && error.message) || 'No se pudo adjuntar el archivo.';
     attachError = { name: String(name || '').slice(0, 80) || 'archivo', reason };
     renderAttachments();
     setLive(reason);
   }
 
-  function addAttachment(att) {
+  function addAttachment(att, since) {
     if (!att || typeof att.id !== 'string' || typeof att.name !== 'string') return;
-    attachError = null;
+    if (since === undefined || since === refusals) attachError = null;
     if (attachments.some(other => other.id === att.id)) return;
     attachments.push({
       id: att.id,
@@ -907,31 +939,56 @@
       size: att.size,
     });
     renderAttachments();
+    renderControls();
     setLive(`${att.name} adjuntado. Se envía con el próximo mensaje.`);
+  }
+
+  // Files on their way to the daemon count toward the limits too (picked several at once).
+  let attaching = 0, attachingBytes = 0;
+  const heldBytes = () => attachments.reduce((sum, a) => sum + (Number(a.size) || 0), 0) + attachingBytes;
+  /** Gentle Dot's useAttachments checks, in Spanish: null when the file may go to the daemon. */
+  function overLimit(size) {
+    if (attachments.length + attaching >= ATTACH_MAX) return ATTACH_TOO_MANY;
+    if (Number.isFinite(size) && size > ATTACH_FILE_BYTES) return ATTACH_TOO_LARGE;
+    if (Number.isFinite(size) && heldBytes() + size > ATTACH_MESSAGE_BYTES) return ATTACH_TOO_LARGE_TOGETHER;
+    return null;
   }
 
   async function attachPath(path) {
     if (typeof path !== 'string' || !path) return;
-    if (attachments.length >= ATTACH_MAX) { setLive(ATTACH_TOO_MANY); return; }
+    const over = overLimit(NaN);
+    if (over) { refuse(path.split(/[\\/]/).pop(), { message: over }); return; }
+    attaching += 1;
+    const since = refusals;
     try {
-      addAttachment(await call('chat_attach', { path }));
+      addAttachment(await call('chat_attach', { path }), since);
     } catch (error) {
       refuse(path.split(/[\\/]/).pop(), error);
+    } finally {
+      attaching -= 1;
     }
   }
 
   async function attachPicked(file) {
     if (!file || typeof file.name !== 'string') return;
-    if (attachments.length >= ATTACH_MAX) { setLive(ATTACH_TOO_MANY); return; }
+    const size = Number(file.size);
+    const over = overLimit(size);
+    if (over) { refuse(file.name, { message: over }); return; }
+    attaching += 1;
+    attachingBytes += Number.isFinite(size) ? size : 0;
+    const since = refusals;
     try {
       const bytes = new Uint8Array(await file.arrayBuffer());
       const header = new TextEncoder().encode(`${JSON.stringify({ name: file.name })}\n`);
       const body = new Uint8Array(header.length + bytes.length);
       body.set(header, 0);
       body.set(bytes, header.length);
-      addAttachment(await invoke('chat_attach_data', body));
+      addAttachment(await invoke('chat_attach_data', body), since);
     } catch (error) {
       refuse(file.name, error);
+    } finally {
+      attaching -= 1;
+      attachingBytes -= Number.isFinite(size) ? size : 0;
     }
   }
 
@@ -949,6 +1006,14 @@
     for (const file of files) attachPicked(file);
   });
   input.addEventListener('input', () => { localProblem = ''; autosize(); renderControls(); });
+  // K2-05 (Gentle Dot Composer onPaste): a pasted image becomes an attachment; pasted text stays text.
+  input.addEventListener('paste', event => {
+    const files = Array.prototype.slice.call((event.clipboardData && event.clipboardData.files) || []);
+    const images = files.filter(f => f && typeof f.type === 'string' && f.type.startsWith('image/'));
+    if (!images.length) return;
+    event.preventDefault();
+    for (const image of images) attachPicked(image);
+  });
   input.addEventListener('keydown', event => {
     // IME owns the key: `isComposing` while it composes, and the legacy 229 sentinel for
     // the keydown that confirms a candidate where the engine delivers it after
@@ -965,9 +1030,9 @@
   });
   form.addEventListener('submit', event => {
     event.preventDefault();
-    if (!V.canSend(view, input.value, inFlight)) {
+    if (!V.canSend(view, input.value, inFlight, attachments.length) || attaching > 0) {
       // the disc is live for a non-empty draft: say why nothing was sent instead of staying silent
-      const why = V.sendState(view, input.value, inFlight).blocked || V.draftProblem(input.value);
+      const why = (attaching > 0 && 'Todavía se está adjuntando un archivo.') || V.sendState(view, input.value, inFlight, attachments.length).blocked || V.draftProblem(input.value);
       if (why && !inFlight) { localProblem = why; setLive(why); }
       renderControls(); return;
     }

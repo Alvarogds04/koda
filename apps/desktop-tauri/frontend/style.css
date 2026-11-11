@@ -391,6 +391,13 @@ html[data-motion="full"] #chat-state[data-kind="busy"] .ico svg, html[data-motio
    Abito on the left (plain). Notes/errors are icon + one word. */
 #chat-log li.user { margin-left: 0; padding: 8px 12px; border-radius: 14px 14px 4px 14px; background: var(--bubble); color: var(--island-ink); width: fit-content; max-width: 88%; align-self: flex-end; }
 #chat-log li.assistant { max-width: 100%; color: var(--island-ink); }
+/* K2-05 attachments (Gentle Dot `message-attachments`): the files a message carried, as chips
+   under the user's bubble (right-aligned with it): name + size, text only, never a link. */
+#chat-log li.attachments { align-self: flex-end; max-width: 88%; white-space: normal; }
+#chat-log .message-attachments { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; margin: 0; padding: 0; list-style: none; }
+#chat-log .message-attachment { display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; min-height: 28px; margin: 0; padding: 0 10px; border-radius: 10px; background: var(--surface); font: 400 var(--fs-caption)/1.2 var(--font-ui); color: var(--island-ink); }
+#chat-log .message-attachment-name { min-width: 0; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#chat-log .message-attachment-size { color: var(--island-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
 #chat-log li.note, #chat-log li.error { display: flex; align-items: center; gap: 6px; font: 600 12px/1.2 var(--font-ui); color: var(--island-muted); white-space: normal; }
 #chat-log li.note .ico svg, #chat-log li.error .ico svg { width: 16px; height: 16px; }
 #chat-log li.error { color: var(--red-11); }

@@ -840,3 +840,16 @@ test('S2 paging: an earlier page is inserted on top without repainting what is d
   assert.deepEqual(plan, { keep: 2, patch: [], append: [], remove: 0, prepend: [r('user', 'a'), r('assistant', 'A')] });
 });
 console.log(`chat-view-check (U3 engine shape): ${passed} passed`);
+
+// K2-05 attachments (Gentle Dot): files alone may be sent; a turn's files are one chips row
+{
+  const V2 = require(require('node:path').join(__dirname, '..', 'frontend', 'chat-view.js'));
+  const ready = { availability: { state: 'ready' }, active_turn: null };
+  require('node:assert/strict').equal(V2.canSend(ready, '', false, 2), true);
+  require('node:assert/strict').equal(V2.canSend(ready, '', false), false);
+  const rows = V2.turnRows({ turn_id: 't-1', user_text: 'hola', attachments: [{ name: 'a\u0000b.txt', size: 3, mime: 'x' }, { name: 5 }] });
+  require('node:assert/strict').deepEqual(rows.map(r => r.kind), ['user', 'attachments']);
+  require('node:assert/strict').deepEqual(rows[1].files, [{ name: 'a b.txt', size: '3 B' }], 'names are cleaned, malformed entries dropped');
+  require('node:assert/strict').equal(V2.sameTurn({ turn_id: 't-1', attachments: [{ name: 'a', size: 1 }] }, { turn_id: 't-1', attachments: [{ name: 'a', size: 2 }] }), false);
+  console.log('chat-view-check: K2-05 attachments passed');
+}

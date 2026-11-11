@@ -167,13 +167,12 @@ fn chathost_one_continuous_chat_refuses_new_new_with_list_and_restore() {
 }
 
 #[test]
-fn chathost_attachments_are_refused_with_a_closed_error_until_the_uploads_unit() {
+fn chathost_attachments_an_id_off_the_daemons_grammar_never_reaches_the_wire() {
     let link = FakeLink::new();
     let host = ChatHost::new();
     let cmd = Command::Submit { text: "mirá".into(), client_request_id: "req-00000002".into(), attachments: vec!["a1b2c3".into()] };
     let e = host.route(&link, "main", &cmd, T0).unwrap_err();
-    assert_eq!(e.code, "attachments_unavailable");
-    assert_eq!(e.safe_message, attachments_off().safe_message);
+    assert_eq!(e.code, "send_refused");
     assert!(link.sent().is_empty());
     assert_eq!(host.project(&link.view(), T0)["turns"], json!([]), "no turn is invented");
 }
@@ -780,17 +779,23 @@ fn chathost_f7_the_keeper_and_publish_never_reserialize_the_chat_state() {
 }
 
 #[test]
-fn chathost_f8_chat_attach_and_chat_attach_data_refuse_and_write_nothing() {
+fn chathost_f8_chat_attach_and_chat_attach_data_forward_to_the_daemon_and_write_nothing() {
+    // K2-05 attachments: both commands keep their gates, then hand the bytes to the DAEMON
+    // (`ChatHost::upload`); the island never writes an upload itself
     let src = include_str!("chathost.rs");
     for sig in ["pub async fn chat_attach(", "pub async fn chat_attach_data("] {
         let body = fn_body(src, sig);
-        assert!(body.contains("attachments_off()"), "{sig} refuses with attachments_unavailable");
-        for gone in ["store_attachment", "uploads::attach", "attachments_dir", "read_dropped", "split_raw_body"] {
+        assert!(body.contains("upload_to_daemon("), "{sig} forwards to the daemon");
+        for gone in ["store_attachment", "uploads::attach", "attachments_dir", "fs::write", "File::create"] {
             assert!(!body.contains(gone), "{sig} still reaches {gone}");
         }
         let gate = body.find("main_window_only(webview.label())").expect("the island gate stays");
-        assert!(gate < body.find("attachments_off()").unwrap());
+        assert!(gate < body.find("upload_to_daemon(").unwrap());
     }
+    assert!(fn_body(src, "async fn upload_to_daemon(").contains(".upload(&*route.conn"), "through the chat connection only");
+    // a dropped path is read only when the OS reported it dropped on the island (one-shot)
+    let attach = fn_body(src, "pub async fn chat_attach(");
+    assert!(attach.find("NATIVE_DROPS").unwrap() < attach.find("read_picked_path(").unwrap());
     assert!(!src.contains("fn store_attachment"), "no write path left to call");
 }
 
@@ -2597,4 +2602,120 @@ fn chathost_u4b_the_projection_names_only_the_answers_the_daemon_accepted() {
     assert_eq!(v["answered_asks"], json!(["a-sel"]));
     assert_eq!(v["asks"], json!([]));
     assert_eq!(host.project(&FakeLink::offline().view(), T0)["answered_asks"], json!([]));
+}
+
+// ---- K2-05 attachments (L11 2a): upload to the daemon, send by its ids, chips on the turn ----
+
+/// A daemon that stores every upload: answers the last chunk with `uploaded` and an id it issues.
+fn storing_link() -> FakeLink {
+    FakeLink::answering(|cmd| match cmd {
+        ChatCommand::Upload { request_id, name, size, offset, data } => {
+            let got = base64_len(data);
+            if offset + got < *size {
+                return vec![];
+            }
+            let id = format!("a-{:016x}", request_id.len() as u64 * 7 + *size);
+            vec![json!({"type":"uploaded","requestId":request_id,"attachment":{"id":id,"name":name,"size":size,"mime":"image/png"}})]
+        }
+        _ => vec![],
+    })
+}
+
+fn base64_len(data: &str) -> u64 {
+    let pad = data.bytes().rev().take_while(|b| *b == b'=').count();
+    (data.len() / 4 * 3 - pad) as u64
+}
+
+#[test]
+fn chathost_attachments_a_file_goes_to_the_daemon_in_chunks_and_comes_back_as_its_id() {
+    let link = storing_link();
+    let host = ChatHost::new();
+    let bytes = vec![7u8; UPLOAD_CHUNK_BYTES * 2 + 10];
+    let got = host.upload(&link, "main", "../../informe.png", &bytes, 2_000).unwrap();
+    assert_eq!(got["name"], json!("informe.png"), "only the last segment is ever sent as a name");
+    assert_eq!(got["size"], json!(bytes.len()));
+    assert!(got["id"].as_str().is_some_and(|i| i.starts_with("a-")));
+    let chunks: Vec<(u64, usize)> = link.sent().iter().filter_map(|c| match c {
+        ChatCommand::Upload { offset, data, .. } => Some((*offset, data.len())),
+        _ => None,
+    }).collect();
+    assert_eq!(chunks.len(), 3);
+    assert_eq!(chunks.iter().map(|c| c.0).collect::<Vec<_>>(), vec![0, UPLOAD_CHUNK_BYTES as u64, 2 * UPLOAD_CHUNK_BYTES as u64]);
+    assert!(chunks.iter().all(|c| c.1 <= MAX_UPLOAD_CHUNK_CHARS));
+    // the island checks the daemon's size bound first: nothing reaches the wire
+    let before = link.sent().len();
+    let big = vec![0u8; MAX_UPLOAD_FILE_BYTES + 1];
+    let err = host.upload(&link, "main", "grande.bin", &big, 50).unwrap_err();
+    assert_eq!(err.code, "file_too_large");
+    assert!(err.safe_message.contains("25 MB"), "{}", err.safe_message);
+    assert_eq!(link.sent().len(), before);
+}
+
+#[test]
+fn chathost_attachments_daemon_refusals_are_spanish_and_settings_cannot_upload() {
+    let link = FakeLink::answering(|cmd| match cmd {
+        ChatCommand::Upload { request_id, .. } => vec![json!({"type":"error","code":"too_many_files","requestId":request_id})],
+        _ => vec![],
+    });
+    let host = ChatHost::new();
+    let err = host.upload(&link, "main", "x.txt", b"hola", 2_000).unwrap_err();
+    assert_eq!(err.code, "too_many_files");
+    assert!(err.safe_message.starts_with("Demasiados archivos"), "{}", err.safe_message);
+    assert_eq!(host.upload(&link, "settings", "x.txt", b"hola", 50).unwrap_err().code, "send_refused");
+    // no answer within the wait: a plain Spanish failure, never a hang
+    let silent = FakeLink::new();
+    assert_eq!(host.upload(&silent, "main", "x.txt", b"hola", 50).unwrap_err().code, "upload_failed");
+    assert_eq!(host.upload(&FakeLink::offline(), "main", "x.txt", b"hola", 50).unwrap_err().code, "engine_unavailable");
+}
+
+#[test]
+fn chathost_attachments_submit_carries_the_ids_and_the_turn_shows_the_chips() {
+    let link = storing_link();
+    let host = ChatHost::new();
+    let file = host.upload(&link, "main", "foto.png", b"PNGDATA", 2_000).unwrap();
+    let id = file["id"].as_str().unwrap().to_owned();
+    let cmd = Command::Submit { text: "mirá".into(), client_request_id: "req-00000001".into(), attachments: vec![id.clone()] };
+    host.route(&link, "main", &cmd, T0).unwrap();
+    let send = link.sent().into_iter().rev().find(|c| matches!(c, ChatCommand::Send { .. })).unwrap();
+    assert!(send.line().contains(&format!("\"attachments\":[\"{id}\"]")), "{}", send.line());
+    let turn = last_turn(&host.project(&link.view(), T0));
+    assert_eq!(turn["attachments"], json!([{"name":"foto.png","size":7,"mime":"image/png"}]));
+    // files only: an empty text is a valid message
+    link.frame(json!({"type":"agent_state","busy":false,"status":"ready","paused":false}));
+    let host2 = ChatHost::new();
+    let file2 = host2.upload(&link, "main", "solo.png", b"PNG", 2_000).unwrap();
+    let only = Command::Submit { text: "".into(), client_request_id: "req-00000002".into(), attachments: vec![file2["id"].as_str().unwrap().to_owned()] };
+    host2.route(&link, "main", &only, T0).unwrap();
+    assert!(link.sent().last().unwrap().line().starts_with("{\"type\":\"send\",\"text\":\"\""));
+    // without files an empty text is still refused
+    assert!(host2.route(&link, "main", &submit("  ", "req-00000003"), T0 + 10_000).is_err());
+}
+
+#[test]
+fn chathost_attachments_history_turns_show_their_chips_after_reload() {
+    let link = FakeLink::new();
+    link.frame(json!({"type":"history","hasEarlier":false,"messages":[
+        {"id":"s0-1","role":"user","text":"mirá","activities":[],"attachments":[{"name":"foto.png","size":12,"mime":"image/png"}]},
+        {"id":"s0-2","role":"assistant","text":"listo","activities":[]},
+    ]}));
+    let turn = last_turn(&ChatHost::new().project(&link.view(), T0));
+    assert_eq!(turn["user_text"], json!("mirá"));
+    assert_eq!(turn["attachments"], json!([{"name":"foto.png","size":12,"mime":"image/png"}]));
+}
+
+#[test]
+fn chathost_attachments_discard_removes_an_unsent_file_on_the_daemon() {
+    let link = storing_link();
+    let host = ChatHost::new();
+    let id = host.upload(&link, "main", "x.png", b"P", 2_000).unwrap()["id"].as_str().unwrap().to_owned();
+    host.route(&link, "main", &Command::Discard { id: id.clone() }, T0).unwrap();
+    assert_eq!(link.sent().last().unwrap().line(), format!("{{\"type\":\"upload_discard\",\"id\":\"{id}\"}}\n"));
+}
+
+#[test]
+fn chathost_attachments_the_glue_never_writes_uploads_island_side() {
+    let src = include_str!("chathost.rs");
+    assert!(!src.contains("uploads::attach"), "the island never stores an attachment itself");
+    assert!(!src.contains("attachments_dir"), "no island-side uploads folder");
+    assert!(src.contains("NATIVE_DROPS"), "a dropped path is honoured only from the native drop set");
 }

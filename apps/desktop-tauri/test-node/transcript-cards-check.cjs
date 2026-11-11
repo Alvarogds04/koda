@@ -35,7 +35,7 @@ test('plain turns render byte-identically: no card rows without tool_calls/appro
   });
   assert.deepEqual(rich, [
     { kind: 'user', text: 'dame' },
-    { kind: 'note', short: 'Adjuntos', icon: 'info', text: 'Archivos adjuntos: a.txt' },
+    { kind: 'attachments', files: [{ name: 'a.txt', size: '12 B' }], text: 'Archivos adjuntos: a.txt (12 B)' },
     { kind: 'note', short: 'Recortado', icon: 'info', text: 'Para entrar en el contexto del modelo se dejaron afuera 2 mensajes anteriores.' },
     { kind: 'assistant', text: 'listo' },
   ]);

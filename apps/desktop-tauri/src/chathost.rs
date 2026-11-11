@@ -7,8 +7,8 @@
 //! verbs are routed by `chatclient::ChatHost` over ONE `agentconn::ChatConn`
 //! per app (started at setup, reconnecting), with the caller's REAL window
 //! label passed into chatclient's window gate. One continuous chat: the
-//! conversation-list verbs are refused (`conversations_off`), attachments are
-//! refused until the uploads unit. The direct Rust chat (local/cloud lanes,
+//! conversation-list verbs are refused (`conversations_off`), attachments go to
+//! the daemon (`chat_attach`/`chat_attach_data` → `ChatHost::upload`). The direct Rust chat (local/cloud lanes,
 //! the private conversation store) is no longer reachable from here; only
 //! `start_history` remains until U5 deletes it. Nothing in this file touches
 //! the desktop snapshot shape (`desktop:state` keeps its 13 keys).
@@ -33,7 +33,7 @@ use crate::{main_window, now_ms, publish, refresh_work_area, store_requested, Ap
 
 /// #343 hardening: paths the OS reported DROPPING on the main window,
 /// recorded natively by `main.rs`'s window event handler. `chat_attach`
-/// only ever honours a member of this set: short-lived (60 s TTL), bounded
+/// only ever reads (and hands to the daemon) a member of this set: short-lived (60 s TTL), bounded
 /// (16 entries) and one-shot, so the page can never name an arbitrary path.
 static NATIVE_DROPS: Mutex<abito_island::uploads::DropSet> =
     Mutex::new(abito_island::uploads::DropSet::new());
@@ -333,15 +333,56 @@ pub async fn chat_action(
     }
 }
 
-// K2-05 T4 U3 F8: attachments are refused until the attachments unit (L11 2a: daemon-side
-// uploads like Gentle Dot). Both commands keep their gates (island window, origin, rate)
-// and then refuse with the fixed `attachments_unavailable` (`chatclient::attachments_off()`):
-// nothing is read, nothing is written into the island's uploads folder, and a native drop is
-// never consumed.
+// K2-05 attachments (L11 2a, Gentle Dot's model): a file the user picked, dropped or pasted goes
+// to the DAEMON over the island's own chat connection (`ChatHost::upload`: `upload` chunks), which
+// stores it in the engine workspace and answers an opaque id issued to this island only. The
+// island never writes an upload, and the page never names a path the island reads: a dropped
+// path is honoured only when the OS reported it dropped on the island window (`NATIVE_DROPS`,
+// one-shot), and a picked or pasted file arrives as raw bytes.
 
-/// #343 — `chat_attach`: one file DROPPED into the chat. F8: refused.
+/// How long the island waits for the daemon's answer after the last chunk.
+const UPLOAD_WAIT_MS: u64 = 15_000;
+
+/// Read one natively dropped path: a regular file only (a link is refused, never followed), at
+/// most the daemon's 25 MB per file, checked on the open handle before reading.
+fn read_picked_path(path: &std::path::Path) -> Result<(String, Vec<u8>), chat::ChatError> {
+    use std::io::Read;
+    let unreadable = || chat::ChatError::invalid_input("No se pudo leer el archivo arrastrado.");
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let meta = std::fs::symlink_metadata(path).map_err(|_| unreadable())?;
+    if !meta.is_file() {
+        return Err(chat::ChatError::invalid_input("Eso no es un archivo."));
+    }
+    let file = std::fs::File::open(path).map_err(|_| unreadable())?;
+    let opened = file.metadata().map_err(|_| unreadable())?;
+    if !opened.is_file() {
+        return Err(chat::ChatError::invalid_input("Eso no es un archivo."));
+    }
+    if opened.len() > chatclient::MAX_UPLOAD_FILE_BYTES as u64 {
+        return Err(chatclient::upload_error("file_too_large"));
+    }
+    let mut bytes = Vec::with_capacity(opened.len() as usize);
+    file.take(chatclient::MAX_UPLOAD_FILE_BYTES as u64 + 1).read_to_end(&mut bytes).map_err(|_| unreadable())?;
+    if bytes.len() > chatclient::MAX_UPLOAD_FILE_BYTES {
+        return Err(chatclient::upload_error("file_too_large"));
+    }
+    Ok((name, bytes))
+}
+
+/// Hand one file to the daemon through the chat connection, off the main thread.
+async fn upload_to_daemon(app: AppHandle, caller: String, name: String, bytes: Vec<u8>) -> Result<Value, BridgeError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let route = app.try_state::<ChatRoute>().ok_or_else(|| BridgeError::denied("chat unavailable"))?;
+        route.feed.host().upload(&*route.conn, &caller, &name, &bytes, UPLOAD_WAIT_MS).map_err(chat_error)
+    })
+    .await
+    .map_err(|_| BridgeError::denied("chat aborted"))?
+}
+
+/// #343 — `chat_attach`: one file DROPPED into the chat, sent to the daemon.
 #[tauri::command]
 pub async fn chat_attach(
+    app: AppHandle,
     webview: tauri::Webview,
     state: State<'_, AppState>,
     payload: Value,
@@ -350,14 +391,26 @@ pub async fn chat_attach(
     let url = webview.url().map(|u| u.to_string()).unwrap_or_default();
     bridge::sender_ok(webview.label(), &url)?;
     state.chat_rate.lock().expect("chat rate lock").check(now_ms())?;
-    let _ = payload;
-    Err(chat_error(chatclient::attachments_off()))
+    let bad = || chat_error(chat::ChatError::invalid_input("Pedido de archivo inválido."));
+    let map = payload.as_object().filter(|m| m.len() == 1).ok_or_else(bad)?;
+    let path = map.get("path").and_then(Value::as_str).filter(|p| !p.is_empty() && p.len() <= 4096).map(PathBuf::from).ok_or_else(bad)?;
+    // only a path the OS reported dropped on the island window, once and while fresh
+    let dropped = NATIVE_DROPS.lock().expect("native drop paths lock").consume(&path, now_ms() as u64);
+    if !dropped {
+        return Err(chat_error(chat::ChatError::invalid_input("Ese archivo no llegó arrastrado a la ventana.")));
+    }
+    let (name, bytes) = tauri::async_runtime::spawn_blocking(move || read_picked_path(&path))
+        .await
+        .map_err(|_| BridgeError::denied("chat aborted"))?
+        .map_err(chat_error)?;
+    upload_to_daemon(app, webview.label().to_string(), name, bytes).await
 }
 
-/// #343 — `chat_attach_data`: one file PICKED in the composer (raw bytes). F8: refused; the body
-/// is never parsed or stored.
+/// #343 — `chat_attach_data`: one file PICKED or PASTED in the composer (raw bytes: a one-line JSON
+/// header `{"name":…}`, LF, the file bytes), sent to the daemon.
 #[tauri::command]
 pub async fn chat_attach_data(
+    app: AppHandle,
     webview: tauri::Webview,
     state: State<'_, AppState>,
     request: tauri::ipc::Request<'_>,
@@ -366,8 +419,15 @@ pub async fn chat_attach_data(
     let url = webview.url().map(|u| u.to_string()).unwrap_or_default();
     bridge::sender_ok(webview.label(), &url)?;
     state.chat_rate.lock().expect("chat rate lock").check(now_ms())?;
-    let _ = request;
-    Err(chat_error(chatclient::attachments_off()))
+    let tauri::ipc::InvokeBody::Raw(body) = request.body() else {
+        return Err(chat_error(chat::ChatError::invalid_input("Pedido de archivo inválido.")));
+    };
+    let (name, bytes) = abito_island::uploads::split_raw_body(body).map_err(chat_error)?;
+    if bytes.len() > chatclient::MAX_UPLOAD_FILE_BYTES {
+        return Err(chat_error(chatclient::upload_error("file_too_large")));
+    }
+    let (name, bytes) = (name, bytes.to_vec());
+    upload_to_daemon(app, webview.label().to_string(), name, bytes).await
 }
 
 /// Initialize private local history; probes are memory-only unless explicitly isolated.

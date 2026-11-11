@@ -616,3 +616,72 @@ fn the_agents_question_is_shown_replayed_on_reconnect_answered_once_and_closed_e
     assert_eq!(last_turn(&done)["turn_id"], accepted["turn_id"]);
     assert_eq!(chat.action("main", json!({"action": "answer", "ask_id": ask_id, "cancelled": true})).unwrap_err(), "ask_closed", "a late answer from another window is refused");
 }
+
+/// K2-05 attachments (L11 2a, like Gentle Dot): a file goes to the REAL daemon over the chat
+/// connection, is stored in the island's engine workspace under the daemon's own id, the send
+/// names that id only, the engine gets Gentle Dot's `<attachments>` block with the stored path,
+/// the turn shows the chip, a relaunched island reads the chip back from history, and a second
+/// island connection can neither send nor discard the first one's file.
+#[test]
+fn an_attached_file_reaches_the_engine_workspace_and_its_chip_survives_a_reload() {
+    let log_dir = PathBuf::from(std::env::var("HOME").unwrap()).join(format!("{PREFIX}{}-7{}", std::process::id() % 100000, std::process::id() % 1000));
+    std::fs::DirBuilder::new().mode(0o700).create(&log_dir).unwrap();
+    struct Tidy(PathBuf);
+    impl Drop for Tidy {
+        fn drop(&mut self) {
+            remove_ours(&self.0);
+        }
+    }
+    let _tidy = Tidy(log_dir.clone());
+    let cmd_log = log_dir.join("engine-commands.jsonl");
+    let island = Island::start(&format!("--persist-messages --cmd-log \"{}\"", cmd_log.display()), true);
+    let chat = Chat::connect(&island);
+    chat.wait("the engine is ready", |v| v["producer"]["pi"] == json!("ready"));
+
+    let bytes: Vec<u8> = (0..400_000u32).map(|i| (i % 251) as u8).collect(); // three chunks
+    let file = chat.feed.host().upload(&*chat.conn, "main", "../../informe final.bin", &bytes, 10_000).expect("the daemon stores the file");
+    let id = file["id"].as_str().unwrap().to_owned();
+    assert_eq!(file["name"], json!("informe final.bin"));
+    assert_eq!(file["size"], json!(bytes.len()));
+    assert!(file.get("path").is_none(), "never a path");
+    let stored = island.root.join("workspace/uploads").join(&id).join("informe final.bin");
+    assert_eq!(std::fs::read(&stored).unwrap(), bytes, "stored daemon-side, in the engine workspace");
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(std::fs::metadata(&stored).unwrap().permissions().mode() & 0o777, 0o600);
+    }
+
+    // another island connection (another client) can neither send nor discard it
+    let other = Chat::connect(&island);
+    other.wait("the other connection is ready", |v| v["producer"]["pi"] == json!("ready"));
+    other.action("main", json!({"action": "discard", "id": id})).unwrap();
+    assert!(other.action("main", json!({"action": "submit", "text": "robo", "client_request_id": "req-other-001", "attachments": [id]})).is_ok(), "the island sends; the daemon refuses");
+    other.wait("the daemon refused another client's file", |v| last_turn(v)["state"] == json!("error"));
+    assert!(stored.exists(), "another client's discard deletes nothing");
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(!std::fs::read_to_string(&cmd_log).unwrap_or_default().contains("\"prompt\""), "nothing reached the engine");
+    drop(other);
+
+    let Routed::Answer(accepted) = chat.action("main", json!({"action": "submit", "text": "resumilo", "client_request_id": "req-att-0001", "attachments": [id]})).unwrap() else {
+        panic!("submit answers the page")
+    };
+    let done = chat.wait("the reply completed", |v| last_turn(v)["state"] == json!("completed") && last_turn(v)["reply"] == json!(REPLY));
+    assert_eq!(last_turn(&done)["turn_id"], accepted["turn_id"]);
+    assert_eq!(last_turn(&done)["user_text"], json!("resumilo"));
+    let chip = json!([{"name": "informe final.bin", "size": bytes.len(), "mime": "application/octet-stream"}]);
+    assert_eq!(last_turn(&done)["attachments"], chip);
+    let log = std::fs::read_to_string(&cmd_log).unwrap();
+    let prompt: Value = serde_json::from_str(log.lines().find(|l| l.contains("\"prompt\"")).unwrap()).unwrap();
+    let message = prompt["message"].as_str().unwrap();
+    assert!(message.starts_with("resumilo\n\n<attachments>\nThe user attached these files, saved in your workspace."), "{message}");
+    assert!(message.contains(&format!("\"path\":{}", serde_json::to_string(stored.to_str().unwrap()).unwrap())), "{message}");
+
+    // a relaunched island reads the turn back from the daemon's history, with its chip
+    let again = Chat::connect(&island);
+    let v = again.wait("history with the chip", |v| last_turn(v)["user_text"] == json!("resumilo"));
+    assert_eq!(last_turn(&v)["attachments"], chip);
+    // a sent file is spent: it stays for the agent, but no second message can send it
+    assert!(stored.exists());
+    again.action("main", json!({"action": "submit", "text": "otra vez", "client_request_id": "req-att-0002", "attachments": [id]})).unwrap();
+    again.wait("a spent file is refused", |v| last_turn(v)["user_text"] == json!("otra vez") && last_turn(v)["state"] == json!("error"));
+}

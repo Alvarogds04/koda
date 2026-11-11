@@ -879,6 +879,9 @@ pub enum Command {
     /// ask's id and the answer travel; whether the ask is pending, its kind and its shown
     /// options are checked by the chat client against what the daemon sent.
     Answer { ask_id: String, answer: AskAnswer },
+    /// K2-05 attachments: the user removed a file before sending it; only the daemon's opaque id
+    /// (`a-<16 hex>`) travels, and the daemon deletes the unsent file it issued to this island.
+    Discard { id: String },
 }
 
 /// K2-05 U4b: one answer to an agent question — exactly one of a select/input `value`, a
@@ -1009,6 +1012,10 @@ pub fn parse_command(payload: &Value) -> Result<Command, ChatError> {
                 _ => return Err(bad()),
             };
             Ok(Command::Answer { ask_id, answer })
+        }
+        "discard" if keys(&["action", "id"]) => {
+            let id = text_of("id").filter(|id| valid_attachment_id(id)).ok_or_else(bad)?;
+            Ok(Command::Discard { id })
         }
         "cancel" if keys(&["action", "turn_id"]) => {
             let turn_id = text_of("turn_id")

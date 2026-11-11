@@ -33,10 +33,13 @@
   }
 
   const SENDABLE = new Set(['ready', 'busy']);
-  function canSend(view, draft, inFlight) {
+  // K2-05 attachments (Gentle Dot parseClientMessage): with files attached the text may be empty;
+  // `files` = how many attachments wait in the composer (0 when omitted).
+  function canSend(view, draft, inFlight, files) {
     if (!view || inFlight || view.active_turn) return false;
     const a = view.availability;
     if (!a || !SENDABLE.has(a.state)) return false;
+    if (files > 0 && !String(draft).trim()) return true;
     return draftProblem(draft) === null;
   }
 
@@ -59,8 +62,8 @@
   // Design 14 (option A): the send disc is grey ONLY when there is nothing to send (empty draft), a turn runs, or a submit is in flight.
   // A model that is not ready no longer greys it out silently: pressing it says why (`blocked`), and canSend() still decides what is sent.
   const BLOCKED = Object.freeze({ unavailable: 'El modelo no está disponible todavía.', blocked: 'El modelo está bloqueado.', unchecked: 'Todavía se está revisando el modelo.' });
-  function sendState(view, draft, inFlight) {
-    const empty = !String(draft).trim();
+  function sendState(view, draft, inFlight, files) {
+    const empty = !String(draft).trim() && !(files > 0);
     if (empty || inFlight || (view && view.active_turn)) return { disabled: true, blocked: null };
     const a = view && view.availability;
     if (!a || !SENDABLE.has(a.state)) return { disabled: false, blocked: (a && BLOCKED[a.state]) || 'El modelo no está listo todavía.' };
@@ -196,7 +199,7 @@
   // The log used to be emptied and redrawn on every state push (a streaming answer pushes many), which made
   // every row flash and the first row jump. Rows are now compared by a key that covers everything drawn:
   // the unchanged prefix is left alone, a changed row is patched in place, new rows are appended.
-  const rowKey = row => JSON.stringify([row.kind, row.text, row.short || '', row.icon || '']);
+  const rowKey = row => JSON.stringify([row.kind, row.text, row.short || '', row.icon || '']); // `attachments` rows: the text names every chip
   // S2 follow-up F5: the keys may come precomputed (the page keys each turn's rows once and reuses them while the turn
   // is unchanged), so a push over a long loaded chat never re-serialises every row.
   function reconcileRows(before, after, beforeKeys, afterKeys) {
@@ -228,7 +231,7 @@
     const ctx = t => (t.live_context && typeof t.live_context.text === 'string') ? `${t.live_context.text}\u0000${t.live_context.trimmed_lines}` : '';
     return a.turn_id === b.turn_id && a.user_text === b.user_text && a.reply === b.reply && a.state === b.state &&
       err(a) === err(b) && a.finish_reason === b.finish_reason && a.trimmed_turns === b.trimmed_turns && ctx(a) === ctx(b) &&
-      sameList(a.attachments && a.attachments.length ? a.attachments.map(x => x && x.name) : null, b.attachments && b.attachments.length ? b.attachments.map(x => x && x.name) : null) &&
+      sameList(a.attachments && a.attachments.length ? a.attachments.map(x => x && `${x.name}\u0000${x.size}`) : null, b.attachments && b.attachments.length ? b.attachments.map(x => x && `${x.name}\u0000${x.size}`) : null) &&
       sameList(a.tool_calls, b.tool_calls) && sameList(a.approvals, b.approvals);
   }
 
@@ -311,15 +314,26 @@
     return rows;
   }
 
+  // K2-05 attachments (Gentle Dot MessageList `message-attachments`): the chips of the files a
+  // prompt carried, name + size, under the user's text. The files live in the engine workspace on
+  // the daemon side; the log names them, it never links, opens or inlines them.
+  const ATTACH_NAME_MAX = 128;
+  function attachmentChips(list) {
+    if (!Array.isArray(list)) return [];
+    return list.slice(0, 16).flatMap(a => {
+      const name = cleanLine(a && a.name, ATTACH_NAME_MAX);
+      return name ? [{ name, size: formatSize(a.size) }] : [];
+    });
+  }
+
   function turnRows(turn) {
-    const rows = [{ kind: 'user', text: turn.user_text }];
-    // #343: what the turn carried, named — the files live in the island's
-    // uploads directory; the log names them, it never links or inlines them.
-    if (Array.isArray(turn.attachments) && turn.attachments.length) {
-      const names = turn.attachments.map(a => (a && typeof a.name === 'string') ? a.name : '?').join(', ');
+    const files = attachmentChips(turn.attachments);
+    // a files-only message has no text bubble, only its chips (Gentle Dot shows text only when present)
+    const rows = files.length && !String(turn.user_text || '').trim() ? [] : [{ kind: 'user', text: turn.user_text }];
+    if (files.length) {
       rows.push({
-        kind: 'note', short: 'Adjuntos', icon: 'info',
-        text: `Archivos adjuntos: ${names}`,
+        kind: 'attachments', files,
+        text: `Archivos adjuntos: ${files.map(f => `${f.name} (${f.size})`).join(', ')}`,
       });
     }
     // S3 (#503): «contexto» — exactly what the live-state context told the model on this turn.
@@ -657,5 +671,5 @@
   }
   const askAria = ask => (ask && ask.title ? `Koda necesita tu respuesta: ${ask.title}` : 'Koda necesita tu respuesta');
   const askClosedAria = (ask, outcome) => `Pregunta de Koda${ask && ask.title ? `: ${ask.title}` : ''}. ${outcome}`;
-  return { askCards, answeredAsks, askPayload, askOutcome, askNextOption, askAria, askClosedAria, staleSnapshot, messageCount, chatHeight, CHAT_MIN_H, CHAT_MAX_H, mergeHistory, leftWindow, PAGE_GAP_MS, pageWait, reconcileRows, rowKey, sameTurn, poseFor, statusView, draftWord, targetAria, noticeAnnouncement, activates, gateLabel, filterChosen, modelRows, modelMeters, modelsInfo, modelsCount, emptyGreeting, cleanDisplayName, cleanLine, CARD_NAME_MAX, CARD_SUMMARY_MAX, DRAFT_MAX, stateLabel, scalarCount, draftProblem, canSend, sendState, needsCheck, checkPlan, statusLine, announcement, atBottom, newRequestId, turnRows, toolRows, approvalRows, activeTurn, activeRole, modelButtonLabel, modelButtonAria, modelButtonEnabled, modelRoleNote, formatSize };
+  return { askCards, answeredAsks, askPayload, askOutcome, askNextOption, askAria, askClosedAria, staleSnapshot, messageCount, chatHeight, CHAT_MIN_H, CHAT_MAX_H, mergeHistory, leftWindow, PAGE_GAP_MS, pageWait, reconcileRows, rowKey, sameTurn, poseFor, statusView, draftWord, targetAria, noticeAnnouncement, activates, gateLabel, filterChosen, modelRows, modelMeters, modelsInfo, modelsCount, emptyGreeting, cleanDisplayName, cleanLine, CARD_NAME_MAX, CARD_SUMMARY_MAX, DRAFT_MAX, stateLabel, scalarCount, draftProblem, canSend, sendState, needsCheck, checkPlan, statusLine, announcement, atBottom, newRequestId, turnRows, toolRows, approvalRows, activeTurn, activeRole, modelButtonLabel, modelButtonAria, modelButtonEnabled, modelRoleNote, formatSize, attachmentChips };
 });

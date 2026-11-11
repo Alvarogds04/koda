@@ -14,7 +14,7 @@ fn chat_commands_are_a_closed_exact_set_for_the_main_window() {
     let ok = |payload: serde_json::Value| ChatState::connected().command(CHAT_WINDOW_LABEL, &payload);
 
     let cmd = ok(send_payload("hola Koda")).unwrap();
-    assert!(matches!(cmd, ChatCommand::Send { ref text, ref client_request_id, ref request_id } if text == "hola Koda" && client_request_id == "c1" && request_id == "i-c1"));
+    assert!(matches!(cmd, ChatCommand::Send { ref text, ref client_request_id, ref request_id, .. } if text == "hola Koda" && client_request_id == "c1" && request_id == "i-c1"));
     assert_eq!(cmd.line(), "{\"type\":\"send\",\"text\":\"hola Koda\",\"requestId\":\"i-c1\"}\n", "clientRequestId stays local; the wire requestId travels");
 
     let cmd = ok(json!({"action":"chat_steer","text":"enfócate","requestId":"i-s1"})).unwrap();
@@ -1214,7 +1214,10 @@ fn u4b_only_an_answer_the_daemon_resolved_is_named_answered() {
 /// U4b verifier F3: an answer whose wire write fails AFTER the answered-once mark (the daemon stopped
 /// reading, the connection is going away) is un-marked: the ask can be answered again, and the host
 /// never says «ya se respondió» for an answer that was never sent.
-#[cfg(unix)]
+/// Linux only: the failed write is forced by the peer's shutdown(Read), which makes the next write fail
+/// with EPIPE on Linux; macOS keeps buffering after a peer SHUT_RD, so the write succeeds there and the
+/// test cannot force the failure (CI 43071616377). The un-mark path itself is the same on every OS.
+#[cfg(target_os = "linux")]
 #[test]
 fn u4b_a_failed_answer_write_unmarks_the_ask() {
     use crate::agentconn::ChatConn;
@@ -1274,4 +1277,81 @@ fn u4b_a_failed_answer_write_unmarks_the_ask() {
     let _ = tx.send(());
     conn.close();
     let _ = keep.join();
+}
+
+// ---- K2-05 attachments (L11 2a, Gentle Dot send{attachments} + the daemon's upload frames) ----
+
+const FILE_ID: &str = "a-0123456789abcdef";
+
+#[test]
+fn attachments_send_names_daemon_ids_only_and_may_have_no_text() {
+    let ok = |payload: serde_json::Value| ChatState::connected().command(CHAT_WINDOW_LABEL, &payload);
+    let cmd = ok(json!({"action":"chat_send","text":"mirá","clientRequestId":"c1","requestId":"i-1","attachments":[FILE_ID]})).unwrap();
+    assert_eq!(cmd.line(), format!("{{\"type\":\"send\",\"text\":\"mirá\",\"requestId\":\"i-1\",\"attachments\":[\"{FILE_ID}\"]}}\n"));
+    let cmd = ok(json!({"action":"chat_send","text":"","clientRequestId":"c1","requestId":"i-1","attachments":[FILE_ID]})).unwrap();
+    assert_eq!(cmd.line(), format!("{{\"type\":\"send\",\"text\":\"\",\"requestId\":\"i-1\",\"attachments\":[\"{FILE_ID}\"]}}\n"), "files only: empty text");
+    // without files the text is still required; files are never a path, a duplicate or more than 10
+    assert!(ok(json!({"action":"chat_send","text":" ","clientRequestId":"c1","requestId":"i-1"})).is_err());
+    let eleven: Vec<String> = (0..11).map(|i| format!("a-{i:016x}")).collect();
+    for bad in [json!([]), json!(["/home/u/secreto.txt"]), json!(["../a-0123456789abcdef"]), json!([FILE_ID, FILE_ID]), json!(eleven), json!("a-0123456789abcdef"), json!([{"uploadId":"x","name":"y"}])] {
+        assert!(ok(json!({"action":"chat_send","text":"x","clientRequestId":"c1","requestId":"i-1","attachments":bad})).is_err(), "{bad}");
+    }
+}
+
+#[test]
+fn attachments_upload_chunks_have_their_own_budget_and_their_exact_wire_shape() {
+    let st = ChatState::connected();
+    let chunk = json!({"action":"chat_upload","requestId":"u-1","name":"foto.png","size":3,"offset":0,"data":"AAAA"});
+    let cmd = st.command(CHAT_WINDOW_LABEL, &chunk).unwrap();
+    assert_eq!(cmd.line(), "{\"type\":\"upload\",\"requestId\":\"u-1\",\"name\":\"foto.png\",\"size\":3,\"offset\":0,\"data\":\"AAAA\"}\n");
+    assert!(st.command("settings", &chunk).is_err(), "only the main island window uploads");
+    // an upload never spends the chat budget: 300 chunks and a send still goes out
+    for _ in 0..300 { st.command(CHAT_WINDOW_LABEL, &chunk).unwrap(); }
+    assert!(st.command(CHAT_WINDOW_LABEL, &send_payload("hola")).is_ok());
+    // …but it has its own, under the daemon's 720 upload frames per minute
+    let mut refused = false;
+    for _ in 0..UPLOAD_FRAMES_PER_MINUTE { refused |= st.command(CHAT_WINDOW_LABEL, &chunk).is_err(); }
+    assert!(refused, "the island stops before the daemon would drop the connection");
+    assert!(UPLOAD_FRAMES_PER_MINUTE < 720);
+    // the chunk's grammar mirrors the daemon (protocol.cjs `upload`)
+    for bad in [
+        json!({"action":"chat_upload","requestId":"u 1","name":"a","size":3,"offset":0,"data":"AAAA"}),
+        json!({"action":"chat_upload","requestId":"u-1","name":"","size":3,"offset":0,"data":"AAAA"}),
+        json!({"action":"chat_upload","requestId":"u-1","name":"a","size":3,"offset":4,"data":"AAAA"}),
+        json!({"action":"chat_upload","requestId":"u-1","name":"a","size":3,"offset":0,"data":"no base64!"}),
+        json!({"action":"chat_upload","requestId":"u-1","name":"a","size":3,"offset":0,"data":"AAAA","path":"/etc/passwd"}),
+        json!({"action":"chat_upload","requestId":"u-1","name":"a","size":3,"offset":0,"data":"A".repeat(MAX_UPLOAD_CHUNK_CHARS + 4)}),
+    ] {
+        assert!(ChatState::connected().command(CHAT_WINDOW_LABEL, &bad).is_err(), "{bad}");
+    }
+    let cmd = ChatState::connected().command(CHAT_WINDOW_LABEL, &json!({"action":"chat_upload_discard","id":FILE_ID})).unwrap();
+    assert_eq!(cmd.line(), format!("{{\"type\":\"upload_discard\",\"id\":\"{FILE_ID}\"}}\n"));
+    assert!(ChatState::connected().command(CHAT_WINDOW_LABEL, &json!({"action":"chat_upload_discard","id":"../x"})).is_err());
+}
+
+#[test]
+fn attachments_the_daemons_answer_to_an_upload_folds_by_its_request_id() {
+    let mut st = ChatState::connected();
+    st.command(CHAT_WINDOW_LABEL, &json!({"action":"chat_upload","requestId":"u-1","name":"a.txt","size":1,"offset":0,"data":"QQ=="})).unwrap();
+    st.command(CHAT_WINDOW_LABEL, &json!({"action":"chat_upload","requestId":"u-2","name":"b.bin","size":1,"offset":0,"data":"QQ=="})).unwrap();
+    st.apply(&json!({"type":"uploaded","requestId":"u-1","attachment":{"id":FILE_ID,"name":"a.txt","size":1,"mime":"application/octet-stream","path":"/secret"}}));
+    st.apply(&json!({"type":"error","code":"file_too_large","requestId":"u-2"}));
+    // an answer to an upload this client never started changes nothing
+    st.apply(&json!({"type":"uploaded","requestId":"u-9","attachment":{"id":"a-ffffffffffffffff","name":"x","size":1,"mime":"x"}}));
+    let v = view(&st);
+    assert_eq!(v["uploads"], json!([
+        {"requestId":"u-1","attachment":{"id":FILE_ID,"name":"a.txt","size":1,"mime":"application/octet-stream"}},
+        {"requestId":"u-2","code":"file_too_large"},
+    ]));
+    assert!(!v.to_string().contains("/secret"), "never a path");
+    assert_eq!(v["turnError"]["n"], json!(0), "an upload refusal is not a turn error");
+}
+
+#[test]
+fn attachments_history_messages_keep_their_chips() {
+    let mut st = ChatState::connected();
+    st.apply(&json!({"type":"history","hasEarlier":false,"messages":[
+        {"id":"s0-1","role":"user","text":"mirá","activities":[],"attachments":[{"name":"foto.png","size":12,"mime":"image/png"},{"name":"bad","size":-1,"mime":"x"},{"name":"a\u{0}b","size":1,"mime":"x"}]},
+    ]}));
+    assert_eq!(view(&st)["messages"][0]["attachments"], json!([{"name":"foto.png","size":12,"mime":"image/png"}]));
 }
