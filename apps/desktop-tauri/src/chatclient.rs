@@ -458,12 +458,20 @@ impl ChatState {
         Ok(cmd)
     }
 
-    /// F5: attribute one error frame to the OLDEST waiting command that can answer it.
+    /// F5: attribute one error frame to the OLDEST waiting command that can answer it. K2-05 F3: a
+    /// send whose turn went quiet with no output (`Settled`) only claims an error no command sent
+    /// AFTER that quiet can answer: the daemon writes a send's rejection in the same tick as the
+    /// busy reset, so a later `failed` answers the later command (a refused catch-up read).
     fn attribute_error(&mut self, code: &str) -> Option<Awaiting> {
         let now = Instant::now();
         let awaiting = self.awaiting.get_mut();
         awaiting.retain(|(k, at)| now.duration_since(*at) < k.ttl());
-        let at = awaiting.iter().position(|(k, _)| k.can_answer(code))?;
+        let mut at = awaiting.iter().position(|(k, _)| k.can_answer(code))?;
+        if let (Awaiting::Settled, quiet) = awaiting[at] {
+            if let Some(later) = awaiting.iter().position(|(k, sent)| *k != Awaiting::Settled && *sent >= quiet && k.can_answer(code)) {
+                at = later;
+            }
+        }
         awaiting.remove(at).map(|(k, _)| k)
     }
 
@@ -1048,8 +1056,14 @@ struct Pending {
     /// position the island knew when it sent (every history page and every announced prompt count,
     /// so it is never lower than any earlier island turn's: island turns keep their send order).
     after: u64,
-    /// The record id of its prompt, once the daemon announced it with this send's `requestId`.
+    /// The record id of its prompt, once the daemon announced it with this send's `requestId` (or,
+    /// K2-05 F2, by the fallback below when no announcement ever named it).
     record: Option<String>,
+    /// F2: the live message ids already on screen when it was sent (never its output).
+    seen: Vec<String>,
+    /// F2: the live messages it owns while it never bound (no `user_message` named it): the output
+    /// of nobody's prompt that arrived while it was the island's turn in flight (bounded).
+    took: Vec<String>,
     /// The last non-empty reply seen (kept across a connection reset that drops the live
     /// messages from the island's view).
     reply: String,
@@ -1121,6 +1135,9 @@ struct HostInner {
     retry_after_ms: u64,
     retries: u32,
 }
+
+/// F2: the live messages one unbound island turn may own.
+const MAX_TOOK: usize = 64;
 
 /// How many times a refused catch-up read is asked again for the same announced record.
 const MAX_CATCH_UP_RETRIES: u32 = 3;
@@ -1204,6 +1221,12 @@ fn live_streams(chat: &Value) -> Vec<(String, String, Option<String>)> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// F2: the ids of the live messages in a view (landed but not in history yet, or still streaming).
+fn live_ids(chat: &Value) -> Vec<String> {
+    let landed = chat_messages(chat).into_iter().filter_map(|m| msg_id(&m).filter(|id| !is_history_id(id)).map(str::to_owned));
+    landed.chain(live_streams(chat).into_iter().map(|(id, _, _)| id)).collect()
 }
 
 /// The record id of the prompt a live message answers (`prompt`), if the daemon announced one.
@@ -1552,21 +1575,45 @@ impl HostInner {
             self.asked_record = Some(announced);
             self.refresh_due = true;
         }
-        let owners: std::collections::HashMap<&str, u64> =
-            self.pending.iter().filter_map(|p| p.record.as_deref().map(|r| (r, p.num))).collect();
-        let owner_of = |prompt: Option<&str>| prompt.and_then(|p| owners.get(p)).copied().unwrap_or(0);
-        // (owner, text, still streaming, the prompt it answers)
-        let mut live: Vec<(u64, String, bool, Option<String>)> = Vec::new();
+        // (message id, text, still streaming, the prompt it answers)
+        let mut outputs: Vec<(String, String, bool, Option<String>)> = Vec::new();
         for m in &messages {
             let Some(id) = msg_id(m) else { continue };
             if is_history_id(id) || msg_role(m) != "assistant" {
                 continue;
             }
-            live.push((owner_of(msg_prompt(m)), msg_text(m).to_owned(), false, msg_prompt(m).map(str::to_owned)));
+            outputs.push((id.to_owned(), msg_text(m).to_owned(), false, msg_prompt(m).map(str::to_owned)));
         }
-        for (_, text, prompt) in &streams {
-            live.push((owner_of(prompt.as_deref()), text.clone(), true, prompt.clone()));
+        for (id, text, prompt) in &streams {
+            outputs.push((id.clone(), text.clone(), true, prompt.clone()));
         }
+        // K2-05 F2: the island's turn in flight that no `user_message` named (an older daemon, or an
+        // announcement that lost its requestId) owns the new output of nobody's island prompt
+        if let Some(p) = self.pending.last_mut().filter(|p| p.ended.is_none() && p.record.is_none()) {
+            if err_n > p.err_seen {
+                // an error correlated to this send: the daemon refused it, so nothing it took was its own
+                p.took.clear();
+                p.reply.clear();
+            }
+            for (id, _, _, prompt) in outputs.iter().filter(|_| err_n <= p.err_seen) {
+                let claimed = prompt.as_deref().is_some_and(|r| self.claims.contains_key(r));
+                if !claimed && !p.seen.contains(id) && !p.took.contains(id) && p.took.len() < MAX_TOOK {
+                    p.took.push(id.clone());
+                }
+            }
+        }
+        let owners: std::collections::HashMap<&str, u64> =
+            self.pending.iter().filter_map(|p| p.record.as_deref().map(|r| (r, p.num))).collect();
+        let owner_of = |id: &str, prompt: Option<&str>| {
+            prompt
+                .and_then(|p| owners.get(p))
+                .copied()
+                .or_else(|| self.pending.iter().find(|p| p.took.iter().any(|t| t == id)).map(|p| p.num))
+                .unwrap_or(0)
+        };
+        // (owner, text, still streaming, the prompt it answers)
+        let live: Vec<(u64, String, bool, Option<String>)> =
+            outputs.into_iter().map(|(id, text, streaming, prompt)| (owner_of(&id, prompt.as_deref()), text, streaming, prompt)).collect();
         // the output an island turn owns (`owner` > 0), or (`owner` 0) the output of no island turn
         // that answers `prompt` or names no prompt at all
         let owned = |owner: u64, prompt: Option<&str>| -> (String, bool) {
@@ -1583,7 +1630,8 @@ impl HostInner {
         let mut live_state: Option<(u64, &'static str)> = None;
         let mut settled_now = false;
         for (i, p) in self.pending.iter_mut().enumerate() {
-            let (reply, streaming) = if p.record.is_some() { owned(p.num, None) } else { (String::new(), false) };
+            // a bound turn's output, or (F2) what an unbound one took
+            let (reply, streaming) = owned(p.num, None);
             // the turn's own output, also after it ended: a cancelled turn's held tail still
             // lands (the daemon flushes it once), and only this turn owns it
             if !reply.is_empty() {
@@ -1623,6 +1671,25 @@ impl HostInner {
         }
         if settled_now {
             self.refresh_due = true;
+        }
+        // K2-05 F2 fallback, ONLY for a turn no `user_message` ever named: once it ended after taking
+        // output (the engine ran it, so it recorded its prompt), it is the first unclaimed recorded
+        // prompt after its send position with its own text, so it is never drawn beside that row
+        for i in 0..self.pending.len() {
+            let p = &self.pending[i];
+            if p.record.is_some() || p.ended.is_none() || p.took.is_empty() {
+                continue;
+            }
+            let found = messages.iter().find_map(|m| {
+                let id = msg_id(m).filter(|id| is_history_id(id))?;
+                let fits = msg_role(m) == "user" && record_pos(id).is_some_and(|pos| pos > p.after) && msg_text(m) == p.text && !self.claims.contains_key(id);
+                fits.then(|| id.to_owned())
+            });
+            if let Some(id) = found {
+                let num = p.num;
+                self.pending[i].record = Some(id.clone());
+                self.claim(&id, num);
+            }
         }
         // a settled turn whose record the shown history has reached: the record turn takes over,
         // and the island keeps how it really ended (F4: cancelled / interrupted / the reply)
@@ -1850,6 +1917,8 @@ impl ChatHost {
             submitted_ms: now_ms,
             after,
             record: None,
+            seen: live_ids(&before),
+            took: vec![],
             reply: String::new(),
             err_seen: turn_error_counter(&before).0,
             ended: None,

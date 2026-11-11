@@ -1758,6 +1758,11 @@ enum OnSend {
     Unrecorded,
     /// The engine records the prompt, then the island cancels it before any answer.
     RecordedNoReply,
+    /// F2: an older daemon (no `user_message` at all): the prompt is recorded and answered.
+    ReplyUnannounced(&'static str),
+    /// F2: the announcement of the island's prompt lost its `requestId` (as F1 did): recorded,
+    /// announced to the island as anybody's prompt, and answered.
+    ReplyAnonymous(&'static str),
 }
 
 /// A rotated chain: every row is one display row, ids `s<file>-<row of that file>` (the daemon's).
@@ -1851,6 +1856,17 @@ fn chain_link_budget(rows: &[(&'static str, &str)], unlimited: bool) -> (std::sy
                         d.push("assistant", reply);
                         let m = format!("m{}", d.rows.len());
                         vec![BUSY(), user_message(&id, text, rid), json!({"type":"message_delta","messageId":m,"text":reply}), json!({"type":"message_done","messageId":m}), QUIET()]
+                    }
+                    OnSend::ReplyUnannounced(reply) | OnSend::ReplyAnonymous(reply) => {
+                        let id = d.push("user", text);
+                        d.push("assistant", reply);
+                        let m = format!("m{}", d.rows.len());
+                        let mut frames = vec![BUSY()];
+                        if matches!(d.on_send, OnSend::ReplyAnonymous(_)) {
+                            frames.push(user_message(&id, text, None));
+                        }
+                        frames.extend([json!({"type":"message_delta","messageId":m,"text":reply}), json!({"type":"message_done","messageId":m}), QUIET()]);
+                        frames
                     }
                     OnSend::Fail => vec![BUSY(), QUIET(), json!({"type":"error","code":"failed"})],
                     OnSend::Unrecorded => vec![BUSY()],
@@ -2182,3 +2198,100 @@ fn bind_every_send_carries_a_fresh_request_id_and_only_its_own_user_message_bind
     let expected = vec![row("vieja", "r-vieja", "completed"), row("hola", "", "cancelled"), row("hola", "", "cancelled"), row("hola", "", "completed")];
     check_bound(&host, &link, &chain, &expected, &[], "fresh ids", T0 + 100);
 }
+
+// ---- K2-05 bind follow-ups (verifier mwbwcay1-c-olub F2/F3) ----------------------------------
+
+/// F2: a turn that never binds (an older daemon sends no `user_message`; or the announcement lost
+/// its requestId) shows ONCE, with its streamed reply, before and after the record carries it.
+#[test]
+fn bind_f2_an_unbound_turn_shows_once_with_its_streamed_reply() {
+    for on_send in [OnSend::ReplyUnannounced("r-hola"), OnSend::ReplyAnonymous("r-hola")] {
+        for refuse in [0, 3] {
+            let label = format!("{on_send:?}, reads refused {refuse}");
+            let (link, chain) = chain_link(&[("user", "vieja"), ("assistant", "r-vieja")]);
+            let host = ChatHost::new();
+            first_window(&host, &link);
+            tick(&host, &link, T0);
+            chain.lock().unwrap().refuse = refuse;
+            // another client's identical prompt before the island's: never taken by the fallback
+            foreign_turn(&link, &chain, &[("hola", "r-otro")]);
+            tick(&host, &link, T0 + 10);
+            chain.lock().unwrap().on_send = on_send;
+            let own = send_turn(&host, &link, "hola", "req-f2000001", T0 + 20);
+            let expected = vec![row("vieja", "r-vieja", "completed"), row("hola", "r-otro", "completed"), row("hola", "r-hola", "completed")];
+            check_bound(&host, &link, &chain, &expected, &[(2, own)], &label, T0 + 100);
+        }
+    }
+}
+
+/// F2: while the unbound turn runs, its streamed output shows on it (never on the newest history
+/// turn), and output that was already on screen when it was sent is never taken.
+#[test]
+fn bind_f2_an_unbound_turn_in_flight_shows_its_own_streamed_output_only() {
+    let link = FakeLink::new();
+    page(&link, &[("s0-1", "user", "vieja")], false);
+    agent(&link, true, "ready");
+    link.frame(json!({"type":"message_delta","messageId":"m1","text":"antes"}));
+    link.frame(json!({"type":"message_done","messageId":"m1"}));
+    agent(&link, false, "ready");
+    let host = ChatHost::new();
+    host.project(&link.view(), T0);
+    host.route(&link, "main", &submit("hola", "req-f2000002"), T0 + 10).unwrap();
+    agent(&link, true, "ready");
+    link.frame(json!({"type":"message_delta","messageId":"m2","text":"parte"}));
+    let v = host.project(&link.view(), T0 + 20);
+    let ts = turns(&v);
+    assert_eq!(shape(&ts), vec![row("vieja", "antes", "completed"), row("hola", "parte", "streaming")], "{v}");
+    assert_eq!(v["active_turn"], ts[1]["turn_id"]);
+}
+
+/// F2: an unbound send the daemon refused (its `failed` arrives after another client's output
+/// started) ends with its error and never keeps that output.
+#[test]
+fn bind_f2_a_refused_unbound_send_never_keeps_another_clients_output() {
+    let link = FakeLink::new();
+    page(&link, &[("s0-1", "user", "vieja"), ("s0-2", "assistant", "r-vieja")], false);
+    let host = ChatHost::new();
+    host.project(&link.view(), T0);
+    host.route(&link, "main", &submit("hola", "req-f2000003"), T0 + 10).unwrap();
+    agent(&link, true, "ready");
+    link.frame(json!({"type":"user_message","messageId":"s0-3","text":"otra"}));
+    link.frame(json!({"type":"message_delta","messageId":"m1","text":"ajena"}));
+    host.project(&link.view(), T0 + 20);
+    link.frame(json!({"type":"error","code":"failed"}));
+    let ts = turns(&host.project(&link.view(), T0 + 30));
+    let mine = ts.iter().find(|t| t["user_text"] == json!("hola")).expect("the island's turn shows");
+    assert_eq!(mine["state"], json!("error"), "{ts:?}");
+    assert_eq!(mine["reply"], json!(""), "another client's output is never the refused send's: {ts:?}");
+}
+
+/// F3: a refused catch-up read's `failed` counts against the read (never against a send whose turn
+/// went quiet with no output), so the read is asked again a status gap later.
+#[test]
+fn bind_f3_a_refused_catch_up_read_after_a_silent_settled_send_is_asked_again() {
+    let (link, chain) = chain_link(&[("user", "vieja"), ("assistant", "r-vieja")]);
+    let host = ChatHost::new();
+    first_window(&host, &link);
+    tick(&host, &link, T0);
+    // the island's turn is recorded, then cancelled before any output: its send is left settled
+    chain.lock().unwrap().on_send = OnSend::RecordedNoReply;
+    let own = send_turn(&host, &link, "hola", "req-f3000001", T0 + 10);
+    chain.lock().unwrap().refuse = 1;
+    cancel_turn(&host, &link, T0 + 20);
+    let reads = |link: &FakeLink| link.sent().iter().filter(|c| matches!(c, ChatCommand::History)).count();
+    tick(&host, &link, T0 + 30);
+    assert_eq!(chain.lock().unwrap().refuse, 0, "the catch-up read went out and was refused");
+    let refused = reads(&link);
+    assert_eq!(link.view()["reads"]["failed"], json!(1), "the refusal is the read's: {}", link.view()["reads"]);
+    // the production reader projects the view the refusal changed
+    host.project(&link.view(), T0 + 31);
+    for k in 0..3 {
+        tick(&host, &link, T0 + 30 + STATUS_GAP + k);
+    }
+    assert!(reads(&link) > refused, "the refused catch-up read is asked again");
+    let ts = turns(&host.project(&link.view(), T0 + 30 + STATUS_GAP + 10));
+    assert_eq!(shape(&ts), vec![row("vieja", "r-vieja", "completed"), row("hola", "", "cancelled")]);
+    assert_eq!(ts[1]["turn_id"], own);
+}
+
+const STATUS_GAP: u64 = 5_000;
