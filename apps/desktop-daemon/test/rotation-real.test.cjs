@@ -29,14 +29,24 @@ const path = require("node:path");
 const { AgentEngine, DEFAULT_COMMAND, runtimeRoot } = require("../src/runtime.cjs");
 const { HANDOFF_TYPE, SESSION_VERSION, SessionRotator } = require("../src/rotation.cjs");
 
-const BOOT_TIMEOUT_MS = 120_000;
 // R8 (K2-05 CI run 43025727185): on the Windows runner the real engine's session replacement
 // (switch_session/new_session: teardown + runtime rebuild inside the engine) did not answer within the
 // Linux budget, while on Linux it answers in ~0.1 s (start ~5 s). Koda's side of a switch is one JSONL
 // request with no file handle kept open, the same on every OS, so Windows gets more time, not other
-// behaviour: the switch budget is the product's own default (DEFAULT_SWITCH_TIMEOUT_MS, 30 s), so a
-// Windows switch slower than what the shipped daemon waits for still fails here.
+// behaviour: every budget stays at or below the product's own default, so a Windows switch slower
+// than what the shipped daemon waits for still fails here.
 const WIN_REAL = process.platform === "win32";
+// K2-05 boot reopen (L44, Windows CI 43071616377): the restart's reopen of the saved session used the
+// short switch budget (30 s) while the rotation's switch had the request budget (300 s); a Windows reopen
+// slower than 30 s was dropped and the fresh boot session overwrote state.json. The product now gives the
+// reopen the SAME budget as the rotation's switch (requestTimeoutMs), so this test gives both one budget
+// too: 60 s on Windows (below the product's 300 s, so it stays stricter than the shipped daemon and fits
+// npm test's 600 s per-test cap), 10 s elsewhere. switchTimeoutMs now only bounds the get_state that
+// confirms the reopen. One reopen attempt here (the product default retries 3 times; runtime.test.cjs
+// covers the retries): a failed reopen ends in the linked fallback inside the cap, and the assertion
+// prints the engine and daemon logs so CI shows the cause.
+const REOPEN_ATTEMPTS = 1;
+const BOOT_TIMEOUT_MS = WIN_REAL ? 540_000 : 120_000;
 
 /** A minimal fake Koda bundled runtime: the production launch path through runtimeDeps (see test/pi-offline.test.cjs). */
 function fakeKodaRuntime(t, gentleRoot) {
@@ -125,8 +135,9 @@ test("real engine: a forced rotation switches it to the handoff session and the 
 		backoffMs: [10_000, 10_000],
 		stableMs: 60_000,
 		startTimeoutMs: 60_000,
-		requestTimeoutMs: WIN_REAL ? 60_000 : 10_000, // R8: the rotation's switch_session runs on the request budget
-		switchTimeoutMs: WIN_REAL ? 30_000 : 10_000, // R8: the restart's reopen runs on the switch budget
+		requestTimeoutMs: WIN_REAL ? 60_000 : 10_000, // the rotation's switch_session AND the restart's reopen (L44)
+		switchTimeoutMs: WIN_REAL ? 30_000 : 10_000, // the get_state that confirms a switch
+		reopenAttempts: REOPEN_ATTEMPTS,
 		stopTimeoutMs: 2_000,
 		log: (line) => logs.push(String(line)),
 	});
@@ -185,7 +196,11 @@ test("real engine: a forced rotation switches it to the handoff session and the 
 	await engine.stop();
 	const again = new AgentEngine(engineOptions());
 	engines.push(again);
-	await again.start();
-	assert.equal(again.sessionFile, seed, "the chat reopens on the seeded session");
-	assert.deepEqual(again.previousSessions, [first], "the chain of files survives the restart");
+	// L44 proof step: when the reopen fails, CI shows the engine's and the daemon's own logs.
+	const withLogs = (what) => `${what}; logs: ${logs.join(" | ").slice(-6000)}`;
+	await again.start().catch((error) => assert.fail(withLogs(`the second engine did not start: ${error.message}`)));
+	assert.equal(again.sessionFile, seed, withLogs("the chat reopens on the seeded session"));
+	assert.deepEqual(again.previousSessions, [first], withLogs("the chain of files survives the restart"));
+	const saved = JSON.parse(fs.readFileSync(path.join(base, "island", "state.json"), "utf8"));
+	assert.equal(saved.sessionFile, seed, withLogs("state.json keeps naming the seeded session"));
 });

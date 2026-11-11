@@ -536,6 +536,121 @@ test("restart ignores persisted session paths outside the island sessions dir", 
 	await engine.stop();
 });
 
+// K2-05 boot reopen (L44, Windows CI 43071616377): the reopen of the conversation saved in
+// state.json must never be replaced by the engine's fresh boot session while it is uncertain.
+// The fake engine's --switch-script scripts the switch_session answers (fail / hang / late <ms>).
+function readState(engine) {
+	return JSON.parse(fs.readFileSync(path.join(engine.island.root, "state.json"), "utf8"));
+}
+
+/** Boots once to create the saved conversation, stops, and arms the switch script for the next boot. */
+async function savedConversation(t, overrides, script) {
+	const scriptFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "abito-switch-script-")), "switch.txt");
+	t.after(() => fs.rmSync(path.dirname(scriptFile), { recursive: true, force: true }));
+	const made = makeEngine(t, { ...overrides, extraArgs: ["--switch-script", scriptFile] });
+	const readies = [];
+	made.engine.on("status", ({ state }) => { if (state === "ready") readies.push(made.engine.sessionFile); });
+	await made.engine.start();
+	const saved = made.engine.sessionFile;
+	fs.appendFileSync(saved, `${JSON.stringify({ type: "message", message: { role: "user", content: [{ type: "text", text: "hola" }] } })}\n`);
+	assert.equal(readState(made.engine).sessionFile, saved);
+	await made.engine.stop();
+	fs.writeFileSync(scriptFile, script);
+	readies.length = 0;
+	return { ...made, saved, readies, scriptFile };
+}
+
+test("boot: a failed reopen of the saved conversation never overwrites state.json and is retried", async (t) => {
+	const { engine, saved, readies, cmdLog, spawnLog } = await savedConversation(t, {}, "fail\n");
+	try {
+		await engine.start();
+		assert.equal(engine.sessionFile, saved, "the chat reopens on the saved conversation");
+		assert.equal(readState(engine).sessionFile, saved, "state.json still names the saved conversation");
+		assert.deepEqual(readies, [saved], "ready is reported once, only on the saved conversation");
+		assert.equal(readCommands(cmdLog).filter((c) => c.type === "switch_session").length, 2, "the failed reopen is retried");
+		assert.equal(spawnCount(spawnLog), 3, "the uncertain child is replaced, never reused");
+		const state = await engine.request({ type: "get_state" });
+		assert.equal(state.data.sessionFile, saved, "the engine and Koda agree");
+	} finally {
+		await engine.stop();
+	}
+});
+
+test("boot: the reopen gets the rotation switch budget (requestTimeoutMs), not the short switch budget", async (t) => {
+	const { engine, saved, readies, cmdLog } = await savedConversation(t, { switchTimeoutMs: 100, requestTimeoutMs: 3000 }, "late 400\n");
+	try {
+		await engine.start();
+		assert.equal(engine.sessionFile, saved);
+		assert.equal(readState(engine).sessionFile, saved);
+		assert.deepEqual(readies, [saved]);
+		assert.equal(readCommands(cmdLog).filter((c) => c.type === "switch_session").length, 1, "a slow reopen is waited for, not retried");
+		const state = await engine.request({ type: "get_state" });
+		assert.equal(state.data.sessionFile, saved, "the engine and Koda agree after the slow switch");
+	} finally {
+		await engine.stop();
+	}
+});
+
+test("boot: after the reopen attempts run out the chat continues in a new session linked to the saved one, which is kept", async (t) => {
+	const { engine, saved, readies, cmdLog, spawnLog } = await savedConversation(
+		t, { switchTimeoutMs: 150, requestTimeoutMs: 150, reopenAttempts: 2 }, "hang\nhang\n",
+	);
+	try {
+		await engine.start();
+		const fresh = engine.sessionFile;
+		assert.notEqual(fresh, saved);
+		assert.equal(readCommands(cmdLog).filter((c) => c.type === "switch_session").length, 2, "exactly reopenAttempts reopens");
+		assert.equal(spawnCount(spawnLog), 4, "the last child never received a switch it could finish later");
+		assert.deepEqual(readies, [fresh], "ready is never reported while a reopen was in flight");
+		assert.deepEqual(engine.previousSessions, [saved], "the saved conversation heads the chain, so its history keeps reading");
+		assert.deepEqual(readState(engine), { sessionFile: fresh, chains: { [fresh]: [saved] } });
+		assert.ok(fs.readFileSync(saved, "utf8").includes("hola"), "the saved conversation file is kept as it was");
+	} finally {
+		await engine.stop();
+	}
+});
+
+test("crash restart: a failed reopen of the saved conversation keeps state.json and is retried with backoff", async (t) => {
+	const scriptFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "abito-switch-script-")), "switch.txt");
+	t.after(() => fs.rmSync(path.dirname(scriptFile), { recursive: true, force: true }));
+	const { engine, cmdLog, spawnLog } = makeEngine(t, { extraArgs: ["--switch-script", scriptFile] });
+	try {
+		await engine.start();
+		const saved = engine.sessionFile;
+		const readies = [];
+		engine.on("status", ({ state }) => { if (state === "ready") readies.push(engine.sessionFile); });
+		fs.writeFileSync(scriptFile, "fail\n");
+		engine.send({ type: "crash" });
+		await waitFor(() => engine.status === "ready" && spawnCount(spawnLog) === 3);
+		assert.equal(engine.sessionFile, saved);
+		assert.equal(readState(engine).sessionFile, saved);
+		assert.deepEqual(readies, [saved]);
+		assert.equal(readCommands(cmdLog).filter((c) => c.type === "switch_session").length, 2);
+	} finally {
+		await engine.stop();
+	}
+});
+
+test("boot: stop() during the reopen retry wait ends start() promptly with nothing persisted over the saved conversation", async (t) => {
+	const { engine, saved, spawnLog } = await savedConversation(t, { backoffMs: [60_000] }, "fail\n");
+	const starting = engine.start();
+	starting.catch(() => {});
+	try {
+		await waitFor(() => spawnCount(spawnLog) === 2 && !engine.child);
+		const began = Date.now();
+		await engine.stop();
+		await starting.catch(() => {});
+		assert.ok(Date.now() - began < 5000, "stop does not wait for the retry backoff");
+		assert.equal(engine.status, "stopped");
+		assert.equal(readState(engine).sessionFile, saved);
+		assert.equal(spawnCount(spawnLog), 2, "no retry after stop");
+	} finally {
+		// Never leave a live child behind (it would keep the test file running).
+		await engine.stop();
+		await starting.catch(() => {});
+	}
+});
+
 // K2-05 T4 U1 verifier fix (S1/S2): a chain is read from the sessions dir only, so a
 // symlinked or outside path must never be persisted as a chain entry in the first place.
 test("linkSessions refuses chain entries that are not owned session files before persisting them", async (t) => {

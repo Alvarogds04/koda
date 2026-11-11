@@ -42,8 +42,23 @@ const chunkedEvents = process.env.FAKE_CHUNKED === "1" || process.argv.includes(
 const sessionDir = argValue("--session-dir") || ".";
 
 // Session file is per-spawn so a restart sees a different current session than
-// the persisted one (exercises the switch_session recovery path).
-const sessionFile = path.join(sessionDir, `fake-session-${process.pid}.jsonl`);
+// the persisted one (exercises the switch_session recovery path). Like Pi, a
+// finished switch_session moves the open session, so a later get_state reports it.
+let sessionFile = path.join(sessionDir, `fake-session-${process.pid}.jsonl`);
+
+// K2-05 boot reopen (L44): --switch-script <file> scripts the switch_session
+// answers, one line consumed per switch (shared by every spawn of one test):
+// `fail` answers an error and stays put, `hang` never answers and never switches,
+// `late <ms>` switches and answers only after <ms> (Pi handles RPC lines
+// concurrently: a get_state meanwhile still reports the old file, rpc-mode.js
+// :474-479). An empty or missing script switches at once.
+const switchScript = argValue("--switch-script");
+function nextSwitchStep() {
+	if (!switchScript || !fs.existsSync(switchScript)) return "";
+	const lines = fs.readFileSync(switchScript, "utf8").split("\n").filter(Boolean);
+	fs.writeFileSync(switchScript, lines.slice(1).map((line) => `${line}\n`).join(""));
+	return lines[0] ?? "";
+}
 
 // Diagnostics-hygiene fixtures: this raw content must never reach engine logs.
 if (process.argv.includes("--malformed-first")) {
@@ -115,9 +130,21 @@ function handle(command) {
 			if (!fs.existsSync(sessionFile)) fs.writeFileSync(sessionFile, "", { mode: 0o600 });
 			respond(command.id, "get_state", { sessionFile });
 			break;
-		case "switch_session":
-			respond(command.id, "switch_session", { sessionFile: command.sessionPath });
+		case "switch_session": {
+			const step = nextSwitchStep();
+			if (step === "hang") break;
+			if (step === "fail") {
+				writeRecord({ id: command.id, type: "response", command: "switch_session", success: false, error: "could not open the session" });
+				break;
+			}
+			const finish = () => {
+				sessionFile = command.sessionPath;
+				respond(command.id, "switch_session", { sessionFile: command.sessionPath });
+			};
+			if (step.startsWith("late ")) setTimeout(finish, Number(step.slice(5)));
+			else finish();
 			break;
+		}
 		case "echo":
 			respond(command.id, "echo", { value: command.value });
 			break;

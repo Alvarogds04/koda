@@ -176,6 +176,16 @@ Behavior details:
   `<root>/state.json` on every spawn; after a crash restart, a persisted path is
   reopened with `switch_session` only when it is inside the island sessions dir,
   a regular non-symlink file owned by the current user. Anything else is ignored.
+  K2-05 (L44): the reopen of the saved conversation, at boot and after a crash, has the
+  same budget as a rotation's switch (`requestTimeoutMs`, default 300 s) and counts only
+  once `get_state` confirms the saved file. Until then it is uncertain (Pi handles RPC
+  lines concurrently and keeps reporting its boot session while a switch runs): a failed
+  or timed-out reopen never overwrites `state.json` and never reports ready on another
+  session — the child is killed (no late switch can land) and a fresh child retries
+  with the restart backoff. After `reopenAttempts` (default 3) consecutive failures on
+  the same saved file, the next child is NOT switched: the chat continues in its fresh
+  session linked as the continuation of the saved one (the rotation's own fallback), so
+  history keeps reading through the chain and the saved file is kept, never deleted.
 - **Stop**: `stop()` ends stdin, then SIGTERM after `stopTimeoutMs`, then SIGKILL; it
   disables restarts, clears turn/deadline/grace timers, and later requests reject with `engine is not ready`.
 - **Spawn args**: `--mode rpc --session-dir <island sessions> --append-system-prompt

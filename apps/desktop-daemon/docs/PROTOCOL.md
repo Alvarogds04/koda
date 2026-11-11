@@ -633,6 +633,12 @@ one-line log notice), and any other unknown `rotation` subkey is still refused.
   the daemon verifies the handoff is in the engine's context before it calls the rotation done.
   state.json only ever names a session the engine actually holds: a failed switch never leaves the
   persisted pointer at the seed.
+- **Reopen on boot/restart (L44).** The engine reopens the session named in state.json with the
+  rotation switch's budget (`requestTimeoutMs`) and adopts it only when `get_state` confirms it. A
+  failed or timed-out reopen is uncertain: state.json is not touched, no `ready` is reported on the
+  engine's fresh boot session, the child is killed and a fresh one retries with backoff. After
+  `reopenAttempts` (default 3) consecutive failures the chat continues in a fresh session linked to
+  the saved one (`previousSessions`), whose file is kept; history keeps reading across the chain.
 - **Failure.** A seed-write failure, an unparseable or wrong-version session header (fail closed),
   or a failed fallback leaves the chat where it was and logs it. A failed switch or verification
   falls back to `new_session` seeded the same way (Gentle Dot's fallback), removes the orphan handoff
