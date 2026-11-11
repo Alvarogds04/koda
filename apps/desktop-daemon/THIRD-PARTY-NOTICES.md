@@ -10,7 +10,8 @@ MIT-licensed reference for the supervised isolated RPC runtime, fail-closed
 private directory checks, strict JSONL framing, transparent session rotation
 (hidden handoff message, session-file chains, 20 MB / 10 compaction limits),
 the read-only history projection over the rotated session chain (`pageHistory`,
-`historyFromMessages`, `describeTool`, `splitAttachments`; K2-05 T4 U1),
+`historyFromMessages`, `describeTool`, `splitAttachments`; K2-05 T4 U1), the
+attachment upload store and prompt composition (`uploads.ts`; K2-05 attachments),
 the user-facing white-label rewriting of internal names, and the
 product-identity approach.
 
@@ -22,7 +23,10 @@ product-identity approach.
   `src/rotation.cjs` (from `src/rotation.ts`), `src/conversations.cjs` (from the
   projection half of `src/conversations.ts` plus `describeTool`/`textOf` from
   `src/presentation.ts` and `splitAttachments` from `src/uploads.ts`),
-  `src/white-label.cjs`, `test/fixtures` and `identity.md`
+  `src/white-label.cjs`, `src/uploads.cjs` (from `src/uploads.ts`: `sanitizeName`,
+  `sniffMime`, the attachment limits and unsent-file expiry, `composePrompt`; K2-05
+  attachments, transported over the island socket with per-client opaque ids
+  instead of `POST /upload`), `test/fixtures` and `identity.md`
   (text), `README.md` (in part)
 - Changes: rewritten in plain Node CJS with no third-party dependencies; Koda
   identity, island paths, environment allowlist and fail-closed path rules differ

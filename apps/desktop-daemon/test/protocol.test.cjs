@@ -999,3 +999,50 @@ test("user_message frame stays within 192 KiB with every field: clipped, the lon
 	}
 	assert.ok(worst > limit - 64, `the sweep reached the bound (${worst})`);
 });
+
+// ----- K2-05 attachments (L11 2a, Gentle Dot send{attachments}) ----------------------------------
+
+test("upload: one chunk of one file, rebuilt; anything off-grammar is bad_request", () => {
+	const chunk = { type: "upload", requestId: "up-1", name: "foto final.png", size: 3, offset: 0, data: "AAAA", extra: "/etc/passwd" };
+	assert.deepEqual(P.decodeClientLine(line(chunk)).frame, { type: "upload", requestId: "up-1", name: "foto final.png", size: 3, offset: 0, data: Buffer.from("AAAA", "base64") });
+	assert.deepEqual(P.decodeClientLine(line({ ...chunk, size: 0, data: "" })).frame.data, Buffer.alloc(0), "an empty file is one empty chunk");
+	for (const bad of [
+		{ ...chunk, requestId: "a b" },
+		{ ...chunk, requestId: undefined },
+		{ ...chunk, name: "" },
+		{ ...chunk, name: "x".repeat(256) },
+		{ ...chunk, name: "a\u0000b" },
+		{ ...chunk, size: -1 },
+		{ ...chunk, size: 1.5 },
+		{ ...chunk, size: "3" },
+		{ ...chunk, offset: -1 },
+		{ ...chunk, offset: 4 },
+		{ ...chunk, data: "not base64!" },
+		{ ...chunk, data: "" },
+		{ ...chunk, data: "A".repeat(P.LIMITS.maxUploadChunkChars + 4) },
+		{ ...chunk, path: undefined, data: undefined },
+	]) assert.deepEqual(P.decodeClientLine(line(bad)), { error: "bad_request" }, JSON.stringify(bad).slice(0, 120));
+	// one whole chunk frame fits the inbound frame bound
+	const biggest = { ...chunk, name: "x".repeat(255), requestId: "r".repeat(64), size: Number.MAX_SAFE_INTEGER, offset: Number.MAX_SAFE_INTEGER, data: "A".repeat(P.LIMITS.maxUploadChunkChars) };
+	assert.ok(Buffer.byteLength(JSON.stringify(biggest)) < P.LIMITS.maxFrameBytes);
+});
+
+test("send: attachments are 1-10 daemon ids, never a path; with files the text may be empty", () => {
+	const id = "a-0123456789abcdef";
+	assert.deepEqual(P.decodeClientLine(line({ type: "send", text: "mirá", requestId: "r1", attachments: [id] })).frame, { type: "send", text: "mirá", images: [], requestId: "r1", attachments: [id] });
+	assert.deepEqual(P.decodeClientLine(line({ type: "send", text: "", attachments: [id] })).frame, { type: "send", text: "", images: [], attachments: [id] });
+	const ten = Array.from({ length: 10 }, (_, i) => `a-${i.toString(16).padStart(16, "0")}`);
+	assert.equal(P.decodeClientLine(line({ type: "send", text: "x", attachments: ten })).frame.attachments.length, 10);
+	for (const attachments of [[], [...ten, "a-ffffffffffffffff"], ["../etc/passwd"], ["/ws/uploads/a-0123456789abcdef/x"], ["a-0123456789ABCDEF"], [{ uploadId: id, name: "x" }], [id, id], id, null]) {
+		assert.deepEqual(P.decodeClientLine(line({ type: "send", text: "x", attachments })), { error: "bad_request" }, JSON.stringify(attachments));
+	}
+	assert.deepEqual(P.decodeClientLine(line({ type: "send", text: "  " })), { error: "bad_request" }, "no files: the text is required");
+	assert.deepEqual(P.decodeClientLine(line({ type: "upload_discard", id, junk: 1 })).frame, { type: "upload_discard", id });
+	assert.deepEqual(P.decodeClientLine(line({ type: "upload_discard", id: "../x" })), { error: "bad_request" });
+});
+
+test("uploaded frame: the stored file as its chip shows it, never its path", () => {
+	const frame = P.uploadedFrame("up-1", { id: "a-0123456789abcdef", name: "nota.txt", size: 4, mime: "application/octet-stream", path: "/secret/ws/uploads/x" });
+	assert.deepEqual(frame, { type: "uploaded", requestId: "up-1", attachment: { id: "a-0123456789abcdef", name: "nota.txt", size: 4, mime: "application/octet-stream" } });
+	for (const code of ["file_too_large", "message_too_large", "too_many_files", "upload_failed", "attachment_not_found"]) assert.equal(P.errorFrame(code).code, code);
+});

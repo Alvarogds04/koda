@@ -35,6 +35,12 @@ const LIMITS = Object.freeze({
 	maxOptions: 50,
 	maxOptionChars: 200,
 	maxIdChars: 128,
+	/** K2-05 attachments: one `upload` chunk's base64 text (≤ 144 KiB of file bytes; the frame stays under maxFrameBytes). */
+	maxUploadChunkChars: 192 * 1024,
+	/** K2-05 attachments: files one `send` names (Gentle Dot ATTACHMENT_LIMITS.files). */
+	maxAttachments: 10,
+	/** K2-05 attachments: a file name as the client sends it (Gentle Dot MAX_NAME). */
+	maxUploadNameChars: 255,
 });
 
 /** Page ids of the rotated chain: `s<file index>-<turn>` (T4 U1, Gentle Dot conversations.ts). */
@@ -46,6 +52,8 @@ const HISTORY_BEFORE = /^s(0|[1-9]\d*)-(0|[1-9]\d*)$/;
  * frame of the prompt the engine recorded for that request.
  */
 const REQUEST_ID = /^[A-Za-z0-9_-]{1,64}$/;
+/** K2-05 attachments: the daemon's own opaque id of one stored upload (uploads.cjs UPLOAD_ID). */
+const ATTACHMENT_ID = /^a-[0-9a-f]{16}$/;
 const IMAGE_MIMES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
 const STRICT_ID = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const SAFE_NAME = /^[A-Za-z0-9_.:-]{1,64}$/;
@@ -220,6 +228,14 @@ function validImages(images) {
 	return out;
 }
 
+/** K2-05 attachments: 1..maxAttachments distinct daemon upload ids, or null. */
+function validAttachmentIds(ids) {
+	if (!Array.isArray(ids) || ids.length === 0 || ids.length > LIMITS.maxAttachments) return null;
+	if (!ids.every((id) => typeof id === "string" && ATTACHMENT_ID.test(id))) return null;
+	if (new Set(ids).size !== ids.length) return null;
+	return [...ids];
+}
+
 /**
  * Validates one decoded client frame (after hello) and rebuilds it with only
  * the allowed fields. Returns undefined for anything invalid or unknown.
@@ -228,12 +244,30 @@ function validateClientFrame(raw) {
 	if (!isObject(raw) || typeof raw.type !== "string") return undefined;
 	switch (raw.type) {
 		case "send": {
-			if (!isString(raw.text, LIMITS.maxTextChars) || raw.text.trim() === "") return undefined;
+			// K2-05 attachments (Gentle Dot parseAttachments): 1-10 ids the daemon issued, never a
+			// path or a name; with files the text may be empty, without them it is required.
+			const attachments = raw.attachments === undefined ? undefined : validAttachmentIds(raw.attachments);
+			if (attachments === null) return undefined;
+			if (!isString(raw.text, LIMITS.maxTextChars) || (raw.text.trim() === "" && !attachments)) return undefined;
 			const images = validImages(raw.images);
 			if (images === null) return undefined;
 			if (raw.requestId !== undefined && !(typeof raw.requestId === "string" && REQUEST_ID.test(raw.requestId))) return undefined;
-			return { type: "send", text: raw.text, images, ...(raw.requestId !== undefined ? { requestId: raw.requestId } : {}) };
+			return { type: "send", text: raw.text, images, ...(raw.requestId !== undefined ? { requestId: raw.requestId } : {}), ...(attachments ? { attachments } : {}) };
 		}
+		case "upload": {
+			// K2-05 attachments: one chunk (base64) of one file, in order. The name is only ever a
+			// display name (uploads.cjs sanitizeName keeps its last segment); nothing names a path.
+			if (typeof raw.requestId !== "string" || !REQUEST_ID.test(raw.requestId)) return undefined;
+			if (!isString(raw.name, LIMITS.maxUploadNameChars) || raw.name === "" || raw.name.includes("\u0000")) return undefined;
+			if (!Number.isSafeInteger(raw.size) || raw.size < 0) return undefined;
+			if (!Number.isSafeInteger(raw.offset) || raw.offset < 0 || raw.offset > raw.size) return undefined;
+			if (typeof raw.data !== "string" || raw.data.length > LIMITS.maxUploadChunkChars) return undefined;
+			if (raw.data === "" ? raw.size !== 0 : !BASE64.test(raw.data) || raw.data.length % 4 !== 0) return undefined;
+			return { type: "upload", requestId: raw.requestId, name: raw.name, size: raw.size, offset: raw.offset, data: Buffer.from(raw.data, "base64") };
+		}
+		case "upload_discard":
+			if (typeof raw.id !== "string" || !ATTACHMENT_ID.test(raw.id)) return undefined;
+			return { type: "upload_discard", id: raw.id };
 		case "steer":
 			if (!isString(raw.text, LIMITS.maxTextChars) || raw.text.trim() === "") return undefined;
 			if (raw.requestId !== undefined && !(typeof raw.requestId === "string" && REQUEST_ID.test(raw.requestId))) return undefined;
@@ -507,6 +541,8 @@ const EMITTED_ERROR_CODES = new Set([
 	"bad_request", "busy", "not_busy", "unavailable", "rate_limited", "unknown_ask", "paused", "failed",
 	"unknown_proposal", "digest_mismatch", "needs_setup", "signin_failed", "store_not_private",
 	"conversations_off", // T4 U1: one continuous chat; new_conversation is refused outright
+	// K2-05 attachments (Gentle Dot uploads.ts refusals): limits, a failed store, an unknown/spent ref
+	"file_too_large", "message_too_large", "too_many_files", "upload_failed", "attachment_not_found",
 ]);
 // Recognized by the host's broader enum, but collapsed to stale/failed before H2c can emit them.
 const RESERVED_CONNECTOR_ERROR_CODES = new Set(["already_decided", "session_mismatch", "pending_full"]);
@@ -724,6 +760,14 @@ function userMessageFrame(message, requestId) {
 		if (encoded(frame) > USER_MESSAGE_MAX_BYTES) throw new Error("user message frame invalid");
 	}
 	return frame;
+}
+/**
+ * K2-05 attachments: the reply to the LAST chunk of an upload, to its sender only — the stored
+ * file as its chip shows it plus the daemon's opaque id the next `send` names. Never the path.
+ */
+function uploadedFrame(requestId, file) {
+	if (typeof requestId !== "string" || !REQUEST_ID.test(requestId) || !isObject(file) || !ATTACHMENT_ID.test(file.id)) throw new Error("uploaded frame invalid");
+	return { type: "uploaded", requestId, attachment: { id: file.id, name: clip(file.name, 128), size: file.size, mime: clip(file.mime, 64) } };
 }
 const earlierFrame = (before, page) => historyPageFrame("earlier", before, page);
 
@@ -1190,6 +1234,8 @@ module.exports = {
 	deltaFrames,
 	encodeServerFrame,
 	userMessageFrame,
+	uploadedFrame,
+	ATTACHMENT_ID,
 	REQUEST_ID,
 	errorFrame,
 	accountDto,

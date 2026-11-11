@@ -29,6 +29,8 @@ const { awaitSafePoint, closedToast } = require("./interrupt.cjs");
 // T4 U1: the history projection over the engine's rotated chain (Gentle Dot's
 // conversations.ts, MIT); see THIRD-PARTY-NOTICES.md.
 const { pageHistory, sessionTail, nextRow, splitAttachments, textOf } = require("./conversations.cjs");
+// K2-05 attachments (L11 2a): Gentle Dot's upload store and prompt composition (uploads.ts, MIT).
+const { UploadStore, composePrompt } = require("./uploads.cjs");
 
 /** Gentle Dot's REMEMBERED_REQUEST_IDS (bridge.ts:122): a repeated send/steer requestId is ignored. */
 const REMEMBERED_REQUEST_IDS = 500;
@@ -87,6 +89,10 @@ const DEFAULTS = {
 	 * which left a connect burst unbounded until its handshake window closed it. */
 	maxHandshakes: 16,
 	framesPerMinute: 240,
+	/** K2-05 attachments: `upload` chunks have their OWN per-client budget (≈ 100 MB/min at the
+	 * 144 KiB chunk), so a large file never trips the 240 frames/min drop and chat frames never
+	 * compete with it. Over the budget the client is dropped, like the frame limit. */
+	uploadFramesPerMinute: 720,
 	maxOutboundBytes: 1024 * 1024,
 	askTimeoutMs: 120_000,
 	maxPendingAsks: 16,
@@ -226,6 +232,10 @@ class IslandServer {
 		this.onInterruptedAck = options.onInterruptedAck; // R5
 		this.pendingInterrupted = undefined;
 		this.pausedStore = options.pausedStore;
+		// K2-05 attachments: files wait in the island's OWN engine workspace (`<island>/workspace/uploads`,
+		// the engine's private workspace, never a user-chosen folder, where nothing is ever written),
+		// owned by the client connection that uploaded them.
+		this.uploads = options.uploads ?? new UploadStore({ workspace: () => this.engine?.island?.workspace, log: (line) => this.log(line) });
 		this.connectorsFlight = undefined; // the single in-flight snapshot promise (shared by all clients)
 		this.connectorsLast = undefined; // {at, outcome: Promise-settled frame | undefined}
 		this.sessionsFlight = undefined; // #360: the single in-flight scan promise (shared by all clients)
@@ -461,7 +471,7 @@ class IslandServer {
 			socket.destroy();
 			return;
 		}
-		const client = { socket, ready: false, seq: 0, pending: Buffer.alloc(0), frames: 0, windowStart: Date.now(), dead: false };
+		const client = { socket, ready: false, seq: 0, pending: Buffer.alloc(0), frames: 0, windowStart: Date.now(), dead: false, uploadFrames: 0, uploadWindowStart: undefined, failedUploads: new Set() };
 		this.clients.add(client);
 		this.pending.add(client);
 		client.handshake = setTimeout(() => this.drop(client), WIN ? Math.min(this.opts.handshakeMs, WIN_HANDSHAKE_MS) : this.opts.handshakeMs);
@@ -474,6 +484,7 @@ class IslandServer {
 			this.clients.delete(client);
 			this.pending.delete(client);
 			this.auth.delete(client);
+			this.uploads.dropOwner(client); // K2-05: what it never sent is removed
 		});
 		socket.on("data", (chunk) => this.onData(client, chunk));
 	}
@@ -486,7 +497,24 @@ class IslandServer {
 		this.clients.delete(client);
 		this.pending.delete(client);
 		this.auth.delete(client);
+		this.uploads.dropOwner(client); // K2-05: what it never sent is removed
 		client.socket.destroy();
+	}
+
+	/**
+	 * Counts one frame against its per-client minute budget (K2-05: `upload` chunks have their own);
+	 * false = over the budget (the caller drops the client, a ready one after a rate_limited frame).
+	 */
+	countFrame(client, upload) {
+		const now = Date.now();
+		const key = upload ? "uploadFrames" : "frames";
+		const start = upload ? "uploadWindowStart" : "windowStart";
+		if (now - (client[start] ?? now) >= 60_000 || client[start] === undefined) {
+			client[key] = 0;
+			client[start] = now;
+		}
+		client[key] += 1;
+		return client[key] <= (upload ? this.opts.uploadFramesPerMinute : this.opts.framesPerMinute);
 	}
 
 	onData(client, chunk) {
@@ -501,19 +529,16 @@ class IslandServer {
 			const limit = client.ready ? P.LIMITS.maxFrameBytes : P.LIMITS.maxHelloBytes;
 			if (line.length > limit) return this.drop(client);
 			if (line.length === 0) continue;
-			const now = Date.now();
-			if (now - client.windowStart >= 60_000) {
-				client.frames = 0;
-				client.windowStart = now;
-			}
-			if (++client.frames > this.opts.framesPerMinute) {
-				if (client.ready) this.sendTo(client, P.errorFrame("rate_limited"));
-				return this.drop(client);
-			}
 			if (!client.ready) {
+				if (!this.countFrame(client, false)) return this.drop(client);
 				this.onHello(client, line);
 			} else {
 				const decoded = P.decodeClientLine(line);
+				// K2-05 attachments: an upload chunk spends the upload budget, every other frame the frame budget
+				if (!this.countFrame(client, decoded.frame?.type === "upload")) {
+					this.sendTo(client, P.errorFrame("rate_limited"));
+					return this.drop(client);
+				}
 				if (decoded.error) this.sendTo(client, P.errorFrame("bad_request"));
 				else this.handle(client, decoded.frame).catch(() => this.sendTo(client, P.errorFrame("failed")));
 			}
@@ -706,11 +731,13 @@ class IslandServer {
 			client.heldPrompt = undefined;
 			this.busy = true; // optimistic: the agent_start event confirms
 			this.broadcastState();
-			const command = { type: "prompt", message: held.text };
-			if (held.images?.length) command.images = held.images;
 			const request = this.expectPrompt(client, held, alongside);
 			alongside = true;
-			this.engine.request(command).catch(() => {
+			// K2-05 attachments: the held files are composed when the prompt goes, and spent once the
+			// engine took it (Gentle Dot consumes after the prompt request succeeded)
+			this.promptCommand(held.text, held.files, held.images).then((command) => this.engine.request(command)).then(() => {
+				if (held.attachments) this.uploads.consume(client, held.attachments);
+			}, () => {
 				this.forgetRequest(request);
 				// A lost ACK may already have started Pi work; the runtime owns
 				// cutoff/recovery. An old rejection cannot free a new turn.
@@ -751,6 +778,65 @@ class IslandServer {
 		} catch {
 			this.log("history rebroadcast not sent");
 		}
+	}
+
+	// ----- K2-05 attachments ---------------------------------------------------------------------
+
+	/**
+	 * Whether the engine's current model accepts images (Gentle Dot supervisor.modelImages: Pi's
+	 * `get_state` model `input`); undefined when unknown — then images are saved, not inlined.
+	 */
+	async modelImages() {
+		try {
+			const state = await this.engine.request({ type: "get_state" });
+			const input = state?.data?.model?.input;
+			return Array.isArray(input) ? input.includes("image") : undefined;
+		} catch {
+			return undefined;
+		}
+	}
+
+	/**
+	 * The engine prompt of one send (Gentle Dot bridge.ts dispatch): plain text, or — with files —
+	 * composePrompt's `<attachments>` block (absolute stored paths the agent reads with its tools),
+	 * the images inline only for a vision model, read back as stored (no link, same size).
+	 */
+	async promptCommand(text, files, images) {
+		const command = { type: "prompt", message: text };
+		const all = [...(images ?? [])];
+		if (files?.length) {
+			const composed = composePrompt(text, files, { images: await this.modelImages() });
+			command.message = composed.message;
+			if (composed.images) all.push(...composed.images);
+		}
+		if (all.length) command.images = all;
+		return command;
+	}
+
+	/** One `upload` chunk: stored, refused once (later chunks of a refused upload are ignored), or finished. */
+	onUpload(client, frame) {
+		if (client.failedUploads.has(frame.requestId)) {
+			if (frame.offset + frame.data.length < frame.size) return undefined;
+			client.failedUploads.delete(frame.requestId); // the last chunk: the id is free again
+			return undefined;
+		}
+		const out = this.uploads.receive(client, frame);
+		if (!out.ok) {
+			if (frame.offset + frame.data.length < frame.size) {
+				client.failedUploads.add(frame.requestId);
+				if (client.failedUploads.size > 16) client.failedUploads.delete(client.failedUploads.values().next().value);
+			}
+			return this.sendTo(client, requestError(out.code, frame.requestId));
+		}
+		if (out.done) {
+			try {
+				return this.sendTo(client, P.uploadedFrame(frame.requestId, out.file));
+			} catch {
+				this.uploads.discard(client, out.file.id);
+				return this.sendTo(client, requestError("upload_failed", frame.requestId));
+			}
+		}
+		return undefined;
 	}
 
 	// ----- K2-05 bind by id: which recorded prompt answers which request -----------------------
@@ -1010,9 +1096,24 @@ class IslandServer {
 				this.broadcastState();
 				return undefined;
 			}
+			case "upload":
+				// K2-05 attachments: not a turn (allowed while paused, like Gentle Dot's /upload)
+				return this.onUpload(client, frame);
+			case "upload_discard":
+				this.uploads.discard(client, frame.id);
+				return undefined;
 			case "send": {
 				// T2: blocked input was already refused above, before every gate.
 				if (!ready()) return fail("unavailable");
+				// K2-05 attachments (Gentle Dot bridge.ts attachedFiles): every id must be one this
+				// client uploaded and has not sent; nothing reaches the engine otherwise, and the
+				// refusal does not spend the requestId.
+				let files;
+				if (frame.attachments) {
+					const found = this.uploads.resolve(client, frame.attachments);
+					if (!found.ok) return fail(found.code);
+					files = found.files;
+				}
 				// K2-05 F3 (Gentle Dot bridge.ts:404): a prompt typed while a ROTATION
 				// switch is in flight is HELD — one per client, in order — and delivered
 				// once the switch settles, instead of a busy bounce the user would have
@@ -1022,7 +1123,7 @@ class IslandServer {
 				if (this.engine?.sessionChange?.switching === true) {
 					if (client.heldPrompt) return fail("busy");
 					this.rememberRequest(frame.requestId);
-					client.heldPrompt = { text: frame.text, images: frame.images, requestId: frame.requestId };
+					client.heldPrompt = { text: frame.text, images: frame.images, requestId: frame.requestId, attachments: frame.attachments, files };
 					return undefined;
 				}
 				if (this.state().busy) return fail("busy");
@@ -1032,9 +1133,9 @@ class IslandServer {
 				const request = this.expectPrompt(client, frame);
 				try {
 					// The response only acknowledges the prompt; completion is agent_settled.
-					const command = { type: "prompt", message: frame.text };
-					if (frame.images.length) command.images = frame.images;
-					await this.engine.request(command);
+					await this.engine.request(await this.promptCommand(frame.text, files, frame.images));
+					// K2-05: sent — the files stay for the agent, no other message can send them
+					if (frame.attachments) this.uploads.consume(client, frame.attachments);
 				} catch {
 					this.forgetRequest(request);
 					// A lost ACK may already have started Pi work; the runtime owns

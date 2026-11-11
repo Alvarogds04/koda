@@ -21,7 +21,9 @@ Implementation: `src/protocol.cjs` (codec/validators/translation), `src/server.c
 
 | type | fields | notes |
 |---|---|---|
-| `send` | `text`, `images?[{data(base64),mimeType}]`, `requestId?` | `busy` error while a turn runs; completion is `agent_settled`, not the prompt response. `requestId` (`[A-Za-z0-9_-]{1,64}`, anything else is `bad_request`): see "Recorded prompts" |
+| `send` | `text`, `images?[{data(base64),mimeType}]`, `requestId?`, `attachments?` | `busy` error while a turn runs; completion is `agent_settled`, not the prompt response. `requestId` (`[A-Za-z0-9_-]{1,64}`, anything else is `bad_request`): see "Recorded prompts". `attachments`: 1–10 distinct upload ids (`a-<16 hex>`) this client received in `uploaded`; with attachments `text` may be empty. See "Attachments" |
+| `upload` | `requestId`, `name`, `size`, `offset`, `data` (base64) | one chunk of one file, in order; see "Attachments" |
+| `upload_discard` | `id` | deletes an unsent file this client uploaded (silent; another client's id is a no-op) |
 | `steer` | `text`, `requestId?` | only while busy (`not_busy` otherwise); `requestId` as for `send` |
 | `abort` | – | Cancels a running turn; its child is recycled before another prompt. An ACK alone never frees busy. Idle abort still reaches Pi. |
 | `set_paused` | `paused: bool` | Global pause switch (#379); see "Global pause" |
@@ -365,7 +367,8 @@ Unknown/invalid post-handshake frames get `error{code:"bad_request"}`.
 | `agents` | `agents[]` of `{id,name,state,backup,detail,plan_hash?,summary?,reviewable?,trust_review?}` — see "Agents frames" |
 | `accounts`, `providers`, `models`, `profiles` | allowlisted DTOs only (no keys, baseUrl, headers, env) |
 | `auth_started`, `auth_prompt`, `auth_event`, `auth_done` | passthrough from AccountManager, rebuilt from an allowlist; the daemon never answers prompts |
-| `error` | `code` ∈ `bad_request, busy, not_busy, unavailable, rate_limited, unknown_ask, paused, failed`, plus the H2c connector codes below — generic only; `requestId?` — the `send`/`steer` it answers (see "Recorded prompts") |
+| `uploaded` | `requestId`, `attachment{id,name,size,mime}` — the last chunk of this client's upload was stored (sender only; see "Attachments") |
+| `error` | `code` ∈ `bad_request, busy, not_busy, unavailable, rate_limited, unknown_ask, paused, failed`, the attachment codes `file_too_large, message_too_large, too_many_files, upload_failed, attachment_not_found`, plus the H2c connector codes below — generic only; `requestId?` — the `send`/`steer` it answers (see "Recorded prompts") |
 
 ## Event translation (Pi RPC → frames)
 
@@ -546,6 +549,45 @@ prompt is its own — not by counting engine cycles, not by matching text.
     history page (192 KiB, measured with every field in place: `clipped`, `requestId`, the largest
     `seq` and the LF; under the island reader's 256 KiB): a longer text is cut on whole code points and
     marked `clipped:true`.
+
+### Attachments (additive, K2-05, L11 2a — Gentle Dot's uploads)
+
+Port of Gentle Dot's `packages/daemon/src/uploads.ts` + bridge.ts `attachedFiles`/`composePrompt`
+(MIT; `src/uploads.cjs`). Any file; the daemon stores it in the island's OWN engine workspace
+(`<island>/workspace/uploads/<id>/<name>`, never a user-chosen folder); images reach a vision model.
+
+- **Upload.** `upload{requestId, name, size, offset, data}` carries one chunk: `data` is standard
+  base64 (≤ 192 Ki chars = 144 KiB, a multiple of 4; an empty file is one empty chunk with `size:0`),
+  `offset` is where it goes (chunks in order), `size` the whole declared size (same on every chunk),
+  `name` ≤ 255 chars, a display name only: the daemon keeps its last path segment, without
+  control/invisible/direction marks, a leading dot or a reserved name (`sanitizeName`). Files are
+  created `0600` with O_EXCL|O_NOFOLLOW in a fresh `0700` folder named by the id; the `uploads` folder
+  must be a private directory (a planted link is refused). The last chunk is answered, to the sender
+  only, with `uploaded{requestId, attachment:{id, name, size, mime}}` — never the path. `mime` is
+  sniffed from content (PNG/JPEG/GIF/WebP/PDF, else `application/octet-stream`). A refused upload
+  answers ONE `error{code, requestId}` (`file_too_large`, `message_too_large`, `too_many_files`,
+  `upload_failed`, `bad_request`), leaves nothing on disk, and its later chunks are ignored.
+- **Limits (daemon-enforced).** 25 MB per file; per client, the files waiting to be sent (finished
+  plus the declared size of unfinished ones) are at most 10 and 50 MB (Gentle Dot's per-message
+  limits). Upload chunks have their own budget of 720 frames/min per client (over it the client is
+  dropped, like the 240 frames/min limit that every other frame keeps). Uploads are allowed while
+  paused (they are not a turn).
+- **Refs.** The id `a-<16 hex>` is random, issued by the daemon, and OWNED by the uploading client
+  connection: a `send` naming an id this client did not upload, already sent, unknown or twice is
+  refused `attachment_not_found` before any other effect (the `requestId` is not spent). Ids never
+  name a path; a path or a name in `attachments` is `bad_request`.
+- **Send.** The prompt is Gentle Dot's: the user's text, a blank line, then
+  `<attachments>`, the fixed intro line, one JSON line per file `{name,size,type,path}` (absolute
+  stored path — the agent reads it with its tools, as the engine), `</attachments>`. An image ≤ 3.75 MB
+  is ALSO passed as an RPC image when the engine's model accepts images (`get_state` →
+  `model.input` includes `image`); otherwise the line says it was saved but the model cannot see
+  images. The image bytes are read back as stored (no link, same size). Once the engine accepted the
+  prompt the files are spent: they stay on disk for the agent but no message can send them again. A
+  prompt held during a rotation keeps its files and spends them when delivered.
+- **Cleanup.** `upload_discard`, the uploading client going away, and one hour without being sent
+  delete an unsent file; an unfinished upload idle 2 minutes is dropped. Sent files are kept.
+- **Display.** `user_message` and history split the block back into `text` + `attachments`
+  (`[{name,size,mime}]`), so the live frame, reconnects and reloads show the same chips.
 
 ## Private memory (K2-05 T1c, the only mode)
 

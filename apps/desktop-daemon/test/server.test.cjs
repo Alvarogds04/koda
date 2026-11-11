@@ -46,6 +46,8 @@ class FakeEngine extends EventEmitter {
 		// K2-05 T4 U1 verifier fix: a private sessions dir + the ownership rule the real
 		// runtime enforces (isOwnedSessionFile), so history reads refuse planted files.
 		this.sessionsDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "abito-fake-engine-")));
+		// K2-05 attachments: the island's own engine workspace (runtime.cjs island.workspace)
+		this.island = { workspace: path.join(this.sessionsDir, "workspace") };
 		this.pendingPersist = undefined; // freshness test hook: a reply persisted only when a get_state arrives
 	this.onGetState = undefined; // freshness test hook: an announcement during the round trip
 }
@@ -84,6 +86,8 @@ async request(command) {
 		// get_state round trip reaches it — a plain file read would miss it — and
 		// onGetState fires an announcement DURING the round trip so the retry re-reads.
 		if (command.type === "get_state") {
+				// K2-05 attachments: the engine's model, as Pi's get_state reports it (input: text/image)
+				if (this.stateData) return { type: "response", success: true, data: this.stateData };
 				if (this.pendingPersist) {
 						const flush = this.pendingPersist;
 						this.pendingPersist = undefined;
@@ -2541,4 +2545,161 @@ test("review F6: an error answering a send carries that send's requestId (only t
 	assert.equal(a.frames.filter((f) => f.type === "error").at(-1).requestId, undefined, "no requestId, none echoed");
 	await sleep(30);
 	assert.equal(b.frames.some((f) => f.type === "error"), false, "nobody else gets the sender's error");
+});
+
+// ----- K2-05 attachments (L11 2a; Gentle Dot uploads.ts + bridge.ts attachedFiles/composePrompt) ------
+
+const PNG_BYTES = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3, 4]);
+const CHUNK = 6;
+/** Uploads one file in CHUNK-byte base64 chunks and waits for the daemon's answer (uploaded or error). */
+async function upload(c, name, bytes, requestId) {
+	const parts = bytes.length === 0 ? [Buffer.alloc(0)] : Array.from({ length: Math.ceil(bytes.length / CHUNK) }, (_, i) => bytes.subarray(i * CHUNK, (i + 1) * CHUNK));
+	let offset = 0;
+	for (const part of parts) {
+		c.send({ type: "upload", requestId, name, size: bytes.length, offset, data: part.toString("base64") });
+		offset += part.length;
+	}
+	return c.wait((f) => f.requestId === requestId && (f.type === "uploaded" || f.type === "error"));
+}
+const uploadsDir = (engine) => path.join(engine.island.workspace, "uploads");
+
+test("attachments: a file uploaded over the channel is stored in the engine workspace; only its sender learns its id", async (t) => {
+	const { endpoint, engine } = await chatOnFile(t);
+	const a = await login(t, endpoint);
+	const b = await login(t, endpoint);
+	const done = await upload(a, "../../secreto/informe.txt", Buffer.from("hola mundo"), "up-1");
+	assert.equal(done.type, "uploaded");
+	assert.match(done.attachment.id, /^a-[0-9a-f]{16}$/);
+	assert.deepEqual({ ...done.attachment, id: "x" }, { id: "x", name: "informe.txt", size: 10, mime: "application/octet-stream" });
+	assert.equal(fs.readFileSync(path.join(uploadsDir(engine), done.attachment.id, "informe.txt"), "utf8"), "hola mundo");
+	assert.equal(JSON.stringify(a.frames).includes(engine.island.workspace), false, "the stored path never travels");
+	await sleep(30);
+	assert.equal(b.frames.some((f) => f.type === "uploaded"), false);
+	assert.equal(engine.requests.length, 0, "an upload never reaches the engine");
+});
+
+test("attachments: send composes Gentle Dot's prompt (path read as the engine, image inline for a vision model); user_message and history show the chips", async (t) => {
+	const { endpoint, engine } = await chatOnFile(t);
+	engine.stateData = { model: { id: "vision", input: ["text", "image"] } };
+	const a = await login(t, endpoint);
+	const b = await login(t, endpoint);
+	const img = (await upload(a, "foto.png", PNG_BYTES, "up-img")).attachment;
+	const doc = (await upload(a, "datos.csv", Buffer.from("a,b\n1,2\n"), "up-doc")).attachment;
+	a.send({ type: "send", text: "mirá esto", requestId: "r-att", attachments: [img.id, doc.id] });
+	await waitFor(() => engine.requests.some((r) => r.type === "prompt"));
+	const prompt = engine.requests.find((r) => r.type === "prompt");
+	const stored = (att) => path.join(uploadsDir(engine), att.id, att.name);
+	assert.ok(prompt.message.startsWith("mirá esto\n\n<attachments>\nThe user attached these files, saved in your workspace."), prompt.message);
+	assert.ok(prompt.message.includes(JSON.stringify({ name: "datos.csv", size: 8, type: "application/octet-stream", path: stored(doc) })), prompt.message);
+	assert.ok(prompt.message.includes(`"image":"attached to this message"`), prompt.message);
+	assert.deepEqual(prompt.images, [{ type: "image", mimeType: "image/png", data: PNG_BYTES.toString("base64") }]);
+	// the engine records the composed prompt: every client sees the user's text and the chips
+	engine.emit("event", { type: "agent_start" });
+	recordUser(engine, [{ type: "text", text: prompt.message }, { type: "image", data: "x", mimeType: "image/png" }]);
+	const own = await a.wait((f) => f.type === "user_message");
+	const theirs = await b.wait((f) => f.type === "user_message");
+	const chips = [{ name: "foto.png", size: PNG_BYTES.length, mime: "image/png" }, { name: "datos.csv", size: 8, mime: "application/octet-stream" }];
+	assert.deepEqual({ ...own, seq: 0 }, { type: "user_message", messageId: "s1-1", text: "mirá esto", attachments: chips, requestId: "r-att", seq: 0 });
+	assert.deepEqual(theirs.attachments, chips);
+	persist(engine, "user", prompt.message);
+	persist(engine, "assistant", "listo");
+	engine.emit("event", { type: "agent_settled" });
+	b.send({ type: "get_history" });
+	const page = await b.wait((f) => f.type === "history");
+	assert.deepEqual(page.messages.find((m) => m.id === "s1-1"), { id: "s1-1", role: "user", text: "mirá esto", activities: [], attachments: chips });
+	// a ref is used once: the files stay for the agent, a second send naming them is refused
+	assert.ok(fs.existsSync(stored(doc)));
+	a.send({ type: "send", text: "otra vez", requestId: "r-again", attachments: [doc.id] });
+	const again = await a.wait((f) => f.type === "error" && f.requestId === "r-again");
+	assert.equal(again.code, "attachment_not_found");
+	assert.equal(engine.requests.filter((r) => r.type === "prompt").length, 1);
+});
+
+test("attachments: a model without vision gets the path only; files-only messages have empty text", async (t) => {
+	const { endpoint, engine } = await chatOnFile(t);
+	engine.stateData = { model: { id: "text-only", input: ["text"] } };
+	const a = await login(t, endpoint);
+	const img = (await upload(a, "foto.png", PNG_BYTES, "up-img")).attachment;
+	a.send({ type: "send", text: "", requestId: "r-only", attachments: [img.id] });
+	await waitFor(() => engine.requests.some((r) => r.type === "prompt"));
+	const prompt = engine.requests.find((r) => r.type === "prompt");
+	assert.equal(prompt.images, undefined);
+	assert.ok(prompt.message.startsWith("<attachments>\n"), prompt.message);
+	assert.ok(prompt.message.includes("the current model cannot see images"));
+});
+
+test("attachments: another client's ref, an unknown ref and a malformed ref never reach the engine", async (t) => {
+	const { endpoint, engine } = await chatOnFile(t);
+	const a = await login(t, endpoint);
+	const b = await login(t, endpoint);
+	const doc = (await upload(a, "nota.txt", Buffer.from("x"), "up-a")).attachment;
+	b.send({ type: "send", text: "robo", requestId: "r-b", attachments: [doc.id] });
+	assert.equal((await b.wait((f) => f.type === "error" && f.requestId === "r-b")).code, "attachment_not_found");
+	b.send({ type: "send", text: "inventado", requestId: "r-c", attachments: ["a-0000000000000000"] });
+	assert.equal((await b.wait((f) => f.type === "error" && f.requestId === "r-c")).code, "attachment_not_found");
+	b.send({ type: "send", text: "ruta", attachments: [path.join(uploadsDir(engine), doc.id, "nota.txt")] });
+	await b.wait((f) => f.type === "error" && f.code === "bad_request");
+	await sleep(30);
+	assert.equal(engine.requests.some((r) => r.type === "prompt"), false);
+	// the refused request is not spent: its sender may retry it
+	a.send({ type: "send", text: "mío", requestId: "r-b", attachments: [doc.id] });
+	await waitFor(() => engine.requests.some((r) => r.type === "prompt"));
+});
+
+test("attachments: per-client quota and size are enforced daemon-side; one error per refused upload", async (t) => {
+	const { endpoint, server } = await chatOnFile(t);
+	server.uploads.limits = { fileBytes: 10, messageBytes: 12, files: 2 };
+	const a = await login(t, endpoint);
+	const b = await login(t, endpoint);
+	assert.equal((await upload(a, "grande.bin", Buffer.alloc(11), "up-big")).code, "file_too_large");
+	await sleep(30);
+	assert.equal(a.frames.filter((f) => f.requestId === "up-big").length, 1, "the later chunks of a refused upload are ignored, not answered");
+	assert.equal((await upload(a, "1.bin", Buffer.alloc(8), "up-1")).type, "uploaded");
+	assert.equal((await upload(a, "2.bin", Buffer.alloc(5), "up-2")).code, "message_too_large");
+	assert.equal((await upload(a, "2.bin", Buffer.alloc(4), "up-3")).type, "uploaded");
+	assert.equal((await upload(a, "3.bin", Buffer.alloc(1), "up-4")).code, "too_many_files");
+	assert.equal((await upload(b, "1.bin", Buffer.alloc(8), "up-b")).type, "uploaded", "every client has its own quota");
+});
+
+test("attachments: removed before sending, or its client gone: the unsent file is deleted; a sent one stays", async (t) => {
+	const { endpoint, engine } = await chatOnFile(t);
+	const a = await login(t, endpoint);
+	const kept = (await upload(a, "enviado.txt", Buffer.from("1"), "up-1")).attachment;
+	const removed = (await upload(a, "quitado.txt", Buffer.from("2"), "up-2")).attachment;
+	const left = (await upload(a, "olvidado.txt", Buffer.from("3"), "up-3")).attachment;
+	a.send({ type: "upload_discard", id: removed.id });
+	await waitFor(() => !fs.existsSync(path.join(uploadsDir(engine), removed.id)));
+	a.send({ type: "send", text: "va", requestId: "r-1", attachments: [kept.id] });
+	await waitFor(() => engine.requests.some((r) => r.type === "prompt"));
+	a.socket.destroy();
+	await waitFor(() => !fs.existsSync(path.join(uploadsDir(engine), left.id)));
+	assert.ok(fs.existsSync(path.join(uploadsDir(engine), kept.id, "enviado.txt")), "a sent file stays for the agent");
+});
+
+test("attachments: upload chunks have their own frame budget (a large file never trips the 240/min limit)", async (t) => {
+	const { endpoint } = await setup(t, { limits: { framesPerMinute: 5, uploadFramesPerMinute: 400 } });
+	const a = await login(t, endpoint);
+	const done = await upload(a, "largo.bin", Buffer.alloc(CHUNK * 300, 7), "up-long");
+	assert.equal(done.type, "uploaded");
+	assert.equal(a.closed, false);
+	const { endpoint: e2 } = await setup(t, { limits: { uploadFramesPerMinute: 3 } });
+	const flood = await login(t, e2);
+	upload(flood, "x.bin", Buffer.alloc(CHUNK * 10), "up-flood").catch(() => {});
+	await waitFor(() => flood.closed);
+});
+
+test("attachments: a prompt held during a rotation carries its files and spends them when delivered", async (t) => {
+	const { endpoint, engine } = await chatOnFile(t);
+	const a = await login(t, endpoint);
+	const doc = (await upload(a, "nota.txt", Buffer.from("x"), "up-1")).attachment;
+	engine.sessionChange = { switching: true };
+	a.send({ type: "send", text: "después", requestId: "r-held", attachments: [doc.id] });
+	await sleep(30);
+	assert.equal(engine.requests.some((r) => r.type === "prompt"), false);
+	engine.sessionChange = undefined;
+	engine.emit("status");
+	await waitFor(() => engine.requests.some((r) => r.type === "prompt"));
+	assert.ok(engine.requests.find((r) => r.type === "prompt").message.includes(`"name":"nota.txt"`));
+	a.send({ type: "send", text: "repetido", requestId: "r-2", attachments: [doc.id] });
+	assert.equal((await a.wait((f) => f.requestId === "r-2" && f.type === "error")).code, "attachment_not_found");
 });
