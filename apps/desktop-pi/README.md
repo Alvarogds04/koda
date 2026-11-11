@@ -128,7 +128,7 @@ With `ABITO_QUESTIONS=3` and a receiver that negotiates `structured:1`, `abito_a
 
 **The tool blocks its own execution while awaiting a reply.** Pi receives the result of that exact call, never a later injected chat message. Other tools in a parallel tool batch may still run; this is not a process-wide scheduler lock. No endpoint, missing socket, unfinished handshake or missing capability returns `unavailable` immediately rather than waiting the question deadline. There is **no terminal fallback**; the tool description tells the agent it may ask through normal chat instead.
 
-The producer admits one live call within its session; another returns `busy` immediately. The receiver enforces **one live question globally, across sessions**, rejecting every second request with `busy`: **no queue, no replay**. Approval cards are a separate lane with visual priority; a card must not cancel a question, and a question must not cover a card.
+The producer admits one live call within its session; another returns `busy` immediately. The receiver holds questions from every session in **one FIFO queue of up to 8** (`QUEUE_CAP`, `apps/desktop-tauri/src/question.rs`): the island shows the oldest, with «1 de N» while others wait, and each keeps its own deadline. A 9th request, or a second one from a connection that already has one pending, gets `busy` and goes to the terminal. **No replay**. Approval cards are a separate lane with visual priority; a card must not cancel a question, and a question must not cover a card.
 
 The producer owns the deadline. Expiration returns `expired`, with **no answer, default or implicit denial/approval**. AbortSignal, end of the owning turn, shutdown or session replacement cancel the live call; disconnect ends it without replay. Every accepted reply is checked against the current session/project and the original deadline even if a timer callback was delayed. A late, duplicate, foreign-session or invalid response never decides the next question.
 
@@ -312,7 +312,7 @@ Local diagnostics contain only question ID and reason, never question/answer tex
 ## Receiver/UI obligations — not implemented here
 
 - During `compact_resize_inflight`, reject new requests immediately as system/busy. After the receiver's declared transition TTL without native acknowledgement, reject as degraded rather than assuming an unknown window size is safe. This producer does not set the receiver's TTL or resize state: those belong to the app. Send `busyReason` **only** when the originating producer negotiated level 2. No native-state transition may fabricate a human decision.
-- Enforce **one live question globally**; second requests from any session receive system `question_closed` / `busy` immediately and visibly. No queue, replay, auto-answer or default.
+- Hold pending questions from every session in **one FIFO queue of up to 8** (`QUEUE_CAP`), oldest shown first, each with its own deadline; a 9th request, or a second one from a connection that already has one pending, receives system `question_closed` / `busy` immediately and visibly. No replay, auto-answer or default.
 - Only an actual trusted human click (`event.isTrusted === true`) on that question's controls emits a response. Never synthesize this property, accept chat as an answer, or expose a model/other-agent answer route. Render text with `textContent`, not HTML. Permission cards remain visually distinct and prioritized; a question does not grant backend permission.
 - Bind UI submissions to question ID and session, not to "whatever question is currently visible". Consume once under the same lock as writing the originating connection. Lock controls while sending. A partial/uncertain write is **outcome unknown**, not permission to retry or restore a decision button.
 - Show "Response sent" only as a pending delivery until `question_resolved`. ACK loss does not prove failure or permit a new answer. Never claim a backend action happened merely because a token reached Pi.
@@ -402,7 +402,7 @@ Next human verification, only on the new root: load this extension, have a sessi
 
 ## Lo que el humano debe decidir
 
-The handshake, one-global-question admission, no queue/defaults, exactly two approval tokens, free-text support and default/bounded expiry above are the **current parent-confirmed contract**, not unanswered choices. Remaining decisions and gaps are:
+The handshake, FIFO admission (up to 8 pending, busy beyond that or for a duplicate connection), no defaults, exactly two approval tokens, free-text support and default/bounded expiry above are the **current parent-confirmed contract**, not unanswered choices. Remaining decisions and gaps are:
 
 1. **Which Pi prompts should use `abito_ask`?** Explicit calls, plus the native `ask_user_choice` / single-question
    `ask_user_question` race described below. Nothing else is redirected, and that must not be simulated by observing

@@ -54,6 +54,11 @@ test('designed for the queue: «1 de N» when the snapshot carries queued_count'
   assert.equal(T.toastView(snap({ queued_count: -4 }), { now: NOW }).queue, null);
   assert.equal(T.toastView(snap({ queued_count: 'x' }), { now: NOW }).queue, null);
   assert.match(T.toastView(snap({ queued_count: 1 }), { now: NOW }).aria, /1 de 2/);
+  // K2-08 S7: the toast and the island say the SAME thing (N.queueLabel): a count past QUEUE_CAP (8) is not a queue the host can hold
+  const N = require(path.join(frontend, 'notify-view.js'));
+  for (const q of [0, 1, 2, 7, 8, 99, 1.5, -1, 'x', undefined]) {
+    assert.equal(T.toastView(snap({ queued_count: q }), { now: NOW }).queue, N.queueLabel(snap({ queued_count: q })) || null, `queued_count ${String(q)}`);
+  }
 });
 
 test('opening needs a trusted click and returns only the live id; a synthetic event opens nothing', () => {
