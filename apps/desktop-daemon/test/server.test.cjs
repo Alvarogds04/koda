@@ -2289,6 +2289,63 @@ test("a prompt held during a rotation keeps its requestId until the engine recor
 	assert.equal((await a.wait((f) => f.type === "user_message")).requestId, "r-held");
 });
 
+test("two prompts held during a rotation: the refused one never takes the delivered one's requestId (F1)", async (t) => {
+	const { endpoint, engine } = await chatOnFile(t);
+	const a = await login(t, endpoint);
+	const b = await login(t, endpoint);
+	engine.sessionChange = { switching: true };
+	a.send({ type: "send", text: "primero", requestId: "r-held-a" });
+	b.send({ type: "send", text: "segundo", requestId: "r-held-b" });
+	await sleep(30);
+	assert.equal(engine.requests.some((r) => r.type === "prompt"), false, "both are held during the switch");
+	// the real runtime refuses a second prompt while the first one's turn runs (runtime.cjs request)
+	const request = engine.request.bind(engine);
+	engine.request = async (command) => {
+		if (command.type === "prompt" && engine.requests.some((r) => r.type === "prompt")) {
+			engine.requests.push(command);
+			throw new Error("engine is busy");
+		}
+		return request(command);
+	};
+	engine.sessionChange = undefined;
+	engine.emit("status", { state: "ready" });
+	await waitFor(() => engine.requests.filter((r) => r.type === "prompt").length === 2);
+	await b.wait((f) => f.type === "error" && f.code === "failed");
+	assert.equal(a.frames.some((f) => f.type === "error"), false, "the delivered prompt's sender gets no error");
+	engine.emit("event", { type: "agent_start" });
+	recordUser(engine, "primero");
+	const own = await a.wait((f) => f.type === "user_message");
+	const theirs = await b.wait((f) => f.type === "user_message");
+	assert.equal(own.requestId, "r-held-a", "the delivered prompt is announced with its own sender's requestId");
+	assert.equal(theirs.requestId, undefined, "the refused prompt's sender never gets a requestId");
+	assert.equal(own.messageId, "s1-1");
+});
+
+test("a steer the engine rewrites (template) still binds to its request, by order (F4)", async (t) => {
+	const { endpoint, engine } = await chatOnFile(t);
+	const a = await login(t, endpoint);
+	const b = await login(t, endpoint);
+	b.send({ type: "send", text: "pregunta", requestId: "r-prompt" });
+	await waitFor(() => engine.requests.some((r) => r.type === "prompt"));
+	engine.emit("event", { type: "agent_start" });
+	await a.wait((f) => f.type === "agent_state" && f.busy);
+	a.send({ type: "steer", text: "/plantilla x", requestId: "r-steer-1" });
+	a.send({ type: "steer", text: "literal", requestId: "r-steer-2" });
+	await waitFor(() => engine.requests.filter((r) => r.type === "steer").length === 2);
+	recordUser(engine, "pregunta");
+	persist(engine, "user", "pregunta");
+	// the engine records the first steer expanded (other text), then the second as typed
+	recordUser(engine, "texto expandido de la plantilla x");
+	persist(engine, "user", "texto expandido de la plantilla x");
+	recordUser(engine, "literal");
+	persist(engine, "user", "literal");
+	// nothing is pending any more: an extension's own message is nobody's
+	recordUser(engine, "despertar");
+	await waitFor(() => userMessages(a).length === 4 && userMessages(b).length === 4);
+	assert.deepEqual(userMessages(a).map((f) => [f.messageId, f.requestId]), [["s1-1", undefined], ["s1-2", "r-steer-1"], ["s1-3", "r-steer-2"], ["s1-4", undefined]]);
+	assert.deepEqual(userMessages(b).map((f) => [f.messageId, f.requestId]), [["s1-1", "r-prompt"], ["s1-2", undefined], ["s1-3", undefined], ["s1-4", undefined]]);
+});
+
 test("user_message for a 64 Ki-char prompt is one bounded frame under the island reader's limit", async (t) => {
 	const { endpoint, engine } = await chatOnFile(t);
 	const a = await login(t, endpoint);

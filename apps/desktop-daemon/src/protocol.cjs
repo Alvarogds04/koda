@@ -705,12 +705,14 @@ function userMessageFrame(message, requestId) {
 	if (shown.attachments) frame.attachments = shown.attachments;
 	if (shown.clipped) frame.clipped = true;
 	if (requestId !== undefined) frame.requestId = requestId;
-	// headroom for the `seq` field and LF the encoder adds (seq is a safe integer: ≤ 16 digits)
-	const over = Buffer.byteLength(JSON.stringify(frame)) - (USER_MESSAGE_MAX_BYTES - 32);
-	if (over > 0) {
+	// K2-05 F5: measured as the encoder writes it, with every field in place — `clipped`, the
+	// requestId and the largest `seq` (a safe integer) plus the LF — never with a guessed headroom
+	const encoded = (f) => Buffer.byteLength(JSON.stringify({ ...f, seq: Number.MAX_SAFE_INTEGER })) + 1;
+	if (encoded(frame) > USER_MESSAGE_MAX_BYTES) {
+		frame.clipped = true; // set before measuring: its own bytes count too
 		// cut whole code points from the end until the serialized frame fits
 		let text = frame.text;
-		let excess = over;
+		let excess = encoded(frame) - USER_MESSAGE_MAX_BYTES;
 		while (excess > 0 && text !== "") {
 			const tail = text.charCodeAt(text.length - 1);
 			const last = tail >= 0xdc00 && tail <= 0xdfff && text.length >= 2 ? 2 : 1;
@@ -719,7 +721,7 @@ function userMessageFrame(message, requestId) {
 			text = text.slice(0, text.length - last);
 		}
 		frame.text = text;
-		frame.clipped = true;
+		if (encoded(frame) > USER_MESSAGE_MAX_BYTES) throw new Error("user message frame invalid");
 	}
 	return frame;
 }

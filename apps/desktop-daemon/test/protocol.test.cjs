@@ -954,3 +954,25 @@ test("user_message frame is byte-bounded below the island reader's limit: whole 
 	assert.ok(P.encodeServerFrame(small, 1).length <= 192 * 1024);
 	assert.equal(small.clipped, undefined, "an escaped 64 Ki text still fits whole");
 });
+
+test("user_message frame stays within 192 KiB with every field: clipped, the longest requestId and the largest seq (F5)", () => {
+	const limit = 192 * 1024;
+	const requestId = "r".repeat(64);
+	const attachments = Array.from({ length: 8 }, (_, i) => ({ name: `${"n".repeat(120)}${i}.png`, size: Number.MAX_SAFE_INTEGER, mime: "image/png" }));
+	// sweep the texts around the cut: the encoded frame (seq + LF included) never passes the limit
+	let worst = 0;
+	for (const unit of ["€", "\"", "😀"]) {
+		const base = Buffer.byteLength(JSON.stringify(P.userMessageFrame({ id: "s99999-99999", text: "", attachments }, requestId)));
+		const per = Buffer.byteLength(JSON.stringify(unit)) - 2;
+		const around = Math.floor((limit - base) / per);
+		for (let n = around - 40; n <= around + 40; n += 1) {
+			const text = unit.repeat(Math.min(n, P.LIMITS.maxTextChars));
+			const frame = P.userMessageFrame({ id: "s99999-99999", text, attachments }, requestId);
+			const bytes = P.encodeServerFrame(frame, Number.MAX_SAFE_INTEGER).length;
+			worst = Math.max(worst, bytes);
+			assert.ok(bytes <= limit, `${JSON.stringify(unit)} × ${n}: ${bytes} bytes`);
+			if (frame.text.length < text.length) assert.equal(frame.clipped, true, "a cut text is marked");
+		}
+	}
+	assert.ok(worst > limit - 64, `the sweep reached the bound (${worst})`);
+});

@@ -210,10 +210,11 @@ class IslandServer {
 		this.historySeq = 0; // T4 U1 freshness: bumped on every message announcement (Gentle Dot's nextMessage)
 		this.asks = new Map();
 		// K2-05 bind by id: requestIds already seen (Gentle Dot's dedupe, bounded, oldest first out),
-		// and the requests the engine may still record: the dispatched prompt (the run's first user
-		// message) and the steers of the running turn, each { client, requestId?, text }.
+		// and the requests the engine may still record: the dispatched prompts (each its own request,
+		// oldest first: a run records its prompt first) and the steers of the running turn, each
+		// { client, requestId?, text }.
 		this.seenRequests = new Set();
-		this.promptRequest = undefined;
+		this.promptRequests = [];
 		this.steerRequests = [];
 		// The open session's display rows, counted from the engine's message events since the
 		// last idle snapshot ({file, rows, role}); undefined when events may have been missed.
@@ -651,10 +652,16 @@ class IslandServer {
 	 * K2-05 F3: delivers the prompt a client typed during a rotation switch,
 	 * once the switch has settled (or failed and recovered). One held prompt per
 	 * client; the delivery follows the same optimistic-busy path as a normal
-	 * send. No-op while a switch is still in flight or a turn runs.
+	 * send. No-op while a switch is still in flight or a turn runs. Several held
+	 * prompts are each dispatched as their own prompt (Gentle Dot bridge.ts:404
+	 * does the same: every send awaiting the switch goes on as a plain prompt);
+	 * the engine runs one at a time and refuses the others, and each refusal
+	 * forgets only its OWN request (K2-05 F1), so the delivered prompt keeps its
+	 * sender's requestId and the refused sender gets `failed` and no requestId.
 	 */
 	flushHeldPrompts() {
 		if (!this.engine || this.engine.sessionChange || this.state().busy) return;
+		let alongside = false;
 		for (const client of [...this.clients]) {
 			const held = client.heldPrompt;
 			if (!held) continue;
@@ -663,7 +670,8 @@ class IslandServer {
 			this.broadcastState();
 			const command = { type: "prompt", message: held.text };
 			if (held.images?.length) command.images = held.images;
-			const request = this.expectPrompt(client, held);
+			const request = this.expectPrompt(client, held, alongside);
+			alongside = true;
 			this.engine.request(command).catch(() => {
 				this.forgetRequest(request);
 				// A lost ACK may already have started Pi work; the runtime owns
@@ -727,11 +735,21 @@ class IslandServer {
 		this.rowTail = typeof file === "string" ? { file, ...sessionTail(file, (line) => this.log(line)) } : undefined;
 	}
 
-	/** A prompt goes to the engine: the run's first recorded user message is its own. */
-	expectPrompt(client, frame) {
-		this.snapshotRows();
-		this.promptRequest = { client, requestId: frame.requestId, text: frame.text };
-		return this.promptRequest;
+	/**
+	 * A prompt goes to the engine: the first recorded user message of its run is its own. A prompt
+	 * dispatched to an idle engine starts a new run: nothing older can still be recorded (a prompt the
+	 * engine handled without a run never settles one), so its rows are read once and it is the only
+	 * pending prompt. `alongside` = dispatched right after another held prompt in the same flush
+	 * (K2-05 F1): it keeps the earlier one's request and its row count.
+	 */
+	expectPrompt(client, frame, alongside = false) {
+		if (!alongside) {
+			this.promptRequests = [];
+			this.snapshotRows();
+		}
+		const request = { client, requestId: frame.requestId, text: frame.text };
+		this.promptRequests.push(request);
+		return request;
 	}
 
 	expectSteer(client, frame) {
@@ -741,35 +759,34 @@ class IslandServer {
 		return request;
 	}
 
-	/** The engine refused the request: it records nothing, so it can never name a record. */
+	/** The engine refused the request: it records nothing, so it can never name a record. Only that
+	 * request is forgotten: any other prompt or steer still on its way keeps its own (K2-05 F1). */
 	forgetRequest(request) {
-		if (this.promptRequest === request) this.promptRequest = undefined;
+		this.promptRequests = this.promptRequests.filter((r) => r !== request);
 		this.steerRequests = this.steerRequests.filter((r) => r !== request);
 	}
 
 	/** The run settled (or the engine went away): whatever it did not record never will be. */
 	forgetRequests() {
-		this.promptRequest = undefined;
+		this.promptRequests = [];
 		this.steerRequests = [];
 	}
 
 	/**
 	 * The request a recorded user message answers. Pi records the dispatched prompt first in its run
 	 * and the steers by their text, in order (agent-session.js removes a consumed steer by text): the
-	 * prompt when the text is its own, else the oldest steer with that text, else the prompt (a
-	 * template expansion changes the recorded text). An unmatched record (an extension's own user
-	 * message) answers nobody's request.
+	 * oldest pending prompt when the text is its own, else the oldest steer with that text, else the
+	 * oldest pending prompt (a template expansion changes the recorded text), else the oldest pending
+	 * steer (K2-05 F4: a steer's template expansion too; Pi records its queue in order). Once nothing
+	 * is pending, a record (an extension's own user message) answers nobody's request.
 	 */
 	takeRequest(text) {
-		const prompt = this.promptRequest;
-		if (prompt && prompt.text === text) {
-			this.promptRequest = undefined;
-			return prompt;
-		}
+		const prompt = this.promptRequests[0];
+		if (prompt && prompt.text === text) return this.promptRequests.shift();
 		const at = this.steerRequests.findIndex((r) => r.text === text);
 		if (at >= 0) return this.steerRequests.splice(at, 1)[0];
-		this.promptRequest = undefined;
-		return prompt;
+		if (prompt) return this.promptRequests.shift();
+		return this.steerRequests.shift();
 	}
 
 	/**

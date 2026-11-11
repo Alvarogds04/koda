@@ -524,14 +524,19 @@ prompt is its own — not by counting engine cycles, not by matching text.
     (not a secret, but nobody else's correlation). The dispatched prompt is the run's first recorded
     user message whose text is its own; steers are matched by text in order (Pi removes a consumed
     steer from its queue by text); a recorded text that matches no pending steer falls back to the
-    dispatched prompt (a template expansion changes the recorded text). A request the engine refused
-    (the `prompt`/`steer` request failed), and every request still pending when the run settles or the
-    engine goes away, is forgotten: it never names a later record. An unmatched record (an extension's
-    own message) carries no `requestId`.
+    dispatched prompt (a template expansion changes the recorded text), and once no prompt is pending,
+    to the oldest pending steer (a steer's template expansion; Pi records its queue in order). Prompts
+    held during a rotation are dispatched one after another when the switch settles; each keeps its own
+    request, so the engine refusing a later one (it runs one turn at a time) forgets only that one: the
+    delivered prompt keeps its sender's `requestId`, the refused sender gets `failed` and no `requestId`.
+    A request the engine refused (the `prompt`/`steer` request failed), and every request still pending
+    when the run settles or the engine goes away, is forgotten: it never names a later record. An
+    unmatched record (an extension's own message) carries no `requestId`.
   - `text` is the user's own text (never white-labelled), split from its `<attachments>` block like
     history and clipped the same way (64 Ki chars, `clipped:true`). The frame is byte-bounded like one
-    history page (192 KiB including `seq`, under the island reader's 256 KiB): a longer text is cut on
-    whole code points and marked `clipped:true`.
+    history page (192 KiB, measured with every field in place: `clipped`, `requestId`, the largest
+    `seq` and the LF; under the island reader's 256 KiB): a longer text is cut on whole code points and
+    marked `clipped:true`.
 
 ## Private memory (K2-05 T1c, the only mode)
 
