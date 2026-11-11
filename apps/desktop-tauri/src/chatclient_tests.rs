@@ -1160,3 +1160,118 @@ fn u4b_an_ask_is_answered_once_and_a_refused_answer_may_be_retried() {
     assert_eq!(view(&st)["answering"], json!([]));
     assert_eq!(view(&st)["asks"], json!([]));
 }
+
+/// U4b verifier F4: `ask_resolved` of ANOTHER ask (answered elsewhere, expired) never drops this
+/// ask's pending-answer record: a later refusal of this answer still frees this ask for a retry.
+#[test]
+fn u4b_another_asks_resolution_never_drops_this_asks_pending_answer() {
+    let mut st = ChatState::connected();
+    st.apply(&json!({"type":"ask","id":"a-1","kind":"select","title":"t","options":["Sí","No"]}));
+    st.apply(&json!({"type":"ask","id":"a-2","kind":"confirm","title":"t"}));
+    assert!(st.command(CHAT_WINDOW_LABEL, &json!({"action":"chat_ui_response","askId":"a-1","answer":"Sí"})).is_ok());
+    // a-2 closes elsewhere (another client answered it, or it expired) while a-1's answer waits
+    st.apply(&json!({"type":"ask_resolved","id":"a-2"}));
+    // the daemon could not deliver a-1's answer: the refusal still finds a-1's record
+    st.apply(&json!({"type":"error","code":"unavailable"}));
+    assert_eq!(view(&st)["answering"], json!([]), "the refusal frees a-1");
+    assert!(st.command(CHAT_WINDOW_LABEL, &json!({"action":"chat_ui_response","askId":"a-1","answer":"No"})).is_ok(), "a-1 may be answered again");
+}
+
+/// U4b verifier F2: the asks this client answered and the daemon then resolved are named in the
+/// view (`answered`, bounded), so the page shows an outcome only for an accepted answer. An ask
+/// resolved without this client's answer (expired, answered elsewhere, engine restart) or one the
+/// daemon refused with `unknown_ask` is never named there.
+#[test]
+fn u4b_only_an_answer_the_daemon_resolved_is_named_answered() {
+    let mut st = ChatState::connected();
+    for id in ["a-1", "a-2", "a-3"] {
+        st.apply(&json!({"type":"ask","id":id,"kind":"confirm","title":"t"}));
+    }
+    assert_eq!(view(&st)["answered"], json!([]));
+    // a-1: this client answered, the daemon resolved it
+    assert!(st.command(CHAT_WINDOW_LABEL, &json!({"action":"chat_ui_response","askId":"a-1","answer":true})).is_ok());
+    st.apply(&json!({"type":"ask_resolved","id":"a-1"}));
+    // a-2: resolved without this client's answer (expired / elsewhere / engine restart)
+    st.apply(&json!({"type":"ask_resolved","id":"a-2"}));
+    // a-3: answered, but the daemon no longer held it
+    assert!(st.command(CHAT_WINDOW_LABEL, &json!({"action":"chat_ui_response","askId":"a-3","answer":false})).is_ok());
+    st.apply(&json!({"type":"error","code":"unknown_ask"}));
+    assert_eq!(view(&st)["answered"], json!(["a-1"]));
+    assert_eq!(view(&st)["asks"], json!([]));
+    // bounded like the pending asks
+    for i in 0..(MAX_ASKS + 4) {
+        let id = format!("b-{i}");
+        st.apply(&json!({"type":"ask","id":id,"kind":"confirm","title":"t"}));
+        assert!(st.command(CHAT_WINDOW_LABEL, &json!({"action":"chat_ui_response","askId":id,"answer":true})).is_ok());
+        st.apply(&json!({"type":"ask_resolved","id":id}));
+        st.rate_count.set(0);
+    }
+    assert_eq!(view(&st)["answered"].as_array().unwrap().len(), MAX_ASKS);
+    // a new connection knows nothing of the old one's answers
+    assert_eq!(view(&ChatState::connected())["answered"], json!([]));
+}
+
+/// U4b verifier F3: an answer whose wire write fails AFTER the answered-once mark (the daemon stopped
+/// reading, the connection is going away) is un-marked: the ask can be answered again, and the host
+/// never says «ya se respondió» for an answer that was never sent.
+#[cfg(unix)]
+#[test]
+fn u4b_a_failed_answer_write_unmarks_the_ask() {
+    use crate::agentconn::ChatConn;
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::net::UnixListener;
+    use std::time::{Duration, Instant};
+    let dir = std::env::temp_dir().join(format!("abito-chatclient-f3-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("runtime/p-AbCdF3")).unwrap();
+    std::fs::set_permissions(dir.join("runtime"), std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::fs::set_permissions(dir.join("runtime/p-AbCdF3"), std::fs::Permissions::from_mode(0o700)).unwrap();
+    struct Tidy(std::path::PathBuf);
+    impl Drop for Tidy {
+        fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); }
+    }
+    let _tidy = Tidy(dir.clone());
+    let endpoint = dir.join("runtime/p-AbCdF3/s");
+    let listener = UnixListener::bind(&endpoint).expect("fake socket");
+    let session = json!({"protocol":"island-agent/1","endpoint":endpoint.to_str().unwrap(),"token":"t0k3n","pid":std::process::id()});
+    let session_path = dir.join("runtime/session.json");
+    std::fs::write(&session_path, session.to_string()).unwrap();
+    std::fs::set_permissions(&session_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    // the fake daemon: handshake, one ask, then it stops READING (its write side stays open, so
+    // the island sees no EOF: only its next write fails)
+    let (tx, rx) = std::sync::mpsc::channel::<()>();
+    let keep = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept");
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut line = String::new();
+        reader.read_line(&mut line).expect("hello");
+        stream.write_all(b"{\"type\":\"ready\",\"seq\":1,\"state\":{\"busy\":false,\"status\":\"ready\",\"paused\":false},\"features\":{\"history\":true,\"conversations\":false}}\n").unwrap();
+        stream.write_all(b"{\"type\":\"ask\",\"seq\":2,\"id\":\"a-1\",\"kind\":\"confirm\",\"title\":\"\xc2\xbfSeguir?\"}\n").unwrap();
+        std::thread::sleep(Duration::from_millis(200)); // the connect-time get_history/status lines arrive
+        stream.shutdown(std::net::Shutdown::Read).unwrap();
+        let _ = rx.recv_timeout(Duration::from_secs(10));
+        drop(stream);
+    });
+    let conn = ChatConn::new(|_| {});
+    conn.connect(&dir);
+    let end = Instant::now() + Duration::from_secs(5);
+    while conn.view()["asks"].as_array().map_or(true, |a| a.is_empty()) {
+        assert!(Instant::now() < end, "the ask never arrived: {}", conn.view());
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    std::thread::sleep(Duration::from_millis(400)); // the daemon has stopped reading
+    let cmd = crate::chat::parse_command(&json!({"action":"answer","ask_id":"a-1","confirmed":true})).unwrap();
+    let host = ChatHost::new();
+    for attempt in 0..2 {
+        let routed = host.route(&conn, CHAT_WINDOW_LABEL, &cmd, 1_000_000);
+        assert_eq!(routed.map_err(|e| e.code), Err("answer_refused".to_string()), "attempt {attempt}: a write that failed is no answer");
+        let v = conn.view();
+        assert_eq!(v["answering"], json!([]), "attempt {attempt}: the failed write un-marks the ask: {v}");
+        assert_eq!(v["asks"][0]["id"], json!("a-1"), "the ask stays pending");
+        let projected = host.project(&v, 1_000_000);
+        assert_eq!(projected["asks"][0]["answering"], json!(false));
+    }
+    let _ = tx.send(());
+    conn.close();
+    let _ = keep.join();
+}

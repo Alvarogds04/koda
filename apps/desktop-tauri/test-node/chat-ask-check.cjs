@@ -175,7 +175,7 @@ const answering = (asks, id) => asks.map(a => (a.id === id ? { ...a, answering: 
     await p.push({ asks: answering(ASKS, 'a-sel') });
     p.control(p.cards()[0], 'option')[0]?.click();
     assert.equal(p.answers().length, 1);
-    await p.push({ asks: ASKS.slice(1) });
+    await p.push({ asks: ASKS.slice(1), answered_asks: ['a-sel'] }); // the daemon accepted it
     const done = p.cards()[0];
     assert.ok(done.textContent.includes('Elegiste: dev'), done.textContent);
     assert.equal(p.control(done, 'option').length, 0, 'no controls left');
@@ -217,7 +217,7 @@ const answering = (asks, id) => asks.map(a => (a.id === id ? { ...a, answering: 
     assert.equal(enter.defaultPrevented, true);
     await p.settle();
     assert.deepEqual(p.answers(), [{ action: 'answer', ask_id: 'a-txt', value: typed }]);
-    await p.push({ asks: [] });
+    await p.push({ asks: [], answered_asks: ['a-txt'] });
     assert.ok(p.cards()[0].textContent.includes(`Respondiste: ${typed}`), 'the user\'s own words, untouched');
     // Escape on a fresh card cancels it and stops there (the island stays open)
     const q = await page();
@@ -231,7 +231,7 @@ const answering = (asks, id) => asks.map(a => (a.id === id ? { ...a, answering: 
     await q.settle();
     assert.deepEqual(q.answers(), [{ action: 'answer', ask_id: 'a-txt', cancelled: true }]);
     assert.equal(closed, 0);
-    await q.push({ asks: [] });
+    await q.push({ asks: [], answered_asks: ['a-txt'] });
     assert.ok(q.cards()[0].textContent.includes('Omitiste la pregunta.'));
   });
   await check('«Omitir» cancels the question once', async () => {
@@ -242,29 +242,79 @@ const answering = (asks, id) => asks.map(a => (a.id === id ? { ...a, answering: 
     await p.settle();
     assert.deepEqual(p.answers(), [{ action: 'answer', ask_id: 'a-sel', cancelled: true }]);
   });
-  await check('an ask resolved elsewhere (another client, expired) closes with that outcome; a refused answer can be retried', async () => {
+  await check('an ask resolved elsewhere (another client, expired) goes away like Gentle Dot; a refused answer can be retried', async () => {
     const p = await page();
     await p.push({ asks: ASKS.slice(0, 2) });
     await p.push({ asks: [ASKS[1]] });
-    assert.ok(p.cards()[0].textContent.includes('La pregunta se cerró'));
+    assert.equal(p.cards().length, 1, 'the card of the question closed elsewhere is removed');
     p.setAnswer(() => Promise.reject({ code: 'answer_refused', message: 'No se pudo enviar la respuesta.' }));
-    p.control(p.cards()[1], 'confirm')[0].click();
+    p.control(p.cards()[0], 'confirm')[0].click();
     await p.settle(); await p.settle();
-    const card = p.cards()[1];
+    const card = p.cards()[0];
     assert.ok(card.textContent.includes('No se pudo enviar la respuesta.'), card.textContent);
     assert.ok(p.control(card, 'confirm').every(b => !b.disabled), 'a refused answer frees the card');
     p.setAnswer(null);
-    p.control(p.cards()[1], 'confirm')[0].click();
+    p.control(p.cards()[0], 'confirm')[0].click();
     await p.settle();
     assert.equal(p.answers().length, 2);
-    // a closed question: the card says so at once
+    // a closed question (unknown to the daemon): the card goes away at once and the chat says why
     const q = await page();
     await q.push({ asks: [ASKS[1]] });
     q.setAnswer(() => Promise.reject({ code: 'ask_closed', message: 'Esa pregunta ya no está abierta.' }));
     q.control(q.cards()[0], 'confirm')[0].click();
     await q.settle(); await q.settle();
-    assert.ok(q.cards()[0].textContent.includes('Esa pregunta ya no está abierta.'));
-    assert.equal(q.control(q.cards()[0], 'confirm').length, 0);
+    assert.equal(q.cards().length, 0, 'the card is removed');
+    assert.equal(q.document.getElementById('chat-live').textContent, 'Esa pregunta ya no está abierta.');
+  });
+  await check('F2: only an answer the daemon accepted shows its outcome; a question closed without it (expired, elsewhere, engine restart) is removed', async () => {
+    // this page answered, but the question closed without the daemon accepting it (not in answered_asks)
+    const p = await page();
+    await p.push({ asks: ASKS });
+    p.control(p.cards()[0], 'option')[1].click();
+    await p.settle();
+    await p.push({ asks: answering(ASKS, 'a-sel') });
+    await p.push({ asks: ASKS.slice(1), answered_asks: [] });
+    assert.deepEqual(p.cards().map(c => c.dataset.askCard), ['a-yes', 'a-txt'], 'no «Elegiste» for an answer the daemon never took');
+    assert.ok(!p.log.textContent.includes('Elegiste'), p.log.textContent);
+    // never answered here: expired or answered elsewhere
+    await p.push({ asks: [ASKS[2]], answered_asks: [] });
+    assert.deepEqual(p.cards().map(c => c.dataset.askCard), ['a-txt']);
+    assert.ok(!p.log.textContent.includes('La pregunta se cerró'), 'no outcome for a question this page did not answer');
+    // engine restart: the daemon drops every pending ask; a reconnect does not bring them back
+    await p.push({ asks: [], availability: { state: 'unavailable', message: 'x' }, active_turn: null });
+    assert.equal(p.cards().length, 1, 'offline: the card waits');
+    await p.push({ asks: [], answered_asks: [], availability: { state: 'ready', message: 'x' } });
+    assert.equal(p.cards().length, 0, 'back online without the question: the card is removed');
+    // the accepted one keeps its outcome
+    const q = await page();
+    await q.push({ asks: [ASKS[1]] });
+    q.control(q.cards()[0], 'confirm')[1].click();
+    await q.settle();
+    await q.push({ asks: [], answered_asks: ['a-yes'] });
+    assert.ok(q.cards()[0].textContent.includes('Respondiste: No'), q.log.textContent);
+  });
+  await check('F3: the card never stays on «Enviando respuesta…» past the next state that shows answering:false', async () => {
+    // the answer was marked, then its write failed (or the connection dropped): Rust un-marks it
+    const p = await page();
+    await p.push({ asks: [ASKS[1]] });
+    p.control(p.cards()[0], 'confirm')[0].click();
+    await p.settle();
+    await p.push({ asks: answering([ASKS[1]], 'a-yes') });
+    assert.ok(p.cards()[0].textContent.includes('Enviando respuesta…'));
+    await p.push({ asks: [ASKS[1]] });
+    assert.ok(!p.cards()[0].textContent.includes('Enviando respuesta…'), p.cards()[0].textContent);
+    assert.ok(p.control(p.cards()[0], 'confirm').every(b => !b.disabled), 'answerable again');
+    // the page never saw answering:true (the mark came and went between two states)
+    const q = await page();
+    await q.push({ asks: [ASKS[1]] });
+    q.control(q.cards()[0], 'confirm')[0].click();
+    await q.settle();
+    await q.push({ asks: [ASKS[1]], turns: [{ turn_id: 't-1', user_text: 'hola', reply: 'buenas', state: 'completed', seq: 2 }] });
+    assert.ok(!q.cards()[0].textContent.includes('Enviando respuesta…'), q.cards()[0].textContent);
+    assert.ok(q.control(q.cards()[0], 'confirm').every(b => !b.disabled), 'answerable again');
+    q.control(q.cards()[0], 'confirm')[1].click();
+    await q.settle();
+    assert.equal(q.answers().length, 2);
   });
   await check('focus: a new card takes the focus only when the human is not typing; the answer returns it to the composer', async () => {
     const p = await page();

@@ -538,7 +538,7 @@
       rec.inflight = false;
       const code = error && error.code;
       const message = (error && error.message) || 'No se pudo enviar la respuesta.';
-      if (code === 'ask_closed') { closeAsk(rec, message); setLive(message); return; }
+      if (code === 'ask_closed') { removeAsk(rec); setLive(message); return; } // U4b F2: gone, like Gentle Dot
       if (code === 'ask_answered' || rec.phase !== 'sending') return; // already answered: the card waits for its resolution
       rec.phase = 'open'; rec.sent = null; rec.problem = message; rec.seenAnswering = false;
       paintAsk(rec);
@@ -554,6 +554,13 @@
     const closed = [...askRecs.values()].filter(r => r.phase === 'closed');
     for (const old of closed.slice(0, Math.max(0, closed.length - ASK_KEEP_CLOSED))) { old.li.remove(); askRecs.delete(old.ask.id); }
   }
+  /** U4b verifier F2: a question that closed without this page's answer being accepted leaves the chat (Gentle Dot). */
+  function removeAsk(rec) {
+    const had = rec.hadFocus || rec.li.contains(document.activeElement);
+    rec.li.remove();
+    if (askRecs.get(rec.ask.id) === rec) askRecs.delete(rec.ask.id);
+    if (had && capsule.dataset.view === 'chat') input.focus(); // the question is gone: back to the composer
+  }
   function clearAsks() {
     for (const rec of askRecs.values()) rec.li.remove();
     askRecs.clear();
@@ -563,6 +570,7 @@
     const list = V.askCards(next);
     const live = new Set(list.map(a => a.id));
     const truth = !!(next.availability && ASK_TRUTH.has(next.availability.state));
+    const accepted = V.answeredAsks(next); // U4b F2: the answers from this island the daemon accepted
     const lastId = Array.isArray(next.turns) && next.turns.length ? next.turns[next.turns.length - 1].turn_id : null;
     for (const ask of list) {
       let rec = askRecs.get(ask.id);
@@ -578,15 +586,18 @@
       }
       rec.ask = ask; rec.waiting = false;
       if (ask.answering && rec.phase !== 'closed') { rec.phase = 'sending'; rec.seenAnswering = true; if (!rec.sent) rec.sent = { answered: true }; }
-      else if (rec.phase === 'sending' && !rec.inflight && rec.seenAnswering) {
-        // the daemon refused the answer (chatclient freed the ask): the card may be answered again
+      else if (rec.phase === 'sending' && !rec.inflight) {
+        // the daemon refused the answer, or its write failed (chatclient freed the ask; U4b F3: whether or not
+        // this page saw the mark): the card may be answered again
         rec.phase = 'open'; rec.sent = null; rec.seenAnswering = false; rec.problem = 'No se pudo enviar la respuesta.';
       }
       paintAsk(rec);
     }
     for (const rec of askRecs.values()) {
       if (live.has(rec.ask.id) || rec.phase === 'closed') continue;
-      if (truth) {
+      if (truth && !accepted.has(rec.ask.id)) removeAsk(rec); // U4b F2: expired, elsewhere, engine restart
+      else if (truth) {
+        if (!rec.sent) rec.sent = { answered: true };
         closeAsk(rec);
         if (capsule.dataset.view === 'chat') setLive(V.askOutcome(rec.ask, rec.sent));
       } else if (!rec.waiting) { rec.waiting = true; paintAsk(rec); } // offline: the daemon replays it on reconnect

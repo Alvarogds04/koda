@@ -257,6 +257,29 @@ test("select options are rewritten before they are clipped, never showing a part
 	assert.deepEqual(P.buildUiResponse(ask, { value: ask.options[0] }), { type: "extension_ui_response", id: "uc", value: leaky });
 });
 
+// K2-05 U4b verifier F1: an ask TITLE was clipped to maxTitleChars BEFORE the white-label, so a
+// hidden name crossing the cut showed in part («…Gentle She»). Like the options, message and
+// placeholder, the title is rewritten first and clipped second. The sweep puts every hidden name
+// at every offset around the cut, for each ask kind.
+test("ask titles are rewritten before they are clipped: a long title never shows part of a hidden name", () => {
+	const max = P.LIMITS.maxTitleChars;
+	const names = ["Gentle Shell", "gentle-ai", "Gentle Pi", "engram", "pi-coding-agent", "abito-island", "el Gentleman", "organic driven development"];
+	for (const method of ["select", "confirm", "input"]) {
+		for (const name of names) {
+			const stem = name.slice(0, 3).toLowerCase();
+			for (let lead = max - name.length - 3; lead <= max + 3; lead += 1) {
+				const title = `${"x".repeat(lead)} ${name} fin`;
+				const event = { type: "extension_ui_request", id: "ut", method, title, ...(method === "select" ? { options: ["a"] } : {}) };
+				const shown = P.translateEvent(event).ask.title;
+				assert.ok(shown.length <= max, `${method} lead ${lead}: the title is still clipped (${shown.length})`);
+				assert.ok(!shown.toLowerCase().replace(/x+/g, "").includes(stem), `${method} lead ${lead}: part of «${name}» shown: ${JSON.stringify(shown.slice(-20))}`);
+			}
+		}
+	}
+	// a short title still rewrites whole, as before
+	assert.equal(P.translateEvent({ type: "extension_ui_request", id: "us", method: "input", title: "Gentle Shell asks" }).ask.title, "Koda asks");
+});
+
 // Clipping never cuts inside a UTF-16 surrogate pair (a lone half would reach
 // the island as U+FFFD or an invalid sequence): an ask title of 299 chars ends
 // right between the pair's halves.

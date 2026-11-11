@@ -297,8 +297,8 @@ fn chathost_the_settings_window_can_never_chat() {
 
 // ---- the chat:state projection ------------------------------------------------------------
 
-const CONVERSATION_KEYS: [&str; 14] = [
-    "active_turn", "asks", "availability", "conversation_id", "conversation_specialist", "evicted", "history_before",
+const CONVERSATION_KEYS: [&str; 15] = [
+    "active_turn", "answered_asks", "asks", "availability", "conversation_id", "conversation_specialist", "evicted", "history_before",
     "history_persisted", "history_problem", "history_skipped", "producer", "queue_note", "target", "turns",
 ];
 const TURN_KEYS: [&str; 12] = [
@@ -2576,4 +2576,25 @@ fn chathost_u4b_the_typed_answer_is_sent_verbatim() {
     let typed = "mi Raspberry Pi con engram y Gentle Shell\nsegunda línea\t😀";
     ChatHost::new().route(&link, "main", &parse_command(&answer("a-txt", "value", json!(typed))).unwrap(), T0).unwrap();
     assert_eq!(link.sent(), vec![ChatCommand::UiResponse { ask_id: "a-txt".into(), answer: ChatAnswer::Value(typed.into()) }]);
+}
+
+/// U4b verifier F2: chat:state names the asks whose answer from THIS island the daemon accepted
+/// (`answered_asks`), so the page shows an outcome only for those; an ask resolved without it
+/// (expired, answered elsewhere, engine restart) or refused `unknown_ask` is not named. Offline:
+/// none.
+#[test]
+fn chathost_u4b_the_projection_names_only_the_answers_the_daemon_accepted() {
+    use crate::chat::parse_command;
+    let link = asking_link();
+    let host = ChatHost::new();
+    assert_eq!(host.project(&link.view(), T0)["answered_asks"], json!([]));
+    host.route(&link, "main", &parse_command(&answer("a-sel", "value", json!("dev"))).unwrap(), T0).unwrap();
+    link.frame(json!({"type":"ask_resolved","id":"a-sel"}));
+    link.frame(json!({"type":"ask_resolved","id":"a-yes"})); // expired / answered elsewhere
+    host.route(&link, "main", &parse_command(&answer("a-txt", "value", json!("Ana"))).unwrap(), T0).unwrap();
+    link.frame(json!({"type":"error","code":"unknown_ask"}));
+    let v = host.project(&link.view(), T0);
+    assert_eq!(v["answered_asks"], json!(["a-sel"]));
+    assert_eq!(v["asks"], json!([]));
+    assert_eq!(host.project(&FakeLink::offline().view(), T0)["answered_asks"], json!([]));
 }

@@ -1104,6 +1104,13 @@ function translateEvent(event, messageId = "m0") {
 	}
 }
 
+/**
+ * K2-05 U4b verifier F1: an ask title as the island may show it, like its options, message and
+ * placeholder: control characters out, rewritten FIRST and clipped SECOND (a clip first could
+ * cut a hidden name in half: «…Gentle She»); the clip never splits a surrogate pair.
+ */
+const askTitle = (title) => clip(presentText(clip(title, Infinity)), LIMITS.maxTitleChars);
+
 function translateUiRequest(event) {
 	const none = { frames: [] };
 	if (typeof event.id !== "string" || !SAFE_ID.test(event.id)) return none;
@@ -1131,17 +1138,17 @@ function translateUiRequest(event) {
 			// by value, pick the wrong original. Every shown label is made unique and
 			// non-empty, so the answer maps back to the right original by position.
 			const options = uniqueShownLabels(originalOptions.map((o) => presentText(o)), LIMITS.maxOptionChars);
-			return { frames: [], ask: { id: event.id, kind: "select", title: presentText(clip(event.title, LIMITS.maxTitleChars)), options, originalOptions } };
+			return { frames: [], ask: { id: event.id, kind: "select", title: askTitle(event.title), options, originalOptions } };
 		}
 		case "confirm":
 			return {
 				frames: [],
-				ask: { id: event.id, kind: "confirm", title: presentText(clip(event.title, LIMITS.maxTitleChars)), options: [] },
+				ask: { id: event.id, kind: "confirm", title: askTitle(event.title), options: [] },
 			};
 		case "input":
 			return {
 				frames: [],
-				ask: { id: event.id, kind: "input", title: presentText(clip(event.title, LIMITS.maxTitleChars)), options: [] },
+				ask: { id: event.id, kind: "input", title: askTitle(event.title), options: [] },
 			};
 		case "editor":
 			// A dialog we cannot show must not hang the agent: the server cancels it.

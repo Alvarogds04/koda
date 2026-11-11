@@ -527,7 +527,11 @@ impl ChatConn {
             let state = self.state.lock().expect("chat state lock");
             state.command(caller, payload)?
         };
-        self.send_line(&cmd.line())?;
+        if self.send_line(&cmd.line()).is_err() {
+            // U4b verifier F3: a line that never left is no answer: un-mark it (keep in sync)
+            self.state.lock().expect("chat state lock").unsent(&cmd);
+            return Err(ChatCommandError);
+        }
         Ok(self.view())
     }
 

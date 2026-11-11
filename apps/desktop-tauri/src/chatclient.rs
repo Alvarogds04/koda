@@ -326,6 +326,10 @@ pub struct ChatState {
     /// that answer frees it again. Interior mutability because [`ChatState::command`] takes
     /// `&self`; bounded by `MAX_ASKS` (only pending asks can be in it).
     answering: RefCell<Vec<String>>,
+    /// K2-05 U4b verifier F2: the asks whose answer from THIS client the daemon accepted (it resolved
+    /// the ask while this client's answer was in flight), newest last, bounded by `MAX_ASKS`. The
+    /// page shows an outcome only for these; an ask resolved any other way just goes away.
+    answered: Vec<String>,
     /// The daemon's last `error` frame: a closed code plus a counter.
     last_error: Value,
     /// The last bounded toasts (newest last).
@@ -395,6 +399,7 @@ impl ChatState {
             pending_ask: Value::Null,
             asks: vec![],
             answering: RefCell::new(vec![]),
+            answered: vec![],
             last_error: json!({"code": null, "n": 0}),
             toasts: vec![],
             queue: json!({"steering": 0, "followUp": 0}),
@@ -691,12 +696,19 @@ impl ChatState {
             "ask_resolved" => {
                 let Some(id) = id_field(frame, "id") else { return };
                 let awaiting = self.awaiting.get_mut();
-                // the answer that resolved it (this client's, when it sent one) waits no more
+                // the answer that resolved it (this client's, when it sent one) waits no more. U4b
+                // verifier F4: only THAT ask's record — another ask's pending answer keeps its own
                 let mine = awaiting.iter().position(|(k, _, r)| *k == Awaiting::Answer && r.as_deref() == Some(id));
-                if let Some(at) = mine.or_else(|| awaiting.iter().position(|(k, _, _)| *k == Awaiting::Answer)) {
+                if let Some(at) = mine {
                     awaiting.remove(at);
                 }
-                self.forget_ask(id)
+                // U4b verifier F2: resolved while this client's answer was in flight = accepted
+                let accepted = self.answering.get_mut().iter().any(|a| a == id) && !self.answered.iter().any(|a| a == id);
+                if accepted {
+                    if self.answered.len() >= MAX_ASKS { self.answered.remove(0); }
+                    self.answered.push(id.to_owned());
+                }
+                self.forget_ask(id) || accepted
             }
             "toast" => {
                 let Some(message) = frame.get("message").and_then(Value::as_str) else { return };
@@ -748,6 +760,23 @@ impl ChatState {
             _ => false,
         };
         if changed {
+            self.revision = self.revision.wrapping_add(1);
+        }
+    }
+
+    /// K2-05 U4b verifier F3: the wire write of a command [`ChatState::command`] accepted failed (the
+    /// daemon stopped reading, the connection is going away): an answer is un-marked and stops
+    /// waiting, so the ask can be answered again. The transports call this on a failed write.
+    pub(crate) fn unsent(&mut self, cmd: &ChatCommand) {
+        let ChatCommand::UiResponse { ask_id, .. } = cmd else { return };
+        let awaiting = self.awaiting.get_mut();
+        if let Some(at) = awaiting.iter().rposition(|(k, _, r)| *k == Awaiting::Answer && r.as_deref() == Some(ask_id.as_str())) {
+            awaiting.remove(at);
+        }
+        let answering = self.answering.get_mut();
+        let before = answering.len();
+        answering.retain(|a| a != ask_id);
+        if answering.len() != before {
             self.revision = self.revision.wrapping_add(1);
         }
     }
@@ -1368,6 +1397,16 @@ fn asks_view(chat: &Value) -> Value {
     )
 }
 
+/// U4b verifier F2: the asks whose answer from this island the daemon accepted (a connected view
+/// only; bounded by `MAX_ASKS`, ids in the daemon's grammar).
+fn answered_view(chat: &Value) -> Value {
+    if !chat_connected(chat) {
+        return json!([]);
+    }
+    let list = chat.get("answered").and_then(Value::as_array).cloned().unwrap_or_default();
+    Value::Array(list.into_iter().filter(Value::is_string).take(MAX_ASKS).collect())
+}
+
 /// K2-05 U4b: whether a view holds that pending ask / is answering it.
 fn ask_state(chat: &Value, ask_id: &str) -> (bool, bool) {
     let has = |key: &str, f: &dyn Fn(&Value) -> bool| chat.get(key).and_then(Value::as_array).is_some_and(|l| l.iter().any(f));
@@ -1933,6 +1972,8 @@ impl HostInner {
             "producer": producer,
             // K2-05 U4b: the agent's pending questions (Gentle Dot `asks`), one card each
             "asks": asks_view(chat),
+            // U4b verifier F2: the asks whose answer from this island the daemon accepted
+            "answered_asks": answered_view(chat),
         })
     }
 }

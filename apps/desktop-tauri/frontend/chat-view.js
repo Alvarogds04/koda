@@ -625,6 +625,11 @@
     }
     return out;
   }
+  /** U4b verifier F2: the asks whose answer from this island the daemon accepted (`chat:state.answered_asks`), bounded. */
+  function answeredAsks(view) {
+    const list = view && Array.isArray(view.answered_asks) ? view.answered_asks : [];
+    return new Set(list.filter(id => typeof id === 'string' && ASK_ID.test(id)).slice(0, MAX_ASK_CARDS));
+  }
   /** The ONE closed `answer` verb for an answer: `{value}` (select/input), `{confirmed}` or `{cancelled}`. */
   function askPayload(askId, answer) {
     if (answer && typeof answer.value === 'string') return { action: 'answer', ask_id: askId, value: answer.value };
@@ -652,5 +657,5 @@
   }
   const askAria = ask => (ask && ask.title ? `Koda necesita tu respuesta: ${ask.title}` : 'Koda necesita tu respuesta');
   const askClosedAria = (ask, outcome) => `Pregunta de Koda${ask && ask.title ? `: ${ask.title}` : ''}. ${outcome}`;
-  return { askCards, askPayload, askOutcome, askNextOption, askAria, askClosedAria, staleSnapshot, messageCount, chatHeight, CHAT_MIN_H, CHAT_MAX_H, mergeHistory, leftWindow, PAGE_GAP_MS, pageWait, reconcileRows, rowKey, sameTurn, poseFor, statusView, draftWord, targetAria, noticeAnnouncement, activates, gateLabel, filterChosen, modelRows, modelMeters, modelsInfo, modelsCount, emptyGreeting, cleanDisplayName, cleanLine, CARD_NAME_MAX, CARD_SUMMARY_MAX, DRAFT_MAX, stateLabel, scalarCount, draftProblem, canSend, sendState, needsCheck, checkPlan, statusLine, announcement, atBottom, newRequestId, turnRows, toolRows, approvalRows, activeTurn, activeRole, modelButtonLabel, modelButtonAria, modelButtonEnabled, modelRoleNote, formatSize };
+  return { askCards, answeredAsks, askPayload, askOutcome, askNextOption, askAria, askClosedAria, staleSnapshot, messageCount, chatHeight, CHAT_MIN_H, CHAT_MAX_H, mergeHistory, leftWindow, PAGE_GAP_MS, pageWait, reconcileRows, rowKey, sameTurn, poseFor, statusView, draftWord, targetAria, noticeAnnouncement, activates, gateLabel, filterChosen, modelRows, modelMeters, modelsInfo, modelsCount, emptyGreeting, cleanDisplayName, cleanLine, CARD_NAME_MAX, CARD_SUMMARY_MAX, DRAFT_MAX, stateLabel, scalarCount, draftProblem, canSend, sendState, needsCheck, checkPlan, statusLine, announcement, atBottom, newRequestId, turnRows, toolRows, approvalRows, activeTurn, activeRole, modelButtonLabel, modelButtonAria, modelButtonEnabled, modelRoleNote, formatSize };
 });
