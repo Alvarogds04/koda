@@ -215,7 +215,15 @@ fn invalid_loopback_consumes_flow(request: Option<Vec<u8>>) {
     browser.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
     if let Some(bytes) = request { browser.write_all(&bytes).unwrap(); }
     let start = std::time::Instant::now();
-    assert!(flow.complete_loopback(&mut pending).is_err());
+    // macOS may finish the loopback handshake after connect() returns, so the first non-blocking
+    // accept can still see no connection (Ok(false)). Poll like the host worker does (oauthcmd.rs).
+    let result = loop {
+        match flow.complete_loopback(&mut pending) {
+            Ok(false) if start.elapsed() < std::time::Duration::from_secs(5) => std::thread::sleep(std::time::Duration::from_millis(5)),
+            other => break other,
+        }
+    };
+    assert!(result.is_err(), "{result:?}");
     assert!(start.elapsed() < std::time::Duration::from_secs(5));
     assert!(pending.listener.is_none()); assert!(pending.verifier.is_none());
     assert_eq!(flow.complete_loopback(&mut pending), Err(OauthError::Used));
