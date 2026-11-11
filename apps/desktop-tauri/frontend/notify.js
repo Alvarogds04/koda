@@ -76,7 +76,8 @@
   let headChangedAt = -Infinity, visibleId = null;
   const inHeadGuard = () => tick() - headChangedAt < HEAD_GUARD_MS;
   // Focus rules (S4/S5): a request never takes the focus out of a field the human is typing in outside the take-over, and keys answer
-  // the card only when the focus is inside #question or on the page itself (never from another editable field or control).
+  // the card (approvals, and plain/multi-select/form/free-text via cardKey) only when the focus is inside #question or on the page
+  // itself; a key aimed at any other control outside the card (editable or not) is left to that control, its default untouched.
   const editable = e => !!e && (/^(INPUT|TEXTAREA|SELECT)$/.test(e.tagName || '') || e.isContentEditable === true);
   const inCard = e => !!e && typeof root.contains === 'function' && root.contains(e);
   const focusFree = e => !e || e === document.body || e === document.documentElement;
@@ -298,6 +299,9 @@
     const n = snapshot && N.fromPending(snapshot.pending);
     const view = current();
     if (!n || !view.controlsEnabled || root.inert || !onScreen() || inHeadGuard()) return false;
+    // S4: the same focus rule as approvals: with the focus on another control outside #question (a button, link, field…) the key is
+    // that control's (Enter on #header-fold folds), so return WITHOUT preventDefault
+    if (!keysReachCard()) return false;
     const ctx = keyContext(n);
     const intent = N.keyIntent(event, ctx);
     if (!intent) return false;
