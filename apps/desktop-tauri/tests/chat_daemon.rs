@@ -500,3 +500,54 @@ fn another_clients_identical_prompt_recorded_first_never_takes_the_islands_turn(
         assert_ne!(turns[0]["turn_id"], accepted["turn_id"], "pass {pass}: the other client's prompt never takes it");
     }
 }
+
+/// S2 follow-up B2 residual (re-verify mwb5m1ps-8-5ta4): the same case with the island's own
+/// read budget SPENT before the other client's turn. The settle refresh is refused by that
+/// budget; the pre-send read belongs with the send (reserved budget), so it still reaches the
+/// real daemon, and the island's turn is the second «hola» — also after a reconnect.
+#[test]
+fn a_spent_read_budget_never_lets_the_islands_turn_take_another_clients_identical_prompt() {
+    let island = Island::start("", true);
+    let chat = Chat::connect(&island);
+    chat.wait("the engine is ready", |v| v["producer"]["pi"] == json!("ready"));
+    let other = Chat::connect(&island);
+    other.wait("the engine is ready for the other client", |v| v["producer"]["pi"] == json!("ready"));
+    // the island spends its whole read budget (status reads, well below the daemon's own limit)
+    let mut spent = 0;
+    while ChatLink::command(&*chat.conn, "main", &json!({"action": "chat_status"})).is_ok() {
+        spent += 1;
+        assert!(spent <= 120, "the read budget is bounded");
+    }
+    assert!(ChatLink::command(&*chat.conn, "main", &json!({"action": "chat_history"})).is_err(), "a plain read is refused now");
+    let file = island.session_file();
+    let mut lines = session_line("user", "hola");
+    lines.push_str(&session_line("assistant", REPLY));
+    std::fs::write(&file, &lines).unwrap();
+    other.action("main", json!({"action": "submit", "text": "hola", "client_request_id": "req-other-0002"})).unwrap();
+    other.wait("the other client's turn completed", |v| last_turn(v)["state"] == json!("completed") && last_turn(v)["reply"] == json!(REPLY));
+    chat.wait("the island saw the other turn end", |v| v["producer"]["pi"] == json!("ready"));
+    let Routed::Answer(accepted) = chat.action("main", json!({"action": "submit", "text": "hola", "client_request_id": "req-chat-b2r01"})).unwrap() else {
+        panic!("submit answers the page")
+    };
+    chat.wait("the island's turn completed", |v| {
+        v["turns"].as_array().is_some_and(|ts| ts.iter().any(|t| t["turn_id"] == accepted["turn_id"] && t["state"] == json!("completed")))
+    });
+    lines.push_str(&session_line("user", "hola"));
+    lines.push_str(&session_line("assistant", REPLY));
+    std::fs::write(&file, &lines).unwrap();
+    let done = |u: &str| (u.to_owned(), REPLY.to_owned(), "completed".to_owned());
+    let shape = |turns: &[Value]| -> Vec<(String, String, String)> {
+        turns.iter().map(|t| (t["user_text"].as_str().unwrap().into(), t["reply"].as_str().unwrap().into(), t["state"].as_str().unwrap().into())).collect()
+    };
+    // (the budget is still spent: the island shows its turn after the other one, from the pre-send page)
+    let v = chat.wait("the island's record", |v| v["turns"].as_array().is_some_and(|t| t.len() == 2 && t[1]["turn_id"] == accepted["turn_id"]));
+    let turns = v["turns"].as_array().unwrap();
+    assert_eq!(shape(turns), vec![done("hola"), done("hola")], "the island's turn after the other client's: {v}");
+    assert_ne!(turns[0]["turn_id"], accepted["turn_id"], "the other client's prompt never takes the island's turn");
+    // a reconnect (the same host, a new connection whose newest page carries the record): the claim
+    chat.conn.connect(&island.root);
+    let v = chat.wait("the newest page after the reconnect", |v| v["turns"].as_array().is_some_and(|t| t.len() == 2));
+    let turns = v["turns"].as_array().unwrap();
+    assert_eq!(shape(turns), vec![done("hola"), done("hola")], "after a reconnect: {v}");
+    assert_eq!(turns[1]["turn_id"], accepted["turn_id"], "after a reconnect the island's turn is still the second «hola»");
+}

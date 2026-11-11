@@ -985,3 +985,52 @@ fn requested_pages_count_as_answers_and_the_first_history_marks_the_view_loaded(
     assert!(st.revision() > before, "and the answer is an event the reader emits");
     assert_eq!(view(&ChatState::disconnected(Reason::Lost))["historyLoaded"], json!(false));
 }
+
+// ---- K2-05 T4 S2 re-verify follow-ups (B2 residual, mwb5m1ps-8-5ta4) ------------------------
+
+#[test]
+fn the_pre_send_history_read_spends_the_reserved_budget_and_always_leaves_the_send_its_slot() {
+    let st = ChatState::connected();
+    let ok = |payload: serde_json::Value| st.command(CHAT_WINDOW_LABEL, &payload);
+    for i in 0..CHAT_FRAMES_PER_MINUTE - CHAT_FRAMES_RESERVED {
+        assert!(ok(json!({"action":"chat_status"})).is_ok(), "read {i}");
+    }
+    assert!(ok(json!({"action":"chat_history"})).is_err(), "paging and status reads stop short of the reserve");
+    // the read right before a send belongs with the send: it may use the reserve
+    let presend = ok(json!({"action":"chat_history","presend":true})).expect("the pre-send read is never refused by the read budget");
+    assert_eq!(presend.line(), "{\"type\":\"get_history\"}\n", "the same daemon read, nothing new on the wire");
+    for bad in [json!({"action":"chat_history","presend":false}), json!({"action":"chat_history","presend":1}), json!({"action":"chat_history","presend":true,"x":1})] {
+        assert!(ok(bad.clone()).is_err(), "a closed shape: {bad}");
+    }
+    // ...but it never takes the send's own slot
+    while st.rate_count.get() < CHAT_FRAMES_PER_MINUTE - 1 {
+        assert!(ok(json!({"action":"chat_abort"})).is_ok());
+    }
+    assert!(ok(json!({"action":"chat_history","presend":true})).is_err(), "the last slot stays the send's");
+    assert!(ok(send_payload("hola")).is_ok(), "the send still goes through");
+}
+
+
+#[test]
+fn a_newest_page_remembers_the_engine_cycles_when_its_read_was_sent() {
+    let mut st = ChatState::connected();
+    st.apply(&json!({"type":"agent_state","busy":false,"status":"ready","paused":false}));
+    st.command(CHAT_WINDOW_LABEL, &json!({"action":"chat_history"})).unwrap();
+    // another client's whole turn runs while the read is answered late
+    st.apply(&json!({"type":"agent_state","busy":true,"status":"ready","paused":false}));
+    st.apply(&json!({"type":"agent_state","busy":false,"status":"ready","paused":false}));
+    st.apply(&json!({"type":"history","messages":[{"id":"s0-1","role":"user","text":"x"}],"hasEarlier":false}));
+    let v = view(&st);
+    assert_eq!((v["historyStarts"].clone(), v["historyAskedStarts"].clone(), v["historyAskedBusy"].clone()), (json!(1), json!(0), json!(false)), "{v}");
+    // a read sent while a cycle runs: the page proves nothing about that cycle
+    st.apply(&json!({"type":"agent_state","busy":true,"status":"ready","paused":false}));
+    st.command(CHAT_WINDOW_LABEL, &json!({"action":"chat_history"})).unwrap();
+    st.apply(&json!({"type":"agent_state","busy":false,"status":"ready","paused":false}));
+    st.apply(&json!({"type":"history","messages":[{"id":"s0-1","role":"user","text":"x"}],"hasEarlier":false}));
+    let v = view(&st);
+    assert_eq!((v["historyAskedStarts"].clone(), v["historyAskedBusy"].clone()), (json!(2), json!(true)), "{v}");
+    // an unsolicited page (a rotation broadcast) is as fresh as its fold
+    st.apply(&json!({"type":"history","messages":[{"id":"s1-1","role":"user","text":"y"}],"hasEarlier":false}));
+    let v = view(&st);
+    assert_eq!((v["historyAskedStarts"].clone(), v["historyAskedBusy"].clone()), (json!(2), json!(false)), "{v}");
+}

@@ -1379,17 +1379,47 @@ fn paging_1500_turns_stays_within_the_islands_budget_and_a_send_still_goes_throu
 struct Live {
     record: std::sync::Arc<Mutex<Record>>,
     link: std::sync::Arc<FakeLink>,
+    /// The answers of `Read::Defer` reads, as the daemon read them (delivered later by the test).
+    deferred: std::sync::Arc<Mutex<Vec<Value>>>,
+}
+
+/// How the fake daemon answers the k-th `get_history` (0-based).
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Read {
+    Answer,
+    /// The daemon refuses it (an `error` frame).
+    Refuse,
+    /// The daemon reads the record NOW but answers only when the test delivers it (late).
+    Defer,
 }
 
 impl Live {
     /// `reply(text)`: the engine's reply to an island send (None = the island cancels it before
     /// any output; `record_cancelled` = the engine recorded the cancelled prompt anyway).
     fn new(log: Vec<(&'static str, String)>, reply: fn(&str) -> Option<String>, record_cancelled: bool) -> Live {
+        Live::with_reads(log, reply, record_cancelled, |_| Read::Answer, true)
+    }
+
+    fn with_reads(log: Vec<(&'static str, String)>, reply: fn(&str) -> Option<String>, record_cancelled: bool, reads: fn(usize) -> Read, unlimited: bool) -> Live {
         let record = std::sync::Arc::new(Mutex::new(Record { log, max: |_| 100 }));
         let held = record.clone();
+        let deferred: std::sync::Arc<Mutex<Vec<Value>>> = Default::default();
+        let late = deferred.clone();
+        let asked = std::sync::atomic::AtomicUsize::new(0);
         let mut link = FakeLink::answering(move |c| {
             let mut r = held.lock().unwrap();
             match c {
+                ChatCommand::History => {
+                    let k = asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    match reads(k) {
+                        Read::Answer => vec![r.history()],
+                        Read::Refuse => vec![json!({"type":"error","code": if k % 2 == 0 { "failed" } else { "rate_limited" }})],
+                        Read::Defer => {
+                            late.lock().unwrap().push(r.history());
+                            vec![]
+                        }
+                    }
+                }
                 ChatCommand::Send { text, .. } => {
                     let busy = json!({"type":"agent_state","busy":true,"status":"ready","paused":false});
                     match reply(text) {
@@ -1408,13 +1438,29 @@ impl Live {
                     }
                 }
                 ChatCommand::Abort => vec![json!({"type":"agent_state","busy":false,"status":"ready","paused":false})],
-                ChatCommand::History => vec![r.history()],
                 ChatCommand::Earlier { before } => vec![r.earlier(before)],
                 _ => vec![],
             }
         });
-        link.unlimited = true;
-        Live { record, link: std::sync::Arc::new(link) }
+        link.unlimited = unlimited;
+        Live { record, link: std::sync::Arc::new(link), deferred }
+    }
+
+    /// Deliver the late answers the daemon read earlier.
+    fn deliver_late(&self) {
+        let frames: Vec<Value> = std::mem::take(&mut *self.deferred.lock().unwrap());
+        for f in frames {
+            self.link.frame(f);
+        }
+    }
+
+    /// The connection drops and comes back: a fresh chat view, then its newest page.
+    fn reconnect(&self, host: &ChatHost, now: u64) {
+        let mut st = ChatState::connected();
+        st.apply(&json!({"type":"agent_state","busy":false,"status":"ready","paused":false}));
+        *self.link.state.lock().unwrap() = st;
+        host.project(&self.link.view(), now);
+        first_window(host, &self.link);
     }
 
     /// Another client's whole turn: recorded by the daemon, broadcast to the island as busy,
@@ -1653,4 +1699,266 @@ fn followups_b2_a_newest_page_read_while_another_turn_runs_never_sets_the_claim_
         ]
     );
     assert_eq!(ts[2]["turn_id"], a["turn_id"]);
+}
+
+// ---- K2-05 T4 S2 re-verify follow-ups (mwb5m1ps-8-5ta4): B2 residual, N1, empty first message ----
+
+/// How the island's reads go wrong around the other client's identical turn.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Trouble {
+    /// The island's own read budget is spent (100 status reads in the window).
+    BudgetSpent,
+    /// The daemon refuses the settle refresh and the pre-send read.
+    RefusedTwice,
+    /// Both reads are answered only after the island's send (past the 3 s pre-send wait).
+    Late,
+}
+
+/// B2 residual: another client's «hola» is recorded first; the island's reads of it are refused
+/// or late; the island sends «hola» too (cancelled, or completed). The island's turn must never
+/// take the other client's prompt — also after the budget window resets and after a reconnect.
+fn b2_residual(trouble: Trouble, completed: bool, recorded: bool) {
+    let label = format!("{trouble:?}, completed: {completed}, cancelled prompt recorded: {recorded}");
+    let log = vec![("user", "vieja".to_owned()), ("assistant", "r-vieja".to_owned())];
+    let reply: fn(&str) -> Option<String> = if completed { |_| Some("r-isla".to_owned()) } else { |_| None };
+    let reads: fn(usize) -> Read = match trouble {
+        Trouble::BudgetSpent => |_| Read::Answer,
+        Trouble::RefusedTwice => |k| if k == 1 || k == 2 { Read::Refuse } else { Read::Answer },
+        Trouble::Late => |k| if k == 1 || k == 2 { Read::Defer } else { Read::Answer },
+    };
+    let live = Live::with_reads(log, reply, recorded, reads, trouble != Trouble::BudgetSpent);
+    let host = ChatHost::new();
+    first_window(&host, &live.link);
+    live.publish(&host, T0);
+    if trouble == Trouble::BudgetSpent {
+        while live.link.command("main", &json!({"action":"chat_status"})).is_ok() {}
+    }
+    live.foreign(&host, "hola", "r-otro", true, T0 + 10);
+    let Routed::Answer(a) = host.route(&*live.link, "main", &submit("hola", "req-b2r00001"), T0 + 20).unwrap() else { panic!("{label}") };
+    if trouble == Trouble::Late {
+        live.deliver_late();
+    }
+    // (the settle grace counts from the real send, after up to 3 s of pre-send wait)
+    let t1 = T0 + 20 + 10_000;
+    let v = live.publish(&host, t1);
+    if !completed {
+        let active = v["active_turn"].as_str().unwrap_or_else(|| panic!("{label}: the island's turn runs: {v}")).to_owned();
+        assert_eq!(active, a["turn_id"].as_str().unwrap(), "{label}");
+        host.route(&*live.link, "main", &Command::Cancel { turn_id: active }, t1 + 10).unwrap();
+    }
+    let (reply, state) = if completed { ("r-isla", "completed") } else { ("", "cancelled") };
+    let expected = vec![
+        ("vieja".to_owned(), "r-vieja".to_owned(), "completed".to_owned()),
+        ("hola".to_owned(), "r-otro".to_owned(), "completed".to_owned()),
+        ("hola".to_owned(), reply.to_owned(), state.to_owned()),
+    ];
+    let check = |when: &str, now: u64| {
+        for k in 0..3 {
+            live.publish(&host, now + k);
+        }
+        let ts = turns(&host.project(&live.link.view(), now + 5));
+        assert_eq!(shape(&ts), expected, "{label}, {when}: the record's order, the island's end under its own turn");
+        assert_eq!(ts[2]["turn_id"], a["turn_id"], "{label}, {when}: the island's turn keeps its id");
+        assert_ne!(ts[1]["turn_id"], a["turn_id"], "{label}, {when}: the other client's prompt never takes the island's turn");
+        assert_eq!(shape(&live.whole_chat(&host, now + 6)), expected, "{label}, {when}: a page reload walks the same chat");
+    };
+    check("right after", t1 + 20);
+    // the island's read budget window resets: the record is read again
+    live.link.state.lock().unwrap().rate_window.set(None);
+    check("after the budget window reset", t1 + 100);
+    // the connection drops and comes back (a new connection, its own newest page)
+    live.reconnect(&host, t1 + 150);
+    check("after a reconnect", t1 + 200);
+}
+
+#[test]
+fn followups_b2_residual_a_spent_read_budget_never_lets_the_island_claim_the_other_clients_prompt() {
+    for completed in [false, true] {
+        for recorded in [true, false] {
+            b2_residual(Trouble::BudgetSpent, completed, recorded);
+        }
+    }
+}
+
+#[test]
+fn followups_b2_residual_refused_reads_never_let_the_island_claim_the_other_clients_prompt() {
+    for completed in [false, true] {
+        for recorded in [true, false] {
+            b2_residual(Trouble::RefusedTwice, completed, recorded);
+        }
+    }
+}
+
+#[test]
+fn followups_b2_residual_late_reads_never_let_the_island_claim_the_other_clients_prompt() {
+    for completed in [false, true] {
+        b2_residual(Trouble::Late, completed, true);
+    }
+}
+
+#[test]
+fn followups_b2_residual_the_pre_send_read_is_never_refused_by_the_islands_read_budget() {
+    let log = vec![("user", "vieja".to_owned()), ("assistant", "r-vieja".to_owned())];
+    let live = Live::with_reads(log, |_| Some("r-isla".to_owned()), false, |_| Read::Answer, false);
+    let host = ChatHost::new();
+    first_window(&host, &live.link);
+    while live.link.command("main", &json!({"action":"chat_status"})).is_ok() {}
+    live.foreign(&host, "otra", "r-otro", true, T0);
+    let reads = live.link.sent().iter().filter(|c| **c == ChatCommand::History).count();
+    host.route(&*live.link, "main", &submit("hola", "req-b2r00002"), T0 + 10).unwrap();
+    let sent = live.link.sent();
+    assert_eq!(sent.iter().filter(|c| **c == ChatCommand::History).count(), reads + 1, "the pre-send read went out: {sent:?}");
+    assert!(matches!(sent.last(), Some(ChatCommand::Send { .. })), "and the send after it: {sent:?}");
+}
+
+/// N1: a link whose newest-page read answers only after `delay_ms`, and whose send has no
+/// optimistic busy yet (the engine's frames come later, from the test).
+fn slow_read_link(delay_ms: u64) -> std::sync::Arc<FakeLink> {
+    let record = std::sync::Arc::new(Mutex::new(Record { log: vec![("user", "vieja".to_owned()), ("assistant", "r-vieja".to_owned())], max: |_| 100 }));
+    let held = record.clone();
+    let slow: std::sync::Arc<Mutex<Option<std::sync::Weak<FakeLink>>>> = Default::default();
+    let weak = slow.clone();
+    let asked = std::sync::atomic::AtomicUsize::new(0);
+    let link = std::sync::Arc::new(FakeLink::answering(move |c| match c {
+        ChatCommand::History if asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 => vec![held.lock().unwrap().history()],
+        ChatCommand::History => {
+            let frame = held.lock().unwrap().history();
+            let link = weak.lock().unwrap().clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+                if let Some(link) = link.and_then(|l| l.upgrade()) {
+                    link.frame(frame);
+                }
+            });
+            vec![]
+        }
+        _ => vec![],
+    }));
+    *slow.lock().unwrap() = Some(std::sync::Arc::downgrade(&link));
+    link
+}
+
+fn wall() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64
+}
+
+/// The page's view of the island's turn while a submit is routed: what every keeper tick shows.
+fn submit_watching(host: &std::sync::Arc<ChatHost>, link: &std::sync::Arc<FakeLink>, id: &str) -> (Value, Vec<(u64, Value, Value, bool)>) {
+    let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let watcher = {
+        let (host, link, done) = (host.clone(), link.clone(), done.clone());
+        std::thread::spawn(move || {
+            let start = wall();
+            let mut seen = vec![];
+            while !done.load(std::sync::atomic::Ordering::SeqCst) {
+                let live = host.has_live();
+                let v = host.project(&link.view(), wall());
+                seen.push((wall() - start, v["active_turn"].clone(), last_turn(&v), live));
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            seen
+        })
+    };
+    let Routed::Answer(a) = host.route(&**link, "main", &submit("hola", id), wall()).unwrap() else { panic!() };
+    done.store(true, std::sync::atomic::Ordering::SeqCst);
+    (a, watcher.join().unwrap())
+}
+
+#[test]
+fn followups_n1_a_slow_pre_send_read_shows_the_turn_as_thinking_and_never_completes_it_early() {
+    let link = slow_read_link(2_000);
+    let host = std::sync::Arc::new(ChatHost::new());
+    first_window(&host, &link);
+    host.project(&link.view(), wall());
+    // another client's turn ran: the island reads the record before its send (2 s)
+    agent(&link, true, "ready");
+    agent(&link, false, "ready");
+    let started = std::time::Instant::now();
+    let (a, seen) = submit_watching(&host, &link, "req-n1000001");
+    let sent_at = wall();
+    assert!(started.elapsed() >= std::time::Duration::from_millis(1_900), "the pre-send read took 2 s: {:?}", started.elapsed());
+    assert!(matches!(link.sent().last(), Some(ChatCommand::Send { .. })), "the send went out after the read");
+    // while the read waited the page already showed the turn: thinking, cancellable
+    let waiting: Vec<_> = seen.iter().filter(|(ms, _, _, _)| *ms >= 300 && *ms <= 1_800).collect();
+    assert!(!waiting.is_empty());
+    for (ms, active, turn, live) in waiting {
+        assert!(*live, "at {ms} ms the keeper re-publishes (the turn is live before any projection)");
+        assert_eq!(*active, a["turn_id"], "at {ms} ms the turn is the active one (cancel available): {turn}");
+        assert_eq!((turn["user_text"].clone(), turn["state"].clone()), (json!("hola"), json!("thinking")), "at {ms} ms: {turn}");
+    }
+    // right after the send (no busy frame yet), and inside the grace measured from the send
+    for after in [0, 1_000, PENDING_SETTLE_MS - 100] {
+        let v = host.project(&link.view(), sent_at + after);
+        assert_eq!(last_turn(&v)["state"], json!("thinking"), "{after} ms after the send: {v}");
+        assert_eq!(v["active_turn"], a["turn_id"]);
+    }
+    // the engine's reply streams into the island's own turn
+    agent(&link, true, "ready");
+    link.frame(json!({"type":"message_delta","messageId":"m1","text":"buenas"}));
+    assert_eq!(last_turn(&host.project(&link.view(), wall()))["state"], json!("streaming"));
+    link.frame(json!({"type":"message_done","messageId":"m1"}));
+    agent(&link, false, "ready");
+    let t = last_turn(&host.project(&link.view(), wall()));
+    assert_eq!((t["turn_id"].clone(), t["reply"].clone(), t["state"].clone()), (a["turn_id"].clone(), json!("buenas"), json!("completed")));
+}
+
+#[test]
+fn followups_n1_a_turn_cancelled_while_its_pre_send_read_waits_never_reaches_the_engine() {
+    let link = slow_read_link(1_000);
+    let host = std::sync::Arc::new(ChatHost::new());
+    first_window(&host, &link);
+    host.project(&link.view(), wall());
+    agent(&link, true, "ready");
+    agent(&link, false, "ready");
+    let canceller = {
+        let (host, link) = (host.clone(), link.clone());
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(400));
+            let v = host.project(&link.view(), wall());
+            let id = v["active_turn"].as_str().map(str::to_owned).unwrap_or_else(|| panic!("the turn is active while it waits: {v}"));
+            host.route(&*link, "main", &Command::Cancel { turn_id: id }, wall()).unwrap()
+        })
+    };
+    let Routed::Answer(a) = host.route(&*link, "main", &submit("hola", "req-n1000002"), wall()).unwrap() else { panic!() };
+    assert_eq!(canceller.join().unwrap(), Routed::Answer(json!({"cancelled": true})));
+    assert!(!link.sent().iter().any(|c| matches!(c, ChatCommand::Send { .. } | ChatCommand::Abort)), "nothing reached the engine: {:?}", link.sent());
+    let v = host.project(&link.view(), wall() + 5_000);
+    let t = last_turn(&v);
+    assert_eq!((t["turn_id"].clone(), t["state"].clone()), (a["turn_id"].clone(), json!("cancelled")));
+    assert_eq!(v["active_turn"], json!(null));
+    host.route(&*link, "main", &submit("otra", "req-n1000003"), wall() + 5_010).expect("the next send goes through");
+}
+
+#[test]
+fn followups_an_island_reply_whose_first_message_is_empty_has_no_leading_blank_paragraph() {
+    let log = vec![("user", "vieja".to_owned()), ("assistant", "r-vieja".to_owned())];
+    let live = Live::new(log, |_| None, false);
+    let host = ChatHost::new();
+    first_window(&host, &live.link);
+    live.publish(&host, T0);
+    let Routed::Answer(a) = host.route(&*live.link, "main", &submit("buscá", "req-e0000001"), T0 + 10).unwrap() else { panic!() };
+    // a tool call with no text: the first message lands empty, then the text
+    live.link.frame(json!({"type":"message_done","messageId":"m1"}));
+    live.link.frame(json!({"type":"message_delta","messageId":"m2","text":"encontré esto"}));
+    let t = last_turn(&host.project(&live.link.view(), T0 + 20));
+    assert_eq!((t["reply"].clone(), t["state"].clone()), (json!("encontré esto"), json!("streaming")), "{t}");
+    live.link.frame(json!({"type":"message_done","messageId":"m2"}));
+    live.link.frame(json!({"type":"agent_state","busy":false,"status":"ready","paused":false}));
+    let t = last_turn(&host.project(&live.link.view(), T0 + 30));
+    assert_eq!((t["reply"].clone(), t["state"].clone()), (json!("encontré esto"), json!("completed")), "{t}");
+    // the record carries the turn (the daemon joins only non-empty texts): one copy, same text
+    {
+        let mut r = live.record.lock().unwrap();
+        r.log.push(("user", "buscá".to_owned()));
+        r.log.push(("assistant", "encontré esto".to_owned()));
+    }
+    for k in 0..3 {
+        live.publish(&host, T0 + 40 + k);
+    }
+    let ts = turns(&host.project(&live.link.view(), T0 + 50));
+    assert_eq!(
+        shape(&ts),
+        vec![("vieja".to_owned(), "r-vieja".to_owned(), "completed".to_owned()), ("buscá".to_owned(), "encontré esto".to_owned(), "completed".to_owned())]
+    );
+    assert_eq!(ts[1]["turn_id"], a["turn_id"]);
 }
