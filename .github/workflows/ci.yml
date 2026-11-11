@@ -172,6 +172,20 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - name: Install the real Pi (tests/agent_daemon.rs lists providers through the daemon's real Pi SDK; Linux only)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          # Same retry policy as the Node suites: ONLY registry/network errors are retried.
+          for attempt in 1 2 3 4 5 6; do
+            if npm i -g "@earendil-works/pi-coding-agent@$PI_VERSION" 2>&1 | tee "$RUNNER_TEMP/npm-pi.log"; then break; fi
+            if ! grep -qE 'npm error code (ETARGET|ETIMEDOUT|ECONNRESET|ECONNREFUSED|EAI_AGAIN|ENOTFOUND|E5[0-9][0-9]|ESOCKETTIMEDOUT|EPIPE)|network (timeout|socket)' "$RUNNER_TEMP/npm-pi.log"; then
+              echo "npm failed with a non-network error: not retrying"; exit 1
+            fi
+            if [ "$attempt" = 6 ]; then echo "npm install of Pi kept failing on network errors"; exit 1; fi
+            echo "registry/network error on attempt $attempt; retrying in $((attempt * 20))s"; sleep $((attempt * 20))
+          done
+          command -v pi
       - name: Pinned esbuild 0.28.2 (the coucou build check needs it; never downloaded by the build itself)
         shell: bash
         run: |
