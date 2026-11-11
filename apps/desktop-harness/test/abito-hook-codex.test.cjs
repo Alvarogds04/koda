@@ -77,8 +77,8 @@ test('codex e2e: every no-island path is silent (exit 0, empty stdout, empty std
   assert.equal(rcv.frames.length, 0);
 });
 
-test('codex e2e: --timeout-sec sets the island wait (capped at 60 s)', async t => {
-  for (const [sec, budget] of [['40', 35000], ['125', 60000]]) {
+test('codex e2e: --timeout-sec sets the island wait (the installed 120 s => 115 s; capped at 115 s)', async t => {
+  for (const [sec, budget] of [['40', 35000], ['120', 115000], ['125', 115000]]) {
     const rcv = await fakeReceiver(t, { questions: true });
     const p = answerer(rcv, 'deny');
     const r = await run(['codex', 'permission-request', '--timeout-sec', sec], permission, envOf(rcv));

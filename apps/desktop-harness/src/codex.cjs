@@ -8,7 +8,7 @@
 // FAIL CLOSED, so they are never emitted here (and there is no «Siempre permitir», S6).
 //
 // permission-request: ONE approval question (agent `codex`) joins the island's FIFO queue and the hook waits for it
-// within the hook budget (`--timeout-sec` less a margin, capped like Claude's). Only an explicit «Aprobar una vez» on a
+// within the hook budget (`--timeout-sec` less a 5 s margin, capped at 115 s: the installed entry gives 120 s, K2-08 T3). Only an explicit «Aprobar una vez» on a
 // request shown in full prints `allow`; «Rechazar» prints `deny`; every other outcome — island closed, busy (queue
 // full), no answer in time, connection lost, «Decidir en la terminal» — prints NOTHING and exits 0, so Codex asks in
 // its terminal. Only `Bash` (the full redacted command) and `apply_patch` (a fixed label, lossy until the file preview
@@ -24,7 +24,7 @@
 // Never read or forwarded: tool_input.description (written by Codex, may be model-influenced), last_assistant_message,
 // model, permission_suggestions. Never forwarded: transcript_path, turn_id.
 const { parseArgs, watchdogMs, startWatchdog, none, isObject, validCwd, toolDescription, defaultFactory, optionSets, questionText,
-  MAX_STDIN_BYTES, DEFAULT_TIMEOUT_SEC, MAX_ISLAND_WAIT_MS, ALLOW, DENY, resolveConfig, computeDeadline, sessionToken } = require('./hook-common.cjs');
+  MAX_STDIN_BYTES, DEFAULT_TIMEOUT_SEC, CODEX_MAX_ISLAND_WAIT_MS, ALLOW, DENY, resolveConfig, computeDeadline, sessionToken } = require('./hook-common.cjs');
 const { redactCommand } = require('./redact.cjs');
 const { sanitizeText } = require('./projection.cjs');
 const { codexAutoReviewed } = require('./codex-reviewer.cjs');
@@ -92,8 +92,9 @@ async function handleCodexHook({ event, input, env = {}, argv = [], now, clientF
       if (!detail) return none(); // MCP, network, anything else: Codex asks in its terminal (S7)
       // K2-08 T2 (S3): Codex's own automatic reviewer handles this turn — no card, nothing printed; unknown → the card.
       if (codexAutoReviewed(data, env)) return none();
-      // The island may only hold the card as long as Codex waits for this hook, less a margin, capped like Claude's.
-      const deadline = computeDeadline({ cliTimeoutMs: args.timeoutSec * 1000, maxMs: MAX_ISLAND_WAIT_MS });
+      // The island may only hold the card as long as Codex waits for this hook, less a 5 s margin, capped at 115 s (T3, S5:
+      // the installed entry gives 120 s). Claude's 60 s cap is not Codex's.
+      const deadline = computeDeadline({ cliTimeoutMs: args.timeoutSec * 1000, maxMs: CODEX_MAX_ISLAND_WAIT_MS });
       if (deadline.mode !== 'ask') return none();
       budget = deadline.timeoutMs;
     } else if (event === 'pre-tool-use') {

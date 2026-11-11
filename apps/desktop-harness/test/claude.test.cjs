@@ -175,6 +175,16 @@ test('hook island wait is capped at 60 s regardless of --timeout-sec', async t =
   const q = rcv.frames.find(f => f.type === 'question');
   assert.equal(q.expiresAt - q.at, 60000);
 });
+// K2-08 T3: Codex's longer wait (115 s with --timeout-sec 120) is Codex-only; Claude keeps its 60 s cap.
+test('Claude with --timeout-sec 120 still waits 60 s (the Codex wait does not leak into Claude)', async t => {
+  const rcv = await fakeReceiver(t, { questions: true });
+  const p = answerer(rcv, 'deny');
+  await handleClaudeHook({ event: 'permission-request', env: envOf(rcv), argv: ['--timeout-sec', '120'], input: permission() });
+  await p;
+  const q = rcv.frames.find(f => f.type === 'question');
+  assert.equal(q.expiresAt - q.at, 60000);
+  assert.equal(require('../src/hook-common.cjs').MAX_ISLAND_WAIT_MS, 60000);
+});
 test('stop: one settled frame; none when stop_hook_active; last_assistant_message never sent', async t => {
   let rcv = await fakeReceiver(t, {});
   let r = await handleClaudeHook({ event: 'stop', input: stopInput(), env: envOf(rcv), argv: [] });
