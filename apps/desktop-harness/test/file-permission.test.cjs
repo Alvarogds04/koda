@@ -67,19 +67,20 @@ test('R10 h: Claude Spanish wording, approve first, unchanged machine values', a
   assert.deepEqual(r.q.options.map(o => [o.value, o.label]), [['allow', 'Aprobar una vez'], ['deny', 'Rechazar']]);
   const l = await card('Mystery', {}); assert.equal(l.q.options[1].label, 'Decidir en la terminal');
 });
-test('R10 i: Codex sends a Spanish notice and never a decision (S4/T2, human L3 option A)', async t => {
-  // Codex has no answerable card any more: ONE attention notice, empty stdout, and its own terminal keeps the prompt.
-  const notice = async (tool_name, tool_input) => {
-    const rcv = await fakeReceiver(t, { questions: true });
-    const out = await handleCodexHook({ event: 'permission-request', env: { ABITO_SOCKET_DIR: rcv.runtime, ABITO_DESKTOP_SOCKET: rcv.endpoint },
-      input: JSON.stringify({ cwd, session_id: 'test', hook_event_name: 'PermissionRequest', tool_name, tool_input }) });
-    assert.equal(out.stdout, ''); assert.equal(out.exitCode, 0);
-    assert.equal(rcv.frames.filter(f => f.type === 'questions_hello' || f.type === 'question').length, 0, 'the island is never asked');
-    return rcv.seen('attention');
-  };
-  assert.equal((await notice('Bash', { command: 'ls' })).detail, 'Bash: ls · Respondé en la terminal');
-  // the file label is unchanged from the projection (same Spanish text, no card)
-  assert.equal((await notice('Write', { file_path: 'uno.txt', content: 'hola' })).detail, 'Write: uno.txt · Respondé en la terminal');
+test('R10 i: Codex answers from the island in Spanish (K2-08 T1); only Bash and apply_patch get a card', async () => {
+  // Bash: the same Spanish card as Claude, «Aprobar una vez» first, never «Siempre permitir»; allow prints the allow line.
+  const r = await card('Bash', { command: 'ls' }, handleCodexHook);
+  assert.equal(r.q.text, 'Codex pide permiso para Bash: ls');
+  assert.deepEqual(r.q.options.map(o => [o.value, o.label]), [['allow', 'Aprobar una vez'], ['deny', 'Rechazar']]);
+  assert.equal(r.out.stdout, ALLOW);
+  // apply_patch is lossy until the file preview (T4): no allow, and a forged allow decides nothing
+  lossy(await card('apply_patch', { command: '*** Begin Patch\n*** End Patch' }, handleCodexHook));
+  // Codex never reports Claude's file tools; a `Write` name is not ours to show: no card, nothing printed
+  let asked = 0;
+  const out = await handleCodexHook({ event: 'permission-request', env: offlineEnv('nonexistent-test'),
+    input: JSON.stringify({ cwd, session_id: 'test', hook_event_name: 'PermissionRequest', tool_name: 'Write', tool_input: { file_path: 'uno.txt', content: 'hola' } }),
+    clientFactory: () => ({ ask: async () => { asked++; return { status: 'answered', answer: { type: 'option', value: 'allow' } }; } }) });
+  assert.equal(out.stdout, ''); assert.equal(out.exitCode, 0); assert.equal(asked, 0);
 });
 test('R11: terminal selection withdraws the card with existing question_resolved', async t => {
   const receiver = await fakeReceiver(t, { questions: true });
