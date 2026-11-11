@@ -119,7 +119,11 @@ test('upgrade from the 5 s notice install: PermissionRequest migrated in place, 
   };
   fs.writeFileSync(p, JSON.stringify(before, null, 2) + '\n', { mode: 0o600 });
   const pl = plan(p);
-  assert.deepEqual(pl.actions.map(a => [a.event, a.action]), [['PermissionRequest', 'replace'], ['PreToolUse', 'unchanged'], ['PostToolUse', 'unchanged'], ['Stop', 'unchanged']]);
+  // On a Windows drive path the notice-era entries lack `commandWindows` (cmd /C could not run them), so all four are
+  // replaced there; on POSIX only PermissionRequest changes. Either way every Koda entry ends as a fresh install writes it.
+  const win = isWin(process.execPath) && isWin(BIN);
+  const notice = win ? 'replace' : 'unchanged';
+  assert.deepEqual(pl.actions.map(a => [a.event, a.action]), [['PermissionRequest', 'replace'], ['PreToolUse', notice], ['PostToolUse', notice], ['Stop', notice]]);
   const got = JSON.parse(pl.after);
   assert.equal(got.model, 'kept');
   // replaced IN PLACE, at the same position of the same group; every other tool's hook is byte-for-byte the same
@@ -411,6 +415,29 @@ test('Windows paths with spaces: every entry carries a cmd-style commandWindows 
   fs.writeFileSync(path.join(d, 'hooks.json'), pl.after);
   assert.equal(plan(path.join(d, 'hooks.json'), { execPath: WIN_NODE, binPath: WIN_BIN }).changed, false);
   assert.equal(JSON.parse(plan(path.join(d, 'hooks.json'), { execPath: WIN_NODE, binPath: WIN_BIN, remove: true }).after).hooks, undefined);
+});
+
+test('Windows paths: upgrading the notice-era install replaces all four Koda entries in place (they gain commandWindows); second run no-op; other tools kept', t => {
+  const d = tmp(t); const p = path.join(d, 'hooks.json');
+  const old = sub => ({ type: 'command', command: `${q(WIN_NODE)} ${q(WIN_BIN)} codex ${sub}`, timeout: sub === 'stop' ? 15 : 5, statusMessage: 'Koda island' });
+  const before = { hooks: {
+    PermissionRequest: [{ hooks: [moshi('moshi-hook perm'), old('permission-request')] }],
+    PreToolUse: [{ matcher: 'request_user_input', hooks: [old('pre-tool-use')] }],
+    PostToolUse: [{ hooks: [old('post-tool-use')] }],
+    Stop: [{ hooks: [old('stop'), moshi('moshi-hook stop')] }],
+  } };
+  fs.writeFileSync(p, JSON.stringify(before, null, 2) + '\n', { mode: 0o600 });
+  const o = { execPath: WIN_NODE, binPath: WIN_BIN };
+  const pl = plan(p, o);
+  assert.deepEqual(pl.actions.map(a => [a.event, a.action]), [['PermissionRequest', 'replace'], ['PreToolUse', 'replace'], ['PostToolUse', 'replace'], ['Stop', 'replace']]);
+  const got = JSON.parse(pl.after).hooks;
+  const want = ev => entryOf(ev, WIN_NODE, WIN_BIN);
+  assert.deepEqual(got.PermissionRequest, [{ hooks: [moshi('moshi-hook perm'), want('PermissionRequest')] }]);
+  assert.deepEqual(got.PreToolUse, [{ matcher: 'request_user_input', hooks: [want('PreToolUse')] }]);
+  assert.deepEqual(got.PostToolUse, [{ hooks: [want('PostToolUse')] }]);
+  assert.deepEqual(got.Stop, [{ hooks: [want('Stop'), moshi('moshi-hook stop')] }]);
+  fs.writeFileSync(p, pl.after);
+  assert.equal(plan(p, o).changed, false, 'a second install run is a no-op');
 });
 
 test('Windows paths cmd would expand or split are refused (65); POSIX paths get no commandWindows', t => {
