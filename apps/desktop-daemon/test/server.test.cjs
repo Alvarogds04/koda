@@ -2388,3 +2388,124 @@ test("the record id never depends on when the engine writes the file (Pi persist
 	const page = await a.wait((f) => f.type === "history");
 	assert.deepEqual(page.messages.filter((m) => m.role === "user").map((m) => [m.id, m.text]), [["s0-1", "antes"], ["s1-1", "vieja"], ["s1-3", "hola"], ["s1-5", "dos"]]);
 });
+
+// ----- K2-05 native-review follow-ups (advisory findings at 9e6aac6) ---------------------------
+
+test("review F1: a requestId refused by a transient gate (busy, not ready, paused, not busy) is accepted on retry", async (t) => {
+	const { endpoint, engine, server } = await chatOnFile(t);
+	const a = await login(t, endpoint);
+	const errors = () => a.frames.filter((f) => f.type === "error").length;
+	// busy: another prompt runs
+	a.send({ type: "send", text: "primero", requestId: "r-first" });
+	await waitFor(() => engine.requests.some((r) => r.type === "prompt"));
+	a.send({ type: "send", text: "reintento", requestId: "r-busy" });
+	await a.wait((f) => f.type === "error" && f.code === "busy");
+	engine.emit("event", { type: "agent_settled" });
+	await waitFor(() => a.frames.filter((f) => f.type === "agent_state").at(-1)?.busy === false);
+	// not busy: a steer with no turn running
+	a.send({ type: "steer", text: "giro", requestId: "r-steer" });
+	await waitFor(() => errors() === 2);
+	// not ready: the engine restarts
+	engine.status = "restarting";
+	a.send({ type: "send", text: "caído", requestId: "r-down" });
+	await waitFor(() => errors() === 3);
+	engine.status = "ready";
+	// paused
+	server.paused = true;
+	a.send({ type: "send", text: "pausa", requestId: "r-paused" });
+	await waitFor(() => errors() === 4);
+	server.paused = false;
+	assert.deepEqual(a.frames.filter((f) => f.type === "error").map((f) => f.code), ["busy", "not_busy", "unavailable", "paused"]);
+	// each retry with the SAME requestId reaches the engine once the gate is gone
+	a.send({ type: "send", text: "reintento", requestId: "r-busy" });
+	await waitFor(() => engine.requests.filter((r) => r.type === "prompt").length === 2);
+	a.send({ type: "steer", text: "giro", requestId: "r-steer" });
+	await waitFor(() => engine.requests.some((r) => r.type === "steer"));
+	engine.emit("event", { type: "agent_settled" });
+	await waitFor(() => a.frames.filter((f) => f.type === "agent_state").at(-1)?.busy === false);
+	a.send({ type: "send", text: "caído", requestId: "r-down" });
+	await waitFor(() => engine.requests.filter((r) => r.type === "prompt").length === 3);
+	engine.emit("event", { type: "agent_settled" });
+	await waitFor(() => a.frames.filter((f) => f.type === "agent_state").at(-1)?.busy === false);
+	a.send({ type: "send", text: "pausa", requestId: "r-paused" });
+	await waitFor(() => engine.requests.filter((r) => r.type === "prompt").length === 4);
+	// an accepted id stays spent: its repeat is ignored silently, even while its own turn runs
+	a.send({ type: "send", text: "pausa", requestId: "r-paused" });
+	a.send({ type: "send", text: "primero", requestId: "r-first" });
+	await sleep(30);
+	assert.deepEqual(engine.requests.filter((r) => r.type === "prompt" || r.type === "steer").map((r) => [r.type, r.message]),
+		[["prompt", "primero"], ["prompt", "reintento"], ["steer", "giro"], ["prompt", "caído"], ["prompt", "pausa"]]);
+	assert.equal(errors(), 4, "a repeat of an accepted id is never an error");
+});
+
+test("review F1: a second prompt held during a rotation is refused without spending its requestId", async (t) => {
+	const { endpoint, engine } = await chatOnFile(t);
+	const a = await login(t, endpoint);
+	engine.sessionChange = { switching: true };
+	a.send({ type: "send", text: "retenido", requestId: "r-held-1" });
+	a.send({ type: "send", text: "otro", requestId: "r-held-2" });
+	await a.wait((f) => f.type === "error" && f.code === "busy");
+	// the held prompt's own repeat is ignored (it was accepted)
+	a.send({ type: "send", text: "retenido", requestId: "r-held-1" });
+	engine.sessionChange = undefined;
+	engine.emit("status", { state: "ready" });
+	await waitFor(() => engine.requests.some((r) => r.type === "prompt"));
+	engine.emit("event", { type: "agent_settled" });
+	await waitFor(() => a.frames.filter((f) => f.type === "agent_state").at(-1)?.busy === false);
+	a.send({ type: "send", text: "otro", requestId: "r-held-2" });
+	await waitFor(() => engine.requests.filter((r) => r.type === "prompt").length === 2);
+	await sleep(30);
+	assert.deepEqual(engine.requests.filter((r) => r.type === "prompt").map((r) => r.message), ["retenido", "otro"]);
+});
+
+test("review F2: an unmatched record never hands a requestId to the wrong client when steers of two clients wait", async (t) => {
+	const { endpoint, engine } = await chatOnFile(t);
+	const a = await login(t, endpoint);
+	const b = await login(t, endpoint);
+	b.send({ type: "send", text: "pregunta", requestId: "r-prompt" });
+	await waitFor(() => engine.requests.some((r) => r.type === "prompt"));
+	engine.emit("event", { type: "agent_start" });
+	await a.wait((f) => f.type === "agent_state" && f.busy);
+	a.send({ type: "steer", text: "/plantilla a", requestId: "r-steer-a" });
+	await waitFor(() => engine.requests.filter((r) => r.type === "steer").length === 1);
+	b.send({ type: "steer", text: "/plantilla b", requestId: "r-steer-b" });
+	await waitFor(() => engine.requests.filter((r) => r.type === "steer").length === 2);
+	recordUser(engine, "pregunta");
+	persist(engine, "user", "pregunta");
+	// an extension's own user message while both steers wait: nobody's request
+	recordUser(engine, "despertar");
+	persist(engine, "user", "despertar");
+	// then each steer, expanded by the engine (other text than what was typed)
+	recordUser(engine, "texto expandido a");
+	persist(engine, "user", "texto expandido a");
+	recordUser(engine, "texto expandido b");
+	persist(engine, "user", "texto expandido b");
+	await waitFor(() => userMessages(a).length === 4 && userMessages(b).length === 4);
+	const ids = (c) => userMessages(c).map((f) => [f.messageId, f.requestId]);
+	// a requestId is only ever echoed for a record that is that client's own
+	for (const [messageId, requestId] of ids(a)) if (requestId !== undefined) assert.equal([messageId, requestId].join(), ["s1-3", "r-steer-a"].join(), `a got ${requestId} on ${messageId}`);
+	for (const [messageId, requestId] of ids(b)) if (requestId !== undefined) assert.ok(messageId === "s1-1" && requestId === "r-prompt" || messageId === "s1-4" && requestId === "r-steer-b", `b got ${requestId} on ${messageId}`);
+	assert.deepEqual(ids(b)[0], ["s1-1", "r-prompt"], "the dispatched prompt still binds");
+});
+
+test("review F6: an error answering a send carries that send's requestId (only to its sender)", async (t) => {
+	const { endpoint, engine } = await chatOnFile(t);
+	const a = await login(t, endpoint);
+	const b = await login(t, endpoint);
+	engine.reject = ["prompt"];
+	a.send({ type: "send", text: "hola", requestId: "r-rejected" });
+	const rejected = await a.wait((f) => f.type === "error");
+	assert.equal(rejected.code, "failed");
+	assert.equal(rejected.requestId, "r-rejected", "the engine's rejection names the send it answers");
+	engine.reject = undefined;
+	a.send({ type: "send", text: "otra", requestId: "r-ok" });
+	await waitFor(() => engine.requests.filter((r) => r.type === "prompt").length === 2);
+	a.send({ type: "send", text: "ocupado", requestId: "r-busy" });
+	const busy = await a.wait((f) => f.type === "error" && f.code === "busy");
+	assert.equal(busy.requestId, "r-busy");
+	a.send({ type: "send", text: "sin id" });
+	await waitFor(() => a.frames.filter((f) => f.type === "error").length === 3);
+	assert.equal(a.frames.filter((f) => f.type === "error").at(-1).requestId, undefined, "no requestId, none echoed");
+	await sleep(30);
+	assert.equal(b.frames.some((f) => f.type === "error"), false, "nobody else gets the sender's error");
+});

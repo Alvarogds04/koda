@@ -34,6 +34,8 @@ const { pageHistory, sessionTail, nextRow, splitAttachments, textOf } = require(
 const REMEMBERED_REQUEST_IDS = 500;
 /** The steers the engine may still record in the running turn (each client's are bounded by the rate limit). */
 const MAX_STEER_REQUESTS = 32;
+/** K2-05 review F6: an error answering a send/steer carries its requestId (additive, sender only). */
+const requestError = (code, requestId) => (requestId === undefined ? P.errorFrame(code) : { ...P.errorFrame(code), requestId });
 
 const DEFAULTS = {
 	handshakeMs: 3000,
@@ -678,7 +680,7 @@ class IslandServer {
 				// cutoff/recovery. An old rejection cannot free a new turn.
 				if (this.engine && this.engine.status === "ready" && this.engine.busy !== true) this.busy = false;
 				this.broadcastState();
-				this.sendTo(client, P.errorFrame("failed"));
+				this.sendTo(client, requestError("failed", held.requestId));
 			}).then(() => {
 				if (this.engine && this.engine.status === "ready" && this.engine.busy !== true && this.busy) {
 					this.busy = false;
@@ -717,12 +719,18 @@ class IslandServer {
 
 	// ----- K2-05 bind by id: which recorded prompt answers which request -----------------------
 
-	/** Gentle Dot's alreadySeen (bridge.ts:1380): true for a requestId seen before; remembers it otherwise. */
-	alreadySeen(requestId) {
-		if (this.seenRequests.has(requestId)) return true;
+	/**
+	 * Gentle Dot's alreadySeen (bridge.ts:1380), split in two (K2-05 review F1): the repeat check
+	 * runs before every gate, but an id is only remembered once its request passed the daemon's
+	 * transient gates (engine ready, no session switch, busy/not busy, pause) — dispatched to the
+	 * engine or held for a rotation. A request those gates refused is not spent, so the client may
+	 * retry it with the same id. A request the engine itself rejected stays spent (a lost ACK may
+	 * already have started work; a repeat must never prompt twice).
+	 */
+	rememberRequest(requestId) {
+		if (requestId === undefined || this.seenRequests.has(requestId)) return;
 		this.seenRequests.add(requestId);
 		if (this.seenRequests.size > REMEMBERED_REQUEST_IDS) this.seenRequests.delete(this.seenRequests.values().next().value);
-		return false;
 	}
 
 	/**
@@ -777,8 +785,11 @@ class IslandServer {
 	 * and the steers by their text, in order (agent-session.js removes a consumed steer by text): the
 	 * oldest pending prompt when the text is its own, else the oldest steer with that text, else the
 	 * oldest pending prompt (a template expansion changes the recorded text), else the oldest pending
-	 * steer (K2-05 F4: a steer's template expansion too; Pi records its queue in order). Once nothing
-	 * is pending, a record (an extension's own user message) answers nobody's request.
+	 * steer (K2-05 F4: a steer's template expansion too; Pi records its queue in order) — but only
+	 * while every pending steer is the same client's (K2-05 review F2): the record may be any of them,
+	 * or an extension's own message, so with steers of two clients waiting it answers nobody's
+	 * request rather than hand one client's requestId to another's record. Once nothing is pending, a
+	 * record (an extension's own user message) answers nobody's request.
 	 */
 	takeRequest(text) {
 		const prompt = this.promptRequests[0];
@@ -786,7 +797,9 @@ class IslandServer {
 		const at = this.steerRequests.findIndex((r) => r.text === text);
 		if (at >= 0) return this.steerRequests.splice(at, 1)[0];
 		if (prompt) return this.promptRequests.shift();
-		return this.steerRequests.shift();
+		const steer = this.steerRequests[0];
+		if (steer && this.steerRequests.every((r) => r.client === steer.client)) return this.steerRequests.shift();
+		return undefined;
 	}
 
 	/**
@@ -875,13 +888,17 @@ class IslandServer {
 
 	async handle(client, frame) {
 		const reply = (f) => this.sendTo(client, f);
-		const fail = (code) => reply(P.errorFrame(code));
+		// K2-05 review F6: an error answering a send/steer names it by its requestId (only to its
+		// sender), so the client never has to guess which of its commands a refusal answers.
+		const correlated = (frame.type === "send" || frame.type === "steer") ? frame.requestId : undefined;
+		const fail = (code) => reply(requestError(code, correlated));
 		// T2/F3: internal /gentle: commands are not part of the product. The fixed
 		// refusal (bad_request) is deterministic and runs BEFORE every other gate
 		// (paused included), and the command never reaches the engine.
 		if ((frame.type === "send" || frame.type === "steer") && isBlockedInput(frame.text)) return fail("bad_request");
-		// K2-05 bind by id (Gentle Dot bridge.ts:399): a repeated requestId is ignored, silently.
-		if ((frame.type === "send" || frame.type === "steer") && frame.requestId !== undefined && this.alreadySeen(frame.requestId)) return undefined;
+		// K2-05 bind by id (Gentle Dot bridge.ts:399): a repeated requestId is ignored, silently. The id
+		// is remembered only once the request passed the transient gates below (review F1).
+		if (correlated !== undefined && this.seenRequests.has(correlated)) return undefined;
 		// T4 U1 (L3/L4/L7, Gentle Dot bridge.ts conversationsOn 476-482/677-682):
 		// the island keeps ONE continuous chat, so its conversation verbs are
 		// refused with this fixed error BEFORE every other gate (busy, paused
@@ -959,10 +976,12 @@ class IslandServer {
 				// reset, new_conversation) is never held: it answers busy as always.
 				if (this.engine?.sessionChange?.switching === true) {
 					if (client.heldPrompt) return fail("busy");
+					this.rememberRequest(frame.requestId);
 					client.heldPrompt = { text: frame.text, images: frame.images, requestId: frame.requestId };
 					return undefined;
 				}
 				if (this.state().busy) return fail("busy");
+				this.rememberRequest(frame.requestId);
 				this.busy = true; // optimistic: the agent_start event confirms
 				this.broadcastState();
 				const request = this.expectPrompt(client, frame);
@@ -986,6 +1005,7 @@ class IslandServer {
 				if (this.switching) return fail("busy");
 				if (!this.busy) return fail("not_busy");
 				{
+					this.rememberRequest(frame.requestId);
 					const request = this.expectSteer(client, frame);
 					return run(() => this.engine.request({ type: "steer", message: frame.text }).catch((error) => {
 						this.forgetRequest(request);

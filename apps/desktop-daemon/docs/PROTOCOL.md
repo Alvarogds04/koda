@@ -365,7 +365,7 @@ Unknown/invalid post-handshake frames get `error{code:"bad_request"}`.
 | `agents` | `agents[]` of `{id,name,state,backup,detail,plan_hash?,summary?,reviewable?,trust_review?}` — see "Agents frames" |
 | `accounts`, `providers`, `models`, `profiles` | allowlisted DTOs only (no keys, baseUrl, headers, env) |
 | `auth_started`, `auth_prompt`, `auth_event`, `auth_done` | passthrough from AccountManager, rebuilt from an allowlist; the daemon never answers prompts |
-| `error` | `code` ∈ `bad_request, busy, not_busy, unavailable, rate_limited, unknown_ask, paused, failed`, plus the H2c connector codes below — generic only |
+| `error` | `code` ∈ `bad_request, busy, not_busy, unavailable, rate_limited, unknown_ask, paused, failed`, plus the H2c connector codes below — generic only; `requestId?` — the `send`/`steer` it answers (see "Recorded prompts") |
 
 ## Event translation (Pi RPC → frames)
 
@@ -511,7 +511,13 @@ prompt is its own — not by counting engine cycles, not by matching text.
 - **`requestId` on `send`/`steer`** (optional, closed grammar `[A-Za-z0-9_-]{1,64}`). A requestId the
   daemon has already seen (the last 500) makes the frame a silent no-op — no error, nothing reaches the
   engine — so a client never sends the same prompt twice. The check runs right after the `/gentle:`
-  refusal, before every other gate: a refused request's id is spent too (send the retry with a fresh id).
+  refusal, before every other gate, but an id is only REMEMBERED once its request passed the transient
+  gates (engine ready, no session switch, `busy`/`not_busy`, pause): dispatched to the engine or held for
+  a rotation. A request those gates refused (or the `/gentle:` refusal) leaves its id unspent, so the
+  client may retry with the same id; a request the engine itself rejected stays spent (a lost ACK may
+  already have started work). Each `error` answering a `send`/`steer` that carried a `requestId` echoes
+  it, to its sender only, so the client never guesses which of its commands a refusal answers (frame-
+  level refusals — `rate_limited` drops, undecodable frames — carry none).
 - **`user_message`** is broadcast to EVERY client each time the engine starts recording a user message
   (Pi's `message_start`, role `user`): the island's own prompts, other clients' prompts, held prompts
   delivered after a rotation, consumed steers, and an extension's own user messages alike.
@@ -525,7 +531,9 @@ prompt is its own — not by counting engine cycles, not by matching text.
     user message whose text is its own; steers are matched by text in order (Pi removes a consumed
     steer from its queue by text); a recorded text that matches no pending steer falls back to the
     dispatched prompt (a template expansion changes the recorded text), and once no prompt is pending,
-    to the oldest pending steer (a steer's template expansion; Pi records its queue in order). Prompts
+    to the oldest pending steer (a steer's template expansion; Pi records its queue in order) — only
+    while every pending steer is the same client's: with steers of two clients waiting, an unmatched
+    record is announced without any `requestId` rather than risk naming another client's request. Prompts
     held during a rotation are dispatched one after another when the switch settles; each keeps its own
     request, so the engine refusing a later one (it runs one turn at a time) forgets only that one: the
     delivered prompt keeps its sender's `requestId`, the refused sender gets `failed` and no `requestId`.
