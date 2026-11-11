@@ -36,7 +36,8 @@ Bounded and exact:
 - It exposes no window ids, pids or window content; `GetRecentWindows` and `GetWindowAt` return app id, app name and
   title (and frame geometry for the window under a point).
 - Everything but `ActivateByPid` is read-only.
-- Windows of Koda itself and windows without a name are skipped.
+- `GetWindowAt` skips windows of Koda itself and windows without a name. `GetRecentWindows` and `ActivateByPid` skip
+  only windows the Shell hides from the taskbar.
 
 ## When Koda asks
 
