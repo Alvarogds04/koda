@@ -171,3 +171,13 @@ test('R13 h + differential: HEAD source in memory, Bash/Write/Codex stdout and e
   }
   t.diagnostic(`HEAD ${revision}: ${count} no-suggestion stdout/exit comparisons identical; Codex never answers (4 answers).`);
 });
+test('R13: a session folder shaped like a macOS path (mixed case, digits, 40+ chars) still offers the session rule', async t => {
+  const fs = require('node:fs'); const os = require('node:os');
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'KodaSession2-')));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const dir = path.join(root, 'Projects2026', 'ClientApp9', 'desktop');
+  fs.mkdirSync(dir, { recursive: true });
+  const entry = rule(); const { question, result } = await run([entry], 'allow_suggestion_1', { cwd: dir });
+  assert.deepEqual(values(question), ['allow', 'allow_suggestion_1', 'deny']);
+  assert.deepEqual(decision(result), { behavior: 'allow', updatedPermissions: [entry] });
+});

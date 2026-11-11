@@ -28,6 +28,12 @@
 | e | base64-run | any run of 40 or more base64/base64url characters; a run containing `/` only when it mixes lower, upper and digits (so long paths survive) |
 | f | pem | `-----BEGIN ... PRIVATE KEY-----` to END, or to the end of the string if unterminated |
 
+File paths on permission cards (Write/Edit previews and the paths a suggested rule names) are checked
+with `secretPath`: the session folder and the home folder are the user's own paths, so only the part
+below them (with its leading separator) is scanned with these rules. On macOS every path starts with `/Users/<Name>`, and a project
+folder with a digit in it would otherwise match `base64-run` and hide an ordinary card. A path outside
+both folders is scanned whole.
+
 ## Lossless-for-display (`allow` may be offered)
 
 Evaluated on the ORIGINAL command. All must hold, otherwise lossy (options `deny` + `terminal` only, fixed reason shown):
