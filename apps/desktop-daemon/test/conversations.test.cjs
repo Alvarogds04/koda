@@ -386,3 +386,24 @@ test("history from a session file holding a lone surrogate encodes U+FFFD, never
 	assert.ok(parsed.messages[0].text.includes("\uFFFD"), "the lone surrogate was replaced with U+FFFD");
 	assert.ok(parsed.messages[0].text.includes("😀"), "the valid pair is untouched");
 });
+
+test("sessionTail + nextRow number rows exactly as the history projection does (K2-05 bind by id)", () => {
+	const { sessionTail, nextRow } = require("../src/conversations.cjs");
+	const dir = tmp("abito-conv-rows-");
+	assert.deepEqual(sessionTail(path.join(dir, "missing.jsonl")), { rows: 0, role: undefined }, "a session not flushed yet has no rows");
+	const entries = [user("uno"), assistant("a"), toolResult("t1"), assistant("b"), handoff("oculto"), user("dos"), user("tres"), assistant("c")];
+	const file = writeSession(dir, "rows.jsonl", entries);
+	const page = pageHistory([file], 100);
+	assert.deepEqual(sessionTail(file), { rows: page.messages.length, role: "assistant" });
+	// counting the same messages from an empty file gives the same ids the page gives
+	let tail = { rows: 0, role: undefined };
+	const users = [];
+	for (const e of entries) {
+		if (e.type !== "message") continue;
+		const step = nextRow(tail, e.message.role);
+		tail = step.tail;
+		if (step.userRow !== undefined) users.push(`s0-${step.userRow}`);
+	}
+	assert.deepEqual(users, page.messages.filter((m) => m.role === "user").map((m) => m.id));
+	assert.equal(tail.rows, page.messages.length);
+});

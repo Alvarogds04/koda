@@ -28,7 +28,12 @@ const { isBlockedInput } = require("./white-label.cjs");
 const { awaitSafePoint, closedToast } = require("./interrupt.cjs");
 // T4 U1: the history projection over the engine's rotated chain (Gentle Dot's
 // conversations.ts, MIT); see THIRD-PARTY-NOTICES.md.
-const { pageHistory } = require("./conversations.cjs");
+const { pageHistory, sessionTail, nextRow, splitAttachments, textOf } = require("./conversations.cjs");
+
+/** Gentle Dot's REMEMBERED_REQUEST_IDS (bridge.ts:122): a repeated send/steer requestId is ignored. */
+const REMEMBERED_REQUEST_IDS = 500;
+/** The steers the engine may still record in the running turn (each client's are bounded by the rate limit). */
+const MAX_STEER_REQUESTS = 32;
 
 const DEFAULTS = {
 	handshakeMs: 3000,
@@ -204,6 +209,15 @@ class IslandServer {
 		this.messageCounter = 0;
 		this.historySeq = 0; // T4 U1 freshness: bumped on every message announcement (Gentle Dot's nextMessage)
 		this.asks = new Map();
+		// K2-05 bind by id: requestIds already seen (Gentle Dot's dedupe, bounded, oldest first out),
+		// and the requests the engine may still record: the dispatched prompt (the run's first user
+		// message) and the steers of the running turn, each { client, requestId?, text }.
+		this.seenRequests = new Set();
+		this.promptRequest = undefined;
+		this.steerRequests = [];
+		// The open session's display rows, counted from the engine's message events since the
+		// last idle snapshot ({file, rows, role}); undefined when events may have been missed.
+		this.rowTail = undefined;
 		this.server = undefined;
 		this.endpoint = undefined;
 		this.directory = undefined;
@@ -335,6 +349,9 @@ class IslandServer {
 		on(this.engine, "status", () => this.onEngineStatus());
 		on(this.engine, "exit", () => this.onEngineStatus(true));
 		on(this.engine, "turn_cancelled", ({ reason }) => {
+			// the runtime drops the cancelled turn's events: the row count is no longer known
+			this.rowTail = undefined;
+			this.forgetRequests();
 			for (const id of [...this.asks.keys()]) this.closeAsk(id, false);
 			// #378: the copy is fixed and sanitized; engine text never reaches a client.
 			this.broadcast(closedToast(reason));
@@ -607,6 +624,18 @@ class IslandServer {
 			|| event?.type === "tool_execution_start" || event?.type === "tool_execution_end") {
 			this.historySeq += 1;
 		}
+		// K2-05 bind by id (Gentle Dot bridge.ts onMessageStart): the engine starts recording a user message
+		if (event?.type === "message_start") {
+			// count the display row this message opens (only while the count is known for the open file)
+			let row;
+			if (this.rowTail && this.rowTail.file === this.engine?.sessionFile) {
+				const step = nextRow(this.rowTail, event.message?.role);
+				this.rowTail = { file: this.rowTail.file, ...step.tail };
+				row = step.userRow;
+			} else this.rowTail = undefined;
+			if (event.message?.role === "user") this.onUserMessage(event.message, row);
+		}
+		if (event?.type === "agent_settled") this.forgetRequests();
 		const out = P.translateEvent(event, this.messageId);
 		if (out.busy !== undefined && out.busy !== this.busy) {
 			this.busy = out.busy;
@@ -634,7 +663,9 @@ class IslandServer {
 			this.broadcastState();
 			const command = { type: "prompt", message: held.text };
 			if (held.images?.length) command.images = held.images;
+			const request = this.expectPrompt(client, held);
 			this.engine.request(command).catch(() => {
+				this.forgetRequest(request);
 				// A lost ACK may already have started Pi work; the runtime owns
 				// cutoff/recovery. An old rejection cannot free a new turn.
 				if (this.engine && this.engine.status === "ready" && this.engine.busy !== true) this.busy = false;
@@ -676,7 +707,101 @@ class IslandServer {
 		}
 	}
 
+	// ----- K2-05 bind by id: which recorded prompt answers which request -----------------------
+
+	/** Gentle Dot's alreadySeen (bridge.ts:1380): true for a requestId seen before; remembers it otherwise. */
+	alreadySeen(requestId) {
+		if (this.seenRequests.has(requestId)) return true;
+		this.seenRequests.add(requestId);
+		if (this.seenRequests.size > REMEMBERED_REQUEST_IDS) this.seenRequests.delete(this.seenRequests.values().next().value);
+		return false;
+	}
+
+	/**
+	 * The engine is idle and about to get a prompt: nothing is being written, so the open file's
+	 * rows are read once here; every later row is counted from the engine's events (Pi persists a
+	 * message right after announcing it, so reading the file at `message_start` would race it).
+	 */
+	snapshotRows() {
+		const file = this.engine?.sessionFile;
+		this.rowTail = typeof file === "string" ? { file, ...sessionTail(file, (line) => this.log(line)) } : undefined;
+	}
+
+	/** A prompt goes to the engine: the run's first recorded user message is its own. */
+	expectPrompt(client, frame) {
+		this.snapshotRows();
+		this.promptRequest = { client, requestId: frame.requestId, text: frame.text };
+		return this.promptRequest;
+	}
+
+	expectSteer(client, frame) {
+		const request = { client, requestId: frame.requestId, text: frame.text };
+		this.steerRequests.push(request);
+		if (this.steerRequests.length > MAX_STEER_REQUESTS) this.steerRequests.shift();
+		return request;
+	}
+
+	/** The engine refused the request: it records nothing, so it can never name a record. */
+	forgetRequest(request) {
+		if (this.promptRequest === request) this.promptRequest = undefined;
+		this.steerRequests = this.steerRequests.filter((r) => r !== request);
+	}
+
+	/** The run settled (or the engine went away): whatever it did not record never will be. */
+	forgetRequests() {
+		this.promptRequest = undefined;
+		this.steerRequests = [];
+	}
+
+	/**
+	 * The request a recorded user message answers. Pi records the dispatched prompt first in its run
+	 * and the steers by their text, in order (agent-session.js removes a consumed steer by text): the
+	 * prompt when the text is its own, else the oldest steer with that text, else the prompt (a
+	 * template expansion changes the recorded text). An unmatched record (an extension's own user
+	 * message) answers nobody's request.
+	 */
+	takeRequest(text) {
+		const prompt = this.promptRequest;
+		if (prompt && prompt.text === text) {
+			this.promptRequest = undefined;
+			return prompt;
+		}
+		const at = this.steerRequests.findIndex((r) => r.text === text);
+		if (at >= 0) return this.steerRequests.splice(at, 1)[0];
+		this.promptRequest = undefined;
+		return prompt;
+	}
+
+	/**
+	 * Gentle Dot bridge.ts onMessageStart: every client is told about every prompt the engine records,
+	 * by the page id history gives it (`s<open file index>-<its row>`; the open file is the chain's last).
+	 * The client whose request it is also gets its requestId back. A session file the history would
+	 * not read (not owned) gets no frame: it could never be joined.
+	 */
+	onUserMessage(message, row) {
+		const { text, attachments } = splitAttachments(textOf(message));
+		const request = this.takeRequest(text);
+		const file = this.engine?.sessionFile;
+		const chain = this.historyChain();
+		if (row === undefined || typeof file !== "string" || chain.at(-1) !== file) return;
+		let frame;
+		let own;
+		try {
+			const record = { id: `s${chain.length - 1}-${row}`, text, attachments };
+			frame = P.userMessageFrame(record);
+			if (request?.requestId !== undefined) own = P.userMessageFrame(record, request.requestId);
+		} catch {
+			this.log("user message not sent");
+			return;
+		}
+		for (const client of [...this.clients]) if (client.ready) this.sendTo(client, own && client === request.client ? own : frame);
+	}
+
 	onEngineStatus(exited = false) {
+		if (exited || this.engine?.status !== "ready") {
+			this.forgetRequests();
+			this.rowTail = undefined;
+		}
 		const status = this.engine?.status;
 		if (exited || status !== "ready") {
 			// A half answer is never replayed; open asks die with the child.
@@ -738,6 +863,8 @@ class IslandServer {
 		// refusal (bad_request) is deterministic and runs BEFORE every other gate
 		// (paused included), and the command never reaches the engine.
 		if ((frame.type === "send" || frame.type === "steer") && isBlockedInput(frame.text)) return fail("bad_request");
+		// K2-05 bind by id (Gentle Dot bridge.ts:399): a repeated requestId is ignored, silently.
+		if ((frame.type === "send" || frame.type === "steer") && frame.requestId !== undefined && this.alreadySeen(frame.requestId)) return undefined;
 		// T4 U1 (L3/L4/L7, Gentle Dot bridge.ts conversationsOn 476-482/677-682):
 		// the island keeps ONE continuous chat, so its conversation verbs are
 		// refused with this fixed error BEFORE every other gate (busy, paused
@@ -815,18 +942,20 @@ class IslandServer {
 				// reset, new_conversation) is never held: it answers busy as always.
 				if (this.engine?.sessionChange?.switching === true) {
 					if (client.heldPrompt) return fail("busy");
-					client.heldPrompt = { text: frame.text, images: frame.images };
+					client.heldPrompt = { text: frame.text, images: frame.images, requestId: frame.requestId };
 					return undefined;
 				}
 				if (this.state().busy) return fail("busy");
 				this.busy = true; // optimistic: the agent_start event confirms
 				this.broadcastState();
+				const request = this.expectPrompt(client, frame);
 				try {
 					// The response only acknowledges the prompt; completion is agent_settled.
 					const command = { type: "prompt", message: frame.text };
 					if (frame.images.length) command.images = frame.images;
 					await this.engine.request(command);
 				} catch {
+					this.forgetRequest(request);
 					// A lost ACK may already have started Pi work; the runtime owns
 					// cutoff/recovery. An old rejection cannot free a new turn.
 					if (ready() && this.engine.busy !== true) this.busy = false;
@@ -839,7 +968,13 @@ class IslandServer {
 				if (!ready()) return fail("unavailable");
 				if (this.switching) return fail("busy");
 				if (!this.busy) return fail("not_busy");
-				return run(() => this.engine.request({ type: "steer", message: frame.text }));
+				{
+					const request = this.expectSteer(client, frame);
+					return run(() => this.engine.request({ type: "steer", message: frame.text }).catch((error) => {
+						this.forgetRequest(request);
+						throw error;
+					}));
+				}
 			case "abort":
 				if (!ready()) return fail("unavailable");
 				return run(() => this.engine.request({ type: "abort" }));

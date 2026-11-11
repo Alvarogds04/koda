@@ -95,6 +95,8 @@ async request(command) {
 						announce();
 				}
 		}
+		// K2-05 bind by id: an engine that rejects the prompt/steer (nothing is recorded).
+		if (this.reject?.includes(command.type)) throw new Error(`${command.type} rejected`);
 		if (command.type === "prompt") {
 			this.turnActive = true;
 			if (this.hold) await new Promise(() => {});
@@ -2146,4 +2148,186 @@ test("a chain entry that is a symlink or lives outside the sessions dir is never
 	assert.deepEqual(frame.messages.map((m) => [m.id, m.text]), [["s0-1", "propia"]], "only the owned session file projects");
 	assert.ok(!JSON.stringify(frame).includes("OUTSIDE-SECRET"), "the planted secret never reaches a client");
 	assert.equal(frame.hasEarlier, false, "refused entries do not invent earlier pages");
+});
+
+// ----- K2-05 bind by id (Gentle Dot bridge.ts onMessageStart + send requestId dedupe) ---------
+
+/** The engine announces a user message it records (Pi's message_start, role user). */
+const recordUser = (engine, content) => engine.emit("event", { type: "message_start", message: { role: "user", content } });
+/** The engine persists one message to the open session file (Pi appends on message_end). */
+const persist = (engine, role, content) => fs.appendFileSync(engine.sessionFile, `${JSON.stringify({ type: "message", message: { role, content } })}\n`);
+const userMessages = (c) => c.frames.filter((f) => f.type === "user_message");
+
+async function chatOnFile(t, existing = []) {
+	const ctx = await setup(t);
+	const dir = ctx.engine.sessionsDir;
+	const old = writeChatSession(dir, "old.jsonl", [
+		{ type: "message", message: { role: "user", content: "antes" } },
+		{ type: "message", message: { role: "assistant", content: "r-antes" } },
+	]);
+	ctx.engine.sessionFile = writeChatSession(dir, "open.jsonl", existing);
+	ctx.engine.chains[ctx.engine.sessionFile] = [old];
+	return ctx;
+}
+
+test("user_message: the recorded prompt is broadcast with its record id; the requestId reaches the sender only", async (t) => {
+	const { endpoint, engine } = await chatOnFile(t, [
+		{ type: "message", message: { role: "user", content: "vieja" } },
+		{ type: "message", message: { role: "assistant", content: "r-vieja" } },
+	]);
+	const a = await login(t, endpoint);
+	const b = await login(t, endpoint);
+	a.send({ type: "send", text: "hola Gentle Shell", requestId: "isla-1" });
+	await waitFor(() => engine.requests.some((r) => r.type === "prompt"));
+	engine.emit("event", { type: "agent_start" });
+	recordUser(engine, "hola Gentle Shell");
+	const own = await a.wait((f) => f.type === "user_message");
+	const theirs = await b.wait((f) => f.type === "user_message");
+	assert.deepEqual({ ...own, seq: 0 }, { type: "user_message", messageId: "s1-3", text: "hola Gentle Shell", requestId: "isla-1", seq: 0 }, "the user's own text, never white-labelled");
+	assert.deepEqual({ ...theirs, seq: 0 }, { type: "user_message", messageId: "s1-3", text: "hola Gentle Shell", seq: 0 }, "other clients see the record without the requestId");
+	// joinable: once persisted, history names the same prompt with the same id
+	persist(engine, "user", "hola Gentle Shell");
+	persist(engine, "assistant", "hola");
+	engine.emit("event", { type: "agent_settled" });
+	b.send({ type: "get_history" });
+	const page = await b.wait((f) => f.type === "history");
+	assert.deepEqual(page.messages.find((m) => m.id === own.messageId), { id: "s1-3", role: "user", text: "hola Gentle Shell", activities: [] });
+});
+
+test("user_message: two clients with identical text each get their own record id; other prompts carry no requestId", async (t) => {
+	const { endpoint, engine } = await chatOnFile(t);
+	const a = await login(t, endpoint);
+	const b = await login(t, endpoint);
+	b.send({ type: "send", text: "hola", requestId: "otro-1" });
+	await waitFor(() => engine.requests.some((r) => r.type === "prompt"));
+	engine.emit("event", { type: "agent_start" });
+	await a.wait((f) => f.type === "agent_state" && f.busy);
+	a.send({ type: "steer", text: "hola", requestId: "isla-1" });
+	await waitFor(() => engine.requests.some((r) => r.type === "steer"));
+	// the engine records b's prompt, answers, then consumes a's steer
+	recordUser(engine, "hola");
+	persist(engine, "user", "hola");
+	engine.emit("event", { type: "message_start", message: { role: "assistant" } });
+	persist(engine, "assistant", "r1");
+	recordUser(engine, "hola");
+	persist(engine, "user", "hola");
+	// an extension's own user message: nobody's request
+	recordUser(engine, "despertar");
+	await waitFor(() => userMessages(a).length === 3 && userMessages(b).length === 3);
+	assert.deepEqual(userMessages(b).map((f) => [f.messageId, f.text, f.requestId]), [["s1-1", "hola", "otro-1"], ["s1-3", "hola", undefined], ["s1-4", "despertar", undefined]]);
+	assert.deepEqual(userMessages(a).map((f) => [f.messageId, f.text, f.requestId]), [["s1-1", "hola", undefined], ["s1-3", "hola", "isla-1"], ["s1-4", "despertar", undefined]]);
+});
+
+test("a repeated requestId is ignored (send and steer), like Gentle Dot's dedupe", async (t) => {
+	const { endpoint, engine } = await chatOnFile(t);
+	const a = await login(t, endpoint);
+	a.send({ type: "send", text: "hola", requestId: "r-1" });
+	await waitFor(() => engine.requests.some((r) => r.type === "prompt"));
+	engine.emit("event", { type: "agent_start" });
+	a.send({ type: "steer", text: "más", requestId: "r-2" });
+	a.send({ type: "steer", text: "más", requestId: "r-2" });
+	a.send({ type: "steer", text: "otro", requestId: "r-1" });
+	a.send({ type: "status" });
+	await waitFor(() => a.frames.filter((f) => f.type === "agent_state").length >= 2);
+	await sleep(30);
+	engine.emit("event", { type: "agent_settled" });
+	await waitFor(() => a.frames.filter((f) => f.type === "agent_state").at(-1).busy === false);
+	a.send({ type: "send", text: "hola", requestId: "r-1" });
+	a.send({ type: "send", text: "nueva", requestId: "r-3" });
+	await waitFor(() => engine.requests.filter((r) => r.type === "prompt").length === 2);
+	await sleep(30);
+	assert.deepEqual(engine.requests.filter((r) => r.type === "prompt" || r.type === "steer").map((r) => [r.type, r.message]), [["prompt", "hola"], ["steer", "más"], ["prompt", "nueva"]]);
+	assert.equal(a.frames.some((f) => f.type === "error"), false, "a repeat is ignored silently, never an error");
+});
+
+test("a failed send or steer never claims a record: the next recorded prompt carries no requestId", async (t) => {
+	const { endpoint, engine } = await chatOnFile(t);
+	const a = await login(t, endpoint);
+	engine.reject = ["prompt"];
+	a.send({ type: "send", text: "hola", requestId: "r-fail" });
+	await a.wait((f) => f.type === "error" && f.code === "failed");
+	engine.reject = ["steer"];
+	engine.emit("event", { type: "agent_start" });
+	await a.wait((f) => f.type === "agent_state" && f.busy);
+	a.send({ type: "steer", text: "hola", requestId: "r-fail-2" });
+	await waitFor(() => a.frames.filter((f) => f.type === "error").length === 2);
+	recordUser(engine, "hola");
+	const frame = await a.wait((f) => f.type === "user_message");
+	assert.equal(frame.requestId, undefined, "a request the engine refused never names a record");
+	assert.equal(frame.messageId, "s1-1");
+});
+
+test("an expanded prompt (the engine records other text) still binds to its send; settled turns forget stale requests", async (t) => {
+	const { endpoint, engine } = await chatOnFile(t);
+	const a = await login(t, endpoint);
+	a.send({ type: "send", text: "/plantilla", requestId: "r-exp" });
+	await waitFor(() => engine.requests.some((r) => r.type === "prompt"));
+	engine.emit("event", { type: "agent_start" });
+	recordUser(engine, "texto expandido de la plantilla");
+	const own = await a.wait((f) => f.type === "user_message");
+	assert.equal(own.requestId, "r-exp");
+	a.send({ type: "steer", text: "nunca registrado", requestId: "r-stale" });
+	await waitFor(() => engine.requests.some((r) => r.type === "steer"));
+	engine.emit("event", { type: "agent_settled" });
+	await waitFor(() => a.frames.filter((f) => f.type === "agent_state").at(-1).busy === false);
+	recordUser(engine, "nunca registrado");
+	await waitFor(() => userMessages(a).length === 2);
+	assert.equal(userMessages(a)[1].requestId, undefined, "a request the settled turn never recorded can no longer claim a later record");
+});
+
+test("a prompt held during a rotation keeps its requestId until the engine records it", async (t) => {
+	const { endpoint, engine } = await chatOnFile(t);
+	const a = await login(t, endpoint);
+	engine.sessionChange = { switching: true };
+	a.send({ type: "send", text: "retenido", requestId: "r-held" });
+	await sleep(30);
+	assert.equal(engine.requests.some((r) => r.type === "prompt"), false);
+	engine.sessionChange = undefined;
+	engine.emit("status", { state: "ready" });
+	await waitFor(() => engine.requests.some((r) => r.type === "prompt"));
+	recordUser(engine, "retenido");
+	assert.equal((await a.wait((f) => f.type === "user_message")).requestId, "r-held");
+});
+
+test("user_message for a 64 Ki-char prompt is one bounded frame under the island reader's limit", async (t) => {
+	const { endpoint, engine } = await chatOnFile(t);
+	const a = await login(t, endpoint);
+	let biggest = 0;
+	a.socket.on("data", () => {});
+	const text = "€".repeat(P.LIMITS.maxTextChars);
+	a.send({ type: "send", text, requestId: "r-big" });
+	await waitFor(() => engine.requests.some((r) => r.type === "prompt"));
+	recordUser(engine, text);
+	const frame = await a.wait((f) => f.type === "user_message");
+	biggest = Buffer.byteLength(JSON.stringify(frame));
+	assert.ok(biggest <= 192 * 1024, `${biggest} bytes`);
+	assert.equal(frame.clipped, true);
+	assert.equal(frame.requestId, "r-big");
+});
+
+test("the record id never depends on when the engine writes the file (Pi persists right after message_start)", async (t) => {
+	const { endpoint, engine } = await chatOnFile(t, [
+		{ type: "message", message: { role: "user", content: "vieja" } },
+		{ type: "message", message: { role: "assistant", content: "r-vieja" } },
+	]);
+	const a = await login(t, endpoint);
+	a.send({ type: "send", text: "hola", requestId: "r-race" });
+	await waitFor(() => engine.requests.some((r) => r.type === "prompt"));
+	engine.emit("event", { type: "agent_start" });
+	// the engine already appended the user message when the daemon handles its message_start
+	persist(engine, "user", "hola");
+	recordUser(engine, "hola");
+	// a tool round: assistant, tool result, assistant again — ONE display row, as history projects it
+	for (const role of ["assistant", "toolResult", "assistant"]) {
+		persist(engine, role, role === "toolResult" ? "ok" : "r");
+		engine.emit("event", { type: "message_start", message: { role } });
+	}
+	persist(engine, "user", "dos");
+	recordUser(engine, "dos");
+	await waitFor(() => userMessages(a).length === 2);
+	assert.deepEqual(userMessages(a).map((f) => [f.messageId, f.requestId]), [["s1-3", "r-race"], ["s1-5", undefined]]);
+	engine.emit("event", { type: "agent_settled" });
+	a.send({ type: "get_history" });
+	const page = await a.wait((f) => f.type === "history");
+	assert.deepEqual(page.messages.filter((m) => m.role === "user").map((m) => [m.id, m.text]), [["s0-1", "antes"], ["s1-1", "vieja"], ["s1-3", "hola"], ["s1-5", "dos"]]);
 });

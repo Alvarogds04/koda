@@ -189,6 +189,29 @@ function sessionTurns(file, log) {
 	return turns;
 }
 
+/**
+ * K2-05 bind by id: the display rows one session file holds now, and the role of the last one. Read
+ * only while the engine is idle (it writes nothing then); from there the daemon counts the rows the
+ * engine's message events add (`nextRow`), never by reading the file again while it is written.
+ */
+function sessionTail(file, log) {
+	const turns = sessionTurns(file, log);
+	return { rows: turns.length, role: turns.at(-1)?.role };
+}
+
+/**
+ * The display row a message the engine starts (`message_start`) takes, exactly as
+ * historyFromMessages numbers it: every user message opens a row; an assistant message opens one
+ * only after a non-assistant row (consecutive assistant messages, tool results between them
+ * included, are ONE row); any other role adds none. Returns the new tail and the row id number when
+ * the message opened a user row.
+ */
+function nextRow(tail, role) {
+	if (role === "user") return { tail: { rows: tail.rows + 1, role: "user" }, userRow: tail.rows + 1 };
+	if (role === "assistant" && tail.role !== "assistant") return { tail: { rows: tail.rows + 1, role: "assistant" } };
+	return { tail };
+}
+
 /** UTF-8 size of one page-entry shape, the same measure the island reader applies. */
 const frameBytes = (turn) => Buffer.byteLength(JSON.stringify(turn), "utf8");
 
@@ -341,4 +364,4 @@ function activitiesOf(message, failed) {
 	});
 }
 
-module.exports = { splitAttachments, textOf, describeTool, readSessionMessages, pageHistory, historyFromMessages };
+module.exports = { splitAttachments, textOf, describeTool, readSessionMessages, pageHistory, historyFromMessages, sessionTail, nextRow };

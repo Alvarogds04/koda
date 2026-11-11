@@ -40,6 +40,12 @@ const LIMITS = Object.freeze({
 /** Page ids of the rotated chain: `s<file index>-<turn>` (T4 U1, Gentle Dot conversations.ts). */
 /** One canonical page id `s<file>-<turn>`: no leading zeros anywhere (K2-05 verifier fix); `sN-0` and out-of-range turns pass shape and answer an empty page. */
 const HISTORY_BEFORE = /^s(0|[1-9]\d*)-(0|[1-9]\d*)$/;
+/**
+ * K2-05 bind by id (Gentle Dot protocol `send{requestId?}`): the client's own correlation id of a
+ * send/steer. Closed and bounded; the daemon echoes it ONLY to the sender, on the `user_message`
+ * frame of the prompt the engine recorded for that request.
+ */
+const REQUEST_ID = /^[A-Za-z0-9_-]{1,64}$/;
 const IMAGE_MIMES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
 const STRICT_ID = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const SAFE_NAME = /^[A-Za-z0-9_.:-]{1,64}$/;
@@ -225,11 +231,13 @@ function validateClientFrame(raw) {
 			if (!isString(raw.text, LIMITS.maxTextChars) || raw.text.trim() === "") return undefined;
 			const images = validImages(raw.images);
 			if (images === null) return undefined;
-			return { type: "send", text: raw.text, images };
+			if (raw.requestId !== undefined && !(typeof raw.requestId === "string" && REQUEST_ID.test(raw.requestId))) return undefined;
+			return { type: "send", text: raw.text, images, ...(raw.requestId !== undefined ? { requestId: raw.requestId } : {}) };
 		}
 		case "steer":
 			if (!isString(raw.text, LIMITS.maxTextChars) || raw.text.trim() === "") return undefined;
-			return { type: "steer", text: raw.text };
+			if (raw.requestId !== undefined && !(typeof raw.requestId === "string" && REQUEST_ID.test(raw.requestId))) return undefined;
+			return { type: "steer", text: raw.text, ...(raw.requestId !== undefined ? { requestId: raw.requestId } : {}) };
 		case "abort":
 		case "status":
 		case "interrupted_ack": // R5: acknowledges the interrupted-work record exposed in the ready frame
@@ -678,6 +686,43 @@ function historyPageFrame(type, before, page) {
 }
 
 const historyFrame = (page) => historyPageFrame("history", undefined, page);
+
+/**
+ * K2-05 bind by id (Gentle Dot bridge.ts onMessageStart → `user_message{messageId,text}`): one
+ * prompt the engine recorded, named by the SAME page id (`s<file>-<turn>`) the history frames give
+ * it, so a client joins it with history exactly. `requestId` is set only on the copy sent to the
+ * client whose send/steer the engine recorded. The text is the user's own (clipped like history,
+ * never white-labelled); the frame is byte-bounded like one history page (192 KiB, under the
+ * island reader's 256 KiB): an over-budget text is cut on whole code points and marked `clipped`.
+ * THROWS on an invalid id or requestId (the server then sends nothing).
+ */
+const USER_MESSAGE_MAX_BYTES = 192 * 1024;
+function userMessageFrame(message, requestId) {
+	if (!isObject(message) || typeof message.id !== "string" || !HISTORY_BEFORE.test(message.id) || typeof message.text !== "string") throw new Error("user message frame invalid");
+	if (requestId !== undefined && !(typeof requestId === "string" && REQUEST_ID.test(requestId))) throw new Error("user message frame invalid");
+	const shown = historyMessageDto({ id: message.id, role: "user", text: message.text, attachments: message.attachments });
+	const frame = { type: "user_message", messageId: shown.id, text: shown.text };
+	if (shown.attachments) frame.attachments = shown.attachments;
+	if (shown.clipped) frame.clipped = true;
+	if (requestId !== undefined) frame.requestId = requestId;
+	// headroom for the `seq` field and LF the encoder adds (seq is a safe integer: ≤ 16 digits)
+	const over = Buffer.byteLength(JSON.stringify(frame)) - (USER_MESSAGE_MAX_BYTES - 32);
+	if (over > 0) {
+		// cut whole code points from the end until the serialized frame fits
+		let text = frame.text;
+		let excess = over;
+		while (excess > 0 && text !== "") {
+			const tail = text.charCodeAt(text.length - 1);
+			const last = tail >= 0xdc00 && tail <= 0xdfff && text.length >= 2 ? 2 : 1;
+			const cut = text.slice(text.length - last);
+			excess -= Buffer.byteLength(JSON.stringify(cut)) - 2;
+			text = text.slice(0, text.length - last);
+		}
+		frame.text = text;
+		frame.clipped = true;
+	}
+	return frame;
+}
 const earlierFrame = (before, page) => historyPageFrame("earlier", before, page);
 
 /**
@@ -1135,6 +1180,8 @@ module.exports = {
 	decodeClientLine,
 	deltaFrames,
 	encodeServerFrame,
+	userMessageFrame,
+	REQUEST_ID,
 	errorFrame,
 	accountDto,
 	providerDto,

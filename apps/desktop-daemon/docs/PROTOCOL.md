@@ -21,8 +21,8 @@ Implementation: `src/protocol.cjs` (codec/validators/translation), `src/server.c
 
 | type | fields | notes |
 |---|---|---|
-| `send` | `text`, `images?[{data(base64),mimeType}]` | `busy` error while a turn runs; completion is `agent_settled`, not the prompt response |
-| `steer` | `text` | only while busy (`not_busy` otherwise) |
+| `send` | `text`, `images?[{data(base64),mimeType}]`, `requestId?` | `busy` error while a turn runs; completion is `agent_settled`, not the prompt response. `requestId` (`[A-Za-z0-9_-]{1,64}`, anything else is `bad_request`): see "Recorded prompts" |
+| `steer` | `text`, `requestId?` | only while busy (`not_busy` otherwise); `requestId` as for `send` |
 | `abort` | – | Cancels a running turn; its child is recycled before another prompt. An ACK alone never frees busy. Idle abort still reaches Pi. |
 | `set_paused` | `paused: bool` | Global pause switch (#379); see "Global pause" |
 | `new_conversation` | – | **Refused** with a fixed `error{conversations_off}` (K2-05 T4 U1): the island keeps ONE continuous chat (L3/L4/L7, Gentle Dot's `conversationsOn` gate). The refusal precedes every other gate (busy, paused included) and no command ever reaches the engine |
@@ -352,6 +352,7 @@ Unknown/invalid post-handshake frames get `error{code:"bad_request"}`.
 |---|---|
 | `ready` | `protocol`, `state{busy,status,paused}`, `limits`, `features{history:true,conversations:false}`, `interrupted?` (`{at, turnActive, asks}` — bounded closed fields of the unconsumed interrupted-work record, counts and time only, never titles/ids/prompts/args/secrets; present until a client sends `interrupted_ack`) |
 | `agent_state` | `busy`, `status` (`ready`, `restarting`, `stopped`…), `paused` |
+| `user_message` | `messageId` (`s<file>-<turn>`, the history id of that prompt), `text`, `attachments?`, `clipped?`, `requestId?` — a prompt the engine recorded; see "Recorded prompts" |
 | `message_delta` | `messageId`, `text` (≤ 16 K chars each; long texts are split into several deltas, every chunk cut on a whole code point — never inside a surrogate pair) |
 | `message_done` | `messageId` |
 | `activity` | `name` (sanitized tool name), `state: running\|done\|error`, optional `callId` (SAFE_ID, present only when the engine names the call) and optional closed `summary` (error only) — never arguments/results |
@@ -368,7 +369,8 @@ Unknown/invalid post-handshake frames get `error{code:"bad_request"}`.
 
 ## Event translation (Pi RPC → frames)
 
-Allowlist: `agent_start`/`agent_settled` (busy state), `message_update` with `text_delta`,
+Allowlist: `agent_start`/`agent_settled` (busy state), `message_start` with role `user` (→ `user_message`,
+see "Recorded prompts"), `message_update` with `text_delta`,
 `message_end` (assistant), `tool_execution_start|end`, `queue_update`, `extension_ui_request`
 (`select`/`confirm`/`input` → `ask`; `notify` → `toast`; `editor` auto-cancelled; other UI chrome dropped).
 Everything else (thinking deltas, `turn_end`, `tool_execution_update`, unknown) is dropped, never forwarded raw.
@@ -422,7 +424,8 @@ Everything else (thinking deltas, `turn_end`, `tool_execution_update`, unknown) 
   A late client asks `get_history` once it has Handshook; the daemon never pushes an unrequested full history
   except after a rotation (below).
 - Stale `p-*` socket dirs of dead servers (connection refused) are removed at start, with dev/ino checks.
-- `ui_response` and `send` are not tied to the originating client; all clients share one session.
+- `ui_response` and `send` are not tied to the originating client; all clients share one session (a
+  `send`'s `requestId` is echoed only to its sender, on the `user_message` of the prompt recorded for it).
 
 ### Client slots (K2-05 U2 follow-up, re-verified)
 
@@ -498,6 +501,37 @@ last carry `earlier:true`.
   broadcasts an empty page. When the rotation's switch CONFIRMS but its verification fails and the
   fallback runs, TWO frames are broadcast: the confirmed seed's session change, then the fallback's
   linked fresh session.
+
+### Recorded prompts (additive, K2-05 bind by id)
+
+Port of Gentle Dot's `send{requestId}` dedupe (bridge.ts:399, 500 remembered ids) and its
+`user_message` broadcast (bridge.ts onMessageStart, MIT). A client never has to infer which recorded
+prompt is its own — not by counting engine cycles, not by matching text.
+
+- **`requestId` on `send`/`steer`** (optional, closed grammar `[A-Za-z0-9_-]{1,64}`). A requestId the
+  daemon has already seen (the last 500) makes the frame a silent no-op — no error, nothing reaches the
+  engine — so a client never sends the same prompt twice. The check runs right after the `/gentle:`
+  refusal, before every other gate: a refused request's id is spent too (send the retry with a fresh id).
+- **`user_message`** is broadcast to EVERY client each time the engine starts recording a user message
+  (Pi's `message_start`, role `user`): the island's own prompts, other clients' prompts, held prompts
+  delivered after a rotation, consumed steers, and an extension's own user messages alike.
+  - `messageId` is the page id the history frames give that same prompt (`s<open file index>-<row>`), so
+    it joins with `history`/`earlier` exactly. The daemon counts the open file's display rows from the
+    engine's message events since its last idle read of the file — never by reading the file while the
+    engine writes it — and sends no `user_message` when that count is not known (after a cancelled turn,
+    an engine restart or a session change, until the next prompt it dispatches).
+  - `requestId` is echoed ONLY on the copy sent to the client whose `send`/`steer` the engine recorded
+    (not a secret, but nobody else's correlation). The dispatched prompt is the run's first recorded
+    user message whose text is its own; steers are matched by text in order (Pi removes a consumed
+    steer from its queue by text); a recorded text that matches no pending steer falls back to the
+    dispatched prompt (a template expansion changes the recorded text). A request the engine refused
+    (the `prompt`/`steer` request failed), and every request still pending when the run settles or the
+    engine goes away, is forgotten: it never names a later record. An unmatched record (an extension's
+    own message) carries no `requestId`.
+  - `text` is the user's own text (never white-labelled), split from its `<attachments>` block like
+    history and clipped the same way (64 Ki chars, `clipped:true`). The frame is byte-bounded like one
+    history page (192 KiB including `seq`, under the island reader's 256 KiB): a longer text is cut on
+    whole code points and marked `clipped:true`.
 
 ## Private memory (K2-05 T1c, the only mode)
 

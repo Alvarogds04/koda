@@ -921,3 +921,36 @@ test("select ask: shown labels are free of C0/C1 control characters; answers rou
 	assert.equal(blank.options[0], "Option 1");
 	assert.equal(blank.options[1], "real");
 });
+
+// ----- K2-05 bind by id: send/steer requestId and the user_message frame -----------------------
+
+test("send and steer accept an optional bounded requestId; any other shape is bad_request", () => {
+	assert.deepEqual(P.decodeClientLine(line({ type: "send", text: "hola", requestId: "i-1_A" })).frame, { type: "send", text: "hola", images: [], requestId: "i-1_A" });
+	assert.deepEqual(P.decodeClientLine(line({ type: "steer", text: "hola", requestId: "x".repeat(64) })).frame, { type: "steer", text: "hola", requestId: "x".repeat(64) });
+	assert.deepEqual(P.decodeClientLine(line({ type: "send", text: "hola" })).frame, { type: "send", text: "hola", images: [] }, "absent stays absent");
+	for (const requestId of ["", "a b", "x".repeat(65), "a.b", "ñ", 5, null, ["a"]]) {
+		assert.deepEqual(P.decodeClientLine(line({ type: "send", text: "hola", requestId })), { error: "bad_request" }, JSON.stringify(requestId));
+		assert.deepEqual(P.decodeClientLine(line({ type: "steer", text: "hola", requestId })), { error: "bad_request" }, JSON.stringify(requestId));
+	}
+});
+
+test("user_message frame: closed shape, record id grammar, requestId only when given, user text never white-labelled", () => {
+	const own = P.userMessageFrame({ id: "s1-3", text: "mi engram y Gentle Shell", attachments: [] }, "req-1");
+	assert.deepEqual(own, { type: "user_message", messageId: "s1-3", text: "mi engram y Gentle Shell", requestId: "req-1" });
+	const other = P.userMessageFrame({ id: "s1-3", text: "x", attachments: [{ name: "a.png", size: 3, mime: "image/png", path: "/etc" }] });
+	assert.deepEqual(other, { type: "user_message", messageId: "s1-3", text: "x", attachments: [{ name: "a.png", size: 3, mime: "image/png" }] });
+	assert.throws(() => P.userMessageFrame({ id: "h3", text: "x" }), /user message/);
+	assert.throws(() => P.userMessageFrame({ id: "s0-1", text: "x" }, "a b"), /user message/);
+});
+
+test("user_message frame is byte-bounded below the island reader's limit: whole code points, marked clipped", () => {
+	const text = "€".repeat(P.LIMITS.maxTextChars); // 196,608 UTF-8 bytes of text alone
+	const frame = P.userMessageFrame({ id: "s0-1", text }, "r1");
+	const bytes = P.encodeServerFrame(frame, 99).length;
+	assert.ok(bytes <= 192 * 1024, `${bytes} bytes`);
+	assert.equal(frame.clipped, true);
+	assert.ok(text.startsWith(frame.text) && frame.text.length > 60_000, "a prefix, cut on whole code points");
+	const small = P.userMessageFrame({ id: "s0-1", text: "\n".repeat(P.LIMITS.maxTextChars) });
+	assert.ok(P.encodeServerFrame(small, 1).length <= 192 * 1024);
+	assert.equal(small.clipped, undefined, "an escaped 64 Ki text still fits whole");
+});

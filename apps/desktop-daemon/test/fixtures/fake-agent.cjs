@@ -6,8 +6,11 @@
 // Behaviour:
 // - get_state -> success with a session file inside the --session-dir it was given
 // - echo      -> success echoing { value } back (correlation tests)
-// - prompt    -> success { disposition: "started" } plus an event burst whose
-//                message_update contains U+2028/U+2029 and an emoji
+// - prompt    -> success { disposition: "started" } plus an event burst: agent_start, the
+//                user message it records (message_start/message_end role user, as Pi does),
+//                and a message_update that contains U+2028/U+2029 and an emoji
+// --persist-messages appends the user message and the reply to the session file the way Pi
+// does (each message right after it is announced), so history reads what the engine recorded.
 // - hang      -> never answered (timeout and pending-rejection tests)
 // - crash     -> exits with FAKE_EXIT_CODE (default 1)
 // - stdin end -> exits 0 (orderly shutdown like `pi --mode rpc`)
@@ -76,6 +79,14 @@ function writeChunked(record, done) {
 	}, 15);
 }
 
+const persistMessages = process.argv.includes("--persist-messages");
+
+/** Pi's SessionManager.appendMessage: one `type:"message"` line per message, appended. */
+function persist(role, text) {
+	if (!persistMessages) return;
+	fs.appendFileSync(sessionFile, `${JSON.stringify({ type: "message", message: { role, content: [{ type: "text", text }] } })}\n`, { mode: 0o600 });
+}
+
 function respond(id, command, data) {
 	writeRecord({ id, type: "response", command, success: true, data });
 }
@@ -99,13 +110,21 @@ function handle(command) {
 		case "prompt": {
 			respond(command.id, "prompt", { disposition: "started" });
 			writeRecord({ type: "agent_start" });
+			// K2-05 bind by id: the engine records the user message (Pi: message_start, then the
+			// append, then message_end) before the reply starts
+			const user = { role: "user", content: [{ type: "text", text: String(command.message) }] };
+			writeRecord({ type: "message_start", message: user });
+			persist("user", String(command.message));
+			writeRecord({ type: "message_end", message: user });
+			const reply = "hola 😀 línea\u2028separada\u2029fin";
 			const emitRest = () => {
+				persist("assistant", reply);
 				writeRecord({ type: "agent_end" });
 				writeRecord({ type: "agent_settled" });
 			};
 			const update = {
 				type: "message_update",
-				assistantMessageEvent: { type: "text_delta", delta: "hola 😀 línea\u2028separada\u2029fin" },
+				assistantMessageEvent: { type: "text_delta", delta: reply },
 			};
 			if (process.argv.includes("--prompt-holds")) {
 				// F2: the assistant message is mid-stream and never settles, like a
