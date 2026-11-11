@@ -1239,12 +1239,13 @@ pub fn conversations_off() -> crate::chat::ChatError {
 }
 
 /// K2-05 attachments: one closed Spanish sentence per upload refusal (the daemon's codes, Gentle
-/// Dot's limits: 25 MB per file, 50 MB and 10 files waiting per message).
+/// Dot's limits: 25 MB per file, 50 MB per message; 5 files, the number the page allows and the
+/// daemon's uploads.cjs ATTACHMENT_LIMITS.files counts).
 pub fn upload_error(code: &str) -> crate::chat::ChatError {
     let (code, message) = match code {
         "file_too_large" => ("file_too_large", "El archivo es demasiado grande: hasta 25 MB por archivo."),
         "message_too_large" => ("message_too_large", "Los archivos juntos son demasiado grandes: hasta 50 MB por mensaje."),
-        "too_many_files" => ("too_many_files", "Demasiados archivos: hasta 10 por mensaje."),
+        "too_many_files" => ("too_many_files", "Demasiados archivos: hasta 5 por mensaje."),
         "attachment_not_found" => ("attachment_not_found", "Un archivo adjunto ya no está disponible; adjuntalo de nuevo."),
         "rate_limited" => ("rate_limited", "Demasiados archivos seguidos; esperá un momento."),
         "unavailable" => ("engine_unavailable", "El motor de Koda no está disponible todavía."),
@@ -1357,6 +1358,9 @@ struct Pending {
     text: String,
     /// K2-05 attachments: the chips of the files it sent (`{name,size,mime}`), shown on its row.
     chips: Vec<Value>,
+    /// The daemon ids of those files: once the engine recorded this send they are spent, and the
+    /// host forgets their chips (`bind_recorded`).
+    attachment_ids: Vec<String>,
     /// When the send went out (the settle grace runs from here).
     submitted_ms: u64,
     /// NEW-2: where the turn shows while the record does not name it: right after the newest record
@@ -1742,6 +1746,9 @@ impl HostInner {
             self.pending[at].record = Some(id.clone());
             let num = self.pending[at].num;
             self.claim(&id, num);
+            // the engine took the send: its files are spent on the daemon, their chips live on its row
+            let spent = std::mem::take(&mut self.pending[at].attachment_ids);
+            self.uploaded.retain(|(u, _)| !spent.contains(u));
         }
     }
 
@@ -2313,8 +2320,10 @@ impl ChatHost {
             payload["attachments"] = json!(attachments);
         }
         link.command(caller, &payload).map_err(|_| send_refused())?;
+        // the chips stay known until the engine records this send (`bind_recorded`) or the user
+        // removes the file: a send the daemon refused never spent its files, so a resend of the same
+        // ids shows them again on its row
         let chips: Vec<Value> = attachments.iter().filter_map(|id| inner.uploaded.iter().find(|(u, _)| u == id).map(|(_, c)| c.clone())).collect();
-        inner.uploaded.retain(|(u, _)| !attachments.contains(u));
         let num = inner.alloc_live();
         let after = inner.max_known;
         inner.pending.push(Pending {
@@ -2323,6 +2332,7 @@ impl ChatHost {
             request_id,
             text,
             chips,
+            attachment_ids: attachments.to_vec(),
             submitted_ms: now_ms,
             after,
             record: None,

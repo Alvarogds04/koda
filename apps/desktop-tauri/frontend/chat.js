@@ -696,8 +696,9 @@
     const said = changed ? null : V.announcement(view, next);
     if (changed) {
       resetHistory(next);
-      if (view) { input.value = ''; pendingId = null; localProblem = ''; autosize(); attachments = []; renderAttachments(); clearAsks(); }
+      if (view) { input.value = ''; pendingId = null; localProblem = ''; autosize(); discardAll(); clearAsks(); }
     }
+    restoreRefused(next);
     syncAsks(next); // U4b: the agent's questions (from `next` only), placed by renderLog after the turn that asked
     followWindow(next);
     view = next;
@@ -829,7 +830,8 @@
   // file. Gentle Dot's limits are checked here first (the daemon enforces them again): a refused
   // file is read by nobody, sent nowhere and shows no chip.
   // files per message: chat.rs MAX_ATTACHMENTS_PER_TURN (5, pinned by chat_tests.rs) — stricter than
-  // Gentle Dot's 10, which the daemon allows; raising it needs chat.rs + its test together.
+  // Gentle Dot's 10; the daemon counts the same 5 (uploads.cjs ATTACHMENT_LIMITS.files) and its
+  // refusal says «hasta 5»; raising it needs chat.rs, uploads.cjs and their tests together.
   const ATTACH_MAX = 5;
   const ATTACH_FILE_BYTES = 25 * 1024 * 1024;    // per file
   const ATTACH_MESSAGE_BYTES = 50 * 1024 * 1024; // together
@@ -954,6 +956,37 @@
     return null;
   }
 
+  // K2-05 follow-up: chips the page drops without sending ask the daemon to delete their unsent
+  // files (no quota lingers until the one-hour expiry); a conversation change is such a drop.
+  function discardAll() {
+    const gone = attachments;
+    attachments = []; attachError = null; sentFiles = null;
+    renderAttachments();
+    for (const a of gone) action({ action: 'discard', id: a.id }).catch(() => {});
+  }
+  // K2-05 follow-up: the files of an ACCEPTED submit wait here until its turn ends. A turn the
+  // daemon refused (it ends in an error, nothing ran, no reply) never spent them: the chips come
+  // back to the composer so the user can resend the same files. A turn that ran, was interrupted
+  // (the engine may have taken it) or whose files are gone keeps nothing.
+  const SPENT_CODES = new Set(['interrupted', 'attachment_not_found']);
+  let sentFiles = null; // { turnId, files }
+  function restoreRefused(next) {
+    if (!sentFiles || !next || !Array.isArray(next.turns)) return;
+    const turn = next.turns.find(t => t && t.turn_id === sentFiles.turnId);
+    if (!turn || turn.state === 'thinking' || turn.state === 'streaming' || turn.state === 'live') return;
+    const files = sentFiles.files;
+    sentFiles = null;
+    const code = turn.error && turn.error.code;
+    if (turn.state !== 'error' || String(turn.reply || '') !== '' || !code || SPENT_CODES.has(code)) return;
+    for (const f of files) {
+      if (attachments.some(a => a.id === f.id)) continue;
+      if (attachments.length >= ATTACH_MAX) { action({ action: 'discard', id: f.id }).catch(() => {}); continue; }
+      attachments.push(f);
+    }
+    renderAttachments();
+    setLive('Los archivos adjuntos siguen listos para enviar.');
+  }
+
   async function attachPath(path) {
     if (typeof path !== 'string' || !path) return;
     const over = overLimit(NaN);
@@ -1046,12 +1079,16 @@
     renderControls();
     const payload = { action: 'submit', text, client_request_id: pendingId };
     if (attachments.length) payload.attachments = attachments.map(a => a.id);
+    const sending = attachments.slice();
     action(payload).then(
-      () => {
+      answer => {
         inFlight = false;
         pendingId = null;
         if (input.value === text) { input.value = ''; autosize(); } // accepted: the draft became a turn
-        if (attachments.length || attachError) { attachments = []; attachError = null; renderAttachments(); } // the files went with the turn
+        // the files went with the turn; kept aside until it ends, in case the daemon refuses it
+        sentFiles = sending.length && answer && typeof answer.turn_id === 'string' ? { turnId: answer.turn_id, files: sending } : null;
+        if (sending.length) attachments = attachments.filter(a => !sending.some(f => f.id === a.id));
+        if (sending.length || attachError) { attachError = null; renderAttachments(); }
         renderControls();
         action({ action: 'view' }).then(apply, () => {});
       },

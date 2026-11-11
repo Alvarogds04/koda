@@ -49,6 +49,36 @@ test("sanitizeName: last segment only, no traversal, hidden marks or reserved na
 	assert.ok(sanitizeName(`${"x".repeat(300)}.pdf`).endsWith(".pdf"));
 });
 
+/** True when the text has no lone surrogate (half of an emoji). */
+const wellFormed = (text) => !/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/.test(text);
+
+test("sanitizeName (F-3): a long emoji or CJK name is cut on whole characters, never half an emoji", () => {
+	for (const stem of ["😀".repeat(200), `x${"😀".repeat(200)}`, "文".repeat(300), `a${"👩‍👩‍👧".repeat(60)}`]) {
+		const name = sanitizeName(`${stem}.png`);
+		assert.ok(wellFormed(name), `no lone surrogate: ${JSON.stringify(name.slice(-8))}`);
+		assert.ok(name.endsWith(".png"), name);
+		assert.ok(name.length <= 120, `at most 120 UTF-16 units: ${name.length}`);
+		assert.ok(Buffer.byteLength(name, "utf8") <= 240, `fits a file name on disk: ${Buffer.byteLength(name, "utf8")} bytes`);
+	}
+	assert.ok(wellFormed(sanitizeName("a\ud800b\udc00c.txt")), "a lone surrogate from the wire is dropped");
+	assert.equal(sanitizeName("a\ud800b\udc00c.txt"), "abc.txt");
+});
+
+test("F-3: a long emoji name is valid text on disk and in the prompt", (t) => {
+	const ws = workspace(t);
+	const store = new UploadStore({ workspace: () => ws });
+	const owner = {};
+	const out = put(store, owner, `${"x"}${"😀".repeat(200)}.png`, PNG);
+	assert.equal(out.ok, true, JSON.stringify(out));
+	assert.ok(wellFormed(out.file.name));
+	const [entry] = fs.readdirSync(path.join(ws, "uploads", out.file.id));
+	assert.equal(entry, out.file.name, "the name on disk is the name shown");
+	const files = store.resolve(owner, [out.file.id]).files;
+	const prompt = composePrompt("mirá", files, { images: false });
+	assert.ok(wellFormed(prompt.message));
+	assert.ok(!prompt.message.includes("\\ud8"), "no escaped half surrogate reaches the provider");
+});
+
 test("sniffMime: images and PDF by content, anything else octet-stream", () => {
 	assert.equal(sniffMime(PNG), "image/png");
 	assert.equal(sniffMime(Buffer.from([0xff, 0xd8, 0xff, 0xe0])), "image/jpeg");
@@ -98,6 +128,15 @@ test("receive: chunks in order build the file; a wrong offset or a mismatched he
 	assert.deepEqual(store.receive(owner, { ...third, offset: 2, data: Buffer.alloc(3) }).ok, false, "more bytes than declared");
 	// only the finished png folder is left
 	assert.deepEqual(fs.readdirSync(path.join(ws, "uploads")), [done.file.id]);
+});
+
+test("limits: the files a client may hold unsent are the 5 per message the island page says («hasta 5»)", (t) => {
+	const ws = workspace(t);
+	const store = new UploadStore({ workspace: () => ws });
+	assert.equal(ATTACHMENT_LIMITS.files, 5);
+	const a = {};
+	for (let i = 0; i < 5; i += 1) assert.equal(put(store, a, `${i}.txt`, Buffer.from("x")).ok, true);
+	assert.deepEqual(put(store, a, "6.txt", Buffer.from("x")), { ok: false, code: "too_many_files" }, "the sixth is refused");
 });
 
 test("limits: a file over 25 MB is refused before a byte is written", (t) => {
@@ -238,4 +277,48 @@ test("readStored reads the stored file only: a swapped link or a changed size is
 	fs.rmSync(stored.path);
 	fs.writeFileSync(stored.path, "short");
 	assert.throws(() => readStored(stored));
+});
+
+test("F-1: readStored refuses a swapped a- folder (a link to another folder with the same file)", { skip: process.platform === "win32" }, (t) => {
+	const ws = workspace(t);
+	const store = new UploadStore({ workspace: () => ws });
+	const owner = {};
+	const { file } = put(store, owner, "foto.png", PNG);
+	const [stored] = store.resolve(owner, [file.id]).files;
+	const outside = workspace(t);
+	fs.writeFileSync(path.join(outside, "foto.png"), Buffer.alloc(PNG.length, 0x53));
+	fs.renameSync(path.dirname(stored.path), path.join(ws, "moved"));
+	fs.symlinkSync(outside, path.dirname(stored.path));
+	assert.throws(() => readStored(stored), "never read through a linked a- folder");
+	const prompt = composePrompt("x", [stored], { images: true });
+	assert.equal(prompt.images, undefined, "nothing outside the uploads folder is inlined");
+});
+
+test("F-1: readStored refuses a hardlinked file (nlink > 1): it is never read back inline", (t) => {
+	const ws = workspace(t);
+	const store = new UploadStore({ workspace: () => ws });
+	const owner = {};
+	const { file } = put(store, owner, "foto.png", PNG);
+	const [stored] = store.resolve(owner, [file.id]).files;
+	const secret = path.join(workspace(t), "secret");
+	fs.writeFileSync(secret, Buffer.alloc(PNG.length, 0x53));
+	fs.rmSync(stored.path);
+	fs.linkSync(secret, stored.path);
+	assert.throws(() => readStored(stored));
+	assert.equal(composePrompt("x", [stored], { images: true }).images, undefined);
+});
+
+test("F-1: discard never deletes through a swapped a- folder; the file outside survives", { skip: process.platform === "win32" }, (t) => {
+	const ws = workspace(t);
+	const store = new UploadStore({ workspace: () => ws });
+	const owner = {};
+	const { file } = put(store, owner, "nota.txt", Buffer.from("x"));
+	const dir = path.join(ws, "uploads", file.id);
+	const outside = workspace(t);
+	fs.writeFileSync(path.join(outside, "nota.txt"), "keep me");
+	fs.renameSync(dir, path.join(ws, "moved"));
+	fs.symlinkSync(outside, dir);
+	assert.equal(store.discard(owner, file.id), true, "the id is forgotten");
+	assert.equal(fs.readFileSync(path.join(outside, "nota.txt"), "utf8"), "keep me");
+	assert.equal(store.resolve(owner, [file.id]).ok, false);
 });

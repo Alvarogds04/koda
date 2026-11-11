@@ -6,7 +6,7 @@
  *
  * Port of Gentle Dot's packages/daemon/src/uploads.ts (MIT, Copyright (c) 2026 Gentleman
  * Programming; see THIRD-PARTY-NOTICES.md): `sanitizeName`, `sniffMime`, the per-message limits
- * (25 MB per file, 50 MB and 10 files per message), the one-hour expiry of files never sent,
+ * (25 MB per file, 50 MB per message; files: 5 here, see ATTACHMENT_LIMITS), the one-hour expiry of files never sent,
  * `composePrompt` (the `<attachments>` block the history's `splitAttachments` reads back) and
  * the «a sent file stays for the assistant, no other message can send it» rule.
  *
@@ -19,7 +19,10 @@
  *   daemon removes) whatever it never sent;
  * - an upload idle for two minutes is dropped (a crashed sender never holds its quota);
  * - files are opened with O_NOFOLLOW and re-checked by size when read back, the uploads folder
- *   must be a private directory (no planted link), names are the last segment only.
+ *   must be a private directory (no planted link), names are the last segment only, cut on whole
+ *   characters (F-3);
+ * - a file is read back inline or deleted only through its own real `a-…` folder inside the
+ *   uploads folder, and a hardlinked file (nlink > 1) is never read back inline (F-1).
  */
 
 const crypto = require("node:crypto");
@@ -27,8 +30,12 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { ensurePrivateDir } = require("./isolation.cjs");
 
-/** Gentle Dot's ATTACHMENT_LIMITS (protocol index.ts): per file, per message (here: per client, unsent). */
-const ATTACHMENT_LIMITS = Object.freeze({ fileBytes: 25 * 1024 * 1024, messageBytes: 50 * 1024 * 1024, files: 10 });
+/**
+ * Gentle Dot's ATTACHMENT_LIMITS (protocol index.ts): per file, per message (here: per client, unsent).
+ * Koda difference: 5 files, not 10 — the island page and chat.rs (MAX_ATTACHMENTS_PER_TURN) allow 5
+ * per message and the refusal says «hasta 5», so the daemon counts the same number the user sees.
+ */
+const ATTACHMENT_LIMITS = Object.freeze({ fileBytes: 25 * 1024 * 1024, messageBytes: 50 * 1024 * 1024, files: 5 });
 /** The longest image passed to the model: about 5 MB once base64-encoded, the strictest provider limit. */
 const MAX_IMAGE_BYTES = 3_750_000;
 /** The daemon's own opaque id of one stored file (and the name of its folder). */
@@ -36,20 +43,41 @@ const UPLOAD_ID = /^a-[0-9a-f]{16}$/;
 const UNSENT_TTL_MS = 60 * 60 * 1000;
 const IDLE_UPLOAD_MS = 2 * 60 * 1000;
 const MAX_NAME_LENGTH = 120;
+/** F-3: a name must also fit one file-name component on disk (255 bytes on ext4/APFS/NTFS-UTF-16). */
+const MAX_NAME_BYTES = 240;
 const MAX_EXTENSION = 16;
 const SNIFF_BYTES = 16;
 /** Control characters, invisible and direction-changing marks. */
 const HIDDEN_CHARS = /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g;
+/** F-3: half of a surrogate pair (not text: it cannot be stored as UTF-8 or sent to a provider). */
+const LONE_SURROGATE = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g;
 const RESERVED = /^(con|prn|aux|nul|com\d|lpt\d)$/i;
 const IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
 const NOFOLLOW = fs.constants.O_NOFOLLOW ?? 0;
 
 /**
+ * F-3 (Gentle Dot cut in UTF-16 units and could leave half an emoji): the longest prefix of whole
+ * characters (code points) within `units` UTF-16 units and `bytes` UTF-8 bytes.
+ */
+function clipWhole(text, units, bytes) {
+	let out = "";
+	let used = 0;
+	for (const ch of text) {
+		const size = Buffer.byteLength(ch, "utf8");
+		if (out.length + ch.length > units || used + size > bytes) break;
+		out += ch;
+		used += size;
+	}
+	return out;
+}
+
+/**
  * A safe file name: the last path segment only, without control or invisible characters,
- * a leading dot (hidden files), or a reserved name; "file" when nothing is left.
+ * a leading dot (hidden files), or a reserved name; "file" when nothing is left. Cut on whole
+ * characters (F-3), so the name on disk and in the prompt is always valid text.
  */
 function sanitizeName(raw) {
-	let name = (String(raw ?? "").split(/[\\/]/).pop() ?? "").normalize("NFC").replace(HIDDEN_CHARS, "");
+	let name = (String(raw ?? "").split(/[\\/]/).pop() ?? "").replace(LONE_SURROGATE, "").normalize("NFC").replace(HIDDEN_CHARS, "");
 	name = name
 		.replace(/[<>:"|?*]/g, "_")
 		.replace(/^[.\s]+/, "")
@@ -58,7 +86,8 @@ function sanitizeName(raw) {
 	if (extension.length > MAX_EXTENSION) extension = "";
 	let stem = name.slice(0, name.length - extension.length);
 	if (stem === "" || RESERVED.test(stem)) stem = "file";
-	return `${stem.slice(0, MAX_NAME_LENGTH - extension.length).trimEnd()}${extension}`;
+	const cut = clipWhole(stem, MAX_NAME_LENGTH - extension.length, MAX_NAME_BYTES - Buffer.byteLength(extension, "utf8")).trimEnd();
+	return `${cut === "" ? "file" : cut}${extension}`;
 }
 
 /** The type of an image or PDF from its first bytes; anything else is `application/octet-stream`. */
@@ -76,14 +105,40 @@ function sniffMime(head) {
 }
 
 /**
- * Reads one stored file back as the engine would: never through a link (O_NOFOLLOW), and only
- * when it is still a regular file of the size that was stored. Throws otherwise.
+ * F-1: the `a-…` folder of one stored file is still the real directory inside the uploads folder
+ * it was created in: not a link (or junction), and resolving it lands at `<uploads>/<id>`. The
+ * uploads folder itself must be a real directory too. Same-user threat (another process of the
+ * user swapping folders), so this is a plain check, not a race-free handle walk.
+ */
+function storedDirOk(filePath) {
+	try {
+		const dir = path.dirname(filePath);
+		const root = path.dirname(dir);
+		if (!UPLOAD_ID.test(path.basename(dir)) || path.basename(root) !== "uploads") return false;
+		for (const p of [root, dir]) {
+			const stat = fs.lstatSync(p);
+			if (stat.isSymbolicLink() || !stat.isDirectory()) return false;
+		}
+		return fs.realpathSync.native(dir) === path.join(fs.realpathSync.native(root), path.basename(dir));
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * Reads one stored file back as the engine would: never through a link (O_NOFOLLOW; on Windows,
+ * where O_NOFOLLOW does not exist, the lstat check below stands in for it), only inside its own
+ * real `a-…` folder (F-1), never a file with another name linked to it (F-1: a hardlink, nlink > 1,
+ * could be a planted copy of any file of the user), and only when it is still a regular file of
+ * the size that was stored. Throws otherwise.
  */
 function readStored(file) {
+	if (!storedDirOk(file.path)) throw new Error("stored file moved");
+	if (NOFOLLOW === 0 && fs.lstatSync(file.path).isSymbolicLink()) throw new Error("stored file changed");
 	const fd = fs.openSync(file.path, fs.constants.O_RDONLY | NOFOLLOW);
 	try {
 		const stat = fs.fstatSync(fd);
-		if (!stat.isFile() || stat.size !== file.size) throw new Error("stored file changed");
+		if (!stat.isFile() || stat.size !== file.size || stat.nlink > 1) throw new Error("stored file changed");
 		const out = Buffer.alloc(file.size);
 		let at = 0;
 		while (at < file.size) {
@@ -272,11 +327,19 @@ class UploadStore {
 		for (const id of ids) slot.files.delete(id);
 	}
 
-	/** The user removed a file before sending it: it is deleted. Returns whether it was this owner's. */
+	/**
+	 * The user removed a file before sending it: it is deleted. Returns whether it was this owner's.
+	 * F-1: only through its own real `a-…` folder; a folder swapped for a link is never followed
+	 * (the id is forgotten, nothing outside the uploads folder is deleted).
+	 */
 	discard(owner, id) {
 		const file = this.owners.get(owner)?.files.get(id);
 		if (!file) return false;
 		this.owners.get(owner).files.delete(id);
+		if (!storedDirOk(file.path)) {
+			this.log("uploads: a stored folder changed; nothing removed through it");
+			return true;
+		}
 		removeQuietly(file.path);
 		removeDirQuietly(path.dirname(file.path));
 		return true;

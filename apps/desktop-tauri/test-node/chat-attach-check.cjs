@@ -8,7 +8,9 @@
    - attach by the button (picker), by a native drop (a PATH, honoured in Rust only when the OS
      dropped it) and by pasting an IMAGE (pasted text stays text);
    - chips with a remove button before sending; removing one asks the daemon to delete it
-     (`chat_action {action:'discard', id}`);
+     (`chat_action {action:'discard', id}`); a conversation change discards them the same way;
+   - a submit the daemon refused after accepting it (its turn ends in a refusal, nothing ran)
+     brings the chips back to the composer, so the user can resend the same files;
    - limits checked on the page first, Spanish errors: 5 files (chat.rs submit cap; the daemon
      allows Gentle Dot's 10), 25 MB per file, 50 MB together;
    - a message may be files only (empty text); the submit carries the daemon ids;
@@ -109,7 +111,7 @@ function makeDom() {
   };
 }
 
-async function loadPage(overrides) {
+async function loadPage(overrides, answers) {
   const dom = makeDom();
   const invocations = [];
   const stateListeners = {};
@@ -133,9 +135,10 @@ async function loadPage(overrides) {
     if (cmd === 'chat_attach_data') {
       const at = args.indexOf(0x0A);
       const header = JSON.parse(Buffer.from(args.slice(0, at)).toString('utf8'));
-      if (header.name.includes('lleno')) return Promise.reject({ message: 'Demasiados archivos: hasta 10 por mensaje.' });
+      if (header.name.includes('lleno')) return Promise.reject({ message: 'Demasiados archivos: hasta 5 por mensaje.' });
       return Promise.resolve(stored(header.name, args.length - at - 1, 'image/png'));
     }
+    if (cmd === 'chat_action' && answers && args && args.payload && answers[args.payload.action]) return Promise.resolve(answers[args.payload.action](args.payload));
     return Promise.resolve(snapshot());
   };
   const listen = (name, cb) => {
@@ -289,6 +292,50 @@ async function check(name, fn) {
     const chipNodes = all.filter(n => n.className === 'message-attachment');
     assert.equal(chipNodes.length, 1, 'one chip drawn in the log');
     assert.match(JSON.stringify(chipNodes[0].children.map(c => c.textContent)), /foto\.png.*2,0 kB/);
+  });
+
+  await check('a submit the daemon refused after accepting it keeps the chips in the composer; the user can resend them', async () => {
+    const page = await loadPage(null, { submit: () => ({ turn_id: 't-77', duplicate: false }) });
+    await page.pick([page.fakeFile('foto.png', 9, 'image/png'), page.fakeFile('datos.csv', 4)]);
+    await page.type('mirá');
+    await page.send();
+    assert.equal(page.chips().length, 0, 'accepted: the strip empties while the turn runs');
+    await page.push({ turns: [{ turn_id: 't-77', state: 'thinking', seq: 1, user_text: 'mirá', reply: '', attachments: [] }], active_turn: 't-77' });
+    assert.equal(page.chips().length, 0);
+    await page.push({ turns: [{ turn_id: 't-77', state: 'error', seq: 2, user_text: 'mirá', reply: '', error: { code: 'busy', safe_message: 'Koda está ocupado.', retryable: true }, attachments: [] }], active_turn: null });
+    assert.deepEqual(page.chipNames(), ['foto.png', 'datos.csv'], 'refused: the chips come back so the user can resend');
+    assert.equal(page.actions('discard').length, 0, 'nothing is discarded: the daemon never spent them');
+    await page.send();
+    const submits = page.actions('submit');
+    assert.equal(submits.length, 2);
+    assert.deepEqual([...submits[1].attachments], [...submits[0].attachments], 'the resend carries the same daemon ids');
+  });
+
+  await check('a turn that ran (completed, interrupted) or whose files are gone never brings its chips back', async () => {
+    for (const end of [
+      { state: 'completed', reply: 'listo', error: null },
+      { state: 'error', reply: '', error: { code: 'interrupted', safe_message: 'x', retryable: true } },
+      { state: 'error', reply: '', error: { code: 'attachment_not_found', safe_message: 'x', retryable: true } },
+      { state: 'error', reply: 'a medias', error: { code: 'failed', safe_message: 'x', retryable: true } },
+    ]) {
+      const page = await loadPage(null, { submit: () => ({ turn_id: 't-78', duplicate: false }) });
+      await page.pick([page.fakeFile('foto.png', 9, 'image/png')]);
+      await page.send();
+      await page.push({ turns: [{ turn_id: 't-78', seq: 3, user_text: '', attachments: [], ...end }], active_turn: null });
+      assert.equal(page.chips().length, 0, JSON.stringify(end));
+      // a later refusal of another turn does not resurrect them either
+      await page.push({ turns: [{ turn_id: 't-78', seq: 4, user_text: '', attachments: [], ...end }, { turn_id: 't-79', state: 'error', seq: 5, user_text: 'x', reply: '', error: { code: 'busy' }, attachments: [] }] });
+      assert.equal(page.chips().length, 0, JSON.stringify(end));
+    }
+  });
+
+  await check('a conversation change clears the chips AND asks the daemon to delete their unsent files', async () => {
+    const page = await loadPage();
+    await page.pick([page.fakeFile('uno.txt', 1), page.fakeFile('dos.txt', 1)]);
+    assert.equal(page.chips().length, 2);
+    await page.push({ conversation_id: 'c-otra', turns: [] });
+    assert.equal(page.chips().length, 0);
+    assert.deepEqual(page.actions('discard').map(p => p.id).sort(), ['a-0000000000000001', 'a-0000000000000002']);
   });
 
   await check('page canSend: files without text are sendable; without files an empty draft is not', async () => {

@@ -2661,6 +2661,9 @@ fn chathost_attachments_daemon_refusals_are_spanish_and_settings_cannot_upload()
     let err = host.upload(&link, "main", "x.txt", b"hola", 2_000).unwrap_err();
     assert_eq!(err.code, "too_many_files");
     assert!(err.safe_message.starts_with("Demasiados archivos"), "{}", err.safe_message);
+    // the limit the user hits on the page (chat.js ATTACH_MAX, chat.rs MAX_ATTACHMENTS_PER_TURN), never another number
+    assert!(err.safe_message.contains("hasta 5 por mensaje"), "{}", err.safe_message);
+    assert!(!err.safe_message.contains("10"), "{}", err.safe_message);
     assert_eq!(host.upload(&link, "settings", "x.txt", b"hola", 50).unwrap_err().code, "send_refused");
     // no answer within the wait: a plain Spanish failure, never a hang
     let silent = FakeLink::new();
@@ -2689,6 +2692,28 @@ fn chathost_attachments_submit_carries_the_ids_and_the_turn_shows_the_chips() {
     assert!(link.sent().last().unwrap().line().starts_with("{\"type\":\"send\",\"text\":\"\""));
     // without files an empty text is still refused
     assert!(host2.route(&link, "main", &submit("  ", "req-00000003"), T0 + 10_000).is_err());
+}
+
+#[test]
+fn chathost_attachments_a_resend_after_the_daemon_refused_shows_the_chips_again() {
+    let link = storing_link();
+    let host = ChatHost::new();
+    let file = host.upload(&link, "main", "foto.png", b"PNGDATA", 2_000).unwrap();
+    let id = file["id"].as_str().unwrap().to_owned();
+    let chip = json!([{"name":"foto.png","size":7,"mime":"image/png"}]);
+    let with_file = |req: &str| Command::Submit { text: "mirá".into(), client_request_id: req.into(), attachments: vec![id.clone()] };
+    host.route(&link, "main", &with_file("req-0000a001"), T0).unwrap();
+    // the daemon refused the send (it never consumed the file): the errored row keeps its chips
+    let rid = wire_request_id(link.sent().iter().rev().find(|c| matches!(c, ChatCommand::Send { .. })).unwrap()).unwrap();
+    link.frame(json!({"type":"error","code":"busy","requestId":rid}));
+    let refused = last_turn(&host.project(&link.view(), T0 + 10));
+    assert_eq!(refused["state"], json!("error"));
+    assert_eq!(refused["attachments"], chip);
+    // the user resends the same files: the live row shows them again
+    host.route(&link, "main", &with_file("req-0000a002"), T0 + 20).unwrap();
+    let resent = last_turn(&host.project(&link.view(), T0 + 30));
+    assert_ne!(resent["turn_id"], refused["turn_id"]);
+    assert_eq!(resent["attachments"], chip, "{resent}");
 }
 
 #[test]
