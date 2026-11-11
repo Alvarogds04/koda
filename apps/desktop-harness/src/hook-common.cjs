@@ -77,7 +77,8 @@ function questionText(agent, detail) {
   if (agent === 'Claude Code' || agent === 'Codex') {
     const reasons = { 'long command': 'comando recortado', 'special characters': 'caracteres especiales',
       'touches credential files': 'ruta sensible', 'shell indirection': 'indirección de shell',
-      'hidden text may contain shell syntax': 'el texto oculto puede contener sintaxis de shell' };
+      'hidden text may contain shell syntax': 'el texto oculto puede contener sintaxis de shell',
+      'hidden text may be a path': 'el texto oculto puede ser una ruta' };
     const bash = detail.text?.startsWith('Bash: ') && detail.redactions !== undefined;
     const shown = detail.filePreview || bash ? detail.text : sanitizeText(detail.text, { max: 120 })
       .replace(/^mcp tool /, 'herramienta MCP ').replace('(file edit)', '(edición de archivo)').replace(/^tool$/, 'herramienta');

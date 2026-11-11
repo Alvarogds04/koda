@@ -19,7 +19,7 @@ const bash = command => describeToolDetailed('Bash', { command });
 test('PATTERNS is a documented list', () => {
   assert.ok(PATTERNS.length >= 10);
   for (const p of PATTERNS) assert.ok(p.id && p.group && p.description);
-  assert.deepEqual(redactCommand(5), { text: '', redactions: 0, spans: [] });
+  assert.deepEqual(redactCommand(5), { text: '', redactions: 0, spans: [], pathSpans: [] });
 });
 
 const POSITIVE = {
@@ -76,7 +76,7 @@ test('redaction negatives: innocent commands are untouched', () => {
   for (const c of ['ls -la /tmp', 'git status', 'npm test', 'echo hello', 'git log --oneline -n 5', 'curl -s https://example.com/a/b?page=2',
     'cat /home/dev/Apps/my-project/worktrees/abito-engine/README.md', 'grep -rn foo src/', 'make MODE=us', 'ls --all', 'node -p 1+1',
     'tool --keyboard x', 'git commit -m "fix tokenizer"', 'PATH=/usr/bin ls', 'echo a:b']) {
-    assert.deepEqual(redactCommand(c), { text: c, redactions: 0, spans: [] }, c);
+    assert.deepEqual(redactCommand(c), { text: c, redactions: 0, spans: [], pathSpans: [] }, c);
   }
 });
 test('redactions counts and fixed marker', () => {
@@ -553,3 +553,187 @@ for (const [agent, handler, mod] of ADAPTERS) {
 }
 
 // K2-08 T1: Codex runs the very same matrix above (ADAPTERS): redaction, lossy => no allow, forged allow => nothing printed.
+
+// K2-08 T1b (S7, L8 «a», verifier D1): a hidden part that looks like a path leaves no «Aprobar» on the card (Claude and Codex);
+// a hidden token keeps «Aprobar». The hidden text never reaches the wire in either case.
+const T1B_PATHS = ['rm -rf /home/alvaro/Apps/koda/worktrees/k2-08-codex-respuesta/apps',
+  'rm -rf C:\\Users\\Runner1\\AppData\\Local\\Temp\\abc123XYZdefGHI456jklMNO789pqrSTU012vwxYZ'];
+const T1B_BEARER = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U';
+for (const [agent, handler, mod] of ADAPTERS) {
+  test(`T1b e2e ${agent}: a hidden path offers only deny/terminal; a forged allow prints nothing`, async t => {
+    for (const command of T1B_PATHS) {
+      for (const value of ['allow', 'terminal', 'deny']) {
+        const rcv = await fakeReceiver(t, { questions: true });
+        const p = answerer(rcv, value);
+        const r = await handler({ event: 'permission-request', input: input(command), env: envOf(rcv), argv: [] });
+        await p;
+        const q = rcv.frames.find(f => f.type === 'question');
+        assert.deepEqual(q.options.map(o => o.value), ['deny', 'terminal'], command);
+        assert.match(q.text, /\[REDACTED\]/, command);
+        assert.match(q.text, /el texto oculto puede ser una ruta; detalles solo en la terminal; decidir en la terminal\)$/, command);
+        assert.equal(r.stdout, value === 'deny' ? mod.DENY : '', command);
+        assert.ok(!rcv.rawFrames.join('').includes('abc123XYZdefGHI456') && !rcv.rawFrames.join('').includes('k2-08-codex-respuesta/apps'), command);
+        checkSize(rcv, q);
+      }
+    }
+  });
+  test(`T1b e2e ${agent}: a hidden Bearer token stays approvable and hidden`, async t => {
+    const rcv = await fakeReceiver(t, { questions: true });
+    const p = answerer(rcv, 'allow');
+    const r = await handler({ event: 'permission-request', input: input(`curl -H "Authorization: Bearer ${T1B_BEARER}" https://api.example.com`), env: envOf(rcv), argv: [] });
+    await p;
+    const q = rcv.frames.find(f => f.type === 'question');
+    assert.equal(q.text, `${agent} pide permiso para Bash: curl -H "Authorization: [REDACTED]" https://api.example.com (secretos ocultos)`);
+    assert.deepEqual(q.options.map(o => o.value), ['allow', 'deny']);
+    assert.equal(r.stdout, mod.ALLOW);
+    assert.ok(!rcv.rawFrames.join('').includes(T1B_BEARER.slice(0, 20)));
+  });
+}
+
+// K2-08 T1b (L10 «a»): byte identity. L10 changes only the lossy classification, never WHICH text is redacted:
+// redactCommand text + spans for this corpus must equal the snapshot frozen from the code BEFORE the L10 change.
+const HEX40 = '0123456789abcdef0123456789abcdef01234567', HEX32 = '0123456789abcdef0123456789abcdef';
+// CORPUS-BEGIN
+const BYTE_CORPUS = [
+  `${RMRF} --password=foo/../../etc/pw`, 'mytool --api-key etc/pw', 'mytool --token=a/b', 'mytool --token "a b/c"',
+  'mytool --password-file=mystuff/pw.txt', 'PASSWORD=mystuff/pw.txt mytool run', 'curl --key certs/client.crt https://h',
+  'curl -H "X-Api-Key: dir/sub/file" https://h', `${RMRF} --token ..`, `${RMRF} --token .`, `${RMRF} --token '..'`,
+  `${RMRF} ~/x://${HEX40}`, `${RMRF} ~/x/${HEX40}`, `curl https://${HEX40}.example.com/x`,
+  'curl -H "Authorization: Bearer abc/def+ghi=" https://api.example.com', 'curl -H "Authorization: Basic dXNlcjpwYXNz/w==" https://api.example.com',
+  "curl -H 'Proxy-Authorization: Basic dTpw' u", 'OPENAI_API_KEY=sk-proj-AbCdEf1234567890GhIjKl npm test',
+  'gh api x ghp_AbCdEf1234567890GhIjKlMnOpQrSt', 'git push https://x-access-token:ghp_AbCdEf1234567890GhIjKlMnOpQrSt@github.com/o/r.git',
+  'psql postgres://u:p@h/db', `mytool verify ${HEX40}`, 'echo aGVsbG8gd29ybGQgdGhpcyBpcyBhIGxvbmcgYmFzZTY0IHN0cmluZwAb1',
+  `${RMRF} /tmp/build-${HEX32}`, `${RMRF} build/${HEX32}/out`, `${RMRF} /home/alvaro/Apps/koda/worktrees/k2-08-codex-respuesta/apps`,
+  'ls ~/Apps2/koda/worktrees/k2-08-codex-respuesta/apps', 'curl "https://h/p?token=abc/def&x=1"', 'curl -u bob:pw https://h',
+  'curl -u bob:p/w https://h', 'x Bearer tok123 y', `${RMRF} Authorization: Bearer ~/`, `${RMRF} Basic /etc/x`,
+  'http GET https://h Authorization:"Bearer abc/def"', `curl -d '{"Authorization":"Bearer abc/def"}' https://h`,
+  'docker login -u me -p s3cret reg', 'docker login -p a/b reg', 'sshpass -p "x/y" ssh h', 'mysql -uroot -pse/cret db',
+  'openssl enc -pass pass:x/y -in f', 'sqlplus scott/tiger@db', 'gcloud auth print-access-token a/b', 'login token a/b',
+  'curl -b "sid=a/b" https://h', `curl -d '{"password": "a/b"}' https://h`, 'export TOKEN=abc123 && ls',
+  'mytool --secret=C:\\Users\\x\\s.txt', `${RMRF} -- --token=x\\y`, 'ls -la /tmp', 'git status',
+  'echo -----BEGIN RSA PRIVATE KEY-----abc/def-----END RSA PRIVATE KEY-----', 'curl -H "Cookie: a=b/c; d=e" u',
+  'curl https://h/AbCdEfGhIjKlMnOp/QrStUvWxYz0123456789abcdEFGH', 'http -a bob:p/w https://h', `curl -H "Authorization: Bearer ${'a'.repeat(10)}" u`,
+];
+// CORPUS-END
+// Frozen from redact.cjs BEFORE the L10 change (T1b as of L9): [text, spans] per BYTE_CORPUS entry. Do not regenerate.
+const BYTE_SNAPSHOT = [
+  ["rm -rf --password=[REDACTED]",["foo/../../etc/pw"]],
+  ["mytool --api-key [REDACTED]",["etc/pw"]],
+  ["mytool --token=[REDACTED]",["a/b"]],
+  ["mytool --token [REDACTED]",["\"a b/c\""]],
+  ["mytool --password-file=[REDACTED]",["mystuff/pw.txt"]],
+  ["PASSWORD=[REDACTED] mytool run",["mystuff/pw.txt"]],
+  ["curl --key [REDACTED] https://h",["certs/client.crt"]],
+  ["curl -H \"X-Api-Key: [REDACTED]\" https://h",["dir/sub/file"]],
+  ["rm -rf --token [REDACTED]",[".."]],
+  ["rm -rf --token [REDACTED]",["."]],
+  ["rm -rf --token [REDACTED]",["'..'"]],
+  ["rm -rf ~/x://[REDACTED]",["0123456789abcdef0123456789abcdef01234567"]],
+  ["rm -rf ~/x/[REDACTED]",["0123456789abcdef0123456789abcdef01234567"]],
+  ["curl https://[REDACTED].example.com/x",["0123456789abcdef0123456789abcdef01234567"]],
+  ["curl -H \"Authorization: [REDACTED]\" https://api.example.com",["Bearer abc/def+ghi="]],
+  ["curl -H \"Authorization: [REDACTED]\" https://api.example.com",["Basic dXNlcjpwYXNz/w=="]],
+  ["curl -H 'Proxy-Authorization: [REDACTED]' u",["Basic dTpw"]],
+  ["OPENAI_API_KEY=[REDACTED] npm test",["sk-proj-AbCdEf1234567890GhIjKl"]],
+  ["gh api x [REDACTED]",["ghp_AbCdEf1234567890GhIjKlMnOpQrSt"]],
+  ["git push https://[REDACTED]@github.com/o/r.git",["x-access-token:ghp_AbCdEf1234567890GhIjKlMnOpQrSt"]],
+  ["psql postgres://[REDACTED]@h/db",["u:p"]],
+  ["mytool verify [REDACTED]",["0123456789abcdef0123456789abcdef01234567"]],
+  ["echo [REDACTED]",["aGVsbG8gd29ybGQgdGhpcyBpcyBhIGxvbmcgYmFzZTY0IHN0cmluZwAb1"]],
+  ["rm -rf /tmp/build-[REDACTED]",["0123456789abcdef0123456789abcdef"]],
+  ["rm -rf build/[REDACTED]/out",["0123456789abcdef0123456789abcdef"]],
+  ["rm -rf [REDACTED]",["/home/alvaro/Apps/koda/worktrees/k2-08-codex-respuesta/apps"]],
+  ["ls ~[REDACTED]",["/Apps2/koda/worktrees/k2-08-codex-respuesta/apps"]],
+  ["curl \"https://h/p?token=[REDACTED]&x=1\"",["abc/def"]],
+  ["curl -u [REDACTED] https://h",["bob:pw"]],
+  ["curl -u [REDACTED] https://h",["bob:p/w"]],
+  ["x Bearer [REDACTED] y",["tok123"]],
+  ["rm -rf Authorization: [REDACTED]",["Bearer ~/"]],
+  ["rm -rf Basic [REDACTED]",["/etc/x"]],
+  ["http GET https://h Authorization:\"Bearer [REDACTED]\"",["abc/def"]],
+  ["curl -d '{\"Authorization\":[REDACTED]}' https://h",["abc/def","\"Bearer [REDACTED]\""]],
+  ["docker login -u me -p [REDACTED] reg",["s3cret"]],
+  ["docker login -p [REDACTED] reg",["a/b"]],
+  ["sshpass -p [REDACTED] ssh h",["\"x/y\""]],
+  ["mysql -uroot -p[REDACTED] db",["se/cret"]],
+  ["openssl enc -pass [REDACTED] -in f",["pass:x/y"]],
+  ["sqlplus [REDACTED]@db",["scott/tiger"]],
+  ["gcloud auth print-access-token [REDACTED]",["a/b"]],
+  ["login token [REDACTED]",["a/b"]],
+  ["curl -b [REDACTED] https://h",["\"sid=a/b\""]],
+  ["curl -d '{\"password\": [REDACTED]}' https://h",["\"a/b\""]],
+  ["export TOKEN=[REDACTED] && ls",["abc123"]],
+  ["mytool --secret=[REDACTED]",["C:\\Users\\x\\s.txt"]],
+  ["rm -rf -- --token=[REDACTED]",["x\\y"]],
+  ["ls -la /tmp",[]],
+  ["git status",[]],
+  ["echo [REDACTED]",["-----BEGIN RSA PRIVATE KEY-----abc/def-----END RSA PRIVATE KEY-----"]],
+  ["curl -H \"Cookie: [REDACTED]\" u",["a=b/c; d=e"]],
+  ["curl https:[REDACTED]",["//h/AbCdEfGhIjKlMnOp/QrStUvWxYz0123456789abcdEFGH"]],
+  ["http -a [REDACTED] https://h",["bob:p/w"]],
+  ["curl -H \"Authorization: [REDACTED]\" u",["Bearer aaaaaaaaaa"]],
+];
+test('T1b L10: redacted text and spans are byte-identical to the frozen pre-L10 snapshot', () => {
+  assert.equal(BYTE_CORPUS.length, BYTE_SNAPSHOT.length);
+  BYTE_CORPUS.forEach((c, i) => { const r = redactCommand(c); assert.deepEqual([r.text, r.spans], BYTE_SNAPSHOT[i], c); });
+});
+
+// K2-08 T1b (L10 «a», verifier D-a/D-b): ANY hidden part whose original text contains / or \, or is exactly . or ..
+// (quotes stripped), makes the card lossy, whatever rule hid it. Only exception: the scheme-prefixed value of a quoted
+// Authorization header (Bearer/Basic). The `://` exception for hex/base64 runs is gone (D-b).
+const L10_LOSSY = [
+  `${RMRF} --password=foo/../../etc/pw`, 'mytool --api-key etc/pw', 'mytool --token=a/b', 'mytool --token "a b/c"',
+  'mytool --password-file=mystuff/pw.txt', 'PASSWORD=mystuff/pw.txt mytool run', 'curl --key certs/client.crt https://h',
+  'curl -H "X-Api-Key: dir/sub/file" https://h', `${RMRF} --token ..`, `${RMRF} --token .`, `${RMRF} --token '..'`,
+  `${RMRF} ~/x://${HEX40}`, `${RMRF} Authorization: Bearer ~/`, 'x Bearer tok/x y', 'curl -u bob:p/w https://h',
+  'curl "https://h/p?token=abc/def&x=1"', 'docker login -p a/b reg',
+  // D-c: `.`/`..` split by quotes is still a dot path once the shell removes the quotes
+  `${RMRF} token ..""`, `${RMRF} token .""`, `${RMRF} token ."."`, `${RMRF} --token=..""`, `${RMRF} --token=.''.`, `${RMRF} --token=""."."`,
+  // D-d: the Authorization exception only holds when the header begins a shell word
+  `${RMRF} /tmp/a="Authorization: Bearer a/b"`, `${RMRF} /tmp/x-H"Authorization: Bearer a/b"`,
+];
+test('T1b L10: every hidden relative path / dot / separator is lossy (hidden path)', () => {
+  for (const c of L10_LOSSY) {
+    const d = bash(c);
+    assert.equal(d.lossy, true, c);
+    assert.ok(['hidden text may be a path', 'hidden text may contain shell syntax'].includes(d.reason), c + ' -> ' + d.reason);
+    assert.ok(redactCommand(c).pathSpans.length > 0, c);
+  }
+  for (const c of L10_LOSSY.slice(0, 11)) assert.equal(bash(c).reason, 'hidden text may be a path', c);
+});
+test('T1b L10: real secrets without a separator, and quoted Authorization schemes, stay approvable', () => {
+  const JWT = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U';
+  for (const c of [`curl -H "Authorization: Bearer ${JWT}/x+y=" https://api.example.com`, 'curl -H "Authorization: Bearer abc/def+ghi=" https://api.example.com',
+    'curl -H "Authorization: Basic dXNlcjpwYXNz/w==" https://api.example.com', "curl -H 'Authorization: Basic dXNlcjpwYXNz' https://api.example.com",
+    "curl -H 'Proxy-Authorization: Basic dTpw' u", 'OPENAI_API_KEY=sk-proj-AbCdEf1234567890GhIjKl npm test',
+    'gh api x ghp_AbCdEf1234567890GhIjKlMnOpQrSt', `mytool verify ${HEX40}`, 'echo aGVsbG8gd29ybGQgdGhpcyBpcyBhIGxvbmcgYmFzZTY0IHN0cmluZwAb1',
+    'git push https://x-access-token:ghp_AbCdEf1234567890GhIjKlMnOpQrSt@github.com/o/r.git', 'psql postgres://u:p@h/db',
+    'curl -u bob:pw https://h', 'mytool --token=abc123', `${RMRF} /tmp/build-${HEX32}`]) {
+    const d = bash(c);
+    assert.equal(d.lossy, false, c + ' -> ' + d.reason);
+    assert.ok(d.redactions > 0, c);
+    assert.deepEqual(redactCommand(c).pathSpans, [], c);
+  }
+  for (const c of ['ls -la /tmp', `${RMRF} ./x`, 'cat ../a/b', 'git -C ../other status']) {
+    const d = bash(c);
+    assert.deepEqual([d.lossy, d.text, d.redactions], [false, 'Bash: ' + c, 0], c);
+  }
+});
+for (const [agent, handler, mod] of ADAPTERS) {
+  test(`T1b L10 e2e ${agent}: a hidden relative path offers only deny/terminal; a forged allow prints nothing`, async t => {
+    for (const command of [`${RMRF} --password=foo/../../etc/pw`, 'curl -H "X-Api-Key: dir/sub/file" https://h', `${RMRF} --token ..`, `${RMRF} ~/x://${HEX40}`]) {
+      for (const value of ['allow', 'terminal', 'deny']) {
+        const rcv = await fakeReceiver(t, { questions: true });
+        const p = answerer(rcv, value);
+        const r = await handler({ event: 'permission-request', input: input(command), env: envOf(rcv), argv: [] });
+        await p;
+        const q = rcv.frames.find(f => f.type === 'question');
+        assert.deepEqual(q.options.map(o => o.value), ['deny', 'terminal'], command);
+        assert.match(q.text, /el texto oculto puede ser una ruta; detalles solo en la terminal; decidir en la terminal\)$/, command);
+        assert.equal(r.stdout, value === 'deny' ? mod.DENY : '', command);
+        assert.ok(!/foo\/\.\.|dir\/sub|0123456789abcdef0123/.test(rcv.rawFrames.join('')), command);
+        checkSize(rcv, q);
+      }
+    }
+  });
+}
