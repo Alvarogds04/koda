@@ -170,13 +170,29 @@ test('Windows: the installed island starts with no node anywhere; its daemon run
 });
 
 /* ---------------- this check itself runs in CI (RDD advisory 7) ---------------- */
-test('this check runs in CI on all 3 OS: run-node-checks.cjs (no arguments) selects it, and island-checks runs exactly that', () => {
+test('this check runs in CI on all 3 OS: run-node-checks.cjs (no file arguments) selects it, and the island-checks shards cover exactly that set', () => {
   const runner = read(path.join(repo, 'run-node-checks.cjs'));
   assert.match(runner, /\.filter\(\(f\) => f\.endsWith\('-check\.cjs'\) && f !== 'producer-check\.cjs'\)/, 'the default set is every *-check.cjs but producer-check');
   assert.ok(fs.readdirSync(path.join(crate, 'test-node')).includes('no-node-smoke-check.cjs'));
   const checks = job('island-checks');
   assert.match(checks, /os: \[ubuntu-latest, macos-26, windows-latest\]/);
-  assert.match(checks, /^\s+node run-node-checks\.cjs\s*$/m, 'island-checks runs the runner with no argument (the whole default set)');
+  // The default set is split in N shards over the whole set (never a file list): the matrix lists 1..N and the runner is
+  // invoked with `--shard <i>/<N>` and nothing else, so no check can fall outside every shard.
+  const shards = checks.match(/^\s+shard: \[([0-9, ]+)\]\s*$/m);
+  assert.ok(shards, 'island-checks has a shard matrix');
+  const list = shards[1].split(',').map((s) => Number(s.trim()));
+  const n = list.length;
+  assert.deepEqual(list, Array.from({ length: n }, (_, i) => i + 1), 'shards are 1..N');
+  const call = checks.match(/^\s+node run-node-checks\.cjs --shard \$\{\{ matrix\.shard \}\}\/([0-9]+)\s*$/m);
+  assert.ok(call, 'island-checks runs the runner with only --shard <matrix.shard>/<N> (the whole default set, split)');
+  assert.equal(Number(call[1]), n, 'the shard count in the invocation equals the matrix size');
+  // The runner really partitions: every default file lands in exactly one of the N shards (`--list` prints the selection).
+  const run = (args) => require('node:child_process').execFileSync(process.execPath, [path.join(repo, 'run-node-checks.cjs'), ...args], { encoding: 'utf8' });
+  const all = run(['--list']).trim().split(/\r?\n/);
+  const seen = [];
+  for (let i = 1; i <= n; i++) seen.push(...run(['--shard', `${i}/${n}`, '--list']).trim().split(/\r?\n/));
+  assert.deepEqual(seen.sort(), [...all].sort(), 'the N shards cover the default set exactly once');
+  assert.ok(all.includes(path.join('test-node', 'no-node-smoke-check.cjs')), 'this check is in the default set');
 });
 
 console.log(`no-node-smoke-check: ${passed} passed`);
