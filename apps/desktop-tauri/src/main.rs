@@ -2549,3 +2549,18 @@ mod restore_lock_order_tests {
         assert_eq!(body.matches("with_pending(").count(), 1);
     }
 }
+
+#[cfg(test)]
+mod island_window_config_tests {
+    // island-free-drag S3: «Un clic en el círculo abre la isla». The island never takes focus, so on
+    // macOS its window is usually not key and the app is not active: without acceptFirstMouse AppKit
+    // swallows the first click to activate Koda and the disc needs a second click (and a first drag
+    // does not move it). The flag is macOS-only; Linux and Windows ignore it.
+    #[test]
+    fn the_island_window_accepts_the_first_click_on_macos() {
+        let conf: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        let main = &conf["app"]["windows"][0];
+        assert_eq!(main["label"], "main");
+        assert_eq!(main["acceptFirstMouse"], true);
+    }
+}
