@@ -467,24 +467,14 @@ test('R3: shell indirection is lossy; plain pipes, redirects and && are not', ()
 const envOf = r => ({ ABITO_DESKTOP_SOCKET: r.endpoint, ABITO_SOCKET_DIR: r.runtime });
 const answerer = (rcv, value) => rcv.next('question').then(q => rcv.send({ v: 1, type: 'answer', questionVersion: 1, project: q.project,
   sessionId: q.sessionId, at: Date.now(), id: q.id, source: 'human', answer: { type: 'option', value } }));
-// S2 (ad0ae382) keeps Claude answering; S4/T2 makes Codex NOTICE-ONLY, so its rows live in the `Codex (aviso)` block
-// at the end of this file. The redaction contract itself (never a secret on the wire) is asserted for both.
-const ADAPTERS = [['Claude Code', viaPipe(claude.handleClaudeHook), claude]];
+// S2 (ad0ae382) keeps Claude answering; K2-08 T1 (S4) makes Codex answer the same way, so both run the same rows:
+// the redaction contract (never a secret on the wire) and «not shown in full => no allow».
+const ADAPTERS = [['Claude Code', viaPipe(claude.handleClaudeHook), claude], ['Codex', viaPipe(codex.handleCodexHook), codex]];
 const input = command => JSON.stringify({ session_id: 's', cwd, hook_event_name: 'PermissionRequest', tool_name: 'Bash',
   tool_input: { command, description: 'SECRETDESC' }, last_assistant_message: 'SECRETREPLY' });
 const checkSize = (rcv, q) => {
   assert.ok([...q.text].length <= 500);
   assert.ok(Buffer.byteLength(rcv.rawFrames.find(x => x.includes('"question"') && x.includes('kind'))) <= 4096);
-};
-const codexNotice = async (t, command) => {
-  const rcv = await fakeReceiver(t, { questions: true });
-  const r = await viaPipe(codex.handleCodexHook)({ event: 'permission-request', input: input(command), env: envOf(rcv), argv: [] });
-  const notice = await rcv.seen('attention');
-  assert.equal(r.stdout, ''); assert.equal(r.exitCode, 0);
-  assert.equal(rcv.frames.filter(f => f.type === 'questions_hello' || f.type === 'question').length, 0, 'never a question');
-  assert.ok([...notice.detail].length <= 200);
-  assert.ok(Buffer.byteLength(JSON.stringify(notice)) + 1 <= 512);
-  return { rcv, r, notice };
 };
 for (const [agent, handler, mod] of ADAPTERS) {
   test(`e2e ${agent}: lossless redacted command is shown, allow/deny offered, allow yields the allow line`, async t => {
@@ -562,45 +552,4 @@ for (const [agent, handler, mod] of ADAPTERS) {
   });
 }
 
-// ---- S4/T2: the Codex rows of the same matrix, as ONE attention notice (never a decision) ----
-test('e2e Codex: lossless redacted command is shown in the notice; nothing is decided', async t => {
-  const { rcv, notice } = await codexNotice(t, 'curl -H "Authorization: Bearer SECRETBEARER1" -u adm:SECRETPW2 https://h/x?token=SECRETQ3 && ls');
-  assert.equal(notice.title, 'Codex te pide permiso');
-  assert.equal(notice.detail, 'Bash: curl -H "Authorization: [REDACTED]" -u [REDACTED] https://h/x?token=[REDACTED] && ls · Respondé en la terminal');
-  assert.doesNotMatch(rcv.rawFrames.join(''), /SECRET/);
-  assert.equal(rcv.frames.filter(f => f.type === 'attention').length, 1, 'one notice, no options');
-});
-test('e2e Codex: no redaction => no marker suffix, still one notice and no decision', async t => {
-  const { rcv, notice } = await codexNotice(t, 'ls -la /tmp');
-  assert.equal(notice.detail, 'Bash: ls -la /tmp · Respondé en la terminal');
-  assert.doesNotMatch(notice.detail, /REDACTED|secretos ocultos/);
-  assert.doesNotMatch(rcv.rawFrames.join(''), /SECRETDESC|SECRETREPLY/);
-});
-for (const [command, reason] of [['cat ~/.ssh/id_rsa', 'touches credential files'], ['echo $(id) TOKEN=SECRETX9', 'shell indirection'],
-  ['echo l\u0455 TOKEN=SECRETX9', 'special characters'], ['echo ' + 'word '.repeat(120) + 'TOKEN=SECRETX9', 'long command'], ['mysql -pSECRETX9', 'special characters']]) {
-  test(`e2e Codex: lossy (${reason}) still sends only a redacted notice with the actionable tail`, async t => {
-    const { rcv, notice } = await codexNotice(t, command);
-    assert.match(notice.detail, / · Respondé en la terminal$/);
-    assert.doesNotMatch(rcv.rawFrames.join(''), /SECRET/);
-    assert.doesNotMatch(JSON.stringify(notice), /Aprobar una vez|Rechazar|Decidir en la terminal|"allow"|"deny"/,
-      'a notice offers nothing to answer');
-  });
-}
-test('e2e Codex: new R1 secret formats never reach the wire; hidden shell syntax stays in the terminal', async t => {
-  for (const command of [...R1_COMMANDS, 'echo a ; X-Token: ' + PLANTED + ' > /dev/null', 'cat f -----BEGIN PRIVATE KEY----- ' + PLANTED + ' ; ls']) {
-    const { rcv } = await codexNotice(t, command);
-    assert.ok(!rcv.rawFrames.join('').includes(PLANTED), command);
-  }
-  const { rcv, notice } = await codexNotice(t, 'curl -H "Cookie: a=b; c=' + PLANTED + '" h');
-  assert.ok(!rcv.rawFrames.join('').includes(PLANTED));
-  assert.match(notice.detail, / · Respondé en la terminal$/);
-});
-test('e2e Codex: max-length and 4-byte-character commands stay inside 200 cp / 512 bytes and never crash', async t => {
-  const cases = ['echo ' + 'a '.repeat(187) + 'ab', 'echo ' + 'a '.repeat(400), '😀'.repeat(2000), 'é'.repeat(2000) + ' TOKEN=SECRETX9', 'echo ' + '\ud800'.repeat(50)];
-  for (const command of cases) {
-    const { rcv, notice } = await codexNotice(t, command);
-    assert.ok([...notice.detail].length <= 200);
-    assert.match(notice.detail, / · Respondé en la terminal$/, 'the actionable tail always survives');
-    assert.doesNotMatch(rcv.rawFrames.join(''), /SECRET/);
-  }
-});
+// K2-08 T1: Codex runs the very same matrix above (ADAPTERS): redaction, lossy => no allow, forged allow => nothing printed.

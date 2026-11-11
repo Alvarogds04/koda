@@ -157,17 +157,19 @@ test('R13 h + differential: HEAD source in memory, Bash/Write/Codex stdout and e
       }
     }
   }
-  // S4/T2: whatever the island would have answered, Codex prints nothing and mints no suggestion rule.
+  // K2-08 T1 (S6): Codex answers allow/deny only — a suggestion is never offered and never minted into a rule.
   for (const value of ['allow', 'deny', 'allow_suggestion_1', 'forged']) {
     const input = JSON.stringify({ cwd, hook_event_name: 'PermissionRequest', tool_name: 'Bash', tool_input: { command: 'ls' }, permission_suggestions: [rule()] });
-    let contacted = 0;
+    let asked = null;
     const opts = { event: 'permission-request', env: TEST_ENV, input, clientFactory: () => ({
-      ask: async () => { contacted++; return { status: 'answered', answer: { type: 'option', value } }; },
-      attention: async () => { contacted++; return { status: 'sent' }; },
+      ask: async q => { asked = q; return { status: 'answered', answer: { type: 'option', value } }; },
       notify: async () => ({ status: 'sent' }), clearAttention: async () => ({ status: 'sent' }) }) };
     const r = await handleCodexHook(opts);
-    assert.deepEqual({ stdout: r.stdout, exitCode: r.exitCode }, { stdout: '', exitCode: 0 }, value);
-    assert.equal(contacted, 1, 'one notice, never a question');
+    assert.deepEqual(asked.options.map(o => o.value), ['allow', 'deny'], value);
+    assert.doesNotMatch(r.stdout, /updatedPermissions|addRules/);
+    const behavior = r.stdout ? JSON.parse(r.stdout).hookSpecificOutput.decision.behavior : undefined;
+    assert.equal(behavior, value === 'allow' || value === 'deny' ? value : undefined, value);
+    assert.equal(r.exitCode, 0);
   }
-  t.diagnostic(`HEAD ${revision}: ${count} no-suggestion stdout/exit comparisons identical; Codex never answers (4 answers).`);
+  t.diagnostic(`HEAD ${revision}: ${count} no-suggestion stdout/exit comparisons identical; Codex answers allow/deny only (4 answers).`);
 });

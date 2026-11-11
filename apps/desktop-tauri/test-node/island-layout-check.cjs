@@ -194,6 +194,19 @@ test('T4b approvalView: the Spanish producer pair wears the approval look and ke
   assert.deepEqual([mcp.tool, mcp.command, mcp.title], [null, 'herramienta MCP foo', 'Permiso:']);
   assert.equal(L.compactView({ rows: [], focusId: null, pending: { kind: 'question', agent: 'claude-code', text: 'Codex pide permiso para Bash: ls', options: [{ index: 0, label: 'Aprobar una vez' }, { index: 1, label: 'Rechazar' }] } }).badge, 'approval');
 });
+// K2-08 T1: the exact cards the Codex hook now sends (apps/desktop-harness/src/codex.cjs). A Bash command shown in full is
+// an approval; apply_patch (lossy until T4) and any other request not shown in full never gets an approve button.
+test('K2-08 T1 approvalView: the Codex hook cards — Bash approvable, apply_patch and lossy commands never approvable', () => {
+  const bash = L.approvalView(es('Codex pide permiso para Bash: ls'), 'Codex');
+  assert.deepEqual([bash.title, bash.tool, bash.command], ['Ejecutar:', 'Bash', 'ls']);
+  assert.deepEqual(rows2(bash), [['reject', 'Rechazar', 'N', 1], ['approve', 'Aprobar una vez', 'Y', 0]]);
+  const lossyOpts = [opt(0, 'Rechazar'), opt(1, 'Decidir en la terminal')];
+  for (const text of ['Codex pide permiso para apply_patch (edición de archivo) (detalles solo en la terminal; decidir en la terminal)',
+    'Codex pide permiso para Bash: cat ~/.ssh/id_rsa (ruta sensible; detalles solo en la terminal; decidir en la terminal)']) {
+    assert.equal(L.approvalView(es(text, lossyOpts), 'Codex'), null, text);
+    assert.equal(L.approvalView(es(text), 'Codex'), null, 'a lossy text stays non-approvable even with a forged pair');
+  }
+});
 test('T4b approvalView: near matches, lossy, extra options, free text, forms and mixed wording stay NOT an approval', () => {
   const T0 = 'Claude Code pide permiso para Bash: ls';
   const no = (n, l) => assert.equal(L.approvalView(n, 'Claude Code'), null, l);

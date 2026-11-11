@@ -1,6 +1,6 @@
 'use strict';
-// S4/T2 e2e through the real CLI: the Codex hooks only ever send a NOTICE and return at once (empty stdout, exit 0).
-// Codex's approval prompt stays in the terminal; nothing here can answer for Codex.
+// K2-08 T1 e2e through the real CLI: a Codex permission request is answered from the island (allow/deny line on stdout)
+// or, whatever else happens, prints nothing so Codex's own prompt asks in the terminal. Plan-mode questions stay a notice.
 const { test } = require('node:test');
 const { hookNodeArgs, pipeEnv } = require('./platform-env.cjs');
 const assert = require('node:assert/strict');
@@ -28,15 +28,35 @@ function run(args, input, env, { closeStdin = true } = {}) {
 }
 const envOf = r => ({ ABITO_DESKTOP_SOCKET: r.endpoint, ABITO_SOCKET_DIR: r.runtime, ...pipeEnv(r) });
 const silent = r => { assert.equal(r.code, 0); assert.equal(r.stdout, ''); assert.equal(r.stderr, ''); };
+const answerer = (rcv, value) => rcv.next('question').then(q => rcv.send({ v: 1, type: 'answer', questionVersion: 1, project: q.project,
+  sessionId: q.sessionId, at: Date.now(), id: q.id, source: 'human', answer: { type: 'option', value } }));
+const ALLOW = '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}\n';
+const DENY = '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"Denied from the Koda island by the user."}}}\n';
 
-test('codex e2e: permission-request sends a notice and prints nothing', async t => {
-  const rcv = await fakeReceiver(t, { questions: true });
-  const r = await run(['codex', 'permission-request'], permission, envOf(rcv));
-  silent(r);
-  const a = await rcv.seen('attention');
-  assert.equal(a.title, 'Codex te pide permiso');
-  assert.equal(a.detail, 'Bash: ls · Respondé en la terminal');
-  assert.equal(rcv.frames.filter(f => f.type === 'questions_hello').length, 0, 'the island is never asked');
+test('codex e2e: permission-request asks the island; allow and deny print the documented line', async t => {
+  for (const [value, line] of [['allow', ALLOW], ['deny', DENY]]) {
+    const rcv = await fakeReceiver(t, { questions: true });
+    const p = answerer(rcv, value);
+    const r = await run(['codex', 'permission-request'], permission, envOf(rcv));
+    await p;
+    assert.equal(r.code, 0); assert.equal(r.stderr, '');
+    assert.equal(r.stdout, line);
+    const q = rcv.frames.find(f => f.type === 'question');
+    assert.equal(q.agent, 'codex');
+    assert.equal(q.text, 'Codex pide permiso para Bash: ls');
+    assert.equal(rcv.frames.filter(f => f.type === 'attention').length, 0, 'no legacy notice');
+  }
+});
+
+test('codex e2e: busy island and MCP requests print nothing', async t => {
+  let rcv = await fakeReceiver(t, { questions: true });
+  const busy = rcv.next('question').then(q => rcv.replyBusy(q, 1));
+  silent(await run(['codex', 'permission-request'], permission, envOf(rcv)));
+  await busy;
+  rcv = await fakeReceiver(t, { questions: true });
+  const mcp = JSON.stringify({ ...JSON.parse(permission), tool_name: 'mcp__github__create_issue', tool_input: { title: 'x' } });
+  silent(await run(['codex', 'permission-request'], mcp, envOf(rcv)));
+  assert.equal(rcv.frames.length, 0, 'MCP stays in the terminal');
 });
 
 test('codex e2e: plan-mode questions (PreToolUse request_user_input) send «Codex te pregunta»', async t => {
@@ -57,11 +77,16 @@ test('codex e2e: every no-island path is silent (exit 0, empty stdout, empty std
   assert.equal(rcv.frames.length, 0);
 });
 
-test('codex e2e: the old --timeout-sec flag still parses and changes nothing', async t => {
-  const rcv = await fakeReceiver(t, { questions: true });
-  const r = await run(['codex', 'permission-request', '--timeout-sec', '20'], permission, envOf(rcv));
-  silent(r);
-  assert.equal((await rcv.seen('attention')).title, 'Codex te pide permiso');
+test('codex e2e: --timeout-sec sets the island wait (capped at 60 s)', async t => {
+  for (const [sec, budget] of [['40', 35000], ['125', 60000]]) {
+    const rcv = await fakeReceiver(t, { questions: true });
+    const p = answerer(rcv, 'deny');
+    const r = await run(['codex', 'permission-request', '--timeout-sec', sec], permission, envOf(rcv));
+    await p;
+    assert.equal(r.stdout, DENY);
+    const q = rcv.frames.find(f => f.type === 'question');
+    assert.equal(q.expiresAt - q.at, budget);
+  }
 });
 
 test('codex e2e: post-tool-use clears the pending notice at once, quietly', async t => {

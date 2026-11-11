@@ -21,12 +21,15 @@
 //! can become a notice. **A settled turn is never a successful task or a passed
 //! test** — the notice text stays generic (display only).
 //!
-//! S4/T2 (human L3, option A «Solo aviso para Codex»): an agent that can only
-//! ask in its own terminal (Codex) sends an `attention` notice instead of a
-//! question — one short title + detail (e.g. «Codex te pide permiso … Respondé
-//! en la terminal»), never a decision and never a deadline — and a later
-//! `attention_clear` frame takes it away once the prompt was resolved. The
-//! island still answers nothing for that agent.
+//! S4/T2 (human L3, option A): an agent that can only ask in its own terminal
+//! sends an `attention` notice instead of a question — one short title +
+//! detail (e.g. «Codex te pregunta … Respondé en la terminal» for a Codex
+//! plan-mode question), never a decision and never a deadline — and a later
+//! `attention_clear` frame takes it away once the prompt was resolved.
+//! K2-08 T1 (S4) reversed «Solo aviso para Codex» for permissions: a Codex
+//! `PermissionRequest` is a `question` frame (agent `codex`) that takes the
+//! shared FIFO question queue like Claude's (src/question.rs); it never
+//! becomes a notice here.
 
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -540,7 +543,8 @@ pub const SEVERITY_ERROR: &str = "error";
 /// The only kinds that ever enter the queue; the UI admits the same set.
 pub const KIND_SETTLED: &str = "settled";
 pub const KIND_TRANSPORT: &str = "transport";
-/// S4/T2: the notice kind of an agent that asks in its own terminal (Codex). Display only, never an answer surface.
+/// S4/T2: the notice kind of an agent that asks in its own terminal (Codex plan-mode questions). Display only, never an
+/// answer surface; a Codex PERMISSION is a question since K2-08 T1.
 pub const KIND_ATTENTION: &str = "attention";
 /// S4/T2: the frame that takes a session's attention notices away once its prompt was resolved.
 pub const KIND_ATTENTION_CLEAR: &str = "attention_clear";
@@ -1477,7 +1481,46 @@ mod tests {
         assert_eq!(parse(&hello, &project(), None, NOW), Err(DecodeError::InvalidSchemaOrScope));
     }
 
-    // --- S4/T2: the «attention» notice (Codex asks in its own terminal) -----------------------
+    // --- K2-08 T1: a Codex permission is a QUESTION in the shared FIFO queue, never an attention notice ---------
+
+    /// The exact frame the Codex hook now sends for `Bash: ls` (apps/desktop-harness/src/codex.cjs): agent `codex`,
+    /// Spanish text, «Aprobar una vez» / «Rechazar», a 30-60 s budget.
+    fn codex_permission_value(project: &str, id: &str, budget_ms: u64) -> Value {
+        json!({"v":1, "type":"question", "questionVersion":1, "project":project, "sessionId":"session-1", "at":NOW,
+               "id":id, "kind":"question", "text":"Codex pide permiso para Bash: ls",
+               "options":[{"value":"allow","label":"Aprobar una vez","description":"Permitir esta solicitud de Codex una vez"},
+                          {"value":"deny","label":"Rechazar","description":"Rechazar la solicitud de Codex"}],
+               "allowFreeText":false, "expiresAt":NOW + budget_ms, "agent":"codex", "projectName":"my-project"})
+    }
+
+    #[test]
+    fn codex_permission_takes_the_question_queue_like_claude_and_is_never_a_notice() {
+        use crate::question::{decode as decode_question, Admission, Inbound, QuestionSlot};
+        let project = project();
+        let identity = identity_of(&project);
+        let first = "12345678-1234-4abc-8abc-123456789abc";
+        let second = "12345678-1234-4abc-8abc-123456789abd";
+        let mut claude = codex_permission_value(&project, first, 30_000);
+        claude["agent"] = json!("claude-code");
+        claude["text"] = json!("Claude Code pide permiso para Bash: ls");
+        let mut slot = QuestionSlot::new();
+        for (connection, value) in [(1, claude), (2, codex_permission_value(&project, second, 60_000))] {
+            let bytes = serde_json::to_vec(&value).unwrap();
+            let Ok(Inbound::Question(q)) = decode_question(&bytes, &identity, NOW) else { panic!("a permission decodes as a question") };
+            assert!(matches!(slot.admit(connection, &identity, q, NOW), Ok(Admission::Accepted)), "admitted to the queue");
+            // the notice transport refuses the same frame (size and schema): a permission is never an attention notice
+            assert!(decode(&bytes, &project, Some(&identity), NOW).is_err(), "never decoded as a notice");
+        }
+        assert_eq!(slot.len(), 2, "«1 de 2»: the Codex permission waits behind Claude's, nothing is dropped");
+        let codex = slot.queue().nth(1).unwrap().question();
+        assert_eq!(codex.agent(), "codex");
+        assert_eq!(codex.agent_label(), "Codex");
+        assert_eq!(codex.options().iter().map(|o| o.label()).collect::<Vec<_>>(), ["Aprobar una vez", "Rechazar"]);
+        // and no attention notice was created on the way
+        assert!(NoticeStore::new(project).snapshot(NOW).iter().all(|n| n.kind != KIND_ATTENTION));
+    }
+
+    // --- S4/T2: the «attention» notice (Codex plan-mode questions, answered in its own terminal) ---------------
 
     fn attention_value(id: &str) -> Value {
         json!({"v":1, "type":"attention", "project":project(), "sessionId":"session-1", "at":NOW, "id":id,

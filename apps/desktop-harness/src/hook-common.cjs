@@ -15,10 +15,10 @@ const ALLOW = '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decis
 const DENY = JSON.stringify({ hookSpecificOutput: { hookEventName: 'PermissionRequest',
   decision: { behavior: 'deny', message: 'Denied from the Koda island by the user.' } } }) + '\n';
 // Option sets per agent. LOSSY_OPTIONS is offered when the island cannot show the whole request:
-// `allow` is deliberately absent. Only the agents that can still ANSWER mint an option set (S4/T2 removed Codex's:
-// Codex only ever sends a notice, so nothing in this file is reached with agent 'Codex' any more).
+// `allow` is deliberately absent. Claude Code and Codex (K2-08 T1, S4) share the Spanish card; Codex never gets a
+// «Siempre permitir» (S6: Codex does not support updatedPermissions), and neither set ever contains one.
 function optionSets(agent, short = agent) {
-  if (agent === 'Claude Code') {
+  if (agent === 'Claude Code' || agent === 'Codex') {
     const deny = { value: 'deny', label: 'Rechazar', description: `Rechazar la solicitud de ${short}` };
     return {
       OPTIONS: [{ value: 'allow', label: 'Aprobar una vez', description: `Permitir esta solicitud de ${agent} una vez` }, deny],
@@ -74,7 +74,7 @@ function toolDescription(name, toolInput) {
 // Shared question text. Lossless Bash shows the full redacted command (never sanitizeText-collapsed: it is
 // printable ASCII / closed visible Latin allow-list, NFC by construction); everything else keeps the short description.
 function questionText(agent, detail) {
-  if (agent === 'Claude Code') {
+  if (agent === 'Claude Code' || agent === 'Codex') {
     const reasons = { 'long command': 'comando recortado', 'special characters': 'caracteres especiales',
       'touches credential files': 'ruta sensible', 'shell indirection': 'indirección de shell',
       'hidden text may contain shell syntax': 'el texto oculto puede contener sintaxis de shell' };
