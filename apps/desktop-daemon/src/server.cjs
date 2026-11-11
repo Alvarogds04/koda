@@ -24,7 +24,7 @@ const P = require("./protocol.cjs");
 // T2 white-label: internal /gentle: commands are refused at the island's prompt
 // intake (Gentle Dot bridge.ts dispatch), with a fixed error, before any
 // admission check. The user's own text is never otherwise rewritten here.
-const { isBlockedInput } = require("./white-label.cjs");
+const { isBlockedInput, presentText } = require("./white-label.cjs");
 const { awaitSafePoint, closedToast } = require("./interrupt.cjs");
 // T4 U1: the history projection over the engine's rotated chain (Gentle Dot's
 // conversations.ts, MIT); see THIRD-PARTY-NOTICES.md.
@@ -34,6 +34,42 @@ const { pageHistory, sessionTail, nextRow, splitAttachments, textOf } = require(
 const REMEMBERED_REQUEST_IDS = 500;
 /** The steers the engine may still record in the running turn (each client's are bounded by the rate limit). */
 const MAX_STEER_REQUESTS = 32;
+/** K2-05 U4b: bounds of an ask's optional details (UTF-16 units, like every daemon clip). */
+const ASK_MESSAGE_CHARS = 2000;
+const ASK_PLACEHOLDER_CHARS = 200;
+
+/**
+ * K2-05 U4b: one optional harness-written ask detail as the island may show it (Gentle Dot
+ * bridge.ts onUiRequest: `message` / `placeholder` pass through presentText). Rewrite FIRST,
+ * clip SECOND (a clip first could cut a hidden name in half), control characters other than
+ * tab/newline removed, never cut between the two halves of a surrogate pair. Anything but a
+ * string is no detail at all.
+ */
+function askDetail(value, max) {
+	if (typeof value !== "string") return undefined;
+	const clean = presentText(value).replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g, "");
+	if (clean.length <= max) return clean;
+	let end = max;
+	const prev = clean.charCodeAt(end - 1);
+	if (prev >= 0xd800 && prev <= 0xdbff) end -= 1;
+	return clean.slice(0, end);
+}
+
+/**
+ * K2-05 U4b: the details a dialog shows next to its title — a confirm's `message` (what the
+ * user approves) and an input's `placeholder` — added to the pending ask (additive, optional).
+ * The user's ANSWER is never touched here: it travels to the engine as typed.
+ */
+function withAskDetails(ask, event) {
+	const message = askDetail(event?.message, ASK_MESSAGE_CHARS);
+	if (message) ask.message = message;
+	if (ask.kind === "input") {
+		const placeholder = askDetail(event?.placeholder, ASK_PLACEHOLDER_CHARS);
+		if (placeholder) ask.placeholder = placeholder;
+	}
+	return ask;
+}
+
 /** K2-05 review F6: an error answering a send/steer carries its requestId (additive, sender only). */
 const requestError = (code, requestId) => (requestId === undefined ? P.errorFrame(code) : { ...P.errorFrame(code), requestId });
 
@@ -646,7 +682,7 @@ class IslandServer {
 		}
 		for (const frame of out.frames) this.broadcast(frame);
 		if (out.messageDone) this.messageCounter += 1;
-		if (out.ask) this.openAsk(out.ask);
+		if (out.ask) this.openAsk(withAskDetails(out.ask, event));
 		if (out.cancelUi) this.safeSend({ type: "extension_ui_response", id: out.cancelUi, cancelled: true });
 	}
 
@@ -859,7 +895,16 @@ class IslandServer {
 	// ----- asks (extension UI) ---------------------------------------------------
 
 	askFrame(ask) {
-		return { type: "ask", id: ask.id, kind: ask.kind, title: ask.title, options: ask.options };
+		// K2-05 U4b: the optional details travel only when present (live frame and connect replay alike)
+		return {
+			type: "ask",
+			id: ask.id,
+			kind: ask.kind,
+			title: ask.title,
+			options: ask.options,
+			...(ask.message ? { message: ask.message } : {}),
+			...(ask.placeholder ? { placeholder: ask.placeholder } : {}),
+		};
 	}
 
 	openAsk(ask) {

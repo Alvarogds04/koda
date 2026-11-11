@@ -606,6 +606,39 @@ test("ask round-trip: select answered; invalid and unknown answers rejected", as
 	await waitFor(() => c.frames.filter((f) => f.code === "unknown_ask").length === 2);
 });
 
+// K2-05 U4b: the island's ask card shows what the user approves (Gentle Dot Ask.message /
+// Ask.placeholder). Additive optional fields, white-labelled like the title, bounded, on the
+// live frame AND on the replay a late client gets; the user's typed answer travels verbatim.
+test("ask carries the confirm message and the input placeholder, white-labelled, bounded and replayed; the typed answer is never rewritten", async (t) => {
+	const { endpoint, engine } = await setup(t);
+	const c = await login(t, endpoint);
+	engine.emit("event", { type: "extension_ui_request", id: "c1", method: "confirm", title: "¿Borrar?", message: "Gentle Shell va a borrar notas.md via engram" });
+	const confirm = await c.wait((f) => f.type === "ask" && f.id === "c1");
+	assert.equal(confirm.message, "Koda va a borrar notas.md via memory");
+	assert.equal("placeholder" in confirm, false, "a confirm has no placeholder");
+	engine.emit("event", { type: "extension_ui_request", id: "i1", method: "input", title: "Nombre", placeholder: "tu pi-coding-agent favorito" });
+	const input = await c.wait((f) => f.type === "ask" && f.id === "i1");
+	assert.equal(input.placeholder, "tu assistant favorito");
+	assert.equal("message" in input, false, "no message was asked");
+	// bounded: a huge message is clipped (2000 UTF-16 units), a non-string is dropped, controls never travel
+	engine.emit("event", { type: "extension_ui_request", id: "c2", method: "confirm", title: "t", message: `a\u0000b${"x".repeat(5000)}` });
+	const big = await c.wait((f) => f.type === "ask" && f.id === "c2");
+	assert.equal(big.message.length, 2000);
+	assert.ok(big.message.startsWith("abx"));
+	engine.emit("event", { type: "extension_ui_request", id: "i2", method: "input", title: "t", placeholder: 7 });
+	const odd = await c.wait((f) => f.type === "ask" && f.id === "i2");
+	assert.equal("placeholder" in odd, false);
+	// a late client gets the same fields in the replay
+	const late = await login(t, endpoint);
+	await waitFor(() => late.frames.filter((f) => f.type === "ask").length === 4);
+	assert.equal(late.frames.find((f) => f.type === "ask" && f.id === "c1").message, "Koda va a borrar notas.md via memory");
+	assert.equal(late.frames.find((f) => f.type === "ask" && f.id === "i1").placeholder, "tu assistant favorito");
+	// the user's own typed answer reaches the engine verbatim (never white-labelled)
+	c.send({ type: "ui_response", id: "i1", value: "mi Raspberry Pi con engram y Gentle Shell" });
+	await c.wait((f) => f.type === "ask_resolved" && f.id === "i1");
+	assert.deepEqual(engine.sent.at(-1), { type: "extension_ui_response", id: "i1", value: "mi Raspberry Pi con engram y Gentle Shell" });
+});
+
 test("ask timeout cancels toward the agent; editor dialogs are cancelled at once", async (t) => {
 	const { endpoint, engine } = await setup(t, { limits: { askTimeoutMs: 60 } });
 	const c = await login(t, endpoint);

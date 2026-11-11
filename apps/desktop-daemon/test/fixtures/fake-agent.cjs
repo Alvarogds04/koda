@@ -15,6 +15,9 @@
 // - crash     -> exits with FAKE_EXIT_CODE (default 1)
 // - stdin end -> exits 0 (orderly shutdown like `pi --mode rpc`)
 // --argv-out / --env-out / --spawn-log dump the spawn evidence for assertions.
+// --ask-on-prompt (K2-05 U4b): after recording the user message the engine asks the user
+// (extension_ui_request `input`, with a hidden engine name in the title/placeholder) and
+// answers only once the extension_ui_response arrives, quoting what it received.
 
 const fs = require("node:fs");
 const path = require("node:path");
@@ -91,9 +94,23 @@ function respond(id, command, data) {
 	writeRecord({ id, type: "response", command, success: true, data });
 }
 
+const askOnPrompt = process.argv.includes("--ask-on-prompt");
+/** K2-05 U4b: the turn waiting for the user's answer (ask id → its continuation). */
+const waitingAsks = new Map();
+let askCounter = 0;
+
 function handle(command) {
 	logCommand(command);
 	switch (command.type) {
+		case "extension_ui_response": {
+			// a dialog answer is not a command: no response record (Pi's RPC shape)
+			const next = waitingAsks.get(command.id);
+			if (next) {
+				waitingAsks.delete(command.id);
+				next(command);
+			}
+			break;
+		}
 		case "get_state":
 			if (!fs.existsSync(sessionFile)) fs.writeFileSync(sessionFile, "", { mode: 0o600 });
 			respond(command.id, "get_state", { sessionFile });
@@ -117,6 +134,18 @@ function handle(command) {
 			persist("user", String(command.message));
 			writeRecord({ type: "message_end", message: user });
 			const reply = "hola 😀 línea\u2028separada\u2029fin";
+			if (askOnPrompt) {
+				const id = `ask-${process.pid}-${++askCounter}`;
+				waitingAsks.set(id, (answer) => {
+					const said = answer.cancelled ? "sin respuesta" : typeof answer.value === "string" ? `recibí ${answer.value.length} caracteres` : `confirmó ${answer.confirmed}`;
+					writeRecord({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: said } });
+					persist("assistant", said);
+					writeRecord({ type: "agent_end" });
+					writeRecord({ type: "agent_settled" });
+				});
+				writeRecord({ type: "extension_ui_request", id, method: "input", title: "Gentle Shell necesita un nombre", placeholder: "nombre para engram" });
+				break;
+			}
 			const emitRest = () => {
 				persist("assistant", reply);
 				writeRecord({ type: "agent_end" });

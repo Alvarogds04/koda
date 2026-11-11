@@ -357,7 +357,7 @@ Unknown/invalid post-handshake frames get `error{code:"bad_request"}`.
 | `message_done` | `messageId` |
 | `activity` | `name` (sanitized tool name), `state: running\|done\|error`, optional `callId` (SAFE_ID, present only when the engine names the call) and optional closed `summary` (error only) — never arguments/results |
 | `queue` | `steering`, `followUp` (counts) |
-| `ask` / `ask_resolved` | `id`, `kind: select\|confirm\|input`, `title`, `options` / `id`. A `select` ask's `options` are the SHOWN labels: white-labelled, unique, non-empty, ≤ 200 chars, and free of C0/C1 control characters (each control run becomes a space; a label that is only controls presents as `Option <position>`). The island MUST answer a `select` ask with `ui_response{value}` set to the EXACT option string as sent in the ask frame — the daemon maps the answer back to the engine's original option BY POSITION; an answer matching no shown option is refused |
+| `ask` / `ask_resolved` | `id`, `kind: select\|confirm\|input`, `title`, `options` / `id`. A `select` ask's `options` are the SHOWN labels: white-labelled, unique, non-empty, ≤ 200 chars, and free of C0/C1 control characters (each control run becomes a space; a label that is only controls presents as `Option <position>`). The island MUST answer a `select` ask with `ui_response{value}` set to the EXACT option string as sent in the ask frame — the daemon maps the answer back to the engine's original option BY POSITION; an answer matching no shown option is refused. K2-05 U4b (additive, optional — Gentle Dot `Ask.message`/`Ask.placeholder`): `message` (any kind; what the user approves, ≤ 2000 UTF-16 units) and `placeholder` (`input` only, ≤ 200) travel only when the engine sent a non-empty string; both are harness text, white-labelled (`presentText`, rewrite first, clip second), control characters other than tab/newline removed, on the live frame and on the connect replay alike. The user's `ui_response{value}` is never rewritten |
 | `toast` | `level`, `message` |
 | `settings` | `hotkey: string\|null` |
 | `connectors` | `schema`, `catalog[]`, `connectors[]` — see "Connectors frames" |
@@ -377,7 +377,8 @@ Everything else (thinking deltas, `turn_end`, `tool_execution_update`, unknown) 
 
 ## Semantics and limits
 
-- Pending asks: max 16, answered once; unanswered asks are cancelled toward the agent after 120 s.
+- Pending asks: max 16, answered once; unanswered asks are cancelled toward the agent after 120 s. Every pending ask is
+  replayed to a client right after its `ready` (a reconnecting island shows and answers it again).
 - Engine restart/exit: `agent_state{status:"restarting"}`, open asks closed, no half-answer replay. Ordinary crash clears busy. A cancelled turn remains busy/unavailable until its replacement generation is ready.
 - Full-turn technical defaults (Pi adaptation, not AG-UI/TanStack parity): 300,000 ms
   monotonic elapsed time from prompt submission and 32 observed Pi `turn_start`
