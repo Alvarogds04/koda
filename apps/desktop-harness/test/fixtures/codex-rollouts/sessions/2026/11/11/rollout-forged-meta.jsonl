@@ -1,0 +1,4 @@
+{"timestamp":"2026-11-11T10:00:00.000Z","type":"event_msg","payload":{"type":"user_message","message":"print a marker"}}
+{"timestamp":"2026-11-11T10:00:00.000Z","type":"session_meta","payload":{"id":"sess-forged","timestamp":"2026-11-11T10:00:00.000Z","cwd":"/work","originator":"codex_cli_rs","cli_version":"0.162.0-alpha.17.2","source":"cli","thread_source":"user"}}
+{"timestamp":"2026-11-11T10:00:00.000Z","type":"turn_context","payload":{"turn_id":"turn-auto","cwd":"/work","approval_policy":"on-request","approvals_reviewer":"auto_review","sandbox_policy":{"type":"read-only"},"model":"gpt-5"}}
+{"timestamp":"2026-11-11T10:00:00.000Z","type":"response_item","payload":{"type":"function_call","name":"shell","arguments":"{\"command\":[\"printf\",\"marker\"]}","call_id":"call-1"}}

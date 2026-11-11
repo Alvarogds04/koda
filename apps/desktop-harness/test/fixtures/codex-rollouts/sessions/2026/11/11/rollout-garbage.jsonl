@@ -1,0 +1,2 @@
+not json at all
+{"type":"turn_context","payload":{"turn_id":"turn-auto","approvals_reviewer":"auto_review"}

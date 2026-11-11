@@ -18,12 +18,16 @@
 // so they still send ONE bounded, fire-and-forget notice «Codex te pregunta … Respondé en la terminal».
 // post-tool-use / stop: the same session-scoped `attention_clear` frame takes that notice away (a completed tool or an
 // ended turn means nothing is pending); `stop` also sends the finished notice, as before.
+// Automatic review (K2-08 T2, S3): a permission request that Codex's own automatic reviewer handles (codex-reviewer.cjs)
+// sends no card and prints nothing. Only there are transcript_path and turn_id read, locally: the rollout under
+// $CODEX_HOME/sessions, bounded; they never travel.
 // Never read or forwarded: tool_input.description (written by Codex, may be model-influenced), last_assistant_message,
-// transcript_path, model, turn_id, permission_suggestions.
+// model, permission_suggestions. Never forwarded: transcript_path, turn_id.
 const { parseArgs, watchdogMs, startWatchdog, none, isObject, validCwd, toolDescription, defaultFactory, optionSets, questionText,
   MAX_STDIN_BYTES, DEFAULT_TIMEOUT_SEC, MAX_ISLAND_WAIT_MS, ALLOW, DENY, resolveConfig, computeDeadline, sessionToken } = require('./hook-common.cjs');
 const { redactCommand } = require('./redact.cjs');
 const { sanitizeText } = require('./projection.cjs');
+const { codexAutoReviewed } = require('./codex-reviewer.cjs');
 
 const EVENTS = { 'permission-request': 'PermissionRequest', 'pre-tool-use': 'PreToolUse',
   'post-tool-use': 'PostToolUse', stop: 'Stop' };
@@ -86,6 +90,8 @@ async function handleCodexHook({ event, input, env = {}, argv = [], now, clientF
       if (typeof data.tool_name !== 'string' || data.tool_name.length === 0) return none();
       detail = codexToolDescription(data.tool_name, data.tool_input);
       if (!detail) return none(); // MCP, network, anything else: Codex asks in its terminal (S7)
+      // K2-08 T2 (S3): Codex's own automatic reviewer handles this turn — no card, nothing printed; unknown → the card.
+      if (codexAutoReviewed(data, env)) return none();
       // The island may only hold the card as long as Codex waits for this hook, less a margin, capped like Claude's.
       const deadline = computeDeadline({ cliTimeoutMs: args.timeoutSec * 1000, maxMs: MAX_ISLAND_WAIT_MS });
       if (deadline.mode !== 'ask') return none();
