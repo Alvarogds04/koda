@@ -60,12 +60,12 @@ function boot(initial) {
     click() { for (const f of this.listeners.click || []) f({ isTrusted: true, preventDefault() {}, stopPropagation() {} }); }
   }
   const TAGS = { 'question-text': 'textarea', 'question-send': 'button', 'question-skip': 'button', 'question-prev': 'button', 'question-primary': 'button', 'question-freeform': 'form',
-    'chat-input': 'textarea', 'island-btn': 'button' };
+    'chat-input': 'textarea', 'island-btn': 'button', 'header-fold': 'button' };
   const ids = ['question', 'capsule', 'question-head', 'question-body', 'question-options', 'question-freeform', 'question-text', 'question-word', 'question-send',
     'question-skip', 'question-live', 'question-expiry', 'question-state', 'question-expiry-word', 'question-state-icon', 'question-state-word',
     'question-step', 'question-step-header', 'question-summary', 'question-nav', 'question-prev', 'question-primary', 'question-queue', 'question-asker-name',
     'question-approval', 'question-approval-title', 'question-approval-cmd', 'question-approval-note', 'question-approval-actions', 'question-reason',
-    'chat-input', 'island-btn', 'note-edit']; // the last three live OUTSIDE the take-over: the chat field, an island control, a contenteditable
+    'chat-input', 'island-btn', 'note-edit', 'header-fold']; // the last four live OUTSIDE the take-over: the chat field, island controls, a contenteditable
   const nodes = Object.fromEntries(ids.map(id => [id, new El(TAGS[id] || 'div', id)]));
   nodes['note-edit'].isContentEditable = true;
   nodes['question-state'].parentNode = nodes['question-head'];
@@ -98,7 +98,13 @@ function boot(initial) {
     CustomEvent: class { constructor(t, o) { this.type = t; this.detail = o && o.detail; } }, Promise, console });
   vm.runInContext(fs.readFileSync(path.join(frontend, 'notify.js'), 'utf8'), ctx);
   const settle = async () => { for (let i = 0; i < 4; i++) await new Promise(r => setImmediate(r)); };
-  const key = k => { for (const f of docListeners.keydown || []) f({ key: k, isTrusted: true, ctrlKey: false, altKey: false, metaKey: false, shiftKey: false, isComposing: false, repeat: false, preventDefault() {}, stopPropagation() {} }); };
+  // returns the event so a test can tell whether its default action (e.g. Enter on a focused button) was prevented
+  const key = k => {
+    const ev = { key: k, isTrusted: true, ctrlKey: false, altKey: false, metaKey: false, shiftKey: false, isComposing: false, repeat: false, defaultPrevented: false,
+      preventDefault() { this.defaultPrevented = true; }, stopPropagation() {} };
+    for (const f of docListeners.keydown || []) f(ev);
+    return ev;
+  };
   const buttons = () => nodes['question-approval-actions'].querySelectorAll('button');
   const button = role => buttons().find(b => b.className.split(' ').includes(`q-${role}`));
   const answers = () => structuredClone(calls.filter(c => c.action === 'answer')); // main-realm copies: the payloads come from the vm realm
@@ -363,6 +369,60 @@ test('S6 (finding 5): an answer that failed to send is never announced as «Perm
   assert.equal(h.said.at(-1), 'No se pudo enviar.');
   await h.push(state(pB(), [], { notice: 'expired' })); // A went to its terminal; B is the head
   assert.ok(!h.said.some(s => /^Permitido/.test(s)), `announced: ${JSON.stringify(h.said)}`);
+});
+
+// ---- verifier finding (cardKey focus rule): plain/multi/form keys answer only from inside #question or the page body -----------------
+test('S4 (cardKey): a digit on a non-editable control OUTSIDE the card does not answer a plain question; on body or inside #question it does', async () => {
+  const outside = boot(state(ask(A)));
+  await outside.settle();
+  outside.advance(1000); // past the head guard
+  outside.nodes['header-fold'].focus();
+  const ev = outside.key('1');
+  await outside.settle();
+  assert.deepEqual(outside.sent(), [], 'a «1» aimed at #header-fold answers nothing');
+  assert.equal(ev.defaultPrevented, false, 'the outside control keeps its own key');
+  const onBody = boot(state(ask(A)));
+  await onBody.settle();
+  onBody.advance(1000);
+  onBody.doc.activeElement = onBody.doc.body;
+  onBody.key('1');
+  await onBody.settle();
+  assert.deepEqual(onBody.answers(), [{ action: 'answer', id: A, index: 0 }], 'with the focus on the page body «1» picks option 1');
+  const inside = boot(state(ask(A)));
+  await inside.settle();
+  inside.advance(1000);
+  inside.rows()[1].focus();
+  inside.key('1');
+  await inside.settle();
+  assert.deepEqual(inside.answers(), [{ action: 'answer', id: A, index: 0 }], 'with the focus inside #question «1» picks option 1');
+});
+
+test('S4 (cardKey): Enter on #header-fold never sends a ready multi-select and keeps the fold\'s default; on body or inside #question it sends', async () => {
+  const ready = async () => {
+    const h = boot(state(many(A)));
+    await h.settle();
+    h.advance(1000);
+    h.rows()[0].click(); // one option picked: «Hecho» is ready
+    await h.settle();
+    return h;
+  };
+  const outside = await ready();
+  outside.nodes['header-fold'].focus();
+  const ev = outside.key('Enter');
+  await outside.settle();
+  assert.deepEqual(outside.sent(), [], 'Enter aimed at #header-fold sends nothing');
+  assert.equal(ev.defaultPrevented, false, 'Enter on #header-fold keeps its default action (fold)');
+  const onBody = await ready();
+  onBody.doc.activeElement = onBody.doc.body;
+  const evBody = onBody.key('Enter');
+  await onBody.settle();
+  assert.deepEqual(onBody.sent().map(c => [c.action, c.id]), [['answer_many', A]], 'with the focus on the page body Enter sends «Hecho»');
+  assert.equal(evBody.defaultPrevented, true);
+  const inside = await ready();
+  inside.nodes['question-primary'].focus();
+  inside.key('Enter');
+  await inside.settle();
+  assert.deepEqual(inside.sent().map(c => [c.action, c.id]), [['answer_many', A]], 'with the focus inside #question Enter sends «Hecho»');
 });
 
 // ---- part 2: the real CSS in headless Chromium ------------------------------------------------------------------------------
