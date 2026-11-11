@@ -158,8 +158,9 @@
   const shapeWithToast = (shape, shown) => (shown
     ? [Math.max(shape[0], TOAST.w), shape[1] + TOAST.gap + TOAST.hMax] : [shape[0], shape[1]]);
 
-  /** A new question used to expand the island by itself; now the toast is the signal while compact. */
-  const revealByToast = ctx => !ctx || ctx.phase !== 'expanded';
+  /** island-free-drag S5 (#266/R23): a NEW question opens a compact island by itself (an expanded one already shows the card).
+   *  Only an island hidden from the tray or the shortcut, or one whose phase is unknown, is signalled by the toast instead. */
+  const revealByToast = ctx => !ctx || (ctx.phase !== 'expanded' && ctx.phase !== 'compact');
 
   // ---- Sileo's motion (hiaaryan/sileo, MIT): constants.ts SPRING = { duration 0.6 s, bounce 0.25 }, sileo.tsx morph ------------------
   // SN6 (vault «Specs/Sileo-notificacion»): the MEASURED timings of sileo.aaryan.design, ONE named table (the stylesheet mirrors the content/presence ones).
