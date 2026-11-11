@@ -182,7 +182,7 @@ const es: Record<string, string> = {
   'Sound': 'Sonido', 'Volume': 'Volumen', 'Open on hover': 'Abrir al pasar el cursor',
   'Auto-close': 'Cierre automático', 'Theme': 'Tema', 'Motion': 'Movimiento',
   '{0} custom': '{0} personalizados', 'Open sounds folder': 'Abrir la carpeta de sonidos', 'Reload sounds': 'Recargar sonidos',
-  "Drop a file named like one of el personaje's sounds (finish.wav, approval.mp3, greet.m4a…) in the sounds folder to replace it, then Reload.": 'Deja en la carpeta de sonidos un archivo con el nombre de uno de los sonidos de el personaje (finish.wav, approval.mp3, greet.m4a…) para reemplazarlo y luego recarga.',
+  "Drop a file named like one of el personaje's sounds (question.wav, approval.mp3, finish.ogg…) in the sounds folder to replace it, then Reload.": 'Deja en la carpeta de sonidos un archivo con el nombre de uno de los sonidos de el personaje (finish.wav, approval.mp3, greet.m4a…) para reemplazarlo y luego recarga.',
   'Hovering the island opens it; it folds again shortly after the pointer leaves. Click inside to keep it open.': 'Pasar el cursor por la isla la abre; se pliega poco después de que el cursor salga. Haz clic dentro para dejarla abierta.',
   'seconds after you leave the island': 'segundos después de salir de la isla',
   'Island lives on': 'La isla vive en', 'Main display': 'Pantalla principal', 'Display under the cursor': 'Pantalla bajo el cursor',

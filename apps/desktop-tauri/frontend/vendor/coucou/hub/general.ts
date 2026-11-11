@@ -160,7 +160,7 @@ export async function renderGeneral({ invoke, V, navigate }: { invoke: (cmd: str
         notchTipRow('Atajo global', (g.hotkey?.note || (g.hotkey?.backendLabel ? `Se registra como: ${g.hotkey.backendLabel}.` : 'Combinación que abre o cierra la isla desde cualquier app.')) + ' Se edita en Atajos.', h('span', { class: 'keycap static', text: hotkey.combo || '—' }), trusted(button('Ir a Atajos', () => navigate?.('shortcuts'))))),
       notchCard('Sonido',
         row(t('Sound'), sound, volume),
-        h('div', { class: 'row' }, soundsFolder, soundsReload, infoTip(t("Drop a file named like one of el personaje's sounds (finish.wav, approval.mp3, greet.m4a…) in the sounds folder to replace it, then Reload."), 'Más información: Sonidos'), h('span', { class: 'hint', text: customCount > 0 ? t('{0} custom', { 0: customCount }) : '' }))),
+        h('div', { class: 'row' }, soundsFolder, soundsReload, infoTip(t("Drop a file named like one of el personaje's sounds (question.wav, approval.mp3, finish.ogg…) in the sounds folder to replace it, then Reload."), 'Más información: Sonidos'), h('span', { class: 'hint', text: customCount > 0 ? t('{0} custom', { 0: customCount }) : '' }))),
       h('p', { class: 'hub-note', role: 'status', text: issue }));
     if (capturing) { capture.focus?.(); }
   }

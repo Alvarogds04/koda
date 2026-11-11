@@ -50,6 +50,17 @@ const FORMATS: [(&str, &str); 10] = [
 /// so the bound is far below Coucou's 8 MiB.
 pub const MAX_BYTES: u64 = 2 * 1024 * 1024;
 
+/// K2-07: the program that shows a folder in the file manager, by `std::env::consts::OS`.
+/// macOS has no `xdg-open`; `open <dir>` reveals it in Finder. Every other non-Windows OS
+/// (Linux, the BSDs) uses the freedesktop opener.
+pub fn reveal_command(os: &str) -> &'static str {
+    match os {
+        "macos" => "open",
+        "windows" => "explorer",
+        _ => "xdg-open",
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Command {
     List,

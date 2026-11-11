@@ -8,8 +8,10 @@
      controls or the digits 1..N answers. No timer, rule or model output ever
      does. Escape only leaves the free-text field; it never declines.
    - Plain text only (textContent). Nothing is persisted in the page.
-   - SILENCE: no audio exists. Sound cues are pure ids (N.soundFor) and stay
-     unplayed until the human enables sound in a future setting.
+   - Sound cues are pure ids (N.soundFor): a new question asks for snd.question,
+     a new permission for snd.approval (K2-07). They reach the sound engine
+     through the page's cue event (see sound-wiring.js); the engine and the human's «Sonido»
+     preference decide whether anything plays.
    - #266: a NEW question is a reveal event dispatched through `abito:question`
      (the gate is the pure N.createRevealGate); a boot replay of the same
      pending is history and never reveals. Revealing opens the island — it is
@@ -580,7 +582,8 @@
     previous = snapshot; snapshot = next;
     trackOutcome(previous, next);
     // Cue ids go to the sound engine through the page event (see sound-wiring.js).
-    const cue = N.soundFor(previous, snapshot);
+    // K2-07: a permission (kind=approval or the approval look) plays snd.approval, any other new question snd.question
+    const cue = N.soundFor(previous, snapshot, n => !isStructured(n) && !!approvalOf(n));
     // #313: the gate is the sound ENGINE (off until the human enables it, silent until ready), not a constant
     if (cue && limiter.allow(cue, Date.now())) document.dispatchEvent(new CustomEvent('abito:cue', { detail: cue }));
     render();

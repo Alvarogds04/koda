@@ -232,7 +232,7 @@ async function renderGeneral({ invoke, V, navigate }) {
       notchCard(
         "Sonido",
         row(t("Sound"), sound, volume),
-        h("div", { class: "row" }, soundsFolder, soundsReload, infoTip(t("Drop a file named like one of el personaje's sounds (finish.wav, approval.mp3, greet.m4a…) in the sounds folder to replace it, then Reload."), "Más información: Sonidos"), h("span", { class: "hint", text: customCount > 0 ? t("{0} custom", { 0: customCount }) : "" }))
+        h("div", { class: "row" }, soundsFolder, soundsReload, infoTip(t("Drop a file named like one of el personaje's sounds (question.wav, approval.mp3, finish.ogg…) in the sounds folder to replace it, then Reload."), "Más información: Sonidos"), h("span", { class: "hint", text: customCount > 0 ? t("{0} custom", { 0: customCount }) : "" }))
       ),
       h("p", { class: "hub-note", role: "status", text: issue })
     );
