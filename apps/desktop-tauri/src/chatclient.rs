@@ -338,11 +338,12 @@ pub struct ChatState {
     /// per read to decide whether to emit.
     #[serde(skip)]
     revision: u64,
-    /// F5: the commands this client sent that still wait for an answer (see [`Awaiting`]).
+    /// F5: the commands this client sent that still wait for an answer (see [`Awaiting`]), with
+    /// the wire `requestId` a send/steer carried (review F6: a daemon error naming it answers it).
     /// Interior mutability because [`ChatState::command`] takes `&self` (the transport parses
     /// and sends under the state lock). Never serialized.
     #[serde(skip)]
-    awaiting: RefCell<VecDeque<(Awaiting, Instant)>>,
+    awaiting: RefCell<VecDeque<(Awaiting, Instant, Option<String>)>>,
     /// F5: the errors correlated to this client's own `send` or its turn (code + counter).
     /// Unlike `lastError`, an error answering a history read, an ask answer or a
     /// steer/abort never moves it: only this one may end a thinking turn.
@@ -448,12 +449,16 @@ impl ChatState {
         if let Some(kind) = Awaiting::of(&cmd) {
             let mut awaiting = self.awaiting.borrow_mut();
             if kind == Awaiting::Send {
-                awaiting.retain(|(k, _)| *k != Awaiting::Settled);
+                awaiting.retain(|(k, _, _)| *k != Awaiting::Settled);
             }
             if awaiting.len() >= MAX_AWAITING {
                 awaiting.pop_front();
             }
-            awaiting.push_back((kind, now));
+            let request = match &cmd {
+                ChatCommand::Send { request_id, .. } | ChatCommand::Steer { request_id, .. } => Some(request_id.clone()),
+                _ => None,
+            };
+            awaiting.push_back((kind, now, request));
         }
         Ok(cmd)
     }
@@ -462,17 +467,25 @@ impl ChatState {
     /// send whose turn went quiet with no output (`Settled`) only claims an error no command sent
     /// AFTER that quiet can answer: the daemon writes a send's rejection in the same tick as the
     /// busy reset, so a later `failed` answers the later command (a refused catch-up read).
-    fn attribute_error(&mut self, code: &str) -> Option<Awaiting> {
+    /// Review F6: an error that names a send/steer (`requestId`, the daemon echoes it to the sender)
+    /// answers exactly that command, whatever arrived in between; one naming nothing waiting is
+    /// nobody's. Only an unnamed error (a daemon that does not echo it, or a frame-level refusal)
+    /// is guessed by order.
+    fn attribute_error(&mut self, code: &str, request: Option<&str>) -> Option<Awaiting> {
         let now = Instant::now();
         let awaiting = self.awaiting.get_mut();
-        awaiting.retain(|(k, at)| now.duration_since(*at) < k.ttl());
-        let mut at = awaiting.iter().position(|(k, _)| k.can_answer(code))?;
-        if let (Awaiting::Settled, quiet) = awaiting[at] {
-            if let Some(later) = awaiting.iter().position(|(k, sent)| *k != Awaiting::Settled && *sent >= quiet && k.can_answer(code)) {
+        awaiting.retain(|(k, at, _)| now.duration_since(*at) < k.ttl());
+        if let Some(request) = request {
+            let at = awaiting.iter().position(|(k, _, r)| r.as_deref() == Some(request) && k.can_answer(code))?;
+            return awaiting.remove(at).map(|(k, _, _)| k);
+        }
+        let mut at = awaiting.iter().position(|(k, _, _)| k.can_answer(code))?;
+        if let (Awaiting::Settled, quiet, _) = awaiting[at] {
+            if let Some(later) = awaiting.iter().position(|(k, sent, _)| *k != Awaiting::Settled && *sent >= quiet && k.can_answer(code)) {
                 at = later;
             }
         }
-        awaiting.remove(at).map(|(k, _)| k)
+        awaiting.remove(at).map(|(k, _, _)| k)
     }
 
     /// Bump one counter of a `{…, "n"}`-style object.
@@ -486,15 +499,15 @@ impl ChatState {
     fn ledger_busy(&mut self, busy: bool) {
         let awaiting = self.awaiting.get_mut();
         if busy {
-            for (k, _) in awaiting.iter_mut() {
+            for (k, _, _) in awaiting.iter_mut() {
                 if *k == Awaiting::Send {
                     *k = Awaiting::Turn { output: false };
                 }
             }
         } else {
             let now = Instant::now();
-            awaiting.retain(|(k, _)| !matches!(k, Awaiting::Turn { output: true } | Awaiting::Control));
-            for (k, at) in awaiting.iter_mut() {
+            awaiting.retain(|(k, _, _)| !matches!(k, Awaiting::Turn { output: true } | Awaiting::Control));
+            for (k, at, _) in awaiting.iter_mut() {
                 if *k == (Awaiting::Turn { output: false }) {
                     *k = Awaiting::Settled;
                     *at = now;
@@ -504,7 +517,7 @@ impl ChatState {
     }
 
     fn ledger_output(&mut self) {
-        for (k, _) in self.awaiting.get_mut().iter_mut() {
+        for (k, _, _) in self.awaiting.get_mut().iter_mut() {
             if let Awaiting::Turn { output } = k {
                 *output = true;
             }
@@ -515,7 +528,7 @@ impl ChatState {
     /// unsolicited `history` broadcast after a rotation can only answer a newest-page read).
     fn ledger_read_answered(&mut self, earlier: bool) -> bool {
         let awaiting = self.awaiting.get_mut();
-        let Some(at) = awaiting.iter().position(|(k, _)| *k == Awaiting::Read(earlier)) else { return false };
+        let Some(at) = awaiting.iter().position(|(k, _, _)| *k == Awaiting::Read(earlier)) else { return false };
         awaiting.remove(at);
         Self::bump(&mut self.reads, "answered");
         if earlier {
@@ -644,7 +657,7 @@ impl ChatState {
             "ask_resolved" => {
                 let Some(id) = id_field(frame, "id") else { return };
                 let awaiting = self.awaiting.get_mut();
-                if let Some(at) = awaiting.iter().position(|(k, _)| *k == Awaiting::Answer) {
+                if let Some(at) = awaiting.iter().position(|(k, _, _)| *k == Awaiting::Answer) {
                     awaiting.remove(at);
                 }
                 self.asks.retain(|a| a.id != id);
@@ -674,7 +687,9 @@ impl ChatState {
                 };
                 let n = self.last_error["n"].as_u64().unwrap_or(0) + 1;
                 self.last_error = json!({"code": code, "n": n});
-                match self.attribute_error(code) {
+                // review F6: the request the daemon says this error answers (off-grammar: unnamed)
+                let request = frame.get("requestId").and_then(Value::as_str).filter(|r| request_id_ok(r));
+                match self.attribute_error(code, request) {
                     Some(Awaiting::Send | Awaiting::Turn { .. } | Awaiting::Settled) => {
                         let n = self.turn_error["n"].as_u64().unwrap_or(0) + 1;
                         self.turn_error = json!({"code": code, "n": n});
@@ -1588,16 +1603,32 @@ impl HostInner {
             outputs.push((id.clone(), text.clone(), true, prompt.clone()));
         }
         // K2-05 F2: the island's turn in flight that no `user_message` named (an older daemon, or an
-        // announcement that lost its requestId) owns the new output of nobody's island prompt
-        if let Some(p) = self.pending.last_mut().filter(|p| p.ended.is_none() && p.record.is_none()) {
+        // announcement that lost its requestId) owns the new output of nobody's island prompt.
+        // Review F3: only output that can be its own. While the engine runs and a prompt the island
+        // did not name was announced after its send, that run may be another client's (the island's
+        // send then answers `busy`): the turn waits. Once the run is quiet and nothing refused the
+        // send, the run's first announced prompt after the send was the island's (the daemon runs
+        // one prompt at a time, recorded first): only its output (or output naming no prompt, an
+        // older daemon's) is taken; a later prompt of that run (a steer) is never the island's.
+        let claims = &self.claims;
+        let first_after = |p: &Pending| {
+            recorded(chat).into_iter().map(|(id, _)| id).find(|id| record_pos(id).is_some_and(|pos| pos > p.after) && !claims.contains_key(id))
+        };
+        if let Some(p) = self.pending.last().filter(|p| p.ended.is_none() && p.record.is_none()) {
+            let run = first_after(p);
+            let p = self.pending.last_mut().expect("the last pending turn");
             if err_n > p.err_seen {
                 // an error correlated to this send: the daemon refused it, so nothing it took was its own
                 p.took.clear();
                 p.reply.clear();
             }
             for (id, _, _, prompt) in outputs.iter().filter(|_| err_n <= p.err_seen) {
-                let claimed = prompt.as_deref().is_some_and(|r| self.claims.contains_key(r));
-                if !claimed && !p.seen.contains(id) && !p.took.contains(id) && p.took.len() < MAX_TOOK {
+                let claimed = prompt.as_deref().is_some_and(|r| claims.contains_key(r));
+                let own_run = match prompt.as_deref() {
+                    None => !busy || run.is_none(),
+                    Some(r) => !busy && run.as_deref() == Some(r),
+                };
+                if own_run && !claimed && !p.seen.contains(id) && !p.took.contains(id) && p.took.len() < MAX_TOOK {
                     p.took.push(id.clone());
                 }
             }
@@ -1674,17 +1705,27 @@ impl HostInner {
         }
         // K2-05 F2 fallback, ONLY for a turn no `user_message` ever named: once it ended after taking
         // output (the engine ran it, so it recorded its prompt), it is the first unclaimed recorded
-        // prompt after its send position with its own text, so it is never drawn beside that row
+        // prompt after its send position with its own text, so it is never drawn beside that row.
+        // Review F4: a turn interrupted before any `user_message` reached the island (the connection
+        // or the engine went away) took nothing, but the engine may have recorded it: the daemon ran
+        // nothing else while it was idle at the send, so it is the FIRST prompt recorded after its
+        // send position — when that prompt has its own text and no island turn holds it. Any other
+        // first prompt (another client's) is never taken: the turn stays where it was sent.
         for i in 0..self.pending.len() {
             let p = &self.pending[i];
-            if p.record.is_some() || p.ended.is_none() || p.took.is_empty() {
+            let interrupted = matches!(&p.ended, Some(TurnEnd::Error(code)) if code == "interrupted");
+            if p.record.is_some() || p.ended.is_none() || (p.took.is_empty() && !interrupted) {
                 continue;
             }
-            let found = messages.iter().find_map(|m| {
-                let id = msg_id(m).filter(|id| is_history_id(id))?;
-                let fits = msg_role(m) == "user" && record_pos(id).is_some_and(|pos| pos > p.after) && msg_text(m) == p.text && !self.claims.contains_key(id);
-                fits.then(|| id.to_owned())
-            });
+            let after = |m: &&Value| msg_role(m) == "user" && msg_id(m).filter(|id| is_history_id(id)).and_then(record_pos).is_some_and(|pos| pos > p.after);
+            let fits = |m: &Value| msg_text(m) == p.text && msg_id(m).is_some_and(|id| !self.claims.contains_key(id));
+            let found = if p.took.is_empty() {
+                messages.iter().find(after).filter(|m| fits(m))
+            } else {
+                messages.iter().filter(after).find(|m| fits(m))
+            }
+            .and_then(msg_id)
+            .map(str::to_owned);
             if let Some(id) = found {
                 let num = p.num;
                 self.pending[i].record = Some(id.clone());

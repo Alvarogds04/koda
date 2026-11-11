@@ -2295,3 +2295,132 @@ fn bind_f3_a_refused_catch_up_read_after_a_silent_settled_send_is_asked_again() 
 }
 
 const STATUS_GAP: u64 = 5_000;
+
+// ---- K2-05 native-review advisory follow-ups (at 9e6aac6) -------------------------------------
+
+/// The island's last send's wire requestId.
+fn last_send_id(link: &FakeLink) -> String {
+    link.sent().iter().rev().find(|c| matches!(c, ChatCommand::Send { .. })).and_then(wire_request_id).expect("a send went out")
+}
+
+/// Review F3: while another client's prompt is known to be in flight (announced without the island's
+/// requestId), the island's unbound turn never shows that prompt's output: it waits (thinking), and
+/// the refusal that names its send ends it with nothing taken.
+#[test]
+fn review_f3_an_unbound_turn_never_shows_another_prompts_output_before_its_refusal() {
+    let link = FakeLink::new();
+    page(&link, &[("s0-1", "user", "vieja"), ("s0-2", "assistant", "r-vieja")], false);
+    let host = ChatHost::new();
+    host.project(&link.view(), T0);
+    host.route(&link, "main", &submit("hola", "req-rf300001"), T0 + 10).unwrap();
+    // another client's prompt got to the daemon first: its record and output reach the island
+    // before the island's own refusal does
+    agent(&link, true, "ready");
+    link.frame(json!({"type":"user_message","messageId":"s0-3","text":"otra"}));
+    link.frame(json!({"type":"message_delta","messageId":"m1","text":"ajena"}));
+    for now in [T0 + 20, T0 + 30] {
+        let ts = turns(&host.project(&link.view(), now));
+        let mine = ts.iter().find(|t| t["user_text"] == json!("hola")).expect("the island's turn shows");
+        assert_eq!(mine["reply"], json!(""), "another prompt's output is never the unbound turn's: {:?}", shape(&ts));
+        assert_eq!(mine["state"], json!("thinking"), "{:?}", shape(&ts));
+    }
+    link.frame(json!({"type":"message_done","messageId":"m1"}));
+    host.project(&link.view(), T0 + 40);
+    let id = last_send_id(&link);
+    link.frame(json!({"type":"error","code":"busy","requestId":id}));
+    agent(&link, false, "ready");
+    let ts = turns(&host.project(&link.view(), T0 + 50));
+    let mine = ts.iter().find(|t| t["user_text"] == json!("hola")).expect("the island's turn shows");
+    assert_eq!((mine["state"].clone(), mine["reply"].clone()), (json!("error"), json!("")), "{:?}", shape(&ts));
+}
+
+/// Review F3: the same with a run that settles before anything names the island's send: once the
+/// engine is quiet and nothing refused it, the run that recorded a prompt after its send was its own.
+#[test]
+fn review_f3_an_unbound_turn_takes_its_runs_output_once_the_run_settled_unrefused() {
+    let link = FakeLink::new();
+    page(&link, &[("s0-1", "user", "vieja"), ("s0-2", "assistant", "r-vieja")], false);
+    let host = ChatHost::new();
+    host.project(&link.view(), T0);
+    host.route(&link, "main", &submit("hola", "req-rf300002"), T0 + 10).unwrap();
+    agent(&link, true, "ready");
+    link.frame(json!({"type":"user_message","messageId":"s0-3","text":"hola"}));
+    link.frame(json!({"type":"message_delta","messageId":"m1","text":"r-hola"}));
+    let ts = turns(&host.project(&link.view(), T0 + 20));
+    assert_eq!(shape(&ts).last().cloned(), Some(row("hola", "", "thinking")), "it waits while the run is ambiguous");
+    link.frame(json!({"type":"message_done","messageId":"m1"}));
+    agent(&link, false, "ready");
+    let ts = turns(&host.project(&link.view(), T0 + 30));
+    assert_eq!(shape(&ts), vec![row("vieja", "r-vieja", "completed"), row("hola", "r-hola", "completed")]);
+}
+
+/// Review F4: the connection drops after the island's send but before the daemon named its record;
+/// after the reconnect the record carries the prompt (and another client's later turn): the island's
+/// turn shows once, where its prompt was recorded, never beside or under another prompt.
+#[test]
+fn review_f4_an_unbound_turn_after_a_reconnect_shows_once_in_send_order() {
+    let link = FakeLink::new();
+    page(&link, &[("s0-1", "user", "vieja"), ("s0-2", "assistant", "r-vieja")], false);
+    let host = ChatHost::new();
+    host.project(&link.view(), T0);
+    let Routed::Answer(a) = host.route(&link, "main", &submit("hola", "req-rf400001"), T0 + 10).unwrap() else { panic!() };
+    agent(&link, true, "ready");
+    host.project(&link.view(), T0 + 20);
+    let lost = serde_json::to_value(ChatState::disconnected(crate::agentclient::Reason::Lost)).unwrap();
+    let ts = turns(&host.project(&lost, T0 + 30));
+    assert_eq!(shape(&ts).last().cloned(), Some(row("hola", "", "error")), "interrupted while down");
+    // reconnected: the engine had recorded and answered it; another client's turn followed
+    let again = FakeLink::new();
+    page(&again, &[("s0-1", "user", "vieja"), ("s0-2", "assistant", "r-vieja"), ("s0-3", "user", "hola"), ("s0-4", "assistant", "r-hola"), ("s0-5", "user", "otra"), ("s0-6", "assistant", "r-otra")], false);
+    for now in [T0 + 40, T0 + 5_000] {
+        let ts = turns(&host.project(&again.view(), now));
+        let users: Vec<&str> = ts.iter().map(|t| t["user_text"].as_str().unwrap()).collect();
+        assert_eq!(users, vec!["vieja", "hola", "otra"], "once, in send order: {:?}", shape(&ts));
+        assert_eq!(ts[1]["turn_id"], a["turn_id"], "the island keeps its own turn id");
+        assert_eq!(ts[1]["reply"], json!("r-hola"));
+        assert_eq!(ts[2]["reply"], json!("r-otra"), "the other prompt keeps its own reply");
+    }
+}
+
+/// Review F4: the send never reached the record (another client's prompt is the next one recorded):
+/// the island's interrupted turn stays once, right after what it knew when it sent, before that prompt.
+#[test]
+fn review_f4_an_unrecorded_unbound_turn_after_a_reconnect_never_takes_another_prompt() {
+    let link = FakeLink::new();
+    page(&link, &[("s0-1", "user", "vieja"), ("s0-2", "assistant", "r-vieja")], false);
+    let host = ChatHost::new();
+    host.project(&link.view(), T0);
+    host.route(&link, "main", &submit("hola", "req-rf400002"), T0 + 10).unwrap();
+    let lost = serde_json::to_value(ChatState::disconnected(crate::agentclient::Reason::Lost)).unwrap();
+    host.project(&lost, T0 + 30);
+    let again = FakeLink::new();
+    page(&again, &[("s0-1", "user", "vieja"), ("s0-2", "assistant", "r-vieja"), ("s0-3", "user", "otra"), ("s0-4", "assistant", "r-otra")], false);
+    let ts = turns(&host.project(&again.view(), T0 + 40));
+    assert_eq!(shape(&ts), vec![row("vieja", "r-vieja", "completed"), row("hola", "", "error"), row("otra", "r-otra", "completed")]);
+}
+
+/// Review F6: the send's quiet signal and its `failed` arrive in separate reads, and a page read
+/// goes out in between: the `failed` that names the send (requestId) ends the send, never the read.
+#[test]
+fn review_f6_a_failed_naming_the_send_ends_it_even_with_a_read_sent_after_its_quiet() {
+    let link = FakeLink::new();
+    page(&link, &[("s0-1", "user", "vieja"), ("s0-2", "assistant", "r-vieja")], false);
+    let host = ChatHost::new();
+    host.project(&link.view(), T0);
+    host.route(&link, "main", &submit("hola", "req-rf600001"), T0 + 10).unwrap();
+    agent(&link, true, "ready");
+    agent(&link, false, "ready");
+    host.project(&link.view(), T0 + 20);
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    // the page's own read goes out after the quiet
+    link.command("main", &json!({"action":"chat_history"})).unwrap();
+    let id = last_send_id(&link);
+    link.frame(json!({"type":"error","code":"failed","requestId":id}));
+    page(&link, &[("s0-1", "user", "vieja"), ("s0-2", "assistant", "r-vieja")], false);
+    let v = link.view();
+    assert_eq!(v["reads"], json!({"answered":1,"failed":0}), "the read was answered, never refused");
+    let ts = turns(&host.project(&v, T0 + 30));
+    let mine = ts.iter().find(|t| t["user_text"] == json!("hola")).expect("the island's turn shows");
+    assert_eq!(mine["state"], json!("error"), "the send's failed ends the send: {:?}", shape(&ts));
+    assert_eq!(mine["error"]["code"], json!("failed"));
+}

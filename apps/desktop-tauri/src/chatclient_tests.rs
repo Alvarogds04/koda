@@ -1060,3 +1060,31 @@ fn every_fresh_request_id_is_in_the_daemons_grammar_and_unique() {
         assert!(!id.is_empty() && id.len() <= 64 && id.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-'), "{id}");
     }
 }
+
+// ---- K2-05 native-review follow-up F6: a daemon error that names its request ------------------
+
+#[test]
+fn an_error_naming_a_requests_id_is_attributed_to_that_request_only() {
+    let mut st = ChatState::connected();
+    st.apply(&json!({"type":"agent_state","busy":false,"status":"ready","paused":false}));
+    st.command("main", &json!({"action":"chat_send","text":"hola","clientRequestId":"c1","requestId":"i-send1"})).unwrap();
+    st.apply(&json!({"type":"agent_state","busy":true,"status":"ready","paused":false}));
+    st.apply(&json!({"type":"agent_state","busy":false,"status":"ready","paused":false}));
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    // a read sent after the send went quiet
+    st.command("main", &json!({"action":"chat_history"})).unwrap();
+    st.apply(&json!({"type":"error","code":"failed","requestId":"i-send1"}));
+    assert_eq!(view(&st)["turnError"], json!({"code":"failed","n":1}), "the named send's error");
+    assert_eq!(view(&st)["reads"], json!({"answered":0,"failed":0}), "the read still waits");
+    // an error that names nothing waiting (a stale or foreign id) is nobody's
+    st.apply(&json!({"type":"error","code":"failed","requestId":"i-other"}));
+    assert_eq!(view(&st)["turnError"]["n"], json!(1));
+    assert_eq!(view(&st)["reads"], json!({"answered":0,"failed":0}));
+    // the read's own refusal (no requestId) still goes to the read
+    st.apply(&json!({"type":"error","code":"failed"}));
+    assert_eq!(view(&st)["reads"], json!({"answered":0,"failed":1}));
+    // a malformed requestId never names anything: the frame is a plain error
+    st.command("main", &json!({"action":"chat_send","text":"otra","clientRequestId":"c2","requestId":"i-send2"})).unwrap();
+    st.apply(&json!({"type":"error","code":"busy","requestId":"no valid id!"}));
+    assert_eq!(view(&st)["turnError"], json!({"code":"busy","n":2}));
+}
