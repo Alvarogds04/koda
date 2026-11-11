@@ -600,5 +600,57 @@
     return n;
   }
   function chatHeight(view) { return Math.min(CHAT_MAX_H, CHAT_MIN_H + messageCount(view) * CHAT_GROWTH); }
-  return { staleSnapshot, messageCount, chatHeight, CHAT_MIN_H, CHAT_MAX_H, mergeHistory, leftWindow, PAGE_GAP_MS, pageWait, reconcileRows, rowKey, sameTurn, poseFor, statusView, draftWord, targetAria, noticeAnnouncement, activates, gateLabel, filterChosen, modelRows, modelMeters, modelsInfo, modelsCount, emptyGreeting, cleanDisplayName, cleanLine, CARD_NAME_MAX, CARD_SUMMARY_MAX, DRAFT_MAX, stateLabel, scalarCount, draftProblem, canSend, sendState, needsCheck, checkPlan, statusLine, announcement, atBottom, newRequestId, turnRows, toolRows, approvalRows, activeTurn, activeRole, modelButtonLabel, modelButtonAria, modelButtonEnabled, modelRoleNote, formatSize };
+
+  // ---- K2-05 U4b: the agent's questions inside the chat (Gentle Dot AskCard) -------------------------------------
+  // `chat:state.asks` carries the daemon's pending asks (chatclient.rs asks_view): select (options), confirm (yes/no)
+  // or input (free text). Titles, details and options are harness text the daemon already white-labelled; what the
+  // human TYPES is theirs and is sent exactly as typed. Everything here is plain text (textContent only).
+  const ASK_KINDS = new Set(['select', 'confirm', 'input']);
+  const ASK_ID = /^[A-Za-z0-9_.:-]{1,128}$/;
+  const MAX_ASK_CARDS = 16; // chatclient.rs MAX_ASKS
+  const ASK_OUTCOME_MAX = 300;
+  const askText = value => (typeof value === 'string' ? value : '');
+  /** The well-formed pending asks of a view, bounded, as the card needs them. */
+  function askCards(view) {
+    const list = view && Array.isArray(view.asks) ? view.asks : [];
+    const out = [];
+    for (const a of list) {
+      if (out.length >= MAX_ASK_CARDS) break;
+      if (!a || typeof a !== 'object' || typeof a.id !== 'string' || !ASK_ID.test(a.id) || !ASK_KINDS.has(a.kind)) continue;
+      out.push({
+        id: a.id, kind: a.kind, title: askText(a.title), message: askText(a.message), placeholder: askText(a.placeholder),
+        options: a.kind === 'select' && Array.isArray(a.options) ? a.options.filter(o => typeof o === 'string') : [],
+        answering: a.answering === true,
+      });
+    }
+    return out;
+  }
+  /** The ONE closed `answer` verb for an answer: `{value}` (select/input), `{confirmed}` or `{cancelled}`. */
+  function askPayload(askId, answer) {
+    if (answer && typeof answer.value === 'string') return { action: 'answer', ask_id: askId, value: answer.value };
+    if (answer && typeof answer.confirmed === 'boolean') return { action: 'answer', ask_id: askId, confirmed: answer.confirmed };
+    return { action: 'answer', ask_id: askId, cancelled: true };
+  }
+  /** What happened to a question, in one Spanish sentence (`sent` = this page's answer; null = closed elsewhere). */
+  function askOutcome(ask, sent) {
+    if (!sent) return 'La pregunta se cerró: se respondió en otro lugar o venció.';
+    if (sent.answered === true) return 'Se envió tu respuesta.';
+    if (sent.cancelled) return 'Omitiste la pregunta.';
+    if (typeof sent.confirmed === 'boolean') return `Respondiste: ${sent.confirmed ? 'Sí' : 'No'}`;
+    const shown = cleanLine(sent.value, ASK_OUTCOME_MAX);
+    if (ask && ask.kind === 'select') return `Elegiste: ${shown}`;
+    return shown ? `Respondiste: ${shown}` : 'Respondiste sin texto.';
+  }
+  /** Roving focus in a select: the arrows wrap, Home/End jump; -1 = not a navigation key. */
+  function askNextOption(index, count, key) {
+    if (!(count > 0)) return -1;
+    if (key === 'ArrowDown' || key === 'ArrowRight') return (index + 1) % count;
+    if (key === 'ArrowUp' || key === 'ArrowLeft') return (index - 1 + count) % count;
+    if (key === 'Home') return 0;
+    if (key === 'End') return count - 1;
+    return -1;
+  }
+  const askAria = ask => (ask && ask.title ? `Koda necesita tu respuesta: ${ask.title}` : 'Koda necesita tu respuesta');
+  const askClosedAria = (ask, outcome) => `Pregunta de Koda${ask && ask.title ? `: ${ask.title}` : ''}. ${outcome}`;
+  return { askCards, askPayload, askOutcome, askNextOption, askAria, askClosedAria, staleSnapshot, messageCount, chatHeight, CHAT_MIN_H, CHAT_MAX_H, mergeHistory, leftWindow, PAGE_GAP_MS, pageWait, reconcileRows, rowKey, sameTurn, poseFor, statusView, draftWord, targetAria, noticeAnnouncement, activates, gateLabel, filterChosen, modelRows, modelMeters, modelsInfo, modelsCount, emptyGreeting, cleanDisplayName, cleanLine, CARD_NAME_MAX, CARD_SUMMARY_MAX, DRAFT_MAX, stateLabel, scalarCount, draftProblem, canSend, sendState, needsCheck, checkPlan, statusLine, announcement, atBottom, newRequestId, turnRows, toolRows, approvalRows, activeTurn, activeRole, modelButtonLabel, modelButtonAria, modelButtonEnabled, modelRoleNote, formatSize };
 });

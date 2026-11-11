@@ -297,8 +297,8 @@ fn chathost_the_settings_window_can_never_chat() {
 
 // ---- the chat:state projection ------------------------------------------------------------
 
-const CONVERSATION_KEYS: [&str; 13] = [
-    "active_turn", "availability", "conversation_id", "conversation_specialist", "evicted", "history_before",
+const CONVERSATION_KEYS: [&str; 14] = [
+    "active_turn", "asks", "availability", "conversation_id", "conversation_specialist", "evicted", "history_before",
     "history_persisted", "history_problem", "history_skipped", "producer", "queue_note", "target", "turns",
 ];
 const TURN_KEYS: [&str; 12] = [
@@ -2423,4 +2423,157 @@ fn review_f6_a_failed_naming_the_send_ends_it_even_with_a_read_sent_after_its_qu
     let mine = ts.iter().find(|t| t["user_text"] == json!("hola")).expect("the island's turn shows");
     assert_eq!(mine["state"], json!("error"), "the send's failed ends the send: {:?}", shape(&ts));
     assert_eq!(mine["error"]["code"], json!("failed"));
+}
+
+// ---- K2-05 U4b: the agent's questions inside the island chat --------------------------------
+
+fn asking_link() -> FakeLink {
+    let link = FakeLink::new();
+    link.frame(json!({"type":"ask","id":"a-sel","kind":"select","title":"¿Qué rama?","options":["main","dev"]}));
+    link.frame(json!({"type":"ask","id":"a-yes","kind":"confirm","title":"¿Borrar?","message":"Se borra notas.md"}));
+    link.frame(json!({"type":"ask","id":"a-txt","kind":"input","title":"Nombre","placeholder":"tu nombre"}));
+    link
+}
+
+fn answer(ask_id: &str, field: &str, value: Value) -> Value {
+    let mut p = json!({"action":"answer","ask_id":ask_id});
+    p[field] = value;
+    p
+}
+
+/// U4b R4: chat:state carries every pending ask for the chat (closed fields, bounded) with
+/// whether this island is already answering it; nothing else about the ask (no wire strings).
+#[test]
+fn chathost_u4b_the_projection_carries_every_pending_ask() {
+    let link = asking_link();
+    let v = ChatHost::new().project(&link.view(), T0);
+    assert_eq!(
+        v["asks"],
+        json!([
+            {"id":"a-sel","kind":"select","title":"¿Qué rama?","message":null,"placeholder":null,"options":["main","dev"],"answering":false},
+            {"id":"a-yes","kind":"confirm","title":"¿Borrar?","message":"Se borra notas.md","placeholder":null,"options":[],"answering":false},
+            {"id":"a-txt","kind":"input","title":"Nombre","message":null,"placeholder":"tu nombre","options":[],"answering":false},
+        ])
+    );
+    // offline: no ask (the daemon replays the pending ones on the next connection)
+    assert_eq!(ChatHost::new().project(&FakeLink::offline().view(), T0)["asks"], json!([]));
+    // bounded: never more than the client's MAX_ASKS
+    let many = FakeLink::new();
+    for i in 0..40 {
+        many.frame(json!({"type":"ask","id":format!("a-{i}"),"kind":"confirm","title":"t"}));
+    }
+    assert_eq!(ChatHost::new().project(&many.view(), T0)["asks"].as_array().unwrap().len(), MAX_ASKS);
+}
+
+/// U4b R5: the `answer` verb is a closed shape validated by chat.rs (ask id grammar, exactly one
+/// of value / confirmed / cancelled, value bounded and free of control characters) and becomes
+/// ONE `ui_response` for that ask through the chat client.
+#[test]
+fn chathost_u4b_answer_is_a_closed_verb_that_sends_one_ui_response() {
+    use crate::chat::{parse_command, AskAnswer};
+    assert_eq!(
+        parse_command(&answer("a-sel", "value", json!("dev"))).unwrap(),
+        Command::Answer { ask_id: "a-sel".into(), answer: AskAnswer::Value("dev".into()) }
+    );
+    assert_eq!(parse_command(&answer("a-yes", "confirmed", json!(false))).unwrap(), Command::Answer { ask_id: "a-yes".into(), answer: AskAnswer::Confirmed(false) });
+    assert_eq!(parse_command(&answer("a-txt", "cancelled", json!(true))).unwrap(), Command::Answer { ask_id: "a-txt".into(), answer: AskAnswer::Cancelled });
+    assert_eq!(parse_command(&answer("a-txt", "value", json!(""))).unwrap(), Command::Answer { ask_id: "a-txt".into(), answer: AskAnswer::Value(String::new()) }, "an empty input answer is an answer");
+    let max: String = "ñ".repeat(crate::chat::ANSWER_MAX_UNITS);
+    assert!(parse_command(&answer("a-txt", "value", json!(max))).is_ok());
+    for bad in [
+        answer("a-txt", "value", json!("x".repeat(crate::chat::ANSWER_MAX_UNITS + 1))),
+        answer("a-txt", "value", json!("a\u{0000}b")),
+        answer("a-txt", "value", json!(7)),
+        answer("a-yes", "confirmed", json!("true")),
+        answer("a-txt", "cancelled", json!(false)),
+        answer("bad id!", "value", json!("x")),
+        answer(&"a".repeat(129), "value", json!("x")),
+        json!({"action":"answer","ask_id":"a-txt"}),
+        json!({"action":"answer","ask_id":"a-txt","value":"x","cancelled":true}),
+        json!({"action":"answer","ask_id":"a-txt","value":"x","extra":1}),
+        json!({"action":"answer","value":"x"}),
+    ] {
+        assert_eq!(parse_command(&bad).map_err(|e| e.code), Err("invalid_input".into()), "{bad}");
+    }
+    // each kind sends exactly its ui_response
+    let link = asking_link();
+    let host = ChatHost::new();
+    for (ask, field, value) in [("a-sel", "value", json!("dev")), ("a-yes", "confirmed", json!(true)), ("a-txt", "cancelled", json!(true))] {
+        let cmd = parse_command(&answer(ask, field, value)).unwrap();
+        assert_eq!(host.route(&link, "main", &cmd, T0).unwrap(), Routed::Answer(json!({"answered": true})));
+    }
+    let lines: Vec<String> = link.sent().iter().map(ChatCommand::line).collect();
+    assert_eq!(
+        lines,
+        [
+            "{\"type\":\"ui_response\",\"id\":\"a-sel\",\"value\":\"dev\"}\n",
+            "{\"type\":\"ui_response\",\"id\":\"a-yes\",\"confirmed\":true}\n",
+            "{\"type\":\"ui_response\",\"id\":\"a-txt\",\"cancelled\":true}\n",
+        ]
+    );
+    // answering shows in the projection until the daemon resolves it
+    let v = host.project(&link.view(), T0);
+    assert!(v["asks"].as_array().unwrap().iter().all(|a| a["answering"] == json!(true)), "{v}");
+}
+
+/// U4b R6: an answer must name a pending ask, a select answer one of its shown options, a
+/// confirm a boolean; a second answer to the same ask is refused and never reaches the daemon;
+/// `ask_resolved` removes the ask; the settings window can never answer.
+#[test]
+fn chathost_u4b_answers_are_refused_for_closed_answered_or_mismatched_asks() {
+    use crate::chat::parse_command;
+    let link = asking_link();
+    let host = ChatHost::new();
+    let route = |p: Value| host.route(&link, "main", &parse_command(&p).unwrap(), T0).map_err(|e| e.code);
+    assert_eq!(route(answer("a-gone", "value", json!("x"))), Err("ask_closed".into()), "never received");
+    assert_eq!(route(answer("a-sel", "value", json!("prod"))), Err("answer_refused".into()), "an option never shown");
+    assert_eq!(route(answer("a-yes", "value", json!("sí"))), Err("answer_refused".into()), "a confirm takes a boolean");
+    assert_eq!(route(answer("a-sel", "confirmed", json!(true))), Err("answer_refused".into()), "a select never takes a boolean");
+    assert!(link.sent().is_empty(), "nothing invalid reaches the daemon");
+    // the settings window may never answer
+    assert_eq!(
+        host.route(&link, "settings", &parse_command(&answer("a-sel", "value", json!("dev"))).unwrap(), T0).map_err(|e| e.code),
+        Err("answer_refused".into())
+    );
+    assert!(link.sent().is_empty());
+    // answered once: the double click is refused before the wire
+    assert!(route(answer("a-sel", "value", json!("dev"))).is_ok());
+    assert_eq!(route(answer("a-sel", "value", json!("main"))), Err("ask_answered".into()));
+    assert_eq!(route(answer("a-sel", "cancelled", json!(true))), Err("ask_answered".into()));
+    assert_eq!(link.sent().len(), 1);
+    // the daemon resolves it (answered here, by another client or expired): the card goes away
+    link.frame(json!({"type":"ask_resolved","id":"a-sel"}));
+    let ids: Vec<Value> = host.project(&link.view(), T0)["asks"].as_array().unwrap().iter().map(|a| a["id"].clone()).collect();
+    assert_eq!(ids, [json!("a-yes"), json!("a-txt")]);
+    assert_eq!(route(answer("a-sel", "value", json!("dev"))), Err("ask_closed".into()));
+    // offline: nothing to answer
+    assert_eq!(
+        host.route(&FakeLink::offline(), "main", &parse_command(&answer("a-yes", "confirmed", json!(true))).unwrap(), T0).map_err(|e| e.code),
+        Err("ask_closed".into())
+    );
+}
+
+/// U4b R7: the answer spends the reserved send budget: a chat whose reads used up their share
+/// can still answer the agent's question.
+#[test]
+fn chathost_u4b_an_answer_goes_through_when_reads_spent_their_share() {
+    use crate::chat::parse_command;
+    let link = asking_link();
+    let reads = (CHAT_FRAMES_PER_MINUTE - CHAT_FRAMES_RESERVED) as usize;
+    for _ in 0..reads {
+        link.command("main", &json!({"action":"chat_status"})).unwrap();
+    }
+    assert!(link.command("main", &json!({"action":"chat_status"})).is_err(), "the read share is spent");
+    let host = ChatHost::new();
+    assert!(host.route(&link, "main", &parse_command(&answer("a-yes", "confirmed", json!(true))).unwrap(), T0).is_ok());
+}
+
+/// U4b R8: the user's typed answer travels verbatim: never white-labelled, never rewritten.
+#[test]
+fn chathost_u4b_the_typed_answer_is_sent_verbatim() {
+    use crate::chat::parse_command;
+    let link = asking_link();
+    let typed = "mi Raspberry Pi con engram y Gentle Shell\nsegunda línea\t😀";
+    ChatHost::new().route(&link, "main", &parse_command(&answer("a-txt", "value", json!(typed))).unwrap(), T0).unwrap();
+    assert_eq!(link.sent(), vec![ChatCommand::UiResponse { ask_id: "a-txt".into(), answer: ChatAnswer::Value(typed.into()) }]);
 }

@@ -875,6 +875,35 @@ pub enum Command {
     Cancel {
         turn_id: String,
     },
+    /// K2-05 U4b: answer one of the agent's questions (Gentle Dot `ui_response`). Only the
+    /// ask's id and the answer travel; whether the ask is pending, its kind and its shown
+    /// options are checked by the chat client against what the daemon sent.
+    Answer { ask_id: String, answer: AskAnswer },
+}
+
+/// K2-05 U4b: one answer to an agent question — exactly one of a select/input `value`, a
+/// confirm's `confirmed` boolean, or `cancelled` (skip the question).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AskAnswer {
+    Value(String),
+    Confirmed(bool),
+    Cancelled,
+}
+
+/// K2-05 U4b: the daemon's bound of an answer `value` (`LIMITS.maxAnswerChars`, UTF-16 units).
+pub const ANSWER_MAX_UNITS: usize = 8 * 1024;
+
+/// K2-05 U4b: the daemon's ask-id grammar (`SAFE_ID`: `[A-Za-z0-9_.:-]{1,128}`).
+fn valid_ask_id(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 128 && id.bytes().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'.' | b':' | b'-'))
+}
+
+/// K2-05 U4b: an answer value is the user's own text, sent as typed (never rewritten): bounded
+/// in UTF-16 units like the daemon, and free of control characters other than tab and newline
+/// (the same rule as a draft). Empty is a valid answer.
+fn valid_answer_value(v: &str) -> bool {
+    v.encode_utf16().count() <= ANSWER_MAX_UNITS
+        && !v.chars().any(|c| c.is_control() && c != '\n' && c != '\t')
 }
 
 fn valid_turn_id(id: &str) -> bool {
@@ -970,6 +999,16 @@ pub fn parse_command(payload: &Value) -> Result<Command, ChatError> {
                 client_request_id,
                 attachments,
             })
+        }
+        "answer" if keys(&["action", "ask_id", "value"]) || keys(&["action", "ask_id", "confirmed"]) || keys(&["action", "ask_id", "cancelled"]) => {
+            let ask_id = text_of("ask_id").filter(|id| valid_ask_id(id)).ok_or_else(bad)?;
+            let answer = match (map.get("value"), map.get("confirmed"), map.get("cancelled")) {
+                (Some(Value::String(v)), None, None) if valid_answer_value(v) => AskAnswer::Value(v.clone()),
+                (None, Some(Value::Bool(b)), None) => AskAnswer::Confirmed(*b),
+                (None, None, Some(Value::Bool(true))) => AskAnswer::Cancelled,
+                _ => return Err(bad()),
+            };
+            Ok(Command::Answer { ask_id, answer })
         }
         "cancel" if keys(&["action", "turn_id"]) => {
             let turn_id = text_of("turn_id")

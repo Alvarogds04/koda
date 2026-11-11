@@ -103,10 +103,15 @@ fn chat_send_mirrors_the_daemon_text_limits() {
 
 #[test]
 fn ui_responses_are_bound_to_a_received_unresolved_ask_and_its_shown_options() {
-    let mut st = ChatState::connected();
-    st.apply(&json!({"type":"ask","id":"a-1","kind":"select","title":"¿Continuar?","options":["Sí","No"]}));
-    st.apply(&json!({"type":"ask","id":"a-2","kind":"confirm","title":"¿Borrar?"}));
-    st.apply(&json!({"type":"ask","id":"a-3","kind":"input","title":"Tu nombre"}));
+    // K2-05 U4b: an ask is answered once, so every check that needs an unanswered ask gets a fresh state
+    let asking = || {
+        let mut st = ChatState::connected();
+        st.apply(&json!({"type":"ask","id":"a-1","kind":"select","title":"¿Continuar?","options":["Sí","No"]}));
+        st.apply(&json!({"type":"ask","id":"a-2","kind":"confirm","title":"¿Borrar?"}));
+        st.apply(&json!({"type":"ask","id":"a-3","kind":"input","title":"Tu nombre"}));
+        st
+    };
+    let st = asking();
 
     // select: only a shown option travels, and only for the pending ask
     let cmd = st.command(CHAT_WINDOW_LABEL, &json!({"action":"chat_ui_response","askId":"a-1","answer":"Sí"})).unwrap();
@@ -119,20 +124,21 @@ fn ui_responses_are_bound_to_a_received_unresolved_ask_and_its_shown_options() {
     // input: free text up to the daemon's answer cap
     let long: String = "x".repeat(MAX_ANSWER_CHARS);
     assert!(st.command(CHAT_WINDOW_LABEL, &json!({"action":"chat_ui_response","askId":"a-3","answer":long})).is_ok());
-    assert!(st.command(CHAT_WINDOW_LABEL, &json!({"action":"chat_ui_response","askId":"a-3","answer":"x".repeat(MAX_ANSWER_CHARS + 1)})).is_err());
-    // cancel is always allowed
-    let cmd = st.command(CHAT_WINDOW_LABEL, &json!({"action":"chat_ui_response","askId":"a-1","answer":null})).unwrap();
+    assert!(asking().command(CHAT_WINDOW_LABEL, &json!({"action":"chat_ui_response","askId":"a-3","answer":"x".repeat(MAX_ANSWER_CHARS + 1)})).is_err());
+    // cancel is always allowed (on an unanswered ask)
+    let cmd = asking().command(CHAT_WINDOW_LABEL, &json!({"action":"chat_ui_response","askId":"a-1","answer":null})).unwrap();
     assert!(matches!(cmd, ChatCommand::UiResponse { answer: ChatAnswer::Cancelled, .. }));
     assert_eq!(cmd.line(), "{\"type\":\"ui_response\",\"id\":\"a-1\",\"cancelled\":true}\n");
 
     // an answer for an ask the island never received is refused
-    assert!(st.command(CHAT_WINDOW_LABEL, &json!({"action":"chat_ui_response","askId":"unknown","answer":"Sí"})).is_err());
+    assert!(asking().command(CHAT_WINDOW_LABEL, &json!({"action":"chat_ui_response","askId":"unknown","answer":"Sí"})).is_err());
     // a select answer that was never shown is refused
-    assert!(st.command(CHAT_WINDOW_LABEL, &json!({"action":"chat_ui_response","askId":"a-1","answer":"Tal vez"})).is_err());
+    assert!(asking().command(CHAT_WINDOW_LABEL, &json!({"action":"chat_ui_response","askId":"a-1","answer":"Tal vez"})).is_err());
     // a confirm ask never takes a text answer
-    assert!(st.command(CHAT_WINDOW_LABEL, &json!({"action":"chat_ui_response","askId":"a-2","answer":"sí"})).is_err());
-    assert!(st.command(CHAT_WINDOW_LABEL, &json!({"action":"chat_ui_response","askId":"a-1","answer":7})).is_err());
+    assert!(asking().command(CHAT_WINDOW_LABEL, &json!({"action":"chat_ui_response","askId":"a-2","answer":"sí"})).is_err());
+    assert!(asking().command(CHAT_WINDOW_LABEL, &json!({"action":"chat_ui_response","askId":"a-1","answer":7})).is_err());
     // a resolved ask is gone: fold the resolution, then the same answer is refused
+    let mut st = asking();
     st.apply(&json!({"type":"ask_resolved","id":"a-1"}));
     assert!(st.command(CHAT_WINDOW_LABEL, &json!({"action":"chat_ui_response","askId":"a-1","answer":"Sí"})).is_err());
     // the other asks survive one resolution
@@ -482,7 +488,9 @@ fn ui_response_answers_with_the_exact_option_string_received() {
     // the page answers the shown label; the wire carries the exact string the frame received
     let cmd = st.command(CHAT_WINDOW_LABEL, &json!({"action":"chat_ui_response","askId":"a-1","answer":"Sí"})).unwrap();
     assert_eq!(cmd.line(), "{\"type\":\"ui_response\",\"id\":\"a-1\",\"value\":\"Sí\\u0007\"}\n");
-    // an unaltered option answers as itself
+    // an unaltered option answers as itself (a fresh ask: K2-05 U4b answers each ask once)
+    let mut st = ChatState::connected();
+    st.apply(&json!({"type":"ask","id":"a-1","kind":"select","title":"¿Seguir?","options":["Sí\u{7}","No"]}));
     let cmd = st.command(CHAT_WINDOW_LABEL, &json!({"action":"chat_ui_response","askId":"a-1","answer":"No"})).unwrap();
     assert_eq!(cmd.line(), "{\"type\":\"ui_response\",\"id\":\"a-1\",\"value\":\"No\"}\n");
 }
@@ -1087,4 +1095,68 @@ fn an_error_naming_a_requests_id_is_attributed_to_that_request_only() {
     st.command("main", &json!({"action":"chat_send","text":"otra","clientRequestId":"c2","requestId":"i-send2"})).unwrap();
     st.apply(&json!({"type":"error","code":"busy","requestId":"no valid id!"}));
     assert_eq!(view(&st)["turnError"], json!({"code":"busy","n":2}));
+}
+
+// ---- K2-05 U4b: the agent's questions inside the island chat --------------------------------
+
+/// U4b R2: every pending ask is in the serialized view (bounded, closed fields), with the
+/// daemon's optional details: a confirm's `message` and an input's `placeholder` (display-clean,
+/// bounded); anything off-type is no detail. `ask_resolved` removes exactly that ask.
+#[test]
+fn u4b_every_pending_ask_is_in_the_view_with_its_message_and_placeholder() {
+    let mut st = ChatState::connected();
+    st.apply(&json!({"type":"ask","id":"a-1","kind":"select","title":"¿Seguimos?","options":["Sí","No"]}));
+    st.apply(&json!({"type":"ask","id":"a-2","kind":"confirm","title":"¿Borrar?","message":"Se borra notas.md\u{0007}","placeholder":"x"}));
+    st.apply(&json!({"type":"ask","id":"a-3","kind":"input","title":"Nombre","placeholder":"tu nombre","message":7}));
+    let v = view(&st);
+    let asks = v["asks"].as_array().expect("every pending ask is in the view");
+    assert_eq!(asks.len(), 3);
+    assert_eq!(asks[0], json!({"id":"a-1","kind":"select","title":"¿Seguimos?","options":["Sí","No"]}));
+    assert_eq!(asks[1], json!({"id":"a-2","kind":"confirm","title":"¿Borrar?","options":[],"message":"Se borra notas.md"}), "a confirm takes no placeholder; controls never show");
+    assert_eq!(asks[2], json!({"id":"a-3","kind":"input","title":"Nombre","options":[],"placeholder":"tu nombre"}), "a non-string message is no detail");
+    // bounded like the daemon: message 2000, placeholder 200 UTF-16 units
+    st.apply(&json!({"type":"ask","id":"a-4","kind":"input","title":"t","message":"m".repeat(5000),"placeholder":"p".repeat(900)}));
+    let v = view(&st);
+    assert_eq!(v["asks"][3]["message"].as_str().unwrap().len(), 2000);
+    assert_eq!(v["asks"][3]["placeholder"].as_str().unwrap().len(), 200);
+    // the same ask twice (a repeated frame) is one card
+    st.apply(&json!({"type":"ask","id":"a-1","kind":"select","title":"¿Seguimos?","options":["Sí","No"]}));
+    assert_eq!(view(&st)["asks"].as_array().unwrap().len(), 4);
+    // the resolution removes exactly that ask
+    st.apply(&json!({"type":"ask_resolved","id":"a-2"}));
+    let ids: Vec<String> = view(&st)["asks"].as_array().unwrap().iter().map(|a| a["id"].as_str().unwrap().to_owned()).collect();
+    assert_eq!(ids, ["a-1", "a-3", "a-4"]);
+    // a disconnected view has no ask to answer
+    assert_eq!(view(&ChatState::disconnected(Reason::Lost))["asks"], json!([]));
+}
+
+/// U4b R3: an ask is answered ONCE: a second answer (double click, a stale card, another
+/// window's repeat) is refused while the first is in flight and never reaches the wire. The view
+/// names the asks being answered. A daemon refusal of that answer frees it for a retry, except
+/// `unknown_ask` (the daemon no longer holds it: the card goes away).
+#[test]
+fn u4b_an_ask_is_answered_once_and_a_refused_answer_may_be_retried() {
+    let mut st = ChatState::connected();
+    st.apply(&json!({"type":"ask","id":"a-1","kind":"select","title":"t","options":["Sí","No"]}));
+    st.apply(&json!({"type":"ask","id":"a-2","kind":"input","title":"t"}));
+    let answer = |id: &str, a: serde_json::Value| json!({"action":"chat_ui_response","askId":id,"answer":a});
+    assert!(st.command(CHAT_WINDOW_LABEL, &answer("a-1", json!("Sí"))).is_ok());
+    assert!(st.command(CHAT_WINDOW_LABEL, &answer("a-1", json!("No"))).is_err(), "a second answer to the same ask is refused");
+    assert!(st.command(CHAT_WINDOW_LABEL, &answer("a-1", json!(null))).is_err(), "a late cancel too");
+    assert_eq!(view(&st)["answering"], json!(["a-1"]));
+    // another ask is still answerable
+    assert!(st.command(CHAT_WINDOW_LABEL, &answer("a-2", json!("hola"))).is_ok());
+    // the daemon could not deliver a-1's answer (engine restarting): it may be answered again
+    st.apply(&json!({"type":"error","code":"unavailable"}));
+    assert_eq!(view(&st)["answering"], json!(["a-2"]));
+    assert!(st.command(CHAT_WINDOW_LABEL, &answer("a-1", json!("No"))).is_ok(), "a refused answer frees the ask");
+    // the daemon no longer holds a-2: the ask goes away with its answer
+    st.apply(&json!({"type":"error","code":"unknown_ask"}));
+    let ids: Vec<String> = view(&st)["asks"].as_array().unwrap().iter().map(|a| a["id"].as_str().unwrap().to_owned()).collect();
+    assert_eq!(ids, ["a-1"], "unknown_ask removes the ask the daemon no longer holds");
+    assert_eq!(view(&st)["answering"], json!(["a-1"]));
+    // the resolution ends the answer
+    st.apply(&json!({"type":"ask_resolved","id":"a-1"}));
+    assert_eq!(view(&st)["answering"], json!([]));
+    assert_eq!(view(&st)["asks"], json!([]));
 }

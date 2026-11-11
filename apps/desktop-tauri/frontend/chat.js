@@ -1,7 +1,8 @@
 'use strict';
 /* U1 — the chat surface inside the island (same window, same surface).
    - Talks to Rust through `chat_action` with the closed command set
-     (view/open/back/check/submit/cancel) and, for the F024 model row, through
+     (view/open/back/check/submit/cancel, and K2-05 U4b `answer` for the agent's
+     questions) and, for the F024 model row, through
      two more CLOSED sets: `models_action` (list/select of the verified local
      registry — the same verbs Ajustes → Modelos uses) and `specialists_action`
      (view only, to name the role that fixes a model). It never names an
@@ -265,13 +266,14 @@
     const before = log.scrollHeight;
     const turns = V.mergeHistory(olderTurns, view && Array.isArray(view.turns) ? view.turns : []);
     // F5: a turn the host re-sent unchanged keeps its rows and their keys; only a changed turn is rendered again
-    const rows = [], keys = [], cache = new Map();
+    const rows = [], keys = [], cache = new Map(), turnRowCounts = [];
     for (const turn of turns) {
       let entry = turnCache.get(turn.turn_id);
       if (entry && V.sameTurn(entry.turn, turn)) entry.turn = turn;
       else { const r = V.turnRows(turn); entry = { turn, rows: r, keys: r.map(V.rowKey) }; }
       cache.set(turn.turn_id, entry);
       for (let k = 0; k < entry.rows.length; k += 1) { rows.push(entry.rows[k]); keys.push(entry.keys[k]); }
+      turnRowCounts.push({ id: turn.turn_id, count: entry.rows.length }); // U4b: where each turn's rows end
     }
     turnCache = cache;
     const placeholder = log.querySelector('li.empty');
@@ -321,8 +323,10 @@
       if (placeholder) { placeholder.remove(); drawn = []; drawnKeys = []; }
       const plan = V.reconcileRows(drawn, rows, drawnKeys, keys);
       const hadRows = drawn.length > 0;
-      for (const { index, row } of plan.patch) paintRow(log.children[index], row);
-      for (let k = 0; k < plan.remove; k += 1) log.lastElementChild.remove();
+      // U4b: the ask cards live in the log too; the turn rows are reconciled among themselves only
+      const els = rowEls();
+      for (const { index, row } of plan.patch) paintRow(els[index], row);
+      for (let k = 0; k < plan.remove; k += 1) els[els.length - 1 - k].remove();
       for (const row of plan.append) {
         const li = document.createElement('li');
         paintRow(li, row);
@@ -334,6 +338,7 @@
       }
       drawn = rows; drawnKeys = keys;
     }
+    placeAsks(turnRowCounts);
     if (!turns.length) {
       newer.hidden = true; // nothing left to scroll to (conversation reset)
       following = true;
@@ -387,6 +392,238 @@
 
   }
 
+  // ---- K2-05 U4b: the agent's questions inside the chat (Gentle Dot AskCard) ---------------------------------------
+  // One card per pending ask (`chat:state.asks`), drawn in the log right after the turn that asked. select = one button
+  // per option (arrows move, Enter chooses), confirm = Sí / No, input = a field (Enter sends, the text goes exactly as
+  // typed). «Omitir» or Escape cancels. A question is answered ONCE (the card locks at the first answer; Rust refuses a
+  // second one too). The card closes when the daemon resolves it (answered here or elsewhere, expired) and keeps its
+  // outcome. While the chat is offline a pending card stays visible and waits; the daemon replays it on reconnect.
+  const ASK_TRUTH = new Set(['ready', 'busy', 'blocked']); // connected states: the ask list is the daemon's own
+  const ASK_KEEP_CLOSED = 16;
+  const askRecs = new Map(); // ask id -> { ask, anchor, li, phase: open|sending|closed, sent, problem, closedText, … }
+  function rowEls() { return Array.prototype.filter.call(log.children, li => !(li.dataset && li.dataset.askCard)); }
+  function askLabel(tag, cls, text) { const n = document.createElement(tag); n.className = cls; n.textContent = text; return n; }
+  function askControl(tag, name, rec) {
+    const n = document.createElement(tag);
+    n.dataset.askControl = name;
+    if (tag === 'button') n.type = 'button';
+    n.disabled = rec.phase !== 'open' || !!rec.waiting;
+    return n;
+  }
+  function askControls(rec, name) {
+    return Array.prototype.filter.call(rec.li.querySelectorAll('[data-ask-control]'), n => !name || n.dataset.askControl === name);
+  }
+  function firstAskControl(rec) {
+    return askControls(rec).find(n => !n.disabled && n.dataset.askControl !== 'options' && (n.dataset.askControl !== 'option' || n.tabIndex === 0)) || null;
+  }
+  function askSig(rec) {
+    const a = rec.ask;
+    return JSON.stringify([rec.phase, !!rec.waiting, rec.problem || '', rec.closedText || '', rec.phase === 'closed' ? V.askOutcome(a, rec.sent) : '',
+      a.kind, a.title, a.message, a.placeholder, a.options]);
+  }
+  function paintAsk(rec) {
+    const sig = askSig(rec);
+    if (rec.paintSig === sig) return; // unchanged: keep the DOM (and the human's focus and typing) as it is
+    const hadFocus = rec.li.contains(document.activeElement) ? document.activeElement.dataset.askControl : '';
+    rec.paintSig = sig;
+    const { li, ask } = rec;
+    li.textContent = '';
+    li.className = 'ask';
+    li.dataset.askCard = ask.id;
+    li.dataset.state = rec.phase;
+    li.setAttribute('role', 'group');
+    if (rec.phase === 'closed') {
+      const outcome = rec.closedText || V.askOutcome(ask, rec.sent);
+      li.setAttribute('aria-label', V.askClosedAria(ask, outcome));
+      li.append(askLabel('p', 'ask-eyebrow', 'Pregunta de Koda'));
+      if (ask.title) li.append(askLabel('p', 'ask-title', ask.title));
+      li.append(askLabel('p', 'ask-outcome', outcome));
+      return;
+    }
+    li.setAttribute('aria-label', V.askAria(ask));
+    li.append(askLabel('p', 'ask-eyebrow', 'Necesita tu respuesta'));
+    if (ask.title) li.append(askLabel('p', 'ask-title', ask.title));
+    if (ask.message) { // the whole text the human approves; a long one scrolls inside the card
+      const m = askLabel('p', 'ask-message', ask.message);
+      m.tabIndex = 0; m.setAttribute('aria-label', `Detalles: ${ask.message}`);
+      li.append(m);
+    }
+    if (ask.kind === 'select') {
+      const group = document.createElement('div');
+      group.className = 'ask-options';
+      group.dataset.askControl = 'options';
+      group.setAttribute('role', 'group');
+      group.setAttribute('aria-label', 'Opciones');
+      const roving = Math.min(rec.focusIndex || 0, Math.max(0, ask.options.length - 1));
+      ask.options.forEach((option, i) => {
+        const b = askControl('button', 'option', rec);
+        b.textContent = option;
+        b.dataset.index = String(i);
+        b.tabIndex = i === roving ? 0 : -1;
+        b.addEventListener('click', () => sendAsk(rec, { value: option }));
+        group.append(b);
+      });
+      li.append(group);
+    } else if (ask.kind === 'confirm') {
+      const group = document.createElement('div');
+      group.className = 'ask-options';
+      for (const [word, confirmed] of [['Sí', true], ['No', false]]) {
+        const b = askControl('button', 'confirm', rec);
+        b.textContent = word;
+        if (confirmed) b.className = 'primary';
+        b.addEventListener('click', () => sendAsk(rec, { confirmed }));
+        group.append(b);
+      }
+      li.append(group);
+    } else {
+      const form = document.createElement('form');
+      form.className = 'ask-form';
+      const field = askControl('input', 'input', rec);
+      field.type = 'text';
+      field.value = rec.draft || ''; // what the human typed survives a repaint
+      field.maxLength = 8192; // chat.rs ANSWER_MAX_UNITS (UTF-16 units, like maxlength)
+      field.placeholder = ask.placeholder || '';
+      field.setAttribute('aria-label', ask.title || 'Tu respuesta');
+      field.addEventListener('input', () => { rec.draft = field.value; });
+      const submit = askControl('button', 'submit', rec);
+      submit.type = 'submit';
+      submit.className = 'primary';
+      submit.textContent = 'Enviar respuesta';
+      form.addEventListener('submit', event => { event.preventDefault(); sendAsk(rec, { value: field.value }); });
+      form.append(field, submit);
+      li.append(form);
+    }
+    const skip = askControl('button', 'skip', rec);
+    skip.className = 'ask-skip';
+    skip.textContent = 'Omitir';
+    skip.setAttribute('aria-label', 'Omitir la pregunta');
+    skip.addEventListener('click', () => sendAsk(rec, { cancelled: true }));
+    li.append(skip);
+    const note = rec.waiting ? 'Esperando la conexión con Koda…' : rec.phase === 'sending' ? 'Enviando respuesta…' : rec.problem || '';
+    if (note) li.append(askLabel('p', 'ask-status', note));
+    if (hadFocus) { const again = askControls(rec, hadFocus).find(n => !n.disabled && (hadFocus !== 'option' || n.tabIndex === 0)); if (again) again.focus(); }
+  }
+  function askKeydown(rec, event) {
+    if (event.isComposing || event.keyCode === 229) return; // IME owns the key
+    if (rec.phase !== 'open' || rec.waiting) return;
+    const target = event.target;
+    const role = target && target.dataset ? target.dataset.askControl : '';
+    if (event.key === 'Escape') { // the first Escape skips the question, it never collapses the island
+      event.preventDefault(); event.stopPropagation();
+      sendAsk(rec, { cancelled: true });
+      return;
+    }
+    if (role === 'option') {
+      const buttons = askControls(rec, 'option');
+      const index = Number(target.dataset.index) || 0;
+      if (event.key === 'Enter') { event.preventDefault(); event.stopPropagation(); sendAsk(rec, { value: rec.ask.options[index] }); return; }
+      const next = V.askNextOption(index, buttons.length, event.key);
+      if (next < 0) return;
+      event.preventDefault();
+      rec.focusIndex = next;
+      buttons.forEach((b, i) => { b.tabIndex = i === next ? 0 : -1; });
+      buttons[next].focus();
+    } else if (role === 'input' && event.key === 'Enter') {
+      event.preventDefault(); event.stopPropagation();
+      sendAsk(rec, { value: target.value });
+    }
+  }
+  function sendAsk(rec, answer) {
+    if (rec.phase !== 'open' || rec.waiting || rec.inflight) return; // answered once: a double click sends nothing
+    rec.hadFocus = rec.li.contains(document.activeElement);
+    rec.phase = 'sending'; rec.inflight = true; rec.sent = answer; rec.problem = '';
+    paintAsk(rec);
+    if (rec.hadFocus) rec.li.focus(); // the disabled control drops the focus: keep it on the card
+    action(V.askPayload(rec.ask.id, answer)).then(() => { rec.inflight = false; }, error => {
+      rec.inflight = false;
+      const code = error && error.code;
+      const message = (error && error.message) || 'No se pudo enviar la respuesta.';
+      if (code === 'ask_closed') { closeAsk(rec, message); setLive(message); return; }
+      if (code === 'ask_answered' || rec.phase !== 'sending') return; // already answered: the card waits for its resolution
+      rec.phase = 'open'; rec.sent = null; rec.problem = message; rec.seenAnswering = false;
+      paintAsk(rec);
+      setLive(message);
+      if (rec.hadFocus) { const first = firstAskControl(rec); if (first) first.focus(); }
+    });
+  }
+  function closeAsk(rec, closedText) {
+    const had = rec.hadFocus || rec.li.contains(document.activeElement);
+    rec.phase = 'closed'; rec.waiting = false; rec.closedText = closedText || '';
+    paintAsk(rec);
+    if (had && capsule.dataset.view === 'chat') input.focus(); // the question is gone: back to the composer
+    const closed = [...askRecs.values()].filter(r => r.phase === 'closed');
+    for (const old of closed.slice(0, Math.max(0, closed.length - ASK_KEEP_CLOSED))) { old.li.remove(); askRecs.delete(old.ask.id); }
+  }
+  function clearAsks() {
+    for (const rec of askRecs.values()) rec.li.remove();
+    askRecs.clear();
+  }
+  /** Fold the view's pending asks into the cards (before the log is drawn). */
+  function syncAsks(next) {
+    const list = V.askCards(next);
+    const live = new Set(list.map(a => a.id));
+    const truth = !!(next.availability && ASK_TRUTH.has(next.availability.state));
+    const lastId = Array.isArray(next.turns) && next.turns.length ? next.turns[next.turns.length - 1].turn_id : null;
+    for (const ask of list) {
+      let rec = askRecs.get(ask.id);
+      if (!rec) {
+        const li = document.createElement('li');
+        li.tabIndex = -1;
+        rec = { ask, anchor: next.active_turn || lastId, li, phase: 'open', fresh: true };
+        const own = rec;
+        li.addEventListener('keydown', event => askKeydown(own, event));
+        askRecs.set(ask.id, rec);
+      } else if (rec.phase === 'closed' && !rec.sent) {
+        rec.phase = 'open'; rec.closedText = ''; // a replayed ask the page closed while it reconnected: open again
+      }
+      rec.ask = ask; rec.waiting = false;
+      if (ask.answering && rec.phase !== 'closed') { rec.phase = 'sending'; rec.seenAnswering = true; if (!rec.sent) rec.sent = { answered: true }; }
+      else if (rec.phase === 'sending' && !rec.inflight && rec.seenAnswering) {
+        // the daemon refused the answer (chatclient freed the ask): the card may be answered again
+        rec.phase = 'open'; rec.sent = null; rec.seenAnswering = false; rec.problem = 'No se pudo enviar la respuesta.';
+      }
+      paintAsk(rec);
+    }
+    for (const rec of askRecs.values()) {
+      if (live.has(rec.ask.id) || rec.phase === 'closed') continue;
+      if (truth) {
+        closeAsk(rec);
+        if (capsule.dataset.view === 'chat') setLive(V.askOutcome(rec.ask, rec.sent));
+      } else if (!rec.waiting) { rec.waiting = true; paintAsk(rec); } // offline: the daemon replays it on reconnect
+    }
+  }
+  /** Put each card right after the last row of the turn that asked (only the nodes out of place move). */
+  function placeAsks(turnRowCounts) {
+    if (!askRecs.size) return;
+    const focused = document.activeElement;
+    const recs = [...askRecs.values()];
+    const rowsNow = rowEls();
+    const desired = [], placed = new Set();
+    let at = 0;
+    for (const { id, count } of turnRowCounts) {
+      for (let k = 0; k < count && at < rowsNow.length; k += 1) desired.push(rowsNow[at++]);
+      for (const rec of recs) if (rec.anchor === id) { desired.push(rec.li); placed.add(rec); }
+    }
+    while (at < rowsNow.length) desired.push(rowsNow[at++]);
+    for (const rec of recs) if (!placed.has(rec)) desired.push(rec.li);
+    for (let i = 0; i < desired.length; i += 1) if (log.children[i] !== desired[i]) log.insertBefore(desired[i], log.children[i] || null);
+    if (focused && document.activeElement !== focused && recs.some(r => r.li.contains(focused))) focused.focus({ preventScroll: true });
+  }
+  /** A new card is scrolled into view and announced; it takes the focus unless the human is typing. */
+  function presentAsks() {
+    const fresh = [...askRecs.values()].filter(r => r.fresh);
+    if (!fresh.length) return;
+    for (const rec of fresh) { rec.fresh = false; if (rec.li.scrollIntoView) rec.li.scrollIntoView({ block: 'nearest' }); }
+    if (capsule.dataset.view !== 'chat') return;
+    const first = fresh.find(r => r.phase === 'open' && !r.waiting);
+    if (!first) return;
+    setLive(V.askAria(first.ask));
+    const active = document.activeElement;
+    const typing = active === input || !!(active && active.dataset && active.dataset.askControl === 'input');
+    if (!typing) { const control = firstAskControl(first); if (control) control.focus(); }
+  }
+  // ---- end U4b
+
   function resetHistory(next) {
     olderTurns = []; historyBefore = next.history_before || null; historyGeneration += 1; paging = false;
     runStarted = false; autoFor = null; pageProblem = ''; clearTimeout(pageTimer); pageTimer = 0; pendingPage = null;
@@ -430,8 +667,9 @@
     const said = changed ? null : V.announcement(view, next);
     if (changed) {
       resetHistory(next);
-      if (view) { input.value = ''; pendingId = null; localProblem = ''; autosize(); attachments = []; renderAttachments(); }
+      if (view) { input.value = ''; pendingId = null; localProblem = ''; autosize(); attachments = []; renderAttachments(); clearAsks(); }
     }
+    syncAsks(next); // U4b: the agent's questions (from `next` only), placed by renderLog after the turn that asked
     followWindow(next);
     view = next;
     reportHeight();
@@ -441,6 +679,7 @@
     renderModelRow();
     scheduleCheck();
     if (capsule.dataset.view === 'chat') setLive(said);
+    presentAsks();
     autoPage();
     // #313: turns and the model going down become cues by TRANSITION (history and the first snapshot are baselines)
     try { const w = window.AbitoSoundWiringInstance; if (w) w.observeChat(next); } catch { /* sound never breaks the chat */ }

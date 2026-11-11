@@ -550,3 +550,69 @@ fn a_spent_read_budget_never_lets_the_islands_turn_take_another_clients_identica
     assert_eq!(turns[1]["turn_id"], accepted["turn_id"], "the island's turn is the second «hola»");
     assert_ne!(turns[0]["turn_id"], accepted["turn_id"]);
 }
+
+/// K2-05 U4b: the agent's question inside the island chat, end to end over the REAL daemon with
+/// the fake engine (`--ask-on-prompt`): the engine asks during the turn; chat:state carries the
+/// card, white-labelled by the daemon; a relaunched island (a second connection, the page reload)
+/// gets the pending ask replayed and answers it; the engine receives the user's text verbatim and
+/// finishes the turn; the card goes away on BOTH connections (ask_resolved), and the first one's
+/// late answer is refused as closed.
+#[test]
+fn the_agents_question_is_shown_replayed_on_reconnect_answered_once_and_closed_everywhere() {
+    let log_dir = PathBuf::from(std::env::var("HOME").unwrap()).join(format!("{PREFIX}{}-8{}", std::process::id() % 100000, std::process::id() % 1000));
+    std::fs::DirBuilder::new().mode(0o700).create(&log_dir).unwrap();
+    struct Tidy(PathBuf);
+    impl Drop for Tidy {
+        fn drop(&mut self) {
+            remove_ours(&self.0);
+        }
+    }
+    let _tidy = Tidy(log_dir.clone());
+    let cmd_log = log_dir.join("engine-commands.jsonl");
+    let island = Island::start(&format!("--ask-on-prompt --cmd-log \"{}\"", cmd_log.display()), true);
+    let chat = Chat::connect(&island);
+    chat.wait("the engine is ready", |v| v["producer"]["pi"] == json!("ready"));
+    assert_eq!(chat.state()["asks"], json!([]));
+    let Routed::Answer(accepted) = chat.action("main", json!({"action": "submit", "text": "guardá esto", "client_request_id": "req-ask-0001"})).unwrap() else {
+        panic!("submit answers the page")
+    };
+    let asked = chat.wait("the agent's question", |v| v["asks"].as_array().is_some_and(|a| a.len() == 1));
+    let ask = asked["asks"][0].clone();
+    assert_eq!(ask["kind"], json!("input"));
+    assert_eq!(ask["title"], json!("Koda necesita un nombre"), "hidden engine names never reach the card");
+    assert_eq!(ask["placeholder"], json!("nombre para memory"));
+    assert_eq!(ask["answering"], json!(false));
+    assert_eq!(asked["active_turn"], accepted["turn_id"], "the turn waits for the answer");
+    assert!(chat.emitted.lock().unwrap().iter().any(|v| v["asks"].as_array().is_some_and(|a| a.len() == 1)), "the page got the card through chat:state");
+    let ask_id = ask["id"].as_str().unwrap().to_owned();
+
+    // the island relaunches (page reload / reconnect): the daemon replays the pending ask
+    let again = Chat::connect(&island);
+    let replayed = again.wait("the replayed question", |v| v["asks"].as_array().is_some_and(|a| a.len() == 1));
+    assert_eq!(replayed["asks"][0]["id"], json!(ask_id));
+    assert_eq!(replayed["asks"][0]["title"], json!("Koda necesita un nombre"));
+
+    // answering after the reconnect works; the typed text is the user's own, sent as typed
+    let typed = "mi Raspberry Pi con engram y Gentle Shell";
+    assert_eq!(again.action("main", json!({"action": "answer", "ask_id": ask_id, "value": typed})).unwrap(), Routed::Answer(json!({"answered": true})));
+    assert_eq!(again.action("main", json!({"action": "answer", "ask_id": ask_id, "value": "otra"})).unwrap_err(), "ask_answered", "answered once");
+    let end = Instant::now() + Duration::from_secs(10);
+    loop {
+        let log = std::fs::read_to_string(&cmd_log).unwrap_or_default();
+        if let Some(line) = log.lines().find(|l| l.contains("\"extension_ui_response\"")) {
+            let got: Value = serde_json::from_str(line).unwrap();
+            assert_eq!(got, json!({"type": "extension_ui_response", "id": ask_id, "value": typed}), "the engine got the user's text verbatim");
+            break;
+        }
+        assert!(Instant::now() < end, "the engine never received the answer");
+        std::thread::sleep(Duration::from_millis(40));
+    }
+    assert_eq!(std::fs::read_to_string(&cmd_log).unwrap().matches("extension_ui_response").count(), 1, "one answer reached the engine");
+    // the card goes away on both connections; the turn finishes with the engine's reply
+    again.wait("the card closed on the answering island", |v| v["asks"] == json!([]));
+    let done = chat.wait("the card closed and the turn finished on the first connection", |v| {
+        v["asks"] == json!([]) && last_turn(v)["state"] == json!("completed") && last_turn(v)["reply"] == json!(format!("recibí {} caracteres", typed.encode_utf16().count()))
+    });
+    assert_eq!(last_turn(&done)["turn_id"], accepted["turn_id"]);
+    assert_eq!(chat.action("main", json!({"action": "answer", "ask_id": ask_id, "cancelled": true})).unwrap_err(), "ask_closed", "a late answer from another window is refused");
+}

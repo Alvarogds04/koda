@@ -196,6 +196,11 @@ impl ChatCommand {
     }
 }
 
+/// K2-05 U4b: the daemon's bound of a confirm's `message` (server.cjs ASK_MESSAGE_CHARS).
+pub const MAX_ASK_MESSAGE_CHARS: usize = 2000;
+/// K2-05 U4b: the daemon's bound of an input's `placeholder` (server.cjs ASK_PLACEHOLDER_CHARS).
+pub const MAX_ASK_PLACEHOLDER_CHARS: usize = 200;
+
 /// One daemon `ask`: the closed fields the island is allowed to show and answer.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ChatAsk {
@@ -204,6 +209,13 @@ pub struct ChatAsk {
     pub title: String,
     /// The shown options: display-clean (control characters stripped). Serialized.
     pub options: Vec<String>,
+    /// K2-05 U4b: what the user approves (a confirm's details, Gentle Dot `Ask.message`):
+    /// harness text the daemon already white-labelled; display-clean and bounded here.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    /// K2-05 U4b: an input's hint (Gentle Dot `Ask.placeholder`), white-labelled by the daemon.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub placeholder: Option<String>,
     /// The EXACT strings the ask frame carried, position-matched to `options`:
     /// an answer travels as received — control characters are stripped for display
     /// only, never in the answer (the daemon matches its pending ask against what
@@ -306,9 +318,14 @@ pub struct ChatState {
     streaming: Vec<StreamMessage>,
     /// The newest pending ask (the one the UI answers), or null.
     pending_ask: Value,
-    /// Every pending ask, for answer validation. Never serialized.
-    #[serde(skip_serializing)]
+    /// Every pending ask (K2-05 U4b: serialized, so the chat shows one card per ask; bounded by
+    /// `MAX_ASKS`), and the list answers are validated against.
     asks: Vec<ChatAsk>,
+    /// K2-05 U4b: the asks whose answer this client sent and the daemon has not resolved yet:
+    /// an ask is answered ONCE (a second answer is refused before the wire). A daemon refusal of
+    /// that answer frees it again. Interior mutability because [`ChatState::command`] takes
+    /// `&self`; bounded by `MAX_ASKS` (only pending asks can be in it).
+    answering: RefCell<Vec<String>>,
     /// The daemon's last `error` frame: a closed code plus a counter.
     last_error: Value,
     /// The last bounded toasts (newest last).
@@ -377,6 +394,7 @@ impl ChatState {
             streaming: vec![],
             pending_ask: Value::Null,
             asks: vec![],
+            answering: RefCell::new(vec![]),
             last_error: json!({"code": null, "n": 0}),
             toasts: vec![],
             queue: json!({"steering": 0, "followUp": 0}),
@@ -429,6 +447,11 @@ impl ChatState {
     pub fn command(&self, caller: &str, payload: &Value) -> Result<ChatCommand, CommandError> {
         if caller != CHAT_WINDOW_LABEL { return Err(CommandError); }
         let cmd = parse_chat_command(&self.asks, payload)?;
+        // K2-05 U4b: an ask is answered once — checked before the budget, so a refused repeat
+        // spends nothing and never reaches the wire
+        if let ChatCommand::UiResponse { ask_id, .. } = &cmd {
+            if self.answering.borrow().iter().any(|a| a == ask_id) { return Err(CommandError); }
+        }
         const WINDOW: std::time::Duration = std::time::Duration::from_secs(60);
         let now = Instant::now();
         match self.rate_window.get() {
@@ -454,11 +477,18 @@ impl ChatState {
             if awaiting.len() >= MAX_AWAITING {
                 awaiting.pop_front();
             }
+            // the third slot names the command: a send/steer's wire requestId, an answer's ask id
             let request = match &cmd {
                 ChatCommand::Send { request_id, .. } | ChatCommand::Steer { request_id, .. } => Some(request_id.clone()),
+                ChatCommand::UiResponse { ask_id, .. } => Some(ask_id.clone()),
                 _ => None,
             };
             awaiting.push_back((kind, now, request));
+        }
+        if let ChatCommand::UiResponse { ask_id, .. } = &cmd {
+            let mut answering = self.answering.borrow_mut();
+            if answering.len() >= MAX_ASKS { answering.remove(0); }
+            answering.push(ask_id.clone());
         }
         Ok(cmd)
     }
@@ -471,13 +501,15 @@ impl ChatState {
     /// answers exactly that command, whatever arrived in between; one naming nothing waiting is
     /// nobody's. Only an unnamed error (a daemon that does not echo it, or a frame-level refusal)
     /// is guessed by order.
-    fn attribute_error(&mut self, code: &str, request: Option<&str>) -> Option<Awaiting> {
+    /// K2-05 U4b: also returns what the claimed entry names (an answer's ask id); an answer is never
+    /// claimed by a `requestId` (its slot holds an ask id, not a request).
+    fn attribute_error(&mut self, code: &str, request: Option<&str>) -> Option<(Awaiting, Option<String>)> {
         let now = Instant::now();
         let awaiting = self.awaiting.get_mut();
         awaiting.retain(|(k, at, _)| now.duration_since(*at) < k.ttl());
         if let Some(request) = request {
-            let at = awaiting.iter().position(|(k, _, r)| r.as_deref() == Some(request) && k.can_answer(code))?;
-            return awaiting.remove(at).map(|(k, _, _)| k);
+            let at = awaiting.iter().position(|(k, _, r)| *k != Awaiting::Answer && r.as_deref() == Some(request) && k.can_answer(code))?;
+            return awaiting.remove(at).map(|(k, _, r)| (k, r));
         }
         let mut at = awaiting.iter().position(|(k, _, _)| k.can_answer(code))?;
         if let (Awaiting::Settled, quiet, _) = awaiting[at] {
@@ -485,7 +517,7 @@ impl ChatState {
                 at = later;
             }
         }
-        awaiting.remove(at).map(|(k, _, _)| k)
+        awaiting.remove(at).map(|(k, _, r)| (k, r))
     }
 
     /// Bump one counter of a `{…, "n"}`-style object.
@@ -647,6 +679,8 @@ impl ChatState {
             }
             "ask" => {
                 let Some(ask) = ask_view(frame) else { return };
+                // K2-05 U4b (Gentle Dot store.ts): an ask already pending is never added twice
+                if self.asks.iter().any(|a| a.id == ask.id) { return; }
                 if self.asks.len() >= MAX_ASKS { return; } // past the bound: never registered, never answerable
                 let pending = serde_json::to_value(&ask).unwrap_or(Value::Null);
                 let changed = self.pending_ask != pending;
@@ -657,14 +691,12 @@ impl ChatState {
             "ask_resolved" => {
                 let Some(id) = id_field(frame, "id") else { return };
                 let awaiting = self.awaiting.get_mut();
-                if let Some(at) = awaiting.iter().position(|(k, _, _)| *k == Awaiting::Answer) {
+                // the answer that resolved it (this client's, when it sent one) waits no more
+                let mine = awaiting.iter().position(|(k, _, r)| *k == Awaiting::Answer && r.as_deref() == Some(id));
+                if let Some(at) = mine.or_else(|| awaiting.iter().position(|(k, _, _)| *k == Awaiting::Answer)) {
                     awaiting.remove(at);
                 }
-                self.asks.retain(|a| a.id != id);
-                let pending = self.asks.last().map(|a| serde_json::to_value(a).unwrap_or(Value::Null)).unwrap_or(Value::Null);
-                let changed = self.pending_ask != pending;
-                self.pending_ask = pending;
-                changed
+                self.forget_ask(id)
             }
             "toast" => {
                 let Some(message) = frame.get("message").and_then(Value::as_str) else { return };
@@ -690,11 +722,20 @@ impl ChatState {
                 // review F6: the request the daemon says this error answers (off-grammar: unnamed)
                 let request = frame.get("requestId").and_then(Value::as_str).filter(|r| request_id_ok(r));
                 match self.attribute_error(code, request) {
-                    Some(Awaiting::Send | Awaiting::Turn { .. } | Awaiting::Settled) => {
+                    // K2-05 U4b: the daemon refused this client's answer: `unknown_ask` = it no longer
+                    // holds the ask (the card goes away); any other refusal frees it for a retry
+                    Some((Awaiting::Answer, Some(ask_id))) => {
+                        if code == "unknown_ask" {
+                            self.forget_ask(&ask_id);
+                        } else {
+                            self.answering.get_mut().retain(|a| *a != ask_id);
+                        }
+                    }
+                    Some((Awaiting::Send | Awaiting::Turn { .. } | Awaiting::Settled, _)) => {
                         let n = self.turn_error["n"].as_u64().unwrap_or(0) + 1;
                         self.turn_error = json!({"code": code, "n": n});
                     }
-                    Some(Awaiting::Read(earlier)) => {
+                    Some((Awaiting::Read(earlier), _)) => {
                         Self::bump(&mut self.reads, "failed");
                         if earlier {
                             Self::bump(&mut self.earlier_reads, "failed");
@@ -709,6 +750,21 @@ impl ChatState {
         if changed {
             self.revision = self.revision.wrapping_add(1);
         }
+    }
+
+    /// K2-05 U4b: an ask is gone (resolved, or the daemon no longer holds it): it leaves the
+    /// pending list, its in-flight answer mark and the newest-ask view. Returns whether the view
+    /// changed.
+    fn forget_ask(&mut self, id: &str) -> bool {
+        let before = self.asks.len();
+        self.asks.retain(|a| a.id != id);
+        let answering = self.answering.get_mut();
+        let was_answering = answering.len();
+        answering.retain(|a| a != id);
+        let pending = self.asks.last().map(|a| serde_json::to_value(a).unwrap_or(Value::Null)).unwrap_or(Value::Null);
+        let changed = self.pending_ask != pending || self.asks.len() != before || answering.len() != was_answering;
+        self.pending_ask = pending;
+        changed
     }
 
     /// Live activities pair running→done/failed by the engine's `callId`. The view has
@@ -826,7 +882,13 @@ fn ask_view(frame: &Value) -> Option<ChatAsk> {
             wire_options.push(raw.to_owned());
         }
     }
-    Some(ChatAsk { id: id.to_owned(), kind: kind.to_owned(), title, options, wire_options })
+    // K2-05 U4b: the optional details (the daemon white-labels and bounds them; mirrored here):
+    // display-clean, bounded, anything but a non-empty string is no detail; a placeholder only
+    // on an input
+    let detail = |key: &str, max: usize| frame.get(key).and_then(Value::as_str).map(|t| clip_utf16(t, max)).filter(|t| !t.is_empty());
+    let message = detail("message", MAX_ASK_MESSAGE_CHARS);
+    let placeholder = if kind == "input" { detail("placeholder", MAX_ASK_PLACEHOLDER_CHARS) } else { None };
+    Some(ChatAsk { id: id.to_owned(), kind: kind.to_owned(), title, options, message, placeholder, wire_options })
 }
 
 /// The closed rebuild of one history message (the daemon already allowlisted its
@@ -997,6 +1059,22 @@ fn engine_unavailable() -> crate::chat::ChatError {
 
 fn send_refused() -> crate::chat::ChatError {
     chat_err("send_refused", "No se pudo enviar el pedido al motor de Koda.", true)
+}
+
+/// K2-05 U4b: the question is no longer open (answered elsewhere, expired, or never received).
+fn ask_closed() -> crate::chat::ChatError {
+    chat_err("ask_closed", "Esa pregunta ya no está abierta.", false)
+}
+
+/// K2-05 U4b: this island already sent an answer to that question.
+fn ask_answered() -> crate::chat::ChatError {
+    chat_err("ask_answered", "Esa pregunta ya se respondió.", false)
+}
+
+/// K2-05 U4b: the answer does not fit the question (an option never shown, a text for a yes/no),
+/// or it could not be sent.
+fn answer_refused() -> crate::chat::ChatError {
+    chat_err("answer_refused", "No se pudo enviar la respuesta.", true)
 }
 
 fn history_unavailable() -> crate::chat::ChatError {
@@ -1260,6 +1338,43 @@ fn recorded(chat: &Value) -> Vec<(String, Option<String>)> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// K2-05 U4b: the pending asks of a connected view as the page shows them (closed fields; the
+/// list is already bounded by `MAX_ASKS`), each with whether this island is answering it.
+fn asks_view(chat: &Value) -> Value {
+    if !chat_connected(chat) {
+        return json!([]);
+    }
+    let answering = chat.get("answering").and_then(Value::as_array).cloned().unwrap_or_default();
+    let list = chat.get("asks").and_then(Value::as_array).cloned().unwrap_or_default();
+    Value::Array(
+        list.iter()
+            .take(MAX_ASKS)
+            .filter_map(|a| {
+                let id = a.get("id")?.as_str()?;
+                let field = |k: &str| a.get(k).filter(|v| v.is_string()).cloned().unwrap_or(Value::Null);
+                Some(json!({
+                    "id": id,
+                    "kind": a.get("kind")?.as_str()?,
+                    "title": a.get("title").and_then(Value::as_str).unwrap_or(""),
+                    "message": field("message"),
+                    "placeholder": field("placeholder"),
+                    "options": a.get("options").filter(|o| o.is_array()).cloned().unwrap_or(json!([])),
+                    "answering": answering.iter().any(|x| x.as_str() == Some(id)),
+                }))
+            })
+            .collect(),
+    )
+}
+
+/// K2-05 U4b: whether a view holds that pending ask / is answering it.
+fn ask_state(chat: &Value, ask_id: &str) -> (bool, bool) {
+    let has = |key: &str, f: &dyn Fn(&Value) -> bool| chat.get(key).and_then(Value::as_array).is_some_and(|l| l.iter().any(f));
+    (
+        chat_connected(chat) && has("asks", &|a: &Value| a.get("id").and_then(Value::as_str) == Some(ask_id)),
+        has("answering", &|a: &Value| a.as_str() == Some(ask_id)),
+    )
 }
 
 /// Whether the view is a connected one whose own newest page arrived.
@@ -1816,6 +1931,8 @@ impl HostInner {
             "conversation_specialist": Value::Null,
             "target": Value::Null,
             "producer": producer,
+            // K2-05 U4b: the agent's pending questions (Gentle Dot `asks`), one card each
+            "asks": asks_view(chat),
         })
     }
 }
@@ -1906,6 +2023,7 @@ impl ChatHost {
                 self.submit(link, caller, text, client_request_id, now_ms)
             }
             Command::Cancel { turn_id } => self.cancel(link, caller, turn_id, now_ms),
+            Command::Answer { ask_id, answer } => Self::answer(link, caller, ask_id, answer),
             Command::History { conversation_id, before } => {
                 if conversation_id != CHAT_CONVERSATION_ID {
                     return Err(crate::chat::ChatError::invalid_input("Pedido de chat inválido."));
@@ -1970,6 +2088,33 @@ impl ChatHost {
         // the keeper re-publishes while a turn is live (its settle grace ends by time)
         inner.live = true;
         Ok(Routed::Answer(json!({"turn_id": format!("t-{num}"), "duplicate": false})))
+    }
+
+    /// K2-05 U4b: one answer to a pending ask, as ONE `ui_response` through the chat client (its
+    /// window gate, its ask/option validation, its answered-once mark and the reserved send budget).
+    /// The refusal says why: the question is gone, it was already answered here, or the answer does
+    /// not fit it. The typed value travels exactly as the page sent it (never rewritten).
+    fn answer(link: &dyn ChatLink, caller: &str, ask_id: &str, answer: &crate::chat::AskAnswer) -> Result<Routed, crate::chat::ChatError> {
+        use crate::chat::AskAnswer;
+        let why = |view: &Value| match ask_state(view, ask_id) {
+            (false, _) => ask_closed(),
+            (true, true) => ask_answered(),
+            (true, false) => answer_refused(),
+        };
+        let before = link.view();
+        if !matches!(ask_state(&before, ask_id), (true, false)) {
+            return Err(why(&before));
+        }
+        let value = match answer {
+            AskAnswer::Value(v) => json!(v),
+            AskAnswer::Confirmed(b) => json!(b),
+            AskAnswer::Cancelled => Value::Null,
+        };
+        match link.command(caller, &json!({"action": "chat_ui_response", "askId": ask_id, "answer": value})) {
+            Ok(_) => Ok(Routed::Answer(json!({"answered": true}))),
+            // a concurrent answer won the state lock, or the ask closed meanwhile: say which
+            Err(_) => Err(why(&link.view())),
+        }
     }
 
     fn cancel(&self, link: &dyn ChatLink, caller: &str, turn_id: &str, now_ms: u64) -> Result<Routed, crate::chat::ChatError> {

@@ -401,6 +401,27 @@ html[data-motion="full"] #chat-state[data-kind="busy"] .ico svg, html[data-motio
 #chat-log li.empty .empty-icons { display: flex; align-items: center; gap: 18px; }
 #chat-log li.empty .ico svg { width: 28px; height: 28px; }
 #chat-log li.empty .empty-greeting { margin: 0; font: 600 13px/1.35 var(--font-ui); color: var(--island-ink); text-align: center; }
+/* K2-05 U4b — the agent's question inside the chat (Gentle Dot .ask-card): a bordered card in the «waits for your
+   yes» sun tone, the title bold, the approved details scrolling inside, the options as pills, «Omitir» as a quiet link.
+   A closed card keeps only its outcome, muted. 44 px targets where the island allows them. */
+#chat-log li.ask { display: flex; flex-direction: column; gap: 8px; margin: 2px 0 10px; padding: 12px; border-radius: 14px; border: 1px solid color-mix(in srgb, var(--sun) 45%, transparent); background: var(--fill); white-space: normal; }
+#chat-log li.ask:focus-visible { outline: 2px solid var(--island-live); outline-offset: 2px; }
+#chat-log li.ask[data-state="closed"] { border-color: var(--line-soft); background: transparent; padding: 8px 12px; gap: 4px; }
+#chat-log li.ask .ask-eyebrow { margin: 0; font: 600 11px/1.2 var(--font-ui); color: var(--sun); }
+#chat-log li.ask[data-state="closed"] .ask-eyebrow { color: var(--island-muted); }
+#chat-log li.ask .ask-title { margin: 0; font: 700 13px/1.35 var(--font-ui); color: var(--island-ink); overflow-wrap: anywhere; }
+#chat-log li.ask .ask-message { margin: 0; max-height: 120px; overflow-y: auto; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.4; color: var(--island-ink); }
+#chat-log li.ask .ask-outcome, #chat-log li.ask .ask-status { margin: 0; font: 600 12px/1.3 var(--font-ui); color: var(--island-muted); overflow-wrap: anywhere; }
+#chat-log li.ask .ask-options, #chat-log li.ask .ask-form { display: flex; flex-wrap: wrap; gap: 8px; }
+#chat-log li.ask .ask-options button, #chat-log li.ask .ask-form button { min-height: 32px; padding: 6px 14px; border-radius: var(--radius-full); border: 1px solid var(--line-soft); background: var(--fill); color: var(--island-ink); font: 600 12px/1.2 var(--font-ui); cursor: pointer; }
+#chat-log li.ask button.primary { background: var(--island-ink); color: var(--island); border-color: transparent; }
+#chat-log li.ask button:hover:not(:disabled) { background: var(--fill-hover); }
+#chat-log li.ask button.primary:hover:not(:disabled) { background: var(--island-ink); opacity: .9; }
+#chat-log li.ask button:focus-visible, #chat-log li.ask input:focus-visible, #chat-log li.ask .ask-message:focus-visible { outline: 2px solid var(--island-live); outline-offset: 2px; }
+#chat-log li.ask button:disabled, #chat-log li.ask input:disabled { opacity: .55; cursor: default; }
+#chat-log li.ask .ask-form input { flex: 1 1 100%; min-height: 32px; padding: 6px 10px; border-radius: 10px; border: 1px solid var(--line-soft); background: transparent; color: var(--island-ink); font: 13px/1.3 var(--font-ui); }
+#chat-log li.ask .ask-skip { align-self: flex-start; min-height: 24px; padding: 0; border: none; background: none; color: var(--island-muted); font: 600 12px/1.2 var(--font-ui); cursor: pointer; }
+#chat-log li.ask .ask-skip:hover:not(:disabled) { color: var(--island-ink); }
 /* F024 — the model row above the composer: one button (dot, model name, caret)
    with its picker panel above it. The name and the rows are plain text from
    chat-view; there is no provider colour here because the chat lane is local. */
