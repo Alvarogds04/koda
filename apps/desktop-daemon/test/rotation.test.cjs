@@ -28,6 +28,7 @@ const { writePrivateFile } = require("../src/isolation.cjs");
 const { DEFAULT_ROTATION, HANDOFF_TYPE, SESSION_VERSION, SessionRotator, handoffText, writeHandoffSession, rotationLimits } = require("../src/rotation.cjs");
 
 const FAKE = path.join(__dirname, "fixtures", "turn-agent.cjs");
+const { win } = require("./platform-env.cjs");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function until(fn, ms = 5000) {
 	const end = Date.now() + ms;
@@ -36,6 +37,30 @@ async function until(fn, ms = 5000) {
 }
 function tmp(prefix) {
 	return fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
+}
+
+/**
+ * A Daemon's island root + env for `base` (the same layout as turn-budget/daemon tests): on Windows
+ * an island may only live inside the canonical protected `%LOCALAPPDATA%\Abito` root
+ * (windowsIslandRootViolation), so the base (canonical long form) is the daemon's private
+ * LOCALAPPDATA and the island sits at `<base>\Abito\<name>`. Linux/macOS: `<base>/<name>`, env
+ * unchanged. Short names keep the Unix socket path under macOS's 104-byte limit.
+ */
+function daemonRootEnv(base, name = "i") {
+	const local = fs.realpathSync.native(base);
+	return {
+		root: win ? path.join(local, "Abito", name) : path.join(base, name),
+		env: { PATH: process.env.PATH, ...(win ? { LOCALAPPDATA: local } : {}) },
+	};
+}
+
+/**
+ * Removes a test's temp folder: registered AFTER the hooks that stop its engines (t.after runs
+ * first-in first-out), because Windows refuses to delete a folder a live child still uses as its
+ * cwd (EBUSY); retries cover the moment Windows takes to release the handles of an exited child.
+ */
+function removeAfter(t, dir) {
+	t.after(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
 }
 
 /** One previous session file: a v3 header plus pre-compacted entries. */
@@ -336,7 +361,10 @@ assert.equal(handoff.display, false, "hidden from the island");
 assert.equal(handoff.parentId, null);
 assert.match(handoff.id, /^[0-9a-f]{8}$/);
 assert.equal(handoff.content, "Summary: el usuario planea un viaje.");
-assert.equal(fs.statSync(file).mode & 0o777, 0o600, "private like every session write");
+// POSIX mode bits only: Windows has none (lstat reports 0o666). There the seed is a plain file inside the
+// island's sessions folder, whose protected owner-only DACL (win-fs) is the access boundary — like every
+// session file the engine itself writes; this temp folder has no such DACL, so there is nothing to compare.
+if (!win) assert.equal(fs.statSync(file).mode & 0o777, 0o600, "private like every session write");
 // The seed is never an overwrite: a second rotation writes its own file and leaves the first intact.
 await assert.rejects(() => fs.promises.writeFile(file, "x", { flag: "wx" }), { code: "EEXIST" });
 const file2 = await writeHandoffSession(previous, "otra ronda");
@@ -561,13 +589,12 @@ async function socketClient(t, endpoint, token) {
 
 test("daemon wiring: rotation is ON by default and the island keeps one continuous chat", async (t) => {
 	const base = tmp("abito-rot-daemon-");
-	t.after(() => fs.rmSync(base, { recursive: true, force: true }));
-	const root = path.join(base, "i");
+	const { root, env } = daemonRootEnv(base);
 	const commandLog = path.join(base, "commands");
 	const messagesFile = writeHandoffMessages(base, "contexto previo de la conversación");
 	const daemon = new Daemon({
 		root,
-		env: { PATH: process.env.PATH },
+		env,
 		log: () => {},
 		engineOptions: {
 			command: process.execPath,
@@ -577,6 +604,7 @@ test("daemon wiring: rotation is ON by default and the island keeps one continuo
 		},
 	});
 	t.after(async () => { await daemon.stop(); });
+	removeAfter(t, base);
 	// Tiny limits through the config file; `enabled` is absent: rotation is ON by default.
 	writePrivateFile(path.join(root, "config.json"), `${JSON.stringify({ rotation: { bytes: 1024 } })}\n`);
 	await daemon.start();
@@ -606,12 +634,11 @@ test("daemon wiring: rotation is ON by default and the island keeps one continuo
 
 test("daemon wiring: rotation.enabled=false keeps #0 rotation off", async (t) => {
 	const base = tmp("abito-rot-off-");
-	t.after(() => fs.rmSync(base, { recursive: true, force: true }));
-	const root = path.join(base, "i");
+	const { root, env } = daemonRootEnv(base);
 	const commandLog = path.join(base, "commands");
 	const daemon = new Daemon({
 		root,
-		env: { PATH: process.env.PATH },
+		env,
 		log: () => {},
 		engineOptions: {
 			command: process.execPath,
@@ -621,6 +648,7 @@ test("daemon wiring: rotation.enabled=false keeps #0 rotation off", async (t) =>
 		},
 	});
 	t.after(async () => { await daemon.stop(); });
+	removeAfter(t, base);
 	writePrivateFile(path.join(root, "config.json"), `${JSON.stringify({ rotation: { enabled: false } })}\n`);
 	await daemon.start();
 	const session = readSession(root);
@@ -636,13 +664,12 @@ test("daemon wiring: rotation.enabled=false keeps #0 rotation off", async (t) =>
 
 test("daemon wiring: the island pause also pauses the rotation", async (t) => {
 	const base = tmp("abito-rot-pause-");
-	t.after(() => fs.rmSync(base, { recursive: true, force: true }));
-	const root = path.join(base, "i");
+	const { root, env } = daemonRootEnv(base);
 	const commandLog = path.join(base, "commands");
 	const messagesFile = writeHandoffMessages(base);
 	const daemon = new Daemon({
 		root,
-		env: { PATH: process.env.PATH },
+		env,
 		log: () => {},
 		engineOptions: {
 			command: process.execPath,
@@ -652,6 +679,7 @@ test("daemon wiring: the island pause also pauses the rotation", async (t) => {
 		},
 	});
 	t.after(async () => { await daemon.stop(); });
+	removeAfter(t, base);
 	writePrivateFile(path.join(root, "config.json"), `${JSON.stringify({ rotation: { bytes: 1024 } })}\n`);
 	await daemon.start();
 	const session = readSession(root);
@@ -709,7 +737,6 @@ test("the chain of session files survives an engine restart", async (t) => {
 
 test("state.json never points at the seed; a failed switch reopens the user's session on the next boot (F1)", async (t) => {
 	const dir = tmp("abito-rot-f1-");
-	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
 	const messagesFile = writeHandoffMessages(dir);
 	const root = path.join(dir, "island");
 	const engineOptions = () => ({
@@ -720,7 +747,13 @@ test("state.json never points at the seed; a failed switch reopens the user's se
 		turnTimeoutMs: 10_000, abortGraceMs: 100,
 	});
 	const engine = new AgentEngine(engineOptions());
-	t.after(async () => { await engine.stop(); });
+	let again;
+	// One hook, in order: both engines stop before their island (a child's cwd) is removed (Windows EBUSY).
+	t.after(async () => {
+		await engine.stop();
+		await again?.stop();
+		fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+	});
 	await engine.start();
 	const first = engine.sessionFile;
 	const stateFile = path.join(root, "state.json");
@@ -738,21 +771,19 @@ test("state.json never points at the seed; a failed switch reopens the user's se
 	assert.equal(JSON.parse(fs.readFileSync(stateFile, "utf8")).sessionFile, first, "state.json never pointed at the seed");
 	// Next boot: the user's session reopens, never a seed.
 	await engine.stop();
-	const again = new AgentEngine(engineOptions());
-	t.after(async () => { await again.stop(); });
+	again = new AgentEngine(engineOptions());
 	await again.start();
 	assert.equal(again.sessionFile, first, "the next boot reopens the user's session");
 });
 
 test("daemon wiring: a prompt typed during the rotation is held and delivered after it (F3)", async (t) => {
 	const base = tmp("abito-rot-hold-");
-	t.after(() => fs.rmSync(base, { recursive: true, force: true }));
-	const root = path.join(base, "i");
+	const { root, env } = daemonRootEnv(base);
 	const commandLog = path.join(base, "commands");
 	const messagesFile = writeHandoffMessages(base, "contexto previo de la conversación");
 	const daemon = new Daemon({
 		root,
-		env: { PATH: process.env.PATH },
+		env,
 		log: () => {},
 		engineOptions: {
 			command: process.execPath,
@@ -762,6 +793,7 @@ test("daemon wiring: a prompt typed during the rotation is held and delivered af
 		},
 	});
 	t.after(async () => { await daemon.stop(); });
+	removeAfter(t, base);
 	writePrivateFile(path.join(root, "config.json"), `${JSON.stringify({ rotation: { bytes: 1024 } })}\n`);
 	await daemon.start();
 	const session = readSession(root);
@@ -781,8 +813,9 @@ test("daemon wiring: a prompt typed during the rotation is held and delivered af
 });
 
 test("daemon boots on a v0.1 #386 config; an unknown rotation subkey still refuses (B1)", async (t) => {
-	const base = tmp("abito-rot-oldboot-");
-	t.after(() => fs.rmSync(base, { recursive: true, force: true }));
+	// Short names: the island socket (<base>/o/runtime/p-XXXXXX/s) must fit macOS's 104-byte Unix path limit
+	// under its long /private/var/folders/... temp dir (the CI failure was «Unix endpoint path too long»).
+	const base = tmp("abito-rb1-");
 	const engineOptions = (commandLog) => ({
 		command: process.execPath,
 		commandArgs: [FAKE, "--command-log", commandLog, "--settle-all"],
@@ -790,17 +823,18 @@ test("daemon boots on a v0.1 #386 config; an unknown rotation subkey still refus
 		turnTimeoutMs: 10_000, abortGraceMs: 200,
 	});
 	// The exact v0.1.0 shape: the daemon STARTS, rotation still on.
-	const oldRoot = path.join(base, "old");
+	const { root: oldRoot, env: oldEnv } = daemonRootEnv(base, "o");
 	writePrivateFile(path.join(oldRoot, "config.json"), `${JSON.stringify({ rotation: { thresholdPercent: 85, keepTurns: 12 } })}\n`);
-	const oldDaemon = new Daemon({ root: oldRoot, env: { PATH: process.env.PATH }, log: () => {}, engineOptions: engineOptions(path.join(base, "old-commands")) });
+	const oldDaemon = new Daemon({ root: oldRoot, env: oldEnv, log: () => {}, engineOptions: engineOptions(path.join(base, "old-commands")) });
 	t.after(async () => { await oldDaemon.stop(); });
 	await oldDaemon.start();
 	assert.ok(oldDaemon.rotator, "rotation is still on: the obsolete keys change nothing");
 	// Any OTHER unknown subkey keeps the strict refusal.
-	const refusedRoot = path.join(base, "refused");
+	const { root: refusedRoot, env: refusedEnv } = daemonRootEnv(base, "r");
 	writePrivateFile(path.join(refusedRoot, "config.json"), `${JSON.stringify({ rotation: { nope: 1 } })}\n`);
-	const refused = new Daemon({ root: refusedRoot, env: { PATH: process.env.PATH }, log: () => {}, engineOptions: engineOptions(path.join(base, "refused-commands")) });
+	const refused = new Daemon({ root: refusedRoot, env: refusedEnv, log: () => {}, engineOptions: engineOptions(path.join(base, "refused-commands")) });
 	t.after(async () => { await refused.stop(); });
+	removeAfter(t, base);
 	await assert.rejects(refused.start(), (error) => error.name === "ConfigError");
 });
 

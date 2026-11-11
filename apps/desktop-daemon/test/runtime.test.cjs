@@ -11,7 +11,7 @@ const path = require("node:path");
 
 const { AgentEngine, JsonlDecoder, bundledGentleShell, gentlePiVersion, runtimeRoot } = require("../src/runtime.cjs");
 const { ensureIsland } = require("../src/isolation.cjs");
-const { unixOnly } = require("./platform-env.cjs");
+const { assertMode, unixOnly, win } = require("./platform-env.cjs");
 
 const FAKE_AGENT = path.join(__dirname, "fixtures", "fake-agent.cjs");
 
@@ -271,7 +271,9 @@ test("start claims the engine home with a .gentle-shell-home marker before the f
 	const claimed = JSON.parse(fs.readFileSync(marker, "utf8"));
 	assert.equal(claimed.createdBy, "gentle-shell");
 	assert.equal(claimed.version, gentlePiVersion()); // the bundled runtime's gentle-pi version (undefined on a dev tree)
-	assert.equal(fs.statSync(marker).mode & 0o777, 0o600);
+	// POSIX mode bits only: the marker is a plain exclusive create (not a win-fs private write), and Windows
+	// has no mode bits (lstat reports 0o666); its access boundary there is the island's private agent folder.
+	if (!win) assert.equal(fs.statSync(marker).mode & 0o777, 0o600);
 
 	// A marker already there is left exactly as it is (gentle-shell checks only
 	// that the file exists); a restart must not rewrite it.
@@ -292,7 +294,8 @@ test("the default engine resolves Koda's bundled runtime, never PATH or npm (T2)
 		fs.writeFileSync(path.join(root, ...scriptRel.split("/")), "");
 		fs.writeFileSync(path.join(root, "gentle-shell"), "#!/bin/sh\n");
 		fs.chmodSync(path.join(root, "gentle-shell"), 0o755);
-		const deps = { execPath: path.join(root, "node"), existsSync: fs.existsSync, lstatSync: fs.lstatSync, readFileSync: fs.readFileSync };
+		// The POSIX layout is asserted as POSIX on every OS (platform: "linux"); the Windows layout below as win32.
+		const deps = { execPath: path.join(root, "node"), existsSync: fs.existsSync, lstatSync: fs.lstatSync, readFileSync: fs.readFileSync, platform: "linux" };
 
 		assert.equal(runtimeRoot(deps), root);
 		assert.equal(runtimeRoot({ ...deps, execPath: "/usr/bin/node" }), undefined, "no koda-runtime.json, no runtime");
@@ -314,7 +317,8 @@ test("the default engine resolves Koda's bundled runtime, never PATH or npm (T2)
 test("bundledGentleShell fails closed on an incomplete runtime, never falls back to PATH", () => {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), "abito-gentle-broken-"));
 	try {
-		const deps = (over = {}) => ({ execPath: path.join(root, "node"), existsSync: fs.existsSync, lstatSync: fs.lstatSync, readFileSync: fs.readFileSync, ...over });
+		// POSIX by default on every OS (platform: "linux"); the Windows checks pass platform: "win32".
+		const deps = (over = {}) => ({ execPath: path.join(root, "node"), existsSync: fs.existsSync, lstatSync: fs.lstatSync, readFileSync: fs.readFileSync, platform: "linux", ...over });
 		fs.writeFileSync(path.join(root, "koda-runtime.json"), `${JSON.stringify({ gentlePi: "4.3.0", gentleShell: "node_modules/gentle-pi/bin/gentle-shell.mjs" })}\n`);
 		// POSIX: the launcher is missing -> refuse, never a PATH search.
 		assert.throws(() => bundledGentleShell(deps()), /missing the gentle-shell launcher|bundled runtime/);
@@ -572,11 +576,13 @@ function fakeCompanion(runtime, version = "0.4.2") {
 
 function fakeRuntimeWithEngram(t, { version = "0.4.2", engramBin = "bin/engram" } = {}) {
 	const runtime = fs.mkdtempSync(path.join(os.tmpdir(), "abito-engram-runtime-"));
-	t.after(() => fs.rmSync(runtime, { recursive: true, force: true }));
+	// Retries: Windows releases a just-exited runtime node.exe a moment later (EPERM/EBUSY on unlink).
+	t.after(() => fs.rmSync(runtime, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
 	fakeCompanion(runtime, version);
 	if (engramBin !== null) {
 		fs.mkdirSync(path.join(runtime, "bin"), { recursive: true });
-		fs.writeFileSync(path.join(runtime, "bin", process.platform === "win32" ? "engram.exe" : "engram"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+		// The file the manifest names, on every OS (the Windows engram.exe mapping has its own fixture below).
+		fs.writeFileSync(path.join(runtime, ...engramBin.split("/")), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
 	}
 	fs.writeFileSync(
 		path.join(runtime, "koda-runtime.json"),
@@ -602,13 +608,14 @@ test("seedEngramCompanion copies the bundled companion into the island and pins 
 	// Real copies, never links, private modes.
 	assert.equal(fs.lstatSync(target).isSymbolicLink(), false);
 	assert.equal(fs.lstatSync(path.join(target, "index.ts")).isSymbolicLink(), false);
-	assert.equal(fs.statSync(path.join(target, "index.ts")).mode & 0o777, 0o600);
-	assert.equal(fs.statSync(target).mode & 0o777, 0o700);
+	// POSIX 0600/0700; on Windows the same privacy rule through the helper's real DACL check.
+	assertMode(path.join(target, "index.ts"), 0o600);
+	assertMode(target, 0o700);
 
 	// settings.json: the pinned companion, every other key preserved.
 	const settings = JSON.parse(fs.readFileSync(path.join(island.agentDir, "settings.json"), "utf8"));
 	assert.deepEqual(settings.packages, ["npm:gentle-engram@0.4.2"]);
-	assert.equal(fs.statSync(path.join(island.agentDir, "settings.json")).mode & 0o777, 0o600);
+	assertMode(path.join(island.agentDir, "settings.json"), 0o600);
 });
 
 test("seedEngramCompanion is idempotent and refreshes when the bundled version differs", (t) => {
@@ -1022,10 +1029,20 @@ test("the default engine drops ENGRAM_* caller overrides; a custom command keeps
 	const runtime = fakeRuntimeWithEngram(t);
 	const scriptRel = "node_modules/gentle-pi/bin/gentle-shell.mjs";
 	fs.mkdirSync(path.join(runtime, "node_modules", "gentle-pi", "bin"), { recursive: true });
-	fs.writeFileSync(path.join(runtime, ...scriptRel.split("/")), "");
-	const launcher = path.join(runtime, "gentle-shell");
-	fs.writeFileSync(launcher, `#!/bin/sh\nexec '${process.execPath}' '${FAKE_AGENT}' "$@"\n`);
-	fs.chmodSync(launcher, 0o755);
+	if (win) {
+		// The shipped Windows runtime shape (bundledGentleShell): the runtime's own node.exe runs the script the
+		// manifest names; here that script hands over to the fake agent with the engine's argv unchanged.
+		fs.copyFileSync(process.execPath, path.join(runtime, "node.exe"));
+		fs.writeFileSync(
+			path.join(runtime, ...scriptRel.split("/")),
+			`import { createRequire } from "node:module";\ncreateRequire(import.meta.url)(${JSON.stringify(FAKE_AGENT)});\n`,
+		);
+	} else {
+		fs.writeFileSync(path.join(runtime, ...scriptRel.split("/")), "");
+		const launcher = path.join(runtime, "gentle-shell");
+		fs.writeFileSync(launcher, `#!/bin/sh\nexec '${process.execPath}' '${FAKE_AGENT}' "$@"\n`);
+		fs.chmodSync(launcher, 0o755);
+	}
 	const overrides = { ENGRAM_BIN: "/custom/user-engram", ENGRAM_PORT: "7437", ENGRAM_URL: "http://127.0.0.1:9999", ENGRAM_DATA_DIR: "/home/user/.engram", ENGRAM_STARTUP_POLICY: "allow", ENGRAM_NO_UPDATE_CHECK: "0", ENGRAM_PI_SESSION_TRACE: "1", OTHER_OVERRIDE: "kept" };
 
 	const { engine, envOut } = makeEngine(t, {

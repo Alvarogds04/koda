@@ -704,18 +704,33 @@ mod bundled_runtime_tests {
             resolve_pi(Some(&crate::nodefinder::Bundled::Valid(rt.clone())), Some(path.as_os_str()), None, &finder, Some(&exe)),
             Ok(rt.pi)
         );
-        // Without any runtime folder, `pi` on the session PATH still answers (dev builds).
+        // Without any runtime folder, a dev build still finds Pi the way each OS installs it.
         let root = Rt::new("resolve-path");
         let exe = root.exe("app/bin");
         let bin = root.dir("bin");
-        let file = bin.join("pi");
-        fs::write(&file, b"#!/bin/sh\n").unwrap();
+        // Unix: `pi` on the session PATH answers.
         #[cfg(unix)]
-        fs::set_permissions(&file, fs::Permissions::from_mode(0o755)).unwrap();
+        let expected = {
+            let file = bin.join("pi");
+            fs::write(&file, b"#!/bin/sh\n").unwrap();
+            fs::set_permissions(&file, fs::Permissions::from_mode(0o755)).unwrap();
+            file
+        };
+        // Windows has no bare `pi` lookup (daemonhost_win.rs discover_pi): Pi is the npm package's
+        // validated CLI JS under the prefix of the `node.exe` found on the session PATH.
+        #[cfg(windows)]
+        let expected = {
+            fs::write(bin.join("node.exe"), b"").unwrap();
+            let package = bin.join("node_modules").join("@earendil-works").join("pi-coding-agent");
+            fs::create_dir_all(package.join("dist")).unwrap();
+            fs::write(package.join("package.json"), r#"{"bin":{"pi":"dist/pi.js"}}"#).unwrap();
+            fs::write(package.join("dist").join("pi.js"), b"").unwrap();
+            package.join("dist").join("pi.js")
+        };
         let path = std::env::join_paths([&bin]).unwrap();
         assert_eq!(
             resolve_pi(None, Some(path.as_os_str()), None, &finder, Some(&exe)),
-            Ok(bin.join("pi"))
+            Ok(expected)
         );
         // And with neither, the failure is the incomplete-install startup failure.
         let empty = root.dir("empty");

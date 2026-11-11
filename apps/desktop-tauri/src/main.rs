@@ -2372,14 +2372,22 @@ mod host_ctx_tests {
 
     /// #431: `chathost::chat_view` runs off the main thread (from `chat_action`
     /// while lane locks are taken), so it must read the CACHED scale, never the
-    /// blocking `scale_factor()` getter. Source guard plus cache semantics.
+    /// blocking `scale_factor()` getter. K2-05 moved the geometry into
+    /// `with_page_keys`, which `chat_view` delegates to: both bodies are guarded.
+    /// Source guard plus cache semantics.
     #[test]
     fn chat_view_reads_the_cached_scale_never_the_blocking_getter() {
         let src = include_str!("chathost.rs");
-        let body = &src[src.find("pub fn chat_view").expect("chat_view exists")..];
-        let body = &body[..body.find("\n}\n").expect("chat_view ends")];
-        assert!(!body.contains("scale_factor()"), "chat_view must not call the blocking getter");
-        assert!(body.contains("cached_scale()"), "chat_view reads the main-thread scale cache");
+        let body_of = |head: &str| {
+            let body = &src[src.find(head).unwrap_or_else(|| panic!("{head} exists"))..];
+            body[..body.find("\n}\n").unwrap_or_else(|| panic!("{head} ends"))].to_string()
+        };
+        let view = body_of("pub fn chat_view(");
+        let keys = body_of("fn with_page_keys(");
+        assert!(view.contains("with_page_keys("), "chat_view builds its geometry in with_page_keys");
+        assert!(!view.contains("scale_factor()"), "chat_view must not call the blocking getter");
+        assert!(!keys.contains("scale_factor()"), "with_page_keys must not call the blocking getter");
+        assert!(keys.contains("cached_scale()"), "with_page_keys reads the main-thread scale cache");
     }
 
     #[test]

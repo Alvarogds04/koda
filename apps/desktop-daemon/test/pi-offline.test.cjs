@@ -59,7 +59,8 @@ const BOOT_TIMEOUT_MS = 90_000;
  */
 function fakeKodaRuntime(t, gentleRoot, preload) {
 	const runtime = fs.mkdtempSync(path.join(os.tmpdir(), "abito-fake-runtime-"));
-	t.after(() => fs.rmSync(runtime, { recursive: true, force: true }));
+	// Retries: on Windows the engine's own child (the runtime node.exe) may still be exiting just after stop() (EPERM).
+	t.after(() => fs.rmSync(runtime, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }));
 	const scriptRel = "node_modules/gentle-pi/bin/gentle-shell.mjs";
 	const script = path.join(runtime, ...scriptRel.split("/"));
 	fs.mkdirSync(path.dirname(script), { recursive: true });

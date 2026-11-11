@@ -44,6 +44,13 @@ const { execFileSync } = require("node:child_process");
 const { AgentEngine, DEFAULT_COMMAND, runtimeRoot } = require("../src/runtime.cjs");
 
 const BOOT_TIMEOUT_MS = 150_000;
+// R8 (K2-05 CI run 43025727185): on the Windows runner the real engine's session replacement
+// (switch_session/new_session: teardown + runtime rebuild inside the engine) did not answer within the
+// Linux budget, while on Linux it answers in ~0.1 s (start ~5 s). Koda's side of a switch is one JSONL
+// request with no file handle kept open, the same on every OS, so Windows gets more time, not other
+// behaviour: the switch budget is the product's own default (DEFAULT_SWITCH_TIMEOUT_MS, 30 s), so a
+// Windows switch slower than what the shipped daemon waits for still fails here.
+const WIN_REAL = process.platform === "win32";
 const ENGRAM_VERSION = "0.4.2";
 
 function sleep(ms) {
@@ -121,7 +128,8 @@ function engramPackageDir() {
  */
 function fakeKodaRuntime(t, gentleRoot, engramRoot, preload) {
 	const runtime = fs.mkdtempSync(path.join(os.tmpdir(), "abito-engram-runtime-"));
-	t.after(() => fs.rmSync(runtime, { recursive: true, force: true }));
+	// Retries: on Windows the engine's own child (the runtime node.exe) may still be exiting just after stop() (EPERM).
+	t.after(() => fs.rmSync(runtime, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }));
 	const scriptRel = "node_modules/gentle-pi/bin/gentle-shell.mjs";
 	const script = path.join(runtime, ...scriptRel.split("/"));
 	fs.mkdirSync(path.dirname(script), { recursive: true });
@@ -290,8 +298,8 @@ if (gentleSkip) {
 			backoffMs: [10_000, 10_000],
 			stableMs: 60_000,
 			startTimeoutMs: 120_000,
-			requestTimeoutMs: 15_000,
-			switchTimeoutMs: 15_000,
+			requestTimeoutMs: WIN_REAL ? 60_000 : 15_000, // R8: new_session runs on the request budget
+			switchTimeoutMs: WIN_REAL ? 30_000 : 15_000,
 			stopTimeoutMs: 2_000,
 			log: (line) => engineLogs.push(line),
 		});

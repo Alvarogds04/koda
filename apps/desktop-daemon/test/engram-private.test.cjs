@@ -13,7 +13,7 @@
 //
 // Proven here, with a temp HOME and a temp island (the user's real ~/.engram
 // and the user's Engram servers on 7437/7438 are NEVER touched — nothing ever
-// connects to those ports; listeners are only listed passively through lsof):
+// connects to those ports; listeners are only listed passively through lsof, netstat on Windows):
 //  - the engine reaches ready offline, with the memory tools registered
 //    (the companion's session_start lifecycle trace; no extension_error);
 //  - the Engram server the companion spawns listens on KODA'S PRIVATE PORT
@@ -40,6 +40,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { execFileSync, spawnSync } = require("node:child_process");
+const { createHash } = require("node:crypto");
 
 const { AgentEngine, DEFAULT_COMMAND, runtimeRoot } = require("../src/runtime.cjs");
 const { PRIVATE_ENGRAM_PORT, privateMemory } = require("../src/isolation.cjs");
@@ -185,7 +186,8 @@ function realEngramBinary() {
 		return { skip: `could not download the pinned ${target.asset} (offline?)` };
 	}
 	if (ok) {
-		const sha = spawnSync("sha256sum", [archive], { encoding: "utf8" }).stdout.trim().split(/\s+/)[0];
+		// Node's own hash, the same on every OS (Git Bash's sha256sum escapes a Windows path: «\\<hash> *D:\\…»).
+		const sha = createHash("sha256").update(fs.readFileSync(archive)).digest("hex");
 		assert.equal(sha, expectedSha, `the downloaded ${target.asset} matches engram.sha256`);
 		if (target.extract === "tar") {
 			execFileSync("tar", ["xzf", archive, "-C", dir, name], { timeout: 60_000 });
@@ -273,8 +275,26 @@ function readAttempts(file) {
 const isLoopback = (host) =>
 	/^(localhost|127\.|::1|\[::1\]|\[::ffff:127\.)/i.test(host) || host.toLowerCase().endsWith(".localhost");
 
+const WIN = process.platform === "win32";
+
+/**
+ * Windows has no lsof: the same passive listing through System32 `netstat -ano` (never a connect). Every
+ * listening TCP row (IPv4 and IPv6) is `TCP <local address:port> <foreign> LISTENING <pid>`.
+ */
+function windowsListeners() {
+	const netstat = path.join(process.env.SystemRoot || "C:\\Windows", "System32", "netstat.exe");
+	const probe = spawnSync(netstat, ["-ano"], { encoding: "utf8", timeout: 15_000, windowsHide: true });
+	return (probe.stdout ?? "")
+		.split(/\r?\n/)
+		.map((line) => line.trim().split(/\s+/))
+		.filter((fields) => fields.length === 5 && fields[0] === "TCP" && fields[3] === "LISTENING")
+		.map((fields) => ({ address: fields[1], pid: Number(fields[4]) }))
+		.filter((row) => Number.isSafeInteger(row.pid) && row.pid > 0);
+}
+
 /** Passive listener listing (NEVER a connect): the pids listening on `port`, or []. */
 function listenerPids(port) {
+	if (WIN) return [...new Set(windowsListeners().filter((row) => row.address.endsWith(`:${port}`)).map((row) => row.pid))];
 	const probe = spawnSync("lsof", ["-w", "-t", "-n", "-P", `-iTCP:${port}`, "-sTCP:LISTEN"], { encoding: "utf8", timeout: 15_000 });
 	const text = (probe.stdout ?? "").trim();
 	if (!text) return [];
@@ -283,6 +303,7 @@ function listenerPids(port) {
 
 /** Every TCP address the pid is LISTENING on (passive listing; never a connect). */
 function listenAddresses(pid) {
+	if (WIN) return windowsListeners().filter((row) => row.pid === pid).map((row) => row.address);
 	const probe = spawnSync("lsof", ["-w", "-n", "-P", "-p", String(pid), "-a", "-iTCP", "-sTCP:LISTEN"], { encoding: "utf8", timeout: 15_000 });
 	return (probe.stdout ?? "")
 		.split("\n")
@@ -295,7 +316,8 @@ function listenAddresses(pid) {
 /** A fake Koda bundled runtime shaped like the installed one, with the REAL Engram binary. */
 function fakeKodaRuntime(t, gentleRoot, engramRoot, preload, engramFile) {
 	const runtime = fs.mkdtempSync(path.join(os.tmpdir(), "abito-engram-private-runtime-"));
-	t.after(() => fs.rmSync(runtime, { recursive: true, force: true }));
+	// Retries: on Windows the engine's own child (the runtime node.exe) may still be exiting just after stop() (EPERM).
+	t.after(() => fs.rmSync(runtime, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }));
 	const scriptRel = "node_modules/gentle-pi/bin/gentle-shell.mjs";
 	const script = path.join(runtime, ...scriptRel.split("/"));
 	fs.mkdirSync(path.dirname(script), { recursive: true });
@@ -382,8 +404,9 @@ if (gentleSkip) {
 				backoffMs: [10_000, 10_000],
 				stableMs: 60_000,
 				startTimeoutMs: 150_000,
-				requestTimeoutMs: 15_000,
-				switchTimeoutMs: 15_000,
+				// R8 (see engram-seed.test.cjs): Windows gets the product's switch budget; new_session runs on the request one.
+				requestTimeoutMs: WIN ? 60_000 : 15_000,
+				switchTimeoutMs: WIN ? 30_000 : 15_000,
 				stopTimeoutMs: 2_000,
 				log: (line) => engineLogs.push(line),
 			});
@@ -397,8 +420,7 @@ if (gentleSkip) {
 			const ownRuntimeBin = path.join(runtimeDeps.execPath, "..", "bin", process.platform === "win32" ? "engram.exe" : "engram");
 			t.after(async () => {
 				for (const pid of listenerPids(Number(PRIVATE_ENGRAM_PORT))) {
-					const probe = spawnSync("lsof", ["-w", "-n", "-P", "-p", String(pid)], { encoding: "utf8", timeout: 15_000 });
-					if ((probe.stdout ?? "").split("\n").some((line) => line.includes("txt ") && line.includes(ownRuntimeBin))) {
+					if (runsExecutable(pid, ownRuntimeBin)) {
 						try {
 							process.kill(pid, "SIGTERM");
 						} catch {}
@@ -473,6 +495,24 @@ if (gentleSkip) {
 			assert.deepEqual(stillUp, [], "port is empty again after the daemon-shaped stop");
 		});
 	}
+}
+
+/**
+ * True when `pid`'s executable is `file` — the orphan cleanup's proof, never a name match. Unix: the lsof
+ * `txt` entry; Windows: the process image path (Get-Process), compared as canonical long paths.
+ */
+function runsExecutable(pid, file) {
+	if (WIN) {
+		const probe = spawnSync("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", `(Get-Process -Id ${Number(pid)} -ErrorAction Stop).Path`], { encoding: "utf8", timeout: 15_000, windowsHide: true });
+		const image = (probe.stdout ?? "").trim();
+		try {
+			return image !== "" && fs.realpathSync.native(image).toLowerCase() === fs.realpathSync.native(file).toLowerCase();
+		} catch {
+			return false;
+		}
+	}
+	const probe = spawnSync("lsof", ["-w", "-n", "-P", "-p", String(pid)], { encoding: "utf8", timeout: 15_000 });
+	return (probe.stdout ?? "").split("\n").some((line) => line.includes("txt ") && line.includes(file));
 }
 
 /** True when the pid no longer answers (not alive or gone). */

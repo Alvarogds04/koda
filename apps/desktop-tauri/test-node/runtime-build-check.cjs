@@ -468,7 +468,11 @@ test('an engram archive without the binary member fails closed: exit 1, exact me
   const r = build(f6, ['--target', 'linux-x64', '--out', out, '--node-archive', f6.archives['linux-x64']]);
   assert.equal(r.status, 1);
   assert.equal(r.stdout, '');
-  assert.match(r.stderr, /^build-runtime: Engram archive engram_3\.4\.0_linux_amd64\.tar\.gz lacks a regular file engram \(extraction: tar -xf failed: exit 2\)\n$/);
+  // The system tar's own exit code for "member not found": GNU tar (Linux) exits 2; bsdtar exits 1 (macOS tar,
+  // Windows System32 tar.exe, which build-runtime calls by its full path, so its label is tar.exe). Exact per OS.
+  const tarLabel = isWin ? 'tar\\.exe' : 'tar';
+  const tarExit = process.platform === 'linux' ? 2 : 1;
+  assert.match(r.stderr, new RegExp(`^build-runtime: Engram archive engram_3\\.4\\.0_linux_amd64\\.tar\\.gz lacks a regular file engram \\(extraction: ${tarLabel} -xf failed: exit ${tarExit}\\)\\n$`));
   assert.equal(fs.existsSync(out), false);
 });
 

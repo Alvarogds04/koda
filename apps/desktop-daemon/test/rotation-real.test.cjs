@@ -30,11 +30,19 @@ const { AgentEngine, DEFAULT_COMMAND, runtimeRoot } = require("../src/runtime.cj
 const { HANDOFF_TYPE, SESSION_VERSION, SessionRotator } = require("../src/rotation.cjs");
 
 const BOOT_TIMEOUT_MS = 120_000;
+// R8 (K2-05 CI run 43025727185): on the Windows runner the real engine's session replacement
+// (switch_session/new_session: teardown + runtime rebuild inside the engine) did not answer within the
+// Linux budget, while on Linux it answers in ~0.1 s (start ~5 s). Koda's side of a switch is one JSONL
+// request with no file handle kept open, the same on every OS, so Windows gets more time, not other
+// behaviour: the switch budget is the product's own default (DEFAULT_SWITCH_TIMEOUT_MS, 30 s), so a
+// Windows switch slower than what the shipped daemon waits for still fails here.
+const WIN_REAL = process.platform === "win32";
 
 /** A minimal fake Koda bundled runtime: the production launch path through runtimeDeps (see test/pi-offline.test.cjs). */
 function fakeKodaRuntime(t, gentleRoot) {
 	const runtime = fs.mkdtempSync(path.join(os.tmpdir(), "abito-fake-runtime-"));
-	t.after(() => fs.rmSync(runtime, { recursive: true, force: true }));
+	// Retries: on Windows the engine's own child (the runtime node.exe) may still be exiting just after stop() (EPERM).
+	t.after(() => fs.rmSync(runtime, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }));
 	const scriptRel = "node_modules/gentle-pi/bin/gentle-shell.mjs";
 	const script = path.join(runtime, ...scriptRel.split("/"));
 	fs.mkdirSync(path.dirname(script), { recursive: true });
@@ -100,6 +108,10 @@ function makeTemp(tag) {
 test("real engine: a forced rotation switches it to the handoff session and the handoff is in its context", { skip: gentleSkip, timeout: BOOT_TIMEOUT_MS }, async (t) => {
 	const base = makeTemp("green");
 	const logs = [];
+	// Registered BEFORE the fake runtime's removal (t.after runs first-in first-out): every engine is stopped
+	// before its runtime folder goes, or Windows refuses to delete the node.exe a live engine runs (EPERM).
+	const engines = [];
+	t.after(async () => { for (const running of engines) await running.stop(); });
 	const { runtimeDeps } = fakeKodaRuntime(t, gentleRoot);
 	const engineOptions = () => ({
 		// Exactly the daemon's default launch shape (T2): command = DEFAULT_COMMAND,
@@ -113,13 +125,13 @@ test("real engine: a forced rotation switches it to the handoff session and the 
 		backoffMs: [10_000, 10_000],
 		stableMs: 60_000,
 		startTimeoutMs: 60_000,
-		requestTimeoutMs: 10_000,
-		switchTimeoutMs: 10_000,
+		requestTimeoutMs: WIN_REAL ? 60_000 : 10_000, // R8: the rotation's switch_session runs on the request budget
+		switchTimeoutMs: WIN_REAL ? 30_000 : 10_000, // R8: the restart's reopen runs on the switch budget
 		stopTimeoutMs: 2_000,
 		log: (line) => logs.push(String(line)),
 	});
 	const engine = new AgentEngine(engineOptions());
-	t.after(async () => { await engine.stop(); });
+	engines.push(engine);
 	await engine.start();
 	assert.equal(engine.status, "ready");
 	const first = engine.sessionFile;
@@ -172,7 +184,7 @@ test("real engine: a forced rotation switches it to the handoff session and the 
 	// History continuity: a fresh engine reopens the chat where it was, chain included.
 	await engine.stop();
 	const again = new AgentEngine(engineOptions());
-	t.after(async () => { await again.stop(); });
+	engines.push(again);
 	await again.start();
 	assert.equal(again.sessionFile, seed, "the chat reopens on the seeded session");
 	assert.deepEqual(again.previousSessions, [first], "the chain of files survives the restart");

@@ -136,7 +136,10 @@ function fakeIsland(extraConfig = {}) {
 		fs.mkdirSync(packageDir, { recursive: true });
 		fs.writeFileSync(path.join(packageDir, "package.json"), JSON.stringify({ name: "@earendil-works/pi-coding-agent", bin: { pi: "fake-agent.cjs" } }));
 		fs.copyFileSync(FAKE, path.join(packageDir, "fake-agent.cjs")); // only requires node:fs and node:path
-		fs.writeFileSync(path.join(root, "config.json"), JSON.stringify(extraConfig), { mode: 0o600 });
+		// K2-05 T2: with no `command` the daemon runs its default engine, Koda's bundled Gentle Shell,
+		// which a test tree has not got. A bare `pi` keeps the npm-prefix resolution above (the
+		// private AppData package), exactly like the Unix branch names its wrapper below.
+		fs.writeFileSync(path.join(root, "config.json"), JSON.stringify({ command: "pi", ...extraConfig }), { mode: 0o600 });
 		return { root, env: cliEnv(root, { AppData: path.join(base, "AppData") }) };
 	}
 	const wrapper = path.join(base, "fake-pi.sh");
