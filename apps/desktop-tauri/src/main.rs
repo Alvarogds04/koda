@@ -819,18 +819,21 @@ fn persist_motion_override(app: &AppHandle, value: bool) {
 /// process exits before reaching `Builder::run`.
 pub(crate) fn restore(app: &AppHandle) {
     let state = app.state::<AppState>();
-    questionhost::with_pending(&state, |pending| {
-        if pending {
-            // Preserve phase, view and geometry; a second launch is not an answer.
-            let Some(win) = main_window(app) else { return };
-            let _ = win.unminimize();
-            show_on_top(&win);
-            sync_host_visible(&win);
-            publish(app, &state);
-            return;
-        }
-        restore_without_question(app, &state);
-    });
+    // Read the flag and release the transport lock first: publish() -> build_snapshot() locks
+    // `state.transport` again, and std's Mutex is not reentrant, so publishing inside
+    // with_pending hung the main thread (tray "Mostrar Koda", the toggle shortcut, a second
+    // launch). Lock order: host transport -> questions -> core/phase; publication follows unlock.
+    let pending = questionhost::with_pending(&state, |pending| pending);
+    if pending {
+        // Preserve phase, view and geometry; a second launch is not an answer.
+        let Some(win) = main_window(app) else { return };
+        let _ = win.unminimize();
+        show_on_top(&win);
+        sync_host_visible(&win);
+        publish(app, &state);
+        return;
+    }
+    restore_without_question(app, &state);
 }
 
 fn restore_without_question(app: &AppHandle, state: &AppState) {
@@ -2527,5 +2530,22 @@ mod main_thread_routing_tests {
                 "{action:?} must run inline on the main thread"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod restore_lock_order_tests {
+    // Structural pin (a live AppHandle is not available in unit tests): restore() must read the
+    // pending flag and drop the transport lock BEFORE publishing, because publish() ->
+    // build_snapshot() locks `state.transport` again and std's Mutex is not reentrant. Calling
+    // publish inside the with_pending closure hung the macOS main thread on tray "Mostrar Koda".
+    #[test]
+    fn restore_reads_the_pending_flag_before_publishing() {
+        let src = include_str!("main.rs");
+        let start = src.find("pub(crate) fn restore(app: &AppHandle)").expect("restore()");
+        let body = &src[start..start + src[start..].find("\n}\n").expect("end of restore()")];
+        assert!(body.contains("let pending = questionhost::with_pending(&state, |pending| pending);"),
+            "restore() must only read the flag inside with_pending");
+        assert_eq!(body.matches("with_pending(").count(), 1);
     }
 }
