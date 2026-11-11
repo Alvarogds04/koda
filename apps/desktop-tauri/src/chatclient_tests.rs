@@ -5,7 +5,7 @@ use serde_json::json;
 // ---- the closed command set (only the main island window may chat) ---------
 
 fn send_payload(text: &str) -> serde_json::Value {
-    json!({"action":"chat_send","text":text,"clientRequestId":"c1"})
+    json!({"action":"chat_send","text":text,"clientRequestId":"c1","requestId":"i-c1"})
 }
 
 #[test]
@@ -14,11 +14,12 @@ fn chat_commands_are_a_closed_exact_set_for_the_main_window() {
     let ok = |payload: serde_json::Value| ChatState::connected().command(CHAT_WINDOW_LABEL, &payload);
 
     let cmd = ok(send_payload("hola Koda")).unwrap();
-    assert!(matches!(cmd, ChatCommand::Send { ref text, ref client_request_id } if text == "hola Koda" && client_request_id == "c1"));
-    assert_eq!(cmd.line(), "{\"type\":\"send\",\"text\":\"hola Koda\"}\n", "clientRequestId stays local, never on the wire");
+    assert!(matches!(cmd, ChatCommand::Send { ref text, ref client_request_id, ref request_id } if text == "hola Koda" && client_request_id == "c1" && request_id == "i-c1"));
+    assert_eq!(cmd.line(), "{\"type\":\"send\",\"text\":\"hola Koda\",\"requestId\":\"i-c1\"}\n", "clientRequestId stays local; the wire requestId travels");
 
-    let cmd = ok(json!({"action":"chat_steer","text":"enfócate"})).unwrap();
-    assert!(matches!(cmd, ChatCommand::Steer { ref text } if text == "enfócate"));
+    let cmd = ok(json!({"action":"chat_steer","text":"enfócate","requestId":"i-s1"})).unwrap();
+    assert!(matches!(cmd, ChatCommand::Steer { ref text, ref request_id } if text == "enfócate" && request_id == "i-s1"));
+    assert_eq!(cmd.line(), "{\"type\":\"steer\",\"text\":\"enfócate\",\"requestId\":\"i-s1\"}\n");
 
     let cmd = ok(json!({"action":"chat_abort"})).unwrap();
     assert!(matches!(cmd, ChatCommand::Abort));
@@ -87,9 +88,17 @@ fn chat_send_mirrors_the_daemon_text_limits() {
     }
     assert!(ok(json!({"action":"chat_send","text":7})).is_err());
     // a clientRequestId is bounded (it is island-local correlation, never the wire)
-    assert!(ok(json!({"action":"chat_send","text":"hola","clientRequestId":""})).is_err());
-    assert!(ok(json!({"action":"chat_send","text":"hola","clientRequestId":"a b"})).is_err());
-    assert!(ok(json!({"action":"chat_send","text":"hola","clientRequestId":"x".repeat(129)})).is_err());
+    assert!(ok(json!({"action":"chat_send","text":"hola","clientRequestId":"","requestId":"i-1"})).is_err());
+    assert!(ok(json!({"action":"chat_send","text":"hola","clientRequestId":"a b","requestId":"i-1"})).is_err());
+    assert!(ok(json!({"action":"chat_send","text":"hola","clientRequestId":"x".repeat(129),"requestId":"i-1"})).is_err());
+    // the wire requestId is mandatory and in the daemon's grammar [A-Za-z0-9_-]{1,64}
+    assert!(ok(json!({"action":"chat_send","text":"hola","clientRequestId":"c1"})).is_err(), "a send without its requestId never goes out");
+    for bad in [json!(""), json!("a b"), json!("a.b"), json!("x".repeat(65)), json!(5), json!(null)] {
+        assert!(ok(json!({"action":"chat_send","text":"hola","clientRequestId":"c1","requestId":bad})).is_err(), "{bad}");
+        assert!(ok(json!({"action":"chat_steer","text":"hola","requestId":bad})).is_err(), "{bad}");
+    }
+    assert!(ok(json!({"action":"chat_steer","text":"hola"})).is_err(), "a steer without its requestId never goes out");
+    assert!(ok(json!({"action":"chat_send","text":"hola","clientRequestId":"c1","requestId":"x".repeat(64)})).is_ok());
 }
 
 #[test]
@@ -382,7 +391,7 @@ fn history_reads_never_spend_the_budget_reserved_for_send_and_abort() {
     for read in [json!({"action":"chat_earlier","before":"s0-1"}), json!({"action":"chat_history"}), json!({"action":"chat_status"})] {
         assert!(ok(read.clone()).is_err(), "paging stops short of the reserve: {read}");
     }
-    assert!(ok(json!({"action":"chat_send","text":"hola","clientRequestId":"req-00000001"})).is_ok(), "a send still goes through");
+    assert!(ok(json!({"action":"chat_send","text":"hola","clientRequestId":"req-00000001","requestId":"i-1"})).is_ok(), "a send still goes through");
     for _ in 1..CHAT_FRAMES_RESERVED {
         assert!(ok(json!({"action":"chat_abort"})).is_ok());
     }
@@ -599,7 +608,7 @@ mod round_trip {
         assert!(conn.command("main", &json!({"action":"chat_new"})).is_err());
 
         // send → the fold turns deltas + done into one assistant message
-        conn.command("main", &json!({"action":"chat_send","text":"hola Koda","clientRequestId":"c1"})).unwrap();
+        conn.command("main", &json!({"action":"chat_send","text":"hola Koda","clientRequestId":"c1","requestId":"i-c1"})).unwrap();
         let v = wait_for(&conn, "assistant message", |v| v["messages"].as_array().is_some_and(|m| m.iter().any(|x| x["role"] == json!("assistant"))));
         let answer = v["messages"].as_array().unwrap().iter().find(|x| x["role"] == json!("assistant")).unwrap();
         assert_eq!(answer["text"], json!("Hola"));
@@ -612,7 +621,7 @@ mod round_trip {
 
         // what actually traveled on the wire
         let lines: Vec<String> = rx.try_iter().collect();
-        assert!(lines.iter().any(|l| l.contains("\"type\":\"send\",\"text\":\"hola Koda\"")), "the send line: {lines:?}");
+        assert!(lines.iter().any(|l| l.contains("\"type\":\"send\",\"text\":\"hola Koda\",\"requestId\":\"i-c1\"")), "the send line: {lines:?}");
         assert!(lines.iter().any(|l| l.contains("\"type\":\"get_earlier\"") == false && l.contains("\"type\":\"get_history\"")), "history was requested on connect");
         assert!(lines.iter().any(|l| l.contains("\"type\":\"ui_response\"") && l.contains("\"value\":\"Sí\"")));
         assert!(!lines.iter().any(|l| l.contains("clientRequestId")), "the correlation id never travels");
@@ -986,51 +995,68 @@ fn requested_pages_count_as_answers_and_the_first_history_marks_the_view_loaded(
     assert_eq!(view(&ChatState::disconnected(Reason::Lost))["historyLoaded"], json!(false));
 }
 
-// ---- K2-05 T4 S2 re-verify follow-ups (B2 residual, mwb5m1ps-8-5ta4) ------------------------
+// ---- K2-05 bind by id: the daemon's `user_message` (Gentle Dot bridge.ts onMessageStart) ------
 
 #[test]
-fn the_pre_send_history_read_spends_the_reserved_budget_and_always_leaves_the_send_its_slot() {
-    let st = ChatState::connected();
-    let ok = |payload: serde_json::Value| st.command(CHAT_WINDOW_LABEL, &payload);
-    for i in 0..CHAT_FRAMES_PER_MINUTE - CHAT_FRAMES_RESERVED {
-        assert!(ok(json!({"action":"chat_status"})).is_ok(), "read {i}");
+fn a_user_message_folds_its_record_id_and_only_a_well_formed_request_id() {
+    let mut st = ChatState::connected();
+    st.apply(&json!({"type":"agent_state","busy":true,"status":"ready","paused":false}));
+    let before = st.revision();
+    st.apply(&json!({"type":"user_message","messageId":"s1-3","text":"hola","requestId":"i-abc"}));
+    assert!(st.revision() > before, "a recorded prompt is a change the reader emits");
+    st.apply(&json!({"type":"user_message","messageId":"s1-5","text":"hola"}));
+    assert_eq!(view(&st)["recorded"], json!([{"id":"s1-3","requestId":"i-abc"},{"id":"s1-5"}]));
+    // off-grammar frames change nothing: never a record the island could bind by mistake
+    for bad in [
+        json!({"type":"user_message","messageId":"h3","text":"x"}),
+        json!({"type":"user_message","messageId":"s01-1","text":"x"}),
+        json!({"type":"user_message","messageId":"s0-1","text":"x","requestId":"a b"}),
+        json!({"type":"user_message","messageId":"s0-1","text":"x","requestId":7}),
+        json!({"type":"user_message","text":"x"}),
+    ] {
+        let before = st.revision();
+        st.apply(&bad);
+        assert_eq!(st.revision(), before, "{bad}");
     }
-    assert!(ok(json!({"action":"chat_history"})).is_err(), "paging and status reads stop short of the reserve");
-    // the read right before a send belongs with the send: it may use the reserve
-    let presend = ok(json!({"action":"chat_history","presend":true})).expect("the pre-send read is never refused by the read budget");
-    assert_eq!(presend.line(), "{\"type\":\"get_history\"}\n", "the same daemon read, nothing new on the wire");
-    for bad in [json!({"action":"chat_history","presend":false}), json!({"action":"chat_history","presend":1}), json!({"action":"chat_history","presend":true,"x":1})] {
-        assert!(ok(bad.clone()).is_err(), "a closed shape: {bad}");
-    }
-    // ...but it never takes the send's own slot
-    while st.rate_count.get() < CHAT_FRAMES_PER_MINUTE - 1 {
-        assert!(ok(json!({"action":"chat_abort"})).is_ok());
-    }
-    assert!(ok(json!({"action":"chat_history","presend":true})).is_err(), "the last slot stays the send's");
-    assert!(ok(send_payload("hola")).is_ok(), "the send still goes through");
+    assert_eq!(view(&st)["recorded"].as_array().unwrap().len(), 2);
+    // the text never enters the view from here: the record id is the only thing kept
+    assert!(!serde_json::to_string(&view(&st)["recorded"]).unwrap().contains("hola"));
 }
 
+#[test]
+fn live_messages_carry_the_record_id_of_the_prompt_they_answer_and_quiet_ends_the_run() {
+    let mut st = ChatState::connected();
+    st.apply(&json!({"type":"agent_state","busy":true,"status":"ready","paused":false}));
+    st.apply(&json!({"type":"message_delta","messageId":"m0","text":"antes"}));
+    st.apply(&json!({"type":"user_message","messageId":"s0-3","text":"hola","requestId":"i-1"}));
+    st.apply(&json!({"type":"message_delta","messageId":"m1","text":"r"}));
+    let v = view(&st);
+    assert_eq!(v["streaming"][0]["prompt"], json!(null), "output before any announced prompt names none");
+    assert_eq!(v["streaming"][1]["prompt"], json!("s0-3"));
+    st.apply(&json!({"type":"message_done","messageId":"m1"}));
+    assert_eq!(view(&st)["messages"][0]["prompt"], json!("s0-3"));
+    st.apply(&json!({"type":"agent_state","busy":false,"status":"ready","paused":false}));
+    st.apply(&json!({"type":"agent_state","busy":true,"status":"ready","paused":false}));
+    st.apply(&json!({"type":"message_delta","messageId":"m2","text":"otro"}));
+    assert_eq!(view(&st)["streaming"][1]["prompt"], json!(null), "a new run never inherits the last prompt");
+}
 
 #[test]
-fn a_newest_page_remembers_the_engine_cycles_when_its_read_was_sent() {
+fn the_recorded_prompts_stay_bounded() {
     let mut st = ChatState::connected();
-    st.apply(&json!({"type":"agent_state","busy":false,"status":"ready","paused":false}));
-    st.command(CHAT_WINDOW_LABEL, &json!({"action":"chat_history"})).unwrap();
-    // another client's whole turn runs while the read is answered late
-    st.apply(&json!({"type":"agent_state","busy":true,"status":"ready","paused":false}));
-    st.apply(&json!({"type":"agent_state","busy":false,"status":"ready","paused":false}));
-    st.apply(&json!({"type":"history","messages":[{"id":"s0-1","role":"user","text":"x"}],"hasEarlier":false}));
-    let v = view(&st);
-    assert_eq!((v["historyStarts"].clone(), v["historyAskedStarts"].clone(), v["historyAskedBusy"].clone()), (json!(1), json!(0), json!(false)), "{v}");
-    // a read sent while a cycle runs: the page proves nothing about that cycle
-    st.apply(&json!({"type":"agent_state","busy":true,"status":"ready","paused":false}));
-    st.command(CHAT_WINDOW_LABEL, &json!({"action":"chat_history"})).unwrap();
-    st.apply(&json!({"type":"agent_state","busy":false,"status":"ready","paused":false}));
-    st.apply(&json!({"type":"history","messages":[{"id":"s0-1","role":"user","text":"x"}],"hasEarlier":false}));
-    let v = view(&st);
-    assert_eq!((v["historyAskedStarts"].clone(), v["historyAskedBusy"].clone()), (json!(2), json!(true)), "{v}");
-    // an unsolicited page (a rotation broadcast) is as fresh as its fold
-    st.apply(&json!({"type":"history","messages":[{"id":"s1-1","role":"user","text":"y"}],"hasEarlier":false}));
-    let v = view(&st);
-    assert_eq!((v["historyAskedStarts"].clone(), v["historyAskedBusy"].clone()), (json!(2), json!(false)), "{v}");
+    for i in 0..(MAX_RECORDED + 10) {
+        st.apply(&json!({"type":"user_message","messageId":format!("s0-{}", i + 1),"text":"x","requestId":format!("i{i}")}));
+    }
+    let r = view(&st)["recorded"].as_array().unwrap().clone();
+    assert_eq!(r.len(), MAX_RECORDED);
+    assert_eq!(r.last().unwrap()["id"], json!(format!("s0-{}", MAX_RECORDED + 10)), "newest kept");
+}
+
+#[test]
+fn every_fresh_request_id_is_in_the_daemons_grammar_and_unique() {
+    let ids: std::collections::HashSet<String> = (0..1_000).map(|_| fresh_request_id()).collect();
+    assert_eq!(ids.len(), 1_000);
+    for id in &ids {
+        assert!(!id.is_empty() && id.len() <= 64 && id.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-'), "{id}");
+    }
 }
