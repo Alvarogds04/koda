@@ -3,21 +3,40 @@
 // Cross-platform runner for apps/desktop-tauri/test-node/*-check.cjs (K2-01): the same checks on Linux, macOS and Windows.
 // Each check runs in its own process with a wall-clock cap and a V8 heap cap; on timeout its whole process tree is killed
 // (process group on Unix, taskkill /T on Windows). run-node-checks.sh stays as the Linux-local runner with a memory cap.
-// Usage: node run-node-checks.cjs [check.cjs ...]   (paths relative to apps/desktop-tauri; default: every *-check.cjs
-// except producer-check.cjs, which is not a test). Exit code = number of failed checks.
+// Usage: node run-node-checks.cjs [--shard <i>/<N>] [--list] [check.cjs ...]   (paths relative to apps/desktop-tauri; default:
+// every *-check.cjs except producer-check.cjs, which is not a test). `--shard i/N` keeps every N-th file of the sorted list
+// starting at the i-th (1-based), so N jobs run the set in parallel and together cover it exactly once. `--list` prints the
+// selected files and exits. Exit code = number of failed checks.
 const { spawn, spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 
 const appDir = path.join(__dirname, 'apps', 'desktop-tauri');
 const isWin = process.platform === 'win32';
-const args = process.argv.slice(2);
-const files = args.length > 0
+const argv = process.argv.slice(2);
+let shard = null;
+let listOnly = false;
+const args = [];
+for (let i = 0; i < argv.length; i++) {
+  if (argv[i] === '--list') { listOnly = true; continue; }
+  if (argv[i] === '--shard') {
+    const m = /^([0-9]+)\/([0-9]+)$/.exec(argv[++i] || '');
+    if (!m || Number(m[1]) < 1 || Number(m[1]) > Number(m[2])) { console.error('--shard expects <i>/<N> with 1 <= i <= N'); process.exit(2); }
+    shard = { i: Number(m[1]), n: Number(m[2]) };
+    continue;
+  }
+  args.push(argv[i]);
+}
+const selected = args.length > 0
   ? args
   : fs.readdirSync(path.join(appDir, 'test-node'))
     .filter((f) => f.endsWith('-check.cjs') && f !== 'producer-check.cjs')
     .sort()
     .map((f) => path.join('test-node', f));
+// Round-robin over the sorted list: the slow browser checks sit together alphabetically (island-nusa-*), so each shard gets
+// a similar share of them.
+const files = shard ? selected.filter((_, idx) => idx % shard.n === shard.i - 1) : selected;
+if (listOnly) { for (const f of files) console.log(f); process.exit(0); }
 
 function capSeconds(file) {
   let src = '';
