@@ -349,6 +349,10 @@ fn read_picked_path(path: &std::path::Path) -> Result<(String, Vec<u8>), chat::C
     use std::io::Read;
     let unreadable = || chat::ChatError::invalid_input("No se pudo leer el archivo arrastrado.");
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    // a FIFO, device or link is refused before any open (an open of a FIFO would block)
+    if !std::fs::symlink_metadata(path).map_err(|_| unreadable())?.is_file() {
+        return Err(chat::ChatError::invalid_input("Eso no es un archivo."));
+    }
     let file = open_dropped(path).map_err(|_| unreadable())?;
     let opened = file.metadata().map_err(|_| unreadable())?;
     // judged on the OPEN handle only: a link was refused by the open itself (native review R1-001)
@@ -374,7 +378,7 @@ fn open_dropped(path: &std::path::Path) -> std::io::Result<std::fs::File> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NOFOLLOW);
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
     }
     #[cfg(windows)]
     {
@@ -476,6 +480,11 @@ mod read_picked_path_tests {
         std::os::unix::fs::symlink(&secret, &link).unwrap();
         // the swap-after-check race, made deterministic: open_dropped is handed a link
         assert!(super::open_dropped(&link).is_err(), "a link is never opened");
+        // a FIFO is refused at once, never opened (an open would block until a writer appears)
+        let fifo = dir.join("fifo");
+        let c = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        assert!(super::read_picked_path(&fifo).is_err(), "a FIFO is not a file");
         let plain = dir.join("plain.txt");
         std::fs::write(&plain, b"ok").unwrap();
         assert_eq!(super::read_picked_path(&plain).unwrap().1, b"ok".to_vec());
