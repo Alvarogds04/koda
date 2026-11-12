@@ -4,6 +4,8 @@
 // MemoryStorage (the session is a credential: it goes to the island's keychain, never to disk), the phone → code → 2FA
 // hand-off over the island protocol, restore from the island's keychain at start, and closed error codes with Spanish
 // notices. Offline: mtcute is replaced by a scripted fake module; there is no api_id in this repo and no real login.
+// The ONE exception is the «never prompt» test, which loads the REAL @mtcute/node from the bundled runtime tree with its
+// RPC stubbed: the bug it pins down (readline prompts on stdin/stdout) only exists in the real client.
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
@@ -12,6 +14,7 @@ const net = require("node:net");
 const os = require("node:os");
 const path = require("node:path");
 const { EventEmitter } = require("node:events");
+const { pathToFileURL } = require("node:url");
 
 const P = require("../src/protocol.cjs");
 const {
@@ -285,6 +288,86 @@ test("telegram: a revoked session disconnects instead of pretending to be connec
 	await assert.rejects(() => session.restore({ apiId: API_ID, apiHash: API_HASH, session: SESSION }), (error) => error.code === "telegram_session_invalid");
 	assert.equal(session.state, "disconnected");
 	assert.deepEqual(session.status(), { state: "disconnected" });
+});
+
+// ---------- restore with the REAL client: never a readline prompt ----------
+
+/**
+ * The real @mtcute/node as Koda ships it (apps/desktop-tauri/packaging/runtime/node_modules). Without that tree installed
+ * here the test skips: the pinned tree is proven by the packaging checks and the build.
+ */
+const REAL_MTCUTE = path.join(__dirname, "..", "..", "desktop-tauri", "packaging", "runtime", "node_modules", "@mtcute", "node", "index.js");
+const realMtcute = fs.existsSync(REAL_MTCUTE);
+
+/**
+ * The real client with its RPC stubbed: every Telegram call answers `rpcText` as an RPC error, and no socket is ever
+ * opened (`_connected`), so nothing leaves this machine and no account is involved. Everything else — the constructor,
+ * `start()` (whose Node subclass fills missing phone/code/password with readline prompts), `importSession`,
+ * `exportSession` — is the library Koda ships.
+ */
+async function realClientModule(rpcText = "AUTH_KEY_UNREGISTERED") {
+	const real = await import(pathToFileURL(REAL_MTCUTE).href);
+	const created = [];
+	class StubbedClient extends real.TelegramClient {
+		constructor(params) {
+			super(params);
+			created.push(this);
+			this.rpcCalls = [];
+			this._client._connected = true; // no transport: every call is answered below
+			this._client.mt.call = async (method) => {
+				this.rpcCalls.push(method._);
+				return { _: "mt_rpc_error", errorCode: 401, errorMessage: rpcText };
+			};
+		}
+	}
+	return { real, created, mod: { TelegramClient: StubbedClient, MemoryStorage: real.MemoryStorage } };
+}
+
+/** A REAL session string (mtcute's own `exportSession` of a fabricated auth key) for the tests that need one. */
+async function realSessionString(real) {
+	const seed = new real.TelegramClient({ apiId: API_ID, apiHash: API_HASH, storage: new real.MemoryStorage(), logLevel: 0 });
+	try {
+		await seed.prepare();
+		await seed._client.mt.storage.provider.authKeys.set(2, Buffer.alloc(256, 7));
+		return await seed.exportSession();
+	} finally {
+		await seed.destroy();
+	}
+}
+
+/** Resolves `{value}`/`{error}` when the promise settles first, or the `fallback` after `ms`. */
+function settledWithin(promise, ms, fallback = "hung") {
+	return new Promise((resolve) => {
+		const timer = setTimeout(() => resolve(fallback), ms);
+		timer.unref?.();
+		promise.then(
+			(value) => { clearTimeout(timer); resolve({ value }); },
+			(error) => { clearTimeout(timer); resolve({ error }); },
+		);
+	});
+}
+
+test("telegram: a dead stored session settles disconnected with no prompt on stdin/stdout (REAL mtcute)", { skip: realMtcute ? false : "packaging/runtime/node_modules is not installed here" }, async (t) => {
+	const { real, created, mod } = await realClientModule("AUTH_KEY_UNREGISTERED");
+	const stored = await realSessionString(real);
+	const session = new TelegramSession({ loadModule: async () => mod });
+	t.after(() => session.stop());
+	// stdout is where mtcute's Node client prints «phone > », «code > » and «2fa password > »: it must stay empty.
+	const writes = [];
+	const original = process.stdout.write;
+	process.stdout.write = function write(chunk, ...rest) {
+		writes.push(String(chunk));
+		return original.call(this, chunk, ...rest);
+	};
+	t.after(() => { process.stdout.write = original; });
+	const outcome = await settledWithin(session.restore({ apiId: API_ID, apiHash: API_HASH, session: stored }), 10_000);
+	assert.notEqual(outcome, "hung", "restore must settle: a dead session may never wait for a phone number nobody can type");
+	assert.equal(outcome.error?.code, "telegram_session_invalid");
+	assert.equal(session.state, "disconnected");
+	assert.deepEqual(session.status(), { state: "disconnected" });
+	assert.equal(created.length, 1);
+	assert.ok(created[0] instanceof real.TelegramClient, "the client under test is the real shipped one");
+	assert.deepEqual(writes, [], `nothing was written to stdout: ${JSON.stringify(writes)}`);
 });
 
 // ---------- logout, missing library, cancellation ----------

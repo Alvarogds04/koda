@@ -104,6 +104,11 @@ function clientModuleEntry(manifestJson) {
 
 const defaultImporter = async (spec) => import(path.isAbsolute(spec) ? pathToFileURL(spec).href : spec);
 
+/** The phone/code/password answer a restore can never produce: it refuses, never touching stdio. */
+const restoreRefusesByDesign = () => {
+	throw new TelegramError("telegram_session_invalid");
+};
+
 /**
  * Finds the client library where Koda ships it (S6, L41): beside the Node the daemon runs on — the bundled runtime, so
  * `<prefix>/runtime/node_modules` — then beside the daemon's own package (`<prefix>/runtime` again, for a daemon started
@@ -226,7 +231,11 @@ class TelegramSession extends EventEmitter {
 		const client = new module.TelegramClient({ apiId, apiHash, storage: new module.MemoryStorage() });
 		this.client = client;
 		try {
-			const user = await client.start({ apiId, apiHash, session });
+			// S6/S20: restoring NEVER asks anything. mtcute's Node client fills a missing phone, code or 2FA password
+			// with `readline` prompts on stdin/stdout, so a dead session (`AUTH_KEY_UNREGISTERED`) would print
+			// «phone > » and wait forever on a daemon that has no terminal. These callbacks refuse instead: the restore
+			// settles `disconnected` with `telegram_session_invalid`, and nothing is read from or written to stdio.
+			const user = await client.start({ apiId, apiHash, session, phone: restoreRefusesByDesign, code: restoreRefusesByDesign, password: restoreRefusesByDesign });
 			this.#signedIn(user);
 			const exported = await this.#export(client);
 			const rotated = exported !== undefined && exported !== session ? exported : undefined;
@@ -235,7 +244,9 @@ class TelegramSession extends EventEmitter {
 			this.#emitStatus();
 			return { state: this.state, ...(rotated !== undefined ? { session: rotated } : {}) };
 		} catch (error) {
-			const mapped = mapRpcError(error);
+			// A dead session (AUTH_KEY_UNREGISTERED and friends) and our own refusal above share one closed code: the
+			// island asks the person to connect again, and nothing else about the failure travels.
+			const mapped = error instanceof TelegramError ? { code: error.code, notice: error.notice } : mapRpcError(error);
 			await this.#discard(error);
 			if (mapped.code === "telegram_session_invalid") {
 				this.log("telegram: the stored session is no longer valid");
