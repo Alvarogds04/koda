@@ -633,12 +633,13 @@ one-line log notice), and any other unknown `rotation` subkey is still refused.
   the daemon verifies the handoff is in the engine's context before it calls the rotation done.
   state.json only ever names a session the engine actually holds: a failed switch never leaves the
   persisted pointer at the seed.
-- **Reopen on boot/restart (L44).** The engine reopens the session named in state.json with the
-  rotation switch's budget (`requestTimeoutMs`) and adopts it only when `get_state` confirms it. A
-  failed or timed-out reopen is uncertain: state.json is not touched, no `ready` is reported on the
-  engine's fresh boot session, the child is killed and a fresh one retries with backoff. After
-  `reopenAttempts` (default 3) consecutive failures the chat continues in a fresh session linked to
-  the saved one (`previousSessions`), whose file is kept; history keeps reading across the chain.
+- **Reopen on boot/restart (L44, L51: Gentle Dot's).** The engine reopens the session named in
+  state.json with `switch_session`, then adopts what `get_state` reports, and only then writes
+  state.json. Any error kills the child (no late switch can land), leaves state.json untouched, never
+  reports `ready` on another session, and a fresh child retries with the restart backoff, with no
+  attempt limit, until the saved session reopens or the daemon stops. One deviation from Gentle Dot:
+  the switch budget is `requestTimeoutMs` (the rotation switch's, 300 s), not 30 s, because Windows
+  CI 43025727185 showed the real engine's switch can take longer.
 - **Failure.** A seed-write failure, an unparseable or wrong-version session header (fail closed),
   or a failed fallback leaves the chat where it was and logs it. A failed switch or verification
   falls back to `new_session` seeded the same way (Gentle Dot's fallback), removes the orphan handoff

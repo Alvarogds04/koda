@@ -15,6 +15,9 @@
 // - crash     -> exits with FAKE_EXIT_CODE (default 1)
 // - stdin end -> exits 0 (orderly shutdown like `pi --mode rpc`)
 // --argv-out / --env-out / --spawn-log dump the spawn evidence for assertions.
+// --lazy-session-file (K2-05 boot reopen B1): like real Pi (session-manager.js:794-799), the
+// session file is written only once there is a conversation: get_state reports the path but
+// creates nothing, the first prompt creates it.
 // --ask-on-prompt (K2-05 U4b): after recording the user message the engine asks the user
 // (extension_ui_request `input`, with a hidden engine name in the title/placeholder) and
 // answers only once the extension_ui_response arrives, quoting what it received.
@@ -98,6 +101,7 @@ function writeChunked(record, done) {
 }
 
 const persistMessages = process.argv.includes("--persist-messages");
+const lazySessionFile = process.argv.includes("--lazy-session-file");
 
 /** Pi's SessionManager.appendMessage: one `type:"message"` line per message, appended. */
 function persist(role, text) {
@@ -127,7 +131,7 @@ function handle(command) {
 			break;
 		}
 		case "get_state":
-			if (!fs.existsSync(sessionFile)) fs.writeFileSync(sessionFile, "", { mode: 0o600 });
+			if (!lazySessionFile && !fs.existsSync(sessionFile)) fs.writeFileSync(sessionFile, "", { mode: 0o600 });
 			respond(command.id, "get_state", { sessionFile });
 			break;
 		case "switch_session": {
@@ -152,6 +156,7 @@ function handle(command) {
 			// Never answered on purpose.
 			break;
 		case "prompt": {
+			if (lazySessionFile && !fs.existsSync(sessionFile)) fs.writeFileSync(sessionFile, "", { mode: 0o600 });
 			respond(command.id, "prompt", { disposition: "started" });
 			writeRecord({ type: "agent_start" });
 			// K2-05 bind by id: the engine records the user message (Pi: message_start, then the

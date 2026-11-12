@@ -547,7 +547,7 @@ function readState(engine) {
 async function savedConversation(t, overrides, script) {
 	const scriptFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "abito-switch-script-")), "switch.txt");
 	t.after(() => fs.rmSync(path.dirname(scriptFile), { recursive: true, force: true }));
-	const made = makeEngine(t, { ...overrides, extraArgs: ["--switch-script", scriptFile] });
+	const made = makeEngine(t, { ...overrides, extraArgs: [...(overrides.extraArgs ?? []), "--switch-script", scriptFile] });
 	const readies = [];
 	made.engine.on("status", ({ state }) => { if (state === "ready") readies.push(made.engine.sessionFile); });
 	await made.engine.start();
@@ -591,20 +591,49 @@ test("boot: the reopen gets the rotation switch budget (requestTimeoutMs), not t
 	}
 });
 
-test("boot: after the reopen attempts run out the chat continues in a new session linked to the saved one, which is kept", async (t) => {
+test("boot: a timed-out reopen is retried with backoff until it lands, with no attempt limit, and a late switch never lands", async (t) => {
+	// Gentle Dot (supervisor.ts spawnAndInitialize/scheduleRestart): any reopen error kills the
+	// child and the next one retries after the backoff; there is no attempt count and no other
+	// session is ever adopted while the saved conversation is on disk.
 	const { engine, saved, readies, cmdLog, spawnLog } = await savedConversation(
-		t, { switchTimeoutMs: 150, requestTimeoutMs: 150, reopenAttempts: 2 }, "hang\nhang\n",
+		t, { requestTimeoutMs: 150 }, "hang\nhang\nhang\nlate 600\n",
 	);
+	const persisted = [];
+	const persist = engine.persistSession.bind(engine);
+	engine.persistSession = (file) => { persisted.push(file); persist(file); };
 	try {
 		await engine.start();
-		const fresh = engine.sessionFile;
-		assert.notEqual(fresh, saved);
-		assert.equal(readCommands(cmdLog).filter((c) => c.type === "switch_session").length, 2, "exactly reopenAttempts reopens");
-		assert.equal(spawnCount(spawnLog), 4, "the last child never received a switch it could finish later");
-		assert.deepEqual(readies, [fresh], "ready is never reported while a reopen was in flight");
-		assert.deepEqual(engine.previousSessions, [saved], "the saved conversation heads the chain, so its history keeps reading");
-		assert.deepEqual(readState(engine), { sessionFile: fresh, chains: { [fresh]: [saved] } });
+		assert.equal(engine.sessionFile, saved, "the chat reopens on the saved conversation");
+		assert.equal(readCommands(cmdLog).filter((c) => c.type === "switch_session").length, 5, "four failed reopens, the fifth lands");
+		assert.equal(spawnCount(spawnLog), 6, "every uncertain child is replaced, never reused");
+		assert.deepEqual(readies, [saved], "ready is never reported on another session");
+		assert.ok(persisted.length > 0 && persisted.every((file) => file === saved), `state.json only ever names the saved conversation (got ${persisted.join(", ")})`);
+		assert.deepEqual(readState(engine), { sessionFile: saved, chains: {} });
+		await sleep(700); // past the late switch of the killed child
+		const state = await engine.request({ type: "get_state" });
+		assert.equal(state.data.sessionFile, saved, "the engine and Koda agree");
 		assert.ok(fs.readFileSync(saved, "utf8").includes("hola"), "the saved conversation file is kept as it was");
+	} finally {
+		await engine.stop();
+	}
+});
+
+test("boot: a restart before the first message never loses the saved conversation (no session file until the first prompt, B1)", async (t) => {
+	// Like real Pi (session-manager.js:794-799) the engine writes a session file only once
+	// there is a conversation, so a fresh session that was ever adopted would vanish on the
+	// next boot. Gentle Dot never adopts one while the saved conversation can be reopened.
+	const { engine, saved, readies, spawnLog } = await savedConversation(t, { extraArgs: ["--lazy-session-file"] }, "fail\nfail\nfail\nfail\n");
+	try {
+		await engine.start();
+		assert.equal(engine.sessionFile, saved, "the first boot reopens the saved conversation");
+		assert.equal(spawnCount(spawnLog), 6, "four failed reopens, each on a fresh child");
+		await engine.stop(); // restart before the first message
+		await engine.start();
+		assert.equal(engine.sessionFile, saved, "the next boot reopens it too");
+		assert.deepEqual(readies, [saved, saved]);
+		assert.deepEqual(readState(engine), { sessionFile: saved, chains: {} });
+		const boot = fs.readdirSync(engine.island.sessions).filter((name) => path.join(engine.island.sessions, name) !== saved);
+		assert.deepEqual(boot, [], "no fresh boot session was ever written");
 	} finally {
 		await engine.stop();
 	}

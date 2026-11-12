@@ -54,13 +54,6 @@ const DEFAULT_START_TIMEOUT_MS = 60_000;
 const DEFAULT_STOP_TIMEOUT_MS = 5_000;
 const DEFAULT_STABLE_MS = 30_000;
 const DEFAULT_SWITCH_TIMEOUT_MS = 30_000;
-/**
- * K2-05 boot reopen (L44): how many times the engine tries to reopen the
- * conversation saved in state.json (each try on a fresh child, with the restart
- * backoff between tries) before it gives up on it and takes the rotation's own
- * fallback: a fresh session linked as the continuation of the saved one.
- */
-const DEFAULT_REOPEN_ATTEMPTS = 3;
 // Abito technical policy, not upstream AG-UI/TanStack constants.
 const DEFAULT_TURN_TIMEOUT_MS = 300_000;
 const DEFAULT_MAX_TURN_ITERATIONS = 32;
@@ -755,11 +748,6 @@ class AgentEngine extends EventEmitter {
 		this.startTimeoutMs = options.startTimeoutMs ?? DEFAULT_START_TIMEOUT_MS;
 		this.stopTimeoutMs = options.stopTimeoutMs ?? DEFAULT_STOP_TIMEOUT_MS;
 		this.switchTimeoutMs = options.switchTimeoutMs ?? DEFAULT_SWITCH_TIMEOUT_MS;
-		this.reopenAttempts = positiveBudget(options.reopenAttempts ?? DEFAULT_REOPEN_ATTEMPTS, "reopenAttempts");
-		/** Consecutive uncertain reopens of one saved conversation: { sessionFile, count }. */
-		this.reopenFailures = undefined;
-		/** The pending first-start retry wait ({ timer, resolve }), cancelled by stop(). */
-		this.startRetry = undefined;
 		this.maxRecordBytes = options.maxRecordBytes ?? DEFAULT_MAX_RECORD_BYTES;
 		this.turnTimeoutMs = positiveBudget(options.turnTimeoutMs ?? DEFAULT_TURN_TIMEOUT_MS, "turnTimeoutMs");
 		this.maxTurnIterations = positiveBudget(options.maxTurnIterations ?? DEFAULT_MAX_TURN_ITERATIONS, "maxTurnIterations");
@@ -858,33 +846,29 @@ class AgentEngine extends EventEmitter {
 		}
 		this.setStatus("starting");
 		try {
-			// K2-05 boot reopen (L44): an uncertain reopen of the saved conversation
-			// is never reported ready on another session; the first start retries it
-			// on a fresh child with the restart backoff (crash restarts already do),
-			// until the reopen attempts run out and the linked fallback takes over.
-			for (let attempt = 0; ; attempt += 1) {
-				try {
-					await this.spawnAndInitialize();
-					break;
-				} catch (error) {
-					if (!error?.reopenUncertain || this.stopping) throw error;
-					this.log(`${error.message}; retrying on a fresh engine`);
-					if (this.child) await new Promise((resolve) => this.closeWaiters.push(resolve));
-					if (this.stopping) break;
-					const delay = this.backoffMs[Math.min(attempt, this.backoffMs.length - 1)] ?? 1000;
-					await new Promise((resolve) => {
-						this.startRetry = { resolve, timer: setTimeout(resolve, delay) };
-					});
-					this.startRetry = undefined;
-					if (this.stopping) break;
-					this.initialStartPending = true;
-				}
-			}
-			if (this.stopping && this.status !== "ready") this.setStatus("stopped");
+			await this.spawnAndInitialize();
 		} catch (error) {
 			this.initialStartPending = false;
-			this.setStatus("stopped");
-			throw error;
+			if (!error?.reopenFailed || this.stopping) {
+				this.setStatus("stopped");
+				throw error;
+			}
+			// K2-05 boot reopen = Gentle Dot (daemon.ts:477-481 + supervisor.ts:415-433):
+			// a failed reopen of the saved conversation is logged and retried by the
+			// restart policy — the killed child's close schedules the next spawn with
+			// the backoff, forever, until one reopens it or stop() is called. Koda's
+			// daemon awaits start(), so start() resolves once that happens.
+			this.log(`agent failed to start: ${error.message}; retrying`);
+			const settled = new Promise((resolve) => {
+				const onStatus = ({ state }) => {
+					if (state !== "ready" && state !== "stopped") return;
+					this.off("status", onStatus);
+					resolve();
+				};
+				this.on("status", onStatus);
+			});
+			if (!this.child) this.scheduleRestart();
+			await settled;
 		}
 	}
 
@@ -1043,11 +1027,6 @@ class AgentEngine extends EventEmitter {
 		this.recycling = false;
 		clearTimeout(this.restartTimer);
 		this.restartTimer = undefined;
-		if (this.startRetry) {
-			clearTimeout(this.startRetry.timer);
-			this.startRetry.resolve();
-			this.startRetry = undefined;
-		}
 		const initializing = this.initialization?.promise;
 		const child = this.child;
 		if (!child) {
@@ -1132,6 +1111,8 @@ class AgentEngine extends EventEmitter {
 		const child = this.spawnChild();
 		const initialization = { child };
 		this.initialization = initialization;
+		/** Whether this child was asked to reopen the conversation saved in state.json. */
+		let reopening = false;
 		const run = async () => {
 			const state = await this.rawRequest({ type: "get_state" }, this.startTimeoutMs);
 			if (this.child !== child) throw new Error("agent exited during startup");
@@ -1139,49 +1120,22 @@ class AgentEngine extends EventEmitter {
 				child.kill("SIGKILL");
 				return;
 			}
-			// Session continuity: reopen the conversation the previous child held.
+			// Session continuity = Gentle Dot's spawnAndInitialize (supervisor.ts:311-330):
+			// reopen the saved conversation, then refreshSession's get_state names the
+			// open session. ANY error kills the child (below), so a late switch cannot
+			// land, and state.json is written only after that get_state.
 			const expected = this.recoverySessionFile;
-			const saved = expected ?? this.readPersistedSession();
+			const wanted = expected ?? this.readPersistedSession();
 			if (expected && !this.isOwnedSessionFile(expected)) throw new Error("agent recovery session is unavailable");
 			const current = state?.data?.sessionFile;
-			const reopen = saved && saved !== current && this.isOwnedSessionFile(saved);
-			// K2-05 boot reopen (L44): the saved conversation (state.json, not an in-memory
-			// recovery) that could not be reopened `reopenAttempts` times in a row is given
-			// up on THIS child, which never receives a switch it could finish later.
-			const giveUp = reopen && !expected && this.reopenFailures?.sessionFile === saved
-				&& this.reopenFailures.count >= this.reopenAttempts;
-			if (reopen && !giveUp) {
-				// The reopen is the same engine operation as the rotation's switch, so it
-				// gets the same budget (requestTimeoutMs), never the short switchTimeoutMs.
-				// Until the engine answers AND get_state confirms the saved file, the
-				// reopen is uncertain: Pi handles RPC lines concurrently and keeps
-				// reporting its boot session while a switch is still running, so a
-				// failure or timeout is never followed by adopting that boot session —
-				// the child is killed (no late switch can land) and state.json is kept.
-				try {
-					await this.rawRequest({ type: "switch_session", sessionPath: saved }, this.requestTimeoutMs);
-					const confirmed = await this.rawRequest({ type: "get_state" }, this.switchTimeoutMs);
-					const opened = confirmed?.data?.sessionFile;
-					if (typeof opened !== "string" || path.resolve(opened) !== path.resolve(saved)) {
-						throw new Error("the engine did not confirm the switch");
-					}
-				} catch (error) {
-					if (expected) throw error;
-					const count = this.reopenFailures?.sessionFile === saved ? this.reopenFailures.count + 1 : 1;
-					this.reopenFailures = { sessionFile: saved, count };
-					const uncertain = new Error(
-						`could not reopen the previous session (attempt ${count} of ${this.reopenAttempts}): ${error.message}`,
-					);
-					uncertain.reopenUncertain = true;
-					throw uncertain;
-				}
+			if (wanted && wanted !== current && this.isOwnedSessionFile(wanted)) {
+				reopening = !expected;
+				// The one deviation from Gentle Dot (30 s): the reopen gets the rotation
+				// switch's budget, requestTimeoutMs, because Windows CI 43025727185 showed
+				// the real engine's switch_session can take longer than 30 s there.
+				await this.rawRequest({ type: "switch_session", sessionPath: wanted }, this.requestTimeoutMs);
 			}
-			const after = giveUp || !reopen
-				? await this.rawRequest({ type: "get_state" }, this.switchTimeoutMs).catch((error) => {
-					if (expected) throw error;
-					return undefined;
-				})
-				: { data: { sessionFile: saved } };
+			const after = await this.rawRequest({ type: "get_state" }, this.switchTimeoutMs);
 			if (this.child !== child) throw new Error("agent exited during startup");
 			if (this.stopping) {
 				child.kill("SIGKILL");
@@ -1190,15 +1144,6 @@ class AgentEngine extends EventEmitter {
 			this.sessionFile = after?.data?.sessionFile ?? current;
 			if (!this.isOwnedSessionFile(this.sessionFile, true)) throw new Error("agent session is unavailable");
 			if (expected && this.sessionFile !== expected) throw new Error("agent recovery session was not confirmed");
-			if (giveUp && this.sessionFile !== saved) {
-				// The rotation's own fallback (rotation.cjs: a fresh session linked as the
-				// continuation of the old one): the saved conversation heads the chain, so
-				// its history keeps reading, and its file is kept — never deleted.
-				const chain = [...(this.chains[saved] ?? []), saved].filter((p) => this.isOwnedSessionFile(p));
-				if (chain.length > 0) this.chains[this.sessionFile] = chain;
-				this.log(`could not reopen the previous session after ${this.reopenAttempts} attempts; the chat continues in a new session linked to it (the file is kept)`);
-			}
-			this.reopenFailures = undefined;
 			this.sessionEpoch += 1;
 			this.persistSession(this.sessionFile);
 			this.initialStartPending = false;
@@ -1214,6 +1159,7 @@ class AgentEngine extends EventEmitter {
 		};
 		initialization.promise = run().catch((error) => {
 			if (this.child === child) child.kill("SIGKILL");
+			if (reopening) error.reopenFailed = true;
 			throw error;
 		}).finally(() => {
 			if (this.initialization === initialization) this.initialization = undefined;

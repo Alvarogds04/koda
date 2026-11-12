@@ -38,14 +38,13 @@ const { HANDOFF_TYPE, SESSION_VERSION, SessionRotator } = require("../src/rotati
 const WIN_REAL = process.platform === "win32";
 // K2-05 boot reopen (L44, Windows CI 43071616377): the restart's reopen of the saved session used the
 // short switch budget (30 s) while the rotation's switch had the request budget (300 s); a Windows reopen
-// slower than 30 s was dropped and the fresh boot session overwrote state.json. The product now gives the
-// reopen the SAME budget as the rotation's switch (requestTimeoutMs), so this test gives both one budget
-// too: 60 s on Windows (below the product's 300 s, so it stays stricter than the shipped daemon and fits
-// npm test's 600 s per-test cap), 10 s elsewhere. switchTimeoutMs now only bounds the get_state that
-// confirms the reopen. One reopen attempt here (the product default retries 3 times; runtime.test.cjs
-// covers the retries): a failed reopen ends in the linked fallback inside the cap, and the assertion
-// prints the engine and daemon logs so CI shows the cause.
-const REOPEN_ATTEMPTS = 1;
+// slower than 30 s was dropped and the fresh boot session overwrote state.json. The product reopens like
+// Gentle Dot (any error kills the child and the restart backoff retries, forever) with ONE deviation: the
+// reopen gets the rotation switch's budget (requestTimeoutMs), so this test gives both one budget too:
+// 60 s on Windows (below the product's 300 s, so it stays stricter than the shipped daemon and fits npm
+// test's 600 s per-test cap), 10 s elsewhere. switchTimeoutMs bounds the get_state after it (Gentle Dot's
+// refreshSession). The second start is waited for ONE attempt's budget (runtime.test.cjs covers the
+// retries): past that the test fails and prints the engine and daemon logs so CI shows the cause.
 const BOOT_TIMEOUT_MS = WIN_REAL ? 540_000 : 120_000;
 
 /** A minimal fake Koda bundled runtime: the production launch path through runtimeDeps (see test/pi-offline.test.cjs). */
@@ -136,8 +135,7 @@ test("real engine: a forced rotation switches it to the handoff session and the 
 		stableMs: 60_000,
 		startTimeoutMs: 60_000,
 		requestTimeoutMs: WIN_REAL ? 60_000 : 10_000, // the rotation's switch_session AND the restart's reopen (L44)
-		switchTimeoutMs: WIN_REAL ? 30_000 : 10_000, // the get_state that confirms a switch
-		reopenAttempts: REOPEN_ATTEMPTS,
+		switchTimeoutMs: WIN_REAL ? 30_000 : 10_000, // the get_state after a switch (Gentle Dot's refreshSession)
 		stopTimeoutMs: 2_000,
 		log: (line) => logs.push(String(line)),
 	});
@@ -198,7 +196,17 @@ test("real engine: a forced rotation switches it to the handoff session and the 
 	engines.push(again);
 	// L44 proof step: when the reopen fails, CI shows the engine's and the daemon's own logs.
 	const withLogs = (what) => `${what}; logs: ${logs.join(" | ").slice(-6000)}`;
-	await again.start().catch((error) => assert.fail(withLogs(`the second engine did not start: ${error.message}`)));
+	const { startTimeoutMs, requestTimeoutMs, switchTimeoutMs } = engineOptions();
+	const reopenWaitMs = startTimeoutMs + requestTimeoutMs + switchTimeoutMs + 10_000; // one attempt
+	let deadline;
+	await Promise.race([
+		again.start(),
+		new Promise((_, reject) => {
+			deadline = setTimeout(() => reject(new Error(`not ready within ${reopenWaitMs} ms (status ${again.status})`)), reopenWaitMs);
+		}),
+	])
+		.catch((error) => assert.fail(withLogs(`the second engine did not start: ${error.message}`)))
+		.finally(() => clearTimeout(deadline));
 	assert.equal(again.sessionFile, seed, withLogs("the chat reopens on the seeded session"));
 	assert.deepEqual(again.previousSessions, [first], withLogs("the chain of files survives the restart"));
 	const saved = JSON.parse(fs.readFileSync(path.join(base, "island", "state.json"), "utf8"));
