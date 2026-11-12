@@ -151,7 +151,7 @@ test('a request the island cannot show in full gets no «Aprobar»: Rechazar + D
   }
 });
 
-test('apply_patch stays lossy until the file preview lands (T4): fixed label, no «Aprobar», the patch never travels', async t => {
+test('apply_patch the island cannot represent (K2-08 T4): only «apply_patch», no «Aprobar», the patch never travels', async t => {
   for (const value of ['allow', 'terminal', 'deny']) {
     const rcv = await fakeReceiver(t, { questions: true });
     const p = answerer(rcv, value);
@@ -159,7 +159,7 @@ test('apply_patch stays lossy until the file preview lands (T4): fixed label, no
     await p;
     const q = questionOf(rcv);
     assert.equal(q.agent, 'codex');
-    assert.equal(q.text, 'Codex pide permiso para apply_patch (edición de archivo) (detalles solo en la terminal; decidir en la terminal)');
+    assert.equal(q.text, 'Codex pide permiso para apply_patch (solicitud no representable; detalles solo en la terminal; decidir en la terminal)');
     assert.deepEqual(q.options, [REJECT, TERMINAL]);
     assert.equal(r.stdout, value === 'deny' ? DENY : '');
     assert.doesNotMatch(wireOf(rcv), /SECRETPATCH/);
@@ -283,9 +283,14 @@ test('the card text is redacted and never carries secrets; hidden secrets mean n
     { tool_input: { command: 'curl -H "Authorization: Bearer sk-abcdefghijklmnopqrstuvwxyz" https://x' }, lossy: false },
     { tool_input: { command: 'export API_TOKEN=SECRETTOKEN123; ls' }, lossy: null },
     { tool_input: { command: 'cat /home/dev/.ssh/id_rsa' }, lossy: true },
-    { tool_name: 'apply_patch', tool_input: { command: '*** Update File: /home/dev/SECRETDIR/a.txt\n+SECRETLINE' }, lossy: true },
+    // K2-08 T4 (3a): a patch path outside the session folder is SHOWN, like Claude's, but its change is not and there is no
+    // «Aprobar»; a path that itself looks like a secret stays hidden by the existing R9 rule (nothing of it on the card).
+    { tool_name: 'apply_patch', tool_input: { command: '*** Begin Patch\n*** Update File: /home/dev/proj/a.txt\n-a\n+API_KEY=SECRETLINE\n*** End Patch' },
+      lossy: true, shows: path.resolve(cwd, '/home/dev/proj/a.txt') },
+    { tool_name: 'apply_patch', tool_input: { command: '*** Begin Patch\n*** Update File: /home/dev/SECRETDIRabcdefghijklmnopqrstuvwxyzABCDEFGH0123456789/a.txt\n-a\n+SECRETLINE\n*** End Patch' },
+      lossy: true, hidden: true },
   ];
-  for (const { lossy, ...h } of cases) {
+  for (const { lossy, shows, hidden, ...h } of cases) {
     const rcv = await fakeReceiver(t, { questions: true });
     const p = answerer(rcv, 'deny');
     const r = await call('permission-request', h, envOf(rcv));
@@ -296,6 +301,8 @@ test('the card text is redacted and never carries secrets; hidden secrets mean n
     assert.ok([...q.text].length <= 500, 'the text stays inside the question bound');
     if (lossy === true) assert.deepEqual(q.options, [REJECT, TERMINAL], JSON.stringify(h));
     if (lossy === false) assert.match(q.text, /\(secretos ocultos\)$/);
+    if (shows) assert.match(q.text, new RegExp(`^Codex pide permiso para apply_patch: ${JSON.stringify(shows).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} \\((fuera de la carpeta de sesión|ruta no verificable); detalles solo en la terminal; decidir en la terminal\\)$`), 'the outside path is shown, never approvable (macOS: /home/dev cannot be resolved)');
+    if (hidden) assert.equal(q.text, 'Codex pide permiso para apply_patch (ruta no segura (secretos ocultos); detalles solo en la terminal; decidir en la terminal)');
   }
 });
 
@@ -363,8 +370,15 @@ test('parseArgs / watchdogMs / startWatchdog stay the CLI contract (old installe
   assert.equal(typeof fired, 'number');
 });
 
-test('codexToolDescription: apply_patch is never shown as a patch; only Bash and apply_patch are answerable at all', () => {
-  assert.deepEqual(codexToolDescription('apply_patch', { command: '*** Begin Patch\n+SECRET\n*** End Patch' }), { text: 'apply_patch (file edit)', lossy: true });
-  assert.equal(codexToolDescription('Bash', { command: 'ls' }).lossy, false);
-  for (const tool of ['mcp__srv__ping', 'Write', 'WebFetch', 'exec_command']) assert.equal(codexToolDescription(tool, {}), null, tool);
+test('codexToolDescription(name, input, cwd): apply_patch gets the R9 file preview; only Bash and apply_patch are answerable at all', () => {
+  assert.deepEqual(codexToolDescription('apply_patch', { command: '*** Begin Patch\n+SECRET\n*** End Patch' }, cwd),
+    { filePreview: true, text: 'apply_patch', lossy: true, reason: 'solicitud no representable' }, 'a patch outside the grammar shows nothing of itself');
+  // an absolute path outside the folder (a relative one would carry this checkout's own path, which may look like a secret).
+  // /home/dev does not exist on macOS runners, so the reason may be «ruta no verificable» there: both show the path, neither is approvable.
+  const outside = codexToolDescription('apply_patch', { command: '*** Begin Patch\n*** Delete File: /home/dev/proj/fuera.txt\n*** End Patch' }, cwd);
+  assert.deepEqual({ ...outside, reason: undefined },
+    { filePreview: true, text: `apply_patch: borrar ${JSON.stringify(path.resolve(cwd, '/home/dev/proj/fuera.txt'))}`, lossy: true, reason: undefined });
+  assert.ok(['fuera de la carpeta de sesión', 'ruta no verificable'].includes(outside.reason), outside.reason);
+  assert.equal(codexToolDescription('Bash', { command: 'ls' }, cwd).lossy, false);
+  for (const tool of ['mcp__srv__ping', 'Write', 'WebFetch', 'exec_command']) assert.equal(codexToolDescription(tool, {}, cwd), null, tool);
 });
