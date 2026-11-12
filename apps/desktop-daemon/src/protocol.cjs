@@ -726,6 +726,13 @@ function hooksFrame(data) {
 
 // maxHoyFrameBytes: the island refuses lines over 256 KiB (agentclient.rs); leave room for `seq` and the LF.
 const MINIKODAS_EMIT = Object.freeze({ maxMinikodas: 32, maxHoyItems: 100, maxHoyTextChars: 4000, maxHoyFrameBytes: 200 * 1024 });
+// The plain-language summary of a DRAFT (src/minikodas/summary.cjs): fixed sections, one plain line each.
+const MINIKODA_SUMMARY = Object.freeze({ maxSections: 8, maxTitleChars: 40, maxSectionBytes: 512, maxTextBytes: 3600 });
+const SUMMARY_SECTION_KEYS = Object.freeze(["when", "reads", "does", "shows", "never", "model"]);
+/** A summary section is exactly one plain line: no control, format (bidi, zero-width), separator or surrogate. */
+const SUMMARY_FORBIDDEN = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Cs}]/u;
+/** The whole summary is the same, line by line: only LF separates the sections. */
+const SUMMARY_FORBIDDEN_BLOCK = /[\u0000-\u0009\u000b-\u001f\u007f-\u009f\p{Cf}\p{Zl}\p{Zp}\p{Cs}]/u;
 const RUN_OUTCOMES = new Set(["done", "failed"]);
 const HOY_KINDS = new Set(["result", "proposal", "error"]);
 const HOY_STATUSES = new Set(["pending", "approved", "rejected"]);
@@ -733,6 +740,26 @@ const PROPOSAL_ACTIONS_EMIT = new Set(["buy", "sell", "send"]);
 const minikodasFail = () => {
 	throw new Error("minikodas frame invalid");
 };
+
+/**
+ * The draft's summary `{sections: [{key, title, text}], text}`: fixed keys, one plain line per field, capped by
+ * count and by bytes. A summary that is off-contract fails the frame; it is never repaired or truncated.
+ */
+function summaryDto(summary) {
+	if (!isObject(summary)) minikodasFail();
+	const extra = Object.keys(summary).filter((k) => k !== "sections" && k !== "text");
+	if (extra.length) minikodasFail();
+	if (!Array.isArray(summary.sections) || summary.sections.length === 0 || summary.sections.length > MINIKODA_SUMMARY.maxSections) minikodasFail();
+	if (typeof summary.text !== "string" || summary.text === "" || Buffer.byteLength(summary.text) > MINIKODA_SUMMARY.maxTextBytes || SUMMARY_FORBIDDEN_BLOCK.test(summary.text)) minikodasFail();
+	const sections = summary.sections.map((s) => {
+		if (!isObject(s) || Object.keys(s).some((k) => !["key", "title", "text"].includes(k))) minikodasFail();
+		if (!SUMMARY_SECTION_KEYS.includes(s.key)) minikodasFail();
+		if (typeof s.title !== "string" || s.title === "" || s.title.length > MINIKODA_SUMMARY.maxTitleChars || SUMMARY_FORBIDDEN.test(s.title)) minikodasFail();
+		if (typeof s.text !== "string" || s.text === "" || Buffer.byteLength(s.text) > MINIKODA_SUMMARY.maxSectionBytes || SUMMARY_FORBIDDEN.test(s.text)) minikodasFail();
+		return { key: s.key, title: s.title, text: s.text };
+	});
+	return { sections, text: summary.text };
+}
 
 /** One Minikoda, rebuilt through the recipe validator. `withPrompt` only for minikoda_get / create replies. */
 function minikodaDto(m, withPrompt) {
@@ -747,6 +774,11 @@ function minikodaDto(m, withPrompt) {
 	if (withPrompt) {
 		if (typeof m.prompt !== "string") minikodasFail();
 		out.prompt = r.prompt;
+	}
+	// Only a draft carries its summary: it is the approval preview (S1) and never a stored field.
+	if (m.summary !== undefined) {
+		if (m.status !== "draft") minikodasFail();
+		out.summary = summaryDto(m.summary);
 	}
 	if (isObject(m.lastRun) && RUN_OUTCOMES.has(m.lastRun.outcome)) {
 		out.lastRun = { at: clip(m.lastRun.at, 40), outcome: m.lastRun.outcome, ...(typeof m.lastRun.reason === "string" ? { reason: clip(m.lastRun.reason, 32) } : {}) };

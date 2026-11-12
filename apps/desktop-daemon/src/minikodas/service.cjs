@@ -27,8 +27,9 @@ const { lstatSync, readFileSync, rmSync, unlinkSync } = require("node:fs");
 const path = require("node:path");
 const { ensurePrivateDir, islandPaths, writePrivateFile } = require("../isolation.cjs");
 const { LIMITS, RecipeError, validateRecipe, recipeToJson } = require("./recipe.cjs");
-const { resolveModelChoice, projectModel } = require("./model.cjs");
+const { resolveModelChoice, projectModel, chatModel } = require("./model.cjs");
 const { runMinikoda, DEFAULT_RUN_TIMEOUT_MS } = require("./runner.cjs");
+const { buildSummary } = require("./summary.cjs");
 const { Scheduler } = require("./scheduler.cjs");
 const { freshestCredential, isOauth, readRunCredential, writeBackCredential } = require("./credentials.cjs");
 
@@ -209,7 +210,35 @@ class MinikodaService extends EventEmitter {
 	dto(entry, { withPrompt = false } = {}) {
 		const r = recipeToJson(entry.recipe);
 		if (!withPrompt) delete r.prompt;
-		return { ...r, status: entry.status, createdAt: entry.createdAt, running: this.running.has(r.id), ...(entry.lastRun ? { lastRun: { ...entry.lastRun } } : {}) };
+		return {
+			...r,
+			status: entry.status,
+			createdAt: entry.createdAt,
+			running: this.running.has(r.id),
+			...(entry.status === "draft" ? { summary: this.summary(entry.recipe) } : {}),
+			...(entry.lastRun ? { lastRun: { ...entry.lastRun } } : {}),
+		};
+	}
+
+	/**
+	 * The plain-language summary of a draft (S1/S7; summary.cjs): deterministic, built only from the validated
+	 * recipe. The model section carries the account's VISIBLE label or «el mismo del chat» when the recipe kept
+	 * the chat's current model; the accountId and every credential stay out of it.
+	 */
+	summary(recipe) {
+		const chat = chatModel(this.options.profiles);
+		const modelIsDefault =
+			chat !== undefined &&
+			chat.provider === recipe.model.provider &&
+			chat.id === recipe.model.id &&
+			chat.accountId === recipe.model.accountId;
+		let accountLabel;
+		try {
+			accountLabel = this.options.accounts.listAccounts().find((a) => a.accountId === recipe.model.accountId)?.label;
+		} catch {
+			accountLabel = undefined; // no label: the summary falls back to provider/id, never to the accountId
+		}
+		return buildSummary(recipe, { accountLabel, modelIsDefault });
 	}
 
 	list() {

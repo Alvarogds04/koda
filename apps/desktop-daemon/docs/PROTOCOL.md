@@ -585,8 +585,8 @@ Implementation: `src/protocol.cjs` (allowlist and DTOs), `src/server.cjs` (`hand
 
 | type | fields |
 | --- | --- |
-| `minikodas` | `minikodas[]` of `{id, name, when, reads, kit, model, never, status: draft\|active, running, createdAt, lastRun?{at, outcome: done\|failed, reason?}}` |
-| `minikoda` | `minikoda` = the same plus `prompt` |
+| `minikodas` | `minikodas[]` of `{id, name, when, reads, kit, model, never, status: draft\|active, running, createdAt, lastRun?{at, outcome: done\|failed, reason?}}`; a draft also carries `summary` |
+| `minikoda` | `minikoda` = the same plus `prompt`, and `summary?{sections: [{key, title, text}], text}` on a `draft` |
 | `hoy` | `items[]` of `{id, minikoda, kind: result\|proposal\|error, status: pending\|approved\|rejected, text, createdAt, action?: buy\|sell\|send, target?, decidedAt?}` (pending proposals first, then newest; ≤ 100 items and ≤ 200 KiB per frame, below the island's 256 KiB line limit), `truncated` (true when items were left out by either bound) |
 | `hoy_approved` | `id, minikoda, action, target, executedAt`: broadcast once per executed approval |
 | `hoy_decided` | `id, status` |
@@ -597,6 +597,12 @@ New error codes: `unknown_minikoda, not_active, not_pending, exists, limit, mode
 ### Semantics
 
 - **«Hoy» is built only from what the daemon stored.** It is never built from the Minikoda's text. A proposal exists only if the kit's `inbox_propose` parked it, and the runner re-validated it (buy, sell or send only). Whatever the model claims in its final text stays plain `result` text.
+- **The draft's summary (S1, S7).** `minikoda_create` stores the draft and its reply carries `summary`; `minikoda_get` of a draft carries it too, and the `minikodas` broadcast includes it for drafts. An `active` Minikoda never carries one (it is the approval preview).
+  - Built by the daemon from the VALIDATED recipe alone (`src/minikodas/summary.cjs`), with no model call: the same recipe always renders the same text. Plain Rioplatense Spanish with the fixed sections «Cuándo corre», «Qué lee», «Qué hace», «Dónde te lo muestra», «Qué nunca hará solo» and «Con qué modelo» (S7: «Podemos hacer que el usuario escoja el modelo»).
+  - `key` is one of `when, reads, does, shows, never, model`; `title` is the section's heading; `text` is the whole summary as one block, the six lines joined by LF.
+  - Every field is one plain line: Unicode format characters (Cf: bidi overrides, zero-width), control and separator characters are removed, and lengths are capped in bytes (each section ≤ 512, the block ≤ 3600, at most 8 sections). The daemon fails the frame instead of sending an off-contract summary; nothing is repaired or truncated inside `protocol.cjs`.
+  - It never carries the accountId, a credential, a file path or prompt internals. «Con qué modelo» shows the account's VISIBLE label plus the model id, or «el mismo del chat» when the recipe kept the chat's current model; without a label it falls back to `provider/id`.
+  - Getting the summary changes nothing: `minikoda_approve_create` stays the only way to activate a draft (criterion 1: «solo lo crea si lo apruebo»).
 - **Approve-later.** A proposal executes only on `hoy_approve {id}`. There is no PIN (human decision L17); a `pin` field, like any unknown field, is dropped by the allowlist.
   - The decision (`approved`) is persisted before the execution record, so a crash between the two can lose an execution, never repeat one.
   - Approvals run one at a time; a second approval of the same item is `not_pending` and never executes again.
