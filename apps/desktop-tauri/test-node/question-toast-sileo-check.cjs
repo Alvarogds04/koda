@@ -111,17 +111,17 @@ async function layout() {
           pending: { id, kind: 'question', agent: 'pi', agent_label: 'Pi', project_name: 'api', text: '¿Café o té?', allow_free_text: false, options: [{ index: 0, label: 'Café', description: '' }, { index: 1, label: 'Té', description: '' }], expires_at: Date.now() + 600000, free_text_max: 2000 } }), { id: ID });
         await r.page.waitForTimeout(100);
       }
-      const conceal = () => r.page.evaluate(() => { document.getElementById('capsule').dataset.edgeHidden = 'true'; });
+      // isla-cualquier-lado S3/S5 (T6): the folded disc IS the trigger (data-edge-hidden is gone); the toast hangs from the disc.
       const feedLate = async () => {
         if (c.arrival) await r.page.evaluate(d => document.dispatchEvent(new CustomEvent('abito:notice-arrival', { detail: d })), c.arrival);
         if (c.disconnect) await r.page.evaluate(() => window.__emit('question:state', { available: true, pending: null, queued: [], queued_count: 0, deliveries: [], notice: 'disconnected' }));
       };
       const tag = `${theme}/${c.name}/${mode}`;
       if (mode === 'mid') { // mid-animation frame: the pill is still travelling
-        await conceal(); await feedLate(); await r.page.waitForTimeout(420);
+        await feedLate(); await r.page.waitForTimeout(420);
         await r.screenshot(`/tmp/toast-sileo-${c.name}-${theme}-mid.png`); n += 1; return;
       }
-      await conceal(); await feedLate(); await r.page.waitForTimeout(2200);
+      await feedLate(); await r.page.waitForTimeout(2200);
       const m = await r.page.evaluate(() => {
         const t = document.getElementById('question-toast'), acts = document.getElementById('question-toast-actions'), cs = e => getComputedStyle(e), tb = t.getBoundingClientRect();
         const rel = e => { const b = e.getBoundingClientRect(); return { left: b.left - tb.left, top: b.top - tb.top, right: b.right - tb.left, bottom: b.bottom - tb.top, w: b.width, h: b.height }; };
@@ -133,7 +133,10 @@ async function layout() {
           title: cs(t.querySelector('.q-toast-title')).color, titleBox: rel(t.querySelector('.q-toast-title')), badge: rel(t.querySelector('.q-toast-badge')), moving, rects,
           boxes: all.filter(e => !(e instanceof SVGElement) && !e.classList.contains('q-toast-canvas') && e.getBoundingClientRect().width > 0).map(e => ({ cls: e.getAttribute('class') || e.tagName, b: rel(e) })),
           btns: btn.map(b => { const o = acts.querySelector(b.classList.contains('q-toast-approve') ? '.q-toast-ord-approve' : b.classList.contains('q-toast-reject') ? '.q-toast-ord-reject' : '.none'); return { cls: b.className, ord: o && !o.hidden ? o.textContent : null, ordHidden: o ? o.getAttribute('aria-hidden') : null, ordBox: o ? rel(o) : null, name: b.textContent, box: rel(b), border: cs(b).borderTopColor }; }),
-          shot: !!document.querySelector('#question-toast .q-toast-abito') };
+          // isla-cualquier-lado S7 (T6): the badge is Koda, painted by koda-skin.js from the disc's own sheet; the clay Abito is gone
+          abito: !!document.querySelector('#question-toast .q-toast-abito, #question-toast [data-abito-body]'),
+          koda: (() => { const k = document.querySelector('#question-toast .q-toast-badge .q-toast-koda'); if (!k) return null;
+            const s = cs(k); return { slot: k.dataset.kodaSlot, anim: k.dataset.anim || null, paint: s.backgroundImage !== 'none', w: k.getBoundingClientRect().width, h: k.getBoundingClientRect().height }; })() };
       });
       assert.equal(m.hidden, false, `${tag}: shown`); assert.equal(m.expanded, 'true', `${tag}: expanded`); assert.equal(+m.opacity, 1, `${tag}: fully visible`);
       assert.equal(m.title, c.title, `${tag}: title colour is the state colour`);
@@ -142,6 +145,11 @@ async function layout() {
       assert.ok(m.pill.w < m.tbox.w - 20 || m.titleBox.w > 220, `${tag}: a pill, not a full-width box (${m.pill.w})`);
       assert.ok(m.pill.bottom > 40, `${tag}: the pill reaches into the body (neck)`);
       assert.ok(m.badge.left >= m.pill.left - 0.5 && m.badge.right <= m.pill.right + 0.5, `${tag}: the Koda circle sits inside the pill`);
+      assert.equal(m.abito, false, `${tag}: never the green clay Abito figure in the badge`);
+      assert.ok(m.koda, `${tag}: the badge carries the Koda slot`);
+      assert.equal(m.koda.slot, 'toast', `${tag}: it is the same slot the folded disc draws (data-koda-slot="toast")`);
+      assert.equal(m.koda.paint, true, `${tag}: koda-skin.js painted the sheet (background-image set)`);
+      assert.ok(m.koda.w >= 20 && m.koda.h >= 20 && m.koda.w <= 36 && m.koda.h <= 36, `${tag}: a 28px badge sprite (${m.koda.w}x${m.koda.h})`);
       assert.ok(m.titleBox.left >= m.badge.right - 0.5 && m.titleBox.right <= m.pill.right + 0.5, `${tag}: the title sits inside the pill`);
       assert.equal(m.tbox.w, 350, `${tag}: width 350`); assert.ok(m.tbox.h <= 96 && m.tbox.h >= 40, `${tag}: height ${m.tbox.h} in 40..96`);
       for (const e of m.boxes) assert.ok(e.b.left >= -0.5 && e.b.right <= 350.5 && e.b.top >= -0.5 && e.b.bottom <= 96.5, `${tag}: ${e.cls} inside 350x96 ${JSON.stringify(e.b)}`);

@@ -7,10 +7,8 @@ if (!H.findPlaywright()) { console.log('SKIPPED island-s13-check: no playwright 
 (async () => {
   const r = await H.open({ question: 'plain', chat: true });
   try {
-    await r.page.evaluate(() => {
-      window.__islandSetState('compact');
-      document.getElementById('capsule').dataset.edgeHidden = 'true';
-    });
+    // isla-cualquier-lado S3/S5 (T6): the folded disc is the toast's trigger; data-edge-hidden is gone from the product.
+    await r.page.evaluate(() => { window.__islandSetState('compact'); });
     await r.page.waitForTimeout(900);
     const st = () => r.page.evaluate(() => { const b = document.querySelector('.q-toast-progress'), t = document.getElementById('question-toast'); return { bar: !!b, play: b && getComputedStyle(b).animationPlayState, hidden: t.hidden || getComputedStyle(t).display === 'none', live: document.getElementById('question-toast-live') && document.getElementById('question-toast-live').textContent, role: document.getElementById('question-toast-live') && document.getElementById('question-toast-live').getAttribute('role') }; });
     let s = await st();

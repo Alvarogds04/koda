@@ -45,7 +45,7 @@ async function layout() {
           pending: { id, kind: 'question', agent: 'pi', agent_label: 'Pi', project_name: 'api', text: '¿Café o té?', allow_free_text: false, options: [{ index: 0, label: 'Café', description: '' }, { index: 1, label: 'Té', description: '' }], expires_at: Date.now() + 600000, free_text_max: 2000 } }), { id: ID });
         await r.page.waitForTimeout(100);
       }
-      await r.page.evaluate(() => { document.getElementById('capsule').dataset.edgeHidden = 'true'; });
+      // isla-cualquier-lado S3/S5 (T6): the toast hangs from the FOLDED disc, so switching the island to compact above IS the trigger.
       if (c.arrival) await r.page.evaluate(d => document.dispatchEvent(new CustomEvent('abito:notice-arrival', { detail: d })), c.arrival);
       if (c.disconnect) await r.page.evaluate(() => window.__emit('question:state', { available: true, pending: null, queued: [], queued_count: 0, deliveries: [], notice: 'disconnected' }));
       const tag = `${theme}/${c.name}/${mode}`;
@@ -80,6 +80,43 @@ async function layout() {
   for (const c of CASES.filter(x => ['plain', 'permission-short', 'finished'].includes(x.name))) await run(c, 'dark', 'mid');
   for (const c of CASES) await run(c, 'dark', 'attr');
   for (const c of CASES.filter(x => ['plain', 'permission-short', 'finished'].includes(x.name))) await run(c, 'light', 'media');
+  n += await disc();
+  return n;
+}
+/** T6: the toast hangs from the DISC on the side that faces the centre of the screen, and never shows with the island open. */
+async function disc() {
+  let n = 0;
+  const show = (edge) => async () => {
+    const r = await H.open({ question: 'plain', theme: 'dark', quick: true });
+    try {
+      await r.page.evaluate(e => window.__islandSetState('compact', e), edge);
+      await r.page.waitForTimeout(1600);
+      const m = await r.page.evaluate(() => {
+        const t = document.getElementById('question-toast'), i = document.getElementById('island'), tb = t.getBoundingClientRect(), ib = i.getBoundingClientRect();
+        return { hidden: t.hidden, edge: t.dataset.edge, phase: document.getElementById('capsule').dataset.phase,
+          toast: { t: tb.top, b: tb.bottom, w: tb.width }, island: { t: ib.top, b: ib.bottom, l: ib.left, r: ib.right } };
+      });
+      assert.equal(m.hidden, false, `${edge}/folded: the question arrives as the toast hanging from the disc`);
+      assert.equal(m.phase, 'compact', `${edge}: the island stayed folded`);
+      assert.equal(m.edge, edge, `${edge}: it hangs from the side the page's own data-edge names`);
+      assert.equal(m.toast.w, 350, `${edge}: width 350`);
+      if (edge === 'top') assert.ok(Math.abs(m.toast.t - m.island.b) <= 1, `${edge}: below the disc (toast top ${m.toast.t.toFixed(1)} vs disc bottom ${m.island.b.toFixed(1)})`);
+      else assert.ok(Math.abs(m.toast.b - m.island.t) <= 1, `${edge}: above the disc (toast bottom ${m.toast.b.toFixed(1)} vs disc top ${m.island.t.toFixed(1)})`);
+      assert.ok(Math.abs((m.island.l + m.island.r) / 2 - 376) <= 1, `${edge}: the disc stays centred in the 752 window`);
+      if (edge === 'top') await r.screenshot('/tmp/toast-disc-below.png'); else await r.screenshot('/tmp/toast-disc-above.png');
+      n += 1;
+    } finally { await r.close(); }
+  };
+  await show('top')(); await show('bottom')();
+  // with the island OPEN the toast never shows: the card is the signal
+  const r = await H.open({ question: 'plain', theme: 'dark', quick: true });
+  try {
+    await r.page.evaluate(() => window.__islandSetState('overview'));
+    await r.page.waitForTimeout(1600);
+    const m = await r.page.evaluate(() => ({ hidden: document.getElementById('question-toast').hidden, phase: document.getElementById('capsule').dataset.phase }));
+    assert.equal(m.phase, 'expanded'); assert.equal(m.hidden, true, 'open island: no toast (the card itself shows the question)');
+    n += 1;
+  } finally { await r.close(); }
   return n;
 }
 layout().then(n => { console.log(`question-toast-center-check: ${passed} ok + ${n} layout`); }).catch(e => { console.error('FAIL', e.message); process.exit(1); });

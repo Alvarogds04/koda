@@ -72,9 +72,8 @@ const flagBox = page => page.evaluate(() => { const f = document.getElementById(
     ['compact question', { question: 'plain', sessions: [] }, async p => { await compact(p); await p.waitForTimeout(1500); }, true],
     ['compact bridge card', { bridgeCard: true, sessions: [], quick: true }, async p => { await p.evaluate(s => window.__emit('desktop:state', s), snap('expanded', CARD())); await p.waitForTimeout(800); await compact(p); await p.evaluate(s => window.__emit('desktop:state', s), snap('compact', CARD())); await p.waitForTimeout(1500); }, true],
     ['idle', { sessions: [], quick: true }, async p => { await compact(p); await p.waitForTimeout(1200); }, false],
-    // isla-cualquier-lado S2: the island never hides at the edge (no hidden-strip scene). Until T6 hooks the toast to the disc, the
-    // toast's own switch (data-edge-hidden, read only by question-toast.js) is set directly to show it.
-    ['toast (question)', { question: 'plain', sessions: [] }, async p => { await compact(p); await p.waitForTimeout(800); await p.evaluate(() => { document.getElementById('capsule').dataset.edgeHidden = 'true'; }); await p.waitForTimeout(1500); }, true],
+    // isla-cualquier-lado S3/S5 (T6): the toast hangs from the folded disc, so folding the island IS the trigger.
+    ['toast (question)', { question: 'plain', sessions: [] }, async p => { await compact(p); await p.waitForTimeout(800); await p.waitForTimeout(1500); }, true],
   ];
   for (const theme of ['dark', 'light']) for (const [name, sc, drive, warmDot] of SCEN) {
     const r = await H.open({ ...sc, theme }); const t = `${theme}/${name}`;

@@ -256,7 +256,7 @@
     const compactClayX = COMPACT.clayX;
     const overviewHeight = questionShown ? questionH : cardShown && cardH ? cardH : (noticeLane && noticeLane.view === 'notices' ? finishedH : 0) || (engineBandOn || noticeStripOn ? OVERVIEW.h + FINISHED_BAND_H : OVERVIEW.h);
     const h = lerp(COMPACT.h, lerp(overviewHeight, CHAT.h, q.x), p);
-    const QT = window.AbitoQuestionToast, withToast = (shape) => (QT && toastShown ? QT.shapeWithToast(shape, true) : shape);
+    const QT = window.AbitoQuestionToast, withToast = (shape) => (QT && toastShown ? QT.shapeWithToast(shape, true, edge) : shape);
     reportShape(withToast([lerp(compactW, lerp(OVERVIEW.w, CHAT.w, q.target), target),
       lerp(COMPACT.h, lerp(overviewHeight, CHAT.h, q.target), target) + GAP_TOP]), withToast([w, h + GAP_TOP]), mode === 'idle' && q.mode === 'idle');
     // corners (isla-cualquier-lado S1): the disc is r16 on all four corners and the floating card r26 (OVERVIEW.r) on all four;
