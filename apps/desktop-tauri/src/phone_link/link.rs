@@ -43,12 +43,16 @@ pub struct Link {
     hub: Arc<Hub>,
     /// The human's wish, as this object knows it: what `status` reports as `enabled`.
     enabled: AtomicBool,
+    /// One switch operation at a time, held across the whole of `enable`, `disable` and `unlink`. Without it a
+    /// second enable that loses the bind reports `port_in_use` and clears what the first one started, and a disable
+    /// can slip under an enable that has not bound yet and leave the link running after the human turned it off.
+    life: Mutex<()>,
     on: Mutex<On>,
 }
 
 impl Link {
     pub fn new() -> Link {
-        Link { hub: Hub::new(), enabled: AtomicBool::new(false), on: Mutex::new(On::default()) }
+        Link { hub: Hub::new(), enabled: AtomicBool::new(false), life: Mutex::new(()), on: Mutex::new(On::default()) }
     }
 
     /// The sessions hub every connection subscribes to (the same object the app publishes into).
@@ -65,20 +69,37 @@ impl Link {
         self.on.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    /// The lifecycle lock. Lock order is `life` → `on` → the hub, and nothing ever takes them the other way.
+    fn life(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.life.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     /// Records the closed reason and answers it. Nothing is left running, and the wish stays on, so the next
     /// start tries again instead of pretending the human turned it off.
+    ///
+    /// Every caller holds the lifecycle lock with no listener up, so this never reaches a running link; it guards
+    /// that anyway, because a failed attempt must never tear down a listener that is serving a phone.
     fn failed(&self, error: &'static str) -> &'static str {
         let mut on = self.lock();
-        on.stop = None;
-        on.shared = None;
-        on.port = 0;
+        if on.shared.is_none() {
+            on.stop = None;
+            on.thread = None;
+            on.port = 0;
+        }
         on.error = Some(error);
         error
+    }
+
+    /// Reports why the last change did not happen without touching what is running (a refused `unlink` keeps the
+    /// listener and the token it already has).
+    fn note_error(&self, error: &'static str) {
+        self.lock().error = Some(error);
     }
 
     /// Starts listening on `bind` (`0.0.0.0:47821` in the app; `127.0.0.1:0` in tests, where the bound port is
     /// then reported by [`Link::status`]). Idempotent: a running link is left exactly as it is.
     pub fn enable(&self, store: &dyn SecretStore, bind: SocketAddr) -> Result<(), &'static str> {
+        let _life = self.life();
         self.enabled.store(true, Ordering::SeqCst);
         if self.running() {
             return Ok(());
@@ -154,8 +175,11 @@ impl Link {
         }
     }
 
-    /// Switches off: the phones are told why their link ended, the listener stops and the thread is joined.
+    /// Switches off: the phones are told why their link ended, the listener stops and the thread is joined. Under
+    /// the lifecycle lock, so an enable that is still in flight either finished (and is now stopped) or starts
+    /// afterwards with the wish already off.
     pub fn disable(&self) {
+        let _life = self.life();
         self.enabled.store(false, Ordering::SeqCst);
         let (stop, thread, shared) = {
             let mut on = self.lock();
@@ -177,12 +201,26 @@ impl Link {
 
     /// Forgets the paired phone: a fresh token locks out whatever held the old one, without touching the
     /// certificate (so nothing must be reinstalled — the phone pairs again with the new link).
+    ///
+    /// If the keystore refuses the new token nothing happened: the link keeps running with the token it already
+    /// has, so a failed unlink never knocks a paired phone off a link the human switched on.
     pub fn unlink(&self, store: &dyn SecretStore) -> Result<(), &'static str> {
+        let _life = self.life();
         let token = match pairing::new_token(store) {
             Ok(token) => token,
-            Err(_) => return Err(self.failed("keystore")),
+            Err(_) => {
+                self.note_error("keystore");
+                return Err("keystore");
+            }
         };
-        let shared = self.lock().shared.clone();
+        let shared = {
+            let mut on = self.lock();
+            let shared = on.shared.clone();
+            if shared.is_some() {
+                on.error = None;
+            }
+            shared
+        };
         if let Some(shared) = shared {
             *shared.token.lock().unwrap_or_else(|e| e.into_inner()) = token;
             self.hub.kick_all("auth", "this computer was unpaired");

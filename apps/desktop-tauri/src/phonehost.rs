@@ -10,7 +10,9 @@
 use crate::{now_ms, AppState};
 use abito_island::bridge::{self, BridgeError};
 use serde_json::{json, Value};
-use tauri::State;
+// `phone_link_action` takes the handle on every platform (S6: it answers `unsupported` off Linux), so the import
+// is unconditional; the traits and the Linux-only module below are not.
+use tauri::{AppHandle, State};
 
 #[cfg(target_os = "linux")]
 use abito_island::phone_link::ids::DEFAULT_PORT;
@@ -23,7 +25,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(target_os = "linux")]
 use std::time::Duration;
 #[cfg(target_os = "linux")]
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{Emitter, Manager};
+
+/// The status event the Teléfono page listens to.
+pub(crate) const PHONE_STATE: &str = "phone:state";
+/// D6: the only window `phone:state` is sent to — it carries the pairing link with the token.
+pub(crate) const PHONE_STATE_TARGET: &str = crate::settingswindow::SETTINGS_LABEL;
 
 /// The closed payload of `phone_link_action`: exactly `{"action":"status"|"enable"|"disable"|"unlink"}`.
 pub(crate) fn parse_action(payload: &Value) -> Option<&'static str> {
@@ -166,8 +173,13 @@ fn act(app: &AppHandle, action: &'static str) -> Result<Value, BridgeError> {
             finish(app)
         }
         "unlink" => {
-            link_of(app).link.unlink(&keystore::keychain()).map_err(|_| err("unlink_failed"))?;
-            ensure_agent(app);
+            let link = link_of(app);
+            link.link.unlink(&keystore::keychain()).map_err(|_| err("unlink_failed"))?;
+            // S3: a link that is off feeds nobody, so an unlink must not create or connect Ajustes' `AgentConn`
+            // for it (that is the pair of daemon clients nobody asked for).
+            if link.link.running() {
+                ensure_agent(app);
+            }
             finish(app)
         }
         _ => Err(err("invalid_schema")),
@@ -178,7 +190,8 @@ fn act(app: &AppHandle, action: &'static str) -> Result<Value, BridgeError> {
 #[cfg(target_os = "linux")]
 fn finish(app: &AppHandle) -> Result<Value, BridgeError> {
     let value = link_of(app).link.status();
-    let _ = app.emit("phone:state", value.clone());
+    // D6: the status carries the pairing link (and so the token): only the Ajustes window gets it, never a broadcast.
+    let _ = app.emit_to(PHONE_STATE_TARGET, PHONE_STATE, value.clone());
     Ok(value)
 }
 
@@ -198,17 +211,16 @@ fn enable(app: &AppHandle) {
 #[cfg(target_os = "linux")]
 fn ensure_agent(app: &AppHandle) {
     let now = abito_island::phone_link::server::now_ms();
-    {
-        let host = link_of(app);
-        let last = host.last_connect.load(Ordering::SeqCst);
-        if last != 0 && now.saturating_sub(last) < RECONNECT {
-            return;
-        }
-        host.last_connect.store(now, Ordering::SeqCst);
+    let host = link_of(app);
+    let last = host.last_connect.load(Ordering::SeqCst);
+    if last != 0 && now.saturating_sub(last) < RECONNECT {
+        return; // the last connect is still fresh: this tick does not even try for the slot
     }
-
     let state = app.state::<AppState>();
     let Ok(mut guard) = state.settings.agent.try_lock() else { return };
+    // Stamped only now that the slot is ours: a tick that could not take it must try again on the next one
+    // instead of pushing the next attempt 30 s away.
+    host.last_connect.store(now, Ordering::SeqCst);
     let conn = guard.get_or_insert_with(|| crate::settingshost::agent_conn(app));
     if conn.view().get("connection").and_then(Value::as_str) == Some("connected") {
         return;
@@ -261,6 +273,19 @@ fn spawn_ticker(app: AppHandle) {
 mod tests {
     use super::parse_action;
     use serde_json::json;
+
+    /// D6: `phone:state` (it carries the link with the token) goes to the Ajustes window only, never to every webview.
+    #[test]
+    fn the_phone_state_event_reaches_only_the_settings_window() {
+        assert_eq!(super::PHONE_STATE_TARGET, "settings");
+        assert_eq!(super::PHONE_STATE, "phone:state");
+        let src = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/phonehost.rs")).unwrap();
+        let body = src.split("#[cfg(test)]").next().unwrap(); // the host itself, not this test's own strings
+        let code: String = body.lines().filter(|l| !l.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n");
+        assert!(!code.contains(".emit("), "no broadcast emit in the phone host");
+        assert_eq!(code.matches(".emit_to(PHONE_STATE_TARGET, PHONE_STATE,").count(), 1, "one targeted send");
+        assert_eq!(code.matches(".emit_to(").count(), 1, "no other window is ever sent the status");
+    }
 
     /// The closed schema of the one phone-link command: exactly one action out of four, no coercion.
     #[test]

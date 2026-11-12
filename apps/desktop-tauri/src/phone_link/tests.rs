@@ -688,3 +688,199 @@ fn unlink_rotates_the_token_and_locks_the_old_phone_out() {
         link.disable();
     });
 }
+
+// ---- the switch under contention: one operation at a time ---------------------------------------------
+
+/// A keystore that holds the first caller until a second one is inside it too (or a short timeout runs out). Two
+/// enables that really overlap both pass «is it running?» before either can bind; a serialized pair never has a
+/// second caller in here, so the timeout carries the only one on.
+struct Rendezvous {
+    arrivals: std::sync::Mutex<usize>,
+    released: std::sync::Condvar,
+    mem: Mem,
+}
+
+impl Rendezvous {
+    fn new() -> Rendezvous {
+        Rendezvous { arrivals: std::sync::Mutex::new(0), released: std::sync::Condvar::new(), mem: Mem::default() }
+    }
+    fn enter(&self) {
+        let mut arrived = self.arrivals.lock().unwrap();
+        *arrived += 1;
+        if *arrived == 1 {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(250);
+            while *arrived < 2 {
+                let left = deadline.saturating_duration_since(std::time::Instant::now());
+                if left.is_zero() {
+                    break;
+                }
+                arrived = self.released.wait_timeout(arrived, left).unwrap().0;
+            }
+        } else {
+            self.released.notify_all();
+        }
+    }
+}
+
+impl SecretStore for Rendezvous {
+    fn get(&self, key: &str) -> Option<String> {
+        self.enter();
+        self.mem.get(key)
+    }
+    fn set(&self, key: &str, value: &str) -> Result<(), String> {
+        self.enter();
+        self.mem.set(key, value)
+    }
+}
+
+/// A keystore that holds every call until the test opens it, and says when the first one is inside: that is how a
+/// disable is guaranteed to arrive while an enable is still in flight.
+struct Held {
+    entered: std::sync::mpsc::Sender<()>,
+    open: std::sync::Mutex<bool>,
+    opened: std::sync::Condvar,
+    mem: Mem,
+}
+
+impl Held {
+    fn new() -> (Held, std::sync::mpsc::Receiver<()>) {
+        let (entered, rx) = std::sync::mpsc::channel();
+        (Held { entered, open: std::sync::Mutex::new(false), opened: std::sync::Condvar::new(), mem: Mem::default() }, rx)
+    }
+    fn wait(&self) {
+        let mut open = self.open.lock().unwrap();
+        if !*open {
+            let _ = self.entered.send(());
+            while !*open {
+                open = self.opened.wait(open).unwrap();
+            }
+        }
+    }
+    fn release(&self) {
+        *self.open.lock().unwrap() = true;
+        self.opened.notify_all();
+    }
+}
+
+impl SecretStore for Held {
+    fn get(&self, key: &str) -> Option<String> {
+        self.wait();
+        self.mem.get(key)
+    }
+    fn set(&self, key: &str, value: &str) -> Result<(), String> {
+        self.wait();
+        self.mem.set(key, value)
+    }
+}
+
+/// The same in-memory store with a latch that makes every later write fail: what `unlink` sees when the keystore
+/// refuses while a link is up.
+#[derive(Default)]
+struct Flaky {
+    mem: Mem,
+    refuse: std::sync::atomic::AtomicBool,
+}
+
+impl Flaky {
+    fn refuse_writes(&self) {
+        self.refuse.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+impl SecretStore for Flaky {
+    fn get(&self, key: &str) -> Option<String> {
+        self.mem.get(key)
+    }
+    fn set(&self, key: &str, value: &str) -> Result<(), String> {
+        if self.refuse.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err("the keystore refused the write".into());
+        }
+        self.mem.set(key, value)
+    }
+}
+
+fn free_port() -> u16 {
+    let held = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    held.local_addr().unwrap().port()
+}
+
+#[test]
+fn two_enables_at_once_leave_one_listener_and_neither_knocks_the_other_down() {
+    let store = Arc::new(Rendezvous::new());
+    let link = Arc::new(super::link::Link::new());
+    let port = free_port();
+    let addr: std::net::SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+    let (first, second) = std::thread::scope(|s| {
+        let a = {
+            let (link, store) = (link.clone(), store.clone());
+            s.spawn(move || link.enable(&*store, addr))
+        };
+        let b = {
+            let (link, store) = (link.clone(), store.clone());
+            s.spawn(move || link.enable(&*store, addr))
+        };
+        (a.join().unwrap(), b.join().unwrap())
+    });
+    assert_eq!((first, second), (Ok(()), Ok(())), "a second enable is the same switch, never a failed bind that kills the first");
+    let status = link.status_for(Some("192.168.1.20".to_string()));
+    assert_eq!((status["running"].as_bool(), status["error"].is_null()), (Some(true), true), "{status}");
+    assert_eq!(status["port"], json!(port), "one listener, on the port both asked for");
+    run(async {
+        let fp = pairing::load_or_create_identity(&*store).unwrap().fingerprint;
+        let token = pairing::token(&*store).unwrap();
+        let (mut r, mut w) = connect(port, &fp).await.unwrap();
+        send(&mut w, json!({"type":"hello","v":PROTOCOL,"token":token})).await;
+        assert_eq!(recv(&mut r).await.unwrap()["type"], "welcome", "the surviving listener still pairs a phone");
+        assert_eq!(recv(&mut r).await.unwrap()["type"], "sessions");
+    });
+    link.disable();
+}
+
+#[test]
+fn a_disable_that_races_an_enable_leaves_nothing_running() {
+    let (store, entered) = Held::new();
+    let link = Arc::new(super::link::Link::new());
+    let port = free_port();
+    let addr: std::net::SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+    std::thread::scope(|s| {
+        let enabling = {
+            let (link, held) = (link.clone(), &store);
+            s.spawn(move || link.enable(held, addr))
+        };
+        entered.recv_timeout(std::time::Duration::from_secs(5)).expect("the enable reached the keystore");
+        let disabling = {
+            let link = link.clone();
+            s.spawn(move || link.disable())
+        };
+        store.release();
+        assert_eq!(enabling.join().unwrap(), Ok(()));
+        disabling.join().unwrap();
+    });
+    let status = link.status_for(Some("192.168.1.20".to_string()));
+    assert_eq!((status["enabled"].as_bool(), status["running"].as_bool()), (Some(false), Some(false)), "{status}");
+    assert_eq!(status["port"], json!(0));
+    assert!(std::net::TcpStream::connect(("127.0.0.1", port)).is_err(), "the enable that was in flight left no listener behind");
+}
+
+#[test]
+fn a_failed_unlink_keeps_the_running_link_and_the_old_token() {
+    run(async {
+        let store = Flaky::default();
+        let link = super::link::Link::new();
+        assert_eq!(link.enable(&store, "127.0.0.1:0".parse().unwrap()), Ok(()));
+        let port = u16::try_from(link.status_for(None)["port"].as_u64().unwrap()).unwrap();
+        store.refuse_writes();
+        assert_eq!(link.unlink(&store), Err("keystore"));
+        let status = link.status_for(Some("192.168.1.20".to_string()));
+        assert_eq!((status["running"].as_bool(), status["port"].as_u64()), (Some(true), Some(u64::from(port))), "the listener the human switched on is still up: {status}");
+        assert_eq!(status["error"].as_str(), Some("keystore"), "and it says why the unlink did not happen");
+        let old = pairing::token(&store).unwrap();
+        assert!(status["link"].as_str().unwrap().contains(&old), "the old token still pairs: nothing was forgotten");
+        let fp = pairing::load_or_create_identity(&store).unwrap().fingerprint;
+        let (mut r, mut w) = connect(port, &fp).await.unwrap();
+        send(&mut w, json!({"type":"hello","v":PROTOCOL,"token":old})).await;
+        assert_eq!(recv(&mut r).await.unwrap()["type"], "welcome");
+        assert_eq!(recv(&mut r).await.unwrap()["type"], "sessions");
+        link.disable();
+    });
+}
