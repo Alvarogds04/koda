@@ -527,12 +527,12 @@ A Minikoda is a small helper that runs a recipe on its own. Code: `src/minikodas
 - A one-time `at` run that is due while paused, busy or already running never comes back, so it lands in «Hoy» as an `error` item («no se hizo»). Repeating ticks just skip.
 
 **Known limits**:
-- The agent runs as the same OS user as the daemon. The kit cannot reach the «Hoy» store, the PIN hash or the daemon token: no kit tool reads files, and those live outside the engine root. Any same-uid process can still read them, though. Running the agent as another OS user is K2-14 criterion 3.
-- Left for later (verifier mwdat8g0, not implemented): moving the clock forward can end a PIN lock early; there is no lower bound on the scrypt cost read from `pin.json`; a damaged `pin.json` stays locked with no recovery path; `hoy_approve` is still accepted while the global pause is on.
+- The agent runs as the same OS user as the daemon. The kit cannot reach the «Hoy» store or the daemon token: no kit tool reads files, and those live outside the engine root. Any same-uid process can still read them, though. Running the agent as another OS user is K2-14 criterion 3.
+- Left for later (verifier mwdat8g0, not implemented): `hoy_approve` is still accepted while the global pause is on.
 - Tests use `test/fixtures/minikodas/fake-pi.cjs`, a fake `pi --mode rpc` that loads the real kit extension and mimics Pi's tool selection and `tool_call` blocking. The real-Pi proof of the two layers is the PoC (`odd/evidence/k2-13-poc/poc-minikodas/evidence/`).
 
 **«Hoy» and approve-later** (`hoy.cjs`, frames in `docs/PROTOCOL.md` «Minikodas and «Hoy» frames»):
 - `<island>/minikodas/hoy/hoy.jsonl` holds every item `{id, minikoda, kind: result|proposal|error, text, action?, target?, status: pending|approved|rejected, createdAt}`. The list is built from this file only, never from the model's text.
-- A proposal executes only on `hoy_approve {id, pin}`. In K2-13 «execute» means: mark the item `approved`, append one line to `approved.jsonl` and broadcast `hoy_approved`. **There is no real buy, sell or send integration yet.**
-- PIN: salted scrypt hash in `pin.json` (0600), set once; changing it needs the old PIN. 5 wrong tries lock it for 15 minutes, and the lock survives restarts. Approval is idempotent (a second approve is refused), and reject never executes.
-- Same-uid processes can read `hoy/`, the PIN hash and `runtime/session.json`, so the PIN is not a real lock against them yet. A separate OS user for the agent is K2-14 criterion 3.
+- A proposal executes only on `hoy_approve {id}`. In K2-13 «execute» means: mark the item `approved`, append one line to `approved.jsonl` and broadcast `hoy_approved`. **There is no real buy, sell or send integration yet.**
+- No PIN (human decision L17): `hoy_approve {id}` approves. Approvals run one at a time, so a proposal executes exactly once even when two approvals arrive together (a second approve is refused with `not_pending`). The decision is persisted before the execution record. Reject never executes.
+- Same-uid limit: any process of the user that holds the session token (`runtime/session.json`, readable by every same-uid process) can approve a proposal. A separate OS user for the agent is K2-14 criterion 3.

@@ -7,8 +7,8 @@
 // Two layers keep the kit closed: `--tools <kit>` (the model is only shown the kit) and the `tool_call`
 // guard (any tool outside MINIKODA_KIT is blocked even if the selection let one through).
 // The kit never executes anything that buys, sells, sends or deletes: inbox_propose only parks a proposal
-// and the daemon decides later, after the human approves with the PIN. Nothing here can reach the «Hoy»
-// store, the PIN hash or the daemon token: those live outside the Minikoda's root and no kit tool reads files.
+// and the daemon decides later, after the human approves it in «Hoy». Nothing here can reach the «Hoy»
+// store or the daemon token: those live outside the Minikoda's root and no kit tool reads files.
 import fs from "node:fs";
 
 const KIT = new Set(String(process.env.MINIKODA_KIT ?? "").split(",").filter(Boolean));
@@ -41,7 +41,7 @@ export default function (pi) {
 		pi.registerTool({
 			name: "inbox_propose",
 			label: "Propose action",
-			description: "Proposes an action that buys, sells or sends something. It is NOT executed: it is parked in the user's «Hoy» inbox and runs only if the user approves it with the PIN. Only the actions buy, sell and send are accepted.",
+			description: "Proposes an action that buys, sells or sends something. It is NOT executed: it is parked in the user's «Hoy» inbox and runs only if the user approves it. Only the actions buy, sell and send are accepted.",
 			parameters: {
 				type: "object",
 				properties: {

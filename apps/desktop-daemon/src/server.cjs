@@ -974,8 +974,6 @@ class IslandServer {
 			case "hoy_list":
 			case "hoy_approve":
 			case "hoy_reject":
-			case "pin_status":
-			case "pin_set":
 				if (!this.minikodas) return fail("unavailable");
 				return this.handleMinikodas(frame, reply, fail);
 			default:
@@ -984,8 +982,8 @@ class IslandServer {
 	}
 
 	/**
-	 * K2-13: Minikodas and «Hoy» verbs. Codes come from closed sets (MinikodaError / inbox results); the PIN
-	 * is never logged or echoed. Lists are always rebuilt from the daemon's stores.
+	 * K2-13: Minikodas and «Hoy» verbs. Codes come from closed sets (MinikodaError / inbox results). Lists are
+	 * always rebuilt from the daemon's stores. Approving needs no PIN (L17).
 	 */
 	async handleMinikodas(frame, reply, fail) {
 		const m = this.minikodas;
@@ -1013,16 +1011,9 @@ class IslandServer {
 				case "hoy_list":
 					return reply(P.hoyFrame(m.hoyList()));
 				case "hoy_approve":
-					return decided(await m.approve(frame.id, frame.pin));
+					return decided(await m.approve(frame.id));
 				case "hoy_reject":
 					return decided(await m.reject(frame.id));
-				case "pin_status":
-					return reply(P.pinStatusFrame(m.pinStatus()));
-				case "pin_set": {
-					const out = await m.setPin(frame.pin, frame.old);
-					if (!out.ok) return fail(out.code);
-					return reply(P.pinStatusFrame(m.pinStatus()));
-				}
 				default:
 					return fail("bad_request");
 			}

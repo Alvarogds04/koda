@@ -333,7 +333,7 @@ class Daemon extends EventEmitter {
 	 * @param {object} [options.engineOptions]  extra AgentEngine options (tests: fake command)
 	 * @param {object} [options.accountsOptions]
 	 * @param {object} [options.serverOptions]  extra IslandServer options (limits)
-	 * @param {object} [options.minikodasOptions]  extra Minikodas options (tests: fake engine command, scrypt)
+	 * @param {object} [options.minikodasOptions]  extra Minikodas options (tests: fake engine command, minEveryMs)
 	 */
 	constructor(options = {}) {
 		super();

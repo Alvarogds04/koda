@@ -2,7 +2,7 @@
 
 /**
  * K2-13 Minikodas: the facade the daemon wires and the island server talks to. It combines the Minikoda
- * service (recipes, approve-to-create, runs, scheduler) with the «Hoy» inbox (results, proposals, PIN).
+ * service (recipes, approve-to-create, runs, scheduler) with the «Hoy» inbox (results, proposals, approve-later).
  * Events: "changed" (the Minikoda list changed), "hoy" (the «Hoy» list changed), "approved" (an approved
  * proposal was executed; in K2-13 «executed» = recorded in approved.jsonl, no real integration yet).
  */
@@ -13,12 +13,11 @@ const { HoyInbox } = require("./hoy.cjs");
 const { MinikodaService, MinikodaError } = require("./service.cjs");
 
 class Minikodas extends EventEmitter {
-	/** Same options as MinikodaService (minus `results`), plus `scrypt` (TEST-ONLY cheaper parameters). */
+	/** Same options as MinikodaService (minus `results`). */
 	constructor(options) {
 		super();
-		const { scrypt, ...rest } = options;
-		this.inbox = new HoyInbox({ dir: path.join(options.islandRoot, "minikodas", "hoy"), now: options.now, log: options.log, ...(scrypt ? { scrypt } : {}) });
-		this.service = new MinikodaService({ ...rest, results: this.inbox });
+		this.inbox = new HoyInbox({ dir: path.join(options.islandRoot, "minikodas", "hoy"), now: options.now, log: options.log });
+		this.service = new MinikodaService({ ...options, results: this.inbox });
 		this.service.on("changed", () => this.emit("changed"));
 		this.service.on("run", () => this.emit("hoy"));
 		this.service.on("missed", () => this.emit("hoy"));
@@ -36,10 +35,10 @@ class Minikodas extends EventEmitter {
 	/** #379 the global pause turned on: cancels every running Minikoda (failed runs, reason paused). */
 	pause() { return this.service.cancelRuns("paused"); }
 	hoyList() { return this.inbox.list(); }
-	pinStatus() { return this.inbox.pinStatus(); }
 
-	async approve(id, pin) {
-		const out = await this.inbox.approve(id, pin);
+	/** Approves a pending «Hoy» proposal (no PIN, L17). Exactly once, even when two approvals arrive together. */
+	async approve(id) {
+		const out = await this.inbox.approve(id);
 		if (out.ok) this.emit("hoy");
 		return out;
 	}
@@ -49,8 +48,6 @@ class Minikodas extends EventEmitter {
 		if (out.ok) this.emit("hoy");
 		return out;
 	}
-
-	setPin(pin, old) { return this.inbox.setPin(pin, old); }
 }
 
 module.exports = { Minikodas, MinikodaError };

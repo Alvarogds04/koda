@@ -6,10 +6,10 @@
  *
  * Layout under the island root (every directory 0700, every file 0600):
  *   minikodas/recipes.json        {version: 1, minikodas: [{recipe, status: draft|active, createdAt, approvedAt?, firedAt?, lastRun?}]}
- *   minikodas/hoy/                «Hoy» store, approved log and PIN hash (hoy.cjs, wired by the daemon)
+ *   minikodas/hoy/                «Hoy» store and approved log (hoy.cjs, wired by the daemon)
  *   minikodas/engines/<id>/       the Minikoda's OWN private engine root (HOME, agent dir, sessions, tmp, workspace)
  *   minikodas/sources/<id>.txt    default source content for the next run (until T1b brings Telegram reading)
- * The engine roots never contain the «Hoy» store, the PIN hash or the daemon token, and the kit has no tool
+ * The engine roots never contain the «Hoy» store or the daemon token, and the kit has no tool
  * that reads files, so a Minikoda cannot reach them through its kit. Same-uid processes can still read them
  * (known limit: running the agent as another OS user is K2-14 criterion 3).
  *

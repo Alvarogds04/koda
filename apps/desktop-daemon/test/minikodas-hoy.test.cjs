@@ -1,6 +1,6 @@
 "use strict";
 
-// K2-13 Minikodas, commit 2 (T4, S3/S5): the «Hoy» inbox with PIN approve-later, the protocol frames
+// K2-13 Minikodas, commit 2 (T4, S3/S5): the «Hoy» inbox with approve-later (no PIN: L17), the protocol frames
 // (allowlist + DTOs), the server verbs and the daemon wiring end to end. Offline: fake Pi (loads the real kit
 // extension), fake auth helper; no model, no network, no real ~/.pi or ~/.abito-island.
 
@@ -14,14 +14,12 @@ const path = require("node:path");
 
 const P = require("../src/protocol.cjs");
 const { IslandServer } = require("../src/server.cjs");
-const { HoyInbox, PIN_ATTEMPTS, PIN_LOCK_MS } = require("../src/minikodas/hoy.cjs");
+const { HoyInbox } = require("../src/minikodas/hoy.cjs");
 const { Minikodas } = require("../src/minikodas/index.cjs");
 
 const FAKE_PI = path.join(__dirname, "fixtures", "minikodas", "fake-pi.cjs");
 const FAKE_AGENT = path.join(__dirname, "fixtures", "fake-agent.cjs");
 const FAKE_AUTH = path.join(__dirname, "fixtures", "fake-auth.cjs");
-const PIN = "246810"; // test-only PIN for throwaway inboxes
-const CHEAP_SCRYPT = { N: 1024, r: 8, p: 1, maxmem: 64 * 1024 * 1024 };
 const posix = process.platform !== "win32";
 const TOKEN = "t".repeat(43);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -67,103 +65,62 @@ const STANDARD = [
 
 async function inboxWithRun(dir, opts = {}) {
 	const inbox = new HoyInbox({ dir, ...opts });
-	assert.deepEqual(await inbox.setPin(PIN), { ok: true });
 	const added = await inbox.addRun({ minikoda: "oportunidades", resultText: "Considerar venta: ACME.", proposals: [{ action: "sell", target: "ACME", text: "Motivo" }] });
 	return { inbox, proposal: added.find((i) => i.kind === "proposal"), result: added.find((i) => i.kind === "result") };
 }
 
-test("S3 Hoy: the proposal is pending and nothing executes before approval; the PIN is stored only as a salted scrypt hash (0600)", async (t) => {
+test("S3 Hoy: the proposal is pending and nothing executes before approval; the store is private and holds no PIN", async (t) => {
 	const dir = path.join(tmp(t), "hoy");
 	const { inbox, proposal, result } = await inboxWithRun(dir);
 	assert.equal(result.status, "approved", "a result has nothing to decide");
 	assert.equal(proposal.status, "pending");
 	assert.equal(proposal.action, "sell");
 	assert.deepEqual(inbox.approvedEntries(), [], "nothing executed before approval");
-	const pin = JSON.parse(fs.readFileSync(path.join(dir, "pin.json"), "utf8"));
-	assert.equal(pin.kdf, "scrypt");
-	assert.equal(pin.N, 1 << 15);
-	assert.equal(Buffer.from(pin.salt, "base64").length, 16);
-	assert.equal(fs.readFileSync(path.join(dir, "pin.json"), "utf8").includes(PIN), false, "never the PIN in clear");
-	if (posix) for (const f of ["hoy.jsonl", "pin.json", "approved.jsonl"]) assert.equal(fs.statSync(path.join(dir, f)).mode & 0o777, 0o600, f);
+	assert.deepEqual(fs.readdirSync(dir).sort(), ["approved.jsonl", "hoy.jsonl"], "no pin.json (L17: no PIN)");
+	if (posix) for (const f of ["hoy.jsonl", "approved.jsonl"]) assert.equal(fs.statSync(path.join(dir, f)).mode & 0o777, 0o600, f);
 	if (posix) assert.equal(fs.statSync(dir).mode & 0o777, 0o700);
-	const second = new HoyInbox({ dir });
-	assert.notEqual(JSON.parse(fs.readFileSync(second.pinFile, "utf8")).hash, Buffer.from(PIN).toString("base64"));
 });
 
-test("S3 approve-later: wrong PIN refused (state unchanged); right PIN executes exactly once, even with two approvals sent together", async (t) => {
+test("S3 approve-later: approve executes exactly once, even with two approvals sent together; the decision is persisted before the execution record", async (t) => {
 	const dir = path.join(tmp(t), "hoy");
 	const { inbox, proposal } = await inboxWithRun(dir);
 	const events = [];
+	// Ordering: the decision (status approved) is saved while the execution record does not exist yet.
+	const save = inbox.save.bind(inbox);
+	const recordsAtSave = [];
+	inbox.save = (items) => {
+		recordsAtSave.push([items.find((i) => i.id === proposal.id)?.status, inbox.approvedEntries().length]);
+		return save(items);
+	};
 	inbox.on("approved", (e) => events.push(e));
-	const before = fs.readFileSync(inbox.file, "utf8");
-	const wrong = await inbox.approve(proposal.id, "000000");
-	assert.deepEqual(wrong, { ok: false, code: "pin_wrong", left: PIN_ATTEMPTS - 1 });
-	assert.equal(fs.readFileSync(inbox.file, "utf8"), before, "a wrong PIN leaves Hoy unchanged");
-	assert.deepEqual(inbox.approvedEntries(), []);
-	assert.equal(events.length, 0);
-	const [a, b] = await Promise.all([inbox.approve(proposal.id, PIN), inbox.approve(proposal.id, PIN)]);
+	const [a, b] = await Promise.all([inbox.approve(proposal.id), inbox.approve(proposal.id)]);
 	assert.equal(a.ok, true);
 	assert.deepEqual(b, { ok: false, code: "not_pending" }, "the second approval is refused");
+	assert.deepEqual(recordsAtSave, [["approved", 0]], "decision persisted (once) before the execution record");
 	assert.equal(inbox.approvedEntries().length, 1, "exactly one execution");
 	assert.equal(events.length, 1, "exactly one approved event");
 	assert.deepEqual([events[0].itemId, events[0].action, events[0].target], [proposal.id, "sell", "ACME"]);
-	assert.deepEqual(await inbox.approve(proposal.id, PIN), { ok: false, code: "not_pending" });
+	assert.deepEqual(await inbox.approve(proposal.id), { ok: false, code: "not_pending" });
 	assert.equal(inbox.approvedEntries().length, 1);
 	assert.equal(inbox.get(proposal.id).status, "approved");
+	// A restart does not reopen it.
+	assert.deepEqual(await new HoyInbox({ dir }).approve(proposal.id), { ok: false, code: "not_pending" });
 });
 
-test("S3 reject never executes, needs no PIN and is final; result/error items and unknown ids are not approvable", async (t) => {
+test("S3 reject never executes and is final; result/error items and unknown ids are not approvable", async (t) => {
 	const dir = path.join(tmp(t), "hoy");
 	const { inbox, proposal, result } = await inboxWithRun(dir);
 	const events = [];
 	inbox.on("approved", (e) => events.push(e));
 	assert.equal((await inbox.reject(proposal.id)).ok, true);
 	assert.deepEqual(inbox.approvedEntries(), [], "reject executes nothing");
-	assert.deepEqual(await inbox.approve(proposal.id, PIN), { ok: false, code: "not_pending" });
+	assert.deepEqual(await inbox.approve(proposal.id), { ok: false, code: "not_pending" });
 	assert.deepEqual(await inbox.reject(proposal.id), { ok: false, code: "not_pending" });
-	assert.deepEqual(await inbox.approve(result.id, PIN), { ok: false, code: "unknown_item" });
+	assert.deepEqual(await inbox.approve(result.id), { ok: false, code: "unknown_item" });
 	const [err] = await inbox.addError({ minikoda: "oportunidades", text: "falló (timeout)" });
-	assert.deepEqual(await inbox.approve(err.id, PIN), { ok: false, code: "unknown_item" });
-	assert.deepEqual(await inbox.approve("00000000-0000-4000-8000-000000000000", PIN), { ok: false, code: "unknown_item" });
+	assert.deepEqual(await inbox.approve(err.id), { ok: false, code: "unknown_item" });
+	assert.deepEqual(await inbox.approve("00000000-0000-4000-8000-000000000000"), { ok: false, code: "unknown_item" });
 	assert.equal(events.length, 0);
-	assert.deepEqual(inbox.approvedEntries(), []);
-});
-
-test("S3 5 wrong PINs lock approvals for 15 minutes; the lock survives a restart; even the right PIN is refused while locked", async (t) => {
-	const dir = path.join(tmp(t), "hoy");
-	const { inbox, proposal } = await inboxWithRun(dir);
-	const codes = [];
-	for (let i = 0; i < PIN_ATTEMPTS; i++) codes.push((await inbox.approve(proposal.id, "111111")).code);
-	assert.deepEqual(codes, ["pin_wrong", "pin_wrong", "pin_wrong", "pin_wrong", "pin_locked"]);
-	assert.equal((await inbox.approve(proposal.id, PIN)).code, "pin_locked");
-	assert.equal(inbox.pinStatus().locked, true);
-	const restarted = new HoyInbox({ dir });
-	assert.equal((await restarted.approve(proposal.id, PIN)).code, "pin_locked", "the lock is persisted");
-	assert.equal((await restarted.setPin("999999", PIN)).code, "pin_locked", "no PIN change while locked");
-	assert.deepEqual(restarted.approvedEntries(), []);
-	assert.equal(restarted.get(proposal.id).status, "pending");
-	const later = new HoyInbox({ dir, now: () => Date.now() + PIN_LOCK_MS + 60_000 });
-	assert.equal((await later.approve(proposal.id, PIN)).ok, true, "after the window the right PIN works");
-	assert.equal(later.approvedEntries().length, 1);
-});
-
-test("S3 PIN: set once; changing it requires the old PIN; a damaged pin.json locks (fail closed)", async (t) => {
-	const dir = path.join(tmp(t), "hoy");
-	const inbox = new HoyInbox({ dir });
-	assert.deepEqual(inbox.pinStatus(), { set: false, locked: false });
-	assert.deepEqual(await inbox.setPin("12"), { ok: false, code: "pin_invalid" });
-	assert.deepEqual(await inbox.setPin(PIN, "123456"), { ok: false, code: "pin_not_set" });
-	assert.deepEqual(await inbox.setPin(PIN), { ok: true });
-	const hash = fs.readFileSync(inbox.pinFile, "utf8");
-	assert.deepEqual(await inbox.setPin("135790"), { ok: false, code: "pin_exists" });
-	assert.equal((await inbox.setPin("135790", "000000")).code, "pin_wrong");
-	assert.equal(JSON.parse(fs.readFileSync(inbox.pinFile, "utf8")).hash, JSON.parse(hash).hash, "refused changes keep the hash");
-	assert.deepEqual(await inbox.setPin("135790", PIN), { ok: true });
-	const added = await inbox.addRun({ minikoda: "m", resultText: "r", proposals: [{ action: "buy", target: "X", text: "t" }] });
-	assert.equal((await inbox.approve(added[1].id, PIN)).code, "pin_wrong", "the old PIN no longer works");
-	fs.writeFileSync(inbox.pinFile, "{not json");
-	assert.deepEqual(inbox.pinStatus(), { set: true, locked: true });
-	assert.equal((await inbox.approve(added[1].id, "135790")).code, "pin_locked");
 	assert.deepEqual(inbox.approvedEntries(), []);
 });
 
@@ -179,7 +136,6 @@ test("protocol: Minikodas and Hoy client frames are validated and rebuilt; anyth
 	const uuid = "123e4567-e89b-42d3-a456-426614174000";
 	assert.deepEqual(P.validateClientFrame({ type: "minikodas_list", extra: 1 }), { type: "minikodas_list" });
 	assert.deepEqual(P.validateClientFrame({ type: "hoy_list" }), { type: "hoy_list" });
-	assert.deepEqual(P.validateClientFrame({ type: "pin_status" }), { type: "pin_status" });
 	for (const type of ["minikoda_get", "minikoda_approve_create", "minikoda_delete", "minikoda_launch"]) {
 		assert.deepEqual(P.validateClientFrame({ type, id: "oportunidades", x: 1 }), { type, id: "oportunidades" });
 		assert.equal(P.validateClientFrame({ type, id: "../x" }), undefined);
@@ -191,21 +147,30 @@ test("protocol: Minikodas and Hoy client frames are validated and rebuilt; anyth
 	assert.equal(P.validateClientFrame({ type: "minikoda_create", recipe: recipe({ kit: ["bash"] }) }), undefined);
 	assert.equal(P.validateClientFrame({ type: "minikoda_create", recipe: { ...recipe(), env: {} } }), undefined);
 	assert.equal(P.validateClientFrame({ type: "minikoda_create", recipe: recipe({ never: ["send"] }) }), undefined);
-	assert.deepEqual(P.validateClientFrame({ type: "hoy_approve", id: uuid, pin: PIN, extra: 1 }), { type: "hoy_approve", id: uuid, pin: PIN });
-	assert.equal(P.validateClientFrame({ type: "hoy_approve", id: uuid }), undefined, "approve needs the PIN");
-	assert.equal(P.validateClientFrame({ type: "hoy_approve", id: uuid, pin: 246810 }), undefined);
-	assert.equal(P.validateClientFrame({ type: "hoy_approve", id: "nope", pin: PIN }), undefined);
-	assert.deepEqual(P.validateClientFrame({ type: "hoy_reject", id: uuid, pin: PIN }), { type: "hoy_reject", id: uuid });
-	assert.deepEqual(P.validateClientFrame({ type: "pin_set", pin: PIN }), { type: "pin_set", pin: PIN });
-	assert.deepEqual(P.validateClientFrame({ type: "pin_set", pin: PIN, old: "135790" }), { type: "pin_set", pin: PIN, old: "135790" });
-	assert.equal(P.validateClientFrame({ type: "pin_set", pin: "12" }), undefined);
-	assert.equal(P.validateClientFrame({ type: "pin_set", pin: PIN, old: "x" }), undefined);
-	for (const code of ["unknown_minikoda", "not_active", "not_pending", "exists", "model_unavailable", "unknown_item", "pin_wrong", "pin_locked", "pin_not_set", "pin_exists", "pin_invalid"]) {
+	assert.deepEqual(P.validateClientFrame({ type: "hoy_approve", id: uuid, extra: 1 }), { type: "hoy_approve", id: uuid }, "approve takes the id only (L17)");
+	assert.equal(P.validateClientFrame({ type: "hoy_approve", id: "nope" }), undefined);
+	assert.equal(P.validateClientFrame({ type: "hoy_approve" }), undefined);
+	assert.deepEqual(P.validateClientFrame({ type: "hoy_reject", id: uuid }), { type: "hoy_reject", id: uuid });
+	for (const code of ["unknown_minikoda", "not_active", "not_pending", "exists", "model_unavailable", "unknown_item"]) {
 		assert.deepEqual(P.errorFrame(code), { type: "error", code });
 	}
 });
 
-test("protocol: hoy frame is rebuilt field by field from stored items, pending proposals first; pin_status never carries the hash", () => {
+test("L17 a frame still carrying a `pin` field is handled by the allowlist like any other extra: dropped on hoy_approve/hoy_reject; the removed PIN verbs and codes are gone", () => {
+	const uuid = "123e4567-e89b-42d3-a456-426614174000";
+	for (const pin of ["246810", 246810, "", null, { x: 1 }]) {
+		assert.deepEqual(P.validateClientFrame({ type: "hoy_approve", id: uuid, pin }), { type: "hoy_approve", id: uuid }, `pin ${JSON.stringify(pin)} dropped`);
+		assert.deepEqual(P.validateClientFrame({ type: "hoy_reject", id: uuid, pin }), { type: "hoy_reject", id: uuid });
+	}
+	// Same rule as other frames: unknown fields are dropped, they never make a valid frame invalid.
+	assert.deepEqual(P.validateClientFrame({ type: "minikoda_launch", id: "oportunidades", pin: "246810" }), { type: "minikoda_launch", id: "oportunidades" });
+	assert.equal(P.validateClientFrame({ type: "hoy_approve", id: "nope", pin: "246810" }), undefined, "a pin never rescues an invalid frame");
+	for (const type of ["pin_set", "pin_status"]) assert.equal(P.validateClientFrame({ type, pin: "246810" }), undefined, `${type} is no longer a verb`);
+	assert.equal(P.pinStatusFrame, undefined);
+	for (const code of ["pin_wrong", "pin_locked", "pin_not_set", "pin_exists", "pin_invalid"]) assert.deepEqual(P.errorFrame(code), { type: "error", code: "failed" }, `${code} is no longer a closed code`);
+});
+
+test("protocol: hoy frame is rebuilt field by field from stored items, pending proposals first", () => {
 	const id = (n) => `00000000-0000-4000-8000-00000000000${n}`;
 	const frame = P.hoyFrame([
 		{ id: id(1), minikoda: "m", kind: "result", text: "r", status: "approved", createdAt: "a", secret: "x" },
@@ -216,7 +181,6 @@ test("protocol: hoy frame is rebuilt field by field from stored items, pending p
 	assert.equal(frame.items[2].secret, undefined);
 	assert.equal(frame.truncated, false);
 	assert.throws(() => P.hoyFrame([{ id: id(1), minikoda: "m", kind: "proposal", action: "delete", target: "x", text: "t", status: "pending" }]), /invalid/);
-	assert.deepEqual(P.pinStatusFrame({ set: true, locked: false, left: 5, hash: "h", salt: "s" }), { type: "pin_status", set: true, locked: false, left: 5 });
 });
 
 // ---------- server verbs (fake engine, real Minikodas facade) ----------
@@ -298,7 +262,6 @@ async function serverWith(t, base, steps = STANDARD) {
 		engine: { command: process.execPath, commandArgs: [FAKE_PI, "--script", script(base, steps)], env: { PATH: process.env.PATH }, startTimeoutMs: 10_000 },
 		minEveryMs: 1,
 		runTimeoutMs: 10_000,
-		scrypt: CHEAP_SCRYPT,
 	});
 	minikodas.start();
 	const runtimeDir = path.join(base, "rt");
@@ -341,10 +304,10 @@ test("server: create is a draft until approve-create; launch lands the run in Ho
 	assert.deepEqual(listed.items, hoy.items, "hoy_list is the same stored list");
 	const engineRoot = path.join(base, "island", "minikodas", "engines", "oportunidades");
 	const inEngine = (dir) => fs.readdirSync(dir, { recursive: true }).map(String);
-	assert.equal(inEngine(engineRoot).some((f) => /hoy\.jsonl|pin\.json|approved\.jsonl|session\.json/.test(f)), false, "Hoy, PIN and token never live in the engine root");
+	assert.equal(inEngine(engineRoot).some((f) => /hoy\.jsonl|approved\.jsonl|session\.json/.test(f)), false, "Hoy and the token never live in the engine root");
 });
 
-test("server: approve needs the PIN; wrong PIN refused with no event; right PIN executes once (one hoy_approved); second approve refused; reject never executes", { skip: !posix && "Unix socket fixture" }, async (t) => {
+test("server: approve takes only the id and executes once (one hoy_approved); a second approve is refused; a stray pin field is ignored; reject never executes", { skip: !posix && "Unix socket fixture" }, async (t) => {
 	const base = tmp(t);
 	const { minikodas, client } = await serverWith(t, base);
 	await client.ask({ type: "minikoda_create", recipe: recipe() }, ["minikoda"]);
@@ -352,19 +315,20 @@ test("server: approve needs the PIN; wrong PIN refused with no event; right PIN 
 	await client.ask({ type: "minikoda_launch", id: "oportunidades" }, ["minikoda_launched"]);
 	const hoy = await client.wait((f) => f.type === "hoy" && f.items.some((i) => i.kind === "proposal"), 15_000);
 	const proposal = hoy.items.find((i) => i.kind === "proposal");
-	assert.equal((await client.ask({ type: "hoy_approve", id: proposal.id, pin: PIN }, ["hoy_decided", "error"])).code, "pin_not_set");
-	assert.deepEqual((await client.ask({ type: "pin_set", pin: PIN }, ["pin_status", "error"])), { type: "pin_status", set: true, locked: false, left: 5, seq: client.frames.at(-1).seq });
-	assert.equal((await client.ask({ type: "pin_set", pin: "135790" }, ["pin_status", "error"])).code, "pin_exists");
-	assert.equal((await client.ask({ type: "hoy_approve", id: proposal.id }, ["hoy_decided", "error"])).code, "bad_request", "no PIN, no approval");
-	assert.equal((await client.ask({ type: "hoy_approve", id: proposal.id, pin: "000000" }, ["hoy_decided", "error"])).code, "pin_wrong");
+	for (const type of ["pin_set", "pin_status"]) assert.equal((await client.ask({ type, pin: "246810" }, ["error"])).code, "bad_request", `${type} is gone`);
 	assert.equal(client.frames.filter((f) => f.type === "hoy_approved").length, 0);
-	assert.equal(minikodas.inbox.approvedEntries().length, 0);
-	const ok = await client.ask({ type: "hoy_approve", id: proposal.id, pin: PIN }, ["hoy_decided", "error"]);
-	assert.deepEqual([ok.type, ok.id, ok.status], ["hoy_decided", proposal.id, "approved"]);
+	assert.equal(minikodas.inbox.approvedEntries().length, 0, "nothing executes before approval");
+	// Two approvals sent together (one with a stray pin field): exactly one execution.
+	const start = client.frames.length;
+	client.send({ type: "hoy_approve", id: proposal.id });
+	client.send({ type: "hoy_approve", id: proposal.id, pin: "246810" });
+	await waitFor(() => client.frames.slice(start).filter((f) => f.type === "hoy_decided" || f.type === "error").length >= 2);
+	const answers = client.frames.slice(start).filter((f) => f.type === "hoy_decided" || f.type === "error");
+	assert.deepEqual(answers.map((f) => (f.type === "error" ? f.code : f.status)).sort(), ["approved", "not_pending"]);
 	await waitFor(() => client.frames.some((f) => f.type === "hoy_approved"));
 	const approvedEvent = client.frames.find((f) => f.type === "hoy_approved");
 	assert.deepEqual([approvedEvent.id, approvedEvent.action, approvedEvent.target], [proposal.id, "sell", "ACME"]);
-	assert.equal((await client.ask({ type: "hoy_approve", id: proposal.id, pin: PIN }, ["hoy_decided", "error"])).code, "not_pending");
+	assert.equal((await client.ask({ type: "hoy_approve", id: proposal.id }, ["hoy_decided", "error"])).code, "not_pending");
 	await sleep(100);
 	assert.equal(client.frames.filter((f) => f.type === "hoy_approved").length, 1, "exactly one approved event");
 	assert.equal(minikodas.inbox.approvedEntries().length, 1, "exactly one execution");
@@ -373,10 +337,10 @@ test("server: approve needs the PIN; wrong PIN refused with no event; right PIN 
 	await waitFor(() => minikodas.hoyList().filter((i) => i.kind === "proposal" && i.status === "pending").length === 1, 15_000);
 	const second = minikodas.hoyList().find((i) => i.kind === "proposal" && i.status === "pending");
 	assert.equal((await client.ask({ type: "hoy_reject", id: second.id }, ["hoy_decided", "error"])).status, "rejected");
-	assert.equal((await client.ask({ type: "hoy_approve", id: second.id, pin: PIN }, ["hoy_decided", "error"])).code, "not_pending");
+	assert.equal((await client.ask({ type: "hoy_approve", id: second.id }, ["hoy_decided", "error"])).code, "not_pending");
 	assert.equal(minikodas.inbox.approvedEntries().length, 1);
 	assert.equal(client.frames.filter((f) => f.type === "hoy_approved").length, 1);
-	assert.equal(JSON.stringify(client.frames).includes(PIN), false, "the PIN is never echoed in any frame");
+	assert.equal(fs.existsSync(path.join(base, "island", "minikodas", "hoy", "pin.json")), false);
 });
 
 test("server: minikodas_list/get/delete; launch refused while paused; a crash lands in Hoy as an error item", { skip: !posix && "Unix socket fixture" }, async (t) => {
@@ -403,7 +367,7 @@ test("server: minikodas_list/get/delete; launch refused while paused; a crash la
 // ---------- verifier follow-ups (T3b) ----------
 
 test("F5 S13 Hoy: a failed run's parked proposals are stored pending (approvable) next to the error item", async (t) => {
-	const inbox = new HoyInbox({ dir: path.join(tmp(t), "hoy"), scrypt: CHEAP_SCRYPT });
+	const inbox = new HoyInbox({ dir: path.join(tmp(t), "hoy") });
 	const added = await inbox.addError({ minikoda: "m", text: "La corrida falló (crashed).", proposals: [{ action: "buy", target: "MELI", text: "t" }, { action: "delete", target: "x", text: "y" }] });
 	assert.deepEqual(added.map((i) => [i.kind, i.status, i.action]), [["error", "approved", undefined], ["proposal", "pending", "buy"]]);
 	assert.deepEqual(inbox.list().map((i) => i.kind), ["error", "proposal"]);
@@ -476,7 +440,6 @@ test("daemon: Minikodas are wired; a SCHEDULED run fires without any launch, lan
 		minikodasOptions: {
 			engine: { command: process.execPath, commandArgs: [FAKE_PI, "--script", script(base, STANDARD)], env: { PATH: process.env.PATH }, startTimeoutMs: 10_000 },
 			minEveryMs: 1,
-			scrypt: CHEAP_SCRYPT,
 		},
 	});
 	await daemon.start();

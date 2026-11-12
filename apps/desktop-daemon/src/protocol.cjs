@@ -367,7 +367,6 @@ function validateClientFrame(raw) {
 		// ----- K2-13 Minikodas and «Hoy» -----
 		case "minikodas_list":
 		case "hoy_list":
-		case "pin_status":
 			return { type: raw.type };
 		case "minikoda_get":
 		case "minikoda_approve_create":
@@ -389,17 +388,10 @@ function validateClientFrame(raw) {
 			return { type: "minikoda_create", recipe: out };
 		}
 		case "hoy_approve":
-			// The PIN travels only here and in pin_set; it is never logged, echoed or stored in clear.
-			if (!isHoyId(raw.id) || !isPin(raw.pin)) return undefined;
-			return { type: "hoy_approve", id: raw.id, pin: raw.pin };
 		case "hoy_reject":
+			// No PIN (L17): only the id travels; any other field (a stray `pin` included) is dropped.
 			if (!isHoyId(raw.id)) return undefined;
-			return { type: "hoy_reject", id: raw.id };
-		case "pin_set": {
-			if (!isPin(raw.pin)) return undefined;
-			if (raw.old !== undefined && !isPin(raw.old)) return undefined;
-			return { type: "pin_set", pin: raw.pin, ...(raw.old !== undefined ? { old: raw.old } : {}) };
-		}
+			return { type: raw.type, id: raw.id };
 		default:
 			return undefined;
 	}
@@ -408,8 +400,6 @@ function validateClientFrame(raw) {
 const HOY_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const isMinikodaId = (v) => typeof v === "string" && MINIKODA_ID.test(v);
 const isHoyId = (v) => typeof v === "string" && HOY_ID.test(v);
-/** Shape only (6-12 digits); the inbox applies the same rule. Wrong shapes are bad_request and never count as a try. */
-const isPin = (v) => typeof v === "string" && /^[0-9]{6,12}$/.test(v);
 
 /**
  * Parses one LF-delimited line into a frame. `hello` is only accepted when
@@ -445,7 +435,7 @@ const EMITTED_ERROR_CODES = new Set([
 	"unknown_proposal", "digest_mismatch", "needs_setup", "signin_failed", "store_not_private",
 	// K2-13 Minikodas and «Hoy»
 	"unknown_minikoda", "not_active", "not_pending", "exists", "limit", "model_unavailable",
-	"unknown_item", "pin_wrong", "pin_locked", "pin_not_set", "pin_exists", "pin_invalid",
+	"unknown_item",
 ]);
 // Recognized by the host's broader enum, but collapsed to stale/failed before H2c can emit them.
 const RESERVED_CONNECTOR_ERROR_CODES = new Set(["already_decided", "session_mismatch", "pending_full"]);
@@ -811,14 +801,6 @@ function hoyApprovedFrame(e) {
 	return { type: "hoy_approved", id: e.itemId, minikoda: e.minikoda, action: e.action, target: clip(e.target, 200), executedAt: clip(e.executedAt, 40) };
 }
 
-/** Reply to pin_status / pin_set: never the hash, the salt or the PIN. */
-function pinStatusFrame(s) {
-	const frame = { type: "pin_status", set: s?.set === true, locked: s?.locked === true };
-	if (frame.locked && Number.isSafeInteger(s?.lockedUntil)) frame.lockedUntil = s.lockedUntil;
-	if (!frame.locked && Number.isSafeInteger(s?.left) && s.left >= 0) frame.left = s.left;
-	return frame;
-}
-
 const list = (items, fn, max = 500) => (Array.isArray(items) ? items.slice(0, max).map(fn) : []);
 
 const accountsFrame = (items) => ({ type: "accounts", accounts: list(items, accountDto) });
@@ -1032,7 +1014,6 @@ module.exports = {
 	minikodaFrame,
 	hoyFrame,
 	hoyApprovedFrame,
-	pinStatusFrame,
 	MINIKODAS_EMIT,
 	providersFrame,
 	modelsFrame,
