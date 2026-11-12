@@ -15,19 +15,36 @@ fn scratch(name: &str) -> PathBuf {
 }
 
 fn run(data_home: &Path, args: &[&str]) -> (Output, serde_json::Value) {
-    let out = Command::new(BIN)
-        .args(args)
+    let mut cmd = Command::new(BIN);
+    cmd.args(args)
         .env_clear()
+        // The same private folder on every OS: HOME/XDG_DATA_HOME on Linux and macOS, LOCALAPPDATA on Windows (where
+        // the data folder is `%LOCALAPPDATA%\abito-data` and HOME is never read, so without this the helper answered
+        // `model_missing` on the Windows CI runner).
         .env("HOME", data_home)
         .env("XDG_DATA_HOME", data_home)
+        .env("LOCALAPPDATA", data_home)
         // A dead proxy: if anything tried the network, it would fail instead of reaching it.
-        .env("HTTPS_PROXY", "http://127.0.0.1:9")
-        .output()
-        .expect("run abito-transcribe");
+        .env("HTTPS_PROXY", "http://127.0.0.1:9");
+    // Not the store's path, but a cleared environment without SystemRoot makes some Win32 lookups in the child fail.
+    if let Some(root) = std::env::var_os("SystemRoot") {
+        cmd.env("SystemRoot", root);
+    }
+    let out = cmd.output().expect("run abito-transcribe");
     let stdout = String::from_utf8(out.stdout.clone()).unwrap();
     assert_eq!(stdout.lines().count(), 1, "exactly one JSON line on stdout: {stdout:?}");
     let json = serde_json::from_str(stdout.trim()).expect("stdout is JSON");
     (out, json)
+}
+
+/// The data folder's name for this OS: `abito-data` on Windows (never `abito`: that is the island's protected root
+/// there), `abito` everywhere else.
+fn data_leaf() -> &'static str {
+    if cfg!(windows) {
+        "abito-data"
+    } else {
+        "abito"
+    }
 }
 
 fn silent_wav(path: &Path, seconds: usize) {
@@ -84,7 +101,7 @@ fn a_model_that_is_not_downloaded_is_model_missing_and_nothing_is_fetched() {
     assert_eq!(json["error"], "model_missing");
     let (_, json) = run(&d, &["transcribe", "--model", "whisper-turbo", "--language", "es", wav.to_str().unwrap()]);
     assert_eq!(json["error"], "model_missing");
-    assert!(!d.join("abito").join("Models").exists(), "transcribe never creates or fills the model store");
+    assert!(!d.join(data_leaf()).join("Models").exists(), "transcribe never creates or fills the model store");
     let (out, json) = run(&d, &["status"]);
     assert_eq!(out.status.code(), Some(0));
     assert_eq!(json["model"], "parakeet-tdt-0.6b-v3-int8");
@@ -115,14 +132,24 @@ fn bad_input_is_refused_before_any_model_is_looked_at() {
 #[test]
 fn usage_errors_exit_2_with_a_json_line_and_never_echo_the_input() {
     let d = scratch("usage");
-    for args in [&["transcribe"][..], &["transcribe", "rel/secret-name.wav"], &["transcribe", "--model", "whisper-turbo", "/abs/secret-name.wav"], &["frobnicate"]] {
+    // An ABSOLUTE input on every OS (a literal like `/abs/…` is relative on Windows, where the helper would answer
+    // `usage` for the wrong reason and never reach the language check this case is about).
+    let absolute = d.join("secret-name.wav");
+    let absolute = absolute.to_str().unwrap();
+    let cases: [&[&str]; 4] = [
+        &["transcribe"],
+        &["transcribe", "rel/secret-name.wav"],
+        &["transcribe", "--model", "whisper-turbo", absolute],
+        &["frobnicate"],
+    ];
+    for args in cases {
         let (out, json) = run(&d, args);
         let code = json["error"].as_str().unwrap().to_string();
         assert!(["usage", "language_required"].contains(&code.as_str()), "{args:?} -> {code}");
         assert!(!String::from_utf8_lossy(&out.stdout).contains("secret-name"));
         assert!(!String::from_utf8_lossy(&out.stderr).contains("secret-name"));
     }
-    let (out, json) = run(&d, &["transcribe", "--model", "whisper-small", "/abs/a.wav"]);
+    let (out, json) = run(&d, &["transcribe", "--model", "whisper-small", absolute]);
     assert_eq!((out.status.code(), json["error"].as_str()), (Some(1), Some("unknown_model")));
     let _ = std::fs::remove_dir_all(&d);
 }

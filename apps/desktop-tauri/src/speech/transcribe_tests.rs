@@ -11,6 +11,15 @@ fn args(list: &[&str]) -> Vec<String> {
     list.iter().map(|s| s.to_string()).collect()
 }
 
+/// An absolute input path that need not exist (parsing never opens it). Built from `temp_dir()` because a literal like
+/// `/tmp/a.wav` is NOT absolute on Windows, where `parse_args` refuses it as a relative input and every assertion
+/// below would fail for the wrong reason.
+fn absolute(name: &str) -> String {
+    let path = std::env::temp_dir().join(name);
+    assert!(path.is_absolute(), "{path:?}");
+    path.to_string_lossy().into_owned()
+}
+
 fn scratch(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("abito-transcribe-unit-{}-{name}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -68,15 +77,16 @@ fn read_all(bytes: Vec<u8>) -> Result<Vec<f32>, Failure> {
 #[test]
 fn parakeet_v3_is_the_default_model_and_whisper_turbo_the_alternative() {
     assert_eq!(MODELS, ["parakeet-tdt-0.6b-v3-int8", "whisper-turbo"]);
-    match parse_args(&args(&["transcribe", "/tmp/a.wav"])).unwrap() {
+    let input = absolute("a.wav");
+    match parse_args(&args(&["transcribe", &input])).unwrap() {
         Command::Transcribe(r) => {
             assert_eq!(r.entry.id, "parakeet-tdt-0.6b-v3-int8");
-            assert_eq!(r.input, PathBuf::from("/tmp/a.wav"));
+            assert_eq!(r.input, PathBuf::from(&input));
             assert_eq!(r.language, None);
         }
         _ => panic!("transcribe expected"),
     }
-    match parse_args(&args(&["transcribe", "--model", "whisper-turbo", "--language", "es", "/tmp/a.wav"])).unwrap() {
+    match parse_args(&args(&["transcribe", "--model", "whisper-turbo", "--language", "es", &input])).unwrap() {
         Command::Transcribe(r) => {
             assert_eq!(r.entry.id, "whisper-turbo");
             assert_eq!(r.language, Some("es"));
@@ -88,23 +98,25 @@ fn parakeet_v3_is_the_default_model_and_whisper_turbo_the_alternative() {
 #[test]
 fn whisper_needs_a_fixed_language_and_other_catalog_models_are_refused() {
     let code = |a: &[&str]| parse_args(&args(a)).err().map(|f| f.code);
-    assert_eq!(code(&["transcribe", "--model", "whisper-turbo", "/tmp/a.wav"]), Some(Code::LanguageRequired));
-    assert_eq!(code(&["transcribe", "--model", "whisper-turbo", "--language", "auto", "/tmp/a.wav"]), Some(Code::LanguageRequired));
-    assert_eq!(code(&["transcribe", "--model", "whisper-small", "/tmp/a.wav"]), Some(Code::UnknownModel));
-    assert_eq!(code(&["transcribe", "--model", "nope", "/tmp/a.wav"]), Some(Code::UnknownModel));
-    assert_eq!(code(&["transcribe", "--language", "xx", "/tmp/a.wav"]), Some(Code::Usage));
+    let input = absolute("a.wav");
+    assert_eq!(code(&["transcribe", "--model", "whisper-turbo", &input]), Some(Code::LanguageRequired));
+    assert_eq!(code(&["transcribe", "--model", "whisper-turbo", "--language", "auto", &input]), Some(Code::LanguageRequired));
+    assert_eq!(code(&["transcribe", "--model", "whisper-small", &input]), Some(Code::UnknownModel));
+    assert_eq!(code(&["transcribe", "--model", "nope", &input]), Some(Code::UnknownModel));
+    assert_eq!(code(&["transcribe", "--language", "xx", &input]), Some(Code::Usage));
 }
 
 #[test]
 fn bad_command_lines_are_usage_errors() {
     let code = |a: &[&str]| parse_args(&args(a)).err().map(|f| f.code);
+    let (a, b) = (absolute("a.wav"), absolute("b.wav"));
     assert_eq!(code(&[]), Some(Code::Usage));
     assert_eq!(code(&["transcribe"]), Some(Code::Usage));
     assert_eq!(code(&["transcribe", "relative.wav"]), Some(Code::Usage), "the input path must be absolute");
-    assert_eq!(code(&["transcribe", "/a.wav", "/b.wav"]), Some(Code::Usage));
-    assert_eq!(code(&["transcribe", "--bogus", "/a.wav"]), Some(Code::Usage));
-    assert_eq!(code(&["transcribe", "--timeout-sec", "0", "/a.wav"]), Some(Code::Usage));
-    assert_eq!(code(&["transcribe", "--timeout-sec", "999999", "/a.wav"]), Some(Code::Usage));
+    assert_eq!(code(&["transcribe", &a, &b]), Some(Code::Usage));
+    assert_eq!(code(&["transcribe", "--bogus", &a]), Some(Code::Usage));
+    assert_eq!(code(&["transcribe", "--timeout-sec", "0", &a]), Some(Code::Usage));
+    assert_eq!(code(&["transcribe", "--timeout-sec", "999999", &a]), Some(Code::Usage));
     assert_eq!(code(&["download"]).is_none(), true, "download defaults to Parakeet");
     assert_eq!(code(&["status", "--model", "whisper-base"]), Some(Code::UnknownModel));
     assert_eq!(code(&["play"]), Some(Code::Usage));

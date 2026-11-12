@@ -1,8 +1,19 @@
 use super::catalog::{find, DEFAULT_MODEL};
 use super::*;
+use std::sync::{Mutex, MutexGuard};
+
+/// The active model and language are PROCESS-WIDE (`active_slot`), and cargo runs a binary's tests in parallel threads:
+/// without this lock `a_model_in_use_cannot_be_deleted…` and `choosing_a_model_or_language…` step on each other about a
+/// third of the runs (the delete-in-use test saw the other test's model and deleted a model that was no longer in use).
+/// These tests therefore never run at the same time, and a poisoned lock still runs the next one.
+fn serial() -> MutexGuard<'static, ()> {
+    static LOCK: Mutex<()> = Mutex::new(());
+    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 #[test]
 fn choosing_a_model_or_language_changes_what_is_active_and_unknown_ids_are_ignored() {
+    let _serial = serial();
     set_active(DEFAULT_MODEL, "es");
     assert_eq!(active(), (DEFAULT_MODEL.to_string(), "es".to_string()));
     set_active("whisper-small", "en");
@@ -28,6 +39,7 @@ fn cancelling_a_download_that_is_not_running_is_harmless_and_unknown_models_cann
 
 #[test]
 fn a_model_in_use_cannot_be_deleted_and_an_unused_one_can() {
+    let _serial = serial();
     set_active("whisper-base", "es");
     assert!(delete_model("whisper-base").is_err(), "in use");
     set_active(DEFAULT_MODEL, "es");

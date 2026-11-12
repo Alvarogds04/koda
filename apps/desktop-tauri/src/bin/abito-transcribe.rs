@@ -1,7 +1,7 @@
 //! abito-transcribe — K2-13 (S8, S15, S16): batch speech-to-text for the Minikodas, spawned by the daemon with
 //! `shell:false` and a fixed argv. It reuses dictation's sherpa-onnx engine, model catalog, model store
 //! (`data_dir()/Models`: `$XDG_DATA_HOME/abito/Models`, `~/.local/share/abito/Models` on Linux and macOS,
-//! `%LOCALAPPDATA%\abito\Models` on Windows) and Silero VAD; see `abito_island::speech::transcribe` for the
+//! `%LOCALAPPDATA%\abito-data\Models` on Windows) and Silero VAD; see `abito_island::speech::transcribe` for the
 //! contract.
 //!
 //!   abito-transcribe transcribe [--model ID] [--language L] [--timeout-sec N] [--max-seconds N] <abs.wav>

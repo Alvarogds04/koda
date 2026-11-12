@@ -10,8 +10,9 @@
 //! Hugging Face at a pinned revision, are checked against their size and
 //! SHA-256 before they are used, and live in the data folder's `Models`
 //! (`data_dir()`: `$XDG_DATA_HOME/abito` or `~/.local/share/abito` on Linux
-//! and macOS, `%LOCALAPPDATA%\abito` on Windows). From then on everything runs
-//! offline.
+//! and macOS, `%LOCALAPPDATA%\abito-data` on Windows — never `%LOCALAPPDATA%\abito`,
+//! which is the same folder as the island's protected root `%LOCALAPPDATA%\Abito`; see
+//! `data_dir_for`). From then on everything runs offline.
 
 pub mod audio;
 pub mod catalog;
@@ -79,7 +80,12 @@ impl ModelSet {
 
     /// Every file is there with its size (the hash was checked when it came in).
     pub fn is_present(&self) -> bool {
-        self.files.iter().all(|f| std::fs::metadata(self.dir().join(f.name)).map(|m| m.len() == f.size).unwrap_or(false))
+        try_models_dir().is_some_and(|root| self.is_present_in(&root))
+    }
+
+    /// The same check against a store the caller resolved, so it can answer "no" instead of panicking.
+    pub fn is_present_in(&self, root: &Path) -> bool {
+        self.files.iter().all(|f| std::fs::metadata(self.dir_in(root).join(f.name)).map(|m| m.len() == f.size).unwrap_or(false))
     }
 }
 
@@ -152,26 +158,42 @@ impl std::fmt::Display for NoDataDir {
 
 impl std::error::Error for NoDataDir {}
 
-/// `<base>/abito` for `os`, read through `var` (an environment lookup) instead of the process environment.
+/// The data folder's name on Windows. NOT `abito`: on case-insensitive NTFS that is the same folder as the island's
+/// protected root `%LOCALAPPDATA%\Abito`, which is a different thing entirely (see `data_dir_for`).
+pub const WINDOWS_DATA_LEAF: &str = "abito-data";
+/// The data folder's name everywhere else.
+pub const DATA_LEAF: &str = "abito";
+
+/// `<base>/<leaf>` for `os`, read through `var` (an environment lookup) instead of the process environment.
 ///
-/// - Windows: `%LOCALAPPDATA%\abito`, else `%USERPROFILE%\AppData\Local\abito`. A Windows GUI app gets no `HOME`
-///   (and the transcription helper runs with the daemon's temporary work folder as its working directory), which is
-///   exactly why the Linux chain cannot be reused there: it produced `<work>/.local/share/abito/Models` and every
-///   Minikoda answered `model_missing`.
+/// - Windows: `%LOCALAPPDATA%\abito-data`, else `%USERPROFILE%\AppData\Local\abito-data`. A Windows GUI app gets no
+///   `HOME` (and the transcription helper runs with the daemon's temporary work folder as its working directory), which
+///   is exactly why the Linux chain cannot be reused there: it produced `<work>/.local/share/abito/Models` and every
+///   Minikoda answered `model_missing`. The leaf is `abito-data` and not `abito` on purpose: NTFS is case-insensitive,
+///   so `%LOCALAPPDATA%\abito` IS `%LOCALAPPDATA%\Abito`, the island's private root. That root is created — or
+///   accepted — with an explicit protected owner-only DACL (`abito-private-session`), and the island verifies it
+///   fail-closed (`winpolicy::dacl_private`: owner plus every ACE principal must be the user, SYSTEM or
+///   Administrators). A data folder created there first by Node/`std::fs` inherits the whole `%LOCALAPPDATA%` profile
+///   DACL, so the island would refuse to start ("runtime root is not a private directory of ours") depending only on
+///   which feature ran first. Two different folders were meant, so they get two different names.
 /// - Linux and macOS: `$XDG_DATA_HOME/abito`, else `$HOME/.local/share/abito`. The macOS-specific store belongs to
 ///   the Mac session (L12); this keeps the folder dictation, the flow store and the helper already use.
 ///
 /// A relative folder is refused on every OS: relative to what is never knowable from here.
 pub fn data_dir_for(os: Os, var: impl Fn(&str) -> Option<OsString>) -> Result<PathBuf, NoDataDir> {
     let absolute = |name: &str| var(name).map(PathBuf::from).filter(|p| p.is_absolute());
-    let base = match os {
-        Os::Windows => absolute("LOCALAPPDATA")
-            .or_else(|| absolute("USERPROFILE").map(|profile| profile.join("AppData").join("Local"))),
-        Os::Linux | Os::MacOs => {
-            absolute("XDG_DATA_HOME").or_else(|| absolute("HOME").map(|home| home.join(".local/share")))
-        }
+    let (base, leaf) = match os {
+        Os::Windows => (
+            absolute("LOCALAPPDATA")
+                .or_else(|| absolute("USERPROFILE").map(|profile| profile.join("AppData").join("Local"))),
+            WINDOWS_DATA_LEAF,
+        ),
+        Os::Linux | Os::MacOs => (
+            absolute("XDG_DATA_HOME").or_else(|| absolute("HOME").map(|home| home.join(".local/share"))),
+            DATA_LEAF,
+        ),
     };
-    base.map(|base| base.join("abito")).ok_or(NoDataDir)
+    base.map(|base| base.join(leaf)).ok_or(NoDataDir)
 }
 
 /// Abito's data folder for this process, or `NoDataDir`. The transcription helper uses this one: it answers a JSON
@@ -181,10 +203,11 @@ pub fn try_data_dir() -> Result<PathBuf, NoDataDir> {
 }
 
 /// Abito's data folder: `$XDG_DATA_HOME/abito` (default `~/.local/share/abito`) on Linux and macOS,
-/// `%LOCALAPPDATA%\abito` (default `%USERPROFILE%\AppData\Local\abito`) on Windows.
+/// `%LOCALAPPDATA%\abito-data` (default `%USERPROFILE%\AppData\Local\abito-data`) on Windows.
 ///
 /// Panics when the environment has no absolute folder at all, and only then: silently continuing under a
-/// `<cwd>/.local/share` is the bug this replaced. Callers that must not panic use `try_data_dir`.
+/// `<cwd>/.local/share` is the bug this replaced. Startup callers must not panic: they check `try_data_dir` first and
+/// disable the feature (voice, dictation) with a log line instead, and the read-only queries use `try_models_dir`.
 pub fn data_dir() -> PathBuf {
     try_data_dir().unwrap_or_else(|error| {
         panic!("abito: cannot locate the data folder ({error}); refusing to use a path relative to the working directory")
@@ -193,6 +216,13 @@ pub fn data_dir() -> PathBuf {
 
 pub fn models_dir() -> PathBuf {
     data_dir().join("Models")
+}
+
+/// The model store, or `None` when the environment names no absolute data folder. Read-only callers (`status`,
+/// `is_ready`, the Settings list, the Silero detector) answer "nothing installed" from this one instead of panicking:
+/// a missing data folder must never take the app down, and it must never be resolved relative to the working folder.
+pub fn try_models_dir() -> Option<PathBuf> {
+    try_data_dir().ok().map(|dir| dir.join("Models"))
 }
 
 // ── Verified download ─────────────────────────────────────────────────────────
@@ -643,7 +673,7 @@ pub(crate) fn offline_config(entry: &catalog::Entry, language: &str, root: &Path
 
 /// Loads the model in the background, so the first dictation is not slowed down.
 pub fn preload() {
-    if !active_set().is_present() || recognizer_slot().lock().unwrap().is_some() {
+    if !is_ready() || recognizer_slot().lock().unwrap().is_some() {
         return;
     }
     std::thread::spawn(|| {
@@ -748,54 +778,88 @@ mod tests {
 
     #[test]
     fn the_windows_store_is_localappdata_or_userprofile_and_is_never_relative() {
-        // Windows: %LOCALAPPDATA%\abito.
-        let localappdata = |pairs: &[(&'static str, &'static str)]| {
-            let map: std::collections::HashMap<&'static str, OsString> =
-                pairs.iter().map(|(name, value)| (*name, OsString::from(value))).collect();
-            move |name: &str| map.get(name).cloned()
+        // Windows: %LOCALAPPDATA%\abito-data. EVERY path here comes from `temp_dir()`, which is absolute on every OS
+        // this test binary runs on: a literal like `/home/u` is not absolute on Windows, so the resolver would refuse
+        // it there and these assertions would be Linux-only.
+        let at = |name: &str| {
+            let path = std::env::temp_dir().join(name);
+            assert!(path.is_absolute(), "{path:?}");
+            path
         };
-        assert_eq!(
-            data_dir_for(Os::Windows, localappdata(&[("LOCALAPPDATA", "/home/u/AppData/Local")])).unwrap(),
-            PathBuf::from("/home/u/AppData/Local/abito")
-        );
+        let env = |pairs: Vec<(&'static str, PathBuf)>| {
+            move |name: &str| pairs.iter().find(|(key, _)| *key == name).map(|(_, value)| value.clone().into_os_string())
+        };
+        let (local, profile, home, xdg) = (at("abito-test-Local"), at("abito-test-profile"), at("abito-test-home"), at("abito-test-xdg"));
+        assert_eq!(data_dir_for(Os::Windows, env(vec![("LOCALAPPDATA", local.clone())])).unwrap(), local.join(WINDOWS_DATA_LEAF));
         // No LOCALAPPDATA: %USERPROFILE%\AppData\Local — never the Linux XDG chain, even when HOME is set.
         assert_eq!(
             data_dir_for(
                 Os::Windows,
-                localappdata(&[("USERPROFILE", "/home/u"), ("HOME", "/home/u"), ("XDG_DATA_HOME", "/home/u/.local/share")])
+                env(vec![("USERPROFILE", profile.clone()), ("HOME", home.clone()), ("XDG_DATA_HOME", xdg.clone())])
             )
             .unwrap(),
-            PathBuf::from("/home/u/AppData/Local/abito")
+            profile.join("AppData").join("Local").join(WINDOWS_DATA_LEAF)
         );
         // Neither: an error, not a working-directory path (a Windows GUI app has no HOME at all).
-        assert_eq!(data_dir_for(Os::Windows, localappdata(&[("HOME", "/home/u")])), Err(NoDataDir));
-        assert_eq!(data_dir_for(Os::Windows, localappdata(&[("XDG_DATA_HOME", "/home/u/.local/share")])), Err(NoDataDir));
+        assert_eq!(data_dir_for(Os::Windows, env(vec![("HOME", home.clone())])), Err(NoDataDir));
+        assert_eq!(data_dir_for(Os::Windows, env(vec![("XDG_DATA_HOME", xdg)])), Err(NoDataDir));
+        assert_eq!(data_dir_for(Os::Windows, env(vec![])), Err(NoDataDir));
         // A relative folder is refused, never joined: the helper's working directory is its temp work folder.
-        assert_eq!(data_dir_for(Os::Windows, localappdata(&[("LOCALAPPDATA", "AppData/Local")])), Err(NoDataDir));
-        assert_eq!(data_dir_for(Os::Windows, localappdata(&[("USERPROFILE", ".")])), Err(NoDataDir));
+        assert_eq!(data_dir_for(Os::Windows, env(vec![("LOCALAPPDATA", PathBuf::from("AppData/Local"))])), Err(NoDataDir));
+        assert_eq!(data_dir_for(Os::Windows, env(vec![("USERPROFILE", PathBuf::from("."))])), Err(NoDataDir));
+        // And the leaf is NOT the island root's name: on case-insensitive NTFS `abito` and `Abito` are one folder.
+        assert_ne!(
+            data_dir_for(Os::Windows, env(vec![("LOCALAPPDATA", at("abito-test-Local"))])).unwrap(),
+            at("abito-test-Local").join("Abito")
+        );
     }
 
     #[test]
     fn the_linux_and_macos_store_keeps_the_xdg_folders_and_refuses_a_relative_one() {
-        let env = |pairs: &[(&'static str, &'static str)]| {
-            let map: std::collections::HashMap<&'static str, OsString> =
-                pairs.iter().map(|(name, value)| (*name, OsString::from(value))).collect();
-            move |name: &str| map.get(name).cloned()
+        let at = |name: &str| {
+            let path = std::env::temp_dir().join(name);
+            assert!(path.is_absolute(), "{path:?}");
+            path
         };
+        let env = |pairs: Vec<(&'static str, PathBuf)>| {
+            move |name: &str| pairs.iter().find(|(key, _)| *key == name).map(|(_, value)| value.clone().into_os_string())
+        };
+        let (xdg, home) = (at("abito-test-xdg"), at("abito-test-home"));
         for os in [Os::Linux, Os::MacOs] {
-            assert_eq!(data_dir_for(os, env(&[("XDG_DATA_HOME", "/x"), ("HOME", "/home/u")])).unwrap(), PathBuf::from("/x/abito"));
-            assert_eq!(data_dir_for(os, env(&[("HOME", "/home/u")])).unwrap(), PathBuf::from("/home/u/.local/share/abito"));
-            assert_eq!(data_dir_for(os, env(&[("XDG_DATA_HOME", ".local/share")])), Err(NoDataDir), "a relative XDG_DATA_HOME is not used");
-            assert_eq!(data_dir_for(os, env(&[])), Err(NoDataDir), "nothing is invented when the environment is empty");
+            assert_eq!(
+                data_dir_for(os, env(vec![("XDG_DATA_HOME", xdg.clone()), ("HOME", home.clone())])).unwrap(),
+                xdg.join(DATA_LEAF)
+            );
+            assert_eq!(data_dir_for(os, env(vec![("HOME", home.clone())])).unwrap(), home.join(".local/share").join(DATA_LEAF));
+            assert_eq!(
+                data_dir_for(os, env(vec![("XDG_DATA_HOME", PathBuf::from(".local/share"))])),
+                Err(NoDataDir),
+                "a relative XDG_DATA_HOME is not used"
+            );
+            assert_eq!(data_dir_for(os, env(vec![])), Err(NoDataDir), "nothing is invented when the environment is empty");
         }
     }
 
     #[test]
     fn this_machine_resolves_an_absolute_data_folder() {
         // The real resolver (injected env is covered above): whatever the OS, never `Path::is_relative`.
-        let dir = try_data_dir().expect("the test environment has an absolute data folder (HOME or XDG_DATA_HOME)");
+        let dir = try_data_dir().expect("the test environment has an absolute data folder (HOME/XDG_DATA_HOME or LOCALAPPDATA)");
         assert!(dir.is_absolute(), "{dir:?}");
-        assert!(dir.ends_with("abito"), "{dir:?}");
+        let leaf = if cfg!(windows) { WINDOWS_DATA_LEAF } else { DATA_LEAF };
+        assert!(dir.ends_with(leaf), "{dir:?}");
+    }
+
+    #[test]
+    fn without_a_data_folder_the_read_only_queries_answer_missing_instead_of_panicking() {
+        // `try_models_dir` is what status/is_ready/the Settings list use: with no absolute folder it answers None, so
+        // the app says «nothing installed» and never resolves a path relative to its working folder. The panicking
+        // `data_dir()` stays reserved for the explicit actions (download, recognition) a startup guard already
+        // disabled (voicehost::start, dictationhost::start).
+        let none = |_: &str| None;
+        assert_eq!(data_dir_for(Os::Windows, none), Err(NoDataDir));
+        assert_eq!(data_dir_for(Os::Linux, none), Err(NoDataDir));
+        assert!(try_data_dir().is_ok(), "this machine does have one");
+        assert!(try_models_dir().is_some_and(|root| root.ends_with("Models")));
     }
 
     #[test]
