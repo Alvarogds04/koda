@@ -321,6 +321,12 @@ test('K2-13 (S9): ffmpeg comes out of the pinned archive byte for byte, executab
     assert.ok(notices.includes('https://github.com/FFmpeg/FFmpeg/tree/c179411bbb'), 'the exact FFmpeg source revision');
     assert.ok(notices.includes('https://github.com/BtbN/FFmpeg-Builds'), 'the build scripts');
     assert.match(notices, /Corresponding Source/);
+    // K2-13 (S9, item 5): the offer is a commitment, and the record says what is still missing — without pretending
+    // a licence review happened.
+    assert.match(notices, /Source offer: on request Koda provides the Corresponding Source of this exact binary/, 'the source offer is explicit');
+    assert.match(notices, /at least\s+three years after the release that shipped it|three years after the release/, 'and lasts three years');
+    assert.match(notices, /must MIRROR that Corresponding Source itself \(LGPL-3\.0 section 6/, 'mirroring before a public release is recorded');
+    assert.match(notices, /has NOT been done/, 'the notices never claim the legal review is done');
   }
   const darwin = fs.readFileSync(path.join(fx.dir, 'out-darwin-arm64', 'THIRD-PARTY-NOTICES.md'), 'utf8');
   assert.doesNotMatch(darwin, /FFmpeg/, 'darwin-arm64 ships no ffmpeg (pending for the Mac session)');

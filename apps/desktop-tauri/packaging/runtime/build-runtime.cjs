@@ -163,6 +163,13 @@ function ffmpegNotice(pin) {
     `- Corresponding Source: the FFmpeg source at revision ${rev}, https://github.com/FFmpeg/FFmpeg/tree/${rev}`,
     `  (${pin.version}), and the scripts that built it, https://github.com/BtbN/FFmpeg-Builds (release ${pin.tag}),`,
     '  which also list the libraries linked into it and their licences.',
+    '- Source offer: on request Koda provides the Corresponding Source of this exact binary — the FFmpeg source at the',
+    '  revision above plus the BtbN/FFmpeg-Builds scripts and the exact library versions linked into it — for at least',
+    '  three years after the release that shipped it, for no more than the cost of making and sending the copy. Ask',
+    '  through the issue tracker of the repository Koda is published from.',
+    '- Before a public release Koda must MIRROR that Corresponding Source itself (LGPL-3.0 section 6: recipients have to',
+    '  be able to obtain it from a network server, not only to ask us). That mirror does not exist yet, and the licence',
+    '  review of FFmpeg and its patent situation has NOT been done. This is an engineering record, not legal advice.',
     'You may replace this file with your own build of FFmpeg; Koda calls it by this path with command-line arguments only.', ''];
 }
 

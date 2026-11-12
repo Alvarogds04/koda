@@ -14,3 +14,17 @@ travel with every installer.
 
 Speech models (Parakeet, Whisper, Silero VAD) are not part of Koda. They are downloaded only when the user asks for
 them, and each keeps its own licence, shown in Ajustes → Voz.
+
+## FFmpeg: source offer and the mirror that is still missing (K2-13, S9)
+
+Koda ships FFmpeg (LGPL-3.0-or-later) as a separate program, running it unmodified with command-line arguments only.
+On request, the maintainers provide its Corresponding Source: the exact FFmpeg source at tag `n9.0.2-49-gc179411bbb`
+(revision `c179411bbb`), together with the BtbN/FFmpeg-Builds scripts and the pinned library versions linked into it,
+for at least three years after a release ships it, for no more than the cost of making and sending the copy.
+
+**Still missing before a public release:** Koda does not mirror those sources itself, and LGPL-3.0 section 6 asks
+recipients to be able to obtain them (a network server or an equivalent), not only to request a copy from us. The
+mirror must exist and be linked from this file before the first public release. The licence review of FFmpeg (LGPL-3.0
+obligations and the AAC/H.264 patent question) has **not** been done. This is an engineering record, not legal advice.
+The detailed text travels with every installer: `apps/desktop-daemon/THIRD-PARTY-NOTICES.md` and the runtime's
+generated `THIRD-PARTY-NOTICES.md` (`apps/desktop-tauri/packaging/runtime/build-runtime.cjs`).

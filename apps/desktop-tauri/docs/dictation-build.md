@@ -156,6 +156,12 @@ abito-transcribe download [--model ID]   # the catalog's pinned, size + SHA-256 
     source revision and build scripts) in `runtime/THIRD-PARTY-NOTICES.md`.
   - It is removed with the runtime directory. The Windows install manifest pins `runtime/ffmpeg.exe` like
     `runtime/node.exe` (`install-manifest.cjs --runtime`).
+  - **Licence record (LGPL-3.0, still open).** Every notice that names FFmpeg also states what is owed and what is
+    still missing: a source offer (the exact FFmpeg source at tag `n9.0.2-49-gc179411bbb` plus the
+    BtbN/FFmpeg-Builds scripts, on request, for at least three years), and the plain statement that Koda does **not**
+    mirror those sources yet, so the mirror has to exist (and be linked from the notices) before a public release
+    (LGPL-3.0 section 6). The licence review of FFmpeg's obligations and its AAC/H.264 patent question has **not**
+    been done; the notices say so instead of implying it was.
 - **macOS (darwin-arm64).** No ffmpeg and no `abito-transcribe` in this version: no LGPL macOS build exists (pending
   for the Mac session, L12). The daemon reports `ffmpeg: "unavailable"`, and a Minikoda video run fails with a clear
   «Hoy» error.
