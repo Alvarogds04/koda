@@ -218,8 +218,10 @@ class Transcriber {
 	/**
 	 * Transcribes one media file. Resolves {text, model, durationSec, segments?, chunks?}; rejects with a
 	 * TranscriptionError. `signal` cancels (the running child is killed). `deleteMedia` removes the input after.
+	 * `deadline` (S17/S19) lets the caller share ONE budget across several transcriptions — the YouTube reader gives
+	 * its downloads and transcripts the same 30 min — and it can only shorten this transcription, never extend it.
 	 */
-	async transcribe(file, { signal, deleteMedia = false } = {}) {
+	async transcribe(file, { signal, deleteMedia = false, deadline } = {}) {
 		const regular = typeof file === "string" && path.isAbsolute(file) && (() => {
 			try {
 				const st = fs.lstatSync(file);
@@ -229,7 +231,7 @@ class Transcriber {
 			}
 		})();
 		let work;
-		const job = { signal, deadline: Date.now() + this.limits.timeoutMs };
+		const job = { signal, deadline: Math.min(Number.isFinite(deadline) ? deadline : Infinity, Date.now() + this.limits.timeoutMs) };
 		try {
 			if (!regular) fail("bad_media");
 			if (signal?.aborted) fail("cancelled");

@@ -11,6 +11,7 @@
  *   minikodas/sources/<id>.txt    default source content for the next run (until T1b brings Telegram reading)
  *   minikodas/media/<runId>/      the media a source downloaded for ONE run (videos/audios, S6); removed after the run
  *   minikodas/transcribe/<uuid>/  the transcriber's work files (transcribe.cjs); removed after each transcription
+ *   minikodas/youtube/<uuid>/     the work files of a run's YouTube links (youtube.cjs, S19); removed after the run
  * The engine roots never contain the «Hoy» store or the daemon token, and the kit has no tool
  * that reads files, so a Minikoda cannot reach them through its kit. Same-uid processes can still read them
  * (known limit: running the agent as another OS user is K2-14 criterion 3).
@@ -47,6 +48,7 @@ const { runMinikoda, DEFAULT_RUN_TIMEOUT_MS } = require("./runner.cjs");
 const { Scheduler } = require("./scheduler.cjs");
 const { freshestCredential, readRunCredential, writeBackCredential } = require("./credentials.cjs");
 const { TranscriptionError, removeWorkDir } = require("./transcribe.cjs");
+const { YouTubeError, MAX_LINKS_PER_RUN } = require("./youtube.cjs");
 
 const MAX_MINIKODAS = 32;
 const MAX_SOURCE_BYTES = 200_000;
@@ -88,7 +90,8 @@ class MinikodaService extends EventEmitter {
 	 * @param {object} [options.engine]        {command, commandArgs, env, startTimeoutMs} for every Minikoda engine
 	 * @param {(recipe, {mediaDir, runId, signal}) => string|{text, media?: string[]}|Promise<…>} [options.source]
 	 *        content of `reads.source` for a run; media files (inside `mediaDir`) are transcribed first (S6)
-	 * @param {{transcribe(file, {signal, deleteMedia}): Promise<{text}>}} [options.transcriber]  transcribe.cjs
+	 * @param {{transcribe(file, {signal, deleteMedia, deadline}): Promise<{text}>}} [options.transcriber]  transcribe.cjs
+	 * @param {{read(text, {signal}): Promise<{text, skipped, failures}>}} [options.youtube]  youtube.cjs (S19)
 	 * @param {() => boolean} [options.isPaused]  #379 global pause: no launch while on
 	 * @param {number} [options.minEveryMs]   smallest `when.everyMs` (tests lower it)
 	 * @param {number} [options.runTimeoutMs]
@@ -144,15 +147,16 @@ class MinikodaService extends EventEmitter {
 	}
 
 	/**
-	 * K2-13 (S6, S9): removes whatever a previous daemon left in its two private work folders — a killed run's media,
-	 * a transcription's work files. Only inside `minikodas/media` and `minikodas/transcribe`, and every entry is
+	 * K2-13 (S6, S9, S19): removes whatever a previous daemon left in its three private work folders — a killed run's
+	 * media, a transcription's work files, a YouTube read's downloads. Only inside `minikodas/media`,
+	 * `minikodas/transcribe` and `minikodas/youtube`, and every entry is
 	 * `lstat`ed, so a symlink is removed as a link and its target is never followed. The two folders themselves are
 	 * `lstat`ed too: a work folder that is not a real directory (a link, a file, a junction) is skipped, never read
 	 * through. Both listings are taken before the FIRST await, so a run that starts while the sweep is removing what a
 	 * previous daemon left keeps its own work folder. A failure is logged instead of stopping the service.
 	 */
 	sweepWorkDirs() {
-		const listings = [this.mediaDir, path.join(this.dir, "transcribe")].map((dir) => {
+		const listings = [this.mediaDir, path.join(this.dir, "transcribe"), path.join(this.dir, "youtube")].map((dir) => {
 			try {
 				if (!lstatSync(dir).isDirectory()) {
 					this.log(`minikodas: ${path.basename(dir)} is not a folder of ours any more, left alone`);
@@ -381,24 +385,28 @@ class MinikodaService extends EventEmitter {
 	// ----- runs ----------------------------------------------------------------------------------
 
 	async readSource(recipe, { runId, signal } = {}) {
+		let text;
 		if (this.options.source) {
 			const mediaDir = ensurePrivateDir(path.join(this.mediaDir, runId ?? randomUUID()));
 			try {
 				const got = await this.options.source(recipe, { mediaDir, runId, signal });
-				if (got === null || typeof got !== "object") return String(got ?? "");
-				return await this.withTranscripts(String(got.text ?? ""), Array.isArray(got.media) ? got.media : [], mediaDir, signal);
+				text = got === null || typeof got !== "object"
+					? String(got ?? "")
+					: await this.withTranscripts(String(got.text ?? ""), Array.isArray(got.media) ? got.media : [], mediaDir, signal);
 			} finally {
 				await removeWorkDir(mediaDir, { log: this.log }); // retried, never throws: the run's own error stands
 			}
+		} else {
+			text = "";
+			const file = path.join(this.sourcesDir, `${recipe.id}.txt`);
+			try {
+				const stats = lstatSync(file);
+				if (stats.isFile() && !stats.isSymbolicLink() && stats.size <= MAX_SOURCE_BYTES) text = readFileSync(file, "utf8");
+			} catch {
+				text = "";
+			}
 		}
-		const file = path.join(this.sourcesDir, `${recipe.id}.txt`);
-		try {
-			const stats = lstatSync(file);
-			if (!stats.isFile() || stats.isSymbolicLink() || stats.size > MAX_SOURCE_BYTES) return "";
-			return readFileSync(file, "utf8");
-		} catch {
-			return "";
-		}
+		return this.withYouTube(recipe, text, { signal });
 	}
 
 	/**
@@ -426,6 +434,41 @@ class MinikodaService extends EventEmitter {
 			parts.push(`\n[Transcripción automática (${i + 1} de ${media.length}) del video o audio del post]\n${out.text}`);
 		}
 		const joined = parts.join("\n");
+		return joined.length > MAX_SOURCE_BYTES ? joined.slice(0, MAX_SOURCE_BYTES) : joined;
+	}
+
+	/**
+	 * S19: the YouTube video links of the source are read from YouTube (subtitles first, else audio + transcription)
+	 * and appended behind their markers. One failed video is a «Hoy» `error` item in Spanish and the run goes on; more
+	 * videos than the cap is also said there. A cancelled run or an exhausted transcription budget ends the run
+	 * (S17), exactly like a failing transcription. Without a wired reader (tests, a checkout with no daemon) the text
+	 * is returned untouched.
+	 */
+	async withYouTube(recipe, text, { signal } = {}) {
+		if (!this.options.youtube) return text;
+		let out;
+		try {
+			out = await this.options.youtube.read(text, { signal });
+		} catch (error) {
+			if (error instanceof YouTubeError) {
+				if (error.code === "cancelled") throw new TranscriptionPhaseError(signal?.reason === "paused" ? "paused" : "cancelled");
+				if (error.code === "budget_exceeded") throw new TranscriptionPhaseError("transcription", error.userText);
+			}
+			throw error;
+		}
+		const name = recipe.name;
+		const landed = async (line) => {
+			try {
+				await this.results.addError({ minikoda: recipe.id, text: line });
+			} catch {
+				this.log(`minikoda ${recipe.id}: could not record a YouTube notice in «Hoy»`);
+			}
+		};
+		for (const failure of out.failures ?? []) await landed(`La corrida de «${name}» no pudo leer un video de YouTube (${failure.userText}).`);
+		if (out.skipped > 0) {
+			await landed(`La corrida de «${name}» leyó como mucho ${MAX_LINKS_PER_RUN} videos de YouTube: ${out.skipped} video(s) más del post quedaron sin leer.`);
+		}
+		const joined = String(out.text ?? "");
 		return joined.length > MAX_SOURCE_BYTES ? joined.slice(0, MAX_SOURCE_BYTES) : joined;
 	}
 

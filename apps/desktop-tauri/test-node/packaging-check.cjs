@@ -241,6 +241,8 @@ test('HU-015: the daemon-free Agentes entry ships, closed under require(), besid
   // K2-13 T2c-2: the transcription helper ships beside the island, and the daemon modules that spawn it ship too.
   assert(L.STAGED.includes('abito-transcribe'));
   assert(L.STAGED.includes('desktop-daemon/src/minikodas/transcribe.cjs') && L.STAGED.includes('desktop-daemon/src/minikodas/transcribe-setting.cjs'));
+  // K2-13 T2c-8 (S19): the daemon module that reads YouTube links ships with it (it spawns the bundled runtime/yt-dlp).
+  assert(L.STAGED.includes('desktop-daemon/src/minikodas/youtube.cjs'), 'the YouTube reader must be packaged');
   for (const rel of ['src/agents-direct.cjs', 'src/agents.cjs', 'src/agent-hooks.cjs']) {
     const src = fs.readFileSync(path.join(crate, '..', 'desktop-daemon', rel), 'utf8');
     for (const m of src.matchAll(/require\(['"](\.{1,2}\/[^'"]+)['"]\)/g)) {

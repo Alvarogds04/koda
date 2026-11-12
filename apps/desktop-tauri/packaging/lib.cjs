@@ -185,7 +185,9 @@ const DAEMON_FILES = ['package.json', 'identity.md', 'THIRD-PARTY-NOTICES.md',
   'src/minikodas/credentials.cjs', 'src/minikodas/hoy.cjs', 'src/minikodas/index.cjs', 'src/minikodas/kit-extension.js', 'src/minikodas/model.cjs',
   'src/minikodas/recipe.cjs', 'src/minikodas/runner.cjs', 'src/minikodas/scheduler.cjs', 'src/minikodas/service.cjs',
   // K2-13 T2c-2: video/audio transcription (bundled ffmpeg + abito-transcribe) and its global setting.
-  'src/minikodas/transcribe.cjs', 'src/minikodas/transcribe-setting.cjs'];
+  'src/minikodas/transcribe.cjs', 'src/minikodas/transcribe-setting.cjs',
+  // K2-13 T2c-8 (S19): YouTube video links, read with the bundled yt-dlp inside the runtime folder.
+  'src/minikodas/youtube.cjs'];
 // L42 F1: the hook installer (apps/desktop-harness) ships NEXT TO the daemon: the daemon derives
 // <package>/desktop-harness/bin/abito-hook.cjs from its own location (src/cli.cjs packagedInstallerBin), so Ajustes can
 // install the Claude/Codex/status-line hooks (and take out the removed Recap's 0.1 hooks, K2-03). Closed under require(): packaging-check pins that.

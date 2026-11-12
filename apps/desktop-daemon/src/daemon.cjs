@@ -38,6 +38,7 @@ const { IslandServer } = require("./server.cjs");
 const { Minikodas } = require("./minikodas/index.cjs");
 // K2-13 (S6-S9, S15, S16): video/audio transcription for the Minikodas (bundled ffmpeg + abito-transcribe helper).
 const { Transcriber, TranscriptionError, bundledTools } = require("./minikodas/transcribe.cjs");
+const { YouTubeReader, bundledYtDlp, bundledNode } = require("./minikodas/youtube.cjs");
 
 const PROTOCOL = "island-agent/1";
 const SESSION_FILE = "session.json";
@@ -336,7 +337,7 @@ class Daemon extends EventEmitter {
 	 * @param {object} [options.accountsOptions]
 	 * @param {object} [options.serverOptions]  extra IslandServer options (limits)
 	 * @param {object} [options.minikodasOptions]  extra Minikodas options (tests: fake engine command, minEveryMs)
-	 * @param {object} [options.transcriberOptions]  tests only: {ffmpeg, helper, limits} instead of the bundled tools
+	 * @param {object} [options.transcriberOptions]  tests only: {ffmpeg, helper, limits, ytdlp, jsRuntime, youtubeLimits} instead of the bundled tools
 	 */
 	constructor(options = {}) {
 		super();
@@ -726,6 +727,7 @@ class Daemon extends EventEmitter {
 	makeMinikodas(cfg) {
 		const { engine: engineOverrides, ...rest } = this.options.minikodasOptions ?? {};
 		this.transcriber = this.makeTranscriber();
+		this.youtube = this.makeYouTube(this.transcriber);
 		return new Minikodas({
 			islandRoot: this.root,
 			accountsRoot: path.join(this.root, "accounts"),
@@ -736,6 +738,8 @@ class Daemon extends EventEmitter {
 			engine: { command: cfg.command, commandArgs: [], env: this.env, ...(engineOverrides ?? {}) },
 			isPaused: () => this.server?.paused === true,
 			transcriber: this.transcriber,
+			// S19: YouTube links are read with the bundled yt-dlp; the transcripts go through that same transcriber.
+			youtube: this.youtube,
 			log: (line) => this.log(line),
 			...rest,
 		});
@@ -751,19 +755,55 @@ class Daemon extends EventEmitter {
 	makeTranscriber() {
 		const tools = bundledTools({ installRoot: path.resolve(__dirname, "..", ".."), platform: this.platform });
 		const overrides = this.options.transcriberOptions ?? {};
+		const asTool = (file) => (file ? { command: file, commandArgs: [] } : undefined);
+		return new Transcriber({
+			islandRoot: this.root,
+			setting: () => this.transcriptionSetting(),
+			ffmpeg: "ffmpeg" in overrides ? overrides.ffmpeg : asTool(tools.ffmpeg),
+			helper: "helper" in overrides ? overrides.helper : asTool(tools.helper),
+			remoteAccount: (accountId) => this.transcriptionAccount(accountId),
+			env: overrides.env ?? this.toolEnv(),
+			limits: overrides.limits,
+			log: (line) => this.log(line),
+		});
+	}
+
+	/** The global transcription setting, read live from the config (S7, S18). */
+	transcriptionSetting() {
+		return this.cfg?.transcription ?? config.loadConfig(this.root, { env: this.env }).transcription;
+	}
+
+	/**
+	 * The environment of the bundled tools: the user's HOME/XDG_DATA_HOME (the helper finds the model store it shares
+	 * with dictation), the platform's own variables and a locale. Nothing else from the daemon's environment.
+	 */
+	toolEnv() {
 		const env = {};
 		for (const key of ["HOME", "XDG_DATA_HOME", "USERPROFILE", "LOCALAPPDATA", "APPDATA", "SystemRoot", "TEMP", "TMP", "LANG"]) {
 			if (typeof this.env[key] === "string") env[key] = this.env[key];
 		}
-		const asTool = (file) => (file ? { command: file, commandArgs: [] } : undefined);
-		return new Transcriber({
+		return env;
+	}
+
+	/**
+	 * K2-13 (S19): the YouTube reader of the Minikodas. `yt-dlp` is the BUNDLED binary at `<install>/runtime/yt-dlp[.exe]`
+	 * — never PATH, never a shell — and the audio it downloads is transcribed by the same transcriber as any other
+	 * media. macOS ships neither ffmpeg nor yt-dlp yet (pending for the Mac session), so there every YouTube link
+	 * answers `youtube_unavailable` and the rest of the post is still read. YouTube extraction needs a JavaScript
+	 * runtime, so yt-dlp gets Koda's own bundled Node (`--js-runtimes node:<absolute path>`); never PATH.
+	 */
+	makeYouTube(transcriber) {
+		const overrides = this.options.transcriberOptions ?? {};
+		const installRoot = path.resolve(__dirname, "..", "..");
+		const file = bundledYtDlp({ installRoot, platform: this.platform });
+		return new YouTubeReader({
 			islandRoot: this.root,
-			setting: () => this.cfg?.transcription ?? config.loadConfig(this.root, { env: this.env }).transcription,
-			ffmpeg: "ffmpeg" in overrides ? overrides.ffmpeg : asTool(tools.ffmpeg),
-			helper: "helper" in overrides ? overrides.helper : asTool(tools.helper),
-			remoteAccount: (accountId) => this.transcriptionAccount(accountId),
-			env: overrides.env ?? env,
-			limits: overrides.limits,
+			ytdlp: "ytdlp" in overrides ? overrides.ytdlp : file ? { command: file, commandArgs: [] } : undefined,
+			jsRuntime: "jsRuntime" in overrides ? overrides.jsRuntime : bundledNode({ installRoot, platform: this.platform }),
+			transcriber,
+			setting: () => this.transcriptionSetting(),
+			env: overrides.env ?? this.toolEnv(),
+			limits: overrides.youtubeLimits,
 			log: (line) => this.log(line),
 		});
 	}
