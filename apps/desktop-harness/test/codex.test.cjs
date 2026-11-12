@@ -1,16 +1,20 @@
 'use strict';
-// S4/T2 (human L3, option A «Solo aviso para Codex»): the Codex hooks NEVER wait for the island and never decide.
-// `PermissionRequest` and the plan-mode `PreToolUse` observer send ONE bounded, non-blocking NOTICE and return at once
-// (empty stdout, exit 0), so Codex's own prompt appears immediately; `Stop` clears it. No decision line exists here.
+// K2-08 T1 (S1, S4, S6, S7): a Codex `PermissionRequest` is answered from the island like Claude's. The hook asks ONE
+// approval question (agent `codex`), waits for it within the hook budget and prints the documented allow/deny line; every
+// other outcome (island closed, busy, no answer, connection lost) prints NOTHING so Codex asks in its own terminal.
+// Only `Bash` and `apply_patch` reach the island; MCP and anything else stays in the terminal. Never «Siempre permitir»,
+// never updatedPermissions/updatedInput/interrupt. The plan-mode `PreToolUse` observer is still a notice; `Stop` and
+// `PostToolUse` still send their clearing frame.
 const { test } = require('node:test');
 const { offlineEnv, offlineDir, stubEndpoint } = require('./platform-env.cjs');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const net = require('node:net');
 const path = require('node:path');
-const { handleCodexHook: raw_handleCodexHook, codexToolDescription, shownText } = require('../src/codex.cjs');
-const { parseArgs, watchdogMs, startWatchdog } = require('../src/hook-common.cjs');
-const { fakeReceiver, viaPipe } = require('./fake-receiver.cjs');
+const { handleCodexHook: raw_handleCodexHook, codexToolDescription, ALLOW, DENY } = require('../src/codex.cjs');
+const { parseArgs, watchdogMs, startWatchdog, CODEX_MAX_ISLAND_WAIT_MS } = require('../src/hook-common.cjs');
+const { IslandClient } = require('../src/client.cjs');
+const { fakeReceiver, transportOf, viaPipe } = require('./fake-receiver.cjs');
 const handleCodexHook = viaPipe(raw_handleCodexHook);
 
 const cwd = path.resolve(__dirname, '..');
@@ -34,35 +38,159 @@ const call = (event, over, env, extra = {}) => handleCodexHook({ event,
   env, argv: [], ...extra });
 const noticeOf = async (rcv, type = 'attention') => rcv.seen(type);
 const wireOf = rcv => rcv.rawFrames.join('');
+// The island answers the next question with one option value (what a click on the card sends).
+const answerer = (rcv, value) => rcv.next('question').then(q => rcv.send({ v: 1, type: 'answer', questionVersion: 1, project: q.project,
+  sessionId: q.sessionId, at: Date.now(), id: q.id, source: 'human', answer: { type: 'option', value } }));
+const questionOf = rcv => rcv.frames.find(f => f.type === 'question');
+// A decision line is exactly the documented allow or deny: nothing reserved (fail-closed in Codex) is ever emitted.
+const RESERVED = /updatedPermissions|updatedInput|interrupt|addRules|setMode|always/i;
+const stub = status => () => ({ ask: async () => ({ status }), attention: async () => ({ status: 'sent' }) });
+const APPROVE = { value: 'allow', label: 'Aprobar una vez', description: 'Permitir esta solicitud de Codex una vez' };
+const REJECT = { value: 'deny', label: 'Rechazar', description: 'Rechazar la solicitud de Codex' };
+const TERMINAL = { value: 'terminal', label: 'Decidir en la terminal', description: 'Continuar con el permiso de Codex en la terminal; la tarjeta se cierra' };
 
-test('PermissionRequest: no decision, empty stdout, exit 0, and ONE attention notice reaches the island', async t => {
+test('PermissionRequest Bash: ONE approval question reaches the island as codex; «Aprobar una vez» prints the exact allow line', async t => {
   const rcv = await fakeReceiver(t, { questions: true });
+  const p = answerer(rcv, 'allow');
   const r = await call('permission-request', {}, envOf(rcv));
-  assertSilent(r);
-  const a = await noticeOf(rcv);
-  assert.deepEqual(Object.keys(a).sort(), ['agent', 'at', 'detail', 'id', 'project', 'projectName', 'sessionId', 'title', 'type', 'v']);
-  assert.equal(a.type, 'attention');
-  assert.equal(a.title, 'Codex te pide permiso');
-  assert.equal(a.detail, 'Bash: ls · Respondé en la terminal');
-  assert.equal(a.agent, 'codex');
-  assert.equal(a.projectName, path.basename(fs.realpathSync(cwd)));
-  assert.match(a.id, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
-  assert.ok(Buffer.byteLength(rcv.rawFrames.at(-1)) <= 512, 'the notice frame stays inside the wire cap');
-  assert.deepEqual(rcv.frames.map(f => f.type), ['hello', 'attention'], 'no questions_hello: the island is never asked anything');
-  // nothing that could decide for Codex is ever produced
-  assert.doesNotMatch(wireOf(rcv), /hookSpecificOutput|decision|behavior|updatedInput|questionVersion/);
-  assert.equal(r.stdout, '');
+  await p;
+  assert.equal(r.exitCode, 0); assert.equal(r.stderr, '');
+  assert.equal(r.stdout, ALLOW);
+  assert.deepEqual(JSON.parse(r.stdout), { hookSpecificOutput: { hookEventName: 'PermissionRequest', decision: { behavior: 'allow' } } });
+  const q = questionOf(rcv);
+  assert.equal(q.kind, 'question'); assert.equal(q.agent, 'codex'); assert.equal(q.allowFreeText, false);
+  assert.equal(q.projectName, path.basename(fs.realpathSync(cwd)));
+  assert.equal(q.text, 'Codex pide permiso para Bash: ls');
+  assert.deepEqual(q.options, [APPROVE, REJECT], 'no «Siempre permitir», ever');
+  assert.equal(rcv.frames.filter(f => f.type === 'attention').length, 0, 'the legacy notice is gone');
+  assert.doesNotMatch(wireOf(rcv), /SECRETPATH/);
 });
 
-test('PermissionRequest never waits for the island: a silent receiver cannot hold the hook', async t => {
-  // A receiver that accepts the connection and answers NOTHING: the hook must still return at once.
-  const rcv = await fakeReceiver(t, { silent: true });
-  const { endpoint, runtime } = rcv;
-  const started = Date.now();
-  const r = await call('permission-request', {}, { ABITO_DESKTOP_SOCKET: endpoint, ABITO_SOCKET_DIR: runtime });
-  const elapsed = Date.now() - started;
+test('PermissionRequest Bash: «Rechazar» prints the exact deny line with the Claude message', async t => {
+  const rcv = await fakeReceiver(t, { questions: true });
+  const p = answerer(rcv, 'deny');
+  const r = await call('permission-request', {}, envOf(rcv));
+  await p;
+  assert.equal(r.exitCode, 0); assert.equal(r.stderr, '');
+  assert.equal(r.stdout, DENY);
+  assert.deepEqual(JSON.parse(r.stdout), { hookSpecificOutput: { hookEventName: 'PermissionRequest',
+    decision: { behavior: 'deny', message: 'Denied from the Koda island by the user.' } } });
+});
+
+test('island closed (no endpoint, nothing listening): nothing printed, exit 0 — Codex asks in its terminal', async () => {
+  for (const env of [stubEndpoint(), offlineDir('nonexistent-abito-test'), offlineEnv('nonexistent-abito-test')]) {
+    assertSilent(await call('permission-request', {}, env));
+  }
+});
+
+test('every non-answer outcome (no answer in time, busy/queue full, lost connection, old island) prints nothing', async () => {
+  for (const s of ['expired', 'busy', 'cancelled', 'human_cancelled', 'unavailable', 'unsupported_receiver', 'protocol_error', 'invalid_request', 'weird']) {
+    const r = await call('permission-request', {}, stubEndpoint(), { clientFactory: stub(s) });
+    assertSilent(r);
+  }
+  for (const answer of [{ type: 'option', value: 'always' }, { type: 'option', value: 'terminal' }, { type: 'text', text: 'allow' }, undefined]) {
+    const r = await call('permission-request', {}, stubEndpoint(), { clientFactory: () => ({ ask: async () => ({ status: 'answered', answer }) }) });
+    assertSilent(r);
+  }
+});
+
+test('a full island queue answers busy: nothing printed, exit 0', async t => {
+  const rcv = await fakeReceiver(t, { questions: true });
+  const busy = rcv.next('question').then(q => rcv.replyBusy(q, 1));
+  const r = await call('permission-request', {}, envOf(rcv), { clientFactory: o => new IslandClient({ ...o, ...transportOf(rcv) }) });
+  await busy;
   assertSilent(r);
-  assert.ok(elapsed < 3000, `a notice is bounded, not a question: ${elapsed} ms`);
+});
+
+test('the island drops the connection mid-question: nothing printed, exit 0', async t => {
+  const rcv = await fakeReceiver(t, { questions: true });
+  const drop = rcv.next('question').then(() => { for (const c of rcv.clients) c.destroy(); });
+  const r = await call('permission-request', {}, envOf(rcv), { clientFactory: o => new IslandClient({ ...o, ...transportOf(rcv) }) });
+  await drop;
+  assertSilent(r);
+});
+
+test('a silent island (accepts, never answers the handshake) cannot make the hook decide', async t => {
+  const rcv = await fakeReceiver(t, { silent: true });
+  const r = await call('permission-request', {}, envOf(rcv), { clientFactory: o => new IslandClient({ ...o, ...transportOf(rcv), handshakeTimeoutMs: 100 }) });
+  assertSilent(r);
+});
+
+// K2-08 T3 (S2, S5): the installed entry gives the hook 120 s, so Codex's card waits up to 115 s (the 5 s margin), not
+// Claude's 60 s cap; anything longer is still capped at those 115 s.
+test('the island wait follows --timeout-sec: default 30 s, 120 s => 115 s, capped at 115 s, too short => no card and nothing printed', async t => {
+  for (const [argv, budget] of [[[], 30000], [['--timeout-sec', '120'], 115000], [['--timeout-sec', '125'], 115000], [['--timeout-sec', '3600'], 115000]]) {
+    const rcv = await fakeReceiver(t, { questions: true });
+    const p = answerer(rcv, 'deny');
+    const r = await call('permission-request', {}, envOf(rcv), { argv });
+    await p;
+    assert.equal(r.stdout, DENY);
+    const q = questionOf(rcv);
+    assert.equal(q.expiresAt - q.at, budget, JSON.stringify(argv));
+  }
+  for (const sec of ['5', '20', '34']) {
+    const rcv = await fakeReceiver(t, { questions: true });
+    assertSilent(await call('permission-request', {}, envOf(rcv), { argv: ['--timeout-sec', sec] }));
+    assert.equal(rcv.frames.length, 0, 'no card the hook could not wait for');
+  }
+});
+
+test('a request the island cannot show in full gets no «Aprobar»: Rechazar + Decidir en la terminal only', async t => {
+  for (const command of ['sudo rm -rf /', 'cat ~/.ssh/id_rsa', 'echo $(id)', 'echo ' + 'word '.repeat(120)]) {
+    for (const value of ['allow', 'terminal', 'deny']) {
+      const rcv = await fakeReceiver(t, { questions: true });
+      const p = answerer(rcv, value);
+      const r = await call('permission-request', { tool_input: { command } }, envOf(rcv));
+      await p;
+      const q = questionOf(rcv);
+      assert.deepEqual(q.options, [REJECT, TERMINAL], command);
+      assert.match(q.text, /^Codex pide permiso para Bash: .*detalles solo en la terminal; decidir en la terminal\)$/);
+      assert.equal(r.stdout, value === 'deny' ? DENY : '', 'a forged allow on a lossy card never decides');
+      assert.equal(r.exitCode, 0);
+    }
+  }
+});
+
+test('apply_patch the island cannot represent (K2-08 T4): only «apply_patch», no «Aprobar», the patch never travels', async t => {
+  for (const value of ['allow', 'terminal', 'deny']) {
+    const rcv = await fakeReceiver(t, { questions: true });
+    const p = answerer(rcv, value);
+    const r = await call('permission-request', { tool_name: 'apply_patch', tool_input: { command: '*** Begin Patch\n+SECRETPATCH\n*** End Patch' } }, envOf(rcv));
+    await p;
+    const q = questionOf(rcv);
+    assert.equal(q.agent, 'codex');
+    assert.equal(q.text, 'Codex pide permiso para apply_patch (solicitud no representable; detalles solo en la terminal; decidir en la terminal)');
+    assert.deepEqual(q.options, [REJECT, TERMINAL]);
+    assert.equal(r.stdout, value === 'deny' ? DENY : '');
+    assert.doesNotMatch(wireOf(rcv), /SECRETPATCH/);
+  }
+});
+
+test('MCP, network and any other tool never reach the island: nothing sent, nothing printed', async t => {
+  for (const tool_name of ['mcp__github__create_issue', 'mcp__srv__ping', 'Write', 'Edit', 'WebFetch', 'network', 'exec_command', 'bash', 'Bash ']) {
+    const rcv = await fakeReceiver(t, { questions: true });
+    let asked = 0;
+    const r = await call('permission-request', { tool_name, tool_input: { command: 'ls', url: 'https://example.com' } }, envOf(rcv),
+      { clientFactory: () => ({ ask: async () => { asked++; return { status: 'answered', answer: { type: 'option', value: 'allow' } }; },
+        attention: async () => { asked++; return { status: 'sent' }; } }) });
+    assertSilent(r);
+    assert.equal(asked, 0, tool_name);
+    assert.equal(rcv.frames.length, 0, tool_name);
+  }
+});
+
+test('never «Siempre permitir» and never a reserved field, whatever Codex suggests or the island answers', async t => {
+  for (const value of ['allow', 'deny', 'always', 'allow_suggestion_1', 'terminal']) {
+    const rcv = await fakeReceiver(t, { questions: true });
+    const p = answerer(rcv, value);
+    const r = await call('permission-request', { permission_suggestions: [{ type: 'addRules', rules: [{ toolName: 'Bash' }] }] }, envOf(rcv));
+    await p;
+    const q = questionOf(rcv);
+    assert.deepEqual(q.options.map(o => o.value), ['allow', 'deny']);
+    assert.doesNotMatch(JSON.stringify(q.options), /Siempre|always|suggestion/i);
+    assert.doesNotMatch(r.stdout, RESERVED);
+    assert.equal(r.stdout, value === 'allow' ? ALLOW : value === 'deny' ? DENY : '');
+  }
 });
 
 test('PreToolUse request_user_input: same immediate notice, this time «Codex te pregunta»', async t => {
@@ -150,84 +278,79 @@ test('malformed / huge / wrong event / bad cwd / bad tool => silent and no netwo
   assert.equal(rcv.frames.length, 0, 'a rejected input never opens a connection');
 });
 
-test('the islands details are short, redacted and never carry secrets', async t => {
+test('the card text is redacted and never carries secrets; hidden secrets mean no «Aprobar» unless the rest is shown in full', async t => {
   const cases = [
-    { tool_name: 'Bash', tool_input: { command: 'curl -H "Authorization: Bearer sk-abcdefghijklmnopqrstuvwxyz" https://x' } },
-    { tool_name: 'Bash', tool_input: { command: 'export API_TOKEN=SECRETTOKEN123; ls' } },
-    { tool_name: 'Bash', tool_input: { command: 'cat /home/dev/.ssh/id_rsa' } },
-    { tool_name: 'apply_patch', tool_input: { command: '*** Update File: /home/dev/SECRETDIR/a.txt\n+SECRETLINE' } },
-    { tool_name: 'mcp__github__create_issue', tool_input: { title: 'SECRETTITLE' } },
+    { tool_input: { command: 'curl -H "Authorization: Bearer sk-abcdefghijklmnopqrstuvwxyz" https://x' }, lossy: false },
+    { tool_input: { command: 'export API_TOKEN=SECRETTOKEN123; ls' }, lossy: null },
+    { tool_input: { command: 'cat /home/dev/.ssh/id_rsa' }, lossy: true },
+    // K2-08 T4 (3a): a patch path outside the session folder is SHOWN, like Claude's, but its change is not and there is no
+    // «Aprobar»; a path that itself looks like a secret stays hidden by the existing R9 rule (nothing of it on the card).
+    { tool_name: 'apply_patch', tool_input: { command: '*** Begin Patch\n*** Update File: /home/dev/proj/a.txt\n-a\n+API_KEY=SECRETLINE\n*** End Patch' },
+      lossy: true, shows: path.resolve(cwd, '/home/dev/proj/a.txt') },
+    { tool_name: 'apply_patch', tool_input: { command: '*** Begin Patch\n*** Update File: /home/dev/SECRETDIRabcdefghijklmnopqrstuvwxyzABCDEFGH0123456789/a.txt\n-a\n+SECRETLINE\n*** End Patch' },
+      lossy: true, hidden: true },
   ];
-  for (const h of cases) {
+  for (const { lossy, shows, hidden, ...h } of cases) {
     const rcv = await fakeReceiver(t, { questions: true });
-    assertSilent(await call('permission-request', h, envOf(rcv)));
-    const a = await noticeOf(rcv);
+    const p = answerer(rcv, 'deny');
+    const r = await call('permission-request', h, envOf(rcv));
+    await p;
+    assert.equal(r.stdout, DENY);
+    const q = questionOf(rcv);
     assert.doesNotMatch(wireOf(rcv), /SECRET|sk-abc|\/home\/alvaro/, JSON.stringify(h));
-    assert.match(a.detail, / · Respondé en la terminal$/);
-    assert.ok([...a.detail].length <= 200, 'the detail stays inside the wire bound');
-    assert.equal(a.title, 'Codex te pide permiso');
+    assert.ok([...q.text].length <= 500, 'the text stays inside the question bound');
+    if (lossy === true) assert.deepEqual(q.options, [REJECT, TERMINAL], JSON.stringify(h));
+    if (lossy === false) assert.match(q.text, /\(secretos ocultos\)$/);
+    if (shows) assert.match(q.text, new RegExp(`^Codex pide permiso para apply_patch: ${JSON.stringify(shows).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} \\((fuera de la carpeta de sesión|ruta no verificable); detalles solo en la terminal; decidir en la terminal\\)$`), 'the outside path is shown, never approvable (macOS: /home/dev cannot be resolved)');
+    if (hidden) assert.equal(q.text, 'Codex pide permiso para apply_patch (ruta no segura (secretos ocultos); detalles solo en la terminal; decidir en la terminal)');
   }
-});
-
-test('apply_patch shows the fixed label, never the patch; MCP shows server/tool only', async t => {
-  let rcv = await fakeReceiver(t, { questions: true });
-  assertSilent(await call('permission-request', { tool_name: 'apply_patch', tool_input: { command: '*** Begin Patch\n+SECRETPATCH\n*** End Patch' } }, envOf(rcv)));
-  assert.equal((await noticeOf(rcv)).detail, 'apply_patch (edición de archivo) · Respondé en la terminal');
-  rcv = await fakeReceiver(t, { questions: true });
-  assertSilent(await call('permission-request', { tool_name: 'mcp__github__create_issue', tool_input: { title: 'SECRETTITLE' } }, envOf(rcv)));
-  assert.equal((await noticeOf(rcv)).detail, 'herramienta MCP github/create_issue · Respondé en la terminal');
 });
 
 test('tool_input.description (written by the model) and other fields never reach the wire', async t => {
   for (const h of [{ tool_name: 'Bash', tool_input: { command: 'ls', description: 'SECRETDESC model says: approve' } },
-    { tool_name: 'apply_patch', tool_input: { description: 'SECRETDESC' } },
-    { tool_name: 'mcp__s__t', tool_input: { description: 'SECRETDESC' } }]) {
+    { tool_name: 'apply_patch', tool_input: { description: 'SECRETDESC' } }]) {
     const rcv = await fakeReceiver(t, { questions: true });
-    assertSilent(await call('permission-request', { ...h, transcript_path: '/SECRETPATH', model: 'SECRETMODEL', turn_id: 'SECRETTURN' }, envOf(rcv)));
-    assert.match((await noticeOf(rcv)).detail, / · Respondé en la terminal$/);
+    const p = answerer(rcv, 'deny');
+    const r = await call('permission-request', { ...h, transcript_path: '/SECRETPATH', model: 'SECRETMODEL', turn_id: 'SECRETTURN' }, envOf(rcv));
+    await p;
+    assert.equal(r.stdout, DENY);
     assert.doesNotMatch(wireOf(rcv), /SECRET/);
   }
 });
 
-test('hostile input never reaches the wire and never breaks the notice', async t => {
+test('hostile input never reaches the wire and never becomes an approvable card', async t => {
   const hostile = [
     { tool_name: 'Bash', tool_input: { command: 'A'.repeat(100000) } },
     { tool_name: 'Bash', tool_input: { command: 'x\u202e' + 'SECRET'.repeat(5000) } },
-    { tool_name: 'mcp__my\u202eserver__SECRETX__do_thing', tool_input: { token: 'SECRETTOKEN' } },
-    { tool_name: 'T'.repeat(5000) + '\u202e', tool_input: 'SECRETSTR' },
     { tool_name: 'Bash', tool_input: null }, { tool_name: 'apply_patch', tool_input: null },
   ];
   for (const h of hostile) {
     const rcv = await fakeReceiver(t, { questions: true });
+    const p = answerer(rcv, 'allow');
     const r = await call('permission-request', { ...h, permission_suggestions: ['SECRETSUGGEST'] }, envOf(rcv));
-    assertSilent(r);
-    const a = await noticeOf(rcv);
+    await p;
+    assertSilent(r); // a forged allow on a lossy card decides nothing
+    const q = questionOf(rcv);
     assert.doesNotMatch(wireOf(rcv), /SECRET|evil|--data|\u202e/);
-    assert.ok([...a.detail].length <= 200);
-    assert.match(a.detail, / · Respondé en la terminal$/);
-    assert.ok(Buffer.byteLength(rcv.rawFrames.at(-1)) <= 512);
+    assert.ok([...q.text].length <= 500);
+    assert.deepEqual(q.options, [REJECT, TERMINAL]);
+  }
+  for (const h of [{ tool_name: 'mcp__my\u202eserver__SECRETX__do_thing', tool_input: { token: 'SECRETTOKEN' } },
+    { tool_name: 'T'.repeat(5000) + '\u202e', tool_input: 'SECRETSTR' }]) {
+    const rcv = await fakeReceiver(t, { questions: true });
+    assertSilent(await call('permission-request', h, envOf(rcv)));
+    assert.equal(rcv.frames.length, 0, 'not Bash/apply_patch: the terminal asks');
   }
 });
 
-test('a 128-character session id still fits the 512-byte notice frame', async t => {
+test('a 128-character session id still travels with the question', async t => {
   const rcv = await fakeReceiver(t, { questions: true });
   const sid = 's'.repeat(128);
-  assertSilent(await call('permission-request', { session_id: sid, tool_input: { command: 'x'.repeat(400) } }, envOf(rcv)));
-  const a = await noticeOf(rcv);
-  assert.equal(a.sessionId, sid);
-  assert.ok(Buffer.byteLength(rcv.rawFrames.at(-1)) <= 512);
-  assert.match(a.detail, /Respondé en la terminal$/);
-});
-
-test('changing the Codex command-line budget changes nothing: the flags are parsed and ignored', async t => {
-  for (const argv of [[], ['--timeout-sec', '20'], ['--timeout-sec', '3600']]) {
-    const rcv = await fakeReceiver(t, { questions: true });
-    assertSilent(await call('permission-request', {}, envOf(rcv), { argv }));
-    const a = await noticeOf(rcv);
-    assert.equal(a.title, 'Codex te pide permiso');
-    assert.equal('expiresAt' in a, false, 'a notice carries no island deadline');
-    assert.equal(rcv.frames.filter(f => f.type === 'questions_hello').length, 0);
-  }
+  const p = answerer(rcv, 'allow');
+  const r = await call('permission-request', { session_id: sid }, envOf(rcv));
+  await p;
+  assert.equal(questionOf(rcv).sessionId, sid);
+  assert.equal(r.stdout, ALLOW);
 });
 
 test('parseArgs / watchdogMs / startWatchdog stay the CLI contract (old installed entries keep working)', () => {
@@ -235,6 +358,8 @@ test('parseArgs / watchdogMs / startWatchdog stay the CLI contract (old installe
   assert.deepEqual(parseArgs(['--timeout-sec', '12']), { timeoutSec: 12 });
   for (const bad of [['--timeout-sec', '0'], ['--timeout-sec', 'x'], ['--nope'], 'x']) assert.equal(parseArgs(bad), null);
   assert.equal(watchdogMs('permission-request', 35), 35000, 'the one event that may hold the island open');
+  // T3: with the installed 120 s the watchdog still fires 5 s after the island deadline (115 s), never inside it.
+  assert.equal(watchdogMs('permission-request', 120) - CODEX_MAX_ISLAND_WAIT_MS, 5000);
   assert.equal(watchdogMs('stop', 35), 15000);
   const noticeWatchdog = watchdogMs('pre-tool-use', 35);
   assert.ok(Number.isInteger(noticeWatchdog) && noticeWatchdog > 0 && noticeWatchdog <= 35000, 'a notice is always bounded');
@@ -245,13 +370,15 @@ test('parseArgs / watchdogMs / startWatchdog stay the CLI contract (old installe
   assert.equal(typeof fired, 'number');
 });
 
-test('codexToolDescription keeps the fixed labels (apply_patch is never shown as a patch)', () => {
-  assert.deepEqual(codexToolDescription('apply_patch', { command: '*** Begin Patch\n+SECRET\n*** End Patch' }), { text: 'apply_patch (file edit)', lossy: true });
-  assert.equal(codexToolDescription('Bash', { command: 'ls' }).lossy, false);
-  assert.equal(codexToolDescription('mcp__srv__ping', {}).lossy, false);
-  // the raw detail still names the path (Codex shows it too); the NOTICE text is what sanitizes HOME away
-  // shownText sanitizes the HOME of whoever runs the hook, so the fixture uses this machine's home
-  const home = require('node:os').homedir();
-  assert.match(codexToolDescription('Bash', { command: `cat ${home}/.ssh/id_rsa` }).text, /^Bash: cat /);
-  assert.equal(shownText(codexToolDescription('Bash', { command: `cat ${home}/.ssh/id_rsa` })).includes(home), false);
+test('codexToolDescription(name, input, cwd): apply_patch gets the R9 file preview; only Bash and apply_patch are answerable at all', () => {
+  assert.deepEqual(codexToolDescription('apply_patch', { command: '*** Begin Patch\n+SECRET\n*** End Patch' }, cwd),
+    { filePreview: true, text: 'apply_patch', lossy: true, reason: 'solicitud no representable' }, 'a patch outside the grammar shows nothing of itself');
+  // an absolute path outside the folder (a relative one would carry this checkout's own path, which may look like a secret).
+  // /home/dev does not exist on macOS runners, so the reason may be «ruta no verificable» there: both show the path, neither is approvable.
+  const outside = codexToolDescription('apply_patch', { command: '*** Begin Patch\n*** Delete File: /home/dev/proj/fuera.txt\n*** End Patch' }, cwd);
+  assert.deepEqual({ ...outside, reason: undefined },
+    { filePreview: true, text: `apply_patch: borrar ${JSON.stringify(path.resolve(cwd, '/home/dev/proj/fuera.txt'))}`, lossy: true, reason: undefined });
+  assert.ok(['fuera de la carpeta de sesión', 'ruta no verificable'].includes(outside.reason), outside.reason);
+  assert.equal(codexToolDescription('Bash', { command: 'ls' }, cwd).lossy, false);
+  for (const tool of ['mcp__srv__ping', 'Write', 'WebFetch', 'exec_command']) assert.equal(codexToolDescription(tool, {}, cwd), null, tool);
 });

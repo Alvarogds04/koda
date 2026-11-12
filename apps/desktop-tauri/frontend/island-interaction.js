@@ -9,9 +9,6 @@
 })(typeof window === 'object' ? window : globalThis, function () {
   const DEFAULTS = Object.freeze({ autoCloseSeconds: 15, openOnHover: false });
   const HOVER_DELAY_MS = 600;
-  // G16: whole seconds the FOLDED island waits before it hides at the edge (Ajustes -> General -> «Ocultar tras»).
-  const EDGE_ABSENCE = Object.freeze({ min: 5, max: 300, default: 10 });
-  const EDGE_BLOCKERS = Object.freeze(['question', 'approval', 'request', 'decision', 'card']);
   const BLOCKERS = Object.freeze(['question', 'approval', 'request', 'decision', 'card',
     'dragging', 'editing', 'composing', 'draft', 'settings', 'models']);
 
@@ -257,60 +254,7 @@
     }
     return Object.freeze({ update, setPreferences, enter, leave, engage, togglePin, reset, stop, snapshot });
   }
-  // L40: visual concealment only, never native Hide or card admission.
-  function createEdgeController(options) {
-    const now = createClock(options.now);
-    let facts = {}, inside = false, hidden = false, stopped = false;
-    let sound = true, seconds = EDGE_ABSENCE.default, timer = null, generation = 0;
-    function cancel() { generation++; if (timer !== null) options.cancel(timer); timer = null; }
-    function show(value) { if (hidden !== value) { hidden = value; options.onHidden(value); } }
-    // Human: «solo lo frena una pregunta pendiente». The edge hide waits only for a pending question/permission (a queued one is the
-    // same flag: the head is pending) and for a pointer over the island. Status notices («Sin motor», the hotkey chip, a downed
-    // bridge), a pin, a draft, an open field or panel, a drag and the stale `data-view` of a just-folded island do not.
-    // A missing `state`/`settled`/`nativeReady`/`question` fact is still not permission (fail closed).
-    function why() {
-      if (stopped) return 'stopped';
-      if (facts.state !== 'compact') return `state:${facts.state}`;
-      if (facts.settled !== true) return 'unsettled';
-      if (facts.nativeReady !== true) return 'native';
-      const blocker = EDGE_BLOCKERS.find(key => facts[key] !== false);
-      if (blocker) return blocker;
-      return inside ? 'pointer' : 'clear';
-    }
-    function allowed() { return why() === 'clear'; }
-    function reconcile(restart = false) {
-      if (stopped) return;
-      if (restart) cancel();
-      if (!allowed()) { cancel(); show(false); return; }
-      if (hidden || timer !== null) return;
-      const serial = ++generation;
-      const due = now() + (sound ? seconds * 1000 : 1000);
-      function deliver() {
-        if (stopped || serial !== generation) return;
-        timer = null;
-        if (!allowed()) return;
-        const remaining = due - now();
-        // Browser timers can deliver a fraction early. Preserve the deadline,
-        // rather than silently spending the hide or restarting a full delay.
-        if (remaining > 0) timer = options.schedule(deliver, Math.max(1, remaining));
-        else show(true);
-      }
-      timer = options.schedule(deliver, Math.max(1, due - now()));
-    }
-    return Object.freeze({
-      update(next) { if (!stopped) { facts = { ...next }; if (typeof facts.pointerInside === 'boolean') inside = facts.pointerInside; reconcile(); } },
-      setPreferences(p) {
-        if (stopped) return;
-        if (!p || typeof p.sound !== 'boolean' || !Number.isInteger(p.absenceSeconds) || p.absenceSeconds < EDGE_ABSENCE.min || p.absenceSeconds > EDGE_ABSENCE.max) throw new TypeError('Invalid absence preferences.');
-        const changed = sound !== p.sound || seconds !== p.absenceSeconds;
-        sound = p.sound; seconds = p.absenceSeconds; reconcile(changed);
-      },
-      enter(event) { if (!stopped && mouse(event)) { inside = true; reconcile(); } },
-      leave(event) { if (!stopped && mouse(event)) { inside = false; reconcile(true); } },
-      alert() { if (!stopped) { cancel(); show(false); reconcile(); } },
-      stop() { stopped = true; cancel(); },
-      snapshot() { return { hidden, inside, why: why() }; },
-    });
-  }
-  return Object.freeze({ DEFAULTS, HOVER_DELAY_MS, BLOCKERS, EDGE_ABSENCE, EDGE_BLOCKERS, validPreferences, eligible, createClock, countdown, createCountdownView, createController, createEdgeController });
+  // isla-cualquier-lado S2 (human: «solo el círculo con koda pero sin que esté oculto»): the folded island never hides at the
+  // screen edge any more, so the edge-hide controller and its 5–300 s delay are retired.
+  return Object.freeze({ DEFAULTS, HOVER_DELAY_MS, BLOCKERS, validPreferences, eligible, createClock, countdown, createCountdownView, createController });
 });

@@ -44,14 +44,14 @@ In JSON mode stdout is **exactly one JSON line** (terminated by `\n`), stderr is
 | `target` | absolute normalized settings path |
 | `exists` | bool: the target file exists |
 | `changed` | bool: the plan would modify (or create) the file; `false` = nothing to do |
-| `entries` | Claude/Codex: `PermissionRequest`, `Stop`; recap (removal only): `UserPromptSubmit`, `PostToolUse`, `Stop`; statusline: exactly `statusLine`. Ordered; `op` in `add`, `replace`, `remove`, `keep` (`keep` includes removal when no marker exists); recap entries are only `remove`/`keep` |
+| `entries` | Claude: `PermissionRequest`, `SessionStart`, `Stop`; Codex: `PermissionRequest`, `PreToolUse`, `PostToolUse`, `Stop`; recap (removal only): `UserPromptSubmit`, `PostToolUse`, `Stop`; statusline: exactly `statusLine`. Ordered; `op` in `add`, `replace`, `remove`, `keep` (`keep` includes removal when no marker exists); recap entries are only `remove`/`keep`. A Codex upgrade from the S4/T2 5 s notice entry to the K2-08 T3 120 s answered entry shows `PermissionRequest` as `replace` |
 | `backup_path` | string or `null` (`null` when nothing changes or the file is new). The timestamp is **planned**; the one used at apply is the apply-time UTC time |
 | `diff.lines` | at most **200** strings, each at most **300** characters, control characters (C0, DEL, C1, U+2028/2029) replaced by `?`; `[]` when unchanged. First line is a `@@` header, then context (` `), `-` and `+` lines |
 | `diff.hidden` | integer >= 0: diff lines not shown. **`diff.hidden > 0` (or any line altered by sanitizing: control characters replaced by `?`, lines cut at 300 characters) means the preview is NOT fully human-reviewable: the island must warn and disable the 1-click apply in that case.** |
 | `diff.outside_hooks_changed_lines` | integer, always `0` by construction (computed, not assumed) |
-| `requires_trust_review` | `true` for `codex` + `install`, otherwise `false` |
+| `requires_trust_review` | `true` for `codex` + `install` (fresh install AND update: Codex trusts hooks by hash), otherwise `false` |
 | `plan_hash` | 64 lowercase hex |
-| `notes` | fixed strings (no file content) |
+| `notes` | fixed strings (no file content). For `codex` + `install` they also say that the hooks must be trusted again in `/hooks` after every install or update, and that Koda answers Codex permission requests from the island: Codex waits up to 120 s showing «Esperando tu respuesta en Koda», then asks in the terminal |
 
 Timestamps are **excluded** from `plan_hash` (the backup name is chosen at apply time). `--remove` also deletes a matcher group that our removal left empty, so a user `matcher` key on such a group is lost with it. `plan_hash` = sha256 (hex) of the canonical JSON (keys sorted, no whitespace) of `{schema, harness, action, target, original:{exists, sha256, size}, result_sha256, timeoutSec, execPath, binPath, installerVersion}`. `result_sha256` is the sha256 of the exact bytes to be written, or `""` when `changed` is `false`. A non-existent original is `{exists:false, sha256:"", size:0}`. Deterministic: identical state gives identical hashes. `INSTALLER_VERSION` is a constant in `src/install-ui.cjs` (`abito-hook-installer/1`).
 
@@ -128,7 +128,7 @@ Refusals that happen after argument validation (`not_island`, `plan_changed`, `b
 3. The app-owned Node adapter spawns `node bin/abito-hook.cjs install ...` directly (no shell); `ppid` identifies that adapter's Node executable.
 4. Run the preview, render `diff.lines` (and `notes`, `requires_trust_review`) to the human, and let the **click** be the confirmation. Store the `plan_hash` the human saw and pass exactly that hash and the same args to the apply.
 5. Pass `--audit-dir` (an island-owned `0700` directory) and treat exit 73 as "not installed".
-6. On `requires_trust_review: true` (Codex), tell the human to review/trust the hooks in `/hooks`; until then they are inactive. The installer never touches `~/.codex/config.toml`.
+6. On `requires_trust_review: true` (Codex, fresh install or update), tell the human to open Codex `/hooks` and trust the Koda hooks again; until then they are inactive (and an updated entry, e.g. the T3 move to the 120 s «Esperando tu respuesta en Koda» entry, stays inactive too). The installer never touches `~/.codex/config.toml`.
 7. Handle `plan_changed` by re-previewing and asking again.
 
 ## Notify-only Claude integrations

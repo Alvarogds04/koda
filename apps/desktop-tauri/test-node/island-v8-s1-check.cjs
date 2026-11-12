@@ -1,6 +1,7 @@
 'use strict';
-/* v8 S1: the hidden island's coloured thread must be VISIBLE in the real window: the island sits 24px up, so the thread has to be in
-   the last 8px of the island (window y 0..8), not at the island's own top (which is off screen). Real layout. */
+/* v8 S1 drew a coloured thread for the island hidden 24px up at the screen edge. isla-cualquier-lado S2 (human: «solo el círculo con
+   koda pero sin que esté oculto») retired that hide: in the real layout the folded island is the full 40x32 disc, on screen, and it
+   stays so with no thread and no hidden state, whatever is waiting. Real layout. */
 const assert = require('node:assert/strict');
 const H = require('./island-geometry-harness.cjs');
 if (!H.findPlaywright()) { console.log('SKIPPED: no playwright — NOT a pass'); process.exit(0); }
@@ -8,18 +9,19 @@ if (!H.findPlaywright()) { console.log('SKIPPED: no playwright — NOT a pass');
   for (const [name, sc] of [['rest', {}], ['question', { question: 'plain' }]]) {
     const r = await H.open({ ...sc, quick: true });
     try {
-      await r.page.evaluate(() => { window.__islandSetState('compact'); window.__islandConceal(true); });
+      await r.page.evaluate(() => { window.__islandSetState('compact'); });
       await r.page.waitForTimeout(1500);
-      const m = await r.page.evaluate(() => { const s = document.getElementById('edge-strip'), b = s.getBoundingClientRect(), c = getComputedStyle(s); const i = document.getElementById('island').getBoundingClientRect();
-        return { top: b.top, bottom: b.bottom, w: b.width, op: +c.opacity, bg: c.backgroundColor, islandBottom: i.bottom, hidden: document.getElementById('capsule').dataset.edgeHidden, state: s.dataset.state }; });
-      assert.equal(m.hidden, 'true', `${name}: hidden`);
-      assert.ok(Math.abs(m.islandBottom - 8) < 0.6, `${name}: island bottom is 8 (${m.islandBottom})`);
-      // S3 (island-free-drag): the concealed island is the disc's own width (geometry::COMPACT_DOT 40), not the old 288 bar.
-      assert.ok(m.top >= -0.5 && m.bottom <= 8.5 && m.w >= 38 && m.w <= 42, `${name}: the thread is on screen inside the 8px zone [${m.top},${m.bottom}] w ${m.w}`);
-      assert.ok(m.op >= 0.4 && !/rgba\(0, 0, 0, 0\)/.test(m.bg), `${name}: opaque enough (${m.op} ${m.bg})`);
-      if (name === 'question') assert.equal(m.state, 'question');
-      const hit = await r.page.evaluate(() => { const b = document.getElementById('edge-strip').getBoundingClientRect(); return document.elementFromPoint(b.left + b.width / 2, Math.max(0.5, b.top + 1.5)) !== null; });
-      assert.ok(hit);
+      const m = await r.page.evaluate(() => { const i = document.getElementById('island').getBoundingClientRect(), cap = document.getElementById('capsule');
+        return { top: i.top, bottom: i.bottom, w: i.width, op: +getComputedStyle(document.getElementById('island')).opacity, strip: !!document.getElementById('edge-strip'),
+          hidden: cap.dataset.edgeHidden, conceal: typeof window.__islandConceal, phase: cap.dataset.phase }; });
+      assert.equal(m.phase, 'compact', `${name}: folded`);
+      assert.equal(m.hidden, undefined, `${name}: never marked hidden`);
+      assert.equal(m.strip, false, `${name}: no edge thread`);
+      assert.equal(m.conceal, 'undefined', `${name}: no page-side conceal hook left`);
+      assert.ok(m.top >= -0.5 && Math.abs(m.bottom - m.top - 32) < 0.6 && m.w >= 38 && m.w <= 42, `${name}: the whole 40x32 disc is on screen [${m.top},${m.bottom}] w ${m.w}`);
+      assert.ok(m.op > 0.9, `${name}: the disc is drawn (${m.op})`);
+      const hit = await r.page.evaluate(() => { const b = document.getElementById('island').getBoundingClientRect(); const el = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2); return !!el && document.getElementById('capsule').contains(el); });
+      assert.ok(hit, `${name}: the disc is the hit target at its centre`);
     } finally { await r.close(); }
   }
   console.log('island-v8-s1-check: ok');

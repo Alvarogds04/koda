@@ -17,9 +17,10 @@ const over = (fg, a, bg) => fg.map((c, i) => Math.round(c * a + bg[i] * (1 - a))
         const ink = getComputedStyle(document.getElementById('nusa-title') /* HU-057: Nusa ink; the legacy .centre-name is hidden (and themed dark in light mode) */).color, rows = [...document.querySelectorAll('.pill-choice')].filter(e => e.getBoundingClientRect().width > 0).map(e => { const s = getComputedStyle(e); return { bw: s.borderTopWidth, bc: s.borderTopColor, pressed: e.getAttribute('aria-pressed'), bg: s.backgroundColor, text: e.textContent.trim().slice(0, 12), mark: !!e.querySelector('.blob-mark') || /◂/.test(e.textContent) }; });
         const clay = getComputedStyle(document.getElementById('clay')).opacity;
         return { radii: [c.borderTopLeftRadius, c.borderTopRightRadius, c.borderBottomRightRadius, c.borderBottomLeftRadius].map(parseFloat), top: b.top, bg: c.backgroundColor, ink, rows, clay, w: b.width, h: b.height }; });
-      // HU-057 L4/L5: the idle overview is the Nusa notch — square top corners (flush to the screen edge), bottom corners 26. Was: all four >= 16 (Sileo pill family).
-      assert.deepEqual(m.radii, [0, 0, 26, 26], `${theme}: Nusa notch: top square, bottom corners 26 (HU-057): ${m.radii}`);
-      assert.equal(Math.round(m.top), 0, `${theme}: the shell is flush to the top edge (${m.top})`);
+      // isla-cualquier-lado S1/S5: the idle overview is the floating card — r26 on all four corners (was the HU-057 notch [0,0,26,26]).
+      assert.deepEqual(m.radii, [26, 26, 26, 26], `${theme}: floating card: r26 on every corner: ${m.radii}`);
+      // the card sits flush with the window edge it is anchored on (top here); the 12 px to the screen edge are the window's (geometry::EDGE_GAP)
+      assert.equal(Math.round(m.top), 0, `${theme}: the card starts at the window top (${m.top})`);
       // HU-057 S1/L4: the Nusa notch is solid black in both themes (was: alpha in [0.6,0.8) see-through). Contrast below is then ink over black, whatever the backdrop.
       const a = parse(m.bg)[3] ?? 1; assert.equal(a, 1, `${theme}: Nusa shell is opaque: ${m.bg}`); assert.deepEqual(parse(m.bg).slice(0, 3), [0, 0, 0], `${theme}: Nusa shell is black: ${m.bg}`);
       assert.equal(+m.clay, 1, `${theme}: mascot opaque`);

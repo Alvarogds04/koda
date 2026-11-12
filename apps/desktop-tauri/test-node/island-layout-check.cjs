@@ -194,6 +194,31 @@ test('T4b approvalView: the Spanish producer pair wears the approval look and ke
   assert.deepEqual([mcp.tool, mcp.command, mcp.title], [null, 'herramienta MCP foo', 'Permiso:']);
   assert.equal(L.compactView({ rows: [], focusId: null, pending: { kind: 'question', agent: 'claude-code', text: 'Codex pide permiso para Bash: ls', options: [{ index: 0, label: 'Aprobar una vez' }, { index: 1, label: 'Rechazar' }] } }).badge, 'approval');
 });
+// K2-08 T1/T4: the exact cards the Codex hook now sends (apps/desktop-harness/src/codex.cjs, file-permission.cjs). A Bash command
+// shown in full is an approval; apply_patch is an approval only for a single-file card shown in full (path + change, borrar, mover);
+// several files, a path outside the session folder, anything recortado/oculto or not representable never gets an approve button.
+test('K2-08 T1/T4 approvalView: the Codex hook cards — Bash and single-file apply_patch approvable, lossy cards never', () => {
+  const bash = L.approvalView(es('Codex pide permiso para Bash: ls'), 'Codex');
+  assert.deepEqual([bash.title, bash.tool, bash.command], ['Ejecutar:', 'Bash', 'ls']);
+  assert.deepEqual(rows2(bash), [['reject', 'Rechazar', 'N', 1], ['approve', 'Aprobar una vez', 'Y', 0]]);
+  for (const detail of ['"/w/uno.txt"; añadir: "hola\\nmundo"', '"/w/uno.txt"; modificar: "a" → "b"', 'borrar "/w/uno.txt"',
+    'mover "/w/uno.txt" → "/w/dos.txt"; modificar: "a" → "b"']) {
+    const v = L.approvalView(es(`Codex pide permiso para apply_patch: ${detail}`), 'Codex');
+    assert.deepEqual([v.title, v.tool, v.command, v.secretsHidden], ['Permiso:', 'apply_patch', detail, false], detail);
+    assert.deepEqual(rows2(v), [['reject', 'Rechazar', 'N', 1], ['approve', 'Aprobar una vez', 'Y', 0]], detail);
+  }
+  const lossyOpts = [opt(0, 'Rechazar'), opt(1, 'Decidir en la terminal')];
+  for (const text of ['Codex pide permiso para apply_patch (edición de archivo) (detalles solo en la terminal; decidir en la terminal)',
+    'Codex pide permiso para apply_patch (solicitud no representable; detalles solo en la terminal; decidir en la terminal)',
+    'Codex pide permiso para apply_patch: varios archivos: "/w/a.txt", "/w/b.txt" (varios archivos; detalles solo en la terminal; decidir en la terminal)',
+    'Codex pide permiso para apply_patch: "/x/fuera.txt" (fuera de la carpeta de sesión; detalles solo en la terminal; decidir en la terminal)',
+    'Codex pide permiso para apply_patch: "/w/uno.txt"; contenido: [REDACTED] (secretos ocultos) (contenido oculto; detalles solo en la terminal; decidir en la terminal)',
+    'Codex pide permiso para apply_patch: "/w/uno.txt"; añadir: "l\\nl" (contenido recortado (8 líneas / 160 bytes); detalles solo en la terminal; decidir en la terminal)',
+    'Codex pide permiso para Bash: cat ~/.ssh/id_rsa (ruta sensible; detalles solo en la terminal; decidir en la terminal)']) {
+    assert.equal(L.approvalView(es(text, lossyOpts), 'Codex'), null, text);
+    assert.equal(L.approvalView(es(text), 'Codex'), null, 'a lossy text stays non-approvable even with a forged pair');
+  }
+});
 test('T4b approvalView: near matches, lossy, extra options, free text, forms and mixed wording stay NOT an approval', () => {
   const T0 = 'Claude Code pide permiso para Bash: ls';
   const no = (n, l) => assert.equal(L.approvalView(n, 'Claude Code'), null, l);
@@ -524,16 +549,8 @@ test('wiring: ONE delegated tooltip in the island — shows on hover AND keyboar
 });
 
 // ======== T1 · S1 (01 oculta A) + S2 (02 compacta A) ========================================================================
-test('S1 edgeStripView: ONE strip whose colour is the most urgent state (reposo gris / pregunta cian / permiso ámbar / listo verde) and never colour alone', () => {
-  assert.deepEqual(L.edgeStripView({}), { state: 'rest', pulse: false, aria: 'Koda, en reposo' });
-  assert.deepEqual(L.edgeStripView({ pending: 'question' }), { state: 'question', pulse: true, aria: 'Koda: una pregunta espera' });
-  assert.deepEqual(L.edgeStripView({ pending: 'approval' }), { state: 'approval', pulse: true, aria: 'Koda: un permiso espera' });
-  assert.deepEqual(L.edgeStripView({ finished: true }), { state: 'finished', pulse: true, aria: 'Koda: algo terminó' });
-  assert.equal(L.edgeStripView({ pending: 'question', finished: true }).state, 'question', 'pending beats finished');
-  assert.equal(L.edgeStripView({ pending: 'approval', finished: true }).state, 'approval');
-  assert.equal(L.edgeStripView({ pending: 'question', queued: 2 }).aria, 'Koda: 3 preguntas esperan', 'the aria says how many wait (the colour cannot)');
-  assert.equal(L.edgeStripView(null).state, 'rest');
-  assert.deepEqual(L.EDGE_STRIP, { w: 160, h: 3, zone: 8 });
+test('isla-cualquier-lado S2: the hidden edge thread is retired (no edgeStripView, no EDGE_STRIP)', () => {
+  assert.equal(L.edgeStripView, undefined); assert.equal(L.EDGE_STRIP, undefined);
 });
 test('S3 compactView: compact is ONLY the disc — a state badge and never a widened bar (island-free-drag L6/L7)', () => {
   const rows = [row({ id: 's-0000000a', kindLabel: 'Pi', cwd: 'workspace', state: 'running', tools: { total: 2, steps: [{ index: 1, name: 'read', state: 'done' }, { index: 2, name: 'bash', state: 'running' }] }, color: 'green' }),
@@ -568,18 +585,18 @@ test('HU-006 S4 + island-free-drag S5 compactView: a notice never widens the isl
     assert.deepEqual([v.activity, v.badge], ['', ''], JSON.stringify(bad));
   }
 });
-test('S1/S2 wiring + CSS: the strip element, the 8px activation zone (24px hidden offset), the mini row and the activity line exist', () => {
+test('S2 wiring + CSS: the mini row and the activity line exist; the edge thread and the hidden offset are gone (isla-cualquier-lado S2)', () => {
   const html = fs.readFileSync(path.join(frontend, 'index.html'), 'utf8');
-  for (const id of ['edge-strip', 'compact-activity', 'compact-badge']) assert.match(html, new RegExp(`id="${id}"`), id);
+  for (const id of ['compact-activity', 'compact-badge']) assert.match(html, new RegExp(`id="${id}"`), id);
+  assert.doesNotMatch(html, /id="edge-strip"/, 'no hidden edge thread');
   const isl = fs.readFileSync(path.join(frontend, 'island.js'), 'utf8');
-  assert.match(isl, /24 \* conceal\.target/, 'hidden = 24px up: 8px of activation zone stay under the pointer');
-  assert.doesNotMatch(isl, /28 \* conceal/, 'the old 4px slice is gone');
+  assert.doesNotMatch(isl, /conceal/, 'the island is never slid up into the edge');
   assert.match(isl, /abito:compact-view/);
   assert.match(isl, /compactW/);
-  assert.equal(decls('#edge-strip').width, '160px'); assert.equal(decls('#edge-strip').height, '3px');
-  assert.equal(decls('#capsule[data-edge-hidden="true"] #island').background, 'transparent', 'only the coloured thread is seen, not the black slice');
-  for (const st of ['rest', 'question', 'approval', 'finished']) assert.ok(decls(`#edge-strip[data-state="${st}"]`).background, st);
-  assert.match(css, /@media \(prefers-reduced-motion: no-preference\) \{[^}]*#edge-strip\[data-pulse="true"\]/, 'the slow pulse exists only when motion is allowed');
+  const nusa = fs.readFileSync(path.join(frontend, 'island-nusa.css'), 'utf8');
+  for (const [name, text] of [['vendor island.css', css], ['island-nusa.css', nusa]]) {
+    assert.doesNotMatch(text.replace(/\/\*[\s\S]*?\*\//g, ''), /#edge-strip|data-edge-hidden|edge-pulse/, name + ': no hidden-state rules left');
+  }
   assert.equal(decls('#mini-grid')['flex-direction'], 'row', 'a row of minis, not a 2x2 grid');
   assert.equal(decls('#capsule[data-phase="compact"] #mini-grid[data-count]:not([data-count="0"])').display, 'flex');
   assert.ok(decls('.mini-more'));

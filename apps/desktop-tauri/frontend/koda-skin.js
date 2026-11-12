@@ -11,15 +11,14 @@
   const now = () => performance.now();
   const reducedNow = () => document.documentElement.dataset.motion === 'reduce' || AbitoClay.reducedNow();
 
-  const tracked = { main: null, toast: null, pill: null };
+  const tracked = { main: null, pill: null };
   const origCreate = AbitoClay.create.bind(AbitoClay);
   AbitoClay.create = function (svg, opts) {
     const inst = origCreate(svg, opts);
     try {
       if (svg && svg.id === 'clay') tracked.main = inst;
       else if (svg && svg.classList) {
-        if (svg.classList.contains('q-toast-abito')) tracked.toast = inst;
-        else if (svg.classList.contains('island-agent-clay') && svg.parentNode && svg.parentNode.dataset && svg.parentNode.dataset.pillId === 'abito') tracked.pill = inst;
+        if (svg.classList.contains('island-agent-clay') && svg.parentNode && svg.parentNode.dataset && svg.parentNode.dataset.pillId === 'abito') tracked.pill = inst;
       }
     } catch { /* decoration only */ }
     return inst;
@@ -71,7 +70,8 @@
     const title = document.getElementById('notice-title'), ci = document.getElementById('chat-input'), nc = document.getElementById('notice-card');
     return {
       pose: inst ? inst.state : 'idle', reaction: inst ? inst.reaction : null,
-      phase: d.phase === 'expanded' || d.phase === 'expanding' ? 'open' : 'compact', hidden: d.edgeHidden === 'true', view: d.view || null,
+      // isla-cualquier-lado S2: the island never hides at the screen edge, so Koda is never «hidden» (no esconderse/asomarse beat)
+      phase: d.phase === 'expanded' || d.phase === 'expanding' ? 'open' : 'compact', hidden: false, view: d.view || null,
       noticeView: d.noticeView || null, noticeAttention: !!(title && /permiso|pide|respond/i.test(title.textContent)),
       noticeError: !!nc && nc.dataset.severity === 'error',
       engineBad: visible(band) || (visible(flag) && flag.dataset.tone === 'red'),
@@ -150,11 +150,18 @@
       }
     }
   }
-  const flowAnim = (inst, fallback) => { const a = inst ? L.POSE_TO_ANIM[inst.state] || (inst.state === 'idle' ? 'respirar' : fallback) : fallback; return a; };
   function placeFlow(main) {
-    const toastSvg = document.querySelector('.q-toast-badge .q-toast-abito');
-    if (toastSvg) { if (toastSvg.nextSibling !== toastSlot.el) toastSvg.after(toastSlot.el); draw(toastSlot, flowAnim(tracked.toast, 'respirar'), 28); }
-    else if (toastSlot.el.parentNode) toastSlot.el.remove();
+    // isla-cualquier-lado S7 (T6): the toast badge is KODA, never the clay Abito. question-toast.js owns the empty slot element; this
+    // skin paints THAT element with the disc's own sheet, integer layout and frame clock, so the toast shows the same character as the
+    // folded disc and no second sprite (nor a hidden clay instance behind it) is ever created.
+    const kodaEl = document.querySelector('.q-toast-badge .q-toast-koda');
+    if (kodaEl) {
+      if (toastSlot.el !== kodaEl) { toastSlot.el = kodaEl; toastSlot.anim = null; toastSlot.cell = 0; toastSlot.k = 0; }
+      // T6b (R3-koda-slot-position-unproved): the circle is 28 px and the sprite is clipped by nothing, so the badge draws the 24 px
+      // sheet (24 + the 2 px margin koda-skin.css gives every slot = exactly 28). 'respirar' has no 24 px cell, so the badge shows
+      // Koda's resting pose instead of a 32 px cell spilling 4 px out of the circle.
+      draw(toastSlot, 'reposo', 28);
+    } else if (toastSlot.el.parentNode) toastSlot.el.remove();
     const pillSvg = document.querySelector('.pill-choice[data-pill-id="abito"] svg.island-agent-clay');
     if (pillSvg) { if (pillSvg.nextSibling !== pillSlot.el) pillSvg.after(pillSlot.el); draw(pillSlot, main, 28); }
     else if (pillSlot.el.parentNode) pillSlot.el.remove();

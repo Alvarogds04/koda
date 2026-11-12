@@ -296,6 +296,13 @@ async function main() {
     assert.ok(html.indexOf('id="chat-new"') < html.indexOf('id="chat-model-row"'), 'after «Respuesta nueva»');
     assert.ok(html.indexOf('id="chat-model-row"') < html.indexOf('id="chat-composer"'), 'above the composer');
     assert.match(/id="chat-model-picker"[^>]*/.exec(html)[0], /hidden/, 'the picker starts closed');
+    // S3 (04 chat 2): the static markup carries the wording for the empty state, so the disabled row never shows an empty name
+    // before the first chat:state arrives (chat-view's NO_MODEL_LABEL covers a view with no target).
+    const name = /<span class="word" id="chat-model-name"[^>]*>([^<]*)<\/span>/.exec(html);
+    assert.ok(name, '#chat-model-name is a plain text span');
+    assert.equal(name[1], 'Sin modelo local', 'the empty case says «Sin modelo local», never a blank name');
+    const dot = /#chat-model-btn \.model-dot \{([^}]*)\}/.exec(fs.readFileSync(path.join(FRONTEND, 'style.css'), 'utf8'));
+    assert.ok(dot && /background:\s*var\(--faint\)/.test(dot[1]), 'the dot of an unknown model is --faint, the inert shape');
   });
 
   await check('R1: the row shows the effective local model as text, with its origin as the accessible name', async () => {

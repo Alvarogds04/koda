@@ -26,7 +26,9 @@ const test = (name, fn) => {
 /* ---------- fixtures ---------- */
 function tarGz(cwd, out, entries) {
   const tar = isWin ? path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe') : 'tar';
-  const r = cp.spawnSync(tar, ['-czf', out, ...entries], { cwd, encoding: 'utf8' });
+  // macOS bsdtar stores extended attributes (e.g. com.apple.provenance) as AppleDouble `._*` members unless
+  // COPYFILE_DISABLE is set; npm would install them as files. GNU tar and Windows tar ignore the variable.
+  const r = cp.spawnSync(tar, ['-czf', out, ...entries], { cwd, encoding: 'utf8', env: { ...process.env, COPYFILE_DISABLE: '1' } });
   assert.equal(r.status, 0, `tar failed: ${r.stderr}`);
 }
 /* A stored (uncompressed) zip: enough for the extractor, and the same bytes on every OS. */
@@ -171,6 +173,9 @@ test(`${hostTarget} (this OS): --archive packs the runtime folder into one tar.g
   const lines = r.stdout.trim().split('\n');
   assert.equal(lines.length, 2);
   assert.equal(lines[1], `archive ${archive} sha256 ${sha256(archive)} (${fs.statSync(archive).size} bytes)`);
+  const listed = cp.spawnSync(isWin ? path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe') : 'tar', ['-tzf', archive], { encoding: 'utf8' });
+  assert.equal(listed.status, 0, listed.stderr);
+  assert.deepEqual(listed.stdout.split(/\r?\n/).filter((m) => /(^|\/)\._/.test(m)), [], 'no macOS AppleDouble (._*) members in the runtime archive');
   const unpacked = path.join(fx.dir, 'unpacked');
   fs.mkdirSync(unpacked);
   const tar = isWin ? path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe') : 'tar';

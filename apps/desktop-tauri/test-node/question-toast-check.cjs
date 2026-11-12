@@ -81,10 +81,38 @@ test('input region: the island shape grows to include the toast (the host region
   assert.equal(h, 32 + T.TOAST.gap + T.TOAST.hMax);
   assert.deepEqual(T.shapeWithToast([720, 184], true), [720, 184 + T.TOAST.gap + T.TOAST.hMax]);
 });
+test('T6b input region: the disc plus its toast, on EITHER edge (the host anchors the rectangle, not this rule)', () => {
+  // isla-cualquier-lado T6b: the only thing that changes with the edge is WHERE the region is anchored in the native window
+  // (islandshape::anchor_bottom: top = the disc on the window's top with the toast below, bottom = the disc on the window's
+  // bottom with the toast ABOVE it). The box the page reports is the same: 350 wide and 96 + 32 tall.
+  assert.deepEqual(T.shapeWithToast([288, 32], true, 'top'), [350, 32 + T.TOAST.gap + T.TOAST.hMax]);
+  assert.deepEqual(T.shapeWithToast([288, 32], true, 'bottom'), [350, 32 + T.TOAST.gap + T.TOAST.hMax]);
+  assert.deepEqual(T.shapeWithToast([288, 32], false, 'bottom'), [288, 32]);
+  assert.deepEqual(T.shapeWithToast([288, 32], true), [350, 32 + T.TOAST.gap + T.TOAST.hMax], 'the edge is not needed to decide the box');
+});
+test('T6 the toast hangs from the DISC on the side that faces the centre of the screen (below for top, above for bottom)', () => {
+  const disc = { top: 12, height: 32 }; // the folded 40x32 island at the window top
+  const high = T.toastPlacement({ edge: 'top', box: disc, expanded: false });
+  assert.deepEqual(high, { edge: 'top', top: 44, height: T.TOAST.h }, 'edge top: the pill starts at the disc bottom edge and the body grows down');
+  assert.deepEqual(T.toastPlacement({ edge: 'top', box: disc, expanded: true }), { edge: 'top', top: 44, height: T.TOAST.hMax }, 'the box only grows away from the disc');
+  const low = T.toastPlacement({ edge: 'bottom', box: disc, expanded: false });
+  assert.deepEqual(low, { edge: 'bottom', top: 12 - T.TOAST.h, height: T.TOAST.h }, 'edge bottom: the pill ends at the disc top edge and the body grows up');
+  assert.deepEqual(T.toastPlacement({ edge: 'bottom', box: disc, expanded: true }), { edge: 'bottom', top: 12 - T.TOAST.hMax, height: T.TOAST.hMax });
+  assert.equal(high.top, disc.top + disc.height, 'flush: no gap between the disc and its toast');
+  assert.equal(low.top + low.height, disc.top, 'flush on the other side too');
+  for (const bad of [null, undefined, {}, { edge: 'left', box: null }, { expanded: 'yes', box: {} }]) {
+    const p = T.toastPlacement(bad);
+    assert.deepEqual([p.edge, p.top, p.height], ['top', 0, T.TOAST.h], `fallback for ${JSON.stringify(bad)}: below the disc, nothing to measure`);
+  }
+  // an unmeasurable island in the lower half still hangs the box above the disc's top (0): a known 40px box, never NaN
+  assert.deepEqual(T.toastPlacement({ edge: 'bottom', box: { top: NaN, height: Infinity } }), { edge: 'bottom', top: -T.TOAST.h, height: T.TOAST.h });
+});
 
-test('reveal policy: a new question shows the toast; it no longer expands the island by itself', () => {
-  assert.equal(T.revealByToast({ phase: 'compact' }), true);
+test('reveal policy (island-free-drag S5): a NEW question opens a compact island; only a hidden island gets the toast', () => {
+  assert.equal(T.revealByToast({ phase: 'compact' }), false, 'compact: a new question keeps auto-opening the island (#266/R23)');
   assert.equal(T.revealByToast({ phase: 'expanded' }), false, 'expanded: the card itself is the signal');
+  assert.equal(T.revealByToast({ phase: 'hidden' }), true, 'hidden from the tray or shortcut: the toast is the signal');
+  assert.equal(T.revealByToast(undefined), true, 'no phase known: fail closed to the toast');
 });
 
 test('Sileo port is vanilla: spring linear() easing, 350x40 pill, gooey filter, no React/npm, reduced motion respected', () => {
@@ -168,20 +196,35 @@ test('reduced motion: the toast does not travel — it appears in place and only
   assert.deepEqual(T.motionPlan(true), { mode: 'fade', springs: false });
   assert.deepEqual(T.motionPlan(false), { mode: 'morph', springs: true });
 });
-test('flush under the island: no gap, centred on it, and it moves with the island (offset follows the island\'s own bottom edge)', () => {
-  assert.equal(T.TOAST.gap, 0, 'touching the island\'s bottom edge');
-  assert.deepEqual(T.toastTop({ top: 0, height: 160 }), 160);
-  assert.deepEqual(T.toastTop({ top: 2, height: 32 }), 34);
-  assert.equal(T.toastTop({ top: -26, height: 32 }), 6, 'an island concealed to the edge pulls the toast up with it');
-  for (const bad of [null, undefined, {}, { top: NaN, height: 5 }]) assert.equal(T.toastTop(bad), 0, JSON.stringify(bad));
+test('flush against the disc: no gap, and it follows the island instead of a fixed window', () => {
+  assert.equal(T.TOAST.gap, 0, 'touching the disc edge');
+  assert.equal(T.toastPlacement({ edge: 'top', box: { top: 0, height: 160 } }).top, 160);
+  assert.equal(T.toastPlacement({ edge: 'top', box: { top: 2, height: 32 } }).top, 34);
+  assert.equal(T.toastPlacement({ edge: 'top', box: { top: -26, height: 32 } }).top, 6, 'a disc measured above the capsule still gives a real edge');
   assert.deepEqual(T.shapeWithToast([288, 32], true), [350, 32 + T.TOAST.hMax], 'the input region has no dead band between island and toast');
+  assert.deepEqual(T.shapeWithToast([288, 32], true, 'bottom'), [350, 32 + T.TOAST.hMax], 'and none above it either');
 });
+test('T6b the toast badge paints the 24 px sheet so Koda fits the 28 px circle (never a 32 px cell spilling out)', () => {
+  // the badge is 28 x 28 (question-toast.css) and koda-skin.css gives every slot a 2 px margin: 24 + 2 x 2 = exactly 28. The
+  // 32 px cell would be 32 + 4 = 36 in a 28 px flex box, i.e. 4 px outside the circle on each side.
+  const K = require(path.join(__dirname, '..', 'frontend', 'koda-logic.js'));
+  const C = require(path.join(__dirname, '..', 'frontend', 'koda-catalog.js'));
+  assert.equal(K.layoutFor('respirar', 'small', 28).cell, 32, 'respirar has no 24 px sheet');
+  const lay = K.layoutFor('reposo', 'small', 28);
+  assert.deepEqual([lay.cell, lay.k], [24, 1]);
+  assert.ok(lay.cell * lay.k + 4 <= 28, `the drawn sprite plus its 2 px margins fits the 28 px badge (${lay.cell * lay.k + 4})`);
+  assert.ok(C.SMALL.includes('reposo'), 'reposo exists on the 24 px sheet');
+  const skin = fs.readFileSync(path.join(frontend, 'koda-skin.js'), 'utf8');
+  assert.match(skin, /draw\(toastSlot, 'reposo', 28\)/, 'the toast badge asks for the sheet that fits it');
+  // R2-flowanim-dead-branch (T7): the badge helper took a clay instance it never received, so the dead branch is gone
+  assert.doesNotMatch(skin, /flowAnim/, 'no dead pose helper left behind');
+});
+
 test('wiring: the toast follows the island with a ResizeObserver (every frame of its spring), reads its radius, and starts from its edge', () => {
   const js = fs.readFileSync(path.join(frontend, 'question-toast.js'), 'utf8');
   assert.match(js, /new ResizeObserver\(/);
   assert.match(js, /observe\(island\)/);
-  assert.match(js, /T\.toastTop\(/);
-  assert.match(js, /T\.morphFrame\(/);
+  assert.match(js, /T\.toastPlacement\(/);
   assert.match(js, /T\.springAt\(/);
   assert.match(js, /requestAnimationFrame/);
   assert.match(js, /T\.motionPlan\(/);
@@ -193,7 +236,6 @@ test('wiring: the toast follows the island with a ResizeObserver (every frame of
 });
 
 // ---- T2: finished + terminal outcomes as informational Sileo toasts (S3-S5) ------------------------------------------------------
-const N = require(path.join(frontend, 'notify-view.js'));
 const settled = (over = {}) => ({ id: '5c1f8f0e-3b52-4f7e-8d0a-0a9b7c6d5e4f', kind: 'settled', title: 'Terminó la revisión', agent: 'codex', projectName: 'abito', ...over });
 test('T2 finished: «<Agente> terminó» is informational — no success claim, not actionable, no open request', () => {
   const v = T.finishedToast(settled());
@@ -215,7 +257,7 @@ test('F6 attention: a Codex «te pide permiso» notice becomes a Sileo pill that
   const v = T.attentionToast(a);
   assert.deepEqual([v.kind, v.title, v.body, v.actionable, v.tone], ['attention', 'Codex te pide permiso', 'Bash: npm install · Respondé en la terminal', false, 'warning']);
   assert.equal(T.openRequest({ isTrusted: true }, v), null, 'never an answer surface: the terminal decides');
-  assert.equal(T.abitoPose(v), 'approval', 'Abito reacts as a permission request');
+  assert.equal(v.role, 'sun', 'amber: something is waiting for a yes, on both the island and the toast');
   assert.equal(T.attentionToast({ ...a, detail: '' }).body, 'Respondé en la terminal');
   for (const bad of [null, {}, { ...a, kind: 'settled' }, { ...a, id: '' }, { ...a, title: '' }]) assert.equal(T.attentionToast(bad), null, JSON.stringify(bad));
 });
@@ -265,8 +307,12 @@ function boot(initial, opts = {}) {
   const set = (fn, ms) => { const id = seq++; timers.set(id, { fn, at: now + Math.max(0, Number(ms) || 0) }); return id; };
   const advance = ms => { const end = now + ms; for (let g = 0; g < 20000; g++) { const due = [...timers.entries()].filter(([, t]) => t.at <= end).sort((a, b) => a[1].at - b[1].at)[0]; if (!due) break; now = Math.max(now, due[1].at); timers.delete(due[0]); due[1].fn(); } now = end; };
   const capsule = el('div'), island = el('div');
-  // human (26-oct): Sileo toasts only while Abito is HIDDEN at the edge; the mounted cases default to that (opts.visible = island shown)
-  capsule.dataset.edgeHidden = opts.visible ? 'false' : 'true';
+  // isla-cualquier-lado (L21, human «1»): a NEW question opens the folded island, so the toast is the signal only where
+  // `revealByToast` says so — a phase it cannot classify. Every mounted case that expects a toast therefore runs with NO phase at all
+  // (opts.phase to stage a classified one); opts.visible = the island is open, exactly when the toast must never show.
+  if (opts.phase) capsule.dataset.phase = opts.phase;
+  else if (opts.visible) capsule.dataset.phase = 'expanded';
+  capsule.dataset.edge = opts.edge || 'top';
   let doc0 = null; const mkEl = tag => { const e = el(tag); e.ownerDocument = doc0; return e; };
   const document = { documentElement: { dataset: {} }, getElementById: id => (id === 'capsule' ? capsule : id === 'island' ? island : null), createElement: mkEl, createElementNS: (_n, t) => mkEl(t), importNode: n => n,
     addEventListener(n, f) { (docEvents[n] ||= []).push(f); }, dispatchEvent(ev) { dispatched.push(ev); (docEvents[ev.type] || []).forEach(f => f(ev)); return true; } };
@@ -308,30 +354,41 @@ mtest('M2 a pending toast replacing an informational toast discards it for good'
   r.advance(2000); r.emit(none('answered')); r.advance(400);
   assert.equal(r.toast.hidden, true, `the superseded «terminó» must not come back; saw ${r.title()}`);
 });
-mtest('M3 (human 26-oct) Abito visible: no Sileo toast at all — the card/island shows it; informational events are dropped, not queued', async () => {
+mtest('M3 island OPEN: no Sileo toast at all — the card/island shows it; informational events are dropped, not queued', async () => {
   const r = boot(SNAP_NOW(), { visible: true }); await Promise.resolve(); await Promise.resolve();
-  r.capsule.dataset.phase = 'expanded'; r.emit(SNAP_NOW()); r.advance(400);
+  assert.equal(r.capsule.dataset.phase, 'expanded');
+  r.emit(SNAP_NOW()); r.advance(400);
   assert.equal(r.toast.hidden, true, 'the card is on screen: no pending toast');
   r.arrive(settledArrival()); r.advance(50);
-  assert.equal(r.toast.hidden, true, 'island visible: no «terminó» toast');
+  assert.equal(r.toast.hidden, true, 'island open: no «terminó» toast');
   r.emit(none('expired')); r.advance(50);
-  assert.equal(r.toast.hidden, true, 'island visible: no outcome toast');
-  r.capsule.dataset.edgeHidden = 'true'; r.emit(none('expired')); r.advance(400);
-  assert.equal(r.toast.hidden, true, 'hiding later does not replay a dropped event');
+  assert.equal(r.toast.hidden, true, 'island open: no outcome toast');
+  r.capsule.dataset.phase = 'compact'; r.emit(none('expired')); r.advance(400);
+  assert.equal(r.toast.hidden, true, 'folding later does not replay a dropped event');
 });
-mtest('M3b (human 26-oct) compact island visible (no question on its pill): an informational event shows NO toast', async () => {
-  const r = boot(none(null), { visible: true }); await Promise.resolve(); await Promise.resolve();
-  r.capsule.dataset.phase = 'compact'; r.arrive(settledArrival()); r.advance(50);
-  assert.equal(r.toast.hidden, true);
+mtest('M3b (isla-cualquier-lado T6/L21) with an UNKNOWN phase the disc shows an informational toast; opening the island takes it away', async () => {
+  const r = boot(none(null)); await Promise.resolve(); await Promise.resolve();
+  r.arrive(settledArrival()); r.advance(50);
+  assert.equal(r.title(), 'Codex terminó', 'unknown phase: «terminó» hangs from the disc');
+  r.capsule.dataset.phase = 'expanded'; r.emit(none(null)); r.advance(400);
+  assert.equal(r.toast.hidden, true, 'open: the island itself shows it');
 });
-mtest('M3c (human 26-oct) a pending question while Abito is visible as a compact pill without its ask: still no toast', async () => {
-  const r = boot(SNAP_NOW(), { visible: true }); await Promise.resolve(); await Promise.resolve();
-  r.capsule.dataset.phase = 'compact'; r.emit(SNAP_NOW()); r.advance(400);
-  assert.equal(r.toast.hidden, true);
-  r.capsule.dataset.edgeHidden = 'true'; r.emit(SNAP_NOW()); r.advance(400);
-  assert.equal(r.toast.hidden, false, 'hidden: the pending question toast appears');
+mtest('M3c (isla-cualquier-lado L21) a new question shows the toast only with an unknown phase; compact and open never do', async () => {
+  const open = boot(SNAP_NOW(), { visible: true }); await Promise.resolve(); await Promise.resolve();
+  open.emit(SNAP_NOW()); open.advance(400);
+  assert.equal(open.toast.hidden, true, 'open: the question card is the signal');
+  // the 11-nov decision (85c73e7): a NEW question opens a compact island by itself (island.js calls revealIsland for it), so the toast
+  // is not the signal there and `revealByToast` says so. The toast still hangs from the disc when the phase is not known at all.
+  open.capsule.dataset.phase = 'compact'; open.emit(SNAP_NOW()); open.advance(400);
+  assert.equal(open.toast.hidden, true, 'compact: the island opens on it (L21), so no toast');
+  open.capsule.dataset.phase = 'expanded'; open.emit(SNAP_NOW()); open.advance(400);
+  assert.equal(open.toast.hidden, true, 'the island opened on it: the toast goes away');
+  const unknown = boot(SNAP_NOW()); await Promise.resolve(); await Promise.resolve();
+  unknown.emit(none(null)); unknown.emit(SNAP_NOW()); unknown.advance(400);
+  assert.equal(unknown.toast.hidden, false, 'unknown phase: the pending question arrives as the toast');
 });
 mtest('M4 pending toast dismissed with Esc (not visible): info event shows', async () => {
+  // unknown phase: the case where the toast is the signal at all (see M3c)
   const r = boot(SNAP_NOW()); await Promise.resolve(); await Promise.resolve();
   r.key('Escape'); r.advance(400); assert.equal(r.toast.hidden, true);
   r.arrive(settledArrival()); assert.equal(r.title(), 'Codex terminó');
@@ -354,59 +411,45 @@ mtest('M6 pending question and permission toasts stay up past 8 s, actionable, a
   }
 });
 
-// ---- T3: the REAL Abito (clay-engine + character-motion) on the left of the toast, with a state-appropriate pose --------------------
-// Observable effects only: what sits in the badge, the pose it shows, whether the shared clay loop keeps rendering.
+// ---- isla-cualquier-lado S3/S7 (T6): the 28px badge is KODA, the same sprite the folded disc draws, never the clay Abito figure ----
+// Observable effects only: what sits in the badge, and whether the toast ever starts the shared clay loop.
 const abitoBoot = (initial, opts = {}) => boot(initial, { abito: true, ...opts });
 const ready = async () => { await Promise.resolve(); await Promise.resolve(); };
 const hasAbito = r => !!r.badge().children.find(c => c.tag === 'svg' && c.children.some(n => n.attrs && Object.hasOwn(n.attrs, 'data-abito-body')));
+const kodaSlot = r => r.badge().children.find(c => /(^| )q-toast-koda( |$)/.test(c.className || ''));
 const appr = { kind: 'approval', text: 'Bash: ls', options: [{ index: 0, label: 'Permitir', description: '' }, { index: 1, label: 'Denegar', description: '' }] };
-mtest('T3-1 the badge on the LEFT of the header is the actual Abito character (clay-engine SVG), not a generic icon', async () => {
+mtest('T6-1 the badge on the LEFT of the header is the Koda slot (data-koda-slot="toast"), never the clay Abito figure', async () => {
   const r = abitoBoot(SNAP_NOW()); await ready();
   assert.equal(r.toast.children[1].children[0], r.badge(), 'the badge is the first (left-most) header item');
-  assert.equal(hasAbito(r), true, 'engine body path is inside the badge');
-  assert.equal(r.badge().children.some(c => c.attrs && c.attrs['data-icon']), false);
+  const slot = kodaSlot(r);
+  assert.ok(slot, `a .q-toast-koda slot in the badge (children: ${r.badge().children.map(c => c.className || c.tag).join(', ')})`);
+  assert.equal(slot.dataset.kodaSlot, 'toast', 'the slot koda-skin.js paints (.koda-sprite[data-koda-slot="toast"])');
+  assert.match(slot.className, /(^| )koda-sprite( |$)/, 'the same sprite class the disc uses');
+  assert.equal(hasAbito(r), false, 'no clay body anywhere in the badge');
+  assert.equal(r.badge().children.some(c => c.attrs && c.attrs['data-icon']), false, 'nor a generic icon');
   assert.equal(r.badge().getAttribute('aria-hidden'), 'true', 'decorative: the toast button keeps its own aria-label');
   assert.match(r.toast.getAttribute('aria-label'), /Pi pregunta/);
 });
-mtest('T3-2 pose follows the real state: question / permission / finished / expired / cancelled / disconnected / busy; never a success pose', async () => {
-  const seen = {};
-  let r = abitoBoot(SNAP_NOW()); await ready(); seen.question = r.badge().dataset.pose;
-  r = abitoBoot(snap({ pending: pending({ expires_at: NOW + 600000, ...appr }) })); await ready(); seen.approval = r.badge().dataset.pose;
-  r = abitoBoot(none(null)); await ready(); r.arrive(settledArrival()); seen.finished = r.badge().dataset.pose;
-  for (const o of ['expired', 'cancelled', 'disconnected']) { r = abitoBoot(none(null)); await ready(); r.emit(SNAP_NOW()); r.emit(none(o)); seen[o] = r.badge().dataset.pose; }
-  r = abitoBoot(snap({ pending: null, notice: null })); await ready(); r.emit(snap({ pending: null, notice: 'busy' })); seen.busy = r.badge().dataset.pose;
-  assert.deepEqual(seen, { question: 'question', approval: 'approval', finished: 'finished', expired: 'sleeping', cancelled: 'idle', disconnected: 'error', busy: 'reject' });
-  for (const pose of Object.values(seen)) assert.ok(!['confirm', 'happy', 'proud', 'love', 'speak'].includes(pose), `${pose} would read as success/celebration`);
-});
-mtest('T3-3 the character is really animated: shared clay frames advance and the SVG contour changes while the toast shows', async () => {
-  const r = abitoBoot(SNAP_NOW()); await ready();
-  const body = () => r.badge().children[0].children.find(n => n.attrs && Object.hasOwn(n.attrs, 'data-abito-body'));
-  r.advance(100); const d0 = body().attrs.d, f0 = r.abitoFrames();
-  r.advance(600);
-  assert.ok(r.abitoFrames() > f0, 'frames are scheduled while the toast is visible');
-  assert.notEqual(body().attrs.d, d0, 'contour moved');
-});
-mtest('T3-4 hidden/disposed toast stops rendering: no engine frames, no leftover character, and a new toast gets a fresh one', async () => {
-  const r = abitoBoot(SNAP_NOW()); await ready(); r.advance(300);
+mtest('T6-2 the toast never drives the clay engine: no instance, no frames, nothing left to dispose', async () => {
+  const r = abitoBoot(SNAP_NOW()); await ready(); r.advance(600);
+  assert.equal(hasAbito(r), false); assert.equal(r.abitoFrames(), 0, 'the shared clay loop is never started by the toast');
   r.emit(none('answered')); r.advance(400);
-  assert.equal(r.toast.hidden, true); assert.equal(hasAbito(r), false, 'character removed with the toast');
-  const f = r.abitoFrames(); r.advance(2000);
-  assert.equal(r.abitoFrames(), f, 'the shared clay loop is idle once nothing visible needs it');
-  r.emit(SNAP_NOW()); r.advance(100);
-  assert.equal(hasAbito(r), true); assert.equal(r.badge().children.length, 1, 'exactly one character'); assert.ok(r.abitoFrames() > f);
-  r.key('Escape'); r.advance(400);
-  const g = r.abitoFrames(); r.advance(1000); assert.equal(r.abitoFrames(), g, 'Esc-dismissed toast also stops rendering');
+  assert.equal(r.toast.hidden, true); assert.equal(r.abitoFrames(), 0);
+  r.emit(SNAP_NOW()); r.advance(300);
+  assert.ok(kodaSlot(r), 'a new toast gets the badge back'); assert.equal(hasAbito(r), false); assert.equal(r.abitoFrames(), 0);
 });
-mtest('T3-5 a pending question replacing «terminó» swaps the pose on the same single character', async () => {
-  const r = abitoBoot(none(null)); await ready(); r.arrive(settledArrival());
-  assert.equal(r.badge().dataset.pose, 'finished');
-  r.emit(SNAP_NOW()); r.advance(50);
-  assert.equal(r.badge().dataset.pose, 'question'); assert.equal(r.badge().children.length, 1);
+mtest('T6-3 one Koda badge for every kind of toast: question, permission, «terminó», attention and outcome', async () => {
+  const seen = {};
+  let r = abitoBoot(SNAP_NOW()); await ready(); seen.question = !!kodaSlot(r);
+  r = abitoBoot(snap({ pending: pending({ expires_at: NOW + 600000, ...appr }) })); await ready(); seen.approval = !!kodaSlot(r);
+  r = abitoBoot(none(null)); await ready(); r.arrive(settledArrival()); seen.finished = !!kodaSlot(r);
+  r = abitoBoot(none(null)); await ready(); r.arrive({ id: '7d3c2b1a-0f9e-4d8c-b7a6-5f4e3d2c1b0a', kind: 'attention', title: 'Codex te pide permiso', detail: 'Bash: ls' }); seen.attention = !!kodaSlot(r);
+  r = abitoBoot(none(null)); await ready(); r.emit(SNAP_NOW()); r.emit(none('expired')); seen.expired = !!kodaSlot(r);
+  assert.deepEqual(seen, { question: true, approval: true, finished: true, attention: true, expired: true });
 });
-mtest('T3-6 reduced motion: Abito shows its static pose, no frames are scheduled; toast behaviour unchanged', async () => {
+mtest('T6-4 reduced motion: the Koda badge is the same (no clay, no frames), the toast still works', async () => {
   const r = abitoBoot(SNAP_NOW(), { reduced: true }); await ready(); r.advance(2000);
-  assert.equal(hasAbito(r), true); assert.equal(r.badge().dataset.pose, 'question');
-  assert.equal(r.abitoFrames(), 0, 'no animation frames under reduced motion');
+  assert.ok(kodaSlot(r)); assert.equal(hasAbito(r), false); assert.equal(r.abitoFrames(), 0);
   assert.equal(r.toast.dataset.actionable, 'true'); assert.equal(r.toast.hidden, false);
 });
 mtest('F6 an attention arrival shows the pill with the producer text; a pending question still outranks it', async () => {
@@ -415,10 +458,17 @@ mtest('F6 an attention arrival shows the pill with the producer text; a pending 
   assert.equal(r.title(), 'Codex te pide permiso'); assert.equal(r.toast.dataset.actionable, 'false');
   r.emit(SNAP_NOW()); assert.equal(r.title(), 'Pi pregunta', 'an answerable question keeps priority');
 });
-mtest('T3-7 no Abito engine available: the generic icon is the fallback and the toast still works', async () => {
-  const r = boot(SNAP_NOW()); await ready();
-  assert.equal(r.badge().children.length, 1); assert.equal(r.badge().children[0].nodeName || 'svg', 'svg');
-  assert.equal(r.toast.hidden, false); assert.equal(r.title(), 'Pi pregunta');
+mtest('T6-5 source: the toast paints the Koda slot and koda-skin draws it with the disc\'s own sheet and layout', () => {
+  const js = fs.readFileSync(path.join(frontend, 'question-toast.js'), 'utf8');
+  assert.match(js, /q-toast-koda/); assert.match(js, /koda\.dataset\.kodaSlot = T\.KODA_SLOT/);
+  const code = js.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, ''); // comments explain the old behaviour; only CODE must be free of the clay character
+  assert.doesNotMatch(code, /AbitoClay|clay-engine|ABITO_POSE|q-toast-abito/, 'the toast never creates or drives the clay character');
+  const skin = fs.readFileSync(path.join(frontend, 'koda-skin.js'), 'utf8');
+  assert.match(skin, /function placeFlow/);
+  const flow = skin.slice(skin.indexOf('function placeFlow'), skin.indexOf('const mover'));
+  assert.match(flow, /q-toast-badge \.q-toast-koda/, 'koda-skin paints the badge slot question-toast.js owns');
+  assert.match(flow, /draw\(toastSlot/, 'with the same draw() as the disc: same catalog, same layout, same frame clock');
+  assert.doesNotMatch(flow, /q-toast-abito/);
 });
 
 

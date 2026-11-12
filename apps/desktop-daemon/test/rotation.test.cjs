@@ -53,7 +53,7 @@ async function rig(t, options = {}, flags = []) {
 		turnTimeoutMs: 10_000, maxTurnIterations: 32, abortGraceMs: 100,
 		...options,
 	});
-	t.after(async () => { await engine.stop(); fs.rmSync(dir, { recursive: true, force: true }); });
+	t.after(async () => { await engine.stop(); fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); });
 	await engine.start();
 	const commands = () => fs.existsSync(commandLog)
 		? fs.readFileSync(commandLog, "utf8").trim().split("\n").filter(Boolean).map(JSON.parse)
@@ -129,7 +129,7 @@ test("buildSummary returns empty for a message-free conversation", () => {
 
 test("rotation on settled: new session, bounded summary pending, ZERO model requests", async (t) => {
 	const dir = tmp("abito-rot-msgs-");
-	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+	t.after(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
 	const messagesFile = writeMessagesFile(dir, twentyTurns());
 	const { engine, rotator, commands } = await rig(t, { rotatorOptions: { maxChars: 50 } }, ["--usage-percent", "90", "--messages-file", messagesFile]);
 	const before = engine.sessionFile;
@@ -188,7 +188,7 @@ test("failed summary keeps the old session instead of losing history", async (t)
 
 test("empty summary (no user/assistant text) does not rotate", async (t) => {
 	const dir = tmp("abito-rot-empty-");
-	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+	t.after(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
 	const messagesFile = writeMessagesFile(dir, [{ role: "toolResult", content: "noise" }]);
 	const { rotator, commands } = await rig(t, {}, ["--usage-percent", "95", "--messages-file", messagesFile]);
 	const result = await rotator.rotateOnce();
@@ -198,7 +198,7 @@ test("empty summary (no user/assistant text) does not rotate", async (t) => {
 
 test("rotation is skipped while the engine is busy", async (t) => {
 	const dir = tmp("abito-rot-msgs2-");
-	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+	t.after(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
 	const messagesFile = writeMessagesFile(dir, twentyTurns());
 	const { engine, rotator, commands } = await rig(t, {}, ["--usage-percent", "90", "--messages-file", messagesFile]);
 	await engine.request({ type: "prompt", message: "held" });
@@ -211,7 +211,7 @@ test("rotation is skipped while the engine is busy", async (t) => {
 
 test("rotation is skipped while paused (#379)", async (t) => {
 	const dir = tmp("abito-rot-msgs3-");
-	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+	t.after(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
 	const messagesFile = writeMessagesFile(dir, twentyTurns());
 	const { engine, rotator, commands } = await rig(t, { rotatorOptions: { isPaused: () => true } },
 		["--usage-percent", "90", "--messages-file", messagesFile]);
@@ -224,7 +224,7 @@ test("rotation is skipped while paused (#379)", async (t) => {
 
 test("failed new_session: the engine recovers the previous session, nothing pending", async (t) => {
 	const dir = tmp("abito-rot-msgs4-");
-	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+	t.after(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
 	const messagesFile = writeMessagesFile(dir, twentyTurns());
 	const { engine, rotator, commands } = await rig(t, {}, ["--usage-percent", "90", "--messages-file", messagesFile, "--reset-fail"]);
 	const session = engine.sessionFile;
@@ -237,7 +237,7 @@ test("failed new_session: the engine recovers the previous session, nothing pend
 
 test("at most one rotation per session, and a pending summary blocks further rotation", async (t) => {
 	const dir = tmp("abito-rot-msgs5-");
-	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+	t.after(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
 	const messagesFile = writeMessagesFile(dir, twentyTurns());
 	const { engine, rotator, commands } = await rig(t, {}, ["--usage-percent", "90", "--messages-file", messagesFile]);
 	await engine.request({ type: "emit", events: [settled()] });
@@ -260,7 +260,7 @@ const { loadConfig } = require("../src/config.cjs");
 
 test("config rotation key: disabled by default, defaults applied, strict validation", () => {
 	const dir = tmp("abito-rot-cfg-");
-	process.on("exit", () => { try { fs.rmSync(dir, { recursive: true, force: true }); } catch {} });
+	process.on("exit", () => { try { fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); } catch {} });
 	// Absent key: rotation stays disabled (zero-config behavior unchanged).
 	let cfg = loadConfig(dir);
 	assert.deepEqual(cfg.rotation, { enabled: false, thresholdPercent: 85, keepTurns: 12 });
@@ -303,7 +303,7 @@ async function socketClient(t, endpoint, token) {
 
 test("server send frames go through the pending-summary decorator", async (t) => {
 	const dir = tmp("abito-rot-srv-");
-	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+	t.after(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
 	const commandLog = path.join(dir, "commands");
 	const messagesFile = writeMessagesFile(dir, twentyTurns());
 	const engine = new AgentEngine({
@@ -341,14 +341,15 @@ test("server send frames go through the pending-summary decorator", async (t) =>
 
 test("daemon wiring: rotation after settle decorates only the next send", async (t) => {
 	const base = tmp("abito-rot-daemon-");
-	t.after(() => fs.rmSync(base, { recursive: true, force: true }));
-	const root = path.join(base, "i");
+	t.after(() => fs.rmSync(base, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
+	// Windows (B5/S6): the island root must sit inside %LOCALAPPDATA%\\Abito, so the test anchors both at `base`.
+	const root = process.platform === "win32" ? path.join(base, "Abito", "i") : path.join(base, "i");
 	const commandLog = path.join(base, "commands");
 	const messagesFile = writeMessagesFile(base, twentyTurns());
 	const logs = [];
 	const daemon = new Daemon({
 		root,
-		env: { PATH: process.env.PATH },
+		env: { PATH: process.env.PATH, ...(process.platform === "win32" ? { LOCALAPPDATA: base } : {}) },
 		log: (line) => logs.push(String(line)),
 		engineOptions: {
 			command: process.execPath,
@@ -381,13 +382,14 @@ test("daemon wiring: rotation after settle decorates only the next send", async 
 
 test("daemon wiring: a rejected prompt keeps the pending summary for the retry (R6)", async (t) => {
 	const base = tmp("abito-rot-r6-");
-	t.after(() => fs.rmSync(base, { recursive: true, force: true }));
-	const root = path.join(base, "i");
+	t.after(() => fs.rmSync(base, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
+	// Windows (B5/S6): the island root must sit inside %LOCALAPPDATA%\\Abito, so the test anchors both at `base`.
+	const root = process.platform === "win32" ? path.join(base, "Abito", "i") : path.join(base, "i");
 	const commandLog = path.join(base, "commands");
 	const messagesFile = writeMessagesFile(base, twentyTurns());
 	const daemon = new Daemon({
 		root,
-		env: { PATH: process.env.PATH },
+		env: { PATH: process.env.PATH, ...(process.platform === "win32" ? { LOCALAPPDATA: base } : {}) },
 		log: () => {},
 		engineOptions: {
 			command: process.execPath,

@@ -22,6 +22,7 @@ const crate = path.resolve(__dirname, '..');
   assert.deepEqual(missing, [], 'daemon modules required but not shipped: ' + missing.join(', '));
 }
 const stage = fs.mkdtempSync(path.join(os.tmpdir(), 'abito-host-stage-fixture-'));
+let localDir = null; // Windows only: the private LOCALAPPDATA of the CLI probe below
 try {
   fs.writeFileSync(path.join(stage, 'abito-island'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
   fs.writeFileSync(path.join(stage, 'abito-island-launcher'), L.launcherText(), { mode: 0o755 });
@@ -66,10 +67,24 @@ try {
 
   // Exercise the public CLI from the shipped tree, not the source checkout. A valid
   // receipt alone cannot prove that every transitively required module was shipped.
-  const island = path.join(stage, 'missing-island');
+  // Windows (K2-01b, as in desktop-daemon/test/cli.test.cjs): the daemon refuses any island root outside the canonical
+  // %LOCALAPPDATA%\Abito, so the missing island sits under a private LOCALAPPDATA (a sibling temp dir: the stage is
+  // listed exactly below), and a child node needs the Windows system variables to bootstrap. Nothing
+  // user-identifying leaves the temp dirs.
+  const win = process.platform === 'win32';
+  const local = win ? fs.mkdtempSync(path.join(os.tmpdir(), 'abito-host-stage-local-')) : null;
+  localDir = local;
+  const island = win ? path.join(local, 'Abito', 'missing-island') : path.join(stage, 'missing-island');
+  const env = { PATH: win ? process.env.PATH : '/usr/bin:/bin', HOME: stage, ABITO_ISLAND_DIR: island };
+  if (win) {
+    fs.mkdirSync(path.join(local, 'Abito'));
+    env.LOCALAPPDATA = local;
+    for (const key of ['SystemRoot', 'windir', 'SystemDrive', 'ComSpec', 'PATHEXT', 'OS', 'NUMBER_OF_PROCESSORS', 'PROCESSOR_ARCHITECTURE']) {
+      if (process.env[key] !== undefined) env[key] = process.env[key];
+    }
+  }
   const status = () => cp.spawnSync(process.execPath, [path.join(stage, 'desktop-daemon/src/cli.cjs'), 'status'], {
-    cwd: stage, encoding: 'utf8', timeout: 10000,
-    env: { PATH: '/usr/bin:/bin', HOME: stage, ABITO_ISLAND_DIR: island },
+    cwd: stage, encoding: 'utf8', timeout: 10000, env,
   });
   const baseline = status();
   assert.equal(baseline.error, undefined);
@@ -99,4 +114,4 @@ try {
     assert.deepEqual(L.verifyStage(stage), [], 'omission probe must restore the exact staged files');
   }
   console.log('staged-cli: status baseline + 2 module-omission regressions passed');
-} finally { fs.rmSync(stage, { recursive: true, force: true }); }
+} finally { fs.rmSync(stage, { recursive: true, force: true }); if (localDir) fs.rmSync(localDir, { recursive: true, force: true }); }

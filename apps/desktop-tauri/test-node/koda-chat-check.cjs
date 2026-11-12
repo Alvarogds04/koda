@@ -12,7 +12,7 @@ test('nusa-chat: largest integer scale of the 32 px cell that fits the column bo
 });
 test('skin source: placeMain has a chat branch that never writes transform', () => {
   const s = fs.readFileSync(__dirname + '/../frontend/koda-skin.js', 'utf8');
-  const pm = s.slice(s.indexOf('function placeMain'), s.indexOf('const flowAnim'));
+  const pm = s.slice(s.indexOf('function placeMain'), s.indexOf('function placeFlow'));
   assert.match(pm, /nusa-chat/); assert.match(pm, /dataset\.view === 'chat'/); assert.doesNotMatch(pm, /style\.transform/);
 });
 console.log(`koda-chat-check (pure): ${passed} passed`);
