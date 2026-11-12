@@ -87,6 +87,7 @@ pub mod protocol;
 pub mod legacy_recap;
 pub mod secrets;
 pub mod provider_oauth;
+pub mod gmail_oauth;
 pub mod oauthcmd;
 pub mod sounds;
 pub mod question;
