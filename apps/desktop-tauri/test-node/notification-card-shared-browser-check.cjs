@@ -13,6 +13,7 @@ const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
 const frontend = path.join(__dirname, '..', 'frontend');
+const H = require('./island-geometry-harness.cjs'); // only for its in-page helper: this check never launches a browser
 const MIN_TARGET = 40;
 const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml' };
 let pass = 0, fail = 0;
@@ -180,14 +181,14 @@ const uid = n => `0b3a5c9e-8f27-4d11-9a0e-${String(n).padStart(12, '0')}`;
   // ---- human 26-oct: the Sileo toast is OPAQUE — its title/body always sit on the solid pill/body, never on what is behind ----------
   await page.evaluate(() => __emit({ available: true, pending: null, queued: [], queued_count: 0, notice: null }));
   await page.waitForTimeout(300);
-  // the order that broke it live: the question arrives while Abito is visible (no toast), THEN Abito hides
   await page.evaluate(() => { window.__islandSetState && window.__islandSetState('compact'); });
   await page.waitForTimeout(400);
+  // isla-cualquier-lado S3/S5 (T6, L21 human «1»): the toast hangs from the FOLDED disc, and a NEW question opens a folded island by
+  // itself, so the only phase that still routes the question to the toast is the one it cannot classify — staged here.
+  await page.evaluate(H.unknownPhaseInPage);
   await page.evaluate(p => __emit({ available: true, pending: p, queued: [], queued_count: 0, notice: null }),
     pending({ id: uid(90), agent: 'codex', text: 'Codex pregunta algo largo para ver el cuerpo', options: [{ index: 0, label: 'A', description: '' }, { index: 1, label: 'B', description: '' }] }));
-  await page.waitForTimeout(600);
-  await page.evaluate(() => window.__islandConceal(true));
-  await page.waitForTimeout(1600);
+  await page.waitForTimeout(2200);
   const op = await page.evaluate(() => {
     const t = document.getElementById('question-toast'); const box = el => { const b = el.getBoundingClientRect(); return { l: b.left, r: b.right, t: b.top, b: b.bottom }; };
     const pill = box(t.querySelector('.q-toast-pill')), title = box(t.querySelector('.q-toast-title')), badge = box(t.querySelector('.q-toast-badge'));
@@ -195,10 +196,11 @@ const uid = n => `0b3a5c9e-8f27-4d11-9a0e-${String(n).padStart(12, '0')}`;
     return { shown: !t.hidden, pill, title, badge, opacity: o, fillOpacity: getComputedStyle(t.querySelector('.q-toast-pill')).fillOpacity };
   });
   const covers = (a, b) => a.l <= b.l + 1 && a.r >= b.r - 1 && a.t <= b.t + 1 && a.b >= b.b - 1;
-  ok('opaque toast: shown while Abito is hidden', op.shown, JSON.stringify(op));
+  ok('opaque toast: shown while the island is folded (the disc is where it hangs from, unknown phase)', op.shown, JSON.stringify(op));
   ok('opaque toast: the solid pill covers the title and Abito badge (nothing drawn over the background)', covers(op.pill, op.title) && covers(op.pill, op.badge), JSON.stringify(op));
   ok('opaque toast: fully opaque (no element opacity < 1, fill opacity 1)', op.opacity === 1 && Number(op.fillOpacity) === 1, JSON.stringify(op));
-  await page.evaluate(() => { __emit({ available: true, pending: null, queued: [], queued_count: 0, notice: null }); window.__islandConceal(false); });
+  await page.evaluate(H.knownPhaseInPage); // one page for the whole check: give the real phase back before the next scenario
+  await page.evaluate(() => { __emit({ available: true, pending: null, queued: [], queued_count: 0, notice: null }); });
   await page.waitForTimeout(500);
 
   // ---- S1 (abito-avisos-ux): the Avisos band is a compact strip in the SAME bottom slot as «Sin cuenta», not a 288x44 capsule over

@@ -910,6 +910,25 @@ test('copy: voseo everywhere (the human writes in Rioplatense Spanish)', () => {
   assert.doesNotMatch(all, /\b(Conecta|Pega|Inicia|Introduce|Elige|Haz|Pulsa|Escribe)\b(?= [a-zñáéíóú])/, 'no tú imperatives');
 });
 
+// S3 (04 ajustes 2): the hub pages are settings pages too, and they were a SECOND register («Haz clic», «Usa…») inside the SAME
+// window the chat speaks voseo in («Escribí…», «Soltá…»). One register, checked on the copy the hub renders.
+test('copy: the hub settings pages share the same voseo register (04 ajustes 2)', () => {
+  const src = f => fs.readFileSync(path.join(frontend, f), 'utf8');
+  const HUB = ['vendor/coucou/hub/i18n-es.js', 'vendor/coucou/hub/general.js', 'vendor/coucou/hub/accounts.js',
+    'vendor/coucou/hub/chat.js', 'settings-isla-mount.js', 'settings-app.js'];
+  // tú imperatives (also with an enclitic) and the tú present forms the copy used; «vos» writes those with an accent
+  const TU = /\b(Haz|Usa|Pulsa|Elige|Añade|Añádela|Quita|Dicta|Instala|Deja|Mantén|Pega|Descarga|Ejecuta|Vuelve)\b(?= [a-zñáéíóú])|\b(usas|haces|quieres|tienes|puedes|debes)\b/g;
+  const left = [];
+  for (const f of HUB) {
+    const text = src(f);
+    for (const m of text.matchAll(TU)) left.push(`${f}:${text.slice(0, m.index).split('\n').length} «${m[0]}»`);
+  }
+  assert.deepEqual(left, [], 'tú forms in the settings copy: write them in voseo (Hacé, Usá, Pulsá, Elegí…)');
+  // 04 ajustes 4: «de el personaje» -> «del personaje»
+  assert.doesNotMatch(src('vendor/coucou/hub/i18n-es.js'), /de el personaje/, 'the sounds text says «del personaje»');
+  assert.match(src('vendor/coucou/hub/i18n-es.js'), /sonidos del personaje/);
+});
+
 test('verbs follow gentle-dot: «Cerrar sesión» for an account (its Sign out), «Desconectar» for an agent (its Disconnect)', () => {
   const src = fs.readFileSync(path.join(frontend, 'settings.js'), 'utf8');
   assert.doesNotMatch(src, /wordBtn\('Salir'/, 'no «Salir» button');

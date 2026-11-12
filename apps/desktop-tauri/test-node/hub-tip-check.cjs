@@ -33,5 +33,12 @@ const { dom, all } = require('./settings-accounts-check.cjs');
   assert(/\.hub-tip\s*\{[^}]*display:\s*none/.test(css));
   assert(/\.hub-info-wrap:hover\s*>\s*\.hub-tip/.test(css) && /\.hub-info-wrap:focus-within\s*>\s*\.hub-tip/.test(css));
   assert(/\.hub-info:focus-visible/.test(css));
+  // S3 (04 ajustes 4): ONE ring for the whole hub — the rail items, the segmented buttons and the ⓘ share 2px #fff, and the green
+  // ring of its own is gone.
+  const ring = /\.hub-item:focus-visible,\s*\.hub-segmented button:focus-visible,\s*\.hub-info:focus-visible\s*\{([^}]*)\}/.exec(css);
+  assert.ok(ring, 'one rule gives .hub-item, .hub-segmented button and .hub-info the same focus ring');
+  assert.match(ring[1], /outline:\s*2px solid #fff/, ring[1]);
+  assert.equal(/#4ade80|var\(--green[^)]*\)\s*\)?\s*;\s*outline-offset/.test(css), false, 'no green focus ring is left');
+  assert.doesNotMatch(css, /outline:\s*2px solid var\(--green/, 'the ⓘ keeps no green outline');
   console.log('hub-tip-check OK');
 })().catch(e => { console.error(e); process.exit(1); });

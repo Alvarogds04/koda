@@ -158,29 +158,21 @@ pub fn normalize_chosen_color(raw: &str) -> Option<String> {
 /// `prefs.json` keeps exactly the bytes it had before #384.
 const AVATAR_COLORS: &str = "avatar_colors";
 
-/// #264 (GD049): the optional remembered island position (physical px). Absent from a
-/// file nobody has dragged, so an untouched `prefs.json` keeps exactly the bytes it had
-/// before #264 as well.
+/// #264 (GD049): the optional remembered island position (physical px): the disc's spot — x is the island window's left, y is
+/// the disc's top edge on screen (isla-cualquier-lado T6c; the very value the window top-left gave while the island hung from
+/// its top, so every stored file still means what it did). Absent from a file nobody has dragged, so an untouched `prefs.json`
+/// keeps exactly the bytes it had before #264 as well.
 const POSITION: &str = "position";
 
 /// A plausible virtual-desktop coordinate in physical px: no real monitor
 /// arrangement reaches this, so a larger value is corrupt data, never a desktop.
 const POSITION_LIMIT: u32 = 1_000_000;
-/// G16: whole seconds the folded island waits before hiding at the edge.
-const ABSENCE_SECONDS: std::ops::RangeInclusive<u16> = 5..=300;
-const ABSENCE_DEFAULT_SECONDS: u16 = 10;
 /// HU-057 S9: the closed island-size set.
 fn valid_island_size(s: &str) -> bool { matches!(s, "s" | "m" | "l" | "auto") }
 
-fn valid_absence_seconds(v: u16) -> bool { ABSENCE_SECONDS.contains(&v) }
-/// The new key wins; an invalid or absent one falls back to the pre-change `absence_minutes` (1–120 minutes, x 60, clamped to 300).
-fn absence_seconds_from(v: &Value) -> Option<u16> {
-    let new = v.get("absence_seconds").and_then(Value::as_u64).and_then(|s| u16::try_from(s).ok()).filter(|s| valid_absence_seconds(*s));
-    new.or_else(|| {
-        let minutes = v.get("absence_minutes").and_then(Value::as_u64).and_then(|m| u16::try_from(m).ok()).filter(|m| (1..=120).contains(m))?;
-        Some((minutes * 60).min(*ABSENCE_SECONDS.end()))
-    })
-}
+// isla-cualquier-lado S2: the folded island never hides at the edge any more, so the G16 delay (`absence_seconds`, and the
+// older `absence_minutes`) is retired. A file that still carries either key loads as before: like every unknown key it is
+// ignored on read and dropped on the next write.
 
 /// The optional theme mode key (#380). Absent = `system`, and absence is preserved.
 const THEME: &str = "theme";
@@ -290,10 +282,6 @@ pub struct Prefs {
     pub open_on_hover: Option<bool>,
     /// HU-057 S9: island size `s|m|l|auto`; `None` means `auto` and is never written.
     pub island_size: Option<String>,
-    /// G16: optional whole seconds the folded island waits before it hides at the edge (5–300); absent means ten seconds.
-    /// A file written before this change carries `absence_minutes` instead: it is still READ (minutes x 60, clamped to 300) and
-    /// never written again, so the file converts the first time it is saved.
-    pub absence_seconds: Option<u16>,
     /// #415 WU2: the blobs the human created by hand (label + optional palette colour),
     /// in creation order. `None` means none, and nothing is written for it, so an
     /// untouched file keeps its bytes.
@@ -375,7 +363,6 @@ impl Default for Prefs {
             auto_close_seconds: None,
             open_on_hover: None,
             island_size: None,
-            absence_seconds: None,
             custom_blobs: None,
             monitor: None,
             settings_window: None,
@@ -612,7 +599,6 @@ impl Prefs {
     pub fn island_size(&self) -> &str {
         self.island_size.as_deref().filter(|s| valid_island_size(s)).unwrap_or("auto")
     }
-    pub fn absence_seconds(&self) -> u16 { self.absence_seconds.filter(|v| valid_absence_seconds(*v)).unwrap_or(ABSENCE_DEFAULT_SECONDS) }
 
     /// S10 (L30): the effective plan-pill policy — absent means off.
     pub fn show_plan_in_notch(&self) -> bool { self.show_plan_in_notch.unwrap_or(false) }
@@ -649,7 +635,6 @@ impl Prefs {
                 .and_then(|s| u16::try_from(s).ok()).filter(|s| *s == 0 || (5..=120).contains(s)),
             open_on_hover: v.get("open_on_hover").and_then(Value::as_bool),
             island_size: v.get("island_size").and_then(Value::as_str).filter(|s| valid_island_size(s)).map(str::to_string),
-            absence_seconds: absence_seconds_from(&v),
             custom_blobs: {
                 let blobs = custom_blobs_from(v.get(CUSTOM_BLOBS));
                 (!blobs.is_empty()).then_some(blobs)
@@ -704,7 +689,6 @@ impl Prefs {
         if let Some(seconds) = self.auto_close_seconds.filter(|s| *s == 0 || (5..=120).contains(s)) {
             v["auto_close_seconds"] = json!(seconds);
         }
-        if let Some(seconds) = self.absence_seconds.filter(|v| valid_absence_seconds(*v)) { v["absence_seconds"] = json!(seconds); }
         if let Some(hover) = self.open_on_hover {
             v["open_on_hover"] = json!(hover);
         }
@@ -809,7 +793,6 @@ pub enum Command {
     SetIslandInteraction { auto_close_seconds: u16, open_on_hover: bool },
     /// HU-057 S9: the island size, closed set `s|m|l|auto`.
     SetIslandSize(String),
-    SetAbsenceSeconds(u16),
     /// #389: the platform monitor name the island is pinned to (Ajustes → Panel).
     /// A choice is only ever one of the keys the island itself saw and offered;
     /// falling back when a stored key is no longer connected is placement's job.
@@ -993,12 +976,6 @@ pub fn parse_command(payload: &Value) -> Result<Command, CommandError> {
             }
             Ok(Command::SetChosenModels { provider: provider.to_string(), models: clean })
         }
-        Some("set_absence_seconds") if map.len() == 2 => {
-            let seconds = map.get("seconds").and_then(Value::as_u64).ok_or(CommandError)?;
-            let seconds = u16::try_from(seconds).map_err(|_| CommandError)?;
-            if !valid_absence_seconds(seconds) { return Err(CommandError); }
-            Ok(Command::SetAbsenceSeconds(seconds))
-        }
         // #336 T1b-a: exactly action + auto_close_seconds + open_on_hover.
         // `as_u64` already refuses floats, strings, null and negatives; the
         // accepted set is {0} («Nunca», #438) ∪ 5..=120, matching the public
@@ -1154,10 +1131,6 @@ pub fn apply(current: &Prefs, command: &Command) -> Result<Prefs, CommandError> 
         Command::ClearPillColor(id) => {
             if !pill_offered(id) { return Err(CommandError); }
             next.pill_colors.remove(id);
-        }
-        Command::SetAbsenceSeconds(seconds) => {
-            if !valid_absence_seconds(*seconds) { return Err(CommandError); }
-            next.absence_seconds = Some(*seconds);
         }
         // #336 T1b-a: both fields commit together under the same gate; the
         // range/type checks already ran at parse and run again here for

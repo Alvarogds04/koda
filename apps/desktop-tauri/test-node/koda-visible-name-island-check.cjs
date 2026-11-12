@@ -30,7 +30,7 @@ const SCENES = [
   ['motor caído', { engine: 'down' }, async () => {}],
   ['sin cuenta', { engine: 'account' }, async () => {}],
   ['compacta', {}, async p => { await p.evaluate(() => window.__islandSetState('compact')); await p.waitForTimeout(900); }],
-  ['toast con la isla oculta', { question: 'plain' }, async p => { await p.evaluate(() => { window.__islandSetState('compact'); document.getElementById('capsule').dataset.edgeHidden = 'true'; }); await p.waitForTimeout(900); }],
+  ['toast en el disco', { question: 'plain' }, async p => { await p.evaluate(() => window.__islandSetState('compact')); await p.waitForTimeout(900); }],
   ['recibida', { question: 'plain' }, async p => { await p.waitForTimeout(2600); await click(p, '#question-options .q-option'); await p.waitForTimeout(500); }],
   ['chat', {}, async p => {
     await p.evaluate(() => window.__islandSetView('chat', 720, 240)); await p.waitForTimeout(900);

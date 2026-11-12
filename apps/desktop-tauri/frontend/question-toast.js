@@ -4,6 +4,8 @@
    filter (feGaussianBlur + feColorMatrix), spring easing as CSS linear(), badge + title header, body on expand. No React, no npm.
    It shows «<Agente> pregunta» + the first line, and a trusted click asks the island to open on that question. It answers ONLY
    for the exact permission pair (HU-063 T3: «Aprobar» / «Rechazar», decisionFor), through the same host path as the card. Pure view functions first (Node tests), DOM mount last.
+   isla-cualquier-lado S3/S5 (T6): the toast hangs from the FOLDED disc (never with the island open), on the side of the disc that faces
+   the centre of the screen (`data-edge`), and its badge is Koda, the sprite the disc itself draws — never the clay Abito figure.
    Loaded as a classic script (window.AbitoQuestionToast) and by test-node/question-toast-check.cjs. */
 (function (root, factory) {
   const N = typeof module === 'object' && module.exports ? require('./notify-view.js') : root.AbitoNotify;
@@ -148,16 +150,36 @@
       N.outcomeView(event.outcome).icon, text[0], text[1], '', event.outcome === 'disconnected' ? 'red' : event.outcome === 'busy' ? 'sun' : 'neutral');
   }
 
-  // ---- Abito on the LEFT of every toast: the real clay character, in an EXISTING pose that matches the real state. -------------------
-  // Finished is neutral («terminó», never success): no confirm/happy/proud pose is mapped to anything. Expired = nobody answered (rests),
-  // cancelled = the agent withdrew (calm), disconnected = the link broke (error pose), busy = the other question was turned away (reject).
-  const ABITO_POSE = Object.freeze({ question: 'question', approval: 'approval', attention: 'approval', finished: 'finished', expired: 'sleeping', cancelled: 'idle', disconnected: 'error', busy: 'reject' });
-  const abitoPose = view => (view && Object.hasOwn(ABITO_POSE, view.kind) ? ABITO_POSE[view.kind] : 'idle');
-  const ABITO_VIEWBOX = '36 42 128 128'; // the body (r ~54, lift/lean +-6) fills the 28px badge
+  // ---- badge: Koda, the same sprite/skin the folded disc draws (isla-cualquier-lado S7/S5, T6) -------------------------------
+  // The 28px badge used to be the green clay Abito (clay-engine + character-motion). S7 forbids that figure off the character's slot,
+  // and the disc IS Koda, so the toast hangs from the disc wearing the same face: question-toast.js owns an empty slot with the skin's
+  // own class and koda-skin.js paints it (same catalog, same integer layout, same frame clock as the disc). Nothing here touches
+  // AbitoClay, so a toast never starts the shared clay loop and a hidden toast has nothing to dispose.
+  const KODA_SLOT = 'toast';
 
-  /** The host input region is one rectangle: grow the reported island shape to include the toast. */
+  /**
+   * The box the page reports to the host while the toast shows: the disc plus the toast it hangs from, 96 px tall and 350 wide, on
+   * ONE side or the OTHER. Rust turns this into one input rectangle anchored on the same edge as the whole island
+   * (geometry::island_window_rect_placed + islandshape::anchor_bottom: top edge = the disc on the window's top with the toast
+   * below it, bottom edge = the disc on the window's bottom with the toast ABOVE it), so both edges cover exactly what is drawn.
+   */
   const shapeWithToast = (shape, shown) => (shown
     ? [Math.max(shape[0], TOAST.w), shape[1] + TOAST.gap + TOAST.hMax] : [shape[0], shape[1]]);
+
+  /**
+   * Where the toast box sits inside the capsule for one measurement of the island. The toast hangs from the DISC on the side that faces
+   * the centre of the screen: in the upper half (edge top) the pill starts at the disc's BOTTOM edge and the body grows down; in the
+   * lower half (edge bottom) the box ends at the disc's TOP edge and the body grows up (the pill stays on the disc side either way,
+   * joined by the same 12px neck). `box` is the island's box in capsule coordinates; the height is the 40px pill or the 96px open card.
+   */
+  function toastPlacement(o) {
+    const c = o || {}, box = c.box;
+    const edge = c.edge === 'bottom' ? 'bottom' : 'top';
+    const height = c.expanded === true ? TOAST.hMax : TOAST.h;
+    const top = box && Number.isFinite(box.top) ? box.top : 0;
+    const h = box && Number.isFinite(box.height) ? box.height : 0;
+    return { edge, top: edge === 'top' ? top + h : top - height, height };
+  }
 
   /** island-free-drag S5 (#266/R23): a NEW question opens a compact island by itself (an expanded one already shows the card).
    *  Only an island hidden from the tray or the shortcut, or one whose phase is unknown, is signalled by the toast instead. */
@@ -217,10 +239,8 @@
     };
   }
   const motionPlan = reduce => (reduce ? { mode: 'fade', springs: false } : { mode: 'morph', springs: true });
-  /** The toast hangs from the island's own bottom edge (its box in the capsule): flush, and it follows the island as it grows. */
-  const toastTop = box => (box && Number.isFinite(box.top) && Number.isFinite(box.height) ? box.top + box.height : 0);
 
-  return { TIMING, EASE, easeAt, TITLE_COLOUR, titleColour, PILL_OPEN_H, ABITO_POSE, ABITO_VIEWBOX, abitoPose, SPRING, springAt, morphFrame, motionPlan, toastTop, NECK_H, TOAST, AGENT_ACCENT, ROLE_ACCENT, agentAccent, toastView, finishedToast, attentionToast, outcomeToast, openRequest, decisionFor, needsFullView, fullyShown, currentDecision, decisionRequest, shapeWithToast, revealByToast, firstLine };
+  return { TIMING, EASE, easeAt, TITLE_COLOUR, titleColour, PILL_OPEN_H, KODA_SLOT, SPRING, springAt, morphFrame, motionPlan, toastPlacement, NECK_H, TOAST, AGENT_ACCENT, ROLE_ACCENT, agentAccent, toastView, finishedToast, attentionToast, outcomeToast, openRequest, decisionFor, needsFullView, fullyShown, currentDecision, decisionRequest, shapeWithToast, revealByToast, firstLine };
 });
 
 function mount(T) {
@@ -252,6 +272,11 @@ function mount(T) {
   group.append(neckRect, pillRect, bodyRect); svg.append(defs, group); canvas.append(svg);
   const header = mk('span', 'q-toast-header');
   const badge = mk('span', 'q-toast-badge'); badge.setAttribute('aria-hidden', 'true');
+  // isla-cualquier-lado S7/S5 (T6): the badge is KODA, not the green clay Abito (island-free-drag S7: never off the character's slot).
+  // This module owns the empty slot with the skin's own class; koda-skin.js paints it with the SAME sheet, integer layout and frame
+  // clock the folded disc uses (.koda-sprite[data-koda-slot="toast"] is already sized by koda-skin.css). No engine, no instance.
+  const koda = mk('span', 'q-toast-koda koda-sprite'); koda.dataset.kodaSlot = T.KODA_SLOT; koda.setAttribute('aria-hidden', 'true');
+  badge.append(koda);
   const dot = mk('i', 'q-toast-dot'); dot.setAttribute('aria-hidden', 'true');
   const title = mk('span', 'q-toast-title'), queue = mk('span', 'q-toast-queue');
   const bar = mk('span', 'q-toast-progress'); bar.setAttribute('aria-hidden', 'true');
@@ -274,41 +299,6 @@ function mount(T) {
   actions.append(rejectBtn, approveBtn, viewAllBtn, ordApprove, ordReject);
   capsule.append(toast, actions, live);
 
-  const icons = window.AbitoIcons;
-  // like island.js: the parser only ever receives the CLOSED own registry's literal markup, never data
-  const parser = new DOMParser();
-  const paintIcon = name => {
-    try {
-      const markup = icons ? icons.svg(name) : '';
-      const parsed = markup ? parser.parseFromString(markup, 'image/svg+xml').documentElement : null;
-      badge.replaceChildren(...(parsed && parsed.nodeName === 'svg' ? [doc.importNode(parsed, true)] : []));
-    } catch { badge.replaceChildren(); }
-  };
-
-  // The actual Abito (clay-engine + the character-motion controller). Created when the toast appears, DISPOSED when it is hidden, so a
-  // hidden toast leaves no instance in the shared clay loop (it halts when nothing is left). No engine -> the generic icon, as before.
-  let abito = null;
-  const disposeAbito = () => {
-    if (!abito) return;
-    const a = abito; abito = null;
-    try { a.character.destroy(); a.clay.destroy(); } catch { /* nothing left to release */ }
-    badge.replaceChildren(); delete badge.dataset.pose;
-  };
-  function paintAbito(pose) {
-    const Clay = typeof AbitoClay !== 'undefined' ? AbitoClay : null, Character = window.AbitoCharacter;
-    if (!Clay || !Character) return false;
-    try {
-      if (!abito) {
-        const svg = sv('svg', { class: 'q-toast-abito', width: '28', height: '28', 'aria-hidden': 'true', focusable: 'false' });
-        const clay = Clay.create(svg, { seed: 505, viewBox: T.ABITO_VIEWBOX, shadow: false, state: pose });
-        const character = Character.create({ clay, choosePose: () => 'idle', validCard: () => false, notification: () => null, blocked: () => reduced() });
-        abito = { clay, character }; badge.replaceChildren(svg);
-      }
-      abito.character.hold(pose); badge.dataset.pose = abito.clay.state;
-      return true;
-    } catch { disposeAbito(); return false; }
-  }
-
   // HU-063 T3 state: the decision on offer for the pending toast, one decision per toast (inFlight), and the host-error line
   const ACTION_H = 32, ONE_LINE_PX = 24; // body line-height is 1.15rem (~18px): two lines are ~37px
   // A request that REPLACES the one on the buttons arms them only after ARM_MS, so a click aimed at the old one can never land on the new one.
@@ -327,8 +317,7 @@ function mount(T) {
   let transientView = null, transientTimer = 0, serial = 0;
   let snapshot = null, view = null, dismissedId = null, shownId = null, expandTimer = 0, collapseTimer = 0, hot = false;
   // S3 + island-free-drag S5: only the EXPANDED island shows the question card, and it paints above every view (R23). Compact is
-  // Koda's disc: it carries the question as its state signal, so no compact pill shows the card any more (the toast is consulted only
-  // while the island is hidden — islandHidden() below — where the disc is concealed).
+  // Koda's disc: it carries the question as its state signal, so no compact pill shows the card any more (the card on screen wins).
   const onScreen = () => capsule.dataset.phase === 'expanded' && !capsule.dataset.card;
   const reduced = () => doc.documentElement.dataset.motion === 'reduce' || (typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches);
   const clear = () => { clearTimeout(expandTimer); clearTimeout(collapseTimer); };
@@ -338,8 +327,8 @@ function mount(T) {
   const runClose = () => {
     stopClose(); if (!view) return;
     running = true; startedAt = Date.now(); bar.style.animationPlayState = 'running';
-    // v8: in the chat view and on the hidden strip the toast is the ONLY click target to the question, so the 8 s only FOLDS its body
-    // (the pill stays); only Escape dismisses it
+    // v8: with the island folded the toast is the ONLY click target to the question, so the 8 s only FOLDS its body (the pill stays);
+    // only Escape dismisses it
     closeTimer = setTimeout(() => { running = false; if (view) { setExpanded(false); bar.style.opacity = '0'; } }, Math.max(0, remaining));
   };
   const pauseClose = () => { if (!running) return; running = false; stopClose(); remaining = Math.max(0, remaining - (Date.now() - startedAt)); bar.style.animationPlayState = 'paused'; };
@@ -354,11 +343,17 @@ function mount(T) {
     const r = island ? parseFloat(getComputedStyle(island).borderBottomLeftRadius) : 14;
     return { box, w: box ? box.width : 288, r: Number.isFinite(r) ? r : 14 };
   };
-  // The toast hangs from the island's REAL bottom edge: re-placed on every layout change of the island (its own spring included).
+  // The toast hangs from the DISC (data-edge: Rust's geometry::growth_edge through __islandSetState): below it in the upper half of the
+  // screen, above it in the lower half, on the side that faces the centre either way. Re-placed on every layout change of the island
+  // (its own spring included), so it follows the disc instead of a fixed window.
   function place() {
     const { box, w, r } = islandBox();
-    const top = Math.round(T.toastTop(box ? { top: box.top - capsule.getBoundingClientRect().top, height: box.height } : null));
-    toast.style.top = `${top}px`; actions.style.top = `${top + T.TOAST.hMax - ACTION_H - 4}px`; // inside the existing 96px body: bottom edge 4px above hMax (room for the focus ring)
+    const p = T.toastPlacement({ edge: capsule.dataset.edge, expanded: toast.dataset.expanded === 'true',
+      box: box ? { top: box.top - capsule.getBoundingClientRect().top, height: box.height } : null });
+    if (toast.dataset.edge !== p.edge) toast.dataset.edge = p.edge; // the stylesheet mirrors the neck and moves the pill to the disc side
+    toast.style.top = `${Math.round(p.top)}px`;
+    // the decision group lives inside the 96px body at the end that faces AWAY from the disc, 4px in for the focus ring
+    actions.style.top = `${Math.round(p.edge === 'top' ? p.top + T.TOAST.hMax - ACTION_H - 4 : p.top + 4)}px`;
     paintFrame(w, r);
   }
   function paintFrame(w, r) {
@@ -390,19 +385,21 @@ function mount(T) {
     anim.open = open; anim.bodyFrom = anim.bodyProgress; anim.bodyTo = open ? 1 : 0; anim.bodyStart = performance.now();
     if (T.motionPlan(reduced()).springs) kick(); else { anim.bodyProgress = anim.bodyTo; place(); }
   };
-  // Follow the island every frame of ITS spring (it grows for a long question, shrinks, conceals): a ResizeObserver on the island
-  // plus the capsule's own attribute changes. No fixed tracking window.
+  // Follow the island every frame of ITS spring (it grows for a long question, shrinks, folds): a ResizeObserver on the island plus the
+  // capsule's own attribute changes. No fixed tracking window.
   if (island && typeof ResizeObserver === 'function') new ResizeObserver(() => { if (!toast.hidden) place(); }).observe(island);
   if (island) new MutationObserver(() => { if (!toast.hidden) place(); }).observe(island, { attributes: true, attributeFilter: ['style'] });
   // A finished/outcome toast is shown only at its event, for a short time, and never over a pending question toast (that one stays the
   // actionable signal; an event that finds it showing is dropped, not queued). A new pending question replaces it at once.
   const dropTransient = () => { clearTimeout(transientTimer); transientView = null; };
-  // human (26-oct): «que las notificaciones de sileo salgan solo si abito está oculto»: while the island is on screen (compact pill or
-  // expanded) it shows the question/notice itself, so no toast at all; an informational event that finds it visible is dropped.
-  const islandHidden = () => capsule.dataset.edgeHidden === 'true';
+  // isla-cualquier-lado S3/S5 (T6) as decided on 11-nov and kept by the human (L21, «1»): the toast hangs from the disc, but a NEW
+  // question OPENS a folded (compact) island by itself, exactly like a notice — so this ONE rule decides both sides: the toast is the
+  // signal only where revealByToast() says so (an island whose phase it cannot classify), and with the card or the island open it never
+  // shows. An informational event is dropped, not queued, when the island is open.
+  const folded = () => !!(T.revealByToast && T.revealByToast({ phase: capsule.dataset.phase }));
   function pushTransient(next) {
     if (!next) return;
-    if (!islandHidden()) return; // dropped, not queued: the visible island already shows it
+    if (!folded()) return; // dropped, not queued: the open island already shows it
     // dropped, not queued: judged on the toast ACTUALLY showing (a pending card on screen or an Esc-dismissed toast does not block it)
     if (T.toastView(snapshot, { now: Date.now(), onScreen: onScreen(), dismissedId })) { render(); return; }
     clearTimeout(transientTimer);
@@ -411,9 +408,9 @@ function mount(T) {
     render();
   }
   function render() {
-    const pendingToast = islandHidden() ? T.toastView(snapshot, { now: Date.now(), onScreen: onScreen(), dismissedId }) : null;
+    const pendingToast = folded() ? T.toastView(snapshot, { now: Date.now(), onScreen: onScreen(), dismissedId }) : null;
     if (pendingToast) dropTransient();
-    if (!islandHidden()) dropTransient(); // shown again by the island: a stale informational toast never comes back // replaced by the actionable toast: gone for good, never revealed again after the answer
+    if (!folded()) dropTransient(); // the island opened: a stale informational toast never comes back // replaced by the actionable toast: gone for good, never revealed again after the answer
     const fresh0 = !pendingToast && transientView && Date.now() < transientView.until && dismissedId !== transientView.id ? transientView : null;
     const next = pendingToast || fresh0;
     view = next;
@@ -430,8 +427,8 @@ function mount(T) {
       if (!toast.hidden) {
         // leaving: the pill is pulled back INTO the island (the spring in reverse), then hidden
         toast.dataset.exiting = 'true'; morphTo(0);
-        const done = () => { if (!view) { disposeAbito(); toast.hidden = true; delete toast.dataset.exiting; delete toast.dataset.ready; } };
-        setTimeout(done, reduced() ? 0 : 320); // the 396 ms presence curve is >= 99.9 % done at 320 ms (0.837 -> 0.999); kept as before so the Abito loop is released at the same moment
+        const done = () => { if (!view) { toast.hidden = true; delete toast.dataset.exiting; delete toast.dataset.ready; } };
+        setTimeout(done, reduced() ? 0 : 320); // the 396 ms presence curve is >= 99.9 % done at 320 ms (0.837 -> 0.999)
       }
       doc.dispatchEvent(new CustomEvent('abito:question-toast', { detail: { shown: false } }));
       return;
@@ -441,7 +438,7 @@ function mount(T) {
     toast.dataset.state = next.tone; toast.dataset.kind = next.kind; toast.dataset.actionable = next.actionable ? 'true' : 'false';
     title.textContent = next.title; queue.textContent = next.queue || ''; queue.hidden = !next.queue; bodyText.textContent = decision && sendError === decision.id ? 'No se pudo enviar.' : next.body;
     toast.setAttribute('aria-label', decision ? `${next.title}: ${next.body}. Abrir la isla, o decidir con Aprobar o Rechazar.` : fullView ? `${next.title}: ${next.body}. Es largo: abrir la isla para leerlo todo y decidir allí.` : next.aria);
-    if (!paintAbito(T.abitoPose(next))) paintIcon(next.icon);
+    // the badge is the Koda slot (koda-skin.js paints it); nothing in this module paints a character
     const fresh = shownId !== next.id;
     const wasHidden = toast.hidden;
     if (wasHidden) toast.hidden = false; // measured VISIBLE: a hidden header has no scrollWidth (the pill shrank to 40px under the title)
@@ -516,6 +513,6 @@ function mount(T) {
   document.addEventListener('abito:notice-arrival', event => { const d = event && event.detail; pushTransient(d && d.kind === 'attention' ? T.attentionToast(d) : T.finishedToast(d)); });
   if (listen) listen('question:state', event => apply(event && event.payload)).catch(() => {});
   if (invoke) invoke('question_action', { payload: { action: 'view' } }).then(apply, () => {});
-  new MutationObserver(render).observe(capsule, { attributes: true, attributeFilter: ['data-phase', 'data-view', 'data-card', 'data-edge-hidden'] });
+  new MutationObserver(render).observe(capsule, { attributes: true, attributeFilter: ['data-phase', 'data-view', 'data-card', 'data-edge'] });
   setInterval(() => { if (view) render(); }, 5000); // local expiry hides it without a host event
 }

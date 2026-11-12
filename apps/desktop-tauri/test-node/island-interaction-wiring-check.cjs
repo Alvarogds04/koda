@@ -188,7 +188,7 @@ function engagementFixture(openOnHover, options) {
     AbitoIslandInteraction: moduleApi,
     __TAURI__: { core: { invoke(cmd, args) {
       invocations.push({ cmd, args });
-      if (cmd === 'prefs_action') return resolved({ sound: false, avatarColors: {}, autoCloseSeconds: 15, openOnHover });
+      if (cmd === 'prefs_action') return resolved({ sound: false, avatarColors: {}, autoCloseSeconds: 15, openOnHover, ...(options && options.prefs) });
       if (cmd === 'hotkey_action') return resolved({ status: 'disabled' });
       if (cmd === 'question_action') return resolved({ available: false, pending: null });
       return resolved({});
@@ -298,22 +298,34 @@ function engagementFixture(openOnHover, options) {
   };
 }
 
+// isla-cualquier-lado S2 (human: «solo el círculo con koda pero sin que esté oculto»): the folded island is Koda's disc and it
+// NEVER hides at the screen edge any more, whatever the time spent folded, the sound setting or an old stored absence preference.
+for (const [name, prefs] of [
+  ['muted (was: hidden after 1 s)', { sound: false }],
+  ['sound on, old 10 s default', { sound: true, absenceSeconds: 10 }],
+  ['old 300 s maximum', { sound: true, absenceSeconds: 300 }],
+]) test('S2 a folded island is never concealed at the edge: ' + name, () => {
+  const f = engagementFixture(false, { prefs }); f.mutate(); f.seed('compact');
+  for (let i = 0; i < 3; i++) { f.advance(301000); f.mutate(); }
+  assert.equal(f.capsule().dataset.edgeHidden, undefined, 'data-edge-hidden is never written');
+  assert.doesNotMatch(String(f.island().style.top), /^-/, 'the disc is never slid up out of the screen');
+  for (const shape of f.shapes()) assert.ok(shape.h >= 32, 'the native island never shrinks into the edge: ' + JSON.stringify(shape));
+});
+test('S2 the island no longer wires an edge-hide timer', () => {
+  assert.doesNotMatch(read('island.js'), /createEdgeController|setConcealed|__islandConceal|edgeHidden|absenceSeconds/, 'no edge-hide wiring is left');
+  assert.doesNotMatch(read('island-interaction.js'), /createEdgeController|EDGE_ABSENCE/, 'the module no longer exports the edge-hide timer');
+});
+
 for (const [name, card, blocked] of [
   ['expired', {state:'pending',reason:null,expires_at:'2000-01-01T00:00:00Z'}, false],
   ['pending', {state:'pending',reason:null,expires_at:'2099-01-01T00:00:00Z'}, true],
   ['inert', {state:'inert',reason:'closed',expires_at:'2099-01-01T00:00:00Z'}, false],
   ['invalid expiry', {state:'pending',reason:null,expires_at:'invalid'}, false],
-]) test('edge card gate: ' + name, () => {
+]) test('compact card gate: ' + name, () => {
   const f=engagementFixture(false); f.update({card:{operation:'Read files',...card}}); f.seed('compact');
   assert.equal(f.permission().hidden, name === 'invalid expiry', 'expired/inert cards remain visible; invalid shape stays hidden');
-  assert.equal(f.capsule().dataset.edgeWhy, blocked ? 'approval' : 'clear');
-  f.advance(1000); assert.equal(f.capsule().dataset.edgeHidden, blocked ? undefined : 'true');
-});
-test('edge diagnostic is mirrored and transparent window hover is not pill hover', () => {
-  const f=engagementFixture(false); f.seed('compact'); f.windowHover(true); f.pillHover(false); f.mutate();
-  assert.equal(f.capsule().dataset.edgeWhy,'clear');
-  f.pillHover(true); f.mutate(); assert.equal(f.capsule().dataset.edgeWhy,'pointer');
-  f.pillHover(false); f.mutate(); assert.equal(f.capsule().dataset.edgeWhy,'clear');
+  // isla-cualquier-lado S2: pending (blocked) or not, the folded island is never concealed at the edge
+  f.advance(301000); assert.equal(f.capsule().dataset.edgeHidden, undefined, blocked ? 'pending card' : 'no pending card');
 });
 
 for (const [surface, button] of [
@@ -534,13 +546,11 @@ test('B4 a text field that is hidden or inert (a closed question card) no longer
   g.focus({ type: 'text', tag: 'textarea' }); g.mutate(); g.advance(60000);
   assert.equal(g.desktopCalls.includes('autoClose'), false, 'a visible text field still protects what is being typed');
 });
-test('B5 the edge-hide setting is SECONDS (Ajustes -> General -> «Ocultar tras», absence_seconds 5..300, default 10; old minutes migrate)', () => {
+test('B5 the retired edge-hide delay is gone from the host too (isla-cualquier-lado S2)', () => {
   const prefs = fs.readFileSync(path.join(__dirname, '../src/prefs.rs'), 'utf8');
-  assert.match(prefs, /ABSENCE_SECONDS: std::ops::RangeInclusive<u16> = 5\.\.=300/);
-  assert.match(prefs, /ABSENCE_DEFAULT_SECONDS: u16 = 10/);
-  assert.match(prefs, /\(minutes \* 60\)\.min\(\*ABSENCE_SECONDS\.end\(\)\)/);
-  assert.match(read('island.js'), /absenceSeconds:p\.absenceSeconds \?\? 10/);
-  assert.doesNotMatch(read('island.js'), /notice: !!\(current\?\.notices/, 'status notices no longer feed the edge guard');
+  assert.doesNotMatch(prefs, /ABSENCE_SECONDS|SetAbsenceSeconds|"set_absence_seconds"/, 'no stored edge-hide delay nor its command');
+  assert.doesNotMatch(fs.readFileSync(path.join(__dirname, '../src/settingshost.rs'), 'utf8'), /absenceSeconds/, 'the settings view no longer projects it');
+  assert.doesNotMatch(read('island.js'), /notice: !!\(current\?\.notices/, 'status notices do not feed the interaction guard');
 });
 
 // ---- live diagnosis: the controller's «why» is published on the capsule so the preview can be READ (human: «no se cumple») -------

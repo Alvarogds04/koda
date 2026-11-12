@@ -10,6 +10,26 @@ const http = require('node:http');
 const path = require('node:path');
 const frontend = path.join(__dirname, '..', 'frontend');
 
+/** isla-cualquier-lado (L21, human «1»): a NEW question opens the folded (compact) island by itself, like a notice, so the Sileo
+ *  toast is the signal only in the one case `revealByToast` leaves open — a phase the toast cannot classify (no ctx / unknown phase).
+ *  The real island rewrites `data-phase` on every render (its own sync loop), so a forged value is gone within a second: this makes
+ *  the phase unreadable to SCRIPTS while the attribute keeps its real value for the stylesheet, i.e. exactly that case and no other.
+ *  Call it after the island is folded and BEFORE feeding the event, and never for a behaviour a classified phase decides. */
+function unknownPhaseInPage() {
+  const capsule = document.getElementById('capsule'), real = capsule.dataset;
+  const view = new Proxy(real, {
+    get: (target, key) => (key === 'phase' ? undefined : Reflect.get(target, key)),
+    set: (target, key, value) => (key === 'phase' ? true : Reflect.set(target, key, value)),
+  });
+  Object.defineProperty(capsule, 'dataset', { configurable: true, get: () => view });
+}
+
+/** Undo unknownPhaseInPage: the element goes back to its real data-* map (a page shared by many scenarios needs this). */
+function knownPhaseInPage() {
+  // the own accessor shadows Element.prototype's `dataset`, so deleting it restores the real map
+  if (Object.getOwnPropertyDescriptor(document.getElementById('capsule'), 'dataset')) delete document.getElementById('capsule').dataset;
+}
+
 function findPlaywright() {
   const candidates = [process.env.PLAYWRIGHT_PATH, path.join(process.env.HOME || '', '.local/lib/node_modules/playwright'), 'playwright', 'playwright-core'].filter(Boolean);
   for (const c of candidates) { try { return require(c); } catch { /* next */ } }
@@ -20,6 +40,12 @@ const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css
 // measure are switched off by the real product. A scenario that exercises them (`github`, `declared`) serves paused.js with
 // `integrations` removed from PAUSED, so the layout is still verified for the version that turns them back on. Nothing else changes.
 const needsIntegrations = scenario => Boolean(scenario.github || scenario.declared || scenario.focusGithub);
+const unknownPhase = async page => {
+  await page.evaluate(unknownPhaseInPage);
+  // the toast repaints on its own events: re-emit the page's OWN question snapshot (the fake host answers `view`) so the new phase
+  // takes effect now and nothing else in the page is touched.
+  await page.evaluate(() => window.__TAURI__.core.invoke('question_action', { payload: { action: 'view' } }).then(v => window.__emit('question:state', v)));
+};
 function serve(scenario = {}) {
   const server = http.createServer((req, res) => {
     const f = path.join(frontend, decodeURIComponent(req.url.split('?')[0]).replace(/^\/+/, '') || 'index.html');
@@ -95,7 +121,7 @@ async function open(scenario = {}) {
           return structuredClone(snap);
         }
         if (cmd === 'agent_action') return a === 'sessions_list' ? { connection, accounts, sessions: { rows: sessions, truncated: false } } : { connection, accounts };
-        if (cmd === 'prefs_action') return { sound: true, declaredPills: scenario.declared ? scenario.declared : scenario.github ? ['integration_github'] : [], mainPill: 'abito', pillColors: {}, avatarColors: {}, autoCloseSeconds: 0, openOnHover: false, absenceSeconds: 600 };
+        if (cmd === 'prefs_action') return { sound: true, declaredPills: scenario.declared ? scenario.declared : scenario.github ? ['integration_github'] : [], mainPill: 'abito', pillColors: {}, avatarColors: {}, autoCloseSeconds: 0, openOnHover: false };
         if (cmd === 'github_action' && scenario.githubData === 'real') {
           // the shape src/github.rs serialises (what the validator's fake `gh` produces): PRs carry `repo`/`isDraft`/`review`, mainCI rows carry repo+branch
           const pr = { id: 'fixture/repo#42', title: 'Fixture PR', url: 'https://github.com/fixture/repo/pull/42', repo: 'fixture/repo', number: 42, isDraft: false, ci: 'failure', review: 'pending', headSha: null };
@@ -194,4 +220,4 @@ async function open(scenario = {}) {
     close: async () => { await browser.close(); server.close(); },
   };
 }
-module.exports = { open, findPlaywright };
+module.exports = { open, findPlaywright, unknownPhase, unknownPhaseInPage, knownPhaseInPage };

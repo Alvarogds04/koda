@@ -63,6 +63,19 @@ test('stylesheet: black body in both themes, Abito scale 13/12/11, accent drives
 test('TOAST numbers are the reported input-area contract', () => {
   assert.deepEqual([T.TOAST.w, T.TOAST.h, T.TOAST.hMax], [350, 40, 96]);
 });
+test('T6 focus ring on the toast is ONE 2px white ring (design/system.md:249), not the grey --dim-2', () => {
+  const css = fs.readFileSync(path.join(frontend, 'question-toast.css'), 'utf8');
+  const rule = /\.q-toast:focus-visible \{([^}]*)\}/.exec(css);
+  assert.ok(rule, 'the toast has a :focus-visible rule');
+  assert.match(rule[1], /outline:\s*2px solid #fff/, rule[1]);
+  assert.doesNotMatch(rule[1], /--dim-2/, 'never the grey ring');
+});
+test('T6 the toast is anchored on the side of the disc that faces the centre of the screen: mirrored 12px neck, pill on the disc edge', () => {
+  const css = fs.readFileSync(path.join(frontend, 'question-toast.css'), 'utf8');
+  assert.match(css, /\.q-toast\[data-edge="bottom"\] \.q-toast-canvas \{[^}]*transform:\s*scaleY\(-1\)/, 'the gooey canvas is mirrored (rects only, no text)');
+  assert.match(css, /\.q-toast\[data-edge="bottom"\] \.q-toast-header \{[^}]*bottom: 0/, 'the pill sits on the disc edge');
+  assert.match(css, /\.q-toast\[data-edge="bottom"\] \.q-toast-content \{[^}]*bottom: var\(--sileo-height\)/, 'the body grows away from the disc');
+});
 
 // ---- real layout (Playwright; SKIPPED loudly when absent): island concealed, the toast alone on screen -----------------------------
 const H = require('./island-geometry-harness.cjs');
@@ -78,9 +91,14 @@ async function layout() {
     const r = await H.open({ question: q === 'codex' ? 'plain' : q, theme, quick: true });
     try {
       await r.page.evaluate(() => window.__islandSetState('compact')); await r.page.waitForTimeout(700);
+      // isla-cualquier-lado (L21, human «1»): a NEW question opens the folded island, so the toast keeps only the phase it cannot
+      // classify. The disc folded just above is where it hangs from.
+      await H.unknownPhase(r.page);
       if (q === 'codex') await r.page.evaluate(({ id }) => window.__emit('question:state', { available: true, queued: [], queued_count: 0, deliveries: [], notice: null,
         pending: { id, kind: 'question', agent: 'codex', agent_label: 'Codex', project_name: 'api', text: '¿Qué editor preferís?', allow_free_text: false, options: [{ index: 0, label: 'vim', description: '' }, { index: 1, label: 'emacs', description: '' }], expires_at: Date.now() + 600000, free_text_max: 2000 } }), { id: '0b3a5c9e-8f27-4d11-9a0e-1c2d3e4f5a6b' });
-      await r.page.evaluate(() => { document.getElementById('capsule').dataset.edgeHidden = 'true'; }); await r.page.waitForTimeout(2200);
+      // isla-cualquier-lado S3/S5 (T6, L21): the toast hangs from the folded disc when the phase cannot be classified (switched on
+      // above); data-edge-hidden is gone from the product.
+      await r.page.waitForTimeout(2200);
       const m = await r.page.evaluate(() => {
         const t = document.getElementById('question-toast'), tb = t.getBoundingClientRect(), cs = e => getComputedStyle(e);
         const texts = [...t.querySelectorAll('.q-toast-title, .q-toast-body, .q-toast-queue')].filter(e => !e.hidden && e.textContent.trim()).map(e => ({ cls: e.className, color: cs(e).color, size: cs(e).fontSize, box: e.getBoundingClientRect().toJSON() }));
@@ -89,7 +107,11 @@ async function layout() {
           fills: ['neck', 'pill', 'bodyrect'].map(k => cs(t.querySelector('.q-toast-' + k)).fill), texts, acts, expanded: t.dataset.expanded, bodyOpacity: cs(t.querySelector('.q-toast-content')).opacity };
       });
       const tag = `${theme}/${q}`;
-      assert.equal(m.hidden, false, `${tag}: the toast is shown (island concealed)`);
+      assert.equal(m.hidden, false, `${tag}: the toast is shown (the island is folded: the disc is where it hangs from)`);
+      const ring = await r.page.evaluate(() => { const t = document.getElementById('question-toast'); t.focus({ focusVisible: true }); const s = getComputedStyle(t);
+        return { visible: t.matches(':focus-visible'), outline: `${s.outlineWidth} ${s.outlineStyle} ${s.outlineColor}` }; });
+      assert.equal(ring.visible, true, `${tag}: the toast is the keyboard focus target`);
+      assert.equal(ring.outline, '2px solid rgb(255, 255, 255)', `${tag}: the toast focus ring is 2px solid white`);
       assert.equal(m.expanded, 'true', `${tag}: expanded`); assert.equal(+m.bodyOpacity, 1, `${tag}: body text visible`);
       for (const f of m.fills) assert.equal(f, 'rgb(0, 0, 0)', `${tag}: toast shape fill is black`);
       assert.equal(m.accent, accent, `${tag}: --q-accent = ${agent === 'pi' && q === 'approvalPi' ? 'amber (permission)' : agent + ' colour'}`);
