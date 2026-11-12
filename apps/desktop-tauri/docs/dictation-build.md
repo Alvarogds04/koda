@@ -16,7 +16,14 @@ libraries** `sherpa-onnx-v1.13.8-linux-x64-static-lib` (contains onnxruntime):
   ```
 
   (`SHERPA_ONNX_ARCHIVE_DIR` pointing at a directory that holds the `.tar.bz2`
-  also works.) Pin the archive's SHA-256 in the packaging recipe.
+  also works.) Pin the archive's SHA-256 in the packaging recipe. Since K2-13
+  this archive is only what the crate's build script needs to exist: the
+  libraries that get **linked** come from the TTS-free archive `build.rs`
+  stages (next section), and that one is fetched by `build.rs` from the public
+  GitHub release on its first build in a fresh `target/` and cached in
+  `target/sherpa-onnx-no-tts/archives`. "Offline" therefore covers cargo (which
+  runs with `--offline`, so no crates.io access) and this crate archive, not
+  `build.rs`'s one-time, sha256-verified download.
 
 The speech model itself (Parakeet TDT 0.6B v3 int8, ~670 MB) is **not** part of
 the build: it is downloaded at runtime, only when the user asks, from Hugging
@@ -68,8 +75,10 @@ Consequences worth knowing:
   the notices need no GPL-3.0 entry for them. The `espeak-ng` *tool* on a
   developer's machine is unrelated and is never used by Koda.
 - `SHERPA_ONNX_LIB_DIR` / `SHERPA_ONNX_ARCHIVE_DIR` still tell the crate where
-  its own (TTS) archive is, but that archive is no longer linked, so the same
-  build works online and offline in CI with no workflow change.
+  its own (TTS) archive is, so its build script has nothing to download, but
+  that archive is no longer linked. `build.rs` downloads its own pinned
+  TTS-free archive once per fresh `target/` (public GitHub release, sha256
+  checked, then cached), so no workflow change was needed for it either.
 - **macOS is not covered yet**: `.cargo/config.toml` has no `apple-darwin`
   table and `build.rs` prints a warning, so `osx-arm64` keeps the crate's link
   list (espeak-ng included) until the Mac session takes the same three steps

@@ -61,6 +61,19 @@ rule('the pin lists the TTS-free archive of every shipped target, sha256-shaped,
   for (const { sha256, archive } of pin) assert.match(sha256, /^[0-9a-f]{64}$/, `${archive} has a sha256`);
 });
 
+rule('the Windows no-TTS archive is not the one the workflows pin: build.rs downloads it, the workflow pin is the now-unused TTS build', () => {
+  const workflowPin = read('packaging/windows/sherpa-onnx.sha256').trim().split('\n')
+    .filter((line) => line.trim() && !line.trim().startsWith('#'))
+    .map((line) => line.trim().split(/\s+/));
+  assert.equal(workflowPin.length, 1, 'the workflow pin holds one line');
+  const workflowArchive = workflowPin[0][1];
+  assert.match(workflowArchive, /-MT-Release-lib\.tar\.bz2$/, 'the workflow line still pins the crate\'s TTS archive');
+  assert.ok(!pin.some(({ archive }) => archive === workflowArchive), 'the no-TTS pin is a different file, downloaded separately');
+  const pinFile = read('packaging/sherpa-onnx-no-tts.sha256');
+  assert.match(pinFile, /build\.rs/, 'the pin file says who downloads it');
+  assert.doesNotMatch(pinFile, /downloads nothing extra|pins the same/, 'and never claims the workflows already fetch it');
+});
+
 rule('build.rs stages exactly the directory .cargo/config.toml links from, sha256-verified, and names the pin file', () => {
   const buildRs = read('build.rs');
   assert.ok(buildRs.includes(`const STAGE_DIR: &str = "${STAGE}";`), `build.rs stages ${STAGE}`);
