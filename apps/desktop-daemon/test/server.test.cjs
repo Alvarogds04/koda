@@ -2694,8 +2694,9 @@ async function upload(c, name, bytes, requestId) {
 	return c.wait((f) => f.requestId === requestId && (f.type === "uploaded" || f.type === "error"));
 }
 const uploadsDir = (engine) => path.join(engine.island.workspace, "uploads");
+const stagingDir = (engine) => path.join(engine.island.workspace, "..", "uploads-staging");
 
-test("attachments: a file uploaded over the channel is stored in the engine workspace; only its sender learns its id", async (t) => {
+test("attachments: an upload waits in the daemon's staging folder, outside the engine's workspace; only its sender learns its id", async (t) => {
 	const { endpoint, engine } = await chatOnFile(t);
 	const a = await login(t, endpoint);
 	const b = await login(t, endpoint);
@@ -2703,11 +2704,26 @@ test("attachments: a file uploaded over the channel is stored in the engine work
 	assert.equal(done.type, "uploaded");
 	assert.match(done.attachment.id, /^a-[0-9a-f]{16}$/);
 	assert.deepEqual({ ...done.attachment, id: "x" }, { id: "x", name: "informe.txt", size: 10, mime: "application/octet-stream" });
-	assert.equal(fs.readFileSync(path.join(uploadsDir(engine), done.attachment.id, "informe.txt"), "utf8"), "hola mundo");
+	assert.equal(fs.readFileSync(path.join(stagingDir(engine), done.attachment.id, "informe.txt"), "utf8"), "hola mundo");
+	assert.equal(fs.existsSync(uploadsDir(engine)), false, "the engine cannot list or read a file that was never sent");
 	assert.equal(JSON.stringify(a.frames).includes(engine.island.workspace), false, "the stored path never travels");
 	await sleep(30);
 	assert.equal(b.frames.some((f) => f.type === "uploaded"), false);
 	assert.equal(engine.requests.length, 0, "an upload never reaches the engine");
+});
+
+test("attachments: a send still awaiting the engine keeps its file when its client goes away (R1-001)", async (t) => {
+	const { endpoint, engine } = await chatOnFile(t);
+	const a = await login(t, endpoint);
+	const doc = (await upload(a, "pedido.txt", Buffer.from("x"), "up-1")).attachment;
+	engine.hold = true; // the prompt is in flight inside the engine
+	a.send({ type: "send", text: "leelo", requestId: "r-1", attachments: [doc.id] });
+	await waitFor(() => engine.requests.some((r) => r.type === "prompt"));
+	const stored = path.join(uploadsDir(engine), doc.id, "pedido.txt");
+	assert.ok(fs.existsSync(stored), "the accepted send moved it into the workspace");
+	a.socket.destroy();
+	await sleep(60);
+	assert.ok(fs.existsSync(stored), "a file already promised to the engine is not deleted on close");
 });
 
 test("attachments: send composes Gentle Dot's prompt (path read as the engine, image inline for a vision model); user_message and history show the chips", async (t) => {
@@ -2800,11 +2816,11 @@ test("attachments: removed before sending, or its client gone: the unsent file i
 	const removed = (await upload(a, "quitado.txt", Buffer.from("2"), "up-2")).attachment;
 	const left = (await upload(a, "olvidado.txt", Buffer.from("3"), "up-3")).attachment;
 	a.send({ type: "upload_discard", id: removed.id });
-	await waitFor(() => !fs.existsSync(path.join(uploadsDir(engine), removed.id)));
+	await waitFor(() => !fs.existsSync(path.join(stagingDir(engine), removed.id)));
 	a.send({ type: "send", text: "va", requestId: "r-1", attachments: [kept.id] });
 	await waitFor(() => engine.requests.some((r) => r.type === "prompt"));
 	a.socket.destroy();
-	await waitFor(() => !fs.existsSync(path.join(uploadsDir(engine), left.id)));
+	await waitFor(() => !fs.existsSync(path.join(stagingDir(engine), left.id)));
 	assert.ok(fs.existsSync(path.join(uploadsDir(engine), kept.id, "enviado.txt")), "a sent file stays for the agent");
 });
 
