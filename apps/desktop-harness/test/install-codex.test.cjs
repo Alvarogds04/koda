@@ -126,9 +126,17 @@ test('upgrade from the 5 s notice install: PermissionRequest migrated in place, 
   assert.deepEqual(pl.actions.map(a => [a.event, a.action]), [['PermissionRequest', 'replace'], ['PreToolUse', notice], ['PostToolUse', notice], ['Stop', notice]]);
   const got = JSON.parse(pl.after);
   assert.equal(got.model, 'kept');
-  // replaced IN PLACE, at the same position of the same group; every other tool's hook is byte-for-byte the same
+  // replaced IN PLACE, at the same position of the same group; every other tool's hook is byte-for-byte the same. On a
+  // Windows drive path the three notice entries are replaced too (they gain commandWindows), in place, in the same groups.
   assert.deepEqual(got.hooks.PermissionRequest, [{ hooks: [moshi('moshi-hook perm'), NOTICE_ENTRIES.PermissionRequest, moshi('herdr-agent-state.sh permission')] }]);
-  for (const ev of ['PreToolUse', 'PostToolUse', 'SessionStart', 'Stop']) assert.deepEqual(got.hooks[ev], before.hooks[ev], ev);
+  const expectEv = {
+    PreToolUse: [before.hooks.PreToolUse[0], { matcher: 'request_user_input', hooks: [NOTICE_ENTRIES.PreToolUse] }],
+    PostToolUse: [{ hooks: [NOTICE_ENTRIES.PostToolUse, moshi('herdr-agent-state.sh post')] }],
+    SessionStart: before.hooks.SessionStart,
+    Stop: [before.hooks.Stop[0], { hooks: [NOTICE_ENTRIES.Stop] }],
+  };
+  for (const ev of Object.keys(expectEv)) assert.deepEqual(got.hooks[ev], expectEv[ev], ev);
+  if (!win) for (const ev of ['PreToolUse', 'PostToolUse', 'SessionStart', 'Stop']) assert.deepEqual(got.hooks[ev], before.hooks[ev], ev + ' byte-identical on POSIX');
   const ours = Object.values(got.hooks).flat().flatMap(g => g.hooks).filter(h => h.command.startsWith(`${q(process.execPath)} ${q(BIN)} codex `)).length;
   assert.equal(ours, 4, 'exactly one Koda entry per event, no duplicates');
   fs.writeFileSync(p, pl.after);
