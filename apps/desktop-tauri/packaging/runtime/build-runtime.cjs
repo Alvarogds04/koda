@@ -393,7 +393,14 @@ async function main() {
     console.log(`runtime ${opts.target}: Node ${pin.version} + Pi ${pi.version} -> ${out} (${s.files} files, ${(s.bytes / 1048576).toFixed(1)} MiB)${opts.selfCheck ? ', self-check ok' : ''}`);
     if (opts.archive) {
       const archive = path.resolve(opts.archive);
-      const a = packArchive(out, archive);
+      // K2-13: an archive asked for INSIDE the folder it packs would be packed into itself (GNU tar then fails with
+      // «file changed as we read it», and a smaller tree only ever passed by luck). Pack beside it, then move it in.
+      const inside = path.relative(out, archive) !== "" && !path.relative(out, archive).startsWith("..");
+      // The temporary MUST live outside the folder being packed: a file created inside it is read while it grows
+      // («tar: file changed as we read it»), which is the whole bug.
+      const target = inside ? path.join(path.dirname(out), `.${path.basename(archive)}.pack-${process.pid}`) : archive;
+      const a = packArchive(out, target); // packArchive removes its own partial on failure
+      if (inside) fs.renameSync(target, archive);
       console.log(`archive ${archive} sha256 ${a.sha} (${a.bytes} bytes)`);
     }
   } finally {
