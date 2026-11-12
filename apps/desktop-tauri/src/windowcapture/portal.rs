@@ -1,13 +1,13 @@
-//! The Wayland fallback (S8): `org.freedesktop.portal.Screenshot` with `interactive=true`.
+//! The Wayland screenshot portal (`org.freedesktop.portal.Screenshot`, `interactive=true`): the
+//! SYSTEM's own picker. **Koda no longer captures through it** (S8/L10): the portal answers a PICTURE,
+//! not a window identity, so nothing can be vetted against the refusal list (Koda itself, the settings
+//! and login dialogs, the password managers) and Koda refuses to capture a window it cannot identify,
+//! the same way Gentle Dot refuses an `UNKNOWN_TARGET`. `linux` does not reach this module any more;
+//! it stays here, compiled and unit-tested, as the documented protocol and as the place a future
+//! identity-carrying portal API would land.
 //!
-//! This is what a session gets when Koda's GNOME extension is not enabled (or the desktop is not
-//! GNOME): the SYSTEM's own picker, where the human clicks the window. Nothing is picked for them
-//! and nothing is picked without them: the portal shows the dialog on every capture.
-//!
-//! What this path cannot do: the portal answers a PICTURE, not a window identity, so the refusal
-//! list in `blocklist` has nothing to vet here. That is the human's own explicit choice per capture
-//! (the strongest consent there is), but it means the list only guards the app-driven backends (the
-//! extension and X11), where Koda picks the window itself.
+//! What the portal could not do even when it was used: it never knew which app was picked, so the
+//! only consent it expressed was the human's own click, per capture.
 //!
 //! The client copies the pattern of `hotkey::portal::client` (blocking `zbus`, no `ashpd`: it is
 //! not in the offline crate set and `zbus` is already compiled in): `org.freedesktop.host.portal.

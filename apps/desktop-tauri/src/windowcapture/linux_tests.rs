@@ -15,13 +15,14 @@ fn a_wayland_session_never_counts_as_x11_even_though_xwayland_sets_display() {
 }
 
 #[test]
-fn with_neither_the_extension_nor_x11_the_human_picks_the_window() {
-    // A dead bus (the extension is absent) on a Wayland session with no X11 display: the only way
-    // to know which window the human means is the system picker, so the target is left open.
+fn without_the_extension_or_x11_a_wayland_session_refuses_instead_of_picking_for_the_human() {
+    // A dead bus (the extension is absent) on a Wayland session with no X11 display. The system picker
+    // would answer a PICTURE with no app identity, so nothing could be vetted against the refusal list:
+    // Koda refuses and says what is missing (the extension, or an X11 session).
     let desktop = LinuxDesktop::fixed(Some("unix:path=/nonexistent/koda-bus"), None, None, Some("wayland"));
-    let target = desktop.pick_target().expect("the picker is the target when nothing else can pick");
-    assert_eq!(target, Target { app_id: String::new(), app: String::new(), title: String::new(), handle: 0 });
-    assert_eq!(desktop.source(&target), Source::Portal);
+    let error = desktop.pick_target().expect_err("an unidentified window is never captured");
+    assert!(matches!(&error, CaptureError::Unsupported(why) if why.contains("cannot tell which app a window belongs to")), "{error:?}");
+    assert!(matches!(&error, CaptureError::Unsupported(why) if why.contains("GNOME extension")), "{error:?}");
     // On an X11 session with a display that has no window, the answer is that there is no window,
     // not a system picker the human never asked for.
     let broken = LinuxDesktop::fixed(Some("unix:path=/nonexistent/koda-bus"), Some(":98"), None, Some("x11"));
@@ -29,10 +30,13 @@ fn with_neither_the_extension_nor_x11_the_human_picks_the_window() {
 }
 
 #[test]
-fn a_system_picker_capture_needs_no_private_directory() {
-    // The portal writes its own file, so a session without XDG_RUNTIME_DIR can still answer.
+fn a_window_no_backend_can_identify_is_never_captured() {
+    // The portal is no longer a capture path: a session with neither the extension nor X11 has no way
+    // to name a window, so a capture is refused with the same message instead of asking the system
+    // picker for a picture nobody can vet.
     let desktop = LinuxDesktop::fixed(Some("unix:path=/nonexistent/koda-bus"), None, Some(""), Some("wayland"));
-    let target = desktop.pick_target().unwrap();
-    // Nothing to capture behind a dead bus: this must be an error, never a panic or a hang.
-    assert!(desktop.capture(&target).is_err());
+    let anonymous = Target { app_id: String::new(), app: String::new(), title: String::new(), handle: 0 };
+    assert!(desktop.source(&anonymous).is_err(), "no backend owns such a target");
+    let error = desktop.capture(&anonymous).expect_err("there is nothing to capture through");
+    assert!(matches!(&error, CaptureError::Unsupported(why) if why.contains("cannot tell which app a window belongs to")), "{error:?}");
 }

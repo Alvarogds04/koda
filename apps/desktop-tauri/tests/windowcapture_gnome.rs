@@ -112,6 +112,13 @@ fn png_of(width: u32, height: u32, rgb: [u8; 3]) -> Vec<u8> {
 
 // ---- the fake extension: org.abito.Context --------------------------------------------------------
 
+/// The one error the real extension raises for a caller that has not registered a good token.
+#[derive(Debug, zbus::DBusError)]
+#[zbus(prefix = "org.abito.Context")]
+enum Refused {
+    NotAllowed(String),
+}
+
 struct FakeExtension {
     picked: Mutex<(u64, String, String, String)>,
     png: Vec<u8>,
@@ -119,22 +126,46 @@ struct FakeExtension {
     /// When set, the extension answers with this path instead of writing into its own directory.
     outside: Option<PathBuf>,
     captured: Arc<Mutex<Vec<u64>>>,
+    /// The launch token that registered first, like the extension's own TokenGate.
+    bound: Arc<Mutex<Option<String>>>,
+}
+
+/// Does this call carry the token the first caller bound? Empty or wrong is refused, like the real one.
+fn permitted(bound: &Mutex<Option<String>>, token: &str) -> Result<(), Refused> {
+    let bound = bound.lock().unwrap();
+    match bound.as_deref() {
+        Some(expected) if token == expected => Ok(()),
+        Some(_) => Err(Refused::NotAllowed("that is not Koda's launch token".into())),
+        None => Err(Refused::NotAllowed("no launch token has been registered".into())),
+    }
 }
 
 #[zbus::interface(name = "org.abito.Context")]
 impl FakeExtension {
-    fn pick_window(&self) -> (u64, String, String, String) {
-        self.picked.lock().unwrap().clone()
+    /// First caller wins: a token of a real length binds once, and only once.
+    fn register(&self, token: String) -> bool {
+        let mut bound = self.bound.lock().unwrap();
+        if bound.is_some() || token.chars().count() < 32 {
+            return false;
+        }
+        *bound = Some(token);
+        true
     }
 
-    fn capture_window(&self, id: u64) -> zbus::fdo::Result<String> {
+    fn pick_window(&self, token: String) -> Result<(u64, String, String, String), Refused> {
+        permitted(&self.bound, &token)?;
+        Ok(self.picked.lock().unwrap().clone())
+    }
+
+    fn capture_window(&self, id: u64, token: String) -> Result<String, Refused> {
+        permitted(&self.bound, &token)?;
         self.captured.lock().unwrap().push(id);
         let path = match &self.outside {
             Some(path) => path.clone(),
             None => self.dir.join(format!("window-{id}-{}.png", std::process::id())),
         };
-        std::fs::write(&path, &self.png).map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
+        std::fs::write(&path, &self.png).map_err(|e| Refused::NotAllowed(format!("no file could be written ({e})")))?;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).map_err(|e| Refused::NotAllowed(format!("no private mode could be set ({e})")))?;
         Ok(path.to_string_lossy().into_owned())
     }
 }
@@ -172,6 +203,7 @@ fn serve_extension(bus: &Bus, picked: (u64, &str, &str, &str), png: Vec<u8>, dir
         dir: dir.to_path_buf(),
         outside,
         captured: Arc::new(Mutex::new(Vec::new())),
+        bound: Arc::new(Mutex::new(None)),
     };
     let captured = fake.captured.clone();
     let conn = connection::Builder::address(bus.address.as_str())
@@ -304,7 +336,7 @@ fn the_extension_contract_picks_a_window_and_hands_back_its_pixels() {
 
     let target: Target = desktop.pick_target().expect("the extension picks the window");
     assert_eq!((target.handle, target.app_id.as_str(), target.app.as_str(), target.title.as_str()), (7, "firefox", "Firefox", "Mozilla — a page"));
-    assert_eq!(desktop.source(&target), Source::Extension);
+    assert_eq!(desktop.source(&target), Ok(Source::Extension));
 
     let shot = desktop.capture(&target).expect("the extension captures it");
     assert_eq!((shot.width, shot.height), (4, 3));
@@ -354,37 +386,41 @@ fn without_the_extension_an_x11_session_picks_and_captures_its_window() {
     let desktop = LinuxDesktop::fixed(Some(&bus.address), Some(&x.display), None, Some("x11"));
     let target = desktop.pick_target().expect("the X11 window");
     assert_eq!((target.app.as_str(), target.app_id.as_str()), ("Foo", "foo Foo"));
-    assert_eq!(desktop.source(&target), Source::X11);
+    assert_eq!(desktop.source(&target), Ok(Source::X11));
     let shot = desktop.capture(&target).expect("the X11 capture");
     assert_eq!((shot.width, shot.height), (64, 48));
 }
 
 #[test]
-fn without_the_extension_or_x11_the_human_picks_the_window_through_the_portal() {
+fn without_the_extension_or_x11_koda_refuses_because_it_cannot_identify_a_window() {
+    // A live portal, ready to save a picture: Koda still refuses. A picture from the system picker has
+    // no app identity, so nothing can be vetted against the refusal list, and Koda does not capture
+    // what it cannot identify (Gentle Dot refuses an unidentified target the same way).
     let bus = Bus::start();
     let root = scratch("portal");
     let shot_file = std::env::temp_dir().join(format!("koda-portal-{}-shot.png", std::process::id()));
     std::fs::write(&shot_file, png_of(5, 4, [200, 100, 50])).unwrap();
     let asked = serve_portal(&bus, Answer::Saved, Some(shot_file.clone()));
     let desktop = LinuxDesktop::fixed(Some(&bus.address), None, Some(root.to_str().unwrap()), Some("wayland"));
-    let target = desktop.pick_target().expect("the picker is the target");
-    assert_eq!(desktop.source(&target), Source::Portal);
-    let shot = desktop.capture(&target).expect("the portal's capture");
-    assert_eq!((shot.width, shot.height), (5, 4));
-    assert_eq!(*asked.lock().unwrap(), vec![(true, true)], "the portal is asked to let the human pick, with a handle token");
-    assert!(!shot_file.exists(), "the portal's temporary file is removed after it is read");
+    let error = desktop.pick_target().expect_err("Koda will not pick a window it cannot identify");
+    let message = abito_island::windowcapture::mcp::error_message(&error);
+    assert!(message.contains("cannot tell which app a window belongs to"), "{message}");
+    assert!(message.contains("GNOME extension") && message.contains("X11"), "{message}");
+    assert!(asked.lock().unwrap().is_empty(), "the system picker is never opened");
+    assert!(shot_file.exists(), "and nothing was read from the portal");
 }
 
 #[test]
-fn closing_the_system_picker_is_a_clear_message_and_never_an_image() {
+fn closing_the_system_picker_is_never_reached_because_koda_will_not_capture_an_unidentified_window() {
+    // The cancel path still belongs to the portal (its own tests cover it), but no Koda flow gets there:
+    // a Wayland session without the extension is refused before any dialog opens.
     let bus = Bus::start();
     let root = scratch("cancel");
-    serve_portal(&bus, Answer::Cancelled, None);
+    let asked = serve_portal(&bus, Answer::Cancelled, None);
     let desktop = LinuxDesktop::fixed(Some(&bus.address), None, Some(root.to_str().unwrap()), Some("wayland"));
-    let target = desktop.pick_target().unwrap();
-    let error = desktop.capture(&target).expect_err("nothing was picked, so nothing is captured");
-    let message = abito_island::windowcapture::mcp::error_message(&error);
-    assert!(message.contains("you did not pick a window"), "{message}");
+    let error = desktop.pick_target().expect_err("nothing is picked, so no dialog is opened");
+    assert!(matches!(error, CaptureError::Unsupported(_)), "{error:?}");
+    assert!(asked.lock().unwrap().is_empty(), "the system picker is never opened");
 }
 
 #[test]
@@ -405,18 +441,72 @@ fn a_portal_that_is_not_there_is_reported_as_unsupported() {
 }
 
 #[test]
-fn an_older_extension_that_cannot_pick_falls_back_to_the_next_backend() {
+fn an_older_extension_that_cannot_pick_is_refused_instead_of_falling_back_to_the_picker() {
     let bus = Bus::start();
     let root = scratch("old-extension");
     let shot_file = std::env::temp_dir().join(format!("koda-portal-{}-old.png", std::process::id()));
     std::fs::write(&shot_file, png_of(3, 3, [1, 2, 3])).unwrap();
     serve_old_extension(&bus); // v2: not absent, but it does not answer PickWindow
-    serve_portal(&bus, Answer::Saved, Some(shot_file.clone()));
+    let asked = serve_portal(&bus, Answer::Saved, Some(shot_file.clone()));
     let desktop = LinuxDesktop::fixed(Some(&bus.address), None, Some(root.to_str().unwrap()), Some("wayland"));
-    let target = desktop.pick_target().expect("an extension that cannot pick must not block the capture");
-    assert_eq!(desktop.source(&target), Source::Portal, "the system picker takes over");
-    let shot = desktop.capture(&target).expect("the portal's capture");
-    assert_eq!((shot.width, shot.height), (3, 3));
+    // An extension that cannot pick is not a licence to capture a window nobody can name.
+    let error = desktop.pick_target().expect_err("an unidentified window is never captured");
+    let message = abito_island::windowcapture::mcp::error_message(&error);
+    assert!(message.contains("cannot tell which app a window belongs to"), "{message}");
+    assert!(asked.lock().unwrap().is_empty(), "the system picker is never opened");
+    assert!(shot_file.exists(), "and nothing was read from the portal");
+}
+
+#[test]
+fn a_client_with_a_different_launch_token_is_refused_and_never_captures() {
+    let bus = Bus::start();
+    let root = scratch("wrong-token");
+    let dir = root.join("koda-capture");
+    std::fs::DirBuilder::new().mode(0o700).create(&dir).unwrap();
+    let fake = serve_extension(&bus, (5, "firefox", "Firefox", "a page"), png_of(2, 2, [1, 2, 3]), &dir, None);
+    // Koda's own launch registers its token first and is answered.
+    let koda = LinuxDesktop::fixed(Some(&bus.address), None, Some(root.to_str().unwrap()), Some("wayland"));
+    let target = koda.pick_target().expect("the launch that registered is the one that picks");
+    assert_eq!(target.handle, 5);
+    // Another Koda (or any program) with a different token: the registration does not take, and every
+    // question is refused by name.
+    let other = LinuxDesktop::fixed(Some(&bus.address), None, Some(root.to_str().unwrap()), Some("wayland"))
+        .with_token("a-different-launch-token-0123456789abcdef");
+    other.pick_target().expect_err("a different token is not Koda");
+    let error = other.capture(&target).expect_err("a different token cannot capture either");
+    let message = abito_island::windowcapture::mcp::error_message(&error);
+    assert!(message.contains("another program holds Koda's GNOME extension"), "{message}");
+    assert!(message.contains("restart Koda"), "{message}");
+    assert!(fake.captured.lock().unwrap().is_empty(), "nothing was captured for the wrong token");
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0, "and no capture file was ever written");
+    // The launch that registered still works: a foreign token cannot lock Koda out of its own extension.
+    let shot = koda.capture(&target).expect("the registering launch still captures");
+    assert_eq!((shot.width, shot.height), (2, 2));
+    assert_eq!(*fake.captured.lock().unwrap(), vec![5u64]);
+}
+
+#[test]
+fn a_client_that_never_registered_and_sends_no_token_is_refused() {
+    let bus = Bus::start();
+    let root = scratch("no-token");
+    let dir = root.join("koda-capture");
+    std::fs::DirBuilder::new().mode(0o700).create(&dir).unwrap();
+    let fake = serve_extension(&bus, (3, "kterm", "KTerm", "shell"), png_of(2, 2, [1, 2, 3]), &dir, None);
+    let conn = connection::Builder::address(bus.address.as_str()).unwrap().build().unwrap();
+    let proxy = zbus::blocking::Proxy::new(&conn, "org.abito.Context", "/org/abito/Context", "org.abito.Context").unwrap();
+    // Nothing registered yet: no token, an empty token and any guess are all refused.
+    for token in ["", "a-token-nobody-registered-0123456789abcdef"] {
+        let picked: zbus::Result<(u64, String, String, String)> = proxy.call("PickWindow", &(token));
+        assert!(format!("{:?}", picked.unwrap_err()).contains("org.abito.Context.NotAllowed"), "{token:?} must be refused");
+        let captured: zbus::Result<String> = proxy.call("CaptureWindow", &(3u64, token));
+        assert!(format!("{:?}", captured.unwrap_err()).contains("org.abito.Context.NotAllowed"), "{token:?} must not capture");
+    }
+    // A token that is too short is not a registration either, so it still holds no rights.
+    let registered: bool = proxy.call("Register", &("short-token")).unwrap();
+    assert!(!registered, "a short token cannot register");
+    let picked: zbus::Result<(u64, String, String, String)> = proxy.call("PickWindow", &("short-token"));
+    assert!(picked.is_err(), "a refused registration grants nothing");
+    assert!(fake.captured.lock().unwrap().is_empty(), "no window was ever painted");
 }
 
 #[test]
