@@ -37,6 +37,16 @@ function secret(s) {
   return r.redactions > 0 || /(?:^|\n)\s*(?:export\s+)?[A-Za-z_][\w]*\s*=/m.test(s) ||
     /(?:key|token|secret|password|credential|private|authorization)\s*["']?\s*[:=]/i.test(s) || /PRIVATE KEY/.test(s);
 }
+// The session folder and the home folder are the user's own, already known paths, not secrets: scan only what a
+// path adds below them, with its leading separator so a run starting right at the boundary is measured as before.
+// On macOS every path starts with /Users/<Name>, so a folder with a digit in it (e.g. /Users/Ana/Projects/app-2) is a 40+ character run mixing lower, upper and digits, and the base64-run rule would
+// otherwise hide the card and drop its suggestions. Anything outside both folders is scanned whole, as before.
+function secretPath(p, cwd) {
+  for (const base of [cwd, os.homedir()]) {
+    if (typeof base === 'string' && path.isAbsolute(base) && inside(base, p)) return secret(path.sep + path.relative(base, p));
+  }
+  return secret(p);
+}
 // Dot-directories that hold credentials or control tooling. Windows: either separator and case-insensitive (NTFS is);
 // elsewhere the Unix rule is unchanged ('/' only, case-sensitive). `platform` is a test seam.
 const DOT_DIRS = { win32: /(?:^|[\\/])\.(?:ssh|claude|codex|config|git)(?:[\\/]|$)/i, posix: /(?:^|\/)\.(?:ssh|claude|codex|config|git)(?:\/|$)/ };
@@ -54,7 +64,7 @@ function describeFilePermission(name, input, cwd) {
     const raw = input.file_path;
     const normalized = path.resolve(cwd, raw);
     if (Buffer.byteLength(normalized) > MAX_PATH_BYTES) return { ...base, reason: 'ruta recortada' };
-    if (unsafe(raw) || /[\t\n\r]/.test(raw) || secret(normalized)) return { ...base, reason: 'ruta no segura (secretos ocultos)' };
+    if (unsafe(raw) || /[\t\n\r]/.test(raw) || secretPath(normalized, cwd)) return { ...base, reason: 'ruta no segura (secretos ocultos)' };
     const text = `${name}: ${quote(normalized)}`;
     let real;
     try { real = canonical(normalized); } catch { return { ...base, text, reason: 'ruta no verificable' }; }
@@ -99,4 +109,4 @@ function describeFilePermission(name, input, cwd) {
     return { filePreview: true, text: full, lossy: trimmed, ...(trimmed ? { reason: 'contenido recortado (8 líneas / 160 bytes)' } : {}) };
   } catch { return base; }
 }
-module.exports = { describeFilePermission, inside, sensitivePath, secret, canonical, MAX_LINES, MAX_BYTES, MAX_PATH_BYTES, MAX_EDITS };
+module.exports = { describeFilePermission, inside, sensitivePath, secret, secretPath, canonical, MAX_LINES, MAX_BYTES, MAX_PATH_BYTES, MAX_EDITS };

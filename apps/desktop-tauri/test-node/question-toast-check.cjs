@@ -82,9 +82,11 @@ test('input region: the island shape grows to include the toast (the host region
   assert.deepEqual(T.shapeWithToast([720, 184], true), [720, 184 + T.TOAST.gap + T.TOAST.hMax]);
 });
 
-test('reveal policy: a new question shows the toast; it no longer expands the island by itself', () => {
-  assert.equal(T.revealByToast({ phase: 'compact' }), true);
+test('reveal policy (island-free-drag S5): a NEW question opens a compact island; only a hidden island gets the toast', () => {
+  assert.equal(T.revealByToast({ phase: 'compact' }), false, 'compact: a new question keeps auto-opening the island (#266/R23)');
   assert.equal(T.revealByToast({ phase: 'expanded' }), false, 'expanded: the card itself is the signal');
+  assert.equal(T.revealByToast({ phase: 'hidden' }), true, 'hidden from the tray or shortcut: the toast is the signal');
+  assert.equal(T.revealByToast(undefined), true, 'no phase known: fail closed to the toast');
 });
 
 test('Sileo port is vanilla: spring linear() easing, 350x40 pill, gooey filter, no React/npm, reduced motion respected', () => {
