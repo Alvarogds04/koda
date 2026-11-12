@@ -258,7 +258,7 @@ class TelegramSession extends EventEmitter {
 		const module = await this.#clientModule();
 		this.apiId = apiId;
 		this.apiHash = apiHash;
-		const client = new module.TelegramClient({ apiId, apiHash, storage: new module.MemoryStorage() });
+		const client = new module.TelegramClient({ apiId, apiHash, storage: new module.MemoryStorage(), logLevel: MTCUTE_LOG_OFF });
 		this.client = client;
 		try {
 			// S6/S20: restoring NEVER asks anything. mtcute's Node client fills a missing phone, code or 2FA password

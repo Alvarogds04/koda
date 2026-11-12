@@ -406,6 +406,12 @@ test("telegram: mtcute's own logging stays off whatever MTCUTE_LOG_LEVEL says (R
 	await session.loginStart({ apiId: API_ID, apiHash: API_HASH, phone: PHONE });
 	assert.equal(created.length, 1);
 	assert.equal(created[0].log.level, 0, "level 0 (OFF) was passed explicitly; the environment did not decide");
+	// Restoring the island's session builds another client: it must be just as quiet (this is the path a dead session
+	// takes, and mtcute's own recovery logs a phone number at INFO).
+	const stored = await realSessionString(real);
+	await session.restore({ apiId: API_ID, apiHash: API_HASH, session: stored }).catch(() => {});
+	assert.equal(created.length, 2);
+	assert.equal(created[1].log.level, 0, "a restore passes the same level");
 });
 
 test("telegram: a long Telegram display name is clipped so the status frame can still be built", async (t) => {
