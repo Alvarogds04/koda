@@ -196,18 +196,70 @@ fn without_a_client_secret_the_exchange_sends_none() {
 }
 
 #[test]
-fn a_callback_with_the_wrong_state_is_refused_and_nothing_is_stored() {
+fn a_callback_with_the_wrong_state_is_refused_without_ending_the_flow() {
+    // A local process or a port-scanning page must not be able to cancel the sign-in (verifier D1).
     let rig = Rig::new(Http::with(vec![Ok(granted("a", Some("r")))]));
     rig.client(None);
     let begun = rig.run(|a| a.begin()).unwrap();
     let q = query(&begun.auth_url);
     let mut pending = begun.pending;
-    let b = browser(&q["redirect_uri"], "/?state=forged&code=x");
-    assert_eq!(poll_until(&rig, &mut pending), Err(GmailError::State));
-    assert!(b.join().unwrap().starts_with("HTTP/1.1 400"));
-    assert!(rig.http.calls().is_empty(), "no exchange with a forged state");
+    for path in ["/?state=forged&code=x".to_owned(), "/?code=x".to_owned(), format!("/?state={0}&state={0}&code=x", q["state"]), format!("/?state={}&code=x&code=y", q["state"])] {
+        let b = browser(&q["redirect_uri"], &path);
+        for _ in 0..200 { assert_eq!(rig.run(|a| a.complete_loopback(&mut pending)), Ok(false), "{path}"); if b.is_finished() { break; } std::thread::sleep(std::time::Duration::from_millis(5)); }
+        assert!(b.join().unwrap().starts_with("HTTP/1.1 400"), "{path}");
+    }
+    assert!(rig.http.calls().is_empty(), "no exchange without the right state");
     assert_eq!(rig.store.raw().unwrap()["refresh_token"], "");
-    assert_eq!(rig.run(|a| a.complete_loopback(&mut pending)), Err(GmailError::Used));
+    let b = browser(&q["redirect_uri"], &format!("/?state={}&code=c&scope={}", q["state"], SCOPE));
+    assert_eq!(poll_until(&rig, &mut pending), Ok(true));
+    b.join().unwrap();
+}
+
+#[test]
+fn a_post_or_a_malformed_request_does_not_end_the_flow() {
+    let rig = Rig::new(Http::with(vec![Ok(granted("a", Some("r")))]));
+    rig.client(None);
+    let begun = rig.run(|a| a.begin()).unwrap();
+    let q = query(&begun.auth_url);
+    let mut pending = begun.pending;
+    let addr = q["redirect_uri"].trim_start_matches("http://").to_owned();
+    for raw in [format!("POST /?state={}&code=c HTTP/1.1\r\n\r\n", q["state"]), "garbage\r\n\r\n".to_owned(), format!("GET /?state={}&code=c HTTP/1.1\r\nCookie: {}\r\n\r\n", q["state"], "x".repeat(40 * 1024))] {
+        let a = addr.clone();
+        let b = std::thread::spawn(move || { let mut s = std::net::TcpStream::connect(a).unwrap(); let _ = s.write_all(raw.as_bytes()); let mut out = String::new(); let _ = s.read_to_string(&mut out); out });
+        for _ in 0..200 { assert_eq!(rig.run(|a| a.complete_loopback(&mut pending)), Ok(false)); if b.is_finished() { break; } std::thread::sleep(std::time::Duration::from_millis(5)); }
+        b.join().unwrap();
+    }
+    assert!(rig.http.calls().is_empty());
+    let b = browser(&q["redirect_uri"], &format!("/?state={}&code=c&scope={}", q["state"], SCOPE));
+    assert_eq!(poll_until(&rig, &mut pending), Ok(true));
+    b.join().unwrap();
+}
+
+#[test]
+fn a_real_browser_head_with_large_cookies_is_accepted() {
+    let rig = Rig::new(Http::with(vec![Ok(granted("a", Some("r")))]));
+    rig.client(None);
+    let begun = rig.run(|a| a.begin()).unwrap();
+    let q = query(&begun.auth_url);
+    let mut pending = begun.pending;
+    let addr = q["redirect_uri"].trim_start_matches("http://").to_owned();
+    let raw = format!("GET /?state={}&code=c&scope={} HTTP/1.1\r\nHost: 127.0.0.1\r\nCookie: {}\r\n\r\n", q["state"], SCOPE, "x".repeat(12 * 1024));
+    let b = std::thread::spawn(move || { let mut s = std::net::TcpStream::connect(addr).unwrap(); s.write_all(raw.as_bytes()).unwrap(); let mut out = String::new(); let _ = s.read_to_string(&mut out); out });
+    assert_eq!(poll_until(&rig, &mut pending), Ok(true));
+    assert!(b.join().unwrap().starts_with("HTTP/1.1 200"));
+}
+
+#[test]
+fn the_answer_page_never_echoes_the_code_or_the_state() {
+    let rig = Rig::new(Http::with(vec![Ok(granted("a", Some("r")))]));
+    rig.client(None);
+    let begun = rig.run(|a| a.begin()).unwrap();
+    let q = query(&begun.auth_url);
+    let mut pending = begun.pending;
+    let b = browser(&q["redirect_uri"], &format!("/?state={}&code=SECRETCODE&scope={}", q["state"], SCOPE));
+    assert_eq!(poll_until(&rig, &mut pending), Ok(true));
+    let page = b.join().unwrap();
+    assert!(!page.contains("SECRETCODE") && !page.contains(&q["state"]), "{page}");
 }
 
 #[test]
@@ -350,19 +402,94 @@ fn access_token_without_a_connection_asks_to_sign_in() {
 }
 
 #[test]
-fn changing_the_client_id_drops_the_old_tokens() {
+fn changing_the_client_id_signs_out_and_revokes_the_old_grant() {
     let rig = Rig::new(Http::default());
     rig.client(None);
     sign_in(&rig, granted("ya29.one", Some("1//r"))).unwrap();
+    let before = rig.http.calls().len();
     let other = ID.replacen("123456789012", "999999999999", 1);
+    rig.http.replies.lock().unwrap().push(Ok(TokenReply { status: 200, body: b"{}".to_vec() }));
     rig.run(|a| a.set_client(&parse_client(&other, None).unwrap())).unwrap();
     assert_eq!(rig.run(|a| a.status()), Ok(Status::SignedOut));
-    assert_eq!(rig.store.raw().unwrap()["refresh_token"], "");
-    // the same client again keeps the connection
+    let stored = rig.store.raw().unwrap();
+    assert_eq!(stored["refresh_token"], "");
+    assert_eq!(stored["client_id"], other.as_str());
+    let calls = rig.http.calls();
+    assert_eq!(calls.len(), before + 1);
+    assert_eq!(calls.last().unwrap().0, REVOKE_URL);
+    assert_eq!(field(&calls.last().unwrap().1, "token"), Some("1//r"));
+}
+
+#[test]
+fn saving_the_same_client_id_keeps_the_connection_and_updates_the_secret() {
+    let rig = Rig::new(Http::default());
     rig.client(None);
     sign_in(&rig, granted("ya29.one", Some("1//r"))).unwrap();
+    let before = rig.http.calls().len();
     rig.client(None);
     assert_eq!(rig.run(|a| a.status()), Ok(Status::Connected));
+    rig.client(Some(SECRET));
+    assert_eq!(rig.run(|a| a.status()), Ok(Status::Connected));
+    let stored = rig.store.raw().unwrap();
+    assert_eq!(stored["client_secret"], SECRET);
+    assert_eq!(stored["refresh_token"], "1//r");
+    assert_eq!(rig.http.calls().len(), before, "no revoke when the client stays");
+}
+
+#[test]
+fn a_token_answer_too_big_for_the_keychain_keeps_the_refresh_token() {
+    let rig = Rig::new(Http::default());
+    rig.client(None);
+    let huge = "a".repeat(crate::secrets::MAX_VALUE_BYTES);
+    assert_eq!(sign_in(&rig, granted(&huge, Some("1//r"))), Ok(true));
+    let stored = rig.store.raw().unwrap();
+    assert_eq!(stored["refresh_token"], "1//r");
+    assert!(stored["access_token"].is_null());
+    assert!(rig.store.map.lock().unwrap()[KEY].len() <= crate::secrets::MAX_VALUE_BYTES);
+    assert_eq!(rig.run(|a| a.status()), Ok(Status::Connected));
+}
+
+#[test]
+fn the_keychain_lock_is_not_held_while_google_answers() {
+    // A slow token endpoint must not freeze status() for the UI (verifier D2).
+    struct Slow { gate: std::sync::mpsc::Receiver<()>, inner: Http }
+    impl TokenHttp for Slow {
+        fn post(&self, url: &str, form: &[(String, String)]) -> Result<TokenReply, OauthError> { let _ = self.gate.recv_timeout(std::time::Duration::from_secs(5)); self.inner.post(url, form) }
+    }
+    unsafe impl Sync for Slow {}
+    let (tx, rx) = std::sync::mpsc::channel();
+    let store = Store::default();
+    let now = AtomicU64::new(1_000_000);
+    let clock = || now.load(Ordering::SeqCst);
+    let fast = Http::default();
+    let auth = GmailAuth::new(&store, &fast, &clock);
+    auth.set_client(&parse_client(ID, None).unwrap()).unwrap();
+    store.map.lock().unwrap().insert(KEY.into(), serde_json::json!({"client_id": ID, "refresh_token": "1//r", "access_token": null, "expires_at": 0}).to_string());
+    let slow = Slow { gate: rx, inner: Http::with(vec![Ok(granted("ya29.two", None))]) };
+    std::thread::scope(|s| {
+        let refresh = s.spawn(|| GmailAuth::new(&store, &slow, &clock).access_token(None));
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let started = std::time::Instant::now();
+        assert_eq!(auth.status(), Ok(Status::Connected));
+        assert!(started.elapsed() < std::time::Duration::from_secs(1), "status waited for the network");
+        tx.send(()).unwrap();
+        assert_eq!(refresh.join().unwrap(), Ok("ya29.two".into()));
+    });
+    assert_eq!(store.raw().unwrap()["access_token"], "ya29.two");
+}
+
+#[test]
+fn a_refresh_that_races_a_forget_does_not_bring_the_tokens_back() {
+    struct Forgetting<'s> { store: &'s Store, inner: Http }
+    impl TokenHttp for Forgetting<'_> {
+        fn post(&self, url: &str, form: &[(String, String)]) -> Result<TokenReply, OauthError> { self.store.map.lock().unwrap().remove(KEY); self.inner.post(url, form) }
+    }
+    let store = Store::default();
+    store.map.lock().unwrap().insert(KEY.into(), serde_json::json!({"client_id": ID, "refresh_token": "1//r", "expires_at": 0}).to_string());
+    let http = Forgetting { store: &store, inner: Http::with(vec![Ok(granted("ya29.two", None))]) };
+    let clock = || 1_000_000u64;
+    assert_eq!(GmailAuth::new(&store, &http, &clock).access_token(None), Err(GmailError::NeedsSignIn));
+    assert!(store.raw().is_none(), "the forgotten entry stays forgotten");
 }
 
 #[test]
