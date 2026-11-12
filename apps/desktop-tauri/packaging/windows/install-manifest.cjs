@@ -7,11 +7,14 @@
 // K2-02 T2: with --runtime <dir> (the build-runtime --out folder) it also pins the bundled
 // runtime's node.exe as runtime/node.exe and (K2-13) its ffmpeg.exe as runtime/ffmpeg.exe (win-fs.cjs only requires hex
 // sha256 values, so the extra entries need no parser change).
+// K2-13 T2c-2 (S8): without --dist this runs on this build's own dist/, so the closed binary set is completed there from
+// target/release first (completeBinaries: only what the caller did not copy, e.g. abito-transcribe.exe). A --dist
+// directory is somebody else's fixture: it is hashed exactly as it is, never written to beyond the manifest.
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const crate = path.resolve(__dirname, '../..');
-const { RUNTIME_FILES } = require('./stage-runtime.cjs');
+const { RUNTIME_FILES, completeBinaries } = require('./stage-runtime.cjs');
 const SCHEMA = 'abito-install/1';
 const HELPER = 'abito-private-session.exe';
 const sha = f => crypto.createHash('sha256').update(fs.readFileSync(f)).digest('hex');
@@ -46,6 +49,10 @@ if (require.main === module) {
   if (process.exitCode !== 2) {
     try {
       const distDir = path.resolve(dist || path.join(crate, 'dist'));
+      if (!dist) {
+        const staged = completeBinaries(distDir);
+        if (staged.length > 0) console.log(`staged: ${staged.join(', ')}`);
+      }
       fs.writeFileSync(path.join(distDir, 'abito-install.json'), build(distDir, runtime ? path.resolve(runtime) : undefined));
       console.log(`manifest: ${runtime ? RUNTIME_FILES.length + 3 : RUNTIME_FILES.length + 1} files`);
     } catch (e) { console.error(e.message); process.exitCode = 1; }
