@@ -497,20 +497,48 @@ fn chathost_chat_action_keeps_its_gates_and_passes_the_real_window_label() {
 #[test]
 fn chathost_the_direct_rust_chat_is_no_longer_reachable() {
     let src = include_str!("chathost.rs");
-    for gone in ["chatlane", "cloudmodel", "live_snapshot", "prepare_target", "specialistshost", "list_conversations", "new_conversation", "history_page", "run_turn"] {
+    for gone in ["chatlane", "cloudmodel", "live_snapshot", "prepare_target", "specialistshost", "list_conversations", "new_conversation", "history_page", "run_turn", "start_history", "init_history", "Store::open"] {
         assert!(!src.contains(gone), "chathost.rs still reaches {gone}");
     }
-    assert!(src.contains("pub fn start_history"), "the local store init stays until U5");
+}
+
+/// K2-05 U5a merge gate (T5 note): the merge needs that nothing in the RUNNING app opens the 0.1
+/// private store or writes under `<app_data_dir>/conversations/` any more. `conversations.rs` keeps
+/// the store itself for U5b, and `_tests.rs` files are not linked into the app, so both are skipped;
+/// every other production source must be clean, and the startup must never initialise a history.
+#[test]
+fn no_runtime_path_opens_or_writes_the_0_1_conversation_store() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut offenders: Vec<String> = Vec::new();
+    for entry in std::fs::read_dir(&dir).expect("src dir") {
+        let path = entry.expect("entry").path();
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
+        if !name.ends_with(".rs") || name.ends_with("_tests.rs") || name == "conversations.rs" {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).expect("read");
+        for needle in ["Store::open", "conversations::Store", "init_history", "chathost::start_history"] {
+            if text.contains(needle) {
+                offenders.push(format!("{name}: {needle}"));
+            }
+        }
+    }
+    assert!(offenders.is_empty(), "production code still reaches the 0.1 conversation store: {offenders:?}");
+    let main = include_str!("main.rs");
+    assert!(!main.contains("start_history"), "the startup no longer initialises a private history");
+    // The only place that still names the 0.1 directory is T5's deletion of its files; nothing opens it.
+    assert_eq!(main.matches("join(\"conversations\")").count(), 1, "only legacy_conversations::cleanup resolves the 0.1 dir");
+    let cleanup_line = main.lines().position(|l| l.contains("join(\"conversations\")")).expect("cleanup dir line");
+    let cleanup = main.lines().position(|l| l.contains("legacy_conversations::cleanup")).expect("cleanup call");
+    assert!(cleanup_line < cleanup, "the dir is resolved for the cleanup alone");
 }
 
 #[test]
 fn chathost_setup_starts_one_reconnecting_chat_connection_after_the_legacy_cleanup() {
     let main = include_str!("main.rs");
     let cleanup = main.find("legacy_conversations::cleanup").expect("T5 cleanup");
-    let history = main.find("chathost::start_history(&handle)").expect("start_history");
     let conn = main.find("chathost::start_conn(&handle)").expect("setup starts the chat connection");
-    assert!(cleanup < history, "T5's cleanup still runs before start_history");
-    assert!(history < conn);
+    assert!(cleanup < conn, "T5's cleanup still runs before the chat connection starts");
     assert!(main.contains("chathost::stop_conn(app)"), "the connection closes on exit");
     let src = include_str!("chathost.rs");
     let start = &src[src.find("pub fn start_conn").expect("start_conn")..];

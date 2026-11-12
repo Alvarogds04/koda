@@ -67,7 +67,6 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use abito_island::bridge::{self, Action, BridgeError};
-use abito_island::chat::ChatError;
 use abito_island::chatlane::{self, Target};
 use abito_island::core::{self, Core, ReleaseOutcome, TogglePlan, WindowIo};
 use abito_island::desktop::{self, IslandState};
@@ -390,6 +389,9 @@ struct AppState {
     /// principal; the store persists in `specialists.json` (0600) and never holds a colour.
     specialists: specialistshost::SpecialistsHost,
     /// U1: per-turn deadlines (the probe shortens them for its fake).
+    /// Kept for specialists/models until U5b/U5d (K2-05 L59): no Rust turn runs any more,
+    /// but the specialists' fixture builds this state.
+    #[allow(dead_code)]
     chat_deadlines: Mutex<abito_island::localmodel::Deadlines>,
     /// #487: the previous window's context for the chat (empty unless the opt-in is on).
     chat_context: Mutex<abito_island::contextwin::ChatContext>,
@@ -404,27 +406,6 @@ struct AppState {
     models_revision: AtomicU64,
     /// U2: whether the last explicit selection reached the 0600 file.
     models_persisted: AtomicBool,
-}
-
-/// U2 gate before dispatch: the target must still be a registered,
-/// selectable local profile at the same revision. The resource half of the
-/// gate (asleep → no load, other alias → no substitute, busy → visible
-/// queue, unknown → refuse, context budget) runs per turn in the
-/// `chatlane` preflight right before the single request.
-fn model_gate(state: &AppState, target: &Target) -> Result<(), ChatError> {
-    let registry = state
-        .models_registry
-        .lock()
-        .expect("models registry lock")
-        .clone();
-    let entry = abito_island::models::select(&registry, &target.profile.profile_id)?;
-    if entry.revision != target.profile.revision
-        || Some(target.alias.as_str()) != entry.alias
-        || target.endpoint.origin() != entry.origin
-    {
-        return Err(ChatError::profile_missing());
-    }
-    Ok(())
 }
 
 /// Adapter: the pure core handlers see the real window through this.
@@ -2113,9 +2094,10 @@ fn main() {
             hotkeyhost::start(&handle); // #305: global show/hide shortcut (config + X11 grab)
             // #306 settings prefs: `settingshost::start` runs before the island is placed (#264)
             specialistshost::start(&handle); // #327: the manual specialists (empty = the principal)
-            // K2-05 T5 (S3): delete Koda 0.1's stored conversations (exact files only) BEFORE the new
-            // store opens (Store::open creates the directory, so this runs synchronously on this startup
-            // thread, first). Test dirs (ABITO_CONVERSATIONS_DATA_DIR) and probe runs never touch data.
+            // K2-05 T5 (S3): delete Koda 0.1's stored conversations (exact files only), synchronously on
+            // this startup thread, first. U5a (K2-05 L59) removed the private Rust store, so nothing opens
+            // `<app_data_dir>/conversations/` any more: this cleanup only ever deletes 0.1 files.
+            // Test dirs (ABITO_CONVERSATIONS_DATA_DIR) and probe runs never touch data.
             let conversations_dir = if std::env::var_os("ABITO_CONVERSATIONS_DATA_DIR").is_some() || probe_requested() {
                 None
             } else {
@@ -2124,7 +2106,6 @@ fn main() {
             if let Some(line) = abito_island::legacy_conversations::cleanup(conversations_dir.as_deref()).log_line() {
                 eprintln!("{line}");
             }
-            chathost::start_history(&handle); // #341: isolated private conversation store
             // K2-05 T4 U3: the island chat talks to the daemon engine through ONE reconnecting
             // chat connection (the settings window keeps its own AgentConn).
             chathost::start_conn(&handle);

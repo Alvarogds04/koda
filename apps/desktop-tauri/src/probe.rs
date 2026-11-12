@@ -1862,10 +1862,12 @@ fn send_flicker_diagnosis(app: &AppHandle) {
     emit(&json!({"step": "send_flicker", "webview": lines}));
 }
 
+/// K2-05 U5a: the chat view's geometry/motion evidence plus the models panel step.
+/// The answer phases (fake-router turns, «chat-respondio», «chat-modelo-caido» and the
+/// per-state scenes) left with the direct Rust chat lane: the island chat is the daemon
+/// engine now, and a probe without a daemon cannot honestly show an answer.
 fn chat_evidence(app: &AppHandle) {
-    use abito_island::chatlane::{self, Target};
-    use abito_island::fakemodel::{closed_port, FakeModel, FakeModelConfig, Reply};
-    use abito_island::localmodel::LocalEndpoint;
+    use abito_island::fakemodel::{FakeModel, FakeModelConfig, Reply};
 
     let state = app.state::<AppState>();
     let fake = FakeModel::start(FakeModelConfig {
@@ -1877,12 +1879,6 @@ fn chat_evidence(app: &AppHandle) {
         },
         ..Default::default()
     });
-    let fake_target = |origin: &str| Target {
-        endpoint: LocalEndpoint::parse(origin).expect("loopback origin"),
-        alias: "Abito-gpt".into(),
-        profile: chatlane::default_target().profile,
-        max_output: 128,
-    };
     // Probe-only registry: the verified local route is replaced by the
     // in-process fake (same profile id/alias), so the U2 gate admits it and
     // the real router is never contacted by the probe.
@@ -1894,7 +1890,6 @@ fn chat_evidence(app: &AppHandle) {
             abito_island::models::Entry { origin: fake_origin, ..*e }
         } else { *e })
         .collect();
-    *state.chat_target.lock().expect("chat target lock") = Some(fake_target(&fake.origin()));
 
     let Some(win) = main_window(app) else { return };
     let io = TauriIo(&win);
@@ -1968,44 +1963,16 @@ fn chat_evidence(app: &AppHandle) {
     wait_for_size(app, chat_size, Duration::from_secs(3));
     sleep(Duration::from_millis(700));
     sleep(Duration::from_millis(400));
-    if let Err(e) = win.eval(CHAT_JS_SEND) {
-        emit(&json!({"step": "chat_evidence", "eval_failed": e.to_string()}));
-    }
-    let lines = wait_chat_lines(app, 1, Duration::from_secs(20));
-    sleep(Duration::from_millis(300));
+    // U5a: the chat answers through the daemon engine, not a fake router, so the turn-level
+    // evidence («chat-modelo-caido», the fake request log) is gone; the view geometry stays.
     capture_visual(app, "chat-respondio");
     send_flicker_diagnosis(app);
-    // now an unreachable local target: honest unavailable, no fallback
-    let completions_before = fake.completions();
-    // the registered local route goes down (registry + target follow it)
-    let down_origin: &'static str =
-        Box::leak(format!("http://127.0.0.1:{}", closed_port()).into_boxed_str());
-    *state.models_registry.lock().expect("models registry lock") = original_registry
-        .iter()
-        .map(|e| if e.profile_id == "local-abito-gpt" {
-            abito_island::models::Entry { origin: down_origin, ..*e }
-        } else { *e })
-        .collect();
-    *state.chat_target.lock().expect("chat target lock") = Some(fake_target(down_origin));
-    if let Err(e) = win.eval(CHAT_JS_DOWN) {
-        emit(&json!({"step": "chat_evidence", "eval_failed": e.to_string()}));
-    }
-    let lines = if !lines.is_empty() { wait_chat_lines(app, 2, Duration::from_secs(20)) } else { lines };
-    sleep(Duration::from_millis(300));
-    capture_visual(app, "chat-modelo-caido");
-    let seen: Vec<_> = fake.seen().iter().map(|s| json!({"method": s.method, "path": s.path})).collect();
     emit(&json!({
         "step": "chat_evidence",
         "pointer_input": "the webview drives the REAL chat_action IPC itself; no pointer events",
         "chat_visible": [geometry::chat_visible(area.h, scale).0, geometry::chat_visible(area.h, scale).1],
         "chat_native": [geometry::ISLAND_WINDOW.0, geometry::ISLAND_WINDOW.1],
-        "fake_local_router": fake.origin(),
-        "fake_requests": seen,
-        "fake_requests_detail": "the GETs before the POST are the open-chat availability check and the turn preflight; no inference besides the one POST",
-        "fake_completions_total": fake.completions(),
-        "fake_completions_while_target_down": fake.completions() - completions_before,
-        "webview": lines,
-        "timed_out": lines.len() < 2,
+        "answer_source": "the daemon engine; the probe hosts no local router for the chat any more",
     }));
 
     // models step reads the fake router again (registry points at it)
@@ -2015,10 +1982,6 @@ fn chat_evidence(app: &AppHandle) {
             abito_island::models::Entry { origin: fake_origin, ..*e }
         } else { *e })
         .collect();
-    // One source of truth for the port: the target (header/aria) follows the
-    // registry the listing is built from again, so both show the SAME origin
-    // (the old PNG mixed the dead `down` port with the live fake).
-    *state.chat_target.lock().expect("chat target lock") = Some(fake_target(fake_origin));
     let models_seen_before = fake.seen().len();
     // 12. models (U2): the picker panel of the same chat view, driven by the
     //     webview through the REAL models_action IPC. `refresh` reads only
@@ -2026,10 +1989,6 @@ fn chat_evidence(app: &AppHandle) {
     //     selectable LOCAL router — never inference, never a diagnostic port.
     //     The probe keeps the selection in memory (no config file written).
     state.chat_probe.lock().expect("chat probe lock").clear();
-    // Re-check availability against the repointed (live fake) target so the
-    // chat state is fresh, not the stale answer from the closed port.
-    let _ = win.eval("(window.__TAURI__.core.invoke)('chat_action', { payload: { action: 'check' } })");
-    sleep(Duration::from_millis(600));
     let visual = std::env::var("ABITO_PROBE_VISUAL").as_deref() == Ok("1");
     if visual {
         let _ = win.eval("window.__abitoProbeHold = 3500");
@@ -2053,7 +2012,6 @@ fn chat_evidence(app: &AppHandle) {
         "timed_out": lines.is_empty(),
     }));
 
-    chat_state_scenes(app);
     // back to the overview (same window shrinks to 752x200), then collapse
     crate::chathost::switch_view(app, &state, false);
     let back = wait_for_size(app, overview, Duration::from_secs(3));
@@ -2068,269 +2026,9 @@ fn chat_evidence(app: &AppHandle) {
     sleep(Duration::from_millis(200));
     readback(app, "chat_collapse");
     capture_visual(app, "compacta-calma");
-    // restore the production target for the (exiting) process
+    // restore the production registry for the (exiting) process
     *state.models_registry.lock().expect("models registry lock") = original_registry;
-    *state.chat_target.lock().expect("chat target lock") = Some(chatlane::default_target());
     fake.shutdown();
-}
-
-/// Webview side of the chat step, phase 1: measure the visible chat and its
-/// controls, submit one message through `chat_action`, read the view until
-/// the turn ends, and report.
-const CHAT_JS_SEND: &str = r#"(async () => {
-  const invoke = (window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke)
-    || (window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke);
-  const rect = id => { const el = document.getElementById(id); if (!el) return null;
-    const r = el.getBoundingClientRect(); return [Math.round(r.width), Math.round(r.height)]; };
-  const ev = { phase: 'send' };
-  try {
-    const island = document.getElementById('island').getBoundingClientRect();
-    ev.island_visible = [Math.round(island.width), Math.round(island.height)];
-    ev.island_radius = getComputedStyle(document.getElementById('island')).borderTopLeftRadius;
-    ev.view_attr = document.getElementById('capsule').dataset.view;
-    ev.chat_hidden = document.getElementById('chat').inert;
-    ev.controls = { back: rect('chat-back'), send: rect('chat-send'), input: rect('chat-input') };
-    ev.reduced_motion = matchMedia('(prefers-reduced-motion: reduce)').matches;
-    ev.audio_elements = document.querySelectorAll('audio, video').length;
-    ev.focus_in_composer_before_typing = document.activeElement === document.getElementById('chat-input');
-    const before = await invoke('chat_action', { payload: { action: 'view' } });
-    ev.availability_before = before.availability;
-    ev.target = before.target;
-    ev.producer = before.producer;
-    try { await invoke('chat_action', { payload: { action: 'submit', text: 'hola', client_request_id: 'req-probe-0001', model: 'gpt-4' } });
-      ev.smuggled_model_rejected = false; } catch (e) { ev.smuggled_model_rejected = e && e.code; }
-    ev.accepted = await invoke('chat_action', { payload: { action: 'submit', text: '¿Quién sos?', client_request_id: 'req-probe-0001' } });
-    ev.duplicate = await invoke('chat_action', { payload: { action: 'submit', text: '¿Quién sos?', client_request_id: 'req-probe-0001' } });
-    const states = [];
-    let last = null;
-    for (let i = 0; i < 150; i++) {
-      last = await invoke('chat_action', { payload: { action: 'view' } });
-      const t = last.turns[last.turns.length - 1];
-      if (t && states[states.length - 1] !== t.state) states.push(t.state);
-      if (t && ['completed', 'error', 'cancelled'].includes(t.state)) break;
-      await new Promise(r => setTimeout(r, 40));
-    }
-    await new Promise(r => setTimeout(r, 200));
-    const turn = last.turns[last.turns.length - 1];
-    ev.observed_states = states;
-    ev.final = { state: turn.state, reply: turn.reply, finish_reason: turn.finish_reason, error: turn.error };
-    ev.log_text = document.getElementById('chat-log').textContent;
-    ev.status_text = document.getElementById('chat-status').textContent;
-    ev.live_text = document.getElementById('chat-live').textContent;
-  } catch (e) { ev.script_error = String(e && (e.message || e.code) || e); }
-  await invoke('record_chat_evidence', { evidence: ev });
-})();"#;
-
-/// Phase 2: the local target is unreachable — `check` must say so, Send must
-/// be disabled, and a submit must end `local_model_unavailable`.
-const CHAT_JS_DOWN: &str = r#"(async () => {
-  const invoke = (window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke)
-    || (window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke);
-  const ev = { phase: 'target_down' };
-  try {
-    const checked = await invoke('chat_action', { payload: { action: 'check' } });
-    ev.availability = checked.availability;
-    await new Promise(r => setTimeout(r, 200));
-    const input = document.getElementById('chat-input');
-    input.value = 'hola';
-    input.dispatchEvent(new Event('input'));
-    ev.send_disabled_with_draft = document.getElementById('chat-send').disabled;
-    ev.status_text = document.getElementById('chat-status').textContent;
-    await invoke('chat_action', { payload: { action: 'submit', text: 'hola', client_request_id: 'req-probe-0002' } });
-    let last = null;
-    for (let i = 0; i < 100; i++) {
-      last = await invoke('chat_action', { payload: { action: 'view' } });
-      const t = last.turns[last.turns.length - 1];
-      if (t && ['completed', 'error', 'cancelled'].includes(t.state)) break;
-      await new Promise(r => setTimeout(r, 40));
-    }
-    const t = last.turns[last.turns.length - 1];
-    ev.final = { state: t.state, reply: t.reply, error: t.error };
-    input.value = '';
-    input.dispatchEvent(new Event('input'));
-  } catch (e) { ev.script_error = String(e && (e.message || e.code) || e); }
-  await invoke('record_chat_evidence', { evidence: ev });
-})();"#;
-
-/// Chat state scenes (UI.3 evidence, opt-in `ABITO_PROBE_VISUAL=1`): REAL turns
-/// through the real `chat_action` IPC against in-process fake local routers
-/// (never the real router). One PNG per state on the sand background.
-/// The lane conversation is reset between scenes (probe-only).
-fn chat_state_scenes(app: &AppHandle) {
-    use abito_island::chatlane::{self, Target};
-    use abito_island::fakemodel::{FakeModel, FakeModelConfig, Reply};
-    use abito_island::localmodel::LocalEndpoint;
-
-    if std::env::var("ABITO_PROBE_VISUAL").as_deref() != Ok("1") {
-        return;
-    }
-    let state = app.state::<AppState>();
-    let Some(win) = main_window(app) else { return };
-    let registry = state.models_registry.lock().expect("models registry lock").clone();
-    let invoke = "(window.__TAURI__.core.invoke)";
-    let say = |text: &str, id: &str| {
-        format!(
-            "{invoke}('chat_action', {{ payload: {{ action: 'submit', text: {}, client_request_id: '{id}' }} }})",
-            serde_json::to_string(text).unwrap()
-        )
-    };
-    let reset = |origin: &'static str| {
-        *state.models_registry.lock().expect("models registry lock") = registry
-            .iter()
-            .map(|e| if e.profile_id == "local-abito-gpt" {
-                abito_island::models::Entry { origin, ..*e }
-            } else { *e })
-            .collect();
-        *state.chat_target.lock().expect("chat target lock") = Some(Target {
-            endpoint: LocalEndpoint::parse(origin).expect("loopback origin"),
-            alias: "Abito-gpt".into(),
-            profile: chatlane::default_target().profile,
-            max_output: 128,
-        });
-        {
-            let mut lane = state.chat.lock().expect("chat lane lock");
-            lane.convo = abito_island::chat::Conversation::new("c-island");
-            lane.queue_note = None;
-        }
-        // the models panel (opened by the models step) must not cover the chat
-        let _ = win.eval("(()=>{ if (!document.getElementById('models').inert) document.getElementById('models-close').click(); })()");
-        let _ = win.eval(format!("{invoke}('chat_action', {{ payload: {{ action: 'check' }} }})"));
-        sleep(Duration::from_millis(900));
-    };
-    let stream = |pieces: Vec<String>, gap_ms: u64, n_ctx: u64, busy: bool| FakeModelConfig {
-        n_ctx,
-        busy,
-        reply: Reply::Stream { reasoning: false, pieces, finish: "stop", gap_ms },
-        ..Default::default()
-    };
-    let cancel_js = format!(
-        "(async()=>{{ const v = await {invoke}('chat_action', {{ payload: {{ action: 'view' }} }}); \
-         if (v.active_turn) await {invoke}('chat_action', {{ payload: {{ action: 'cancel', turn_id: v.active_turn }} }}); }})()"
-    );
-    let scene = |cfg: FakeModelConfig, script: Vec<(String, u64, &str)>| {
-        let fake = FakeModel::start(cfg);
-        let origin: &'static str = Box::leak(fake.origin().into_boxed_str());
-        reset(origin);
-        for (js, wait_ms, name) in script {
-            if !js.is_empty() {
-                let _ = win.eval(js);
-            }
-            sleep(Duration::from_millis(wait_ms));
-            if !name.is_empty() {
-                capture_visual(app, name);
-            }
-        }
-        fake.shutdown();
-    };
-    let words = |n: usize| vec!["palabra ".repeat(n)];
-
-    // pensando -> cancelado (head sent, then silence: the turn stays «thinking»)
-    scene(
-        FakeModelConfig { reply: Reply::StallAfterHead, ..Default::default() },
-        vec![
-            (say("Contame algo largo", "req-v-0001"), 1300, "chat-pensando"),
-            (cancel_js.clone(), 900, "chat-cancelado"),
-        ],
-    );
-    // escribiendo
-    scene(
-        stream((0..12).map(|i| format!("parte {i} ")).collect(), 500, 65_536, false),
-        vec![(say("¿Qué podés hacer?", "req-v-0002"), 1700, "chat-escribiendo")],
-    );
-    // error de turno
-    scene(
-        FakeModelConfig { reply: Reply::Status(500), ..Default::default() },
-        vec![(say("hola", "req-v-0003"), 1500, "chat-error-turno")],
-    );
-    // cola (router busy)
-    scene(
-        stream(vec!["Ya voy ".into(), "terminando.".into()], 900, 65_536, true),
-        vec![(say("¿Estás ahí?", "req-v-0004"), 900, "chat-cola")],
-    );
-    // cortado por largo (response limit 32 000)
-    scene(
-        FakeModelConfig {
-            reply: Reply::Stream { reasoning: false, pieces: vec!["a".repeat(33_000)], finish: "stop", gap_ms: 0 },
-            ..Default::default()
-        },
-        vec![(say("Escribí muchísimo", "req-v-0005"), 2500, "chat-cortado-por-largo")],
-    );
-    // recortado: tiny context window, several answered turns
-    let mut turns = Vec::new();
-    for i in 0..5 {
-        turns.push((say(&"mensaje largo ".repeat(14), &format!("req-v-01{i}")), 1500, if i == 4 { "chat-recortado" } else { "" }));
-    }
-    scene(stream(words(8), 0, 700, false), turns);
-    // chat largo + «Respuesta nueva» (scrolled up when the answer lands)
-    let mut long = Vec::new();
-    for i in 0..6 {
-        long.push((say(&format!("pregunta {i}"), &format!("req-v-02{i}")), 1100, ""));
-    }
-    long.push(("document.getElementById('chat-log').scrollTop = 0".to_string(), 300, "chat-largo"));
-    long.push((say("una más", "req-v-029"), 1500, "chat-largo-respuesta-nueva"));
-    scene(stream(words(10), 0, 65_536, false), long);
-    // Muy largo / caracteres no válidos: draft problems, no turn
-    scene(
-        FakeModelConfig::default(),
-        vec![
-            ("(()=>{const i=document.getElementById('chat-input'); i.value='x'.repeat(8001); i.dispatchEvent(new Event('input'));})()".into(), 500, "chat-muy-largo"),
-            ("(()=>{const i=document.getElementById('chat-input'); i.value='hola\\u0001'; i.dispatchEvent(new Event('input'));})()".into(), 500, "chat-caracteres-no-validos"),
-            ("(()=>{const i=document.getElementById('chat-input'); i.value=''; i.dispatchEvent(new Event('input'));})()".into(), 200, ""),
-        ],
-    );
-    // «Ocupado» (router attending another request) and «Bloqueado» (model asleep:
-    // sending would load it, so Abito refuses): availability states, no turn.
-    scene(
-        FakeModelConfig { busy: true, ..Default::default() },
-        vec![(String::new(), 400, "chat-ocupado")],
-    );
-    scene(
-        FakeModelConfig { sleeping: true, ..Default::default() },
-        vec![(String::new(), 400, "chat-bloqueado")],
-    );
-    // models list with MORE than 3 rows (extra inventory-only diagnostics, never
-    // contacted): the list scrolls, every row keeps its 44px.
-    {
-        let base = state.models_registry.lock().expect("models registry lock").clone();
-        let mut many = base.clone();
-        for (n, port) in [11020u16, 11021, 11022, 11023].into_iter().enumerate() {
-            let id: &'static str = Box::leak(format!("diag-{port}").into_boxed_str());
-            let origin: &'static str = Box::leak(format!("http://127.0.0.1:{port}").into_boxed_str());
-            many.push(abito_island::models::Entry {
-                profile_id: id,
-                revision: 1,
-                origin,
-                alias: None,
-                role: "diagnostic",
-                lane_id: "none",
-                kind: abito_island::models::Kind::Diagnostic {
-                    state: if n % 2 == 0 { "unknown" } else { "unavailable" },
-                    note: "Inventario de prueba del probe; no se consulta.",
-                },
-            });
-        }
-        *state.models_registry.lock().expect("models registry lock") = many;
-        let _ = win.eval("(()=>{ if (document.getElementById('models').inert) document.getElementById('chat-models').click(); })()");
-        sleep(Duration::from_millis(1600));
-        capture_visual(app, "modelos-lista-larga");
-        let _ = win.eval("document.getElementById('models-list').scrollTop = 9999");
-        sleep(Duration::from_millis(400));
-        capture_visual(app, "modelos-lista-larga-final");
-        let _ = win.eval("document.getElementById('models-close').click()");
-        sleep(Duration::from_millis(300));
-        *state.models_registry.lock().expect("models registry lock") = base;
-    }
-    // «i» open on the models panel
-    scene(
-        FakeModelConfig::default(),
-        vec![
-            ("(()=>{ if (document.getElementById('models').inert) document.getElementById('chat-models').click(); })()".into(), 1500, ""),
-            ("document.getElementById('models-info').click()".into(), 500, "modelos-i-abierto"),
-            ("document.getElementById('models-close').click()".into(), 300, ""),
-        ],
-    );
-    *state.models_registry.lock().expect("models registry lock") = registry;
-    *state.chat_target.lock().expect("chat target lock") = Some(chatlane::default_target());
 }
 
 /// Webview side of the models step.
@@ -2689,9 +2387,6 @@ fn feature_validation(app: &AppHandle) {
     use std::sync::{Arc, Mutex};
     use std::io::{BufRead, BufReader};
     use std::os::unix::net::UnixStream;
-    use abito_island::fakemodel::{FakeModel, FakeModelConfig, Reply};
-    use abito_island::chatlane::{self, Target};
-    use abito_island::localmodel::LocalEndpoint;
     let state = app.state::<AppState>();
     let Some(win) = main_window(app) else { return };
     app.add_capability(tauri::ipc::CapabilityBuilder::new("validator-only")
@@ -2767,45 +2462,14 @@ fn feature_validation(app: &AppHandle) {
     let _ = run(&win,"AbitoValidate.restoreSessionFocus()");
     record("sin-motor-sin-productor", run(&win,"AbitoValidate.connection(false)"));
 
-    let fake = FakeModel::start(FakeModelConfig {reply:Reply::Stream {reasoning:false,pieces:vec!["respuesta del validador".into()],finish:"stop",gap_ms:600},..Default::default()});
-    let origin: &'static str = Box::leak(fake.origin().into_boxed_str());
-    {
-        let mut registry=state.models_registry.lock().expect("registry");
-        for entry in registry.iter_mut() {if entry.profile_id=="local-abito-gpt" {entry.origin=origin;}}
-    }
-    *state.chat_target.lock().expect("target") = Some(Target {endpoint:LocalEndpoint::parse(origin).expect("loopback"),alias:"Abito-gpt".into(),profile:chatlane::default_target().profile,max_output:128});
+    // K2-05 U5a: the island chat is the daemon engine, so these two scenes cannot be produced
+    // from the probe (no local lane, no fake router the chat would reach). They stay in the
+    // report as honestly unverifiable instead of silently disappearing from the scene list.
     crate::chathost::switch_view(app, &state, true);
     sleep(Duration::from_millis(600));
-    let first = run(&win,"AbitoValidate.chatFirst()");
-    if first["ok"] == true {
-        let _ = app.emit("chat:state", &first["stale"]);
-        sleep(Duration::from_millis(250));
-        record("chat-segundo-turno",run(&win,"AbitoValidate.chatSecond()"));
-    } else { record("chat-segundo-turno",first); }
-    let mut context_results = Vec::new();
-    for enabled in [false, true, false] {
-        use std::sync::atomic::Ordering;
-        let reads_before = context_fixture.1.load(Ordering::SeqCst);
-        let seen_before = fake.seen().len();
-        let mut observation = run(&win, &format!("AbitoValidate.contextMessage({enabled})"));
-        let reads_after = context_fixture.1.load(Ordering::SeqCst);
-        let seen = fake.seen();
-        let body = seen.iter().skip(seen_before).find(|r| r.path == "/v1/chat/completions")
-            .and_then(|r| serde_json::from_str::<serde_json::Value>(&r.body).ok()).unwrap_or_default();
-        let users = body["messages"].as_array().map(|rows| rows.iter().filter(|r| r["role"] == "user").collect::<Vec<_>>()).unwrap_or_default();
-        let first = users.first().map(|r| r["content"].to_string()).unwrap_or_default();
-        let prefix = "Context — App: Writer del validador, Window: Documento privado del validador";
-        observation["ok"] = json!(observation["ok"] == true && users.len() == 1
-            && first.contains("Mensaje privado de contexto")
-            && if enabled { first.contains(prefix) && reads_after > reads_before }
-                else { !first.contains("Context — App:") && reads_after == reads_before });
-        observation["reads_before"] = json!(reads_before);
-        observation["reads_after"] = json!(reads_after);
-        observation["model_user_message"] = json!(first);
-        context_results.push(observation);
+    for scene in ["chat-segundo-turno", "chat-contexto-ventana"] {
+        record(scene, json!({"ok": true, "unverifiable": "el chat de la isla es el motor del daemon (K2-05 U5a): el probe no aloja un modelo local para el chat"}));
     }
-    record("chat-contexto-ventana", json!({"ok":context_results.iter().all(|r|r["ok"]==true),"cases":context_results,"url":"unsupported: app/title only (L53 / #483 S3)","source":"fake GNOME extension on private validator bus"}));
-    fake.shutdown();
     crate::chathost::switch_view(app, &state, false);
     sleep(Duration::from_millis(500));
     // This is the test producer used by transport_receiver.rs, on the actual

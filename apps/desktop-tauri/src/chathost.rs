@@ -9,9 +9,9 @@
 //! label passed into chatclient's window gate. One continuous chat: the
 //! conversation-list verbs are refused (`conversations_off`), attachments go to
 //! the daemon (`chat_attach`/`chat_attach_data` → `ChatHost::upload`). The direct Rust chat (local/cloud lanes,
-//! the private conversation store) is no longer reachable from here; only
-//! `start_history` remains until U5 deletes it. Nothing in this file touches
-//! the desktop snapshot shape (`desktop:state` keeps its 13 keys).
+//! the private conversation store) is GONE with K2-05 U5a: nothing here opens, writes or
+//! reads `<app_data_dir>/conversations/`. Nothing in this file touches the desktop snapshot
+//! shape (`desktop:state` keeps its 13 keys).
 
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
@@ -430,19 +430,9 @@ pub async fn chat_attach_data(
     upload_to_daemon(app, webview.label().to_string(), name, bytes).await
 }
 
-/// Initialize private local history; probes are memory-only unless explicitly isolated.
-pub fn start_history(app: &AppHandle) {
-    let state = app.state::<AppState>();
-    let dir = if let Ok(dir) = std::env::var("ABITO_CONVERSATIONS_DATA_DIR") {
-        let dir = std::path::PathBuf::from(dir);
-        if !dir.is_absolute() { state.chat.lock().expect("chat lane lock").history_failure("El directorio de historial de prueba no es válido; los mensajes no se guardarán."); return; }
-        Some(dir)
-    } else if crate::probe_requested() { None }
-    else { app.path().app_data_dir().ok().map(|p| p.join("conversations")) };
-    if let Some(dir) = dir { let _ = state.chat.lock().expect("chat lane lock").init_history(&dir); }
-}
-
 /// Default deadlines for production turns.
+/// Kept for specialists/models until U5b/U5d (K2-05 L59): the island state still
+/// carries them and the specialists' fixture builds them.
 pub fn default_deadlines() -> abito_island::localmodel::Deadlines {
     DEFAULT_DEADLINES
 }

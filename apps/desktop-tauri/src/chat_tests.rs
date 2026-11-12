@@ -17,6 +17,10 @@ fn convo() -> Conversation {
     Conversation::new("c-test")
 }
 
+fn attachment(id: &str, name: &str, mime: &str, file: &str) -> Attachment {
+    Attachment { id: id.into(), name: name.into(), mime: mime.into(), size: 12, file: file.into() }
+}
+
 // --- input validation -------------------------------------------------------
 
 #[test]
@@ -251,74 +255,6 @@ fn presentation_cache_is_bounded_in_bytes_but_never_evicts_the_active_turn() {
     assert!(c.evicted() >= 1);
 }
 
-// --- prompt construction --------------------------------------------------------
-
-#[test]
-fn prompt_carries_system_history_and_the_new_message_in_order() {
-    let mut c = convo();
-    let a = c.submit("¿quién sos?", "req-0000000001", &profile()).unwrap();
-    c.apply(&a.turn_id, 1, Event::Delta("Abito.".into())).unwrap();
-    c.apply(&a.turn_id, 2, Event::Complete(FinishReason::Stop)).unwrap();
-    let b = c.submit("¿y qué hacés?", "req-0000000002", &profile()).unwrap();
-    let prompt = c.prompt_for(&b.turn_id, "SYS", 4096, 512).unwrap();
-    let roles: Vec<&str> = prompt.messages.iter().map(|m| m.role).collect();
-    assert_eq!(roles, ["system", "user", "assistant", "user"]);
-    assert_eq!(prompt.messages[3].content, "¿y qué hacés?");
-    assert_eq!(prompt.trimmed_turns, 0);
-}
-
-#[test]
-fn failed_or_cancelled_turns_without_reply_do_not_enter_the_prompt() {
-    let mut c = convo();
-    let a = c.submit("uno", "req-0000000001", &profile()).unwrap();
-    c.apply(&a.turn_id, 1, Event::Error(ChatError::inference_error()))
-        .unwrap();
-    let b = c.submit("dos", "req-0000000002", &profile()).unwrap();
-    let prompt = c.prompt_for(&b.turn_id, "SYS", 4096, 512).unwrap();
-    let roles: Vec<&str> = prompt.messages.iter().map(|m| m.role).collect();
-    assert_eq!(roles, ["system", "user"]);
-}
-
-#[test]
-fn history_over_budget_is_trimmed_visibly_never_by_growing_the_context() {
-    let mut c = convo();
-    for n in 1..=6 {
-        let a = c
-            .submit(&"palabra ".repeat(100), &format!("req-{n:010}"), &profile())
-            .unwrap();
-        c.apply(&a.turn_id, 1, Event::Delta("ok".into())).unwrap();
-        c.apply(&a.turn_id, 2, Event::Complete(FinishReason::Stop)).unwrap();
-    }
-    let b = c.submit("último", "req-0000000099", &profile()).unwrap();
-    // budget fits roughly two old turns plus the new message
-    let prompt = c.prompt_for(&b.turn_id, "SYS", 1200, 400).unwrap();
-    assert!(prompt.trimmed_turns > 0);
-    assert!(prompt.estimated_tokens + 400 <= 1200);
-    assert_eq!(prompt.messages.last().unwrap().content, "último");
-    // the trimming is recorded on the turn so the UI can say it
-    assert_eq!(c.turn(&b.turn_id).unwrap().trimmed_turns, prompt.trimmed_turns);
-}
-
-#[test]
-fn a_message_that_cannot_fit_alone_is_a_context_limit_error() {
-    let mut c = convo();
-    let a = c
-        .submit(&"x".repeat(DRAFT_MAX_SCALARS), "req-0000000001", &profile())
-        .unwrap();
-    let e = c.prompt_for(&a.turn_id, "SYS", 1000, 400).unwrap_err();
-    assert_eq!(e.code, "context_limit");
-    assert!(!e.retryable);
-}
-
-#[test]
-fn token_estimate_is_conservative() {
-    // ~3 UTF-8 bytes per token plus per-message overhead, rounded up
-    assert_eq!(estimate_tokens(""), MESSAGE_OVERHEAD_TOKENS);
-    assert_eq!(estimate_tokens("abc"), 1 + MESSAGE_OVERHEAD_TOKENS);
-    assert_eq!(estimate_tokens("abcd"), 2 + MESSAGE_OVERHEAD_TOKENS);
-    assert!(estimate_tokens(&"ñ".repeat(300)) >= 200);
-}
-
 // --- view projection --------------------------------------------------------------
 
 #[test]
@@ -420,33 +356,6 @@ fn check_command_is_argument_free() {
     assert!(parse_command(&json!({"action": "check", "endpoint": "x"})).is_err());
 }
 
-// --- #343 shape pins: the attachment work must not change the old wire shape --
-
-#[test]
-fn plain_message_content_serializes_as_a_json_string() {
-    // Pin: with no attachments, every prompt message keeps `content` as a
-    // JSON string — never an array — and the completion body is byte-identical.
-    let mut c = convo();
-    let a = c.submit("hola", "req-shape-000001", &profile()).unwrap();
-    c.apply(&a.turn_id, 1, Event::Delta("respuesta".into())).unwrap();
-    c.apply(&a.turn_id, 2, Event::Complete(FinishReason::Stop)).unwrap();
-    let b = c.submit("otra", "req-shape-000002", &profile()).unwrap();
-    let p = c.prompt_for(&b.turn_id, "sistema", 8192, 1024).unwrap();
-    assert_eq!(serde_json::to_value(&p.messages[0]).unwrap(), json!({"role":"system","content":"sistema"}));
-    assert_eq!(serde_json::to_value(&p.messages[1]).unwrap(), json!({"role":"user","content":"hola"}));
-    assert_eq!(serde_json::to_value(&p.messages[2]).unwrap(), json!({"role":"assistant","content":"respuesta"}));
-    assert_eq!(serde_json::to_value(&p.messages[3]).unwrap(), json!({"role":"user","content":"otra"}));
-    let body = crate::localmodel::completion_body("Abito-gpt", &p.messages, 1024);
-    assert!(body.contains("\"content\":\"sistema\""), "{body}");
-    assert!(body.contains("\"content\":\"hola\""), "{body}");
-}
-
-// --- #343: attachments through submit, prompts and the command set -----------
-
-fn attachment(id: &str, name: &str, mime: &str, file: &str) -> Attachment {
-    Attachment { id: id.into(), name: name.into(), mime: mime.into(), size: 12, file: file.into() }
-}
-
 #[test]
 fn submit_accepts_ids_and_turns_carry_the_metadata() {
     let mut c = convo();
@@ -457,11 +366,9 @@ fn submit_accepts_ids_and_turns_carry_the_metadata() {
     let turn = c.turn(&a.turn_id).unwrap();
     assert_eq!(turn.attachments.len(), 1);
     assert_eq!(turn.attachments[0].name, "notas.txt");
-    // The wire shape with attachments is content parts, not a string.
-    let p = c.prompt_for(&a.turn_id, "sistema", 8192, 1024).unwrap();
-    let user = &p.messages[1];
-    assert_eq!(user.role, "user");
-    assert!(user.content.is_array(), "{}", user.content);
+    // U5a: the attachment metadata stays on the turn; the prompt is the daemon engine's
+    // now, so nothing in Rust builds one.
+    assert_eq!(c.view()["turns"][0]["attachments"][0]["mime"], json!("text/plain"));
 }
 
 #[test]
@@ -490,45 +397,6 @@ fn submit_command_parses_the_optional_attachments_key() {
     let many: Vec<String> = (0..6).map(|i| format!("a-{:016x}", i)).collect();
     let bad = json!({"action": "submit", "text": "hola", "client_request_id": "req-0000000001", "attachments": many});
     assert_eq!(parse_command(&bad).unwrap_err().code, "invalid_input");
-}
-
-#[test]
-fn prompts_inline_text_attachments_and_note_missing_ones() {
-    let mut c = convo();
-    let a = c.submit_with_attachments(
-        "resumí esto", "req-att-00000002", &profile(),
-        vec![
-            attachment("a-0123456789abcdef", "notas.txt", "text/plain", "0123456789abcdef-notas.txt"),
-            attachment("a-ffffffffffffffff", "perdido.txt", "text/plain", "ffffffffffffffff-perdido.txt"),
-        ],
-    ).unwrap();
-    let resolve = |att: &Attachment| (att.id == "a-0123456789abcdef").then(|| "contenido del archivo".to_string());
-    let p = c.prompt_for_resolved(&a.turn_id, "sistema", 8192, 1024, &resolve).unwrap();
-    let content = p.messages[1].content.as_array().unwrap();
-    let text = content[0]["text"].as_str().unwrap();
-    assert!(text.starts_with("resumí esto"), "{text}");
-    assert!(text.contains("[Archivo adjunto: notas.txt]\ncontenido del archivo"), "{text}");
-    assert!(text.contains("[Archivo adjunto: perdido.txt — el archivo ya no está disponible]"), "{text}");
-    assert_eq!(content.len(), 1); // text only: no image parts
-}
-
-#[test]
-fn prompts_build_image_parts_and_reserve_their_budget() {
-    let mut c = convo();
-    let a = c.submit_with_attachments(
-        "mirá", "req-att-00000003", &profile(),
-        vec![attachment("a-0123456789abcdef", "foto.png", "image/png", "0123456789abcdef-foto.png")],
-    ).unwrap();
-    let resolve = |att: &Attachment| (att.mime == "image/png").then(|| "data:image/png;base64,AAAA".to_string());
-    let p = c.prompt_for_resolved(&a.turn_id, "sistema", 8192, 1024, &resolve).unwrap();
-    let content = p.messages[1].content.as_array().unwrap();
-    assert_eq!(content[0]["type"], "text");
-    assert_eq!(content[1]["type"], "image_url");
-    assert_eq!(content[1]["image_url"]["url"], "data:image/png;base64,AAAA");
-    // The image cost enters the budget: a context too small for it errors honestly.
-    // used ≈ estimate("sistema") + estimate("mirá") + IMAGE_TOKEN_ESTIMATE = 1037.
-    let small = c.prompt_for_resolved(&a.turn_id, "sistema", IMAGE_TOKEN_ESTIMATE + 100, 100, &resolve);
-    assert_eq!(small.unwrap_err().code, "context_limit");
 }
 
 #[test]
@@ -628,41 +496,6 @@ fn tool_events_after_a_terminal_turn_are_refused() {
     assert_eq!(c.apply(&t, 3, call("c1", "read", ToolState::Done, None)), Err(Reject::AfterTerminal));
 }
 
-// ---- #487: the window context rides with the FIRST user message, in every later prompt of that conversation ----
-
-#[test]
-fn context_prefixes_the_first_user_message_in_its_prompt_and_all_later_ones_but_not_the_stored_text() {
-    let mut c = convo();
-    let a = c.submit("hola", "req-0000000001", &profile()).unwrap();
-    c.attach_context(&a.turn_id, "Context — App: Firefox, Window: Docs");
-    let p = c.prompt_for(&a.turn_id, "SYS", 4096, 512).unwrap();
-    assert_eq!(p.messages[1].content, "Context — App: Firefox, Window: Docs\n\nhola");
-    c.apply(&a.turn_id, 1, Event::Delta("ok".into())).unwrap();
-    c.apply(&a.turn_id, 2, Event::Complete(FinishReason::Stop)).unwrap();
-    let b = c.submit("y ahora", "req-0000000002", &profile()).unwrap();
-    let p = c.prompt_for(&b.turn_id, "SYS", 4096, 512).unwrap();
-    assert_eq!(p.messages[0].content, "SYS", "the system text is untouched");
-    assert_eq!(p.messages[1].content, "Context — App: Firefox, Window: Docs\n\nhola", "stays in the history like conversationMessages");
-    assert_eq!(p.messages[3].content, "y ahora");
-    assert_eq!(c.view()["turns"][0]["user_text"], "hola", "the stored and shown text has no context");
-}
-
-#[test]
-fn a_conversation_without_context_prompts_exactly_as_before() {
-    let mut c = convo();
-    let a = c.submit("hola", "req-0000000001", &profile()).unwrap();
-    assert_eq!(c.prompt_for(&a.turn_id, "SYS", 4096, 512).unwrap().messages[1].content, "hola");
-}
-
-#[test]
-fn the_context_counts_against_the_token_budget() {
-    let mut c = convo();
-    let a = c.submit("hola", "req-0000000001", &profile()).unwrap();
-    let plain = c.prompt_for(&a.turn_id, "SYS", 4096, 512).unwrap().estimated_tokens;
-    c.attach_context(&a.turn_id, &"x".repeat(400));
-    assert!(c.prompt_for(&a.turn_id, "SYS", 4096, 512).unwrap().estimated_tokens > plain + 50);
-}
-
 // --- S10 (L35): the page reports the chat height it wants (Coucou's growing prompt) ------------------------------------
 
 #[test]
@@ -686,27 +519,3 @@ fn the_height_verb_is_exact_closed_and_integer_only() {
     }
 }
 
-// ---- S3 (#503): the page can show what the live context said on a turn --------------------------
-
-#[test]
-fn live_context_is_shown_on_its_turn_only_and_never_changes_the_user_text_or_the_prompt() {
-    let mut c = convo();
-    let a = c.submit("hola", "req-0000000001", &profile()).unwrap();
-    c.attach_live(&a.turn_id, "Estado en vivo\n- Pi en api: trabajando", 2);
-    let v = c.view();
-    assert_eq!(v["turns"][0]["live_context"], json!({"text": "Estado en vivo\n- Pi en api: trabajando", "trimmed_lines": 2}));
-    assert_eq!(v["turns"][0]["user_text"], "hola");
-    assert_eq!(c.prompt_for(&a.turn_id, "SYS", 4096, 512).unwrap().messages[1].content, "hola", "the history never carries it");
-    c.apply(&a.turn_id, 1, Event::Delta("ok".into())).unwrap();
-    c.apply(&a.turn_id, 2, Event::Complete(FinishReason::Stop)).unwrap();
-    let b = c.submit("otra", "req-0000000002", &profile()).unwrap();
-    assert!(c.view()["turns"][1].get("live_context").is_none(), "a turn without the context has no key");
-    let _ = b;
-}
-
-#[test]
-fn a_turn_projection_without_live_context_is_unchanged() {
-    let mut c = convo();
-    c.submit("hola", "req-0000000001", &profile()).unwrap();
-    assert!(c.view()["turns"][0].get("live_context").is_none());
-}

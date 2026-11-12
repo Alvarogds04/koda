@@ -27,8 +27,6 @@ pub const RESPONSE_MAX_SCALARS: usize = 32_000;
 /// Eviction is presentation-only; #341 persists history independently.
 pub const CACHE_MAX_TURNS: usize = 100;
 pub const CACHE_MAX_BYTES: usize = 256 * 1024;
-/// Per-message chat-template overhead in the token estimate.
-pub const MESSAGE_OVERHEAD_TOKENS: usize = 4;
 
 /// Turn states, exactly the contract strings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -175,12 +173,6 @@ pub fn valid_client_request_id(id: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
-/// Conservative token estimate: ⌈UTF-8 bytes / 3⌉ + template overhead.
-/// Over-estimating keeps the request inside the context budget.
-pub fn estimate_tokens(text: &str) -> usize {
-    text.len().div_ceil(3) + MESSAGE_OVERHEAD_TOKENS
-}
-
 /// The profile a turn is frozen to (no halfway swap on selection change).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ProfileRef {
@@ -204,10 +196,6 @@ pub struct Attachment {
 
 /// Attachments accepted on one turn (submit parsing and the page agree).
 pub const MAX_ATTACHMENTS_PER_TURN: usize = 5;
-/// Conservative prompt cost of one image attachment: images do not tokenize
-/// like text, so the budget reserves this much per resolvable image and a
-/// turn that no longer fits errors honestly (`context_limit`).
-pub const IMAGE_TOKEN_ESTIMATE: usize = 1024;
 
 /// An attachment id the page may reference: `a-` + 16 lowercase hex chars.
 pub fn valid_attachment_id(id: &str) -> bool {
@@ -356,82 +344,6 @@ impl Turn {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct Message {
-    pub role: &'static str,
-    /// Plain text for messages without attachments (the historical shape);
-    /// a turn with attachments sends OpenAI content parts instead:
-    /// `[{type:"text",…},{type:"image_url",…}]`.
-    pub content: Value,
-}
-
-impl Message {
-    fn text(role: &'static str, content: impl Into<String>) -> Self {
-        Message { role, content: Value::String(content.into()) }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Prompt {
-    pub messages: Vec<Message>,
-    pub estimated_tokens: usize,
-    pub trimmed_turns: usize,
-}
-
-/// Resolves one attachment's content for prompt building: text → the file's
-/// text (inlined), image → a data URL. `None` = the content is not available
-/// and the message says so honestly. The caller does the disk reads; prompt
-/// building stays pure.
-pub type ResolveAttachment<'a> = dyn Fn(&Attachment) -> Option<String> + 'a;
-
-/// One message's content and its token cost: a JSON string for turns without
-/// attachments (the historical shape) or OpenAI content parts otherwise.
-fn content_for(turn: &Turn, resolve: &ResolveAttachment) -> (Value, usize) {
-    if turn.attachments.is_empty() {
-        return (Value::String(turn.user_text.clone()), estimate_tokens(&turn.user_text));
-    }
-    const MISSING: &str = " — el archivo ya no está disponible";
-    let mut text = turn.user_text.clone();
-    let mut parts: Vec<Value> = Vec::new();
-    let mut cost = 0usize;
-    for a in &turn.attachments {
-        let resolved = resolve(a);
-        if a.mime.starts_with("image/") {
-            match resolved {
-                Some(url) => {
-                    parts.push(json!({"type": "image_url", "image_url": {"url": url}}));
-                    cost += IMAGE_TOKEN_ESTIMATE;
-                }
-                None => text.push_str(&format!("\n\n[Archivo adjunto: {}{}]", a.name, MISSING)),
-            }
-        } else {
-            match resolved {
-                Some(content) => text.push_str(&format!("\n\n[Archivo adjunto: {}]\n{}", a.name, content)),
-                None => text.push_str(&format!("\n\n[Archivo adjunto: {}{}]", a.name, MISSING)),
-            }
-        }
-    }
-    parts.insert(0, json!({"type": "text", "text": text}));
-    cost += estimate_tokens(&text);
-    (Value::Array(parts), cost)
-}
-
-/// #487: `text\n\n` before a message's text (a plain string, or the first text part).
-fn prefixed(content: Value, text: &str) -> Value {
-    match content {
-        Value::String(s) => Value::String(format!("{text}\n\n{s}")),
-        Value::Array(mut parts) => {
-            if let Some(first) = parts.first_mut() {
-                if let Some(s) = first.get("text").and_then(Value::as_str) {
-                    first["text"] = Value::String(format!("{text}\n\n{s}"));
-                }
-            }
-            Value::Array(parts)
-        }
-        other => other,
-    }
-}
-
 /// The bounded active context of one conversation. #341 stores history separately.
 #[derive(Debug)]
 pub struct Conversation {
@@ -439,12 +351,6 @@ pub struct Conversation {
     turns: VecDeque<Turn>,
     next: u64,
     evicted: usize,
-    /// #487: the window context of this live conversation: (turn id it rides with, text). Memory only,
-    /// never stored, shown or sent back to the page; NotchBuddy prefixes the FIRST user message with it.
-    context: Option<(String, String)>,
-    /// S3 (#503): what the live-state context said on each turn, memory only, so the page can show
-    /// «contexto» (text, omitted lines). Never stored on disk and never part of the user's text.
-    live: std::collections::HashMap<String, (String, usize)>,
 }
 
 impl Conversation {
@@ -454,34 +360,20 @@ impl Conversation {
             turns: VecDeque::new(),
             next: 0,
             evicted: 0,
-            context: None,
-            live: Default::default(),
         }
-    }
-
-    /// #487: attach the window context to `turn_id`'s user message (prompt only).
-    pub fn attach_context(&mut self, turn_id: &str, text: &str) {
-        self.context = Some((turn_id.to_string(), text.to_string()));
-    }
-
-    /// S3 (#503): remember what the live context said on `turn_id` (shown, never re-sent from here).
-    pub fn attach_live(&mut self, turn_id: &str, text: &str, trimmed_lines: usize) {
-        let ids: std::collections::HashSet<&str> = self.turns.iter().map(|t| t.turn_id.as_str()).collect();
-        self.live.retain(|id, _| ids.contains(id.as_str()));
-        self.live.insert(turn_id.to_string(), (text.to_string(), trimmed_lines));
     }
 
     /// Restore the newest page; older presentation pages never enlarge model context.
     pub fn restore(id: &str, turns: Vec<Turn>) -> Self {
         let next = turns.iter().filter_map(|t| t.turn_id.strip_prefix("t-")?.parse::<u64>().ok()).max().unwrap_or(0);
-        let mut convo = Self { id: id.into(), turns: turns.into(), next, evicted: 0, context: None, live: Default::default() };
+        let mut convo = Self { id: id.into(), turns: turns.into(), next, evicted: 0 };
         convo.enforce_cache();
         convo
     }
 
     /// Project a bounded disk page without applying the active model-context cache.
     pub fn project_history(id: &str, turns: Vec<Turn>) -> Value {
-        Self { id: id.into(), turns: turns.into(), next: 0, evicted: 0, context: None, live: Default::default() }.view()
+        Self { id: id.into(), turns: turns.into(), next: 0, evicted: 0 }.view()
     }
 
     pub fn id(&self) -> &str {
@@ -707,88 +599,6 @@ impl Conversation {
         }
     }
 
-                /// Build the bounded prompt for `turn_id`: system + newest history that
-                /// fits + the new user message. `context_limit - max_output` is the
-                /// input budget; older turns that do not fit are left out and counted
-                /// (shown to the human), and a message that cannot fit alone is a
-                /// `context_limit` error — never a silently larger context.
-                pub fn prompt_for(
-                                &mut self,
-                                turn_id: &str,
-                                system: &str,
-                                context_limit: usize,
-                                max_output: usize,
-                ) -> Result<Prompt, ChatError> {
-                                self.prompt_for_resolved(turn_id, system, context_limit, max_output, &|_| None)
-                }
-
-                /// [`prompt_for`] with attachment contents. A turn WITHOUT attachments
-                /// produces byte-identical messages to before (#343 shape pin); a turn
-                /// WITH attachments sends OpenAI content parts: one text part (the
-                /// draft plus «[Archivo adjunto: nombre]» blocks) and one image_url
-                /// part per resolvable image. Unresolvable attachments become a visible
-                /// note — never a silent drop.
-                pub fn prompt_for_resolved(
-                                &mut self,
-                                turn_id: &str,
-                                system: &str,
-                                context_limit: usize,
-                                max_output: usize,
-                                resolve: &ResolveAttachment,
-                ) -> Result<Prompt, ChatError> {
-                                let index = self
-                                                .turns
-                                                .iter()
-                                                .position(|t| t.turn_id == turn_id)
-                                                .ok_or_else(ChatError::profile_missing)?;
-                                let budget = context_limit.saturating_sub(max_output);
-                                let ctx = self.context.clone();
-                                let with_ctx = |t: &Turn| {
-                                                let (content, cost) = content_for(t, resolve);
-                                                match &ctx {
-                                                                Some((id, text)) if *id == t.turn_id => (prefixed(content, text), cost + estimate_tokens(text)),
-                                                                _ => (content, cost),
-                                                }
-                                };
-                                let (user_content, user_cost) = with_ctx(&self.turns[index]);
-                                let mut used = estimate_tokens(system) + user_cost;
-                                if used > budget {
-                                                return Err(ChatError::context_limit());
-                                }
-                                let eligible: Vec<&Turn> = self
-                                                .turns
-                                                .iter()
-                                                .take(index)
-                                                .filter(|t| {
-                                                                !t.reply.is_empty()
-                                                                                && matches!(t.state, TurnState::Completed | TurnState::Cancelled)
-                                                })
-                                                .collect();
-                                let mut kept: Vec<&Turn> = Vec::new();
-                                for t in eligible.iter().rev() {
-                                                let (_, content_cost) = with_ctx(t);
-                                                let cost = content_cost + estimate_tokens(&t.reply);
-                                                if used + cost > budget {
-                                                                break;
-                                                }
-                                                used += cost;
-                                                kept.push(t);
-                                }
-                                let trimmed = eligible.len() - kept.len();
-                                let mut messages = vec![Message::text("system", system)];
-                                for t in kept.iter().rev() {
-                                                let (content, _) = with_ctx(t);
-                                                messages.push(Message { role: "user", content });
-                                                messages.push(Message::text("assistant", t.reply.clone()));
-                                }
-                                messages.push(Message { role: "user", content: user_content });
-                                self.turns[index].trimmed_turns = trimmed;
-                                Ok(Prompt {
-                                                messages,
-                                                estimated_tokens: used,
-                                                trimmed_turns: trimmed,
-                                })
-    }
 
     /// Plain-data projection for the WebView (`chat:state`). The page's own
     /// client request ids are not echoed back.
@@ -811,10 +621,6 @@ impl Conversation {
                     "profile_revision": t.profile.revision,
                     "attachments": t.attachments,
                 });
-                // #418: optional keys — a plain turn's projection is unchanged.
-                if let Some((text, trimmed)) = self.live.get(&t.turn_id) {
-                    v["live_context"] = json!({"text": text, "trimmed_lines": trimmed});
-                }
                 if !t.tool_calls.is_empty() {
                     v["tool_calls"] = json!(t.tool_calls);
                 }
