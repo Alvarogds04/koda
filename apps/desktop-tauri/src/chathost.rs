@@ -349,12 +349,9 @@ fn read_picked_path(path: &std::path::Path) -> Result<(String, Vec<u8>), chat::C
     use std::io::Read;
     let unreadable = || chat::ChatError::invalid_input("No se pudo leer el archivo arrastrado.");
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    let meta = std::fs::symlink_metadata(path).map_err(|_| unreadable())?;
-    if !meta.is_file() {
-        return Err(chat::ChatError::invalid_input("Eso no es un archivo."));
-    }
-    let file = std::fs::File::open(path).map_err(|_| unreadable())?;
+    let file = open_dropped(path).map_err(|_| unreadable())?;
     let opened = file.metadata().map_err(|_| unreadable())?;
+    // judged on the OPEN handle only: a link was refused by the open itself (native review R1-001)
     if !opened.is_file() {
         return Err(chat::ChatError::invalid_input("Eso no es un archivo."));
     }
@@ -367,6 +364,33 @@ fn read_picked_path(path: &std::path::Path) -> Result<(String, Vec<u8>), chat::C
         return Err(chatclient::upload_error("file_too_large"));
     }
     Ok((name, bytes))
+}
+
+/// Opens a dropped path without ever following a link: `O_NOFOLLOW` on Unix, and on Windows the
+/// reparse point itself is opened (`FILE_FLAG_OPEN_REPARSE_POINT`), which is then not a regular file.
+fn open_dropped(path: &std::path::Path) -> std::io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    let file = options.open(path)?;
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        let attributes = file.metadata()?.file_attributes();
+        if attributes & windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "reparse point"));
+        }
+    }
+    Ok(file)
 }
 
 /// Hand one file to the daemon through the chat connection, off the main thread.
@@ -435,4 +459,26 @@ pub async fn chat_attach_data(
 /// them and the specialists' fixture builds them.
 pub fn default_deadlines() -> abito_island::localmodel::Deadlines {
     DEFAULT_DEADLINES
+}
+
+#[cfg(all(test, unix))]
+mod read_picked_path_tests {
+    /// Native review R1-001: a dropped path that is (or becomes) a link is refused at the open
+    /// itself, so a swap after the metadata check cannot make the island read another file.
+    #[test]
+    fn a_dropped_link_is_refused_at_the_open_never_followed() {
+        let dir = std::env::temp_dir().join(format!("koda-drop-link-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let secret = dir.join("secret.txt");
+        std::fs::write(&secret, b"SECRET").unwrap();
+        let link = dir.join("dropped.txt");
+        let _ = std::fs::remove_file(&link);
+        std::os::unix::fs::symlink(&secret, &link).unwrap();
+        // the swap-after-check race, made deterministic: open_dropped is handed a link
+        assert!(super::open_dropped(&link).is_err(), "a link is never opened");
+        let plain = dir.join("plain.txt");
+        std::fs::write(&plain, b"ok").unwrap();
+        assert_eq!(super::read_picked_path(&plain).unwrap().1, b"ok".to_vec());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
