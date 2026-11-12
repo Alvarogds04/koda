@@ -14,10 +14,13 @@
 pub mod audio;
 pub mod catalog;
 pub mod train;
+pub mod transcribe;
 pub mod words;
 pub mod wake;
 #[cfg(test)]
 mod catalog_tests;
+#[cfg(test)]
+mod transcribe_tests;
 #[cfg(test)]
 mod models_tests;
 #[cfg(test)]
@@ -330,6 +333,16 @@ pub fn delete_model(id: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// The verified download of one catalog set, run to the end on the calling thread (the `abito-transcribe download`
+/// command: an explicit user action, like the picker's click). Same pins, same store, same checks as `download_model`.
+pub fn download_set_now(set: &ModelSet, progress: &dyn Fn(f64)) -> Result<(), String> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| e.to_string())?
+        .block_on(fetch_set(set, progress, &|| false))
+}
+
 async fn fetch_set(set: &ModelSet, progress: &dyn Fn(f64), cancelled: &dyn Fn() -> bool) -> Result<(), String> {
     use futures_util::StreamExt;
     let total = set.total_size();
@@ -500,7 +513,7 @@ fn load_lock() -> &'static Mutex<()> {
     L.get_or_init(|| Mutex::new(()))
 }
 
-fn threads() -> i32 {
+pub(crate) fn threads() -> i32 {
     std::thread::available_parallelism().map(|n| n.get().clamp(1, 4) as i32).unwrap_or(2)
 }
 
@@ -518,24 +531,35 @@ pub fn recognizer() -> Option<Arc<OfflineRecognizer>> {
     }
     let (id, language) = active();
     let entry = catalog::find(&id)?;
+    let config = offline_config(entry, &language, &models_dir());
+    let r = OfflineRecognizer::create(&config).map(Arc::new);
+    *recognizer_slot().lock().unwrap() = r.clone();
+    r
+}
+
+/// The recognizer configuration of one catalog model whose files live under `root` (the shared model store). Used by
+/// dictation and by the Minikodas' batch transcription (`abito-transcribe`), so both load a model the same way.
+pub(crate) fn offline_config(entry: &catalog::Entry, language: &str, root: &Path) -> OfflineRecognizerConfig {
+    let dir = entry.set.dir_in(root);
+    let path = |name: &str| dir.join(name).to_string_lossy().to_string();
     let mut config = OfflineRecognizerConfig::default();
     match entry.engine {
         catalog::Engine::Parakeet => {
             config.model_config.transducer = OfflineTransducerModelConfig {
-                encoder: Some(PARAKEET.path("encoder.int8.onnx")),
-                decoder: Some(PARAKEET.path("decoder.int8.onnx")),
-                joiner: Some(PARAKEET.path("joiner.int8.onnx")),
+                encoder: Some(path("encoder.int8.onnx")),
+                decoder: Some(path("decoder.int8.onnx")),
+                joiner: Some(path("joiner.int8.onnx")),
             };
-            config.model_config.tokens = Some(PARAKEET.path("tokens.txt"));
+            config.model_config.tokens = Some(path("tokens.txt"));
             config.model_config.model_type = Some("nemo_transducer".into());
         }
         catalog::Engine::Whisper => {
-            let file = |suffix: &str| entry.set.files.iter().find(|f| f.name.ends_with(suffix)).map(|f| entry.set.path(f.name));
+            let file = |suffix: &str| entry.set.files.iter().find(|f| f.name.ends_with(suffix)).map(|f| path(f.name));
             config.model_config.whisper = OfflineWhisperModelConfig {
                 encoder: file("-encoder.int8.onnx"),
                 decoder: file("-decoder.int8.onnx"),
                 // Fixed language when the user chose one; empty lets Whisper guess.
-                language: Some(catalog::effective_language(entry, &language).unwrap_or("").to_string()),
+                language: Some(catalog::effective_language(entry, language).unwrap_or("").to_string()),
                 task: Some("transcribe".into()),
                 ..Default::default()
             };
@@ -544,9 +568,7 @@ pub fn recognizer() -> Option<Arc<OfflineRecognizer>> {
         }
     }
     config.model_config.num_threads = threads();
-    let r = OfflineRecognizer::create(&config).map(Arc::new);
-    *recognizer_slot().lock().unwrap() = r.clone();
-    r
+    config
 }
 
 /// Loads the model in the background, so the first dictation is not slowed down.
