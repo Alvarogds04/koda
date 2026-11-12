@@ -34,6 +34,44 @@ pub const MAX_SESSION_BYTES: usize = 4096;
 pub const MAX_FRAME_BYTES: usize = 256 * 1024;
 pub const MAX_REPLY_CHARS: usize = 4096;
 
+// ---- K2-13 «Hoy»: the daemon's own closed vocabularies (PROTOCOL.md, «Minikodas and «Hoy» frames») ----
+/// An item id is the daemon's uuid: lowercase hex in the 8-4-4-4-12 shape.
+const MAX_HOY_ITEMS: usize = 100;
+const MAX_HOY_TEXT: usize = 4000;
+const HOY_KINDS: [&str; 3] = ["result", "proposal", "error"];
+const HOY_STATUSES: [&str; 3] = ["pending", "approved", "rejected"];
+const HOY_ACTIONS: [&str; 3] = ["buy", "sell", "send"];
+/// S19: where the text of a video result came from. The daemon does not send it yet; when it does, only these two
+/// closed values reach the page (the island draws its chip with the row, and nothing when it is absent).
+const HOY_PROVENANCE: [&str; 2] = ["youtube_subtitles", "local_transcription"];
+
+fn hoy_id(s: &str) -> bool {
+    let b = s.as_bytes();
+    b.len() == 36
+        && b.iter().enumerate().all(|(i, c)| match i {
+            8 | 13 | 18 | 23 => *c == b'-',
+            _ => c.is_ascii_digit() || (b'a'..=b'f').contains(c),
+        })
+}
+/// «Hoy» text is untrusted (it comes from models and Telegram posts). Control CHARACTERS and Unicode format
+/// characters (bidi overrides, zero-width) go, so nothing on the page can reverse or hide what it says.
+fn hoy_text(v: &Value, key: &str, max: usize) -> Value {
+    v.get(key)
+        .and_then(Value::as_str)
+        .map(|s| Value::from(s.chars().filter(|c| !c.is_control() && !matches!(c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}' | '\u{feff}')).take(max).collect::<String>()))
+        .unwrap_or(Value::Null)
+}
+fn closed_cell(v: &Value, key: &str, allowed: &'static [&'static str]) -> Option<&'static str> {
+    let raw = v.get(key).and_then(Value::as_str)?;
+    allowed.iter().copied().find(|a| *a == raw)
+}
+fn iso_cell(v: &Value, key: &str) -> Value {
+    match v.get(key).and_then(Value::as_str) {
+        Some(s) if !s.is_empty() && s.len() <= 40 && !has_control(s) => Value::from(s),
+        _ => Value::Null,
+    }
+}
+
 // ---- session.json ----------------------------------------------------------------------
 pub struct Session {
     pub endpoint: String,
@@ -280,6 +318,21 @@ pub fn parse_ui_command(payload: &Value) -> Result<UiCommand, CommandError> {
             exact(1)?;
             wire(&[("type", "hooks_preview")])
         }
+        // K2-13 T6b-1 (S3/L17): «Hoy» is read-only to ask for, and a proposal is decided by its ID ALONE. `exact(2)`
+        // is the PIN gate: the human removed it (L17), so a payload carrying `pin` — or any other stray field — is not
+        // a command at all and never reaches the socket. The id must be the daemon's lowercase uuid.
+        "hoy_list" => {
+            exact(1)?;
+            wire(&[("type", "hoy_list")])
+        }
+        "hoy_approve" | "hoy_reject" => {
+            exact(2)?;
+            let id = get("id")?;
+            if !hoy_id(id) {
+                return Err(CommandError);
+            }
+            wire(&[("type", action), ("id", id)])
+        }
         "agent_connect" => {
             // The plan the human SAW travels back with the click; the engine previews again and refuses to apply
             // a different one. Optional (absent = the engine applies a fresh preview), and exactly 64 lowercase hex.
@@ -424,6 +477,10 @@ pub struct ClientState {
     /// #436 T6.5: the engine's `hooks` frame (the read-only hooks preview), folded to a
     /// bounded closed view (null until the engine answers a `hooks_preview` ask).
     hooks: Value,
+    /// K2-13 T6b-1: the daemon's «Hoy» frame, folded to a bounded closed view
+    /// (`{items, truncated}`, null until the daemon answers a `hoy_list` ask). The island renders
+    /// these rows as plain text: nothing here is markup, and no field is invented.
+    hoy: Value,
 }
 
 /// A plan hash from the engine: exactly 64 lowercase hex characters.
@@ -485,6 +542,7 @@ impl ClientState {
             models: Value::Null,
             sessions: Value::Null,
             hooks: Value::Null,
+            hoy: Value::Null,
         }
     }
     /// #490: the closed live-sessions view (`{rows, truncated}`, `Null` until the engine answers). The ONE
@@ -621,6 +679,51 @@ impl ClientState {
                 }
                 self.agents = Value::Array(out);
             }
+            "hoy" => {
+                // K2-13 T6b-1 (S2/S3/S5): «Hoy» is what the DAEMON stored, folded row by row. A row is rebuilt field
+                // by field and anything off the closed vocabulary DROPS the row (never sanitised into a lie); text
+                // loses control + bidi characters; a `proposal` without a real action and target cannot exist. What
+                // never reaches the page: any other field the frame carried, and any row past the 100-item cap.
+                let Some(list) = frame.get("items").and_then(Value::as_array) else { return Ok(()) };
+                let truncated = frame.get("truncated").and_then(Value::as_bool).unwrap_or(false);
+                let mut items: Vec<Value> = Vec::new();
+                for i in list.iter().take(MAX_HOY_ITEMS) {
+                    let Some(kind) = closed_cell(i, "kind", &HOY_KINDS) else { continue };
+                    let Some(status) = closed_cell(i, "status", &HOY_STATUSES) else { continue };
+                    let (Some(id), Some(minikoda)) = (
+                        i.get("id").and_then(Value::as_str).filter(|s| hoy_id(s)),
+                        i.get("minikoda").and_then(Value::as_str).filter(|s| strict_id(s)),
+                    ) else { continue };
+                    let mut row = json!({
+                        "id": id, "minikoda": minikoda, "kind": kind, "status": status,
+                        "text": hoy_text(i, "text", MAX_HOY_TEXT), "createdAt": iso_cell(i, "createdAt"),
+                    });
+                    if kind == "proposal" {
+                        let (Some(action), target) = (closed_cell(i, "action", &HOY_ACTIONS), hoy_text(i, "target", 200)) else { continue };
+                        if !target.is_string() { continue; }
+                        row["action"] = json!(action);
+                        row["target"] = target;
+                    }
+                    if let Some(p) = closed_cell(i, "provenance", &HOY_PROVENANCE) { row["provenance"] = json!(p); }
+                    if let Value::String(d) = iso_cell(i, "decidedAt") { row["decidedAt"] = json!(d); }
+                    items.push(row);
+                }
+                self.hoy = json!({"items": items, "truncated": truncated});
+            }
+            "hoy_decided" | "hoy_approved" => {
+                // One decision, folded in place: the daemon said so (never the click). A decision for a row we do
+                // not hold invents nothing, and `hoy_approved` is the ONE execution record — both mean `approved`.
+                let (Some(id), Some(status)) = (frame.get("id").and_then(Value::as_str).filter(|s| hoy_id(s)),
+                    if t == "hoy_approved" { Some("approved") } else { closed_cell(frame, "status", &HOY_STATUSES) })
+                else { return Ok(()) };
+                let Some(list) = self.hoy.get_mut("items").and_then(Value::as_array_mut) else { return Ok(()) };
+                for row in list.iter_mut() {
+                    if row.get("id").and_then(Value::as_str) != Some(id) || row.get("kind").and_then(Value::as_str) != Some("proposal") { continue; }
+                    row["status"] = json!(status);
+                    // a decision is final: the row keeps what the daemon recorded, never a second decision
+                    if let Value::String(at) = iso_cell(frame, "executedAt") { row["decidedAt"] = json!(at); }
+                }
+            }
             "models" => {
                 // #414: the connected providers' catalogue, a bounded closed view: only rows with a
                 // slug-shaped provider and id survive, names are clipped text, and nothing else the
@@ -717,7 +820,8 @@ impl ClientState {
             "error" => {
                 // the daemon's closed code set (anything else reads as plain `failed`), never free text
                 let code = match frame.get("code").and_then(Value::as_str) {
-                    Some(c @ ("bad_request" | "busy" | "not_busy" | "unavailable" | "rate_limited" | "unknown_ask" | "failed" | "store_not_private")) => c,
+                    Some(c @ ("bad_request" | "busy" | "not_busy" | "unavailable" | "rate_limited" | "unknown_ask" | "failed" | "store_not_private"
+                        | "paused" | "unknown_minikoda" | "not_active" | "not_pending" | "exists" | "limit" | "model_unavailable" | "unknown_item")) => c,
                     _ => "failed",
                 };
                 let n = self.last_error["n"].as_u64().unwrap_or(0) + 1;
