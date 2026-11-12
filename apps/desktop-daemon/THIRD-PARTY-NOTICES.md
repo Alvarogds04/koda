@@ -361,3 +361,39 @@ The shipped binary is an LGPL build by BtbN/FFmpeg-Builds: it is configured with
   licence review of FFmpeg (LGPL-3.0 obligations and the AAC/H.264 patent question recorded in
   `odd/tasks/k2-13-minikodas.md`) has **NOT** been done. This paragraph is an engineering record, not legal advice.
 - You may replace `runtime/ffmpeg[.exe]` with your own build of FFmpeg: Koda only calls it by that path.
+
+## yt-dlp (Linux and Windows installers)
+
+The Linux and Windows installers ship yt-dlp as a separate program, `runtime/yt-dlp` (Linux) or `runtime\yt-dlp.exe`
+(Windows), inside Koda's bundled runtime. The daemon runs it, unmodified and with command-line arguments only, to read
+the YouTube links a Minikoda finds in a post: its own subtitles first, and only when a video has none, its audio (which
+the daemon then transcribes). K2-13 T2c-8 (S19). The macOS installer ships no yt-dlp and no ffmpeg, so YouTube links are
+not read there.
+
+yt-dlp is released into the public domain under the Unlicense; its text is `runtime/LICENSE.yt-dlp.txt`, installed next
+to the binary. The official standalone executables are PyInstaller bundles: they also carry Python (PSF-2.0) and
+third-party components, including **copyleft** ones — GNU Readline (GPL-3.0-or-later, bundled as its own shared object),
+mutagen (GPL-2.0-or-later), libidn2/libunistring/libintl (LGPL-3.0-or-later / LGPL-2.1-or-later) and libstdc++/libgcc
+(GPL-3.0 with the GCC exception). Their texts, verbatim from the release, are `runtime/THIRD-PARTY-NOTICES.yt-dlp.txt`.
+
+- Exact binaries, pinned by SHA-256 in `apps/desktop-tauri/packaging/runtime/ytdlp.sha256`:
+  `https://github.com/yt-dlp/yt-dlp/releases/download/2026.10.26/yt-dlp_linux` and `.../yt-dlp.exe`. The runtime build
+  also refuses a file that is not an official PyInstaller standalone build.
+- Corresponding Source: the yt-dlp source at tag `2026.10.26`, https://github.com/yt-dlp/yt-dlp/tree/2026.10.26, and the
+  source of each bundled component from its original project; yt-dlp states that its maintainers provide the bundled
+  components' source on request (maintainers@yt-dlp.org) as the licences require.
+- Source access (GPL-3.0 §6(d), through the GPL-3.0-or-later components — the clause that applies to a downloadable
+  installer): recipients have to be able to obtain that Corresponding Source from a designated place, in the same way
+  they obtained the binary, with clear directions next to the download. A written offer alone (GPL-3.0 §6(b)) is NOT
+  sufficient for a download.
+- **Not done yet, before a public release.** Koda does not mirror those sources itself, so no designated place exists
+  yet and the obligation above is unmet: the mirror must exist and be linked from this notice and from the download
+  page before Koda's first public release. As an additional measure — not a substitute — Koda offers a copy on request
+  (GPL-3.0 §6(b)) for at least three years after shipping a version that contains it. The licence review of yt-dlp and
+  of the copyleft components inside its standalone builds has **NOT** been done. This paragraph is an engineering
+  record, not legal advice.
+- YouTube's own terms do not allow downloading outside its apps. Reading a link through its subtitles, or through a
+  downloaded audio track when it has none, was a knowing product decision (K2-13 decision L33).
+- YouTube breaks yt-dlp regularly, so this pin is refreshed often (tag, both SHA-256 values from the release's
+  `SHA2-256SUMS`, and the two licence texts): a binary that no longer extracts is expected, not a defect of Koda's.
+- You may replace `runtime/yt-dlp[.exe]` with your own build of yt-dlp: Koda only calls it by that path.

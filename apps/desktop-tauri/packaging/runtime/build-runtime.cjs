@@ -10,6 +10,12 @@
    - node.sha256: one official Node archive per target with its sha256 (the lines of the release's signed SHASUMS256.txt).
      The archive comes from --node-archive (offline) or from https://nodejs.org/dist/; a sha256 mismatch fails closed.
    - package.json + package-lock.json: Pi, pinned exactly; npm ci installs every package against its lockfile sha512.
+   - ytdlp.sha256 (K2-13 T2c-8, S19): the standalone yt-dlp executable for linux-x64 and for win-x64 (none for
+     darwin-arm64), by release tag + sha256, plus the sha256 of the two licence texts it ships with (yt-dlp's
+     Unlicense and the release's THIRD_PARTY_LICENSES.txt, in packaging/runtime/ytdlp/). The binary comes from
+     --ytdlp-dir (offline) or from github.com/yt-dlp/yt-dlp/releases; a sha256 mismatch fails closed, and so does a
+     file that carries no PyInstaller archive (i.e. is not an official standalone build). yt-dlp breaks whenever
+     YouTube changes, so this pin has to be refreshed often: see the header of ytdlp.sha256.
    - ffmpeg.sha256 (K2-13 S9): one BtbN/FFmpeg-Builds LGPL archive for linux-x64 and for win-x64 (none for darwin-arm64:
      no LGPL macOS build exists yet), from --ffmpeg-archive (offline) or its GitHub release; a sha256 mismatch fails
      closed. Only bin/ffmpeg[.exe] and LICENSE.txt leave the archive (no ffprobe, ffplay, docs). The build refuses a
@@ -26,7 +32,10 @@
                            node.exe with Pi's own CLI JS resolved next to it (desktop-daemon runtime.cjs)
      ffmpeg | ffmpeg.exe   (linux-x64, win-x64) the pinned LGPL ffmpeg the daemon spawns for Minikoda transcriptions
      LICENSE.ffmpeg.txt    its LGPL v3 text (from the archive); THIRD-PARTY-NOTICES.md says where its source is
-     koda-runtime.json     {target, node, pi, piCli, ffmpeg?}
+     yt-dlp | yt-dlp.exe   (linux-x64, win-x64) the pinned standalone yt-dlp the daemon spawns to read YouTube links
+     LICENSE.yt-dlp.txt    yt-dlp's Unlicense text
+     THIRD-PARTY-NOTICES.yt-dlp.txt  its release's THIRD_PARTY_LICENSES.txt (Python, GNU Readline, mutagen, …)
+     koda-runtime.json     {target, node, pi, piCli, ffmpeg?, ytdlp?}
    --archive also packs <out> into ONE tar.gz (members relative to the runtime folder's root, no links) and prints its
    sha256: the single file the Linux and Windows installers ship and verify before extracting. macOS ships the folder.
    --self-check runs the built Pi (`pi --version`) with an empty private HOME, offline; only when the target is this OS. */
@@ -48,22 +57,38 @@ const TARGETS = {
 const FFMPEG_TARGETS = { 'linux-x64': { flavour: 'linux64', ext: '.tar.xz', exe: 'ffmpeg' }, 'win-x64': { flavour: 'win64', ext: '.zip', exe: 'ffmpeg.exe' } };
 const FFMPEG_RELEASES = 'https://github.com/BtbN/FFmpeg-Builds/releases/download';
 
+/* K2-13 T2c-8 (S19): the standalone yt-dlp the daemon spawns to read the YouTube links of a post; darwin-arm64 ships
+   none (pending for the Mac session, decision L12), where the daemon answers youtube_unavailable. The two licence
+   texts of the release travel beside the binary: yt-dlp is Unlicense, and its official standalone executables are
+   PyInstaller bundles that also carry copyleft components (GNU Readline GPL-3.0-or-later, mutagen GPL-2.0-or-later),
+   named in the release's THIRD_PARTY_LICENSES.txt. */
+const YTDLP_TARGETS = { 'linux-x64': { asset: 'yt-dlp_linux', exe: 'yt-dlp' }, 'win-x64': { asset: 'yt-dlp.exe', exe: 'yt-dlp.exe' } };
+const YTDLP_RELEASES = 'https://github.com/yt-dlp/yt-dlp/releases/download';
+/** [file in packaging/runtime/, name it gets in the runtime folder] — both pinned in ytdlp.sha256. */
+const YTDLP_LICENCES = [
+  ['ytdlp/unlicense.txt', 'LICENSE.yt-dlp.txt'],
+  ['ytdlp/third-party-licenses.txt', 'THIRD-PARTY-NOTICES.yt-dlp.txt'],
+];
+/** Present in every official PyInstaller standalone build; a file without it is not one. */
+const YTDLP_PYINSTALLER_MARK = 'pyimod01_archive';
+
 class Fail extends Error {
   constructor(message, code = 1) { super(message); this.code = code; }
 }
 
 function parseArgs(argv) {
   const opts = { selfCheck: false };
-  const takes = { '--target': 'target', '--out': 'out', '--node-archive': 'nodeArchive', '--ffmpeg-archive': 'ffmpegArchive', '--cache': 'cache', '--archive': 'archive' };
+  const takes = { '--target': 'target', '--out': 'out', '--node-archive': 'nodeArchive', '--ffmpeg-archive': 'ffmpegArchive', '--ytdlp-dir': 'ytdlpDir', '--cache': 'cache', '--archive': 'archive' };
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
     if (a === '--self-check') { opts.selfCheck = true; continue; }
-    if (!takes[a] || i + 1 >= argv.length) throw new Fail(`usage: build-runtime.cjs --target <${Object.keys(TARGETS).join('|')}> --out <dir> [--node-archive <file>] [--ffmpeg-archive <file>] [--cache <dir>] [--self-check] [--archive <file.tar.gz>] (bad argument: ${a})`, 2);
+    if (!takes[a] || i + 1 >= argv.length) throw new Fail(`usage: build-runtime.cjs --target <${Object.keys(TARGETS).join('|')}> --out <dir> [--node-archive <file>] [--ffmpeg-archive <file>] [--ytdlp-dir <dir>] [--cache <dir>] [--self-check] [--archive <file.tar.gz>] (bad argument: ${a})`, 2);
     opts[takes[a]] = argv[(i += 1)];
   }
   if (!opts.target || !opts.out) throw new Fail('usage: build-runtime.cjs --target <target> --out <dir> (both are required)', 2);
   if (!TARGETS[opts.target]) throw new Fail(`unknown target ${opts.target}; known: ${Object.keys(TARGETS).join(', ')}`, 2);
   if (opts.ffmpegArchive && !FFMPEG_TARGETS[opts.target]) throw new Fail(`--ffmpeg-archive: ${opts.target} ships no ffmpeg (no LGPL build for it yet)`, 2);
+  if (opts.ytdlpDir && !YTDLP_TARGETS[opts.target]) throw new Fail(`--ytdlp-dir: ${opts.target} ships no yt-dlp`, 2);
   return opts;
 }
 
@@ -185,6 +210,100 @@ function ffmpegNotice(pin) {
     '  The licence review of FFmpeg (LGPL-3.0 obligations and the AAC/H.264 patent question) has NOT been done. This is',
     '  an engineering record, not legal advice.',
     'You may replace this file with your own build of FFmpeg; Koda calls it by this path with command-line arguments only.', ''];
+}
+
+/* The pin lines of a sha256 file: [sha, path], comments and blanks dropped. */
+function pinLines(name) {
+  return fs.readFileSync(path.join(HERE, name), 'utf8').split(/\r?\n/).map((l) => l.trim()).filter((l) => l && !l.startsWith('#')).map((l) => l.split(/\s+/));
+}
+
+/* The yt-dlp pin for a target, or null (darwin-arm64). Exactly one official asset per shipped target. */
+function ytdlpPin(target) {
+  const t = YTDLP_TARGETS[target];
+  if (!t) return null;
+  const pins = pinLines('ytdlp.sha256');
+  const mine = pins.filter(([, rel]) => rel && rel.endsWith(`/${t.asset}`));
+  if (mine.length !== 1) throw new Fail(`ytdlp.sha256 must pin exactly one ${t.asset} for ${target}, found ${mine.length}`);
+  const [sha, rel] = mine[0];
+  const m = new RegExp(`^(\\d{4}\\.\\d{2}\\.\\d{2})/(${t.asset.replace(/[.]/g, '\\.')})$`).exec(rel);
+  if (!/^[0-9a-f]{64}$/.test(sha) || !m) throw new Fail(`malformed ytdlp.sha256 line for ${target} (<sha256>  <yyyy.mm.dd>/${t.asset})`);
+  return { sha, tag: m[1], asset: t.asset, exe: t.exe, name: rel };
+}
+
+/* The two licence texts, each verified against its own pin: the file that ships is the pinned one, byte for byte. */
+function ytdlpLicences() {
+  const pins = pinLines('ytdlp.sha256').filter(([, rel]) => rel && rel.startsWith('ytdlp/'));
+  if (pins.length !== YTDLP_LICENCES.length) throw new Fail(`ytdlp.sha256 must pin the ${YTDLP_LICENCES.length} yt-dlp licence texts, found ${pins.length}`);
+  for (const [source, output] of YTDLP_LICENCES) {
+    const pin = pins.find(([, rel]) => rel === source);
+    if (!pin) throw new Fail(`ytdlp.sha256 does not pin ${source}`);
+    const file = path.join(HERE, source);
+    if (!fs.existsSync(file)) throw new Fail(`missing yt-dlp licence text ${source}`);
+    const got = sha256File(file);
+    if (got !== pin[0]) throw new Fail(`${source} does not match its pinned sha256: expected ${pin[0]}, got ${got}`);
+  }
+  return YTDLP_LICENCES.map(([source, output]) => ({ source: path.join(HERE, source), output }));
+}
+
+async function ytdlpBinary(pin, opts, cache) {
+  let file = opts.ytdlpDir ? path.join(path.resolve(opts.ytdlpDir), pin.asset) : path.join(cache, pin.asset);
+  if (!opts.ytdlpDir && !fs.existsSync(file)) {
+    const partial = `${file}.partial-${process.pid}`;
+    await download(`${YTDLP_RELEASES}/${pin.tag}/${pin.asset}`, partial);
+    fs.renameSync(partial, file);
+  }
+  if (!fs.existsSync(file)) throw new Fail(`yt-dlp binary not found: ${file}`);
+  if (path.basename(file) !== pin.asset) throw new Fail(`yt-dlp binary must be ${pin.asset}, got ${path.basename(file)}`);
+  const got = sha256File(file);
+  if (got !== pin.sha) {
+    if (!opts.ytdlpDir) fs.rmSync(file, { force: true });
+    throw new Fail(`yt-dlp SHA256 mismatch for ${pin.asset}: expected ${pin.sha}, got ${got}`);
+  }
+  return file;
+}
+
+/* The PyInstaller marker proves the file is an official standalone build and not an arbitrary executable that happens
+   to have the right hash for our own pin. It is copied byte for byte and made executable; its licence texts follow. */
+function stageYtdlp(file, pin, dest, licences) {
+  const bytes = fs.readFileSync(file);
+  if (!bytes.includes(Buffer.from(YTDLP_PYINSTALLER_MARK))) throw new Fail(`yt-dlp ${pin.asset} carries no PyInstaller archive: it is not the official standalone build`);
+  fs.copyFileSync(file, path.join(dest, pin.exe));
+  fs.chmodSync(path.join(dest, pin.exe), 0o755);
+  for (const { source, output } of licences) {
+    fs.copyFileSync(source, path.join(dest, output));
+    fs.chmodSync(path.join(dest, output), 0o644);
+  }
+}
+
+/* The yt-dlp section of the runtime notices: what ships, its licence, the copyleft components inside the official
+   executable, and the source-access record (the same shape as the FFmpeg one). */
+function ytdlpNotice(pin) {
+  return [`## yt-dlp ${pin.tag} (\`${pin.exe}\`)`, '',
+    'License: Unlicense (public domain). Full text: `LICENSE.yt-dlp.txt` in this folder.', '',
+    `The \`${pin.exe}\` in this folder is yt-dlp (https://github.com/yt-dlp/yt-dlp), the official standalone build of release`,
+    `${pin.tag}, unmodified. Koda runs it as a separate, unmodified program with command-line arguments only — the daemon spawns it to read`,
+    'the subtitles or the audio of a YouTube video link that a Minikoda found in a post. Its own code is not linked with it.',
+    `- Binary: ${YTDLP_RELEASES}/${pin.tag}/${pin.asset} (sha256 ${pin.sha})`,
+    '- The official standalone executables are PyInstaller bundles: they also carry Python (PSF-2.0) and third-party',
+    '  components, including copyleft ones — GNU Readline (GPL-3.0-or-later, bundled as its own shared object) and mutagen',
+    '  (GPL-2.0-or-later) — plus libidn2, libunistring and libintl (LGPL-3.0-or-later / LGPL-2.1-or-later), libstdc++ and',
+    '  libgcc (GPL-3.0-with-GCC-exception) and BoringSSL, curl, nghttp2, Tornado and others under permissive licences.',
+    '  Their texts travel in this folder, verbatim from the release: `THIRD-PARTY-NOTICES.yt-dlp.txt`.',
+    '- Corresponding Source: the yt-dlp source at tag ' + pin.tag + `, https://github.com/yt-dlp/yt-dlp/tree/${pin.tag}, and`,
+    '  the source of each bundled component from its original project; yt-dlp states that the maintainers provide it on',
+    '  request (maintainers@yt-dlp.org) as the licences require.',
+    '- Source access (GPL-3.0 §6(d) through the GPL-3.0-or-later components; the clause that applies to a downloadable',
+    '  installer): a recipient has to be able to obtain that Corresponding Source from a designated place (a network',
+    '  server or an equivalent) in the same way they obtained the binary, with clear directions next to the download.',
+    '- NOT DONE YET, before a public release: Koda does not mirror that Corresponding Source itself, so no designated',
+    '  place exists yet and the obligation above is unmet. The mirror must exist and be linked from this notice and from',
+    '  the download page before the first public release. As an additional measure Koda offers a copy on request',
+    '  (GPL-3.0 §6(b)) for at least three years after the release that shipped it. The licence review of yt-dlp and of',
+    '  the copyleft components inside its standalone builds has NOT been done. This is an engineering record, not legal',
+    "  advice. (YouTube's own terms do not allow downloading outside its apps; the product decision to read links",
+    '  through subtitles or a downloaded audio track was taken knowingly — decision L33.)',
+    '- YouTube breaks yt-dlp regularly: this pin has to be refreshed often (tag, both sha256 values from the release',
+    '  SHA2-256SUMS and the two licence texts) instead of shipping a binary that no longer extracts a video.', ''];
 }
 
 async function download(url, dest) {
@@ -327,11 +446,12 @@ const repository = (manifest) => (typeof manifest.repository === 'string' ? mani
 /* THIRD-PARTY-NOTICES.md for the runtime folder: Node first, then every package with its declared licence and the
    path of the licence file it ships. A package that ships no licence file gets its author and repository from its
    package.json and the canonical text from licenses/<id>.txt, reproduced once; with no such text the build fails. */
-function writeNotices(dest, nodeVersion, ffPin) {
+function writeNotices(dest, nodeVersion, ffPin, ytPin) {
   const lines = ['# Third-party notices: Koda\'s bundled runtime', '',
     'Koda ships its own Node.js and Pi in this folder (K2-02). Their licences and those of every package they include follow.', '',
     `## Node.js ${nodeVersion}`, '', 'License: MIT (with bundled components). Full text: `LICENSE.node` in this folder.', '',
-    ...(ffPin ? ffmpegNotice(ffPin) : [])];
+    ...(ffPin ? ffmpegNotice(ffPin) : []),
+    ...(ytPin ? ytdlpNotice(ytPin) : [])];
   const texts = new Map();
   for (const { dir, manifest } of packagesIn(path.join(dest, 'node_modules'))) {
     const id = licenseId(manifest);
@@ -436,6 +556,8 @@ async function main() {
   const out = path.resolve(opts.out);
   const pin = nodePin(opts.target);
   const ffPin = ffmpegPin(opts.target);
+  const ytPin = ytdlpPin(opts.target);
+  const ytLicences = ytPin ? ytdlpLicences() : [];
   const tmpCache = !opts.cache;
   const cache = opts.cache ? path.resolve(opts.cache) : fs.mkdtempSync(path.join(os.tmpdir(), 'koda-runtime-cache-'));
   fs.mkdirSync(cache, { recursive: true });
@@ -447,16 +569,17 @@ async function main() {
     fs.mkdirSync(partial, { mode: 0o755 });
     extractNode(archive, pin, opts.target, partial);
     if (ffPin) extractFfmpeg(await ffmpegArchive(ffPin, opts, cache), ffPin, partial);
+    if (ytPin) stageYtdlp(await ytdlpBinary(ytPin, opts, cache), ytPin, partial, ytLicences);
     const pi = installPi(partial, cache);
-    writeNotices(partial, pin.version, ffPin);
+    writeNotices(partial, pin.version, ffPin, ytPin);
     if (t.platform !== 'win32') fs.writeFileSync(path.join(partial, 'pi'), piLauncher(pi.cli), { mode: 0o755 });
-    fs.writeFileSync(path.join(partial, 'koda-runtime.json'), `${JSON.stringify({ target: opts.target, node: pin.version, pi: pi.version, piCli: pi.cli, ...(ffPin ? { ffmpeg: ffPin.version } : {}) }, null, 2)}\n`, { mode: 0o644 });
+    fs.writeFileSync(path.join(partial, 'koda-runtime.json'), `${JSON.stringify({ target: opts.target, node: pin.version, pi: pi.version, piCli: pi.cli, ...(ffPin ? { ffmpeg: ffPin.version } : {}), ...(ytPin ? { ytdlp: ytPin.tag } : {}) }, null, 2)}\n`, { mode: 0o644 });
     noSymlinks(partial);
     if (opts.selfCheck) selfCheck(partial, opts.target, pi.version);
     fs.rmSync(out, { recursive: true, force: true });
     fs.renameSync(partial, out);
     const s = sizeOf(out);
-    console.log(`runtime ${opts.target}: Node ${pin.version} + Pi ${pi.version}${ffPin ? ` + ffmpeg ${ffPin.version}` : ''} -> ${out} (${s.files} files, ${(s.bytes / 1048576).toFixed(1)} MiB)${opts.selfCheck ? ', self-check ok' : ''}`);
+    console.log(`runtime ${opts.target}: Node ${pin.version} + Pi ${pi.version}${ffPin ? ` + ffmpeg ${ffPin.version}` : ''}${ytPin ? ` + yt-dlp ${ytPin.tag}` : ''} -> ${out} (${s.files} files, ${(s.bytes / 1048576).toFixed(1)} MiB)${opts.selfCheck ? ', self-check ok' : ''}`);
     if (opts.archive) {
       const archive = path.resolve(opts.archive);
       const a = packArchive(out, archive);

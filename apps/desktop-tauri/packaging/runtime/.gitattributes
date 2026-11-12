@@ -1,0 +1,4 @@
+# K2-13 T2c-8 (S19): hash-pinned runtime inputs are byte-identical on every OS checkout, so the sha256 of the yt-dlp
+# licence texts (and every pin line) means the same thing on Windows as on Linux and macOS.
+ytdlp/*.txt -text
+ytdlp.sha256 -text

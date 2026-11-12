@@ -272,13 +272,14 @@ try {
     assert.match(r.stderr, /unexpected staged entry: unlisted\.txt/);
     assert.equal(fs.readFileSync(path.join(outArchive, 'unlisted.txt'), 'utf8'), 'unlisted');
   });
-  rule('abito-install.json lists runtime/node.exe with its sha256 via --runtime, and the previous entries are unchanged without it', () => {
+  rule('abito-install.json lists runtime/node.exe, ffmpeg.exe and yt-dlp.exe with their sha256 via --runtime, and the previous entries are unchanged without it', () => {
     const distA = path.join(scratch, 'dist-manifest-runtime');
     const distB = path.join(scratch, 'dist-manifest-plain');
     const runtimeDir = path.join(scratch, 'runtime-fixture');
     fs.mkdirSync(distA); fs.mkdirSync(distB); fs.mkdirSync(runtimeDir);
     fs.writeFileSync(path.join(runtimeDir, 'node.exe'), 'pinned node fixture');
     fs.writeFileSync(path.join(runtimeDir, 'ffmpeg.exe'), 'pinned ffmpeg fixture');
+    fs.writeFileSync(path.join(runtimeDir, 'yt-dlp.exe'), 'pinned yt-dlp fixture');
     for (const d of [distA, distB]) fs.writeFileSync(path.join(d, 'abito-private-session.exe'), 'helper fixture');
     const runManifest = (dist, ...extra) => {
       const r = spawnSync(process.execPath, [path.join(crate, 'packaging/windows/install-manifest.cjs'), '--dist', dist, ...extra], { encoding: 'utf8' });
@@ -288,10 +289,12 @@ try {
     const plain = runManifest(distB);
     const withRuntime = runManifest(distA, '--runtime', runtimeDir);
     assert.equal(withRuntime.schema, 'abito-install/1');
-    assert.deepEqual(Object.keys(withRuntime.files).sort(), [...Object.keys(plain.files), 'runtime/node.exe', 'runtime/ffmpeg.exe'].sort());
+    assert.deepEqual(Object.keys(withRuntime.files).sort(), [...Object.keys(plain.files), 'runtime/node.exe', 'runtime/ffmpeg.exe', 'runtime/yt-dlp.exe'].sort());
     assert.equal(withRuntime.files['runtime/node.exe'], sha256(path.join(runtimeDir, 'node.exe')));
     // K2-13 (S9): the bundled LGPL ffmpeg the daemon spawns is pinned like node.exe.
     assert.equal(withRuntime.files['runtime/ffmpeg.exe'], sha256(path.join(runtimeDir, 'ffmpeg.exe')));
+    // K2-13 T2c-8 (S19): and so is the bundled yt-dlp that reads YouTube links.
+    assert.equal(withRuntime.files['runtime/yt-dlp.exe'], sha256(path.join(runtimeDir, 'yt-dlp.exe')));
     assert.deepEqual(Object.keys(plain.files).sort(), ['abito-private-session.exe', ...files].sort());
   });
   rule('macOS /var -> /private/var (K2-01b CI): a symlinked ANCESTOR of the output dir (outside the stage) is accepted, while a symlink inside the stage is still refused', () => {
