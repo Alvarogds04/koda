@@ -12,7 +12,7 @@ const fs = require('node:fs');
 const net = require('node:net');
 const path = require('node:path');
 const { handleCodexHook: raw_handleCodexHook, codexToolDescription, ALLOW, DENY } = require('../src/codex.cjs');
-const { parseArgs, watchdogMs, startWatchdog } = require('../src/hook-common.cjs');
+const { parseArgs, watchdogMs, startWatchdog, CODEX_MAX_ISLAND_WAIT_MS } = require('../src/hook-common.cjs');
 const { IslandClient } = require('../src/client.cjs');
 const { fakeReceiver, transportOf, viaPipe } = require('./fake-receiver.cjs');
 const handleCodexHook = viaPipe(raw_handleCodexHook);
@@ -116,8 +116,10 @@ test('a silent island (accepts, never answers the handshake) cannot make the hoo
   assertSilent(r);
 });
 
-test('the island wait follows --timeout-sec: default 30 s, capped at 60 s, too short => no card and nothing printed', async t => {
-  for (const [argv, budget] of [[[], 30000], [['--timeout-sec', '125'], 60000], [['--timeout-sec', '3600'], 60000]]) {
+// K2-08 T3 (S2, S5): the installed entry gives the hook 120 s, so Codex's card waits up to 115 s (the 5 s margin), not
+// Claude's 60 s cap; anything longer is still capped at those 115 s.
+test('the island wait follows --timeout-sec: default 30 s, 120 s => 115 s, capped at 115 s, too short => no card and nothing printed', async t => {
+  for (const [argv, budget] of [[[], 30000], [['--timeout-sec', '120'], 115000], [['--timeout-sec', '125'], 115000], [['--timeout-sec', '3600'], 115000]]) {
     const rcv = await fakeReceiver(t, { questions: true });
     const p = answerer(rcv, 'deny');
     const r = await call('permission-request', {}, envOf(rcv), { argv });
@@ -349,6 +351,8 @@ test('parseArgs / watchdogMs / startWatchdog stay the CLI contract (old installe
   assert.deepEqual(parseArgs(['--timeout-sec', '12']), { timeoutSec: 12 });
   for (const bad of [['--timeout-sec', '0'], ['--timeout-sec', 'x'], ['--nope'], 'x']) assert.equal(parseArgs(bad), null);
   assert.equal(watchdogMs('permission-request', 35), 35000, 'the one event that may hold the island open');
+  // T3: with the installed 120 s the watchdog still fires 5 s after the island deadline (115 s), never inside it.
+  assert.equal(watchdogMs('permission-request', 120) - CODEX_MAX_ISLAND_WAIT_MS, 5000);
   assert.equal(watchdogMs('stop', 35), 15000);
   const noticeWatchdog = watchdogMs('pre-tool-use', 35);
   assert.ok(Number.isInteger(noticeWatchdog) && noticeWatchdog > 0 && noticeWatchdog <= 35000, 'a notice is always bounded');
