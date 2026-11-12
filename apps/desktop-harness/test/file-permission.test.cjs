@@ -73,8 +73,13 @@ test('R10 i: Codex answers from the island in Spanish (K2-08 T1); only Bash and 
   assert.equal(r.q.text, 'Codex pide permiso para Bash: ls');
   assert.deepEqual(r.q.options.map(o => [o.value, o.label]), [['allow', 'Aprobar una vez'], ['deny', 'Rechazar']]);
   assert.equal(r.out.stdout, ALLOW);
-  // apply_patch is lossy until the file preview (T4): no allow, and a forged allow decides nothing
+  // apply_patch (K2-08 T4) uses the same R9 file preview: a patch outside the grammar or touching several files (1a) stays
+  // lossy, and a forged allow decides nothing. Approvable single-file cards: apply-patch.test.cjs (neutral session folder).
   lossy(await card('apply_patch', { command: '*** Begin Patch\n*** End Patch' }, handleCodexHook));
+  const many = await card('apply_patch', { command: '*** Begin Patch\n*** Add File: a.txt\n+a\n*** Delete File: b.txt\n*** End Patch' }, handleCodexHook);
+  lossy(many); assert.match(many.q.text, /^Codex pide permiso para apply_patch: varios archivos: .*\(varios archivos; detalles solo en la terminal/);
+  const outside = await card('apply_patch', { command: '*** Begin Patch\n*** Add File: /home/dev/proj/x.txt\n+not-shown\n*** End Patch' }, handleCodexHook);
+  lossy(outside); assert.ok(outside.q.text.includes(JSON.stringify(path.resolve(cwd, '/home/dev/proj/x.txt')))); assert.doesNotMatch(outside.q.text, /not-shown/);
   // Codex never reports Claude's file tools; a `Write` name is not ours to show: no card, nothing printed
   let asked = 0;
   const out = await handleCodexHook({ event: 'permission-request', env: offlineEnv('nonexistent-test'),

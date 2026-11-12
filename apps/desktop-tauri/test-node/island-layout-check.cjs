@@ -194,14 +194,26 @@ test('T4b approvalView: the Spanish producer pair wears the approval look and ke
   assert.deepEqual([mcp.tool, mcp.command, mcp.title], [null, 'herramienta MCP foo', 'Permiso:']);
   assert.equal(L.compactView({ rows: [], focusId: null, pending: { kind: 'question', agent: 'claude-code', text: 'Codex pide permiso para Bash: ls', options: [{ index: 0, label: 'Aprobar una vez' }, { index: 1, label: 'Rechazar' }] } }).badge, 'approval');
 });
-// K2-08 T1: the exact cards the Codex hook now sends (apps/desktop-harness/src/codex.cjs). A Bash command shown in full is
-// an approval; apply_patch (lossy until T4) and any other request not shown in full never gets an approve button.
-test('K2-08 T1 approvalView: the Codex hook cards — Bash approvable, apply_patch and lossy commands never approvable', () => {
+// K2-08 T1/T4: the exact cards the Codex hook now sends (apps/desktop-harness/src/codex.cjs, file-permission.cjs). A Bash command
+// shown in full is an approval; apply_patch is an approval only for a single-file card shown in full (path + change, borrar, mover);
+// several files, a path outside the session folder, anything recortado/oculto or not representable never gets an approve button.
+test('K2-08 T1/T4 approvalView: the Codex hook cards — Bash and single-file apply_patch approvable, lossy cards never', () => {
   const bash = L.approvalView(es('Codex pide permiso para Bash: ls'), 'Codex');
   assert.deepEqual([bash.title, bash.tool, bash.command], ['Ejecutar:', 'Bash', 'ls']);
   assert.deepEqual(rows2(bash), [['reject', 'Rechazar', 'N', 1], ['approve', 'Aprobar una vez', 'Y', 0]]);
+  for (const detail of ['"/w/uno.txt"; añadir: "hola\\nmundo"', '"/w/uno.txt"; modificar: "a" → "b"', 'borrar "/w/uno.txt"',
+    'mover "/w/uno.txt" → "/w/dos.txt"; modificar: "a" → "b"']) {
+    const v = L.approvalView(es(`Codex pide permiso para apply_patch: ${detail}`), 'Codex');
+    assert.deepEqual([v.title, v.tool, v.command, v.secretsHidden], ['Permiso:', 'apply_patch', detail, false], detail);
+    assert.deepEqual(rows2(v), [['reject', 'Rechazar', 'N', 1], ['approve', 'Aprobar una vez', 'Y', 0]], detail);
+  }
   const lossyOpts = [opt(0, 'Rechazar'), opt(1, 'Decidir en la terminal')];
   for (const text of ['Codex pide permiso para apply_patch (edición de archivo) (detalles solo en la terminal; decidir en la terminal)',
+    'Codex pide permiso para apply_patch (solicitud no representable; detalles solo en la terminal; decidir en la terminal)',
+    'Codex pide permiso para apply_patch: varios archivos: "/w/a.txt", "/w/b.txt" (varios archivos; detalles solo en la terminal; decidir en la terminal)',
+    'Codex pide permiso para apply_patch: "/x/fuera.txt" (fuera de la carpeta de sesión; detalles solo en la terminal; decidir en la terminal)',
+    'Codex pide permiso para apply_patch: "/w/uno.txt"; contenido: [REDACTED] (secretos ocultos) (contenido oculto; detalles solo en la terminal; decidir en la terminal)',
+    'Codex pide permiso para apply_patch: "/w/uno.txt"; añadir: "l\\nl" (contenido recortado (8 líneas / 160 bytes); detalles solo en la terminal; decidir en la terminal)',
     'Codex pide permiso para Bash: cat ~/.ssh/id_rsa (ruta sensible; detalles solo en la terminal; decidir en la terminal)']) {
     assert.equal(L.approvalView(es(text, lossyOpts), 'Codex'), null, text);
     assert.equal(L.approvalView(es(text), 'Codex'), null, 'a lossy text stays non-approvable even with a forged pair');
