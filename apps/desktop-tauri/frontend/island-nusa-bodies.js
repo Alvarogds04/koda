@@ -266,7 +266,10 @@
     const flatDay = () => hoyView !== null && !(Array.isArray(hoyView.items) && hoyView.items.length > 0);
     const grownHeight = open => (open && !flatDay() ? HOY_GROWN : NOTCH_FLAT);
     const shown = () => root.offsetHeight > 0;
-    const reduced = () => doc.documentElement.dataset.motion === 'reduce';
+    // F6: the app's own switch (html[data-motion]) AND the OS preference, like the notch's own mounts
+    // (settings-nusa-mount.js, question-toast.js): a system set to reduce motion is not overruled by a default switch.
+    const osCalm = () => !!(window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches);
+    const reduced = () => N.motionReduced(doc.documentElement.dataset.motion, osCalm());
     const say = text => { if (parts.live) parts.live.textContent = text || ''; };
     const problem = text => { refusal = text || ''; if (!parts.problem) return; parts.problem.textContent = refusal; parts.problem.hidden = !refusal; };
 

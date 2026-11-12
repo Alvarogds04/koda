@@ -48,9 +48,11 @@ function measure(page) {
         approve: reach(buttons[0]), reject: reach(buttons[1]) };
     });
     const tabs = [...document.querySelectorAll('#hoy-tabs [role="tab"]')].map(el => ({ text: (el.textContent || '').trim(), selected: el.getAttribute('aria-selected'), ...box(el), reach: reach(el) }));
+    // the ONE visible control cluster of the header (the pin island.js adds lives outside it)
+    const hdr = [...document.querySelectorAll('#island-header .header-actions .hdr-action')].map(el => ({ id: el.id, ...box(el) }));
     return {
       island: box(island), nusa: box(nusa), hoy: box(hoy), shown: getComputedStyle(hoy).display !== 'none',
-      koda: koda ? box(koda) : null, rows, tabs,
+      koda: koda ? box(koda) : null, rows, tabs, hdr,
       shapes: (window.__shapes || []).slice(-6), title: document.getElementById('nusa-title').textContent,
       summary: document.getElementById('hoy-summary').textContent,
       empty: document.getElementById('hoy-empty').hidden ? null : document.getElementById('hoy-empty').textContent,
@@ -82,6 +84,17 @@ function verify(name, m, { grown = true } = {}) {
     }
   }
   for (const t of m.tabs) assert.ok(t.reach.ok, `${name}: tab «${t.text}» receives the click (got ${t.reach.got})`);
+  // F1: the Hoy disc is a fourth header action, so it sits on the SAME line as Ajustes / Silenciar / Plegar. (island.js's
+  // own `#island-pin` borrows the `hdr-action` class but keeps its old slot styling: it is not part of this cluster's four.)
+  const disc = m.hdr.find(b => b.id === 'open-hoy');
+  assert.ok(disc, `${name}: the Hoy disc is in the header's control cluster`);
+  for (const id of ['open-settings', 'toggle-sound', 'header-fold']) {
+    const other = m.hdr.find(b => b.id === id);
+    assert.ok(other, `${name}: ${id} is next to it`);
+    assert.ok(Math.abs(other.y - disc.y) <= 1, `${name}: the Hoy disc lines up with ${id} (y ${disc.y} vs ${other.y})`);
+    assert.ok(Math.abs(other.h - disc.h) <= 1, `${name}: and is the same height as ${id} (${disc.h} vs ${other.h})`);
+    assert.ok(Math.abs((other.y + other.h / 2) - (disc.y + disc.h / 2)) <= 1, `${name}: so their centres share a line (${id})`);
+  }
 }
 
 (async () => {
@@ -312,6 +325,25 @@ function verify(name, m, { grown = true } = {}) {
       assert.equal(Math.round(m.island.h), 150, 'the notch is 150 again');
       const pressed = await r.page.getAttribute('#open-hoy', 'aria-pressed');
       assert.equal(pressed, 'false', 'and its tab says so');
+    } finally { await r.close(); }
+  }
+
+  // 6 · F6: a system that asks for reduced motion still gets a working day (the switch itself is `motionReduced`, tested
+  //     pure in hoy-view-check: the page must never pick its own animation policy from a missing preference)
+  {
+    const r = await H.open({ hoy: DAY, hoyTab: true });
+    try {
+      await r.page.emulateMedia({ reducedMotion: 'reduce' });
+      await r.page.click('#open-hoy');                 // close
+      await r.page.waitForTimeout(400);
+      await r.page.click('#open-hoy');                 // open again, now under the OS preference
+      await r.page.waitForTimeout(700);
+      const m = await measure(r.page);
+      verify('reduced-motion', m);
+      // island.js mirrors the OS preference into html[data-motion], so the assertion here is the WORKING day; the
+      // switch itself (app flag OR OS preference) is `motionReduced`, covered pure in hoy-view-check
+      assert.match(await r.page.evaluate(() => document.documentElement.dataset.motion || ''), /^(reduce|full|)$/);
+      await r.page.locator('#island').screenshot({ path: path.join(SHOTS, 'hoy-movimiento-reducido.png') });
     } finally { await r.close(); }
   }
 

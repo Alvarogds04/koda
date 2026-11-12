@@ -206,8 +206,10 @@
 
   // ---- K2-13 T6b-1 «Hoy» (S2/S3/S5/S13/S17/S19): the island's day ----
   // The daemon's folded `hoy` view (agentclient.rs) says what happened; this model only decides how it is SAID. Everything the
-  // daemon or a model wrote is untrusted text: it is cleaned of control and Unicode format characters (bidi overrides,
-  // zero-width), collapsed and capped here, and the mount writes it with textContent — never as markup.
+  // daemon or a model wrote is untrusted text: it is cleaned of control characters, of the WHOLE Unicode Cf category
+  // (\p{Cf}: bidi overrides, zero-width, word joiners, tag letters, soft hyphens…) and of the U+2028/U+2029 line and
+  // paragraph separators (Zl/Zp), collapsed and capped here, and the mount writes it with textContent — never as markup.
+  // The first version listed only the bidi ranges (U+200B-200F, 202A-202E, 2066-2069, FEFF) and let the rest through (F2).
   const HOY_TABS = Object.freeze([
     Object.freeze({ id: 'propuestas', title: 'Propuestas' }),
     Object.freeze({ id: 'resultados', title: 'Resultados' }),
@@ -229,7 +231,7 @@
     unavailable: 'El daemon no está disponible ahora.',
     failed: 'El daemon no pudo registrar la decisión.',
   });
-  const FORMAT_CHARS = /[\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g;
+  const FORMAT_CHARS = /[\p{Cf}\u2028\u2029]/gu;
   const CONTROL_CHARS = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g;
   function hoyClean(text, max) {
     const s = String(text == null ? '' : text).replace(FORMAT_CHARS, '').replace(CONTROL_CHARS, ' ').replace(/\s+/g, ' ').trim();
@@ -394,10 +396,15 @@
     const kept = list.filter(r => rank.has(r.id)).sort((a, b) => rank.get(a.id) - rank.get(b.id));
     return kept.concat(list.filter(r => !rank.has(r.id)));
   }
+  /**
+   * F6: motion is reduced when the app's own switch says so OR when the OS asks for it. The first version read only
+   * `html[data-motion="reduce"]`, so a system set to reduce motion still animated the grown box.
+   */
+  const motionReduced = (motionAttr, mediaMatches) => motionAttr === 'reduce' || mediaMatches === true;
   /** A click is honoured only once the rows have been still for `HOY_CLICK_GUARD_MS` (an armed guard, not a moving one). */
   const hoyGuardOpen = (movedAt, now) => !(Number.isFinite(movedAt) && movedAt > 0) || !Number.isFinite(now) || now - movedAt >= HOY_CLICK_GUARD_MS;
 
   return { dismissAll, dismissFeedback, TABS, step, arrows, wheelStep, keyStep, VEIL, veilState, agentRows, AGENT_ROWS, AGENT_ROWS_LINKED, moreAgents, STATE_WORD, clockText, noticeLines, agentHex, focusView, veilColor, noticeAgentColor, takeoverState, chatInert, takeoverTitle, sendCheck, requestId, replyLine, DRAFT_MAX, SIZES, sizeScale, shortTitle,
     HOY_TABS, HOY_ACTION, HOY_STATE, HOY_PROVENANCE, hoyClean, hoyCounts, hoyTab, hoyTabKey, hoyRows, hoySummary, hoyEmpty, hoyRefusal, hoySplit,
-    HOY_WAIT_MS, HOY_CLICK_GUARD_MS, HOY_TARGET_MAX, hoyErrorN, hoyDecision, hoyReadProblem, hoyOrder, hoyGuardOpen };
+    HOY_WAIT_MS, HOY_CLICK_GUARD_MS, HOY_TARGET_MAX, motionReduced, hoyErrorN, hoyDecision, hoyReadProblem, hoyOrder, hoyGuardOpen };
 });

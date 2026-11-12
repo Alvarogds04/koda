@@ -138,6 +138,68 @@ fn text_loses_control_and_bidi_characters_and_is_capped() {
 }
 
 #[test]
+fn text_loses_the_whole_unicode_format_set_and_the_separators() {
+    // One representative of every Cf group — soft hyphen, Arabic letter mark, Arabic number sign, Mongolian vowel
+    // separator, word joiner, tag letter, Egyptian and musical format controls, interlinear annotation — plus the
+    // line/paragraph separators (Zl/Zp), which are not Cc and used to survive.
+    let nasty = "comprar\u{ad}\u{61c}\u{600}\u{6dd}\u{890}\u{180e}\u{2060}\u{e0041}\u{13430}\u{1d173}\u{fff9}\u{2028}\u{2029} YPF";
+    let state = connected(json!([{
+        "id": A, "minikoda": "valmar", "kind": "result", "status": "approved", "text": nasty,
+        "createdAt": "2026-11-06T09:30:00.000Z"
+    }]));
+    let text = rows(&state)[0]["text"].as_str().unwrap().to_string();
+    for c in ['\u{ad}', '\u{61c}', '\u{600}', '\u{6dd}', '\u{890}', '\u{180e}', '\u{2060}', '\u{e0041}', '\u{13430}', '\u{1d173}', '\u{fff9}', '\u{2028}', '\u{2029}'] {
+        assert!(!text.contains(c), "{c:?} must not reach the page: {text:?}");
+    }
+    assert_eq!(text, "comprar YPF");
+}
+
+#[test]
+fn ordinary_text_keeps_its_accents_and_spaces() {
+    let state = connected(json!([{
+        "id": A, "minikoda": "valmar", "kind": "result", "status": "approved",
+        "text": "ñandú, ¿qué tal? · año 2026", "createdAt": "2026-11-06T09:30:00.000Z"
+    }]));
+    assert_eq!(rows(&state)[0]["text"], json!("ñandú, ¿qué tal? · año 2026"));
+}
+
+#[test]
+fn a_decision_is_final_and_pending_is_never_one() {
+    let mut state = connected(json!([{
+        "id": A, "minikoda": "valmar", "kind": "proposal", "status": "pending", "text": "comprar", "action": "buy",
+        "target": "YPF", "createdAt": "2026-11-06T09:12:00.000Z"
+    }]));
+    // `pending` is a STATUS, not a decision: a frame that carries it decides nothing
+    state.apply(&json!({ "type": "hoy_decided", "id": A, "status": "pending", "executedAt": "2026-11-06T09:46:00.000Z" })).unwrap();
+    assert_eq!(rows(&state)[0]["status"], json!("pending"), "a pending status never decides anything");
+    assert!(rows(&state)[0].get("decidedAt").is_none(), "and never stamps a decision");
+    // pending -> approved is the one transition a proposal has
+    state.apply(&json!({ "type": "hoy_decided", "id": A, "status": "approved" })).unwrap();
+    assert_eq!(rows(&state)[0]["status"], json!("approved"));
+    // a SECOND decision is ignored: the row keeps what the daemon recorded first
+    state.apply(&json!({ "type": "hoy_decided", "id": A, "status": "rejected" })).unwrap();
+    assert_eq!(rows(&state)[0]["status"], json!("approved"), "a decision is final");
+    state.apply(&json!({ "type": "hoy_decided", "id": A, "status": "approved" })).unwrap();
+    assert_eq!(rows(&state)[0]["status"], json!("approved"));
+    // the execution record of the SAME decision still stamps its time
+    let mut timed = connected(json!([{
+        "id": A, "minikoda": "valmar", "kind": "proposal", "status": "pending", "text": "comprar", "action": "buy",
+        "target": "YPF", "createdAt": "2026-11-06T09:12:00.000Z"
+    }]));
+    timed.apply(&json!({ "type": "hoy_decided", "id": A, "status": "approved" })).unwrap();
+    timed.apply(&json!({ "type": "hoy_approved", "id": A, "executedAt": "2026-11-06T09:46:00.000Z" })).unwrap();
+    assert_eq!(rows(&timed)[0]["status"], json!("approved"));
+    assert_eq!(rows(&timed)[0]["decidedAt"], json!("2026-11-06T09:46:00.000Z"), "the execution record of the same decision still stamps its time");
+    // ...and so is a rejected one
+    let mut rejected = connected(json!([{
+        "id": B, "minikoda": "valmar", "kind": "proposal", "status": "rejected", "text": "vender", "action": "sell",
+        "target": "Pampa", "createdAt": "2026-11-06T09:13:00.000Z"
+    }]));
+    rejected.apply(&json!({ "type": "hoy_approved", "id": B, "executedAt": "2026-11-06T09:47:00.000Z" })).unwrap();
+    assert_eq!(rows(&rejected)[0]["status"], json!("rejected"), "an execution record never re-opens a rejected row");
+}
+
+#[test]
 fn provenance_is_a_closed_field_the_island_may_show() {
     let state = connected(json!([
         { "id": A, "minikoda": "videos", "kind": "result", "status": "approved", "text": "uno", "createdAt": "2026-11-06T08:15:00.000Z", "provenance": "youtube_subtitles" },

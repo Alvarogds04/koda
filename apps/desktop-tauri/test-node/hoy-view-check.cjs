@@ -185,6 +185,33 @@ test('the tabs answer ArrowLeft / ArrowRight / Home / End (roving focus), and no
   assert.equal(N.hoyTabKey({ key: 'ArrowRight', isTrusted: true, metaKey: true }, 0), null, 'never with a modifier');
 });
 
+test('motion is reduced by the app switch OR by the OS preference (F6)', () => {
+  assert.equal(typeof N.motionReduced, 'function');
+  assert.equal(N.motionReduced('reduce', false), true, 'the app\'s own switch');
+  assert.equal(N.motionReduced(undefined, true), true, 'the OS preference, with the app switch untouched');
+  assert.equal(N.motionReduced('full', true), true);
+  assert.equal(N.motionReduced(undefined, false), false);
+  assert.equal(N.motionReduced('', undefined), false);
+});
+
+// ---- F2: the WHOLE Unicode format set goes, not the bidi ranges the first version happened to list ----
+test('every Unicode format character is stripped, and the line/paragraph separators too', () => {
+  // one representative of every Cf group (soft hyphen, Arabic letter mark, Mongolian vowel separator, word joiner, tag
+  // letters) and the Zl/Zp separators: none may reach the page
+  const bad = ['\u00ad', '\u061c', '\u180e', '\u2060', '\u{e0041}', '\u2028', '\u2029', '\u0600', '\u06dd', '\u0890', '\u{110bd}', '\ufff9'];
+  const nasty = `comprar${bad.join('')} YPF`;
+  const [r] = N.hoyRows(view([proposal(A, { target: nasty, text: nasty })]), NOW);
+  const all = `${r.title} ${r.sub} ${r.full} ${r.aria}`;
+  for (const c of bad) assert.ok(!all.includes(c), `${JSON.stringify(c)} must not reach the DOM`);
+  assert.equal(r.title, 'Comprar comprar YPF'.trim(), 'and nothing else was touched');
+});
+
+test('ordinary text keeps its accents and its spaces', () => {
+  const [r] = N.hoyRows(view([proposal(A, { target: '10 CEDEARs de YPF · año 2026', text: 'ñandú, ¿qué tal?' })]), NOW);
+  assert.equal(r.title, 'Comprar 10 CEDEARs de YPF · año 2026');
+  assert.match(r.sub, /ñandú, ¿qué tal\?/);
+});
+
 // ---- a decision in flight: the daemon's later state decides it, never the click (verifier mwdtsadz B1/B2) ----
 test('a decision waits for the daemon: the command reply is the state BEFORE it', () => {
   const before = view([proposal(A)]);

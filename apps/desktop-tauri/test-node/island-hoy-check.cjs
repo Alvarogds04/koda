@@ -131,7 +131,9 @@ test('css: tokens only for colour, and the artboard\'s sizes', () => {
   assert.match(hoyCss, /\.hoy-row \{[^}]*min-height: 32px/, 'a proposal row is two lines (32)');
   assert.match(hoyCss, /\.hoy-row\[data-kind="result"\] \{[^}]*min-height: 44px/, 'a result with its summary is 44');
   assert.match(hoyCss, /border-radius: 10px/, 'row radius 10 (the notch\'s own rows)');
-  assert.match(hoyCss, /html\[data-motion="reduce"\]/, 'reduced motion is respected');
+  assert.match(hoyCss, /html\[data-motion="reduce"\]/, 'the app\'s own reduced-motion switch is respected');
+  assert.match(hoyMount, /prefers-reduced-motion: reduce/, 'and the OS preference too (F6), like the notch\'s other mounts');
+  assert.match(hoyMount, /N\.motionReduced\(/, 'through the model\'s one switch, not an ad-hoc expression here');
   assert.match(hoyCss, /font-size: 11px|font-size: 12px|font-size: 13px/, 'the notch type scale');
 });
 

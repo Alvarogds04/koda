@@ -53,12 +53,49 @@ fn hoy_id(s: &str) -> bool {
             _ => c.is_ascii_digit() || (b'a'..=b'f').contains(c),
         })
 }
-/// «Hoy» text is untrusted (it comes from models and Telegram posts). Control CHARACTERS and Unicode format
-/// characters (bidi overrides, zero-width) go, so nothing on the page can reverse or hide what it says.
+/// The Unicode `Cf` (format) ranges of Unicode 16.0, in one table: bidi overrides and isolates, zero-width joiners and
+/// spaces, soft hyphens, word joiners, tag characters, interlinear annotations and the Egyptian / musical format controls.
+/// Rust's `char::is_control` is `Cc` only, so the format characters have to be named here (F2: the first version listed
+/// just U+200B-200F, 202A-202E, 2066-2069 and FEFF and let the rest through).
+const FORMAT_RANGES: [(u32, u32); 22] = [
+    (0x00ad, 0x00ad),
+    (0x0600, 0x0605),
+    (0x061c, 0x061c),
+    (0x06dd, 0x06dd),
+    (0x070f, 0x070f),
+    (0x0890, 0x0891),
+    (0x08e2, 0x08e2),
+    (0x180e, 0x180e),
+    (0x200b, 0x200f),
+    (0x202a, 0x202e),
+    (0x2060, 0x2064),
+    (0x2066, 0x206f),
+    (0xfeff, 0xfeff),
+    (0xfff9, 0xfffb),
+    (0x110bd, 0x110bd),
+    (0x110cd, 0x110cd),
+    (0x13430, 0x1343f),
+    (0x1bca0, 0x1bca3),
+    (0x1d173, 0x1d17a),
+    (0xe0001, 0xe0001),
+    (0xe0020, 0xe007f),
+    // Zl / Zp (line and paragraph separators): not Cc, not Cf, and just as able to reflow or hide a row
+    (0x2028, 0x2029),
+];
+/// True for a character «Hoy» must not carry: the whole `Cf` set above, the two separators, and any `Cc` control.
+fn hoy_denied(c: char) -> bool {
+    if c.is_control() {
+        return true;
+    }
+    let cp = c as u32;
+    FORMAT_RANGES.iter().any(|(lo, hi)| cp >= *lo && cp <= *hi)
+}
+/// «Hoy» text is untrusted (it comes from models and Telegram posts). Control characters, every Unicode format character
+/// and U+2028/U+2029 go, so nothing on the page can reverse, hide or reflow what it says.
 fn hoy_text(v: &Value, key: &str, max: usize) -> Value {
     v.get(key)
         .and_then(Value::as_str)
-        .map(|s| Value::from(s.chars().filter(|c| !c.is_control() && !matches!(c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}' | '\u{feff}')).take(max).collect::<String>()))
+        .map(|s| Value::from(s.chars().filter(|c| !hoy_denied(*c)).take(max).collect::<String>()))
         .unwrap_or(Value::Null)
 }
 fn closed_cell(v: &Value, key: &str, allowed: &'static [&'static str]) -> Option<&'static str> {
@@ -711,16 +748,20 @@ impl ClientState {
                 self.hoy = json!({"items": items, "truncated": truncated});
             }
             "hoy_decided" | "hoy_approved" => {
-                // One decision, folded in place: the daemon said so (never the click). A decision for a row we do
-                // not hold invents nothing, and `hoy_approved` is the ONE execution record — both mean `approved`.
+                // One decision, folded in place: the daemon said so (never the click). A decision for a row we do not
+                // hold invents nothing; `hoy_approved` is the ONE execution record, so it means `approved`; `pending` is
+                // a status and never a decision (F3).
                 let (Some(id), Some(status)) = (frame.get("id").and_then(Value::as_str).filter(|s| hoy_id(s)),
-                    if t == "hoy_approved" { Some("approved") } else { closed_cell(frame, "status", &HOY_STATUSES) })
+                    if t == "hoy_approved" { Some("approved") } else { closed_cell(frame, "status", &["approved", "rejected"]) })
                 else { return Ok(()) };
                 let Some(list) = self.hoy.get_mut("items").and_then(Value::as_array_mut) else { return Ok(()) };
                 for row in list.iter_mut() {
                     if row.get("id").and_then(Value::as_str) != Some(id) || row.get("kind").and_then(Value::as_str) != Some("proposal") { continue; }
-                    row["status"] = json!(status);
-                    // a decision is final: the row keeps what the daemon recorded, never a second decision
+                    // a decision is FINAL: only a pending row can be decided, and a second frame never re-decides it.
+                    // The execution record of the SAME decision may still arrive and stamp its time.
+                    let current = row.get("status").and_then(Value::as_str);
+                    if current == Some("pending") { row["status"] = json!(status); }
+                    else if current != Some(status) { continue; }
                     if let Value::String(at) = iso_cell(frame, "executedAt") { row["decidedAt"] = json!(at); }
                 }
             }
