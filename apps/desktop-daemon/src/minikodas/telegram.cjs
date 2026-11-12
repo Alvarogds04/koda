@@ -40,6 +40,8 @@ const SPANISH_NOTICES = Object.freeze({
 	telegram_password_required: "Telegram pide la contraseña de dos pasos de tu cuenta.",
 	telegram_flood_wait: "Telegram pidió esperar; volvé a intentar cuando pase el tiempo indicado.",
 	telegram_session_invalid: "La sesión de Telegram ya no es válida. Conectá tu cuenta otra vez.",
+	telegram_not_connected: "No hay ninguna cuenta de Telegram conectada. Conectala en Ajustes.",
+	telegram_channel_invalid: "El canal de Telegram no es válido. Usá @usuario o un enlace t.me del canal.",
 	telegram_cancelled: "La conexión con Telegram se canceló.",
 	telegram_failed: "Telegram no respondió como se esperaba. Probá otra vez.",
 });

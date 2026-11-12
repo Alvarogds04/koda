@@ -472,6 +472,8 @@ const EMITTED_ERROR_CODES = new Set([
 	"telegram_unavailable", "telegram_already_connected", "telegram_not_awaiting_code", "telegram_not_awaiting_password",
 	"telegram_credentials_invalid", "telegram_code_invalid", "telegram_password_invalid", "telegram_password_required",
 	"telegram_flood_wait", "telegram_session_invalid", "telegram_cancelled", "telegram_failed",
+	// a source ('telegram:@canal') failure never reaches the wire, but the closed set stays one set
+	"telegram_not_connected", "telegram_channel_invalid",
 ]);
 // Recognized by the host's broader enum, but collapsed to stale/failed before H2c can emit them.
 const RESERVED_CONNECTOR_ERROR_CODES = new Set(["already_decided", "session_mismatch", "pending_full"]);

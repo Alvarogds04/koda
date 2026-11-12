@@ -8,7 +8,9 @@
  *   minikodas/recipes.json        {version: 1, minikodas: [{recipe, status: draft|active, createdAt, approvedAt?, firedAt?, lastRun?}]}
  *   minikodas/hoy/                «Hoy» store and approved log (hoy.cjs, wired by the daemon)
  *   minikodas/engines/<id>/       the Minikoda's OWN private engine root (HOME, agent dir, sessions, tmp, workspace)
- *   minikodas/sources/<id>.txt    default source content for the next run (until T1b brings Telegram reading)
+ *   minikodas/sources/<id>.txt    default source content for the next run (a plain-text source)
+ *   minikodas/telegram/<id>.json  the cached channel {channelId, accessHash, lastSeenId} of a Telegram source (0600)
+ *   minikodas/media/<run>/        the media one run downloaded (0700/0600), consumed by the transcription step
  * The engine roots never contain the «Hoy» store or the daemon token, and the kit has no tool
  * that reads files, so a Minikoda cannot reach them through its kit. Same-uid processes can still read them
  * (known limit: running the agent as another OS user is K2-14 criterion 3).
@@ -31,6 +33,7 @@ const { resolveModelChoice, projectModel } = require("./model.cjs");
 const { runMinikoda, DEFAULT_RUN_TIMEOUT_MS } = require("./runner.cjs");
 const { Scheduler } = require("./scheduler.cjs");
 const { freshestCredential, isOauth, readRunCredential, writeBackCredential } = require("./credentials.cjs");
+const { TelegramSource, TelegramError, parseSource } = require("./telegram-source.cjs");
 
 const MAX_MINIKODAS = 32;
 const MAX_SOURCE_BYTES = 200_000;
@@ -83,6 +86,17 @@ class MinikodaService extends EventEmitter {
 		this.file = path.join(this.dir, "recipes.json");
 		this.enginesDir = ensurePrivateDir(path.join(this.dir, "engines"));
 		this.sourcesDir = ensurePrivateDir(path.join(this.dir, "sources"));
+		// K2-13 (S6): a `telegram:@canal` source reads the channel with the user's account. Created lazily (no island
+		// grows a media folder until a channel really downloads something), and only when the daemon has a session.
+		this.mediaRoot = path.join(this.dir, "media");
+		this.telegramSource = options.telegram
+			? new TelegramSource({
+				stateDir: path.join(this.dir, "telegram"),
+				mediaRoot: this.mediaRoot,
+				getClient: () => this.options.telegram.connectedClient?.() ?? this.options.telegram.connectedClient,
+				log: (line) => this.log(line),
+			})
+			: undefined;
 		this.minEveryMs = options.minEveryMs ?? LIMITS.minEveryMs;
 		this.runTimeoutMs = options.runTimeoutMs ?? DEFAULT_RUN_TIMEOUT_MS;
 		this.maxConcurrentRuns = options.maxConcurrentRuns ?? DEFAULT_MAX_CONCURRENT_RUNS;
@@ -316,6 +330,7 @@ class MinikodaService extends EventEmitter {
 		state.minikodas = state.minikodas.filter((e) => e.recipe.id !== id);
 		this.persist(state);
 		this.removeEngineRoot(id);
+		this.telegramSource?.forget(id);
 		this.emit("changed");
 		return { id, deleted: true };
 	}
@@ -349,8 +364,29 @@ class MinikodaService extends EventEmitter {
 
 	// ----- runs ----------------------------------------------------------------------------------
 
+	/**
+	 * K2-13 (S6): what this run reads. A plain-text descriptor keeps the `sources/<id>.txt` behaviour; a `telegram:`
+	 * descriptor resolves the channel and downloads its new posts. Returns `{text, media, commit?}`: `commit()` is the
+	 * only thing that moves the last-seen marker, and `execute()` calls it only when the run succeeded.
+	 */
+	async prepareSource(recipe, runId, signal) {
+		if (this.options.source) return { text: String((await this.options.source(recipe)) ?? ""), media: [] };
+		const parsed = parseSource(recipe.reads.source);
+		if (parsed !== undefined && parsed.type === "telegram") {
+			if (!this.telegramSource) throw new TelegramError("telegram_unavailable");
+			return this.telegramSource.prepare({ recipe, runId, signal });
+		}
+		if (parsed === undefined) {
+			// A malformed `telegram:` descriptor is refused whenever this daemon can really read Telegram (a typo must
+			// never read an empty text file instead of the channel). A daemon embedded without a Telegram session only
+			// knows plain-text sources, and reads `sources/<id>.txt` as it always did.
+			if (this.telegramSource) throw new TelegramError("telegram_channel_invalid");
+			this.log(`minikoda ${recipe.id}: the source descriptor is not a Telegram channel (reading the text source)`);
+		}
+		return { text: await this.readSource(recipe), media: [] };
+	}
+
 	async readSource(recipe) {
-		if (this.options.source) return String((await this.options.source(recipe)) ?? "");
 		const file = path.join(this.sourcesDir, `${recipe.id}.txt`);
 		try {
 			const stats = lstatSync(file);
@@ -435,13 +471,24 @@ class MinikodaService extends EventEmitter {
 		let result;
 		let notice = "";
 		await this.leftovers;
+		let source = { text: "", media: [] };
 		try {
-			const source = await this.readSource(recipe);
-			result = await runMinikoda({
+			source = await this.prepareSource(recipe, runId, signal);
+		} catch (error) {
+			// S6: a channel that cannot be read is a failed run with its Spanish reason in «Hoy», never a silent skip.
+			this.log(`minikoda ${recipe.id}: run failed before start (source)`);
+			result = { runId, minikoda: recipe.id, outcome: "failed", reason: "source", proposals: [] };
+			// The Spanish sentence ends with its own full stop; «Hoy» adds the sentence's, so drop the duplicate.
+			const sentence = typeof error?.notice === "string" && error.notice !== "" ? error.notice.replace(/\.+$/, "") : "no se pudo leer el canal";
+			notice = `: ${sentence}`;
+		}
+		try {
+			// A source that could not be read already failed this run: the engine never starts.
+			if (result === undefined) result = await runMinikoda({
 				recipe,
 				root: this.engineRoot(recipe.id),
 				runId,
-				source,
+				source: source.text ?? "",
 				signal,
 				timeoutMs: this.runTimeoutMs,
 				engine: this.options.engine,
@@ -472,8 +519,10 @@ class MinikodaService extends EventEmitter {
 				},
 			});
 		} catch {
-			this.log(`minikoda ${recipe.id}: run failed before start`);
-			result = { runId, minikoda: recipe.id, outcome: "failed", reason: "failed", proposals: [] };
+			if (result === undefined) {
+				this.log(`minikoda ${recipe.id}: run failed before start`);
+				result = { runId, minikoda: recipe.id, outcome: "failed", reason: "failed", proposals: [] };
+			}
 		}
 		// Every outcome (done, crash, timeout, cancel): the engine may have refreshed the token before it ended.
 		// Written back first (S11), then the copy is removed; a copy that could not be written back stays so the
@@ -481,6 +530,8 @@ class MinikodaService extends EventEmitter {
 		if (copied !== undefined && (await this.settleRunCredential(recipe, agentDir, copied))) this.removeRunCredential(agentDir);
 		if (result.outcome === "done") {
 			await this.results.addRun({ minikoda: recipe.id, resultText: result.resultText, proposals: result.proposals });
+			// S6: the channel marker moves only now, so a failed run reads the same posts again instead of skipping them.
+			await source.commit?.();
 		} else {
 			// S13: what the kit really parked before the failure is kept pending, and «Hoy» says the run failed.
 			const parked = result.proposals ?? [];

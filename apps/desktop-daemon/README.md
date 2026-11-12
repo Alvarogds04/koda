@@ -553,11 +553,42 @@ A Minikoda is a small helper that runs a recipe on its own. Code: `src/minikodas
 **Recipe** (`recipe.cjs`, strict validation; anything unknown or out of range is refused, never repaired):
 `{id, name, when, reads, kit, prompt, model, never}`.
 - `when`: exactly one of `{manual: true}`, `{everyMs}` (≥ 60 s) or `{at: ISO date}` (future, ≤ 1 year).
-- `reads`: `{source}`, a descriptor. Before each run the daemon prepares the source's content and hands it to the Minikoda only through `source_read`. Today the content comes from `<island>/minikodas/sources/<id>.txt`; Telegram reading arrives with K2-13 T1b.
+- `reads`: `{source}`, a descriptor. Before each run the daemon prepares the source's content and hands it to the Minikoda only through `source_read`. A plain-text descriptor reads `<island>/minikodas/sources/<id>.txt`; `telegram:@canal` (or `telegram:t.me/canal`) reads that public Telegram channel with the user's own account (see «A Telegram channel as the source»).
 - `kit`: names from the closed catalogue `source_read`, `inbox_propose`.
 - `prompt`: the Minikoda's specialised prompt. It is appended after Koda's fixed base rules.
 - `model`: `{provider, id, accountId}`. It must come from an account Koda already has (`accounts/`): the account must exist, be signed in, serve that provider and offer that model. A provider served by two accounts needs `accountId`. Without a choice, the model is the chat's current model (the active profile).
 - `never`: must be exactly `buy, sell, send, delete`.
+
+### A Telegram channel as the source (S6)
+
+`reads.source` is `telegram:@canal` (also accepted: `telegram:canal`, `telegram:t.me/canal`, `telegram:https://t.me/canal`).
+Anything else after `telegram:` is refused when the daemon has a Telegram session, because a typo must never read an
+empty text file instead of the channel. Implementation: `src/minikodas/telegram-source.cjs`.
+
+- **Resolved once, cached.** The first run resolves the channel and caches `{channelId, accessHash}` in the Minikoda's
+  private state `<island>/minikodas/telegram/<id>.json` (0600); later runs use the cached input peer, so
+  `contacts.resolveUsername` is not spent on every run (and its flood limits are respected). A cached channel Telegram
+  no longer accepts is resolved again, once.
+- **Only what is new.** Each run asks for posts newer than the stored `lastSeenId` (`getHistory({minId})`), reading at
+  most 20 posts; the first run reads the latest 5. The marker moves **only when the run succeeded** (`commit()` runs
+  after the result reaches «Hoy»): a failed run reads the same posts again instead of skipping them.
+- **Text.** The posts arrive oldest → newest, each as `[id] texto`, inside `Canal @canal: N publicaciones nuevas.`, capped
+  at 60 000 chars. That text is what `source_read` returns; the Minikoda never sees the channel itself.
+- **Media.** Video (round video notes and GIF animations included), audio and voice messages are downloaded with
+  `downloadAsNodeStream` into the run's private folder `<island>/minikodas/media/<run>/` (folder 0700, files 0600) —
+  but only after Telegram's own metadata says the file is **≤ 200 MB and ≤ 3 hours**; a bigger or longer one, or one
+  whose size Telegram does not report, is skipped with a note in the text. Photos and documents are ignored, and
+  content-protected (noforwards) media is skipped with a note. `FILE_REFERENCE_EXPIRED` refetches that one message and
+  retries the download once, never in a loop.
+- **`source.media` is the contract with the transcription step.** `prepare()` resolves
+  `{text, media: [{path, mimeType, durationSec, messageId, kind}], commit}`. Nothing is transcribed on this branch
+  (`feat/k2-13-transcribe` owns that): the transcription step consumes `source.media`, replaces each entry with its
+  transcript (attached to `messageId`) and deletes the files, so the media folder of a run never outlives it. Until that
+  step is merged, the post text says the media exists but was not transcribed.
+- **Failures are «Hoy» errors, never silence.** A long `FLOOD_WAIT` (mtcute absorbs ≤ 10 s), no connected account, an
+  invalid channel or a revoked session fail the run with `reason: "source"` and the Spanish sentence from
+  `telegram.cjs` («Telegram pidió esperar 5 minutos»). There is no retry loop, and the media downloaded so far are
+  removed.
 
 **Store** (`service.cjs`): `<island>/minikodas/recipes.json` (0600, dir 0700). Creating a Minikoda takes two steps. `createDraft` stores a validated draft that never runs; only `approveCreate` makes it `active` and arms its schedule (S1: «solo lo crea si lo apruebo»).
 
