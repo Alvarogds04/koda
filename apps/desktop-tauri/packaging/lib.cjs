@@ -180,7 +180,10 @@ const DAEMON_FILES = ['package.json', 'identity.md', 'THIRD-PARTY-NOTICES.md',
   'src/connectors.cjs', 'src/connector-host.cjs', 'src/connector-host-client.cjs', 'src/custom-provider.cjs', 'src/custom-provider-extension.cjs',
   'src/daemon.cjs', 'src/interrupt.cjs', 'src/isolation.cjs', 'src/mcp-import.cjs', 'src/profiles.cjs',
   'src/protocol.cjs', 'src/rotation.cjs', 'src/runtime.cjs', 'src/sdk-helper.mjs', 'src/server.cjs',
-  'src/sessions.cjs', 'src/procinfo.cjs', 'src/spaces.cjs', 'src/win-fs.cjs'];
+  'src/sessions.cjs', 'src/procinfo.cjs', 'src/spaces.cjs', 'src/win-fs.cjs',
+  // K2-13 Minikodas: required by daemon.cjs; kit-extension.js is loaded by Pi through its path (-e).
+  'src/minikodas/hoy.cjs', 'src/minikodas/index.cjs', 'src/minikodas/kit-extension.js', 'src/minikodas/model.cjs',
+  'src/minikodas/recipe.cjs', 'src/minikodas/runner.cjs', 'src/minikodas/scheduler.cjs', 'src/minikodas/service.cjs'];
 // L42 F1: the hook installer (apps/desktop-harness) ships NEXT TO the daemon: the daemon derives
 // <package>/desktop-harness/bin/abito-hook.cjs from its own location (src/cli.cjs packagedInstallerBin), so Ajustes can
 // install the Claude/Codex/status-line hooks (and take out the removed Recap's 0.1 hooks, K2-03). Closed under require(): packaging-check pins that.
@@ -196,7 +199,7 @@ const PI_FILES = ['pi-extension.ts', 'adapter.cjs', 'ask-tool.cjs', 'config.cjs'
 const RUNTIME_ARCHIVE = 'koda-runtime-linux-x64.tar.gz';
 const STAGED = ['abito-island', 'abito-island-launcher', 'abito-island.png', `${IDENTIFIER}.desktop`, RUNTIME_ARCHIVE,
   ...DAEMON_FILES.map(f => `desktop-daemon/${f}`), ...HARNESS_FILES.map(f => `desktop-harness/${f}`), ...PI_FILES.map(f => `desktop-pi/${f}`)];
-const STAGED_DIRS = ['desktop-pi', 'desktop-daemon', 'desktop-daemon/src', 'desktop-harness', 'desktop-harness/bin', 'desktop-harness/src'];
+const STAGED_DIRS = ['desktop-pi', 'desktop-daemon', 'desktop-daemon/src', 'desktop-daemon/src/minikodas', 'desktop-harness', 'desktop-harness/bin', 'desktop-harness/src'];
 // Enumerate the complete tree without following links, including empty directories.
 // `prune` names ONE top-level directory whose contents are not enumerated: only PREFIX/runtime
 // uses it (K2-02 T2). Its integrity comes from the hash-verified runtime archive, not from the
