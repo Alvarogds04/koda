@@ -92,9 +92,12 @@ async function disc() {
       await r.page.evaluate(e => window.__islandSetState('compact', e), edge);
       await r.page.waitForTimeout(1600);
       const m = await r.page.evaluate(() => {
-        const t = document.getElementById('question-toast'), i = document.getElementById('island'), tb = t.getBoundingClientRect(), ib = i.getBoundingClientRect();
-        return { hidden: t.hidden, edge: t.dataset.edge, phase: document.getElementById('capsule').dataset.phase,
-          toast: { t: tb.top, b: tb.bottom, w: tb.width }, island: { t: ib.top, b: ib.bottom, l: ib.left, r: ib.right } };
+        const t = document.getElementById('question-toast'), i = document.getElementById('island'), c = document.getElementById('capsule');
+        const box = e => { const b = e.getBoundingClientRect(); return { t: b.top, b: b.bottom, l: b.left, r: b.right, w: b.width, h: b.height }; };
+        const shape = k => box(t.querySelector('.q-toast-' + k));
+        return { hidden: t.hidden, edge: t.dataset.edge, expanded: t.dataset.expanded, phase: c.dataset.phase, capsule: box(c),
+          toast: box(t), island: box(i), badge: box(t.querySelector('.q-toast-badge')), slot: box(t.querySelector('.q-toast-koda')),
+          neck: shape('neck'), pill: shape('pill'), body: shape('bodyrect') };
       });
       assert.equal(m.hidden, false, `${edge}/folded: the question arrives as the toast hanging from the disc`);
       assert.equal(m.phase, 'compact', `${edge}: the island stayed folded`);
@@ -103,6 +106,24 @@ async function disc() {
       if (edge === 'top') assert.ok(Math.abs(m.toast.t - m.island.b) <= 1, `${edge}: below the disc (toast top ${m.toast.t.toFixed(1)} vs disc bottom ${m.island.b.toFixed(1)})`);
       else assert.ok(Math.abs(m.toast.b - m.island.t) <= 1, `${edge}: above the disc (toast bottom ${m.toast.b.toFixed(1)} vs disc top ${m.island.t.toFixed(1)})`);
       assert.ok(Math.abs((m.island.l + m.island.r) / 2 - 376) <= 1, `${edge}: the disc stays centred in the 752 window`);
+      // T6b: the gooey pill, neck and body are PAINTED on the disc side the edge names (the shape was mirrored about the wrong line
+      // and the whole card was drawn one box height away from its text), and all of it inside the native window's capsule
+      if (edge === 'top') {
+        assert.ok(Math.abs(m.neck.b - m.island.b) <= 1, `${edge}: the neck joins the disc at its bottom edge (neck bottom ${m.neck.b.toFixed(1)} vs disc ${m.island.b.toFixed(1)})`);
+        assert.ok(Math.abs(m.pill.t - m.island.b) <= 1, `${edge}: the pill sits under the disc (pill top ${m.pill.t.toFixed(1)})`);
+        assert.ok(m.body.b - m.island.b >= 32, `${edge}: the body grows down, away from the disc`);
+      } else {
+        assert.ok(Math.abs(m.neck.t - m.island.t) <= 1, `${edge}: the neck joins the disc at its top edge (neck top ${m.neck.t.toFixed(1)} vs disc ${m.island.t.toFixed(1)})`);
+        assert.ok(Math.abs(m.pill.b - m.island.t) <= 1, `${edge}: the pill sits above the disc (pill bottom ${m.pill.b.toFixed(1)})`);
+        assert.ok(m.island.t - m.body.t >= 32, `${edge}: the body grows up, away from the disc`);
+      }
+      for (const k of ['neck', 'pill', 'body']) assert.ok(m[k].t >= m.capsule.t - 1 && m[k].b <= m.capsule.b + 1, `${edge}: the painted ${k} is inside the native window`);
+      // T6b (R3-koda-slot-position-unproved): the toast's Koda is drawn INSIDE the 28 px badge, never spilling out of it
+      assert.ok(m.slot.w >= 1 && m.slot.h >= 1, `${edge}: the toast badge paints Koda`);
+      assert.ok(m.badge.w <= 28.5 && m.badge.h <= 28.5, `${edge}: the badge is the 28 px circle (${m.badge.w}x${m.badge.h})`);
+      assert.ok(m.slot.l >= m.badge.l - 1 && m.slot.r <= m.badge.r + 1 && m.slot.t >= m.badge.t - 1 && m.slot.b <= m.badge.b + 1,
+        `${edge}: the Koda sprite (${m.slot.l.toFixed(1)}..${m.slot.r.toFixed(1)}, ${m.slot.t.toFixed(1)}..${m.slot.b.toFixed(1)}) stays inside the badge (${m.badge.l.toFixed(1)}..${m.badge.r.toFixed(1)}, ${m.badge.t.toFixed(1)}..${m.badge.b.toFixed(1)})`);
+      assert.ok(m.slot.w <= 28.5 && m.slot.h <= 28.5, `${edge}: the Koda sprite is ${m.slot.w}x${m.slot.h}, not 32x32 in a 28 px badge`);
       if (edge === 'top') await r.screenshot('/tmp/toast-disc-below.png'); else await r.screenshot('/tmp/toast-disc-above.png');
       n += 1;
     } finally { await r.close(); }
@@ -113,8 +134,13 @@ async function disc() {
   try {
     await r.page.evaluate(() => window.__islandSetState('overview'));
     await r.page.waitForTimeout(1600);
-    const m = await r.page.evaluate(() => ({ hidden: document.getElementById('question-toast').hidden, phase: document.getElementById('capsule').dataset.phase }));
+    const m = await r.page.evaluate(() => {
+      const t = document.getElementById('question-toast'), slot = t.querySelector('.q-toast-koda'), b = slot.getBoundingClientRect();
+      return { hidden: t.hidden, phase: document.getElementById('capsule').dataset.phase, slot: { w: b.width, h: b.height } };
+    });
     assert.equal(m.phase, 'expanded'); assert.equal(m.hidden, true, 'open island: no toast (the card itself shows the question)');
+    // T6b (R2-koda-slot-hidden-toast): the slot exists in the DOM but a hidden toast paints nothing — its sprite has no box at all
+    assert.equal(m.slot.w, 0); assert.equal(m.slot.h, 0);
     n += 1;
   } finally { await r.close(); }
   return n;

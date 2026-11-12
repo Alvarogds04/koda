@@ -81,10 +81,14 @@ test('input region: the island shape grows to include the toast (the host region
   assert.equal(h, 32 + T.TOAST.gap + T.TOAST.hMax);
   assert.deepEqual(T.shapeWithToast([720, 184], true), [720, 184 + T.TOAST.gap + T.TOAST.hMax]);
 });
-test('T6 input region: it only grows toward the toast (bottom edge: the host region is anchored at the window top)', () => {
+test('T6b input region: the disc plus its toast, on EITHER edge (the host anchors the rectangle, not this rule)', () => {
+  // isla-cualquier-lado T6b: the only thing that changes with the edge is WHERE the region is anchored in the native window
+  // (islandshape::anchor_bottom: top = the disc on the window's top with the toast below, bottom = the disc on the window's
+  // bottom with the toast ABOVE it). The box the page reports is the same: 350 wide and 96 + 32 tall.
   assert.deepEqual(T.shapeWithToast([288, 32], true, 'top'), [350, 32 + T.TOAST.gap + T.TOAST.hMax]);
-  assert.deepEqual(T.shapeWithToast([288, 32], true, 'bottom'), [288, 32]);
+  assert.deepEqual(T.shapeWithToast([288, 32], true, 'bottom'), [350, 32 + T.TOAST.gap + T.TOAST.hMax]);
   assert.deepEqual(T.shapeWithToast([288, 32], false, 'bottom'), [288, 32]);
+  assert.deepEqual(T.shapeWithToast([288, 32], true), [350, 32 + T.TOAST.gap + T.TOAST.hMax], 'the edge is not needed to decide the box');
 });
 test('T6 the toast hangs from the DISC on the side that faces the centre of the screen (below for top, above for bottom)', () => {
   const disc = { top: 12, height: 32 }; // the folded 40x32 island at the window top
@@ -196,7 +200,22 @@ test('flush against the disc: no gap, and it follows the island instead of a fix
   assert.equal(T.toastPlacement({ edge: 'top', box: { top: 2, height: 32 } }).top, 34);
   assert.equal(T.toastPlacement({ edge: 'top', box: { top: -26, height: 32 } }).top, 6, 'a disc measured above the capsule still gives a real edge');
   assert.deepEqual(T.shapeWithToast([288, 32], true), [350, 32 + T.TOAST.hMax], 'the input region has no dead band between island and toast');
+  assert.deepEqual(T.shapeWithToast([288, 32], true, 'bottom'), [350, 32 + T.TOAST.hMax], 'and none above it either');
 });
+test('T6b the toast badge paints the 24 px sheet so Koda fits the 28 px circle (never a 32 px cell spilling out)', () => {
+  // the badge is 28 x 28 (question-toast.css) and koda-skin.css gives every slot a 2 px margin: 24 + 2 x 2 = exactly 28. The
+  // 32 px cell would be 32 + 4 = 36 in a 28 px flex box, i.e. 4 px outside the circle on each side.
+  const K = require(path.join(__dirname, '..', 'frontend', 'koda-logic.js'));
+  const C = require(path.join(__dirname, '..', 'frontend', 'koda-catalog.js'));
+  assert.equal(K.layoutFor('respirar', 'small', 28).cell, 32, 'respirar has no 24 px sheet');
+  const lay = K.layoutFor('reposo', 'small', 28);
+  assert.deepEqual([lay.cell, lay.k], [24, 1]);
+  assert.ok(lay.cell * lay.k + 4 <= 28, `the drawn sprite plus its 2 px margins fits the 28 px badge (${lay.cell * lay.k + 4})`);
+  assert.ok(C.SMALL.includes('reposo'), 'reposo exists on the 24 px sheet');
+  const skin = fs.readFileSync(path.join(frontend, 'koda-skin.js'), 'utf8');
+  assert.match(skin, /draw\(toastSlot, flowAnim\(null, 'reposo'\), 28\)/, 'the toast badge asks for the sheet that fits it');
+});
+
 test('wiring: the toast follows the island with a ResizeObserver (every frame of its spring), reads its radius, and starts from its edge', () => {
   const js = fs.readFileSync(path.join(frontend, 'question-toast.js'), 'utf8');
   assert.match(js, /new ResizeObserver\(/);

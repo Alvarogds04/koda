@@ -126,13 +126,14 @@ impl Core {
         self.edge = edge;
         ViewPlan { chat: self.chat, size: (rect.w, rect.h), rect, stage: rect, visible, edge }
     }
-    /// Where the island is now decides the side the card grows to: the disc spot is read back from the live window (a compact
-    /// window starts at it; an expanded one is laid out for the current edge), so one expanded card never flips edge.
+    /// Where the island is now decides the side the card grows to: the disc spot is read back from the live window for the edge
+    /// the window was laid out with, so one expanded card never flips edge. Folded, that edge is `self.edge` too: the window
+    /// hangs from the disc's top in the upper half and stands on the disc's bottom in the lower half
+    /// (geometry::island_window_rect_placed), and the placement and the release keep `self.edge` in step with it.
     fn growth_edge(&self, io: &dyn WindowIo, area: Rect) -> Edge {
         let (x, y) = io.outer_position();
         let (w, h) = io.size();
-        let laid_out = if self.expanded { self.edge } else { Edge::Top };
-        let origin_y = geometry::disc_origin_y(Rect { x, y, w, h }, laid_out, io.scale());
+        let origin_y = geometry::disc_origin_y(Rect { x, y, w, h }, self.edge, io.scale());
         geometry::growth_edge_at(origin_y, area, io.scale())
     }
 }
@@ -255,6 +256,25 @@ mod tests {
         assert_eq!(Core::new().toggle(&io, area()).edge(), Edge::Bottom);
         io.scale = 1.0;
         assert_eq!(Core::new().toggle(&io, area()).edge(), Edge::Top);
+    }
+    #[test]
+    fn a_folded_window_standing_on_the_disc_reads_the_disc_and_never_its_top() {
+        // isla-cualquier-lado T6b: in the lower half the folded window stands on the disc (geometry::island_window_rect_placed),
+        // so the disc spot is one disc above the window's BOTTOM, not the window's top. Reading the top here would say Top
+        // (392 + 75 = 467 <= 556) for a disc at 700, and the card would open downward from the wrong spot.
+        let io = FakeIo { pos: Cell::new((584, 700 + 32 - 340)), size: Cell::new(geometry::ISLAND_WINDOW), scale: 1.0 };
+        let mut core = Core::new();
+        core.edge = Edge::Bottom; // the folded window on this spot was laid out for Bottom
+        assert_eq!(core.toggle(&io, area()).edge(), Edge::Bottom, "the disc at 700 is below the midpoint 556");
+        assert_eq!(core.edge, Edge::Bottom);
+        // the upper half still reads the window's top: the two edges are one rule over the same spot
+        let io = FakeIo::compact_top();
+        assert_eq!(Core::new().toggle(&io, area()).edge(), Edge::Top);
+        // dragged up while folded, the same window (still laid out for Bottom) is read through its own edge
+        io.pos.set((584, 32));
+        let mut core = Core::new();
+        core.edge = Edge::Bottom;
+        assert_eq!(core.toggle(&io, area()).edge(), Edge::Top, "disc 340 is above the midpoint");
     }
     #[test]
     fn cancelled_release_never_toggles() {

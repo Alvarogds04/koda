@@ -256,16 +256,20 @@
     const compactClayX = COMPACT.clayX;
     const overviewHeight = questionShown ? questionH : cardShown && cardH ? cardH : (noticeLane && noticeLane.view === 'notices' ? finishedH : 0) || (engineBandOn || noticeStripOn ? OVERVIEW.h + FINISHED_BAND_H : OVERVIEW.h);
     const h = lerp(COMPACT.h, lerp(overviewHeight, CHAT.h, q.x), p);
-    const QT = window.AbitoQuestionToast, withToast = (shape) => (QT && toastShown ? QT.shapeWithToast(shape, true, edge) : shape);
+    // isla-cualquier-lado T6b: the toast box is the disc plus the toast on EITHER edge (the edge decides only where Rust anchors
+    // the one input rectangle), so the reported shape does not depend on it any more.
+    const QT = window.AbitoQuestionToast, withToast = (shape) => (QT && toastShown ? QT.shapeWithToast(shape, true) : shape);
     reportShape(withToast([lerp(compactW, lerp(OVERVIEW.w, CHAT.w, q.target), target),
       lerp(COMPACT.h, lerp(overviewHeight, CHAT.h, q.target), target) + GAP_TOP]), withToast([w, h + GAP_TOP]), mode === 'idle' && q.mode === 'idle');
     // corners (isla-cualquier-lado S1): the disc is r16 on all four corners and the floating card r26 (OVERVIEW.r) on all four;
     // no corner is square and nothing draws ears any more.
     const radius = lerp(COMPACT.r, OVERVIEW.r, p);
     const gap = lerp(COMPACT.gap, OVERVIEW.gap, p);
-    // a card anchored on its bottom edge stands on the window's bottom and grows up; collapsing hands the disc back to the window
-    // top at once (Rust returns the window to the disc's spot with the collapse)
-    const anchorBottom = edge === 'bottom' && target === 1;
+    // isla-cualquier-lado T6b: in the lower half the WHOLE island stands on the window's bottom edge — the open card grows up
+    // and the folded disc hangs there with the question toast above it — exactly the edge geometry::island_window_rect_placed
+    // uses for the native window. In the upper half both hang from the window's top. Nothing but the window moves: the disc's
+    // spot on screen is the same folded or open.
+    const anchorBottom = edge === 'bottom';
     // the question card is 148 high (200 island): the character centres on it, 15px lower than on the 108 cards
     const ovBase = questionShown ? { ...OVERVIEW_CARD, cy: OVERVIEW_CARD.cy + (questionH - LEGACY_CARD_H) / 2 } : cardShown ? OVERVIEW_CARD : OVERVIEW;
     // the confirmed finished-notice lane (pane starts at x=108) uses the small R6 too, or the 128px blob covers the pane

@@ -156,8 +156,13 @@
   // AbitoClay, so a toast never starts the shared clay loop and a hidden toast has nothing to dispose.
   const KODA_SLOT = 'toast';
 
-  /** The host input region is one rectangle anchored at the window top: it only grows toward a toast that hangs BELOW the disc. */
-  const shapeWithToast = (shape, shown, edge) => (shown && edge !== 'bottom'
+  /**
+   * The box the page reports to the host while the toast shows: the disc plus the toast it hangs from, 96 px tall and 350 wide, on
+   * ONE side or the OTHER. Rust turns this into one input rectangle anchored on the same edge as the whole island
+   * (geometry::island_window_rect_placed + islandshape::anchor_bottom: top edge = the disc on the window's top with the toast
+   * below it, bottom edge = the disc on the window's bottom with the toast ABOVE it), so both edges cover exactly what is drawn.
+   */
+  const shapeWithToast = (shape, shown) => (shown
     ? [Math.max(shape[0], TOAST.w), shape[1] + TOAST.gap + TOAST.hMax] : [shape[0], shape[1]]);
 
   /**

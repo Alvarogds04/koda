@@ -21,12 +21,13 @@ pub(crate) fn parse_window_height(payload: &Value) -> Option<i32> {
     i32::try_from(object.get("h")?.as_i64()?).ok()
 }
 
-/// The expanded card stands on the window's bottom edge (geometry::Edge::Bottom, isla-cualquier-lado S1: a card in the lower half of
-/// its screen grows up). Compact and collapsing, the disc always hangs from the window top. Read from the core on the threads that
-/// already take it for `is_protected` (build_snapshot locks the core too).
+/// The island stands on the window's bottom edge (geometry::Edge::Bottom, isla-cualquier-lado S1/T6b: an island in the lower half
+/// of its screen grows up and hangs its toast up). The SAME rule folds and opens: in the lower half the whole window — the open
+/// card's column and the folded disc with the toast above it — stands on its bottom edge, in the upper half on its top. Read from
+/// the core on the threads that already take it for `is_protected` (build_snapshot locks the core too).
 pub(crate) fn anchor_bottom(state: &crate::AppState) -> bool {
     let core = state.core.lock().expect("core lock");
-    core.expanded && core.edge == abito_island::geometry::Edge::Bottom
+    core.edge == abito_island::geometry::Edge::Bottom
 }
 
 /// The rect for the top anchor, moved to the bottom of the window when the card stands on it.
@@ -46,22 +47,23 @@ fn input_rect(report: Report, window: (i32, i32), protected: bool) -> (i32,i32,i
 
 /// S29 + HU-057 + island-free-drag S3: the compact island is Koda's disc (40x32, r16 on all four corners — the same box, so it also
 /// covers the hidden strip); isla-cualquier-lado S1: the expanded island is the floating card, r26 on all four corners (island.js
-/// OVERVIEW.r), at the window top or, anchored on its bottom edge, at the window bottom. So the transparent corner pixels inside the
-/// reported rectangle must pass clicks. The input region is that box as horizontal bands: per pixel row the corner arc's inset
-/// is rounded UP, so no pixel outside the drawn shell ever takes a click (at most one drawn pixel per side per row is given up).
-/// Only a settled report that IS one island box is rounded: a transition (union of two endpoints plus spring air) and the question
-/// toast under the compact pill are not a single box and stay one rectangle, exactly as before.
+/// OVERVIEW.r), at the window top or, anchored on its bottom edge, at the window bottom. T6b: the folded disc and the question toast
+/// above it follow the same anchor. So the transparent corner pixels inside the reported rectangle must pass clicks. The input region
+/// is that box as horizontal bands: per pixel row the corner arc's inset is rounded UP, so no pixel outside the drawn shell ever
+/// takes a click (at most one drawn pixel per side per row is given up). Only a settled report that IS one island box is rounded: a
+/// transition (union of two endpoints plus spring air) and the question toast with the compact disc are not a single box and stay
+/// one rectangle, exactly as before.
 #[cfg(test)]
 pub(crate) fn input_rects(report: Report, window: (i32, i32), protected: bool) -> Vec<(i32, i32, i32, i32)> {
     input_rects_anchored(report, window, protected, false)
 }
-/// `input_rects` for a card anchored on the window's top (`bottom` false) or bottom edge. Only an expanded box moves: the compact
-/// disc (and its strip) keep hanging from the top whatever the flag says.
+/// `input_rects` for the island anchored on the window's top (`bottom` false) or bottom edge. The whole island moves with the
+/// anchor — the open card, the folded disc and the question toast above it (geometry::island_window_rect_placed decides it, and
+/// the page puts `#island` on the same edge).
 pub(crate) fn input_rects_anchored(report: Report, window: (i32, i32), protected: bool, bottom: bool) -> Vec<(i32, i32, i32, i32)> {
     let compact = report.w == abito_island::geometry::COMPACT_DOT.0;
-    let bottom = bottom && !(report.settled && compact && report.h <= abito_island::geometry::COMPACT_DOT.1);
     let (x, y, w, h) = anchored(input_rect(report, window, protected), window, bottom);
-    // (radius, box top): the hidden strip shows only the bottom `h` px of the disc that sits 32-h px above the window
+    // (radius, box top): the hidden strip shows only the bottom `h` px of the disc's own 32 px box, so its box top is above it
     let (radius_top, radius_bottom, top) = if report.settled && compact && report.h <= abito_island::geometry::COMPACT_DOT.1 {
         (16.0, 16.0, if protected || report.h >= abito_island::geometry::COMPACT_DOT.1 || h >= abito_island::geometry::COMPACT_DOT.1 { 0 } else { report.h - abito_island::geometry::COMPACT_DOT.1 })
     } else if report.settled && report.w >= 640 && h == report.h.clamp(abito_island::geometry::COMPACT_DOT.1, window.1.max(0)) {
@@ -84,6 +86,20 @@ pub(crate) fn input_rects_anchored(report: Report, window: (i32, i32), protected
         }
     }
     rects
+}
+
+/// The height of the box the page DRAWS when it is an open card, from the last SETTLED report: island_move_end feeds it to
+/// geometry::visible_card_height so a dropped card keeps the height that is laid out (a 240 chat, a taller take-over) instead of a
+/// guess. A report that is not a card (the seeded 288x32 bar, the folded 40x32 disc, a transition) answers None.
+fn report_height(state: &((i32, i32), Report)) -> Option<i32> {
+    let (_, report) = state;
+    (report.settled && report.h > abito_island::geometry::COMPACT_DOT.1).then_some(report.h)
+}
+
+/// The page's last settled report of the island it draws, as the open card's visible height (see `report_height`).
+pub(crate) fn last_visible_height() -> Option<i32> {
+    #[cfg(target_os = "linux")] { report_height(&*SHAPE.lock().expect("island shape lock")) }
+    #[cfg(not(target_os = "linux"))] { report_height(&*LAST.lock().expect("island shape lock")) }
 }
 
 /// A request, an approval card or a question is on screen: such a card must never lose clicks (Linux refuses the thin hidden strip;
@@ -352,6 +368,53 @@ mod corners {
         let tall = input_rects_anchored(Report { w: 720, h: 255, settled: true }, (752, 500), false, true);
         assert!(tall.iter().all(|r| r.1 >= 500 - 255 && r.1 + r.3 <= 500), "{tall:?}");
     }
+    /// isla-cualquier-lado T6b: the folded island follows the SAME edge rule as the open card, so in the lower half its disc sits
+    /// on the window's bottom edge and the toast hangs above it. The input region must follow, or the disc and the toast would be
+    /// painted where nothing takes a click.
+    #[test]
+    fn a_folded_disc_on_its_bottom_edge_takes_clicks_at_the_window_bottom_and_nowhere_else() {
+        let report = Report { w: abito_island::geometry::COMPACT_DOT.0, h: abito_island::geometry::COMPACT_DOT.1, settled: true };
+        let top = input_rects_anchored(report, W, false, false);
+        assert!(covers(&top, W.0 / 2, 0), "upper half: the disc hangs from the window's top");
+        assert!(!covers(&top, W.0 / 2, W.1 - 1), "and nothing at the bottom takes a click");
+        let bottom = input_rects_anchored(report, W, false, true);
+        assert!(covers(&bottom, W.0 / 2, W.1 - 1), "lower half: the disc stands on the window's bottom");
+        assert!(covers(&bottom, W.0 / 2, W.1 - 16), "its whole r16 box is clickable");
+        assert!(!covers(&bottom, W.0 / 2, 0), "the window's top row passes clicks");
+        let x = (W.0 - abito_island::geometry::COMPACT_DOT.0) / 2;
+        for (cx, cy) in [(x, W.1 - 1), (x + 39, W.1 - 1)] { assert!(!covers(&bottom, cx, cy), "the disc's rounded corner ({cx},{cy}) passes clicks"); }
+        assert!(!covers(&bottom, x - 1, W.1 - 16) && !covers(&bottom, x + 40, W.1 - 16), "nothing outside the disc");
+    }
+
+    #[test]
+    fn a_folded_disc_with_its_toast_above_covers_the_toast_and_the_disc_and_nothing_else() {
+        // what the page reports while the toast shows above the folded disc (question-toast.js shapeWithToast): 350 wide, 96 tall
+        // toast + the 32 px disc, flush (gap 0)
+        let report = Report { w: 350, h: 96 + abito_island::geometry::COMPACT_DOT.1, settled: true };
+        let rects = input_rects_anchored(report, W, false, true);
+        assert_eq!(rects, vec![((W.0 - 350) / 2, W.1 - 128, 350, 128)], "one rectangle from the toast's top to the disc's bottom");
+        assert!(covers(&rects, W.0 / 2, W.1 - 128), "the toast's top row takes clicks");
+        assert!(!covers(&rects, W.0 / 2, W.1 - 129), "nothing above the toast");
+        assert!(covers(&rects, W.0 / 2, W.1 - 1), "the disc's bottom row takes clicks");
+        assert!(!covers(&rects, (W.0 - 350) / 2 - 1, W.1 - 100), "nothing left of the toast");
+        // and with the disc in the upper half the same region is anchored at the window top: one rule, two edges
+        assert_eq!(input_rects_anchored(report, W, false, false), vec![((W.0 - 350) / 2, 0, 350, 128)]);
+        // a window grown for a long question keeps the whole region on its bottom edge
+        let tall = input_rects_anchored(report, (752, 500), false, true);
+        assert_eq!(tall, vec![((W.0 - 350) / 2, 500 - 128, 350, 128)]);
+    }
+
+    #[test]
+    fn only_a_settled_report_that_is_a_card_tells_the_drop_spot_its_height() {
+        // island_move_end asks for the height the page DRAWS; the shipped default report (288x32, the retired bar) is not a card
+        let bar = ((288, 32), Report { w: 288, h: 32, settled: true });
+        assert_eq!(report_height(&bar), None, "the seeded bar height is not a card");
+        let card = ((720, 150), Report { w: 720, h: 240, settled: true });
+        assert_eq!(report_height(&card), Some(240), "a 240 chat card");
+        let moving = ((720, 150), Report { w: 640, h: 300, settled: false });
+        assert_eq!(report_height(&moving), None, "a transition is not a laid-out card");
+    }
+
     #[test]
     fn the_anchor_is_read_from_the_shared_state_so_every_platform_follows_the_edge() {
         let mut state = ((40, 32), Report { w: 40, h: 32, settled: true });

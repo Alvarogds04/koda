@@ -31,10 +31,13 @@
 .q-toast-neck, .q-toast-pill, .q-toast-bodyrect { fill: #000; }
 .q-toast-canvas { top: -12px; } /* human 26-oct «sin transparencia»: SVG y=0 (the island's bottom edge, NECK_H 12 above) = the toast's top, so the
    pill and body are drawn exactly under the header and body text, never offset with text over the background */
-/* T6: with the disc in the LOWER half of the screen the toast hangs ABOVE it, so the whole shape is mirrored about SVG y=0 (12px into the
-   canvas = the toast's own top edge, which is the disc's top): the gooey neck still points 12px INTO the disc and the card grows up. The
-   canvas holds rects only — no text, no icon — so a flip is safe; the text layers below stay upright and swap ends instead. */
-.q-toast[data-edge="bottom"] .q-toast-canvas { transform: scaleY(-1); transform-origin: 50% 12px; }
+/* T6/T6b: with the disc in the LOWER half of the screen the toast hangs ABOVE it, so the whole shape is mirrored about the line that
+   joins the two: the toast's BOTTOM edge, which is the disc's top edge. The canvas is 12 px taller than the box, so `top: calc(100% -
+   12px)` puts its SVG y=0 on that line and `transform-origin: 50% 12px` mirrors about it: the pill ends on the disc's top, the gooey
+   neck points 12 px DOWN INTO the disc and the body grows up, while the box keeps its 40/96 px and the text layers below stay upright
+   and swap ends instead. (Mirroring about the canvas' default 12 px from the toast's TOP drew the whole card one box height above its
+   own text; the canvas holds rects only — no text, no icon — so the flip itself is safe.) */
+.q-toast[data-edge="bottom"] .q-toast-canvas { top: calc(100% - 12px); transform: scaleY(-1); transform-origin: 50% 12px; }
 .q-toast-header { position: absolute; z-index: 20; left: 0; top: 0; display: flex; align-items: center; justify-content: center; gap: 8px; height: var(--sileo-height); padding: 6px 8px; max-width: 100%; box-sizing: border-box; overflow: hidden; animation: q-toast-header-in var(--sileo-duration) var(--sileo-spring-easing) both; }
 /* T6: hanging above the disc, the pill sits on the toast box's BOTTOM edge — the one that touches the disc — and the body grows up from it */
 .q-toast[data-edge="bottom"] .q-toast-header { top: auto; bottom: 0; }

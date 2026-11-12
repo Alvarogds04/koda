@@ -158,7 +158,10 @@
     const kodaEl = document.querySelector('.q-toast-badge .q-toast-koda');
     if (kodaEl) {
       if (toastSlot.el !== kodaEl) { toastSlot.el = kodaEl; toastSlot.anim = null; toastSlot.cell = 0; toastSlot.k = 0; }
-      draw(toastSlot, flowAnim(null, 'respirar'), 28);
+      // T6b (R3-koda-slot-position-unproved): the circle is 28 px and the sprite is clipped by nothing, so the badge draws the 24 px
+      // sheet (24 + the 2 px margin koda-skin.css gives every slot = exactly 28). 'respirar' has no 24 px cell, so the badge shows
+      // Koda's resting pose instead of a 32 px cell spilling 4 px out of the circle.
+      draw(toastSlot, flowAnim(null, 'reposo'), 28);
     } else if (toastSlot.el.parentNode) toastSlot.el.remove();
     const pillSvg = document.querySelector('.pill-choice[data-pill-id="abito"] svg.island-agent-clay');
     if (pillSvg) { if (pillSvg.nextSibling !== pillSlot.el) pillSvg.after(pillSlot.el); draw(pillSlot, main, 28); }

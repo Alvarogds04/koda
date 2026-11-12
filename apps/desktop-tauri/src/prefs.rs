@@ -158,9 +158,10 @@ pub fn normalize_chosen_color(raw: &str) -> Option<String> {
 /// `prefs.json` keeps exactly the bytes it had before #384.
 const AVATAR_COLORS: &str = "avatar_colors";
 
-/// #264 (GD049): the optional remembered island position (physical px). Absent from a
-/// file nobody has dragged, so an untouched `prefs.json` keeps exactly the bytes it had
-/// before #264 as well.
+/// #264 (GD049): the optional remembered island position (physical px): the disc's spot — x is the island window's left, y is
+/// the disc's top edge on screen (isla-cualquier-lado T6c; the very value the window top-left gave while the island hung from
+/// its top, so every stored file still means what it did). Absent from a file nobody has dragged, so an untouched `prefs.json`
+/// keeps exactly the bytes it had before #264 as well.
 const POSITION: &str = "position";
 
 /// A plausible virtual-desktop coordinate in physical px: no real monitor
