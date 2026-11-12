@@ -7,6 +7,7 @@
 //
 // The identity and the token come from the keystore on every start and are never cached anywhere else. The token
 // leaves this module inside the pairing link and its QR only: never a log, never a JSON field of its own.
+use super::announce::{self, Advertise, Announcement, Mdns};
 use super::hub::Hub;
 use super::pairing::{self, SecretStore};
 use super::server::{self, Features, Shared};
@@ -27,8 +28,14 @@ impl Features for NoFeatures {}
 /// Bounded on purpose: switching off must never wait on a phone.
 const STOP_GRACE: std::time::Duration = std::time::Duration::from_millis(150);
 
+/// `status.mdns` before anything is announced: S3, no service, and no daemon either.
+const MDNS_OFF: &str = "off";
+/// `status.mdns` while the record is registered.
+const MDNS_ON: &str = "on";
+/// `status.mdns` when the announcement could not be made. Never fatal: the QR still pairs (S7).
+const MDNS_ERROR: &str = "error";
+
 /// What `enable` left running, plus the closed reason it did not.
-#[derive(Default)]
 struct On {
     stop: Option<oneshot::Sender<()>>,
     thread: Option<JoinHandle<()>>,
@@ -37,10 +44,34 @@ struct On {
     name: String,
     port: u16,
     error: Option<&'static str>,
+    /// The live mDNS announcement (S7): present exactly while it is registered, so `None` here means nothing is
+    /// announced. It is boxed because stopping it means unregistering from its daemon, never just dropping a value.
+    announcement: Option<Box<dyn Announcement>>,
+    /// [`MDNS_ON`], [`MDNS_OFF`] or [`MDNS_ERROR`] — the non-fatal half of the status.
+    mdns: &'static str,
+}
+
+impl Default for On {
+    fn default() -> On {
+        On {
+            stop: None,
+            thread: None,
+            shared: None,
+            fingerprint: String::new(),
+            name: String::new(),
+            port: 0,
+            error: None,
+            announcement: None,
+            mdns: MDNS_OFF,
+        }
+    }
 }
 
 pub struct Link {
     hub: Arc<Hub>,
+    /// What announces this computer while the listener is up. The app's is [`Mdns`]; tests hand in a fake, because
+    /// a unit test must never open a multicast socket.
+    advertise: Arc<dyn Advertise>,
     /// The human's wish, as this object knows it: what `status` reports as `enabled`.
     enabled: AtomicBool,
     /// One switch operation at a time, held across the whole of `enable`, `disable` and `unlink`. Without it a
@@ -51,8 +82,14 @@ pub struct Link {
 }
 
 impl Link {
+    /// The app's link: mDNS announces it while it is on.
     pub fn new() -> Link {
-        Link { hub: Hub::new(), enabled: AtomicBool::new(false), life: Mutex::new(()), on: Mutex::new(On::default()) }
+        Link::with_advertiser(Arc::new(Mdns))
+    }
+
+    /// [`Link::new`] with the announcement given: the tests' fake, so `cargo test` never joins the multicast group.
+    pub fn with_advertiser(advertise: Arc<dyn Advertise>) -> Link {
+        Link { hub: Hub::new(), advertise, enabled: AtomicBool::new(false), life: Mutex::new(()), on: Mutex::new(On::default()) }
     }
 
     /// The sessions hub every connection subscribes to (the same object the app publishes into).
@@ -80,13 +117,25 @@ impl Link {
     /// Every caller holds the lifecycle lock with no listener up, so this never reaches a running link; it guards
     /// that anyway, because a failed attempt must never tear down a listener that is serving a phone.
     fn failed(&self, error: &'static str) -> &'static str {
-        let mut on = self.lock();
-        if on.shared.is_none() {
-            on.stop = None;
-            on.thread = None;
-            on.port = 0;
+        let stale = {
+            let mut on = self.lock();
+            let stale = if on.shared.is_none() {
+                on.stop = None;
+                on.thread = None;
+                on.port = 0;
+                // A failed enable announces nothing (S7): an announcement that started must not outlive its listener.
+                on.mdns = MDNS_OFF;
+                on.announcement.take()
+            } else {
+                None
+            };
+            on.error = Some(error);
+            stale
+        };
+        // Outside the lock: stopping is a conversation with the daemon, and nobody reading `status` waits for it.
+        if let Some(mut announcement) = stale {
+            announcement.stop();
         }
-        on.error = Some(error);
         error
     }
 
@@ -157,6 +206,13 @@ impl Link {
         // Binding is the thread's first act: this wait is one syscall, never a hang.
         match ready_rx.recv().unwrap_or(Err("runtime")) {
             Ok(port) => {
+                // S7: the announcement starts only now, with the port the OS really gave us, and its failure is
+                // not fatal — the QR still pairs — so it is recorded in `mdns` and the listener stays up.
+                let record = announce::record(&name, port, &identity.fingerprint);
+                let (announcement, mdns) = match self.advertise.announce(&record) {
+                    Ok(announcement) => (Some(announcement), MDNS_ON),
+                    Err(_) => (None, MDNS_ERROR),
+                };
                 let mut on = self.lock();
                 on.stop = Some(stop_tx);
                 on.thread = Some(thread);
@@ -164,6 +220,8 @@ impl Link {
                 on.fingerprint = identity.fingerprint;
                 on.name = name;
                 on.port = port;
+                on.announcement = announcement;
+                on.mdns = mdns;
                 on.error = None;
                 Ok(())
             }
@@ -181,15 +239,20 @@ impl Link {
     pub fn disable(&self) {
         let _life = self.life();
         self.enabled.store(false, Ordering::SeqCst);
-        let (stop, thread, shared) = {
+        let (stop, thread, shared, announcement) = {
             let mut on = self.lock();
-            let taken = (on.stop.take(), on.thread.take(), on.shared.take());
+            let taken = (on.stop.take(), on.thread.take(), on.shared.take(), on.announcement.take());
             on.port = 0;
             on.error = None;
+            // S3/S7: nothing is announced once the human turns the link off, and no daemon is left behind.
+            on.mdns = MDNS_OFF;
             taken
         };
         if shared.is_some() {
             self.hub.kick_all("closed", "the phone link was turned off");
+        }
+        if let Some(mut announcement) = announcement {
+            announcement.stop();
         }
         if let Some(stop) = stop {
             let _ = stop.send(());
@@ -234,8 +297,10 @@ impl Link {
         source::publish(&self.hub, view, now);
     }
 
-    /// What Ajustes reads: `{enabled, running, port, host, name, link, qrSvg, clients, error}`. The link is built
-    /// from this computer's LAN address, the one the phone must reach.
+    /// What Ajustes reads: `{enabled, running, port, host, name, link, qrSvg, clients, error, mdns}`. The link is
+    /// built from this computer's LAN address, the one the phone must reach. `error` is a fatal reason the link is
+    /// not up; `mdns` is `on` / `off` / `error`, and an `error` there means «the QR still pairs, the announcement
+    /// did not happen».
     pub fn status(&self) -> Value {
         self.status_for(pairing::lan_address().map(|ip| ip.to_string()))
     }
@@ -264,6 +329,7 @@ impl Link {
             "qrSvg": qr_svg,
             "clients": self.hub.clients(),
             "error": on.error,
+            "mdns": on.mdns,
         })
     }
 }

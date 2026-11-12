@@ -54,8 +54,9 @@ fn err(code: &str) -> BridgeError {
 /// S6: on a platform that does not run the link the page gets one honest, closed answer.
 #[cfg(not(target_os = "linux"))]
 fn unsupported() -> Result<Value, BridgeError> {
+    // `mdns` keeps the shape of the Linux status (S7): nothing is announced where no listener runs.
     Ok(json!({"enabled": false, "running": false, "port": 0, "host": null, "name": null,
-        "link": null, "qrSvg": null, "clients": 0, "error": "unsupported"}))
+        "link": null, "qrSvg": null, "clients": 0, "error": "unsupported", "mdns": "off"}))
 }
 
 /// The phone link's one command. The same sender gate and rate limiter as every other host command; the socket,

@@ -1,6 +1,7 @@
 //! Slice A: identity/token/link (pairing), admission bookkeeping and the TLS hello. The client side
 //! of the tests pins the certificate by SHA-256 exactly as the phone does, over real TLS on loopback.
 use super::{hub, ids, source};
+use super::announce::{self, Advertise, Announcement, Record};
 use super::pairing::{self, SecretStore};
 use super::server::{self, Features, Shared, PROTOCOL};
 use serde_json::{json, Value};
@@ -21,7 +22,7 @@ fn the_wire_identifiers_are_in_one_module_and_user_text_says_abito() {
     assert_eq!(ids::DEFAULT_NAME, "Abito");
     assert_eq!(ids::DEFAULT_PORT, 47821, "the contract's default port lives here too (§1)");
     // No other file spells an identifier: each takes it from ids.rs (the switch stays one line).
-    for f in ["pairing.rs", "server.rs", "admission.rs", "link.rs"] {
+    for f in ["pairing.rs", "server.rs", "admission.rs", "link.rs", "announce.rs"] {
         let src = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/phone_link").join(f)).unwrap();
         let code: String = src.lines().filter(|l| !l.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n");
         assert!(!code.contains("abito://") && !code.contains("_abito") && !code.contains("phone link\""), "{f} must take the identifiers from ids.rs");
@@ -506,6 +507,223 @@ fn the_session_source_is_the_one_accessor_of_the_agent_client_state() {
     assert_eq!(got[0].pill_id, "agent_codex");
 }
 
+// ---- S7: the mDNS announcement, §3.2 of the link contract -------------------------------
+
+/// What §3.2 puts on the wire, field by field. The announcement is a hint, never a credential: the phone still
+/// pins the full certificate, so only the id and the version decide «this is my computer».
+#[test]
+fn the_announcement_record_is_exactly_what_the_contract_asks_for() {
+    let fp = pairing::load_or_create_identity(&Mem::default()).unwrap().fingerprint;
+    let r = announce::record("Alvaro PC", 47821, &fp);
+    assert_eq!(r.service, "_abito._tcp.local.", "ids::MDNS_SERVICE plus the DNS-SD domain (S12: still `abito`)");
+    assert_eq!(r.instance, "Alvaro PC", "the computer's name, the same one the pairing link carries");
+    assert_eq!(r.host, "alvaro-pc.local.", "a DNS label of the computer name");
+    assert_eq!(r.port, 47821, "the listening port");
+    assert_eq!(r.fp, fp[..announce::FP_ID_LEN], "the FIRST 16 hex characters of the certificate SHA-256");
+    assert_eq!(r.fp.len(), 16);
+    assert!(r.fp.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()), "lowercase hex only");
+    assert_eq!(r.v, "1", "the protocol version, as text");
+    assert_eq!(r.v, server::PROTOCOL.to_string(), "one source for the version, the one the handshake compares");
+    // Uppercase input announces lowercase: the phone compares the id case-insensitively (§2.3).
+    assert_eq!(announce::fp16(&fp.to_uppercase()), r.fp);
+}
+
+/// The host label is what the announced addresses hang from: a DNS label, never empty, never `-bound`.
+#[test]
+fn the_announced_host_is_a_dns_label_of_the_computer_name() {
+    assert_eq!(announce::host_label("Alvaro PC"), "alvaro-pc");
+    assert_eq!(announce::host_label("  Léa's  PC & co  "), "l-a-s-pc-co", "everything DNS refuses becomes one '-'");
+    assert_eq!(announce::host_label(""), ids::DEFAULT_NAME.to_ascii_lowercase());
+    assert_eq!(announce::host_label("---"), "abito", "an unusable name falls back instead of announcing `.local.`");
+    let cut = announce::host_label(&format!("{} PC", "A".repeat(80)));
+    assert_eq!(cut.len(), 63, "a DNS label holds at most 63 bytes");
+    assert!(!cut.ends_with('-') && !cut.starts_with('-'), "{cut}");
+    // A name the phone would show but DNS would not carry still yields one label.
+    let record = announce::record("  ", 1, &"ab".repeat(32));
+    assert_eq!((record.instance.as_str(), record.host.as_str()), (ids::DEFAULT_NAME, "abito.local."));
+}
+
+/// The record is a service the daemon accepts: registration refuses a malformed type, host or TXT, so this is the
+/// contract's §3.2 checked against the crate that carries it (still no socket: `ServiceInfo` is a value).
+#[test]
+fn the_record_is_a_service_the_mdns_daemon_can_carry() {
+    let r = announce::record("Alvaro PC", 47821, &"ab".repeat(32));
+    let info = mdns_sd::ServiceInfo::new(
+        &r.service,
+        &r.instance,
+        &r.host,
+        (),
+        r.port,
+        &[("fp", r.fp.as_str()), ("v", r.v.as_str())] as &[(&str, &str)],
+    )
+    .unwrap();
+    assert_eq!(info.get_fullname(), "Alvaro PC._abito._tcp.local.");
+    assert_eq!(info.get_hostname(), "alvaro-pc.local.");
+    assert_eq!(info.get_port(), 47821);
+    assert_eq!(info.get_property_val_str("fp"), Some("abababababababab"), "16 hex, no more");
+    assert_eq!(info.get_property_val_str("v"), Some("1"));
+}
+
+/// The announcement seam: the app's [`announce::Mdns`], the tests' [`FakeMdns`]. No unit test opens a multicast
+/// socket, so `cargo test` stays isolated and fast.
+struct FakeMdns {
+    records: std::sync::Mutex<Vec<Record>>,
+    stops: Arc<std::sync::Mutex<usize>>,
+    fails: bool,
+}
+
+impl FakeMdns {
+    fn working() -> Arc<FakeMdns> {
+        Arc::new(FakeMdns { records: std::sync::Mutex::new(Vec::new()), stops: Arc::default(), fails: false })
+    }
+    fn failing() -> Arc<FakeMdns> {
+        Arc::new(FakeMdns { records: std::sync::Mutex::new(Vec::new()), stops: Arc::default(), fails: true })
+    }
+    fn records(&self) -> Vec<Record> {
+        self.records.lock().unwrap().clone()
+    }
+    fn stops(&self) -> usize {
+        *self.stops.lock().unwrap()
+    }
+}
+
+impl Advertise for FakeMdns {
+    fn announce(&self, record: &Record) -> Result<Box<dyn Announcement>, String> {
+        self.records.lock().unwrap().push(record.clone());
+        if self.fails {
+            return Err("no mDNS on this network".to_string());
+        }
+        Ok(Box::new(FakeAnnouncement(self.stops.clone())))
+    }
+}
+
+struct FakeAnnouncement(Arc<std::sync::Mutex<usize>>);
+
+impl Announcement for FakeAnnouncement {
+    fn stop(&mut self) {
+        *self.0.lock().unwrap() += 1;
+    }
+}
+
+/// A link whose announcement is the fake: every link test uses this, never the real daemon.
+fn test_link() -> (super::link::Link, Arc<FakeMdns>) {
+    let mdns = FakeMdns::working();
+    (super::link::Link::with_advertiser(mdns.clone()), mdns)
+}
+
+#[test]
+fn the_link_announces_once_with_the_port_it_bound_and_stops_when_switched_off() {
+    let store = Mem::default();
+    let (link, mdns) = test_link();
+    assert_eq!(link.status_for(None)["mdns"], json!("off"), "S3: nothing is announced while it is off");
+    assert!(mdns.records().is_empty(), "and no daemon was started either");
+
+    assert_eq!(link.enable(&store, "127.0.0.1:0".parse().unwrap()), Ok(()));
+    let status = link.status_for(None);
+    let port = u16::try_from(status["port"].as_u64().unwrap()).unwrap();
+    assert_eq!(status["mdns"], json!("on"));
+    let fp = pairing::load_or_create_identity(&store).unwrap().fingerprint;
+    let records = mdns.records();
+    assert_eq!(records.len(), 1, "exactly one announcement per enable");
+    assert_eq!(records[0].port, port, "the real bound port, not the 0 the test asked for");
+    assert_ne!(port, 0);
+    assert_eq!(records[0].fp, fp[..announce::FP_ID_LEN]);
+    assert_eq!(records[0].instance, pairing::computer_name().trim(), "the same name the link carries");
+    assert_eq!(records[0].service, "_abito._tcp.local.");
+    assert_eq!(records[0].v, "1");
+
+    assert_eq!(link.enable(&store, "127.0.0.1:0".parse().unwrap()), Ok(()));
+    assert_eq!(mdns.records().len(), 1, "a second enable is the same switch, never a second announcement");
+    assert_eq!(mdns.stops(), 0);
+
+    link.disable();
+    assert_eq!(mdns.stops(), 1, "switching off unregisters");
+    let off = link.status_for(None);
+    assert_eq!((off["running"].as_bool(), off["mdns"].as_str()), (Some(false), Some("off")));
+    assert!(mdns.records().len() == 1, "and it does not announce again by itself");
+}
+
+#[test]
+fn a_failed_bind_announces_nothing() {
+    let held = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = held.local_addr().unwrap().port();
+    let store = Mem::default();
+    let (link, mdns) = test_link();
+    assert_eq!(link.enable(&store, format!("127.0.0.1:{port}").parse().unwrap()), Err("port_in_use"));
+    assert!(mdns.records().is_empty(), "no listener, no announcement");
+    assert_eq!(mdns.stops(), 0);
+    let status = link.status_for(None);
+    assert_eq!((status["running"].as_bool(), status["mdns"].as_str()), (Some(false), Some("off")));
+    assert_eq!(status["error"].as_str(), Some("port_in_use"), "the fatal reason keeps its own field");
+}
+
+#[test]
+fn an_announcement_failure_is_not_fatal_so_the_qr_still_pairs() {
+    run(async {
+        let store = Mem::default();
+        let mdns = FakeMdns::failing();
+        let link = super::link::Link::with_advertiser(mdns.clone());
+        assert_eq!(link.enable(&store, "127.0.0.1:0".parse().unwrap()), Ok(()), "S7: mDNS failing never fails enable");
+        let status = link.status_for(Some("192.168.1.20".to_string()));
+        assert_eq!((status["running"].as_bool(), status["enabled"].as_bool()), (Some(true), Some(true)));
+        assert_eq!(status["mdns"], json!("error"), "the page can say the announcement did not happen");
+        assert!(status["error"].is_null(), "`error` stays for the fatal reasons");
+        assert_eq!(mdns.stops(), 0, "a failed announcement has nothing to unregister");
+
+        let port = u16::try_from(status["port"].as_u64().unwrap()).unwrap();
+        let fp = pairing::load_or_create_identity(&store).unwrap().fingerprint;
+        let token = pairing::token(&store).unwrap();
+        let (mut r, mut w) = connect(port, &fp).await.unwrap();
+        send(&mut w, json!({"type":"hello","v":PROTOCOL,"token":token})).await;
+        assert_eq!(recv(&mut r).await.unwrap()["type"], "welcome", "the QR's link still pairs");
+        assert_eq!(recv(&mut r).await.unwrap()["type"], "sessions");
+
+        link.disable();
+        assert_eq!(link.status_for(None)["mdns"], json!("off"));
+        // A transient failure is not remembered: the next enable tries again.
+        assert_eq!(link.enable(&store, "127.0.0.1:0".parse().unwrap()), Ok(()));
+        assert_eq!(mdns.records().len(), 2, "a later enable announces again");
+        link.disable();
+    });
+}
+
+/// The real thing, once, by hand: `cargo test --lib -- --ignored the_real_announcement` starts the app's own link
+/// on 127.0.0.1:0 and browses `_abito._tcp` the way the phone does, reading the TXT out of the resolution. Ignored
+/// because it binds mDNS's port 5353, sends real multicast and browses the LAN, which no routine unit test may do.
+#[test]
+#[ignore = "binds mDNS port 5353, sends real multicast and browses the LAN"]
+fn the_real_announcement_is_found_by_a_real_browse() {
+    use mdns_sd::{ServiceDaemon, ServiceEvent};
+
+    let store = Mem::default();
+    let link = super::link::Link::new(); // the app's link: the real announcement, not the fake
+    assert_eq!(link.enable(&store, "127.0.0.1:0".parse().unwrap()), Ok(()));
+    let status = link.status_for(None);
+    assert_eq!(status["mdns"], json!("on"), "{status}");
+    let port = u16::try_from(status["port"].as_u64().unwrap()).unwrap();
+    let fp = pairing::load_or_create_identity(&store).unwrap().fingerprint;
+
+    let browser = ServiceDaemon::new().unwrap();
+    let events = browser.browse("_abito._tcp.local.").unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut found = None;
+    while found.is_none() && std::time::Instant::now() < deadline {
+        if let Ok(ServiceEvent::ServiceResolved(info)) = events.recv_timeout(std::time::Duration::from_millis(250)) {
+            if info.get_property_val_str("fp") == Some(&fp[..announce::FP_ID_LEN]) {
+                found = Some(info);
+            }
+        }
+    }
+    let _ = browser.shutdown();
+    let info = found.expect("what this computer announced came back over multicast");
+    assert_eq!(info.get_port(), port, "the port the listener really bound");
+    assert_eq!(info.get_property_val_str("v"), Some("1"));
+    assert_eq!(info.get_fullname(), format!("{}._abito._tcp.local.", pairing::computer_name().trim()));
+
+    link.disable();
+    assert_eq!(link.status_for(None)["mdns"], json!("off"), "and the announcement goes with the listener");
+}
+
 // ---- the live link: S2's missing switch, S3's off-by-default -----------------------------------------
 
 /// An in-memory `secrets::SecretStore` (the OS keystore's seam): the adapter's rules are a unit test.
@@ -575,13 +793,15 @@ fn the_keystore_adapter_reads_and_writes_and_answers_a_fixed_text_on_failure() {
 
 #[test]
 fn a_link_that_was_never_switched_on_listens_nowhere_and_says_so() {
-    let link = super::link::Link::new();
+    let (link, mdns) = test_link();
     let status = link.status_for(Some("192.168.1.20".to_string()));
     assert_eq!(status["enabled"], json!(false), "S3: off until the human turns it on");
     assert_eq!(status["running"], json!(false));
     assert_eq!(status["port"], json!(0));
     assert_eq!(status["clients"], json!(0));
+    assert_eq!(status["mdns"], json!("off"), "S7/S3: a link that is off announces nothing");
     assert!(status["link"].is_null() && status["qrSvg"].is_null() && status["error"].is_null());
+    assert!(mdns.records().is_empty(), "and there is no daemon behind the status either");
     assert_eq!(link.hub().clients(), 0);
 }
 
@@ -589,7 +809,7 @@ fn a_link_that_was_never_switched_on_listens_nowhere_and_says_so() {
 fn the_link_serves_a_paired_phone_and_everything_stops_when_it_is_switched_off() {
     run(async {
         let store = Mem::default();
-        let link = super::link::Link::new();
+        let (link, _mdns) = test_link();
         assert_eq!(link.enable(&store, "127.0.0.1:0".parse().unwrap()), Ok(()));
         let status = link.status_for(Some("192.168.1.20".to_string()));
         assert_eq!((status["enabled"].as_bool(), status["running"].as_bool()), (Some(true), Some(true)));
@@ -629,7 +849,7 @@ fn the_link_serves_a_paired_phone_and_everything_stops_when_it_is_switched_off()
 #[test]
 fn enabling_a_running_link_changes_nothing() {
     let store = Mem::default();
-    let link = super::link::Link::new();
+    let (link, _mdns) = test_link();
     assert_eq!(link.enable(&store, "127.0.0.1:0".parse().unwrap()), Ok(()));
     let port = link.status_for(None)["port"].as_u64();
     assert_eq!(link.enable(&store, "127.0.0.1:0".parse().unwrap()), Ok(()));
@@ -642,7 +862,7 @@ fn a_port_already_in_use_is_a_closed_error_and_the_link_stays_off() {
     let held = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = held.local_addr().unwrap().port();
     let store = Mem::default();
-    let link = super::link::Link::new();
+    let (link, _mdns) = test_link();
     assert_eq!(link.enable(&store, format!("127.0.0.1:{port}").parse().unwrap()), Err("port_in_use"));
     let status = link.status_for(Some("192.168.1.20".to_string()));
     assert_eq!((status["running"].as_bool(), status["error"].as_str()), (Some(false), Some("port_in_use")));
@@ -659,7 +879,7 @@ fn a_port_already_in_use_is_a_closed_error_and_the_link_stays_off() {
 fn unlink_rotates_the_token_and_locks_the_old_phone_out() {
     run(async {
         let store = Mem::default();
-        let link = super::link::Link::new();
+        let (link, _mdns) = test_link();
         assert_eq!(link.enable(&store, "127.0.0.1:0".parse().unwrap()), Ok(()));
         let port = u16::try_from(link.status_for(None)["port"].as_u64().unwrap()).unwrap();
         let fp = pairing::load_or_create_identity(&store).unwrap().fingerprint;
@@ -807,7 +1027,7 @@ fn free_port() -> u16 {
 #[test]
 fn two_enables_at_once_leave_one_listener_and_neither_knocks_the_other_down() {
     let store = Arc::new(Rendezvous::new());
-    let link = Arc::new(super::link::Link::new());
+    let link = Arc::new(super::link::Link::with_advertiser(FakeMdns::working()));
     let port = free_port();
     let addr: std::net::SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
     let (first, second) = std::thread::scope(|s| {
@@ -839,7 +1059,7 @@ fn two_enables_at_once_leave_one_listener_and_neither_knocks_the_other_down() {
 #[test]
 fn a_disable_that_races_an_enable_leaves_nothing_running() {
     let (store, entered) = Held::new();
-    let link = Arc::new(super::link::Link::new());
+    let link = Arc::new(super::link::Link::with_advertiser(FakeMdns::working()));
     let port = free_port();
     let addr: std::net::SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
     std::thread::scope(|s| {
@@ -866,7 +1086,7 @@ fn a_disable_that_races_an_enable_leaves_nothing_running() {
 fn a_failed_unlink_keeps_the_running_link_and_the_old_token() {
     run(async {
         let store = Flaky::default();
-        let link = super::link::Link::new();
+        let (link, _mdns) = test_link();
         assert_eq!(link.enable(&store, "127.0.0.1:0".parse().unwrap()), Ok(()));
         let port = u16::try_from(link.status_for(None)["port"].as_u64().unwrap()).unwrap();
         store.refuse_writes();
