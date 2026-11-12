@@ -139,6 +139,7 @@ class IslandServer {
 	 * @param {object} [options.sessions] {snapshot(): Promise<{sessions, truncated}>}; read-only /proc discovery (#360)
 	 * @param {object} [options.connectorsControl] live connectors control adapter; reachable ONLY through this authenticated channel
 	 * @param {object} [options.minikodas] K2-13 Minikodas facade (minikodas/index.cjs; EventEmitter: changed, hoy, approved). Reachable ONLY via this channel.
+	 * @param {object} [options.transcription] K2-13 {get(): status, set(setting)}: the global transcription setting; a ConfigError from set -> bad_request
 	 * @param {object} [options.agents]     {list(), connect(id, planHash), disconnect(id)} (AgentsManager-like; EventEmitter 'change' = working-state push). Reachable ONLY via this channel.
 	 * @param {object} [options.settings]  {get(): {hotkey}, setHotkey(value)}; a ConfigError from setHotkey -> bad_request
 	 * @param {boolean} [options.paused]   #379 initial global pause state (restored from config at daemon boot)
@@ -162,6 +163,7 @@ class IslandServer {
 		this.connectorsControl = options.connectorsControl;
 		this.agents = options.agents;
 		this.minikodas = options.minikodas; // K2-13
+		this.transcription = options.transcription; // K2-13 transcription setting (S7, S16)
 		this.agentHooks = options.agentHooks; // #361 {preview(), install(id, hash), remove(id, hash)}
 		this.paused = options.paused === true; // #379 global pause switch; admission guards in handle()
 		this.promptDecorator = options.promptDecorator; // #386 pending rotation summary (no decorator = identity)
@@ -715,6 +717,19 @@ class IslandServer {
 					return fail(error?.name === "ConfigError" ? "bad_request" : "failed");
 				}
 				return run(async () => this.broadcast(P.settingsFrame(this.settings.get())));
+			// K2-13 (S7, S16): the global transcription setting; never a Base URL or a key in the frame.
+			case "transcription_get":
+				if (!this.transcription) return fail("unavailable");
+				return run(async () => reply(P.transcriptionFrame(this.transcription.get())));
+			case "transcription_set":
+				if (!this.transcription) return fail("unavailable");
+				try {
+					await this.transcription.set(frame.setting);
+				} catch (error) {
+					this.log("command transcription_set failed");
+					return fail(error?.name === "ConfigError" ? "bad_request" : "failed");
+				}
+				return run(async () => this.broadcast(P.transcriptionFrame(this.transcription.get())));
 			case "connectors_list":
 				if (!this.connectors) return fail("unavailable");
 				try {

@@ -36,6 +36,8 @@ const { SessionRotator } = require("./rotation.cjs");
 const { IslandServer } = require("./server.cjs");
 // K2-13: Minikodas (recipes, runs in their own engine roots, scheduler) and the «Hoy» inbox.
 const { Minikodas } = require("./minikodas/index.cjs");
+// K2-13 (S6-S9, S15, S16): video/audio transcription for the Minikodas (bundled ffmpeg + abito-transcribe helper).
+const { Transcriber, TranscriptionError, bundledTools } = require("./minikodas/transcribe.cjs");
 
 const PROTOCOL = "island-agent/1";
 const SESSION_FILE = "session.json";
@@ -334,6 +336,7 @@ class Daemon extends EventEmitter {
 	 * @param {object} [options.accountsOptions]
 	 * @param {object} [options.serverOptions]  extra IslandServer options (limits)
 	 * @param {object} [options.minikodasOptions]  extra Minikodas options (tests: fake engine command, minEveryMs)
+	 * @param {object} [options.transcriberOptions]  tests only: {ffmpeg, helper, limits} instead of the bundled tools
 	 */
 	constructor(options = {}) {
 		super();
@@ -485,6 +488,7 @@ class Daemon extends EventEmitter {
 			agents: this.agents,
 			agentHooks: this.agentHooks,
 			minikodas: this.minikodas,
+			transcription: { get: () => this.transcriber.status(), set: (value) => this.persistTranscription(value) },
 			sessions: { snapshot: async () => scanSessions({ scopePid: sessionScope(this.env) }) }, // #360: read-only /proc discovery (L52: was never wired)
 			settings: { get: () => ({ hotkey: this.getHotkey() }), setHotkey: (value) => this.persistHotkey(value) },
 			paused: cfg.paused === true, // #379: the persisted pause is restored at every boot
@@ -721,6 +725,7 @@ class Daemon extends EventEmitter {
 	 */
 	makeMinikodas(cfg) {
 		const { engine: engineOverrides, ...rest } = this.options.minikodasOptions ?? {};
+		this.transcriber = this.makeTranscriber();
 		return new Minikodas({
 			islandRoot: this.root,
 			accountsRoot: path.join(this.root, "accounts"),
@@ -730,9 +735,58 @@ class Daemon extends EventEmitter {
 			chat: { agentDir: path.join(this.root, "agent"), activeAccountPath: path.join(this.root, "active-account.json") },
 			engine: { command: cfg.command, commandArgs: [], env: this.env, ...(engineOverrides ?? {}) },
 			isPaused: () => this.server?.paused === true,
+			transcriber: this.transcriber,
 			log: (line) => this.log(line),
 			...rest,
 		});
+	}
+
+	/**
+	 * K2-13 (S6-S9, S15, S16): the transcriber. The tools are the BUNDLED ones beside this daemon package
+	 * (`<install>/runtime/ffmpeg[.exe]`, `<install>/abito-transcribe[.exe]`), never PATH; absent (a development
+	 * checkout, or macOS where ffmpeg is not bundled yet) they are reported unavailable and every media transcription
+	 * fails with a clear «Hoy» error. The setting is read live from the config (`transcription`). The helper gets the
+	 * user's HOME/XDG_DATA_HOME so it finds the model store dictation shares; nothing else from the environment.
+	 */
+	makeTranscriber() {
+		const tools = bundledTools({ installRoot: path.resolve(__dirname, "..", ".."), platform: this.platform });
+		const overrides = this.options.transcriberOptions ?? {};
+		const env = {};
+		for (const key of ["HOME", "XDG_DATA_HOME", "USERPROFILE", "LOCALAPPDATA", "APPDATA", "SystemRoot", "TEMP", "TMP", "LANG"]) {
+			if (typeof this.env[key] === "string") env[key] = this.env[key];
+		}
+		const asTool = (file) => (file ? { command: file, commandArgs: [] } : undefined);
+		return new Transcriber({
+			islandRoot: this.root,
+			setting: () => this.cfg?.transcription ?? config.loadConfig(this.root, { env: this.env }).transcription,
+			ffmpeg: "ffmpeg" in overrides ? overrides.ffmpeg : asTool(tools.ffmpeg),
+			helper: "helper" in overrides ? overrides.helper : asTool(tools.helper),
+			remoteAccount: (accountId) => this.transcriptionAccount(accountId),
+			env: overrides.env ?? env,
+			limits: overrides.limits,
+			log: (line) => this.log(line),
+		});
+	}
+
+	/**
+	 * K2-13 (S7): the remote transcription account must be one Koda already has, signed in, and OpenAI-compatible
+	 * (a custom gateway account: its Base URL and key are the account's own). Anything else is remote_unavailable.
+	 */
+	async transcriptionAccount(accountId) {
+		const meta = this.accounts?.readMeta(accountId);
+		if (!meta || meta.kind !== "custom" || meta.configured !== true) throw new TranscriptionError("remote_unavailable");
+		try {
+			return { baseUrl: this.accounts.customConfig(meta).baseUrl, apiKey: this.accounts.storedApiKey(meta) };
+		} catch {
+			throw new TranscriptionError("remote_unavailable");
+		}
+	}
+
+	/** Validates + persists the transcription setting (no engine restart: the next transcription reads it). */
+	persistTranscription(value) {
+		const result = config.setTranscription(this.root, value);
+		this.cfg = { ...(this.cfg ?? {}), transcription: result.transcription };
+		return result;
 	}
 
 	/** The persisted global hotkey (canonical) or null. */

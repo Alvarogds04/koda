@@ -9,6 +9,8 @@
  *   minikodas/hoy/                «Hoy» store and approved log (hoy.cjs, wired by the daemon)
  *   minikodas/engines/<id>/       the Minikoda's OWN private engine root (HOME, agent dir, sessions, tmp, workspace)
  *   minikodas/sources/<id>.txt    default source content for the next run (until T1b brings Telegram reading)
+ *   minikodas/media/<runId>/      the media a source downloaded for ONE run (videos/audios, S6); removed after the run
+ *   minikodas/transcribe/<uuid>/  the transcriber's work files (transcribe.cjs); removed after each transcription
  * The engine roots never contain the «Hoy» store or the daemon token, and the kit has no tool
  * that reads files, so a Minikoda cannot reach them through its kit. Same-uid processes can still read them
  * (known limit: running the agent as another OS user is K2-14 criterion 3).
@@ -19,6 +21,12 @@
  * timeout, start failure, model unavailable) lands in the results sink («Hoy») as an `error` item, never
  * silently. Results reach «Hoy» only through `options.results` ({addRun, addError}); the service never
  * builds «Hoy» from the model's text.
+ *
+ * S6 («el canal publica ambos»: video posts are transcribed first): a source may return `{text, media: [files]}`
+ * instead of a string. Every media file must be a regular file inside the run's own media folder; each one is
+ * transcribed (options.transcriber, transcribe.cjs) and deleted, and its transcript is appended to the source the
+ * Minikoda reads. A transcription failure ends the run before its engine starts: a «Hoy» error item that says why.
+ * Cancelling the run (pause, delete, daemon stop) cancels the transcription too.
  */
 
 const { EventEmitter } = require("node:events");
@@ -31,10 +39,21 @@ const { resolveModelChoice, projectModel } = require("./model.cjs");
 const { runMinikoda, DEFAULT_RUN_TIMEOUT_MS } = require("./runner.cjs");
 const { Scheduler } = require("./scheduler.cjs");
 const { freshestCredential, readRunCredential, writeBackCredential } = require("./credentials.cjs");
+const { TranscriptionError } = require("./transcribe.cjs");
 
 const MAX_MINIKODAS = 32;
 const MAX_SOURCE_BYTES = 200_000;
 const DEFAULT_MAX_CONCURRENT_RUNS = 2;
+const MAX_MEDIA_PER_RUN = 20;
+
+/** A run that ended in its transcription phase (never reaches the engine). */
+class TranscriptionPhaseError extends Error {
+	constructor(reason, detail) {
+		super(`transcription phase: ${reason}`);
+		this.reason = reason;
+		this.detail = detail;
+	}
+}
 
 class MinikodaError extends Error {
 	constructor(code, message = code) {
@@ -60,7 +79,9 @@ class MinikodaService extends EventEmitter {
 	 *        marker: its live credential is read (freshest wins) and receives a Minikoda's refreshed OAuth token (S11)
 	 * @param {number} [options.credentialLockWaitMs]
 	 * @param {object} [options.engine]        {command, commandArgs, env, startTimeoutMs} for every Minikoda engine
-	 * @param {(recipe) => string|Promise<string>} [options.source]  content of `reads.source` for a run
+	 * @param {(recipe, {mediaDir, runId, signal}) => string|{text, media?: string[]}|Promise<…>} [options.source]
+	 *        content of `reads.source` for a run; media files (inside `mediaDir`) are transcribed first (S6)
+	 * @param {{transcribe(file, {signal, deleteMedia}): Promise<{text}>}} [options.transcriber]  transcribe.cjs
 	 * @param {() => boolean} [options.isPaused]  #379 global pause: no launch while on
 	 * @param {number} [options.minEveryMs]   smallest `when.everyMs` (tests lower it)
 	 * @param {number} [options.runTimeoutMs]
@@ -76,6 +97,7 @@ class MinikodaService extends EventEmitter {
 		this.file = path.join(this.dir, "recipes.json");
 		this.enginesDir = ensurePrivateDir(path.join(this.dir, "engines"));
 		this.sourcesDir = ensurePrivateDir(path.join(this.dir, "sources"));
+		this.mediaDir = ensurePrivateDir(path.join(this.dir, "media"));
 		this.minEveryMs = options.minEveryMs ?? LIMITS.minEveryMs;
 		this.runTimeoutMs = options.runTimeoutMs ?? DEFAULT_RUN_TIMEOUT_MS;
 		this.maxConcurrentRuns = options.maxConcurrentRuns ?? DEFAULT_MAX_CONCURRENT_RUNS;
@@ -309,8 +331,17 @@ class MinikodaService extends EventEmitter {
 
 	// ----- runs ----------------------------------------------------------------------------------
 
-	async readSource(recipe) {
-		if (this.options.source) return String((await this.options.source(recipe)) ?? "");
+	async readSource(recipe, { runId, signal } = {}) {
+		if (this.options.source) {
+			const mediaDir = ensurePrivateDir(path.join(this.mediaDir, runId ?? randomUUID()));
+			try {
+				const got = await this.options.source(recipe, { mediaDir, runId, signal });
+				if (got === null || typeof got !== "object") return String(got ?? "");
+				return await this.withTranscripts(String(got.text ?? ""), Array.isArray(got.media) ? got.media : [], mediaDir, signal);
+			} finally {
+				rmSync(mediaDir, { recursive: true, force: true });
+			}
+		}
 		const file = path.join(this.sourcesDir, `${recipe.id}.txt`);
 		try {
 			const stats = lstatSync(file);
@@ -319,6 +350,34 @@ class MinikodaService extends EventEmitter {
 		} catch {
 			return "";
 		}
+	}
+
+	/**
+	 * S6: transcribes every media file of the run (in order) and appends the transcripts to the source text. A file
+	 * outside the run's own media folder is refused and never touched. Throws TranscriptionPhaseError.
+	 */
+	async withTranscripts(text, media, mediaDir, signal) {
+		if (media.length === 0) return text;
+		const failed = (error) => {
+			if (signal?.aborted || error?.code === "cancelled") throw new TranscriptionPhaseError(signal?.reason === "paused" ? "paused" : "cancelled");
+			throw new TranscriptionPhaseError("transcription", error instanceof TranscriptionError ? error.userText : new TranscriptionError("failed").userText);
+		};
+		if (media.length > MAX_MEDIA_PER_RUN) failed(new TranscriptionError("too_long"));
+		const inside = (file) => typeof file === "string" && path.isAbsolute(file) && path.dirname(path.resolve(file)) === mediaDir;
+		if (!media.every(inside)) failed(new TranscriptionError("bad_media"));
+		if (!this.options.transcriber) failed(new TranscriptionError("ffmpeg_unavailable"));
+		const parts = [text];
+		for (const [i, file] of media.entries()) {
+			let out;
+			try {
+				out = await this.options.transcriber.transcribe(file, { signal, deleteMedia: true });
+			} catch (error) {
+				failed(error);
+			}
+			parts.push(`\n[Transcripción automática (${i + 1} de ${media.length}) del video o audio del post]\n${out.text}`);
+		}
+		const joined = parts.join("\n");
+		return joined.length > MAX_SOURCE_BYTES ? joined.slice(0, MAX_SOURCE_BYTES) : joined;
 	}
 
 	/**
@@ -393,8 +452,15 @@ class MinikodaService extends EventEmitter {
 		let copied;
 		let result;
 		try {
-			const source = await this.readSource(recipe);
-			result = await runMinikoda({
+			let source;
+			try {
+				source = await this.readSource(recipe, { runId, signal });
+			} catch (error) {
+				if (!(error instanceof TranscriptionPhaseError)) throw error;
+				this.log(`minikoda ${recipe.id}: transcription phase ended (${error.reason})`);
+				result = { runId, minikoda: recipe.id, outcome: "failed", reason: error.reason, ...(error.detail ? { detail: error.detail } : {}), proposals: [] };
+			}
+			if (!result) result = await runMinikoda({
 				recipe,
 				root: this.engineRoot(recipe.id),
 				runId,
@@ -439,7 +505,7 @@ class MinikodaService extends EventEmitter {
 			const parked = result.proposals ?? [];
 			await this.results.addError({
 				minikoda: recipe.id,
-				text: `La corrida de «${recipe.name}» falló (${result.reason}).${parked.length ? ` ${parked.length} propuesta(s) de esa corrida quedaron pendientes en «Hoy».` : ""}`,
+				text: `La corrida de «${recipe.name}» falló (${result.reason === "transcription" ? `transcripción: ${result.detail}` : result.reason}).${parked.length ? ` ${parked.length} propuesta(s) de esa corrida quedaron pendientes en «Hoy».` : ""}`,
 				proposals: parked,
 			});
 		}

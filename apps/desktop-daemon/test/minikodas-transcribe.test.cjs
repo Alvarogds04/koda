@@ -1,0 +1,543 @@
+"use strict";
+
+// K2-13 T2c-2 (S6, S7 transcription part, S8, S9, S15, S16): the daemon's transcription service. Offline: a fake
+// ffmpeg, a fake `abito-transcribe` helper and a fake loopback OpenAI-compatible server; no model, no NaN, no network.
+
+const test = require("node:test");
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const http = require("node:http");
+const os = require("node:os");
+const path = require("node:path");
+
+const { validateTranscriptionSetting, TRANSCRIPTION_DEFAULT } = require("../src/minikodas/transcribe-setting.cjs");
+const { Transcriber, TranscriptionError, bundledTools, CHUNK_SECONDS, MAX_CHUNK_BYTES } = require("../src/minikodas/transcribe.cjs");
+const { MinikodaService } = require("../src/minikodas/service.cjs");
+const config = require("../src/config.cjs");
+const P = require("../src/protocol.cjs");
+
+const FIX = path.join(__dirname, "fixtures", "minikodas");
+const FAKE_FFMPEG = path.join(FIX, "fake-ffmpeg.cjs");
+const FAKE_HELPER = path.join(FIX, "fake-transcribe.cjs");
+const FAKE_PI = path.join(FIX, "fake-pi.cjs");
+const KEY = "sk-test-transcribe-0123456789abcdef";
+const posix = process.platform !== "win32";
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+async function waitFor(fn, ms = 10_000) {
+	const end = Date.now() + ms;
+	while (Date.now() < end) {
+		if (await fn()) return;
+		await sleep(10);
+	}
+	assert.ok(await fn(), "waitFor timed out");
+}
+
+function tmp(t) {
+	const base = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "abito-tr-")));
+	t.after(() => fs.rmSync(base, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 }));
+	return base;
+}
+function media(dir, seconds, name = "video.mp4") {
+	fs.mkdirSync(dir, { recursive: true });
+	const file = path.join(dir, name);
+	fs.writeFileSync(file, JSON.stringify({ seconds }));
+	return file;
+}
+function allFiles(dir) {
+	if (!fs.existsSync(dir)) return [];
+	const out = [];
+	for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+		const p = path.join(dir, e.name);
+		if (e.isDirectory()) out.push(...allFiles(p));
+		else out.push(p);
+	}
+	return out;
+}
+const lines = (file) => (fs.existsSync(file) ? fs.readFileSync(file, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
+
+/** A Transcriber wired to the fakes; `env` selects their modes. */
+function transcriber(t, base, { setting = TRANSCRIPTION_DEFAULT, env = {}, remote, limits = {}, logs = [] } = {}) {
+	const island = path.join(base, "island");
+	fs.mkdirSync(island, { recursive: true, mode: 0o700 });
+	const ffLog = path.join(base, "ffmpeg.log");
+	const helperLog = path.join(base, "helper.log");
+	const tr = new Transcriber({
+		islandRoot: island,
+		setting: () => setting,
+		ffmpeg: { command: process.execPath, commandArgs: [FAKE_FFMPEG] },
+		helper: { command: process.execPath, commandArgs: [FAKE_HELPER] },
+		remoteAccount: remote ?? (async () => { throw new TranscriptionError("remote_unavailable"); }),
+		env: { PATH: process.env.PATH, FAKE_FFMPEG_LOG: ffLog, FAKE_HELPER_LOG: helperLog, ...env },
+		log: (line) => logs.push(line),
+		limits,
+	});
+	return { tr, island, ffLog, helperLog, logs, workRoot: path.join(island, "minikodas", "transcribe") };
+}
+
+/** A loopback OpenAI-compatible server; `handler(req, body, n)` answers. Records every request. */
+async function fakeServer(t, handler) {
+	const seen = [];
+	const server = http.createServer((req, res) => {
+		const chunks = [];
+		req.on("data", (c) => chunks.push(c));
+		req.on("end", () => {
+			const body = Buffer.concat(chunks);
+			seen.push({ method: req.method, url: req.url, headers: req.headers, body });
+			handler(req, res, body, seen.length);
+		});
+	});
+	await new Promise((r) => server.listen(0, "127.0.0.1", r));
+	t.after(() => new Promise((r) => server.close(r)));
+	return { base: `http://127.0.0.1:${server.address().port}/v1`, seen };
+}
+const field = (body, name) => {
+	const m = new RegExp(`name="${name}"\\r\\n\\r\\n([^\\r]*)\\r\\n`).exec(body.toString("latin1"));
+	return m ? m[1] : undefined;
+};
+
+// ---------- the setting ----------
+
+test("setting: local Parakeet by default; whisper-turbo and remote are the alternatives; anything else is refused", () => {
+	assert.deepEqual(TRANSCRIPTION_DEFAULT, { mode: "local-parakeet", language: "es" });
+	assert.deepEqual(validateTranscriptionSetting({ mode: "local-whisper-turbo", language: "en" }), { mode: "local-whisper-turbo", language: "en" });
+	assert.deepEqual(validateTranscriptionSetting({ mode: "local-parakeet" }), { mode: "local-parakeet", language: "es" });
+	assert.deepEqual(validateTranscriptionSetting({ mode: "remote", remote: { accountId: "nan", model: "whisper" } }), { mode: "remote", language: "es", remote: { accountId: "nan", model: "whisper" } });
+	for (const bad of [
+		null, [], "local-parakeet", {}, { mode: "local-whisper-small" }, { mode: "local-parakeet", language: "auto" }, { mode: "local-parakeet", language: "xx" },
+		{ mode: "local-parakeet", extra: 1 }, { mode: "remote" }, { mode: "remote", remote: { accountId: "nan" } }, { mode: "remote", remote: { accountId: "../x", model: "whisper" } },
+		{ mode: "remote", remote: { accountId: "nan", model: "wh\nisper" } }, { mode: "remote", remote: { accountId: "nan", model: "w", baseUrl: "https://evil" } },
+		{ mode: "local-parakeet", remote: { accountId: "nan", model: "whisper" } },
+	]) assert.throws(() => validateTranscriptionSetting(bad), /transcription/, JSON.stringify(bad));
+});
+
+test("setting: stored in the daemon config (0600), default when absent, a bad stored value is a config error", (t) => {
+	const base = tmp(t);
+	const island = path.join(base, "island");
+	fs.mkdirSync(island, { mode: 0o700 });
+	assert.deepEqual(config.loadConfig(island, { env: {} }).transcription, TRANSCRIPTION_DEFAULT);
+	const out = config.setTranscription(island, { mode: "remote", language: "es", remote: { accountId: "nan", model: "whisper" } });
+	assert.equal(out.changed, true);
+	assert.deepEqual(config.loadConfig(island, { env: {} }).transcription, { mode: "remote", language: "es", remote: { accountId: "nan", model: "whisper" } });
+	const file = path.join(island, "config.json");
+	if (posix) assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+	assert.throws(() => config.setTranscription(island, { mode: "cloud" }), (e) => e.name === "ConfigError" && e.field === "transcription");
+	assert.equal(JSON.parse(fs.readFileSync(file, "utf8")).transcription.mode, "remote", "a refused value changes nothing");
+	fs.writeFileSync(file, JSON.stringify({ transcription: { mode: "x" } }), { mode: 0o600 });
+	assert.throws(() => config.loadConfig(island, { env: {} }), (e) => e.field === "transcription");
+});
+
+test("protocol: transcription_get/set are validated; the frame carries the setting and availability, never a URL or key", () => {
+	const parse = P.validateClientFrame;
+	assert.deepEqual(parse({ type: "transcription_get" }), { type: "transcription_get" });
+	assert.deepEqual(parse({ type: "transcription_set", setting: { mode: "local-whisper-turbo", language: "es" } }), { type: "transcription_set", setting: { mode: "local-whisper-turbo", language: "es" } });
+	assert.equal(parse({ type: "transcription_set", setting: { mode: "remote" } }), undefined);
+	assert.equal(parse({ type: "transcription_set" }), undefined);
+	const frame = P.transcriptionFrame({ mode: "remote", language: "es", remote: { accountId: "nan", model: "whisper", baseUrl: "https://x", apiKey: KEY }, ffmpeg: "available", local: "unavailable" });
+	assert.deepEqual(frame, { type: "transcription", setting: { mode: "remote", language: "es", remote: { accountId: "nan", model: "whisper" } }, ffmpeg: "available", local: "unavailable" });
+	assert.ok(!JSON.stringify(frame).includes(KEY));
+	assert.throws(() => P.transcriptionFrame({ mode: "nope", ffmpeg: "available", local: "available" }));
+});
+
+// ---------- the bundled tools ----------
+
+test("bundled tools: fixed paths beside the daemon package, never PATH; macOS reports ffmpeg unavailable (out of scope)", (t) => {
+	const base = tmp(t);
+	const root = path.join(base, "prefix");
+	fs.mkdirSync(path.join(root, "runtime"), { recursive: true });
+	const linux = bundledTools({ installRoot: root, platform: "linux" });
+	assert.deepEqual(linux, { ffmpeg: undefined, helper: undefined }, "nothing there: unavailable, no fallback");
+	fs.writeFileSync(path.join(root, "runtime", "ffmpeg"), "bin", { mode: 0o755 });
+	fs.writeFileSync(path.join(root, "abito-transcribe"), "bin", { mode: 0o755 });
+	assert.deepEqual(bundledTools({ installRoot: root, platform: "linux" }), { ffmpeg: path.join(root, "runtime", "ffmpeg"), helper: path.join(root, "abito-transcribe") });
+	assert.deepEqual(bundledTools({ installRoot: root, platform: "darwin" }).ffmpeg, undefined, "darwin-arm64: ffmpeg is not bundled yet");
+	fs.writeFileSync(path.join(root, "runtime", "ffmpeg.exe"), "bin");
+	fs.writeFileSync(path.join(root, "abito-transcribe.exe"), "bin");
+	assert.deepEqual(bundledTools({ installRoot: root, platform: "win32" }), { ffmpeg: path.join(root, "runtime", "ffmpeg.exe"), helper: path.join(root, "abito-transcribe.exe") });
+	if (posix) {
+		fs.rmSync(path.join(root, "runtime", "ffmpeg"));
+		fs.symlinkSync("/usr/bin/true", path.join(root, "runtime", "ffmpeg"));
+		assert.equal(bundledTools({ installRoot: root, platform: "linux" }).ffmpeg, undefined, "a symlink is never run");
+		fs.rmSync(path.join(root, "abito-transcribe"));
+		fs.writeFileSync(path.join(root, "abito-transcribe"), "bin", { mode: 0o644 });
+		assert.equal(bundledTools({ installRoot: root, platform: "linux" }).helper, undefined, "not executable");
+	}
+});
+
+test("ffmpeg unavailable (macOS, or not bundled): a clear ffmpeg_unavailable, nothing spawned, the media is still deleted", async (t) => {
+	const base = tmp(t);
+	const island = path.join(base, "island");
+	fs.mkdirSync(island);
+	const tr = new Transcriber({ islandRoot: island, setting: () => TRANSCRIPTION_DEFAULT, ffmpeg: undefined, helper: { command: process.execPath, commandArgs: [FAKE_HELPER] }, env: {}, log: () => {} });
+	assert.deepEqual(tr.status(), { mode: "local-parakeet", language: "es", ffmpeg: "unavailable", local: "available" });
+	const file = media(path.join(base, "in"), 10);
+	await assert.rejects(tr.transcribe(file, { deleteMedia: true }), (e) => e instanceof TranscriptionError && e.code === "ffmpeg_unavailable");
+	assert.equal(fs.existsSync(file), false);
+});
+
+// ---------- local ----------
+
+test("S15/S16 local Parakeet (default): ffmpeg extracts 16 kHz mono with a fixed argv, the helper transcribes, temp files are gone", async (t) => {
+	const base = tmp(t);
+	const { tr, ffLog, helperLog, workRoot } = transcriber(t, base);
+	const file = media(path.join(base, "in"), 42);
+	const out = await tr.transcribe(file, { deleteMedia: true });
+	assert.equal(out.text, "hola desde parakeet-tdt-0.6b-v3-int8 en es");
+	assert.equal(out.model, "parakeet-tdt-0.6b-v3-int8");
+	assert.equal(Math.round(out.durationSec), 42);
+	const [ff] = lines(ffLog);
+	assert.deepEqual(ff.slice(0, 6), ["-nostdin", "-hide_banner", "-loglevel", "error", "-protocol_whitelist", "file"]);
+	assert.ok(ff.includes("-format_whitelist"));
+	assert.equal(ff[ff.indexOf("-i") + 1], `file:${file}`, "the input goes through the file: protocol only");
+	for (const [flag, value] of [["-ac", "1"], ["-ar", "16000"], ["-c:a", "pcm_s16le"], ["-map", "0:a:0"]]) assert.equal(ff[ff.indexOf(flag) + 1], value, flag);
+	const [helper] = lines(helperLog);
+	assert.deepEqual(helper.slice(0, 5), ["transcribe", "--model", "parakeet-tdt-0.6b-v3-int8", "--language", "es"]);
+	assert.ok(path.isAbsolute(helper.at(-1)));
+	assert.equal(fs.existsSync(file), false, "the downloaded media is deleted after");
+	assert.deepEqual(allFiles(workRoot), [], "no extracted audio is left behind");
+});
+
+test("S16 local whisper-turbo: the helper gets whisper-turbo with the language fixed", async (t) => {
+	const base = tmp(t);
+	const { tr, helperLog } = transcriber(t, base, { setting: { mode: "local-whisper-turbo", language: "en" } });
+	const out = await tr.transcribe(media(path.join(base, "in"), 5));
+	assert.equal(out.text, "hola desde whisper-turbo en en");
+	assert.deepEqual(lines(helperLog)[0].slice(0, 5), ["transcribe", "--model", "whisper-turbo", "--language", "en"]);
+});
+
+test("local failures map to closed codes and never leave files: model_missing, garbage, crash, ffmpeg failure, too long", async (t) => {
+	const base = tmp(t);
+	const cases = [
+		[{ FAKE_HELPER_MODE: "model_missing" }, "model_missing"],
+		[{ FAKE_HELPER_MODE: "garbage" }, "invalid_response"],
+		[{ FAKE_HELPER_MODE: "crash" }, "failed"],
+		[{ FAKE_HELPER_MODE: "huge" }, "invalid_response"],
+		[{ FAKE_FFMPEG_MODE: "fail" }, "bad_media"],
+	];
+	for (const [env, code] of cases) {
+		const logs = [];
+		const { tr, workRoot } = transcriber(t, base, { env, logs });
+		const file = media(path.join(base, "in"), 10);
+		await assert.rejects(tr.transcribe(file, { deleteMedia: true }), (e) => e.code === code, JSON.stringify(env));
+		assert.equal(fs.existsSync(file), false);
+		assert.deepEqual(allFiles(workRoot), []);
+		assert.ok(!logs.join("\n").includes(file), "the media path is never logged");
+	}
+	const { tr } = transcriber(t, base, { limits: { maxSeconds: 30 } });
+	await assert.rejects(tr.transcribe(media(path.join(base, "in"), 31)), (e) => e.code === "too_long");
+});
+
+test("input: only a regular file is accepted (no symlink, no directory, no relative path)", async (t) => {
+	const base = tmp(t);
+	const { tr, ffLog } = transcriber(t, base);
+	const file = media(path.join(base, "in"), 3);
+	await assert.rejects(tr.transcribe("relative.mp4"), (e) => e.code === "bad_media");
+	await assert.rejects(tr.transcribe(path.join(base, "in")), (e) => e.code === "bad_media");
+	if (posix) {
+		const link = path.join(base, "in", "link.mp4");
+		fs.symlinkSync(file, link);
+		await assert.rejects(tr.transcribe(link, { deleteMedia: true }), (e) => e.code === "bad_media");
+		assert.ok(fs.existsSync(file), "deleteMedia never deletes through a symlink");
+	}
+	assert.deepEqual(lines(ffLog), [], "ffmpeg never ran");
+});
+
+test("cancellation and timeout: an aborted or slow transcription kills its child and cleans up", async (t) => {
+	const base = tmp(t);
+	for (const env of [{ FAKE_HELPER_MODE: "hang" }, { FAKE_FFMPEG_MODE: "hang" }]) {
+		const { tr, workRoot } = transcriber(t, base, { env });
+		const controller = new AbortController();
+		const file = media(path.join(base, "in"), 10);
+		const p = tr.transcribe(file, { signal: controller.signal, deleteMedia: true });
+		await sleep(300);
+		controller.abort("paused");
+		await assert.rejects(p, (e) => e.code === "cancelled");
+		assert.equal(fs.existsSync(file), false);
+		assert.deepEqual(allFiles(workRoot), []);
+		const slow = transcriber(t, base, { env, limits: { timeoutMs: 400 } });
+		await assert.rejects(slow.tr.transcribe(media(path.join(base, "in"), 10)), (e) => e.code === "timeout");
+	}
+});
+
+// ---------- remote ----------
+
+test("S7/S9 remote: ≤180 s OGG chunks POSTed to {base}/audio/transcriptions with the account's key; JSON .text joined in order", async (t) => {
+	const base = tmp(t);
+	const srv = await fakeServer(t, (req, res, body, n) => {
+		res.writeHead(200, { "content-type": "application/json" });
+		res.end(JSON.stringify({ text: `parte ${n}`, segments: [] }));
+	});
+	const logs = [];
+	const { tr, ffLog, workRoot } = transcriber(t, base, {
+		setting: { mode: "remote", language: "es", remote: { accountId: "gw", model: "whisper" } },
+		remote: async (accountId) => {
+			assert.equal(accountId, "gw");
+			return { baseUrl: srv.base, apiKey: KEY };
+		},
+		logs,
+	});
+	const file = media(path.join(base, "in"), 400);
+	const out = await tr.transcribe(file, { deleteMedia: true });
+	assert.equal(out.text, "parte 1 parte 2 parte 3");
+	assert.equal(out.chunks, 3);
+	assert.equal(out.model, "whisper");
+	assert.equal(srv.seen.length, 3);
+	for (const r of srv.seen) {
+		assert.equal(r.method, "POST");
+		assert.equal(r.url, "/v1/audio/transcriptions");
+		assert.equal(r.headers.authorization, `Bearer ${KEY}`);
+		assert.match(r.headers["content-type"], /^multipart\/form-data; boundary=/);
+		assert.equal(field(r.body, "model"), "whisper");
+		assert.equal(field(r.body, "language"), "es");
+		assert.equal(field(r.body, "response_format"), "json");
+		assert.match(r.body.toString("latin1"), /filename="chunk-\d+\.ogg"\r\nContent-Type: audio\/ogg/);
+		assert.ok(r.body.length <= MAX_CHUNK_BYTES + 4096);
+	}
+	assert.ok(CHUNK_SECONDS <= 180);
+	const chunkCalls = lines(ffLog).filter((a) => a.at(-1).endsWith(".ogg"));
+	assert.deepEqual(chunkCalls.map((a) => Number(a[a.indexOf("-ss") + 1])), [0, CHUNK_SECONDS, 2 * CHUNK_SECONDS]);
+	for (const a of chunkCalls) {
+		assert.ok(Number(a[a.indexOf("-t") + 1]) <= 180);
+		assert.equal(a[a.indexOf("-c:a") + 1], "libopus");
+		assert.equal(a[a.indexOf("-ac") + 1], "1");
+	}
+	assert.equal(fs.existsSync(file), false);
+	assert.deepEqual(allFiles(workRoot), []);
+	assert.ok(!logs.join("\n").includes(KEY), "the key is never logged");
+});
+
+test("remote failures: 401 is remote_auth, non-JSON is invalid_response, a redirect is never followed, a slow server times out, an oversized chunk is never sent", async (t) => {
+	const base = tmp(t);
+	const run = async (handler, { env, limits } = {}) => {
+		const srv = await fakeServer(t, handler);
+		const logs = [];
+		const { tr, workRoot } = transcriber(t, base, { env, limits, logs, setting: { mode: "remote", language: "es", remote: { accountId: "gw", model: "whisper" } }, remote: async () => ({ baseUrl: srv.base, apiKey: KEY }) });
+		const file = media(path.join(base, "in"), 20);
+		const err = await tr.transcribe(file, { deleteMedia: true }).then(() => undefined, (e) => e);
+		assert.equal(fs.existsSync(file), false);
+		assert.deepEqual(allFiles(workRoot), []);
+		assert.ok(!logs.join("\n").includes(KEY));
+		assert.ok(!String(err?.message).includes(KEY) && !String(err?.message).includes("127.0.0.1"));
+		return { code: err?.code, seen: srv.seen };
+	};
+	assert.equal((await run((q, s) => { s.writeHead(401); s.end("{}"); })).code, "remote_auth");
+	assert.equal((await run((q, s) => { s.writeHead(200, { "content-type": "text/plain" }); s.end("hola"); })).code, "invalid_response");
+	assert.equal((await run((q, s) => { s.writeHead(200); s.end(JSON.stringify({ nottext: 1 })); })).code, "invalid_response");
+	const redirected = await run((q, s) => { s.writeHead(302, { location: "http://127.0.0.1:9/steal" }); s.end(); });
+	assert.equal(redirected.code, "remote_failed");
+	assert.equal(redirected.seen.length, 1);
+	assert.equal((await run((q, s) => { s.writeHead(500); s.end("boom"); })).code, "remote_failed");
+	assert.equal((await run(() => {}, { limits: { requestTimeoutMs: 300 } })).code, "timeout");
+	const huge = await run((q, s) => { s.writeHead(200); s.end(JSON.stringify({ text: "x" })); }, { env: { FAKE_FFMPEG_MODE: "huge" } });
+	assert.equal(huge.code, "too_large");
+	assert.equal(huge.seen.length, 0, "a chunk over 25 MB is never uploaded");
+});
+
+test("remote: an unusable account (signed out, not a gateway) is remote_unavailable and nothing is sent", async (t) => {
+	const base = tmp(t);
+	const { tr } = transcriber(t, base, { setting: { mode: "remote", language: "es", remote: { accountId: "gw", model: "whisper" } } });
+	await assert.rejects(tr.transcribe(media(path.join(base, "in"), 5)), (e) => e.code === "remote_unavailable");
+});
+
+// ---------- the Minikoda run ----------
+
+const MODEL = { provider: "fake", id: "fake-minikoda", accountId: "main" };
+const recipe = () => ({
+	id: "videos",
+	name: "Videos",
+	when: { manual: true },
+	reads: { source: "telegram:canal-x" },
+	kit: ["source_read", "inbox_propose"],
+	prompt: "Resumí el canal.",
+	model: { ...MODEL },
+	never: ["buy", "sell", "send", "delete"],
+});
+function accountsFixture(base) {
+	const accountsRoot = path.join(base, "accounts");
+	fs.mkdirSync(path.join(accountsRoot, "main"), { recursive: true, mode: 0o700 });
+	fs.writeFileSync(path.join(accountsRoot, "main", "auth.json"), JSON.stringify({ fake: { type: "api_key", key: "fake-key" } }), { mode: 0o600 });
+	return {
+		accountsRoot,
+		accounts: { listAccounts: () => [{ accountId: "main", provider: "fake", configured: true }], models: async () => [{ provider: "fake", id: "fake-minikoda" }] },
+		profiles: { list: () => ({ profiles: [], active: undefined }) },
+	};
+}
+function service(t, base, { env = {}, source, steps } = {}) {
+	const fx = accountsFixture(base);
+	const scriptFile = path.join(base, "script.json");
+	fs.writeFileSync(scriptFile, JSON.stringify({ steps: steps ?? [{ tool: "source_read" }, { text: "Resumen listo." }] }));
+	const results = { runs: [], errors: [], addRun: async (r) => { results.runs.push(r); }, addError: async (e) => { results.errors.push(e); } };
+	const { tr } = transcriber(t, base, { env });
+	const svc = new MinikodaService({
+		islandRoot: path.join(base, "island"),
+		accounts: fx.accounts,
+		profiles: fx.profiles,
+		accountsRoot: fx.accountsRoot,
+		results,
+		minEveryMs: 1,
+		runTimeoutMs: 20_000,
+		engine: { command: process.execPath, commandArgs: [FAKE_PI, "--script", scriptFile], env: { PATH: process.env.PATH }, startTimeoutMs: 10_000 },
+		transcriber: tr,
+		source,
+	});
+	t.after(() => svc.stop());
+	svc.start();
+	return { svc, results, island: path.join(base, "island") };
+}
+
+test("S6 a video post is transcribed first: the Minikoda reads the text plus the transcript, and the media is deleted", async (t) => {
+	const base = tmp(t);
+	let mediaFile;
+	const { svc, results, island } = service(t, base, {
+		source: async (_recipe, { mediaDir }) => {
+			mediaFile = media(mediaDir, 12, "post-1.mp4");
+			return { text: "Post del canal: mirá el video.", media: [mediaFile] };
+		},
+	});
+	await svc.createDraft(recipe());
+	await svc.approveCreate("videos");
+	assert.equal((await svc.launch("videos")).started, true);
+	await waitFor(() => results.runs.length + results.errors.length === 1);
+	assert.deepEqual(results.errors, []);
+	const source = fs.readFileSync(path.join(island, "minikodas", "engines", "videos", "run", "source.txt"), "utf8");
+	assert.match(source, /Post del canal: mirá el video\./);
+	assert.match(source, /Transcripción automática \(1 de 1\)/);
+	assert.match(source, /hola desde parakeet-tdt-0\.6b-v3-int8 en es/);
+	assert.equal(fs.existsSync(mediaFile), false);
+	assert.deepEqual(allFiles(path.join(island, "minikodas", "media")), []);
+});
+
+test("S6 a transcription failure is a clear «Hoy» error and the Minikoda's engine never starts", async (t) => {
+	const base = tmp(t);
+	let mediaFile;
+	const { svc, results, island } = service(t, base, {
+		env: { FAKE_HELPER_MODE: "model_missing" },
+		source: async (_recipe, { mediaDir }) => {
+			mediaFile = media(mediaDir, 12, "post-1.mp4");
+			return { text: "Post", media: [mediaFile] };
+		},
+	});
+	await svc.createDraft(recipe());
+	await svc.approveCreate("videos");
+	await svc.launch("videos");
+	await waitFor(() => results.errors.length === 1);
+	assert.equal(results.runs.length, 0);
+	assert.match(results.errors[0].text, /falló \(transcripción: el modelo local no está descargado/);
+	assert.equal(svc.get("videos").lastRun.reason, "transcription");
+	assert.equal(fs.existsSync(path.join(island, "minikodas", "engines", "videos", "run", "source.txt")), false, "the engine never ran");
+	assert.equal(fs.existsSync(mediaFile), false);
+});
+
+test("S6 a media path outside the run's media folder is refused (never transcribed, never deleted)", async (t) => {
+	const base = tmp(t);
+	const outside = media(path.join(base, "elsewhere"), 3);
+	const { svc, results } = service(t, base, { source: async () => ({ text: "Post", media: [outside] }) });
+	await svc.createDraft(recipe());
+	await svc.approveCreate("videos");
+	await svc.launch("videos");
+	await waitFor(() => results.errors.length === 1);
+	assert.match(results.errors[0].text, /transcripción/);
+	assert.ok(fs.existsSync(outside), "a file the run does not own is never deleted");
+});
+
+test("pause and delete cancel a transcription in flight; the media is deleted and the run is reported", async (t) => {
+	const base = tmp(t);
+	for (const how of ["pause", "delete"]) {
+		const dir = path.join(base, how);
+		fs.mkdirSync(dir);
+		let mediaFile;
+		const { svc, results } = service(t, dir, {
+			env: { FAKE_HELPER_MODE: "hang" },
+			source: async (_recipe, { mediaDir }) => {
+				mediaFile = media(mediaDir, 12, "post-1.mp4");
+				return { text: "Post", media: [mediaFile] };
+			},
+		});
+		await svc.createDraft(recipe());
+		await svc.approveCreate("videos");
+		await svc.launch("videos");
+		await waitFor(() => mediaFile && fs.existsSync(mediaFile) === false ? true : svc.running.size === 1);
+		await sleep(300);
+		if (how === "pause") await svc.cancelRuns("paused");
+		else await svc.delete("videos");
+		await waitFor(() => results.errors.length === 1);
+		assert.match(results.errors[0].text, how === "pause" ? /falló \(paused\)/ : /falló \(cancelled\)/);
+		assert.equal(fs.existsSync(mediaFile), false);
+	}
+});
+
+// ---------- the daemon ----------
+
+const net = require("node:net");
+const FAKE_AGENT = path.join(__dirname, "fixtures", "fake-agent.cjs");
+const FAKE_AUTH = path.join(__dirname, "fixtures", "fake-auth.cjs");
+
+async function daemonWith(t, base, { platform, transcriberOptions } = {}) {
+	const { Daemon, readSession } = require("../src/daemon.cjs");
+	const root = path.join(base, "i");
+	fs.mkdirSync(path.join(root, "accounts", "gw"), { recursive: true, mode: 0o700 });
+	fs.chmodSync(path.join(root, "accounts"), 0o700);
+	// A custom (OpenAI-compatible) gateway account the user already has: Base URL + key live in the account.
+	fs.writeFileSync(path.join(root, "accounts", "gw", "account.json"), JSON.stringify({ accountId: "gw", label: "Gateway", provider: "custom-gw", authMethod: "api_key", configured: true, createdAt: "2026-11-12T00:00:00.000Z", kind: "custom" }), { mode: 0o600 });
+	fs.writeFileSync(path.join(root, "accounts", "gw", "auth.json"), JSON.stringify({ "custom-gw": { type: "api_key", key: KEY } }), { mode: 0o600 });
+	fs.writeFileSync(path.join(root, "accounts", "gw", "models.json"), JSON.stringify({ providers: { "custom-gw": { baseUrl: "http://127.0.0.1:9/v1", models: [{ id: "whisper" }] } } }), { mode: 0o600 });
+	const logs = [];
+	const daemon = new Daemon({
+		root,
+		platform,
+		env: { PATH: process.env.PATH },
+		log: (line) => logs.push(line),
+		engineOptions: { command: process.execPath, commandArgs: [FAKE_AGENT], backoffMs: [20], stopTimeoutMs: 500, startTimeoutMs: 5000 },
+		accountsOptions: { helper: { command: process.execPath, args: [FAKE_AUTH, "--accounts-root", path.join(root, "accounts")], env: { PATH: process.env.PATH } } },
+		transcriberOptions,
+	});
+	await daemon.start();
+	t.after(() => daemon.stop());
+	const session = readSession(root);
+	const client = await new Promise((resolve, reject) => {
+		const socket = net.connect(session.endpoint);
+		const frames = [];
+		let buf = "";
+		socket.on("data", (d) => {
+			buf += d.toString("utf8");
+			let i;
+			while ((i = buf.indexOf("\n")) >= 0) {
+				frames.push(JSON.parse(buf.slice(0, i)));
+				buf = buf.slice(i + 1);
+			}
+		});
+		socket.on("error", reject);
+		socket.on("connect", () => {
+			socket.write(`${JSON.stringify({ type: "hello", protocol: "island-agent/1", token: session.token })}\n`);
+			resolve({ socket, frames, send: (f) => socket.write(`${JSON.stringify(f)}\n`) });
+		});
+	});
+	t.after(() => client.socket.destroy());
+	await waitFor(() => client.frames.some((f) => f.type === "ready"));
+	return { daemon, client, root, logs };
+}
+
+test("daemon: transcription_get/set over the socket; the setting persists in config.json; the remote account resolves from the store, never the frame", { skip: !posix && "Unix socket fixture", timeout: 60_000 }, async (t) => {
+	const base = tmp(t);
+	const { daemon, client, root, logs } = await daemonWith(t, base, { transcriberOptions: { ffmpeg: { command: process.execPath, commandArgs: [FAKE_FFMPEG] }, helper: { command: process.execPath, commandArgs: [FAKE_HELPER] } } });
+	client.send({ type: "transcription_get" });
+	await waitFor(() => client.frames.some((f) => f.type === "transcription"));
+	assert.deepEqual(client.frames.find((f) => f.type === "transcription"), { type: "transcription", setting: { mode: "local-parakeet", language: "es" }, ffmpeg: "available", local: "available", seq: client.frames.find((f) => f.type === "transcription").seq });
+	client.send({ type: "transcription_set", setting: { mode: "remote", language: "es", remote: { accountId: "gw", model: "whisper" } } });
+	await waitFor(() => client.frames.some((f) => f.type === "transcription" && f.setting.mode === "remote"));
+	assert.deepEqual(JSON.parse(fs.readFileSync(path.join(root, "config.json"), "utf8")).transcription, { mode: "remote", language: "es", remote: { accountId: "gw", model: "whisper" } });
+	client.send({ type: "transcription_set", setting: { mode: "remote", language: "es", remote: { accountId: "gw", model: "whisper", baseUrl: "https://evil" } } });
+	await waitFor(() => client.frames.some((f) => f.type === "error" && f.code === "bad_request"));
+	assert.deepEqual(await daemon.transcriptionAccount("gw"), { baseUrl: "http://127.0.0.1:9/v1", apiKey: KEY });
+	await assert.rejects(daemon.transcriptionAccount("nobody"), (e) => e.code === "remote_unavailable");
+	assert.ok(!client.frames.some((f) => JSON.stringify(f).includes(KEY) || JSON.stringify(f).includes("127.0.0.1:9")), "no frame carries the key or the URL");
+	assert.ok(!logs.join("\n").includes(KEY));
+});
+
+test("daemon on macOS (darwin-arm64, out of scope): ffmpeg is reported unavailable even when a binary sits there", { skip: !posix && "Unix socket fixture", timeout: 60_000 }, async (t) => {
+	const base = tmp(t);
+	const { daemon, client } = await daemonWith(t, base, { platform: "darwin" });
+	client.send({ type: "transcription_get" });
+	await waitFor(() => client.frames.some((f) => f.type === "transcription"));
+	assert.equal(client.frames.find((f) => f.type === "transcription").ffmpeg, "unavailable");
+	await assert.rejects(daemon.transcriber.transcribe(media(path.join(base, "in"), 3)), (e) => e.code === "ffmpeg_unavailable");
+});

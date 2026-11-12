@@ -183,7 +183,9 @@ const DAEMON_FILES = ['package.json', 'identity.md', 'THIRD-PARTY-NOTICES.md',
   'src/sessions.cjs', 'src/procinfo.cjs', 'src/spaces.cjs', 'src/win-fs.cjs',
   // K2-13 Minikodas: required by daemon.cjs; kit-extension.js is loaded by Pi through its path (-e).
   'src/minikodas/credentials.cjs', 'src/minikodas/hoy.cjs', 'src/minikodas/index.cjs', 'src/minikodas/kit-extension.js', 'src/minikodas/model.cjs',
-  'src/minikodas/recipe.cjs', 'src/minikodas/runner.cjs', 'src/minikodas/scheduler.cjs', 'src/minikodas/service.cjs'];
+  'src/minikodas/recipe.cjs', 'src/minikodas/runner.cjs', 'src/minikodas/scheduler.cjs', 'src/minikodas/service.cjs',
+  // K2-13 T2c-2: video/audio transcription (bundled ffmpeg + abito-transcribe) and its global setting.
+  'src/minikodas/transcribe.cjs', 'src/minikodas/transcribe-setting.cjs'];
 // L42 F1: the hook installer (apps/desktop-harness) ships NEXT TO the daemon: the daemon derives
 // <package>/desktop-harness/bin/abito-hook.cjs from its own location (src/cli.cjs packagedInstallerBin), so Ajustes can
 // install the Claude/Codex/status-line hooks (and take out the removed Recap's 0.1 hooks, K2-03). Closed under require(): packaging-check pins that.

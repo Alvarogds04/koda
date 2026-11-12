@@ -594,6 +594,17 @@ Implementation: `src/protocol.cjs` (allowlist and DTOs), `src/server.cjs` (`hand
 
 New error codes: `unknown_minikoda, not_active, not_pending, exists, limit, model_unavailable, unknown_item`.
 
+### Transcription setting (K2-13, S7/S16)
+
+| type | fields | reply |
+| --- | --- | --- |
+| `transcription_get` | – | `transcription` |
+| `transcription_set` | `setting{mode, language?, remote?{accountId, model}}` | broadcast `transcription`; `bad_request` for anything off-contract (unknown mode or key, a `baseUrl`, a malformed account id) |
+
+`transcription` (server → client): `setting{mode: local-parakeet\|local-whisper-turbo\|remote, language: es\|en\|fr\|de\|it\|pt\|ca, remote?{accountId, model}}`, `ffmpeg: available\|unavailable`, `local: available\|unavailable`. The frame never carries a Base URL or a key: the remote account's are read from the account store when a transcription runs. `ffmpeg` is always `unavailable` on macOS in this version (darwin-arm64 does not bundle ffmpeg yet). Without a transcriber both verbs answer `unavailable`.
+
+A failed transcription ends the Minikoda's run before its engine starts: a «Hoy» `error` item «La corrida de «X» falló (transcripción: <why>)» and `lastRun.reason: "transcription"`. A pause or a delete during the transcription cancels it (`reason: paused` / `cancelled`).
+
 ### Semantics
 
 - **«Hoy» is built only from what the daemon stored.** It is never built from the Minikoda's text. A proposal exists only if the kit's `inbox_propose` parked it, and the runner re-validated it (buy, sell or send only). Whatever the model claims in its final text stays plain `result` text.

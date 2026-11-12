@@ -531,6 +531,24 @@ A Minikoda is a small helper that runs a recipe on its own. Code: `src/minikodas
 - Left for later (verifier mwdat8g0, not implemented): `hoy_approve` is still accepted while the global pause is on.
 - Tests use `test/fixtures/minikodas/fake-pi.cjs`, a fake `pi --mode rpc` that loads the real kit extension and mimics Pi's tool selection and `tool_call` blocking. The real-Pi proof of the two layers is the PoC (`odd/evidence/k2-13-poc/poc-minikodas/evidence/`).
 
+**Video and audio posts: transcription** (K2-13 S6-S9, S15, S16; `transcribe.cjs`, `transcribe-setting.cjs`):
+- A source may hand a run `{text, media: [files]}`. Each media file must be a regular file inside the run's own folder `<island>/minikodas/media/<runId>/`. It is transcribed, deleted, and its transcript is appended to what `source_read` returns. The media never reaches the model. The folder is removed after the run.
+- **Setting** (global, `config.json` key `transcription`, frames `transcription_get`/`transcription_set`):
+  - `{mode: "local-parakeet"}`: the default. Parakeet v3 int8 on this computer, no network.
+  - `{mode: "local-whisper-turbo", language}`: better on company names, slower, ~2.5 GB RAM. The language is always fixed.
+  - `{mode: "remote", language, remote: {accountId, model}}`: an OpenAI-compatible (custom gateway) account Koda already has, e.g. NaN with model `whisper`. The Base URL and the key are that account's own; the setting never holds them. `language` defaults to `es`.
+- **Tools.** Both are bundled, found at fixed paths beside the daemon package and never on PATH:
+  - ffmpeg: `<install>/runtime/ffmpeg[.exe]`, a pinned LGPL build (`apps/desktop-tauri/packaging/runtime/ffmpeg.sha256`).
+  - The helper: `<install>/abito-transcribe[.exe]`, the island crate's sherpa-onnx helper. It shares dictation's model store and Silero VAD (`apps/desktop-tauri/docs/dictation-build.md`).
+  - Both are spawned with `shell:false` and a fixed argv. ffmpeg only opens `file:` input, in a closed list of containers (no playlists, no network).
+  - **macOS: ffmpeg is not bundled in this version** (pending for the Mac session), so every media transcription there fails with `ffmpeg_unavailable`.
+- **Local path.** ffmpeg extracts 16 kHz mono 16-bit WAV, then `abito-transcribe transcribe --model … --language … <wav>` runs. Its VAD segments are capped at 25 s. A model that is not downloaded is `model_missing`; the daemon never downloads models.
+- **Remote path.** The WAV is cut into ≤ 175 s mono OGG/Opus chunks (refused above 24 MB). Each chunk is POSTed to `{base}/audio/transcriptions` (`model`, `language`, `response_format=json`, bearer key). Only the JSON `.text` is read, and the chunks are joined in order. A redirect is never followed, a 401/403 is `remote_auth`, and responses are bounded.
+- **Bounds.** At most 3 h of audio, 2 h per transcription, 180 s per remote request, and 20 media per run. Cancelling the run (pause, delete, daemon stop) kills the running ffmpeg or helper.
+- **Cleanup.** Work files live in `<island>/minikodas/transcribe/<uuid>/` and are removed after every transcription. The media is deleted after its audio is extracted, and again in `finally`.
+- **Never logged:** the key, the media path, the media content, the transcript. ffmpeg's and the helper's stderr is drained and dropped.
+- **Failures** are a «Hoy» `error` item that says why (`transcripción: el modelo local no está descargado`, …). The Minikoda's engine never starts.
+
 **«Hoy» and approve-later** (`hoy.cjs`, frames in `docs/PROTOCOL.md` «Minikodas and «Hoy» frames»):
 - `<island>/minikodas/hoy/hoy.jsonl` holds every item `{id, minikoda, kind: result|proposal|error, text, action?, target?, status: pending|approved|rejected, createdAt}`. The list is built from this file only, never from the model's text.
 - A proposal executes only on `hoy_approve {id}`. In K2-13 «execute» means: mark the item `approved`, append one line to `approved.jsonl` and broadcast `hoy_approved`. **There is no real buy, sell or send integration yet.**
