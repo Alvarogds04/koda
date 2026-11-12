@@ -148,10 +148,12 @@ test('a session folder shaped like a macOS path (mixed case, digits, 40+ chars) 
 });
 test('below a macOS-shaped session folder, a secret-shaped relative path is still hidden and never allowed', async t => {
   const { root, dir } = macShapedSession(); t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  const r = await cardIn(dir, 'Write', { file_path: 'Ab12Cd34Ef56Gh78/Ij90Kl12Mn34Op56Qr78StUv', content: 'not-shown' });
-  lossy(r); assert.doesNotMatch(r.q.text, /not-shown|Qr78StUv/); assert.match(r.q.text, /secretos ocultos/);
+  // One 42-character segment: a run inside a single name is caught on every OS (a '/'-joined run only on POSIX).
+  const r = await cardIn(dir, 'Write', { file_path: 'Ab12Cd34Ef56Gh78Ij90Kl12Mn34Op56Qr78StUvWx', content: 'not-shown' });
+  lossy(r); assert.doesNotMatch(r.q.text, /not-shown|Qr78StUvWx/); assert.match(r.q.text, /secretos ocultos/);
 });
-test('a 39-character mixed token directly below the session folder stays hidden (the boundary slash still counts)', async t => {
+// POSIX only: '\\' is not in the base64 alphabet, so on Windows a separator never joins a run (before or after secretPath).
+test('a 39-character mixed token directly below the session folder stays hidden (the boundary slash still counts)', { skip: path.sep !== '/' && 'POSIX separator rule (Windows twin: none, a backslash never joins a base64 run)' }, async t => {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'plain.')));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const r = await cardIn(root, 'Write', { file_path: 'Ab12Cd34Ef56Gh78Ij90Kl12Mn34Op56Qr78StU', content: 'x' });
