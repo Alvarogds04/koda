@@ -520,6 +520,32 @@ if a `.node` file appears under `@mtcute`, `@fuman` or `better-sqlite3`
 (`packaging/runtime/build-runtime.cjs` `assertNoNativeAddons`), and `apps/desktop-tauri/test-node/telegram-deps-check.cjs`
 keeps both pins, the stub and the licences in step.
 
+### Login and the session (S10, S20)
+
+`src/minikodas/telegram.cjs` is the daemon's one Telegram client. The login happens in Ajustes over the island protocol
+(`docs/PROTOCOL.md`, «Telegram frames»): `telegram_login_start{apiId, apiHash, phone}` asks Telegram for a code,
+`telegram_login_code{code}` delivers it, and `telegram_login_password{password}` answers a two-step login. Every answer is
+a frame; nothing is read from a terminal, and a refused code or password leaves the login where it was so the person can
+try again.
+
+**The session is a credential and never touches the disk.** The client is always built with mtcute's `MemoryStorage`
+(the wrapper refuses a caller-supplied storage, and a test proves that no `client.session` — mtcute's own default — or
+sqlite file can appear in the working directory or `HOME`). When a login finishes, or when restoring rotates the session,
+the daemon replies `telegram_session{session}` to the connection that asked, and only to that connection: the island
+stores it in the OS keychain and hands it back at start with `telegram_session_restore{apiId, apiHash, session}`. An
+unchanged session is never echoed back.
+
+`apiHash`, the phone, the code, the password and the session never appear in a log line, a broadcast, «Hoy» or an error.
+Failures are closed codes with a fixed Spanish sentence (`telegram_flood_wait` carries `retryAfterMinutes`, e.g.
+«Telegram pidió esperar 4 minutos»); Telegram's own text is never forwarded because it can echo the phone number. A
+revoked session answers `telegram_session_invalid` and disconnects instead of pretending to be connected. The global
+pause refuses the login and logout frames (they change the account's state) but keeps answering status and the
+start-up restore.
+
+**Island contract.** The island must store the session in the keychain, must never write it to a file, must never echo it
+back inside another frame, and after `telegram_logout` must delete its keychain entry (the daemon already revoked the auth
+key on Telegram when it could reach it).
+
 ## Minikodas (K2-13)
 
 A Minikoda is a small helper that runs a recipe on its own. Code: `src/minikodas/`.

@@ -28,6 +28,13 @@ const REVIEWED = [
   { file: 'desktop-harness/src/windows-transport.cjs', text: "path.resolve(__dirname, '..', '..', RELAY_NAME)", why: 'Windows relay exe placed by the Windows installer next to the package' },
   { file: 'desktop-harness/src/windows-transport.cjs', text: "path.resolve(__dirname, '..', '..', 'desktop-tauri', 'target', 'debug', RELAY_NAME)", why: 'development layout only' },
   { file: 'desktop-harness/src/install-recap.cjs', text: "path.resolve(__dirname, '../bin/abito-recap-hook.cjs')", why: 'the removed 0.1 Recap script: only its path is matched, to take old hooks out; never loaded' },
+  // K2-13 T1b (S10/S20): the Telegram client library is NOT a file of this package. It ships inside the bundled runtime
+  // folder (human decision L41: that is the one npm tree the installers verify, extract and write notices for), and the
+  // daemon locates it at run time: beside the Node it runs on, then beside its own package. The pin, the empty
+  // better-sqlite3 stub and the "no native addon" rule are held by test-node/telegram-deps-check.cjs, and the frames
+  // that reach this module are bounded by protocol.cjs. The importer takes a path or the bare package name, so the
+  // specifier cannot be a literal the walker could follow into L.STAGED.
+  { file: 'desktop-daemon/src/minikodas/telegram.cjs', text: 'import(path.isAbsolute(spec) ? pathToFileURL(spec).href : spec)', why: 'the Telegram client library ships inside the bundled runtime folder (K2-13 L41), located at run time; telegram-deps-check.cjs holds its pin, its stub and its no-native-addon rule' },
 ];
 const BUILTINS = new Set(require('node:module').builtinModules);
 const SHIPPED = new Set(L.STAGED);
