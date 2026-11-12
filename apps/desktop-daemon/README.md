@@ -3,8 +3,10 @@
 The island chat is a full agent, not a direct model call: this package supervises the
 installed `pi` running `--mode rpc` as a child process inside a private island, with an
 Abito identity, isolated environment, session privacy, request correlation, crash
-restart with bounded backoff, and clean stops. Plain Node CJS, zero runtime
-dependencies.
+restart with bounded backoff, and clean stops. Plain Node CJS: one runtime
+dependency (`@mtcute/node`, the Telegram client library, K2-13), and it ships inside
+the bundled runtime folder, never from this package (see «The Telegram client
+library» below).
 
 Status: U1–U4 implemented (runtime, profiles, island transport, config/CLI/daemon). The installed `pi` on this machine is the default
 runtime and was smoke-verified offline (`start` → `get_state` → `stop` against the
@@ -491,6 +493,32 @@ claude-code, codex and statusline (delegated to the AgentsManager) plus gemini-c
 (`src/agent-hooks.cjs`, self-owned marker-tagged artifacts, notify-only). Preview is read-only; install and
 remove require the exact `plan_hash` shown, back everything up first and refuse foreign or unsafe targets.
 Frames, invariants, sources and UNVERIFIED items: [`../../tests/PROTOCOL.md`](../../tests/PROTOCOL.md).
+
+## The Telegram client library (K2-13)
+
+Reading Telegram channels with the user's own account (S6) needs a client library: **`@mtcute/node` 0.32.8**, pinned
+exactly here (with every `@mtcute/*` package it pulls frozen by `overrides`) and pinned to the same version in
+`../desktop-tauri/packaging/runtime/package.json`. Evidence and the library comparison: `odd/evidence/k2-13-spike/`.
+
+**Nothing ships from this package.** The bytes travel inside the bundled runtime folder Koda already installs and
+verifies (`S6`; decided by the human, K2-13 L41), because that is the one npm tree every installer verifies, extracts and
+writes licence notices for:
+
+- installed: `<runtime>/node_modules/@mtcute/node` (`<prefix>/runtime`, `Contents/Resources/runtime` on macOS);
+- development: `npm ci` in this package (no install scripts needed) puts it in `node_modules/`, and ordinary Node
+  resolution finds it — `npm test` never needs it, because the tests inject a fake client.
+
+The Telegram module resolves the library in that order: beside the Node the daemon runs on (`<folder>/node_modules`),
+then beside its own package (`../runtime/node_modules`), then by ordinary Node resolution; if none of them has it, the
+Telegram frames answer `unavailable` instead of crashing the daemon.
+
+**No native addon.** mtcute's `better-sqlite3` is replaced by Koda's empty stub
+(`../desktop-tauri/packaging/runtime/stubs/better-sqlite3`, wired as a `file:` dependency in both `package.json` files,
+exactly as `overrides` cannot express in npm 9). The daemon always passes `MemoryStorage`, so the `SqliteStorage` that
+would load the addon is never constructed; the stub throws if it ever is, and mtcute's crypto is WASM. The build fails
+if a `.node` file appears under `@mtcute`, `@fuman` or `better-sqlite3`
+(`packaging/runtime/build-runtime.cjs` `assertNoNativeAddons`), and `apps/desktop-tauri/test-node/telegram-deps-check.cjs`
+keeps both pins, the stub and the licences in step.
 
 ## Minikodas (K2-13)
 

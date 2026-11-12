@@ -1,0 +1,13 @@
+{
+  "name": "better-sqlite3",
+  "version": "12.11.1",
+  "description": "Koda's empty stand-in for better-sqlite3 (K2-13): mtcute's SqliteStorage is never constructed, because the daemon always passes a MemoryStorage, so the native addon is neither shipped nor loaded. See ../../README.md.",
+  "author": "Alvarogds04",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Alvarogds04/koda.git"
+  },
+  "license": "MIT",
+  "main": "index.js",
+  "kodaStub": "better-sqlite3"
+}

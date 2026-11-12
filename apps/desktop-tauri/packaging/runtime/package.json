@@ -1,9 +1,19 @@
 {
   "name": "koda-runtime",
   "private": true,
-  "description": "The Pi that Koda ships inside every installer (K2-02). Pinned exactly; the lockfile pins every package by sha512.",
+  "description": "The Pi that Koda ships inside every installer (K2-02) plus the daemon's own runtime dependencies (K2-13). Pinned exactly; the lockfile pins every package by sha512.",
   "license": "MIT",
   "dependencies": {
-    "@earendil-works/pi-coding-agent": "1.4.0"
+    "@earendil-works/pi-coding-agent": "1.4.0",
+    "@mtcute/node": "0.32.8",
+    "better-sqlite3": "file:./stubs/better-sqlite3"
+  },
+  "overrides": {
+    "@mtcute/core": "0.32.8",
+    "@mtcute/file-id": "0.32.6",
+    "@mtcute/html-parser": "0.32.8",
+    "@mtcute/markdown-parser": "0.32.8",
+    "@mtcute/tl-runtime": "0.32.6",
+    "@mtcute/wasm": "0.32.8"
   }
 }
