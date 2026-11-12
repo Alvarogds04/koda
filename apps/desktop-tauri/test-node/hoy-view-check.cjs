@@ -108,7 +108,8 @@ test('item text is untrusted: control and bidi characters never reach the page',
   const [r] = N.hoyRows(view([proposal(A, { target: nasty, text: nasty })]), NOW);
   const all = `${r.title} ${r.sub} ${r.full}`;
   for (const bad of ['\u0000', '\u202e', '\u200b', '\u0007']) assert.ok(!all.includes(bad), `bidi/control ${JSON.stringify(bad)} must not reach the DOM`);
-  assert.ok(Array.from(r.title).length <= 140, 'titles are capped');
+  // a proposal's title IS its target (B3): it is bounded by the daemon's own 200, never by an ellipsis-sized box
+  assert.ok(Array.from(r.title).length <= 'Comprar '.length + N.HOY_TARGET_MAX, 'a proposal title is bounded by the target cap');
   assert.ok(Array.from(r.sub).length <= 220, 'subs are capped');
 });
 
@@ -148,6 +149,27 @@ test('a refusal is read by its closed code, never by free text', () => {
   assert.match(N.hoyRefusal('failed'), /no pudo registrar/);
   assert.equal(N.hoyRefusal('sudo rm -rf /'), N.hoyRefusal('failed'), 'an unknown code says exactly what a failure says');
   assert.equal(typeof N.hoyRefusal(null), 'string');
+});
+
+// ---- B3: the recipient of a `send` cannot be summarised away ----
+const RECIPIENT = 'Lucía Fernández';
+const HEAD = 'el resumen de la corrida de Valmar, con las tres oportunidades a ';
+const LONG = HEAD + 'x'.repeat(199 - HEAD.length - RECIPIENT.length - 1) + ' ' + RECIPIENT;
+
+test('a 199-character target is shown WHOLE: the daemon caps it at 200, the row never at 90', () => {
+  assert.equal(Array.from(LONG).length, 199, 'the fixture is a real 199-character target');
+  const [r] = N.hoyRows(view([proposal(A, { action: 'send', target: LONG })]), NOW);
+  assert.ok(r.title.includes(RECIPIENT), `the recipient is in the visible title (${r.title})`);
+  assert.equal(r.title, `Enviar ${LONG}`, 'the whole target, not a 90-character prefix');
+  assert.ok(!r.title.includes('…'), 'never ellipsised before it is drawn');
+  assert.ok(r.approve.includes(RECIPIENT), 'and the recipient is in the button\'s accessible name');
+  assert.ok(r.reject.includes(RECIPIENT));
+  assert.ok(r.aria.includes(RECIPIENT), 'nor is it missing from the row\'s own name');
+});
+
+test('a target longer than the daemon\'s own cap is cut at 200, and nothing else', () => {
+  const [r] = N.hoyRows(view([proposal(A, { action: 'send', target: `${'a'.repeat(400)} ${RECIPIENT}` })]), NOW);
+  assert.equal(Array.from(r.title).length, 'Enviar '.length + 200, 'the daemon cap, not the page\'s');
 });
 
 test('the tabs answer ArrowLeft / ArrowRight / Home / End (roving focus), and nothing while typing', () => {

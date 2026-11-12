@@ -132,6 +132,42 @@ function verify(name, m, { grown = true } = {}) {
     } finally { await r.close(); }
   }
 
+  // 1b · B3: the target of a `send` is drawn WHOLE. A recipient that only exists after character 90 must still be
+  //      visible: no ellipsis, no clamp, wrapped inside the row, and named by the button.
+  {
+    const SEND = 'abababab-cdcd-4efe-8a8a-b0b0b0b0b0b0', recipient = 'Lucía Fernández';
+    const head = 'el resumen de la corrida de Valmar, con las tres oportunidades a ';
+    const target = head + 'x'.repeat(199 - head.length - recipient.length - 1) + ' ' + recipient;
+    const r = await H.open({ hoyTab: true, hoy: [{ id: SEND, minikoda: 'valmar', kind: 'proposal', status: 'pending', action: 'send', target, text: 'por Telegram, desde tu cuenta', createdAt: at('09:12') }] });
+    try {
+      const m = await r.page.evaluate(name => {
+        const box = el => { const b = el.getBoundingClientRect(); return { x: b.x, y: b.y, right: b.right, bottom: b.bottom, w: b.width, h: b.height }; };
+        const row = document.querySelector('#hoy-list .hoy-row'), tt = row.querySelector('.hoy-tt');
+        const text = tt.textContent, idx = text.lastIndexOf(name);
+        const range = document.createRange(); range.setStart(tt.firstChild, idx); range.setEnd(tt.firstChild, idx + name.length);
+        const rb = range.getBoundingClientRect(), style = getComputedStyle(tt);
+        return {
+          title: text, row: box(row), text: box(tt), island: box(document.getElementById('island')), list: box(document.getElementById('hoy-list')),
+          range: { x: rb.x, y: rb.y, right: rb.right, bottom: rb.bottom, w: rb.width, h: rb.height },
+          overflowX: tt.scrollWidth - tt.clientWidth, overflowY: tt.scrollHeight - tt.clientHeight,
+          clamp: style.webkitLineClamp, wrap: style.whiteSpace, ellipsis: style.textOverflow,
+          aria: [...row.querySelectorAll('.hoy-acts .hoy-btn')].map(b => b.getAttribute('aria-label')),
+          lines: Math.round(box(tt).h / 16),
+        };
+      }, recipient);
+      assert.ok(m.title.includes(recipient), `the target is drawn whole, recipient included (${m.title.slice(-40)})`);
+      assert.ok(m.overflowX <= 1, `the title does not overflow sideways (${m.overflowX})`);
+      assert.ok(m.overflowY <= 1, `nor vertically, so nothing is clipped (${m.overflowY})`);
+      assert.equal(m.clamp, 'none', 'the target is never line-clamped');
+      assert.equal(m.wrap, 'normal', 'it wraps over as many lines as it needs');
+      assert.ok(m.lines >= 2, `the row really grew (${m.lines} lines)`);
+      assert.ok(m.range.w > 0 && m.range.y >= m.row.y - 0.5 && m.range.bottom <= m.row.bottom + 0.5, `the recipient is inside the row's own box (${JSON.stringify(m.range)} in ${JSON.stringify(m.row)})`);
+      assert.ok(m.range.bottom <= m.island.bottom + 1, 'and inside the island');
+      assert.ok(m.aria[0] && m.aria[0].includes(recipient), `the button's accessible name carries it (${m.aria && m.aria[0]})`);
+      await r.page.locator('#island').screenshot({ path: path.join(SHOTS, 'hoy-destino-completo.png') });
+    } finally { await r.close(); }
+  }
+
   // 2 · Enter on a row never approves; the button does, and the word comes back from the daemon
   {
     const r = await H.open({ hoy: DAY, hoyTab: true });

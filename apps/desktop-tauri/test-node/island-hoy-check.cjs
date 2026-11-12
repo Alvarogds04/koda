@@ -135,6 +135,14 @@ test('css: tokens only for colour, and the artboard\'s sizes', () => {
   assert.match(hoyCss, /font-size: 11px|font-size: 12px|font-size: 13px/, 'the notch type scale');
 });
 
+test('a proposal target wraps instead of being ellipsised away (B3)', () => {
+  const rule = hoyCss.match(/\.hoy-row\[data-kind="proposal"\] \.hoy-tt \{([^}]*)\}/);
+  assert.ok(rule, 'a proposal title has its own rule');
+  assert.match(rule[1], /white-space: normal/, 'it wraps over as many lines as it needs');
+  assert.match(rule[1], /text-overflow: clip|text-overflow: initial/, 'and is never shortened with an ellipsis');
+  assert.ok(!/-webkit-line-clamp/.test(rule[1]), 'never clamped: the recipient of a send must be readable');
+});
+
 test('the notch title says «Hoy» while it is open, and the pager stays out of the way', () => {
   assert.match(mount, /dataset\.hoy === 'open'/, 'the mount knows the Hoy state');
   assert.match(mount, /paintTitle[\s\S]{0,400}Hoy/, 'and the header title follows it');

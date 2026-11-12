@@ -478,6 +478,9 @@ html[data-motion="reduce"] #question[data-enter] :is(#question-asker, #question-
 .hoy-row[data-kind="error"] .hoy-glyph { color: var(--red-11); }
 .hoy-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
 .hoy-tt { font-size: 12px; font-weight: 600; line-height: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* B3: a proposal's title is its TARGET (what the buy / sell / send is about, and to whom a send goes). It is never cut:
+   the row grows over as many lines as the daemon's 200 characters need, and the list scrolls. */
+.hoy-row[data-kind="proposal"] .hoy-tt { white-space: normal; overflow: visible; text-overflow: clip; overflow-wrap: anywhere; }
 .hoy-sub { font-size: 11px; line-height: 14px; color: rgba(255,255,255,.62); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .hoy-row[data-kind="result"] .hoy-sub, .hoy-row[data-kind="error"] .hoy-sub { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 .hoy-chip { align-self: flex-start; margin-top: 1px; font-size: 11px; line-height: 14px; padding: 0 6px; border-radius: 99px; background: rgba(255,255,255,.12); color: #fff; white-space: nowrap; }

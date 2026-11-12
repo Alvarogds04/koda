@@ -284,7 +284,10 @@
     if (at > 12 && at <= 140) return [s.slice(0, at + 1), s.slice(at + 2)];
     return [hoyClean(s, 140), ''];
   }
-  const HOY_TITLE_MAX = 140, HOY_SUB_MAX = 220, HOY_FULL_MAX = 1200;
+  // B3: the target of a proposal is what a buy / sell / send is ABOUT, and the recipient of a send lives at its end. The
+  // daemon bounds it at 200, so the page shows all 200 and lets the row grow and the list scroll: a cut target is a
+  // decision made blind. The row's other lines keep their own bounds.
+  const HOY_TARGET_MAX = 200, HOY_TITLE_MAX = 140, HOY_SUB_MAX = 220, HOY_FULL_MAX = 1200;
   function hoyRow(item, now) {
     const tab = HOY_GROUP[item && item.kind];
     if (!tab || typeof item.id !== 'string' || !item.id) return null;
@@ -296,7 +299,7 @@
     const action = tab === 'propuestas' && Object.prototype.hasOwnProperty.call(HOY_ACTION, item.action) ? item.action : '';
     let title = '', sub = '', chip = '', state = '';
     if (tab === 'propuestas') {
-      const target = hoyClean(item.target, 90);
+      const target = hoyClean(item.target, HOY_TARGET_MAX);
       title = action ? `${HOY_ACTION[action]} ${target}` : `${HOY_VERB[item.action] || 'Propuesta'}${target ? `: ${target}` : ''}`;
       sub = [stamp, hoyClean(text, 60)].filter(Boolean).join(' · ');
       // the artboard's words: «Aprobada · se ejecutó · 09:46» (when it ran) and «Rechazada · no se hizo nada» (no time: nothing ran)
@@ -310,7 +313,7 @@
       title = hoyClean(head, HOY_TITLE_MAX) || 'Un Minikoda falló';
       sub = [stamp, rest].filter(Boolean).join(' · ');
     }
-    title = hoyClean(title, HOY_TITLE_MAX);
+    if (tab !== 'propuestas') title = hoyClean(title, HOY_TITLE_MAX); // a proposal's title IS its target: shown whole
     sub = hoyClean(sub, HOY_SUB_MAX);
     const full = hoyClean(text, HOY_FULL_MAX);
     // `status` is the CLOSED state the CSS keys on (pending / approved / rejected, and `info` for what is only read):
@@ -396,5 +399,5 @@
 
   return { dismissAll, dismissFeedback, TABS, step, arrows, wheelStep, keyStep, VEIL, veilState, agentRows, AGENT_ROWS, AGENT_ROWS_LINKED, moreAgents, STATE_WORD, clockText, noticeLines, agentHex, focusView, veilColor, noticeAgentColor, takeoverState, chatInert, takeoverTitle, sendCheck, requestId, replyLine, DRAFT_MAX, SIZES, sizeScale, shortTitle,
     HOY_TABS, HOY_ACTION, HOY_STATE, HOY_PROVENANCE, hoyClean, hoyCounts, hoyTab, hoyTabKey, hoyRows, hoySummary, hoyEmpty, hoyRefusal, hoySplit,
-    HOY_WAIT_MS, HOY_CLICK_GUARD_MS, hoyErrorN, hoyDecision, hoyReadProblem, hoyOrder, hoyGuardOpen };
+    HOY_WAIT_MS, HOY_CLICK_GUARD_MS, HOY_TARGET_MAX, hoyErrorN, hoyDecision, hoyReadProblem, hoyOrder, hoyGuardOpen };
 });
