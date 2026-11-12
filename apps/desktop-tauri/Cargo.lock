@@ -18,6 +18,7 @@ dependencies = [
  "mdns-sd",
  "oauth2",
  "objc2-app-kit",
+ "png 0.18.1",
  "qrcode",
  "rcgen",
  "reqwest 0.12.28",

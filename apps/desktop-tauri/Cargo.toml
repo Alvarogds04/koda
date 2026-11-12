@@ -74,6 +74,8 @@ webpki-roots = "1"
 # rcgen was a dev-dependency for the mail tests; the phone link needs it at run time. qrcode renders
 # the pairing link as SVG (no image crates). ring is already resolved (rustls); direct edge only.
 rcgen = { version = "0.13", default-features = false, features = ["ring"] }
+# K2-06: PNG encoding of the captured window. png 0.18.1 is ALREADY in Cargo.lock (tauri); direct edge only.
+png = "0.18"
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 ring = "0.17"
 # The phone finds this computer again when its address changes: announced on the local network only
@@ -85,7 +87,7 @@ mdns-sd = { version = "0.21", default-features = false }
 # was uncompilable there). XTest (synthetic input) is deliberately NOT here: it lives in the
 # dev set below so the shipped binary never compiles the input-injection module.
 [target.'cfg(target_os = "linux")'.dependencies]
-x11rb = { version = "0.13", features = ["xkb"] }
+x11rb = { version = "0.13", features = ["xkb", "composite"] }
 # #305b: the XDG GlobalShortcuts portal client. NOT ashpd (absent from the
 # offline registry, downloads are forbidden): zbus is ALREADY compiled in via
 # tauri-plugin-single-instance, so this declares the same crate/version/features

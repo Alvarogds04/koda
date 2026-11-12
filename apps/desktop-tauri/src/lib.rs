@@ -121,3 +121,5 @@ pub mod transport;
 #[path = "transport_unavailable.rs"]
 pub mod transport;
 pub mod workarea;
+/// K2-06: the host side of «capture my window» (refusal list, consent session, loopback tool server).
+pub mod windowcapture;
