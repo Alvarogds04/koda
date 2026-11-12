@@ -79,6 +79,7 @@ class MinikodaService extends EventEmitter {
 		if (typeof options.results?.addRun !== "function" || typeof options.results?.addError !== "function") throw new Error("a results sink is required");
 		this.results = options.results;
 		this.running = new Map(); // id -> {runId, controller, promise}
+		this.deleting = new Set(); // ids whose deletion is cancelling their run: never relaunched meanwhile
 		this.queue = Promise.resolve();
 		this.stopped = false;
 		this.scheduler = new Scheduler({
@@ -223,21 +224,35 @@ class MinikodaService extends EventEmitter {
 		});
 	}
 
-	/** Deletes a Minikoda: unschedules it, cancels its run, removes its private engine root. «Hoy» items stay. */
-	delete(id) {
-		return this.serial(async () => {
-			const state = this.load();
-			if (!state.minikodas.some((e) => e.recipe.id === id)) throw new MinikodaError("unknown_minikoda");
+	/**
+	 * Deletes a Minikoda: unschedules it, cancels its run, removes its private engine root. «Hoy» items stay.
+	 * The run is cancelled and awaited OUTSIDE serial(): its last step queues its own serial() write (lastRun),
+	 * so awaiting it inside the queue would deadlock the store (and every later stop()). While the deletion is
+	 * pending the Minikoda cannot be launched again.
+	 */
+	async delete(id) {
+		if (!this.find(id)) throw new MinikodaError("unknown_minikoda");
+		this.deleting.add(id);
+		try {
 			this.scheduler.remove(id);
 			const run = this.running.get(id);
 			run?.controller.abort();
 			await run?.promise.catch(() => {});
-			state.minikodas = state.minikodas.filter((e) => e.recipe.id !== id);
-			this.persist(state);
-			this.removeEngineRoot(id);
-			this.emit("changed");
-			return { id, deleted: true };
-		});
+			return await this.serial(async () => this.deleteStored(id));
+		} finally {
+			this.deleting.delete(id);
+		}
+	}
+
+	/** The store change and folder removal of delete(); runs inside serial(), after the run has landed. */
+	deleteStored(id) {
+		const state = this.load();
+		if (!state.minikodas.some((e) => e.recipe.id === id)) throw new MinikodaError("unknown_minikoda");
+		state.minikodas = state.minikodas.filter((e) => e.recipe.id !== id);
+		this.persist(state);
+		this.removeEngineRoot(id);
+		this.emit("changed");
+		return { id, deleted: true };
 	}
 
 	removeEngineRoot(id) {
@@ -290,7 +305,7 @@ class MinikodaService extends EventEmitter {
 		if (this.stopped) return { started: false, reason: "stopped" };
 		const entry = this.find(id);
 		if (!entry) throw new MinikodaError("unknown_minikoda");
-		if (entry.status !== "active") throw new MinikodaError("not_active");
+		if (entry.status !== "active" || this.deleting.has(id)) throw new MinikodaError(entry.status !== "active" ? "not_active" : "unknown_minikoda");
 		if (this.isPaused()) return { started: false, reason: "paused" };
 		if (this.running.has(id)) return { started: false, reason: "running" };
 		if (this.running.size >= this.maxConcurrentRuns) return { started: false, reason: "busy" };

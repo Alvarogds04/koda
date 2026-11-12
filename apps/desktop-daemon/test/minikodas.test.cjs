@@ -394,6 +394,41 @@ test("S4 the scheduler launches an approved Minikoda without anyone calling laun
 	assert.ok(skips.every((s) => s.reason === "running"));
 });
 
+/** Races `promise` against a deadline so a deadlock fails the test instead of hanging the suite. */
+const within = (promise, ms, what) => Promise.race([promise, new Promise((_, reject) => setTimeout(() => reject(new Error(`${what} did not settle within ${ms} ms (deadlock)`)), ms))]);
+
+test("B1 deleting a Minikoda while its run never ends cancels the run, deletes it and leaves the service usable", async (t) => {
+	const base = tmp(t);
+	const { svc, results, island } = service(t, base, { steps: [{ hang: true }], runTimeoutMs: 600_000 });
+	await svc.createDraft(recipe());
+	await svc.approveCreate("oportunidades");
+	await svc.createDraft(recipe({ id: "otro", name: "Otro" }));
+	assert.equal((await svc.launch("oportunidades")).started, true);
+	await sleep(300);
+	assert.deepEqual(await within(svc.delete("oportunidades"), 5000, "delete"), { id: "oportunidades", deleted: true });
+	assert.equal(results.errors.length, 1, "the cancelled run is recorded, never silent");
+	assert.match(results.errors[0].text, /cancelled/);
+	assert.deepEqual(svc.list().map((m) => m.id), ["otro"]);
+	assert.equal(fs.existsSync(path.join(island, "minikodas", "engines", "oportunidades")), false);
+	// The store queue is not stuck: the next mutation goes through.
+	assert.equal((await within(svc.approveCreate("otro"), 5000, "approveCreate after delete")).status, "active");
+	await within(svc.stop(), 5000, "stop after delete");
+});
+
+test("B1 stop() while a delete is cancelling a never-ending run settles both", async (t) => {
+	const base = tmp(t);
+	const { svc, results } = service(t, base, { steps: [{ hang: true }], runTimeoutMs: 600_000 });
+	await svc.createDraft(recipe());
+	await svc.approveCreate("oportunidades");
+	await svc.launch("oportunidades");
+	await sleep(300);
+	const deleting = svc.delete("oportunidades");
+	await within(Promise.all([deleting, svc.stop()]), 5000, "delete + stop");
+	assert.equal(results.errors.length, 1);
+	assert.deepEqual(svc.list(), []);
+	assert.deepEqual(await svc.launch("oportunidades"), { started: false, reason: "stopped" });
+});
+
 test("S4 a stored Minikoda survives a restart; the daemon stop cancels a run in flight and records it as failed", async (t) => {
 	const base = tmp(t);
 	const first = service(t, base, { steps: [{ hang: true }], runTimeoutMs: 60_000 });
