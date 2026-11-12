@@ -1,5 +1,5 @@
 //! #467 key store: API keys and tokens live in the OS keychain (Secret Service on Linux,
-//! Credential Manager on Windows), never on disk, never in the WebView and never in a log.
+//! the login Keychain on macOS, Credential Manager on Windows), never on disk, never in the WebView and never in a log.
 //!
 //! Adapted from Coucou src-tauri/src/secrets.rs @434d6a2b, Copyright (c) 2026 Louis Raillé, MIT.
 //! (Allowlist idea and `keyring` backend only; the closed command, the `unavailable` answer
@@ -159,11 +159,11 @@ pub fn apply(store: &dyn SecretStore, command: &Command) -> Result<Value, Secret
     Ok(json!({"key": key, "present": present}))
 }
 
-/// The real keychain. Linux: Secret Service; Windows: Credential Manager; any other OS has
-/// no store and is honestly `Unavailable` (never a file).
+/// The real keychain. Linux: Secret Service; macOS: the login Keychain (K2-01c); Windows:
+/// Credential Manager; any other OS has no store and is honestly `Unavailable` (never a file).
 pub struct Keychain;
 
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 mod native {
     use super::{StoreError, SERVICE};
 
@@ -182,7 +182,7 @@ mod native {
     }
 }
 
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 impl SecretStore for Keychain {
     fn read(&self, key: &str) -> Result<Option<String>, StoreError> {
         match native::entry(key)?.get_password() {
@@ -202,7 +202,7 @@ impl SecretStore for Keychain {
     }
 }
 
-#[cfg(not(any(target_os = "linux", windows)))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 impl SecretStore for Keychain {
     fn read(&self, _: &str) -> Result<Option<String>, StoreError> {
         Err(StoreError::Unavailable)

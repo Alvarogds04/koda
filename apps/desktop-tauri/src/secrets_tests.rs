@@ -129,6 +129,34 @@ fn the_service_name_is_abitos_own() {
     assert!(!SERVICE.to_lowercase().contains("coucou"));
 }
 
+/// K2-01c S1: on macOS a saved value lands in the login Keychain under Abito's own service and is
+/// still there for a fresh store (a reopened Koda). Checked through the public store and through
+/// `security`, so it cannot pass against any other backend. Uses a throwaway probe entry only.
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_keeps_secrets_in_the_login_keychain() {
+    let key = format!("k2-01c-test-probe-{}", std::process::id());
+    let value = "probe-value-not-a-secret";
+    assert_eq!(Keychain.write(&key, value), Ok(()));
+    // a new store instance, like a second launch of Koda, reads the same entry back
+    let fresh = Keychain;
+    assert_eq!(fresh.read(&key), Ok(Some(value.to_owned())));
+    // Attributes only (no -w): reading the password from another binary would hit the item's
+    // ACL and a prompt; the attributes prove the entry is in the Keychain under Abito's service.
+    let out = std::process::Command::new("security")
+        .args(["find-generic-password", "-s", SERVICE, "-a", &key])
+        .output()
+        .expect("security(1) runs");
+    assert!(out.status.success(), "the entry is in the macOS Keychain");
+    let attrs = String::from_utf8_lossy(&out.stdout);
+    assert!(attrs.contains(SERVICE) && attrs.contains(&key), "service and account match");
+    assert!(!attrs.contains(value), "attributes never carry the value");
+    assert_eq!(fresh.delete(&key), Ok(()));
+    assert_eq!(fresh.read(&key), Ok(None));
+    // deleting a missing entry stays Ok (same contract as Linux/Windows)
+    assert_eq!(fresh.delete(&key), Ok(()));
+}
+
 /// #503 S3: NaN and OpenCode Go keys live in the closed keychain list like every other chat key.
 #[test]
 fn nan_and_opencode_go_keys_are_known() {
