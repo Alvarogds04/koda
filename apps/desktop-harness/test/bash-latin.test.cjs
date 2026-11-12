@@ -14,9 +14,8 @@ const handleCodexHook = viaPipe(raw_handleCodexHook);
 const cwd = path.resolve(__dirname, '..');
 const bash = command => describeToolDetailed('Bash', { command });
 const screenshot = 'echo "una linea larga para ver cómo se acomoda el texto en la tarjeta de permiso" > ./prueba-isla/tres.txt';
-// Claude's answered path (S2, ad0ae382) is unchanged. S4/T2: Codex never answers — its rows are the
-// `Codex (aviso)` tests at the end of this file, which assert the ONE attention notice instead of a decision.
-const agents = [['Claude Code', handleClaudeHook]];
+// Claude's answered path (S2, ad0ae382) is unchanged; K2-08 T1 (S4) makes Codex answer the same way, so both run every row.
+const agents = [['Claude Code', handleClaudeHook], ['Codex', handleCodexHook]];
 const input = command => JSON.stringify({ cwd, session_id: 'latin-test', hook_event_name: 'PermissionRequest', tool_name: 'Bash', tool_input: { command } });
 const offline = offlineEnv('nonexistent-abito-test');
 
@@ -129,51 +128,3 @@ for (const [agent, handle] of agents) test(`R22 UTF-8 boundaries reach the wire:
   }
 });
 
-// ---- S4/T2: Codex sends ONE attention notice and never a decision (human L3, option A) -------------------------
-// The notice must carry the same projection Claude shows (the exact redacted command), stay inside the wire bound and
-// leave the terminal prompt in charge: empty stdout, exit 0, never a `question` frame.
-async function codexNotice(t, command) {
-  const rcv = await fakeReceiver(t, { questions: true });
-  const out = await handleCodexHook({ event: 'permission-request', input: input(command),
-    env: { ABITO_SOCKET_DIR: rcv.runtime, ABITO_DESKTOP_SOCKET: rcv.endpoint }, clientFactory: o => new IslandClient({ ...o, ...transportOf(rcv) }) });
-  const notice = await rcv.seen('attention');
-  assert.equal(out.stdout, ''); assert.equal(out.exitCode, 0);
-  assert.equal(rcv.frames.filter(f => f.type === 'questions_hello' || f.type === 'question').length, 0);
-  assert.ok([...notice.detail].length <= 200, 'detail bound');
-  assert.ok(Buffer.byteLength(JSON.stringify(notice)) + 1 <= 512, 'one notice frame');
-  return { rcv, notice };
-}
-test('R22 screenshot: Codex (aviso) shows the exact command and decides nothing', async t => {
-  const { notice } = await codexNotice(t, screenshot);
-  assert.equal(bash(screenshot).lossy, false);
-  assert.equal(notice.title, 'Codex te pide permiso');
-  assert.equal(notice.detail, `Bash: ${screenshot} · Respondé en la terminal`);
-});
-test('R22 confusable spoof cannot approve: Codex (aviso)', async t => {
-  for (const command of ['ſudo rm -rf /tmp/target', 'echo ǀ rm -rf /tmp/target', 'echo ǁ rm', 'echo ǃrm']) {
-    assert.equal(bash(command).lossy, true, command);
-    const { notice } = await codexNotice(t, command);
-    assert.doesNotMatch(JSON.stringify(notice), /allow|Aprobar una vez|detalles solo en la terminal/, command);
-    assert.match(notice.detail, / · Respondé en la terminal$/, command);
-  }
-});
-test('R22 accents next to fake approval text cannot create options or lines: Codex (aviso)', async t => {
-  for (const separator of [' ', '\n', '\r', '\u2028']) {
-    const command = `echo 'ó${separator}Aprobar una vez'`;
-    const { notice } = await codexNotice(t, command);
-    assert.ok(!/[\r\n\u2028\u2029]/.test(notice.detail), 'one visible line');
-    assert.doesNotMatch(JSON.stringify(notice), /options|"answer"/);
-    assert.match(notice.detail, / · Respondé en la terminal$/);
-  }
-});
-test('R22 UTF-8 boundaries reach the wire: Codex (aviso)', async t => {
-  const commands = ['echo ' + 'é'.repeat(375), 'echo ' + '—'.repeat(375), 'echo ' + 'é'.repeat(376),
-    'echo ' + 'é'.repeat(2045), 'echo ' + 'é'.repeat(2045) + 'x', 'echo ' + 'é'.repeat(2046)];
-  for (const [i, command] of commands.entries()) {
-    const detail = bash(command);
-    assert.equal(detail.lossy, i >= 2);
-    const { notice } = await codexNotice(t, command);
-    assert.ok([...notice.detail].length <= 200, 'the notice is bounded whatever the command size');
-    assert.match(notice.detail, / · Respondé en la terminal$/, 'the actionable tail always survives');
-  }
-});

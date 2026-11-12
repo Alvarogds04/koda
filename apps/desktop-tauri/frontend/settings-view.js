@@ -599,7 +599,7 @@
   const PLAN_HASH = /^[0-9a-f]{64}$/;
   // The engine prints a CLOSED English template for the plan. The page never shows engine text: it recognises
   // the template and says the same thing in Spanish; anything else becomes one generic, true sentence.
-  const PLAN_RE = /^(Adds|Updates) the Abito (hooks|plugin) (?:(\([A-Za-z.]+(?:, [A-Za-z.]+){0,5}\)) )?(?:to|in) (~\/[\w.\/-]{1,120}|\/[\w.\/-]{1,200})\. A backup is made first\.( Codex will ask you to trust them in \/hooks\.)?( This change is large: review it in the file\.)?$/;
+  const PLAN_RE = /^(Adds|Updates) the Abito (hooks|plugin) (?:(\([A-Za-z.]+(?:, [A-Za-z.]+){0,5}\)) )?(?:to|in) (~\/[\w.\/-]{1,120}|\/[\w.\/-]{1,200})\. A backup is made first\.( Koda answers Codex permission requests from the island; Codex waits up to 120 s for your answer\. Trust the Koda hooks again in Codex \/hooks after every install or update\.)?( This change is large: review it in the file\.)?$/;
   // L32e: the two notify-only integrations have their own closed summaries (daemon agents.cjs); only these exact
   // sentences (optionally followed by the one large-change line) are shown, in Spanish. Anything else falls back.
   const NOTIFY_PLANS = Object.freeze({
@@ -620,7 +620,7 @@
     const verb = (m[1] === 'Adds' ? 'Agrega ' : 'Actualiza ') + noun;
     const joiner = m[1] === 'Adds' ? 'a' : 'en';
     const withNames = m[3] && m[1] === 'Adds' ? ` ${m[3]}` : '';
-    return `${verb}${withNames} ${joiner} ${m[4]}. Antes se hace un respaldo.${m[5] ? ' Codex te va a pedir que confíes en ellos en /hooks.' : ''}${m[6] ? ' Es un cambio grande: revisalo en el archivo.' : ''}`;
+    return `${verb}${withNames} ${joiner} ${m[4]}. Antes se hace un respaldo.${m[5] ? ' Koda responde los permisos de Codex desde la isla; Codex espera hasta 120 s tu respuesta. Después de cada instalación o actualización, volvé a confiar en los hooks de Koda desde /hooks en Codex.' : ''}${m[6] ? ' Es un cambio grande: revisalo en el archivo.' : ''}`;
   }
   const AGENTS_WAIT_MS = 4000; // how long the page waits for the engine's `agents` frame before saying so
   const LOGOUT_WORD = 'Cerrar sesión'; // gentle-dot's «Sign out»

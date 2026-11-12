@@ -2,7 +2,7 @@
 
 **Decision (explicit, human):** the island shows the FULL Bash command, with secrets redacted, so `Allow once` can be offered for commands with arguments. The redacted text goes over the local QP/1 Unix socket (private 0700 directory, 0600 socket, owner-checked) to the island. Raw, unredacted commands are never sent.
 
-`redactCommand(command) -> {text, redactions, spans}`; each secret becomes the fixed marker `[REDACTED]`; `spans` lists the original substrings that were replaced (used by the consent check below). Passes repeat until stable (max 6), so it is idempotent. Linear time (anchored heads, bounded quantifiers, manual value scanners); tests run 1 MB adversarial inputs under 500 ms each. On an internal error the whole command is hidden.
+`redactCommand(command) -> {text, redactions, spans, pathSpans}`; each secret becomes the fixed marker `[REDACTED]`; `spans` lists the original substrings that were replaced (used by the consent check below) and `pathSpans` the subset that may be a path (rule 8). Passes repeat until stable (max 6), so it is idempotent. Linear time (anchored heads, bounded quantifiers, manual value scanners); tests run 1 MB adversarial inputs under 500 ms each. On an internal error the whole command is hidden.
 
 ## Patterns (`PATTERNS` export mirrors this list)
 
@@ -48,6 +48,19 @@ Evaluated on the ORIGINAL command. All must hold, otherwise lossy (options `deny
 6b. No hidden shell syntax: if ANY text replaced by `[REDACTED]` (the `spans`) contains one of `; & | < > ` $ ( ) { } \`, a newline or a carriage return, the command is lossy with the fixed reason `hidden text may contain shell syntax` (false positives such as a password containing `$` are accepted). In addition the header, URL userinfo, escaped-JSON and unterminated PEM spans are clamped to stop at the first unquoted `; & | < >` (or the closing quote), so the visible command keeps its structure. Property-tested: whenever a command is lossless, no span has such a character and the display is `Bash: ` + the redacted text.
 6c. Quote parity: scanning the ORIGINAL left to right with a shell-aware quote tracker (single quotes literal; double quotes and `$'..'` with backslash escapes), the command is lossy with the same fixed reason when any replaced span starts and ends in a different quote state, contains an odd number of unescaped `'`/`"`, or when any visible character has a different quote state in the display than in the original. So a visible `; & | < >` is quoted/unquoted in the display exactly as in the original. Root cause also fixed: the bare-scalar JSON value consumes whole quoted chunks (to the matching closing quote) and never stops inside one; an unclosable quote stays visible and only what follows is hidden. Property-tested (6000 quote-heavy commands) with an independent tracker.
 7. Also lossy: the redacted text begins with `[REDACTED]` (the command word itself was hidden). Number of redactions does not matter; the question gets ` (secrets hidden)` when it is above 0.
+8. Hidden path (K2-08 T1b, human decisions L8 «a» and L10 «a»): lossy with the fixed reason `hidden text may be a path` (Spanish card: «el texto oculto puede ser una ruta») when any replaced span MAY BE A PATH, so over-redaction can never hide the target of a command while still offering `allow`. Applies to Claude and Codex. `redactCommand` returns these spans as `pathSpans`; WHICH text is redacted never changes (text and spans stay byte-identical; a frozen snapshot test and a fuzz against the previous code guard this). A span is path-like, whatever rule hid it, when its ORIGINAL text:
+   - contains `/` or `\`; or
+   - is exactly `.` or `..` after stripping surrounding quotes (`--token ..`, `--token '.'`); or
+   - starts like a path root, optionally after an opening quote: `~` or a drive letter `C:`; or
+   - (hex/base64 runs only) sits right next to `/` or `\`, i.e. is a whole path component. There is no `://` exception any more (D-b): `rm -rf ~/x://<40 hex>` shows `~/x://[REDACTED]` but the shell targets `~/x:/<hex>`, so it is lossy.
+
+   Now lossy (D-a: a relative path given as the value of a secret-named option): `--password=foo/../../etc/pw`, `--api-key etc/pw`, `--token=a/b`, `--token "a b/c"`, `--password-file=mystuff/pw.txt`, `PASSWORD=mystuff/pw.txt …`, `curl --key certs/client.crt`, `-H "X-Api-Key: dir/sub/file"`, `--token ..`, `--token .`, `curl -u bob:p/w`; and the verifier's D1 case `rm -rf /home/alvaro/Apps/koda/worktrees/k2-08-codex-respuesta/apps`, shown as `rm -rf [REDACTED]` (before T1b: `allow` with «secretos ocultos»).
+
+   The ONLY exception: the scheme-prefixed value of an `Authorization` / `Proxy-Authorization` header (`Bearer <token>`, `Basic <b64>`) stays approvable even when the token contains `/`: `curl -H "Authorization: Bearer <JWT with />" https://api.example.com`, `curl -H "Authorization: Basic <b64 with />" …`, httpie `Authorization:"Bearer …"`. It holds only when the header name begins a QUOTED shell word (`"Authorization: …` after a space, `=` or `-H`, or httpie `Authorization:"…`), the value starts with `Bearer`/`Basic`, and it has no dot segment (`./`, `../`, `/.`, `/..`). Not exempt (lossy): `-H "Authorization: Bearer ../../x"`, `-H "Authorization: Token a/b"`, an unquoted header, `"/tmp/Authorization: Bearer a/b"`, a bare `Bearer a/b` outside a header, `curl -u` user:pass containing `/`.
+
+   Still approvable (nothing path-like hidden): `sk-…`, `ghp_…` and the other token shapes; standalone hex/base64 runs with no adjacent separator (`echo <40-char base64>`, `mytool verify <40 hex>`, `/tmp/build-<hash>`); URL userinfo `scheme://user:pass@host` (its hidden part cannot contain `/`; one containing `\` is lossy); `--token=abc123`; `curl -u bob:pw`. Commands with nothing hidden are unchanged.
+
+   Accepted cost (L10): a `--token` value (or any secret-named option, variable or non-Authorization header) containing `/` is no longer approvable from the island; AWS secret keys (base64 with `/`) and Slack webhooks / secret URLs with a hidden path were already lossy.
 
 Question texts: lossless `<Agent> asks permission: Bash: <cmd>[ (secrets hidden)]`; lossy `<Agent> asks permission for Bash: <cmd, max 300 cp> (<reason>; details only in the terminal)`.
 
@@ -63,4 +76,4 @@ Question texts: lossless `<Agent> asks permission: Bash: <cmd>[ (secrets hidden)
 
 ## False-positive policy
 
-Fail closed: over-redaction is acceptable (`make KEYBOARD=us` shows `KEYBOARD=[REDACTED]`; long hashes are hidden). Over-redaction never makes a command lossless that otherwise was not, but it can hide the command word, which forces lossy.
+Fail closed: over-redaction is acceptable (`make KEYBOARD=us` shows `KEYBOARD=[REDACTED]`; long hashes are hidden). Over-redaction never makes a command lossless that otherwise was not, but it can hide the command word, which forces lossy, and a hidden path forces lossy too (rule 8).

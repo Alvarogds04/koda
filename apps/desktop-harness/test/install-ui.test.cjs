@@ -107,6 +107,21 @@ test('preview JSON schema: claude and codex, new file and existing file, remove'
   }
 });
 
+// K2-08 T3 (S2, S4): the island preview for Codex says the island answers its permissions, the waiting text Codex
+// shows and that every install or update must be trusted again in /hooks; the stale notice-only claim is gone.
+test('codex island preview notes: answered from the island, «Esperando tu respuesta en Koda», re-trust in /hooks', async t => {
+  const d = tmp(t); const p = path.join(d, 'hooks.json');
+  const j = await preview('codex', p);
+  const notes = j.notes.join('\n');
+  assert.match(notes, /Koda answers Codex permission requests from the island/);
+  assert.ok(notes.includes('«Esperando tu respuesta en Koda»'));
+  assert.match(notes, /\/hooks/);
+  assert.match(notes, /again after every install or update/);
+  assert.doesNotMatch(notes, /never answers/i);
+  const c = await preview('claude', path.join(d, 'settings.json'));
+  assert.doesNotMatch(c.notes.join('\n'), /Codex|\/hooks/, 'Claude previews stay as they were');
+});
+
 test('preview diff is bounded to 200 lines, sanitized and truncated per line', async t => {
   const d = tmp(t); const p = path.join(d, 'settings.json');
   const groups = [];

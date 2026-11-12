@@ -1004,7 +1004,7 @@
     soundCue('observeNotices', notices); // #313: only a NEW top notice sounds, never the ones already there at start-up
     const arrivals = toastGate ? toastGate.arrivals(notices) : []; // the toast's own baseline gate: boot/retained rows are not arrivals
     const fresh = finishedCycle ? finishedCycle.observe(notices, finishedAllowed()) : revealGate?.notice(notices);
-    // F6 (SN1): an attention notice alone (Codex asks in its own terminal) is signalled by the Sileo pill, not by forcing the island open
+    // F6 (SN1): an attention notice alone (a Codex plan-mode question in its own terminal) is signalled by the Sileo pill, not by forcing the island open
     const attentionOnly = arrivals.length > 0 && arrivals.every(x => x.kind === 'attention');
     // human 26-oct: Sileo toasts only while Abito is hidden; a visible island shows the attention notice itself (its Avisos strip)
     if (fresh) { if (attentionOnly && capsule.dataset.edgeHidden === 'true') edgeInteraction?.alert(); else revealIsland(false, true); } // boot, retained rows and snapshot churn are not arrivals

@@ -124,7 +124,8 @@
     if (!body) return null;
     return transient(`finished:${notice.id}`, 'finished', 'neutral', 'info', who ? `${who} terminó` : 'Una tarea terminó', body, 'Terminó; el resultado no está confirmado', 'neutral');
   }
-  /** F6 (SN1): a NEW attention notice (Codex «te pide permiso / te pregunta») -> a Sileo pill that only POINTS at the terminal.
+  /** F6 (SN1): a NEW attention notice (a Codex question asked in its terminal; since K2-08 Codex permissions use the question
+      queue instead) -> a Sileo pill that only POINTS at the terminal.
       Informational like «terminó»: no click target, no answer, no decision; the producer's own one display line is the body. */
   function attentionToast(notice) {
     if (!notice || notice.kind !== 'attention' || typeof notice.id !== 'string' || !notice.id) return null;
