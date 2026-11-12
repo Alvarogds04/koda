@@ -13,7 +13,7 @@
  * offers (`listModels`, the same catalogue `models_list` shows; custom accounts: their discovered ids).
  *
  * Projection (projectModel): before each run the Minikoda's OWN private agent dir receives exactly that one
- * credential, the account's models.json and the model defaults — the same files profile activation writes
+ * credential (the freshest copy, written back after the run: credentials.cjs, S11), the account's models.json and the model defaults — the same files profile activation writes
  * for the chat engine, never shared with it. A custom (LiteLLM/OpenAI-compatible) account is served only by
  * the guarded provider extension (custom-provider-extension.cjs), exactly like the chat.
  */
@@ -91,9 +91,10 @@ async function resolveModelChoice({ choice, listAccounts, profiles, listModels, 
  * every spawn, so a logout or a model change in the account is honoured on the next run. Throws
  * ModelChoiceError when the account lost its credential.
  */
-function projectModel({ agentDir, accountsRoot, model, custom }) {
+function projectModel({ agentDir, accountsRoot, model, custom, credential: given }) {
 	const accountDir = path.join(accountsRoot, model.accountId);
-	const credential = readJson(path.join(accountDir, "auth.json"))?.[model.provider];
+	// `given`: the freshest copy chosen under the credential locks (credentials.cjs, S11); default: the account's.
+	const credential = given ?? readJson(path.join(accountDir, "auth.json"))?.[model.provider];
 	if (!credential) refuse("account_not_signed_in");
 	const files = {
 		auth: path.join(agentDir, "auth.json"),

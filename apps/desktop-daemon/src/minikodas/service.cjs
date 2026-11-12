@@ -25,11 +25,12 @@ const { EventEmitter } = require("node:events");
 const { randomUUID } = require("node:crypto");
 const { lstatSync, readFileSync, rmSync } = require("node:fs");
 const path = require("node:path");
-const { ensurePrivateDir, writePrivateFile } = require("../isolation.cjs");
+const { ensurePrivateDir, islandPaths, writePrivateFile } = require("../isolation.cjs");
 const { LIMITS, RecipeError, validateRecipe, recipeToJson } = require("./recipe.cjs");
 const { resolveModelChoice, projectModel } = require("./model.cjs");
 const { runMinikoda, DEFAULT_RUN_TIMEOUT_MS } = require("./runner.cjs");
 const { Scheduler } = require("./scheduler.cjs");
+const { freshestCredential, readRunCredential, writeBackCredential } = require("./credentials.cjs");
 
 const MAX_MINIKODAS = 32;
 const MAX_SOURCE_BYTES = 200_000;
@@ -55,6 +56,9 @@ class MinikodaService extends EventEmitter {
 	 * @param {{listAccounts(): object[], models(provider, accountId): Promise<object[]>}} options.accounts
 	 * @param {{list(): {profiles, active}}} [options.profiles]  the chat's profiles (default model)
 	 * @param {string} options.accountsRoot
+	 * @param {{agentDir: string, activeAccountPath: string}} [options.chat]  the chat engine's agent dir and active-account
+	 *        marker: its live credential is read (freshest wins) and receives a Minikoda's refreshed OAuth token (S11)
+	 * @param {number} [options.credentialLockWaitMs]
 	 * @param {object} [options.engine]        {command, commandArgs, env, startTimeoutMs} for every Minikoda engine
 	 * @param {(recipe) => string|Promise<string>} [options.source]  content of `reads.source` for a run
 	 * @param {() => boolean} [options.isPaused]  #379 global pause: no launch while on
@@ -322,8 +326,39 @@ class MinikodaService extends EventEmitter {
 		return { started: true, runId };
 	}
 
+	/** Where a run's credential comes from and goes back to (S11). */
+	credentialScope(recipe) {
+		return {
+			accountsRoot: this.options.accountsRoot,
+			accountId: recipe.model.accountId,
+			provider: recipe.model.provider,
+			chat: this.options.chat,
+			lockWaitMs: this.options.credentialLockWaitMs,
+		};
+	}
+
+	/**
+	 * S11 write-back: the Minikoda's copy, possibly refreshed (and its refresh token rotated) by its engine, goes
+	 * back to the account and to the chat's live credential when it is fresher (credentials.cjs). `before` is
+	 * what was copied in; undefined for a copy left by an earlier run whose write-back did not complete.
+	 * Returns false when the write-back failed (the copy is then kept so the next run retries it).
+	 */
+	async settleRunCredential(recipe, agentDir, before) {
+		const after = readRunCredential(agentDir, recipe.model.provider);
+		if (after === undefined) return true;
+		try {
+			await writeBackCredential({ ...this.credentialScope(recipe), before, after });
+			return true;
+		} catch {
+			this.log(`minikoda ${recipe.id}: could not write the refreshed credential back (kept for the next run)`);
+			return false;
+		}
+	}
+
 	async execute(recipe, runId, signal) {
 		const account = () => this.options.accounts.listAccounts().find((a) => a.accountId === recipe.model.accountId);
+		const agentDir = islandPaths(this.engineRoot(recipe.id)).agentDir;
+		let copied;
 		let result;
 		try {
 			const source = await this.readSource(recipe);
@@ -336,10 +371,14 @@ class MinikodaService extends EventEmitter {
 				timeoutMs: this.runTimeoutMs,
 				engine: this.options.engine,
 				log: this.log,
-				prepareModel: (agentDir) => {
+				prepareModel: async (dir) => {
 					const a = account();
 					if (!a || a.configured !== true) throw Object.assign(new Error("account unavailable"), { name: "ModelChoiceError" });
-					projectModel({ agentDir, accountsRoot: this.options.accountsRoot, model: recipe.model, custom: a.custom === true });
+					// A copy an earlier run could not write back goes back first, so no rotated token is lost.
+					await this.settleRunCredential(recipe, dir, undefined);
+					copied = await freshestCredential(this.credentialScope(recipe));
+					if (!copied) throw Object.assign(new Error("account not signed in"), { name: "ModelChoiceError" });
+					projectModel({ agentDir: dir, accountsRoot: this.options.accountsRoot, model: recipe.model, custom: a.custom === true, credential: copied });
 					return {};
 				},
 			});
@@ -347,6 +386,8 @@ class MinikodaService extends EventEmitter {
 			this.log(`minikoda ${recipe.id}: run failed before start`);
 			result = { runId, minikoda: recipe.id, outcome: "failed", reason: "failed", proposals: [] };
 		}
+		// Every outcome (done, crash, timeout, cancel): the engine may have refreshed the token before it ended.
+		if (copied !== undefined) await this.settleRunCredential(recipe, agentDir, copied);
 		if (result.outcome === "done") {
 			await this.results.addRun({ minikoda: recipe.id, resultText: result.resultText, proposals: result.proposals });
 		} else {

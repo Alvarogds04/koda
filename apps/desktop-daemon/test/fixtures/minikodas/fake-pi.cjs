@@ -10,8 +10,12 @@
 // The built-in `bash` here only writes the marker file named by its `marker` argument into the cwd, so a
 // test can prove it never ran (and, in the negative control, that it does run when both layers allow it).
 //
-// The turn is scripted by `--script <json file>`: {steps: [{tool, args} | {text} | {crash: code} | {hang: true}]}.
-// `--report <file>` receives {argv, declared, envKeys} at startup (no env values except MINIKODA_KIT).
+// The turn is scripted by `--script <json file>`:
+//   {steps: [{tool, args} | {text} | {crash: code} | {hang: true} | {rotate: {provider, credential}}]}.
+// `rotate` mimics the SDK's OAuth refresh: read-modify-write of <agent dir>/auth.json under its lock directory
+// (auth.json.lock, as proper-lockfile does), with FAKE tokens only.
+// `--report <file>` receives {argv, declared, authSeen, ...} at startup (no env values except MINIKODA_KIT;
+// authSeen is the fake credential file the run started with).
 
 const fs = require("node:fs");
 const path = require("node:path");
@@ -62,6 +66,27 @@ async function callTool(id, name, args) {
 	}
 }
 
+function rotate({ provider, credential }) {
+	const dir = process.env.PI_CODING_AGENT_DIR;
+	const lock = path.join(dir, "auth.json.lock");
+	for (let i = 0; ; i++) {
+		try {
+			fs.mkdirSync(lock);
+			break;
+		} catch (error) {
+			if (error.code !== "EEXIST" || i > 2000) throw error;
+			Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
+		}
+	}
+	try {
+		const file = path.join(dir, "auth.json");
+		const current = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : {};
+		fs.writeFileSync(file, JSON.stringify({ ...current, [provider]: credential }, null, 2), { mode: 0o600 });
+	} finally {
+		fs.rmdirSync(lock);
+	}
+}
+
 async function runTurn() {
 	write({ type: "agent_start" });
 	let n = 0;
@@ -69,6 +94,7 @@ async function runTurn() {
 		n += 1;
 		if (step.crash !== undefined) process.exit(step.crash);
 		if (step.hang) return; // never settles
+		if (step.rotate) rotate(step.rotate);
 		write({ type: "turn_start" });
 		if (step.tool) await callTool(`call_${n}`, step.tool, step.args);
 		if (step.text !== undefined) write({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: step.text }] } });
@@ -76,6 +102,14 @@ async function runTurn() {
 	}
 	write({ type: "agent_end" });
 	write({ type: "agent_settled" });
+}
+
+function readAuth() {
+	try {
+		return JSON.parse(fs.readFileSync(path.join(process.env.PI_CODING_AGENT_DIR, "auth.json"), "utf8"));
+	} catch {
+		return null;
+	}
 }
 
 async function main() {
@@ -86,7 +120,7 @@ async function main() {
 	const report = argValue("--report");
 	if (report) {
 		const declared = selection.filter((name) => tools.has(name));
-		fs.writeFileSync(report, JSON.stringify({ argv, declared, kitEnv: process.env.MINIKODA_KIT ?? null, gentleAgents: process.env.GENTLE_PI_AGENTS ?? null, home: process.env.HOME, agentDir: process.env.PI_CODING_AGENT_DIR, cwd: process.cwd() }));
+		fs.writeFileSync(report, JSON.stringify({ argv, declared, kitEnv: process.env.MINIKODA_KIT ?? null, gentleAgents: process.env.GENTLE_PI_AGENTS ?? null, home: process.env.HOME, agentDir: process.env.PI_CODING_AGENT_DIR, cwd: process.cwd(), authSeen: readAuth() }));
 	}
 	let buffer = "";
 	process.stdin.on("data", (chunk) => {

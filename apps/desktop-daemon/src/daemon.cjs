@@ -726,6 +726,8 @@ class Daemon extends EventEmitter {
 			accountsRoot: path.join(this.root, "accounts"),
 			accounts: this.accounts,
 			profiles: this.profiles,
+			// S11: the chat's live credential (freshest wins) receives a Minikoda's refreshed OAuth token.
+			chat: { agentDir: path.join(this.root, "agent"), activeAccountPath: path.join(this.root, "active-account.json") },
 			engine: { command: cfg.command, commandArgs: [], env: this.env, ...(engineOverrides ?? {}) },
 			isPaused: () => this.server?.paused === true,
 			log: (line) => this.log(line),

@@ -103,7 +103,7 @@ class RunFailure extends Error {
  * @param {string} args.root          the Minikoda's own private engine root
  * @param {string} args.runId
  * @param {string} args.source        content the daemon prepared for this run (source_read returns it)
- * @param {(agentDir:string) => {extraExtensions?: string[]}} [args.prepareModel]  projects the model into the agent dir
+ * @param {(agentDir:string) => {extraExtensions?: string[]}|Promise<{extraExtensions?: string[]}>} [args.prepareModel]  projects the model into the agent dir
  * @param {object} [args.engine]      {command, commandArgs, env, startTimeoutMs}
  * @param {number} [args.timeoutMs]   whole-run bound (start + turn)
  * @param {string[]} [args.tools]     TEST-ONLY: widened tool selection, to prove the guard alone
@@ -123,7 +123,7 @@ async function runMinikoda({ recipe, root, runId, source = "", prepareModel, eng
 
 	let prepared;
 	try {
-		prepared = prepareModel ? prepareModel(island.agentDir) ?? {} : {};
+		prepared = prepareModel ? (await prepareModel(island.agentDir)) ?? {} : {};
 	} catch (error) {
 		return finish("failed", { reason: error?.name === "ModelChoiceError" ? "model_unavailable" : "start_failed" });
 	}
