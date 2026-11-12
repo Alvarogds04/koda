@@ -35,6 +35,18 @@ const K2_03 = Object.freeze({
   [`${V}island/island.css`]: 'recap card styles removed',
   'apps/desktop-tauri/frontend/settings-view.js': 'recap agent id, rows and plan summary removed',
 });
+// K2-05 U5c (human decision L72): Ajustes → Modelos and the per-provider/local model lists inside the Ajustes window
+// hub are removed. Exactly these files change, and why (specialists keep choosing their model: they are untouched).
+const K2_05 = Object.freeze({
+  [`${V}hub/accounts.ts`]: 'model list renderer removed: Ajustes no longer lists or chooses models (K2-05 U5c)',
+  [`${V}hub/accounts.js`]: 'generated from hub/accounts.ts',
+  [`${V}hub/chat.ts`]: 'per-provider model <select> and the chosen-models writes removed (K2-05 U5c)',
+  [`${V}hub/chat.js`]: 'generated from hub/chat.ts',
+  'apps/desktop-tauri/frontend/settings-view.js': 'Modelos tab and its model view-models removed (K2-05 U5c)',
+  'apps/desktop-tauri/frontend/settings.js': 'models panel mount, hidden body and render branch removed (K2-05 U5c)',
+});
+// Every file whose change is accounted for, by reason.
+const ALLOWED = Object.freeze({ ...K2_03, ...K2_05 });
 
 /** Repository-relative paths changed against HEAD under `root` (throws a clear error outside a git checkout). */
 function changedSinceHead(root) {
@@ -56,11 +68,11 @@ function onlyRenamed(root, p) {
 
 /** The changed files in scope that are neither a pure rename nor a listed K2-03 change. Pure: `renamed` is injectable. */
 function violations(changed, inScope, renamed) {
-  return changed.filter(inScope).filter(p => !Object.prototype.hasOwnProperty.call(K2_03, p) && !renamed(p));
+  return changed.filter(inScope).filter(p => !Object.prototype.hasOwnProperty.call(ALLOWED, p) && !renamed(p));
 }
 
 function check(root, inScope) {
   return violations(changedSinceHead(root), inScope, p => onlyRenamed(root, p));
 }
 
-module.exports = { K2_03, changedSinceHead, onlyRenamed, violations, check };
+module.exports = { K2_03, K2_05, ALLOWED, changedSinceHead, onlyRenamed, violations, check };

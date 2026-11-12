@@ -45,6 +45,11 @@ if (cwdOut) fs.writeFileSync(cwdOut, process.cwd());
 const delayMs = Number(process.env.FAKE_DELAY_MS || 0);
 const chunkedEvents = process.env.FAKE_CHUNKED === "1" || process.argv.includes("--chunked-events");
 const sessionDir = argValue("--session-dir") || ".";
+const modelFile = argValue("--model-file");
+function currentModel() {
+	if (!modelFile || !fs.existsSync(modelFile)) return undefined;
+	return JSON.parse(fs.readFileSync(modelFile, "utf8"));
+}
 
 // Session file is per-spawn so a restart sees a different current session than
 // the persisted one (exercises the switch_session recovery path). Like Pi, a
@@ -148,7 +153,9 @@ function handle(command) {
 				break;
 			}
 			if (!lazySessionFile && !fs.existsSync(sessionFile)) fs.writeFileSync(sessionFile, "", { mode: 0o600 });
-			respond(command.id, "get_state", { sessionFile });
+			// --model-file <file>: the model the engine reports in get_state (Pi's `data.model`), read at every
+			// answer so a test can change it between two reads; absent file = no model reported.
+			respond(command.id, "get_state", { sessionFile, ...(currentModel() ? { model: currentModel() } : {}) });
 			break;
 		case "switch_session": {
 			const step = nextSwitchStep();

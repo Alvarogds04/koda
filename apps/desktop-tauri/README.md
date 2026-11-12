@@ -925,47 +925,31 @@ cargo test --manifest-path apps/desktop-tauri/Cargo.toml
 #   smuggled origin refused, selection effective, fake router saw only GETs
 ```
 
-## #339 / F024 — the model row above the composer
+## K2-05 U5c — which model answers (read-only line above the composer)
 
-The chat column carries one row between «Respuesta nueva» and the composer: a
-button with the availability dot, the effective local model's name and a
-caret, plus an inline picker above it. Upstream Coucou's “Click model name
-above composer” (`windows/src/views/chat.ts:216-254`); the macOS popover
-itself (`IslandViewContent.swift:1345-1375`) is not ported, per the 0.2 scope
-rule.
+The F024 model picker is gone (human decision L72, 12 Nov 2026), together with
+Ajustes → Modelos, the per-provider/local model lists in the Ajustes hub and the
+`chosen_models` preference. The ENGINE (Gentle Shell, run by the daemon) owns the
+model; the chat only SHOWS it.
 
-**What it shows (R1/R4):** the EFFECTIVE target of the next turn — Rust has
-already resolved the active specialist into `chat:state.target`
-(`chathost::current_target` → `specialistshost::turn_snapshot`), so the row
-names exactly the model that will answer. The alias, or the profile id when it
-has none; «Sin modelo local elegido» when there is no target; and the role's
-name appended («Abito-gpt · Investigación») only when that role is what
-supplies this exact model, with a one-line note inside the picker. Plain text
-only (`textContent`), the origin rides in the accessible name without its
-scheme, and never an endpoint, key, account or provider (S5).
+The chat column carries one plain-text line between «Respuesta nueva» and the
+composer (`#chat-model-line`): the name of the model the engine will answer with
+(its `name`, or its `id` when it has none). No button, no picker, nothing to
+click or choose; it is hidden while the model is unknown — never a placeholder
+name — and while the engine is not ready.
 
-**What a click does (R2/R3):** toggles the picker over the SAME closed
-`models_action` set Ajustes → Modelos uses — `list` on open,
-`select{profile_id}` on a row — so a selection applies from the NEXT message
-(a running turn keeps its frozen target) and nothing new reached the wire: no
-new verb, no new preference, no Rust change, and `chat_action`'s closed set is
-untouched. Escape closes the picker first; a running turn freezes the row; a
-CHOSEN target that is down or blocked disables it, while no target chosen (or
-no preflight verdict yet) keeps it enabled — otherwise the picker would be a
-dead end exactly when the human needs it.
-
-**What it is not:** not a per-turn override; not a provider picker (the chat
-lane is local-only, `src/chatlane.rs`; cloud chips would need a new wire verb
-plus a daemon round trip and engine restart, out of 0.2); and it never writes
-a role. `chat.js` may invoke exactly `chat_action`, `open_chat_url`,
-`models_action {list,select}` and `specialists_action {view}` — a check pins
-that set so a later edit cannot grow it silently.
-
-### Verifying #339
+**Where it comes from:** Pi's own `get_state` `data.model`, read by the daemon
+(`runtime.cjs` `modelIdentity`, refreshed after a model switch) and published in the
+`ready` / `agent_state` status as `model: { provider?, id, name? }` (closed
+identity; the key is absent when the engine reported none). Rust folds it
+(`chatclient.rs` `engine_model`: bounded plain strings, no control characters) and
+projects it as `chat:state.engine_model` (`null` when unknown or when the engine
+is not `ready`). `chat-view.js` `engineModelLine` turns it into text; the page writes
+it with `textContent`. Specialists keep choosing their own model exactly as before
+(`specialists_action` / `models_action`, untouched).
 
 ```sh
-node apps/desktop-tauri/test-node/chat-view-check.cjs         # 52 checks (5 pure F024: label/aria/note/enabled/markup)
-node apps/desktop-tauri/test-node/chat-model-picker-check.cjs # 10 checks, fake DOM driving the REAL chat.js
+node apps/desktop-tauri/test-node/chat-view-check.cjs         # pure helpers + the K2-05 U5c read-only model line (text, unknown → hidden, no picker)
 node apps/desktop-tauri/tests/composer-ime-check.cjs          # 10 checks: the keyboard contract still holds
 # cargo test runs both harnesses through tests/frontend_chat_view.rs
 ```
@@ -1459,7 +1443,6 @@ apps/desktop-tauri/
     ├── island.js         # motion, pointer forwarding, notices + approval card (M2/M3), chat view motion (U1)
     ├── chat-view.js      # PURE U1 helpers (labels, send gate, announcements) — node-tested
     ├── chat.js           # U1 chat surface (composer, transcript, live region)
-    ├── models.js         # U2 model picker panel (inside the chat view)
     └── clay-engine.js    # frozen R6, byte-for-byte, DO NOT EDIT
 ```
 
@@ -1522,8 +1505,8 @@ removes exactly our files and the entry. Tests: `test-node/install-check.cjs`
 ## #408 — Unified Ajustes with sub-tabs and an island that grows to fit
 
 - **One entry:** the gear (overview and chat header) opens **Ajustes**. The separate Cuentas, Conectores and Modelo header buttons are gone; the old open events (`abito:settings-select` with a tab id) still deep-link into the matching tab.
-- **Sub-tabs** (a real `role="tablist"`: arrows wrap, Home/End, roving tabindex, `aria-selected`, 44 px, visible focus): Cuentas · Conectores · Modelos · Especialistas · Pills · Apariencia · General. Names, order, icons and hints live in one table, `settings-view.js` `TABS`; rename or reorder there.
-- **Where things went:** atajo + sonido → General; saludo, movimiento, tema, colores → Apariencia; the local-models picker (`#models`, same `models.js`) → Modelos.
+- **Sub-tabs** (a real `role="tablist"`: arrows wrap, Home/End, roving tabindex, `aria-selected`, 44 px, visible focus): General · Conexiones · Blobs · Apariencia (K2-05 U5c: «Modelos» is gone). Names, order, icons and hints live in one table, `settings-view.js` `TABS`; rename or reorder there.
+- **Where things went:** atajo + sonido → General; saludo, movimiento, tema, colores → Apariencia. K2-05 U5c: the local-models picker (`#models`, `models.js`) was removed; the engine owns the chat model.
 - **Cuentas / providers (#410 r2):** one compact LIST row per provider (`providerRows`): the provider name, its status **Conectado / No conectado / En curso / Error**, and two connect buttons — `API` (manual key) and `Auth` (account sign-in) — only for a method the provider offers. Nothing else per row by default: a live login collapses the row to «Cancelar» with the device code / URL / masked prompt under it, a connected row adds «Cerrar sesión», an error or cancel stays on the row that caused it. Errors are the UI's own sentences; engine text is never rendered. Same daemon protocol and the same masked-field → `auth_reply` → cleared path; approvals stay UI-only.
 - **Auto-expand (S4):** opening Ajustes calls `settings_view {open:true}`; Rust (`geometry::settings_visible`: 720 wide, height `min(680, work area − gaps)`, ≥ 240, narrower on small screens) stages the resize on the docked edge and clamps it to the work area. Closing sends `{open:false}` and the previous chat rectangle is restored. The page never sends a size; the payload is exactly one boolean. Compact and overview sizes are untouched.
 - **Tests:** `test-node/settings-view-check.cjs` (tabs table, tablist keys, provider rows), `test-node/pills-check.cjs` (tab routing, size request), `src/core.rs` tests (grow, exact restore, small work areas, forget on leave) and `settingshost` payload test.

@@ -712,6 +712,22 @@ function encodeRecord(record) {
 }
 
 /**
+ * K2-05 U5c: the model the engine answers with, as the closed identity the island may show
+ * (provider, id, name: bounded plain strings). It is read ONLY from Pi's own `get_state`
+ * `data.model`; anything else in that object (inputs, costs, keys) never leaves here, and a
+ * state without a usable model is `undefined` (unknown), never a guess.
+ */
+function modelIdentity(model) {
+	if (!model || typeof model !== "object") return undefined;
+	const text = (value) => (typeof value === "string" && value.trim() ? value.trim().slice(0, 128) : undefined);
+	const id = text(model.id);
+	if (!id) return undefined;
+	const provider = text(model.provider);
+	const name = text(model.name);
+	return { ...(provider ? { provider } : {}), id, ...(name ? { name } : {}) };
+}
+
+/**
  * The island agent engine. Start with `start()`, send commands with
  * `request()` (correlated, timeout-bounded) or `send()` (no response
  * expected), stop with `stop()`.
@@ -761,6 +777,8 @@ class AgentEngine extends EventEmitter {
 		this.chains = {};
 		this.sessionChange = undefined;
 		this.sessionEpoch = 0;
+		/** K2-05 U5c: the model the engine reports it answers with (closed identity), or undefined = unknown. */
+		this.model = undefined;
 		this.turnCounter = 0;
 		this.log = options.log ?? (() => {});
 		this.status = "stopped";
@@ -927,6 +945,7 @@ class AgentEngine extends EventEmitter {
 				throw new Error("agent session switch was not confirmed");
 			}
 			this.sessionFile = sessionFile;
+			this.adoptModel(modelIdentity(state?.data?.model));
 			this.sessionEpoch += 1;
 			this.persistSession(sessionFile);
 			this.sessionChange = undefined;
@@ -1143,6 +1162,7 @@ class AgentEngine extends EventEmitter {
 				return;
 			}
 			this.sessionFile = after?.data?.sessionFile ?? current;
+			this.model = modelIdentity(after?.data?.model); // announced by the `ready` status that follows
 			if (!this.isOwnedSessionFile(this.sessionFile, true)) throw new Error("agent session is unavailable");
 			// Koda deviation (kept from the former recovery check, now for every reopen): a
 			// switch the engine ACKs but does not apply is an error like any other, so ready
@@ -1310,6 +1330,7 @@ class AgentEngine extends EventEmitter {
 		this.sessionChange = undefined;
 		this.clearTurn();
 		this.sessionFile = undefined;
+		this.model = undefined; // a stopped engine answers with nothing
 		this.child = undefined;
 		const reason = new Error(`agent exited (${signal ?? `code ${code}`})`);
 		for (const pending of [...this.pending.values()]) {
@@ -1351,6 +1372,28 @@ class AgentEngine extends EventEmitter {
 			});
 		}, delay);
 		this.setStatus("restarting");
+	}
+
+	/** Adopts the reported model; emits "model" only when it really changed. */
+	adoptModel(next) {
+		if (JSON.stringify(next ?? null) === JSON.stringify(this.model ?? null)) return;
+		this.model = next;
+		this.emit("model", next);
+	}
+
+	/**
+	 * K2-05 U5c: asks the engine which model it answers with now (Pi `get_state` `data.model`),
+	 * for a change that does not restart it (a model switch). A failed read changes nothing.
+	 */
+	async refreshModel() {
+		if (this.status !== "ready") return;
+		const child = this.child;
+		try {
+			const state = await this.rawRequest({ type: "get_state" }, this.switchTimeoutMs);
+			if (child === this.child && this.status === "ready") this.adoptModel(modelIdentity(state?.data?.model));
+		} catch {
+			// unknown stays as it was: the readout never guesses
+		}
 	}
 
 	setStatus(state) {

@@ -13,11 +13,11 @@
   // ---- screens ------------------------------------------------------------------------------------------------
   // Copied from gentle-dot (MIT): one icon button per screen in the chat header; each screen COVERS the chat
   // body with a title, a close button and a one-line hint. Opening one closes the others.
-// #442: five tabs, General first; #440 keeps the design's copy diet.
+// #442: four tabs, General first; #440 keeps the design's copy diet. K2-05 U5c (L72): the
+  // «Modelos» tab is gone — the engine owns the model, Ajustes does not choose it.
   const TABS = Object.freeze([
     Object.freeze({ id: 'general', title: 'General', icon: 'gear', label: 'General', hint: '' }),
     Object.freeze({ id: 'accounts', title: 'Conexiones', icon: 'plug', label: 'Conexiones', hint: '' }),
-    Object.freeze({ id: 'models', title: 'Modelos', icon: 'chip', label: 'Modelos', hint: 'Modelos que usa Koda' }),
     Object.freeze({ id: 'pills', title: 'Blobs', icon: 'ring', label: 'Blobs', hint: '' }),
     Object.freeze({ id: 'appearance', title: 'Apariencia', icon: 'eye', label: 'Apariencia', hint: '' }),
 
@@ -434,67 +434,6 @@
     return accountRows(state).filter(r => signedIn.has(r.accountId)).map(r => Object.assign({}, r, { signedIn: !r.local }));
   }
 
-  // ---- #414: Ajustes → Modelos — one group per provider, the models of the CONNECTED ones ------------------------
-  // The engine reports the catalogue (`models` frame, folded by agentclient) and the typed pref
-  // `chosen_models` holds what the human marked. Nothing here is invented: a provider the engine
-  // does not name never renders, and a disconnected one is a hint to Conexiones, not a guess.
-  const chosenOf = chosen => (chosen && typeof chosen === 'object' && !Array.isArray(chosen)) ? chosen : {};
-  function isProviderConnected(state, providerId) {
-    const provider = providerOf(state, providerId);
-    return !!provider && (provider.configured === true || !!accountOfProvider(state, providerId));
-  }
-  const UNPROVEN_SUB = 'Guardado · sin probar';
-  function modelsTabView(state, chosen) {
-    // No engine (or not yet answered) is a wait or a problem in the same words as Conexiones.
-    const cv = connectionView(state);
-    if (cv && cv.kind !== 'connecting' && !cv.starting) return { kind: 'no_engine', word: cv.word, icon: cv.icon, tone: cv.tone, aria: cv.aria, groups: [] };
-    if (!state || state.connection !== 'connected') return { kind: 'connecting', word: 'Conectando', icon: 'ring', tone: 'live', aria: 'Conectando con el motor del agente.', groups: [] };
-    const store = chosenOf(chosen);
-    const models = Array.isArray(state.models) ? state.models : [];
-    const groups = ((state.providers) || []).map(p => {
-      const name = String(p.name || p.id);
-      // T7.2 (Q2): a provider whose ONLY account is a locally saved key (accounts frame:
-      // local===true + configured, no engine account, provider not configured) lists its models
-      // but is saved, never proven: «Guardado · sin probar». No new wire field.
-      const savedLocal = ((state.accounts) || []).some(a => a && a.provider === p.id && a.local === true && a.configured === true);
-      const onlyLocal = savedLocal && p.configured !== true && !accountOfProvider(state, p.id);
-      if (!isProviderConnected(state, p.id) && !onlyLocal) {
-        return { id: p.id, name, connected: false, hint: `Conectá ${name} en Conexiones para ver sus modelos.` };
-      }
-      const list = Array.isArray(store[p.id]) ? store[p.id].filter(x => typeof x === 'string') : [];
-      return {
-        id: p.id, name, connected: true,
-        // T7.2: the capability chips read ONLY the closed fields the engine frame already
-        // carries (agentclient `models` fold): reasoning and contextWindow. Nothing is
-        // invented — an absent/zero context and a false reasoning draw no chip.
-        models: models.filter(m => m && m.provider === p.id && typeof m.id === 'string')
-          .map(m => ({ id: m.id, name: String(m.name || m.id), chosen: list.includes(m.id),
-            sub: onlyLocal ? UNPROVEN_SUB : '',
-            reasoning: m.reasoning === true,
-            contextWindow: Number.isFinite(m.contextWindow) && m.contextWindow > 0 ? m.contextWindow : null })),
-      };
-    });
-    return { kind: 'ready', groups };
-  }
-  // One toggle: add the model to its provider's list, or take it out; an emptied provider drops its
-  // key (the typed pref then stores no key at all). Plain objects only: prototype keys never survive.
-  function chosenToggle(chosen, providerId, modelId) {
-    const store = chosenOf(chosen);
-    const list = Array.isArray(store[providerId]) ? store[providerId].filter(x => typeof x === 'string') : [];
-    const next = list.includes(modelId) ? list.filter(x => x !== modelId) : [...list, modelId];
-    const out = {};
-    for (const key of Object.keys(store)) if (key !== providerId && Array.isArray(store[key])) out[key] = store[key];
-    if (next.length) out[providerId] = next;
-    return out;
-  }
-  // The closed wire payload: the WHOLE list of that provider replaces what is stored.
-  function chosenModelsPayload(chosen, providerId) {
-    const store = chosenOf(chosen);
-    const list = Array.isArray(store[providerId]) ? store[providerId].filter(x => typeof x === 'string') : [];
-    return { action: 'set_chosen_models', provider: String(providerId), models: list };
-  }
-
-
   // ---- Claves (#467): the OS key store, presence only --------------------------------------------------------------
   // Layout of the section adapted from Coucou src/settings/main.ts (API keys), Copyright (c) 2026 Louis Raillé, MIT.
   // The ids mirror KNOWN_KEYS of src/secrets.rs (the host refuses anything else). Labels are OURS; the page never
@@ -886,7 +825,6 @@
   }
 
   return { PI_SECTIONS, KEY_IDS, keyRows, keyPayload, keyError, ownedAccounts, colorRows, soundGainProblem, gainPercent, autoCloseSegments, islandSizeSegments, islandSizeProblem, isSettingsWindow, settingsWindowView, quickPanelView, displayNameProblem, islandInteractionView, autoCloseProblem, commandOutcome, hotkeySetOutcome, makeDrafts, providerRows, cancelPlan, TABS, tabById, tabAlias, servicesGroupVisible, tabKeyTarget, METHOD_CARDS, providerList, loginPlan, pendingLogin, pendingLoginReady, connectedAccounts, AGENT_IDS, agentsView, directOutcome, agentActionFailure, planSummary, AGENTS_WAIT_MS, CONNECT_WAIT_MS, LOGOUT_WORD, SOUND_DEFAULT: false, connectionView, accountRows, loginMethods, createValidity,
-    modelsTabView, chosenToggle, chosenModelsPayload,
     maskInput, promptView, replyValid, eventView, safeWebUrl, flowOutcome, connectorsView, soundDefault, generalView, captureCombo,
     maskInput, promptView, replyValid, eventView, safeWebUrl, flowOutcome, connectorsView, soundDefault, generalView, captureCombo,
     daemonRestartView, daemonRestartOutcome,

@@ -367,7 +367,7 @@ const ERROR_CODES: [&str; 20] = [
 #[serde(rename_all = "camelCase")]
 pub struct ChatState {
     connection: String,
-    /// The folded `agent_state` frame: busy/status/paused only.
+    /// The folded `agent_state` frame: busy/status/paused and the engine's model identity (or null).
     agent: Value,
     /// The chat log: history pages replace it, `earlier` pages prepend, finished
     /// streams append. Bounded by `MAX_MESSAGES`.
@@ -688,11 +688,17 @@ impl ChatState {
             "ready" | "agent_state" => {
                 let s = frame.get("state").filter(|s| s.is_object()).unwrap_or(frame);
                 let status = s.get("status").and_then(Value::as_str).filter(|s| matches!(*s, "ready" | "restarting" | "stopped" | "starting" | "unavailable"));
-                let agent = json!({
+                let mut agent = json!({
                     "busy": s.get("busy").and_then(Value::as_bool).unwrap_or(false),
                     "status": status,
                     "paused": s.get("paused").and_then(Value::as_bool).unwrap_or(false),
                 });
+                // K2-05 U5c: the engine's own model identity (daemon `get_state`), closed fields only;
+                // the key exists only while one is known (the existing shape is otherwise untouched)
+                let model = engine_model(s.get("model"));
+                if !model.is_null() {
+                    agent["model"] = model;
+                }
                 let mut changed = false;
                 // a quiet engine ends the run: the next run's output answers the next prompt
                 if agent["busy"] != json!(true) {
@@ -1680,6 +1686,37 @@ fn join_reply(a: &str, b: &str) -> String {
 /// K2-05 boot order = Gentle Dot (store.ts agentState starts at "starting"; ChatSurface
 /// statusText «Starting the assistant…» / «The assistant is restarting…»): an engine that is
 /// starting or restarting is a wait, never a downed model; sends stay refused until ready.
+/// K2-05 U5c: the engine's model as the closed identity the page may show: `provider`, `id`, `name`,
+/// plain strings of at most 128 chars without control characters; `null` when there is no usable `id`.
+fn engine_model(raw: Option<&Value>) -> Value {
+    let Some(obj) = raw.and_then(Value::as_object) else { return Value::Null };
+    let text = |key: &str| {
+        obj.get(key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|t| !t.is_empty() && t.chars().count() <= 128 && !t.chars().any(char::is_control))
+    };
+    let Some(id) = text("id") else { return Value::Null };
+    let mut out = serde_json::Map::new();
+    if let Some(provider) = text("provider") {
+        out.insert("provider".into(), json!(provider));
+    }
+    out.insert("id".into(), json!(id));
+    if let Some(name) = text("name") {
+        out.insert("name".into(), json!(name));
+    }
+    Value::Object(out)
+}
+
+/// The model line of the projection: only while the engine is ready (a stopped, restarting or
+/// unreachable engine answers with nothing, so a stale name is never shown).
+fn engine_model_view(chat: &Value) -> Value {
+    if !chat_connected(chat) || chat.pointer("/agent/status").and_then(Value::as_str) != Some("ready") {
+        return Value::Null;
+    }
+    chat.pointer("/agent/model").cloned().unwrap_or(Value::Null)
+}
+
 fn availability_and_producer(chat: &Value) -> (Value, Value) {
     let note = "Chat con el motor de Koda.";
     let pair = |state: &str, message: &str, producer: &str| {
@@ -2204,6 +2241,8 @@ impl HostInner {
             "history_problem": Value::Null,
             "history_persisted": true,
             "conversation_specialist": Value::Null,
+            // K2-05 U5c: the model the ENGINE answers with, read-only (never chosen here); null while unknown
+            "engine_model": engine_model_view(chat),
             "target": Value::Null,
             "producer": producer,
             // K2-05 U4b: the agent's pending questions (Gentle Dot `asks`), one card each

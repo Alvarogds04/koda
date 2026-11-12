@@ -84,14 +84,14 @@ test('S21 Chat: «Probar» is VISIBLE on a card without a key, disabled, and its
   for (const p of probes) { assert(p.visible, `${p.card}: Probar not visible`); assert(p.disabled, `${p.card}: Probar must be disabled without a key`); assert.equal(p.reason, 'Guarda una clave para poder probarla.'); assert(p.reasonVisible, `${p.card}: the reason must be on screen`); }
 });
 
-test('S4 Chat: ONE list of AI providers: no second «Configuración de proveedores» / «Buscar proveedor» system, one key field per provider, each card has its model', async r => {
+test('S4 Chat: ONE list of AI providers: no second «Configuración de proveedores» / «Buscar proveedor» system, one key field per provider, and no card offers a model (K2-05 U5c)', async r => {
   await r.go('Chat');
   const page = await r.text('.hub-page');
   for (const dup of ['Configuración de proveedores', 'Buscar proveedor', 'Cuentas conectadas']) assert(!page.includes(dup), `duplicate system still on Chat: ${dup}`);
   const keys = await r.page.evaluate(() => [...document.querySelectorAll('input[id^="chat-key-"]')].map(i => i.id));
   assert.equal(new Set(keys).size, keys.length, `a key field twice: ${JSON.stringify(keys)}`);
   const cards = await r.page.evaluate(() => [...document.querySelectorAll('.abito-card')].filter(c => c.querySelector('input[id^="chat-key-"]')).map(c => [c.querySelector('h2').textContent.trim().split(/\s/)[0], !!c.querySelector('select[id^="chat-"][id$="-model"]')]));
-  assert(cards.length >= 4 && cards.every(([, hasModel]) => hasModel), `every provider card owns its model: ${JSON.stringify(cards)}`);
+  assert(cards.length >= 4 && cards.every(([, hasModel]) => !hasModel), `no card offers a model: the engine owns the model (${JSON.stringify(cards)})`);
   const names = cards.map(c => c[0]); assert.equal(new Set(names).size, names.length, `a provider twice: ${names}`);
   assert(await r.page.evaluate(() => !!document.getElementById('chat-window-context') && !!document.getElementById('chat-extras')), 'slots for the context toggle');
 });

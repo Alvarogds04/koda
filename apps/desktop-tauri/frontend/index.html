@@ -74,7 +74,6 @@
   <script defer src="chat-view.js"></script>
   <script defer src="chat-cards.js"></script>
   <script defer src="chat.js"></script>
-  <script defer src="models.js"></script>
   <!-- #306: settings panel (providers, connectors, general). -->
   <script defer src="specialists-view.js"></script>
   <script defer src="pill-settings.js"></script>
@@ -316,20 +315,9 @@
           </div>
           <ol id="chat-log" tabindex="0" aria-label="Historial de la conversación"></ol>
           <button id="chat-new" type="button" hidden aria-label="Ir al final" title="Ir al final"><span class="ico" data-icon="arrow-down"></span><span class="dot"></span></button>
-          <!-- F024: the model row above the composer — the LOCAL model of the NEXT turn
-               (chat:state.target, already resolved by Rust) and its picker. The picker reads
-               the SAME closed `models_action` set as Ajustes → Modelos (list/select): it can
-               never name an endpoint, a key, an account or a provider (S5). Plain text only. -->
-          <div id="chat-model-row">
-            <button id="chat-model-btn" type="button" disabled aria-expanded="false" aria-controls="chat-model-picker">
-              <span class="model-dot" aria-hidden="true"></span>
-              <span class="word" id="chat-model-name"></span>
-              <span class="model-caret" aria-hidden="true"></span>
-            </button>
-            <div id="chat-model-picker" role="group" aria-label="Modelos locales" hidden inert>
-              <p id="chat-model-note" class="picker-note"></p>
-            </div>
-          </div>
+          <!-- K2-05 U5c: which model the engine answers with — read-only text (chat:state.engine_model), hidden while
+               unknown. No button, no picker: the engine owns the model. -->
+          <p id="chat-model-line" hidden></p>
           <form id="chat-composer" novalidate>
             <label for="chat-input" class="sr-only">Mensaje para Koda</label>
             <textarea id="chat-input" rows="1" maxlength="8000" spellcheck="true"
@@ -368,22 +356,6 @@
             <section id="integrations-n8n" hidden></section>
             <section id="integrations-calendar" hidden></section>
           </div><!-- /connections-more -->
-          <!-- U2: self-hosted model choice — an internal panel of the same
-               island (replaces the transcript while open). Local only, no
-               keys; listed is never shown as ready. -->
-          <div id="models" inert role="tabpanel" aria-labelledby="settings-tab-models" aria-label="Modelo local">
-            <!-- #309: the buttons come first so wrapping pushes the meters to a second row, never a button out of the island -->
-            <div id="models-bar">
-              <span id="models-count" class="chip" role="img"><span class="ico" data-icon="chip"></span><span class="word" id="models-count-word"></span></span>
-              <button id="models-info" class="icon-btn" type="button" aria-label="Ver detalle de los modelos" aria-expanded="false" aria-controls="models-note"><span class="ico" data-icon="info"></span></button>
-              <button id="models-refresh" class="icon-btn" type="button" aria-label="Actualizar modelos locales"><span class="ico" data-icon="refresh"></span></button>
-              <ul id="models-meters" aria-label="Recursos de esta máquina"></ul>
-            </div>
-            <p id="models-note" class="sr-only"></p>
-            <label class="models-search-field" for="models-search"><span class="sr-only">Buscar modelos locales</span><input id="models-search" type="search" placeholder="Buscar modelos" autocomplete="off"></label>
-            <ul id="models-list" aria-label="Modelos locales"></ul>
-            <p id="models-resources" class="sr-only"></p>
-          </div>
           <p id="settings-live" class="sr-only" role="status" aria-live="polite"></p>
         </div>
         <p id="chat-live" class="sr-only" role="status" aria-live="polite"></p>

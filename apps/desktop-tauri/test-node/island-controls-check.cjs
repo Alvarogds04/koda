@@ -105,12 +105,13 @@ test('chat body top row (K2-05 T4 U4, one continuous chat): Â«Cargar anterioresÂ
   assert.equal(decls('#chat-history-label')['font-size'], 'var(--fs-caption)');
   assert.match(fs.readFileSync(path.join(dir, 'chat.js'), 'utf8'), /chat-history-label[\s\S]{0,200}turns\.length/, 'the label shows only while the conversation has no turns');
 });
-test('chat model chip keeps its 24px chip and wears Coucou\'s model-btn tokens (500 10.5px, rgba .06 fill, r999) (S10 L22)', () => {
-  const c = decls('#chat-model-btn');
-  assert.equal(c['min-height'], '24px');
-  assert.equal(c.font, '500 10.5px var(--font)');
-  assert.equal(c.background, 'rgba(255, 255, 255, 0.06)');
-  assert.equal(c['border-radius'], 'var(--radius-full)');
+test('K2-05 U5c (L72): the read-only model line keeps its own tokens and hides while unknown; the chip/picker are gone', () => {
+  const c = decls('#chat-model-line');
+  assert.equal(c['text-overflow'], 'ellipsis', 'a long model name truncates instead of wrapping the composer');
+  assert.equal(c.font, '600 var(--fs-caption)/1.2 var(--font-ui)');
+  assert.equal(decls('#chat-model-line[hidden]')['display'], 'none', 'hidden until the engine says which model answers');
+  const html = fs.readFileSync(path.join(dir, 'index.html'), 'utf8');
+  assert.doesNotMatch(html, /chat-model-btn|chat-model-picker|id="chat-model-row"/, 'no button, no picker: the engine owns the model');
 });
 console.log(`island-controls-check: ${failed ? failed + ' FAILED' : 'all passed'}`);
 if (failed) process.exitCode = 1;
@@ -161,7 +162,7 @@ test('F --focus-ring is a muted accent token defined once, never lime and never 
   assert.doesNotMatch(root['--focus-ring'], /var\(--go\)|#b8ff2e|transparent/i);
   assert.match(root['--focus-ring'], /rgba\(255, 255, 255, 0?\.[3-9]\d*\)|var\(--dim-[123]\)/, 'a muted white or a dim token');
 });
-test('F the same thin ring applies to the other text fields of the island (question free text, model search), not to buttons', () => {
+test('F the same thin ring applies to the other text fields of the island (question free text), not to buttons', () => {
   assert.equal(decls('#question-text:focus-visible').outline, '1px solid var(--focus-ring)');
   assert.equal(decls('#chat-input:focus-visible').outline, '1px solid var(--island-live)');
 });

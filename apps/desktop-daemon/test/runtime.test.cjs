@@ -82,6 +82,36 @@ function makeEngine(t, overrides = {}) {
 	return { engine, dir, spawnLog, argvOut, envOut, cmdLog };
 }
 
+test("U5c: the engine reports the model it answers with (get_state data.model), nothing when it reports none", async (t) => {
+	const none = makeEngine(t);
+	await none.engine.start();
+	assert.equal(none.engine.model, undefined, "no model reported: unknown, never a guess");
+	await none.engine.stop();
+
+	const modelDir = fs.mkdtempSync(path.join(os.tmpdir(), "abito-model-test-"));
+	t.after(() => fs.rmSync(modelDir, { recursive: true, force: true }));
+	const modelFile = path.join(modelDir, "model.json");
+	fs.writeFileSync(modelFile, JSON.stringify({ provider: "anthropic", id: "claude-sonnet-5-5", name: "Claude Sonnet 5.5", input: ["text", "image"], apiKey: "sk-never" }));
+	const { engine } = makeEngine(t, { extraArgs: ["--model-file", modelFile] });
+	t.after(() => engine.stop().catch(() => {}));
+	await engine.start();
+	assert.deepEqual(engine.model, { provider: "anthropic", id: "claude-sonnet-5-5", name: "Claude Sonnet 5.5" }, "only the closed identity fields");
+
+	const seen = [];
+	engine.on("model", (m) => seen.push(m));
+	fs.writeFileSync(modelFile, JSON.stringify({ provider: "openai", id: "gpt-x" }));
+	await engine.refreshModel();
+	assert.deepEqual(engine.model, { provider: "openai", id: "gpt-x" });
+	assert.deepEqual(seen, [{ provider: "openai", id: "gpt-x" }]);
+	await engine.refreshModel();
+	assert.equal(seen.length, 1, "an unchanged model emits nothing");
+	fs.unlinkSync(modelFile);
+	await engine.refreshModel();
+	assert.equal(engine.model, undefined, "the engine stopped reporting one: unknown again");
+	await engine.stop();
+	assert.equal(engine.model, undefined);
+});
+
 test("start reaches ready and correlates a get_state request", async (t) => {
 	const { engine, argvOut, envOut } = makeEngine(t);
 	const statuses = [];

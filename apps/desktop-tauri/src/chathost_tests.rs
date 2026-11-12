@@ -296,8 +296,8 @@ fn chathost_the_settings_window_can_never_chat() {
 
 // ---- the chat:state projection ------------------------------------------------------------
 
-const CONVERSATION_KEYS: [&str; 15] = [
-    "active_turn", "answered_asks", "asks", "availability", "conversation_id", "conversation_specialist", "evicted", "history_before",
+const CONVERSATION_KEYS: [&str; 16] = [
+    "active_turn", "answered_asks", "asks", "availability", "conversation_id", "conversation_specialist", "engine_model", "evicted", "history_before",
     "history_persisted", "history_problem", "history_skipped", "producer", "queue_note", "target", "turns",
 ];
 const TURN_KEYS: [&str; 12] = [
@@ -309,6 +309,20 @@ fn keys(v: &Value) -> Vec<String> {
     let mut k: Vec<String> = v.as_object().expect("object").keys().cloned().collect();
     k.sort();
     k
+}
+
+#[test]
+fn chathost_projects_the_engines_model_and_null_when_unknown() {
+    let link = FakeLink::new();
+    let host = ChatHost::new();
+    assert_eq!(host.project(&link.view(), T0)["engine_model"], json!(null), "no model known: null, never a placeholder");
+    link.frame(json!({"type":"agent_state","busy":false,"status":"ready","paused":false,"model":{"provider":"anthropic","id":"claude-sonnet-5-5","name":"Claude Sonnet 5.5"}}));
+    assert_eq!(
+        host.project(&link.view(), T0)["engine_model"],
+        json!({"provider":"anthropic","id":"claude-sonnet-5-5","name":"Claude Sonnet 5.5"})
+    );
+    link.frame(json!({"type":"agent_state","busy":false,"status":"stopped","paused":false,"model":{"id":"stale"}}));
+    assert_eq!(host.project(&link.view(), T0)["engine_model"], json!(null), "a stopped engine answers with nothing");
 }
 
 #[test]

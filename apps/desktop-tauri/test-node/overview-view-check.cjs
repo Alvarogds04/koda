@@ -658,9 +658,11 @@ test('§9.2 motion table in CSS: view enter spring after 160ms delay, exit 160ms
   for (const m of css.replace(/\.dcapsule \{[^}]*\}/, '').matchAll(/transition:([^;]*);/g)) assert.doesNotMatch(m[1], /\b(width|height|left|top|right|bottom|margin|padding)\b/, m[1]);
   assert.match(css, /#clay \{[^}]*scale\(var\(--hover, 1\)\)[^}]*transition: transform var\(--dur-state\)/);
   assert.match(css, /:where\(button, textarea\) \{[^}]*outline: 2px solid transparent[^}]*var\(--dur-focus\)/);
-  assert.match(css, /#models-list \.choose\[aria-pressed="true"\] \.ico \{ animation: control-pop var\(--dur-control\) var\(--spring\)/);
+  // K2-05 U5c (L72): `control-pop` animated the chosen model of the removed Ajustes model list, so it and its
+  // only consumer are gone with it (the control timing token --dur-control is still asserted above).
+  assert.doesNotMatch(css, /control-pop/);
   const reduced = [...css.matchAll(/html\[data-motion="reduce"\][^{]*\{[^}]*\}/g)].map(m => m[0]).join('\n');
-  assert.match(reduced, /html\[data-motion="reduce"\] #notices, html\[data-motion="reduce"\] #permission, html\[data-motion="reduce"\] #open-chat, html\[data-motion="reduce"\] #chat, html\[data-motion="reduce"\] #models, html\[data-motion="reduce"\] #chat-body, html\[data-motion="reduce"\] #question \{ transition: none !important; transform: none !important/);
+  assert.match(reduced, /html\[data-motion="reduce"\] #notices, html\[data-motion="reduce"\] #permission, html\[data-motion="reduce"\] #open-chat, html\[data-motion="reduce"\] #chat, html\[data-motion="reduce"\] #chat-body, html\[data-motion="reduce"\] #question \{ transition: none !important; transform: none !important/);
   assert.match(reduced, /html\[data-motion="reduce"\] #clay \{ transition: none !important/);
 });
 
@@ -747,24 +749,21 @@ test('night review: the bridge is shown (chip «Sin puente», compact triangle) 
 test('night review: views are NOT display:none while animating (inert instead), so the §9.2 motion actually runs', () => {
   const html = fs.readFileSync(path.join(frontend, 'index.html'), 'utf8');
   assert.match(html, /<section id="chat" inert/); assert.doesNotMatch(html, /<section id="chat"[^>]*\shidden/);
-  assert.match(html, /<div id="models" inert/); assert.doesNotMatch(html, /<div id="models"[^>]*\shidden/);
+  // K2-05 U5c (L72): the Ajustes model panel, its script tag and its styles are gone; #chat keeps the contract above.
+  assert.doesNotMatch(html, /id="models"/); assert.doesNotMatch(html, /src="models\.js"/);
   const chatSrc = fs.readFileSync(path.join(frontend, 'chat.js'), 'utf8');
-  const modelsSrc = fs.readFileSync(path.join(frontend, 'models.js'), 'utf8');
   assert.doesNotMatch(chatSrc, /\bchat\.hidden\s*=/);
-  assert.doesNotMatch(modelsSrc, /panel\.hidden\s*=/);
   assert.match(chatSrc, /chat\.inert = false/); assert.match(chatSrc, /chat\.inert = true; \}, 220\)/);
-  assert.match(css, /#models\[data-open="true"\] \{[^}]*var\(--dur-view-delay\)/);
-  assert.doesNotMatch(css, /#models\[hidden\]/);
-  assert.doesNotMatch(css, /#capsule\[data-models="open"\] #chat-body \{ display: none/);
+  assert.doesNotMatch(css, /#models/);
 });
 
-test('N8 vertical chat entrance: the chat (and its models panel) travel along the docked edge, with the contract timing, no display:none', () => {
+test('N8 vertical chat entrance: the chat travels along the docked edge, with the contract timing, no display:none', () => {
   const root = css.slice(css.indexOf(':root'), css.indexOf('}', css.indexOf(':root')));
   // a variable distance, a direction per docked edge
   assert.match(root, /--view-shift:\s*16px/);
   assert.match(css, /#capsule\[data-edge="top"\]\s*\{[^}]*--view-dir:\s*-1/);
   assert.match(css, /#capsule\[data-edge="bottom"\]\s*\{[^}]*--view-dir:\s*1/);
-  for (const sel of ['#chat', '#models']) {
+  for (const sel of ['#chat']) {
     const rule = new RegExp(`\\n${sel} \\{([^}]*)\\}`).exec(css);
     assert.ok(rule, sel);
     assert.match(rule[1], /transform: translateY\(calc\(var\(--view-dir\) \* var\(--view-shift\)\)\)/, `${sel} starts displaced along the edge`);
@@ -777,7 +776,7 @@ test('N8 vertical chat entrance: the chat (and its models panel) travel along th
   const chatRule = /\n#chat \{([^}]*)\}/.exec(css)[1];
   assert.doesNotMatch(chatRule, /translateY\(6px\)/);
   // reduced motion still jumps
-  assert.match(css, /html\[data-motion="reduce"\] #chat, html\[data-motion="reduce"\] #models/);
+  assert.match(css, /html\[data-motion="reduce"\] #chat/);
 });
 
 test('#304 motionState: Abito animates ALWAYS by default; the system preference counts only when the human opted to honor it', () => {
@@ -872,7 +871,7 @@ test('CSS structure: braces balance (no stray «}» swallowing the next rule) an
     if (plain[i] === '{') { if (d === 0) top.push(plain.slice(start, i).trim()); d += 1; }
     else if (plain[i] === '}') { d -= 1; if (d === 0) start = i + 1; }
   }
-  for (const sel of ['.sr-only', '#clay', '#island', '#compact-flag', '#open-chat', '#chat', '#models', '#question']) assert.ok(top.includes(sel), `top-level rule ${sel} must exist; got ${top.length} rules`);
+  for (const sel of ['.sr-only', '#clay', '#island', '#compact-flag', '#open-chat', '#chat', '#question']) assert.ok(top.includes(sel), `top-level rule ${sel} must exist; got ${top.length} rules`);
   assert.ok(top.some(t => t.startsWith('html[data-motion="reduce"] #notices')), 'the reduced-motion rules are top-level rules');
 });
 

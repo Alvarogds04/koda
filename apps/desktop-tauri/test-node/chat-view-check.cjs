@@ -130,60 +130,6 @@ test('turn rows render plain text roles and truncation/trim notes', () => {
 });
 
 
-// ---- U2: model picker helpers ---------------------------------------------
-test('model rows are visible metadata, never "listed" mistaken for "ready"', () => {
-  const rows = V.modelRows({
-    selected: 'local-abito-gpt',
-    profiles: [
-      { profile_id: 'local-abito-gpt', origin: 'http://127.0.0.1:11002', alias: 'Abito-gpt', selectable: true,
-        gate: { state: 'ready', message: 'Cargado y libre · contexto 65536 tokens.' },
-        context_tokens: 65536, max_output_tokens: 1024, size_bytes: 18198045184, params: 35505251456,
-        quantization: 'IQ4_XS - 4.25 bpw', vision: false },
-      { profile_id: 'diag-11014', origin: 'http://127.0.0.1:11014', alias: null, selectable: false,
-        gate: { state: 'unknown', message: 'Responde 404…' } },
-    ],
-  });
-  assert.equal(rows.length, 2);
-  assert.equal(rows[0].selected, true);
-  assert.equal(rows[0].selectable, true);
-  assert.equal(rows[0].title, 'Abito-gpt');
-  assert.match(rows[0].facts, /127\.0\.0\.1:11002/);
-  assert.match(rows[0].facts, /contexto 65\.536/);
-  assert.match(rows[0].facts, /salida ≤1\.024/);
-  assert.match(rows[0].facts, /18,2 GB/);
-  assert.match(rows[0].facts, /35,5 mil millones/);
-  assert.match(rows[0].facts, /sin visión/);
-  assert.equal(rows[0].state, 'Listo');
-  assert.equal(rows[1].selectable, false);
-  assert.equal(rows[1].title, 'Puerto 11014');
-  assert.equal(rows[1].state, 'Desconocido');
-});
-
-test('UI.2 model rows: chips carry numbers, one word only for non-ready gates, full sentence in aria', () => {
-  const ready = { profile_id: 'local-abito-gpt', origin: 'http://127.0.0.1:11002', alias: 'Abito-gpt', selectable: true,
-    gate: { state: 'ready', message: 'Cargado y libre.' }, context_tokens: 65536, size_bytes: 18198045184,
-    params: 35505251456, vision: false };
-  const [r, n, d] = V.modelRows({ selected: 'local-abito-gpt', profiles: [ready,
-    { ...ready, profile_id: 'x', alias: 'Otro', gate: { state: 'needs_load', message: 'm' } },
-    { profile_id: null, origin: 'http://127.0.0.1:11014', alias: null, selectable: false, gate: { state: 'unavailable', message: 'caído' } }] });
-  assert.deepEqual(r.chips.map(c => c.text), ['local', '64k', '18,2 GB', '35,5B', '']);
-  assert.equal(r.chips[4].icon, 'eye-off');
-  assert.equal(r.word, ''); assert.equal(r.tone, 'go');
-  assert.match(r.aria, /127\.0\.0\.1:11002/);
-  assert.equal(n.word, 'Sin cargar'); assert.equal(n.wordIcon, 'load-off');
-  assert.equal(d.word, 'No disponible'); assert.equal(d.tone, 'red'); assert.equal(d.title, 'Puerto 11014');
-});
-
-test('UI.2 meters: used share, numbers only in aria, unknown stays honest', () => {
-  const m = V.modelMeters({ resources: { mem_total: 100e9, mem_available: 25e9, gpu: { vram_total: 10e9, vram_used: 5e9, gtt_total: 20e9, gtt_used: 0 } } });
-  assert.deepEqual(m.map(x => x.key), ['ram', 'vram', 'gtt']);
-  assert.equal(m[0].fraction, 0.75);
-  assert.match(m[0].aria, /RAM: 75,0 GB en uso de 100,0 GB/);
-  const u = V.modelMeters({ resources: { mem_total: null, mem_available: null, gpu: null } });
-  assert.ok(u.every(x => !x.known && /desconocida/.test(x.aria)));
-  assert.equal(V.modelsCount({ profiles: [{ selectable: true, profile_id: 'a' }, { selectable: false }] }), 1);
-});
-
 test('UI.2 chat status: a word only for problems; shapes carry the rest', () => {
   const base = { turns: [], active_turn: null, queue_note: null };
   const v = (state, msg) => V.statusView({ ...base, availability: { state, message: msg || '' } });
@@ -327,14 +273,6 @@ test('UI.3: «Respuesta nueva» is hidden whenever the conversation is empty (fo
   assert.match(chatSrc, /if \(!turns\.length\) \{\s*newer\.hidden = true;/);
 });
 
-test('gate state labels distinguish ready, queue, needs_load, unknown, unavailable', () => {
-  assert.equal(V.gateLabel('ready'), 'Listo');
-  assert.equal(V.gateLabel('queue'), 'En cola');
-  assert.equal(V.gateLabel('needs_load'), 'Requiere cargarlo (Koda no lo hace)');
-  assert.equal(V.gateLabel('unknown'), 'Desconocido');
-  assert.equal(V.gateLabel('unavailable'), 'No disponible');
-});
-
 // ---- Q1: notices live region -----------------------------------------------
 test('a notice is announced once, when a NEW one arrives, as text only', () => {
   const n = (id, title, detail) => ({ id, sessionId: 's', title, detail });
@@ -453,8 +391,8 @@ const panelBox = id => {
   return { left: px(r, /left:\s*(\d+)px/, 0), right: px(r, /right:\s*(\d+)px/, 0) };
 };
 
-test('column: Settings and Models span the whole column (no 60px gutter left over from the 640 layout)', () => {
-  for (const id of ['#settings', '#models']) {
+test('column: Settings spans the whole column (no 60px gutter left over from the 640 layout)', () => {
+  for (const id of ['#settings']) {
     const b = panelBox(id);
     assert.ok(b.left <= 12, `${id} left ${b.left}px`);
     assert.ok(b.right <= 12, `${id} right ${b.right}px`);
@@ -481,26 +419,9 @@ test('column: #408 — the header keeps only Ajustes and Volver, so it fits the 
   assert.ok(need <= inner, `header needs ${need}px of ${inner}px`);
 });
 
-test('column: the models bar is two rows — [count, info, refresh, done] then the meters — and «Actualizar» and «Listo» are always inside', () => {
-  assert.match(rule('#models-bar'), /flex-wrap:\s*wrap/);
-  const bar = html.slice(html.indexOf('id="models-bar"'), html.indexOf('id="models-note"'));
-  const at = id => bar.indexOf(`id="${id}"`);
-  assert.ok(at('models-refresh') > -1);
-  assert.ok(at('models-refresh') < at('models-meters'), 'the buttons come BEFORE the meters, so wrapping pushes the meters down, never the buttons out');
-  assert.match(rule('#models-meters'), /(flex-basis:\s*100%|width:\s*100%|order:\s*\d)/, 'the meters take their own row');
-  // first row: chip + 3 icon buttons (44px each) + gaps must fit
-  const first = 44 * 3 + 44 /* chip, generous */ + 8 * 3;
-  assert.ok(first <= COLUMN_W - 24, `first row needs ${first}px`);
-  // second row: three meters with their gaps must fit
-  const gap = px(rule('#models-meters'), /gap:\s*(\d+)px/, 0);
-  const meter = 6 + 44 + 6; // label + bar + gap, measured from the captures
-  assert.ok(meter * 3 + gap * 2 <= COLUMN_W - 24, `meters need ${meter * 3 + gap * 2}px`);
-});
-
 test('column: the sticky controls cannot be hidden by the content (close is not inside the scrolling body)', () => {
   assert.ok(html.indexOf('id="settings-close"') < html.indexOf('id="settings-body"'));
   assert.match(rule('#settings-body'), /overflow-y:\s*auto/);
-  assert.match(rule('#models-list'), /overflow-y:\s*auto/);
 });
 
 test('column: with a screen open the chat header STAYS visible (gentle-dot): the header buttons switch screens, the panel carries its own close', () => {
@@ -620,76 +541,46 @@ test('greeting: the page writes the greeting with textContent and never puts the
   assert.doesNotMatch(code, /innerHTML|outerHTML|insertAdjacentHTML|document\.write/, 'no markup sink in the greeting renderer');
 });
 
-// ---- F024: the model row above the composer (R1/R2/R4/R5) -------------------
-const F024_TARGET = { alias: 'Abito-gpt', profile_id: 'local-abito-gpt', origin: 'http://127.0.0.1:11002' };
-const F024_READY = { target: F024_TARGET, availability: { state: 'ready', message: 'Modelo local listo.' }, active_turn: null };
-const F024_ROLE = { id: 'inv', name: 'Investigación', model: 'local-abito-gpt' };
-
-test('F024 row label: the effective local model; the role is named only when that role supplies this target (R1/R4)', () => {
-  assert.equal(V.modelButtonLabel(null, null), 'Sin modelo local elegido');
-  assert.equal(V.modelButtonLabel({ target: null }, null), 'Sin modelo local elegido');
-  assert.equal(V.modelButtonLabel(F024_READY, null), 'Abito-gpt');
-  assert.equal(V.modelButtonLabel(F024_READY, F024_ROLE), 'Abito-gpt · Investigación');
-  assert.equal(V.modelButtonLabel(F024_READY, { id: 'x', name: 'Otra', model: 'otro-id' }), 'Abito-gpt',
-    'a role on ANOTHER model does not claim this target');
-  assert.equal(
-    V.modelButtonLabel({ ...F024_READY, target: { profile_id: 'local-x', origin: F024_TARGET.origin } }, null),
-    'local-x', 'no alias: the profile id, never the origin');
-  assert.equal(
-    V.modelButtonLabel({ ...F024_READY, target: { profile_id: '', origin: F024_TARGET.origin } }, null),
-    'Sin modelo local elegido', 'nothing identifiable: the empty label');
+// ---- K2-05 U5c: the read-only line saying which model the engine answers with --------------------
+test('U5c model line: the engine\'s model name as plain text, id when it has no name', () => {
+  assert.deepEqual(V.engineModelLine({ engine_model: { provider: 'anthropic', id: 'claude-sonnet-5-5', name: 'Claude Sonnet 5.5' } }),
+    { text: 'Claude Sonnet 5.5', aria: 'Koda responde con el modelo Claude Sonnet 5.5' });
+  assert.equal(V.engineModelLine({ engine_model: { id: 'gpt-x' } }).text, 'gpt-x');
+  assert.equal(V.engineModelLine({ engine_model: { id: 'gpt-x', name: '  ' } }).text, 'gpt-x');
 });
 
-test('F024 row aria: origin without its scheme plus the role ownership sentence — never an endpoint, key or provider (R4/R5)', () => {
-  assert.equal(V.modelButtonAria(F024_READY, null), 'Abito-gpt, sólo local, 127.0.0.1:11002');
-  const withRole = V.modelButtonAria(F024_READY, F024_ROLE);
-  assert.match(withRole, /^Abito-gpt, sólo local, 127\.0\.0\.1:11002/);
-  assert.match(withRole, /Investigación/, 'the role that fixes the model is part of what the row announces');
-  assert.doesNotMatch(V.modelButtonAria(F024_READY, null), /https?:\/\//, 'no scheme in the accessible name');
-  for (const text of [V.modelButtonLabel(F024_READY, F024_ROLE), withRole, V.modelRoleNote(F024_READY, F024_ROLE)]) {
-    assert.doesNotMatch(text, /api[_-]?key|Bearer|accounts\.json|anthropic|openai|openrouter|lmstudio|ollama/i, `no daemon/provider material: ${text}`);
-    assert.doesNotMatch(text, /https?:\/\//, `no endpoint: ${text}`);
+test('U5c model line: unknown shows NOTHING (never a placeholder name)', () => {
+  for (const view of [null, undefined, {}, { engine_model: null }, { engine_model: {} }, { engine_model: 'x' }, { engine_model: { id: '' } }, { engine_model: { id: 7 } }]) {
+    assert.equal(V.engineModelLine(view), null, JSON.stringify(view));
   }
 });
 
-test('F024 role note: ONE line, only while the active role is what fixes this exact target (R4)', () => {
-  const note = V.modelRoleNote(F024_READY, F024_ROLE);
-  assert.ok(note.length > 0);
-  assert.equal(note.includes('\n'), false);
-  assert.match(note, /Investigación/);
-  assert.match(note, /picker/i, 'the note says the picker does not override the role');
-  assert.equal(V.modelRoleNote(F024_READY, null), '');
-  assert.equal(V.modelRoleNote(F024_READY, { id: 'x', name: 'Otra', model: 'otro-id' }), '');
-  assert.equal(V.modelRoleNote({ ...F024_READY, target: null }, F024_ROLE), '');
+test('U5c model line: control characters and length are bounded, it is only ever text', () => {
+  const line = V.engineModelLine({ engine_model: { id: 'a\nb\u0000c', name: `${'x'.repeat(200)}` } });
+  assert.equal(line.text.length, 128);
+  assert.equal(V.engineModelLine({ engine_model: { id: 'a\nb\u0000c' } }).text, 'a b c');
 });
 
-test('F024 row interactivity: a running turn freezes it; an unchosen model stays choosable; a chosen one must be sendable (R2)', () => {
-  assert.equal(V.modelButtonEnabled({ ...F024_READY, active_turn: 't-1' }), false, 'a running turn disables the row');
-  assert.equal(V.modelButtonEnabled(F024_READY), true);
-  assert.equal(V.modelButtonEnabled({ ...F024_READY, availability: { state: 'busy' } }), true);
-  assert.equal(V.modelButtonEnabled({ ...F024_READY, availability: { state: 'unchecked' } }), true,
-    'no preflight verdict yet: nothing to protect');
-  assert.equal(V.modelButtonEnabled({ ...F024_READY, availability: { state: 'unavailable' } }), false);
-  assert.equal(V.modelButtonEnabled({ ...F024_READY, availability: { state: 'blocked' } }), false);
-  assert.equal(V.modelButtonEnabled({ target: null, availability: { state: 'blocked' }, active_turn: null }), true,
-    'nothing chosen: opening the row is what lets the human choose');
-  assert.equal(V.modelButtonEnabled(null), false);
-});
-
-test('F024 markup: the row sits between «Respuesta nueva» and the composer, with its named controls (R1)', () => {
+test('U5c: the chat has NO model picker — no helper, no button, no picker markup, no models_action call', () => {
+  for (const name of ['modelRows', 'modelMeters', 'modelsInfo', 'modelsCount', 'filterChosen', 'modelButtonLabel', 'modelButtonAria', 'modelButtonEnabled', 'modelRoleNote', 'gateLabel']) {
+    assert.equal(V[name], undefined, `${name} is gone`);
+  }
   for (const id of ['chat-model-row', 'chat-model-btn', 'chat-model-name', 'chat-model-picker', 'chat-model-note']) {
-    assert.ok(html.includes(`id="${id}"`), id);
+    assert.ok(!html.includes(`id="${id}"`), `${id} is gone`);
   }
+  const chatSrc = fs.readFileSync(path.join(__dirname, '..', 'frontend', 'chat.js'), 'utf8');
+  assert.doesNotMatch(chatSrc, /models_action|set_chosen_models|chosenModels|setPicker|selectModel/);
+});
+
+test('U5c markup: the line sits between «Respuesta nueva» and the composer, hidden until a model is known, with no control inside', () => {
+  const tag = /<p[^>]*id="chat-model-line"[^>]*>/.exec(html);
+  assert.ok(tag, 'the line exists');
+  assert.match(tag[0], /hidden/, 'hidden until the engine reports a model');
+  assert.doesNotMatch(tag[0], /<button|tabindex/);
   const newer = html.indexOf('id="chat-new"');
-  const row = html.indexOf('id="chat-model-row"');
+  const line = html.indexOf('id="chat-model-line"');
   const composer = html.indexOf('id="chat-composer"');
-  assert.ok(newer > -1 && row > newer, 'the row comes after «Respuesta nueva»');
-  assert.ok(composer > row, 'the row comes directly above the composer');
-  const button = /<button[^>]*id="chat-model-btn"[^>]*>[\s\S]*?<\/button>/.exec(html);
-  assert.ok(button, 'the row is a real button');
-  assert.match(button[0], /aria-expanded="false"/);
-  assert.match(button[0], /aria-controls="chat-model-picker"/);
-  assert.match(/id="chat-model-picker"[^>]*/.exec(html)[0], /hidden/, 'the picker starts closed');
+  assert.ok(newer > -1 && line > newer && composer > line, 'between the new-answer button and the composer');
 });
 
 test('B4: snapshot ordering uses per-turn sequence, never a global sequence across conversations', () => {

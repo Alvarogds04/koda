@@ -15,7 +15,7 @@ import './settings-nusa-mount.js';
 import './island-nusa.js';
 import './settings-isla.js';
 import './settings-isla-mount.js';
-import { renderAccounts, renderModels } from './vendor/coucou/hub/accounts.js';
+import { renderAccounts } from './vendor/coucou/hub/accounts.js';
 import { renderAgentSettings } from './vendor/coucou/hub/agents.js';
 import { renderChatSettings } from './vendor/coucou/hub/chat.js';
 import { renderIntegrations } from './vendor/coucou/hub/integrations.js';
@@ -152,11 +152,6 @@ startHub(root, {
           const chat = await renderChatSettings(options);
           const accounts = await renderAccounts({ ...options, page: 'chat', slotFor: chat.slotFor });
           mounted.push(accounts, chat); // Engine line BEFORE the provider cards; rows use the cards' slots.
-          const models = await renderModels({ ...options, connected: false }); // #503 S4: one list; the cards own the model choice
-          // Preserve Abito's verified model controls inside Coucou's Local models section.
-          chat.querySelector?.('#chat-local-models')?.append(models);
-          const disposeChat = chat.dispose;
-          chat.dispose = () => { models.dispose(); disposeChat(); };
         }
         if (page === 'integrations') mounted.push(await renderIntegrations(personal));
         if (page === 'shortcuts') mounted.push(await renderShortcuts(options));

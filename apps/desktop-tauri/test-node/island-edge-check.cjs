@@ -30,7 +30,7 @@ for(const block of ['question','approval','request','decision','card']) {
   p.advance(600000);assert.equal(p.c.snapshot().hidden,false,block+' prevents hiding');
 }
 // status notices, the hotkey chip, a stuck «pinned», a draft, a field, a panel, a drag... never keep the island out of the edge
-for(const harmless of ['notice','pinned','editing','composing','draft','settings','models','dragging']) {
+for(const harmless of ['notice','pinned','editing','composing','draft','settings','dragging']) {
   const p=fixture();p.c.setPreferences({sound:true,absenceSeconds:10});p.c.update(facts({[harmless]:true}));
   p.advance(9999);assert.equal(p.c.snapshot().hidden,false,harmless+' not yet');
   p.advance(1);assert.equal(p.c.snapshot().hidden,true,harmless+' does not block hiding');

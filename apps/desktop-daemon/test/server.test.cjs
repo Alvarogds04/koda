@@ -1738,6 +1738,26 @@ test("set_paused: persists, broadcasts agent_state{paused} to every client, resu
 	assert.deepEqual(store.writes, [true, false]);
 });
 
+test("U5c: ready and agent_state carry the engine's model identity only when it reported one, and follow a change", async (t) => {
+	const { endpoint, engine } = await setup(t);
+	const a = await login(t, endpoint);
+	assert.equal("model" in a.frames[0].state, false, "no model reported: the key is absent (unknown, never a placeholder)");
+	engine.model = { provider: "anthropic", id: "claude-sonnet-5-5", name: "Claude Sonnet 5.5" };
+	engine.emit("model", engine.model);
+	await a.wait((f) => f.type === "agent_state" && f.model);
+	assert.deepEqual(a.frames.find((f) => f.type === "agent_state" && f.model).model, { provider: "anthropic", id: "claude-sonnet-5-5", name: "Claude Sonnet 5.5" });
+	const b = await login(t, endpoint);
+	assert.deepEqual(b.frames[0].state.model, engine.model, "a late client reads it from ready");
+	engine.model = undefined;
+	engine.emit("model", undefined);
+	await a.wait((f) => f.type === "agent_state" && !f.model && a.frames.filter((g) => g.type === "agent_state").length >= 2);
+	engine.status = "stopped";
+	engine.model = { id: "stale" };
+	engine.emit("status", { state: "stopped" });
+	await a.wait((f) => f.type === "agent_state" && f.status === "stopped");
+	assert.equal("model" in a.frames.filter((f) => f.type === "agent_state").pop(), false, "a stopped engine shows no model");
+});
+
 test("set_paused: non-boolean reaches the server as bad_request (validator) and changes nothing", async (t) => {
 	const store = makePausedStore();
 	const { server, endpoint } = await setup(t, { pausedStore: store });

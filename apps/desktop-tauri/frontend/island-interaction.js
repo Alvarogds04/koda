@@ -13,7 +13,7 @@
   const EDGE_ABSENCE = Object.freeze({ min: 5, max: 300, default: 10 });
   const EDGE_BLOCKERS = Object.freeze(['question', 'approval', 'request', 'decision', 'card']);
   const BLOCKERS = Object.freeze(['question', 'approval', 'request', 'decision', 'card',
-    'dragging', 'editing', 'composing', 'draft', 'settings', 'models']);
+    'dragging', 'editing', 'composing', 'draft', 'settings']);
 
   // #438: accepted values are {0} («Nunca») ∪ 5..=120 — the same closed shape
   // the stored contract now knows. Everything else is refused.

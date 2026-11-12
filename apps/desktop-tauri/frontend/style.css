@@ -41,7 +41,7 @@
   --dur-view-out: 160ms;
   --dur-control: 300ms;
   --dur-focus: 120ms;
-  /* N8: the chat (and its models panel) travel VERTICALLY along the docked edge:
+  /* N8: the chat travel VERTICALLY along the docked edge:
      they start --view-shift closer to the edge they grow from (above when docked
      at the top, below when docked at the bottom) and settle with the view spring.
      Reference (gentle-dot, MIT, read-only): --ease cubic-bezier(.2,.8,.2,1) and
@@ -274,7 +274,7 @@ html[data-motion="reduce"] .stheme { transition: none; }
    (default full: Abito always animates; the SYSTEM preference, which WebKit derives from
    GtkSettings and which can be «off» in a session without the human asking for it, is
    honored only when the human opts in). No rule below uses the system media query. */
-html[data-motion="reduce"] #notices, html[data-motion="reduce"] #permission, html[data-motion="reduce"] #open-chat, html[data-motion="reduce"] #chat, html[data-motion="reduce"] #models, html[data-motion="reduce"] #chat-body, html[data-motion="reduce"] #question { transition: none !important; transform: none !important; }
+html[data-motion="reduce"] #notices, html[data-motion="reduce"] #permission, html[data-motion="reduce"] #open-chat, html[data-motion="reduce"] #chat, html[data-motion="reduce"] #chat-body, html[data-motion="reduce"] #question { transition: none !important; transform: none !important; }
 html[data-motion="reduce"] #clay { transition: none !important; }
 html[data-motion="reduce"] #chat-state[data-kind="busy"] .ico svg, html[data-motion="reduce"] #chat-state[data-kind="checking"] .ico svg, html[data-motion="reduce"] [data-kind="checking"] .ico svg { animation: none; }
 /* Contract §4: no meaning depends on animation. The in-flight ring stays
@@ -429,51 +429,9 @@ html[data-motion="full"] #chat-state[data-kind="busy"] .ico svg, html[data-motio
 #chat-log li.ask .ask-form input { flex: 1 1 100%; min-height: 32px; padding: 6px 10px; border-radius: 10px; border: 1px solid var(--line-soft); background: transparent; color: var(--island-ink); font: 13px/1.3 var(--font-ui); }
 #chat-log li.ask .ask-skip { align-self: flex-start; min-height: 24px; padding: 0; border: none; background: none; color: var(--island-muted); font: 600 12px/1.2 var(--font-ui); cursor: pointer; }
 #chat-log li.ask .ask-skip:hover:not(:disabled) { color: var(--island-ink); }
-/* F024 — the model row above the composer: one button (dot, model name, caret)
-   with its picker panel above it. The name and the rows are plain text from
-   chat-view; there is no provider colour here because the chat lane is local. */
-#chat-model-row { position: relative; display: flex; align-items: center; gap: 6px; margin-top: 6px; }
-#chat-model-btn {
-  display: inline-flex; align-items: center; gap: 6px; max-width: 100%; min-height: 26px;
-  padding: 3px 10px; border-radius: var(--radius-full);
-  border: 1px solid var(--line-soft); background: var(--fill);
-  color: var(--island-muted); font: 600 11px/1.3 var(--font-ui); cursor: pointer;
-  transition: color var(--dur-state) var(--ease-out), background var(--dur-state) var(--ease-out);
-}
-#chat-model-btn:hover:not(:disabled) { color: var(--island-ink); }
-#chat-model-btn:focus-visible { outline: 2px solid var(--island-live); outline-offset: 2px; }
-#chat-model-btn:disabled { opacity: .55; cursor: default; }
-#chat-model-btn .word { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 220px; }
-#chat-model-btn .model-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--faint); flex: none; }
-/* The dot carries the availability the row already announces (never a provider). */
-#chat-model-btn[data-avail="ready"] .model-dot, #chat-model-btn[data-avail="busy"] .model-dot { background: var(--go); }
-#chat-model-btn[data-avail="unchecked"] .model-dot { background: var(--island-live); }
-#chat-model-btn[data-avail="unavailable"] .model-dot, #chat-model-btn[data-avail="blocked"] .model-dot { background: var(--red-11); }
-#chat-model-btn .model-caret {
-  width: 0; height: 0; flex: none;
-  border-left: 4px solid transparent; border-right: 4px solid transparent; border-top: 4px solid currentColor;
-  transition: transform var(--dur-state) var(--ease-out);
-}
-#chat-model-btn[aria-expanded="true"] .model-caret { transform: rotate(180deg); }
-#chat-model-picker {
-  position: absolute; left: 0; right: 0; bottom: calc(100% + 6px); z-index: 3;
-  display: flex; flex-direction: column; gap: 2px; padding: 6px;
-  border: 1px solid var(--line-soft); border-radius: 16px; background: var(--card-bg);
-  max-height: 46vh; overflow-y: auto;
-}
-#chat-model-picker[hidden] { display: none; }
-#chat-model-picker .picker-note { margin: 0; padding: 2px 6px 4px; color: var(--island-muted); font: 400 11px/1.4 var(--font-ui); }
-#chat-model-picker .picker-row {
-  display: flex; align-items: center; gap: 8px; width: 100%; padding: 8px 10px;
-  border: 0; border-radius: 10px; background: transparent; color: var(--island-ink);
-  font: 500 12px/1.35 var(--font-ui); text-align: left; cursor: pointer;
-}
-#chat-model-picker .picker-row:hover:not(:disabled) { background: var(--fill-alt); }
-#chat-model-picker .picker-row[aria-pressed="true"] { background: var(--fill-alt); }
-#chat-model-picker .picker-row:disabled { color: var(--island-muted); cursor: default; }
-#chat-model-picker .picker-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-#chat-model-picker .picker-state { margin-left: auto; color: var(--island-muted); font-size: 11px; flex: none; }
-html[data-motion="reduce"] #chat-model-btn, html[data-motion="reduce"] #chat-model-btn .model-caret { transition: none; }
+/* K2-05 U5c — which model answers: one read-only line above the composer (plain text from chat-view, no control). */
+#chat-model-line { margin: 6px 0 0; padding: 0 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--island-muted); font: 600 var(--fs-caption)/1.2 var(--font-ui); }
+#chat-model-line[hidden] { display: none; }
 #chat-composer { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px; margin-top: 6px; }
 #chat-input {
   flex: 1;
@@ -526,87 +484,10 @@ html[data-motion="reduce"] #chat-log li.enter { animation: none; }
 
 html[data-motion="reduce"] #chat-log { scroll-behavior: auto; }
 
-/* ---- U2: model picker (internal panel of the chat view) --------------- */
-/* Panels swap with the §9.2 motion (no display:none): the chat body leaves in
-   160ms ease-in and the models panel enters after the 160ms delay. */
+/* ---- the chat body swaps with the §9.2 motion (no display:none) ---------- */
 #chat-body { transition: opacity var(--dur-state) var(--ease-out) var(--dur-view-delay), visibility 0s; }
-#capsule[data-models="open"] #chat-status-strip, #capsule[data-settings="open"] #chat-status-strip { opacity: 0; visibility: hidden; } /* #309: never over a panel */
-#capsule[data-models="open"] #chat-body { opacity: 0; visibility: hidden; transition: opacity var(--dur-view-out) var(--ease-in), visibility 0s linear var(--dur-view-out); }
-/* UI.2 — visual model view (docs/desktop-visual-language.md §2.4). Panel =
-   one 44px bar (count chip, «i», three meters, refresh, done) + a scrolling
-   list of 44px rows. Rows are never clipped by a fixed height: the list
-   scrolls and every row keeps its full height (BLOCKER 2 of the review). */
-#models {
-  position: absolute; left: 12px; right: 12px; top: 56px; bottom: 12px; /* #309: the whole column below the header */
-  display: flex; flex-direction: column; gap: 4px; color: var(--island-muted);
-  opacity: 0; visibility: hidden; transform: translateY(calc(var(--view-dir) * var(--view-shift)));
-  transition: opacity var(--dur-view-out) var(--ease-in), transform var(--dur-view-out) var(--ease-in), visibility 0s linear var(--dur-view-out);
-}
-#models[data-open="true"] {
-  opacity: 1; visibility: visible; transform: none;
-  transition: opacity var(--dur-state) var(--ease-out) var(--dur-view-delay), transform var(--dur-view-in) var(--spring) var(--dur-view-delay), visibility 0s;
-}
-#models-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; min-height: 44px; }
-#models-bar .icon-btn:first-of-type { margin-left: 0; }
-#models-refresh { margin-left: auto; } /* refresh + done are pinned to the right of row 1 */
-#models-meters { display: flex; flex: 0 0 100%; order: 2; gap: 14px; margin: 0; padding: 0 2px; list-style: none; }
-.meter { display: inline-flex; align-items: center; gap: 6px; color: var(--island-muted); }
-.meter-label { font: 600 11px/1 var(--font-ui); color: var(--island-ink); }
-.meter-bar { display: inline-flex; }
-.meter[data-known="false"] { color: var(--faint); }
-#models-note:not(.sr-only) {
-  position: absolute; left: 0; right: 0; top: 48px; z-index: 2; margin: 0; padding: 8px 10px;
-  background: var(--surface); border-radius: var(--radius-xl); color: var(--island-ink); font-size: 12px; line-height: 1.35;
-}
-#models-list { flex: 1; min-height: 0; margin: 0; padding: 0; list-style: none; overflow-y: auto; overscroll-behavior: contain; scroll-snap-type: y proximity; }
-#models-list li { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 0 0 0 2px; scroll-snap-align: start; }
-#models-list li[aria-label] { cursor: default; }
-.model-title { flex: none; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--island-ink); font: 600 13px/1.2 var(--font-ui); }
-.model-chips { flex: 1; min-width: 0; display: flex; align-items: center; gap: 10px; overflow: hidden; }
-.model-chips .chip { min-height: 24px; font-size: 12px; }
-.model-chips .chip .ico svg { width: 16px; height: 16px; }
-.model-word { flex: none; }
-.model-word .word { color: var(--island-ink); }
-.model-ok { flex: none; width: 10px; height: 10px; margin: 0 5px; border-radius: 50%; background: var(--go); }
-#models-list li.disabled .model-title, #models-list li.disabled .model-chips { opacity: .6; }
-#models-list .choose, .models-prov .choose {
-  flex: none; display: grid; place-items: center; width: 44px; height: 44px; padding: 0;
-  border-radius: var(--radius-full); border: 0; background: transparent; color: #000; cursor: pointer; position: relative;
-}
-/* the circle itself is the control's shape: hollow ring = pick it, lime check = chosen */
-#models-list .choose::before, .models-prov .choose::before {
-  content: ""; position: absolute; width: 28px; height: 28px; border-radius: 50%;
-  border: 2px solid var(--line-ring); box-sizing: border-box;
-}
-#models-list .choose[aria-pressed="true"]::before, .models-prov .choose[aria-pressed="true"]::before { background: var(--go); border-color: var(--go); }
-#models-list .choose:hover:not(:disabled)::before, .models-prov .choose:hover:not(:disabled)::before { border-color: var(--island-ink); }
-#models-list .choose:disabled:not([aria-pressed="true"]) { cursor: default; }
-#models-list .choose:disabled:not([aria-pressed="true"])::before { border-color: var(--faint); }
-#models-list .choose .ico, .models-prov .choose .ico { position: relative; z-index: 1; }
-#models-list .choose .ico svg, .models-prov .choose .ico svg { width: 18px; height: 18px; }
-@keyframes control-pop { from { opacity: 0; transform: scale(.6); } }
-#models-list .choose[aria-pressed="true"] .ico { animation: control-pop var(--dur-control) var(--spring); }
-#models-list .choose::before { transition: background-color var(--dur-state) var(--ease-out), border-color var(--dur-state) var(--ease-out); }
+#capsule[data-settings="open"] #chat-status-strip { opacity: 0; visibility: hidden; } /* #309: never over a panel */
 .icon-btn { transition: background-color var(--dur-press) var(--ease-out), border-color var(--dur-state) var(--ease-out); }
-#models-list .skeleton { height: 44px; margin: 0 0 4px; border-radius: var(--radius-xl); background: rgba(99, 179, 255, .16); }
-@keyframes pulse { 50% { opacity: .45; } }
-#models-list .skeleton { animation: pulse 1200ms ease-in-out infinite; }
-html[data-motion="reduce"] #models-list .skeleton, html[data-motion="reduce"] #models-list .choose[aria-pressed="true"] .ico, html[data-motion="reduce"] .models-prov .choose[aria-pressed="true"] .ico { animation: none; }
-html[data-motion="reduce"] #models-list .choose::before, html[data-motion="reduce"] .models-prov .choose::before, html[data-motion="reduce"] .icon-btn, html[data-motion="reduce"] :where(button, textarea) { transition: none; }
-
-/* ---- #414/T7.2: Ajustes → Modelos — one flat radio-row list above the local picker ----
-   Design ajustes-ventana-modelos-*.png: group label «Cuentas conectadas», one row per model
-   (radio + name + provider chip + capability chips); a disconnected provider draws nothing
-   (the old per-provider group + hint rules are gone). */
-.models-prov { flex: 0 0 auto; margin: 0; padding: 0 0 8px; border-bottom: 1px solid var(--line-ring); }
-.models-prov-title { margin: 2px 0 4px; color: var(--island-muted); font: 600 var(--fs-caption)/1.3 var(--font-ui); text-transform: uppercase; letter-spacing: .04em; }
-.models-prov-models { margin: 0 0 4px; padding: 0; list-style: none; }
-.models-prov-model { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 0 0 0 2px; }
-.models-prov-model .model-titles { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-.models-prov-model .model-title { max-width: none; }
-.model-sub { color: var(--island-muted); font: 400 var(--fs-caption)/1.2 var(--font-ui); }
-.models-prov-chip { flex: none; min-height: 24px; max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-caption); }
-.models-local-label { margin: 10px 0 4px; color: var(--island-muted); font: 600 var(--fs-caption)/1.3 var(--font-ui); text-transform: uppercase; letter-spacing: .04em; }
 
 /* ---- Q1: keyboard focus of the island itself -------------------------- */
 #capsule:has(#island-toggle:focus-visible) #island { outline: 2px solid var(--go); outline-offset: 2px; }
@@ -680,7 +561,7 @@ html[data-motion="reduce"] #models-list .choose::before, html[data-motion="reduc
   transition: opacity var(--dur-state) var(--ease-out) var(--dur-view-delay), transform var(--dur-view-in) var(--spring) var(--dur-view-delay), visibility 0s;
 }
 /* #310: the chat HEADER stays visible with a screen open (gentle-dot): its buttons switch screens with the pointer */
-#capsule[data-settings="open"] #chat-body, #capsule[data-settings="open"] #models { opacity: 0; visibility: hidden; }
+#capsule[data-settings="open"] #chat-body { opacity: 0; visibility: hidden; }
 #settings-bar { display: flex; align-items: center; gap: 8px; min-height: 44px; }
 /* #310: the screen title (gentle-dot's «Accounts» / «Connectors» / «Settings»), one row with the close button */
 #settings-title { flex: 1 1 auto; min-width: 0; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--island-ink); font: 700 16px/1.2 var(--font-ui); }
@@ -914,24 +795,10 @@ body { color: var(--ink); -webkit-font-smoothing: antialiased; }
 #chat-composer .round { border-radius: 10px; width: 44px; min-width: 44px; height: 44px; }
 #chat-composer .round .ico svg { width: 16px; height: 16px; }
 
-/* Vertical live Model: search above real rows, actions remain in their own
-   contained row. Readiness and selection still come exclusively from models.js. */
-#models, #settings { top: 84px; left: 10px; right: 10px; bottom: 10px; border-radius: 20px; background: var(--card-bg); padding: 12px 16px; }
+#settings { top: 84px; left: 10px; right: 10px; bottom: 10px; border-radius: 20px; background: var(--card-bg); padding: 12px 16px; }
 /* Visual correction V1: the character moves to the chat header ONLY while the chat view shows a panel.
    Unscoped, a panel left open when the island collapsed pinned the dot's character 34px too low. */
-#capsule[data-phase="expanded"][data-view="chat"][data-models="open"] #clay, #capsule[data-phase="expanded"][data-view="chat"][data-settings="open"] #clay { top: 13px !important; }
-#models-bar { flex: 0 0 auto; }
-#models-bar .icon-btn { border: 0; }
-#models-meters { font-variant-numeric: tabular-nums; }
-.models-search-field { display: flex; align-items: center; width: 100%; flex: 0 0 auto; height: 44px; margin: 4px 0; padding: 0 10px; border-radius: 12px; background: var(--fill-q); }
-#models-search { width: 100%; min-width: 0; height: 44px; padding: 0; border: 0; outline: 0; background: transparent; color: var(--ink); font: 400 13px/20px var(--font); }
-.models-search-field:focus-within { outline: 2px solid var(--go); outline-offset: 2px; }
-#models-search::placeholder { color: var(--muted); }
-#models-list li { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) 44px; gap: 4px 8px; padding: 6px 10px; margin: 2px 0; border-radius: 8px; background: var(--fill-alt); }
-#models-list .model-title { max-width: none; grid-column: 1; grid-row: 1; }
-#models-list .model-chips { grid-column: 1; grid-row: 2; flex-wrap: wrap; gap: 8px; }
-#models-list .choose { grid-column: 2; grid-row: 1 / 3; align-self: center; }
-#models-list li[hidden] { display: none; }
+#capsule[data-phase="expanded"][data-view="chat"][data-settings="open"] #clay { top: 13px !important; }
 #settings-title { font-weight: 600; font-size: var(--fs-title); }
 #settings-close { border: 0; }
 .ssection { color: var(--muted); letter-spacing: .06em; }
@@ -1000,7 +867,7 @@ html[data-motion="reduce"] #island-header, html[data-motion="reduce"] #island-he
 /* ---- chat: ONE header row, a roomier transcript card ------------------- */
 #chat { padding: 8px 10px 10px; }
 #chat-header { min-height: 56px; gap: 4px; padding-left: 16px; }
-#capsule[data-models="open"] #chat-header, #capsule[data-settings="open"] #chat-header { padding-left: 72px; }
+#capsule[data-settings="open"] #chat-header { padding-left: 72px; }
 #chat-header .chip { font-size: var(--fs-body); }
 #chat-status-strip { position: absolute; z-index: 3; top: 70px; left: 50%; min-height: 0; padding: 4px 12px; transform: translateX(-50%); border-radius: 999px; background: var(--surface); }
 #chat-body { padding: 16px 16px 14px; }
@@ -1011,16 +878,7 @@ html[data-motion="reduce"] #island-header, html[data-motion="reduce"] #island-he
 #chat-composer { margin-left: 60px; gap: 8px; margin-top: 8px; }
 #chat-input { font-size: var(--fs-body); padding: 11px 14px; }
 /* ---- model / settings panels: one vertical column under the header ------ */
-#models, #settings { top: 72px; left: 10px; right: 10px; bottom: 10px; padding: 16px; gap: 8px; }
-#models-bar { gap: 8px 12px; }
-#models-meters { gap: 18px; padding: 4px 2px 0; }
-.meter-label { font-size: var(--fs-caption); }
-.models-search-field { margin: 4px 0 8px; }
-#models-search { font-size: var(--fs-body); }
-#models-list li { gap: 6px 10px; padding: 10px 12px; margin: 0 0 8px; }
-#models-list .model-title { font-size: var(--fs-body); }
-.model-chips { gap: 10px; }
-.model-chips .chip { font-size: var(--fs-label); }
+#settings { top: 72px; left: 10px; right: 10px; bottom: 10px; padding: 16px; gap: 8px; }
 #settings-bar { gap: 10px; }
 #settings-hint, .snote, .sempty { font-size: var(--fs-label); line-height: 1.45; }
 #settings-hint { margin: 0 0 10px; }
@@ -1340,9 +1198,6 @@ html[data-theme="light"] .sfield { color-scheme: light; }
   border: 1px solid var(--line-soft); background: transparent; color: var(--island-ink); font: 600 var(--fs-label)/1.2 var(--font-ui); cursor: pointer; }
 .ml-back:hover, .ml-send:hover { background: var(--fill-hover); }
 
-/* the model picker lives inside Ajustes now: in flow, no overlay of its own */
-#settings #models { position: static; padding: 0; background: none; border-radius: 0; flex: 1; min-height: 0; transform: none; transition: none; opacity: 1; visibility: visible; }
-#settings #models:not([data-open="true"]) { display: none; }
 
 /* #366 F093 — Ajustes in its own window: the SAME page runs there, but only
    Ajustes is the window. The Rust-created window (label "settings") sets
@@ -1365,8 +1220,7 @@ body[data-window="settings"] #island {
 }
 /* the panel and its own model-picker fill the window (the #408 island offsets
    — top 58/72/84px, left/right 10–12px — are island-size business) */
-body[data-window="settings"] #settings,
-body[data-window="settings"] #models {
+body[data-window="settings"] #settings {
   position: absolute; inset: 0; top: 0; left: 0; right: 0; bottom: 0;
   border-radius: 0; opacity: 1; visibility: visible; transform: none;
 }
@@ -1388,8 +1242,7 @@ body[data-window="settings"] #settings-tabs {
 body[data-window="settings"] #settings-tabs .stab { flex: none; width: 100%; justify-content: flex-start; }
 body[data-window="settings"] #settings-bar { grid-column: 2; padding: 16px 24px 8px; }
 body[data-window="settings"] #settings-hint { grid-column: 2; margin: 0; padding: 0 24px; }
-body[data-window="settings"] #settings-body,
-body[data-window="settings"] #settings #models {
+body[data-window="settings"] #settings-body {
   grid-column: 2; grid-row: 3; position: static; min-width: 0; min-height: 0;
   overflow-y: auto; padding: 16px 24px; width: auto;
 }
@@ -1452,7 +1305,7 @@ html[data-motion="reduce"] .sseg-btn { transition: none; }
 #settings[data-rail="true"] #settings-hint { grid-column: 2; grid-row: 2; }
 #settings[data-rail="true"] #settings-tabs { grid-column: 1; grid-row: 2 / 4; flex-direction: column; flex-wrap: nowrap; align-self: start; gap: 6px; }
 #settings[data-rail="true"] .stab { justify-content: flex-start; width: 100%; min-height: 44px; } /* design §3: tab 36 visual on ::after, r10 */
-#settings[data-rail="true"] #settings-body, #settings[data-rail="true"] #models { grid-column: 2; grid-row: 3; min-height: 0; }
+#settings[data-rail="true"] #settings-body { grid-column: 2; grid-row: 3; min-height: 0; }
 #settings[data-rail="true"] #settings-live { grid-column: 1 / -1; }
 
 /* #347 mini-bots: noninteractive strip of neutral mini-Abitos, one per active chat turn (overview only).
@@ -1928,7 +1781,6 @@ html[data-motion="reduce"] #settings-body[data-screen="pills"] .blob-toggle { tr
 #chat-history-controls { justify-content: flex-start; align-items: center; }
 #chat-history-label { color: var(--island-muted); font-size: var(--fs-caption); line-height: 1.2; }
 #chat-history-label[hidden] { display: none; }
-#chat-model-btn { min-height: 24px; font: 600 var(--fs-caption)/1.2 var(--font-ui); background: var(--surface); }
 
 /* ---- #410: Conexiones compacta (TaskView #410, S1-S3). Denser ONLY inside the Conexiones tab:
    settings.js publishes the open sub-tab on the tabpanel (body.dataset.screen) and every rule below
