@@ -164,12 +164,13 @@ function verify(name, m, { grown = true } = {}) {
     } finally { await r.close(); }
   }
 
-  // 3 · a refused approval shows the daemon's own closed reason, and claims nothing
+  // 3 · a refused approval shows the daemon's own closed reason, and claims nothing. The refusal is NOT in the command's
+  //     reply (that one is the state at write time): it only exists in the `agent:state` the daemon pushes afterwards.
   {
     const r = await H.open({ hoy: DAY, hoyTab: true, hoyRefuse: 'not_pending' });
     try {
       await r.page.click('#hoy-list .hoy-row .hoy-approve');
-      await r.page.waitForTimeout(400);
+      await r.page.waitForTimeout(700);
       const m = await measure(r.page);
       verify('refusal', m);
       assert.ok(m.problem, 'a refusal is shown, never swallowed');
@@ -180,6 +181,71 @@ function verify(name, m, { grown = true } = {}) {
       const live = await r.page.evaluate(() => document.getElementById('hoy-live').textContent);
       assert.ok(!/^Aprobada/.test(live || ''), 'a refusal never announces a success');
       await r.page.locator('#island').screenshot({ path: path.join(SHOTS, 'hoy-rechazo-del-daemon.png') });
+    } finally { await r.close(); }
+  }
+
+  // 3b · B1: the daemon's answer lands BETWEEN the two clicks of a double-click, so the row under the cursor changes.
+  //      Exactly ONE proposal may be decided, and it must be the one that was under the cursor at the first click.
+  for (const delay of [0, 15, 200]) {
+    const r = await H.open({ hoy: DAY, hoyTab: true, hoyReplyDelay: delay, hoyWait: 900 });
+    try {
+      const id = await r.page.evaluate(() => document.querySelector('#hoy-list .hoy-row').dataset.id);
+      const box = await r.page.locator('#hoy-list .hoy-row .hoy-approve').first().boundingBox();
+      await r.page.mouse.click(box.x + box.width / 2, box.y + box.height / 2, { clickCount: 2, delay: 40 });
+      await r.page.waitForTimeout(700);
+      const sent = await r.page.evaluate(() => (window.__allCalls || [])
+        .filter(c => c.cmd === 'agent_action' && /^hoy_(approve|reject)$/.test(c.payload && c.payload.action))
+        .map(c => c.payload.id));
+      assert.deepEqual(sent, [id], `delay ${delay}: exactly ONE decision travelled, and only for the clicked proposal (${JSON.stringify(sent)})`);
+      const items = await r.page.evaluate(() => window.__hoy.items.filter(i => i.kind === 'proposal').map(i => ({ id: i.id, status: i.status })));
+      assert.deepEqual(items.filter(i => i.status === 'pending').map(i => i.id), [B], `delay ${delay}: the other proposal is still waiting, untouched (${JSON.stringify(items)})`);
+      const m = await measure(r.page);
+      assert.equal(m.problem, null, `delay ${delay}: no false refusal (${m.problem})`);
+      const live = await r.page.evaluate(() => document.getElementById('hoy-live').textContent);
+      assert.match(live, /^Aprobada: /, `delay ${delay}: the approval is announced once the daemon shows it (${live})`);
+      assert.equal(m.rows.length, 3, `delay ${delay}: the day keeps its three proposals`);
+      assert.equal(m.rows[0].state, 'approved', `delay ${delay}: the decided row keeps its place (no re-sort under the cursor)`);
+      assert.ok(m.rows[1].approve && m.rows[1].reject, `delay ${delay}: the untouched proposal is still there to decide`);
+      verify(`dblclick/${delay}`, m);
+    } finally { await r.close(); }
+  }
+
+  // 3c · F5: a refused or unavailable READ says so, instead of leaving a stale day on screen
+  for (const [label, opts, want] of [
+    ['unavailable', { hoyDown: true }, /no está disponible ahora/],
+    ['refused', { hoyListRefuse: 'unavailable' }, /no está disponible ahora/],
+  ]) {
+    const r = await H.open({ hoy: DAY, hoyTab: true, ...opts });
+    try {
+      const m = await measure(r.page);
+      assert.ok(m.problem, `${label}: a read that did not work is said, never swallowed`);
+      assert.match(m.problem, want, `${label}: ${m.problem}`);
+      assert.ok(!/^Aprobada/.test(m.live || ''), `${label}: and nothing claims a decision`);
+      await r.page.locator('#island').screenshot({ path: path.join(SHOTS, `hoy-lectura-${label}.png`) });
+    } finally { await r.close(); }
+  }
+
+  // 3d · the daemon never answers: every decision waits, silenced, and only the deadline says the outcome is UNKNOWN
+  {
+    const r = await H.open({ hoy: DAY, hoyTab: true, hoySilent: true, hoyWait: 900 });
+    try {
+      await r.page.click('#hoy-list .hoy-row .hoy-approve');
+      await r.page.waitForTimeout(700);
+      const waiting = await r.page.evaluate(() => ({
+        disabled: [...document.querySelectorAll('#hoy-list .hoy-acts .hoy-btn')].map(b => b.disabled),
+        live: document.getElementById('hoy-live').textContent,
+        problem: document.getElementById('hoy-problem').hidden ? null : document.getElementById('hoy-problem').textContent,
+      }));
+      assert.ok(waiting.disabled.length >= 2 && waiting.disabled.every(Boolean), `every Aprobar / Rechazar is disabled while one decision is in flight (${JSON.stringify(waiting.disabled)})`);
+      assert.ok(!/^(Aprobada|Rechazada)/.test(waiting.live || ''), 'nothing is announced while the daemon has not answered');
+      assert.equal(waiting.problem, null, 'and nothing is called a failure either');
+      await r.page.waitForTimeout(2900);
+      const m = await measure(r.page);
+      assert.match(m.problem || '', /No sabemos si el daemon/, `the deadline says the truth (${m.problem})`);
+      assert.ok(!/^(Aprobada|Rechazada)/.test(m.live || ''), 'never a success it cannot prove');
+      const lists = m.calls.filter(c => c === 'hoy_list').length;
+      assert.ok(lists >= 2, `the day is asked again after the deadline (${lists} hoy_list)`);
+      await r.page.locator('#island').screenshot({ path: path.join(SHOTS, 'hoy-sin-respuesta.png') });
     } finally { await r.close(); }
   }
 

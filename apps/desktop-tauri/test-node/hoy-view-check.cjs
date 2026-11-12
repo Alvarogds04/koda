@@ -163,4 +163,66 @@ test('the tabs answer ArrowLeft / ArrowRight / Home / End (roving focus), and no
   assert.equal(N.hoyTabKey({ key: 'ArrowRight', isTrusted: true, metaKey: true }, 0), null, 'never with a modifier');
 });
 
+// ---- a decision in flight: the daemon's later state decides it, never the click (verifier mwdtsadz B1/B2) ----
+test('a decision waits for the daemon: the command reply is the state BEFORE it', () => {
+  const before = view([proposal(A)]);
+  assert.equal(typeof N.hoyDecision, 'function', 'the model owns the judgement');
+  assert.equal(N.HOY_WAIT_MS, 3000, 'the deadline is ~3 s');
+  for (const stale of [undefined, null, {}, { hoy: before }, { hoy: before, last_error: { code: null, n: 0 } }]) {
+    assert.deepEqual(N.hoyDecision(0, stale, A, 'approved'), { state: 'waiting' }, `the write-time reply never decides: ${JSON.stringify(stale)}`);
+  }
+});
+
+test('the daemon shows the decision: that is the success, and nothing else is', () => {
+  const after = view([proposal(A, { status: 'approved', decidedAt: '2026-11-06T09:46:00' })]);
+  assert.deepEqual(N.hoyDecision(0, { hoy: after, last_error: { code: null, n: 0 } }, A, 'approved'), { state: 'ok' });
+  // a still pending row is not an outcome, however many frames say so
+  assert.deepEqual(N.hoyDecision(0, { hoy: view([proposal(A)]), last_error: { code: null, n: 0 } }, A, 'approved'), { state: 'waiting' });
+  // the wrong status is not the wanted one either
+  const rejected = view([proposal(A, { status: 'rejected' })]);
+  assert.deepEqual(N.hoyDecision(0, { hoy: rejected, last_error: { code: null, n: 0 } }, A, 'approved'), { state: 'waiting' });
+});
+
+test('a refusal is the daemon\'s own closed code, recognised by its counter', () => {
+  const still = view([proposal(A)]);
+  assert.deepEqual(N.hoyDecision(4, { hoy: still, last_error: { code: 'not_pending', n: 5 } }, A, 'approved'), { state: 'refused', code: 'not_pending' });
+  assert.deepEqual(N.hoyDecision(4, { hoy: still, last_error: { code: 'unavailable', n: 5 } }, A, 'approved'), { state: 'refused', code: 'unavailable' });
+  // the SAME error that was already there when the command left is not this decision's answer
+  assert.deepEqual(N.hoyDecision(5, { hoy: still, last_error: { code: 'not_pending', n: 5 } }, A, 'approved'), { state: 'waiting' });
+  assert.deepEqual(N.hoyDecision(0, { hoy: still, last_error: { code: 'sudo rm -rf /', n: 1 } }, A, 'approved'), { state: 'refused', code: 'sudo rm -rf /' }, 'an unknown code is still a refusal; the refusal text maps it to `failed`');
+  assert.match(N.hoyRefusal('sudo rm -rf /'), /no pudo registrar/);
+});
+
+test('a read the daemon could not answer is said, never rendered as a stale day (F5)', () => {
+  assert.equal(N.hoyReadProblem(0, { connection: 'connected', hoy: view([proposal(A)]) }), '');
+  assert.equal(N.hoyReadProblem(2, { connection: 'connected', hoy: view([]), last_error: { code: null, n: 2 } }), '', 'the error that was already there is not this read');
+  assert.match(N.hoyReadProblem(0, { connection: 'no_daemon' }), /no está disponible/);
+  assert.match(N.hoyReadProblem(0, { connection: 'lost' }), /no está disponible/);
+  assert.match(N.hoyReadProblem(0, { connection: 'connected', last_error: { code: 'unavailable', n: 1 } }), /no está disponible/);
+  assert.match(N.hoyReadProblem(0, null), /no está disponible/, 'no answer at all is «unavailable», never silence');
+  assert.equal(N.hoyReadProblem(0, { connection: 'connected' }), '', 'a connected answer with no day yet is not a problem');
+});
+
+test('rows never move under the cursor: a decided row keeps its place while the panel is open', () => {
+  assert.equal(typeof N.hoyOrder, 'function');
+  const rows = list => list.map(id => ({ id }));
+  // the daemon re-sorts pending-first after a decision: the page keeps its own first-seen order
+  assert.deepEqual(N.hoyOrder([A, B, C], rows([B, A, C])).map(r => r.id), [A, B, C]);
+  // a new pending proposal arrives: it goes after what was already on screen (nothing shifts)
+  assert.deepEqual(N.hoyOrder([A, B], rows([C, A, B])).map(r => r.id), [A, B, C]);
+  // a row that disappeared is simply gone, and no-remember-order is the daemon order
+  assert.deepEqual(N.hoyOrder([A, B], rows([B])).map(r => r.id), [B]);
+  assert.deepEqual(N.hoyOrder([], rows([B, A])).map(r => r.id), [B, A]);
+  assert.deepEqual(N.hoyOrder(null, null), []);
+});
+
+test('clicks are ignored for a moment after a repaint moved rows', () => {
+  assert.equal(N.HOY_CLICK_GUARD_MS, 400);
+  assert.equal(typeof N.hoyGuardOpen, 'function');
+  assert.equal(N.hoyGuardOpen(1000, 1000), false, 'the instant it moved: refused');
+  assert.equal(N.hoyGuardOpen(1000, 1399), false);
+  assert.equal(N.hoyGuardOpen(1000, 1400), true);
+  assert.equal(N.hoyGuardOpen(0, 5), true, 'nothing moved yet: nothing to guard');
+});
+
 console.log(`hoy-view-check: ${passed} passed`);

@@ -343,8 +343,58 @@
     if (tab === 'errores') return 'Ningún aviso: todo salió bien.';
     return 'Nada en esta pestaña.';
   }
-  const hoyRefusal = code => HOY_REFUSAL[typeof code === 'string' ? code : ''] || HOY_REFUSAL.failed;
+  const hoyRefusal = code => (Object.prototype.hasOwnProperty.call(HOY_REFUSAL, typeof code === 'string' ? code : '') ? HOY_REFUSAL[code] : HOY_REFUSAL.failed);
+
+  // ---- a decision in flight (verifier mwdtsadz B1/B2) ----
+  // AgentConn::command hands the page the state at WRITE time (`self.view()` right after sending), and the daemon's
+  // answer to a decision arrives later as `agent:state` — the contract settings.js documents. So NOTHING is judged from
+  // the reply: the decision is held until the daemon's own state shows that row moved or its error counter moved, and
+  // the deadline says it does not know instead of guessing either way. Until then every decision on the panel is closed.
+  const HOY_WAIT_MS = 3000;        // how long one decision waits for the daemon before its outcome is «no sabemos»
+  const HOY_CLICK_GUARD_MS = 400;  // a click this soon after a repaint that moved rows hits a row nobody chose
+  /** The daemon's error counter: how the page tells «an error arrived AFTER my command» without reading its text. */
+  function hoyErrorN(view) {
+    const n = view && view.last_error ? view.last_error.n : 0;
+    return Number.isFinite(n) && n >= 0 ? n : 0;
+  }
+  /**
+   * One decision against one view the page received (the write-time reply or an `agent:state`).
+   * `beforeN` is `hoyErrorN` captured when the command left. `{state:'ok'}` only when the daemon's row carries the
+   * wanted status; `{state:'refused', code}` only when its counter moved; anything else is still waiting.
+   */
+  function hoyDecision(beforeN, after, id, want) {
+    const items = after && after.hoy && Array.isArray(after.hoy.items) ? after.hoy.items : null;
+    const row = items ? items.find(i => i && i.id === id) : null;
+    if (row && row.status === want) return { state: 'ok' };
+    const from = Number.isFinite(beforeN) && beforeN > 0 ? beforeN : 0;
+    if (hoyErrorN(after) > from) return { state: 'refused', code: after.last_error && after.last_error.code };
+    return { state: 'waiting' };
+  }
+  /** A read («hoy_list» / «view») has no click to confirm: it either brings the day or the daemon's closed reason (F5). */
+  function hoyReadProblem(beforeN, view) {
+    if (!view || typeof view !== 'object') return HOY_REFUSAL.unavailable;
+    if (typeof view.connection === 'string' && view.connection !== 'connected') return HOY_REFUSAL.unavailable;
+    const from = Number.isFinite(beforeN) && beforeN > 0 ? beforeN : 0;
+    if (hoyErrorN(view) > from) return hoyRefusal(view.last_error && view.last_error.code);
+    return '';
+  }
+  /**
+   * The order rows are DRAWN in: ids already on screen keep the place they had (a decided row never sinks while the
+   * panel is open, so the buttons under the cursor never become another proposal's), and ids seen for the first time
+   * follow in the daemon's own order.
+   */
+  function hoyOrder(previous, rows) {
+    const list = Array.isArray(rows) ? rows.filter(r => r && typeof r.id === 'string') : [];
+    const seen = Array.isArray(previous) ? previous : [];
+    if (!seen.length) return list;
+    const rank = new Map(seen.map((id, i) => [id, i]));
+    const kept = list.filter(r => rank.has(r.id)).sort((a, b) => rank.get(a.id) - rank.get(b.id));
+    return kept.concat(list.filter(r => !rank.has(r.id)));
+  }
+  /** A click is honoured only once the rows have been still for `HOY_CLICK_GUARD_MS` (an armed guard, not a moving one). */
+  const hoyGuardOpen = (movedAt, now) => !(Number.isFinite(movedAt) && movedAt > 0) || !Number.isFinite(now) || now - movedAt >= HOY_CLICK_GUARD_MS;
 
   return { dismissAll, dismissFeedback, TABS, step, arrows, wheelStep, keyStep, VEIL, veilState, agentRows, AGENT_ROWS, AGENT_ROWS_LINKED, moreAgents, STATE_WORD, clockText, noticeLines, agentHex, focusView, veilColor, noticeAgentColor, takeoverState, chatInert, takeoverTitle, sendCheck, requestId, replyLine, DRAFT_MAX, SIZES, sizeScale, shortTitle,
-    HOY_TABS, HOY_ACTION, HOY_STATE, HOY_PROVENANCE, hoyClean, hoyCounts, hoyTab, hoyTabKey, hoyRows, hoySummary, hoyEmpty, hoyRefusal, hoySplit };
+    HOY_TABS, HOY_ACTION, HOY_STATE, HOY_PROVENANCE, hoyClean, hoyCounts, hoyTab, hoyTabKey, hoyRows, hoySummary, hoyEmpty, hoyRefusal, hoySplit,
+    HOY_WAIT_MS, HOY_CLICK_GUARD_MS, hoyErrorN, hoyDecision, hoyReadProblem, hoyOrder, hoyGuardOpen };
 });

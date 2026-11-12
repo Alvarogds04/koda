@@ -257,6 +257,9 @@
       result: ['M6 3h7l3 3v11H6z', 'M8 9h6M8 12h6M8 15h4'], error: ['M10 3.5 18 17H2z', 'M10 8v4', 'M10 14.4v.1'],
     };
     let hoyView = null, hoyTabId = null, tabChosen = false, hoyBusy = '', shapeTimer = 0, refusal = '', rowNodes = new Map(), hoySig = 'none';
+    // B1/B2: one decision in flight at a time, judged only by the daemon's own later state
+    let pending = null, errorN = 0, readFrom = -1, movedAt = 0;
+    const rowOrder = new Map(); // tab id -> the ids in the order they were FIRST drawn (a repaint never re-sorts)
     const isOpen = () => capsule.dataset.hoy === 'open';
     // the artboard's fifth frame: a day with nothing in it needs no room, so the notch stays 150 and the empty line says why.
     // Before the first answer arrives we keep the grown box (there IS something until the daemon says otherwise).
@@ -310,10 +313,13 @@
     function actions(row) {
       const wrap = el('div', 'hoy-acts');
       const yes = el('button', 'hoy-btn hoy-approve', 'Aprobar');
-      yes.type = 'button'; yes.setAttribute('aria-label', row.approve); yes.disabled = hoyBusy === row.id;
-      yes.addEventListener('click', e => { if (e.isTrusted !== true) return; decide(row.id, 'approve'); });
       const no = el('button', 'hoy-btn', 'Rechazar');
-      no.type = 'button'; no.setAttribute('aria-label', row.reject); no.disabled = hoyBusy === row.id;
+      yes.type = 'button'; yes.setAttribute('aria-label', row.approve);
+      no.type = 'button'; no.setAttribute('aria-label', row.reject);
+      // a decision in flight closes EVERY decision on the panel, not only its own row: the daemon re-sorts its day, so
+      // the next button under the cursor may belong to another proposal (the verifier's double approval, B1)
+      yes.disabled = no.disabled = !!hoyBusy;
+      yes.addEventListener('click', e => { if (e.isTrusted !== true) return; decide(row.id, 'approve'); });
       no.addEventListener('click', e => { if (e.isTrusted !== true) return; decide(row.id, 'reject'); });
       wrap.append(yes, no);
       return wrap;
@@ -336,7 +342,13 @@
         if (num) num.textContent = String(n);
       }
       if (parts.panel) parts.panel.setAttribute('aria-labelledby', 'hoy-tab-' + active.id);
-      const rows = N.hoyRows(hoyView, Date.now()).filter(r => r.tab === active.id);
+      // the order is the page's own while the panel stays on this tab: a decided row (or a row the daemon moved) keeps
+      // the place it had, so the Aprobar / Rechazar under the cursor always belongs to the proposal it was aimed at
+      const seen = rowOrder.get(active.id) || [];
+      const rows = N.hoyOrder(seen, N.hoyRows(hoyView, Date.now()).filter(r => r.tab === active.id));
+      const ids = rows.map(r => r.id).join('\n');
+      if (seen.length && ids && ids !== seen.join('\n')) movedAt = Date.now(); // they moved: hold the clicks a moment
+      rowOrder.set(active.id, rows.map(r => r.id));
       rowNodes = new Map();
       if (parts.list) {
         parts.list.textContent = '';
@@ -368,29 +380,69 @@
       hoyView = { items: next.items, truncated: next.truncated === true };
       if (isOpen()) paintHoy();
     }
-    function load() {
+    // `keep`: the caller already said something true (the deadline's «no sabemos») that a successful read must not erase
+    function load(keep) {
+      const unavailable = () => { readFrom = -1; problem(N.hoyRefusal('unavailable')); say(N.hoyRefusal('unavailable')); };
       call('agent_action', { action: 'view' }).then(v => {
-        applyHoy(v && v.hoy);                                          // the first ask also connects the client
-        return call('agent_action', { action: 'hoy_list' });
-      }).then(v => { applyHoy(v && v.hoy); problem(''); },
-        e => problem((e && e.message) || 'No se pudo leer «Hoy».'));
+        observeHoy(v);                                                // the first ask also connects the client
+        const n0 = errorN;                                            // an error already there is not THIS read's answer
+        readFrom = n0;
+        return call('agent_action', { action: 'hoy_list' }).then(list => {
+          observeHoy(list);
+          const p = N.hoyReadProblem(n0, list);                       // F5: a refused or unavailable read is said
+          if (p || !keep) { problem(p); if (p) say(p); }
+          readFrom = -1;
+        }, unavailable);
+      }, unavailable);
     }
+    // One view from ANY path — the command's write-time reply, a read's answer, an `agent:state` push — goes through
+    // here: the day follows the daemon, and a decision is finished only by the daemon's own state (B1/B2).
+    function observeHoy(view, snapshot) {
+      if (!view || typeof view !== 'object') return;
+      if (snapshot !== false) applyHoy(view.hoy);   // a write-time reply is the day BEFORE the command: it never replaces it
+      errorN = Math.max(errorN, N.hoyErrorN(view));
+      if (pending) {
+        const d = pending;
+        const r = N.hoyDecision(d.n0, view, d.id, d.want);
+        if (r.state === 'waiting') return;
+        finishDecision();
+        if (r.state === 'ok') say(d.how === 'approve' ? `Aprobada: ${d.label}. Se ejecutó una vez.` : `Rechazada: ${d.label}. No se hizo nada.`);
+        else { const t = N.hoyRefusal(r.code); problem(t); say(t); }
+        return;
+      }
+      if (readFrom >= 0) {                          // a read was asked and the daemon refused it afterwards (F5)
+        const p = N.hoyReadProblem(readFrom, view);
+        if (p) { readFrom = -1; problem(p); say(p); }
+      }
+    }
+    function finishDecision() {
+      const d = pending;
+      pending = null;
+      if (d) clearTimeout(d.timer);
+      hoyBusy = '';
+      paintHoy();
+      const node = d ? rowNodes.get(d.id) : null;   // the buttons just left: keep the keyboard on the row it acted on
+      if (node && typeof node.focus === 'function') node.focus();
+    }
+    const UNKNOWN = 'No sabemos si el daemon registró la decisión.';
     function decide(id, how) {
-      if (hoyBusy) return;
+      if (hoyBusy || pending) return;
+      if (!N.hoyGuardOpen(movedAt, Date.now())) return; // the rows moved this instant: this button may be another proposal's
       const row = N.hoyRows(hoyView, Date.now()).find(r => r.id === id);
-      const label = row ? row.title : 'la propuesta';
-      const want = how === 'approve' ? 'approved' : 'rejected';
-      hoyBusy = id; problem(''); paintHoy();
-      call('agent_action', { action: how === 'approve' ? 'hoy_approve' : 'hoy_reject', id }).then(v => {
-        applyHoy(v && v.hoy);
-        const now = hoyView && Array.isArray(hoyView.items) ? hoyView.items.find(i => i && i.id === id) : null;
-        // the daemon said so: only then is it announced. A refusal is its own closed code, never guessed from the click.
-        if (now && now.status === want) say(how === 'approve' ? `Aprobada: ${label}. Se ejecutó una vez.` : `Rechazada: ${label}. No se hizo nada.`);
-        else problem(N.hoyRefusal((v && v.last_error && v.last_error.code) || 'failed'));
-      }, e => problem((e && e.message) || 'No se pudo enviar la decisión.')).then(() => {
-        hoyBusy = ''; paintHoy();
-        const node = rowNodes.get(id);                     // the buttons just left: keep the keyboard on the row it acted on
-        if (node && typeof node.focus === 'function') node.focus();
+      const d = { id, how, want: how === 'approve' ? 'approved' : 'rejected', label: row ? row.title : 'la propuesta', n0: errorN, timer: 0 };
+      hoyBusy = id; problem(''); say(''); pending = d;
+      // the deadline: silence is not a success and not a failure — say it does not know, and ask the day again
+      d.timer = setTimeout(() => {
+        if (pending !== d) return;
+        pending = null; hoyBusy = '';
+        problem(UNKNOWN); say(UNKNOWN); paintHoy(); load(true);
+      }, N.HOY_WAIT_MS);
+      paintHoy();
+      call('agent_action', { action: how === 'approve' ? 'hoy_approve' : 'hoy_reject', id }).then(v => observeHoy(v, false), () => {
+        if (pending !== d) return;
+        finishDecision();
+        const t = N.hoyRefusal('unavailable');
+        problem(t); say(t);
       });
     }
     function focusTab() { const b = byId('hoy-tab-' + (hoyTabId || 'propuestas')); if (b && typeof b.focus === 'function') b.focus(); }
@@ -399,6 +451,7 @@
       if (on) capsule.dataset.hoy = 'open'; else delete capsule.dataset.hoy;
       if (parts.open) parts.open.setAttribute('aria-pressed', on ? 'true' : 'false');
       report(on);
+      rowOrder.clear(); movedAt = 0;  // closed: the day follows the daemon's own order again when it is opened
       if (!on) { problem(''); return; }
       problem(''); paintHoy(); load();
       if (focus) focusTab();
@@ -436,7 +489,7 @@
     window.addEventListener('resize', () => { if (isOpen()) settle(); });
     try {
       const listen = window.__TAURI__ && window.__TAURI__.event && window.__TAURI__.event.listen;
-      if (listen) listen('agent:state', ev => { const p = ev && ev.payload; if (p) applyHoy(p.hoy); }).catch(() => {});
+      if (listen) listen('agent:state', ev => { const p = ev && ev.payload; if (p) observeHoy(p); }).catch(() => {});
     } catch { /* optional facade */ }
     paintHoy();
   })();

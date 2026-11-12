@@ -82,9 +82,22 @@ test('the mount wires only the closed verbs, every action needs a trusted event,
 });
 
 test('a decision is read back from the daemon, never assumed from the click', () => {
-  assert.match(hoyMount, /now\.status === want/, 'the row is announced only when the daemon reports the wanted status');
+  // the command's reply is the state at WRITE time (agentconn.rs returns self.view() right after sending), so the
+  // outcome only exists in a later `agent:state` — the same contract settings.js documents. The mount holds the
+  // decision until the model says ok/refused; the deadline says it does not know, it never guesses (B1/B2).
+  assert.match(hoyMount, /N\.hoyDecision\(/, 'the judgement is the pure model\'s');
+  assert.match(hoyMount, /N\.HOY_WAIT_MS/, 'with a deadline');
+  assert.match(hoyMount, /pending\b/, 'and one decision in flight at a time');
+  assert.match(hoyMount, /agent:state[\s\S]{0,200}(observeHoy|hoyDecision|applyHoy)/, 'the daemon\'s own state is the answer');
+  assert.match(hoyMount, /hoyBusy/, 'a decision in flight holds the panel');
+  assert.match(hoyMount, /yes\.disabled = no\.disabled = !!hoyBusy/, 'EVERY Aprobar / Rechazar is disabled while one is in flight');
+  assert.match(hoyMount, /N\.hoyOrder\(/, 'a decided row keeps its place while the panel is open (no re-sort under the cursor)');
+  assert.match(hoyMount, /N\.hoyGuardOpen\(/, 'and clicks are ignored for a moment after a repaint moved rows');
+  assert.match(hoyMount, /N\.hoyReadProblem\(/, 'a refused or unavailable read is said (F5)');
+  assert.ok(!/now\.status === want/.test(hoyMount), 'nothing is judged from the write-time view any more');
   assert.match(hoyMount, /hoyRefusal/, 'a refusal is shown from the closed code');
-  assert.match(hoyMount, /last_error/, 'the daemon refusal travels as its code');
+  assert.match(hoyMount, /N\.hoyErrorN\(/, 'the refusal travels as the daemon\'s counter + code, never as text');
+  assert.match(read('island-nusa.js'), /last_error/, 'the code comes from the state the client already publishes');
 });
 
 test('the island reports its own 300 box, or the lower half of Hoy would take no clicks', () => {
