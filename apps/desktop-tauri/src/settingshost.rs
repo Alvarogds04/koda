@@ -161,7 +161,6 @@ fn view_prefs(p: &Prefs) -> Value {
         "theme": p.theme().as_str(),
         "chosenModels": p.chosen_models,
         "autoCloseSeconds": p.auto_close_seconds(), "openOnHover": p.open_on_hover(),
-        "absenceSeconds": p.absence_seconds(),
         "customBlobs": p.custom_blobs_view(),
         "islandAgents": p.island_agents_view(),
         "abitoInstructions": p.abito_instructions_view(),

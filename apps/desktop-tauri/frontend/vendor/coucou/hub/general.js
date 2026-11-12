@@ -117,17 +117,6 @@ async function renderGeneral({ invoke, V, navigate }) {
       }
       patch({ autoCloseInterval: value });
     });
-    const absence = identify(h("input", { type: "number", min: "5", max: "300", step: "1", value: String(prefs.absenceSeconds ?? 10), "aria-label": "Segundos antes de ocultar la isla plegada" }), "hub-absence");
-    absence.addEventListener("change", (e) => {
-      if (!e.isTrusted) return;
-      const seconds2 = Number(absence.value);
-      if (!absence.value.trim() || !Number.isInteger(seconds2) || seconds2 < 5 || seconds2 > 300) {
-        issue = "Usa un entero entre 5 y 300 segundos.";
-        paint();
-        return;
-      }
-      directPrefs({ action: "set_absence_seconds", seconds: seconds2 });
-    });
     const theme = V.themeView(prefs);
     const order = ["dark", "light", "system"], pills = order.map((id) => theme.options.find((o) => o.id === id)).filter(Boolean);
     const themeSelect = identify(trusted(segmented(pills.map((o) => [o.id, o.label]), theme.mode, (value) => directPrefs({ action: "set_theme", theme: value }))), "hub-theme");
@@ -224,7 +213,6 @@ async function renderGeneral({ invoke, V, navigate }) {
         "Isla",
         notchTipRow(t("Open on hover"), t("Hovering the island opens it; it folds again shortly after the pointer leaves. Click inside to keep it open."), hover),
         notchTipRow("Plegar tras (s)", t("seconds after you leave the island"), seconds),
-        notchTipRow("Ocultar plegada tras (s)", "Segundos con la isla plegada; vuelve al acercar el mouse, con un aviso o con una pregunta.", absence),
         row(t("Island lives on"), screen),
         // L2 «General: A» / propuesta: the global shortcut is edited in ONE place, Atajos. Same pref, same hotkey_action.
         notchTipRow("Atajo global", (g.hotkey?.note || (g.hotkey?.backendLabel ? `Se registra como: ${g.hotkey.backendLabel}.` : "Combinación que abre o cierra la isla desde cualquier app.")) + " Se edita en Atajos.", h("span", { class: "keycap static", text: hotkey.combo || "—" }), trusted(button("Ir a Atajos", () => navigate?.("shortcuts"))))

@@ -95,7 +95,7 @@ async function open(scenario = {}) {
           return structuredClone(snap);
         }
         if (cmd === 'agent_action') return a === 'sessions_list' ? { connection, accounts, sessions: { rows: sessions, truncated: false } } : { connection, accounts };
-        if (cmd === 'prefs_action') return { sound: true, declaredPills: scenario.declared ? scenario.declared : scenario.github ? ['integration_github'] : [], mainPill: 'abito', pillColors: {}, avatarColors: {}, autoCloseSeconds: 0, openOnHover: false, absenceSeconds: 600 };
+        if (cmd === 'prefs_action') return { sound: true, declaredPills: scenario.declared ? scenario.declared : scenario.github ? ['integration_github'] : [], mainPill: 'abito', pillColors: {}, avatarColors: {}, autoCloseSeconds: 0, openOnHover: false };
         if (cmd === 'github_action' && scenario.githubData === 'real') {
           // the shape src/github.rs serialises (what the validator's fake `gh` produces): PRs carry `repo`/`isDraft`/`review`, mainCI rows carry repo+branch
           const pr = { id: 'fixture/repo#42', title: 'Fixture PR', url: 'https://github.com/fixture/repo/pull/42', repo: 'fixture/repo', number: 42, isDraft: false, ci: 'failure', review: 'pending', headSha: null };

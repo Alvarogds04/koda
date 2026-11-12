@@ -102,33 +102,37 @@
     const pill=document.querySelector('.dpill'), css=getComputedStyle(pill), rect=pill.getBoundingClientRect();
     return {ok:pill.hidden && css.display==='none' && rect.width===0 && rect.height===0,reason:'pill de dictado visible en idle con función habilitada',hidden:pill.hidden,display:css.display,rect:[rect.width,rect.height],phase:byId('capsule').dataset.dictation||'idle'};
   }
+  // isla-cualquier-lado S2 (human: «solo el círculo con koda pero sin que esté oculto»): the folded island is Koda's disc and it never
+  // hides at the screen edge any more. The disc is shown when nothing marks it hidden and its full 32px height is on screen.
+  const discShown=()=>byId('capsule').dataset.edgeHidden!=='true' && byId('island').getBoundingClientRect().top>=-0.1 && byId('island').getBoundingClientRect().bottom>=31.9;
   let edgeIdlePrefs;
   async function edgeIdle() {
     edgeIdlePrefs=await invoke('prefs_action',{action:'view'});
-    // human decision: «Ocultar tras» is SECONDS (5..300); 5 s keeps the scene short. Restored by edgeWake.
-    await invoke('prefs_action',{action:'set_absence_seconds',seconds:5});
     await invoke('prefs_action',{action:'sound_on'});
     await emit('validate-input',{kind:'move',x:20,y:500});
     await invoke('desktop_action',{action:'close'});
-    const began=performance.now();
-    await wait(()=>byId('capsule').dataset.edgeHidden==='true' && byId('island').getBoundingClientRect().bottom<=8.1,'ausencia de 5 s deja franja',15000);
+    await wait(()=>byId('capsule').dataset.phase==='compact','plegada antes de esperar');
+    // past the retired 10 s default (and the 1 s muted hide): the disc must still be fully on screen, every 500 ms
+    const began=performance.now(); let shown=true;
+    while(performance.now()-began<12000){ shown=shown && discShown(); await new Promise(resolve=>setTimeout(resolve,500)); }
     const native=await invoke('desktop_action',{action:'snapshot'});
-    const elapsed=performance.now()-began;
-    return {ok:native.state==='compact' && elapsed>=4000 && elapsed<=15000,elapsed,native:native.state,bottom:byId('island').getBoundingClientRect().bottom};
+    return {ok:native.state==='compact' && shown && discShown(),neverHidden:shown,native:native.state,bottom:byId('island').getBoundingClientRect().bottom};
   }
   async function edgeWake() {
     const o=window.__validateOrigin, r=byId('island').getBoundingClientRect();
     const x=Math.round(o.x+(r.x+r.width/2)*o.scale);
-    await emit('validate-input',{kind:'move',x,y:Math.round(o.y+12*o.scale)});
+    // below the disc the input reaches the window underneath: the folded island is not hovered there
+    await emit('validate-input',{kind:'move',x,y:Math.round(o.y+(r.bottom+12)*o.scale)});
     await new Promise(resolve=>setTimeout(resolve,350));
-    const through=byId('capsule').dataset.edgeHidden==='true';
-    await emit('validate-input',{kind:'move',x,y:Math.round(o.y+2*o.scale)});
-    await wait(()=>byId('capsule').dataset.edgeHidden==='false' && byId('island').getBoundingClientRect().bottom>=31.9,'mouse en franja restaura barra');
-    await invoke('prefs_action',{action:'set_absence_seconds',seconds:edgeIdlePrefs.absenceSeconds});
+    const through=!byId('island').matches(':hover');
+    // over the disc it is the island's own surface, still the visible disc
+    await emit('validate-input',{kind:'move',x,y:Math.round(o.y+(r.y+r.height/2)*o.scale)});
+    await wait(()=>byId('island').matches(':hover'),'el puntero llega al disco');
+    const shown=discShown();
     await invoke('prefs_action',{action:edgeIdlePrefs.sound ? 'sound_on':'sound_off'});
     await emit('validate-input',{kind:'move',x:20,y:500});
     await invoke('desktop_action',{action:'expand'});
-    return {ok:through,inputBelowStripPassedThrough:through};
+    return {ok:through && shown,inputBelowDiscPassedThrough:through,discShown:shown};
   }
   async function islandHoverPin() {
     const original = await invoke('prefs_action',{action:'view'});
@@ -138,7 +142,7 @@
     const outside = () => move(20,500);
     const inside = async () => {
       const r=byId('capsule').getBoundingClientRect(), o=window.__validateOrigin;
-      await move(o.x+(r.x+r.width/2)*o.scale,o.y+(byId('capsule').dataset.edgeHidden==='true' ? 2 : r.y+8)*o.scale);
+      await move(o.x+(r.x+r.width/2)*o.scale,o.y+(r.y+8)*o.scale);
     };
     try {
       await invoke('prefs_action',{action:'set_island_interaction',auto_close_seconds:5,open_on_hover:false});
@@ -168,12 +172,12 @@
       await wait(()=>!byId('island-countdown').hidden,'cuenta atrás visible');
       await wait(()=>phase()==='compact','cierre tras desfijar',7000);
       const closed=await invoke('desktop_action',{action:'snapshot'});
+      // muted, the folded disc used to hide after 1 s: it now stays on screen
       await invoke('prefs_action',{action:'sound_off'});
-      await wait(()=>byId('capsule').dataset.edgeHidden==='true' && byId('island').getBoundingClientRect().bottom<=8.1,'mute oculta hacia borde');
-      const mutedStrip=byId('island').getBoundingClientRect().bottom;
-      await inside(); await wait(()=>byId('capsule').dataset.edgeHidden==='false','mouse despierta isla silenciada');
-      return {mutedStrip,ok:hoverOff.state==='compact' && entered.state==='expanded' && grace.state==='expanded' && held.state==='expanded' && noCountdown && closed.state==='compact',hoverOff:hoverOff.state,entered:entered.state,grace:grace.state,held:held.state,noCountdown,closed:closed.state,
-        coverage:'XTest immediate hover-on/off, leave grace, pin/countdown, mute slides up leaving the 8px zone (24px hidden offset) and pointer wakes it; absence/mask covered in edgeIdle/edgeWake'};
+      await delay(2000);
+      const mutedDiscShown=discShown();
+      return {mutedDiscShown,ok:hoverOff.state==='compact' && entered.state==='expanded' && grace.state==='expanded' && held.state==='expanded' && noCountdown && closed.state==='compact' && mutedDiscShown,hoverOff:hoverOff.state,entered:entered.state,grace:grace.state,held:held.state,noCountdown,closed:closed.state,
+        coverage:'XTest immediate hover-on/off, leave grace, pin/countdown, and the muted folded disc stays on screen; idle/pass-through covered in edgeIdle/edgeWake'};
     } finally {
       await outside();
       await invoke('prefs_action',{action:original.sound ? 'sound_on':'sound_off'});
@@ -286,8 +290,9 @@
     const elapsed=performance.now()-began;
     const folded=await invoke('desktop_action',{action:'snapshot'});
     await invoke('prefs_action',{action:'sound_off'});
-    // human decision: only a pending question blocks the edge hide, so the retained notices do NOT keep the island out of the edge
-    const retainedDoesNotBlockEdge=await wait(()=>byId('capsule').dataset.edgeHidden==='true','avisos retenidos no frenan ocultar',5000).then(()=>true,()=>false);
+    // isla-cualquier-lado S2: with retained notices and muted, the folded disc stays on screen (it never hides at the edge)
+    await new Promise(resolve=>setTimeout(resolve,2000));
+    const foldedDiscShown=discShown();
     await invoke('prefs_action',{action:cyclePrefs.sound ? 'sound_on':'sound_off'});
     await invoke('desktop_action',{action:'expand'});
     await wait(()=>byId('capsule').dataset.phase==='expanded','reabre historial sin reiniciar terminado');
@@ -299,7 +304,7 @@
     await wait(async()=> (await invoke('desktop_action',{action:'snapshot'})).notices.length===before-1,'descarta exactamente una fila');
     await click(byId('notice-clear'));
     await wait(async()=> !(await invoke('desktop_action',{action:'snapshot'})).notices.length,'descarta todos conserva el contrato');
-    return {ok:held && elapsed>=5000 && folded.state==='compact' && folded.notices.length>=2 && historical && retainedDoesNotBlockEdge,held,elapsed,native:folded.state,retained:folded.notices.length,historical,retainedDoesNotBlockEdge,groupedDismissal:true};
+    return {ok:held && elapsed>=5000 && folded.state==='compact' && folded.notices.length>=2 && historical && foldedDiscShown,held,elapsed,native:folded.state,retained:folded.notices.length,historical,foldedDiscShown,groupedDismissal:true};
     } finally {
       await invoke('prefs_action',{action:'set_island_interaction',auto_close_seconds:cyclePrefs.autoCloseSeconds,open_on_hover:cyclePrefs.openOnHover});
       await invoke('prefs_action',{action:cyclePrefs.sound ? 'sound_on':'sound_off'});
@@ -318,14 +323,14 @@
     await emit('validate-input',{kind:'move',x:20,y:500});
     await wait(()=>!byId('capsule').matches(':hover'),'puntero fuera antes de plegar');
     await invoke('desktop_action',{action:'close'});
-    await wait(()=>byId('capsule').dataset.edgeHidden==='true','oculta antes de aviso real');
+    await wait(()=>byId('capsule').dataset.phase==='compact' && discShown(),'disco plegado y visible antes del aviso real');
     return {ok:true};
   }
   async function notice() {
     await wait(()=>byId('notices').textContent.includes('Validador'),'aviso Pi visible');
-    await wait(()=>byId('capsule').dataset.edgeHidden==='false' && byId('capsule').dataset.phase==='expanded','aviso real despierta borde');
+    await wait(()=>byId('capsule').dataset.phase==='expanded','aviso real abre la isla plegada');
     await invoke('prefs_action',{action:noticeEdgeSound ? 'sound_on':'sound_off'});
-    return {ok:true,text:byId('notices').textContent,edgeRevealed:true};
+    return {ok:true,text:byId('notices').textContent,revealed:true};
   }
   async function shortcutDispatch() {
     for(const id of ['openChat','goToAlert','muteToggle','jumpToTerminal']) {

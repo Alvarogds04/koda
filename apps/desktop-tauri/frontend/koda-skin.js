@@ -71,7 +71,8 @@
     const title = document.getElementById('notice-title'), ci = document.getElementById('chat-input'), nc = document.getElementById('notice-card');
     return {
       pose: inst ? inst.state : 'idle', reaction: inst ? inst.reaction : null,
-      phase: d.phase === 'expanded' || d.phase === 'expanding' ? 'open' : 'compact', hidden: d.edgeHidden === 'true', view: d.view || null,
+      // isla-cualquier-lado S2: the island never hides at the screen edge, so Koda is never «hidden» (no esconderse/asomarse beat)
+      phase: d.phase === 'expanded' || d.phase === 'expanding' ? 'open' : 'compact', hidden: false, view: d.view || null,
       noticeView: d.noticeView || null, noticeAttention: !!(title && /permiso|pide|respond/i.test(title.textContent)),
       noticeError: !!nc && nc.dataset.severity === 'error',
       engineBad: visible(band) || (visible(flag) && flag.dataset.tone === 'red'),

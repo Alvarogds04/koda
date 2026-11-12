@@ -241,17 +241,8 @@
     };
   }
   const reportShape = shapeReporter(invoke);
-  const conceal = { x:0, target:0, from:0, start:0, moving:false };
-  function setConcealed(hidden) {
-    const next = hidden ? 1 : 0;
-    if (conceal.target === next) return;
-    conceal.target = next; conceal.from = conceal.x; conceal.start = performance.now();
-    conceal.moving = !motionReduced();
-    if (!conceal.moving) conceal.x = next;
-    capsule.dataset.edgeHidden = String(hidden);
-    render();
-    if (conceal.moving && !raf) raf = requestAnimationFrame(tick);
-  }
+  // isla-cualquier-lado S2 (human: «solo el círculo con koda pero sin que esté oculto»): the folded island is Koda's disc and it
+  // never hides at the screen edge any more. The edge-hide timer, its 24px slide and the `data-edge-hidden` state are gone.
 
   function render() {
     // S3: the compact island is the disc, in EVERY compact state (island-layout.js compactView). `compactDisc` only marks that the
@@ -264,7 +255,7 @@
     const h = lerp(COMPACT.h, lerp(overviewHeight, CHAT.h, q.x), p);
     const QT = window.AbitoQuestionToast, withToast = (shape) => (QT && toastShown ? QT.shapeWithToast(shape, true) : shape);
     reportShape(withToast([lerp(compactW, lerp(OVERVIEW.w, CHAT.w, q.target), target),
-      lerp(COMPACT.h, lerp(overviewHeight, CHAT.h, q.target), target) + GAP_TOP * (1 - conceal.target) - 24 * conceal.target]), withToast([w, h + GAP_TOP * (1 - conceal.x) - 24 * conceal.x]), mode === 'idle' && q.mode === 'idle' && !conceal.moving);
+      lerp(COMPACT.h, lerp(overviewHeight, CHAT.h, q.target), target) + GAP_TOP]), withToast([w, h + GAP_TOP]), mode === 'idle' && q.mode === 'idle');
     // corners (HU-057): the compact pill is r16 on all four; the expanded island is the Nusa notch, square on top (the ears are
     // drawn by island-nusa-mount.js) and r26 (OVERVIEW.r) at the bottom.
     const rBottom = lerp(COMPACT.r, OVERVIEW.r, p), rTop = lerp(COMPACT.r, 0, p); // the disc is round on all four corners; the notch is square on top
@@ -277,7 +268,7 @@
     put(island, 'width', w + 'px');
     put(island, 'height', h + 'px');
     put(island, 'borderRadius', `${rTop}px ${rTop}px ${rBottom}px ${rBottom}px`);
-    put(island, 'top', (gap * (1 - conceal.x) - 24 * conceal.x - 0 * conceal.x) + 'px');
+    put(island, 'top', gap + 'px');
     put(island, 'bottom', 'auto');
     // R6 is only scaled and positioned (never redrawn): centred in the
     // overview, small at the left of the header in the chat view.
@@ -354,13 +345,8 @@
       q.x = q.target + (q.x0 - q.target) * (1 - easeShrink(t));
       if (t >= 1) { q.x = q.target; q.mode = 'idle'; }
     }
-    if (conceal.moving) {
-      const t = Math.min(1, (now - conceal.start) / SHRINK_MS);
-      conceal.x = lerp(conceal.from, conceal.target, easeShrink(t));
-      if (t >= 1) { conceal.x = conceal.target; conceal.moving = false; }
-    }
     render();
-    if (mode !== 'idle' || q.mode !== 'idle' || conceal.moving) raf = requestAnimationFrame(tick);
+    if (mode !== 'idle' || q.mode !== 'idle') raf = requestAnimationFrame(tick);
   }
 
   // U1: move the chat channel with the contract motion (grow = spring,
@@ -410,7 +396,6 @@
     if (!raf) raf = requestAnimationFrame(tick);
   }
   window.__islandSetState = setPhase;
-  window.__islandConceal = setConcealed; // the page-side hidden state (the host drives it through the edge interaction); also lets the real-layout harness reach it
   // U1: called from Rust (chathost::apply_view) with the chat height from
   // geometry::CHAT_VISIBLE — the frontend never owns that number.
   window.__islandSetView = (view, vw, vh) => {
@@ -661,9 +646,6 @@
     new MutationObserver(() => idleFold.setExpanded(capsule.dataset.phase === 'expanded')).observe(capsule, { attributes: true, attributeFilter: ['data-phase'] });
     idleFold.setExpanded(capsule.dataset.phase === 'expanded');
   }
-  const edgeInteraction = window.AbitoIslandInteraction?.createEdgeController({
-    now: () => performance.now(), schedule: (fn, ms) => setTimeout(fn, ms), cancel: id => clearTimeout(id), onHidden: setConcealed,
-  });
   const TEXT_FIELD = 'input, textarea, [contenteditable="true"]';
   const NON_TEXT_INPUT = new Set(['checkbox', 'radio', 'button', 'submit', 'reset', 'range', 'color', 'file', 'image']);
   function interactionFacts() {
@@ -719,14 +701,6 @@
     // controller's one-word reason. Diagnostic only; nothing reads it back.
     if (interaction) { const why = interaction.snapshot().why; if (capsule.dataset.autoClose !== why) capsule.dataset.autoClose = why; }
     paintPin();
-    if (edgeInteraction) {
-      // Native input-mask changes may swallow pointerleave. Reconcile against
-      // WebKit's live hover hit-test before arming another idle deadline.
-      const facts = { ...interactionFacts(), pointerInside: typeof island.matches === 'function' ? island.matches(':hover') : undefined, pinned: !!interaction?.snapshot().pinned };
-      edgeInteraction.update(facts);
-      // Diagnostic only: no layout, and an unavailable diagnostic must never break interaction.
-      try { const why = edgeInteraction.snapshot().why; if (capsule.dataset.edgeWhy !== why) capsule.dataset.edgeWhy = why; } catch { /* optional diagnostic */ }
-    }
   }
   // HU-057 S9: S/M/L/Auto. The scale is AbitoNusa.sizeScale(setting, work-area width) published as --nusa-size on #capsule
   // (the expanded notch scales as one piece, origin top-centre). The native window is 752 wide and the notch 720, so anything
@@ -741,7 +715,6 @@
   function applyInteractionPrefs(p) {
     if (!interaction || !p) return;
     applyIslandSize(p.islandSize);
-    if (edgeInteraction) edgeInteraction.setPreferences({ sound:p.sound !== false, absenceSeconds:p.absenceSeconds ?? 10 });
     // An absent/foreign pair (a host without #336) keeps the module defaults.
     if (Number.isInteger(p.autoCloseSeconds) && typeof p.openOnHover === 'boolean') {
       try { interaction.setPreferences({ autoCloseSeconds: p.autoCloseSeconds, openOnHover: p.openOnHover }); }
@@ -761,11 +734,9 @@
     // engage reject anything synthetic); these listeners only forward events.
     capsule.addEventListener('pointerenter', e => { interaction.enter(e); });
     capsule.addEventListener('pointerleave', e => { interaction.leave(e); });
-    island.addEventListener('pointerenter', e => { edgeInteraction?.enter(e); syncInteraction(); });
-    island.addEventListener('pointerleave', e => { edgeInteraction?.leave(e); syncInteraction(); });
     document.addEventListener('click', e => { interaction.engage(e); });
     document.addEventListener('keydown', e => { interaction.engage(e); });
-    window.addEventListener('pagehide', () => { interaction.stop(); edgeInteraction?.stop(); });
+    window.addEventListener('pagehide', () => { interaction.stop(); });
     // No event follows a swallowed pointerleave: while the island believes the pointer is inside, re-read the live hover once a second.
     setInterval(() => { if (interaction.snapshot().inside && !document.hidden) syncInteraction(); }, 1000);
   }
@@ -945,7 +916,6 @@
   }
   if (desktopCharacter) desktopCharacter.attach({ clay, reveal: () => revealIsland() }); // #486
   function revealIsland(question = false, notice = false) {
-    edgeInteraction?.alert();
     if (!NV || typeof NV.revealAction !== 'function' || revealFlight) return;
     const action = NV.revealAction({ state: current && current.state, phase: capsule.dataset.phase, view: capsule.dataset.view, question, notice });
     if (action === 'leave-chat' || action === 'show-question') { openQuestion(); return; }
@@ -1004,10 +974,9 @@
     soundCue('observeNotices', notices); // #313: only a NEW top notice sounds, never the ones already there at start-up
     const arrivals = toastGate ? toastGate.arrivals(notices) : []; // the toast's own baseline gate: boot/retained rows are not arrivals
     const fresh = finishedCycle ? finishedCycle.observe(notices, finishedAllowed()) : revealGate?.notice(notices);
-    // F6 (SN1): an attention notice alone (Codex asks in its own terminal) is signalled by the Sileo pill, not by forcing the island open
-    const attentionOnly = arrivals.length > 0 && arrivals.every(x => x.kind === 'attention');
-    // human 26-oct: Sileo toasts only while Abito is hidden; a visible island shows the attention notice itself (its Avisos strip)
-    if (fresh) { if (attentionOnly && capsule.dataset.edgeHidden === 'true') edgeInteraction?.alert(); else revealIsland(false, true); } // boot, retained rows and snapshot churn are not arrivals
+    // isla-cualquier-lado S2: the island is never hidden, so it always shows the new notice itself (its Avisos strip), attention
+    // notices included (before, an attention notice that found the island hidden at the edge woke it without opening it)
+    if (fresh) revealIsland(false, true); // boot, retained rows and snapshot churn are not arrivals
     // HU-006 S4: the latest new notice reads inside the compact pill; a notice that left the list leaves the pill
     const shownArrival = arrivals.filter(x => !x.kind || x.kind === 'settled' || x.kind === 'attention').at(-1);
     if (shownArrival) showCompactNotice(shownArrival);
@@ -1622,7 +1591,7 @@
     if (event.detail && event.detail.reveal) {
       // #266: a genuinely new question reveals. With the toast the island stays as it is (the human opens it from the toast).
       const T = window.AbitoQuestionToast;
-      if (T && T.revealByToast({ phase: capsule.dataset.phase })) edgeInteraction?.alert(); else revealIsland(true);
+      if (!(T && T.revealByToast({ phase: capsule.dataset.phase }))) revealIsland(true);
     }
   });
 

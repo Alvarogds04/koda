@@ -31,7 +31,6 @@ const PHASES = [
   { name: 'error notice', kind: 'expanded', sc: { noticeRows: [ERR], sessions: [], quick: true, windowCap: 340 }, w: 720, h: 148, drive: async p => { await p.evaluate(id => window.__emit('desktop:notice-open', { id, kind: 'finished' }), ERR.id); await p.waitForTimeout(1500); } },
   { name: 'chat', kind: 'expanded', sc: { chat: true }, drive: none, w: 720, h: 240 },
   { name: 'chat + pending question (dimmed, inert)', kind: 'expanded', sc: { question: 'plain' }, w: 720, h: 240, drive: async p => { await p.evaluate(() => window.__islandSetView('chat', 720, 240)); await p.waitForTimeout(1200); } },
-  { name: 'hidden strip (island concealed)', kind: 'pill', sc: { quick: true }, w: 40, h: 32, drive: async p => { await compact(p); await p.waitForTimeout(800); await p.evaluate(() => window.__islandConceal(true)); await p.waitForTimeout(1200); } },
 ];
 // island-free-drag S3: the compact island carries no text in any state, so there is no text pill to measure under another font:
 // the two compact phases above are exactly 40x32 whatever the system font or what is waiting.

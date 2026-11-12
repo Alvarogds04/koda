@@ -186,7 +186,8 @@ const uid = n => `0b3a5c9e-8f27-4d11-9a0e-${String(n).padStart(12, '0')}`;
   await page.evaluate(p => __emit({ available: true, pending: p, queued: [], queued_count: 0, notice: null }),
     pending({ id: uid(90), agent: 'codex', text: 'Codex pregunta algo largo para ver el cuerpo', options: [{ index: 0, label: 'A', description: '' }, { index: 1, label: 'B', description: '' }] }));
   await page.waitForTimeout(600);
-  await page.evaluate(() => window.__islandConceal(true));
+  // isla-cualquier-lado S2: the island never hides at the edge; until T6 the toast's own switch (read only by question-toast.js) shows it
+  await page.evaluate(() => { document.getElementById('capsule').dataset.edgeHidden = 'true'; });
   await page.waitForTimeout(1600);
   const op = await page.evaluate(() => {
     const t = document.getElementById('question-toast'); const box = el => { const b = el.getBoundingClientRect(); return { l: b.left, r: b.right, t: b.top, b: b.bottom }; };
@@ -198,7 +199,7 @@ const uid = n => `0b3a5c9e-8f27-4d11-9a0e-${String(n).padStart(12, '0')}`;
   ok('opaque toast: shown while Abito is hidden', op.shown, JSON.stringify(op));
   ok('opaque toast: the solid pill covers the title and Abito badge (nothing drawn over the background)', covers(op.pill, op.title) && covers(op.pill, op.badge), JSON.stringify(op));
   ok('opaque toast: fully opaque (no element opacity < 1, fill opacity 1)', op.opacity === 1 && Number(op.fillOpacity) === 1, JSON.stringify(op));
-  await page.evaluate(() => { __emit({ available: true, pending: null, queued: [], queued_count: 0, notice: null }); window.__islandConceal(false); });
+  await page.evaluate(() => { __emit({ available: true, pending: null, queued: [], queued_count: 0, notice: null }); delete document.getElementById('capsule').dataset.edgeHidden; });
   await page.waitForTimeout(500);
 
   // ---- S1 (abito-avisos-ux): the Avisos band is a compact strip in the SAME bottom slot as «Sin cuenta», not a 288x44 capsule over

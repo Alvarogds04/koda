@@ -38,7 +38,7 @@ assert.deepEqual([...I.IDS], N.SIZES.map(s => s.id), 'same closed set as the isl
   const P = require('../frontend/pills.js'), C = require('../frontend/pill-catalog.js');
   const M = require('../frontend/settings-isla-mount.js');
 
-  let prefs = { sound: true, gain: .12, autoCloseSeconds: 15, openOnHover: false, declaredPills: [], pillColors: {}, avatarColors: {}, mainPill: 'integration_claude', theme: 'system', displayName: '', monitor: null, absenceSeconds: 10, islandSize: 'm', islandAgents: [], abitoInstructions: '' };
+  let prefs = { sound: true, gain: .12, autoCloseSeconds: 15, openOnHover: false, declaredPills: [], pillColors: {}, avatarColors: {}, mainPill: 'integration_claude', theme: 'system', displayName: '', monitor: null, islandSize: 'm', islandAgents: [], abitoInstructions: '' };
   const calls = []; let failSize = false;
   const invoke = async (cmd, { payload: p }) => {
     calls.push([cmd, p]);
@@ -50,7 +50,6 @@ assert.deepEqual([...I.IDS], N.SIZES.map(s => s.id), 'same closed set as the isl
     if (cmd === 'models_action') return { profiles: [] };
     if (p.action === 'set_island_size') { if (failSize) throw new Error('x'); prefs.islandSize = p.island_size; }
     if (p.action === 'set_avatar_color') prefs.avatarColors[p.identity] = p.color;
-    if (p.action === 'set_absence_seconds') prefs.absenceSeconds = p.seconds;
     if (p.action === 'set_island_interaction') { prefs.autoCloseSeconds = p.auto_close_seconds; prefs.openOnHover = p.open_on_hover; }
     return structuredClone(prefs);
   };
@@ -70,8 +69,10 @@ assert.deepEqual([...I.IDS], N.SIZES.map(s => s.id), 'same closed set as the isl
   const rawGeneral = await renderGeneral({ invoke, V }); await rawGeneral.settled();
   const rawPills = await renderPills({ ...personal, part: 'abito' }); await rawPills.settled();
   const moved = { isla: sig(isla(rawGeneral)), colours: sig(colours(rawPills)) };
-  assert.ok(moved.isla.ids.includes('hub-hover') && moved.isla.ids.includes('hub-absence') && moved.isla.ids.includes('hub-screen'), 'inventory sanity: the Isla card has hover, plegar, ocultar, pantalla');
-  for (const l of ['Abrir al pasar el cursor', 'Plegar tras (s)', 'Ocultar plegada tras (s)', 'La isla vive en', 'Atajo global']) assert.ok(moved.isla.labels.includes(l), l);
+  assert.ok(moved.isla.ids.includes('hub-hover') && moved.isla.ids.includes('hub-screen'), 'inventory sanity: the Isla card has hover, plegar, pantalla');
+  for (const l of ['Abrir al pasar el cursor', 'Plegar tras (s)', 'La isla vive en', 'Atajo global']) assert.ok(moved.isla.labels.includes(l), l);
+  // isla-cualquier-lado S2: the folded island never hides at the edge, so there is no «Ocultar plegada» row to move
+  assert.ok(!moved.isla.ids.includes('hub-absence') && !moved.isla.labels.includes('Ocultar plegada tras (s)'), 'no «Ocultar plegada» row');
   assert.ok(moved.isla.buttons.includes('Ir a Atajos'), moved.isla.buttons.join('|'));
   assert.ok(moved.colours.ids.some(i => i.startsWith('identity-abito-')), 'inventory sanity: the colour swatches');
   const stay = { // General keeps these

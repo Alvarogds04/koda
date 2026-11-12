@@ -397,6 +397,8 @@ function mount(T) {
   const dropTransient = () => { clearTimeout(transientTimer); transientView = null; };
   // human (26-oct): «que las notificaciones de sileo salgan solo si abito está oculto»: while the island is on screen (compact pill or
   // expanded) it shows the question/notice itself, so no toast at all; an informational event that finds it visible is dropped.
+  // isla-cualquier-lado S2 (T4): the island never hides at the edge any more and nothing writes data-edge-hidden, so this toast stays
+  // off until T6 hooks it to the folded disc. The read is kept on purpose: it is the toast harness's only switch until then.
   const islandHidden = () => capsule.dataset.edgeHidden === 'true';
   function pushTransient(next) {
     if (!next) return;

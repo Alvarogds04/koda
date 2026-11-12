@@ -83,13 +83,6 @@ export async function renderGeneral({ invoke, V, navigate }: { invoke: (cmd: str
       if (!seconds.value.trim() || !Number.isInteger(value) || value !== 0 && (value < 5 || value > 120)) { issue = 'Usa 0 o un entero entre 5 y 120 segundos.'; paint(); return; }
       patch({ autoCloseInterval: value });
     });
-    const absence = identify(h('input', { type: 'number', min: '5', max: '300', step: '1', value: String(prefs.absenceSeconds ?? 10), 'aria-label': 'Segundos antes de ocultar la isla plegada' }) as HTMLInputElement, 'hub-absence');
-    absence.addEventListener('change', e => {
-      if (!e.isTrusted) return;
-      const seconds = Number(absence.value);
-      if (!absence.value.trim() || !Number.isInteger(seconds) || seconds < 5 || seconds > 300) { issue = 'Usa un entero entre 5 y 300 segundos.'; paint(); return; }
-      directPrefs({ action: 'set_absence_seconds', seconds });
-    });
     // #503 S18 (screen validation): the theme is three segmented pills Oscuro / Claro / Sistema (the MD), not a dropdown.
     // Same closed command; each pill carries its own accessible sentence.
     const theme = V.themeView(prefs);
@@ -154,7 +147,6 @@ export async function renderGeneral({ invoke, V, navigate }: { invoke: (cmd: str
       notchCard('Isla',
         notchTipRow(t('Open on hover'), t('Hovering the island opens it; it folds again shortly after the pointer leaves. Click inside to keep it open.'), hover),
         notchTipRow('Plegar tras (s)', t('seconds after you leave the island'), seconds),
-        notchTipRow('Ocultar plegada tras (s)', 'Segundos con la isla plegada; vuelve al acercar el mouse, con un aviso o con una pregunta.', absence),
         row(t('Island lives on'), screen),
         // L2 «General: A» / propuesta: the global shortcut is edited in ONE place, Atajos. Same pref, same hotkey_action.
         notchTipRow('Atajo global', (g.hotkey?.note || (g.hotkey?.backendLabel ? `Se registra como: ${g.hotkey.backendLabel}.` : 'Combinación que abre o cierra la isla desde cualquier app.')) + ' Se edita en Atajos.', h('span', { class: 'keycap static', text: hotkey.combo || '—' }), trusted(button('Ir a Atajos', () => navigate?.('shortcuts'))))),
