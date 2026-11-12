@@ -6,8 +6,9 @@
  * A recipe says `reads.source: "telegram:@canal"` (or a `t.me` link) and the daemon reads that PUBLIC channel with the
  * user's own account (S6), never with a bot. Per run:
  *
- * 1. the channel is resolved ONCE and `{channelId, accessHash}` is cached in the Minikoda's private state
- *    (`<island>/minikodas/telegram/<id>.json`, 0600), so later runs do not spend `contacts.resolveUsername`;
+ * 1. the channel is read by its `@username` (`getHistory("@canal")`). Only the username and the last post read are
+ *    kept in the Minikoda's private state (`<island>/minikodas/telegram/<id>.json`, 0600): mtcute resolves and caches
+ *    usernames itself, and a peer rebuilt from a cached access hash would arrive at Telegram as access hash 0;
  * 2. only posts newer than `lastSeenId` are fetched (`getHistory({minId})`), capped per run: the first run reads the
  *    latest 5, later runs at most 20;
  * 3. video, audio, voice and round-video media are downloaded with `downloadAsNodeStream` into the run's private folder
@@ -16,7 +17,8 @@
  *    note. `FILE_REFERENCE_EXPIRED` refetches that one message and retries the download ONCE;
  * 4. the result is `{text, media:[{path, mimeType, durationSec, messageId, kind}], commit}`. `text` is what the Minikoda
  *    reads through `source_read`; `media` is the contract the transcription step consumes (K2-13 T2c, branch
- *    feat/k2-13-transcribe): it turns each file into text and deletes it, so nothing is transcribed here;
+ *    feat/k2-13-transcribe): it turns each file into text. Nothing is transcribed here, and the run's media folder is
+ *    removed as soon as the run ends (`removeRun`, called by the service in a finally);
  * 5. `commit()` moves `lastSeenId`, and the service calls it only when the run really succeeded. A failed run reads the
  *    same posts again next time instead of skipping them.
  *
@@ -31,7 +33,9 @@ const { pipeline } = require("node:stream/promises");
 const { ensurePrivateDir, writePrivateFile } = require("../isolation.cjs");
 const { TelegramError, mapRpcError } = require("./telegram.cjs");
 
-/** A public channel's username: a letter followed by 4-31 letters, digits or underscores (Telegram's own rule). */
+/**
+ * A public channel's username: a letter followed by 4-31 letters, digits or underscores (Telegram's own rule).
+ */
 const CHANNEL_USERNAME = /^[A-Za-z][A-Za-z0-9_]{4,31}$/;
 /** Names that are links of their own, never channels this daemon can read by username. */
 const RESERVED = new Set(["joinchat", "addstickers", "addemoji", "share", "iv", "proxy", "socks"]);
@@ -80,6 +84,19 @@ function parseSource(descriptor) {
 	return channel === undefined ? undefined : { type: "telegram", channel };
 }
 
+/**
+ * True for a channel that was typed WITHOUT the `telegram:` prefix (`@nombre`, a `t.me`/`telegram.me` link): the creation
+ * step refuses it instead of letting the run read it as an empty text source, so the daemon never has to guess.
+ */
+function looksLikeChannel(value) {
+	if (typeof value !== "string") return false;
+	const name = value.trim();
+	return name.startsWith("@") || LINK_PREFIXES.some((candidate) => candidate.test(name));
+}
+
+/** The text Telegram/mtcute put in an error (`RpcError.text`, a message): the only thing the checks below read. */
+const rpcTextOf = (error) => String(error?.text ?? error?.errorMessage ?? error?.message ?? "");
+
 const fileExtension = (mimeType) => {
 	const known = { "video/mp4": "mp4", "video/quicktime": "mov", "video/webm": "webm", "audio/mpeg": "mp3", "audio/mp4": "m4a", "audio/ogg": "ogg", "audio/opus": "opus", "audio/x-wav": "wav", "audio/wav": "wav" };
 	return known[String(mimeType)] ?? "bin";
@@ -117,25 +134,32 @@ class TelegramSource {
 		try {
 			state = JSON.parse(raw);
 		} catch {
-			this.log(`minikoda ${id}: the cached telegram channel is unreadable (resolving again)`);
+			this.log(`minikoda ${id}: the cached telegram channel is unreadable (reading it again)`);
 			return undefined;
 		}
-		const valid = state?.version === 1
+		// v2 dropped the cached `{channelId, accessHash}`: see saveState.
+		const valid = state?.version === 2
 			&& typeof state.channel === "string"
-			&& Number.isSafeInteger(state.channelId) && state.channelId > 0
-			&& (typeof state.accessHash === "string" || Number.isSafeInteger(state.accessHash))
 			&& Number.isSafeInteger(state.lastSeenId) && state.lastSeenId >= 0;
 		if (!valid) {
-			this.log(`minikoda ${id}: the cached telegram channel is invalid (resolving again)`);
+			this.log(`minikoda ${id}: the cached telegram channel is invalid (reading it again)`);
 			return undefined;
 		}
-		return { channel: state.channel, channelId: state.channelId, accessHash: String(state.accessHash), lastSeenId: state.lastSeenId };
+		return { channel: state.channel, lastSeenId: state.lastSeenId };
 	}
 
+	/**
+	 * The only thing Koda keeps between runs is the channel's `@username` and the last post it read.
+	 *
+	 * An `accessHash` is NOT cached: mtcute's TL writer serializes it with `.low`/`.high`, so a hash stored as a string
+	 * (JSON has no 64-bit integer) was written as 0, and every later run had to re-resolve the channel after Telegram
+	 * answered CHANNEL_INVALID. mtcute already caches usernames per client in its own storage, so the username alone is
+	 * both simpler and correct: `getHistory("@canal")` resolves once per daemon lifetime, not once per run.
+	 */
 	saveState(id, state) {
 		const file = this.#stateFile(id);
 		ensurePrivateDir(path.dirname(file));
-		writePrivateFile(file, `${JSON.stringify({ version: 1, ...state, accessHash: String(state.accessHash) }, null, 2)}\n`);
+		writePrivateFile(file, `${JSON.stringify({ version: 2, channel: state.channel, lastSeenId: state.lastSeenId }, null, 2)}\n`);
 	}
 
 	/** Drops a Minikoda's cached channel (its delete path): the next Minikoda with the same id resolves again. */
@@ -166,27 +190,21 @@ class TelegramSource {
 		const id = recipe.id;
 		const state = this.loadState(id);
 		const useCache = state !== undefined && state.channel === parsed.channel;
-		// The resolved channel is cached as soon as it is known: a run that fails later must not pay resolveUsername
-		// again. Only `lastSeenId` waits for commit().
-		let peer = useCache ? { _: "inputPeerChannel", channelId: state.channelId, accessHash: state.accessHash } : undefined;
-		let resolved = undefined;
-		try {
-			if (peer === undefined) resolved = await this.#resolve(client, parsed.channel);
-			else resolved = { channelId: state.channelId, accessHash: state.accessHash };
-		} catch (error) {
-			throw this.#map(error);
-		}
+		// The peer IS the username: mtcute resolves it once per client and caches it, so no hand-built peer (and no
+		// access hash turned into 0) can ever be sent to Telegram.
+		const peer = parsed.channel;
 		const minId = useCache && state.lastSeenId > 0 ? state.lastSeenId : undefined;
 		const limit = minId === undefined ? this.limits.firstRunPosts : this.limits.maxPostsPerRun;
+		const history = { limit, ...(minId !== undefined ? { minId } : {}) };
 		let messages;
 		try {
-			messages = await client.getHistory(peer ?? resolved.peer, { limit, ...(minId !== undefined ? { minId } : {}) });
+			messages = await client.getHistory(peer, history);
 		} catch (error) {
-			// A cached channel Telegram no longer accepts is resolved again ONCE, then the run fails with a closed code.
-			if (peer !== undefined && /CHANNEL_INVALID|CHANNEL_PRIVATE|PEER_ID_INVALID/.test(String(error?.text ?? error?.message ?? ""))) {
+			// A username mtcute cached before the channel changed (CHANNEL_INVALID, CHANNEL_PRIVATE, PEER_ID_INVALID):
+			// resolved again ONCE, then the run fails with a closed code.
+			if (/CHANNEL_INVALID|CHANNEL_PRIVATE|PEER_ID_INVALID/.test(rpcTextOf(error))) {
 				try {
-					resolved = await this.#resolve(client, parsed.channel);
-					messages = await client.getHistory(resolved.peer, { limit, ...(minId !== undefined ? { minId } : {}) });
+					messages = await client.getHistory(await client.resolveChannel(peer, true), history);
 				} catch (retryError) {
 					throw this.#map(retryError);
 				}
@@ -203,7 +221,7 @@ class TelegramSource {
 			const lines = [];
 			let truncated = false;
 			for (const message of posts) {
-				const block = await this.#post(message, client, mediaDir, media, signal);
+				const block = await this.#post(message, client, peer, mediaDir, media, signal);
 				if (lines.join("\n").length + block.length > this.limits.maxTextChars) {
 					truncated = true;
 					break;
@@ -215,13 +233,13 @@ class TelegramSource {
 				: `Canal ${parsed.channel}: ${posts.length} ${posts.length === 1 ? "publicación nueva" : "publicaciones nuevas"}.`;
 			const text = [header, ...lines, ...(truncated ? ["[… el resto de las publicaciones quedó fuera por tamaño]"] : [])].join("\n\n");
 			const highest = posts.length > 0 ? posts[posts.length - 1].id : (minId ?? 0);
-			const alreadySeen = state !== undefined && state.channel === parsed.channel ? state.lastSeenId : 0;
-			this.saveState(id, { channel: parsed.channel, channelId: resolved.channelId, accessHash: resolved.accessHash, lastSeenId: alreadySeen });
+			const alreadySeen = useCache ? state.lastSeenId : 0;
+			this.saveState(id, { channel: parsed.channel, lastSeenId: alreadySeen });
 			this.log(`minikoda ${id}: telegram run ${runId} read ${posts.length} post(s), ${media.length} media file(s)`);
 			return {
 				text: text.slice(0, this.limits.maxTextChars),
 				media,
-				commit: async () => this.saveState(id, { channel: parsed.channel, channelId: resolved.channelId, accessHash: resolved.accessHash, lastSeenId: Math.max(highest, minId ?? 0) }),
+				commit: async () => this.saveState(id, { channel: parsed.channel, lastSeenId: Math.max(highest, minId ?? 0) }),
 			};
 		} catch (error) {
 			// A run that could not finish leaves no media behind.
@@ -231,7 +249,7 @@ class TelegramSource {
 	}
 
 	/** One post as the Minikoda reads it, downloading its media when Telegram's metadata says it is within the caps. */
-	async #post(message, client, mediaDir, media, signal) {
+	async #post(message, client, peer, mediaDir, media, signal) {
 		const text = typeof message.text === "string" ? message.text.trim().slice(0, this.limits.maxPostChars) : "";
 		const blocks = [`[${message.id}]${text === "" ? "" : ` ${text}`}`];
 		const kind = message.media?.type;
@@ -248,26 +266,31 @@ class TelegramSource {
 				} else if (Number.isFinite(durationSec) && durationSec > this.limits.maxMediaDurationSec) {
 					blocks.push(`(${kind} omitido: demasiado largo, 3 horas como máximo)`);
 				} else {
-					const file = await this.#download(message, client, mediaDir, signal);
+					const file = await this.#download(message, client, peer, mediaDir, signal);
 					media.push({ path: file, mimeType: String(message.media?.mimeType ?? "application/octet-stream"), durationSec, messageId: message.id, kind });
-					blocks.push(`(${kind} de ${durationSec} s, adjunto; se transcribe aparte)`);
+					// Transcription is another branch (feat/k2-13-transcribe): until it is merged this run carries the file and
+					// says so plainly. The Minikoda is told what was attached, never where the media went.
+					blocks.push(`(${kind} de ${durationSec} s, adjunto; todavía sin transcribir)`);
 				}
 			}
 		}
 		return blocks.join(" ");
 	}
 
-	/** Streams one media file into the run's private folder; FILE_REFERENCE_EXPIRED refetches the message and retries once. */
-	async #download(message, client, mediaDir, signal) {
+	/**
+	 * Streams one media file into the run's private folder; FILE_REFERENCE_EXPIRED refetches the message and retries once.
+	 * `peer` is the channel the post was read from: mtcute's media objects carry no `.chat`, and `getMessages` needs one.
+	 */
+	async #download(message, client, peer, mediaDir, signal) {
 		ensurePrivateDir(mediaDir);
 		const file = path.join(mediaDir, `${message.id}-${message.media?.type ?? "media"}.${fileExtension(message.media?.mimeType)}`);
 		const attempt = (media) => pipeline(client.downloadAsNodeStream(media, { abortSignal: signal, fileSize: media?.fileSize }), fs.createWriteStream(file, { mode: 0o600 }));
 		try {
 			await attempt(message.media);
 		} catch (error) {
-			if (!/FILE_REFERENCE_EXPIRED/.test(String(error?.text ?? error?.message ?? ""))) throw this.#map(error);
-			// Telegram expired the file reference: ask for the message again (fresh reference) and retry exactly once.
-			const [fresh] = await client.getMessages(message.media?.chat ? message.media.chat : undefined, [message.id]).catch(() => []);
+			if (!/FILE_REFERENCE_EXPIRED/.test(rpcTextOf(error))) throw this.#map(error);
+			// Telegram expired the file reference: ask for the message again in ITS channel (fresh reference) and retry once.
+			const [fresh] = await client.getMessages(peer, [message.id]).catch(() => []);
 			if (!fresh?.media) throw this.#map(error);
 			try {
 				await attempt(fresh.media);
@@ -279,16 +302,24 @@ class TelegramSource {
 		return file;
 	}
 
-	async #resolve(client, channel) {
-		const resolved = await client.resolveChannel(channel);
-		if (!resolved || typeof resolved !== "object" || !Number.isSafeInteger(resolved.channelId) || resolved.accessHash === undefined) {
-			throw new TelegramError("telegram_channel_invalid");
-		}
-		return { peer: resolved, channelId: resolved.channelId, accessHash: String(resolved.accessHash) };
+	/**
+	 * Removes one run's media folder (the service calls it after EVERY run: success, engine failure or cancel).
+	 * The transcription step (K2-13 T2c, branch feat/k2-13-transcribe) will consume `source.media` BEFORE this happens,
+	 * so merging the two branches deletes the files the same way, only later.
+	 */
+	removeRun(runId) {
+		if (typeof runId !== "string" && typeof runId !== "number") return;
+		const dir = path.join(this.mediaRoot, String(runId));
+		if (path.dirname(dir) !== this.mediaRoot) return;
+		this.#removeRunMedia(dir);
 	}
 
 	#map(error) {
 		if (error instanceof TelegramError) return error;
+		// A channel that does not exist is a channel problem, not a Telegram outage: «usá @usuario o un enlace t.me».
+		if (/USERNAME_NOT_OCCUPIED|USERNAME_INVALID/.test(rpcTextOf(error)) || /was not found|is not found in local cache/.test(String(error?.message ?? ""))) {
+			return new TelegramError("telegram_channel_invalid", { cause: error });
+		}
 		const mapped = mapRpcError(error);
 		return new TelegramError(mapped.code, { ...mapped, cause: error });
 	}
@@ -302,4 +333,4 @@ class TelegramSource {
 	}
 }
 
-module.exports = { TelegramSource, TelegramSourceError: TelegramError, TelegramError, parseSource, normalizeChannel, SOURCE_LIMITS };
+module.exports = { TelegramSource, TelegramSourceError: TelegramError, TelegramError, parseSource, normalizeChannel, looksLikeChannel, SOURCE_LIMITS };

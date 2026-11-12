@@ -69,6 +69,9 @@ function fakeClient(script = {}) {
 		async getMessages(peer, ids) {
 			calls.messages.push({ peer, ids });
 			if (script.refetchError) throw rpc(script.refetchError);
+			// The real API needs the chat the message lives in (`message.media` carries no chat of its own): a reference
+			// expired retry that forgot the peer is refused here instead of silently returning nothing.
+			if (peer === undefined || peer === null || peer === "") throw rpc("PEER_ID_INVALID");
 			return script.refetched ?? [];
 		},
 		downloadAsNodeStream(location, params) {
@@ -140,23 +143,22 @@ test("source: a channel is @name or a t.me link, and nothing else", () => {
 
 // ---------- resolve once, poll what is new ----------
 
-test("source: the channel is resolved once and cached (0600) in the Minikoda's private state; the next run reuses it", async (t) => {
+test("source: the channel is read by its @username and only {channel, lastSeenId} is kept; the next run sends the same username", async (t) => {
 	const client = fakeClient({ messages: [post(3, "tercero")] });
 	const { src, base } = source(t, { client });
 	const stateFile = path.join(base, "island", "minikodas", "telegram", "canal.json");
 	const first = await src.prepare({ recipe: recipeWith("@valmar_canal"), runId: "run-1" });
 	assert.match(first.text, /tercero/);
-	assert.equal(client.calls.resolve.length, 1, "resolveChannel was called once");
-	assert.deepEqual(client.calls.history[0].peer, { _: "inputChannel", channelId: 4242, accessHash: "7777" }, "the resolved channel is the peer");
-	const state = JSON.parse(fs.readFileSync(stateFile, "utf8"));
-	assert.deepEqual(state, { version: 1, channel: "@valmar_canal", channelId: 4242, accessHash: "7777", lastSeenId: 0 });
-	if (posix) assert.equal(fs.statSync(stateFile).mode & 0o777, 0o600, "the state is private");
+	assert.equal(client.calls.history[0].peer, "@valmar_canal", "the peer is the username: mtcute resolves and caches it");
 	await first.commit();
-	assert.equal(JSON.parse(fs.readFileSync(stateFile, "utf8")).lastSeenId, 3, "the marker moves after a successful run");
+	// An access hash is never cached: JSON has no 64-bit integer, and mtcute's TL writer reads `.low`/`.high`, so a
+	// cached string reached Telegram as access hash 0 and every run after the first had to re-resolve the channel.
+	assert.deepEqual(JSON.parse(fs.readFileSync(stateFile, "utf8")), { version: 2, channel: "@valmar_canal", lastSeenId: 3 });
+	if (posix) assert.equal(fs.statSync(stateFile).mode & 0o777, 0o600, "the state is private");
 	const second = await src.prepare({ recipe: recipeWith("@valmar_canal"), runId: "run-2" });
-	assert.equal(client.calls.resolve.length, 1, "the cached channel is reused, never resolved twice");
-	assert.deepEqual(client.calls.history[1].peer, { _: "inputPeerChannel", channelId: 4242, accessHash: "7777" }, "the cached channel is an input peer");
+	assert.equal(client.calls.history[1].peer, "@valmar_canal", "the second run sends the username again, never a rebuilt peer");
 	assert.equal(client.calls.history[1].params.minId, 3, "only posts newer than the last one seen");
+	assert.equal(client.calls.resolve.length, 0, "no contacts.resolveUsername spent by the daemon: mtcute caches the username");
 	assert.match(second.text, /tercero/);
 });
 
@@ -232,6 +234,8 @@ test("source: video, audio, voice and round video are downloaded into the run's 
 	}
 	assert.equal(client.calls.downloads.length, 4);
 	assert.match(out.text, /video/i, "the text tells the Minikoda that the post carries media");
+	assert.match(out.text, /adjunto; todavía sin transcribir/, "it says what was attached and that it is not transcribed yet");
+	assert.doesNotMatch(out.text, /se transcribe aparte/, "no promise about a later step the Minikoda cannot see");
 });
 
 test("source: photos and documents are ignored, never downloaded", async (t) => {
@@ -283,6 +287,7 @@ test("source: FILE_REFERENCE_EXPIRED refetches the message once and finishes the
 	assert.equal(out.media.length, 1);
 	assert.equal(client.calls.messages.length, 1, "the message was refetched exactly once");
 	assert.deepEqual(client.calls.messages[0].ids, [7]);
+	assert.equal(client.calls.messages[0].peer, "@valmar_canal", "the refetch names the channel the post was read from");
 	assert.equal(client.calls.downloads.length, 2, "one retry, not a loop");
 });
 
@@ -327,10 +332,10 @@ test("source: without a connected Telegram account the source refuses instead of
 	);
 });
 
-test("source: a cached channel that Telegram no longer accepts is resolved again once", async (t) => {
+test("source: a channel Telegram no longer accepts for its cached username is resolved again once", async (t) => {
 	const base = tmp(t);
 	fs.mkdirSync(path.join(base, "island", "minikodas", "telegram"), { recursive: true, mode: 0o700 });
-	fs.writeFileSync(path.join(base, "island", "minikodas", "telegram", "canal.json"), JSON.stringify({ version: 1, channel: "@valmar_canal", channelId: 1, accessHash: "2", lastSeenId: 0 }), { mode: 0o600 });
+	fs.writeFileSync(path.join(base, "island", "minikodas", "telegram", "canal.json"), JSON.stringify({ version: 2, channel: "@valmar_canal", lastSeenId: 0 }), { mode: 0o600 });
 	const client = fakeClient({ messages: [post(4, "nuevo")] });
 	let first = true;
 	const history = client.getHistory.bind(client);
@@ -345,6 +350,7 @@ test("source: a cached channel that Telegram no longer accepts is resolved again
 	const out = await src.prepare({ recipe: recipeWith("@valmar_canal"), runId: "r" });
 	assert.match(out.text, /nuevo/);
 	assert.equal(client.calls.resolve.length, 1, "the stale cache was refreshed once");
+	assert.equal(client.calls.resolve[0], "@valmar_canal");
 });
 
 test("source: the media live under the island's minikodas/media/<run>, and a second run gets its own folder", async (t) => {
@@ -413,8 +419,91 @@ test("service: a Minikoda that reads a Telegram channel lands a Spanish «Hoy» 
 	await svc.launch(draft.id);
 	await waitFor(() => results.errors.length === 1);
 	assert.equal(results.runs.length, 0);
-	assert.match(results.errors[0].text, /Telegram/, "«Hoy» explains it in Spanish");
+	// «No hay ninguna cuenta…» and not «no respondió»: the source must see the session's own closed code, never the
+	// function it happens to be reached through (`connectedClient?.() ?? connectedClient` returned the method itself).
+	assert.match(results.errors[0].text, /No hay ninguna cuenta/, "«Hoy» says there is no account, not that Telegram did not answer");
 	assert.doesNotMatch(results.errors[0].text, /accessHash|7777/);
 	assert.equal(svc.find(draft.id).lastRun.outcome, "failed");
 	assert.equal(svc.find(draft.id).lastRun.reason, "source");
+});
+
+// ---------- the media of a run never outlive it ----------
+
+const FAKE_PI = path.join(__dirname, "fixtures", "minikodas", "fake-pi.cjs");
+
+/** A service whose only Minikoda reads the fake channel, with the engine's turn scripted by `steps`. */
+async function mediaService(t, { steps }) {
+	const base = tmp(t);
+	const fx = accountsFixture(base);
+	const client = fakeClient({ messages: [post(1, "el video", video())] });
+	const scriptFile = path.join(base, "script.json");
+	fs.writeFileSync(scriptFile, JSON.stringify({ steps }));
+	const results = { runs: [], errors: [], addRun: async (run) => results.runs.push(run), addError: async (err) => results.errors.push(err) };
+	const svc = new MinikodaService({
+		islandRoot: path.join(base, "island"),
+		accounts: fx.accounts,
+		profiles: fx.profiles,
+		accountsRoot: fx.accountsRoot,
+		results,
+		minEveryMs: 1,
+		runTimeoutMs: 20_000,
+		telegram: { connectedClient: () => client },
+		engine: { command: process.execPath, commandArgs: [FAKE_PI, "--script", scriptFile], env: { PATH: process.env.PATH }, startTimeoutMs: 10_000 },
+	});
+	t.after(() => svc.stop());
+	svc.start();
+	const draft = await svc.createDraft({
+		name: "Canal",
+		when: { manual: true },
+		reads: { source: "telegram:@valmar_canal" },
+		kit: ["source_read"],
+		prompt: "Sos un Minikoda de oportunidades.",
+		never: ["buy", "sell", "send", "delete"],
+	});
+	await svc.approveCreate(draft.id);
+	const { runId } = await svc.launch(draft.id);
+	const mediaRoot = path.join(base, "island", "minikodas", "media");
+	return { base, svc, client, results, runId, mediaRoot, mediaDir: path.join(mediaRoot, runId) };
+}
+
+test("service: the media a run downloaded are gone when the run ends (success, engine failure and cancel)", async (t) => {
+	// The transcription step of feat/k2-13-transcribe will consume source.media first; until that merge nothing reads
+	// those files after the run, and a video per run would grow the island without a limit.
+	const ok = await mediaService(t, { steps: [{ tool: "source_read" }, { text: "Listo." }] });
+	await waitFor(() => ok.results.runs.length === 1);
+	assert.equal(ok.client.calls.downloads.length, 1, "the video was really downloaded during the run");
+	assert.equal(fs.existsSync(ok.mediaDir), false, "and it is gone once the result reached «Hoy»");
+
+	const bad = await mediaService(t, { steps: [{ crash: 3 }] });
+	await waitFor(() => bad.results.errors.length === 1);
+	assert.equal(bad.client.calls.downloads.length, 1);
+	assert.equal(fs.existsSync(bad.mediaDir), false, "an engine failure leaves no media behind either");
+
+	const paused = await mediaService(t, { steps: [{ hang: true }] });
+	await waitFor(() => paused.client.calls.downloads.length === 1);
+	await paused.svc.cancelRuns("paused");
+	await waitFor(() => paused.results.errors.length === 1);
+	assert.match(paused.results.errors[0].text, /paused/);
+	assert.equal(fs.existsSync(paused.mediaDir), false, "a cancelled run cleans up too");
+	assert.deepEqual(fs.existsSync(paused.mediaRoot) ? fs.readdirSync(paused.mediaRoot) : [], [], "no folder of any run survives");
+});
+
+// ---------- why no peer is cached ----------
+
+const REAL_TL_RUNTIME = path.join(__dirname, "..", "..", "desktop-tauri", "packaging", "runtime", "node_modules", "@mtcute", "tl-runtime", "index.cjs");
+
+test("source: an access hash stored as a string reaches Telegram as 0, which is why the reader caches no peer at all", { skip: fs.existsSync(REAL_TL_RUNTIME) ? false : "packaging/runtime/node_modules is not installed here" }, () => {
+	// The evidence for the design, with mtcute's own writer: `TlBinaryWriter.long()` writes `val.low` and `val.high`.
+	// A Long (what the library's TL objects carry) writes the channel's hash; the string JSON could keep has none of
+	// those fields, so the field would travel as eight zero bytes and Telegram answers CHANNEL_INVALID — every run.
+	const { TlBinaryWriter } = require(REAL_TL_RUNTIME);
+	const written = (value) => {
+		const writer = TlBinaryWriter.manual(16);
+		writer.long(value);
+		return Buffer.from(writer.result());
+	};
+	const asLong = written({ low: 7777, high: 0 });
+	const asString = written("7777");
+	assert.deepEqual([...asLong], [0x61, 0x1e, 0, 0, 0, 0, 0, 0], "a Long writes the hash's low word (7777 = 0x1e61, little-endian)");
+	assert.deepEqual([...asString], [0, 0, 0, 0, 0, 0, 0, 0], "a string writes zeros: that is the access hash 0 Telegram refuses");
 });

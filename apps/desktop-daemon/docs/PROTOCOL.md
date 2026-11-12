@@ -629,7 +629,7 @@ Implementation: `src/protocol.cjs` (allowlist and DTOs), `src/server.cjs` (`hand
 | --- | --- | --- |
 | `minikodas_list` | – | `minikodas` (no prompts) |
 | `minikoda_get` | `id` | `minikoda` (with prompt) |
-| `minikoda_create` | `recipe{id?, name, when, reads{source}, kit[], prompt, model?{provider, id, accountId?}, never[]}` | `minikoda` with `status: "draft"`; broadcast `minikodas` |
+| `minikoda_create` | `recipe{id?, name, when, reads{source}, kit[], prompt, model?{provider, id, accountId?}, never[]}` | `minikoda` with `status: "draft"`; broadcast `minikodas`. `reads.source` is validated here: `telegram:@canal` must be a channel, and a channel typed without the prefix (`@canal`, `t.me/canal`) is `bad_request` — the daemon never stores it as a text file name that every run would read as empty |
 | `minikoda_approve_create` | `id` | `minikoda` with `status: "active"` (the schedule is armed); broadcast `minikodas` |
 | `minikoda_delete` | `id` | `minikoda_deleted{id}`; broadcast `minikodas` (its run is cancelled, its engine root removed; «Hoy» items stay). `failed` when a refreshed credential kept in its root still cannot be written back: the Minikoda stays (README «Minikodas», S11) |
 | `minikoda_launch` | `id` | `minikoda_launched{id, started, reason?: running\|busy\|paused\|stopped}`; the run lands later as a `hoy` broadcast. Refused with `paused` while the global pause is on |

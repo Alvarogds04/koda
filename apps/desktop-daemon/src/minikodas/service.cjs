@@ -9,8 +9,8 @@
  *   minikodas/hoy/                «Hoy» store and approved log (hoy.cjs, wired by the daemon)
  *   minikodas/engines/<id>/       the Minikoda's OWN private engine root (HOME, agent dir, sessions, tmp, workspace)
  *   minikodas/sources/<id>.txt    default source content for the next run (a plain-text source)
- *   minikodas/telegram/<id>.json  the cached channel {channelId, accessHash, lastSeenId} of a Telegram source (0600)
- *   minikodas/media/<run>/        the media one run downloaded (0700/0600), consumed by the transcription step
+ *   minikodas/telegram/<id>.json  the cached channel {channel, lastSeenId} of a Telegram source (0600)
+ *   minikodas/media/<run>/        the media one run downloaded (0700/0600), removed when the run ends
  * The engine roots never contain the «Hoy» store or the daemon token, and the kit has no tool
  * that reads files, so a Minikoda cannot reach them through its kit. Same-uid processes can still read them
  * (known limit: running the agent as another OS user is K2-14 criterion 3).
@@ -93,7 +93,10 @@ class MinikodaService extends EventEmitter {
 			? new TelegramSource({
 				stateDir: path.join(this.dir, "telegram"),
 				mediaRoot: this.mediaRoot,
-				getClient: () => this.options.telegram.connectedClient?.() ?? this.options.telegram.connectedClient,
+				// The live client, or undefined when no account is connected. NOT `connectedClient?.() ?? connectedClient`:
+				// that handed the source the method itself whenever the call yielded undefined, so a daemon with no
+				// session failed the run with «Telegram no respondió» instead of «no hay ninguna cuenta conectada».
+				getClient: () => options.telegram.connectedClient(),
 				log: (line) => this.log(line),
 			})
 			: undefined;
@@ -464,7 +467,20 @@ class MinikodaService extends EventEmitter {
 		}
 	}
 
+	/**
+	 * One run, from its source to «Hoy». The media the source downloaded for this run are removed when it ends, whatever
+	 * the outcome (done, engine failure, timeout, cancel): nothing reads them after the run on this branch, and the
+	 * transcription step (feat/k2-13-transcribe) will consume `source.media` before this point once merged.
+	 */
 	async execute(recipe, runId, signal) {
+		try {
+			return await this.executeRun(recipe, runId, signal);
+		} finally {
+			this.telegramSource?.removeRun(runId);
+		}
+	}
+
+	async executeRun(recipe, runId, signal) {
 		const account = () => this.options.accounts.listAccounts().find((a) => a.accountId === recipe.model.accountId);
 		const agentDir = islandPaths(this.engineRoot(recipe.id)).agentDir;
 		let copied;
