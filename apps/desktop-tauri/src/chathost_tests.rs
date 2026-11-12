@@ -855,6 +855,58 @@ fn chathost_r2_the_production_reader_callback_projects_emits_and_refreshes_on_th
     assert!(!feed.connected());
 }
 
+// K2-05 boot follow-up F3 (deviation from Gentle Dot, reason «empty chat after a long boot»): Gentle
+// Dot's UI asks for history only on connect (client.ts:72) and its daemon broadcasts models, not
+// history, on ready (bridge.ts:1176-1186), so a boot longer than the 60 s history wait leaves the
+// chat empty there too. The island asks for the newest page again when the engine goes not-ready → ready.
+#[test]
+fn chathost_f3_the_engine_becoming_ready_after_a_long_boot_rereads_the_newest_page_once() {
+    let feed = ChatFeed::new(|_| {});
+    let link: std::sync::Arc<FakeLink> = std::sync::Arc::new(FakeLink::new());
+    let dyn_link: std::sync::Arc<dyn ChatLink + Send + Sync> = link.clone();
+    feed.bind(std::sync::Arc::downgrade(&dyn_link));
+    let callback = ChatFeed::reader_callback(&feed);
+    // connected while the engine starts; the held read gave up (the daemon's 60 s wait)
+    agent(&link, false, "starting");
+    callback(link.view());
+    link.frame(json!({"type":"error","code":"unavailable"}));
+    callback(link.view());
+    assert!(!link.sent().contains(&ChatCommand::History), "nothing to re-read while the engine still starts");
+    agent(&link, false, "ready");
+    callback(link.view());
+    assert_eq!(link.sent().iter().filter(|c| **c == ChatCommand::History).count(), 1, "ready re-reads the newest page: {:?}", link.sent());
+    // ready → ready (busy/idle changes) never re-reads
+    agent(&link, true, "ready");
+    callback(link.view());
+    agent(&link, false, "ready");
+    callback(link.view());
+    page(&link, &[("s0-1", "user", "hola"), ("s0-2", "assistant", "buenas")], false);
+    callback(link.view());
+    assert_eq!(link.sent().iter().filter(|c| **c == ChatCommand::History).count(), 1, "{:?}", link.sent());
+    // an engine restart that comes back ready re-reads once more
+    agent(&link, false, "restarting");
+    callback(link.view());
+    agent(&link, false, "ready");
+    callback(link.view());
+    assert_eq!(link.sent().iter().filter(|c| **c == ChatCommand::History).count(), 2, "{:?}", link.sent());
+}
+
+#[test]
+fn chathost_f3_a_connection_that_starts_ready_never_rereads_on_its_own() {
+    let feed = ChatFeed::new(|_| {});
+    let link: std::sync::Arc<FakeLink> = std::sync::Arc::new(FakeLink::new());
+    let dyn_link: std::sync::Arc<dyn ChatLink + Send + Sync> = link.clone();
+    feed.bind(std::sync::Arc::downgrade(&dyn_link));
+    let callback = ChatFeed::reader_callback(&feed);
+    // a lost connection, then a new one whose engine is already ready: the connection's own
+    // get_history (agentconn.rs connect) covers it, the transition rule adds nothing
+    callback(serde_json::to_value(ChatState::disconnected(crate::agentclient::Reason::Lost)).unwrap());
+    callback(link.view());
+    agent(&link, false, "ready");
+    callback(link.view());
+    assert!(!link.sent().contains(&ChatCommand::History), "{:?}", link.sent());
+}
+
 #[test]
 fn chathost_f3_earlier_pages_never_take_the_newest_turns_off_the_chat() {
     // Gentle Dot's model: an earlier page never enters the newest view, so no reload is needed

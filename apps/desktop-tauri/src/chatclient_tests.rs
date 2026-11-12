@@ -967,6 +967,45 @@ fn errors_are_attributed_to_the_oldest_waiting_command_that_can_answer_them() {
     assert_eq!(view(&st)["turnError"]["n"], json!(1));
 }
 
+// K2-05 boot follow-up F4: a get_history sent while the engine starts is HELD by the daemon (server.cjs
+// whenReady, readyWaitMs 60 s): its only answers are a page once ready, or `unavailable` once the engine
+// stopped or the hold ran out. An immediate `unavailable` meanwhile answers another command (an abort,
+// an earlier page) and is never charged to the held read; the island keeps the held read as long as
+// the daemon holds it.
+#[test]
+fn f4_an_immediate_unavailable_while_the_engine_starts_is_never_charged_to_the_held_history_read() {
+    let mut st = ChatState::connected();
+    st.apply(&json!({"type":"agent_state","busy":false,"status":"starting","paused":false}));
+    st.command("main", &json!({"action":"chat_history"})).unwrap();
+    st.command("main", &json!({"action":"chat_earlier","before":"s0-4"})).unwrap();
+    st.command("main", &json!({"action":"chat_abort"})).unwrap();
+    // the earlier page and the abort are refused at once (not ready)
+    st.apply(&json!({"type":"error","code":"unavailable"}));
+    assert_eq!(view(&st)["earlierReads"], json!({"answered":0,"failed":1}), "the earlier read is refused");
+    assert_eq!(view(&st)["reads"], json!({"answered":0,"failed":1}), "only the earlier read failed");
+    st.apply(&json!({"type":"error","code":"unavailable"}));
+    assert_eq!(view(&st)["reads"], json!({"answered":0,"failed":1}), "the abort's refusal never fails the held history read");
+    // the engine becomes ready: the held read is answered
+    st.apply(&json!({"type":"agent_state","busy":false,"status":"ready","paused":false}));
+    st.apply(&json!({"type":"history","messages":[],"hasEarlier":false}));
+    assert_eq!(view(&st)["reads"], json!({"answered":1,"failed":1}));
+    assert_eq!(view(&st)["historyLoaded"], json!(true));
+}
+
+#[test]
+fn f4_a_held_history_read_fails_when_the_engine_stops_and_outlives_the_daemons_hold() {
+    let mut st = ChatState::connected();
+    st.apply(&json!({"type":"agent_state","busy":false,"status":"restarting","paused":false}));
+    st.command("main", &json!({"action":"chat_history"})).unwrap();
+    // the daemon's whenReady rejects when the engine stops (agent_state first, then the error)
+    st.apply(&json!({"type":"agent_state","busy":false,"status":"stopped","paused":false}));
+    st.apply(&json!({"type":"error","code":"unavailable"}));
+    assert_eq!(view(&st)["reads"], json!({"answered":0,"failed":1}), "a stopped engine's refusal answers the held read");
+    // the island waits for a held read at least as long as the daemon holds it (60 s)
+    assert!(Awaiting::Read(false).ttl() > Duration::from_millis(HISTORY_HOLD_MS), "{:?}", Awaiting::Read(false).ttl());
+    assert_eq!(HISTORY_HOLD_MS, 60_000, "server.cjs readyWaitMs (Gentle Dot READY_TIMEOUT_MS)");
+}
+
 #[test]
 fn an_accepted_turn_with_output_no_longer_claims_errors_but_a_silent_one_claims_failed() {
     let mut st = ChatState::connected();

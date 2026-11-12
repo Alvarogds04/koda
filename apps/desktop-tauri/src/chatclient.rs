@@ -321,12 +321,15 @@ impl Awaiting {
         }
     }
 
-    /// How long an entry may wait before it can no longer claim an error.
+    /// How long an entry may wait before it can no longer claim an error. K2-05 boot follow-up F4:
+    /// a newest-page read may be HELD by the daemon while its engine starts (`HISTORY_HOLD_MS`), so
+    /// it waits longer than that hold; an earlier-page read is never held.
     fn ttl(self) -> Duration {
         match self {
             Awaiting::Send | Awaiting::Turn { .. } => Duration::from_secs(600),
             Awaiting::Settled => Duration::from_secs(10),
-            Awaiting::Read(_) | Awaiting::Answer | Awaiting::Control => Duration::from_secs(30),
+            Awaiting::Read(false) => Duration::from_millis(HISTORY_HOLD_MS) + Duration::from_secs(30),
+            Awaiting::Read(true) | Awaiting::Answer | Awaiting::Control => Duration::from_secs(30),
         }
     }
 
@@ -601,15 +604,22 @@ impl ChatState {
     /// claimed by a `requestId` (its slot holds an ask id, not a request).
     fn attribute_error(&mut self, code: &str, request: Option<&str>) -> Option<(Awaiting, Option<String>)> {
         let now = Instant::now();
+        // K2-05 boot follow-up F4: while the engine starts or restarts the daemon HOLDS a newest-page
+        // read (server.cjs whenReady) until it is ready, stops, or `HISTORY_HOLD_MS` ran out, so an
+        // error meanwhile answers some other command, never that read. The island's clock started
+        // before the daemon's, so a read the daemon gave up on is always past the hold here.
+        let starting = matches!(self.agent.get("status").and_then(Value::as_str), Some("starting" | "restarting"));
+        let hold = Duration::from_millis(HISTORY_HOLD_MS);
+        let held = |k: &Awaiting, at: &Instant| *k == Awaiting::Read(false) && starting && now.duration_since(*at) < hold && code != "rate_limited";
         let awaiting = self.awaiting.get_mut();
         awaiting.retain(|(k, at, _)| now.duration_since(*at) < k.ttl());
         if let Some(request) = request {
             let at = awaiting.iter().position(|(k, _, r)| *k != Awaiting::Answer && r.as_deref() == Some(request) && k.can_answer(code))?;
             return awaiting.remove(at).map(|(k, _, r)| (k, r));
         }
-        let mut at = awaiting.iter().position(|(k, _, _)| k.can_answer(code))?;
+        let mut at = awaiting.iter().position(|(k, sent, _)| k.can_answer(code) && !held(k, sent))?;
         if let (Awaiting::Settled, quiet, _) = awaiting[at] {
-            if let Some(later) = awaiting.iter().position(|(k, sent, _)| *k != Awaiting::Settled && *sent >= quiet && k.can_answer(code)) {
+            if let Some(later) = awaiting.iter().position(|(k, sent, _)| *k != Awaiting::Settled && *sent >= quiet && k.can_answer(code) && !held(k, sent)) {
                 at = later;
             }
         }
@@ -1211,6 +1221,9 @@ const STATUS_GAP_MS: u64 = 2_000;
 /// The longest a `history` page request waits for the daemon's answer frame (R3: the wait
 /// ends on the answer itself — `reads` moves — this is only the give-up bound).
 const HISTORY_WAIT_MS: u64 = 3_000;
+/// K2-05 boot follow-up F4: how long the daemon HOLDS a `get_history` while its engine starts or
+/// restarts (server.cjs `readyWaitMs`, Gentle Dot bridge.ts `READY_TIMEOUT_MS`).
+const HISTORY_HOLD_MS: u64 = 60_000;
 /// F6: the most turns one `chat:state` projection carries (the visible window); everything
 /// older is reached through `history_before` paging, one daemon page per request.
 pub const WINDOW_TURNS: usize = 50;
@@ -1452,6 +1465,9 @@ struct HostInner {
     /// K2-05 attachments: the chips of the files the daemon stored for this island and not sent
     /// yet, by the daemon's id (bounded): a submit shows them on its row.
     uploaded: VecDeque<(String, Value)>,
+    /// K2-05 boot follow-up F3: the engine status the last projection of THIS connection saw (None on
+    /// a fresh connection, before any status, or while disconnected).
+    engine_status: Option<String>,
 }
 
 /// F2: the live messages one unbound island turn may own.
@@ -1927,8 +1943,19 @@ impl HostInner {
         self.bind_recorded(chat);
         let connected = chat_connected(chat);
         let busy = chat_busy(chat);
-        let engine_down = matches!(chat.pointer("/agent/status").and_then(Value::as_str), Some("restarting" | "stopped" | "unavailable"));
+        let status = chat.pointer("/agent/status").and_then(Value::as_str).filter(|_| connected);
+        let engine_down = matches!(status, Some("restarting" | "stopped" | "unavailable"));
         let (err_n, err_code) = turn_error_counter(chat);
+        // K2-05 boot follow-up F3 (Koda deviation, reason «empty chat after a long boot»): Gentle Dot's
+        // UI asks for history only when it connects (client.ts:72) and its daemon broadcasts models,
+        // not history, when the engine becomes ready (bridge.ts:1176-1186), so a boot longer than the
+        // daemon's 60 s history hold leaves the chat empty there too. The island asks for the newest
+        // page again when THIS connection sees the engine go from not ready to ready (a fresh
+        // connection's first status never does: its own connect-time read covers it).
+        if status == Some("ready") && matches!(self.engine_status.as_deref(), Some("starting" | "restarting" | "stopped" | "unavailable")) {
+            self.refresh_due = true;
+        }
+        self.engine_status = status.map(str::to_owned);
 
         // live output (landed assistant messages not yet in the daemon's history, and messages
         // still streaming), each owned by the island turn its prompt's record id names; output
