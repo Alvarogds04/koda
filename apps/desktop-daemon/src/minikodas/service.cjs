@@ -138,32 +138,40 @@ class MinikodaService extends EventEmitter {
 
 	/**
 	 * K2-13 (S6, S9): removes whatever a previous daemon left in its two private work folders — a killed run's media,
-	 * a transcription's work files. Only inside `minikodas/media` and `minikodas/transcribe`, every entry is `lstat`ed
-	 * (a symlink is removed as a link, never followed), and a failure is logged instead of stopping the service.
+	 * a transcription's work files. Only inside `minikodas/media` and `minikodas/transcribe`, and every entry is
+	 * `lstat`ed, so a symlink is removed as a link and its target is never followed. The two folders themselves are
+	 * `lstat`ed too: a work folder that is not a real directory (a link, a file, a junction) is skipped, never read
+	 * through. Both listings are taken before the FIRST await, so a run that starts while the sweep is removing what a
+	 * previous daemon left keeps its own work folder. A failure is logged instead of stopping the service.
 	 */
 	sweepWorkDirs() {
-		const dirs = [this.mediaDir, path.join(this.dir, "transcribe")];
-		const sweep = async () => {
-			for (const dir of dirs) {
-				let names;
-				try {
-					names = readdirSync(dir);
-				} catch (error) {
-					if (error.code !== "ENOENT") this.log(`minikodas: could not list ${path.basename(dir)} (${error.code})`);
-					continue;
+		const listings = [this.mediaDir, path.join(this.dir, "transcribe")].map((dir) => {
+			try {
+				if (!lstatSync(dir).isDirectory()) {
+					this.log(`minikodas: ${path.basename(dir)} is not a folder of ours any more, left alone`);
+					return undefined;
 				}
-				for (const name of names) {
-					const entry = path.join(dir, name);
+				return { dir, names: readdirSync(dir) };
+			} catch (error) {
+				if (error.code !== "ENOENT") this.log(`minikodas: could not list ${path.basename(dir)} (${error.code})`);
+				return undefined;
+			}
+		});
+		const sweep = async () => {
+			for (const listing of listings) {
+				if (!listing) continue;
+				for (const name of listing.names) {
+					const entry = path.join(listing.dir, name);
 					try {
 						if (lstatSync(entry).isDirectory()) await removeWorkDir(entry, { log: this.log });
 						else unlinkSync(entry); // a file or a symlink: the link goes, its target is never touched
 					} catch (error) {
-						if (error.code !== "ENOENT") this.log(`minikodas: could not sweep ${path.basename(dir)} (${error.code ?? "error"})`);
+						if (error.code !== "ENOENT") this.log(`minikodas: could not sweep ${path.basename(listing.dir)} (${error.code ?? "error"})`);
 					}
 				}
 			}
 		};
-		// Best effort and off the caller's path: `start()` stays synchronous.
+		// Best effort and off the caller's path: `start()` stays synchronous, and the listings above are already taken.
 		sweep().catch(() => this.log("minikodas: the work-folder sweep failed"));
 	}
 

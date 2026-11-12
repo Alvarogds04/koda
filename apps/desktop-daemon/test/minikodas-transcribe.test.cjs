@@ -501,6 +501,58 @@ test("K2-13: starting the service sweeps its own stale media and transcription f
 	assert.ok(svc);
 });
 
+test("K2-13: the start sweep never follows a work folder that is a symlink to somewhere else", async (t) => {
+	// `minikodas/transcribe` is a known name an attacker (or a stray link) could replace: the sweep lstats the folder
+	// itself and skips anything that is not a real directory, so a link's target is never listed, never removed.
+	const base = tmp(t);
+	const island = path.join(base, "island");
+	const outside = path.join(base, "outside");
+	fs.mkdirSync(path.join(outside, "keeper"), { recursive: true, mode: 0o700 });
+	const precious = path.join(outside, "keeper", "precious.txt");
+	fs.writeFileSync(precious, "keep", { mode: 0o600 });
+	// A stale entry under media proves the sweep really ran before the assertions below.
+	const stale = media(path.join(island, "minikodas", "media", "run-old"), 3, "old.mp4");
+	fs.mkdirSync(path.join(island, "minikodas"), { recursive: true, mode: 0o700 });
+	if (posix) fs.symlinkSync(outside, path.join(island, "minikodas", "transcribe"));
+	else fs.symlinkSync(outside, path.join(island, "minikodas", "transcribe"), "junction");
+	const { svc } = service(t, base);
+	await waitFor(() => !fs.existsSync(stale));
+	await sleep(100);
+	assert.equal(fs.existsSync(precious), true, "the target of a symlinked work folder is never swept");
+	assert.equal(fs.existsSync(path.join(outside, "keeper")), true, "nor the folder itself");
+	assert.ok(svc);
+});
+
+test("K2-13: a work folder created while the sweep is running is never swept", async (t) => {
+	// Both listings are read before the first await: a run that starts (and so creates its work folder) while the
+	// sweep is still removing what a previous daemon left keeps everything it wrote.
+	const base = tmp(t);
+	const island = path.join(base, "island");
+	const stale = media(path.join(island, "minikodas", "media", "run-old"), 3, "old.mp4");
+	fs.mkdirSync(path.join(island, "minikodas", "transcribe"), { recursive: true, mode: 0o700 });
+	const { svc } = service(t, base);
+	const fresh = path.join(island, "minikodas", "transcribe", "u-fresh");
+	fs.mkdirSync(fresh, { recursive: true, mode: 0o700 });
+	const wav = path.join(fresh, "audio.wav");
+	fs.writeFileSync(wav, "x", { mode: 0o600 });
+	await waitFor(() => !fs.existsSync(stale));
+	await sleep(100);
+	assert.equal(fs.existsSync(wav), true, "a transcription that started meanwhile keeps its work folder");
+	assert.ok(svc);
+});
+
+test("K2-13: a killed tool logs its reason once, never a bogus exit line after the run settled", async (t) => {
+	// The `close` of a child Koda killed arrives after the transcription settled (with `null` as its code). Logging it
+	// then would claim a failure that already has its own, correct line.
+	const base = tmp(t);
+	const logs = [];
+	const { tr } = transcriber(t, base, { env: { FAKE_FFMPEG_MODE: "hang" }, logs, limits: { timeoutMs: 400 } });
+	await assert.rejects(tr.transcribe(media(path.join(base, "in"), 10)), (e) => e.code === "timeout");
+	await sleep(300);
+	assert.deepEqual(logs.filter((l) => /exited/.test(l)), [], "no exit line after the run settled");
+	assert.ok(logs.some((l) => /timed out/.test(l)), `the real reason is logged: ${JSON.stringify(logs)}`);
+});
+
 test("S6 a transcription failure is a clear «Hoy» error and the Minikoda's engine never starts", async (t) => {
 	const base = tmp(t);
 	let mediaFile;

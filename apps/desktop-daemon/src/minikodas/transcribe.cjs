@@ -449,6 +449,9 @@ class Transcriber {
 				stopAndSettle(reject, new TranscriptionError("failed"));
 			});
 			child.on("close", (code) => {
+				// A child Koda killed reports its `close` AFTER the transcription settled (with `null`): that exit line
+				// would claim a failure the run already told apart.
+				if (settled) return;
 				if (code !== 0 && !allowFailure) {
 					this.log(`transcription: ${label} exited ${code}`);
 					return settle(reject, new TranscriptionError(failCode));
