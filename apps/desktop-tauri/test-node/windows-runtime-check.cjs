@@ -11,7 +11,7 @@ const script = path.join(crate, 'packaging/windows/stage-runtime.cjs');
 const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'abito-win-stage-'));
 const out = path.join(scratch, 'payload');
 const files = [...L.DAEMON_FILES.map(f => `desktop-daemon/${f}`), ...L.HARNESS_FILES.map(f => `desktop-harness/${f}`), ...L.PI_FILES.map(f => `desktop-pi/${f}`)].sort();
-const bins = ['abito-island.exe', 'abito-notice-relay.exe', 'abito-private-session.exe', 'abito-install.json'];
+const bins = ['abito-island.exe', 'abito-notice-relay.exe', 'abito-private-session.exe', 'abito-transcribe.exe', 'abito-install.json'];
 function run(...args) { return spawnSync(process.execPath, [script, '--out', out, ...args], { encoding: 'utf8' }); }
 function runOut(dest, ...args) { return spawnSync(process.execPath, [script, '--out', dest, ...args], { encoding: 'utf8' }); }
 function entries(dir, prefix = '') { return fs.readdirSync(dir).flatMap(n => fs.statSync(path.join(dir, n)).isDirectory() ? entries(path.join(dir, n), `${prefix}${n}/`) : [`${prefix}${n}`]).sort(); }
@@ -94,6 +94,7 @@ try {
   };
   for (const f of ['Cargo.toml', 'Cargo.lock', 'tauri.conf.json', 'capabilities/main.json',
     'packaging/lib.cjs', 'packaging/windows/stage-runtime.cjs', 'packaging/windows/stage-win.cjs',
+    'packaging/windows/install-manifest.cjs',
     'packaging/windows/xbuild.sh', 'packaging/windows/abito.nsi', 'packaging/windows/Dockerfile',
     ...L.FRONTEND_FILES.map(f => `frontend/${f}`), ...files.map(f => `../${f}`)]) copy(f);
   for (const args of [['init', '-q'], ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-q', '--allow-empty', '-m', 'fixture']]) {
@@ -271,12 +272,14 @@ try {
     assert.match(r.stderr, /unexpected staged entry: unlisted\.txt/);
     assert.equal(fs.readFileSync(path.join(outArchive, 'unlisted.txt'), 'utf8'), 'unlisted');
   });
-  rule('abito-install.json lists runtime/node.exe with its sha256 via --runtime, and the previous entries are unchanged without it', () => {
+  rule('abito-install.json lists runtime/node.exe, ffmpeg.exe and yt-dlp.exe with their sha256 via --runtime, and the previous entries are unchanged without it', () => {
     const distA = path.join(scratch, 'dist-manifest-runtime');
     const distB = path.join(scratch, 'dist-manifest-plain');
     const runtimeDir = path.join(scratch, 'runtime-fixture');
     fs.mkdirSync(distA); fs.mkdirSync(distB); fs.mkdirSync(runtimeDir);
     fs.writeFileSync(path.join(runtimeDir, 'node.exe'), 'pinned node fixture');
+    fs.writeFileSync(path.join(runtimeDir, 'ffmpeg.exe'), 'pinned ffmpeg fixture');
+    fs.writeFileSync(path.join(runtimeDir, 'yt-dlp.exe'), 'pinned yt-dlp fixture');
     for (const d of [distA, distB]) fs.writeFileSync(path.join(d, 'abito-private-session.exe'), 'helper fixture');
     const runManifest = (dist, ...extra) => {
       const r = spawnSync(process.execPath, [path.join(crate, 'packaging/windows/install-manifest.cjs'), '--dist', dist, ...extra], { encoding: 'utf8' });
@@ -286,8 +289,12 @@ try {
     const plain = runManifest(distB);
     const withRuntime = runManifest(distA, '--runtime', runtimeDir);
     assert.equal(withRuntime.schema, 'abito-install/1');
-    assert.deepEqual(Object.keys(withRuntime.files).sort(), [...Object.keys(plain.files), 'runtime/node.exe'].sort());
+    assert.deepEqual(Object.keys(withRuntime.files).sort(), [...Object.keys(plain.files), 'runtime/node.exe', 'runtime/ffmpeg.exe', 'runtime/yt-dlp.exe'].sort());
     assert.equal(withRuntime.files['runtime/node.exe'], sha256(path.join(runtimeDir, 'node.exe')));
+    // K2-13 (S9): the bundled LGPL ffmpeg the daemon spawns is pinned like node.exe.
+    assert.equal(withRuntime.files['runtime/ffmpeg.exe'], sha256(path.join(runtimeDir, 'ffmpeg.exe')));
+    // K2-13 T2c-8 (S19): and so is the bundled yt-dlp that reads YouTube links.
+    assert.equal(withRuntime.files['runtime/yt-dlp.exe'], sha256(path.join(runtimeDir, 'yt-dlp.exe')));
     assert.deepEqual(Object.keys(plain.files).sort(), ['abito-private-session.exe', ...files].sort());
   });
   rule('macOS /var -> /private/var (K2-01b CI): a symlinked ANCESTOR of the output dir (outside the stage) is accepted, while a symlink inside the stage is still refused', () => {
@@ -305,6 +312,39 @@ try {
     const bad = runOut(dest);
     assert.equal(bad.status, 1);
     assert.equal(bad.stderr, 'unexpected staged entry: desktop-daemon/linked\n');
+  });
+  rule('K2-13 S8: the Windows build completes the closed binary set in the real dist/ from target/release (the preview workflow copies only three of the four)', () => {
+    // The preview workflow copies abito-island, abito-notice-relay and abito-private-session from target/release
+    // into dist/ and then runs install-manifest.cjs without --dist. abito-transcribe.exe (K2-13 S8, S15) is built by
+    // the same `cargo build --release --bins` but the copy list predates it, and $BINDIR must hold every
+    // BINARY_FILE before makensis Files it. The default dist/ is this build's own output, so it is completed there.
+    const { completeBinaries } = require('../packaging/windows/stage-runtime.cjs');
+    const distFixture2 = path.join(scratch, 'dist-complete');
+    const releaseFixture = path.join(scratch, 'release-complete');
+    const exes = bins.filter((b) => b.endsWith('.exe')); // target/release/ holds the executables, never abito-install.json
+    fs.mkdirSync(distFixture2); fs.mkdirSync(releaseFixture);
+    for (const b of exes) fs.writeFileSync(path.join(releaseFixture, b), `release ${b}`);
+    for (const b of ['abito-island.exe', 'abito-notice-relay.exe', 'abito-private-session.exe']) {
+      fs.writeFileSync(path.join(distFixture2, b), `workflow ${b}`);
+    }
+    assert.deepEqual(completeBinaries(distFixture2, releaseFixture), ['abito-transcribe.exe'], 'only the missing binary is staged');
+    assert.equal(fs.readFileSync(path.join(distFixture2, 'abito-transcribe.exe'), 'utf8'), 'release abito-transcribe.exe');
+    assert.equal(fs.readFileSync(path.join(distFixture2, 'abito-island.exe'), 'utf8'), 'workflow abito-island.exe', 'a binary the caller already staged is never replaced');
+    assert.deepEqual(completeBinaries(distFixture2, releaseFixture), [], 'idempotent: a second run stages nothing');
+    // A host without a Windows release build (Linux/macOS CI, a plain checkout) copies nothing at all.
+    const emptyRelease = path.join(scratch, 'release-empty'); fs.mkdirSync(emptyRelease);
+    assert.deepEqual(completeBinaries(path.join(scratch, 'dist-empty'), emptyRelease), []);
+    assert.equal(fs.existsSync(path.join(scratch, 'dist-empty')), false, 'nothing is created when there is nothing to stage');
+    // CLI wiring: install-manifest.cjs without --dist completes this checkout's default dist/ (what CI runs).
+    const fixtureDist = path.join(fixtureCrate, 'dist');
+    const fixtureRelease = path.join(fixtureCrate, 'target/release');
+    fs.mkdirSync(fixtureRelease, { recursive: true });
+    for (const b of exes) fs.writeFileSync(path.join(fixtureRelease, b), `release ${b}`);
+    fs.unlinkSync(path.join(fixtureDist, 'abito-transcribe.exe'));
+    const manifestRun = spawnSync(process.execPath, [path.join(fixtureCrate, 'packaging/windows/install-manifest.cjs')], { encoding: 'utf8' });
+    assert.equal(manifestRun.status, 0, manifestRun.stderr);
+    assert.equal(fs.readFileSync(path.join(fixtureDist, 'abito-transcribe.exe'), 'utf8'), 'release abito-transcribe.exe');
+    assert.equal(fs.readFileSync(path.join(fixtureDist, 'abito-island.exe'), 'utf8'), 'fixture, not a Windows executable', 'the manifest step never rewrites a binary that is already in dist/');
   });
   let failedRules = 0;
   for (const [name, fn] of rules) {

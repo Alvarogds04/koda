@@ -1,11 +1,21 @@
 #!/usr/bin/env node
 'use strict';
-/* M4 format A build: OFFLINE release build + stage + receipt. Stages files
+/* M4 format A build: release build + stage + receipt. Stages files
    only: it installs nothing, touches no installed app and never launches the
    binary. Usage: node packaging/build.cjs --runtime-archive <file> [--out <dir>] [--skip-cargo] [--smoke-variant]
    (--skip-cargo reuses target/release/abito-island, for re-staging). The runtime
    archive comes from packaging/runtime/build-runtime.cjs --archive (CI runs it
-   first; this build stays offline) and is staged + hashed like every other file. */
+   first) and is staged + hashed like every other file.
+
+   "Offline" means CARGO, not the network as a whole: cargo runs with --offline
+   (no crates.io index, no registry download), and the crate's own sherpa-onnx
+   archive must be supplied through SHERPA_ONNX_ARCHIVE_DIR / SHERPA_ONNX_LIB_DIR.
+   K2-13's build.rs additionally FETCHES one pinned archive on its first build in
+   a fresh target/: the upstream sherpa-onnx v1.13.8 libraries built with
+   -DSHERPA_ONNX_ENABLE_TTS=OFF, sha256-verified against
+   packaging/sherpa-onnx-no-tts.sha256 and then cached in
+   target/sherpa-onnx-no-tts/archives, so later builds of the same tree need no
+   network. A machine with none must pre-place that archive in the cache. */
 const fs = require('node:fs');
 const path = require('node:path');
 const cp = require('node:child_process');
@@ -52,19 +62,24 @@ const env = { ...process.env, RUSTFLAGS: remap, CARGO_ENCODED_RUSTFLAGS: undefin
 function cargoBuild(extraArgs, targetDir) {
   const argv = ['build', '--release', '--locked', '--offline', ...extraArgs, '--target-dir', targetDir];
   const r = cp.spawnSync('cargo', argv, { cwd: crate, stdio: 'inherit', env });
-  if (r.status !== 0) { console.error('cargo build failed (offline: no download is attempted)'); process.exit(1); }
+  if (r.status !== 0) { console.error('cargo build failed (cargo ran with --offline: it attempted no crates.io download; build.rs may still fetch its pinned TTS-free sherpa-onnx archive once, see the header)'); process.exit(1); }
 }
 // The SHIPPED binary: no `probe` feature (ABITO_PROBE/--probe do nothing, no fakes).
 const shipTarget = path.join(crate, 'target-ship');
 if (!args.includes('--skip-cargo')) cargoBuild(['--features', 'tauri/custom-protocol'], shipTarget);
 const built = path.join(shipTarget, 'release', 'abito-island');
 if (!fs.existsSync(built)) { console.error('release binary missing'); process.exit(1); }
+// K2-13 T2c-2: the transcription helper is a second binary of the same crate and build (same flags, same remaps).
+const builtHelper = path.join(shipTarget, 'release', L.TRANSCRIBE_BIN);
+if (!fs.existsSync(builtHelper)) { console.error(`release ${L.TRANSCRIBE_BIN} missing`); process.exit(1); }
 
 const stage = path.join(outRoot, 'abito-island', cfg.version);
 fs.rmSync(stage, { recursive: true, force: true });
 fs.mkdirSync(stage, { recursive: true, mode: 0o755 });
 fs.copyFileSync(built, path.join(stage, 'abito-island'));
 fs.chmodSync(path.join(stage, 'abito-island'), 0o755);
+fs.copyFileSync(builtHelper, path.join(stage, L.TRANSCRIBE_BIN));
+fs.chmodSync(path.join(stage, L.TRANSCRIBE_BIN), 0o755);
 fs.copyFileSync(path.join(crate, 'icons', 'icon.png'), path.join(stage, 'abito-island.png'));
 fs.chmodSync(path.join(stage, 'abito-island.png'), 0o644);
 fs.writeFileSync(path.join(stage, 'abito-island-launcher'), L.launcherText(), { mode: 0o755 });

@@ -81,6 +81,42 @@ function nodeArchive(dir, target) {
   return file;
 }
 
+/* K2-13 T2c-2 (S9): fake BtbN LGPL ffmpeg archives for linux-x64 and win-x64 (none for darwin-arm64: out of scope). The
+   binary carries an ffmpeg-like configure string, which is what build-runtime scans; the licence is the LGPL text's
+   first line. The linux «.tar.xz» fixture is gzip inside: tar detects the compression from the bytes, never the name. */
+const FFMPEG_TAG = 'autobuild-2026-11-11-12-39';
+const FFMPEG_BASE = { 'linux-x64': 'ffmpeg-n9.0.2-49-gc179411bbb-linux64-lgpl-9.0', 'win-x64': 'ffmpeg-n9.0.2-49-gc179411bbb-win64-lgpl-9.0' };
+const LGPL_HEAD = '                   GNU LESSER GENERAL PUBLIC LICENSE\n                       Version 3, 29 June 2007\n';
+function ffmpegArchive(dir, target, { config = '--prefix=/ffbuild/prefix --enable-version3 --disable-debug', license = LGPL_HEAD, name } = {}) {
+  const base = FFMPEG_BASE[target];
+  const bin = Buffer.from(`fake ffmpeg ${target}\0${config}\0`);
+  if (target === 'win-x64') {
+    const file = path.join(dir, name || `${base}.zip`);
+    zipStored(file, [[`${base}/bin/ffmpeg.exe`, bin, 0o100755], [`${base}/bin/ffplay.exe`, Buffer.from('ffplay')], [`${base}/LICENSE.txt`, Buffer.from(license)]]);
+    return file;
+  }
+  const root = path.join(dir, `ff-src-${target}-${crypto.randomBytes(4).toString('hex')}`);
+  fs.mkdirSync(path.join(root, base, 'bin'), { recursive: true });
+  fs.writeFileSync(path.join(root, base, 'bin', 'ffmpeg'), bin, { mode: 0o755 });
+  fs.writeFileSync(path.join(root, base, 'bin', 'ffprobe'), 'ffprobe', { mode: 0o755 });
+  fs.writeFileSync(path.join(root, base, 'LICENSE.txt'), license);
+  const file = path.join(dir, name || `${base}.tar.xz`);
+  tarGz(root, file, [base]);
+  return file;
+}
+
+/* K2-13 T2c-8 (S19): fake standalone yt-dlp binaries for linux-x64 and win-x64 (none for darwin-arm64). They carry the
+   PyInstaller archive marker build-runtime scans for, so a file that is not an official standalone build is refused.
+   The licence texts are the REAL pinned ones (a few hundred KB), so the fixture proves what the build ships. */
+const YTDLP_TAG = '2026.10.26';
+const YTDLP_BASE = { 'linux-x64': 'yt-dlp_linux', 'win-x64': 'yt-dlp.exe' };
+const YTDLP_LICENCES = [['ytdlp/unlicense.txt', 'LICENSE.yt-dlp.txt'], ['ytdlp/third-party-licenses.txt', 'THIRD-PARTY-NOTICES.yt-dlp.txt']];
+function ytdlpBinary(dir, target, { marker = 'pyimod01_archive', tag } = {}) {
+  const file = path.join(dir, YTDLP_BASE[target]);
+  fs.writeFileSync(file, Buffer.concat([Buffer.from(`fake yt-dlp ${target}\0`), Buffer.from(marker), Buffer.from(`\0${tag ?? YTDLP_TAG}\0`)]));
+  return file;
+}
+
 /* A builder copy next to fixture pins: the script reads its pins from its own directory. */
 function fixture(targets = ['linux-x64', 'darwin-arm64', 'win-x64'], opts = {}) {
   const dir = T.make('koda-runtime-build-');
@@ -91,6 +127,19 @@ function fixture(targets = ['linux-x64', 'darwin-arm64', 'win-x64'], opts = {}) 
   const archives = {};
   for (const t of targets) archives[t] = nodeArchive(dir, t);
   fs.writeFileSync(path.join(pins, 'node.sha256'), targets.map((t) => `${sha256(archives[t])}  ${path.basename(archives[t])}\n`).join(''));
+  const ffmpeg = {};
+  const ffDir = path.join(dir, 'ffmpeg');
+  fs.mkdirSync(ffDir);
+  for (const t of targets.filter((x) => FFMPEG_BASE[x])) ffmpeg[t] = ffmpegArchive(ffDir, t, opts.ffmpeg?.[t]);
+  fs.writeFileSync(path.join(pins, 'ffmpeg.sha256'), `# fixture pins\n${Object.values(ffmpeg).map((f) => `${sha256(f)}  ${FFMPEG_TAG}/${path.basename(f)}\n`).join('')}`);
+  const ytdlpDir = path.join(dir, 'ytdlp-bin');
+  fs.mkdirSync(ytdlpDir);
+  const ytdlp = {};
+  for (const t of targets.filter((x) => YTDLP_BASE[x])) ytdlp[t] = ytdlpBinary(ytdlpDir, t, opts.ytdlp?.[t]);
+  fs.cpSync(path.join(path.dirname(BUILDER), 'ytdlp'), path.join(pins, 'ytdlp'), { recursive: true });
+  fs.writeFileSync(path.join(pins, 'ytdlp.sha256'), ['# fixture pins',
+    ...Object.entries(ytdlp).map(([, f]) => `${sha256(f)}  ${YTDLP_TAG}/${path.basename(f)}`),
+    ...YTDLP_LICENCES.map(([rel]) => `${sha256(path.join(pins, rel))}  ${rel}`)].join('\n') + '\n');
   // A fake Pi package: its CLI prints the version, and with KODA_REPORT=1 also which Node runs it.
   const pkgSrc = path.join(dir, 'pi-src', 'package');
   fs.mkdirSync(path.join(pkgSrc, 'dist', 'bundle'), { recursive: true });
@@ -109,9 +158,14 @@ function fixture(targets = ['linux-x64', 'darwin-arm64', 'win-x64'], opts = {}) 
       'node_modules/@earendil-works/pi-coding-agent': { version: '1.4.0', resolved: spec, integrity, bin: { pi: 'dist/bundle/cli.js' } },
     },
   }));
-  return { dir, pins, archives };
+  return { dir, pins, archives, ffmpeg, ytdlpDir, ytdlp };
 }
 function build(fx, args, env = {}) {
+  // Offline: linux-x64 and win-x64 builds get their fixture ffmpeg archive unless the test passes its own.
+  const target = args[args.indexOf('--target') + 1];
+  if (args.includes('--target') && fx.ffmpeg[target] && !args.includes('--ffmpeg-archive')) args = [...args, '--ffmpeg-archive', fx.ffmpeg[target]];
+  // Offline: the yt-dlp binaries come from the fixture folder, never from GitHub.
+  if (args.includes('--target') && fx.ytdlp[target] && !args.includes('--ytdlp-dir')) args = [...args, '--ytdlp-dir', fx.ytdlpDir];
   return cp.spawnSync(process.execPath, [path.join(fx.pins, 'build-runtime.cjs'), ...args], {
     encoding: 'utf8', env: { ...process.env, npm_config_offline: 'true', ...env }, timeout: 120_000,
   });
@@ -132,14 +186,20 @@ for (const target of ['linux-x64', 'darwin-arm64', 'win-x64']) {
     const out = path.join(fx.dir, `out-${target}`);
     const r = build(fx, ['--target', target, '--out', out, '--node-archive', fx.archives[target]]);
     assert.equal(r.status, 0, `exit ${r.status}\nstdout=${r.stdout}\nstderr=${r.stderr}`);
-    assert.match(r.stdout, new RegExp(`^runtime ${target}: Node ${NODE_VERSION} \\+ Pi 1\\.4\\.0 -> `));
+    const ff = target === 'darwin-arm64' ? '' : ' \\+ ffmpeg n9\\.0\\.2-49-gc179411bbb \\+ yt-dlp 2026\\.10\\.26';
+    assert.match(r.stdout, new RegExp(`^runtime ${target}: Node ${NODE_VERSION} \\+ Pi 1\\.4\\.0${ff} -> `));
     const exe = target === 'win-x64' ? 'node.exe' : 'node';
     const expected = [exe, 'LICENSE.node', 'THIRD-PARTY-NOTICES.md', 'koda-runtime.json',
       'node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js', 'node_modules/@earendil-works/pi-coding-agent/package.json'];
     if (target !== 'win-x64') expected.push('pi');
-    assert.deepEqual(tree(out), expected.sort(), 'no npm, npx, corepack, .bin symlink or npm bookkeeping');
+    // K2-13 (S9): the pinned LGPL ffmpeg and its licence on linux-x64 and win-x64; nothing on darwin-arm64 (out of scope).
+    if (target === 'linux-x64') expected.push('ffmpeg', 'LICENSE.ffmpeg.txt', 'yt-dlp', 'LICENSE.yt-dlp.txt', 'THIRD-PARTY-NOTICES.yt-dlp.txt');
+    if (target === 'win-x64') expected.push('ffmpeg.exe', 'LICENSE.ffmpeg.txt', 'yt-dlp.exe', 'LICENSE.yt-dlp.txt', 'THIRD-PARTY-NOTICES.yt-dlp.txt');
+    assert.deepEqual(tree(out), expected.sort(), 'no npm, npx, corepack, .bin symlink, npm bookkeeping, ffprobe or ffplay');
     assert.deepEqual(readJson(path.join(out, 'koda-runtime.json')),
-      { target, node: NODE_VERSION, pi: '1.4.0', piCli: 'node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js' });
+      { target, node: NODE_VERSION, pi: '1.4.0', piCli: 'node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js',
+        ...(target === 'darwin-arm64' ? {} : { ffmpeg: 'n9.0.2-49-gc179411bbb' }),
+        ...(target === 'darwin-arm64' ? {} : { ytdlp: YTDLP_TAG }) });
     assert.equal(fs.readFileSync(path.join(out, 'LICENSE.node'), 'utf8'), 'Node licence\n');
     if (!isWin) assert.equal(fs.statSync(path.join(out, exe)).mode & 0o111, 0o111, 'node is executable');
   });
@@ -271,6 +331,142 @@ test('--self-check for another OS is refused before anything is built', () => {
   const r = build(fx, ['--target', other, '--out', out, '--node-archive', fx.archives[other], '--self-check']);
   assert.equal(r.status, 2);
   assert.match(r.stderr, new RegExp(`^build-runtime: --self-check runs only on ${other}; this is `));
+  assert.equal(fs.existsSync(out), false);
+});
+
+test('K2-13 (S9): ffmpeg comes out of the pinned archive byte for byte, executable, with its LGPL licence and notice', () => {
+  for (const target of ['linux-x64', 'win-x64']) {
+    const out = path.join(fx.dir, `out-${target}`);
+    const exe = target === 'win-x64' ? 'ffmpeg.exe' : 'ffmpeg';
+    assert.match(fs.readFileSync(path.join(out, exe), 'latin1'), /--enable-version3/);
+    if (!isWin && target === 'linux-x64') assert.equal(fs.statSync(path.join(out, exe)).mode & 0o111, 0o111, 'ffmpeg is executable');
+    assert.equal(fs.readFileSync(path.join(out, 'LICENSE.ffmpeg.txt'), 'utf8'), LGPL_HEAD);
+    const notices = fs.readFileSync(path.join(out, 'THIRD-PARTY-NOTICES.md'), 'utf8');
+    assert.ok(notices.includes(`## FFmpeg n9.0.2-49-gc179411bbb (\`${exe}\`)`), 'an FFmpeg section names the shipped binary');
+    assert.match(notices, /License: LGPL-3\.0-or-later\. Full text: `LICENSE\.ffmpeg\.txt` in this folder\./);
+    assert.match(notices, /built without --enable-gpl and without --enable-nonfree/);
+    assert.ok(notices.includes(`https://github.com/BtbN/FFmpeg-Builds/releases/download/${FFMPEG_TAG}/${FFMPEG_BASE[target]}`), 'the exact upstream asset');
+    // K2-13 (S9, item 5): the source is identified by its REVISION HASH; the version string is only a label, because a
+    // describe tag is not an identity (`-g<abbrev>` can be ambiguous and carries no full commit id).
+    assert.ok(notices.includes('https://github.com/FFmpeg/FFmpeg/tree/c179411bbb2864cc71323d3055acda25d5c2aace'), 'the exact FFmpeg source revision');
+    assert.ok(notices.includes('the commit n9.0.2-49-gc179411bbb labels `c179411bbb`'), 'the describe string is labelled as a label');
+    assert.ok(notices.includes('The version string is a label, never the identity of the source'), 'and the notice says so');
+    assert.ok(notices.includes('https://github.com/BtbN/FFmpeg-Builds'), 'the build scripts');
+    assert.match(notices, /Corresponding Source/);
+    // K2-13 (S9, item 5): a DOWNLOADED binary owes GPL-3.0 §6(d) as incorporated by LGPL-3.0 (a designated place
+    // recipients can obtain the Corresponding Source from, with clear directions next to the download), and an offer
+    // on request (§6(b), the clause for a copy handed over in a physical product) is not sufficient on its own. Note
+    // what the clauses are: LGPL-3.0 §6 is «Revised Versions» and combining a work with the Library is §4/§5, so
+    // neither of them is the basis for a source duty.
+    assert.match(notices, /GPL-3\.0 §6\(d\), incorporated by LGPL-3\.0 — the clause that applies to a downloadable installer/, 'the clause a download owes is named');
+    assert.match(notices, /on its own, is NOT sufficient for a download/, 'an offer on request is not enough for a download');
+    assert.match(notices, /does not mirror that Corresponding Source itself/, 'the missing mirror is still recorded');
+    assert.match(notices, /three years after the release that shipped it/, 'the additional on-request offer lasts three years');
+    assert.match(notices, /must exist and be linked from this notice and/, 'the designated place is required before a public release');
+    assert.doesNotMatch(notices, /LGPL-3\.0 section 6/, 'never a citation of the LGPL-3.0 section that is about Revised Versions');
+    assert.doesNotMatch(notices, /§6 is about combining|about combining a work with the Library/, 'and never the wrong claim that LGPL-3.0 §6 is about combining');
+    assert.match(notices, /has NOT been done/, 'the notices never claim the legal review is done');
+  }
+  const darwin = fs.readFileSync(path.join(fx.dir, 'out-darwin-arm64', 'THIRD-PARTY-NOTICES.md'), 'utf8');
+  assert.doesNotMatch(darwin, /FFmpeg/, 'darwin-arm64 ships no ffmpeg (pending for the Mac session)');
+});
+
+test('K2-13 (S9): a GPL or nonfree ffmpeg, a non-LGPL licence or a tampered archive fails closed with no output', () => {
+  const cases = [
+    [{ config: '--prefix=/ffbuild/prefix --enable-gpl --enable-version3' }, /ffmpeg .* was configured with --enable-gpl: only LGPL builds ship/],
+    [{ config: '--prefix=/ffbuild/prefix --enable-nonfree' }, /ffmpeg .* was configured with --enable-nonfree: only LGPL builds ship/],
+    [{ config: 'no configure string here' }, /ffmpeg .* carries no configure string: cannot prove it is an LGPL build/],
+    [{ license: '                    GNU GENERAL PUBLIC LICENSE\n' }, /ffmpeg archive .* LICENSE\.txt is not the GNU LESSER GENERAL PUBLIC LICENSE/],
+  ];
+  for (const [opts, message] of cases) {
+    const f = fixture(['linux-x64'], { ffmpeg: { 'linux-x64': opts } });
+    const out = path.join(f.dir, 'out');
+    const r = build(f, ['--target', 'linux-x64', '--out', out, '--node-archive', f.archives['linux-x64']], { npm_config_cache: path.join(f.dir, 'c') });
+    assert.equal(r.status, 1, `${JSON.stringify(opts)}: ${r.stdout}`);
+    assert.match(r.stderr, message);
+    assert.equal(fs.existsSync(out), false);
+  }
+  const bad = path.join(fx.dir, 'bad-ff');
+  fs.mkdirSync(bad);
+  const tampered = path.join(bad, path.basename(fx.ffmpeg['win-x64']));
+  fs.writeFileSync(tampered, Buffer.concat([fs.readFileSync(fx.ffmpeg['win-x64']), Buffer.from('x')]));
+  const out = path.join(fx.dir, 'out-ff-tampered');
+  const r = build(fx, ['--target', 'win-x64', '--out', out, '--node-archive', fx.archives['win-x64'], '--ffmpeg-archive', tampered]);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /^build-runtime: ffmpeg archive SHA256 mismatch for ffmpeg-n9\.0\.2-49-gc179411bbb-win64-lgpl-9\.0\.zip: expected [0-9a-f]{64}, got [0-9a-f]{64}\n$/);
+  assert.equal(fs.existsSync(out), false);
+  const wrong = build(fx, ['--target', 'linux-x64', '--out', out, '--node-archive', fx.archives['linux-x64'], '--ffmpeg-archive', fx.ffmpeg['win-x64']]);
+  assert.equal(wrong.status, 1);
+  assert.match(wrong.stderr, /ffmpeg archive must be ffmpeg-n9\.0\.2-49-gc179411bbb-linux64-lgpl-9\.0\.tar\.xz/);
+  const mac = build(fx, ['--target', 'darwin-arm64', '--out', out, '--node-archive', fx.archives['darwin-arm64'], '--ffmpeg-archive', fx.ffmpeg['linux-x64']]);
+  assert.equal(mac.status, 2);
+  assert.match(mac.stderr, /darwin-arm64 ships no ffmpeg/);
+});
+
+test('K2-13 (S19): yt-dlp comes out of the pinned binary byte for byte, executable, with its Unlicense and its third-party notices', () => {
+  for (const target of ['linux-x64', 'win-x64']) {
+    const out = path.join(fx.dir, `out-${target}`);
+    const exe = target === 'win-x64' ? 'yt-dlp.exe' : 'yt-dlp';
+    assert.deepEqual(fs.readFileSync(path.join(out, exe)), fs.readFileSync(fx.ytdlp[target]), 'the shipped file is the pinned download');
+    if (!isWin && target === 'linux-x64') assert.equal(fs.statSync(path.join(out, exe)).mode & 0o111, 0o111, 'yt-dlp is executable');
+    // The two licence texts of the release travel next to the binary: the Unlicense of yt-dlp itself and the
+    // THIRD_PARTY_LICENSES.txt that names the bundled copyleft components (GNU Readline, mutagen).
+    assert.equal(fs.readFileSync(path.join(out, 'LICENSE.yt-dlp.txt'), 'utf8'), fs.readFileSync(path.join(path.dirname(BUILDER), 'ytdlp/unlicense.txt'), 'utf8'));
+    assert.equal(fs.readFileSync(path.join(out, 'THIRD-PARTY-NOTICES.yt-dlp.txt'), 'utf8'), fs.readFileSync(path.join(path.dirname(BUILDER), 'ytdlp/third-party-licenses.txt'), 'utf8'));
+    const notices = fs.readFileSync(path.join(out, 'THIRD-PARTY-NOTICES.md'), 'utf8');
+    assert.ok(notices.includes(`## yt-dlp ${YTDLP_TAG} (\`${exe}\`)`), 'a yt-dlp section names the shipped binary and its release');
+    assert.match(notices, /License: Unlicense \(public domain\)\. Full text: `LICENSE\.yt-dlp\.txt` in this folder\./);
+    assert.ok(notices.includes(`https://github.com/yt-dlp/yt-dlp/releases/download/${YTDLP_TAG}/${YTDLP_BASE[target]}`), 'the exact upstream asset');
+    for (const copyleft of ['GNU Readline', 'GPL-3.0-or-later', 'mutagen', 'GPL-2.0-or-later']) assert.ok(notices.includes(copyleft), `the notices name ${copyleft}`);
+    assert.match(notices, /Koda runs it as a separate, unmodified program/, 'the aggregate is named as what it is');
+    assert.match(notices, /NOT DONE YET/, 'the missing designated place for the Corresponding Source is stated');
+    assert.doesNotMatch(notices, /<year>|<copyright holders>/);
+  }
+  const darwin = fs.readFileSync(path.join(fx.dir, 'out-darwin-arm64', 'THIRD-PARTY-NOTICES.md'), 'utf8');
+  assert.doesNotMatch(darwin, /yt-dlp/, 'darwin-arm64 ships no yt-dlp (pending for the Mac session)');
+});
+
+test('K2-13 (S19): a tampered, non-PyInstaller or misnamed yt-dlp fails closed with no output', () => {
+  const out = path.join(fx.dir, 'out-ytdlp-bad');
+  const bad = path.join(fx.dir, 'ytdlp-bad');
+  fs.mkdirSync(bad);
+  const tampered = path.join(bad, 'yt-dlp_linux');
+  fs.writeFileSync(tampered, Buffer.concat([fs.readFileSync(fx.ytdlp['linux-x64']), Buffer.from('x')]));
+  let r = build(fx, ['--target', 'linux-x64', '--out', out, '--node-archive', fx.archives['linux-x64'], '--ytdlp-dir', bad]);
+  assert.equal(r.status, 1, r.stdout);
+  assert.equal(r.stdout, '');
+  assert.match(r.stderr, /^build-runtime: yt-dlp SHA256 mismatch for yt-dlp_linux: expected [0-9a-f]{64}, got [0-9a-f]{64}\n$/);
+  assert.equal(fs.existsSync(out), false);
+  // A pin whose file is not an official standalone build (no PyInstaller archive) is refused after the hash matches.
+  const f = fixture(['linux-x64'], { ytdlp: { 'linux-x64': { marker: 'not a pyinstaller build' } } });
+  r = build(f, ['--target', 'linux-x64', '--out', path.join(f.dir, 'out'), '--node-archive', f.archives['linux-x64'], '--ffmpeg-archive', f.ffmpeg['linux-x64']]);
+  assert.equal(r.status, 1, r.stdout);
+  assert.match(r.stderr, /^build-runtime: yt-dlp yt-dlp_linux carries no PyInstaller archive: it is not the official standalone build\n$/);
+  assert.equal(fs.existsSync(path.join(f.dir, 'out')), false);
+  // A pin that is not the expected asset is refused before anything is built.
+  const f2 = fixture(['linux-x64']);
+  fs.writeFileSync(path.join(f2.pins, 'ytdlp.sha256'), `${'a'.repeat(64)}  ${YTDLP_TAG}/yt-dlp_macos\n`);
+  r = build(f2, ['--target', 'linux-x64', '--out', path.join(f2.dir, 'out'), '--node-archive', f2.archives['linux-x64'], '--ffmpeg-archive', f2.ffmpeg['linux-x64']]);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /ytdlp\.sha256 must pin exactly one yt-dlp_linux for linux-x64, found 0/);
+  assert.equal(fs.existsSync(path.join(f2.dir, 'out')), false);
+});
+
+test('K2-13 (S19): --ytdlp-dir is only an offline source: a target without a yt-dlp pin ships none and refuses the flag', () => {
+  const out = path.join(fx.dir, 'out-mac-ytdlp');
+  const r = build(fx, ['--target', 'darwin-arm64', '--out', out, '--node-archive', fx.archives['darwin-arm64'], '--ytdlp-dir', fx.ytdlpDir]);
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /^build-runtime: --ytdlp-dir: darwin-arm64 ships no yt-dlp\n$/);
+  assert.equal(fs.existsSync(out), false);
+});
+
+test('K2-13 (S9): an ffmpeg pin that is not a BtbN LGPL asset is refused before anything is built', () => {
+  const f = fixture(['linux-x64']);
+  fs.writeFileSync(path.join(f.pins, 'ffmpeg.sha256'), `${'a'.repeat(64)}  ${FFMPEG_TAG}/ffmpeg-n9.0.2-49-gc179411bbb-linux64-gpl-9.0.tar.xz\n`);
+  const out = path.join(f.dir, 'out');
+  const r = build(f, ['--target', 'linux-x64', '--out', out, '--node-archive', f.archives['linux-x64'], '--ffmpeg-archive', f.ffmpeg['linux-x64']]);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /ffmpeg\.sha256 must pin exactly one BtbN LGPL archive for linux-x64/);
   assert.equal(fs.existsSync(out), false);
 });
 

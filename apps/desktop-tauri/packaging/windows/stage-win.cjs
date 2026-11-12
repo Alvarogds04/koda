@@ -47,6 +47,11 @@ if (args.includes('--check')) {
     }
   }
   if (rec.identifier !== L.IDENTIFIER || rec.version !== cfg.version || rec.r6_sha256 !== r6 || rec.csp !== cfg.csp) problems.push('receipt configuration mismatch');
+  // K2-13: re-hashing proves the receipt matches the artifacts; only the bytes prove no TTS path slipped into the
+  // build (a build started outside apps/desktop-tauri does not read .cargo/config.toml).
+  problems.push(...L.verifyTtsFree(['abito-island.exe', 'abito-transcribe.exe']
+    .map((name) => ({ name, file: path.join(dist, name) }))
+    .filter(({ file }) => fs.existsSync(file))));
   if (problems.length) { console.error('FAIL:\n - ' + problems.join('\n - ')); process.exit(1); }
   console.log('OK: windows artifacts match the receipt');
   process.exit(0);

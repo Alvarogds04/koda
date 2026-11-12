@@ -75,4 +75,56 @@ test('hash-pinned inputs keep their bytes on a Windows checkout (no CRLF convers
   const seen = new Set(r.stdout.split('\n'));
   for (const f of files) assert.ok(seen.has(`${f}: text: unset`), `${f} is checked out without CRLF conversion`);
 });
+test('K2-13 (S9): ffmpeg is pinned once for linux-x64 and once for win-x64, BtbN LGPL builds of one FFmpeg revision, none for darwin-arm64', () => {
+  const lines = read(path.join(crate, 'packaging/runtime/ffmpeg.sha256')).split(/\r?\n/).filter((l) => l.trim() !== '' && !l.startsWith('#'));
+  const pins = lines.map((l) => l.trim().split(/\s+/));
+  assert.equal(pins.length, 2);
+  const names = pins.map(([, rel]) => rel).sort();
+  const shape = /^autobuild-\d{4}-\d{2}-\d{2}-\d{2}-\d{2}\/ffmpeg-(n[\d.]+-\d+-g[0-9a-f]+)-(linux64|win64)-lgpl-[\d.]+\.(tar\.xz|zip)$/;
+  const [linux, win] = names.map((n) => shape.exec(n));
+  assert.ok(linux && linux[2] === 'linux64' && linux[3] === 'tar.xz', names[0]);
+  assert.ok(win && win[2] === 'win64' && win[3] === 'zip', names[1]);
+  assert.equal(linux[1], win[1], 'one FFmpeg revision on both OSes');
+  assert.equal(names[0].split('/')[0], names[1].split('/')[0], 'one BtbN release');
+  for (const [sha, rel] of pins) {
+    assert.match(sha, /^[0-9a-f]{64}$/, rel);
+    assert.doesNotMatch(rel, /-gpl|nonfree|darwin|macos/, rel);
+  }
+});
+test('K2-13 (S19): yt-dlp is pinned once for linux-x64 and once for win-x64, one release, with the two licence texts it ships, none for darwin-arm64', () => {
+  const lines = read(path.join(crate, 'packaging/runtime/ytdlp.sha256')).split(/\r?\n/).filter((l) => l.trim() !== '' && !l.startsWith('#')).map((l) => l.trim().split(/\s+/));
+  const binaries = lines.filter(([, rel]) => !rel.startsWith('ytdlp/'));
+  const licences = lines.filter(([, rel]) => rel.startsWith('ytdlp/'));
+  assert.equal(binaries.length, 2, 'one asset per shipped target, and no darwin/macos/arm/x86 build');
+  const shape = /^(\d{4}\.\d{2}\.\d{2})\/(yt-dlp_linux|yt-dlp\.exe)$/;
+  const tags = new Set();
+  const assets = [];
+  for (const [sha, rel] of binaries) {
+    const m = shape.exec(rel);
+    assert.ok(m, `the pin names an official standalone asset: ${rel}`);
+    assert.match(sha, /^[0-9a-f]{64}$/, rel);
+    tags.add(m[1]);
+    assets.push(m[2]);
+  }
+  assert.equal(tags.size, 1, 'one yt-dlp release on both OSes');
+  assert.deepEqual(assets.sort(), ['yt-dlp.exe', 'yt-dlp_linux']);
+  // The two licence texts travel next to the binary and are pinned by their own sha256, so what ships is what was
+  // reviewed: yt-dlp's Unlicense and the release's THIRD_PARTY_LICENSES.txt (Python, GNU Readline, mutagen, …).
+  assert.deepEqual(licences.map(([, rel]) => rel).sort(), ['ytdlp/third-party-licenses.txt', 'ytdlp/unlicense.txt']);
+  for (const [sha, rel] of licences) {
+    const bytes = fs.readFileSync(path.join(crate, 'packaging/runtime', rel));
+    assert.equal(require('node:crypto').createHash('sha256').update(bytes).digest('hex'), sha, rel);
+  }
+  assert.match(read(path.join(crate, 'packaging/runtime/ytdlp/unlicense.txt')), /released into the public domain/);
+  assert.match(read(path.join(crate, 'packaging/runtime/ytdlp/third-party-licenses.txt')), /GNU Readline \| GPL-3\.0-or-later/);
+});
+
+test('K2-13 (S19): the hash-pinned yt-dlp inputs keep their bytes on a Windows checkout (.gitattributes marks them -text)', () => {
+  const files = ['packaging/runtime/ytdlp.sha256', 'packaging/runtime/ytdlp/unlicense.txt', 'packaging/runtime/ytdlp/third-party-licenses.txt'];
+  const r = require('node:child_process').spawnSync('git', ['check-attr', 'text', '--', ...files], { cwd: crate, encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stderr);
+  const seen = new Set(r.stdout.split('\n'));
+  for (const f of files) assert.ok(seen.has(`${f}: text: unset`), `${f} is checked out without CRLF conversion`);
+});
+
 console.log(`runtime-pins-check: ${passed} passed`);

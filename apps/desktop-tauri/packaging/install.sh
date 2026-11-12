@@ -49,7 +49,7 @@ DESKTOP="$ID.desktop"
 RUNTIME_ARCHIVE="koda-runtime-linux-x64.tar.gz"
 # Closed-set verifier beside this script; run by the EXTRACTED runtime's node.
 LIB="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)/lib.cjs"
-EXEC_FILES="abito-island abito-island-launcher"
+EXEC_FILES="abito-island abito-island-launcher abito-transcribe"
 
 die() { printf 'install.sh: %s\n' "$*" >&2; exit 1; }
 note() { printf '%s\n' "$*"; }

@@ -1,6 +1,7 @@
 //! One gated command; shared store and engine live for the application lifetime.
 use crate::{now_ms, AppState};
 use abito_island::{bridge::{self, BridgeError}, dictation_cmd::{self as cmd, Command, Engine, Plan}, flow, speech};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -21,8 +22,9 @@ pub struct Host {
     starting: bool,
 }
 impl Host {
-    fn load() -> Self {
-        Self { store: Arc::new(Mutex::new(flow::store::Store::load())), engine: Engine { running: None }, starting: false }
+    /// The store comes from the data folder the caller resolved, so a missing folder is decided once, in `start`.
+    fn load(folder: PathBuf) -> Self {
+        Self { store: Arc::new(Mutex::new(flow::store::Store::load_from(folder))), engine: Engine { running: None }, starting: false }
     }
 }
 
@@ -68,7 +70,15 @@ fn sync(app: &AppHandle) {
     }
 }
 pub fn start(app: &AppHandle) {
-    app.manage(Mutex::new(Host::load()));
+    // No absolute data folder in the environment (LOCALAPPDATA/USERPROFILE on Windows, XDG_DATA_HOME/HOME elsewhere):
+    // the dictation store cannot be located, so dictation is disabled here with ONE log line instead of panicking
+    // while loading it. No host is managed, and every dictation command answers `unavailable` (dictation_action
+    // checks for it).
+    let Ok(folder) = speech::try_data_dir().map(|dir| dir.join("Flow")) else {
+        eprintln!("abito dictation: disabled, {} — nothing is read or written", speech::NoDataDir);
+        return;
+    };
+    app.manage(Mutex::new(Host::load(folder)));
     sync(app);
 }
 fn err(code: &str) -> BridgeError {
@@ -93,7 +103,9 @@ pub async fn dictation_action(
         let has_claude_key = matches!(payload["action"].as_str(), Some("set_prefs" | "status"))
             && Keychain.read("anthropic-api-key").ok().flatten().is_some_and(|v| !v.is_empty());
         let command = cmd::parse_command(&payload, &names, has_claude_key).ok_or_else(|| err("invalid_schema"))?;
-        let slot = app.state::<Mutex<Host>>();
+        // No managed host: dictationhost::start could not locate the data folder and disabled dictation with one log
+        // line. Answering `unavailable` keeps every store read and write out of a working-directory-relative path.
+        let Some(slot) = app.try_state::<Mutex<Host>>() else { return Err(err("unavailable")) };
         match command {
             Command::Status => {
                 let (key, prefs) = {

@@ -16,6 +16,7 @@ const { SCHEMA: CONNECTORS_SCHEMA, buildCatalog, buildConnectors } = require("./
 const { SCHEMA: MCP_IMPORT_SCHEMA, buildFiles, buildServers } = require("./mcp-import.cjs");
 const { SCHEMA: SESSIONS_SCHEMA, buildSessions } = require("./sessions.cjs");
 const { validateRecipe, recipeToJson, ID_PATTERN: MINIKODA_ID } = require("./minikodas/recipe.cjs");
+const { validateTranscriptionSetting } = require("./minikodas/transcribe-setting.cjs");
 
 const PROTOCOL = "island-agent/1";
 
@@ -386,6 +387,18 @@ function validateClientFrame(raw) {
 			if (recipe.id !== undefined) out.id = recipe.id;
 			if (recipe.model !== undefined) out.model = { ...recipe.model };
 			return { type: "minikoda_create", recipe: out };
+		}
+		// ----- K2-13 transcription setting (S7, S16) -----
+		case "transcription_get":
+			return { type: "transcription_get" };
+		case "transcription_set": {
+			let setting;
+			try {
+				setting = validateTranscriptionSetting(raw.setting);
+			} catch {
+				return undefined;
+			}
+			return { type: "transcription_set", setting };
 		}
 		case "hoy_approve":
 		case "hoy_reject":
@@ -786,6 +799,22 @@ function minikodaDto(m, withPrompt) {
 	return out;
 }
 
+const TOOL_STATES = new Set(["available", "unavailable"]);
+/**
+ * Reply to transcription_get / broadcast after transcription_set: the global setting (re-validated, so a Base URL or
+ * a key can never ride along) plus whether the bundled ffmpeg and the local transcriber are there. THROWS on invalid data.
+ */
+function transcriptionFrame(s) {
+	if (!isObject(s) || !TOOL_STATES.has(s.ffmpeg) || !TOOL_STATES.has(s.local)) minikodasFail();
+	let setting;
+	try {
+		setting = validateTranscriptionSetting({ mode: s.mode, language: s.language, ...(s.remote ? { remote: { accountId: s.remote.accountId, model: s.remote.model } } : {}) });
+	} catch {
+		minikodasFail();
+	}
+	return { type: "transcription", setting, ffmpeg: s.ffmpeg, local: s.local };
+}
+
 /** Reply/broadcast `minikodas`: the stored Minikodas (no prompts). THROWS on invalid data (the server answers failed). */
 function minikodasFrame(items) {
 	if (!Array.isArray(items) || items.length > MINIKODAS_EMIT.maxMinikodas) minikodasFail();
@@ -1046,6 +1075,7 @@ module.exports = {
 	minikodaFrame,
 	hoyFrame,
 	hoyApprovedFrame,
+	transcriptionFrame,
 	MINIKODAS_EMIT,
 	providersFrame,
 	modelsFrame,

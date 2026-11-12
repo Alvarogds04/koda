@@ -86,6 +86,7 @@ function craftedTarGz(out, members) {
 function stage() {
   const dir = tmp();
   fs.writeFileSync(path.join(dir, 'abito-island'), '#!/bin/sh\necho toy binary\n', { mode: 0o755 });
+  fs.writeFileSync(path.join(dir, 'abito-transcribe'), '#!/bin/sh\necho toy transcriber\n', { mode: 0o755 });
   fs.writeFileSync(path.join(dir, 'abito-island-launcher'), L.launcherText(), { mode: 0o755 });
   fs.writeFileSync(path.join(dir, 'abito-island.png'), 'png-bytes', { mode: 0o644 });
   fs.writeFileSync(path.join(dir, `${L.IDENTIFIER}.desktop`), L.desktopText(), { mode: 0o644 });
@@ -146,7 +147,8 @@ test('happy path: installs binary+launcher+png(+template+receipt), executable, h
   const st = stage(), e = env();
   const r = install(st, e);
   assert.equal(r.status, 0, r.stderr + r.stdout);
-  for (const n of ['abito-island', 'abito-island-launcher']) assert.ok(fs.statSync(path.join(e.prefix, n)).mode & 0o100, `${n} executable`);
+  for (const n of ['abito-island', 'abito-island-launcher', 'abito-transcribe']) assert.ok(fs.statSync(path.join(e.prefix, n)).mode & 0o100, `${n} executable`);
+  assert.ok(L.STAGED.includes('abito-transcribe'), 'K2-13: the transcription helper ships beside the island');
   for (const n of [...L.STAGED, 'receipt.json']) if (n !== ARCHIVE) assert.ok(fs.existsSync(path.join(e.prefix, n)), n);
   assert.equal(fs.existsSync(path.join(e.prefix, ARCHIVE)), false, 'the runtime archive itself is not installed');
   // the bundled runtime: exactly the archive's tree, extracted at PREFIX/runtime
