@@ -3,13 +3,20 @@
 /* K2-02 T1 (S1, S2): build the runtime folder Koda ships inside every installer: its own pinned Node and its own pinned Pi,
    so Koda never needs (nor touches) a Node or a Pi installed on the machine.
 
+   K2-13 (L41): the same folder carries the daemon's own runtime dependencies (@mtcute/node, the Telegram client library),
+   because this is the one npm tree every installer already verifies, extracts and writes licence notices for. They add no
+   native addon: mtcute's crypto is WASM and better-sqlite3 — its one hard native dependency — is replaced by the empty
+   stub in stubs/better-sqlite3 (the daemon always passes mtcute's MemoryStorage, so the SqliteStorage that would load the
+   addon is never constructed; the stub throws if it ever is). assertNoNativeAddons() fails the build otherwise.
+
    Usage: node packaging/runtime/build-runtime.cjs --target <linux-x64|darwin-arm64|win-x64> --out <dir>
             [--node-archive <file>] [--ffmpeg-archive <file>] [--cache <dir>] [--self-check] [--archive <file.tar.gz>]
 
    Inputs, all pinned in this directory:
    - node.sha256: one official Node archive per target with its sha256 (the lines of the release's signed SHASUMS256.txt).
      The archive comes from --node-archive (offline) or from https://nodejs.org/dist/; a sha256 mismatch fails closed.
-   - package.json + package-lock.json: Pi, pinned exactly; npm ci installs every package against its lockfile sha512.
+   - package.json + package-lock.json: Pi and the daemon's runtime dependencies, pinned exactly; npm ci installs every
+     package against its lockfile sha512. The only non-registry entry is Koda's own better-sqlite3 stub (stubs/).
    - ytdlp.sha256 (K2-13 T2c-8, S19): the standalone yt-dlp executable for linux-x64 and for win-x64 (none for
      darwin-arm64), by release tag + sha256, plus the sha256 of the two licence texts it ships with (yt-dlp's
      Unlicense and the release's THIRD_PARTY_LICENSES.txt, in packaging/runtime/ytdlp/). The binary comes from
@@ -27,7 +34,8 @@
      LICENSE.node          Node's licence (MIT plus its bundled components)
      THIRD-PARTY-NOTICES.md  Node and every shipped package with its licence (texts from licenses/ for packages
                            that ship no licence file; a licence with no text there fails the build)
-     node_modules/...      Pi and its dependencies, install scripts not run, no .bin symlinks, no symlink at all
+     node_modules/...      Pi, the daemon's runtime dependencies and their dependencies, install scripts not run,
+                           no .bin symlinks, no symlink at all, and no native addon of Koda's own
      pi                    (Linux, macOS) launcher that runs Pi with THIS Node; Windows needs none: the daemon starts
                            node.exe with Pi's own CLI JS resolved next to it (desktop-daemon runtime.cjs)
      ffmpeg | ffmpeg.exe   (linux-x64, win-x64) the pinned LGPL ffmpeg the daemon spawns for Minikoda transcriptions
@@ -234,7 +242,7 @@ function ytdlpPin(target) {
 function ytdlpLicences() {
   const pins = pinLines('ytdlp.sha256').filter(([, rel]) => rel && rel.startsWith('ytdlp/'));
   if (pins.length !== YTDLP_LICENCES.length) throw new Fail(`ytdlp.sha256 must pin the ${YTDLP_LICENCES.length} yt-dlp licence texts, found ${pins.length}`);
-  for (const [source, output] of YTDLP_LICENCES) {
+  for (const [source] of YTDLP_LICENCES) {
     const pin = pins.find(([, rel]) => rel === source);
     if (!pin) throw new Fail(`ytdlp.sha256 does not pin ${source}`);
     const file = path.join(HERE, source);
@@ -389,6 +397,11 @@ function npmCli() {
 
 function installPi(dest, cache) {
   for (const f of ['package.json', 'package-lock.json']) fs.copyFileSync(path.join(HERE, f), path.join(dest, f));
+  // K2-13: a `file:` dependency (Koda's better-sqlite3 stub) resolves from the build directory, so the stub folder travels
+  // with the pins and is removed again after the install: the output holds the installed copy, never the source folder.
+  const stubs = path.join(HERE, 'stubs');
+  const hasStubs = fs.lstatSync(stubs, { throwIfNoEntry: false })?.isDirectory() === true;
+  if (hasStubs) fs.cpSync(stubs, path.join(dest, 'stubs'), { recursive: true });
   // Private, empty npm configurations: no user or global .npmrc may redirect the registry or change what is installed.
   // Two files: npm refuses to load one file as both the user and the global config.
   const userrc = path.join(cache, 'user.npmrc');
@@ -402,6 +415,7 @@ function installPi(dest, cache) {
   };
   run(process.execPath, [npmCli(), 'ci', '--ignore-scripts', '--omit=dev', '--no-audit', '--no-fund', '--registry=https://registry.npmjs.org/'], { cwd: dest, env }, 'npm ci');
   for (const f of ['package.json', 'package-lock.json']) fs.rmSync(path.join(dest, f));
+  if (hasStubs) fs.rmSync(path.join(dest, 'stubs'), { recursive: true, force: true });
   // npm-only bookkeeping and the .bin symlinks; Koda starts Pi through its own launcher (or the daemon on Windows).
   fs.rmSync(path.join(dest, 'node_modules', '.bin'), { recursive: true, force: true });
   fs.rmSync(path.join(dest, 'node_modules', '.package-lock.json'), { force: true });
@@ -448,7 +462,9 @@ const repository = (manifest) => (typeof manifest.repository === 'string' ? mani
    package.json and the canonical text from licenses/<id>.txt, reproduced once; with no such text the build fails. */
 function writeNotices(dest, nodeVersion, ffPin, ytPin) {
   const lines = ['# Third-party notices: Koda\'s bundled runtime', '',
-    'Koda ships its own Node.js and Pi in this folder (K2-02). Their licences and those of every package they include follow.', '',
+    'Koda ships its own Node.js and Pi in this folder (K2-02), plus the daemon\'s own runtime dependencies (K2-13: @mtcute/node,',
+    'the Telegram client library, with the empty better-sqlite3 stub this folder ships in place of its native addon).',
+    'Their licences and those of every package they include follow.', '',
     `## Node.js ${nodeVersion}`, '', 'License: MIT (with bundled components). Full text: `LICENSE.node` in this folder.', '',
     ...(ffPin ? ffmpegNotice(ffPin) : []),
     ...(ytPin ? ytdlpNotice(ytPin) : [])];
@@ -491,6 +507,38 @@ function noSymlinks(dir) {
     const p = path.join(dir, e.name);
     if (e.isSymbolicLink()) throw new Fail(`runtime contains a symlink: ${path.relative(dir, p)}`);
     if (e.isDirectory()) noSymlinks(p);
+  }
+}
+
+/* K2-13: nothing the daemon's dependencies bring in may be a native addon. Scoped to what K2-13 adds (@mtcute, @fuman and
+   the better-sqlite3 slot) so a Pi release with its own platform prebuild never breaks this build: Pi's prebuilds under
+   @earendil-works/pi-tui/native/ shipped before K2-13 and are not ours to police here. */
+const NO_ADDON_SCOPE = ['@mtcute', '@fuman', 'better-sqlite3'];
+function assertNoNativeAddons(dest) {
+  const modules = path.join(dest, 'node_modules');
+  const st = fs.lstatSync(modules, { throwIfNoEntry: false });
+  if (!st || !st.isDirectory()) return;
+  const addons = [];
+  const walk = (dir) => {
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      const p = path.join(dir, e.name);
+      if (e.isSymbolicLink()) continue; // noSymlinks() reports every link; this walk never follows one
+      if (e.isDirectory()) walk(p);
+      else if (e.name.endsWith('.node')) addons.push(path.relative(modules, p).split(path.sep).join('/'));
+    }
+  };
+  for (const scope of NO_ADDON_SCOPE) {
+    const dir = path.join(modules, ...scope.split('/'));
+    const own = fs.lstatSync(dir, { throwIfNoEntry: false });
+    if (own && own.isDirectory()) walk(dir);
+  }
+  if (addons.length) {
+    throw new Fail(`Koda's runtime dependencies ship a native addon: ${addons.sort().join(', ')}. mtcute's crypto is WASM and better-sqlite3 must stay the empty stub: refusing to build a runtime that needs a compiled module.`);
+  }
+  let sqlite;
+  try { sqlite = JSON.parse(fs.readFileSync(path.join(modules, 'better-sqlite3', 'package.json'), 'utf8')); } catch { sqlite = undefined; }
+  if (sqlite && sqlite.kodaStub !== 'better-sqlite3') {
+    throw new Fail('node_modules/better-sqlite3 is the real package, not Koda\'s empty stub: the native addon must never ship (see stubs/better-sqlite3)');
   }
 }
 
@@ -550,6 +598,21 @@ function sizeOf(dir) {
   return { bytes, files };
 }
 
+/**
+ * Whether the runtime archive is asked for INSIDE the folder it packs (82c27cf). Such an archive would be packed into
+ * itself: GNU tar reads a file that is still growing and fails with «file changed as we read it» (a small tree only ever
+ * passed by luck).
+ *
+ * Three cases are NOT inside: the folder itself, anything that starts with `..` (a sibling or an ancestor) and any
+ * ABSOLUTE result — on Windows `path.relative` returns `D:\…` for a path on another drive, and treating that as inside
+ * would pack beside the folder and then try to move the archive onto another drive.
+ */
+function archiveInsideOut(out, archive, relative = path.relative) {
+  const rel = relative(out, archive);
+  if (rel === '' || rel.startsWith('..') || path.isAbsolute(rel) || path.win32.isAbsolute(rel)) return false;
+  return true;
+}
+
 async function main() {
   const opts = parseArgs(process.argv.slice(2));
   const t = TARGETS[opts.target];
@@ -571,6 +634,7 @@ async function main() {
     if (ffPin) extractFfmpeg(await ffmpegArchive(ffPin, opts, cache), ffPin, partial);
     if (ytPin) stageYtdlp(await ytdlpBinary(ytPin, opts, cache), ytPin, partial, ytLicences);
     const pi = installPi(partial, cache);
+    assertNoNativeAddons(partial);
     writeNotices(partial, pin.version, ffPin, ytPin);
     if (t.platform !== 'win32') fs.writeFileSync(path.join(partial, 'pi'), piLauncher(pi.cli), { mode: 0o755 });
     fs.writeFileSync(path.join(partial, 'koda-runtime.json'), `${JSON.stringify({ target: opts.target, node: pin.version, pi: pi.version, piCli: pi.cli, ...(ffPin ? { ffmpeg: ffPin.version } : {}), ...(ytPin ? { ytdlp: ytPin.tag } : {}) }, null, 2)}\n`, { mode: 0o644 });
@@ -582,7 +646,12 @@ async function main() {
     console.log(`runtime ${opts.target}: Node ${pin.version} + Pi ${pi.version}${ffPin ? ` + ffmpeg ${ffPin.version}` : ''}${ytPin ? ` + yt-dlp ${ytPin.tag}` : ''} -> ${out} (${s.files} files, ${(s.bytes / 1048576).toFixed(1)} MiB)${opts.selfCheck ? ', self-check ok' : ''}`);
     if (opts.archive) {
       const archive = path.resolve(opts.archive);
-      const a = packArchive(out, archive);
+      const inside = archiveInsideOut(out, archive);
+      // The temporary MUST live outside the folder being packed: a file created inside it is read while it grows
+      // («tar: file changed as we read it»), which is the whole bug.
+      const target = inside ? path.join(path.dirname(out), `.${path.basename(archive)}.pack-${process.pid}`) : archive;
+      const a = packArchive(out, target); // packArchive removes its own partial on failure
+      if (inside) fs.renameSync(target, archive);
       console.log(`archive ${archive} sha256 ${a.sha} (${a.bytes} bytes)`);
     }
   } finally {
@@ -591,7 +660,12 @@ async function main() {
   }
 }
 
-main().catch((e) => {
-  console.error(`build-runtime: ${e.message}`);
-  process.exit(e instanceof Fail ? e.code : 1);
-});
+/* The guard and the archive-path test are exported so test-node/ can hold them to fixtures (K2-13). */
+module.exports = { assertNoNativeAddons, archiveInsideOut };
+
+if (require.main === module) {
+  main().catch((e) => {
+    console.error(`build-runtime: ${e.message}`);
+    process.exit(e instanceof Fail ? e.code : 1);
+  });
+}

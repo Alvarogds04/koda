@@ -11,7 +11,6 @@
  * never logged. The file is removed on stop.
  */
 
-const crypto = require("node:crypto");
 const { EventEmitter } = require("node:events");
 const fs = require("node:fs");
 const net = require("node:net");
@@ -39,6 +38,8 @@ const { Minikodas } = require("./minikodas/index.cjs");
 // K2-13 (S6-S9, S15, S16): video/audio transcription for the Minikodas (bundled ffmpeg + abito-transcribe helper).
 const { Transcriber, TranscriptionError, bundledTools } = require("./minikodas/transcribe.cjs");
 const { YouTubeReader, bundledYtDlp, bundledNode } = require("./minikodas/youtube.cjs");
+// K2-13 (S10/S20): the daemon's one Telegram session (login over the island protocol, keychain session, no file).
+const { createTelegram } = require("./minikodas/telegram.cjs");
 
 const PROTOCOL = "island-agent/1";
 const SESSION_FILE = "session.json";
@@ -338,6 +339,7 @@ class Daemon extends EventEmitter {
 	 * @param {object} [options.serverOptions]  extra IslandServer options (limits)
 	 * @param {object} [options.minikodasOptions]  extra Minikodas options (tests: fake engine command, minEveryMs)
 	 * @param {object} [options.transcriberOptions]  tests only: {ffmpeg, helper, limits, ytdlp, jsRuntime, youtubeLimits} instead of the bundled tools
+	 * @param {object} [options.telegramOptions]   extra Telegram session options (tests: a fake client library, log)
 	 */
 	constructor(options = {}) {
 		super();
@@ -464,6 +466,7 @@ class Daemon extends EventEmitter {
 		}
 		this.agents = this.makeAgents(cfg);
 		this.agentHooks = this.makeAgentHooks();
+		this.telegram = this.makeTelegram();
 		this.minikodas = this.makeMinikodas(cfg);
 		this.token = IslandServer.generateToken();
 		// #386: rotation runs only when the user opted in; the summary travels
@@ -490,6 +493,7 @@ class Daemon extends EventEmitter {
 			agentHooks: this.agentHooks,
 			minikodas: this.minikodas,
 			transcription: { get: () => this.transcriber.status(), set: (value) => this.persistTranscription(value) },
+			telegram: this.telegram,
 			sessions: { snapshot: async () => scanSessions({ scopePid: sessionScope(this.env) }) }, // #360: read-only /proc discovery (L52: was never wired)
 			settings: { get: () => ({ hotkey: this.getHotkey() }), setHotkey: (value) => this.persistHotkey(value) },
 			paused: cfg.paused === true, // #379: the persisted pause is restored at every boot
@@ -719,6 +723,15 @@ class Daemon extends EventEmitter {
 	}
 
 	/**
+	 * K2-13 (S10/S20): the daemon's Telegram session. One client, always mtcute's MemoryStorage: the session lives in the
+	 * island's keychain and in memory only, never in a file. Options come from `telegramOptions` (tests inject a fake
+	 * client library, so no test ever logs in to Telegram).
+	 */
+	makeTelegram() {
+		return createTelegram({ log: (line) => this.log(line), ...(this.options.telegramOptions ?? {}) });
+	}
+
+	/**
 	 * K2-13 Minikodas. Each Minikoda runs in its own engine root under `<island>/minikodas/engines/<id>` with
 	 * the same engine command as the chat (`cfg.command`, plain `pi` in release/0.2; the Gentle Shell command
 	 * once K2-05 lands). The model is validated against the accounts Koda already has; the default is the
@@ -905,6 +918,9 @@ class Daemon extends EventEmitter {
 		// K2-13: timers stop and runs in flight are cancelled (recorded as failed runs) before the server goes.
 		await this.minikodas?.stop().catch(() => {});
 		this.minikodas = undefined;
+		// K2-13: the Telegram client is torn down (in memory only; the island keeps the session in the keychain).
+		await this.telegram?.stop().catch(() => {});
+		this.telegram = undefined;
 		await this.server?.close().catch(() => {});
 		await this.engine?.stop().catch(() => {});
 		// After the engine stop, so pi is gone before its MCP capability file is.

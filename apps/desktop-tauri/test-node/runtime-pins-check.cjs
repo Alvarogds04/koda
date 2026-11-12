@@ -41,16 +41,25 @@ test('every Node pin is a sha256 of a single Node 22 release that Pi accepts (>=
   const [major, minor] = [...versions][0].split('.').map(Number);
   assert.ok(major === 22 && minor >= 19, `Node ${[...versions][0]} is 22.x >= 22.19.0`);
 });
-test('Pi is pinned to exactly 1.4.0, and it is the only dependency', () => {
-  assert.deepEqual(pkg.dependencies, { [PI]: '1.4.0' });
+test('Pi is pinned to exactly 1.4.0, the daemon\'s Telegram client library rides along, and nothing is unpinned', () => {
+  // K2-13 (L41): the daemon's own runtime dependency ships inside this folder, because this is the one npm tree every
+  // installer already verifies, extracts and writes licence notices for. Exact pins only, and better-sqlite3 is the
+  // stub: mtcute's native addon never enters a user's machine (telegram-deps-check.cjs holds the stub itself).
+  assert.deepEqual(pkg.dependencies, { [PI]: '1.4.0', '@mtcute/node': '0.32.8', 'better-sqlite3': 'file:./stubs/better-sqlite3' });
   assert.equal(lock.packages[`node_modules/${PI}`].version, '1.4.0');
+  assert.equal(lock.packages['node_modules/@mtcute/node'].version, '0.32.8');
 });
-test('the lockfile pins every package to the npm registry with a sha512 integrity', () => {
+test('the lockfile pins every package to the npm registry with a sha512 integrity, except the local better-sqlite3 stub', () => {
   assert.equal(lock.lockfileVersion, 3);
   const entries = Object.entries(lock.packages).filter(([k]) => k !== '');
   assert.ok(entries.length > 1);
   for (const [k, v] of entries) {
-    assert.ok(!v.link && !v.inBundle, `${k} is a plain registry package`);
+    assert.ok(!v.link && !v.inBundle, `${k} is a plain package, not a link or a bundle`);
+    if (k === 'node_modules/better-sqlite3') {
+      // The one deliberate exception: our own empty stub, resolved from this folder, so it has no registry integrity.
+      assert.equal(v.resolved, 'file:stubs/better-sqlite3', 'the stub is resolved from packaging/runtime/stubs');
+      continue;
+    }
     assert.match(v.resolved, /^https:\/\/registry\.npmjs\.org\//, `${k} resolved from registry.npmjs.org`);
     assert.match(v.integrity, /^sha512-/, `${k} has a sha512 integrity`);
   }

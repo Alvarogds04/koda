@@ -185,6 +185,9 @@ const DAEMON_FILES = ['package.json', 'identity.md', 'THIRD-PARTY-NOTICES.md',
   'src/minikodas/credentials.cjs', 'src/minikodas/hoy.cjs', 'src/minikodas/index.cjs', 'src/minikodas/kit-extension.js', 'src/minikodas/model.cjs',
   'src/minikodas/recipe.cjs', 'src/minikodas/runner.cjs', 'src/minikodas/scheduler.cjs', 'src/minikodas/service.cjs',
   'src/minikodas/summary.cjs',
+  // K2-13 T1b (S10/S20): the Telegram session. The library it loads (`@mtcute/node`) does NOT ship from this package: it
+  // rides inside the bundled runtime folder (L41), so this file's parse is reviewed in host-stage-check.
+  'src/minikodas/telegram.cjs', 'src/minikodas/telegram-source.cjs',
   // K2-13 T2c-2: video/audio transcription (bundled ffmpeg + abito-transcribe) and its global setting.
   'src/minikodas/transcribe.cjs', 'src/minikodas/transcribe-setting.cjs',
   // K2-13 T2c-8 (S19): YouTube video links, read with the bundled yt-dlp inside the runtime folder.

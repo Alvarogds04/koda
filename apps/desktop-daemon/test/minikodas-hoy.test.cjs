@@ -40,7 +40,7 @@ const recipe = (over = {}) => ({
 	id: "oportunidades",
 	name: "Oportunidades",
 	when: { manual: true },
-	reads: { source: "telegram:canal-x" },
+	reads: { source: "notas.txt" },
 	kit: ["source_read", "inbox_propose"],
 	prompt: "Sos un Minikoda de oportunidades de inversión.",
 	model: { provider: "anthropic", id: "claude-sonnet-5" },

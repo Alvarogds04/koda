@@ -561,6 +561,77 @@ The error enum also retains existing codes such as `not_busy` and `unknown_ask`;
 
 **Grave same-UID note (next to the agents invariant).** `connectors_approve` is a privileged command reachable only through the authenticated island channel (not an MCP/engine tool, not a CLI); but the channel token lives in `<island>/runtime/session.json` (0600) and the Abito engine agent, Claude Code and Codex run as the same user and can read it: an approval card the agent can click is NOT a human gate. This matters MORE for approvals than for agents. Closing it needs the daemon launched by the island with an inherited socket (security follow-up, not done).
 
+## Telegram frames (additive, K2-13: S10/S20)
+
+Implementation: `src/protocol.cjs` (allowlist, closed frames), `src/server.cjs` (`handleTelegram`),
+`src/minikodas/telegram.cjs` (the one client). Without a Telegram session every verb answers `unavailable`.
+
+The daemon holds **one** Telegram client, always with mtcute's `MemoryStorage`. The `api_id`/`api_hash` are entered in
+Ajustes (S10), the login happens here, and the **session is a credential**: it is returned to the island only in the one
+frame `telegram_session`, only as the reply to the connection that asked for it, and the island stores it in the OS
+keychain. No file is ever written by the daemon (`client.session` and every sqlite path are impossible: the storage is
+never a default). `apiHash`, phone, code, password and session never appear in a log line, in a broadcast, in «Hoy» or
+in an error.
+
+### Client → server
+
+| type | fields (validated exactly; unknown fields dropped) | reply |
+| --- | --- | --- |
+| `telegram_status` | – | `telegram_status` (this client) |
+| `telegram_login_start` | `apiId` (positive integer), `apiHash` (exactly 32 lowercase hex), `phone` (E.164: `+`, non-zero, 7–15 digits) | `telegram_status{state:"awaiting_code"}`; the code request's outcome arrives as a broadcast `telegram_status` with `notice` (and `retryAfterMinutes` on FLOOD_WAIT) |
+| `telegram_login_code` | `code` (1–32 chars, no control characters) | `telegram_status` (next step: `awaiting_password`, or `awaiting_code` again after a refused code) or `telegram_session` when the login finished |
+| `telegram_login_password` | `password` (1–1024 chars) | `telegram_status` or `telegram_session` |
+| `telegram_logout` | – | `telegram_status{state:"disconnected"}`; the auth key is revoked on Telegram when reachable, and always forgotten locally. Allowed while the global pause is on (account safety, like `agent_disconnect`) |
+| `telegram_session_restore` | `apiId`, `apiHash`, `session` (1–4096 **printable ASCII** chars; anything else is `bad_request`) | `telegram_status{state:"connected"}`; `telegram_session` **only** when Telegram rotated the session (an unchanged one is never echoed back) |
+
+Error codes (closed set; each has a fixed Spanish sentence in `src/minikodas/telegram.cjs`):
+`telegram_unavailable`, `telegram_already_connected`, `telegram_not_awaiting_code`, `telegram_not_awaiting_password`,
+`telegram_credentials_invalid`, `telegram_code_invalid`, `telegram_password_invalid`, `telegram_password_required`,
+`telegram_flood_wait`, `telegram_session_invalid`, `telegram_cancelled`, `telegram_login_other_connection`,
+`telegram_failed`. Telegram's own text is never forwarded (it can echo a phone number); an unrecognised failure is
+`telegram_failed`.
+
+### Server → client
+
+| type | fields |
+| --- | --- |
+| `telegram_status` | `state: disconnected\|awaiting_code\|awaiting_password\|connected`, `account?{name (≤80), username (≤32) \| null}`, `notice?` (Koda's Spanish sentence, ≤300), `retryAfterMinutes?` (1–1440) |
+| `telegram_session` | `session` (the exported session string) — **reply only, never broadcast**. The island must store it in the keychain and must never echo it back inside any other frame |
+
+`telegram_status` is broadcast on every state change (that frame carries no secret) so every connected client shows the
+same account state.
+
+### Semantics
+
+- **Phone → code → 2FA, driven by frames, never readline.** `telegram_login_start` sends the code request and returns at
+  once; the person's answers arrive later as their own frames. A refused code or password keeps the login where it was
+  (`awaiting_code` / `awaiting_password`) instead of restarting it, so the island can ask again.
+- **FLOOD_WAIT.** mtcute absorbs waits up to 10 s. A longer one surfaces as `telegram_flood_wait` with
+  `retryAfterMinutes` (rounded up, minimum 1) and «Telegram pidió esperar N minutos». No frame retries in a loop.
+- **`AUTH_KEY_UNREGISTERED` and friends** mean the keychain session died: the daemon answers `telegram_session_invalid`
+  and goes `disconnected`, never pretending to be connected.
+- **One client.** A second `telegram_login_start` while connected is `telegram_already_connected`; a new start while a
+  login is pending replaces the pending attempt (the old client is destroyed) — but only from the connection that
+  started it.
+- **A login belongs to its connection.** `telegram_login_start` tags the flow with the connection that sent it; a
+  `telegram_login_code` or `telegram_login_password` from ANY other connection is refused with
+  `telegram_login_other_connection`, and so is a `telegram_login_start` from another connection while a flow is pending
+  (two windows starting at once used to both receive the session). After the login lands there is nothing left to own:
+  the verbs answer `telegram_not_awaiting_code` / `telegram_not_awaiting_password`. `telegram_logout` is not bound: any
+  connection may revoke the session, and it may do so while paused.
+- **A session that cannot travel does not connect.** The exported session leaves in the one `telegram_session` frame, so
+  it must be printable ASCII and at most 4096 chars (a real mtcute session is ~350). A client that answers anything else
+  fails the login with `telegram_failed` and its client is destroyed, instead of the daemon looking connected with a
+  session the island could never store or restore.
+- **Global pause (#379).** `telegram_login_start`, `telegram_login_code` and `telegram_login_password` answer `paused`
+  while the switch is on: they change the user's account state. `telegram_status` (read only), `telegram_logout`
+  (account safety, like `agent_disconnect`) and `telegram_session_restore` (the island's start-up hand-off of a session it
+  already holds, no new work) still answer, so a paused daemon can still report whether the stored session is valid and
+  the person can still disconnect.
+- **Same-UID limit**, as for «Hoy»: any process of the same OS user could send these frames on the daemon's socket. The
+  keychain session is what protects the account off-machine, and K2-14 criterion 3 (agent as its own OS user) is the
+  durable fix.
+
 ## Minikodas and «Hoy» frames (additive, K2-13)
 
 Implementation: `src/protocol.cjs` (allowlist and DTOs), `src/server.cjs` (`handleMinikodas`), `src/minikodas/` (service, runner, kit, scheduler, «Hoy»). Without a Minikodas service every verb answers `unavailable`.
@@ -571,7 +642,7 @@ Implementation: `src/protocol.cjs` (allowlist and DTOs), `src/server.cjs` (`hand
 | --- | --- | --- |
 | `minikodas_list` | – | `minikodas` (no prompts) |
 | `minikoda_get` | `id` | `minikoda` (with prompt) |
-| `minikoda_create` | `recipe{id?, name, when, reads{source}, kit[], prompt, model?{provider, id, accountId?}, never[]}` | `minikoda` with `status: "draft"`; broadcast `minikodas` |
+| `minikoda_create` | `recipe{id?, name, when, reads{source}, kit[], prompt, model?{provider, id, accountId?}, never[]}` | `minikoda` with `status: "draft"`; broadcast `minikodas`. `reads.source` is validated here: `telegram:@canal` must be a channel, and a channel typed without the prefix (`@canal`, `t.me/canal`) is `bad_request` — the daemon never stores it as a text file name that every run would read as empty |
 | `minikoda_approve_create` | `id` | `minikoda` with `status: "active"` (the schedule is armed); broadcast `minikodas` |
 | `minikoda_delete` | `id` | `minikoda_deleted{id}`; broadcast `minikodas` (its run is cancelled, its engine root removed; «Hoy» items stay). `failed` when a refreshed credential kept in its root still cannot be written back: the Minikoda stays (README «Minikodas», S11) |
 | `minikoda_launch` | `id` | `minikoda_launched{id, started, reason?: running\|busy\|paused\|stopped}`; the run lands later as a `hoy` broadcast. Refused with `paused` while the global pause is on |

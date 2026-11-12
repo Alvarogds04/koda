@@ -17,6 +17,9 @@ const { SCHEMA: MCP_IMPORT_SCHEMA, buildFiles, buildServers } = require("./mcp-i
 const { SCHEMA: SESSIONS_SCHEMA, buildSessions } = require("./sessions.cjs");
 const { validateRecipe, recipeToJson, ID_PATTERN: MINIKODA_ID } = require("./minikodas/recipe.cjs");
 const { validateTranscriptionSetting } = require("./minikodas/transcribe-setting.cjs");
+// The session contract (printable ASCII, bounded) is defined where the login produces it, and shared here: the frame
+// builder, the decoder and the login cannot disagree about what a `telegram_session` may carry.
+const { isCarriableSession, SESSION_MAX_CHARS } = require("./minikodas/telegram.cjs");
 
 const PROTOCOL = "island-agent/1";
 
@@ -43,6 +46,15 @@ const SAFE_ID = /^[A-Za-z0-9_.:-]{1,128}$/;
 const BASE64 = /^[A-Za-z0-9+/]+={0,2}$/;
 /** Any control character (tabs and newlines included) is refused in short labels/ids. */
 const CONTROL = /[\u0000-\u001f\u007f]/;
+/**
+ * K2-13 (S10/S20) Telegram frames. Bounds are what a session string, a code and a 2FA password can be, never unbounded:
+ * the session contract (printable ASCII, bounded) lives in minikodas/telegram.cjs, next to the login that produces it, so
+ * the frame builder, the frame decoder and the login can never disagree.
+ */
+const TELEGRAM_LIMITS = Object.freeze({ maxSession: SESSION_MAX_CHARS, maxCode: 32, maxPassword: 1024, maxNotice: 300, maxApiId: 2 ** 31 - 1 });
+/** An E.164 phone number: `+`, a non-zero country digit, 7-15 digits in total. */
+const E164 = /^\+[1-9]\d{6,14}$/;
+const API_HASH = /^[0-9a-f]{32}$/;
 /** Hook-managed agents (agents.cjs); the closed set of agent_connect/agent_disconnect targets. */
 const AGENT_IDS = Object.freeze(["pi", "claude-code", "codex", "statusline", "copilot-cli", "opencode"]);
 const PLAN_HASH = /^[0-9a-f]{64}$/;
@@ -400,6 +412,32 @@ function validateClientFrame(raw) {
 			}
 			return { type: "transcription_set", setting };
 		}
+		// ----- K2-13 Telegram (S10/S20) -----
+		case "telegram_status":
+		case "telegram_logout":
+			return { type: raw.type };
+		case "telegram_login_start": {
+			// S10: the api_id/api_hash come from Ajustes and the phone is the person's; all three are validated here and
+			// never logged, stored or echoed back (only the closed frames below can carry Telegram's answers).
+			if (!Number.isSafeInteger(raw.apiId) || raw.apiId <= 0 || raw.apiId > TELEGRAM_LIMITS.maxApiId) return undefined;
+			if (typeof raw.apiHash !== "string" || !API_HASH.test(raw.apiHash)) return undefined;
+			if (typeof raw.phone !== "string" || !E164.test(raw.phone)) return undefined;
+			return { type: "telegram_login_start", apiId: raw.apiId, apiHash: raw.apiHash, phone: raw.phone };
+		}
+		case "telegram_login_code":
+			if (typeof raw.code !== "string" || raw.code === "" || raw.code.length > TELEGRAM_LIMITS.maxCode || CONTROL.test(raw.code)) return undefined;
+			return { type: "telegram_login_code", code: raw.code };
+		case "telegram_login_password":
+			if (typeof raw.password !== "string" || raw.password === "" || raw.password.length > TELEGRAM_LIMITS.maxPassword) return undefined;
+			return { type: "telegram_login_password", password: raw.password };
+		case "telegram_session_restore": {
+			if (!Number.isSafeInteger(raw.apiId) || raw.apiId <= 0 || raw.apiId > TELEGRAM_LIMITS.maxApiId) return undefined;
+			if (typeof raw.apiHash !== "string" || !API_HASH.test(raw.apiHash)) return undefined;
+			// PROTOCOL.md says printable ASCII: a value with a control character or a non-ASCII byte is not a session this
+			// daemon could ever have exported, and the island has no business handing one over.
+			if (!isCarriableSession(raw.session)) return undefined;
+			return { type: "telegram_session_restore", apiId: raw.apiId, apiHash: raw.apiHash, session: raw.session };
+		}
 		case "hoy_approve":
 		case "hoy_reject":
 			// No PIN (L17): only the id travels; any other field (a stray `pin` included) is dropped.
@@ -449,6 +487,12 @@ const EMITTED_ERROR_CODES = new Set([
 	// K2-13 Minikodas and «Hoy»
 	"unknown_minikoda", "not_active", "not_pending", "exists", "limit", "model_unavailable",
 	"unknown_item",
+	// K2-13 Telegram (S10/S20): closed codes, each with a fixed Spanish sentence in minikodas/telegram.cjs
+	"telegram_unavailable", "telegram_already_connected", "telegram_not_awaiting_code", "telegram_not_awaiting_password",
+	"telegram_credentials_invalid", "telegram_code_invalid", "telegram_password_invalid", "telegram_password_required",
+	"telegram_flood_wait", "telegram_session_invalid", "telegram_cancelled", "telegram_login_other_connection", "telegram_failed",
+	// a source ('telegram:@canal') failure never reaches the wire, but the closed set stays one set
+	"telegram_not_connected", "telegram_channel_invalid",
 ]);
 // Recognized by the host's broader enum, but collapsed to stale/failed before H2c can emit them.
 const RESERVED_CONNECTOR_ERROR_CODES = new Set(["already_decided", "session_mismatch", "pending_full"]);
@@ -862,6 +906,45 @@ function hoyApprovedFrame(e) {
 	return { type: "hoy_approved", id: e.itemId, minikoda: e.minikoda, action: e.action, target: clip(e.target, 200), executedAt: clip(e.executedAt, 40) };
 }
 
+const TELEGRAM_STATES_EMIT = Object.freeze(["disconnected", "awaiting_code", "awaiting_password", "connected"]);
+const telegramFail = () => {
+	throw new Error("telegram frame invalid");
+};
+/**
+ * Reply/broadcast `telegram_status`: the public account state, never a phone, apiHash, code, password or session.
+ * `notice` is Koda's own Spanish sentence and `retryAfterMinutes` the only detail it can carry.
+ */
+function telegramStatusFrame(status) {
+	if (!isObject(status) || !TELEGRAM_STATES_EMIT.includes(status.state)) telegramFail();
+	const frame = { type: "telegram_status", state: status.state };
+	if (status.account !== undefined) {
+		const account = status.account;
+		if (!isObject(account) || typeof account.name !== "string" || !safeLabel(account.name)) telegramFail();
+		if (account.username !== null && account.username !== undefined) {
+			if (typeof account.username !== "string" || account.username === "" || account.username.length > 32 || !/^[A-Za-z0-9_]+$/.test(account.username)) telegramFail();
+		}
+		frame.account = { name: account.name, username: typeof account.username === "string" ? account.username : null };
+	}
+	if (status.notice !== undefined) {
+		if (typeof status.notice !== "string" || status.notice === "" || CONTROL.test(status.notice)) telegramFail();
+		frame.notice = clip(status.notice, TELEGRAM_LIMITS.maxNotice);
+	}
+	if (status.retryAfterMinutes !== undefined) {
+		if (!Number.isSafeInteger(status.retryAfterMinutes) || status.retryAfterMinutes < 1 || status.retryAfterMinutes > 1440) telegramFail();
+		frame.retryAfterMinutes = status.retryAfterMinutes;
+	}
+	return frame;
+}
+
+/**
+ * Reply `telegram_session` (S20): the exported session the island stores in the OS keychain. It is built from the one
+ * field that matters, so nothing else can ride along, and it is ONLY ever a reply to the asking connection.
+ */
+function telegramSessionFrame(data) {
+	if (!isObject(data) || !isCarriableSession(data.session)) telegramFail();
+	return { type: "telegram_session", session: data.session };
+}
+
 const list = (items, fn, max = 500) => (Array.isArray(items) ? items.slice(0, max).map(fn) : []);
 
 const accountsFrame = (items) => ({ type: "accounts", accounts: list(items, accountDto) });
@@ -1071,6 +1154,9 @@ module.exports = {
 	MCP_IMPORT_EMIT,
 	SESSIONS_EMIT,
 	accountsFrame,
+	telegramStatusFrame,
+	telegramSessionFrame,
+	TELEGRAM_LIMITS,
 	minikodasFrame,
 	minikodaFrame,
 	hoyFrame,

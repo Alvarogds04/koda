@@ -55,7 +55,12 @@ const WIN_HANDSHAKE_MS = 2000;
  * a process (agent_connect, connectors_list, agents_list). Stopping or reading
  * work (abort, agent_disconnect, every read-only query) stays allowed.
  */
-const PAUSED_REFUSED = new Set(["send", "steer", "new_conversation", "agent_connect", "hooks_install", "hooks_remove", "connectors_list", "agents_list", "minikoda_launch"]);
+const PAUSED_REFUSED = new Set(["send", "steer", "new_conversation", "agent_connect", "hooks_install", "hooks_remove", "connectors_list", "agents_list", "minikoda_launch",
+	// K2-13 (S10): starting or advancing a Telegram login changes the user's account state, so the global pause stops it
+	// like any other work. `telegram_status` (read-only), `telegram_session_restore` (the island's hand-off of the keychain
+	// session at start, no new work) and `telegram_logout` still answer: #379 keeps account-safety actions available (it
+	// lets `agent_disconnect` through for the same reason), and revoking a session must never wait for the pause to end.
+	"telegram_login_start", "telegram_login_code", "telegram_login_password"]);
 
 const uid = () => (typeof process.getuid === "function" ? process.getuid() : undefined);
 
@@ -140,6 +145,9 @@ class IslandServer {
 	 * @param {object} [options.connectorsControl] live connectors control adapter; reachable ONLY through this authenticated channel
 	 * @param {object} [options.minikodas] K2-13 Minikodas facade (minikodas/index.cjs; EventEmitter: changed, hoy, approved). Reachable ONLY via this channel.
 	 * @param {object} [options.transcription] K2-13 {get(): status, set(setting)}: the global transcription setting; a ConfigError from set -> bad_request
+	 * @param {object} [options.telegram]  K2-13 Telegram session (minikodas/telegram.cjs; EventEmitter: status). The
+	 *        telegram_* frames reach it only through this authenticated channel; `telegram_session` is a reply to the
+	 *        asking connection and is never broadcast.
 	 * @param {object} [options.agents]     {list(), connect(id, planHash), disconnect(id)} (AgentsManager-like; EventEmitter 'change' = working-state push). Reachable ONLY via this channel.
 	 * @param {object} [options.settings]  {get(): {hotkey}, setHotkey(value)}; a ConfigError from setHotkey -> bad_request
 	 * @param {boolean} [options.paused]   #379 initial global pause state (restored from config at daemon boot)
@@ -164,6 +172,7 @@ class IslandServer {
 		this.agents = options.agents;
 		this.minikodas = options.minikodas; // K2-13
 		this.transcription = options.transcription; // K2-13 transcription setting (S7, S16)
+		this.telegram = options.telegram; // K2-13 Telegram session (S10/S20)
 		this.agentHooks = options.agentHooks; // #361 {preview(), install(id, hash), remove(id, hash)}
 		this.paused = options.paused === true; // #379 global pause switch; admission guards in handle()
 		this.promptDecorator = options.promptDecorator; // #386 pending rotation summary (no decorator = identity)
@@ -179,6 +188,7 @@ class IslandServer {
 		this.opts = { ...DEFAULTS, ...(options.limits ?? {}) };
 		this.log = options.log ?? (() => {});
 		this.clients = new Set();
+		this.clientSeq = 0; // K2-13: each connection gets an id, so a login can belong to the one that started it
 		this.busy = false;
 		this.switching = undefined; // the single in-flight profile/role selection
 		this.authFlow = undefined; // last sign-in flow seen: {flowId, accountId, method, phase}
@@ -309,6 +319,14 @@ class IslandServer {
 		on(this.minikodas, "approved", (entry) => {
 			try { this.broadcast(P.hoyApprovedFrame(entry)); } catch { this.log("hoy approval not sent"); }
 		});
+		// K2-13 (S20): the account state is public and shared; the session itself never is (see handleTelegram).
+		on(this.telegram, "status", (status) => {
+			try {
+				this.broadcast(P.telegramStatusFrame(status));
+			} catch {
+				this.log("telegram status not sent");
+			}
+		});
 		on(this.connectorsControl, "pending", (items) => {
 			try { this.broadcast(P.pendingFrame({ items })); } catch { this.log("connector pending not sent"); }
 		});
@@ -337,7 +355,7 @@ class IslandServer {
 			socket.destroy();
 			return;
 		}
-		const client = { socket, ready: false, seq: 0, pending: Buffer.alloc(0), frames: 0, windowStart: Date.now(), dead: false };
+		const client = { id: `c${++this.clientSeq}`, socket, ready: false, seq: 0, pending: Buffer.alloc(0), frames: 0, windowStart: Date.now(), dead: false };
 		this.clients.add(client);
 		client.handshake = setTimeout(() => this.drop(client), WIN ? Math.min(this.opts.handshakeMs, WIN_HANDSHAKE_MS) : this.opts.handshakeMs);
 		socket.on("error", () => this.drop(client));
@@ -991,6 +1009,15 @@ class IslandServer {
 			case "hoy_reject":
 				if (!this.minikodas) return fail("unavailable");
 				return this.handleMinikodas(frame, reply, fail);
+			// ----- K2-13 Telegram (S10/S20) -----
+			case "telegram_status":
+			case "telegram_login_start":
+			case "telegram_login_code":
+			case "telegram_login_password":
+			case "telegram_logout":
+			case "telegram_session_restore":
+				if (!this.telegram) return fail("unavailable");
+				return this.handleTelegram(frame, reply, fail, client.id);
 			default:
 				return fail("bad_request");
 		}
@@ -1035,6 +1062,51 @@ class IslandServer {
 		} catch (error) {
 			this.log(`command ${frame.type} failed`);
 			return fail(error?.name === "MinikodaError" ? error.code : "failed");
+		}
+	}
+
+	/**
+	 * K2-13 (S10/S20): the Telegram verbs. Every answer is built by protocol.cjs from closed fields, and the ONE frame
+	 * that can carry a session (`telegram_session`) is sent with `reply`, i.e. only to the connection that asked for it.
+	 * Secrets (apiHash, phone, code, password, session) are never logged and never broadcast. `connection` is the id of
+	 * the connection that sent the frame: a login belongs to the one that started it, so another window can neither
+	 * answer its code nor replace the flow (the verifier showed two concurrent logins both receiving the session).
+	 */
+	async handleTelegram(frame, reply, fail, connection) {
+		const t = this.telegram;
+		try {
+			switch (frame.type) {
+				case "telegram_status":
+					return reply(P.telegramStatusFrame(t.status()));
+				case "telegram_login_start":
+					await t.loginStart({ apiId: frame.apiId, apiHash: frame.apiHash, phone: frame.phone, owner: connection });
+					return reply(P.telegramStatusFrame(t.status()));
+				case "telegram_login_code": {
+					const out = await t.loginCode(frame.code, connection);
+					if (out.session !== undefined) return reply(P.telegramSessionFrame({ session: out.session }));
+					return reply(P.telegramStatusFrame(t.status()));
+				}
+				case "telegram_login_password": {
+					const out = await t.loginPassword(frame.password, connection);
+					if (out.session !== undefined) return reply(P.telegramSessionFrame({ session: out.session }));
+					return reply(P.telegramStatusFrame(t.status()));
+				}
+				case "telegram_logout":
+					await t.logout();
+					return reply(P.telegramStatusFrame(t.status()));
+				case "telegram_session_restore": {
+					const out = await t.restore({ apiId: frame.apiId, apiHash: frame.apiHash, session: frame.session });
+					// A rotated session goes back to the island (its keychain); an unchanged one is never echoed.
+					if (out.session !== undefined) return reply(P.telegramSessionFrame({ session: out.session }));
+					return reply(P.telegramStatusFrame(t.status()));
+				}
+				default:
+					return fail("bad_request");
+			}
+		} catch (error) {
+			// Closed codes only: the TelegramError message is Koda's Spanish sentence, never Telegram's raw text.
+			this.log(`command ${frame.type} failed`);
+			return fail(typeof error?.code === "string" ? error.code : "failed"); // errorFrame() keeps only closed codes
 		}
 	}
 

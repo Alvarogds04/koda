@@ -246,6 +246,42 @@ test(`${hostTarget} (this OS): --archive packs the runtime folder into one tar.g
   if (!isWin) assert.equal(fs.statSync(path.join(unpacked, 'node')).mode & 0o111, 0o111, 'node stays executable');
 });
 
+test(`${hostTarget} (this OS): an --archive path INSIDE the runtime folder never packs the archive into itself (82c27cf)`, () => {
+  // The archive is asked for inside the folder it packs. Packed naively, GNU tar reads the file it is still writing and
+  // fails with «file changed as we read it»: the tree was small enough to pass by luck until K2-13 added a dependency
+  // tree, and runtime-linux-install-check silently fell back to its offline skip.
+  const out = path.join(fx.dir, 'out-inside');
+  const archive = path.join(out, `koda-runtime-${hostTarget}.tar.gz`);
+  const r = build(fx, ['--target', hostTarget, '--out', out, '--node-archive', fx.archives[hostTarget], '--archive', archive]);
+  assert.equal(r.status, 0, `exit ${r.status}\nstdout=${r.stdout}\nstderr=${r.stderr}`);
+  assert.equal(r.stderr, '');
+  const lines = r.stdout.trim().split('\n');
+  assert.equal(lines.length, 2);
+  assert.equal(lines[1], `archive ${archive} sha256 ${sha256(archive)} (${fs.statSync(archive).size} bytes)`);
+  const unpacked = path.join(fx.dir, 'unpacked-inside');
+  fs.mkdirSync(unpacked);
+  const tar = isWin ? path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe') : 'tar';
+  const x = cp.spawnSync(tar, ['-xzf', archive, '-C', unpacked], { encoding: 'utf8' });
+  assert.equal(x.status, 0, x.stderr);
+  const expected = tree(out).filter((f) => f !== path.basename(archive));
+  assert.ok(expected.length > 0);
+  assert.deepEqual(tree(unpacked), expected, 'the archive holds the runtime folder, never itself');
+  assert.deepEqual(fs.readdirSync(fx.dir).filter((n) => n.includes('.pack-')), [], 'the packing temporary does not stay beside the folder');
+});
+
+test('the inside/outside decision for --archive treats a path on another Windows drive as outside', () => {
+  // `path.relative` returns an ABSOLUTE path when the two paths are on different drives; taken as «inside», the finished
+  // archive would be renamed across drives.
+  const { archiveInsideOut } = require(BUILDER);
+  assert.equal(typeof archiveInsideOut, 'function', 'build-runtime.cjs exports the decision the build uses');
+  assert.equal(archiveInsideOut('/prefix/runtime', '/prefix/runtime/rt.tar.gz'), true, 'a child of the folder is inside');
+  assert.equal(archiveInsideOut('/prefix/runtime', '/prefix/rt.tar.gz'), false, 'a sibling is outside');
+  assert.equal(archiveInsideOut('/prefix/runtime', '/prefix/runtime'), false, 'the folder itself is not inside itself');
+  assert.equal(archiveInsideOut('C:\\prefix\\runtime', 'C:\\prefix\\runtime\\rt.tar.gz', () => 'rt.tar.gz'), true);
+  assert.equal(archiveInsideOut('C:\\prefix\\runtime', 'D:\\out\\rt.tar.gz', () => 'D:\\out\\rt.tar.gz'), false, 'another drive: an absolute result is outside');
+  assert.equal(archiveInsideOut('C:\\prefix\\runtime', 'C:\\prefix\\rt.tar.gz', () => '..\\rt.tar.gz'), false);
+});
+
 test('the runtime ships THIRD-PARTY-NOTICES.md: Node, then every package with its licence (a package without a licence file gets its declared author and the canonical text)', () => {
   const notices = fs.readFileSync(path.join(fx.dir, 'out-linux-x64', 'THIRD-PARTY-NOTICES.md'), 'utf8');
   assert.match(notices, /^# Third-party notices: Koda's bundled runtime\n/);

@@ -3,8 +3,10 @@
 The island chat is a full agent, not a direct model call: this package supervises the
 installed `pi` running `--mode rpc` as a child process inside a private island, with an
 Abito identity, isolated environment, session privacy, request correlation, crash
-restart with bounded backoff, and clean stops. Plain Node CJS, zero runtime
-dependencies.
+restart with bounded backoff, and clean stops. Plain Node CJS: one runtime
+dependency (`@mtcute/node`, the Telegram client library, K2-13), and it ships inside
+the bundled runtime folder, never from this package (see «The Telegram client
+library» below).
 
 Status: U1–U4 implemented (runtime, profiles, island transport, config/CLI/daemon). The installed `pi` on this machine is the default
 runtime and was smoke-verified offline (`start` → `get_state` → `stop` against the
@@ -492,6 +494,62 @@ claude-code, codex and statusline (delegated to the AgentsManager) plus gemini-c
 remove require the exact `plan_hash` shown, back everything up first and refuse foreign or unsafe targets.
 Frames, invariants, sources and UNVERIFIED items: [`../../tests/PROTOCOL.md`](../../tests/PROTOCOL.md).
 
+## The Telegram client library (K2-13)
+
+Reading Telegram channels with the user's own account (S6) needs a client library: **`@mtcute/node` 0.32.8**, pinned
+exactly here (with every `@mtcute/*` package it pulls frozen by `overrides`) and pinned to the same version in
+`../desktop-tauri/packaging/runtime/package.json`. Evidence and the library comparison: `odd/evidence/k2-13-spike/`.
+
+**Nothing ships from this package.** The bytes travel inside the bundled runtime folder Koda already installs and
+verifies (`S6`; decided by the human, K2-13 L41), because that is the one npm tree every installer verifies, extracts and
+writes licence notices for:
+
+- installed: `<runtime>/node_modules/@mtcute/node` (`<prefix>/runtime`, `Contents/Resources/runtime` on macOS);
+- development: `npm ci` in this package (no install scripts needed) puts it in `node_modules/`, and ordinary Node
+  resolution finds it — `npm test` never needs it, because the tests inject a fake client.
+
+The Telegram module resolves the library in that order: beside the Node the daemon runs on (`<folder>/node_modules`),
+then beside its own package (`../runtime/node_modules`), then by ordinary Node resolution; if none of them has it, the
+Telegram frames answer `unavailable` instead of crashing the daemon.
+
+**No native addon.** mtcute's `better-sqlite3` is replaced by Koda's empty stub
+(`../desktop-tauri/packaging/runtime/stubs/better-sqlite3`, wired as a `file:` dependency in both `package.json` files,
+exactly as `overrides` cannot express in npm 9). The daemon always passes `MemoryStorage`, so the `SqliteStorage` that
+would load the addon is never constructed; the stub throws if it ever is, and mtcute's crypto is WASM. The build fails
+if a `.node` file appears under `@mtcute`, `@fuman` or `better-sqlite3`
+(`packaging/runtime/build-runtime.cjs` `assertNoNativeAddons`), and `apps/desktop-tauri/test-node/telegram-deps-check.cjs`
+keeps both pins, the stub and the licences in step.
+
+### Login and the session (S10, S20)
+
+`src/minikodas/telegram.cjs` is the daemon's one Telegram client. The login happens in Ajustes over the island protocol
+(`docs/PROTOCOL.md`, «Telegram frames»): `telegram_login_start{apiId, apiHash, phone}` asks Telegram for a code,
+`telegram_login_code{code}` delivers it, and `telegram_login_password{password}` answers a two-step login. Every answer is
+a frame; nothing is read from a terminal, and a refused code or password leaves the login where it was so the person can
+try again.
+
+**The session is a credential and never touches the disk.** The client is always built with mtcute's `MemoryStorage`
+(the wrapper refuses a caller-supplied storage, and a test proves that no `client.session` — mtcute's own default — or
+sqlite file can appear in the working directory or `HOME`). When a login finishes, or when restoring rotates the session,
+the daemon replies `telegram_session{session}` to the connection that asked, and only to that connection: the island
+stores it in the OS keychain and hands it back at start with `telegram_session_restore{apiId, apiHash, session}`. An
+unchanged session is never echoed back.
+
+`apiHash`, the phone, the code, the password and the session never appear in a log line, a broadcast, «Hoy» or an error.
+Failures are closed codes with a fixed Spanish sentence (`telegram_flood_wait` carries `retryAfterMinutes`, e.g.
+«Telegram pidió esperar 4 minutos»); Telegram's own text is never forwarded because it can echo the phone number. A
+revoked session answers `telegram_session_invalid` and disconnects instead of pretending to be connected. The global
+pause refuses the login frames (they change the account's state) but keeps answering status, the start-up restore and
+`telegram_logout`: revoking a session is an account-safety action, like `agent_disconnect`. A login belongs to the
+connection that started it, so another window can neither answer its code nor replace the flow
+(`telegram_login_other_connection`). The library's own logging is passed level 0 (OFF) explicitly, so a
+`MTCUTE_LOG_LEVEL` in the environment can never make mtcute print phone numbers, codes or payloads to the daemon's
+stdio; a display name longer than the frame's 80 chars is clipped where the account is stored.
+
+**Island contract.** The island must store the session in the keychain, must never write it to a file, must never echo it
+back inside another frame, and after `telegram_logout` must delete its keychain entry (the daemon already revoked the auth
+key on Telegram when it could reach it).
+
 ## Minikodas (K2-13)
 
 A Minikoda is a small helper that runs a recipe on its own. Code: `src/minikodas/`.
@@ -499,11 +557,52 @@ A Minikoda is a small helper that runs a recipe on its own. Code: `src/minikodas
 **Recipe** (`recipe.cjs`, strict validation; anything unknown or out of range is refused, never repaired):
 `{id, name, when, reads, kit, prompt, model, never}`.
 - `when`: exactly one of `{manual: true}`, `{everyMs}` (≥ 60 s) or `{at: ISO date}` (future, ≤ 1 year).
-- `reads`: `{source}`, a descriptor. Before each run the daemon prepares the source's content and hands it to the Minikoda only through `source_read`. Today the content comes from `<island>/minikodas/sources/<id>.txt`; Telegram reading arrives with K2-13 T1b.
+- `reads`: `{source}`, a descriptor. Before each run the daemon prepares the source's content and hands it to the Minikoda only through `source_read`. A plain-text descriptor reads `<island>/minikodas/sources/<id>.txt`; `telegram:@canal` (or `telegram:t.me/canal`) reads that public Telegram channel with the user's own account (see «A Telegram channel as the source»). The descriptor is validated **when the Minikoda is created**: a channel typed without the prefix (`@canal`, `t.me/canal`) is refused there with a Spanish sentence («para leer un canal de Telegram hace falta el prefijo «telegram:»») instead of being stored as a text file name and read as empty on every run, and so is a malformed `telegram:` value.
 - `kit`: names from the closed catalogue `source_read`, `inbox_propose`.
 - `prompt`: the Minikoda's specialised prompt. It is appended after Koda's fixed base rules.
 - `model`: `{provider, id, accountId}`. It must come from an account Koda already has (`accounts/`): the account must exist, be signed in, serve that provider and offer that model. A provider served by two accounts needs `accountId`. Without a choice, the model is the chat's current model (the active profile).
 - `never`: must be exactly `buy, sell, send, delete`.
+
+### A Telegram channel as the source (S6)
+
+`reads.source` is `telegram:@canal` (also accepted: `telegram:canal`, `telegram:t.me/canal`, `telegram:https://t.me/canal`).
+Anything else after `telegram:` is refused **when the Minikoda is created** (`recipe.cjs` asks `telegram-source.cjs` for the
+grammar), so a typo never becomes a text source read as empty at run time; a channel typed without the prefix is refused
+there too. Implementation: `src/minikodas/telegram-source.cjs`.
+
+- **Read by its `@username`, and almost nothing is cached.** Each run asks for the channel by its username
+  (`getHistory("@canal")`): mtcute resolves it once per client and caches the result in its own storage, so
+  `contacts.resolveUsername` is spent once per daemon lifetime, not once per run. The Minikoda's private state
+  `<island>/minikodas/telegram/<id>.json` (0600) holds only `{version: 2, channel, lastSeenId}`. It deliberately does
+  **not** cache the `accessHash`: JSON has no 64-bit integer and mtcute's TL writer reads `.low`/`.high`, so a hash
+  stored as a string would reach Telegram as access hash 0 and every later run would have to re-resolve the channel
+  after `CHANNEL_INVALID` (`telegram-source.test.cjs` pins this with the library's own writer). A username mtcute cached
+  before the channel changed hands is resolved again, once.
+- **Only what is new.** Each run asks for posts newer than the stored `lastSeenId` (`getHistory({minId})`), reading at
+  most 20 posts; the first run reads the latest 5. The marker moves **only when the run succeeded** (`commit()` runs
+  after the result reaches «Hoy»): a failed run reads the same posts again instead of skipping them.
+- **Text.** The posts arrive oldest → newest, each as `[id] texto`, inside `Canal @canal: N publicaciones nuevas.`, capped
+  at 60 000 chars. That text is what `source_read` returns; the Minikoda never sees the channel itself.
+- **Media.** Video (round video notes and GIF animations included), audio and voice messages are downloaded with
+  `downloadAsNodeStream` into the run's private folder `<island>/minikodas/media/<run>/` (folder 0700, files 0600) —
+  but only after Telegram's own metadata says the file is **≤ 200 MB and ≤ 3 hours**; a bigger or longer one, or one
+  whose size Telegram does not report, is skipped with a note in the text. Photos and documents are ignored, and
+  content-protected (noforwards) media is skipped with a note. `FILE_REFERENCE_EXPIRED` refetches that one message **in
+  its channel** (`getMessages("@canal", [id])`: mtcute's media objects carry no `.chat`) and retries the download once,
+  never in a loop.
+- **`source.media` is the contract with the transcription step.** `prepare()` resolves
+  `{text, media: [{path, mimeType, durationSec, messageId, kind}], commit}`. Nothing is transcribed on this branch and
+  the post text says exactly that («video de 95 s, adjunto; todavía sin transcribir»). The run's media folder is removed
+  as soon as the run ends — success, engine failure, timeout or cancel (`TelegramSource.removeRun`, called by
+  `service.cjs` in a `finally`) — so a video per run never accumulates in the island.
+  **Merge note (`feat/k2-13-transcribe`):** the transcription step is what reconnects the two. It consumes
+  `source.media`, attaches each transcript to its `messageId` and then calls the same `removeRun(runId)`; it runs while
+  the folder still exists (before the `finally`). Until that merge, deleting in the `finally` is the correct end state:
+  nothing reads those files after the run.
+- **Failures are «Hoy» errors, never silence.** A long `FLOOD_WAIT` (mtcute absorbs ≤ 10 s), no connected account, an
+  invalid channel or a revoked session fail the run with `reason: "source"` and the Spanish sentence from
+  `telegram.cjs` («Telegram pidió esperar 5 minutos», «No hay ninguna cuenta de Telegram conectada»). There is no retry
+  loop, and the media downloaded so far are removed.
 
 **Store** (`service.cjs`): `<island>/minikodas/recipes.json` (0600, dir 0700). Creating a Minikoda takes two steps. `createDraft` stores a validated draft that never runs; only `approveCreate` makes it `active` and arms its schedule (S1: «solo lo crea si lo apruebo»).
 

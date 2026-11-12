@@ -39,7 +39,7 @@ const recipe = (over = {}) => ({
 	id: "oportunidades",
 	name: "Oportunidades",
 	when: { manual: true },
-	reads: { source: "telegram:canal-x" },
+	reads: { source: "notas.txt" },
 	kit: ["source_read", "inbox_propose"],
 	prompt: "Sos un Minikoda de oportunidades de inversión.",
 	model: { ...MODEL },
@@ -105,7 +105,26 @@ test("recipe: strict validation refuses every out-of-contract field with a Recip
 	for (const [over, pattern] of bad) assert.throws(() => validateRecipe(recipe(over)), (e) => e.name === "RecipeError" && pattern.test(e.message), JSON.stringify(over));
 	assert.throws(() => validateRecipe({ ...recipe(), output: "telegram" }), /unknown fields/);
 	assert.throws(() => validateRecipe(recipe({ when: { at: "2000-01-01T00:00:00Z" } }), { now: Date.now() }), /future/);
-	// A draft may omit id and model (the daemon fills them), a stored recipe may not.
+});
+
+test("recipe: a Telegram source is validated when the Minikoda is created, and a descriptor without `telegram:` is refused in Spanish", () => {
+	const source = (value) => validateRecipe(recipe({ reads: { source: value } })).reads.source;
+	for (const value of ["telegram:@valmar_canal", "telegram:valmar_canal", "telegram:t.me/valmar_canal", "telegram:https://t.me/valmar_canal"]) {
+		assert.equal(source(value), value, `${value} is a channel the daemon can read`);
+	}
+	// A channel typed without the prefix must never be read as an empty text file at run time: the daemon refuses it
+	// here, where the person still is, with a sentence that says what to write instead.
+	for (const value of ["@valmar_canal", "t.me/valmar_canal", "https://t.me/valmar_canal", "telegram.me/valmar_canal"]) {
+		assert.throws(() => validateRecipe(recipe({ reads: { source: value } })), /prefijo «telegram:»/, `refused at creation: ${value}`);
+	}
+	for (const value of ["telegram:", "telegram:@val mar", "telegram:t.me/+AbCdEf123", "telegram:https://example.com/valmar"]) {
+		assert.throws(() => validateRecipe(recipe({ reads: { source: value } })), /canal de Telegram válido/, `refused: ${value}`);
+	}
+	assert.equal(source("mi archivo de notas"), "mi archivo de notas", "a plain descriptor stays a text source");
+});
+
+// A draft may omit id and model (the daemon fills them), a stored recipe may not.
+test("recipe: a draft may omit id and model, a stored recipe may not", () => {
 	const { id: _id, model: _model, ...draft } = recipe();
 	assert.equal(validateRecipe(draft, { draft: true }).id, undefined);
 	assert.throws(() => validateRecipe(draft), /id must be/);

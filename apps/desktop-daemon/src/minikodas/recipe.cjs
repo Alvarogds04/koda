@@ -5,14 +5,17 @@
  *
  * A recipe is {id, name, when, reads, kit, prompt, model, never}:
  * - when   exactly one of {manual: true}, {everyMs: n} or {at: ISO date};
- * - reads  {source: "<descriptor>"}; the daemon prepares the content of that source for each run (Telegram
- *          reading arrives later, K2-13 T1b) and hands it to the Minikoda only through `source_read`;
+ * - reads  {source: "<descriptor>"}; the daemon prepares the content of that source for each run and hands it to the
+ *          Minikoda only through `source_read`. A `telegram:@canal` descriptor is a public channel read with the
+ *          user's own account (S6) and is validated here, at creation (telegram-source.cjs owns the grammar);
  * - kit    names from the CLOSED catalogue below, nothing else;
  * - prompt the Minikoda's specialised prompt (the calidad round showed a specialised prompt is what matters);
  * - model  {provider, id, accountId} chosen from the accounts Koda already has (validated by model.cjs);
  * - never  the verbs a Minikoda never does on its own; it must list all of buy, sell, send and delete.
  * Anything else (unknown fields, unknown kit pieces, out-of-range values) is refused, never repaired.
  */
+
+const { parseSource, looksLikeChannel } = require("./telegram-source.cjs");
 
 /** The closed kit catalogue: every tool a recipe may put in its kit. */
 const KIT_CATALOGUE = Object.freeze(["source_read", "inbox_propose"]);
@@ -86,14 +89,25 @@ function validateModel(model) {
 }
 
 /**
- * Validates a recipe and returns a frozen, normalized copy, or throws RecipeError with the first problem.
- * Options:
- * - draft:      true for a draft from a client: `id` and `model` may be missing (the daemon fills them);
- * - minEveryMs: the smallest repeat (default LIMITS.minEveryMs);
- * - now:        when set, `at` must be in the future relative to it (creation); stored recipes skip it.
+ * `reads.source`: a plain text descriptor, or `telegram:@canal`. The Telegram form is checked HERE, when the Minikoda is
+ * created, and not at run time: a channel typed without the prefix (`@canal`, `t.me/canal`) would otherwise be accepted
+ * as a text file name and read as empty on every run, and a typo inside `telegram:` would only fail at 3 a.m.
  */
-function validateRecipe(raw, options = {}) {
-	const draft = options.draft === true;
+function validateSource(value) {
+	if (typeof value !== "string" || value.trim() === "" || value.length > LIMITS.maxSourceChars || CONTROL.test(value)) {
+		fail(`reads.source must be 1-${LIMITS.maxSourceChars} chars`);
+	}
+	const source = value.trim();
+	if (looksLikeChannel(source)) {
+		fail(`reads.source: para leer un canal de Telegram hace falta el prefijo «telegram:» (escribí «telegram:${source}»)`);
+	}
+	if (parseSource(source) === undefined) {
+		fail("reads.source: eso no es un canal de Telegram válido (usá «telegram:@canal» o un enlace t.me del canal)");
+	}
+	return source;
+}
+
+function validateRecipe(raw, options = {}) {	const draft = options.draft === true;
 	const minEveryMs = options.minEveryMs ?? LIMITS.minEveryMs;
 	if (!isObject(raw)) fail("not an object");
 	onlyKeys(raw, RECIPE_KEYS, "recipe");
@@ -103,7 +117,7 @@ function validateRecipe(raw, options = {}) {
 	const normalizedWhen = validateWhen(when, { minEveryMs, now: options.now });
 	if (!isObject(reads)) fail("reads must be {source}");
 	onlyKeys(reads, ["source"], "reads");
-	if (typeof reads.source !== "string" || reads.source.trim() === "" || reads.source.length > LIMITS.maxSourceChars || CONTROL.test(reads.source)) fail(`reads.source must be 1-${LIMITS.maxSourceChars} chars`);
+	const source = validateSource(reads.source);
 	if (!Array.isArray(kit) || kit.length === 0 || kit.length > KIT_CATALOGUE.length) fail("kit must be a non-empty list");
 	for (const piece of kit) if (typeof piece !== "string" || !KIT_CATALOGUE.includes(piece)) fail("kit has a piece outside the closed catalogue");
 	if (new Set(kit).size !== kit.length) fail("kit has duplicates");
@@ -116,7 +130,7 @@ function validateRecipe(raw, options = {}) {
 		...(id !== undefined ? { id } : {}),
 		name: name.trim(),
 		when: Object.freeze(normalizedWhen),
-		reads: Object.freeze({ source: reads.source.trim() }),
+		reads: Object.freeze({ source }),
 		kit: Object.freeze([...kit]),
 		prompt,
 		...(normalizedModel ? { model: Object.freeze(normalizedModel) } : {}),
