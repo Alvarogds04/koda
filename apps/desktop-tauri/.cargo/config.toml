@@ -1,0 +1,55 @@
+# Cargo configuration — K2-13 (S8, S15; decisions L22/L23): link sherpa-onnx without its TTS path.
+#
+# sherpa-onnx-sys 1.13.8's build script links thirteen static archives, three of which carry the text-to-speech path:
+# piper_phonemize, espeak-ng (GPL-3.0) and ucd. Koda only recognises speech, never synthesises it, but those archives
+# reached abito-island and abito-transcribe. Upstream publishes the same v1.13.8 libraries built with
+# -DSHERPA_ONNX_ENABLE_TTS=OFF, and `build.rs` stages them, sha256-verified against
+# packaging/sherpa-onnx-no-tts.sha256, in `target/sherpa-onnx-no-tts/lib`.
+#
+# The tables below replace the build script's link list for this package (the `links` value of sherpa-onnx-sys, so the
+# section is named after it) with the same libraries minus the three TTS ones. `static:-bundle=` matters twice:
+#   * without `+bundle` the archives are resolved by the linker at the final link instead of being packed into
+#     sherpa-onnx-sys's rlib, which is what lets a directory staged by `build.rs` be the one that is linked;
+#   * a missing staged archive makes the link fail loudly ("could not find native static library") instead of
+#     silently falling back to the TTS build.
+# `rustc-link-search` is relative because this crate is its own workspace root, so rustc runs from this directory.
+#
+# darwin is absent on purpose: the macOS libraries and the Mac session are pending (L12). macOS keeps the crate's own
+# link list, espeak-ng included, and build.rs says so in a warning when it builds there.
+# Replacing a build script's link list by configuration is a deliberate, reviewable exception: it removes a GPL-3.0
+# library from the shipped binaries without a workflow edit, and `test-node/sherpa-tts-free-check.cjs` proves it.
+
+[target.x86_64-unknown-linux-gnu.sherpa-onnx]
+rustc-link-lib = [
+  "static:-bundle=sherpa-onnx-c-api",
+  "static:-bundle=sherpa-onnx-core",
+  "static:-bundle=kaldi-decoder-core",
+  "static:-bundle=sherpa-onnx-kaldifst-core",
+  "static:-bundle=sherpa-onnx-fstfar",
+  "static:-bundle=sherpa-onnx-fst",
+  "static:-bundle=kaldi-native-fbank-core",
+  "static:-bundle=kissfft-float",
+  "static:-bundle=onnxruntime",
+  "static:-bundle=ssentencepiece_core",
+  "dylib=stdc++",
+  "dylib=m",
+  "dylib=pthread",
+  "dylib=dl",
+]
+rustc-link-search = ["target/sherpa-onnx-no-tts/lib"]
+
+# Windows: the crate's static link adds no system libraries of its own, so the list is the ten archives.
+[target.x86_64-pc-windows-msvc.sherpa-onnx]
+rustc-link-lib = [
+  "static:-bundle=sherpa-onnx-c-api",
+  "static:-bundle=sherpa-onnx-core",
+  "static:-bundle=kaldi-decoder-core",
+  "static:-bundle=sherpa-onnx-kaldifst-core",
+  "static:-bundle=sherpa-onnx-fstfar",
+  "static:-bundle=sherpa-onnx-fst",
+  "static:-bundle=kaldi-native-fbank-core",
+  "static:-bundle=kissfft-float",
+  "static:-bundle=onnxruntime",
+  "static:-bundle=ssentencepiece_core",
+]
+rustc-link-search = ["target/sherpa-onnx-no-tts/lib"]

@@ -26,6 +26,46 @@ into `$XDG_DATA_HOME/abito/Models`.
 `reqwest` is pinned to 0.12 (ring + webpki-roots TLS) because 0.13's rustls
 needs aws-lc-rs and rustls-platform-verifier.
 
+## No espeak-ng in the shipped binaries (K2-13, S8/S15; decisions L22/L23)
+
+The archive above also carries the text-to-speech path: `piper_phonemize`,
+`espeak-ng` (GPL-3.0) and the `ucd` tables, and sherpa-onnx-sys links all
+thirteen libraries. Koda only *recognises* speech (Parakeet, Whisper, Silero
+VAD, the dictation wake word); nothing in `src/speech` or
+`src/bin/abito-transcribe.rs` synthesises it. So `abito-island` and
+`abito-transcribe` link the same upstream v1.13.8 release built with
+`-DSHERPA_ONNX_ENABLE_TTS=OFF` instead:
+
+- `packaging/sherpa-onnx-no-tts.sha256` pins the TTS-free archive and its
+  SHA-256 for `linux-x64` and `win-x64`.
+- `build.rs` downloads it once (public GitHub release, ~22 MB on Linux), checks
+  the SHA-256 against that pin and unpacks only `lib/*.a` / `lib/*.lib` into
+  `target/sherpa-onnx-no-tts/lib`. A mismatch, a failed download or an archive
+  without native libraries fails the build instead of falling back.
+- `.cargo/config.toml` replaces sherpa-onnx-sys's link list for this crate with
+  the same ten archives minus the three TTS ones, and points the link at that
+  directory. `static:-bundle=` is what makes it work: the archives are resolved
+  by the linker at the final link, not packed into the crate's rlib, so the
+  staged directory is the one that is actually linked.
+
+Consequences worth knowing:
+
+- **Nothing espeak-ng, piper_phonemize or ucd ships on Linux or Windows**, so
+  the notices need no GPL-3.0 entry for them. The `espeak-ng` *tool* on a
+  developer's machine is unrelated and is never used by Koda.
+- `SHERPA_ONNX_LIB_DIR` / `SHERPA_ONNX_ARCHIVE_DIR` still tell the crate where
+  its own (TTS) archive is, but that archive is no longer linked, so the same
+  build works online and offline in CI with no workflow change.
+- **macOS is not covered yet**: `.cargo/config.toml` has no `apple-darwin`
+  table and `build.rs` prints a warning, so `osx-arm64` keeps the crate's link
+  list (espeak-ng included) until the Mac session takes the same three steps
+  with the `osx-arm64-static-no-tts-lib` archive (decisions L12, L23).
+- Verify a build with `nm -a target/debug/abito-transcribe | grep -c espeak_`
+  (must be `0`); `node test-node/sherpa-tts-free-check.cjs` pins the wiring and
+  scans the newest rlib and the built binaries for espeak/piper bytes.
+- Bumping `sherpa-onnx` means updating the version inside the two archive names
+  in the pin file (the check compares them with `Cargo.lock`).
+
 ## Minikodas: `abito-transcribe` (K2-13, S8/S15/S16)
 
 `src/bin/abito-transcribe.rs` is a second binary of this crate: batch
@@ -77,7 +117,10 @@ abito-transcribe download [--model ID]   # the catalog's pinned, size + SHA-256 
 - **Linux.** `packaging/build.cjs` stages `target-ship/release/abito-transcribe` beside `abito-island` (`lib.cjs`
   `STAGED`, executable in `install.sh` `EXEC_FILES`). Uninstall removes it with the other staged files.
 - **Windows.** `abito-transcribe.exe` is in `stage-runtime.cjs` `BINARY_FILES`, so the generated NSIS include installs
-  and deletes it. The build must copy it into `dist/` like the other helpers; `xbuild.sh package` does.
+  and deletes it. `xbuild.sh package` copies it into `dist/` with the other helpers, and so does
+  `install-manifest.cjs` on the GitHub runner: `cargo build --release --bins` builds it, the workflow copies only three
+  of the four binaries, and `completeBinaries()` (stage-runtime.cjs) stages what is missing in the default `dist/`
+  before NSIS runs. No workflow edit is needed for it.
 - **ffmpeg.** It ships inside the bundled runtime: `packaging/runtime/build-runtime.cjs` takes the pinned BtbN LGPL
   archive (`packaging/runtime/ffmpeg.sha256`, linux-x64 and win-x64), verifies its sha256, and keeps only
   `bin/ffmpeg[.exe]` and `LICENSE.txt`.

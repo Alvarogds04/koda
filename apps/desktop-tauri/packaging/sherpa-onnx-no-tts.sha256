@@ -1,0 +1,12 @@
+# K2-13 (S8, S15; decisions L22/L23): sherpa-onnx v1.13.8 static libraries built with
+# -DSHERPA_ONNX_ENABLE_TTS=OFF, so they carry no espeak-ng (GPL-3.0), no piper_phonemize and no ucd tables.
+# Koda only recognises speech, so abito-island and abito-transcribe link these instead of the TTS build that
+# sherpa-onnx-sys downloads by itself. build.rs reads this file, checks the sha256 of each archive before
+# unpacking it, and refuses an archive that does not match. darwin-arm64 is deliberately absent: the macOS
+# libraries and the Mac session are pending (L12), so that target still links the TTS build.
+#
+# sha256                                                           archive
+36f2ebd0b9aa09248ff6461a30dcb7edfe7eecf2deb67dfb0ceb3aaf4906051f  sherpa-onnx-v1.13.8-linux-x64-static-no-tts-lib.tar.bz2
+# The Windows archive is the one the workflows already fetch: packaging/windows/sherpa-onnx.sha256 pins the same
+# line for .github/workflows/{ci,preview-windows}.yml, so the Windows build downloads nothing extra.
+f0aa074ddc39553b30208b53e84c12275d09702911c9faa8d34fa932428e4641  sherpa-onnx-v1.13.8-win-x64-static-MT-Release-no-tts-lib.tar.bz2

@@ -13,6 +13,15 @@ probe = []
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+# K2-13 (S8, S15; decisions L22/L23): build.rs stages sherpa-onnx's own v1.13.8 libraries built without TTS
+# (-DSHERPA_ONNX_ENABLE_TTS=OFF) over the TTS build sherpa-onnx-sys downloads, so the shipped binaries contain no
+# espeak-ng (GPL-3.0) and no piper_phonemize. It reuses what Cargo.lock already resolves — ureq 2.12, tar, bzip2 and
+# sha2 are exactly the crates sherpa-onnx-sys's own build script uses to fetch and unpack its native libraries — so
+# this adds build edges only: no new packages, and the same rustls client (no native-tls, no openssl).
+ureq = { version = "2.12", features = ["proxy-from-env"] }
+tar = "0.4"
+bzip2 = "0.4"
+sha2 = "0.10"
 
 [dependencies]
 # Dependency policy (#467, owner decision): new crates are allowed only for functions Abito

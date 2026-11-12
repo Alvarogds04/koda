@@ -80,9 +80,13 @@ This package carries no other third-party runtime or test dependencies.
 
 Koda's binaries (`abito-island`, and `abito-transcribe`, the helper that transcribes Minikoda videos) link
 sherpa-onnx 1.13.8 statically: the `sherpa-onnx` and `sherpa-onnx-sys` crates
-(https://github.com/k2-fsa/sherpa-onnx, crates.io) and its prebuilt static libraries
-`sherpa-onnx-v1.13.8-<os>-static-lib` from the project's GitHub release v1.13.8. The speech models are not part of Koda:
-they are downloaded on the user's request from Hugging Face, each under its own licence (shown in Ajustes → Voz).
+(https://github.com/k2-fsa/sherpa-onnx, crates.io) and its prebuilt static libraries from the project's GitHub release
+v1.13.8. Koda only recognises speech, never synthesises it, so on Linux and Windows it links the upstream libraries
+built with `-DSHERPA_ONNX_ENABLE_TTS=OFF` (`sherpa-onnx-v1.13.8-<os>-static-no-tts-lib`): the text-to-speech path —
+`piper_phonemize`, `espeak-ng` (GPL-3.0) and the `ucd` tables — is **not** part of these binaries and therefore needs no
+notice here (see `apps/desktop-tauri/docs/dictation-build.md`). macOS still links the default libraries, espeak-ng
+included, until that build is changed. The speech models are not part of Koda: they are downloaded on the user's request
+from Hugging Face, each under its own licence (shown in Ajustes → Voz).
 
 sherpa-onnx is distributed under the Apache License 2.0 (the crate's `LICENSE`; no `NOTICE` file is published with
 it). The full text follows.
