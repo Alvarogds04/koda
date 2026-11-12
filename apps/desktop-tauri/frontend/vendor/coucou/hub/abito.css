@@ -138,7 +138,9 @@ section.abito-card > h2 { gap: 8px; }
 .hub-info-wrap { position: relative; display: inline-flex; align-items: center; margin-left: 6px; }
 .hub-info { min-width: 24px; min-height: 24px; padding: 0; background: transparent; border: 0; border-radius: 50%; color: var(--dim); font: 500 13px var(--font); cursor: help; }
 .hub-info:hover, .hub-info:focus-visible { color: var(--ink); }
-.hub-info:focus-visible { outline: 2px solid var(--green, #4ade80); outline-offset: 1px; }
+/* S3 (04 ajustes 4): ONE focus ring in the hub — 2px #fff, the ring the notch and the toast wear (design/system.md:249). The rail
+   items and the segmented buttons had none at all, and the ⓘ answered with a green ring of its own. */
+.hub-item:focus-visible, .hub-segmented button:focus-visible, .hub-info:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
 .hub-tip { display: none; position: absolute; z-index: 20; left: 50%; top: calc(100% + 6px); transform: translateX(-50%); width: max-content; max-width: 260px;
   padding: 8px 10px; border-radius: 8px; background: var(--hub-card, #1b1d22); border: 1px solid var(--hairline, #2a2d34); color: var(--ink, #f5f6f8);
   font: 400 12px/1.4 var(--font); text-align: left; white-space: normal; box-shadow: 0 6px 18px rgba(0,0,0,.45); pointer-events: none; }

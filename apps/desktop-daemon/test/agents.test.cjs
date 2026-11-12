@@ -23,7 +23,8 @@ const OS_INJECTED_ENV = [
 	// recorded child env carries HOMEDRIVE although the product passes the closed childEnv allowlist).
 	// They are OS-injected profile facts, never parent secrets; the env OPTION the product passes stays
 	// asserted closed by the HU-047 run-seam tests, which record exactly what the product handed over.
-	...(win ? ["HOMEDRIVE", "HOMEPATH"] : []),
+	// LOGONSERVER is the same kind of OS-injected logon fact (CI 43263659882 test 66).
+	...(win ? ["HOMEDRIVE", "HOMEPATH", "LOGONSERVER"] : []),
 ];
 const HASH_A = "a".repeat(64);
 const HASH_B = "b".repeat(64);

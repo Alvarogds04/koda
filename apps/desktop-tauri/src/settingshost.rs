@@ -161,7 +161,6 @@ fn view_prefs(p: &Prefs) -> Value {
         "theme": p.theme().as_str(),
         "chosenModels": p.chosen_models,
         "autoCloseSeconds": p.auto_close_seconds(), "openOnHover": p.open_on_hover(),
-        "absenceSeconds": p.absence_seconds(),
         "customBlobs": p.custom_blobs_view(),
         "islandAgents": p.island_agents_view(),
         "abitoInstructions": p.abito_instructions_view(),
@@ -253,7 +252,9 @@ pub fn save_desktop_character(app: &AppHandle, on: bool, spot: Option<(i32, i32)
     .is_ok()
 }
 
-/// #264: where the human last dragged the island (window top-left, physical px), or None for the top-centre default.
+/// #264: where the human last dragged the island — the disc's spot (x = the island window's left, y = the disc's top edge on
+/// screen, physical px), or None for the top-centre default. Until isla-cualquier-lado T6b this was the window's top-left:
+/// identical for an upper-half island, while a bottom-edge window now stands on the disc instead of starting at it.
 pub fn island_position(app: &AppHandle) -> Option<(i32, i32)> {
     let state = app.state::<AppState>();
     let saved = state.settings.prefs.lock().expect("prefs lock").position;

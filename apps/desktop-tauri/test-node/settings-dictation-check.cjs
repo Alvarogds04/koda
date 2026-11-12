@@ -32,7 +32,7 @@ const { dom, Element, all, text } = require('./settings-accounts-check.cjs');
   await FlowBridge.setPrefs({...state.prefs,cleanup:true,unexpected:1});
   const expectedPrefs = () => Object.fromEntries(['enabled','key','edge','mic','keepDays','cleanup','defaultStyle'].map(k=>[k,state.prefs[k]]));
   assert.deepEqual(calls.pop(), ['dictation_action',{action:'set_prefs',prefs:expectedPrefs()}]);
-  for (const [enabled,model,keys,copy] of [[false,'missing','ok','Dictado desactivado'],[true,'missing','ok','Descarga el modelo de voz para dictar'],[true,'ready','ok','Listo · mantén Ctrl+Alt+V'],[true,'ready','pending','Usa el micrófono'],[true,'ready','denied','Usa el micrófono'],[true,'ready','unsupported','Usa el micrófono']]) {
+  for (const [enabled,model,keys,copy] of [[false,'missing','ok','Dictado desactivado'],[true,'missing','ok','Descargá el modelo de voz para dictar'],[true,'ready','ok','Listo · mantén Ctrl+Alt+V'],[true,'ready','pending','Usá el micrófono'],[true,'ready','denied','Usá el micrófono'],[true,'ready','unsupported','Usá el micrófono']]) {
     state.prefs.enabled=enabled; state.models.parakeet={state:model}; state.keys=keys;
     const host=new Element('div'); await startHub(host,{version:'test',flowPages:{},renderNotch:async()=>{}});
     assert(text(all(host).find(e=>e.className==='hub-status')).includes(copy), copy);
@@ -48,7 +48,7 @@ const { dom, Element, all, text } = require('./settings-accounts-check.cjs');
   assert(String(page.children[0].className).includes('hub-hero'), 'D3: the hero is the first thing on the page; the feedback line must not sit above it');
   const labels = all(page).filter(e=>e.className==='hub-label').map(e=>e.textContent);
   assert.deepEqual(labels,['Probar','Activación','Audio','Datos'], '0.2.1 L2 (Ajustes de dictado: A): Probar first, then Activación, Audio, Datos');
-  assert.deepEqual(all(page).filter(e=>e.className==='title').map(e=>e.textContent),['Mantén una tecla para dictar en cualquier lugar','Mantener para dictar','Posición de la píldora','Manos libres','Volver a pegar el último dictado','Cancelar un dictado','Micrófono','Parakeet, en tu ordenador','Guardar el historial']);
+  assert.deepEqual(all(page).filter(e=>e.className==='title').map(e=>e.textContent),['Mantené una tecla para dictar en cualquier lugar','Mantener para dictar','Posición de la píldora','Manos libres','Volver a pegar el último dictado','Cancelar un dictado','Micrófono','Parakeet, en tu ordenador','Guardar el historial']);
   assert(text(page).includes('612')); assert(text(page).includes('Ctrl+Alt+V')); assert(!all(page).some(e=>e.tagName==='option'&&e.attrs.value==='right_ctrl'));
   const row = title => all(page).find(e=>e.className==='hub-row' && all(e).some(n=>n.textContent===title));
   const control=(title,tag)=>all(row(title)).find(e=>e.tagName===tag);
@@ -63,7 +63,7 @@ const { dom, Element, all, text } = require('./settings-accounts-check.cjs');
   calls.length=0;
   for(const e of all(page).filter(e=>['button','select','input'].includes(e.tagName))) { e.fire(e.tagName==='button'?'click':'change',false); }
   await new Promise(r=>setImmediate(r)); assert.deepEqual(calls,[],'synthetic gestures never invoke');
-  control('Mantén una tecla para dictar en cualquier lugar','button').fire('click'); await new Promise(r=>setImmediate(r));
+  control('Mantené una tecla para dictar en cualquier lugar','button').fire('click'); await new Promise(r=>setImmediate(r));
   assert.deepEqual(calls.splice(0),[['dictation_action',{action:'set_prefs',prefs:expectedPrefs()}]]);
   for(const [title,value] of [['Micrófono','USB'],['Guardar el historial','7'],['Guardar el historial','0'],['Guardar el historial','30'],['Guardar el historial','365'],['Guardar el historial','-1']]) {
     const el=control(title,'select'); el.value=value;el.fire('change'); await new Promise(r=>setImmediate(r));

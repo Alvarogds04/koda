@@ -7,7 +7,7 @@
   const nusa = doc.getElementById('nusa');
   if (!N || !nusa) return;
   const $ = id => doc.getElementById(id);
-  const capsule = $('capsule'), island = $('island');
+  const capsule = $('capsule');
   let current = 0, tabTitle = 'Inicio';
   // T5: the state a Pregunta / Permiso / Terminó / Error takes over, read from the data the island already publishes
   const qEl = $('question'), noticeCardEl = $('notice-card');
@@ -128,24 +128,6 @@
   if (capsule) new MutationObserver(paintVeil).observe(capsule, { attributes: true });
   for (const el of [qEl, noticeCardEl]) if (el) new MutationObserver(paintVeil).observe(el, { attributes: true, attributeFilter: ['data-look', 'data-severity'] });
 
-  // ears: #island clips its children, so the concave corners live in a sibling of #island, positioned from its box
-  if (capsule && island) {
-    const ear = doc.createElement('div'); ear.id = 'nusa-ear'; ear.setAttribute('aria-hidden', 'true');
-    ear.append(doc.createElement('i'), doc.createElement('i'));
-    island.after(ear);
-    const place = () => {
-      // human, 29-oct: the island is the Nusa notch in EVERY expanded phase (chat included), so it wears the ears whenever it hangs expanded from the top
-      const on = active() || !!capsule.dataset.takeover || capsule.dataset.phase === 'expanded';
-      ear.dataset.on = on ? 'true' : 'false';
-      if (!on) return;
-      const r = { left: island.offsetLeft, top: island.offsetTop, width: island.offsetWidth };
-      const rect = island.getBoundingClientRect(), cr = capsule.getBoundingClientRect();
-      ear.style.left = `${rect.left - cr.left - 12}px`; ear.style.top = `${rect.top - cr.top}px`; ear.style.width = `${(r.width || rect.width) + 24}px`;
-    };
-    new MutationObserver(place).observe(capsule, { attributes: true });
-    new MutationObserver(place).observe(island, { attributes: true, attributeFilter: ['style'] });
-    window.addEventListener('resize', place);
-    place();
-  }
+  // isla-cualquier-lado S1: the floating card has no concave ears; the #nusa-ear sibling that drew them is gone.
   select(0);
 })();

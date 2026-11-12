@@ -108,6 +108,24 @@ fn ensure_island_window(app: &AppHandle) -> Rect {
     if !dragging && io.outer_position() != (wanted.x, wanted.y) {
         io.set_outer_position(wanted.x, wanted.y);
     }
+    // isla-cualquier-lado T6b: the window around the disc follows the same growth edge as the open card. One read of the spot
+    // decides the placement above, the edge the core keeps and the `data-edge` the page lays the island out for, so a monitor,
+    // work-area or scale change can never make the page draw a lower-half island from the top of its window.
+    if dragging {
+        // mid-drag the window keeps the layout it was released with; the release settles everything below
+    } else if let Some(placed) = placed {
+        let edge = geometry::growth_edge_at(placed.origin.1, area, io.scale());
+        let changed = {
+            let mut core = state.core.lock().expect("core lock");
+            let was = core.edge;
+            core.edge = edge;
+            was != edge
+        };
+        if changed {
+            let expanded = { *state.phase.lock().expect("phase lock") == IslandState::Expanded };
+            push_phase(app, if expanded { "overview" } else { "compact" }, edge);
+        }
+    }
     islandshape::apply(app, None);
     wanted
 }
@@ -1087,14 +1105,36 @@ fn island_move_end(app: AppHandle, webview: tauri::Webview, state: State<AppStat
     let Some(win) = main_window(&app) else { return };
     let io = TauriIo(&win);
     let area = refresh_work_area(&app, &state);
-    let compact = geometry::Placed { origin: io.outer_position(), expanded: false };
-    let anchor = geometry::island_window_rect_placed(compact, area, io.scale(), state.window_h.load(Ordering::SeqCst));
-    *state.island_origin.lock().unwrap_or_else(|e| e.into_inner()) = Some((anchor.x, anchor.y));
-    if !settingshost::save_island_position(&app, (anchor.x, anchor.y)) {
+    // isla-cualquier-lado S1/T6b: the island is placed AROUND the disc, so the spot is read back for the edge it was laid out with
+    // (geometry::drop_spot) and the disc stays where the human released it, folding and opening alike. The card's own visible
+    // height is what the page reports (T5b R3-drop-card-height): a 240 chat or a taller take-over, never a guess from the window.
+    let (x, y) = io.outer_position();
+    let (w, h) = io.size();
+    // read before the core lock: islandshape's own lock must never be taken under it (islandshape::apply takes SHAPE then the core)
+    let reported = islandshape::last_visible_height();
+    let (edge, card_h) = {
+        let core = state.core.lock().expect("core lock");
+        (core.edge, geometry::visible_card_height(reported, core.chat, core.chat_height()))
+    };
+    let expanded = state.island_open.load(Ordering::SeqCst);
+    let (spot, edge) = geometry::drop_spot(Rect { x, y, w, h }, expanded, edge, card_h, area, io.scale());
+    // ONE read of the final spot decides all three BEFORE anything is applied (T5b R3-drop-edge-ordering): the spot that is
+    // saved, the edge the placement derives from it, and the edge the page lays the island out for. Nothing can disagree.
+    // The saved spot is the DISC's (x is the window's left, y the disc's top), so a restart rebuilds this same window.
+    *state.island_origin.lock().unwrap_or_else(|e| e.into_inner()) = Some(spot);
+    state.core.lock().expect("core lock").edge = edge;
+    if !settingshost::save_island_position(&app, spot) {
         eprintln!("island position not saved");
     }
     let safe = ensure_island_window(&app);
     store_requested(&state, "drag", Some((safe.x, safe.y)), Some((safe.w, safe.h)));
+    // the page lays the island out for the edge the drop chose (data-edge): the open card or the folded disc, same phase, so
+    // nothing animates; a folded drop across the midpoint moves the disc's window and the page must follow it
+    if expanded {
+        push_phase(&app, "overview", edge);
+    } else {
+        push_phase(&app, "compact", edge);
+    }
     publish(&app, &state);
 }
 
@@ -2063,6 +2103,16 @@ fn main() {
         // Electron `win.webContents.on('did-finish-load', publish)`.
         .on_page_load(|webview, _payload| {
             let state = webview.state::<AppState>();
+            // isla-cualquier-lado T6b: the page's edge starts at 'top' and Rust only pushes it with a later phase change. A folded
+            // island restored in the lower half is laid out on its BOTTOM edge, so the page must learn the edge the moment its
+            // scripts have run — otherwise it would draw the disc at the window top while Rust takes clicks at the bottom.
+            if webview.label() == "main" {
+                let (expanded, edge) = {
+                    let phase = *state.phase.lock().expect("phase lock");
+                    (phase == IslandState::Expanded, state.core.lock().expect("core lock").edge)
+                };
+                push_phase(webview.app_handle(), if expanded { "overview" } else { "compact" }, edge);
+            }
             publish(webview.app_handle(), &state);
         })
         // Electron `win.on('close', preventDefault + quit)`: closing the
@@ -2155,8 +2205,8 @@ fn main() {
             // (main thread here, so the live getter is inline and safe).
             sync_host_visible(&win);
             let state = app.state::<AppState>();
-            // ensure_island_window has cached the chosen work area already.
-            state.core.lock().expect("core lock").edge = Edge::Top;
+            // ensure_island_window has cached the chosen work area AND the edge the restored spot is laid out for
+            // (geometry::growth_edge_at), so a folded island restored in the lower half keeps its bottom edge.
             store_requested(&state, "initial", Some((rect.x, rect.y)), Some((w, h)));
             platform::audit::sample(&handle, "setup", 0, Some((w, h)));
             // Read-only sampling stops with this process. No probe or UI actions.

@@ -11,6 +11,7 @@ const path = require("node:path");
 
 const { AgentEngine, JsonlDecoder } = require("../src/runtime.cjs");
 const { ensureIsland } = require("../src/isolation.cjs");
+const { win, assertMode } = require("./platform-env.cjs");
 
 const FAKE_AGENT = path.join(__dirname, "fixtures", "fake-agent.cjs");
 
@@ -99,7 +100,9 @@ test("start reaches ready and correlates a get_state request", async (t) => {
 	assert.equal(argv[sessionIdx + 1], engine.island.sessions);
 	assert.equal(argv[identityIdx + 1], path.join(engine.island.root, "identity.md"));
 	assert.ok(fs.existsSync(argv[identityIdx + 1]));
-	assert.equal(fs.statSync(argv[identityIdx + 1]).mode & 0o777, 0o600);
+	// 0600 is a Unix fact (mode bits); on Windows the same privacy rule is asserted through the verified helper's real
+	// DACL check (platform-env.assertMode -> test/win-private.cjs), never by weakening the assertion.
+	assertMode(argv[identityIdx + 1], 0o600);
 
 	// The child environment is isolated from the parent's secrets and Pi setup.
 	const childEnv = JSON.parse(fs.readFileSync(envOut, "utf8"));
@@ -219,7 +222,10 @@ test("start refuses an identity target replaced by a symlink and leaves the vict
 	const victim = path.join(dir, "victim.md");
 	fs.writeFileSync(victim, "keep\n");
 	fs.symlinkSync(victim, path.join(island.root, "identity.md"));
-	await assert.rejects(() => engine.start(), /symlink|refusing/);
+	// Same refusal, platform message (as isolation.test.cjs:201): POSIX names the symlink, the Windows helper names the
+	// reparse point it refused. Only the message is platform-correct; the refusal itself and the victim checks below are
+	// unchanged, so nothing is written through the link on either OS.
+	await assert.rejects(() => engine.start(), win ? /reparse/ : /symlink|refusing/);
 	assert.equal(fs.readFileSync(victim, "utf8"), "keep\n");
 	assert.ok(fs.lstatSync(path.join(island.root, "identity.md")).isSymbolicLink());
 });

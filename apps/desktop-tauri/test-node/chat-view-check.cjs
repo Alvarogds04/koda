@@ -358,6 +358,8 @@ test('compact island keyboard activation: Enter and Space only', () => {
 const css = fs.readFileSync(path.join(__dirname, '..', 'frontend', 'style.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
 const html = fs.readFileSync(path.join(__dirname, '..', 'frontend', 'index.html'), 'utf8');
 const rule = sel => { const m = css.match(new RegExp('(?:^|\\n)' + sel.replace(/[.*+?^${}()|[\]\\#]/g, '\\$&') + '\\s*\\{([^}]*)\\}')); return m ? m[1] : ''; };
+// every block for one selector, in stylesheet order: #chat-body has several (layout, transition, the Coucou card)
+const rules = sel => [...css.matchAll(new RegExp('(?:^|\\n)' + sel.replace(/[.*+?^${}()|[\]\\#]/g, '\\$&') + '\\s*\\{([^}]*)\\}', 'g'))].map(m => m[1]);
 
 test('column: the chat padding is symmetric (the 60px R6 gutter of the horizontal header is gone)', () => {
   const pad = rule('#chat').match(/padding:\s*([^;]+);/);
@@ -437,8 +439,27 @@ test('S14 validation: the mic is a full 44px disc and the send disc is a solid p
   assert.ok(dim && Number(dim[1]) >= 0.6, 'an empty draft only dims the white disc (>= .6), it does not turn it grey: ' + (dim && dim[1]));
   assert.doesNotMatch(last('#chat-send:not(:disabled)::after') + last('#chat-send::after'), /opacity:\s*0?\.[0-8]/, 'enabled is fully opaque');
 });
-test('S14 focus: the chat field\'s focus is a 1px accent edge (never the lime halo)', () => {
-  assert.match(rule('#chat-input:focus-visible'), /outline:\s*1px solid var\(--island-live\)/);
+test('S3 (04 chat 3): the chat field and the model row wear the notch\'s one 2px #fff ring, never the lime halo', () => {
+  assert.match(rule('#chat-input:focus-visible'), /outline:\s*2px solid #fff/, 'the field: 2px #fff');
+  assert.doesNotMatch(rule('#chat-input:focus-visible'), /--island-live/, 'no second accent ring on the field');
+  assert.match(rule('#chat-model-btn:focus-visible'), /outline:\s*2px solid #fff/, 'the model button: 2px #fff too, not blue');
+});
+
+test('S3 (04 chat 3): radii stay on the token scale — the card body 18 (--radius-2xl), the human bubble 12 (--radius-xl)', () => {
+  const body = rules('#chat-body').find(r => /border-radius/.test(r));
+  assert.ok(body, 'the card body has a radius');
+  assert.match(body, /border-radius:\s*18px/, '#chat-body is 18, not 20');
+  const bubble = rules('#chat-log li.user').filter(r => /border-radius/.test(r));
+  assert.ok(bubble.length > 0, 'the bubble has a radius');
+  for (const b of bubble) assert.doesNotMatch(b, /border-radius:\s*14px/, 'no block keeps the off-scale 14');
+  assert.match(bubble[bubble.length - 1], /border-radius:\s*12px/, 'the effective bubble radius is 12');
+});
+
+test('S3 (04 chat 3): the help text says the second Escape folds the island, the same word as the «Plegar» button', () => {
+  const help = /id="chat-help"[^>]*>([^<]*)</.exec(html);
+  assert.ok(help, '#chat-help exists');
+  assert.match(help[1], /otro Escape pliega la isla/, 'folds, never «cierra»');
+  assert.doesNotMatch(help[1], /cierra la isla/);
 });
 
 test('S14 header: an undrawn state is not drawn at all (no empty dot-separator), and the header keeps its height', () => {

@@ -549,16 +549,8 @@ test('wiring: ONE delegated tooltip in the island — shows on hover AND keyboar
 });
 
 // ======== T1 · S1 (01 oculta A) + S2 (02 compacta A) ========================================================================
-test('S1 edgeStripView: ONE strip whose colour is the most urgent state (reposo gris / pregunta cian / permiso ámbar / listo verde) and never colour alone', () => {
-  assert.deepEqual(L.edgeStripView({}), { state: 'rest', pulse: false, aria: 'Koda, en reposo' });
-  assert.deepEqual(L.edgeStripView({ pending: 'question' }), { state: 'question', pulse: true, aria: 'Koda: una pregunta espera' });
-  assert.deepEqual(L.edgeStripView({ pending: 'approval' }), { state: 'approval', pulse: true, aria: 'Koda: un permiso espera' });
-  assert.deepEqual(L.edgeStripView({ finished: true }), { state: 'finished', pulse: true, aria: 'Koda: algo terminó' });
-  assert.equal(L.edgeStripView({ pending: 'question', finished: true }).state, 'question', 'pending beats finished');
-  assert.equal(L.edgeStripView({ pending: 'approval', finished: true }).state, 'approval');
-  assert.equal(L.edgeStripView({ pending: 'question', queued: 2 }).aria, 'Koda: 3 preguntas esperan', 'the aria says how many wait (the colour cannot)');
-  assert.equal(L.edgeStripView(null).state, 'rest');
-  assert.deepEqual(L.EDGE_STRIP, { w: 160, h: 3, zone: 8 });
+test('isla-cualquier-lado S2: the hidden edge thread is retired (no edgeStripView, no EDGE_STRIP)', () => {
+  assert.equal(L.edgeStripView, undefined); assert.equal(L.EDGE_STRIP, undefined);
 });
 test('S3 compactView: compact is ONLY the disc — a state badge and never a widened bar (island-free-drag L6/L7)', () => {
   const rows = [row({ id: 's-0000000a', kindLabel: 'Pi', cwd: 'workspace', state: 'running', tools: { total: 2, steps: [{ index: 1, name: 'read', state: 'done' }, { index: 2, name: 'bash', state: 'running' }] }, color: 'green' }),
@@ -593,18 +585,18 @@ test('HU-006 S4 + island-free-drag S5 compactView: a notice never widens the isl
     assert.deepEqual([v.activity, v.badge], ['', ''], JSON.stringify(bad));
   }
 });
-test('S1/S2 wiring + CSS: the strip element, the 8px activation zone (24px hidden offset), the mini row and the activity line exist', () => {
+test('S2 wiring + CSS: the mini row and the activity line exist; the edge thread and the hidden offset are gone (isla-cualquier-lado S2)', () => {
   const html = fs.readFileSync(path.join(frontend, 'index.html'), 'utf8');
-  for (const id of ['edge-strip', 'compact-activity', 'compact-badge']) assert.match(html, new RegExp(`id="${id}"`), id);
+  for (const id of ['compact-activity', 'compact-badge']) assert.match(html, new RegExp(`id="${id}"`), id);
+  assert.doesNotMatch(html, /id="edge-strip"/, 'no hidden edge thread');
   const isl = fs.readFileSync(path.join(frontend, 'island.js'), 'utf8');
-  assert.match(isl, /24 \* conceal\.target/, 'hidden = 24px up: 8px of activation zone stay under the pointer');
-  assert.doesNotMatch(isl, /28 \* conceal/, 'the old 4px slice is gone');
+  assert.doesNotMatch(isl, /conceal/, 'the island is never slid up into the edge');
   assert.match(isl, /abito:compact-view/);
   assert.match(isl, /compactW/);
-  assert.equal(decls('#edge-strip').width, '160px'); assert.equal(decls('#edge-strip').height, '3px');
-  assert.equal(decls('#capsule[data-edge-hidden="true"] #island').background, 'transparent', 'only the coloured thread is seen, not the black slice');
-  for (const st of ['rest', 'question', 'approval', 'finished']) assert.ok(decls(`#edge-strip[data-state="${st}"]`).background, st);
-  assert.match(css, /@media \(prefers-reduced-motion: no-preference\) \{[^}]*#edge-strip\[data-pulse="true"\]/, 'the slow pulse exists only when motion is allowed');
+  const nusa = fs.readFileSync(path.join(frontend, 'island-nusa.css'), 'utf8');
+  for (const [name, text] of [['vendor island.css', css], ['island-nusa.css', nusa]]) {
+    assert.doesNotMatch(text.replace(/\/\*[\s\S]*?\*\//g, ''), /#edge-strip|data-edge-hidden|edge-pulse/, name + ': no hidden-state rules left');
+  }
   assert.equal(decls('#mini-grid')['flex-direction'], 'row', 'a row of minis, not a 2x2 grid');
   assert.equal(decls('#capsule[data-phase="compact"] #mini-grid[data-count]:not([data-count="0"])').display, 'flex');
   assert.ok(decls('.mini-more'));
