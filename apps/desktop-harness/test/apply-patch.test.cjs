@@ -239,6 +239,28 @@ test('hook: a forged allow on any lossy card prints nothing; deny still denies; 
   }
 });
 
+test('L27 R1-001: Move onto a destination that already exists says it replaces it (still approvable); a new destination is unchanged', t => {
+  fs.writeFileSync(abs('ocupado.txt'), 'viejo\n');
+  t.after(() => fs.rmSync(abs('ocupado.txt'), { force: true }));
+  const mv = `apply_patch: mover ${q(abs('uno.txt'))} → ${q(abs('ocupado.txt'))} (reemplaza el archivo que ya existe)`;
+  assert.deepEqual(card(['*** Update File: uno.txt', '*** Move to: ocupado.txt']), { filePreview: true, text: mv, lossy: false }, 'a pure rename');
+  assert.deepEqual(card(['*** Update File: uno.txt', '*** Move to: ocupado.txt', '@@', '-a', '+b']),
+    { filePreview: true, text: `${mv}; modificar: ${q('a')} → ${q('b')}`, lossy: false }, 'a rename with a hunk');
+  assert.deepEqual(card(['*** Update File: uno.txt', '*** Move to: libre.txt']),
+    { filePreview: true, text: `apply_patch: mover ${q(abs('uno.txt'))} → ${q(abs('libre.txt'))}`, lossy: false }, 'a missing destination keeps «mover a → b»');
+});
+
+test('L27 R3-002: cards that are never approvable stay inside the card bound even with long paths', () => {
+  const long = n => `mi carpeta "${n}"/`.repeat(9) + 'nota.txt'; // 152 bytes: under the 160-byte path cap, JSON quoting grows it
+  const several = card(['*** Add File: ' + long('a'), '+a', '*** Add File: ' + long('b'), '+b', '*** Update File: ' + long('c'), '*** Move to: ' + long('d'), '@@', '-x', '+y']);
+  assert.equal(several.lossy, true); assert.equal(several.reason, 'varios archivos');
+  assert.ok([...several.text].length <= 390 && Buffer.byteLength(several.text) <= 1200, several.text);
+  assert.match(several.text, /^apply_patch: varios archivos/); assert.doesNotMatch(several.text, /ruta oculta/, 'the paths are readable, only long');
+  const out = card(['*** Update File: ' + long('e'), '*** Move to: ../' + long('f'), '@@', '-a', '+b']);
+  assert.equal(out.lossy, true); assert.equal(out.reason, 'fuera de la carpeta de sesión');
+  assert.ok([...out.text].length <= 390 && Buffer.byteLength(out.text) <= 1200, out.text);
+});
+
 test('a secret-looking or over-long path stays hidden like Claude\'s (nothing of it shown), also inside a several-files list', () => {
   const tok = 'SECRETDIRabcdefghijklmnopqrstuvwxyzABCDEFGH0123456789/a.txt';
   assert.deepEqual(card(['*** Add File: ' + tok, '+x']), { ...BASE, reason: 'ruta no segura (secretos ocultos)' });

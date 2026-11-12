@@ -112,6 +112,10 @@ function cut(snippets) {
   return { trimmed, shown };
 }
 // Reserve room for Spanish asker/fallback, also accounting for JSON escape expansion.
+// L27 R3-002: a card that is never approvable still has to fit the question; past the cap only its short form is shown.
+function fit(text, short) {
+  return [...text].length > 350 || Buffer.byteLength(text) > 1000 ? short : text;
+}
 function bounded(base, head, full, trimmed) {
   if ([...full].length > (trimmed ? 350 : 390) || Buffer.byteLength(full) > 1200) return { ...base, text: head, reason: 'vista previa recortada' };
   return { filePreview: true, text: full, lossy: trimmed, ...(trimmed ? { reason: 'contenido recortado (8 líneas / 160 bytes)' } : {}) };
@@ -183,34 +187,40 @@ function describePatchPermission(input, cwd) {
     const entry = vs => vs.map(label).join(' → ');
     if (files.length > 1) { // 1a: several files are never approvable; the card lists up to 3
       const more = files.length - MAX_EDITS;
-      return { ...base, text: `apply_patch: varios archivos: ${verdicts.slice(0, MAX_EDITS).map(entry).join(', ')}${more > 0 ? ` y ${more} más` : ''}`, reason: 'varios archivos' };
+      return { ...base, text: fit(`apply_patch: varios archivos: ${verdicts.slice(0, MAX_EDITS).map(entry).join(', ')}${more > 0 ? ` y ${more} más` : ''}`, `apply_patch: varios archivos (${files.length})`), reason: 'varios archivos' };
     }
     const [file] = files, [vs] = verdicts;
     const hidden = vs.find(v => !v.shown);
     if (hidden) return { ...base, reason: hidden.reason };
-    const head = file.op === 'delete' ? `apply_patch: borrar ${label(vs[0])}` : file.move !== null ? `apply_patch: mover ${entry(vs)}` : `apply_patch: ${label(vs[0])}`;
+    // L27 R1-001: Codex's Move overwrites a destination that already exists, so the card says so (lstat only, like Add File).
+    let replaces = false;
+    if (file.move !== null && vs[1].normalized !== vs[0].normalized) try { fs.lstatSync(vs[1].normalized); replaces = true; } catch { replaces = false; }
+    const head = file.op === 'delete' ? `apply_patch: borrar ${label(vs[0])}` : file.move !== null
+      ? `apply_patch: mover ${entry(vs)}${replaces ? ' (reemplaza el archivo que ya existe)' : ''}` : `apply_patch: ${label(vs[0])}`;
+    // The text of a card without «Aprobar»: the head, or only the operation when the paths are too long to fit.
+    const short = fit(head, file.op === 'delete' ? 'apply_patch: borrar' : file.move !== null ? 'apply_patch: mover' : 'apply_patch');
     const flagged = vs.find(v => v.reason);
-    if (flagged) return { ...base, text: head, reason: flagged.reason };
-    if (file.hunks.length > MAX_EDITS) return { ...base, text: head, reason: 'cambios recortados (máximo 3)' };
+    if (flagged) return { ...base, text: short, reason: flagged.reason };
+    if (file.hunks.length > MAX_EDITS) return { ...base, text: short, reason: 'cambios recortados (máximo 3)' };
     // Scan EVERY body line (+, -, context, @@ anchors) before anything is cut.
     const views = file.hunks.map(hunkView);
     const scan = file.op === 'add' ? [file.add.join('\n')] : file.hunks.flatMap(h => [h.anchor || '',
       h.lines.filter(l => l.t !== '+').map(l => l.s).join('\n'), h.lines.filter(l => l.t !== '-').map(l => l.s).join('\n')]);
-    if (scan.some(secret)) return { ...base, text: `${head}; contenido: [REDACTED] (secretos ocultos)`, reason: 'contenido oculto' };
-    if (views.some(v => v.blind)) return { ...base, text: head, reason: 'ubicación del cambio no visible' };
-    if (file.op === 'delete' || (file.op === 'update' && !views.length)) return bounded(base, head, head, false);
+    if (scan.some(secret)) return { ...base, text: `${short}; contenido: [REDACTED] (secretos ocultos)`, reason: 'contenido oculto' };
+    if (views.some(v => v.blind)) return { ...base, text: short, reason: 'ubicación del cambio no visible' };
+    if (file.op === 'delete' || (file.op === 'update' && !views.length)) return bounded(base, short, head, false);
     const snippets = file.op === 'add' ? scan : views.flatMap(v => [...(v.anchor !== null ? [v.anchor] : []), v.old, v.neu]);
     const { trimmed, shown } = cut(snippets);
     if (file.op === 'add') {
       // L22 D2b: Codex's Add File overwrites a file that already exists, so the card says so (lstat only: no content is read).
       let exists = false;
       try { fs.lstatSync(vs[0].normalized); exists = true; } catch { exists = false; }
-      return bounded(base, head, `${head}; ${exists ? 'reemplazar el contenido por' : 'añadir'}: ${quote(shown[0])}`, trimmed);
+      return bounded(base, short, `${head}; ${exists ? 'reemplazar el contenido por' : 'añadir'}: ${quote(shown[0])}`, trimmed);
     }
     let i = 0;
     const parts = views.map(v => `${v.anchor !== null ? `en ${quote(shown[i++])}: ` : ''}${quote(shown[i++])} → ${quote(shown[i++])}${v.eof ? ' (al final del archivo)' : ''}`);
     const hunks = parts.length === 1 ? parts[0] : parts.map((p, n) => `${n + 1}. ${p}`).join('; ');
-    return bounded(base, head, `${head}; modificar: ${hunks}`, trimmed);
+    return bounded(base, short, `${head}; modificar: ${hunks}`, trimmed);
   } catch { return base; }
 }
 module.exports = { describeFilePermission, describePatchPermission, inside, sensitivePath, secret, canonical, MAX_LINES, MAX_BYTES, MAX_PATH_BYTES, MAX_EDITS };
