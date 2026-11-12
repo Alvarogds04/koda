@@ -7,7 +7,7 @@
 //!
 //! Contract:
 //! - closed key list: any other name is refused at parse time;
-//! - NO plaintext fallback: with no Secret Service the answer is `unavailable`, nothing is
+//! - NO plaintext fallback: with no reachable keychain the answer is `unavailable`, nothing is
 //!   written anywhere else and nothing is retried;
 //! - the WebView can only `set`, `clear` or ask `present`; the value is never read back to it
 //!   and never appears in `Debug`, errors or answers.
@@ -61,7 +61,7 @@ pub const MAX_VALUE_BYTES: usize = 2048;
 /// error string must never be able to carry a value into a log or an answer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StoreError {
-    /// No keychain/Secret Service reachable or locked out.
+    /// No OS keychain reachable or locked out.
     Unavailable,
     /// The keychain answered but refused the operation.
     Failed,
