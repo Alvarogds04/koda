@@ -34,6 +34,8 @@ const { defaultIslandRoot } = require("./isolation.cjs");
 // #386: continuous conversation rotation (opt-in via config `rotation`).
 const { SessionRotator } = require("./rotation.cjs");
 const { IslandServer } = require("./server.cjs");
+// K2-13: Minikodas (recipes, runs in their own engine roots, scheduler) and the «Hoy» inbox.
+const { Minikodas } = require("./minikodas/index.cjs");
 
 const PROTOCOL = "island-agent/1";
 const SESSION_FILE = "session.json";
@@ -331,6 +333,7 @@ class Daemon extends EventEmitter {
 	 * @param {object} [options.engineOptions]  extra AgentEngine options (tests: fake command)
 	 * @param {object} [options.accountsOptions]
 	 * @param {object} [options.serverOptions]  extra IslandServer options (limits)
+	 * @param {object} [options.minikodasOptions]  extra Minikodas options (tests: fake engine command, scrypt)
 	 */
 	constructor(options = {}) {
 		super();
@@ -457,6 +460,7 @@ class Daemon extends EventEmitter {
 		}
 		this.agents = this.makeAgents(cfg);
 		this.agentHooks = this.makeAgentHooks();
+		this.minikodas = this.makeMinikodas(cfg);
 		this.token = IslandServer.generateToken();
 		// #386: rotation runs only when the user opted in; the summary travels
 		// with the user's NEXT prompt, never as a daemon-issued model request.
@@ -480,6 +484,7 @@ class Daemon extends EventEmitter {
 			connectorsControl: this.connectorsControl,
 			agents: this.agents,
 			agentHooks: this.agentHooks,
+			minikodas: this.minikodas,
 			sessions: { snapshot: async () => scanSessions({ scopePid: sessionScope(this.env) }) }, // #360: read-only /proc discovery (L52: was never wired)
 			settings: { get: () => ({ hotkey: this.getHotkey() }), setHotkey: (value) => this.persistHotkey(value) },
 			paused: cfg.paused === true, // #379: the persisted pause is restored at every boot
@@ -493,6 +498,8 @@ class Daemon extends EventEmitter {
 		});
 		const { endpoint } = await this.server.start();
 		this.endpoint = endpoint;
+		// K2-13: schedules arm only once the server is up; nothing runs before an approved recipe.
+		this.minikodas.start();
 		this.startedAt = Date.now();
 		// R8: the boot-time parent pid lets a later launch detect reparenting
 		// (an orphan under systemd --user lands on the user subreaper, ppid != 1).
@@ -706,6 +713,26 @@ class Daemon extends EventEmitter {
 		return createAgentHooks({ home, agents: this.agents, nodeExe: process.execPath, log: (line) => this.log(line), ...(this.options.agentHooksOptions ?? {}) });
 	}
 
+	/**
+	 * K2-13 Minikodas. Each Minikoda runs in its own engine root under `<island>/minikodas/engines/<id>` with
+	 * the same engine command as the chat (`cfg.command`, plain `pi` in release/0.2; the Gentle Shell command
+	 * once K2-05 lands). The model is validated against the accounts Koda already has; the default is the
+	 * chat's active profile. The global pause (#379) refuses launches and skips scheduled ticks.
+	 */
+	makeMinikodas(cfg) {
+		const { engine: engineOverrides, ...rest } = this.options.minikodasOptions ?? {};
+		return new Minikodas({
+			islandRoot: this.root,
+			accountsRoot: path.join(this.root, "accounts"),
+			accounts: this.accounts,
+			profiles: this.profiles,
+			engine: { command: cfg.command, commandArgs: [], env: this.env, ...(engineOverrides ?? {}) },
+			isPaused: () => this.server?.paused === true,
+			log: (line) => this.log(line),
+			...rest,
+		});
+	}
+
 	/** The persisted global hotkey (canonical) or null. */
 	getHotkey() {
 		return this.cfg?.hotkey ?? null;
@@ -779,6 +806,9 @@ class Daemon extends EventEmitter {
 		this.connectorsControl = undefined;
 		// The connector host removes its MCP source before the engine and daemon projection stop.
 		await this.connectorHost?.stop().catch(() => {});
+		// K2-13: timers stop and runs in flight are cancelled (recorded as failed runs) before the server goes.
+		await this.minikodas?.stop().catch(() => {});
+		this.minikodas = undefined;
 		await this.server?.close().catch(() => {});
 		await this.engine?.stop().catch(() => {});
 		// After the engine stop, so pi is gone before its MCP capability file is.

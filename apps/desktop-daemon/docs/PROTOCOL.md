@@ -559,3 +559,52 @@ Only one setup flow may be active. Catalog setup has at most eight fields; promp
 The error enum also retains existing codes such as `not_busy` and `unknown_ask`; error strings and raw host detail are never sent.
 
 **Grave same-UID note (next to the agents invariant).** `connectors_approve` is a privileged command reachable only through the authenticated island channel (not an MCP/engine tool, not a CLI); but the channel token lives in `<island>/runtime/session.json` (0600) and the Abito engine agent, Claude Code and Codex run as the same user and can read it: an approval card the agent can click is NOT a human gate. This matters MORE for approvals than for agents. Closing it needs the daemon launched by the island with an inherited socket (security follow-up, not done).
+
+## Minikodas and «Hoy» frames (additive, K2-13)
+
+Implementation: `src/protocol.cjs` (allowlist and DTOs), `src/server.cjs` (`handleMinikodas`), `src/minikodas/` (service, runner, kit, scheduler, «Hoy»). Without a Minikodas service every verb answers `unavailable`.
+
+### Client → server
+
+| type | fields | reply |
+| --- | --- | --- |
+| `minikodas_list` | – | `minikodas` (no prompts) |
+| `minikoda_get` | `id` | `minikoda` (with prompt) |
+| `minikoda_create` | `recipe{id?, name, when, reads{source}, kit[], prompt, model?{provider, id, accountId?}, never[]}` | `minikoda` with `status: "draft"`; broadcast `minikodas` |
+| `minikoda_approve_create` | `id` | `minikoda` with `status: "active"` (the schedule is armed); broadcast `minikodas` |
+| `minikoda_delete` | `id` | `minikoda_deleted{id}`; broadcast `minikodas` (its run is cancelled, its engine root removed; «Hoy» items stay) |
+| `minikoda_launch` | `id` | `minikoda_launched{id, started, reason?: running\|busy\|paused\|stopped}`; the run lands later as a `hoy` broadcast. Refused with `paused` while the global pause is on |
+| `hoy_list` | – | `hoy` |
+| `hoy_approve` | `id` (uuid), `pin` (6-12 digits) | `hoy_decided{id, status: "approved"}` and ONE broadcast `hoy_approved`; or `error` |
+| `hoy_reject` | `id` | `hoy_decided{id, status: "rejected"}`; never executes, needs no PIN |
+| `pin_status` | – | `pin_status` |
+| `pin_set` | `pin`, `old?` | `pin_status`. Sets the PIN once; changing it requires `old` (the current PIN, counted toward the lock) |
+
+`id` of a Minikoda: `[a-z0-9][a-z0-9-]{0,39}`. A recipe is validated twice: shape in `protocol.cjs`, then fully in the daemon (minimum period 60 s, `at` in the future, model against the configured accounts). A `kit` outside `source_read, inbox_propose`, a `never` other than exactly `buy, sell, send, delete`, or any unknown field is `bad_request`, and the store is left unchanged.
+
+### Server → client
+
+| type | fields |
+| --- | --- |
+| `minikodas` | `minikodas[]` of `{id, name, when, reads, kit, model, never, status: draft\|active, running, createdAt, lastRun?{at, outcome: done\|failed, reason?}}` |
+| `minikoda` | `minikoda` = the same plus `prompt` |
+| `hoy` | `items[]` of `{id, minikoda, kind: result\|proposal\|error, status: pending\|approved\|rejected, text, createdAt, action?: buy\|sell\|send, target?, decidedAt?}` (pending proposals first, then newest; ≤ 100), `truncated` |
+| `hoy_approved` | `id, minikoda, action, target, executedAt`: broadcast once per executed approval |
+| `hoy_decided` | `id, status` |
+| `pin_status` | `set, locked, lockedUntil?, left?` (never the hash, salt or PIN) |
+| `minikoda_launched`, `minikoda_deleted` | see above |
+
+New error codes: `unknown_minikoda, not_active, not_pending, exists, limit, model_unavailable, unknown_item, pin_wrong, pin_locked, pin_not_set, pin_exists, pin_invalid`.
+
+### Semantics
+
+- **«Hoy» is built only from what the daemon stored.** It is never built from the Minikoda's text. A proposal exists only if the kit's `inbox_propose` parked it, and the runner re-validated it (buy, sell or send only). Whatever the model claims in its final text stays plain `result` text.
+- **Approve-later.** A proposal executes only on `hoy_approve` with the right PIN. The PIN is stored as a salted scrypt hash (N=2^15, r=8, p=1) in `<island>/minikodas/hoy/pin.json` (0600).
+  - 5 wrong PINs in a row lock approvals and PIN changes for 15 minutes. The lock is persisted, so a restart does not reset it.
+  - A damaged `pin.json` counts as locked.
+  - A malformed PIN is `bad_request` and does not count as a try.
+  - Approvals run one at a time; a second approval of the same item is `not_pending` and never executes again.
+  - `hoy_reject` never executes.
+- **What «execute» means in K2-13.** The item is marked `approved`, one line is appended to `<island>/minikodas/hoy/approved.jsonl` and `hoy_approved` is broadcast. Real buy, sell or send integrations do not exist yet; nothing leaves the machine.
+- **Failed runs.** A crash, timeout, start failure, unavailable model or cancelled run lands as a `kind: "error"` item and in `lastRun`. It is never silent.
+- **Same-UID limit.** The kit has no tool that reads files. The «Hoy» store, the PIN hash and the daemon token live outside every Minikoda engine root, so a Minikoda cannot reach them through its kit. But any process of the same OS user can read them, including the PIN hash, which can then be brute-forced offline, and the session token, which can then send `hoy_approve`. The PIN is not a real lock against a same-user process until the agent runs as a separate OS user (K2-14 criterion 3), as with the `connectors_approve` note above.

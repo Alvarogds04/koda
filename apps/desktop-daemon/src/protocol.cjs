@@ -15,6 +15,7 @@
 const { SCHEMA: CONNECTORS_SCHEMA, buildCatalog, buildConnectors } = require("./connectors.cjs");
 const { SCHEMA: MCP_IMPORT_SCHEMA, buildFiles, buildServers } = require("./mcp-import.cjs");
 const { SCHEMA: SESSIONS_SCHEMA, buildSessions } = require("./sessions.cjs");
+const { validateRecipe, recipeToJson, ID_PATTERN: MINIKODA_ID } = require("./minikodas/recipe.cjs");
 
 const PROTOCOL = "island-agent/1";
 
@@ -363,10 +364,52 @@ function validateClientFrame(raw) {
 		case "auth_cancel":
 			if (!isString(raw.flowId, 128)) return undefined;
 			return { type: "auth_cancel", flowId: raw.flowId };
+		// ----- K2-13 Minikodas and «Hoy» -----
+		case "minikodas_list":
+		case "hoy_list":
+		case "pin_status":
+			return { type: raw.type };
+		case "minikoda_get":
+		case "minikoda_approve_create":
+		case "minikoda_delete":
+		case "minikoda_launch":
+			if (!isMinikodaId(raw.id)) return undefined;
+			return { type: raw.type, id: raw.id };
+		case "minikoda_create": {
+			// Shape only (the daemon re-validates with its own minimum period, the clock and the accounts).
+			let recipe;
+			try {
+				recipe = validateRecipe(raw.recipe, { draft: true, minEveryMs: 1 });
+			} catch {
+				return undefined;
+			}
+			const out = { name: recipe.name, when: { ...recipe.when }, reads: { ...recipe.reads }, kit: [...recipe.kit], prompt: recipe.prompt, never: [...recipe.never] };
+			if (recipe.id !== undefined) out.id = recipe.id;
+			if (recipe.model !== undefined) out.model = { ...recipe.model };
+			return { type: "minikoda_create", recipe: out };
+		}
+		case "hoy_approve":
+			// The PIN travels only here and in pin_set; it is never logged, echoed or stored in clear.
+			if (!isHoyId(raw.id) || !isPin(raw.pin)) return undefined;
+			return { type: "hoy_approve", id: raw.id, pin: raw.pin };
+		case "hoy_reject":
+			if (!isHoyId(raw.id)) return undefined;
+			return { type: "hoy_reject", id: raw.id };
+		case "pin_set": {
+			if (!isPin(raw.pin)) return undefined;
+			if (raw.old !== undefined && !isPin(raw.old)) return undefined;
+			return { type: "pin_set", pin: raw.pin, ...(raw.old !== undefined ? { old: raw.old } : {}) };
+		}
 		default:
 			return undefined;
 	}
 }
+
+const HOY_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const isMinikodaId = (v) => typeof v === "string" && MINIKODA_ID.test(v);
+const isHoyId = (v) => typeof v === "string" && HOY_ID.test(v);
+/** Shape only (6-12 digits); the inbox applies the same rule. Wrong shapes are bad_request and never count as a try. */
+const isPin = (v) => typeof v === "string" && /^[0-9]{6,12}$/.test(v);
 
 /**
  * Parses one LF-delimited line into a frame. `hello` is only accepted when
@@ -400,6 +443,9 @@ function encodeServerFrame(frame, seq) {
 const EMITTED_ERROR_CODES = new Set([
 	"bad_request", "busy", "not_busy", "unavailable", "rate_limited", "unknown_ask", "paused", "failed",
 	"unknown_proposal", "digest_mismatch", "needs_setup", "signin_failed", "store_not_private",
+	// K2-13 Minikodas and «Hoy»
+	"unknown_minikoda", "not_active", "not_pending", "exists", "limit", "model_unavailable",
+	"unknown_item", "pin_wrong", "pin_locked", "pin_not_set", "pin_exists", "pin_invalid",
 ]);
 // Recognized by the host's broader enum, but collapsed to stale/failed before H2c can emit them.
 const RESERVED_CONNECTOR_ERROR_CODES = new Set(["already_decided", "session_mismatch", "pending_full"]);
@@ -686,6 +732,83 @@ function hooksFrame(data) {
 	return frame;
 }
 
+// ----- K2-13 Minikodas and «Hoy» frames -----------------------------------------------------------
+
+const MINIKODAS_EMIT = Object.freeze({ maxMinikodas: 32, maxHoyItems: 100, maxHoyTextChars: 4000 });
+const RUN_OUTCOMES = new Set(["done", "failed"]);
+const HOY_KINDS = new Set(["result", "proposal", "error"]);
+const HOY_STATUSES = new Set(["pending", "approved", "rejected"]);
+const PROPOSAL_ACTIONS_EMIT = new Set(["buy", "sell", "send"]);
+const minikodasFail = () => {
+	throw new Error("minikodas frame invalid");
+};
+
+/** One Minikoda, rebuilt through the recipe validator. `withPrompt` only for minikoda_get / create replies. */
+function minikodaDto(m, withPrompt) {
+	if (!isObject(m) || (m.status !== "draft" && m.status !== "active")) minikodasFail();
+	let r;
+	try {
+		r = recipeToJson(validateRecipe({ id: m.id, name: m.name, when: m.when, reads: m.reads, kit: m.kit, prompt: typeof m.prompt === "string" ? m.prompt : "-", model: m.model, never: m.never }, { minEveryMs: 1 }));
+	} catch {
+		minikodasFail();
+	}
+	const out = { id: r.id, name: r.name, when: r.when, reads: r.reads, kit: r.kit, model: r.model, never: r.never, status: m.status, running: m.running === true, createdAt: clip(m.createdAt, 40) };
+	if (withPrompt) {
+		if (typeof m.prompt !== "string") minikodasFail();
+		out.prompt = r.prompt;
+	}
+	if (isObject(m.lastRun) && RUN_OUTCOMES.has(m.lastRun.outcome)) {
+		out.lastRun = { at: clip(m.lastRun.at, 40), outcome: m.lastRun.outcome, ...(typeof m.lastRun.reason === "string" ? { reason: clip(m.lastRun.reason, 32) } : {}) };
+	}
+	return out;
+}
+
+/** Reply/broadcast `minikodas`: the stored Minikodas (no prompts). THROWS on invalid data (the server answers failed). */
+function minikodasFrame(items) {
+	if (!Array.isArray(items) || items.length > MINIKODAS_EMIT.maxMinikodas) minikodasFail();
+	return { type: "minikodas", minikodas: items.map((m) => minikodaDto(m, false)) };
+}
+
+/** Reply to minikoda_get / minikoda_create / minikoda_approve_create: one Minikoda with its prompt. */
+const minikodaFrame = (m) => ({ type: "minikoda", minikoda: minikodaDto(m, true) });
+
+/**
+ * Reply/broadcast `hoy`: built ONLY from the stored items (hoy.cjs), field by field. Pending proposals first,
+ * then the newest items, at most MINIKODAS_EMIT.maxHoyItems (`truncated` says when some were left out).
+ */
+function hoyFrame(items) {
+	if (!Array.isArray(items)) minikodasFail();
+	const rows = items.map((i) => {
+		if (!isObject(i) || !HOY_KINDS.has(i.kind) || !HOY_STATUSES.has(i.status) || typeof i.id !== "string" || !HOY_ID.test(i.id) || !isMinikodaId(i.minikoda)) minikodasFail();
+		const out = { id: i.id, minikoda: i.minikoda, kind: i.kind, status: i.status, text: clip(i.text, MINIKODAS_EMIT.maxHoyTextChars), createdAt: clip(i.createdAt, 40) };
+		if (i.kind === "proposal") {
+			if (!PROPOSAL_ACTIONS_EMIT.has(i.action)) minikodasFail();
+			out.action = i.action;
+			out.target = clip(i.target, 200);
+		}
+		if (typeof i.decidedAt === "string") out.decidedAt = clip(i.decidedAt, 40);
+		return out;
+	});
+	const pending = rows.filter((r) => r.kind === "proposal" && r.status === "pending").reverse();
+	const rest = rows.filter((r) => !(r.kind === "proposal" && r.status === "pending")).reverse();
+	const ordered = [...pending, ...rest];
+	return { type: "hoy", items: ordered.slice(0, MINIKODAS_EMIT.maxHoyItems), truncated: ordered.length > MINIKODAS_EMIT.maxHoyItems };
+}
+
+/** Broadcast after an approved proposal was executed (K2-13: recorded only; no real integration yet). */
+function hoyApprovedFrame(e) {
+	if (!isObject(e) || typeof e.itemId !== "string" || !HOY_ID.test(e.itemId) || !isMinikodaId(e.minikoda) || !PROPOSAL_ACTIONS_EMIT.has(e.action)) minikodasFail();
+	return { type: "hoy_approved", id: e.itemId, minikoda: e.minikoda, action: e.action, target: clip(e.target, 200), executedAt: clip(e.executedAt, 40) };
+}
+
+/** Reply to pin_status / pin_set: never the hash, the salt or the PIN. */
+function pinStatusFrame(s) {
+	const frame = { type: "pin_status", set: s?.set === true, locked: s?.locked === true };
+	if (frame.locked && Number.isSafeInteger(s?.lockedUntil)) frame.lockedUntil = s.lockedUntil;
+	if (!frame.locked && Number.isSafeInteger(s?.left) && s.left >= 0) frame.left = s.left;
+	return frame;
+}
+
 const list = (items, fn, max = 500) => (Array.isArray(items) ? items.slice(0, max).map(fn) : []);
 
 const accountsFrame = (items) => ({ type: "accounts", accounts: list(items, accountDto) });
@@ -895,6 +1018,12 @@ module.exports = {
 	MCP_IMPORT_EMIT,
 	SESSIONS_EMIT,
 	accountsFrame,
+	minikodasFrame,
+	minikodaFrame,
+	hoyFrame,
+	hoyApprovedFrame,
+	pinStatusFrame,
+	MINIKODAS_EMIT,
 	providersFrame,
 	modelsFrame,
 	profilesFrame,
