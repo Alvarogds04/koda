@@ -430,4 +430,33 @@ test('identity never collides with the installed apps', () => {
   assert.match(L.desktopText(), /Exec="@INSTALL_DIR@\/abito-island-launcher"/);
   assert.doesNotMatch(L.desktopText() + L.launcherText(), /abito-desktop|com\.abitog\.Abito\b(?!Tauri)/);
 });
+test('K2-13: a staged binary that carries the TTS path (espeak_ or piper_phonemize) fails verifyStage', () => {
+  for (const [file, marker] of [['abito-island', 'espeak_Synth'], ['abito-island', 'espeak_ng_InitializePath'], [L.TRANSCRIBE_BIN, 'piper_phonemize'], [L.TRANSCRIBE_BIN, 'espeak_']]) {
+    const d = fakeStage();
+    fs.appendFileSync(path.join(d, file), `${marker}\n`);
+    const r = readJson(path.join(d, 'receipt.json')); r.files[file] = L.sha256File(path.join(d, file));
+    fs.writeFileSync(path.join(d, 'receipt.json'), JSON.stringify(r));
+    const problems = L.verifyStage(d).join('\n');
+    assert.match(problems, /espeak|piper/, `${file} with ${marker} must fail: ${problems}`);
+    assert.doesNotMatch(problems, /hash differs/, 'the rule under test is the TTS one, not the hash');
+    fs.rmSync(d, { recursive: true });
+  }
+  // The scan is the same function the Windows receipt check uses, so a `.exe` name is covered here too.
+  const exeDir = T.make('abito-tts-exe-');
+  const exe = path.join(exeDir, 'abito-transcribe.exe');
+  fs.writeFileSync(exe, Buffer.concat([Buffer.alloc(1024, 1), Buffer.from('piper_phonemize')]));
+  assert.match(L.verifyTtsFree([{ name: 'abito-transcribe.exe', file: exe }]).join(), /piper/);
+  const cleanDir = T.make('abito-tts-clean-');
+  const clean = path.join(cleanDir, 'abito-island.exe');
+  fs.writeFileSync(clean, Buffer.alloc(5 * 1024 * 1024 + 7, 2));
+  assert.deepEqual(L.verifyTtsFree([{ name: 'abito-island.exe', file: clean }]), [], 'a binary without the symbols passes');
+  fs.rmSync(exeDir, { recursive: true, force: true });
+  fs.rmSync(cleanDir, { recursive: true, force: true });
+});
+
+test('K2-13: the Windows receipt check asks the same TTS-free rule before it accepts the artifacts', () => {
+  const stageWin = fs.readFileSync(path.join(crate, 'packaging/windows/stage-win.cjs'), 'utf8');
+  assert.match(stageWin, /verifyTtsFree/);
+});
+
 console.log(`packaging-check: ${passed} passed`);

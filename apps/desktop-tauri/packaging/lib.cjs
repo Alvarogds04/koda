@@ -270,6 +270,49 @@ function isUserAuditDir(dir) {
   }
   return true;
 }
+// ---- K2-13 (S8, S15; decisions L22/L23): no TTS path in a shipped binary -----------------------
+// sherpa-onnx's default libraries carry the text-to-speech path: piper_phonemize and espeak-ng (GPL-3.0). Koda only
+// recognises speech, so `build.rs` stages the upstream libraries built with -DSHERPA_ONNX_ENABLE_TTS=OFF and the crate
+// links those. A silent fallback to the TTS build (a build started outside apps/desktop-tauri, so .cargo/config.toml is
+// not read) used to happen without a trace; the bytes of the shipped binaries are the last word on it.
+const TTS_SYMBOLS = ['espeak_', 'piper_phonemize', 'piper-phonemize'];
+/**
+ * Streams a binary and returns the first TTS symbol it carries, or null. The file is read in chunks with an
+ * overlap (a release binary is hundreds of megabytes: it is never loaded whole).
+ */
+function ttsSymbolsIn(file) {
+  const needles = TTS_SYMBOLS.map((s) => Buffer.from(s, 'latin1'));
+  const overlap = Math.max(...needles.map((n) => n.length)) - 1;
+  const fd = fs.openSync(file, 'r');
+  try {
+    const size = fs.fstatSync(fd).size;
+    const chunk = Buffer.allocUnsafe(4 * 1024 * 1024 + overlap);
+    let carry = Buffer.alloc(0);
+    for (let offset = 0; offset < size; offset += 4 * 1024 * 1024) {
+      const read = fs.readSync(fd, chunk, 0, chunk.length, offset);
+      if (read <= 0) break;
+      const window = Buffer.concat([carry, chunk.subarray(0, read)]);
+      for (let i = 0; i < needles.length; i += 1) if (window.includes(needles[i])) return TTS_SYMBOLS[i];
+      carry = window.subarray(window.length - overlap);
+    }
+  } finally {
+    fs.closeSync(fd);
+  }
+  return null;
+}
+/**
+ * The TTS-free problems of `[{name, file}]`: empty when every named binary is clean. A missing file is the caller's
+ * problem (existence is checked where the file set is checked), so it is skipped here.
+ */
+function verifyTtsFree(entries) {
+  const problems = [];
+  for (const { name, file } of entries) {
+    const found = ttsSymbolsIn(file);
+    if (found) problems.push(`${name} contains «${found}»: it carries sherpa-onnx's TTS path (espeak-ng GPL-3.0 / piper_phonemize); build from apps/desktop-tauri, where .cargo/config.toml links the TTS-free archives`);
+  }
+  return problems;
+}
+
 function verifyStage(dir, { sourceCrate } = {}) {
   const problems = [];
   const receiptPath = path.join(dir, 'receipt.json');
@@ -312,6 +355,10 @@ function verifyStage(dir, { sourceCrate } = {}) {
     if (sourceCrate && bytes.includes(Buffer.from(sourceCrate))) problems.push(`${TRANSCRIBE_BIN} embeds the source-tree path`);
     if (POSIX_MODES() && !(fs.statSync(helper).mode & 0o100)) problems.push(`${TRANSCRIBE_BIN} is not executable`);
   }
+  // K2-13: the two shipped binaries must not carry espeak-ng or piper_phonemize (see verifyTtsFree).
+  problems.push(...verifyTtsFree([['abito-island', bin], [TRANSCRIBE_BIN, helper]]
+    .filter(([, file]) => fs.existsSync(file))
+    .map(([name, file]) => ({ name, file }))));
   return problems;
 }
 
@@ -334,5 +381,5 @@ function requireClean(crate) {
   return p;
 }
 
-module.exports = { provenance, requireClean, FORBIDDEN_ENV_PATTERN, ALLOWED_ABITO, R6_PREFIX, IDENTIFIER, FRONTEND_FILES, EXPECTED_PERMISSIONS, DAEMON_FILES, HARNESS_FILES, PI_FILES, RUNTIME_ARCHIVE, TRANSCRIBE_BIN, STAGED, STAGED_DIRS, checkInstalledLayout, sha256, sha256File,
+module.exports = { provenance, requireClean, FORBIDDEN_ENV_PATTERN, ALLOWED_ABITO, R6_PREFIX, IDENTIFIER, FRONTEND_FILES, EXPECTED_PERMISSIONS, DAEMON_FILES, HARNESS_FILES, PI_FILES, RUNTIME_ARCHIVE, TRANSCRIBE_BIN, STAGED, STAGED_DIRS, checkInstalledLayout, sha256, sha256File, verifyTtsFree, ttsSymbolsIn,
   checkR6, checkFrontend, checkConfig, launcherText, desktopText, verifyStage };

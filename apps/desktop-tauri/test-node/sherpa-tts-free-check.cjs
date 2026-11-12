@@ -103,6 +103,16 @@ rule('no source file synthesises speech through sherpa-onnx: this is an ASR-only
   assert.deepEqual(offenders, [], 'no speech synthesis is used, so removing the TTS libraries removes no feature');
 });
 
+rule('the no-TTS link is not optional: the crate config carries the marker and build.rs refuses linux-x64 / win-x64 without it', () => {
+  const config = read('.cargo/config.toml');
+  assert.match(config, /^\[env\]/m, 'an [env] table in the crate config');
+  assert.match(config, /^KODA_NO_TTS_LINK = "1"/m, 'the marker lives in the same file as the link tables');
+  const buildRs = read('build.rs');
+  assert.match(buildRs, /const NO_TTS_MARKER: &str = "KODA_NO_TTS_LINK";/, 'build.rs names the marker');
+  assert.match(buildRs, /require_no_tts_link_marker|env::var_os\(NO_TTS_MARKER\)/, 'build.rs checks it');
+  assert.match(buildRs, /apps\/desktop-tauri/, 'the panic says where to build from');
+});
+
 rule('a built rlib and a built binary never carry espeak or piper code (streamed byte scan, no nm needed)', () => {
   const deps = path.join(crate, 'target/debug/deps');
   const inspected = [];
@@ -119,14 +129,17 @@ rule('a built rlib and a built binary never carry espeak or piper code (streamed
       inspected.push(`${name} (newest of ${rlibs.length})`);
     }
   }
-  for (const profile of ['debug', 'release']) {
-    for (const bin of ['abito-island', 'abito-transcribe']) {
+  // The binaries that actually ship: target/{debug,release}, the release build of `packaging/build.cjs`
+  // (target-ship/) and the Windows staging dir dist/ — whenever this checkout has them.
+  const SHIP_DIRS = ['target/debug', 'target/release', 'target-ship/release', 'dist'];
+  for (const dir of SHIP_DIRS) {
+    for (const bin of ['abito-island', 'abito-transcribe', 'abito-notice-relay', 'abito-private-session']) {
       for (const name of [bin, `${bin}.exe`]) {
-        const file = path.join(crate, 'target', profile, name);
+        const file = path.join(crate, dir, name);
         if (!fs.existsSync(file)) continue;
         const found = contains(file, ['espeak_', 'piper_phonemize']);
-        assert.equal(found, null, `target/${profile}/${name} contains ${found}`);
-        inspected.push(`${profile}/${name}`);
+        assert.equal(found, null, `${dir}/${name} contains ${found}`);
+        inspected.push(`${dir}/${name}`);
       }
     }
   }

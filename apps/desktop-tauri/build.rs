@@ -38,12 +38,19 @@ fn main() {
 const SHERPA_VERSION: &str = "1.13.8";
 const RELEASE_BASE_URL: &str = "https://github.com/k2-fsa/sherpa-onnx/releases/download";
 const PIN_FILE: &str = "packaging/sherpa-onnx-no-tts.sha256";
+/// Set by this crate's own `.cargo/config.toml` (`[env]`), the same file that carries the link list without the three
+/// TTS archives. Cargo reads a config file from the CURRENT directory and its ancestors, never from the manifest
+/// directory, so a build started elsewhere (`cargo build --manifest-path apps/desktop-tauri/Cargo.toml`) would see
+/// neither the link list nor this marker, and would silently link the TTS build (espeak-ng, GPL-3.0). This script
+/// refuses to build a shipped target without the marker.
+const NO_TTS_MARKER: &str = "KODA_NO_TTS_LINK";
 /// Where the TTS-free archives are staged. `.cargo/config.toml` names the same path in `rustc-link-search`; both
 /// are relative to this crate, which is the workspace root, so the linker resolves them from the same directory.
 const STAGE_DIR: &str = "target/sherpa-onnx-no-tts/lib";
 
 fn stage_tts_free_sherpa() {
     println!("cargo:rerun-if-changed={PIN_FILE}");
+    println!("cargo:rerun-if-env-changed={NO_TTS_MARKER}");
     // docs.rs sets DOCS_RS=1: no native libraries are linked there (sherpa-onnx-sys skips them too).
     if env::var_os("DOCS_RS").is_some() {
         return;
@@ -55,6 +62,7 @@ fn stage_tts_free_sherpa() {
         );
         return;
     };
+    require_no_tts_link_marker();
     let Ok(crate_dir) = env::var("CARGO_MANIFEST_DIR") else {
         panic!("K2-13: CARGO_MANIFEST_DIR is unset, so the TTS-free sherpa-onnx libraries cannot be staged")
     };
@@ -76,6 +84,20 @@ struct Target {
     /// Archive name in the upstream release, as pinned in packaging/sherpa-onnx-no-tts.sha256.
     archive: String,
     suffix: &'static str,
+}
+
+/// Refuses to stage (and link) for a shipped target when the crate's own configuration is not in effect.
+fn require_no_tts_link_marker() {
+    if env::var_os(NO_TTS_MARKER).is_some() {
+        return;
+    }
+    panic!(
+        "K2-13: {NO_TTS_MARKER} is not set, so this build would link sherpa-onnx's TTS build (espeak-ng GPL-3.0, \
+         piper_phonemize) instead of the staged TTS-free archives. The marker lives in apps/desktop-tauri/.cargo/\
+         config.toml, next to the link list that leaves those archives out, and cargo only reads a config file from \
+         the current directory. Build from apps/desktop-tauri (`cd apps/desktop-tauri && cargo build ...`), which \
+         reads it; `cargo build --manifest-path apps/desktop-tauri/Cargo.toml` started anywhere else does not."
+    );
 }
 
 fn target() -> Option<Target> {

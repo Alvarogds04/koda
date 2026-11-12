@@ -47,6 +47,20 @@ VAD, the dictation wake word); nothing in `src/speech` or
   directory. `static:-bundle=` is what makes it work: the archives are resolved
   by the linker at the final link, not packed into the crate's rlib, so the
   staged directory is the one that is actually linked.
+- **The configuration is not optional.** Cargo reads a config file from the
+  current directory and its ancestors, never from the manifest directory, so
+  `cargo build --manifest-path apps/desktop-tauri/Cargo.toml` started anywhere
+  else would find neither the link list nor the `[env] KODA_NO_TTS_LINK = "1"`
+  marker in that same file — and would link the TTS build silently. `build.rs`
+  panics on `linux-x64` and `win-x64` when the marker is missing and says to
+  build from `apps/desktop-tauri`. Everything that ships already does:
+  `packaging/build.cjs` runs cargo with the crate as its working directory, and
+  so does the Windows container (`xbuild.sh` mounts the crate at `/abito/src`).
+- The bytes of the staged files are checked too, not only the link list:
+  `packaging/lib.cjs verifyStage` and `packaging/windows/stage-win.cjs --check`
+  stream `abito-island[.exe]` and `abito-transcribe[.exe]` and fail on an
+  `espeak_` or `piper_phonemize` string, so a staged build from the wrong
+  directory can never be packaged.
 
 Consequences worth knowing:
 
@@ -62,7 +76,9 @@ Consequences worth knowing:
   with the `osx-arm64-static-no-tts-lib` archive (decisions L12, L23).
 - Verify a build with `nm -a target/debug/abito-transcribe | grep -c espeak_`
   (must be `0`); `node test-node/sherpa-tts-free-check.cjs` pins the wiring and
-  scans the newest rlib and the built binaries for espeak/piper bytes.
+  scans the newest rlib and the built binaries (`target/debug`,
+  `target/release`, `target-ship/release` and the Windows `dist/`) for
+  espeak/piper bytes.
 - Bumping `sherpa-onnx` means updating the version inside the two archive names
   in the pin file (the check compares them with `Cargo.lock`).
 
