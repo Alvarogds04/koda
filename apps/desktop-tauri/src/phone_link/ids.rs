@@ -11,3 +11,5 @@ pub const MDNS_SERVICE: &str = "_abito._tcp";
 pub const CERT_CN: &str = "Abito phone link";
 /// What the phone shows for this computer when the hostname is unusable.
 pub const DEFAULT_NAME: &str = "Abito";
+/// The port the desktop listens on, and the one the pairing link and the announcement carry (§1).
+pub const DEFAULT_PORT: u16 = 47821;

@@ -45,6 +45,7 @@ mod planhost;
 mod dictationhost;
 mod voicehost;
 mod settingshost;
+mod phonehost;
 mod islandhit;
 mod islandclick;
 mod settingswindow;
@@ -2051,6 +2052,7 @@ fn main() {
             voicehost::voice_action,
             settingshost::settings_view,
             settingshost::daemon_action,
+            phonehost::phone_link_action,
             settingswindow::settings_window_action,
             specialistshost::specialists_action,
             record_facade_evidence,
@@ -2201,6 +2203,10 @@ fn main() {
             // Only the first instance reaches setup. Failure is optional and
             // never tears down the island; runtime errors reach agent:state.
             handle.state::<abito_island::daemonhost::HostSlot>().start();
+            // K2 (S2/S3/S5): the phone link starts OFF and only opens its LAN port when the human turned it
+            // on; it hangs the phone off the daemon connection started just above, never a second one.
+            #[cfg(target_os = "linux")]
+            phonehost::start(&handle);
             spawn_shutdown_watcher(handle.clone());
             // #315: the tray (menu: Mostrar/Ocultar/Arrancar al iniciar sesión/Salir)
             // plus one bounded, off-thread first connection attempt so the icon
@@ -2230,6 +2236,9 @@ fn main() {
         .run(|app, event| {
             if let tauri::RunEvent::Exit = event {
                 app.state::<abito_island::daemonhost::HostSlot>().stop();
+                // The phone link's port closes with the app: nothing of ours outlives this process.
+                #[cfg(target_os = "linux")]
+                phonehost::stop(app);
                 settingshost::stop(app);
                 close_transport(app);
             }

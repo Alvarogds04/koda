@@ -1,0 +1,291 @@
+//! K2 S5 host: the app's half of the phone link — the switch the page calls, the startup, and the session feed.
+//!
+//! S3/D3: the link is OFF until the human turns it on in Ajustes › Teléfono Android; before that nothing listens on
+//! the LAN, nothing is announced and no timer runs.
+//! S5/D5: the phone does NOT get its own daemon connection (the daemon allows two clients, and the island already
+//! uses them): it hangs off Ajustes' one `AgentConn`, which this host creates at startup through the shared
+//! constructor, so the phone has sessions without Ajustes ever being opened.
+//!
+//! S6: Linux only in 0.2. Everywhere else the command answers the closed "unsupported" status and nothing runs.
+use crate::{now_ms, AppState};
+use abito_island::bridge::{self, BridgeError};
+use serde_json::{json, Value};
+use tauri::State;
+
+#[cfg(target_os = "linux")]
+use abito_island::phone_link::ids::DEFAULT_PORT;
+#[cfg(target_os = "linux")]
+use abito_island::phone_link::{keystore, link::Link};
+#[cfg(target_os = "linux")]
+use std::net::SocketAddr;
+#[cfg(target_os = "linux")]
+use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(target_os = "linux")]
+use std::time::Duration;
+#[cfg(target_os = "linux")]
+use tauri::{AppHandle, Emitter, Manager};
+
+/// The closed payload of `phone_link_action`: exactly `{"action":"status"|"enable"|"disable"|"unlink"}`.
+pub(crate) fn parse_action(payload: &Value) -> Option<&'static str> {
+    let obj = payload.as_object()?;
+    if obj.len() != 1 {
+        return None;
+    }
+    match obj.get("action")?.as_str()? {
+        "status" => Some("status"),
+        "enable" => Some("enable"),
+        "disable" => Some("disable"),
+        "unlink" => Some("unlink"),
+        _ => None,
+    }
+}
+
+fn err(code: &str) -> BridgeError {
+    BridgeError { code: code.into(), message: "No se pudo completar la acción del enlace con el teléfono.".into() }
+}
+
+/// S6: on a platform that does not run the link the page gets one honest, closed answer.
+#[cfg(not(target_os = "linux"))]
+fn unsupported() -> Result<Value, BridgeError> {
+    Ok(json!({"enabled": false, "running": false, "port": 0, "host": null, "name": null,
+        "link": null, "qrSvg": null, "clients": 0, "error": "unsupported"}))
+}
+
+/// The phone link's one command. The same sender gate and rate limiter as every other host command; the socket,
+/// certificate and keychain work always runs off the WebView thread.
+#[tauri::command]
+pub async fn phone_link_action(
+    app: AppHandle,
+    webview: tauri::Webview,
+    state: State<'_, AppState>,
+    payload: Value,
+) -> Result<Value, BridgeError> {
+    let url = webview.url().map(|u| u.to_string()).unwrap_or_default();
+    bridge::sender_ok(webview.label(), &url)?;
+    state.chat_rate.lock().expect("chat rate lock").check(now_ms())?;
+    let action = parse_action(&payload).ok_or_else(|| err("invalid_schema"))?;
+
+    #[cfg(target_os = "linux")]
+    {
+        let handle = app.clone();
+        tauri::async_runtime::spawn_blocking(move || act(&handle, action)).await.map_err(|_| err("phone_aborted"))?
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (app, action);
+        unsupported()
+    }
+}
+
+/// How often a running link asks the daemon for the session list again. The hub only sends what changed.
+#[cfg(target_os = "linux")]
+const TICK: Duration = Duration::from_secs(2);
+/// A link whose connection is gone retries on its own clock, so a missing daemon cannot make this spin.
+#[cfg(target_os = "linux")]
+const RECONNECT: u64 = 30_000;
+
+/// The live link in Tauri's shared state. `last_connect` is the ticker's own backoff, in epoch ms.
+#[cfg(target_os = "linux")]
+pub struct PhoneHost {
+    link: Link,
+    last_connect: AtomicU64,
+}
+
+#[cfg(target_os = "linux")]
+impl Default for PhoneHost {
+    fn default() -> Self {
+        PhoneHost { link: Link::new(), last_connect: AtomicU64::new(0) }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn link_of(app: &AppHandle) -> State<'_, PhoneHost> {
+    app.state::<PhoneHost>()
+}
+
+/// Setup: the link's state exists from now on, and a stored «on» starts it — off the main thread, because making
+/// the certificate, reading the keystore and binding a port are not the window's work.
+#[cfg(target_os = "linux")]
+pub fn start(app: &AppHandle) {
+    if app.try_state::<PhoneHost>().is_none() {
+        app.manage(PhoneHost::default());
+    }
+    spawn_ticker(app.clone());
+    if !wanted(app) {
+        return; // S3: off until the human says so.
+    }
+    let handle = app.clone();
+    std::thread::spawn(move || {
+        enable(&handle);
+    });
+}
+
+/// Exit (`RunEvent::Exit`): the port closes with the app, so nothing of ours outlives it.
+#[cfg(target_os = "linux")]
+pub fn stop(app: &AppHandle) {
+    if let Some(host) = app.try_state::<PhoneHost>() {
+        host.link.disable();
+    }
+}
+
+/// S5/D5: the shared `AgentConn` callback. The phone reads the same `sessions` projection the island draws, so
+/// whatever the island shows flows to it by extending that one mapping (never a second source).
+#[cfg(target_os = "linux")]
+pub(crate) fn publish_sessions(app: &AppHandle, view: &Value) {
+    let Some(host) = app.try_state::<PhoneHost>() else { return };
+    host.link.publish_sessions(&view["sessions"], abito_island::phone_link::server::now_ms());
+}
+
+#[cfg(target_os = "linux")]
+fn wanted(app: &AppHandle) -> bool {
+    crate::settingshost::voice_prefs_snapshot(app).phone_link()
+}
+
+/// The switch's own preference, through the same transaction and atomic writer as every other setting.
+#[cfg(target_os = "linux")]
+fn persist(app: &AppHandle, on: bool) -> Result<(), BridgeError> {
+    crate::settingshost::voice_prefs_command(app, &abito_island::prefs::Command::SetPhoneLink(on))
+        .map(|_| ())
+        .ok_or_else(|| err("save_failed"))
+}
+
+#[cfg(target_os = "linux")]
+fn act(app: &AppHandle, action: &'static str) -> Result<Value, BridgeError> {
+    match action {
+        "status" => Ok(link_of(app).link.status()),
+        "enable" => {
+            // The wish is recorded first: a taken port must not read as «the human turned it off».
+            persist(app, true)?;
+            enable(app);
+            finish(app)
+        }
+        "disable" => {
+            persist(app, false)?;
+            link_of(app).link.disable();
+            finish(app)
+        }
+        "unlink" => {
+            link_of(app).link.unlink(&keystore::keychain()).map_err(|_| err("unlink_failed"))?;
+            ensure_agent(app);
+            finish(app)
+        }
+        _ => Err(err("invalid_schema")),
+    }
+}
+
+/// The status after a change, told to every page on `phone:state` (neither the switch nor the page ever guesses).
+#[cfg(target_os = "linux")]
+fn finish(app: &AppHandle) -> Result<Value, BridgeError> {
+    let value = link_of(app).link.status();
+    let _ = app.emit("phone:state", value.clone());
+    Ok(value)
+}
+
+/// Binds `0.0.0.0:47821` (the contract's port): every non-LAN peer is already dropped by `server::is_local`, and
+/// the Android emulator reaches the host's loopback as 10.0.2.2.
+#[cfg(target_os = "linux")]
+fn enable(app: &AppHandle) {
+    let bound = link_of(app).link.enable(&keystore::keychain(), SocketAddr::from(([0, 0, 0, 0], DEFAULT_PORT)));
+    if bound.is_ok() {
+        ensure_agent(app);
+    }
+}
+
+/// S5 «creándolo al arranque»: the one `AgentConn` is created through the shared constructor (so it carries the
+/// phone callback) and connected here. The slot is only TRIED — a busy slot belongs to the UI's own call, and this
+/// attempt is dropped rather than waited for.
+#[cfg(target_os = "linux")]
+fn ensure_agent(app: &AppHandle) {
+    let now = abito_island::phone_link::server::now_ms();
+    {
+        let host = link_of(app);
+        let last = host.last_connect.load(Ordering::SeqCst);
+        if last != 0 && now.saturating_sub(last) < RECONNECT {
+            return;
+        }
+        host.last_connect.store(now, Ordering::SeqCst);
+    }
+
+    let state = app.state::<AppState>();
+    let Ok(mut guard) = state.settings.agent.try_lock() else { return };
+    let conn = guard.get_or_insert_with(|| crate::settingshost::agent_conn(app));
+    if conn.view().get("connection").and_then(Value::as_str) == Some("connected") {
+        return;
+    }
+    if let Some(reason) = app.state::<abito_island::daemonhost::HostSlot>().failure() {
+        conn.startup_failed(reason);
+        return;
+    }
+    let root = abito_island::agentconn::island_root(
+        std::env::var("ABITO_ISLAND_DIR").ok().as_deref(),
+        std::env::var("HOME").ok().as_deref(),
+    );
+    if let Some(root) = root {
+        conn.connect(&root);
+    }
+}
+
+/// While the link is on, ask the one `AgentConn` for the session list again. The reply folds into the agent state
+/// and the shared callback pushes it to the phones; a list whose content did not change is not sent again.
+#[cfg(target_os = "linux")]
+fn tick(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    let Ok(guard) = state.settings.agent.try_lock() else { return }; // busy: this tick is skipped
+    let Some(conn) = guard.as_ref() else { return };
+    if conn.view().get("connection").and_then(Value::as_str) != Some("connected") {
+        return;
+    }
+    if let Ok(command) = abito_island::agentclient::parse_ui_command(&json!({"action": "sessions_list"})) {
+        let _ = conn.send(&command);
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn spawn_ticker(app: AppHandle) {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(TICK);
+        if crate::quitting() {
+            return;
+        }
+        let Some(host) = app.try_state::<PhoneHost>() else { return };
+        if !host.link.running() {
+            continue; // nothing of ours runs while the link is off (S3)
+        }
+        tick(&app);
+        ensure_agent(&app);
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_action;
+    use serde_json::json;
+
+    /// The closed schema of the one phone-link command: exactly one action out of four, no coercion.
+    #[test]
+    fn the_phone_link_payload_is_a_closed_one_key_command() {
+        for (payload, action) in [
+            (json!({"action": "status"}), "status"),
+            (json!({"action": "enable"}), "enable"),
+            (json!({"action": "disable"}), "disable"),
+            (json!({"action": "unlink"}), "unlink"),
+        ] {
+            assert_eq!(parse_action(&payload), Some(action), "{payload}");
+        }
+        for bad in [
+            json!({}),
+            json!({"action": "start"}),
+            json!({"action": "ENABLE"}),
+            json!({"action": 1}),
+            json!({"action": null}),
+            json!({"action": "status", "port": 47821}),
+            json!({"action": "enable", "action2": "disable"}),
+            json!("status"),
+            json!(["status"]),
+            json!(null),
+        ] {
+            assert_eq!(parse_action(&bad), None, "{bad} is not a valid phone link command");
+        }
+    }
+}

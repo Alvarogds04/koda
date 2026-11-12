@@ -19,8 +19,9 @@ fn the_wire_identifiers_are_in_one_module_and_user_text_says_abito() {
     assert_eq!(ids::MDNS_SERVICE, "_abito._tcp");
     assert_eq!(ids::CERT_CN, "Abito phone link");
     assert_eq!(ids::DEFAULT_NAME, "Abito");
+    assert_eq!(ids::DEFAULT_PORT, 47821, "the contract's default port lives here too (§1)");
     // No other file spells an identifier: each takes it from ids.rs (the switch stays one line).
-    for f in ["pairing.rs", "server.rs", "admission.rs"] {
+    for f in ["pairing.rs", "server.rs", "admission.rs", "link.rs"] {
         let src = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/phone_link").join(f)).unwrap();
         let code: String = src.lines().filter(|l| !l.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n");
         assert!(!code.contains("abito://") && !code.contains("_abito") && !code.contains("phone link\""), "{f} must take the identifiers from ids.rs");
@@ -503,4 +504,187 @@ fn the_session_source_is_the_one_accessor_of_the_agent_client_state() {
     let got = source::sessions_from_view(st.sessions_view());
     assert_eq!(got.len(), 1);
     assert_eq!(got[0].pill_id, "agent_codex");
+}
+
+// ---- the live link: S2's missing switch, S3's off-by-default -----------------------------------------
+
+/// An in-memory `secrets::SecretStore` (the OS keystore's seam): the adapter's rules are a unit test.
+#[derive(Clone, Default)]
+struct Vault(std::sync::Arc<VaultInner>);
+
+#[derive(Default)]
+struct VaultInner {
+    entries: std::sync::Mutex<std::collections::HashMap<String, String>>,
+    broken: std::sync::atomic::AtomicBool,
+}
+
+impl Vault {
+    fn read_raw(&self, key: &str) -> Option<String> {
+        self.0.entries.lock().unwrap().get(key).cloned()
+    }
+    fn put_raw(&self, key: &str, value: &str) {
+        self.0.entries.lock().unwrap().insert(key.into(), value.into());
+    }
+    fn break_it(&self) {
+        self.0.broken.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+impl crate::secrets::SecretStore for Vault {
+    fn read(&self, key: &str) -> Result<Option<String>, crate::secrets::StoreError> {
+        if self.0.broken.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(crate::secrets::StoreError::Unavailable);
+        }
+        Ok(self.read_raw(key))
+    }
+    fn write(&self, key: &str, value: &str) -> Result<(), crate::secrets::StoreError> {
+        if self.0.broken.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(crate::secrets::StoreError::Failed);
+        }
+        self.put_raw(key, value);
+        Ok(())
+    }
+    fn delete(&self, key: &str) -> Result<(), crate::secrets::StoreError> {
+        if self.0.broken.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(crate::secrets::StoreError::Failed);
+        }
+        self.0.entries.lock().unwrap().remove(key);
+        Ok(())
+    }
+}
+
+#[test]
+fn the_keystore_adapter_reads_and_writes_and_answers_a_fixed_text_on_failure() {
+    use super::keystore::{KeychainStore, WRITE_FAILED};
+    let vault = Vault::default();
+    let store = KeychainStore::new(vault.clone());
+    assert_eq!(store.get(pairing::TOKEN_KEY), None, "a missing entry reads as absent");
+    assert_eq!(store.set(pairing::TOKEN_KEY, "tok_en-1234567890abcd"), Ok(()));
+    assert_eq!(vault.read_raw(pairing::TOKEN_KEY).as_deref(), Some("tok_en-1234567890abcd"));
+    assert_eq!(store.get(pairing::TOKEN_KEY).as_deref(), Some("tok_en-1234567890abcd"));
+    vault.put_raw(pairing::CERT_KEY, "");
+    assert_eq!(store.get(pairing::CERT_KEY), None, "an empty entry is the same as missing: no fallback to disk");
+    vault.break_it();
+    assert_eq!(store.get(pairing::TOKEN_KEY), None, "an unreadable keystore is reported as absent, never as a crash");
+    let refused = store.set(pairing::TOKEN_KEY, "another-token-value");
+    assert_eq!(refused, Err(WRITE_FAILED.to_string()));
+    assert!(!refused.unwrap_err().contains("another-token-value"), "the answer never carries the value");
+    // The app's adapter is this one over the real keychain; the type is checked, nothing is read.
+    let _: &dyn SecretStore = &super::keystore::keychain();
+}
+
+#[test]
+fn a_link_that_was_never_switched_on_listens_nowhere_and_says_so() {
+    let link = super::link::Link::new();
+    let status = link.status_for(Some("192.168.1.20".to_string()));
+    assert_eq!(status["enabled"], json!(false), "S3: off until the human turns it on");
+    assert_eq!(status["running"], json!(false));
+    assert_eq!(status["port"], json!(0));
+    assert_eq!(status["clients"], json!(0));
+    assert!(status["link"].is_null() && status["qrSvg"].is_null() && status["error"].is_null());
+    assert_eq!(link.hub().clients(), 0);
+}
+
+#[test]
+fn the_link_serves_a_paired_phone_and_everything_stops_when_it_is_switched_off() {
+    run(async {
+        let store = Mem::default();
+        let link = super::link::Link::new();
+        assert_eq!(link.enable(&store, "127.0.0.1:0".parse().unwrap()), Ok(()));
+        let status = link.status_for(Some("192.168.1.20".to_string()));
+        assert_eq!((status["enabled"].as_bool(), status["running"].as_bool()), (Some(true), Some(true)));
+        assert!(status["error"].is_null());
+        let port = u16::try_from(status["port"].as_u64().unwrap()).unwrap();
+        assert_ne!(port, 0, "the test binds port 0: status reports the real one");
+        let fp = pairing::load_or_create_identity(&store).unwrap().fingerprint;
+        let text = status["link"].as_str().unwrap().to_string();
+        assert!(text.starts_with("abito://pair?v=1&"), "{text}");
+        assert!(text.contains(&format!("port={port}&fp={fp}")), "{text}");
+        assert!(status["qrSvg"].as_str().unwrap().contains("<svg"));
+        assert_eq!(status["clients"], json!(0));
+
+        let token = pairing::token(&store).unwrap();
+        let (mut r, mut w) = connect(port, &fp).await.unwrap();
+        send(&mut w, json!({"type":"hello","v":PROTOCOL,"token":token})).await;
+        assert_eq!(recv(&mut r).await.unwrap()["type"], "welcome");
+        assert_eq!(recv(&mut r).await.unwrap()["type"], "sessions");
+        assert_eq!(link.status_for(Some("192.168.1.20".to_string()))["clients"], json!(1));
+        link.publish_sessions(&rows(json!([{"id":"s-0000000a","kind":"codex","cwd":"koda","state":"running","origin":null}])), 1_000);
+        let pushed = recv(&mut r).await.unwrap();
+        assert_eq!(pushed["type"], "sessions");
+        assert_eq!(pushed["sessions"][0]["pillId"], "agent_codex", "the phone reads what the island draws");
+
+        link.disable();
+        let e = recv(&mut r).await.unwrap();
+        assert_eq!((e["type"].as_str(), e["code"].as_str()), (Some("error"), Some("closed")));
+        assert!(recv(&mut r).await.is_none(), "the phone's link ends");
+        assert!(tokio::net::TcpStream::connect(("127.0.0.1", port)).await.is_err(), "nothing listens once it is off");
+        let off = link.status_for(Some("192.168.1.20".to_string()));
+        assert_eq!((off["enabled"].as_bool(), off["running"].as_bool()), (Some(false), Some(false)));
+        assert_eq!(off["port"], json!(0));
+        assert!(off["link"].is_null() && off["qrSvg"].is_null());
+    });
+}
+
+#[test]
+fn enabling_a_running_link_changes_nothing() {
+    let store = Mem::default();
+    let link = super::link::Link::new();
+    assert_eq!(link.enable(&store, "127.0.0.1:0".parse().unwrap()), Ok(()));
+    let port = link.status_for(None)["port"].as_u64();
+    assert_eq!(link.enable(&store, "127.0.0.1:0".parse().unwrap()), Ok(()));
+    assert_eq!(link.status_for(None)["port"].as_u64(), port, "the same listener, never a second one");
+    link.disable();
+}
+
+#[test]
+fn a_port_already_in_use_is_a_closed_error_and_the_link_stays_off() {
+    let held = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = held.local_addr().unwrap().port();
+    let store = Mem::default();
+    let link = super::link::Link::new();
+    assert_eq!(link.enable(&store, format!("127.0.0.1:{port}").parse().unwrap()), Err("port_in_use"));
+    let status = link.status_for(Some("192.168.1.20".to_string()));
+    assert_eq!((status["running"].as_bool(), status["error"].as_str()), (Some(false), Some("port_in_use")));
+    assert!(status["link"].is_null());
+    // The wish stays on: the next start retries instead of pretending the human turned it off.
+    assert_eq!(status["enabled"], json!(true));
+    drop(held);
+    assert_eq!(link.enable(&store, "127.0.0.1:0".parse().unwrap()), Ok(()), "a later attempt works");
+    assert!(link.status_for(None)["error"].is_null());
+    link.disable();
+}
+
+#[test]
+fn unlink_rotates_the_token_and_locks_the_old_phone_out() {
+    run(async {
+        let store = Mem::default();
+        let link = super::link::Link::new();
+        assert_eq!(link.enable(&store, "127.0.0.1:0".parse().unwrap()), Ok(()));
+        let port = u16::try_from(link.status_for(None)["port"].as_u64().unwrap()).unwrap();
+        let fp = pairing::load_or_create_identity(&store).unwrap().fingerprint;
+        let old = pairing::token(&store).unwrap();
+        let (mut r, mut w) = connect(port, &fp).await.unwrap();
+        send(&mut w, json!({"type":"hello","v":PROTOCOL,"token":old})).await;
+        assert_eq!(recv(&mut r).await.unwrap()["type"], "welcome");
+        assert_eq!(recv(&mut r).await.unwrap()["type"], "sessions");
+
+        assert_eq!(link.unlink(&store), Ok(()));
+        let new = pairing::token(&store).unwrap();
+        assert_ne!(new, old, "a fresh token, the certificate untouched");
+        let e = recv(&mut r).await.unwrap();
+        assert_eq!((e["type"].as_str(), e["code"].as_str()), (Some("error"), Some("auth")), "the paired phone is locked out");
+        assert!(recv(&mut r).await.is_none());
+
+        let (mut r2, mut w2) = connect(port, &fp).await.unwrap();
+        send(&mut w2, json!({"type":"hello","v":PROTOCOL,"token":old})).await;
+        let refused = recv(&mut r2).await.unwrap();
+        assert_eq!((refused["type"].as_str(), refused["code"].as_str()), (Some("error"), Some("auth")));
+
+        let (mut r3, mut w3) = connect(port, &fp).await.unwrap();
+        send(&mut w3, json!({"type":"hello","v":PROTOCOL,"token":new.clone()})).await;
+        assert_eq!(recv(&mut r3).await.unwrap()["type"], "welcome");
+        assert!(link.status_for(Some("192.168.1.20".to_string()))["link"].as_str().unwrap().contains(&new), "the new link carries the new token");
+        link.disable();
+    });
 }
