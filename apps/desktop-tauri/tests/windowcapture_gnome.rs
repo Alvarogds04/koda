@@ -472,7 +472,12 @@ fn a_client_with_a_different_launch_token_is_refused_and_never_captures() {
     // question is refused by name.
     let other = LinuxDesktop::fixed(Some(&bus.address), None, Some(root.to_str().unwrap()), Some("wayland"))
         .with_token("a-different-launch-token-0123456789abcdef");
-    other.pick_target().expect_err("a different token is not Koda");
+    let refused = other.pick_target().expect_err("a different token is not Koda");
+    // The pick itself says why, not the generic «turn on the extension»: the extension IS there.
+    let at_pick = abito_island::windowcapture::mcp::error_message(&refused);
+    assert!(at_pick.contains("another program holds Koda's GNOME extension"), "{at_pick}");
+    assert!(at_pick.contains("restart Koda"), "{at_pick}");
+    assert!(!at_pick.contains("cannot tell which app"), "{at_pick}");
     let error = other.capture(&target).expect_err("a different token cannot capture either");
     let message = abito_island::windowcapture::mcp::error_message(&error);
     assert!(message.contains("another program holds Koda's GNOME extension"), "{message}");

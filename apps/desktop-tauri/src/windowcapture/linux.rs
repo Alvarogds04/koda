@@ -153,6 +153,9 @@ impl Desktop for LinuxDesktop {
                 }
                 return Err(CaptureError::NoWindow);
             }
+            // The extension is there and refused us by name: another program holds it. Say so; the
+            // next backend would hide the real reason behind a generic «turn on the extension».
+            Err(CaptureError::Unsupported(why)) if why == gnome::NOT_ALLOWED => return Err(CaptureError::Unsupported(why)),
             Err(_) => {} // absent, too old or silent: the next backend
         }
         if self.real_x11() {
