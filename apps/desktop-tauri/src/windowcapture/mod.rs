@@ -11,3 +11,10 @@ pub mod image;
 #[cfg(target_os = "linux")]
 pub mod x11;
 pub mod server;
+#[cfg(target_os = "macos")]
+pub mod macos;
+#[cfg(windows)]
+pub mod win;
+/// Native consent dialog (S6) on macOS (NSAlert) and Windows (TaskDialog), copied from Gentle Dot `alert.rs`.
+#[cfg(any(target_os = "macos", windows))]
+pub mod alert;
