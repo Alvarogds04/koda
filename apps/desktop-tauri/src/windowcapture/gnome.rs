@@ -233,10 +233,20 @@ fn capture_now(bus_address: Option<&str>, dir: &Path, id: u64) -> Result<Raw, Ca
         .call(CAPTURE_METHOD, &(id,))
         .map_err(|e| CaptureError::Failed(format!("the extension could not capture that window ({e})")))?;
     let path = PathBuf::from(path);
-    let bytes = read_private_png(dir, &path, MAX_PNG_BYTES)?;
-    // Only a file that passed every check above is ours to remove.
-    let _ = std::fs::remove_file(&path);
+    let bytes = read_and_discard(dir, &path, MAX_PNG_BYTES)?;
     decode_png(&bytes)
+}
+
+/// `read_private_png`, then the file is deleted WHETHER OR NOT it was accepted: it is the extension's
+/// private capture, and a refused one must not stay in `$XDG_RUNTIME_DIR/koda-capture` (M1). Only a
+/// direct child of the private directory is ever removed; a path outside it is not ours to delete,
+/// and a planted symlink is removed itself, never its target.
+pub fn read_and_discard(dir: &Path, path: &Path, max: u64) -> Result<Vec<u8>, CaptureError> {
+    let result = read_private_png(dir, path, max);
+    if path.is_absolute() && path.parent() == Some(dir) {
+        let _ = std::fs::remove_file(path);
+    }
+    result
 }
 
 #[cfg(test)]

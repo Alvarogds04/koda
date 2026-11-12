@@ -183,3 +183,47 @@ fn a_path_that_is_not_a_regular_file_or_is_empty_is_refused() {
     let missing = root.join("nowhere").join("window.png");
     assert!(read_private_png(&dir, &missing, MAX_PNG_BYTES).is_err());
 }
+
+// M1: a capture the validator refuses is still the extension's private file: it is always deleted.
+#[test]
+fn a_refused_capture_is_deleted_and_never_left_in_the_runtime_directory() {
+    let dir = scratch("m1-refused");
+    let bad = dir.join("not-a-png");
+    std::fs::write(&bad, b"hello, not a png").unwrap();
+    std::fs::set_permissions(&bad, std::fs::Permissions::from_mode(0o600)).unwrap();
+    assert!(read_and_discard(&dir, &bad, 1 << 20).is_err());
+    assert!(!bad.exists(), "the refused file must be gone");
+}
+
+#[test]
+fn an_accepted_capture_is_deleted_after_it_is_read() {
+    let dir = scratch("m1-accepted");
+    let good = dir.join("shot.png");
+    std::fs::write(&good, png_of(2, 2, [1, 2, 3])).unwrap();
+    std::fs::set_permissions(&good, std::fs::Permissions::from_mode(0o600)).unwrap();
+    assert!(read_and_discard(&dir, &good, 1 << 20).is_ok());
+    assert!(!good.exists());
+}
+
+#[test]
+fn a_path_outside_the_private_directory_is_refused_and_never_deleted() {
+    let dir = scratch("m1-dir");
+    let other = scratch("m1-other");
+    let outside = other.join("precious");
+    std::fs::write(&outside, b"mine").unwrap();
+    assert!(read_and_discard(&dir, &outside, 1 << 20).is_err());
+    assert!(outside.exists(), "a file the extension did not own is never ours to delete");
+}
+
+#[test]
+fn a_symlink_in_the_directory_is_removed_without_touching_its_target() {
+    let dir = scratch("m1-link-dir");
+    let other = scratch("m1-link-target");
+    let target = other.join("precious");
+    std::fs::write(&target, b"mine").unwrap();
+    let link = dir.join("link.png");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    assert!(read_and_discard(&dir, &link, 1 << 20).is_err());
+    assert!(link.symlink_metadata().is_err(), "the planted link is removed");
+    assert!(target.exists(), "its target is never touched");
+}
