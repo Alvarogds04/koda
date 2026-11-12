@@ -491,3 +491,38 @@ claude-code, codex and statusline (delegated to the AgentsManager) plus gemini-c
 (`src/agent-hooks.cjs`, self-owned marker-tagged artifacts, notify-only). Preview is read-only; install and
 remove require the exact `plan_hash` shown, back everything up first and refuse foreign or unsafe targets.
 Frames, invariants, sources and UNVERIFIED items: [`../../tests/PROTOCOL.md`](../../tests/PROTOCOL.md).
+
+## Minikodas (K2-13)
+
+A Minikoda is a small helper that runs a recipe on its own. Code: `src/minikodas/`.
+
+**Recipe** (`recipe.cjs`, strict validation; anything unknown or out of range is refused, never repaired):
+`{id, name, when, reads, kit, prompt, model, never}`.
+- `when`: exactly one of `{manual: true}`, `{everyMs}` (≥ 60 s) or `{at: ISO date}` (future, ≤ 1 year).
+- `reads`: `{source}`, a descriptor. Before each run the daemon prepares the source's content and hands it to the Minikoda only through `source_read`. Today the content comes from `<island>/minikodas/sources/<id>.txt`; Telegram reading arrives with K2-13 T1b.
+- `kit`: names from the closed catalogue `source_read`, `inbox_propose`.
+- `prompt`: the Minikoda's specialised prompt. It is appended after Koda's fixed base rules.
+- `model`: `{provider, id, accountId}`. It must come from an account Koda already has (`accounts/`): the account must exist, be signed in, serve that provider and offer that model. A provider served by two accounts needs `accountId`. Without a choice, the model is the chat's current model (the active profile).
+- `never`: must be exactly `buy, sell, send, delete`.
+
+**Store** (`service.cjs`): `<island>/minikodas/recipes.json` (0600, dir 0700). Creating a Minikoda takes two steps. `createDraft` stores a validated draft that never runs; only `approveCreate` makes it `active` and arms its schedule (S1: «solo lo crea si lo apruebo»).
+
+**Runner** (`runner.cjs`): every run is a supervised `pi --mode rpc` child (`AgentEngine`) in the Minikoda's own private root, `<island>/minikodas/engines/<id>/`. That root has its own HOME, agent dir, sessions, tmp and workspace. It is never the chat engine's root and never shared between Minikodas. Before each run the chosen model is projected into that agent dir, using the same files profile activation writes for the chat: one credential, the account's `models.json` and the defaults. A custom gateway is served by the guarded custom-provider extension. Every run starts a fresh session.
+- Reduced profile: `-ne -e src/minikodas/kit-extension.js --no-mcp --no-skills --no-prompt-templates --no-themes --no-context-files --tools <kit> --model <provider>/<id>`, plus `GENTLE_PI_AGENTS=0` in the child env.
+- Closed kit, two layers:
+  - `--tools` = kit, so the model is only shown the kit;
+  - the extension's `tool_call` guard blocks any tool outside `MINIKODA_KIT`.
+  - Tested: `bash` is refused and never runs, and a negative control proves the marker does appear when both layers allow it.
+- The engine command is injectable (`engine: {command, commandArgs, env}`). release/0.2 still spawns plain `pi`. **Gentle Shell (decided, «usamos el motor de gentle shell») plugs in when K2-05 lands its spawning in release/0.2.** Pass the Gentle Shell command the chat engine resolves, keep the same flags, `GENTLE_PI_AGENTS=0` and `--tools` = kit. The PoC measured that `-ne`/`--no-skills` do not remove Gentle's own core, and that only `--tools` keeps its tools away from the model (`odd/evidence/k2-13-poc/gentle-shell-round/`).
+- Runs never overlap per Minikoda (a second launch answers `running`). At most two run at once overall. Every run is bounded by a timeout (default 300 s).
+- A crash, a timeout, a start failure, an unavailable model or a cancelled run (daemon stop, delete) is a **failed run**. It lands in «Hoy» as an `error` item and in `lastRun`. It is never silent and never respawned.
+- Proposals are read only from the file the kit wrote (re-validated: buy/sell/send). The model's text is never parsed for proposals.
+
+**Scheduler** (`scheduler.cjs`): Koda's own timer.
+- `everyMs` repeats; `at` fires once and is marked `firedAt`, so a restart never fires it again; `manual` never fires by itself.
+- A tick that lands while the previous run is still going is skipped, never queued.
+- The global pause (#379) skips ticks and refuses launches.
+
+**Known limits**:
+- The agent runs as the same OS user as the daemon. The kit cannot reach the «Hoy» store, the PIN hash or the daemon token: no kit tool reads files, and those live outside the engine root. Any same-uid process can still read them, though. Running the agent as another OS user is K2-14 criterion 3.
+- Tests use `test/fixtures/minikodas/fake-pi.cjs`, a fake `pi --mode rpc` that loads the real kit extension and mimics Pi's tool selection and `tool_call` blocking. The real-Pi proof of the two layers is the PoC (`odd/evidence/k2-13-poc/poc-minikodas/evidence/`).
