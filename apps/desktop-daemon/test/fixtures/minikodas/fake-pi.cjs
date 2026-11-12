@@ -11,9 +11,12 @@
 // test can prove it never ran (and, in the negative control, that it does run when both layers allow it).
 //
 // The turn is scripted by `--script <json file>`:
-//   {steps: [{tool, args} | {text} | {crash: code} | {hang: true} | {rotate: {provider, credential}}]}.
+//   {steps: [{tool, args} | {text} | {crash: code} | {hang: true} | {rotate: {provider, credential}} | {waitFile: path}],
+//    onEnd?: {delayMs, rotate?}}.
 // `rotate` mimics the SDK's OAuth refresh: read-modify-write of <agent dir>/auth.json under its lock directory
-// (auth.json.lock, as proper-lockfile does), with FAKE tokens only.
+// (auth.json.lock, as proper-lockfile does), with FAKE tokens only. `waitFile` blocks the turn until the file
+// exists (a test takes a lock in between). `onEnd` mimics a refresh still in flight when the daemon closes stdin:
+// the process exits only `delayMs` later, after its `rotate` (a SIGTERM before that loses the rotation).
 // `--report <file>` receives {argv, declared, authSeen, ...} at startup (no env values except MINIKODA_KIT;
 // authSeen is the fake credential file the run started with).
 
@@ -97,6 +100,7 @@ async function runTurn() {
 		if (step.crash !== undefined) process.exit(step.crash);
 		if (step.hang) return; // never settles
 		if (step.rotate) rotate(step.rotate);
+		if (step.waitFile) while (!fs.existsSync(step.waitFile)) await new Promise((r) => setTimeout(r, 10));
 		write({ type: "turn_start" });
 		if (step.tool) await callTool(`call_${n}`, step.tool, step.args);
 		if (step.text !== undefined) write({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: step.text }] } });
@@ -145,7 +149,13 @@ async function main() {
 			} else respond(c);
 		}
 	});
-	process.stdin.on("end", () => process.exit(0));
+	process.stdin.on("end", () => {
+		if (!script.onEnd) process.exit(0);
+		setTimeout(() => {
+			if (script.onEnd.rotate) rotate(script.onEnd.rotate);
+			process.exit(0);
+		}, script.onEnd.delayMs ?? 0);
+	});
 }
 
 main().catch((error) => {

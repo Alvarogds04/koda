@@ -30,11 +30,18 @@ const { LIMITS, RecipeError, validateRecipe, recipeToJson } = require("./recipe.
 const { resolveModelChoice, projectModel } = require("./model.cjs");
 const { runMinikoda, DEFAULT_RUN_TIMEOUT_MS } = require("./runner.cjs");
 const { Scheduler } = require("./scheduler.cjs");
-const { freshestCredential, readRunCredential, writeBackCredential } = require("./credentials.cjs");
+const { freshestCredential, isOauth, readRunCredential, writeBackCredential } = require("./credentials.cjs");
 
 const MAX_MINIKODAS = 32;
 const MAX_SOURCE_BYTES = 200_000;
 const DEFAULT_MAX_CONCURRENT_RUNS = 2;
+/**
+ * S11/F-B: an OAuth session copied into a run must outlive the run, its engine's stop grace and a margin, so the
+ * Minikoda's engine never refreshes it (the chat could be refreshing the same refresh token under its own lock).
+ * The daemon has no refresh path of its own (the SDK helper only signs in and out), so a session closer to its
+ * expiry is not copied: the run fails as model_unavailable and «Hoy» asks the user to renew it in the chat.
+ */
+const SESSION_MIN_LIFETIME_EXTRA_MS = 5 * 60_000 + 60_000;
 
 class MinikodaError extends Error {
 	constructor(code, message = code) {
@@ -85,6 +92,7 @@ class MinikodaService extends EventEmitter {
 		this.running = new Map(); // id -> {runId, controller, promise}
 		this.deleting = new Set(); // ids whose deletion is cancelling their run: never relaunched meanwhile
 		this.queue = Promise.resolve();
+		this.leftovers = Promise.resolve(); // settling of copies kept by an earlier daemon (start())
 		this.stopped = false;
 		this.scheduler = new Scheduler({
 			launch: (id, meta) => this.launch(id, meta),
@@ -106,9 +114,32 @@ class MinikodaService extends EventEmitter {
 			.catch(() => this.log(`minikoda ${minikoda}: could not record the missed run`));
 	}
 
-	/** Arms the scheduler for every stored active Minikoda. */
+	/**
+	 * Arms the scheduler for every stored active Minikoda and settles (writes back, then removes) any credential
+	 * copy an earlier daemon kept because its write-back failed (S11/F-C). Runs wait for that settling. Resolves
+	 * when it is done; never rejects (a copy that still cannot be written back stays for the next try).
+	 */
 	start() {
-		for (const entry of this.load().minikodas) if (entry.status === "active") this.scheduler.add(entry.recipe, { firedAt: entry.firedAt });
+		const entries = this.load().minikodas;
+		this.leftovers = (async () => {
+			for (const entry of entries) {
+				try {
+					await this.settleLeftover(entry.recipe);
+				} catch {
+					this.log(`minikoda ${entry.recipe.id}: could not settle its kept credential copy`);
+				}
+			}
+		})();
+		for (const entry of entries) if (entry.status === "active") this.scheduler.add(entry.recipe, { firedAt: entry.firedAt });
+		return this.leftovers;
+	}
+
+	/** Writes back and removes a kept credential copy in a Minikoda's agent dir; false when it must stay. */
+	async settleLeftover(recipe) {
+		const agentDir = islandPaths(this.engineRoot(recipe.id)).agentDir;
+		if (!(await this.settleRunCredential(recipe, agentDir, undefined))) return false;
+		this.removeRunCredential(agentDir);
+		return true;
 	}
 
 	/**
@@ -127,6 +158,7 @@ class MinikodaService extends EventEmitter {
 		this.scheduler.stop();
 		for (const run of this.running.values()) run.controller.abort();
 		await Promise.all([...this.running.values()].map((r) => r.promise.catch(() => {})));
+		await this.leftovers;
 	}
 
 	serial(fn) {
@@ -253,7 +285,8 @@ class MinikodaService extends EventEmitter {
 	 * Deletes a Minikoda: unschedules it, cancels its run, removes its private engine root. «Hoy» items stay.
 	 * The run is cancelled and awaited OUTSIDE serial(): its last step queues its own serial() write (lastRun),
 	 * so awaiting it inside the queue would deadlock the store (and every later stop()). While the deletion is
-	 * pending the Minikoda cannot be launched again.
+	 * pending the Minikoda cannot be launched again. A credential copy kept in its root is written back first
+	 * (S11/F-C); while that fails the deletion fails (`failed`) and the Minikoda, its schedule and its copy stay.
 	 */
 	async delete(id) {
 		if (!this.find(id)) throw new MinikodaError("unknown_minikoda");
@@ -264,15 +297,22 @@ class MinikodaService extends EventEmitter {
 			run?.controller.abort();
 			await run?.promise.catch(() => {});
 			return await this.serial(async () => this.deleteStored(id));
+		} catch (error) {
+			const entry = this.find(id);
+			if (entry?.status === "active" && !this.stopped) this.scheduler.add(entry.recipe, { firedAt: entry.firedAt });
+			throw error;
 		} finally {
 			this.deleting.delete(id);
 		}
 	}
 
 	/** The store change and folder removal of delete(); runs inside serial(), after the run has landed. */
-	deleteStored(id) {
+	async deleteStored(id) {
+		await this.leftovers;
 		const state = this.load();
-		if (!state.minikodas.some((e) => e.recipe.id === id)) throw new MinikodaError("unknown_minikoda");
+		const entry = state.minikodas.find((e) => e.recipe.id === id);
+		if (!entry) throw new MinikodaError("unknown_minikoda");
+		if (!(await this.settleLeftover(entry.recipe))) throw new MinikodaError("failed", "the refreshed credential could not be written back yet");
 		state.minikodas = state.minikodas.filter((e) => e.recipe.id !== id);
 		this.persist(state);
 		this.removeEngineRoot(id);
@@ -362,7 +402,8 @@ class MinikodaService extends EventEmitter {
 	 * S11 write-back: the Minikoda's copy, possibly refreshed (and its refresh token rotated) by its engine, goes
 	 * back to the account and to the chat's live credential when it is fresher (credentials.cjs). `before` is
 	 * what was copied in; undefined for a copy left by an earlier run whose write-back did not complete.
-	 * Returns false when the write-back failed (the copy is then kept so the next run retries it).
+	 * Returns false when the write-back failed (the copy is then kept; it is retried before the next run, at the
+	 * next daemon start and before a delete).
 	 */
 	async settleRunCredential(recipe, agentDir, before) {
 		const after = readRunCredential(agentDir, recipe.model.provider);
@@ -392,6 +433,8 @@ class MinikodaService extends EventEmitter {
 		const agentDir = islandPaths(this.engineRoot(recipe.id)).agentDir;
 		let copied;
 		let result;
+		let notice = "";
+		await this.leftovers;
 		try {
 			const source = await this.readSource(recipe);
 			result = await runMinikoda({
@@ -411,6 +454,10 @@ class MinikodaService extends EventEmitter {
 					this.removeRunCredential(dir);
 					const fresh = await freshestCredential(this.credentialScope(recipe));
 					if (!fresh) throw Object.assign(new Error("account not signed in"), { name: "ModelChoiceError" });
+					if (isOauth(fresh) && fresh.expires < this.now() + this.runTimeoutMs + SESSION_MIN_LIFETIME_EXTRA_MS) {
+						notice = `: la sesión de ${a.label || a.accountId} vence pronto; abrí el chat para renovarla`;
+						throw Object.assign(new Error("session expires soon"), { name: "ModelChoiceError" });
+					}
 					let files;
 					try {
 						files = projectModel({ agentDir: dir, accountsRoot: this.options.accountsRoot, model: recipe.model, custom: a.custom === true, credential: fresh });
@@ -439,7 +486,7 @@ class MinikodaService extends EventEmitter {
 			const parked = result.proposals ?? [];
 			await this.results.addError({
 				minikoda: recipe.id,
-				text: `La corrida de «${recipe.name}» falló (${result.reason}).${parked.length ? ` ${parked.length} propuesta(s) de esa corrida quedaron pendientes en «Hoy».` : ""}`,
+				text: `La corrida de «${recipe.name}» falló (${result.reason})${notice}.${parked.length ? ` ${parked.length} propuesta(s) de esa corrida quedaron pendientes en «Hoy».` : ""}`,
 				proposals: parked,
 			});
 		}

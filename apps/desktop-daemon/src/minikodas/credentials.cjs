@@ -11,14 +11,23 @@
  *   active profile uses the same account and provider, the chat engine's live `agent/auth.json` (the chat
  *   refreshes there and saves it back to the account only on a profile switch, so the account copy can be
  *   stale).
- * - Copy-in (`freshestCredential`): the freshest of the two. For OAuth, fresher = larger `expires`. Anything
- *   else (api keys, local placeholders) comes from the account store, which the user edits. The account store
- *   is authoritative about logout: no credential there means not signed in, whatever the chat holds.
- * - Write-back (`writeBackCredential`): after the run, when the Minikoda's OAuth credential changed and is
- *   fresher, it is written to the account store and, when the chat's active profile uses that account, to the
- *   chat's live `agent/auth.json`; each side only when it still holds that provider (logout is never
- *   undone) and only when the written credential is fresher than what it holds NOW (never an older token over
- *   a newer one).
+ * - Copy-in (`freshestCredential`): the freshest of the two. Only OAuth against OAuth is compared (fresher =
+ *   larger `expires`); anything else (api keys, local placeholders) comes from the account store, which the
+ *   user edits. The account store is authoritative about logout: no credential there means not signed in,
+ *   whatever the chat holds.
+ * - Write-back (`writeBackCredential`): after the run, the Minikoda's copy is a credential its engine (a model
+ *   with a closed kit, but still a process we do not trust) could have rewritten. It goes back only as a
+ *   refresh of the OAuth token that was copied in:
+ *   - the copied-in credential (`before`) was OAuth, and the account store, and the chat's live file when the
+ *     chat's active profile uses that account, hold OAuth for the provider NOW (an API key is never replaced,
+ *     logout is never undone; a chat file without the provider is left alone);
+ *   - `after.expires` is strictly later than `before.expires` and than what each side holds now (never an
+ *     older or same-age token over a newer one), and at most MAX_EXPIRES_AHEAD_MS from now (a forged token
+ *     cannot pin itself forever);
+ *   - only {type, access, refresh, expires} plus fields `before` already had are written (nothing injected).
+ *   `before` is undefined only for a copy an earlier run kept because its write-back failed: such a copy only
+ *   exists for an OAuth copy-in (anything else is never written back, so it never fails), and the fields kept
+ *   are then those the side being written already has.
  * - Serialization. Every read and write happens under the lock directories the SDK's file credential store
  *   uses (`<file>.lock`, proper-lockfile: mkdir, stale after 30 s), the same ones ProfileStore takes for
  *   activation. The chat engine's own refresh runs read-modify-write under that lock and reloads the file when
@@ -34,6 +43,9 @@ const { writePrivateFile } = require("../isolation.cjs");
 
 const LOCK_STALE_MS = 30_000;
 const LOCK_WAIT_MS = 20_000; // above the SDK refresh timeout (15 s) a chat refresh may hold the lock for
+/** The latest expiry a written-back token may have (OAuth access tokens live hours, not years). */
+const MAX_EXPIRES_AHEAD_MS = 365 * 86_400_000;
+const OAUTH_FIELDS = ["type", "access", "refresh", "expires"];
 const ACCOUNT_ID = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -51,8 +63,8 @@ function readJson(file) {
 }
 
 const isOauth = (c) => c?.type === "oauth" && typeof c.access === "string" && typeof c.refresh === "string" && Number.isFinite(c.expires);
-/** True when `a` is an OAuth credential strictly fresher than `b` (b missing or not OAuth counts as older). */
-const fresher = (a, b) => isOauth(a) && (!isOauth(b) || a.expires > b.expires);
+/** True when `a` and `b` are both OAuth credentials and `a` expires strictly later. */
+const fresher = (a, b) => isOauth(a) && isOauth(b) && a.expires > b.expires;
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
 /** Takes `<dir>/auth.json.lock` (the SDK file store's lock), breaking a stale one; returns the release function. */
@@ -148,29 +160,41 @@ async function freshestCredential({ accountsRoot, accountId, provider, chat, loc
 	});
 }
 
+/** What may be written back: the OAuth fields plus the extra fields of `model` (the copied-in credential). */
+function sanitized(after, model) {
+	const out = {};
+	for (const key of [...OAUTH_FIELDS, ...Object.keys(model ?? {})]) if (Object.hasOwn(after, key) && !Object.hasOwn(out, key)) out[key] = after[key];
+	return out;
+}
+
 /**
  * After a run: writes the Minikoda's refreshed OAuth credential (`after`, which differs from the copied-in
- * `before`) back to the account store and the chat's live file, each only when it still holds the provider
- * and `after` is fresher than what it holds now. Returns {account, chat} booleans (what was written).
+ * `before`) back to the account store and the chat's live file, under the rules in the header (OAuth on every
+ * side, strictly fresher, bounded expiry, whitelisted fields). Returns {account, chat} booleans (what was written).
  */
-async function writeBackCredential({ accountsRoot, accountId, provider, chat, before, after, lockWaitMs }) {
+async function writeBackCredential({ accountsRoot, accountId, provider, chat, before, after, lockWaitMs, now = Date.now() }) {
 	const written = { account: false, chat: false };
 	if (!isOauth(after) || same(after, before)) return written;
+	if (before !== undefined && !fresher(after, before)) return written; // also refuses a non-OAuth copy-in
+	if (after.expires > now + MAX_EXPIRES_AHEAD_MS) return written;
 	const accountDir = accountDirOf(accountsRoot, accountId);
 	return withLocks(chat, accountDir, lockWaitMs, async () => {
 		const accountFile = path.join(accountDir, "auth.json");
 		const stored = readJson(accountFile);
-		if (stored[provider] !== undefined && fresher(after, stored[provider])) {
-			writePrivateFile(accountFile, `${JSON.stringify({ ...stored, [provider]: after }, null, 2)}\n`);
+		if (!isOauth(stored[provider])) return written;
+		const liveFile = chatTarget(chat, accountId, provider);
+		let live;
+		if (liveFile) {
+			live = readJson(liveFile);
+			if (live[provider] !== undefined && !isOauth(live[provider])) return written;
+		}
+		if (fresher(after, stored[provider])) {
+			writePrivateFile(accountFile, `${JSON.stringify({ ...stored, [provider]: sanitized(after, before ?? stored[provider]) }, null, 2)}\n`);
 			written.account = true;
 		}
-		const liveFile = chatTarget(chat, accountId, provider);
-		if (liveFile) {
-			const live = readJson(liveFile);
-			if (live[provider] !== undefined && fresher(after, live[provider])) {
-				writePrivateFile(liveFile, `${JSON.stringify({ ...live, [provider]: after }, null, 2)}\n`);
-				written.chat = true;
-			}
+		if (live && fresher(after, live[provider])) {
+			writePrivateFile(liveFile, `${JSON.stringify({ ...live, [provider]: sanitized(after, before ?? live[provider]) }, null, 2)}\n`);
+			written.chat = true;
 		}
 		return written;
 	});
@@ -185,4 +209,4 @@ function readRunCredential(agentDir, provider) {
 	}
 }
 
-module.exports = { freshestCredential, writeBackCredential, readRunCredential, lockCredentials, isOauth, fresher, LOCK_STALE_MS };
+module.exports = { freshestCredential, writeBackCredential, readRunCredential, lockCredentials, isOauth, fresher, LOCK_STALE_MS, MAX_EXPIRES_AHEAD_MS };

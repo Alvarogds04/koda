@@ -466,19 +466,19 @@ function oauthFixture(t, base, { account, chatLive, chatActive = true, steps }) 
 	return { ...s, chatAuth: path.join(agentDir, "auth.json"), accountAuth: path.join(s.fx.accountsRoot, "main", "auth.json"), agentDir };
 }
 
-async function runOnce(svc, results, n = 1) {
+async function runOnce(svc, results, n = 1, ms = 10_000) {
 	await svc.createDraft(recipe());
 	await svc.approveCreate("oportunidades");
 	assert.equal((await svc.launch("oportunidades")).started, true);
-	await waitFor(() => results.runs.length + results.errors.length >= n);
-	await waitFor(() => !svc.running.has("oportunidades"));
+	await waitFor(() => results.runs.length + results.errors.length >= n, ms);
+	await waitFor(() => !svc.running.has("oportunidades"), ms);
 }
 
 test("S11 a token rotated inside the Minikoda is written back to the account AND to the chat's live credential", async (t) => {
 	const base = tmp(t);
 	const now = Date.now();
 	const rotated = oauth("ROTATED", now + 3_600_000);
-	const fx = oauthFixture(t, base, { account: oauth("OLD", now + 60_000), chatLive: oauth("OLD", now + 60_000), steps: [{ rotate: { provider: "fake", credential: rotated } }, ...STANDARD] });
+	const fx = oauthFixture(t, base, { account: oauth("OLD", now + 1_800_000), chatLive: oauth("OLD", now + 1_800_000), steps: [{ rotate: { provider: "fake", credential: rotated } }, ...STANDARD] });
 	await runOnce(fx.svc, fx.results);
 	assert.equal(fx.results.runs.length, 1, "the run itself succeeded");
 	assert.deepEqual(readAuth(fx.accountAuth).fake, rotated, "the account store has the rotated token");
@@ -492,7 +492,7 @@ test("S11 the chat is on another account: only the account store gets the rotate
 	const now = Date.now();
 	const rotated = oauth("ROTATED", now + 3_600_000);
 	const other = oauth("OTHER-ACCOUNT", now + 60_000);
-	const fx = oauthFixture(t, base, { account: oauth("OLD", now + 60_000), chatLive: other, chatActive: false, steps: [{ rotate: { provider: "fake", credential: rotated } }, ...STANDARD] });
+	const fx = oauthFixture(t, base, { account: oauth("OLD", now + 1_800_000), chatLive: other, chatActive: false, steps: [{ rotate: { provider: "fake", credential: rotated } }, ...STANDARD] });
 	await runOnce(fx.svc, fx.results);
 	assert.deepEqual(readAuth(fx.accountAuth).fake, rotated);
 	assert.deepEqual(readAuth(fx.chatAuth).fake, other);
@@ -688,4 +688,257 @@ test("F10 the copied auth.json is removed after every run (done or failed) and w
 	await waitFor(() => !svc.running.has("oportunidades"));
 	assert.match(results.errors[1].text, /model_unavailable/);
 	assert.equal(fs.existsSync(auth), false, "removed when the copy step fails");
+});
+
+// ---------- T3c: credential write-back hardening (re-verify mwdcsca1, F-A..F-F) ----------
+
+/** Account `main` and a chat agent dir whose active profile is `main`/`fake`, for the credentials.cjs unit tests. */
+function credentialStores(t) {
+	const base = tmp(t);
+	const accountsRoot = path.join(base, "accounts");
+	const accountDir = path.join(accountsRoot, "main");
+	fs.mkdirSync(accountDir, { recursive: true, mode: 0o700 });
+	const chatDir = path.join(base, "chat", "agent");
+	fs.mkdirSync(chatDir, { recursive: true, mode: 0o700 });
+	const activeAccountPath = path.join(base, "chat", "active-account.json");
+	fs.writeFileSync(activeAccountPath, JSON.stringify({ accountId: "main", provider: "fake" }));
+	const accountAuth = path.join(accountDir, "auth.json");
+	const chatAuth = path.join(chatDir, "auth.json");
+	const put = (account, chat) => {
+		fs.writeFileSync(accountAuth, JSON.stringify({ fake: account }));
+		fs.writeFileSync(chatAuth, JSON.stringify({ fake: chat ?? account }));
+	};
+	return { base, accountDir, chatDir, accountAuth, chatAuth, put, args: { accountsRoot, accountId: "main", provider: "fake", chat: { agentDir: chatDir, activeAccountPath } } };
+}
+const NOTHING = { account: false, chat: false };
+const BOTH = { account: true, chat: true };
+
+test("F-A a forged OAuth credential never replaces an API key (account store or chat) and is never copied in over one", async (t) => {
+	const { writeBackCredential, freshestCredential } = require("../src/minikodas/credentials.cjs");
+	const s = credentialStores(t);
+	const now = Date.now();
+	const key = { type: "api_key", key: "FAKE-KEY" };
+	s.put(key);
+	for (const before of [key, undefined]) {
+		assert.deepEqual(await writeBackCredential({ ...s.args, before, after: oauth("FORGED", now + 3_600_000) }), NOTHING, `before=${before?.type}`);
+		assert.deepEqual(readAuth(s.accountAuth).fake, key, "the account keeps its API key (the only copy)");
+		assert.deepEqual(readAuth(s.chatAuth).fake, key, "the chat keeps its API key");
+	}
+	// Copy-in: an OAuth token in the chat file never wins over the account's API key.
+	fs.writeFileSync(s.chatAuth, JSON.stringify({ fake: oauth("LIVE", now + 3_600_000) }));
+	assert.deepEqual(await freshestCredential(s.args), key);
+	// OAuth copied in, but the account now holds an API key (the user switched): nothing is written.
+	assert.deepEqual(await writeBackCredential({ ...s.args, before: oauth("A", now + 1000), after: oauth("B", now + 3_600_000) }), NOTHING);
+	assert.deepEqual(readAuth(s.accountAuth).fake, key);
+	// The account holds an API key while the chat still holds OAuth for it: the chat is not refreshed either.
+	s.put(key, oauth("A", now + 1000));
+	assert.deepEqual(await writeBackCredential({ ...s.args, before: oauth("A", now + 1000), after: oauth("B", now + 3_600_000) }), NOTHING);
+	assert.deepEqual(readAuth(s.chatAuth).fake, oauth("A", now + 1000));
+	// The account holds OAuth but the chat holds an API key for the same provider: both are left alone.
+	s.put(oauth("A", now + 1000), key);
+	assert.deepEqual(await writeBackCredential({ ...s.args, before: oauth("A", now + 1000), after: oauth("B", now + 3_600_000) }), NOTHING);
+	assert.deepEqual(readAuth(s.accountAuth).fake, oauth("A", now + 1000));
+	assert.deepEqual(readAuth(s.chatAuth).fake, key);
+});
+
+test("F-A end to end: a Minikoda engine that writes an OAuth credential over its copied API key changes nothing outside its root", async (t) => {
+	const base = tmp(t);
+	const key = { type: "api_key", key: "FAKE-KEY" };
+	const forged = oauth("FORGED", Date.now() + 3_600_000);
+	const fx = oauthFixture(t, base, { account: key, chatLive: key, steps: [{ rotate: { provider: "fake", credential: forged } }, ...STANDARD] });
+	await runOnce(fx.svc, fx.results);
+	assert.equal(fx.results.runs.length, 1);
+	assert.deepEqual(readAuth(fx.accountAuth).fake, key, "the account's API key survives");
+	assert.deepEqual(readAuth(fx.chatAuth).fake, key, "the chat's API key survives");
+});
+
+test("F-A a huge or far-future expiry is refused; at most one year ahead is accepted", async (t) => {
+	const { writeBackCredential } = require("../src/minikodas/credentials.cjs");
+	const s = credentialStores(t);
+	const now = Date.now();
+	const day = 86_400_000;
+	const before = oauth("A", now + 3_600_000);
+	for (const expires of [8.64e15, now + 366 * day]) {
+		s.put(before);
+		assert.deepEqual(await writeBackCredential({ ...s.args, before, after: oauth("PINNED", expires) }), NOTHING, `expires=${expires}`);
+		assert.deepEqual(readAuth(s.accountAuth).fake, before);
+		assert.deepEqual(readAuth(s.chatAuth).fake, before);
+	}
+	assert.deepEqual(await writeBackCredential({ ...s.args, before, after: oauth("B", now + 364 * day) }), BOTH);
+});
+
+test("F-A the refreshed token must expire strictly later than the copied-in one and than what each side holds", async (t) => {
+	const { writeBackCredential } = require("../src/minikodas/credentials.cjs");
+	const s = credentialStores(t);
+	const T = Date.now() + 3_600_000;
+	// Equal expiry, different token: never written (a `>=` would let a same-age forgery through).
+	s.put(oauth("A", T));
+	assert.deepEqual(await writeBackCredential({ ...s.args, before: oauth("A", T), after: oauth("B", T) }), NOTHING);
+	assert.deepEqual(readAuth(s.accountAuth).fake, oauth("A", T));
+	// Both sides hold an OLDER token than the one copied in: `after` must still beat the copied-in expiry.
+	s.put(oauth("S", T - 1000));
+	assert.deepEqual(await writeBackCredential({ ...s.args, before: oauth("A", T), after: oauth("B", T) }), NOTHING);
+	assert.deepEqual(readAuth(s.accountAuth).fake, oauth("S", T - 1000));
+	assert.deepEqual(await writeBackCredential({ ...s.args, before: oauth("A", T), after: oauth("B", T + 1) }), BOTH);
+	assert.deepEqual(readAuth(s.chatAuth).fake, oauth("B", T + 1));
+});
+
+test("F-A only {type, access, refresh, expires} and fields the copied-in credential already had are written back", async (t) => {
+	const { writeBackCredential } = require("../src/minikodas/credentials.cjs");
+	const s = credentialStores(t);
+	const T = Date.now() + 3_600_000;
+	const before = { ...oauth("A", T), accountId: "acct-1" };
+	s.put(before);
+	const after = { ...oauth("B", T + 60_000), accountId: "acct-2", enterpriseUrl: "https://forged.invalid", headers: { x: "y" } };
+	assert.deepEqual(await writeBackCredential({ ...s.args, before, after }), BOTH);
+	const expected = { type: "oauth", access: "FAKE-ACCESS-B", refresh: "FAKE-REFRESH-B", expires: T + 60_000, accountId: "acct-2" };
+	assert.deepEqual(readAuth(s.accountAuth).fake, expected);
+	assert.deepEqual(readAuth(s.chatAuth).fake, expected);
+});
+
+test("F-F lock order is always chat, then account (never the account lock while waiting for the chat's)", async (t) => {
+	const { writeBackCredential, freshestCredential, lockCredentials } = require("../src/minikodas/credentials.cjs");
+	const s = credentialStores(t);
+	const T = Date.now() + 3_600_000;
+	s.put(oauth("A", T));
+	const accountLock = path.join(s.accountDir, "auth.json.lock");
+	const chatLock = path.join(s.chatDir, "auth.json.lock");
+	for (const call of [() => writeBackCredential({ ...s.args, before: oauth("A", T), after: oauth("B", T + 1000) }), () => freshestCredential(s.args)]) {
+		const releaseChat = await lockCredentials(s.chatDir);
+		const waiting = call();
+		await sleep(150);
+		assert.equal(fs.existsSync(accountLock), false, "the account lock is not taken before the chat lock");
+		releaseChat();
+		await waiting;
+		const releaseAccount = await lockCredentials(s.accountDir);
+		const second = call();
+		await sleep(150);
+		assert.equal(fs.existsSync(chatLock), true, "the chat lock is taken first and held while the account lock is awaited");
+		releaseAccount();
+		await second;
+		assert.equal(fs.existsSync(chatLock) || fs.existsSync(accountLock), false, "both released");
+	}
+});
+
+test("F-B an OAuth session that expires before the run could end is not copied in: «Hoy» asks to renew it in the chat", async (t) => {
+	const base = tmp(t);
+	const now = Date.now();
+	const report = path.join(base, "report.json");
+	// runTimeoutMs 10 s: a session needs at least 10 s + 5 min + the margin left.
+	const soon = oauth("SOON", now + 120_000);
+	const fx = oauthFixture(t, base, { account: soon, chatLive: soon, steps: STANDARD });
+	fx.svc.options.engine = fakeEngine(script(base, STANDARD, "s.json"), report);
+	fx.svc.options.accounts = { ...fx.svc.options.accounts, listAccounts: () => [{ accountId: "main", provider: "fake", configured: true, label: "Trabajo" }] };
+	await runOnce(fx.svc, fx.results);
+	assert.equal(fx.results.runs.length, 0);
+	assert.equal(fx.results.errors.length, 1);
+	assert.match(fx.results.errors[0].text, /la sesión de Trabajo vence pronto; abrí el chat para renovarla/);
+	assert.equal(fx.svc.get("oportunidades").lastRun.reason, "model_unavailable");
+	assert.equal(fs.existsSync(report), false, "the engine never started");
+	assert.equal(fs.existsSync(path.join(fx.island, "minikodas", "engines", "oportunidades", "agent", "auth.json")), false, "nothing was copied in");
+	assert.deepEqual(readAuth(fx.accountAuth).fake, soon);
+	// Enough lifetime left (just above the bound): the run goes ahead with that session.
+	const enough = oauth("ENOUGH", Date.now() + 10_000 + 360_000 + 30_000);
+	fs.writeFileSync(fx.accountAuth, JSON.stringify({ fake: enough }));
+	fs.writeFileSync(fx.chatAuth, JSON.stringify({ fake: enough }));
+	await fx.svc.launch("oportunidades");
+	await waitFor(() => fx.results.runs.length === 1);
+	assert.deepEqual(JSON.parse(fs.readFileSync(report, "utf8")).authSeen, { fake: enough });
+});
+
+/**
+ * A run whose engine rotates the token, but whose write-back cannot take the account lock: the copy is kept.
+ * Returns the fixture with `release` (frees the account lock) and the kept copy's path.
+ */
+async function keptCopy(t, base) {
+	const { lockCredentials } = require("../src/minikodas/credentials.cjs");
+	const now = Date.now();
+	const rotated = oauth("ROTATED", now + 7_200_000);
+	const go = path.join(base, "go");
+	const fx = oauthFixture(t, base, { account: oauth("OLD", now + 3_600_000), chatLive: oauth("OLD", now + 3_600_000), steps: [{ rotate: { provider: "fake", credential: rotated } }, { waitFile: go }, ...STANDARD] });
+	fx.svc.options.credentialLockWaitMs = 200;
+	const runAuth = path.join(fx.island, "minikodas", "engines", "oportunidades", "agent", "auth.json");
+	await fx.svc.createDraft(recipe());
+	await fx.svc.approveCreate("oportunidades");
+	assert.equal((await fx.svc.launch("oportunidades")).started, true);
+	// The fake engine writes in place (not atomically): a read can land mid-write.
+	await waitFor(() => { try { return readAuth(runAuth).fake?.access === rotated.access; } catch { return false; } });
+	let held = await lockCredentials(path.dirname(fx.accountAuth));
+	const release = () => { held?.(); held = undefined; };
+	t.after(release);
+	fs.writeFileSync(go, "");
+	await waitFor(() => fx.results.runs.length === 1);
+	await waitFor(() => !fx.svc.running.has("oportunidades"));
+	assert.deepEqual(readAuth(runAuth).fake, rotated, "the copy that could not be written back is kept");
+	assert.deepEqual(readAuth(fx.accountAuth).fake, oauth("OLD", now + 3_600_000));
+	return { ...fx, rotated, runAuth, release };
+}
+
+test("F-C a kept copy is written back before the next run of that Minikoda", async (t) => {
+	const base = tmp(t);
+	const fx = await keptCopy(t, base);
+	fx.release();
+	fx.svc.options.engine = fakeEngine(script(base, STANDARD, "second.json"));
+	await fx.svc.launch("oportunidades");
+	await waitFor(() => fx.results.runs.length === 2);
+	await waitFor(() => !fx.svc.running.has("oportunidades"));
+	assert.deepEqual(readAuth(fx.accountAuth).fake, fx.rotated, "the rotated token reached the account");
+	assert.deepEqual(readAuth(fx.chatAuth).fake, fx.rotated, "and the chat");
+	assert.equal(fs.existsSync(fx.runAuth), false);
+});
+
+test("F-C a kept copy is settled when the daemon starts again, without any run", async (t) => {
+	const base = tmp(t);
+	const fx = await keptCopy(t, base);
+	await fx.svc.stop();
+	fx.release();
+	const results = { runs: [], errors: [], addRun: async (r) => { results.runs.push(r); }, addError: async (e) => { results.errors.push(e); } };
+	const again = new MinikodaService({ ...fx.svc.options, results });
+	t.after(() => again.stop());
+	await again.start();
+	assert.deepEqual(readAuth(fx.accountAuth).fake, fx.rotated);
+	assert.deepEqual(readAuth(fx.chatAuth).fake, fx.rotated);
+	assert.equal(fs.existsSync(fx.runAuth), false, "settled and removed");
+	assert.equal(results.runs.length + results.errors.length, 0, "nothing ran");
+});
+
+test("F-C deleting a Minikoda writes its kept copy back first; while that fails the Minikoda and its copy stay", async (t) => {
+	const base = tmp(t);
+	const fx = await keptCopy(t, base);
+	const root = path.join(fx.island, "minikodas", "engines", "oportunidades");
+	await assert.rejects(fx.svc.delete("oportunidades"), (e) => e.code === "failed");
+	assert.deepEqual(readAuth(fx.runAuth).fake, fx.rotated, "the copy survives a delete whose write-back failed");
+	assert.deepEqual(fx.svc.list().map((m) => m.id), ["oportunidades"]);
+	fx.release();
+	assert.deepEqual(await fx.svc.delete("oportunidades"), { id: "oportunidades", deleted: true });
+	assert.deepEqual(readAuth(fx.accountAuth).fake, fx.rotated, "the rotated token reached the account before the root was removed");
+	assert.equal(fs.existsSync(root), false);
+});
+
+test("F-D a refresh still in flight when the engine is stopped finishes (stop grace >= 20 s, no SIGTERM at 5 s)", async (t) => {
+	const base = tmp(t);
+	const now = Date.now();
+	const rotated = oauth("LATE", now + 7_200_000);
+	const fx = oauthFixture(t, base, { account: oauth("OLD", now + 3_600_000), chatLive: oauth("OLD", now + 3_600_000), steps: STANDARD });
+	const file = path.join(base, "late.json");
+	fs.writeFileSync(file, JSON.stringify({ steps: STANDARD, onEnd: { delayMs: 6000, rotate: { provider: "fake", credential: rotated } } }));
+	fx.svc.options.engine = fakeEngine(file);
+	await runOnce(fx.svc, fx.results, 1, 40_000);
+	assert.equal(fx.results.runs.length, 1);
+	assert.deepEqual(readAuth(fx.accountAuth).fake, rotated, "the refresh that ended after stdin closed was written back");
+});
+
+test("F-F a Minikoda being deleted cannot be launched again meanwhile", async (t) => {
+	const base = tmp(t);
+	const { svc } = service(t, base);
+	await svc.createDraft(recipe());
+	await svc.approveCreate("oportunidades");
+	let open;
+	svc.serial(() => new Promise((resolve) => { open = resolve; }));
+	const deleting = svc.delete("oportunidades");
+	await sleep(20);
+	await assert.rejects(svc.launch("oportunidades"), (e) => e.code === "unknown_minikoda");
+	assert.equal(svc.running.size, 0, "no run started during the deletion");
+	open();
+	assert.deepEqual(await deleting, { id: "oportunidades", deleted: true });
 });

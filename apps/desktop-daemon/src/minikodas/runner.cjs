@@ -36,6 +36,12 @@ const MAX_RESULT_CHARS = 8000;
 const MAX_TARGET_CHARS = 200;
 const MAX_PROPOSAL_TEXT_CHARS = 4000;
 const MAX_PROPOSALS = 20;
+/**
+ * S11/F-D: the engine gets at least this long to exit after its stdin closes before SIGTERM (SIGKILL 2 s later),
+ * so an OAuth refresh in flight (the SDK bounds it at 15 s) can finish and save its rotated token. The engine's
+ * turn-recycle SIGKILL never applies: the run ends with stop(), which cancels the recycle (README «Minikodas»).
+ */
+const MIN_STOP_TIMEOUT_MS = 20_000;
 /** The reduced-profile flags every Minikoda engine gets (before --tools/--model). */
 const PROFILE_FLAGS = Object.freeze(["-ne", "--no-mcp", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files"]);
 
@@ -155,6 +161,7 @@ async function runMinikoda({ recipe, root, runId, source = "", prepareModel, eng
 		// One run, one child: a crash is a failed run, never a silent respawn.
 		backoffMs: [2_147_483_647],
 		startTimeoutMs: engineOptions.startTimeoutMs ?? 60_000,
+		stopTimeoutMs: Math.max(MIN_STOP_TIMEOUT_MS, engineOptions.stopTimeoutMs ?? 0),
 		turnTimeoutMs: timeoutMs,
 	});
 	const events = [];
@@ -210,4 +217,4 @@ async function runMinikoda({ recipe, root, runId, source = "", prepareModel, eng
 	return finish("done", { resultText, toolCalls, proposals, discarded });
 }
 
-module.exports = { runMinikoda, engineArgs, readProposals, plainTarget, BASE_PROMPT, KIT_EXTENSION, PROFILE_FLAGS, DEFAULT_RUN_TIMEOUT_MS };
+module.exports = { runMinikoda, engineArgs, readProposals, plainTarget, BASE_PROMPT, KIT_EXTENSION, PROFILE_FLAGS, DEFAULT_RUN_TIMEOUT_MS, MIN_STOP_TIMEOUT_MS };

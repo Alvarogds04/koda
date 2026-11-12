@@ -24,7 +24,8 @@ class Minikodas extends EventEmitter {
 		this.inbox.on("approved", (entry) => this.emit("approved", entry));
 	}
 
-	start() { this.service.start(); }
+	/** Arms the schedules; resolves once credential copies kept by an earlier daemon are settled (never rejects). */
+	start() { return this.service.start(); }
 	stop() { return this.service.stop(); }
 	list() { return this.service.list(); }
 	get(id) { return this.service.get(id); }
