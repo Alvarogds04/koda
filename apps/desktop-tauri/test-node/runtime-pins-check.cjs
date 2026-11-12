@@ -75,4 +75,20 @@ test('hash-pinned inputs keep their bytes on a Windows checkout (no CRLF convers
   const seen = new Set(r.stdout.split('\n'));
   for (const f of files) assert.ok(seen.has(`${f}: text: unset`), `${f} is checked out without CRLF conversion`);
 });
+test('K2-13 (S9): ffmpeg is pinned once for linux-x64 and once for win-x64, BtbN LGPL builds of one FFmpeg revision, none for darwin-arm64', () => {
+  const lines = read(path.join(crate, 'packaging/runtime/ffmpeg.sha256')).split(/\r?\n/).filter((l) => l.trim() !== '' && !l.startsWith('#'));
+  const pins = lines.map((l) => l.trim().split(/\s+/));
+  assert.equal(pins.length, 2);
+  const names = pins.map(([, rel]) => rel).sort();
+  const shape = /^autobuild-\d{4}-\d{2}-\d{2}-\d{2}-\d{2}\/ffmpeg-(n[\d.]+-\d+-g[0-9a-f]+)-(linux64|win64)-lgpl-[\d.]+\.(tar\.xz|zip)$/;
+  const [linux, win] = names.map((n) => shape.exec(n));
+  assert.ok(linux && linux[2] === 'linux64' && linux[3] === 'tar.xz', names[0]);
+  assert.ok(win && win[2] === 'win64' && win[3] === 'zip', names[1]);
+  assert.equal(linux[1], win[1], 'one FFmpeg revision on both OSes');
+  assert.equal(names[0].split('/')[0], names[1].split('/')[0], 'one BtbN release');
+  for (const [sha, rel] of pins) {
+    assert.match(sha, /^[0-9a-f]{64}$/, rel);
+    assert.doesNotMatch(rel, /-gpl|nonfree|darwin|macos/, rel);
+  }
+});
 console.log(`runtime-pins-check: ${passed} passed`);

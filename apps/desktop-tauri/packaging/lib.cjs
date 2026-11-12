@@ -199,7 +199,11 @@ const PI_FILES = ['pi-extension.ts', 'adapter.cjs', 'ask-tool.cjs', 'config.cjs'
 // other file; the Linux installer verifies its sha256 and its members before extracting it to
 // PREFIX/runtime. Windows stages the same archive; macOS ships the extracted folder instead.
 const RUNTIME_ARCHIVE = 'koda-runtime-linux-x64.tar.gz';
-const STAGED = ['abito-island', 'abito-island-launcher', 'abito-island.png', `${IDENTIFIER}.desktop`, RUNTIME_ARCHIVE,
+// K2-13 T2c-2 (S8, S15): `abito-transcribe` (the island crate's sherpa-onnx batch helper the daemon spawns for Minikoda
+// transcriptions) ships beside the island binary; the daemon finds it at <prefix>/abito-transcribe, never on PATH. The pinned
+// LGPL ffmpeg travels inside the runtime archive (PREFIX/runtime/ffmpeg).
+const TRANSCRIBE_BIN = 'abito-transcribe';
+const STAGED = ['abito-island', 'abito-island-launcher', TRANSCRIBE_BIN, 'abito-island.png', `${IDENTIFIER}.desktop`, RUNTIME_ARCHIVE,
   ...DAEMON_FILES.map(f => `desktop-daemon/${f}`), ...HARNESS_FILES.map(f => `desktop-harness/${f}`), ...PI_FILES.map(f => `desktop-pi/${f}`)];
 const STAGED_DIRS = ['desktop-pi', 'desktop-daemon', 'desktop-daemon/src', 'desktop-daemon/src/minikodas', 'desktop-harness', 'desktop-harness/bin', 'desktop-harness/src'];
 // Enumerate the complete tree without following links, including empty directories.
@@ -302,6 +306,12 @@ function verifyStage(dir, { sourceCrate } = {}) {
     for (const prefix of [process.env.HOME && `${process.env.HOME}/.cargo`, process.env.HOME && `${process.env.HOME}/Apps`].filter(Boolean)) if (bytes.includes(Buffer.from(prefix))) problems.push(`binary embeds the build machine path ${prefix}…`);
     if (POSIX_MODES() && !(fs.statSync(bin).mode & 0o100)) problems.push('binary is not executable');
   }
+  const helper = path.join(dir, TRANSCRIBE_BIN);
+  if (fs.existsSync(helper)) {
+    const bytes = fs.readFileSync(helper);
+    if (sourceCrate && bytes.includes(Buffer.from(sourceCrate))) problems.push(`${TRANSCRIBE_BIN} embeds the source-tree path`);
+    if (POSIX_MODES() && !(fs.statSync(helper).mode & 0o100)) problems.push(`${TRANSCRIBE_BIN} is not executable`);
+  }
   return problems;
 }
 
@@ -324,5 +334,5 @@ function requireClean(crate) {
   return p;
 }
 
-module.exports = { provenance, requireClean, FORBIDDEN_ENV_PATTERN, ALLOWED_ABITO, R6_PREFIX, IDENTIFIER, FRONTEND_FILES, EXPECTED_PERMISSIONS, DAEMON_FILES, HARNESS_FILES, PI_FILES, RUNTIME_ARCHIVE, STAGED, STAGED_DIRS, checkInstalledLayout, sha256, sha256File,
+module.exports = { provenance, requireClean, FORBIDDEN_ENV_PATTERN, ALLOWED_ABITO, R6_PREFIX, IDENTIFIER, FRONTEND_FILES, EXPECTED_PERMISSIONS, DAEMON_FILES, HARNESS_FILES, PI_FILES, RUNTIME_ARCHIVE, TRANSCRIBE_BIN, STAGED, STAGED_DIRS, checkInstalledLayout, sha256, sha256File,
   checkR6, checkFrontend, checkConfig, launcherText, desktopText, verifyStage };

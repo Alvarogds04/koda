@@ -71,3 +71,25 @@ abito-transcribe download [--model ID]   # the catalog's pinned, size + SHA-256 
   recognizer) and `cargo test --test transcribe_cli` (the binary against an
   empty private store). The real model run is opt-in:
   `ABITO_TRANSCRIBE_WAV=<wav> cargo test --test transcribe_cli -- --nocapture`.
+
+### Packaging `abito-transcribe` and ffmpeg (K2-13, S9)
+
+- **Linux.** `packaging/build.cjs` stages `target-ship/release/abito-transcribe` beside `abito-island` (`lib.cjs`
+  `STAGED`, executable in `install.sh` `EXEC_FILES`). Uninstall removes it with the other staged files.
+- **Windows.** `abito-transcribe.exe` is in `stage-runtime.cjs` `BINARY_FILES`, so the generated NSIS include installs
+  and deletes it. The build must copy it into `dist/` like the other helpers; `xbuild.sh package` does.
+- **ffmpeg.** It ships inside the bundled runtime: `packaging/runtime/build-runtime.cjs` takes the pinned BtbN LGPL
+  archive (`packaging/runtime/ffmpeg.sha256`, linux-x64 and win-x64), verifies its sha256, and keeps only
+  `bin/ffmpeg[.exe]` and `LICENSE.txt`.
+  - It refuses a binary configured with `--enable-gpl` or `--enable-nonfree` (or with no configure string), and a
+    licence that is not the LGPL.
+  - The archive is downloaded at build time from the BtbN GitHub release; `--ffmpeg-archive <file>` makes it offline.
+  - It lands as `runtime/ffmpeg[.exe]` + `runtime/LICENSE.ffmpeg.txt`, with an FFmpeg section (binary URL, sha256,
+    source revision and build scripts) in `runtime/THIRD-PARTY-NOTICES.md`.
+  - It is removed with the runtime directory. The Windows install manifest pins `runtime/ffmpeg.exe` like
+    `runtime/node.exe` (`install-manifest.cjs --runtime`).
+- **macOS (darwin-arm64).** No ffmpeg and no `abito-transcribe` in this version: no LGPL macOS build exists (pending
+  for the Mac session, L12). The daemon reports `ffmpeg: "unavailable"`, and a Minikoda video run fails with a clear
+  «Hoy» error.
+- **Notices.** `apps/desktop-daemon/THIRD-PARTY-NOTICES.md` (shipped) carries sherpa-onnx (Apache-2.0), ONNX Runtime
+  (MIT) and FFmpeg (LGPL, with the source location and offer). The repository root `THIRD-PARTY-NOTICES.md` indexes them.

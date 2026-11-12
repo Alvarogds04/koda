@@ -10,7 +10,9 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { DAEMON_FILES, HARNESS_FILES, PI_FILES } = require('../lib.cjs');
 const crate = path.resolve(__dirname, '../..');
-const BINARY_FILES = ['abito-island.exe', 'abito-notice-relay.exe', 'abito-private-session.exe', 'abito-install.json'];
+// K2-13 T2c-2: abito-transcribe.exe (the Minikodas' sherpa-onnx transcription helper) installs beside the island; the
+// pinned LGPL ffmpeg.exe travels inside the runtime archive (runtime\ffmpeg.exe), removed with the runtime directory.
+const BINARY_FILES = ['abito-island.exe', 'abito-notice-relay.exe', 'abito-private-session.exe', 'abito-transcribe.exe', 'abito-install.json'];
 const RUNTIME_FILES = [...DAEMON_FILES.map(f => `desktop-daemon/${f}`), ...HARNESS_FILES.map(f => `desktop-harness/${f}`), ...PI_FILES.map(f => `desktop-pi/${f}`)].sort();
 const ARCHIVE_NAME = 'koda-runtime.tar.gz';
 const DEFAULT_OUT = path.join(crate, 'dist/windows-runtime');

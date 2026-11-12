@@ -59,12 +59,17 @@ const shipTarget = path.join(crate, 'target-ship');
 if (!args.includes('--skip-cargo')) cargoBuild(['--features', 'tauri/custom-protocol'], shipTarget);
 const built = path.join(shipTarget, 'release', 'abito-island');
 if (!fs.existsSync(built)) { console.error('release binary missing'); process.exit(1); }
+// K2-13 T2c-2: the transcription helper is a second binary of the same crate and build (same flags, same remaps).
+const builtHelper = path.join(shipTarget, 'release', L.TRANSCRIBE_BIN);
+if (!fs.existsSync(builtHelper)) { console.error(`release ${L.TRANSCRIBE_BIN} missing`); process.exit(1); }
 
 const stage = path.join(outRoot, 'abito-island', cfg.version);
 fs.rmSync(stage, { recursive: true, force: true });
 fs.mkdirSync(stage, { recursive: true, mode: 0o755 });
 fs.copyFileSync(built, path.join(stage, 'abito-island'));
 fs.chmodSync(path.join(stage, 'abito-island'), 0o755);
+fs.copyFileSync(builtHelper, path.join(stage, L.TRANSCRIBE_BIN));
+fs.chmodSync(path.join(stage, L.TRANSCRIBE_BIN), 0o755);
 fs.copyFileSync(path.join(crate, 'icons', 'icon.png'), path.join(stage, 'abito-island.png'));
 fs.chmodSync(path.join(stage, 'abito-island.png'), 0o644);
 fs.writeFileSync(path.join(stage, 'abito-island-launcher'), L.launcherText(), { mode: 0o755 });

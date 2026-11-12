@@ -5,8 +5,8 @@
 // the helper and only registers scripts that are byte-identical to what this build shipped. Run after the native
 // binaries are copied into dist/ and before makensis; NSIS installs it next to the binaries.
 // K2-02 T2: with --runtime <dir> (the build-runtime --out folder) it also pins the bundled
-// runtime's node.exe as runtime/node.exe (win-fs.cjs only requires hex sha256 values, so the
-// extra entry needs no parser change).
+// runtime's node.exe as runtime/node.exe and (K2-13) its ffmpeg.exe as runtime/ffmpeg.exe (win-fs.cjs only requires hex
+// sha256 values, so the extra entries need no parser change).
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
@@ -25,10 +25,12 @@ function build(dist, runtime) {
     files[f] = sha(src);
   }
   if (runtime) {
-    const rel = 'runtime/node.exe';
-    const src = path.join(runtime, 'node.exe');
-    if (!fs.lstatSync(src, { throwIfNoEntry: false })?.isFile()) throw new Error(`not a regular file: ${src}`);
-    files[rel] = sha(src);
+    // K2-13 (S9): the bundled ffmpeg.exe the daemon spawns is pinned like node.exe.
+    for (const exe of ['node.exe', 'ffmpeg.exe']) {
+      const src = path.join(runtime, exe);
+      if (!fs.lstatSync(src, { throwIfNoEntry: false })?.isFile()) throw new Error(`not a regular file: ${src}`);
+      files[`runtime/${exe}`] = sha(src);
+    }
   }
   const sorted = Object.fromEntries(Object.entries(files).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
   return JSON.stringify({ schema: SCHEMA, files: sorted }) + '\n';
@@ -45,7 +47,7 @@ if (require.main === module) {
     try {
       const distDir = path.resolve(dist || path.join(crate, 'dist'));
       fs.writeFileSync(path.join(distDir, 'abito-install.json'), build(distDir, runtime ? path.resolve(runtime) : undefined));
-      console.log(`manifest: ${runtime ? RUNTIME_FILES.length + 2 : RUNTIME_FILES.length + 1} files`);
+      console.log(`manifest: ${runtime ? RUNTIME_FILES.length + 3 : RUNTIME_FILES.length + 1} files`);
     } catch (e) { console.error(e.message); process.exitCode = 1; }
   }
 }

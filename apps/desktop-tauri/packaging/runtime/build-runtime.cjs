@@ -4,12 +4,17 @@
    so Koda never needs (nor touches) a Node or a Pi installed on the machine.
 
    Usage: node packaging/runtime/build-runtime.cjs --target <linux-x64|darwin-arm64|win-x64> --out <dir>
-            [--node-archive <file>] [--cache <dir>] [--self-check] [--archive <file.tar.gz>]
+            [--node-archive <file>] [--ffmpeg-archive <file>] [--cache <dir>] [--self-check] [--archive <file.tar.gz>]
 
    Inputs, all pinned in this directory:
    - node.sha256: one official Node archive per target with its sha256 (the lines of the release's signed SHASUMS256.txt).
      The archive comes from --node-archive (offline) or from https://nodejs.org/dist/; a sha256 mismatch fails closed.
    - package.json + package-lock.json: Pi, pinned exactly; npm ci installs every package against its lockfile sha512.
+   - ffmpeg.sha256 (K2-13 S9): one BtbN/FFmpeg-Builds LGPL archive for linux-x64 and for win-x64 (none for darwin-arm64:
+     no LGPL macOS build exists yet), from --ffmpeg-archive (offline) or its GitHub release; a sha256 mismatch fails
+     closed. Only bin/ffmpeg[.exe] and LICENSE.txt leave the archive (no ffprobe, ffplay, docs). The build refuses a
+     binary whose embedded configure string has --enable-gpl or --enable-nonfree (or has no configure string at all)
+     and a LICENSE.txt that is not the LGPL text.
 
    Output (<out>, created only when every step succeeds; a failed build leaves <out> untouched):
      node | node.exe       the pinned Node binary only: no npm, npx or corepack
@@ -19,7 +24,9 @@
      node_modules/...      Pi and its dependencies, install scripts not run, no .bin symlinks, no symlink at all
      pi                    (Linux, macOS) launcher that runs Pi with THIS Node; Windows needs none: the daemon starts
                            node.exe with Pi's own CLI JS resolved next to it (desktop-daemon runtime.cjs)
-     koda-runtime.json     {target, node, pi}
+     ffmpeg | ffmpeg.exe   (linux-x64, win-x64) the pinned LGPL ffmpeg the daemon spawns for Minikoda transcriptions
+     LICENSE.ffmpeg.txt    its LGPL v3 text (from the archive); THIRD-PARTY-NOTICES.md says where its source is
+     koda-runtime.json     {target, node, pi, piCli, ffmpeg?}
    --archive also packs <out> into ONE tar.gz (members relative to the runtime folder's root, no links) and prints its
    sha256: the single file the Linux and Windows installers ship and verify before extracting. macOS ships the folder.
    --self-check runs the built Pi (`pi --version`) with an empty private HOME, offline; only when the target is this OS. */
@@ -37,21 +44,26 @@ const TARGETS = {
   'win-x64': { platform: 'win32', arch: 'x64', ext: '.zip', exe: 'node.exe' },
 };
 
+/* K2-13 (S9): the BtbN asset flavour per target; darwin-arm64 ships no ffmpeg (pending for the Mac session). */
+const FFMPEG_TARGETS = { 'linux-x64': { flavour: 'linux64', ext: '.tar.xz', exe: 'ffmpeg' }, 'win-x64': { flavour: 'win64', ext: '.zip', exe: 'ffmpeg.exe' } };
+const FFMPEG_RELEASES = 'https://github.com/BtbN/FFmpeg-Builds/releases/download';
+
 class Fail extends Error {
   constructor(message, code = 1) { super(message); this.code = code; }
 }
 
 function parseArgs(argv) {
   const opts = { selfCheck: false };
-  const takes = { '--target': 'target', '--out': 'out', '--node-archive': 'nodeArchive', '--cache': 'cache', '--archive': 'archive' };
+  const takes = { '--target': 'target', '--out': 'out', '--node-archive': 'nodeArchive', '--ffmpeg-archive': 'ffmpegArchive', '--cache': 'cache', '--archive': 'archive' };
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
     if (a === '--self-check') { opts.selfCheck = true; continue; }
-    if (!takes[a] || i + 1 >= argv.length) throw new Fail(`usage: build-runtime.cjs --target <${Object.keys(TARGETS).join('|')}> --out <dir> [--node-archive <file>] [--cache <dir>] [--self-check] [--archive <file.tar.gz>] (bad argument: ${a})`, 2);
+    if (!takes[a] || i + 1 >= argv.length) throw new Fail(`usage: build-runtime.cjs --target <${Object.keys(TARGETS).join('|')}> --out <dir> [--node-archive <file>] [--ffmpeg-archive <file>] [--cache <dir>] [--self-check] [--archive <file.tar.gz>] (bad argument: ${a})`, 2);
     opts[takes[a]] = argv[(i += 1)];
   }
   if (!opts.target || !opts.out) throw new Fail('usage: build-runtime.cjs --target <target> --out <dir> (both are required)', 2);
   if (!TARGETS[opts.target]) throw new Fail(`unknown target ${opts.target}; known: ${Object.keys(TARGETS).join(', ')}`, 2);
+  if (opts.ffmpegArchive && !FFMPEG_TARGETS[opts.target]) throw new Fail(`--ffmpeg-archive: ${opts.target} ships no ffmpeg (no LGPL build for it yet)`, 2);
   return opts;
 }
 
@@ -73,6 +85,85 @@ function nodePin(target) {
   const m = /^node-v(\d+\.\d+\.\d+)-/.exec(name);
   if (!/^[0-9a-f]{64}$/.test(sha) || !m) throw new Fail(`malformed node.sha256 line for ${target}`);
   return { sha, name, version: m[1], dir: name.slice(0, -t.ext.length) };
+}
+
+/* The ffmpeg pin for a target, or null (darwin-arm64). Exactly one BtbN LGPL asset per shipped target. */
+function ffmpegPin(target) {
+  const f = FFMPEG_TARGETS[target];
+  if (!f) return null;
+  const lines = fs.readFileSync(path.join(HERE, 'ffmpeg.sha256'), 'utf8').split(/\r?\n/).map((l) => l.trim()).filter((l) => l && !l.startsWith('#'));
+  const shape = new RegExp(`^(autobuild-\\d{4}-\\d{2}-\\d{2}-\\d{2}-\\d{2})/(ffmpeg-(n\\d+(?:\\.\\d+)*-\\d+-g[0-9a-f]+)-${f.flavour}-lgpl-\\d+(?:\\.\\d+)*)${f.ext.replace(/\./g, '\\.')}$`);
+  const pins = lines.map((l) => l.split(/\s+/)).map(([sha, rel]) => ({ sha, m: shape.exec(rel || '') })).filter((p) => p.m && /^[0-9a-f]{64}$/.test(p.sha));
+  const flavoured = lines.filter((l) => l.includes(`-${f.flavour}-`));
+  if (pins.length !== 1 || flavoured.length !== 1) throw new Fail(`ffmpeg.sha256 must pin exactly one BtbN LGPL archive for ${target} (<sha256>  autobuild-<date>/ffmpeg-<rev>-${f.flavour}-lgpl-<ver>${f.ext})`);
+  const { sha, m } = pins[0];
+  return { sha, tag: m[1], dir: m[2], name: `${m[2]}${f.ext}`, version: m[3], exe: f.exe, ext: f.ext };
+}
+
+async function ffmpegArchive(pin, opts, cache) {
+  let file = opts.ffmpegArchive ? path.resolve(opts.ffmpegArchive) : path.join(cache, pin.name);
+  if (!opts.ffmpegArchive && !fs.existsSync(file)) {
+    const partial = `${file}.partial-${process.pid}`;
+    await download(`${FFMPEG_RELEASES}/${pin.tag}/${pin.name}`, partial);
+    fs.renameSync(partial, file);
+  }
+  if (!fs.existsSync(file)) throw new Fail(`ffmpeg archive not found: ${file}`);
+  if (path.basename(file) !== pin.name) throw new Fail(`ffmpeg archive must be ${pin.name}, got ${path.basename(file)}`);
+  const got = sha256File(file);
+  if (got !== pin.sha) {
+    if (!opts.ffmpegArchive) fs.rmSync(file, { force: true });
+    throw new Fail(`ffmpeg archive SHA256 mismatch for ${pin.name}: expected ${pin.sha}, got ${got}`);
+  }
+  return file;
+}
+
+/* Only bin/ffmpeg[.exe] and LICENSE.txt leave the archive; then the LGPL proof: the binary's embedded configure string
+   (FFmpeg compiles it in; `ffmpeg -version` prints it) must exist and carry neither --enable-gpl nor --enable-nonfree,
+   and the licence must be the LGPL. Byte checks, so a cross-target build proves it without running the binary. */
+function extractFfmpeg(archive, pin, dest) {
+  const scratch = fs.mkdtempSync(path.join(path.dirname(dest), '.ffmpeg-extract-'));
+  try {
+    const members = [`${pin.dir}/bin/${pin.exe}`, `${pin.dir}/LICENSE.txt`];
+    if (process.platform === 'win32') {
+      run(path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe'), ['-xf', archive, '-C', scratch, ...members], {}, 'tar (ffmpeg)');
+    } else if (pin.ext === '.zip') {
+      run('unzip', ['-q', archive, ...members, '-d', scratch], {}, 'unzip (ffmpeg)');
+    } else {
+      run('tar', ['-xf', archive, '-C', scratch, ...members], {}, 'tar (ffmpeg)'); // compression detected from the bytes
+    }
+    for (const m of members) {
+      const st = fs.lstatSync(path.join(scratch, m), { throwIfNoEntry: false });
+      if (!st || !st.isFile()) throw new Fail(`ffmpeg archive ${pin.name} lacks a regular file ${m}`);
+    }
+    const bin = fs.readFileSync(path.join(scratch, members[0]));
+    if (!bin.includes(Buffer.from('--prefix='))) throw new Fail(`ffmpeg ${pin.name} carries no configure string: cannot prove it is an LGPL build`);
+    for (const flag of ['--enable-gpl', '--enable-nonfree']) {
+      if (bin.includes(Buffer.from(flag))) throw new Fail(`ffmpeg ${pin.name} was configured with ${flag}: only LGPL builds ship`);
+    }
+    const licence = fs.readFileSync(path.join(scratch, members[1]), 'utf8');
+    if (licence.trimStart().split(/\r?\n/)[0].trim() !== 'GNU LESSER GENERAL PUBLIC LICENSE') throw new Fail(`ffmpeg archive ${pin.name}: LICENSE.txt is not the GNU LESSER GENERAL PUBLIC LICENSE`);
+    fs.copyFileSync(path.join(scratch, members[0]), path.join(dest, pin.exe));
+    fs.chmodSync(path.join(dest, pin.exe), 0o755);
+    fs.copyFileSync(path.join(scratch, members[1]), path.join(dest, 'LICENSE.ffmpeg.txt'));
+    fs.chmodSync(path.join(dest, 'LICENSE.ffmpeg.txt'), 0o644);
+  } finally {
+    fs.rmSync(scratch, { recursive: true, force: true });
+  }
+}
+
+/* The FFmpeg section of the runtime notices: the licence, the exact binary it came from and where its source is. */
+function ffmpegNotice(pin) {
+  const rev = /-g([0-9a-f]+)$/.exec(pin.version)[1];
+  return [`## FFmpeg ${pin.version} (\`${pin.exe}\`)`, '',
+    'License: LGPL-3.0-or-later. Full text: `LICENSE.ffmpeg.txt` in this folder.',
+    `The \`${pin.exe}\` in this folder is FFmpeg (https://ffmpeg.org), built by BtbN/FFmpeg-Builds as an LGPL build:`,
+    'configured with --enable-version3 and built without --enable-gpl and without --enable-nonfree. Koda runs it as a separate',
+    'program, unmodified, only to extract and split the audio of videos for transcription.',
+    `- Binary: ${FFMPEG_RELEASES}/${pin.tag}/${pin.name} (sha256 ${pin.sha})`,
+    `- Corresponding Source: the FFmpeg source at revision ${rev}, https://github.com/FFmpeg/FFmpeg/tree/${rev}`,
+    `  (${pin.version}), and the scripts that built it, https://github.com/BtbN/FFmpeg-Builds (release ${pin.tag}),`,
+    '  which also list the libraries linked into it and their licences.',
+    'You may replace this file with your own build of FFmpeg; Koda calls it by this path with command-line arguments only.', ''];
 }
 
 async function download(url, dest) {
@@ -215,10 +306,11 @@ const repository = (manifest) => (typeof manifest.repository === 'string' ? mani
 /* THIRD-PARTY-NOTICES.md for the runtime folder: Node first, then every package with its declared licence and the
    path of the licence file it ships. A package that ships no licence file gets its author and repository from its
    package.json and the canonical text from licenses/<id>.txt, reproduced once; with no such text the build fails. */
-function writeNotices(dest, nodeVersion) {
+function writeNotices(dest, nodeVersion, ffPin) {
   const lines = ['# Third-party notices: Koda\'s bundled runtime', '',
     'Koda ships its own Node.js and Pi in this folder (K2-02). Their licences and those of every package they include follow.', '',
-    `## Node.js ${nodeVersion}`, '', 'License: MIT (with bundled components). Full text: `LICENSE.node` in this folder.', ''];
+    `## Node.js ${nodeVersion}`, '', 'License: MIT (with bundled components). Full text: `LICENSE.node` in this folder.', '',
+    ...(ffPin ? ffmpegNotice(ffPin) : [])];
   const texts = new Map();
   for (const { dir, manifest } of packagesIn(path.join(dest, 'node_modules'))) {
     const id = licenseId(manifest);
@@ -322,6 +414,7 @@ async function main() {
   const t = TARGETS[opts.target];
   const out = path.resolve(opts.out);
   const pin = nodePin(opts.target);
+  const ffPin = ffmpegPin(opts.target);
   const tmpCache = !opts.cache;
   const cache = opts.cache ? path.resolve(opts.cache) : fs.mkdtempSync(path.join(os.tmpdir(), 'koda-runtime-cache-'));
   fs.mkdirSync(cache, { recursive: true });
@@ -332,16 +425,17 @@ async function main() {
     const archive = await nodeArchive(pin, opts, cache);
     fs.mkdirSync(partial, { mode: 0o755 });
     extractNode(archive, pin, opts.target, partial);
+    if (ffPin) extractFfmpeg(await ffmpegArchive(ffPin, opts, cache), ffPin, partial);
     const pi = installPi(partial, cache);
-    writeNotices(partial, pin.version);
+    writeNotices(partial, pin.version, ffPin);
     if (t.platform !== 'win32') fs.writeFileSync(path.join(partial, 'pi'), piLauncher(pi.cli), { mode: 0o755 });
-    fs.writeFileSync(path.join(partial, 'koda-runtime.json'), `${JSON.stringify({ target: opts.target, node: pin.version, pi: pi.version, piCli: pi.cli }, null, 2)}\n`, { mode: 0o644 });
+    fs.writeFileSync(path.join(partial, 'koda-runtime.json'), `${JSON.stringify({ target: opts.target, node: pin.version, pi: pi.version, piCli: pi.cli, ...(ffPin ? { ffmpeg: ffPin.version } : {}) }, null, 2)}\n`, { mode: 0o644 });
     noSymlinks(partial);
     if (opts.selfCheck) selfCheck(partial, opts.target, pi.version);
     fs.rmSync(out, { recursive: true, force: true });
     fs.renameSync(partial, out);
     const s = sizeOf(out);
-    console.log(`runtime ${opts.target}: Node ${pin.version} + Pi ${pi.version} -> ${out} (${s.files} files, ${(s.bytes / 1048576).toFixed(1)} MiB)${opts.selfCheck ? ', self-check ok' : ''}`);
+    console.log(`runtime ${opts.target}: Node ${pin.version} + Pi ${pi.version}${ffPin ? ` + ffmpeg ${ffPin.version}` : ''} -> ${out} (${s.files} files, ${(s.bytes / 1048576).toFixed(1)} MiB)${opts.selfCheck ? ', self-check ok' : ''}`);
     if (opts.archive) {
       const archive = path.resolve(opts.archive);
       const a = packArchive(out, archive);

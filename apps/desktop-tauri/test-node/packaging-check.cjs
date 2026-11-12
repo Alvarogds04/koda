@@ -185,6 +185,7 @@ function fakeStage({ crateDir: _crateDir = crate } = {}) {
   // `.abito-tmpdirs`, and verifyStage lists the stage exactly (an extra file is a real problem there).
   const dir = path.join(T.make('abito-stage-'), 'stage'); fs.mkdirSync(dir);
   fs.writeFileSync(path.join(dir, 'abito-island'), '#!/bin/true\nfake binary\n', { mode: 0o755 });
+  fs.writeFileSync(path.join(dir, L.TRANSCRIBE_BIN), '#!/bin/true\nfake transcriber\n', { mode: 0o755 }); // K2-13 helper
   fs.writeFileSync(path.join(dir, 'abito-island-launcher'), L.launcherText(), { mode: 0o755 });
   fs.writeFileSync(path.join(dir, `${L.IDENTIFIER}.desktop`), L.desktopText(), { mode: 0o644 });
   fs.writeFileSync(path.join(dir, 'abito-island.png'), 'png', { mode: 0o644 });
@@ -237,6 +238,9 @@ test('L42 F1: the package ships the hook installer and everything it requires, a
 test('HU-015: the daemon-free Agentes entry ships, closed under require(), beside the harness it drives', () => {
   assert(L.DAEMON_FILES.includes('src/agents-direct.cjs'), 'Ajustes → Agentes runs src/agents-direct.cjs with no daemon: it must be packaged');
   assert(L.STAGED.includes('desktop-daemon/src/agents-direct.cjs'));
+  // K2-13 T2c-2: the transcription helper ships beside the island, and the daemon modules that spawn it ship too.
+  assert(L.STAGED.includes('abito-transcribe'));
+  assert(L.STAGED.includes('desktop-daemon/src/minikodas/transcribe.cjs') && L.STAGED.includes('desktop-daemon/src/minikodas/transcribe-setting.cjs'));
   for (const rel of ['src/agents-direct.cjs', 'src/agents.cjs', 'src/agent-hooks.cjs']) {
     const src = fs.readFileSync(path.join(crate, '..', 'desktop-daemon', rel), 'utf8');
     for (const m of src.matchAll(/require\(['"](\.{1,2}\/[^'"]+)['"]\)/g)) {

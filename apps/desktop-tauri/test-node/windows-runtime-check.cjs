@@ -11,7 +11,7 @@ const script = path.join(crate, 'packaging/windows/stage-runtime.cjs');
 const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'abito-win-stage-'));
 const out = path.join(scratch, 'payload');
 const files = [...L.DAEMON_FILES.map(f => `desktop-daemon/${f}`), ...L.HARNESS_FILES.map(f => `desktop-harness/${f}`), ...L.PI_FILES.map(f => `desktop-pi/${f}`)].sort();
-const bins = ['abito-island.exe', 'abito-notice-relay.exe', 'abito-private-session.exe', 'abito-install.json'];
+const bins = ['abito-island.exe', 'abito-notice-relay.exe', 'abito-private-session.exe', 'abito-transcribe.exe', 'abito-install.json'];
 function run(...args) { return spawnSync(process.execPath, [script, '--out', out, ...args], { encoding: 'utf8' }); }
 function runOut(dest, ...args) { return spawnSync(process.execPath, [script, '--out', dest, ...args], { encoding: 'utf8' }); }
 function entries(dir, prefix = '') { return fs.readdirSync(dir).flatMap(n => fs.statSync(path.join(dir, n)).isDirectory() ? entries(path.join(dir, n), `${prefix}${n}/`) : [`${prefix}${n}`]).sort(); }
@@ -277,6 +277,7 @@ try {
     const runtimeDir = path.join(scratch, 'runtime-fixture');
     fs.mkdirSync(distA); fs.mkdirSync(distB); fs.mkdirSync(runtimeDir);
     fs.writeFileSync(path.join(runtimeDir, 'node.exe'), 'pinned node fixture');
+    fs.writeFileSync(path.join(runtimeDir, 'ffmpeg.exe'), 'pinned ffmpeg fixture');
     for (const d of [distA, distB]) fs.writeFileSync(path.join(d, 'abito-private-session.exe'), 'helper fixture');
     const runManifest = (dist, ...extra) => {
       const r = spawnSync(process.execPath, [path.join(crate, 'packaging/windows/install-manifest.cjs'), '--dist', dist, ...extra], { encoding: 'utf8' });
@@ -286,8 +287,10 @@ try {
     const plain = runManifest(distB);
     const withRuntime = runManifest(distA, '--runtime', runtimeDir);
     assert.equal(withRuntime.schema, 'abito-install/1');
-    assert.deepEqual(Object.keys(withRuntime.files).sort(), [...Object.keys(plain.files), 'runtime/node.exe'].sort());
+    assert.deepEqual(Object.keys(withRuntime.files).sort(), [...Object.keys(plain.files), 'runtime/node.exe', 'runtime/ffmpeg.exe'].sort());
     assert.equal(withRuntime.files['runtime/node.exe'], sha256(path.join(runtimeDir, 'node.exe')));
+    // K2-13 (S9): the bundled LGPL ffmpeg the daemon spawns is pinned like node.exe.
+    assert.equal(withRuntime.files['runtime/ffmpeg.exe'], sha256(path.join(runtimeDir, 'ffmpeg.exe')));
     assert.deepEqual(Object.keys(plain.files).sort(), ['abito-private-session.exe', ...files].sort());
   });
   rule('macOS /var -> /private/var (K2-01b CI): a symlinked ANCESTOR of the output dir (outside the stage) is accepted, while a symlink inside the stage is still refused', () => {
