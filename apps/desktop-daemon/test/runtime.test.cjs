@@ -686,6 +686,32 @@ test("boot: a restart before the first message never loses the saved conversatio
 	}
 });
 
+test("a refused first prompt (no account, no session file yet) never blocks the engine: the replacement and the next start are ready (F1)", async (t) => {
+	// Gentle Dot (supervisor.ts:312-318): the session to reopen is switched to only when the file
+	// exists (existsSync); there is no separate «recovery» session. Real Pi with no account refuses
+	// the first prompt and never writes its lazy session file, so a missing file is skipped.
+	const { engine, spawnLog, cmdLog } = makeEngine(t, { abortGraceMs: 50, extraArgs: ["--lazy-session-file", "--refuse-prompt"] });
+	try {
+		await engine.start();
+		const first = engine.sessionFile;
+		assert.equal(fs.existsSync(first), false, "the lazy session file is not written before a message");
+		const pid = engine.pid;
+		await assert.rejects(() => engine.request({ type: "prompt", message: "hola" }), /No API key/);
+		// the refused turn is cut off and its child replaced; the replacement must become ready
+		await waitFor(() => engine.status === "ready" && engine.pid !== pid, 5000);
+		assert.equal(spawnCount(spawnLog), 2, "one replacement, no retry loop");
+		assert.equal(readCommands(cmdLog).filter((c) => c.type === "switch_session").length, 0, "a session file that does not exist is never switched to");
+		assert.equal(readState(engine).sessionFile, engine.sessionFile, "state.json names the open session");
+		// and the next start (Reiniciar / app restart) is ready too
+		await engine.stop();
+		await engine.start();
+		assert.equal(engine.status, "ready");
+		assert.equal(spawnCount(spawnLog), 3);
+	} finally {
+		await engine.stop();
+	}
+});
+
 test("crash restart: a failed reopen of the saved conversation keeps state.json and is retried with backoff", async (t) => {
 	const scriptFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "abito-switch-script-")), "switch.txt");
 	t.after(() => fs.rmSync(path.dirname(scriptFile), { recursive: true, force: true }));

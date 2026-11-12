@@ -216,6 +216,44 @@ test("boot order: an engine command that cannot spawn keeps the daemon up and re
 	assert.equal(fs.existsSync(path.join(root, "runtime", "session.json")), false);
 });
 
+// K2-05 boot follow-up = Gentle Dot close() (daemon.ts:410-458): a stop acts at once, even
+// while the engine is still starting, and a stop early in the boot publishes nothing at all.
+test("boot order: stop() while the engine is still starting acts at once and withdraws session.json (Gentle Dot close)", async () => {
+	const { daemon, root, evidence } = gated();
+	daemon.options.engineOptions.startTimeoutMs = 60_000;
+	const starting = daemon.start();
+	starting.catch(() => {});
+	try {
+		await waitFor(() => readSession(root) !== undefined && fs.existsSync(evidence.spawn), 10000);
+		assert.equal(daemon.engine.status, "starting");
+		const began = Date.now();
+		await daemon.stop();
+		const took = Date.now() - began;
+		assert.ok(took < 5000, `stop took ${took} ms`);
+		assert.equal(fs.existsSync(path.join(root, "runtime", "session.json")), false);
+		await starting;
+		assert.equal(daemon.status().state, "stopped");
+		assert.equal(daemon.engine.status, "stopped");
+	} finally {
+		await daemon.stop();
+		await starting.catch(() => {});
+	}
+});
+
+test("boot order: stop() right after start() publishes nothing and never spawns the engine", async () => {
+	const { daemon, root, evidence } = make();
+	const starting = daemon.start();
+	starting.catch(() => {});
+	await daemon.stop();
+	await starting.catch(() => {});
+	await sleep(300);
+	assert.equal(daemon.status().state, "stopped");
+	assert.equal(fs.existsSync(path.join(root, "runtime", "session.json")), false, "no session published after the stop");
+	assert.equal(fs.existsSync(evidence.spawn), false, "the engine was never spawned");
+	assert.equal(fs.readdirSync(path.join(root, "runtime")).filter((n) => n.startsWith("p-")).length, 0, "no socket directory left");
+	await daemon.stop();
+});
+
 test("boot order: the configured profile is activated once the retried engine becomes ready", async () => {
 	const { daemon, root, gate } = gated();
 	daemon.options.engineOptions.startTimeoutMs = 200;

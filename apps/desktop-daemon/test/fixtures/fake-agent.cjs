@@ -18,6 +18,8 @@
 // --lazy-session-file (K2-05 boot reopen B1): like real Pi (session-manager.js:794-799), the
 // session file is written only once there is a conversation: get_state reports the path but
 // creates nothing, the first prompt creates it.
+// --refuse-prompt (K2-05 boot follow-up F1): like real Pi with no account, every prompt is answered
+// with an error and nothing is recorded (with --lazy-session-file the session file is never written).
 // --ask-on-prompt (K2-05 U4b): after recording the user message the engine asks the user
 // (extension_ui_request `input`, with a hidden engine name in the title/placeholder) and
 // answers only once the extension_ui_response arrives, quoting what it received.
@@ -168,6 +170,10 @@ function handle(command) {
 			// Never answered on purpose.
 			break;
 		case "prompt": {
+			if (process.argv.includes("--refuse-prompt")) {
+				writeRecord({ id: command.id, type: "response", command: "prompt", success: false, error: "No API key found" });
+				break;
+			}
 			if (lazySessionFile && !fs.existsSync(sessionFile)) fs.writeFileSync(sessionFile, "", { mode: 0o600 });
 			respond(command.id, "prompt", { disposition: "started" });
 			writeRecord({ type: "agent_start" });

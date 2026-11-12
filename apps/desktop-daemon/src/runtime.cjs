@@ -760,7 +760,6 @@ class AgentEngine extends EventEmitter {
 		// across the boundary, and the chain survives restarts in state.json.
 		this.chains = {};
 		this.sessionChange = undefined;
-		this.recoverySessionFile = undefined;
 		this.sessionEpoch = 0;
 		this.turnCounter = 0;
 		this.log = options.log ?? (() => {});
@@ -942,7 +941,6 @@ class AgentEngine extends EventEmitter {
 				// Applied-but-unacknowledged resets are ambiguous: cut off, reopen
 				// the last verified session, and NEVER retry the reset automatically.
 				this.recycling = true;
-				this.recoverySessionFile = change.sessionFile;
 				this.sessionFile = undefined;
 				this.setStatus("restarting");
 				change.child.kill("SIGKILL");
@@ -978,7 +976,6 @@ class AgentEngine extends EventEmitter {
 		if (this.turn !== turn || this.child !== turn.child || this.stopping) return Promise.resolve();
 		turn.cancelled = true;
 		this.recycling = true;
-		this.recoverySessionFile = turn.sessionFile;
 		clearTimeout(turn.timer);
 		// F2: a cancelled turn never reaches message_end, so the held delta tail
 		// the stream filter still holds would be dropped. Flush it once, as a
@@ -1028,7 +1025,6 @@ class AgentEngine extends EventEmitter {
 		this.wasLaunched = true;
 		this.clearTurn();
 		this.sessionChange = undefined;
-		this.recoverySessionFile = undefined;
 		this.recycling = false;
 		clearTimeout(this.restartTimer);
 		this.restartTimer = undefined;
@@ -1124,14 +1120,17 @@ class AgentEngine extends EventEmitter {
 				return;
 			}
 			// Session continuity = Gentle Dot's spawnAndInitialize (supervisor.ts:311-330):
-			// reopen the saved conversation, then refreshSession's get_state names the
-			// open session. ANY error kills the child (below), so a late switch cannot
-			// land, and state.json is written only after that get_state.
-			const expected = this.recoverySessionFile;
-			const wanted = expected ?? this.readPersistedSession();
-			if (expected && !this.isOwnedSessionFile(expected)) throw new Error("agent recovery session is unavailable");
+			// reopen the saved conversation only when its file exists (existsSync; here the
+			// stricter owned-file check), then refreshSession's get_state names the open
+			// session. Gentle Dot keeps no separate «recovery» session: a cut-off turn or an
+			// unconfirmed reset reopens state.json's session like any boot (K2-05 F1: a refused
+			// first prompt leaves a session file Pi never wrote; it is skipped, never awaited).
+			// ANY error kills the child (below), so a late switch cannot land, and state.json
+			// is written only after that get_state.
+			const wanted = this.readPersistedSession();
 			const current = state?.data?.sessionFile;
-			if (wanted && wanted !== current && this.isOwnedSessionFile(wanted)) {
+			const switching = Boolean(wanted && wanted !== current && this.isOwnedSessionFile(wanted));
+			if (switching) {
 				// The one deviation from Gentle Dot (30 s): the reopen gets the rotation
 				// switch's budget, requestTimeoutMs, because Windows CI 43025727185 showed
 				// the real engine's switch_session can take longer than 30 s there.
@@ -1145,12 +1144,15 @@ class AgentEngine extends EventEmitter {
 			}
 			this.sessionFile = after?.data?.sessionFile ?? current;
 			if (!this.isOwnedSessionFile(this.sessionFile, true)) throw new Error("agent session is unavailable");
-			if (expected && this.sessionFile !== expected) throw new Error("agent recovery session was not confirmed");
+			// Koda deviation (kept from the former recovery check, now for every reopen): a
+			// switch the engine ACKs but does not apply is an error like any other, so ready
+			// is never reported on another session while the saved file is on disk (Gentle
+			// Dot's refreshSession would adopt it and overwrite the saved pointer).
+			if (switching && path.resolve(this.sessionFile) !== path.resolve(wanted)) throw new Error("agent session switch was not confirmed");
 			this.sessionEpoch += 1;
 			this.persistSession(this.sessionFile);
 			this.spawnedAt = Date.now();
 			this.recycling = false;
-			this.recoverySessionFile = undefined;
 			this.setStatus("ready");
 			// K2-05 T4 U1 verifier fix: the reopen's session_changed fires only once the
 			// engine is ready — before, the server's history re-broadcast guard (status
@@ -1304,10 +1306,7 @@ class AgentEngine extends EventEmitter {
 
 	handleClose(child, code, signal) {
 		if (child !== this.child) return;
-		if (this.sessionChange && !this.stopping) {
-			this.recycling = true;
-			this.recoverySessionFile = this.sessionChange.sessionFile;
-		}
+		if (this.sessionChange && !this.stopping) this.recycling = true;
 		this.sessionChange = undefined;
 		this.clearTurn();
 		this.sessionFile = undefined;

@@ -353,9 +353,17 @@ class Daemon extends EventEmitter {
 		return sessionPath(this.root);
 	}
 
-	async start() {
-		if (this.state !== "stopped") throw new Error("daemon already started");
+	start() {
+		if (this.state !== "stopped") return Promise.reject(new Error("daemon already started"));
 		this.state = "starting";
+		this.engineStarting = false;
+		const starting = this.startOnce();
+		this.starting = starting;
+		starting.catch(() => {});
+		return starting;
+	}
+
+	async startOnce() {
 		try {
 			await this.boot();
 			// A stop() that raced the boot (the engine may still be starting) keeps its verdict.
@@ -366,6 +374,15 @@ class Daemon extends EventEmitter {
 			this.state = "stopped";
 			throw error;
 		}
+	}
+
+	/**
+	 * K2-05 boot follow-up = Gentle Dot close() (daemon.ts:410-458, `if (!stopping)` before
+	 * supervisor.start): once a stop() was asked for, the boot creates and publishes nothing more.
+	 * Checked after each of the boot's short awaits; start() then tears down what the boot made.
+	 */
+	assertBooting() {
+		if (this.state !== "starting") throw new Error("daemon stopped during boot");
 	}
 
 	async boot() {
@@ -383,6 +400,7 @@ class Daemon extends EventEmitter {
 		let replaced = false;
 		if (existing) {
 			const verdict = await classifySession(this.root, { env: this.env });
+			this.assertBooting();
 			if (verdict.ready) {
 				this.recordLaunch({ reason: "endpoint_ready", outcome: "refused", incumbentPid: existing.pid });
 				throw new Error("daemon already running");
@@ -421,6 +439,7 @@ class Daemon extends EventEmitter {
 		this.memory = engine.command === DEFAULT_COMMAND
 			? await privateMemory(this.env, this.root, (line) => this.log(line), this.options.memoryOptions ?? {})
 			: undefined;
+		this.assertBooting();
 		this.accounts = new AccountManager({
 			accountsRoot: path.join(this.root, "accounts"),
 			env: this.env,
@@ -456,6 +475,7 @@ class Daemon extends EventEmitter {
 				this.connectorHostUnavailable = true;
 				this.log("connector host unavailable");
 			}
+			this.assertBooting();
 		}
 
 		const runtimeDir = ensurePrivateDir(path.join(this.root, "runtime"));
@@ -512,6 +532,7 @@ class Daemon extends EventEmitter {
 			...(this.options.serverOptions ?? {}),
 		});
 		const { endpoint } = await this.server.start();
+		this.assertBooting();
 		this.endpoint = endpoint;
 		this.startedAt = Date.now();
 		// R8: the boot-time parent pid lets a later launch detect reparenting
@@ -544,6 +565,9 @@ class Daemon extends EventEmitter {
 		// the engine starts (they read "starting"/"restarting", sends are refused unavailable).
 		// A failed first start is logged, never fatal: the runtime keeps retrying with its backoff.
 		if (cfg.profile) this.activateProfileWhenReady(cfg.profile);
+		// From here a stop() does not wait for the boot: it tears down at once and stops the
+		// starting engine (Gentle Dot close() during supervisor.start()).
+		this.engineStarting = true;
 		await engine.start().catch((error) => {
 			if (this.state === "stopping" || this.state === "stopped") return;
 			// Koda deviation: a spawn that could not even be prepared (the private identity file
@@ -849,7 +873,16 @@ class Daemon extends EventEmitter {
 
 	async stop() {
 		if (this.state === "stopped") return;
+		// K2-05 boot follow-up = Gentle Dot close() (daemon.ts:410-458): a stop while the boot waits
+		// for the engine's first start acts at once (session.json withdrawn, the starting engine
+		// stopped). Earlier in the boot (short, bounded steps) the boot itself stops at its next
+		// check and tears down; this stop waits for that.
+		const booting = this.state === "starting" && !this.engineStarting ? this.starting : undefined;
 		this.state = "stopping";
+		if (booting) {
+			await booting.catch(() => {});
+			if (this.state === "stopped") return;
+		}
 		await this.teardown();
 		this.state = "stopped";
 	}

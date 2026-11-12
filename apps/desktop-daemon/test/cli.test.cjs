@@ -182,6 +182,56 @@ test("app-owned run with immediate EOF never publishes a live session", async ()
 	} finally { await reap(child); }
 });
 
+// K2-05 boot follow-up (Gentle Dot daemon.ts:410-458 close()): stopping acts at once, even while
+// the engine is still starting. The fake engine holds its first get_state behind a gate that is
+// never opened, so the first engine start would only end at the 60 s start timeout.
+function startingIsland() {
+	const { root, env } = fakeIsland();
+	const gate = path.join(path.dirname(root), "never-open");
+	const wrapper = path.join(path.dirname(root), "fake-pi-starting.sh");
+	fs.writeFileSync(wrapper, `#!/bin/sh\nexec "${process.execPath}" "${FAKE}" --state-gate "${gate}" "$@"\n`, { mode: 0o755 });
+	fs.writeFileSync(path.join(root, "config.json"), JSON.stringify({ command: wrapper }), { mode: 0o600 });
+	return { root, env };
+}
+const startingTwin = "needs a #!/bin/sh wrapper to hold the engine's first get_state; the shutdown path (cli.cjs run) is platform-independent";
+
+test("app-owned run stops at once on stdin EOF while the engine is still starting (Gentle Dot close)", unixOnly(startingTwin), async () => {
+	const { root, env } = startingIsland();
+	const child = spawn(process.execPath, [CLI, "run", "--app-owned"], { env, stdio: ["pipe", "pipe", "pipe"] });
+	let output = "";
+	child.stderr.on("data", (d) => { output += d; });
+	child.stdout.resume();
+	try {
+		await waitForSessionPid(root, child.pid);
+		const began = Date.now();
+		child.stdin.end();
+		await waitFor(() => child.exitCode !== null, 20000);
+		const took = Date.now() - began;
+		assert.equal(child.exitCode, 0, output);
+		assert.ok(took < 10000, `stopped after ${took} ms (the engine start would hold it 60 s)`);
+		assert.equal(fs.existsSync(sessionOf(root)), false);
+	} finally { await reap(child); }
+});
+
+test("cli stop (SIGTERM) acts at once while the engine is still starting and withdraws session.json", unixOnly(startingTwin), async () => {
+	const { root, env } = startingIsland();
+	const child = spawn(process.execPath, [CLI, "run"], { env, stdio: ["ignore", "pipe", "pipe"] });
+	let output = "";
+	child.stdout.on("data", (d) => { output += d; });
+	child.stderr.on("data", (d) => { output += d; });
+	try {
+		await waitForSessionPid(root, child.pid);
+		const began = Date.now();
+		const stop = cli(root, ["stop"], env);
+		const took = Date.now() - began;
+		assert.equal(stop.status, 0, stop.stderr);
+		assert.ok(took < 10000, `cli stop took ${took} ms (the engine start would hold it 60 s)`);
+		await waitFor(() => child.exitCode !== null, 20000);
+		assert.equal(child.exitCode, 0, output);
+		assert.equal(fs.existsSync(sessionOf(root)), false);
+	} finally { await reap(child); }
+});
+
 test("usage errors exit 2 with a generic message", () => {
 	const root = islandRoot();
 	for (const args of [[], ["bogus"], ["config"], ["config", "set-workspace"], ["config", "nope"], ["run", "--x"]]) {

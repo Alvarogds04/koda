@@ -636,12 +636,25 @@ one-line log notice), and any other unknown `rotation` subkey is still refused.
   state.json only ever names a session the engine actually holds: a failed switch never leaves the
   persisted pointer at the seed.
 - **Reopen on boot/restart (L44, L51: Gentle Dot's).** The engine reopens the session named in
-  state.json with `switch_session`, then adopts what `get_state` reports, and only then writes
-  state.json. Any error kills the child (no late switch can land), leaves state.json untouched, never
-  reports `ready` on another session, and a fresh child retries with the restart backoff, with no
-  attempt limit, until the saved session reopens or the daemon stops. One deviation from Gentle Dot:
-  the switch budget is `requestTimeoutMs` (the rotation switch's, 300 s), not 30 s, because Windows
-  CI 43025727185 showed the real engine's switch can take longer.
+  state.json with `switch_session` only when that file exists (Gentle Dot `supervisor.ts:317`
+  `existsSync(wanted)`; Koda's check is the stricter owned-file rule), then adopts what `get_state`
+  reports, and only then writes state.json. A cut-off turn, a crash or an unconfirmed reset reopen
+  the same saved session the same way: there is no separate «recovery» session (Gentle Dot keeps
+  none), so a session file the engine never wrote (a first prompt refused with no account: real Pi
+  writes its file only after a message) is skipped and never blocks the engine (K2-05 F1). Any error
+  kills the child (no late switch can land), leaves state.json untouched, never reports `ready` on
+  another session, and a fresh child retries with the restart backoff, with no attempt limit, until
+  the saved session reopens or the daemon stops. Two deviations from Gentle Dot: the switch budget is
+  `requestTimeoutMs` (the rotation switch's, 300 s), not 30 s, because Windows CI 43025727185 showed
+  the real engine's switch can take longer; and a switch the engine ACKs without applying it is an
+  error (Gentle Dot's `refreshSession` would adopt the other session and overwrite the saved pointer).
+- **Known gap shared with Gentle Dot (F2).** A rotation that falls back to `new_session` names the
+  fresh session in state.json with its chain (`rotation.ts:212-214`, here `rotation.cjs:311-317`),
+  but the engine writes that session's file only with its first message. A daemon or engine restart
+  right after such a fallback, before the next message, finds no file to reopen (the `existsSync`
+  skip above), boots a new empty session and the chain link to the earlier conversation is lost (the
+  earlier session files stay on disk). Gentle Dot has the same window; Koda keeps that behaviour for
+  parity.
 - **Failure.** A seed-write failure, an unparseable or wrong-version session header (fail closed),
   or a failed fallback leaves the chat where it was and logs it. A failed switch or verification
   falls back to `new_session` seeded the same way (Gentle Dot's fallback), removes the orphan handoff
@@ -660,7 +673,12 @@ in `<island>/runtime/session.json` (0600, removed on stop).
 
 **Boot order (K2-05, Gentle Dot `daemon.ts:470-481`).** The daemon validates its config and the bundled
 engine (a missing or broken bundled runtime still fails the boot, like Gentle Dot's `loadConfig`), opens
-its server, publishes `session.json` and only then starts the engine, without making the boot wait for it.
+its server, publishes `session.json` and only then starts the engine. Like Gentle Dot (`daemon.ts:477-481`
+`await supervisor.start().catch(log)`), the boot awaits that first engine start, but a stop does not:
+SIGTERM/SIGINT, stdin EOF of an app-owned `run` and `abito-island-daemon stop` act at once even while the
+engine is still starting (Gentle Dot `close()`, `daemon.ts:410-458`) — `session.json` is withdrawn, the
+server closes and the starting engine is stopped without waiting for its start to settle; a stop asked for
+before the server listens lets the boot publish nothing.
 Clients that connect meanwhile get `ready{state.status:"starting"}` (then `agent_state` as it changes);
 `send`/`steer` answer `unavailable` until the engine is `ready`. A first engine start that fails is logged
 (`agent failed to start: …; retrying`) and retried by the runtime with its backoff; the daemon stays up. The

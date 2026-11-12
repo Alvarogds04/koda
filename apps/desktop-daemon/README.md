@@ -17,6 +17,9 @@ The Linux Tauri app starts this host as its direct child with
 `node src/cli.cjs run --app-owned`. The flag adds a stdin lifetime lease: EOF
 requests shutdown, including EOF received during startup. Plain `run` retains its
 foreground SIGINT/SIGTERM behavior; `status`, `stop` and config commands are unchanged.
+Like Gentle Dot's `close()` (`daemon.ts:410-458`), EOF, SIGINT/SIGTERM and `stop` act at
+once even while the engine is still starting: `session.json` is withdrawn and the starting
+engine stopped without waiting for its first start to settle.
 
 Generic CLI failures append a bounded diagnostic with an allowlisted error name/code
 and a fixed, path-redacted category. Unknown exception details are omitted, not
@@ -153,8 +156,10 @@ Behavior details:
   admission stays closed while the owned child is cut off and a replacement
   reopens the last verified session. The reset is never automatically retried.
   Stop/generation changes invalidate stale reset continuations. Cancelled/reset
-  recovery pins the last verified owned session: a replacement that merely ACKs
-  reopening but reports another identity stays busy/unavailable, never ready.
+  recovery reopens the session saved in `state.json` exactly like a boot (there is
+  no separate «recovery» session, Gentle Dot keeps none): a replacement that merely
+  ACKs reopening but reports another identity stays busy/unavailable, never ready;
+  a saved session whose file the engine never wrote is skipped (K2-05 F1, below).
 - **Limit of proof**: Pi reports events asynchronously and processes abort
   cooperatively. Observation/cutoff cannot guarantee a hard provider-call or tool
   side-effect ceiling or undo completed effects. One daemon has one current Pi
@@ -179,18 +184,32 @@ Behavior details:
   `<root>/state.json` on every spawn; after a crash restart, a persisted path is
   reopened with `switch_session` only when it is inside the island sessions dir,
   a regular non-symlink file owned by the current user. Anything else is ignored.
-  K2-05 (L44, L51): the reopen of the saved conversation, at boot and after a crash, is
-  Gentle Dot's (`supervisor.ts` `spawnAndInitialize`): `get_state`; when the saved file
-  differs from the engine's boot session, `switch_session` to it; then `get_state` again,
+  K2-05 (L44, L51): the reopen of the saved conversation, at boot, after a crash and after
+  a cut-off turn or reset, is Gentle Dot's (`supervisor.ts:311-330` `spawnAndInitialize`):
+  `get_state`; when the saved file differs from the engine's boot session AND exists
+  (Gentle Dot's `existsSync(wanted)`; here the owned-file rule above), `switch_session` to
+  it; then `get_state` again,
   and only that answer is adopted and written to `state.json`. ANY error kills the child
   (no late switch can land), `state.json` is left as it was, and the restart backoff
   spawns a fresh child that tries again, with no attempt limit, until one reopens the
   saved conversation or `stop()` is called. No other session is ever adopted while the
-  saved file is there, so a restart before the first message cannot lose it. At boot, a
+  saved file is there, so a restart before the first message cannot lose it. A saved
+  session whose file does not exist is skipped, never waited for (K2-05 F1: with no
+  account the engine refuses the first prompt and never writes its session file; before,
+  every replacement refused to start with «agent recovery session is unavailable» and
+  the engine stayed not ready until the app restarted). At boot, a
   failed reopen rejects `start()` like any first-start failure and the same retry runs
-  (Gentle Dot's daemon logs it and keeps serving). One deviation: the boot reopen's `switch_session` gets the rotation
+  (Gentle Dot's daemon logs it and keeps serving). Two deviations: the boot reopen's `switch_session` gets the rotation
   switch's budget (`requestTimeoutMs`, default 300 s) instead of Gentle Dot's 30 s,
-  because Windows CI 43025727185 showed the real engine's switch can take longer there.
+  because Windows CI 43025727185 showed the real engine's switch can take longer there;
+  and a switch the engine ACKs without applying is an error (Gentle Dot's `refreshSession`
+  would adopt the other session and overwrite the saved pointer).
+- **Known gap shared with Gentle Dot (K2-05 F2, kept for parity)**: a rotation that falls
+  back to `new_session` saves the fresh session and its chain in `state.json`, but the
+  engine writes that session's file only with its first message. A restart right after
+  the fallback, before the next message, finds no file to reopen, boots an empty session
+  and loses the chain link to the earlier conversation (its files stay on disk). Gentle
+  Dot (`rotation.ts:212-214`) has the same window.
 - **Stop**: `stop()` ends stdin, then SIGTERM after `stopTimeoutMs`, then SIGKILL; it
   disables restarts, clears turn/deadline/grace timers, and later requests reject with `engine is not ready`.
 - **Spawn args**: `--mode rpc --session-dir <island sessions> --append-system-prompt
