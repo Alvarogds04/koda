@@ -27,6 +27,13 @@
  * transcribed (options.transcriber, transcribe.cjs) and deleted, and its transcript is appended to the source the
  * Minikoda reads. A transcription failure ends the run before its engine starts: a «Hoy» error item that says why.
  * Cancelling the run (pause, delete, daemon stop) cancels the transcription too.
+ *
+ * S17: transcription has its OWN budget (`TRANSCRIPTION_BUDGET_MS`, 30 min) and never counts toward the run's engine
+ * budget (`runTimeoutMs`, 300 s). That clock starts only when `runMinikoda` starts the engine, i.e. AFTER the source
+ * and its transcripts are ready; a 40-minute video cannot eat the engine's time. A run slot IS held while a video is
+ * transcribed: a transcribing run counts against `maxConcurrentRuns` (2) exactly like a running one. When the
+ * transcription budget runs out, the helper/ffmpeg/remote request is killed, the temp media is deleted by the existing
+ * cleanup, the engine never starts and «Hoy» gets an error item saying the video was too long to transcribe in time.
  */
 
 const { EventEmitter } = require("node:events");
@@ -508,6 +515,8 @@ class MinikodaService extends EventEmitter {
 				runId,
 				source,
 				signal,
+				// S17: this budget (300 s) is spent by the ENGINE only. runMinikoda starts its clock here, after the
+				// transcription, so transcription time never counts toward it (transcribe.cjs has its own 30 min).
 				timeoutMs: this.runTimeoutMs,
 				engine: this.options.engine,
 				log: this.log,

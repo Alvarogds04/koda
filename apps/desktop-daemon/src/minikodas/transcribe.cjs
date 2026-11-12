@@ -36,6 +36,13 @@ const CHUNK_SECONDS = 175;
 const MAX_CHUNK_BYTES = 24_000_000;
 /** Longest wait for a killed child's `close` before the run settles anyway (a kill that did not take). */
 const CLOSE_GRACE_MS = 10_000;
+/**
+ * S17 (human decision L31): transcription has its OWN budget, it does not count toward the 300 s run budget of the
+ * Minikoda's engine. The one value bounds the whole transcription — the ffmpeg extraction, every local helper run and
+ * every remote request — so local and remote paths cannot drift apart.
+ */
+const TRANSCRIPTION_BUDGET_MINUTES = 30;
+const TRANSCRIPTION_BUDGET_MS = TRANSCRIPTION_BUDGET_MINUTES * 60 * 1000;
 /** Containers ffmpeg may open (no playlists such as hls/concat, no devices, no network). */
 const INPUT_FORMATS = "mov,mp4,m4a,3gp,3g2,mj2,matroska,webm,ogg,mp3,wav,flac,aac,avi,mpegts";
 /**
@@ -50,7 +57,7 @@ const INPUT_CODECS = [
 ].join(",");
 const DEFAULT_LIMITS = Object.freeze({
 	maxSeconds: 3 * 3600, // longest audio transcribed (same default as the helper)
-	timeoutMs: 2 * 3600 * 1000, // whole transcription
+	timeoutMs: TRANSCRIPTION_BUDGET_MS, // S17: the whole transcription, local and remote alike
 	requestTimeoutMs: 180_000, // one remote request
 	maxHelperOutputBytes: 4 * 1024 * 1024,
 	maxResponseBytes: 1024 * 1024,
@@ -65,6 +72,8 @@ const USER_TEXT = Object.freeze({
 	too_long: "el audio es más largo que el máximo permitido",
 	too_large: "un fragmento supera el límite de 25 MB",
 	timeout: "tardó demasiado",
+	// S17: the transcription's own 30 min ran out (never the run's 300 s engine budget, which has not started yet).
+	budget_exceeded: `el video tardó más de ${TRANSCRIPTION_BUDGET_MINUTES} minutos en transcribirse; no se resumió`,
 	cancelled: "se canceló",
 	remote_unavailable: "la cuenta elegida para transcribir no está disponible",
 	remote_auth: "la cuenta elegida para transcribir rechazó la clave",
@@ -277,7 +286,8 @@ class Transcriber {
 			fail("invalid_response");
 		}
 		if (code !== 0 || typeof out?.error === "string") {
-			const mapped = { model_missing: "model_missing", too_long: "too_long", timeout: "timeout", bad_audio: "bad_media", bad_input: "bad_media" }[out?.error] ?? "failed";
+			// The helper's own `--timeout-sec` IS the remaining transcription budget (S17), so its `timeout` is ours.
+			const mapped = { model_missing: "model_missing", too_long: "too_long", timeout: "budget_exceeded", bad_audio: "bad_media", bad_input: "bad_media" }[out?.error] ?? "failed";
 			this.log(`transcription: abito-transcribe answered ${mapped}`);
 			fail(mapped);
 		}
@@ -325,6 +335,8 @@ class Transcriber {
 		const client = url.protocol === "https:" ? https : http;
 		const { body, contentType } = multipart([["model", setting.remote.model], ["language", setting.language], ["response_format", "json"]], file);
 		const timeoutMs = Math.min(this.limits.requestTimeoutMs, Math.max(1, job.deadline - Date.now()));
+		// S17: only an exhausted transcription budget is `budget_exceeded`; one slow request keeps its own `timeout`.
+		const timeoutCode = job.deadline - Date.now() <= this.limits.requestTimeoutMs ? "budget_exceeded" : "timeout";
 		return new Promise((resolve, reject) => {
 			let settled = false;
 			let request;
@@ -337,7 +349,7 @@ class Transcriber {
 				fn(value);
 			};
 			const onAbort = () => finish(reject, new TranscriptionError("cancelled"));
-			const timer = setTimeout(() => finish(reject, new TranscriptionError("timeout")), timeoutMs);
+			const timer = setTimeout(() => finish(reject, new TranscriptionError(timeoutCode)), timeoutMs);
 			if (job.signal?.aborted) return onAbort();
 			job.signal?.addEventListener("abort", onAbort, { once: true });
 			try {
@@ -425,9 +437,11 @@ class Transcriber {
 				child.once("close", finishNow);
 			};
 			const onAbort = () => stopAndSettle(reject, new TranscriptionError("cancelled"));
+			// This timer is always the transcription's whole budget (S17): ffmpeg, the local helper and the remote path
+			// all run against the SAME `job.deadline`, so a kill here means that budget ran out.
 			const timer = setTimeout(() => {
 				this.log(`transcription: ${label} timed out`);
-				stopAndSettle(reject, new TranscriptionError("timeout"));
+				stopAndSettle(reject, new TranscriptionError("budget_exceeded"));
 			}, Math.max(1, job.deadline - Date.now()));
 			if (job.signal?.aborted) return onAbort();
 			job.signal?.addEventListener("abort", onAbort, { once: true });
@@ -462,4 +476,4 @@ class Transcriber {
 	}
 }
 
-module.exports = { Transcriber, TranscriptionError, bundledTools, wavSeconds, removeWorkDir, CHUNK_SECONDS, MAX_CHUNK_BYTES, INPUT_FORMATS, INPUT_CODECS, DEFAULT_LIMITS, USER_TEXT };
+module.exports = { Transcriber, TranscriptionError, bundledTools, wavSeconds, removeWorkDir, CHUNK_SECONDS, MAX_CHUNK_BYTES, INPUT_FORMATS, INPUT_CODECS, DEFAULT_LIMITS, USER_TEXT, TRANSCRIPTION_BUDGET_MINUTES, TRANSCRIPTION_BUDGET_MS };

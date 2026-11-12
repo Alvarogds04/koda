@@ -11,7 +11,7 @@ const os = require("node:os");
 const path = require("node:path");
 
 const { validateTranscriptionSetting, TRANSCRIPTION_DEFAULT } = require("../src/minikodas/transcribe-setting.cjs");
-const { Transcriber, TranscriptionError, bundledTools, removeWorkDir, CHUNK_SECONDS, MAX_CHUNK_BYTES } = require("../src/minikodas/transcribe.cjs");
+const { Transcriber, TranscriptionError, bundledTools, removeWorkDir, CHUNK_SECONDS, MAX_CHUNK_BYTES, TRANSCRIPTION_BUDGET_MS, TRANSCRIPTION_BUDGET_MINUTES } = require("../src/minikodas/transcribe.cjs");
 const { MinikodaService } = require("../src/minikodas/service.cjs");
 const config = require("../src/config.cjs");
 const P = require("../src/protocol.cjs");
@@ -246,6 +246,7 @@ test("local failures map to closed codes and never leave files: model_missing, g
 	const base = tmp(t);
 	const cases = [
 		[{ FAKE_HELPER_MODE: "model_missing" }, "model_missing"],
+		[{ FAKE_HELPER_MODE: "timeout" }, "budget_exceeded"], // the helper's deadline IS the remaining budget (S17)
 		[{ FAKE_HELPER_MODE: "garbage" }, "invalid_response"],
 		[{ FAKE_HELPER_MODE: "crash" }, "failed"],
 		[{ FAKE_HELPER_MODE: "huge" }, "invalid_response"],
@@ -279,7 +280,7 @@ test("input: only a regular file is accepted (no symlink, no directory, no relat
 	assert.deepEqual(lines(ffLog), [], "ffmpeg never ran");
 });
 
-test("cancellation and timeout: an aborted or slow transcription kills its child and cleans up", async (t) => {
+test("cancellation and budget: an aborted or slow transcription kills its child and cleans up", async (t) => {
 	const base = tmp(t);
 	for (const env of [{ FAKE_HELPER_MODE: "hang" }, { FAKE_FFMPEG_MODE: "hang" }]) {
 		const { tr, workRoot } = transcriber(t, base, { env });
@@ -292,7 +293,8 @@ test("cancellation and timeout: an aborted or slow transcription kills its child
 		assert.equal(fs.existsSync(file), false);
 		assert.deepEqual(allFiles(workRoot), []);
 		const slow = transcriber(t, base, { env, limits: { timeoutMs: 400 } });
-		await assert.rejects(slow.tr.transcribe(media(path.join(base, "in"), 10)), (e) => e.code === "timeout");
+		// S17: an exhausted transcription budget (here injected small) is its own code, not a slow single request.
+		await assert.rejects(slow.tr.transcribe(media(path.join(base, "in"), 10)), (e) => e.code === "budget_exceeded");
 	}
 });
 
@@ -334,7 +336,7 @@ test("K2-13: a cleanup that cannot remove the work folder never replaces the tra
 
 test("S7/S9 remote: ≤180 s OGG chunks POSTed to {base}/audio/transcriptions with the account's key; JSON .text joined in order", async (t) => {
 	const base = tmp(t);
-	const srv = await fakeServer(t, (req, res, body, n) => {
+	const srv = await fakeServer(t, (_req, res, _body, n) => {
 		res.writeHead(200, { "content-type": "application/json" });
 		res.end(JSON.stringify({ text: `parte ${n}`, segments: [] }));
 	});
@@ -391,15 +393,15 @@ test("remote failures: 401 is remote_auth, non-JSON is invalid_response, a redir
 		assert.ok(!String(err?.message).includes(KEY) && !String(err?.message).includes("127.0.0.1"));
 		return { code: err?.code, seen: srv.seen };
 	};
-	assert.equal((await run((q, s) => { s.writeHead(401); s.end("{}"); })).code, "remote_auth");
-	assert.equal((await run((q, s) => { s.writeHead(200, { "content-type": "text/plain" }); s.end("hola"); })).code, "invalid_response");
-	assert.equal((await run((q, s) => { s.writeHead(200); s.end(JSON.stringify({ nottext: 1 })); })).code, "invalid_response");
-	const redirected = await run((q, s) => { s.writeHead(302, { location: "http://127.0.0.1:9/steal" }); s.end(); });
+	assert.equal((await run((_q, s) => { s.writeHead(401); s.end("{}"); })).code, "remote_auth");
+	assert.equal((await run((_q, s) => { s.writeHead(200, { "content-type": "text/plain" }); s.end("hola"); })).code, "invalid_response");
+	assert.equal((await run((_q, s) => { s.writeHead(200); s.end(JSON.stringify({ nottext: 1 })); })).code, "invalid_response");
+	const redirected = await run((_q, s) => { s.writeHead(302, { location: "http://127.0.0.1:9/steal" }); s.end(); });
 	assert.equal(redirected.code, "remote_failed");
 	assert.equal(redirected.seen.length, 1);
-	assert.equal((await run((q, s) => { s.writeHead(500); s.end("boom"); })).code, "remote_failed");
+	assert.equal((await run((_q, s) => { s.writeHead(500); s.end("boom"); })).code, "remote_failed");
 	assert.equal((await run(() => {}, { limits: { requestTimeoutMs: 300 } })).code, "timeout");
-	const huge = await run((q, s) => { s.writeHead(200); s.end(JSON.stringify({ text: "x" })); }, { env: { FAKE_FFMPEG_MODE: "huge" } });
+	const huge = await run((_q, s) => { s.writeHead(200); s.end(JSON.stringify({ text: "x" })); }, { env: { FAKE_FFMPEG_MODE: "huge" } });
 	assert.equal(huge.code, "too_large");
 	assert.equal(huge.seen.length, 0, "a chunk over 25 MB is never uploaded");
 });
@@ -413,7 +415,7 @@ test("remote: an unusable account (signed out, not a gateway) is remote_unavaila
 // ---------- the Minikoda run ----------
 
 const MODEL = { provider: "fake", id: "fake-minikoda", accountId: "main" };
-const recipe = () => ({
+const recipe = (over = {}) => ({
 	id: "videos",
 	name: "Videos",
 	when: { manual: true },
@@ -422,6 +424,7 @@ const recipe = () => ({
 	prompt: "Resumí el canal.",
 	model: { ...MODEL },
 	never: ["buy", "sell", "send", "delete"],
+	...over,
 });
 function accountsFixture(base) {
 	const accountsRoot = path.join(base, "accounts");
@@ -433,12 +436,12 @@ function accountsFixture(base) {
 		profiles: { list: () => ({ profiles: [], active: undefined }) },
 	};
 }
-function service(t, base, { env = {}, source, steps } = {}) {
+function service(t, base, { env = {}, source, steps, limits, transcriber: custom, runTimeoutMs = 20_000, maxConcurrentRuns } = {}) {
 	const fx = accountsFixture(base);
 	const scriptFile = path.join(base, "script.json");
 	fs.writeFileSync(scriptFile, JSON.stringify({ steps: steps ?? [{ tool: "source_read" }, { text: "Resumen listo." }] }));
 	const results = { runs: [], errors: [], addRun: async (r) => { results.runs.push(r); }, addError: async (e) => { results.errors.push(e); } };
-	const { tr } = transcriber(t, base, { env });
+	const { tr } = transcriber(t, base, { env, limits });
 	const svc = new MinikodaService({
 		islandRoot: path.join(base, "island"),
 		accounts: fx.accounts,
@@ -446,9 +449,10 @@ function service(t, base, { env = {}, source, steps } = {}) {
 		accountsRoot: fx.accountsRoot,
 		results,
 		minEveryMs: 1,
-		runTimeoutMs: 20_000,
+		runTimeoutMs,
+		...(maxConcurrentRuns ? { maxConcurrentRuns } : {}),
 		engine: { command: process.execPath, commandArgs: [FAKE_PI, "--script", scriptFile], env: { PATH: process.env.PATH }, startTimeoutMs: 10_000 },
-		transcriber: tr,
+		transcriber: custom ?? tr,
 		source,
 	});
 	t.after(() => svc.stop());
@@ -547,7 +551,7 @@ test("K2-13: a killed tool logs its reason once, never a bogus exit line after t
 	const base = tmp(t);
 	const logs = [];
 	const { tr } = transcriber(t, base, { env: { FAKE_FFMPEG_MODE: "hang" }, logs, limits: { timeoutMs: 400 } });
-	await assert.rejects(tr.transcribe(media(path.join(base, "in"), 10)), (e) => e.code === "timeout");
+	await assert.rejects(tr.transcribe(media(path.join(base, "in"), 10)), (e) => e.code === "budget_exceeded");
 	await sleep(300);
 	assert.deepEqual(logs.filter((l) => /exited/.test(l)), [], "no exit line after the run settled");
 	assert.ok(logs.some((l) => /timed out/.test(l)), `the real reason is logged: ${JSON.stringify(logs)}`);
@@ -572,6 +576,91 @@ test("S6 a transcription failure is a clear «Hoy» error and the Minikoda's eng
 	assert.equal(svc.get("videos").lastRun.reason, "transcription");
 	assert.equal(fs.existsSync(path.join(island, "minikodas", "engines", "videos", "run", "source.txt")), false, "the engine never ran");
 	assert.equal(fs.existsSync(mediaFile), false);
+});
+
+test("S17 transcription has its own 30-minute budget, separate from the run's engine budget", async (t) => {
+	// The human's decision (L31, S17): transcription time does NOT count toward the 300 s run budget; it has its own
+	// 30 min per run. When it runs out the helper is killed, the temp media and work folder are removed, the engine
+	// never starts, and «Hoy» says the video was too long to transcribe in time.
+	assert.equal(TRANSCRIPTION_BUDGET_MINUTES, 30);
+	assert.equal(TRANSCRIPTION_BUDGET_MS, 30 * 60 * 1000);
+	const base = tmp(t);
+	const pidFile = path.join(base, "helper.pid");
+	let mediaFile;
+	const { svc, results, island } = service(t, base, {
+		env: { FAKE_HELPER_MODE: "hang", FAKE_HELPER_PID: pidFile },
+		limits: { timeoutMs: 600 }, // the injected budget stands in for the 30 min
+		maxConcurrentRuns: 1,
+		source: async (_recipe, { mediaDir }) => {
+			mediaFile = media(mediaDir, 12, "post-1.mp4");
+			return { text: "Post del canal", media: [mediaFile] };
+		},
+	});
+	await svc.createDraft(recipe());
+	await svc.approveCreate("videos");
+	await svc.createDraft(recipe({ id: "otro", name: "Otro" }));
+	await svc.approveCreate("otro");
+	assert.equal((await svc.launch("videos")).started, true);
+	await waitFor(() => fs.existsSync(pidFile));
+	const helperPid = Number(fs.readFileSync(pidFile, "utf8"));
+	// The run slot is held while the video is transcribed: the 2-concurrent-runs rule counts a transcribing run.
+	assert.deepEqual(await svc.launch("otro"), { started: false, reason: "busy" });
+	await waitFor(() => results.errors.length === 1);
+	assert.equal(results.runs.length, 0);
+	assert.match(results.errors[0].text, /falló \(transcripción: el video tardó más de 30 minutos en transcribirse; no se resumió\)/);
+	assert.equal(svc.get("videos").lastRun.reason, "transcription");
+	assert.equal(fs.existsSync(mediaFile), false, "the temp media is deleted");
+	assert.deepEqual(allFiles(path.join(island, "minikodas", "transcribe")), [], "the work folder is gone");
+	assert.equal(fs.existsSync(path.join(island, "minikodas", "engines", "videos", "run", "source.txt")), false, "the engine never started");
+	const alive = () => { try { process.kill(helperPid, 0); return true; } catch { return false; } };
+	await waitFor(() => !alive());
+});
+
+test("S17 the run's engine budget starts only after the transcription ends", async (t) => {
+	// runMinikoda() is called after the source (and its transcripts) is ready, so its OWN clock starts there. A
+	// transcription longer than the engine budget must not count against it; the same budget still bounds the engine.
+	const base = tmp(t);
+	const slowMs = 4000;
+	const slow = { transcribe: async () => { await sleep(slowMs); return { text: "transcrito despacio" }; } };
+	const transcribing = async (_recipe, { mediaDir }) => ({ text: "Post del canal", media: [media(mediaDir, 12)] });
+	const { svc, results, island } = service(t, base, { runTimeoutMs: 3000, transcriber: slow, source: transcribing });
+	await svc.createDraft(recipe());
+	await svc.approveCreate("videos");
+	assert.equal((await svc.launch("videos")).started, true);
+	await waitFor(() => results.runs.length + results.errors.length === 1, 20_000);
+	assert.deepEqual(results.errors, [], "a 4 s transcription does not spend the 3 s engine budget");
+	assert.equal(results.runs.length, 1);
+	assert.equal(svc.get("videos").lastRun.outcome, "done");
+	assert.match(fs.readFileSync(path.join(island, "minikodas", "engines", "videos", "run", "source.txt"), "utf8"), /transcrito despacio/);
+	// Negative control: the same engine budget does bound the engine once the transcription is over.
+	const control = path.join(base, "control");
+	fs.mkdirSync(control);
+	const hang = service(t, control, { runTimeoutMs: 800, transcriber: { transcribe: async () => ({ text: "listo" }) }, steps: [{ hang: true }], source: transcribing });
+	await hang.svc.createDraft(recipe());
+	await hang.svc.approveCreate("videos");
+	assert.equal((await hang.svc.launch("videos")).started, true);
+	await waitFor(() => hang.results.errors.length === 1);
+	assert.match(hang.results.errors[0].text, /falló \(timeout\)/);
+});
+
+test("S17 the remote path shares that one budget: the budget expiring is budget_exceeded, one slow chunk is timeout", async (t) => {
+	// The same named constant bounds every remote request; only the request's own 180 s keeps the generic `timeout`.
+	const base = tmp(t);
+	const run = async (limits) => {
+		const srv = await fakeServer(t, () => {}); // accepts the request and never answers
+		const { tr, workRoot } = transcriber(t, base, {
+			setting: { mode: "remote", language: "es", remote: { accountId: "gw", model: "whisper" } },
+			remote: async () => ({ baseUrl: srv.base, apiKey: KEY }),
+			limits,
+		});
+		const file = media(path.join(base, `in-${limits.timeoutMs ?? "default"}-${limits.requestTimeoutMs ?? 0}`), 10);
+		const code = await tr.transcribe(file, { deleteMedia: true }).then(() => undefined, (e) => e.code);
+		assert.equal(fs.existsSync(file), false);
+		assert.deepEqual(allFiles(workRoot), []);
+		return code;
+	};
+	assert.equal(await run({ timeoutMs: 600 }), "budget_exceeded", "the transcription budget ran out first");
+	assert.equal(await run({ requestTimeoutMs: 400 }), "timeout", "one slow request keeps its own code");
 });
 
 test("S6 a media path outside the run's media folder is refused (never transcribed, never deleted)", async (t) => {
