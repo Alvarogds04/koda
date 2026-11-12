@@ -46,23 +46,23 @@ const { dom, Element, all, text } = require('./settings-accounts-check.cjs');
     } else if (config.flowPages[id]) {
       await config.flowPages[id](container, { hero, status: { prefs: { key: 'right_ctrl' }, platform: 'linux', models: { parakeet: { state: 'missing' }, downloadMb: 670 } }, navigate() {}, set onLeave(_) {} });
       assert(all(container).some(e => e.className.includes('hub-hero')), id);
-      assert(text(container).includes('pendiente de conectar'), id);
+      if (id === 'phone') {
+        // K2 T1/S4: Teléfono is live (settings-designs-phone-check.cjs covers it). Without a host that answers, it shows no QR
+        // and no link, and every control stays inert (the loop below).
+        await new Promise(r => setTimeout(r, 0));
+        assert(text(container).includes('Enlace con el teléfono'), id);
+        assert(!all(container).some(e => String(e.className || '').includes('phone-qr-img')), 'no QR without a host');
+      } else assert(text(container).includes('pendiente de conectar'), id);
     } else {
       const cleanup = await config.renderNotch(id, container);
       const expected = {general:[['general',undefined],['pills',undefined]], chat:[['chat-settings',undefined],['accounts','chat'],['models',undefined]], integrations:[['integrations',undefined]], agents:[['pills',undefined],['agent-settings',undefined],['pills',undefined]], shortcuts:[['shortcuts',undefined]]}[id];
       if (expected) { assert.deepEqual(invoked, expected); assert(container.children.length); cleanup?.(); }
       else {
-        assert(text(container).includes(id === 'phone' ? 'No disponible' : 'pendiente de conectar'));
-        if(id==='phone') {
-          assert.deepEqual(all(container).filter(e=>e.tagName==='h2').map(e=>text(e).trim()),['Teléfono Android']);
-          assert(text(container).includes('Enlace con el teléfono'));
-          // #503 S24: the designed layout (steps, devices, unlink with confirmation) without QR; every control stays inert (checked below for all pages)
-          assert(all(container).filter(e=>e.tagName==='button').length>=1);
-          assert(!all(container).some(e=>['canvas','img','svg'].includes(e.tagName)),'no QR in 0.2');
-        }
+        assert(text(container).includes('pendiente de conectar'));
       }
     }
     // L42: the voice-model control (OK Koda) is live; everything else is disabled
+    if (id === 'phone') continue; // K2 T1: live switch/copy/unpair, covered by settings-designs-phone-check.cjs
     for (const e of all(container).filter(e => ['button','input','select','textarea'].includes(e.tagName) && !String(e.className).includes('hub-info') && !(id === 'voice' && String(e.textContent || '').trim() === 'Descargar'))) assert.equal(e.disabled, true, id);
   }
   assert(source.includes("page === 'agents'") && source.includes("part: 'tools'") && source.includes("part: 'island'") && source.includes("part: 'abito'"), '0.2.1 S1 (option B): Agentes composes the main tool, the CLI table, the island switches and the Abito part; Integraciones is the services only');

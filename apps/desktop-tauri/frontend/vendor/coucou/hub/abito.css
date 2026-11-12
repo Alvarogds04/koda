@@ -82,11 +82,18 @@ section.abito-card > h2 { gap: 8px; }
 .int-head .switch { position: relative; }
 .int-head .switch::before { content: ""; position: absolute; inset: -12px -6px; }
 
-/* #503 S24 (Teléfono, Opción A, sin QR en 0.2): status line, numbered steps, an honest code area and an empty devices list.
-   Everything is inert; the state is icon + word and the security notes sit at the top, readable. */
+/* #503 S24 (Teléfono, Opción A) + K2 T1 (S4: la página mínima VIVA): status line, numbered steps, the pairing QR and its link,
+   and the devices list. The state is always icon + word, and the security notes sit at the top, readable. */
 .phone-status { display: flex; align-items: center; gap: 8px; font: 600 13px var(--font); color: var(--dim); }
+.phone-status .state-word { color: var(--ink); }
 .phone-security { display: flex; flex-direction: column; gap: 2px; padding: 8px 12px; border-radius: 10px; background: rgba(255,255,255,0.04); }
 .phone-steps { margin: 4px 0 0 20px; display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; }
+/* The QR is the host's own SVG inside a white square: a QR on a dark panel does not scan. */
+.phone-qr[hidden], .phone-link[hidden] { display: none !important; }
+.phone-qr { display: flex; justify-content: center; padding: 8px; border-radius: 12px; background: #fff; width: max-content; }
+.phone-qr-img { display: block; width: 168px; height: 168px; }
+.phone-link { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.phone-link-field { flex: 1 1 260px; min-width: 0; min-height: 32px; font: 12px var(--mono, ui-monospace, monospace); }
 .phone-devices { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; min-height: 44px; }
 .phone-confirm { display: flex; align-items: center; gap: 8px; }
 .phone-confirm[hidden] { display: none !important; }

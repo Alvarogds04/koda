@@ -49,10 +49,10 @@ const text = e => [e.textContent || '', ...e.children.map(text)].join(' ');
   // 0.1.2 (human: «vale todo lo que este en pausa se puede ocultar?» → yes; supersedes 26-oct «Visibles en gris y apagadas»):
   // only Chat, Agentes, General, Atajos and Privacidad are in the menu; every paused page is HIDDEN and never opened
   // (not by click, hub-page, abito:hub-select or initialPage: those land on General)
-  const ACTIVE = ['general', 'agents', 'chat', 'shortcuts', 'privacy'];
+  const ACTIVE = ['general', 'agents', 'chat', 'phone', 'shortcuts', 'privacy']; // K2 T1: Teléfono is live
   const PAUSED = [...FLOW_PAGES, ...NOTCH_PAGES].map(p => p.id).filter(id => !ACTIVE.includes(id));
-  assert.deepEqual(items.map(e => e.children[1].textContent), ['General','Agentes','Chat','Atajos','Privacidad'], 'paused pages are not in the menu');
-  assert.deepEqual(items.map(e => e.attrs?.['data-page']), ['general','agents','chat','shortcuts','privacy'], 'each entry names its page');
+  assert.deepEqual(items.map(e => e.children[1].textContent), ['General','Agentes','Chat','Teléfono Android','Atajos','Privacidad'], 'paused pages are not in the menu');
+  assert.deepEqual(items.map(e => e.attrs?.['data-page']), ['general','agents','chat','phone','shortcuts','privacy'], 'each entry names its page');
   assert(!all(host).some(e => e.className === 'hub-paused' || (e.className || '').split(' ').includes('paused')), 'no grey «En pausa» rows');
   const { PAUSED_PAGES } = await import(pathToFileURL(path.join(base, 'shell.js')));
   assert.deepEqual([...PAUSED_PAGES].sort(), [...PAUSED].sort(), 'the single source of truth is unchanged');
