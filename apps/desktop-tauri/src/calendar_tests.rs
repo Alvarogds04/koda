@@ -161,3 +161,38 @@ fn request_is_closed_to_refresh() {
         assert!(parse_request(&bad).is_err(), "{bad}");
     }
 }
+
+#[test]
+fn hostile_values_never_panic_and_are_skipped() {
+    // Verifier B1/S-1: non-ASCII inside fixed-width fields and overflowing numbers.
+    let bodies = [
+        "DTSTART:202é011\r\n", "DTSTART:20261112T1é234\r\n",
+        "DTSTART:20261112T080000Z\r\nRRULE:FREQ=WEEKLY;BYDAY=éa\r\n",
+        "DTSTART:20261112T080000Z\r\nEXDATE:202é011\r\n",
+        "DTSTART:20261112T080000Z\r\nRRULE:FREQ=DAILY;UNTIL=202é011\r\n",
+        "DTSTART:20261112T080000Z\r\nDURATION:P99999999999999W\r\n",
+        "DTSTART:20261112T080000Z\r\nRRULE:FREQ=MONTHLY;BYMONTHDAY=-2147483648\r\n",
+        "DTSTART:20261112T080000Z\r\nRRULE:FREQ=YEARLY;INTERVAL=2147483647\r\n",
+        "DTSTART:20261112T080000Z\r\nRRULE:FREQ=DAILY;INTERVAL=4294967295;COUNT=4294967295\r\n",
+    ];
+    for body in bodies {
+        let text = ics(&format!("BEGIN:VEVENT\r\nUID:h\r\nSUMMARY:H\r\n{body}END:VEVENT\r\n"));
+        let events = parse_ics(&text).unwrap();
+        let _ = occurrences(&events, Date::new(2026, 11, 12), Date::new(2026, 11, 13));
+    }
+}
+
+#[test]
+fn many_moved_and_excluded_instances_stay_fast() {
+    // Verifier S-2: 3,000 daily series from 1990, each with a moved instance and an EXDATE.
+    let mut body = String::new();
+    for i in 0..3000 {
+        body.push_str(&format!("BEGIN:VEVENT\r\nUID:s{i}\r\nSUMMARY:S{i}\r\nDTSTART:19900101T080000Z\r\nRRULE:FREQ=DAILY\r\nEXDATE:20000101T080000Z\r\nEND:VEVENT\r\n\
+BEGIN:VEVENT\r\nUID:s{i}\r\nRECURRENCE-ID:19950101T080000Z\r\nSUMMARY:M{i}\r\nDTSTART:19950102T080000Z\r\nEND:VEVENT\r\n"));
+    }
+    let events = parse_ics(&ics(&body)).unwrap();
+    let started = std::time::Instant::now();
+    let out = occurrences(&events, Date::new(2026, 11, 12), Date::new(2026, 11, 13));
+    assert_eq!(out.len(), MAX_OCCURRENCES);
+    assert!(started.elapsed() < std::time::Duration::from_secs(10), "{:?}", started.elapsed());
+}

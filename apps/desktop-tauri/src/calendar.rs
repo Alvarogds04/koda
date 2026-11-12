@@ -23,6 +23,10 @@ const MAX_EVENTS: usize = 20_000;
 const MAX_STEPS: usize = 40_000;
 /// Text fields are cut to this many characters.
 const MAX_TEXT: usize = 200;
+/// Recurrence instances examined per refresh, over all events together.
+const MAX_WORK: usize = 2_000_000;
+/// INTERVAL is clamped to this (years for YEARLY); bigger values only ever give the first date.
+const MAX_INTERVAL: u32 = 1000;
 /// A fresh answer is served from the cache for this long.
 pub const MAX_AGE_MS: u64 = 5 * 60 * 1000;
 
@@ -267,7 +271,7 @@ fn num(s: &str) -> Option<u32> {
 }
 
 fn parse_date(v: &str) -> Option<Date> {
-    if v.len() != 8 {
+    if v.len() != 8 || !v.is_ascii() {
         return None;
     }
     let d = Date::new(num(&v[..4])? as i32, num(&v[4..6])?, num(&v[6..8])?);
@@ -277,6 +281,9 @@ fn parse_date(v: &str) -> Option<Date> {
 /// DATE or DATE-TIME value, with the TZID parameter when there is one.
 fn parse_stamp(params: &[(String, String)], value: &str) -> Option<Stamp> {
     let value = value.trim();
+    if !value.is_ascii() {
+        return None;
+    }
     let tzid = params.iter().find(|(k, _)| k == "TZID").map(|(_, v)| v.clone()).filter(|v| !v.is_empty());
     if value.len() == 8 {
         return Some(Stamp { date: parse_date(value)?, time: None, tz: None });
@@ -313,7 +320,7 @@ fn parse_duration(v: &str) -> Option<i64> {
             'W' | 'D' | 'H' | 'M' | 'S' => {
                 let n: i64 = digits.parse().ok()?;
                 digits.clear();
-                total += n * match (c, in_time) {
+                let unit = match (c, in_time) {
                     ('W', false) => 604_800,
                     ('D', false) => 86_400,
                     ('H', true) => 3600,
@@ -321,11 +328,13 @@ fn parse_duration(v: &str) -> Option<i64> {
                     ('S', true) => 1,
                     _ => return None,
                 };
+                total = total.checked_add(n.checked_mul(unit)?)?;
             }
             _ => return None,
         }
     }
-    digits.is_empty().then_some(sign * total)
+    // Nothing on a calendar lasts more than a year in practice; longer is treated as invalid.
+    (digits.is_empty() && total <= 366 * 86_400).then_some(sign * total)
 }
 
 fn weekday_code(s: &str) -> Option<u32> {
@@ -348,13 +357,16 @@ fn parse_rule(value: &str) -> Option<Rule> {
                     _ => return None,
                 })
             }
-            "INTERVAL" => rule.interval = i64::from(num(v)?.max(1)),
+            "INTERVAL" => rule.interval = i64::from(num(v)?.clamp(1, MAX_INTERVAL)),
             "COUNT" => rule.count = Some(num(v)? as usize),
             "UNTIL" => rule.until = Some(parse_stamp(&[], v)?),
             "WKST" => {}
             "BYDAY" => {
                 for d in v.split(',') {
                     let d = d.trim().to_ascii_uppercase();
+                    if !d.is_ascii() {
+                        return None;
+                    }
                     let (ord, code) = d.split_at(d.len().checked_sub(2)?);
                     let ord: i32 = if ord.is_empty() { 0 } else { ord.trim_start_matches('+').parse().ok()? };
                     rule.by_day.push((ord, weekday_code(code)?));
@@ -363,7 +375,7 @@ fn parse_rule(value: &str) -> Option<Rule> {
             "BYMONTHDAY" => {
                 for d in v.split(',') {
                     let n: i32 = d.trim().parse().ok()?;
-                    if n == 0 || n.abs() > 31 {
+                    if n == 0 || n.unsigned_abs() > 31 {
                         return None;
                     }
                     rule.by_month_day.push(n);
@@ -503,11 +515,14 @@ fn month_days(rule: &Rule, first: Date, y: i32, m: u32) -> Vec<u32> {
 }
 
 /// Start dates of a rule, in order, from the event's first date up to `to` (inclusive).
-fn rule_dates(rule: &Rule, first: Date, to: Date, mut keep: impl FnMut(Date) -> bool) {
+/// Start dates of a rule, in order, up to `to` (inclusive). Without COUNT nothing before `skip_to`
+/// can matter, so the walk jumps there instead of stepping from the first date (old series stay cheap).
+fn rule_dates(rule: &Rule, first: Date, skip_to: Date, to: Date, mut keep: impl FnMut(Date) -> bool) {
     let mut steps = 0usize;
+    let jump = |span: i64, period: i64| if rule.count.is_none() && span > 0 { span / period } else { 0 };
     match rule.freq {
         Freq::Daily => {
-            let mut d = first;
+            let mut d = first.add_days(jump(skip_to.days() - first.days(), rule.interval) * rule.interval);
             while d <= to && steps < MAX_STEPS {
                 if !keep(d) {
                     return;
@@ -518,6 +533,7 @@ fn rule_dates(rule: &Rule, first: Date, to: Date, mut keep: impl FnMut(Date) -> 
         }
         Freq::Weekly => {
             let week0 = first.add_days(-i64::from(first.weekday()));
+            let week0 = week0.add_days(jump(skip_to.days() - week0.days(), 7 * rule.interval) * 7 * rule.interval);
             let days: Vec<u32> = if rule.by_day.is_empty() { vec![first.weekday()] } else { rule.by_day.iter().map(|&(_, w)| w).collect() };
             let mut week = week0;
             while week <= to && steps < MAX_STEPS {
@@ -534,6 +550,10 @@ fn rule_dates(rule: &Rule, first: Date, to: Date, mut keep: impl FnMut(Date) -> 
         Freq::Monthly | Freq::Yearly => {
             let (mut y, mut m) = (first.y, first.m);
             let step_months = if rule.freq == Freq::Yearly { 12 * rule.interval } else { rule.interval };
+            let ahead = jump((i64::from(skip_to.y) - i64::from(y)) * 12 + i64::from(skip_to.m) - i64::from(m), step_months) * step_months;
+            let next = i64::from(m) - 1 + ahead;
+            let Ok(year) = i32::try_from(i64::from(y) + next.div_euclid(12)) else { return };
+            (y, m) = (year, next.rem_euclid(12) as u32 + 1);
             while Date::new(y, m, 1) <= to && steps < MAX_STEPS {
                 for d in month_days(rule, first, y, m) {
                     let date = Date::new(y, m, d);
@@ -542,7 +562,8 @@ fn rule_dates(rule: &Rule, first: Date, to: Date, mut keep: impl FnMut(Date) -> 
                     }
                 }
                 let next = i64::from(m) - 1 + step_months;
-                y += next.div_euclid(12) as i32;
+                let Ok(year) = i32::try_from(i64::from(y) + next.div_euclid(12)) else { return };
+                y = year;
                 m = next.rem_euclid(12) as u32 + 1;
                 steps += 1;
             }
@@ -553,9 +574,10 @@ fn rule_dates(rule: &Rule, first: Date, to: Date, mut keep: impl FnMut(Date) -> 
 /// Occurrences that touch any date in `[from, to]`, sorted by date, all-day first, then time.
 pub fn occurrences(events: &[Event], from: Date, to: Date) -> Vec<Occurrence> {
     // Instances that a RECURRENCE-ID event moved or cancelled.
-    let moved: Vec<(&str, Slot)> =
+    let moved: std::collections::HashSet<(&str, Slot)> =
         events.iter().filter_map(|e| Some((e.uid.as_str(), e.recurrence_id.as_ref()?.key()))).collect();
     let mut out = Vec::new();
+    let mut work = 0usize;
     for event in events {
         let all_day = event.start.time.is_none();
         let length = match (&event.end, event.duration) {
@@ -574,7 +596,13 @@ pub fn occurrences(events: &[Event], from: Date, to: Date) -> Vec<Occurrence> {
         match &event.rule {
             Some(Some(rule)) if event.recurrence_id.is_none() => {
                 let mut seen = 0usize;
-                rule_dates(rule, event.start.date, to, |date| {
+                let exdates: std::collections::HashSet<Slot> = event.exdates.iter().copied().collect();
+                let skip_to = from.add_days(-(length / 86_400) - 1);
+                rule_dates(rule, event.start.date, skip_to, to, |date| {
+                    work += 1;
+                    if work > MAX_WORK {
+                        return false;
+                    }
                     let start = event.start.on(date);
                     if let Some(until) = &rule.until {
                         let past = match until.time { Some(_) => start.key() > until.key(), None => date > until.date };
@@ -587,9 +615,9 @@ pub fn occurrences(events: &[Event], from: Date, to: Date) -> Vec<Occurrence> {
                         return false;
                     }
                     let key = start.key();
-                    let skipped = event.exdates.contains(&key)
-                        || event.exdates.iter().any(|(d, t)| t.is_none() && *d == date)
-                        || moved.iter().any(|(uid, k)| *uid == event.uid && *k == key);
+                    let skipped = exdates.contains(&key)
+                        || exdates.contains(&(date, None))
+                        || moved.contains(&(event.uid.as_str(), key));
                     if !skipped {
                         push(start);
                     }
