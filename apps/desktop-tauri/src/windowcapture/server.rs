@@ -39,7 +39,7 @@ struct Parsed {
     body: String,
 }
 
-fn read_request(stream: &mut TcpStream) -> Option<Parsed> {
+fn read_request(stream: &mut TcpStream, deadline: Duration) -> Option<Parsed> {
     let start = Instant::now();
     let mut buf = Vec::new();
     let mut chunk = [0u8; 4096];
@@ -48,7 +48,7 @@ fn read_request(stream: &mut TcpStream) -> Option<Parsed> {
             break pos;
         }
         if buf.len() > MAX_HEAD { return None; }
-        let left = READ_DEADLINE.checked_sub(start.elapsed())?;
+        let left = deadline.checked_sub(start.elapsed())?;
         stream.set_read_timeout(Some(left.max(Duration::from_millis(1)))).ok()?;
         let n = stream.read(&mut chunk).ok()?;
         if n == 0 { return None; }
@@ -67,7 +67,7 @@ fn read_request(stream: &mut TcpStream) -> Option<Parsed> {
     if length > MAX_BODY { return None; }
     let mut body = buf[head_end + 4..].to_vec();
     while body.len() < length {
-        let left = READ_DEADLINE.checked_sub(start.elapsed())?;
+        let left = deadline.checked_sub(start.elapsed())?;
         stream.set_read_timeout(Some(left.max(Duration::from_millis(1)))).ok()?;
         let n = stream.read(&mut chunk).ok()?;
         if n == 0 { return None; }
@@ -78,10 +78,15 @@ fn read_request(stream: &mut TcpStream) -> Option<Parsed> {
     Some(Parsed { method, path, authorization, body: String::from_utf8(body).ok()? })
 }
 
+/// Only an IPv4 loopback peer is served.
+fn is_loopback_peer(peer: &SocketAddr) -> bool {
+    matches!(peer, SocketAddr::V4(a) if a.ip().is_loopback())
+}
+
 fn serve(helper: &Helper, mut stream: TcpStream) {
     // Defense in depth: the socket is bound to loopback, but refuse any non-loopback peer anyway.
-    if !matches!(stream.peer_addr(), Ok(SocketAddr::V4(a)) if a.ip().is_loopback()) { return; }
-    let reply = match read_request(&mut stream) {
+    if !stream.peer_addr().is_ok_and(|peer| is_loopback_peer(&peer)) { return; }
+    let reply = match read_request(&mut stream, READ_DEADLINE) {
         Some(r) => helper.handle(&HttpRequest { method: &r.method, path: &r.path, authorization: r.authorization.as_deref(), body: &r.body }),
         None => HttpReply { status: 400, body: None },
     };

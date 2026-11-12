@@ -202,3 +202,27 @@ fn tokens_are_long_random_and_fresh() {
     assert_eq!(a.len(), 64);
     assert_ne!(a, b);
 }
+
+// M3: two calls at the same time ask for the permission once.
+#[test]
+fn two_simultaneous_calls_ask_for_the_permission_only_once() {
+    struct Slow(AtomicUsize);
+    impl Dialogs for Slow {
+        fn ask_grant(&self) -> bool {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            std::thread::sleep(std::time::Duration::from_millis(80));
+            true
+        }
+    }
+    let desktop = Arc::new(FakeDesktop { target: Mutex::new(Ok(target("firefox", "Firefox"))), captures: AtomicUsize::new(0), result: Mutex::new(Ok(shot())) });
+    let dialogs = Arc::new(Slow(AtomicUsize::new(0)));
+    let helper = Arc::new(Helper::new(desktop.clone(), dialogs.clone(), Arc::new(|| NOW), Arc::new(|| true), TOKEN.into()));
+    let body = json!({"jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": {"name": TOOL, "arguments": {}}}).to_string();
+    let threads: Vec<_> = (0..4).map(|_| {
+        let (helper, body) = (helper.clone(), body.clone());
+        std::thread::spawn(move || helper.handle(&HttpRequest { method: "POST", path: "/mcp", authorization: Some("Bearer secret-token"), body: &body }))
+    }).collect();
+    for t in threads { assert_eq!(t.join().unwrap().status, 200); }
+    assert_eq!(dialogs.0.load(Ordering::SeqCst), 1);
+    assert_eq!(desktop.captures.load(Ordering::SeqCst), 4);
+}

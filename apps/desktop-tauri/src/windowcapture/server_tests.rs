@@ -42,3 +42,44 @@ fn an_oversized_body_is_refused() {
     let reply = exchange(&endpoint.url, "POST /mcp HTTP/1.1\r\nAuthorization: Bearer t\r\nContent-Length: 99999999\r\nConnection: close\r\n\r\n");
     assert!(reply.starts_with("HTTP/1.1 400"), "{reply}");
 }
+
+// M3: a slow reader is cut off at its deadline, only a loopback peer is served.
+#[test]
+fn a_client_that_sends_half_a_request_and_stops_is_cut_off_at_the_deadline() {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+    let addr = listener.local_addr().unwrap();
+    let client = std::thread::spawn(move || {
+        let mut s = TcpStream::connect(addr).unwrap();
+        s.write_all(b"POST /mcp HTTP/1.1\r\nContent-Length: 10\r\n").unwrap(); // never finishes the head
+        std::thread::sleep(Duration::from_millis(600));
+    });
+    let (mut stream, _) = listener.accept().unwrap();
+    let started = Instant::now();
+    assert!(read_request(&mut stream, Duration::from_millis(150)).is_none());
+    assert!(started.elapsed() < Duration::from_millis(500), "{:?}", started.elapsed());
+    client.join().unwrap();
+}
+
+#[test]
+fn a_body_that_never_arrives_is_cut_off_at_the_deadline() {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+    let addr = listener.local_addr().unwrap();
+    let client = std::thread::spawn(move || {
+        let mut s = TcpStream::connect(addr).unwrap();
+        s.write_all(b"POST /mcp HTTP/1.1\r\nContent-Length: 50\r\n\r\n{").unwrap();
+        std::thread::sleep(Duration::from_millis(600));
+    });
+    let (mut stream, _) = listener.accept().unwrap();
+    assert!(read_request(&mut stream, Duration::from_millis(150)).is_none());
+    client.join().unwrap();
+}
+
+#[test]
+fn only_an_ipv4_loopback_peer_is_served() {
+    use std::net::{SocketAddr, SocketAddrV4, SocketAddrV6, Ipv6Addr};
+    assert!(is_loopback_peer(&SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 1))));
+    assert!(is_loopback_peer(&SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(127, 9, 9, 9), 1))));
+    assert!(!is_loopback_peer(&SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(192, 168, 1, 5), 1))));
+    assert!(!is_loopback_peer(&SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 1))));
+    assert!(!is_loopback_peer(&SocketAddr::V6(SocketAddrV6::new(Ipv6Addr::LOCALHOST, 1, 0, 0))));
+}
