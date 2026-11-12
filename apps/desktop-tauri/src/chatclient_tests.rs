@@ -1220,6 +1220,11 @@ fn u4b_another_asks_resolution_never_drops_this_asks_pending_answer() {
 /// view (`answered`, bounded), so the page shows an outcome only for an accepted answer. An ask
 /// resolved without this client's answer (expired, answered elsewhere, engine restart) or one the
 /// daemon refused with `unknown_ask` is never named there.
+/// K2-05 R1-001 (native review, CRITICAL): that outcome is carried by `ask_resolved{answered:true}`
+/// (additive, sent only to the client whose answer closed the ask). A PLAIN `ask_resolved` is never
+/// an outcome: it removes the card, so a client whose answer lost the race (another client answered
+/// first, or the 120 s expiry) never presents its discarded answer as sent. `unknown_ask` for this
+/// client's answer clears a mark too.
 #[test]
 fn u4b_only_an_answer_the_daemon_resolved_is_named_answered() {
     let mut st = ChatState::connected();
@@ -1227,9 +1232,9 @@ fn u4b_only_an_answer_the_daemon_resolved_is_named_answered() {
         st.apply(&json!({"type":"ask","id":id,"kind":"confirm","title":"t"}));
     }
     assert_eq!(view(&st)["answered"], json!([]));
-    // a-1: this client answered, the daemon resolved it
+    // a-1: this client answered, the daemon accepted and resolved it
     assert!(st.command(CHAT_WINDOW_LABEL, &json!({"action":"chat_ui_response","askId":"a-1","answer":true})).is_ok());
-    st.apply(&json!({"type":"ask_resolved","id":"a-1"}));
+    st.apply(&json!({"type":"ask_resolved","id":"a-1","answered":true}));
     // a-2: resolved without this client's answer (expired / elsewhere / engine restart)
     st.apply(&json!({"type":"ask_resolved","id":"a-2"}));
     // a-3: answered, but the daemon no longer held it
@@ -1242,12 +1247,35 @@ fn u4b_only_an_answer_the_daemon_resolved_is_named_answered() {
         let id = format!("b-{i}");
         st.apply(&json!({"type":"ask","id":id,"kind":"confirm","title":"t"}));
         assert!(st.command(CHAT_WINDOW_LABEL, &json!({"action":"chat_ui_response","askId":id,"answer":true})).is_ok());
-        st.apply(&json!({"type":"ask_resolved","id":id}));
+        st.apply(&json!({"type":"ask_resolved","id":id,"answered":true}));
         st.rate_count.set(0);
     }
     assert_eq!(view(&st)["answered"].as_array().unwrap().len(), MAX_ASKS);
     // a new connection knows nothing of the old one's answers
     assert_eq!(view(&ChatState::connected())["answered"], json!([]));
+}
+
+/// K2-05 R1-001 (native review, CRITICAL): a client that answered and LOST the race (another
+/// client's answer, or the 120 s expiry, closed the ask) gets the plain `ask_resolved`: the card
+/// goes away and nothing claims the answer was sent. Off-grammar `answered` values are no outcome.
+#[test]
+fn r1_001_a_plain_resolution_never_claims_this_clients_answer_was_sent() {
+    let mut st = ChatState::connected();
+    for id in ["a-1", "a-2"] {
+        st.apply(&json!({"type":"ask","id":id,"kind":"confirm","title":"t"}));
+    }
+    assert!(st.command(CHAT_WINDOW_LABEL, &json!({"action":"chat_ui_response","askId":"a-1","answer":true})).is_ok());
+    assert_eq!(view(&st)["answering"], json!(["a-1"]));
+    // another client's answer closed it while this one's answer was in flight
+    st.apply(&json!({"type":"ask_resolved","id":"a-1"}));
+    assert_eq!(view(&st)["answered"], json!([]), "a plain resolution is never this client's outcome");
+    assert_eq!(view(&st)["answering"], json!([]), "the answer stops waiting");
+    assert_eq!(view(&st)["asks"].as_array().unwrap().len(), 1, "the card goes away");
+    // anything but a real `true` is off-grammar: no outcome
+    assert!(st.command(CHAT_WINDOW_LABEL, &json!({"action":"chat_ui_response","askId":"a-2","answer":false})).is_ok());
+    st.apply(&json!({"type":"ask_resolved","id":"a-2","answered":"true"}));
+    assert_eq!(view(&st)["answered"], json!([]));
+    assert_eq!(view(&st)["asks"], json!([]));
 }
 
 /// U4b verifier F3: an answer whose wire write fails AFTER the answered-once mark (the daemon stopped

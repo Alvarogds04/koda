@@ -2696,13 +2696,18 @@ fn chathost_u4b_the_projection_names_only_the_answers_the_daemon_accepted() {
     let host = ChatHost::new();
     assert_eq!(host.project(&link.view(), T0)["answered_asks"], json!([]));
     host.route(&link, "main", &parse_command(&answer("a-sel", "value", json!("dev"))).unwrap(), T0).unwrap();
-    link.frame(json!({"type":"ask_resolved","id":"a-sel"}));
+    link.frame(json!({"type":"ask_resolved","id":"a-sel","answered":true})); // K2-05 R1-001: only the accepted answer names an outcome
     link.frame(json!({"type":"ask_resolved","id":"a-yes"})); // expired / answered elsewhere
     host.route(&link, "main", &parse_command(&answer("a-txt", "value", json!("Ana"))).unwrap(), T0).unwrap();
     link.frame(json!({"type":"error","code":"unknown_ask"}));
     let v = host.project(&link.view(), T0);
     assert_eq!(v["answered_asks"], json!(["a-sel"]));
     assert_eq!(v["asks"], json!([]));
+    // R1-001: a PLAIN resolution (another client answered, or the expiry) is never an outcome
+    link.frame(json!({"type":"ask","id":"a-plain","kind":"confirm","title":"t"}));
+    host.route(&link, "main", &parse_command(&answer("a-plain", "confirmed", json!(true))).unwrap(), T0).unwrap();
+    link.frame(json!({"type":"ask_resolved","id":"a-plain"}));
+    assert_eq!(host.project(&link.view(), T0)["answered_asks"], json!(["a-sel"]), "a plain resolution never names this island's answer");
     assert_eq!(host.project(&FakeLink::offline().view(), T0)["answered_asks"], json!([]));
 }
 

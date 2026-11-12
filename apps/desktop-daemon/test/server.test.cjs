@@ -610,6 +610,30 @@ test("ask round-trip: select answered; invalid and unknown answers rejected", as
 	await waitFor(() => c.frames.filter((f) => f.code === "unknown_ask").length === 2);
 });
 
+// K2-05 R1-001 (native review, CRITICAL): only the client whose own `ui_response` closed the ask
+// is told the answer was accepted (`ask_resolved{answered:true}`). Every other client gets the
+// plain frame — another client's answer or the 120 s expiry closed it — so a client that lost the
+// race can never present its discarded answer as sent.
+test("ask_resolved names the accepted answer only to the client whose answer closed the ask", async (t) => {
+	const { endpoint, engine } = await setup(t);
+	const a = await login(t, endpoint);
+	const b = await login(t, endpoint);
+	engine.emit("event", { type: "extension_ui_request", id: "r1", method: "confirm", title: "¿Borrar?" });
+	await a.wait((f) => f.type === "ask" && f.id === "r1");
+	await b.wait((f) => f.type === "ask" && f.id === "r1");
+	// B answers first and wins; A is still holding its own answer
+	b.send({ type: "ui_response", id: "r1", confirmed: true });
+	const own = await b.wait((f) => f.type === "ask_resolved" && f.id === "r1");
+	assert.equal(own.answered, true, "the answering client is told its answer was accepted");
+	const other = await a.wait((f) => f.type === "ask_resolved" && f.id === "r1");
+	assert.equal("answered" in other, false, "every other client learns only that the ask is gone");
+	// A's late answer is discarded: the daemon refuses it, so it was never sent
+	a.send({ type: "ui_response", id: "r1", confirmed: true });
+	await a.wait((f) => f.type === "error" && f.code === "unknown_ask");
+	assert.equal("answered" in b.frames.find((f) => f.type === "ask_resolved" && f.id === "r1"), true, "B keeps its accepted mark");
+	assert.deepEqual(engine.sent, [{ type: "extension_ui_response", id: "r1", confirmed: true }], "exactly one answer reached the engine");
+});
+
 // K2-05 U4b: the island's ask card shows what the user approves (Gentle Dot Ask.message /
 // Ask.placeholder). Additive optional fields, white-labelled like the title, bounded, on the
 // live frame AND on the replay a late client gets; the user's typed answer travels verbatim.
@@ -648,7 +672,8 @@ test("ask timeout cancels toward the agent; editor dialogs are cancelled at once
 	const c = await login(t, endpoint);
 	engine.emit("event", { type: "extension_ui_request", id: "u2", method: "confirm", title: "Sure?" });
 	await c.wait((f) => f.type === "ask");
-	await c.wait((f) => f.type === "ask_resolved");
+	const expired = await c.wait((f) => f.type === "ask_resolved");
+	assert.equal("answered" in expired, false, "an expiry closes the ask for everyone, never as this client's answer");
 	assert.deepEqual(engine.sent.at(-1), { type: "extension_ui_response", id: "u2", cancelled: true });
 	engine.emit("event", { type: "extension_ui_request", id: "u3", method: "editor", title: "E" });
 	assert.deepEqual(engine.sent.at(-1), { type: "extension_ui_response", id: "u3", cancelled: true });

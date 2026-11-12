@@ -1085,12 +1085,23 @@ class IslandServer {
 		this.broadcast(this.askFrame(ask));
 	}
 
-	closeAsk(id, _answered) {
+	/**
+	 * K2-05 R1-001: the resolution names the outcome ONLY to the client whose own accepted
+	 * `ui_response` closed the ask (`ask_resolved{id, answered:true}`); every other client gets the
+	 * plain frame, because another client's answer or the 120 s expiry closed it and an answer
+	 * nobody accepted must never be shown as sent. An expiry, a cancel and an engine restart stay
+	 * plain to everyone.
+	 */
+	closeAsk(id, answered, answeringClient) {
 		const ask = this.asks.get(id);
 		if (!ask) return;
 		clearTimeout(ask.timer);
 		this.asks.delete(id);
-		this.broadcast({ type: "ask_resolved", id });
+		for (const client of [...this.clients]) {
+			if (!client.ready) continue;
+			const own = answered === true && client === answeringClient;
+			this.sendTo(client, own ? { type: "ask_resolved", id, answered: true } : { type: "ask_resolved", id });
+		}
 	}
 
 	// ----- client commands ---------------------------------------------------------
@@ -1275,7 +1286,7 @@ class IslandServer {
 				const response = P.buildUiResponse(ask, frame);
 				if (!response) return fail("bad_request");
 				if (!this.safeSend(response)) return fail("unavailable");
-				this.closeAsk(frame.id, true);
+				this.closeAsk(frame.id, true, client);
 				return undefined;
 			}
 			case "settings_get":

@@ -816,8 +816,12 @@ impl ChatState {
                 if let Some(at) = mine {
                     awaiting.remove(at);
                 }
-                // U4b verifier F2: resolved while this client's answer was in flight = accepted
-                let accepted = self.answering.get_mut().iter().any(|a| a == id) && !self.answered.iter().any(|a| a == id);
+                // U4b verifier F2: resolved while this client's answer was in flight = accepted.
+                // K2-05 R1-001: ONLY when the daemon says so (`answered:true`, sent just to the
+                // client whose answer closed the ask). A plain `ask_resolved` means another
+                // client's answer, a cancel or the 120 s expiry closed it: the card goes away and
+                // this client's discarded answer is never presented as sent.
+                let accepted = frame.get("answered").and_then(Value::as_bool) == Some(true) && !self.answered.iter().any(|a| a == id);
                 if accepted {
                     if self.answered.len() >= MAX_ASKS { self.answered.remove(0); }
                     self.answered.push(id.to_owned());
@@ -857,9 +861,12 @@ impl ChatState {
                 }
                 match self.attribute_error(code, request) {
                     // K2-05 U4b: the daemon refused this client's answer: `unknown_ask` = it no longer
-                    // holds the ask (the card goes away); any other refusal frees it for a retry
+                    // holds the ask (the card goes away); any other refusal frees it for a retry.
+                    // R1-001: a discarded answer never keeps a mark either (never both frames, but
+                    // an `answered` mark must not outlive the daemon's own refusal).
                     Some((Awaiting::Answer, Some(ask_id))) => {
                         if code == "unknown_ask" {
+                            self.answered.retain(|a| *a != ask_id);
                             self.forget_ask(&ask_id);
                         } else {
                             self.answering.get_mut().retain(|a| *a != ask_id);
