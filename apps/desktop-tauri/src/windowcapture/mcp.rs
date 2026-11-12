@@ -4,7 +4,7 @@
 //! token fresh per launch compared in constant time, `POST /mcp` only, notifications answered 202.
 //! Unlike Gentle Dot's twelve tools, Koda has exactly one, and it never acts on the desktop.
 use super::blocklist;
-use super::session::{self, Session};
+use super::session::Session;
 use base64::Engine as _;
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};

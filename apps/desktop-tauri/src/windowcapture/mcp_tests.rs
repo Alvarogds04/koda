@@ -149,10 +149,10 @@ fn the_grant_is_asked_once_per_session_and_again_after_thirty_minutes() {
     rig.call(TOOL);
     rig.call(TOOL);
     assert_eq!(rig.dialogs.asked.load(Ordering::SeqCst), 1);
-    rig.clock.store(NOW + session::SESSION_MS - 1, Ordering::SeqCst);
+    rig.clock.store(NOW + crate::windowcapture::session::SESSION_MS - 1, Ordering::SeqCst);
     rig.call(TOOL);
     assert_eq!(rig.dialogs.asked.load(Ordering::SeqCst), 1);
-    rig.clock.store(NOW + session::SESSION_MS, Ordering::SeqCst);
+    rig.clock.store(NOW + crate::windowcapture::session::SESSION_MS, Ordering::SeqCst);
     rig.call(TOOL);
     assert_eq!(rig.dialogs.asked.load(Ordering::SeqCst), 2);
     assert_eq!(rig.desktop.captures.load(Ordering::SeqCst), 4);

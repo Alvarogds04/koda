@@ -26,3 +26,7 @@ pub mod win;
 /// Native consent dialog (S6) on macOS (NSAlert) and Windows (TaskDialog), copied from Gentle Dot `alert.rs`.
 #[cfg(any(target_os = "macos", windows))]
 pub mod alert;
+/// Linux consent dialog (GTK, the app's own).
+#[cfg(target_os = "linux")]
+pub mod consent_gtk;
+pub mod host;
