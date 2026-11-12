@@ -151,9 +151,6 @@ async function renderGeneral({ invoke, V, navigate }) {
     });
     const enabled = trusted(toggle(hotkey.enabled !== false, (value) => shortcut({ action: value ? "enable" : "disable" })));
     enabled.setAttribute("aria-label", "Atajo activo");
-    // Notch pages use settings/main.ts sections and .row, not Flow's hub-card.
-    // S3 (04 ajustes 3): «Pantalla bajo el cursor» was a disabled option that could never work, so it is hidden until the host
-    // supports it instead of being offered greyed out; the read-only display list and the saved names stay as they were.
     const screen = trusted(select([
       ["primary", t("Main display")],
       ...namedScreens().map((name2) => [name2, name2])
@@ -172,8 +169,6 @@ async function renderGeneral({ invoke, V, navigate }) {
         await countCustom();
       });
     } })), "hub-sounds-reload");
-    // S3 (04 ajustes 3): the «Idioma» row is hidden until a language other than Spanish exists — a disabled control with a «No
-    // disponible todavía» hint is a promise the product does not keep.
     const startup = (() => {
       const control = identify(trusted(toggle(autostart.enabled === true, (enabled2) => run(async () => {
         autostart = await send("prefs_action", { action: "set_autostart", enabled: enabled2 });
