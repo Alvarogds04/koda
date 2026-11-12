@@ -105,9 +105,9 @@
   const NOTICE_KINDS = new Set(['settled', 'transport', 'attention']);
   const SEVERITY_TONE = { warning: 'sun', error: 'red' };
   const SEVERITY_WORD = { info: 'Aviso', warning: 'Advertencia', error: 'Error' };
-  // S4/T2 (human L3, option A «Solo aviso para Codex»): an «attention» notice means an agent is asking IN ITS OWN
-  // TERMINAL (Codex). It is always the sun tone and it is never an answer surface: the island only points at the
-  // terminal («Respondé en la terminal» rides the notice detail).
+  // An «attention» notice means an agent is asking IN ITS OWN TERMINAL (since K2-08, only Codex plan-mode questions:
+  // Codex permissions are answered from the island's question queue). It is always the sun tone and never an answer
+  // surface: the island only points at the terminal («Respondé en la terminal» rides the notice detail).
   const KIND_TONE = { attention: 'sun' };
   const KIND_WORD = { attention: 'Atención' };
   const kindTone = kind => (Object.prototype.hasOwnProperty.call(KIND_TONE, kind) ? KIND_TONE[kind] : null);
@@ -373,7 +373,8 @@
   // S10 (L25): when the producer sent `projectName` + `agent` (additive wire fields), the who-row is Coucou's «<project> <agent> terminó»;
   // `label` derives the agent's display name from its slug (never trusted as sent). Without them the host title is used as before.
   function finishedCardView(notice, label) {
-    // S4/T2: Codex gets NO card. Its prompt lives in the terminal; a card would invite a decision the island cannot make.
+    // An attention notice (a Codex plan-mode question asked in its terminal) gets NO card: the island cannot answer it.
+    // Codex permissions are not notices since K2-08; they come through the question queue.
     if (notice && notice.kind === 'attention') return null;
     const clean = v => (typeof v === 'string' ? v.replace(/[\u0000-\u001f\u007f]/g, ' ').trim() : '');
     const title = clean(notice && notice.title);

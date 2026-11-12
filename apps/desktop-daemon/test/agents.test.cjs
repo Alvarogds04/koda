@@ -313,7 +313,7 @@ test("state mapping: not_connected with plan_hash and closed summaries", async (
 	assert.equal(claude.trust_review, false);
 	const codex = byId(list, "codex");
 	assert.equal(codex.plan_hash, HASH_B);
-	assert.equal(codex.summary, "Adds the Abito hooks (PermissionRequest, Stop) to ~/.codex/hooks.json. A backup is made first. Codex will ask you to trust them in /hooks.");
+	assert.equal(codex.summary, "Adds the Abito hooks (PermissionRequest, Stop) to ~/.codex/hooks.json. A backup is made first. Koda answers Codex permission requests from the island; Codex waits up to 120 s for your answer. Trust the Koda hooks again in Codex /hooks after every install or update.");
 	assert.equal(codex.trust_review, true);
 	assert.equal(byId(list, "opencode").state, "unavailable", "no OpenCode settings dir in the private HOME: not installed");
 	assert.equal(byId(list, "copilot-cli").state, "unavailable");
@@ -328,7 +328,7 @@ test("state mapping: connected has no plan fields; replace and mixed ops are out
 	for (const k of ["plan_hash", "summary", "reviewable", "trust_review"]) assert.equal(k in claude, false, k);
 	const codex = byId(list, "codex");
 	assert.equal(codex.state, "outdated");
-	assert.equal(codex.summary, "Updates the Abito hooks in ~/.codex/hooks.json. A backup is made first. Codex will ask you to trust them in /hooks.");
+	assert.equal(codex.summary, "Updates the Abito hooks in ~/.codex/hooks.json. A backup is made first. Koda answers Codex permission requests from the island; Codex waits up to 120 s for your answer. Trust the Koda hooks again in Codex /hooks after every install or update.");
 	assert.equal(codex.plan_hash, HASH_A);
 	s.write({ claude: { preview: { exit: 0, stdout: preview({ ops: ["add", "keep"] }) } }, codex: { preview: { exit: 0, stdout: preview({ harness: "codex" }) } } });
 	s.manager.invalidate();
