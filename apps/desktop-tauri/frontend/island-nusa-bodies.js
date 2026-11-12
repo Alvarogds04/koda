@@ -236,5 +236,209 @@
   if (capsule) new MutationObserver(paintChip).observe(capsule, { attributes: true, attributeFilter: ['data-question', 'data-notice-band'] });
   try { if (window.desktop) { window.desktop.onState(s => setNotices(s && s.notices)); window.desktop.snapshot().then(s => setNotices(s && s.notices), () => {}); } } catch { /* facade optional */ }
   try { const listen = window.__TAURI__ && window.__TAURI__.event && window.__TAURI__.event.listen; if (listen) listen('chat:state', ev => applyReply(N.replyLine(ev && ev.payload))).catch(() => {}); } catch { /* optional */ }
+
+  // ---- K2-13 T6b-1 «Hoy» (S2/S3/S5/S13/S17/S19): the island's day ------------------------------------------------
+  // The data arrives already folded by the client (agentclient.rs: one bounded, closed `hoy` view per frame). This mount
+  // only DRAWS it: every string is written with textContent from the pure model (island-nusa.js) — the item text comes
+  // from models and Telegram posts, so it is never markup. A decision asks the daemon (`hoy_approve` / `hoy_reject {id}`,
+  // no PIN, L17) and the row's word comes BACK from the daemon: a click never announces its own success. The notch grows to
+  // 300 (the height the chat already reaches) with ONE attribute; because #island is sized inline by island.js, the page
+  // reports the grown box to the host itself (`island_shape`), or the lower half of Hoy would take no clicks at all.
+  (function hoyMount() {
+    const root = doc.getElementById('hoy');
+    if (!root || !capsule || !N || !N.hoyRows) return;
+    const island = doc.getElementById('island');
+    const byId = id => doc.getElementById(id);
+    const HOY_GROWN = 300, NOTCH_FLAT = 150;
+    const parts = { summary: byId('hoy-summary'), problem: byId('hoy-problem'), tabs: byId('hoy-tabs'), panel: byId('hoy-panel'),
+      list: byId('hoy-list'), empty: byId('hoy-empty'), foot: byId('hoy-foot'), live: byId('hoy-live'), open: byId('open-hoy') };
+    const GLYPHS = {
+      buy: ['M4 16 16 4', 'M9 4h7v7'], sell: ['M16 4 4 16', 'M11 16H4V9'], send: ['M3 10 17 4 13 17 9 12z'],
+      result: ['M6 3h7l3 3v11H6z', 'M8 9h6M8 12h6M8 15h4'], error: ['M10 3.5 18 17H2z', 'M10 8v4', 'M10 14.4v.1'],
+    };
+    let hoyView = null, hoyTabId = null, tabChosen = false, hoyBusy = '', shapeTimer = 0, refusal = '', rowNodes = new Map(), hoySig = 'none';
+    const isOpen = () => capsule.dataset.hoy === 'open';
+    // the artboard's fifth frame: a day with nothing in it needs no room, so the notch stays 150 and the empty line says why.
+    // Before the first answer arrives we keep the grown box (there IS something until the daemon says otherwise).
+    const flatDay = () => hoyView !== null && !(Array.isArray(hoyView.items) && hoyView.items.length > 0);
+    const grownHeight = open => (open && !flatDay() ? HOY_GROWN : NOTCH_FLAT);
+    const shown = () => root.offsetHeight > 0;
+    const reduced = () => doc.documentElement.dataset.motion === 'reduce';
+    const say = text => { if (parts.live) parts.live.textContent = text || ''; };
+    const problem = text => { refusal = text || ''; if (!parts.problem) return; parts.problem.textContent = refusal; parts.problem.hidden = !refusal; };
+
+    // ---- the grown box, reported to the host (the only thing the page cannot let island.js decide here) ----
+    const box = () => { const r = island ? island.getBoundingClientRect() : null; return r && r.width > 0 ? { w: Math.round(r.width), h: Math.round(r.height) } : { w: 720, h: isOpen() ? HOY_GROWN : NOTCH_FLAT }; };
+    const shape = (settled, size) => { if (!invoke) return; try { invoke('island_shape', { payload: { w: size.w, h: size.h, settled } }).catch(() => {}); } catch { /* optional bridge */ } };
+    const settle = () => { clearTimeout(shapeTimer); shape(true, box()); };
+    function report(open) {                     // the destination first (the host draws air and shadow from it), then the settled box
+      if (!invoke) return;
+      shape(false, { w: 720, h: grownHeight(open) });
+      clearTimeout(shapeTimer);
+      shapeTimer = setTimeout(settle, reduced() ? 0 : 340);
+    }
+    function reassert() {                        // island.js reports its own 150 box on its transitions: restore ours
+      if (!isOpen() || !shown()) return;
+      clearTimeout(shapeTimer);
+      shapeTimer = setTimeout(settle, 80);
+    }
+
+    // ---- paint ----
+    function rowNode(row) {
+      const li = el('li', 'hoy-row');
+      li.dataset.kind = row.kind; li.dataset.state = row.status; li.dataset.id = row.id;
+      if (row.action) li.dataset.action = row.action;
+      li.tabIndex = 0;                            // a row is readable with the keyboard; Enter on it NEVER decides (no handler)
+      li.setAttribute('aria-label', row.aria);
+      if (row.full) li.title = row.full;          // the whole stored sentence, on hover, as plain text
+      const glyph = el('i', 'hoy-glyph'); glyph.setAttribute('aria-hidden', 'true');
+      glyph.append(icon(GLYPHS[row.kind === 'proposal' ? (row.action || 'buy') : row.kind === 'error' ? 'error' : 'result']));
+      const body = el('div', 'hoy-body');
+      body.append(el('span', 'hoy-tt', row.title), el('span', 'hoy-sub', row.sub));
+      if (row.chip) { const chip = el('span', 'hoy-chip', row.chip); chip.title = 'De dónde salió el texto'; body.append(chip); }
+      li.append(glyph, body);
+      if (row.state) li.append(stateNode(row));
+      if (row.actions) li.append(actions(row));
+      return li;
+    }
+    function stateNode(row) {
+      const wrap = el('span', 'hoy-state');
+      wrap.append(icon(row.state.startsWith('Aprobada') ? ['M3.5 10.5l4 4 8-9'] : ['M5 5l10 10', 'M15 5 5 15']));
+      wrap.append(doc.createTextNode(row.state));
+      return wrap;
+    }
+    function actions(row) {
+      const wrap = el('div', 'hoy-acts');
+      const yes = el('button', 'hoy-btn hoy-approve', 'Aprobar');
+      yes.type = 'button'; yes.setAttribute('aria-label', row.approve); yes.disabled = hoyBusy === row.id;
+      yes.addEventListener('click', e => { if (e.isTrusted !== true) return; decide(row.id, 'approve'); });
+      const no = el('button', 'hoy-btn', 'Rechazar');
+      no.type = 'button'; no.setAttribute('aria-label', row.reject); no.disabled = hoyBusy === row.id;
+      no.addEventListener('click', e => { if (e.isTrusted !== true) return; decide(row.id, 'reject'); });
+      wrap.append(yes, no);
+      return wrap;
+    }
+    function paintHoy() {
+      const counts = N.hoyCounts(hoyView);
+      // the opening tab is the model's choice (pending first) until the human picks one: before the first answer there is
+      // no data to choose from, so nothing is frozen then
+      hoyTabId = N.hoyTab(counts, tabChosen ? hoyTabId : null);
+      const active = N.HOY_TABS.find(t => t.id === hoyTabId) || N.HOY_TABS[0];
+      if (parts.summary) parts.summary.textContent = N.hoySummary(counts);
+      for (const t of N.HOY_TABS) {
+        const b = byId('hoy-tab-' + t.id);
+        if (!b) continue;
+        const on = t.id === hoyTabId, n = counts[t.id] || 0;
+        b.setAttribute('aria-selected', on ? 'true' : 'false');
+        b.tabIndex = on ? 0 : -1;
+        b.setAttribute('aria-label', `${t.title}, ${n} ${t.id === 'propuestas' ? (n === 1 ? 'espera tu sí' : 'esperan tu sí') : t.id === 'errores' ? (n === 1 ? 'aviso' : 'avisos') : (n === 1 ? 'resultado' : 'resultados')}`);
+        const num = b.querySelector('.hoy-n');
+        if (num) num.textContent = String(n);
+      }
+      if (parts.panel) parts.panel.setAttribute('aria-labelledby', 'hoy-tab-' + active.id);
+      const rows = N.hoyRows(hoyView, Date.now()).filter(r => r.tab === active.id);
+      rowNodes = new Map();
+      if (parts.list) {
+        parts.list.textContent = '';
+        for (const row of rows) { const node = rowNode(row); rowNodes.set(row.id, node); parts.list.append(node); }
+      }
+      if (parts.empty) { parts.empty.hidden = rows.length > 0; parts.empty.textContent = N.hoyEmpty(active.id); }
+      if (parts.foot) {
+        const cut = counts.truncated;
+        parts.foot.hidden = !cut;
+        parts.foot.textContent = cut ? '«Hoy» guarda más de lo que cabe: se ven los primeros elementos.' : '';
+      }
+      if (parts.open) parts.open.setAttribute('aria-label', counts.pending ? `Hoy · ${counts.pending} ${counts.pending === 1 ? 'propuesta espera' : 'propuestas esperan'} tu sí` : 'Hoy');
+      const flat = flatDay();                  // an empty day gives the room back, and the host hears about it
+      if ((capsule.dataset.hoyEmpty === 'true') !== flat) {
+        if (flat) capsule.dataset.hoyEmpty = 'true'; else delete capsule.dataset.hoyEmpty;
+        if (isOpen()) report(true);
+      }
+      problem(refusal);
+    }
+
+    // ---- data ----
+    // The client publishes its whole state on every change (the sessions ticker polls too), so a repaint only happens when
+    // «Hoy» itself moved: a rebuild resets the list's scroll and the focused row, and nothing else may do that.
+    function applyHoy(next) {
+      if (!next || typeof next !== 'object' || !Array.isArray(next.items)) return;
+      const sig = JSON.stringify(next.items) + (next.truncated === true ? '+' : '');
+      if (sig === hoySig) return;
+      hoySig = sig;
+      hoyView = { items: next.items, truncated: next.truncated === true };
+      if (isOpen()) paintHoy();
+    }
+    function load() {
+      call('agent_action', { action: 'view' }).then(v => {
+        applyHoy(v && v.hoy);                                          // the first ask also connects the client
+        return call('agent_action', { action: 'hoy_list' });
+      }).then(v => { applyHoy(v && v.hoy); problem(''); },
+        e => problem((e && e.message) || 'No se pudo leer «Hoy».'));
+    }
+    function decide(id, how) {
+      if (hoyBusy) return;
+      const row = N.hoyRows(hoyView, Date.now()).find(r => r.id === id);
+      const label = row ? row.title : 'la propuesta';
+      const want = how === 'approve' ? 'approved' : 'rejected';
+      hoyBusy = id; problem(''); paintHoy();
+      call('agent_action', { action: how === 'approve' ? 'hoy_approve' : 'hoy_reject', id }).then(v => {
+        applyHoy(v && v.hoy);
+        const now = hoyView && Array.isArray(hoyView.items) ? hoyView.items.find(i => i && i.id === id) : null;
+        // the daemon said so: only then is it announced. A refusal is its own closed code, never guessed from the click.
+        if (now && now.status === want) say(how === 'approve' ? `Aprobada: ${label}. Se ejecutó una vez.` : `Rechazada: ${label}. No se hizo nada.`);
+        else problem(N.hoyRefusal((v && v.last_error && v.last_error.code) || 'failed'));
+      }, e => problem((e && e.message) || 'No se pudo enviar la decisión.')).then(() => {
+        hoyBusy = ''; paintHoy();
+        const node = rowNodes.get(id);                     // the buttons just left: keep the keyboard on the row it acted on
+        if (node && typeof node.focus === 'function') node.focus();
+      });
+    }
+    function focusTab() { const b = byId('hoy-tab-' + (hoyTabId || 'propuestas')); if (b && typeof b.focus === 'function') b.focus(); }
+    function setOpen(on, focus) {
+      if (isOpen() === on) return;
+      if (on) capsule.dataset.hoy = 'open'; else delete capsule.dataset.hoy;
+      if (parts.open) parts.open.setAttribute('aria-pressed', on ? 'true' : 'false');
+      report(on);
+      if (!on) { problem(''); return; }
+      problem(''); paintHoy(); load();
+      if (focus) focusTab();
+    }
+
+    // ---- wiring (every action needs a trusted event) ----
+    for (const t of N.HOY_TABS) {
+      const b = byId('hoy-tab-' + t.id);
+      if (!b) continue;
+      b.addEventListener('click', e => {
+        if (e.isTrusted !== true) return;
+        tabChosen = true; hoyTabId = t.id; paintHoy(); say(`Pestaña ${t.title}. ${N.hoyEmpty(t.id)}`);
+      });
+      b.addEventListener('keydown', e => {
+        if (e.isTrusted !== true) return;
+        const to = N.hoyTabKey(e, N.HOY_TABS.findIndex(x => x.id === t.id));
+        if (to === null) return;
+        e.preventDefault(); e.stopPropagation();
+        tabChosen = true; hoyTabId = N.HOY_TABS[to].id; paintHoy();
+        const next = byId('hoy-tab-' + hoyTabId); if (next && typeof next.focus === 'function') next.focus();
+        say(`Pestaña ${N.HOY_TABS[to].title}.`);
+      });
+    }
+    if (parts.open) parts.open.addEventListener('click', e => { if (e.isTrusted !== true) return; setOpen(!isOpen(), true); });
+    const homeTab = byId('home-tab');
+    if (homeTab) homeTab.addEventListener('click', () => { if (isOpen()) setOpen(false, false); }, true);
+    doc.addEventListener('abito:nusa-tab', () => { if (isOpen()) { setOpen(false, false); const b = byId('open-hoy'); if (b && typeof b.focus === 'function') b.focus(); } });
+    doc.addEventListener('keydown', e => {
+      if (e.key !== 'Escape' || !isOpen()) return;
+      setOpen(false, false);
+      const b = byId('open-hoy'); if (b && typeof b.focus === 'function') b.focus();
+    }, true);
+    // a take-over (question, permission, finished card) hides Hoy by CSS; the title and the box must follow it back
+    if (capsule) new MutationObserver(() => { if (isOpen()) { reassert(); } }).observe(capsule, { attributes: true, attributeFilter: ['data-question', 'data-card', 'data-takeover', 'data-phase', 'data-view'] });
+    window.addEventListener('resize', () => { if (isOpen()) settle(); });
+    try {
+      const listen = window.__TAURI__ && window.__TAURI__.event && window.__TAURI__.event.listen;
+      if (listen) listen('agent:state', ev => { const p = ev && ev.payload; if (p) applyHoy(p.hoy); }).catch(() => {});
+    } catch { /* optional facade */ }
+    paintHoy();
+  })();
   paint(); refreshReply();
 })();

@@ -67,7 +67,9 @@ test('T3/T4: bodies build DOM with textContent only (no markup sink) and never i
   assert.doesNotMatch(strip(bodies) + strip(read('island-nusa-mount.js')), /innerHTML|outerHTML|insertAdjacentHTML|document\.write/);
   assert.match(bodies, /textContent/);
   const verbs = [...strip(bodies).matchAll(/call\(\s*'([a-z_]+)'/g)].map(m => m[1]).sort();
-  assert.deepEqual([...new Set(verbs)], ['chat_action', 'dictation_action']);
+  // K2-13 T6b-1 «Hoy» reads and decides through the EXISTING agent_action (the same command Ajustes → Agentes already uses):
+  // no new Tauri command, no new bridge and no capability is added by the notch. Nothing else may join this list.
+  assert.deepEqual([...new Set(verbs)], ['agent_action', 'chat_action', 'dictation_action']);
 });
 test('T3: Inicio — the one field, mic only with dictation on, trusted-only send, id reuse, 8000, chat opens from the reply line', () => {
   for (const s of ['Pedile algo a Koda… (o dictalo)', "'submit'", 'client_request_id', 'getRandomValues', 'requestId', 'sendCheck', "'status'", "'hands_free'", 'prefs.enabled === true', // Koda 0.1 T2

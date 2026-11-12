@@ -94,7 +94,24 @@ async function open(scenario = {}) {
           if (a === 'expand') { snap.state = 'expanded'; snap.revision += 1; queueMicrotask(() => window.__islandSetState && window.__islandSetState('overview')); }
           return structuredClone(snap);
         }
-        if (cmd === 'agent_action') return a === 'sessions_list' ? { connection, accounts, sessions: { rows: sessions, truncated: false } } : { connection, accounts };
+        if (cmd === 'agent_action') {
+          if (a === 'sessions_list') return { connection, accounts, sessions: { rows: sessions, truncated: false } };
+          // K2-13 T6b-1 «Hoy»: the folded `hoy` view the Rust client hands the page, plus the daemon's closed refusal.
+          // `hoy_approve` / `hoy_reject` change the stored item exactly like the daemon does — never because the page clicked.
+          if (scenario.hoy && (a === 'view' || a === 'hoy_list' || a === 'hoy_approve' || a === 'hoy_reject')) {
+            const hoy = window.__hoy || (window.__hoy = { items: (scenario.hoy || []).map(i => ({ ...i })), truncated: scenario.hoyTruncated === true });
+            let failure = scenario.hoyError || { code: null, n: 0 };
+            if (a === 'hoy_approve' || a === 'hoy_reject') {
+              const item = hoy.items.find(i => i.id === (args.payload && args.payload.id));
+              const want = a === 'hoy_approve' ? 'approved' : 'rejected';
+              if (scenario.hoyRefuse) failure = { code: scenario.hoyRefuse, n: (failure.n || 0) + 1 };
+              else if (item && item.status === 'pending') item.status = want;
+              else failure = { code: 'not_pending', n: (failure.n || 0) + 1 };
+            }
+            return { connection, accounts, hoy: structuredClone(hoy), last_error: failure };
+          }
+          return { connection, accounts };
+        }
         if (cmd === 'prefs_action') return { sound: true, declaredPills: scenario.declared ? scenario.declared : scenario.github ? ['integration_github'] : [], mainPill: 'abito', pillColors: {}, avatarColors: {}, autoCloseSeconds: 0, openOnHover: false, absenceSeconds: 600 };
         if (cmd === 'github_action' && scenario.githubData === 'real') {
           // the shape src/github.rs serialises (what the validator's fake `gh` produces): PRs carry `repo`/`isDraft`/`review`, mainCI rows carry repo+branch
@@ -139,6 +156,14 @@ async function open(scenario = {}) {
   if (scenario.github) await page.evaluate(() => document.dispatchEvent(new CustomEvent('abito:integration-seen', { detail: { ids: ['integration_github'], source: 'github' } })));
   if (scenario.focusGithub) { await page.waitForTimeout(600); await page.evaluate(() => document.getElementById('pill-choice-integration_github')?.click()); }
   await page.waitForTimeout(scenario.quick ? 1800 : 4200); // spring + the ticker's first poll (`quick`: measurements that only need the card, not the first ticker poll)
+  // K2-13 T6b-1: «Hoy» opens from its header tab once the island finished expanding (the header is only shown then).
+  // Playwright's click is a trusted input event, which is what the mount requires.
+  if (scenario.hoyTab) {
+    await page.waitForFunction(() => document.getElementById('capsule').dataset.phase === 'expanded', null, { timeout: 15000 });
+    await page.waitForTimeout(200);
+    await page.click('#open-hoy');
+    await page.waitForTimeout(scenario.hoyWait || 700);
+  }
   if (scenario.finishedCard && !scenario.noLane) { await page.evaluate(id => window.__emit('desktop:notice-open', { id, kind: 'finished' }), UUID); await page.waitForTimeout(1500); }
   if (scenario.question) {
     await page.waitForTimeout(600);
