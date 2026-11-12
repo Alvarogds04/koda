@@ -9,6 +9,10 @@
   else root.AbitoPaused = Object.freeze(api);
 })(typeof self !== 'undefined' ? self : this, () => {
   const PAUSED = Object.freeze(['dictation', 'voice', 'integrations', 'spotify', 'phone']);
+  /* K2-10 T4 (S11): the island's MAIL has its own entry and is NOT paused in this version — the feature
+     has to work (`Feature::Mail => false` in src/paused.rs). It is listed here, NOT in PAUSED, so the next
+     version pauses it by moving one id: test-node/paused-check.cjs keeps both files in agreement. */
+  const NOT_PAUSED = Object.freeze(['mail']);
   const paused = feature => PAUSED.includes(feature);
-  return { PAUSED, paused, LABEL: 'En pausa · próxima versión' };
+  return { PAUSED, NOT_PAUSED, paused, LABEL: 'En pausa · próxima versión' };
 });

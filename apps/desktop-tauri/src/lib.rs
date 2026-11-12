@@ -89,6 +89,7 @@ pub mod secrets;
 pub mod provider_oauth;
 pub mod gmail_oauth;
 pub mod gmail_api;
+pub mod gmailcmd;
 pub mod oauthcmd;
 pub mod sounds;
 pub mod question;
