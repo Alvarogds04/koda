@@ -24,9 +24,11 @@
  *   rotation       continuous conversation rotation (#386): object with optional subkeys
  *                  `enabled` (strict boolean, default FALSE: opt-in), `thresholdPercent` (50..100,
  *                  default 85) and `keepTurns` (1..100, default 12); unknown subkeys are rejected
- *   transcription  K2-13 (S7, S16) how a Minikoda transcribes videos/audios (minikodas/transcribe-setting.cjs):
- *                  {mode: "local-parakeet"|"local-whisper-turbo"|"remote", language?, remote?: {accountId, model}};
- *                  default {mode: "local-parakeet", language: "es"}; an invalid stored value is a config error
+ *   transcription  K2-13 (S7, S18) how a Minikoda transcribes videos/audios (minikodas/transcribe-setting.cjs):
+ *                  {mode: "local-parakeet"|"remote", language?, remote?: {accountId, model}};
+ *                  default {mode: "local-parakeet", language: "es"}; an invalid stored value is a config error.
+ *                  S18 (L32): Parakeet is the only local model; a `local-whisper-turbo` stored by an earlier build
+ *                  is migrated to {mode: "local-parakeet", language} when the file is read, never rewritten here.
  *
  * `ABITO_WORKSPACE` (the Abito analogue of Gentle Dot's GENTLE_DOT_WORKSPACE)
  * overrides the file's workspace and is validated the same way.
@@ -37,7 +39,7 @@ const path = require("node:path");
 
 const { MEMORY_PROJECT, assertSecurePath, islandPaths, writePrivateFile } = require("./isolation.cjs");
 const { THINKING_LEVELS, isStrictProfileId } = require("./profiles.cjs");
-const { TRANSCRIPTION_DEFAULT, validateTranscriptionSetting } = require("./minikodas/transcribe-setting.cjs");
+const { TRANSCRIPTION_DEFAULT, validateTranscriptionSetting, migrateTranscriptionSetting } = require("./minikodas/transcribe-setting.cjs");
 // K2-01b: on Windows private files are judged by the verified HU-047 helper (null off Windows; see readPrivateJson).
 const winfs = require("./win-fs.cjs");
 
@@ -285,6 +287,18 @@ function validateTranscription(raw) {
 	}
 }
 
+/**
+ * K2-13 (S18) `transcription` read back from disk: the same strict validator plus the one migration, so a config
+ * written by a build that still offered `local-whisper-turbo` loads as `local-parakeet` instead of locking Ajustes.
+ */
+function migrateTranscription(raw) {
+	try {
+		return migrateTranscriptionSetting(raw);
+	} catch {
+		throw new ConfigError("transcription");
+	}
+}
+
 /** The raw, validated file content (no defaults, no env). */
 function readConfigFile(islandRoot) {
 	// Same parent-chain policy as writes: no symlinked/world-writable/foreign-owned island path.
@@ -320,7 +334,7 @@ function readConfigFile(islandRoot) {
 		out.paused = raw.paused;
 	}
 	if (raw.rotation !== undefined) out.rotation = validateRotation(raw.rotation);
-	if (raw.transcription !== undefined) out.transcription = validateTranscription(raw.transcription);
+	if (raw.transcription !== undefined) out.transcription = migrateTranscription(raw.transcription);
 	if (raw.connectorHostBin !== undefined) out.connectorHostBin = validateConnectorHostBin(raw.connectorHostBin);
 	if (raw.hotkey !== undefined) {
 		// Inert metadata: an invalid value must never lock the user out of recovery. Drop it, flag it.

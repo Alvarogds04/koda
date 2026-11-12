@@ -531,12 +531,12 @@ A Minikoda is a small helper that runs a recipe on its own. Code: `src/minikodas
 - Left for later (verifier mwdat8g0, not implemented): `hoy_approve` is still accepted while the global pause is on.
 - Tests use `test/fixtures/minikodas/fake-pi.cjs`, a fake `pi --mode rpc` that loads the real kit extension and mimics Pi's tool selection and `tool_call` blocking. The real-Pi proof of the two layers is the PoC (`odd/evidence/k2-13-poc/poc-minikodas/evidence/`).
 
-**Video and audio posts: transcription** (K2-13 S6-S9, S15, S16; `transcribe.cjs`, `transcribe-setting.cjs`):
+**Video and audio posts: transcription** (K2-13 S6-S9, S15, S16, S17, S18; `transcribe.cjs`, `transcribe-setting.cjs`):
 - A source may hand a run `{text, media: [files]}`. Each media file must be a regular file inside the run's own folder `<island>/minikodas/media/<runId>/`. It is transcribed, deleted, and its transcript is appended to what `source_read` returns. The media never reaches the model. The folder is removed after the run.
 - **Setting** (global, `config.json` key `transcription`, frames `transcription_get`/`transcription_set`):
-  - `{mode: "local-parakeet"}`: the default. Parakeet v3 int8 on this computer, no network.
-  - `{mode: "local-whisper-turbo", language}`: better on company names, slower, ~2.5 GB RAM. The language is always fixed.
+  - `{mode: "local-parakeet", language}`: the default. Parakeet v3 int8 on this computer, no network. The language is always fixed.
   - `{mode: "remote", language, remote: {accountId, model}}`: an OpenAI-compatible (custom gateway) account Koda already has, e.g. NaN with model `whisper`. The Base URL and the key are that account's own; the setting never holds them. `language` defaults to `es`.
+  - **S18 «pues usamos solo ese modelo»: Parakeet is the only local model.** The local `local-whisper-turbo` option of the first build is gone: the validator, the `transcription` frames and Ajustes no longer offer it, and a stale frame is answered `bad_request`. A `config.json` still saying `local-whisper-turbo` is migrated to `{mode: "local-parakeet", language}` when it is read (`migrateTranscriptionSetting`), so an island written by that build keeps working; only the removed mode is migrated, every other invalid value stays a config error.
 - **Tools.** Both are bundled, found at fixed paths beside the daemon package and never on PATH:
   - ffmpeg: `<install>/runtime/ffmpeg[.exe]`, a pinned LGPL build (`apps/desktop-tauri/packaging/runtime/ffmpeg.sha256`).
   - The helper: `<install>/abito-transcribe[.exe]`, the island crate's sherpa-onnx helper. It shares dictation's model store and Silero VAD (`apps/desktop-tauri/docs/dictation-build.md`).

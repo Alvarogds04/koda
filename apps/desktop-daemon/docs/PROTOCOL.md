@@ -594,14 +594,14 @@ Implementation: `src/protocol.cjs` (allowlist and DTOs), `src/server.cjs` (`hand
 
 New error codes: `unknown_minikoda, not_active, not_pending, exists, limit, model_unavailable, unknown_item`.
 
-### Transcription setting (K2-13, S7/S16)
+### Transcription setting (K2-13, S7/S18)
 
 | type | fields | reply |
 | --- | --- | --- |
 | `transcription_get` | – | `transcription` |
 | `transcription_set` | `setting{mode, language?, remote?{accountId, model}}` | broadcast `transcription`; `bad_request` for anything off-contract (unknown mode or key, a `baseUrl`, a malformed account id) |
 
-`transcription` (server → client): `setting{mode: local-parakeet\|local-whisper-turbo\|remote, language: es\|en\|fr\|de\|it\|pt\|ca, remote?{accountId, model}}`, `ffmpeg: available\|unavailable`, `local: available\|unavailable`. The frame never carries a Base URL or a key: the remote account's are read from the account store when a transcription runs. `ffmpeg` is always `unavailable` on macOS in this version (darwin-arm64 does not bundle ffmpeg yet). Without a transcriber both verbs answer `unavailable`.
+`transcription` (server → client): `setting{mode: local-parakeet\|remote, language: es\|en\|fr\|de\|it\|pt\|ca, remote?{accountId, model}}`, `ffmpeg: available\|unavailable`, `local: available\|unavailable`. S18 (L32): `local-parakeet` is the only local mode; `local-whisper-turbo` was removed from the contract, so a client that still sends it is answered `bad_request`, while a stored setting from that build is migrated to `local-parakeet` (keeping its language) when the daemon reads its config. The frame never carries a Base URL or a key: the remote account's are read from the account store when a transcription runs. `ffmpeg` is always `unavailable` on macOS in this version (darwin-arm64 does not bundle ffmpeg yet). Without a transcriber both verbs answer `unavailable`.
 
 A failed transcription ends the Minikoda's run before its engine starts: a «Hoy» `error` item «La corrida de «X» falló (transcripción: <why>)» and `lastRun.reason: "transcription"`. A pause or a delete during the transcription cancels it (`reason: paused` / `cancelled`). Transcription has its own 30-minute budget (S17): it does not count toward the run's 300 s engine budget, whose clock starts only after the transcript is ready, and when it runs out the item says «el video tardó más de 30 minutos en transcribirse; no se resumió». A transcribing run still holds its run slot (at most two runs at once, transcription included).
 

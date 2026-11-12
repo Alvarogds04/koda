@@ -10,7 +10,7 @@ const http = require("node:http");
 const os = require("node:os");
 const path = require("node:path");
 
-const { validateTranscriptionSetting, TRANSCRIPTION_DEFAULT } = require("../src/minikodas/transcribe-setting.cjs");
+const { validateTranscriptionSetting, TRANSCRIPTION_DEFAULT, TRANSCRIPTION_MODES, LOCAL_MODELS } = require("../src/minikodas/transcribe-setting.cjs");
 const { Transcriber, TranscriptionError, bundledTools, removeWorkDir, CHUNK_SECONDS, MAX_CHUNK_BYTES, TRANSCRIPTION_BUDGET_MS, TRANSCRIPTION_BUDGET_MINUTES } = require("../src/minikodas/transcribe.cjs");
 const { MinikodaService } = require("../src/minikodas/service.cjs");
 const config = require("../src/config.cjs");
@@ -98,13 +98,15 @@ const field = (body, name) => {
 
 // ---------- the setting ----------
 
-test("setting: local Parakeet by default; whisper-turbo and remote are the alternatives; anything else is refused", () => {
+test("S18 setting: Parakeet is the only local model, the remote account is the alternative, and whisper-turbo is gone", () => {
 	assert.deepEqual(TRANSCRIPTION_DEFAULT, { mode: "local-parakeet", language: "es" });
-	assert.deepEqual(validateTranscriptionSetting({ mode: "local-whisper-turbo", language: "en" }), { mode: "local-whisper-turbo", language: "en" });
+	assert.deepEqual(TRANSCRIPTION_MODES, ["local-parakeet", "remote"]);
+	assert.deepEqual(LOCAL_MODELS, { "local-parakeet": "parakeet-tdt-0.6b-v3-int8" });
 	assert.deepEqual(validateTranscriptionSetting({ mode: "local-parakeet" }), { mode: "local-parakeet", language: "es" });
 	assert.deepEqual(validateTranscriptionSetting({ mode: "remote", remote: { accountId: "nan", model: "whisper" } }), { mode: "remote", language: "es", remote: { accountId: "nan", model: "whisper" } });
 	for (const bad of [
 		null, [], "local-parakeet", {}, { mode: "local-whisper-small" }, { mode: "local-parakeet", language: "auto" }, { mode: "local-parakeet", language: "xx" },
+		{ mode: "local-whisper-turbo" }, { mode: "local-whisper-turbo", language: "en" }, { mode: "local-parakeet", model: "whisper-turbo" },
 		{ mode: "local-parakeet", extra: 1 }, { mode: "remote" }, { mode: "remote", remote: { accountId: "nan" } }, { mode: "remote", remote: { accountId: "../x", model: "whisper" } },
 		{ mode: "remote", remote: { accountId: "nan", model: "wh\nisper" } }, { mode: "remote", remote: { accountId: "nan", model: "w", baseUrl: "https://evil" } },
 		{ mode: "local-parakeet", remote: { accountId: "nan", model: "whisper" } },
@@ -130,7 +132,9 @@ test("setting: stored in the daemon config (0600), default when absent, a bad st
 test("protocol: transcription_get/set are validated; the frame carries the setting and availability, never a URL or key", () => {
 	const parse = P.validateClientFrame;
 	assert.deepEqual(parse({ type: "transcription_get" }), { type: "transcription_get" });
-	assert.deepEqual(parse({ type: "transcription_set", setting: { mode: "local-whisper-turbo", language: "es" } }), { type: "transcription_set", setting: { mode: "local-whisper-turbo", language: "es" } });
+	assert.deepEqual(parse({ type: "transcription_set", setting: { mode: "local-parakeet", language: "es" } }), { type: "transcription_set", setting: { mode: "local-parakeet", language: "es" } });
+	// S18: the removed local Whisper option is off-contract, so a stale client frame is refused, never migrated.
+	assert.equal(parse({ type: "transcription_set", setting: { mode: "local-whisper-turbo", language: "es" } }), undefined);
 	assert.equal(parse({ type: "transcription_set", setting: { mode: "remote" } }), undefined);
 	assert.equal(parse({ type: "transcription_set" }), undefined);
 	const frame = P.transcriptionFrame({ mode: "remote", language: "es", remote: { accountId: "nan", model: "whisper", baseUrl: "https://x", apiKey: KEY }, ffmpeg: "available", local: "unavailable" });
@@ -234,12 +238,26 @@ function assertCodecList(argv) {
 	assert.ok(!list.some((name) => name.includes("*")), "this option has no globbing: a star would allow nothing at all");
 }
 
-test("S16 local whisper-turbo: the helper gets whisper-turbo with the language fixed", async (t) => {
+test("S18 a stored local-whisper-turbo from an earlier build migrates to Parakeet on load, and a client can no longer set it", async (t) => {
+	// «pues usamos solo ese modelo» (L32): the local Whisper option is removed. An island whose config still says
+	// `local-whisper-turbo` must not become unreadable (that would lock the user out of Ajustes): it loads as Parakeet,
+	// keeping the language, and every later transcription runs Parakeet. A client frame is refused instead.
 	const base = tmp(t);
-	const { tr, helperLog } = transcriber(t, base, { setting: { mode: "local-whisper-turbo", language: "en" } });
+	const island = path.join(base, "island");
+	fs.mkdirSync(island, { recursive: true, mode: 0o700 });
+	const file = path.join(island, "config.json");
+	fs.writeFileSync(file, JSON.stringify({ transcription: { mode: "local-whisper-turbo", language: "en" } }), { mode: 0o600 });
+	assert.deepEqual(config.loadConfig(island, { env: {} }).transcription, { mode: "local-parakeet", language: "en" });
+	assert.throws(() => config.setTranscription(island, { mode: "local-whisper-turbo", language: "en" }), (e) => e.name === "ConfigError" && e.field === "transcription");
+	// Any other invalid stored value is still a config error: only the removed mode is migrated.
+	fs.writeFileSync(file, JSON.stringify({ transcription: { mode: "local-parakeet", language: "xx" } }), { mode: 0o600 });
+	assert.throws(() => config.loadConfig(island, { env: {} }), (e) => e.field === "transcription");
+	// The daemon's transcriber reads that migrated setting, so the helper really gets Parakeet.
+	fs.writeFileSync(file, JSON.stringify({ transcription: { mode: "local-whisper-turbo", language: "en" } }), { mode: 0o600 });
+	const { tr, helperLog } = transcriber(t, base, { setting: config.loadConfig(island, { env: {} }).transcription });
 	const out = await tr.transcribe(media(path.join(base, "in"), 5));
-	assert.equal(out.text, "hola desde whisper-turbo en en");
-	assert.deepEqual(lines(helperLog)[0].slice(0, 5), ["transcribe", "--model", "whisper-turbo", "--language", "en"]);
+	assert.equal(out.text, "hola desde parakeet-tdt-0.6b-v3-int8 en en");
+	assert.deepEqual(lines(helperLog)[0].slice(0, 5), ["transcribe", "--model", "parakeet-tdt-0.6b-v3-int8", "--language", "en"]);
 });
 
 test("local failures map to closed codes and never leave files: model_missing, garbage, crash, ffmpeg failure, too long", async (t) => {
