@@ -299,7 +299,7 @@ test('the card text is redacted and never carries secrets; hidden secrets mean n
     assert.ok([...q.text].length <= 500, 'the text stays inside the question bound');
     if (lossy === true) assert.deepEqual(q.options, [REJECT, TERMINAL], JSON.stringify(h));
     if (lossy === false) assert.match(q.text, /\(secretos ocultos\)$/);
-    if (shows) assert.equal(q.text, `Codex pide permiso para apply_patch: ${JSON.stringify(shows)} (fuera de la carpeta de sesión; detalles solo en la terminal; decidir en la terminal)`);
+    if (shows) assert.match(q.text, new RegExp(`^Codex pide permiso para apply_patch: ${JSON.stringify(shows).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} \\((fuera de la carpeta de sesión|ruta no verificable); detalles solo en la terminal; decidir en la terminal\\)$`), 'the outside path is shown, never approvable (macOS: /home/dev cannot be resolved)');
     if (hidden) assert.equal(q.text, 'Codex pide permiso para apply_patch (ruta no segura (secretos ocultos); detalles solo en la terminal; decidir en la terminal)');
   }
 });
@@ -369,9 +369,12 @@ test('parseArgs / watchdogMs / startWatchdog stay the CLI contract (old installe
 test('codexToolDescription(name, input, cwd): apply_patch gets the R9 file preview; only Bash and apply_patch are answerable at all', () => {
   assert.deepEqual(codexToolDescription('apply_patch', { command: '*** Begin Patch\n+SECRET\n*** End Patch' }, cwd),
     { filePreview: true, text: 'apply_patch', lossy: true, reason: 'solicitud no representable' }, 'a patch outside the grammar shows nothing of itself');
-  // an absolute path outside the folder (a relative one would carry this checkout's own path, which may look like a secret)
-  assert.deepEqual(codexToolDescription('apply_patch', { command: '*** Begin Patch\n*** Delete File: /home/dev/proj/fuera.txt\n*** End Patch' }, cwd),
-    { filePreview: true, text: `apply_patch: borrar ${JSON.stringify(path.resolve(cwd, '/home/dev/proj/fuera.txt'))}`, lossy: true, reason: 'fuera de la carpeta de sesión' });
+  // an absolute path outside the folder (a relative one would carry this checkout's own path, which may look like a secret).
+  // /home/dev does not exist on macOS runners, so the reason may be «ruta no verificable» there: both show the path, neither is approvable.
+  const outside = codexToolDescription('apply_patch', { command: '*** Begin Patch\n*** Delete File: /home/dev/proj/fuera.txt\n*** End Patch' }, cwd);
+  assert.deepEqual({ ...outside, reason: undefined },
+    { filePreview: true, text: `apply_patch: borrar ${JSON.stringify(path.resolve(cwd, '/home/dev/proj/fuera.txt'))}`, lossy: true, reason: undefined });
+  assert.ok(['fuera de la carpeta de sesión', 'ruta no verificable'].includes(outside.reason), outside.reason);
   assert.equal(codexToolDescription('Bash', { command: 'ls' }, cwd).lossy, false);
   for (const tool of ['mcp__srv__ping', 'Write', 'WebFetch', 'exec_command']) assert.equal(codexToolDescription(tool, {}, cwd), null, tool);
 });
