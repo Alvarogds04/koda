@@ -30,6 +30,16 @@ the build: it is downloaded at runtime, only when the user asks, from Hugging
 Face at a pinned revision, verified by size and SHA-256 (`src/speech/mod.rs`),
 into `$XDG_DATA_HOME/abito/Models`.
 
+On Windows that folder is `%LOCALAPPDATA%\abito-data\Models`, **not**
+`%LOCALAPPDATA%\abito`: NTFS is case-insensitive, so `abito` and the island's
+protected root `Abito` would be the same directory. That root is created (or
+accepted) with an explicit protected owner-only DACL and verified fail-closed by
+the island, so a data folder born there with the inherited profile DACL would
+make the island refuse to start ("runtime root is not a private directory of
+ours") depending only on which feature ran first. Landing the store first with
+`abito-data` keeps the two folders apart; nothing is migrated because the
+Windows path was introduced in this same (unreleased) cycle.
+
 `reqwest` is pinned to 0.12 (ring + webpki-roots TLS) because 0.13's rustls
 needs aws-lc-rs and rustls-platform-verifier.
 
@@ -157,11 +167,14 @@ abito-transcribe download [--model ID]   # the catalog's pinned, size + SHA-256 
   - It is removed with the runtime directory. The Windows install manifest pins `runtime/ffmpeg.exe` like
     `runtime/node.exe` (`install-manifest.cjs --runtime`).
   - **Licence record (LGPL-3.0, still open).** Every notice that names FFmpeg also states what is owed and what is
-    still missing: a source offer (the exact FFmpeg source at tag `n9.0.2-49-gc179411bbb` plus the
-    BtbN/FFmpeg-Builds scripts, on request, for at least three years), and the plain statement that Koda does **not**
-    mirror those sources yet, so the mirror has to exist (and be linked from the notices) before a public release
-    (LGPL-3.0 section 6). The licence review of FFmpeg's obligations and its AAC/H.264 patent question has **not**
-    been done; the notices say so instead of implying it was.
+    still missing: a written source offer (GPL-3.0 §6(b), incorporated by LGPL-3.0) of the exact FFmpeg source at
+    revision `c179411bbb2864cc71323d3055acda25d5c2aace` — the commit FFmpeg's version string labels
+    `n9.0.2-49-gc179411bbb`, a label and not the identity — plus the BtbN/FFmpeg-Builds scripts, on request, for at
+    least three years), and the plain statement that Koda does **not** mirror those sources yet, so the mirror has to
+    exist (and be linked from the notices) before a public release: that is GPL-3.0 §6(d) (a designated place
+    recipients can obtain the source from, not only an offer on request), also incorporated by LGPL-3.0. The warning
+    is not «LGPL-3.0 §6», which is about combining a work with the Library. The licence review of FFmpeg's obligations
+    and its AAC/H.264 patent question has **not** been done; the notices say so instead of implying it was.
 - **macOS (darwin-arm64).** No ffmpeg and no `abito-transcribe` in this version: no LGPL macOS build exists (pending
   for the Mac session, L12). The daemon reports `ffmpeg: "unavailable"`, and a Minikoda video run fails with a clear
   «Hoy» error.
