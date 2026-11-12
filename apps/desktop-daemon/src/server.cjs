@@ -234,10 +234,8 @@ class IslandServer {
 		this.onInterruptedAck = options.onInterruptedAck; // R5
 		this.pendingInterrupted = undefined;
 		this.pausedStore = options.pausedStore;
-		// K2-05 attachments: files wait in the island's OWN engine workspace (`<island>/workspace/uploads`,
-		// the engine's private workspace, never a user-chosen folder, where nothing is ever written),
-		// owned by the client connection that uploaded them.
-		this.uploads = options.uploads ?? new UploadStore({ workspace: () => this.engine?.island?.workspace, log: (line) => this.log(line) });
+		// K2-05 attachments: unsent files wait OUTSIDE the engine workspace (R1-002); an accepted send moves them in.
+		this.uploads = options.uploads ?? new UploadStore({ workspace: () => this.engine?.island?.workspace, staging: () => (this.engine?.island?.root ? path.join(this.engine.island.root, "uploads-staging") : undefined), log: (line) => this.log(line) });
 		this.connectorsFlight = undefined; // the single in-flight snapshot promise (shared by all clients)
 		this.connectorsLast = undefined; // {at, outcome: Promise-settled frame | undefined}
 		this.sessionsFlight = undefined; // #360: the single in-flight scan promise (shared by all clients)
@@ -814,11 +812,19 @@ class IslandServer {
 			this.broadcastState();
 			const request = this.expectPrompt(client, held, alongside);
 			alongside = true;
-			// K2-05 attachments: the held files are composed when the prompt goes, and spent once the
-			// engine took it (Gentle Dot consumes after the prompt request succeeded)
+			// K2-05 attachments: the held files are moved into the workspace when the prompt goes
+			// (R1-001: reserved until the engine answers).
+			if (held.attachments && !this.uploads.accept(client, held.attachments)) {
+				this.forgetRequest(request);
+				if (this.engine && this.engine.status === "ready" && this.engine.busy !== true) this.busy = false;
+				this.broadcastState();
+				this.sendTo(client, requestError("upload_failed", held.requestId));
+				continue;
+			}
 			this.promptCommand(held.text, held.files, held.images).then((command) => this.engine.request(command)).then(() => {
 				if (held.attachments) this.uploads.consume(client, held.attachments);
 			}, () => {
+				if (held.attachments) this.uploads.release(client, held.attachments);
 				this.forgetRequest(request);
 				// A lost ACK may already have started Pi work; the runtime owns
 				// cutoff/recovery. An old rejection cannot free a new turn.
@@ -1088,12 +1094,23 @@ class IslandServer {
 		this.broadcast(this.askFrame(ask));
 	}
 
-	closeAsk(id, _answered) {
+	/**
+	 * K2-05 R1-001: the resolution names the outcome ONLY to the client whose own accepted
+	 * `ui_response` closed the ask (`ask_resolved{id, answered:true}`); every other client gets the
+	 * plain frame, because another client's answer or the 120 s expiry closed it and an answer
+	 * nobody accepted must never be shown as sent. An expiry, a cancel and an engine restart stay
+	 * plain to everyone.
+	 */
+	closeAsk(id, answered, answeringClient) {
 		const ask = this.asks.get(id);
 		if (!ask) return;
 		clearTimeout(ask.timer);
 		this.asks.delete(id);
-		this.broadcast({ type: "ask_resolved", id });
+		for (const client of [...this.clients]) {
+			if (!client.ready) continue;
+			const own = answered === true && client === answeringClient;
+			this.sendTo(client, own ? { type: "ask_resolved", id, answered: true } : { type: "ask_resolved", id });
+		}
 	}
 
 	// ----- client commands ---------------------------------------------------------
@@ -1208,6 +1225,8 @@ class IslandServer {
 					return undefined;
 				}
 				if (this.state().busy) return fail("busy");
+				// R1-002/R1-001: only an accepted send moves the files in; they stay reserved until it settles.
+				if (frame.attachments && !this.uploads.accept(client, frame.attachments)) return fail("upload_failed");
 				this.rememberRequest(frame.requestId);
 				this.busy = true; // optimistic: the agent_start event confirms
 				this.broadcastState();
@@ -1218,6 +1237,7 @@ class IslandServer {
 					// K2-05: sent — the files stay for the agent, no other message can send them
 					if (frame.attachments) this.uploads.consume(client, frame.attachments);
 				} catch {
+					if (frame.attachments) this.uploads.release(client, frame.attachments);
 					this.forgetRequest(request);
 					// A lost ACK may already have started Pi work; the runtime owns
 					// cutoff/recovery. An old rejection cannot free a new turn.
@@ -1278,7 +1298,7 @@ class IslandServer {
 				const response = P.buildUiResponse(ask, frame);
 				if (!response) return fail("bad_request");
 				if (!this.safeSend(response)) return fail("unavailable");
-				this.closeAsk(frame.id, true);
+				this.closeAsk(frame.id, true, client);
 				return undefined;
 			}
 			case "settings_get":

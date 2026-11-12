@@ -21,8 +21,12 @@
  * - files are opened with O_NOFOLLOW and re-checked by size when read back, the uploads folder
  *   must be a private directory (no planted link), names are the last segment only, cut on whole
  *   characters (F-3);
- * - a file is read back inline or deleted only through its own real `a-…` folder inside the
- *   uploads folder, and a hardlinked file (nlink > 1) is never read back inline (F-1).
+ * - a file is read back inline or deleted only through its own real `a-…` folder inside its
+ *   root folder (staging or uploads), and a hardlinked file (nlink > 1) is never read back
+ *   inline (F-1);
+ * - R1-002/R1-001: an unsent file waits in the daemon's staging folder, OUTSIDE the engine's
+ *   workspace; an accepted send moves it into `<workspace>/uploads` and reserves it (read back by
+ *   lstat too, R1-004: Windows has no O_NOFOLLOW).
  */
 
 const crypto = require("node:crypto");
@@ -104,17 +108,30 @@ function sniffMime(head) {
 	return "application/octet-stream";
 }
 
+/** R1-004: a link is refused by lstat — the file, and every folder up to the uploads root. */
+function plainStored(file) {
+	if (typeof file.root !== "string" || !path.isAbsolute(file.root)) throw new Error("stored file has no root");
+	const stat = fs.lstatSync(file.path);
+	if (!stat.isFile() || stat.size !== file.size) throw new Error("stored file changed");
+	for (let dir = path.dirname(file.path); ; dir = path.dirname(dir)) {
+		const parent = fs.lstatSync(dir);
+		if (parent.isSymbolicLink() || !parent.isDirectory()) throw new Error("stored folder is a link");
+		if (dir === file.root) return stat;
+		if (path.dirname(dir) === dir) throw new Error("stored file is outside the uploads folder");
+	}
+}
+
 /**
- * F-1: the `a-…` folder of one stored file is still the real directory inside the uploads folder
+ * F-1: the `a-…` folder of one stored file is still the real directory inside the root folder
  * it was created in: not a link (or junction), and resolving it lands at `<uploads>/<id>`. The
  * uploads folder itself must be a real directory too. Same-user threat (another process of the
  * user swapping folders), so this is a plain check, not a race-free handle walk.
  */
-function storedDirOk(filePath) {
+function storedDirOk(filePath, expectedRoot) {
 	try {
 		const dir = path.dirname(filePath);
 		const root = path.dirname(dir);
-		if (!UPLOAD_ID.test(path.basename(dir)) || path.basename(root) !== "uploads") return false;
+		if (!UPLOAD_ID.test(path.basename(dir)) || typeof expectedRoot !== "string" || root !== expectedRoot) return false;
 		for (const p of [root, dir]) {
 			const stat = fs.lstatSync(p);
 			if (stat.isSymbolicLink() || !stat.isDirectory()) return false;
@@ -133,12 +150,12 @@ function storedDirOk(filePath) {
  * the size that was stored. Throws otherwise.
  */
 function readStored(file) {
-	if (!storedDirOk(file.path)) throw new Error("stored file moved");
-	if (NOFOLLOW === 0 && fs.lstatSync(file.path).isSymbolicLink()) throw new Error("stored file changed");
+	if (!storedDirOk(file.path, file.root)) throw new Error("stored file moved");
+	const before = plainStored(file);
 	const fd = fs.openSync(file.path, fs.constants.O_RDONLY | NOFOLLOW);
 	try {
 		const stat = fs.fstatSync(fd);
-		if (!stat.isFile() || stat.size !== file.size || stat.nlink > 1) throw new Error("stored file changed");
+		if (!stat.isFile() || stat.size !== file.size || stat.nlink > 1 || stat.dev !== before.dev || stat.ino !== before.ino) throw new Error("stored file changed");
 		const out = Buffer.alloc(file.size);
 		let at = 0;
 		while (at < file.size) {
@@ -176,6 +193,7 @@ class UploadStore {
 	/**
 	 * @param {object} options
 	 * @param {() => (string|undefined)} options.workspace the engine's workspace (read at every upload)
+	 * @param {() => (string|undefined)} [options.staging] where unsent files wait, outside that workspace
 	 * @param {{fileBytes:number,messageBytes:number,files:number}} [options.limits]
 	 * @param {number} [options.ttlMs] unsent files expire after this (default one hour)
 	 * @param {number} [options.idleMs] an unfinished upload with no chunk for this long is dropped
@@ -184,6 +202,7 @@ class UploadStore {
 	 */
 	constructor(options) {
 		this.workspace = options.workspace;
+		this.staging = options.staging;
 		this.limits = options.limits ?? ATTACHMENT_LIMITS;
 		this.ttlMs = options.ttlMs ?? UNSENT_TTL_MS;
 		this.idleMs = options.idleMs ?? IDLE_UPLOAD_MS;
@@ -257,25 +276,26 @@ class UploadStore {
 			removeDirQuietly(part.dir);
 			return { ok: false, code: "upload_failed" };
 		}
-		const file = { id: part.id, name: part.name, size: part.size, mime: sniffMime(part.head), path: part.path, createdAt: part.createdAt };
+		const file = { id: part.id, name: part.name, size: part.size, mime: sniffMime(part.head), path: part.path, stageRoot: part.stageRoot, target: part.target, targetRoot: part.targetRoot, dir: part.dir, createdAt: part.createdAt };
 		slot.files.set(file.id, file);
 		return { ok: true, done: true, file: { id: file.id, name: file.name, size: file.size, mime: file.mime } };
 	}
 
-	/** Creates the private folder and the file of a new upload; undefined when it cannot. */
+	/** Creates the private folder and the file of a new upload; R1-002: outside the engine workspace. */
 	open(rawName, size) {
 		const workspace = this.workspace();
 		if (typeof workspace !== "string" || !path.isAbsolute(workspace)) return undefined;
+		const given = this.staging?.();
+		const root = typeof given === "string" && path.isAbsolute(given) ? given : path.join(path.dirname(workspace), "uploads-staging");
 		const id = `a-${crypto.randomBytes(8).toString("hex")}`;
 		const name = sanitizeName(rawName);
-		const root = path.join(workspace, "uploads");
 		const dir = path.join(root, id);
 		const file = path.join(dir, name);
 		let fd;
 		try {
 			ensurePrivateDir(root);
 			const stat = fs.lstatSync(root);
-			if (stat.isSymbolicLink() || !stat.isDirectory()) throw new Error("uploads folder is not a directory");
+			if (stat.isSymbolicLink() || !stat.isDirectory()) throw new Error("the staging folder is not a directory");
 			fs.mkdirSync(dir, { mode: 0o700 });
 			fd = fs.openSync(file, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | NOFOLLOW, 0o600);
 		} catch (error) {
@@ -284,7 +304,8 @@ class UploadStore {
 			return undefined;
 		}
 		const now = this.now();
-		return { id, name, size, fd, path: file, dir, head: Buffer.alloc(0), received: 0, createdAt: now, lastAt: now };
+		const targetRoot = path.join(workspace, "uploads");
+		return { id, name, size, fd, path: file, stageRoot: root, target: path.join(targetRoot, id, name), targetRoot, dir, head: Buffer.alloc(0), received: 0, createdAt: now, lastAt: now };
 	}
 
 	abort(slot, requestId) {
@@ -311,13 +332,51 @@ class UploadStore {
 		const seen = new Set();
 		for (const id of ids) {
 			const file = slot?.files.get(id);
-			if (!file || seen.has(id)) return { ok: false, code: "attachment_not_found" };
+			if (!file || file.reserved || seen.has(id)) return { ok: false, code: "attachment_not_found" };
 			seen.add(id);
-			files.push({ id: file.id, name: file.name, size: file.size, mime: file.mime, path: file.path });
+			files.push({ id: file.id, name: file.name, size: file.size, mime: file.mime, path: file.target, root: file.targetRoot });
 		}
 		const bytes = files.reduce((sum, file) => sum + file.size, 0);
 		if (files.length > this.limits.files || bytes > this.limits.messageBytes) return { ok: false, code: "message_too_large" };
 		return { ok: true, files };
+	}
+
+	/** R1-002: the only moment an unsent file enters the engine's workspace (`back`: returns it). */
+	promote(file, back = false) {
+		const [from, to] = back ? [file.target, file.path] : [file.path, file.target];
+		try {
+			if (back) ensurePrivateDir(file.dir);
+			else {
+				plainStored({ path: file.path, root: file.stageRoot, size: file.size });
+				ensurePrivateDir(file.targetRoot);
+				const stat = fs.lstatSync(file.targetRoot);
+				if (stat.isSymbolicLink() || !stat.isDirectory()) throw new Error("uploads folder is not a directory");
+				fs.mkdirSync(path.dirname(file.target), { mode: 0o700 });
+			}
+			try { fs.renameSync(from, to); } catch (error) {
+				if (error?.code !== "EXDEV") throw error;
+				fs.copyFileSync(from, to, fs.constants.COPYFILE_EXCL);
+				fs.rmSync(from, { force: true });
+			}
+			removeDirQuietly(back ? path.dirname(file.target) : file.dir);
+			return true;
+		} catch (error) {
+			if (!back) this.log(`uploads: could not move a sent file (${error?.code ?? "error"})`);
+			return false;
+		}
+	}
+
+	/** R1-001: the accepted send's files are reserved for it until it settles. */
+	accept(owner, ids) {
+		const slot = this.owners.get(owner);
+		const files = ids.map((id) => slot?.files.get(id));
+		if (!slot || files.some((file) => !file || file.reserved)) return false;
+		if (!files.every((file) => this.promote(file))) {
+			for (const file of files) this.promote(file, true);
+			return false;
+		}
+		for (const file of files) file.reserved = true;
+		return true;
 	}
 
 	/** The files were sent: they stay on disk for the assistant, but no message can send them again. */
@@ -325,6 +384,26 @@ class UploadStore {
 		const slot = this.owners.get(owner);
 		if (!slot) return;
 		for (const id of ids) slot.files.delete(id);
+		if (slot.files.size === 0 && slot.partial.size === 0) this.owners.delete(owner);
+	}
+
+	/** The send failed: the reserved files go back to their client (or are removed when it is gone). */
+	release(owner, ids) {
+		const slot = this.owners.get(owner);
+		for (const id of ids) {
+			const file = slot?.files.get(id);
+			if (!file?.reserved) continue;
+			this.promote(file, true);
+			if (!slot.gone) {
+				file.reserved = false;
+			} else {
+				slot.files.delete(id);
+				removeQuietly(file.target);
+				removeQuietly(file.path);
+				removeDirQuietly(file.dir);
+			}
+		}
+		if (slot && slot.files.size === 0 && slot.partial.size === 0) this.owners.delete(owner);
 	}
 
 	/**
@@ -334,9 +413,9 @@ class UploadStore {
 	 */
 	discard(owner, id) {
 		const file = this.owners.get(owner)?.files.get(id);
-		if (!file) return false;
+		if (!file || file.reserved) return false;
 		this.owners.get(owner).files.delete(id);
-		if (!storedDirOk(file.path)) {
+		if (!storedDirOk(file.path, file.stageRoot)) {
 			this.log("uploads: a stored folder changed; nothing removed through it");
 			return true;
 		}
@@ -345,13 +424,15 @@ class UploadStore {
 		return true;
 	}
 
-	/** The client went away: whatever it never sent (finished or not) is removed. */
+	/** The client went away: whatever it never sent is removed; R1-001: NOT a reserved file (the
+	 * engine is about to read it). */
 	dropOwner(owner) {
 		const slot = this.owners.get(owner);
 		if (!slot) return;
 		for (const requestId of [...slot.partial.keys()]) this.abort(slot, requestId);
-		for (const id of [...slot.files.keys()]) this.discard(owner, id);
-		this.owners.delete(owner);
+		for (const [id, file] of [...slot.files]) if (!file.reserved) this.discard(owner, id);
+		if (slot.files.size === 0) this.owners.delete(owner);
+		else slot.gone = true;
 	}
 
 	/** Unsent files older than the TTL and uploads idle too long are removed (sent files are never here). */
@@ -359,7 +440,7 @@ class UploadStore {
 		const now = this.now();
 		for (const [owner, slot] of this.owners) {
 			for (const [requestId, part] of slot.partial) if (now - part.lastAt > this.idleMs) this.abort(slot, requestId);
-			for (const [id, file] of slot.files) if (now - file.createdAt > this.ttlMs) this.discard(owner, id);
+			for (const [id, file] of slot.files) if (!file.reserved && now - file.createdAt > this.ttlMs) this.discard(owner, id);
 			if (slot.files.size === 0 && slot.partial.size === 0) this.owners.delete(owner);
 		}
 	}

@@ -26,10 +26,13 @@ const { splitAttachments } = require("../src/conversations.cjs");
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 1, 2, 3, 4]);
 
 function workspace(t) {
-	const dir = fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()), "abito-uploads-"));
-	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-	return dir;
+	const root = fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()), "abito-uploads-"));
+	t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+	const ws = path.join(root, "workspace");
+	fs.mkdirSync(ws, { mode: 0o700 });
+	return ws;
 }
+const stagingDir = (ws) => path.join(path.dirname(ws), "uploads-staging");
 
 /** One whole file in one chunk. */
 function put(store, owner, name, bytes, requestId = `r${Math.random().toString(36).slice(2, 10)}`) {
@@ -71,7 +74,7 @@ test("F-3: a long emoji name is valid text on disk and in the prompt", (t) => {
 	const out = put(store, owner, `${"x"}${"😀".repeat(200)}.png`, PNG);
 	assert.equal(out.ok, true, JSON.stringify(out));
 	assert.ok(wellFormed(out.file.name));
-	const [entry] = fs.readdirSync(path.join(ws, "uploads", out.file.id));
+	const [entry] = fs.readdirSync(path.join(stagingDir(ws), out.file.id));
 	assert.equal(entry, out.file.name, "the name on disk is the name shown");
 	const files = store.resolve(owner, [out.file.id]).files;
 	const prompt = composePrompt("mirá", files, { images: false });
@@ -88,7 +91,7 @@ test("sniffMime: images and PDF by content, anything else octet-stream", () => {
 	assert.equal(sniffMime(Buffer.from("hola")), "application/octet-stream");
 });
 
-test("receive: a file is stored in the engine workspace under an opaque daemon id, private", (t) => {
+test("R1-002: receive stages the file outside the engine workspace under an opaque daemon id, private", (t) => {
 	const ws = workspace(t);
 	const store = new UploadStore({ workspace: () => ws });
 	const owner = {};
@@ -97,14 +100,20 @@ test("receive: a file is stored in the engine workspace under an opaque daemon i
 	assert.equal(out.done, true);
 	assert.match(out.file.id, UPLOAD_ID);
 	assert.deepEqual({ name: out.file.name, size: out.file.size, mime: out.file.mime }, { name: "informe final.txt", size: 4, mime: "application/octet-stream" });
-	const stored = path.join(ws, "uploads", out.file.id, "informe final.txt");
+	const stored = path.join(stagingDir(ws), out.file.id, "informe final.txt");
 	assert.equal(fs.readFileSync(stored, "utf8"), "hola");
+	assert.equal(fs.existsSync(path.join(ws, "uploads")), false, "the engine cannot list what was never sent");
 	assert.ok(!("path" in out.file), "the store's path never travels to a client");
 	if (process.platform !== "win32") {
 		assert.equal(fs.statSync(stored).mode & 0o777, 0o600);
 		assert.equal(fs.statSync(path.dirname(stored)).mode & 0o777, 0o700);
-		assert.equal(fs.statSync(path.join(ws, "uploads")).mode & 0o777, 0o700);
+		assert.equal(fs.statSync(stagingDir(ws)).mode & 0o777, 0o700);
 	}
+	const [resolved] = store.resolve(owner, [out.file.id]).files;
+	assert.equal(resolved.path, path.join(ws, "uploads", out.file.id, "informe final.txt"), "the prompt names the workspace path");
+	assert.equal(store.accept(owner, [out.file.id]), true);
+	assert.equal(fs.readFileSync(resolved.path, "utf8"), "hola", "the accepted send moved it into the workspace");
+	assert.equal(fs.existsSync(path.join(stagingDir(ws), out.file.id)), false);
 });
 
 test("receive: chunks in order build the file; a wrong offset or a mismatched header is refused and leaves nothing", (t) => {
@@ -127,7 +136,7 @@ test("receive: chunks in order build the file; a wrong offset or a mismatched he
 	assert.deepEqual(store.receive(owner, { ...third, name: "otro.bin", offset: 2, data: Buffer.alloc(2) }), { ok: false, code: "bad_request" });
 	assert.deepEqual(store.receive(owner, { ...third, offset: 2, data: Buffer.alloc(3) }).ok, false, "more bytes than declared");
 	// only the finished png folder is left
-	assert.deepEqual(fs.readdirSync(path.join(ws, "uploads")), [done.file.id]);
+	assert.deepEqual(fs.readdirSync(stagingDir(ws)), [done.file.id]);
 });
 
 test("limits: the files a client may hold unsent are the 5 per message the island page says («hasta 5»)", (t) => {
@@ -177,6 +186,7 @@ test("refs: only the client the id was issued to may use it, once; unknown ids a
 	const ok = store.resolve(a, [file.id]);
 	assert.equal(ok.ok, true);
 	assert.equal(ok.files[0].path, path.join(ws, "uploads", file.id, "nota.txt"));
+	assert.equal(store.accept(a, [file.id]), true);
 	store.consume(a, [file.id]);
 	assert.deepEqual(store.resolve(a, [file.id]), { ok: false, code: "attachment_not_found" }, "a ref is used once");
 	assert.ok(fs.existsSync(ok.files[0].path), "a sent file stays for the agent");
@@ -192,20 +202,22 @@ test("cleanup: discard, a client going away and the one-hour expiry remove unsen
 	const one = put(store, a, "uno.txt", Buffer.from("1")).file;
 	const sent = put(store, a, "dos.txt", Buffer.from("2")).file;
 	const theirs = put(store, b, "tres.txt", Buffer.from("3")).file;
+	assert.equal(store.accept(a, [sent.id]), true);
 	store.consume(a, [sent.id]);
 	assert.equal(store.discard(b, one.id), false, "another client cannot discard it");
 	assert.equal(store.discard(a, one.id), true);
-	assert.equal(fs.existsSync(path.join(ws, "uploads", one.id)), false);
+	assert.equal(fs.existsSync(path.join(stagingDir(ws), one.id)), false);
 	const partial = store.receive(a, { requestId: "half", name: "h.bin", size: 4, offset: 0, data: Buffer.alloc(1) });
 	assert.equal(partial.ok, true);
 	const left = put(store, a, "cuatro.txt", Buffer.from("4")).file;
 	store.dropOwner(a);
-	assert.equal(fs.existsSync(path.join(ws, "uploads", left.id)), false, "unsent: removed with its client");
+	assert.equal(fs.existsSync(path.join(stagingDir(ws), left.id)), false, "unsent: removed with its client");
 	assert.equal(fs.existsSync(path.join(ws, "uploads", sent.id, "dos.txt")), true, "sent: kept for the agent");
-	assert.deepEqual(fs.readdirSync(path.join(ws, "uploads")).sort(), [sent.id, theirs.id].sort(), "the partial upload is gone too");
+	assert.deepEqual(fs.readdirSync(path.join(ws, "uploads")).sort(), [sent.id], "the partial upload is gone too");
+	assert.deepEqual(fs.readdirSync(stagingDir(ws)), [theirs.id]);
 	clock += 60 * 60 * 1000 + 1;
 	put(store, {}, "trigger.txt", Buffer.from("t"));
-	assert.equal(fs.existsSync(path.join(ws, "uploads", theirs.id)), false, "an upload never sent expires after an hour");
+	assert.equal(fs.existsSync(path.join(stagingDir(ws), theirs.id)), false, "an upload never sent expires after an hour");
 	assert.equal(fs.existsSync(path.join(ws, "uploads", sent.id, "dos.txt")), true);
 });
 
@@ -221,10 +233,10 @@ test("an upload idle for two minutes is dropped and frees the quota", (t) => {
 	assert.deepEqual(store.receive(a, { requestId: "slow", name: "s.bin", size: 10, offset: 1, data: Buffer.alloc(1) }), { ok: false, code: "upload_failed" });
 });
 
-test("a planted link instead of the uploads folder is refused, nothing is written through it", { skip: process.platform === "win32" }, (t) => {
+test("a planted link instead of the staging folder is refused, nothing is written through it", { skip: process.platform === "win32" }, (t) => {
 	const ws = workspace(t);
 	const outside = workspace(t);
-	fs.symlinkSync(outside, path.join(ws, "uploads"));
+	fs.symlinkSync(outside, stagingDir(ws));
 	const store = new UploadStore({ workspace: () => ws });
 	assert.deepEqual(put(store, {}, "a.txt", Buffer.from("x")), { ok: false, code: "upload_failed" });
 	assert.deepEqual(fs.readdirSync(outside), []);
@@ -262,12 +274,13 @@ test("composePrompt: Gentle Dot's block; images inline only for a vision model; 
 	assert.equal(unreadable.images, undefined, "an image that cannot be read is not inlined");
 });
 
-test("readStored reads the stored file only: a swapped link or a changed size is refused", { skip: process.platform === "win32" }, (t) => {
+test("R1-004: a link at the stored path or in a parent folder is refused (Windows has no O_NOFOLLOW)", { skip: process.platform === "win32" }, (t) => {
 	const ws = workspace(t);
 	const store = new UploadStore({ workspace: () => ws });
 	const owner = {};
 	const { file } = put(store, owner, "foto.png", PNG);
 	const [stored] = store.resolve(owner, [file.id]).files;
+	assert.equal(store.accept(owner, [file.id]), true);
 	assert.deepEqual(readStored(stored), PNG);
 	const secret = path.join(workspace(t), "secret");
 	fs.writeFileSync(secret, "S".repeat(PNG.length));
@@ -277,6 +290,12 @@ test("readStored reads the stored file only: a swapped link or a changed size is
 	fs.rmSync(stored.path);
 	fs.writeFileSync(stored.path, "short");
 	assert.throws(() => readStored(stored));
+	// a parent folder swapped for a link: O_NOFOLLOW never covered this one
+	const outside = workspace(t);
+	fs.writeFileSync(path.join(outside, "foto.png"), "T".repeat(PNG.length));
+	fs.rmSync(path.dirname(stored.path), { recursive: true, force: true });
+	fs.symlinkSync(outside, path.dirname(stored.path));
+	assert.throws(() => readStored(stored));
 });
 
 test("F-1: readStored refuses a swapped a- folder (a link to another folder with the same file)", { skip: process.platform === "win32" }, (t) => {
@@ -285,6 +304,7 @@ test("F-1: readStored refuses a swapped a- folder (a link to another folder with
 	const owner = {};
 	const { file } = put(store, owner, "foto.png", PNG);
 	const [stored] = store.resolve(owner, [file.id]).files;
+	assert.equal(store.accept(owner, [file.id]), true, "sent: the file is now in the uploads folder");
 	const outside = workspace(t);
 	fs.writeFileSync(path.join(outside, "foto.png"), Buffer.alloc(PNG.length, 0x53));
 	fs.renameSync(path.dirname(stored.path), path.join(ws, "moved"));
@@ -300,6 +320,7 @@ test("F-1: readStored refuses a hardlinked file (nlink > 1): it is never read ba
 	const owner = {};
 	const { file } = put(store, owner, "foto.png", PNG);
 	const [stored] = store.resolve(owner, [file.id]).files;
+	assert.equal(store.accept(owner, [file.id]), true, "sent: the file is now in the uploads folder");
 	const secret = path.join(workspace(t), "secret");
 	fs.writeFileSync(secret, Buffer.alloc(PNG.length, 0x53));
 	fs.rmSync(stored.path);
@@ -313,7 +334,7 @@ test("F-1: discard never deletes through a swapped a- folder; the file outside s
 	const store = new UploadStore({ workspace: () => ws });
 	const owner = {};
 	const { file } = put(store, owner, "nota.txt", Buffer.from("x"));
-	const dir = path.join(ws, "uploads", file.id);
+	const dir = path.join(stagingDir(ws), file.id);
 	const outside = workspace(t);
 	fs.writeFileSync(path.join(outside, "nota.txt"), "keep me");
 	fs.renameSync(dir, path.join(ws, "moved"));

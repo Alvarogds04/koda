@@ -610,6 +610,30 @@ test("ask round-trip: select answered; invalid and unknown answers rejected", as
 	await waitFor(() => c.frames.filter((f) => f.code === "unknown_ask").length === 2);
 });
 
+// K2-05 R1-001 (native review, CRITICAL): only the client whose own `ui_response` closed the ask
+// is told the answer was accepted (`ask_resolved{answered:true}`). Every other client gets the
+// plain frame — another client's answer or the 120 s expiry closed it — so a client that lost the
+// race can never present its discarded answer as sent.
+test("ask_resolved names the accepted answer only to the client whose answer closed the ask", async (t) => {
+	const { endpoint, engine } = await setup(t);
+	const a = await login(t, endpoint);
+	const b = await login(t, endpoint);
+	engine.emit("event", { type: "extension_ui_request", id: "r1", method: "confirm", title: "¿Borrar?" });
+	await a.wait((f) => f.type === "ask" && f.id === "r1");
+	await b.wait((f) => f.type === "ask" && f.id === "r1");
+	// B answers first and wins; A is still holding its own answer
+	b.send({ type: "ui_response", id: "r1", confirmed: true });
+	const own = await b.wait((f) => f.type === "ask_resolved" && f.id === "r1");
+	assert.equal(own.answered, true, "the answering client is told its answer was accepted");
+	const other = await a.wait((f) => f.type === "ask_resolved" && f.id === "r1");
+	assert.equal("answered" in other, false, "every other client learns only that the ask is gone");
+	// A's late answer is discarded: the daemon refuses it, so it was never sent
+	a.send({ type: "ui_response", id: "r1", confirmed: true });
+	await a.wait((f) => f.type === "error" && f.code === "unknown_ask");
+	assert.equal("answered" in b.frames.find((f) => f.type === "ask_resolved" && f.id === "r1"), true, "B keeps its accepted mark");
+	assert.deepEqual(engine.sent, [{ type: "extension_ui_response", id: "r1", confirmed: true }], "exactly one answer reached the engine");
+});
+
 // K2-05 U4b: the island's ask card shows what the user approves (Gentle Dot Ask.message /
 // Ask.placeholder). Additive optional fields, white-labelled like the title, bounded, on the
 // live frame AND on the replay a late client gets; the user's typed answer travels verbatim.
@@ -648,7 +672,8 @@ test("ask timeout cancels toward the agent; editor dialogs are cancelled at once
 	const c = await login(t, endpoint);
 	engine.emit("event", { type: "extension_ui_request", id: "u2", method: "confirm", title: "Sure?" });
 	await c.wait((f) => f.type === "ask");
-	await c.wait((f) => f.type === "ask_resolved");
+	const expired = await c.wait((f) => f.type === "ask_resolved");
+	assert.equal("answered" in expired, false, "an expiry closes the ask for everyone, never as this client's answer");
 	assert.deepEqual(engine.sent.at(-1), { type: "extension_ui_response", id: "u2", cancelled: true });
 	engine.emit("event", { type: "extension_ui_request", id: "u3", method: "editor", title: "E" });
 	assert.deepEqual(engine.sent.at(-1), { type: "extension_ui_response", id: "u3", cancelled: true });
@@ -2689,8 +2714,9 @@ async function upload(c, name, bytes, requestId) {
 	return c.wait((f) => f.requestId === requestId && (f.type === "uploaded" || f.type === "error"));
 }
 const uploadsDir = (engine) => path.join(engine.island.workspace, "uploads");
+const stagingDir = (engine) => path.join(engine.island.workspace, "..", "uploads-staging");
 
-test("attachments: a file uploaded over the channel is stored in the engine workspace; only its sender learns its id", async (t) => {
+test("attachments: an upload waits in the daemon's staging folder, outside the engine's workspace; only its sender learns its id", async (t) => {
 	const { endpoint, engine } = await chatOnFile(t);
 	const a = await login(t, endpoint);
 	const b = await login(t, endpoint);
@@ -2698,11 +2724,26 @@ test("attachments: a file uploaded over the channel is stored in the engine work
 	assert.equal(done.type, "uploaded");
 	assert.match(done.attachment.id, /^a-[0-9a-f]{16}$/);
 	assert.deepEqual({ ...done.attachment, id: "x" }, { id: "x", name: "informe.txt", size: 10, mime: "application/octet-stream" });
-	assert.equal(fs.readFileSync(path.join(uploadsDir(engine), done.attachment.id, "informe.txt"), "utf8"), "hola mundo");
+	assert.equal(fs.readFileSync(path.join(stagingDir(engine), done.attachment.id, "informe.txt"), "utf8"), "hola mundo");
+	assert.equal(fs.existsSync(uploadsDir(engine)), false, "the engine cannot list or read a file that was never sent");
 	assert.equal(JSON.stringify(a.frames).includes(engine.island.workspace), false, "the stored path never travels");
 	await sleep(30);
 	assert.equal(b.frames.some((f) => f.type === "uploaded"), false);
 	assert.equal(engine.requests.length, 0, "an upload never reaches the engine");
+});
+
+test("attachments: a send still awaiting the engine keeps its file when its client goes away (R1-001)", async (t) => {
+	const { endpoint, engine } = await chatOnFile(t);
+	const a = await login(t, endpoint);
+	const doc = (await upload(a, "pedido.txt", Buffer.from("x"), "up-1")).attachment;
+	engine.hold = true; // the prompt is in flight inside the engine
+	a.send({ type: "send", text: "leelo", requestId: "r-1", attachments: [doc.id] });
+	await waitFor(() => engine.requests.some((r) => r.type === "prompt"));
+	const stored = path.join(uploadsDir(engine), doc.id, "pedido.txt");
+	assert.ok(fs.existsSync(stored), "the accepted send moved it into the workspace");
+	a.socket.destroy();
+	await sleep(60);
+	assert.ok(fs.existsSync(stored), "a file already promised to the engine is not deleted on close");
 });
 
 test("attachments: send composes Gentle Dot's prompt (path read as the engine, image inline for a vision model); user_message and history show the chips", async (t) => {
@@ -2795,11 +2836,11 @@ test("attachments: removed before sending, or its client gone: the unsent file i
 	const removed = (await upload(a, "quitado.txt", Buffer.from("2"), "up-2")).attachment;
 	const left = (await upload(a, "olvidado.txt", Buffer.from("3"), "up-3")).attachment;
 	a.send({ type: "upload_discard", id: removed.id });
-	await waitFor(() => !fs.existsSync(path.join(uploadsDir(engine), removed.id)));
+	await waitFor(() => !fs.existsSync(path.join(stagingDir(engine), removed.id)));
 	a.send({ type: "send", text: "va", requestId: "r-1", attachments: [kept.id] });
 	await waitFor(() => engine.requests.some((r) => r.type === "prompt"));
 	a.socket.destroy();
-	await waitFor(() => !fs.existsSync(path.join(uploadsDir(engine), left.id)));
+	await waitFor(() => !fs.existsSync(path.join(stagingDir(engine), left.id)));
 	assert.ok(fs.existsSync(path.join(uploadsDir(engine), kept.id, "enviado.txt")), "a sent file stays for the agent");
 });
 
