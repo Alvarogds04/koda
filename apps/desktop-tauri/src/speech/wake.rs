@@ -52,7 +52,9 @@ impl VadSpec {
             .unwrap_or(false)
     }
     pub fn is_present(&self) -> bool {
-        self.is_present_in(&models_dir())
+        // Read-only: no data folder in the environment is "not installed", never a panic (a missing folder must not
+        // take the app down at startup).
+        crate::speech::try_models_dir().is_some_and(|root| self.is_present_in(&root))
     }
     pub fn path(&self) -> PathBuf {
         self.path_in(&models_dir())

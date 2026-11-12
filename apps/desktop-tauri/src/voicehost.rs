@@ -375,12 +375,13 @@ fn sync(app: &AppHandle) {
 }
 
 fn speech_json(h: &Host) -> Value {
-    let root = speech::models_dir();
+    // Read-only: with no data folder the list says «not installed» instead of panicking (see voicehost::start).
+    let root = speech::try_models_dir();
     let models: Vec<Value> = catalog::entries()
         .iter()
         .map(|e| json!({
             "id": e.id, "name": e.name, "sizeMb": e.size_mb(), "languages": e.languages, "forcesLanguage": e.forces_language,
-            "license": e.license, "note": e.note, "state": speech::model_state(e.id), "installed": catalog::state_in(e, &root) == catalog::Installed::Yes,
+            "license": e.license, "note": e.note, "state": speech::model_state(e.id), "installed": root.as_deref().is_some_and(|root| catalog::state_in(e, root) == catalog::Installed::Yes),
             "active": e.id == h.speech.model,
         }))
         .collect();
@@ -388,10 +389,17 @@ fn speech_json(h: &Host) -> Value {
 }
 
 pub fn start(app: &AppHandle) {
-    let speech_prefs = catalog::load_prefs_in(&voicecmd::prefs_dir());
+    // No absolute data folder in the environment (LOCALAPPDATA/USERPROFILE on Windows, XDG_DATA_HOME/HOME elsewhere):
+    // the voice store cannot be located, so voice is disabled here with ONE log line instead of panicking on the first
+    // read. No host is managed, and every voice command answers `unavailable` (voice_action checks for it).
+    let Ok(folder) = speech::try_data_dir().map(|dir| dir.join("Voice")) else {
+        eprintln!("abito voice: disabled, {} — nothing is read or written", speech::NoDataDir);
+        return;
+    };
+    let speech_prefs = catalog::load_prefs_in(&folder);
     speech::set_active(&speech_prefs.model, &speech_prefs.language);
     speech::set_custom_words(&speech_prefs.words);
-    app.manage(Mutex::new(Host { prefs: voicecmd::load_prefs_in(&voicecmd::prefs_dir()), listener: None, last_error: None, learned: train::load_in(&voicecmd::prefs_dir()), trainer: train::Trainer::default(), speech: speech_prefs }));
+    app.manage(Mutex::new(Host { prefs: voicecmd::load_prefs_in(&folder), listener: None, last_error: None, learned: train::load_in(&folder), trainer: train::Trainer::default(), speech: speech_prefs }));
     let app = app.clone();
     std::thread::spawn(move || sync(&app));
 }
@@ -422,6 +430,11 @@ pub async fn voice_action(
     bridge::sender_ok(webview.label(), &url)?;
     state.chat_rate.lock().expect("chat rate lock").check(now_ms())?;
     let command = voicecmd::parse_command(&payload).ok_or_else(|| err("invalid_schema"))?;
+    // No managed host: voicehost::start could not locate the data folder and disabled voice with one log line.
+    // Answering `unavailable` keeps every store read and write out of a working-directory-relative path.
+    if app.try_state::<Mutex<Host>>().is_none() {
+        return Err(err("unavailable"));
+    }
     tauri::async_runtime::spawn_blocking(move || match command.clone() {
         Command::Status => Ok(status_json(&app)),
         Command::SetPrefs(prefs) => {
