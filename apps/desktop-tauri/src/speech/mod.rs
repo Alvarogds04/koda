@@ -8,8 +8,10 @@
 //! Nothing is downloaded until the user asks for it (`download` is only ever
 //! called from an explicit user action). The files come over HTTPS from
 //! Hugging Face at a pinned revision, are checked against their size and
-//! SHA-256 before they are used, and live in `$XDG_DATA_HOME/abito/Models`
-//! (default `~/.local/share/abito/Models`). From then on everything runs offline.
+//! SHA-256 before they are used, and live in the data folder's `Models`
+//! (`data_dir()`: `$XDG_DATA_HOME/abito` or `~/.local/share/abito` on Linux
+//! and macOS, `%LOCALAPPDATA%\abito` on Windows). From then on everything runs
+//! offline.
 
 pub mod audio;
 pub mod catalog;
@@ -32,6 +34,7 @@ mod wake_tests;
 #[cfg(test)]
 mod koda_word_tests;
 
+use std::ffi::OsString;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -111,14 +114,81 @@ pub static PARAKEET: ModelSet = ModelSet {
     ],
 };
 
-/// Abito's data folder: `$XDG_DATA_HOME/abito` (default `~/.local/share/abito`).
+/// The OS whose data-folder layout is being resolved. Passed in, never read from `cfg!(…)` inside the resolver,
+/// so one test binary covers every OS's rules on the machine that runs it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Os {
+    Linux,
+    MacOs,
+    Windows,
+}
+
+impl Os {
+    pub fn current() -> Self {
+        if cfg!(windows) {
+            Os::Windows
+        } else if cfg!(target_os = "macos") {
+            Os::MacOs
+        } else {
+            Os::Linux
+        }
+    }
+}
+
+/// The data folder cannot be located: the environment has no absolute folder for it. Koda never guesses a
+/// working-directory-relative one (see `data_dir`), so the caller decides what to answer instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NoDataDir;
+
+impl std::fmt::Display for NoDataDir {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "no absolute data folder in the environment (LOCALAPPDATA or USERPROFILE on Windows, XDG_DATA_HOME or \
+             HOME elsewhere)"
+        )
+    }
+}
+
+impl std::error::Error for NoDataDir {}
+
+/// `<base>/abito` for `os`, read through `var` (an environment lookup) instead of the process environment.
+///
+/// - Windows: `%LOCALAPPDATA%\abito`, else `%USERPROFILE%\AppData\Local\abito`. A Windows GUI app gets no `HOME`
+///   (and the transcription helper runs with the daemon's temporary work folder as its working directory), which is
+///   exactly why the Linux chain cannot be reused there: it produced `<work>/.local/share/abito/Models` and every
+///   Minikoda answered `model_missing`.
+/// - Linux and macOS: `$XDG_DATA_HOME/abito`, else `$HOME/.local/share/abito`. The macOS-specific store belongs to
+///   the Mac session (L12); this keeps the folder dictation, the flow store and the helper already use.
+///
+/// A relative folder is refused on every OS: relative to what is never knowable from here.
+pub fn data_dir_for(os: Os, var: impl Fn(&str) -> Option<OsString>) -> Result<PathBuf, NoDataDir> {
+    let absolute = |name: &str| var(name).map(PathBuf::from).filter(|p| p.is_absolute());
+    let base = match os {
+        Os::Windows => absolute("LOCALAPPDATA")
+            .or_else(|| absolute("USERPROFILE").map(|profile| profile.join("AppData").join("Local"))),
+        Os::Linux | Os::MacOs => {
+            absolute("XDG_DATA_HOME").or_else(|| absolute("HOME").map(|home| home.join(".local/share")))
+        }
+    };
+    base.map(|base| base.join("abito")).ok_or(NoDataDir)
+}
+
+/// Abito's data folder for this process, or `NoDataDir`. The transcription helper uses this one: it answers a JSON
+/// error instead of panicking.
+pub fn try_data_dir() -> Result<PathBuf, NoDataDir> {
+    data_dir_for(Os::current(), |name| std::env::var_os(name))
+}
+
+/// Abito's data folder: `$XDG_DATA_HOME/abito` (default `~/.local/share/abito`) on Linux and macOS,
+/// `%LOCALAPPDATA%\abito` (default `%USERPROFILE%\AppData\Local\abito`) on Windows.
+///
+/// Panics when the environment has no absolute folder at all, and only then: silently continuing under a
+/// `<cwd>/.local/share` is the bug this replaced. Callers that must not panic use `try_data_dir`.
 pub fn data_dir() -> PathBuf {
-    let base = std::env::var_os("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute())
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
-        .unwrap_or_else(|| PathBuf::from(".local/share"));
-    base.join("abito")
+    try_data_dir().unwrap_or_else(|error| {
+        panic!("abito: cannot locate the data folder ({error}); refusing to use a path relative to the working directory")
+    })
 }
 
 pub fn models_dir() -> PathBuf {
@@ -674,6 +744,58 @@ mod tests {
             assert_eq!(f.sha256.len(), 64, "{}", f.name);
             assert!(f.url.starts_with("https://huggingface.co/"), "{}", f.name);
         }
+    }
+
+    #[test]
+    fn the_windows_store_is_localappdata_or_userprofile_and_is_never_relative() {
+        // Windows: %LOCALAPPDATA%\abito.
+        let localappdata = |pairs: &[(&'static str, &'static str)]| {
+            let map: std::collections::HashMap<&'static str, OsString> =
+                pairs.iter().map(|(name, value)| (*name, OsString::from(value))).collect();
+            move |name: &str| map.get(name).cloned()
+        };
+        assert_eq!(
+            data_dir_for(Os::Windows, localappdata(&[("LOCALAPPDATA", "/home/u/AppData/Local")])).unwrap(),
+            PathBuf::from("/home/u/AppData/Local/abito")
+        );
+        // No LOCALAPPDATA: %USERPROFILE%\AppData\Local — never the Linux XDG chain, even when HOME is set.
+        assert_eq!(
+            data_dir_for(
+                Os::Windows,
+                localappdata(&[("USERPROFILE", "/home/u"), ("HOME", "/home/u"), ("XDG_DATA_HOME", "/home/u/.local/share")])
+            )
+            .unwrap(),
+            PathBuf::from("/home/u/AppData/Local/abito")
+        );
+        // Neither: an error, not a working-directory path (a Windows GUI app has no HOME at all).
+        assert_eq!(data_dir_for(Os::Windows, localappdata(&[("HOME", "/home/u")])), Err(NoDataDir));
+        assert_eq!(data_dir_for(Os::Windows, localappdata(&[("XDG_DATA_HOME", "/home/u/.local/share")])), Err(NoDataDir));
+        // A relative folder is refused, never joined: the helper's working directory is its temp work folder.
+        assert_eq!(data_dir_for(Os::Windows, localappdata(&[("LOCALAPPDATA", "AppData/Local")])), Err(NoDataDir));
+        assert_eq!(data_dir_for(Os::Windows, localappdata(&[("USERPROFILE", ".")])), Err(NoDataDir));
+    }
+
+    #[test]
+    fn the_linux_and_macos_store_keeps_the_xdg_folders_and_refuses_a_relative_one() {
+        let env = |pairs: &[(&'static str, &'static str)]| {
+            let map: std::collections::HashMap<&'static str, OsString> =
+                pairs.iter().map(|(name, value)| (*name, OsString::from(value))).collect();
+            move |name: &str| map.get(name).cloned()
+        };
+        for os in [Os::Linux, Os::MacOs] {
+            assert_eq!(data_dir_for(os, env(&[("XDG_DATA_HOME", "/x"), ("HOME", "/home/u")])).unwrap(), PathBuf::from("/x/abito"));
+            assert_eq!(data_dir_for(os, env(&[("HOME", "/home/u")])).unwrap(), PathBuf::from("/home/u/.local/share/abito"));
+            assert_eq!(data_dir_for(os, env(&[("XDG_DATA_HOME", ".local/share")])), Err(NoDataDir), "a relative XDG_DATA_HOME is not used");
+            assert_eq!(data_dir_for(os, env(&[])), Err(NoDataDir), "nothing is invented when the environment is empty");
+        }
+    }
+
+    #[test]
+    fn this_machine_resolves_an_absolute_data_folder() {
+        // The real resolver (injected env is covered above): whatever the OS, never `Path::is_relative`.
+        let dir = try_data_dir().expect("the test environment has an absolute data folder (HOME or XDG_DATA_HOME)");
+        assert!(dir.is_absolute(), "{dir:?}");
+        assert!(dir.ends_with("abito"), "{dir:?}");
     }
 
     #[test]

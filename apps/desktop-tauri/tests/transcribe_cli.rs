@@ -50,6 +50,31 @@ fn silent_wav(path: &Path, seconds: usize) {
 }
 
 #[test]
+fn without_a_data_folder_the_helper_answers_model_missing_and_never_uses_a_relative_path() {
+    // The daemon gives this binary its temporary work folder as cwd (transcribe.cjs). Koda must never resolve the
+    // store relative to it: a fake store sitting under `<cwd>/.local/share` has to stay invisible when the
+    // environment names no absolute folder (on Windows a GUI app has no HOME, which is the bug this covers).
+    let d = scratch("nodata");
+    let vad = d.join(".local/share/abito/Models/silero-vad");
+    std::fs::create_dir_all(&vad).unwrap();
+    let file = std::fs::File::create(vad.join("silero_vad.onnx")).unwrap();
+    file.set_len(643_854).unwrap(); // the detector's pinned size: a relative fallback would report it present
+    drop(file);
+    let out = Command::new(BIN)
+        .args(["status"])
+        .env_clear() // no HOME, no XDG_DATA_HOME, no LOCALAPPDATA
+        .current_dir(&d)
+        .output()
+        .expect("run abito-transcribe");
+    let stdout = String::from_utf8(out.stdout.clone()).unwrap();
+    assert_eq!(stdout.lines().count(), 1, "one JSON line: {stdout:?}");
+    let json: serde_json::Value = serde_json::from_str(stdout.trim()).expect("stdout is JSON");
+    assert_eq!((out.status.code(), json["error"].as_str()), (Some(1), Some("model_missing")), "{stdout}");
+    assert_eq!(json["vad"], serde_json::Value::Null, "the store under the working directory is never read");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
 fn a_model_that_is_not_downloaded_is_model_missing_and_nothing_is_fetched() {
     let d = scratch("missing");
     let wav = d.join("a.wav");

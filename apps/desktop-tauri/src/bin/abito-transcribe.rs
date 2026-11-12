@@ -1,6 +1,8 @@
 //! abito-transcribe — K2-13 (S8, S15, S16): batch speech-to-text for the Minikodas, spawned by the daemon with
 //! `shell:false` and a fixed argv. It reuses dictation's sherpa-onnx engine, model catalog, model store
-//! (`$XDG_DATA_HOME/abito/Models`) and Silero VAD; see `abito_island::speech::transcribe` for the contract.
+//! (`data_dir()/Models`: `$XDG_DATA_HOME/abito/Models`, `~/.local/share/abito/Models` on Linux and macOS,
+//! `%LOCALAPPDATA%\abito\Models` on Windows) and Silero VAD; see `abito_island::speech::transcribe` for the
+//! contract.
 //!
 //!   abito-transcribe transcribe [--model ID] [--language L] [--timeout-sec N] [--max-seconds N] <abs.wav>
 //!   abito-transcribe status   [--model ID]   -> {model, present, vad, downloadMb}
@@ -19,8 +21,13 @@ fn print_line(line: &str) {
 }
 
 fn run(args: &[String]) -> Result<String, t::Failure> {
-    let root = speech::models_dir();
-    match t::parse_args(args)? {
+    let command = t::parse_args(args)?;
+    // The store comes from `data_dir`, which refuses a path relative to the working directory (the daemon gives
+    // this binary its temporary work folder as cwd). A missing environment is a JSON error, never a panic.
+    let root = speech::try_data_dir().map(|dir| dir.join("Models")).map_err(|_| {
+        t::Failure::new(t::Code::ModelMissing, "the data folder cannot be located in the environment")
+    })?;
+    match command {
         t::Command::Status { entry } => Ok(serde_json::to_string(&t::status_in(entry, &root)).unwrap_or_default()),
         t::Command::Download { entry } => {
             let progress = |f: f64| {
