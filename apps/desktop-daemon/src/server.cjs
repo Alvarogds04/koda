@@ -55,7 +55,7 @@ const WIN_HANDSHAKE_MS = 2000;
  * a process (agent_connect, connectors_list, agents_list). Stopping or reading
  * work (abort, agent_disconnect, every read-only query) stays allowed.
  */
-const PAUSED_REFUSED = new Set(["send", "steer", "new_conversation", "agent_connect", "hooks_install", "hooks_remove", "connectors_list", "agents_list"]);
+const PAUSED_REFUSED = new Set(["send", "steer", "new_conversation", "agent_connect", "hooks_install", "hooks_remove", "connectors_list", "agents_list", "minikoda_launch"]);
 
 const uid = () => (typeof process.getuid === "function" ? process.getuid() : undefined);
 
@@ -138,6 +138,7 @@ class IslandServer {
 	 * @param {object} [options.connectors] {snapshot(): Promise<{catalog, connectors}>}; read-only, persisted data
 	 * @param {object} [options.sessions] {snapshot(): Promise<{sessions, truncated}>}; read-only /proc discovery (#360)
 	 * @param {object} [options.connectorsControl] live connectors control adapter; reachable ONLY through this authenticated channel
+	 * @param {object} [options.minikodas] K2-13 Minikodas facade (minikodas/index.cjs; EventEmitter: changed, hoy, approved). Reachable ONLY via this channel.
 	 * @param {object} [options.agents]     {list(), connect(id, planHash), disconnect(id)} (AgentsManager-like; EventEmitter 'change' = working-state push). Reachable ONLY via this channel.
 	 * @param {object} [options.settings]  {get(): {hotkey}, setHotkey(value)}; a ConfigError from setHotkey -> bad_request
 	 * @param {boolean} [options.paused]   #379 initial global pause state (restored from config at daemon boot)
@@ -160,6 +161,7 @@ class IslandServer {
 		this.sessions = options.sessions;
 		this.connectorsControl = options.connectorsControl;
 		this.agents = options.agents;
+		this.minikodas = options.minikodas; // K2-13
 		this.agentHooks = options.agentHooks; // #361 {preview(), install(id, hash), remove(id, hash)}
 		this.paused = options.paused === true; // #379 global pause switch; admission guards in handle()
 		this.promptDecorator = options.promptDecorator; // #386 pending rotation summary (no decorator = identity)
@@ -294,6 +296,16 @@ class IslandServer {
 		on(this.accounts, "auth_done", (d) => {
 			this.trackAuth(d?.flowId, "done");
 			this.broadcast(P.authDoneFrame(d));
+		});
+		// K2-13: every client sees the same Minikodas and «Hoy» (built from the stores, never from the model).
+		on(this.minikodas, "changed", () => {
+			try { this.broadcast(P.minikodasFrame(this.minikodas.list())); } catch { this.log("minikodas change not sent"); }
+		});
+		on(this.minikodas, "hoy", () => {
+			try { this.broadcast(P.hoyFrame(this.minikodas.hoyList())); } catch { this.log("hoy change not sent"); }
+		});
+		on(this.minikodas, "approved", (entry) => {
+			try { this.broadcast(P.hoyApprovedFrame(entry)); } catch { this.log("hoy approval not sent"); }
 		});
 		on(this.connectorsControl, "pending", (items) => {
 			try { this.broadcast(P.pendingFrame({ items })); } catch { this.log("connector pending not sent"); }
@@ -622,6 +634,8 @@ class IslandServer {
 				// path (admission closes, open asks resolve, the child is recycled, the
 				// session reopens, no replay). Idling pause sends nothing.
 				if (frame.paused && this.state().busy) this.engine?.interruptTurn?.("paused");
+				// K2-13: running Minikodas are cancelled too (each lands in «Hoy» as a failed run, reason paused).
+				if (frame.paused) this.minikodas?.pause?.()?.catch?.(() => this.log("minikodas pause failed"));
 				this.broadcastState();
 				return undefined;
 			}
@@ -950,8 +964,62 @@ class IslandServer {
 				}
 				if (!this.accounts) return fail("unavailable");
 				return run(() => this.accounts.cancel(frame.flowId));
+			// ----- K2-13 Minikodas and «Hoy» -----
+			case "minikodas_list":
+			case "minikoda_get":
+			case "minikoda_create":
+			case "minikoda_approve_create":
+			case "minikoda_delete":
+			case "minikoda_launch":
+			case "hoy_list":
+			case "hoy_approve":
+			case "hoy_reject":
+				if (!this.minikodas) return fail("unavailable");
+				return this.handleMinikodas(frame, reply, fail);
 			default:
 				return fail("bad_request");
+		}
+	}
+
+	/**
+	 * K2-13: Minikodas and «Hoy» verbs. Codes come from closed sets (MinikodaError / inbox results). Lists are
+	 * always rebuilt from the daemon's stores. Approving needs no PIN (L17).
+	 */
+	async handleMinikodas(frame, reply, fail) {
+		const m = this.minikodas;
+		const decided = (out) => {
+			if (!out.ok) return fail(out.code);
+			return reply({ type: "hoy_decided", id: out.item.id, status: out.item.status });
+		};
+		try {
+			switch (frame.type) {
+				case "minikodas_list":
+					return reply(P.minikodasFrame(m.list()));
+				case "minikoda_get":
+					return reply(P.minikodaFrame(m.get(frame.id)));
+				case "minikoda_create":
+					return reply(P.minikodaFrame(await m.createDraft(frame.recipe)));
+				case "minikoda_approve_create":
+					return reply(P.minikodaFrame(await m.approveCreate(frame.id)));
+				case "minikoda_delete":
+					await m.delete(frame.id);
+					return reply({ type: "minikoda_deleted", id: frame.id });
+				case "minikoda_launch": {
+					const out = await m.launch(frame.id);
+					return reply({ type: "minikoda_launched", id: frame.id, started: out.started === true, ...(out.started ? {} : { reason: ["running", "busy", "paused", "stopped"].includes(out.reason) ? out.reason : "busy" }) });
+				}
+				case "hoy_list":
+					return reply(P.hoyFrame(m.hoyList()));
+				case "hoy_approve":
+					return decided(await m.approve(frame.id));
+				case "hoy_reject":
+					return decided(await m.reject(frame.id));
+				default:
+					return fail("bad_request");
+			}
+		} catch (error) {
+			this.log(`command ${frame.type} failed`);
+			return fail(error?.name === "MinikodaError" ? error.code : "failed");
 		}
 	}
 

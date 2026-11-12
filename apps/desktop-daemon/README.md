@@ -491,3 +491,56 @@ claude-code, codex and statusline (delegated to the AgentsManager) plus gemini-c
 (`src/agent-hooks.cjs`, self-owned marker-tagged artifacts, notify-only). Preview is read-only; install and
 remove require the exact `plan_hash` shown, back everything up first and refuse foreign or unsafe targets.
 Frames, invariants, sources and UNVERIFIED items: [`../../tests/PROTOCOL.md`](../../tests/PROTOCOL.md).
+
+## Minikodas (K2-13)
+
+A Minikoda is a small helper that runs a recipe on its own. Code: `src/minikodas/`.
+
+**Recipe** (`recipe.cjs`, strict validation; anything unknown or out of range is refused, never repaired):
+`{id, name, when, reads, kit, prompt, model, never}`.
+- `when`: exactly one of `{manual: true}`, `{everyMs}` (≥ 60 s) or `{at: ISO date}` (future, ≤ 1 year).
+- `reads`: `{source}`, a descriptor. Before each run the daemon prepares the source's content and hands it to the Minikoda only through `source_read`. Today the content comes from `<island>/minikodas/sources/<id>.txt`; Telegram reading arrives with K2-13 T1b.
+- `kit`: names from the closed catalogue `source_read`, `inbox_propose`.
+- `prompt`: the Minikoda's specialised prompt. It is appended after Koda's fixed base rules.
+- `model`: `{provider, id, accountId}`. It must come from an account Koda already has (`accounts/`): the account must exist, be signed in, serve that provider and offer that model. A provider served by two accounts needs `accountId`. Without a choice, the model is the chat's current model (the active profile).
+- `never`: must be exactly `buy, sell, send, delete`.
+
+**Store** (`service.cjs`): `<island>/minikodas/recipes.json` (0600, dir 0700). Creating a Minikoda takes two steps. `createDraft` stores a validated draft that never runs; only `approveCreate` makes it `active` and arms its schedule (S1: «solo lo crea si lo apruebo»).
+
+**Summary of a draft** (`summary.cjs`, S1/S7): `createDraft`'s reply and `minikoda_get` of a draft carry `summary {sections: [{key, title, text}], text}`, the plain-language «qué entendió» shown before the user approves: «Cuándo corre» (a mano / cada N minutos u horas / a una hora, in UTC), «Qué lee» (the source descriptor), «Qué hace» (the task text), «Dónde te lo muestra» («Hoy»), «Qué nunca hará solo» (the `never` verbs and the fact that such an action waits for approval) and «Con qué modelo» (S7: the account's visible label plus the model id, or «el mismo del chat»). It is deterministic: built only from the validated recipe, with no model call. Every field is one plain line — Unicode format characters (bidi, zero-width), control characters and breaks are stripped — and capped in bytes (512 per section, 3600 for the block). It never carries the accountId, a credential, a path or prompt internals. Getting it activates nothing: only `approveCreate` does. Frames and caps: `docs/PROTOCOL.md` «Minikodas and «Hoy» frames».
+
+**Runner** (`runner.cjs`): every run is a supervised `pi --mode rpc` child (`AgentEngine`) in the Minikoda's own private root, `<island>/minikodas/engines/<id>/`. That root has its own HOME, agent dir, sessions, tmp and workspace. It is never the chat engine's root and never shared between Minikodas. Before each run the chosen model is projected into that agent dir, using the same files profile activation writes for the chat: one credential, the account's `models.json` and the defaults. A custom gateway is served by the guarded custom-provider extension, passed explicitly with `-e` (the reduced profile's `-ne` turns off the auto-loaded `agent/extensions/`). Every run starts a fresh session. The copied `auth.json` is removed after every run, once the write-back below has completed, and when the copy step fails. The only exception is a copy whose write-back failed (see below): it stays in the Minikoda root until it is written back.
+- **Credential copy and write-back (S11, decision «1a»; `credentials.cjs`).**
+  - Copy-in: the run gets the freshest copy of the account's credential. That is the account store's, or the chat's live `agent/auth.json` when the chat's active profile uses the same account and provider and both hold OAuth tokens, the chat's expiring later (the chat refreshes there and saves back to the account only on a profile switch). An API key always comes from the account store.
+  - Lifetime gate (F-B): an OAuth session is copied in only when it outlives the run timeout plus 6 minutes (5 minutes plus a 1-minute margin), so the Minikoda's engine never has to refresh it while the chat may be refreshing the same refresh token. The daemon has no refresh path of its own (the SDK helper only signs in and out), so a session closer to expiry is not copied: the run fails as `model_unavailable` and «Hoy» says «la sesión de <cuenta> vence pronto; abrí el chat para renovarla».
+  - Write-back: the Minikoda's copy is untrusted (its engine could rewrite it). After the run (any outcome) it goes back to the account store and, when the chat's active profile uses that account, to the chat's live `agent/auth.json` only as a refresh of the OAuth token that was copied in. The copied-in credential must be OAuth. The account store, and the chat file when it is targeted, must hold OAuth for that provider now: an API key is never replaced and logout is never undone. The new token must expire strictly later than the copied-in one and than what each side holds now, and at most one year from now. Only `type`, `access`, `refresh`, `expires` and the fields the copied-in credential already had are written.
+  - Locking: every read and write takes the same lock directories the SDK's credential store uses (`<dir>/auth.json.lock`, chat dir first, then account dir) and writes atomically (temp + rename, 0600). The chat engine re-reads `auth.json` when its revision changes, so it picks the new token up on its next request. A leftover profile-switch journal leaves the chat side alone.
+  - Failed write-back (F-C): a write-back that cannot take the lock (20 s) keeps the Minikoda's copy. The kept copy is written back before that Minikoda's next run, when the daemon starts again (runs wait for it) and before a delete. While it still fails, `minikoda_delete` answers `failed` and leaves the Minikoda, its schedule and its copy in place.
+  - Engine stop (F-D): a run's engine gets 20 s to exit after its stdin closes before SIGTERM (SIGKILL 2 s later), so an OAuth refresh in flight (bounded at 15 s by the SDK) can save its rotated token. The engine's turn-recycle SIGKILL (2 s after a cancelled turn) does not apply in practice: the runner calls `stop()` as soon as a turn is cancelled, which cancels the recycle. In a narrow race the engine can settle its cancelled turn before `stop()` runs; it is then killed at once. A refresh in flight at that moment, or one that outlasts the 20 s grace, is lost. The lifetime gate keeps such a refresh from starting in the first place.
+- Reduced profile: `-ne -e src/minikodas/kit-extension.js --no-mcp --no-skills --no-prompt-templates --no-themes --no-context-files --tools <kit> --model <provider>/<id>`, plus `GENTLE_PI_AGENTS=0` in the child env.
+- Closed kit, two layers:
+  - `--tools` = kit, so the model is only shown the kit;
+  - the extension's `tool_call` guard blocks any tool outside `MINIKODA_KIT`.
+  - Tested: `bash` is refused and never runs, and a negative control proves the marker does appear when both layers allow it.
+- The engine command is injectable (`engine: {command, commandArgs, env}`). release/0.2 still spawns plain `pi`. **Gentle Shell (decided, «usamos el motor de gentle shell») plugs in when K2-05 lands its spawning in release/0.2.** Pass the Gentle Shell command the chat engine resolves, keep the same flags, `GENTLE_PI_AGENTS=0` and `--tools` = kit. The PoC measured that `-ne`/`--no-skills` do not remove Gentle's own core, and that only `--tools` keeps its tools away from the model (`odd/evidence/k2-13-poc/gentle-shell-round/`).
+- Runs never overlap per Minikoda (a second launch answers `running`). At most two run at once overall. Every run is bounded by a timeout (default 300 s).
+- A crash, a timeout, a start failure, an unavailable model or a cancelled run (daemon stop, delete, the global pause turning on) is a **failed run**. It lands in «Hoy» as an `error` item and in `lastRun`. It is never silent and never respawned. The proposals the kit parked before the failure are stored as pending in «Hoy» too, and the error item says so (S13: «3 si guardalo como pendiente, aunque avise al usuario que fallo»).
+- Proposal `target`: one plain line. Unicode format characters (bidi overrides such as U+202E, zero-width characters) are stripped; a line break or control character is refused by the kit and discarded by the runner.
+- Proposals are read only from the file the kit wrote (re-validated: buy/sell/send). The model's text is never parsed for proposals.
+
+**Scheduler** (`scheduler.cjs`): Koda's own timer.
+- `everyMs` repeats; `at` fires once and is marked `firedAt`, so a restart never fires it again; `manual` never fires by itself.
+- A tick that lands while the previous run is still going is skipped, never queued.
+- The global pause (#379) skips ticks and refuses launches; turning it on also cancels the Minikodas that are running (failed runs, reason `paused`).
+- A one-time `at` run that is due while paused, busy or already running never comes back, so it lands in «Hoy» as an `error` item («no se hizo»). Repeating ticks just skip.
+
+**Known limits**:
+- The agent runs as the same OS user as the daemon. The kit cannot reach the «Hoy» store or the daemon token: no kit tool reads files, and those live outside the engine root. Any same-uid process can still read them, though. Running the agent as another OS user is K2-14 criterion 3.
+- Left for later (verifier mwdat8g0, not implemented): `hoy_approve` is still accepted while the global pause is on.
+- Tests use `test/fixtures/minikodas/fake-pi.cjs`, a fake `pi --mode rpc` that loads the real kit extension and mimics Pi's tool selection and `tool_call` blocking. The real-Pi proof of the two layers is the PoC (`odd/evidence/k2-13-poc/poc-minikodas/evidence/`).
+
+**«Hoy» and approve-later** (`hoy.cjs`, frames in `docs/PROTOCOL.md` «Minikodas and «Hoy» frames»):
+- `<island>/minikodas/hoy/hoy.jsonl` holds every item `{id, minikoda, kind: result|proposal|error, text, action?, target?, status: pending|approved|rejected, createdAt}`. The list is built from this file only, never from the model's text.
+- A proposal executes only on `hoy_approve {id}`. In K2-13 «execute» means: mark the item `approved`, append one line to `approved.jsonl` and broadcast `hoy_approved`. **There is no real buy, sell or send integration yet.**
+- No PIN (human decision L17): `hoy_approve {id}` approves. Approvals run one at a time, so a proposal executes exactly once even when two approvals arrive together (a second approve is refused with `not_pending`). The decision is persisted before the execution record. Reject never executes.
+- Same-uid limit: any process of the user that holds the session token (`runtime/session.json`, readable by every same-uid process) can approve a proposal. A separate OS user for the agent is K2-14 criterion 3.

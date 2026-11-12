@@ -15,6 +15,7 @@
 const { SCHEMA: CONNECTORS_SCHEMA, buildCatalog, buildConnectors } = require("./connectors.cjs");
 const { SCHEMA: MCP_IMPORT_SCHEMA, buildFiles, buildServers } = require("./mcp-import.cjs");
 const { SCHEMA: SESSIONS_SCHEMA, buildSessions } = require("./sessions.cjs");
+const { validateRecipe, recipeToJson, ID_PATTERN: MINIKODA_ID } = require("./minikodas/recipe.cjs");
 
 const PROTOCOL = "island-agent/1";
 
@@ -363,10 +364,42 @@ function validateClientFrame(raw) {
 		case "auth_cancel":
 			if (!isString(raw.flowId, 128)) return undefined;
 			return { type: "auth_cancel", flowId: raw.flowId };
+		// ----- K2-13 Minikodas and «Hoy» -----
+		case "minikodas_list":
+		case "hoy_list":
+			return { type: raw.type };
+		case "minikoda_get":
+		case "minikoda_approve_create":
+		case "minikoda_delete":
+		case "minikoda_launch":
+			if (!isMinikodaId(raw.id)) return undefined;
+			return { type: raw.type, id: raw.id };
+		case "minikoda_create": {
+			// Shape only (the daemon re-validates with its own minimum period, the clock and the accounts).
+			let recipe;
+			try {
+				recipe = validateRecipe(raw.recipe, { draft: true, minEveryMs: 1 });
+			} catch {
+				return undefined;
+			}
+			const out = { name: recipe.name, when: { ...recipe.when }, reads: { ...recipe.reads }, kit: [...recipe.kit], prompt: recipe.prompt, never: [...recipe.never] };
+			if (recipe.id !== undefined) out.id = recipe.id;
+			if (recipe.model !== undefined) out.model = { ...recipe.model };
+			return { type: "minikoda_create", recipe: out };
+		}
+		case "hoy_approve":
+		case "hoy_reject":
+			// No PIN (L17): only the id travels; any other field (a stray `pin` included) is dropped.
+			if (!isHoyId(raw.id)) return undefined;
+			return { type: raw.type, id: raw.id };
 		default:
 			return undefined;
 	}
 }
+
+const HOY_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const isMinikodaId = (v) => typeof v === "string" && MINIKODA_ID.test(v);
+const isHoyId = (v) => typeof v === "string" && HOY_ID.test(v);
 
 /**
  * Parses one LF-delimited line into a frame. `hello` is only accepted when
@@ -400,6 +433,9 @@ function encodeServerFrame(frame, seq) {
 const EMITTED_ERROR_CODES = new Set([
 	"bad_request", "busy", "not_busy", "unavailable", "rate_limited", "unknown_ask", "paused", "failed",
 	"unknown_proposal", "digest_mismatch", "needs_setup", "signin_failed", "store_not_private",
+	// K2-13 Minikodas and «Hoy»
+	"unknown_minikoda", "not_active", "not_pending", "exists", "limit", "model_unavailable",
+	"unknown_item",
 ]);
 // Recognized by the host's broader enum, but collapsed to stale/failed before H2c can emit them.
 const RESERVED_CONNECTOR_ERROR_CODES = new Set(["already_decided", "session_mismatch", "pending_full"]);
@@ -686,6 +722,117 @@ function hooksFrame(data) {
 	return frame;
 }
 
+// ----- K2-13 Minikodas and «Hoy» frames -----------------------------------------------------------
+
+// maxHoyFrameBytes: the island refuses lines over 256 KiB (agentclient.rs); leave room for `seq` and the LF.
+const MINIKODAS_EMIT = Object.freeze({ maxMinikodas: 32, maxHoyItems: 100, maxHoyTextChars: 4000, maxHoyFrameBytes: 200 * 1024 });
+// The plain-language summary of a DRAFT (src/minikodas/summary.cjs): fixed sections, one plain line each.
+const MINIKODA_SUMMARY = Object.freeze({ maxSections: 8, maxTitleChars: 40, maxSectionBytes: 512, maxTextBytes: 3600 });
+const SUMMARY_SECTION_KEYS = Object.freeze(["when", "reads", "does", "shows", "never", "model"]);
+/** A summary section is exactly one plain line: no control, format (bidi, zero-width), separator or surrogate. */
+const SUMMARY_FORBIDDEN = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Cs}]/u;
+/** The whole summary is the same, line by line: only LF separates the sections. */
+const SUMMARY_FORBIDDEN_BLOCK = /[\u0000-\u0009\u000b-\u001f\u007f-\u009f\p{Cf}\p{Zl}\p{Zp}\p{Cs}]/u;
+const RUN_OUTCOMES = new Set(["done", "failed"]);
+const HOY_KINDS = new Set(["result", "proposal", "error"]);
+const HOY_STATUSES = new Set(["pending", "approved", "rejected"]);
+const PROPOSAL_ACTIONS_EMIT = new Set(["buy", "sell", "send"]);
+const minikodasFail = () => {
+	throw new Error("minikodas frame invalid");
+};
+
+/**
+ * The draft's summary `{sections: [{key, title, text}], text}`: fixed keys, one plain line per field, capped by
+ * count and by bytes. A summary that is off-contract fails the frame; it is never repaired or truncated.
+ */
+function summaryDto(summary) {
+	if (!isObject(summary)) minikodasFail();
+	const extra = Object.keys(summary).filter((k) => k !== "sections" && k !== "text");
+	if (extra.length) minikodasFail();
+	if (!Array.isArray(summary.sections) || summary.sections.length === 0 || summary.sections.length > MINIKODA_SUMMARY.maxSections) minikodasFail();
+	if (typeof summary.text !== "string" || summary.text === "" || Buffer.byteLength(summary.text) > MINIKODA_SUMMARY.maxTextBytes || SUMMARY_FORBIDDEN_BLOCK.test(summary.text)) minikodasFail();
+	const sections = summary.sections.map((s) => {
+		if (!isObject(s) || Object.keys(s).some((k) => !["key", "title", "text"].includes(k))) minikodasFail();
+		if (!SUMMARY_SECTION_KEYS.includes(s.key)) minikodasFail();
+		if (typeof s.title !== "string" || s.title === "" || s.title.length > MINIKODA_SUMMARY.maxTitleChars || SUMMARY_FORBIDDEN.test(s.title)) minikodasFail();
+		if (typeof s.text !== "string" || s.text === "" || Buffer.byteLength(s.text) > MINIKODA_SUMMARY.maxSectionBytes || SUMMARY_FORBIDDEN.test(s.text)) minikodasFail();
+		return { key: s.key, title: s.title, text: s.text };
+	});
+	return { sections, text: summary.text };
+}
+
+/** One Minikoda, rebuilt through the recipe validator. `withPrompt` only for minikoda_get / create replies. */
+function minikodaDto(m, withPrompt) {
+	if (!isObject(m) || (m.status !== "draft" && m.status !== "active")) minikodasFail();
+	let r;
+	try {
+		r = recipeToJson(validateRecipe({ id: m.id, name: m.name, when: m.when, reads: m.reads, kit: m.kit, prompt: typeof m.prompt === "string" ? m.prompt : "-", model: m.model, never: m.never }, { minEveryMs: 1 }));
+	} catch {
+		minikodasFail();
+	}
+	const out = { id: r.id, name: r.name, when: r.when, reads: r.reads, kit: r.kit, model: r.model, never: r.never, status: m.status, running: m.running === true, createdAt: clip(m.createdAt, 40) };
+	if (withPrompt) {
+		if (typeof m.prompt !== "string") minikodasFail();
+		out.prompt = r.prompt;
+	}
+	// Only a draft carries its summary: it is the approval preview (S1) and never a stored field.
+	if (m.summary !== undefined) {
+		if (m.status !== "draft") minikodasFail();
+		out.summary = summaryDto(m.summary);
+	}
+	if (isObject(m.lastRun) && RUN_OUTCOMES.has(m.lastRun.outcome)) {
+		out.lastRun = { at: clip(m.lastRun.at, 40), outcome: m.lastRun.outcome, ...(typeof m.lastRun.reason === "string" ? { reason: clip(m.lastRun.reason, 32) } : {}) };
+	}
+	return out;
+}
+
+/** Reply/broadcast `minikodas`: the stored Minikodas (no prompts). THROWS on invalid data (the server answers failed). */
+function minikodasFrame(items) {
+	if (!Array.isArray(items) || items.length > MINIKODAS_EMIT.maxMinikodas) minikodasFail();
+	return { type: "minikodas", minikodas: items.map((m) => minikodaDto(m, false)) };
+}
+
+/** Reply to minikoda_get / minikoda_create / minikoda_approve_create: one Minikoda with its prompt. */
+const minikodaFrame = (m) => ({ type: "minikoda", minikoda: minikodaDto(m, true) });
+
+/**
+ * Reply/broadcast `hoy`: built ONLY from the stored items (hoy.cjs), field by field. Pending proposals first,
+ * then the newest items, at most MINIKODAS_EMIT.maxHoyItems (`truncated` says when some were left out).
+ */
+function hoyFrame(items) {
+	if (!Array.isArray(items)) minikodasFail();
+	const rows = items.map((i) => {
+		if (!isObject(i) || !HOY_KINDS.has(i.kind) || !HOY_STATUSES.has(i.status) || typeof i.id !== "string" || !HOY_ID.test(i.id) || !isMinikodaId(i.minikoda)) minikodasFail();
+		const out = { id: i.id, minikoda: i.minikoda, kind: i.kind, status: i.status, text: clip(i.text, MINIKODAS_EMIT.maxHoyTextChars), createdAt: clip(i.createdAt, 40) };
+		if (i.kind === "proposal") {
+			if (!PROPOSAL_ACTIONS_EMIT.has(i.action)) minikodasFail();
+			out.action = i.action;
+			out.target = clip(i.target, 200);
+		}
+		if (typeof i.decidedAt === "string") out.decidedAt = clip(i.decidedAt, 40);
+		return out;
+	});
+	const pending = rows.filter((r) => r.kind === "proposal" && r.status === "pending").reverse();
+	const rest = rows.filter((r) => !(r.kind === "proposal" && r.status === "pending")).reverse();
+	const ordered = [...pending, ...rest];
+	// Bounded by count AND by bytes: items are kept in order while the frame stays under maxHoyFrameBytes.
+	const kept = [];
+	let bytes = Buffer.byteLength(JSON.stringify({ type: "hoy", items: [], truncated: true, seq: Number.MAX_SAFE_INTEGER }));
+	for (const row of ordered.slice(0, MINIKODAS_EMIT.maxHoyItems)) {
+		const size = Buffer.byteLength(JSON.stringify(row)) + 1; // + the comma
+		if (bytes + size > MINIKODAS_EMIT.maxHoyFrameBytes) break;
+		bytes += size;
+		kept.push(row);
+	}
+	return { type: "hoy", items: kept, truncated: kept.length < ordered.length };
+}
+
+/** Broadcast after an approved proposal was executed (K2-13: recorded only; no real integration yet). */
+function hoyApprovedFrame(e) {
+	if (!isObject(e) || typeof e.itemId !== "string" || !HOY_ID.test(e.itemId) || !isMinikodaId(e.minikoda) || !PROPOSAL_ACTIONS_EMIT.has(e.action)) minikodasFail();
+	return { type: "hoy_approved", id: e.itemId, minikoda: e.minikoda, action: e.action, target: clip(e.target, 200), executedAt: clip(e.executedAt, 40) };
+}
+
 const list = (items, fn, max = 500) => (Array.isArray(items) ? items.slice(0, max).map(fn) : []);
 
 const accountsFrame = (items) => ({ type: "accounts", accounts: list(items, accountDto) });
@@ -895,6 +1042,11 @@ module.exports = {
 	MCP_IMPORT_EMIT,
 	SESSIONS_EMIT,
 	accountsFrame,
+	minikodasFrame,
+	minikodaFrame,
+	hoyFrame,
+	hoyApprovedFrame,
+	MINIKODAS_EMIT,
 	providersFrame,
 	modelsFrame,
 	profilesFrame,

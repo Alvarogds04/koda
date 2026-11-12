@@ -175,7 +175,7 @@ if [ "$UNINSTALL" -eq 1 ]; then
   elif [ -L "$PREFIX/runtime" ]; then
     note "Kept $PREFIX/runtime: it is a symlink, not ours to remove."
   fi
-  rmdir "$PREFIX/desktop-daemon/src" "$PREFIX/desktop-daemon" "$PREFIX/desktop-harness/bin" "$PREFIX/desktop-harness/src" "$PREFIX/desktop-harness" "$PREFIX/desktop-pi" "$PREFIX" 2>/dev/null || true
+  rmdir "$PREFIX/desktop-daemon/src/minikodas" "$PREFIX/desktop-daemon/src" "$PREFIX/desktop-daemon" "$PREFIX/desktop-harness/bin" "$PREFIX/desktop-harness/src" "$PREFIX/desktop-harness" "$PREFIX/desktop-pi" "$PREFIX" 2>/dev/null || true
   refresh_desktop_db
   if [ -n "$removed" ]; then note "Removed:$removed"; else note "Nothing to remove (not installed under $PREFIX)."; fi
   if [ -d "$PREFIX" ]; then note "Kept $PREFIX: it still holds files that are not ours."; fi

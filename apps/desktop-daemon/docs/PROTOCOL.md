@@ -73,8 +73,9 @@ daemon admits nothing new:
   and `agent_connect`, `connectors_list`, `agents_list` (each spawns a process: a tool/connector call).
 - STILL ALLOWED: `abort` and `agent_disconnect` (stopping work is always possible), every read-only query
   (`status`, `accounts_list`, `providers_list`, `models_list`, `profiles_list`, `settings_get`, `mcp_import_preview`,
-  `agents_list` while unpaused, `auth_state`), and all account/profile/settings/auth verbs. Scheduled tasks have no
-  admission path in the daemon yet; when one exists it must honor this switch.
+  `agents_list` while unpaused, `auth_state`), and all account/profile/settings/auth verbs. K2-13 Minikodas honor it:
+  `minikoda_launch` is refused with `paused`, scheduled ticks are skipped, and turning the pause on cancels the
+  Minikodas that are running (see «Minikodas and «Hoy» frames»).
 - In-flight work is interrupted at the next safe point (#378): pausing while a turn is active cancels the turn
   through the engine's cancellation path (reason `paused`): admission closes, open asks resolve, one sanitized
   warning `toast` explains the pause ("La pausa interrumpió el turno del agente."), the child is recycled and the
@@ -559,3 +560,54 @@ Only one setup flow may be active. Catalog setup has at most eight fields; promp
 The error enum also retains existing codes such as `not_busy` and `unknown_ask`; error strings and raw host detail are never sent.
 
 **Grave same-UID note (next to the agents invariant).** `connectors_approve` is a privileged command reachable only through the authenticated island channel (not an MCP/engine tool, not a CLI); but the channel token lives in `<island>/runtime/session.json` (0600) and the Abito engine agent, Claude Code and Codex run as the same user and can read it: an approval card the agent can click is NOT a human gate. This matters MORE for approvals than for agents. Closing it needs the daemon launched by the island with an inherited socket (security follow-up, not done).
+
+## Minikodas and «Hoy» frames (additive, K2-13)
+
+Implementation: `src/protocol.cjs` (allowlist and DTOs), `src/server.cjs` (`handleMinikodas`), `src/minikodas/` (service, runner, kit, scheduler, «Hoy»). Without a Minikodas service every verb answers `unavailable`.
+
+### Client → server
+
+| type | fields | reply |
+| --- | --- | --- |
+| `minikodas_list` | – | `minikodas` (no prompts) |
+| `minikoda_get` | `id` | `minikoda` (with prompt) |
+| `minikoda_create` | `recipe{id?, name, when, reads{source}, kit[], prompt, model?{provider, id, accountId?}, never[]}` | `minikoda` with `status: "draft"`; broadcast `minikodas` |
+| `minikoda_approve_create` | `id` | `minikoda` with `status: "active"` (the schedule is armed); broadcast `minikodas` |
+| `minikoda_delete` | `id` | `minikoda_deleted{id}`; broadcast `minikodas` (its run is cancelled, its engine root removed; «Hoy» items stay). `failed` when a refreshed credential kept in its root still cannot be written back: the Minikoda stays (README «Minikodas», S11) |
+| `minikoda_launch` | `id` | `minikoda_launched{id, started, reason?: running\|busy\|paused\|stopped}`; the run lands later as a `hoy` broadcast. Refused with `paused` while the global pause is on |
+| `hoy_list` | – | `hoy` |
+| `hoy_approve` | `id` (uuid) | `hoy_decided{id, status: "approved"}` and ONE broadcast `hoy_approved`; or `error` (`unknown_item`, `not_pending`) |
+| `hoy_reject` | `id` | `hoy_decided{id, status: "rejected"}`; never executes |
+
+`id` of a Minikoda: `[a-z0-9][a-z0-9-]{0,39}`. A recipe is validated twice: shape in `protocol.cjs`, then fully in the daemon (minimum period 60 s, `at` in the future, model against the configured accounts). A `kit` outside `source_read, inbox_propose`, a `never` other than exactly `buy, sell, send, delete`, or any unknown field is `bad_request`, and the store is left unchanged.
+
+### Server → client
+
+| type | fields |
+| --- | --- |
+| `minikodas` | `minikodas[]` of `{id, name, when, reads, kit, model, never, status: draft\|active, running, createdAt, lastRun?{at, outcome: done\|failed, reason?}}`; a draft also carries `summary` |
+| `minikoda` | `minikoda` = the same plus `prompt`, and `summary?{sections: [{key, title, text}], text}` on a `draft` |
+| `hoy` | `items[]` of `{id, minikoda, kind: result\|proposal\|error, status: pending\|approved\|rejected, text, createdAt, action?: buy\|sell\|send, target?, decidedAt?}` (pending proposals first, then newest; ≤ 100 items and ≤ 200 KiB per frame, below the island's 256 KiB line limit), `truncated` (true when items were left out by either bound) |
+| `hoy_approved` | `id, minikoda, action, target, executedAt`: broadcast once per executed approval |
+| `hoy_decided` | `id, status` |
+| `minikoda_launched`, `minikoda_deleted` | see above |
+
+New error codes: `unknown_minikoda, not_active, not_pending, exists, limit, model_unavailable, unknown_item`.
+
+### Semantics
+
+- **«Hoy» is built only from what the daemon stored.** It is never built from the Minikoda's text. A proposal exists only if the kit's `inbox_propose` parked it, and the runner re-validated it (buy, sell or send only). Whatever the model claims in its final text stays plain `result` text.
+- **The draft's summary (S1, S7).** `minikoda_create` stores the draft and its reply carries `summary`; `minikoda_get` of a draft carries it too, and the `minikodas` broadcast includes it for drafts. An `active` Minikoda never carries one (it is the approval preview).
+  - Built by the daemon from the VALIDATED recipe alone (`src/minikodas/summary.cjs`), with no model call: the same recipe always renders the same text. Plain Rioplatense Spanish with the fixed sections «Cuándo corre», «Qué lee», «Qué hace», «Dónde te lo muestra», «Qué nunca hará solo» and «Con qué modelo» (S7: «Podemos hacer que el usuario escoja el modelo»).
+  - `key` is one of `when, reads, does, shows, never, model`; `title` is the section's heading; `text` is the whole summary as one block, the six lines joined by LF.
+  - Every field is one plain line: Unicode format characters (Cf: bidi overrides, zero-width), control and separator characters are removed, and lengths are capped in bytes (each section ≤ 512, the block ≤ 3600, at most 8 sections). The daemon fails the frame instead of sending an off-contract summary; nothing is repaired or truncated inside `protocol.cjs`.
+  - It never carries the accountId, a credential, a file path or prompt internals. «Con qué modelo» shows the account's VISIBLE label plus the model id, or «el mismo del chat» when the recipe kept the chat's current model; without a label it falls back to `provider/id`.
+  - Getting the summary changes nothing: `minikoda_approve_create` stays the only way to activate a draft (criterion 1: «solo lo crea si lo apruebo»).
+- **Approve-later.** A proposal executes only on `hoy_approve {id}`. There is no PIN (human decision L17); a `pin` field, like any unknown field, is dropped by the allowlist.
+  - The decision (`approved`) is persisted before the execution record, so a crash between the two can lose an execution, never repeat one.
+  - Approvals run one at a time; a second approval of the same item is `not_pending` and never executes again.
+  - `hoy_reject` never executes.
+- **What «execute» means in K2-13.** The item is marked `approved`, one line is appended to `<island>/minikodas/hoy/approved.jsonl` and `hoy_approved` is broadcast. Real buy, sell or send integrations do not exist yet; nothing leaves the machine.
+- **Failed runs.** A crash, timeout, start failure, unavailable model or cancelled run (daemon stop, delete, or `set_paused{paused:true}`, reason `paused`) lands as a `kind: "error"` item and in `lastRun`. It is never silent. Proposals the kit parked before the failure are stored as `pending` proposals next to it (S13). A one-time scheduled (`at`) run that was due while paused, busy or already running lands as an `error` item too.
+- **Proposal `target`** is one plain line: Unicode format characters (Cf, e.g. U+202E) are stripped, and a line break or control character is refused.
+- **Same-UID limit.** The kit has no tool that reads files. The «Hoy» store and the daemon token live outside every Minikoda engine root, so a Minikoda cannot reach them through its kit. But any process of the same OS user can read them, and any process holding the session token can send `hoy_approve` and approve a proposal. That holds until the agent runs as a separate OS user (K2-14 criterion 3), as with the `connectors_approve` note above.
