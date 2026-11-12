@@ -1809,3 +1809,26 @@ test('HU-015: directOutcome reports only the host answer for THAT agent', () => 
   assert.match(S.directOutcome({ agentsRuntime: 'node_missing' }, 'codex', 'ok').say, /Node\.js/);
   assert.equal(S.directOutcome(null, 'codex', 'ok').ok, false);
 });
+
+// K2-05 boot order = Gentle Dot (ChatSurface: starting/restarting is a wait; the daemon answers first):
+// Ajustes says Koda is starting, never «Sin motor»; «Sin motor» stays for a daemon that is really absent.
+test('K2-05 boot order: a connected daemon whose engine starts or restarts reads «Arrancando…», a wait in Spanish', () => {
+  for (const engine of ['starting', 'restarting']) {
+    const v = S.connectionView({ connection: 'connected', engine });
+    assert.ok(v, engine);
+    assert.equal(v.starting, true, engine);
+    assert.equal(v.word, 'Arrancando…', engine);
+    assert.deepEqual([v.icon, v.tone], ['ring', 'live'], `${engine}: a wait, not an error`);
+    assert.equal(v.aria, 'Arrancando…: Koda está arrancando… abriendo tu conversación.');
+    assert.notEqual(v.word, 'Sin motor');
+    // the vendor Ajustes banner (hub/accounts.js) maps only connecting/no_daemon to a non-error look
+    assert.equal(v.kind, 'no_daemon', 'quiet «○» look in the vendor banner, never its red «✗»');
+  }
+  for (const engine of ['ready', 'stopped', null, undefined, 'nope']) assert.equal(S.connectionView({ connection: 'connected', engine }), null, String(engine));
+  assert.equal(S.connectionView({ connection: 'no_daemon' }).word, 'Sin motor', 'a REAL no_daemon still says so');
+  assert.equal(S.connectionView({ connection: 'no_daemon', engine: 'starting' }).word, 'Sin motor', 'only a connected daemon can report its engine');
+  // the models tab keeps working while the engine starts (accounts and models are the daemon's own)
+  const models = S.modelsTabView({ connection: 'connected', engine: 'starting', providers: [], models: [] }, {});
+  assert.notEqual(models.kind, 'no_engine');
+});
+console.log(`settings-view-check (K2-05 boot order): ${passed} passed`);

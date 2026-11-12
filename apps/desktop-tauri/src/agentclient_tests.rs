@@ -269,6 +269,24 @@ fn an_unknown_or_hostile_error_code_never_reaches_the_page_as_text() {
     assert!(!text.contains("script") && text.len() < 60, "{text}");
 }
 
+// ---- K2-05 boot order (Gentle Dot agent_state): Ajustes knows when the engine is still starting ----
+#[test]
+fn the_engine_status_folds_from_ready_and_agent_state_in_a_closed_vocabulary() {
+    let mut st = ClientState::connected();
+    assert_eq!(serde_json::to_value(&st).unwrap()["engine"], json!(null), "unknown until the daemon says so");
+    st.apply(&json!({"type":"ready","protocol":"island-agent/1","state":{"busy":false,"status":"starting","paused":false}})).unwrap();
+    assert_eq!(serde_json::to_value(&st).unwrap()["engine"], json!("starting"));
+    for status in ["restarting", "ready", "stopped", "starting"] {
+        st.apply(&json!({"type":"agent_state","busy":false,"status":status,"paused":false})).unwrap();
+        assert_eq!(serde_json::to_value(&st).unwrap()["engine"], json!(status));
+    }
+    for bad in [json!("<script>"), json!(7), json!(null), json!("unavailable!")] {
+        st.apply(&json!({"type":"agent_state","status":bad})).unwrap();
+        assert_eq!(serde_json::to_value(&st).unwrap()["engine"], json!(null), "{bad}");
+    }
+    assert_eq!(serde_json::to_value(ClientState::disconnected(Reason::Lost)).unwrap()["engine"], json!(null));
+}
+
 #[test]
 fn a_connection_that_drops_starts_a_clean_error_slate() {
     let mut st = ClientState::disconnected(Reason::Lost);

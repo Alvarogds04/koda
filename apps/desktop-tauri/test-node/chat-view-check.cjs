@@ -841,6 +841,31 @@ test('S2 paging: an earlier page is inserted on top without repainting what is d
 });
 console.log(`chat-view-check (U3 engine shape): ${passed} passed`);
 
+// K2-05 boot order = Gentle Dot (ChatSurface statusText + `ready` excludes starting/restarting): while the
+// engine starts or restarts the chat SAYS so in Spanish, as a wait (live tone, spinner), never «Modelo caído»,
+// and the send stays refused with the same sentence.
+{
+  const A = require('node:assert/strict');
+  const V3 = require(path.join(__dirname, '..', 'frontend', 'chat-view.js'));
+  const boot = (state, message) => ({ turns: [], active_turn: null, queue_note: null, target: null,
+    availability: { state, message }, producer: { pi: state === 'starting' ? 'connected' : 'unavailable', note: 'Chat con el motor de Koda.' } });
+  const starting = boot('starting', 'Koda está arrancando… abriendo tu conversación.');
+  const restarting = boot('restarting', 'Koda se está reiniciando… abriendo tu conversación.');
+  for (const [v, word] of [[starting, 'Arrancando…'], [restarting, 'Reiniciando…']]) {
+    const sv = V3.statusView(v);
+    A.deepEqual([sv.kind, sv.tone, sv.icon, sv.word], ['checking', 'live', 'ring', word], v.availability.state + ' (the existing spinner kind)');
+    A.notEqual(sv.word, 'Modelo caído');
+    A.equal(sv.aria, v.availability.message, 'the full Spanish sentence is the aria');
+    A.equal(V3.statusLine(v), v.availability.message);
+    A.equal(V3.canSend(v, 'hola', false), false, 'sends are refused until the engine is ready');
+    A.equal(V3.sendState(v, 'hola', false).blocked, v.availability.message, 'pressing send says Koda is starting');
+    A.equal(V3.poseFor(v), null, 'a start is not an error pose');
+    A.equal(V3.needsCheck(v), false, 'no local-model check loop while the engine starts');
+  }
+  A.equal(V3.statusView(boot('unavailable', 'El motor de Koda no está disponible todavía.')).word, 'Modelo caído', 'a real outage keeps its word');
+  console.log('chat-view-check: K2-05 boot order passed');
+}
+
 // K2-05 attachments (Gentle Dot): files alone may be sent; a turn's files are one chips row
 {
   const V2 = require(require('node:path').join(__dirname, '..', 'frontend', 'chat-view.js'));

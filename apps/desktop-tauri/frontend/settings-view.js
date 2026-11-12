@@ -55,6 +55,13 @@
       return { kind: 'connecting', word: 'Conectando', icon: 'ring', tone: 'live', aria: 'Conectando con el motor del agente.' };
     }
     const c = state && state.connection;
+    // K2-05 boot order = Gentle Dot (ChatSurface statusText; the daemon answers before its engine is ready):
+    // a connected daemon whose engine starts or restarts is a WAIT said in Spanish, never «Sin motor».
+    // kind `no_daemon` + `starting: true`: the Ajustes banner (vendor hub/accounts.js) gives `no_daemon` its
+    // quiet «○» look and the red «✗» to every other kind; `starting` tells this one apart.
+    if (c === 'connected' && (state.engine === 'starting' || state.engine === 'restarting')) {
+      return { kind: 'no_daemon', starting: true, word: 'Arrancando…', icon: 'ring', tone: 'live', aria: 'Arrancando…: Koda está arrancando… abriendo tu conversación.' };
+    }
     if (c === 'connected') return null;
     const missing = c === 'no_daemon' && state.last_error && state.last_error.code;
     if (missing === 'node_missing' || missing === 'pi_missing') {
@@ -440,7 +447,7 @@
   function modelsTabView(state, chosen) {
     // No engine (or not yet answered) is a wait or a problem in the same words as Conexiones.
     const cv = connectionView(state);
-    if (cv && cv.kind !== 'connecting') return { kind: 'no_engine', word: cv.word, icon: cv.icon, tone: cv.tone, aria: cv.aria, groups: [] };
+    if (cv && cv.kind !== 'connecting' && !cv.starting) return { kind: 'no_engine', word: cv.word, icon: cv.icon, tone: cv.tone, aria: cv.aria, groups: [] };
     if (!state || state.connection !== 'connected') return { kind: 'connecting', word: 'Conectando', icon: 'ring', tone: 'live', aria: 'Conectando con el motor del agente.', groups: [] };
     const store = chosenOf(chosen);
     const models = Array.isArray(state.models) ? state.models : [];

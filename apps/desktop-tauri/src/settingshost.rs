@@ -19,11 +19,14 @@ use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 /// #390 GD027: how long a `restart` waits for the fresh daemon to answer `ready`.
-/// The engine's own boot timeout is 60 s (desktop-daemon/src/runtime.cjs), so this
-/// bound lets the daemon reach its own verdict first; past it the answer is honestly
-/// `ready:false`, never a success. Polling is cheap (a missing session.json fails in
-/// one stat) and bounded — no unbounded wait anywhere.
-const RESTART_WAIT: Duration = Duration::from_secs(62);
+/// K2-05 boot order = Gentle Dot (daemon.ts:470-481): the daemon now publishes its session and
+/// answers `ready` as soon as its server listens — BEFORE its engine starts (the engine's own
+/// boot, up to minutes while it reopens a long conversation, is reported live as
+/// `starting`/`restarting`). So this bound covers only the daemon's pre-listen work (private
+/// memory probe, the optional connector host's 10 s start bound) and is Gentle Dot's
+/// DAEMON_START_TIMEOUT (shell.rs:52, 20 s); past it the answer is honestly `ready:false`, never a
+/// success. Polling is cheap (a missing session.json fails in one stat) and bounded.
+const RESTART_WAIT: Duration = Duration::from_secs(20);
 const RESTART_POLL: Duration = Duration::from_millis(200);
 
 pub struct SettingsHost {
@@ -621,6 +624,9 @@ pub async fn daemon_action(
         let root = island_root(std::env::var("ABITO_ISLAND_DIR").ok().as_deref(), std::env::var("HOME").ok().as_deref())
             .ok_or_else(|| err("no_island_root"))?;
         if action == "restart" {
+            // K2-05 (L51, copy Gentle Dot): like its tray «Restart assistant» (shell.rs:743-745 →
+            // restart_daemon), «Reiniciar» always restarts, even while the engine is starting; the
+            // saved conversation is safe because a failed or cut reopen never writes state.json.
             // The old client (and its reader) go BEFORE its daemon; the fresh one below
             // starts from `no_daemon`, never from a stale `connected`.
             let old = state.settings.agent.lock().expect("agent lock").take();
@@ -723,6 +729,12 @@ mod settings_view_tests {
                 "{verdict}"
             );
         }
+    }
+
+    /// K2-05 boot order: the restart wait is Gentle Dot's DAEMON_START_TIMEOUT (shell.rs:52).
+    #[test]
+    fn the_restart_wait_is_gentle_dots_daemon_start_timeout() {
+        assert_eq!(super::RESTART_WAIT, std::time::Duration::from_secs(20), "Gentle Dot's DAEMON_START_TIMEOUT");
     }
 
     /// #390 fix: the restart answer carries exactly its four keys — no token, pid or path.

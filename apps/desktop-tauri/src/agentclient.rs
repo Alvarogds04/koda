@@ -473,6 +473,10 @@ pub struct ClientState {
     /// #436 T6.5: the engine's `hooks` frame (the read-only hooks preview), folded to a
     /// bounded closed view (null until the engine answers a `hooks_preview` ask).
     hooks: Value,
+    /// K2-05 boot order (Gentle Dot `agent_state`): the engine's status from the daemon's
+    /// `ready`/`agent_state` frames, closed set (`ready|starting|restarting|stopped|unavailable`);
+    /// null until the daemon says so. The daemon answers before its engine is ready.
+    engine: Value,
 }
 
 /// A plan hash from the engine: exactly 64 lowercase hex characters.
@@ -534,6 +538,7 @@ impl ClientState {
             models: Value::Null,
             sessions: Value::Null,
             hooks: Value::Null,
+            engine: Value::Null,
         }
     }
     /// #490: the closed live-sessions view (`{rows, truncated}`, `Null` until the engine answers). The ONE
@@ -569,6 +574,13 @@ impl ClientState {
         let Some(t) = frame.get("type").and_then(Value::as_str) else { return Ok(()) };
         let items = |key: &str| frame.get(key).and_then(Value::as_array).cloned().unwrap_or_default();
         match t {
+            "ready" | "agent_state" => {
+                // K2-05 boot order: `ready` carries the state nested under "state"; `agent_state` flat.
+                let s = frame.get("state").filter(|s| s.is_object()).unwrap_or(frame);
+                self.engine = s.get("status").and_then(Value::as_str)
+                    .filter(|s| matches!(*s, "ready" | "starting" | "restarting" | "stopped" | "unavailable"))
+                    .map(Value::from).unwrap_or(Value::Null);
+            }
             "providers" => {
                 self.providers = items("providers").iter().take(100).map(|p| json!({
                     "id": clip(p, "id", 64), "name": clip(p, "name", 120), "configured": p.get("configured").and_then(Value::as_bool).unwrap_or(false),

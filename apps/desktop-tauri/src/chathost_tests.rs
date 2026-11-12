@@ -332,6 +332,24 @@ fn chathost_the_projection_keeps_the_page_keys_and_turn_shape() {
 }
 
 #[test]
+fn chathost_a_starting_or_restarting_engine_is_a_wait_said_in_spanish_never_a_downed_model() {
+    // K2-05 boot order = Gentle Dot ChatSurface statusText: «Starting the assistant…» /
+    // «The assistant is restarting…» while the daemon already answers.
+    let host = ChatHost::new();
+    let link = FakeLink::new();
+    for (status, state, message) in [
+        ("starting", "starting", "Koda está arrancando… abriendo tu conversación."),
+        ("restarting", "restarting", "Koda se está reiniciando… abriendo tu conversación."),
+    ] {
+        link.frame(json!({"type":"agent_state","busy":false,"status":status,"paused":false}));
+        let v = host.project(&link.view(), T0);
+        assert_eq!(v["availability"], json!({"state": state, "message": message}), "{status}");
+    }
+    link.frame(json!({"type":"agent_state","busy":false,"status":"stopped","paused":false}));
+    assert_eq!(host.project(&link.view(), T0)["availability"]["state"], json!("unavailable"), "a stopped engine is still down");
+}
+
+#[test]
 fn chathost_producer_is_the_real_engine_state_and_never_names_the_engine_vendor() {
     let host = ChatHost::new();
     let off = host.project(&FakeLink::offline().view(), T0);
@@ -341,8 +359,8 @@ fn chathost_producer_is_the_real_engine_state_and_never_names_the_engine_vendor(
     let cases = [
         (json!({"type":"agent_state","busy":false,"status":"ready","paused":false}), "ready", "ready"),
         (json!({"type":"agent_state","busy":true,"status":"ready","paused":false}), "busy", "busy"),
-        (json!({"type":"agent_state","busy":false,"status":"starting","paused":false}), "connected", "unchecked"),
-        (json!({"type":"agent_state","busy":false,"status":"restarting","paused":false}), "unavailable", "unavailable"),
+        (json!({"type":"agent_state","busy":false,"status":"starting","paused":false}), "connected", "starting"),
+        (json!({"type":"agent_state","busy":false,"status":"restarting","paused":false}), "unavailable", "restarting"),
         (json!({"type":"agent_state","busy":false,"status":"stopped","paused":false}), "unavailable", "unavailable"),
         (json!({"type":"agent_state","busy":false,"status":"ready","paused":true}), "ready", "blocked"),
     ];
@@ -357,6 +375,7 @@ fn chathost_producer_is_the_real_engine_state_and_never_names_the_engine_vendor(
     let fresh = ChatState::connected();
     let v = host.project(&serde_json::to_value(&fresh).unwrap(), T0);
     assert_eq!(v["producer"]["pi"], json!("connected"), "connected, no engine status yet");
+    assert_eq!(v["availability"]["state"], json!("starting"), "Gentle Dot's store starts at agentState starting");
     values.push(v);
     for v in values {
         for text in [&v["producer"]["note"], &v["availability"]["message"]] {

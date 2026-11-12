@@ -62,10 +62,15 @@
   // Design 14 (option A): the send disc is grey ONLY when there is nothing to send (empty draft), a turn runs, or a submit is in flight.
   // A model that is not ready no longer greys it out silently: pressing it says why (`blocked`), and canSend() still decides what is sent.
   const BLOCKED = Object.freeze({ unavailable: 'El modelo no está disponible todavía.', blocked: 'El modelo está bloqueado.', unchecked: 'Todavía se está revisando el modelo.' });
+  // K2-05 boot order = Gentle Dot (ChatSurface statusText): the daemon answers while its engine starts or
+  // restarts; that is a WAIT said in Spanish, never «Modelo caído». The host's sentence is the reason.
+  const BOOTING = Object.freeze({ starting: 'Arrancando…', restarting: 'Reiniciando…' });
+  const BOOT_SAY = Object.freeze({ starting: 'Koda está arrancando… abriendo tu conversación.', restarting: 'Koda se está reiniciando… abriendo tu conversación.' });
   function sendState(view, draft, inFlight, files) {
     const empty = !String(draft).trim() && !(files > 0);
     if (empty || inFlight || (view && view.active_turn)) return { disabled: true, blocked: null };
     const a = view && view.availability;
+    if (a && BOOTING[a.state]) return { disabled: false, blocked: a.message || BOOT_SAY[a.state] };
     if (!a || !SENDABLE.has(a.state)) return { disabled: false, blocked: (a && BLOCKED[a.state]) || 'El modelo no está listo todavía.' };
     return { disabled: false, blocked: null };
   }
@@ -114,6 +119,8 @@
     if (state === 'busy') return mk('occupied', 'live', 'clock', 'Ocupado');
     if (state === 'blocked') return mk('blocked', 'red', 'triangle', 'Bloqueado');
     if (state === 'unavailable') return mk('down', 'red', 'triangle', 'Modelo caído');
+    // kind `checking` keeps the page's existing spinner (style.css #chat-state[data-kind="checking"])
+    if (BOOTING[state]) return mk('checking', 'live', 'ring', BOOTING[state]);
     return mk('checking', 'live', 'ring', '');
   }
   // R6 pose for the chat lane, from real state only: a turn thinking -> think,

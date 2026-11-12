@@ -1659,8 +1659,11 @@ fn join_reply(a: &str, b: &str) -> String {
 }
 
 /// `availability` and `producer` from the REAL daemon/engine state. `availability.state`
-/// keeps the page's closed vocabulary (ready/busy/blocked/unavailable/unchecked);
+/// keeps the page's closed vocabulary (ready/busy/blocked/unavailable/starting/restarting);
 /// `producer.pi` is connected/ready/busy/unavailable. No sentence names the engine vendor.
+/// K2-05 boot order = Gentle Dot (store.ts agentState starts at "starting"; ChatSurface
+/// statusText «Starting the assistant…» / «The assistant is restarting…»): an engine that is
+/// starting or restarting is a wait, never a downed model; sends stay refused until ready.
 fn availability_and_producer(chat: &Value) -> (Value, Value) {
     let note = "Chat con el motor de Koda.";
     let pair = |state: &str, message: &str, producer: &str| {
@@ -1672,13 +1675,14 @@ fn availability_and_producer(chat: &Value) -> (Value, Value) {
     let status = chat.pointer("/agent/status").and_then(Value::as_str);
     let paused = chat.pointer("/agent/paused").and_then(Value::as_bool).unwrap_or(false);
     match status {
-        Some("restarting" | "stopped" | "unavailable") => {
-            pair("unavailable", "El motor de Koda se está reiniciando; probá de nuevo en unos segundos.", "unavailable")
+        Some("restarting") => pair("restarting", "Koda se está reiniciando… abriendo tu conversación.", "unavailable"),
+        Some("stopped" | "unavailable") => {
+            pair("unavailable", "El motor de Koda se detuvo; probá de nuevo en unos segundos.", "unavailable")
         }
         Some("ready") if paused => pair("blocked", "El chat está en pausa; reanudalo en Ajustes.", "ready"),
         Some("ready") if chat_busy(chat) => pair("busy", "El motor de Koda está respondiendo.", "busy"),
         Some("ready") => pair("ready", "El motor de Koda está listo.", "ready"),
-        _ => pair("unchecked", "El motor de Koda está arrancando.", "connected"),
+        _ => pair("starting", "Koda está arrancando… abriendo tu conversación.", "connected"),
     }
 }
 
