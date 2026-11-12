@@ -5,13 +5,14 @@
  * account manager (auth.cjs), the profile store (profiles.cjs) and the island
  * server (server.cjs) from `<island>/config.json`.
  *
- * Host handoff: after everything is up, `<island>/runtime/session.json`
- * (0600, atomic) carries `{protocol, endpoint, token, pid, procStart, startedAt}`. The
+ * Host handoff: once the server listens, `<island>/runtime/session.json`
+ * (0600, atomic) carries `{protocol, endpoint, token, pid, procStart, startedAt}` — before
+ * the engine is ready, like Gentle Dot (daemon.ts:470-481): clients read the engine's
+ * "starting"/"restarting" state meanwhile. The
  * token is generated per launch, lives only in memory and that file, and is
  * never logged. The file is removed on stop.
  */
 
-const crypto = require("node:crypto");
 const { EventEmitter } = require("node:events");
 const fs = require("node:fs");
 const net = require("node:net");
@@ -357,7 +358,8 @@ class Daemon extends EventEmitter {
 		this.state = "starting";
 		try {
 			await this.boot();
-			this.state = "running";
+			// A stop() that raced the boot (the engine may still be starting) keeps its verdict.
+			if (this.state === "starting") this.state = "running";
 			return { endpoint: this.endpoint, pid: process.pid };
 		} catch (error) {
 			await this.teardown();
@@ -406,6 +408,10 @@ class Daemon extends EventEmitter {
 			...(this.options.engineOptions ?? {}),
 		});
 		this.engine = engine;
+		// K2-05 boot order = Gentle Dot (config.ts loadConfig → bundledGentleShell): a missing or
+		// broken bundled engine fails the boot here, before anything listens or is published —
+		// the one engine failure that is not retried (it is «Sin motor», not «arrancando»).
+		engine.spawnCommandPrefix();
 		// K2-05 T1c (S5/L11): Koda's memory is ALWAYS private, and the daemon owns
 		// its lifecycle — the port state is confirmed BEFORE the engine spawns, so
 		// cleanup is only ever taken for a port that was empty (a pre-existing
@@ -433,8 +439,6 @@ class Daemon extends EventEmitter {
 				engine.request({ type: "set_thinking_level", level: this.cfg.thinking }).catch(() => this.log("could not apply the thinking default"));
 			}
 		});
-		await engine.start();
-		if (cfg.profile) await this.profiles.select(cfg.profile).catch(() => this.log("could not activate the configured profile"));
 
 		this.connectorHost = undefined;
 		this.connectorHostUnavailable = false;
@@ -534,6 +538,38 @@ class Daemon extends EventEmitter {
 		void this.agents?.removeLegacyRecap?.();
 		// R5: a boot never consumes the interrupted-work record; it is exposed
 		// once through the ready frame and consumed only after interrupted_ack.
+
+		// K2-05 boot order = Gentle Dot (daemon.ts:470-481): the server already listens and the
+		// session is published, so the island's health check and its clients are answered while
+		// the engine starts (they read "starting"/"restarting", sends are refused unavailable).
+		// A failed first start is logged, never fatal: the runtime keeps retrying with its backoff.
+		if (cfg.profile) this.activateProfileWhenReady(cfg.profile);
+		await engine.start().catch((error) => {
+			if (this.state === "stopping" || this.state === "stopped") return;
+			// Koda deviation: a spawn that could not even be prepared (the private identity file
+			// refused) is not retried by the runtime, so the line does not promise a retry.
+			this.log(`agent failed to start: ${error.message}${engine.status === "stopped" ? "" : "; retrying"}`);
+		});
+	}
+
+	/**
+	 * The configured profile is activated the first time the engine is ready (it restarts the
+	 * engine on the profile's model), exactly once per boot. Before K2-05's boot order this ran
+	 * right after an awaited engine start; now the engine may still be starting when boot returns.
+	 */
+	activateProfileWhenReady(profileId) {
+		const engine = this.engine;
+		const activate = () => {
+			if (this.state === "stopping" || this.state === "stopped" || this.engine !== engine) return;
+			this.profiles.select(profileId).catch(() => this.log("could not activate the configured profile"));
+		};
+		if (engine.status === "ready") return activate();
+		const onStatus = ({ state }) => {
+			if (state !== "ready") return;
+			engine.off("status", onStatus);
+			activate();
+		};
+		engine.on("status", onStatus);
 	}
 
 	/**

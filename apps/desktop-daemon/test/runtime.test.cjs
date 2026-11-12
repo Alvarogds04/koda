@@ -419,15 +419,52 @@ test("the default engine command fails closed without the bundled runtime (never
 	assert.equal(engine.status, "stopped");
 });
 
-test("start refuses to run twice and propagates an unspawnable command", async (t) => {
+test("start refuses to run twice and an unspawnable command rejects start and is retried (Gentle Dot)", async (t) => {
 	const { engine } = makeEngine(t);
 	await engine.start();
 	await assert.rejects(() => engine.start(), /cannot start/);
 	await engine.stop();
 
-	const broken = makeEngine(t, { command: "/nonexistent/abito-fake-bin" });
-	await assert.rejects(() => broken.engine.start(), (error) => error instanceof Error);
+	// Gentle Dot (supervisor.ts start/handleClose/scheduleRestart): a spawned engine that never
+	// becomes ready rejects start() for the caller to log, and the restart policy keeps trying.
+	const logs = [];
+	const broken = makeEngine(t, { command: "/nonexistent/abito-fake-bin", log: (line) => logs.push(String(line)) });
+	try {
+		await assert.rejects(() => broken.engine.start(), (error) => error instanceof Error);
+		await waitFor(() => logs.filter((line) => line.startsWith("agent restart failed")).length >= 2);
+		assert.equal(broken.engine.status, "restarting");
+	} finally {
+		await broken.engine.stop();
+	}
 	assert.equal(broken.engine.status, "stopped");
+});
+
+test("start: a first start that fails rejects start() and the engine keeps retrying until it is ready (Gentle Dot)", async (t) => {
+	const gate = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "abito-state-gate-")), "open");
+	t.after(() => fs.rmSync(path.dirname(gate), { recursive: true, force: true }));
+	const { engine, spawnLog } = makeEngine(t, { startTimeoutMs: 150, extraArgs: ["--state-gate", gate] });
+	const statuses = [];
+	engine.on("status", ({ state }) => statuses.push(state));
+	try {
+		await assert.rejects(() => engine.start(), /did not answer get_state/);
+		await waitFor(() => engine.status === "restarting");
+		fs.writeFileSync(gate, "");
+		await waitFor(() => engine.status === "ready");
+		assert.equal(statuses[0], "starting");
+		assert.ok(statuses.includes("restarting"), JSON.stringify(statuses));
+		assert.ok(spawnCount(spawnLog) >= 2, "the failed child was replaced");
+		const state = await engine.request({ type: "get_state" });
+		assert.equal(state.success, true);
+	} finally {
+		await engine.stop();
+	}
+});
+
+test("start: a spawn that cannot even be prepared fails closed and is never retried", async (t) => {
+	const { engine } = makeEngine(t, { command: "gentle-shell" });
+	await assert.rejects(() => engine.start(), /bundled runtime/);
+	await sleep(100);
+	assert.equal(engine.status, "stopped", "no retry is scheduled when nothing was spawned");
 });
 
 test("start refuses an identity target replaced by a symlink and leaves the victim intact", async (t) => {
@@ -543,6 +580,15 @@ function readState(engine) {
 	return JSON.parse(fs.readFileSync(path.join(engine.island.root, "state.json"), "utf8"));
 }
 
+/**
+ * Gentle Dot (daemon.ts:477-481): a first start that fails rejects start() (the daemon logs it)
+ * while the restart policy keeps retrying; resolves once the engine is ready.
+ */
+async function startUntilReady(engine, ms = 10_000) {
+	await engine.start().catch(() => {});
+	await waitFor(() => engine.status === "ready", ms);
+}
+
 /** Boots once to create the saved conversation, stops, and arms the switch script for the next boot. */
 async function savedConversation(t, overrides, script) {
 	const scriptFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "abito-switch-script-")), "switch.txt");
@@ -563,7 +609,8 @@ async function savedConversation(t, overrides, script) {
 test("boot: a failed reopen of the saved conversation never overwrites state.json and is retried", async (t) => {
 	const { engine, saved, readies, cmdLog, spawnLog } = await savedConversation(t, {}, "fail\n");
 	try {
-		await engine.start();
+		await assert.rejects(() => engine.start(), /could not open the session/, "the failed first start is reported to the caller");
+		await waitFor(() => engine.status === "ready");
 		assert.equal(engine.sessionFile, saved, "the chat reopens on the saved conversation");
 		assert.equal(readState(engine).sessionFile, saved, "state.json still names the saved conversation");
 		assert.deepEqual(readies, [saved], "ready is reported once, only on the saved conversation");
@@ -602,7 +649,7 @@ test("boot: a timed-out reopen is retried with backoff until it lands, with no a
 	const persist = engine.persistSession.bind(engine);
 	engine.persistSession = (file) => { persisted.push(file); persist(file); };
 	try {
-		await engine.start();
+		await startUntilReady(engine);
 		assert.equal(engine.sessionFile, saved, "the chat reopens on the saved conversation");
 		assert.equal(readCommands(cmdLog).filter((c) => c.type === "switch_session").length, 5, "four failed reopens, the fifth lands");
 		assert.equal(spawnCount(spawnLog), 6, "every uncertain child is replaced, never reused");
@@ -624,11 +671,11 @@ test("boot: a restart before the first message never loses the saved conversatio
 	// next boot. Gentle Dot never adopts one while the saved conversation can be reopened.
 	const { engine, saved, readies, spawnLog } = await savedConversation(t, { extraArgs: ["--lazy-session-file"] }, "fail\nfail\nfail\nfail\n");
 	try {
-		await engine.start();
+		await startUntilReady(engine);
 		assert.equal(engine.sessionFile, saved, "the first boot reopens the saved conversation");
 		assert.equal(spawnCount(spawnLog), 6, "four failed reopens, each on a fresh child");
 		await engine.stop(); // restart before the first message
-		await engine.start();
+		await startUntilReady(engine);
 		assert.equal(engine.sessionFile, saved, "the next boot reopens it too");
 		assert.deepEqual(readies, [saved, saved]);
 		assert.deepEqual(readState(engine), { sessionFile: saved, chains: {} });

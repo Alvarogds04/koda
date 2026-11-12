@@ -777,11 +777,17 @@ class AgentEngine extends EventEmitter {
 		this.restarting = false;
 		this.restartTimer = undefined;
 		this.initialization = undefined;
-		this.initialStartPending = false;
+		/** Whether start() or stop() was called: before that, "stopped" only means not started yet (Gentle Dot supervisor.launched). */
+		this.wasLaunched = false;
 	}
 
 	get pid() {
 		return this.child?.pid;
+	}
+
+	/** Gentle Dot (supervisor.ts launched): whether start() or stop() was called. */
+	get launched() {
+		return this.wasLaunched;
 	}
 
 	/** The earlier session files of the open chat, oldest first (K2-05 T3 rotation chains). */
@@ -816,13 +822,17 @@ class AgentEngine extends EventEmitter {
 		this.emit("sessions_linked", { sessionFile });
 	}
 
-	/** Ensures the private island, spawns the agent and waits for its first `get_state`. */
+	/**
+	 * Ensures the private island, spawns the agent and waits for its first `get_state`.
+	 * Gentle Dot (supervisor.ts start + daemon.ts:477-481): a spawned engine that fails to
+	 * become ready rejects start() — the daemon logs it — and the restart policy keeps
+	 * retrying with the backoff until one is ready or stop() is called. Only a spawn that
+	 * could not even be prepared (identity file refused, no engine to run) stays stopped.
+	 */
 	async start() {
 		if (this.status !== "stopped") throw new Error(`cannot start from status "${this.status}"`);
 		this.stopping = false;
-		// An initial spawn that never becomes ready surfaces to the caller; only
-		// a child that reached ready is supervised with crash restarts.
-		this.initialStartPending = true;
+		this.wasLaunched = true;
 		this.island = ensureIsland(this.root);
 		// Mark Koda's own engine home as gentle-shell's BEFORE the first spawn
 		// (T2): gentle-shell runs its first-run setup only in a home it created,
@@ -845,30 +855,24 @@ class AgentEngine extends EventEmitter {
 			}
 		}
 		this.setStatus("starting");
+		let initializing;
 		try {
-			await this.spawnAndInitialize();
+			initializing = this.spawnAndInitialize();
 		} catch (error) {
-			this.initialStartPending = false;
-			if (!error?.reopenFailed || this.stopping) {
+			// Nothing was spawned: nothing to retry.
+			this.setStatus("stopped");
+			throw error;
+		}
+		try {
+			await initializing;
+		} catch (error) {
+			if (this.stopping) {
 				this.setStatus("stopped");
 				throw error;
 			}
-			// K2-05 boot reopen = Gentle Dot (daemon.ts:477-481 + supervisor.ts:415-433):
-			// a failed reopen of the saved conversation is logged and retried by the
-			// restart policy — the killed child's close schedules the next spawn with
-			// the backoff, forever, until one reopens it or stop() is called. Koda's
-			// daemon awaits start(), so start() resolves once that happens.
-			this.log(`agent failed to start: ${error.message}; retrying`);
-			const settled = new Promise((resolve) => {
-				const onStatus = ({ state }) => {
-					if (state !== "ready" && state !== "stopped") return;
-					this.off("status", onStatus);
-					resolve();
-				};
-				this.on("status", onStatus);
-			});
+			// A child still closing schedules the next attempt itself (handleClose).
 			if (!this.child) this.scheduleRestart();
-			await settled;
+			throw error;
 		}
 	}
 
@@ -1021,6 +1025,7 @@ class AgentEngine extends EventEmitter {
 	/** Stops the agent, disables crash restarts, and terminates it gracefully then forcibly. */
 	async stop() {
 		this.stopping = true;
+		this.wasLaunched = true;
 		this.clearTurn();
 		this.sessionChange = undefined;
 		this.recoverySessionFile = undefined;
@@ -1111,8 +1116,6 @@ class AgentEngine extends EventEmitter {
 		const child = this.spawnChild();
 		const initialization = { child };
 		this.initialization = initialization;
-		/** Whether this child was asked to reopen the conversation saved in state.json. */
-		let reopening = false;
 		const run = async () => {
 			const state = await this.rawRequest({ type: "get_state" }, this.startTimeoutMs);
 			if (this.child !== child) throw new Error("agent exited during startup");
@@ -1129,7 +1132,6 @@ class AgentEngine extends EventEmitter {
 			if (expected && !this.isOwnedSessionFile(expected)) throw new Error("agent recovery session is unavailable");
 			const current = state?.data?.sessionFile;
 			if (wanted && wanted !== current && this.isOwnedSessionFile(wanted)) {
-				reopening = !expected;
 				// The one deviation from Gentle Dot (30 s): the reopen gets the rotation
 				// switch's budget, requestTimeoutMs, because Windows CI 43025727185 showed
 				// the real engine's switch_session can take longer than 30 s there.
@@ -1146,7 +1148,6 @@ class AgentEngine extends EventEmitter {
 			if (expected && this.sessionFile !== expected) throw new Error("agent recovery session was not confirmed");
 			this.sessionEpoch += 1;
 			this.persistSession(this.sessionFile);
-			this.initialStartPending = false;
 			this.spawnedAt = Date.now();
 			this.recycling = false;
 			this.recoverySessionFile = undefined;
@@ -1159,7 +1160,6 @@ class AgentEngine extends EventEmitter {
 		};
 		initialization.promise = run().catch((error) => {
 			if (this.child === child) child.kill("SIGKILL");
-			if (reopening) error.reopenFailed = true;
 			throw error;
 		}).finally(() => {
 			if (this.initialization === initialization) this.initialization = undefined;
@@ -1328,10 +1328,6 @@ class AgentEngine extends EventEmitter {
 		}
 		if (this.restarting) {
 			this.restarting = false;
-			return;
-		}
-		if (this.initialStartPending) {
-			this.initialStartPending = false;
 			return;
 		}
 		if (this.stopping) {

@@ -2023,6 +2023,75 @@ test("get_history and get_earlier are unavailable without a ready engine or an o
 	await c.wait((f) => f.type === "error" && f.code === "unavailable", 3000);
 });
 
+// K2-05 boot order (Gentle Dot daemon.ts:470-481 + bridge.ts deriveState/whenReady): the daemon
+// listens before its engine is ready, so clients connect while it starts.
+test("a client connecting before the engine was launched reads starting, like Gentle Dot's deriveState", async (t) => {
+	const { endpoint, engine } = await setup(t);
+	engine.status = "stopped";
+	engine.launched = false;
+	const c = await login(t, endpoint);
+	assert.equal(c.frames.find((f) => f.type === "ready").state.status, "starting");
+	c.send({ type: "send", text: "hola", requestId: "r-boot-1" });
+	await c.wait((f) => f.type === "error" && f.code === "unavailable");
+	assert.deepEqual(engine.requests, [], "nothing reaches an engine that is not ready");
+	engine.launched = true;
+	c.send({ type: "status" });
+	await c.wait((f) => f.type === "agent_state" && f.status === "stopped");
+});
+
+test("get_history asked while the engine starts waits and is answered once it is ready (Gentle Dot whenReady)", async (t) => {
+	const { endpoint, engine } = await setup(t);
+	const file = writeChatSession(engine.sessionsDir, "saved.jsonl", [
+		{ type: "message", message: { role: "user", content: "hola" } },
+		{ type: "message", message: { role: "assistant", content: "buenas" } },
+	]);
+	engine.status = "starting";
+	const c = await login(t, endpoint);
+	assert.equal(c.frames.find((f) => f.type === "ready").state.status, "starting");
+	c.send({ type: "get_history" });
+	c.send({ type: "send", text: "hola", requestId: "r-boot-2" });
+	await c.wait((f) => f.type === "error" && f.code === "unavailable");
+	await sleep(80);
+	assert.equal(c.frames.some((f) => f.type === "history"), false, "no page while the engine starts");
+	assert.equal(c.frames.filter((f) => f.type === "error").length, 1, "the history read is not refused");
+	engine.status = "restarting";
+	engine.emit("status", { state: "restarting" });
+	await c.wait((f) => f.type === "agent_state" && f.status === "restarting");
+	engine.sessionFile = file;
+	engine.status = "ready";
+	engine.emit("status", { state: "ready" });
+	const page = await c.wait((f) => f.type === "history");
+	assert.deepEqual(page.messages.map((m) => m.text), ["hola", "buenas"]);
+});
+
+test("get_history waiting for a starting engine is refused unavailable when the engine stops instead", async (t) => {
+	const { endpoint, engine, server } = await setup(t);
+	engine.status = "starting";
+	const c = await login(t, endpoint);
+	c.send({ type: "get_history" });
+	await sleep(40);
+	engine.status = "stopped";
+	engine.launched = true;
+	engine.emit("status", { state: "stopped" });
+	await c.wait((f) => f.type === "error" && f.code === "unavailable");
+	// Many reads while the engine starts share ONE engine listener (no pile-up on the emitter).
+	engine.status = "starting";
+	const before = engine.listenerCount("status");
+	for (let i = 0; i < 20; i += 1) c.send({ type: "get_history" });
+	await waitFor(() => engine.listenerCount("status") === before + 1);
+	await sleep(40);
+	assert.equal(engine.listenerCount("status"), before + 1);
+	engine.status = "stopped";
+	engine.emit("status", { state: "stopped" });
+	await waitFor(() => c.frames.filter((f) => f.type === "error" && f.code === "unavailable").length === 21);
+	assert.equal(engine.listenerCount("status"), before, "the shared wait leaves no listener behind");
+	// A wait still open when the server closes never hangs.
+	engine.status = "starting";
+	c.send({ type: "get_history" });
+	await sleep(40);
+	await server.close();
+});
+
 test("new_conversation is refused conversations_off before any gate: idle, busy and paused; nothing reaches the engine", async (t) => {
 	const store = { paused: false, get() { return store.paused; }, set(value) { store.paused = value; } };
 	const { endpoint, engine } = await setup(t, { pausedStore: store });

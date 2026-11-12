@@ -145,6 +145,103 @@ test("start writes a private session.json, serves the protocol, stop removes it"
 	}
 });
 
+// K2-05 boot order = Gentle Dot (daemon.ts:470-481): the server listens and the session is
+// published BEFORE the engine is ready; clients read "starting"; a first start that fails is
+// logged («agent failed to start: …; retrying») and retried by the runtime, never fatal.
+function gated(extra = {}) {
+	const m = make(extra);
+	m.gate = path.join(m.base, "state-gate");
+	m.daemon.options.engineOptions.commandArgs.push("--state-gate", m.gate);
+	return m;
+}
+
+test("boot order: the session is published and clients are served while the engine starts (Gentle Dot)", async () => {
+	const { daemon, root, gate, logs } = gated();
+	const starting = daemon.start();
+	starting.catch(() => {});
+	try {
+		await waitFor(() => readSession(root) !== undefined, 10000);
+		const session = readSession(root);
+		assert.equal(daemon.engine.status, "starting", "published before the engine is ready");
+		const verdict = await classifySession(root);
+		assert.equal(verdict.ready, true, "the island's health check answers while the engine starts");
+		const { socket, frames } = await connect(session);
+		await waitFor(() => frames.some((f) => f.type === "ready"));
+		assert.equal(frames.find((f) => f.type === "ready").state.status, "starting");
+		socket.write(`${JSON.stringify({ type: "get_history" })}\n`);
+		socket.write(`${JSON.stringify({ type: "send", text: "hola", requestId: "r-boot-3" })}\n`);
+		await waitFor(() => frames.some((f) => f.type === "error" && f.code === "unavailable"));
+		fs.writeFileSync(gate, "");
+		await starting;
+		assert.equal(daemon.engine.status, "ready");
+		await waitFor(() => frames.some((f) => f.type === "agent_state" && f.status === "ready"));
+		await waitFor(() => frames.some((f) => f.type === "history"), 10000);
+		socket.destroy();
+		assert.equal(logs.some((l) => l.includes(session.token)), false, "token must never be logged");
+	} finally {
+		fs.writeFileSync(gate, "");
+		await starting.catch(() => {});
+		await daemon.stop();
+	}
+	assert.equal(fs.existsSync(path.join(root, "runtime", "session.json")), false);
+});
+
+test("boot order: a first engine start that fails keeps the daemon up, is logged and retried until ready (Gentle Dot)", async () => {
+	const { daemon, root, gate, logs, evidence } = gated();
+	daemon.options.engineOptions.startTimeoutMs = 200;
+	try {
+		await daemon.start();
+		assert.ok(readSession(root), "the daemon stays up and keeps its session");
+		assert.ok(logs.some((l) => /^agent failed to start: .*; retrying$/.test(l)), JSON.stringify(logs));
+		assert.ok(["starting", "restarting"].includes(daemon.engine.status), daemon.engine.status);
+		fs.writeFileSync(gate, "");
+		await waitFor(() => daemon.engine.status === "ready", 10000);
+		assert.ok(fs.readFileSync(evidence.spawn, "utf8").split("\n").filter(Boolean).length >= 2, "the failed engine was replaced");
+	} finally {
+		fs.writeFileSync(gate, "");
+		await daemon.stop();
+	}
+});
+
+test("boot order: an engine command that cannot spawn keeps the daemon up and retrying (Gentle Dot)", async () => {
+	const { daemon, root, logs } = make({ options: { engineOptions: { command: path.join(tmp(), "nope"), commandArgs: [], backoffMs: [20], stopTimeoutMs: 200, startTimeoutMs: 300 } } });
+	try {
+		await daemon.start();
+		assert.ok(readSession(root));
+		assert.ok(logs.some((l) => /^agent failed to start: .*; retrying$/.test(l)), JSON.stringify(logs));
+		await waitFor(() => logs.filter((l) => /agent (restart failed|exited unexpectedly)/.test(l)).length >= 2);
+	} finally {
+		await daemon.stop();
+	}
+	assert.equal(fs.existsSync(path.join(root, "runtime", "session.json")), false);
+});
+
+test("boot order: the configured profile is activated once the retried engine becomes ready", async () => {
+	const { daemon, root, gate } = gated();
+	daemon.options.engineOptions.startTimeoutMs = 200;
+	fs.mkdirSync(root, { recursive: true, mode: 0o700 });
+	writePrivateFile(path.join(root, "config.json"), JSON.stringify({ profile: "work" }));
+	const selected = [];
+	try {
+		await daemon.start();
+		daemon.profiles.select = async (id) => { selected.push([id, daemon.engine.status]); };
+		assert.deepEqual(selected, []);
+		fs.writeFileSync(gate, "");
+		await waitFor(() => selected.length === 1, 10000);
+		assert.deepEqual(selected, [["work", "ready"]]);
+	} finally {
+		fs.writeFileSync(gate, "");
+		await daemon.stop();
+	}
+});
+
+test("boot order: a missing bundled engine still fails the boot before anything is published (Gentle Dot loadConfig)", async () => {
+	const { daemon, root } = make({ options: { engineOptions: { command: "gentle-shell", commandArgs: [], backoffMs: [20], stopTimeoutMs: 200, startTimeoutMs: 300 } } });
+	await assert.rejects(() => daemon.start(), /bundled runtime/);
+	assert.equal(fs.existsSync(path.join(root, "runtime", "session.json")), false);
+	assert.equal(daemon.memory, undefined, "no private memory was touched");
+});
+
 test("each launch generates a fresh token; double start is refused", async () => {
 	const a = make();
 	await a.daemon.start();
@@ -524,7 +621,9 @@ test("MCP projection: cleanupSync deletes it synchronously (process exit path)",
 });
 
 test("MCP projection: a boot that fails after writing it cleans it up", async () => {
-	const m = withMcp({ options: { engineOptions: { command: path.join(tmp(), "nope"), commandArgs: [], backoffMs: [20], stopTimeoutMs: 200, startTimeoutMs: 300 } } });
+	// K2-05 boot order: an unspawnable command no longer fails the boot (Gentle Dot retries it);
+	// a missing bundled engine still does, after the projection was written.
+	const m = withMcp({ options: { engineOptions: { command: "gentle-shell", commandArgs: [], backoffMs: [20], stopTimeoutMs: 200, startTimeoutMs: 300 } } });
 	await assert.rejects(() => m.daemon.start());
 	assert.equal(fs.existsSync(m.file), false);
 	assert.equal(fs.existsSync(path.join(m.root, "runtime", "session.json")), false);

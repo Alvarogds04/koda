@@ -28,7 +28,7 @@ Implementation: `src/protocol.cjs` (codec/validators/translation), `src/server.c
 | `abort` | – | Cancels a running turn; its child is recycled before another prompt. An ACK alone never frees busy. Idle abort still reaches Pi. |
 | `set_paused` | `paused: bool` | Global pause switch (#379); see "Global pause" |
 | `new_conversation` | – | **Refused** with a fixed `error{conversations_off}` (K2-05 T4 U1): the island keeps ONE continuous chat (L3/L4/L7, Gentle Dot's `conversationsOn` gate). The refusal precedes every other gate (busy, paused included) and no command ever reaches the engine |
-| `get_history` | – | replies `history{messages,hasEarlier}` — the newest page of the open chat; see "History frames". `unavailable` while the engine is not ready or holds no open session |
+| `get_history` | – | replies `history{messages,hasEarlier}` — the newest page of the open chat; see "History frames". Asked while the engine starts or restarts, it waits until the engine is ready (Gentle Dot `whenReady`, up to 60 s); `unavailable` when the engine stops instead, does not start in time, or holds no open session |
 | `get_earlier` | `before: s<file>-<turn>` | replies `earlier{before,messages,hasEarlier}` — the page ending just before that message id. Ids are canonical (no leading zeros): a non-canonical or non-page-id `before` is `bad_request`; a canonical id that names no turn — `sN-0`, a turn beyond what that file ever held, or an index past the chain — yields an EMPTY page with `hasEarlier:false` (the island keeps what it shows) |
 | `status` | – | replies `agent_state` |
 | `interrupted_ack` | – | acknowledges the interrupted-work record exposed in `ready.interrupted` (#385/R5): the daemon marks it consumed (never at boot) and replies `interrupted_acknowledged`; idempotent, allowed while paused; if persisting the record fails it replies the `error`/`failed` frame and the record stays pending so a retry can persist it (R4) |
@@ -353,7 +353,7 @@ Unknown/invalid post-handshake frames get `error{code:"bad_request"}`.
 | type | fields |
 |---|---|
 | `ready` | `protocol`, `state{busy,status,paused}`, `limits`, `features{history:true,conversations:false}`, `interrupted?` (`{at, turnActive, asks}` — bounded closed fields of the unconsumed interrupted-work record, counts and time only, never titles/ids/prompts/args/secrets; present until a client sends `interrupted_ack`) |
-| `agent_state` | `busy`, `status` (`ready`, `restarting`, `stopped`…), `paused` |
+| `agent_state` | `busy`, `status` (`starting`, `ready`, `restarting`, `stopped`), `paused` — `starting` also while the daemon listens but has not launched its engine yet (Gentle Dot `deriveState`) |
 | `user_message` | `messageId` (`s<file>-<turn>`, the history id of that prompt), `text`, `attachments?`, `clipped?`, `requestId?` — a prompt the engine recorded; see "Recorded prompts" |
 | `message_delta` | `messageId`, `text` (≤ 16 K chars each; long texts are split into several deltas, every chunk cut on a whole code point — never inside a surrogate pair) |
 | `message_done` | `messageId` |
@@ -486,8 +486,10 @@ last carry `earlier:true`.
   on a whole code point. A chain file that is missing or
   unreadable is skipped with a one-line daemon log (one over 64 MiB is skipped instead of blocking the
   read); torn/corrupt lines inside a file are skipped (the engine rewrites them as it appends).
-- **Readiness.** While the engine is not `ready` or holds no open session, `get_history`/`get_earlier` answer
-  `error{unavailable}` (retryable) — never an empty page, which would clear what the island shows.
+- **Readiness.** `get_history` asked while the engine starts or restarts waits for it (K2-05 boot order, Gentle
+  Dot `bridge.ts` `whenReady`, 60 s); an engine that stops, does not start in time or holds no open session
+  answers `error{unavailable}` (retryable), and so does `get_earlier` while the engine is not `ready` — never
+  an empty page, which would clear what the island shows.
 - **Chain files are owned.** A chain file is read only when it is a regular, non-symlink, owned file
   directly inside the engine's private sessions dir (the runtime's `isOwnedSessionFile` rule) — a
   planted symlink or an outside path is dropped with a one-line log, never read — and `linkSessions`
@@ -654,7 +656,15 @@ one-line log notice), and any other unknown `rotation` subkey is still refused.
 ## Obtaining endpoint and token (U4)
 
 The host does not generate the token: `abito-island-daemon run` does, and publishes `{protocol, endpoint, token, pid, procStart, startedAt}`
-in `<island>/runtime/session.json` (0600, removed on stop). The endpoint and token stay valid across engine restarts
+in `<island>/runtime/session.json` (0600, removed on stop).
+
+**Boot order (K2-05, Gentle Dot `daemon.ts:470-481`).** The daemon validates its config and the bundled
+engine (a missing or broken bundled runtime still fails the boot, like Gentle Dot's `loadConfig`), opens
+its server, publishes `session.json` and only then starts the engine, without making the boot wait for it.
+Clients that connect meanwhile get `ready{state.status:"starting"}` (then `agent_state` as it changes);
+`send`/`steer` answer `unavailable` until the engine is `ready`. A first engine start that fails is logged
+(`agent failed to start: …; retrying`) and retried by the runtime with its backoff; the daemon stays up. The
+configured `profile` is activated the first time the engine is ready. The endpoint and token stay valid across engine restarts
 (crash, workspace change, profile switch); a new daemon launch means a new token. See README "User config, CLI and host handoff".
 
 #### Local OpenAI-compatible endpoints (v0.2)

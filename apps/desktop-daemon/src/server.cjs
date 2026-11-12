@@ -104,6 +104,8 @@ const DEFAULTS = {
 	sessionsMinIntervalMs: 2000,
 	/** Messages per history page (T4 U1); Gentle Dot's HISTORY_PAGE. */
 	historyPage: 100,
+	/** K2-05 boot order: how long a get_history waits for a starting engine (Gentle Dot's READY_TIMEOUT_MS). */
+	readyWaitMs: 60_000,
 };
 /** sockaddr_un.sun_path holds 108 bytes including the NUL on Linux and 104 on macOS. */
 const MAX_SOCKET_PATH = process.platform === "darwin" ? 103 : 107;
@@ -272,6 +274,8 @@ class IslandServer {
 		this.directory = undefined;
 		this.closing = undefined;
 		this.listeners = [];
+		/** K2-05 boot order: the one wait get_history reads share while the engine starts (Gentle Dot whenReady). */
+		this.readyWait = undefined;
 	}
 
 	static generateToken() {
@@ -283,7 +287,52 @@ class IslandServer {
 	}
 
 	state() {
-		return { busy: this.busy || this.engine?.busy === true || this.switching !== undefined, status: this.engine?.status ?? "stopped", paused: this.paused === true };
+		return { busy: this.busy || this.engine?.busy === true || this.switching !== undefined, status: this.engineStatus(), paused: this.paused === true };
+	}
+
+	/**
+	 * K2-05 boot order = Gentle Dot bridge.ts deriveState: the daemon listens before its engine
+	 * was launched, so a "stopped" engine that was never started reads "starting" (only an engine
+	 * that was started and then stopped is really "stopped"). An engine without `launched`
+	 * (tests, older shape) keeps its own status.
+	 */
+	engineStatus() {
+		const status = this.engine?.status ?? "stopped";
+		return status === "stopped" && this.engine?.launched === false ? "starting" : status;
+	}
+
+	/**
+	 * Gentle Dot bridge.ts whenReady: resolves once the engine is ready; rejects when it stops,
+	 * after READY_WAIT_MS (Gentle Dot's READY_TIMEOUT_MS, 60 s) or when the server closes.
+	 * Koda deviation: every read waiting for the same start shares ONE wait (one engine listener),
+	 * so a client repeating get_history cannot pile listeners on the engine's emitter.
+	 */
+	whenReady() {
+		if (this.engine?.status === "ready") return Promise.resolve();
+		const engine = this.engine;
+		if (!engine?.on || this.closing) return Promise.reject(new Error("engine is not ready"));
+		if (this.readyWait) return this.readyWait.promise;
+		const wait = {};
+		wait.promise = new Promise((resolve, reject) => {
+			const finish = (error) => {
+				clearTimeout(timer);
+				engine.off("status", onStatus);
+				if (this.readyWait === wait) this.readyWait = undefined;
+				if (error) reject(error);
+				else resolve();
+			};
+			const timer = setTimeout(() => finish(new Error("the engine did not start in time")), this.opts.readyWaitMs);
+			timer.unref?.();
+			const onStatus = ({ state }) => {
+				if (state === "ready") finish();
+				else if (state === "stopped") finish(new Error("the engine stopped"));
+			};
+			engine.on("status", onStatus);
+			wait.finish = finish;
+		});
+		wait.promise.catch(() => {});
+		this.readyWait = wait;
+		return wait.promise;
 	}
 
 	/**
@@ -1162,10 +1211,18 @@ class IslandServer {
 				if (!ready()) return fail("unavailable");
 				return run(() => this.engine.request({ type: "abort" }));
 			case "get_history": {
-				// T4 U1: a read-only page of the open chat (Gentle Dot waits for the engine
-				// to be ready; Koda answers unavailable instead so the island can retry,
-				// and NEVER an empty page that would clear what the island already shows).
-				// The read carries Gentle Dot's freshness round trip (currentHistory).
+				// T4 U1 + K2-05 boot order (Gentle Dot bridge.ts:622-624 whenReady): a client asks for
+				// history as soon as it connects, often while the engine starts; the read waits for the
+				// engine instead of being refused. An engine that stops (or does not start within
+				// readyWaitMs) answers unavailable, never an empty page that would clear what the
+				// island already shows. The read carries Gentle Dot's freshness round trip (currentHistory).
+				if (!ready()) {
+					try {
+						await this.whenReady();
+					} catch {
+						return fail("unavailable");
+					}
+				}
 				if (!ready() || typeof this.engine?.sessionFile !== "string") return fail("unavailable");
 				try {
 					return reply(P.historyFrame(await this.currentHistory(undefined)));
@@ -1505,6 +1562,7 @@ class IslandServer {
 		if (this.closing) return this.closing;
 		this.closing = (async () => {
 			for (const off of this.listeners.splice(0)) off();
+			this.readyWait?.finish(new Error("the server closed"));
 			for (const id of [...this.asks.keys()]) {
 				clearTimeout(this.asks.get(id).timer);
 				this.asks.delete(id);

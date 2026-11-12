@@ -54,7 +54,7 @@ the current user:
 | `<root>/identity.md` | The Abito identity file, regenerated from `identity.md` (mode `0600`) before every spawn |
 | `<root>/state.json` | The open session file, persisted for continuity across crash restarts (mode `0600`) |
 | `<root>/config.json` | User config (U4, section below; mode `0600`) |
-| `<root>/runtime/` | `session.json` host handoff, the `p-XXXXXX/s` socket (U4), the `launches.jsonl` ledger (#390) and the `interrupted.json` record (#385) |
+| `<root>/runtime/` | `session.json` host handoff (published once the server listens, before the engine is ready: K2-05 boot order), the `p-XXXXXX/s` socket (U4), the `launches.jsonl` ledger (#390) and the `interrupted.json` record (#385) |
 
 Path checks fail closed: any symlink component, any world-writable component without
 the sticky bit, any component owned by a foreign user, or an island root owned by
@@ -166,8 +166,11 @@ Behavior details:
 - **Exit**: all pending requests reject with `agent exited (...)`.
 - **Crash restart**: after a child that had reached `ready` exits unexpectedly, the
   engine respawns with exponential bounded backoff (default 1s, 2s, 4s, 8s, 16s, 30s,
-  repeating; reset after 30s of stable uptime). A first `start()` that never becomes
-  ready fails to the caller instead of restarting in the background. One
+  repeating; reset after 30s of stable uptime). K2-05 boot order (Gentle Dot
+  `supervisor.ts` start + `daemon.ts:477-481`): a first `start()` whose spawned child
+  never becomes ready rejects to the caller (the daemon logs `agent failed to start: …;
+  retrying`) AND the restart policy keeps retrying with the same backoff; only a spawn
+  that could not even be prepared (the private identity file refused) stays `stopped`. One
   initialization owns startup failure and one restart timer owns the next attempt;
   startup close never independently schedules a duplicate retry. No live child
   can be overwritten by another spawn. Stop awaits the owned initialization and
@@ -183,9 +186,9 @@ Behavior details:
   (no late switch can land), `state.json` is left as it was, and the restart backoff
   spawns a fresh child that tries again, with no attempt limit, until one reopens the
   saved conversation or `stop()` is called. No other session is ever adopted while the
-  saved file is there, so a restart before the first message cannot lose it. At boot,
-  `start()` resolves once that happens (Gentle Dot's daemon logs the failure and lets the
-  same retry run). One deviation: the boot reopen's `switch_session` gets the rotation
+  saved file is there, so a restart before the first message cannot lose it. At boot, a
+  failed reopen rejects `start()` like any first-start failure and the same retry runs
+  (Gentle Dot's daemon logs it and keeps serving). One deviation: the boot reopen's `switch_session` gets the rotation
   switch's budget (`requestTimeoutMs`, default 300 s) instead of Gentle Dot's 30 s,
   because Windows CI 43025727185 showed the real engine's switch can take longer there.
 - **Stop**: `stop()` ends stdin, then SIGTERM after `stopTimeoutMs`, then SIGKILL; it

@@ -101,6 +101,9 @@ function writeChunked(record, done) {
 }
 
 const persistMessages = process.argv.includes("--persist-messages");
+// K2-05 boot order (Gentle Dot daemon.ts:470-481): --state-gate <file> holds every get_state
+// answer until <file> exists, so a test can keep the engine "starting" while clients connect.
+const stateGate = argValue("--state-gate");
 const lazySessionFile = process.argv.includes("--lazy-session-file");
 
 /** Pi's SessionManager.appendMessage: one `type:"message"` line per message, appended. */
@@ -131,6 +134,15 @@ function handle(command) {
 			break;
 		}
 		case "get_state":
+			if (stateGate && !fs.existsSync(stateGate)) {
+				// a slow engine boot: answer once the test opens the gate (polled, never busy-waiting)
+				const timer = setInterval(() => {
+					if (!fs.existsSync(stateGate)) return;
+					clearInterval(timer);
+					handle(command);
+				}, 10);
+				break;
+			}
 			if (!lazySessionFile && !fs.existsSync(sessionFile)) fs.writeFileSync(sessionFile, "", { mode: 0o600 });
 			respond(command.id, "get_state", { sessionFile });
 			break;
