@@ -22,6 +22,11 @@ const HARNESS = path.join(__dirname, "..", "..", "desktop-harness");
 // therefore stages the real helper + a manifest naming it into the layout root — exactly what the
 // Windows CI layout provides at apps/. Without the compiled exe the live tests skip (the POSIX twin
 // is the real ownership/mode trust check, which stays the only mechanism on Linux/macOS).
+// The layout root must also be its canonical LONG path: win-fs's manifest check refuses any `~`
+// component (pathOk), while plain fs.realpathSync only resolves links and does NOT expand the 8.3
+// name os.tmpdir() returns on the Windows runners (…\RUNNER~1\AppData\Local\Temp), so the staged
+// helper was refused as install_unverified and tests 44/45/46 failed with state 'error'
+// (CI 43263659882). setup() therefore resolves with realpathSync.native, the rule tmpBase() applies.
 const HELPER_SRC = path.join(__dirname, "..", "..", "abito-private-session.exe");
 const hasHelper = () => fs.existsSync(HELPER_SRC);
 const helperSkip = "needs Windows + the compiled, manifest-trusted abito-private-session.exe (present on the Windows CI runner); POSIX twin: the real ownership/mode trust check exercised by these same tests";
@@ -67,7 +72,10 @@ function copyInstaller(dest) {
 const THIRD = { hooks: { PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "/usr/bin/true" }] }] }, theme: "dark" };
 
 function setup(t) {
-	const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "abito-agents-e2e-")));
+	// native: os.tmpdir() is the 8.3 short form on the Windows runners (…\RUNNER~1\…) and the helper's
+	// manifest/path policy refuses a `~` component, so the layout root must be the canonical long path
+	// (see the header note).
+	const base = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "abito-agents-e2e-")));
 	t.after(() => fs.rmSync(base, { recursive: true, force: true }));
 	fs.chmodSync(base, 0o700);
 	const home = path.join(base, "home");
