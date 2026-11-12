@@ -26,6 +26,7 @@ const click = (ui, word) => {
   return b;
 };
 const sw = ui => all(ui).find(e => String(e.className).split(' ').includes('switch'));
+const usageSwitch = ui => all(ui).find(e => String(e.className).split(' ').includes('switch') && e.attrs['aria-label'] === 'Uso de los planes');
 const qrImg = ui => all(ui).find(e => e.tagName === 'img');
 const qrBox = ui => all(ui).find(e => String(e.className) === 'phone-qr');
 const linkField = ui => byId(ui, 'phone-link');
@@ -36,18 +37,31 @@ const tick = () => new Promise(r => setImmediate(r));
 
 const ctx = hero => ({ hero, status: { prefs: { key: 'right_ctrl' }, platform: 'linux' }, navigate() {}, set onLeave(_) {} });
 
-/** Mounts the page against a fake host: one closed command, one event, and a clipboard that records what it was given. */
-async function mount(initial = OFF) {
+/** Mounts the page against a fake host: the two closed commands, one event, and a clipboard that records what it got.
+ * `phone_link_action` is the link; `prefs_action` is the same channel every other Ajustes switch uses, and the only
+ * thing the phone page asks it for is its own switch (`phoneUsage`, S11). */
+async function mount(initial = OFF, options = {}) {
   dom();
-  const listened = new Map(), calls = [], copied = [];
+  const listened = new Map(), calls = [], prefsCalls = [], copied = [];
   Object.defineProperty(global, 'navigator', { configurable: true, value: { userAgent: 'Linux', clipboard: { writeText: async v => { copied.push(v); } } } });
   global.window = { __TAURI__: { event: { listen: async (name, fn) => { const set = listened.get(name) ?? new Set(); listened.set(name, set); set.add(fn); return () => set.delete(fn); } } } };
   const { setInvoke } = await load('flow-shim.js');
   const { hero } = await load('hero.js');
-  let status = initial, refused = null;
+  let status = initial, refused = null, usage = options.phoneUsage === true;
+  const prefsRefused = options.prefsRefused ?? null, saveRefused = options.saveRefused ?? null;
   setInvoke(async (cmd, args) => {
-    assert.equal(cmd, 'phone_link_action', 'one closed command');
     assert.deepEqual(Object.keys(args ?? {}), ['payload'], 'exactly one payload key');
+    if (cmd === 'prefs_action') {
+      prefsCalls.push(structuredClone(args.payload));
+      if (prefsRefused) throw prefsRefused;
+      if (args.payload.action === 'view') return { phoneUsage: usage };
+      assert.deepEqual(Object.keys(args.payload), ['action', 'phone_usage'], 'closed schema: action + the boolean');
+      assert.equal(args.payload.action, 'set_phone_usage', 'the phone page writes only its own preference');
+      if (saveRefused) throw saveRefused;
+      usage = args.payload.phone_usage === true;
+      return { phoneUsage: usage };
+    }
+    assert.equal(cmd, 'phone_link_action', 'the link has one closed command');
     assert.deepEqual(Object.keys(args.payload), ['action'], 'closed schema: nothing but the action');
     calls.push(structuredClone(args.payload));
     if (refused) throw refused;
@@ -60,7 +74,8 @@ async function mount(initial = OFF) {
   const page = new Element('div');
   await phonePage(page, ctx(hero));
   return {
-    page, calls, copied,
+    page, calls, prefsCalls, copied,
+    usage: () => usage,
     push: next => { status = { ...next }; for (const fn of [...(listened.get('phone:state') ?? [])]) fn({ payload: structuredClone(status) }); },
     flush: tick,
   };
@@ -72,7 +87,7 @@ async function mountRefused(message) {
   const { setInvoke } = await load('flow-shim.js');
   const { hero } = await load('hero.js');
   const { phonePage } = await load('pages.js');
-  setInvoke(async () => { throw new Error(message); });
+  setInvoke(async cmd => { throw new Error(cmd === 'prefs_action' ? 'prefs_action not found' : message); });
   const page = new Element('div');
   await phonePage(page, ctx(hero));
   return page;
@@ -239,6 +254,42 @@ register('K2 T1 Teléfono: the hero subtitle keeps «Wi‑Fi» in one piece (non
   const { t } = await import(pathToFileURL(path.join(base, 'i18n-es.js')));
   const es = t('Your agents and their approvals on your Android phone, over your Wi-Fi.');
   assert.equal(es.replace(/[\u2010\u2011]/g, '-'), 'Tus agentes y sus aprobaciones en tu teléfono Android, por Wi-Fi.'); assert(es.includes('\u2011') && !es.includes('Wi-Fi'));
+});
+
+register('K2 T6/S11 Teléfono: «Uso de los planes» is its own switch, OFF by default, and the click is the stored pref', async () => {
+  const { page, calls, prefsCalls, usage, flush } = await mount();
+  assert.deepEqual(calls, [{ action: 'status' }], 'the link command is still only read on mount');
+  assert.deepEqual(prefsCalls, [{ action: 'view' }], 'the plan switch reads the stored preference, through prefs_action');
+  const plan = usageSwitch(page);
+  assert(plan, 'the plan switch exists, labelled');
+  assert.equal(plan.attrs['aria-pressed'], 'false', 'S11: off by default');
+  assert(!String(plan.className).split(' ').includes('on'));
+  assert.equal(plan.disabled, false, 'a live switch is not inert');
+  assert(words(page).includes('Uso de los planes'), 'the row is labelled in words');
+  assert(words(page).includes('Muestra en el teléfono cuánto usaste de Claude y Codex.'), 'and says what it does');
+  plan.fire('click', false); await flush();
+  assert.deepEqual(prefsCalls, [{ action: 'view' }], 'a synthetic click changes nothing');
+  plan.fire('click'); await flush();
+  assert.deepEqual(prefsCalls.slice(1), [{ action: 'set_phone_usage', phone_usage: true }], 'the click writes the pref, exactly');
+  assert.equal(usage(), true);
+  assert.equal(plan.attrs['aria-pressed'], 'true');
+  plan.fire('click'); await flush();
+  assert.deepEqual(prefsCalls.slice(1), [{ action: 'set_phone_usage', phone_usage: true }, { action: 'set_phone_usage', phone_usage: false }]);
+  assert.equal(plan.attrs['aria-pressed'], 'false');
+  assert.deepEqual(calls, [{ action: 'status' }], 'the plan switch never touches the link switch');
+});
+
+register('K2 T6/S11 Teléfono: a stored «on» paints the switch, and a refused save never becomes an «on»', async () => {
+  const stored = await mount(OFF, { phoneUsage: true });
+  assert.equal(usageSwitch(stored.page).attrs['aria-pressed'], 'true', 'the page shows what is stored');
+  const refused = await mount(OFF, { saveRefused: new Error('save_failed') });
+  assert.equal(usageSwitch(refused.page).attrs['aria-pressed'], 'false');
+  usageSwitch(refused.page).fire('click'); await tick();
+  assert.equal(usageSwitch(refused.page).attrs['aria-pressed'], 'false', 'a refused write goes back to the stored value');
+  assert(words(refused.page).includes('No se pudo guardar el uso de los planes. No se anuncia ningún cambio como guardado.'));
+  // A host that cannot answer `prefs_action` at all leaves the switch inert instead of claiming «off».
+  const none = await mountRefused('phone_link_action not found');
+  assert.equal(usageSwitch(none).disabled, true);
 });
 
 // The designs suite (settings-designs-check.cjs) requires this file and runs everything it registered; running THIS file must also

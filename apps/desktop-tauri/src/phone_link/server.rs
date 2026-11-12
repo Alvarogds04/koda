@@ -273,6 +273,7 @@ where
         now_ms(),
         in_force.contains(&ids::CAP_DETAILS),
         in_force.contains(&ids::CAP_ANSWERS),
+        in_force.contains(&ids::CAP_USAGE),
     );
 
     // 2. the conversation

@@ -7,7 +7,7 @@ import { notchRow, notchHint } from './notch.js';
 import { t } from './i18n-es.js';
 import { glowCard, emptyState } from './hero.js';
 import { mount, modelsControl } from './dictation-pages.js';
-import { PhoneBridge, type PhoneStatus } from './flow-shim.js';
+import { PhoneBridge, PrefsBridge, type PhoneStatus } from './flow-shim.js';
 import { trusted } from './runtime.js';
 import type { FlowPageRenderer, PageId } from './shell.js';
 const definitions: Record<string, [string, string | null, string]> = {
@@ -46,6 +46,7 @@ const phones = (n: number) => (n === 1 ? '1 teléfono conectado' : `${n} teléfo
 export const phonePage: FlowPageRenderer = async (page: HTMLElement, ctx: any) => {
   const life = mount(page, ctx);
   let st: PhoneStatus | null = null, refused = '', busy = false;
+  let usageOn = false, usageKnown = false, usageBusy = false;
   const icon = (glyph: string) => h('span', { class: 'state-ico', 'aria-hidden': 'true', text: glyph });
   const status = h('div', { id: 'phone-status', class: 'phone-status', role: 'status', 'aria-live': 'polite' });
   const security = h('div', { id: 'phone-security', class: 'phone-security' },
@@ -54,6 +55,12 @@ export const phonePage: FlowPageRenderer = async (page: HTMLElement, ctx: any) =
   const sw = trusted(toggle(false, (on) => void turn(on)));
   sw.setAttribute('aria-label', 'Enlace con el teléfono');
   sw.setAttribute('aria-pressed', 'false');
+  // S11/§11: the plan pills, behind their own switch. It is an Ajustes preference (`set_phone_usage`), so the page
+  // reads it from the prefs view and writes it through the same closed `prefs_action` every other switch uses. The
+  // link offers `usage` in the NEXT `welcome`: a phone already connected sees the pills after it reconnects.
+  const usage = trusted(toggle(false, (on) => void setUsage(on)));
+  usage.setAttribute('aria-label', 'Uso de los planes');
+  usage.setAttribute('aria-pressed', 'false');
   const steps = h('ol', { id: 'phone-steps', class: 'phone-steps' },
     h('li', { text: 'Abrí Kenai en el teléfono.' }),
     h('li', { text: 'Escaneá el código o pegá el link.' }),
@@ -77,7 +84,9 @@ export const phonePage: FlowPageRenderer = async (page: HTMLElement, ctx: any) =
   page.append(ctx.hero('phone', t('Android phone'), t('Your agents and their approvals on your Android phone, over your Wi-Fi.')),
     status, security,
     notchHint(t("Send your agents' sessions to Koda for Android and answer permission requests from the phone. Off by default; it only listens on your local network.")),
-    notchRow(t('Phone link'), sw), steps, qr, linkRow, devices, message);
+    notchRow(t('Phone link'), sw),
+    notchHint('Muestra en el teléfono cuánto usaste de Claude y Codex.'),
+    notchRow('Uso de los planes', usage), steps, qr, linkRow, devices, message);
 
   function paint() {
     const error = st?.error ?? null;
@@ -88,6 +97,10 @@ export const phonePage: FlowPageRenderer = async (page: HTMLElement, ctx: any) =
     sw.setAttribute('aria-pressed', String(enabled));
     sw.classList.toggle('on', enabled);
     (sw as HTMLButtonElement).disabled = unknown || unsupported;
+    // The plan switch mirrors the stored preference; until it has been read it stays inert instead of guessing «off».
+    usage.setAttribute('aria-pressed', String(usageOn));
+    usage.classList.toggle('on', usageOn);
+    (usage as HTMLButtonElement).disabled = !usageKnown || usageBusy;
     let glyph = '○', word = 'Apagado';
     if (unknown) { glyph = unsupported ? '·' : '✗'; word = unsupported ? PHONE_ERRORS.unsupported : 'No se pudo leer el estado del enlace.'; }
     else if (error === 'unsupported') { glyph = '·'; word = PHONE_ERRORS.unsupported; }
@@ -136,6 +149,21 @@ export const phonePage: FlowPageRenderer = async (page: HTMLElement, ctx: any) =
     try { await clip.writeText(link); copyNote.textContent = 'Copiado.'; }
     catch { copyNote.textContent = 'No se pudo copiar: seleccioná el link y copialo a mano.'; }
   }
+  async function setUsage(on: boolean) {
+    if (usageBusy || !usageKnown) return;
+    usageBusy = true;
+    try {
+      const view = await PrefsBridge.setPhoneUsage(on);
+      if (life.alive() && view) { usageOn = view.phoneUsage === true; message.textContent = ''; }
+    }
+    catch {
+      if (life.alive()) message.textContent = 'No se pudo guardar el uso de los planes. No se anuncia ningún cambio como guardado.';
+    }
+    finally {
+      usageBusy = false;
+      if (life.alive()) paint(); // a refused switch goes back to the stored value, never stays optimistic
+    }
+  }
   async function unpair() {
     try {
       const next = await PhoneBridge.unlink();
@@ -156,6 +184,11 @@ export const phonePage: FlowPageRenderer = async (page: HTMLElement, ctx: any) =
     if (read) { st = read; refused = ''; }
   }
   catch (error) { refused = phoneReason(error); }
+  try {
+    const view = await PrefsBridge.view();
+    if (view) { usageOn = view.phoneUsage === true; usageKnown = true; }
+  }
+  catch { /* a host that cannot answer leaves the plan switch inert rather than showing an «off» nobody stored */ }
   if (!life.alive()) return;
   paint();
   await life.listen('phone:state', (next: PhoneStatus) => { if (!next) return; st = next; refused = ''; message.textContent = ''; paint(); });

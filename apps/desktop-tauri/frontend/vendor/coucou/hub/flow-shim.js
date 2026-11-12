@@ -58,6 +58,13 @@ const PhoneBridge = Object.freeze({
   disable: () => phoneCall("disable"),
   unlink: () => phoneCall("unlink")
 });
+const prefsCall = (payload) => invoke ? invoke("prefs_action", { payload }) : Promise.reject(new Error("No disponible todavía"));
+const PrefsBridge = Object.freeze({
+  /** The stored prefs, as the page is shown them (`phoneUsage` is the phone's plan-usage switch). */
+  view: () => prefsCall({ action: "view" }),
+  /** «Uso de los planes»: exactly the two keys the host parses, `action` + the boolean. */
+  setPhoneUsage: (on) => prefsCall({ action: "set_phone_usage", phone_usage: on === true })
+});
 const voiceCall = (payload) => invoke ? invoke("voice_action", { payload }) : Promise.reject(new Error("No disponible todavía"));
 const VoiceBridge = Object.freeze({
   status: async () => {
@@ -85,6 +92,7 @@ const VoiceBridge = Object.freeze({
 export {
   FlowBridge,
   PhoneBridge,
+  PrefsBridge,
   VoiceBridge,
   setInvoke
 };

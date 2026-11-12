@@ -19,15 +19,9 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use tokio::sync::oneshot;
 
-/// The capabilities the desktop offers in `welcome` (§6.0). Today it offers NONE, so the link keeps sending the plain
-/// v1 welcome and the plain v1 sessions: the `details` switch is still an open product decision (always on while the
-/// link is on, or its own Ajustes switch). Turning it on is one method here, and nothing else:
-///
-/// ```ignore
-/// impl Features for NoFeatures {
-///     fn offered(&self) -> Vec<&'static str> { vec![ids::CAP_DETAILS] } // or `self.details.then_some(…)`
-/// }
-/// ```
+/// The capabilities the desktop offers in `welcome` (§6.0) when nothing else is wired: NONE, so the link keeps
+/// sending the plain v1 welcome and the plain v1 sessions. It is the default of [`Link`], and the app replaces it with
+/// a seam that reads the human's switches (`phonehost::PrefsFeatures`); the tests replace it with their own.
 struct NoFeatures;
 impl Features for NoFeatures {}
 
@@ -92,6 +86,11 @@ pub struct Link {
     /// What announces this computer while the listener is up. The app's is [`Mdns`]; tests hand in a fake, because
     /// a unit test must never open a multicast socket.
     advertise: Arc<dyn Advertise>,
+    /// The capabilities offered in `welcome` (§6.0), handed to every connection and read once per `hello`, so a
+    /// switch the human flips is in force at the next one. Defaults to nothing offered.
+    features: Arc<dyn Features>,
+    /// Where a phone's `decision` / `answer` goes (§8, §9). Defaults to refusing everything.
+    decisions: Arc<dyn Decisions>,
     /// The human's wish, as this object knows it: what `status` reports as `enabled`.
     enabled: AtomicBool,
     /// One switch operation at a time, held across the whole of `enable`, `disable` and `unlink`. Without it a
@@ -109,7 +108,29 @@ impl Link {
 
     /// [`Link::new`] with the announcement given: the tests' fake, so `cargo test` never joins the multicast group.
     pub fn with_advertiser(advertise: Arc<dyn Advertise>) -> Link {
-        Link { hub: Hub::new(), advertise, enabled: AtomicBool::new(false), life: Mutex::new(()), on: Mutex::new(On::default()) }
+        Link::with_seams(advertise, Arc::new(NoFeatures), Arc::new(RefuseDecisions))
+    }
+
+    /// [`Link::new`] with what the desktop offers in `welcome` (§6.0) and nothing behind the decision seam: the app's
+    /// own link while the approvals relay is still being decided (`phonehost`).
+    pub fn with_features(features: Arc<dyn Features>) -> Link {
+        Link::with_seams(Arc::new(Mdns), features, Arc::new(RefuseDecisions))
+    }
+
+    /// The two seams a real desktop needs: what it offers in `welcome` (§6.0) and where a phone's `decision` / `answer`
+    /// goes (§8, §9). Both are handed to every connection as they are, so an implementation that reads a switch gets
+    /// asked again on every hello — switching a capability off is in force at the next connection, never for the open
+    /// one (the phone reconnects, and §6.0 is negotiated per connection).
+    pub fn with_seams(advertise: Arc<dyn Advertise>, features: Arc<dyn Features>, decisions: Arc<dyn Decisions>) -> Link {
+        Link {
+            hub: Hub::new(),
+            advertise,
+            features,
+            decisions,
+            enabled: AtomicBool::new(false),
+            life: Mutex::new(()),
+            on: Mutex::new(On::default()),
+        }
     }
 
     /// The sessions hub every connection subscribes to (the same object the app publishes into).
@@ -190,8 +211,8 @@ impl Link {
             self.hub.clone(),
             token,
             name.clone(),
-            Arc::new(NoFeatures),
-            Arc::new(RefuseDecisions),
+            self.features.clone(),
+            self.decisions.clone(),
         );
         let served = shared.clone();
         let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<u16, &'static str>>();
@@ -321,6 +342,12 @@ impl Link {
     /// whose content did not move, so publishing on every agent change costs one comparison.
     pub fn publish_sessions(&self, view: &Value, now: u64) {
         source::publish(&self.hub, view, now);
+    }
+
+    /// S11/§11: the plan usage, to the phones that negotiated `usage`. The hub keeps this line and replays it to a
+    /// phone that connects later, and never resends an identical one.
+    pub fn publish_usage(&self, usage: Value) {
+        self.hub.publish_usage(usage);
     }
 
     /// What Ajustes reads: `{enabled, running, port, host, name, link, qrSvg, clients, error, mdns}`. The link is

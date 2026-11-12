@@ -168,6 +168,7 @@ fn view_prefs(p: &Prefs) -> Value {
         "monitor": p.monitor,
         "showPlanInNotch": p.show_plan_in_notch(),
         "showCodexPlanInNotch": p.show_codex_plan_in_notch(),
+        "phoneUsage": p.phone_usage(),
         "windowContext": p.window_context(),
         "liveContext": p.live_context(),
         "windowContextAvailable": context_extension_available(), "windowContextNote": context_title_note(), "windowContextNative": cfg!(not(target_os = "linux")),

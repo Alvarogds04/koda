@@ -15,6 +15,7 @@ pub mod link;
 pub mod pairing;
 pub mod server;
 pub mod source;
+pub mod usage;
 
 use ring::digest;
 

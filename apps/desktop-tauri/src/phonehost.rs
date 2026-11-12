@@ -17,11 +17,13 @@ use tauri::{AppHandle, State};
 #[cfg(target_os = "linux")]
 use abito_island::phone_link::ids::DEFAULT_PORT;
 #[cfg(target_os = "linux")]
-use abito_island::phone_link::{keystore, link::Link};
+use abito_island::phone_link::{ids, keystore, link::Link, server::Features};
 #[cfg(target_os = "linux")]
 use std::net::SocketAddr;
 #[cfg(target_os = "linux")]
 use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(target_os = "linux")]
+use std::sync::Arc;
 #[cfg(target_os = "linux")]
 use std::time::Duration;
 #[cfg(target_os = "linux")]
@@ -92,18 +94,66 @@ const TICK: Duration = Duration::from_secs(2);
 /// A link whose connection is gone retries on its own clock, so a missing daemon cannot make this spin.
 #[cfg(target_os = "linux")]
 const RECONNECT: u64 = 30_000;
+/// S11/§11: how often the plans are read for the phone while «Uso de los planes» is on. The first read comes with the
+/// first tick after the link is up, so a phone that pairs at once does not wait a whole minute for its pills.
+#[cfg(target_os = "linux")]
+const USAGE_EVERY_MS: u64 = 60_000;
 
-/// The live link in Tauri's shared state. `last_connect` is the ticker's own backoff, in epoch ms.
+/// S11/§6.0: what this desktop offers the phone, read again on every `hello` (`server::Features::offered` is called
+/// once per connection), so a switch the human flips is in force at the next one — the phone reconnects, and the
+/// capabilities are negotiated per connection by design.
+///
+/// It reads Ajustes' prefs every time; nothing is cached, so there is no stale answer to go wrong. TODAY it offers
+/// `usage` and nothing else: `details` (T3) and `answers` / `diffs` / `services` / `chat` (T4/T5) are still pending
+/// human decisions, and the ONE place they will be turned on is the list below.
+#[cfg(target_os = "linux")]
+pub(crate) struct PrefsFeatures {
+    read: Box<dyn Fn() -> abito_island::prefs::Prefs + Send + Sync>,
+}
+
+#[cfg(target_os = "linux")]
+impl PrefsFeatures {
+    pub(crate) fn new(read: impl Fn() -> abito_island::prefs::Prefs + Send + Sync + 'static) -> PrefsFeatures {
+        PrefsFeatures { read: Box::new(read) }
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Features for PrefsFeatures {
+    fn offered(&self) -> Vec<&'static str> {
+        let prefs = (self.read)();
+        let mut caps: Vec<&'static str> = Vec::new();
+        // S11: the Claude and Codex plan pills.
+        if prefs.phone_usage() {
+            caps.push(ids::CAP_USAGE);
+        }
+        // Pending human decisions (T3 `details`, T4/T5 `answers`, `diffs`, `services`, `chat`) are offered from here,
+        // each behind its own switch, once the decision exists. Nothing else in the link decides what is offered.
+        caps
+    }
+}
+
+/// The live link in Tauri's shared state. `last_connect` is the ticker's own backoff, in epoch ms; `last_usage` is
+/// when the plans were last read for the phone (0 = never), so the 60 s clock is kept across ticks.
 #[cfg(target_os = "linux")]
 pub struct PhoneHost {
     link: Link,
     last_connect: AtomicU64,
+    last_usage: AtomicU64,
 }
 
 #[cfg(target_os = "linux")]
-impl Default for PhoneHost {
-    fn default() -> Self {
-        PhoneHost { link: Link::new(), last_connect: AtomicU64::new(0) }
+impl PhoneHost {
+    /// The app's host. The features seam reads Ajustes' prefs on every hello; the decision seam stays the link's
+    /// default (every `decision` and `answer` is refused) until the approvals relay is wired (T4/T5).
+    fn app(app: &AppHandle) -> PhoneHost {
+        let handle = app.clone();
+        let features = Arc::new(PrefsFeatures::new(move || crate::settingshost::voice_prefs_snapshot(&handle)));
+        PhoneHost {
+            link: Link::with_features(features),
+            last_connect: AtomicU64::new(0),
+            last_usage: AtomicU64::new(0),
+        }
     }
 }
 
@@ -117,7 +167,7 @@ fn link_of(app: &AppHandle) -> State<'_, PhoneHost> {
 #[cfg(target_os = "linux")]
 pub fn start(app: &AppHandle) {
     if app.try_state::<PhoneHost>().is_none() {
-        app.manage(PhoneHost::default());
+        app.manage(PhoneHost::app(app));
     }
     spawn_ticker(app.clone());
     if !wanted(app) {
@@ -267,13 +317,66 @@ fn spawn_ticker(app: AppHandle) {
         }
         tick(&app);
         ensure_agent(&app);
+        usage_tick(&app); // S11: and no plan is read while its own switch is off
     });
+}
+
+/// S11/§11: while the link is running AND «Uso de los planes» is on, read the plans and tell the phones. Nothing is
+/// read while either switch is off: no file, no process, nothing on the wire.
+///
+/// Claude comes from the status-line channel (`claude_plan`: a local file with a 10 minute freshness rule). Codex is
+/// asked ONLY when its own pill switch is also on (`show_codex_plan_in_notch`), because that read spawns the user's
+/// own `codex app-server`; its process-wide BUSY guard is what keeps it from ever running alongside the island's own
+/// plan card — a busy answer is skipped for this tick, never queued.
+#[cfg(target_os = "linux")]
+fn usage_tick(app: &AppHandle) {
+    let Some(host) = app.try_state::<PhoneHost>() else { return };
+    let prefs = crate::settingshost::voice_prefs_snapshot(app);
+    if !prefs.phone_usage() {
+        return;
+    }
+    let now = abito_island::phone_link::server::now_ms();
+    let last = host.last_usage.load(Ordering::SeqCst);
+    if last != 0 && now.saturating_sub(last) < USAGE_EVERY_MS {
+        return;
+    }
+    host.last_usage.store(now, Ordering::SeqCst);
+    let claude = abito_island::transport::resolve_runtime()
+        .ok()
+        .and_then(|runtime| abito_island::claude_plan::read(&runtime));
+    let codex = prefs.show_codex_plan_in_notch().then(abito_island::codex_plan::read).flatten();
+    host.link.publish_usage(abito_island::phone_link::usage::line(claude.as_ref(), codex.as_ref(), now as i64));
 }
 
 #[cfg(test)]
 mod tests {
     use super::parse_action;
     use serde_json::json;
+
+    /// K2 T6 (S11/§6.0): the capability seam answers from Ajustes' prefs on EVERY hello — never a cached copy — and
+    /// today it offers `usage` and nothing else, because every other capability is still a human decision.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn the_features_seam_reads_the_switch_on_every_hello_and_offers_only_what_is_wired() {
+        use abito_island::phone_link::server::Features;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let on = Arc::new(AtomicBool::new(false));
+        let read = {
+            let on = on.clone();
+            move || abito_island::prefs::Prefs { phone_usage: on.load(Ordering::SeqCst).then_some(true), ..Default::default() }
+        };
+        let features = super::PrefsFeatures::new(read);
+        assert!(features.offered().is_empty(), "S11: off by default, so nothing of the plans is offered");
+        on.store(true, Ordering::SeqCst);
+        assert_eq!(features.offered(), vec!["usage"], "the switch is on: exactly the capability behind it");
+        on.store(false, Ordering::SeqCst);
+        assert!(features.offered().is_empty(), "read again on every call: no cached answer");
+        on.store(true, Ordering::SeqCst);
+        for cap in ["details", "answers", "diffs", "services", "chat"] {
+            assert!(!features.offered().contains(&cap), "{cap} is still a human decision and is never offered");
+        }
+    }
 
     /// D6: `phone:state` (it carries the link with the token) goes to the Ajustes window only, never to every webview.
     #[test]

@@ -457,7 +457,7 @@ fn a_phone_that_cannot_keep_up_is_dropped_not_waited_for() {
     run(async {
         let hub = hub::Hub::new();
         let (tx, _rx) = tokio::sync::mpsc::channel::<server::Out>(2);
-        let (_id, evicted) = hub.subscribe(tx, 0, false, false);
+        let (_id, evicted) = hub.subscribe(tx, 0, false, false, false);
         for n in 0..10 {
             hub.publish_sessions(vec![sess("integration_claude", if n % 2 == 0 { "working" } else { "idle" })], n);
         }
@@ -1863,4 +1863,268 @@ async fn connected_with_caps(rig: &Rig, caps: &[&str]) -> Client {
     send(&mut w, json!({"type":"hello","v":PROTOCOL,"token":rig.token,"device":"Pixel 7","caps":caps})).await;
     assert_eq!(recv(&mut r).await.unwrap()["type"], "welcome");
     (r, w)
+}
+
+// ---- slice E: the plan pills (§11) ---------------------------------------------------------------------
+// `usage::line` is pure: the two shapes the desktop already reads go in, the contract's line comes out. Every rule
+// below is one the phone enforces by dropping what it does not accept, so a line that breaks one shows nothing.
+
+/// The Claude view `claude_plan::read` hands over: `updatedAt` and the two windows in milliseconds.
+fn claude_view() -> Value {
+    json!({
+        "updatedAt": 1_710_000_000_000i64,
+        "fiveHour": {"usedPct": 63.0, "resetsAt": 1_710_005_700_000i64},
+        "sevenDay": {"usedPct": 21.0, "resetsAt": 1_710_259_200_000i64},
+    })
+}
+
+/// The shape `codex_plan::read` keeps (`limits_only`): the primary is the week, the secondary a shorter window, and
+/// `resetsAt` is epoch SECONDS, as Codex itself answers.
+fn codex_limits() -> Value {
+    json!({
+        "rateLimits": {
+            "planType": "plus",
+            "primary": {"usedPercent": 31.0, "resetsAt": 1_710_172_800i64, "windowDurationMins": 10080},
+            "secondary": {"usedPercent": 12.0, "resetsAt": 1_710_018_000i64, "windowDurationMins": 300},
+        },
+        "rateLimitResetCredits": {"availableCount": 2},
+    })
+}
+
+const NOW: i64 = 1_710_000_000_000;
+
+#[test]
+fn the_usage_line_carries_both_plans_exactly_as_the_contract_describes_them() {
+    let line = super::usage::line(Some(&claude_view()), Some(&codex_limits()), NOW);
+    assert_eq!(line["type"], "usage");
+    assert_eq!(
+        line["claude"],
+        json!({
+            "fiveHour": {"pct": 63, "resetsAt": 1_710_005_700_000i64},
+            "sevenDay": {"pct": 21, "resetsAt": 1_710_259_200_000i64},
+            "updatedAt": 1_710_000_000_000i64,
+        }),
+        "{line}"
+    );
+    // Codex's seconds become milliseconds, `planType` is the short plan name, and the resets are the free ones.
+    assert_eq!(
+        line["codex"],
+        json!({
+            "fiveHour": {"pct": 12, "resetsAt": 1_710_018_000_000i64},
+            "sevenDay": {"pct": 31, "resetsAt": 1_710_172_800_000i64},
+            "resetCredits": 2,
+            "plan": "plus",
+            "updatedAt": NOW,
+        }),
+        "{line}"
+    );
+}
+
+#[test]
+fn a_window_the_phone_would_drop_is_never_sent_and_a_plan_without_one_is_absent() {
+    // A window needs BOTH fields: whole percent 0..=100 and a reset in milliseconds after the epoch.
+    for bad in [
+        json!({"usedPct": 40.0}),
+        json!({"resetsAt": 1_710_005_700_000i64}),
+        json!({"usedPct": 40.0, "resetsAt": 0}),
+        json!({"usedPct": 40.0, "resetsAt": -5}),
+        json!({"usedPct": "40", "resetsAt": 1_710_005_700_000i64}),
+        json!({"usedPct": 40.0, "resetsAt": "soon"}),
+        json!(null),
+        json!(7),
+    ] {
+        let view = json!({"updatedAt": NOW, "fiveHour": bad});
+        assert_eq!(super::usage::line(Some(&view), None, NOW), json!({"type": "usage"}), "a plan without a usable window is dropped whole: {bad}");
+    }
+    // A percentage is made whole and kept inside the range the phone accepts, never rounded out of it.
+    for (raw, pct) in [(63.4, 63), (63.6, 64), (200.0, 100), (-3.0, 0), (100.0, 100), (0.0, 0)] {
+        let view = json!({"updatedAt": NOW, "fiveHour": {"usedPct": raw, "resetsAt": 1_710_005_700_000i64}});
+        let line = super::usage::line(Some(&view), None, NOW);
+        assert_eq!(line["claude"]["fiveHour"], json!({"pct": pct, "resetsAt": 1_710_005_700_000i64}), "{raw} → {pct}");
+    }
+    // One usable window is enough; the other is simply absent.
+    let view = json!({"updatedAt": NOW, "fiveHour": {"usedPct": 10.0, "resetsAt": 1_710_005_700_000i64}, "sevenDay": json!({"usedPct": 10.0})});
+    let line = super::usage::line(Some(&view), None, NOW);
+    assert!(line["claude"].get("sevenDay").is_none(), "{line}");
+    assert_eq!(line["claude"]["fiveHour"]["pct"], 10);
+}
+
+#[test]
+fn the_plan_name_reset_credits_and_updated_at_are_cut_to_what_the_phone_keeps() {
+    let name = |raw: Value| {
+        let limits = json!({"rateLimits": {"planType": raw, "primary": {"usedPercent": 5.0, "resetsAt": 1_710_172_800i64}},
+            "rateLimitResetCredits": {"availableCount": 1}});
+        super::usage::line(None, Some(&limits), NOW)["codex"].get("plan").cloned()
+    };
+    assert_eq!(name(json!("max")), Some(json!("max")));
+    assert_eq!(name(json!("plus-2000 plan")), Some(json!("plus-2000 plan")));
+    assert_eq!(name(json!(" MAX 5! ")), Some(json!("MAX 5")), "only letters, digits, space and dash; trimmed, blanks dropped");
+    assert_eq!(name(json!("a".repeat(40))), Some(json!("a".repeat(20))), "cut to 20 characters");
+    for blank in [json!(""), json!("  "), json!("¡!"), json!(7), json!(null)] {
+        assert_eq!(name(blank.clone()), None, "{blank} says nothing and is dropped");
+    }
+
+    let credits = |raw: Value| {
+        let limits = json!({"rateLimits": {"primary": {"usedPercent": 5.0, "resetsAt": 1_710_172_800i64}},
+            "rateLimitResetCredits": {"availableCount": raw}});
+        super::usage::line(None, Some(&limits), NOW)["codex"].get("resetCredits").cloned()
+    };
+    assert_eq!(credits(json!(0)), Some(json!(0)));
+    assert_eq!(credits(json!(99)), Some(json!(99)));
+    for bad in [json!(100), json!(-1), json!(2.5), json!("2"), json!(null)] {
+        assert_eq!(credits(bad.clone()), None, "{bad} is outside 0..=99 and is dropped");
+    }
+
+    // `updatedAt` must be >= 0; without one the plan is still worth sending.
+    for bad in [json!(-1), json!(null), json!("yesterday")] {
+        let view = json!({"updatedAt": bad.clone(), "fiveHour": {"usedPct": 5.0, "resetsAt": 1_710_005_700_000i64}});
+        let line = super::usage::line(Some(&view), None, NOW);
+        assert_eq!(line["claude"]["fiveHour"]["pct"], 5, "{bad}");
+        assert!(line["claude"].get("updatedAt").is_none(), "no stamp is invented: {line}");
+    }
+    assert_eq!(super::usage::line(None, None, NOW), json!({"type": "usage"}), "both absent clears the phone's display (§11)");
+    assert_eq!(super::usage::line(Some(&json!({})), Some(&json!({"rateLimits": null})), NOW), json!({"type": "usage"}));
+}
+
+#[test]
+fn codex_windows_are_told_apart_by_duration_and_an_unknown_plan_still_counts() {
+    // The duration is what tells them apart: a day or less is the 5-hour window, anything else the week. The week
+    // (primary) and the short window (secondary) become the phone's two pills.
+    let limits = json!({"rateLimits": {"primary": {"usedPercent": 31.0, "resetsAt": 1_710_172_800i64, "windowDurationMins": 10080},
+        "secondary": {"usedPercent": 12.0, "resetsAt": 1_710_018_000i64, "windowDurationMins": 300}}});
+    let line = super::usage::line(None, Some(&limits), NOW);
+    assert_eq!(line["codex"]["sevenDay"], json!({"pct": 31, "resetsAt": 1_710_172_800_000i64}), "{line}");
+    assert_eq!(line["codex"]["fiveHour"], json!({"pct": 12, "resetsAt": 1_710_018_000_000i64}), "{line}");
+    // Without a duration the windows cannot be told apart, so both read as the week and the later one is what the
+    // pill shows — the same rule (and the same result) as the island's own gauge.
+    let undated = json!({"rateLimits": {"primary": {"usedPercent": 31.0, "resetsAt": 1_710_172_800i64},
+        "secondary": {"usedPercent": 12.0, "resetsAt": 1_710_018_000i64}}});
+    let line = super::usage::line(None, Some(&undated), NOW);
+    assert_eq!(line["codex"]["sevenDay"], json!({"pct": 12, "resetsAt": 1_710_018_000_000i64}), "{line}");
+    assert!(line["codex"].get("plan").is_none() && line["codex"].get("resetCredits").is_none(), "nothing says them: absent");
+    // A used percent beyond the range is clamped to what the phone keeps, exactly like the island's own gauge.
+    let limits = json!({"rateLimits": {"primary": {"usedPercent": 130.0, "resetsAt": 1_710_172_800i64}}});
+    assert_eq!(super::usage::line(None, Some(&limits), NOW)["codex"]["sevenDay"]["pct"], 100);
+    // No limits at all is no plan, never an empty object on the wire.
+    for empty in [json!({}), json!({"rateLimits": {}}), json!({"rateLimits": {"primary": {"usedPercent": 5.0}}})] {
+        assert_eq!(super::usage::line(None, Some(&empty), NOW), json!({"type": "usage"}), "{empty}");
+    }
+}
+
+/// Everything a fake hub subscriber has been written, one line per message. A close is never expected in these tests.
+fn out_lines(rx: &mut tokio::sync::mpsc::Receiver<server::Out>) -> Vec<String> {
+    let mut lines = Vec::new();
+    while let Ok(msg) = rx.try_recv() {
+        match msg {
+            server::Out::Line(l) => lines.push(l.to_string()),
+            server::Out::Close { code, .. } => panic!("unexpected close: {code}"),
+        }
+    }
+    lines
+}
+
+fn usage_line(pct: u8) -> Value {
+    json!({"type": "usage", "claude": {"fiveHour": {"pct": pct, "resetsAt": 1_710_005_700_000i64}, "updatedAt": NOW}})
+}
+
+#[test]
+fn usage_goes_only_to_a_usage_subscriber_is_never_repeated_and_is_replayed_after_the_sessions() {
+    let hub = hub::Hub::new();
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<server::Out>(16);
+    let (plain_tx, mut plain_rx) = tokio::sync::mpsc::channel::<server::Out>(16);
+    hub.subscribe(tx, 0, false, false, true);
+    hub.subscribe(plain_tx, 0, false, false, false);
+    let opening = out_lines(&mut rx);
+    assert_eq!(opening.len(), 1, "the sessions first, and no usage before anything was published: {opening:?}");
+    assert!(opening[0].contains("\"type\":\"sessions\""));
+    assert_eq!(out_lines(&mut plain_rx).len(), 1);
+
+    hub.publish_usage(usage_line(63));
+    let first = out_lines(&mut rx);
+    assert_eq!(first, vec![usage_line(63).to_string()], "the usage phone is told");
+    assert_eq!(hub.usage_json(), Some(usage_line(63)), "and the hub keeps it for whoever connects next");
+    assert_eq!(out_lines(&mut plain_rx), Vec::<String>::new(), "a phone that did not negotiate `usage` is never sent it");
+
+    hub.publish_usage(usage_line(63));
+    assert_eq!(out_lines(&mut rx), Vec::<String>::new(), "only what changed (§5): the same line is not repeated");
+
+    hub.publish_usage(usage_line(64));
+    assert_eq!(out_lines(&mut rx), vec![usage_line(64).to_string()], "a moved percentage is a new line");
+
+    // A reconnect: the sessions first (§5), then the last usage line, so the pills are right without waiting a minute.
+    let (late_tx, mut late_rx) = tokio::sync::mpsc::channel::<server::Out>(16);
+    hub.subscribe(late_tx, 0, false, false, true);
+    let replay = out_lines(&mut late_rx);
+    assert_eq!(replay.len(), 2, "{replay:?}");
+    assert!(replay[0].contains("\"type\":\"sessions\""));
+    assert_eq!(replay[1], usage_line(64).to_string(), "the last line, once");
+    let (never_tx, mut never_rx) = tokio::sync::mpsc::channel::<server::Out>(16);
+    hub.subscribe(never_tx, 0, false, false, false);
+    assert_eq!(out_lines(&mut never_rx).len(), 1, "a plain phone is replayed nothing it cannot use");
+}
+
+/// A desktop that offers `usage` and nothing else.
+struct UsageOnly;
+impl Features for UsageOnly {
+    fn offered(&self) -> Vec<&'static str> {
+        vec![ids::CAP_USAGE]
+    }
+}
+
+#[test]
+fn a_phone_that_asks_for_usage_is_offered_it_and_shown_the_published_numbers() {
+    run(async {
+        let rig = start_with(Arc::new(UsageOnly)).await;
+        let (mut r, mut w) = connect(rig.port, &rig.fingerprint).await.unwrap();
+        send(&mut w, json!({"type":"hello","v":PROTOCOL,"token":rig.token,"device":"Pixel 7","caps":["usage"]})).await;
+        let welcome = recv(&mut r).await.unwrap();
+        assert_eq!(welcome["caps"], json!(["usage"]), "§6.0: a capability only in force when both sides name it");
+        assert_eq!(recv(&mut r).await.unwrap()["type"], "sessions");
+        rig.hub.publish_usage(usage_line(21));
+        let line = recv(&mut r).await.unwrap();
+        assert_eq!(line, usage_line(21), "the hub's line reaches the phone as it is");
+    });
+}
+
+#[test]
+fn a_phone_that_asks_for_usage_gets_nothing_when_the_desktop_offers_nothing() {
+    run(async {
+        let rig = start_with(Arc::new(Off)).await;
+        rig.hub.publish_usage(usage_line(21));
+        let (mut r, mut w) = connect(rig.port, &rig.fingerprint).await.unwrap();
+        send(&mut w, json!({"type":"hello","v":PROTOCOL,"token":rig.token,"device":"Pixel 7","caps":["usage"]})).await;
+        let welcome = recv(&mut r).await.unwrap();
+        assert!(welcome.get("caps").is_none(), "the switch is off: nothing is offered: {welcome}");
+        let next = recv(&mut r).await.unwrap();
+        assert_eq!(next["type"], "sessions", "and no usage line follows: {next}");
+    });
+}
+
+/// A `Features` seam the test can flip, exactly like a pref the human changes while the link runs.
+struct Switch(std::sync::atomic::AtomicBool);
+impl Features for Switch {
+    fn offered(&self) -> Vec<&'static str> {
+        if self.0.load(std::sync::atomic::Ordering::SeqCst) { vec![ids::CAP_USAGE] } else { Vec::new() }
+    }
+}
+
+#[test]
+fn the_link_reads_its_features_on_every_hello_so_a_switch_takes_effect_at_the_next_connection() {
+    let switch = Arc::new(Switch(std::sync::atomic::AtomicBool::new(false)));
+    let link = super::link::Link::with_seams(FakeMdns::working(), switch.clone(), Arc::new(super::link::RefuseDecisions));
+    let store = Mem::default();
+    assert_eq!(link.enable(&store, "127.0.0.1:0".parse().unwrap()), Ok(()));
+    let port = u16::try_from(link.status_for(None)["port"].as_u64().unwrap()).unwrap();
+    let token = pairing::token(&store).unwrap();
+    let fingerprint = pairing::load_or_create_identity(&store).unwrap().fingerprint;
+    run(async {
+        for (on, expected) in [(false, None), (true, Some(json!(["usage"]))), (false, None)] {
+            switch.0.store(on, std::sync::atomic::Ordering::SeqCst);
+            let (mut r, mut w) = connect(port, &fingerprint).await.unwrap();
+            send(&mut w, json!({"type":"hello","v":PROTOCOL,"token":token,"caps":["usage"]})).await;
+            let welcome = recv(&mut r).await.unwrap();
+            assert_eq!(welcome.get("caps"), expected.as_ref(), "offered() is read once per hello: {welcome}");
+        }
+    });
+    link.disable();
 }

@@ -4,7 +4,7 @@ import { card, row, button, keyLabel, label, divider, toggle, segmented } from "
 import { notchRow, notchHint } from "./notch.js";
 import { t } from "./i18n-es.js";
 import { mount, modelsControl } from "./dictation-pages.js";
-import { PhoneBridge } from "./flow-shim.js";
+import { PhoneBridge, PrefsBridge } from "./flow-shim.js";
 import { trusted } from "./runtime.js";
 const definitions = {
   voice: ["OK Koda", "Say « OK Koda », then ask anything: add a pill, play music, the weather, an email to prepare.", "Enable"]
@@ -32,6 +32,7 @@ const phones = (n) => n === 1 ? "1 teléfono conectado" : `${n} teléfonos conec
 const phonePage = async (page, ctx) => {
   const life = mount(page, ctx);
   let st = null, refused = "", busy = false;
+  let usageOn = false, usageKnown = false, usageBusy = false;
   const icon = (glyph) => h("span", { class: "state-ico", "aria-hidden": "true", text: glyph });
   const status = h("div", { id: "phone-status", class: "phone-status", role: "status", "aria-live": "polite" });
   const security = h(
@@ -43,6 +44,9 @@ const phonePage = async (page, ctx) => {
   const sw = trusted(toggle(false, (on) => void turn(on)));
   sw.setAttribute("aria-label", "Enlace con el teléfono");
   sw.setAttribute("aria-pressed", "false");
+  const usage = trusted(toggle(false, (on) => void setUsage(on)));
+  usage.setAttribute("aria-label", "Uso de los planes");
+  usage.setAttribute("aria-pressed", "false");
   const steps = h(
     "ol",
     { id: "phone-steps", class: "phone-steps" },
@@ -84,6 +88,8 @@ const phonePage = async (page, ctx) => {
     security,
     notchHint(t("Send your agents' sessions to Koda for Android and answer permission requests from the phone. Off by default; it only listens on your local network.")),
     notchRow(t("Phone link"), sw),
+    notchHint("Muestra en el teléfono cuánto usaste de Claude y Codex."),
+    notchRow("Uso de los planes", usage),
     steps,
     qr,
     linkRow,
@@ -98,6 +104,9 @@ const phonePage = async (page, ctx) => {
     sw.setAttribute("aria-pressed", String(enabled));
     sw.classList.toggle("on", enabled);
     sw.disabled = unknown || unsupported;
+    usage.setAttribute("aria-pressed", String(usageOn));
+    usage.classList.toggle("on", usageOn);
+    usage.disabled = !usageKnown || usageBusy;
     let glyph = "○", word = "Apagado";
     if (unknown) {
       glyph = unsupported ? "·" : "✗";
@@ -177,6 +186,22 @@ const phonePage = async (page, ctx) => {
       copyNote.textContent = "No se pudo copiar: seleccioná el link y copialo a mano.";
     }
   }
+  async function setUsage(on) {
+    if (usageBusy || !usageKnown) return;
+    usageBusy = true;
+    try {
+      const view = await PrefsBridge.setPhoneUsage(on);
+      if (life.alive() && view) {
+        usageOn = view.phoneUsage === true;
+        message.textContent = "";
+      }
+    } catch {
+      if (life.alive()) message.textContent = "No se pudo guardar el uso de los planes. No se anuncia ningún cambio como guardado.";
+    } finally {
+      usageBusy = false;
+      if (life.alive()) paint();
+    }
+  }
   async function unpair() {
     try {
       const next = await PhoneBridge.unlink();
@@ -203,6 +228,14 @@ const phonePage = async (page, ctx) => {
     }
   } catch (error) {
     refused = phoneReason(error);
+  }
+  try {
+    const view = await PrefsBridge.view();
+    if (view) {
+      usageOn = view.phoneUsage === true;
+      usageKnown = true;
+    }
+  } catch {
   }
   if (!life.alive()) return;
   paint();

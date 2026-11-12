@@ -76,6 +76,17 @@ export const PhoneBridge = Object.freeze({
   unlink: (): Promise<PhoneStatus> => phoneCall('unlink'),
 });
 
+// K2 T6 (S11/§11): the Ajustes preferences the phone page owns, through the SAME closed `prefs_action` command every
+// other switch in Ajustes uses — the phone link is no reason to invent a second channel for a preference.
+export interface PrefsView { phoneUsage?: boolean; [key: string]: any }
+const prefsCall = (payload: any) => invoke ? invoke('prefs_action', { payload }) : Promise.reject(new Error('No disponible todavía'));
+export const PrefsBridge = Object.freeze({
+  /** The stored prefs, as the page is shown them (`phoneUsage` is the phone's plan-usage switch). */
+  view: (): Promise<PrefsView> => prefsCall({ action: 'view' }),
+  /** «Uso de los planes»: exactly the two keys the host parses, `action` + the boolean. */
+  setPhoneUsage: (on: boolean): Promise<PrefsView> => prefsCall({ action: 'set_phone_usage', phone_usage: on === true }),
+});
+
 // #488: the one closed voice command (OK Koda).
 export interface VoicePrefs { enabled: boolean; output: 'system' | 'elevenlabs' | 'off'; gender: 'female' | 'male'; sensitivity: number }
 const voiceCall = (payload: any) => invoke ? invoke('voice_action', { payload }) : Promise.reject(new Error('No disponible todavía'));

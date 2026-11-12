@@ -14,6 +14,10 @@
 // the one with details, and hands each subscriber the line matching its capability set. A change that only touches
 // a details field is a change for the details phone and nothing at all for the plain one, which is never resent an
 // identical plain line.
+//
+// Slice E (`usage`, §11): the plan pills are one line with no per-connection rendering, so the hub keeps the last one
+// it published, sends it only to a phone that negotiated `usage`, never repeats an identical one, and replays it to a
+// phone that connects later (right after the sessions), so its pills are right without waiting for the next poll.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -176,9 +180,10 @@ struct Sub {
     id: u64,
     tx: mpsc::Sender<Out>,
     /// The capability set of this connection: `details` changes the session line it is sent, `answers` whether a
-    /// `question` is offered to it at all (§6.0).
+    /// `question` is offered to it at all (§6.0), `usage` whether the plan pills are (§11).
     details: bool,
     answers: bool,
+    usage: bool,
     /// Set when the hub gives up on a phone that cannot keep up, so its connection closes (and the phone
     /// reconnects to a fresh picture) instead of staying open and silently going stale.
     evicted: Arc<AtomicBool>,
@@ -192,6 +197,8 @@ struct Inner {
     /// The last line rendered for each kind of subscriber, so the same content is never sent twice.
     plain: Option<Arc<str>>,
     detail: Option<Arc<str>>,
+    /// The last `usage` line published, kept so a reconnect does not have to wait for the next poll (§11).
+    usage: Option<Arc<str>>,
     /// The requests waiting for the user, oldest first, keyed by fingerprint (§8.1).
     asks: Vec<Ask>,
 }
@@ -292,10 +299,28 @@ impl Hub {
         )
     }
 
+    /// The §11 plan pills: the line goes only to a phone that negotiated `usage`, and only when it really changed —
+    /// every line makes the phone redraw its pills, so an identical one is not sent (`publish_sessions`' own rule).
+    pub fn publish_usage(&self, usage: serde_json::Value) {
+        let line: Arc<str> = usage.to_string().into();
+        let mut inner = self.lock();
+        if inner.usage.as_deref() == Some(line.as_ref()) {
+            return;
+        }
+        inner.usage = Some(line.clone());
+        keep(&mut inner, line, |sub| sub.usage);
+    }
+
+    /// The last `usage` line the hub holds, if any (what a reconnect is replayed).
+    pub fn usage_json(&self) -> Option<serde_json::Value> {
+        self.lock().usage.as_deref().and_then(|l| serde_json::from_str(l).ok())
+    }
+
     /// Registers an authenticated connection; the first line it gets is the current sessions, rendered for the
     /// capabilities this connection negotiated in its `hello`, and after it whatever is still pending (§5: a link drop
-    /// clears the phone's book, so a reconnect is re-offered the same fingerprints).
-    pub fn subscribe(&self, tx: mpsc::Sender<Out>, _now: u64, details: bool, answers: bool) -> (u64, Arc<AtomicBool>) {
+    /// clears the phone's book, so a reconnect is re-offered the same fingerprints). A phone with `usage` is then
+    /// replayed the last plan line, so its pills are right at once instead of a poll later.
+    pub fn subscribe(&self, tx: mpsc::Sender<Out>, _now: u64, details: bool, answers: bool, usage: bool) -> (u64, Arc<AtomicBool>) {
         let mut inner = self.lock();
         let id = inner.next_sub;
         inner.next_sub += 1;
@@ -308,8 +333,13 @@ impl Hub {
                 }
             }
         }
+        if usage {
+            if let Some(line) = inner.usage.clone() {
+                let _ = tx.try_send(Out::Line(line));
+            }
+        }
         let evicted = Arc::new(AtomicBool::new(false));
-        inner.subs.push(Sub { id, tx, details, answers, evicted: evicted.clone() });
+        inner.subs.push(Sub { id, tx, details, answers, usage, evicted: evicted.clone() });
         (id, evicted)
     }
 
