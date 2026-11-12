@@ -108,7 +108,23 @@ keyring = { version = "3", features = ["apple-native"] }
 # HU-049/HU-050: frontmost app (NSWorkspace) and activate (NSRunningApplication); already in Cargo.lock via tauri/tao.
 core-foundation = "0.10"
 core-graphics = "0.25"
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "libc", "NSWorkspace", "NSRunningApplication"] }
+# K2-06 (S6): the consent alert is an AppKit NSAlert run modally. NSAlert + NSApplication to show it
+# and run it, and the button chain (NSButton over NSControl/NSView/NSResponder) to add the refusing
+# button first with Return as its key equivalent. Feature flags only: every one of these crates is
+# ALREADY in Cargo.lock.
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "libc", "NSAlert", "NSApplication", "NSButton", "NSControl", "NSResponder", "NSView", "NSWorkspace", "NSRunningApplication"] }
+# K2-06 (S1/S7): ScreenCaptureKit window capture, macOS 14+. objc2-screen-capture-kit 0.3.2 is the
+# only NEW package (Zlib OR Apache-2.0 OR MIT); it resolves onto the objc2 0.6.5, objc2-foundation
+# 0.3.2, objc2-core-foundation 0.3.2, objc2-core-graphics 0.3.2 and block2 0.6.2 ALREADY in
+# Cargo.lock, so nothing else is added and no second objc2 version appears. The features are the
+# ones Koda uses (Gentle Dot enables the same set): SCShareableContent for the SCWindow by id,
+# SCStream for SCContentFilter/SCStreamConfiguration, SCScreenshotManager for the shot itself.
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSError"] }
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFCGTypes", "CFData"] }
+objc2-core-graphics = { version = "0.3", default-features = false, features = ["std", "CGDataProvider", "CGImage"] }
+block2 = "0.6"
+objc2-screen-capture-kit = { version = "0.3", default-features = false, features = ["std", "block2", "objc2-core-foundation", "objc2-core-graphics", "SCScreenshotManager", "SCShareableContent", "SCStream"] }
 
 [target.'cfg(windows)'.dependencies]
 # #467 key store: Windows Credential Manager.
@@ -127,7 +143,11 @@ keyring = { version = "3", features = ["windows-native"] }
 # OVERLAPPED/GetOverlappedResult/CancelIoEx, Storage_FileSystem for
 # ReadFile/WriteFile/MoveFileExW, Security_Cryptography for BCryptGenRandom
 # (128-bit pipe instance). Symbols verified against the cached 0.61.2 source.
-windows-sys = { version = "0.61.2", default-features = false, features = ["Win32_Foundation", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging", "Win32_System_Threading", "Win32_Graphics_Gdi", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Diagnostics_ToolHelp", "Win32_System_SystemInformation", "Win32_Security_Authorization", "Win32_System_Pipes", "Win32_System_IO", "Win32_Storage_FileSystem", "Win32_Security_Cryptography", "Win32_Graphics_Dwm"] }
+# K2-06 (S1, S6) additions, same crate and still feature gates only: Storage_Xps for
+# PrintWindow (it lives there in windows-sys 0.61.2; PW_RENDERFULLCONTENT itself is NOT
+# declared there and comes from winuser.h as a local constant) and UI_Controls for the consent
+# task dialog (TaskDialogIndirect). Both verified against the cached 0.61.2 source.
+windows-sys = { version = "0.61.2", default-features = false, features = ["Win32_Foundation", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging", "Win32_System_Threading", "Win32_Graphics_Gdi", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Diagnostics_ToolHelp", "Win32_System_SystemInformation", "Win32_Security_Authorization", "Win32_System_Pipes", "Win32_System_IO", "Win32_Storage_FileSystem", "Win32_Security_Cryptography", "Win32_Graphics_Dwm", "Win32_Storage_Xps", "Win32_UI_Controls"] }
 
 [target.'cfg(unix)'.dev-dependencies]
 # tests only: fake key presses on a PRIVATE Xvfb (tests/hotkey_x11.rs). Never shipped.
