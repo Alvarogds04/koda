@@ -539,8 +539,12 @@ unchanged session is never echoed back.
 Failures are closed codes with a fixed Spanish sentence (`telegram_flood_wait` carries `retryAfterMinutes`, e.g.
 «Telegram pidió esperar 4 minutos»); Telegram's own text is never forwarded because it can echo the phone number. A
 revoked session answers `telegram_session_invalid` and disconnects instead of pretending to be connected. The global
-pause refuses the login and logout frames (they change the account's state) but keeps answering status and the
-start-up restore.
+pause refuses the login frames (they change the account's state) but keeps answering status, the start-up restore and
+`telegram_logout`: revoking a session is an account-safety action, like `agent_disconnect`. A login belongs to the
+connection that started it, so another window can neither answer its code nor replace the flow
+(`telegram_login_other_connection`). The library's own logging is passed level 0 (OFF) explicitly, so a
+`MTCUTE_LOG_LEVEL` in the environment can never make mtcute print phone numbers, codes or payloads to the daemon's
+stdio; a display name longer than the frame's 80 chars is clipped where the account is stored.
 
 **Island contract.** The island must store the session in the keychain, must never write it to a file, must never echo it
 back inside another frame, and after `telegram_logout` must delete its keychain entry (the daemon already revoked the auth

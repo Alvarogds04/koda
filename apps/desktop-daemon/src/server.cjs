@@ -56,11 +56,11 @@ const WIN_HANDSHAKE_MS = 2000;
  * work (abort, agent_disconnect, every read-only query) stays allowed.
  */
 const PAUSED_REFUSED = new Set(["send", "steer", "new_conversation", "agent_connect", "hooks_install", "hooks_remove", "connectors_list", "agents_list", "minikoda_launch",
-	// K2-13 (S10): connecting, answering or disconnecting Telegram changes the user's account state, so the global pause
-	// stops it like any other work. `telegram_status` (read-only) and `telegram_session_restore` (the island's hand-off of
-	// the keychain session at start, no new work) still answer: without the restore a paused daemon could not report
-	// whether the session it already holds is valid.
-	"telegram_login_start", "telegram_login_code", "telegram_login_password", "telegram_logout"]);
+	// K2-13 (S10): starting or advancing a Telegram login changes the user's account state, so the global pause stops it
+	// like any other work. `telegram_status` (read-only), `telegram_session_restore` (the island's hand-off of the keychain
+	// session at start, no new work) and `telegram_logout` still answer: #379 keeps account-safety actions available (it
+	// lets `agent_disconnect` through for the same reason), and revoking a session must never wait for the pause to end.
+	"telegram_login_start", "telegram_login_code", "telegram_login_password"]);
 
 const uid = () => (typeof process.getuid === "function" ? process.getuid() : undefined);
 
@@ -186,6 +186,7 @@ class IslandServer {
 		this.opts = { ...DEFAULTS, ...(options.limits ?? {}) };
 		this.log = options.log ?? (() => {});
 		this.clients = new Set();
+		this.clientSeq = 0; // K2-13: each connection gets an id, so a login can belong to the one that started it
 		this.busy = false;
 		this.switching = undefined; // the single in-flight profile/role selection
 		this.authFlow = undefined; // last sign-in flow seen: {flowId, accountId, method, phase}
@@ -352,7 +353,7 @@ class IslandServer {
 			socket.destroy();
 			return;
 		}
-		const client = { socket, ready: false, seq: 0, pending: Buffer.alloc(0), frames: 0, windowStart: Date.now(), dead: false };
+		const client = { id: `c${++this.clientSeq}`, socket, ready: false, seq: 0, pending: Buffer.alloc(0), frames: 0, windowStart: Date.now(), dead: false };
 		this.clients.add(client);
 		client.handshake = setTimeout(() => this.drop(client), WIN ? Math.min(this.opts.handshakeMs, WIN_HANDSHAKE_MS) : this.opts.handshakeMs);
 		socket.on("error", () => this.drop(client));
@@ -1001,7 +1002,7 @@ class IslandServer {
 			case "telegram_logout":
 			case "telegram_session_restore":
 				if (!this.telegram) return fail("unavailable");
-				return this.handleTelegram(frame, reply, fail);
+				return this.handleTelegram(frame, reply, fail, client.id);
 			default:
 				return fail("bad_request");
 		}
@@ -1052,24 +1053,26 @@ class IslandServer {
 	/**
 	 * K2-13 (S10/S20): the Telegram verbs. Every answer is built by protocol.cjs from closed fields, and the ONE frame
 	 * that can carry a session (`telegram_session`) is sent with `reply`, i.e. only to the connection that asked for it.
-	 * Secrets (apiHash, phone, code, password, session) are never logged and never broadcast.
+	 * Secrets (apiHash, phone, code, password, session) are never logged and never broadcast. `connection` is the id of
+	 * the connection that sent the frame: a login belongs to the one that started it, so another window can neither
+	 * answer its code nor replace the flow (the verifier showed two concurrent logins both receiving the session).
 	 */
-	async handleTelegram(frame, reply, fail) {
+	async handleTelegram(frame, reply, fail, connection) {
 		const t = this.telegram;
 		try {
 			switch (frame.type) {
 				case "telegram_status":
 					return reply(P.telegramStatusFrame(t.status()));
 				case "telegram_login_start":
-					await t.loginStart({ apiId: frame.apiId, apiHash: frame.apiHash, phone: frame.phone });
+					await t.loginStart({ apiId: frame.apiId, apiHash: frame.apiHash, phone: frame.phone, owner: connection });
 					return reply(P.telegramStatusFrame(t.status()));
 				case "telegram_login_code": {
-					const out = await t.loginCode(frame.code);
+					const out = await t.loginCode(frame.code, connection);
 					if (out.session !== undefined) return reply(P.telegramSessionFrame({ session: out.session }));
 					return reply(P.telegramStatusFrame(t.status()));
 				}
 				case "telegram_login_password": {
-					const out = await t.loginPassword(frame.password);
+					const out = await t.loginPassword(frame.password, connection);
 					if (out.session !== undefined) return reply(P.telegramSessionFrame({ session: out.session }));
 					return reply(P.telegramStatusFrame(t.status()));
 				}

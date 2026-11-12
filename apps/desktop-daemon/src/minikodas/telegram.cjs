@@ -43,6 +43,7 @@ const SPANISH_NOTICES = Object.freeze({
 	telegram_not_connected: "No hay ninguna cuenta de Telegram conectada. Conectala en Ajustes.",
 	telegram_channel_invalid: "El canal de Telegram no es válido. Usá @usuario o un enlace t.me del canal.",
 	telegram_cancelled: "La conexión con Telegram se canceló.",
+	telegram_login_other_connection: "Esa conexión con Telegram la empezó otra ventana de Koda. Terminála desde ahí.",
 	telegram_failed: "Telegram no respondió como se esperaba. Probá otra vez.",
 });
 /** Every code the Telegram frames can carry (the server maps them through `SPANISH_NOTICES`). */
@@ -63,6 +64,22 @@ class TelegramError extends Error {
 }
 
 const rpcText = (error) => String(error?.text ?? error?.errorMessage ?? error?.message ?? "");
+
+/** Telegram allows first+last to add up to 129 chars; the status frame carries a name capped at 80. */
+const MAX_ACCOUNT_NAME = 80;
+/** The longest session string that may travel in one `telegram_session` frame (a real mtcute session is ~350 chars). */
+const SESSION_MAX_CHARS = 4096;
+/**
+ * The session contract, shared with protocol.cjs so the frame builder, the frame decoder and the login agree on ONE
+ * definition: printable ASCII, non-empty, bounded. mtcute's own string session is base64 of a fixed layout, so it always
+ * satisfies this; anything else (a client that answered a file path, a JSON blob, a pasted multi-line string) does not.
+ */
+const isCarriableSession = (value) =>
+	typeof value === "string"
+	&& value !== ""
+	&& value.length <= SESSION_MAX_CHARS
+	&& !/[\u0000-\u001f\u007f]/.test(value)
+	&& /^[\x20-\x7e]+$/.test(value);
 
 /**
  * Maps a Telegram/mtcute failure to one closed code plus its Spanish sentence. The raw text is never echoed: it can
@@ -108,6 +125,13 @@ const defaultImporter = async (spec) => import(path.isAbsolute(spec) ? pathToFil
 const restoreRefusesByDesign = () => {
 	throw new TelegramError("telegram_session_invalid");
 };
+
+/**
+ * mtcute's own log manager (`@mtcute/core` LogManager): 0 is OFF. It is passed explicitly, so nothing the library logs —
+ * which at INFO/DEBUG/VERBOSE carries phone numbers, codes and payloads — reaches the daemon's stdio, whatever
+ * `MTCUTE_LOG_LEVEL` is set to in the person's environment (NodePlatform reads it as the default level).
+ */
+const MTCUTE_LOG_OFF = 0;
 
 /**
  * Finds the client library where Koda ships it (S6, L41): beside the Node the daemon runs on — the bundled runtime, so
@@ -161,6 +185,7 @@ class TelegramSession extends EventEmitter {
 		this.session = undefined;
 		this.waiting = { code: undefined, password: undefined };
 		this.queued = { code: undefined, password: undefined };
+		this.loginOwner = undefined;
 		this.waiters = [];
 		this.flowEnd = undefined;
 		this.stopped = false;
@@ -182,18 +207,21 @@ class TelegramSession extends EventEmitter {
 
 	// ----- the frame-driven login ------------------------------------------------------------
 
-	/**
-	 * Starts a login: builds the one client (MemoryStorage), asks Telegram for a code and returns at once. The code
+	/** Starts a login: builds the one client (MemoryStorage), asks Telegram for a code and returns at once. The code
 	 * request's outcome (a FLOOD_WAIT, an invalid api_id) arrives as a "status" event with its Spanish notice.
-	 */
-	async loginStart({ apiId, apiHash, phone }) {
+	 * `owner` is the connection that started it: only that connection may answer or replace the flow. */
+	async loginStart({ apiId, apiHash, phone, owner }) {
 		if (this.stopped) throw new TelegramError("telegram_cancelled");
 		if (this.state === "connected") throw new TelegramError("telegram_already_connected");
+		// A pending login belongs to the window that started it: another one cannot silently replace it (two windows
+		// starting at once both ended up receiving the session).
+		if (this.loginOwner !== undefined && owner !== this.loginOwner) throw new TelegramError("telegram_login_other_connection");
 		await this.#discard("telegram_cancelled");
 		const module = await this.#clientModule();
 		this.apiId = apiId;
 		this.apiHash = apiHash;
-		this.client = new module.TelegramClient({ apiId, apiHash, storage: new module.MemoryStorage() });
+		this.client = new module.TelegramClient({ apiId, apiHash, storage: new module.MemoryStorage(), logLevel: MTCUTE_LOG_OFF });
+		this.loginOwner = owner;
 		this.state = "awaiting_code";
 		this.account = undefined;
 		this.session = undefined;
@@ -207,14 +235,16 @@ class TelegramSession extends EventEmitter {
 	}
 
 	/** Delivers the code Telegram sent. Resolves to the next state, or to the session when the login finished. */
-	async loginCode(code) {
+	async loginCode(code, owner) {
 		if (this.state !== "awaiting_code") throw new TelegramError("telegram_not_awaiting_code");
+		this.#assertOwner(owner);
 		return this.#answer("code", code);
 	}
 
 	/** Delivers the two-step password. Resolves to the next state, or to the session when the login finished. */
-	async loginPassword(password) {
+	async loginPassword(password, owner) {
 		if (this.state !== "awaiting_password") throw new TelegramError("telegram_not_awaiting_password");
+		this.#assertOwner(owner);
 		return this.#answer("password", password);
 	}
 
@@ -296,6 +326,12 @@ class TelegramSession extends EventEmitter {
 		this.apiHash = undefined;
 		this.flow = undefined;
 		this.flowEnd = undefined;
+		this.loginOwner = undefined;
+	}
+
+	/** Only the connection that started a login may answer it; a flow without an owner (tests, an embedded call) is open. */
+	#assertOwner(owner) {
+		if (this.loginOwner !== undefined && owner !== this.loginOwner) throw new TelegramError("telegram_login_other_connection");
 	}
 
 	/** Cancels the flow in flight (its pending answer rejects with `code`) and destroys the client. */
@@ -312,6 +348,7 @@ class TelegramSession extends EventEmitter {
 		}
 		this.state = "disconnected";
 		this.account = undefined;
+		this.loginOwner = undefined;
 	}
 
 	async #clientModule() {
@@ -378,11 +415,15 @@ class TelegramSession extends EventEmitter {
 
 	#signedIn(user) {
 		this.state = "connected";
-		const name = typeof user?.displayName === "string" && user.displayName.trim() !== "" ? user.displayName : typeof user?.firstName === "string" ? user.firstName : "Cuenta de Telegram";
+		const raw = typeof user?.displayName === "string" && user.displayName.trim() !== "" ? user.displayName : typeof user?.firstName === "string" ? user.firstName : "Cuenta de Telegram";
+		// The status frame caps the name at 80 and refuses control characters; a real Telegram name can be 129 chars, so it
+		// is clipped HERE (a frame builder that throws would leave a person logged in with no status to show for it).
+		const name = String(raw).replace(/[\u0000-\u001f\u007f]/g, "").trim().slice(0, MAX_ACCOUNT_NAME) || "Cuenta de Telegram";
 		const username = typeof user?.username === "string" && user.username !== "" ? user.username : null;
 		this.account = { name, username };
 	}
 
+	/** The exported session, or undefined when the client has none (a restore then keeps the island's copy as it is). */
 	async #export(client) {
 		try {
 			const exported = await client.exportSession();
@@ -415,21 +456,32 @@ class TelegramSession extends EventEmitter {
 				},
 				codeSentCallback: () => this.log("telegram: Telegram sent the login code"),
 			});
+			// The session leaves in the ONE `telegram_session` frame, which carries printable ASCII bounded by
+			// SESSION_MAX_CHARS. A login that cannot produce such a value must not complete: the island could neither
+			// store it in the keychain nor restore it, and the daemon would look connected with nothing to reconnect with.
+			const exported = await this.#export(client);
+			if (!isCarriableSession(exported)) throw new TelegramError("telegram_failed");
 			this.#signedIn(user);
-			const session = await this.#export(client);
+			const session = exported;
 			this.session = session;
 			this.apiHash = apiHash; // still needed to reconnect; memory only
+			this.loginOwner = undefined;
 			this.log("telegram: login finished");
 			this.#notify({ kind: "done", session });
 			this.#emitStatus();
 		} catch (error) {
-			const mapped = error instanceof TelegramError && error.code === "telegram_cancelled" ? { code: "telegram_cancelled", notice: error.message } : mapRpcError(error);
+			const mapped = error instanceof TelegramError && error.code === "telegram_cancelled" ? { code: "telegram_cancelled", notice: error.message } : error instanceof TelegramError ? { code: error.code, notice: error.notice } : mapRpcError(error);
 			const failure = new TelegramError(mapped.code, { ...mapped, cause: error });
 			if (mapped.code === "telegram_cancelled") {
 				this.log("telegram: login cancelled");
 			} else {
 				this.log(`telegram: login failed (${failure.code})`);
-				this.state = mapped.code === "telegram_session_invalid" ? "disconnected" : this.state === "connected" ? "connected" : this.state === "awaiting_password" ? "awaiting_password" : "awaiting_code";
+			}
+			if (mapped.code === "telegram_session_invalid" || mapped.code === "telegram_failed") {
+				// Nothing is waiting to be retried: the attempt is over, and an auth key nobody could store must not linger.
+				await this.#discard(failure);
+			} else {
+				this.state = this.state === "connected" ? "connected" : this.state === "awaiting_password" ? "awaiting_password" : "awaiting_code";
 			}
 			this.#notify({ kind: "failed", error: failure });
 			this.#emitStatus({ notice: failure.notice, ...(failure.retryAfterMinutes !== undefined ? { retryAfterMinutes: failure.retryAfterMinutes } : {}) });
@@ -451,5 +503,8 @@ module.exports = {
 	mapRpcError,
 	resolveClientModule,
 	clientModuleEntry,
+	isCarriableSession,
+	SESSION_MAX_CHARS,
+	MAX_ACCOUNT_NAME,
 	MODULE_SPEC,
 };

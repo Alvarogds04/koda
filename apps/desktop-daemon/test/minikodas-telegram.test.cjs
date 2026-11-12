@@ -370,6 +370,84 @@ test("telegram: a dead stored session settles disconnected with no prompt on std
 	assert.deepEqual(writes, [], `nothing was written to stdout: ${JSON.stringify(writes)}`);
 });
 
+// ---------- clients, frames and ownership ----------
+
+test("telegram: the real exported session fits the frame by a wide margin (measured, not guessed)", { skip: realMtcute ? false : "packaging/runtime/node_modules is not installed here" }, async () => {
+	const { real } = await realClientModule();
+	const stored = await realSessionString(real);
+	assert.ok(stored.length > 0, "the library exported something");
+	assert.match(stored, /^[\x20-\x7e]+$/, "printable ASCII, so the frame (and the island's keychain) can carry it");
+	assert.ok(stored.length <= P.TELEGRAM_LIMITS.maxSession, `${stored.length} chars fit the ${P.TELEGRAM_LIMITS.maxSession}-char frame`);
+	assert.ok(stored.length < 1024, `the cap is not tight: a real mtcute session measures ${stored.length} chars`);
+	assert.equal(P.telegramSessionFrame({ session: stored }).session, stored, "the frame accepts a real session");
+});
+
+test("telegram: mtcute's own logging stays off whatever MTCUTE_LOG_LEVEL says (REAL mtcute)", { skip: realMtcute ? false : "packaging/runtime/node_modules is not installed here" }, async (t) => {
+	// NodePlatform reads MTCUTE_LOG_LEVEL as the default level, and INFO/DEBUG/VERBOSE can print phone numbers, codes and
+	// payloads. The daemon passes its own level, so a verbose environment cannot turn the library's log on.
+	const real = await import(pathToFileURL(REAL_MTCUTE).href);
+	const previous = process.env.MTCUTE_LOG_LEVEL;
+	process.env.MTCUTE_LOG_LEVEL = "5";
+	t.after(() => {
+		if (previous === undefined) delete process.env.MTCUTE_LOG_LEVEL;
+		else process.env.MTCUTE_LOG_LEVEL = previous;
+	});
+	const created = [];
+	class RecordingClient extends real.TelegramClient {
+		constructor(params) {
+			super(params);
+			created.push(this);
+			this._client._connected = true;
+			this._client.mt.call = async () => ({ _: "mt_rpc_error", errorCode: 401, errorMessage: "AUTH_KEY_UNREGISTERED" });
+		}
+	}
+	const session = new TelegramSession({ loadModule: async () => ({ TelegramClient: RecordingClient, MemoryStorage: real.MemoryStorage }) });
+	t.after(() => session.stop());
+	await session.loginStart({ apiId: API_ID, apiHash: API_HASH, phone: PHONE });
+	assert.equal(created.length, 1);
+	assert.equal(created[0].log.level, 0, "level 0 (OFF) was passed explicitly; the environment did not decide");
+});
+
+test("telegram: a long Telegram display name is clipped so the status frame can still be built", async (t) => {
+	// Telegram allows first+last up to 129 chars; the status frame carries a name capped at 80.
+	const fake = fakeModule({ user: { displayName: "ñ".repeat(129), username: "anap" } });
+	const session = new TelegramSession({ loadModule: async () => fake.mod });
+	t.after(() => session.stop());
+	await loginFlow(session);
+	assert.equal(session.status().account.name.length, 80, "the name reaches the frame clipped, not dropped by the frame builder");
+	assert.doesNotThrow(() => P.telegramStatusFrame(session.status()), "a real name must never make the status frame throw");
+});
+
+test("telegram: a session the frames cannot carry fails the login cleanly instead of throwing in the reply", async (t) => {
+	// 4 KiB is generous (see the measured test below); a value outside the frame's contract must never reach the reply,
+	// because the island could neither store it nor restore it and the daemon would look connected.
+	const fake = fakeModule({ exported: "x".repeat(P.TELEGRAM_LIMITS.maxSession + 1) });
+	const session = new TelegramSession({ loadModule: async () => fake.mod });
+	t.after(() => session.stop());
+	await session.loginStart({ apiId: API_ID, apiHash: API_HASH, phone: PHONE });
+	await assert.rejects(() => session.loginCode(CODE), (error) => error.code === "telegram_failed");
+	assert.equal(session.state, "disconnected", "nobody is left «connected» with a session that cannot travel");
+	assert.equal(session.connectedClient(), undefined);
+	assert.ok(fake.clients[0].destroyed, "the client is torn down instead of keeping an auth key nobody can restore");
+});
+
+test("telegram: another connection cannot answer or restart a pending login", async (t) => {
+	const fake = fakeModule({ needs2fa: true });
+	const session = new TelegramSession({ loadModule: async () => fake.mod });
+	t.after(() => session.stop());
+	await session.loginStart({ apiId: API_ID, apiHash: API_HASH, phone: PHONE, owner: "conn-a" });
+	const refused = (error) => error.code === "telegram_login_other_connection";
+	await assert.rejects(() => session.loginCode(CODE, "conn-b"), refused, "a code from another window is not the person's answer");
+	await assert.rejects(() => session.loginStart({ apiId: API_ID, apiHash: API_HASH, phone: PHONE, owner: "conn-b" }), refused, "a second window cannot replace the flow");
+	assert.equal(session.state, "awaiting_code", "and the first window is still where it was");
+	const out = await session.loginCode(CODE, "conn-a");
+	assert.equal(out.state, "awaiting_password");
+	await assert.rejects(() => session.loginPassword(PASSWORD, "conn-b"), refused, "the 2FA password belongs to the same window");
+	assert.equal((await session.loginPassword(PASSWORD, "conn-a")).state, "connected");
+	// Once the login finished there is nothing left to own: code/password are simply not awaited anymore.
+	await assert.rejects(() => session.loginCode(CODE, "conn-b"), (error) => error.code === "telegram_not_awaiting_code");
+});
+
 // ---------- logout, missing library, cancellation ----------
 
 test("telegram: logout destroys the client and forgets the account", async (t) => {
@@ -458,6 +536,11 @@ test("protocol: telegram frames accept exactly the documented fields and reject 
 	refuse({ type: "telegram_login_password", password: "x".repeat(1025) });
 	refuse({ type: "telegram_session_restore", apiId: API_ID, apiHash: API_HASH, session: "" });
 	refuse({ type: "telegram_session_restore", apiId: API_ID, apiHash: API_HASH, session: "x".repeat(4097) });
+	// PROTOCOL.md says printable ASCII: a session with a newline or a non-ASCII byte is not a mtcute session and would
+	// be stored in the keychain as something the daemon could never read back.
+	refuse({ type: "telegram_session_restore", apiId: API_ID, apiHash: API_HASH, session: `${SESSION.slice(0, 4)}\u00e9${SESSION.slice(4)}` });
+	refuse({ type: "telegram_session_restore", apiId: API_ID, apiHash: API_HASH, session: `${SESSION}\n${SESSION}` });
+	refuse({ type: "telegram_session_restore", apiId: API_ID, apiHash: API_HASH, session: `${SESSION}\u0000` });
 	refuse({ type: "telegram_login_start" });
 });
 
@@ -528,14 +611,14 @@ class FakeTelegram extends EventEmitter {
 		this.emit("status", this.status());
 		return { state: this.state };
 	}
-	async loginCode(frame) {
-		this.calls.push(["loginCode", frame]);
+	async loginCode(code, owner) {
+		this.calls.push(["loginCode", { code, owner }]);
 		this.state = "connected";
 		this.emit("status", this.status());
 		return { state: "connected", session: this.session };
 	}
-	async loginPassword(frame) {
-		this.calls.push(["loginPassword", frame]);
+	async loginPassword(password, owner) {
+		this.calls.push(["loginPassword", { password, owner }]);
 		return { state: this.state };
 	}
 	async logout() {
@@ -598,24 +681,50 @@ test("server: the session frame answers ONLY the connection that completed the l
 	assert.ok(telegram.calls.some(([name]) => name === "loginCode"));
 });
 
-test("server: the global pause refuses every login/logout frame and still answers status", async (t) => {
+test("server: the global pause refuses every login frame, still answers status, and still allows logout", async (t) => {
 	const { open } = await serverFixture(t, { paused: true });
 	const c = await open();
 	for (const frame of [
 		{ type: "telegram_login_start", apiId: API_ID, apiHash: API_HASH, phone: PHONE },
 		{ type: "telegram_login_code", code: CODE },
 		{ type: "telegram_login_password", password: PASSWORD },
-		{ type: "telegram_logout" },
 	]) {
 		c.frames.length = 0;
 		c.send(frame);
 		const error = await waitFrame(c, (f) => f.type === "error");
 		assert.equal(error.code, "paused", `${frame.type} is refused while paused`);
 	}
+	// #379 keeps account-safety actions available, like agent_disconnect: logging out must never need the pause off.
+	c.frames.length = 0;
+	c.send({ type: "telegram_logout" });
+	const afterLogout = await waitFrame(c, (f) => f.type === "telegram_status" || f.type === "error");
+	assert.equal(afterLogout.type, "telegram_status", "logout stays available while paused");
+	assert.equal(afterLogout.state, "disconnected");
 	c.frames.length = 0;
 	c.send({ type: "telegram_status" });
 	const status = await waitFrame(c, (f) => f.type === "telegram_status");
 	assert.equal(status.state, "disconnected", "read-only status still answers while paused");
+});
+
+test("server: a login is handed to the service with the connection that started it", async (t) => {
+	const { open, telegram } = await serverFixture(t);
+	const starts = async (n) => {
+		for (let i = 0; i < 400 && telegram.calls.filter(([name]) => name === "loginStart").length < n; i++) await sleepTick(5);
+		return telegram.calls.filter(([name]) => name === "loginStart");
+	};
+	const first = await open();
+	const second = await open();
+	first.send({ type: "telegram_login_start", apiId: API_ID, apiHash: API_HASH, phone: PHONE });
+	const one = await starts(1);
+	second.send({ type: "telegram_login_start", apiId: API_ID, apiHash: API_HASH, phone: PHONE });
+	const two = await starts(2);
+	assert.equal(two.length, 2, `both frames reached the service: ${JSON.stringify(telegram.calls)}`);
+	assert.ok(one[0][1].owner !== undefined && two[1][1].owner !== undefined, "every start carries its originating connection");
+	assert.notEqual(two[0][1].owner, two[1][1].owner, "two connections are not the same owner");
+	first.send({ type: "telegram_login_code", code: CODE });
+	for (let i = 0; i < 400 && !telegram.calls.some(([name]) => name === "loginCode"); i++) await sleepTick(5);
+	const answered = telegram.calls.filter(([name]) => name === "loginCode");
+	assert.deepEqual(answered.map(([, frame]) => frame.owner), [two[0][1].owner], "the code is answered by the connection that started the login");
 });
 
 test("server: a closed Telegram error code reaches the island unchanged", async (t) => {
