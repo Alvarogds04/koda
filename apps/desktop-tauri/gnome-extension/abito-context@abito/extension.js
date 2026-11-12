@@ -7,29 +7,35 @@
 //   GetRecentWindows() -> a(sss)   (app id, app name, title), most recently focused first.
 //   GetWindowAt(x, y) -> a(sssiiii)  (the window under a point, geometry for explicit character drags)
 //   ActivateByPid(pid) -> b          (v2: bring the window of ONE process to the front)
-//   PickWindow() -> (t, s, s, s)     (v3: id, app id, app name and title of the window Koda may look at)
-//   CaptureWindow(id) -> s           (v3: paint ONE window into a private PNG and answer its path)
+//   PickWindow(token) -> (t, s, s, s) (v4: id, app id, app name and title of the window Koda may look at)
+//   CaptureWindow(id, token) -> s     (v4: paint ONE window into a private PNG and answer its path)
+//   Register(token) -> b              (v4: bind Koda's per-launch token to the calling connection)
 // Everything but ActivateByPid raises a window, and only ActivateByPid does that and it only raises. Nothing
 // here moves, resizes or closes a window, runs code or a process, or sends anything to the network.
 //
-// TRUST BOUNDARY of CaptureWindow (deliberate, documented in src/windowcapture/gnome.rs too): this bus is the
-// user's own, so any process running as this user could call it. The extension refuses a caller it cannot
-// identify as Koda (the caller's own /proc/<pid>/cmdline must name this build), takes only an opaque window
-// id, paints nothing but that window, writes nowhere except $XDG_RUNTIME_DIR/koda-capture (0700, file 0600)
-// and answers only its path. A same-user process that defeats that check can already screenshot the session
-// itself, so the real boundary is the user, not this check.
+// TRUST BOUNDARY of PickWindow and CaptureWindow (deliberate, documented in src/windowcapture/gnome.rs too):
+// this bus is the user's own, so any process running as this user could call it. What stands in the way is a
+// random token Koda makes fresh on every launch and keeps in memory only: Register(token) binds it to the
+// caller's D-Bus unique name, and every PickWindow/CaptureWindow must present it or be refused with
+// org.abito.Context.NotAllowed (picking is gated too: it reveals an app name and a title). The token is never
+// written to disk, never logged and never sent anywhere but here. When the registering connection leaves the
+// bus the binding is released, so a new Koda launch can register; FIRST CALLER WINS, so a program that
+// registers before Koda holds the extension until it leaves - a denial of service that Koda reports as «another
+// program holds Koda's GNOME extension», never a way in. CaptureWindow still takes only an opaque window id,
+// paints nothing but that window, writes nowhere except $XDG_RUNTIME_DIR/koda-capture (0700, file 0600) and
+// answers only its path. A same-user process that could defeat any of this can already screenshot the session
+// itself, so the real boundary is the user.
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import Shell from 'gi://Shell';
 import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
+import {TokenGate} from './token.js';
 
 const BUS_NAME = 'org.abito.Context';
 const OBJECT_PATH = '/org/abito/Context';
 const MAX_HISTORY = 8;
 // Captures are written here, under the user's own 0700 runtime directory, and read by Koda at once.
 const PRIVATE_DIR = 'koda-capture';
-// The only processes allowed to ask for a capture: this build's binary, by file name.
-const KODA_PROCESS_NAMES = ['abito-island', 'koda'];
 
 // Shell.Screenshot.composite_to_stream is callback based; the Shell itself promisifies it, and _promisify is a
 // no-op when that already happened. Guarded: an older Shell without the method must not break the other methods.
@@ -43,6 +49,10 @@ try {
 
 const IFACE = `<node>
   <interface name="org.abito.Context">
+    <method name="Register">
+      <arg type="s" direction="in" name="token"/>
+      <arg type="b" direction="out" name="registered"/>
+    </method>
     <method name="GetRecentWindows">
       <arg type="a(sss)" direction="out" name="windows"/>
     </method>
@@ -56,6 +66,7 @@ const IFACE = `<node>
       <arg type="a(sssiiii)" direction="out" name="windows"/>
     </method>
     <method name="PickWindow">
+      <arg type="s" direction="in" name="token"/>
       <arg type="t" direction="out" name="id"/>
       <arg type="s" direction="out" name="app_id"/>
       <arg type="s" direction="out" name="app_name"/>
@@ -63,33 +74,15 @@ const IFACE = `<node>
     </method>
     <method name="CaptureWindow">
       <arg type="t" direction="in" name="id"/>
+      <arg type="s" direction="in" name="token"/>
       <arg type="s" direction="out" name="path"/>
     </method>
   </interface>
 </node>`;
 
-// Is `sender` (a D-Bus unique name) one of OUR processes? Best effort: a process of this same user that
-// cannot be read is allowed, because the permission boundary is the user, not this check.
-function _callerIsKoda(sender) {
-    if (!sender) return false;
-    let pid = 0;
-    try {
-        const [answer] = Gio.DBus.session.call_sync(
-            'org.freedesktop.DBus', '/org/freedesktop/DBus', 'org.freedesktop.DBus',
-            'GetConnectionUnixProcessID', new GLib.Variant('(s)', [sender]),
-            new GLib.VariantType('(u)'), Gio.DBusCallFlags.NONE, 800, null).deepUnpack();
-        pid = Number(answer);
-    } catch {
-        return false; // a sender that cannot be identified is never trusted with a picture
-    }
-    let argv0 = '';
-    try {
-        const [, contents] = Gio.File.new_for_path(`/proc/${pid}/cmdline`).load_contents(null);
-        argv0 = new TextDecoder().decode(contents.get_data()).split('\0')[0] ?? '';
-    } catch {
-        return true; // same user, cmdline unreadable (hidepid): see the trust boundary above
-    }
-    return KODA_PROCESS_NAMES.includes(argv0.split('/').pop());
+// The token a call carries, or '' when the caller sent something that is not a string.
+function _tokenOf(value) {
+    return typeof value === 'string' ? value : '';
 }
 
 // Write the PNG into the private directory with a fresh random name. 0600 file, 0700 directory: a window is
@@ -118,6 +111,8 @@ export default class AbitoContextExtension extends Extension {
     enable() {
         this._history = []; // Meta.Window, most recent first
         this._unmanaged = new Map(); // window -> signal id
+        this._gate = new TokenGate(); // the launch token Koda registered, if any
+        this._watches = []; // bus name watches that release a token when its owner leaves
         this._focusId = global.display.connect('notify::focus-window', () => this._remember(global.display.focus_window));
         this._remember(global.display.focus_window);
         this._dbus = Gio.DBusExportedObject.wrapJSObject(IFACE, this);
@@ -131,6 +126,9 @@ export default class AbitoContextExtension extends Extension {
         this._ownerId = 0;
         this._dbus?.unexport();
         this._dbus = null;
+        for (const id of this._watches) Gio.bus_unwatch_name(id);
+        this._watches = [];
+        this._gate = null;
         if (this._focusId) global.display.disconnect(this._focusId);
         this._focusId = 0;
         for (const [win, id] of this._unmanaged) win.disconnect(id);
@@ -198,10 +196,29 @@ export default class AbitoContextExtension extends Extension {
         return [rows]; // wrapJSObject wants the out args as a tuple
     }
 
-    // v3. The window Koda is allowed to look at: the most recently focused one that is not Koda's own, using
-    // the same history and the same filter GetWindowAt already applies. No id means «there is none», which is
-    // authoritative: the Shell can see every window.
-    PickWindow() {
+    // v4. Bind Koda's per-launch token to the connection that says it: first caller wins, and the
+    // binding is released when that connection leaves the bus, so a new Koda launch can register.
+    // `false` is not an error (another registration is live); the answer is what Koda reports on.
+    RegisterAsync(params, invocation) {
+        const sender = invocation.get_sender() ?? '';
+        const registered = this._gate.register(_tokenOf(params[0]), sender);
+        if (registered) {
+            this._watches.push(Gio.bus_watch_name_on_connection(
+                Gio.DBus.session, sender, Gio.BusNameWatcherFlags.NONE, null,
+                () => this._gate?.release(sender)));
+        }
+        invocation.return_value(new GLib.Variant('(b)', [registered]));
+    }
+
+    // v4. The window Koda is allowed to look at: the most recently focused one that is not Koda's own,
+    // using the same history and the same filter GetWindowAt already applies. No id means «there is
+    // none», which is authoritative: the Shell can see every window. Gated like CaptureWindow: this
+    // answers an app name and a title.
+    PickWindowAsync(params, invocation) {
+        if (!this._gate.check(_tokenOf(params[0]))) {
+            invocation.return_dbus_error('org.abito.Context.NotAllowed', 'Koda must register its launch token before it may pick a window');
+            return;
+        }
         const tracker = Shell.WindowTracker.get_default();
         for (const win of this._history) {
             if (win.is_skip_taskbar()) continue;
@@ -209,16 +226,18 @@ export default class AbitoContextExtension extends Extension {
             const id = app?.get_id() ?? win.get_wm_class() ?? '';
             const name = app?.get_name() ?? win.get_wm_class() ?? '';
             if (`${id} ${name} ${win.get_wm_class() ?? ''}`.toLowerCase().includes('abito') || !name.trim()) continue;
-            return [win.get_id(), id, name, win.get_title() ?? ''];
+            invocation.return_value(new GLib.Variant('(tsss)', [win.get_id(), id, name, win.get_title() ?? '']));
+            return;
         }
-        return [0, '', '', ''];
+        invocation.return_value(new GLib.Variant('(tsss)', [0, '', '', '']));
     }
 
-    // v3. Paint ONE window (covered windows included) into a private PNG and answer its path. Async because the
-    // compositor paints into a stream; the invocation is answered by hand so the caller can be checked first.
+    // v4. Paint ONE window (covered windows included) into a private PNG and answer its path. Async because
+    // the compositor paints into a stream, and because the invocation is answered by hand once the caller's
+    // token has been checked.
     CaptureWindowAsync(params, invocation) {
-        if (!_callerIsKoda(invocation.get_sender())) {
-            invocation.return_dbus_error('org.abito.Context.NotAllowed', 'Only Koda may ask for a window capture');
+        if (!this._gate.check(_tokenOf(params[1]))) {
+            invocation.return_dbus_error('org.abito.Context.NotAllowed', 'Koda must register its launch token before it may capture a window');
             return;
         }
         this._captureWindow(Number(params[0])).then(

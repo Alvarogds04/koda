@@ -14,20 +14,36 @@
 //! symlink cannot redirect the read, and it caps the size before reading.
 //!
 //! TRUST BOUNDARY (a deliberate, documented limit): `org.abito.Context` lives on the user's
-//! session bus, so ANY process running as this user can call `CaptureWindow` and receive a picture
-//! of any window it can name. That is the same boundary the portal, the X server and `/proc`
-//! already have: a same-user process can read the screen without Koda's help. What the extension
-//! does about it: `CaptureWindow` refuses a caller whose process it cannot identify as Koda
-//! (`/proc/<pid>/cmdline` must name this build), it takes only an opaque window id (never a title,
-//! a command or a rectangle), it captures nothing but that one window, it writes nowhere except the
-//! private directory, and it exposes no way to move, resize or close anything. A user who can
-//! bypass that check can already screenshot the session itself.
+//! session bus, so ANY process running as this user can call `CaptureWindow`. What stands in the way
+//! is a random token Koda makes fresh on every launch and keeps in memory only: `Register(token)`
+//! binds it to the calling D-Bus unique name, and `PickWindow`/`CaptureWindow` refuse with
+//! `org.abito.Context.NotAllowed` unless the call carries that exact token. No process name, no
+//! `/proc` lookup and no unreadable command line counts as Koda any more: only the token does.
+//! Whoever registers first holds the extension until its connection leaves the bus, so a foreign
+//! registration is a denial of service (`NOT_ALLOWED`: restart Koda), never a way in. Beyond the
+//! token, `CaptureWindow` takes only an opaque window id (never a title, a command or a rectangle),
+//! captures nothing but that one window, writes nowhere except the private directory, and exposes
+//! no way to move, resize or close anything. A same-user process that can bypass all of this can
+//! already screenshot the session itself, which is the boundary every other Linux path has too.
 use super::image::Raw;
 use super::mcp::{CaptureError, Target};
 use crate::contextwin::{BUS_NAME, INTERFACE, OBJECT_PATH};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::Duration;
 use zbus::blocking::{Connection, Proxy};
+
+/// The extension method that binds Koda's per-launch token to this connection.
+pub const REGISTER_METHOD: &str = "Register";
+/// The extension's own refusal: this caller's token is not the one bound to the extension.
+pub const NOT_ALLOWED_ERROR: &str = "org.abito.Context.NotAllowed";
+/// What the human is told when another program registered with the extension first.
+pub const NOT_ALLOWED: &str = "another program holds Koda's GNOME extension; restart Koda";
+/// A fixed token for `LinuxDesktop::fixed` (tests, and any headless run that fixes its environment).
+/// It is published on purpose and it is NOT a launch token: a real Koda always uses the random one.
+pub const TEST_TOKEN: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+static LAUNCH_TOKEN: OnceLock<String> = OnceLock::new();
 
 /// The extension method that answers which window the human was just looking at.
 pub const PICK_METHOD: &str = "PickWindow";
@@ -177,6 +193,25 @@ fn owns_bus(conn: &Connection) -> Result<bool, CaptureError> {
     dbus.name_has_owner(name).map_err(|e| unusable(&format!("the session bus did not answer ({e})")))
 }
 
+/// The token this launch of Koda registers with its own extension: 32 random bytes as hex, made once
+/// per process, kept in memory only. It is never written to disk, never logged and never printed
+/// with `Debug`, which is why it leaves this module only as an argument to a D-Bus call.
+pub fn launch_token() -> String {
+    LAUNCH_TOKEN.get_or_init(super::mcp::new_token).clone()
+}
+
+/// Did the extension refuse us by name, i.e. is its token somebody else's?
+fn refused_by_name(error: &zbus::Error) -> bool {
+    matches!(error, zbus::Error::MethodError(name, _, _) if name.as_str() == NOT_ALLOWED_ERROR)
+}
+
+/// Offer this launch's token. `false` means another registration is still live: not an error here,
+/// because the call that follows is what answers whether we may pick or capture. The token is only
+/// ever passed as an argument to the extension: it is never logged and never shown in an error.
+fn register(proxy: &Proxy<'_>, token: &str) {
+    let _: Result<bool, zbus::Error> = proxy.call(REGISTER_METHOD, &(token,));
+}
+
 /// Is the extension on the session bus right now? Presence only, no window data asked for.
 pub fn available(bus_address: Option<&str>) -> bool {
     crate::contextwin::dbus::available(bus_address)
@@ -184,26 +219,34 @@ pub fn available(bus_address: Option<&str>) -> bool {
 
 /// Ask the extension for the most recently focused window that is not Koda's.
 ///
+/// `token` is this launch's token (`launch_token`): it is registered first so the extension knows
+/// who is asking, and the same token travels with the question.
+///
 /// `Err(NoWindow)` is authoritative: the extension can see every window and there is none.
 /// Any other error means «this backend cannot answer», so the caller may try the next one.
-pub fn pick(bus_address: Option<&str>) -> Result<Target, CaptureError> {
-    let addr = bus_address.map(str::to_owned);
+pub fn pick(bus_address: Option<&str>, token: &str) -> Result<Target, CaptureError> {
+    let (addr, token) = (bus_address.map(str::to_owned), token.to_owned());
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let _ = tx.send(pick_now(addr.as_deref()));
+        let _ = tx.send(pick_now(addr.as_deref(), &token));
     });
     rx.recv_timeout(PICK_DEADLINE).unwrap_or_else(|_| Err(unusable("the extension did not answer in time")))
 }
 
-fn pick_now(bus_address: Option<&str>) -> Result<Target, CaptureError> {
+fn pick_now(bus_address: Option<&str>, token: &str) -> Result<Target, CaptureError> {
     let conn = connect(bus_address)?;
     if !owns_bus(&conn)? {
         return Err(unusable("the extension is not running"));
     }
     let proxy = Proxy::new(&conn, BUS_NAME, OBJECT_PATH, INTERFACE).map_err(|e| unusable(&format!("the extension cannot be used ({e})")))?;
-    let (id, app_id, app, title): (u64, String, String, String) = proxy
-        .call(PICK_METHOD, &())
-        .map_err(|e| unusable(&format!("this version of the extension does not pick windows ({e})")))?;
+    register(&proxy, token);
+    let (id, app_id, app, title): (u64, String, String, String) = proxy.call(PICK_METHOD, &(token,)).map_err(|e| {
+        if refused_by_name(&e) {
+            unusable(NOT_ALLOWED)
+        } else {
+            unusable(&format!("this version of the extension does not pick windows ({e})"))
+        }
+    })?;
     let candidate = crate::contextwin::Candidate { app_id: app_id.clone(), app_name: app.clone(), title: title.clone() };
     // Belt and braces: the extension already leaves Koda out, and nothing here trusts that.
     if id == 0 || app.trim().is_empty() || crate::contextwin::is_abito(&candidate) {
@@ -213,25 +256,30 @@ fn pick_now(bus_address: Option<&str>) -> Result<Target, CaptureError> {
 }
 
 /// Paint the window `id` through the extension and read the PNG it wrote. The file is deleted as
-/// soon as its pixels are in memory.
-pub fn capture(bus_address: Option<&str>, dir: &Path, id: u64) -> Result<Raw, CaptureError> {
+/// soon as its pixels are in memory. `token` is this launch's own, exactly as in `pick`.
+pub fn capture(bus_address: Option<&str>, dir: &Path, id: u64, token: &str) -> Result<Raw, CaptureError> {
     let (tx, rx) = std::sync::mpsc::channel();
-    let (addr, dir) = (bus_address.map(str::to_owned), dir.to_path_buf());
+    let (addr, dir, token) = (bus_address.map(str::to_owned), dir.to_path_buf(), token.to_owned());
     std::thread::spawn(move || {
-        let _ = tx.send(capture_now(addr.as_deref(), &dir, id));
+        let _ = tx.send(capture_now(addr.as_deref(), &dir, id, &token));
     });
     rx.recv_timeout(CAPTURE_DEADLINE).unwrap_or_else(|_| Err(unusable("the extension did not answer in time")))
 }
 
-fn capture_now(bus_address: Option<&str>, dir: &Path, id: u64) -> Result<Raw, CaptureError> {
+fn capture_now(bus_address: Option<&str>, dir: &Path, id: u64, token: &str) -> Result<Raw, CaptureError> {
     let conn = connect(bus_address)?;
     if !owns_bus(&conn)? {
         return Err(unusable("the extension is not running"));
     }
     let proxy = Proxy::new(&conn, BUS_NAME, OBJECT_PATH, INTERFACE).map_err(|e| unusable(&format!("the extension cannot be used ({e})")))?;
-    let path: String = proxy
-        .call(CAPTURE_METHOD, &(id,))
-        .map_err(|e| CaptureError::Failed(format!("the extension could not capture that window ({e})")))?;
+    register(&proxy, token);
+    let path: String = proxy.call(CAPTURE_METHOD, &(id, token)).map_err(|e| {
+        if refused_by_name(&e) {
+            unusable(NOT_ALLOWED)
+        } else {
+            CaptureError::Failed(format!("the extension could not capture that window ({e})"))
+        }
+    })?;
     let path = PathBuf::from(path);
     let bytes = read_and_discard(dir, &path, MAX_PNG_BYTES)?;
     decode_png(&bytes)

@@ -138,15 +138,26 @@ fn a_png_becomes_rgba_pixels() {
 #[test]
 fn the_extension_declares_the_capture_methods_the_client_calls() {
     let ext = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/gnome-extension/abito-context@abito/extension.js")).unwrap();
-    // PickWindow: the window Koda is asked about, as an opaque id plus what the model is told.
+    // Register: Koda's own per-launch token, bound to the connection that registered it.
+    assert!(ext.contains("<method name=\"Register\">"), "the registration method exists");
+    assert!(ext.contains("import {TokenGate} from './token.js';"), "the token gate is its own module");
+    // PickWindow: the token in, then the window Koda is asked about as an opaque id plus what the
+    // model is told. Picking is gated too: it reveals the app and the title of the window.
     assert!(ext.contains("<method name=\"PickWindow\">"), "the picking method exists");
+    assert!(ext.contains("type=\"s\" direction=\"in\" name=\"token\""), "picking needs the token");
     assert!(ext.contains("type=\"t\" direction=\"out\" name=\"id\""), "the id is an opaque uint64");
     assert!(ext.contains("type=\"s\" direction=\"out\" name=\"app_id\""));
     assert!(ext.contains("type=\"s\" direction=\"out\" name=\"title\""));
-    // CaptureWindow: one id in, a private file path out.
+    // CaptureWindow: one id and the token in, a private file path out.
     assert!(ext.contains("<method name=\"CaptureWindow\">"), "the capture method exists");
     assert!(ext.contains("type=\"t\" direction=\"in\" name=\"id\""));
     assert!(ext.contains("type=\"s\" direction=\"out\" name=\"path\""));
+    // No caller sniffing survives: a process named «koda» without the token is refused, and an
+    // unreadable command line is no longer a reason to trust anybody.
+    for gone in ["KODA_PROCESS_NAMES", "/proc/", "cmdline", "_callerIsKoda"] {
+        assert!(!ext.contains(gone), "{gone} is gone: only the token identifies the caller");
+    }
+    assert!(ext.contains("org.abito.Context.NotAllowed"), "an unregistered caller is refused by name");
     // The methods that were already there are untouched.
     for kept in ["GetRecentWindows", "GetWindowAt", "ActivateByPid"] {
         assert!(ext.contains(kept), "{kept} is still there");
@@ -160,7 +171,83 @@ fn the_extension_declares_the_capture_methods_the_client_calls() {
     assert!(ext.contains("paint_to_content"), "the window actor is painted");
     assert!(ext.contains("composite_to_stream"), "the shell encodes the PNG");
     let meta: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/gnome-extension/abito-context@abito/metadata.json")).unwrap()).unwrap();
-    assert_eq!(meta["version"], 3, "a changed contract is a new extension version");
+    assert_eq!(meta["version"], 4, "a changed contract is a new extension version");
+}
+
+/// The token gate is plain JavaScript with no GNOME imports, so node can run it here: the exact
+/// rules the extension relies on, checked without a Shell. A missing node is a loud failure, never
+/// a silent skip.
+#[test]
+fn the_token_gate_admits_only_the_token_it_bound_once() {
+    let module = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("gnome-extension/abito-context@abito/token.js");
+    let source = std::fs::read_to_string(&module).unwrap_or_else(|e| panic!("{} must exist: {e}", module.display()));
+    assert!(!source.contains("gi://"), "the gate is pure JavaScript: no GNOME imports");
+    let script = r#"
+import {pathToFileURL} from 'node:url';
+const {TokenGate} = await import(pathToFileURL(process.argv[1]).href);
+const gate = new TokenGate();
+const long = n => 'a'.repeat(n);
+const answers = {};
+answers.nothingBoundRefused = gate.check(long(64)) === false;
+answers.noTokenRefused = gate.check() === false;
+answers.nullTokenRefused = gate.check(null) === false;
+answers.numberTokenRefused = gate.check(1234) === false;
+answers.emptyTokenRefused = gate.check('') === false;
+answers.shortTokenNotRegistered = gate.register(long(31), ':1.4') === false;
+answers.nonStringNotRegistered = gate.register(1234, ':1.4') === false;
+answers.emptyTokenNotRegistered = gate.register('', ':1.4') === false;
+answers.noOwnerNotRegistered = gate.register(long(64), '') === false;
+answers.firstRegistrationAccepted = gate.register(long(64), ':1.7') === true;
+answers.wrongTokenRefused = gate.check('b'.repeat(64)) === false;
+answers.sameLengthWrongTokenRefused = gate.check('a'.repeat(63) + 'b') === false;
+answers.longerTokenRefused = gate.check(long(65)) === false;
+answers.shorterTokenRefused = gate.check(long(63)) === false;
+answers.secondRegistrationRefused = gate.register('c'.repeat(64), ':1.8') === false;
+answers.otherTokenRefusedWhileBound = gate.check('c'.repeat(64)) === false;
+gate.release(':1.9');
+answers.releaseByAnotherOwnerChangesNothing = gate.check(long(64)) === true;
+answers.rightTokenAccepted = gate.check(long(64)) === true;
+gate.release(':1.7');
+answers.releasedTokenRefused = gate.check(long(64)) === false;
+answers.afterReleaseANewRegistrationWorks = gate.register('d'.repeat(64), ':1.10') === true;
+answers.newTokenAccepted = gate.check('d'.repeat(64)) === true;
+answers.previousTokenRefusedAfterTheNewRegistration = gate.check(long(64)) === false;
+console.log(JSON.stringify(answers));
+"#;
+    let output = std::process::Command::new("node")
+        .args(["--input-type=module", "-e", script, module.to_str().expect("a UTF-8 module path")])
+        .output()
+        .unwrap_or_else(|e| panic!("node is required to check the extension's token gate (no skip): {e}"));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "node could not load {}: {stderr}", module.display());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let answers: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap_or_else(|e| panic!("the gate answered nothing usable ({e}): {stdout}{stderr}"));
+    for rule in [
+        "nothingBoundRefused",
+        "noTokenRefused",
+        "nullTokenRefused",
+        "numberTokenRefused",
+        "emptyTokenRefused",
+        "shortTokenNotRegistered",
+        "nonStringNotRegistered",
+        "emptyTokenNotRegistered",
+        "noOwnerNotRegistered",
+        "firstRegistrationAccepted",
+        "wrongTokenRefused",
+        "sameLengthWrongTokenRefused",
+        "longerTokenRefused",
+        "shorterTokenRefused",
+        "secondRegistrationRefused",
+        "otherTokenRefusedWhileBound",
+        "releaseByAnotherOwnerChangesNothing",
+        "rightTokenAccepted",
+        "releasedTokenRefused",
+        "afterReleaseANewRegistrationWorks",
+        "newTokenAccepted",
+        "previousTokenRefusedAfterTheNewRegistration",
+    ] {
+        assert_eq!(answers[rule], serde_json::Value::Bool(true), "{rule}: {stdout}{stderr}");
+    }
 }
 
 #[test]
@@ -226,4 +313,17 @@ fn a_symlink_in_the_directory_is_removed_without_touching_its_target() {
     assert!(read_and_discard(&dir, &link, 1 << 20).is_err());
     assert!(link.symlink_metadata().is_err(), "the planted link is removed");
     assert!(target.exists(), "its target is never touched");
+}
+
+/// One token per launch, always: made in memory, never written anywhere, and what the extension is
+/// given - so two launches of Koda never share it, and restarting Koda is a new token.
+#[test]
+fn the_launch_token_is_one_random_64_hex_token_per_launch() {
+    let first = launch_token();
+    assert_eq!(first, launch_token(), "the same launch keeps the same token");
+    assert_eq!(first.len(), 64, "32 random bytes, hex encoded: {first}");
+    assert!(first.chars().all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c)), "hex only: {first}");
+    // The fixed test token is published in this source: it must never be the launch's own.
+    assert_ne!(first, TEST_TOKEN, "the test token is not the launch token");
+    assert_eq!(TEST_TOKEN.len(), 64, "the test token is a real-shaped token");
 }
