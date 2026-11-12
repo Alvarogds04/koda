@@ -161,16 +161,13 @@ const text = e => [e.textContent || '', ...e.children.map(text)].join(' ');
   calls.length = 0;
   assert.equal(ui.firstChild.tagName, 'section', 'General is made of settings sections (#503 S18: three task cards)');
   assert.deepEqual(all(ui).filter(e => e.tagName === 'h2').map(text), [' Apariencia', ' Isla', ' Sonido']);
-  assert.deepEqual(all(ui).filter(e => e.tagName === 'label').map(e => e.textContent), ['Idioma','Tema','Nombre visible','Abrir al iniciar sesión','Abrir Ajustes al abrir Koda','Abrir al pasar el cursor','Plegar tras (s)','La isla vive en','Atajo global','Sonido']);
+  assert.deepEqual(all(ui).filter(e => e.tagName === 'label').map(e => e.textContent), ['Tema','Nombre visible','Abrir al iniciar sesión','Abrir Ajustes al abrir Koda','Abrir al pasar el cursor','Plegar tras (s)','La isla vive en','Atajo global','Sonido']);
   // #503 S18: the theme IS a segmented control now (the MD's «Oscuro / Claro / Sistema»); it must be the only one
   assert.equal(all(ui).filter(e => e.className === 'hub-segmented').length, 1);
-  for (const id of ['hub-language']) {
-    const el = all(ui).find(e => e.attrs.id === id); assert(el?.disabled, id);
-    el.fire(el.tagName === 'select' ? 'change' : 'click'); await ui.settled(); assert.deepEqual(calls, []);
-  }
-  assert(text(ui).includes('No disponible todavía'));
+  // S3 (04 ajustes 3): the dead controls are hidden, not greyed out with a «No disponible todavía» promise
+  assert.equal(all(ui).find(e => e.attrs.id === 'hub-language'), undefined, 'no disabled «Idioma» select');
+  assert(!text(ui).includes('No disponible todavía'), 'and no apology hint for a control that is not there');
   assert(!text(ui).includes('0 means never'), 'D6: Coucou shows no such line under Auto-close');
-  assert.equal(all(ui).find(e=>e.attrs.id==='hub-language').children.length,11);
   const field = id => all(ui).find(e => e.attrs.id === id);
   // isla-cualquier-lado S2: the folded island never hides at the edge, so there is no «Ocultar plegada» row nor its command
   assert.equal(field('hub-absence'), undefined, 'no edge-hide seconds field');
@@ -187,8 +184,9 @@ const text = e => [e.textContent || '', ...e.children.map(text)].join(' ');
   const reopened=await renderGeneral({invoke,V}); await reopened.settled();
   assert.equal(all(reopened).find(e=>e.attrs.id==='hub-autostart').attrs['aria-pressed'],'false'); reopened.dispose(); calls.length=0;
   // 5a: real display list and custom sounds on the existing closed hosts.
-  assert.deepEqual(field('hub-screen').children.map(e => e.attrs.value), ['primary', 'cursor', 'DP-1', 'HDMI-1'], 'monitor_action list feeds the select');
-  assert(field('hub-screen').children[1].disabled, 'cursor-following stays unavailable');
+  assert.deepEqual(field('hub-screen').children.map(e => e.attrs.value), ['primary', 'DP-1', 'HDMI-1'], 'monitor_action list feeds the select');
+  // S3 (04 ajustes 3): the cursor-following option was disabled forever, so it is not offered at all
+  assert(!field('hub-screen').children.some(e => e.attrs.value === 'cursor' || e.disabled), 'no dead «Pantalla bajo el cursor» option');
   assert(text(ui).includes('2 personalizados'), 'custom sound count from sound_action list');
   for (const id of ['hub-sounds-folder', 'hub-sounds-reload']) assert(!field(id).disabled, id);
   field('hub-sounds-folder').fire('click', false); await ui.settled(); assert.deepEqual(calls, []);
@@ -213,7 +211,7 @@ const text = e => [e.textContent || '', ...e.children.map(text)].join(' ');
   field('hub-screen').value='primary'; field('hub-screen').fire('change',false); await ui.settled(); assert.deepEqual(calls,[]);
   field('hub-screen').fire('change'); await ui.settled(); assert.deepEqual(calls.pop(),['prefs_action',{action:'clear_monitor'}]);
   field('hub-screen').value='DP-1'; field('hub-screen').fire('change'); await ui.settled(); assert.deepEqual(calls.pop(),['prefs_action',{action:'set_monitor',monitor:'DP-1'}]);
-  field('hub-screen').value='cursor'; field('hub-screen').fire('change'); await ui.settled(); assert.deepEqual(calls,[]);
+  // S3 (04 ajustes 3): there is no «Pantalla bajo el cursor» option any more, so no dead choice is left to refuse (checked above)
   field('hub-screen').value='HDMI-1'; field('hub-screen').fire('change'); await ui.settled(); assert.deepEqual(calls.pop(),['prefs_action',{action:'set_monitor',monitor:'HDMI-1'}], 'a listed display is selectable');
   const vol = field('hub-volume'); vol.value = '0.08'; vol.fire('input', false); await ui.settled(); assert.equal(calls.length, 0);
   vol.fire('input'); await ui.settled(); assert.deepEqual(calls.pop(), ['prefs_action', { action: 'set_sound_gain', gain: .08 }]);

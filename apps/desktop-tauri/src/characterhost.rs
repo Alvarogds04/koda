@@ -116,7 +116,8 @@ fn island_rect(app: &AppHandle) -> Option<(Rect, f64)> {
 /// Where the pet lives while it is in the island: centred under the top edge of what the human actually SEES — the folded disc or
 /// the open card — never under the transparent native window. isla-cualquier-lado T6c: since T5/T6b the island stands on the
 /// window's BOTTOM edge in the lower half, so aiming at the window top landed the pet ~308 px above the disc.
-/// geometry::visible_top is that one rule; the edge and the drawn height come from the same places the placement does.
+/// geometry::island_visible_top is that one rule (folded the disc, open the card); the edge and the drawn height come from the same
+/// places the placement does.
 fn island_origin(app: &AppHandle) -> Option<(f64, f64)> {
     let (r, scale) = island_rect(app)?;
     // the page's report BEFORE the core lock: islandshape takes SHAPE and then the core, so never the reverse
@@ -126,10 +127,9 @@ fn island_origin(app: &AppHandle) -> Option<(f64, f64)> {
         let core = state.core.lock().expect("core lock");
         (core.expanded, core.edge, core.chat, core.chat_height())
     };
-    // folded the visible island is the DISC; open it is the card the page draws (a 240 chat, a taller take-over)
-    let visible = if expanded { geometry::visible_card_height(reported, chat, chat_height) } else { geometry::COMPACT_DOT.1 };
+    // The arithmetic is pure and lives in geometry (R3-wiring-source-grep-only, T7): here it is only the window and the core read.
     let window = geometry::Rect { x: r.x.round() as i32, y: r.y.round() as i32, w: r.w.round() as i32, h: r.h.round() as i32 };
-    let top = geometry::visible_top(window, edge, geometry::scaled_height(visible, scale));
+    let top = geometry::island_visible_top(window, edge, expanded, reported, chat, chat_height, scale);
     Some(cw::island_spot(r.x + r.w / 2.0, f64::from(top), cw::SIZE, scale))
 }
 

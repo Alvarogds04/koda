@@ -108,4 +108,26 @@ test('Ver todas: the opener event is dispatched only from a trusted click; the t
   assert.match(b, /data-nusa-sessions|dataset\.nusaSessions/, 'state attribute set by our code');
   assert.match(css, /#capsule\[data-nusa-sessions="open"\][^{]*#overview-view[^{]*\{[^}]*visibility:\s*visible/, 'css carve-out');
 });
+test('S3 (04 avisos 3): the notice pills keep their painted size and gain a 24 px tall hit area through ::after', () => {
+  const css = read('island-nusa.css').replace(/\/\*[\s\S]*?\*\//g, '');
+  const decls = sel => {
+    const out = {};
+    for (const m of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+      if (!m[1].replace(/\s+/g, ' ').trim().split(',').map(s => s.trim()).includes(sel)) continue;
+      for (const d of m[2].split(';')) { const i = d.indexOf(':'); if (i > 0) out[d.slice(0, i).trim()] = d.slice(i + 1).trim(); }
+    }
+    return out;
+  };
+  for (const sel of ['.nusa-link', '.nusa-markall', '.nusa-all', '.sessions-all-back']) {
+    assert.equal(decls(sel).position, 'relative', `${sel} positions its own hit area`);
+    const after = decls(`${sel}::after`);
+    assert.equal(after.content, '""', `${sel}::after is a real (transparent) box`);
+    assert.equal(after['min-height'], '24px', `${sel}: the hit area is at least 24 px tall`);
+    assert.notEqual(after['pointer-events'], 'none', `${sel}: and it takes the pointer`);
+  }
+  // the painted pill did not grow: only the transparent box around it did
+  assert.equal(decls('.nusa-link')['font-size'], '11px');
+  assert.equal(decls('.nusa-link').padding, '1px 6px');
+  assert.equal(decls('.nusa-markall').padding, '2px 10px');
+});
 console.log(`island-nusa-dom-check: ${passed} passed`);

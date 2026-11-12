@@ -223,7 +223,7 @@
         <div id="notice-card" hidden>
           <div class="who-row"><span class="dot" aria-hidden="true"></span><strong id="notice-card-name"></strong><span id="notice-card-verb"></span></div>
           <div id="notice-card-message" class="one-line"></div>
-          <div class="actions"><button id="notice-card-terminal" class="btn primary" type="button" aria-label="Abrir terminal"><span>Ver</span></button><button id="notice-card-ok" class="btn secondary" type="button"><span>OK</span></button></div>
+          <div class="actions"><button id="notice-card-terminal" class="btn primary" type="button" aria-label="Ver en la terminal"><span>Ver</span></button><button id="notice-card-ok" class="btn secondary" type="button"><span>OK</span></button></div>
         </div>
       </div>
       <!-- Q1: notices are announced once to screen readers (polite). -->
@@ -328,7 +328,9 @@
           <div id="chat-model-row">
             <button id="chat-model-btn" type="button" disabled aria-expanded="false" aria-controls="chat-model-picker">
               <span class="model-dot" aria-hidden="true"></span>
-              <span class="word" id="chat-model-name"></span>
+              <!-- S3 (04 chat 2): with no model yet the row says so instead of showing an empty name at .55. chat.js
+                   overwrites it with the target alias as soon as the first chat:state arrives. -->
+              <span class="word" id="chat-model-name">Sin modelo local</span>
               <span class="model-caret" aria-hidden="true"></span>
             </button>
             <div id="chat-model-picker" role="group" aria-label="Modelos locales" hidden inert>
@@ -340,7 +342,7 @@
             <textarea id="chat-input" rows="1" maxlength="8000" spellcheck="true"
               aria-describedby="chat-help chat-problem" placeholder="Escribí…"></textarea>
             <span id="chat-draft-word" class="chip" data-tone="red" hidden></span>
-            <span id="chat-help" class="sr-only">Enter envía. Mayúsculas más Enter agrega una línea. Ctrl+N crea una conversación sin borrar el historial. Escape sale del campo; otro Escape cierra la isla.</span>
+            <span id="chat-help" class="sr-only">Enter envía. Mayúsculas más Enter agrega una línea. Ctrl+N crea una conversación sin borrar el historial. Escape sale del campo; otro Escape pliega la isla.</span>
             <button id="chat-cancel" class="round" type="button" hidden aria-label="Cancelar"><span class="ico" data-icon="square"></span></button>
             <button id="chat-mic" class="round" type="button" hidden aria-label="Dictar con el micrófono"><span class="ico" data-icon="mic"></span></button>
             <button id="chat-send" class="round" type="submit" disabled aria-label="Enviar"><span class="ico" data-icon="arrow-up"></span></button>

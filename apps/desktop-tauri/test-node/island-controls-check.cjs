@@ -146,10 +146,13 @@ test('B the card keeps room below the last option (Coucou ~35px of air, never 6p
   assert.match(String(q['padding-bottom'] || q.padding || ''), /\b(1[2-9]|[2-9]\d)px/, 'bottom padding of at least 12px');
 });
 // ---- F: the chat field's focus ring is thin and consistent (human audit: «anillo lima grueso desalineado con el tema») ---------------
-test('F the chat input\'s focus ring is 1px in a muted accent, not the global 2px lime; it stays visible (>= 1px, not transparent, not none)', () => {
+// ---- F: the chat field's focus ring (human audit: «anillo lima grueso desalineado con el tema»). S3 (04 chat 3): the island's
+// ONE ring is 2px #fff (design/system.md: notch and toast), so the field and the model row wear that one instead of accents.
+// ----
+test('F the chat input\'s focus ring is the island\'s one 2px #fff, not the global lime halo nor a blue accent of its own', () => {
   const ring = decls('#chat-input:focus-visible');
   assert.ok(Object.keys(ring).length > 0, 'the chat field has its own focus rule');
-  assert.equal(ring.outline, '1px solid var(--island-live)', 'design 14 A: a 1px accent edge');
+  assert.equal(ring.outline, '2px solid #fff', 'S3 (04 chat 3): one 2px #fff ring on the field');
   assert.equal(ring['outline-offset'], '0', 'drawn on the field\'s own edge, not floating 2px away');
   const base = decls(':focus-visible');
   assert.equal(base.outline, '2px solid var(--go)', 'the global ring is untouched for every other control');
@@ -160,7 +163,7 @@ test('F --focus-ring is a muted accent token defined once, never lime and never 
   assert.doesNotMatch(root['--focus-ring'], /var\(--go\)|#b8ff2e|transparent/i);
   assert.match(root['--focus-ring'], /rgba\(255, 255, 255, 0?\.[3-9]\d*\)|var\(--dim-[123]\)/, 'a muted white or a dim token');
 });
-test('F the same thin ring applies to the other text fields of the island (question free text, model search), not to buttons', () => {
+test('F the same thin ring applies to the other text fields of the island (question free text), not to buttons', () => {
   assert.equal(decls('#question-text:focus-visible').outline, '1px solid var(--focus-ring)');
-  assert.equal(decls('#chat-input:focus-visible').outline, '1px solid var(--island-live)');
+  assert.equal(decls('#chat-input:focus-visible').outline, '2px solid #fff');
 });

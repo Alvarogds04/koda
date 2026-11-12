@@ -75,8 +75,8 @@ assert.deepEqual([...I.IDS], N.SIZES.map(s => s.id), 'same closed set as the isl
   assert.ok(!moved.isla.ids.includes('hub-absence') && !moved.isla.labels.includes('Ocultar plegada tras (s)'), 'no «Ocultar plegada» row');
   assert.ok(moved.isla.buttons.includes('Ir a Atajos'), moved.isla.buttons.join('|'));
   assert.ok(moved.colours.ids.some(i => i.startsWith('identity-abito-')), 'inventory sanity: the colour swatches');
-  const stay = { // General keeps these
-    general: ['hub-sound', 'hub-volume', 'hub-theme', 'hub-language', 'hub-autostart', 'hub-open-at-launch', 'hub-sounds-folder', 'hub-sounds-reload'],
+  const stay = { // General keeps these (S3, 04 ajustes 3: the dead «Idioma» control is hidden, so it is not here)
+    general: ['hub-sound', 'hub-volume', 'hub-theme', 'hub-autostart', 'hub-open-at-launch', 'hub-sounds-folder', 'hub-sounds-reload'],
     instructions: 'abito-instructions',
   };
   rawGeneral.dispose(); rawPills.dispose();
@@ -175,6 +175,25 @@ assert.deepEqual([...I.IDS], N.SIZES.map(s => s.id), 'same closed set as the isl
   for (const f of ['settings-isla.js', 'settings-isla-mount.js']) { const src = read(`frontend/${f}`); assert.ok(!/innerHTML|outerHTML|insertAdjacentHTML|document\.write|eval\(|new Function|setAttribute\('style'/.test(src), `${f}: no HTML injection`); }
   assert.ok(/setProperty\('--k'/.test(read('frontend/settings-isla-mount.js')));
   assert.ok(/isla-notch/.test(read('frontend/settings-nusa.css')) && !/url\(\s*['"]?https?:/.test(read('frontend/settings-nusa.css')));
+  // S3 (04 ajustes 1): the preview is the floating CARD — r26 on all four corners at the same 1/5 scale as its box, hairline, centred.
+  // It used to hang from the top as the retired notch (r0 0 14 14, margin -8).
+  {
+    const css = read('frontend/settings-nusa.css').replace(/\/\*[\s\S]*?\*\//g, '');
+    const decls = sel => {
+      const out = {};
+      for (const m of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+        if (!m[1].replace(/\s+/g, ' ').trim().split(',').map(s => s.trim()).includes(sel)) continue;
+        for (const d of m[2].split(';')) { const i = d.indexOf(':'); if (i > 0) out[d.slice(0, i).trim()] = d.slice(i + 1).trim(); }
+      }
+      return out;
+    };
+    const stage = decls('body.hub-window .isla-stage'), card = decls('body.hub-window .isla-notch');
+    assert.equal(stage['align-items'], 'center', 'the card floats in the middle of the box, not at its top');
+    assert.equal(card['margin-top'], '0', 'nothing hangs from the stage top any more');
+    assert.equal(card.height, 'calc(var(--k) * 30px)', '150/5 = 30: the card drawn at 1/5');
+    assert.equal(card['border-radius'], 'calc(var(--k) * 5.2px)', 'r26/5 = 5.2 on ALL four corners');
+    assert.match(card['box-shadow'], /0 0 0 1px var\(--win-line\)/, 'the hairline');
+  }
   assert.equal(require('../frontend/settings-nusa.js').pageVoice('isla').phrase, require('../frontend/settings-nusa.js').pageVoice('island').phrase, 'the Isla rail id has its own Koda phrase');
   // R1 (restored by K2-03): vendor, settings-view.js and settings.js untouched except Abito -> Koda and the listed K2-03 removals.
   const R1 = require('./settings-vendor-r1.cjs');

@@ -109,6 +109,13 @@ html[data-motion="reduce"] #nusa * { transition: none; }
 .nusa-link { font: inherit; font-size: 11px; padding: 1px 6px; border: 0; border-radius: 99px; background: rgba(255,255,255,.12); color: #fff; cursor: pointer; }
 .nusa-link:hover, .nusa-markall:hover { background: rgba(255,255,255,.22); }
 .nusa-markall { align-self: flex-start; font: inherit; font-size: 12px; padding: 2px 10px; border: 0; border-radius: 99px; background: rgba(255,255,255,.12); color: #fff; cursor: pointer; }
+/* isla-cualquier-lado S3 (04 avisos 3): the painted pill stays as drawn, but every text pill of the notice surfaces gains a 24 px tall
+   hit area through a transparent ::after — the same pattern .nusa-jump and #engine-band already use. A 15 px «Ver» was a target no
+   finger or cursor finds; the ink and the row heights do not move. */
+.nusa-link, .nusa-markall, .nusa-all, .sessions-all-back { position: relative; }
+.nusa-link::after, .nusa-markall::after, .nusa-all::after, .sessions-all-back::after {
+  content: ""; position: absolute; left: 0; right: 0; top: 50%; min-height: 24px; transform: translateY(-50%);
+}
 
 /* HU-057 L4/L5: the expanded island is 150 high, so the 32px bands under it start at 150 - 6 = 144 (was 178 under the 184 overview). */
 html #capsule[data-phase="expanded"][data-notice-view="notices"] #notices[data-scroll],

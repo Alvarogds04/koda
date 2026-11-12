@@ -68,17 +68,26 @@ const flagBox = page => page.evaluate(() => { const f = document.getElementById(
 
   // ── (2) the stray yellow dot
   const compact = p => p.evaluate(() => window.__islandSetState('compact'));
+  // R2-duplicate-scenario (T7): since T6 the question toast hangs from the folded disc, so «compact question» and «toast (question)»
+  // were the SAME state driven twice. One scenario now, and it proves the toast is there — otherwise the stray-dot pass would only
+  // be checking an empty folded disc while claiming to cover the toast.
   const SCEN = [
-    ['compact question', { question: 'plain', sessions: [] }, async p => { await compact(p); await p.waitForTimeout(1500); }, true],
+    ['compact question + toast', { question: 'plain', sessions: [] }, async p => { await compact(p); await p.waitForTimeout(2300); }, true],
     ['compact bridge card', { bridgeCard: true, sessions: [], quick: true }, async p => { await p.evaluate(s => window.__emit('desktop:state', s), snap('expanded', CARD())); await p.waitForTimeout(800); await compact(p); await p.evaluate(s => window.__emit('desktop:state', s), snap('compact', CARD())); await p.waitForTimeout(1500); }, true],
     ['idle', { sessions: [], quick: true }, async p => { await compact(p); await p.waitForTimeout(1200); }, false],
-    // isla-cualquier-lado S3/S5 (T6): the toast hangs from the folded disc, so folding the island IS the trigger.
-    ['toast (question)', { question: 'plain', sessions: [] }, async p => { await compact(p); await p.waitForTimeout(800); await p.waitForTimeout(1500); }, true],
   ];
   for (const theme of ['dark', 'light']) for (const [name, sc, drive, warmDot] of SCEN) {
     const r = await H.open({ ...sc, theme }); const t = `${theme}/${name}`;
     try {
       await drive(r.page); ran++;
+      if (name.startsWith('compact question')) {
+        const toast = await r.page.evaluate(() => {
+          const el = document.getElementById('question-toast'); if (!el) return null;
+          const b = el.getBoundingClientRect(), s = getComputedStyle(el);
+          return { shown: s.visibility !== 'hidden' && +s.opacity > 0 && b.width > 0 && b.height > 0, box: [b.left, b.top, b.width, b.height].map(Math.round) };
+        });
+        if (!toast || !toast.shown) bad.push(`${t}: no question toast over the folded disc (${JSON.stringify(toast)})`);
+      }
       const f = await flagBox(r.page); if (f.shown) bad.push(`${t}: #compact-flag visible at ${f.box}`);
       const s = await strays(r.page); if (s.length) bad.push(`${t}: stray warm element(s) outside island/toast: ${s.join(' ')}`);
       const dot = await r.page.evaluate(() => { const c = document.getElementById('capsule'); return { pill: c.style.getPropertyValue('--pill-dot'), fit: c.dataset.compactDisc, aft: getComputedStyle(document.getElementById('island'), '::after').content }; });

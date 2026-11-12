@@ -76,6 +76,14 @@ pub fn growth_edge_at(origin_y: i32, area: Rect, scale: f64) -> Edge {
 pub fn visible_top(window: Rect, edge: Edge, visible_h: i32) -> i32 {
     match edge { Edge::Top => window.y, Edge::Bottom => (window.bottom() - visible_h).max(window.y) }
 }
+/// The visible top of the island as everything that AIMS at it reads it (the desktop pet, isla-cualquier-lado T6c): folded the
+/// island is the disc, open it is the card the page draws, and geometry::visible_top puts that height on the edge the core chose.
+/// characterhost::island_origin is this rule plus the window and the core read, so the arithmetic lives here with its own test
+/// instead of only inside a function that needs a Tauri AppHandle (R3-wiring-source-grep-only, T7).
+pub fn island_visible_top(window: Rect, edge: Edge, expanded: bool, reported: Option<i32>, chat: bool, chat_height: i32, scale: f64) -> i32 {
+    let visible = if expanded { visible_card_height(reported, chat, chat_height) } else { COMPACT_DOT.1 };
+    visible_top(window, edge, scaled_height(visible, scale))
+}
 /// A logical height in physical px, rounded exactly like every other native size.
 pub fn scaled_height(h: i32, scale: f64) -> i32 { scaled_size((0, h), scale).1 }
 /// The disc spot of a native window laid out for `edge`: in the upper half, the window starts at the disc's top; in the lower half
@@ -529,6 +537,35 @@ mod tests {
             for edge in [Edge::Top, Edge::Bottom] {
                 assert_eq!(disc_origin_y(win, edge, scale), visible_top(win, edge, scaled_height(COMPACT_DOT.1, scale)));
             }
+        }
+    }
+
+    /// R3-wiring-source-grep-only (T7): the pet's arithmetic is proven HERE, not by grepping characterhost for a call. Folded it is
+    /// the disc whatever the report says; open it is the card the page DRAWS, else the chat's height, else the overview card.
+    #[test]
+    fn island_visible_top_reads_the_drawn_height_from_the_state_the_pet_reads() {
+        let window = Rect { x: 100, y: 200, w: 752, h: 340 };
+        // folded: the disc, whatever the report or the chat say
+        for (reported, chat, chat_h) in [(Some(240), true, 240), (None, false, 240), (Some(32), false, 240)] {
+            assert_eq!(island_visible_top(window, Edge::Top, false, reported, chat, chat_h, 1.0), 200, "upper half: the window top");
+            assert_eq!(island_visible_top(window, Edge::Bottom, false, reported, chat, chat_h, 1.0), 200 + 340 - COMPACT_DOT.1, "lower half: one disc above the window bottom");
+        }
+        // open: the height the page draws wins
+        assert_eq!(island_visible_top(window, Edge::Bottom, true, Some(240), false, 240, 1.0), 200 + 340 - 240);
+        assert_eq!(island_visible_top(window, Edge::Bottom, true, Some(300), true, 240, 1.0), 200 + 340 - 300, "a tall take-over card");
+        // no report: the chat's own clamped height, else the overview card (the folded disc is not a card height)
+        assert_eq!(island_visible_top(window, Edge::Bottom, true, None, true, 280, 1.0), 200 + 340 - 280);
+        assert_eq!(island_visible_top(window, Edge::Bottom, true, None, false, 280, 1.0), 200 + 340 - OVERVIEW_VISIBLE.1);
+        assert_eq!(island_visible_top(window, Edge::Bottom, true, Some(COMPACT_DOT.1), false, 240, 1.0), 200 + 340 - OVERVIEW_VISIBLE.1);
+        // a stale report taller than the window never puts the island above its own window
+        assert_eq!(island_visible_top(window, Edge::Bottom, true, Some(500), false, 240, 1.0), 200);
+        // the same rule in physical px at scale 2: the disc is 64, a 240 card is 480
+        let big = Rect { x: 0, y: 0, w: 1504, h: 680 };
+        assert_eq!(island_visible_top(big, Edge::Bottom, false, None, false, 0, 2.0), 680 - scaled_height(COMPACT_DOT.1, 2.0));
+        assert_eq!(island_visible_top(big, Edge::Bottom, true, Some(240), false, 240, 2.0), 680 - scaled_height(240, 2.0));
+        // folded it is exactly one case of visible_top, so the two rules can never drift
+        for edge in [Edge::Top, Edge::Bottom] {
+            assert_eq!(island_visible_top(window, edge, false, Some(300), true, 300, 1.0), visible_top(window, edge, COMPACT_DOT.1));
         }
     }
 

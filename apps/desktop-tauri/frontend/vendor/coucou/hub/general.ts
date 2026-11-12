@@ -3,7 +3,7 @@
 import { h, clear } from '../views/dom.js';
 import { createBridge } from '../bridge-abito.js';
 import { toggle, select, button, segmented } from './ui.js';
-import { t, LANGUAGES } from './i18n-es.js';
+import { t } from './i18n-es.js';
 import { notchCard, notchRow as plainRow, notchTipRow, infoTip } from './notch.js';
 const row = plainRow;
 
@@ -80,7 +80,7 @@ export async function renderGeneral({ invoke, V, navigate }: { invoke: (cmd: str
     seconds.addEventListener('change', e => {
       if (!e.isTrusted) return;
       const value = Number(seconds.value);
-      if (!seconds.value.trim() || !Number.isInteger(value) || value !== 0 && (value < 5 || value > 120)) { issue = 'Usa 0 o un entero entre 5 y 120 segundos.'; paint(); return; }
+      if (!seconds.value.trim() || !Number.isInteger(value) || value !== 0 && (value < 5 || value > 120)) { issue = 'Usá 0 o un entero entre 5 y 120 segundos.'; paint(); return; }
       patch({ autoCloseInterval: value });
     });
     // #503 S18 (screen validation): the theme is three segmented pills Oscuro / Claro / Sistema (the MD), not a dropdown.
@@ -106,19 +106,15 @@ export async function renderGeneral({ invoke, V, navigate }: { invoke: (cmd: str
     const enabled = trusted(toggle(hotkey.enabled !== false, value => shortcut({ action: value ? 'enable' : 'disable' })));
     enabled.setAttribute('aria-label', 'Atajo activo');
     // Notch pages use settings/main.ts sections and .row, not Flow's hub-card.
-    const unavailable = (el: HTMLElement, id: string) => {
-      (el as HTMLButtonElement).disabled = true; el.setAttribute('title', 'No disponible todavía');
-      return identify(el, id);
-    };
-    const screen = trusted(select([['primary', t('Main display')], ['cursor', t('Display under the cursor')],
-      ...namedScreens().map((name: string): [string,string] => [name,name])], settings.screen, value => {
-        if (value !== 'cursor') patch({ screen: value });
-      }));
+    // S3 (04 ajustes 3): «Pantalla bajo el cursor» was a disabled option that could never work, so it is hidden until the host
+    // supports it instead of being offered greyed out; the read-only display list and the saved names stay as they were.
+    const screen = trusted(select([['primary', t('Main display')],
+      ...namedScreens().map((name: string): [string,string] => [name,name])], settings.screen, value => patch({ screen: value })));
     screen.className = ''; screen.setAttribute('aria-label', t('Island lives on')); screen.setAttribute('id', 'hub-screen');
-    const cursor = screen.children[1] as HTMLOptionElement; cursor.disabled = true; cursor.title = 'No disponible todavía';
-    const soundsFolder = identify(trusted(h('button', { text: t('Open sounds folder'), onclick: () => { run(async () => { await send('sound_action', { action: 'reveal' }); }, 'No se pudo abrir la carpeta de sonidos (el administrador de archivos no respondió). Ábrela a mano: la carpeta «sounds» dentro de la carpeta de configuración de Koda.'); } })), 'hub-sounds-folder');
+    const soundsFolder = identify(trusted(h('button', { text: t('Open sounds folder'), onclick: () => { run(async () => { await send('sound_action', { action: 'reveal' }); }, 'No se pudo abrir la carpeta de sonidos (el administrador de archivos no respondió). Abrila a mano: la carpeta «sounds» dentro de la carpeta de configuración de Koda.'); } })), 'hub-sounds-folder');
     const soundsReload = identify(trusted(h('button', { text: t('Reload sounds'), onclick: () => { run(async () => { await send('sound_action', { action: 'reload' }); await countCustom(); }); } })), 'hub-sounds-reload');
-    const language = unavailable(select([['', t('System')], ...LANGUAGES], '', () => {}), 'hub-language'); language.className = '';
+    // S3 (04 ajustes 3): the «Idioma» row is hidden until a language other than Spanish exists — a disabled control with a «No
+    // disponible todavía» hint is a promise the product does not keep.
     const startup = (() => {
       const control = identify(trusted(toggle(autostart.enabled === true, enabled => run(async () => {
         autostart = await send('prefs_action', { action: 'set_autostart', enabled });
@@ -139,7 +135,6 @@ export async function renderGeneral({ invoke, V, navigate }: { invoke: (cmd: str
     // #503 S18 (Opción A): three cards by task. Same controls, ids, labels and closed commands as before.
     root.append(
       notchCard('Apariencia',
-        row(t('Language'), language, h('span', { class: 'hint', text: 'No disponible todavía' })),
         notchTipRow(t('Theme'), 'Sistema sigue el tema de tu escritorio. El movimiento no se puede configurar en Koda.', themeSelect),
         row('Nombre visible', name, save), nameIssue,
         notchTipRow(t('Launch at startup'), 'Abre Koda al iniciar la sesión del escritorio.', startup),

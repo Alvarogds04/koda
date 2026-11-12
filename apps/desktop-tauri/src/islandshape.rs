@@ -386,6 +386,42 @@ mod corners {
         assert!(!covers(&bottom, x - 1, W.1 - 16) && !covers(&bottom, x + 40, W.1 - 16), "nothing outside the disc");
     }
 
+    /// R3-hidden-strip-bottom-untested (T7): the hidden strip is a 40 x 4..32 report that shows only the bottom of the disc's own
+    /// 32 px box, and since T6b the folded island follows the edge rule, so in the lower half that strip has to land on the WINDOW's
+    /// bottom edge with the disc's rounded corners, exactly as the top-anchored one does at the top. Untested before.
+    #[test]
+    fn the_hidden_strip_on_its_bottom_edge_takes_clicks_in_the_discs_bottom_rows_and_nowhere_else() {
+        let (dw, dh) = abito_island::geometry::COMPACT_DOT;
+        let x = (W.0 - dw) / 2;
+        let strip = Report { w: dw, h: 8, settled: true };
+        let top = input_rects_anchored(strip, W, false, false);
+        let bottom = input_rects_anchored(strip, W, false, true);
+        assert!(!bottom.is_empty(), "the strip on its bottom edge has a region");
+        // it occupies only the 8 rows it draws, at the window's bottom, and nothing above them
+        for (rx, ry, _rw, rh) in &bottom {
+            assert!(*ry >= W.1 - 8, "({rx},{ry},{rh}) starts above the 8 px it draws");
+            assert!(ry + rh <= W.1, "({rx},{ry},{rh}) reaches past the window bottom");
+        }
+        for px in (x - 4)..(x + dw + 4) { assert!(!covers(&bottom, px, W.1 - 9), "the row above the strip passes clicks at {px}"); }
+        assert!(covers(&bottom, W.0 / 2, W.1 - 1), "the middle of the bottom row takes clicks");
+        // the disc's rounded bottom corners pass clicks, like the whole disc on its bottom edge
+        for (cx, cy) in [(x, W.1 - 1), (x + dw - 1, W.1 - 1)] { assert!(!covers(&bottom, cx, cy), "the disc's rounded corner ({cx},{cy}) passes clicks"); }
+        assert!(!covers(&bottom, x - 1, W.1 - 4) && !covers(&bottom, x + dw, W.1 - 4), "nothing outside the disc's width takes a click");
+        // the SAME rows as the top-anchored strip mirrored to the bottom: one rule, two edges
+        for row in 0..8 {
+            for px in 0..W.0 {
+                assert_eq!(covers(&bottom, px, W.1 - 8 + row), covers(&top, px, row), "row {row} of the strip differs between the two edges at x={px}");
+            }
+        }
+        // a protected ask still refuses the thin strip: the WHOLE disc box takes clicks, rounded r16 (never the 8 px zone)
+        let protected_bottom = input_rects_anchored(strip, W, true, true);
+        for (rx, ry, _rw, rh) in &protected_bottom { assert!(*ry >= W.1 - dh && ry + rh <= W.1, "({rx},{ry},{rh}) leaves the disc's box at the window bottom"); }
+        assert!(covers(&protected_bottom, W.0 / 2, W.1 - dh), "with an ask pending the disc's top row takes clicks, not just the 8 px");
+        assert!(!covers(&protected_bottom, x, W.1 - dh), "its corner still passes clicks");
+        // and a moving (unsettled) report is never the thin zone at the bottom either
+        assert_eq!(input_rects_anchored(Report { settled: false, ..strip }, W, false, true), vec![(x, W.1 - dh, dw, dh)]);
+    }
+
     #[test]
     fn a_folded_disc_with_its_toast_above_covers_the_toast_and_the_disc_and_nothing_else() {
         // what the page reports while the toast shows above the folded disc (question-toast.js shapeWithToast): 350 wide, 96 tall

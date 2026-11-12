@@ -119,7 +119,7 @@ test('S25 Atajos: the portal\'s description of a key is TRANSLATED («Pulse <Shi
   assert.equal(portalTriggerKeys('x'.repeat(5000) + ' <Control>a'), null, 'bounded input');
 });
 
-test('S25 Atajos: a key cell NEVER contains «Pulse», «<» or «>» unless it is capturing; capturing says «Pulsa las teclas…»', async () => {
+test('S25 Atajos: a key cell NEVER contains «Pulse», «<» or «>» unless it is capturing; capturing says «Pulsá las teclas…»', async () => {
   const { ui } = await mount();
   const caps = all(find(ui, 'global-shortcuts')).filter(e => e.className.split(' ').includes('keycap'));
   assert(caps.length > 0); for (const k of caps) assert(!/Pulse|[<>]/.test(k.textContent), k.textContent);

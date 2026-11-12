@@ -213,7 +213,9 @@ test('T6b the toast badge paints the 24 px sheet so Koda fits the 28 px circle (
   assert.ok(lay.cell * lay.k + 4 <= 28, `the drawn sprite plus its 2 px margins fits the 28 px badge (${lay.cell * lay.k + 4})`);
   assert.ok(C.SMALL.includes('reposo'), 'reposo exists on the 24 px sheet');
   const skin = fs.readFileSync(path.join(frontend, 'koda-skin.js'), 'utf8');
-  assert.match(skin, /draw\(toastSlot, flowAnim\(null, 'reposo'\), 28\)/, 'the toast badge asks for the sheet that fits it');
+  assert.match(skin, /draw\(toastSlot, 'reposo', 28\)/, 'the toast badge asks for the sheet that fits it');
+  // R2-flowanim-dead-branch (T7): the badge helper took a clay instance it never received, so the dead branch is gone
+  assert.doesNotMatch(skin, /flowAnim/, 'no dead pose helper left behind');
 });
 
 test('wiring: the toast follows the island with a ResizeObserver (every frame of its spring), reads its radius, and starts from its edge', () => {

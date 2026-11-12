@@ -157,17 +157,19 @@ body.hub-window .hub-hero h1, body.hub-window .hub-hero.compact h1 { line-height
 
 @media (prefers-reduced-motion: reduce) { .nusa-veil { transition: none; } }
 
-/* HU-063 T2: page «Isla» — live preview of the notch scale (settings-isla-mount.js sets --k on .isla-notch) */
+/* HU-063 T2: page «Isla» — live preview of the notch scale (settings-isla-mount.js sets --k on .isla-notch).
+   S3 (04 ajustes 1): the island IS the floating card now, so the preview draws that card at 1/5 of its real size — 720x150 r26 with a
+   hairline becomes 144x30 r5.2 — centred in the box. It used to hang from the top as the retired notch (r0 0 14 14, margin -8). */
 body.hub-window .isla-stage {
-  display: flex; align-items: flex-start; justify-content: center;
-  height: 64px; padding-top: 8px; overflow: hidden;
+  display: flex; align-items: center; justify-content: center;
+  height: 64px; padding: 0; overflow: hidden;
   border-radius: 10px; background: var(--win-bg); border: 1px solid var(--win-line);
 }
 body.hub-window .isla-notch {
   --k: 1;
-  width: calc(var(--k) * 144px); max-width: 100%; height: calc(var(--k) * 26px);
-  border-radius: 0 0 calc(var(--k) * 14px) calc(var(--k) * 14px);
-  margin-top: -8px; background: #000; box-shadow: 0 0 0 1px var(--win-line);
+  width: calc(var(--k) * 144px); max-width: 100%; height: calc(var(--k) * 30px);
+  border-radius: calc(var(--k) * 5.2px); /* r26 on the real 720x150 card, the same 1/5 scale as width and height */
+  margin-top: 0; background: #000; box-shadow: 0 0 0 1px var(--win-line);
   transition: width 0.25s, height 0.25s;
 }
 @media (prefers-reduced-motion: reduce) { body.hub-window .isla-notch { transition: none; } }

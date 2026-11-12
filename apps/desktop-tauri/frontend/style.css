@@ -321,8 +321,9 @@ html[data-motion="reduce"] [data-kind="busy"] .ico svg { animation: none; }
 :focus-visible { outline: 2px solid var(--go); outline-offset: 2px; }
 /* A text field already has a visible edge: its focus is a 1px muted ring ON that edge, not a 2px lime halo floating around it. */
 #question-text:focus-visible { outline: 1px solid var(--focus-ring); outline-offset: 0; }
-/* Design 14 (option A): the chat field's focus is a 1px ACCENT edge on its own border (not the lime halo, not a muted white). */
-#chat-input:focus-visible { outline: 1px solid var(--island-live); outline-offset: 0; }
+/* S3 (04 chat 3): the chat field wears the SAME 2px #fff ring as the notch and the toast — one ring in the whole island,
+   never a second accent (design/system.md: notch and toast use a 2px #fff outline). */
+#chat-input:focus-visible { outline: 2px solid #fff; outline-offset: 0; }
 
 #chat {
   position: absolute;
@@ -389,7 +390,7 @@ html[data-motion="full"] #chat-state[data-kind="busy"] .ico svg, html[data-motio
 #chat-log li { margin: 0 0 6px; white-space: pre-wrap; overflow-wrap: anywhere; }
 /* UI.2: «Vos»/«Abito» labels are gone: you sit on the right (tinted bubble),
    Abito on the left (plain). Notes/errors are icon + one word. */
-#chat-log li.user { margin-left: 0; padding: 8px 12px; border-radius: 14px 14px 4px 14px; background: var(--bubble); color: var(--island-ink); width: fit-content; max-width: 88%; align-self: flex-end; }
+#chat-log li.user { margin-left: 0; padding: 8px 12px; border-radius: 12px 12px 4px 12px; background: var(--bubble); color: var(--island-ink); width: fit-content; max-width: 88%; align-self: flex-end; }
 #chat-log li.assistant { max-width: 100%; color: var(--island-ink); }
 #chat-log li.note, #chat-log li.error { display: flex; align-items: center; gap: 6px; font: 600 12px/1.2 var(--font-ui); color: var(--island-muted); white-space: normal; }
 #chat-log li.note .ico svg, #chat-log li.error .ico svg { width: 16px; height: 16px; }
@@ -413,7 +414,8 @@ html[data-motion="full"] #chat-state[data-kind="busy"] .ico svg, html[data-motio
   transition: color var(--dur-state) var(--ease-out), background var(--dur-state) var(--ease-out);
 }
 #chat-model-btn:hover:not(:disabled) { color: var(--island-ink); }
-#chat-model-btn:focus-visible { outline: 2px solid var(--island-live); outline-offset: 2px; }
+/* S3 (04 chat 3): the model row takes the island's one focus ring (2px #fff), not a blue one of its own. */
+#chat-model-btn:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
 #chat-model-btn:disabled { opacity: .55; cursor: default; }
 #chat-model-btn .word { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 220px; }
 #chat-model-btn .model-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--faint); flex: none; }
@@ -874,11 +876,11 @@ body { color: var(--ink); -webkit-font-smoothing: antialiased; }
 #chat-header { min-height: 44px; padding-left: 0; }
 #chat-header .icon-btn { border: 0; color: var(--muted); }
 #chat-status-strip { min-height: 24px; padding-bottom: 4px; }
-#chat-body { border-radius: 20px; background: var(--card-bg); padding: 12px 20px 14px; }
+#chat-body { border-radius: 18px; background: var(--card-bg); padding: 12px 20px 14px; } /* S3 (04 chat 3): --radius-2xl, was 20 */
 #chat-body::before { position: absolute; inset: 0; border-radius: inherit; background: radial-gradient(280px 280px at 50% calc(100% + 58px), rgba(99, 102, 241, .5), transparent 70%); content: ""; pointer-events: none; }
 #chat-body > * { z-index: 1; }
 #chat-log { position: relative; gap: 6px; }
-#chat-log li.user { border-radius: 14px; background: var(--fill-q); }
+#chat-log li.user { border-radius: 12px; background: var(--fill-q); } /* S3 (04 chat 3): --radius-xl, was 14 */
 #chat-log li.assistant { max-width: 92%; }
 #chat-composer { position: relative; gap: 6px; margin-left: 42px; }
 #chat-input { min-width: 0; border: 0; border-radius: 20px; background: var(--fill-alt); padding: 10px 12px; }

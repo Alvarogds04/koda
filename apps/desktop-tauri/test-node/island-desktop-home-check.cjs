@@ -25,22 +25,30 @@ test('T6c: one pure rule for the visible top, and the folded disc is one case of
   assert.match(geo, /pub fn scaled_height\(h: i32, scale: f64\) -> i32 \{/, 'logical visible height -> physical px');
 });
 
-test('T6c: characterhost aims the pet at the visible top of the disc or the card, never at the window top', () => {
+test('T6c + T7 wiring only: characterhost asks geometry::island_visible_top for the visible top, never the window top', () => {
+  // R3-wiring-source-grep-only (T7): this test now only proves the WIRING (who is called, from where, in which order). The arithmetic
+  // is geometry::island_visible_top, and it is proven by cargo test (geometry::tests::island_visible_top_reads_the_drawn_height_…),
+  // because island_origin needs a Tauri AppHandle and cannot run in a unit test.
   const host = read('src/characterhost.rs');
   const origin = slice(host, 'fn island_origin(', 'fn apply_shape(');
   assert.ok(origin.length > 0, 'island_origin still exists');
-  assert.match(origin, /geometry::visible_top\(/, 'the pet asks the pure rule for the top');
+  assert.match(origin, /geometry::island_visible_top\(window, edge, expanded, reported, chat, chat_height, scale\)/,
+    'the pet asks the pure rule for the top, handing it the state it read');
   // the edge is read from the core, like every other island placement
-  const core = slice(origin, 'core.lock()', 'geometry::visible_top(');
+  const core = slice(origin, 'core.lock()', 'geometry::island_visible_top(');
   assert.match(core, /core\.edge/, 'the edge comes from the core');
   assert.match(core, /core\.expanded/, 'folded or open decides what is visible');
-  // the height is the one the page DRAWS: the disc folded, the card open
-  assert.match(origin, /geometry::visible_card_height\(reported, chat, chat_height\)/, 'the open card uses the drawn height');
-  assert.match(origin, /geometry::COMPACT_DOT\.1/, 'folded: the disc');
-  assert.match(origin, /islandshape::last_visible_height\(\)/, 'the report is the source of that height');
+  assert.match(origin, /islandshape::last_visible_height\(\)/, 'the report is the source of the drawn height');
   const reportedAt = origin.indexOf('islandshape::last_visible_height()'), lockAt = origin.indexOf('core.lock()');
   assert.ok(reportedAt > 0 && reportedAt < lockAt, 'the shape report is read BEFORE the core lock (SHAPE -> core order)');
   assert.doesNotMatch(origin, /island_spot\(r\.x \+ r\.w \/ 2\.0, r\.y,/, 'never the transparent window top again');
+  // the drawn height and the folded disc are decided by the pure rule, not here: they are asserted where they live
+  assert.doesNotMatch(origin, /visible_card_height|COMPACT_DOT/, 'characterhost does not repeat the drawn-height rule');
+  const geo = read('src/geometry.rs');
+  assert.match(geo, /pub fn island_visible_top\(window: Rect, edge: Edge, expanded: bool, reported: Option<i32>, chat: bool, chat_height: i32, scale: f64\) -> i32 \{/,
+    'the pure rule exists in geometry');
+  assert.match(geo, /fn island_visible_top_reads_the_drawn_height_from_the_state_the_pet_reads\(\)/,
+    'and cargo test proves its behaviour');
 });
 
 test('T6c: island_spot says what it centres under, and the stored position is the disc spot', () => {

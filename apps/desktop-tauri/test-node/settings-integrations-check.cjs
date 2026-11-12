@@ -104,7 +104,10 @@ const { dom, Element, all, text } = require('./settings-accounts-check.cjs');
   click(find('shortcut-toggleIsland').children[0]);await ui.settled();assert.deepEqual(calls,[['hotkey_action',{action:'disable'}]]);
   click(find('shortcut-toggleIsland').children[0]);await ui.settled();assert.deepEqual(calls.at(-1),['hotkey_action',{action:'enable'}]);
   const record=()=>find('shortcut-toggleIsland').children.at(-1);
-  calls.length=0;click(record(),false);assert(!text(ui).includes('Pulsa las teclas…'));click(record());await ui.settled();
+  // the capturing keycap asks for the new keys; the hidden guide under the list always carries the same words, so the assertion is
+  // on the KEYCAP itself (a synthetic click must never start recording), not on the whole page text
+  calls.length=0;click(record(),false);assert(!text(record()).includes('las teclas'),'a synthetic click never starts recording');click(record());await ui.settled();
+  assert(text(record()).includes('Pulsá las teclas…'),'a trusted click asks for the new keys');
   record().fire('keydown',false,{key:'K',code:'KeyK',ctrlKey:true});await ui.settled();assert.deepEqual(calls,[['hotkey_action',{action:'suspend'}]]);
   record().fire('keydown',true,{key:'K',code:'KeyK',ctrlKey:true});await ui.settled();assert.deepEqual(calls,[['hotkey_action',{action:'suspend'}],['hotkey_action',{action:'set',combo:'Ctrl+K'}],['hotkey_action',{action:'resume'}]]);await new Promise(r=>setImmediate(r));
     calls.length=0;click(record());await ui.settled();await new Promise(r=>setImmediate(r));record().fire('keydown',true,{key:'Backspace',code:'Backspace'});await ui.settled();await new Promise(r=>setImmediate(r));
