@@ -365,6 +365,21 @@ function sizeOf(dir) {
   return { bytes, files };
 }
 
+/**
+ * Whether the runtime archive is asked for INSIDE the folder it packs (82c27cf). Such an archive would be packed into
+ * itself: GNU tar reads a file that is still growing and fails with «file changed as we read it» (a small tree only ever
+ * passed by luck).
+ *
+ * Three cases are NOT inside: the folder itself, anything that starts with `..` (a sibling or an ancestor) and any
+ * ABSOLUTE result — on Windows `path.relative` returns `D:\…` for a path on another drive, and treating that as inside
+ * would pack beside the folder and then try to move the archive onto another drive.
+ */
+function archiveInsideOut(out, archive, relative = path.relative) {
+  const rel = relative(out, archive);
+  if (rel === '' || rel.startsWith('..') || path.isAbsolute(rel) || path.win32.isAbsolute(rel)) return false;
+  return true;
+}
+
 async function main() {
   const opts = parseArgs(process.argv.slice(2));
   const t = TARGETS[opts.target];
@@ -393,9 +408,7 @@ async function main() {
     console.log(`runtime ${opts.target}: Node ${pin.version} + Pi ${pi.version} -> ${out} (${s.files} files, ${(s.bytes / 1048576).toFixed(1)} MiB)${opts.selfCheck ? ', self-check ok' : ''}`);
     if (opts.archive) {
       const archive = path.resolve(opts.archive);
-      // K2-13: an archive asked for INSIDE the folder it packs would be packed into itself (GNU tar then fails with
-      // «file changed as we read it», and a smaller tree only ever passed by luck). Pack beside it, then move it in.
-      const inside = path.relative(out, archive) !== "" && !path.relative(out, archive).startsWith("..");
+      const inside = archiveInsideOut(out, archive);
       // The temporary MUST live outside the folder being packed: a file created inside it is read while it grows
       // («tar: file changed as we read it»), which is the whole bug.
       const target = inside ? path.join(path.dirname(out), `.${path.basename(archive)}.pack-${process.pid}`) : archive;
@@ -409,8 +422,8 @@ async function main() {
   }
 }
 
-/* The guard is exported so test-node/telegram-deps-check.cjs can hold it to a fixture tree (K2-13). */
-module.exports = { assertNoNativeAddons };
+/* The guard and the archive-path test are exported so test-node/ can hold them to fixtures (K2-13). */
+module.exports = { assertNoNativeAddons, archiveInsideOut };
 
 if (require.main === module) {
   main().catch((e) => {

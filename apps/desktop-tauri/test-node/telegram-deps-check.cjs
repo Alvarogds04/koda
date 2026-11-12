@@ -2,10 +2,11 @@
 /* K2-13 T1b (S6, S20): the Telegram client library Koda ships, checked on the pin files only (no network, no install).
    Decided by the human (K2-13 L41): @mtcute/node is declared once as the daemon's development pin and once as the
    bundled runtime's shipped pin, and the bytes ship inside the runtime folder, because that is the one npm tree every
-   installer already verifies, extracts and writes licence notices for. This check proves the two pins cannot drift,
-   that better-sqlite3 is Koda's empty stub in both trees (the session never touches disk, so the native addon is never
-   loaded), and — when the runtime tree is installed here — that no native addon of ours and no missing licence text
-   would reach a user.
+   installer already verifies, extracts and writes licence notices for. This check proves the two pins cannot drift —
+   the direct pin, the @mtcute/* family and the @fuman/* family mtcute pulls, `long` and the better-sqlite3 stub — that
+   both lockfiles resolve every one of them to the same version AND the same integrity, that better-sqlite3 is Koda's
+   empty stub in both trees (the session never touches disk, so the native addon is never loaded), and — when the
+   runtime tree is installed here — that no native addon of ours and no missing licence text would reach a user.
    Run: node apps/desktop-tauri/test-node/telegram-deps-check.cjs */
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -37,6 +38,13 @@ function readJson(file) {
 const MTCUTE = '@mtcute/node';
 const STUB = 'better-sqlite3';
 const STUB_MARKER = 'kodaStub';
+/**
+ * The families mtcute pulls beside itself. @mtcute/* is frozen by `overrides` in both packages; @fuman/* and `long` are
+ * pinned by exact version here, because a fresh install of an updated @mtcute/node could otherwise move them silently
+ * (both files are out of the daemon's package and cannot be regenerated without network).
+ */
+const FUMAN = Object.freeze({ '@fuman/io': '0.0.23', '@fuman/net': '0.0.23', '@fuman/node': '0.0.23', '@fuman/utils': '0.0.23' });
+const LONG = '5.3.2';
 const SPEC = `^\\d+\\.\\d+\\.\\d+$`;
 const daemonPkg = readJson(path.join(daemonDir, 'package.json'));
 const runtimePkg = readJson(path.join(runtimeDir, 'package.json'));
@@ -51,6 +59,21 @@ const mtcutePackages = (lock) =>
 	Object.entries(lock.packages)
 		.filter(([key]) => /^node_modules\/@mtcute\//.test(key))
 		.map(([key, entry]) => ({ name: key.slice('node_modules/'.length), version: entry.version }));
+/**
+ * Every package the two trees must agree on, keyed by name: the @mtcute/* family, the @fuman/* family it pulls, `long`
+ * (Apache-2.0, tl-runtime's 64-bit integers) and the better-sqlite3 stub. `integrity` is part of the comparison: same
+ * version from a different tarball is still drift.
+ */
+const sharedPackages = (lock) => {
+	const out = {};
+	for (const [key, entry] of Object.entries(lock.packages)) {
+		const name = key.startsWith('node_modules/') ? key.slice('node_modules/'.length) : undefined;
+		if (!name) continue;
+		if (!/^@mtcute\//.test(name) && !/^@fuman\//.test(name) && name !== 'long' && name !== STUB) continue;
+		out[name] = { version: entry.version, integrity: entry.integrity, resolved: entry.resolved };
+	}
+	return out;
+};
 const exact = (value, what) => {
 	assert.equal(typeof value, 'string', `${what} is declared`);
 	assert.match(value, new RegExp(SPEC), `${what} is an exact version, not a range (${value})`);
@@ -77,6 +100,34 @@ test('every @mtcute/* package the lockfile installs is pinned exactly by overrid
 		for (const { name, version } of pins) {
 			assert.equal(exact(overrides[name], `${label} overrides ${name}`), version, `${label} freezes ${name}@${version}`);
 		}
+	}
+});
+
+test('every @fuman/* package mtcute pulls is an exact pin, equal in both lockfiles, and `long` with it', () => {
+	for (const name of Object.keys(FUMAN)) {
+		for (const [label, lock] of [['apps/desktop-daemon', daemonLock], ['packaging/runtime', runtimeLock]]) {
+			const entry = lock.packages[`node_modules/${name}`];
+			assert.ok(entry, `${label} lock resolves ${name}`);
+			assert.equal(exact(entry.version, `${label} ${name}`), FUMAN[name], `${label} pins ${name}@${FUMAN[name]}`);
+		}
+	}
+	// tl-runtime writes 64-bit values through `long` (Apache-2.0); it is not ours to choose, but it must be one version.
+	for (const [label, lock] of [['apps/desktop-daemon', daemonLock], ['packaging/runtime', runtimeLock]]) {
+		assert.equal(exact(lock.packages['node_modules/long']?.version, `${label} long`), LONG, `${label} resolves long@${LONG}`);
+	}
+});
+
+test('both lockfiles resolve every shared package to the same version AND the same integrity', () => {
+	const daemon = sharedPackages(daemonLock);
+	const runtime = sharedPackages(runtimeLock);
+	const names = Object.keys(daemon).sort();
+	assert.ok(names.length >= 12, `the shared set is the whole Telegram dependency tree (${names.length} packages)`);
+	for (const name of names) {
+		assert.ok(runtime[name], `packaging/runtime lock also resolves ${name}`);
+		assert.deepEqual(runtime[name].version, daemon[name].version, `${name} is the same version in both lockfiles`);
+		if (name === STUB) continue; // the stub is a local file: no registry integrity by design (asserted below)
+		assert.match(String(daemon[name].integrity), /^sha512-/, `${name} is pinned by sha512 in the daemon lock`);
+		assert.equal(runtime[name].integrity, daemon[name].integrity, `${name} is the same tarball in both lockfiles`);
 	}
 });
 
