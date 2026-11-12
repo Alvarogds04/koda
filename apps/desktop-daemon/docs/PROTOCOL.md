@@ -73,8 +73,9 @@ daemon admits nothing new:
   and `agent_connect`, `connectors_list`, `agents_list` (each spawns a process: a tool/connector call).
 - STILL ALLOWED: `abort` and `agent_disconnect` (stopping work is always possible), every read-only query
   (`status`, `accounts_list`, `providers_list`, `models_list`, `profiles_list`, `settings_get`, `mcp_import_preview`,
-  `agents_list` while unpaused, `auth_state`), and all account/profile/settings/auth verbs. Scheduled tasks have no
-  admission path in the daemon yet; when one exists it must honor this switch.
+  `agents_list` while unpaused, `auth_state`), and all account/profile/settings/auth verbs. K2-13 Minikodas honor it:
+  `minikoda_launch` is refused with `paused`, scheduled ticks are skipped, and turning the pause on cancels the
+  Minikodas that are running (see «Minikodas and «Hoy» frames»).
 - In-flight work is interrupted at the next safe point (#378): pausing while a turn is active cancels the turn
   through the engine's cancellation path (reason `paused`): admission closes, open asks resolve, one sanitized
   warning `toast` explains the pause ("La pausa interrumpió el turno del agente."), the child is recycled and the
@@ -588,13 +589,13 @@ Implementation: `src/protocol.cjs` (allowlist and DTOs), `src/server.cjs` (`hand
 | --- | --- |
 | `minikodas` | `minikodas[]` of `{id, name, when, reads, kit, model, never, status: draft\|active, running, createdAt, lastRun?{at, outcome: done\|failed, reason?}}` |
 | `minikoda` | `minikoda` = the same plus `prompt` |
-| `hoy` | `items[]` of `{id, minikoda, kind: result\|proposal\|error, status: pending\|approved\|rejected, text, createdAt, action?: buy\|sell\|send, target?, decidedAt?}` (pending proposals first, then newest; ≤ 100), `truncated` |
+| `hoy` | `items[]` of `{id, minikoda, kind: result\|proposal\|error, status: pending\|approved\|rejected, text, createdAt, action?: buy\|sell\|send, target?, decidedAt?}` (pending proposals first, then newest; ≤ 100 items and ≤ 200 KiB per frame, below the island's 256 KiB line limit), `truncated` (true when items were left out by either bound) |
 | `hoy_approved` | `id, minikoda, action, target, executedAt`: broadcast once per executed approval |
 | `hoy_decided` | `id, status` |
 | `pin_status` | `set, locked, lockedUntil?, left?` (never the hash, salt or PIN) |
 | `minikoda_launched`, `minikoda_deleted` | see above |
 
-New error codes: `unknown_minikoda, not_active, not_pending, exists, limit, model_unavailable, unknown_item, pin_wrong, pin_locked, pin_not_set, pin_exists, pin_invalid`.
+New error codes: `unknown_minikoda, not_active, not_pending, exists, limit, model_unavailable, unknown_item, pin_wrong, pin_locked, pin_not_set, pin_exists`. (`pin_invalid` exists inside `hoy.cjs` but never reaches a client: a malformed PIN is refused by the allowlist first, as `bad_request`.)
 
 ### Semantics
 
@@ -606,5 +607,6 @@ New error codes: `unknown_minikoda, not_active, not_pending, exists, limit, mode
   - Approvals run one at a time; a second approval of the same item is `not_pending` and never executes again.
   - `hoy_reject` never executes.
 - **What «execute» means in K2-13.** The item is marked `approved`, one line is appended to `<island>/minikodas/hoy/approved.jsonl` and `hoy_approved` is broadcast. Real buy, sell or send integrations do not exist yet; nothing leaves the machine.
-- **Failed runs.** A crash, timeout, start failure, unavailable model or cancelled run lands as a `kind: "error"` item and in `lastRun`. It is never silent.
+- **Failed runs.** A crash, timeout, start failure, unavailable model or cancelled run (daemon stop, delete, or `set_paused{paused:true}`, reason `paused`) lands as a `kind: "error"` item and in `lastRun`. It is never silent. Proposals the kit parked before the failure are stored as `pending` proposals next to it (S13). A one-time scheduled (`at`) run that was due while paused, busy or already running lands as an `error` item too.
+- **Proposal `target`** is one plain line: Unicode format characters (Cf, e.g. U+202E) are stripped, and a line break or control character is refused.
 - **Same-UID limit.** The kit has no tool that reads files. The «Hoy» store, the PIN hash and the daemon token live outside every Minikoda engine root, so a Minikoda cannot reach them through its kit. But any process of the same OS user can read them, including the PIN hash, which can then be brute-forced offline, and the session token, which can then send `hoy_approve`. The PIN is not a real lock against a same-user process until the agent runs as a separate OS user (K2-14 criterion 3), as with the `connectors_approve` note above.

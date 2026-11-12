@@ -49,6 +49,16 @@ const BASE_PROMPT = [
 
 const textOf = (content) => (Array.isArray(content) ? content.map((c) => (c?.type === "text" && typeof c.text === "string" ? c.text : "")).join("") : typeof content === "string" ? content : "");
 
+/**
+ * A proposal target is one plain line: Unicode format characters (Cf: bidi overrides such as U+202E, zero-width
+ * characters) are stripped; any control character or line/paragraph separator makes it invalid (undefined).
+ */
+function plainTarget(value) {
+	const stripped = value.replace(/\p{Cf}/gu, "");
+	if (/[\p{Cc}\u2028\u2029]/u.test(stripped)) return undefined;
+	return stripped.trim();
+}
+
 /** Re-validates the kit's parked proposals; a malformed or out-of-catalogue line is discarded and counted. */
 function readProposals(file) {
 	const proposals = [];
@@ -67,13 +77,14 @@ function readProposals(file) {
 			discarded += 1;
 			continue;
 		}
-		const ok = p && PROPOSAL_ACTIONS.includes(p.action) && typeof p.target === "string" && p.target.trim() !== "" && p.target.length <= MAX_TARGET_CHARS &&
+		const target = typeof p?.target === "string" ? plainTarget(p.target) : undefined;
+		const ok = p && PROPOSAL_ACTIONS.includes(p.action) && target !== undefined && target !== "" && target.length <= MAX_TARGET_CHARS &&
 			typeof p.text === "string" && p.text.trim() !== "" && p.text.length <= MAX_PROPOSAL_TEXT_CHARS;
 		if (!ok || proposals.length >= MAX_PROPOSALS) {
 			discarded += 1;
 			continue;
 		}
-		proposals.push({ action: p.action, target: p.target.trim(), text: p.text.trim() });
+		proposals.push({ action: p.action, target, text: p.text.trim() });
 	}
 	return { proposals, discarded };
 }
@@ -165,8 +176,9 @@ async function runMinikoda({ recipe, root, runId, source = "", prepareModel, eng
 	};
 	engine.on("exit", ({ code, signal }) => abort(new RunFailure(exitReason(code, signal))));
 	engine.on("turn_cancelled", ({ reason }) => abort(new RunFailure(reason === "time_limit" ? "timeout" : "cancelled")));
-	// The daemon stopping (or the Minikoda being deleted) cancels the run: recorded as failed, never silent.
-	const onAbort = () => abort(new RunFailure("cancelled"));
+	// The daemon stopping, the Minikoda being deleted or the global pause turning on (reason "paused") cancels
+	// the run: recorded as failed, never silent.
+	const onAbort = () => abort(new RunFailure(signal?.reason === "paused" ? "paused" : "cancelled"));
 	if (signal?.aborted) onAbort();
 	else signal?.addEventListener("abort", onAbort, { once: true });
 	let timer;
@@ -198,4 +210,4 @@ async function runMinikoda({ recipe, root, runId, source = "", prepareModel, eng
 	return finish("done", { resultText, toolCalls, proposals, discarded });
 }
 
-module.exports = { runMinikoda, engineArgs, readProposals, BASE_PROMPT, KIT_EXTENSION, PROFILE_FLAGS, DEFAULT_RUN_TIMEOUT_MS };
+module.exports = { runMinikoda, engineArgs, readProposals, plainTarget, BASE_PROMPT, KIT_EXTENSION, PROFILE_FLAGS, DEFAULT_RUN_TIMEOUT_MS };

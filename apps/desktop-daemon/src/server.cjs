@@ -634,6 +634,8 @@ class IslandServer {
 				// path (admission closes, open asks resolve, the child is recycled, the
 				// session reopens, no replay). Idling pause sends nothing.
 				if (frame.paused && this.state().busy) this.engine?.interruptTurn?.("paused");
+				// K2-13: running Minikodas are cancelled too (each lands in «Hoy» as a failed run, reason paused).
+				if (frame.paused) this.minikodas?.pause?.()?.catch?.(() => this.log("minikodas pause failed"));
 				this.broadcastState();
 				return undefined;
 			}

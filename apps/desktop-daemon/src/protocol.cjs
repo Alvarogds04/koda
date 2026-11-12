@@ -734,7 +734,8 @@ function hooksFrame(data) {
 
 // ----- K2-13 Minikodas and «Hoy» frames -----------------------------------------------------------
 
-const MINIKODAS_EMIT = Object.freeze({ maxMinikodas: 32, maxHoyItems: 100, maxHoyTextChars: 4000 });
+// maxHoyFrameBytes: the island refuses lines over 256 KiB (agentclient.rs); leave room for `seq` and the LF.
+const MINIKODAS_EMIT = Object.freeze({ maxMinikodas: 32, maxHoyItems: 100, maxHoyTextChars: 4000, maxHoyFrameBytes: 200 * 1024 });
 const RUN_OUTCOMES = new Set(["done", "failed"]);
 const HOY_KINDS = new Set(["result", "proposal", "error"]);
 const HOY_STATUSES = new Set(["pending", "approved", "rejected"]);
@@ -792,7 +793,16 @@ function hoyFrame(items) {
 	const pending = rows.filter((r) => r.kind === "proposal" && r.status === "pending").reverse();
 	const rest = rows.filter((r) => !(r.kind === "proposal" && r.status === "pending")).reverse();
 	const ordered = [...pending, ...rest];
-	return { type: "hoy", items: ordered.slice(0, MINIKODAS_EMIT.maxHoyItems), truncated: ordered.length > MINIKODAS_EMIT.maxHoyItems };
+	// Bounded by count AND by bytes: items are kept in order while the frame stays under maxHoyFrameBytes.
+	const kept = [];
+	let bytes = Buffer.byteLength(JSON.stringify({ type: "hoy", items: [], truncated: true, seq: Number.MAX_SAFE_INTEGER }));
+	for (const row of ordered.slice(0, MINIKODAS_EMIT.maxHoyItems)) {
+		const size = Buffer.byteLength(JSON.stringify(row)) + 1; // + the comma
+		if (bytes + size > MINIKODAS_EMIT.maxHoyFrameBytes) break;
+		bytes += size;
+		kept.push(row);
+	}
+	return { type: "hoy", items: kept, truncated: kept.length < ordered.length };
 }
 
 /** Broadcast after an approved proposal was executed (K2-13: recorded only; no real integration yet). */

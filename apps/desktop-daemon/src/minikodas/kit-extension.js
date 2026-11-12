@@ -55,7 +55,10 @@ export default function (pi) {
 			async execute(_id, params) {
 				const action = params?.action;
 				if (!ACTIONS.includes(action)) throw new Error(`Refused: «${String(action).slice(0, 40)}» is not a proposable action. Only buy, sell or send can be proposed; nothing was parked.`);
-				const target = typeof params.target === "string" ? params.target.trim() : "";
+				// One plain line: Unicode format characters (bidi overrides, zero-width) are stripped; line breaks refused.
+				const raw = typeof params.target === "string" ? params.target.replace(/\p{Cf}/gu, "") : "";
+				if (/[\p{Cc}\u2028\u2029]/u.test(raw)) throw new Error("Refused: target must be one line without control characters; nothing was parked.");
+				const target = raw.trim();
 				const why = typeof params.text === "string" ? params.text.trim() : "";
 				if (target === "" || target.length > MAX_TARGET_CHARS) throw new Error(`Refused: target must be 1-${MAX_TARGET_CHARS} characters; nothing was parked.`);
 				if (why === "" || why.length > MAX_TEXT_CHARS) throw new Error(`Refused: text must be 1-${MAX_TEXT_CHARS} characters; nothing was parked.`);

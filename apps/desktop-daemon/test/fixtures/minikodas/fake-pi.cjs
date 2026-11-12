@@ -42,8 +42,10 @@ tools.set("bash", {
 		return { content: [{ type: "text", text: "ran" }] };
 	},
 });
+const providers = [];
 const api = {
 	registerTool(tool) { tools.set(tool.name, tool); },
+	registerProvider(id) { providers.push(id); },
 	on(event, fn) { handlers.set(event, [...(handlers.get(event) ?? []), fn]); },
 };
 
@@ -120,7 +122,7 @@ async function main() {
 	const report = argValue("--report");
 	if (report) {
 		const declared = selection.filter((name) => tools.has(name));
-		fs.writeFileSync(report, JSON.stringify({ argv, declared, kitEnv: process.env.MINIKODA_KIT ?? null, gentleAgents: process.env.GENTLE_PI_AGENTS ?? null, home: process.env.HOME, agentDir: process.env.PI_CODING_AGENT_DIR, cwd: process.cwd(), authSeen: readAuth() }));
+		fs.writeFileSync(report, JSON.stringify({ argv, declared, kitEnv: process.env.MINIKODA_KIT ?? null, gentleAgents: process.env.GENTLE_PI_AGENTS ?? null, home: process.env.HOME, agentDir: process.env.PI_CODING_AGENT_DIR, cwd: process.cwd(), authSeen: readAuth(), providers }));
 	}
 	let buffer = "";
 	process.stdin.on("data", (chunk) => {

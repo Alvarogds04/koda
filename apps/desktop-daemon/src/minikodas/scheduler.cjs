@@ -4,6 +4,8 @@
  * K2-13 Minikodas (T3): Koda's own timer. `everyMs` repeats, `at` fires once, `manual` never fires by itself.
  * Nobody presses anything: the timer calls `launch(id, {trigger: "time"})`. A Minikoda never overlaps itself:
  * the launcher refuses a second run while one is going, and the tick is counted as `skipped`, never queued.
+ * A one-time `at` run that cannot start when due (paused, busy, running) never comes back: it is reported
+ * through `onMissed` («Hoy» error item), never lost silently. Repeating ticks just skip.
  * `at` is persisted through `markFired` so a daemon restart never fires it twice. Timers longer than the
  * platform maximum (~24.8 days) are re-armed in steps.
  */
@@ -18,10 +20,13 @@ class Scheduler extends EventEmitter {
 	 * @param {(id:string, meta:{trigger:string, firedAt:string}) => Promise<{started:boolean}>} options.launch
 	 * @param {(id:string) => void} [options.markFired]  persists that an `at` recipe fired
 	 * @param {() => boolean} [options.isPaused]          #379 global pause: a tick while paused is skipped
+	 * @param {(e:{minikoda:string, firedAt:string, reason:string}) => void} [options.onMissed]  a one-time `at` run that
+	 *        could not start (paused, busy, running, failed): it never comes back, so it is reported, never lost silently
 	 */
-	constructor({ launch, markFired = () => {}, isPaused = () => false, now = Date.now, log = () => {} }) {
+	constructor({ launch, markFired = () => {}, isPaused = () => false, onMissed = () => {}, now = Date.now, log = () => {} }) {
 		super();
 		this.launch = launch;
+		this.onMissed = onMissed;
 		this.markFired = markFired;
 		this.isPaused = isPaused;
 		this.now = now;
@@ -72,9 +77,18 @@ class Scheduler extends EventEmitter {
 		} else {
 			this.arm(entry, when.everyMs);
 		}
+		const missed = (reason) => {
+			if (when.at === undefined) return;
+			try {
+				this.onMissed({ minikoda: id, firedAt, reason });
+			} catch {
+				this.log(`minikoda ${id}: could not report the missed run`);
+			}
+		};
 		if (this.isPaused()) {
 			entry.skipped += 1;
 			this.emit("skipped", { minikoda: id, firedAt, reason: "paused" });
+			missed("paused");
 			return;
 		}
 		Promise.resolve()
@@ -84,12 +98,16 @@ class Scheduler extends EventEmitter {
 					entry.skipped += 1;
 					this.emit("skipped", { minikoda: id, firedAt, reason: out.reason ?? "running" });
 					this.log(`minikoda ${id}: tick skipped (${out.reason ?? "running"})`);
+					if (out.reason !== "stopped") missed(out.reason ?? "running");
 				} else {
 					entry.runs += 1;
 					this.emit("fired", { minikoda: id, firedAt });
 				}
 			})
-			.catch(() => this.log(`minikoda ${id}: scheduled launch failed`));
+			.catch(() => {
+				this.log(`minikoda ${id}: scheduled launch failed`);
+				missed("failed");
+			});
 	}
 
 	stats(id) {

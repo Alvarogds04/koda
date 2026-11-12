@@ -21,6 +21,7 @@ class Minikodas extends EventEmitter {
 		this.service = new MinikodaService({ ...rest, results: this.inbox });
 		this.service.on("changed", () => this.emit("changed"));
 		this.service.on("run", () => this.emit("hoy"));
+		this.service.on("missed", () => this.emit("hoy"));
 		this.inbox.on("approved", (entry) => this.emit("approved", entry));
 	}
 
@@ -32,6 +33,8 @@ class Minikodas extends EventEmitter {
 	approveCreate(id) { return this.service.approveCreate(id); }
 	delete(id) { return this.service.delete(id); }
 	launch(id) { return this.service.launch(id, { trigger: "manual" }); }
+	/** #379 the global pause turned on: cancels every running Minikoda (failed runs, reason paused). */
+	pause() { return this.service.cancelRuns("paused"); }
 	hoyList() { return this.inbox.list(); }
 	pinStatus() { return this.inbox.pinStatus(); }
 

@@ -122,7 +122,7 @@ test("S3 reject never executes, needs no PIN and is final; result/error items an
 	assert.deepEqual(await inbox.approve(proposal.id, PIN), { ok: false, code: "not_pending" });
 	assert.deepEqual(await inbox.reject(proposal.id), { ok: false, code: "not_pending" });
 	assert.deepEqual(await inbox.approve(result.id, PIN), { ok: false, code: "unknown_item" });
-	const err = await inbox.addError({ minikoda: "oportunidades", text: "falló (timeout)" });
+	const [err] = await inbox.addError({ minikoda: "oportunidades", text: "falló (timeout)" });
 	assert.deepEqual(await inbox.approve(err.id, PIN), { ok: false, code: "unknown_item" });
 	assert.deepEqual(await inbox.approve("00000000-0000-4000-8000-000000000000", PIN), { ok: false, code: "unknown_item" });
 	assert.equal(events.length, 0);
@@ -400,6 +400,63 @@ test("server: minikodas_list/get/delete; launch refused while paused; a crash la
 	assert.deepEqual((await client.ask({ type: "minikodas_list" }, ["minikodas"])).minikodas, []);
 });
 
+// ---------- verifier follow-ups (T3b) ----------
+
+test("F5 S13 Hoy: a failed run's parked proposals are stored pending (approvable) next to the error item", async (t) => {
+	const inbox = new HoyInbox({ dir: path.join(tmp(t), "hoy"), scrypt: CHEAP_SCRYPT });
+	const added = await inbox.addError({ minikoda: "m", text: "La corrida falló (crashed).", proposals: [{ action: "buy", target: "MELI", text: "t" }, { action: "delete", target: "x", text: "y" }] });
+	assert.deepEqual(added.map((i) => [i.kind, i.status, i.action]), [["error", "approved", undefined], ["proposal", "pending", "buy"]]);
+	assert.deepEqual(inbox.list().map((i) => i.kind), ["error", "proposal"]);
+});
+
+test("F5 S13 server: a crash after a proposal shows the failure AND the pending proposal in «Hoy»", { skip: !posix && "Unix socket fixture" }, async (t) => {
+	const base = tmp(t);
+	const { client } = await serverWith(t, base, [{ tool: "inbox_propose", args: { action: "sell", target: "ACME", text: "t" } }, { crash: 3 }]);
+	await client.ask({ type: "minikoda_create", recipe: recipe() }, ["minikoda"]);
+	await client.ask({ type: "minikoda_approve_create", id: "oportunidades" }, ["minikoda"]);
+	await client.ask({ type: "minikoda_launch", id: "oportunidades" }, ["minikoda_launched"]);
+	const hoy = await client.wait((f) => f.type === "hoy" && f.items.some((i) => i.kind === "error"), 15_000);
+	assert.match(hoy.items.find((i) => i.kind === "error").text, /falló \(crashed\).*pendientes/);
+	assert.deepEqual(hoy.items.filter((i) => i.kind === "proposal").map((i) => [i.status, i.action, i.target]), [["pending", "sell", "ACME"]]);
+});
+
+test("F6 Hoy strips Unicode format characters and line breaks from a stored target", async (t) => {
+	const inbox = new HoyInbox({ dir: path.join(tmp(t), "hoy") });
+	const added = await inbox.addRun({ minikoda: "m", resultText: "r", proposals: [{ action: "sell", target: "AC\u202eME\nX", text: "z" }] });
+	assert.equal(added[1].target, "ACME X");
+});
+
+test("F7 the hoy frame is capped in bytes (the island refuses lines over 256 KiB) and says truncated", () => {
+	const id = (n) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
+	// 100 items of 4000 three-byte characters: ~1.2 MB unbounded.
+	const items = Array.from({ length: 100 }, (_, n) => ({ id: id(n), minikoda: "m", kind: "result", text: "\u20ac".repeat(4000), status: "approved", createdAt: "a" }));
+	const frame = P.hoyFrame(items);
+	const bytes = Buffer.byteLength(JSON.stringify({ ...frame, seq: Number.MAX_SAFE_INTEGER }));
+	assert.ok(bytes <= P.MINIKODAS_EMIT.maxHoyFrameBytes, `${bytes} bytes`);
+	assert.ok(P.MINIKODAS_EMIT.maxHoyFrameBytes < 256 * 1024);
+	assert.equal(frame.truncated, true);
+	assert.ok(frame.items.length > 0 && frame.items.length < 100);
+	assert.equal(frame.items[0].id, id(99), "newest first; the oldest are dropped");
+	const small = P.hoyFrame(items.slice(0, 3).map((i) => ({ ...i, text: "x" })));
+	assert.equal(small.truncated, false);
+	assert.equal(small.items.length, 3);
+});
+
+test("F8 turning the global pause on cancels running Minikodas too (failed run, reason paused)", { skip: !posix && "Unix socket fixture" }, async (t) => {
+	const base = tmp(t);
+	const { minikodas, client } = await serverWith(t, base, [{ hang: true }]);
+	await client.ask({ type: "minikoda_create", recipe: recipe() }, ["minikoda"]);
+	await client.ask({ type: "minikoda_approve_create", id: "oportunidades" }, ["minikoda"]);
+	assert.equal((await client.ask({ type: "minikoda_launch", id: "oportunidades" }, ["minikoda_launched"])).started, true);
+	await sleep(300);
+	assert.equal(minikodas.list()[0].running, true);
+	client.send({ type: "set_paused", paused: true });
+	const hoy = await client.wait((f) => f.type === "hoy" && f.items.some((i) => i.kind === "error"), 5_000);
+	assert.match(hoy.items.find((i) => i.kind === "error").text, /falló \(paused\)/);
+	await waitFor(() => minikodas.list()[0].running === false, 5_000);
+	assert.equal(minikodas.list()[0].lastRun.reason, "paused");
+});
+
 // ---------- daemon wiring end to end ----------
 
 test("daemon: Minikodas are wired; a SCHEDULED run fires without any launch, lands in Hoy, and the chat engine's root is never touched", { skip: !posix && "Unix socket fixture", timeout: 60_000 }, async (t) => {
@@ -457,7 +514,7 @@ test("daemon: Minikodas are wired; a SCHEDULED run fires without any launch, lan
 	assert.equal(hoy.filter((i) => i.kind === "proposal" && i.action === "sell").length >= 1, true);
 	assert.equal(hoy.some((i) => i.kind === "proposal" && i.action !== "sell"), false, "only stored proposals, never the delete the kit refused or the claimed ones");
 	assert.equal(fs.existsSync(path.join(root, "agent", "auth.json")), false, "the chat engine's agent dir never gets the Minikoda's credential");
-	assert.ok(fs.existsSync(path.join(root, "minikodas", "engines", "oportunidades", "agent", "auth.json")));
+	assert.ok(fs.existsSync(path.join(root, "minikodas", "engines", "oportunidades", "agent", "settings.json")), "the model was projected into its own agent dir");
 	assert.equal(fs.statSync(path.join(root, "minikodas", "hoy", "hoy.jsonl")).mode & 0o777, 0o600);
 	await daemon.stop();
 	assert.equal(daemon.minikodas, undefined, "stopped with the daemon");

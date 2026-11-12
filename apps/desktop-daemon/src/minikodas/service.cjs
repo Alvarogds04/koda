@@ -23,7 +23,7 @@
 
 const { EventEmitter } = require("node:events");
 const { randomUUID } = require("node:crypto");
-const { lstatSync, readFileSync, rmSync } = require("node:fs");
+const { lstatSync, readFileSync, rmSync, unlinkSync } = require("node:fs");
 const path = require("node:path");
 const { ensurePrivateDir, islandPaths, writePrivateFile } = require("../isolation.cjs");
 const { LIMITS, RecipeError, validateRecipe, recipeToJson } = require("./recipe.cjs");
@@ -90,14 +90,35 @@ class MinikodaService extends EventEmitter {
 			launch: (id, meta) => this.launch(id, meta),
 			markFired: (id) => this.markFired(id),
 			isPaused: this.isPaused,
+			onMissed: (e) => this.reportMissed(e),
 			now: this.now,
 			log: this.log,
 		});
 	}
 
+	/** A one-time scheduled run that could not start when due: an error item in «Hoy», never silent. */
+	reportMissed({ minikoda, reason }) {
+		const entry = this.find(minikoda);
+		const name = entry?.recipe.name ?? minikoda;
+		this.results
+			.addError({ minikoda, text: `La corrida programada de «${name}» no se hizo (${reason}) y no se repetirá.` })
+			.then(() => this.emit("missed", { minikoda, reason }))
+			.catch(() => this.log(`minikoda ${minikoda}: could not record the missed run`));
+	}
+
 	/** Arms the scheduler for every stored active Minikoda. */
 	start() {
 		for (const entry of this.load().minikodas) if (entry.status === "active") this.scheduler.add(entry.recipe, { firedAt: entry.firedAt });
+	}
+
+	/**
+	 * #379 the global pause turned on: every run in flight is cancelled (failed run, reason `paused`, its
+	 * parked proposals kept pending, S13). Resolves when they have landed.
+	 */
+	async cancelRuns(reason = "paused") {
+		const runs = [...this.running.values()];
+		for (const run of runs) run.controller.abort(reason);
+		await Promise.all(runs.map((r) => r.promise.catch(() => {})));
 	}
 
 	/** Stops the timers, cancels runs in flight and waits for them to land (as failed runs). */
@@ -355,6 +376,17 @@ class MinikodaService extends EventEmitter {
 		}
 	}
 
+	/** Removes the copied credential from a Minikoda's agent dir (never a symlink target). */
+	removeRunCredential(agentDir) {
+		const file = path.join(agentDir, "auth.json");
+		try {
+			const stats = lstatSync(file);
+			if (stats.isFile() || stats.isSymbolicLink()) unlinkSync(file);
+		} catch (error) {
+			if (error.code !== "ENOENT") this.log("minikoda: could not remove the copied credential");
+		}
+	}
+
 	async execute(recipe, runId, signal) {
 		const account = () => this.options.accounts.listAccounts().find((a) => a.accountId === recipe.model.accountId);
 		const agentDir = islandPaths(this.engineRoot(recipe.id)).agentDir;
@@ -375,11 +407,21 @@ class MinikodaService extends EventEmitter {
 					const a = account();
 					if (!a || a.configured !== true) throw Object.assign(new Error("account unavailable"), { name: "ModelChoiceError" });
 					// A copy an earlier run could not write back goes back first, so no rotated token is lost.
-					await this.settleRunCredential(recipe, dir, undefined);
-					copied = await freshestCredential(this.credentialScope(recipe));
-					if (!copied) throw Object.assign(new Error("account not signed in"), { name: "ModelChoiceError" });
-					projectModel({ agentDir: dir, accountsRoot: this.options.accountsRoot, model: recipe.model, custom: a.custom === true, credential: copied });
-					return {};
+					if (!(await this.settleRunCredential(recipe, dir, undefined))) throw new Error("earlier credential not written back");
+					this.removeRunCredential(dir);
+					const fresh = await freshestCredential(this.credentialScope(recipe));
+					if (!fresh) throw Object.assign(new Error("account not signed in"), { name: "ModelChoiceError" });
+					let files;
+					try {
+						files = projectModel({ agentDir: dir, accountsRoot: this.options.accountsRoot, model: recipe.model, custom: a.custom === true, credential: fresh });
+					} catch (error) {
+						this.removeRunCredential(dir); // the copy step failed: the credential never stays behind
+						throw error;
+					}
+					copied = fresh;
+					// `-ne` turns off the auto-loaded agent extensions, so a custom gateway's guarded provider
+					// extension is passed explicitly, exactly like the kit.
+					return a.custom === true ? { extraExtensions: [files.extension] } : {};
 				},
 			});
 		} catch {
@@ -387,12 +429,19 @@ class MinikodaService extends EventEmitter {
 			result = { runId, minikoda: recipe.id, outcome: "failed", reason: "failed", proposals: [] };
 		}
 		// Every outcome (done, crash, timeout, cancel): the engine may have refreshed the token before it ended.
-		if (copied !== undefined) await this.settleRunCredential(recipe, agentDir, copied);
+		// Written back first (S11), then the copy is removed; a copy that could not be written back stays so the
+		// next run retries it (removing it would lose a rotated refresh token).
+		if (copied !== undefined && (await this.settleRunCredential(recipe, agentDir, copied))) this.removeRunCredential(agentDir);
 		if (result.outcome === "done") {
 			await this.results.addRun({ minikoda: recipe.id, resultText: result.resultText, proposals: result.proposals });
 		} else {
-			const parked = result.proposals?.length ?? 0;
-			await this.results.addError({ minikoda: recipe.id, text: `La corrida de «${recipe.name}» falló (${result.reason}).${parked ? ` ${parked} propuesta(s) de esa corrida no se guardaron.` : ""}` });
+			// S13: what the kit really parked before the failure is kept pending, and «Hoy» says the run failed.
+			const parked = result.proposals ?? [];
+			await this.results.addError({
+				minikoda: recipe.id,
+				text: `La corrida de «${recipe.name}» falló (${result.reason}).${parked.length ? ` ${parked.length} propuesta(s) de esa corrida quedaron pendientes en «Hoy».` : ""}`,
+				proposals: parked,
+			});
 		}
 		await this.serial(async () => {
 			const state = this.load();

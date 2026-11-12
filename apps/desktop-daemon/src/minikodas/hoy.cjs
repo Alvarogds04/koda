@@ -36,6 +36,8 @@ const MAX_TEXT_CHARS = 8000;
 
 const derive = (pin, salt, opts) => new Promise((resolve, reject) => scrypt(pin, salt, HASH_BYTES, opts, (e, k) => (e ? reject(e) : resolve(k))));
 const clean = (value, max) => String(value ?? "").replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "").slice(0, max);
+/** A proposal target is one plain line: Unicode format characters (Cf: bidi overrides, zero-width) go, breaks become spaces. */
+const cleanTarget = (value) => String(value ?? "").replace(/\p{Cf}/gu, "").replace(/[\p{Cc}\u2028\u2029]+/gu, " ").trim().slice(0, 200);
 
 class HoyInbox extends EventEmitter {
 	constructor({ dir, now = Date.now, log = () => {}, scrypt: scryptOptions = SCRYPT }) {
@@ -105,22 +107,34 @@ class HoyInbox extends EventEmitter {
 	addRun({ minikoda, resultText, proposals = [] }) {
 		return this.serial(async () => {
 			const createdAt = new Date(this.now()).toISOString();
-			const added = [{ id: randomUUID(), minikoda, kind: "result", text: clean(resultText, MAX_TEXT_CHARS), status: "approved", createdAt }];
-			for (const p of proposals) {
-				if (!PROPOSAL_ACTIONS.includes(p?.action)) continue;
-				added.push({ id: randomUUID(), minikoda, kind: "proposal", text: clean(p.text, MAX_TEXT_CHARS), action: p.action, target: clean(p.target, 200), status: "pending", createdAt });
-			}
+			const added = [{ id: randomUUID(), minikoda, kind: "result", text: clean(resultText, MAX_TEXT_CHARS), status: "approved", createdAt }, ...this.proposalItems(minikoda, proposals, createdAt)];
 			this.save([...this.list(), ...added]);
 			return added;
 		});
 	}
 
-	/** Records a failed run (crash, timeout, start failure): never silent. */
-	addError({ minikoda, text }) {
+	proposalItems(minikoda, proposals, createdAt) {
+		const items = [];
+		for (const p of Array.isArray(proposals) ? proposals : []) {
+			if (!PROPOSAL_ACTIONS.includes(p?.action)) continue;
+			const target = cleanTarget(p.target);
+			if (target === "") continue;
+			items.push({ id: randomUUID(), minikoda, kind: "proposal", text: clean(p.text, MAX_TEXT_CHARS), action: p.action, target, status: "pending", createdAt });
+		}
+		return items;
+	}
+
+	/**
+	 * Records a failed run (crash, timeout, start failure, cancel) or a missed scheduled run: never silent.
+	 * S13 («3 si guardalo como pendiente, aunque avise al usuario que fallo»): the proposals the kit really parked
+	 * before the failure are stored as pending too, next to the error item. Returns the added items.
+	 */
+	addError({ minikoda, text, proposals = [] }) {
 		return this.serial(async () => {
-			const item = { id: randomUUID(), minikoda, kind: "error", text: clean(text, 500), status: "approved", createdAt: new Date(this.now()).toISOString() };
-			this.save([...this.list(), item]);
-			return item;
+			const createdAt = new Date(this.now()).toISOString();
+			const added = [{ id: randomUUID(), minikoda, kind: "error", text: clean(text, 500), status: "approved", createdAt }, ...this.proposalItems(minikoda, proposals, createdAt)];
+			this.save([...this.list(), ...added]);
+			return added;
 		});
 	}
 

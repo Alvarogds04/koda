@@ -352,7 +352,9 @@ test("S1 (daemon part) a Minikoda is created as a DRAFT and runs only after appr
 	assert.deepEqual(results.runs[0].proposals, [{ action: "sell", target: "ACME", text: "El post dice «ACME pierde el contrato»." }]);
 	assert.equal(svc.get("oportunidades").lastRun.outcome, "done");
 	assert.notEqual(path.join(island, "minikodas", "engines", "oportunidades"), path.join(island, "agent"), "never the chat engine's root");
-	assert.ok(fs.existsSync(path.join(island, "minikodas", "engines", "oportunidades", "agent", "auth.json")));
+	assert.ok(fs.existsSync(path.join(island, "minikodas", "engines", "oportunidades", "agent", "settings.json")), "the model was projected into its own agent dir");
+	await waitFor(() => !svc.running.has("oportunidades"));
+	assert.equal(fs.existsSync(path.join(island, "minikodas", "engines", "oportunidades", "agent", "auth.json")), false, "the copied credential does not stay between runs");
 	assert.equal(fs.existsSync(path.join(island, "agent", "auth.json")), false, "the chat engine's agent dir is never touched");
 });
 
@@ -578,4 +580,112 @@ test("S11 concurrent writers under the SDK lock never lose the newest token", as
 	await Promise.all(many);
 	assert.deepEqual(readAuth(accountAuth).fake, oauth("W11", now + 3_000_000 + 11_000));
 	assert.deepEqual(readAuth(chatAuth).fake, oauth("W11", now + 3_000_000 + 11_000));
+});
+
+// ---------- verifier follow-ups (T3b) ----------
+
+test("F4 a custom (gateway) account gets its guarded provider extension passed with -e (-ne disables the auto-loaded one)", async (t) => {
+	const base = tmp(t);
+	const report = path.join(base, "report.json");
+	const { svc, results, fx, island } = service(t, base, { fixture: { extra: [{ accountId: "gw", provider: "custom-gw", configured: true, custom: true }] } });
+	fs.mkdirSync(path.join(fx.accountsRoot, "gw"), { recursive: true, mode: 0o700 });
+	fs.writeFileSync(path.join(fx.accountsRoot, "gw", "auth.json"), JSON.stringify({ "custom-gw": { type: "api_key", key: "FAKE-GW-KEY" } }), { mode: 0o600 });
+	fs.writeFileSync(path.join(fx.accountsRoot, "gw", "models.json"), JSON.stringify({ providers: { "custom-gw": { baseUrl: "http://127.0.0.1:9/v1", models: [{ id: "gw-model" }] } } }), { mode: 0o600 });
+	svc.options.engine = fakeEngine(script(base, STANDARD, "gw.json"), report);
+	await svc.createDraft(recipe({ model: { provider: "custom-gw", id: "gw-model", accountId: "gw" } }));
+	await svc.approveCreate("oportunidades");
+	await svc.launch("oportunidades");
+	await waitFor(() => results.runs.length + results.errors.length === 1);
+	const rep = JSON.parse(fs.readFileSync(report, "utf8"));
+	const ext = path.join(island, "minikodas", "engines", "oportunidades", "agent", "extensions", "abito-custom-provider.js");
+	assert.ok(rep.argv.includes("-ne"));
+	assert.equal(rep.argv[rep.argv.indexOf(ext) - 1], "-e", "the custom provider extension is loaded explicitly");
+	assert.deepEqual(rep.providers, ["custom-gw"], "the gateway provider is registered");
+	assert.equal(results.runs.length, 1);
+});
+
+test("F5 S13: proposals parked before a run crashes are stored as pending, and the failure is reported with them", async (t) => {
+	const base = tmp(t);
+	const { svc, results } = service(t, base, { steps: [{ tool: "inbox_propose", args: { action: "buy", target: "MELI", text: "Oportunidad." } }, { crash: 3 }] });
+	await svc.createDraft(recipe());
+	await svc.approveCreate("oportunidades");
+	await svc.launch("oportunidades");
+	await waitFor(() => results.errors.length === 1);
+	assert.equal(results.runs.length, 0);
+	assert.deepEqual(results.errors[0].proposals, [{ action: "buy", target: "MELI", text: "Oportunidad." }]);
+	assert.match(results.errors[0].text, /falló \(crashed\)/);
+	assert.match(results.errors[0].text, /1 propuesta\(s\) de esa corrida quedaron pendientes/);
+});
+
+test("F6 a proposal target loses Unicode format characters (bidi overrides) and must be one line", async (t) => {
+	const { readProposals } = require("../src/minikodas/runner.cjs");
+	const base = tmp(t);
+	const file = path.join(base, "p.jsonl");
+	const lines = [
+		{ action: "sell", target: "AC\u202eEM\u202c", text: "ok" },
+		{ action: "buy", target: "A\nB", text: "two lines" },
+		{ action: "buy", target: "A\u2028B", text: "line separator" },
+		{ action: "buy", target: "\u200b\u2066", text: "only format chars" },
+	];
+	fs.writeFileSync(file, lines.map((l) => JSON.stringify(l)).join("\n"));
+	assert.deepEqual(readProposals(file), { proposals: [{ action: "sell", target: "ACEM", text: "ok" }], discarded: 3 });
+	// The kit refuses it up front, so the model sees the error and nothing is parked.
+	const root = path.join(base, "engines", "k");
+	const steps = [
+		{ tool: "inbox_propose", args: { action: "sell", target: "AC\nME", text: "x" } },
+		{ tool: "inbox_propose", args: { action: "sell", target: "\u202eACME", text: "x" } },
+		{ text: "Listo." },
+	];
+	const r = await runMinikoda({ recipe: validateRecipe(recipe()), root, runId: "r1", engine: fakeEngine(script(base, steps)) });
+	assert.deepEqual(r.toolCalls.map((c) => c.isError), [true, false]);
+	assert.match(r.toolCalls[0].text, /one line/);
+	assert.deepEqual(r.proposals, [{ action: "sell", target: "ACME", text: "x" }]);
+});
+
+test("F9 a one-time `at` run that is due while paused (or busy) is reported, never silently lost", async (t) => {
+	const missed = [];
+	let paused = true;
+	const s = new Scheduler({ launch: async () => ({ started: false, reason: "busy" }), isPaused: () => paused, onMissed: (e) => missed.push(e) });
+	t.after(() => s.stop());
+	s.add(validateRecipe(recipe({ id: "pausada", when: { at: new Date(Date.now() + 50).toISOString() } })));
+	s.add(validateRecipe(recipe({ id: "cada", when: { everyMs: 50 } }), { minEveryMs: 1 }));
+	await sleep(300);
+	paused = false;
+	s.add(validateRecipe(recipe({ id: "ocupada", when: { at: new Date(Date.now() + 50).toISOString() } })));
+	await sleep(300);
+	assert.deepEqual(missed.map((m) => [m.minikoda, m.reason]), [["pausada", "paused"], ["ocupada", "busy"]], "only one-time runs are reported; repeating ticks just skip");
+	// The service turns it into an error item in «Hoy».
+	const base = tmp(t);
+	const { svc, results } = service(t, base, { options: { isPaused: () => true } });
+	await svc.createDraft(recipe({ when: { at: new Date(Date.now() + 2000).toISOString() } }));
+	await svc.approveCreate("oportunidades");
+	await waitFor(() => results.errors.length === 1, 10_000);
+	assert.match(results.errors[0].text, /no se hizo \(paused\)/);
+	assert.equal(results.runs.length, 0);
+});
+
+test("F10 the copied auth.json is removed after every run (done or failed) and when the copy step fails", async (t) => {
+	const base = tmp(t);
+	const { svc, results, island, fx } = service(t, base);
+	const auth = path.join(island, "minikodas", "engines", "oportunidades", "agent", "auth.json");
+	await svc.createDraft(recipe());
+	await svc.approveCreate("oportunidades");
+	await svc.launch("oportunidades");
+	await waitFor(() => results.runs.length === 1);
+	await waitFor(() => !svc.running.has("oportunidades"));
+	assert.equal(fs.existsSync(auth), false, "removed after a done run");
+	svc.options.engine = fakeEngine(script(base, [{ crash: 3 }], "c.json"));
+	await svc.launch("oportunidades");
+	await waitFor(() => results.errors.length === 1);
+	await waitFor(() => !svc.running.has("oportunidades"));
+	assert.equal(fs.existsSync(auth), false, "removed after a failed run");
+	// The copy step fails after the credential was written (the model is no longer offered by the account).
+	fs.writeFileSync(path.join(fx.accountsRoot, "main", "models.json"), "{}");
+	const gw = { accountId: "main", provider: "fake", configured: true, custom: true };
+	svc.options.accounts = { ...fx.accounts, listAccounts: () => [gw] };
+	await svc.launch("oportunidades");
+	await waitFor(() => results.errors.length === 2);
+	await waitFor(() => !svc.running.has("oportunidades"));
+	assert.match(results.errors[1].text, /model_unavailable/);
+	assert.equal(fs.existsSync(auth), false, "removed when the copy step fails");
 });
