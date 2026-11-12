@@ -56,7 +56,9 @@ let sessionFile = path.join(sessionDir, `fake-session-${process.pid}.jsonl`);
 // `fail` answers an error and stays put, `hang` never answers and never switches,
 // `late <ms>` switches and answers only after <ms> (Pi handles RPC lines
 // concurrently: a get_state meanwhile still reports the old file, rpc-mode.js
-// :474-479). An empty or missing script switches at once.
+// :474-479), and `ack` answers success WITHOUT moving the open session — a switch the
+// engine acknowledges but does not apply (the one documented Koda deviation from
+// Gentle Dot's refreshSession). An empty or missing script switches at once.
 const switchScript = argValue("--switch-script");
 function nextSwitchStep() {
 	if (!switchScript || !fs.existsSync(switchScript)) return "";
@@ -153,6 +155,12 @@ function handle(command) {
 			if (step === "hang") break;
 			if (step === "fail") {
 				writeRecord({ id: command.id, type: "response", command: "switch_session", success: false, error: "could not open the session" });
+				break;
+			}
+			if (step === "ack") {
+				// K2-05 boot deviation: the engine ACKs the switch and keeps its own session, so the
+				// get_state that follows still reports the boot session (acknowledged, not applied).
+				respond(command.id, "switch_session", { sessionFile });
 				break;
 			}
 			const finish = () => {

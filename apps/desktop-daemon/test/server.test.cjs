@@ -2092,6 +2092,44 @@ test("get_history waiting for a starting engine is refused unavailable when the 
 	await server.close();
 });
 
+test("each read held for a starting engine times out on its own deadline, like Gentle Dot's per-call whenReady timer", async (t) => {
+	// Gentle Dot starts the timer INSIDE whenReady (bridge.ts:729-747), so a read asked later gets
+	// its own deadline counted from the moment it was asked; Koda keeps ONE engine listener for
+	// every held read (asserted below), but that sharing must never move a deadline onto an
+	// earlier call.
+	const { endpoint, engine } = await setup(t, { limits: { readyWaitMs: 500 } });
+	engine.status = "starting";
+	const c = await login(t, endpoint);
+	const askedAt = [];
+	const failedAt = [];
+	c.send({ type: "get_history" });
+	askedAt.push(Date.now());
+	await sleep(300);
+	c.send({ type: "get_history" });
+	askedAt.push(Date.now());
+	const deadline = Date.now() + 5000;
+	while (failedAt.length < 2 && Date.now() < deadline) {
+		const errors = c.frames.filter((f) => f.type === "error" && f.code === "unavailable").length;
+		while (failedAt.length < errors) failedAt.push(Date.now());
+		if (failedAt.length < 2) await sleep(5);
+	}
+	assert.equal(failedAt.length, 2, "both held reads end unavailable when the engine never starts");
+	assert.ok(failedAt[0] - askedAt[0] >= 450, `the first read waits its own deadline (${failedAt[0] - askedAt[0]} ms)`);
+	assert.ok(
+		failedAt[1] - askedAt[1] >= 450,
+		`the second read waits its OWN deadline, counted from when it was asked (${failedAt[1] - askedAt[1]} ms; sharing the first read's timer would end it ${failedAt[0] - askedAt[1]} ms after it asked)`,
+	);
+	assert.ok(failedAt[1] - failedAt[0] >= 250, "the two deadlines stay 300 ms apart, as the two reads did");
+	// Many reads while the engine starts still share ONE engine listener (no pile-up on the emitter).
+	engine.status = "starting";
+	const before = engine.listenerCount("status");
+	for (let i = 0; i < 10; i += 1) c.send({ type: "get_history" });
+	await waitFor(() => engine.listenerCount("status") === before + 1);
+	engine.status = "ready";
+	engine.emit("status", { state: "ready" });
+	await waitFor(() => engine.listenerCount("status") === before);
+});
+
 test("new_conversation is refused conversations_off before any gate: idle, busy and paused; nothing reaches the engine", async (t) => {
 	const store = { paused: false, get() { return store.paused; }, set(value) { store.paused = value; } };
 	const { endpoint, engine } = await setup(t, { pausedStore: store });

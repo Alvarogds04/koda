@@ -676,9 +676,12 @@ engine (a missing or broken bundled runtime still fails the boot, like Gentle Do
 its server, publishes `session.json` and only then starts the engine. Like Gentle Dot (`daemon.ts:477-481`
 `await supervisor.start().catch(log)`), the boot awaits that first engine start, but a stop does not:
 SIGTERM/SIGINT, stdin EOF of an app-owned `run` and `abito-island-daemon stop` act at once even while the
-engine is still starting (Gentle Dot `close()`, `daemon.ts:410-458`) — `session.json` is withdrawn, the
-server closes and the starting engine is stopped without waiting for its start to settle; a stop asked for
-before the server listens lets the boot publish nothing.
+engine is still starting (Gentle Dot `close()`, `daemon.ts:410-458`): the server closes and `session.json` is
+withdrawn immediately — never after that first start settles — and the starting engine is asked to stop at
+once (its stdin closed). The PROCESS then exits when that starting engine answers or the stop timers fire
+(`stopTimeoutMs`, 5 s → SIGTERM, two seconds later → SIGKILL), so an engine still loading can keep the
+process alive for a few seconds after `session.json` is already gone, exactly like Gentle Dot's `close()`; a
+stop asked for before the server listens lets the boot publish nothing.
 Clients that connect meanwhile get `ready{state.status:"starting"}` (then `agent_state` as it changes);
 `send`/`steer` answer `unavailable` until the engine is `ready`. A first engine start that fails is logged
 (`agent failed to start: …; retrying`) and retried by the runtime with its backoff; the daemon stays up. The

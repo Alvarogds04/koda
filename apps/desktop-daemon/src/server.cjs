@@ -274,8 +274,10 @@ class IslandServer {
 		this.directory = undefined;
 		this.closing = undefined;
 		this.listeners = [];
-		/** K2-05 boot order: the one wait get_history reads share while the engine starts (Gentle Dot whenReady). */
-		this.readyWait = undefined;
+		/** K2-05 boot order: the reads held while the engine starts (Gentle Dot whenReady), each with its own timer. */
+		this.readyWaiters = new Set();
+		/** The single engine `status` listener every held read shares (bounded, never one per call). */
+		this.readyWatch = undefined;
 	}
 
 	static generateToken() {
@@ -302,37 +304,64 @@ class IslandServer {
 	}
 
 	/**
-	 * Gentle Dot bridge.ts whenReady: resolves once the engine is ready; rejects when it stops,
-	 * after READY_WAIT_MS (Gentle Dot's READY_TIMEOUT_MS, 60 s) or when the server closes.
-	 * Koda deviation: every read waiting for the same start shares ONE wait (one engine listener),
-	 * so a client repeating get_history cannot pile listeners on the engine's emitter.
+	 * Gentle Dot bridge.ts:729-747 whenReady: resolves once the engine is ready; rejects when it
+	 * stops, or when READY_WAIT_MS (Gentle Dot's READY_TIMEOUT_MS, 60 s) elapses FROM THIS CALL —
+	 * the timer starts here, inside the call, exactly as upstream, so two reads 30 s apart time out
+	 * 30 s apart and a later read is never cut short by an earlier one's deadline.
+	 * What Koda does NOT copy is one listener per call: every held read shares ONE engine `status`
+	 * listener (registered by the first one), so a client repeating get_history cannot pile
+	 * listeners on the engine's emitter. It keeps the per-call timing above because each caller
+	 * owns its own timer; the shared listener only ever decides ready/stopped for all of them.
 	 */
 	whenReady() {
 		if (this.engine?.status === "ready") return Promise.resolve();
 		const engine = this.engine;
 		if (!engine?.on || this.closing) return Promise.reject(new Error("engine is not ready"));
-		if (this.readyWait) return this.readyWait.promise;
-		const wait = {};
-		wait.promise = new Promise((resolve, reject) => {
-			const finish = (error) => {
-				clearTimeout(timer);
-				engine.off("status", onStatus);
-				if (this.readyWait === wait) this.readyWait = undefined;
-				if (error) reject(error);
-				else resolve();
-			};
-			const timer = setTimeout(() => finish(new Error("the engine did not start in time")), this.opts.readyWaitMs);
-			timer.unref?.();
-			const onStatus = ({ state }) => {
-				if (state === "ready") finish();
-				else if (state === "stopped") finish(new Error("the engine stopped"));
-			};
-			engine.on("status", onStatus);
-			wait.finish = finish;
+		// One timer per call, counted from now; the shared listener is already there or is added here.
+		const promise = new Promise((resolve, reject) => {
+			const waiter = { resolve, reject };
+			waiter.timer = setTimeout(() => {
+				this.readyWaiters.delete(waiter);
+				if (this.readyWaiters.size === 0) this.unwatchReady();
+				reject(new Error("the engine did not start in time"));
+			}, this.opts.readyWaitMs);
+			waiter.timer.unref?.();
+			this.readyWaiters.add(waiter);
+			this.watchReady(engine);
 		});
-		wait.promise.catch(() => {});
-		this.readyWait = wait;
-		return wait.promise;
+		promise.catch(() => {});
+		return promise;
+	}
+
+	/** Registers the single shared `status` listener of the held reads (no-op when it exists). */
+	watchReady(engine) {
+		if (this.readyWatch) return;
+		const onStatus = ({ state }) => {
+			if (state === "ready") this.settleReady();
+			else if (state === "stopped") this.settleReady(new Error("the engine stopped"));
+		};
+		this.readyWatch = { engine, onStatus };
+		engine.on("status", onStatus);
+	}
+
+	/** Drops the shared `status` listener once no read is waiting for it. */
+	unwatchReady() {
+		const watch = this.readyWatch;
+		if (!watch) return;
+		this.readyWatch = undefined;
+		watch.engine.off("status", watch.onStatus);
+	}
+
+	/** Settles every read waiting for the engine at once: ready (no error) or the reason it never came. */
+	settleReady(error) {
+		const waiters = [...this.readyWaiters];
+		this.readyWaiters.clear();
+		this.unwatchReady();
+		for (const waiter of waiters) {
+			clearTimeout(waiter.timer);
+			if (error) waiter.reject(error);
+			else waiter.resolve();
+		}
 	}
 
 	/**
@@ -1562,7 +1591,7 @@ class IslandServer {
 		if (this.closing) return this.closing;
 		this.closing = (async () => {
 			for (const off of this.listeners.splice(0)) off();
-			this.readyWait?.finish(new Error("the server closed"));
+			this.settleReady(new Error("the server closed"));
 			for (const id of [...this.asks.keys()]) {
 				clearTimeout(this.asks.get(id).timer);
 				this.asks.delete(id);

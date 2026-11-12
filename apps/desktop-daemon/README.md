@@ -18,8 +18,12 @@ The Linux Tauri app starts this host as its direct child with
 requests shutdown, including EOF received during startup. Plain `run` retains its
 foreground SIGINT/SIGTERM behavior; `status`, `stop` and config commands are unchanged.
 Like Gentle Dot's `close()` (`daemon.ts:410-458`), EOF, SIGINT/SIGTERM and `stop` act at
-once even while the engine is still starting: `session.json` is withdrawn and the starting
-engine stopped without waiting for its first start to settle.
+once even while the engine is still starting: the server closes and `session.json` is
+withdrawn immediately, never after that first start settles, and the starting engine is
+asked to stop at once (its stdin closed). The PROCESS exits when that starting engine
+answers or the stop timers fire (`stopTimeoutMs`, 5 s → SIGTERM, two seconds later →
+SIGKILL), so a real engine still loading can keep the process alive for a few seconds after
+`session.json` is already gone — the same shape as Gentle Dot's `close()`.
 
 Generic CLI failures append a bounded diagnostic with an allowlisted error name/code
 and a fixed, path-redacted category. Unknown exception details are omitted, not

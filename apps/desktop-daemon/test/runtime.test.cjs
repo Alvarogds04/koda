@@ -665,6 +665,43 @@ test("boot: a timed-out reopen is retried with backoff until it lands, with no a
 	}
 });
 
+test("boot: a switch the engine acknowledges but does not apply is an error, never a ready on another session", async (t) => {
+	// Koda's one documented deviation from Gentle Dot's spawnAndInitialize (supervisor.ts:311-330):
+	// Gentle Dot's refreshSession adopts whatever session the engine reports after the switch, and
+	// persisting it would overwrite the saved pointer. Real Pi can ACK a switch_session and keep
+	// its own session, so an unconfirmed switch is treated like any other reopen failure: the child
+	// is killed, state.json is left byte-identical, `ready` is never reported and the restart
+	// policy keeps retrying (no attempt limit, Gentle Dot's scheduleRestart).
+	const script = "ack\n".repeat(8);
+	const { engine, saved, readies, cmdLog, spawnLog } = await savedConversation(t, {}, script);
+	const stateFile = path.join(engine.island.root, "state.json");
+	const before = fs.readFileSync(stateFile);
+	const persisted = [];
+	const persist = engine.persistSession.bind(engine);
+	engine.persistSession = (file) => { persisted.push(file); persist(file); };
+	try {
+		await assert.rejects(() => engine.start(), /switch was not confirmed/, "the acknowledged-but-unapplied switch is an error for the caller");
+		// Retries continue with no attempt limit: count the switches, not the spawns (a fresh child has
+		// not been asked for the conversation yet when it starts).
+		const switches = () => readCommands(cmdLog).filter((c) => c.type === "switch_session");
+		await waitFor(() => switches().length >= 5, 10_000);
+		assert.deepEqual(readies, [], "ready is never reported on a session the switch did not reach");
+		assert.notEqual(engine.status, "ready");
+		assert.deepEqual(persisted, [], "nothing was ever persisted over the saved conversation");
+		assert.deepEqual(fs.readFileSync(stateFile), before, "state.json is byte-identical");
+		const asked = switches();
+		assert.ok(asked.every((c) => c.sessionPath === saved), "every retry asks for the saved conversation");
+		assert.ok(
+			spawnCount(spawnLog) >= asked.length + 1,
+			`every unconfirmed switch replaces its child, never reused (${spawnCount(spawnLog)} spawns, ${asked.length} switches)`,
+		);
+		assert.equal(engine.sessionFile, undefined, "the boot session is never adopted as the open one");
+		assert.ok(fs.readFileSync(saved, "utf8").includes("hola"), "the saved conversation file is untouched");
+	} finally {
+		await engine.stop();
+	}
+});
+
 test("boot: a restart before the first message never loses the saved conversation (no session file until the first prompt, B1)", async (t) => {
 	// Like real Pi (session-manager.js:794-799) the engine writes a session file only once
 	// there is a conversation, so a fresh session that was ever adopted would vanish on the
