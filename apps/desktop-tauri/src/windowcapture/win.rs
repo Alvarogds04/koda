@@ -21,14 +21,15 @@ use super::mcp::{CaptureError, Desktop, Shot, Target};
 use windows_sys::Win32::Foundation::{CloseHandle, HWND, LPARAM, RECT};
 use windows_sys::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS};
 use windows_sys::Win32::Graphics::Gdi::{
-    BitBlt, CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, ReleaseDC, SelectObject, BITMAPINFO,
+    BitBlt, CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GdiFlush, GetDC, ReleaseDC, SelectObject, BITMAPINFO,
     BITMAPINFOHEADER, BI_RGB, CAPTUREBLT, DIB_RGB_COLORS, HBITMAP, HDC, HGDIOBJ, SRCCOPY,
 };
 use windows_sys::Win32::Storage::Xps::PrintWindow;
 use windows_sys::Win32::System::Threading::{OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GetWindowDisplayAffinity, GetWindowLongW, GetWindowRect, GetWindowTextW, GetWindowThreadProcessId,
-    IsIconic, IsWindowVisible, SetWindowDisplayAffinity, GWL_EXSTYLE, WDA_EXCLUDEFROMCAPTURE, WS_EX_TOOLWINDOW,
+    IsHungAppWindow, IsIconic, IsWindowVisible, SetWindowDisplayAffinity, GWL_EXSTYLE, WDA_EXCLUDEFROMCAPTURE,
+    WS_EX_TOOLWINDOW,
 };
 
 /// `PrintWindow`'s "the app paints its own content" flag. windows-sys 0.61.2 declares only
@@ -325,6 +326,9 @@ fn print_window(hwnd: HWND, width: u32, height: u32) -> Result<Option<Raw>, Capt
     let canvas = Canvas::new(width, height)?;
     // SAFETY: a valid window handle, a memory context with the bitmap selected, and a documented flag.
     let copied = unsafe { PrintWindow(hwnd, canvas.memory, PW_RENDERFULLCONTENT) };
+    // GDI may batch the drawing: flush it before reading the DIB, or the frame reads black or stale.
+    // SAFETY: no arguments; flushes this thread's GDI batch.
+    unsafe { GdiFlush() };
     let pixels = canvas.pixels();
     // A composited window answers 0 or a black frame: the pixels decide, not the return value.
     if copied == 0 || looks_black(&pixels) {
@@ -346,7 +350,15 @@ fn screen_copy(hwnd: HWND) -> Result<Raw, CaptureError> {
     if copied == 0 {
         return Err(CaptureError::Failed("the window could not be copied off the screen".into()));
     }
+    // SAFETY: no arguments; the copy above is complete in the DIB before it is read.
+    unsafe { GdiFlush() };
     Ok(Raw { width: width as u32, height: height as u32, bgra: true, data: canvas.pixels() })
+}
+
+/// `PrintWindow` waits on the target's UI thread: a window that stopped responding would block the
+/// capture without end, so it is never asked to paint; its pixels come off the screen instead.
+pub fn asks_the_window_to_paint(hung: bool) -> bool {
+    !hung
 }
 
 /// The window's pixels: its own drawing first, and the screen behind it when that comes back black.
@@ -356,8 +368,12 @@ pub fn capture_window(handle: u64) -> Result<Raw, CaptureError> {
     }
     let hwnd = handle as usize as HWND;
     let (_, _, width, height) = screen_bounds(hwnd)?;
-    if let Some(raw) = print_window(hwnd, width as u32, height as u32)? {
-        return Ok(raw);
+    // SAFETY: a plain query on a window handle.
+    let hung = unsafe { IsHungAppWindow(hwnd) } != 0;
+    if asks_the_window_to_paint(hung) {
+        if let Some(raw) = print_window(hwnd, width as u32, height as u32)? {
+            return Ok(raw);
+        }
     }
     screen_copy(hwnd)
 }

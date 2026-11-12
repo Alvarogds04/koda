@@ -86,3 +86,23 @@ fn a_frame_of_only_black_pixels_is_a_black_frame() {
 fn an_empty_handle_is_a_clean_failure() {
     assert!(matches!(capture_window(0), Err(CaptureError::Failed(_))));
 }
+
+#[test]
+fn a_window_that_stopped_responding_is_never_asked_to_paint() {
+    // PrintWindow would wait on its frozen UI thread; the screen copy needs nothing from it.
+    assert!(!asks_the_window_to_paint(true));
+    assert!(asks_the_window_to_paint(false));
+}
+
+#[test]
+fn the_dib_is_flushed_before_its_pixels_are_read() {
+    let src = include_str!("win.rs");
+    let print = src.find("PrintWindow(hwnd, canvas.memory").unwrap();
+    let flush = src[print..].find("GdiFlush()").unwrap() + print;
+    let read = src[print..].find("canvas.pixels()").unwrap() + print;
+    assert!(flush < read, "PrintWindow: flush before reading");
+    let blt = src.find("BitBlt(canvas.memory").unwrap();
+    let flush = src[blt..].find("GdiFlush()").unwrap() + blt;
+    let read = src[blt..].find("canvas.pixels()").unwrap() + blt;
+    assert!(flush < read, "BitBlt: flush before reading");
+}
