@@ -10,7 +10,7 @@
 use super::announce::{self, Advertise, Announcement, Mdns};
 use super::hub::Hub;
 use super::pairing::{self, SecretStore};
-use super::server::{self, Features, Shared};
+use super::server::{self, Decisions, Features, Shared};
 use super::source;
 use serde_json::{json, Value};
 use std::net::SocketAddr;
@@ -30,6 +30,19 @@ use tokio::sync::oneshot;
 /// ```
 struct NoFeatures;
 impl Features for NoFeatures {}
+
+/// The seam of a desktop with nothing to approve (§8, §9): every `decision` and every `answer` is refused, so the link
+/// sends no `approvalResolved` and leaves the request pending. Today's behaviour, until the relay that asks for an
+/// approval is wired to the hub: a decision that resolves nothing must never be confirmed.
+pub(super) struct RefuseDecisions;
+impl Decisions for RefuseDecisions {
+    fn decide(&self, _fingerprint: &str, _allow: bool) -> Result<(), ()> {
+        Err(())
+    }
+    fn answer(&self, _fingerprint: &str, _picks: Vec<Vec<String>>) -> Result<(), ()> {
+        Err(())
+    }
+}
 
 /// How long a switched-off link lets its open connections write their last line before the socket goes away.
 /// Bounded on purpose: switching off must never wait on a phone.
@@ -173,7 +186,13 @@ impl Link {
             Err(_) => return Err(self.failed("tls")),
         };
         let name = pairing::computer_name();
-        let shared = Shared::with_hub(self.hub.clone(), token, name.clone(), Arc::new(NoFeatures));
+        let shared = Shared::with_hub_and_decisions(
+            self.hub.clone(),
+            token,
+            name.clone(),
+            Arc::new(NoFeatures),
+            Arc::new(RefuseDecisions),
+        );
         let served = shared.clone();
         let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<u16, &'static str>>();
         let (stop_tx, stop_rx) = oneshot::channel::<()>();

@@ -1,9 +1,9 @@
 //! Slice A: identity/token/link (pairing), admission bookkeeping and the TLS hello. The client side
 //! of the tests pins the certificate by SHA-256 exactly as the phone does, over real TLS on loopback.
-use super::{hub, ids, source};
+use super::{asks, hub, ids, source};
 use super::announce::{self, Advertise, Announcement, Record};
 use super::pairing::{self, SecretStore};
-use super::server::{self, Features, Shared, PROTOCOL};
+use super::server::{self, Decisions, Features, Shared, PROTOCOL};
 use serde_json::{json, Value};
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -200,13 +200,17 @@ struct Rig {
 }
 
 async fn start_with(features: Arc<dyn Features>) -> Rig {
+    start_with_decisions(features, Arc::new(Recording::default())).await
+}
+
+async fn start_with_decisions(features: Arc<dyn Features>, decisions: Arc<dyn Decisions>) -> Rig {
     let store = Mem::default();
     let id = pairing::load_or_create_identity(&store).unwrap();
     let token = pairing::token(&store).unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     let hub = hub::Hub::new();
-    let shared = Shared::with_hub(hub.clone(), token.clone(), "Test PC".into(), features);
+    let shared = Shared::with_hub_and_decisions(hub.clone(), token.clone(), "Test PC".into(), features, decisions);
     let handle = server::serve(listener, server::tls_acceptor(&id).unwrap(), shared);
     Rig { port, fingerprint: id.fingerprint, token, handle: Some(handle), hub }
 }
@@ -453,7 +457,7 @@ fn a_phone_that_cannot_keep_up_is_dropped_not_waited_for() {
     run(async {
         let hub = hub::Hub::new();
         let (tx, _rx) = tokio::sync::mpsc::channel::<server::Out>(2);
-        let (_id, evicted) = hub.subscribe(tx, 0, false);
+        let (_id, evicted) = hub.subscribe(tx, 0, false, false);
         for n in 0..10 {
             hub.publish_sessions(vec![sess("integration_claude", if n % 2 == 0 { "working" } else { "idle" })], n);
         }
@@ -1375,4 +1379,488 @@ fn a_failed_unlink_keeps_the_running_link_and_the_old_token() {
         assert_eq!(recv(&mut r).await.unwrap()["type"], "sessions");
         link.disable();
     });
+}
+
+// ---- slice C: approvals and questions (§8, §9) ---------------------------------------------------------
+// The whole of §8.1's and §9's arithmetic, and the two wire lines, are pure: no socket, no phone, no agent.
+
+/// The two questions of `tools/dev-desktop.mjs` (`FAKE_QUESTIONS`), the sample the reference desktop hashes.
+fn sample_questions() -> Value {
+    json!([
+      {"question":"Which branch should I use?","multiSelect":false,"options":[{"label":"main","description":"The default branch"},{"label":"develop","description":""}]},
+      {"question":"Which checks should I run?","multiSelect":true,"options":[{"label":"Lint","description":""},{"label":"Tests","description":"Unit tests"},{"label":"Build","description":""}]}
+    ])
+}
+
+/// What `JSON.stringify(FAKE_QUESTIONS)` prints in `node`: the exact text the reference desktop hashes.
+const SAMPLE_QUESTIONS_JSON: &str = concat!(
+    r#"[{"question":"Which branch should I use?","multiSelect":false,"options":[{"label":"main","description":"The default branch"},{"label":"develop","description":""}]},"#,
+    r#"{"question":"Which checks should I run?","multiSelect":true,"options":[{"label":"Lint","description":""},{"label":"Tests","description":"Unit tests"},{"label":"Build","description":""}]}]"#
+);
+
+fn sample_question_list() -> Vec<asks::Question> {
+    serde_json::from_value(sample_questions()).unwrap()
+}
+
+#[test]
+fn the_fingerprint_is_the_contracts_vector_and_its_fields_cannot_run_together() {
+    // §8.1 / `ProtocolTest.fingerprintMatchesTheMacDerivation`: if this does not match, nothing else will.
+    assert_eq!(
+        asks::fingerprint("agent_codex", "sess-1", "Bash", "rm -rf build", "k1"),
+        "0b2944f472c9dda6c1d369e7c161730641be8e67174c8eb67c887a2fe0ccd30d"
+    );
+    let fp = asks::fingerprint("agent_codex", "sess-1", "Bash", "rm -rf build", "k1");
+    assert_eq!(fp.len(), 64);
+    assert!(fp.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)), "lowercase hex and nothing else: {fp}");
+    assert!(asks::is_fingerprint(&fp));
+    // U+001F is what keeps the five fields apart: on their own, (“a”,“bc”) and (“ab”,“c”) are the same eight bytes.
+    assert_ne!(
+        asks::fingerprint("a", "bc", "t", "c", "k"),
+        asks::fingerprint("ab", "c", "t", "c", "k"),
+        "without the separator two different requests would share one fingerprint"
+    );
+    for bad in ["A".repeat(64), "a".repeat(63), "a".repeat(65), "g".repeat(64), String::new()] {
+        assert!(!asks::is_fingerprint(&bad), "{bad:?}");
+    }
+}
+
+#[test]
+fn the_question_fingerprint_is_computed_over_the_json_the_reference_desktop_prints() {
+    let questions = sample_question_list();
+    // Key order and shape are part of the identity: `question`, `multiSelect`, `options`, `label`, `description`.
+    assert_eq!(asks::questions_json(&questions), SAMPLE_QUESTIONS_JSON);
+    // `node -e` with dev-desktop.mjs' own `fingerprint`, tool `AskUserQuestion`, input key `q4`:
+    // 12f1cf4bde5bb60e67683c5df8b3a05d00e7e68e947f6128820ae01beebe606e
+    assert_eq!(
+        asks::fingerprint("integration_claude", "dev_session", asks::QUESTION_TOOL, &asks::questions_json(&questions), "q4"),
+        "12f1cf4bde5bb60e67683c5df8b3a05d00e7e68e947f6128820ae01beebe606e"
+    );
+    assert_eq!(asks::QUESTION_TOOL, "AskUserQuestion", "§8.1: the tool slot of a question");
+    let ask = asks::Ask::question("integration_claude", "dev_session", questions.clone(), "q4", 1_700_000_000_000).unwrap();
+    assert_eq!(ask.fingerprint(), "12f1cf4bde5bb60e67683c5df8b3a05d00e7e68e947f6128820ae01beebe606e");
+    let line: Value = serde_json::from_str(ask.question_line().unwrap().as_str()).unwrap();
+    assert_eq!(line["type"], "question");
+    assert_eq!((line["pillId"].as_str(), line["createdAt"].as_u64()), (Some("integration_claude"), Some(1_700_000_000_000)));
+    assert_eq!(line["questions"], sample_questions(), "the questions reach the phone exactly as the agent asked them");
+}
+
+#[test]
+fn a_command_too_long_for_the_sheet_is_cut_to_500_characters_and_flagged() {
+    let short = asks::Ask::approval("integration_claude", "sess-1", "Bash", "npm run build", "k1", 1_000);
+    let line: Value = serde_json::from_str(short.approval_line().as_str()).unwrap();
+    assert_eq!(line["type"], "approval");
+    assert_eq!((line["pillId"].as_str(), line["tool"].as_str(), line["command"].as_str()), (Some("integration_claude"), Some("Bash"), Some("npm run build")));
+    assert_eq!(line["createdAt"], 1_000);
+    assert!(line.get("truncated").is_none(), "a command that was not cut is not flagged (§8.4: absent means false): {line}");
+
+    // 499 'a's, one two-byte character at the boundary and a long tail: the cut is at 500 characters, not 500 bytes.
+    let mut command = "a".repeat(499);
+    command.push('é');
+    command.push_str(&"b".repeat(400));
+    let long = asks::Ask::approval("agent_codex", "sess-2", "Bash", &command, "k9", 2_000);
+    let line: Value = serde_json::from_str(long.approval_line().as_str()).unwrap();
+    let shown = line["command"].as_str().unwrap();
+    assert_eq!(shown.chars().count(), 500);
+    assert!(shown.ends_with('é'), "the cut is on a character boundary");
+    assert_eq!(line["truncated"], true);
+    // §8.1: the fingerprint identifies the request; the wire text is only what the user is shown.
+    assert_eq!(long.fingerprint(), asks::fingerprint("agent_codex", "sess-2", "Bash", &command, "k9"));
+}
+
+#[test]
+fn a_question_that_breaks_the_contracts_limits_is_never_offered() {
+    fn with(question: &str, multi: bool, labels: &[&str]) -> Value {
+        json!([{"question": question, "multiSelect": multi,
+                "options": labels.iter().map(|l| json!({"label": l, "description": ""})).collect::<Vec<_>>()}])
+    }
+    fn ask(value: Value) -> Option<asks::Ask> {
+        let questions: Vec<asks::Question> = serde_json::from_value(value).ok()?;
+        asks::Ask::question("integration_claude", "sess-1", questions, "k1", 1_000)
+    }
+    assert!(ask(with("Pick one", false, &["a", "b"])).is_some(), "the smallest legal question");
+    assert!(ask(with("Pick one", true, &["a"])).is_some(), "a single option is legal (§ question table: 1 to 8)");
+    assert!(ask(json!([])).is_none(), "zero questions");
+    let five: Vec<Value> = (0..5).map(|i| json!({"question": format!("q{i}"), "options": [{"label": "a", "description": ""}]})).collect();
+    assert!(ask(Value::Array(five)).is_none(), "more than 4 questions");
+    assert!(ask(with("   ", false, &["a"])).is_none(), "a blank question");
+    assert!(ask(with("Pick one", false, &[])).is_none(), "no options");
+    assert!(ask(with("Pick one", false, &["1", "2", "3", "4", "5", "6", "7", "8", "9"])).is_none(), "more than 8 options");
+    assert!(ask(with("Pick one", false, &["a", " "])).is_none(), "a blank label");
+    assert!(ask(with("Pick one", true, &["a", "a"])).is_none(), "two labels that cannot be told apart");
+    // The same label in two different questions is fine (§ question table: different *within one question*).
+    assert!(asks::valid_questions(&[
+        serde_json::from_value(json!({"question":"one","options":[{"label":"a","description":""}]})).unwrap(),
+        serde_json::from_value(json!({"question":"two","options":[{"label":"a","description":""}]})).unwrap(),
+    ]));
+    // A question handed to the hub already built but broken on arrival is still never offered.
+    let broken = asks::Ask::Question {
+        pill_id: "integration_claude".into(),
+        fingerprint: "a".repeat(64),
+        created_at: 1_000,
+        questions: Vec::new(),
+    };
+    assert!(broken.line().is_none());
+    assert_eq!(broken.state(), "question");
+}
+
+#[test]
+fn the_picks_validation_is_the_contracts_table() {
+    let questions = sample_question_list();
+    let picks = |v: Value| -> Vec<Vec<String>> { serde_json::from_value(v).unwrap_or_default() };
+    assert!(asks::valid_picks(&questions, &picks(json!([["main"], ["Lint"]]))));
+    assert!(asks::valid_picks(&questions, &picks(json!([["develop"], ["Lint", "Tests", "Build"]]))));
+    // Count
+    assert!(!asks::valid_picks(&questions, &picks(json!([["main"]]))), "a short array");
+    assert!(!asks::valid_picks(&questions, &picks(json!([["main"], ["Lint"], ["Lint"]]))), "a long array");
+    assert!(!asks::valid_picks(&questions, &picks(json!([]))), "no answers at all");
+    // Non-empty
+    assert!(!asks::valid_picks(&questions, &picks(json!([["main"], []]))));
+    // Distinct
+    assert!(!asks::valid_picks(&questions, &picks(json!([["main"], ["Lint", "Lint"]]))));
+    // Only offered labels: no near-misses, no case fixes, no trimming
+    for bad in ["Main", " main", "main ", "mai", "develo"] {
+        assert!(!asks::valid_picks(&questions, &picks(json!([[bad], ["Lint"]]))), "{bad:?}");
+    }
+    // Single choice: exactly one
+    assert!(!asks::valid_picks(&questions, &picks(json!([["main", "develop"], ["Lint"]]))));
+    // Multiple choice: as many as offered, and no more
+    assert!(!asks::valid_picks(&questions, &picks(json!([["main"], ["Lint", "Tests", "Build", "Other"]]))));
+    // The two lists swapped: the labels of question 2 are not the labels of question 1.
+    assert!(!asks::valid_picks(&questions, &picks(json!([["Lint"], ["main"]]))));
+}
+
+#[test]
+fn a_decision_or_an_answer_is_only_what_the_contract_describes() {
+    let fp = "b".repeat(64);
+    assert_eq!(asks::parse_decision(&json!({"type":"decision","fingerprint":fp,"decision":"allow"})), Some((fp.clone(), asks::Verdict::Allow)));
+    assert_eq!(asks::parse_decision(&json!({"type":"decision","fingerprint":fp,"decision":"deny"})), Some((fp.clone(), asks::Verdict::Deny)));
+    for bad in [
+        json!({"type":"decision","fingerprint":fp,"decision":"always"}),
+        json!({"type":"decision","fingerprint":fp,"decision":"Allow"}),
+        json!({"type":"decision","fingerprint":fp.to_uppercase(),"decision":"allow"}),
+        json!({"type":"decision","fingerprint":fp,"decision":true}),
+        json!({"type":"decision","fingerprint":"short","decision":"allow"}),
+        json!({"type":"decision"}),
+    ] {
+        assert!(asks::parse_decision(&bad).is_none(), "{bad}");
+    }
+    assert_eq!(
+        asks::parse_answer(&json!({"type":"answer","fingerprint":fp,"picks":[["develop"],["Lint","Build"]]})),
+        Some((fp.clone(), vec![vec!["develop".to_string()], vec!["Lint".to_string(), "Build".to_string()]]))
+    );
+    for bad in [
+        json!({"type":"answer","fingerprint":fp,"picks":"main"}),
+        json!({"type":"answer","fingerprint":fp,"picks":[[1],[2]]}),
+        json!({"type":"answer","fingerprint":fp,"picks":["main"]}),
+        json!({"type":"answer","fingerprint":fp}),
+        json!({"type":"answer","fingerprint":"nope","picks":[]}),
+    ] {
+        assert!(asks::parse_answer(&bad).is_none(), "{bad}");
+    }
+}
+
+// ---- slice C: the hub's pending asks and the phone → desktop seam --------------------------------------------
+// Everything below is over real TLS on loopback, with ephemeral ports: the seam is the phone link's only way into
+// the agent, so what it is called with (and when it is not called at all) is exactly what these tests fix.
+
+/// What the desktop offers when a slice is being tested that needs `answers`.
+struct OffersAnswers;
+impl Features for OffersAnswers {
+    fn offered(&self) -> Vec<&'static str> {
+        vec![ids::CAP_ANSWERS]
+    }
+}
+
+/// The fake agent: it records every call the link makes, and can refuse like a real one does when the request is
+/// already gone on the computer's side.
+#[derive(Default)]
+struct Recording {
+    decided: std::sync::Mutex<Vec<(String, bool)>>,
+    answered: std::sync::Mutex<Vec<(String, Vec<Vec<String>>)>>,
+    refuse: std::sync::atomic::AtomicBool,
+}
+
+impl Recording {
+    fn decided(&self) -> Vec<(String, bool)> {
+        self.decided.lock().unwrap().clone()
+    }
+    fn answered(&self) -> Vec<(String, Vec<Vec<String>>)> {
+        self.answered.lock().unwrap().clone()
+    }
+    fn refuse(&self) {
+        self.refuse.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+impl Decisions for Recording {
+    fn decide(&self, fingerprint: &str, allow: bool) -> Result<(), ()> {
+        self.decided.lock().unwrap().push((fingerprint.to_string(), allow));
+        if self.refuse.load(std::sync::atomic::Ordering::SeqCst) {
+            Err(())
+        } else {
+            Ok(())
+        }
+    }
+    fn answer(&self, fingerprint: &str, picks: Vec<Vec<String>>) -> Result<(), ()> {
+        self.answered.lock().unwrap().push((fingerprint.to_string(), picks));
+        if self.refuse.load(std::sync::atomic::Ordering::SeqCst) {
+            Err(())
+        } else {
+            Ok(())
+        }
+    }
+}
+
+type Reader = BufReader<tokio::io::ReadHalf<tokio_rustls::client::TlsStream<tokio::net::TcpStream>>>;
+
+/// The next line of the wanted type, skipping the ones before it (a `sessions` line from a state change, say).
+async fn recv_type(r: &mut Reader, want: &str) -> Value {
+    for _ in 0..8 {
+        let line = recv(r).await.unwrap_or_else(|| panic!("the link went quiet while a `{want}` was expected"));
+        if line["type"] == want {
+            return line;
+        }
+    }
+    panic!("no `{want}` line arrived");
+}
+
+fn an_approval() -> asks::Ask {
+    asks::Ask::approval("integration_claude", "sess-1", "Bash", "npm run build", "k1", 2_000)
+}
+
+fn a_question() -> asks::Ask {
+    asks::Ask::question("integration_claude", "sess-1", sample_question_list(), "k2", 2_000).unwrap()
+}
+
+#[test]
+fn a_pending_approval_puts_its_session_in_the_approval_state_and_offers_the_sheet_after_the_sessions() {
+    run(async {
+        let rig = start().await;
+        rig.hub.publish_sessions(vec![sess("integration_claude", "working")], 1_000);
+        let ask = an_approval();
+        rig.hub.offer(ask.clone());
+        let (mut r, _w) = paired(&rig).await;
+        let sessions = recv(&mut r).await.unwrap();
+        assert_eq!(sessions["type"], "sessions", "§5: sessions first, then what is pending");
+        assert_eq!(sessions["sessions"][0]["state"], "approval", "§6: the island and the sheet must agree: {sessions}");
+        let sheet = recv(&mut r).await.unwrap();
+        assert_eq!(sheet["type"], "approval");
+        assert_eq!(sheet["pillId"], "integration_claude");
+        assert_eq!(sheet["fingerprint"], ask.fingerprint());
+        assert_eq!((sheet["tool"].as_str(), sheet["command"].as_str()), (Some("Bash"), Some("npm run build")));
+        assert_eq!(sheet["createdAt"], 2_000);
+        assert_eq!(rig.hub.pending().len(), 1);
+    });
+}
+
+#[test]
+fn a_decision_is_applied_once_and_approval_resolved_reaches_every_phone() {
+    run(async {
+        let recording = Arc::new(Recording::default());
+        let rig = start_with_decisions(Arc::new(Off), recording.clone()).await;
+        rig.hub.publish_sessions(vec![sess("integration_claude", "working")], 1_000);
+        let ask = an_approval();
+        rig.hub.offer(ask.clone());
+        let (mut one, mut w1) = paired(&rig).await;
+        let (mut two, _w2) = paired(&rig).await;
+        for r in [&mut one, &mut two] {
+            assert_eq!(recv(r).await.unwrap()["sessions"][0]["state"], "approval");
+            assert_eq!(recv(r).await.unwrap()["type"], "approval", "every phone is offered the sheet");
+        }
+        send(&mut w1, json!({"type":"decision","fingerprint":ask.fingerprint(),"decision":"allow"})).await;
+        for r in [&mut one, &mut two] {
+            let sessions = recv_type(r, "sessions").await;
+            assert_eq!(sessions["sessions"][0]["state"], "working", "the source state comes back once no ask is pending");
+            let resolved = recv_type(r, "approvalResolved").await;
+            assert_eq!(resolved["fingerprint"], ask.fingerprint(), "§8.3: the only confirmation the phone accepts");
+        }
+        assert_eq!(recording.decided(), vec![(ask.fingerprint().to_string(), true)], "the agent is told exactly once");
+        assert!(recording.answered().is_empty());
+        assert!(rig.hub.pending().is_empty(), "the request is gone from the book");
+    });
+}
+
+#[test]
+fn a_decision_for_an_unknown_or_non_approval_request_is_silence_and_never_reaches_the_agent() {
+    run(async {
+        let recording = Arc::new(Recording::default());
+        let rig = start_with_decisions(Arc::new(OffersAnswers), recording.clone()).await;
+        let question = a_question();
+        rig.hub.offer(question.clone());
+        let (mut r, mut w) = connected_with_caps(&rig, &["answers"]).await;
+        assert_eq!(recv(&mut r).await.unwrap()["type"], "sessions");
+        assert_eq!(recv(&mut r).await.unwrap()["type"], "question");
+        // A question's fingerprint is not an approval: a `decision` for it decides nothing (§6 `decision`).
+        send(&mut w, json!({"type":"decision","fingerprint":question.fingerprint(),"decision":"allow"})).await;
+        // Nobody asked for this one at all.
+        send(&mut w, json!({"type":"decision","fingerprint":"a".repeat(64),"decision":"deny"})).await;
+        send(&mut w, json!({"type":"ping"})).await;
+        assert_eq!(recv(&mut r).await.unwrap()["type"], "pong", "silence is the correct answer (§6 `decision`)");
+        assert!(recording.decided().is_empty(), "the agent is never called for a request that is not pending");
+    });
+}
+
+#[test]
+fn a_seam_that_refuses_never_confirms_the_decision() {
+    run(async {
+        let recording = Arc::new(Recording::default());
+        recording.refuse();
+        let rig = start_with_decisions(Arc::new(Off), recording.clone()).await;
+        let ask = an_approval();
+        rig.hub.offer(ask.clone());
+        let (mut r, mut w) = paired(&rig).await;
+        assert_eq!(recv(&mut r).await.unwrap()["type"], "sessions");
+        assert_eq!(recv(&mut r).await.unwrap()["type"], "approval");
+        send(&mut w, json!({"type":"decision","fingerprint":ask.fingerprint(),"decision":"deny"})).await;
+        send(&mut w, json!({"type":"ping"})).await;
+        assert_eq!(recv(&mut r).await.unwrap()["type"], "pong", "§5: no approvalResolved before the agent took the decision");
+        assert_eq!(recording.decided(), vec![(ask.fingerprint().to_string(), false)], "deny is `false`, not a third thing");
+        assert_eq!(rig.hub.pending().len(), 1, "the request is still decidable while the agent refuses it");
+    });
+}
+
+#[test]
+fn a_reconnect_re_offers_the_pending_approval_with_the_same_fingerprint() {
+    run(async {
+        let rig = start().await;
+        let ask = an_approval();
+        rig.hub.offer(ask.clone());
+        let (mut r, w) = paired(&rig).await;
+        assert_eq!(recv(&mut r).await.unwrap()["type"], "sessions");
+        let first = recv(&mut r).await.unwrap();
+        assert_eq!(first["type"], "approval");
+        drop((r, w));
+        // ... and again, on a fresh connection: §5's re-offer, with the same fingerprint.
+        let (mut again, mut w2) = paired(&rig).await;
+        assert_eq!(recv(&mut again).await.unwrap()["type"], "sessions");
+        let second = recv(&mut again).await.unwrap();
+        assert_eq!(second["type"], "approval");
+        assert_eq!(second["fingerprint"], first["fingerprint"], "the phone matches its own bookkeeping by fingerprint");
+        // Offering the same request again is idempotent: no second sheet, no second fingerprint in the book.
+        rig.hub.offer(ask.clone());
+        assert_eq!(rig.hub.pending().len(), 1);
+        send(&mut w2, json!({"type":"ping"})).await;
+        assert_eq!(recv(&mut again).await.unwrap()["type"], "pong", "nothing was sent twice");
+    });
+}
+
+#[test]
+fn a_question_reaches_only_a_phone_that_negotiated_answers() {
+    run(async {
+        let rig = start_with(Arc::new(OffersAnswers)).await;
+        rig.hub.publish_sessions(vec![sess("integration_claude", "working")], 1_000);
+        let ask = a_question();
+        rig.hub.offer(ask.clone());
+        // A phone that did not ask for `answers`: the state is core v1 (§7), the question is not sent (§6.0).
+        let (mut plain, mut wp) = paired(&rig).await;
+        let sessions = recv(&mut plain).await.unwrap();
+        assert_eq!(sessions["sessions"][0]["state"], "question");
+        send(&mut wp, json!({"type":"ping"})).await;
+        assert_eq!(recv(&mut plain).await.unwrap()["type"], "pong", "no question for a phone without `answers`");
+        // A phone that did: the re-offer after its welcome, then the question itself.
+        let (mut r, _w) = connected_with_caps(&rig, &["answers"]).await;
+        let question = recv_type(&mut r, "question").await;
+        assert_eq!(question["fingerprint"], ask.fingerprint());
+        assert_eq!(question["questions"], sample_questions());
+        assert_eq!(question["createdAt"], 2_000);
+    });
+}
+
+#[test]
+fn an_answer_is_applied_only_when_every_pick_is_valid() {
+    run(async {
+        let recording = Arc::new(Recording::default());
+        let rig = start_with_decisions(Arc::new(OffersAnswers), recording.clone()).await;
+        let ask = a_question();
+        rig.hub.offer(ask.clone());
+        let (mut r, mut w) = connected_with_caps(&rig, &["answers"]).await;
+        assert_eq!(recv_type(&mut r, "question").await["type"], "question");
+        // §9.2's table: a short array, an unoffered label (the wrong case), two labels for a single choice, a repeated
+        // label and an empty list are all refused with silence, and silence is not a state the phone shows.
+        for bad in [
+            json!([["main"]]),
+            json!([["Main"], ["Lint"]]),
+            json!([["main", "develop"], ["Lint"]]),
+            json!([["develop"], ["Lint", "Lint"]]),
+            json!([["develop"], []]),
+        ] {
+            send(&mut w, json!({"type":"answer","fingerprint":ask.fingerprint(),"picks":bad})).await;
+        }
+        send(&mut w, json!({"type":"ping"})).await;
+        assert_eq!(recv(&mut r).await.unwrap()["type"], "pong", "§9.2: an invalid answer is answered with nothing");
+        assert!(recording.answered().is_empty(), "an invalid answer never reaches the agent");
+        // A valid one, with the labels exactly as offered.
+        send(&mut w, json!({"type":"answer","fingerprint":ask.fingerprint(),"picks":[["develop"],["Tests","Build"]]})).await;
+        let resolved = recv_type(&mut r, "approvalResolved").await;
+        assert_eq!(resolved["fingerprint"], ask.fingerprint(), "§9.2: the only signal the phone accepts as answered");
+        assert_eq!(
+            recording.answered(),
+            vec![(ask.fingerprint().to_string(), vec![vec!["develop".to_string()], vec!["Tests".to_string(), "Build".to_string()]])],
+            "the labels reach the agent exactly as the phone sent them, never reordered or translated"
+        );
+        assert!(rig.hub.pending().is_empty());
+    });
+}
+
+#[test]
+fn an_answer_from_a_phone_without_answers_in_force_is_ignored() {
+    run(async {
+        let recording = Arc::new(Recording::default());
+        // The desktop offers `answers`, the phone never asked for it: the capability is not in force (§6.0).
+        let rig = start_with_decisions(Arc::new(OffersAnswers), recording.clone()).await;
+        let ask = a_question();
+        rig.hub.offer(ask.clone());
+        let (mut r, mut w) = paired(&rig).await;
+        assert_eq!(recv(&mut r).await.unwrap()["type"], "sessions");
+        send(&mut w, json!({"type":"answer","fingerprint":ask.fingerprint(),"picks":[["main"],["Lint"]]})).await;
+        send(&mut w, json!({"type":"ping"})).await;
+        assert_eq!(recv(&mut r).await.unwrap()["type"], "pong");
+        assert!(recording.answered().is_empty());
+        assert_eq!(rig.hub.pending().len(), 1);
+    });
+}
+
+#[test]
+fn at_most_eight_asks_wait_and_the_oldest_goes_with_its_resolution() {
+    run(async {
+        let rig = start().await;
+        let (mut r, _w) = paired(&rig).await;
+        assert_eq!(recv(&mut r).await.unwrap()["type"], "sessions");
+        // Nine different requests: the same command twice is two requests only because its input key differs (§8.1).
+        let asks: Vec<asks::Ask> = (0..9)
+            .map(|i| asks::Ask::approval("integration_claude", "sess-1", "Bash", "cmd", &format!("k{i}"), 1_000 + i))
+            .collect();
+        for ask in &asks {
+            rig.hub.offer(ask.clone());
+        }
+        for ask in asks.iter().take(hub::MAX_PENDING_ASKS) {
+            assert_eq!(recv(&mut r).await.unwrap()["fingerprint"], ask.fingerprint(), "each offer is sent once");
+        }
+        let resolved = recv(&mut r).await.unwrap();
+        assert_eq!(resolved["type"], "approvalResolved", "the oldest is dropped, and a dropped request is closed (§8.3)");
+        assert_eq!(resolved["fingerprint"], asks[0].fingerprint());
+        assert_eq!(recv(&mut r).await.unwrap()["fingerprint"], asks[8].fingerprint(), "the ninth is offered");
+        assert_eq!(rig.hub.pending().len(), hub::MAX_PENDING_ASKS);
+        assert!(rig.hub.pending().iter().all(|a| a.fingerprint() != asks[0].fingerprint()));
+    });
+}
+
+#[test]
+fn the_pending_book_is_keyed_by_fingerprint_and_resolving_twice_is_harmless() {
+    let rig_hub = hub::Hub::new();
+    let ask = an_approval();
+    rig_hub.offer(ask.clone());
+    assert_eq!(rig_hub.pending().len(), 1);
+    assert!(rig_hub.resolve(ask.fingerprint()).is_some());
+    assert!(rig_hub.resolve(ask.fingerprint()).is_none(), "a request is decided once (§8.2)");
+    assert!(rig_hub.pending().is_empty());
+    assert!(rig_hub.pending_ask(ask.fingerprint()).is_none());
+}
+
+/// A phone that says which capabilities it asked for, up to its sessions line.
+async fn connected_with_caps(rig: &Rig, caps: &[&str]) -> Client {
+    let (mut r, mut w) = connect(rig.port, &rig.fingerprint).await.unwrap();
+    send(&mut w, json!({"type":"hello","v":PROTOCOL,"token":rig.token,"device":"Pixel 7","caps":caps})).await;
+    assert_eq!(recv(&mut r).await.unwrap()["type"], "welcome");
+    (r, w)
 }

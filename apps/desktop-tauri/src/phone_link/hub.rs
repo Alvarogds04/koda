@@ -22,9 +22,13 @@ use serde::Serialize;
 use serde_json::json;
 use tokio::sync::mpsc;
 
+use super::asks::Ask;
 use super::server::Out;
 
 pub const MAX_SESSIONS: usize = 16;
+/// The most requests that may wait for the user at once: past this the oldest leaves, with the `approvalResolved` that
+/// closes it on the phone (§8.3), so a phone's sheet can never belong to a request the hub silently forgot.
+pub const MAX_PENDING_ASKS: usize = 8;
 const MAX_TEXT_CHARS: usize = 200;
 /// The most step labels a session carries (§6).
 pub const MAX_STEPS: usize = 20;
@@ -147,15 +151,19 @@ struct WireSession<'a> {
     color: Option<&'a str>,
 }
 
-fn wire(s: &Session, details: bool) -> WireSession<'_> {
+/// One session as a phone is shown it. `ask` is the request still waiting for its pill: while there is one the state
+/// published is `approval` / `question` (§6: the island and the sheet must agree) and `updatedAt` at least the moment
+/// the request arrived, so the row never reads older than the request it is showing.
+fn wire<'a>(s: &'a Session, details: bool, ask: Option<&Ask>) -> WireSession<'a> {
+    let stamp = if details { s.detail_at } else { s.plain_at };
     WireSession {
         pill_id: &s.pill_id,
         agent: &s.agent,
-        state: &s.state,
+        state: ask.map_or(s.state.as_str(), |a| a.state()),
         status_text: &s.status_text,
         step_index: s.step_index,
         step_count: s.step_count,
-        updated_at: if details { s.detail_at } else { s.plain_at },
+        updated_at: ask.map_or(stamp, |a| stamp.max(a.created_at())),
         // An empty list is the default `[]`, so it is left out rather than spelled (§6).
         steps: (details && !s.steps.is_empty()).then_some(s.steps.as_slice()),
         final_line: details.then_some(s.final_line.as_deref()).flatten(),
@@ -167,8 +175,10 @@ fn wire(s: &Session, details: bool) -> WireSession<'_> {
 struct Sub {
     id: u64,
     tx: mpsc::Sender<Out>,
-    /// The capability set of this connection: only `details` changes what it is sent today.
+    /// The capability set of this connection: `details` changes the session line it is sent, `answers` whether a
+    /// `question` is offered to it at all (§6.0).
     details: bool,
+    answers: bool,
     /// Set when the hub gives up on a phone that cannot keep up, so its connection closes (and the phone
     /// reconnects to a fresh picture) instead of staying open and silently going stale.
     evicted: Arc<AtomicBool>,
@@ -182,6 +192,8 @@ struct Inner {
     /// The last line rendered for each kind of subscriber, so the same content is never sent twice.
     plain: Option<Arc<str>>,
     detail: Option<Arc<str>>,
+    /// The requests waiting for the user, oldest first, keyed by fingerprint (§8.1).
+    asks: Vec<Ask>,
 }
 
 pub struct Hub {
@@ -221,20 +233,46 @@ impl Hub {
             }
         }
         inner.sessions = next;
-        let plain = sessions_line(&inner.sessions, false);
-        let detail = sessions_line(&inner.sessions, true);
-        let plain_changed = inner.plain.as_deref() != Some(plain.as_str());
-        let detail_changed = inner.detail.as_deref() != Some(detail.as_str());
-        if !plain_changed && !detail_changed {
+        refresh(&mut inner);
+    }
+
+    /// Offers a request to the phones: an approval to every phone (approvals are v1, not a capability), a question
+    /// only to a phone that negotiated `answers` (§6.0). Idempotent by fingerprint: the same request offered twice is
+    /// one sheet on the phone. The pill's session is published in the `approval` / `question` state while it waits.
+    pub fn offer(&self, ask: Ask) {
+        let mut inner = self.lock();
+        if inner.asks.iter().any(|a| a.fingerprint() == ask.fingerprint()) {
             return;
         }
-        if plain_changed {
-            inner.plain = Some(plain.into());
+        let dropped = (inner.asks.len() >= MAX_PENDING_ASKS).then(|| inner.asks.remove(0));
+        inner.asks.push(ask.clone());
+        refresh(&mut inner);
+        if let Some(dropped) = dropped {
+            send_resolved(&mut inner, dropped.fingerprint());
         }
-        if detail_changed {
-            inner.detail = Some(detail.into());
-        }
-        broadcast(&mut inner, plain_changed, detail_changed);
+        send_ask(&mut inner, &ask);
+    }
+
+    /// The request is gone (decided, answered, timed out, or dropped): every phone is told once and it leaves the
+    /// book. `None` when it was not pending, and then nothing at all is sent.
+    pub fn resolve(&self, fingerprint: &str) -> Option<Ask> {
+        let mut inner = self.lock();
+        let at = inner.asks.iter().position(|a| a.fingerprint() == fingerprint)?;
+        let ask = inner.asks.remove(at);
+        refresh(&mut inner);
+        send_resolved(&mut inner, fingerprint);
+        Some(ask)
+    }
+
+    /// What is waiting for the user, oldest first.
+    pub fn pending(&self) -> Vec<Ask> {
+        self.lock().asks.clone()
+    }
+
+    /// The pending ask with this fingerprint, if it is still waiting: the only thing a `decision` or an `answer` may
+    /// be matched by (§8.1).
+    pub fn pending_ask(&self, fingerprint: &str) -> Option<Ask> {
+        self.lock().asks.iter().find(|a| a.fingerprint() == fingerprint).cloned()
     }
 
     /// The v1 `sessions` list as JSON (what a phone without `details` is sent), for tests and diagnostics.
@@ -246,20 +284,32 @@ impl Hub {
     pub fn sessions_json_with(&self, details: bool) -> serde_json::Value {
         let inner = self.lock();
         serde_json::Value::Array(
-            inner.sessions.iter().map(|s| serde_json::to_value(wire(s, details)).unwrap_or_default()).collect(),
+            inner
+                .sessions
+                .iter()
+                .map(|s| serde_json::to_value(wire(s, details, ask_of(&inner.asks, &s.pill_id))).unwrap_or_default())
+                .collect(),
         )
     }
 
     /// Registers an authenticated connection; the first line it gets is the current sessions, rendered for the
-    /// capabilities this connection negotiated in its `hello`.
-    pub fn subscribe(&self, tx: mpsc::Sender<Out>, _now: u64, details: bool) -> (u64, Arc<AtomicBool>) {
+    /// capabilities this connection negotiated in its `hello`, and after it whatever is still pending (§5: a link drop
+    /// clears the phone's book, so a reconnect is re-offered the same fingerprints).
+    pub fn subscribe(&self, tx: mpsc::Sender<Out>, _now: u64, details: bool, answers: bool) -> (u64, Arc<AtomicBool>) {
         let mut inner = self.lock();
         let id = inner.next_sub;
         inner.next_sub += 1;
         let line = cached(&mut inner, details);
         let _ = tx.try_send(Out::Line(line));
+        for ask in inner.asks.clone() {
+            if answers || ask.is_approval() {
+                if let Some(line) = ask.line() {
+                    let _ = tx.try_send(Out::Line(line.into()));
+                }
+            }
+        }
         let evicted = Arc::new(AtomicBool::new(false));
-        inner.subs.push(Sub { id, tx, details, evicted: evicted.clone() });
+        inner.subs.push(Sub { id, tx, details, answers, evicted: evicted.clone() });
         (id, evicted)
     }
 
@@ -280,16 +330,69 @@ impl Hub {
     }
 }
 
-fn sessions_line(sessions: &[Session], details: bool) -> String {
-    let rows: Vec<WireSession<'_>> = sessions.iter().map(|s| wire(s, details)).collect();
+fn sessions_line(sessions: &[Session], details: bool, asks: &[Ask]) -> String {
+    let rows: Vec<WireSession<'_>> = sessions.iter().map(|s| wire(s, details, ask_of(asks, &s.pill_id))).collect();
     json!({ "type": "sessions", "sessions": rows }).to_string()
+}
+
+/// The ask that decides a pill's published state: the newest one still pending, so a row shows the request the agent
+/// is waiting on right now (a pill with a question and an approval pending shows the later of the two).
+fn ask_of<'a>(asks: &'a [Ask], pill_id: &str) -> Option<&'a Ask> {
+    asks.iter().rev().find(|a| a.pill_id() == pill_id)
 }
 
 /// The current line for one kind of subscriber, rendered once and kept.
 fn cached(inner: &mut Inner, details: bool) -> Arc<str> {
-    let sessions = &inner.sessions;
+    let (sessions, asks) = (&inner.sessions, &inner.asks);
     let slot = if details { &mut inner.detail } else { &mut inner.plain };
-    slot.get_or_insert_with(|| sessions_line(sessions, details).into()).clone()
+    slot.get_or_insert_with(|| sessions_line(sessions, details, asks).into()).clone()
+}
+
+/// Re-renders both session lines from what the hub holds now (source sessions plus pending asks) and sends only what
+/// really changed, so a details-only change still never resends a plain phone an identical line.
+fn refresh(inner: &mut Inner) {
+    let plain = sessions_line(&inner.sessions, false, &inner.asks);
+    let detail = sessions_line(&inner.sessions, true, &inner.asks);
+    let plain_changed = inner.plain.as_deref() != Some(plain.as_str());
+    let detail_changed = inner.detail.as_deref() != Some(detail.as_str());
+    if plain_changed {
+        inner.plain = Some(plain.into());
+    }
+    if detail_changed {
+        inner.detail = Some(detail.into());
+    }
+    if plain_changed || detail_changed {
+        broadcast(inner, plain_changed, detail_changed);
+    }
+}
+
+/// `approvalResolved` for one fingerprint, to everyone: the request is gone as far as the phone is concerned (§8.3).
+fn send_resolved(inner: &mut Inner, fingerprint: &str) {
+    let line: Arc<str> = json!({ "type": "approvalResolved", "fingerprint": fingerprint }).to_string().into();
+    keep(inner, line, |_| true);
+}
+
+/// The `approval` / `question` line to the phones that accept it.
+fn send_ask(inner: &mut Inner, ask: &Ask) {
+    let Some(line) = ask.line() else { return };
+    let line: Arc<str> = line.into();
+    let needs_answers = !ask.is_approval();
+    keep(inner, line, |sub| !needs_answers || sub.answers);
+}
+
+/// Writes one line to the phones `wanted` accepts; one that cannot keep up (a full queue) or has gone is dropped,
+/// never waited for.
+fn keep(inner: &mut Inner, line: Arc<str>, wanted: impl Fn(&Sub) -> bool) {
+    inner.subs.retain(|s| {
+        if !wanted(s) {
+            return true;
+        }
+        let kept = s.tx.try_send(Out::Line(line.clone())).is_ok();
+        if !kept {
+            s.evicted.store(true, Ordering::SeqCst);
+        }
+        kept
+    });
 }
 
 /// Sends what changed to every subscriber, one line per capability set; a phone that cannot keep up (a full queue)

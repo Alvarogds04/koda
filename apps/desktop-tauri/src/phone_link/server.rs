@@ -27,6 +27,7 @@ use tokio_rustls::rustls::{crypto::ring as ring_provider, ServerConfig};
 use tokio_rustls::TlsAcceptor;
 
 use super::admission::{Admission, Ticket};
+use super::asks;
 use super::constant_eq;
 use super::hub::Hub;
 use super::ids;
@@ -55,6 +56,23 @@ pub trait Features: Send + Sync {
     }
 }
 
+/// What the desktop does with a phone's `decision` or `answer` (§8, §9): the one seam between the phone and the
+/// agent, and the whole of what this module knows about it.
+///
+/// It is synchronous like [`Features`], because the link's thread must not own the agent's threads: the implementation
+/// hands the decision to whatever really holds the pending request (the relay that asked for the approval, the agent
+/// waiting on the question) and answers — `Ok` only when the agent took it. A refusal is silence on the wire: the
+/// request stays pending and decidable, and `approvalResolved` is never sent for it (§8.3, §9.2).
+///
+/// The default implementation refuses everything, so a desktop that has not wired the seam behaves exactly as before
+/// this slice: `decision`s and `answer`s are ignored (`link.rs`).
+pub trait Decisions: Send + Sync {
+    /// Apply an approval decision. `Ok` means the agent has it.
+    fn decide(&self, fingerprint: &str, allow: bool) -> Result<(), ()>;
+    /// Hand the labels of every question, in the order the questions were asked (§9.2).
+    fn answer(&self, fingerprint: &str, picks: Vec<Vec<String>>) -> Result<(), ()>;
+}
+
 /// The capability set in force on one connection: what the phone asked for ∩ what the desktop offers (§6.0, «only
 /// in force when both sides name it»), in the contract's canonical order, unknown strings dropped on either side and
 /// never duplicated.
@@ -79,12 +97,26 @@ pub struct Shared {
     pub token: Mutex<String>,
     pub name: String,
     pub features: Arc<dyn Features>,
+    /// The way from a phone's `decision` / `answer` to the agent (§8, §9).
+    pub decisions: Arc<dyn Decisions>,
     admission: Arc<Admission>,
 }
 
 impl Shared {
+    /// The link with nothing behind the seam: a `decision` or an `answer` is ignored, which is what a desktop with no
+    /// approvals to offer does.
     pub fn with_hub(hub: Arc<Hub>, token: String, name: String, features: Arc<dyn Features>) -> Arc<Shared> {
-        Arc::new(Shared { hub, token: Mutex::new(token), name, features, admission: Admission::new() })
+        Shared::with_hub_and_decisions(hub, token, name, features, Arc::new(super::link::RefuseDecisions))
+    }
+
+    pub fn with_hub_and_decisions(
+        hub: Arc<Hub>,
+        token: String,
+        name: String,
+        features: Arc<dyn Features>,
+        decisions: Arc<dyn Decisions>,
+    ) -> Arc<Shared> {
+        Arc::new(Shared { hub, token: Mutex::new(token), name, features, decisions, admission: Admission::new() })
     }
 }
 
@@ -236,7 +268,12 @@ where
     let _ = say(welcome).await;
     // The first line after the welcome is the current sessions, rendered for this connection's capabilities; later
     // changes arrive through the hub, which keeps one line per capability set.
-    let (id, evicted) = shared.hub.subscribe(tx.clone(), now_ms(), in_force.contains(&ids::CAP_DETAILS));
+    let (id, evicted) = shared.hub.subscribe(
+        tx.clone(),
+        now_ms(),
+        in_force.contains(&ids::CAP_DETAILS),
+        in_force.contains(&ids::CAP_ANSWERS),
+    );
 
     // 2. the conversation
     loop {
@@ -259,10 +296,48 @@ where
                 let _ = say(json!({ "type": "pong" })).await;
             }
             Some("bye") => break,
+            Some("decision") => decide(&shared, &msg),
+            Some("answer") => answer(&shared, &msg, in_force.contains(&ids::CAP_ANSWERS)),
             _ => {} // unknown types are ignored
         }
     }
     shared.hub.unsubscribe(id);
+}
+
+/// A `decision` (§6, §8): only for a request that is still pending — an unknown, already resolved or expired one is
+/// ignored, with nothing sent back — and `approvalResolved` only after the agent really took the decision.
+fn decide(shared: &Arc<Shared>, msg: &serde_json::Value) {
+    let Some((fingerprint, verdict)) = asks::parse_decision(msg) else { return };
+    let Some(ask) = shared.hub.pending_ask(&fingerprint) else { return };
+    // A question is answered, never decided: the two messages do not stand in for each other.
+    if !ask.is_approval() {
+        return;
+    }
+    let allow = verdict == asks::Verdict::Allow;
+    if shared.decisions.decide(&fingerprint, allow).is_ok() {
+        shared.hub.resolve(&fingerprint);
+    }
+}
+
+/// An `answer` (§6, §9): only with `answers` in force on this connection, only for a question that is still pending,
+/// and only when every pick passes §9.2's table. Anything else is silence, because a refusal is not a state the phone
+/// shows — the question simply stays until it is answered or expires.
+fn answer(shared: &Arc<Shared>, msg: &serde_json::Value, answers: bool) {
+    if !answers {
+        return;
+    }
+    let Some((fingerprint, picks)) = asks::parse_answer(msg) else { return };
+    let Some(ask) = shared.hub.pending_ask(&fingerprint) else { return };
+    if ask.is_approval() {
+        return;
+    }
+    let Some(questions) = ask.questions() else { return };
+    if !asks::valid_picks(questions, &picks) {
+        return;
+    }
+    if shared.decisions.answer(&fingerprint, picks).is_ok() {
+        shared.hub.resolve(&fingerprint);
+    }
 }
 
 pub fn now_ms() -> u64 {

@@ -7,6 +7,7 @@
 //! for as long as the human wants it (S2/S3). `announce` is the mDNS half of that switch (S7).
 pub mod admission;
 pub mod announce;
+pub mod asks;
 pub mod hub;
 pub mod ids;
 pub mod keystore;
