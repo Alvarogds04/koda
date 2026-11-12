@@ -306,6 +306,7 @@ fn tick(app: &AppHandle) {
 
 #[cfg(target_os = "linux")]
 fn spawn_ticker(app: AppHandle) {
+    spawn_usage_ticker(app.clone());
     std::thread::spawn(move || loop {
         std::thread::sleep(TICK);
         if crate::quitting() {
@@ -317,6 +318,22 @@ fn spawn_ticker(app: AppHandle) {
         }
         tick(&app);
         ensure_agent(&app);
+    });
+}
+
+/// S11: the plans are read on their OWN thread. A Codex read can take up to 15 s (it spawns `codex app-server`), and on
+/// the session ticker that would hold the phone's session list (and a pending request's «Caduca en») that long.
+#[cfg(target_os = "linux")]
+fn spawn_usage_ticker(app: AppHandle) {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(TICK);
+        if crate::quitting() {
+            return;
+        }
+        let Some(host) = app.try_state::<PhoneHost>() else { return };
+        if !host.link.running() {
+            continue; // nothing of ours runs while the link is off (S3)
+        }
         usage_tick(&app); // S11: and no plan is read while its own switch is off
     });
 }
