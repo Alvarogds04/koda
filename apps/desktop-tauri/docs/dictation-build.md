@@ -34,11 +34,25 @@ On Windows that folder is `%LOCALAPPDATA%\abito-data\Models`, **not**
 `%LOCALAPPDATA%\abito`: NTFS is case-insensitive, so `abito` and the island's
 protected root `Abito` would be the same directory. That root is created (or
 accepted) with an explicit protected owner-only DACL and verified fail-closed by
-the island, so a data folder born there with the inherited profile DACL would
-make the island refuse to start ("runtime root is not a private directory of
-ours") depending only on which feature ran first. Landing the store first with
-`abito-data` keeps the two folders apart; nothing is migrated because the
-Windows path was introduced in this same (unreleased) cycle.
+the island (`winpolicy::dacl_private`: every ACE principal has to be the user,
+SYSTEM or Administrators), so a data folder born there with the inherited
+profile DACL **may** make the island refuse to start ("runtime root is not a
+private directory of ours") depending only on which feature ran first. Whether
+it does depends on that profile's DACL: a stock `%LOCALAPPDATA%` (SYSTEM,
+Administrators, the user) passes, while a profile whose folder carries extra
+principals — a domain or capability SID, an inherited `CREATOR OWNER` — fails
+`dacl_private`. Landing the store first with `abito-data` keeps the two folders
+apart and removes the question instead of leaving it to luck.
+
+**Nothing is migrated.** Before this change the folder was
+`$HOME/.local/share/abito` on every OS, so a Windows install that ran an earlier
+build with `HOME` set (Git Bash, MSYS, a hand-set variable) put its models
+there; it now looks at `%LOCALAPPDATA%\abito-data\Models` and downloads them
+again. No automatic migration runs on purpose: the guessed source could belong
+to something else, and the download is size- and SHA-256-checked while a copied
+file is not. To keep the files, copy them by hand with Koda closed:
+`%HOME%\.local\share\abito\Models` → `%LOCALAPPDATA%\abito-data\Models`
+(`abito-transcribe status` then reports `present: true` and nothing downloads).
 
 `reqwest` is pinned to 0.12 (ring + webpki-roots TLS) because 0.13's rustls
 needs aws-lc-rs and rustls-platform-verifier.
@@ -167,16 +181,22 @@ abito-transcribe download [--model ID]   # the catalog's pinned, size + SHA-256 
   - It is removed with the runtime directory. The Windows install manifest pins `runtime/ffmpeg.exe` like
     `runtime/node.exe` (`install-manifest.cjs --runtime`).
   - **Licence record (LGPL-3.0, still open).** Every notice that names FFmpeg also states what is owed and what is
-    still missing: a written source offer (GPL-3.0 §6(b), incorporated by LGPL-3.0) of the exact FFmpeg source at
-    revision `c179411bbb2864cc71323d3055acda25d5c2aace` — the commit FFmpeg's version string labels
-    `n9.0.2-49-gc179411bbb`, a label and not the identity — plus the BtbN/FFmpeg-Builds scripts, on request, for at
-    least three years), and the plain statement that Koda does **not** mirror those sources yet, so the mirror has to
-    exist (and be linked from the notices) before a public release: that is GPL-3.0 §6(d) (a designated place
-    recipients can obtain the source from, not only an offer on request), also incorporated by LGPL-3.0. The warning
-    is not «LGPL-3.0 §6», which is about combining a work with the Library. The licence review of FFmpeg's obligations
-    and its AAC/H.264 patent question has **not** been done; the notices say so instead of implying it was.
+    still missing. Koda reaches people as a file they download, so the clause that applies is **GPL-3.0 §6(d)**,
+    incorporated by LGPL-3.0: recipients must be able to obtain the Corresponding Source — the exact FFmpeg source at
+    revision `c179411bbb2864cc71323d3055acda25d5c2aace` (the commit FFmpeg's version string labels
+    `n9.0.2-49-gc179411bbb`, a label and not the identity) plus the BtbN/FFmpeg-Builds scripts and the pinned library
+    versions — from a designated place (a network server or an equivalent), in the same way they obtained the binary
+    and with clear directions next to the download. A written offer to send it on request is GPL-3.0 §6(b), the clause
+    for a copy handed over in a physical product: on its own it is **not** sufficient for a download, so the notices
+    keep it only as an additional three-year measure. Koda does **not** mirror those sources yet, so no designated
+    place exists and the §6(d) obligation is unmet today: the mirror has to exist and be linked from the notices and
+    from the download page before a public release. (The basis is GPL-3.0 §6 as incorporated by LGPL-3.0. It is not
+    «LGPL-3.0 §6», which is «Revised Versions», and combining a work with the Library is LGPL-3.0 §4/§5, so neither
+    of those is where a source duty comes from.) The licence review of FFmpeg's obligations and its AAC/H.264 patent
+    question has **not** been done; the notices say so instead of implying it was.
 - **macOS (darwin-arm64).** No ffmpeg and no `abito-transcribe` in this version: no LGPL macOS build exists (pending
   for the Mac session, L12). The daemon reports `ffmpeg: "unavailable"`, and a Minikoda video run fails with a clear
   «Hoy» error.
 - **Notices.** `apps/desktop-daemon/THIRD-PARTY-NOTICES.md` (shipped) carries sherpa-onnx (Apache-2.0), ONNX Runtime
-  (MIT) and FFmpeg (LGPL, with the source location and offer). The repository root `THIRD-PARTY-NOTICES.md` indexes them.
+  (MIT) and FFmpeg (LGPL, with the source location and the §6(d) designated-place record). The repository root
+  `THIRD-PARTY-NOTICES.md` indexes them.

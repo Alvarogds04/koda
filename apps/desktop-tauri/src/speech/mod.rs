@@ -174,8 +174,10 @@ pub const DATA_LEAF: &str = "abito";
 ///   accepted — with an explicit protected owner-only DACL (`abito-private-session`), and the island verifies it
 ///   fail-closed (`winpolicy::dacl_private`: owner plus every ACE principal must be the user, SYSTEM or
 ///   Administrators). A data folder created there first by Node/`std::fs` inherits the whole `%LOCALAPPDATA%` profile
-///   DACL, so the island would refuse to start ("runtime root is not a private directory of ours") depending only on
-///   which feature ran first. Two different folders were meant, so they get two different names.
+///   DACL instead, so the island MAY refuse to start ("runtime root is not a private directory of ours") depending
+///   only on which feature ran first: a stock `%LOCALAPPDATA%` DACL (SYSTEM, Administrators, the user) passes that
+///   check, while a profile whose folder carries extra principals — a domain or capability SID, an inherited
+///   `CREATOR OWNER` — fails it. Two different folders were meant, so they get two different names.
 /// - Linux and macOS: `$XDG_DATA_HOME/abito`, else `$HOME/.local/share/abito`. The macOS-specific store belongs to
 ///   the Mac session (L12); this keeps the folder dictation, the flow store and the helper already use.
 ///
@@ -808,10 +810,14 @@ mod tests {
         assert_eq!(data_dir_for(Os::Windows, env(vec![("LOCALAPPDATA", PathBuf::from("AppData/Local"))])), Err(NoDataDir));
         assert_eq!(data_dir_for(Os::Windows, env(vec![("USERPROFILE", PathBuf::from("."))])), Err(NoDataDir));
         // And the leaf is NOT the island root's name: on case-insensitive NTFS `abito` and `Abito` are one folder.
+        // Compared lowercased on purpose: the two strings differ in case anyway, so comparing them as they are would
+        // pass even if the leaf went back to `abito` — that is exactly the collision this guards.
         assert_ne!(
-            data_dir_for(Os::Windows, env(vec![("LOCALAPPDATA", at("abito-test-Local"))])).unwrap(),
-            at("abito-test-Local").join("Abito")
+            data_dir_for(Os::Windows, env(vec![("LOCALAPPDATA", at("abito-test-Local"))])).unwrap().to_string_lossy().to_lowercase(),
+            at("abito-test-Local").join("Abito").to_string_lossy().to_lowercase()
         );
+        // Same check on the leaf itself, which no case difference can hide.
+        assert_ne!(WINDOWS_DATA_LEAF.to_lowercase(), "abito");
     }
 
     #[test]

@@ -325,13 +325,18 @@ test('K2-13 (S9): ffmpeg comes out of the pinned archive byte for byte, executab
     assert.ok(notices.includes('The version string is a label, never the identity of the source'), 'and the notice says so');
     assert.ok(notices.includes('https://github.com/BtbN/FFmpeg-Builds'), 'the build scripts');
     assert.match(notices, /Corresponding Source/);
-    // K2-13 (S9, item 5): the offer is a commitment, and the record says what is still missing — without pretending
-    // a licence review happened, and citing the GPL-3.0 clauses LGPL-3.0 incorporates rather than «LGPL-3.0 section 6»
-    // (LGPL-3.0 §6 is about combining with a library; it says nothing about source offers).
-    assert.match(notices, /Source offer \(GPL-3\.0 §6\(b\), incorporated by LGPL-3\.0\): on request Koda provides the Corresponding Source of this/, 'the source offer is explicit');
-    assert.match(notices, /at least\s+three years after the release that shipped it|three years after the release/, 'and lasts three years');
-    assert.match(notices, /must MIRROR that Corresponding Source itself \(GPL-3\.0 §6\(d\), incorporated by/, 'mirroring before a public release is recorded');
-    assert.doesNotMatch(notices, /LGPL-3\.0 section 6/, 'never the LGPL-3.0 section that is about combining with a library');
+    // K2-13 (S9, item 5): a DOWNLOADED binary owes GPL-3.0 §6(d) as incorporated by LGPL-3.0 (a designated place
+    // recipients can obtain the Corresponding Source from, with clear directions next to the download), and an offer
+    // on request (§6(b), the clause for a copy handed over in a physical product) is not sufficient on its own. Note
+    // what the clauses are: LGPL-3.0 §6 is «Revised Versions» and combining a work with the Library is §4/§5, so
+    // neither of them is the basis for a source duty.
+    assert.match(notices, /GPL-3\.0 §6\(d\), incorporated by LGPL-3\.0 — the clause that applies to a downloadable installer/, 'the clause a download owes is named');
+    assert.match(notices, /on its own, is NOT sufficient for a download/, 'an offer on request is not enough for a download');
+    assert.match(notices, /does not mirror that Corresponding Source itself/, 'the missing mirror is still recorded');
+    assert.match(notices, /three years after the release that shipped it/, 'the additional on-request offer lasts three years');
+    assert.match(notices, /must exist and be linked from this notice and/, 'the designated place is required before a public release');
+    assert.doesNotMatch(notices, /LGPL-3\.0 section 6/, 'never a citation of the LGPL-3.0 section that is about Revised Versions');
+    assert.doesNotMatch(notices, /§6 is about combining|about combining a work with the Library/, 'and never the wrong claim that LGPL-3.0 §6 is about combining');
     assert.match(notices, /has NOT been done/, 'the notices never claim the legal review is done');
   }
   const darwin = fs.readFileSync(path.join(fx.dir, 'out-darwin-arm64', 'THIRD-PARTY-NOTICES.md'), 'utf8');

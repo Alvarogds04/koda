@@ -77,12 +77,16 @@ fn without_a_data_folder_the_helper_answers_model_missing_and_never_uses_a_relat
     let file = std::fs::File::create(vad.join("silero_vad.onnx")).unwrap();
     file.set_len(643_854).unwrap(); // the detector's pinned size: a relative fallback would report it present
     drop(file);
-    let out = Command::new(BIN)
-        .args(["status"])
+    let mut cmd = Command::new(BIN);
+    cmd.args(["status"])
         .env_clear() // no HOME, no XDG_DATA_HOME, no LOCALAPPDATA
-        .current_dir(&d)
-        .output()
-        .expect("run abito-transcribe");
+        // The one variable a cleared environment still needs on Windows: Win32 lookups in the child fail without it,
+        // and that would turn this case into a different failure than the one it is about (`run()` does the same).
+        .current_dir(&d);
+    if let Some(root) = std::env::var_os("SystemRoot") {
+        cmd.env("SystemRoot", root);
+    }
+    let out = cmd.output().expect("run abito-transcribe");
     let stdout = String::from_utf8(out.stdout.clone()).unwrap();
     assert_eq!(stdout.lines().count(), 1, "one JSON line: {stdout:?}");
     let json: serde_json::Value = serde_json::from_str(stdout.trim()).expect("stdout is JSON");
