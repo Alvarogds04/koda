@@ -218,3 +218,44 @@ fn the_name_predicates_match_exactly_what_conversations_rs_wrote() {
     assert!(!is_temp_file("index-4242-0.tmp.txt"), "suffix must end the name");
     assert!(!is_temp_file("xindex-4242-0.tmp"), "prefix must start the name");
 }
+
+// Folder-race (K2-05 T5 follow-up): the folder is swapped for a symlink to another directory right
+// AFTER it was validated and BEFORE anything is deleted. Legacy-named files behind the link must
+// survive, and the files that were inside the opened folder are the only ones removed.
+#[cfg(unix)]
+#[test]
+fn a_folder_swapped_for_a_symlink_after_the_check_deletes_nothing_outside() {
+    let parent = scratch("race-parent");
+    let conv = parent.join("conversations");
+    let moved = parent.join("conversations-moved");
+    let outside = scratch("race-outside");
+    fs::create_dir(&conv).unwrap();
+    write(&conv.join(format!("{A_ID}.jsonl")), b"inside");
+    write(&conv.join("index.json"), b"inside");
+    write(&conv.join("keep.txt"), b"keep");
+    write(&outside.join(format!("{A_ID}.jsonl")), b"outside");
+    write(&outside.join("index.json"), b"outside");
+    write(&outside.join("index-4242-0.tmp"), b"outside");
+
+    let (c, m, o) = (conv.clone(), moved.clone(), outside.clone());
+    AFTER_FOLDER_CHECK.with(|h| {
+        *h.borrow_mut() = Some(Box::new(move || {
+            fs::rename(&c, &m).unwrap();
+            std::os::unix::fs::symlink(&o, &c).unwrap();
+        }));
+    });
+    let out = cleanup(Some(&conv));
+    AFTER_FOLDER_CHECK.with(|h| *h.borrow_mut() = None);
+
+    assert_eq!(out.failed, 0);
+    assert_eq!(fs::read(outside.join(format!("{A_ID}.jsonl"))).unwrap(), b"outside");
+    assert_eq!(fs::read(outside.join("index.json")).unwrap(), b"outside");
+    assert_eq!(fs::read(outside.join("index-4242-0.tmp")).unwrap(), b"outside");
+    assert!(fs::symlink_metadata(&conv).unwrap().file_type().is_symlink(), "the swapped-in link stays");
+    // what lived in the folder we actually opened was ours: legacy names gone, the rest kept
+    assert!(!moved.join(format!("{A_ID}.jsonl")).exists());
+    assert!(!moved.join("index.json").exists());
+    assert_eq!(fs::read(moved.join("keep.txt")).unwrap(), b"keep");
+    fs::remove_dir_all(&parent).unwrap();
+    fs::remove_dir_all(&outside).unwrap();
+}
