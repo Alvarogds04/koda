@@ -1083,14 +1083,33 @@ fn island_move_end(app: AppHandle, webview: tauri::Webview, state: State<AppStat
     let Some(win) = main_window(&app) else { return };
     let io = TauriIo(&win);
     let area = refresh_work_area(&app, &state);
-    let compact = geometry::Placed { origin: io.outer_position(), expanded: false };
+    // isla-cualquier-lado S1: an open card anchored on its bottom edge stands one disc below the spot, so the spot is read back for
+    // the edge it was laid out with (geometry::drop_spot) and the card stays where the human released it, flipping edge if needed.
+    let (x, y) = io.outer_position();
+    let (w, h) = io.size();
+    let (edge, card_h) = {
+        let core = state.core.lock().expect("core lock");
+        (core.edge, if core.chat { core.chat_height() } else { geometry::OVERVIEW_VISIBLE.1 })
+    };
+    let expanded = state.island_open.load(Ordering::SeqCst);
+    let (spot, _) = geometry::drop_spot(Rect { x, y, w, h }, expanded, edge, card_h, area, io.scale());
+    let compact = geometry::Placed { origin: spot, expanded: false };
     let anchor = geometry::island_window_rect_placed(compact, area, io.scale(), state.window_h.load(Ordering::SeqCst));
     *state.island_origin.lock().unwrap_or_else(|e| e.into_inner()) = Some((anchor.x, anchor.y));
+    if expanded {
+        // the SAVED spot (clamped so the disc stays on screen) decides, exactly as the placement in ensure_island_window will
+        state.core.lock().expect("core lock").edge = geometry::growth_edge_at(anchor.y, area, io.scale());
+    }
     if !settingshost::save_island_position(&app, (anchor.x, anchor.y)) {
         eprintln!("island position not saved");
     }
     let safe = ensure_island_window(&app);
     store_requested(&state, "drag", Some((safe.x, safe.y)), Some((safe.w, safe.h)));
+    if expanded {
+        // the page lays the open card out for the edge the drop chose (data-edge); same phase, so nothing animates
+        let edge = state.core.lock().expect("core lock").edge;
+        push_phase(&app, "overview", edge);
+    }
     publish(&app, &state);
 }
 

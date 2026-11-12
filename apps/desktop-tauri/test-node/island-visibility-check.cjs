@@ -36,7 +36,18 @@ test('B1 reproduction: expand then collapse settles the visible island and input
   function drain() { for (let i = 0; frames.size && i < 300; i++) { now += 16.667; const pending = [...frames.values()]; frames.clear(); pending.forEach(fn => fn(now)); } assert.equal(frames.size, 0); }
   context.window.__islandSetState('overview'); drain();
   assert.equal(capsule.dataset.phase, 'expanded'); assert.equal(island.style.width, '720px');
+  // isla-cualquier-lado S1: the open island is the floating card, r26 on all four corners, hanging from the window top by default
+  assert.equal(island.style.borderRadius, '26px 26px 26px 26px', 'the card is round on all four corners');
+  assert.equal(capsule.dataset.edge, 'top'); assert.equal(island.style.top, '0px'); assert.equal(island.style.bottom, 'auto');
+  // Rust sends Bottom for a card in the lower half of its screen: it stands on the window's bottom edge
+  context.window.__islandSetState('overview', 'bottom'); drain();
+  assert.equal(capsule.dataset.edge, 'bottom'); assert.equal(island.style.top, 'auto'); assert.equal(island.style.bottom, '0px');
+  assert.equal(island.style.borderRadius, '26px 26px 26px 26px');
+  context.window.__islandSetState('overview', 'sideways'); drain();
+  assert.equal(capsule.dataset.edge, 'bottom', 'an unknown edge keeps the last one Rust sent');
   context.window.__islandSetState('compact'); drain();
+  // folding hands the disc back to the window top whatever the edge
+  assert.equal(island.style.top, '0px'); assert.equal(island.style.bottom, 'auto');
   console.log('B1 rendered:', capsule.dataset.phase, island.style.width, island.style.height, 'shape:', JSON.stringify(calls.at(-1)));
   assert.equal(capsule.dataset.phase, 'compact');
   // island-free-drag S3: compact is Koda's disc (geometry::COMPACT_DOT) — no bar, in any compact state

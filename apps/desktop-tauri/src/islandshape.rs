@@ -21,6 +21,19 @@ pub(crate) fn parse_window_height(payload: &Value) -> Option<i32> {
     i32::try_from(object.get("h")?.as_i64()?).ok()
 }
 
+/// The expanded card stands on the window's bottom edge (geometry::Edge::Bottom, isla-cualquier-lado S1: a card in the lower half of
+/// its screen grows up). Compact and collapsing, the disc always hangs from the window top. Read from the core on the threads that
+/// already take it for `is_protected` (build_snapshot locks the core too).
+pub(crate) fn anchor_bottom(state: &crate::AppState) -> bool {
+    let core = state.core.lock().expect("core lock");
+    core.expanded && core.edge == abito_island::geometry::Edge::Bottom
+}
+
+/// The rect for the top anchor, moved to the bottom of the window when the card stands on it.
+fn anchored(rect: (i32, i32, i32, i32), window: (i32, i32), bottom: bool) -> (i32, i32, i32, i32) {
+    if bottom { (rect.0, (window.1.max(0) - rect.3).max(0), rect.2, rect.3) } else { rect }
+}
+
 // Only the compact strip may be shorter than the disc.
 fn input_rect(report: Report, window: (i32, i32), protected: bool) -> (i32,i32,i32,i32) {
     // The hidden strip (S1): only the compact DISC's own width (island-free-drag S3: compact is the disc, nothing else) can be one.
@@ -32,25 +45,32 @@ fn input_rect(report: Report, window: (i32, i32), protected: bool) -> (i32,i32,i
 }
 
 /// S29 + HU-057 + island-free-drag S3: the compact island is Koda's disc (40x32, r16 on all four corners — the same box, so it also
-/// covers the hidden strip); the expanded island is the Nusa notch (square top corners,
-/// bottom corners r26: island.js rTop 0 / rBottom OVERVIEW.r). So the transparent corner pixels inside the
+/// covers the hidden strip); isla-cualquier-lado S1: the expanded island is the floating card, r26 on all four corners (island.js
+/// OVERVIEW.r), at the window top or, anchored on its bottom edge, at the window bottom. So the transparent corner pixels inside the
 /// reported rectangle must pass clicks. The input region is that box as horizontal bands: per pixel row the corner arc's inset
 /// is rounded UP, so no pixel outside the drawn shell ever takes a click (at most one drawn pixel per side per row is given up).
 /// Only a settled report that IS one island box is rounded: a transition (union of two endpoints plus spring air) and the question
 /// toast under the compact pill are not a single box and stay one rectangle, exactly as before.
+#[cfg(test)]
 pub(crate) fn input_rects(report: Report, window: (i32, i32), protected: bool) -> Vec<(i32, i32, i32, i32)> {
-    let (x, y, w, h) = input_rect(report, window, protected);
+    input_rects_anchored(report, window, protected, false)
+}
+/// `input_rects` for a card anchored on the window's top (`bottom` false) or bottom edge. Only an expanded box moves: the compact
+/// disc (and its strip) keep hanging from the top whatever the flag says.
+pub(crate) fn input_rects_anchored(report: Report, window: (i32, i32), protected: bool, bottom: bool) -> Vec<(i32, i32, i32, i32)> {
     let compact = report.w == abito_island::geometry::COMPACT_DOT.0;
+    let bottom = bottom && !(report.settled && compact && report.h <= abito_island::geometry::COMPACT_DOT.1);
+    let (x, y, w, h) = anchored(input_rect(report, window, protected), window, bottom);
     // (radius, box top): the hidden strip shows only the bottom `h` px of the disc that sits 32-h px above the window
     let (radius_top, radius_bottom, top) = if report.settled && compact && report.h <= abito_island::geometry::COMPACT_DOT.1 {
         (16.0, 16.0, if protected || report.h >= abito_island::geometry::COMPACT_DOT.1 || h >= abito_island::geometry::COMPACT_DOT.1 { 0 } else { report.h - abito_island::geometry::COMPACT_DOT.1 })
     } else if report.settled && report.w >= 640 && h == report.h.clamp(abito_island::geometry::COMPACT_DOT.1, window.1.max(0)) {
-        (0.0, 26.0, 0)
+        (26.0, 26.0, 0)
     } else { return vec![(x, y, w, h)] };
     let box_h = if top < 0 { abito_island::geometry::COMPACT_DOT.1 } else { h };
     let mut rects: Vec<(i32, i32, i32, i32)> = Vec::new();
     for row in y.max(0)..(y + h) {
-        let centre = f64::from(row - top) + 0.5;                    // the row's centre, in the box
+        let centre = f64::from(row - y - top) + 0.5;                // the row's centre, in the box (the box starts at y + top)
         let (edge, radius) = if centre <= f64::from(box_h) / 2.0 { (centre, radius_top) } else { (f64::from(box_h) - centre, radius_bottom) };
         let inset = if edge >= radius { 0 } else {
             let dy = radius - edge;
@@ -80,14 +100,19 @@ static LAST: std::sync::Mutex<((i32, i32), Report)> = std::sync::Mutex::new(((28
 
 /// Windows/macOS: remember the page's report (`apply` is called from `island_shape`), and read the current rects for the click-through.
 #[cfg(not(target_os = "linux"))]
-pub(crate) fn current_rects(window: (i32, i32), protected: bool) -> Vec<(i32, i32, i32, i32)> {
+pub(crate) fn current_rects(window: (i32, i32), protected: bool, bottom: bool) -> Vec<(i32, i32, i32, i32)> {
     let mut state = LAST.lock().expect("island shape lock");
-    shape_rects(&mut state, None, window, protected)
+    shape_rects_anchored(&mut state, None, window, protected, bottom)
 }
 
 /// The island's input rects for the current report, shared by every platform. `state` = (the last SETTLED destination, the last report):
 /// a settled report is remembered; while moving the rects are the union of the previous and the next shape (plus spring air).
+#[cfg(test)]
 pub(crate) fn shape_rects(state: &mut ((i32, i32), Report), report: Option<Report>, window: (i32, i32), protected: bool) -> Vec<(i32, i32, i32, i32)> {
+    shape_rects_anchored(state, report, window, protected, false)
+}
+/// `shape_rects` with the card's anchor (see `anchor_bottom`).
+pub(crate) fn shape_rects_anchored(state: &mut ((i32, i32), Report), report: Option<Report>, window: (i32, i32), protected: bool, bottom: bool) -> Vec<(i32, i32, i32, i32)> {
     use abito_island::geometry;
     if let Some(report) = report { state.1 = report; }
     let report = state.1;
@@ -96,7 +121,7 @@ pub(crate) fn shape_rects(state: &mut ((i32, i32), Report), report: Option<Repor
         state.0 = destination;
         destination
     } else { geometry::transition_shape(state.0, destination, window) };
-    input_rects(if report.settled { report } else { Report { w: shape.0, h: shape.1, settled: false } }, window, protected)
+    input_rects_anchored(if report.settled { report } else { Report { w: shape.0, h: shape.1, settled: false } }, window, protected, bottom)
 }
 
 #[cfg(target_os = "linux")]
@@ -120,7 +145,8 @@ pub(crate) fn apply(app: &tauri::AppHandle, report: Option<Report>) {
             let mut state = SHAPE.lock().expect("island shape lock");
             let app_state = handle.state::<crate::AppState>();
             let protected = is_protected(&handle, &app_state);
-            let rects: Vec<_> = shape_rects(&mut state, report, window, protected)
+            let bottom = anchor_bottom(&app_state);
+            let rects: Vec<_> = shape_rects_anchored(&mut state, report, window, protected, bottom)
                 .into_iter().map(|(x, y, w, h)| gtk::cairo::RectangleInt::new(x, y, w, h)).collect();
             let region = gtk::cairo::Region::create_rectangles(&rects);
             gdk.input_shape_combine_region(&region, 0, 0);
@@ -249,7 +275,8 @@ mod corners {
         let mut out = vec![];
         let (dw, dh) = abito_island::geometry::COMPACT_DOT;
         out.push((Report { w: dw, h: dh, settled: true }, (centred(dw), 0, dw, dh), (16.0, 16.0))); // the disc: r16 on all four corners
-        for (w, h) in [(720, 150), (720, 220), (720, 208), (720, 224), (720, 240), (720, 300)] { out.push((Report { w, h, settled: true }, (centred(w), 0, w, h), (0.0, 26.0))); }
+        // isla-cualquier-lado S1: the floating card is r26 on ALL four corners (was the notch: square on top, r26 at the bottom)
+        for (w, h) in [(720, 150), (720, 220), (720, 208), (720, 224), (720, 240), (720, 300)] { out.push((Report { w, h, settled: true }, (centred(w), 0, w, h), (26.0, 26.0))); }
         // hidden: the disc (32 tall) sits 24 px up, so only its bottom 8 px (with its rounded bottom corners) show
         out.push((Report { w: dw, h: 8, settled: true }, (centred(dw), -24, dw, dh), (16.0, 16.0)));
         out
@@ -273,15 +300,13 @@ mod corners {
         }
     }
 
-    /// The expanded notch is square on top (HU-057): only the pill's top corners are rounded.
-    fn h_top_round(report: &Report) -> bool { report.h <= 32 }
-
     #[test]
     fn the_four_corners_of_every_size_pass_clicks_and_the_middle_does_not() {
         for (report, (bx, by, bw, bh), _) in sizes() {
             let rects = input_rects(report, W, false);
             let (top, bottom) = (by.max(0), by + bh - 1);
-            if by >= 0 && h_top_round(&report) { for (x, y) in [(bx, top), (bx + bw - 1, top)] { assert!(!covers(&rects, x, y), "{report:?}: top corner ({x},{y}) must pass clicks"); } }
+            // every drawn box is round on all four corners (the disc r16, the card r26); the hidden strip's top is off the window
+            if by >= 0 { for (x, y) in [(bx, top), (bx + bw - 1, top)] { assert!(!covers(&rects, x, y), "{report:?}: top corner ({x},{y}) must pass clicks"); } }
             for (x, y) in [(bx, bottom), (bx + bw - 1, bottom)] { assert!(!covers(&rects, x, y), "{report:?}: bottom corner ({x},{y}) must pass clicks"); }
             let (mx, my) = (bx + bw / 2, (top + bottom) / 2);
             assert!(covers(&rects, mx, my), "{report:?}: the middle takes clicks");
@@ -300,6 +325,39 @@ mod corners {
         for w in [350, 440, 560] { assert_eq!(input_rects(Report { w, h: 128, settled: true }, window, false).len(), 1, "toast shape {w}x128"); }
         // the bounding rectangle is what it always was
         assert_eq!(input_rect(Report { w: 720, h: 150, settled: true }, window, false), (16, 0, 720, 150));
+    }
+
+    /// isla-cualquier-lado S1: a card in the lower half of its screen stands on the window's BOTTOM edge and grows up, so its click
+    /// region is the same rounded r26 box, mirrored to the bottom of the window; nothing above it takes a click.
+    #[test]
+    fn a_bottom_anchored_card_takes_clicks_at_the_bottom_of_the_window_and_nowhere_else() {
+        for (w, h) in [(720, 150), (720, 186), (720, 240), (720, 300)] {
+            let report = Report { w, h, settled: true };
+            let rects = input_rects_anchored(report, W, false, true);
+            let box_ = ((W.0 - w) / 2, W.1 - h, w, h);
+            for y in 0..W.1 { for x in 0..W.0 {
+                if covers(&rects, x, y) { assert!(inside(x, y, box_, (26.0, 26.0)), "{w}x{h}: ({x},{y}) takes clicks outside the card at the window bottom"); }
+            } }
+            let (bx, by) = (box_.0, box_.1);
+            assert!(covers(&rects, bx + w / 2, by + h / 2), "{w}x{h}: the card's middle takes clicks");
+            assert!(covers(&rects, bx + w / 2, W.1 - 1), "{w}x{h}: the middle of the window's bottom row takes clicks");
+            assert!(!covers(&rects, bx + w / 2, by - 1), "{w}x{h}: the row above the card passes clicks");
+            for (x, y) in [(bx, by), (bx + w - 1, by), (bx, W.1 - 1), (bx + w - 1, W.1 - 1)] { assert!(!covers(&rects, x, y), "{w}x{h}: corner ({x},{y}) passes clicks"); }
+        }
+        // the top anchor is the ordinary region; a transition stays one plain rectangle, also at the bottom
+        let card = Report { w: 720, h: 150, settled: true };
+        assert_eq!(input_rects_anchored(card, W, false, false), input_rects(card, W, false));
+        assert_eq!(input_rects_anchored(Report { w: 752, h: 166, settled: false }, W, false, true), vec![(0, W.1 - 166, 752, 166)]);
+        // a window grown for a long question keeps the card on its bottom edge
+        let tall = input_rects_anchored(Report { w: 720, h: 255, settled: true }, (752, 500), false, true);
+        assert!(tall.iter().all(|r| r.1 >= 500 - 255 && r.1 + r.3 <= 500), "{tall:?}");
+    }
+    #[test]
+    fn the_anchor_is_read_from_the_shared_state_so_every_platform_follows_the_edge() {
+        let mut state = ((40, 32), Report { w: 40, h: 32, settled: true });
+        let at_bottom = shape_rects_anchored(&mut state, Some(Report { w: 720, h: 150, settled: true }), W, false, true);
+        assert!(at_bottom.iter().all(|r| r.1 >= W.1 - 150), "bottom-anchored card: {at_bottom:?}");
+        assert!(shape_rects_anchored(&mut state, None, W, false, false).iter().all(|r| r.1 + r.3 <= 150), "the same report, top anchor");
     }
 
     #[test]

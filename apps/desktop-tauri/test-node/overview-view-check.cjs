@@ -858,8 +858,8 @@ test('L34 mini grid: up to four small characters on the bar, 13px cells 3px apar
 test('fixed-window gestures retain click reporting and character pick-up without frontend docking policy', () => {
   assert.doesNotMatch(islandSrc, /snap_to_edge|nearest_vertical_edge|anchor_toggle/);
   assert.match(islandSrc, /send\('drag_press'/); assert.match(islandSrc, /send\('drag_release'/);
-  // HU-057: the borderRadius source line is now `${rTopUsed}… ${rBottom}…`; «square top corners, rounded bottom» is asserted on the rendered island
-  // (browser block at the end of this file), compact and expanded.
+  // isla-cualquier-lado S1: the borderRadius source line is `${radius}px` on all four corners; «r26 all round» is asserted on the rendered
+  // island (browser block at the end of this file), compact and expanded.
 });
 
 test('CSS structure: braces balance (no stray «}» swallowing the next rule) and every critical top-level rule exists', () => {
@@ -1046,7 +1046,7 @@ test('T7.3 approval card markup: «Espera tu respuesta» caption, fold inside th
     const [isl] = await ui.measure('#island');
     const radii = await ui.page.evaluate(() => { const c = getComputedStyle(document.getElementById('island')); return [c.borderTopLeftRadius, c.borderTopRightRadius, c.borderBottomRightRadius, c.borderBottomLeftRadius].map(parseFloat); });
     assert.deepEqual([Math.round(isl.w), Math.round(isl.h)], [720, 150], 'HU-057 plain overview is the 720x150 Nusa notch');
-    assert.deepEqual(radii, [0, 0, 26, 26], 'HU-057 notch: square top, r26 bottom');
+    assert.deepEqual(radii, [26, 26, 26, 26], 'isla-cualquier-lado S1: the floating card is r26 on all four corners (was the notch [0,0,26,26])');
     // island-free-drag S3: compact is the disc (40x32, r16 on ALL four corners), so it reads as a circle wherever it floats
     await ui.page.evaluate(() => window.__islandSetState('compact')); await ui.page.waitForTimeout(1500);
     const compactRadii = await ui.page.evaluate(() => { const c = getComputedStyle(document.getElementById('island')); return [c.borderTopLeftRadius, c.borderTopRightRadius, c.borderBottomRightRadius, c.borderBottomLeftRadius].map(parseFloat); });

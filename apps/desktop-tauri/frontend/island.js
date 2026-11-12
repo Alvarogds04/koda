@@ -48,16 +48,17 @@
   // island-free-drag S3 (human: «que no aparezca la barra y que directamente sea nada más el circulito»): the compact island is
   // Koda's disc and nothing else — 40x32, the same box the bare pill already drew (island-layout.js COMPACT_DOT_W/H = geometry::
   // COMPACT_DOT). No activity line, no minis, no «Responder», in NO compact state. #clay is translated -50% by the vendor sheet, so
-  // clayX is its CENTRE: the disc's centre. The expanded island keeps Coucou's notch geometry untouched.
+  // clayX is its CENTRE: the disc's centre. The expanded island keeps Coucou's sizes; its shape is the floating card (r26 all round).
   const COMPACT = { w: 40, h: 32, r: 16, gap: 0, clay: 23, clayX: 20, drop: 1 };
   // S10 (L19): Coucou's own bot placement (core/layout.ts VIEW_LAYOUTS): overview botX 68 / diameter 58,
   // approval, question, error and finished botX 62 / diameter 56, centred on the 84pt card row
   // (cy 101 from the island top). The box is diameter * 128/112 because the engine draws ~112 of 128
   // viewBox units; only scale/position change, the engine is frozen. `cy` is the visible blob centre.
-  // S10 (L24, «Notch pegado arriba como Coucou»): the expanded island is stuck to the top edge of the screen (gap 0) with
-  // Coucou's corners 0 0 14 14; Rust pins every view with geometry::island_window_rect.
-  const GAP_TOP = 0; // S29 (human: «No lo separes, me gusta que esté pegada»): the shell is flush to the top edge again
-  const OVERVIEW = { w: 720, h: 150, r: 26, gap: 0, clay: 64, clayX: 598, cy: 74 }; // HU-057 Nusa notch (bottom corners only)
+  // isla-cualquier-lado S1/S5 (human: «El nocth ya no será anclado como sale en la release 0.2»): the expanded island is a floating
+  // card, r26 on all four corners, that sits flush with its anchored edge of the native window; the 12 px between the card and the
+  // work-area edge belong to the window's placement (geometry::EDGE_GAP), so the page adds no offset of its own.
+  const GAP_TOP = 0; // the card's offset from the window edge it is anchored on (was S29's «flush to the screen's top edge»)
+  const OVERVIEW = { w: 720, h: 150, r: 26, gap: 0, clay: 64, clayX: 598, cy: 74 }; // HU-057 Nusa body, r26 on every corner
   const QUESTION_H = 224; // default; a long question grows it (abito:question-size), capped by the fixed window
   let questionH = QUESTION_H;
   let compactW = COMPACT.w; // S3: the compact island IS the disc; the layout model's width is advisory and never widens it
@@ -177,7 +178,9 @@
   let mode = 'idle';    // 'idle' | 'spring' | 'shrink'
   let t0 = 0, p0 = 0, last = 0, raf = 0;
   let settledPhase = null; // #439: the landed phase this animation reached (see O.viewPhase)
-  const edge = 'top';   // fixed to the work area's top edge
+  // isla-cualquier-lado S1: the edge the expanded card is anchored on (geometry::growth_edge, pushed by Rust with the phase): 'top' in
+  // the upper half of the screen (grows down), 'bottom' in the lower half (grows up). Horizontal placement never changes the shape.
+  let edge = 'top';
   // U1: second channel, 0 = overview, 1 = chat (same contract motion).
   const q = { x: 0, v: 0, target: 0, mode: 'idle', t0: 0, x0: 0, last: 0 };
 
@@ -256,10 +259,13 @@
     const QT = window.AbitoQuestionToast, withToast = (shape) => (QT && toastShown ? QT.shapeWithToast(shape, true) : shape);
     reportShape(withToast([lerp(compactW, lerp(OVERVIEW.w, CHAT.w, q.target), target),
       lerp(COMPACT.h, lerp(overviewHeight, CHAT.h, q.target), target) + GAP_TOP]), withToast([w, h + GAP_TOP]), mode === 'idle' && q.mode === 'idle');
-    // corners (HU-057): the compact pill is r16 on all four; the expanded island is the Nusa notch, square on top (the ears are
-    // drawn by island-nusa-mount.js) and r26 (OVERVIEW.r) at the bottom.
-    const rBottom = lerp(COMPACT.r, OVERVIEW.r, p), rTop = lerp(COMPACT.r, 0, p); // the disc is round on all four corners; the notch is square on top
+    // corners (isla-cualquier-lado S1): the disc is r16 on all four corners and the floating card r26 (OVERVIEW.r) on all four;
+    // no corner is square and nothing draws ears any more.
+    const radius = lerp(COMPACT.r, OVERVIEW.r, p);
     const gap = lerp(COMPACT.gap, OVERVIEW.gap, p);
+    // a card anchored on its bottom edge stands on the window's bottom and grows up; collapsing hands the disc back to the window
+    // top at once (Rust returns the window to the disc's spot with the collapse)
+    const anchorBottom = edge === 'bottom' && target === 1;
     // the question card is 148 high (200 island): the character centres on it, 15px lower than on the 108 cards
     const ovBase = questionShown ? { ...OVERVIEW_CARD, cy: OVERVIEW_CARD.cy + (questionH - LEGACY_CARD_H) / 2 } : cardShown ? OVERVIEW_CARD : OVERVIEW;
     // the confirmed finished-notice lane (pane starts at x=108) uses the small R6 too, or the 128px blob covers the pane
@@ -267,9 +273,9 @@
     const cs = lerp(COMPACT.clay, ov.clay, p);
     put(island, 'width', w + 'px');
     put(island, 'height', h + 'px');
-    put(island, 'borderRadius', `${rTop}px ${rTop}px ${rBottom}px ${rBottom}px`);
-    put(island, 'top', gap + 'px');
-    put(island, 'bottom', 'auto');
+    put(island, 'borderRadius', `${radius}px ${radius}px ${radius}px ${radius}px`);
+    put(island, 'top', anchorBottom ? 'auto' : gap + 'px');
+    put(island, 'bottom', anchorBottom ? gap + 'px' : 'auto');
     // R6 is only scaled and positioned (never redrawn): centred in the
     // overview, small at the left of the header in the chat view.
     const csv = lerp(cs, CHAT.clay, q.x);
@@ -375,7 +381,8 @@
   }
 
   // Called from Rust (WebviewWindow::eval) after every core toggle.
-  function setPhase(phase) {
+  function setPhase(phase, nextEdge) {
+    if (nextEdge === 'top' || nextEdge === 'bottom') edge = nextEdge; // anything else keeps the last edge Rust sent
     settledPhase = null; // a new transition never inherits the previous latch
     const t = phase === 'overview' ? 1 : 0;
     target = t;

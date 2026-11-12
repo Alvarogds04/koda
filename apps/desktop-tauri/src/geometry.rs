@@ -1,5 +1,5 @@
 //! Pure island geometry. Native rectangles are physical pixels; page/input-shape
-//! dimensions are logical pixels. Every view shares one top-centred native window.
+//! dimensions are logical pixels. Every view shares one native window, placed top-centre until the human drags it.
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Rect { pub x: i32, pub y: i32, pub w: i32, pub h: i32 }
@@ -8,9 +8,60 @@ impl Rect {
     pub fn bottom(&self) -> i32 { self.y + self.h }
 }
 
-/// The page always hangs from Top. Bottom remains part of the read-back vocabulary.
+/// The edge the expanded card is anchored on (isla-cualquier-lado S1, design/isla-cualquier-lado/02-tarjeta-flotante.html): Top grows
+/// down, Bottom grows up. There are no Left/Right edges: horizontal placement never changes the card's shape.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Edge { #[default] Top, Bottom }
+
+/// Logical px the expanded card keeps from every work-area edge (artboard 02: «margen mínimo 12 a los bordes»). The compact disc
+/// is exempt: it may touch any edge (island-free-drag S3).
+pub const EDGE_GAP: i32 = 12;
+
+/// The growth rule of artboard 02: a card whose centre is in the upper half of its monitor's work area hangs from its top edge
+/// and grows down; in the lower half it stands on its bottom edge and grows up. The exact midpoint is Top. Same unit for both
+/// rectangles (physical px); compared doubled so a half-pixel centre is exact.
+pub fn growth_edge(card: Rect, area: Rect) -> Edge {
+    let centre2 = 2 * i64::from(card.y) + i64::from(card.h);
+    let middle2 = 2 * i64::from(area.y) + i64::from(area.h);
+    if centre2 <= middle2 { Edge::Top } else { Edge::Bottom }
+}
+
+/// `area` shrunk by `gap` on every side, or `area` itself when it is too small to give the gap up (being on screen wins).
+fn inset(area: Rect, gap: i32) -> Rect {
+    if gap <= 0 || area.w <= 2 * gap || area.h <= 2 * gap { return area; }
+    Rect { x: area.x + gap, y: area.y + gap, w: area.w - 2 * gap, h: area.h - 2 * gap }
+}
+fn edge_gap(scale: f64) -> i32 { (f64::from(EDGE_GAP) * valid_scale(scale)).round() as i32 }
+
+/// Where a released drag leaves the island (island_move_end), as the disc spot to save and the edge to lay the card out for.
+/// `window` is the native window the human released (physical px); `edge` the one it was laid out for; `card_h` the open card's
+/// logical height. Compact, the window's top-left is the spot. Open, the CARD stays exactly where it was seen: it is read from the
+/// window for `edge`, the growth rule picks the edge for that card, and the spot is its top (Top) or one disc above its bottom
+/// (Bottom), so placing the open island at the spot rebuilds the released card without a jump. The edge returned is the one the
+/// placement derives from the spot (growth_edge_at), so the two never disagree.
+pub fn drop_spot(window: Rect, expanded: bool, edge: Edge, card_h: i32, area: Rect, scale: f64) -> ((i32, i32), Edge) {
+    let y = if expanded {
+        let (cw, ch) = scaled_size((OVERVIEW_VISIBLE.0, card_h.max(COMPACT_DOT.1)), scale);
+        let top = match edge { Edge::Top => window.y, Edge::Bottom => window.bottom() - ch };
+        match growth_edge(Rect { x: window.x, y: top, w: cw, h: ch }, area) {
+            Edge::Top => top,
+            Edge::Bottom => top + ch - scaled_size(COMPACT_DOT, scale).1,
+        }
+    } else { window.y };
+    ((window.x, y), growth_edge_at(y, area, scale))
+}
+/// The growth edge of the island whose disc spot (the window's top-left while compact) is at `origin_y`: the overview card
+/// opened downward from there is the reference, so the answer depends on where the human dropped the island and never flips
+/// between the plans of one expanded card (physical px).
+pub fn growth_edge_at(origin_y: i32, area: Rect, scale: f64) -> Edge {
+    let (w, h) = scaled_size(OVERVIEW_VISIBLE, scale);
+    growth_edge(Rect { x: area.x, y: origin_y, w, h }, area)
+}
+/// The disc spot of a native window laid out for `edge`: compact and Top windows start at it; a Bottom window stands on the
+/// disc's bottom edge, so its spot is one disc above the window's bottom.
+pub fn disc_origin_y(window: Rect, edge: Edge, scale: f64) -> i32 {
+    match edge { Edge::Top => window.y, Edge::Bottom => window.bottom() - scaled_size(COMPACT_DOT, scale).1 }
+}
 
 /// The whole compact island, in logical px: Koda's DISC and nothing else — no bar, no activity line, no mini mascots, no «Responder»
 /// pill, in NO compact state (island-free-drag S3/S5: the human's «que no aparezca la barra y que directamente sea nada más el
@@ -89,12 +140,12 @@ pub fn island_window_rect(area: Rect, scale: f64) -> Rect {
 pub fn island_window_rect_h(area: Rect, scale: f64, height: i32) -> Rect {
     island_window_rect_on(area, area, scale, height)
 }
-/// Horizontally centred on `monitor` (the island hangs from the top centre of the SCREEN, like a notch), vertically from `area`
-/// (a top panel pushes it down) and kept inside `area`. A side dock shrinks the work area asymmetrically, so centring on the work
-/// area put the island 23 px off to one side on a 46 px dock.
+/// Horizontally centred on `monitor` (the default spot is the top centre of the SCREEN), vertically EDGE_GAP below the top of `area`
+/// (a top panel pushes it down; isla-cualquier-lado S1: the floating card no longer touches the edge) and kept inside `area`. A side
+/// dock shrinks the work area asymmetrically, so centring on the work area put the island 23 px off to one side on a 46 px dock.
 pub fn island_window_rect_on(monitor: Rect, area: Rect, scale: f64, height: i32) -> Rect {
     let (w, h) = scaled_size((ISLAND_WINDOW.0, height), scale);
-    let centred = Rect { x: monitor.x + (monitor.w - w) / 2, y: area.y, w, h };
+    let centred = Rect { x: monitor.x + (monitor.w - w) / 2, y: area.y + edge_gap(scale), w, h };
     clamp_rect(centred, area)
 }
 /// The scale to lay the island out with, or None while no monitor backs it. Under XWayland native scaling the X screen is drawn
@@ -116,13 +167,21 @@ pub fn island_window_rect_for(monitor: Option<Rect>, area: Rect, reported_scale:
 pub struct Placed { pub origin: (i32, i32), pub expanded: bool }
 /// The island at the spot the human dragged it to, kept usable inside `area`. Compact, only the DISC (hanging centred from the
 /// window's top) has to stay on screen, so the transparent rest of the window may leave it and the disc reaches every edge.
-/// Expanded, the whole window has to fit: near an edge it shifts just enough, and collapsing returns it to `origin`.
+/// Expanded, the card grows toward the free half of the screen (growth_edge_at): in the upper half the window hangs from the disc
+/// spot, in the lower half it stands on the disc's bottom edge so the card opens upward. Its column (the window's full height, the
+/// card's width) keeps EDGE_GAP from every work-area edge: near an edge it shifts just enough, and collapsing returns it to `origin`.
 pub fn island_window_rect_placed(placed: Placed, area: Rect, scale: f64, height: i32) -> Rect {
     let (w, h) = scaled_size((ISLAND_WINDOW.0, height), scale);
-    let keep = if placed.expanded { (w, h) } else { scaled_size(COMPACT_DOT, scale) };
+    let (keep, room, y) = if placed.expanded {
+        let y = match growth_edge_at(placed.origin.1, area, scale) {
+            Edge::Top => placed.origin.1,
+            Edge::Bottom => placed.origin.1 + scaled_size(COMPACT_DOT, scale).1 - h,
+        };
+        ((scaled_size(OVERVIEW_VISIBLE, scale).0, h), inset(area, edge_gap(scale)), y)
+    } else { (scaled_size(COMPACT_DOT, scale), area, placed.origin.1) };
     let (kw, kh) = (keep.0.min(w), keep.1.min(h));
     let side = (w - kw) / 2;
-    let kept = clamp_rect(Rect { x: placed.origin.0 + side, y: placed.origin.1, w: kw, h: kh }, area);
+    let kept = clamp_rect(Rect { x: placed.origin.0 + side, y, w: kw, h: kh }, room);
     Rect { x: kept.x - side, y: kept.y, w, h }
 }
 /// `island_window_rect_for`, or the dragged placement when the human moved the island. No monitor still means «wait».
@@ -169,9 +228,12 @@ mod tests {
     fn a_dragged_island_stays_where_it_was_released() {
         let placed = Placed { origin: (100, 500), expanded: false };
         assert_eq!(island_window_rect_placed(placed, area(), 1.0, ISLAND_WINDOW.1), Rect { x: 100, y: 500, w: 752, h: 340 });
-        // expanded at the same spot: the whole window fits, so nothing moves either
-        let open = Placed { origin: (100, 500), expanded: true };
-        assert_eq!(island_window_rect_placed(open, area(), 1.0, ISLAND_WINDOW.1), Rect { x: 100, y: 500, w: 752, h: 340 });
+        // expanded at the same spot in the upper half: the whole window fits, so nothing moves either
+        let open = Placed { origin: (100, 300), expanded: true };
+        assert_eq!(island_window_rect_placed(open, area(), 1.0, ISLAND_WINDOW.1), Rect { x: 100, y: 300, w: 752, h: 340 });
+        // isla-cualquier-lado S1: in the lower half the window stands on the disc's bottom edge (500 + 32) and the card grows up
+        let low = Placed { origin: (100, 500), expanded: true };
+        assert_eq!(island_window_rect_placed(low, area(), 1.0, ISLAND_WINDOW.1), Rect { x: 100, y: 500 + 32 - 340, w: 752, h: 340 });
     }
     #[test]
     fn a_compact_island_may_reach_any_edge_while_the_disc_stays_on_screen() {
@@ -185,10 +247,11 @@ mod tests {
     }
     #[test]
     fn an_expanded_island_near_an_edge_shifts_just_enough_to_show_everything() {
+        // isla-cualquier-lado S1: the card keeps EDGE_GAP (12) from the edges; the window's 16 px of side air may leave the screen
         let open = |origin| island_window_rect_placed(Placed { origin, expanded: true }, area(), 1.0, ISLAND_WINDOW.1);
-        assert_eq!(open((500, 1060)), Rect { x: 500, y: 1080 - 340, w: 752, h: 340 });
-        assert_eq!(open((-300, 500)), Rect { x: 0, y: 500, w: 752, h: 340 });
-        assert_eq!(open((1900, 500)), Rect { x: 1920 - 752, y: 500, w: 752, h: 340 });
+        assert_eq!(open((500, 1060)), Rect { x: 500, y: 1080 - 12 - 340, w: 752, h: 340 });
+        assert_eq!(open((-300, 300)), Rect { x: 12 - 16, y: 300, w: 752, h: 340 });
+        assert_eq!(open((1900, 300)), Rect { x: 1920 - 12 - 720 - 16, y: 300, w: 752, h: 340 });
         // a scaled screen keeps physical origins and scales the kept box
         let hidpi = island_window_rect_placed(Placed { origin: (5000, 5000), expanded: false }, area(), 2.0, ISLAND_WINDOW.1);
         // compact at scale 2: the 80x64 disc is what stays on screen; the 1504-wide window may hang off it
@@ -201,6 +264,127 @@ mod tests {
         let placed = Placed { origin: (100, 500), expanded: false };
         assert_eq!(island_window_rect_where(Some(monitor), area(), 1.0, ISLAND_WINDOW.1, Some(placed)), Some(Rect { x: 100, y: 500, w: 752, h: 340 }));
         assert_eq!(island_window_rect_where(None, area(), 1.0, ISLAND_WINDOW.1, Some(placed)), None, "no monitor: keep the last placement");
+    }
+
+    // --- isla-cualquier-lado S1/S5 (T5): the expanded island is a floating card that grows toward the free half of its screen ----------
+
+    #[test]
+    fn a_card_in_the_upper_half_grows_down_and_one_in_the_lower_half_grows_up() {
+        // work area y 32..1080: midpoint 556
+        let card = |y| Rect { x: 600, y, w: 720, h: 150 };
+        assert_eq!(growth_edge(card(44), area()), Edge::Top, "near the top: anchored on its top edge, grows down");
+        assert_eq!(growth_edge(card(300), area()), Edge::Top);
+        assert_eq!(growth_edge(card(700), area()), Edge::Bottom, "lower half: anchored on its bottom edge, grows up");
+        assert_eq!(growth_edge(card(1080 - 12 - 150), area()), Edge::Bottom);
+        // only the vertical centre counts: horizontal placement never changes the shape
+        for x in [-5000, 0, 1500, 5000] { assert_eq!(growth_edge(Rect { x, ..card(700) }, area()), Edge::Bottom); }
+    }
+    #[test]
+    fn a_card_centred_exactly_on_the_work_area_midpoint_grows_down() {
+        // centre 481 + 75 = 556 = 32 + 1048 / 2: the tie is pinned to Top (today's behaviour); one pixel lower is Bottom
+        assert_eq!(growth_edge(Rect { x: 600, y: 481, w: 720, h: 150 }, area()), Edge::Top);
+        assert_eq!(growth_edge(Rect { x: 600, y: 482, w: 720, h: 150 }, area()), Edge::Bottom);
+        // an odd height puts the centre on a half pixel: exact, no rounding toward either half
+        let odd = Rect { x: 0, y: 0, w: 100, h: 101 }; // midpoint 50.5
+        assert_eq!(growth_edge(Rect { x: 0, y: 0, w: 40, h: 101 }, odd), Edge::Top, "centre 50.5 == midpoint 50.5");
+        assert_eq!(growth_edge(Rect { x: 0, y: 1, w: 40, h: 100 }, odd), Edge::Bottom, "centre 51 > 50.5");
+    }
+    #[test]
+    fn the_growth_edge_is_read_on_the_cards_own_monitor_even_with_a_negative_origin() {
+        // a secondary monitor above-left of the primary: work area y -1080..0, midpoint -540
+        let second = Rect { x: -1920, y: -1080, w: 1920, h: 1040 }; // a 40 px bottom panel: midpoint -560
+        let card = |y| Rect { x: -1500, y, w: 720, h: 150 };
+        assert_eq!(growth_edge(card(-1068), second), Edge::Top);
+        assert_eq!(growth_edge(card(-635), second), Edge::Top, "centre -560 is the midpoint");
+        assert_eq!(growth_edge(card(-634), second), Edge::Bottom);
+        assert_eq!(growth_edge(card(-200), second), Edge::Bottom, "near its own bottom, although above the primary's midpoint");
+        // a physical-pixel monitor at scale 2 to the right: the rule is the same on physical px
+        let hidpi = Rect { x: 1920, y: 0, w: 3840, h: 2096 };
+        assert_eq!(growth_edge(Rect { x: 2400, y: 1500, w: 1440, h: 300 }, hidpi), Edge::Bottom);
+        assert_eq!(growth_edge(Rect { x: 2400, y: 24, w: 1440, h: 300 }, hidpi), Edge::Top);
+    }
+    #[test]
+    fn an_expanded_card_keeps_12px_from_every_work_area_edge_while_the_disc_may_touch_them() {
+        assert_eq!(EDGE_GAP, 12);
+        let open = |origin| island_window_rect_placed(Placed { origin, expanded: true }, area(), 1.0, ISLAND_WINDOW.1);
+        let side = (ISLAND_WINDOW.0 - OVERVIEW_VISIBLE.0) / 2; // 16 px of transparent air each side of the 720 card
+        for origin in [(-5000, -5000), (5000, 5000), (-5000, 5000), (5000, -5000), (500, 32), (500, 1060), (0, 500), (1200, 500)] {
+            let w = open(origin);
+            let (left, right) = (w.x + side, w.right() - side);
+            assert!(left >= 12 && right <= 1920 - 12, "{origin:?}: card x {left}..{right} keeps 12 px from the sides");
+            assert!(w.y >= 32 + 12 && w.bottom() <= 1080 - 12, "{origin:?}: window y {}..{} keeps 12 px from the top and bottom", w.y, w.bottom());
+        }
+        assert_eq!(open((-5000, -5000)), Rect { x: 12 - side, y: 44, w: 752, h: 340 }, "top-left corner: the card is exactly 12 px in");
+        assert_eq!(open((5000, 5000)), Rect { x: 1920 - 12 - 720 - side, y: 1080 - 12 - 340, w: 752, h: 340 });
+        // well inside the work area nothing moves (upper half: the window hangs from the disc spot)
+        assert_eq!(open((100, 300)), Rect { x: 100, y: 300, w: 752, h: 340 });
+        // the gap is logical: 24 physical px at scale 2
+        let hidpi = island_window_rect_placed(Placed { origin: (-5000, -5000), expanded: true }, area(), 2.0, ISLAND_WINDOW.1);
+        assert_eq!((hidpi.x + 32, hidpi.y), (24, 32 + 24));
+        // compact: the disc still reaches every edge (island-free-drag S3)
+        let compact = island_window_rect_placed(Placed { origin: (500, -5000), expanded: false }, area(), 1.0, ISLAND_WINDOW.1);
+        assert_eq!(compact.y, 32);
+    }
+    #[test]
+    fn a_card_dropped_in_the_lower_half_opens_upward_from_the_discs_bottom_edge() {
+        let open = |y| island_window_rect_placed(Placed { origin: (100, y), expanded: true }, area(), 1.0, ISLAND_WINDOW.1);
+        // the disc's bottom edge (y + 32) is where the card stands: the window bottom
+        for y in [520, 700, 900] { assert_eq!(open(y).bottom(), y + 32, "disc at {y}"); }
+        // a disc on the bottom edge: the card keeps its 12 px
+        assert_eq!(open(1080 - 32).bottom(), 1080 - 12);
+        // the edge is the same function of the spot both ways: Top hangs from the spot, Bottom ends one disc below it
+        for y in [100, 481, 482, 700] {
+            let edge = growth_edge_at(y, area(), 1.0);
+            assert_eq!(disc_origin_y(open(y), edge, 1.0), y, "spot {y} ({edge:?}) round-trips");
+        }
+        assert_eq!(growth_edge_at(481, area(), 1.0), Edge::Top); assert_eq!(growth_edge_at(482, area(), 1.0), Edge::Bottom);
+        // a taller (question) window still stands on the disc's bottom edge
+        assert_eq!(island_window_rect_placed(Placed { origin: (100, 900), expanded: true }, area(), 1.0, 500).bottom(), 932);
+        // scale 2: 64 px disc, 680 px window
+        let hidpi = island_window_rect_placed(Placed { origin: (100, 1500), expanded: true }, Rect { x: 0, y: 0, w: 3840, h: 2160 }, 2.0, ISLAND_WINDOW.1);
+        assert_eq!((hidpi.y, hidpi.bottom()), (1500 + 64 - 680, 1564));
+    }
+    #[test]
+    fn dropping_an_open_card_keeps_it_where_it_was_released_and_round_trips_through_the_placement() {
+        // island_move_end: the window the human released, laid out for `edge`, gives back the disc spot to save; placing the open
+        // island at that spot rebuilds exactly the released window (no jump), and the edge it reports is the one to lay out for.
+        let h = ISLAND_WINDOW.1;
+        let again = |spot: (i32, i32), height| island_window_rect_placed(Placed { origin: spot, expanded: true }, area(), 1.0, height);
+        // compact: the window's top-left IS the spot
+        assert_eq!(drop_spot(Rect { x: 300, y: 900, w: 752, h }, false, Edge::Top, 150, area(), 1.0), ((300, 900), Edge::Bottom));
+        assert_eq!(drop_spot(Rect { x: 300, y: 100, w: 752, h }, false, Edge::Bottom, 150, area(), 1.0), ((300, 100), Edge::Top));
+        // an open lower-half card dragged within the lower half: the spot is one disc above the window bottom, nothing moves
+        let low = Rect { x: 300, y: 600, w: 752, h };
+        let (spot, edge) = drop_spot(low, true, Edge::Bottom, 150, area(), 1.0);
+        assert_eq!((spot, edge), ((300, 600 + h - 32), Edge::Bottom));
+        assert_eq!(spot.1, disc_origin_y(low, Edge::Bottom, 1.0));
+        assert_eq!(again(spot, h), low, "lower half: the released window comes back unchanged");
+        // an open upper-half card: the spot is the window top
+        let high = Rect { x: 300, y: 200, w: 752, h };
+        assert_eq!(drop_spot(high, true, Edge::Top, 150, area(), 1.0), ((300, 200), Edge::Top));
+        assert_eq!(again((300, 200), h), high);
+        // dragged ACROSS the midpoint: the card stays where it was seen and the edge flips. A bottom-anchored card dropped high
+        // (card 150 at y 100..250) now hangs from its own top; a top-anchored card dropped low stands on its own bottom.
+        let (spot, edge) = drop_spot(Rect { x: 300, y: 250 - h, w: 752, h }, true, Edge::Bottom, 150, area(), 1.0);
+        assert_eq!((spot, edge), ((300, 100), Edge::Top));
+        assert_eq!(again(spot, h).y, 100, "the card's top stays at 100");
+        let (spot, edge) = drop_spot(Rect { x: 300, y: 800, w: 752, h }, true, Edge::Top, 150, area(), 1.0);
+        assert_eq!((spot, edge), ((300, 800 + 150 - 32), Edge::Bottom));
+        assert_eq!(again(spot, h).bottom(), 950, "the card's bottom stays at 950");
+        // the open card's real height (a 240 chat) is what stays put when it crosses
+        let (spot, edge) = drop_spot(Rect { x: 300, y: 700, w: 752, h }, true, Edge::Top, 240, area(), 1.0);
+        assert_eq!((spot, edge), ((300, 700 + 240 - 32), Edge::Bottom));
+        // scale 2: the disc is 64 physical px
+        let big = Rect { x: 0, y: 0, w: 3840, h: 2160 };
+        let w2 = Rect { x: 100, y: 1200, w: 1504, h: 680 };
+        assert_eq!(drop_spot(w2, true, Edge::Bottom, 150, big, 2.0), ((100, 1880 - 64), Edge::Bottom));
+    }
+    #[test]
+    fn the_default_placement_leaves_12px_between_the_work_area_top_and_the_card() {
+        assert_eq!(island_window_rect(area(), 1.0).y, 32 + 12);
+        assert_eq!(island_window_rect(Rect { x: 0, y: 64, w: 3840, h: 2096 }, 2.0).y, 64 + 24, "12 logical px at scale 2");
+        let monitor = Rect { x: 0, y: 0, w: 1920, h: 1080 };
+        assert_eq!(island_window_rect_for(Some(monitor), monitor, 1.0, ISLAND_WINDOW.1).map(|r| r.y), Some(12));
     }
 
     #[test]
@@ -352,12 +536,12 @@ mod tests {
         let a = area();
         let r = island_window_rect(a, 1.0);
         assert_eq!((r.w, r.h), (752, 340));
-        assert_eq!(r.y, a.y, "stuck to the top edge");
+        assert_eq!(r.y, a.y + EDGE_GAP, "isla-cualquier-lado S1: 12 px below the top edge (was flush)");
         assert_eq!(r.x + r.w / 2, a.x + a.w / 2, "centred on the work area");
         // physical px at another scale
         let big = Rect { x: 0, y: 64, w: 3840, h: 2096 };
         let r2 = island_window_rect(big, 2.0);
-        assert_eq!((r2.w, r2.h, r2.y), (1504, 680, 64));
+        assert_eq!((r2.w, r2.h, r2.y), (1504, 680, 64 + 24));
         // a work area smaller than the window shrinks it onto the screen, never off it
         let tiny = Rect { x: 10, y: 20, w: 500, h: 300 };
         let r3 = island_window_rect(tiny, 1.0);
@@ -419,10 +603,10 @@ mod tests {
         let r = island_window_rect_on(monitor, work, 1.0, ISLAND_WINDOW.1);
         assert_eq!(r.x + r.w / 2, 960, "window centre = monitor centre");
         assert_eq!((r.x, r.w), (584, 752));
-        assert_eq!(r.y, work.y, "the top still honours the work area (a top panel pushes it down)");
+        assert_eq!(r.y, work.y + EDGE_GAP, "the top still honours the work area (a top panel pushes it down), 12 px below it");
         // a top panel: y comes from the work area, x from the monitor
         let top = island_window_rect_on(monitor, Rect { x: 0, y: 32, w: 1920, h: 1048 }, 1.0, ISLAND_WINDOW.1);
-        assert_eq!((top.x, top.y), (584, 32));
+        assert_eq!((top.x, top.y), (584, 32 + 12));
         // a second monitor to the right keeps its own centre
         let second = Rect { x: 1920, y: 0, w: 2560, h: 1440 };
         let r2 = island_window_rect_on(second, second, 1.0, ISLAND_WINDOW.1);
@@ -467,7 +651,7 @@ mod tests {
             let r = island_window_rect_for(Some(monitor), monitor, scale, ISLAND_WINDOW.1).expect("a monitor is there");
             assert_eq!((r.w, r.h), size, "logical 752x340 at scale {scale}");
             assert_eq!(r.x + r.w / 2, centre, "centred on the monitor's X geometry at scale {scale}");
-            assert_eq!(r.y, monitor.y);
+            assert_eq!(r.y, monitor.y + (f64::from(EDGE_GAP) * scale) as i32, "12 logical px below the top at scale {scale}");
             assert_eq!(r.w as f64 / scale, 752.0, "the same LOGICAL width whatever the scale");
         }
     }
