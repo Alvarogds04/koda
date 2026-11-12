@@ -12,7 +12,7 @@ const fs = require('node:fs');
 const net = require('node:net');
 const path = require('node:path');
 const { handleCodexHook: raw_handleCodexHook, codexToolDescription, ALLOW, DENY } = require('../src/codex.cjs');
-const { parseArgs, watchdogMs, startWatchdog } = require('../src/hook-common.cjs');
+const { parseArgs, watchdogMs, startWatchdog, CODEX_MAX_ISLAND_WAIT_MS } = require('../src/hook-common.cjs');
 const { IslandClient } = require('../src/client.cjs');
 const { fakeReceiver, transportOf, viaPipe } = require('./fake-receiver.cjs');
 const handleCodexHook = viaPipe(raw_handleCodexHook);
@@ -116,8 +116,10 @@ test('a silent island (accepts, never answers the handshake) cannot make the hoo
   assertSilent(r);
 });
 
-test('the island wait follows --timeout-sec: default 30 s, capped at 60 s, too short => no card and nothing printed', async t => {
-  for (const [argv, budget] of [[[], 30000], [['--timeout-sec', '125'], 60000], [['--timeout-sec', '3600'], 60000]]) {
+// K2-08 T3 (S2, S5): the installed entry gives the hook 120 s, so Codex's card waits up to 115 s (the 5 s margin), not
+// Claude's 60 s cap; anything longer is still capped at those 115 s.
+test('the island wait follows --timeout-sec: default 30 s, 120 s => 115 s, capped at 115 s, too short => no card and nothing printed', async t => {
+  for (const [argv, budget] of [[[], 30000], [['--timeout-sec', '120'], 115000], [['--timeout-sec', '125'], 115000], [['--timeout-sec', '3600'], 115000]]) {
     const rcv = await fakeReceiver(t, { questions: true });
     const p = answerer(rcv, 'deny');
     const r = await call('permission-request', {}, envOf(rcv), { argv });
@@ -149,7 +151,7 @@ test('a request the island cannot show in full gets no «Aprobar»: Rechazar + D
   }
 });
 
-test('apply_patch stays lossy until the file preview lands (T4): fixed label, no «Aprobar», the patch never travels', async t => {
+test('apply_patch the island cannot represent (K2-08 T4): only «apply_patch», no «Aprobar», the patch never travels', async t => {
   for (const value of ['allow', 'terminal', 'deny']) {
     const rcv = await fakeReceiver(t, { questions: true });
     const p = answerer(rcv, value);
@@ -157,7 +159,7 @@ test('apply_patch stays lossy until the file preview lands (T4): fixed label, no
     await p;
     const q = questionOf(rcv);
     assert.equal(q.agent, 'codex');
-    assert.equal(q.text, 'Codex pide permiso para apply_patch (edición de archivo) (detalles solo en la terminal; decidir en la terminal)');
+    assert.equal(q.text, 'Codex pide permiso para apply_patch (solicitud no representable; detalles solo en la terminal; decidir en la terminal)');
     assert.deepEqual(q.options, [REJECT, TERMINAL]);
     assert.equal(r.stdout, value === 'deny' ? DENY : '');
     assert.doesNotMatch(wireOf(rcv), /SECRETPATCH/);
@@ -281,9 +283,14 @@ test('the card text is redacted and never carries secrets; hidden secrets mean n
     { tool_input: { command: 'curl -H "Authorization: Bearer sk-abcdefghijklmnopqrstuvwxyz" https://x' }, lossy: false },
     { tool_input: { command: 'export API_TOKEN=SECRETTOKEN123; ls' }, lossy: null },
     { tool_input: { command: 'cat /home/dev/.ssh/id_rsa' }, lossy: true },
-    { tool_name: 'apply_patch', tool_input: { command: '*** Update File: /home/dev/SECRETDIR/a.txt\n+SECRETLINE' }, lossy: true },
+    // K2-08 T4 (3a): a patch path outside the session folder is SHOWN, like Claude's, but its change is not and there is no
+    // «Aprobar»; a path that itself looks like a secret stays hidden by the existing R9 rule (nothing of it on the card).
+    { tool_name: 'apply_patch', tool_input: { command: '*** Begin Patch\n*** Update File: /home/dev/proj/a.txt\n-a\n+API_KEY=SECRETLINE\n*** End Patch' },
+      lossy: true, shows: path.resolve(cwd, '/home/dev/proj/a.txt') },
+    { tool_name: 'apply_patch', tool_input: { command: '*** Begin Patch\n*** Update File: /home/dev/SECRETDIRabcdefghijklmnopqrstuvwxyzABCDEFGH0123456789/a.txt\n-a\n+SECRETLINE\n*** End Patch' },
+      lossy: true, hidden: true },
   ];
-  for (const { lossy, ...h } of cases) {
+  for (const { lossy, shows, hidden, ...h } of cases) {
     const rcv = await fakeReceiver(t, { questions: true });
     const p = answerer(rcv, 'deny');
     const r = await call('permission-request', h, envOf(rcv));
@@ -294,6 +301,8 @@ test('the card text is redacted and never carries secrets; hidden secrets mean n
     assert.ok([...q.text].length <= 500, 'the text stays inside the question bound');
     if (lossy === true) assert.deepEqual(q.options, [REJECT, TERMINAL], JSON.stringify(h));
     if (lossy === false) assert.match(q.text, /\(secretos ocultos\)$/);
+    if (shows) assert.match(q.text, new RegExp(`^Codex pide permiso para apply_patch: ${JSON.stringify(shows).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} \\((fuera de la carpeta de sesión|ruta no verificable); detalles solo en la terminal; decidir en la terminal\\)$`), 'the outside path is shown, never approvable (macOS: /home/dev cannot be resolved)');
+    if (hidden) assert.equal(q.text, 'Codex pide permiso para apply_patch (ruta no segura (secretos ocultos); detalles solo en la terminal; decidir en la terminal)');
   }
 });
 
@@ -349,6 +358,8 @@ test('parseArgs / watchdogMs / startWatchdog stay the CLI contract (old installe
   assert.deepEqual(parseArgs(['--timeout-sec', '12']), { timeoutSec: 12 });
   for (const bad of [['--timeout-sec', '0'], ['--timeout-sec', 'x'], ['--nope'], 'x']) assert.equal(parseArgs(bad), null);
   assert.equal(watchdogMs('permission-request', 35), 35000, 'the one event that may hold the island open');
+  // T3: with the installed 120 s the watchdog still fires 5 s after the island deadline (115 s), never inside it.
+  assert.equal(watchdogMs('permission-request', 120) - CODEX_MAX_ISLAND_WAIT_MS, 5000);
   assert.equal(watchdogMs('stop', 35), 15000);
   const noticeWatchdog = watchdogMs('pre-tool-use', 35);
   assert.ok(Number.isInteger(noticeWatchdog) && noticeWatchdog > 0 && noticeWatchdog <= 35000, 'a notice is always bounded');
@@ -359,8 +370,15 @@ test('parseArgs / watchdogMs / startWatchdog stay the CLI contract (old installe
   assert.equal(typeof fired, 'number');
 });
 
-test('codexToolDescription: apply_patch is never shown as a patch; only Bash and apply_patch are answerable at all', () => {
-  assert.deepEqual(codexToolDescription('apply_patch', { command: '*** Begin Patch\n+SECRET\n*** End Patch' }), { text: 'apply_patch (file edit)', lossy: true });
-  assert.equal(codexToolDescription('Bash', { command: 'ls' }).lossy, false);
-  for (const tool of ['mcp__srv__ping', 'Write', 'WebFetch', 'exec_command']) assert.equal(codexToolDescription(tool, {}), null, tool);
+test('codexToolDescription(name, input, cwd): apply_patch gets the R9 file preview; only Bash and apply_patch are answerable at all', () => {
+  assert.deepEqual(codexToolDescription('apply_patch', { command: '*** Begin Patch\n+SECRET\n*** End Patch' }, cwd),
+    { filePreview: true, text: 'apply_patch', lossy: true, reason: 'solicitud no representable' }, 'a patch outside the grammar shows nothing of itself');
+  // an absolute path outside the folder (a relative one would carry this checkout's own path, which may look like a secret).
+  // /home/dev does not exist on macOS runners, so the reason may be «ruta no verificable» there: both show the path, neither is approvable.
+  const outside = codexToolDescription('apply_patch', { command: '*** Begin Patch\n*** Delete File: /home/dev/proj/fuera.txt\n*** End Patch' }, cwd);
+  assert.deepEqual({ ...outside, reason: undefined },
+    { filePreview: true, text: `apply_patch: borrar ${JSON.stringify(path.resolve(cwd, '/home/dev/proj/fuera.txt'))}`, lossy: true, reason: undefined });
+  assert.ok(['fuera de la carpeta de sesión', 'ruta no verificable'].includes(outside.reason), outside.reason);
+  assert.equal(codexToolDescription('Bash', { command: 'ls' }, cwd).lossy, false);
+  for (const tool of ['mcp__srv__ping', 'Write', 'WebFetch', 'exec_command']) assert.equal(codexToolDescription(tool, {}, cwd), null, tool);
 });

@@ -1600,7 +1600,7 @@
     if (show !== questionShown) { questionShown = show; render(); }
     paintCompactFlag();
     if (event.detail && event.detail.reveal) {
-      // #266: a genuinely new question reveals. With the toast the island stays as it is (the human opens it from the toast).
+      // #266 / island-free-drag S5: a genuinely new question opens a compact island; a hidden one gets the toast (opened from it).
       const T = window.AbitoQuestionToast;
       if (!(T && T.revealByToast({ phase: capsule.dataset.phase }))) revealIsland(true);
     }

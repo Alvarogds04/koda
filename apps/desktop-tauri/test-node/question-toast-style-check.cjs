@@ -91,9 +91,13 @@ async function layout() {
     const r = await H.open({ question: q === 'codex' ? 'plain' : q, theme, quick: true });
     try {
       await r.page.evaluate(() => window.__islandSetState('compact')); await r.page.waitForTimeout(700);
+      // isla-cualquier-lado (L21, human «1»): a NEW question opens the folded island, so the toast keeps only the phase it cannot
+      // classify. The disc folded just above is where it hangs from.
+      await H.unknownPhase(r.page);
       if (q === 'codex') await r.page.evaluate(({ id }) => window.__emit('question:state', { available: true, queued: [], queued_count: 0, deliveries: [], notice: null,
         pending: { id, kind: 'question', agent: 'codex', agent_label: 'Codex', project_name: 'api', text: '¿Qué editor preferís?', allow_free_text: false, options: [{ index: 0, label: 'vim', description: '' }, { index: 1, label: 'emacs', description: '' }], expires_at: Date.now() + 600000, free_text_max: 2000 } }), { id: '0b3a5c9e-8f27-4d11-9a0e-1c2d3e4f5a6b' });
-      // isla-cualquier-lado S3/S5 (T6): the folded disc is the trigger; data-edge-hidden is gone from the product.
+      // isla-cualquier-lado S3/S5 (T6, L21): the toast hangs from the folded disc when the phase cannot be classified (switched on
+      // above); data-edge-hidden is gone from the product.
       await r.page.waitForTimeout(2200);
       const m = await r.page.evaluate(() => {
         const t = document.getElementById('question-toast'), tb = t.getBoundingClientRect(), cs = e => getComputedStyle(e);

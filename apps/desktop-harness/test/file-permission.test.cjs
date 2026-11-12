@@ -4,6 +4,8 @@ const { offlineEnv, offlineDir, stubEndpoint } = require('./platform-env.cjs');
 const assert = require('node:assert/strict');
 const path = require('node:path');
 const os = require('node:os');
+const fs = require('node:fs');
+const { redactCommand } = require('../src/redact.cjs');
 const { handleClaudeHook: raw_handleClaudeHook, ALLOW } = require('../src/claude.cjs');
 const { handleCodexHook: raw_handleCodexHook } = require('../src/codex.cjs');
 const { describeToolDetailed } = require('../src/projection.cjs');
@@ -73,8 +75,13 @@ test('R10 i: Codex answers from the island in Spanish (K2-08 T1); only Bash and 
   assert.equal(r.q.text, 'Codex pide permiso para Bash: ls');
   assert.deepEqual(r.q.options.map(o => [o.value, o.label]), [['allow', 'Aprobar una vez'], ['deny', 'Rechazar']]);
   assert.equal(r.out.stdout, ALLOW);
-  // apply_patch is lossy until the file preview (T4): no allow, and a forged allow decides nothing
+  // apply_patch (K2-08 T4) uses the same R9 file preview: a patch outside the grammar or touching several files (1a) stays
+  // lossy, and a forged allow decides nothing. Approvable single-file cards: apply-patch.test.cjs (neutral session folder).
   lossy(await card('apply_patch', { command: '*** Begin Patch\n*** End Patch' }, handleCodexHook));
+  const many = await card('apply_patch', { command: '*** Begin Patch\n*** Add File: a.txt\n+a\n*** Delete File: b.txt\n*** End Patch' }, handleCodexHook);
+  lossy(many); assert.match(many.q.text, /^Codex pide permiso para apply_patch: varios archivos: .*\(varios archivos; detalles solo en la terminal/);
+  const outside = await card('apply_patch', { command: '*** Begin Patch\n*** Add File: /home/dev/proj/x.txt\n+not-shown\n*** End Patch' }, handleCodexHook);
+  lossy(outside); assert.ok(outside.q.text.includes(JSON.stringify(path.resolve(cwd, '/home/dev/proj/x.txt')))); assert.doesNotMatch(outside.q.text, /not-shown/);
   // Codex never reports Claude's file tools; a `Write` name is not ours to show: no card, nothing printed
   let asked = 0;
   const out = await handleCodexHook({ event: 'permission-request', env: offlineEnv('nonexistent-test'),
@@ -119,4 +126,41 @@ test('sensitivePath: Windows dot-directories are case-insensitive; Unix rule unc
   for (const p of ['C:\\p\\.GIT\\hooks\\pre-commit', 'C:\\p\\.Config\\x', 'C:\\p\\.Ssh\\k']) assert.equal(sensitivePath(p, 'win32'), true, p);
   for (const p of ['/p/.GIT/x', '/p/a\\.git\\x', '/p/.config\\x']) assert.equal(sensitivePath(p, 'linux'), false, p);
   assert.equal(sensitivePath('/p/.git/x', 'linux'), true);
+});
+// macOS paths start with /Users/<Name>: a session folder with a digit in it is a 40+ character run that mixes lower,
+// upper and digits, the shape of the base64-run secret rule. The session folder is not a secret; only what a
+// request adds below it is scanned.
+function macShapedSession() {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'KodaSession2-')));
+  const dir = path.join(root, 'Projects2026', 'ClientApp9', 'desktop');
+  fs.mkdirSync(dir, { recursive: true });
+  return { root, dir };
+}
+async function cardIn(dir, tool_name, tool_input) {
+  let q;
+  const out = await handleClaudeHook({ event: 'permission-request', env: offlineEnv('nonexistent-test'),
+    input: JSON.stringify({ cwd: dir, session_id: 'test', hook_event_name: 'PermissionRequest', tool_name, tool_input }),
+    clientFactory: () => ({ ask: async request => { q = request; return { status: 'answered', answer: { type: 'option', value: 'allow' } }; } }) });
+  assert.ok(q); normalizeRequest(q);
+  return { q, out };
+}
+test('a session folder shaped like a macOS path (mixed case, digits, 40+ chars) shows the exact path and permits allow', async t => {
+  const { root, dir } = macShapedSession(); t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  if (path.sep === '/') assert.ok(redactCommand(dir).redactions > 0, 'precondition: the folder alone matches the base64-run rule');
+  const r = await cardIn(dir, 'Write', { file_path: 'uno.txt', content: 'hola' });
+  assert.equal(r.out.stdout, ALLOW);
+  assert.ok(r.q.text.includes(JSON.stringify(path.join(dir, 'uno.txt'))));
+});
+test('below a macOS-shaped session folder, a secret-shaped relative path is still hidden and never allowed', async t => {
+  const { root, dir } = macShapedSession(); t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  // One 42-character segment: a run inside a single name is caught on every OS (a '/'-joined run only on POSIX).
+  const r = await cardIn(dir, 'Write', { file_path: 'Ab12Cd34Ef56Gh78Ij90Kl12Mn34Op56Qr78StUvWx', content: 'not-shown' });
+  lossy(r); assert.doesNotMatch(r.q.text, /not-shown|Qr78StUvWx/); assert.match(r.q.text, /secretos ocultos/);
+});
+// POSIX only: '\\' is not in the base64 alphabet, so on Windows a separator never joins a run (before or after secretPath).
+test('a 39-character mixed token directly below the session folder stays hidden (the boundary slash still counts)', { skip: path.sep !== '/' && 'POSIX separator rule (Windows twin: none, a backslash never joins a base64 run)' }, async t => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'plain.')));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const r = await cardIn(root, 'Write', { file_path: 'Ab12Cd34Ef56Gh78Ij90Kl12Mn34Op56Qr78StU', content: 'x' });
+  lossy(r); assert.match(r.q.text, /secretos ocultos/);
 });

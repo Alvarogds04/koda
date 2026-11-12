@@ -11,6 +11,10 @@ const { describeTool, describeToolDetailed, sanitizeText } = require('./projecti
 
 const MAX_STDIN_BYTES = 1024 * 1024;
 const DEFAULT_TIMEOUT_SEC = 35, STOP_WATCHDOG_MS = 15000, MAX_ISLAND_WAIT_MS = 60000;
+// K2-08 T3 (S2, S5): Codex's installed PermissionRequest entry gives the hook 120 s, so a Codex card may wait the hook
+// budget less the 5 s margin: 115 s. Codex only; Claude, Copilot and OpenCode keep MAX_ISLAND_WAIT_MS. The watchdog
+// (watchdogMs) still fires at the hook budget, 5 s after this deadline.
+const CODEX_MAX_ISLAND_WAIT_MS = 115000;
 const ALLOW = '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}\n';
 const DENY = JSON.stringify({ hookSpecificOutput: { hookEventName: 'PermissionRequest',
   decision: { behavior: 'deny', message: 'Denied from the Koda island by the user.' } } }) + '\n';
@@ -113,5 +117,5 @@ function mapResult(result, lossy) {
 }
 
 module.exports = { parseArgs, watchdogMs, startWatchdog, none, isObject, validCwd, toolDescription, defaultFactory, mapResult, optionSets, questionText,
-  MAX_STDIN_BYTES, DEFAULT_TIMEOUT_SEC, STOP_WATCHDOG_MS, MAX_ISLAND_WAIT_MS, ALLOW, DENY,
+  MAX_STDIN_BYTES, DEFAULT_TIMEOUT_SEC, STOP_WATCHDOG_MS, MAX_ISLAND_WAIT_MS, CODEX_MAX_ISLAND_WAIT_MS, ALLOW, DENY,
   IslandClient, formatNoDecision, resolveConfig, computeDeadline, sessionToken, sanitizeText };

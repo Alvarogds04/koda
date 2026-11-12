@@ -105,13 +105,17 @@ async function layout() {
       if (mode === 'media') await r.page.emulateMedia({ reducedMotion: 'reduce' });
       if (mode === 'attr') await r.page.evaluate(() => { document.documentElement.dataset.motion = 'reduce'; });
       await r.page.evaluate(() => window.__islandSetState('compact')); await r.page.waitForTimeout(700);
+      // isla-cualquier-lado (L21, human «1»): a NEW question opens the folded island, so the toast keeps only the phase it cannot
+      // classify. The disc folded just above is the shape it hangs from.
+      await H.unknownPhase(r.page);
       if (c.feed) await r.page.evaluate(p => window.__emit('question:state', p), c.feed);
       if (c.disconnect) {
         await r.page.evaluate(({ id }) => window.__emit('question:state', { available: true, queued: [], queued_count: 0, deliveries: [], notice: null,
           pending: { id, kind: 'question', agent: 'pi', agent_label: 'Pi', project_name: 'api', text: '¿Café o té?', allow_free_text: false, options: [{ index: 0, label: 'Café', description: '' }, { index: 1, label: 'Té', description: '' }], expires_at: Date.now() + 600000, free_text_max: 2000 } }), { id: ID });
         await r.page.waitForTimeout(100);
       }
-      // isla-cualquier-lado S3/S5 (T6): the folded disc IS the trigger (data-edge-hidden is gone); the toast hangs from the disc.
+      // isla-cualquier-lado S3/S5 (T6): the folded disc IS the shape the toast hangs from (data-edge-hidden is gone); since L21 the
+      // unknown phase switched on above is what still sends the question to it.
       const feedLate = async () => {
         if (c.arrival) await r.page.evaluate(d => document.dispatchEvent(new CustomEvent('abito:notice-arrival', { detail: d })), c.arrival);
         if (c.disconnect) await r.page.evaluate(() => window.__emit('question:state', { available: true, pending: null, queued: [], queued_count: 0, deliveries: [], notice: 'disconnected' }));

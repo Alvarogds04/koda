@@ -39,13 +39,19 @@ async function layout() {
       if (mode === 'media') await r.page.emulateMedia({ reducedMotion: 'reduce' });
       if (mode === 'attr') await r.page.evaluate(() => { document.documentElement.dataset.motion = 'reduce'; });
       await r.page.evaluate(() => window.__islandSetState('compact')); await r.page.waitForTimeout(700);
+      // isla-cualquier-lado (L21, human «1»): a NEW question opens the folded island, so the toast is the signal only for a phase it
+      // cannot classify. The disc (folded above) is what it hangs from; the phase is what still sends the question to the toast.
+      await H.unknownPhase(r.page);
+      // isla-cualquier-lado S3/S5 (T6): the toast hangs from the FOLDED disc, and L21 leaves it only the unknown phase, switched on
+      // above: the question fed here is the case that still shows it.
       if (c.feed) await r.page.evaluate(p => window.__emit('question:state', p), c.feed);
       if (c.disconnect) {
         await r.page.evaluate(({ id }) => window.__emit('question:state', { available: true, queued: [], queued_count: 0, deliveries: [], notice: null,
           pending: { id, kind: 'question', agent: 'pi', agent_label: 'Pi', project_name: 'api', text: '¿Café o té?', allow_free_text: false, options: [{ index: 0, label: 'Café', description: '' }, { index: 1, label: 'Té', description: '' }], expires_at: Date.now() + 600000, free_text_max: 2000 } }), { id: ID });
         await r.page.waitForTimeout(100);
       }
-      // isla-cualquier-lado S3/S5 (T6): the toast hangs from the FOLDED disc, so switching the island to compact above IS the trigger.
+      // isla-cualquier-lado S3/S5 (T6, L21): the toast hangs from the FOLDED disc, and only the phase switched on above — the one
+      // the toast cannot classify — still routes the question there.
       if (c.arrival) await r.page.evaluate(d => document.dispatchEvent(new CustomEvent('abito:notice-arrival', { detail: d })), c.arrival);
       if (c.disconnect) await r.page.evaluate(() => window.__emit('question:state', { available: true, pending: null, queued: [], queued_count: 0, deliveries: [], notice: 'disconnected' }));
       const tag = `${theme}/${c.name}/${mode}`;
@@ -91,11 +97,18 @@ async function disc() {
     try {
       await r.page.evaluate(e => window.__islandSetState('compact', e), edge);
       await r.page.waitForTimeout(1600);
+      // L21 («1»): compact alone no longer sends the question to the toast; the unknown phase is what still does.
+      await H.unknownPhase(r.page);
+      await r.page.evaluate(() => window.__emit('question:state', { available: true, queued: [], queued_count: 0, deliveries: [], notice: null, pending: null }));
+      await r.page.evaluate(({ id }) => window.__emit('question:state', { available: true, queued: [], queued_count: 0, deliveries: [], notice: null,
+        pending: { id, kind: 'question', agent: 'pi', agent_label: 'Pi', project_name: 'api', text: '¿Café o té?', allow_free_text: false,
+          options: [{ index: 0, label: 'Café', description: '' }, { index: 1, label: 'Té', description: '' }], expires_at: Date.now() + 600000, free_text_max: 2000 } }), { id: '0b3a5c9e-8f27-4d11-9a0e-1c2d3e4f5a6b' });
+      await r.page.waitForTimeout(2200);
       const m = await r.page.evaluate(() => {
         const t = document.getElementById('question-toast'), i = document.getElementById('island'), c = document.getElementById('capsule');
         const box = e => { const b = e.getBoundingClientRect(); return { t: b.top, b: b.bottom, l: b.left, r: b.right, w: b.width, h: b.height }; };
         const shape = k => box(t.querySelector('.q-toast-' + k));
-        return { hidden: t.hidden, edge: t.dataset.edge, expanded: t.dataset.expanded, phase: c.dataset.phase, capsule: box(c),
+        return { hidden: t.hidden, edge: t.dataset.edge, expanded: t.dataset.expanded, phase: c.getAttribute('data-phase'), capsule: box(c),
           toast: box(t), island: box(i), badge: box(t.querySelector('.q-toast-badge')), slot: box(t.querySelector('.q-toast-koda')),
           neck: shape('neck'), pill: shape('pill'), body: shape('bodyrect') };
       });

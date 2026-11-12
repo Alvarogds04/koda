@@ -837,18 +837,21 @@ fn persist_motion_override(app: &AppHandle, value: bool) {
 /// process exits before reaching `Builder::run`.
 pub(crate) fn restore(app: &AppHandle) {
     let state = app.state::<AppState>();
-    questionhost::with_pending(&state, |pending| {
-        if pending {
-            // Preserve phase, view and geometry; a second launch is not an answer.
-            let Some(win) = main_window(app) else { return };
-            let _ = win.unminimize();
-            show_on_top(&win);
-            sync_host_visible(&win);
-            publish(app, &state);
-            return;
-        }
-        restore_without_question(app, &state);
-    });
+    // Read the flag and release the transport lock first: publish() -> build_snapshot() locks
+    // `state.transport` again, and std's Mutex is not reentrant, so publishing inside
+    // with_pending hung the main thread (tray "Mostrar Koda", the toggle shortcut, a second
+    // launch). Lock order: host transport -> questions -> core/phase; publication follows unlock.
+    let pending = questionhost::with_pending(&state, |pending| pending);
+    if pending {
+        // Preserve phase, view and geometry; a second launch is not an answer.
+        let Some(win) = main_window(app) else { return };
+        let _ = win.unminimize();
+        show_on_top(&win);
+        sync_host_visible(&win);
+        publish(app, &state);
+        return;
+    }
+    restore_without_question(app, &state);
 }
 
 fn restore_without_question(app: &AppHandle, state: &AppState) {
@@ -2577,5 +2580,37 @@ mod main_thread_routing_tests {
                 "{action:?} must run inline on the main thread"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod restore_lock_order_tests {
+    // Structural pin (a live AppHandle is not available in unit tests): restore() must read the
+    // pending flag and drop the transport lock BEFORE publishing, because publish() ->
+    // build_snapshot() locks `state.transport` again and std's Mutex is not reentrant. Calling
+    // publish inside the with_pending closure hung the macOS main thread on tray "Mostrar Koda".
+    #[test]
+    fn restore_reads_the_pending_flag_before_publishing() {
+        let src = include_str!("main.rs");
+        let start = src.find("pub(crate) fn restore(app: &AppHandle)").expect("restore()");
+        let body = &src[start..start + src[start..].find("\n}\n").expect("end of restore()")];
+        assert!(body.contains("let pending = questionhost::with_pending(&state, |pending| pending);"),
+            "restore() must only read the flag inside with_pending");
+        assert_eq!(body.matches("with_pending(").count(), 1);
+    }
+}
+
+#[cfg(test)]
+mod island_window_config_tests {
+    // island-free-drag S3: «Un clic en el círculo abre la isla». The island never takes focus, so on
+    // macOS its window is usually not key and the app is not active: without acceptFirstMouse AppKit
+    // swallows the first click to activate Koda and the disc needs a second click (and a first drag
+    // does not move it). The flag is macOS-only; Linux and Windows ignore it.
+    #[test]
+    fn the_island_window_accepts_the_first_click_on_macos() {
+        let conf: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        let main = &conf["app"]["windows"][0];
+        assert_eq!(main["label"], "main");
+        assert_eq!(main["acceptFirstMouse"], true);
     }
 }

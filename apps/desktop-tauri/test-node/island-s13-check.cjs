@@ -7,9 +7,12 @@ if (!H.findPlaywright()) { console.log('SKIPPED island-s13-check: no playwright 
 (async () => {
   const r = await H.open({ question: 'plain', chat: true });
   try {
-    // isla-cualquier-lado S3/S5 (T6): the folded disc is the toast's trigger; data-edge-hidden is gone from the product.
+    // isla-cualquier-lado S3/S5 (T6, L21): the toast hangs from the folded disc; since a NEW question opens the folded island by itself
+    // (human «1», 85c73e7), the only phase that still sends the question to the toast is the one it cannot classify.
     await r.page.evaluate(() => { window.__islandSetState('compact'); });
     await r.page.waitForTimeout(900);
+    await H.unknownPhase(r.page);
+    await r.page.waitForTimeout(1200);
     const st = () => r.page.evaluate(() => { const b = document.querySelector('.q-toast-progress'), t = document.getElementById('question-toast'); return { bar: !!b, play: b && getComputedStyle(b).animationPlayState, hidden: t.hidden || getComputedStyle(t).display === 'none', live: document.getElementById('question-toast-live') && document.getElementById('question-toast-live').textContent, role: document.getElementById('question-toast-live') && document.getElementById('question-toast-live').getAttribute('role') }; });
     let s = await st();
     assert.ok(s.bar, 'progress bar exists'); assert.equal(s.play, 'running'); assert.equal(s.role, 'status'); assert.match(s.live, /pregunta/i, 'announced politely');

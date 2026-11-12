@@ -44,7 +44,7 @@ const EVENTS = Object.freeze(["PermissionRequest", "Stop"]);
 // shows up as a trailing MIGRATION entry, and only on the run that actually removes the old entry we owned.
 const CLAUDE_EVENTS = Object.freeze(["PermissionRequest", "SessionStart", "Stop"]);
 const MIGRATED_EVENTS = Object.freeze(["PreToolUse"]);
-// S4/T2: the Codex installer (notice-only) reports four entries, in this order.
+// K2-08 T3: the Codex installer reports four entries, in this order (PermissionRequest is answered from the island).
 const CODEX_EVENTS = Object.freeze(["PermissionRequest", "PreToolUse", "PostToolUse", "Stop"]);
 const FOLDER_REASONS = new Set(["writable", "foreign_owner", "acl"]);
 const OPS = new Set(["add", "replace", "remove", "keep"]);
@@ -405,7 +405,9 @@ class AgentsManager extends EventEmitter {
 		if (agent.id === "pi") summary = "Installs the Abito Pi extension in the default ~/.pi/agent directory. A backup is made first.";
 		if (agent.id === "opencode") summary = state === "outdated" ? `Updates the Abito plugin in ${file}. A backup is made first.` : `Adds the Abito plugin to ${file}. A backup is made first.`;
 		if (agent.id === "statusline") summary = "Adds the status-line relay in ~/.claude/settings.json. An existing status line keeps working (the relay prints it). A backup is made first.";
-		if (trust) summary += " Codex will ask you to trust them in /hooks.";
+		// K2-08 T3b: Koda answers Codex from the island (120 s entry); every install or update changes the hook hash, so the
+		// human trusts the Koda hooks again in Codex /hooks.
+		if (trust) summary += " Koda answers Codex permission requests from the island; Codex waits up to 120 s for your answer. Trust the Koda hooks again in Codex /hooks after every install or update.";
 		if (!reviewable) summary += " This change is large: review it in the file.";
 		return { ...entry, plan_hash: preview.plan_hash, summary, reviewable, trust_review: trust };
 	}

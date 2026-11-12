@@ -270,7 +270,9 @@ const NOTES_BASE = [
   'The backup path is planned; the timestamp is chosen when the plan is applied.',
   'Applying requires the plan_hash of this preview and fails with plan_changed if anything differs.',
 ];
-const NOTE_TRUST = 'Codex keeps these hooks inactive until the human reviews them in /hooks; this installer never touches config.toml.';
+// K2-08 T3 (S2, S4): Codex trusts a hook by its hash, so every install or update needs the /hooks review again.
+const NOTE_TRUST = 'Codex keeps these hooks inactive until the human reviews them in /hooks, again after every install or update; this installer never touches config.toml.';
+const NOTE_CODEX = `Koda answers Codex permission requests from the island: Codex waits up to ${codex.PERMISSION_TIMEOUT_SEC} s and shows «${codex.WAITING_MESSAGE}» meanwhile; with the island closed or no answer in time, Codex asks in the terminal.`;
 
 function buildPlan(parsed, opts) {
   const profile = parsed.harness === 'codex' ? codex.CODEX_PROFILE : parsed.harness === 'copilot' ? copilot.COPILOT_PROFILE : parsed.harness === 'opencode' ? opencode.OPENCODE_PROFILE : parsed.harness === 'recap' ? recap.PROFILE : core.CLAUDE_PROFILE;
@@ -346,7 +348,7 @@ async function runInstallUi(argv, opts = {}) {
     if (parsed.applyPlan === null) {
       const { plan, action, hash, trust } = buildPlan(parsed, opts);
       const backupPath = plan.changed && plan.exists ? core.backupPathFor(plan.backupTarget || plan.settingsPath, (opts.now || (() => new Date()))()) : null;
-      const notes = [...NOTES_BASE]; if (trust) notes.push(NOTE_TRUST);
+      const notes = [...NOTES_BASE]; if (trust) notes.push(NOTE_TRUST, NOTE_CODEX);
       emit({
         schema: SCHEMA, ok: true, mode: 'preview', harness: parsed.harness, action, target: plan.settingsPath, exists: plan.exists, changed: plan.changed,
         entries: entriesOf(plan), backup_path: backupPath, diff: diffView(plan), requires_trust_review: trust, plan_hash: hash, notes,

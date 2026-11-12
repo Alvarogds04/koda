@@ -68,11 +68,15 @@ const flagBox = page => page.evaluate(() => { const f = document.getElementById(
 
   // ── (2) the stray yellow dot
   const compact = p => p.evaluate(() => window.__islandSetState('compact'));
-  // R2-duplicate-scenario (T7): since T6 the question toast hangs from the folded disc, so «compact question» and «toast (question)»
-  // were the SAME state driven twice. One scenario now, and it proves the toast is there — otherwise the stray-dot pass would only
-  // be checking an empty folded disc while claiming to cover the toast.
+  // R2-duplicate-scenario (T7), revisited for L21 (human «1»): a NEW question opens the folded island by itself, so the toast is no
+  // longer what a compact question shows — the scenario now proves THAT (the island opens on a new question, and never a toast), while
+  // still driving the warm state the stray-dot pass needs.
   const SCEN = [
-    ['compact question + toast', { question: 'plain', sessions: [] }, async p => { await compact(p); await p.waitForTimeout(2300); }, true],
+    ['compact question, no toast (a new question opens the island)', { question: 'plain', sessions: [] }, async p => {
+      // the HOST's state has to be compact too: revealAction reads it, and only then is a new question what opens the island
+      await p.evaluate(s => window.__emit('desktop:state', s), snap('compact', null)); await p.waitForTimeout(800);
+      await compact(p); await p.waitForTimeout(2300);
+    }, true],
     ['compact bridge card', { bridgeCard: true, sessions: [], quick: true }, async p => { await p.evaluate(s => window.__emit('desktop:state', s), snap('expanded', CARD())); await p.waitForTimeout(800); await compact(p); await p.evaluate(s => window.__emit('desktop:state', s), snap('compact', CARD())); await p.waitForTimeout(1500); }, true],
     ['idle', { sessions: [], quick: true }, async p => { await compact(p); await p.waitForTimeout(1200); }, false],
   ];
@@ -81,12 +85,13 @@ const flagBox = page => page.evaluate(() => { const f = document.getElementById(
     try {
       await drive(r.page); ran++;
       if (name.startsWith('compact question')) {
+        // isla-cualquier-lado L21: on the folded disc the pending question is NOT a toast (compact + a new question opens the island).
         const toast = await r.page.evaluate(() => {
           const el = document.getElementById('question-toast'); if (!el) return null;
           const b = el.getBoundingClientRect(), s = getComputedStyle(el);
           return { shown: s.visibility !== 'hidden' && +s.opacity > 0 && b.width > 0 && b.height > 0, box: [b.left, b.top, b.width, b.height].map(Math.round) };
         });
-        if (!toast || !toast.shown) bad.push(`${t}: no question toast over the folded disc (${JSON.stringify(toast)})`);
+        if (toast && toast.shown) bad.push(`${t}: a toast over the folded disc (${JSON.stringify(toast)})`);
       }
       const f = await flagBox(r.page); if (f.shown) bad.push(`${t}: #compact-flag visible at ${f.box}`);
       const s = await strays(r.page); if (s.length) bad.push(`${t}: stray warm element(s) outside island/toast: ${s.join(' ')}`);
@@ -95,6 +100,20 @@ const flagBox = page => page.evaluate(() => { const f = document.getElementById(
       if (!theme.startsWith('x') && dot.fit === 'true' && dot.aft === 'none') bad.push(`${t}: fitted pill lost its own dot`);
       await r.screenshot(`/tmp/bridge-fix-${name.replace(/[^a-z]+/g, '-')}-${theme}.png`);
       if (theme === 'dark') console.log(`  ${t}: pill-dot='${dot.pill}' fit=${dot.fit} flag=${JSON.stringify(f)}`);
+      if (name.startsWith('compact question')) {
+        // the decided rule (L21 = the 11-nov decision «Que se abra sola, como dice S5»): a NEW question opens the folded island, and the
+        // toast never appears for it. The host's own expand verb is what proves the island took it.
+        await r.page.evaluate(() => { window.__desktopCalls = []; });
+        await r.page.evaluate(id => window.__emit('question:state', { available: true, queued: [], queued_count: 0, deliveries: [], notice: null,
+          pending: { id, kind: 'question', agent: 'pi', agent_label: 'Pi', project_name: 'api', text: '¿Otra?', allow_free_text: false,
+            options: [{ index: 0, label: 'Sí', description: '' }, { index: 1, label: 'No', description: '' }], expires_at: Date.now() + 600000, free_text_max: 2000 } }),
+        '0b3a5c9e-8f27-4d11-9a0e-00000000a0a0');
+        await r.page.waitForTimeout(1800);
+        const opened = await r.page.evaluate(() => ({ phase: document.getElementById('capsule').dataset.phase,
+          expand: (window.__desktopCalls || []).some(c => c && c.action === 'expand'), toast: !document.getElementById('question-toast').hidden }));
+        if (!opened.expand || opened.phase !== 'expanded') bad.push(`${t}: a NEW question did not open the folded island (${JSON.stringify(opened)})`);
+        if (opened.toast) bad.push(`${t}: a toast showed for a question the island opened (${JSON.stringify(opened)})`);
+      }
     } finally { await r.close(); }
   }
   console.log(`island heights with the bridge card: ${JSON.stringify(sizes)}; scenarios run: ${ran}`);

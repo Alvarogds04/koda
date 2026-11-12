@@ -108,9 +108,11 @@ test('T6 the toast hangs from the DISC on the side that faces the centre of the 
   assert.deepEqual(T.toastPlacement({ edge: 'bottom', box: { top: NaN, height: Infinity } }), { edge: 'bottom', top: -T.TOAST.h, height: T.TOAST.h });
 });
 
-test('reveal policy: a new question shows the toast; it no longer expands the island by itself', () => {
-  assert.equal(T.revealByToast({ phase: 'compact' }), true);
+test('reveal policy (island-free-drag S5): a NEW question opens a compact island; only a hidden island gets the toast', () => {
+  assert.equal(T.revealByToast({ phase: 'compact' }), false, 'compact: a new question keeps auto-opening the island (#266/R23)');
   assert.equal(T.revealByToast({ phase: 'expanded' }), false, 'expanded: the card itself is the signal');
+  assert.equal(T.revealByToast({ phase: 'hidden' }), true, 'hidden from the tray or shortcut: the toast is the signal');
+  assert.equal(T.revealByToast(undefined), true, 'no phase known: fail closed to the toast');
 });
 
 test('Sileo port is vanilla: spring linear() easing, 350x40 pill, gooey filter, no React/npm, reduced motion respected', () => {
@@ -305,9 +307,11 @@ function boot(initial, opts = {}) {
   const set = (fn, ms) => { const id = seq++; timers.set(id, { fn, at: now + Math.max(0, Number(ms) || 0) }); return id; };
   const advance = ms => { const end = now + ms; for (let g = 0; g < 20000; g++) { const due = [...timers.entries()].filter(([, t]) => t.at <= end).sort((a, b) => a[1].at - b[1].at)[0]; if (!due) break; now = Math.max(now, due[1].at); timers.delete(due[0]); due[1].fn(); } now = end; };
   const capsule = el('div'), island = el('div');
-  // isla-cualquier-lado S3/S5 (T6): the toast hangs from the FOLDED disc, so the mounted cases start folded (opts.visible = the island
-  // is open, which is exactly when the toast must never show). opts.edge is the page's data-edge (Rust's geometry::growth_edge).
-  capsule.dataset.phase = opts.visible ? 'expanded' : 'compact';
+  // isla-cualquier-lado (L21, human «1»): a NEW question opens the folded island, so the toast is the signal only where
+  // `revealByToast` says so — a phase it cannot classify. Every mounted case that expects a toast therefore runs with NO phase at all
+  // (opts.phase to stage a classified one); opts.visible = the island is open, exactly when the toast must never show.
+  if (opts.phase) capsule.dataset.phase = opts.phase;
+  else if (opts.visible) capsule.dataset.phase = 'expanded';
   capsule.dataset.edge = opts.edge || 'top';
   let doc0 = null; const mkEl = tag => { const e = el(tag); e.ownerDocument = doc0; return e; };
   const document = { documentElement: { dataset: {} }, getElementById: id => (id === 'capsule' ? capsule : id === 'island' ? island : null), createElement: mkEl, createElementNS: (_n, t) => mkEl(t), importNode: n => n,
@@ -362,23 +366,29 @@ mtest('M3 island OPEN: no Sileo toast at all — the card/island shows it; infor
   r.capsule.dataset.phase = 'compact'; r.emit(none('expired')); r.advance(400);
   assert.equal(r.toast.hidden, true, 'folding later does not replay a dropped event');
 });
-mtest('M3b (isla-cualquier-lado T6) the FOLDED disc does show an informational toast; opening the island takes it away', async () => {
+mtest('M3b (isla-cualquier-lado T6/L21) with an UNKNOWN phase the disc shows an informational toast; opening the island takes it away', async () => {
   const r = boot(none(null)); await Promise.resolve(); await Promise.resolve();
-  r.capsule.dataset.phase = 'compact'; r.arrive(settledArrival()); r.advance(50);
-  assert.equal(r.title(), 'Codex terminó', 'folded: «terminó» hangs from the disc');
+  r.arrive(settledArrival()); r.advance(50);
+  assert.equal(r.title(), 'Codex terminó', 'unknown phase: «terminó» hangs from the disc');
   r.capsule.dataset.phase = 'expanded'; r.emit(none(null)); r.advance(400);
   assert.equal(r.toast.hidden, true, 'open: the island itself shows it');
 });
-mtest('M3c (isla-cualquier-lado T6) a new question shows the toast while the island stays FOLDED; with the island open, never', async () => {
+mtest('M3c (isla-cualquier-lado L21) a new question shows the toast only with an unknown phase; compact and open never do', async () => {
   const open = boot(SNAP_NOW(), { visible: true }); await Promise.resolve(); await Promise.resolve();
   open.emit(SNAP_NOW()); open.advance(400);
   assert.equal(open.toast.hidden, true, 'open: the question card is the signal');
+  // the 11-nov decision (85c73e7): a NEW question opens a compact island by itself (island.js calls revealIsland for it), so the toast
+  // is not the signal there and `revealByToast` says so. The toast still hangs from the disc when the phase is not known at all.
   open.capsule.dataset.phase = 'compact'; open.emit(SNAP_NOW()); open.advance(400);
-  assert.equal(open.toast.hidden, false, 'folded: the pending question toast appears');
+  assert.equal(open.toast.hidden, true, 'compact: the island opens on it (L21), so no toast');
   open.capsule.dataset.phase = 'expanded'; open.emit(SNAP_NOW()); open.advance(400);
   assert.equal(open.toast.hidden, true, 'the island opened on it: the toast goes away');
+  const unknown = boot(SNAP_NOW()); await Promise.resolve(); await Promise.resolve();
+  unknown.emit(none(null)); unknown.emit(SNAP_NOW()); unknown.advance(400);
+  assert.equal(unknown.toast.hidden, false, 'unknown phase: the pending question arrives as the toast');
 });
 mtest('M4 pending toast dismissed with Esc (not visible): info event shows', async () => {
+  // unknown phase: the case where the toast is the signal at all (see M3c)
   const r = boot(SNAP_NOW()); await Promise.resolve(); await Promise.resolve();
   r.key('Escape'); r.advance(400); assert.equal(r.toast.hidden, true);
   r.arrive(settledArrival()); assert.equal(r.title(), 'Codex terminó');

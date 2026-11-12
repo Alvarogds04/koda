@@ -126,7 +126,8 @@
     if (!body) return null;
     return transient(`finished:${notice.id}`, 'finished', 'neutral', 'info', who ? `${who} terminó` : 'Una tarea terminó', body, 'Terminó; el resultado no está confirmado', 'neutral');
   }
-  /** F6 (SN1): a NEW attention notice (Codex «te pide permiso / te pregunta») -> a Sileo pill that only POINTS at the terminal.
+  /** F6 (SN1): a NEW attention notice (a Codex question asked in its terminal; since K2-08 Codex permissions use the question
+      queue instead) -> a Sileo pill that only POINTS at the terminal.
       Informational like «terminó»: no click target, no answer, no decision; the producer's own one display line is the body. */
   function attentionToast(notice) {
     if (!notice || notice.kind !== 'attention' || typeof notice.id !== 'string' || !notice.id) return null;
@@ -180,8 +181,9 @@
     return { edge, top: edge === 'top' ? top + h : top - height, height };
   }
 
-  /** A new question used to expand the island by itself; now the toast is the signal while compact. THIS is the toast's own switch. */
-  const revealByToast = ctx => !ctx || ctx.phase !== 'expanded';
+  /** island-free-drag S5 (#266/R23): a NEW question opens a compact island by itself (an expanded one already shows the card).
+   *  Only an island hidden from the tray or the shortcut, or one whose phase is unknown, is signalled by the toast instead. */
+  const revealByToast = ctx => !ctx || (ctx.phase !== 'expanded' && ctx.phase !== 'compact');
 
   // ---- Sileo's motion (hiaaryan/sileo, MIT): constants.ts SPRING = { duration 0.6 s, bounce 0.25 }, sileo.tsx morph ------------------
   // SN6 (vault «Specs/Sileo-notificacion»): the MEASURED timings of sileo.aaryan.design, ONE named table (the stylesheet mirrors the content/presence ones).
@@ -390,9 +392,10 @@ function mount(T) {
   // A finished/outcome toast is shown only at its event, for a short time, and never over a pending question toast (that one stays the
   // actionable signal; an event that finds it showing is dropped, not queued). A new pending question replaces it at once.
   const dropTransient = () => { clearTimeout(transientTimer); transientView = null; };
-  // isla-cualquier-lado S3/S5 (T6): the toast hangs from the FOLDED disc. island.js asks revealByToast() BEFORE it opens the island for a new
-  // question, so this ONE rule decides both: while the island stays folded (compact) the question arrives as this toast; with the island
-  // open (or opening) the card is the signal and the toast never shows. An informational event that finds it folded shows there too.
+  // isla-cualquier-lado S3/S5 (T6) as decided on 11-nov and kept by the human (L21, «1»): the toast hangs from the disc, but a NEW
+  // question OPENS a folded (compact) island by itself, exactly like a notice — so this ONE rule decides both sides: the toast is the
+  // signal only where revealByToast() says so (an island whose phase it cannot classify), and with the card or the island open it never
+  // shows. An informational event is dropped, not queued, when the island is open.
   const folded = () => !!(T.revealByToast && T.revealByToast({ phase: capsule.dataset.phase }));
   function pushTransient(next) {
     if (!next) return;

@@ -46,14 +46,19 @@ test('B1 reproduction: expand then collapse settles the visible island and input
   context.window.__islandSetState('overview', 'sideways'); drain();
   assert.equal(capsule.dataset.edge, 'bottom', 'an unknown edge keeps the last one Rust sent');
   context.window.__islandSetState('compact'); drain();
-  // folding hands the disc back to the window top whatever the edge
-  assert.equal(island.style.top, '0px'); assert.equal(island.style.bottom, 'auto');
+  // isla-cualquier-lado T6b (L17): the folded disc follows the same edge as the card. With a bottom edge it stands on the window's
+  // bottom edge, so a question toast above it stays inside the native window; with a top edge it hangs from the window top.
+  assert.equal(capsule.dataset.edge, 'bottom', 'folding keeps the edge Rust sent');
+  assert.equal(island.style.top, 'auto'); assert.equal(island.style.bottom, '0px');
   console.log('B1 rendered:', capsule.dataset.phase, island.style.width, island.style.height, 'shape:', JSON.stringify(calls.at(-1)));
   assert.equal(capsule.dataset.phase, 'compact');
   // island-free-drag S3: compact is Koda's disc (geometry::COMPACT_DOT) — no bar, in any compact state
   assert.equal(island.style.width, '40px'); assert.equal(island.style.height, '32px');
   assert.equal(island.style.borderRadius, '16px 16px 16px 16px', 'the disc is round on all four corners');
   assert.deepEqual(JSON.parse(JSON.stringify(calls.at(-1))), ['island_shape', { payload: { w: 40, h: 32, settled: true } }]);
+  // and with a top edge the folded disc hangs from the window top again
+  context.window.__islandSetState('compact', 'top'); drain();
+  assert.equal(capsule.dataset.edge, 'top'); assert.equal(island.style.top, '0px'); assert.equal(island.style.bottom, 'auto');
 });
 
 test('B1 click: a named header fold control collapses through the guarded host verb, never an arbitrary control press', async () => {
