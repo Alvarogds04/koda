@@ -151,25 +151,34 @@ function extractFfmpeg(archive, pin, dest) {
   }
 }
 
+/* The full commit id behind the abbreviated `-g<rev>` FFmpeg's own version string carries (a describe label, not the
+   identity). An unknown revision is stated as the abbreviation alone: the notices never invent a hash. */
+const FFMPEG_FULL_REV = { c179411bbb: 'c179411bbb2864cc71323d3055acda25d5c2aace' };
+
 /* The FFmpeg section of the runtime notices: the licence, the exact binary it came from and where its source is. */
 function ffmpegNotice(pin) {
   const rev = /-g([0-9a-f]+)$/.exec(pin.version)[1];
+  const full = FFMPEG_FULL_REV[rev];
+  const revision = full ? `${full} (the commit ${pin.version} labels \`${rev}\`)` : rev;
+  const tree = `https://github.com/FFmpeg/FFmpeg/tree/${full ?? rev}`;
   return [`## FFmpeg ${pin.version} (\`${pin.exe}\`)`, '',
     'License: LGPL-3.0-or-later. Full text: `LICENSE.ffmpeg.txt` in this folder.',
     `The \`${pin.exe}\` in this folder is FFmpeg (https://ffmpeg.org), built by BtbN/FFmpeg-Builds as an LGPL build:`,
     'configured with --enable-version3 and built without --enable-gpl and without --enable-nonfree. Koda runs it as a separate',
     'program, unmodified, only to extract and split the audio of videos for transcription.',
     `- Binary: ${FFMPEG_RELEASES}/${pin.tag}/${pin.name} (sha256 ${pin.sha})`,
-    `- Corresponding Source: the FFmpeg source at revision ${rev}, https://github.com/FFmpeg/FFmpeg/tree/${rev}`,
-    `  (${pin.version}), and the scripts that built it, https://github.com/BtbN/FFmpeg-Builds (release ${pin.tag}),`,
-    '  which also list the libraries linked into it and their licences.',
-    '- Source offer: on request Koda provides the Corresponding Source of this exact binary — the FFmpeg source at the',
-    '  revision above plus the BtbN/FFmpeg-Builds scripts and the exact library versions linked into it — for at least',
-    '  three years after the release that shipped it, for no more than the cost of making and sending the copy. Ask',
-    '  through the issue tracker of the repository Koda is published from.',
-    '- Before a public release Koda must MIRROR that Corresponding Source itself (LGPL-3.0 section 6: recipients have to',
-    '  be able to obtain it from a network server, not only to ask us). That mirror does not exist yet, and the licence',
-    '  review of FFmpeg and its patent situation has NOT been done. This is an engineering record, not legal advice.',
+    `- Corresponding Source: the FFmpeg source at revision ${revision}, ${tree}`,
+    `  and the scripts that built it, https://github.com/BtbN/FFmpeg-Builds (release ${pin.tag}), which also list the`,
+    '  libraries linked into it and their licences. The version string is a label, never the identity of the source:',
+    '  the revision hash above is.',
+    '- Source offer (GPL-3.0 §6(b), incorporated by LGPL-3.0): on request Koda provides the Corresponding Source of this',
+    '  exact binary — the FFmpeg source at the revision above plus the BtbN/FFmpeg-Builds scripts and the exact library',
+    '  versions linked into it — for at least three years after the release that shipped it, for no more than the cost of',
+    '  making and sending the copy. Ask through the issue tracker of the repository Koda is published from.',
+    '- Before a public release Koda must MIRROR that Corresponding Source itself (GPL-3.0 §6(d), incorporated by',
+    '  LGPL-3.0: recipients have to be able to obtain it from a network server, not only to ask us). That mirror does not',
+    '  exist yet, and the licence review of FFmpeg and its patent situation has NOT been done. This is an engineering',
+    '  record, not legal advice.',
     'You may replace this file with your own build of FFmpeg; Koda calls it by this path with command-line arguments only.', ''];
 }
 

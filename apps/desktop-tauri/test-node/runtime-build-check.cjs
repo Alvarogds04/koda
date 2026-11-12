@@ -318,14 +318,20 @@ test('K2-13 (S9): ffmpeg comes out of the pinned archive byte for byte, executab
     assert.match(notices, /License: LGPL-3\.0-or-later\. Full text: `LICENSE\.ffmpeg\.txt` in this folder\./);
     assert.match(notices, /built without --enable-gpl and without --enable-nonfree/);
     assert.ok(notices.includes(`https://github.com/BtbN/FFmpeg-Builds/releases/download/${FFMPEG_TAG}/${FFMPEG_BASE[target]}`), 'the exact upstream asset');
-    assert.ok(notices.includes('https://github.com/FFmpeg/FFmpeg/tree/c179411bbb'), 'the exact FFmpeg source revision');
+    // K2-13 (S9, item 5): the source is identified by its REVISION HASH; the version string is only a label, because a
+    // describe tag is not an identity (`-g<abbrev>` can be ambiguous and carries no full commit id).
+    assert.ok(notices.includes('https://github.com/FFmpeg/FFmpeg/tree/c179411bbb2864cc71323d3055acda25d5c2aace'), 'the exact FFmpeg source revision');
+    assert.ok(notices.includes('the commit n9.0.2-49-gc179411bbb labels `c179411bbb`'), 'the describe string is labelled as a label');
+    assert.ok(notices.includes('The version string is a label, never the identity of the source'), 'and the notice says so');
     assert.ok(notices.includes('https://github.com/BtbN/FFmpeg-Builds'), 'the build scripts');
     assert.match(notices, /Corresponding Source/);
     // K2-13 (S9, item 5): the offer is a commitment, and the record says what is still missing — without pretending
-    // a licence review happened.
-    assert.match(notices, /Source offer: on request Koda provides the Corresponding Source of this exact binary/, 'the source offer is explicit');
+    // a licence review happened, and citing the GPL-3.0 clauses LGPL-3.0 incorporates rather than «LGPL-3.0 section 6»
+    // (LGPL-3.0 §6 is about combining with a library; it says nothing about source offers).
+    assert.match(notices, /Source offer \(GPL-3\.0 §6\(b\), incorporated by LGPL-3\.0\): on request Koda provides the Corresponding Source of this/, 'the source offer is explicit');
     assert.match(notices, /at least\s+three years after the release that shipped it|three years after the release/, 'and lasts three years');
-    assert.match(notices, /must MIRROR that Corresponding Source itself \(LGPL-3\.0 section 6/, 'mirroring before a public release is recorded');
+    assert.match(notices, /must MIRROR that Corresponding Source itself \(GPL-3\.0 §6\(d\), incorporated by/, 'mirroring before a public release is recorded');
+    assert.doesNotMatch(notices, /LGPL-3\.0 section 6/, 'never the LGPL-3.0 section that is about combining with a library');
     assert.match(notices, /has NOT been done/, 'the notices never claim the legal review is done');
   }
   const darwin = fs.readFileSync(path.join(fx.dir, 'out-darwin-arm64', 'THIRD-PARTY-NOTICES.md'), 'utf8');

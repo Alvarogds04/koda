@@ -342,17 +342,19 @@ The shipped binary is an LGPL build by BtbN/FFmpeg-Builds: it is configured with
 - Exact binaries, pinned by SHA-256 in `apps/desktop-tauri/packaging/runtime/ffmpeg.sha256`:
   `https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-11-11-12-39/ffmpeg-n9.0.2-49-gc179411bbb-linux64-lgpl-9.0.tar.xz`
   and `.../ffmpeg-n9.0.2-49-gc179411bbb-win64-lgpl-9.0.zip`.
-- Corresponding Source: FFmpeg at revision `c179411bbb2864cc71323d3055acda25d5c2aace` (n9.0.2-49-gc179411bbb),
-  https://github.com/FFmpeg/FFmpeg/tree/c179411bbb2864cc71323d3055acda25d5c2aace, plus the build scripts and the exact
+- Corresponding Source: FFmpeg at revision `c179411bbb2864cc71323d3055acda25d5c2aace` — the commit that FFmpeg's
+  own version string labels `n9.0.2-49-gc179411bbb`, a label and not the identity,
+  https://github.com/FFmpeg/FFmpeg/tree/c179411bbb2864cc71323d3055acda25d5c2aace — plus the build scripts and the exact
   versions of the libraries linked into it, https://github.com/BtbN/FFmpeg-Builds (release autobuild-2026-11-11-12-39).
-- Source offer: for at least three years after we ship a version of Koda that contains this FFmpeg, anyone who
-  received it can ask the Koda maintainers (through the issue tracker of the repository Koda is published from) for
-  a copy of that Corresponding Source — the exact FFmpeg source at the tag above, together with the BtbN build
-  scripts and the pinned library versions linked into it — provided for no more than the cost of making and sending
-  the copy.
-- **Not done yet, before a public release.** Koda does not mirror that Corresponding Source itself. LGPL-3.0 section 6
-  requires recipients to be able to obtain it (a network server or an equivalent), not only to ask us for a copy, so
-  the sources above must be mirrored and linked from this notice **before Koda's first public release**. The licence
+- Source offer (GPL-3.0 §6(b), incorporated by LGPL-3.0): for at least three years after we ship a version of Koda that
+  contains this FFmpeg, anyone who received it can ask the Koda maintainers (through the issue tracker of the
+  repository Koda is published from) for a copy of that Corresponding Source — the exact FFmpeg source at the revision
+  above, together with the BtbN build scripts and the pinned library versions linked into it — provided for no more
+  than the cost of making and sending the copy.
+- **Not done yet, before a public release.** Koda does not mirror that Corresponding Source itself. GPL-3.0 §6(d) —
+  incorporated by LGPL-3.0 with the rest of GPL-3.0 — requires recipients to be able to obtain it from a designated
+  place (a network server or an equivalent), not only to ask us for a copy, so the sources above must be mirrored and
+  linked from this notice **before Koda's first public release**. The licence
   review of FFmpeg (LGPL-3.0 obligations and the AAC/H.264 patent question recorded in
   `odd/tasks/k2-13-minikodas.md`) has **NOT** been done. This paragraph is an engineering record, not legal advice.
 - You may replace `runtime/ffmpeg[.exe]` with your own build of FFmpeg: Koda only calls it by that path.
