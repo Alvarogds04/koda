@@ -29,6 +29,7 @@ use tokio_rustls::TlsAcceptor;
 use super::admission::{Admission, Ticket};
 use super::constant_eq;
 use super::hub::Hub;
+use super::ids;
 use super::pairing::Identity;
 
 pub const PROTOCOL: u64 = 1;
@@ -40,8 +41,30 @@ pub const IDLE_TIMEOUT: Duration = Duration::from_secs(20 * 60);
 /// Pause before answering a wrong token.
 const AUTH_PENALTY: Duration = Duration::from_millis(400);
 
-/// Which optional features the user has switched on, read again for every connection. Slice A offers none.
-pub trait Features: Send + Sync {}
+/// Which optional capabilities the desktop offers right now (§6.0), read again for every connection, so a switch
+/// changes the very next `welcome`.
+///
+/// Whether `details` is offered always while the link is on, or sits behind its own Ajustes switch, is the human's
+/// decision and lives entirely in the implementation of `offered`: `link.rs` answers what the user chose, this trait
+/// only says what the wire carries. Offering nothing (the default) is today's behaviour: a plain v1 welcome.
+pub trait Features: Send + Sync {
+    /// The caps the desktop can serve right now, named with `ids::CAPS`' wire values. Read on every `hello`;
+    /// anything unknown is ignored, and only what both sides name is ever in force.
+    fn offered(&self) -> Vec<&'static str> {
+        Vec::new()
+    }
+}
+
+/// The capability set in force on one connection: what the phone asked for ∩ what the desktop offers (§6.0, «only
+/// in force when both sides name it»), in the contract's canonical order, unknown strings dropped on either side and
+/// never duplicated.
+pub fn in_force(asked: &[&str], offered: &[&str]) -> Vec<&'static str> {
+    ids::CAPS
+        .iter()
+        .copied()
+        .filter(|cap| asked.iter().any(|a| a == cap) && offered.iter().any(|o| o == cap))
+        .collect()
+}
 
 /// A line to write, or the last one (an `error`) and close.
 pub enum Out {
@@ -199,10 +222,21 @@ where
     if let Some(t) = &ticket {
         t.authenticated();
     }
-    let _ = &shared.features;
-    let _ = say(json!({ "type": "welcome", "v": PROTOCOL, "desktop": shared.name, "os": std::env::consts::OS })).await;
-    // The first line after the welcome is the current sessions; later changes arrive through the hub.
-    let (id, evicted) = shared.hub.subscribe(tx.clone(), now_ms());
+    // §6.0: what the phone can use ∩ what the desktop offers right now, in the contract's canonical order. Read
+    // again on every connection, so a switch changes the very next welcome. The welcome names that intersection and
+    // not the whole list of switches: that is what the reference desktop does (`tools/dev-desktop.mjs` computes its
+    // `offered` from the phone's `caps` too), and it is the stricter of the two readings of §6.0.
+    let asked: Vec<&str> = hello["caps"].as_array().map(|a| a.iter().filter_map(serde_json::Value::as_str).collect()).unwrap_or_default();
+    let in_force = in_force(&asked, &shared.features.offered());
+    let mut welcome = json!({ "type": "welcome", "v": PROTOCOL, "desktop": shared.name, "os": std::env::consts::OS });
+    if !in_force.is_empty() {
+        // Omitted entirely when empty, exactly as the phone omits an empty hello `caps`.
+        welcome["caps"] = json!(in_force);
+    }
+    let _ = say(welcome).await;
+    // The first line after the welcome is the current sessions, rendered for this connection's capabilities; later
+    // changes arrive through the hub, which keeps one line per capability set.
+    let (id, evicted) = shared.hub.subscribe(tx.clone(), now_ms(), in_force.contains(&ids::CAP_DETAILS));
 
     // 2. the conversation
     loop {

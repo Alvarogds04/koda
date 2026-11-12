@@ -19,8 +19,15 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use tokio::sync::oneshot;
 
-/// Slice A/B offers no optional capability in `welcome` yet: the capabilities slice turns this into the human's
-/// switches. An empty trait impl is what the server expects.
+/// The capabilities the desktop offers in `welcome` (§6.0). Today it offers NONE, so the link keeps sending the plain
+/// v1 welcome and the plain v1 sessions: the `details` switch is still an open product decision (always on while the
+/// link is on, or its own Ajustes switch). Turning it on is one method here, and nothing else:
+///
+/// ```ignore
+/// impl Features for NoFeatures {
+///     fn offered(&self) -> Vec<&'static str> { vec![ids::CAP_DETAILS] } // or `self.details.then_some(…)`
+/// }
+/// ```
 struct NoFeatures;
 impl Features for NoFeatures {}
 

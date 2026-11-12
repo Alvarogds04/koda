@@ -199,16 +199,21 @@ struct Rig {
     hub: Arc<hub::Hub>,
 }
 
-async fn start() -> Rig {
+async fn start_with(features: Arc<dyn Features>) -> Rig {
     let store = Mem::default();
     let id = pairing::load_or_create_identity(&store).unwrap();
     let token = pairing::token(&store).unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     let hub = hub::Hub::new();
-    let shared = Shared::with_hub(hub.clone(), token.clone(), "Test PC".into(), Arc::new(Off));
+    let shared = Shared::with_hub(hub.clone(), token.clone(), "Test PC".into(), features);
     let handle = server::serve(listener, server::tls_acceptor(&id).unwrap(), shared);
     Rig { port, fingerprint: id.fingerprint, token, handle: Some(handle), hub }
+}
+
+/// The desktop as `link.rs` builds it today: nothing optional switched on.
+async fn start() -> Rig {
+    start_with(Arc::new(Off)).await
 }
 
 type Client = (BufReader<tokio::io::ReadHalf<tokio_rustls::client::TlsStream<tokio::net::TcpStream>>>, tokio::io::WriteHalf<tokio_rustls::client::TlsStream<tokio::net::TcpStream>>);
@@ -448,7 +453,7 @@ fn a_phone_that_cannot_keep_up_is_dropped_not_waited_for() {
     run(async {
         let hub = hub::Hub::new();
         let (tx, _rx) = tokio::sync::mpsc::channel::<server::Out>(2);
-        let (_id, evicted) = hub.subscribe(tx, 0);
+        let (_id, evicted) = hub.subscribe(tx, 0, false);
         for n in 0..10 {
             hub.publish_sessions(vec![sess("integration_claude", if n % 2 == 0 { "working" } else { "idle" })], n);
         }
@@ -505,6 +510,273 @@ fn the_session_source_is_the_one_accessor_of_the_agent_client_state() {
     let got = source::sessions_from_view(st.sessions_view());
     assert_eq!(got.len(), 1);
     assert_eq!(got[0].pill_id, "agent_codex");
+}
+
+// ---- S8: the optional capabilities (§6.0) and the session details behind `details` (§7) --------------
+
+/// A desktop that has the session details switch on. `future_thing` is a capability it does not know either:
+/// neither side may let a string it does not understand travel.
+struct Offers;
+impl Features for Offers {
+    fn offered(&self) -> Vec<&'static str> {
+        vec![ids::CAP_DETAILS, "future_thing"]
+    }
+}
+
+fn detailed(pill: &str, state: &str) -> hub::SessionIn {
+    hub::SessionIn {
+        steps: vec!["Read".into(), "Bash".into()],
+        project: Some("abito".into()),
+        step_index: 2,
+        step_count: 6,
+        ..sess(pill, state)
+    }
+}
+
+#[test]
+fn the_wire_caps_and_the_eleven_states_are_one_list_each() {
+    assert_eq!(ids::CAPS, ["chat", "details", "answers", "diffs", "usage", "services"], "§6.0's table, in its order");
+    assert_eq!(ids::CAP_DETAILS, ids::CAPS[1]);
+    assert_eq!(
+        hub::STATES,
+        ["idle", "working", "thinking", "searching", "approval", "question", "error", "finished", "ratelimit", "sleeping", "dizzy"],
+        "§7.2's eleven states, in one list"
+    );
+}
+
+#[test]
+fn a_capability_is_only_in_force_when_both_sides_name_it() {
+    use server::in_force;
+    assert_eq!(in_force(&["details"], &["details"]), vec!["details"]);
+    assert!(in_force(&["details"], &[]).is_empty(), "the desktop did not offer it");
+    assert!(in_force(&[], &["details"]).is_empty(), "the phone did not ask");
+    assert!(in_force(&["chat"], &["details"]).is_empty(), "two different capabilities");
+    assert_eq!(in_force(&["nope", "unknown", ""], &["details", "future_thing"]), Vec::<&'static str>::new(), "unknown strings on either side are ignored");
+    assert_eq!(
+        in_force(&["services", "details", "chat", "details"], &["chat", "details", "services", "junk"]),
+        vec!["chat", "details", "services"],
+        "the canonical order, never a duplicate"
+    );
+}
+
+#[test]
+fn a_phone_that_asks_for_details_is_offered_details_and_shown_them() {
+    run(async {
+        let rig = start_with(Arc::new(Offers)).await;
+        rig.hub.publish_sessions(vec![detailed("integration_claude", "working")], 4_000);
+        let (mut r, mut w) = connect(rig.port, &rig.fingerprint).await.unwrap();
+        send(&mut w, json!({"type":"hello","v":PROTOCOL,"token":rig.token,"device":"Pixel 7","caps":["details"]})).await;
+        let welcome = recv(&mut r).await.unwrap();
+        assert_eq!(welcome["type"], "welcome");
+        assert_eq!(welcome["caps"], json!(["details"]), "§6.0: a capability only in force when both sides name it");
+        let line = recv(&mut r).await.unwrap();
+        let s = &line["sessions"][0];
+        assert_eq!(s["pillId"], "integration_claude");
+        assert_eq!(s["steps"], json!(["Read", "Bash"]), "oldest first");
+        assert_eq!(s["project"], "abito", "a folder name, never a path");
+        assert_eq!((s["stepIndex"].as_u64(), s["stepCount"].as_u64()), (Some(2), Some(6)));
+        assert_eq!(s["updatedAt"], 4_000);
+        assert!(s.get("color").is_none() && s.get("finalLine").is_none(), "nothing to say: absent, not invented: {line}");
+    });
+}
+
+#[test]
+fn a_phone_without_caps_gets_the_plain_v1_welcome_and_sessions() {
+    run(async {
+        let rig = start_with(Arc::new(Offers)).await;
+        rig.hub.publish_sessions(vec![detailed("integration_claude", "working")], 5_000);
+        let (mut r, mut w) = connect(rig.port, &rig.fingerprint).await.unwrap();
+        send(&mut w, json!({"type":"hello","v":PROTOCOL,"token":rig.token,"device":"Pixel 7"})).await;
+        let welcome = recv(&mut r).await.unwrap();
+        assert!(welcome.get("caps").is_none(), "§6.0: `caps` is omitted entirely when empty: {welcome}");
+        let line = recv(&mut r).await.unwrap();
+        let s = &line["sessions"][0];
+        assert_eq!(s.as_object().unwrap().len(), 7, "the plain v1 session, exactly its seven fields: {line}");
+        for k in ["steps", "finalLine", "project", "color"] {
+            assert!(s.get(k).is_none(), "{k} is only for a phone that asked for `details`: {line}");
+        }
+    });
+}
+
+#[test]
+fn a_desktop_that_offers_nothing_never_grants_details_and_junk_caps_are_tolerated() {
+    run(async {
+        let rig = start().await;
+        rig.hub.publish_sessions(vec![detailed("integration_claude", "working")], 6_000);
+        let (mut r, mut w) = connect(rig.port, &rig.fingerprint).await.unwrap();
+        let everything = json!(["chat", "details", "answers", "diffs", "usage", "services"]);
+        send(&mut w, json!({"type":"hello","v":PROTOCOL,"token":rig.token,"device":"Pixel 7","caps":everything})).await;
+        let welcome = recv(&mut r).await.unwrap();
+        assert!(welcome.get("caps").is_none(), "the switch is off: nothing offered, nothing granted: {welcome}");
+        assert_eq!(recv(&mut r).await.unwrap()["sessions"][0].as_object().unwrap().len(), 7);
+
+        // Non-strings, unknown names and duplicates in `caps` change nothing: the hello is still valid.
+        let (mut r, mut w) = connect(rig.port, &rig.fingerprint).await.unwrap();
+        let junk = json!(["details", 5, null, {"x":1}, "", "future_thing", "details"]);
+        send(&mut w, json!({"type":"hello","v":PROTOCOL,"token":rig.token,"caps":junk})).await;
+        assert_eq!(recv(&mut r).await.unwrap()["type"], "welcome");
+        assert_eq!(recv(&mut r).await.unwrap()["sessions"].as_array().unwrap().len(), 1);
+    });
+}
+
+#[test]
+fn the_details_fields_are_cut_validated_and_never_a_path() {
+    let hub = hub::Hub::new();
+    let mut s = sess("integration_claude", "working");
+    s.project = Some("/home/me/secret/abito/".into());
+    s.color = Some("#2dd4bf".into());
+    s.final_line = Some("  done\u{7}  \n".into());
+    s.steps = (0..25).map(|n| format!("Step {n}\u{0}{}", "z".repeat(300))).collect();
+    s.status_text = format!("{}\u{0}", "s".repeat(400));
+    hub.publish_sessions(vec![s], 7_000);
+
+    let full = hub.sessions_json_with(true)[0].clone();
+    assert_eq!(full["project"], "abito", "the folder name only: never a path (§15.6)");
+    assert_eq!(full["updatedAt"], 7_000);
+    assert_eq!(full["color"], "#2DD4BF");
+    assert_eq!(full["finalLine"], "done");
+    assert_eq!(full["statusText"].as_str().unwrap().chars().count(), 200);
+    let steps = full["steps"].as_array().unwrap();
+    assert_eq!(steps.len(), 20, "at most 20 entries");
+    assert_eq!(steps[19].as_str().unwrap().chars().count(), 200, "at most 200 characters each");
+    assert!(steps.iter().all(|s| !s.as_str().unwrap().contains('\u{0}')), "control characters are stripped: {steps:?}");
+    let first = steps[0].as_str().unwrap();
+    assert!(first.starts_with("Step 5") && steps[19].as_str().unwrap().starts_with("Step 24"), "the most recent 20, oldest first: {first:?}");
+
+    let plain = hub.sessions_json_with(false)[0].clone();
+    assert_eq!(plain.as_object().unwrap().len(), 7, "the plain line carries none of it: {plain}");
+    for k in ["steps", "finalLine", "project", "color"] {
+        assert!(plain.get(k).is_none(), "{k}");
+    }
+
+    // What the contract refuses is absent, not guessed.
+    for bad in ["", "/", ".", "..", "   "] {
+        let hub = hub::Hub::new();
+        let mut s = sess("agent_codex", "idle");
+        s.project = Some(bad.into());
+        hub.publish_sessions(vec![s], 1);
+        assert!(hub.sessions_json_with(true)[0].get("project").is_none(), "project {bad:?} is refused");
+    }
+    for bad in ["#FFF", "2DD4BF", "#GGGGGG", "#2DD4BF7", "#2DD4B", "", "#2D D4BF"] {
+        let hub = hub::Hub::new();
+        let mut s = sess("agent_codex", "idle");
+        s.color = Some(bad.into());
+        hub.publish_sessions(vec![s], 1);
+        assert!(hub.sessions_json_with(true)[0].get("color").is_none(), "color {bad:?} is dropped");
+    }
+    // A stray space around a real colour is trimmed, not thrown away.
+    let hub = hub::Hub::new();
+    let mut padded = sess("agent_codex", "idle");
+    padded.color = Some(" #2dd4bf ".into());
+    hub.publish_sessions(vec![padded], 1);
+    assert_eq!(hub.sessions_json_with(true)[0]["color"], "#2DD4BF");
+
+    let hub = hub::Hub::new();
+    let mut blank = sess("agent_codex", "idle");
+    blank.final_line = Some("  \n\t ".into());
+    blank.steps = Vec::new();
+    hub.publish_sessions(vec![blank], 1);
+    let one = hub.sessions_json_with(true)[0].clone();
+    assert!(one.get("finalLine").is_none(), "a blank last line is absent, not an empty string: {one}");
+    assert!(one.get("steps").is_none(), "no steps is absent too (the default is []): {one}");
+}
+
+#[test]
+fn a_details_only_change_reaches_the_details_phone_and_never_resends_a_plain_line() {
+    run(async {
+        let rig = start_with(Arc::new(Offers)).await;
+        let (mut plain, mut pw) = connect(rig.port, &rig.fingerprint).await.unwrap();
+        send(&mut pw, json!({"type":"hello","v":PROTOCOL,"token":rig.token})).await;
+        assert_eq!(recv(&mut plain).await.unwrap()["type"], "welcome");
+        assert_eq!(recv(&mut plain).await.unwrap()["sessions"].as_array().unwrap().len(), 0);
+        let (mut rich, mut rw) = connect(rig.port, &rig.fingerprint).await.unwrap();
+        send(&mut rw, json!({"type":"hello","v":PROTOCOL,"token":rig.token,"caps":["details"]})).await;
+        assert_eq!(recv(&mut rich).await.unwrap()["caps"], json!(["details"]));
+        recv(&mut rich).await.unwrap();
+
+        let mut s = detailed("integration_claude", "working");
+        s.steps = vec!["Read".into()];
+        rig.hub.publish_sessions(vec![s.clone()], 1_000);
+        assert_eq!(recv(&mut plain).await.unwrap()["sessions"][0].as_object().unwrap().len(), 7);
+        let got = recv(&mut rich).await.unwrap();
+        assert_eq!(got["sessions"][0]["steps"], json!(["Read"]));
+        assert_eq!(got["sessions"][0]["updatedAt"], 1_000);
+
+        // The very same content again: neither phone is told, and no `updatedAt` moves (both are still 1_000).
+        rig.hub.publish_sessions(vec![s.clone()], 5_000);
+        rig.hub.publish_sessions(vec![s.clone()], 5_500);
+
+        // A details-only change: the same plain line, more steps. Only the phone that shows details is told.
+        s.steps = vec!["Read".into(), "Bash".into(), "Edit".into()];
+        rig.hub.publish_sessions(vec![s], 6_000);
+        let got = recv(&mut rich).await.unwrap();
+        assert_eq!(got["sessions"][0]["updatedAt"], 6_000, "the two earlier publishes moved nothing: {got}");
+        assert_eq!(got["sessions"][0]["steps"], json!(["Read", "Bash", "Edit"]));
+        let mut line = String::new();
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(300), plain.read_line(&mut line)).await.is_err(),
+            "a plain phone is never resent an identical plain line: {line:?}"
+        );
+    });
+}
+
+#[test]
+fn the_islands_tools_become_step_progress_and_the_details_steps() {
+    let view = rows(json!([
+        {"id":"s-0000000a","kind":"claude-code","cwd":"proj","state":"running","origin":null,
+         "tools":{"total":6,"steps":[
+            {"index":1,"name":"read","state":"done"},
+            {"index":2,"name":"grep","state":"done"},
+            {"index":3,"name":"edit","state":"running"}]}},
+        {"id":"s-0000000b","kind":"codex","cwd":null,"state":"running","origin":null,
+         "tools":{"total":2,"steps":[
+            {"index":1,"name":"read","state":"done"},
+            {"index":2,"name":"bash","state":"done"}]}},
+        {"id":"s-0000000c","kind":"gemini","cwd":null,"state":"zombie","origin":null,
+         "tools":{"total":2,"steps":[
+            {"index":1,"name":"read","state":"done"},
+            {"index":2,"name":"bash","state":"error"}]}},
+        {"id":"s-0000000d","kind":"opencode","cwd":null,"state":"sleeping","origin":null}
+    ]));
+    let got = source::sessions_from_view(&view);
+    let by = |p: &str| got.iter().find(|s| s.pill_id == p).unwrap_or_else(|| panic!("{p} in {got:?}")).clone();
+
+    let claude = by("integration_claude");
+    assert_eq!((claude.step_index, claude.step_count), (3, 6), "the running step out of the total");
+    assert_eq!(claude.steps, vec!["Read", "Grep", "Edit"], "oldest first, a label per step");
+    assert_eq!(claude.status_text, "Edit", "one honest line: the step it is running");
+
+    let codex = by("agent_codex");
+    assert_eq!((codex.step_index, codex.step_count), (2, 2), "every step done: the ring is full");
+    assert_eq!(codex.status_text, "", "nothing true to add about a row that is not running");
+
+    let gemini = by("agent_gemini");
+    assert_eq!((gemini.step_index, gemini.step_count), (2, 2), "an error stops the ring where it failed");
+    assert_eq!(gemini.steps.len(), 2);
+
+    let opencode = by("agent_opencode");
+    assert_eq!((opencode.step_index, opencode.step_count), (0, 0), "no tools, no progress claim");
+    assert!(opencode.steps.is_empty());
+
+    // The winning row is the one the step counts come from, exactly as the state is.
+    let quiet = rows(json!([
+        {"id":"s-0000000a","kind":"codex","cwd":null,"state":"sleeping","origin":null,
+         "tools":{"total":9,"steps":[{"index":1,"name":"read","state":"done"}]}},
+        {"id":"s-0000000b","kind":"codex","cwd":null,"state":"running","origin":null,
+         "tools":{"total":2,"steps":[{"index":1,"name":"read","state":"done"},{"index":2,"name":"bash","state":"running"}]}}
+    ]));
+    let one = &source::sessions_from_view(&quiet)[0];
+    assert_eq!((one.step_index, one.step_count), (2, 2), "the busiest row speaks for the pill");
+    assert_eq!(one.steps, vec!["Read", "Bash"], "the busiest row's steps, not the sleeping one's");
+    assert_eq!(one.status_text, "2 sessions", "an agent with several rows says how many: the step label is for a single one");
+
+    // More steps than the contract allows are the LAST 20, oldest first.
+    let many: Vec<serde_json::Value> = (1..=30).map(|i| json!({"index":i,"name":format!("step{i}"),"state":"done"})).collect();
+    let cut = rows(json!([{"id":"s-0000000a","kind":"codex","cwd":null,"state":"running","origin":null,
+        "tools":{"total":30,"steps":many}}]));
+    let s = &source::sessions_from_view(&cut)[0];
+    assert_eq!(s.steps.len(), 20);
+    assert_eq!((s.steps.first().map(String::as_str), s.steps.last().map(String::as_str)), (Some("Step11"), Some("Step30")));
 }
 
 // ---- S7: the mDNS announcement, §3.2 of the link contract -------------------------------
