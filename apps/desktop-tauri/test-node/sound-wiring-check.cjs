@@ -103,7 +103,6 @@ function hostDtoFixture(host) {
       'p.theme().as_str()': 'system',
       'p.auto_close_seconds()': 15,
       'p.open_on_hover()': false,
-      'p.absence_seconds()': 10,
       'p.show_plan_in_notch()': false,
       'p.show_codex_plan_in_notch()': false,
       'p.window_context()': false,
@@ -134,7 +133,7 @@ test('Host DTO fixture extracts complete legacy and multiline typed projections 
   assert.deepEqual(dto, { sound: true, gain: 0, displayName: null, avatarColors: {},
     pillColors: {},
     mainPill: 'integration_claude', declaredPills: ['integration_resend', 'integration_n8n', 'integration_vercel', 'integration_github'], theme: 'system',
-    autoCloseSeconds: 15, openOnHover: false, absenceSeconds: 10, openSettingsAtLaunch: false, settingsWindow: true, customBlobs: null, islandAgents: null, abitoInstructions: null, monitor: null, showPlanInNotch: false, showCodexPlanInNotch: false, windowContext: false, liveContext: true, windowContextAvailable: false, windowContextNote: null, windowContextNative: false });
+    autoCloseSeconds: 15, openOnHover: false, openSettingsAtLaunch: false, settingsWindow: true, customBlobs: null, islandAgents: null, abitoInstructions: null, monitor: null, showPlanInNotch: false, showCodexPlanInNotch: false, windowContext: false, liveContext: true, windowContextAvailable: false, windowContextNote: null, windowContextNative: false });
   const legacy = 'fn view_prefs(p: &Prefs) -> Value { json!({"sound": p.sound, "gain": p.gain(), "displayName": p.display_name, "avatarColors": p.avatar_colors}) }';
   assert.deepEqual(hostDtoFixture(legacy), { sound: true, gain: 0, displayName: null, avatarColors: {} });
   const quoted = 'complete ) with "quoted" text';

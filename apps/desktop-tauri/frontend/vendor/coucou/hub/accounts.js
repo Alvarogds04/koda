@@ -187,7 +187,7 @@ async function renderAccounts({ invoke, V, listen, timers, page = "all", keys: s
     flow = h("div", { role: "group", "aria-label": "Inicio de sesión en curso" });
     if (ev?.message) flow.append(note(ev.message));
     if (ev?.userCode) flow.append(h("code", { class: "path", text: ev.userCode }));
-    if (ev?.link) flow.append(note(ev.link), note("Abre este enlace en tu navegador. Abrir enlaces no está disponible en esta ventana."));
+    if (ev?.link) flow.append(note(ev.link), note("Abrí este enlace en tu navegador. Abrir enlaces no está disponible en esta ventana."));
     else if (ev?.linkRejected) flow.append(note("No se pudo abrir el enlace desde acá."));
     if (prompt) {
       flow.append(note(prompt.message));

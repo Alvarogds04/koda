@@ -93,8 +93,10 @@ test('#336 no innerHTML is reintroduced in island.js (#411) and the adapter owns
 // here is HANDLER SIMULATION ONLY — no native gesture, focus or geometry is
 // proven (the module's own isTrusted rules stay pinned in
 // island-interaction-check.cjs).
-function engagementFixture(openOnHover) {
+function engagementFixture(openOnHover, options) {
   const vm = require('node:vm');
+  // island-free-drag S4: the desktop-character adapter is optional; the spies record a real pick-up/carry/end when it is present
+  const pet = options && options.pet ? { picked: [], carried: [], ended: [] } : null;
   let hovering = false;
   const intervalsList = [];
   const moduleApi = require(path.join(frontend, 'island-interaction.js'));
@@ -116,7 +118,7 @@ function engagementFixture(openOnHover) {
       hidden: true, inert: false, disabled: false, value: '', textContent: '', tabIndex: 0,
       dataset: {}, matches() { return false; },
       style: { width: '', height: '', top: '', bottom: '', left: '', borderRadius: '',
-        setProperty() {}, getPropertyValue() { return '1'; } },
+        setProperty() {}, getPropertyValue() { return '1'; }, removeProperty() {} },
       classList: { add() {}, remove() {}, toggle() {} },
       setAttribute(k, v) { attrs.set(k, v); }, getAttribute(k) { return attrs.get(k) ?? null; }, removeAttribute() {}, appendChild() {},
       before(el) { byId.set(el.id, el); },
@@ -186,7 +188,7 @@ function engagementFixture(openOnHover) {
     AbitoIslandInteraction: moduleApi,
     __TAURI__: { core: { invoke(cmd, args) {
       invocations.push({ cmd, args });
-      if (cmd === 'prefs_action') return resolved({ sound: false, avatarColors: {}, autoCloseSeconds: 15, openOnHover });
+      if (cmd === 'prefs_action') return resolved({ sound: false, avatarColors: {}, autoCloseSeconds: 15, openOnHover, ...(options && options.prefs) });
       if (cmd === 'hotkey_action') return resolved({ status: 'disabled' });
       if (cmd === 'question_action') return resolved({ available: false, pending: null });
       return resolved({});
@@ -194,6 +196,19 @@ function engagementFixture(openOnHover) {
     desktop,
     document: documentStub,
   };
+  if (pet) {
+    sandbox.AbitoIslandDesktop = {
+      canPickUp: () => (options.pet.canPickUp ? options.pet.canPickUp() : true),
+      pickUp: (x, y) => pet.picked.push([x, y]),
+      carry: (x, y) => pet.carried.push([x, y]),
+      carryEnd: (x, y) => pet.ended.push([x, y]),
+      flyOutOrHome() {},
+      attach() {},
+      snapshot() {},
+      init: () => Promise.resolve(),
+      ready: Promise.resolve(),
+    };
+  }
   sandbox.window = sandbox;
   sandbox.self = sandbox;
   sandbox.top = sandbox;
@@ -229,9 +244,30 @@ function engagementFixture(openOnHover) {
     enter() { hovering = true; byId.get('capsule').fire('pointerenter', pointer({ type: 'pointerenter' })); byId.get('island').fire('pointerenter', pointer({ type: 'pointerenter' })); },
     leave() { hovering = false; byId.get('capsule').fire('pointerleave', pointer({ type: 'pointerleave' })); byId.get('island').fire('pointerleave', pointer({ type: 'pointerleave' })); },
     press() { fire(windowListeners, 'pointerdown', pointer({ type: 'pointerdown', target: { closest: () => null } })); },
+    // Koda: a press on the bare pill at a screen point, then pointer travel in screen px
+    pressAt(screenX, screenY) { fire(windowListeners, 'pointerdown', pointer({ type: 'pointerdown', screenX, screenY, target: { closest: () => null } })); },
+    moveTo(screenX, screenY, buttons = 1) { fire(windowListeners, 'pointermove', pointer({ type: 'pointermove', screenX, screenY, buttons })); },
+    blur() { fire(windowListeners, 'blur', { type: 'blur' }); },
+    cancel() { fire(windowListeners, 'pointercancel', pointer({ type: 'pointercancel' })); },
+    moves() { return invocations.filter(i => /^island_move/.test(i.cmd)); },
     // a press on an element that matches the real selector list (e.g. a link): closest honours the selector
     pressOn(tag) { fire(windowListeners, 'pointerdown', pointer({ type: 'pointerdown', ctrlKey: true,
       target: { closest: sel => (String(sel).split(',').map(x => x.trim()).includes(tag) ? {} : null) } })); },
+    // island-free-drag S3/S4: a press on the character itself (as a real hit-test on #clay reports it)
+    pressCharacter(clientX, clientY, screenX, screenY) {
+      const target = { closest: sel => (String(sel).split(',').map(x => x.trim()).includes('#clay') ? {} : null), setPointerCapture() {} };
+      fire(windowListeners, 'pointerdown', pointer({ type: 'pointerdown', clientX, clientY, screenX, screenY, target })); },
+    // T7: under the Koda skin #clay is hidden; the character a human sees and grabs is the .koda-sprite drawn beside it
+    pressSprite(clientX, clientY, screenX, screenY) {
+      const target = { classList: { contains: c => c === 'koda-sprite' }, closest: sel => (String(sel).split(',').map(x => x.trim()).includes('.koda-sprite') ? {} : null), setPointerCapture() {} };
+      fire(windowListeners, 'pointerdown', pointer({ type: 'pointerdown', clientX, clientY, screenX, screenY, target })); },
+    movePointer(clientX, clientY, screenX, screenY, buttons = 1) {
+      fire(windowListeners, 'pointermove', pointer({ type: 'pointermove', clientX, clientY, screenX, screenY, buttons })); },
+    pet() { return pet; },
+    island() { return byId.get('island'); },
+    shapes() { return invocations.filter(i => i.cmd === 'island_shape').map(i => i.args.payload); },
+    // island-free-drag S3: the layout model publishes what the compact island should show (abito:compact-view)
+    compactView(detail) { fire(documentListeners, 'abito:compact-view', { type: 'abito:compact-view', detail }); },
     release() { fire(windowListeners, 'pointerup', pointer({ type: 'pointerup' })); },
     click() { fire(documentListeners, 'click', pointer({ type: 'click' })); },
     // Execute the shipped global pointer handlers around an independently owned
@@ -262,22 +298,34 @@ function engagementFixture(openOnHover) {
   };
 }
 
+// isla-cualquier-lado S2 (human: «solo el círculo con koda pero sin que esté oculto»): the folded island is Koda's disc and it
+// NEVER hides at the screen edge any more, whatever the time spent folded, the sound setting or an old stored absence preference.
+for (const [name, prefs] of [
+  ['muted (was: hidden after 1 s)', { sound: false }],
+  ['sound on, old 10 s default', { sound: true, absenceSeconds: 10 }],
+  ['old 300 s maximum', { sound: true, absenceSeconds: 300 }],
+]) test('S2 a folded island is never concealed at the edge: ' + name, () => {
+  const f = engagementFixture(false, { prefs }); f.mutate(); f.seed('compact');
+  for (let i = 0; i < 3; i++) { f.advance(301000); f.mutate(); }
+  assert.equal(f.capsule().dataset.edgeHidden, undefined, 'data-edge-hidden is never written');
+  assert.doesNotMatch(String(f.island().style.top), /^-/, 'the disc is never slid up out of the screen');
+  for (const shape of f.shapes()) assert.ok(shape.h >= 32, 'the native island never shrinks into the edge: ' + JSON.stringify(shape));
+});
+test('S2 the island no longer wires an edge-hide timer', () => {
+  assert.doesNotMatch(read('island.js'), /createEdgeController|setConcealed|__islandConceal|edgeHidden|absenceSeconds/, 'no edge-hide wiring is left');
+  assert.doesNotMatch(read('island-interaction.js'), /createEdgeController|EDGE_ABSENCE/, 'the module no longer exports the edge-hide timer');
+});
+
 for (const [name, card, blocked] of [
   ['expired', {state:'pending',reason:null,expires_at:'2000-01-01T00:00:00Z'}, false],
   ['pending', {state:'pending',reason:null,expires_at:'2099-01-01T00:00:00Z'}, true],
   ['inert', {state:'inert',reason:'closed',expires_at:'2099-01-01T00:00:00Z'}, false],
   ['invalid expiry', {state:'pending',reason:null,expires_at:'invalid'}, false],
-]) test('edge card gate: ' + name, () => {
+]) test('compact card gate: ' + name, () => {
   const f=engagementFixture(false); f.update({card:{operation:'Read files',...card}}); f.seed('compact');
   assert.equal(f.permission().hidden, name === 'invalid expiry', 'expired/inert cards remain visible; invalid shape stays hidden');
-  assert.equal(f.capsule().dataset.edgeWhy, blocked ? 'approval' : 'clear');
-  f.advance(1000); assert.equal(f.capsule().dataset.edgeHidden, blocked ? undefined : 'true');
-});
-test('edge diagnostic is mirrored and transparent window hover is not pill hover', () => {
-  const f=engagementFixture(false); f.seed('compact'); f.windowHover(true); f.pillHover(false); f.mutate();
-  assert.equal(f.capsule().dataset.edgeWhy,'clear');
-  f.pillHover(true); f.mutate(); assert.equal(f.capsule().dataset.edgeWhy,'pointer');
-  f.pillHover(false); f.mutate(); assert.equal(f.capsule().dataset.edgeWhy,'clear');
+  // isla-cualquier-lado S2: pending (blocked) or not, the folded island is never concealed at the edge
+  f.advance(301000); assert.equal(f.capsule().dataset.edgeHidden, undefined, blocked ? 'pending card' : 'no pending card');
 });
 
 for (const [surface, button] of [
@@ -293,12 +341,53 @@ for (const [surface, button] of [
   assert.deepEqual(f.desktopCalls, [], 'no expand, close or auto-close');
 });
 
-test('a press on the collapsed bar expands immediately without a release toggle', () => {
+test('a click on the collapsed bar expands on release without a release toggle', () => {
   const f = engagementFixture(false); f.mutate();
   f.press();
-  assert.deepEqual(f.desktopCalls, ['expand']);
+  assert.deepEqual(f.desktopCalls, [], 'a press alone may still become a move');
   f.release();
+  assert.deepEqual(f.desktopCalls, ['expand']);
   assert.equal(f.dragReleases().length, 0);
+  assert.deepEqual(f.moves(), [], 'a click never moves the island');
+});
+
+test('Koda: dragging the collapsed bar moves the island and does not expand it', () => {
+  const f = engagementFixture(false); f.mutate();
+  f.pressAt(900, 40); f.moveTo(903, 42);
+  assert.deepEqual(f.moves(), [], 'under 6 px it is still a click');
+  f.moveTo(950, 300); f.moveTo(20, 1000); f.release();
+  assert.deepEqual(JSON.parse(JSON.stringify(f.moves().map(i => [i.cmd, i.args]))), [
+    ['island_move_begin', { x: 900, y: 40 }],
+    ['island_move', { x: 950, y: 300 }],
+    ['island_move', { x: 20, y: 1000 }],
+    ['island_move_end', {}],
+  ]);
+  assert.deepEqual(f.desktopCalls, [], 'a move never expands');
+  assert.equal(f.invocations.filter(i => /^drag_/.test(i.cmd)).length, 0, 'the pill drag never reaches the character/click path');
+});
+
+test('Koda: the expanded island moves from its pill too; the window moving under the pointer (pointercancel/blur) never ends the move', () => {
+  const f = engagementFixture(false); f.mutate(); f.seed('expanded');
+  f.pressAt(500, 100); f.moveTo(500, 400); f.cancel(); f.blur(); f.moveTo(520, 420);
+  assert.deepEqual(f.moves().map(i => i.cmd), ['island_move_begin', 'island_move', 'island_move'], 'still moving after cancel/blur');
+  f.release();
+  assert.deepEqual(f.moves().map(i => i.cmd), ['island_move_begin', 'island_move', 'island_move', 'island_move_end']);
+  assert.deepEqual(f.desktopCalls, [], 'no expand, close or auto-close');
+  f.press(); f.cancel();
+  assert.deepEqual(f.desktopCalls, [], 'a cancelled click on a compact or expanded pill does nothing');
+});
+
+test('Koda: a lost release ends the move on the next pointer move seen without the button, so the island never sticks to the mouse', () => {
+  const f = engagementFixture(false); f.mutate();
+  f.pressAt(900, 40); f.moveTo(950, 300); f.moveTo(960, 310, 0); f.moveTo(1200, 900, 0);
+  assert.deepEqual(f.moves().map(i => i.cmd), ['island_move_begin', 'island_move', 'island_move_end']);
+  assert.deepEqual(f.desktopCalls, [], 'a lost release never expands');
+});
+
+test('Koda: a control or a link inside the island never starts a move', () => {
+  const f = engagementFixture(false); f.mutate(); f.seed('expanded');
+  f.pressOn('a'); f.moveTo(800, 800); f.release();
+  assert.deepEqual(f.moves(), []);
 });
 
 test('#421 a Ctrl+click press on a link never starts a drag: no drag_press, no toggle, no collapse verb (facade spy)', () => {
@@ -457,13 +546,11 @@ test('B4 a text field that is hidden or inert (a closed question card) no longer
   g.focus({ type: 'text', tag: 'textarea' }); g.mutate(); g.advance(60000);
   assert.equal(g.desktopCalls.includes('autoClose'), false, 'a visible text field still protects what is being typed');
 });
-test('B5 the edge-hide setting is SECONDS (Ajustes -> General -> «Ocultar tras», absence_seconds 5..300, default 10; old minutes migrate)', () => {
+test('B5 the retired edge-hide delay is gone from the host too (isla-cualquier-lado S2)', () => {
   const prefs = fs.readFileSync(path.join(__dirname, '../src/prefs.rs'), 'utf8');
-  assert.match(prefs, /ABSENCE_SECONDS: std::ops::RangeInclusive<u16> = 5\.\.=300/);
-  assert.match(prefs, /ABSENCE_DEFAULT_SECONDS: u16 = 10/);
-  assert.match(prefs, /\(minutes \* 60\)\.min\(\*ABSENCE_SECONDS\.end\(\)\)/);
-  assert.match(read('island.js'), /absenceSeconds:p\.absenceSeconds \?\? 10/);
-  assert.doesNotMatch(read('island.js'), /notice: !!\(current\?\.notices/, 'status notices no longer feed the edge guard');
+  assert.doesNotMatch(prefs, /ABSENCE_SECONDS|SetAbsenceSeconds|"set_absence_seconds"/, 'no stored edge-hide delay nor its command');
+  assert.doesNotMatch(fs.readFileSync(path.join(__dirname, '../src/settingshost.rs'), 'utf8'), /absenceSeconds/, 'the settings view no longer projects it');
+  assert.doesNotMatch(read('island.js'), /notice: !!\(current\?\.notices/, 'status notices do not feed the interaction guard');
 });
 
 // ---- live diagnosis: the controller's «why» is published on the capsule so the preview can be READ (human: «no se cumple») -------
@@ -482,6 +569,91 @@ test('C2 the 1 s hover re-read is armed (setInterval) and runs only while the co
   f.enter(); f.hover(false);
   f.tickIntervals();
   assert.match(f.capsule().dataset.autoClose, /^armado:/, 'the re-read cleared the stale «inside» without any other event');
+});
+
+// ---- island-free-drag S3/S4: compact Koda is ONLY the disc — it opens on a click, moves on a drag, and never pulls the pet ----
+// isTrusted:true is HANDLER SIMULATION ONLY (the module's own rules stay in island-interaction-check.cjs); what is proven here is
+// WHICH branch of the shipped handlers runs for a press on the character / on the disc.
+test('S3: a press on the compact disc opens it on a click and moves it on a drag, through the host verbs only', () => {
+  const click = engagementFixture(false); click.mutate(); click.seed('compact');
+  click.pressAt(960, 16); click.release();
+  assert.deepEqual(click.desktopCalls, ['expand'], 'a click opens the island');
+  assert.deepEqual(click.moves(), [], 'a click never moves it');
+  assert.equal(click.invocations.filter(i => /^drag_/.test(i.cmd)).length, 0, 'the compact press no longer reaches the native click path');
+  const drag = engagementFixture(false); drag.mutate(); drag.seed('compact');
+  drag.pressAt(960, 16); drag.moveTo(1000, 200); drag.release();
+  assert.deepEqual(drag.moves().map(i => i.cmd), ['island_move_begin', 'island_move', 'island_move_end']);
+  assert.deepEqual(drag.desktopCalls, [], 'a drag never opens it');
+});
+
+test('S3: a (legacy) wide compact view can never widen the disc, and the «Responder» pill is gone', () => {
+  const f = engagementFixture(false); f.mutate(); f.seed('compact');
+  f.compactView({ width: 560, activity: '¿Qué editor preferís?', reply: true, badge: 'question' });
+  assert.equal(f.island().style.width, '40px', 'the disc is the whole compact island');
+  assert.equal(f.island().style.height, '32px');
+  const shape = f.shapes().at(-1);
+  assert.deepEqual(JSON.parse(JSON.stringify(shape)), { w: 40, h: 32, settled: true }, 'the native input shape is the disc box');
+  assert.doesNotMatch(read('index.html'), /id="compact-reply"/, 'no «Responder» control exists on the disc');
+});
+
+test('S4: dragging the CHARACTER of the compact disc moves the island; the pet never leaves while compact', () => {
+  const f = engagementFixture(false, { pet: true }); f.mutate(); f.seed('compact');
+  f.pressCharacter(20, 16, 960, 16);
+  f.movePointer(120, 220, 1060, 220);
+  f.release();
+  assert.deepEqual(f.pet().picked, [], 'S4: compact never pulls the desktop character out');
+  assert.deepEqual(f.moves().map(i => i.cmd), ['island_move_begin', 'island_move', 'island_move_end'], 'the disc is a handle');
+  assert.deepEqual(f.desktopCalls, [], 'a move never expands');
+  assert.equal(f.invocations.filter(i => /^drag_/.test(i.cmd)).length, 0, 'nor does it reach the native click path');
+});
+
+test('S4: on the OPEN island, dragging the character pulls the pet out and never moves the island', () => {
+  const f = engagementFixture(false, { pet: true }); f.mutate(); f.seed('expanded');
+  f.pressCharacter(60, 80, 800, 80);
+  f.movePointer(200, 160, 940, 160);
+  assert.deepEqual(f.pet().picked, [[60, 80]], 'the pet leaves only from the open island');
+  assert.deepEqual(f.moves(), [], 'a pet pull-out never moves the island');
+  f.movePointer(240, 200, 980, 200);
+  assert.deepEqual(f.pet().carried, [[240, 200]], 'it follows the pointer');
+  f.release();
+  assert.equal(f.pet().ended.length, 1, 'and the release ends the carry');
+  assert.deepEqual(f.desktopCalls, [], 'no expand/close while carrying the pet');
+});
+
+test('S4: with no pet available (already out / feature off) the character of the open island is a handle again', () => {
+  const f = engagementFixture(false, { pet: { canPickUp: () => false } }); f.mutate(); f.seed('expanded');
+  f.pressCharacter(60, 80, 800, 80); f.movePointer(200, 160, 940, 160); f.release();
+  assert.deepEqual(f.pet().picked, []);
+  assert.deepEqual(f.moves().map(i => i.cmd), ['island_move_begin', 'island_move', 'island_move_end']);
+});
+
+test('T7: on the OPEN island the visible Koda sprite is the character: dragging it pulls the pet out', () => {
+  const f = engagementFixture(false, { pet: true }); f.mutate(); f.seed('expanded');
+  f.pressSprite(60, 80, 800, 80); f.movePointer(200, 160, 940, 160);
+  assert.deepEqual(f.pet().picked, [[60, 80]], 'grabbing the sprite of the open island pulls the pet out');
+  assert.deepEqual(f.moves(), [], 'and never moves the island');
+  f.release();
+});
+
+test('T7: on the compact disc the sprite is still the disc: dragging it moves the island, never the pet', () => {
+  const f = engagementFixture(false, { pet: true }); f.mutate();
+  f.pressSprite(20, 16, 960, 16); f.movePointer(20, 16, 1000, 300); f.release();
+  assert.deepEqual(f.pet().picked, []);
+  assert.deepEqual(f.moves().map(i => i.cmd), ['island_move_begin', 'island_move', 'island_move_end']);
+});
+
+test('T7: a focus blip (blur/pointercancel) while carrying the pet never drops it; the button release does, and a lost release ends it on the next move', () => {
+  const f = engagementFixture(false, { pet: true }); f.mutate(); f.seed('expanded');
+  f.pressSprite(60, 80, 800, 80); f.movePointer(200, 160, 940, 160);
+  f.cancel(); f.blur();
+  assert.equal(f.pet().ended.length, 0, 'the character window mapping under the pointer must not end the carry');
+  f.movePointer(400, 300, 1140, 300);
+  assert.deepEqual(f.pet().carried.slice(-1), [[400, 300]], 'it keeps following the pointer');
+  f.release();
+  assert.equal(f.pet().ended.length, 1, 'the real release ends it');
+  const g = engagementFixture(false, { pet: true }); g.mutate(); g.seed('expanded');
+  g.pressSprite(60, 80, 800, 80); g.movePointer(200, 160, 940, 160); g.movePointer(220, 180, 960, 180, 0);
+  assert.equal(g.pet().ended.length, 1, 'a move without the button ends a carry whose release was lost');
 });
 
 console.log(`island-interaction-wiring-check: ${passed} passed, ${failed} failed`);

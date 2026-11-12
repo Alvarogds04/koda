@@ -136,7 +136,7 @@ startHub(root, {
         container.append(general, personalization);
         return () => { for (const stop of stops) stop?.(); general.dispose?.(); personalization.dispose?.(); };
       }
-      catch { container.append(card(row('No disponible', 'No se pudieron leer los ajustes. Vuelve a abrir esta página.'))); }
+      catch { container.append(card(row('No disponible', 'No se pudieron leer los ajustes. Volvé a abrir esta página.'))); }
     } else {
       const mounted = [];
       // Each renderer retains its closed IPC planner and per-mount cleanup.
@@ -159,7 +159,7 @@ startHub(root, {
         else container.append(renderUnavailable(page));
       } catch {
         for (const ui of mounted) ui.dispose();
-        container.append(card(row('No disponible', 'No se pudieron leer los ajustes. Vuelve a abrir esta página.')));
+        container.append(card(row('No disponible', 'No se pudieron leer los ajustes. Volvé a abrir esta página.')));
       }
       return () => { for (const ui of mounted) ui.dispose(); };
     }

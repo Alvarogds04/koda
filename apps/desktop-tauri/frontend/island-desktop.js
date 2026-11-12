@@ -9,9 +9,10 @@
   root.AbitoIslandDesktopFactory = Object.freeze(api);
   api.mount();
 })(typeof self !== 'undefined' ? self : this, root => {
-  /** Who handles a press+drag: a press ON the character picks it up (Coucou); anything else moves the island. */
-  function pickUpDecision({ onCharacter, available }) {
-    return onCharacter && available ? 'pickup' : 'island';
+  /** Who handles a press+drag: a press ON the character of the OPEN island picks it up (Coucou); anything else moves the island.
+   *  island-free-drag S4 (choice A): the compact island is only the disc, and the pet may leave ONLY from the expanded island. */
+  function pickUpDecision({ onCharacter, available, expanded }) {
+    return onCharacter && available && expanded === true ? 'pickup' : 'island';
   }
 
   function create(deps) {

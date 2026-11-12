@@ -2,9 +2,10 @@
 /* T4 (Sileo notifications): the REAL question card in a real browser, through its public flow.
    ATTACHES to the existing shared Chrome on 127.0.0.1:9222 (CDP). It NEVER launches, downloads or restarts a
    browser: if none answers it fails clearly. It closes only its own context/page, never the browser.
-   Real frontend (index.html + real CSS/JS) served from a scratch HTTP server, with a FAKE Tauri bridge: the card is
-   opened by the real trusted «Responder» click; the host's phase hook (__islandSetState) is emulated exactly as Rust
-   evals it. NO backend, NO live agents: it proves rendered geometry + the payloads the card hands to question_action.
+   Real frontend (index.html + real CSS/JS) served from a scratch HTTP server, with a FAKE Tauri bridge: a NEW question
+   opens the island by itself (only if it did not, the compact disc is clicked); the host's phase hook (__islandSetState)
+   is emulated exactly as Rust evals it. NO backend, NO live agents: it proves rendered geometry + the payloads the card
+   hands to question_action.
    Side effects of loading the full page (pre-existing, unrelated to this check): island.js/desktop.js call
    agent_action/prefs_action/island_shape/record_frontend_evidence/chat_action on the FAKE bridge, which answers null.
    Run: node apps/desktop-tauri/test-node/notification-card-shared-browser-check.cjs
@@ -13,6 +14,7 @@ const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
 const frontend = path.join(__dirname, '..', 'frontend');
+const H = require('./island-geometry-harness.cjs'); // only for its in-page helper: this check never launches a browser
 const MIN_TARGET = 40;
 const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml' };
 let pass = 0, fail = 0;
@@ -65,13 +67,26 @@ const uid = n => `0b3a5c9e-8f27-4d11-9a0e-${String(n).padStart(12, '0')}`;
   await page.waitForTimeout(900);
 
   const pending = over => ({ kind: 'question', agent: 'pi', text: '¿Qué?', options: [], expires_at: Date.now() + 600000, allow_free_text: false, ...over });
-  const show = async p => { // a real trusted «Responder» click opens the island on the question
+  const waitOpen = ms => page.waitForFunction(() => { const c = document.getElementById('capsule'); return c.dataset.phase === 'expanded' && c.dataset.question === 'pending'; }, null, { timeout: ms });
+  const show = async p => { // a NEW question opens the island by itself and shows it on the card
     await page.evaluate(() => __emit({ available: true, pending: null, queued: [], queued_count: 0, notice: null }));
     await page.waitForTimeout(200);
     await page.evaluate(p => __emit({ available: true, pending: p, queued: [], queued_count: 0, notice: null }), p);
     await page.waitForTimeout(700);
-    if (await page.evaluate(() => document.getElementById('capsule').dataset.phase) !== 'expanded') await page.click('#compact-reply');
-    await page.waitForFunction(() => { const c = document.getElementById('capsule'); return c.dataset.phase === 'expanded' && c.dataset.question === 'pending'; }, null, { timeout: 5000 });
+    // island-free-drag S3/S5: the compact island is only the disc, and a NEW question opens it by itself, so WAIT for that.
+    // NEVER click #island to open it: the card lives INSIDE #island and the expanded island's box is centred on row 1, so Playwright's
+    // hit-target check accepts the row as a descendant, waits for the spring to settle and dispatches ONE trusted click on
+    // .q-option[data-number="1"] — it silently toggles it (macOS CI: «S5 multi» rows arrived aria-checked="true" before any of the
+    // check's own clicks, and the 6 assertions cascaded from there). Measured on a 752x560 viewport: the expanded island is 720x295 at
+    // the top, so its centre (y≈148) sits inside row 1, which starts at y≈120; and this branch is taken on every run where the phase
+    // is NOT yet «expanded» 700 ms after the question (a ~10x slower machine), i.e. exactly on the slower macOS runner.
+    // Only if the island never opens by itself is the DISC clicked, at its own centre measured now: the top of the notch (y≈20), always
+    // well above the card's first row.
+    if (!await waitOpen(5000).then(() => true, () => false)) {
+      const disc = await page.evaluate(() => { const b = document.getElementById('island').getBoundingClientRect(); return { x: b.left + b.width / 2, y: b.top + b.height / 2 }; });
+      await page.mouse.click(disc.x, disc.y);
+      await waitOpen(5000);
+    }
     await page.waitForTimeout(700);
   };
   const sentNow = () => page.evaluate(() => window.__sent.slice());
@@ -179,14 +194,14 @@ const uid = n => `0b3a5c9e-8f27-4d11-9a0e-${String(n).padStart(12, '0')}`;
   // ---- human 26-oct: the Sileo toast is OPAQUE — its title/body always sit on the solid pill/body, never on what is behind ----------
   await page.evaluate(() => __emit({ available: true, pending: null, queued: [], queued_count: 0, notice: null }));
   await page.waitForTimeout(300);
-  // the order that broke it live: the question arrives while Abito is visible (no toast), THEN Abito hides
-  await page.evaluate(() => { window.__islandSetState && window.__islandSetState('compact'); });
+  await page.evaluate(() => { if (window.__islandSetState) window.__islandSetState('compact'); });
   await page.waitForTimeout(400);
+  // isla-cualquier-lado S3/S5 (T6, L21 human «1»): the toast hangs from the FOLDED disc, and a NEW question opens a folded island by
+  // itself, so the only phase that still routes the question to the toast is the one it cannot classify — staged here.
+  await page.evaluate(H.unknownPhaseInPage);
   await page.evaluate(p => __emit({ available: true, pending: p, queued: [], queued_count: 0, notice: null }),
     pending({ id: uid(90), agent: 'codex', text: 'Codex pregunta algo largo para ver el cuerpo', options: [{ index: 0, label: 'A', description: '' }, { index: 1, label: 'B', description: '' }] }));
-  await page.waitForTimeout(600);
-  await page.evaluate(() => window.__islandConceal(true));
-  await page.waitForTimeout(1600);
+  await page.waitForTimeout(2200);
   const op = await page.evaluate(() => {
     const t = document.getElementById('question-toast'); const box = el => { const b = el.getBoundingClientRect(); return { l: b.left, r: b.right, t: b.top, b: b.bottom }; };
     const pill = box(t.querySelector('.q-toast-pill')), title = box(t.querySelector('.q-toast-title')), badge = box(t.querySelector('.q-toast-badge'));
@@ -194,10 +209,11 @@ const uid = n => `0b3a5c9e-8f27-4d11-9a0e-${String(n).padStart(12, '0')}`;
     return { shown: !t.hidden, pill, title, badge, opacity: o, fillOpacity: getComputedStyle(t.querySelector('.q-toast-pill')).fillOpacity };
   });
   const covers = (a, b) => a.l <= b.l + 1 && a.r >= b.r - 1 && a.t <= b.t + 1 && a.b >= b.b - 1;
-  ok('opaque toast: shown while Abito is hidden', op.shown, JSON.stringify(op));
+  ok('opaque toast: shown while the island is folded (the disc is where it hangs from, unknown phase)', op.shown, JSON.stringify(op));
   ok('opaque toast: the solid pill covers the title and Abito badge (nothing drawn over the background)', covers(op.pill, op.title) && covers(op.pill, op.badge), JSON.stringify(op));
   ok('opaque toast: fully opaque (no element opacity < 1, fill opacity 1)', op.opacity === 1 && Number(op.fillOpacity) === 1, JSON.stringify(op));
-  await page.evaluate(() => { __emit({ available: true, pending: null, queued: [], queued_count: 0, notice: null }); window.__islandConceal(false); });
+  await page.evaluate(H.knownPhaseInPage); // one page for the whole check: give the real phase back before the next scenario
+  await page.evaluate(() => { __emit({ available: true, pending: null, queued: [], queued_count: 0, notice: null }); });
   await page.waitForTimeout(500);
 
   // ---- S1 (abito-avisos-ux): the Avisos band is a compact strip in the SAME bottom slot as «Sin cuenta», not a 288x44 capsule over

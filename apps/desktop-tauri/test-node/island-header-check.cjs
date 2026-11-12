@@ -124,6 +124,15 @@ test('finished card markup + wiring: lives inside #notices, survives the boot re
   const notices = html.slice(html.indexOf('<div id="notices"'), html.indexOf('<p id="notice-live"'));
   assert.match(notices, /id="notice-card"[^>]*hidden[\s\S]*id="notice-card-name"[\s\S]*id="notice-card-verb"[\s\S]*id="notice-card-message"[\s\S]*id="notice-card-terminal"[\s\S]*id="notice-card-ok"/);
   assert.doesNotMatch(notices, /id="notice-card-terminal"[^>]*disabled/);
+  // S3 (04 avisos 5): the visible word is «Ver» inside a button that opens the terminal, so the accessible name must CONTAIN
+  // «Ver» (WCAG 2.5.3, label in name) — «Abrir terminal» did not.
+  const terminalTag = /<button[^>]*id="notice-card-terminal"[^>]*>([\s\S]*?)<\/button>/.exec(notices);
+  assert.ok(terminalTag, 'the terminal button is in the finished card');
+  const visible = terminalTag[1].replace(/<[^>]*>/g, '').trim();
+  const accessible = /aria-label="([^"]*)"/.exec(terminalTag[0]);
+  assert.equal(visible, 'Ver', 'the visible label');
+  assert.ok(accessible && accessible[1].includes(visible), `the accessible name contains «${visible}» (got ${accessible && accessible[1]})`);
+  assert.equal(accessible[1], 'Ver en la terminal', 'and it still says where it goes');
   const src = read('island.js');
   assert.match(src, /noticesEl\.replaceChildren\(noticeChips, noticePill, noticeDetail, noticeList, \.\.\.\(\$\('notice-card'\)/, 'the boot rebuild keeps the card');
   assert.match(src, /O\.finishedCardView\(selected, NV && NV\.agentLabel\)/);

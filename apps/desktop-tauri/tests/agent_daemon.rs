@@ -2,8 +2,10 @@
 // Linux-only integration: Unix agent sockets and the Linux session/daemon policy.
 
 //! #306: the island-agent client against the REAL `abito-island-daemon` (apps/desktop-daemon)
-//! running a FAKE agent in a private temp island. No Pi, no provider, no network, no
-//! credential. A daemon that is not running must read as `no_daemon`, never hang.
+//! running a FAKE agent in a private temp island. No provider account, no network, no credential.
+//! The fake agent replaces only the engine: listing providers goes through the daemon's real Pi SDK
+//! helper, so a `pi` on PATH is required (CI installs the pinned Pi in the Rust job; never skip).
+//! A daemon that is not running must read as `no_daemon`, never hang.
 use abito_island::agentconn::{island_root, AgentConn};
 use serde_json::{json, Value};
 use std::os::unix::fs::DirBuilderExt;
@@ -456,7 +458,7 @@ fn the_real_daemon_lists_agents_with_a_plan_the_page_can_carry_back() {
     // #436 design: the connect word is «Agregar hooks» (was «Conectar»)
     assert_eq!(row["label"], json!("Agregar hooks"));
     assert_eq!(row["hash"], json!(hash), "the click carries the hash the human saw");
-    assert!(row["summary"].as_str().unwrap().starts_with("Agrega los hooks de Abito"), "{row}");
+    assert!(row["summary"].as_str().unwrap().starts_with("Agrega los hooks de Koda"), "{row}");
     if let Some(o) = list.iter().find(|a| a["id"] == json!("opencode")) { assert_eq!(o["state"], json!("unavailable")); }
 }
 

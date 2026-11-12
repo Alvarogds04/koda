@@ -1056,19 +1056,7 @@ button.notice-list-open { cursor: pointer; }
 /* v5-04: the island's own tooltip (WebKitGTK did not paint native `title` tooltips in this window). Never takes the pointer. */
 #island-tip { position: absolute; z-index: 30; max-width: 260px; padding: 5px 9px; border-radius: 8px; background: var(--card-flat, #1b1c20); color: var(--ink); border: 1px solid var(--hairline, rgba(255, 255, 255, 0.14)); font: 400 11px/1.35 var(--font); box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35); pointer-events: none; overflow-wrap: anywhere; white-space: normal; }
 #island-tip[hidden] { display: none; }
-/* ══ T1 · S1 (01 oculta A): ONE coloured thread. Hidden = the island is 24px up; 8px of it stay under the pointer as the activation zone ═══
-   Only the thread is seen (the black slice is transparent); its colour is the most urgent state and it pulses slowly only if motion is allowed. */
-#edge-strip { position: absolute; left: 50%; top: 0; width: 160px; height: 3px; margin-left: -80px; border-radius: 0 0 3px 3px; background: var(--dim-3); opacity: 0; pointer-events: none; transition: opacity 160ms var(--ease-out), background 160ms var(--ease-out); z-index: 6; }
-#capsule[data-edge-hidden="true"] #edge-strip { opacity: 1; }
-#capsule[data-edge-hidden="true"] #island { background: transparent; box-shadow: none; }
-#capsule[data-edge-hidden="true"] #island > *:not(#edge-strip) { opacity: 0; pointer-events: none; }
-#edge-strip[data-state="rest"] { background: var(--dim-3); }
-#edge-strip[data-state="question"] { background: #22d3ee; }
-#edge-strip[data-state="approval"] { background: #f5a524; }
-#edge-strip[data-state="finished"] { background: #22c55e; }
-@media (prefers-reduced-motion: no-preference) { #edge-strip[data-pulse="true"] { animation: edge-pulse 2.4s ease-in-out infinite; } }
-html[data-motion="reduce"] #edge-strip { animation: none; transition: none; }
-@keyframes edge-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .45; } }
+/* isla-cualquier-lado S2: the folded island never hides at the screen edge any more; the hidden thread (#edge-strip) is gone. */
 
 /* ══ T1 · S2 (02 compacta A): mascot + up to 3 coloured minis + «+N», the activity line, a state badge ═══════════════════════════════ */
 #mini-grid { left: auto; right: 12px; top: 50%; width: auto; height: 18px; margin-top: -9px; display: none; flex-direction: row; align-items: center; gap: 4px; grid-template-columns: none; grid-auto-rows: auto; }
@@ -1150,12 +1138,6 @@ html[data-motion="reduce"] #edge-strip { animation: none; transition: none; }
 .sessions-all-list { margin-top: 2px; gap: 4px 6px; }
 .card-left > .sessions-all, .sessions-all button { pointer-events: auto; }
 
-/* ══ v8 S1: the hidden island sits 24px up (window y -24..8), so its VISIBLE part is the island's last 8px. The thread lives there
-   (island y 24..27 = window y 0..3), never at the island's own top, which is off screen. Rest is a visible light grey. ═══════════ */
-#edge-strip { top: 24px; height: 3px; border-radius: 0 0 3px 3px; }
-#edge-strip[data-state="rest"] { background: var(--dim-2); }
-#capsule[data-edge-hidden="true"] #edge-strip { opacity: 1; }
-
 /* ══ v8 S7: the reason a disabled «Hecho» is disabled is visible text beside it (dim-2 on the card, >= 4.5:1) ═════════════════════ */
 #question-reason { flex: 1 1 auto; min-width: 0; margin-right: auto; font: 400 11px var(--font); color: var(--dim-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 #question-reason[hidden] { display: none; }
@@ -1180,7 +1162,6 @@ html[data-motion="reduce"] #edge-strip { animation: none; transition: none; }
 :root { --card-solid: #141518; }
 html[data-theme="light"] { --card-solid: var(--card-bg); }
 #capsule[data-phase="expanded"] { --card: color-mix(in srgb, var(--card-solid) 78%, transparent); --card-flat: color-mix(in srgb, var(--card-solid) 60%, transparent); }
-#capsule[data-edge-hidden="true"] { --card: var(--card-solid); }
 
 /* ══ S30: NO coloured outline on the blob rows; the session colour lives on its mascot. Selected = background + the «◂» mark; keyboard focus keeps its ring ══ */
 .pill-choice, .pill-choice[data-color], .pill-choice[data-color="green"], .pill-choice[data-color="blue"], .pill-choice[data-color="mint"], .pill-choice[data-color="orange"], .pill-choice[data-color="purple"], .pill-choice[data-color^="#"], .pill-choice[aria-pressed="true"] { border-color: transparent; }

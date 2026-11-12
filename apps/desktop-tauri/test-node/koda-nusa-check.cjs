@@ -21,7 +21,7 @@ test('other slots unchanged', () => {
 });
 test('skin source: placeMain uses the nusa slot only when #nusa is displayed, parents into #nusa-right, else restores the island path', () => {
   const s = fs.readFileSync(__dirname + '/../frontend/koda-skin.js', 'utf8');
-  const pm = s.slice(s.indexOf('function placeMain'), s.indexOf('const flowAnim'));
+  const pm = s.slice(s.indexOf('function placeMain'), s.indexOf('function placeFlow'));
   assert.match(pm, /getElementById\('nusa-right'\)/);
   assert.match(pm, /getElementById\('nusa'\)/);
   assert.match(pm, /pref = 'nusa'/);

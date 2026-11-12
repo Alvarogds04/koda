@@ -1,5 +1,6 @@
 //! Island interaction policy. Pointer travel distinguishes clicks from cancelled gestures;
-//! every view lives in the same top-centred native window.
+//! every view lives in the same native window. The expanded card grows toward the free half of its screen
+//! (geometry::growth_edge_at, isla-cualquier-lado S1): every plan carries that edge to the page.
 use crate::geometry::{self, Edge, Rect};
 
 pub trait WindowIo {
@@ -40,7 +41,9 @@ impl TogglePlan {
     pub fn rect(&self) -> Rect {
         match self { Self::Expand { rect, .. } | Self::Collapse { rect, .. } => *rect }
     }
-    pub fn edge(&self) -> Edge { Edge::Top }
+    pub fn edge(&self) -> Edge {
+        match self { Self::Expand { edge, .. } | Self::Collapse { edge, .. } => *edge }
+    }
     pub fn is_expand(&self) -> bool { matches!(self, Self::Expand { .. }) }
 }
 
@@ -91,11 +94,12 @@ impl Core {
     pub fn toggle(&mut self, io: &dyn WindowIo, area: Rect) -> TogglePlan {
         let rect = geometry::island_window_rect(area, io.scale());
         let size = (rect.w, rect.h);
-        self.edge = Edge::Top;
+        let edge = self.growth_edge(io, area);
+        self.edge = edge;
         self.expanded = !self.expanded;
         self.chat = false;
-        if self.expanded { TogglePlan::Expand { size, rect, edge: Edge::Top } }
-        else { TogglePlan::Collapse { size, rect, edge: Edge::Top } }
+        if self.expanded { TogglePlan::Expand { size, rect, edge } }
+        else { TogglePlan::Collapse { size, rect, edge } }
     }
     pub fn plan_view(&mut self, io: &dyn WindowIo, area: Rect, chat: bool) -> Option<ViewPlan> {
         if !self.expanded || self.chat == chat { return None; }
@@ -116,9 +120,21 @@ impl Core {
         self.chat_height = height;
         Some(self.view_plan(io, area, (geometry::CHAT_COLUMN_W, height)))
     }
-    fn view_plan(&self, io: &dyn WindowIo, area: Rect, visible: (i32, i32)) -> ViewPlan {
+    fn view_plan(&mut self, io: &dyn WindowIo, area: Rect, visible: (i32, i32)) -> ViewPlan {
         let rect = geometry::island_window_rect(area, io.scale());
-        ViewPlan { chat: self.chat, size: (rect.w, rect.h), rect, stage: rect, visible, edge: Edge::Top }
+        let edge = self.growth_edge(io, area);
+        self.edge = edge;
+        ViewPlan { chat: self.chat, size: (rect.w, rect.h), rect, stage: rect, visible, edge }
+    }
+    /// Where the island is now decides the side the card grows to: the disc spot is read back from the live window for the edge
+    /// the window was laid out with, so one expanded card never flips edge. Folded, that edge is `self.edge` too: the window
+    /// hangs from the disc's top in the upper half and stands on the disc's bottom in the lower half
+    /// (geometry::island_window_rect_placed), and the placement and the release keep `self.edge` in step with it.
+    fn growth_edge(&self, io: &dyn WindowIo, area: Rect) -> Edge {
+        let (x, y) = io.outer_position();
+        let (w, h) = io.size();
+        let origin_y = geometry::disc_origin_y(Rect { x, y, w, h }, self.edge, io.scale());
+        geometry::growth_edge_at(origin_y, area, io.scale())
     }
 }
 
@@ -195,6 +211,70 @@ mod tests {
         let ReleaseOutcome::Toggle(plan) = core.release(&io, area(), (53.0, 20.0), false) else { panic!("short click"); };
         assert!(plan.is_expand()); assert_eq!(plan.rect(), geometry::island_window_rect(area(), 1.0));
         assert!(core.expanded); assert_eq!(core.edge, Edge::Top);
+    }
+    // isla-cualquier-lado S1/S5 (T5): the edge the expanded card grows from follows where the island IS (geometry::growth_edge),
+    // no longer a hard-coded Top. area() is y 32..1080, midpoint 556; the card is 150 tall at the window's top.
+    #[test]
+    fn an_island_in_the_lower_half_expands_anchored_on_its_bottom_edge() {
+        let io = FakeIo::compact_top(); io.pos.set((584, 800));
+        let mut core = Core::new();
+        let plan = core.toggle(&io, area());
+        assert!(plan.is_expand());
+        assert_eq!(plan.edge(), Edge::Bottom, "card centre 875 is below the midpoint 556");
+        assert_eq!(core.edge, Edge::Bottom);
+        // the views of the same expanded card report the same edge
+        let chat = core.plan_view(&io, area(), true).unwrap();
+        assert_eq!(chat.edge, Edge::Bottom);
+        // collapsing reports where it is too (the window laid out for Bottom stands on the disc's bottom edge)
+        io.pos.set((584, 800 + 32 - 340));
+        assert_eq!(core.toggle(&io, area()).edge(), Edge::Bottom);
+    }
+    #[test]
+    fn an_island_in_the_upper_half_expands_anchored_on_its_top_edge_and_the_edge_follows_a_move() {
+        let io = FakeIo::compact_top(); io.pos.set((584, 200));
+        let mut core = Core::new();
+        assert_eq!(core.toggle(&io, area()).edge(), Edge::Top);
+        assert_eq!(core.plan_view(&io, area(), true).unwrap().edge, Edge::Top);
+        // the human dropped it in the lower half: the next plan reads the new spot
+        io.pos.set((584, 900));
+        let back = core.plan_view(&io, area(), false).unwrap();
+        assert_eq!(back.edge, Edge::Bottom); assert_eq!(core.edge, Edge::Bottom);
+        // laid out for Bottom, the window stands on the disc's bottom edge: reading it back finds the same spot, no flip
+        io.pos.set((584, 900 + 32 - 340));
+        assert_eq!(core.plan_view(&io, area(), true).unwrap().edge, Edge::Bottom);
+        // exactly on the midpoint (spot 481: card centre 481 + 75 = 556) a compact island grows down
+        let io = FakeIo::compact_top(); io.pos.set((584, 481));
+        assert_eq!(Core::new().toggle(&io, area()).edge(), Edge::Top);
+        io.pos.set((584, 482));
+        assert_eq!(Core::new().toggle(&io, area()).edge(), Edge::Bottom);
+    }
+    #[test]
+    fn the_growth_edge_reads_the_card_at_the_window_scale() {
+        // scale 2: the card is 300 physical px tall; a window at y 420 has its card centre at 570 (> 556): Bottom. At scale 1 the
+        // same spot is centre 495: Top.
+        let mut io = FakeIo::compact_top(); io.pos.set((584, 420)); io.scale = 2.0;
+        assert_eq!(Core::new().toggle(&io, area()).edge(), Edge::Bottom);
+        io.scale = 1.0;
+        assert_eq!(Core::new().toggle(&io, area()).edge(), Edge::Top);
+    }
+    #[test]
+    fn a_folded_window_standing_on_the_disc_reads_the_disc_and_never_its_top() {
+        // isla-cualquier-lado T6b: in the lower half the folded window stands on the disc (geometry::island_window_rect_placed),
+        // so the disc spot is one disc above the window's BOTTOM, not the window's top. Reading the top here would say Top
+        // (392 + 75 = 467 <= 556) for a disc at 700, and the card would open downward from the wrong spot.
+        let io = FakeIo { pos: Cell::new((584, 700 + 32 - 340)), size: Cell::new(geometry::ISLAND_WINDOW), scale: 1.0 };
+        let mut core = Core::new();
+        core.edge = Edge::Bottom; // the folded window on this spot was laid out for Bottom
+        assert_eq!(core.toggle(&io, area()).edge(), Edge::Bottom, "the disc at 700 is below the midpoint 556");
+        assert_eq!(core.edge, Edge::Bottom);
+        // the upper half still reads the window's top: the two edges are one rule over the same spot
+        let io = FakeIo::compact_top();
+        assert_eq!(Core::new().toggle(&io, area()).edge(), Edge::Top);
+        // dragged up while folded, the same window (still laid out for Bottom) is read through its own edge
+        io.pos.set((584, 32));
+        let mut core = Core::new();
+        core.edge = Edge::Bottom;
+        assert_eq!(core.toggle(&io, area()).edge(), Edge::Top, "disc 340 is above the midpoint");
     }
     #[test]
     fn cancelled_release_never_toggles() {

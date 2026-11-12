@@ -17,7 +17,7 @@ class Element {
   remove() {}
 }
 
-test('B1 reproduction: expand then collapse settles the visible island and input report at 288x32', () => {
+test('B1 reproduction: expand then collapse settles the visible island and input report at the DISC (40x32)', () => {
   const source = fs.readFileSync(path.join(frontend, 'island.js'), 'utf8');
   const capsule = new Element(), island = new Element(), clayEl = new Element();
   const calls = [], frames = new Map(); let serial = 0, now = 0;
@@ -36,11 +36,29 @@ test('B1 reproduction: expand then collapse settles the visible island and input
   function drain() { for (let i = 0; frames.size && i < 300; i++) { now += 16.667; const pending = [...frames.values()]; frames.clear(); pending.forEach(fn => fn(now)); } assert.equal(frames.size, 0); }
   context.window.__islandSetState('overview'); drain();
   assert.equal(capsule.dataset.phase, 'expanded'); assert.equal(island.style.width, '720px');
+  // isla-cualquier-lado S1: the open island is the floating card, r26 on all four corners, hanging from the window top by default
+  assert.equal(island.style.borderRadius, '26px 26px 26px 26px', 'the card is round on all four corners');
+  assert.equal(capsule.dataset.edge, 'top'); assert.equal(island.style.top, '0px'); assert.equal(island.style.bottom, 'auto');
+  // Rust sends Bottom for a card in the lower half of its screen: it stands on the window's bottom edge
+  context.window.__islandSetState('overview', 'bottom'); drain();
+  assert.equal(capsule.dataset.edge, 'bottom'); assert.equal(island.style.top, 'auto'); assert.equal(island.style.bottom, '0px');
+  assert.equal(island.style.borderRadius, '26px 26px 26px 26px');
+  context.window.__islandSetState('overview', 'sideways'); drain();
+  assert.equal(capsule.dataset.edge, 'bottom', 'an unknown edge keeps the last one Rust sent');
   context.window.__islandSetState('compact'); drain();
+  // isla-cualquier-lado T6b (L17): the folded disc follows the same edge as the card. With a bottom edge it stands on the window's
+  // bottom edge, so a question toast above it stays inside the native window; with a top edge it hangs from the window top.
+  assert.equal(capsule.dataset.edge, 'bottom', 'folding keeps the edge Rust sent');
+  assert.equal(island.style.top, 'auto'); assert.equal(island.style.bottom, '0px');
   console.log('B1 rendered:', capsule.dataset.phase, island.style.width, island.style.height, 'shape:', JSON.stringify(calls.at(-1)));
   assert.equal(capsule.dataset.phase, 'compact');
-  assert.equal(island.style.width, '288px'); assert.equal(island.style.height, '32px');
-  assert.deepEqual(JSON.parse(JSON.stringify(calls.at(-1))), ['island_shape', { payload: { w: 288, h: 32, settled: true } }]);
+  // island-free-drag S3: compact is Koda's disc (geometry::COMPACT_DOT) — no bar, in any compact state
+  assert.equal(island.style.width, '40px'); assert.equal(island.style.height, '32px');
+  assert.equal(island.style.borderRadius, '16px 16px 16px 16px', 'the disc is round on all four corners');
+  assert.deepEqual(JSON.parse(JSON.stringify(calls.at(-1))), ['island_shape', { payload: { w: 40, h: 32, settled: true } }]);
+  // and with a top edge the folded disc hangs from the window top again
+  context.window.__islandSetState('compact', 'top'); drain();
+  assert.equal(capsule.dataset.edge, 'top'); assert.equal(island.style.top, '0px'); assert.equal(island.style.bottom, 'auto');
 });
 
 test('B1 click: a named header fold control collapses through the guarded host verb, never an arbitrary control press', async () => {

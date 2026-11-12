@@ -35,12 +35,16 @@ test('three tabs, tablist semantics, no Chat tab', () => {
 test('no minibot or blob inside #nusa', () => {
   assert.ok(!/minibot|blobs|overview-view/.test(nusa));
 });
-test('css: black notch, bottom corners 26, ears, veil tokens, legacy hidden in the idle overview only', () => {
-  const css = read('island-nusa.css');
-  assert.ok(/border-radius:\s*0 0 26px 26px/.test(css));
+test('css: black floating card, r26 on all four corners, no ears, hairline + centred shadow, veil tokens, legacy hidden in the idle overview only', () => {
+  // isla-cualquier-lado S1/S5 (artboard 02): the notch's `0 0 26px 26px`, its #nusa-ear and its `0 18px 40px` are gone
+  const css = read('island-nusa.css'), plain = css.replace(/\/\*[\s\S]*?\*\//g, '');
+  assert.ok(/#island \{ background: #000; border-radius: 26px; \}/.test(plain), 'the idle overview card is r26 all round');
+  assert.ok(!/border-radius:\s*0 0 26px 26px/.test(plain), 'no square-topped notch radius left');
+  assert.ok(!/nusa-ear/.test(plain) && !/nusa-ear/.test(read('island-nusa-mount.js').replace(/^\s*\/\/.*$/gm, '')), 'no concave ears');
+  assert.ok(/box-shadow: 0 0 0 1px var\(--win-line\), 0 12px 40px rgba\(0,0,0,\.45\)/.test(plain), 'hairline + centred drop shadow');
+  assert.ok(!/0 18px 40px/.test(plain), 'the downward notch shadow is gone');
   assert.ok(/#000/.test(css));
   for (const t of ['--island-live', '--sun', '--go', '--red-11']) assert.ok(css.includes(t), t);
-  assert.ok(/#nusa-ear/.test(css));
   const sel = ':not([data-card]):not([data-question="pending"]):not([data-question="expired"]):not([data-question="outcome"])';
   assert.ok(css.includes(`#capsule[data-phase="expanded"][data-view="overview"]${sel}`));
   for (const hidden of ['#overview-view', '#blobs', '#minibots', '#island-header']) assert.ok(css.includes(hidden), hidden);
@@ -49,10 +53,13 @@ test('mount: uses the model, 30 s clock, wheel and keys, not while typing', () =
   const js = read('island-nusa-mount.js');
   for (const s of ['AbitoNusa', 'clockText', '30000', 'wheelStep', 'keyStep', 'arrows', 'veilState', 'typing']) assert.ok(js.includes(s), s);
 });
-test('island.js: notch geometry 720x150 r26, bottom-only radius', () => {
+test('island.js: card geometry 720x150, r26 on all four corners, anchored on the edge Rust sends', () => {
   const js = read('island.js');
   assert.ok(/const OVERVIEW = \{ w: 720, h: 150, r: 26, gap: 0, clay: 64, clayX: 598, cy: 74 \}/.test(js));
-  assert.ok(/rTop = lerp\(COMPACT\.r, 0, p\)/.test(js), 'top radius goes to 0');
+  assert.ok(/const radius = lerp\(COMPACT\.r, OVERVIEW\.r, p\)/.test(js), 'every corner goes 16 -> 26 (no square top)');
+  assert.ok(/put\(island, 'borderRadius', `\$\{radius\}px \$\{radius\}px \$\{radius\}px \$\{radius\}px`\)/.test(js));
+  assert.ok(!/rTop/.test(js), 'no top radius of its own');
+  assert.ok(/function setPhase\(phase, nextEdge\)/.test(js) && /let edge = 'top'/.test(js), 'the edge comes from Rust with the phase');
 });
 
 const bodies = (() => { try { return read('island-nusa-bodies.js'); } catch { return ''; } })();
@@ -100,5 +107,27 @@ test('Ver todas: the opener event is dispatched only from a trusted click; the t
   assert.doesNotMatch(b, /innerHTML|outerHTML|insertAdjacentHTML/);
   assert.match(b, /data-nusa-sessions|dataset\.nusaSessions/, 'state attribute set by our code');
   assert.match(css, /#capsule\[data-nusa-sessions="open"\][^{]*#overview-view[^{]*\{[^}]*visibility:\s*visible/, 'css carve-out');
+});
+test('S3 (04 avisos 3): the notice pills keep their painted size and gain a 24 px tall hit area through ::after', () => {
+  const css = read('island-nusa.css').replace(/\/\*[\s\S]*?\*\//g, '');
+  const decls = sel => {
+    const out = {};
+    for (const m of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+      if (!m[1].replace(/\s+/g, ' ').trim().split(',').map(s => s.trim()).includes(sel)) continue;
+      for (const d of m[2].split(';')) { const i = d.indexOf(':'); if (i > 0) out[d.slice(0, i).trim()] = d.slice(i + 1).trim(); }
+    }
+    return out;
+  };
+  for (const sel of ['.nusa-link', '.nusa-markall', '.nusa-all', '.sessions-all-back']) {
+    assert.equal(decls(sel).position, 'relative', `${sel} positions its own hit area`);
+    const after = decls(`${sel}::after`);
+    assert.equal(after.content, '""', `${sel}::after is a real (transparent) box`);
+    assert.equal(after['min-height'], '24px', `${sel}: the hit area is at least 24 px tall`);
+    assert.notEqual(after['pointer-events'], 'none', `${sel}: and it takes the pointer`);
+  }
+  // the painted pill did not grow: only the transparent box around it did
+  assert.equal(decls('.nusa-link')['font-size'], '11px');
+  assert.equal(decls('.nusa-link').padding, '1px 6px');
+  assert.equal(decls('.nusa-markall').padding, '2px 10px');
 });
 console.log(`island-nusa-dom-check: ${passed} passed`);

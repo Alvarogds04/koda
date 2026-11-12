@@ -2138,56 +2138,31 @@ fn launch_settings_is_a_closed_persisted_opt_in() {
 }
 
 #[test]
-fn absence_seconds_round_trip_through_the_prefs_command_in_the_5_to_300_range() {
-    let command = parse_command(&json!({"action":"set_absence_seconds","seconds":30})).expect("G16 setting accepted");
-    let next = apply(&Prefs::default(), &command).unwrap();
-    let wire: Value = serde_json::from_str(&next.to_text()).unwrap();
-    assert_eq!(wire["absence_seconds"], 30);
-    assert!(wire.get("absence_minutes").is_none(), "the old key is never written again");
-    assert_eq!(Prefs::from_text(Some(&next.to_text())), next);
-    for ok in [5, 10, 300] {
-        assert!(parse_command(&json!({"action":"set_absence_seconds","seconds":ok})).is_ok(), "{ok}");
+fn an_old_prefs_file_with_the_retired_edge_hide_delay_still_loads() {
+    // isla-cualquier-lado S2: the folded island never hides at the edge any more, so the G16 delay is retired. A file written
+    // before carries `absence_seconds` (or the even older `absence_minutes`): it MUST still load with every other setting intact.
+    let old = r##"{"v":1,"sound":false,"gain":0.2,"display_name":"Ana","theme":"dark","auto_close_seconds":30,"open_on_hover":true,"island_size":"m","absence_seconds":45,"absence_minutes":2}"##;
+    let p = Prefs::from_text(Some(old));
+    let expected = Prefs {
+        sound: false, gain: Some(0.2), display_name: Some("Ana".into()), theme: Some(Theme::Dark),
+        auto_close_seconds: Some(30), open_on_hover: Some(true), island_size: Some("m".into()),
+        ..Prefs::default()
+    };
+    assert_eq!(p, expected, "the retired keys are tolerated and ignored; nothing else is lost");
+    for retired in [r#"{"v":1,"absence_seconds":999}"#, r#"{"v":1,"absence_seconds":"10"}"#, r#"{"v":1,"absence_minutes":null}"#] {
+        assert_eq!(Prefs::from_text(Some(retired)), Prefs::default(), "{retired}");
     }
-    for bad in [json!(0), json!(4), json!(301), json!(1.5), json!("10"), json!(null), json!(-5)] {
-        assert!(parse_command(&json!({"action":"set_absence_seconds","seconds":bad})).is_err(), "{bad}");
-    }
-    assert!(parse_command(&json!({"action":"set_absence_seconds","seconds":10,"extra":true})).is_err());
-    assert!(parse_command(&json!({"action":"set_absence_seconds"})).is_err());
-    assert!(parse_command(&json!({"action":"set_absence_minutes","minutes":3})).is_err(), "the old command is retired");
+    // the next write drops the retired keys: the file converts the first time it is saved
+    let wire: Value = serde_json::from_str(&p.to_text()).unwrap();
+    assert!(wire.get("absence_seconds").is_none() && wire.get("absence_minutes").is_none());
+    assert_eq!(Prefs::from_text(Some(&p.to_text())), p, "stable after the conversion");
 }
 
 #[test]
-fn absence_defaults_to_ten_seconds() {
-    assert_eq!(Prefs::default().absence_seconds(), 10);
-    assert_eq!(Prefs::from_text(Some(r#"{"v":1}"#)).absence_seconds(), 10);
-    assert_eq!(Prefs { absence_seconds: Some(4), ..Prefs::default() }.absence_seconds(), 10, "out of range reads as the default");
-    assert_eq!(Prefs { absence_seconds: Some(301), ..Prefs::default() }.absence_seconds(), 10);
-}
-
-#[test]
-fn a_stored_absence_in_minutes_migrates_to_seconds_and_the_next_write_uses_the_new_key() {
-    // minutes x 60, clamped to 300
-    for (stored, seconds) in [(1, 60), (2, 120), (3, 180), (5, 300), (6, 300), (120, 300)] {
-        let p = Prefs::from_text(Some(&format!(r#"{{"v":1,"absence_minutes":{stored}}}"#)));
-        assert_eq!(p.absence_seconds(), seconds, "{stored} min");
+fn the_edge_hide_delay_command_is_retired() {
+    for payload in [json!({"action":"set_absence_seconds","seconds":30}), json!({"action":"set_absence_minutes","minutes":3})] {
+        assert!(parse_command(&payload).is_err(), "{payload}");
     }
-    // an invalid old value is not a setting: the default
-    for bad in ["0", "121", "1.5", "\"3\"", "null", "-1"] {
-        assert_eq!(Prefs::from_text(Some(&format!(r#"{{"v":1,"absence_minutes":{bad}}}"#))).absence_seconds(), 10, "{bad}");
-    }
-    // the new key wins over the old one; an invalid new key falls back to a valid old one
-    assert_eq!(Prefs::from_text(Some(r#"{"v":1,"absence_seconds":45,"absence_minutes":2}"#)).absence_seconds(), 45);
-    assert_eq!(Prefs::from_text(Some(r#"{"v":1,"absence_seconds":4,"absence_minutes":2}"#)).absence_seconds(), 120);
-    assert_eq!(Prefs::from_text(Some(r#"{"v":1,"absence_seconds":999}"#)).absence_seconds(), 10);
-    // writing: only the new key, so the file converts the first time it is saved
-    let migrated = Prefs::from_text(Some(r#"{"v":1,"absence_minutes":2}"#));
-    let wire: Value = serde_json::from_str(&migrated.to_text()).unwrap();
-    assert_eq!(wire["absence_seconds"], 120);
-    assert!(wire.get("absence_minutes").is_none());
-    assert_eq!(Prefs::from_text(Some(&migrated.to_text())), migrated, "stable after the conversion");
-    // a file with neither key writes neither
-    let none: Value = serde_json::from_str(&Prefs::default().to_text()).unwrap();
-    assert!(none.get("absence_seconds").is_none() && none.get("absence_minutes").is_none());
 }
 
 // ---- S5 (#503): `liveContext`, the chat's live-state context switch (default ON) ------------------

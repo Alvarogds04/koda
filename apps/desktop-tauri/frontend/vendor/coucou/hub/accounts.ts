@@ -106,7 +106,7 @@ export async function renderAccounts({ invoke, V, listen, timers, page = 'all', 
     if (ev?.message) flow.append(note(ev.message));
     if (ev?.userCode) flow.append(h('code', { class: 'path', text: ev.userCode }));
     // open_chat_url is main-only. Plain text is safe; never navigate the settings webview.
-    if (ev?.link) flow.append(note(ev.link), note('Abre este enlace en tu navegador. Abrir enlaces no está disponible en esta ventana.'));
+    if (ev?.link) flow.append(note(ev.link), note('Abrí este enlace en tu navegador. Abrir enlaces no está disponible en esta ventana.'));
     else if (ev?.linkRejected) flow.append(note('No se pudo abrir el enlace desde acá.'));
     if (prompt) {
       flow.append(note(prompt.message));

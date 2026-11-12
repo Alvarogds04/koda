@@ -11,14 +11,18 @@ const { describeTool, describeToolDetailed, sanitizeText } = require('./projecti
 
 const MAX_STDIN_BYTES = 1024 * 1024;
 const DEFAULT_TIMEOUT_SEC = 35, STOP_WATCHDOG_MS = 15000, MAX_ISLAND_WAIT_MS = 60000;
+// K2-08 T3 (S2, S5): Codex's installed PermissionRequest entry gives the hook 120 s, so a Codex card may wait the hook
+// budget less the 5 s margin: 115 s. Codex only; Claude, Copilot and OpenCode keep MAX_ISLAND_WAIT_MS. The watchdog
+// (watchdogMs) still fires at the hook budget, 5 s after this deadline.
+const CODEX_MAX_ISLAND_WAIT_MS = 115000;
 const ALLOW = '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}\n';
 const DENY = JSON.stringify({ hookSpecificOutput: { hookEventName: 'PermissionRequest',
   decision: { behavior: 'deny', message: 'Denied from the Koda island by the user.' } } }) + '\n';
 // Option sets per agent. LOSSY_OPTIONS is offered when the island cannot show the whole request:
-// `allow` is deliberately absent. Only the agents that can still ANSWER mint an option set (S4/T2 removed Codex's:
-// Codex only ever sends a notice, so nothing in this file is reached with agent 'Codex' any more).
+// `allow` is deliberately absent. Claude Code and Codex (K2-08 T1, S4) share the Spanish card; Codex never gets a
+// «Siempre permitir» (S6: Codex does not support updatedPermissions), and neither set ever contains one.
 function optionSets(agent, short = agent) {
-  if (agent === 'Claude Code') {
+  if (agent === 'Claude Code' || agent === 'Codex') {
     const deny = { value: 'deny', label: 'Rechazar', description: `Rechazar la solicitud de ${short}` };
     return {
       OPTIONS: [{ value: 'allow', label: 'Aprobar una vez', description: `Permitir esta solicitud de ${agent} una vez` }, deny],
@@ -74,10 +78,11 @@ function toolDescription(name, toolInput) {
 // Shared question text. Lossless Bash shows the full redacted command (never sanitizeText-collapsed: it is
 // printable ASCII / closed visible Latin allow-list, NFC by construction); everything else keeps the short description.
 function questionText(agent, detail) {
-  if (agent === 'Claude Code') {
+  if (agent === 'Claude Code' || agent === 'Codex') {
     const reasons = { 'long command': 'comando recortado', 'special characters': 'caracteres especiales',
       'touches credential files': 'ruta sensible', 'shell indirection': 'indirección de shell',
-      'hidden text may contain shell syntax': 'el texto oculto puede contener sintaxis de shell' };
+      'hidden text may contain shell syntax': 'el texto oculto puede contener sintaxis de shell',
+      'hidden text may be a path': 'el texto oculto puede ser una ruta' };
     const bash = detail.text?.startsWith('Bash: ') && detail.redactions !== undefined;
     const shown = detail.filePreview || bash ? detail.text : sanitizeText(detail.text, { max: 120 })
       .replace(/^mcp tool /, 'herramienta MCP ').replace('(file edit)', '(edición de archivo)').replace(/^tool$/, 'herramienta');
@@ -112,5 +117,5 @@ function mapResult(result, lossy) {
 }
 
 module.exports = { parseArgs, watchdogMs, startWatchdog, none, isObject, validCwd, toolDescription, defaultFactory, mapResult, optionSets, questionText,
-  MAX_STDIN_BYTES, DEFAULT_TIMEOUT_SEC, STOP_WATCHDOG_MS, MAX_ISLAND_WAIT_MS, ALLOW, DENY,
+  MAX_STDIN_BYTES, DEFAULT_TIMEOUT_SEC, STOP_WATCHDOG_MS, MAX_ISLAND_WAIT_MS, CODEX_MAX_ISLAND_WAIT_MS, ALLOW, DENY,
   IslandClient, formatNoDecision, resolveConfig, computeDeadline, sessionToken, sanitizeText };

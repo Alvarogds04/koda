@@ -35,16 +35,16 @@ async function renderChatSettings({ invoke, V, listen, timers }) {
   const keyRefresh = {};
   const subscriptionCleanups = [];
   function subscriptionRow(group, provider) {
-    const box = h("div", { id: `chat-subscription-${group}`, title: `Usa tu suscripción de ${provider === "claude" ? "Claude" : "ChatGPT"}. El inicio de sesión se hace en tu navegador; Koda guarda el acceso solo en el llavero del sistema. Sin verificar con el proveedor.`, style: "display:flex;flex-direction:column;gap:6px;min-width:0" });
+    const box = h("div", { id: `chat-subscription-${group}`, title: `Usá tu suscripción de ${provider === "claude" ? "Claude" : "ChatGPT"}. El inicio de sesión se hace en tu navegador; Koda guarda el acceso solo en el llavero del sistema. Sin verificar con el proveedor.`, style: "display:flex;flex-direction:column;gap:6px;min-width:0" });
     const badge = h("span", { class: "hint", role: "status" });
     const controls = h("div", { style: "display:flex;flex-wrap:wrap;align-items:center;gap:8px;min-width:0" });
     const manual = h("div", { style: "display:flex;flex-wrap:wrap;gap:8px;min-width:0" });
-    const code = input("text", "Pega aquí el código", `chat-oauth-code-${provider}`);
+    const code = input("text", "Pegá aquí el código", `chat-oauth-code-${provider}`);
     code.maxLength = 2048;
-    code.setAttribute("aria-label", "Pega aquí el código");
+    code.setAttribute("aria-label", "Pegá aquí el código");
     const url = h("div", { style: "user-select:text;overflow-wrap:anywhere;min-width:0", text: "" });
     const alert = h("div", { class: "hint notice err", role: "alert", "aria-live": "polite" });
-    const generic = "No se pudo completar el inicio de sesión. Vuelve a intentarlo.";
+    const generic = "No se pudo completar el inicio de sesión. Volvé a intentarlo.";
     let waiting = false, busy = false, status = "", epoch = 0, timer = null;
     const stop = () => {
       if (timer !== null) (timers || globalThis).clearTimeout(timer);
@@ -200,7 +200,7 @@ async function renderChatSettings({ invoke, V, listen, timers }) {
       hide();
       if (action === "set") {
         if (!value) {
-          invalid("Pega la clave antes de guardar.");
+          invalid("Pegá la clave antes de guardar.");
           return;
         }
         if (value.includes("\0")) {
@@ -253,7 +253,7 @@ async function renderChatSettings({ invoke, V, listen, timers }) {
         present[id] = stored?.present === true;
         refresh();
         const accountId = keyAccountId(id), has = !accountId || V.ownedAccounts(state?.ownedAccounts).some((a) => a.accountId === accountId);
-        feedback.append(h("div", { class: present[id] && has ? "notice ok" : "notice err", text: !present[id] ? "No hay clave guardada." : has ? "Clave guardada y cuenta del chat lista. No se contactó al proveedor." : "El chat aún no tiene cuenta para este proveedor. Vuelve a guardar la clave." }));
+        feedback.append(h("div", { class: present[id] && has ? "notice ok" : "notice err", text: !present[id] ? "No hay clave guardada." : has ? "Clave guardada y cuenta del chat lista. No se contactó al proveedor." : "El chat aún no tiene cuenta para este proveedor. Volvé a guardar la clave." }));
       }, () => feedback.append(h("div", { class: "notice err", text: "No se pudo comprobar la clave." }))).finally(() => {
         busy = false;
         save.disabled = remove.disabled = false;
@@ -349,11 +349,11 @@ async function renderChatSettings({ invoke, V, listen, timers }) {
       ctxBody.append(h("div", { class: "hub-note", text: available === true ? "La extensión de GNOME está disponible. Solo se leen la app y el título; no se captura la URL." : available === false ? "La extensión de GNOME no está disponible. En GNOME Wayland no se pueden leer ventanas nativas sin ella; el respaldo X11 solo ve ventanas XWayland." : "No se pudo comprobar la extensión de GNOME." }));
     if (available !== true) {
       ctxBody.append(
-        h("div", { class: "hub-note", text: "Para instalarla, desde la raíz del repositorio ejecuta:" }),
+        h("div", { class: "hub-note", text: "Para instalarla, desde la raíz del repositorio ejecutá:" }),
         h("code", { text: "sh apps/desktop-tauri/gnome-extension/install.sh" }),
-        h("div", { class: "hub-note", text: "En Wayland, después de instalar una extensión nueva debes cerrar sesión y volver a entrar. Después ejecuta:" }),
+        h("div", { class: "hub-note", text: "En Wayland, después de instalar una extensión nueva tenés que cerrar sesión y volver a entrar. Después ejecutá:" }),
         h("code", { text: "gnome-extensions enable abito-context@abito" }),
-        h("div", { class: "hub-note", text: "Vuelve a abrir esta página para comprobarla. Koda no instala ni habilita la extensión automáticamente. No se captura la URL." })
+        h("div", { class: "hub-note", text: "Volvé a abrir esta página para comprobarla. Koda no instala ni habilita la extensión automáticamente. No se captura la URL." })
       );
     }
   };

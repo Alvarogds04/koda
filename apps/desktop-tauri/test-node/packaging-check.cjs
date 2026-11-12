@@ -181,7 +181,9 @@ test('each gate FAILS when its rule is broken', () => {
 });
 
 function fakeStage({ crateDir: _crateDir = crate } = {}) {
-  const dir = T.make('abito-stage-');
+  // A child of the temp dir, never the temp dir itself: on Windows tmpdirs.cjs marks every dir it creates with
+  // `.abito-tmpdirs`, and verifyStage lists the stage exactly (an extra file is a real problem there).
+  const dir = path.join(T.make('abito-stage-'), 'stage'); fs.mkdirSync(dir);
   fs.writeFileSync(path.join(dir, 'abito-island'), '#!/bin/true\nfake binary\n', { mode: 0o755 });
   fs.writeFileSync(path.join(dir, 'abito-island-launcher'), L.launcherText(), { mode: 0o755 });
   fs.writeFileSync(path.join(dir, `${L.IDENTIFIER}.desktop`), L.desktopText(), { mode: 0o644 });
@@ -262,9 +264,11 @@ test('verify: a pristine stage passes; tampering is caught without launching any
   fs.writeFileSync(path.join(e, 'extra'), 'x');
   assert.match(L.verifyStage(e).join(), /unexpected stage entries/);
   fs.rmSync(e, { recursive: true });
-  const w = fakeStage(); fs.chmodSync(path.join(w, 'abito-island'), 0o777);
-  assert.match(L.verifyStage(w).join(), /writable/);
-  fs.rmSync(w, { recursive: true });
+  if (process.platform !== 'win32') { // the writable rule is unix-only by design (POSIX modes); the Windows twin is below
+    const w = fakeStage(); fs.chmodSync(path.join(w, 'abito-island'), 0o777);
+    assert.match(L.verifyStage(w).join(), /writable/);
+    fs.rmSync(w, { recursive: true });
+  }
 });
 // K2-02 (windows-latest, K2-01b CI): NTFS has no POSIX permission bits; Node reports every file and directory as
 // 0o666 (0o444 read-only) with no exec bits. The POSIX mode rules (group/world writable, executable binary) are
@@ -316,6 +320,7 @@ test('launcher: no args, refuses whole env families, forces X11, execs only its 
   assert.match(t, /export GDK_BACKEND=x11/);
   assert.match(t, /exec "\$here\/abito-island"$/m);
   // behaviour: run the launcher's guards (the sibling binary is a stub that must NOT start when refused)
+  if (process.platform === 'win32') return; // the launcher is a POSIX sh script: Windows ships no launcher and cannot run it
   const cp = require('node:child_process');
   const d = fakeStage(); fs.writeFileSync(path.join(d, 'abito-island'), '#!/bin/sh\necho STARTED\n', { mode: 0o755 });
   const run = (extra, env) => cp.spawnSync(path.join(d, 'abito-island-launcher'), extra, { env: { PATH: process.env.PATH, ...env }, encoding: 'utf8' });
