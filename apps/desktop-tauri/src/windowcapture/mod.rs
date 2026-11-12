@@ -10,6 +10,14 @@ pub mod mcp;
 pub mod image;
 #[cfg(target_os = "linux")]
 pub mod x11;
+// S8: GNOME Wayland through Koda's own extension, the system screenshot portal, and the order
+// they are tried in (that order is `linux`).
+#[cfg(target_os = "linux")]
+pub mod gnome;
+#[cfg(target_os = "linux")]
+pub mod portal;
+#[cfg(target_os = "linux")]
+pub mod linux;
 pub mod server;
 #[cfg(target_os = "macos")]
 pub mod macos;
