@@ -187,12 +187,21 @@ test('this check runs in CI on all 3 OS: run-node-checks.cjs (no file arguments)
   assert.ok(call, 'island-checks runs the runner with only --shard <matrix.shard>/<N> (the whole default set, split)');
   assert.equal(Number(call[1]), n, 'the shard count in the invocation equals the matrix size');
   // The runner really partitions: every default file lands in exactly one of the N shards (`--list` prints the selection).
-  const run = (args) => require('node:child_process').execFileSync(process.execPath, [path.join(repo, 'run-node-checks.cjs'), ...args], { encoding: 'utf8' });
+  const run = (args, env = {}) => require('node:child_process').execFileSync(process.execPath, [path.join(repo, 'run-node-checks.cjs'), ...args], { encoding: 'utf8', env: { ...process.env, ...env } });
   const all = run(['--list']).trim().split(/\r?\n/);
   const seen = [];
   for (let i = 1; i <= n; i++) seen.push(...run(['--shard', `${i}/${n}`, '--list']).trim().split(/\r?\n/));
   assert.deepEqual(seen.sort(), [...all].sort(), 'the N shards cover the default set exactly once');
   assert.ok(all.includes(path.join('test-node', 'no-node-smoke-check.cjs')), 'this check is in the default set');
+  // macOS runners are about twice as slow as ubuntu on the browser checks (install-check 56 s vs the 120 s cap on
+  // ubuntu; island-s31 156 s vs 420 s), so the wall-clock caps double there and only there (`--list --caps` prints them).
+  const caps = (platform) => Object.fromEntries(run(['--list', '--caps'], { RUN_NODE_CHECKS_PLATFORM: platform }).trim().split(/\r?\n/).map((l) => l.split('\t')));
+  const linux = caps('linux'), darwin = caps('darwin'), win = caps('win32');
+  assert.equal(linux[path.join('test-node', 'install-check.cjs')], '120');
+  assert.equal(linux[path.join('test-node', 'island-s31-check.cjs')], '420');
+  assert.equal(darwin[path.join('test-node', 'install-check.cjs')], '240');
+  assert.equal(darwin[path.join('test-node', 'island-s31-check.cjs')], '840');
+  assert.deepEqual(win, linux, 'Windows keeps the ubuntu caps');
 });
 
 console.log(`no-node-smoke-check: ${passed} passed`);
