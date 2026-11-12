@@ -34,8 +34,20 @@ const { LOCAL_MODELS, TRANSCRIPTION_DEFAULT } = require("./transcribe-setting.cj
 /** Remote chunks: at most 180 s (NaN's per-request limit) and 25 MB; 175 s leaves a margin for the encoder. */
 const CHUNK_SECONDS = 175;
 const MAX_CHUNK_BYTES = 24_000_000;
+/** Longest wait for a killed child's `close` before the run settles anyway (a kill that did not take). */
+const CLOSE_GRACE_MS = 10_000;
 /** Containers ffmpeg may open (no playlists such as hls/concat, no devices, no network). */
 const INPUT_FORMATS = "mov,mp4,m4a,3gp,3g2,mj2,matroska,webm,ogg,mp3,wav,flac,aac,avi,mpegts";
+/**
+ * The decoders those containers may use (`-codec_whitelist`). ffmpeg matches this option against DECODERS only, and by
+ * exact name (no globs: `*` matches nothing — checked with `ffmpeg -h full` and with real runs), so every decoder the
+ * accepted containers carry is named: AAC (plain, fixed and LATM for MPEG-TS), Opus and Vorbis (Ogg/WebM), MP3/MP2,
+ * FLAC, Apple lossless, AC-3/E-AC-3 and the PCM variants WAV/AVI/MOV ship. Video and text decoders are left out, so a
+ * hand-crafted file cannot reach them. */
+const INPUT_CODECS = [
+	"aac", "aac_fixed", "aac_latm", "opus", "vorbis", "flac", "alac", "mp3", "mp3float", "mp2", "ac3", "eac3",
+	"pcm_s16le", "pcm_s16be", "pcm_s24le", "pcm_s24be", "pcm_s32le", "pcm_s32be", "pcm_f32le", "pcm_u8", "pcm_alaw", "pcm_mulaw",
+].join(",");
 const DEFAULT_LIMITS = Object.freeze({
 	maxSeconds: 3 * 3600, // longest audio transcribed (same default as the helper)
 	timeoutMs: 2 * 3600 * 1000, // whole transcription
@@ -130,6 +142,31 @@ function removeRegular(file) {
 	} catch {}
 }
 
+/**
+ * Removes a private work folder, retrying a few short times. Windows keeps the folder of a just-killed child busy
+ * (EBUSY) for a moment, so a bare `rmSync` in a `finally` could throw and replace the error that really ended the
+ * transcription. Cleanup is therefore best effort: it never throws, and when it gives up it logs and returns false
+ * (the caller's own error, if any, stands).
+ *
+ * @param {string} dir
+ * @param {{attempts?: number, delayMs?: number, fs?: {rmSync: Function}, log?: (line: string) => void}} [options]
+ * @returns {Promise<boolean>} true once the folder is gone
+ */
+async function removeWorkDir(dir, { attempts = 6, delayMs = 50, fs: remover = fs, log = () => {} } = {}) {
+	for (let attempt = 1; ; attempt += 1) {
+		try {
+			remover.rmSync(dir, { recursive: true, force: true });
+			return true;
+		} catch (error) {
+			if (attempt >= attempts) {
+				log(`transcription: could not remove its work folder (${error?.code ?? "error"})`);
+				return false;
+			}
+			await new Promise((resolve) => setTimeout(resolve, delayMs * attempt));
+		}
+	}
+}
+
 /** One multipart/form-data body: text fields, then the file part. */
 function multipart(fields, file) {
 	const boundary = `----koda${randomUUID().replace(/-/g, "")}`;
@@ -147,10 +184,11 @@ class Transcriber {
 	 * @param {{command, commandArgs?}|undefined} o.ffmpeg   the bundled ffmpeg (undefined: unavailable)
 	 * @param {{command, commandArgs?}|undefined} o.helper   the bundled abito-transcribe (undefined: unavailable)
 	 * @param {(accountId) => Promise<{baseUrl, apiKey}>} [o.remoteAccount]  a usable OpenAI-compatible account
-	 * @param {object} [o.env]               environment of the children (the helper finds the shared model store)
-	 * @param {object} [o.limits]            overrides of DEFAULT_LIMITS (tests)
-	 */
-	constructor({ islandRoot, setting, ffmpeg, helper, remoteAccount, env = process.env, log = () => {}, limits = {} }) {
+		 * @param {object} [o.env]               environment of the children (the helper finds the shared model store)
+		 * @param {object} [o.limits]            overrides of DEFAULT_LIMITS (tests)
+		 * @param {(dir: string) => Promise<boolean>} [o.removeDir]  work-folder cleanup (removeWorkDir)
+		 */
+	constructor({ islandRoot, setting, ffmpeg, helper, remoteAccount, env = process.env, log = () => {}, limits = {}, removeDir }) {
 		this.islandRoot = islandRoot;
 		this.setting = setting ?? (() => TRANSCRIPTION_DEFAULT);
 		this.ffmpeg = ffmpeg;
@@ -159,6 +197,8 @@ class Transcriber {
 		this.env = env;
 		this.log = log;
 		this.limits = { ...DEFAULT_LIMITS, ...limits };
+		// Injectable so a test can prove cleanup never replaces the original error.
+		this.removeDir = removeDir ?? ((dir) => removeWorkDir(dir, { log: this.log }));
 	}
 
 	/** What Ajustes shows: the setting plus whether the bundled tools are there. Never a URL or a key. */
@@ -191,6 +231,7 @@ class Transcriber {
 			const wav = path.join(work, "audio.wav");
 			await this.run(this.ffmpeg, [
 				"-nostdin", "-hide_banner", "-loglevel", "error", "-protocol_whitelist", "file", "-format_whitelist", INPUT_FORMATS,
+				"-codec_whitelist", INPUT_CODECS,
 				"-i", `file:${file}`, "-map", "0:a:0", "-vn", "-sn", "-dn", "-map_metadata", "-1",
 				"-ac", "1", "-ar", "16000", "-t", String(this.limits.maxSeconds + 1), "-c:a", "pcm_s16le", "-f", "wav", "-y", wav,
 			], job, { label: "ffmpeg", failCode: "bad_media", cwd: work });
@@ -204,7 +245,15 @@ class Transcriber {
 			throw new TranscriptionError("failed");
 		} finally {
 			if (deleteMedia && regular) removeRegular(file);
-			if (work) fs.rmSync(work, { recursive: true, force: true });
+			// Cleanup never replaces the error above: the helper may have been killed a moment ago and Windows keeps its
+			// folder busy (EBUSY), so `removeWorkDir` retries and gives up quietly.
+			if (work) {
+				try {
+					await this.removeDir(work);
+				} catch {
+					this.log("transcription: could not remove its work folder");
+				}
+			}
 		}
 	}
 
@@ -254,8 +303,10 @@ class Transcriber {
 			const chunk = path.join(work, `chunk-${index}.ogg`);
 			await this.run(this.ffmpeg, [
 				"-nostdin", "-hide_banner", "-loglevel", "error", "-protocol_whitelist", "file", "-format_whitelist", "wav",
+				"-codec_whitelist", INPUT_CODECS,
 				"-ss", String(start), "-t", String(CHUNK_SECONDS), "-i", `file:${wav}`,
 				"-ac", "1", "-c:a", "libopus", "-b:a", "32k", "-f", "ogg", "-y", chunk,
+				// libopus is an ENCODER: `-codec_whitelist` filters decoders only (verified on ffmpeg 8.0.1).
 			], job, { label: "ffmpeg", failCode: "failed", cwd: work });
 			const size = fs.statSync(chunk).size;
 			if (size > MAX_CHUNK_BYTES) fail("too_large");
@@ -337,7 +388,8 @@ class Transcriber {
 
 	/**
 	 * Runs one bundled tool (shell:false, fixed argv). Resolves {code, stdout}; kills the child on cancel or at the
-	 * job deadline. stderr is drained and dropped (it can name the media), never logged.
+	 * job deadline. stderr is drained and dropped (it can name the media), never logged. A killed child is gone (its
+	 * `close` seen, or the grace period over) before the promise settles, so cleanup never races a live process.
 	 */
 	run(tool, args, job, { label, capture = false, allowFailure = false, failCode = "failed", cwd }) {
 		return new Promise((resolve, reject) => {
@@ -345,18 +397,37 @@ class Transcriber {
 			let child;
 			const out = [];
 			let outBytes = 0;
-			const finish = (fn, value) => {
-				if (settled) return;
+			const release = () => {
 				settled = true;
 				clearTimeout(timer);
 				job.signal?.removeEventListener("abort", onAbort);
-				if (child && child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+			};
+			const settle = (fn, value) => {
+				if (settled) return;
+				release();
 				fn(value);
 			};
-			const onAbort = () => finish(reject, new TranscriptionError("cancelled"));
+			// Kill, then wait for `close` (bounded): Windows keeps a just-killed child's folder busy until it really exits.
+			const stopAndSettle = (fn, value) => {
+				if (settled) return;
+				if (!child || child.exitCode !== null || child.signalCode !== null) return settle(fn, value);
+				release();
+				child.kill("SIGKILL");
+				let done = false;
+				const finishNow = () => {
+					if (done) return;
+					done = true;
+					clearTimeout(grace);
+					fn(value);
+				};
+				const grace = setTimeout(finishNow, CLOSE_GRACE_MS);
+				grace.unref?.();
+				child.once("close", finishNow);
+			};
+			const onAbort = () => stopAndSettle(reject, new TranscriptionError("cancelled"));
 			const timer = setTimeout(() => {
 				this.log(`transcription: ${label} timed out`);
-				finish(reject, new TranscriptionError("timeout"));
+				stopAndSettle(reject, new TranscriptionError("timeout"));
 			}, Math.max(1, job.deadline - Date.now()));
 			if (job.signal?.aborted) return onAbort();
 			job.signal?.addEventListener("abort", onAbort, { once: true });
@@ -364,28 +435,28 @@ class Transcriber {
 				child = spawn(tool.command, [...(tool.commandArgs ?? []), ...args], { shell: false, windowsHide: true, stdio: ["ignore", "pipe", "pipe"], env: this.env, cwd });
 			} catch {
 				this.log(`transcription: ${label} could not start`);
-				return finish(reject, new TranscriptionError("failed"));
+				return settle(reject, new TranscriptionError("failed"));
 			}
 			child.stdout.on("data", (c) => {
 				if (!capture) return;
 				outBytes += c.length;
-				if (outBytes > this.limits.maxHelperOutputBytes) return finish(reject, new TranscriptionError("invalid_response"));
+				if (outBytes > this.limits.maxHelperOutputBytes) return stopAndSettle(reject, new TranscriptionError("invalid_response"));
 				out.push(c);
 			});
 			child.stderr.resume();
 			child.on("error", () => {
 				this.log(`transcription: ${label} could not start`);
-				finish(reject, new TranscriptionError("failed"));
+				stopAndSettle(reject, new TranscriptionError("failed"));
 			});
 			child.on("close", (code) => {
 				if (code !== 0 && !allowFailure) {
 					this.log(`transcription: ${label} exited ${code}`);
-					return finish(reject, new TranscriptionError(failCode));
+					return settle(reject, new TranscriptionError(failCode));
 				}
-				finish(resolve, { code, stdout: Buffer.concat(out) });
+				settle(resolve, { code, stdout: Buffer.concat(out) });
 			});
 		});
 	}
 }
 
-module.exports = { Transcriber, TranscriptionError, bundledTools, wavSeconds, CHUNK_SECONDS, MAX_CHUNK_BYTES, INPUT_FORMATS, DEFAULT_LIMITS, USER_TEXT };
+module.exports = { Transcriber, TranscriptionError, bundledTools, wavSeconds, removeWorkDir, CHUNK_SECONDS, MAX_CHUNK_BYTES, INPUT_FORMATS, INPUT_CODECS, DEFAULT_LIMITS, USER_TEXT };

@@ -31,7 +31,7 @@
 
 const { EventEmitter } = require("node:events");
 const { randomUUID } = require("node:crypto");
-const { lstatSync, readFileSync, rmSync, unlinkSync } = require("node:fs");
+const { lstatSync, readFileSync, readdirSync, rmSync, unlinkSync } = require("node:fs");
 const path = require("node:path");
 const { ensurePrivateDir, islandPaths, writePrivateFile } = require("../isolation.cjs");
 const { LIMITS, RecipeError, validateRecipe, recipeToJson } = require("./recipe.cjs");
@@ -39,7 +39,7 @@ const { resolveModelChoice, projectModel } = require("./model.cjs");
 const { runMinikoda, DEFAULT_RUN_TIMEOUT_MS } = require("./runner.cjs");
 const { Scheduler } = require("./scheduler.cjs");
 const { freshestCredential, readRunCredential, writeBackCredential } = require("./credentials.cjs");
-const { TranscriptionError } = require("./transcribe.cjs");
+const { TranscriptionError, removeWorkDir } = require("./transcribe.cjs");
 
 const MAX_MINIKODAS = 32;
 const MAX_SOURCE_BYTES = 200_000;
@@ -128,9 +128,43 @@ class MinikodaService extends EventEmitter {
 			.catch(() => this.log(`minikoda ${minikoda}: could not record the missed run`));
 	}
 
-	/** Arms the scheduler for every stored active Minikoda. */
+	/**
+	 * Arms the scheduler for every stored active Minikoda, after sweeping what a killed run or daemon left behind.
+	 */
 	start() {
+		this.sweepWorkDirs();
 		for (const entry of this.load().minikodas) if (entry.status === "active") this.scheduler.add(entry.recipe, { firedAt: entry.firedAt });
+	}
+
+	/**
+	 * K2-13 (S6, S9): removes whatever a previous daemon left in its two private work folders — a killed run's media,
+	 * a transcription's work files. Only inside `minikodas/media` and `minikodas/transcribe`, every entry is `lstat`ed
+	 * (a symlink is removed as a link, never followed), and a failure is logged instead of stopping the service.
+	 */
+	sweepWorkDirs() {
+		const dirs = [this.mediaDir, path.join(this.dir, "transcribe")];
+		const sweep = async () => {
+			for (const dir of dirs) {
+				let names;
+				try {
+					names = readdirSync(dir);
+				} catch (error) {
+					if (error.code !== "ENOENT") this.log(`minikodas: could not list ${path.basename(dir)} (${error.code})`);
+					continue;
+				}
+				for (const name of names) {
+					const entry = path.join(dir, name);
+					try {
+						if (lstatSync(entry).isDirectory()) await removeWorkDir(entry, { log: this.log });
+						else unlinkSync(entry); // a file or a symlink: the link goes, its target is never touched
+					} catch (error) {
+						if (error.code !== "ENOENT") this.log(`minikodas: could not sweep ${path.basename(dir)} (${error.code ?? "error"})`);
+					}
+				}
+			}
+		};
+		// Best effort and off the caller's path: `start()` stays synchronous.
+		sweep().catch(() => this.log("minikodas: the work-folder sweep failed"));
 	}
 
 	/**
@@ -339,7 +373,7 @@ class MinikodaService extends EventEmitter {
 				if (got === null || typeof got !== "object") return String(got ?? "");
 				return await this.withTranscripts(String(got.text ?? ""), Array.isArray(got.media) ? got.media : [], mediaDir, signal);
 			} finally {
-				rmSync(mediaDir, { recursive: true, force: true });
+				await removeWorkDir(mediaDir, { log: this.log }); // retried, never throws: the run's own error stands
 			}
 		}
 		const file = path.join(this.sourcesDir, `${recipe.id}.txt`);

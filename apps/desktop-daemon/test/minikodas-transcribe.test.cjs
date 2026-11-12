@@ -11,7 +11,7 @@ const os = require("node:os");
 const path = require("node:path");
 
 const { validateTranscriptionSetting, TRANSCRIPTION_DEFAULT } = require("../src/minikodas/transcribe-setting.cjs");
-const { Transcriber, TranscriptionError, bundledTools, CHUNK_SECONDS, MAX_CHUNK_BYTES } = require("../src/minikodas/transcribe.cjs");
+const { Transcriber, TranscriptionError, bundledTools, removeWorkDir, CHUNK_SECONDS, MAX_CHUNK_BYTES } = require("../src/minikodas/transcribe.cjs");
 const { MinikodaService } = require("../src/minikodas/service.cjs");
 const config = require("../src/config.cjs");
 const P = require("../src/protocol.cjs");
@@ -56,7 +56,7 @@ function allFiles(dir) {
 const lines = (file) => (fs.existsSync(file) ? fs.readFileSync(file, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
 
 /** A Transcriber wired to the fakes; `env` selects their modes. */
-function transcriber(t, base, { setting = TRANSCRIPTION_DEFAULT, env = {}, remote, limits = {}, logs = [] } = {}) {
+function transcriber(t, base, { setting = TRANSCRIPTION_DEFAULT, env = {}, remote, limits = {}, logs = [], removeDir } = {}) {
 	const island = path.join(base, "island");
 	fs.mkdirSync(island, { recursive: true, mode: 0o700 });
 	const ffLog = path.join(base, "ffmpeg.log");
@@ -70,6 +70,7 @@ function transcriber(t, base, { setting = TRANSCRIPTION_DEFAULT, env = {}, remot
 		env: { PATH: process.env.PATH, FAKE_FFMPEG_LOG: ffLog, FAKE_HELPER_LOG: helperLog, ...env },
 		log: (line) => logs.push(line),
 		limits,
+		...(removeDir ? { removeDir } : {}),
 	});
 	return { tr, island, ffLog, helperLog, logs, workRoot: path.join(island, "minikodas", "transcribe") };
 }
@@ -196,6 +197,43 @@ test("S15/S16 local Parakeet (default): ffmpeg extracts 16 kHz mono with a fixed
 	assert.deepEqual(allFiles(workRoot), [], "no extracted audio is left behind");
 });
 
+test("S9 ffmpeg may only decode audio: -codec_whitelist names the decoders the accepted containers carry", async (t) => {
+	// ffmpeg's -codec_whitelist filters DECODERS and matches exact names (no globs): `ffmpeg -h full` and a real run
+	// on this machine both confirm it, and `*` in that list blocks everything. The accepted containers (INPUT_FORMATS)
+	// carry AAC, Opus, MP3, Vorbis, FLAC, Apple lossless and PCM, so those are what the list must name.
+	const base = tmp(t);
+	const { tr, ffLog } = transcriber(t, base);
+	await tr.transcribe(media(path.join(base, "in"), 3)); // extract: <media> -> 16 kHz mono WAV
+	assertCodecList(lines(ffLog)[0]);
+	const srv = await fakeServer(t, (req, res) => {
+		res.writeHead(200, { "content-type": "application/json" });
+		res.end(JSON.stringify({ text: "ok" }));
+	});
+	const remote = transcriber(t, base, {
+		setting: { mode: "remote", language: "es", remote: { accountId: "gw", model: "whisper" } },
+		remote: async () => ({ baseUrl: srv.base, apiKey: KEY }),
+	});
+	const before = lines(ffLog).length;
+	await remote.tr.transcribe(media(path.join(base, "in2"), 200)); // extract + 2 chunks: the WAV is decoded too
+	const calls = lines(ffLog).slice(before);
+	assert.equal(calls.length, 3, "extract plus two 175 s chunks");
+	for (const argv of calls) assertCodecList(argv);
+});
+
+/** Every ffmpeg call must allow exactly the audio decoders Koda needs, before -i (it is an input decoder option). */
+function assertCodecList(argv) {
+	const at = argv.indexOf("-codec_whitelist");
+	assert.ok(at >= 0, `ffmpeg runs with a decoder whitelist: ${argv.join(" ")}`);
+	assert.ok(at < argv.indexOf("-i"), "-codec_whitelist applies to the input decoder, so it comes before -i");
+	const list = argv[at + 1].split(",");
+	for (const needed of ["aac", "aac_fixed", "aac_latm", "opus", "mp3", "mp3float", "mp2", "vorbis", "flac", "alac", "ac3", "eac3",
+		"pcm_s16le", "pcm_s24le", "pcm_s32le", "pcm_f32le", "pcm_u8", "pcm_s16be", "pcm_s24be", "pcm_s32be", "pcm_alaw", "pcm_mulaw"]) {
+		assert.ok(list.includes(needed), `${needed} is an audio decoder of the accepted containers`);
+	}
+	for (const never of ["h264", "hevc", "av1", "vp9", "vp8", "theora", "dts", "truehd", "subrip", "ass"]) assert.ok(!list.includes(never), `${never} is not an audio decoder Koda needs`);
+	assert.ok(!list.some((name) => name.includes("*")), "this option has no globbing: a star would allow nothing at all");
+}
+
 test("S16 local whisper-turbo: the helper gets whisper-turbo with the language fixed", async (t) => {
 	const base = tmp(t);
 	const { tr, helperLog } = transcriber(t, base, { setting: { mode: "local-whisper-turbo", language: "en" } });
@@ -256,6 +294,40 @@ test("cancellation and timeout: an aborted or slow transcription kills its child
 		const slow = transcriber(t, base, { env, limits: { timeoutMs: 400 } });
 		await assert.rejects(slow.tr.transcribe(media(path.join(base, "in"), 10)), (e) => e.code === "timeout");
 	}
+});
+
+test("K2-13 Windows: a work folder removed right after a killed child is retried, and cleanup never throws", async (t) => {
+	// Windows keeps a just-killed child's folder busy for a moment, so rmSync throws EBUSY. Cleanup is best effort:
+	// a few short retries, then give up silently (logged) — it must never throw and replace the real error.
+	const base = tmp(t);
+	const dir = path.join(base, "work");
+	fs.mkdirSync(dir, { recursive: true });
+	const busy = () => Object.assign(new Error("resource busy or locked"), { code: "EBUSY" });
+	let calls = 0;
+	const lockedTwice = (target, options) => {
+		calls += 1;
+		if (calls < 3) throw busy();
+		fs.rmSync(target, options);
+	};
+	assert.equal(await removeWorkDir(dir, { fs: { rmSync: lockedTwice }, delayMs: 1 }), true);
+	assert.equal(calls, 3, "the two EBUSY answers are retried");
+	assert.equal(fs.existsSync(dir), false);
+	const stuck = path.join(base, "stuck");
+	fs.mkdirSync(stuck, { recursive: true });
+	const logs = [];
+	assert.equal(await removeWorkDir(stuck, { fs: { rmSync: () => { throw busy(); } }, delayMs: 1, log: (line) => logs.push(line) }), false);
+	assert.match(logs.join("\n"), /work folder/);
+});
+
+test("K2-13: a cleanup that cannot remove the work folder never replaces the transcription's own error code", async (t) => {
+	const base = tmp(t);
+	const { tr } = transcriber(t, base, {
+		env: { FAKE_FFMPEG_MODE: "fail" },
+		removeDir: async () => { throw Object.assign(new Error("busy"), { code: "EBUSY" }); },
+	});
+	const file = media(path.join(base, "in"), 5);
+	await assert.rejects(tr.transcribe(file, { deleteMedia: true }), (error) => error.code === "bad_media", "ffmpeg's failure stands");
+	assert.equal(fs.existsSync(file), false, "the media is still deleted");
 });
 
 // ---------- remote ----------
@@ -404,6 +476,29 @@ test("S6 a video post is transcribed first: the Minikoda reads the text plus the
 	assert.match(source, /hola desde parakeet-tdt-0\.6b-v3-int8 en es/);
 	assert.equal(fs.existsSync(mediaFile), false);
 	assert.deepEqual(allFiles(path.join(island, "minikodas", "media")), []);
+});
+
+test("K2-13: starting the service sweeps its own stale media and transcription folders, and nothing else", async (t) => {
+	// A killed run or daemon leaves work files behind; the next start removes them. Only inside minikodas/media and
+	// minikodas/transcribe, and an entry is never followed through a symlink.
+	const base = tmp(t);
+	const island = path.join(base, "island");
+	const staleMedia = media(path.join(island, "minikodas", "media", "run-old"), 3, "old.mp4");
+	const staleWork = path.join(island, "minikodas", "transcribe", "u-old");
+	fs.mkdirSync(staleWork, { recursive: true, mode: 0o700 });
+	fs.writeFileSync(path.join(staleWork, "audio.wav"), "x", { mode: 0o600 });
+	const loose = path.join(island, "minikodas", "media", "loose-file");
+	fs.writeFileSync(loose, "x", { mode: 0o600 });
+	const outside = path.join(base, "keep-me.txt");
+	fs.writeFileSync(outside, "keep");
+	const link = path.join(island, "minikodas", "transcribe", "link");
+	if (posix) fs.symlinkSync(outside, link);
+	const { svc } = service(t, base); // constructs and starts: the sweep runs here
+	await waitFor(() => (!fs.existsSync(staleMedia) && !fs.existsSync(staleWork) && !fs.existsSync(loose)));
+	assert.deepEqual(allFiles(path.join(island, "minikodas", "media")), [], "no stale media is left");
+	assert.deepEqual(allFiles(path.join(island, "minikodas", "transcribe")), [], "no stale transcription work is left");
+	assert.equal(fs.existsSync(outside), true, "a file outside the two folders is never touched");
+	assert.ok(svc);
 });
 
 test("S6 a transcription failure is a clear «Hoy» error and the Minikoda's engine never starts", async (t) => {
