@@ -320,7 +320,7 @@ fn chathost_the_projection_keeps_the_page_keys_and_turn_shape() {
     let v = host.project(&link.view(), T0);
     assert_eq!(keys(&v), CONVERSATION_KEYS);
     assert_eq!(v["conversation_id"], json!(CHAT_CONVERSATION_ID));
-    assert!(crate::conversations::valid_id(CHAT_CONVERSATION_ID), "the page passes it back through chat.rs's history parse");
+    assert!(crate::chat::valid_conversation_id(CHAT_CONVERSATION_ID), "the page passes it back through chat.rs's history parse");
     assert_eq!(v["target"], json!(null), "the engine owns the model: no local target");
     assert_eq!(keys(&v["availability"]), ["message", "state"]);
     assert_eq!(keys(&v["producer"]), ["note", "pi"]);
@@ -502,22 +502,25 @@ fn chathost_the_direct_rust_chat_is_no_longer_reachable() {
     }
 }
 
-/// K2-05 U5a merge gate (T5 note): the merge needs that nothing in the RUNNING app opens the 0.1
-/// private store or writes under `<app_data_dir>/conversations/` any more. `conversations.rs` keeps
-/// the store itself for U5b, and `_tests.rs` files are not linked into the app, so both are skipped;
-/// every other production source must be clean, and the startup must never initialise a history.
+/// K2-05 U5b merge gate (T5 note): nothing in the RUNNING app opens the 0.1 private store or
+/// writes under `<app_data_dir>/conversations/` any more — the store module is GONE (U5b), `_tests.rs`
+/// files are not linked into the app, and the startup must never initialise a history.
 #[test]
 fn no_runtime_path_opens_or_writes_the_0_1_conversation_store() {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    assert!(!dir.join("conversations.rs").exists(), "K2-05 U5b deleted the 0.1 conversation store module");
+    assert!(!dir.join("conversations_tests.rs").exists(), "and its tests, with the behaviour they covered");
+    let lib = include_str!("lib.rs");
+    assert!(!lib.contains("pub mod conversations"), "the store module is no longer declared");
     let mut offenders: Vec<String> = Vec::new();
     for entry in std::fs::read_dir(&dir).expect("src dir") {
         let path = entry.expect("entry").path();
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
-        if !name.ends_with(".rs") || name.ends_with("_tests.rs") || name == "conversations.rs" {
+        if !name.ends_with(".rs") || name.ends_with("_tests.rs") {
             continue;
         }
         let text = std::fs::read_to_string(&path).expect("read");
-        for needle in ["Store::open", "conversations::Store", "init_history", "chathost::start_history"] {
+        for needle in ["Store::open", "conversations::Store", "init_history", "chathost::start_history", "conversations::valid_id"] {
             if text.contains(needle) {
                 offenders.push(format!("{name}: {needle}"));
             }

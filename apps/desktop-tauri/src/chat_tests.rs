@@ -1,25 +1,12 @@
-//! Unit U1 — tests for the pure chat contract (`abito.chat.v1` subset that a
-//! LOCAL model can honestly produce). Written before the implementation:
-//! RED → GREEN.
+//! K2-05 U5b — tests for what the island chat contract still parses.
+//!
+//! The in-memory conversation (`Conversation`, `Turn`, the turn states, the producer
+//! `Event`, tool/approval receipts and the presentation cache) left with the 0.1
+//! conversation store; its tests left with it. What is exercised here is the closed
+//! `chat_action` verb set, the id shapes it validates and the typed safe errors.
 
 use super::*;
 use serde_json::json;
-
-fn profile() -> ProfileRef {
-    ProfileRef {
-        profile_id: "local-abito-gpt".into(),
-        revision: 1,
-        lane_id: "conversation".into(),
-    }
-}
-
-fn convo() -> Conversation {
-    Conversation::new("c-test")
-}
-
-fn attachment(id: &str, name: &str, mime: &str, file: &str) -> Attachment {
-    Attachment { id: id.into(), name: name.into(), mime: mime.into(), size: 12, file: file.into() }
-}
 
 // --- input validation -------------------------------------------------------
 
@@ -55,254 +42,18 @@ fn client_request_ids_are_bounded_tokens() {
     assert!(!valid_client_request_id("req-ñ123456789ab"));
 }
 
-// --- submit / acceptance -------------------------------------------------------
-
+/// K2-05 U5b (was `conversations::valid_id`): the page still passes a conversation id
+/// back in `restore`/`history`, so the shape stays even though the store is gone.
 #[test]
-fn submit_assigns_native_ids_and_queues() {
-    let mut c = convo();
-    let a = c.submit("hola", "req-0000000001", &profile()).unwrap();
-    assert!(!a.duplicate);
-    assert_eq!(a.turn_id, "t-1");
-    assert_eq!(a.request_id, "c-test/r-1");
-    assert_eq!(a.profile_id, "local-abito-gpt");
-    assert_eq!(a.profile_revision, 1);
-    assert_eq!(a.lane_id, "conversation");
-    let t = c.turn("t-1").unwrap();
-    assert_eq!(t.state, TurnState::Queued);
-    assert_eq!(t.user_text, "hola");
-    assert_eq!(t.seq, 0);
-}
-
-#[test]
-fn duplicate_client_request_id_returns_the_same_turn_not_a_new_job() {
-    let mut c = convo();
-    let a = c.submit("hola", "req-0000000001", &profile()).unwrap();
-    let b = c.submit("hola otra vez", "req-0000000001", &profile()).unwrap();
-    assert!(b.duplicate);
-    assert_eq!(a.turn_id, b.turn_id);
-    assert_eq!(c.len(), 1);
-}
-
-#[test]
-fn only_one_turn_runs_per_conversation() {
-    let mut c = convo();
-    c.submit("uno", "req-0000000001", &profile()).unwrap();
-    let e = c.submit("dos", "req-0000000002", &profile()).unwrap_err();
-    assert_eq!(e.code, "queue_full");
-    assert!(e.retryable);
-    assert_eq!(c.len(), 1);
-}
-
-#[test]
-fn a_new_turn_is_accepted_once_the_previous_one_is_terminal() {
-    let mut c = convo();
-    c.submit("uno", "req-0000000001", &profile()).unwrap();
-    c.apply("t-1", 1, Event::Complete(FinishReason::Stop)).unwrap();
-    let a = c.submit("dos", "req-0000000002", &profile()).unwrap();
-    assert_eq!(a.turn_id, "t-2");
-}
-
-// --- events, sequencing, terminal states ---------------------------------------
-
-#[test]
-fn ordinary_turn_runs_thinking_streaming_completed() {
-    let mut c = convo();
-    c.submit("hola", "req-0000000001", &profile()).unwrap();
-    c.apply("t-1", 1, Event::Thinking).unwrap();
-    assert_eq!(c.turn("t-1").unwrap().state, TurnState::Thinking);
-    c.apply("t-1", 2, Event::Delta("Ho".into())).unwrap();
-    assert_eq!(c.turn("t-1").unwrap().state, TurnState::Streaming);
-    c.apply("t-1", 3, Event::Delta("la".into())).unwrap();
-    c.apply("t-1", 4, Event::Complete(FinishReason::Stop)).unwrap();
-    let t = c.turn("t-1").unwrap();
-    assert_eq!(t.state, TurnState::Completed);
-    assert_eq!(t.reply, "Hola");
-    assert_eq!(t.finish, Some(FinishReason::Stop));
-    assert_eq!(t.seq, 4);
-}
-
-#[test]
-fn regressing_duplicate_or_gapped_sequence_is_rejected() {
-    let mut c = convo();
-    c.submit("hola", "req-0000000001", &profile()).unwrap();
-    c.apply("t-1", 1, Event::Thinking).unwrap();
-    assert_eq!(c.apply("t-1", 1, Event::Thinking), Err(Reject::Regressing));
-    assert_eq!(c.apply("t-1", 0, Event::Thinking), Err(Reject::Regressing));
-    assert_eq!(c.apply("t-1", 3, Event::Delta("x".into())), Err(Reject::Gap));
-    assert_eq!(c.turn("t-1").unwrap().reply, "");
-}
-
-#[test]
-fn events_for_unknown_turns_or_after_terminal_are_rejected() {
-    let mut c = convo();
-    c.submit("hola", "req-0000000001", &profile()).unwrap();
-    assert_eq!(c.apply("t-9", 1, Event::Thinking), Err(Reject::UnknownTurn));
-    c.apply("t-1", 1, Event::Complete(FinishReason::Stop)).unwrap();
-    assert_eq!(
-        c.apply("t-1", 2, Event::Delta("tarde".into())),
-        Err(Reject::AfterTerminal)
-    );
-    assert_eq!(c.turn("t-1").unwrap().reply, "");
-}
-
-#[test]
-fn cancel_is_terminal_and_discards_later_deltas() {
-    let mut c = convo();
-    c.submit("hola", "req-0000000001", &profile()).unwrap();
-    c.apply("t-1", 1, Event::Delta("parcial".into())).unwrap();
-    assert!(c.cancel("t-1"));
-    let t = c.turn("t-1").unwrap();
-    assert_eq!(t.state, TurnState::Cancelled);
-    assert_eq!(t.finish, Some(FinishReason::Cancelled));
-    assert_eq!(
-        c.apply("t-1", 2, Event::Delta(" más".into())),
-        Err(Reject::AfterTerminal)
-    );
-    assert_eq!(c.turn("t-1").unwrap().reply, "parcial");
-    // cancelling twice / an unknown turn never creates anything
-    assert!(!c.cancel("t-1"));
-    assert!(!c.cancel("t-7"));
-    assert_eq!(c.len(), 1);
-}
-
-#[test]
-fn error_is_terminal_and_keeps_only_the_safe_fields() {
-    let mut c = convo();
-    c.submit("hola", "req-0000000001", &profile()).unwrap();
-    c.apply("t-1", 1, Event::Error(ChatError::local_model_unavailable()))
-        .unwrap();
-    let t = c.turn("t-1").unwrap();
-    assert_eq!(t.state, TurnState::Error);
-    let e = t.error.as_ref().unwrap();
-    assert_eq!(e.code, "local_model_unavailable");
-    assert!(e.retryable);
-    // the safe message says plainly that nothing else was used
-    assert!(e.safe_message.contains("No se usó ningún otro modelo"));
-}
-
-#[test]
-fn waiting_approval_never_turns_into_execution_by_itself() {
-    let mut c = convo();
-    c.submit("hola", "req-0000000001", &profile()).unwrap();
-    c.apply("t-1", 1, Event::Thinking).unwrap();
-    c.apply("t-1", 2, Event::WaitingApproval).unwrap();
-    assert_eq!(c.turn("t-1").unwrap().state, TurnState::WaitingApproval);
-    // deltas while waiting are not a hidden transition back to streaming
-    assert_eq!(
-        c.apply("t-1", 3, Event::Delta("x".into())),
-        Err(Reject::InvalidTransition)
-    );
-    // waiting is not terminal: a new turn is still refused
-    assert_eq!(
-        c.submit("otro", "req-0000000002", &profile()).unwrap_err().code,
-        "queue_full"
-    );
-}
-
-#[test]
-fn thinking_after_streaming_is_an_invalid_transition() {
-    let mut c = convo();
-    c.submit("hola", "req-0000000001", &profile()).unwrap();
-    c.apply("t-1", 1, Event::Delta("a".into())).unwrap();
-    assert_eq!(c.apply("t-1", 2, Event::Thinking), Err(Reject::InvalidTransition));
-}
-
-#[test]
-fn response_is_bounded_and_truncation_is_an_explicit_limit_state() {
-    let mut c = convo();
-    c.submit("hola", "req-0000000001", &profile()).unwrap();
-    let big = "é".repeat(RESPONSE_MAX_SCALARS - 2);
-    assert_eq!(c.apply("t-1", 1, Event::Delta(big)).unwrap(), Applied::Ok);
-    assert_eq!(
-        c.apply("t-1", 2, Event::Delta("abcd".into())).unwrap(),
-        Applied::Truncated
-    );
-    let t = c.turn("t-1").unwrap();
-    assert_eq!(t.reply.chars().count(), RESPONSE_MAX_SCALARS);
-    assert_eq!(t.state, TurnState::Completed);
-    assert_eq!(t.finish, Some(FinishReason::Limit));
-}
-
-// --- presentation cache -------------------------------------------------------
-
-#[test]
-fn presentation_cache_keeps_at_most_100_turns() {
-    let mut c = convo();
-    for n in 0..(CACHE_MAX_TURNS + 5) {
-        let id = format!("req-{n:010}");
-        let a = c.submit("hola", &id, &profile()).unwrap();
-        c.apply(&a.turn_id, 1, Event::Complete(FinishReason::Stop)).unwrap();
-    }
-    assert_eq!(c.len(), CACHE_MAX_TURNS);
-    assert_eq!(c.evicted(), 5);
-    assert!(c.turn("t-1").is_none());
-}
-
-#[test]
-fn presentation_cache_is_bounded_in_bytes_but_never_evicts_the_active_turn() {
-    let mut c = convo();
-    let text = "x".repeat(DRAFT_MAX_SCALARS);
-    let mut n = 0;
-    while c.bytes() <= CACHE_MAX_BYTES - DRAFT_MAX_SCALARS {
-        n += 1;
-        let a = c.submit(&text, &format!("req-{n:010}"), &profile()).unwrap();
-        c.apply(&a.turn_id, 1, Event::Complete(FinishReason::Stop)).unwrap();
-    }
-    n += 1;
-    let a = c.submit(&text, &format!("req-{n:010}"), &profile()).unwrap();
-    assert!(c.bytes() <= CACHE_MAX_BYTES);
-    assert!(c.turn(&a.turn_id).is_some());
-    assert!(c.evicted() >= 1);
-}
-
-// --- view projection --------------------------------------------------------------
-
-#[test]
-fn view_is_plain_data_with_states_as_contract_strings() {
-    let mut c = convo();
-    c.submit("hola", "req-0000000001", &profile()).unwrap();
-    c.apply("t-1", 1, Event::Thinking).unwrap();
-    let v = c.view();
-    assert_eq!(v["conversation_id"], "c-test");
-    assert_eq!(v["active_turn"], "t-1");
-    let turn = &v["turns"][0];
-    assert_eq!(turn["state"], "thinking");
-    assert_eq!(turn["user_text"], "hola");
-    assert_eq!(turn["reply"], "");
-    assert!(turn["error"].is_null());
-    // the client request id is the page's own token, not echoed back
-    assert!(turn.get("client_request_id").is_none());
-}
-
-#[test]
-fn state_strings_match_the_contract() {
-    let all = [
-        (TurnState::Queued, "queued"),
-        (TurnState::Thinking, "thinking"),
-        (TurnState::Streaming, "streaming"),
-        (TurnState::WaitingApproval, "waiting_approval"),
-        (TurnState::Completed, "completed"),
-        (TurnState::Cancelled, "cancelled"),
-        (TurnState::Error, "error"),
-    ];
-    for (state, text) in all {
-        assert_eq!(serde_json::to_value(state).unwrap(), text);
-    }
-    assert!(TurnState::Completed.is_terminal());
-    assert!(TurnState::Cancelled.is_terminal());
-    assert!(TurnState::Error.is_terminal());
-    assert!(!TurnState::WaitingApproval.is_terminal());
-}
-
-#[test]
-fn lookup_answers_a_repeated_client_id_without_submitting() {
-    let mut c = convo();
-    assert!(c.lookup("req-0000000001").is_none());
-    let a = c.submit("hola", "req-0000000001", &profile()).unwrap();
-    let again = c.lookup("req-0000000001").unwrap();
-    assert!(again.duplicate);
-    assert_eq!(again.turn_id, a.turn_id);
-    assert_eq!(c.len(), 1);
+fn conversation_ids_are_c_prefixed_tokens() {
+    assert!(valid_conversation_id("c-koda"));
+    assert!(valid_conversation_id("c-1712345678901234567-4242-0"));
+    assert!(!valid_conversation_id("c-1"), "shorter than the 4-byte minimum");
+    assert!(valid_conversation_id("c-12"), "the minimum accepted length is exactly 4 bytes");
+    assert!(!valid_conversation_id("t-1234"), "turn ids are a different shape");
+    assert!(!valid_conversation_id("c-"));
+    assert!(!valid_conversation_id("c-../escape"));
+    assert!(!valid_conversation_id(&format!("c-{}", "a".repeat(79))), "capped at 80 bytes");
 }
 
 // --- chat_action IPC payload (validated in Rust, like desktop_action) -----------
@@ -321,6 +72,36 @@ fn chat_commands_parse_with_exact_keys() {
         parse_command(&json!({"action": "cancel", "turn_id": "t-3"})).unwrap(),
         Command::Cancel { turn_id: "t-3".into() }
     );
+}
+
+/// The conversation verbs the host refuses (`conversations_off`: one continuous chat)
+/// still PARSE here, with the id shape they always had — refusing is the host's job.
+#[test]
+fn conversation_verbs_parse_and_validate_the_id_shape() {
+    assert_eq!(parse_command(&json!({"action": "new"})).unwrap(), Command::New);
+    assert_eq!(parse_command(&json!({"action": "new_with", "specialist_id": null})).unwrap(), Command::NewWith { specialist_id: None });
+    assert_eq!(parse_command(&json!({"action": "list"})).unwrap(), Command::List);
+    assert_eq!(
+        parse_command(&json!({"action": "restore", "conversation_id": "c-koda"})).unwrap(),
+        Command::Restore { conversation_id: "c-koda".into() }
+    );
+    assert_eq!(
+        parse_command(&json!({"action": "history", "conversation_id": "c-koda", "before": null})).unwrap(),
+        Command::History { conversation_id: "c-koda".into(), before: None }
+    );
+    assert_eq!(
+        parse_command(&json!({"action": "history", "conversation_id": "c-koda", "before": 12})).unwrap(),
+        Command::History { conversation_id: "c-koda".into(), before: Some(12) }
+    );
+    for bad in [
+        json!({"action": "restore", "conversation_id": "x"}),
+        json!({"action": "restore", "conversation_id": "c-../x"}),
+        json!({"action": "history", "conversation_id": "t-1", "before": null}),
+        json!({"action": "history", "conversation_id": "c-koda", "before": 0}),
+        json!({"action": "history", "conversation_id": "c-koda"}),
+    ] {
+        assert_eq!(parse_command(&bad).unwrap_err().code, "invalid_input", "{bad}");
+    }
 }
 
 #[test]
@@ -357,21 +138,6 @@ fn check_command_is_argument_free() {
 }
 
 #[test]
-fn submit_accepts_ids_and_turns_carry_the_metadata() {
-    let mut c = convo();
-    let a = c.submit_with_attachments(
-        "hola", "req-att-00000001", &profile(),
-        vec![attachment("a-0123456789abcdef", "notas.txt", "text/plain", "0123456789abcdef-notas.txt")],
-    ).unwrap();
-    let turn = c.turn(&a.turn_id).unwrap();
-    assert_eq!(turn.attachments.len(), 1);
-    assert_eq!(turn.attachments[0].name, "notas.txt");
-    // U5a: the attachment metadata stays on the turn; the prompt is the daemon engine's
-    // now, so nothing in Rust builds one.
-    assert_eq!(c.view()["turns"][0]["attachments"][0]["mime"], json!("text/plain"));
-}
-
-#[test]
 fn submit_command_parses_the_optional_attachments_key() {
     let ok = json!({"action": "submit", "text": "hola", "client_request_id": "req-0000000001",
         "attachments": ["a-0123456789abcdef", "a-ffffffffffffffff"]});
@@ -405,97 +171,6 @@ fn safe_errors_name_what_to_do() {
     assert!(ChatError::vision_unsupported().safe_message.contains("no puede leer imágenes"));
 }
 
-// --- #418: tool calls and approval decisions as turn events -------------------
-
-fn running_turn(c: &mut Conversation) -> String {
-    let a = c.submit("hola", "req-0000000001", &profile()).unwrap();
-    c.apply(&a.turn_id, 1, Event::Thinking).unwrap();
-    a.turn_id
-}
-
-fn call(id: &str, name: &str, state: ToolState, summary: Option<&str>) -> Event {
-    Event::ToolCall(ToolCall {
-        call_id: id.into(),
-        name: name.into(),
-        state,
-        summary: summary.map(str::to_string),
-    })
-}
-
-#[test]
-fn a_plain_turn_view_has_no_tool_or_approval_keys() {
-    let mut c = convo();
-    let t = running_turn(&mut c);
-    c.apply(&t, 2, Event::Delta("ok".into())).unwrap();
-    let v = c.view();
-    let turn = v["turns"][0].as_object().unwrap();
-    assert!(!turn.contains_key("tool_calls"));
-    assert!(!turn.contains_key("approvals"));
-}
-
-#[test]
-fn a_tool_call_event_surfaces_in_the_view_and_upserts_by_call_id() {
-    let mut c = convo();
-    let t = running_turn(&mut c);
-    c.apply(&t, 2, call("call_1", "read", ToolState::Running, None)).unwrap();
-    assert_eq!(c.view()["turns"][0]["tool_calls"], json!([{"call_id": "call_1", "name": "read", "state": "running"}]));
-    c.apply(&t, 3, call("call_1", "read", ToolState::Failed, Some("La herramienta terminó con error."))).unwrap();
-    let calls = c.view()["turns"][0]["tool_calls"].clone();
-    assert_eq!(calls, json!([{"call_id": "call_1", "name": "read", "state": "failed", "summary": "La herramienta terminó con error."}]));
-    // a finished call never goes back to running
-    assert_eq!(c.apply(&t, 4, call("call_1", "read", ToolState::Running, None)), Err(Reject::InvalidTransition));
-}
-
-#[test]
-fn unsafe_tool_events_are_rejected_and_change_nothing() {
-    let mut c = convo();
-    let t = running_turn(&mut c);
-    let before = c.view();
-    for bad in [
-        call("bad id!", "read", ToolState::Running, None),
-        call("", "read", ToolState::Running, None),
-        call("call_1", "bash\nrm -rf /", ToolState::Running, None),
-        call("call_1", &"n".repeat(65), ToolState::Running, None),
-        call("call_1", "read", ToolState::Running, Some("line\nbreak")),
-        call("call_1", "read", ToolState::Running, Some(&"s".repeat(241))),
-    ] {
-        assert_eq!(c.apply(&t, 2, bad), Err(Reject::Invalid));
-    }
-    assert_eq!(c.view(), before, "rejected events leave the turn and seq unchanged");
-    assert!(c.apply(&t, 2, Event::Delta("x".into())).is_ok(), "seq 2 is still free");
-}
-
-#[test]
-fn tool_calls_per_turn_are_bounded() {
-    let mut c = convo();
-    let t = running_turn(&mut c);
-    for i in 0..MAX_TOOL_CALLS {
-        c.apply(&t, 2 + i as u64, call(&format!("c{i}"), "read", ToolState::Done, None)).unwrap();
-    }
-    assert_eq!(c.apply(&t, 2 + MAX_TOOL_CALLS as u64, call("extra", "read", ToolState::Done, None)), Err(Reject::Invalid));
-}
-
-#[test]
-fn approval_decisions_surface_once_per_request() {
-    let mut c = convo();
-    let t = running_turn(&mut c);
-    let ev = |id: &str, d| Event::Approval(ApprovalDecision { request_id: id.into(), operation: "Enviar correo".into(), decision: d });
-    c.apply(&t, 2, ev("req_1", Decision::Approved)).unwrap();
-    assert_eq!(c.view()["turns"][0]["approvals"], json!([{"request_id": "req_1", "operation": "Enviar correo", "decision": "approved"}]));
-    assert_eq!(c.apply(&t, 3, ev("req_1", Decision::Denied)), Err(Reject::InvalidTransition));
-    let bad = Event::Approval(ApprovalDecision { request_id: "req_2".into(), operation: "a\u{0}b".into(), decision: Decision::Expired });
-    assert_eq!(c.apply(&t, 3, bad), Err(Reject::Invalid));
-    assert_eq!(c.view()["turns"][0]["approvals"].as_array().unwrap().len(), 1);
-}
-
-#[test]
-fn tool_events_after_a_terminal_turn_are_refused() {
-    let mut c = convo();
-    let t = running_turn(&mut c);
-    c.apply(&t, 2, Event::Complete(FinishReason::Stop)).unwrap();
-    assert_eq!(c.apply(&t, 3, call("c1", "read", ToolState::Done, None)), Err(Reject::AfterTerminal));
-}
-
 // --- S10 (L35): the page reports the chat height it wants (Coucou's growing prompt) ------------------------------------
 
 #[test]
@@ -518,4 +193,3 @@ fn the_height_verb_is_exact_closed_and_integer_only() {
         assert!(parse_command(&bad).is_err(), "{bad} must be refused");
     }
 }
-

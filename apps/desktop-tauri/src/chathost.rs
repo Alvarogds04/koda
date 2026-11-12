@@ -431,8 +431,8 @@ pub async fn chat_attach_data(
 }
 
 /// Default deadlines for production turns.
-/// Kept for specialists/models until U5b/U5d (K2-05 L59): the island state still
-/// carries them and the specialists' fixture builds them.
+/// Kept for specialists until U5d (K2-05 L59): the island state still carries
+/// them and the specialists' fixture builds them.
 pub fn default_deadlines() -> abito_island::localmodel::Deadlines {
     DEFAULT_DEADLINES
 }
