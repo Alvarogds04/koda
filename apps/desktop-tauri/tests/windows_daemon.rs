@@ -311,7 +311,7 @@ fn helper_verify_is_read_only_and_requires_native_identity_and_ready() {
         assert_eq!(output.status.code(), Some(if ready { 0 } else { 1 }));
         assert!(output.stdout.is_empty() && output.stderr.is_empty(), "verdict code only");
         assert_eq!(std::fs::read(session_file(&base)).unwrap(), before);
-        assert_eq!(std::fs::read_dir(base.join("Abito/runtime")).unwrap().count(), 1);
+        assert_eq!(std::fs::read_dir(base.join("Koda/runtime")).unwrap().count(), 1);
         widen_dacl_to_everyone(&session_file(&base));
         let refused = Command::new(HELPER).arg("--verify").env("LOCALAPPDATA", &base).env_remove("ABITO_ISLAND_DIR").output().unwrap();
         assert_eq!(refused.status.code(), Some(1));
