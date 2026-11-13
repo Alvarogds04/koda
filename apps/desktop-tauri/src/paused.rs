@@ -6,7 +6,7 @@
 
 /// The features of this build. `paused` is the single switch the hosts read at startup.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Feature { Dictation, Voice, Integrations, Spotify, Phone, Mail }
+pub enum Feature { Dictation, Voice, Integrations, Spotify, Phone, Mail, Github, Calendar }
 
 /// Paused in this version (everything that is neither Chat nor Agentes nor the general shell).
 /// K2-10 T4 (S11): `Mail` gets its OWN entry and is NOT paused — the island's mail reads the user's
@@ -19,6 +19,10 @@ pub const fn paused(feature: Feature) -> bool {
         Feature::Mail => false,
         // K2-09: music from the island ships in 0.2
         Feature::Spotify => false,
+        // K2-11 S6: GitHub and the calendar have their OWN entries and are not paused, so both cards
+        // are visible without un-pausing the 0.3 services (`Integrations` above stays paused).
+        Feature::Github => false,
+        Feature::Calendar => false,
     }
 }
 
@@ -61,5 +65,17 @@ mod tests {
         assert!(effective(Feature::Mail, true), "un «on» guardado arranca el correo");
         assert!(!effective(Feature::Mail, false), "un «off» guardado se respeta igual");
         assert!(paused(Feature::Integrations), "el resto de Integraciones sigue en pausa");
+    }
+
+    /// K2-11 S6: GitHub y el calendario tienen su PROPIA entrada y no están en pausa, así que sus
+    /// tarjetas se ven sin despausar los servicios de la 0.3.
+    #[test]
+    fn k2_11_github_and_calendar_have_their_own_active_entry() {
+        for f in [Feature::Github, Feature::Calendar] {
+            assert!(!paused(f), "{f:?} no se pausa en esta versión");
+            assert!(effective(f, true), "{f:?}: un «on» guardado lo arranca");
+            assert!(!effective(f, false), "{f:?}: un «off» guardado se respeta igual");
+        }
+        assert!(paused(Feature::Integrations), "los servicios de la 0.3 siguen en pausa");
     }
 }
