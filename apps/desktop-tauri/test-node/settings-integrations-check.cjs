@@ -45,7 +45,7 @@ const { dom, Element, all, text } = require('./settings-accounts-check.cjs');
   assert(text(ui).includes('Secret Service (GNOME Keyring, KWallet)'));
   assert(!/nunca en el disco|never on disk/i.test(text(ui)),'approved truthful-copy exception');
   // K2-10 T7 (L21/L22): the Mail (IMAP) and Mail (SMTP) cards left the hub, so their keys are no
-  // longer asked here; they STAY in KNOWN_KEYS and in the keychain until the human decides.
+  // longer asked here; K2-10 T8 (L23) then removed those keys from KNOWN_KEYS and the keychain.
   const keys=['stripe-api-key','github-token','vercel-token','n8n-url','n8n-api-key','resend-api-key','resend-from','notion-api-key','calcom-api-key'];
   assert.deepEqual(calls.filter(([c])=>c==='secret_action').map(([,p])=>p),keys.map(key=>({action:'present',key})));
   const list=find('integration-list');assert.equal(list.children.length,8);
