@@ -14,14 +14,15 @@ const test = (_n, fn) => { fn(); passed += 1; };
 
 test('one frontend list, the same as Ajustes and Rust', () => {
   assert.equal(P.LABEL, 'En pausa · próxima versión');
-  for (const f of ['dictation', 'voice', 'integrations', 'phone']) assert.equal(P.paused(f), true, f);
+  // K2 T1 (S2, S3): `phone` is out of the pause — Ajustes › Teléfono is live and the link still starts OFF there.
   // K2-09 S5: «se quita la pausa de Spotify»
-  for (const f of ['spotify', 'chat', 'agents', 'general', 'shortcuts', 'privacy', 'sessions', 'notifications']) assert.equal(P.paused(f), false, f);
+  for (const f of ['dictation', 'voice', 'integrations']) assert.equal(P.paused(f), true, f);
+  for (const f of ['spotify', 'chat', 'agents', 'general', 'shortcuts', 'privacy', 'sessions', 'notifications', 'phone']) assert.equal(P.paused(f), false, f);
   const rust = fs.readFileSync(path.join(__dirname, '..', 'src', 'paused.rs'), 'utf8');
-  assert.match(rust, /Feature::Dictation \| Feature::Voice \| Feature::Integrations \| Feature::Phone => true/);
+  assert.match(rust, /Feature::Dictation \| Feature::Voice \| Feature::Integrations => true,\s*Feature::Phone => false/);
   assert.match(rust, /Feature::Spotify => false/, 'K2-09: Spotify is no longer paused in Rust either');
   const shell = fs.readFileSync(path.join(frontend, 'vendor', 'coucou', 'hub', 'shell.ts'), 'utf8');
-  assert.match(shell, /ACTIVE_PAGES: readonly string\[\] = Object\.freeze\(\["general", "agents", "chat", "shortcuts", "privacy"\]\)/, 'Ajustes keeps exactly the active pages');
+  assert.match(shell, /ACTIVE_PAGES: readonly string\[\] = Object\.freeze\(\["general", "agents", "chat", "phone", "shortcuts", "privacy"\]\)/, 'Ajustes keeps exactly the active pages');
 });
 test('Spotify (K2-09): not paused any more, so the card follows the prefs on a supported OS', () => {
   const prefs = { mainPill: 'integration_spotify' };
