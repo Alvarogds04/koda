@@ -8,7 +8,7 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { fakeReceiver } = require('./fake-receiver.cjs');
 
-const bin = path.resolve(__dirname, '../bin/abito-hook.cjs');
+const bin = path.resolve(__dirname, '../bin/koda-hook.cjs');
 const cwd = path.resolve(__dirname, '..');
 const permission = JSON.stringify({ session_id: 's1', cwd, model: 'm', turn_id: 't', hook_event_name: 'PermissionRequest', tool_name: 'Bash', tool_input: { command: 'ls' } });
 const planQuestion = JSON.stringify({ session_id: 's1', cwd, hook_event_name: 'PreToolUse', tool_name: 'request_user_input', tool_input: { questions: [{ question: '¿Qué alcance?' }] } });

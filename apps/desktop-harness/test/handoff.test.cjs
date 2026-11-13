@@ -13,7 +13,7 @@ const { resolveConfig } = require('../src/config.cjs');
 const { fakeReceiver } = require('./fake-receiver.cjs');
 
 const owner = process.getuid?.();
-const bin = path.resolve(__dirname, '../bin/abito-hook.cjs');
+const bin = path.resolve(__dirname, '../bin/koda-hook.cjs');
 const cwd = path.resolve(__dirname, '..');
 const handoff = (rcv, over = {}) => JSON.stringify({ v: 1, endpoint: rcv.endpoint, pid: process.pid, ...over });
 function put(rcv, text, mode = 0o600) {

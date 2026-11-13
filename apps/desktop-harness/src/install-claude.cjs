@@ -8,7 +8,12 @@ const crypto = require('node:crypto');
 const readline = require('node:readline');
 const winfs = require('./win-fs.cjs');
 
-const BIN_PATH = path.resolve(__dirname, '../bin/abito-hook.cjs');
+// K2-04 (S1, S4): the names are Koda's. A Koda 0.1 hook that still calls `bin/abito-hook.cjs` (from whatever directory that
+// install lived in) is recognised as OURS by the exact-basename rule below and replaced in place: one card per notice, never a
+// duplicate, and never a look-alike such as `my-abito-hook.cjs`.
+const SCRIPT_NAME = 'koda-hook.cjs';
+const LEGACY_SCRIPT_NAMES = Object.freeze(['abito-hook.cjs']);
+const BIN_PATH = path.resolve(__dirname, '../bin/' + SCRIPT_NAME);
 const MAX_BYTES = 1024 * 1024;
 const DEFAULT_TIMEOUT_SEC = 35;
 const STOP_TIMEOUT_SEC = 15;
@@ -36,10 +41,11 @@ const CLAUDE_PROFILE = {
     if (event === 'SessionStart') return { type: 'command', command: execPath, args: [binPath, 'claude', 'session-start'], timeout: SESSION_START_TIMEOUT_SEC };
     return { type: 'command', command: execPath, args: [binPath, 'claude', 'permission-request', '--timeout-sec', String(timeoutSec)], timeout: timeoutSec };
   },
-  // HU-068: ours = the current script OR the same Abito script from a FORMER location (AppTranslocation, Downloads, an old install
-  // dir), anchored on the exact file name as args[0] and the `claude` subcommand as args[1]. A look-alike name is foreign.
+  // HU-068: ours = the current script OR the same Koda script from a FORMER location (AppTranslocation, Downloads, an old install
+  // dir) OR a Koda 0.1 script name, anchored on the exact file name as args[0] and the `claude` subcommand as args[1]. A
+  // look-alike name is foreign.
   isOurs: (h, binPath) => isObjF(h) && h.type === 'command' && Array.isArray(h.args) && h.args.includes('claude')
-    && (h.args.includes(binPath) || (h.args[1] === 'claude' && isFormerScript(h.args[0], 'abito-hook.cjs'))),
+    && (h.args.includes(binPath) || (h.args[1] === 'claude' && isHookScript(h.args[0]))),
   previewNotes: plan => (plan.actions.some(a => a.migrated && a.action !== 'unchanged')
     ? ['Migration: the Koda-owned PreToolUse (AskUserQuestion) entry is removed; AskUserQuestion is answered under PermissionRequest now, next to the terminal dialog.']
     : []),
@@ -52,7 +58,11 @@ function isFormerScript(p, name) {
   return parts.length > 1 && parts[parts.length - 1] === name;
 }
 function isObjF(v) { return v !== null && typeof v === 'object' && !Array.isArray(v); }
-const USAGE = 'usage: abito-hook install claude (--settings <abs path> | --user) [--timeout-sec N] [--remove] [--apply]\n';
+/** True when `p` names our hook script: the current name, a 0.1 name, or a former location of either. Never a look-alike. */
+function isHookScript(p) {
+  return isFormerScript(p, SCRIPT_NAME) || LEGACY_SCRIPT_NAMES.some(name => isFormerScript(p, name));
+}
+const USAGE = 'usage: koda-hook install claude (--settings <abs path> | --user) [--timeout-sec N] [--remove] [--apply]\n';
 
 CLAUDE_PROFILE.usage = USAGE;
 
@@ -425,8 +435,66 @@ function changedOutsidePatch(plan) {
   return pre + suf;
 }
 function backupPathFor(settingsPath, now) {
-  const ts = now.toISOString().replace(/[-:]/g, '').replace('.', '');
-  return `${settingsPath}.abito-backup-${ts}`;
+  return `${settingsPath}.abito-backup-${stampOf(now)}`;
+}
+const stampOf = now => now.toISOString().replace(/[-:]/g, '').replace('.', '');
+
+// ---- K2-04 (S2, S4): retiring the Koda 0.1 artifact a client would still load --------------
+// Two cards per notice is exactly what S2 forbids, and a client that loads a whole folder (Copilot reads every *.json in
+// ~/.copilot/hooks, OpenCode and Pi load a folder) would keep the 0.1 file next to the new one. The new install therefore
+// MOVES the 0.1 file aside to a dated `.abito-backup-` name next to itself (never deleted, never recursive) and puts it back
+// if the write fails. A file at the old name without our ownership marker is somebody else's and is never in this list.
+const retireOf = plan => (Array.isArray(plan.retire) ? plan.retire : []);
+/** True while every 0.1 file is byte-identical to the previewed plan (mid-flight changes refuse, never clobber). */
+function retireFresh(plan) {
+  const w = winfs.active();
+  for (const r of retireOf(plan)) {
+    let text = null;
+    if (w) { try { const got = w.readPrivate(r.abs); text = got ? got.buf.toString('utf8') : null; } catch { return false; } }
+    else { const got = readTarget(r.abs, plan.uid); if (got) text = got.buf.toString('utf8'); }
+    if (text !== r.before) return false;
+  }
+  return true;
+}
+/** First free `<file>.abito-backup-<stamp>[-1..-9]`: an existing backup is never overwritten. */
+function freeBackupName(file, now, exists) {
+  const base = `${file}.abito-backup-${stampOf(now)}`;
+  for (let i = 0; i <= 9; i++) {
+    const cand = i === 0 ? base : `${base}-${i}`;
+    if (!exists(cand)) return cand;
+  }
+  return null;
+}
+/** Moves the 0.1 files aside into `moves` (filled as it goes, so a mid-way failure still gets them back). A 0.1 target with
+ * `after` is rewritten without our entries right after its bytes are parked in the backup (the client keeps everything that was
+ * not ours); `after === null` leaves only the backup behind. */
+function retireAside(plan, now, moves) {
+  const w = winfs.active();
+  const at = now();
+  const exists = w ? p => { try { return w.checkPath(p).exists; } catch { return true; } } : p => { try { fs.lstatSync(p); return true; } catch { return false; } };
+  for (const r of retireOf(plan)) {
+    const to = freeBackupName(r.abs, at, exists);
+    if (to === null) throw new Error('no backup name left');
+    if (w) w.move(r.abs, to); else fs.renameSync(r.abs, to);
+    const move = { from: r.abs, to, written: false };
+    moves.push(move);
+    if (typeof r.after === 'string') {
+      const bytes = Buffer.from(r.after, 'utf8');
+      if (w) w.writePrivate(r.abs, bytes, null); else writeNew(r.abs, bytes, r.mode || 0o600);
+      move.written = true;
+    }
+  }
+  return moves;
+}
+/** Best-effort inverse of retireAside (used when the new write or its verification fails). */
+function retireBack(moves) {
+  const w = winfs.active();
+  for (const m of [...moves].reverse()) {
+    try {
+      if (m.written) { if (w) w.remove(m.from); else fs.unlinkSync(m.from); }
+      if (w) w.move(m.to, m.from); else fs.renameSync(m.to, m.from);
+    } catch { /* the human still has the backup */ }
+  }
 }
 function renderPreview(plan, { backupPath, apply }) {
   const L = [];
@@ -488,11 +556,15 @@ function restore(plan, backupPath) {
   } catch { return false; }
 }
 
-async function applyPlan(plan, { backupPath, verify = defaultVerify, out, err }) {
+const STALE = Symbol('stale');
+async function applyPlan(plan, { backupPath, verify = defaultVerify, out, err, now = () => new Date() }) {
   const w = winfs.active();
-  if (w) return winApplyPlan(w, plan, { backupPath, verify, out, err });
+  if (w) return winApplyPlan(w, plan, { backupPath, verify, out, err, now });
   const target = plan.settingsPath;
   const data = Buffer.from(plan.after, 'utf8');
+  // A plan whose only change is retiring a 0.1 artifact writes nothing: only a plan WITH a patch has bytes to write
+  // (a new file always carries one), so a retire-only plan never creates the target.
+  const write = plan.changed && plan.patch !== null;
   if (plan.patch && plan.exists) {
     const orig = fs.readFileSync(target);
     const pre = Buffer.from(plan.baseText.slice(0, plan.patch.start), 'utf8'), suf = Buffer.from(plan.baseText.slice(plan.patch.end), 'utf8');
@@ -504,40 +576,57 @@ async function applyPlan(plan, { backupPath, verify = defaultVerify, out, err })
   }
   const wantHash = sha256(data);
   if (!sameSig(target, plan)) { err('refused: settings file changed since the preview; nothing was written\n'); return 70; }
+  if (!retireFresh(plan)) { err('refused: the Koda 0.1 file changed since the preview; nothing was written\n'); return 70; }
   let backupMade = false, tmpf = null;
+  const moved = [];
   try {
-    if (plan.exists) { writeNew(backupPath, plan.before === '' ? Buffer.alloc(0) : fs.readFileSync(target), 0o600); backupMade = true; }
-    tmpf = tempPath(target);
-    writeNew(tmpf, data, plan.mode);
-    if (sha256(fs.readFileSync(tmpf)) !== wantHash) throw new Error('temp content mismatch');
-    if (!sameSig(target, plan)) { fs.unlinkSync(tmpf); tmpf = null; err('refused: settings file changed since the preview; nothing was written\n'); return 70; }
-    if (plan.exists) fs.renameSync(tmpf, target);
-    else { fs.linkSync(tmpf, target); fs.unlinkSync(tmpf); }
-    tmpf = null;
-  } catch {
+    if (write) {
+      if (plan.exists) { writeNew(backupPath, plan.before === '' ? Buffer.alloc(0) : fs.readFileSync(target), 0o600); backupMade = true; }
+      tmpf = tempPath(target);
+      writeNew(tmpf, data, plan.mode);
+      if (sha256(fs.readFileSync(tmpf)) !== wantHash) throw new Error('temp content mismatch');
+      if (!sameSig(target, plan)) throw STALE;
+    }
+    retireAside(plan, now, moved);
+    if (write) {
+      if (plan.exists) fs.renameSync(tmpf, target);
+      else { fs.linkSync(tmpf, target); fs.unlinkSync(tmpf); }
+      tmpf = null;
+    }
+  } catch (e) {
     if (tmpf) { try { fs.unlinkSync(tmpf); } catch { /* ignore */ } }
+    retireBack(moved);
+    if (e === STALE) { err('refused: settings file changed since the preview; nothing was written\n'); return 70; }
     err('error: could not write settings; target unchanged\n');
     return 70;
   }
-  let ok = false;
-  try { const written = fs.readFileSync(target, 'utf8'); ok = !!verify(plan.profile && plan.profile.rawText ? null : JSON.parse(written), plan, written); } catch { ok = false; }
+  // Only what we wrote is verified: a retire-only plan leaves the target untouched (or absent), so there is nothing to re-read.
+  let ok = true;
+  if (write) {
+    ok = false;
+    try { const written = fs.readFileSync(target, 'utf8'); ok = !!verify(plan.profile && plan.profile.rawText ? null : JSON.parse(written), plan, written); } catch { ok = false; }
+  }
   if (!ok) {
-    const restored = restore(plan, backupMade ? backupPath : null);
+    const restored = write ? restore(plan, backupMade ? backupPath : null) : true;
+    retireBack(moved);
     if (restored) err('error: verification failed; the previous settings were restored\n');
     else if (backupMade) err(`error: verification failed; could not restore automatically; your original is at ${backupPath}\n`);
     else err(`error: verification failed; could not restore automatically; remove the new file ${target} by hand\n`);
     return 70;
   }
   out(`Done. ${plan.remove ? 'Removed' : 'Installed'} Koda hook entries in ${target}\n`);
+  if (moved.length > 0) out(`Koda 0.1 file moved aside: ${moved.map(m => m.to).join(', ')}\n`);
+  if (!write) { for (const n of plan.profile.postNotes(plan)) out(n + '\n'); return 0; }
   if (backupMade) { out(`Backup: ${backupPath}\nRollback: cp -p ${shq(backupPath)} ${shq(target)}\n`); }
   else out(`Rollback: rm -- ${shq(target)}\n`);
   for (const n of plan.profile.postNotes(plan)) out(n + '\n');
   return 0;
 }
 
-async function winApplyPlan(w, plan, { backupPath, verify, out, err }) {
+async function winApplyPlan(w, plan, { backupPath, verify, out, err, now = () => new Date() }) {
   const target = plan.settingsPath;
   const data = Buffer.from(plan.after, 'utf8');
+  const write = plan.changed && plan.patch !== null;
   const stale = () => { err('refused: settings file changed since the preview; nothing was written\n'); return 70; };
   if (plan.patch && plan.exists) {
     const orig = Buffer.from(plan.before, 'utf8');
@@ -547,27 +636,38 @@ async function winApplyPlan(w, plan, { backupPath, verify, out, err }) {
     }
   }
   let backupMade = false;
+  const moved = [];
   try {
     const cur = winReadTarget(w, target);
     if ((plan.sig ? cur === null || cur.sig.sha256 !== plan.sig.sha256 : cur !== null)) return stale();
-    if (plan.exists) { w.writePrivate(backupPath, cur.buf, null); backupMade = true; }
-    // The helper re-checks the expected hash under the same call that replaces the file.
-    w.writePrivate(target, data, plan.exists ? plan.sig.sha256 : null);
+    if (!retireFresh(plan)) { err('refused: the Koda 0.1 file changed since the preview; nothing was written\n'); return 70; }
+    if (write) {
+      if (plan.exists) { w.writePrivate(backupPath, cur.buf, null); backupMade = true; }
+      // The helper re-checks the expected hash under the same call that replaces the file.
+      w.writePrivate(target, data, plan.exists ? plan.sig.sha256 : null);
+    }
+    retireAside(plan, now, moved);
   } catch (e) {
+    retireBack(moved);
     if (e && e.reason === 'mismatch') return stale();
     err(`error: could not write settings (${(e && e.reason) || 'unverified'}); target unchanged\n`);
     return 70;
   }
-  let ok = false;
-  try { const written = w.readPrivate(target).buf.toString('utf8'); ok = !!verify(plan.profile && plan.profile.rawText ? null : JSON.parse(written), plan, written); } catch { ok = false; }
+  let ok = true;
+  if (write) {
+    ok = false;
+    try { const written = w.readPrivate(target).buf.toString('utf8'); ok = !!verify(plan.profile && plan.profile.rawText ? null : JSON.parse(written), plan, written); } catch { ok = false; }
+  }
   if (!ok) {
-    const restored = restore(plan, backupMade ? backupPath : null);
+    const restored = write ? restore(plan, backupMade ? backupPath : null) : true;
+    retireBack(moved);
     if (restored) err('error: verification failed; the previous settings were restored\n');
     else if (backupMade) err(`error: verification failed; could not restore automatically; your original is at ${backupPath}\n`);
     else err(`error: verification failed; could not restore automatically; remove the new file ${target} by hand\n`);
     return 70;
   }
   out(`Done. ${plan.remove ? 'Removed' : 'Installed'} Koda hook entries in ${target}\n`);
+  if (moved.length > 0) out(`Koda 0.1 file moved aside: ${moved.map(m => m.to).join(', ')}\n`);
   if (backupMade) out(`Backup: ${backupPath}\n`);
   for (const n of plan.profile.postNotes(plan)) out(n + '\n');
   return 0;
@@ -625,4 +725,4 @@ async function runInstall(argv, opts = {}) {
   }
 }
 
-module.exports = { isFormerScript, winRefuse, numberIsLossless, readTarget, checkParent, detectStyle, sameSig, DIFF_LINES, diffLines, changedOutsidePatch, checkTimeout, CLAUDE_PROFILE, InstallErrorRefuse: refuse, unsafeFolder, shq, isObj, askLine, promptTimeoutFromEnv, scanSettings, defaultVerify, BIN_PATH, USAGE, InstallError, planClaudeSettings, renderPreview, runInstall, applyPlan, resolveUserSettings, checkSettingsSyntax, parseInstallArgs, backupPathFor, MAX_BYTES };
+module.exports = { isFormerScript, isHookScript, SCRIPT_NAME, LEGACY_SCRIPT_NAMES, retireFresh, retireAside, retireBack, retireOf, freeBackupName, winRefuse, numberIsLossless, readTarget, checkParent, detectStyle, sameSig, DIFF_LINES, diffLines, changedOutsidePatch, checkTimeout, CLAUDE_PROFILE, InstallErrorRefuse: refuse, unsafeFolder, shq, isObj, askLine, promptTimeoutFromEnv, scanSettings, defaultVerify, BIN_PATH, USAGE, InstallError, planClaudeSettings, renderPreview, runInstall, applyPlan, resolveUserSettings, checkSettingsSyntax, parseInstallArgs, backupPathFor, MAX_BYTES };

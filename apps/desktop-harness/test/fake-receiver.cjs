@@ -9,7 +9,7 @@ const { EventEmitter } = require('node:events');
 // Linux/macOS: an AF_UNIX socket at `<runtime>/p-XXXXXX/s`. Windows: a local named pipe (AF_UNIX listen is
 // refused there) plus the `<runtime>\endpoint.json` metadata file; the receiver then carries `platform: 'win32'`
 // and an `open` seam that connects straight to the pipe. Tests that build an IslandClient spread `transport(receiver)`.
-// Child-process tests (bin/abito-hook.cjs) go through the native relay, which the hosted runner does not have.
+// Child-process tests (bin/koda-hook.cjs) go through the native relay, which the hosted runner does not have.
 let latest = {};
 async function fakeReceiver(t, { questions = false, busyReason = false, structured = false, silent = false } = {}) {
   const runtime = fs.mkdtempSync(path.join(path.resolve(__dirname, '..'), '.test-'));

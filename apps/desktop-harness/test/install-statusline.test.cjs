@@ -5,7 +5,6 @@ const { tmpBase, assertMode } = require('./platform-env.cjs');
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const { planStatusLine, runStatusLineInstall, STATUSLINE_BIN, isOurs } = require('../src/install-statusline.cjs');
 
@@ -124,4 +123,45 @@ test('a missing file is created 0600 and removed again without leaving an empty 
 test('bad arguments are a usage error', async () => {
   const t = home('{}\n');
   for (const argv of [[], ['--user', '--timeout-sec', '5'], ['--user', '--user'], ['--settings', 'rel']]) assert.equal((await run(argv, t)).code, 64, JSON.stringify(argv));
+});
+
+// --- K2-04 (S1, S4): the Koda 0.1 status line is ours too -------------------------------------
+// A 0.1 install pointed statusLine at `bin/abito-statusline.cjs`. It is replaced in place (statusLine is a single member, so there
+// is never a second relay) and `--remove` takes it out — the user's own status line keeps being saved and restored as before.
+
+const LEGACY_CMD = "'/usr/bin/node' '/opt/koda-0.1/desktop-harness/bin/abito-statusline.cjs'";
+
+test('K2-04: a 0.1 status line is replaced in place and the installed one names the Koda script', async () => {
+  const t0 = home(`{\n  "statusLine": {"type": "command", "command": ${JSON.stringify(LEGACY_CMD)}}\n}\n`);
+  const pl = planStatusLine({ settingsPath: t0.file, home: t0.h, binPath: STATUSLINE_BIN, execPath: '/usr/bin/node' });
+  assert.equal(pl.action, 'replace', 'the 0.1 relay is recognised as ours');
+  assert.ok(pl.after.includes('koda-statusline.cjs'), 'the new relay names the Koda script');
+  assert.ok(!pl.after.includes('abito-statusline.cjs'), 'and no 0.1 name survives');
+  const applied = await run(['--settings', t0.file, '--apply'], t0);
+  assert.equal(applied.code, 0, applied.err);
+  const text = fs.readFileSync(t0.file, 'utf8');
+  assert.equal((text.match(/"statusLine"/g) || []).length, 1, 'exactly one status-line member');
+  assert.ok(text.includes('koda-statusline.cjs'));
+  // remove: the 0.1 relay is ours, so it is taken out with no saved previous line
+  const removed = await run(['--settings', t0.file, '--remove', '--apply'], t0);
+  assert.equal(removed.code, 0, removed.err);
+  assert.ok(!fs.readFileSync(t0.file, 'utf8').includes('statusLine'));
+});
+
+test('K2-04: both markers are ours, a foreign status line is not', () => {
+  assert.equal(isOurs({ type: 'command', command: "'/usr/bin/node' '/x/koda-statusline.cjs'" }), true);
+  assert.equal(isOurs({ type: 'command', command: `'/usr/bin/node' '/x/abito-statusline.cjs'` }), true, 'the 0.1 relay stays removable');
+  assert.equal(isOurs({ type: 'command', command: 'my-own-statusline --flag' }), false);
+});
+
+test('K2-04: the recogniser is anchored on the exact script name, so a look-alike status line is foreign', () => {
+  const node = '/usr/bin/node';
+  const ours = d => isOurs({ type: 'command', command: `'${node}' '${d}'` });
+  assert.equal(ours('/opt/koda/bin/koda-statusline.cjs'), true);
+  assert.equal(ours('/Users/a/Abito.app/Contents/Resources/desktop-harness/bin/abito-statusline.cjs'), true);
+  assert.equal(isOurs({ type: 'command', command: '& "C:\\Program Files\\nodejs\\node.exe" "C:\\k\\bin\\koda-statusline.cjs"' }), true);
+  for (const d of ['/home/me/my-abito-statusline.cjs', '/home/me/koda-statusline.cjs.bak', '/home/me/koda-statusline.cjs/run.sh', '/home/me/not-koda-statusline.cjs']) {
+    assert.equal(ours(d), false, d);
+  }
+  assert.equal(isOurs({ type: 'command', command: 'my-status --wrap koda-statusline.cjs' }), false, 'a bare mention inside another command');
 });

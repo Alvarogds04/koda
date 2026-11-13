@@ -47,6 +47,11 @@ function computePlanHash(plan, harness, action, version = INSTALLER_VERSION) {
     ...(plan.backupRoot ? {backupRoot:plan.backupRoot} : {}),
     original: { exists: plan.exists, sha256: plan.sig ? plan.sig.sha256 : '', size: plan.sig ? plan.sig.size : 0 },
     result_sha256: plan.changed ? sha256(Buffer.from(plan.after, 'utf8')) : '',
+    // K2-04 (S2, S4): the Koda 0.1 artifact this plan retires is part of the plan, so a change to it is `plan_changed`,
+    // never a silent second install over somebody else's bytes.
+    ...(Array.isArray(plan.retire) ? {retire: plan.retire.map(r => ({path: r.abs, sha256: sha256(Buffer.from(r.before, 'utf8')), size: Buffer.byteLength(r.before),
+      result: typeof r.after === 'string' ? sha256(Buffer.from(r.after, 'utf8')) : ''}))} : {}),
+    ...(plan.legacyPath ? {legacy: {path: plan.legacyPath, exists: plan.legacyExists === true, sha256: plan.legacySig || ''}} : {}),
     timeoutSec: plan.timeoutSec, execPath: plan.execPath, binPath: plan.binPath, installerVersion: version,
   };
   return sha256(canonical(doc));
@@ -279,7 +284,7 @@ function buildPlan(parsed, opts) {
   const env = opts.env || process.env;
   const o = parsed.o;
   if (parsed.harness === 'pi') {
-    const target = core.resolveUserSettings(env, opts.homedir || os.homedir, ['.pi', 'agent', 'extensions', 'abito-island']);
+    const target = core.resolveUserSettings(env, opts.homedir || os.homedir, ['.pi', 'agent', 'extensions', 'koda-island']);
     const plan = pi.planPi({home:env.HOME, uid:opts.uid === undefined ? winfs.uidOf() : opts.uid, remove:o.remove,
       execPath:opts.execPath || process.execPath, binPath:opts.binPath || core.BIN_PATH});
     if (plan.settingsPath !== target) throw new core.InstallError(65, 'Pi default path mismatch');
@@ -316,7 +321,7 @@ function unsafeFolderMessage({ dir, reason }) {
   if (reason === 'foreign_owner') return `La carpeta ${dir} pertenece a otro usuario y Koda solo escribe en carpetas tuyas; cambiale el dueño a tu usuario (con permisos de administrador) y volvé a intentar.`;
   return `La carpeta ${dir} tiene permisos de Windows (ACL) que dan acceso a otros usuarios o no es tuya; dejala accesible solo para tu usuario (Propiedades > Seguridad) y volvé a intentar.`;
 }
-const fixedMessage = { foreignExtension: 'Ya hay una extensión de Pi en ~/.pi/agent/extensions/abito-island que Koda no instaló: borrala o renombrala y volvé a conectar.', unverified: 'the installed Koda files could not be verified; nothing was written', unsafe: 'the target or its folder is not private to this user or goes through a link; nothing was written', usage: 'invalid arguments', refused: 'input or settings file refused', internal: 'unexpected failure; nothing was written' };
+const fixedMessage = { foreignExtension: 'Ya hay una extensión de Pi en ~/.pi/agent/extensions/koda-island que Koda no instaló: borrala o renombrala y volvé a conectar.', unverified: 'the installed Koda files could not be verified; nothing was written', unsafe: 'the target or its folder is not private to this user or goes through a link; nothing was written', usage: 'invalid arguments', refused: 'input or settings file refused', internal: 'unexpected failure; nothing was written' };
 
 // argv: arguments after `install`. Always prints exactly one JSON line through opts.out; returns the exit code.
 async function runInstallUi(argv, opts = {}) {
@@ -394,7 +399,7 @@ async function applyPlanned(parsed, opts, emit, fail) {
         try { statusline.writeSaved(plan.home, plan.savePrevious); previousSaved = true; }
         catch { rc = 70; }
       }
-      if (rc === 0) rc = await (parsed.harness === 'pi' ? pi.applyPi : core.applyPlan)(plan, { backupPath,
+      if (rc === 0) rc = await (parsed.harness === 'pi' ? pi.applyPi : core.applyPlan)(plan, { backupPath, now,
         verify: parsed.harness === 'statusline' ? statusline.verify(plan) : (plan.profile && plan.profile.verify ? plan.profile.verify(plan) : undefined),
         out: () => {}, err: s => { msg += s; } });
       if (parsed.harness === 'statusline' && ((rc !== 0 && previousSaved) || (rc === 0 && plan.restorePrevious))) {

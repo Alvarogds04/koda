@@ -8,7 +8,7 @@ const os = require('node:os');
 const path = require('node:path');
 const ui = require('../src/install-ui.cjs');
 
-const BIN = path.resolve(__dirname, '../bin/abito-hook.cjs');
+const BIN = path.resolve(__dirname, '../bin/koda-hook.cjs');
 const hex64 = /^[0-9a-f]{64}$/;
 const CTRL = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/;
 
@@ -419,4 +419,21 @@ test('BIN path constant in preview is this package bin', async t => {
   const d = tmp(t); const p = path.join(d, 'settings.json');
   const r = await run(['claude', '--settings', p, '--json']);
   assert.ok(r.lines[0].includes(JSON.stringify(BIN).slice(1, -1)) || r.json.diff.lines.some(l => l.includes(BIN)) || r.lines[0].includes(JSON.stringify(JSON.stringify(BIN).slice(1, -1)).slice(1, -1)));
+});
+
+// K2-04 (S2, S4): the island preview installs at the Koda default names, and the Koda 0.1 artifact it retires is part of the
+// plan, so a change to that file between preview and apply is `plan_changed` and never a second install over somebody's bytes.
+test('K2-04: --user previews at the Koda default targets and binds the 0.1 artifact it retires', async t => {
+  const d = tmp(t);
+  // every parent is private to us: 0700, then umask cannot make them group-writable (the installers refuse that)
+  for (const dir of ['.copilot/hooks', '.config/opencode/plugins']) fs.mkdirSync(path.join(d, dir), { recursive: true, mode: 0o700 });
+  const opts = { env: { HOME: d }, homedir: () => d };
+  assert.equal((await run(['copilot', '--user', '--json'], opts)).json.target, path.join(d, '.copilot/hooks/koda-island.json'));
+  assert.equal((await run(['opencode', '--user', '--json'], opts)).json.target, path.join(d, '.config/opencode/plugins/koda-island.js'));
+  // Pi's own default target (and its 0.1 folder) is covered end-to-end in test/install-pi.test.cjs: its payload source files are
+  // read here from a development checkout, which this umask can make group-writable (planPi refuses that, correctly).
+  const before = (await run(['copilot', '--user', '--json'], opts)).json.plan_hash;
+  const legacy = { type: 'command', exec: process.execPath, args: ['/opt/koda-0.1/desktop-harness/bin/abito-hook.cjs', 'copilot', 'stop'], timeoutSec: 15 };
+  fs.writeFileSync(path.join(d, '.copilot/hooks/abito-island.json'), JSON.stringify({ version: 1, hooks: { sessionEnd: [legacy] } }, null, 2) + '\n');
+  assert.notEqual((await run(['copilot', '--user', '--json'], opts)).json.plan_hash, before, 'the retired 0.1 file is bound by the hash');
 });

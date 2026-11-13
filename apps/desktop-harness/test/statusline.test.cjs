@@ -10,7 +10,7 @@ const { extractPlan, writeChannel, readPrevious, channelPath, previousPath, runP
 
 const NOW = 1_800_000_000_000;
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'abito-sl-'));
-const BIN = path.resolve(__dirname, '../bin/abito-statusline.cjs');
+const BIN = path.resolve(__dirname, '../bin/koda-statusline.cjs');
 
 test('only the two windows survive; every other field of the status JSON is dropped', () => {
   const plan = extractPlan({

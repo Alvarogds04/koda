@@ -84,7 +84,7 @@ test('readPrivate returns null for a missing file under a private parent and ref
 
 test('trustedHelper accepts only the receipt-listed sha256 of the sibling helper and a closed manifest', () => {
   const bytes = Buffer.from('MZ-helper');
-  const manifest = { schema: 'abito-install/1', files: { 'abito-private-session.exe': sha(bytes), 'desktop-harness/bin/abito-hook.cjs': 'c'.repeat(64) } };
+  const manifest = { schema: 'abito-install/1', files: { 'abito-private-session.exe': sha(bytes), 'desktop-harness/bin/koda-hook.cjs': 'c'.repeat(64) } };
   const deps = { readFile: f => (f.endsWith('.json') ? Buffer.from(JSON.stringify(manifest)) : bytes), root: 'C:\\Abito' };
   assert.equal(wf.trustedHelper(deps), 'C:\\Abito\\abito-private-session.exe');
   assert.throws(() => wf.trustedHelper({ ...deps, readFile: f => (f.endsWith('.json') ? Buffer.from(JSON.stringify(manifest)) : Buffer.from('tampered')) }), /helper_untrusted/);
@@ -95,21 +95,21 @@ test('trustedHelper accepts only the receipt-listed sha256 of the sibling helper
 
 test('verifyScript checks a registered script against the manifest hash', () => {
   const script = Buffer.from('console.log(1)');
-  const manifest = { schema: 'abito-install/1', files: { 'abito-private-session.exe': 'a'.repeat(64), 'desktop-harness/bin/abito-hook.cjs': sha(script) } };
+  const manifest = { schema: 'abito-install/1', files: { 'abito-private-session.exe': 'a'.repeat(64), 'desktop-harness/bin/koda-hook.cjs': sha(script) } };
   const deps = { readFile: f => (f.endsWith('.json') ? Buffer.from(JSON.stringify(manifest)) : script), root: 'C:\\Abito' };
-  assert.doesNotThrow(() => wf.verifyScript('desktop-harness/bin/abito-hook.cjs', deps));
-  assert.throws(() => wf.verifyScript('desktop-harness/bin/abito-hook.cjs', { ...deps, readFile: f => (f.endsWith('.json') ? Buffer.from(JSON.stringify(manifest)) : Buffer.from('evil')) }), /script_untrusted/);
+  assert.doesNotThrow(() => wf.verifyScript('desktop-harness/bin/koda-hook.cjs', deps));
+  assert.throws(() => wf.verifyScript('desktop-harness/bin/koda-hook.cjs', { ...deps, readFile: f => (f.endsWith('.json') ? Buffer.from(JSON.stringify(manifest)) : Buffer.from('evil')) }), /script_untrusted/);
   assert.throws(() => wf.verifyScript('desktop-harness/bin/unknown.cjs', deps), /script_untrusted/);
 });
 
 test('readVerified returns manifest-matching bytes only; verifyBundled maps an absolute script into the install root', () => {
   const script = Buffer.from('hook');
-  const manifest = { schema: 'abito-install/1', files: { 'abito-private-session.exe': 'a'.repeat(64), 'desktop-harness/bin/abito-hook.cjs': sha(script) } };
+  const manifest = { schema: 'abito-install/1', files: { 'abito-private-session.exe': 'a'.repeat(64), 'desktop-harness/bin/koda-hook.cjs': sha(script) } };
   const deps = { readFile: f => (f.endsWith('.json') ? Buffer.from(JSON.stringify(manifest)) : script), root: 'C:\\Abito' };
-  assert.ok(wf.readVerified('desktop-harness/bin/abito-hook.cjs', deps).equals(script));
+  assert.ok(wf.readVerified('desktop-harness/bin/koda-hook.cjs', deps).equals(script));
   assert.throws(() => wf.readVerified('desktop-harness/bin/../x', deps), /script_untrusted/);
-  assert.doesNotThrow(() => wf.verifyBundled('C:\\Abito\\desktop-harness\\bin\\abito-hook.cjs', deps));
-  assert.throws(() => wf.verifyBundled('C:\\Other\\abito-hook.cjs', deps), /script_untrusted/);
+  assert.doesNotThrow(() => wf.verifyBundled('C:\\Abito\\desktop-harness\\bin\\koda-hook.cjs', deps));
+  assert.throws(() => wf.verifyBundled('C:\\Other\\koda-hook.cjs', deps), /script_untrusted/);
 });
 
 test('pathOk refuses superscript device names, CONIN$/CONOUT$ and 8.3 short names (verifier L1; mirrors winpolicy::fs_path_ok)', () => {

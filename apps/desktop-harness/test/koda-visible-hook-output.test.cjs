@@ -1,7 +1,7 @@
 'use strict';
 // Koda 0.1 T2: what a hook prints in the user's terminal (and the denial message the model sees) names the product «Koda».
 // Common failure paths of every agent: unavailable, no answer, timeout too short, invalid configuration, denied.
-// Internal names (abito-hook, KODA_* variables, paths) are NOT part of this contract.
+// Internal names (koda-hook, KODA_* variables, paths) are NOT part of this contract.
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');

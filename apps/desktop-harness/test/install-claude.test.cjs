@@ -10,7 +10,7 @@ const crypto = require('node:crypto');
 const { spawnSync } = require('node:child_process');
 const ic = require('../src/install-claude.cjs');
 
-const BIN = path.resolve(__dirname, '../bin/abito-hook.cjs');
+const BIN = path.resolve(__dirname, '../bin/koda-hook.cjs');
 const EXEC = process.execPath;
 const sha = b => crypto.createHash('sha256').update(b).digest('hex');
 
@@ -339,7 +339,7 @@ test('CLI: usage errors exit 64 with fixed stderr text and empty stdout', t => {
     ['install', 'claude', '--settings', p, '--timeout-sec', 'x'], ['install', 'claude', '--settings', p, '--remove', '--timeout-sec', '40'], ['install', 'claude', '--settings', p, 'extra']];
   for (const a of cases) {
     const r = spawnSync(EXEC, [BIN, ...a], { env: { PATH: process.env.PATH, HOME: d }, encoding: 'utf8', timeout: 20000 });
-    assert.equal(r.status, 64, a.join(' ')); assert.equal(r.stdout, ''); assert.match(r.stderr, /^usage: abito-hook install claude/);
+    assert.equal(r.status, 64, a.join(' ')); assert.equal(r.stdout, ''); assert.match(r.stderr, /^usage: koda-hook install claude/);
   }
   assert.deepEqual(ls(d), []);
 });
@@ -607,4 +607,53 @@ test('HU-068: install replaces a former-location hook with the current one inste
   assert.equal(JSON.stringify(after).includes('AppTranslocation'), false);
   assert.deepEqual(after.map(h => h.command), [EXEC, herdr.command]);
   assert.equal(after[0].args[0], BIN);
+});
+
+// --- K2-04 (S2, S4): Koda 0.1 entries are recognised as ours and replaced in place ------------
+// A 0.1 install called `bin/abito-hook.cjs` from whatever directory it lived in. The human must end up with ONE card per notice,
+// so the 0.1 entry is replaced (never duplicated), `--remove` still takes it out, and a look-alike stays foreign.
+
+const LEGACY_BIN = '/opt/koda-0.1/desktop-harness/bin/abito-hook.cjs';
+const legacy = (event, extra = []) => ({ type: 'command', command: '/usr/bin/node', args: [LEGACY_BIN, 'claude', event, ...extra] });
+const mineIn = (hooks, ev) => (hooks[ev] || []).flatMap(g => (g.hooks || [])).filter(x => Array.isArray(x.args) && x.args[0] === BIN);
+
+test('K2-04: a 0.1 entry plus foreign entries ends with exactly ONE Koda entry and the foreign bytes intact', t => {
+  const d = tmp(t);
+  const p = write(d, { hooks: {
+    PermissionRequest: [{ hooks: [other.hooks[0], legacy('permission-request', ['--timeout-sec', '35'])] }],
+    Stop: [{ hooks: [legacy('stop')] }],
+    Notification: [{ hooks: [other.hooks[0]] }],
+  } });
+  const pl = plan(p);
+  assert.equal(pl.changed, true);
+  const h = JSON.parse(pl.after).hooks;
+  for (const ev of ['PermissionRequest', 'SessionStart', 'Stop']) assert.equal(mineIn(h, ev).length, 1, `one Koda entry in ${ev}`);
+  assert.deepEqual(h.Notification, [{ hooks: [other.hooks[0]] }], 'a foreign event is left byte-identical');
+  assert.ok(!pl.after.includes('abito-hook.cjs'), 'no 0.1 entry survives');
+  fs.writeFileSync(p, pl.after, { mode: 0o640 }); fs.chmodSync(p, 0o640);
+  assert.equal(plan(p).changed, false, 'installing again is a no-op');
+});
+
+test('K2-04: a 0.1 entry and a Koda entry in the same file still end up as ONE entry', t => {
+  const d = tmp(t);
+  const current = { type: 'command', command: '/usr/bin/node', args: [BIN, 'claude', 'stop'], timeout: 15 };
+  const p = write(d, { hooks: { Stop: [{ hooks: [current, legacy('stop'), current] }] } });
+  const h = JSON.parse(plan(p).after).hooks;
+  assert.equal(mineIn(h, 'Stop').length, 1, 'ours (0.1 or current, any number) collapse to one');
+});
+
+test('K2-04: --remove takes the 0.1 entries out and leaves foreign ones; a look-alike is never ours', t => {
+  const d = tmp(t);
+  const lookalike = { type: 'command', command: '/usr/bin/node', args: ['/opt/tool/my-abito-hook.cjs', 'claude', 'stop'] };
+  const p = write(d, { hooks: {
+    PermissionRequest: [{ hooks: [other.hooks[0], legacy('permission-request')] }],
+    Stop: [{ hooks: [lookalike, legacy('stop')] }],
+  } });
+  const gone = JSON.parse(plan(p, { remove: true }).after).hooks;
+  assert.deepEqual(gone.PermissionRequest, [{ hooks: [other.hooks[0]] }], 'our 0.1 entry is removed, the foreign one stays');
+  assert.deepEqual(gone.Stop, [{ hooks: [lookalike] }], 'a look-alike name is foreign and is never touched');
+  // and an install sees the look-alike as foreign too: it adds ours next to it instead of replacing it
+  const after = JSON.parse(plan(p).after).hooks;
+  assert.deepEqual(after.Stop[0].hooks[0], lookalike);
+  assert.equal(mineIn(after, 'Stop').length, 1);
 });

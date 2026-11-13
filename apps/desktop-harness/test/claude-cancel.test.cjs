@@ -14,7 +14,7 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { fakeReceiver } = require('./fake-receiver.cjs');
 
-const bin = path.resolve(__dirname, '../bin/abito-hook.cjs');
+const bin = path.resolve(__dirname, '../bin/koda-hook.cjs');
 const cwd = path.resolve(__dirname, '..');
 // One question (S2 shape): the island answers it through PermissionRequest.
 const askInput = JSON.stringify({ session_id: 's1', cwd, permission_mode: 'default', hook_event_name: 'PermissionRequest',

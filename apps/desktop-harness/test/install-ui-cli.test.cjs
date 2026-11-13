@@ -13,7 +13,7 @@ const { spawnSync } = require('node:child_process');
 const core = require('../src/install-claude.cjs');
 const codex = require('../src/install-codex.cjs');
 
-const BIN = path.resolve(__dirname, '../bin/abito-hook.cjs');
+const BIN = path.resolve(__dirname, '../bin/koda-hook.cjs');
 const NODE_REAL = fs.realpathSync(process.execPath);
 const sha = b => crypto.createHash('sha256').update(b).digest('hex');
 const MARKERS = ['CLAUDECODE', 'CLAUDE_CODE_ENTRYPOINT', 'CODEX_SANDBOX', 'CODEX_SANDBOX_NETWORK_DISABLED', 'CODEX_THREAD_ID', 'CODEX_SESSION_ID', 'PI_SESSION_ID', 'PI_SESSION_FILE', 'AI_AGENT', 'GENTLE_PI_SESSION'];
@@ -64,7 +64,7 @@ test('Windows UI install with an unverifiable install manifest refuses before re
     const root = path.join(dir, 'untrusted-install', 'desktop-harness');
     const pkg = path.resolve(path.dirname(BIN), '..');
     for (const sub of ['bin', 'src']) fs.cpSync(path.join(pkg, sub), path.join(root, sub), { recursive: true });
-    bin = path.join(root, 'bin', 'abito-hook.cjs');
+    bin = path.join(root, 'bin', 'koda-hook.cjs');
   }
   for (const harness of ['claude', 'codex', 'copilot', 'opencode', 'recap', 'statusline']) {
     for (const extra of [[], ['--apply-plan', 'a'.repeat(64), '--audit-dir', path.join(dir, 'audit')]]) {
@@ -341,5 +341,5 @@ test('crash AFTER the result JSON was produced: no stack, exit code matches that
 test('TTY installers still reject the new flags (usage 64, text on stderr)', t => {
   const d = tmp(t);
   const r = spawnSync(process.execPath, [BIN, 'install', 'claude', '--settings', path.join(d, 's.json'), '--bogus'], { encoding: 'utf8', timeout: 20000, env: cleanEnv(d) });
-  assert.equal(r.status, 64); assert.match(r.stderr, /^usage: abito-hook install claude/);
+  assert.equal(r.status, 64); assert.match(r.stderr, /^usage: koda-hook install claude/);
 });

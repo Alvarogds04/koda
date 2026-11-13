@@ -11,13 +11,23 @@ const ic = require('./install-claude.cjs');
 const winfs = require('./win-fs.cjs');
 const { previousShell } = require('./statusline.cjs');
 
-const STATUSLINE_BIN = path.resolve(__dirname, '../bin/abito-statusline.cjs');
-const MARKER = 'abito-statusline.cjs';
-const USAGE = 'usage: abito-hook install statusline (--settings <abs path> | --user) [--remove] [--apply]\n';
+const STATUSLINE_BIN = path.resolve(__dirname, '../bin/koda-statusline.cjs');
+// K2-04 (S1, S4): the marker is the script name. A status line installed by Koda 0.1 names `abito-statusline.cjs`; it is still
+// OURS, so installing replaces it in place and --remove takes it out, exactly like the current one.
+const MARKER = 'koda-statusline.cjs';
+const LEGACY_MARKER = 'abito-statusline.cjs';
+const USAGE = 'usage: koda-hook install statusline (--settings <abs path> | --user) [--remove] [--apply]\n';
 const { InstallError, scanSettings, shq, isObj, diffLines } = ic;
 const refuse = ic.InstallErrorRefuse;
 
-const isOurs = v => isObj(v) && typeof v.command === 'string' && v.command.includes(MARKER);
+// Anchored: ours only when one quoted word of the command IS the script, i.e. its last path component is exactly the Koda or the
+// 0.1 script name. A look-alike (`my-abito-statusline.cjs`, `koda-statusline.cjs.bak`, a bare mention inside another command) is foreign.
+const isScriptWord = w => [MARKER, LEGACY_MARKER].some(name => w === name || w.endsWith('/' + name) || w.endsWith('\\' + name));
+const isOurs = v => {
+  if (!isObj(v) || typeof v.command !== 'string') return false;
+  for (const m of v.command.matchAll(/(["'])(.*?)\1/g)) if (isScriptWord(m[2])) return true;
+  return false;
+};
 const previousFile = home => path.join(home, '.abito', 'statusline-previous.json');
 const removePrevious = home => { const w = winfs.active(); if (w) w.remove(previousFile(home)); else fs.unlinkSync(previousFile(home)); };
 const ser = (v, style) => JSON.stringify(v, null, style.unit).replace(/\n/g, style.eol + style.mi);
@@ -213,4 +223,4 @@ function parseArgs(argv) {
   return o;
 }
 
-module.exports = { statusLineCommand, removePrevious, planStatusLine, runStatusLineInstall, STATUSLINE_BIN, isOurs, previousFile, writeSaved, verify, USAGE };
+module.exports = { statusLineCommand, removePrevious, planStatusLine, runStatusLineInstall, STATUSLINE_BIN, isOurs, previousFile, writeSaved, verify, USAGE, MARKER, LEGACY_MARKER };
