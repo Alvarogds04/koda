@@ -27,7 +27,7 @@ Ausente, corrupto, `v` distinto de 1 o `sound` no booleano: **APAGADO** (devuelv
 - `engine.ready()` sólo **después** de renderizar el primer snapshot de estado. Antes de eso no suena nada («sin sorpresas al arrancar»).
 - Al reconectar, reanudar o reproducir un historial: `engine.quiet(ms)` (0..60000) y `engine.resetTransitions()`. Tras `resetTransitions()` la siguiente observación de cada clave vuelve a ser sólo una línea base.
 - `transition(key, active, id)`: la **primera** observación de una clave sólo graba la línea base (una condición persistente ya presente al arrancar no suena); después suena `id` únicamente en el paso false a true; true a false sólo rearma. `active` debe ser booleano estricto. Claves: texto de <= 64 caracteres, mapa acotado a 256 (se expulsa la más antigua).
-- El motor no crea ningún AudioContext mientras está apagado (lo solicita en el primer play permitido; si falla: `no_audio` y no se reintenta durante 10 s). El cableado de la isla puede crear el contexto compartido al arrancar para decodificar archivos propios, sin reproducirlos, incluso con sonido apagado.
+- El motor no crea ningún AudioContext mientras está apagado (lo solicita en el primer play permitido; si falla: `no_audio` y no se reintenta durante 10 s). El cableado de la isla tampoco: con el sonido apagado no lee ni decodifica los archivos propios; al encenderlo los carga con el contexto compartido (K2-07 S2).
 
 ## Ejemplo completo
 
@@ -113,13 +113,17 @@ Limitador global: nunca encola ni interrumpe; los cues pedidos con menos de `coa
 
 | Evento de la isla | Cue | Notas |
 | --- | --- | --- |
-| Pregunta nueva | `snd.attention` | Sólo cuando aparece (id nuevo). |
+| Pregunta nueva | `snd.question` | Sólo cuando aparece (id nuevo). `notify.js` (K2-07). |
+| Permiso nuevo: pregunta `kind=approval` o pregunta con aspecto de permiso | `snd.approval` | Sólo cuando aparece. `notify.js` usa el mismo clasificador que la tarjeta (`island-layout approvalView`). |
+| Tarjeta de permiso de la isla (`#permission`) | `snd.approval` | Sólo cuando llega una tarjeta vigente nueva; plegarla o reabrirla no suena. |
 | Vencimiento de pregunta o tarjeta | `snd.expired` | |
 | Cara de error (modelo no disponible/bloqueado, o error de turno) | `snd.error` | **Sólo en la transición** con `transition()`; nunca mientras dura. |
 | Mensaje enviado | `snd.sent` | |
 | Respuesta completa (streaming a completed) | `snd.reply` | |
 | Empieza a pensar | `snd.think` | Una vez por turno. |
-| Aviso que no es pregunta (settled) | `snd.notice` | |
+| Turno terminado (aviso nuevo de tipo `settled`) | `snd.finish` | Por id nuevo en cualquier posición de la lista (el host la ordena de más antiguo a más nuevo); un descarte no suena. |
+| Otro aviso nuevo (un agente pregunta en su terminal, `attention`; fallo del transporte) | `snd.notice` | Igual que antes de K2-07. |
+| (ninguno desde K2-07) | `snd.attention` | Antes sonaba con la pregunta y la tarjeta; queda en el catálogo para un `abito:cue` explícito. Un archivo propio `attention.*` ya no suena con esos avisos: usa `question.*` o `approval.*`. |
 | Acción aprobada confirmada | `snd.confirm` | sin trigger todavia: espera el campo tipado del host. |
 | Acción rechazada confirmada | `snd.reject` | sin trigger todavia: espera el campo tipado del host. |
 | Micrófono abierto | `snd.listen` | sin trigger todavia: espera la voz. |
@@ -166,9 +170,10 @@ Además de los diecisiete anteriores, el catálogo tiene veinte identidades sint
 heredados de Abito y los stems de los archivos propios (`greet`, `greeting`). Son identidades independientes,
 no alias: cada una conserva su búfer y su compuerta de ritmo. Parámetros completos: `docs/CUES.md`.
 
-El motor sólo los reproduce ante un evento `abito:cue` explícito con el id exacto. No hay productores instalados
-y no se inventan disparadores: los nombres sugieren el evento, pero el disparador real lo decide quien emita el
-evento. Todos comparten nivel 0,2, una sola nota senoidal de 160 ms (ataque 10 ms, relajación 100 ms) con
+El motor sólo los reproduce ante un evento `abito:cue` explícito con el id exacto o una llamada del cableado de la
+isla. Desde K2-07 («Un sonido distinto para cada aviso») tres tienen productor instalado: `snd.question`,
+`snd.approval` y `snd.finish` (tabla «Evento a cue»). Para los demás no hay productores y no se inventan
+disparadores: los nombres sugieren el evento, pero el disparador real lo decide quien emita el evento. Todos comparten nivel 0,2, una sola nota senoidal de 160 ms (ataque 10 ms, relajación 100 ms) con
 glissando ascendente de f a f × 1,25, y prioridad -2 salvo los excepcionales:
 
 | Cue | Nombre | Prioridad |
@@ -197,7 +202,7 @@ glissando ascendente de f a f × 1,25, y prioridad -2 salvo los excepcionales:
 ### Lo que NUNCA debe sonar
 
 - **«Enviada»** (la decisión se envió y el host contestó 2xx).
-- **«Sin confirmar»** (conflicto al confirmar): no es un error; la tarjeta ya cuenta con `snd.attention`.
+- **«Sin confirmar»** (conflicto al confirmar): no es un error; la tarjeta ya sonó con `snd.approval` al llegar.
 - Nada por el solo cambio de cara del personaje, ni al arrancar, reanudar o reconectar.
 
 ## No verificado (honesto)
