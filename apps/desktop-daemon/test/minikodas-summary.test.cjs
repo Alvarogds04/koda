@@ -74,7 +74,7 @@ test("S1 «Cuándo corre»: manual, a repeat in minutes or hours, and a one-time
 
 test("S1 «Qué lee» is the recipe's source descriptor and «Dónde te lo muestra» is «Hoy»", () => {
 	assert.equal(sectionText(summaryOf(), "reads"), "Lee las publicaciones del canal X de Telegram.");
-	assert.equal(sectionText(summaryOf({ reads: { source: "telegram:canal-x" } }), "reads"), "Lee telegram:canal-x.");
+	assert.equal(sectionText(summaryOf({ reads: { source: "telegram:canal_x" } }), "reads"), "Lee telegram:canal_x.");
 	assert.equal(sectionText(summaryOf({ reads: { source: "los mensajes del grupo." } }), "reads"), "Lee los mensajes del grupo.");
 	assert.match(sectionText(summaryOf(), "shows"), /«Hoy»/);
 });

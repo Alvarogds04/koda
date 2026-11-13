@@ -339,7 +339,7 @@ const recipe = (over = {}) => ({
 	id: "videos",
 	name: "Videos",
 	when: { manual: true },
-	reads: { source: "telegram:canal-x" },
+	reads: { source: "telegram:canal_x" },
 	kit: ["source_read", "inbox_propose"],
 	prompt: "Resumí el canal.",
 	model: { ...MODEL },
