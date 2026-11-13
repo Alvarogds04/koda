@@ -319,6 +319,10 @@ pub settings_window: Option<bool>,
     /// Non-secret and HOST-ONLY: written by the mail host, never by the page. `None` means
     /// never counted and is never written, so an untouched file keeps its bytes.
     pub gmail_last_seen_ms: Option<u64>,
+    /// K2-10 T8 (L23, L24): the 0.1 IMAP/SMTP mail accounts were removed from the keychain.
+    /// HOST-ONLY: set by the startup migration once all seven keys are gone, never by the page.
+    /// `None` means not yet and is never written, so an untouched file keeps its bytes.
+    pub mail_migration_done: Option<bool>,
 }
 
 /// #486 W2: the saved state of the desktop character. Written by the native drop path
@@ -333,6 +337,8 @@ const DESKTOP_CHARACTER: &str = "desktop_character";
 /// K2-10 T4 (S5): the mail counter's last visit, ms since the epoch. Written by the mail host
 /// only; absent from a file whose mail card was never shown.
 const GMAIL_LAST_SEEN_MS: &str = "gmail_last_seen_ms";
+/// K2-10 T8: the one-time removal of the 0.1 mail accounts finished. Written by the host only.
+const MAIL_MIGRATION_DONE: &str = "mail_migration_done";
 
 /// A closed shape: `{"on":bool}` plus an optional bounded `{"x","y"}` spot; anything else
 /// reads as absent (the character stays in the island).
@@ -379,6 +385,7 @@ impl Default for Prefs {
             live_context: None,
             desktop_character: None,
             gmail_last_seen_ms: None,
+            mail_migration_done: None,
         }
     }
 }
@@ -566,6 +573,8 @@ impl Prefs {
     /// K2-10 T4 (S5): the stored mail mark, ms since the epoch; 0 means «never visited», which
     /// makes every unread message count as new.
     pub fn gmail_last_seen_ms(&self) -> u64 { self.gmail_last_seen_ms.unwrap_or(0) }
+    /// K2-10 T8: the 0.1 mail accounts were already removed from the keychain.
+    pub fn mail_migration_done(&self) -> bool { self.mail_migration_done == Some(true) }
 
     /// #366 F093: the effective Ajustes placement — absent means in-island (#408).
     pub fn settings_window_on(&self) -> bool { self.settings_window.unwrap_or(false) }
@@ -615,6 +624,7 @@ impl Prefs {
             live_context: v.get("live_context").and_then(Value::as_bool),
             desktop_character: desktop_character_from(v.get(DESKTOP_CHARACTER)),
             gmail_last_seen_ms: v.get(GMAIL_LAST_SEEN_MS).and_then(Value::as_u64).filter(|ms| *ms > 0),
+            mail_migration_done: v.get(MAIL_MIGRATION_DONE).and_then(Value::as_bool).filter(|done| *done),
         };
         if prefs.declared_pills.is_some() { prefs.declared_pills = Some(prefs.declared_pills()); }
         prefs
@@ -696,6 +706,9 @@ impl Prefs {
         }
         if let Some(ms) = self.gmail_last_seen_ms.filter(|ms| *ms > 0) {
             v[GMAIL_LAST_SEEN_MS] = json!(ms);
+        }
+        if self.mail_migration_done == Some(true) {
+            v[MAIL_MIGRATION_DONE] = json!(true);
         }
         if let Some(c) = self.desktop_character.filter(|c| c.spot.is_none_or(|(x, y)| valid_position(x, y))) {
             v[DESKTOP_CHARACTER] = match c.spot {
@@ -802,6 +815,9 @@ pub enum Command {
     /// produced by [`parse_command`]: the counter is the mail host's business, and the page
     /// must never be able to move it forwards (hiding new mail) or backwards.
     SetGmailLastSeen(u64),
+    /// K2-10 T8 (L23, L24): the startup migration removed the 0.1 mail accounts. Deliberately
+    /// NOT produced by [`parse_command`]: only the host records it, and it can never be unset.
+    SetMailMigrationDone,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1025,6 +1041,7 @@ pub fn apply(current: &Prefs, command: &Command) -> Result<Prefs, CommandError> 
     match command {
         Command::View => {}
         Command::AutostartView | Command::SetAutostart(_) => return Err(CommandError),
+        Command::SetMailMigrationDone => next.mail_migration_done = Some(true),
         Command::SetGmailLastSeen(ms) => {
             if *ms == 0 {
                 return Err(CommandError);

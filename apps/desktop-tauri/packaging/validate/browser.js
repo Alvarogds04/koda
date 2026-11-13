@@ -614,8 +614,11 @@
     return {ok:data.available===true && data.activity.total===17 && stats.stats.totalStars===18 && stats.stats.totalRepos===23,text,data,stats,details:['PR','CI','activity']};
   }
   async function mail() {
-    const answer=await invoke('mail_action',{action:'inbox'});
-    return {ok:answer.ok===false && answer.reason==='keychain_unavailable',reason:'correo no explicó la falta de keyring privado',answer,unverifiable:'IMAP/SMTP requieren claves en keyring; sin servicio de secretos privado ni credenciales del usuario'};
+    // K2-10 T7 (L21/L22): mail by IMAP/SMTP is retired; the one mail verb is Gmail's closed
+    // `gmail_action`, whose `status` answers `{ok,state,…}` or a stable `{ok:false,reason}`.
+    const answer=await invoke('gmail_action',{payload:{action:'status'}});
+    const closed=!!answer && typeof answer.ok==='boolean' && (answer.ok===true ? typeof answer.state==='string' : typeof answer.reason==='string');
+    return {ok:closed,reason:'el correo no respondió una forma cerrada',answer,unverifiable:'Gmail exige el client id propio del usuario y el llavero del sistema; sin servicio de secretos privado ni credenciales del usuario' };
   }
   async function sounds() {
     const before=await invoke('sound_action',{action:'list'});

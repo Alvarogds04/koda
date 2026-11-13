@@ -2439,3 +2439,23 @@ fn k2_10_the_page_can_never_supply_the_mail_seen_mark() {
         assert_eq!(parse_command(&bad), Err(CommandError), "{bad} must be refused");
     }
 }
+
+/// K2-10 T8 (L23, L24): the «0.1 mail accounts removed» mark. Absent by default and never
+/// written while unset; once set it round-trips and cannot be unset; the page never sets it.
+#[test]
+fn k2_10_the_mail_migration_mark_is_host_only_and_sticks() {
+    assert!(!Prefs::default().mail_migration_done());
+    assert!(!Prefs::default().to_text().contains("mail_migration_done"), "an untouched file keeps its bytes");
+    let done = update(&Prefs::default(), &Command::SetMailMigrationDone, |_| true).unwrap();
+    assert!(done.mail_migration_done());
+    assert_eq!(Prefs::from_text(Some(&done.to_text())), done);
+    assert!(Prefs::from_text(Some(&done.to_text())).mail_migration_done());
+    assert_eq!(update(&done, &Command::SetMailMigrationDone, |_| true).unwrap(), done, "setting it again is a no-op");
+    assert!(update(&Prefs::default(), &Command::SetMailMigrationDone, |_| false).is_err(), "a failed save is not done");
+    for bad in [json!({"action":"set_mail_migration_done"}), json!({"action":"set_mail_migration_done","on":true})] {
+        assert_eq!(parse_command(&bad), Err(CommandError), "{bad} must be refused");
+    }
+    // a hand-edited non-true value reads as not done (the migration runs again; it is idempotent)
+    let text = done.to_text().replace("\"mail_migration_done\":true", "\"mail_migration_done\":\"yes\"");
+    assert!(!Prefs::from_text(Some(&text)).mail_migration_done());
+}
