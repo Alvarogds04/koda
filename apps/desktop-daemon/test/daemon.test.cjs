@@ -163,8 +163,15 @@ test("boot order: the session is published and clients are served while the engi
 		await waitFor(() => readSession(root) !== undefined, 10000);
 		const session = readSession(root);
 		assert.equal(daemon.engine.status, "starting", "published before the engine is ready");
-		const verdict = await classifySession(root);
+		// Windows: the real check is a synchronous native helper (spawnSync) that blocks this
+		// process's event loop, and this daemon lives in THIS process, so it could never answer the
+		// helper's hello (CI 43339026300). Same seam as the other in-process classify tests; the
+		// served-while-starting proof on Windows is the hello->ready of connect() just below.
+		const verified = [];
+		const deps = process.platform === "win32" ? { nativeVerify: (r) => (verified.push(r), true) } : {};
+		const verdict = await classifySession(root, deps);
 		assert.equal(verdict.ready, true, "the island's health check answers while the engine starts");
+		if (process.platform === "win32") assert.deepEqual(verified, [root], "the native identity check ran against this island");
 		const { socket, frames } = await connect(session);
 		await waitFor(() => frames.some((f) => f.type === "ready"));
 		assert.equal(frames.find((f) => f.type === "ready").state.status, "starting");
