@@ -13,7 +13,7 @@ const { spawn, spawnSync } = require("node:child_process");
 const CLI = path.join(__dirname, "..", "src", "cli.cjs");
 const FAKE = path.join(__dirname, "fixtures", "fake-agent.cjs");
 const { assertMode } = require("./platform-env.cjs");
-const { pidState, procStartTicks } = require("../src/daemon.cjs");
+const { classifySession, pidState, procStartTicks } = require("../src/daemon.cjs");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const tempDirs = new Set();
 
@@ -145,11 +145,42 @@ function fakeIsland(extraConfig = {}) {
 	return { root, env: cliEnv(root) };
 }
 const sessionOf = (root) => path.join(root, "runtime", "session.json");
+const sessionPid = (root) => {
+	try { return JSON.parse(fs.readFileSync(sessionOf(root), "utf8")).pid; }
+	catch { return undefined; }
+};
 async function waitForSessionPid(root, pid) {
-	await waitFor(() => {
-		try { return JSON.parse(fs.readFileSync(sessionOf(root), "utf8")).pid === pid; }
-		catch { return false; }
-	}, 60000);
+	await waitFor(() => sessionPid(root) === pid, 60000);
+}
+/** The same wait, for a daemon this test starts itself. CI 43352802736 (windows, test 123) failed with `waitFor timed
+ *  out` where this wait reads session.json: a fixed 60 s bound for a boot that the runner was plainly stretching (the two
+ *  tests either side of it took 7.9 s and 23.6 s), and a silence that could not say whether the daemon was slow or dead.
+ *  So it waits for the EFFECT (this pid owns the island) with a generous bound, and fails at once, in the child's own
+ *  words, if the daemon dies first. What it proves is unchanged: the successor owns the island before the assertions. */
+async function waitForOwnSession(root, child) {
+	const tail = () => child.output || "(no output)";
+	const end = Date.now() + 180000;
+	while (Date.now() < end) {
+		if (sessionPid(root) === child.pid) return;
+		if (child.exitCode !== null || child.signalCode !== null) {
+			assert.fail(`the daemon exited (${child.exitCode ?? child.signalCode}) before owning the island: ${tail()}`);
+		}
+		await sleep(20);
+	}
+	assert.equal(sessionPid(root), child.pid, `the daemon did not own the island within 180 s: ${tail()}`);
+}
+/** Waits for the verdict the NEXT boot itself requires before it may replace a session: `stale`, i.e. a confirmed dead
+ *  pid. A hard kill leaves session.json behind (a documented Windows limit: POSIX status cleans it), and Windows answers
+ *  signal 0 for a pid the OS has not released yet, so a successor started too early is refused with words. Waiting for
+ *  this verdict waits for the effect; it does not relax anything the assertions below prove. */
+async function waitForReplaceable(root) {
+	const end = Date.now() + 60000;
+	let verdict = await classifySession(root);
+	while (verdict.state !== "stale" && Date.now() < end) {
+		await sleep(200);
+		verdict = await classifySession(root);
+	}
+	assert.equal(verdict.state, "stale", `the island cannot be replaced 60 s after a hard kill: ${JSON.stringify(verdict)}`);
 }
 
 test("app-owned run stops on stdin EOF and removes its session handoff", async () => {
@@ -367,12 +398,14 @@ test("MCP projection: written from mcpConfigPath, kept across a hard kill, overw
 	const children = [];
 	const runOwned = () => {
 		const child = spawn(process.execPath, [CLI, "run", "--app-owned"], { env, stdio: ["pipe", "pipe", "pipe"] });
+		child.output = "";
+		child.stderr.on("data", (d) => { child.output += d; }); // a refusal must reach the failure message, not a 60 s silence
 		children.push(child);
 		return child;
 	};
 	try {
 		let child = runOwned();
-		await waitForSessionPid(root, child.pid);
+		await waitForOwnSession(root, child);
 		assert.equal(fs.existsSync(projected), true, "the boot writes the projection from mcpConfigPath");
 		if (!WIN) assert.equal(fs.statSync(projected).mode & 0o777, 0o600, "the projection is private");
 		assert.deepEqual(Object.keys(JSON.parse(fs.readFileSync(projected, "utf8")).mcpServers), ["first"]);
@@ -381,9 +414,10 @@ test("MCP projection: written from mcpConfigPath, kept across a hard kill, overw
 		assert.equal(fs.existsSync(projected), true, "a hard kill cannot be handled: the projection stays");
 
 		fs.writeFileSync(src, entry("second"), { mode: 0o600 });
+		// The hard kill left a stale session.json: wait until the island really is replaceable, then for THIS child's own session.
+		await waitForReplaceable(root);
 		child = runOwned();
-		// The hard kill left a stale session.json: wait for THIS child's own session.
-		await waitForSessionPid(root, child.pid);
+		await waitForOwnSession(root, child);
 		assert.deepEqual(Object.keys(JSON.parse(fs.readFileSync(projected, "utf8")).mcpServers), ["second"], "next start overwrites the stale projection");
 		child.stdin.end(); // clean stop, no POSIX signals
 		await waitFor(() => child.exitCode !== null);
