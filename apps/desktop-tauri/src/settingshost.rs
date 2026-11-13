@@ -169,6 +169,7 @@ fn view_prefs(p: &Prefs) -> Value {
         "monitor": p.monitor,
         "showPlanInNotch": p.show_plan_in_notch(),
         "showCodexPlanInNotch": p.show_codex_plan_in_notch(),
+        "phoneUsage": p.phone_usage(),
         "windowContext": p.window_context(),
         "windowCapture": p.window_capture(),
         "liveContext": p.live_context(),
@@ -299,6 +300,33 @@ pub fn save_settings_window_size(app: &AppHandle, w: u32, h: u32) -> bool {
     .is_ok()
 }
 
+/// K2-10 T4 (S5): the last visit of the mail card, ms since the epoch (0: never). Read from the
+/// in-memory prefs under the same lock every other preferences writer takes.
+pub fn gmail_last_seen_ms(app: &AppHandle) -> u64 {
+    app.state::<AppState>()
+        .settings
+        .prefs
+        .lock()
+        .expect("prefs lock")
+        .gmail_last_seen_ms()
+}
+
+/// K2-10 T4 (S5): remember a later visit through the SAME `prefs::transact` gate, file and atomic
+/// writer as every other preference, so the mark never races a settings change. The mark is
+/// monotonic (`prefs::apply` keeps the later of the two), never comes from the page and is never
+/// published in the settings view. `false`: it could not be saved and the stored one stands.
+pub fn remember_gmail_last_seen(app: &AppHandle, at_ms: u64) -> bool {
+    let state = app.state::<AppState>();
+    prefs::transact(
+        &state.settings.prefs_serial,
+        &state.settings.prefs,
+        &prefs::Command::SetGmailLastSeen(at_ms),
+        |p| persist_prefs(app, p),
+        |_| {},
+    )
+    .is_ok()
+}
+
 /// #442 T7.4: a deleted specialist leaves the island order. Rust-internal (never a wire
 /// command); a no-op when the id is not in the stored order, so it never writes needlessly.
 pub fn prune_island_agent(app: &AppHandle, id: &str) {
@@ -398,6 +426,23 @@ pub async fn prefs_action(
     Ok(view_prefs(&next))
 }
 
+/// The ONE place an `AgentConn` is created: the panel's first use, `daemon_action status`, and the fresh client
+/// after a restart all pass through here, so every connection carries the same two callbacks — the Ajustes emitter
+/// and the phone link's session feed (S5/D5: the phone hangs off this connection, never a second one).
+///
+/// The view is handed in on purpose: a callback fires while the caller holds the agent slot, so it must never lock
+/// it again (it did, once, and the first open of the panel hung forever).
+pub(crate) fn agent_conn(handle: &AppHandle) -> AgentConn {
+    let emitter = handle.clone();
+    #[cfg(target_os = "linux")]
+    let phone = handle.clone();
+    AgentConn::new(move |view: Value| {
+        #[cfg(target_os = "linux")]
+        crate::phonehost::publish_sessions(&phone, &view);
+        let _ = emitter.emit("agent:state", view);
+    })
+}
+
 /// The island agent: `view` (connects on first use), and the closed command set of
 /// `agentclient::parse_ui_command`. Abito account commands are committed locally before
 /// any daemon connection; snapshots expose credential presence only.
@@ -436,14 +481,8 @@ pub async fn agent_action(
             return Ok(abito_island::agents_direct::perform(&op));
         }
         let mut guard = state.settings.agent.lock().expect("agent lock");
-        let conn = guard.get_or_insert_with(|| {
-            let emitter = handle.clone();
-            // The view is handed in: this callback fires while `agent_action` holds the slot, so it must
-            // not lock it again (it did, once, and the first open of the panel hung forever).
-            AgentConn::new(move |view| {
-                let _ = emitter.emit("agent:state", view);
-            })
-        });
+        // The one constructor: this view also feeds the phone link, which hangs off this same connection (S5/D5).
+        let conn = guard.get_or_insert_with(|| agent_conn(&handle));
         let is_view_or_refresh = payload
             .get("action")
             .and_then(Value::as_str)
@@ -533,12 +572,7 @@ pub(crate) fn daemon_connect(
     watch: Option<&abito_island::daemonhost::HostSlot>,
 ) -> (String, bool) {
     let mut guard = state.settings.agent.lock().expect("agent lock");
-    let emitter = handle.clone();
-    let conn = guard.get_or_insert_with(|| {
-        AgentConn::new(move |view| {
-            let _ = emitter.emit("agent:state", view);
-        })
-    });
+    let conn = guard.get_or_insert_with(|| agent_conn(handle));
     let connected =
         |c: &AgentConn| c.view().get("connection").and_then(Value::as_str) == Some("connected");
     let deadline = wait.map(|w| Instant::now() + w);

@@ -6,12 +6,17 @@
 
 /// The features of this build. `paused` is the single switch the hosts read at startup.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Feature { Dictation, Voice, Integrations, Spotify, Phone }
+pub enum Feature { Dictation, Voice, Integrations, Spotify, Phone, Mail }
 
 /// Paused in this version (everything that is neither Chat nor Agentes nor the general shell).
+/// K2-10 T4 (S11): `Mail` gets its OWN entry and is NOT paused — the island's mail reads the user's
+/// own Gmail; the pause of `Integrations` (service cards) is untouched.
+/// The phone link left the list in K2 (S2): it starts off and only opens its LAN port when the human turns it on (S3).
 pub const fn paused(feature: Feature) -> bool {
     match feature {
-        Feature::Dictation | Feature::Voice | Feature::Integrations | Feature::Spotify | Feature::Phone => true,
+        Feature::Dictation | Feature::Voice | Feature::Integrations | Feature::Spotify => true,
+        Feature::Phone => false,
+        Feature::Mail => false,
     }
 }
 
@@ -26,11 +31,30 @@ mod tests {
     use super::*;
     #[test]
     fn every_non_chat_non_agent_feature_is_paused_and_never_starts_even_if_enabled() {
-        for f in [Feature::Dictation, Feature::Voice, Feature::Integrations, Feature::Spotify, Feature::Phone] {
+        for f in [Feature::Dictation, Feature::Voice, Feature::Integrations, Feature::Spotify] {
             assert!(paused(f), "{f:?}");
             assert!(!effective(f, true), "{f:?}: a stored «on» must not start a paused feature");
             assert!(!effective(f, false), "{f:?}");
         }
         assert_eq!(LABEL, "En pausa · próxima versión");
+    }
+
+    /// S2 (K2 phone link): the phone link leaves the pause list; S3 still keeps it OFF until the human turns
+    /// it on in Ajustes, because it opens a port on the LAN.
+    #[test]
+    fn the_phone_link_is_out_of_pause_and_still_starts_only_when_the_human_turned_it_on() {
+        assert!(!paused(Feature::Phone), "the phone link is no longer paused");
+        assert!(effective(Feature::Phone, true), "a stored «on» starts the phone link");
+        assert!(!effective(Feature::Phone, false), "off by default: nothing listens on the LAN");
+    }
+
+    /// K2-10 T4 (S11): el correo tiene su PROPIA entrada y no está en pausa en esta versión: la
+    /// tarjeta de la isla y su ajuste tienen que andar, a diferencia de las de Integraciones.
+    #[test]
+    fn k2_10_mail_is_not_paused_and_keeps_its_own_entry() {
+        assert!(!paused(Feature::Mail), "el correo no se pausa en esta versión");
+        assert!(effective(Feature::Mail, true), "un «on» guardado arranca el correo");
+        assert!(!effective(Feature::Mail, false), "un «off» guardado se respeta igual");
+        assert!(paused(Feature::Integrations), "el resto de Integraciones sigue en pausa");
     }
 }

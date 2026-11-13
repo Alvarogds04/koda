@@ -2066,6 +2066,84 @@ fn window_context_failed_save_changes_nothing() {
     assert!(update(&Prefs::default(), &Command::SetWindowContext(true), |_| false).is_err());
 }
 
+// ---- K2 phone link: `phone_link`, the switch that opens the LAN port (S3) ----------------------------
+#[test]
+fn phone_link_is_an_exact_closed_two_key_command() {
+    assert_eq!(parse_command(&json!({"action":"set_phone_link","phone_link":true})), Ok(Command::SetPhoneLink(true)));
+    assert_eq!(parse_command(&json!({"action":"set_phone_link","phone_link":false})), Ok(Command::SetPhoneLink(false)));
+    for bad in [
+        json!({"action":"set_phone_link"}),
+        json!({"action":"set_phone_link","phone_link":"true"}),
+        json!({"action":"set_phone_link","phone_link":1}),
+        json!({"action":"set_phone_link","phone_link":null}),
+        json!({"action":"set_phone_link","phone_link":true,"port":47821}),
+        json!({"action":"set_phone_link","window_context":true}),
+    ] {
+        assert_eq!(parse_command(&bad), Err(CommandError), "{bad}");
+    }
+}
+
+#[test]
+fn phone_link_is_off_by_default_persists_and_false_drops_the_key() {
+    assert!(!Prefs::default().phone_link(), "S3: the link starts OFF, nothing listens on the LAN");
+    let on = update(&Prefs::default(), &Command::SetPhoneLink(true), |_| true).unwrap();
+    assert!(on.phone_link());
+    assert_eq!(serde_json::from_str::<serde_json::Value>(&on.to_text()).unwrap()["phone_link"], json!(true));
+    assert!(Prefs::from_text(Some(&on.to_text())).phone_link());
+    let off = update(&on, &Command::SetPhoneLink(false), |_| true).unwrap();
+    assert_eq!(off.phone_link, None);
+    assert!(!off.to_text().contains("phone_link"), "the default writes no key");
+    assert!(!on.window_context() && !on.show_plan_in_notch(), "independent of the other switches");
+    for hostile in ["1", "\"true\"", "null", "[true]"] {
+        let text = format!(r#"{{"v":1,"phone_link":{hostile}}}"#);
+        assert!(!Prefs::from_text(Some(&text)).phone_link(), "{hostile}");
+    }
+}
+
+#[test]
+fn phone_link_failed_save_changes_nothing() {
+    assert!(update(&Prefs::default(), &Command::SetPhoneLink(true), |_| false).is_err());
+}
+
+// ---- K2 T6 (S11, §11): `phone_usage`, the switch that puts the plan pills on the phone -----------------
+#[test]
+fn phone_usage_is_an_exact_closed_two_key_command() {
+    assert_eq!(parse_command(&json!({"action":"set_phone_usage","phone_usage":true})), Ok(Command::SetPhoneUsage(true)));
+    assert_eq!(parse_command(&json!({"action":"set_phone_usage","phone_usage":false})), Ok(Command::SetPhoneUsage(false)));
+    for bad in [
+        json!({"action":"set_phone_usage"}),
+        json!({"action":"set_phone_usage","phone_usage":"true"}),
+        json!({"action":"set_phone_usage","phone_usage":1}),
+        json!({"action":"set_phone_usage","phone_usage":null}),
+        json!({"action":"set_phone_usage","phone_usage":true,"codex":true}),
+        json!({"action":"set_phone_usage","phoneUsage":true}),
+    ] {
+        assert_eq!(parse_command(&bad), Err(CommandError), "{bad}");
+    }
+}
+
+#[test]
+fn phone_usage_is_off_by_default_persists_and_false_drops_the_key() {
+    assert!(!Prefs::default().phone_usage(), "S11: nothing of the plans leaves this computer until the human says so");
+    let on = update(&Prefs::default(), &Command::SetPhoneUsage(true), |_| true).unwrap();
+    assert!(on.phone_usage());
+    assert_eq!(serde_json::from_str::<serde_json::Value>(&on.to_text()).unwrap()["phone_usage"], json!(true));
+    assert!(Prefs::from_text(Some(&on.to_text())).phone_usage());
+    let off = update(&on, &Command::SetPhoneUsage(false), |_| true).unwrap();
+    assert_eq!(off.phone_usage, None);
+    assert!(!off.to_text().contains("phone_usage"), "the default writes no key");
+    assert!(!on.phone_link() && !on.show_plan_in_notch() && !on.show_codex_plan_in_notch(), "independent of the other switches");
+    for hostile in ["1", "\"true\"", "null", "[true]", "{}"] {
+        let text = format!(r#"{{"v":1,"phone_usage":{hostile}}}"#);
+        assert!(!Prefs::from_text(Some(&text)).phone_usage(), "{hostile}");
+    }
+}
+
+#[test]
+fn phone_usage_failed_save_changes_nothing() {
+    assert!(update(&Prefs::default(), &Command::SetPhoneUsage(true), |_| false).is_err());
+}
+
 // ---- #486 W2: the desktop character's saved state (Coucou's `desktopMochi`) ----
 
 /// Absent, or any malformed shape, reads as "lives in the island" (off); an untouched
@@ -2305,5 +2383,59 @@ fn window_capture_is_off_by_default_persists_and_is_independent_of_window_contex
     assert!(!off.to_text().contains("window_capture"), "the default writes no key");
     for hostile in ["1", "\"true\"", "null", "[true]"] {
         assert!(!Prefs::from_text(Some(&format!(r#"{{"v":1,"window_capture":{hostile}}}"#))).window_capture(), "{hostile}");
+    }
+}
+
+// ---- K2-10 T4 (S5): the mail counter's last visit -----------------------------------------
+
+/// Absent by default and never written, so a file that never showed the mail card keeps its
+/// bytes; a hostile value reads as absent (the counter then counts everything as new).
+#[test]
+fn k2_10_the_mail_seen_mark_is_absent_by_default_and_an_old_file_keeps_its_bytes() {
+    assert_eq!(Prefs::default().gmail_last_seen_ms, None);
+    assert!(!Prefs::default().to_text().contains("gmail_last_seen_ms"));
+    let untouched = Prefs::from_text(Some(r#"{"v":1,"sound":true}"#));
+    assert_eq!(untouched.to_text(), r#"{"sound":true,"v":1}"#);
+    for bad in [
+        Some(r#"{"v":1,"gmail_last_seen_ms":0}"#),
+        Some(r#"{"v":1,"gmail_last_seen_ms":-5}"#),
+        Some(r#"{"v":1,"gmail_last_seen_ms":"5"}"#),
+        Some(r#"{"v":1,"gmail_last_seen_ms":null}"#),
+        Some(r#"{"v":1,"gmail_last_seen_ms":{}}"#),
+    ] {
+        let p = Prefs::from_text(bad);
+        assert_eq!(p.gmail_last_seen_ms, None, "{bad:?}");
+        assert!(!p.to_text().contains("gmail_last_seen_ms"), "{bad:?} leaves no key behind");
+    }
+}
+
+/// The mark round-trips through the v1 file and only ever moves FORWARDS: a stale write is
+/// accepted as a no-op (never stored), and zero is no visit at all.
+#[test]
+fn k2_10_the_mail_seen_mark_round_trips_and_never_moves_backwards() {
+    let at = |ms| update(&Prefs::default(), &Command::SetGmailLastSeen(ms), |_| true).unwrap();
+    let first = at(1_760_000_000_000);
+    assert_eq!(first.gmail_last_seen_ms, Some(1_760_000_000_000));
+    assert_eq!(Prefs::from_text(Some(&first.to_text())), first);
+    let later = update(&first, &Command::SetGmailLastSeen(1_760_000_600_000), |_| true).unwrap();
+    assert_eq!(later.gmail_last_seen_ms, Some(1_760_000_600_000));
+    let stale = update(&later, &Command::SetGmailLastSeen(1_760_000_000_000), |_| true).unwrap();
+    assert_eq!(stale.gmail_last_seen_ms, Some(1_760_000_600_000), "an earlier visit never wins");
+    assert_eq!(stale, later, "a stale write is a no-op, not a rewrite");
+    assert!(update(&Prefs::default(), &Command::SetGmailLastSeen(0), |_| true).is_err());
+    assert!(update(&Prefs::default(), &Command::SetGmailLastSeen(5), |_| false).is_err());
+}
+
+/// The page never supplies it: the closed wire command has no such action, and no spelling of
+/// it is accepted.
+#[test]
+fn k2_10_the_page_can_never_supply_the_mail_seen_mark() {
+    for bad in [
+        json!({"action":"set_gmail_last_seen","atMs":5}),
+        json!({"action":"set_gmail_last_seen","gmail_last_seen_ms":5}),
+        json!({"action":"set_gmail_last_seen"}),
+        json!({"action":"set_gmail_last_seen","atMs":"5"}),
+    ] {
+        assert_eq!(parse_command(&bad), Err(CommandError), "{bad} must be refused");
     }
 }

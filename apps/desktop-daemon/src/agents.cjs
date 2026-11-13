@@ -369,9 +369,16 @@ class AgentsManager extends EventEmitter {
 
 	/** Maps an installer refusal code to a terminal entry. */
 	refusalEntry(agent, code, extra) {
+		// A refusal about the target FOLDER cannot be about a folder that does not exist: the agent is simply not installed
+		// there. POSIX already answers that with the plain "refused" code; Windows reports a missing parent as
+		// unsafe_folder, because the native helper's parent_ok is false when the parent directory is absent and the
+		// installer maps every non-private-parent fact to that code (CI 43319173068: tests 44/46 read 'error' where the
+		// honest answer is 'unavailable'). A refusal about an EXISTING folder keeps its error state, unchanged.
+		if ((code === "refused" || code === "unsafe_folder") && !this.settingsDirExists(agent)) return this.plain(agent, "unavailable");
 		if (code === "refused") {
-			// The CLI refuses every unreadable/invalid input with the same fixed text; a missing settings dir means "tool not installed".
-			return this.settingsDirExists(agent) ? this.failure(agent, "config_invalid") : this.plain(agent, "unavailable");
+			// The CLI refuses every unreadable/invalid input with the same fixed text, so a remaining refusal means the
+			// settings directory exists but cannot be read or parsed.
+			return this.failure(agent, "config_invalid");
 		}
 		if (code === "unsafe_folder") {
 			const entry = this.failure(agent, "unsafe_folder");

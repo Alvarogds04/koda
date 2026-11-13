@@ -1161,14 +1161,17 @@ class AgentEngine extends EventEmitter {
 				child.kill("SIGKILL");
 				return;
 			}
-			this.sessionFile = after?.data?.sessionFile ?? current;
-			this.model = modelIdentity(after?.data?.model); // announced by the `ready` status that follows
-			if (!this.isOwnedSessionFile(this.sessionFile, true)) throw new Error("agent session is unavailable");
+			// The reported session is adopted only after every check below: an unconfirmed boot
+			// session must never be visible as the open one, not even until the killed child closes.
+			const opened = after?.data?.sessionFile ?? current;
+			if (!this.isOwnedSessionFile(opened, true)) throw new Error("agent session is unavailable");
 			// Koda deviation (kept from the former recovery check, now for every reopen): a
 			// switch the engine ACKs but does not apply is an error like any other, so ready
 			// is never reported on another session while the saved file is on disk (Gentle
 			// Dot's refreshSession would adopt it and overwrite the saved pointer).
-			if (switching && path.resolve(this.sessionFile) !== path.resolve(wanted)) throw new Error("agent session switch was not confirmed");
+			if (switching && path.resolve(opened) !== path.resolve(wanted)) throw new Error("agent session switch was not confirmed");
+			this.sessionFile = opened;
+			this.model = modelIdentity(after?.data?.model); // announced by the `ready` status that follows
 			this.sessionEpoch += 1;
 			this.persistSession(this.sessionFile);
 			this.spawnedAt = Date.now();
