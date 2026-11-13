@@ -29,6 +29,7 @@
     // K2-11: GitHub (a pull request: two nodes joined by a line, one arm bending to a third) and the calendar (a page with two rings).
     pr: { d: ['M4.5 5v6', 'M11.5 11V7.5a2 2 0 0 0-2-2H8'], c: [[4.5, 3.5, 1.5], [4.5, 12.5, 1.5], [11.5, 12.5, 1.5]] },
     cal: { d: ['M3 4.5h10v8.5H3z', 'M3 7.5h10', 'M5.5 2.5v3', 'M10.5 2.5v3'] },
+    mail: { d: ['M2.5 4.5h11v7a.5.5 0 0 1-.5.5h-10a.5.5 0 0 1-.5-.5z', 'M2.5 4.5L8 8.5l5.5-4'] }, // K2-10: the envelope the Gmail card registers as `mail`
     app: { d: ['M6 4h4a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z'] }, // a key nobody drew yet still shows a shape
   };
   const NS = 'http://www.w3.org/2000/svg';

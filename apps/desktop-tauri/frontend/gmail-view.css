@@ -1,0 +1,190 @@
+/* K2-10 T5 (S1, S5, S6, S7, S12) — the GMAIL card of the island's icon row (design/k2-09-atajos/08-isla-unida.html, «Gmail · solo lo
+   nuevo»: boards 2 «Nuevos por defecto», 2b «128 sin leer», 3 «un correo abierto» and 3c «enlace a otro dominio»).
+
+   Where it lives: island-shortcuts-mount.js paints the focused card into #nusa-card (island-nusa.css, the body's first column,
+   ~104px tall inside the 150 island). So the LIST is the 150-island card — 20 head + rows + the edge of the next one, and the rest
+   scrolls inside — and the OPENED MESSAGE reuses the same box with its own internal scroll. The design grows the island to 240 for an
+   open mail; that needs the page's shape report (island.js) and is deliberately NOT faked here: the window's input region comes from
+   that report, so a taller card with a 150 report would draw rows nobody can click.
+
+   Fills are the design's own opaque ones (05: the veil never runs under text): the notch is black, so `linear-gradient(c, c) #000`
+   is exactly `c` over the island's black with no transparency. Tokens only — no image, no remote font, no literal app colour except
+   the Gmail identity ring of the design's «accesorio» (--id-gmail). */
+.gm {
+  --gm-row: linear-gradient(rgba(255,255,255,.06), rgba(255,255,255,.06)) #000;
+  --gm-chip: linear-gradient(rgba(255,255,255,.12), rgba(255,255,255,.12)) #000;
+  --gm-hover: linear-gradient(rgba(255,255,255,.2), rgba(255,255,255,.2)) #000;
+  --gm-fill: linear-gradient(rgba(255,255,255,.1), rgba(255,255,255,.1)) #000;
+  --gm-muted: var(--muted, rgba(255,255,255,.62));
+  --gm-soft: rgba(255,255,255,.78);
+  --gm-ink: var(--ink, #fff);
+  --gm-mail: #ffd08a; /* «accesorio de Koda = qué app» (06): Gmail's identity, never a state */
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  height: 100%;
+  color: var(--gm-ink);
+  font-size: 12px;
+}
+.gm :is(button) { font: inherit; }
+.gm :is(.gm-flt, .gm-row, .gm-lnk, .gm-btn, .gm-back):focus-visible { outline: 2px solid var(--gm-ink); outline-offset: -2px; }
+
+/* ── head: «N nuevos · M sin leer» and the four filters, one line ── */
+.gm-head { flex: none; display: flex; align-items: center; gap: 8px; height: 20px; min-width: 0; white-space: nowrap; }
+.gm-sum { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: 11px; color: var(--gm-muted); }
+.gm-sum b { color: var(--gm-ink); font-weight: 700; }
+.gm-seg { flex: none; display: inline-flex; gap: 2px; }
+.gm-flt {
+  position: relative;
+  height: 20px;
+  padding: 0 7px;
+  border: 0;
+  border-radius: 99px;
+  background: var(--gm-row);
+  color: var(--gm-soft);
+  font-size: 11px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  white-space: nowrap;
+  transition: background .15s, color .15s;
+}
+.gm-flt::after { content: ""; position: absolute; inset: -2px 0; } /* 20 visible, 24 of hit */
+.gm-flt:hover { background: var(--gm-chip); color: var(--gm-ink); }
+.gm-flt[aria-pressed="true"] { background: #fff; color: #000; font-weight: 600; }
+
+/* ── the list: one row per mail (sender, subject, one-line preview, hour), unread marked ── */
+.gm-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; scrollbar-width: none; }
+.gm-list::-webkit-scrollbar { display: none; }
+.gm-list[hidden] { display: none; }
+.gm-row {
+  flex: none;
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 24px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 10px;
+  background: var(--gm-row);
+  color: var(--gm-ink);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  min-width: 0;
+  white-space: nowrap;
+  transition: background .15s;
+}
+.gm-row:hover { background: var(--gm-chip); }
+.gm-dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--gm-ink); }
+.gm-dot.off { background: transparent; }
+.gm-r1 { flex: none; width: 92px; overflow: hidden; text-overflow: ellipsis; font-size: 12px; }
+.gm-un .gm-r1 { font-weight: 700; }
+.gm-r2 { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: 12px; color: var(--gm-muted); }
+.gm-un .gm-r2 { color: var(--gm-soft); }
+.gm-r3 { flex: none; font-size: 11px; color: var(--gm-muted); font-variant-numeric: tabular-nums; }
+
+/* S3: an empty inbox and a failed call each say their own line — never a made-up row */
+.gm-empty {
+  flex: 1 1 auto;
+  min-height: 0;
+  margin: 0;
+  padding: 0 8px;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  background: var(--gm-row);
+  font-size: 12px;
+  color: var(--gm-muted);
+  text-align: center;
+}
+.gm-empty[hidden] { display: none; }
+.gm-problem { margin: 0; padding: 2px 0; font-size: 11px; color: var(--sun, #f2c14e); }
+.gm-problem[hidden] { display: none; }
+
+/* ── the opened message: plain text with Koda's own styles, chips for its links (S6, S7 / design 3, 3c) ── */
+.gm-msg { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.gm-msg[hidden] { display: none; }
+.gm-msg-head { flex: none; display: flex; align-items: center; gap: 8px; height: 22px; min-width: 0; white-space: nowrap; }
+.gm-back {
+  position: relative;
+  flex: none;
+  height: 22px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 99px;
+  background: var(--gm-chip);
+  color: var(--gm-ink);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.gm-back::after { content: ""; position: absolute; inset: -1px -2px; }
+.gm-back:hover { background: var(--gm-hover); }
+.gm-who { flex: 1 1 auto; min-width: 0; display: flex; align-items: baseline; gap: 6px; overflow: hidden; white-space: nowrap; }
+.gm-from { min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: 12px; font-weight: 600; }
+.gm-addr { min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: 11px; color: var(--gm-muted); }
+.gm-when { flex: none; font-size: 11px; color: var(--gm-muted); font-variant-numeric: tabular-nums; }
+.gm-subj { flex: none; margin: 0; font-size: 13px; font-weight: 700; letter-spacing: -.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.gm-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; font-size: 12px; line-height: 16px; color: var(--gm-soft); scrollbar-width: thin; scrollbar-color: rgba(255,255,255,.4) transparent; }
+.gm-body .gm-p { margin: 0; }
+.gm-body .gm-li { display: flex; gap: 6px; margin: 0; }
+.gm-bullet { flex: none; color: var(--gm-muted); }
+.gm-body b { color: var(--gm-ink); font-weight: 700; }
+.gm-cut { flex: none; margin: 0; font-size: 11px; color: var(--gm-muted); }
+.gm-links { flex: none; display: flex; flex-wrap: wrap; gap: 4px; max-height: 44px; overflow: hidden; }
+.gm-lnk {
+  position: relative;
+  height: 20px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 99px;
+  background: var(--gm-chip);
+  color: var(--gm-ink);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.gm-lnk::after { content: ""; position: absolute; inset: -3px 0; } /* 20 visible, 26 of hit */
+.gm-lnk:hover { background: var(--gm-hover); }
+/* 3c: the question takes the action row until it is answered; «Cancelar» starts focused, «Abrir» is the one primary */
+.gm-cf {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  min-width: 0;
+  padding: 0 2px 0 10px;
+  border-radius: 10px;
+  background: var(--gm-fill);
+  white-space: nowrap;
+}
+.gm-cf[hidden] { display: none; }
+.gm-cf-t { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: 12px; color: var(--gm-soft); }
+.gm-acts { flex: none; display: flex; align-items: center; gap: 8px; height: 28px; }
+.gm-btn {
+  position: relative;
+  height: 24px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 99px;
+  background: var(--gm-chip);
+  color: var(--gm-ink);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.gm-btn::after { content: ""; position: absolute; inset: -10px 0; } /* 24 visible, 44 of hit (S: the designs' 44 rule) */
+.gm-btn:hover { background: var(--gm-hover); }
+.gm-pri { background: #fff; color: #000; }
+.gm-pri:hover { background: #e6e6e6; }
+
+html[data-motion="reduce"] :is(.gm-flt, .gm-row) { transition: none; }
+@media (prefers-reduced-motion: reduce) { :is(.gm-flt, .gm-row) { transition: none; } }
