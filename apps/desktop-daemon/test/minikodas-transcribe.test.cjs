@@ -45,10 +45,15 @@ function tmp(t) {
 	const base = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "abito-tr-")));
 	cleanups.set(t, []);
 	t.after(async () => {
+		// A cleanup that throws (a service that would not stop) must NOT keep the tree from being removed, and must NOT be
+		// swallowed either: it is collected, the tree is removed, and the failure is rethrown so the hook still fails.
+		const failures = [];
 		for (const fn of cleanups.get(t).reverse()) {
-			try { await fn(); } catch { /* a failing cleanup must not keep the tree from being removed */ }
+			try { await fn(); } catch (error) { failures.push(error); }
 		}
 		fs.rmSync(base, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
+		if (failures.length === 1) throw failures[0];
+		if (failures.length > 1) throw new AggregateError(failures, `${failures.length} cleanups failed`);
 	});
 	return base;
 }
