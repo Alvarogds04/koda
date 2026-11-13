@@ -147,18 +147,20 @@
       }
       return out;
     }
-    const at = days.indexOf(read.placed.day);
-    if (at >= 0) {
+    // a timed event: its own start day paints the start time; a day it merely continues through paints where it ends
+    const startAt = days.indexOf(read.placed.day);
+    if (startAt >= 0) {
       const time = clock(read.placed);
-      out.push(rowAt(read, at, time, `a las ${time}`, [at, 1, read.placed.minutes]));
-      return out;
+      out.push(rowAt(read, startAt, time, `a las ${time}`, [startAt, 1, read.placed.minutes]));
     }
-    // it began before today: it still covers today while its end is after 00:00 here, and the time column says until when
-    const today = days[0];
-    const covers = read.ended.day > today || (read.ended.day === today && read.ended.minutes > 0);
-    if (read.placed.day < today && covers) {
-      const until = clock(read.ended);
-      out.push(rowAt(read, 0, `${HASTA} ${until}`, `hasta las ${until}`, [0, 1, 0]));
+    const until = clock(read.ended);
+    for (let at = Math.max(startAt + 1, 0); at < days.length; at += 1) {
+      // it continues into this day while it ends after 00:00 of it, so it began on an earlier day and has not ended before it
+      const covers = read.ended.day > days[at] || (read.ended.day === days[at] && read.ended.minutes > 0);
+      if (read.placed.day >= days[at] || !covers) continue;
+      // it ends on this very day → «Hasta HH:MM»; it runs on past this day → «Hasta mañana HH:MM» (never «hasta 09:00» for tomorrow's 09:00)
+      const runsOn = read.ended.day > days[at];
+      out.push(rowAt(read, at, runsOn ? `${HASTA} mañana ${until}` : `${HASTA} ${until}`, runsOn ? `hasta mañana a las ${until}` : `hasta las ${until}`, [at, 1, 0]));
     }
     return out;
   }

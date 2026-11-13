@@ -185,6 +185,21 @@ test('F2: a timed event that began before today and still covers it shows under 
   assert.equal(v.rows[0].aria, 'Hoy, hasta las 01:30, Guardia');
 });
 
+test('F2: a timed event that began before today and ends tomorrow says so and also shows under «Mañana»', () => {
+  const v = C.cardView(answer([
+    floatingAt({ title: 'Viaje', start: { date: dayAt(-1), time: '22:00:00', tz: null }, end: { date: dayAt(1), time: '09:00:00', tz: null } }),
+  ]), COVER_NOW);
+  assert.deepEqual(v.rows.map(r => `${r.day} ${r.time} ${r.title}`), ['Hoy Hasta mañana 09:00 Viaje', 'Mañana Hasta 09:00 Viaje'],
+    'ending tomorrow it must not read as «hasta 09:00» today, and tomorrow shows it until its end');
+  assert.equal(v.rows[0].aria, 'Hoy, hasta mañana a las 09:00, Viaje');
+  assert.equal(v.rows[1].aria, 'Mañana, hasta las 09:00, Viaje');
+  // an event that also starts today and ends tomorrow keeps its start time today and continues tomorrow
+  const w = C.cardView(answer([
+    floatingAt({ title: 'Guardia larga', start: { date: dayAt(0), time: '22:00:00', tz: null }, end: { date: dayAt(1), time: '06:00:00', tz: null } }),
+  ]), COVER_NOW);
+  assert.deepEqual(w.rows.map(r => `${r.day} ${r.time}`), ['Hoy 22:00', 'Mañana Hasta 06:00']);
+});
+
 test('F2: all-day rows stay «Todo el día» and sort before the timed ones of the same day', () => {
   const v = C.cardView(answer([
     floatingAt({ title: 'Reunión', start: { date: dayAt(0), time: '09:00:00', tz: null }, end: { date: dayAt(0), time: '10:00:00', tz: null } }),
