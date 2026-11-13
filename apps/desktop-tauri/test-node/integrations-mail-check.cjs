@@ -281,6 +281,26 @@ test('render: state line, the two fields, save/connect/disconnect and the help b
   assert.match(hostNode.querySelector('[data-field="authUrl"]').textContent, /^https:\/\/accounts\.google\.com\//);
 });
 
+// ---- T6 (S3): the card left the sample-data group ----------------------------------------
+// It used to sit under «Servicios · Datos de ejemplo» while being the one LIVE card of Ajustes. It now has its own heading and its
+// own section, still inside #connections-more (the wrapper settings.js re-appends on the Conexiones tab).
+test('T6 S3: #integrations-mail has its own section and heading, out of «Servicios · Datos de ejemplo»', () => {
+  const html = fs.readFileSync(path.join(frontend, 'index.html'), 'utf8');
+  assert.equal((html.match(/src="integrations-mail\.js"/g) || []).length, 1, 'loaded once');
+  assert.equal((html.match(/id="integrations-mail"/g) || []).length, 1, 'one container: the mount contract is unchanged');
+  assert.equal((html.match(/integrations-email/g) || []).length, 0, 'the fake «Correo» card, its script and its section are gone');
+  assert.equal(fs.existsSync(path.join(frontend, 'integrations-email.js')), false, 'and its file with them');
+  assert.equal(fs.existsSync(path.join(__dirname, 'integrations-email-check.cjs')), false, 'nor its check');
+  const group = /<div id="connections-more"[^>]*>([\s\S]*?)<!-- \/connections-more -->/.exec(html);
+  assert.ok(group, 'the wrapper the settings render re-appends is still there');
+  const body = group[1];
+  const at = body.indexOf('<section id="integrations-mail" hidden></section>');
+  const sample = body.indexOf('Servicios · Datos de ejemplo');
+  assert.ok(at > 0, 'the live card travels with the wrapper');
+  assert.ok(sample > 0 && at < sample, 'it comes BEFORE the sample-data group, so it is not read as an example');
+  assert.match(body.slice(0, at), /<h3 class="ssection">Correo · Gmail<\/h3>/, 'its own heading precedes it');
+});
+
 (async () => {
   for (const [name, fn] of queue) {
     try { await fn(); passed += 1; } catch (e) { console.error(`FAIL: ${name}`); throw e; }

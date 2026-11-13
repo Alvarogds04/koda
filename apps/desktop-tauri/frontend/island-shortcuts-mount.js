@@ -26,6 +26,7 @@
   const ICONS = {
     koda: { d: ['M3 2.5l3 3h4l3-3V10a4.5 4.5 0 0 1-4.5 4h-1A4.5 4.5 0 0 1 3 10z'], c: [[6.2, 9, 1], [9.8, 9, 1]] },
     note: { d: ['M6 12V3.6l7-1.6v8.5'], c: [[4.3, 12, 1.7], [11.3, 10.5, 1.7]] },
+    mail: { d: ['M2.5 4.5h11v7a.5.5 0 0 1-.5.5h-10a.5.5 0 0 1-.5-.5z', 'M2.5 4.5L8 8.5l5.5-4'] }, // K2-10: the envelope the Gmail card registers as `mail`
     app: { d: ['M6 4h4a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z'] }, // a key nobody drew yet still shows a shape
   };
   const NS = 'http://www.w3.org/2000/svg';
