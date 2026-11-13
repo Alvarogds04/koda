@@ -2066,6 +2066,84 @@ fn window_context_failed_save_changes_nothing() {
     assert!(update(&Prefs::default(), &Command::SetWindowContext(true), |_| false).is_err());
 }
 
+// ---- K2 phone link: `phone_link`, the switch that opens the LAN port (S3) ----------------------------
+#[test]
+fn phone_link_is_an_exact_closed_two_key_command() {
+    assert_eq!(parse_command(&json!({"action":"set_phone_link","phone_link":true})), Ok(Command::SetPhoneLink(true)));
+    assert_eq!(parse_command(&json!({"action":"set_phone_link","phone_link":false})), Ok(Command::SetPhoneLink(false)));
+    for bad in [
+        json!({"action":"set_phone_link"}),
+        json!({"action":"set_phone_link","phone_link":"true"}),
+        json!({"action":"set_phone_link","phone_link":1}),
+        json!({"action":"set_phone_link","phone_link":null}),
+        json!({"action":"set_phone_link","phone_link":true,"port":47821}),
+        json!({"action":"set_phone_link","window_context":true}),
+    ] {
+        assert_eq!(parse_command(&bad), Err(CommandError), "{bad}");
+    }
+}
+
+#[test]
+fn phone_link_is_off_by_default_persists_and_false_drops_the_key() {
+    assert!(!Prefs::default().phone_link(), "S3: the link starts OFF, nothing listens on the LAN");
+    let on = update(&Prefs::default(), &Command::SetPhoneLink(true), |_| true).unwrap();
+    assert!(on.phone_link());
+    assert_eq!(serde_json::from_str::<serde_json::Value>(&on.to_text()).unwrap()["phone_link"], json!(true));
+    assert!(Prefs::from_text(Some(&on.to_text())).phone_link());
+    let off = update(&on, &Command::SetPhoneLink(false), |_| true).unwrap();
+    assert_eq!(off.phone_link, None);
+    assert!(!off.to_text().contains("phone_link"), "the default writes no key");
+    assert!(!on.window_context() && !on.show_plan_in_notch(), "independent of the other switches");
+    for hostile in ["1", "\"true\"", "null", "[true]"] {
+        let text = format!(r#"{{"v":1,"phone_link":{hostile}}}"#);
+        assert!(!Prefs::from_text(Some(&text)).phone_link(), "{hostile}");
+    }
+}
+
+#[test]
+fn phone_link_failed_save_changes_nothing() {
+    assert!(update(&Prefs::default(), &Command::SetPhoneLink(true), |_| false).is_err());
+}
+
+// ---- K2 T6 (S11, §11): `phone_usage`, the switch that puts the plan pills on the phone -----------------
+#[test]
+fn phone_usage_is_an_exact_closed_two_key_command() {
+    assert_eq!(parse_command(&json!({"action":"set_phone_usage","phone_usage":true})), Ok(Command::SetPhoneUsage(true)));
+    assert_eq!(parse_command(&json!({"action":"set_phone_usage","phone_usage":false})), Ok(Command::SetPhoneUsage(false)));
+    for bad in [
+        json!({"action":"set_phone_usage"}),
+        json!({"action":"set_phone_usage","phone_usage":"true"}),
+        json!({"action":"set_phone_usage","phone_usage":1}),
+        json!({"action":"set_phone_usage","phone_usage":null}),
+        json!({"action":"set_phone_usage","phone_usage":true,"codex":true}),
+        json!({"action":"set_phone_usage","phoneUsage":true}),
+    ] {
+        assert_eq!(parse_command(&bad), Err(CommandError), "{bad}");
+    }
+}
+
+#[test]
+fn phone_usage_is_off_by_default_persists_and_false_drops_the_key() {
+    assert!(!Prefs::default().phone_usage(), "S11: nothing of the plans leaves this computer until the human says so");
+    let on = update(&Prefs::default(), &Command::SetPhoneUsage(true), |_| true).unwrap();
+    assert!(on.phone_usage());
+    assert_eq!(serde_json::from_str::<serde_json::Value>(&on.to_text()).unwrap()["phone_usage"], json!(true));
+    assert!(Prefs::from_text(Some(&on.to_text())).phone_usage());
+    let off = update(&on, &Command::SetPhoneUsage(false), |_| true).unwrap();
+    assert_eq!(off.phone_usage, None);
+    assert!(!off.to_text().contains("phone_usage"), "the default writes no key");
+    assert!(!on.phone_link() && !on.show_plan_in_notch() && !on.show_codex_plan_in_notch(), "independent of the other switches");
+    for hostile in ["1", "\"true\"", "null", "[true]", "{}"] {
+        let text = format!(r#"{{"v":1,"phone_usage":{hostile}}}"#);
+        assert!(!Prefs::from_text(Some(&text)).phone_usage(), "{hostile}");
+    }
+}
+
+#[test]
+fn phone_usage_failed_save_changes_nothing() {
+    assert!(update(&Prefs::default(), &Command::SetPhoneUsage(true), |_| false).is_err());
+}
+
 // ---- #486 W2: the desktop character's saved state (Coucou's `desktopMochi`) ----
 
 /// Absent, or any malformed shape, reads as "lives in the island" (off); an untouched

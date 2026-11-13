@@ -50,6 +50,21 @@ const FlowBridge = Object.freeze({
   download: () => call({ action: "download_model" }),
   removeModels: () => call({ action: "remove_model" })
 });
+const phoneCall = (action) => invoke ? invoke("phone_link_action", { payload: { action } }) : Promise.reject(new Error("No disponible todavía"));
+const PhoneBridge = Object.freeze({
+  // The rejection is NOT swallowed: a host that cannot answer (another OS, a missing command) is not the same as «off».
+  status: () => phoneCall("status"),
+  enable: () => phoneCall("enable"),
+  disable: () => phoneCall("disable"),
+  unlink: () => phoneCall("unlink")
+});
+const prefsCall = (payload) => invoke ? invoke("prefs_action", { payload }) : Promise.reject(new Error("No disponible todavía"));
+const PrefsBridge = Object.freeze({
+  /** The stored prefs, as the page is shown them (`phoneUsage` is the phone's plan-usage switch). */
+  view: () => prefsCall({ action: "view" }),
+  /** «Uso de los planes»: exactly the two keys the host parses, `action` + the boolean. */
+  setPhoneUsage: (on) => prefsCall({ action: "set_phone_usage", phone_usage: on === true })
+});
 const voiceCall = (payload) => invoke ? invoke("voice_action", { payload }) : Promise.reject(new Error("No disponible todavía"));
 const VoiceBridge = Object.freeze({
   status: async () => {
@@ -76,6 +91,8 @@ const VoiceBridge = Object.freeze({
 });
 export {
   FlowBridge,
+  PhoneBridge,
+  PrefsBridge,
   VoiceBridge,
   setInvoke
 };

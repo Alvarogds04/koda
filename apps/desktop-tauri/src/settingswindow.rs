@@ -434,7 +434,7 @@ mod tests {
     fn f093_the_commands_reachable_from_settings_are_pinned_exactly() {
         // K2-10 T4 (S11): `gmail_action` joins this list on purpose — the Gmail card lives in Ajustes,
         // so it must answer in the own settings window too (shared sender gate, like prefs_action).
-        const REACHABLE: [&str; 16] = [
+        const REACHABLE: [&str; 17] = [
             "agent_action",
             "daemon_action",
             "dictation_action",
@@ -444,6 +444,7 @@ mod tests {
             "models_action",
             "monitor_action",
             "oauth_action",
+            "phone_link_action",
             "plan_action",
             "prefs_action",
             "secret_action",

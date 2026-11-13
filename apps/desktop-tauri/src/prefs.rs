@@ -302,6 +302,12 @@ pub settings_window: Option<bool>,
     /// #487: opt-in to read the previous window's app and title for the chat (NotchBuddy feature 8).
     /// `None` means off and is never written.
     pub window_context: Option<bool>,
+    /// K2 phone link (S3/D3): the switch that makes the desktop listen for the phone on the LAN.
+    /// `None` means OFF — nothing listens, nothing is announced — and is never written.
+    pub phone_link: Option<bool>,
+    /// K2 T6 (S11/§11): whether the phone is sent the Claude and Codex plan usage (`usage`). `None` means OFF and is
+    /// never written; while it is off no plan is read for the phone at all.
+    pub phone_usage: Option<bool>,
     /// S5 (#503): the chat's live-state context (sessions + integrations). `None` means ON; only `false` is written.
     pub live_context: Option<bool>,
     /// #486 W2 (Coucou `desktopMochi`): the character lives on the desktop and where it
@@ -365,6 +371,8 @@ impl Default for Prefs {
             show_plan_in_notch: None,
             show_codex_plan_in_notch: None,
             window_context: None,
+            phone_link: None,
+            phone_usage: None,
             live_context: None,
             desktop_character: None,
             gmail_last_seen_ms: None,
@@ -545,6 +553,10 @@ impl Prefs {
     /// S10 (L30): the effective Codex pill policy — absent means off (no `codex app-server` is ever started).
     pub fn show_codex_plan_in_notch(&self) -> bool { self.show_codex_plan_in_notch.unwrap_or(false) }
     pub fn window_context(&self) -> bool { self.window_context.unwrap_or(false) }
+    /// K2 phone link: OFF unless the human turned it on in Ajustes (S3).
+    pub fn phone_link(&self) -> bool { self.phone_link.unwrap_or(false) }
+    /// K2 T6: OFF unless the human asked the phone to show the plan usage (S11/§11).
+    pub fn phone_usage(&self) -> bool { self.phone_usage.unwrap_or(false) }
     pub fn live_context(&self) -> bool { self.live_context.unwrap_or(true) }
 
     /// K2-10 T4 (S5): the stored mail mark, ms since the epoch; 0 means «never visited», which
@@ -593,6 +605,8 @@ impl Prefs {
             show_plan_in_notch: v.get("show_plan_in_notch").and_then(Value::as_bool),
             show_codex_plan_in_notch: v.get("show_codex_plan_in_notch").and_then(Value::as_bool),
             window_context: v.get("window_context").and_then(Value::as_bool),
+            phone_link: v.get("phone_link").and_then(Value::as_bool),
+            phone_usage: v.get("phone_usage").and_then(Value::as_bool),
             live_context: v.get("live_context").and_then(Value::as_bool),
             desktop_character: desktop_character_from(v.get(DESKTOP_CHARACTER)),
             gmail_last_seen_ms: v.get(GMAIL_LAST_SEEN_MS).and_then(Value::as_u64).filter(|ms| *ms > 0),
@@ -662,6 +676,12 @@ impl Prefs {
         }
         if let Some(on) = self.window_context {
             v["window_context"] = json!(on);
+        }
+        if let Some(on) = self.phone_link {
+            v["phone_link"] = json!(on);
+        }
+        if let Some(on) = self.phone_usage {
+            v["phone_usage"] = json!(on);
         }
         if let Some(on) = self.live_context {
             v["live_context"] = json!(on);
@@ -747,6 +767,10 @@ pub enum Command {
     /// S10 (L30): show or hide the Codex plan-usage pill (an opt-in to `codex app-server`). `false` stores no key.
     SetShowCodexPlanInNotch(bool),
     SetWindowContext(bool),
+    /// K2 phone link (S3): the switch that opens the LAN port; `false` stores no key at all.
+    SetPhoneLink(bool),
+    /// K2 T6 (S11): whether the phone is sent the plan usage (§11).
+    SetPhoneUsage(bool),
     SetLiveContext(bool),
     /// #486 W2: the desktop character left or returned to the island, and the spot it sits
     /// at. Deliberately NOT produced by [`parse_command`]: only the native drop path saves
@@ -944,6 +968,16 @@ pub fn parse_command(payload: &Value) -> Result<Command, CommandError> {
             let on = map.get("window_context").and_then(Value::as_bool).ok_or(CommandError)?;
             Ok(Command::SetWindowContext(on))
         }
+        // K2 phone link (S3): exactly action + phone_link (a bool); no coercion.
+        Some("set_phone_link") if map.len() == 2 => {
+            let on = map.get("phone_link").and_then(Value::as_bool).ok_or(CommandError)?;
+            Ok(Command::SetPhoneLink(on))
+        }
+        // K2 T6 (S11, §11): exactly action + phone_usage (a bool); no coercion.
+        Some("set_phone_usage") if map.len() == 2 => {
+            let on = map.get("phone_usage").and_then(Value::as_bool).ok_or(CommandError)?;
+            Ok(Command::SetPhoneUsage(on))
+        }
         // S5 (#503): exactly action + live_context (a bool); no coercion.
         Some("set_live_context") if map.len() == 2 => {
             let on = map.get("live_context").and_then(Value::as_bool).ok_or(CommandError)?;
@@ -1122,6 +1156,8 @@ pub fn apply(current: &Prefs, command: &Command) -> Result<Prefs, CommandError> 
         Command::SetShowPlanInNotch(on) => next.show_plan_in_notch = on.then_some(true),
         Command::SetShowCodexPlanInNotch(on) => next.show_codex_plan_in_notch = on.then_some(true),
         Command::SetWindowContext(on) => next.window_context = on.then_some(true),
+        Command::SetPhoneLink(on) => next.phone_link = on.then_some(true),
+        Command::SetPhoneUsage(on) => next.phone_usage = on.then_some(true),
         Command::SetLiveContext(on) => next.live_context = (!on).then_some(false),
         Command::SetDesktopCharacter { on, spot } => {
             if spot.is_some_and(|(x, y)| !valid_position(x, y)) { return Err(CommandError); }
