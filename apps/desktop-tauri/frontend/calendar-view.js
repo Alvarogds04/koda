@@ -128,6 +128,8 @@
     return { title: clean(event.title), location: clean(event.location) || null, placed, ended };
   }
 
+  /** A YYYY-MM-DD key → «DD/MM» (the host's day, as written: never shifted). */
+  const dayMonth = k => `${k.slice(8, 10)}/${k.slice(5, 7)}`;
   const clock = placed => `${pad(Math.floor(placed.minutes / 60))}:${pad(placed.minutes % 60)}`;
   /** One covered day → one row of the card (the fields are closed; nothing of the event rides along beyond them). */
   function rowAt(read, at, time, spoken, rank) {
@@ -158,9 +160,9 @@
       // it continues into this day while it ends after 00:00 of it, so it began on an earlier day and has not ended before it
       const covers = read.ended.day > days[at] || (read.ended.day === days[at] && read.ended.minutes > 0);
       if (read.placed.day >= days[at] || !covers) continue;
-      // it ends on this very day → «Hasta HH:MM»; it runs on past this day → «Hasta mañana HH:MM» (never «hasta 09:00» for tomorrow's 09:00)
-      const runsOn = read.ended.day > days[at];
-      out.push(rowAt(read, at, runsOn ? `${HASTA} mañana ${until}` : `${HASTA} ${until}`, runsOn ? `hasta mañana a las ${until}` : `hasta las ${until}`, [at, 1, 0]));
+      // it ends on this very day → «Hasta HH:MM»; tomorrow → «Hasta mañana HH:MM»; any later day → «Hasta el DD/MM HH:MM» (never «mañana» for a later day)
+      const when = read.ended.day === days[at] ? '' : read.ended.day === days[1] ? 'mañana ' : `el ${dayMonth(read.ended.day)} `;
+      out.push(rowAt(read, at, `${HASTA} ${when}${until}`, `hasta ${when}${when ? 'a las ' : 'las '}${until}`, [at, 1, 0]));
     }
     return out;
   }
