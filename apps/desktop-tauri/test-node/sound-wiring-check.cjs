@@ -252,14 +252,14 @@ test('history: the first chat snapshot (possibly with old turns) and a reconnect
   assert.deepEqual(r.calls, []);
 });
 
-test('notices and cards: only a NEW top notice and a card that BECOMES pending sound; what was there at start-up does not', async () => {
+test('notices and cards: only a NEW notice and a NEW permission card sound; what was there at start-up does not', async () => {
   const r = rig();
   r.bus.fire('prefs:state', { v: 1, sound: true }); r.wiring.firstSnapshotRendered(); r.time.advance(5000);
   r.wiring.observeNotices([{ id: 'n1' }]);               // baseline
   assert.deepEqual(r.calls, []);
   r.wiring.observeNotices([{ id: 'n1' }]);               // same
   assert.deepEqual(r.calls, []);
-  r.wiring.observeNotices([{ id: 'n2' }, { id: 'n1' }]); // new on top
+  r.wiring.observeNotices([{ id: 'n2' }, { id: 'n1' }]); // a new notice that is not a finished turn keeps snd.notice
   assert.deepEqual(r.calls, ['snd.notice']);
   r.wiring.observeNotices([]);                            // dismissed: nothing
   assert.deepEqual(r.calls, ['snd.notice']);
@@ -267,9 +267,38 @@ test('notices and cards: only a NEW top notice and a card that BECOMES pending s
   r.wiring.observeCard('c1');                             // baseline
   assert.deepEqual(r.calls, []);
   r.wiring.observeCard('c2');
-  assert.deepEqual(r.calls, ['snd.attention']);
+  assert.deepEqual(r.calls, ['snd.approval'], 'K2-07 L10: the permission card plays snd.approval');
   r.wiring.observeCard('c2'); r.wiring.observeCard(null);
-  assert.deepEqual(r.calls, ['snd.attention'], 'the same card, or none, is not an event');
+  assert.deepEqual(r.calls, ['snd.approval'], 'the same card, or none, is not an event');
+});
+
+test('K2-07 S1/L10: a finished turn (notice kind settled) plays snd.finish; attention and transport notices keep snd.notice', () => {
+  const r = rig();
+  r.bus.fire('prefs:state', { v: 1, sound: true }); r.wiring.firstSnapshotRendered(); r.time.advance(5000);
+  const settled = id => ({ id, kind: 'settled' }), attention = id => ({ id, kind: 'attention' }), transport = id => ({ id, kind: 'transport' });
+  r.wiring.observeNotices([settled('old')]);                                // start-up: history, silent
+  assert.deepEqual(r.calls, []);
+  // the host queue is OLDEST FIRST (protocol.rs snapshot): a new settled notice lands at the END, the top does not change
+  r.wiring.observeNotices([settled('old'), settled('s1')]);
+  assert.deepEqual(r.calls, ['snd.finish'], 'a finished turn behind an older one still sounds');
+  r.wiring.observeNotices([attention('a1'), settled('old'), settled('s1')]); // an attention notice leads the strip
+  assert.deepEqual(r.calls, ['snd.finish', 'snd.notice']);
+  r.wiring.observeNotices([transport('t1'), attention('a1'), settled('old'), settled('s1')]);
+  assert.deepEqual(r.calls, ['snd.finish', 'snd.notice', 'snd.notice']);
+  r.calls.length = 0;
+  // dismissing (or pruning) the top must not sound for the notice that moves up
+  r.wiring.observeNotices([attention('a1'), settled('old'), settled('s1')]);
+  r.wiring.observeNotices([settled('old'), settled('s1')]);
+  r.wiring.observeNotices([settled('s1')]);
+  r.wiring.observeNotices([]);
+  assert.deepEqual(r.calls, [], 'a dismiss is never an event');
+  // reconnect re-baselines: a replayed list is history
+  r.wiring.reconnected();
+  r.wiring.observeNotices([settled('s2'), attention('a2')]);
+  assert.deepEqual(r.calls, [], 'the first list after a reconnect is history');
+  r.wiring.observeNotices([settled('s2'), attention('a2'), settled('s3'), settled('s4')]);
+  assert.deepEqual(r.calls, ['snd.finish'], 'several finished turns at once ask once');
+  for (const junk of [null, 7, [null, 1, { id: 3 }, { kind: 'settled' }]]) assert.doesNotThrow(() => r.wiring.observeNotices(junk));
 });
 
 test('never: «Enviada» / «Sin confirmar» notices and the character face alone make no sound', () => {
@@ -359,7 +388,7 @@ test('custom sounds: reject empty, malformed, non-string and oversized base64 wi
   }
 });
 
-test('custom sounds: boot shares the decoding/playback context and never plays while off', async () => {
+test('custom sounds: boot shares the decoding/playback context, never plays and never opens audio while off', async () => {
   let contexts = 0, engine;
   const sources = [], events = {};
   const c = soft.createSoftContext();
@@ -376,8 +405,10 @@ test('custom sounds: boot shares the decoding/playback context and never plays w
     } } } };
   const w = Wiring.boot(win); await w.samplesLoaded(); w.firstSnapshotRendered();
   assert.equal((await engine.play('snd.notice')).reason, 'disabled');
-  assert.equal(sources.length, 0); assert.equal(contexts, 1);
-  w.applyPrefs({ sound: true }); assert.equal((await engine.play('snd.notice')).played, true);
+  assert.equal(sources.length, 0); assert.equal(contexts, 0, 'K2-07 S2: sound off creates no AudioContext, not even to decode');
+  w.applyPrefs({ sound: true }); await w.samplesLoaded();
+  assert.equal(contexts, 1, 'turning sound on loads the files with the shared context');
+  assert.equal((await engine.play('snd.notice')).played, true);
   assert.equal(sources.length, 1); assert.equal(contexts, 1); assert.equal(c.oscillators.length, 0);
   engine.close();
 });

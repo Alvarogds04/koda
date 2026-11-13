@@ -980,7 +980,7 @@
     if (!snapshot || !noticesEl || !O) return;
     const notices = Array.isArray(snapshot.notices) ? snapshot.notices : [];
     announceNotice(notices);
-    soundCue('observeNotices', notices); // #313: only a NEW top notice sounds, never the ones already there at start-up
+    soundCue('observeNotices', notices); // #313/K2-07: a NEW notice sounds (finished turn: snd.finish), never the ones already there at start-up
     const arrivals = toastGate ? toastGate.arrivals(notices) : []; // the toast's own baseline gate: boot/retained rows are not arrivals
     const fresh = finishedCycle ? finishedCycle.observe(notices, finishedAllowed()) : revealGate?.notice(notices);
     // isla-cualquier-lado S2: the island is never hidden, so it always shows the new notice itself (its Avisos strip), attention
@@ -1429,7 +1429,9 @@
     paintCompactFlag();
     const card = current && current.card;
     const valid = validCard(card);
-    soundCue('observeCard', valid && card.state === 'pending' && typeof card.id === 'string' ? card.id : null); // #313: a card BECOMING pending
+    // #313/K2-07: a permission card ARRIVING plays snd.approval. The host card carries no id (card.rs project_card: four keys), so a
+    // still-waiting card (not expired) is keyed by its operation + expiry; deciding or folding it keeps the key, expiry clears it.
+    soundCue('observeCard', valid && Date.now() < Date.parse(card.expires_at) ? `${card.operation}\n${card.expires_at}` : null);
     const permission = $('permission');
     if (!permission || !O) return;
     const visible = valid && !noticeLane;
