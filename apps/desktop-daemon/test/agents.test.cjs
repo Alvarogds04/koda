@@ -9,23 +9,31 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
+const { spawnSync } = require("node:child_process");
 const { AgentsManager } = require("../src/agents.cjs");
 const { win, unixOnly } = require("./platform-env.cjs");
 
 const FIXTURE = path.join(__dirname, "fixtures", "fake-installer.cjs");
-// macOS injects __CF_USER_TEXT_ENCODING into every process at exec (CoreFoundation); the fake
-// installer records its own process.env, so on darwin this key appears although the product passed
-// an allowlisted env. It is OS-injected and never comes from the parent environment — not a leak.
-const OS_INJECTED_ENV = [
-	...(process.platform === "darwin" ? ["__CF_USER_TEXT_ENCODING"] : []),
-	// Windows: the OS adds the user-profile pair HOMEDRIVE/HOMEPATH to a spawned child's environment
-	// beyond the explicit env block (observed on the Windows CI runner, CI 41729969464 test 60: the
-	// recorded child env carries HOMEDRIVE although the product passes the closed childEnv allowlist).
-	// They are OS-injected profile facts, never parent secrets; the env OPTION the product passes stays
-	// asserted closed by the HU-047 run-seam tests, which record exactly what the product handed over.
-	// LOGONSERVER is the same kind of OS-injected logon fact (CI 43263659882 test 66).
-	...(win ? ["HOMEDRIVE", "HOMEPATH", "LOGONSERVER"] : []),
-];
+/**
+ * The keys a process gets BEYOND the env block it was handed, asked to this same OS instead of being listed by hand.
+ * The fake installer records its own process.env, so the OS-injected keys show up in what it recorded even though the
+ * product passed an allowlisted env: Windows adds profile and system facts (HOMEDRIVE/HOMEPATH, LOGONSERVER,
+ * SYSTEMDRIVE, SYSTEMROOT, ...) and darwin adds __CF_USER_TEXT_ENCODING at exec (CoreFoundation). Adding those names one
+ * CI failure at a time is a treadmill (CI 41729969464, 43263659882, 43319173068 each added one) and a hand-written list is
+ * always one runner image behind, so the set is DERIVED: this Node is spawned once with a single marker variable and the
+ * keys that come back are exactly what the OS injects. It stays non-tautological: a leaked marker of the parent (a real
+ * variable the product did not pass) is in neither the pinned set nor this one, so the leak assertion still fails.
+ */
+const ENV_PROBE_KEY = "ABITO_ENV_PROBE";
+const OS_INJECTED_ENV = (() => {
+	const probe = spawnSync(process.execPath, ["-e", "process.stdout.write(JSON.stringify(Object.keys(process.env)))"], {
+		env: { [ENV_PROBE_KEY]: "1" }, encoding: "utf8", timeout: 60_000, windowsHide: true,
+	});
+	if (probe.status !== 0 || typeof probe.stdout !== "string") throw new Error(`env probe failed: ${probe.status} ${probe.stderr ?? probe.error ?? ""}`);
+	const keys = JSON.parse(probe.stdout);
+	if (!Array.isArray(keys) || !keys.includes(ENV_PROBE_KEY)) throw new Error("env probe did not report its own marker");
+	return keys.filter((key) => key !== ENV_PROBE_KEY);
+})();
 const HASH_A = "a".repeat(64);
 const HASH_B = "b".repeat(64);
 const HASH_R = "c".repeat(64);
@@ -451,8 +459,8 @@ test("child env: allowlist + ABITO_ISLAND_EXE only, HOME is the real home passed
 	}
 	assert.equal(s.calls().length, 6);
 	// The product allowlist is DERIVED from src/agents.cjs childEnv (never guessed): what the manager
-	// passes is exactly childEnv(), plus the OS-injected keys above (the real spawn's child process
-	// environment carries them on Windows; the injected-run HU-047 tests pin the option itself).
+	// passes is exactly childEnv(), plus the keys this OS injects into a child on its own (OS_INJECTED_ENV asks the OS;
+	// it is never a hand-written list of names, and the injected-run HU-047 tests pin the env OPTION itself).
 	// Review (non-tautological): the CLOSED set is pinned here as literals per OS. A key added to childEnv() itself must
 	// fail this test, not widen it; the derived set must equal the pinned one, and the recorded child env stays inside it.
 	const PINNED_ENV = (win ? ["HOME", "USERPROFILE", "SystemRoot", "PATH", "ABITO_ISLAND_EXE"] : ["PATH", "HOME", "ABITO_ISLAND_EXE"]).concat(process.env.LANG ? ["LANG"] : []);
@@ -509,6 +517,21 @@ test("HU-047: an unsafe folder keeps its own detail with the folder and the clos
 	const s2 = setup(t, { claude: { preview: { exit: 0, stdout: preview() }, apply: unsafe("/home/u/.claude", "bogus") } });
 	const b = byId(await s2.manager.connect("claude-code"), "claude-code");
 	assert.deepEqual([b.detail, b.folder], ["unsafe_folder", undefined], "an unknown reason never forwards the folder");
+});
+
+test("HU-047: a folder that does not exist reads 'unavailable', never an unsafe-folder error", async (t) => {
+	// Windows (CI 43319173068 tests 44/46): the native helper reports parent_ok=false when the parent directory is absent,
+	// so a tool that is simply NOT INSTALLED there is refused as unsafe_folder and the manager showed state 'error'. A
+	// folder that does not exist cannot be unsafe, so the honest answer is the one POSIX already gave ('refused' with no
+	// settings directory => unavailable). A refusal about an EXISTING folder keeps its error, folder and reason.
+	const unsafe = { exit: 65, stdout: { schema: SCHEMA, ok: false, code: "unsafe_folder", message: "fixed", folder: "/home/u/.config/opencode/plugins", folder_reason: "acl" } };
+	const s = setup(t, { opencode: { preview: unsafe }, claude: { preview: unsafe } });
+	const list = await s.manager.list();
+	assert.deepEqual([byId(list, "opencode").state, byId(list, "opencode").detail, byId(list, "opencode").folder], ["unavailable", null, undefined], "no ~/.config/opencode/plugins in this HOME: not installed");
+	assert.deepEqual([byId(list, "claude-code").state, byId(list, "claude-code").detail, byId(list, "claude-code").folder_reason], ["error", "unsafe_folder", "acl"], "an existing ~/.claude keeps its refusal");
+	// The same reading for the plain POSIX refusal: no settings directory means "not installed", nothing else.
+	const s2 = setup(t, { opencode: { preview: refusal("refused", 65) } });
+	assert.equal(byId(await s2.manager.list(), "opencode").state, "unavailable");
 });
 
 test("apply failures map to closed details", async (t) => {
