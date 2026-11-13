@@ -37,6 +37,11 @@ impl Bus {
         let address = format!("unix:path={}", sock.display());
         let conf = dir.join("bus.conf");
         std::fs::write(&conf, format!("<!DOCTYPE busconfig PUBLIC \"-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN\" \"http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd\"><busconfig><type>session</type><listen>{address}</listen><auth>EXTERNAL</auth><policy context=\"default\"><allow send_destination=\"*\" eavesdrop=\"true\"/><allow eavesdrop=\"true\"/><allow own=\"*\"/></policy></busconfig>")).expect("write bus config");
+        let child = Self::spawn(&conf, &sock);
+        Bus { child, address, dir }
+    }
+
+    fn spawn(conf: &Path, sock: &Path) -> Child {
         let child = Command::new("dbus-daemon")
             .args([&format!("--config-file={}", conf.display()), "--nofork", "--nopidfile"])
             .stdin(Stdio::null())
@@ -50,7 +55,17 @@ impl Bus {
             }
             std::thread::sleep(Duration::from_millis(30));
         }
-        Bus { child, address, dir }
+        child
+    }
+
+    /// The bus dies and a new one listens at the SAME address, like a session whose bus came back: every
+    /// connection to the old one is gone and nobody owns any name.
+    fn restart(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        let sock = self.dir.join("s");
+        let _ = std::fs::remove_file(&sock);
+        self.child = Self::spawn(&self.dir.join("bus.conf"), &sock);
     }
 }
 impl Drop for Bus {
@@ -126,39 +141,59 @@ struct FakeExtension {
     /// When set, the extension answers with this path instead of writing into its own directory.
     outside: Option<PathBuf>,
     captured: Arc<Mutex<Vec<u64>>>,
-    /// The launch token that registered first, like the extension's own TokenGate.
-    bound: Arc<Mutex<Option<String>>>,
+    /// The (token, owner's unique bus name) that registered first, like the extension's own TokenGate.
+    bound: Arc<Mutex<Option<(String, String)>>>,
+    /// Every Register call the extension answered, with what it answered: the count is the proof of how
+    /// many registrations a client makes.
+    registers: Arc<Mutex<Vec<bool>>>,
+    /// A second connection of the fake's own, only used to ask the bus whether the owner is still there.
+    bus: BusConnection,
 }
 
-/// Does this call carry the token the first caller bound? Empty or wrong is refused, like the real one.
-fn permitted(bound: &Mutex<Option<String>>, token: &str) -> Result<(), Refused> {
-    let bound = bound.lock().unwrap();
-    match bound.as_deref() {
-        Some(expected) if token == expected => Ok(()),
-        Some(_) => Err(Refused::NotAllowed("that is not Koda's launch token".into())),
-        None => Err(Refused::NotAllowed("no launch token has been registered".into())),
+impl FakeExtension {
+    /// The bound token, after releasing the binding if its owner left the bus: the real extension does it
+    /// with a bus name watch, and the effect is the same - nobody is bound once the owner is gone.
+    fn live_token(&self) -> Option<String> {
+        let mut bound = self.bound.lock().unwrap();
+        let owner = bound.as_ref().map(|(_, owner)| owner.clone())?;
+        let dbus = zbus::blocking::fdo::DBusProxy::new(&self.bus).expect("a bus proxy");
+        let name = zbus::names::BusName::try_from(owner.as_str()).expect("a unique name");
+        if !dbus.name_has_owner(name).unwrap_or(true) {
+            *bound = None;
+        }
+        bound.as_ref().map(|(token, _)| token.clone())
+    }
+
+    /// Does this call carry the token the first caller bound? Empty or wrong is refused, like the real one.
+    fn permitted(&self, token: &str) -> Result<(), Refused> {
+        match self.live_token().as_deref() {
+            Some(expected) if token == expected => Ok(()),
+            Some(_) => Err(Refused::NotAllowed("that is not Koda's launch token".into())),
+            None => Err(Refused::NotAllowed("no launch token has been registered".into())),
+        }
     }
 }
 
 #[zbus::interface(name = "org.abito.Context")]
 impl FakeExtension {
     /// First caller wins: a token of a real length binds once, and only once.
-    fn register(&self, token: String) -> bool {
-        let mut bound = self.bound.lock().unwrap();
-        if bound.is_some() || token.chars().count() < 32 {
-            return false;
+    fn register(&self, token: String, #[zbus(header)] header: zbus::message::Header<'_>) -> bool {
+        let owner = header.sender().map(|s| s.to_string()).unwrap_or_default();
+        let registered = self.live_token().is_none() && token.chars().count() >= 32 && !owner.is_empty();
+        if registered {
+            *self.bound.lock().unwrap() = Some((token, owner));
         }
-        *bound = Some(token);
-        true
+        self.registers.lock().unwrap().push(registered);
+        registered
     }
 
     fn pick_window(&self, token: String) -> Result<(u64, String, String, String), Refused> {
-        permitted(&self.bound, &token)?;
+        self.permitted(&token)?;
         Ok(self.picked.lock().unwrap().clone())
     }
 
     fn capture_window(&self, id: u64, token: String) -> Result<String, Refused> {
-        permitted(&self.bound, &token)?;
+        self.permitted(&token)?;
         self.captured.lock().unwrap().push(id);
         let path = match &self.outside {
             Some(path) => path.clone(),
@@ -172,6 +207,8 @@ impl FakeExtension {
 
 struct ExtensionState {
     captured: Arc<Mutex<Vec<u64>>>,
+    bound: Arc<Mutex<Option<(String, String)>>>,
+    registers: Arc<Mutex<Vec<bool>>>,
 }
 
 /// An extension from before v3: it answers window context but cannot pick or capture a window.
@@ -204,8 +241,10 @@ fn serve_extension(bus: &Bus, picked: (u64, &str, &str, &str), png: Vec<u8>, dir
         outside,
         captured: Arc::new(Mutex::new(Vec::new())),
         bound: Arc::new(Mutex::new(None)),
+        registers: Arc::new(Mutex::new(Vec::new())),
+        bus: connection::Builder::address(bus.address.as_str()).unwrap().build().unwrap(),
     };
-    let captured = fake.captured.clone();
+    let (captured, bound, registers) = (fake.captured.clone(), fake.bound.clone(), fake.registers.clone());
     let conn = connection::Builder::address(bus.address.as_str())
         .unwrap()
         .name("org.abito.Context")
@@ -215,7 +254,7 @@ fn serve_extension(bus: &Bus, picked: (u64, &str, &str, &str), png: Vec<u8>, dir
         .build()
         .unwrap();
     std::mem::forget(conn); // the service lives as long as the private bus does
-    ExtensionState { captured }
+    ExtensionState { captured, bound, registers }
 }
 
 // ---- the fake screenshot portal -------------------------------------------------------------------
@@ -475,13 +514,13 @@ fn a_client_with_a_different_launch_token_is_refused_and_never_captures() {
     let refused = other.pick_target().expect_err("a different token is not Koda");
     // The pick itself says why, not the generic «turn on the extension»: the extension IS there.
     let at_pick = abito_island::windowcapture::mcp::error_message(&refused);
-    assert!(at_pick.contains("another program holds Koda's GNOME extension"), "{at_pick}");
-    assert!(at_pick.contains("restart Koda"), "{at_pick}");
+    assert!(at_pick.to_lowercase().contains("otro programa"), "{at_pick}");
+    assert!(at_pick.contains("Reiniciá"), "{at_pick}");
     assert!(!at_pick.contains("cannot tell which app"), "{at_pick}");
     let error = other.capture(&target).expect_err("a different token cannot capture either");
     let message = abito_island::windowcapture::mcp::error_message(&error);
-    assert!(message.contains("another program holds Koda's GNOME extension"), "{message}");
-    assert!(message.contains("restart Koda"), "{message}");
+    assert!(message.to_lowercase().contains("otro programa"), "{message}");
+    assert!(message.contains("Reiniciá"), "{message}");
     assert!(fake.captured.lock().unwrap().is_empty(), "nothing was captured for the wrong token");
     assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0, "and no capture file was ever written");
     // The launch that registered still works: a foreign token cannot lock Koda out of its own extension.
@@ -524,10 +563,200 @@ fn an_extension_that_sees_no_window_is_believed() {
     // Wayland: the extension can see every window, so «none» is the answer, not a picker prompt.
     let wayland = LinuxDesktop::fixed(Some(&bus.address), None, Some(root.to_str().unwrap()), Some("wayland"));
     assert_eq!(wayland.pick_target(), Err(CaptureError::NoWindow));
+    // Koda is one launch: that desktop's connection holds the extension, so it goes away before the next.
+    drop(wayland);
     // A real X11 session with the extension enabled still has its own windows to fall back on.
     let x = Xvfb::start(94);
     let _x11 = x11_window(&x.display, b"gedit\0Gedit\0", 0x00ffff, (16, 16));
     let x11 = LinuxDesktop::fixed(Some(&bus.address), Some(&x.display), Some(root.to_str().unwrap()), Some("x11"));
     let target = x11.pick_target().expect("the X11 window behind an empty extension");
     assert_eq!(target.app, "Gedit");
+}
+
+// ---- one registration for the life of the island (K2-06 B1-R1) -----------------------------------
+
+const THIRD_PARTY_TOKEN: &str = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
+
+fn proxy_of(conn: &BusConnection) -> zbus::blocking::Proxy<'static> {
+    zbus::blocking::Proxy::new(conn, "org.abito.Context", "/org/abito/Context", "org.abito.Context").unwrap()
+}
+
+fn register_raw(conn: &BusConnection, token: &str) -> bool {
+    proxy_of(conn).call("Register", &(token,)).unwrap()
+}
+
+fn pick_raw(conn: &BusConnection, token: &str) -> zbus::Result<(u64, String, String, String)> {
+    proxy_of(conn).call("PickWindow", &(token,))
+}
+
+fn capture_raw(conn: &BusConnection, id: u64, token: &str) -> zbus::Result<String> {
+    proxy_of(conn).call("CaptureWindow", &(id, token))
+}
+
+fn is_not_allowed<T: std::fmt::Debug>(answer: zbus::Result<T>) -> bool {
+    matches!(&answer, Err(zbus::Error::MethodError(name, _, _)) if name.as_str() == "org.abito.Context.NotAllowed")
+}
+
+fn private_bus_connection(bus: &Bus) -> BusConnection {
+    connection::Builder::address(bus.address.as_str()).unwrap().build().unwrap()
+}
+
+fn captures_dir(name: &str) -> (PathBuf, PathBuf) {
+    let root = scratch(name);
+    let dir = root.join("koda-capture");
+    std::fs::DirBuilder::new().mode(0o700).create(&dir).unwrap();
+    (root, dir)
+}
+
+/// Waits for what the bus reports asynchronously (a name that vanished): a bounded poll, never a sleep
+/// that has to guess.
+fn eventually(what: &str, mut check: impl FnMut() -> bool) {
+    for _ in 0..200 {
+        if check() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    panic!("never happened: {what}");
+}
+
+#[test]
+fn the_binding_is_released_when_the_registered_connection_closes() {
+    let bus = Bus::start();
+    let (_root, dir) = captures_dir("released");
+    let fake = serve_extension(&bus, (5, "firefox", "Firefox", "a page"), png_of(2, 2, [1, 2, 3]), &dir, None);
+    let owner = private_bus_connection(&bus);
+    assert!(register_raw(&owner, THIRD_PARTY_TOKEN), "the first caller binds");
+    assert!(pick_raw(&owner, THIRD_PARTY_TOKEN).is_ok());
+    drop(owner);
+    // Nobody is bound once the owner's connection is gone: its token is refused, and a new owner binds.
+    let other = private_bus_connection(&bus);
+    eventually("the old token stops working", || is_not_allowed(pick_raw(&other, THIRD_PARTY_TOKEN)));
+    assert!(fake.bound.lock().unwrap().is_none(), "the gate is empty");
+    assert!(register_raw(&other, "0123456789abcdef0123456789abcdef-a-new-owner"), "a new owner can bind");
+}
+
+#[test]
+fn a_second_register_is_refused_while_a_live_owner_holds_the_binding() {
+    let bus = Bus::start();
+    let (_root, dir) = captures_dir("second-register");
+    let fake = serve_extension(&bus, (5, "firefox", "Firefox", "a page"), png_of(2, 2, [1, 2, 3]), &dir, None);
+    let owner = private_bus_connection(&bus);
+    let intruder = private_bus_connection(&bus);
+    assert!(register_raw(&owner, THIRD_PARTY_TOKEN));
+    assert!(!register_raw(&intruder, "0123456789abcdef0123456789abcdef-another"), "a live owner is never displaced");
+    assert!(!register_raw(&intruder, THIRD_PARTY_TOKEN), "not even with the owner's own token");
+    assert!(!register_raw(&owner, THIRD_PARTY_TOKEN), "and the owner cannot register twice");
+    assert_eq!(*fake.registers.lock().unwrap(), vec![true, false, false, false]);
+    assert!(pick_raw(&owner, THIRD_PARTY_TOKEN).is_ok(), "the owner still works");
+}
+
+#[test]
+fn pick_and_capture_are_refused_with_no_binding_and_with_a_wrong_token() {
+    let bus = Bus::start();
+    let (_root, dir) = captures_dir("refused");
+    let fake = serve_extension(&bus, (5, "firefox", "Firefox", "a page"), png_of(2, 2, [1, 2, 3]), &dir, None);
+    let caller = private_bus_connection(&bus);
+    // Nobody is bound: every token, even a well-formed one, is refused.
+    assert!(is_not_allowed(pick_raw(&caller, THIRD_PARTY_TOKEN)), "unbound pick");
+    assert!(is_not_allowed(capture_raw(&caller, 5, THIRD_PARTY_TOKEN)), "unbound capture");
+    // Somebody is bound: a different token is refused.
+    let owner = private_bus_connection(&bus);
+    assert!(register_raw(&owner, THIRD_PARTY_TOKEN));
+    let wrong = "0123456789abcdef0123456789abcdef-not-the-token";
+    assert!(is_not_allowed(pick_raw(&caller, wrong)), "wrong-token pick");
+    assert!(is_not_allowed(capture_raw(&caller, 5, wrong)), "wrong-token capture");
+    assert!(fake.captured.lock().unwrap().is_empty() && std::fs::read_dir(&dir).unwrap().count() == 0, "nothing was painted or written");
+}
+
+#[test]
+fn a_third_party_that_registers_first_locks_koda_out_and_cannot_make_it_capture() {
+    let bus = Bus::start();
+    let (root, dir) = captures_dir("third-party-first");
+    let fake = serve_extension(&bus, (5, "firefox", "Firefox", "a page"), png_of(2, 2, [1, 2, 3]), &dir, None);
+    let third_party = private_bus_connection(&bus);
+    assert!(register_raw(&third_party, THIRD_PARTY_TOKEN));
+    let koda = LinuxDesktop::fixed(Some(&bus.address), None, Some(root.to_str().unwrap()), Some("wayland"));
+    // Koda captures nothing and says why, in Spanish, instead of the generic «turn on the extension».
+    let error = koda.pick_target().expect_err("Koda is refused while another program holds the extension");
+    let message = abito_island::windowcapture::mcp::error_message(&error);
+    assert!(message.to_lowercase().contains("otro programa") && message.contains("extensión de GNOME de Koda"), "{message}");
+    assert!(message.contains("Reiniciá"), "it says to restart: {message}");
+    assert!(!message.contains("This system cannot"), "the message is not wrapped in English: {message}");
+    let target = Target { app_id: "firefox".into(), app: "Firefox".into(), title: "a page".into(), handle: 5 };
+    let error = koda.capture(&target).expect_err("and it cannot capture either");
+    assert!(abito_island::windowcapture::mcp::error_message(&error).to_lowercase().contains("otro programa"));
+    assert!(fake.captured.lock().unwrap().is_empty(), "nothing was captured");
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0, "and no file was written");
+    assert!(fake.registers.lock().unwrap().iter().skip(1).all(|ok| !ok), "Koda never took the binding");
+    // The third party holds only its own access: its token is not Koda's, and Koda's is not bound.
+    assert!(is_not_allowed(pick_raw(&third_party, "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")));
+    // Once that program leaves the bus, a later normal attempt registers and works.
+    drop(third_party);
+    eventually("Koda gets the extension back", || koda.pick_target().is_ok());
+    assert!(koda.capture(&target).is_ok());
+}
+
+#[test]
+fn koda_keeps_one_connection_and_registers_once_for_all_its_picks_and_captures() {
+    let bus = Bus::start();
+    let (root, dir) = captures_dir("one-connection");
+    let fake = serve_extension(&bus, (5, "firefox", "Firefox", "a page"), png_of(2, 2, [1, 2, 3]), &dir, None);
+    let koda = LinuxDesktop::fixed(Some(&bus.address), None, Some(root.to_str().unwrap()), Some("wayland"));
+    for _ in 0..3 {
+        let target = koda.pick_target().expect("pick");
+        koda.capture(&target).expect("capture");
+    }
+    assert_eq!(*fake.registers.lock().unwrap(), vec![true], "exactly one Register for the island's life");
+    assert_eq!(*fake.captured.lock().unwrap(), vec![5, 5, 5]);
+    // The binding is still Koda's after every call: the gate was never empty in between.
+    assert!(fake.bound.lock().unwrap().is_some(), "Koda is still bound between its calls");
+    let stranger = private_bus_connection(&bus);
+    assert!(!register_raw(&stranger, THIRD_PARTY_TOKEN), "so nobody else can take it");
+    assert!(is_not_allowed(pick_raw(&stranger, THIRD_PARTY_TOKEN)));
+}
+
+#[test]
+fn koda_registers_when_the_capture_endpoint_starts_not_on_the_first_pick() {
+    let bus = Bus::start();
+    let (root, dir) = captures_dir("at-launch");
+    let fake = serve_extension(&bus, (5, "firefox", "Firefox", "a page"), png_of(2, 2, [1, 2, 3]), &dir, None);
+    let koda = LinuxDesktop::fixed(Some(&bus.address), None, Some(root.to_str().unwrap()), Some("wayland"));
+    koda.start();
+    eventually("Koda registered at launch", || fake.bound.lock().unwrap().is_some());
+    // The gate is not empty before the first pick: a stranger cannot take it.
+    let stranger = private_bus_connection(&bus);
+    assert!(!register_raw(&stranger, THIRD_PARTY_TOKEN));
+    koda.pick_target().expect("the first pick uses that registration");
+    assert_eq!(*fake.registers.lock().unwrap(), vec![true, false]);
+}
+
+#[test]
+fn koda_registers_again_once_after_the_extension_forgot_it() {
+    // A Shell restart gives the extension an empty gate while Koda's connection is still up.
+    let bus = Bus::start();
+    let (root, dir) = captures_dir("forgot");
+    let fake = serve_extension(&bus, (5, "firefox", "Firefox", "a page"), png_of(2, 2, [1, 2, 3]), &dir, None);
+    let koda = LinuxDesktop::fixed(Some(&bus.address), None, Some(root.to_str().unwrap()), Some("wayland"));
+    koda.pick_target().expect("first pick");
+    *fake.bound.lock().unwrap() = None;
+    koda.pick_target().expect("Koda registers again and is answered");
+    koda.pick_target().expect("and keeps that registration");
+    assert_eq!(*fake.registers.lock().unwrap(), vec![true, true]);
+}
+
+#[test]
+fn koda_reconnects_after_its_connection_drops_and_registers_once_on_the_new_one() {
+    let mut bus = Bus::start();
+    let (root, dir) = captures_dir("reconnect");
+    let first = serve_extension(&bus, (5, "firefox", "Firefox", "a page"), png_of(2, 2, [1, 2, 3]), &dir, None);
+    let koda = LinuxDesktop::fixed(Some(&bus.address), None, Some(root.to_str().unwrap()), Some("wayland"));
+    koda.pick_target().expect("first pick");
+    assert_eq!(*first.registers.lock().unwrap(), vec![true]);
+    bus.restart();
+    let second = serve_extension(&bus, (6, "kate", "Kate", "notes"), png_of(2, 2, [1, 2, 3]), &dir, None);
+    let target = koda.pick_target().expect("Koda reconnects by itself");
+    assert_eq!(target.handle, 6, "the new extension answered");
+    koda.capture(&target).expect("and captures on the new connection");
+    assert_eq!(*second.registers.lock().unwrap(), vec![true], "one registration on the new connection");
 }

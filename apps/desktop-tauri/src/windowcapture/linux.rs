@@ -19,7 +19,7 @@ use super::image;
 use super::mcp::{CaptureError, Desktop, Shot, Target};
 use super::{gnome, x11};
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 /// What Koda says when no backend can name the window: the portal would answer a picture with no app
 /// identity, so the window is refused instead of captured.
@@ -53,8 +53,9 @@ pub struct LinuxDesktop {
     runtime_dir: Option<String>,
     session_type: Option<String>,
     wayland_display: Option<String>,
-    /// This launch's token for Koda's own GNOME extension: `gnome::launch_token` in a real run.
-    token: String,
+    /// Koda's one registration with its own GNOME extension: one session-bus connection, registered with
+    /// this launch's token (`gnome::launch_token` in a real run) and kept for the island's life.
+    link: Arc<gnome::Link>,
     /// The target Koda picked and the backend that picked it: a target is captured where it came from.
     last: Mutex<Option<(Target, Source)>>,
 }
@@ -68,7 +69,7 @@ impl LinuxDesktop {
             runtime_dir: std::env::var("XDG_RUNTIME_DIR").ok(),
             session_type: std::env::var("XDG_SESSION_TYPE").ok(),
             wayland_display: std::env::var("WAYLAND_DISPLAY").ok(),
-            token: gnome::launch_token(),
+            link: gnome::Link::new(None, &gnome::launch_token()),
             last: Mutex::new(None),
         }
     }
@@ -83,7 +84,7 @@ impl LinuxDesktop {
             runtime_dir: runtime_dir.map(str::to_owned),
             session_type: session_type.map(str::to_owned),
             wayland_display: (session_type == Some("wayland")).then(|| "wayland-0".to_string()),
-            token: gnome::TEST_TOKEN.to_string(),
+            link: gnome::Link::new(bus_address, gnome::TEST_TOKEN),
             last: Mutex::new(None),
         }
     }
@@ -91,7 +92,7 @@ impl LinuxDesktop {
     /// This desktop's launch token, in place of the fixed test one: a test can then act as another
     /// Koda (or as any other program) and check that the extension refuses it.
     pub fn with_token(mut self, token: &str) -> Self {
-        self.token = token.to_owned();
+        self.link = gnome::Link::new(self.bus_address.as_deref(), token);
         self
     }
 
@@ -138,8 +139,17 @@ impl Default for LinuxDesktop {
 /// silent is not: then X11 (a real X11 session) takes over. With neither, Koda refuses: the system
 /// picker would answer a picture with no app identity, and an unidentified window is never captured.
 impl Desktop for LinuxDesktop {
+    /// Open and register the one connection now, from a worker thread so a busy Shell never holds up the
+    /// launch. A session without the extension finds nothing to register with and holds nothing.
+    fn start(&self) {
+        let link = self.link.clone();
+        std::thread::spawn(move || {
+            let _ = link.ensure();
+        });
+    }
+
     fn pick_target(&self) -> Result<Target, CaptureError> {
-        match gnome::pick(self.bus_address.as_deref(), &self.token) {
+        match gnome::pick(&self.link) {
             Ok(target) => {
                 self.remember(&target, Source::Extension);
                 return Ok(target);
@@ -174,7 +184,7 @@ impl Desktop for LinuxDesktop {
 
     fn capture(&self, target: &Target) -> Result<Shot, CaptureError> {
         let raw = match self.source(target)? {
-            Source::Extension => gnome::capture(self.bus_address.as_deref(), &self.capture_dir()?, target.handle, &self.token)?,
+            Source::Extension => gnome::capture(&self.link, &self.capture_dir()?, target.handle)?,
             Source::X11 => x11::capture(self.display.as_deref(), target.handle)?,
         };
         let (png, width, height) = image::encode_png(&raw).ok_or_else(|| CaptureError::Failed("the window came back with no pixels".into()))?;

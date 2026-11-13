@@ -22,6 +22,9 @@ pub fn start(
     if ENDPOINT.get().is_some() {
         return true;
     }
+    // Before anything can ask for a window: the backend takes its registrations (Linux: the one
+    // connection to Koda's GNOME extension) once, here, not lazily on the first pick.
+    desktop.start();
     let token = mcp::new_token();
     let now = Arc::new(|| std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0));
     let helper = Arc::new(Helper::new(desktop, dialogs, now, enabled, token.clone()));

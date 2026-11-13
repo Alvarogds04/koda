@@ -17,6 +17,9 @@ const PROTOCOL_VERSIONS: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05"];
 pub const NOT_ALLOWED: &str = "The user did not allow Koda to look at their window. Nothing was captured.";
 pub const TURNED_OFF: &str = "Looking at the user's window is turned off in Koda's settings. Nothing was captured. \
 Tell the user they can turn it on in Ajustes → Chat → «Dejar que Koda vea mi ventana».";
+/// Another program registered with Koda's GNOME extension first, so Koda captures nothing. The tool says
+/// so in the human's language, with the way out (a fresh session or a fresh Koda frees the extension).
+pub const EXTENSION_HELD: &str = "Otro programa tiene la extensión de GNOME de Koda, así que Koda no captura nada. Reiniciá la sesión o Koda y volvé a preguntar.";
 const NO_WINDOW: &str = "Koda found no other window to look at. Ask the user to bring the window they mean to the front and try again.";
 
 /// The window the capture would take.
@@ -50,6 +53,10 @@ pub enum CaptureError {
 
 /// What the host can do on this OS: choose the window (through `contextwin`, never the island) and capture it.
 pub trait Desktop: Send + Sync {
+    /// Called once when the capture endpoint starts, before any pick: a backend that has to keep a
+    /// registration for the island's life (Linux, with Koda's GNOME extension) makes it here, not on
+    /// the first pick. Never blocks the launch.
+    fn start(&self) {}
     fn pick_target(&self) -> Result<Target, CaptureError>;
     fn capture(&self, target: &Target) -> Result<Shot, CaptureError>;
 }
@@ -113,6 +120,7 @@ macOS asks again after every Koda update.";
             let fix = "Grant the screen permission to Koda in your system's privacy settings.";
             format!("Koda does not have the screen recording permission, so it cannot see the window. {fix} Then ask again.")
         }
+        CaptureError::Unsupported(why) if why == EXTENSION_HELD => why.clone(),
         CaptureError::Unsupported(why) => format!("This system cannot capture a window: {why}"),
         CaptureError::Failed(why) => format!("The capture failed: {why}"),
     }
