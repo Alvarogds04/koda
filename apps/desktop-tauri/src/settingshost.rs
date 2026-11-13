@@ -35,6 +35,24 @@ const RESTART_POLL: Duration = Duration::from_millis(200);
 /// arrived while no login of ours was running (a stale reply, a second window, a replay) is never stored.
 static TELEGRAM_LOGIN: LoginGuard = LoginGuard::new();
 
+/// The `last_error` (code, n) this host already acted on. The connection's `last_error` is overwritten only by a NEW error, so
+/// a stale one stays in every later view: acting on it each time would, after ONE revoked session, wipe the credentials of
+/// every login that follows (and keep suppressing the session hand-off after a `telegram_unavailable`).
+static TELEGRAM_ERROR_SEEN: Mutex<Option<(String, u64)>> = Mutex::new(None);
+
+/// The code of the view's `last_error` when it is one this host has not acted on yet, and marks it as acted on. `None` for
+/// no error, a null code, or an error already handled. Compared by (code, n), not by order: a reconnect starts `n` over.
+fn fresh_error_code(view: &Value, seen: &mut Option<(String, u64)>) -> Option<String> {
+    let error = view.get("last_error")?;
+    let code = error.get("code").and_then(Value::as_str)?;
+    let key = (code.to_string(), error.get("n").and_then(Value::as_u64).unwrap_or(0));
+    if seen.as_ref() == Some(&key) {
+        return None;
+    }
+    *seen = Some(key);
+    Some(code.to_string())
+}
+
 pub struct SettingsHost {
     // #315: the tray derives its connection state from this slot's view
     // (try_lock only — never a blocking read inside publish).
@@ -590,15 +608,18 @@ pub async fn agent_action(
                 return Err(err("agent_unavailable"));
             }
         };
+        // Each `last_error` is acted on ONCE (see TELEGRAM_ERROR_SEEN): a stale one must not keep touching the keychain.
+        let fresh_error = fresh_error_code(&view, &mut TELEGRAM_ERROR_SEEN.lock().expect("telegram error lock"));
         // A dead session (AUTH_KEY_UNREGISTERED and friends) means the keychain copy is worthless: forget it so the next
         // start does not hand the daemon a credential Telegram already revoked.
-        if view.get("last_error").and_then(|e| e.get("code")).and_then(Value::as_str) == Some("telegram_session_invalid") {
+        if fresh_error.as_deref() == Some("telegram_session_invalid") {
             TELEGRAM_LOGIN.cancel();
             let _ = secrets::forget_telegram(&secrets::Keychain);
         }
         // The hand-off of a session this island already holds: at start (this is the first connect), after a reconnect
-        // and whenever Ajustes reads the state. Only when the daemon says it has none.
-        if view.get("last_error").and_then(|e| e.get("code")).and_then(Value::as_str) != Some("telegram_unavailable") {
+        // and whenever Ajustes reads the state. Only when the daemon says it has none, and not on the call that just
+        // learned the daemon's Telegram is unavailable (an older `telegram_unavailable` does not block it any more).
+        if fresh_error.as_deref() != Some("telegram_unavailable") {
             if let Some(telegram) = view.get("telegram").cloned() {
                 if telegram_restore_if_needed(&conn, &telegram) {
                     view = conn.view();
@@ -823,6 +844,43 @@ pub fn stop(app: &AppHandle) {
     let conn = state.settings.agent.lock().expect("agent lock").take();
     if let Some(c) = conn {
         c.close();
+    }
+}
+
+#[cfg(test)]
+mod telegram_error_tests {
+    use super::fresh_error_code;
+    use serde_json::json;
+
+    fn view(code: serde_json::Value, n: u64) -> serde_json::Value {
+        json!({"last_error": {"code": code, "n": n}})
+    }
+
+    #[test]
+    fn an_error_is_fresh_once_and_never_again() {
+        let mut seen = None;
+        let v = view(json!("telegram_session_invalid"), 3);
+        assert_eq!(fresh_error_code(&v, &mut seen).as_deref(), Some("telegram_session_invalid"));
+        // the same view comes back with every later call: it must not be acted on again
+        assert_eq!(fresh_error_code(&v, &mut seen), None);
+        assert_eq!(fresh_error_code(&v, &mut seen), None);
+    }
+
+    #[test]
+    fn a_new_error_is_fresh_even_with_the_same_code_or_a_smaller_n() {
+        let mut seen = None;
+        assert!(fresh_error_code(&view(json!("telegram_session_invalid"), 3), &mut seen).is_some());
+        assert!(fresh_error_code(&view(json!("telegram_session_invalid"), 4), &mut seen).is_some(), "the next error of the same kind");
+        assert!(fresh_error_code(&view(json!("telegram_session_invalid"), 1), &mut seen).is_some(), "a reconnect starts n over");
+        assert!(fresh_error_code(&view(json!("telegram_unavailable"), 1), &mut seen).is_some(), "another code");
+    }
+
+    #[test]
+    fn no_error_is_never_fresh() {
+        let mut seen = None;
+        assert_eq!(fresh_error_code(&json!({}), &mut seen), None);
+        assert_eq!(fresh_error_code(&view(json!(null), 0), &mut seen), None);
+        assert_eq!(seen, None, "nothing was recorded for a view with no error");
     }
 }
 
