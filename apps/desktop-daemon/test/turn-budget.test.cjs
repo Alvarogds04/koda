@@ -188,16 +188,27 @@ test("socket budget cancellation closes asks, preserves busy guards, sanitizes o
 		delta("STALE"), { type: "extension_ui_request", id: "late", method: "confirm", title: "STALE" });
 	await until(() => frames.some((f) => f.type === "ask_resolved" && f.id === "ask-1"));
 	send({ type: "profile_select", id: "work" });
-	send({ type: "new_conversation" });
+	send({ type: "new_conversation" }); // T4 U1: the island verb is refused (conversations_off), never the engine
 	send({ type: "send", text: "denied" });
 	await until(() => frames.filter((f) => f.type === "error").length >= 3);
 	assert.equal(profiles.selected, 0);
-	assert.equal(commands().filter((c) => c.type === "new_session").length, 0);
+	assert.ok(frames.filter((f) => f.type === "error").some((f) => f.code === "conversations_off"), "the conversation reset is refused");
+	assert.equal(commands().filter((c) => c.type === "new_session").length, 0, "a refusal never reaches the engine");
+	// K2-05 T4 U1 verifier fix: the ENGINE-level reset path is gated too — during the
+	// cut-off generation a new_session is refused (busy/recycling) and the count stays
+	// 0; only after the replacement is ready does the reset succeed (count 1, below).
+	await assert.rejects(engine.request({ type: "new_session" }), /busy|not ready/);
+	assert.equal(commands().filter((c) => c.type === "new_session").length, 0, "no engine reset during the cut-off generation");
 	assert.equal(commands().filter((c) => c.type === "prompt").length, 1);
 	assert.ok(!JSON.stringify(frames).includes("STALE"));
 	await replaced(pid);
-	send({ type: "new_conversation" });
+	// T4 U1: the reset goes through the ENGINE path that still exists in production
+	// (the rotation's fallback new_session), not through the island verb.
+	await engine.request({ type: "new_session" });
 	await until(() => commands().filter((c) => c.type === "new_session").length === 1);
+	send({ type: "new_conversation" });
+	await until(() => frames.some((f) => f.type === "error" && f.code === "conversations_off"));
+	assert.equal(commands().filter((c) => c.type === "new_session").length, 1, "the verb adds no resets");
 	send({ type: "send", text: "healthy" });
 	await until(() => commands().filter((c) => c.type === "prompt").length === 2);
 	await until(() => frames.at(-1)?.type === "agent_state" && frames.at(-1)?.busy === false);
@@ -274,14 +285,16 @@ async function resetDaemon(t, flags = [], options = {}) {
 test("delayed reset guards public daemon status/send/profile/config/workspace without rejected side effects, then binds the next prompt to its verified session", async (t) => {
 	const { daemon, root, dir, commands, saved, send, frames } = await resetDaemon(t, ["--reset-delay"]);
 	const before = saved();
-	send({ type: "new_conversation" });
+	// T4 U1: the island's new_conversation verb is gone; the reset rides the ENGINE-level
+	// new_session path that still exists in production (the rotation's fallback).
+	const resetting = daemon.engine.request({ type: "new_session" });
 	await until(() => commands().some((c) => c.type === "new_session"));
 	assert.equal(daemon.status().busy, true);
 	send({ type: "send", text: "denied" });
 	send({ type: "profile_select", id: "work" });
 	send({ type: "new_conversation" });
 	await until(() => frames.filter((f) => f.type === "error").length === 3);
-	assert.deepEqual(frames.filter((f) => f.type === "error").map((f) => f.code), ["busy", "busy", "busy"]);
+	assert.deepEqual(frames.filter((f) => f.type === "error").map((f) => f.code), ["busy", "busy", "conversations_off"], "the island verb is refused outright; the rest stay busy");
 	await assert.rejects(daemon.setWorkspace(dir), /busy: finish or abort the current turn first/);
 	await assert.rejects(daemon.applyConfig(), /busy: finish or abort the current turn first/);
 	assert.equal(saved(), before);
@@ -289,6 +302,7 @@ test("delayed reset guards public daemon status/send/profile/config/workspace wi
 	assert.equal(fs.existsSync(path.join(root, "profiles.json")), false);
 	assert.equal(commands().filter((c) => c.type === "prompt").length, 0);
 	assert.equal(commands().filter((c) => c.type === "new_session").length, 1);
+	await resetting; // the delayed reset completes; its verified session is what the next prompt binds to
 	await until(() => !daemon.status().busy);
 	const after = JSON.parse(saved()).sessionFile;
 	assert.notEqual(after, JSON.parse(before).sessionFile);
@@ -318,11 +332,13 @@ for (const flag of ["--reset-lost", "--reset-fail", "--reset-crash"]) {
 	test(`reset failure ${flag} cuts off its owned generation without retry or unverified session admission`, async (t) => {
 		const { daemon, commands, saved, send, frames } = await resetDaemon(t, [flag], { requestTimeoutMs: 70 });
 		const previous = saved();
-		send({ type: "new_conversation" });
-		await until(() => frames.some((f) => f.type === "error" && f.code === "failed"));
+		// T4 U1: the reset rides the ENGINE-level path; the island verb is refused outright.
+		const resetting = daemon.engine.request({ type: "new_session" });
+		// R4: the ambiguous reset rejects — the daemon owns cutoff/recovery, no client error frame.
+		await assert.rejects(resetting);
 		assert.equal(daemon.status().busy, true);
 		send({ type: "send", text: "denied" });
-		await until(() => frames.filter((f) => f.type === "error").length === 2);
+		await until(() => frames.some((f) => f.type === "error"));
 		assert.ok(["busy", "unavailable"].includes(frames.filter((f) => f.type === "error").at(-1).code));
 		assert.equal(saved(), previous);
 		assert.equal(commands().filter((c) => c.type === "new_session").length, 1);
@@ -436,7 +452,7 @@ test("a reported session path outside the private sessions dir is still refused"
 // prompt is ever replayed.
 for (const reason of ["paused", "access_revoked"]) {
 	test(`daemon-level interruption (${reason}) recycles like cancellation and never replays`, async (t) => {
-		const { engine, commands, events, emit, replaced } = await rig(t, { turnTimeoutMs: 10000 }, ["--abort-no-ack"]);
+		const { engine, commands, emit, replaced } = await rig(t, { turnTimeoutMs: 10000 }, ["--abort-no-ack"]);
 		const pid = engine.pid;
 		const session = (await engine.request({ type: "get_state" })).data.sessionFile;
 		await engine.request({ type: "prompt", message: "held" });

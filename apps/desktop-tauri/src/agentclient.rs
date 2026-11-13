@@ -109,10 +109,18 @@ pub enum FrameError {
 #[derive(Default)]
 pub struct FrameBuffer {
     pending: Vec<u8>,
+    /// Lenient-read state: a line already past the daemon's own frame bound with no LF
+    /// in sight is discarded as it arrives, until the next newline ends it.
+    discarding: bool,
 }
 
 impl FrameBuffer {
     /// Feed bytes; returns the complete frames (objects) found. LF is the only separator.
+    /// STRICT: an oversized or malformed line is a protocol error, never a skip. This is NOT
+    /// the handshake path — both connections (the unix [`crate::agentconn`] and the Windows
+    /// mirror) handshake AND read with [`FrameBuffer::push_lenient`] — the strict variant
+    /// only serves callers that must fail closed on any noise (the Windows native status
+    /// proof `agentconn_win::verify_session`, which answers a single hello→ready).
     pub fn push(&mut self, bytes: &[u8]) -> Result<Vec<Value>, FrameError> {
         self.pending.extend_from_slice(bytes);
         let mut out = Vec::new();
@@ -131,6 +139,47 @@ impl FrameBuffer {
             return Err(FrameError::TooLarge);
         }
         Ok(out)
+    }
+
+    /// Feed bytes on the read path (handshake AND post-handshake: `agentconn.rs:160`/`:368`
+    /// and their Windows mirror use it for both): an oversized line (a hooks broadcast
+    /// up to the daemon's own 1 MiB history bound) or a malformed JSON line is SKIPPED —
+    /// counted, never buffered past its bound, never fatal — so the connection stays up.
+    /// Returns the complete frames found and how many lines were skipped.
+    pub fn push_lenient(&mut self, bytes: &[u8]) -> (Vec<Value>, u64) {
+        let mut out = Vec::new();
+        let mut skipped = 0u64;
+        let mut rest = bytes;
+        if self.discarding {
+            // bounded discard: bytes flow through, only the next newline ends the skip
+            match rest.iter().position(|b| *b == b'\n') {
+                Some(at) => {
+                    self.discarding = false;
+                    rest = &rest[at + 1..];
+                    skipped += 1;
+                }
+                None => return (out, skipped),
+            }
+        }
+        self.pending.extend_from_slice(rest);
+        while let Some(at) = self.pending.iter().position(|b| *b == b'\n') {
+            let line: Vec<u8> = self.pending.drain(..=at).collect();
+            if line.len() > MAX_FRAME_BYTES + 1 {
+                skipped += 1; // already drained: the oversized bytes were never kept
+                continue;
+            }
+            match serde_json::from_slice::<Value>(&line[..line.len() - 1]) {
+                Ok(v) if v.is_object() => out.push(v),
+                _ => skipped += 1, // malformed JSON or not an object
+            }
+        }
+        if self.pending.len() > MAX_FRAME_BYTES {
+            // no LF and already past the daemon's own bound: the eventual line can only
+            // be oversized — stop buffering it, discard until the next newline
+            self.pending.clear();
+            self.discarding = true;
+        }
+        (out, skipped)
     }
 }
 
@@ -424,6 +473,10 @@ pub struct ClientState {
     /// #436 T6.5: the engine's `hooks` frame (the read-only hooks preview), folded to a
     /// bounded closed view (null until the engine answers a `hooks_preview` ask).
     hooks: Value,
+    /// K2-05 boot order (Gentle Dot `agent_state`): the engine's status from the daemon's
+    /// `ready`/`agent_state` frames, closed set (`ready|starting|restarting|stopped|unavailable`);
+    /// null until the daemon says so. The daemon answers before its engine is ready.
+    engine: Value,
 }
 
 /// A plan hash from the engine: exactly 64 lowercase hex characters.
@@ -485,6 +538,7 @@ impl ClientState {
             models: Value::Null,
             sessions: Value::Null,
             hooks: Value::Null,
+            engine: Value::Null,
         }
     }
     /// #490: the closed live-sessions view (`{rows, truncated}`, `Null` until the engine answers). The ONE
@@ -520,6 +574,13 @@ impl ClientState {
         let Some(t) = frame.get("type").and_then(Value::as_str) else { return Ok(()) };
         let items = |key: &str| frame.get(key).and_then(Value::as_array).cloned().unwrap_or_default();
         match t {
+            "ready" | "agent_state" => {
+                // K2-05 boot order: `ready` carries the state nested under "state"; `agent_state` flat.
+                let s = frame.get("state").filter(|s| s.is_object()).unwrap_or(frame);
+                self.engine = s.get("status").and_then(Value::as_str)
+                    .filter(|s| matches!(*s, "ready" | "starting" | "restarting" | "stopped" | "unavailable"))
+                    .map(Value::from).unwrap_or(Value::Null);
+            }
             "providers" => {
                 self.providers = items("providers").iter().take(100).map(|p| json!({
                     "id": clip(p, "id", 64), "name": clip(p, "name", 120), "configured": p.get("configured").and_then(Value::as_bool).unwrap_or(false),

@@ -136,7 +136,10 @@ function fakeIsland(extraConfig = {}) {
 		fs.mkdirSync(packageDir, { recursive: true });
 		fs.writeFileSync(path.join(packageDir, "package.json"), JSON.stringify({ name: "@earendil-works/pi-coding-agent", bin: { pi: "fake-agent.cjs" } }));
 		fs.copyFileSync(FAKE, path.join(packageDir, "fake-agent.cjs")); // only requires node:fs and node:path
-		fs.writeFileSync(path.join(root, "config.json"), JSON.stringify(extraConfig), { mode: 0o600 });
+		// K2-05 T2: with no `command` the daemon runs its default engine, Koda's bundled Gentle Shell,
+		// which a test tree has not got. A bare `pi` keeps the npm-prefix resolution above (the
+		// private AppData package), exactly like the Unix branch names its wrapper below.
+		fs.writeFileSync(path.join(root, "config.json"), JSON.stringify({ command: "pi", ...extraConfig }), { mode: 0o600 });
 		return { root, env: cliEnv(root, { AppData: path.join(base, "AppData") }) };
 	}
 	const wrapper = path.join(base, "fake-pi.sh");
@@ -179,6 +182,56 @@ test("app-owned run with immediate EOF never publishes a live session", async ()
 	} finally { await reap(child); }
 });
 
+// K2-05 boot follow-up (Gentle Dot daemon.ts:410-458 close()): stopping acts at once, even while
+// the engine is still starting. The fake engine holds its first get_state behind a gate that is
+// never opened, so the first engine start would only end at the 60 s start timeout.
+function startingIsland() {
+	const { root, env } = fakeIsland();
+	const gate = path.join(path.dirname(root), "never-open");
+	const wrapper = path.join(path.dirname(root), "fake-pi-starting.sh");
+	fs.writeFileSync(wrapper, `#!/bin/sh\nexec "${process.execPath}" "${FAKE}" --state-gate "${gate}" "$@"\n`, { mode: 0o755 });
+	fs.writeFileSync(path.join(root, "config.json"), JSON.stringify({ command: wrapper }), { mode: 0o600 });
+	return { root, env };
+}
+const startingTwin = "needs a #!/bin/sh wrapper to hold the engine's first get_state; the shutdown path (cli.cjs run) is platform-independent";
+
+test("app-owned run stops at once on stdin EOF while the engine is still starting (Gentle Dot close)", unixOnly(startingTwin), async () => {
+	const { root, env } = startingIsland();
+	const child = spawn(process.execPath, [CLI, "run", "--app-owned"], { env, stdio: ["pipe", "pipe", "pipe"] });
+	let output = "";
+	child.stderr.on("data", (d) => { output += d; });
+	child.stdout.resume();
+	try {
+		await waitForSessionPid(root, child.pid);
+		const began = Date.now();
+		child.stdin.end();
+		await waitFor(() => child.exitCode !== null, 20000);
+		const took = Date.now() - began;
+		assert.equal(child.exitCode, 0, output);
+		assert.ok(took < 10000, `stopped after ${took} ms (the engine start would hold it 60 s)`);
+		assert.equal(fs.existsSync(sessionOf(root)), false);
+	} finally { await reap(child); }
+});
+
+test("cli stop (SIGTERM) acts at once while the engine is still starting and withdraws session.json", unixOnly(startingTwin), async () => {
+	const { root, env } = startingIsland();
+	const child = spawn(process.execPath, [CLI, "run"], { env, stdio: ["ignore", "pipe", "pipe"] });
+	let output = "";
+	child.stdout.on("data", (d) => { output += d; });
+	child.stderr.on("data", (d) => { output += d; });
+	try {
+		await waitForSessionPid(root, child.pid);
+		const began = Date.now();
+		const stop = cli(root, ["stop"], env);
+		const took = Date.now() - began;
+		assert.equal(stop.status, 0, stop.stderr);
+		assert.ok(took < 10000, `cli stop took ${took} ms (the engine start would hold it 60 s)`);
+		await waitFor(() => child.exitCode !== null, 20000);
+		assert.equal(child.exitCode, 0, output);
+		assert.equal(fs.existsSync(sessionOf(root)), false);
+	} finally { await reap(child); }
+});
+
 test("usage errors exit 2 with a generic message", () => {
 	const root = islandRoot();
 	for (const args of [[], ["bogus"], ["config"], ["config", "set-workspace"], ["config", "nope"], ["run", "--x"]]) {
@@ -206,7 +259,8 @@ test("config get prints the effective config; set-workspace persists it", () => 
 	let r = cli(root, ["config", "get"]);
 	assert.equal(r.status, 0);
 	const got = JSON.parse(r.stdout);
-	assert.equal(got.command, "pi");
+	// T2: the default engine is Koda's bundled Gentle Shell; config.json still overrides.
+	assert.equal(got.command, "gentle-shell");
 	assert.equal(got.workspaceSource, "default");
 	r = cli(root, ["config", "set-workspace", ws]);
 	assert.equal(r.status, 0, r.stderr);
@@ -634,5 +688,50 @@ test("#390 check (5): a restart leaves the old pid dead, a fresh procStart and t
 	} finally {
 		if (child2) await reap(child2);
 		await reap(child1);
+	}
+});
+
+// F1 (verifier): with the island's settings window AND the chat connected, the client cap
+// used to be full, so the daemon's own health probe (classifySession's hello→ready, run by
+// `status`) was refused at connect time and the island was told the daemon was dead
+// (stale/endpoint_refused) while it was perfectly alive. The cap now counts clients that
+// completed their handshake and leaves room for the probe.
+test("F1: settings+chat connected -> status still classifies the daemon healthy", async () => {
+	const { root, env } = fakeIsland();
+	const child = spawn(process.execPath, [CLI, "run", "--app-owned"], { env, stdio: ["pipe", "pipe", "pipe"] });
+	const held = [];
+	try {
+		await waitForSessionPid(root, child.pid);
+		const session = JSON.parse(fs.readFileSync(sessionOf(root), "utf8"));
+		// Two clients (the settings window and the chat) hold their connections.
+		for (let i = 0; i < 2; i += 1) {
+			const socket = net.connect(session.endpoint);
+			await new Promise((resolve, reject) => {
+				socket.once("connect", resolve);
+				socket.once("error", reject);
+			});
+			socket.write(`${JSON.stringify({ type: "hello", protocol: "island-agent/1", token: session.token })}\n`);
+			await new Promise((resolve, reject) => {
+				socket.once("data", (chunk) => {
+					try {
+						assert.equal(JSON.parse(chunk.toString("utf8").split("\n")[0]).type, "ready");
+						resolve();
+					} catch (error) {
+						reject(error);
+					}
+				});
+				socket.once("error", reject);
+			});
+			held.push(socket);
+		}
+		const st = cli(root, ["status"], env);
+		assert.equal(st.status, 0, st.stderr);
+		const out = JSON.parse(st.stdout);
+		assert.equal(out.state, "healthy", `the daemon must classify healthy with both clients connected: ${JSON.stringify(out)}`);
+		assert.equal(out.ready, true);
+	} finally {
+		for (const socket of held) socket.destroy();
+		child.stdin.end();
+		await reap(child);
 	}
 });

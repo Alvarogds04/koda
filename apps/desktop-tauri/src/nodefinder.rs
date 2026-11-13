@@ -115,6 +115,11 @@ pub struct BundledRuntime {
     /// What discovery hands callers for `pi`: the `pi` launcher (Linux, macOS) or the
     /// package CLI JS (Windows, spawned with node.exe), always inside `dir`.
     pub pi: PathBuf,
+    /// The daemon's engine (K2-05 T2): the `gentle-shell` launcher (Linux, macOS) or the
+    /// `koda-runtime.json` `gentleShell` script (Windows, spawned with node.exe), always
+    /// inside `dir` — the daemon resolves the same shape itself (runtime.cjs
+    /// bundledGentleShell); discovery keeps the island-side gate and the PATH input.
+    pub gentle_shell: PathBuf,
 }
 
 /// The outcome of looking for the bundled runtime beside the running executable.
@@ -153,12 +158,14 @@ pub fn current_runtime_target() -> &'static str {
     }
 }
 
-/// Looks for and validates the bundled runtime beside `exe` (K2-02 S1/S2). The folder
-/// must be a real directory (never a symlink), `node` a real executable file (never a
-/// symlink), `koda-runtime.json` must parse and name this OS target, the Pi CLI path
-/// must stay inside the folder and exist, and on Linux/macOS the `pi` launcher must be
-/// a real executable file too. A missing folder is [`Bundled::Absent`]; anything else
-/// that is not fully valid is [`Bundled::Invalid`] (fail closed).
+/// Looks for and validates the bundled runtime beside `exe` (K2-02 S1/S2, extended by
+/// K2-05 T2): the folder must be a real directory (never a symlink), `node` a real
+/// executable file (never a symlink), `koda-runtime.json` must parse and name this OS
+/// target, the Pi CLI path AND the Gentle Shell script (`gentleShell`) must stay inside
+/// the folder and exist, and on Linux/macOS the `pi` AND `gentle-shell` launchers must
+/// be real executable files too: a runtime without Gentle Shell is not the engine Koda
+/// ships. A missing folder is [`Bundled::Absent`]; anything else that is not fully
+/// valid is [`Bundled::Invalid`] (fail closed).
 pub fn bundled_runtime(exe: &Path, os: Os, target: &str) -> Bundled {
     let Some(dir) = bundled_runtime_dir(exe, os) else { return Bundled::Absent };
     let Ok(meta) = fs::symlink_metadata(&dir) else { return Bundled::Absent };
@@ -170,14 +177,20 @@ pub fn bundled_runtime(exe: &Path, os: Os, target: &str) -> Bundled {
     if manifest.get("target").and_then(serde_json::Value::as_str) != Some(target) { return Bundled::Invalid }
     let Some(pi_cli) = manifest.get("piCli").and_then(serde_json::Value::as_str) else { return Bundled::Invalid };
     let Some(cli) = inside_file(&dir, pi_cli) else { return Bundled::Invalid };
-    let pi = if os == Os::Windows {
-        cli
+    // K2-05 T2: the runtime must carry the engine itself (same discipline as piCli).
+    let Some(shell_rel) = manifest.get("gentleShell").and_then(serde_json::Value::as_str) else { return Bundled::Invalid };
+    let Some(shell_script) = inside_file(&dir, shell_rel) else { return Bundled::Invalid };
+    if os == Os::Windows {
+        Bundled::Valid(BundledRuntime { dir, node, pi: cli, gentle_shell: shell_script })
     } else {
-        let launcher = dir.join("pi");
-        if !regular_executable(&launcher) { return Bundled::Invalid }
-        launcher
-    };
-    Bundled::Valid(BundledRuntime { dir, node, pi })
+        let mut launchers = [("pi", None), ("gentle-shell", Some(shell_script))];
+        for (name, resolved) in &mut launchers {
+            let launcher = dir.join(name);
+            if !regular_executable(&launcher) { return Bundled::Invalid }
+            *resolved = Some(launcher);
+        }
+        Bundled::Valid(BundledRuntime { dir, node, pi: launchers[0].1.clone().unwrap(), gentle_shell: launchers[1].1.clone().unwrap() })
+    }
 }
 
 /// A regular file (never a symlink) that is executable: Unix exec bits; on Windows
@@ -406,9 +419,12 @@ mod tests {
     impl Drop for Rt { fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); } }
 
     const PI_CLI: &str = "node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js";
+    const GENTLE_SHELL: &str = "node_modules/gentle-pi/bin/gentle-shell.mjs";
 
     /// A fully valid runtime folder for `os` (its files are plain files: the layout,
-    /// not the platform, is what is under test here). Returns (exe, runtime dir, node path).
+    /// not the platform, is what is under test here) — the shape the real build emits
+    /// (K2-05 T1/T1b): Node, Pi and the Gentle Shell engine with its manifest entries.
+    /// Returns (exe, runtime dir, node path).
     fn write_runtime(root: &Rt, exe_rel: &str, os: Os, target: &str) -> (PathBuf, PathBuf, PathBuf) {
         let exe = root.exe(exe_rel);
         let dir = bundled_runtime_dir(&exe, os).unwrap();
@@ -420,14 +436,19 @@ mod tests {
         let cli = dir.join(PI_CLI);
         fs::create_dir_all(cli.parent().unwrap()).unwrap();
         fs::write(&cli, b"cli").unwrap();
+        let shell = dir.join(GENTLE_SHELL);
+        fs::create_dir_all(shell.parent().unwrap()).unwrap();
+        fs::write(&shell, b"shell").unwrap();
         if os != Os::Windows {
-            let pi = dir.join("pi");
-            fs::write(&pi, b"#!/bin/sh\n").unwrap();
-            #[cfg(unix)]
-            fs::set_permissions(&pi, fs::Permissions::from_mode(0o755)).unwrap();
+            for launcher in ["pi", "gentle-shell"] {
+                let file = dir.join(launcher);
+                fs::write(&file, b"#!/bin/sh\n").unwrap();
+                #[cfg(unix)]
+                fs::set_permissions(&file, fs::Permissions::from_mode(0o755)).unwrap();
+            }
         }
         fs::write(dir.join("koda-runtime.json"),
-            format!("{{\"target\":\"{target}\",\"node\":\"22.23.4\",\"pi\":\"1.4.0\",\"piCli\":\"{PI_CLI}\"}}")).unwrap();
+            format!("{{\"target\":\"{target}\",\"node\":\"22.23.4\",\"pi\":\"1.4.0\",\"piCli\":\"{PI_CLI}\",\"gentlePi\":\"4.3.0\",\"gentleShell\":\"{GENTLE_SHELL}\"}}")).unwrap();
         (exe, dir, node)
     }
 
@@ -465,6 +486,111 @@ mod tests {
                 assert_eq!(rt.pi, dir.join("pi"), "{os:?}: the sh launcher is what PATH hands to children");
             }
         }
+    }
+
+    /// A manifest with every engine entry the K2-05 build emits, so a single
+    /// manifest rule can be broken in isolation.
+    fn k2_manifest(target: &str, overrides: &[(&str, Option<&str>)]) -> String {
+        let base = [
+            ("target", Some(target)),
+            ("piCli", Some(PI_CLI)),
+            ("gentleShell", Some(GENTLE_SHELL)),
+        ];
+        // An override REPLACES its base entry (None removes it), so a single manifest
+        // rule can be broken in isolation.
+        let value_of = |key: &str| overrides.iter().rev().find(|(k, _)| *k == key)
+            .map(|(_, v)| *v)
+            .unwrap_or_else(|| base.iter().find(|(k, _)| *k == key).and_then(|(_, v)| *v));
+        let pairs: Vec<String> = ["target", "piCli", "gentleShell"].into_iter()
+            .filter_map(|key| value_of(key).map(|value| format!("\"{}\":{}", key, serde_json::Value::String(value.into()))))
+            .collect();
+        format!("{{{}}}", pairs.join(","))
+    }
+
+    #[test]
+    fn a_runtime_without_the_gentle_shell_script_is_not_a_usable_bundled_runtime() {
+        // K2-05 T2: a runtime without Gentle Shell is not the engine Koda ships.
+        let missing_key = |overrides: &[(&str, Option<&str>)]| {
+            for (os, target, exe_rel) in [
+                (Os::Linux, "linux-x64", "app/bin"),
+                (Os::Mac, "darwin-arm64", "Abito.app/Contents/MacOS"),
+                (Os::Windows, "win-x64", "app/bin"),
+            ] {
+                let root = Rt::new("no-shell");
+                let (exe, dir, _) = write_runtime(&root, exe_rel, os, target);
+                fs::write(dir.join("koda-runtime.json"), k2_manifest(target, overrides)).unwrap();
+                assert_eq!(bundled_runtime(&exe, os, target), Bundled::Invalid, "{os:?}");
+            }
+        };
+        // the manifest names no gentleShell at all
+        missing_key(&[("gentleShell", None)]);
+        // the manifest names a script that does not exist
+        missing_key(&[("gentleShell", Some("node_modules/missing/shell.mjs"))]);
+        // the manifest names an absolute path
+        missing_key(&[("gentleShell", Some("/etc/passwd"))]);
+        // the manifest names a path escaping the runtime folder
+        missing_key(&[("gentleShell", Some("../../../outside/shell.mjs"))]);
+        // the script file was removed from the folder
+        for (os, target, exe_rel) in [
+            (Os::Linux, "linux-x64", "app/bin"),
+            (Os::Mac, "darwin-arm64", "Abito.app/Contents/MacOS"),
+            (Os::Windows, "win-x64", "app/bin"),
+        ] {
+            let root = Rt::new("no-shell-file");
+            let (exe, dir, _) = write_runtime(&root, exe_rel, os, target);
+            fs::remove_file(dir.join(GENTLE_SHELL)).unwrap();
+            assert_eq!(bundled_runtime(&exe, os, target), Bundled::Invalid, "{os:?}");
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_symlinked_gentle_shell_script_is_refused() {
+        use std::os::unix::fs::symlink;
+        // the script file itself is a symlink (to a real file outside the runtime)
+        let root = Rt::new("shell-symlink");
+        let (exe, dir, _) = write_runtime(&root, "app/bin", Os::Linux, "linux-x64");
+        fs::remove_file(dir.join(GENTLE_SHELL)).unwrap();
+        let outside = root.0.join("outside-shell.mjs");
+        fs::write(&outside, b"outside").unwrap();
+        symlink(&outside, dir.join(GENTLE_SHELL)).unwrap();
+        assert_eq!(bundled_runtime(&exe, Os::Linux, "linux-x64"), Bundled::Invalid);
+        // a symlink part-way down (a directory segment) is refused too: it could
+        // redirect the script outside the runtime, exactly like for piCli
+        let root = Rt::new("shell-symlink-dir");
+        let (exe, dir, _) = write_runtime(&root, "app/bin", Os::Linux, "linux-x64");
+        fs::rename(dir.join("node_modules"), root.0.join("real-node_modules")).unwrap();
+        symlink(root.0.join("real-node_modules"), dir.join("node_modules")).unwrap();
+        assert_eq!(bundled_runtime(&exe, Os::Linux, "linux-x64"), Bundled::Invalid);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn the_gentle_shell_launcher_is_required_on_unix() {
+        // Linux/macOS spawn the runtime's `gentle-shell` launcher directly (runtime.cjs
+        // bundledGentleShell): without it the runtime cannot start the engine.
+        let root = Rt::new("no-launcher");
+        let (exe, dir, _) = write_runtime(&root, "app/bin", Os::Linux, "linux-x64");
+        fs::remove_file(dir.join("gentle-shell")).unwrap();
+        assert_eq!(bundled_runtime(&exe, Os::Linux, "linux-x64"), Bundled::Invalid);
+        // a launcher without any exec bit is not an executable file either
+        let root = Rt::new("launcher-noexec");
+        let (exe, dir, _) = write_runtime(&root, "app/bin", Os::Linux, "linux-x64");
+        fs::set_permissions(dir.join("gentle-shell"), fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(bundled_runtime(&exe, Os::Linux, "linux-x64"), Bundled::Invalid);
+    }
+
+    #[test]
+    fn the_windows_shape_is_node_exe_plus_the_script_and_never_a_launcher() {
+        // Windows spawns node.exe with the script `gentleShell` names (no launcher exists,
+        // and none is required): the fixture never writes one for Os::Windows.
+        let root = Rt::new("win-shape");
+        let (exe, dir, _) = write_runtime(&root, "app/bin", Os::Windows, "win-x64");
+        assert!(!dir.join("gentle-shell").exists(), "the Windows fixture has no launcher");
+        let Bundled::Valid(rt) = bundled_runtime(&exe, Os::Windows, "win-x64") else {
+            panic!("Windows: node.exe + the gentleShell script is a usable runtime without any launcher");
+        };
+        assert_eq!(rt.gentle_shell, dir.join(GENTLE_SHELL), "what the daemon spawns with node.exe");
     }
 
     #[test]
@@ -508,12 +634,13 @@ mod tests {
         // manifest unparseable
         broken(&|_, _, dir| { fs::write(dir.join("koda-runtime.json"), "{not json").unwrap(); });
         // piCli cases (RDD advisory 3): the manifest keeps the RIGHT target for the OS under test, so only the piCli rule
-        // can refuse it — a wrong target would refuse it first and make these cases vacuous.
+        // can refuse it — a wrong target would refuse it first and make these cases vacuous. The gentleShell entry the K2-05
+        // build emits stays in every one of these manifests, so the gentleShell rule cannot be the one refusing.
         let manifest = |os: Os, pi_cli: Option<String>| {
             let target = match os { Os::Linux => "linux-x64", Os::Mac => "darwin-arm64", Os::Windows => "win-x64" };
             match pi_cli {
-                Some(cli) => format!("{{\"target\":\"{target}\",\"piCli\":{}}}", serde_json::Value::String(cli)),
-                None => format!("{{\"target\":\"{target}\"}}"),
+                Some(cli) => format!("{{\"target\":\"{target}\",\"piCli\":{pi_cli_json},\"gentleShell\":\"{GENTLE_SHELL}\"}}", pi_cli_json = serde_json::Value::String(cli)),
+                None => format!("{{\"target\":\"{target}\",\"gentleShell\":\"{GENTLE_SHELL}\"}}"),
             }
         };
         // piCli missing from the manifest

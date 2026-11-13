@@ -19,11 +19,14 @@ use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 /// #390 GD027: how long a `restart` waits for the fresh daemon to answer `ready`.
-/// The engine's own boot timeout is 60 s (desktop-daemon/src/runtime.cjs), so this
-/// bound lets the daemon reach its own verdict first; past it the answer is honestly
-/// `ready:false`, never a success. Polling is cheap (a missing session.json fails in
-/// one stat) and bounded — no unbounded wait anywhere.
-const RESTART_WAIT: Duration = Duration::from_secs(62);
+/// K2-05 boot order = Gentle Dot (daemon.ts:470-481): the daemon now publishes its session and
+/// answers `ready` as soon as its server listens — BEFORE its engine starts (the engine's own
+/// boot, up to minutes while it reopens a long conversation, is reported live as
+/// `starting`/`restarting`). So this bound covers only the daemon's pre-listen work (private
+/// memory probe, the optional connector host's 10 s start bound) and is Gentle Dot's
+/// DAEMON_START_TIMEOUT (shell.rs:52, 20 s); past it the answer is honestly `ready:false`, never a
+/// success. Polling is cheap (a missing session.json fails in one stat) and bounded.
+const RESTART_WAIT: Duration = Duration::from_secs(20);
 const RESTART_POLL: Duration = Duration::from_millis(200);
 
 pub struct SettingsHost {
@@ -159,7 +162,6 @@ fn view_prefs(p: &Prefs) -> Value {
         "mainPill": p.main_pill(), "declaredPills": p.declared_pills(),
         "pillColors": p.pill_colors,
         "theme": p.theme().as_str(),
-        "chosenModels": p.chosen_models,
         "autoCloseSeconds": p.auto_close_seconds(), "openOnHover": p.open_on_hover(),
         "customBlobs": p.custom_blobs_view(),
         "islandAgents": p.island_agents_view(),
@@ -677,6 +679,9 @@ pub async fn daemon_action(
         let root = island_root(std::env::var("ABITO_ISLAND_DIR").ok().as_deref(), std::env::var("HOME").ok().as_deref())
             .ok_or_else(|| err("no_island_root"))?;
         if action == "restart" {
+            // K2-05 (L51, copy Gentle Dot): like its tray «Restart assistant» (shell.rs:743-745 →
+            // restart_daemon), «Reiniciar» always restarts, even while the engine is starting; the
+            // saved conversation is safe because a failed or cut reopen never writes state.json.
             // The old client (and its reader) go BEFORE its daemon; the fresh one below
             // starts from `no_daemon`, never from a stale `connected`.
             let old = state.settings.agent.lock().expect("agent lock").take();
@@ -781,6 +786,12 @@ mod settings_view_tests {
         }
     }
 
+    /// K2-05 boot order: the restart wait is Gentle Dot's DAEMON_START_TIMEOUT (shell.rs:52).
+    #[test]
+    fn the_restart_wait_is_gentle_dots_daemon_start_timeout() {
+        assert_eq!(super::RESTART_WAIT, std::time::Duration::from_secs(20), "Gentle Dot's DAEMON_START_TIMEOUT");
+    }
+
     /// #390 fix: the restart answer carries exactly its four keys — no token, pid or path.
     #[test]
     fn restart_response_never_carries_a_token_pid_or_path() {
@@ -799,33 +810,48 @@ mod settings_view_tests {
         }
     }
 
-    /// #414: the chosen models of the connected providers reach the WebView only as the
-    /// validated typed pref; nothing chosen projects as null, like every optional field.
+    /// L72: the per-provider model allowlist pref was removed; the projection carries no
+    /// `chosenModels` key at all, and the removed command is refused with the same bridge
+    /// code as any unknown action — an old file that still has the key projects and saves clean.
     #[test]
-    fn f414_the_webview_projection_carries_the_chosen_models() {
+    fn l72_the_webview_projection_carries_no_chosen_models_key() {
         use abito_island::prefs::{parse_command, update, Prefs};
-        let prefs = Prefs::from_text(Some(
-            r#"{"v":1,"chosen_models":{"anthropic":["claude-sonnet-4-5"]}}"#,
+        let legacy = Prefs::from_text(Some(
+            r#"{"v":1,"sound":false,"chosen_models":{"anthropic":["claude-x"]}}"#,
         ));
-        let view = view_prefs(&prefs);
-        assert_eq!(
-            view["chosenModels"],
-            json!({"anthropic":["claude-sonnet-4-5"]})
+        let view = view_prefs(&legacy);
+        assert!(
+            view.get("chosenModels").is_none(),
+            "the projection carries no chosenModels key: {view}"
         );
-        assert_eq!(
-            view_prefs(&Prefs::default())["chosenModels"],
-            json!(null),
-            "nothing chosen is null, like the other optional fields"
+        assert!(
+            view_prefs(&Prefs::default()).get("chosenModels").is_none(),
+            "the defaults carry no key either"
         );
-        // a round trip through the closed command keeps the projection
-        let cmd = parse_command(
-            &json!({"action":"set_chosen_models","provider":"openai","models":["gpt-5.2"]}),
+        assert_eq!(view["sound"], json!(false), "the other prefs still project");
+        // The removed action never reaches a transaction: the same refusal as any unknown one.
+        let refused = parse_command(
+            &json!({"action":"set_chosen_models","provider":"anthropic","models":["claude-x"]}),
+        )
+        .map_err(|_| super::err("invalid_schema"))
+        .unwrap_err();
+        let unknown = parse_command(&json!({"action":"choose_models"}))
+            .map_err(|_| super::err("invalid_schema"))
+            .unwrap_err();
+        assert_eq!(refused.code, unknown.code, "exactly the unknown-command refusal");
+        assert_eq!(refused.code, "invalid_schema");
+        // A file that sourced the old key still takes an unrelated command, dropping the key.
+        let next = update(
+            &legacy,
+            &parse_command(&json!({"action":"sound_on"})).unwrap(),
+            |_| true,
         )
         .unwrap();
-        let next = update(&prefs, &cmd, |_| true).unwrap();
-        assert_eq!(
-            view_prefs(&next)["chosenModels"],
-            json!({"anthropic":["claude-sonnet-4-5"],"openai":["gpt-5.2"]})
+        assert!(next.to_text().contains(r#""sound":true"#));
+        assert!(
+            !next.to_text().contains("chosen_models"),
+            "the next save drops the key: {}",
+            next.to_text()
         );
     }
 
@@ -860,7 +886,6 @@ mod settings_view_tests {
             json!(true),
             "sound is on by default: a file with no `sound` key projects the default"
         );
-        assert_eq!(view["chosenModels"], json!(null));
     }
 
     /// #455: effective placement is always the window, without migrating stored keys.

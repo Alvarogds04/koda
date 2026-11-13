@@ -360,7 +360,7 @@ fn pi_discovery_uses_the_validated_package_cli_js_never_a_cmd_shim() {
     let missing = daemonhost::discover_pi(Some(&std::ffi::OsString::from("")), None, None, Some(&std::ffi::OsString::from(empty.display().to_string())));
     let message = missing.unwrap_err();
     assert!(message.contains("pi missing"), "{message}");
-    assert!(message.contains("npm install -g @earendil-works/pi-coding-agent"), "{message}");
+    assert!(!message.contains("npm install"), "Koda never advises an npm install: {message}");
 }
 
 #[test]

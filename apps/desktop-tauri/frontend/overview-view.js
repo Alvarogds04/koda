@@ -331,17 +331,19 @@
   // agent state (connection, accounts) and the session list. Anything not distinguishable from that data yields null.
   // `pi` = { connection, accounts: [{configured, local}] | null, sessions: 'ready'|'error'|'pending' }.
   const ENGINE_BAD = { lost: 'Motor caído', refused: 'Motor no responde', bad_session: 'Sesión no válida', no_daemon: 'Sin motor' };
-  const row = (kind, label, link, target, where) => ({ kind, label, link, target, aria: `${link} Pi: abrir Ajustes → ${where}` });
+  // K2-05 T4 U4: the accessible text never names the engine vendor («Conectar: abrir Ajustes → Agentes»).
+  const row = (kind, label, link, target, where) => ({ kind, label, link, target, aria: `${link}: abrir Ajustes → ${where}` });
   function engineRowView(conn, pi) {
     if (!conn || conn.kind === 'unavailable') return null; // the notice channel is not Pi
     const p = pi && typeof pi === 'object' ? pi : null;
     if (p && p.connection === 'no_daemon' && p.last_error) {
       const code = p.last_error.code;
       if (code === 'node_missing' || code === 'pi_missing') {
-        const label = code === 'node_missing' ? 'Falta Node.js' : 'Falta Pi';
+        const label = code === 'node_missing' ? 'Falta Node.js' : 'Falta el motor de Koda';
         // K2-02 (S4): both «Falta…» states are now DEV-BUILD-ONLY paths (a release install ships its own Node and Pi, so
         // discovery cannot miss them). The «Instalar Pi» / «Instalar Node» buttons are gone from Ajustes; the island keeps
         // the plain label and, for a missing Pi, the plain «Abrir Chat» link (the old pointer to «Instalar Pi» is dropped).
+        // K2-05 (S1, S4): the engine is Koda's own bundled Gentle Shell, so the `pi_missing` label names Koda's engine, never Pi.
         const help = code === 'node_missing' ? 'instalalo desde nodejs.org.' : '';
         const view = row('engine', label, code === 'pi_missing' ? 'Abrir Chat' : 'Revisar', 'accounts:motor', code === 'pi_missing' ? 'Chat' : 'Motor');
         view.aria = help ? `${label}: ${help} ${view.aria}` : `${label}: ${view.aria}`;

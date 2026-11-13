@@ -32,7 +32,7 @@ async function renderChatSettings({ invoke, V, listen, timers }) {
   root.style.setProperty("display", "contents");
   s.message.className = "abito-settings-feedback notice err";
   const present = {};
-  let state = null, prefs = {}, modelBusy = false;
+  let state = null, prefs = {};
   const keyRefresh = {};
   const subscriptionCleanups = [];
   function subscriptionRow(group, provider) {
@@ -228,7 +228,6 @@ async function renderChatSettings({ invoke, V, listen, timers }) {
           () => call("agent_action", account),
           (next) => {
             state = { ...state, ...next };
-            drawModels();
           },
           () => feedback.append(h("div", { class: "notice err", text: "La clave quedó guardada, pero no se pudo crear la cuenta del chat. Créala en Cuentas." }))
         );
@@ -279,51 +278,16 @@ async function renderChatSettings({ invoke, V, listen, timers }) {
     return { r, dot, stateLabel, feedback, stateBadge, fieldError, testReason };
   }
   const api = keyRow("anthropic-api-key", t("API key"), "sk-ant-...", true);
-  const models = {};
-  const FALLBACK = { anthropic: [["claude-opus-5", "Claude Opus 5"], ["claude-sonnet-5", "Claude Sonnet 5"], ["claude-haiku-4-5", "Claude Haiku 4.5"]] };
-  const modelPicker = (group) => {
-    const select = trusted(h("select", { id: `chat-${group}-model`, "aria-label": t("Model") }));
-    models[group] = select;
-    select.addEventListener("change", (e) => {
-      if (!e.isTrusted || select.disabled || modelBusy) return;
-      const g = V.modelsTabView(state, prefs.chosenModels || {}).groups?.find((x) => x.id === group && x.connected);
-      const choice = g?.models.find((m) => m.id === select.value);
-      if (!choice || choice.chosen) return;
-      const payload = V.chosenModelsPayload(V.chosenToggle(prefs.chosenModels || {}, group, choice.id), group);
-      if (!payload) return;
-      modelBusy = true;
-      select.disabled = true;
-      work(() => call("prefs_action", payload), (next) => {
-        prefs = next;
-      }).finally(() => {
-        modelBusy = false;
-        if (s.alive()) drawModels();
-      });
-    });
-    return select;
-  };
-  function drawModels() {
-    const view = V.modelsTabView(state, prefs.chosenModels || {});
-    for (const [group, select] of Object.entries(models)) {
-      clear(select);
-      const offered = view.groups?.find((g) => g.id === group && g.connected)?.models || [];
-      if (!offered.length) for (const [id, name] of FALLBACK[group] || [["", UNAVAILABLE]]) select.append(h("option", { value: id, text: name }));
-      else for (const m of offered) select.append(h("option", { value: m.id, text: m.name }));
-      select.value = offered.find((m) => m.chosen)?.id || offered[0]?.id || FALLBACK[group]?.[0][0] || "";
-      select.disabled = modelBusy || !offered.length;
-      select.title = offered.length ? "Modelos elegidos de Koda; no cambia el modelo activo de una conversación." : UNAVAILABLE;
-    }
-  }
   const engineSlots = {};
   const engineSlot = (group) => engineSlots[group] = h("div", { id: `chat-engine-slot-${group}` });
   const foldable = (card) => foldableCard(card, card.getAttribute("aria-label") || (card.children[0]?.firstElementChild?.textContent || card.children[0]?.textContent || "").replace(/[▾▸]/g, "").trim());
-  const apiSection = notchCard("Claude", api.stateBadge, api.stateLabel, api.r, api.fieldError, api.testReason, row(t("Model"), modelPicker("anthropic")), api.feedback, subscriptionRow("anthropic", "claude"), engineSlot("anthropic"));
+  const apiSection = notchCard("Claude", api.stateBadge, api.stateLabel, api.r, api.fieldError, api.testReason, api.feedback, subscriptionRow("anthropic", "claude"), engineSlot("anthropic"));
   apiSection.children[0].prepend(api.dot);
   foldable(apiSection);
   const providerCards = [];
   for (const [id, name, placeholder, site] of CLOUD) {
     const k = keyRow(KEYS[id] ?? providerDef(id).key, name, placeholder);
-    const c = notchCard(name, k.stateBadge, k.stateLabel, k.r, k.fieldError, k.testReason, row(t("Model"), modelPicker(id)), k.feedback, engineSlot(id));
+    const c = notchCard(name, k.stateBadge, k.stateLabel, k.r, k.fieldError, k.testReason, k.feedback, engineSlot(id));
     if (id === "openai") c.append(subscriptionRow("openai", "chatgpt"));
     c.setAttribute("title", t("Key from {site}", { site }));
     c.children[0].prepend(k.dot);
@@ -355,7 +319,7 @@ async function renderChatSettings({ invoke, V, listen, timers }) {
     block.append(h("div", { class: "row" }, label, url, connect));
     if (id === "custom") block.append(row("", key));
     const na = hint(UNAVAILABLE);
-    na.setAttribute("title", "Conexión de direcciones arbitrarias no disponible todavía; los modelos verificados de Koda siguen debajo.");
+    na.setAttribute("title", "Conexión de direcciones arbitrarias no disponible todavía.");
     block.append(na, exposure);
     showExposure();
     locals.append(block);
@@ -399,7 +363,7 @@ async function renderChatSettings({ invoke, V, listen, timers }) {
   ctxCard.setAttribute("id", "chat-window-context");
   foldable(ctxCard);
   const localCard = section(t("Local models"), locals);
-  localCard.setAttribute("title", t("Chat with a model you run yourself: Ollama or LM Studio (leave the address empty for the usual one on this computer), or any server that speaks the OpenAI API, such as vLLM or llama.cpp. Once connected, pick it above the chat box."));
+  localCard.setAttribute("title", t("Chat with a model you run yourself: Ollama or LM Studio (leave the address empty for the usual one on this computer), or any server that speaks the OpenAI API, such as vLLM or llama.cpp."));
   localCard.setAttribute("id", "chat-local-models");
   foldable(localCard);
   const engineOthers = h("div", { id: "chat-engine-others" });
@@ -412,27 +376,22 @@ async function renderChatSettings({ invoke, V, listen, timers }) {
     ctxCard,
     s.message
   );
-  drawModels();
   watch("agent:state", (next) => {
     state = { ...state, ...next };
-    drawModels();
   });
   watch("prefs:state", (next) => {
     prefs = next;
-    drawModels();
     paintContext();
   });
   for (const key of ["anthropic-api-key", ...CLOUD.map(([id]) => KEYS[id] ?? providerDef(id).key)]) work(() => call("secret_action", V.keyPayload("present", key)), (result2) => {
     present[key] = result2?.present === true;
     keyRefresh[key]();
   });
-  for (const action of ["view", "models_list"]) work(() => call("agent_action", { action }), (next) => {
+  work(() => call("agent_action", { action: "view" }), (next) => {
     state = { ...state, ...next };
-    drawModels();
   });
   work(() => call("prefs_action", { action: "view" }), (next) => {
     prefs = next;
-    drawModels();
     paintContext();
   });
   const result = s.finish(), dispose = result.dispose;

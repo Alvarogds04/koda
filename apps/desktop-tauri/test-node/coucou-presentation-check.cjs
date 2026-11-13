@@ -19,10 +19,12 @@ const test = (name, fn) => {
 
 test('approved live composition retains every existing binding and host script', () => {
   const html = read('index.html');
-  for (const id of ['capsule', 'island', 'clay', 'island-toggle', 'open-chat', 'open-settings', 'notices', 'notice-open', 'notice-dismiss', 'permission', 'allow', 'deny', 'question', 'question-options', 'chat', 'models', 'settings', 'home-tab', 'overview-view'])
+  for (const id of ['capsule', 'island', 'clay', 'island-toggle', 'open-chat', 'open-settings', 'notices', 'notice-open', 'notice-dismiss', 'permission', 'allow', 'deny', 'question', 'question-options', 'chat', 'chat-model-line', 'settings', 'home-tab', 'overview-view'])
     assert.match(html, new RegExp(`id="${id}"`), id);
-  for (const file of ['clay-engine.js', 'desktop.js', 'notify.js', 'chat.js', 'models.js', 'settings.js'])
+  // K2-05 U5c (L72): the Ajustes model panel and its own script are gone from the page
+  for (const file of ['clay-engine.js', 'desktop.js', 'notify.js', 'chat.js', 'settings.js'])
     assert.match(html, new RegExp(`src="${file.replace('.', '\\.')}"`));
+  assert.doesNotMatch(html, /src="models\.js"/);
   assert.doesNotMatch(html, /preview\.js|harness-nav|data-permission-choice|style="/);
   const ids = [...html.matchAll(/\bid="([^"]+)"/g)].map(x => x[1]);
   assert.equal(new Set(ids).size, ids.length, 'binding IDs are unique');
@@ -34,7 +36,7 @@ test('Coucou tokens and card composition are present without replacing native si
   assert.match(css, /--muted:\s*#8E939C/);
   assert.match(css, /#overview-view/);
   assert.match(css, /#notice-open/);
-  assert.match(css, /#models-search/);
+  assert.match(css, /#chat-model-line/);
   assert.doesNotMatch(css, /transition:\s*all/);
   const island = read('island.js');
   assert.match(island, /CHAT\.w = vw; CHAT\.h = vh/);
@@ -84,8 +86,10 @@ test('S10 header on top (replaces the V1 gutter): 720x34 header above the cards;
 
 test('V1 dot: a panel left open can never move the dot character (scoped to the expanded chat view)', () => {
   const css = read('style.css');
-  assert.doesNotMatch(css, /#capsule\[data-models="open"\] #clay, #capsule\[data-settings="open"\] #clay/);
-  assert.match(css, /#capsule\[data-phase="expanded"\]\[data-view="chat"\]\[data-models="open"\] #clay/);
+  // K2-05 U5c (L72): the models panel is gone, so `data-models` must not linger; the settings panel keeps the same guard.
+  assert.doesNotMatch(css, /data-models/);
+  assert.doesNotMatch(css, /#capsule\[data-settings="open"\] #clay, /);
+  assert.match(css, /#capsule\[data-phase="expanded"\]\[data-view="chat"\]\[data-settings="open"\] #clay/);
   assert.match(read('island.js'), /new CustomEvent\('island:view', \{ detail: 'overview' \}\)/);
 });
 
@@ -119,7 +123,7 @@ test('S10 island type scale: Coucou\'s exact sizes (windows/src/style.css @434d6
     assert((tail + literal).includes(sel), `${sel} is on the Coucou scale`);
   assert.doesNotMatch(tail, /font-size:\s*\d|font:\s*\d+\s+\d/, 'the block uses only the --cc-fs-* tokens');
   assert.match(literal, /\.agentline strong \{ font: 600 12px/); assert.match(literal, /\.overview-detail \{[^}]*font: 500 13px/); assert.match(literal, /\.btn|#allow, #deny, \.q-option \{[^}]*font: 500 12\.5px/);
-  for (const chat of ['#chat', '#settings', '#models']) assert(!tail.includes(chat), `${chat} untouched (S10: chat stays Abito's)`);
+  for (const chat of ['#chat', '#settings']) assert(!tail.includes(chat), `${chat} untouched (S10: chat stays Abito's)`);
 });
 
 test('V1 icon: the settings glyph is a cog (closed 8-tooth outline + hub), stroke-only, not the old sun/asterisk', () => {
@@ -234,21 +238,6 @@ test('native confirmed open suppresses unrelated approval; question stays above 
   b.window.__islandSetView('chat', 380, 500);
   assert.equal(b.get('capsule').dataset.noticeView, undefined, 'ordinary navigation exits the notice lane');
   assert.equal(b.get('capsule').dataset.view, 'chat');
-});
-test('vertical Model search filters live rows without selecting, refreshing, or changing readiness', () => {
-  const b = boot();
-  const ready = b.get('ready-row'), unavailable = b.get('unavailable-row');
-  ready.textContent = 'Qwen listo'; unavailable.textContent = 'Llama No disponible';
-  ready.dataset.ready = 'true'; unavailable.dataset.ready = 'false';
-  b.get('models-list').querySelectorAll = () => [ready, unavailable];
-  b.get('models-search').value = ' qWeN ';
-  b.get('models-search').fire('input');
-  assert.equal(ready.hidden, false); assert.equal(unavailable.hidden, true);
-  assert.equal(ready.dataset.ready, 'true'); assert.equal(unavailable.dataset.ready, 'false');
-  b.get('models-search').value = '';
-  b.get('models-search').fire('input');
-  assert.equal(ready.hidden, false); assert.equal(unavailable.hidden, false);
-  assert.deepEqual(b.calls, []);
 });
 console.log(`coucou-presentation-check: ${passed} passed, ${failed} failed`);
 if (failed) process.exitCode = 1;
