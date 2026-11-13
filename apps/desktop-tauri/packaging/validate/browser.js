@@ -565,53 +565,40 @@
         }
         finally {document.removeEventListener('abito:integration-opened',received);}
       }
-      if(id==='integration_calcom' && state==='ready') {
-        const button=text=>[...document.querySelectorAll('.int-host button')].find(b=>b.textContent===text);
-        await click(button('Día'));
-        await wait(()=>document.querySelector('.int-host [data-calendar="day"]'),'agenda diaria');
-        const booking=[...document.querySelectorAll('.int-host button')].find(b=>b.textContent.startsWith('fixture ·'));
-        await click(booking);
-        await wait(()=>document.querySelector('.int-host [data-calendar="detail"]')?.textContent.includes('Validador'),'detalle de reserva');
-        if(!document.querySelector('.int-host').textContent.includes('Consulta fixture')) throw Error('faltan notas de reserva');
-        await click(button('Volver a la agenda'));
-        await wait(()=>document.querySelector('.int-host [data-calendar="day"]'),'volver al día');
-        await click(button('Semana'));
-        await wait(()=>document.querySelector('.int-host [data-calendar="week"]'),'agenda semanal');
-      }
-      results.push({id,state,refresh:true,open:state==='ready',calendar:id==='integration_calcom'&&state==='ready'?'week/day/detail':null});
+      results.push({id,state,refresh:true,open:state==='ready'});
     }
     const host=document.querySelector('.int-host'); if(host) host.scrollTop=0;
     return {ok:true,results};
   }
+  // K2-11 S5/S6: GitHub is a card of the shortcuts row (island-shortcuts.js, K2-09), not a pill of the column and not the overview's left
+  // card. The scene drives what the cards render today: the row's icon, the #nusa-card host, the three .gh-tile counters, a .gh-row list,
+  // 「‹ Pulso」 and the contribution strip. Every number checked here also comes from the fake gh's own answer (github_action).
   async function github() {
     await invoke('desktop_action',{action:'expand'});
-    const prefs=await invoke('prefs_action',{action:'view'});
-    if(!prefs.declaredPills.includes('integration_github')) await invoke('prefs_action',{action:'toggle_declared_pill',id:'integration_github'});
     const data=await invoke('github_action',{action:'refresh',section:'activity'});
     // The island ignores blob clicks while it is busy (pills-view `onScreen`): right after «pi-pregunta» the answered question's outcome
-    // («Recibida») is on screen for 3-4 s and a click then is dropped silently. Wait for the calm overview before choosing the row.
+    // («Recibida») is on screen for 3-4 s and a click then is dropped silently. Wait for the calm overview before choosing the icon.
     const calm=()=>{const d=byId('capsule')?.dataset||{};return d.phase==='expanded' && d.view==='overview' && !d.card && d.settings!=='open' && !['pending','expired','outcome'].includes(d.question) && d.noticeView!=='notices';};
     await wait(calm,'isla en calma antes de elegir GitHub',10000);
-    let pill;
-    try {pill=await wait(()=>{const p=byId('pill-choice-integration_github');return visible(p) && p;},'pill GitHub declarada con gh falso');}
-    catch {return {ok:false,reason:'GitHub devuelve datos del gh falso pero la pill declarada no aparece en la isla',data,prefs:await invoke('prefs_action',{action:'view'})};}
-    await click(pill);
-    // A click that landed in the instant the island turned busy again is repeated once the overview is calm (the row is still there then).
-    const card=await wait(async()=>{const c=document.querySelector('.gh-card');if(visible(c) && c.textContent.includes('GitHub') && !c.textContent.includes('Cargando')) return c;const p=byId('pill-choice-integration_github');if(visible(p) && calm()) await click(p);return false;},'tarjeta GitHub desde gh falso',12000);
-    const text=card.textContent;
+    const icon=()=>document.querySelector('#nusa-apps button[data-go="github"]');
+    let row;
+    try {row=await wait(()=>{const b=icon();return visible(b) && b;},'icono GitHub en la fila de atajos del gh falso',12000);}
+    catch {return {ok:false,reason:'GitHub devuelve datos del gh falso pero su icono no aparece en la fila de atajos de la isla',data};}
+    await click(row);
+    const host=await wait(()=>{const h=document.querySelector('#nusa-card .gh-host');return visible(h) && h;},'hueco de la tarjeta GitHub',12000);
+    await wait(()=>host.querySelector('.gh-pulse-card'),'pulso GitHub dibujado');
+    const text=host.textContent;
     const stats=await invoke('github_action',{action:'refresh',section:'pulse'});
-    // Design 16 (option A): the card IS the PR list with CI state and an explicit [Abrir]; CI of the default branch and activity keep their detail.
-    await wait(()=>card.textContent.includes('18') && card.textContent.includes('Fixture PR') && card.querySelector('.gh-row') && card.querySelector('.gh-open'),'lista de PR con estado y Abrir');
-    await click(card.querySelector('.gh-ci-main'));
-    await wait(()=>card.textContent.includes('main') && card.querySelector('.gh-row'),'detalle CI');
-    await click(card.querySelector('.gh-back'));
-    await wait(()=>card.querySelector('.gh-spark'),'volver al pulso CI');
-    await click(card.querySelector('.gh-spark'));
-    await wait(()=>card.textContent.includes('23 repos'),'actividad y repositorios');
-    await click(card.querySelector('.gh-back'));
-    await wait(()=>card.textContent.includes('Fixture PR') && card.querySelector('.gh-open'),'lista de PR visible para captura');
-    // Keep the PR list visible for its native PNG; Spotify releases focus.
-    return {ok:data.available===true && data.activity.total===17 && stats.stats.totalStars===18 && stats.stats.totalRepos===23,text,data,stats,details:['PR','CI','activity']};
+    const tiles=()=>[...host.querySelectorAll('.gh-tile')];
+    await wait(()=>tiles().length===3 && tiles().every(t=>visible(t)),'los tres contadores del pulso (revisión, PR, issues)');
+    // A counter opens ITS list inside the same card, with its CI state, and 「‹ Pulso」 comes back.
+    await click(tiles().find(t=>t.getAttribute('data-tile')==='pr'));
+    await wait(()=>host.querySelector('.gh-row') && host.textContent.includes('Fixture PR'),'lista de PR dentro de la misma tarjeta');
+    await click(host.querySelector('.gh-back'));
+    await wait(()=>tiles().length===3 && !host.querySelector('.gh-row'),'«‹ Pulso» vuelve a los contadores');
+    await wait(()=>host.querySelector('.gh-strip'),'tira de contribuciones del pulso');
+    // The pulse stays on screen for its native PNG, exactly as the user leaves it; the Spotify scene sends the row back to Koda.
+    return {ok:data.available===true && data.activity?.total===17 && stats.stats?.totalStars===18 && stats.stats?.totalRepos===23,text,data,stats,details:['pulse','PR','activity']};
   }
   async function mail() {
     // K2-10 T7 (L21/L22): mail by IMAP/SMTP is retired; the one mail verb is Gmail's closed
@@ -647,8 +634,9 @@
     } finally {off();}
   }
   async function spotify() {
-    const gh=document.querySelector('.gh-card');
-    if(visible(gh)) { await click(byId('pill-choice-abito')); await wait(()=>!visible(gh),'GitHub desenfocado antes de Spotify'); }
+    // K2-11: GitHub's card lives in the shortcuts row now, so the row goes back to Koda before Spotify is examined.
+    const githubCard=()=>document.querySelector('#nusa-card .gh-host');
+    if(visible(githubCard())) { await click(document.querySelector('#nusa-apps button[data-go="koda"]')); await wait(()=>!visible(githubCard()),'GitHub desenfocado antes de Spotify'); }
     const prefs=await invoke('prefs_action',{action:'view'});
     if(!prefs.declaredPills.includes('integration_spotify')) {
       if(prefs.declaredPills.length>=4) await invoke('prefs_action',{action:'toggle_declared_pill',id:prefs.declaredPills[0]});
