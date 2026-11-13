@@ -11,11 +11,17 @@
    - Transcription (S7/S16/S18): Parakeet on this PC is the only local option and the default; «Con una cuenta» is the
      alternative, with a configured OpenAI-compatible account and a model id. There is no Whisper option and no download
      setting (S18/S19).
+   - The MODEL STATE of the local transcription model is drawn (T6b-3, artboard 06 frames 5-6): «Falta · N MB»,
+     «Descargar», the progress and «Instalado · N MB». The island already knows and downloads it, so the page only reads
+     `voice_action {action:'status'}`, listens to its `voice-model` event and asks for a download on a CLICK. A download
+     is a large transfer over the network: it never starts on its own, and the page never sends a URL, a path or a file
+     name — only the catalog id it read from the status reply.
    - NOT here: the per-Minikoda model selector of artboard 06 lives with artboards 04/05 (the list and the creation card).
-     The model-missing / downloading state of the artboard is not drawn either: the daemon reports only
-     `local: available|unavailable` (the bundled helper), never a download progress, so the page does not invent one.
-   - The one closed host verb is the existing `agent_action` (src/agentclient.rs's allowlist): the page can ask eight
-     verbs and nothing else.
+     The page draws what the island reports about the local model and nothing more: the daemon's `local: available|unavailable`
+     (the bundled helper) keeps today's note, so a missing helper is never blamed on the model.
+   - The closed host verbs are the existing `agent_action` (src/agentclient.rs's allowlist) and the existing `voice_action`
+     (src/voicehost.rs, admitted for the main window). The page asks eight `agent_action` verbs, `voice_action {action:'status'}`
+     and — only from a click — `{action:'download_model'}` and `{action:'model_download', id}`. Nothing else.
 
    Loaded as a classic script (window.AbitoMinikodas) and by test-node/minikodas-settings-check.cjs through
    `module.exports`. Text only (textContent, never innerHTML); the outcome of a command is a sentence of OURS chosen from
@@ -186,6 +192,151 @@
       ffmpeg: view && typeof view.ffmpeg === 'string' ? view.ffmpeg : null,
     });
   }
+  // ---- the transcription model's own state (T6b-3, artboard 06 frames 5-6) -------------------------------------
+  // The island already knows and downloads the model. `voice_action {action:'status'}` (src/voicehost.rs status_json)
+  // answers with the voice detector's and Parakeet's ModelState — `{state:'missing'}`, `{state:'downloading',fraction}`,
+  // `{state:'ready'}` or `{state:'failed',error}` (src/speech/mod.rs ModelState) — plus the catalog with each `sizeMb`.
+  // The detector is fetched by the id-less `{action:'download_model'}` (src/speech/wake.rs download) and a catalog entry
+  // by `{action:'model_download', id}` (src/speech/mod.rs download_model). Transcription needs BOTH (src/speech/transcribe.rs
+  // returns ModelMissing when the model or the detector is absent), so «Instalado» is said only when both are there.
+  /** src/speech/catalog.rs DEFAULT_MODEL: the only local transcription model (S18), and the id the page may ask for. */
+  const PARAKEET = 'parakeet-tdt-0.6b-v3-int8';
+  /** The bound the host applies to a catalog id (frontend/settings-app.js too): never a URL, a path or a file name. */
+  const MODEL_ID = /^[a-z0-9][a-z0-9.-]{0,39}$/;
+  const MODEL_STATES = Object.freeze(['missing', 'downloading', 'ready', 'failed', 'unknown']);
+  /** How long a download may go without a `voice-model` event before the card stops claiming it is progressing. */
+  const MODEL_STALL_MS = 180000;
+  const MB_MAX = 100000;
+  // The host reports a failure as FREE TEXT (`ModelState::Failed { error }`, the downloader's own message), so a network
+  // failure, a checksum mismatch and a full disk cannot be told apart from here: ONE sentence names the likely causes and
+  // the host's text is never shown, parsed or copied.
+  const MODEL_SENTENCES = Object.freeze({
+    missing: 'Falta el modelo de transcripción: todavía no está descargado en esta PC.',
+    downloading: 'Se está descargando el modelo. Mientras falta, los Minikodas que traen videos esperan: no hay transcripción a medias.',
+    ready: 'Parakeet y el detector de voz están instalados en esta PC.',
+    failed: 'La descarga del modelo no terminó. Puede haber sido la conexión o el espacio en disco: probá de nuevo.',
+    stalled: 'La descarga del modelo dejó de avanzar y Koda no recibió novedades durante tres minutos: probá de nuevo.',
+    unknown: 'No se pudo leer el estado del modelo de transcripción.',
+  });
+  /** A size in MB the island reported, or null: nothing is drawn from a guess. */
+  const megabytes = value => (Number.isInteger(value) && value > 0 && value <= MB_MAX ? value : null);
+  /** One ModelState → `{kind}` / `{kind, fraction}`, or null when it is not one of the four the host sends. */
+  function modelState(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    const kind = value.state;
+    if (kind === 'missing' || kind === 'ready' || kind === 'failed') return { kind };
+    if (kind !== 'downloading') return null;
+    const raw = typeof value.fraction === 'number' && Number.isFinite(value.fraction) ? value.fraction : 0;
+    return { kind, fraction: Math.min(1, Math.max(0, raw)) };
+  }
+  /** The catalog entry the page may ask for, read from the reply: it has to BE the local model and look like an id. */
+  function modelEntry(reply) {
+    const speech = reply && typeof reply === 'object' ? reply.speech : null;
+    const models = speech && typeof speech === 'object' && Array.isArray(speech.models) ? speech.models : null;
+    if (!models) return null;
+    for (const row of models) {
+      if (!row || typeof row !== 'object') continue;
+      const id = row.id;
+      // `id !== PARAKEET` is the whole allowlist (S18 has one local model); the regex is belt and braces so a URL, a path
+      // or a file name can never travel even if the island's own list were wrong.
+      if (typeof id !== 'string' || id !== PARAKEET || !MODEL_ID.test(id)) continue;
+      return Object.freeze({ id, sizeMb: megabytes(row.sizeMb) });
+    }
+    return null;
+  }
+  function modelViewOf(state, extra) {
+    const sizeMb = extra && Number.isInteger(extra.sizeMb) ? extra.sizeMb : null;
+    const percent = state === 'downloading' && Number.isInteger(extra.percent) ? extra.percent : null;
+    const doneMb = state === 'downloading' && Number.isInteger(extra.doneMb) ? extra.doneMb : null;
+    const size = sizeMb === null ? '' : ` · ${sizeMb} MB`;
+    const stalled = extra && extra.stalled === true;
+    return Object.freeze({
+      state,
+      sizeMb,
+      percent,
+      doneMb,
+      parakeetReady: extra && extra.parakeetReady === true,
+      vadReady: extra && extra.vadReady === true,
+      canDownload: state === 'missing',
+      canRetry: state === 'failed',
+      stalled,
+      // the artboard's wording: «Falta · N MB» / «Descargando · N %» / «Instalado · N MB» / «Falló»
+      pill: state === 'missing' ? `Falta${size}` : state === 'ready' ? `Instalado${size}` : state === 'downloading' ? `Descargando · ${percent} %` : state === 'failed' ? 'Falló' : '',
+      // and the progress line, without the speed text the artboard draws and nobody reports
+      detail: state === 'downloading' ? (sizeMb === null ? `${percent} %` : `${percent} % · ${doneMb} de ${sizeMb} MB`) : '',
+      sentence: state === 'failed' ? (stalled ? MODEL_SENTENCES.stalled : MODEL_SENTENCES.failed) : MODEL_SENTENCES[state] || MODEL_SENTENCES.unknown,
+    });
+  }
+  /**
+   * The status reply (+ how long since the last `voice-model` event) → the small closed view the card draws. Anything the
+   * host did not say clearly is `unknown`; the host's own error text is never read.
+   */
+  function modelView(reply, options) {
+    const parakeet = modelState(reply && reply.parakeet);
+    const detector = modelState(reply && reply.vad);
+    if (!parakeet || !detector) return modelViewOf('unknown', {});
+    const entry = modelEntry(reply);
+    const parakeetReady = parakeet.kind === 'ready';
+    const vadReady = detector.kind === 'ready';
+    const vadMb = megabytes(reply && reply.downloadMb);
+    const waited = options && typeof options.waitedMs === 'number' && Number.isFinite(options.waitedMs) && options.waitedMs > 0 ? options.waitedMs : 0;
+    // the size of what is still to come: the model while it lacks, the detector when only the detector lacks
+    const sizeMb = parakeetReady ? (vadReady ? (entry ? entry.sizeMb : null) : vadMb) : entry ? entry.sizeMb : null;
+    const moving = parakeet.kind === 'downloading' ? parakeet : detector.kind === 'downloading' ? detector : null;
+    const ready = parakeetReady && vadReady;
+    const facts = { sizeMb, parakeetReady, vadReady };
+    if (moving) {
+      const total = parakeet.kind === 'downloading' ? (entry ? entry.sizeMb : null) : vadMb;
+      const percent = Math.min(100, Math.max(0, Math.round(moving.fraction * 100)));
+      // a download that went quiet past the budget is a failure with a retry, never an endless «descargando»
+      if (waited >= MODEL_STALL_MS) return modelViewOf('failed', { ...facts, sizeMb: total, stalled: true });
+      const done = total === null ? null : Math.min(total, Math.round(moving.fraction * total));
+      return modelViewOf('downloading', { ...facts, sizeMb: total, percent, doneMb: done });
+    }
+    if (parakeet.kind === 'failed' || detector.kind === 'failed') return modelViewOf('failed', facts);
+    if (ready) return modelViewOf('ready', { ...facts, sizeMb: entry ? entry.sizeMb : null });
+    return modelViewOf('missing', facts);
+  }
+  /** `{action:'model_download', id}` for the local model, or null: the id is always the one read from the reply. */
+  function modelDownloadPayload(reply) {
+    const view = modelView(reply);
+    if (view.parakeetReady || (view.state !== 'missing' && view.state !== 'failed')) return null;
+    const entry = modelEntry(reply);
+    return entry ? Object.freeze({ action: 'model_download', id: entry.id }) : null;
+  }
+  /** `{action:'download_model'}`: the voice detector, the fixed id-less verb (src/speech/wake.rs download). */
+  function vadDownloadPayload(reply) {
+    const view = modelView(reply);
+    if (view.vadReady || (view.state !== 'missing' && view.state !== 'failed')) return null;
+    return Object.freeze({ action: 'download_model' });
+  }
+  /**
+   * Everything one click asks for, in order, or null when there is nothing to ask — and also null when the reply does not
+   * carry the catalog entry, so a URL, a path or an unknown id can never produce a host call at all.
+   */
+  function downloadPayloads(reply) {
+    if (!modelEntry(reply)) return null;
+    const model = modelDownloadPayload(reply);
+    const vad = vadDownloadPayload(reply);
+    const out = [];
+    if (model) out.push(model);
+    if (vad) out.push(vad);
+    return out.length ? Object.freeze(out) : null;
+  }
+
+  /**
+   * What a click on the model button must do, from the last status reply and how long the page has heard nothing.
+   * `download`: the closed payloads, built from the host's own catalog entry. `reread`: the host still calls the download
+   * «in flight» but the card already says it failed (the stall budget passed), so the click asks for the status again and
+   * never starts a second download behind a download the host may still be running. `none`: nothing honest to ask.
+   */
+  function modelClickAction(reply, waitedMs) {
+    const view = modelView(reply, { waitedMs });
+    if (view.state === 'failed' && view.stalled) return Object.freeze({ kind: 'reread' });
+    const payloads = downloadPayloads(reply);
+    return payloads ? Object.freeze({ kind: 'download', payloads }) : Object.freeze({ kind: 'none' });
+  }
+
   /** `transcription_set`, validated as the host and the daemon validate it, or null. */
   function transcriptionPayload(mode, language, accountId, model) {
     if (!MODES.includes(mode)) return null;
@@ -204,6 +355,8 @@
     errorSentence, telegramView, accountLine, connectedSentence,
     apiIdProblem, apiHashProblem, phoneProblem, codeProblem, passwordProblem, modelProblem,
     loginStartPayload, codePayload, passwordPayload,
+    PARAKEET, MODEL_STATES, MODEL_STALL_MS, MODEL_SENTENCES, modelView, modelEntry,
+    modelDownloadPayload, vadDownloadPayload, downloadPayloads, modelClickAction,
     accountsForTranscription, transcriptionView, transcriptionPayload, oneLine,
   });
 });
@@ -217,6 +370,8 @@ function mount(api) {
   const listen = (window.__TAURI__ && window.__TAURI__.event && window.__TAURI__.event.listen) || null;
   if (!invoke) return;
   const call = payload => invoke('agent_action', { payload });
+  // The model state comes from the island's own closed voice verb (src/voicehost.rs voice_action): no new command.
+  const callVoice = payload => invoke('voice_action', { payload });
   const el = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls; if (text) n.textContent = text; return n; };
 
   let agentState = null;
@@ -229,6 +384,11 @@ function mount(api) {
   // The number of the login in flight. The phone FIELD is emptied as soon as the login starts, so «Pedir otro» needs this
   // copy; it is dropped when the login ends. The field's placeholder is an example, never a number to dial.
   let loginPhone = '';
+  // the model state: the last status reply, and when the last sign of life from a download arrived (the stall budget)
+  let modelStatus = null;
+  let modelAsked = false;   // the card has asked the island at least once: before that, nothing is claimed
+  let modelWait = 0;
+  let modelTimer = 0;
   let waitedError = 0;    // the last_error counter we have already answered
   let lastSent = null;    // { action, at } of the command in flight, for the honest timeout
   let timer = 0;
@@ -324,9 +484,20 @@ function mount(api) {
   remoteFields.append(accountSelect, modelInput);
   remoteRow.append(remoteRadio, remoteText, remoteFields);
   group.append(localRow, remoteRow);
+  // The local model's own state (artboard 06 frames 5-6): the pill and «Descargar» ride on the local option, the progress
+  // and the explanation sit under the group. A download is a large transfer: it only ever leaves on a click.
+  const modelAct = el('span', 'srow-actions');
+  const modelPill = el('span', 'snote', ''); modelPill.id = 'transcription-model-pill';
+  const modelBtn = el('button', 'sbtn', 'Descargar'); modelBtn.type = 'button'; modelBtn.id = 'transcription-model-download';
+  modelBtn.setAttribute('aria-describedby', 'transcription-model-note');
+  modelAct.append(modelPill, modelBtn);
+  localRow.append(modelAct);
+  // No `role="status"` here on purpose: the section already has its one live region (`#minikodas-live`), and a progress
+  // line that changes with every chunk would be announced over and over.
+  const trModelNote = el('p', 'snote'); trModelNote.id = 'transcription-model-note';
   const trLocalNote = el('p', 'snote'); trLocalNote.id = 'transcription-local-note';
   const trProblem = el('p', 'snote'); trProblem.id = 'transcription-problem'; trProblem.setAttribute('role', 'status');
-  tr.append(group, trLocalNote, trProblem);
+  tr.append(group, trModelNote, trLocalNote, trProblem);
   tr.append(el('p', 'snote', 'La transcripción tiene su propio límite de 30 minutos por corrida: no gasta los 5 minutos del Minikoda. Si un video no termina a tiempo, se cancela, se borra el audio temporal y «Hoy» te avisa que era demasiado largo.'));
 
   // the one live region of the whole section
@@ -396,9 +567,57 @@ function mount(api) {
     trProblem.textContent = v.options.length ? '' : 'Para «Con una cuenta» necesitás una cuenta compatible con OpenAI en Ajustes › Conexiones.';
     trProblem.hidden = !trProblem.textContent;
   }
+  /**
+   * The model row, drawn from the pure view of the last status reply. The only clock here is the stall budget: the view
+   * stops saying «descargando» once no `voice-model` event has arrived in `MODEL_STALL_MS`, so nothing spins forever.
+   */
+  function modelNow() {
+    return api.modelView(modelStatus, { waitedMs: modelWait ? Date.now() - modelWait : 0 });
+  }
+  function paintModel() {
+    const v = modelNow();
+    // Before the first answer (and with the card still hidden) nothing is drawn: an unseen card does not claim a failure.
+    if (!modelAsked) {
+      modelPill.hidden = true;
+      trModelNote.hidden = true;
+      modelBtn.hidden = true;
+      return;
+    }
+    modelPill.textContent = v.pill;
+    modelPill.hidden = !v.pill;
+    // the progress line while it downloads, the honest sentence otherwise (missing, failed, unreadable)
+    trModelNote.textContent = v.detail || v.sentence;
+    trModelNote.hidden = !trModelNote.textContent;
+    // «Descargar» when it lacks, «Reintentar» after a failure, nothing when it is installed or unreadable
+    modelBtn.hidden = !(v.canDownload || v.canRetry);
+    modelBtn.textContent = v.canRetry ? 'Reintentar' : 'Descargar';
+    modelBtn.disabled = busy;
+    if (v.state === 'downloading') armModelWatch();
+  }
+  /** One timer, re-armed by each event: the page never polls the host for progress. */
+  function armModelWatch() {
+    clearTimeout(modelTimer);
+    modelTimer = 0;
+    if (modelNow().state !== 'downloading') return;
+    // What is LEFT of the budget since the last sign of life: arming a fresh one on every repaint would let an unrelated
+    // event (the agent's state, say) postpone the stall forever.
+    modelTimer = setTimeout(() => {
+      modelTimer = 0;
+      paint();
+    }, Math.max(0, api.MODEL_STALL_MS - (Date.now() - modelWait)));
+  }
+  /** A status reply, or the payload of the island's `voice-model` event (the same JSON, src/voicehost.rs). */
+  function applyModel(reply) {
+    if (!reply || typeof reply !== 'object') return;
+    modelStatus = reply;
+    modelAsked = true;
+    modelWait = Date.now();     // progress resets the stall budget, because it is a sign of life
+    paint();
+  }
   function paint() {
     paintTelegram();
     paintTranscription();
+    paintModel();
   }
 
   // ---- talking to the host ------------------------------------------------------------------------------------
@@ -536,10 +755,44 @@ function mount(api) {
   remoteRadio.addEventListener('change', e => { if (e.isTrusted === false) return; saveTranscription(); });
   accountSelect.addEventListener('change', e => { if (e.isTrusted !== false) saveTranscription(); });
   modelInput.addEventListener('change', e => { if (e.isTrusted !== false) saveTranscription(); });
+  // The download: a real click, and only the closed payloads the pure builder produced from the status reply we read
+  // (the catalog id and the id-less detector verb). Nothing else is ever sent.
+  modelBtn.addEventListener('click', e => {
+    if (e.isTrusted !== true) return;
+    // The button rides on the local option, which is a <label>: without this, the click would also pick the radio and save
+    // the setting. The default action of the click is cancelled, the download itself is not.
+    e.preventDefault();
+    const action = api.modelClickAction(modelStatus, modelWait ? Date.now() - modelWait : 0);
+    if (action.kind === 'reread') {
+      // a stalled download: ask the host what it says now; a real failure or a missing model comes back as a state with its own button
+      callVoice({ action: 'status' }).then(reply => { modelWait = Date.now(); applyModel(reply); }, () => { modelStatus = null; paint(); });
+      return;
+    }
+    const payloads = action.kind === 'download' ? action.payloads : null;
+    if (!payloads) {
+      // nothing we could honestly ask for: no id read from the island, or nothing to download
+      note = { tone: 'sun', say: api.MODEL_SENTENCES.unknown };
+      paint();
+      return;
+    }
+    modelWait = Date.now();
+    note = { tone: 'sun', say: api.MODEL_SENTENCES.downloading };
+    paint();
+    let chain = Promise.resolve();
+    for (const payload of payloads) {
+      chain = chain.then(() => callVoice(payload).then(applyModel, error => {
+        // the host refuses with a CLOSED code (src/voicehost.rs err), never with free text
+        const code = error && typeof error.code === 'string' ? error.code : '';
+        note = { tone: 'red', say: code ? api.errorSentence(code, null) : api.MODEL_SENTENCES.failed };
+        paint();
+      }));
+    }
+  });
 
   if (listen) {
     const fail = name => error => console.error(`minikodas: live ${name} events unavailable`, error);
     listen('agent:state', e => apply(e && e.payload)).catch(fail('agent:state'));
+    listen('voice-model', e => applyModel(e && e.payload)).catch(fail('voice-model'));
   }
   // The read happens when the card is SHOWN, never at island start: the island page loads with Ajustes closed, and a
   // hidden card has no business opening the daemon's socket. The panel re-appends this section on its own tab
@@ -549,6 +802,9 @@ function mount(api) {
     call({ action: 'view' }).then(next => { shown = true; apply(next); }, () => {
       live.textContent = 'No se pudo leer el estado de Telegram ni el de la transcripción.';
     });
+    // the model state is read once, here, when the card is shown: a hidden card has no business asking, and nothing polls
+    modelAsked = true;
+    callVoice({ action: 'status' }).then(applyModel, () => { modelStatus = null; paint(); });
   }
   const observer = new MutationObserver(() => { if (!host.hidden && !shown) read(); else if (host.hidden) shown = false; });
   observer.observe(host, { attributes: true, attributeFilter: ['hidden'] });

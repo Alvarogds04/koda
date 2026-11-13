@@ -231,7 +231,7 @@ test('the card never writes markup, never stores a secret and never names a remo
   // the one host verb is the existing closed one
   const verbs = [...src.matchAll(/action: '([a-z_]+)'/g)].map(m => m[1]);
   for (const verb of verbs) {
-    assert.match(verb, /^(telegram_login_start|telegram_login_code|telegram_login_password|telegram_logout|transcription_set|view)$/, `${verb} must be one of the closed verbs`);
+    assert.match(verb, /^(telegram_login_start|telegram_login_code|telegram_login_password|telegram_logout|transcription_set|view|status|download_model|model_download)$/, `${verb} must be one of the closed verbs`);
   }
   assert.ok(verbs.includes('telegram_login_password'));
   // a secret is cleared as soon as it travelled
@@ -264,6 +264,249 @@ test('no new design token and no new colour or size literal was added by the car
   for (const banned of [/--[a-z-]+:/, /#[0-9a-fA-F]{3,8}\b/, /rgba?\(/, /\bpx\b/]) {
     assert.doesNotMatch(src, banned, `the card uses the Ajustes components as they are: ${banned}`);
   }
+});
+
+// ---- the transcription MODEL STATE (T6b-3, artboard 06 frames 5-6) -----------------------------------------
+// The island already knows and downloads the model (src/voicehost.rs): `voice_action {action:'status'}` answers
+// `{ vad: <ModelState>, parakeet: <ModelState>, downloadMb: 1, speech: { model, models: [{ id, name, sizeMb, state, ... }] } }`,
+// a ModelState is `{state:'missing'|'ready'} | {state:'downloading', fraction:0..1} | {state:'failed', error}`
+// (src/speech/mod.rs ModelState, tag = "state"). `{action:'download_model'}` fetches the Silero VAD (src/speech/wake.rs
+// download), `{action:'model_download', id}` one catalog entry (src/speech/mod.rs download_model). Transcription needs BOTH
+// (src/speech/transcribe.rs run_transcribe returns ModelMissing when the model or the VAD is absent).
+const PARAKEET = 'parakeet-tdt-0.6b-v3-int8';
+const entry = (id = PARAKEET, sizeMb = 670) => ({ id, name: 'Parakeet v3', sizeMb, languages: ['es', 'en'], forcesLanguage: false, license: 'CC-BY-4.0', note: 'rápido', state: { state: 'missing' }, installed: false, active: true });
+const voiceStatus = ({ parakeet = { state: 'missing' }, vad = { state: 'missing' }, models = [entry()], downloadMb = 1 } = {}) => ({
+  prefs: { enabled: false, output: 'system', gender: 'female', sensitivity: 50 }, vad, downloadMb, parakeet, listening: false, error: null,
+  training: { state: 'idle' }, speech: { language: 'es', model: PARAKEET, words: [], languages: ['es', 'en'], models },
+});
+const BOTH_READY = { parakeet: { state: 'ready' }, vad: { state: 'ready' } };
+
+test('the model is drawn missing with the size the island reports, never a hard-coded one', () => {
+  const v = M.modelView(voiceStatus());
+  assert.equal(v.state, 'missing', 'nothing downloaded is «missing»');
+  assert.equal(v.sizeMb, 670, 'the size is the one the island reports');
+  assert.equal(v.pill, 'Falta · 670 MB', 'the artboard’s wording: «Falta · 612 MB» with the real size');
+  assert.equal(v.percent, null, 'nothing is downloading: there is no percentage');
+  assert.equal(v.canDownload, true, 'a missing model offers «Descargar»');
+  assert.equal(v.canRetry, false);
+  assert.match(v.sentence, /[Ff]alta/, 'it says the model is missing');
+  // a reply without a usable size still names the state, without inventing megabytes
+  const noSize = M.modelView(voiceStatus({ models: [{ id: PARAKEET, name: 'Parakeet v3' }] }));
+  assert.equal(noSize.state, 'missing');
+  assert.equal(noSize.sizeMb, null);
+  assert.equal(noSize.pill, 'Falta');
+});
+
+test('«Instalado» means Parakeet AND the voice detector, never Parakeet alone', () => {
+  const both = M.modelView(voiceStatus(BOTH_READY));
+  assert.equal(both.state, 'ready');
+  assert.equal(both.pill, 'Instalado · 670 MB');
+  assert.equal(both.canDownload, false, 'an installed model offers no download button');
+  assert.equal(both.canRetry, false);
+  // Parakeet ready but the Silero VAD absent: transcription fails (transcribe.rs ModelMissing), so this is NOT «instalado»
+  const noVad = M.modelView(voiceStatus({ parakeet: { state: 'ready' } }));
+  assert.equal(noVad.state, 'missing', 'Parakeet alone cannot transcribe');
+  assert.equal(noVad.parakeetReady, true);
+  assert.equal(noVad.vadReady, false);
+  assert.equal(noVad.sizeMb, 1, 'what is left is the detector, the size the island reports for it');
+  assert.equal(noVad.pill, 'Falta · 1 MB');
+  assert.equal(noVad.canDownload, true, 'the detector can still be fetched on a click');
+  assert.equal(both.parakeetReady && both.vadReady, true);
+});
+
+test('downloading: an integer percentage from the reported fraction, clamped', () => {
+  const half = M.modelView(voiceStatus({ parakeet: { state: 'downloading', fraction: 0.5 } }));
+  assert.equal(half.state, 'downloading');
+  assert.equal(half.percent, 50, 'the fraction becomes an integer percentage');
+  assert.equal(half.doneMb, 335);
+  assert.equal(half.detail, '50 % · 335 de 670 MB', 'the artboard’s progress line, without the speed nobody reports');
+  assert.equal(half.pill, 'Descargando · 50 %');
+  assert.equal(half.canDownload, false, 'a download in flight is not started twice');
+  assert.equal(half.canRetry, false);
+  assert.equal(M.modelView(voiceStatus({ parakeet: { state: 'downloading', fraction: 1.7 } })).percent, 100, 'clamped above');
+  assert.equal(M.modelView(voiceStatus({ parakeet: { state: 'downloading', fraction: -0.4 } })).percent, 0, 'clamped below');
+  assert.equal(M.modelView(voiceStatus({ parakeet: { state: 'downloading', fraction: Number.NaN } })).percent, 0, 'a broken fraction is 0, not NaN');
+  assert.equal(M.modelView(voiceStatus({ parakeet: { state: 'downloading' } })).percent, 0, 'no fraction reported is 0');
+  assert.equal(M.modelView(voiceStatus({ parakeet: { state: 'downloading', fraction: '0.5' } })).percent, 0, 'a string fraction is not trusted');
+  // the detector's own download is shown with its own size
+  const vadOnly = M.modelView(voiceStatus({ parakeet: { state: 'ready' }, vad: { state: 'downloading', fraction: 0.5 } }));
+  assert.equal(vadOnly.state, 'downloading');
+  assert.equal(vadOnly.sizeMb, 1);
+  assert.equal(vadOnly.percent, 50);
+});
+
+test('a failed download says OUR sentence, offers «Reintentar», and never echoes the host text', () => {
+  const hostText = 'ENOSPC: no space left on device, write /home/alvaro/.local/share/abito/.parakeet.part';
+  for (const reply of [
+    voiceStatus({ parakeet: { state: 'failed', error: hostText } }),
+    voiceStatus({ parakeet: { state: 'ready' }, vad: { state: 'failed', error: hostText } }),
+  ]) {
+    const v = M.modelView(reply);
+    assert.equal(v.state, 'failed');
+    assert.equal(v.pill, 'Falló');
+    assert.equal(v.canRetry, true, 'a failed download offers a retry');
+    assert.equal(v.canDownload, false, 'the retry button is the one affordance, not two');
+    assert.match(v.sentence, /conexi[oó]n|disco/, `it names the likely causes: ${v.sentence}`);
+    const drawn = JSON.stringify(v);
+    for (const leaked of ['ENOSPC', '/home', '.part', '.onnx', 'http']) assert.equal(drawn.includes(leaked), false, `the host text never reaches the page: ${leaked}`);
+  }
+});
+
+test('a download that stops reporting is bounded, not an endless «cargando»', () => {
+  assert.ok(Number.isInteger(M.MODEL_STALL_MS) && M.MODEL_STALL_MS >= 60000 && M.MODEL_STALL_MS <= 600000, 'the budget is minutes, not a spin');
+  const moving = voiceStatus({ parakeet: { state: 'downloading', fraction: 0.3 } });
+  assert.equal(M.modelView(moving, { waitedMs: 0 }).state, 'downloading');
+  assert.equal(M.modelView(moving, { waitedMs: M.MODEL_STALL_MS - 1 }).state, 'downloading', 'one millisecond early is still downloading');
+  const stalled = M.modelView(moving, { waitedMs: M.MODEL_STALL_MS });
+  assert.equal(stalled.state, 'failed', 'silence past the budget is a failure, not progress');
+  assert.equal(stalled.canRetry, true);
+  assert.match(stalled.sentence, /dej[oó] de avanzar|no (lleg|recib)/, `it says the download went quiet: ${stalled.sentence}`);
+  // a nonsense wait is the same as no wait
+  for (const waitedMs of [undefined, null, 'x', -5, Number.NaN]) {
+    assert.equal(M.modelView(moving, { waitedMs }).state, 'downloading', `waitedMs ${String(waitedMs)} cannot invent a failure`);
+  }
+  // and a real download in flight is never marked failed by the timer after progress resumed
+  assert.equal(M.modelView({ ...moving, parakeet: { state: 'downloading', fraction: 0.6 } }, { waitedMs: 10 }).state, 'downloading');
+});
+
+test('anything unusable from the host is «unknown»: never a guess, never a throw', () => {
+  const broken = [null, undefined, 'x', 7, [], {}, { parakeet: { state: 'ready' } }, { vad: { state: 'ready' } },
+    { parakeet: { state: 'weird' }, vad: { state: 'ready' } }, { parakeet: { state: 'ready' }, vad: null },
+    { parakeet: { state: 1 }, vad: { state: 'ready' } }, { parakeet: 'ready', vad: 'ready' }, { error: 'unavailable' }];
+  for (const reply of broken) {
+    const v = M.modelView(reply);
+    assert.equal(v.state, 'unknown', `${JSON.stringify(reply)} is not a state the page can draw`);
+    assert.equal(v.canDownload, false, 'an unknown state never offers a download: nothing is known about the model');
+    assert.equal(v.canRetry, false);
+    assert.equal(v.pill, '');
+    assert.match(v.sentence, /estado del modelo/, 'it says the state could not be read');
+  }
+  // no throw, whatever arrives
+  for (const reply of [Object.create(null), { speech: { models: 'x' } }, voiceStatus({ models: null })]) {
+    assert.doesNotThrow(() => M.modelView(reply));
+  }
+  // a malformed status still cannot become a download: the id has to come from the reply
+  assert.equal(M.downloadPayloads({ parakeet: { state: 'missing' }, vad: { state: 'missing' } }), null);
+});
+
+test('the download payloads are closed: the id read from the reply, and the fixed VAD verb', () => {
+  assert.deepEqual([...M.downloadPayloads(voiceStatus())], [
+    { action: 'model_download', id: PARAKEET },
+    { action: 'download_model' },
+  ], 'a missing model asks for both: the model and the detector it needs');
+  // only the detector is missing: no second copy of the model
+  assert.deepEqual([...M.downloadPayloads(voiceStatus({ parakeet: { state: 'ready' } }))], [{ action: 'download_model' }]);
+  // nothing is asked for when everything is there, and never twice while downloading
+  assert.equal(M.downloadPayloads(voiceStatus(BOTH_READY)), null);
+  assert.equal(M.downloadPayloads(voiceStatus({ parakeet: { state: 'downloading', fraction: 0.2 } })), null, 'a download in flight is not asked for again');
+  // a failed one can be asked again, both halves
+  assert.equal(M.downloadPayloads(voiceStatus({ parakeet: { state: 'failed', error: 'x' } })).length, 2);
+  for (const payload of M.downloadPayloads(voiceStatus())) {
+    assert.deepEqual(Object.keys(payload).sort(), payload.action === 'download_model' ? ['action'] : ['action', 'id'], 'nothing but the closed fields travels');
+  }
+});
+
+test('an id that is not the catalog entry in the reply is refused: no payload, no host call', () => {
+  const bad = [
+    { why: 'not in the list', models: [] },
+    { why: 'another model only', models: [entry('whisper-small-int8', 394)] },
+    { why: 'a URL', models: [entry('https://huggingface.co/x/parakeet.onnx')] },
+    { why: 'a path', models: [entry('/home/alvaro/Apps/koda/parakeet.onnx')] },
+    { why: 'a traversal', models: [entry('../x')] },
+    { why: 'dots only', models: [entry('..')] },
+    { why: 'empty', models: [entry('')] },
+    { why: 'uppercase', models: [entry(PARAKEET.toUpperCase())] },
+    { why: 'a number', models: [{ id: 7, name: 'x', sizeMb: 670 }] },
+    { why: 'the list is not a list', models: 'x' },
+  ];
+  for (const { why, models } of bad) {
+    const reply = voiceStatus({ models });
+    assert.equal(M.modelDownloadPayload(reply), null, `${why}: no model payload`);
+    assert.equal(M.downloadPayloads(reply), null, `${why}: no host call at all`);
+    // even when only the detector is left, nothing is sent without the id we read from the reply
+    assert.equal(M.downloadPayloads({ ...reply, parakeet: { state: 'ready' } }), null, `${why}: still nothing`);
+  }
+  // the good one still works, and the id is the reply’s own string
+  assert.equal(M.modelDownloadPayload(voiceStatus()).id, PARAKEET);
+  assert.equal(M.modelDownloadPayload(voiceStatus({ parakeet: { state: 'ready' } })), null, 'an installed model is not downloaded again');
+  const vad = M.vadDownloadPayload(voiceStatus());
+  assert.deepEqual(vad, { action: 'download_model' }, 'the detector is the fixed id-less verb (src/speech/wake.rs download)');
+  assert.equal(M.vadDownloadPayload(voiceStatus(BOTH_READY)), null);
+  assert.equal(M.vadDownloadPayload(voiceStatus({ vad: { state: 'downloading', fraction: 0.1 } })), null);
+});
+
+test('the card draws the model state from the island and asks for it only on a trusted click', () => {
+  const src = read('minikodas-settings.js');
+  // a short message per needle, so a failure never dumps the whole page
+  const has = (needle, why) => assert.ok(src.includes(needle), `${why}: «${needle}» is missing from the page`);
+  assert.equal(/612/.test(src), false, 'the artboard’s size is a drawing: the page shows the reported one');
+  assert.equal(/https?:\/\//.test(src), false, 'no URL lives in the page');
+  assert.equal(/\.onnx|\.part\b|\.local\/share/.test(src), false, 'no file name and no path lives in the page');
+  // the state comes from the pure view, never from a literal
+  has('api.modelView(', 'the card draws what modelView returns');
+  has("invoke('voice_action'", 'the model state comes from the existing closed voice_action');
+  has("callVoice({ action: 'status' })", 'the status is read when the card is shown');
+  has("listen('voice-model'", 'and it is updated by the event the island emits (src/voicehost.rs voice-model)');
+  // the button: a real click, then the closed payloads, nothing else
+  const from = src.indexOf('modelBtn.addEventListener');
+  assert.ok(from > 0, 'the download button has its own handler');
+  const handler = src.slice(from, from + 2400);
+  assert.match(handler, /e\.isTrusted !== true/, 'a synthetic click never downloads the model');
+  assert.match(handler, /api\.modelClickAction\(/, 'the payloads come from the pure builder, through the click action');
+  assert.match(handler, /action\.kind === 'download' \? action\.payloads : null/, 'only a `download` action carries payloads to the host');
+  for (const banned of ['innerHTML', 'location', 'http', 'fetch(']) {
+    assert.equal(handler.includes(banned), false, `the click handler never uses ${banned}`);
+  }
+  // the waiting is bounded by a timer, not by a poll
+  has('api.MODEL_STALL_MS', 'the stall budget is the exported constant');
+  has('setTimeout(', 'a timer repaints once the budget passes');
+  assert.equal(/setInterval\(/.test(src), false, 'no polling loop');
+  // TRIANGULATE: re-arming on every repaint would postpone the budget forever (an agent:state event every second is
+  // enough), so the timer is armed for what is LEFT of `MODEL_STALL_MS` since the last sign of life.
+  assert.match(src, /Math\.max\(0, api\.MODEL_STALL_MS - \(Date\.now\(\) - modelWait\)\)/, 'the timer counts from the last event, not from the last paint');
+  // TRIANGULATE: the button lives on the local option, which is a <label>: a click on it would also pick the radio and
+  // save the setting. The default action of that click is cancelled.
+  assert.match(handler, /e\.preventDefault\(\)/, 'the download click does not also toggle the option it sits on');
+});
+
+test('the model sentence is ours in every state, in the artboard’s words', () => {
+  const src = read('minikodas-settings.js');
+  for (const needle of ['Falta${size}', 'Instalado${size}', "'Descargar'", "'Reintentar'"]) {
+    assert.ok(src.includes(needle), `the artboard’s wording «${needle}» is missing`);
+  }
+  // the downloading line keeps the artboard’s shape and drops the speed nobody reports
+  assert.ok(src.includes('% · ${doneMb} de ${sizeMb} MB'), 'the progress line is «N % · M de T MB»');
+  assert.equal(/MB\/s/.test(src), false, 'the speed is not drawn: nobody reports it');
+});
+
+test('«Reintentar» after a stalled download re-reads the host and never starts a second download', () => {
+  const base = {
+    prefs: {}, vad: { state: 'ready' }, downloadMb: 1,
+    parakeet: { state: 'downloading', fraction: 0.4 },
+    speech: { models: [{ id: 'parakeet-tdt-0.6b-v3-int8', sizeMb: 670, state: { state: 'downloading', fraction: 0.4 }, installed: false }] },
+  };
+  // the host still says «downloading» but the page has heard nothing for longer than the budget: the card says failed/retry
+  const stalled = M.modelClickAction(base, M.MODEL_STALL_MS + 1000);
+  assert.deepEqual(stalled, { kind: 'reread' }, 'a stalled download asks the host again, it does not guess');
+  // while it is still moving, a click on the (hidden) button does nothing
+  assert.deepEqual(M.modelClickAction(base, 1000), { kind: 'none' });
+  // a real failure or a missing model starts the download with the closed payloads only
+  const failed = { ...base, parakeet: { state: 'failed', error: 'x' } };
+  const act = M.modelClickAction(failed, 0);
+  assert.equal(act.kind, 'download');
+  assert.deepEqual(act.payloads, [{ action: 'model_download', id: 'parakeet-tdt-0.6b-v3-int8' }]);
+  // a reply with no catalog entry can never produce a call
+  assert.deepEqual(M.modelClickAction({ ...failed, speech: { models: [] } }, 0), { kind: 'none' });
+  assert.deepEqual(M.modelClickAction(null, 0), { kind: 'none' });
+  // nothing in the action carries anything but the closed verbs
+  for (const p of act.payloads) assert.ok(['model_download', 'download_model'].includes(p.action));
+});
+
+test('the download click goes through modelClickAction', () => {
+  const src = read('minikodas-settings.js');
+  const handler = src.slice(src.indexOf('modelBtn.addEventListener'));
+  assert.match(handler.slice(0, 1400), /api\.modelClickAction\(/, 'the click asks the pure function what to do');
+  assert.doesNotMatch(handler.slice(0, 1400), /api\.downloadPayloads\(/, 'the click no longer builds payloads from the raw host state');
 });
 
 console.log(`minikodas-settings-check: ${passed} passed`);
