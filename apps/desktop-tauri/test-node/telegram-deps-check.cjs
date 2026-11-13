@@ -203,7 +203,9 @@ test('build-runtime runs that guard before it ships the folder', () => {
 	const source = fs.readFileSync(path.join(runtimeDir, 'build-runtime.cjs'), 'utf8');
 	const call = source.indexOf('assertNoNativeAddons(partial)');
 	assert.ok(call > 0, 'the build calls the guard');
-	const rename = source.indexOf('fs.renameSync(partial, out)');
+	// release/0.2 (K2-05) replaced the bare rename with a bounded Windows retry: the guard still runs first, whichever
+	// of the two calls the build uses.
+	const rename = Math.max(source.indexOf('fs.renameSync(partial, out)'), source.indexOf('renameWithRetry(partial, out'));
 	assert.ok(rename > call, 'the guard runs before the built folder replaces the output');
 });
 

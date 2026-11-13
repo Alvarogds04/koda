@@ -659,9 +659,9 @@ const repository = (manifest) => (typeof manifest.repository === 'string' ? mani
    package.json and the canonical text from licenses/<id>.txt, reproduced once; with no such text the build fails. */
 function writeNotices(dest, nodeVersion, engram, ffPin, ytPin) {
   const lines = ['# Third-party notices: Koda\'s bundled runtime', '',
-    'Koda ships Node.js, Pi, Gentle Shell (gentle-pi) and Engram in this folder (K2-02, K2-05), plus the daemon\'s own',
-    'runtime dependencies (K2-13: @mtcute/node, the Telegram client library, with the empty better-sqlite3 stub this',
-    'folder ships in place of its native addon). Their licences and those of every package they include follow.', '',
+    'Koda ships Node.js, Pi, Gentle Shell (gentle-pi) and Engram in this folder (K2-02, K2-05). Their licences and those of every package they include follow.', '',
+    'The daemon\'s own runtime dependencies ship here too (K2-13): @mtcute/node, the Telegram client library, with the empty',
+    'better-sqlite3 stub this folder carries in place of its native addon. They are listed below with every other package.', '',
     `## Node.js ${nodeVersion}`, '', 'License: MIT (with bundled components). Full text: `LICENSE.node` in this folder.', '',
     ...(ffPin ? ffmpegNotice(ffPin) : []),
     ...(ytPin ? ytdlpNotice(ytPin) : [])];

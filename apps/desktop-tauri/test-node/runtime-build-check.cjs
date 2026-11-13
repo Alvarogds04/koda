@@ -405,7 +405,8 @@ test('Windows: the real build wins a commit rename refused twice with EPERM, and
   const out = path.join(fx.dir, 'out-rename-retry');
   let r = build(fx, ['--target', 'linux-x64', '--out', out, '--node-archive', fx.archives['linux-x64']], { KODA_RUNTIME_TEST_RENAME_EPERM: '2' });
   assert.equal(r.status, 0, `exit ${r.status}\nstdout=${r.stdout}\nstderr=${r.stderr}`);
-  assert.match(r.stdout, new RegExp(`^runtime linux-x64: Node ${NODE_VERSION} \\+ Pi 1\\.4\\.0 \\+ gentle-pi 4\\.3\\.0 \\+ engram 3\\.4\\.0 -> `));
+  // K2-13: the banner also names the bundled ffmpeg and yt-dlp (linux-x64 ships both).
+  assert.match(r.stdout, new RegExp(`^runtime linux-x64: Node ${NODE_VERSION} \\+ Pi 1\\.4\\.0 \\+ gentle-pi 4\\.3\\.0 \\+ engram 3\\.4\\.0 \\+ ffmpeg n9\\.0\\.2-49-gc179411bbb \\+ yt-dlp 2026\\.10\\.26 -> `));
   assert.ok(tree(out).includes('koda-runtime.json'), 'the runtime is complete after the retried rename');
   assert.deepEqual(fs.readdirSync(fx.dir).filter((n) => n.startsWith('out-rename-retry.partial-')), [], 'the partial took the output\'s place');
   const failed = path.join(fx.dir, 'out-rename-fail');
