@@ -9,6 +9,7 @@ import os
 import pathlib
 import subprocess
 import sys
+import tempfile
 import time
 
 if sys.platform != "darwin" or os.environ.get("GITHUB_ACTIONS") != "true":
@@ -53,7 +54,7 @@ def launch(name, while_running=None):
 def endpoint_published(pid):
     # HU-068: the stable handoff Pi and the hooks read to find the island (it used to be a «no receiver» stub here)
     import json
-    runtime = pathlib.Path(env.get("TMPDIR", "/tmp")) / "koda"
+    runtime = pathlib.Path(env.get("TMPDIR") or tempfile.gettempdir()) / "koda"
     handoff = runtime / "endpoint.json"
     assert handoff.is_file(), f"no endpoint.json in {runtime}: {sorted(p.name for p in runtime.iterdir())}"
     assert handoff.stat().st_mode & 0o777 == 0o600, oct(handoff.stat().st_mode)
