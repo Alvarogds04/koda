@@ -200,6 +200,23 @@ test('F2: a timed event that began before today and ends tomorrow says so and al
   assert.deepEqual(w.rows.map(r => `${r.day} ${r.time}`), ['Hoy 22:00', 'Mañana Hasta 06:00']);
 });
 
+test('F2: an event that runs on past tomorrow names its real end day on both rows (never «Hasta mañana»)', () => {
+  const key = dayAt(3);
+  const dm = `${key.slice(8, 10)}/${key.slice(5, 7)}`;
+  const v = C.cardView(answer([
+    floatingAt({ title: 'Congreso', start: { date: dayAt(-1), time: '22:00:00', tz: null }, end: { date: key, time: '09:00:00', tz: null } }),
+  ]), COVER_NOW);
+  assert.deepEqual(v.rows.map(r => `${r.day} ${r.time} ${r.title}`), [`Hoy Hasta el ${dm} 09:00 Congreso`, `Mañana Hasta el ${dm} 09:00 Congreso`],
+    'ending in three days it must not say «mañana» on either row');
+  assert.equal(v.rows[0].aria, `Hoy, hasta el ${dm} a las 09:00, Congreso`);
+  assert.equal(v.rows[1].aria, `Mañana, hasta el ${dm} a las 09:00, Congreso`);
+  // ending tomorrow keeps the short form, and ending the same day stays «Hasta HH:MM»
+  const w = C.cardView(answer([
+    floatingAt({ title: 'Viaje', start: { date: dayAt(-1), time: '22:00:00', tz: null }, end: { date: dayAt(1), time: '09:00:00', tz: null } }),
+  ]), COVER_NOW);
+  assert.deepEqual(w.rows.map(r => `${r.day} ${r.time}`), ['Hoy Hasta mañana 09:00', 'Mañana Hasta 09:00']);
+});
+
 test('F2: all-day rows stay «Todo el día» and sort before the timed ones of the same day', () => {
   const v = C.cardView(answer([
     floatingAt({ title: 'Reunión', start: { date: dayAt(0), time: '09:00:00', tz: null }, end: { date: dayAt(0), time: '10:00:00', tz: null } }),
