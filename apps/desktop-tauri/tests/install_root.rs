@@ -3,8 +3,8 @@
 //! M4-PRE: a packaged (release) binary must never resolve its runtime root or
 //! project id to the source tree, and the installed root is its own private
 //! leaf that never touches the Preview's reserved roots.
-use abito_island::identity::{self, project_root_for};
-use abito_island::transport::{
+use koda_island::identity::{self, project_root_for};
+use koda_island::transport::{
     self, default_runtime_for, resolve_runtime_from, runtime_allowed, INSTALLED_RUNTIME_LEAF,
     RESERVED_RUNTIME_NAMES,
 };
@@ -97,8 +97,8 @@ fn installed_project_root_comes_only_from_an_explicit_absolute_directory() {
     let got = project_root_for(None, dir.to_str()).expect("explicit directory");
     assert_eq!(got, std::fs::canonicalize(&dir).unwrap());
     // the id is derived from that root, not from the build tree
-    let id = abito_island::protocol::project_id(got.to_str().unwrap());
-    assert_ne!(id, abito_island::protocol::project_id(&std::fs::canonicalize(BUILD_TREE).unwrap().parent().unwrap().parent().unwrap().to_string_lossy()));
+    let id = koda_island::protocol::project_id(got.to_str().unwrap());
+    assert_ne!(id, koda_island::protocol::project_id(&std::fs::canonicalize(BUILD_TREE).unwrap().parent().unwrap().parent().unwrap().to_string_lossy()));
     let _ = std::fs::remove_dir_all(&dir);
 }
 

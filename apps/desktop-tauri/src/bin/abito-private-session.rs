@@ -25,8 +25,8 @@
 use std::io::Read as _;
 use std::io::Write as _;
 #[cfg(windows)]
-use abito_island::winipc;
-use abito_island::winpolicy;
+use koda_island::winipc;
+use koda_island::winpolicy;
 use serde_json::Value;
 
 const PROTOCOL: &str = "island-agent/1";
@@ -180,7 +180,7 @@ fn run() -> i32 {
     if let Some(cmd) = winpolicy::parse_fs_args(&args) {
         #[cfg(windows)]
         {
-            return match abito_island::winfs::ffi::run(&cmd, &mut std::io::stdin()) {
+            return match koda_island::winfs::ffi::run(&cmd, &mut std::io::stdin()) {
                 Ok(json) => { println!("{json}"); 0 }
                 Err(reason) => { println!("{{\"schema\":\"abito-fs/1\",\"ok\":false,\"reason\":\"{reason}\"}}"); 1 }
             };
@@ -231,7 +231,7 @@ fn run_windows(verify: bool) -> i32 {
         None => return if verify { 1 } else { fail("island root is not the canonical protected one") },
     };
     if verify {
-        return if abito_island::agentconn::verify_session(&root).is_ok() { 0 } else { 1 };
+        return if koda_island::agentconn::verify_session(&root).is_ok() { 0 } else { 1 };
     }
     let runtime = root.join("runtime");
     // The daemon creates the runtime directory; this helper only ever fills

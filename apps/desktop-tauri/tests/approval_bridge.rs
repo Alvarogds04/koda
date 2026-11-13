@@ -21,9 +21,9 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use abito_island::approval::{self, Approval, Decision, HostCtx, Shared, SharedHooks};
-use abito_island::fakebridge::{FakeBackend, FakeConfig};
-use abito_island::http::REQUEST_DEADLINE_MS;
+use koda_island::approval::{self, Approval, Decision, HostCtx, Shared, SharedHooks};
+use koda_island::fakebridge::{FakeBackend, FakeConfig};
+use koda_island::http::REQUEST_DEADLINE_MS;
 use serde_json::{json, Value};
 
 const LOGIN: &str = "tester@example.test";
@@ -544,11 +544,11 @@ fn quit_aborts_an_inflight_decision_without_retry() {
             value: SESSION.to_string(),
             expires_at: None,
         });
-        appr.status = abito_island::desktop::BridgeStatus {
+        appr.status = koda_island::desktop::BridgeStatus {
             state: "healthy",
             reason: "Puente disponible.",
         };
-        let candidate = abito_island::card::parse_proposals(&json!([pending('a')]))
+        let candidate = koda_island::card::parse_proposals(&json!([pending('a')]))
             .expect("parseable")
             .expect("one candidate");
         appr.queued = Some(candidate.clone());
@@ -607,7 +607,7 @@ fn no_login_configuration_means_disabled_and_zero_requests() {
     {
         let mut appr = fixture.appr.lock().expect("approval lock");
         appr.login = None;
-        appr.status = abito_island::desktop::BridgeStatus {
+        appr.status = koda_island::desktop::BridgeStatus {
             state: "disabled",
             reason: "Puente deshabilitado: configuración no válida.",
         };

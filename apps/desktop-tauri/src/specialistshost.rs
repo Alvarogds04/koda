@@ -5,10 +5,10 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
-use abito_island::bridge::{self, BridgeError};
-use abito_island::chat::ChatError;
-use abito_island::chatlane::Target;
-use abito_island::models::{self, Entry};
+use koda_island::bridge::{self, BridgeError};
+use koda_island::chat::ChatError;
+use koda_island::chatlane::Target;
+use koda_island::models::{self, Entry};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -169,16 +169,16 @@ pub fn turn_snapshot(state: &AppState, base: &str) -> Result<(Option<Target>, St
 
 /// Freeze the role and cloud selection together; an explicitly local role always wins.
 #[allow(dead_code)]
-pub fn turn_snapshot_selected(state: &AppState, base: &str) -> Result<(Option<Target>, String, Option<SpecialistRef>, Option<abito_island::cloudprofiles::CloudSelection>), ChatError> {
+pub fn turn_snapshot_selected(state: &AppState, base: &str) -> Result<(Option<Target>, String, Option<SpecialistRef>, Option<koda_island::cloudprofiles::CloudSelection>), ChatError> {
     let (role, principal_instructions) = {
         let store = state.specialists.store.lock().expect("specialists lock");
-        let instructions = crate::settingshost::abito_instructions(&state.settings);
+        let instructions = crate::settingshost::koda_instructions(&state.settings);
         (store.active().cloned(), instructions)
     };
     let fallback = state.chat_target.lock().expect("chat target lock").clone();
     let registry = modelshost::registry(state);
     let cloud = if role.as_ref().is_some_and(|r| r.model.is_some()) { None } else { *state.chat_cloud.lock().expect("cloud selection lock") };
-    let cloud_base = base.replace("Funcionas con un modelo local de esta máquina. ", abito_island::chatlane::CLOUD_MODEL_PROMPT);
+    let cloud_base = base.replace("Funcionas con un modelo local de esta máquina. ", koda_island::chatlane::CLOUD_MODEL_PROMPT);
     let base = if cloud.is_some() { &cloud_base } else { base };
     let (target, system) = resolve_turn(role.as_ref(), fallback, &registry, base, principal_instructions.as_deref())?;
     let specialist = role.map(|s| SpecialistRef { id: s.id, name: s.name });
@@ -200,7 +200,7 @@ pub fn select_conversation_role(app: &AppHandle, state: &AppState, id: Option<&s
 
 #[allow(dead_code)]
 pub fn effective_target(state: &AppState) -> Result<Option<Target>, ChatError> {
-    turn_configuration(state, abito_island::chatlane::SYSTEM_PROMPT).map(|(target, _)| target)
+    turn_configuration(state, koda_island::chatlane::SYSTEM_PROMPT).map(|(target, _)| target)
 }
 
 #[tauri::command]

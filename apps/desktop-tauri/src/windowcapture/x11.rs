@@ -4,7 +4,7 @@
 //! it (covered parts are right); otherwise `GetImage` on the window (covered parts may be wrong).
 use super::image::Raw;
 use super::mcp::{CaptureError, Target};
-use crate::contextwin::{is_abito, Candidate};
+use crate::contextwin::{is_koda, Candidate};
 use x11rb::connection::Connection;
 use x11rb::protocol::composite::ConnectionExt as _;
 use x11rb::protocol::xproto::{AtomEnum, ConnectionExt, ImageFormat, MapState};
@@ -71,7 +71,7 @@ pub fn pick(display: Option<&str>) -> Result<Target, CaptureError> {
         }
         let app = if class.is_empty() { instance.clone() } else { class.clone() };
         let candidate = Candidate { app_id: format!("{instance} {class}"), app_name: app.clone(), title: String::new() };
-        if is_abito(&candidate) || app.trim().is_empty() {
+        if is_koda(&candidate) || app.trim().is_empty() {
             continue;
         }
         return Ok(Target { app_id: candidate.app_id, app, title: String::from_utf8_lossy(&title).into_owned(), handle: id as u64 });

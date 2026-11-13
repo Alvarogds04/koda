@@ -1,5 +1,5 @@
 //! Click is display-only: exact identity/kind, no answer or approval authority.
-use abito_island::bridge::{parse_click, route_click, ClickKind};
+use koda_island::bridge::{parse_click, route_click, ClickKind};
 use serde_json::json;
 
 const ID: &str = "3f2b8a40-1c2d-4e5f-8a6b-7c8d9e0f1a2b";
@@ -7,7 +7,7 @@ const OTHER: &str = "7a1d2c3b-4e5f-4a6b-9c8d-1e2f3a4b5c6d";
 const NOW: u64 = 2_000_000_000_000;
 
 struct Measured;
-impl abito_island::core::WindowIo for Measured {
+impl koda_island::core::WindowIo for Measured {
     fn outer_position(&self) -> (i32,i32) { (100,0) }
     fn size(&self) -> (i32,i32) { (672,176) }
     fn scale(&self) -> f64 { 1.0 }
@@ -15,7 +15,7 @@ impl abito_island::core::WindowIo for Measured {
 }
 #[test]
 fn click_open_never_collapses_hidden_stale_expanded_or_expanded_chat() {
-    use abito_island::{core::Core, desktop::{plan_click_open, ClickPlan, IslandState}, geometry::Rect};
+    use koda_island::{core::Core, desktop::{plan_click_open, ClickPlan, IslandState}, geometry::Rect};
     let area = Rect { x:0,y:0,w:1920,h:1080 };
     for phase in [IslandState::Hidden,IslandState::Compact,IslandState::Expanded] {
         for expanded in [false,true] {
@@ -26,9 +26,9 @@ fn click_open_never_collapses_hidden_stale_expanded_or_expanded_chat() {
             assert!(core.expanded); assert!(!core.chat); assert_eq!(state,IslandState::Expanded);
         }
     }
-    assert!(abito_island::desktop::click_plan_is_current(2,2,IslandState::Expanded));
-    assert!(!abito_island::desktop::click_plan_is_current(2,3,IslandState::Expanded));
-    assert!(!abito_island::desktop::click_plan_is_current(2,2,IslandState::Hidden));
+    assert!(koda_island::desktop::click_plan_is_current(2,2,IslandState::Expanded));
+    assert!(!koda_island::desktop::click_plan_is_current(2,3,IslandState::Expanded));
+    assert!(!koda_island::desktop::click_plan_is_current(2,2,IslandState::Hidden));
 }
 
 #[test]
@@ -56,11 +56,11 @@ fn invalid_shapes_fail_closed_without_legacy_argument_smuggling() {
         json!({"action":"expand","id":ID,"kind":"question"}),
     ] {
         assert_eq!(parse_click(&payload).unwrap_err().code, "denied");
-        assert!(abito_island::bridge::validate_payload(&payload).is_err());
+        assert!(koda_island::bridge::validate_payload(&payload).is_err());
     }
     assert!(parse_click(&json!({"action":"click","id":"a".repeat(513),"kind":"question"})).is_err());
-    assert!(abito_island::bridge::validate_payload(&json!({"action":"expand"})).is_ok());
-    assert!(abito_island::bridge::validate_payload(&json!({"action":"dismiss"})).is_ok());
+    assert!(koda_island::bridge::validate_payload(&json!({"action":"expand"})).is_ok());
+    assert!(koda_island::bridge::validate_payload(&json!({"action":"dismiss"})).is_ok());
 }
 
 #[test]

@@ -1,5 +1,5 @@
 {
-  "name": "abito-desktop-sound",
+  "name": "koda-desktop-sound",
   "version": "0.1.0",
   "private": true,
   "description": "Abito island sound engine (#313): dependency-free UMD, WebAudio-synthesized cues, no audio files.",

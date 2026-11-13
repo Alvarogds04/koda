@@ -327,7 +327,7 @@ From the repository root, using the already installed Cargo/Node and cached depe
 sh apps/desktop-pi/scripts/test-real-receiver.sh
 ```
 
-This is an opt-in integration test, **not a fake receiver, Pi/model session, or UI test**. It builds `apps/desktop-tauri/tests/question_producer.rs` against the actual `abito_island::transport` library and launches `test-node/pi-question-producer.cjs`, which loads this producer's real config, adapter and `QuestionBroker`. Only Pi's registration/context and the human host are simulated. Every observed socket write still goes to the real UDS unchanged; no manufactured ready, answer or ACK is substituted.
+This is an opt-in integration test, **not a fake receiver, Pi/model session, or UI test**. It builds `apps/desktop-tauri/tests/question_producer.rs` against the actual `koda_island::transport` library and launches `test-node/pi-question-producer.cjs`, which loads this producer's real config, adapter and `QuestionBroker`. Only Pi's registration/context and the human host are simulated. Every observed socket write still goes to the real UDS unchanged; no manufactured ready, answer or ACK is substituted.
 
 The runner uses `cargo test --offline --locked`, a target directory in this checkout, and a fresh private `KODA_SOCKET_DIR` in this checkout. It removes `DISPLAY`, `WAYLAND_DISPLAY`, `DBUS_SESSION_BUS_ADDRESS`, `XAUTHORITY` and `XDG_SESSION_TYPE` from the child environment. No Tauri entry point, GTK initialization, X server, native window, display capture, provider or service is launched. Linking the app's cached GTK/Tauri dependencies does not create a window. Missing cached dependencies or tools fail explicitly: **no downloads, fallback or silent skip**.
 

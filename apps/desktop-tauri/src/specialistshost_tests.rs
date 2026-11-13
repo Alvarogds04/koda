@@ -202,7 +202,7 @@ fn ipc_dispatcher_persists_before_events_and_failure_keeps_disk_and_roles() {
 fn principal_test_state(instructions: &str) -> AppState {
     use crate::*;
     let project = "principal-prompt-test".to_string();
-    let prefs = abito_island::prefs::Prefs::from_text(Some(
+    let prefs = koda_island::prefs::Prefs::from_text(Some(
         &json!({"v": 1, "abito_instructions": instructions}).to_string(),
     ));
     AppState {
@@ -254,7 +254,7 @@ fn principal_test_state(instructions: &str) -> AppState {
 fn turn_snapshot_applies_preferences_only_to_principal_and_freezes_the_prompt() {
     let instructions = "Contestá con ejemplos.\nConservá los saltos.";
     let mut state = principal_test_state(instructions);
-    let base = abito_island::chatlane::SYSTEM_PROMPT;
+    let base = koda_island::chatlane::SYSTEM_PROMPT;
     let (target, frozen, association) = turn_snapshot(&state, base).unwrap();
     assert!(target.is_none());
     assert!(association.is_none());
@@ -269,7 +269,7 @@ fn turn_snapshot_applies_preferences_only_to_principal_and_freezes_the_prompt() 
     assert_eq!(prompt, specialists::system_prompt(base, Some(&role)));
     assert!(!prompt.contains(instructions));
     assert_eq!(association.unwrap().id, role.id);
-    state.settings = crate::settingshost::with_test_prefs(abito_island::prefs::Prefs::default());
+    state.settings = crate::settingshost::with_test_prefs(koda_island::prefs::Prefs::default());
     state.specialists.execute(None, models::REGISTRY, Command::Select { id: None }, |_| {}).unwrap();
     assert_eq!(turn_snapshot(&state, base).unwrap().1, base);
     assert!(frozen.contains(instructions), "later edits cannot change an existing turn");

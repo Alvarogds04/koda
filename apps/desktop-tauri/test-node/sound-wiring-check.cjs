@@ -117,7 +117,7 @@ function hostDtoFixture(host) {
       'p.custom_blobs_view()': null,
       // #442 T7.4: the island order projects as null until the human chooses one
       'p.island_agents_view()': null,
-      'p.abito_instructions_view()': null,
+      'p.koda_instructions_view()': null,
       // #389: the chosen panel monitor projects as null when no choice exists
       'p.monitor': null,
     };

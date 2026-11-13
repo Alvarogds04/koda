@@ -3,7 +3,7 @@
 //! A test binary of its own ON PURPOSE: this file's single test clears the process environment (HOME, XDG_DATA_HOME,
 //! LOCALAPPDATA, USERPROFILE), which no other test in the same process may observe. Cargo runs each test binary in its
 //! own process, so nothing else is affected.
-use abito_island::speech;
+use koda_island::speech;
 
 #[test]
 fn with_no_data_folder_the_read_only_speech_queries_answer_instead_of_panicking() {

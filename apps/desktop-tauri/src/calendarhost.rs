@@ -2,8 +2,8 @@
 //! user's private ICS URL (see `calendar`). Main window only, like the GitHub card. The URL is
 //! read from the keychain here and never crosses IPC; the answer carries events or a fixed code.
 use crate::{now_ms, AppState};
-use abito_island::bridge::{self, BridgeError};
-use abito_island::calendar::{self, Cache};
+use koda_island::bridge::{self, BridgeError};
+use koda_island::calendar::{self, Cache};
 use serde_json::Value;
 use std::sync::Mutex;
 use tauri::State;
@@ -22,7 +22,7 @@ pub async fn calendar_action(
     calendar::parse_request(&payload)?;
     state.rate.lock().expect("rate lock").check(now_ms())?;
     tauri::async_runtime::spawn_blocking(move || {
-        use abito_island::secrets::{Keychain, SecretStore};
+        use koda_island::secrets::{Keychain, SecretStore};
         let saved = Keychain.read(calendar::KEY).ok().flatten();
         let mut slot = CACHE.lock().unwrap_or_else(|e| e.into_inner());
         slot.get_or_insert_with(Cache::default).refresh(saved.as_deref(), now_ms() as u64, calendar::fetch_ics)

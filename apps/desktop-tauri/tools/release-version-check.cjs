@@ -10,7 +10,9 @@ const root = path.resolve(__dirname, '..');
 function expected(dir = root) {
   const cargo = /^version = "([^"]+)"/m.exec(fs.readFileSync(path.join(dir, 'Cargo.toml'), 'utf8'))?.[1];
   const conf = JSON.parse(fs.readFileSync(path.join(dir, 'tauri.conf.json'), 'utf8')).version;
-  const lock = /name = "abito-island"\nversion = "([^"]+)"/.exec(fs.readFileSync(path.join(dir, 'Cargo.lock'), 'utf8'))?.[1];
+  // The app package is `koda-island` since K2-04 T7 (it was `abito-island`): accept both, so renaming the crate never makes this
+  // tool read nothing. Any OTHER name is not the app and is reported as a disagreement, never silently accepted.
+  const lock = /name = "(?:koda|abito)-island"\nversion = "([^"]+)"/.exec(fs.readFileSync(path.join(dir, 'Cargo.lock'), 'utf8'))?.[1];
   const channel = fs.readFileSync(path.join(dir, 'RELEASE_CHANNEL'), 'utf8').trim();
   const problems = [];
   if (!cargo || cargo !== conf || cargo !== lock) problems.push(`versions disagree: Cargo.toml ${cargo}, tauri.conf.json ${conf}, Cargo.lock ${lock}`);

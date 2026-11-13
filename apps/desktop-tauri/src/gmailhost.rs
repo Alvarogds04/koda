@@ -7,12 +7,12 @@
 //! closed schema; every keychain and network step runs off the WebView thread, and no token, secret
 //! or client id ever reaches the page.
 use crate::{now_ms, AppState};
-use abito_island::bridge::{self, BridgeError};
-use abito_island::gmail_api::RustlsHttp as GmailApi;
-use abito_island::gmail_oauth::GmailAuth;
-use abito_island::gmailcmd::{self, Env, Flows, Seen};
-use abito_island::provider_oauth::RustlsHttp as TokenEndpoint;
-use abito_island::secrets::Keychain;
+use koda_island::bridge::{self, BridgeError};
+use koda_island::gmail_api::RustlsHttp as GmailApi;
+use koda_island::gmail_oauth::GmailAuth;
+use koda_island::gmailcmd::{self, Env, Flows, Seen};
+use koda_island::provider_oauth::RustlsHttp as TokenEndpoint;
+use koda_island::secrets::Keychain;
 use serde_json::{json, Value};
 use std::sync::OnceLock;
 
@@ -36,12 +36,12 @@ impl Seen for PrefsSeen<'_> {
 /// This command keeps its own validation: `desktop::validated_web_url` for links (it admits only
 /// http(s)) and `gmailcmd::safe_mailto` for replies.
 fn open(target: &str) -> bool {
-    use abito_island::opener::{open_detached, Target};
+    use koda_island::opener::{open_detached, Target};
     let target = if target.starts_with("mailto:") {
         if !gmailcmd::safe_mailto(target) { return false; }
         Target::Mailto(target)
     } else {
-        if abito_island::desktop::validated_web_url(&json!({"url": target})).is_err() { return false; }
+        if koda_island::desktop::validated_web_url(&json!({"url": target})).is_err() { return false; }
         Target::Web(target)
     };
     open_detached(target).is_ok()

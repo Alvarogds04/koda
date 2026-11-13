@@ -5,10 +5,10 @@
 //! schema). Reachable from the settings window on purpose: Coucou's Settings → "Open sounds
 //! folder" / "Reload sounds" live there. It can only read files named after one of the
 //! thirty-seven cue stems (`sounds::STEMS`) inside the app's own `sounds` folder (see
-//! `abito_island::sounds`), and `reveal` opens that fixed folder with no caller-influenced argument.
+//! `koda_island::sounds`), and `reveal` opens that fixed folder with no caller-influenced argument.
 use crate::{now_ms, AppState};
-use abito_island::bridge::{self, BridgeError};
-use abito_island::sounds::{self, Command};
+use koda_island::bridge::{self, BridgeError};
+use koda_island::sounds::{self, Command};
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -33,7 +33,7 @@ fn reveal(dir: &std::path::Path) -> Result<(), BridgeError> {
     std::fs::create_dir_all(dir).map_err(|_| err("save_failed"))?;
     // K2-01c: xdg-open, Finder (`open`) or Explorer; only a spawn failure counts (explorer.exe
     // reports 1 even on success).
-    abito_island::opener::open_detached(abito_island::opener::Target::Folder(dir)).map_err(|_| err("unavailable"))
+    koda_island::opener::open_detached(koda_island::opener::Target::Folder(dir)).map_err(|_| err("unavailable"))
 }
 
 /// Closed custom-sounds command: `{action:"list"}` → `{names:[stem…]}`,

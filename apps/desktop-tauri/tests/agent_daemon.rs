@@ -6,7 +6,7 @@
 //! The fake agent replaces only the engine: listing providers goes through the daemon's real Pi SDK
 //! helper, so a `pi` on PATH is required (CI installs the pinned Pi in the Rust job; never skip).
 //! A daemon that is not running must read as `no_daemon`, never hang.
-use abito_island::agentconn::{island_root, AgentConn};
+use koda_island::agentconn::{island_root, AgentConn};
 use serde_json::{json, Value};
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
@@ -336,7 +336,7 @@ fn live_island_first_open_sequence_returns_promptly() {
 /// mutex to emit `agent:state`. That is a self-deadlock unless the callback never re-locks it.
 #[test]
 fn the_host_pattern_connect_under_the_slot_mutex_with_a_callback_that_reads_the_slot_does_not_deadlock() {
-    use abito_island::agentconn::AgentConn as Conn;
+    use koda_island::agentconn::AgentConn as Conn;
     let island = Island::start();
     let slot: Arc<std::sync::Mutex<Option<Conn>>> = Arc::new(std::sync::Mutex::new(None));
     let emitted = Arc::new(AtomicU32::new(0));
@@ -449,7 +449,7 @@ fn the_real_daemon_lists_agents_with_a_plan_the_page_can_carry_back() {
     let claude = list.iter().find(|a| a["id"] == json!("claude-code")).unwrap_or_else(|| panic!("claude-code missing: {list:?}"));
     assert_eq!(claude["state"], json!("not_connected"), "an empty private home has no hooks: {claude}");
     let hash = claude["plan_hash"].as_str().expect("a plan_hash for a button state");
-    assert!(abito_island::agentclient::plan_hash_ok(hash), "{hash}");
+    assert!(koda_island::agentclient::plan_hash_ok(hash), "{hash}");
     assert_eq!(claude["reviewable"], json!(true));
     // the page's pure view turns exactly this real frame into a one-click row carrying the hash it shows
     let js = format!("const S=require('{}/frontend/settings-view.js'); const st={}; const r=S.agentsView(st).rows.find(x=>x.id==='claude-code'); process.stdout.write(JSON.stringify({{label:r.primary&&r.primary.label,hash:r.primary&&r.primary.command.plan_hash,summary:r.summary}}));", env!("CARGO_MANIFEST_DIR"), v);

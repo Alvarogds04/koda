@@ -7,7 +7,7 @@
 //! 2. the FOLD of the daemon's `hoy` / `hoy_decided` / `hoy_approved` frames into one bounded, closed view the page
 //!    renders as text: rows are rebuilt field by field, an off-vocabulary row is dropped (never sanitised into a
 //!    lie), text loses its control and bidi characters, and the frame's own `truncated` flag survives.
-use abito_island::agentclient::{parse_ui_command, ClientState, UiCommand};
+use koda_island::agentclient::{parse_ui_command, ClientState, UiCommand};
 use serde_json::{json, Value};
 
 const A: &str = "0b3a5c9e-8f27-4d11-9a0e-1c2d3e4f5a6b";

@@ -2,7 +2,7 @@
 //! XTest fake input drives the key presses; the test fails loudly if Xvfb is
 //! missing (a missing runner must never read as green).
 #![cfg(target_os = "linux")] // Requires the Linux Xvfb/XTest runner.
-use abito_island::hotkey::{x11::Grabber, x11::GrabEvent, Combo, Status};
+use koda_island::hotkey::{x11::Grabber, x11::GrabEvent, Combo, Status};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::{self, Receiver};
@@ -164,7 +164,7 @@ fn an_invalid_combo_never_reaches_the_server() {
 
 #[test]
 fn active_window_is_read_and_focus_can_be_handed_back() {
-    use abito_island::hotkey::x11::{active_window, give_focus_back};
+    use koda_island::hotkey::x11::{active_window, give_focus_back};
     let x = Xvfb::start();
     // bare Xvfb has no WM: no _NET_ACTIVE_WINDOW, and it must say None, not panic
     assert_eq!(active_window(Some(&x.display)), None);

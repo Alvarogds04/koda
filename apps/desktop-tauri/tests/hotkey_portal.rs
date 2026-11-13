@@ -3,7 +3,7 @@
 //! The fake follows the documented Request/Response protocol, including the OS
 //! permission dialog (accept / decline / never answered).
 #![cfg(target_os = "linux")] // Requires the Linux private-bus D-Bus runner.
-use abito_island::hotkey::{portal::client::{probe, PortalGrabber, PortalHub}, portal::{bind_requests, route_activation, PortalState, ShortcutSignal, SHORTCUT_ID}, Combo, Status};
+use koda_island::hotkey::{portal::client::{probe, PortalGrabber, PortalHub}, portal::{bind_requests, route_activation, PortalState, ShortcutSignal, SHORTCUT_ID}, Combo, Status};
 use std::collections::HashMap;
 use std::os::unix::fs::DirBuilderExt;
 use std::process::{Child, Command, Stdio};
@@ -303,7 +303,7 @@ fn after_a_rebind_the_old_session_cannot_fire_and_the_new_one_fires_once() {
 
 #[test]
 fn a_slow_portal_cannot_freeze_the_caller_probe_is_time_boxed() {
-    use abito_island::hotkey::portal::client::probe_with_timeout;
+    use koda_island::hotkey::portal::client::probe_with_timeout;
     let bus = Bus::start();
     let _srv = serve_slow(&bus, Dialog::Accept, Duration::from_secs(4));
     let t0 = std::time::Instant::now();
@@ -355,7 +355,7 @@ fn a_portal_without_the_registry_still_works_like_before() {
 
 #[test]
 fn every_catalog_action_sends_its_own_human_description_to_the_portal() {
-    use abito_island::hotkey::{Target,HotkeyConfig};
+    use koda_island::hotkey::{Target,HotkeyConfig};
     let expected = ["Mostrar u ocultar la isla de Koda", "Enviar Koda al escritorio o traerlo a casa",
         "Abrir el chat de Koda", "Ir al permiso o pregunta pendiente", "Enfocar una terminal abierta",
         "Ir a la siguiente pestaña", "Ir a la pestaña anterior", "Silenciar o activar el sonido de Koda",
@@ -381,8 +381,8 @@ fn hub(bus: &Bus) -> (PortalHub, mpsc::Receiver<String>) {
     });
     (hub, rx)
 }
-fn all_targets() -> Vec<(abito_island::hotkey::Target, abito_island::hotkey::HotkeyConfig)> {
-    abito_island::hotkey::Target::ALL.into_iter().map(|t| (t, abito_island::hotkey::HotkeyConfig::default_for(t))).collect()
+fn all_targets() -> Vec<(koda_island::hotkey::Target, koda_island::hotkey::HotkeyConfig)> {
+    koda_island::hotkey::Target::ALL.into_iter().map(|t| (t, koda_island::hotkey::HotkeyConfig::default_for(t))).collect()
 }
 fn hub_wait(h: &PortalHub, want: Status, ms: u64) -> bool {
     let end = std::time::Instant::now() + Duration::from_millis(ms);
@@ -400,9 +400,9 @@ fn every_enabled_target_is_bound_in_one_bind_call_of_one_session() {
     let state = STATES.lock().unwrap().get(&bus.address).unwrap().clone();
     let calls = state.bind_calls.lock().unwrap().clone();
     assert_eq!(calls.len(), 1, "ONE BindShortcuts for the whole set (one OS dialog), not one per target");
-    assert_eq!(calls[0], abito_island::hotkey::Target::ALL.iter().map(|t| t.portal_id().to_string()).collect::<Vec<_>>());
+    assert_eq!(calls[0], koda_island::hotkey::Target::ALL.iter().map(|t| t.portal_id().to_string()).collect::<Vec<_>>());
     remember(&bus);
-    for t in abito_island::hotkey::Target::ALL {
+    for t in koda_island::hotkey::Target::ALL {
         activate(&srv, t.portal_id());
         assert_eq!(rx.recv_timeout(Duration::from_secs(3)).as_deref(), Ok(t.id()), "the press reaches the target that owns the id");
     }
@@ -429,7 +429,7 @@ fn applying_the_same_set_again_keeps_the_session_and_never_asks_twice() {
     assert!(hub_wait(&h, Status::Active, 4000));
     let calls = state.bind_calls.lock().unwrap().clone();
     assert_eq!(calls.len(), 2);
-    assert!(!calls[1].contains(&abito_island::hotkey::Target::DesktopToggle.portal_id().to_string()), "a disabled target is not bound");
+    assert!(!calls[1].contains(&koda_island::hotkey::Target::DesktopToggle.portal_id().to_string()), "a disabled target is not bound");
     h.stop();
 }
 
@@ -443,6 +443,6 @@ fn the_trigger_the_human_picked_in_the_os_is_read_back() {
     h.apply(bind_requests(&all_targets()), false);
     assert!(hub_wait(&h, Status::Active, 4000));
     assert_eq!(h.effective_trigger(SHORTCUT_ID).as_deref(), Some("Ctrl+Shift+N"));
-    assert_eq!(h.effective_trigger(abito_island::hotkey::Target::DesktopToggle.portal_id()).as_deref(), Some("CTRL+ALT+d"));
+    assert_eq!(h.effective_trigger(koda_island::hotkey::Target::DesktopToggle.portal_id()).as_deref(), Some("CTRL+ALT+d"));
     h.stop();
 }

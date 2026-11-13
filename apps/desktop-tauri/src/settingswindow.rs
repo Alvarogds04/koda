@@ -9,7 +9,7 @@
 //! limiter. No secret, token or path crosses to the WebView here.
 
 use crate::AppState;
-use abito_island::bridge::{self, BridgeError};
+use koda_island::bridge::{self, BridgeError};
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Once;
@@ -36,8 +36,8 @@ pub(crate) const MIN_INNER_SIZE: (f64, f64) = (720.0, 480.0);
 /// below the window minimum: on a screen smaller than the minimum, the minimum
 /// wins — the WM enforces `min_inner_size` anyway.
 pub(crate) fn opening_size(stored: Option<(u32, u32)>, work: (u32, u32)) -> (f64, f64) {
-    let (min_w, min_h) = abito_island::prefs::SETTINGS_WINDOW_SIZE_MIN;
-    let (max_w, max_h) = abito_island::prefs::SETTINGS_WINDOW_SIZE_MAX;
+    let (min_w, min_h) = koda_island::prefs::SETTINGS_WINDOW_SIZE_MIN;
+    let (max_w, max_h) = koda_island::prefs::SETTINGS_WINDOW_SIZE_MAX;
     let usable = |(w, h): (u32, u32)| {
         w >= min_w && w <= max_w && h >= min_h && h <= max_h && w <= work.0 && h <= work.1
     };
@@ -524,11 +524,11 @@ mod tests {
         assert!(src.contains("bridge::sender_ok(webview.label(), &url)"), "the shared sender gate is the one that admits both windows");
         assert!(!src.contains("main_window_only("), "the Gmail card is configured in Ajustes: it must work there");
         // The gate itself, as the command uses it: both labels and both pages.
-        assert!(abito_island::bridge::sender_ok("main", "tauri://localhost/index.html").is_ok());
-        assert!(abito_island::bridge::sender_ok(SETTINGS_LABEL, "tauri://localhost/settings.html").is_ok());
-        assert!(abito_island::bridge::sender_ok("settings", "tauri://localhost/index.html").is_ok(), "the island page is served under both labels");
-        assert!(abito_island::bridge::sender_ok("main", "tauri://localhost/settings.html").is_err(), "the Ajustes page belongs to the settings window alone");
-        assert!(abito_island::bridge::sender_ok("foreign", "tauri://localhost/index.html").is_err());
+        assert!(koda_island::bridge::sender_ok("main", "tauri://localhost/index.html").is_ok());
+        assert!(koda_island::bridge::sender_ok(SETTINGS_LABEL, "tauri://localhost/settings.html").is_ok());
+        assert!(koda_island::bridge::sender_ok("settings", "tauri://localhost/index.html").is_ok(), "the island page is served under both labels");
+        assert!(koda_island::bridge::sender_ok("main", "tauri://localhost/settings.html").is_err(), "the Ajustes page belongs to the settings window alone");
+        assert!(koda_island::bridge::sender_ok("foreign", "tauri://localhost/index.html").is_err());
     }
 
     // ---- T6.2: the opening size of the own window (pure, no window system) ---

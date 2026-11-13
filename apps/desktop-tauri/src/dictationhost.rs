@@ -1,6 +1,6 @@
 //! One gated command; shared store and engine live for the application lifetime.
 use crate::{now_ms, AppState};
-use abito_island::{bridge::{self, BridgeError}, dictation_cmd::{self as cmd, Command, Engine, Plan}, flow, speech};
+use koda_island::{bridge::{self, BridgeError}, dictation_cmd::{self as cmd, Command, Engine, Plan}, flow, speech};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use serde_json::{json, Value};
@@ -48,7 +48,7 @@ fn sync(app: &AppHandle) {
     let (plan, store) = {
         let mut host = slot.lock().expect("dictation host");
         // abito-pausa: a paused feature never starts, whatever its stored preference says (the preference itself is kept)
-        let enabled = abito_island::paused::effective(abito_island::paused::Feature::Dictation, host.store.lock().expect("dictation store").prefs.enabled);
+        let enabled = koda_island::paused::effective(koda_island::paused::Feature::Dictation, host.store.lock().expect("dictation store").prefs.enabled);
         let starting = host.starting;
         let plan = host.engine.plan(enabled, starting);
         if matches!(plan, Plan::Start) { host.starting = true; }
@@ -62,7 +62,7 @@ fn sync(app: &AppHandle) {
             let rejected = {
                 let mut host = slot.lock().expect("dictation host");
                 host.starting = false;
-                let wanted = abito_island::paused::effective(abito_island::paused::Feature::Dictation, host.store.lock().expect("dictation store").prefs.enabled);
+                let wanted = koda_island::paused::effective(koda_island::paused::Feature::Dictation, host.store.lock().expect("dictation store").prefs.enabled);
                 host.engine.install(running, wanted)
             };
             if let Some(unused) = rejected { std::thread::spawn(move || drop(unused)); }
@@ -99,7 +99,7 @@ pub async fn dictation_action(
         // Device enumeration and model files are slow: none of it happens under the host lock.
         let devices = if matches!(payload["action"].as_str(), Some("set_prefs" | "status")) { speech::audio::input_devices() } else { vec![] };
         let names = devices.iter().map(|d| d.name.clone()).collect::<Vec<_>>();
-        use abito_island::secrets::{Keychain, SecretStore};
+        use koda_island::secrets::{Keychain, SecretStore};
         let has_claude_key = matches!(payload["action"].as_str(), Some("set_prefs" | "status"))
             && Keychain.read("anthropic-api-key").ok().flatten().is_some_and(|v| !v.is_empty());
         let command = cmd::parse_command(&payload, &names, has_claude_key).ok_or_else(|| err("invalid_schema"))?;

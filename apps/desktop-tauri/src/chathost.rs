@@ -18,14 +18,14 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use abito_island::agentconn::ChatConn;
-use abito_island::bridge::{self, BridgeError};
-use abito_island::chat::{self, Command};
-use abito_island::chatclient::{self, Routed};
-use abito_island::core::ViewPlan;
-use abito_island::desktop::IslandState;
-use abito_island::geometry;
-use abito_island::localmodel::DEFAULT_DEADLINES;
+use koda_island::agentconn::ChatConn;
+use koda_island::bridge::{self, BridgeError};
+use koda_island::chat::{self, Command};
+use koda_island::chatclient::{self, Routed};
+use koda_island::core::ViewPlan;
+use koda_island::desktop::IslandState;
+use koda_island::geometry;
+use koda_island::localmodel::DEFAULT_DEADLINES;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -35,8 +35,8 @@ use crate::{main_window, now_ms, publish, refresh_work_area, store_requested, Ap
 /// recorded natively by `main.rs`'s window event handler. `chat_attach`
 /// only ever reads (and hands to the daemon) a member of this set: short-lived (60 s TTL), bounded
 /// (16 entries) and one-shot, so the page can never name an arbitrary path.
-static NATIVE_DROPS: Mutex<abito_island::uploads::DropSet> =
-    Mutex::new(abito_island::uploads::DropSet::new());
+static NATIVE_DROPS: Mutex<koda_island::uploads::DropSet> =
+    Mutex::new(koda_island::uploads::DropSet::new());
 
 /// Record a native `WindowEvent::DragDrop(Drop)` on the main window.
 pub(crate) fn record_drops(paths: Vec<PathBuf>) {
@@ -76,7 +76,7 @@ pub struct ChatRoute {
 }
 
 fn island_dir() -> Option<PathBuf> {
-    abito_island::agentconn::island_root(
+    koda_island::agentconn::island_root(
         std::env::var("KODA_ISLAND_DIR").ok().as_deref(),
         std::env::var("HOME").ok().as_deref(),
     )
@@ -151,7 +151,7 @@ fn conversation_view(app: &AppHandle) -> Value {
         // F7: the view the reader handed over, never a fresh serialization of the state
         Some(route) => route.feed.project(now_ms() as u64),
         None => {
-            let off = abito_island::chatclient::ChatState::disconnected(abito_island::agentclient::Reason::NoDaemon);
+            let off = koda_island::chatclient::ChatState::disconnected(koda_island::agentclient::Reason::NoDaemon);
             chatclient::ChatHost::new().project(&serde_json::to_value(off).unwrap_or(Value::Null), now_ms() as u64)
         }
     }
@@ -450,7 +450,7 @@ pub async fn chat_attach_data(
     let tauri::ipc::InvokeBody::Raw(body) = request.body() else {
         return Err(chat_error(chat::ChatError::invalid_input("Pedido de archivo inválido.")));
     };
-    let (name, bytes) = abito_island::uploads::split_raw_body(body).map_err(chat_error)?;
+    let (name, bytes) = koda_island::uploads::split_raw_body(body).map_err(chat_error)?;
     if bytes.len() > chatclient::MAX_UPLOAD_FILE_BYTES {
         return Err(chat_error(chatclient::upload_error("file_too_large")));
     }
@@ -461,7 +461,7 @@ pub async fn chat_attach_data(
 /// Default deadlines for production turns.
 /// Kept for specialists until U5d (K2-05 L59): the island state still carries
 /// them and the specialists' fixture builds them.
-pub fn default_deadlines() -> abito_island::localmodel::Deadlines {
+pub fn default_deadlines() -> koda_island::localmodel::Deadlines {
     DEFAULT_DEADLINES
 }
 

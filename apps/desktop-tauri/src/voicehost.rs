@@ -7,12 +7,12 @@
 //! `voice-wake` {} when the phrase is heard, then `voice-command` {text} with what was
 //! said after it (or `voice-timeout` {} when nothing was).
 use crate::{now_ms, AppState};
-use abito_island::bridge::{self, BridgeError};
-use abito_island::speech::{self, audio, catalog, train, wake};
-use abito_island::prefs::Command as PrefsCommand;
-use abito_island::voicecmd::{self, Command, VoicePrefs};
-use abito_island::voiceintent::{self, Effect, Hands, MusicOp, Outcome, Session, World};
-use abito_island::voicespeak::{self, Engine, Voices};
+use koda_island::bridge::{self, BridgeError};
+use koda_island::speech::{self, audio, catalog, train, wake};
+use koda_island::prefs::Command as PrefsCommand;
+use koda_island::voicecmd::{self, Command, VoicePrefs};
+use koda_island::voiceintent::{self, Effect, Hands, MusicOp, Outcome, Session, World};
+use koda_island::voicespeak::{self, Engine, Voices};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use serde_json::{json, Value};
@@ -38,7 +38,7 @@ impl Hands for AppHands {
             Effect::Music(op) => music_control(&self.app, op),
             Effect::TogglePill(id) => crate::settingshost::voice_prefs_command(&self.app, &PrefsCommand::ToggleDeclaredPill(id.clone())).is_some(),
             Effect::SetMainPill(id) => crate::settingshost::voice_prefs_command(&self.app, &PrefsCommand::SetMainPill(id.clone())).is_some(),
-            Effect::OpenUrl(url) => url.starts_with("https://") && abito_island::opener::open_detached(abito_island::opener::Target::Web(url)).is_ok(),
+            Effect::OpenUrl(url) => url.starts_with("https://") && koda_island::opener::open_detached(koda_island::opener::Target::Web(url)).is_ok(),
             Effect::OpenApp(bin) => spawn_detached(bin, None),
             Effect::AskChat(text) => self.app.emit("voice-ask", json!({ "text": text })).is_ok(),
         }
@@ -69,10 +69,10 @@ fn music_state(app: &AppHandle) -> (bool, bool, u8, Option<(String, Option<Strin
 
 fn music_control(app: &AppHandle, op: &MusicOp) -> bool {
     let action = match op {
-        MusicOp::PlayPause => abito_island::spotify::Action::PlayPause,
-        MusicOp::Next => abito_island::spotify::Action::Next,
-        MusicOp::Previous => abito_island::spotify::Action::Previous,
-        MusicOp::Volume(v) => abito_island::spotify::Action::Volume(*v),
+        MusicOp::PlayPause => koda_island::spotify::Action::PlayPause,
+        MusicOp::Next => koda_island::spotify::Action::Next,
+        MusicOp::Previous => koda_island::spotify::Action::Previous,
+        MusicOp::Volume(v) => koda_island::spotify::Action::Volume(*v),
     };
     crate::spotifyhost::control(app, action)
 }
@@ -94,7 +94,7 @@ impl Voices for RealVoices {
     }
 
     fn eleven(&self, text: &str, gender: voicecmd::Gender) -> bool {
-        use abito_island::secrets::{Keychain, SecretStore};
+        use koda_island::secrets::{Keychain, SecretStore};
         let Some(key) = Keychain.read(voicespeak::KEY_NAME).ok().flatten().filter(|k| !k.is_empty()) else { return false };
         let run = async {
             let client = reqwest::Client::builder()
@@ -235,7 +235,7 @@ fn command_reply(handle: &AppHandle, session: &mut Session, hands: &AppHands, te
     let _ = handle.emit("voice-result", json!({ "outcome": outcome, "message": reply.message, "lang": if reply.lang == voiceintent::Lang::En { "en" } else { "es" } }));
     let prefs = slot_prefs(handle);
     let engine = {
-        use abito_island::secrets::{Keychain, SecretStore};
+        use koda_island::secrets::{Keychain, SecretStore};
         let has_key = Keychain.read(voicespeak::KEY_NAME).ok().flatten().is_some_and(|k| !k.is_empty());
         voicespeak::engine_for(prefs.output, has_key)
     };
@@ -341,14 +341,14 @@ fn sync(app: &AppHandle) {
     let (want, running) = {
         let h = slot.lock().expect("voice host");
         // abito-pausa: «OK Abito» is paused in this version — the microphone listener never starts (the stored preference is kept)
-        (abito_island::paused::effective(abito_island::paused::Feature::Voice, h.prefs.enabled) && wake::VAD.is_present() && speech::is_ready(), h.listener.is_some())
+        (koda_island::paused::effective(koda_island::paused::Feature::Voice, h.prefs.enabled) && wake::VAD.is_present() && speech::is_ready(), h.listener.is_some())
     };
     if want && !running {
         let sens = slot.lock().expect("voice host").prefs.sensitivity;
         let result = start_listener(app, sens);
         let mut h = slot.lock().expect("voice host");
         match result {
-            Ok(l) if abito_island::paused::effective(abito_island::paused::Feature::Voice, h.prefs.enabled) => {
+            Ok(l) if koda_island::paused::effective(koda_island::paused::Feature::Voice, h.prefs.enabled) => {
                 h.listener = Some(l);
                 h.last_error = None;
             }
@@ -358,8 +358,8 @@ fn sync(app: &AppHandle) {
             }
             Err(e) => {
                 // #503 S1: a local failure record with a CLOSED class only; the error text (`e`) is never passed on.
-                let class = if wake::VAD.is_present() { abito_island::failure::ModelError::Other } else { abito_island::failure::ModelError::MissingFile };
-                abito_island::failure::report("voice", "model-load-failed", abito_island::failure::Reason::ModelLoadFailed(class), None);
+                let class = if wake::VAD.is_present() { koda_island::failure::ModelError::Other } else { koda_island::failure::ModelError::MissingFile };
+                koda_island::failure::report("voice", "model-load-failed", koda_island::failure::Reason::ModelLoadFailed(class), None);
                 h.last_error = Some(e);
             }
         }
