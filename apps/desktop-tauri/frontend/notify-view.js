@@ -204,12 +204,20 @@
     return outcome ? { kind: 'outcome', outcome, controlsEnabled: false } : { kind: 'none', controlsEnabled: false };
   }
 
-  // ---- sound cues (catalog ids only; playing them is a separate OFF-by-default switch) --------
+  // ---- sound cues (catalog ids only; the sound engine and the human's preference decide whether they play) --------
   const SILENT = new Set(['sent', 'ack_lost', 'outcome_unknown', 'answered', 'human_cancelled', 'rejected', 'busy', 'disconnected', 'cancelled']);
-  function soundFor(prev, next) {
+  // K2-07 L10 «Un sonido distinto para cada aviso»: a new question plays snd.question, a new permission snd.approval.
+  // A permission is Pi's kind=approval, or a question the island SHOWS as a permission: `isPermission(n)` is the page's own
+  // approval-look classifier (island-layout approvalView), so the cue and the card the human sees never disagree.
+  function soundFor(prev, next, isPermission) {
     if (!prev || !next) return null; // nothing sounds at start-up or without history
     const before = fromPending(prev.pending), after = fromPending(next.pending);
-    if (after && (!before || before.id !== after.id)) return 'snd.attention';
+    if (after && (!before || before.id !== after.id)) {
+      if (after.kind === 'approval') return 'snd.approval';
+      let look = false;
+      try { look = typeof isPermission === 'function' && isPermission(after) === true; } catch { look = false; }
+      return look ? 'snd.approval' : 'snd.question';
+    }
     // an expiry is an EVENT: the question that was pending last time is gone and the host says expired
     // (a retained old notice must not swallow a second expiry, nor re-fire on an unrelated update)
     if (!after && before && next.notice === 'expired') return 'snd.expired';

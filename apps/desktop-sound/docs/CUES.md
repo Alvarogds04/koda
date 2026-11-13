@@ -6,8 +6,8 @@ Nivel = `cue.level` (0..1). El pico real de una voz es `gain × level × note.pe
 
 | Id | Nombre | Disparador | Síntesis | Duración (ms) | Nivel | Prioridad |
 | --- | --- | --- | --- | --- | --- | --- |
-| `snd.notice` | Aviso | Aviso nuevo del transporte (settled) | dos notas senoidales suaves descendentes, 880 y 660 Hz | 250 | 0.6 | 2 |
-| `snd.attention` | Atención | Tarjeta de aprobación pendiente o pregunta nueva | dos notas triangulares ascendentes, 660 y 990 Hz; la más sonora | 400 | 1 | 4 |
+| `snd.notice` | Aviso | Aviso nuevo que no es un turno terminado: un agente pregunta en su terminal (attention) o falla el transporte | dos notas senoidales suaves descendentes, 880 y 660 Hz | 250 | 0.6 | 2 |
+| `snd.attention` | Atención | Sin productor desde K2-07 (antes: pregunta nueva o tarjeta de aprobación); sólo un `abito:cue` explícito | dos notas triangulares ascendentes, 660 y 990 Hz; la más sonora | 400 | 1 | 4 |
 | `snd.confirm` | Confirmado | Acción aprobada confirmada por el host (sin trigger todavía) | golpecito brillante senoidal, 1320 Hz | 200 | 0.6 | 3 |
 | `snd.reject` | Rechazado | Acción rechazada confirmada por el host (sin trigger todavía) | golpecito grave y apagado triangular, 220 Hz | 200 | 0.7 | 3 |
 | `snd.error` | Error | Modelo no disponible o bloqueado, o turno con error (sólo en la transición) | dos notas triangulares descendentes, 520 y 390 Hz, sin alarmar | 350 | 0.75 | 5 |
@@ -29,9 +29,9 @@ Nivel = `cue.level` (0..1). El pico real de una voz es `gain × level × note.pe
 | `snd.dizzy` | Mareo | Evento abito:cue explícito | nota senoidal 330 Hz con glissando ascendente a 412,5 Hz | 160 | 0.2 | -2 |
 | `snd.greet` | Saludo | Evento abito:cue explícito | nota senoidal 760 Hz con glissando ascendente a 950 Hz | 160 | 0.2 | -2 |
 | `snd.work` | Trabajo | Evento abito:cue explícito | nota senoidal 400 Hz con glissando ascendente a 500 Hz | 160 | 0.2 | -2 |
-| `snd.finish` | Terminado | Evento abito:cue explícito | nota senoidal 1040 Hz con glissando ascendente a 1300 Hz | 160 | 0.2 | 2 |
-| `snd.approval` | Aprobación pendiente | Evento abito:cue explícito | nota senoidal 620 Hz con glissando ascendente a 775 Hz | 160 | 0.2 | 4 |
-| `snd.question` | Pregunta | Evento abito:cue explícito | nota senoidal 840 Hz con glissando ascendente a 1050 Hz | 160 | 0.2 | 4 |
+| `snd.finish` | Terminado | Turno terminado: aviso nuevo de tipo settled (K2-07) | nota senoidal 1040 Hz con glissando ascendente a 1300 Hz | 160 | 0.2 | 2 |
+| `snd.approval` | Aprobación pendiente | Permiso nuevo: pregunta kind=approval, pregunta con aspecto de permiso o tarjeta de permiso de la isla (K2-07) | nota senoidal 620 Hz con glissando ascendente a 775 Hz | 160 | 0.2 | 4 |
+| `snd.question` | Pregunta | Pregunta nueva de un agente (question:state, K2-07) | nota senoidal 840 Hz con glissando ascendente a 1050 Hz | 160 | 0.2 | 4 |
 | `snd.approve` | Aprobado | Evento abito:cue explícito | nota senoidal 1240 Hz con glissando ascendente a 1550 Hz | 160 | 0.2 | 3 |
 | `snd.gulp` | Recibir | Evento abito:cue explícito | nota senoidal 260 Hz con glissando ascendente a 325 Hz | 160 | 0.2 | -2 |
 | `snd.send` | Enviar | Evento abito:cue explícito | nota senoidal 2200 Hz con glissando ascendente a 2750 Hz | 160 | 0.2 | 1 |
@@ -46,8 +46,12 @@ Nivel = `cue.level` (0..1). El pico real de una voz es `gain × level × note.pe
 
 Los veinte últimos cues son las identidades sintetizadas de reserva para los nombres heredados de Abito y para
 los archivos propios (`greet`, `greeting`): identidades independientes, no alias, con búfer y compuerta de ritmo
-propios. El motor sólo los reproduce ante un evento `abito:cue` explícito con el id exacto; no hay productores
-instalados y no se inventan disparadores. Todos comparten nivel 0,2 y una sola nota senoidal de 160 ms
+propios. El motor sólo los reproduce ante un evento `abito:cue` explícito con el id exacto o una llamada del
+cableado de la isla. Desde K2-07 («Un sonido distinto para cada aviso») tres tienen productor instalado:
+`snd.question` (pregunta nueva, `notify.js`), `snd.approval` (permiso nuevo, `notify.js`, y tarjeta de permiso
+de la isla, `sound-wiring.js`) y `snd.finish` (aviso nuevo de tipo `settled`, `sound-wiring.js`), siempre sólo en
+la transición: nunca el primer snapshot, una reconexión ni un descarte. Los demás no tienen productor y no se
+inventan disparadores. Todos comparten nivel 0,2 y una sola nota senoidal de 160 ms
 (ataque 10 ms, relajación 100 ms) con glissando ascendente de f a f × 1,25. Su prioridad es -2, salvo
 `snd.approval` y `snd.question` (4), `snd.approve` (3), `snd.finish` (2) y `snd.send` (1).
 
