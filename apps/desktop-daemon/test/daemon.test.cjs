@@ -1476,27 +1476,41 @@ test("R8: a daemon reparented away from its boot-time parent is orphaned even wh
 			writePrivateFile(path.join(root, "runtime", "session.json"), `${JSON.stringify({ ...session, ppid: recordedPpid })}\n`);
 		}
 		assert.equal(typeof recordedPpid, "number", "session.json records the boot-time parent pid");
-		const same = await classifySession(root, { ppid: () => recordedPpid });
+		// Windows decides the state from the native identity proof ALONE (its branch answers before the parent chain is read),
+		// and the real helper spawn from this in-process test is refused on the runner — the same note as GD014, which is why
+		// CI 43319173068 classified the unchanged parent 'foreign'. The proof is therefore asked through the product's own
+		// verification seam, never bypassed: the seam is still consulted about this exact root.
+		const verified = [];
+		const native = win ? { nativeVerify: (r) => (verified.push(r), true) } : {};
+		const same = await classifySession(root, { ppid: () => recordedPpid, ...native });
+		if (win) assert.deepEqual(verified, [root], "the native verification is consulted for this exact root");
 		assert.equal(same.state, "healthy", "unchanged parent: healthy");
 		// Under a systemd --user session an orphan is reparented to the user
-		// subreaper, whose pid is never 1 (the injected seam simulates it).
+		// subreaper, whose pid is never 1 (the injected seam simulates it). Windows has no parent identity yet (gap 2a), so
+		// the ppid comparison only exists where /proc does; the seam is injected on every OS to keep the fixture identical.
 		const subreaperPpid = recordedPpid === 4242 ? 4243 : 4242;
-		const reparented = await classifySession(root, { ppid: () => subreaperPpid });
-		assert.equal(reparented.state, "orphaned", "reparented away from the boot-time parent: orphaned");
-		assert.equal(reparented.reason, "parent_gone");
-		assert.equal(reparented.ready, true, "an orphaned daemon can still be serving");
-		// ppid 1 stays an accepted orphan shape (the old rule).
-		const classic = await classifySession(root, { ppid: () => 1 });
-		assert.equal(classic.state, "orphaned");
-		assert.equal(classic.reason, "parent_gone");
+		const reparented = await classifySession(root, { ppid: () => subreaperPpid, ...native });
+		assert.equal(reparented.state, win ? "healthy" : "orphaned", win ? "Windows: the native proof alone decides (gap 2a)" : "reparented away from the boot-time parent: orphaned");
+		if (win) {
+			// The refusal direction is untouched by that gap: without the native proof the same live session is foreign, never healthy.
+			const denied = await classifySession(root, { ppid: () => recordedPpid, nativeVerify: () => false });
+			assert.deepEqual([denied.state, denied.reason, denied.ready], ["foreign", "identity_unconfirmed", false], "no native proof: never healthy");
+		} else {
+			assert.equal(reparented.reason, "parent_gone");
+			assert.equal(reparented.ready, true, "an orphaned daemon can still be serving");
+			// ppid 1 stays an accepted orphan shape (the old rule).
+			const classic = await classifySession(root, { ppid: () => 1 });
+			assert.equal(classic.state, "orphaned");
+			assert.equal(classic.reason, "parent_gone");
+		}
 		// A legacy session without a recorded ppid keeps the old rule only.
 		const legacy = { ...session };
 		delete legacy.ppid;
 		writePrivateFile(path.join(root, "runtime", "session.json"), `${JSON.stringify(legacy)}\n`);
-		const old = await classifySession(root, { ppid: () => subreaperPpid });
+		const old = await classifySession(root, { ppid: () => subreaperPpid, ...native });
 		assert.equal(old.state, "healthy", "no recorded ppid: no reparenting evidence, old rules apply");
 		// A platform without /proc degrades honestly: no crash, no false orphan.
-		const blind = await classifySession(root, { ppid: () => undefined });
+		const blind = await classifySession(root, { ppid: () => undefined, ...native });
 		assert.equal(blind.state, "healthy");
 	} finally {
 		await daemon.stop();
