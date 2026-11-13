@@ -621,6 +621,10 @@ mod client {
                 }
                 s.listener = conn.unique_name().map(|n| n.to_string());
             }
+            // K2-09: open the stream BEFORE subscribing and reading. zbus only hands a message to the streams that already exist, so a
+            // NameOwnerChanged landing between the match rule and a later stream was lost while the first read had already found no
+            // owner: a Spotify starting at that instant was never seen (tests/spotify_mpris.rs, ~1 run in 10).
+            let stream = MessageIterator::from(conn.clone());
             if let Ok(dbus) = DBusProxy::new(&conn) {
                 for rule in rules() {
                     let _ = dbus.add_match_rule(rule);
@@ -628,7 +632,7 @@ mod client {
             }
             // Spotify may have started before the pill was declared.
             self.read_everything(&conn, generation);
-            for msg in MessageIterator::from(conn.clone()) {
+            for msg in stream {
                 if !self.current(generation) {
                     break;
                 }
