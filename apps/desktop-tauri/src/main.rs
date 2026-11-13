@@ -1139,7 +1139,8 @@ fn island_move_end(app: AppHandle, webview: tauri::Webview, state: State<AppStat
 }
 
 /// F025: only a trusted local sender may ask the host to open a parsed web
-/// URL. xdg-open receives exactly one URL argument, never a shell command.
+/// URL. The system opener (K2-01c: xdg-open, open or the Windows protocol handler) receives
+/// exactly one URL argument, never a shell command.
 #[tauri::command]
 async fn open_chat_url(
     webview: tauri::Webview,
@@ -1152,19 +1153,14 @@ async fn open_chat_url(
     {
         let mut rate = state.rate.lock().expect("rate lock");
         desktop::open_web_url(webview.label(), &origin, &payload, &mut rate, now_ms(), |url| {
-            child = Some(std::process::Command::new("xdg-open")
-                .arg(url)
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .spawn().map_err(|_| BridgeError::denied("external opener unavailable"))?);
+            child = Some(abito_island::opener::spawn(abito_island::opener::Target::Web(url))
+                .map_err(|_| BridgeError::denied("external opener unavailable"))?);
             Ok(())
         })?;
     } // Release shared rate guard before waiting, and reap only our own child.
     tauri::async_runtime::spawn_blocking(move || {
-        let status = child.ok_or_else(|| BridgeError::denied("external opener unavailable"))?.wait()
-            .map_err(|_| BridgeError::denied("external opener failed"))?;
-        if status.success() { Ok(()) } else { Err(BridgeError::denied("external opener failed")) }
+        let child = child.ok_or_else(|| BridgeError::denied("external opener unavailable"))?;
+        abito_island::opener::finish(child, true).map_err(|_| BridgeError::denied("external opener failed"))
     }).await.map_err(|_| BridgeError::denied("external opener aborted"))?
 }
 
