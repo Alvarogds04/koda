@@ -298,6 +298,8 @@ impl Link {
         if shared.is_some() {
             self.hub.kick_all("closed", "the phone link was turned off");
         }
+        // Verifier O2: the plan numbers are not carried over to whatever pairs after the link comes back on.
+        self.hub.clear_usage();
         if let Some(mut announcement) = announcement {
             announcement.stop();
         }
@@ -335,6 +337,8 @@ impl Link {
             *shared.token.lock().unwrap_or_else(|e| e.into_inner()) = token;
             self.hub.kick_all("auth", "this computer was unpaired");
         }
+        // Verifier O2: a new pairing never gets the previous pairing's last plan numbers; it waits for a fresh read.
+        self.hub.clear_usage();
         Ok(())
     }
 
