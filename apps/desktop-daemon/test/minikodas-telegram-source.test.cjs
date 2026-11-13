@@ -33,9 +33,24 @@ async function waitFor(fn, ms = 10_000) {
 	}
 	assert.ok(await fn(), "waitFor timed out");
 }
+// node:test runs a context's after() hooks in the order they were REGISTERED (checked on node 22), and the temp tree is
+// registered first, so a service stopped by a later hook would be stopped AFTER its folder was removed: on Windows the
+// engine still holds its workspace open and the removal answers EBUSY. So this is the ONE hook of the context: it runs
+// the cleanups other code registered with onCleanup() (last registered first: stop a service before what it uses), and
+// only then removes the tree.
+const cleanups = new WeakMap();
+function onCleanup(t, fn) {
+	cleanups.get(t).push(fn);
+}
 function tmp(t) {
 	const base = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "abito-tgsrc-")));
-	t.after(() => fs.rmSync(base, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 }));
+	cleanups.set(t, []);
+	t.after(async () => {
+		for (const fn of cleanups.get(t).reverse()) {
+			try { await fn(); } catch { /* a failing cleanup must not keep the tree from being removed */ }
+		}
+		fs.rmSync(base, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
+	});
 	return base;
 }
 const rpc = (text) => Object.assign(new Error(text), { text });
@@ -405,13 +420,7 @@ test("service: a Minikoda that reads a Telegram channel lands a Spanish «Hoy» 
 		telegram: { connectedClient: () => undefined },
 		engine: { command: process.execPath, commandArgs: ["-e", "process.exit(0)"], env: { PATH: process.env.PATH }, startTimeoutMs: 5_000 },
 	});
-	// Stop the service (and its Minikoda engine, which still holds its workspace) BEFORE tmp(t)'s removal of `base`:
-	// node:test runs after() hooks in registration order and tmp(t) registered first, so a plain t.after here would
-	// run too late and Windows would answer EBUSY on the engine's workspace.
-	t.after(async () => {
-		await svc.stop();
-		fs.rmSync(base, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
-	});
+	onCleanup(t, () => svc.stop()); // stopped by tmp(t)'s single hook BEFORE the tree is removed
 	svc.start();
 	const draft = await svc.createDraft({
 		name: "Canal",
@@ -456,13 +465,7 @@ async function mediaService(t, { steps }) {
 		telegram: { connectedClient: () => client },
 		engine: { command: process.execPath, commandArgs: [FAKE_PI, "--script", scriptFile], env: { PATH: process.env.PATH }, startTimeoutMs: 10_000 },
 	});
-	// Stop the service (and its Minikoda engine, which still holds its workspace) BEFORE tmp(t)'s removal of `base`:
-	// node:test runs after() hooks in registration order and tmp(t) registered first, so a plain t.after here would
-	// run too late and Windows would answer EBUSY on the engine's workspace.
-	t.after(async () => {
-		await svc.stop();
-		fs.rmSync(base, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
-	});
+	onCleanup(t, () => svc.stop()); // stopped by tmp(t)'s single hook BEFORE the tree is removed
 	svc.start();
 	const draft = await svc.createDraft({
 		name: "Canal",
