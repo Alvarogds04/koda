@@ -55,7 +55,7 @@
     telegram_cancelled: 'El pedido se canceló. Podés empezar de nuevo cuando quieras.',
     telegram_login_other_connection: 'El ingreso lo empezó otra ventana y sólo esa puede terminarlo. Cerrá la otra ventana de Ajustes y volvé a conectar desde acá.',
     telegram_failed: 'Telegram no completó el pedido. Probá de nuevo en un momento.',
-    telegram_forget_failed: 'No se pudo borrar la sesión guardada del llavero, así que la cuenta sigue conectada. Probá desconectar de nuevo en un momento.',
+    telegram_forget_failed: 'La cuenta quedó desconectada, pero no se pudo borrar la sesión guardada del llavero de tu sistema. Probá de nuevo en un momento o borrala a mano.',
     paused: 'Koda está en pausa: quitá la pausa y volvé a intentar.',
     unavailable: 'El motor de Koda no está disponible ahora mismo.',
     bad_request: 'Faltó un dato o no tenía el formato esperado. Revisalo y probá de nuevo.',
@@ -408,6 +408,10 @@ function mount(api) {
     credentials = next.telegramCredentials === true;
     sessionStored = next.telegramSessionStored === true;
     telegram = api.telegramView(next.telegram, credentials, sessionStored);
+    // N6: the kept number belongs to a login IN FLIGHT. Any ending the daemon reports (a code it refused, a login another
+    // window started, «ya hay una cuenta conectada») leaves the folded step at none, and those endings never pass through
+    // the page's own success paths: the number is dropped here, where the step says the login is over.
+    if (telegram.step === null) loginPhone = '';
     transcription = api.transcriptionView(next.transcription, next.accounts);
     const error = next.last_error && Number.isInteger(next.last_error.n) ? next.last_error : null;
     if (error && error.n > waitedError) {

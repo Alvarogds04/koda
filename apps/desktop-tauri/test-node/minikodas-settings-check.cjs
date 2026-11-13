@@ -93,6 +93,17 @@ test('every closed Telegram code has its own sentence, and none of them is the d
   assert.equal(M.errorSentence(null, null), M.SENTENCES.failed);
 });
 
+// F8/N4: a logout the daemon accepted but whose keychain delete failed is NOT «sigue conectada»: under the new order the
+// account was disconnected FIRST (the daemon was told), and only the saved data could not be removed from the keychain.
+test('the logout sentence says the account WAS disconnected and only the keychain delete failed', () => {
+  const say = M.errorSentence('telegram_forget_failed', null);
+  assert.match(say, /desconectad/, `the account is disconnected under the new order: ${say}`);
+  assert.doesNotMatch(say, /sigue conectada|todav[ií]a conectada|no se desconect/, `it must not claim the account is still connected: ${say}`);
+  assert.match(say, /llavero/, 'it says what could not be removed');
+  assert.match(say, /a mano/, 'and that the leftover can be removed by hand');
+  assert.ok(!/[0-9a-f]{32}|AQAA/.test(say), `never a secret: ${say}`);
+});
+
 // ---- the card's state ------------------------------------------------------------------------------------
 test('the step comes from the daemon state, never from the click', () => {
   const states = [
@@ -226,6 +237,15 @@ test('the card never writes markup, never stores a secret and never names a remo
   // a secret is cleared as soon as it travelled
   assert.match(src, /stepNodes\.password\.field\.value = ''/, 'the 2FA password leaves the page right after it is sent');
   assert.match(src, /hashInput\.value = ''/, 'the api hash is cleared once the login landed');
+});
+
+test('the kept number is dropped whenever the folded step says no login is in progress (N6)', () => {
+  const src = read('minikodas-settings.js');
+  const from = src.indexOf('function apply(next)');
+  assert.ok(from > 0, 'the apply function is found');
+  // a daemon-reported ending (another window started the login, the account was already connected, a refused code) never
+  // passes through the page's own success paths, so the number must be dropped where the folded step says so
+  assert.match(src.slice(from, from + 900), /if \(telegram\.step === null\) loginPhone = ''/, 'the number of a login that is no longer in progress is dropped');
 });
 
 test('the container, its script and its tab are wired in index.html and settings.js', () => {

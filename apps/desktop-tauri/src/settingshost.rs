@@ -114,12 +114,58 @@ fn telegram_flags(view: &mut Value) {
     view["telegramSessionStored"] = Value::Bool(stored);
 }
 
+/// K2-13 N1: what the host does when the daemon says the stored session is dead (AUTH_KEY_UNREGISTERED and friends): the
+/// login guard is disarmed, the worthless triple goes and the session verdict falls back to the keychain. ONE helper for the
+/// pre-step and the post-command block, so the two can never drift apart. The delete's failure is a log line without a
+/// value (the page still gets the daemon's own verdict) and the next start retries.
+fn forget_revoked_session(store: &dyn secrets::SecretStore, guard: &LoginGuard) {
+    guard.cancel();
+    if secrets::forget_telegram(store).is_err() {
+        eprintln!("telegram: the revoked session could not be deleted from the keychain; the next start retries");
+    }
+    remember_session_flag(SessionStored::Unknown);
+}
+
+/// K2-13 N1: settle a revoked session this island has not been told about yet, BEFORE a login writes anything. It consults
+/// the same `(code, n)` mark as the post-command block, so the two steps together act on one error exactly once: an error
+/// already settled here is not settled again there.
+fn settle_unseen_revoked_session(view: &Value, store: &dyn secrets::SecretStore, guard: &LoginGuard) -> bool {
+    let fresh = fresh_error_code(view, &mut TELEGRAM_ERROR_SEEN.lock().expect("telegram error lock"));
+    if fresh.as_deref() != Some("telegram_session_invalid") {
+        return false;
+    }
+    forget_revoked_session(store, guard);
+    true
+}
+
+/// K2-13 N3: whether `telegram_restore_if_needed` may run on this call. A login in flight owns the daemon's Telegram
+/// session: the view `conn.command` returned is still `disconnected`, the triple the keychain already holds looks like a
+/// restore, and the daemon's `restore()` STARTS by cancelling the pending login — the login the person just started dies.
+fn restore_allowed(action: Option<&str>) -> bool {
+    !matches!(
+        action,
+        Some("telegram_login_start" | "telegram_login_code" | "telegram_login_password")
+    )
+}
+
+/// K2-13 N2: forget the `(code, n)` this host already acted on. A reconnect makes a NEW connection whose `last_error` starts
+/// over at `{code: null, n: 0}` and whose counter restarts with it, so the error the previous connection ended on is not
+/// this one's first error.
+fn reset_seen(seen: &mut Option<(String, u64)>) {
+    *seen = None;
+}
+
 /// The code of the view's `last_error` when it is one this host has not acted on yet, and marks it as acted on. `None` for
 /// no error, a null code, or an error already handled. Compared by (code, n), not by order: a reconnect starts `n` over.
 fn fresh_error_code(view: &Value, seen: &mut Option<(String, u64)>) -> Option<String> {
-    let error = view.get("last_error")?;
-    let code = error.get("code").and_then(Value::as_str)?;
-    let key = (code.to_string(), error.get("n").and_then(Value::as_u64).unwrap_or(0));
+    let error = view.get("last_error");
+    let Some(code) = error.and_then(|e| e.get("code")).and_then(Value::as_str) else {
+        // No error at all, or the null one a brand-new connection starts with (`{code: null, n: 0}`): nothing from the
+        // previous connection is remembered (N2).
+        reset_seen(seen);
+        return None;
+    };
+    let key = (code.to_string(), error.and_then(|e| e.get("n")).and_then(Value::as_u64).unwrap_or(0));
     if seen.as_ref() == Some(&key) {
         return None;
     }
@@ -564,6 +610,9 @@ pub(crate) fn agent_conn(handle: &AppHandle) -> AgentConn {
     let emitter = handle.clone();
     #[cfg(target_os = "linux")]
     let phone = handle.clone();
+    // N2: a new connection's `last_error` starts over at `{code: null, n: 0}`: the (code, n) the previous connection ended on
+    // is not this one's first error, even when both are the same code with the same counter.
+    reset_seen(&mut TELEGRAM_ERROR_SEEN.lock().expect("telegram error lock"));
     // K2-13 T6b-3 (S20): the ONE `telegram_session` reply of this connection goes straight into the OS keychain, from the
     // reader thread and BEFORE the «connected» view is published. It never reaches the WebView, a log line or a frame. F3:
     // what became of it is recorded, so the next view says honestly whether the session really is in the keychain.
@@ -661,7 +710,12 @@ pub async fn agent_action(
                 std::env::var("HOME").ok().as_deref(),
             );
             match root {
-                Some(root) => conn.connect(&root),
+                Some(root) => {
+                    // N2: a new connection's `last_error` starts over at `{code: null, n: 0}` and its counter restarts with
+                    // it, so the (code, n) the previous connection ended on is not this one's first error.
+                    reset_seen(&mut TELEGRAM_ERROR_SEEN.lock().expect("telegram error lock"));
+                    conn.connect(&root)
+                }
                 None => return Err(err("no_island_root")),
             }
         }
@@ -671,6 +725,16 @@ pub async fn agent_action(
         // session travels the other way: `telegram_session` -> keychain -> `telegram_session_restore`, and never into a
         // view, an event or a log.
         let telegram_action = payload.get("action").and_then(Value::as_str).filter(|a| a.starts_with("telegram_"));
+        // N1: an error this connection has not been acted on yet is settled BEFORE a login writes anything. A restore the
+        // previous command sent is answered ASYNCHRONOUSLY (`telegram_session_invalid`), after that call returned, and the
+        // `agent:state` emit path never marks an error as seen: left alone, the post-command step below would read that OLD
+        // error as this login's answer, delete the pair it just wrote and disarm the guard while the daemon keeps logging
+        // in — and the `telegram_session` reply that followed would then be dropped as Foreign. Same helper as below, so
+        // the two steps cannot drift. `restore_allowed` is false for exactly the three login steps: the calls that write or
+        // advance a login.
+        if !restore_allowed(telegram_action) {
+            settle_unseen_revoked_session(&conn.view(), &secrets::Keychain, &TELEGRAM_LOGIN);
+        }
         if telegram_action == Some("telegram_login_start") {
             // A login is only worth starting when the pair can be stored: with no reachable keychain the answer is the
             // keychain's own code and NOTHING travels to the daemon (never a plaintext fallback, secrets.rs contract).
@@ -682,13 +746,10 @@ pub async fn agent_action(
             remember_session_flag(SessionStored::Unknown);
         }
         if telegram_action == Some("telegram_logout") {
-            // Account safety: whoever logs out, the stored triple goes (a revoked session must not be replayed).
+            // Account safety: after a logout nothing of this island may store or replay a session, whatever the keychain
+            // still holds (`a revoked session must not be replayed`). The keychain itself is cleared only AFTER the daemon
+            // was told — see N4 below.
             TELEGRAM_LOGIN.cancel();
-            // F8: a logout that could not clear the keychain is NOT a success, and it is not this host's to swallow. The
-            // page gets a closed code of ours (never the keychain's text) and the daemon is not told to log out, so the
-            // account and the stored session never drift apart: they stay together until the delete works.
-            secrets::forget_telegram(&secrets::Keychain).map_err(|_| err("telegram_forget_failed"))?;
-            remember_session_flag(SessionStored::Unknown);
         }
         let mut view = match conn.command(&payload) {
             Ok(view) => view,
@@ -696,26 +757,38 @@ pub async fn agent_action(
                 if telegram_action == Some("telegram_login_start") {
                     TELEGRAM_LOGIN.cancel();
                 }
+                // N4: nothing reached the daemon, so nothing was logged out and nothing is forgotten.
                 return Err(err("agent_unavailable"));
             }
         };
+        // K2-13 N4: the stored triple goes only AFTER the daemon was told to log out. Deleting first made a locked keychain
+        // a logout that could never happen (the account stayed connected at Telegram and the page only said «no se pudo»);
+        // now a delete that fails is still not a success — the page gets a closed code of ours, never the keychain's text —
+        // while the account IS disconnected, and the stale entry a failed delete leaves is cleaned by the
+        // `telegram_session_invalid` path on the next start.
+        if telegram_action == Some("telegram_logout") {
+            // Nothing arrived on this connection for the login guard, and no stored session is the one in use any more.
+            remember_session_flag(SessionStored::Unknown);
+            secrets::forget_telegram(&secrets::Keychain).map_err(|_| err("telegram_forget_failed"))?;
+        }
         // Each `last_error` is acted on ONCE (see TELEGRAM_ERROR_SEEN): a stale one must not keep touching the keychain.
         let fresh_error = fresh_error_code(&view, &mut TELEGRAM_ERROR_SEEN.lock().expect("telegram error lock"));
         // A dead session (AUTH_KEY_UNREGISTERED and friends) means the keychain copy is worthless: forget it so the next
         // start does not hand the daemon a credential Telegram already revoked. F8: the delete is attempted here and its
         // failure is NOT turned into a false «borrado» — the page must still get the daemon's verdict, so the failure is
-        // recorded as a log line without a value and the next start retries.
+        // recorded as a log line without a value and the next start retries. The same helper settles the same error in the
+        // pre-step above; the (code, n) mark keeps the pair from acting twice on one error.
         if fresh_error.as_deref() == Some("telegram_session_invalid") {
-            TELEGRAM_LOGIN.cancel();
-            if secrets::forget_telegram(&secrets::Keychain).is_err() {
-                eprintln!("telegram: the revoked session could not be deleted from the keychain; the next start retries");
-            }
-            remember_session_flag(SessionStored::Unknown);
+            forget_revoked_session(&secrets::Keychain, &TELEGRAM_LOGIN);
         }
         // The hand-off of a session this island already holds: at start (this is the first connect), after a reconnect
         // and whenever Ajustes reads the state. Only when the daemon says it has none, and not on the call that just
-        // learned the daemon's Telegram is unavailable (an older `telegram_unavailable` does not block it any more).
-        if fresh_error.as_deref() != Some("telegram_unavailable") {
+        // learned the daemon's Telegram is unavailable (an older `telegram_unavailable` does not block it any more). N3: a
+        // login step must not restore either — the daemon's `restore()` begins by cancelling the pending login. Residual,
+        // documented and NOT solved here: a restore answered only with `telegram_status` leaves `TELEGRAM_LOGIN` armed (see
+        // `telegram_restore_if_needed`); the daemon sends `telegram_session` only to the connection that asked, so acting on
+        // a stale arm would need a daemon bug.
+        if restore_allowed(telegram_action) && fresh_error.as_deref() != Some("telegram_unavailable") {
             if let Some(telegram) = view.get("telegram").cloned() {
                 if telegram_restore_if_needed(&conn, &telegram) {
                     view = conn.view();
@@ -978,6 +1051,140 @@ mod telegram_error_tests {
         assert_eq!(fresh_error_code(&json!({}), &mut seen), None);
         assert_eq!(fresh_error_code(&view(json!(null), 0), &mut seen), None);
         assert_eq!(seen, None, "nothing was recorded for a view with no error");
+    }
+}
+
+#[cfg(test)]
+mod telegram_revoked_session_tests {
+    use super::{reset_seen, restore_allowed, settle_unseen_revoked_session, TELEGRAM_ERROR_SEEN};
+    use abito_island::secrets::{
+        remember_api_pair, LoginGuard, SecretStore, StoreError, TELEGRAM_API_HASH, TELEGRAM_API_ID,
+        TELEGRAM_SESSION,
+    };
+    use serde_json::{json, Value};
+    use std::collections::BTreeMap;
+    use std::sync::Mutex;
+
+    const HASH: &str = "8f3c1d9ae2b74c05d61fa8b3c0e7d294";
+
+    /// The in-memory stand-in for the OS keychain: no test ever reads or writes the user's real one.
+    #[derive(Default)]
+    struct TinyStore {
+        values: Mutex<BTreeMap<String, String>>,
+        deletes: Mutex<Vec<String>>,
+    }
+
+    impl TinyStore {
+        fn with_triple() -> TinyStore {
+            let store = TinyStore::default();
+            {
+                let mut values = store.values.lock().unwrap();
+                values.insert(TELEGRAM_API_ID.to_string(), "20405128".to_string());
+                values.insert(TELEGRAM_API_HASH.to_string(), HASH.to_string());
+                values.insert(TELEGRAM_SESSION.to_string(), "AQAAAAAsession0123456789+/base64==".to_string());
+            }
+            store
+        }
+        fn keys(&self) -> Vec<String> {
+            self.values.lock().unwrap().keys().cloned().collect()
+        }
+        fn get(&self, key: &str) -> Option<String> {
+            self.values.lock().unwrap().get(key).cloned()
+        }
+        fn deletes(&self) -> Vec<String> {
+            self.deletes.lock().unwrap().clone()
+        }
+    }
+
+    impl SecretStore for TinyStore {
+        fn read(&self, key: &str) -> Result<Option<String>, StoreError> {
+            Ok(self.get(key))
+        }
+        fn write(&self, key: &str, value: &str) -> Result<(), StoreError> {
+            self.values.lock().unwrap().insert(key.to_string(), value.to_string());
+            Ok(())
+        }
+        fn delete(&self, key: &str) -> Result<(), StoreError> {
+            self.deletes.lock().unwrap().push(key.to_string());
+            self.values.lock().unwrap().remove(key);
+            Ok(())
+        }
+    }
+
+    fn revoked_view(n: u64) -> Value {
+        json!({"last_error": {"code": "telegram_session_invalid", "n": n}})
+    }
+
+    /// K2-13 N1: agent_action settles an error it has not acted on yet BEFORE `telegram_login_start` writes its pair. A
+    /// restore answered after the previous command returned leaves an UNSEEN `telegram_session_invalid` in the view the
+    /// `agent:state` emit never marks; without the pre-step, the post-command step reads that OLD error as this login's
+    /// answer, deletes the pair it just wrote and disarms the guard while the daemon keeps logging in.
+    ///
+    /// What this test can and cannot see: the helper's contract (settle once, act once) is exercised here; the ORDER inside
+    /// `agent_action` needs an `AppHandle`, so it is not unit-testable and only the helper makes it one code path.
+    #[test]
+    fn a_revoked_session_is_settled_once_before_the_login_writes_so_its_new_pair_survives() {
+        *TELEGRAM_ERROR_SEEN.lock().expect("telegram error lock") = None;
+        let store = TinyStore::with_triple();
+        let guard = LoginGuard::new();
+        guard.begin();
+        let stale = revoked_view(2);
+        // the pre-step: the session really is revoked, so the triple and the guard go
+        assert!(settle_unseen_revoked_session(&stale, &store, &guard), "the first settle acts on the error");
+        assert!(!guard.pending(), "the login guard is disarmed with the dead session");
+        assert!(store.keys().is_empty(), "the dead session and its pair are gone: {:?}", store.keys());
+        // the login writes its pair and begins
+        guard.begin();
+        remember_api_pair(&store, 20_405_128, HASH).expect("the pair is stored");
+        let deletes_before = store.deletes();
+        // `last_error` is only overwritten by a NEW error: the same view still carries it on every later call
+        assert!(!settle_unseen_revoked_session(&stale, &store, &guard), "an error already acted on is not acted on again");
+        assert_eq!(store.get(TELEGRAM_API_ID).as_deref(), Some("20405128"), "the pair the login just wrote survives: {:?}", store.keys());
+        assert_eq!(store.get(TELEGRAM_API_HASH).as_deref(), Some(HASH));
+        assert_eq!(store.deletes(), deletes_before, "nothing was deleted the second time");
+        assert!(guard.pending(), "and the login in flight is still armed to store its session");
+        // TRIANGULATE: only a revoked session touches the keychain. Another code says nothing about the stored triple.
+        *TELEGRAM_ERROR_SEEN.lock().expect("telegram error lock") = None;
+        let unavailable = json!({"last_error": {"code": "telegram_unavailable", "n": 1}});
+        assert!(!settle_unseen_revoked_session(&unavailable, &store, &guard), "an unavailable daemon is not a dead session");
+        assert_eq!(store.get(TELEGRAM_API_ID).as_deref(), Some("20405128"), "the pair survives: {:?}", store.keys());
+        assert!(guard.pending(), "and a login in flight is still armed");
+    }
+
+    /// K2-13 N2: a reconnect makes a new connection whose `last_error` is the null one, and the daemon's counter restarts
+    /// with it. Acting on the previous connection's (code, n) must not swallow the first error of the new one.
+    #[test]
+    fn a_reconnect_forgets_the_error_the_previous_connection_ended_on() {
+        use super::fresh_error_code;
+        let mut seen = None;
+        let stale = revoked_view(1);
+        assert_eq!(fresh_error_code(&stale, &mut seen).as_deref(), Some("telegram_session_invalid"));
+        assert_eq!(fresh_error_code(&stale, &mut seen), None, "the same error is not acted on twice");
+        // a reconnect: a brand-new ClientState, whose last_error is the null one
+        assert_eq!(fresh_error_code(&json!({"last_error": {"code": null, "n": 0}}), &mut seen), None);
+        // n restarts on the new connection: its first error can repeat the last one's (code, n) and is still a new error
+        assert_eq!(
+            fresh_error_code(&stale, &mut seen).as_deref(),
+            Some("telegram_session_invalid"),
+            "the first error of a new connection is a new error, even with the same code and n"
+        );
+        // TRIANGULATE: the mark is also cleared directly where a connection is made (`reset_seen`).
+        let mut act = Some(("telegram_session_invalid".to_string(), 1));
+        assert_eq!(fresh_error_code(&stale, &mut act), None, "the mark swallows the same error");
+        reset_seen(&mut act);
+        assert_eq!(fresh_error_code(&stale, &mut act).as_deref(), Some("telegram_session_invalid"), "after a reset the same (code, n) is fresh again");
+    }
+
+    /// K2-13 N3: a login in flight owns the daemon's Telegram session. `restore()` starts by cancelling the pending login, so
+    /// a restore on the same call as a login step kills the login the person just started.
+    #[test]
+    fn a_login_in_flight_is_never_restored_over() {
+        for action in ["telegram_login_start", "telegram_login_code", "telegram_login_password"] {
+            assert!(!restore_allowed(Some(action)), "{action} owns the session: a restore would cancel it");
+        }
+        for action in [Some("telegram_logout"), Some("view"), Some("transcription_set"), None] {
+            assert!(restore_allowed(action), "{action:?} must still restore a stored session");
+        }
     }
 }
 
