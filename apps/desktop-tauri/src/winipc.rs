@@ -22,7 +22,7 @@
 
 use serde_json::{json, Value};
 
-/// `%LOCALAPPDATA%\Abito\<NOTICES_LEAF>` — discovery metadata root.
+/// `%LOCALAPPDATA%\Koda\<NOTICES_LEAF>` — discovery metadata root.
 pub const NOTICES_LEAF: &str = "notices";
 /// Discovery metadata format version (the only one parsed).
 pub const META_VERSION: u32 = 1;
@@ -772,7 +772,7 @@ pub mod ffi {
     }
 
     /// Canonical confinement for island runtime state on Windows:
-    /// `%LOCALAPPDATA%\Abito\<leaf>`, created and ACL-verified (private:
+    /// `%LOCALAPPDATA%\Koda\<leaf>`, created and ACL-verified (private:
     /// owner, SYSTEM, Administrators). Reusable seam for the daemon session
     /// ACL hardening. `None` when LOCALAPPDATA is missing/relative.
     pub fn prepare_runtime_leaf(leaf: &str, sid: &str) -> Option<std::path::PathBuf> {

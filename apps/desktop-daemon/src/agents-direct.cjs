@@ -77,7 +77,7 @@ async function main(argv, env, out, deps = {}) {
 	}
 	try {
 		const home = validateHome(env.HOME || env.USERPROFILE || os.homedir());
-		const dir = env.ABITO_ISLAND_DIR || path.join(home, ".abito-island");
+		const dir = env.ABITO_ISLAND_DIR || path.join(home, ".koda");
 		if (!path.isAbsolute(dir)) throw new Error("island dir");
 		const islandDir = ensurePrivateDir(dir);
 		ensurePrivateDir(path.join(islandDir, "audit"));

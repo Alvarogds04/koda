@@ -10,11 +10,11 @@ const { AgentEngine } = require("../src/runtime.cjs");
 const { IslandServer } = require("../src/server.cjs");
 const { win } = require("./platform-env.cjs");
 
-/** Daemon island root + env for Windows parity: the root must sit inside the private `%LOCALAPPDATA%\Abito`. */
+/** Daemon island root + env for Windows parity: the root must sit inside the private `%LOCALAPPDATA%\Koda`. */
 function daemonRootEnv(dir) {
 	const base = fs.realpathSync.native(dir); // canonical long form (identity on Linux/macOS)
 	return {
-		root: win ? path.join(base, "Abito", "i") : path.join(base, "i"),
+		root: win ? path.join(base, "Koda", "i") : path.join(base, "i"),
 		env: { PATH: process.env.PATH, ...(win ? { LOCALAPPDATA: base } : {}) },
 	};
 }

@@ -22,7 +22,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Isolated Pi installation failed' }
 $localData = [Environment]::GetFolderPath('LocalApplicationData')
 $islandData = Join-Path $localData 'com.abitog.AbitoTauri'
 if (Test-Path -LiteralPath $islandData) { throw 'Runner already has island user data; refusing smoke against existing state' }
-if (Test-Path -LiteralPath (Join-Path $localData 'Abito')) { throw 'Runner already has island runtime data; refusing reuse' }
+if (Test-Path -LiteralPath (Join-Path $localData 'Koda')) { throw 'Runner already has island runtime data; refusing reuse' }
 $originalEnv = @{}
 foreach ($key in @('PATH', 'HOME', 'USERPROFILE', 'ABITO_ISLAND_EXE', 'APPDATA', 'LOCALAPPDATA', 'ProgramFiles', 'ABITO_PROJECT_ROOT', 'ABITO_ISLAND_DIR', 'ABITO_DESKTOP_SOCKET')) {
     $originalEnv[$key] = [Environment]::GetEnvironmentVariable($key, 'Process')
@@ -39,7 +39,7 @@ function Show-SmokeDiagnostics {
         Get-Content -LiteralPath $log.FullName -Tail 80 | ForEach-Object { Write-Host $_ }
     }
     Write-Host 'The app-owned daemon inherits island stderr; generic startup exceptions have a redacted diagnostic suffix.'
-    foreach ($dir in @((Join-Path $env:LOCALAPPDATA 'Abito'), (Join-Path $env:LOCALAPPDATA 'Abito/runtime'), (Join-Path $env:LOCALAPPDATA 'Abito/notices'))) {
+    foreach ($dir in @((Join-Path $env:LOCALAPPDATA 'Koda'), (Join-Path $env:LOCALAPPDATA 'Koda/runtime'), (Join-Path $env:LOCALAPPDATA 'Koda/notices'))) {
         if (Test-Path -LiteralPath $dir) {
             Write-Host "Directory: $dir"
             Get-ChildItem -LiteralPath $dir -Force | Select-Object Name,Length,Mode | Format-Table | Out-String | Write-Host
@@ -95,11 +95,11 @@ function Start-Island([string]$Mode) {
     # launch to publish its own record; existence alone is not readiness.
     Wait-For {
         try {
-            $candidate = Get-Content -Raw -LiteralPath (Join-Path $data 'Abito/notices/endpoint.json') | ConvertFrom-Json
+            $candidate = Get-Content -Raw -LiteralPath (Join-Path $data 'Koda/notices/endpoint.json') | ConvertFrom-Json
             return $candidate.pid -eq $script:process.Id
         } catch { return $false }
     } "$Mode receiver metadata"
-    $metadata = Get-Content -Raw -LiteralPath (Join-Path $data 'Abito/notices/endpoint.json') | ConvertFrom-Json
+    $metadata = Get-Content -Raw -LiteralPath (Join-Path $data 'Koda/notices/endpoint.json') | ConvertFrom-Json
     if ($metadata.pid -ne $script:process.Id) { throw 'Receiver metadata does not belong to installed island process' }
 }
 try {

@@ -7,7 +7,7 @@ const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 
 // Windows (T2/S3): the island publishes the notice endpoint metadata at the
-// canonical `%LOCALAPPDATA%\Abito\notices\endpoint.json`. The hook clients
+// canonical `%LOCALAPPDATA%\Koda\notices\endpoint.json`. The hook clients
 // never read it as authority — the native relay re-verifies it — so config
 // only resolves the path (no /proc, no uid, no directory-chain walk).
 const DRIVE_RE = /^[A-Za-z]:[\\/]/;
@@ -37,7 +37,7 @@ function resolveConfigWindows(env, options = {}) {
     return { runtime: path.win32.dirname(explicit), endpoint: explicit, source: 'env' };
   }
   if (!windowsAbsolute(env.LOCALAPPDATA)) return { runtime: undefined, endpoint: undefined, source: undefined };
-  const runtime = path.win32.join(env.LOCALAPPDATA, 'Abito', 'notices');
+  const runtime = path.win32.join(env.LOCALAPPDATA, 'Koda', 'notices');
   const endpoint = path.win32.join(runtime, 'endpoint.json');
   try {
     const st = stat(endpoint);
@@ -186,10 +186,10 @@ function resolveConfig(env, owner, options = {}) {
   if ((options.platform ?? process.platform) === 'win32') return resolveConfigWindows(env, options);
   if (!Number.isInteger(owner) || owner < 0) throw new Error('Linux uid required');
   // Default: the Tauri island's own leaf, exactly where `src/transport.rs default_runtime` binds
-  // (`$XDG_RUNTIME_DIR/abito-island`). The Electron production (`abito-desktop`) and Preview
+  // (`$XDG_RUNTIME_DIR/koda`). The Electron production (`abito-desktop`) and Preview
   // (`abito-desktop-preview`) roots are never a default: they need an explicit ABITO_SOCKET_DIR.
   const xdg = runtimeBase(env, owner);
-  const runtime = env.ABITO_SOCKET_DIR ?? `${xdg}/abito-island`;
+  const runtime = env.ABITO_SOCKET_DIR ?? `${xdg}/koda`;
   if (!normalized(runtime)) throw new Error('Invalid ABITO_SOCKET_DIR');
   const explicit = env.ABITO_DESKTOP_SOCKET;
   if (explicit !== undefined) {

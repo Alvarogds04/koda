@@ -72,7 +72,7 @@ function findSessionHelper(deps = {}) {
  * the target atomically. The token travels on the helper's STDIN only: never
  * argv, never the environment, never a log. The daemon root is passed as
  * ABITO_ISLAND_DIR (the same var the daemon itself honours); the helper refuses
- * any root that bypasses the canonical protected %LOCALAPPDATA%\Abito root.
+ * any root that bypasses the canonical protected %LOCALAPPDATA%\Koda root.
  * Fails closed: without the helper or without a zero exit, NO session is
  * published and the boot fails.
  */
@@ -326,7 +326,7 @@ async function classifySession(root, deps = {}) {
 class Daemon extends EventEmitter {
 	/**
 	 * @param {object} [options]
-	 * @param {string} [options.root]           island root (default ABITO_ISLAND_DIR / ~/.abito-island)
+	 * @param {string} [options.root]           island root (default ABITO_ISLAND_DIR / ~/.koda)
 	 * @param {object} [options.env]            environment (default process.env)
 	 * @param {(line:string)=>void} [options.log]
 	 * @param {object} [options.engineOptions]  extra AgentEngine options (tests: fake command)
@@ -387,7 +387,7 @@ class Daemon extends EventEmitter {
 
 	async boot() {
 		// Windows (B5/S6): validate the island root against the canonical
-		// protected %LOCALAPPDATA%\Abito root BEFORE ensureIsland, config or ANY
+		// protected %LOCALAPPDATA%\Koda root BEFORE ensureIsland, config or ANY
 		// directory write — a forbidden root must never get files created in it.
 		const violation = windowsIslandRootViolation(this.root, this.env, this.platform);
 		if (violation) throw new Error(`refusing island root: ${violation}`);

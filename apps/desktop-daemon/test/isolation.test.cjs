@@ -137,9 +137,9 @@ test("pathWithNodeFirst uses the right separator on every platform", () => {
 	assert.equal(pathWithNodeFirst("/koda/runtime", undefined), `/koda/runtime${path.delimiter}/usr/bin:/bin`);
 });
 
-test("defaultIslandRoot honours ABITO_ISLAND_DIR and defaults to ~/.abito-island", () => {
+test("defaultIslandRoot honours ABITO_ISLAND_DIR and defaults to ~/.koda", () => {
 	assert.equal(defaultIslandRoot({ ABITO_ISLAND_DIR: "/x/y" }), "/x/y");
-	assert.equal(defaultIslandRoot({ HOME: "/home/user" }), path.join("/home/user", ".abito-island"));
+	assert.equal(defaultIslandRoot({ HOME: "/home/user" }), path.join("/home/user", ".koda"));
 });
 
 // Windows (Gentle Dot isolatedAgentEnv): the engine and its tools resolve the

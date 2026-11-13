@@ -7,7 +7,7 @@
 //! * Input: ONE bounded JSON object on stdin. The token NEVER travels on the
 //!   command line, in the environment or in a log.
 //! * Output path: exactly `<island>/runtime/session.json`, where `<island>` is
-//!   the canonical protected `%LOCALAPPDATA%\Abito` root — or an
+//!   the canonical protected `%LOCALAPPDATA%\Koda` root — or an
 //!   `ABITO_ISLAND_DIR` override INSIDE it (`winpolicy::island_root` refuses
 //!   anything else). No path ever comes from the input.
 //! * Write: `winipc::ffi::private_file_bytes` — CREATE_NEW temp with an

@@ -237,7 +237,7 @@ mod native_tests {
     use crate::winpolicy::Expect;
 
     fn temp_dir(tag: &str) -> std::path::PathBuf {
-        // Never under %LOCALAPPDATA%\Abito (the installed smoke refuses a runner that already has it):
+        // Never under %LOCALAPPDATA%\Koda (the installed smoke refuses a runner that already has it):
         // a fresh child of the temp dir with our own protected DACL.
         let dir = std::env::temp_dir().join(format!("abito-fs-test-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);

@@ -45,9 +45,9 @@ function tmp() {
 	TEST_BASES.add(base);
 	return base;
 }
-/** The daemon's island root: on Windows it MUST sit inside the private `%LOCALAPPDATA%\Abito` canonical root. */
+/** The daemon's island root: on Windows it MUST sit inside the private `%LOCALAPPDATA%\Koda` canonical root. */
 function islandRoot(base) {
-	return win ? path.join(base, "Abito", "i") : path.join(base, "i");
+	return win ? path.join(base, "Koda", "i") : path.join(base, "i");
 }
 /** The daemon env: on Windows %LOCALAPPDATA% anchors the canonical island root (a private temp dir, never the real one). */
 function daemonEnv(base, extra = {}) {

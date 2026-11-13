@@ -200,7 +200,7 @@ ausente sí la bloquean.
 El validador usa **otra pantalla Xvfb, nunca `DISPLAY=:0`**, con WM, bus D-Bus,
 HOME y XDG privados. Los sockets Pi viven sólo en
 `/run/user/1000/abito-validator-pi/<aleatorio>` (0700, retirado al terminar);
-no toca `/run/user/1000/abito-island`. Los clics XTest pertenecen al proceso de
+no toca `/run/user/1000/koda`. Los clics XTest pertenecen al proceso de
 validación, nunca al binario entregado. El atajo comprueba el callback compartido,
 no la entrega física de teclas por GNOME; el menú se activa por su exportación
 D-Bus, no por un panel GNOME.
@@ -1489,7 +1489,7 @@ node packaging/verify.cjs dist/abito-island/<version>   # re-hash vs receipt, no
   have uncommitted or untracked changes: build from a clean checkout
   (`git worktree add ../abito-m4-clean <commit>`).
 - Identity: `com.abitog.AbitoTauri`; installed runtime root
-  `$XDG_RUNTIME_DIR/abito-island` (never `abito-desktop*`); the project root of
+  `$XDG_RUNTIME_DIR/koda` (never `abito-desktop*`); the project root of
   an installed build comes only from `ABITO_PROJECT_ROOT` (absolute,
   normalized, existing dir) — otherwise the transport reports unavailable.
   Debug builds keep the dev layout. Tests: `tests/install_root.rs`

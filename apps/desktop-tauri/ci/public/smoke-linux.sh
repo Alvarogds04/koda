@@ -172,7 +172,7 @@ case "$APP" in "$WORK"/*) die "--work must not contain --app: $WORK" ;; esac
 [ "$WORK" != "$HOME" ] || die "--work must not be your home directory"
 # sockaddr_un.sun_path is 108 bytes on Linux, NUL included: keep the notice socket
 # inside that limit instead of failing later inside the app.
-SOCKET_SUFFIX='/run/abito-island/p-XXXXXX/s'
+SOCKET_SUFFIX='/run/koda/p-XXXXXX/s'
 [ $(( ${#WORK} + ${#SOCKET_SUFFIX} )) -le 107 ] || die "--work is too deep: ${#WORK} + ${#SOCKET_SUFFIX} bytes exceeds the 107-byte unix socket limit (use a shorter --work)"
 
 if [ -e "$WORK" ]; then
@@ -429,7 +429,7 @@ if grep -q 'island host: no_daemon' "$WORK/island.log"; then
   exit 1
 fi
 SOCKET=$(sed -n 's/^ABITO_DESKTOP_SOCKET=//p' "$WORK/island.log" | head -n 1)
-HANDOFF="$XDG_RUNTIME/abito-island/endpoint.json"
+HANDOFF="$XDG_RUNTIME/koda/endpoint.json"
 if [ -S "$SOCKET" ] && [ -f "$HANDOFF" ] && [ "$(stat -c %a "$HANDOFF")" = 600 ]; then
   pass "(b) start: the installed launcher started the app-owned daemon (ready line received) and published $HANDOFF (0600) for socket $SOCKET"
 else

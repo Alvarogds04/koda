@@ -117,8 +117,8 @@ const sessionToken = (raw) => {
 function discoverEndpoint(env, uid) {
   let runtime;
   if (typeof env.ABITO_SOCKET_DIR === "string" && env.ABITO_SOCKET_DIR.startsWith("/")) runtime = env.ABITO_SOCKET_DIR;
-  else if (typeof env.XDG_RUNTIME_DIR === "string" && env.XDG_RUNTIME_DIR.startsWith("/")) runtime = env.XDG_RUNTIME_DIR + "/abito-island";
-  else runtime = "/run/user/" + uid + "/abito-island";
+  else if (typeof env.XDG_RUNTIME_DIR === "string" && env.XDG_RUNTIME_DIR.startsWith("/")) runtime = env.XDG_RUNTIME_DIR + "/koda";
+  else runtime = "/run/user/" + uid + "/koda";
   let fd;
   try {
     fd = fs.openSync(runtime + "/endpoint.json", fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);

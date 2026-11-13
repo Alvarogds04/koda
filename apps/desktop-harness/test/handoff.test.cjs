@@ -27,8 +27,8 @@ const mac = process.platform === 'darwin';
 const macBase = () => fs.realpathSync(require('node:os').tmpdir());
 test('default runtime matrix', () => {
   assert.equal(resolveConfig({ ABITO_SOCKET_DIR: '/x/r', XDG_RUNTIME_DIR: '/run/user/9' }, 1, { procExists: () => false }).runtime, '/x/r');
-  assert.equal(resolveConfig({ XDG_RUNTIME_DIR: '/tmp/xdg-none' }, 1).runtime, mac ? `${macBase()}/abito-island` : '/tmp/xdg-none/abito-island');
-  const fallback = mac ? `${macBase()}/abito-island` : '/run/user/1234/abito-island';
+  assert.equal(resolveConfig({ XDG_RUNTIME_DIR: '/tmp/xdg-none' }, 1).runtime, mac ? `${macBase()}/koda` : '/tmp/xdg-none/koda');
+  const fallback = mac ? `${macBase()}/koda` : '/run/user/1234/koda';
   for (const xdg of [undefined, '', 'rel', '/', '/a/', '/a/../b', '/a\0b'])
     assert.equal(resolveConfig({ XDG_RUNTIME_DIR: xdg }, 1234, { procExists: () => false }).runtime, fallback, String(xdg));
   assert.throws(() => resolveConfig({ ABITO_SOCKET_DIR: 'rel' }, 1), /Invalid ABITO_SOCKET_DIR/);

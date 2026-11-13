@@ -83,7 +83,7 @@ fn users_read_and_null_dacl_are_refused_by_daemon_and_receiver_without_writes() 
 fn newly_created_directories_are_protected_user_and_system_only() {
     let fixture = Fixture::new("new-private");
     let sid = winipc::ffi::current_user_sid().unwrap();
-    let abito = fixture.0.join("Abito");
+    let abito = fixture.0.join("Koda");
     for leaf in ["notices", "runtime"] {
         let target = abito.join(leaf);
         winipc::ffi::prepare_runtime(&target, &sid).expect("atomic private creation");

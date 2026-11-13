@@ -46,12 +46,12 @@ pub fn session_path(island_root: &Path) -> PathBuf {
     island_root.join("runtime").join("session.json")
 }
 
-/// Island root: `ABITO_ISLAND_DIR` (absolute) or `~/.abito-island`.
+/// Island root: `ABITO_ISLAND_DIR` (absolute) or `~/.koda`.
 pub fn island_root(env_dir: Option<&str>, home: Option<&str>) -> Option<PathBuf> {
     if let Some(d) = env_dir.filter(|d| !d.is_empty()) {
         return d.starts_with('/').then(|| PathBuf::from(d));
     }
-    home.filter(|h| h.starts_with('/')).map(|h| Path::new(h).join(".abito-island"))
+    home.filter(|h| h.starts_with('/')).map(|h| Path::new(h).join(".koda"))
 }
 
 /// The session file must be OURS, a regular file, not group/world accessible.

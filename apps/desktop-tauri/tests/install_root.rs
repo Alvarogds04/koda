@@ -16,7 +16,7 @@ const BUILD_TREE: &str = env!("CARGO_MANIFEST_DIR");
 #[test]
 fn installed_default_is_the_own_leaf_under_xdg_and_never_the_source_tree() {
     let root = default_runtime_for(Some("/run/user/1000"), None).expect("installed default");
-    assert_eq!(root, PathBuf::from("/run/user/1000/abito-island"));
+    assert_eq!(root, PathBuf::from("/run/user/1000/koda"));
     assert!(!root.starts_with(BUILD_TREE), "installed root must not point at the build tree");
     assert!(!INSTALLED_RUNTIME_LEAF.is_empty());
     assert!(!RESERVED_RUNTIME_NAMES.contains(&INSTALLED_RUNTIME_LEAF));

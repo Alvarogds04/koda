@@ -13,7 +13,7 @@ const permission = (over = {}) => JSON.stringify({ session_id: 'sess-1', transcr
   tool_input: { command: 'ls' }, ...over });
 const stopInput = (over = {}) => JSON.stringify({ session_id: 'sess-1', cwd, hook_event_name: 'Stop', stop_hook_active: false,
   last_assistant_message: 'SECRETREPLY', ...over });
-// An empty env would resolve the REAL default runtime (/run/user/<uid>/abito-island) and could reach the live island.
+// An empty env would resolve the REAL default runtime (/run/user/<uid>/koda) and could reach the live island.
 const NO_ISLAND = offlineDir('nonexistent-abito-test');
 const envOf = r => ({ ABITO_DESKTOP_SOCKET: r.endpoint, ABITO_SOCKET_DIR: r.runtime });
 const stub = status => () => ({ ask: async () => ({ status }), notify: async () => ({ status: 'sent' }) });

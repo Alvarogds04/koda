@@ -157,8 +157,8 @@ fn wait_for(conn: &AgentConn, what: &str, pred: impl Fn(&Value) -> bool) -> Valu
 #[test]
 fn island_root_comes_from_the_environment_only() {
     assert_eq!(island_root(Some("/x/y"), Some("/home/u")), Some(PathBuf::from("/x/y")));
-    assert_eq!(island_root(None, Some("/home/u")), Some(PathBuf::from("/home/u/.abito-island")));
-    assert_eq!(island_root(Some(""), Some("/home/u")), Some(PathBuf::from("/home/u/.abito-island")));
+    assert_eq!(island_root(None, Some("/home/u")), Some(PathBuf::from("/home/u/.koda")));
+    assert_eq!(island_root(Some(""), Some("/home/u")), Some(PathBuf::from("/home/u/.koda")));
     assert_eq!(island_root(Some("relative"), Some("/home/u")), None, "a relative override is refused, never guessed");
     assert_eq!(island_root(None, None), None);
     assert_eq!(island_root(None, Some("home")), None);

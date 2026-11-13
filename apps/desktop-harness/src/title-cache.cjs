@@ -22,11 +22,11 @@ function stateDir(env) {
   const own = env && env.ABITO_STATE_DIR;
   if (typeof own === 'string' && path.isAbsolute(own) && path.normalize(own) === own) return own;
   const xdg = env && env.XDG_STATE_HOME;
-  if (typeof xdg === 'string' && path.isAbsolute(xdg) && path.normalize(xdg) === xdg) return path.join(xdg, 'abito-island');
+  if (typeof xdg === 'string' && path.isAbsolute(xdg) && path.normalize(xdg) === xdg) return path.join(xdg, 'koda');
   // Windows: the per-user local app data folder (no `.local/state`); Unix keeps the XDG-style default.
-  if (process.platform === 'win32' && env && typeof env.LOCALAPPDATA === 'string' && path.win32.isAbsolute(env.LOCALAPPDATA)) return path.win32.join(env.LOCALAPPDATA, 'Abito', 'state');
+  if (process.platform === 'win32' && env && typeof env.LOCALAPPDATA === 'string' && path.win32.isAbsolute(env.LOCALAPPDATA)) return path.win32.join(env.LOCALAPPDATA, 'Koda', 'state');
   const home = (env && env.HOME) || os.homedir();
-  return typeof home === 'string' && path.isAbsolute(home) ? path.join(home, '.local', 'state', 'abito-island') : null;
+  return typeof home === 'string' && path.isAbsolute(home) ? path.join(home, '.local', 'state', 'koda') : null;
 }
 const dirOf = (env, kind) => { const base = stateDir(env); return base ? path.join(base, kind) : null; };
 

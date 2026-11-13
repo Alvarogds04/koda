@@ -17,8 +17,8 @@ const { projectId, sessionToken } = require('../src/identity.cjs');
 
 const cwd = path_cwd();
 function path_cwd() { return require('node:path').resolve(__dirname, '..'); }
-const META = 'C:\\Users\\u\\AppData\\Local\\Abito\\notices\\endpoint.json';
-const RUNTIME = 'C:\\Users\\u\\AppData\\Local\\Abito\\notices';
+const META = 'C:\\Users\\u\\AppData\\Local\\Koda\\notices\\endpoint.json';
+const RUNTIME = 'C:\\Users\\u\\AppData\\Local\\Koda\\notices';
 const LOCAL = 'C:\\Users\\u\\AppData\\Local';
 const OPTS = [{ value: 'yes', label: 'SECRETLABEL yes', description: '' }, { value: 'no', label: 'No', description: 'd' }];
 const REQ = { text: 'SECRETQUESTION proceed?', options: OPTS, timeoutMs: 30000 };
@@ -68,7 +68,7 @@ test('windows config: explicit ABITO_DESKTOP_SOCKET override keeps the relay met
 });
 test('linux config behaviour is unchanged (same function, default platform)', { skip: process.platform === 'win32' && 'Unix path rules use the host path module; the win32 rules are the tests above' }, () => {
   assert.deepEqual(resolveConfig({}, 4321, { procExists: () => false, platform: process.platform === 'darwin' ? 'darwin' : 'linux' }),
-    { runtime: process.platform === 'darwin' ? require('node:fs').realpathSync(require('node:os').tmpdir()) + '/abito-island' : '/run/user/4321/abito-island', endpoint: undefined, source: undefined });
+    { runtime: process.platform === 'darwin' ? require('node:fs').realpathSync(require('node:os').tmpdir()) + '/koda' : '/run/user/4321/koda', endpoint: undefined, source: undefined });
   assert.throws(() => resolveConfig({ ABITO_SOCKET_DIR: '/nonexistent/abito-windows-test' }, undefined, { platform: 'linux' }));
 });
 
@@ -83,7 +83,7 @@ test('windows verifyEndpoint: metadata shape + runtime binding, no unix socket c
   }
 });
 test('linux verifyEndpoint behaviour is unchanged (default platform)', () => {
-  assert.throws(() => verifyEndpoint('/run/user/1000/abito-island/p-abc123/s', '/run/user/1000/abito-island', { platform: 'linux' }));
+  assert.throws(() => verifyEndpoint('/run/user/1000/koda/p-abc123/s', '/run/user/1000/koda', { platform: 'linux' }));
 });
 
 // --- relay adapter (windows-transport) --------------------------------------
