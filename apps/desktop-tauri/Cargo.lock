@@ -3,49 +3,6 @@
 version = 4
 
 [[package]]
-name = "abito-island"
-version = "0.1.0"
-dependencies = [
- "base64 0.22.1",
- "block2",
- "core-foundation 0.10.1",
- "core-graphics",
- "cpal",
- "futures-util",
- "gtk",
- "keyring",
- "libc",
- "mdns-sd",
- "oauth2",
- "objc2",
- "objc2-app-kit",
- "objc2-core-foundation",
- "objc2-core-graphics",
- "objc2-foundation",
- "objc2-screen-capture-kit",
- "png 0.18.1",
- "qrcode",
- "rcgen",
- "reqwest 0.12.28",
- "ring",
- "rustls",
- "serde",
- "serde_json",
- "sha2",
- "sherpa-onnx",
- "subtle",
- "tauri",
- "tauri-build",
- "tauri-plugin-single-instance",
- "tokio",
- "tokio-rustls",
- "windows",
- "windows-sys 0.61.2",
- "x11rb",
- "zbus 5.19.0",
-]
-
-[[package]]
 name = "adler2"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2350,6 +2307,49 @@ dependencies = [
  "security-framework 3.7.0",
  "windows-sys 0.60.2",
  "zeroize",
+]
+
+[[package]]
+name = "koda-island"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "block2",
+ "core-foundation 0.10.1",
+ "core-graphics",
+ "cpal",
+ "futures-util",
+ "gtk",
+ "keyring",
+ "libc",
+ "mdns-sd",
+ "oauth2",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
+ "objc2-foundation",
+ "objc2-screen-capture-kit",
+ "png 0.18.1",
+ "qrcode",
+ "rcgen",
+ "reqwest 0.12.28",
+ "ring",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sha2",
+ "sherpa-onnx",
+ "subtle",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-single-instance",
+ "tokio",
+ "tokio-rustls",
+ "windows",
+ "windows-sys 0.61.2",
+ "x11rb",
+ "zbus 5.19.0",
 ]
 
 [[package]]

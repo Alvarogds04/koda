@@ -3,9 +3,9 @@
 //! speaks the same D-Bus contract, and the portal is a fake that follows the documented
 //! Request/Response protocol.
 #![cfg(target_os = "linux")]
-use abito_island::windowcapture::linux::{LinuxDesktop, Source};
-use abito_island::windowcapture::mcp::{CaptureError, Desktop, Target};
-use abito_island::windowcapture::portal;
+use koda_island::windowcapture::linux::{LinuxDesktop, Source};
+use koda_island::windowcapture::mcp::{CaptureError, Desktop, Target};
+use koda_island::windowcapture::portal;
 use std::collections::HashMap;
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::{Path, PathBuf};
@@ -442,7 +442,7 @@ fn without_the_extension_or_x11_koda_refuses_because_it_cannot_identify_a_window
     let asked = serve_portal(&bus, Answer::Saved, Some(shot_file.clone()));
     let desktop = LinuxDesktop::fixed(Some(&bus.address), None, Some(root.to_str().unwrap()), Some("wayland"));
     let error = desktop.pick_target().expect_err("Koda will not pick a window it cannot identify");
-    let message = abito_island::windowcapture::mcp::error_message(&error);
+    let message = koda_island::windowcapture::mcp::error_message(&error);
     assert!(message.contains("cannot tell which app a window belongs to"), "{message}");
     assert!(message.contains("GNOME extension") && message.contains("X11"), "{message}");
     assert!(asked.lock().unwrap().is_empty(), "the system picker is never opened");
@@ -476,7 +476,7 @@ fn a_picker_nobody_answers_gives_up_instead_of_hanging() {
 fn a_portal_that_is_not_there_is_reported_as_unsupported() {
     let bus = Bus::start();
     let error = portal::capture_with_wait(Some(&bus.address), Duration::from_millis(400)).expect_err("no portal, no capture");
-    assert!(matches!(error, abito_island::windowcapture::mcp::CaptureError::Unsupported(_)), "{error:?}");
+    assert!(matches!(error, koda_island::windowcapture::mcp::CaptureError::Unsupported(_)), "{error:?}");
 }
 
 #[test]
@@ -490,7 +490,7 @@ fn an_older_extension_that_cannot_pick_is_refused_instead_of_falling_back_to_the
     let desktop = LinuxDesktop::fixed(Some(&bus.address), None, Some(root.to_str().unwrap()), Some("wayland"));
     // An extension that cannot pick is not a licence to capture a window nobody can name.
     let error = desktop.pick_target().expect_err("an unidentified window is never captured");
-    let message = abito_island::windowcapture::mcp::error_message(&error);
+    let message = koda_island::windowcapture::mcp::error_message(&error);
     assert!(message.contains("cannot tell which app a window belongs to"), "{message}");
     assert!(asked.lock().unwrap().is_empty(), "the system picker is never opened");
     assert!(shot_file.exists(), "and nothing was read from the portal");
@@ -513,12 +513,12 @@ fn a_client_with_a_different_launch_token_is_refused_and_never_captures() {
         .with_token("a-different-launch-token-0123456789abcdef");
     let refused = other.pick_target().expect_err("a different token is not Koda");
     // The pick itself says why, not the generic «turn on the extension»: the extension IS there.
-    let at_pick = abito_island::windowcapture::mcp::error_message(&refused);
+    let at_pick = koda_island::windowcapture::mcp::error_message(&refused);
     assert!(at_pick.to_lowercase().contains("otro programa"), "{at_pick}");
     assert!(at_pick.contains("Reiniciá"), "{at_pick}");
     assert!(!at_pick.contains("cannot tell which app"), "{at_pick}");
     let error = other.capture(&target).expect_err("a different token cannot capture either");
-    let message = abito_island::windowcapture::mcp::error_message(&error);
+    let message = koda_island::windowcapture::mcp::error_message(&error);
     assert!(message.to_lowercase().contains("otro programa"), "{message}");
     assert!(message.contains("Reiniciá"), "{message}");
     assert!(fake.captured.lock().unwrap().is_empty(), "nothing was captured for the wrong token");
@@ -679,13 +679,13 @@ fn a_third_party_that_registers_first_locks_koda_out_and_cannot_make_it_capture(
     let koda = LinuxDesktop::fixed(Some(&bus.address), None, Some(root.to_str().unwrap()), Some("wayland"));
     // Koda captures nothing and says why, in Spanish, instead of the generic «turn on the extension».
     let error = koda.pick_target().expect_err("Koda is refused while another program holds the extension");
-    let message = abito_island::windowcapture::mcp::error_message(&error);
+    let message = koda_island::windowcapture::mcp::error_message(&error);
     assert!(message.to_lowercase().contains("otro programa") && message.contains("extensión de GNOME de Koda"), "{message}");
     assert!(message.contains("Reiniciá"), "it says to restart: {message}");
     assert!(!message.contains("This system cannot"), "the message is not wrapped in English: {message}");
     let target = Target { app_id: "firefox".into(), app: "Firefox".into(), title: "a page".into(), handle: 5 };
     let error = koda.capture(&target).expect_err("and it cannot capture either");
-    assert!(abito_island::windowcapture::mcp::error_message(&error).to_lowercase().contains("otro programa"));
+    assert!(koda_island::windowcapture::mcp::error_message(&error).to_lowercase().contains("otro programa"));
     assert!(fake.captured.lock().unwrap().is_empty(), "nothing was captured");
     assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0, "and no file was written");
     assert!(fake.registers.lock().unwrap().iter().skip(1).all(|ok| !ok), "Koda never took the binding");

@@ -27,7 +27,7 @@ pub(crate) fn parse_window_height(payload: &Value) -> Option<i32> {
 /// the core on the threads that already take it for `is_protected` (build_snapshot locks the core too).
 pub(crate) fn anchor_bottom(state: &crate::AppState) -> bool {
     let core = state.core.lock().expect("core lock");
-    core.edge == abito_island::geometry::Edge::Bottom
+    core.edge == koda_island::geometry::Edge::Bottom
 }
 
 /// The rect for the top anchor, moved to the bottom of the window when the card stands on it.
@@ -38,11 +38,11 @@ fn anchored(rect: (i32, i32, i32, i32), window: (i32, i32), bottom: bool) -> (i3
 // Only the compact strip may be shorter than the disc.
 fn input_rect(report: Report, window: (i32, i32), protected: bool) -> (i32,i32,i32,i32) {
     // The hidden strip (S1): only the compact DISC's own width (island-free-drag S3: compact is the disc, nothing else) can be one.
-    if !protected && report.w == abito_island::geometry::COMPACT_DOT.0 && (4..32).contains(&report.h) && report.settled {
+    if !protected && report.w == koda_island::geometry::COMPACT_DOT.0 && (4..32).contains(&report.h) && report.settled {
         let w = report.w.min(window.0.max(0));
         return ((window.0-w)/2, 0, w, report.h.min(window.1.max(0)));
     }
-    abito_island::geometry::island_shape_rect((report.w,report.h), window)
+    koda_island::geometry::island_shape_rect((report.w,report.h), window)
 }
 
 /// S29 + HU-057 + island-free-drag S3: the compact island is Koda's disc (40x32, r16 on all four corners — the same box, so it also
@@ -61,15 +61,15 @@ pub(crate) fn input_rects(report: Report, window: (i32, i32), protected: bool) -
 /// anchor — the open card, the folded disc and the question toast above it (geometry::island_window_rect_placed decides it, and
 /// the page puts `#island` on the same edge).
 pub(crate) fn input_rects_anchored(report: Report, window: (i32, i32), protected: bool, bottom: bool) -> Vec<(i32, i32, i32, i32)> {
-    let compact = report.w == abito_island::geometry::COMPACT_DOT.0;
+    let compact = report.w == koda_island::geometry::COMPACT_DOT.0;
     let (x, y, w, h) = anchored(input_rect(report, window, protected), window, bottom);
     // (radius, box top): the hidden strip shows only the bottom `h` px of the disc's own 32 px box, so its box top is above it
-    let (radius_top, radius_bottom, top) = if report.settled && compact && report.h <= abito_island::geometry::COMPACT_DOT.1 {
-        (16.0, 16.0, if protected || report.h >= abito_island::geometry::COMPACT_DOT.1 || h >= abito_island::geometry::COMPACT_DOT.1 { 0 } else { report.h - abito_island::geometry::COMPACT_DOT.1 })
-    } else if report.settled && report.w >= 640 && h == report.h.clamp(abito_island::geometry::COMPACT_DOT.1, window.1.max(0)) {
+    let (radius_top, radius_bottom, top) = if report.settled && compact && report.h <= koda_island::geometry::COMPACT_DOT.1 {
+        (16.0, 16.0, if protected || report.h >= koda_island::geometry::COMPACT_DOT.1 || h >= koda_island::geometry::COMPACT_DOT.1 { 0 } else { report.h - koda_island::geometry::COMPACT_DOT.1 })
+    } else if report.settled && report.w >= 640 && h == report.h.clamp(koda_island::geometry::COMPACT_DOT.1, window.1.max(0)) {
         (26.0, 26.0, 0)
     } else { return vec![(x, y, w, h)] };
-    let box_h = if top < 0 { abito_island::geometry::COMPACT_DOT.1 } else { h };
+    let box_h = if top < 0 { koda_island::geometry::COMPACT_DOT.1 } else { h };
     let mut rects: Vec<(i32, i32, i32, i32)> = Vec::new();
     for row in y.max(0)..(y + h) {
         let centre = f64::from(row - y - top) + 0.5;                // the row's centre, in the box (the box starts at y + top)
@@ -93,7 +93,7 @@ pub(crate) fn input_rects_anchored(report: Report, window: (i32, i32), protected
 /// guess. A report that is not a card (the seeded 288x32 bar, the folded 40x32 disc, a transition) answers None.
 fn report_height(state: &((i32, i32), Report)) -> Option<i32> {
     let (_, report) = state;
-    (report.settled && report.h > abito_island::geometry::COMPACT_DOT.1).then_some(report.h)
+    (report.settled && report.h > koda_island::geometry::COMPACT_DOT.1).then_some(report.h)
 }
 
 /// The page's last settled report of the island it draws, as the open card's visible height (see `report_height`).
@@ -129,7 +129,7 @@ pub(crate) fn shape_rects(state: &mut ((i32, i32), Report), report: Option<Repor
 }
 /// `shape_rects` with the card's anchor (see `anchor_bottom`).
 pub(crate) fn shape_rects_anchored(state: &mut ((i32, i32), Report), report: Option<Report>, window: (i32, i32), protected: bool, bottom: bool) -> Vec<(i32, i32, i32, i32)> {
-    use abito_island::geometry;
+    use koda_island::geometry;
     if let Some(report) = report { state.1 = report; }
     let report = state.1;
     let destination = geometry::clamp_island_shape(report.w, report.h, window);
@@ -177,7 +177,7 @@ pub(crate) fn apply(_app: &tauri::AppHandle, report: Option<Report>) {
         let mut state = LAST.lock().expect("island shape lock");
         state.1 = report;
         // a settled report also fixes the destination the next transition starts from (same bookkeeping as shape_rects)
-        if report.settled { state.0 = abito_island::geometry::clamp_island_shape(report.w, report.h, abito_island::geometry::ISLAND_WINDOW); }
+        if report.settled { state.0 = koda_island::geometry::clamp_island_shape(report.w, report.h, koda_island::geometry::ISLAND_WINDOW); }
     }
 }
 
@@ -211,7 +211,7 @@ mod tests {
 #[test]
 fn edge_input_tracks_four_pixel_strip_and_protected_cards_refuse_it() {
     // island-free-drag S3: the compact strip is the DISC's width (40), centred in the fixed 752 window
-    let w = abito_island::geometry::COMPACT_DOT.0;
+    let w = koda_island::geometry::COMPACT_DOT.0;
     let x = (752 - w) / 2;
     let strip = Report { w, h:4, settled:true };
     assert_eq!(input_rect(strip, (752,340), false), (x,0,w,4));
@@ -224,7 +224,7 @@ fn edge_input_tracks_four_pixel_strip_and_protected_cards_refuse_it() {
 fn the_hidden_strip_input_zone_is_the_drawn_8px_of_the_disc_and_never_wider_than_it() {
     // S1 + island-free-drag S3: the compact island is the DISC (40x32 in every compact state); the hidden strip is 24 px up, leaving
     // an 8 px activation zone exactly as wide as the disc.
-    let w = abito_island::geometry::COMPACT_DOT.0;
+    let w = koda_island::geometry::COMPACT_DOT.0;
     let strip = Report { w, h: 8, settled: true };
     let (x, y, rw, rh) = input_rect(strip, (752, 340), false);
     assert_eq!((rw, rh), (w, 8), "zone {w} wide, 8 px tall");
@@ -246,7 +246,7 @@ fn the_input_region_covers_exactly_what_is_drawn_for_every_native_size_of_the_is
     // state); hidden strip: 40x8; expanded 720x184, 720x220 with the «terminó»/problem band; question 224; chat 720 x 240..300.
     let window = (752, 340);
     let centred = |w: i32| (window.0 - w) / 2;
-    let (w, h) = abito_island::geometry::COMPACT_DOT;
+    let (w, h) = koda_island::geometry::COMPACT_DOT;
     assert_eq!(input_rect(Report { w, h, settled: true }, window, false), (centred(w), 0, w, h), "compact disc {w}x{h}");
     assert_eq!(input_rect(Report { w, h: 8, settled: true }, window, false), (centred(w), 0, w, 8), "hidden strip {w}x8");
     // a click just BELOW the drawn strip (y = 8) is outside the region, so it passes through to the app underneath
@@ -260,8 +260,8 @@ fn the_input_region_covers_exactly_what_is_drawn_for_every_native_size_of_the_is
     assert_eq!(input_rect(Report { w: 10_000, h: 10_000, settled: true }, window, false), (0, 0, 752, 340));
     // placement: the logical window is 752x340 at every scale, the input region is in LOGICAL px (GDK scales it with the window)
     for (scale, monitor_w) in [(1.0, 1920), (2.0, 3072), (2.0, 3840)] {
-        let monitor = abito_island::geometry::Rect { x: 0, y: 0, w: monitor_w, h: monitor_w * 9 / 16 };
-        let r = abito_island::geometry::island_window_rect_for(Some(monitor), monitor, scale, 340).unwrap();
+        let monitor = koda_island::geometry::Rect { x: 0, y: 0, w: monitor_w, h: monitor_w * 9 / 16 };
+        let r = koda_island::geometry::island_window_rect_for(Some(monitor), monitor, scale, 340).unwrap();
         assert_eq!((r.w as f64 / scale, r.h as f64 / scale), (752.0, 340.0), "scale {scale}");
         assert_eq!(r.x + r.w / 2, monitor_w / 2, "centred at scale {scale}");
     }
@@ -289,7 +289,7 @@ mod corners {
     fn sizes() -> Vec<(Report, (i32, i32, i32, i32), (f64, f64))> {
         let centred = |w: i32| (W.0 - w) / 2;
         let mut out = vec![];
-        let (dw, dh) = abito_island::geometry::COMPACT_DOT;
+        let (dw, dh) = koda_island::geometry::COMPACT_DOT;
         out.push((Report { w: dw, h: dh, settled: true }, (centred(dw), 0, dw, dh), (16.0, 16.0))); // the disc: r16 on all four corners
         // isla-cualquier-lado S1: the floating card is r26 on ALL four corners (was the notch: square on top, r26 at the bottom)
         for (w, h) in [(720, 150), (720, 220), (720, 208), (720, 224), (720, 240), (720, 300)] { out.push((Report { w, h, settled: true }, (centred(w), 0, w, h), (26.0, 26.0))); }
@@ -373,7 +373,7 @@ mod corners {
     /// painted where nothing takes a click.
     #[test]
     fn a_folded_disc_on_its_bottom_edge_takes_clicks_at_the_window_bottom_and_nowhere_else() {
-        let report = Report { w: abito_island::geometry::COMPACT_DOT.0, h: abito_island::geometry::COMPACT_DOT.1, settled: true };
+        let report = Report { w: koda_island::geometry::COMPACT_DOT.0, h: koda_island::geometry::COMPACT_DOT.1, settled: true };
         let top = input_rects_anchored(report, W, false, false);
         assert!(covers(&top, W.0 / 2, 0), "upper half: the disc hangs from the window's top");
         assert!(!covers(&top, W.0 / 2, W.1 - 1), "and nothing at the bottom takes a click");
@@ -381,7 +381,7 @@ mod corners {
         assert!(covers(&bottom, W.0 / 2, W.1 - 1), "lower half: the disc stands on the window's bottom");
         assert!(covers(&bottom, W.0 / 2, W.1 - 16), "its whole r16 box is clickable");
         assert!(!covers(&bottom, W.0 / 2, 0), "the window's top row passes clicks");
-        let x = (W.0 - abito_island::geometry::COMPACT_DOT.0) / 2;
+        let x = (W.0 - koda_island::geometry::COMPACT_DOT.0) / 2;
         for (cx, cy) in [(x, W.1 - 1), (x + 39, W.1 - 1)] { assert!(!covers(&bottom, cx, cy), "the disc's rounded corner ({cx},{cy}) passes clicks"); }
         assert!(!covers(&bottom, x - 1, W.1 - 16) && !covers(&bottom, x + 40, W.1 - 16), "nothing outside the disc");
     }
@@ -391,7 +391,7 @@ mod corners {
     /// bottom edge with the disc's rounded corners, exactly as the top-anchored one does at the top. Untested before.
     #[test]
     fn the_hidden_strip_on_its_bottom_edge_takes_clicks_in_the_discs_bottom_rows_and_nowhere_else() {
-        let (dw, dh) = abito_island::geometry::COMPACT_DOT;
+        let (dw, dh) = koda_island::geometry::COMPACT_DOT;
         let x = (W.0 - dw) / 2;
         let strip = Report { w: dw, h: 8, settled: true };
         let top = input_rects_anchored(strip, W, false, false);
@@ -426,7 +426,7 @@ mod corners {
     fn a_folded_disc_with_its_toast_above_covers_the_toast_and_the_disc_and_nothing_else() {
         // what the page reports while the toast shows above the folded disc (question-toast.js shapeWithToast): 350 wide, 96 tall
         // toast + the 32 px disc, flush (gap 0)
-        let report = Report { w: 350, h: 96 + abito_island::geometry::COMPACT_DOT.1, settled: true };
+        let report = Report { w: 350, h: 96 + koda_island::geometry::COMPACT_DOT.1, settled: true };
         let rects = input_rects_anchored(report, W, false, true);
         assert_eq!(rects, vec![((W.0 - 350) / 2, W.1 - 128, 350, 128)], "one rectangle from the toast's top to the disc's bottom");
         assert!(covers(&rects, W.0 / 2, W.1 - 128), "the toast's top row takes clicks");
@@ -485,7 +485,7 @@ mod shared_rects {
     const W: (i32, i32) = (752, 340);
     /// What the Linux `apply` computed inline before this change, kept verbatim as the reference.
     fn reference(state: &mut ((i32, i32), Report), report: Option<Report>, protected: bool) -> Vec<(i32, i32, i32, i32)> {
-        use abito_island::geometry;
+        use koda_island::geometry;
         if let Some(report) = report { state.1 = report; }
         let report = state.1;
         let destination = geometry::clamp_island_shape(report.w, report.h, W);

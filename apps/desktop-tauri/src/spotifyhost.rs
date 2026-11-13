@@ -1,6 +1,6 @@
 //! #470 host: the `spotify_action` command and the `spotify:state` island event.
 //!
-//! One closed command (see `abito_island::spotify::parse_command`). `view` starts the platform's
+//! One closed command (see `koda_island::spotify::parse_command`). `view` starts the platform's
 //! backend and answers the current state; `stop` ends it; the rest drive Spotify. State is pushed with
 //! `app.emit("spotify:state", …)` whenever Spotify's player moves.
 //!
@@ -8,15 +8,15 @@
 //! system media transport controls (`spotify_smtc`), macOS is AppleScript (`spotify_mac`). The two new
 //! backends fill the same `PlayerState` and are driven through the same five calls, so only the file
 //! behind `spotify_backend` changes; macOS alone can also answer `open_permission` (design 08 F7).
-use abito_island::bridge::{self, BridgeError};
-use abito_island::spotify::{self, Action};
+use koda_island::bridge::{self, BridgeError};
+use koda_island::spotify::{self, Action};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Webview};
 
 #[cfg(windows)]
-use abito_island::spotify_smtc as spotify_backend;
+use koda_island::spotify_smtc as spotify_backend;
 #[cfg(target_os = "macos")]
-use abito_island::spotify_mac as spotify_backend;
+use koda_island::spotify_mac as spotify_backend;
 
 fn err(code: &str) -> BridgeError {
     BridgeError {
@@ -60,7 +60,7 @@ pub async fn spotify_action(
     let url = webview.url().map(|u| u.to_string()).unwrap_or_default();
     bridge::sender_ok(webview.label(), &url)?;
     // abito-pausa: Spotify is paused in this version — no D-Bus/MPRIS call
-    if abito_island::paused::paused(abito_island::paused::Feature::Spotify) { return Err(err("paused")); }
+    if koda_island::paused::paused(koda_island::paused::Feature::Spotify) { return Err(err("paused")); }
     let action = spotify::parse_command(&payload).ok_or_else(|| err("invalid_schema"))?;
     run(app, action).await
 }

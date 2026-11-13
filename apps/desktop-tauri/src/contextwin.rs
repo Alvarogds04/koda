@@ -63,7 +63,7 @@ pub const DBUS_DEADLINE: Duration = Duration::from_millis(800);
 
 /// True for Koda's own windows (app id `com.abitog.Koda`, WM_CLASS, desktop file, app name). The old name stays in the test
 /// on purpose: a 0.1 install running next to this one, or a binary still called `abito-island`, is also "ours" to skip.
-pub fn is_abito(c: &Candidate) -> bool {
+pub fn is_koda(c: &Candidate) -> bool {
     let own = |text: &str| {
         let text = text.to_lowercase();
         text.contains("abito") || text.contains("koda")
@@ -83,7 +83,7 @@ fn capped(text: &str) -> String {
 pub fn pick_external(recent: &[Candidate]) -> Option<ActiveWindow> {
     recent
         .iter()
-        .find(|c| !is_abito(c) && !c.app_name.trim().is_empty())
+        .find(|c| !is_koda(c) && !c.app_name.trim().is_empty())
         .map(|c| ActiveWindow { app: capped(&c.app_name), title: capped(&c.title) })
 }
 

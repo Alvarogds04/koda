@@ -9,9 +9,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use abito_island::characterwin::{self as cw, Display, Rect};
-use abito_island::contextwin;
-use abito_island::geometry;
+use koda_island::characterwin::{self as cw, Display, Rect};
+use koda_island::contextwin;
+use koda_island::geometry;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, State, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 

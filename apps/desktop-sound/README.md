@@ -1,4 +1,4 @@
-# abito-desktop-sound — motor de sonido de la isla (#313)
+# koda-desktop-sound — motor de sonido de la isla (#313)
 
 Un único archivo UMD sin dependencias, `sound-engine.js`, que sintetiza los 37 cues del catálogo (`docs/desktop-sound-catalog.md`) con un subconjunto de WebAudio (osciladores y ganancias). **Sin acceso a archivos, sin DOM, sin red.** Admite muestras opcionales ya decodificadas, inyectadas por el host; sin ellas usa la síntesis propia. Apagado por defecto. Parámetros por cue: `docs/CUES.md`.
 

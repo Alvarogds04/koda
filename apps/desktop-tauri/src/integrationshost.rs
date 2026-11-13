@@ -1,14 +1,14 @@
 //! #489 host: the `integration_action` command and the `integration:update` island event.
 //!
 //! Adapted from Coucou windows/src-tauri/src/integrations.rs @71b773f, Copyright (c) 2026 Louis
-//! Raillé, MIT (the timers and the emit; the pollers live in `abito_island::integrations`).
+//! Raillé, MIT (the timers and the emit; the pollers live in `koda_island::integrations`).
 //! One thread per service wakes on Coucou's cadence and does NOTHING unless the human declared
 //! that pill (main or declared) and saved its key: no declared pill, no request. The last update
 //! of each service is cached so the card opens with data. The island window only.
-use abito_island::bridge::{self, BridgeError};
-use abito_island::integrations::{self as integ, Command, Seen};
-use abito_island::integrations_net::Net;
-use abito_island::secrets::Keychain;
+use koda_island::bridge::{self, BridgeError};
+use koda_island::integrations::{self as integ, Command, Seen};
+use koda_island::integrations_net::Net;
+use koda_island::secrets::Keychain;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
@@ -65,7 +65,7 @@ fn run_poll(app: &AppHandle, id: &'static str) {
 /// Starts one timer thread per poller (Coucou's first-run delay and interval).
 pub fn start(app: &AppHandle) {
     // abito-pausa: integrations are paused in this version — no poller thread, no network
-    if abito_island::paused::paused(abito_island::paused::Feature::Integrations) { return; }
+    if koda_island::paused::paused(koda_island::paused::Feature::Integrations) { return; }
     for (id, delay, every) in integ::POLLERS {
         let app = app.clone();
         std::thread::spawn(move || {
@@ -126,12 +126,12 @@ pub fn set_validation_fixture(origin: Option<&str>, mode: &'static str) {
 #[cfg(any(debug_assertions, feature = "probe"))]
 struct FixtureKeys(bool);
 #[cfg(any(debug_assertions, feature = "probe"))]
-impl abito_island::secrets::SecretStore for FixtureKeys {
-    fn read(&self, key:&str)->Result<Option<String>,abito_island::secrets::StoreError> {
+impl koda_island::secrets::SecretStore for FixtureKeys {
+    fn read(&self, key:&str)->Result<Option<String>,koda_island::secrets::StoreError> {
         Ok(self.0.then(||if key=="n8n-url" {"http://127.0.0.1".into()} else {"validator".into()}))
     }
-    fn write(&self,_:&str,_:&str)->Result<(),abito_island::secrets::StoreError>{unreachable!()}
-    fn delete(&self,_:&str)->Result<(),abito_island::secrets::StoreError>{unreachable!()}
+    fn write(&self,_:&str,_:&str)->Result<(),koda_island::secrets::StoreError>{unreachable!()}
+    fn delete(&self,_:&str)->Result<(),koda_island::secrets::StoreError>{unreachable!()}
 }
 #[cfg(any(debug_assertions, feature = "probe"))]
 struct FixtureHttp { origin:String, mode:&'static str, id:&'static str }

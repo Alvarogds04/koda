@@ -45,7 +45,7 @@ fn c(id: &str, name: &str, title: &str) -> Candidate {
 }
 
 #[test]
-fn skips_abito_windows_and_returns_the_most_recent_external_one() {
+fn skips_koda_windows_and_returns_the_most_recent_external_one() {
     let recent = vec![
         c("com.abitog.Koda", "Abito", "Abito"),
         c("firefox.desktop", "Firefox", "Docs"),
@@ -58,11 +58,11 @@ fn skips_abito_windows_and_returns_the_most_recent_external_one() {
 // `com.abitog.Koda` still contains «abito» (as «abitog»), so a test on the app name alone proves the rule is not an accident.
 #[test]
 fn koda_own_windows_are_skipped_by_their_current_names() {
-    assert!(is_abito(&c("com.abitog.Koda", "Koda", "Koda")));
-    assert!(is_abito(&c("koda", "Koda", "")), "the renamed binary's WM_CLASS / app id");
-    assert!(is_abito(&c("", "Koda", "Ajustes")), "an app name alone");
-    assert!(!is_abito(&c("firefox.desktop", "Firefox", "Koda docs")), "a title never makes a window ours");
-    assert!(!is_abito(&c("org.gnome.Todo", "Soda", "x")), "no loose substring: soda is not koda");
+    assert!(is_koda(&c("com.abitog.Koda", "Koda", "Koda")));
+    assert!(is_koda(&c("koda", "Koda", "")), "the renamed binary's WM_CLASS / app id");
+    assert!(is_koda(&c("", "Koda", "Ajustes")), "an app name alone");
+    assert!(!is_koda(&c("firefox.desktop", "Firefox", "Koda docs")), "a title never makes a window ours");
+    assert!(!is_koda(&c("org.gnome.Todo", "Soda", "x")), "no loose substring: soda is not koda");
 }
 
 #[test]

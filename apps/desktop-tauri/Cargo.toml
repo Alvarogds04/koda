@@ -1,10 +1,11 @@
 [package]
-# K2-04 T6: the PACKAGE keeps its name so the library stays `abito_island` and every `use abito_island::`
-# keeps compiling; only the INSTALLED main binary is named `koda` (the `[[bin]]` below). T7 renames the crate.
-name = "abito-island"
+# K2-04 T7: the package (and so the library, `koda_island`) is named after the app; the INSTALLED main binary is `koda`
+# (the `[[bin]]` below). The library is NOT called `koda`: the bin is, and two targets named alike would emit the same
+# `koda.*` artifacts (koda.pdb on Windows) and collide in the docs output.
+name = "koda-island"
 version = "0.1.0"
 edition = "2021"
-description = "Abito island — Electron to Rust+Tauri migration, unit M2 (host/bridge + Pi transport receiver)"
+description = "Koda island — Electron to Rust+Tauri migration, unit M2 (host/bridge + Pi transport receiver)"
 publish = false
 default-run = "koda"
 

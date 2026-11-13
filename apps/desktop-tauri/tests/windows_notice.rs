@@ -18,9 +18,9 @@ use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use abito_island::protocol::{self, READY_LINE};
-use abito_island::transport::{self, TransportOptions};
-use abito_island::winipc;
+use koda_island::protocol::{self, READY_LINE};
+use koda_island::transport::{self, TransportOptions};
+use koda_island::winipc;
 use windows_sys::Win32::Foundation::HANDLE;
 use serde_json::{json, Value};
 
@@ -208,7 +208,7 @@ fn same_user_handshake_notice_and_bounded_close() {
 /// `r21_socket_peer_notice_origin_is_host_only_bounded_and_revoked`; macOS has `macos_origin_is_never_invented_even_for_an_accepted_notice`.
 #[test]
 fn windows_never_invents_a_terminal_origin_hu065() {
-    use abito_island::focushost::{OriginKind, OriginRequest};
+    use koda_island::focushost::{OriginKind, OriginRequest};
     let fixture = Fixture::new("win-notice-origin");
     let client = TestClient::connect(&fixture.transport);
     client.send(&hello(&fixture.project));

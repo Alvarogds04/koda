@@ -15,11 +15,11 @@
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 
-use abito_island::bridge::{self, BridgeError};
-use abito_island::chat::{ChatError, ProfileRef};
-use abito_island::chatlane::{Target, ISLAND_MAX_OUTPUT_TOKENS};
-use abito_island::localmodel::LocalEndpoint;
-use abito_island::models::{self, Entry, ModelsCommand, Saved};
+use koda_island::bridge::{self, BridgeError};
+use koda_island::chat::{ChatError, ProfileRef};
+use koda_island::chatlane::{Target, ISLAND_MAX_OUTPUT_TOKENS};
+use koda_island::localmodel::LocalEndpoint;
+use koda_island::models::{self, Entry, ModelsCommand, Saved};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -79,7 +79,7 @@ pub fn load_selection(app: &AppHandle, state: &AppState) {
         Saved::Absent
     };
     *state.chat_cloud.lock().expect("cloud selection lock") = match &saved {
-        Saved::Selected(id) => abito_island::cloudprofiles::select_credentialed(id, &abito_island::secrets::Keychain).ok(),
+        Saved::Selected(id) => koda_island::cloudprofiles::select_credentialed(id, &koda_island::secrets::Keychain).ok(),
         _ => None,
     };
     let target = models::initial_selection(&saved).and_then(target_of);
@@ -104,13 +104,13 @@ fn selected_id(state: &AppState) -> Option<String> {
 pub fn reconcile_cloud(app: &AppHandle) {
     let state = app.state::<AppState>();
     let current = *state.chat_cloud.lock().expect("cloud selection lock");
-    if current.is_none() || abito_island::cloudprofiles::reconcile(current, &abito_island::secrets::Keychain).is_some() { return; }
+    if current.is_none() || koda_island::cloudprofiles::reconcile(current, &koda_island::secrets::Keychain).is_some() { return; }
     *state.chat_cloud.lock().expect("cloud selection lock") = None;
     #[cfg(unix)]
     if let (Some(dir), Some(t)) = (config_dir(app), state.chat_target.lock().expect("chat target lock").as_ref()) {
         let _ = models::write_saved_file(&dir, &t.profile.profile_id);
     }
-    state.chat.lock().expect("chat lane lock").availability = abito_island::chatlane::Availability::unchecked();
+    state.chat.lock().expect("chat lane lock").availability = koda_island::chatlane::Availability::unchecked();
     refresh(&state);
     publish_models(app);
     chathost::publish_chat(app);
@@ -135,7 +135,7 @@ fn last(state: &AppState) -> Value {
                    "remote": "Sin nube y sin claves: sólo modelos de esta máquina."});
     }
     let mut profiles = v["profiles"].as_array().cloned().unwrap_or_default();
-    profiles.extend(abito_island::cloudprofiles::cloud_entries(&abito_island::secrets::Keychain).into_iter().map(|e| e.listing()));
+    profiles.extend(koda_island::cloudprofiles::cloud_entries(&koda_island::secrets::Keychain).into_iter().map(|e| e.listing()));
     v["profiles"] = json!(profiles);
     v["remote"] = json!("Nube: sólo proveedores con credencial en Ajustes → Chat.");
     v["selected"] = json!(selected_id(state));
@@ -157,7 +157,7 @@ pub fn publish_models(app: &AppHandle) {
 pub fn select(app: &AppHandle, state: &AppState, profile_id: &str) -> Result<(), BridgeError> {
     let registry = registry(state);
     if profile_id.starts_with("cloud-") {
-        let cloud = abito_island::cloudprofiles::select_credentialed(profile_id, &abito_island::secrets::Keychain).map_err(err)?;
+        let cloud = koda_island::cloudprofiles::select_credentialed(profile_id, &koda_island::secrets::Keychain).map_err(err)?;
         *state.chat_cloud.lock().expect("cloud selection lock") = Some(cloud);
     } else {
         let entry = models::select(&registry, profile_id).map_err(err)?;
@@ -186,7 +186,7 @@ pub fn select(app: &AppHandle, state: &AppState, profile_id: &str) -> Result<(),
     state.models_persisted.store(persisted, Ordering::SeqCst);
     // the chat's availability belongs to the previous target: re-check it
     state.chat.lock().expect("chat lane lock").availability =
-        abito_island::chatlane::Availability::unchecked();
+        koda_island::chatlane::Availability::unchecked();
     Ok(())
 }
 

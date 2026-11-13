@@ -25,9 +25,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use abito_island::agentconn::AgentConn;
-use abito_island::daemonhost;
-use abito_island::winipc;
+use koda_island::agentconn::AgentConn;
+use koda_island::daemonhost;
+use koda_island::winipc;
 use serde_json::{json, Value};
 
 const HELPER: &str = env!("CARGO_BIN_EXE_abito-private-session");

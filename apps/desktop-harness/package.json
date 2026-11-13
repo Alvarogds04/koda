@@ -1,5 +1,5 @@
 {
-  "name": "abito-desktop-harness",
+  "name": "koda-desktop-harness",
   "version": "0.1.0",
   "private": true,
   "description": "Safe island client for short-lived CLI harness hook processes; no runtime dependencies",

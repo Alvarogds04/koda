@@ -292,7 +292,7 @@ pub settings_window: Option<bool>,
     /// the default and is never written, so an untouched file keeps its bytes.
     pub island_agents: Option<Vec<String>>,
     /// #442 T7.4: the principal's declarative «Qué hace». `None` is the default, never written.
-    pub abito_instructions: Option<String>,
+    pub koda_instructions: Option<String>,
     /// S10 (L30): whether the Claude plan-usage pill shows in the island header (Coucou's `showPlanInNotch`).
     /// `None` means the default (off) and is never written, so an untouched file keeps its bytes.
     pub show_plan_in_notch: Option<bool>,
@@ -375,7 +375,7 @@ impl Default for Prefs {
             open_settings_at_launch: None,
             settings_window_size: None,
             island_agents: None,
-            abito_instructions: None,
+            koda_instructions: None,
             show_plan_in_notch: None,
             show_codex_plan_in_notch: None,
             window_context: None,
@@ -535,8 +535,8 @@ impl Prefs {
         }
     }
     /// #442 T7.4: the WebView projection of the principal's «Qué hace»; absent is null.
-    pub fn abito_instructions_view(&self) -> Value {
-        match &self.abito_instructions {
+    pub fn koda_instructions_view(&self) -> Value {
+        match &self.koda_instructions {
             Some(text) => json!(text),
             None => Value::Null,
         }
@@ -613,7 +613,7 @@ impl Prefs {
             open_settings_at_launch: v.get("open_settings_at_launch").and_then(Value::as_bool).filter(|on| *on),
             settings_window_size: settings_window_size_from(v.get(SETTINGS_WINDOW_SIZE)),
             island_agents: island_agents_from(v.get(ISLAND_AGENTS)),
-            abito_instructions: v.get(KODA_INSTRUCTIONS).and_then(Value::as_str)
+            koda_instructions: v.get(KODA_INSTRUCTIONS).and_then(Value::as_str)
                 .and_then(|text| clean_instructions(text).ok()).flatten(),
             show_plan_in_notch: v.get("show_plan_in_notch").and_then(Value::as_bool),
             show_codex_plan_in_notch: v.get("show_codex_plan_in_notch").and_then(Value::as_bool),
@@ -680,7 +680,7 @@ impl Prefs {
         if let Some(ids) = &self.island_agents {
             v[ISLAND_AGENTS] = json!(ids);
         }
-        if let Some(text) = &self.abito_instructions {
+        if let Some(text) = &self.koda_instructions {
             v[KODA_INSTRUCTIONS] = json!(text);
         }
         if let Some(on) = self.show_plan_in_notch {
@@ -810,7 +810,7 @@ pub enum Command {
     /// host sends it after a delete): deliberately NOT produced by [`parse_command`].
     PruneIslandAgent(String),
     /// #442 T7.4: the principal's «Qué hace»; an empty (or blank) text clears it.
-    SetAbitoInstructions(String),
+    SetKodaInstructions(String),
     /// K2-10 T4 (S5): the mail counter's last visit, ms since the epoch. Deliberately NOT
     /// produced by [`parse_command`]: the counter is the mail host's business, and the page
     /// must never be able to move it forwards (hiding new mail) or backwards.
@@ -1023,7 +1023,7 @@ pub fn parse_command(payload: &Value) -> Result<Command, CommandError> {
         Some("set_abito_instructions") if map.len() == 2 => {
             let text = map.get("text").and_then(Value::as_str).ok_or(CommandError)?;
             clean_instructions(text)?;
-            Ok(Command::SetAbitoInstructions(text.to_owned()))
+            Ok(Command::SetKodaInstructions(text.to_owned()))
         }
         _ => Err(CommandError),
     }
@@ -1205,7 +1205,7 @@ pub fn apply(current: &Prefs, command: &Command) -> Result<Prefs, CommandError> 
             if !valid_island_order(order) { return Err(CommandError); }
             next.island_agents = Some(order.clone());
         }
-        Command::SetAbitoInstructions(text) => next.abito_instructions = clean_instructions(text)?,
+        Command::SetKodaInstructions(text) => next.koda_instructions = clean_instructions(text)?,
         Command::PruneIslandAgent(id) => {
             if let Some(ids) = next.island_agents.as_mut() { ids.retain(|x| x != id); }
         }

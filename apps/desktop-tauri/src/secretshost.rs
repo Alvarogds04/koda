@@ -4,8 +4,8 @@
 //! schema). The answer is `{key, present}` only: the value is never returned. The keychain
 //! call is blocking D-Bus work, so it runs off the WebView thread.
 use crate::{now_ms, AppState};
-use abito_island::bridge::{self, BridgeError};
-use abito_island::secrets::{self, Keychain};
+use koda_island::bridge::{self, BridgeError};
+use koda_island::secrets::{self, Keychain};
 use serde_json::Value;
 use tauri::State;
 

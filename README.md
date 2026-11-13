@@ -60,10 +60,12 @@ Each agent row in *Ajustes → Agentes* works on its own: Claude Code and Codex 
 | `apps/desktop-sound` | sound engine |
 | `assets/koda` | Koda's 42 animations as transparent 512×512 GIF and animated WebP (stickers, wallpapers, avatars): [gallery](assets/koda/README.md) |
 
-The installed binary is `koda`. A few internal names still carry the old name and are renamed separately: the Rust
-crate and library (`abito_island`), the two helper binaries (`abito-notice-relay`, `abito-private-session`), the line the
-agent daemon prints when it starts, the hook extension names that older installs left behind, and the phone-link
-protocol. The bundle identifier is `com.abitog.Koda`.
+The installed binary is `koda`, the Rust package is `koda-island` (library `koda_island`), the agent daemon CLI is
+`koda-daemon` and the bundle identifier is `com.abitog.Koda`. A few internal names still carry the old name on purpose:
+the two Windows helper binaries (`abito-notice-relay`, `abito-private-session`), the hook extension names that older
+installs left behind (they are recognised and replaced), the phone-link protocol and the frontend's `window.Abito*`
+globals. Renaming them needs a decision of its own (a wire contract, an installed extension or a frozen
+rendering pin), so they are not part of the internal rename.
 Nothing from Koda 0.1 is migrated: its old data folder, keychain entries and memories stay where they
 are, untouched and unused, so you can always go back.
 

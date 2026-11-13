@@ -35,9 +35,9 @@ test('T6b: the folded window stands on the disc in the lower half, from the same
 });
 
 test('T6b: the click region and the page stand on the edge the placement used, folded or open', () => {
-  assert.match(shape, /pub\(crate\) fn anchor_bottom\(state: &crate::AppState\) -> bool \{[\s\S]{0,170}core\.edge == abito_island::geometry::Edge::Bottom/,
+  assert.match(shape, /pub\(crate\) fn anchor_bottom\(state: &crate::AppState\) -> bool \{[\s\S]{0,170}core\.edge == (?:abito|koda)_island::geometry::Edge::Bottom/,
     'anchor_bottom follows the edge for the folded disc too');
-  assert.doesNotMatch(shape, /core\.expanded && core\.edge == abito_island::geometry::Edge::Bottom/, 'the folded disc is not pinned to the window top');
+  assert.doesNotMatch(shape, /core\.expanded && core\.edge == (?:abito|koda)_island::geometry::Edge::Bottom/, 'the folded disc is not pinned to the window top');
   const rects = between(shape, 'pub(crate) fn input_rects_anchored(', '/// The height of the box the page DRAWS');
   assert.match(rects, /let \(x, y, w, h\) = anchored\(input_rect\(report, window, protected\), window, bottom\);/, 'the whole box moves with the anchor');
   assert.doesNotMatch(rects, /bottom && !\(report\.settled && compact && report\.h <=/, 'a settled disc is not excluded from the anchor');

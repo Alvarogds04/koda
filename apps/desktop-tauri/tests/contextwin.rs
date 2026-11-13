@@ -2,7 +2,7 @@
 //! (`dbus-daemon`) and against fake window data on a PRIVATE Xvfb. The human's bus and
 //! display are never used; a missing runner fails loudly.
 #![cfg(target_os = "linux")]
-use abito_island::contextwin::{capture, dbus, x11, ActiveWindow, BUS_NAME, OBJECT_PATH};
+use koda_island::contextwin::{capture, dbus, x11, ActiveWindow, BUS_NAME, OBJECT_PATH};
 use std::os::unix::fs::DirBuilderExt;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -132,7 +132,7 @@ fn flow_uses_the_gnome_reader_on_wayland() {
 #[test]
 fn flow_gnome_child() {
     if std::env::var("KODA_TEST_CONTEXT_CHILD").ok().as_deref() != Some("1") { return; }
-    use abito_island::flow::{self, Backend, System};
+    use koda_island::flow::{self, Backend, System};
     assert_eq!(System.foreground_app(), Some(("org.example.writer".into(), "Writer".into())));
     assert_eq!(flow::running_apps(), vec![("org.example.writer".into(), "Writer".into())]);
 }
