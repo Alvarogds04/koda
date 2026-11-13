@@ -209,11 +209,11 @@ test('F4: a DST gap resolves with the offset before it, an overlap to its FIRST 
   assert.equal(C.zonedInstant('Mars/Olympus', Date.UTC(2026, 0, 1)), null);
 });
 
-const BIDI = /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]/;
+const BIDI = /[\u0000-\u001f\u007f-\u009f\u061c\u180e\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]/;
 
 test('F7: the sanitiser strips bidi controls and separators too, not only C0/C1 (titles come from outside invitations)', () => {
   // U+202E right-to-left override, U+2066/U+2069 isolates, U+200E mark, U+FEFF, U+200B, U+2028 line separator
-  const hostile = 'Factura\u202E\u2066gpj.exe\u2069\u200E\uFEFF\u200B y\u2028algo';
+  const hostile = 'Factura\u202E\u2066gpj.exe\u2069\u200E\uFEFF\u200B\u061C\u180E y\u2028algo';
   const v = C.cardView(answer([floatingAt({ title: hostile, location: 'Sala\u202Etxt\u200F' })]), COVER_NOW);
   assert.equal(v.rows.length, 1);
   assert.doesNotMatch(v.rows[0].title, BIDI, JSON.stringify(v.rows[0].title));

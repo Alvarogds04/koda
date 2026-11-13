@@ -104,11 +104,11 @@ const pulseOf = (o = {}) => ({ available: true, pulse: { ...PULSE, ...o } });
   });
 
   // F7: bidi overrides and separators are stripped like every other control character (a title comes from outside)
-  const BIDI = /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]/;
+  const BIDI = /[\u0000-\u001f\u007f-\u009f\u061c\u180e\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]/;
 
   test('F7: hostile titles and refs lose their bidi controls, and the ref goes through the same cap', () => {
     // U+202E/U+2066/U+2069/U+200F/U+200E/FEFF/2028: the overrides and separators a title can carry from an outside invitation
-    const hostile = 'Arreglar\u202E\u2066\u200F el \u2028login\uFEFF';
+    const hostile = 'Arreglar\u202E\u2066\u200F\u061C\u180E el \u2028login\uFEFF';
     const prRows = G.cardView({ pulse: { ...PULSE, myPRs: [pr({ title: hostile })] }, section: 'pr' }).rows;
     assert.doesNotMatch(prRows[0].title, BIDI, JSON.stringify(prRows[0].title));
     assert.match(prRows[0].title, /^Arreglar/);

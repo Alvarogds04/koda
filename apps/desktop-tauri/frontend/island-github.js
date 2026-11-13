@@ -33,7 +33,7 @@
   const isObject = v => v !== null && typeof v === 'object' && !Array.isArray(v);
   /** C0/C1 controls PLUS the bidi overrides, zero-width and separator characters a title (or a repo name) can carry from
       outside: each becomes a space and the result is capped, because they are text, never direction. */
-  const HOSTILE = /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]/g;
+  const HOSTILE = /[\u0000-\u001f\u007f-\u009f\u061c\u180e\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]/g;
   const clean = (v, max = MAX_TEXT) => (typeof v === 'string' ? [...v.replace(HOSTILE, ' ').trim()].slice(0, max).join('') : '');
   /** Why there is no card. Closed: anything else reads as «bad answer», never as the user's fault. */
   const REASONS = Object.freeze({

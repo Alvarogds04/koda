@@ -1357,7 +1357,7 @@ html[data-motion="reduce"] .sseg-btn { transition: none; }
 }
 html[data-motion="reduce"] #island-countdown::before { transition: none; }
 
-/* ---- #357/#358/#359: Notion, n8n and Calendario service cards (frontend/integrations-{notion,n8n,calendar}.js,
+/* ---- #357/#358/#359: Notion and n8n service cards (frontend/integrations-{notion,n8n}.js,
    FAKE providers). APPEND-ONLY block, placed BEFORE the #410 compact slice (a #410 test slices style.css from
    that marker to EOF). Theme tokens only, so light and dark resolve with zero raw colors; 44px targets. */
 #integrations-notion { display: grid; gap: 8px; }
@@ -1417,76 +1417,6 @@ html[data-motion="reduce"] #island-countdown::before { transition: none; }
 .intw-row:hover, .intw-open:hover, .intw-back:hover { background: var(--fill-hover); }
 .intw-row:focus-visible, .intw-open:focus-visible, .intw-back:focus-visible { outline: 2px solid var(--go); outline-offset: 2px; }
 
-#integrations-calendar { display: grid; gap: 8px; }
-#integrations-calendar[hidden] { display: none; }
-.intc-head { display: flex; align-items: baseline; gap: 10px; }
-.intc-title { font: 700 var(--fs-body)/1.2 var(--font-ui); color: var(--island-ink); }
-.intc-meta { font: 400 var(--fs-label)/1.2 var(--font-ui); color: var(--muted); white-space: nowrap; }
-.intc-fake { margin: 0; font: 600 var(--fs-label)/1.4 var(--font-ui); color: var(--sun); }
-.intc-empty, .intc-sub { margin: 0; font: 400 var(--fs-label)/1.4 var(--font-ui); color: var(--muted); }
-.intc-nav-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.intc-month { font: 700 var(--fs-label)/1.2 var(--font-ui); color: var(--island-ink); }
-.intc-nav, .intc-day {
-  min-height: 44px; min-width: 44px; padding: 0 12px; border-radius: var(--radius-full);
-  border: 1px solid var(--line-soft); background: transparent; color: var(--island-muted);
-  font: 600 var(--fs-label)/1.2 var(--font-ui); cursor: pointer;
-}
-.intc-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 2px; }
-.intc-wd { text-align: center; font: 600 var(--fs-caption)/1.2 var(--font-ui); color: var(--muted); }
-.intc-day { padding: 0; border-radius: var(--radius-xl); border-color: var(--line-faint); background: var(--fill-alt); color: var(--island-ink); }
-.intc-day[data-count] { border-color: var(--go); }
-.intc-day--today { font-weight: 700; color: var(--go); }
-.intc-day--sel, .intc-day[aria-pressed="true"] { background: var(--fill-hover); border-color: var(--go); }
-.intc-list { margin: 0; padding: 0; list-style: none; display: grid; gap: 4px; }
-.intc-row {
-  display: flex; align-items: center; justify-content: space-between; gap: 10px; width: 100%; min-height: 44px; padding: 0 12px;
-  border-radius: var(--radius-xl); text-align: left; border: 1px solid var(--line-faint);
-  background: var(--fill-alt); color: var(--island-ink); font: 600 var(--fs-label)/1.2 var(--font-ui); cursor: pointer;
-}
-.intc-row-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.intc-card { display: grid; gap: 6px; padding: 10px 12px; border-radius: var(--radius-xl); border: 1px solid var(--line-faint); background: var(--fill-alt); }
-.intc-card-title { margin: 0; font: 700 var(--fs-body)/1.2 var(--font-ui); color: var(--island-ink); overflow-wrap: anywhere; }
-.intc-card .intc-nav { justify-self: start; }
-.intc-nav:hover, .intc-day:hover, .intc-row:hover { background: var(--fill-hover); color: var(--island-ink); }
-.intc-nav:focus-visible, .intc-day:focus-visible, .intc-row:focus-visible { outline: 2px solid var(--go); outline-offset: 2px; }
-/* ---- #353: GitHub service card (frontend/integrations-github.js, FAKE dataset).
-   APPEND-ONLY block, placed BEFORE the #410 compact slice (a #410 test slices style.css from
-   that marker to EOF). Theme tokens only, so light and dark resolve with zero raw colors;
-   the grid intensity rides on opacity of --go, never on a raw color. Inert until
-   <section id="integrations-github" hidden> exists (mount contract in the module header). */
-#integrations-github { display: grid; gap: 8px; }
-#integrations-github[hidden] { display: none; }
-.ig-title, .ig-sub { margin: 0; font: 700 var(--fs-body)/1.2 var(--font-ui); color: var(--island-ink); }
-.ig-sub { font-size: var(--fs-label); color: var(--muted); }
-.ig-fake { margin: 0; font: 600 var(--fs-label)/1.4 var(--font-ui); color: var(--sun); }
-.ig-ci { margin: 0; font: 400 var(--fs-label)/1.2 var(--font-ui); color: var(--muted); }
-.ig-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
-.ig-row {
-  display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
-  padding: 8px 12px; border-radius: var(--radius-xl);
-  border: 1px solid var(--line-faint); background: var(--fill-alt);
-}
-.ig-num { font: 600 var(--fs-caption)/1.2 var(--font-ui); color: var(--muted); }
-.ig-name { flex: 1; min-width: 0; font: 600 var(--fs-label)/1.2 var(--font-ui); color: var(--island-ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ig-meta { font: 400 var(--fs-caption)/1.2 var(--font-ui); color: var(--muted); }
-.ig-chip { font: 600 var(--fs-caption)/1.2 var(--font-ui); color: var(--muted); white-space: nowrap; }
-.ig-chip--pass { color: var(--go); }
-.ig-chip--fail { color: var(--red-11); }
-.ig-chip--pending { color: var(--sun); }
-.ig-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; max-width: 320px; }
-.ig-day {
-  min-height: 44px; border-radius: var(--radius-full); padding: 0; cursor: pointer;
-  border: 1px solid var(--line-soft); background: var(--fill-hover);
-}
-.ig-day--1, .ig-day--2, .ig-day--3, .ig-day--4 { background: var(--go); }
-.ig-day--1 { opacity: .35; }
-.ig-day--2 { opacity: .55; }
-.ig-day--3 { opacity: .8; }
-.ig-day:hover { border-color: var(--island-ink); }
-.ig-day:focus-visible { outline: 2px solid var(--go); outline-offset: 2px; }
-.ig-day[aria-pressed="true"] { border-color: var(--island-ink); border-width: 2px; }
-.ig-detail { display: flex; gap: 10px; flex-wrap: wrap; align-items: baseline; padding: 8px 12px; border-radius: var(--radius-xl); border: 1px solid var(--line); }
-.ig-detail-title { font: 700 var(--fs-label)/1.2 var(--font-ui); color: var(--island-ink); }
 
 /* ---- #354: Deployments service card (frontend/integrations-deployments.js, FAKE dataset).
    Same append-only region as #353, still BEFORE the #410 compact slice. Tokens only; inert

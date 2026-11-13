@@ -37,7 +37,7 @@
   const isObject = v => v !== null && typeof v === 'object' && !Array.isArray(v);
   /** C0/C1 controls PLUS the bidi overrides, zero-width and separator characters a title can carry from outside (an invitation
       writes the title, not us): control characters are text, never direction, so each one becomes a space and the result is capped. */
-  const HOSTILE = /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]/g;
+  const HOSTILE = /[\u0000-\u001f\u007f-\u009f\u061c\u180e\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]/g;
   const clean = (v, max = MAX_TEXT) => (typeof v === 'string' ? [...v.replace(HOSTILE, ' ').trim()].slice(0, max).join('') : '');
   const pad = n => String(n).padStart(2, '0');
   const DAY_MS = 86400000;
