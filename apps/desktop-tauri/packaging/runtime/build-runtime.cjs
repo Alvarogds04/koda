@@ -564,7 +564,7 @@ function installPi(dest, cache, target, t) {
     npm_config_userconfig: userrc, npm_config_globalconfig: globalrc, npm_config_cache: path.join(cache, 'npm'),
     npm_config_update_notifier: 'false', npm_config_fund: 'false', npm_config_audit: 'false',
   };
-  run(process.execPath, [npmCli(), 'ci', '--ignore-scripts', '--omit=dev', '--no-audit', '--no-fund', '--registry=https://registry.npmjs.org/'], { cwd: dest, env }, 'npm ci');
+  run(process.execPath, [npmCli(), 'ci', '--install-links', '--ignore-scripts', '--omit=dev', '--no-audit', '--no-fund', '--registry=https://registry.npmjs.org/'], { cwd: dest, env }, 'npm ci');
   auditTargetPlatforms(dest, target, t);
   for (const f of ['package.json', 'package-lock.json']) fs.rmSync(path.join(dest, f));
   if (hasStubs) fs.rmSync(path.join(dest, 'stubs'), { recursive: true, force: true });

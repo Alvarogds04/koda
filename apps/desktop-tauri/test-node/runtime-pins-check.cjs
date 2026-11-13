@@ -123,6 +123,10 @@ test('the lockfile pins every package to the npm registry with a sha512 integrit
     if (k === 'node_modules/better-sqlite3') {
       // The one deliberate exception: our own empty stub, resolved from this folder, so it has no registry integrity.
       assert.equal(v.resolved, 'file:stubs/better-sqlite3', 'the stub is resolved from packaging/runtime/stubs');
+      // A `file:` entry with `resolved` (not a `link`) is the --install-links lock form: npm >= 10 refuses this lock
+      // in a plain `npm ci` («Missing: better-sqlite3 … from lock file»). The build must pass the same flag.
+      const builder = fs.readFileSync(path.join(__dirname, '..', 'packaging', 'runtime', 'build-runtime.cjs'), 'utf8');
+      assert.match(builder, /\[npmCli\(\), 'ci', '--install-links'/, 'build-runtime runs npm ci with --install-links, matching the stub entry of the lock');
       continue;
     }
     assert.match(v.resolved, /^https:\/\/registry\.npmjs\.org\//, `${k} resolved from registry.npmjs.org`);
