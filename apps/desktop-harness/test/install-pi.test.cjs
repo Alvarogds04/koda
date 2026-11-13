@@ -25,11 +25,10 @@ const test = (name, ...rest) => (process.platform === 'win32' && WIN_POSIX_INSTA
   : baseTest(name, ...rest));
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { spawnSync } = require('node:child_process');
-const CLI = path.resolve(__dirname, '../bin/abito-hook.cjs');
+const CLI = path.resolve(__dirname, '../bin/koda-hook.cjs');
 const MANIFEST = '.abito-manifest.json';
 const digest = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 function fixture(t) {
@@ -46,9 +45,9 @@ function fixture(t) {
     const target = path.join(bundle, 'desktop-pi', file);
     fs.copyFileSync(path.resolve(__dirname, '../../desktop-pi', file), target); fs.chmodSync(target, 0o644);
   }
-  const cli = path.join(bundle, 'desktop-harness/bin/abito-hook.cjs');
+  const cli = path.join(bundle, 'desktop-harness/bin/koda-hook.cjs');
   const audit = path.join(home, 'audit'); fs.mkdirSync(audit, { mode: 0o700 });
-  const target = path.join(home, '.pi/agent/extensions/abito-island');
+  const target = path.join(home, '.pi/agent/extensions/koda-island');
   const extraEnv = {};
   const run = (...args) => {
     const result = spawnSync(process.execPath, [cli, 'install', 'pi', '--user', '--json', ...args], {
@@ -105,7 +104,7 @@ test('Pi refuses foreign targets and symlinks without touching their bytes', t =
 });
 
 // HU-052: a hand-copied extension (no manifest) is refused with its OWN code and sentence, never adopted and never touched.
-const FOREIGN_SENTENCE = 'Ya hay una extensión de Pi en ~/.pi/agent/extensions/abito-island que Koda no instaló: borrala o renombrala y volvé a conectar.';
+const FOREIGN_SENTENCE = 'Ya hay una extensión de Pi en ~/.pi/agent/extensions/koda-island que Koda no instaló: borrala o renombrala y volvé a conectar.';
 // HU-047: a folder another user or group can change is refused with its own code, naming THAT folder and the exact chmod.
 test('Pi names the exact group-writable folder and the chmod that fixes it (preview and apply)', { skip: process.platform === 'win32' }, t => {
   const f = fixture(t); fs.mkdirSync(path.dirname(f.target), { recursive: true, mode: 0o700 });
@@ -153,7 +152,7 @@ test('Pi keeps the generic refusal for a symlink target and for a modified Abito
 test('the Pi install usage line (no --json) is a usage error that names all three systems and never claims «Linux/macOS only»', () => {
   const r = spawnSync(process.execPath, [CLI, 'install', 'pi'], { encoding: 'utf8', timeout: 10000, env: { PATH: '/usr/bin:/bin' } });
   assert.equal(r.status, 64);
-  assert.match(r.stderr, /^usage: abito-hook install pi --user /);
+  assert.match(r.stderr, /^usage: koda-hook install pi --user /);
   assert.doesNotMatch(r.stderr, /Linux\/macOS only/);
   assert.match(r.stderr, /Linux, macOS and Windows/);
 });
@@ -192,7 +191,7 @@ test('Pi failed replacement restores the prior owned directory and preserves unr
   const failed = f.apply(pv.value.plan_hash);
   assert.equal(failed.code,70); assert.equal(failed.value.ok,false);
   assert.deepEqual(snapshot(f.target),before);
-  assert.deepEqual(fs.readdirSync(path.dirname(f.target)),['abito-island']);
+  assert.deepEqual(fs.readdirSync(path.dirname(f.target)),['koda-island']);
 });
 
 test('installed Pi payload loads through the real offline Pi extension loader', async t => {
@@ -226,7 +225,7 @@ test('Pi discovery sees one extension after upgrade and zero after removal, neve
   }
   assert.equal(f.apply(f.run('--remove').value.plan_hash,'--remove').code,0); await discover(0);
   const backups = path.join(f.home,'.pi/agent/abito-backups');
-  assert.equal(fs.readdirSync(backups).filter(n=>n.startsWith('abito-island.abito-backup-')).length,1);
+  assert.equal(fs.readdirSync(backups).filter(n=>n.startsWith('koda-island.abito-backup-')).length,1);
   assert.equal(fs.statSync(backups).mode & 0o077,0);
 });
 
@@ -312,4 +311,82 @@ test('Pi apply that fails after creating ~/.pi/agent/... removes the empty folde
   assert.equal(fs.existsSync(path.join(b.home, '.pi/agent')), true, 'a folder that already existed stays');
   assert.equal(fs.existsSync(path.join(b.home, '.pi/agent/extensions')), false, 'the one this run made goes');
   assert.equal(fs.existsSync(path.join(b.home, '.pi/agent/abito-backups')), false);
+});
+
+// --- K2-04 (S2, S4): the Koda 0.1 extension folder is retired into the backup flow --------------
+// Pi loads every extension folder under ~/.pi/agent/extensions, so a 0.1 `abito-island` next to `koda-island` would show two cards
+// per notice. The 0.1 folder is recognised by its own manifest + file hashes (owned()) and moved into the existing backup flow,
+// never deleted outright: if the new install fails, it is put back. A folder at the old name that is not a verified Koda install
+// is never touched.
+
+const extensions = f => path.dirname(f.target);
+const legacyPath = f => path.join(extensions(f), 'abito-island');
+function legacyCopy(f) {
+  const legacy = legacyPath(f);
+  fs.cpSync(f.target, legacy, { recursive: true });
+  fs.chmodSync(legacy, 0o700);
+  return legacy;
+}
+
+test('K2-04: a Koda 0.1 extension folder is retired, so Pi keeps exactly ONE extension', t => {
+  const f = fixture(t);
+  assert.equal(f.apply(f.run().value.plan_hash).code, 0);
+  const legacy = legacyCopy(f);
+  const preview = f.run();
+  assert.equal(preview.code, 0);
+  assert.equal(preview.value.changed, true, 'the 0.1 folder alone is a change, even with the Koda payload already exact');
+  const applied = f.apply(preview.value.plan_hash);
+  assert.equal(applied.code, 0, JSON.stringify(applied.value));
+  assert.equal(fs.existsSync(legacy), false, 'the 0.1 folder leaves the extensions folder');
+  assert.deepEqual(fs.readdirSync(extensions(f)), ['koda-island'], 'one extension folder: one card per notice');
+});
+
+test('K2-04: the retired 0.1 folder stays in the backup folder after a successful install (the backup prune never removes it)', t => {
+  const f = fixture(t);
+  assert.equal(f.apply(f.run().value.plan_hash).code, 0);
+  legacyCopy(f);
+  const applied = f.apply(f.run().value.plan_hash);
+  assert.equal(applied.code, 0, JSON.stringify(applied.value));
+  const backups = path.join(f.home, '.pi/agent/abito-backups');
+  const kept = fs.readdirSync(backups).filter(n => /^abito-island\.abito-backup-/.test(n));
+  assert.equal(kept.length, 1, `the retired 0.1 folder is kept, got ${JSON.stringify(fs.readdirSync(backups))}`);
+  assert.ok(fs.existsSync(path.join(backups, kept[0], '.abito-manifest.json')), 'and it is still the whole 0.1 install, not an emptied folder');
+});
+
+test('K2-04: a failed replacement puts the 0.1 folder back (retired, never deleted outright)', t => {
+  const f = fixture(t);
+  assert.equal(f.apply(f.run().value.plan_hash).code, 0);
+  const legacy = legacyCopy(f);
+  const before = snapshot(legacy);
+  const inject = path.join(f.bundle, 'corrupt.cjs');
+  fs.writeFileSync(inject, "const fs=require('fs'),p=require('path');const old=fs.renameSync;fs.renameSync=function(a,b){const r=old(a,b);if(a.includes('.abito-island-stage-'))fs.appendFileSync(p.join(b,'config.cjs'),'corrupt');return r;};");
+  f.extraEnv.NODE_OPTIONS = '--require=' + inject;
+  const preview = f.run();
+  assert.equal(preview.value.changed, true);
+  const refused = f.apply(preview.value.plan_hash);
+  assert.equal(refused.code, 70, 'the corrupted publication is refused');
+  assert.deepEqual(snapshot(legacy), before, 'the 0.1 folder is back exactly as it was');
+});
+
+test('K2-04: a folder at the old name that is not a Koda install is never touched', t => {
+  const f = fixture(t);
+  const legacy = legacyPath(f);
+  fs.mkdirSync(legacy, { recursive: true, mode: 0o700 });
+  fs.writeFileSync(path.join(legacy, 'index.ts'), '// hand-written by the human\n', { mode: 0o600 });
+  const applied = f.apply(f.run().value.plan_hash);
+  assert.equal(applied.code, 0, JSON.stringify(applied.value));
+  assert.equal(fs.readFileSync(path.join(legacy, 'index.ts'), 'utf8'), '// hand-written by the human\n', 'left byte for byte');
+  assert.ok(fs.existsSync(f.target), 'and the Koda extension is installed next to it');
+});
+
+test('K2-04: --remove also retires a 0.1 extension folder', t => {
+  const f = fixture(t);
+  assert.equal(f.apply(f.run().value.plan_hash).code, 0);
+  const legacy = legacyCopy(f);
+  const preview = f.run('--remove');
+  assert.equal(preview.value.changed, true);
+  const removed = f.apply(preview.value.plan_hash, '--remove');
+  assert.equal(removed.code, 0, JSON.stringify(removed.value));
+  assert.equal(fs.existsSync(f.target), false, 'the Koda folder is gone');
+  assert.equal(fs.existsSync(legacy), false, 'and so is the 0.1 folder');
 });
