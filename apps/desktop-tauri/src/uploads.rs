@@ -8,8 +8,6 @@
 //! `resolve_ids`, the total-bytes cap and the stale-`tmp` sweep.
 //!
 //! Three small pieces still have a real caller:
-//! - [`MAX_FILE_BYTES`] and [`sanitize_name`]: `mailcmd` bounds and names the
-//!   attachment of a sent mail with the same rule the chat used;
 //! - [`DropSet`]: the native drag-drop paths, kept for specialists until U5d
 //!   (K2-05 L59) — `chat_attach` still only honours a path the OS reported
 //!   dropped on the island window, and the attachments path that replaces it
@@ -17,12 +15,17 @@
 //! - [`split_raw_body`]: the `chat_attach_data` raw body (a one-line JSON
 //!   header, LF, the bytes) the command still parses before handing the file
 //!   to the daemon.
+//!
+//! K2-10 T7 (L21/L22): the mail card lost IMAP and SMTP, so [`MAX_FILE_BYTES`]
+//! and [`sanitize_name`] have no caller left inside Koda. They stay because
+//! they are public and still describe the one rule a dropped file must keep;
+//! deleting them is a separate call, not a side effect of retiring a card.
 
 use std::path::{Path, PathBuf};
 
 use crate::chat::ChatError;
 
-/// Hard size cap for one attached file (also the cap of a mail attachment).
+/// Hard size cap for one attached file.
 pub const MAX_FILE_BYTES: usize = 10 * 1024 * 1024;
 
 /// Sanitize a DISPLAY name: basename of any separator style, control

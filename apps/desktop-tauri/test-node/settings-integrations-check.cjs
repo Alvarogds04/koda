@@ -44,10 +44,12 @@ const { dom, Element, all, text } = require('./settings-accounts-check.cjs');
   assert(text(ui).includes('Las claves se quedan en el llavero del sistema.'));
   assert(text(ui).includes('Secret Service (GNOME Keyring, KWallet)'));
   assert(!/nunca en el disco|never on disk/i.test(text(ui)),'approved truthful-copy exception');
-  const keys=['stripe-api-key','github-token','vercel-token','n8n-url','n8n-api-key','resend-api-key','resend-from','notion-api-key','calcom-api-key','smtp-host','smtp-user','smtp-password','smtp-from','imap-host','imap-user','imap-password'];
+  // K2-10 T7 (L21/L22): the Mail (IMAP) and Mail (SMTP) cards left the hub, so their keys are no
+  // longer asked here; they STAY in KNOWN_KEYS and in the keychain until the human decides.
+  const keys=['stripe-api-key','github-token','vercel-token','n8n-url','n8n-api-key','resend-api-key','resend-from','notion-api-key','calcom-api-key'];
   assert.deepEqual(calls.filter(([c])=>c==='secret_action').map(([,p])=>p),keys.map(key=>({action:'present',key})));
-  const list=find('integration-list');assert.equal(list.children.length,10);
-  assert.deepEqual(list.children.map(e=>e.id),[...['stripe','github','vercel','n8n','resend','notion','calcom','spotify'].map(id=>`integration_${id}`),'mail_smtp','mail_imap']);
+  const list=find('integration-list');assert.equal(list.children.length,8);
+  assert.deepEqual(list.children.map(e=>e.id),['stripe','github','vercel','n8n','resend','notion','calcom','spotify'].map(id=>`integration_${id}`),'L21/L22: no Mail (IMAP) and no Mail (SMTP) card');
   for(const key of keys){
     const input=find(`integration-key-${key}`);assert.equal(input.type,'password','all keystore fields masked, including URL');
     const row=all(ui).find(e=>e.children.includes(input));assert.equal(row.children[0].tagName,'label');
@@ -132,5 +134,21 @@ const { dom, Element, all, text } = require('./settings-accounts-check.cjs');
   assert.equal(fs.existsSync(path.join(base,'recap.ts')),false,'hub/recap.ts is gone');
   for(const name of ['integrations','shortcuts'])assert(!/innerHTML|setAttribute\(['"]style|console\.|localStorage|sessionStorage/.test(fs.readFileSync(path.join(base,name+'.ts'),'utf8')));
   for(const name of ['general','agents'])assert(!/recap_action|renderRecapRows/.test(fs.readFileSync(path.join(base,name+'.ts'),'utf8')),name);
+  // K2-10 T7 (L21/L22): the retirement is pinned HERE — no `mail_action` verb left, no Mail (IMAP)
+  // or Mail (SMTP) card in the hub, and the 7 imap-*/smtp-* keys still in the keychain allow-list.
+  {
+    const src=name=>fs.readFileSync(path.resolve(__dirname,'../src',name),'utf8');
+    const main=src('main.rs');
+    assert(!/\bmail_action/.test(main),'L21: `mail_action` is no longer registered in main.rs');
+    assert(/gmail_action/.test(main),'the Gmail verb is the one mail command left');
+    for(const gone of ['mailhost.rs','mailcmd.rs','imapcmd.rs']) assert.equal(fs.existsSync(path.resolve(__dirname,'../src',gone)),false,`L21/L22: src/${gone} is gone`);
+    const hub=fs.readFileSync(path.join(base,'integrations.ts'),'utf8');
+    assert(!/mail_imap|mail_smtp|Mail \(IMAP\)|Mail \(SMTP\)/.test(hub),'L21/L22: the hub defines no Mail (IMAP)/Mail (SMTP) card');
+    const known=src('secrets.rs').match(/pub const KNOWN_KEYS: &\[&str\] = &\[([\s\S]*?)\];/);
+    assert(known,'KNOWN_KEYS must remain readable');
+    const ids=[...known[1].matchAll(/"([^"]+)"/g)].map(m=>m[1]);
+    for(const key of ['imap-host','imap-user','imap-password','smtp-host','smtp-user','smtp-password','smtp-from']) assert(ids.includes(key),`L22: ${key} stays in KNOWN_KEYS; nothing stored is deleted`);
+    assert(ids.includes('resend-api-key') && ids.includes('resend-from'),'the Resend integration is untouched');
+  }
   console.log('PASS settings-integrations: exact integration rows, truthful copy, secrets, capacity, colours, shortcut controls and trusted IPC');
 })().catch(e=>{console.error(e);process.exitCode=1;});

@@ -438,6 +438,8 @@
   // Layout of the section adapted from Coucou src/settings/main.ts (API keys), Copyright (c) 2026 Louis Raillé, MIT.
   // The ids mirror KNOWN_KEYS of src/secrets.rs (the host refuses anything else). Labels are OURS; the page never
   // shows a value, only «Guardada» / «Sin definir», and sends a value only inside one `set`.
+  // L21/L22 (0.2): the Mail (IMAP) and Mail (SMTP) cards left the hub, but the 7 imap-*/smtp-* keys stay in
+  // `KNOWN_KEYS` and nothing stored is deleted, so a 0.1 value still keeps its name here.
   const KEY_LABELS = Object.freeze({
     'anthropic-api-key': 'Anthropic', 'openai-api-key': 'OpenAI', 'google-api-key': 'Google', 'openrouter-api-key': 'OpenRouter', 'nan-api-key': 'NaN', 'opencode-go-api-key': 'OpenCode Go',
     'openai-compatible-key': 'Compatible con OpenAI', 'n8n-url': 'n8n (dirección)', 'n8n-api-key': 'n8n (clave)',
