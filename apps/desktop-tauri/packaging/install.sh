@@ -321,6 +321,13 @@ legacy_menu_entry_is_01() {
   launcher="${exec_line##* \"}"; launcher="${launcher%\"}"
   old_prefix="${launcher%/abito-island-launcher}"
   [ -n "$old_prefix" ] || return 1
+  # The 0.1 installer only accepted absolute paths made of [A-Za-z0-9_./-] for its prefix and for the project root (safe_path),
+  # so a root or prefix with a space, quote, $ or backtick was never written by it: that file is not the 0.1 one.
+  old_root="${exec_line#env ABITO_PROJECT_ROOT=}"; old_root="${old_root% \"$launcher\"}"
+  for p in "$old_prefix" "$old_root"; do
+    case "$p" in /*) ;; *) return 1 ;; esac
+    case "$p" in *[!A-Za-z0-9_./-]*) return 1 ;; esac
+  done
   want="$(mktemp "${TMPDIR:-/tmp}/koda-legacy-entry.XXXXXX")" || return 1
   printf '%s\n' '[Desktop Entry]' 'Type=Application' 'Name=Koda' 'Comment=Koda' "Exec=$exec_line" \
     "Icon=$old_prefix/abito-island.png" 'Terminal=false' 'Categories=Utility;' 'StartupWMClass=Abito-island' > "$want"
