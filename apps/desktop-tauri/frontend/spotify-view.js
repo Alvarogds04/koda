@@ -4,10 +4,16 @@
    Copyright (c) 2026 Louis Raillé, MIT. Abito's own icons and copy; local raster artwork decoded into a canvas (no URL fetch and no CSP relaxation) and no Spotify mark.
 
    Wire (src/spotifyhost.rs, island window ONLY — the host refuses the settings label):
-     invoke('spotify_action', {payload:{action:'view'|'stop'|'play_pause'|'next'|'previous'}}) -> {ok, state}
-     event 'spotify:state' -> PlayerState {running, track:{id,title,artist,album,duration,artUrl}|null, playing, ...}
+     invoke('spotify_action', {payload:{action:'view'|'stop'|'play_pause'|'next'|'previous'|'open_permission'}}) -> {ok, state}
+     event 'spotify:state' -> PlayerState {running, track:{id,title,artist,album,duration,artUrl}|null, playing, needsPermission?, ...}
    `view` when the card becomes visible, `stop` when it goes away (and on unload). Pure view-model first,
-   textContent-only renderer, browser-only mount at the tail (house pattern, see integrations-view.js). */
+   textContent-only renderer, browser-only mount at the tail (house pattern, see integrations-view.js).
+
+   K2-09: the same card, three systems — Linux reads MPRIS, Windows the system media controls (SMTC) and
+   macOS AppleScript; `os` comes from AbitoPillCatalog.HOST_OS. macOS only: if the user refused the
+   Automation prompt, the state carries `needsPermission` and the card becomes design 08 F7 («Spotify
+   necesita permiso», one button «Dar permiso» that asks the host to open Ajustes del Sistema ›
+   Automatización — the deep link lives in src/spotify_mac.rs, never here). */
 (function (root, factory) {
   const api = factory();
   if (typeof module === 'object' && module.exports) { module.exports = Object.freeze(api); return; }
@@ -17,11 +23,15 @@
   const PILL_ID = 'integration_spotify';
   const MAX_TEXT = 120;
   const CONTROLS = Object.freeze({ previous: 'Anterior', play_pause: 'Reproducir o pausar', next: 'Siguiente' });
+  // K2-09 S3/S6 (design 08 F7): macOS refused the Automation prompt. One phrase and one button; the
+  // Ajustes del Sistema deep link is the host's secret, never a URL in the page.
+  const PERMISSION = Object.freeze({ action: 'open_permission', label: 'Dar permiso', title: 'Spotify necesita permiso', line: 'Permití a Koda controlar Spotify en Automatización' });
+  const OSES = Object.freeze(['linux', 'windows', 'macos']);
   const isObject = v => v !== null && typeof v === 'object' && !Array.isArray(v);
   const clean = (v, max = MAX_TEXT) => (typeof v === 'string' ? [...v.replace(/[\u0000-\u001f\u007f]/g, ' ').trim()].slice(0, max).join('') : '');
 
-  // The card exists only for a Linux host whose prefs name the Spotify pill (main or declared).
-  const wantedIgnoringPause = (prefs, os) => os === 'linux' && isObject(prefs) &&
+  // The card exists on a Linux, Windows or macOS host whose prefs name the Spotify pill (main or declared).
+  const wantedIgnoringPause = (prefs, os) => OSES.includes(os) && isObject(prefs) &&
     (prefs.mainPill === PILL_ID || (Array.isArray(prefs.declaredPills) && prefs.declaredPills.includes(PILL_ID)));
   // abito-pausa: Spotify is paused in this version — no card, no D-Bus call (the stored prefs are kept)
   const pausedNow = () => { const P = typeof module === 'object' && module.exports ? require('./paused.js') : (typeof window !== 'undefined' ? window.AbitoPaused : null); return !!(P && P.paused('spotify')); };
@@ -29,6 +39,10 @@
 
   // PlayerState -> what the card says. Anything off-shape reads as «not open»: never a guess.
   function cardView(state) {
+    // macOS only: the user said no to Automation, so there is no state to show — say how to say yes.
+    if (isObject(state) && state.needsPermission === true) {
+      return { kind: 'permission', title: PERMISSION.title, artist: PERMISSION.line, playing: false, controls: false, permission: true, aria: `${PERMISSION.title}. ${PERMISSION.line}` };
+    }
     if (!isObject(state) || state.running !== true) {
       return { kind: 'closed', title: 'Spotify no está abierto', artist: '', playing: false, controls: false, aria: 'Spotify no está abierto' };
     }
@@ -76,7 +90,7 @@
     return art;
   }
 
-  const payload = action => (Object.prototype.hasOwnProperty.call(CONTROLS, action) ? { action } : null);
+  const payload = action => (Object.prototype.hasOwnProperty.call(CONTROLS, action) || action === PERMISSION.action ? { action } : null);
 
   // The lifecycle: `view` on show, `stop` on hide, nothing twice. `invoke` and `onState` are injected.
   function controller({ invoke, onState }) {
@@ -103,7 +117,7 @@
     };
   }
 
-  return { PILL_ID, CONTROLS, wanted, wantedIgnoringPause, cardView, payload, controller, formatTime, progressView, volumeOf, valuedPayload, artworkView };
+  return { PILL_ID, CONTROLS, PERMISSION, OSES, wanted, wantedIgnoringPause, cardView, payload, controller, formatTime, progressView, volumeOf, valuedPayload, artworkView };
 });
 
 function mount(api) {
@@ -120,7 +134,8 @@ function mount(api) {
   const invoke = (root.__TAURI__ && root.__TAURI__.core && root.__TAURI__.core.invoke) || (internals && internals.invoke);
   const listen = root.__TAURI__ && root.__TAURI__.event && root.__TAURI__.event.listen;
   if (!invoke) return;
-  const os = typeof navigator !== 'undefined' && /Windows/.test(navigator.userAgent || '') ? 'windows' : 'linux';
+  // K2-09: three systems (macOS no longer reads as Linux); the card shows only where the host has a backend
+  const os = root.AbitoPillCatalog ? root.AbitoPillCatalog.HOST_OS : 'linux';
   const mk = (tag, cls, text) => { const n = doc.createElement(tag); if (cls) n.className = cls; if (text) n.textContent = text; return n; };
   // Coucou's now-playing card (views/spotify.ts, NowPlayingViews.swift): green dot + title, subtitle, then
   // backward / play-pause / forward. Glyph paths are Coucou's ICONS (MIT, 24x24 grid, filled). There is no
@@ -139,7 +154,8 @@ function mount(api) {
     el.append(path); return el;
   };
   const title = mk('span', 'np-title'), artist = mk('div', 'np-sub');
-  const row = mk('div', 'np-title-row'); row.append(mk('span', 'np-dot'), title);
+  const dot = mk('span', 'np-dot');
+  const row = mk('div', 'np-title-row'); row.append(dot, title);
   const text = mk('div', 'np-text');  // title, artist and (below) the transport controls: filled once `bar` exists
   const art = mk('div', 'np-art'); art.setAttribute('aria-hidden', 'true');
   const noteSvg = doc.createElementNS(NS, 'svg'); noteSvg.setAttribute('viewBox', '0 0 24 24'); noteSvg.setAttribute('width', '15'); noteSvg.setAttribute('height', '15');
@@ -174,6 +190,15 @@ function mount(api) {
     b.addEventListener('click', e => { if (e.isTrusted === true) ctl.control(action); });
     buttons[action] = b; bar.append(b);
   }
+  // K2-09 S3/S6 (design 08 F7): with Automation refused the transport gives way to ONE button. Text via
+  // textContent; the styling rides in CSSOM properties because the card stylesheet is not this file's to edit.
+  const perm = mk('button', 'np-perm');
+  perm.type = 'button'; perm.textContent = api.PERMISSION.label;
+  perm.style.height = '30px'; perm.style.padding = '0 13px'; perm.style.border = '0'; perm.style.borderRadius = '999px';
+  perm.style.background = 'var(--ink)'; perm.style.color = 'var(--card-flat)'; perm.style.font = '500 12px var(--font)';
+  perm.style.cursor = 'pointer'; perm.style.margin = '7px 0 7px 8px';
+  perm.addEventListener('click', e => { if (e.isTrusted === true) ctl.control(api.PERMISSION.action); });
+  perm.hidden = true; bar.append(perm);
   // progress row: elapsed, bar, remaining (Coucou .np-progress); controls: shuffle, previous, play, next, repeat | volume.
   const barOf = (label, onCommit) => {
     const el = mk('div', 'np-bar'), track = mk('i', 'np-track'), fill = mk('i', 'np-fill'), knob = mk('i', 'np-knob');
@@ -241,7 +266,10 @@ function mount(api) {
     shuffle.setAttribute('aria-pressed', ok && last.shuffle === true ? 'true' : 'false');
     repeat.setAttribute('aria-pressed', ok && last.repeat === true ? 'true' : 'false');
     tickProgress(); runClock(v.kind === 'track' && v.playing);
-    for (const b of Object.values(buttons)) b.disabled = !v.controls;
+    const permission = v.kind === 'permission';
+    dot.hidden = permission;
+    perm.hidden = !permission;
+    for (const b of Object.values(buttons)) { b.hidden = permission; b.disabled = !v.controls; }
     buttons.play_pause.replaceChildren(glyph(v.playing ? 'pause' : 'play', 9));
     if (v.aria !== lastAria) { lastAria = v.aria; live.textContent = v.aria; }
   }

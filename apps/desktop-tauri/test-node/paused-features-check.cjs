@@ -14,19 +14,23 @@ const test = (_n, fn) => { fn(); passed += 1; };
 
 test('one frontend list, the same as Ajustes and Rust', () => {
   assert.equal(P.LABEL, 'En pausa · próxima versión');
-  for (const f of ['dictation', 'voice', 'integrations', 'spotify', 'phone']) assert.equal(P.paused(f), true, f);
-  for (const f of ['chat', 'agents', 'general', 'shortcuts', 'privacy', 'sessions', 'notifications']) assert.equal(P.paused(f), false, f);
+  for (const f of ['dictation', 'voice', 'integrations', 'phone']) assert.equal(P.paused(f), true, f);
+  // K2-09 S5: «se quita la pausa de Spotify»
+  for (const f of ['spotify', 'chat', 'agents', 'general', 'shortcuts', 'privacy', 'sessions', 'notifications']) assert.equal(P.paused(f), false, f);
   const rust = fs.readFileSync(path.join(__dirname, '..', 'src', 'paused.rs'), 'utf8');
-  assert.match(rust, /Feature::Dictation \| Feature::Voice \| Feature::Integrations \| Feature::Spotify \| Feature::Phone => true/);
+  assert.match(rust, /Feature::Dictation \| Feature::Voice \| Feature::Integrations \| Feature::Phone => true/);
+  assert.match(rust, /Feature::Spotify => false/, 'K2-09: Spotify is no longer paused in Rust either');
   const shell = fs.readFileSync(path.join(frontend, 'vendor', 'coucou', 'hub', 'shell.ts'), 'utf8');
   assert.match(shell, /ACTIVE_PAGES: readonly string\[\] = Object\.freeze\(\["general", "agents", "chat", "shortcuts", "privacy"\]\)/, 'Ajustes keeps exactly the active pages');
 });
-test('Spotify: no card while paused, even with the pill declared on Linux; the old rule is kept for the next version', () => {
+test('Spotify (K2-09): not paused any more, so the card follows the prefs on a supported OS', () => {
   const prefs = { mainPill: 'integration_spotify' };
-  assert.equal(S.wanted(prefs, 'linux'), false);
+  assert.equal(S.wanted(prefs, 'linux'), true);
   assert.equal(S.wantedIgnoringPause(prefs, 'linux'), true);
   assert.equal(S.wantedIgnoringPause({ mainPill: 'integration_claude', declaredPills: ['integration_spotify'] }, 'linux'), true);
-  assert.equal(S.wantedIgnoringPause(prefs, 'windows'), false);
+  // K2-09 S1: the card exists on the three systems (MPRIS, SMTC, AppleScript)
+  for (const os of ['windows', 'macos']) assert.equal(S.wanted(prefs, os), true, os);
+  assert.equal(S.wanted(prefs, 'unknown'), false);
 });
 test('GitHub: no card and no polling while paused; the old rule is kept', () => {
   assert.equal(G.wanted({ mainPill: 'integration_github' }), false);

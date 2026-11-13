@@ -761,13 +761,13 @@ fn f032_optional_defaults_and_saved_normalization() {
     let loaded = Prefs::from_text(Some(raw));
     let v: Value = serde_json::from_str(&loaded.to_text()).unwrap();
     // The offered catalog is per-OS BY DESIGN (`pill_offered`): claude-desktop
-    // is offered on Windows only, spotify on Linux only. `ai_google` is not a
+    // is offered on Windows only; spotify on every desktop OS since K2-09 (MPRIS, SMTC, AppleScript). `ai_google` is not a
     // MAIN_PILL, so the stored main_pill falls back to the default
     // `integration_claude`, which drops the stored "integration_claude" twin.
     // What survives, in first-occurrence order:
     //   Linux   [gemini, ai_google, amp, notion, spotify, resend]
-    //   Windows [gemini, ai_google, amp, notion, claude-desktop, resend]
-    //   macOS   [gemini, ai_google, amp, notion, resend]
+    //   Windows [gemini, ai_google, amp, notion, spotify, claude-desktop, resend]
+    //   macOS   [gemini, ai_google, amp, notion, spotify, resend]
     // Every OS keeps a real fifth id — S32's point (the fifth is kept, not
     // dropped for being the fifth) is asserted on all three, never weakened:
     // `integration_resend` is offered everywhere and closes the macOS gap.
@@ -776,10 +776,10 @@ fn f032_optional_defaults_and_saved_normalization() {
             ["agent_gemini", "ai_google", "agent_amp", "integration_notion", "integration_spotify", "integration_resend"].to_vec()
         }
         _ if cfg!(target_os = "windows") => {
-            ["agent_gemini", "ai_google", "agent_amp", "integration_notion", "agent_claude-desktop", "integration_resend"].to_vec()
+            ["agent_gemini", "ai_google", "agent_amp", "integration_notion", "integration_spotify", "agent_claude-desktop", "integration_resend"].to_vec()
         }
         _ => {
-            ["agent_gemini", "ai_google", "agent_amp", "integration_notion", "integration_resend"].to_vec()
+            ["agent_gemini", "ai_google", "agent_amp", "integration_notion", "integration_spotify", "integration_resend"].to_vec()
         }
     };
     assert_eq!(v["declared_pills"], json!(expected), "S32: the fifth is kept, not dropped for being the fifth");

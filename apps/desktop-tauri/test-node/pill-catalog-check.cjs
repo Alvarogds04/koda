@@ -42,11 +42,19 @@ test('S6 only23 Linux declarations; Apple Music excluded and desktop unsupported
   assert.equal(c.offered('integration_music', 'linux'), false);
   assert.equal(c.offered('agent_claude-desktop', 'linux'), false);
   assert.equal(c.offered('integration_spotify', 'linux'), true);
-  assert.equal(c.available('windows').length, 23);
+  // K2-09 S5: Spotify has a backend on all three desktop systems now (MPRIS / SMTC / AppleScript).
+  assert.equal(c.available('windows').length, 24);
   assert.equal(c.offered('integration_music', 'windows'), false);
-  assert.equal(c.offered('integration_spotify', 'windows'), false);
+  assert.equal(c.offered('integration_spotify', 'windows'), true);
+  assert.equal(c.offered('integration_spotify', 'macos'), true);
   assert.equal(c.offered('agent_claude-desktop', 'windows'), true);
   assert.deepEqual(c.available('unknown'), []);
+  // K2-09 S5: «El frontend distingue tres sistemas (hoy trata macOS como Linux)»; macOS keeps what it was offered as «linux»
+  assert.deepEqual(c.available('macos').map(x => x.id), c.available('linux').map(x => x.id));
+  assert.equal(c.osOf('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'), 'windows');
+  assert.equal(c.osOf('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15'), 'macos');
+  assert.equal(c.osOf('Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36'), 'linux');
+  assert.equal(c.osOf(''), 'linux');
   assert.deepEqual(c.mainChoices('linux').map(x => x.id), ['integration_claude', 'agent_codex', 'agent_gemini', 'agent_hermes'], '0.2.1 S3: the main tool offers CLIs only');
   assert.deepEqual(c.acceptedMain('linux').map(x => x.id), ['integration_claude', 'agent_cursor', 'agent_antigravity', 'agent_codex', 'agent_gemini', 'agent_hermes'], 'a stored Cursor/Antigravity main is still read back');
 });
