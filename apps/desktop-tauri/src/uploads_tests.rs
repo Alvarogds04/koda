@@ -1,5 +1,4 @@
-//! K2-05 U5b — tests of what is left of the upload support: the display-name
-//! sanitiser, the attachment-id grammar the closed `chat_action` set parses, the
+//! K2-05 U5b — tests of what is left of the upload support: the attachment-id grammar the closed `chat_action` set parses, the
 //! native drop set and the `chat_attach_data` raw-body split.
 //!
 //! The 0.1 storage tests (content allowlist, attach/read-back/resolve, the
@@ -8,20 +7,6 @@
 
 use super::*;
 use crate::chat::valid_attachment_id;
-
-#[test]
-fn sanitize_name_keeps_a_safe_display_name() {
-    assert_eq!(sanitize_name("../etc/passwd"), "passwd");
-    assert_eq!(sanitize_name("C:\\Users\\alguien\\foto.png"), "foto.png");
-    assert_eq!(sanitize_name("documento final?.pdf"), "documento final_.pdf");
-    assert_eq!(sanitize_name(".."), "archivo");
-    assert_eq!(sanitize_name(""), "archivo");
-    assert_eq!(sanitize_name("\u{7}campana\u{8}.txt"), "campana.txt");
-    assert_eq!(sanitize_name(".oculto."), "oculto");
-    let long = "a".repeat(90);
-    assert_eq!(sanitize_name(&long).chars().count(), 80);
-    assert_eq!(sanitize_name("café.png"), "café.png");
-}
 
 /// The id the closed `chat_action` verb set accepts for `submit`/`discard`
 /// (`a-` + 16 lowercase hex): the page's own reference, nothing else.

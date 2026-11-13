@@ -8,8 +8,6 @@
 //! `resolve_ids`, the total-bytes cap and the stale-`tmp` sweep.
 //!
 //! Three small pieces still have a real caller:
-//! - [`MAX_FILE_BYTES`] and [`sanitize_name`]: `mailcmd` bounds and names the
-//!   attachment of a sent mail with the same rule the chat used;
 //! - [`DropSet`]: the native drag-drop paths, kept for specialists until U5d
 //!   (K2-05 L59) — `chat_attach` still only honours a path the OS reported
 //!   dropped on the island window, and the attachments path that replaces it
@@ -17,35 +15,13 @@
 //! - [`split_raw_body`]: the `chat_attach_data` raw body (a one-line JSON
 //!   header, LF, the bytes) the command still parses before handing the file
 //!   to the daemon.
+//!
+//! K2-10 (L26): the per-file size cap and the display-name sanitiser left too;
+//! their last caller was the retired IMAP/SMTP mail path.
 
 use std::path::{Path, PathBuf};
 
 use crate::chat::ChatError;
-
-/// Hard size cap for one attached file (also the cap of a mail attachment).
-pub const MAX_FILE_BYTES: usize = 10 * 1024 * 1024;
-
-/// Sanitize a DISPLAY name: basename of any separator style, control
-/// characters stripped, path-significant and unusual characters folded to
-/// `_`, leading/trailing dots and spaces removed, bounded to 80 chars,
-/// never empty and never a dot name.
-pub fn sanitize_name(raw: &str) -> String {
-    let base = raw.rsplit(['/', '\\']).next().unwrap_or("");
-    let mut out = String::new();
-    for c in base.chars().filter(|c| !c.is_control()) {
-        if c.is_alphanumeric() || matches!(c, ' ' | '.' | '_' | '-' | '(' | ')') {
-            out.push(c);
-        } else {
-            out.push('_');
-        }
-    }
-    let trimmed: String = out.trim_matches(|c| c == '.' || c == ' ').to_string();
-    let mut bounded: String = trimmed.chars().take(80).collect();
-    if bounded.is_empty() {
-        bounded = "archivo".to_string();
-    }
-    bounded
-}
 
 fn invalid(why: &str) -> ChatError {
     ChatError::invalid_input(why)

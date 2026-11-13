@@ -496,3 +496,12 @@ fn reply_mailto_refuses_an_address_it_cannot_quote() {
         assert_eq!(reply_mailto(&d), None, "{bad:?}");
     }
 }
+
+#[test]
+fn the_mailto_url_is_built_with_everything_encoded() {
+    // Moved here with the builder itself when IMAP/SMTP left (K2-10 T7, L21/L22):
+    // «Responder» is the one thing left that builds a `mailto:`.
+    assert_eq!(mailto("ana@example.com", "Re: Hola & más"), "mailto:ana@example.com?subject=Re%3A%20Hola%20%26%20m%C3%A1s");
+    assert_eq!(mailto("a@b.co", "Re: -_.~ ok"), "mailto:a@b.co?subject=Re%3A%20-_.~%20ok", "unreserved characters stay readable");
+    assert_eq!(mailto("a@b.co", ""), "mailto:a@b.co?subject=");
+}
