@@ -39,7 +39,7 @@ const EXTENSION_FILE = "koda-window-capture.js";
 const TOOL_PREFIX = "mcp__computer__";
 const SCREENSHOT_TOOL = `${TOOL_PREFIX}screenshot_my_window`;
 /** S2: what the user reads instead of a capture their model could never see. */
-const NO_VISION_MESSAGE = "Your current model cannot see images. Choose a model with image input (vision) in Koda's model settings and ask again.";
+const NO_VISION_MESSAGE = "Your current model cannot see images. Choose a provider or model with image input (vision) in Ajustes → Cuentas and ask again.";
 
 // The template is plain ESM loaded by Pi (jiti), exactly like the custom-provider one. Keep it free of
 // backticks and dollar-brace sequences: it is a constant, never a template that receives data.
