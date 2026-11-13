@@ -70,7 +70,7 @@ const tmpBase = () => fs.realpathSync.native(os.tmpdir());
 /**
  * Island root for direct staging (no fake agent). On Windows an island may only live inside the
  * canonical protected %LOCALAPPDATA%\Koda root (windowsIslandRootViolation), so every island
- * gets a PRIVATE LOCALAPPDATA temp dir and sits at `<LOCALAPPDATA>\Abito\i`; cliEnv() puts the
+ * gets a PRIVATE LOCALAPPDATA temp dir and sits at `<LOCALAPPDATA>\Koda\i`; cliEnv() puts the
  * matching LOCALAPPDATA into the child env. Linux/macOS: `<tmp>/i`, env unchanged as before.
  */
 function islandRoot() {
@@ -92,7 +92,7 @@ function cliEnv(root, extra = {}) {
 		for (const key of ["SystemRoot", "windir", "SystemDrive", "ComSpec", "PATHEXT", "OS", "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE"]) {
 			if (process.env[key] !== undefined && env[key] === undefined) env[key] = process.env[key];
 		}
-		if (env.KODA_ISLAND_DIR === root) env.LOCALAPPDATA = path.dirname(path.dirname(root)); // <local>\Abito\i -> <local>
+		if (env.KODA_ISLAND_DIR === root) env.LOCALAPPDATA = path.dirname(path.dirname(root)); // <local>\Koda\i -> <local>
 		const privateTemp = path.join(path.dirname(env.HOME), "tmp");
 		fs.mkdirSync(privateTemp, { recursive: true });
 		env.TEMP = privateTemp;
@@ -148,6 +148,38 @@ function fakeIsland(extraConfig = {}) {
 	return { root, env: cliEnv(root) };
 }
 const sessionOf = (root) => path.join(root, "runtime", "session.json");
+/**
+ * K2-04 diagnostic, Windows only, computed ONLY when a `status` assertion already failed: why did the native verify refuse?
+ * It re-runs `status` a few times a second apart (a session.json published a moment before the pipe listens would heal by
+ * itself: a timing race, not a refusal), then records the session fields (never the token), whether the pipe exists, the
+ * ACLs the native verifier checks and the helper's own exit code.
+ */
+function windowsStatusDiagnostic(root, env) {
+	if (!WIN) return "";
+	const { spawnSync } = require("node:child_process");
+	const lines = [];
+	const run = (cmd, args, extraEnv) => {
+		const r = spawnSync(cmd, args, { encoding: "utf8", timeout: 10000, windowsHide: true, env: extraEnv ?? process.env });
+		return `${path.basename(cmd)} ${args.map((a) => path.basename(a)).join(" ")} -> exit ${r.status}${r.error ? ` error ${r.error.code}` : ""} out=${JSON.stringify(String(r.stdout ?? "").trim().slice(0, 400))} err=${JSON.stringify(String(r.stderr ?? "").trim().slice(0, 200))}`;
+	};
+	for (let i = 1; i <= 5; i++) {
+		const again = cli(root, ["status"], env);
+		lines.push(`retry ${i}: status exit ${again.status} ${again.status === 0 ? "(healthy now)" : String(again.stderr).trim()}`);
+		if (again.status === 0) break;
+		spawnSync(process.execPath, ["-e", "setTimeout(()=>{},1000)"], { timeout: 5000 });
+	}
+	try {
+		const session = JSON.parse(fs.readFileSync(sessionOf(root), "utf8"));
+		lines.push(`session keys=${Object.keys(session).join(",")} pid=${session.pid}`);
+		lines.push(`pipe exists: ${typeof session.endpoint === "string" ? fs.existsSync(session.endpoint) : "no endpoint field"}`);
+	} catch (e) { lines.push(`session read failed: ${e.message}`); }
+	for (const target of [path.dirname(root), root, path.join(root, "runtime"), sessionOf(root)]) lines.push(run("icacls", [target]));
+	if (process.env.KODA_TEST_HELPER) {
+		lines.push(run(process.env.KODA_TEST_HELPER, ["--verify"], { ...process.env, KODA_ISLAND_DIR: path.resolve(root), LOCALAPPDATA: env.LOCALAPPDATA }));
+	}
+	return `\n--- windows status diagnostic ---\n${lines.join("\n")}`;
+}
+
 const sessionPid = (root) => {
 	try { return JSON.parse(fs.readFileSync(sessionOf(root), "utf8")).pid; }
 	catch { return undefined; }
@@ -589,7 +621,7 @@ test("#390 GD014: status reports state/reason/ready for a RUNNING daemon (native
 	try {
 		await waitForSessionPid(root, child.pid);
 		const st = cli(root, ["status"], env);
-		assert.equal(st.status, 0, st.stderr);
+		assert.equal(st.status, 0, st.status === 0 ? st.stderr : st.stderr + windowsStatusDiagnostic(root, env));
 		const out = JSON.parse(st.stdout);
 		assert.equal(out.running, true);
 		assert.equal(out.pid, child.pid);
@@ -628,7 +660,7 @@ test("Windows twin: status confirms a live daemon only through the native helper
 	try {
 		await waitForSessionPid(root, child.pid);
 		const st = cli(root, ["status"], env);
-		assert.equal(st.status, 0, st.stderr);
+		assert.equal(st.status, 0, st.status === 0 ? st.stderr : st.stderr + windowsStatusDiagnostic(root, env));
 		const out = JSON.parse(st.stdout);
 		assert.equal(out.running, true);
 		assert.equal(out.pid, child.pid);

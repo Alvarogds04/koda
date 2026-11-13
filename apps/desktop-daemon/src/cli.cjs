@@ -20,7 +20,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const config = require("./config.cjs");
-const { Daemon, classifySession, isDaemonProcess, pidAlive, pidState, readSession, sessionPath } = require("./daemon.cjs");
+const { Daemon, classifySession, isDaemonProcess, pidState, readSession, sessionPath } = require("./daemon.cjs");
 const { ensureIsland, defaultIslandRoot, windowsIslandRootViolation } = require("./isolation.cjs");
 
 const USAGE = "usage: koda-daemon run [--app-owned] | status | stop | config get | config set-workspace <absolute-path> | config set-hotkey <combo>|--clear";
