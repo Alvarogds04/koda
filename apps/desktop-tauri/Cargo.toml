@@ -59,14 +59,10 @@ sherpa-onnx = { version = "1.13.8", default-features = false, features = ["stati
 # PulseAudio server) for the device list on Linux.
 cpal = "0.18"
 
-# #490 mail: SMTP + MIME for sending from the island with the user's own account (owner decision:
-# a mature implementation beats a hand-written one for AUTH, TLS and MIME encoding). rustls only
-# (no native-tls/openssl), no default features.
-lettre = { version = "0.11", default-features = false, features = ["smtp-transport", "builder", "tokio1", "tokio1-rustls-tls"] }
-
-# #490 IMAP inbox: a hand-written minimal client over TLS (the Rust IMAP crates are alpha or
-# native-tls based). rustls with the ring provider and webpki roots are ALREADY resolved through
-# reqwest/lettre; these are direct edges only. Implicit TLS (993) only, no plaintext.
+# #490 IMAP inbox and SMTP sending retired in the 0.2 (K2-10 T7, L21/L22): their crates left with
+# them (lettre is gone). The rustls edges stay because the phone link serves and pins TLS: rustls
+# with the ring provider and tokio-rustls are used by `phone_link`. `webpki-roots` has no caller
+# left (the Gmail client goes through reqwest), kept untouched until the parent decides.
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 webpki-roots = "1"
