@@ -114,7 +114,7 @@ export default class AbitoContextExtension extends Extension {
         this._issuedOf = new WeakMap(); // Meta.Window -> the opaque id already issued for it
         this._unmanaged = new Map(); // window -> signal id
         this._gate = new TokenGate(); // the launch token Koda registered, if any
-        this._watches = []; // bus name watches that release a token when its owner leaves
+        this._watches = new Map(); // owner's unique bus name -> its bus name watch: at most one, for the one live owner
         this._focusId = global.display.connect('notify::focus-window', () => this._remember(global.display.focus_window));
         this._remember(global.display.focus_window);
         this._dbus = Gio.DBusExportedObject.wrapJSObject(IFACE, this);
@@ -128,8 +128,8 @@ export default class AbitoContextExtension extends Extension {
         this._ownerId = 0;
         this._dbus?.unexport();
         this._dbus = null;
-        for (const id of this._watches) Gio.bus_unwatch_name(id);
-        this._watches = [];
+        for (const id of this._watches.values()) Gio.bus_unwatch_name(id);
+        this._watches.clear();
         this._gate = null;
         if (this._focusId) global.display.disconnect(this._focusId);
         this._focusId = 0;
@@ -207,12 +207,28 @@ export default class AbitoContextExtension extends Extension {
     RegisterAsync(params, invocation) {
         const sender = invocation.get_sender() ?? '';
         const registered = this._gate.register(_tokenOf(params[0]), sender);
-        if (registered) {
-            this._watches.push(Gio.bus_watch_name_on_connection(
-                Gio.DBus.session, sender, Gio.BusNameWatcherFlags.NONE, null,
-                () => this._gate?.release(sender)));
-        }
+        if (registered) this._watchOwner(sender);
         invocation.return_value(new GLib.Variant('(b)', [registered]));
+    }
+
+    // One watch for the one live owner (a refused Register never gets here), taken away as soon as the
+    // binding is released, so the table never outgrows the registrations that are alive.
+    _watchOwner(owner) {
+        const id = Gio.bus_watch_name_on_connection(
+            Gio.DBus.session, owner, Gio.BusNameWatcherFlags.NONE, null,
+            () => this._ownerGone(owner));
+        // The name may already have vanished while the watch was set up (the callback ran, the binding is
+        // gone): then there is nothing to keep watching.
+        if (this._gate?.heldBy(owner)) this._watches.set(owner, id);
+        else Gio.bus_unwatch_name(id);
+    }
+
+    _ownerGone(owner) {
+        this._gate?.release(owner);
+        const id = this._watches?.get(owner);
+        if (id === undefined) return;
+        this._watches.delete(owner);
+        Gio.bus_unwatch_name(id);
     }
 
     // v4. The window Koda is allowed to look at: the most recently focused one that is not Koda's own,

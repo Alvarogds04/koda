@@ -60,6 +60,11 @@ export class TokenGate {
         return difference === 0;
     }
 
+    /** Is `owner` (a D-Bus unique name) the one that holds the binding right now? */
+    heldBy(owner) {
+        return this._token !== null && owner === this._owner;
+    }
+
     /** Forget the binding, but only for the owner that made it. */
     release(owner) {
         if (this._token === null || owner !== this._owner) return;
