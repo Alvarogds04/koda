@@ -165,7 +165,7 @@ fn view_prefs(p: &Prefs) -> Value {
         "autoCloseSeconds": p.auto_close_seconds(), "openOnHover": p.open_on_hover(),
         "customBlobs": p.custom_blobs_view(),
         "islandAgents": p.island_agents_view(),
-        "abitoInstructions": p.abito_instructions_view(),
+        "abitoInstructions": p.koda_instructions_view(),
         "monitor": p.monitor,
         "showPlanInNotch": p.show_plan_in_notch(),
         "showCodexPlanInNotch": p.show_codex_plan_in_notch(),
@@ -203,8 +203,8 @@ pub fn display_name(host: &SettingsHost) -> Option<String> {
 }
 
 /// Read the principal's already loaded response preferences once for an immutable turn.
-pub fn abito_instructions(host: &SettingsHost) -> Option<String> {
-    host.prefs.lock().expect("prefs lock").abito_instructions.clone()
+pub fn koda_instructions(host: &SettingsHost) -> Option<String> {
+    host.prefs.lock().expect("prefs lock").koda_instructions.clone()
 }
 
 /// T6.2: the remembered inner size of the own Ajustes window (logical px), read

@@ -172,7 +172,7 @@ pub fn turn_snapshot(state: &AppState, base: &str) -> Result<(Option<Target>, St
 pub fn turn_snapshot_selected(state: &AppState, base: &str) -> Result<(Option<Target>, String, Option<SpecialistRef>, Option<koda_island::cloudprofiles::CloudSelection>), ChatError> {
     let (role, principal_instructions) = {
         let store = state.specialists.store.lock().expect("specialists lock");
-        let instructions = crate::settingshost::abito_instructions(&state.settings);
+        let instructions = crate::settingshost::koda_instructions(&state.settings);
         (store.active().cloned(), instructions)
     };
     let fallback = state.chat_target.lock().expect("chat target lock").clone();

@@ -363,7 +363,7 @@ fn pick_now(link: &Link) -> Result<Target, CaptureError> {
         link.call(PICK_METHOD, &(link.token.as_str(),), |e| unusable(&format!("this version of the extension does not pick windows ({e})")))?;
     let candidate = crate::contextwin::Candidate { app_id: app_id.clone(), app_name: app.clone(), title: title.clone() };
     // Belt and braces: the extension already leaves Koda out, and nothing here trusts that.
-    if id == 0 || app.trim().is_empty() || crate::contextwin::is_abito(&candidate) {
+    if id == 0 || app.trim().is_empty() || crate::contextwin::is_koda(&candidate) {
         return Err(CaptureError::NoWindow);
     }
     Ok(Target { app_id, app, title, handle: id })
