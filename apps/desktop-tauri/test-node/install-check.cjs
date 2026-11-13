@@ -605,7 +605,10 @@ function legacyDecision(files) {
   const src = fs.readFileSync(SCRIPT, 'utf8');
   const start = src.indexOf('legacy_menu_entry_is_01() {');
   assert.ok(start > 0, 'the function is in install.sh');
-  const fn = src.slice(start, src.indexOf('\n}\n', start) + 3);
+  const end = src.indexOf('\n}\n', start);
+  assert.ok(end > start, 'the end of the function is found');
+  const fn = src.slice(start, end + 3);
+  assert.ok(fn.split('\n').length > 15 && fn.trimEnd().endsWith('}'), 'the WHOLE function was extracted, not a prefix');
   const dir = tmp();
   fs.writeFileSync(path.join(dir, 'fn.sh'), fn);
   const out = {};
@@ -639,6 +642,9 @@ test('K2-04 T6: the 0.1 menu entry check keeps every file that is not exactly th
     'a project root with a space (the 0.1 refused it)': write(ours.replace('/home/u/p', '/srv/my project')),
     'a prefix with a quote (the 0.1 refused it)': write(legacyEntry('/opt/we"ird/abito-island')),
     'a relative project root': write(ours.replace('/home/u/p', 'relative/p')),
+    'a project root the 0.1 safe_path refused (// . .. trailing /)': write(ours.replace('/home/u/p', '/home//u/../p/')),
+    'a prefix the 0.1 safe_path refused (a . segment)': write(legacyEntry('/home/u/./abito-island')),
+    'the filesystem root as the project root': write(ours.replace('/home/u/p', '/')),
     'a symlink': apps => { fs.writeFileSync(path.join(apps, 'real.desktop'), ours); fs.symlinkSync(path.join(apps, 'real.desktop'), path.join(apps, LEGACY_DESKTOP)); },
     'a directory': apps => fs.mkdirSync(path.join(apps, LEGACY_DESKTOP)),
     'a missing file': () => {},

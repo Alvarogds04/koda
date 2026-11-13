@@ -327,6 +327,8 @@ legacy_menu_entry_is_01() {
   for p in "$old_prefix" "$old_root"; do
     case "$p" in /*) ;; *) return 1 ;; esac
     case "$p" in *[!A-Za-z0-9_./-]*) return 1 ;; esac
+    case "$p" in *//*|*/./*|*/../*|*/.|*/..|*/) return 1 ;; esac # normalized, as the 0.1 safe_path required
+    [ "$p" != "/" ] || return 1
   done
   want="$(mktemp "${TMPDIR:-/tmp}/koda-legacy-entry.XXXXXX")" || return 1
   printf '%s\n' '[Desktop Entry]' 'Type=Application' 'Name=Koda' 'Comment=Koda' "Exec=$exec_line" \
