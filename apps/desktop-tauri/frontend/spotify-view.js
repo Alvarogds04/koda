@@ -136,6 +136,9 @@ function mount(api) {
   if (!invoke) return;
   // K2-09: three systems (macOS no longer reads as Linux); the card shows only where the host has a backend
   const os = root.AbitoPillCatalog ? root.AbitoPillCatalog.HOST_OS : 'linux';
+  // K2-09 S7 (option A): the card is a card of the island's icon row (island-shortcuts.js). Without that model it keeps the legacy
+  // path (the left card of the overview) exactly as before.
+  const shortcuts = root.AbitoShortcuts || null;
   const mk = (tag, cls, text) => { const n = doc.createElement(tag); if (cls) n.className = cls; if (text) n.textContent = text; return n; };
   // Coucou's now-playing card (views/spotify.ts, NowPlayingViews.swift): green dot + title, subtitle, then
   // backward / play-pause / forward. Glyph paths are Coucou's ICONS (MIT, 24x24 grid, filled). There is no
@@ -222,7 +225,7 @@ function mount(api) {
     return api2;
   };
   const elapsed = mk('span', 'np-time elapsed'), remaining = mk('span', 'np-time remaining');
-  let last = null;
+  let last = null, lastRunning = null;
   const progress = barOf('Posición', f => { const p = api.progressView(last, Date.now()); if (p.seekable) ctl.control('seek', f * p.duration); });
   const progressRow = mk('div', 'np-progress'); progressRow.append(elapsed, progress.el, remaining);
   const GLYPH_FLAGS = {
@@ -245,6 +248,16 @@ function mount(api) {
   head.append(art, text);
   const card = mk('div', 'np-card'); card.append(head, progressRow);
   host.append(card);
+  // S7/S2: the row's icon exists only while Spotify is really running. `mount` hands the SAME card node to #nusa-card and its unmount
+  // gives it back, so the paint code and the host verbs stay in one place.
+  let prefs = {};
+  if (shortcuts) {
+    shortcuts.registerCard({
+      id: 'spotify', label: 'Spotify', icon: 'note',
+      available: () => api.wanted(prefs, os) && lastRunning === true,
+      mount: el => { el.append(card); return () => { host.append(card); }; },
+    });
+  }
   function tickProgress() {
     const p = api.progressView(last, Date.now());
     progress.enabled = p.seekable; if (!progress.dragging) progress.paint(p.fraction);
@@ -272,18 +285,27 @@ function mount(api) {
     for (const b of Object.values(buttons)) { b.hidden = permission; b.disabled = !v.controls; }
     buttons.play_pause.replaceChildren(glyph(v.playing ? 'pause' : 'play', 9));
     if (v.aria !== lastAria) { lastAria = v.aria; live.textContent = v.aria; }
+    // S2: a closed Spotify leaves no icon and no card; the row repaints as soon as `running` moves
+    const running = !!last && last.running === true;
+    if (running !== lastRunning) { lastRunning = running; if (shortcuts) shortcuts.refresh(); }
   }
   const ctl = api.controller({ invoke, onState: paint });
-  let prefs = {};
   const onScreen = () => {
     const d = capsule.dataset;
     return d.phase === 'expanded' && d.view === 'overview' && !d.card && d.settings !== 'open' &&
       !['pending', 'expired', 'outcome'].includes(d.question) && d.noticeView !== 'notices' && !doc.hidden;
   };
   function sync() {
-    const show = api.wanted(prefs, os) && onScreen();
-    host.hidden = !api.wanted(prefs, os) || !show;
-    if (show) { overview.dataset.spotify = 'on'; ctl.show(); } else { delete overview.dataset.spotify; ctl.hide(); }
+    // The host session belongs to the PILL, not to the card: `view` is what answers whether Spotify is running (S2 decides the row's
+    // icon) and keeps that answer live while the user looks at the island; `stop` comes when the prefs stop naming it or the page hides.
+    // The legacy left card still only shows in the overview it was written for.
+    // only while the island is open: on macOS the session is an osascript poll, never a background loop behind a folded disc
+    const want = api.wanted(prefs, os) && !doc.hidden && capsule.dataset.phase === 'expanded';
+    if (want) ctl.show(); else ctl.hide();
+    const legacy = want && onScreen();
+    host.hidden = !legacy;
+    if (legacy) overview.dataset.spotify = 'on'; else delete overview.dataset.spotify;
+    if (shortcuts) shortcuts.refresh();
   }
   host.hidden = true; paint(null);
   if (listen) {
