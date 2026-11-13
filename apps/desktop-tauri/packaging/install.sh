@@ -305,11 +305,30 @@ for f in $INSTALL_FILES receipt.json; do mv -f "$PREFIX/$f$TMP_SUFFIX" "$PREFIX/
 mv -f "$APPS/.new.$$.$DESKTOP" "$APPS/$DESKTOP"
 
 # K2-04 T6: the Koda 0.1 left its own menu entry (com.abitog.AbitoTauri.desktop) and its install stays in place, so after
-# updating there would be two «Koda» in the menu. Remove THAT exact file, and only when it is the 0.1 one: a regular file
-# (never a link or a directory) whose Exec names an `abito-island` launcher. The 0.1 install itself is never removed.
+# updating there would be two «Koda» in the menu. Remove THAT exact file, and only when it is EXACTLY what the 0.1 installer
+# wrote: the 0.1 generated it from a fixed template (desktopText) by resolving @INSTALL_DIR@ and rewriting the Exec line, so the
+# whole file is rebuilt here from its own Exec line and compared byte for byte. A file the user edited (a comment, another
+# Exec, an extra key, CRLF), a link or a directory stays. The 0.1 install itself is never removed.
 LEGACY_DESKTOP="com.abitog.AbitoTauri.desktop"
-if [ -f "$APPS/$LEGACY_DESKTOP" ] && [ ! -L "$APPS/$LEGACY_DESKTOP" ] \
-   && grep -Eq '^Exec=.*/abito-island-launcher"?$' "$APPS/$LEGACY_DESKTOP"; then
+legacy_menu_entry_is_01() {
+  f="$1"
+  [ -f "$f" ] && [ ! -L "$f" ] || return 1
+  [ "$(wc -c < "$f")" -le 4096 ] || return 1
+  [ "$(grep -c '^Exec=' "$f")" = 1 ] || return 1
+  exec_line="$(sed -n 's/^Exec=//p' "$f")"
+  # Exec=env ABITO_PROJECT_ROOT=<root> "<prefix>/abito-island-launcher"
+  case "$exec_line" in env\ ABITO_PROJECT_ROOT=*\ \"*/abito-island-launcher\") ;; *) return 1 ;; esac
+  launcher="${exec_line##* \"}"; launcher="${launcher%\"}"
+  old_prefix="${launcher%/abito-island-launcher}"
+  [ -n "$old_prefix" ] || return 1
+  want="$(mktemp "${TMPDIR:-/tmp}/koda-legacy-entry.XXXXXX")" || return 1
+  printf '%s\n' '[Desktop Entry]' 'Type=Application' 'Name=Koda' 'Comment=Koda' "Exec=$exec_line" \
+    "Icon=$old_prefix/abito-island.png" 'Terminal=false' 'Categories=Utility;' 'StartupWMClass=Abito-island' > "$want"
+  cmp -s "$f" "$want"; rc=$?
+  rm -f "$want"
+  return $rc
+}
+if legacy_menu_entry_is_01 "$APPS/$LEGACY_DESKTOP"; then
   if rm -f "$APPS/$LEGACY_DESKTOP"; then LEGACY_REMOVED=1; fi
 fi
 refresh_desktop_db

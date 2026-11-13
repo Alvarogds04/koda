@@ -284,8 +284,11 @@ fn non_unix_enable_refuses_honestly_and_never_writes() {
 
 #[cfg(unix)]
 fn legacy_template(exe: &str) -> String {
+    // what the 0.1 wrote: the whole path as ONE double-quoted word, with \\ " $ ` escaped by a backslash
+    let quoted: String = exe.chars().flat_map(|c| match c { '\\' | '"' | '$' | '`' => vec!['\\', c], c => vec![c] }).collect();
+    let icon = format!("{}/abito-island.png", exe.rsplit_once('/').map(|(dir, _)| dir).unwrap_or(""));
     format!(
-        "[Desktop Entry]\nType=Application\nName=Koda\nComment=Koda\nExec=\"{exe}\" --autostart\nIcon={exe}.png\nTerminal=false\nCategories=Utility;\nStartupWMClass=Abito-island\nX-GNOME-Autostart-enabled=true\n"
+        "[Desktop Entry]\nType=Application\nName=Koda\nComment=Koda\nExec=\"{quoted}\" --autostart\nIcon={icon}\nTerminal=false\nCategories=Utility;\nStartupWMClass=Abito-island\nX-GNOME-Autostart-enabled=true\n"
     )
 }
 
@@ -321,6 +324,68 @@ fn an_entry_the_user_changed_or_that_is_not_ours_stays_untouched() {
         std::fs::write(&file, &text).unwrap();
         assert_eq!(retire_legacy_entry(&dir), LegacyOutcome::Kept, "{why}");
         assert_eq!(std::fs::read_to_string(&file).unwrap(), text, "{why}: byte-identical");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// A file the user touched is theirs. The 0.1 wrote ONE exact shape per binary path, so anything that is not byte-for-byte that
+// shape stays, including the edits a person would realistically make.
+#[cfg(unix)]
+#[test]
+fn every_realistic_user_edit_keeps_the_file() {
+    let dir = unique_dir("legacy-edits");
+    let file = dir.join(LEGACY_ENTRY_FILE_NAME);
+    let exe = "/home/u/.local/share/abito-island/abito-island";
+    let ours = legacy_template(exe);
+    let cases: Vec<(&str, String)> = vec![
+        ("a comment", format!("# my note\n{ours}")),
+        ("a blank line", ours.replacen("Type=Application\n", "Type=Application\n\n", 1)),
+        ("Name changed", ours.replace("Name=Koda", "Name=My Koda")),
+        ("Comment changed", ours.replace("Comment=Koda", "Comment=mine")),
+        ("Icon elsewhere", ours.replace("Icon=/home/u/.local/share/abito-island/abito-island.png", "Icon=/usr/share/icons/x.png")),
+        ("Categories changed", ours.replace("Categories=Utility;", "Categories=Utility;Development;")),
+        ("WM class changed", ours.replace("StartupWMClass=Abito-island", "StartupWMClass=Mine")),
+        ("autostart disabled by the user", ours.replace("X-GNOME-Autostart-enabled=true", "X-GNOME-Autostart-enabled=false")),
+        ("Type changed", ours.replace("Type=Application", "Type=Link")),
+        ("only the header and Exec", format!("[Desktop Entry]\nExec=\"{exe}\" --autostart\n")),
+        ("env prefix before the path", ours.replace(&format!("Exec=\"{exe}\""), &format!("Exec=env X=1 \"{exe}\""))),
+        ("another program with our path as an argument", ours.replace(&format!("Exec=\"{exe}\""), &format!("Exec=/usr/bin/other-prog \"{exe}\""))),
+        ("a relative binary", ours.replace(&format!("Exec=\"{exe}\""), "Exec=abito-island")),
+        ("a duplicated Exec", ours.replacen("Terminal=false\n", "Terminal=false\nExec=/usr/bin/other --autostart\n", 1)),
+        ("a duplicated key", format!("{ours}Name=Koda\n")),
+        ("CRLF line endings", ours.replace('\n', "\r\n")),
+        ("no trailing newline", ours.trim_end().to_string()),
+        ("a second section", format!("{ours}\n[Desktop Action x]\nName=x\n")),
+        ("Hidden", format!("{ours}Hidden=true\n")),
+    ];
+    for (why, text) in &cases {
+        assert_ne!(text, &ours, "{why}: the fixture must differ from the template");
+        std::fs::write(&file, text).unwrap();
+        assert_eq!(retire_legacy_entry(&dir), LegacyOutcome::Kept, "{why}");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), *text, "{why}: byte-identical");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// The XDG Base Directory spec: a relative XDG_CONFIG_HOME is invalid and ignored. It must never resolve against the current
+// directory, where an exact-name file could be removed by mistake.
+#[test]
+fn a_relative_xdg_config_home_is_ignored_and_never_resolves_against_the_current_directory() {
+    assert_eq!(autostart_dir(Some("relative/cfg"), Some("/home/u")), Some(std::path::PathBuf::from("/home/u/.config/autostart")));
+    assert_eq!(autostart_dir(Some("relative/cfg"), None), None, "no valid base at all: no directory");
+    assert_eq!(autostart_dir(Some(""), Some("/home/u")), Some(std::path::PathBuf::from("/home/u/.config/autostart")));
+    assert_eq!(autostart_dir(None, Some("home/u")), None);
+}
+
+#[cfg(unix)]
+#[test]
+fn the_exact_0_1_entry_is_recognised_even_for_a_path_the_0_1_had_to_escape() {
+    let dir = unique_dir("legacy-escaped");
+    let file = dir.join(LEGACY_ENTRY_FILE_NAME);
+    for exe in ["/home/u/.local/share/abito-island/abito-island", "/home/u/my \"dir\"/$x/`y`/abito-island", "/opt/with space/abito-island"] {
+        std::fs::write(&file, legacy_template(exe)).unwrap();
+        assert_eq!(retire_legacy_entry(&dir), LegacyOutcome::Removed, "{exe}");
+        assert!(!file.exists());
     }
     let _ = std::fs::remove_dir_all(&dir);
 }

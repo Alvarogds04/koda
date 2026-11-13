@@ -2247,7 +2247,7 @@ fn main() {
             // chat connection (the settings window keeps its own AgentConn).
             chathost::start_conn(&handle);
             // K2-03 T3 (S2, S4): delete the removed weekly Recap's data (exact files only), off the startup path.
-            // K2-04 T6: the 0.1 Recap file lives under the OLD identifier's folder, next to the new one.
+            // K2-04 T6: that 0.1 file lives under the OLD identifier's folder, next to the new one.
             let data_dir = handle.path().app_local_data_dir().ok()
                 .and_then(|p| abito_island::legacy_identity::legacy_sibling(&p, abito_island::identity::APP_IDENTIFIER));
             std::thread::spawn(move || {

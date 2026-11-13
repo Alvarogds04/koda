@@ -107,7 +107,8 @@ fn quote_exec(path: &Path) -> Option<String> {
 /// `$HOME/.config/autostart` when XDG is unset or empty (spec fallback).
 /// Both must be absolute; anything else is `None` (no honest path, no toggle).
 pub fn autostart_dir(xdg_config_home: Option<&str>, home: Option<&str>) -> Option<PathBuf> {
-    let root = match xdg_config_home.filter(|v| !v.is_empty()) {
+    // XDG Base Directory spec: a relative XDG_CONFIG_HOME is invalid and must be ignored (falling back to $HOME/.config).
+    let root = match xdg_config_home.filter(|v| !v.is_empty() && v.starts_with('/')) {
         Some(xdg) => PathBuf::from(xdg),
         None => PathBuf::from(home.filter(|h| !h.is_empty() && h.starts_with('/'))?)
             .join(".config"),
@@ -155,28 +156,50 @@ impl LegacyOutcome {
     }
 }
 
-/// True only for the closed template the Koda 0.1 wrote: every line is one of its fixed keys, `Exec` is the 0.1 binary
-/// (`.../abito-island`, the whole path as one quoted or plain word) followed by exactly `--autostart`, and nothing else.
-/// A file the user edited (an extra key, another program, an extra argument) is not ours and is never removed.
+/// The Koda 0.1 wrote this file with `desktop_entry`: ONE exact shape per binary path. Rebuild that shape from the binary path
+/// found in the file's own `Exec` line and require the whole text to match it BYTE FOR BYTE. Anything that is not exactly what the
+/// 0.1 wrote is the user's (a comment, a blank line, a changed Name or Icon, autostart switched off, an env prefix, another
+/// program, a duplicated or extra key, CRLF endings, a missing trailing newline) and stays.
 fn is_legacy_template(text: &str) -> bool {
-    const KEYS: [&str; 10] = ["Type", "Name", "Comment", "Exec", "Icon", "Terminal", "Categories", "StartupWMClass", "X-GNOME-Autostart-enabled", "[Desktop Entry]"];
-    let mut lines = text.lines();
-    if lines.next() != Some("[Desktop Entry]") { return false; }
-    let mut exec_ok = false;
-    for line in lines {
-        let Some((key, value)) = line.split_once('=') else { return false };
-        if !KEYS.contains(&key) { return false; }
-        match key {
-            "Terminal" if value != "false" => return false,
-            "Exec" => {
-                let Some(command) = value.strip_suffix(" --autostart") else { return false };
-                let command = command.trim_matches('"');
-                exec_ok = command.rsplit('/').next() == Some("abito-island");
-            }
-            _ => {}
+    let Some(exec) = text.lines().find_map(|line| line.strip_prefix("Exec=")) else { return false };
+    let Some(quoted) = exec.strip_suffix(" --autostart") else { return false };
+    let Some(inner) = quoted.strip_prefix('"').and_then(|rest| rest.strip_suffix('"')) else { return false };
+    // undo the 0.1's quoting: a backslash escapes exactly one of \ " $ `
+    let mut path = String::with_capacity(inner.len());
+    let mut chars = inner.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => match chars.next() {
+                Some(escaped @ ('\\' | '"' | '$' | '`')) => path.push(escaped),
+                _ => return false,
+            },
+            '"' | '$' | '`' => return false, // the 0.1 always escaped these
+            c => path.push(c),
         }
     }
-    exec_ok
+    let exe = Path::new(&path);
+    if !exe.is_absolute() || exe.file_name().and_then(|n| n.to_str()) != Some("abito-island") { return false; }
+    let Some(dir) = exe.parent() else { return false };
+    let Some(expected) = legacy_entry_text(exe, dir) else { return false };
+    text == expected
+}
+
+/// The 0.1's closed template, byte for byte, for `exe` (the 0.1 binary `.../abito-island`) with its icon beside it.
+fn legacy_entry_text(exe: &Path, dir: &Path) -> Option<String> {
+    let exec = quote_exec(exe)?;
+    let icon = plain_value(&dir.join("abito-island.png"))?;
+    Some(format!(
+        "[Desktop Entry]\n\
+         Type=Application\n\
+         Name=Koda\n\
+         Comment=Koda\n\
+         Exec={exec} --autostart\n\
+         Icon={icon}\n\
+         Terminal=false\n\
+         Categories=Utility;\n\
+         StartupWMClass=Abito-island\n\
+         X-GNOME-Autostart-enabled=true\n"
+    ))
 }
 
 /// Removes the Koda 0.1 autostart entry from `autostart_dir` and nothing else: that ONE exact file name, only when it is a
