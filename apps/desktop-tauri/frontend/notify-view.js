@@ -33,8 +33,8 @@
   const PROJECT_NAME = /^[A-Za-z0-9._-](?:[A-Za-z0-9._ -]{0,62}[A-Za-z0-9._-])?$/;
   // S4 (abito-avisos-ux, human: «quita lo de sb y dejalo todo como abito»): the Abito project lives in the folder «sb-second-brain»;
   // on screen it is «Abito». Display only: ids, paths and wire fields keep the real folder name. Any other project keeps its own.
-  const ABITO_FOLDERS = /^sb-second-brain$/i;
-  const projectLabel = name => (typeof name === 'string' && ABITO_FOLDERS.test(name.trim()) ? 'Koda' : name);
+  const KODA_FOLDERS = /^sb-second-brain$/i;
+  const projectLabel = name => (typeof name === 'string' && KODA_FOLDERS.test(name.trim()) ? 'Koda' : name);
   const askerLine = n => {
     const name = n && typeof n.projectName === 'string' && PROJECT_NAME.test(n.projectName) ? projectLabel(n.projectName) : null;
     return name ? `${askerName(n)} · ${name}` : askerName(n);

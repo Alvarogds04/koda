@@ -71,8 +71,8 @@ pub struct Branding {
 }
 
 pub const BRANDING: Branding = Branding {
-    product: "Abito",
-    assistant: "Abito",
+    product: "Koda",
+    assistant: "Koda",
 };
 
 /// `main.cjs bridgeStatus` (83): the lane's health projection, fed by the
@@ -374,8 +374,8 @@ mod tests {
         assert_eq!(value["notices"], serde_json::json!([]));
         assert_eq!(value["connections"], 0);
         assert_eq!(value["motionOverride"], false);
-        assert_eq!(value["branding"]["product"], "Abito");
-        assert_eq!(value["branding"]["assistant"], "Abito");
+        assert_eq!(value["branding"]["product"], "Koda");
+        assert_eq!(value["branding"]["assistant"], "Koda");
         assert_eq!(value["bridgeStatus"]["state"], "disabled");
     }
 
@@ -487,21 +487,21 @@ mod tests {
 
     #[test]
     fn plain_second_launch_restores_without_focus() {
-        assert_eq!(launch_intent(&args(&["abito-island"])), LaunchIntent::Restore);
+        assert_eq!(launch_intent(&args(&["koda"])), LaunchIntent::Restore);
         assert_eq!(launch_intent(&args(&[])), LaunchIntent::Restore);
         assert!(!LaunchIntent::Restore.takes_focus());
     }
 
     #[test]
     fn only_the_exact_chat_flag_is_a_deliberate_typing_request() {
-        assert_eq!(launch_intent(&args(&["abito-island", "--chat"])), LaunchIntent::Chat);
+        assert_eq!(launch_intent(&args(&["koda", "--chat"])), LaunchIntent::Chat);
         assert!(LaunchIntent::Chat.takes_focus());
         for other in [
-            vec!["abito-island", "--chat=1"],
-            vec!["abito-island", "--CHAT"],
-            vec!["abito-island", "chat"],
-            vec!["abito-island", "--chat", "--probe"],
-            vec!["abito-island", "--focus"],
+            vec!["koda", "--chat=1"],
+            vec!["koda", "--CHAT"],
+            vec!["koda", "chat"],
+            vec!["koda", "--chat", "--probe"],
+            vec!["koda", "--focus"],
         ] {
             assert_eq!(launch_intent(&args(&other)), LaunchIntent::Restore, "{other:?}");
         }

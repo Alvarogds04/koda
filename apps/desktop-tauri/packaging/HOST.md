@@ -1,11 +1,11 @@
 # App-owned island host
 
-The user-local Linux install includes `desktop-daemon/` beside `abito-island`.
+The user-local Linux install includes `desktop-daemon/` beside `koda`.
 The first instance starts `node desktop-daemon/src/cli.cjs run --app-owned` during
 Tauri setup. A second instance does not reach setup and creates no second host.
-No service, global installation, or new `ABITO_*` override is introduced. The
+No service, global installation, or new `KODA_*` override is introduced. The
 existing private-root override is for disposable development runs; the production
-launcher still accepts only `ABITO_PROJECT_ROOT`.
+launcher still accepts only `KODA_PROJECT_ROOT`.
 
 ## Lifetime and supervisor boundaries
 
@@ -120,7 +120,7 @@ If unavailable, it selects the highest numeric `vMAJOR.MINOR.PATCH/bin` under
 Overflow yields no NVM candidate. Absolute inherited PATH entries still win.
 Node/Pi are not bundled; arbitrary custom prefixes and fnm require PATH setup.
 GUI installs on macOS/Windows use the canonical home directory only when
-`ABITO_PROJECT_ROOT` is absent (HOME on macOS, USERPROFILE on Windows). Explicit
+`KODA_PROJECT_ROOT` is absent (HOME on macOS, USERPROFILE on Windows). Explicit
 invalid settings still fail, debug roots remain unchanged, and Linux still
 requires its launcher-provided setting.
 

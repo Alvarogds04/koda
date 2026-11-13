@@ -198,9 +198,9 @@ fn slot_prefs(app: &AppHandle) -> VoicePrefs {
 }
 
 /// Wake-phrase diagnostics are opt-in: the heard text is private and is logged only when
-/// Abito was started with `ABITO_VOICE_DEBUG=1`.
+/// Abito was started with `KODA_VOICE_DEBUG=1`.
 fn voice_debug() -> bool {
-    voice_debug_from(std::env::var("ABITO_VOICE_DEBUG").ok().as_deref())
+    voice_debug_from(std::env::var("KODA_VOICE_DEBUG").ok().as_deref())
 }
 
 fn voice_debug_from(value: Option<&str>) -> bool {
@@ -300,7 +300,7 @@ fn start_listener(app: &AppHandle, sensitivity: u8) -> Result<Listener, String> 
                         eprintln!("abito voice: {:.1}s segment transcribed in {:?}", seg.len() as f32 / speech::SAMPLE_RATE as f32, started.elapsed());
                         let tolerance = wake::params(slot_prefs(&handle).sensitivity).tolerance;
                         // Diagnostics for wake-phrase tests only: the heard text is private, so it is
-                        // logged ONLY when the developer starts Abito with ABITO_VOICE_DEBUG=1.
+                        // logged ONLY when the developer starts Abito with KODA_VOICE_DEBUG=1.
                         if voice_debug() {
                             eprintln!("abito voice: heard {:?} (normalised {:?}, tolerance {})", text, voiceintent::normalise(&text), tolerance);
                         }

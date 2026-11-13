@@ -54,7 +54,7 @@ test('install is refused: Recap can never be added again (exit 64, file and fold
     const r = await run(argv, t);
     assert.equal(r.code, 64, argv.join(' '));
     assert.equal(r.out, '');
-    assert.match(r.err, /usage: abito-hook install recap --user --remove/);
+    assert.match(r.err, /usage: koda-hook install recap --user --remove/);
   }
   assert.deepEqual(fs.readFileSync(t.file), before);
   assert.deepEqual(backups(t.file), []);

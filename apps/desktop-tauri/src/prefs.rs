@@ -38,13 +38,13 @@ const ISLAND_AGENTS: &str = "island_agents";
 /// (1..=2000 chars, `\n`/`\t` allowed, every other control refused). DECLARATIVE ONLY: like
 /// the specialists' instructions of #375 nothing applies it yet. Absent = none; an empty
 /// command clears it and no empty key is ever written.
-pub const MAX_ABITO_INSTRUCTIONS_CHARS: usize = 2000;
-const ABITO_INSTRUCTIONS: &str = "abito_instructions";
+pub const MAX_KODA_INSTRUCTIONS_CHARS: usize = 2000;
+const KODA_INSTRUCTIONS: &str = "abito_instructions";
 
 fn clean_instructions(text: &str) -> Result<Option<String>, CommandError> {
     if text.chars().any(|c| c.is_control() && c != '\n' && c != '\t') { return Err(CommandError); }
     let t = text.trim();
-    if t.chars().count() > MAX_ABITO_INSTRUCTIONS_CHARS { return Err(CommandError); }
+    if t.chars().count() > MAX_KODA_INSTRUCTIONS_CHARS { return Err(CommandError); }
     Ok((!t.is_empty()).then(|| t.to_owned()))
 }
 
@@ -613,7 +613,7 @@ impl Prefs {
             open_settings_at_launch: v.get("open_settings_at_launch").and_then(Value::as_bool).filter(|on| *on),
             settings_window_size: settings_window_size_from(v.get(SETTINGS_WINDOW_SIZE)),
             island_agents: island_agents_from(v.get(ISLAND_AGENTS)),
-            abito_instructions: v.get(ABITO_INSTRUCTIONS).and_then(Value::as_str)
+            abito_instructions: v.get(KODA_INSTRUCTIONS).and_then(Value::as_str)
                 .and_then(|text| clean_instructions(text).ok()).flatten(),
             show_plan_in_notch: v.get("show_plan_in_notch").and_then(Value::as_bool),
             show_codex_plan_in_notch: v.get("show_codex_plan_in_notch").and_then(Value::as_bool),
@@ -681,7 +681,7 @@ impl Prefs {
             v[ISLAND_AGENTS] = json!(ids);
         }
         if let Some(text) = &self.abito_instructions {
-            v[ABITO_INSTRUCTIONS] = json!(text);
+            v[KODA_INSTRUCTIONS] = json!(text);
         }
         if let Some(on) = self.show_plan_in_notch {
             v["show_plan_in_notch"] = json!(on);

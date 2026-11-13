@@ -166,7 +166,7 @@ pub fn download(on_change: impl Fn(ModelState) + Send + 'static) {
     }
 }
 
-/// The same verified download, run to the end on the calling thread (the `abito-transcribe download` command, an
+/// The same verified download, run to the end on the calling thread (the `koda-transcribe download` command, an
 /// explicit user action). Nothing is fetched when the detector is already there.
 pub fn download_now() -> Result<(), String> {
     if VAD.is_present() {

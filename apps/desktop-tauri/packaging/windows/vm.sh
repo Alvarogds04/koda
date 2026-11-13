@@ -24,7 +24,7 @@
 #
 # Control channels with the guest (the guest never accepts an inbound
 # connection; OpenSSH server is only a best-effort bonus):
-#   IN   a tiny ISO (label ABITO_SETUP) is rebuilt with command-<N>.bat and
+#   IN   a tiny ISO (label KODA_SETUP) is rebuilt with command-<N>.bat and
 #        hot-swapped as the second CD-ROM. C:\abito\vm-poll.ps1, running as the
 #        AbitoPortPoll scheduled task, sees a new number and executes it.
 #   OUT  each result is POSTed to the collect listener on 192.168.122.1:8765
@@ -32,19 +32,19 @@
 #        C:\abito\out-<N>.txt inside the guest.
 set -eu
 
-NAME=${ABITO_VM_NAME:-abito-win11}
+NAME=${KODA_VM_NAME:-abito-win11}
 URI=qemu:///system
-VMHOME=${ABITO_VM_HOME:-$HOME/.local/share/abito-vm}
-ISO=${ABITO_WIN_ISO:-$VMHOME/iso/Win11_25H2_consumer_x64_en-us.iso}
+VMHOME=${KODA_VM_HOME:-$HOME/.local/share/abito-vm}
+ISO=${KODA_WIN_ISO:-$VMHOME/iso/Win11_25H2_consumer_x64_en-us.iso}
 SRCDIR=$(dirname "$0")
 UNATTEND=$SRCDIR/win11-autounattend.xml
 SETUP_PS1=$SRCDIR/vm-setup.ps1
 POLL_PS1=$SRCDIR/vm-poll.ps1
 COLLECT=$SRCDIR/collect-server.py
-POOLDIR=${ABITO_VM_POOL:-/var/lib/libvirt/images}
-MEMORY_MB=${ABITO_VM_MEMORY_MB:-8192}
-VCPU=${ABITO_VM_VCPUS:-4}
-DISK_GB=${ABITO_VM_DISK_GB:-64}
+POOLDIR=${KODA_VM_POOL:-/var/lib/libvirt/images}
+MEMORY_MB=${KODA_VM_MEMORY_MB:-8192}
+VCPU=${KODA_VM_VCPUS:-4}
+DISK_GB=${KODA_VM_DISK_GB:-64}
 INBOX=$VMHOME/inbox
 GATEWAY=192.168.122.1
 COLLECT_PORT=8765
@@ -98,11 +98,11 @@ make_command_iso() {
 $*
 CMDS
   fi
-  ( cd "$VMHOME/cd" && xorriso -as mkisofs -o "$VMHOME/cd.iso" -V ABITO_SETUP -J -r . ) >/dev/null
+  ( cd "$VMHOME/cd" && xorriso -as mkisofs -o "$VMHOME/cd.iso" -V KODA_SETUP -J -r . ) >/dev/null
   say "command.iso: $(stat -c %s "$VMHOME/cd.iso") bytes (autounattend + vm-setup + vm-poll + command-$cmdn)"
 }
 
-POOLMEDIA=${ABITO_VM_POOLMEDIA:-/var/lib/libvirt/abito-vm}
+POOLMEDIA=${KODA_VM_POOLMEDIA:-/var/lib/libvirt/abito-vm}
 
 # libvirt reads the media as user libvirt-qemu, so the answer CD has to live
 # under a directory that user can reach. Keep one copy in the repo-adjacent VM

@@ -40,14 +40,14 @@ static SEQ: AtomicUsize = AtomicUsize::new(0);
 fn scratch(tag: &str) -> PathBuf {
     let base = std::env::temp_dir()
         .join(format!("abito-win-daemon-{}-{}-{}", tag, std::process::id(), SEQ.fetch_add(1, Ordering::SeqCst)));
-    std::fs::create_dir_all(base.join("Abito").join("runtime")).expect("scratch island");
+    std::fs::create_dir_all(base.join("Koda").join("runtime")).expect("scratch island");
     let me = current_sid();
     // Protect deepest-first: setting the parent's non-inheritable DACL first
     // removes the child's inherited grants on Windows before we can set its
     // owner/DACL (ERROR_ACCESS_DENIED on hosted runners). A protected child
     // keeps its explicit owner-only grants when the parent changes afterward.
-    apply_protected_dacl(base.join("Abito").join("runtime").as_path(), &me);
-    apply_protected_dacl(base.join("Abito").as_path(), &me);
+    apply_protected_dacl(base.join("Koda").join("runtime").as_path(), &me);
+    apply_protected_dacl(base.join("Koda").as_path(), &me);
     base
 }
 
@@ -78,9 +78,9 @@ fn run_helper(base: &Path, input: &[u8], island_dir: Option<&Path>) -> std::proc
     let mut command = Command::new(HELPER);
     command.env("LOCALAPPDATA", base).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
     if let Some(dir) = island_dir {
-        command.env("ABITO_ISLAND_DIR", dir);
+        command.env("KODA_ISLAND_DIR", dir);
     } else {
-        command.env_remove("ABITO_ISLAND_DIR");
+        command.env_remove("KODA_ISLAND_DIR");
     }
     let mut child = command.spawn().expect("spawn helper");
     child.stdin.as_mut().expect("helper stdin").write_all(input).expect("write stdin");
@@ -88,7 +88,7 @@ fn run_helper(base: &Path, input: &[u8], island_dir: Option<&Path>) -> std::proc
 }
 
 fn session_file(base: &Path) -> PathBuf {
-    base.join("Abito").join("runtime").join("session.json")
+    base.join("Koda").join("runtime").join("session.json")
 }
 
 fn current_sid() -> String {
@@ -110,7 +110,7 @@ fn helper_writes_session_with_an_owner_only_dacl_at_creation() {
     // runtime directory stays private in the winpolicy sense (owner+SYSTEM+Admins).
     assert!(winipc::ffi::directory_private(&file, &me, true), "session.json must be owner-only");
     assert!(winipc::ffi::directory_private(&file.parent().unwrap(), &me, false));
-    assert!(winipc::ffi::directory_private(base.join("Abito").as_path(), &me, false));
+    assert!(winipc::ffi::directory_private(base.join("Koda").as_path(), &me, false));
     // Re-publication (atomic replace) keeps the same guarantees.
     let again = run_helper(&base, payload(&pipe_name(), std::process::id()).as_bytes(), None);
     assert_eq!(again.status.code(), Some(0));
@@ -127,7 +127,7 @@ fn helper_refuses_an_override_outside_the_canonical_protected_root() {
     assert!(!outside.join("runtime").join("session.json").exists(), "nothing written to the decoy root");
     assert!(!session_file(&base).exists(), "nothing written to the canonical root either");
     // Path tricks are refused the same way.
-    for trick in [format!("{}\\Abito\\..\\..\\steal", base.display()), format!("{}\\Abito\\.\\x", base.display())] {
+    for trick in [format!("{}\\Koda\\..\\..\\steal", base.display()), format!("{}\\Koda\\.\\x", base.display())] {
         let out = run_helper(&base, payload(&pipe_name(), std::process::id()).as_bytes(), Some(Path::new(&trick)));
         assert_ne!(out.status.code(), Some(0), "trick override refused: {trick}");
         assert!(!base.join("steal").join("runtime").join("session.json").exists());
@@ -220,7 +220,7 @@ fn reader_rejects_a_wider_dacl_on_the_session_file() {
     assert_eq!(out.status.code(), Some(0));
     let file = session_file(&base);
     widen_dacl_to_everyone(&file);
-    let root = base.join("Abito");
+    let root = base.join("Koda");
     let conn = AgentConn::new(|_| {});
     conn.connect(&root);
     let view = conn.view();
@@ -237,7 +237,7 @@ fn reader_sends_no_token_to_a_server_with_a_foreign_pid() {
     let server = winipc::ffi::create_server_pipe(&name, &sid, false).expect("pipe server");
     let out = run_helper(&base, payload(&name, sleeper.id()).as_bytes(), None);
     assert_eq!(out.status.code(), Some(0));
-    let root = base.join("Abito");
+    let root = base.join("Koda");
     let conn = AgentConn::new(|_| {});
     conn.connect(&root);
     assert_eq!(conn.view()["connection"], json!("refused"), "server pid must equal the recorded session pid");
@@ -257,7 +257,7 @@ fn reader_sends_the_token_only_after_verification_and_connects() {
     let server = winipc::ffi::create_server_pipe(&name, &sid, false).expect("pipe server");
     let out = run_helper(&base, payload(&name, std::process::id()).as_bytes(), None);
     assert_eq!(out.status.code(), Some(0));
-    let root = base.join("Abito");
+    let root = base.join("Koda");
     // Server side: read the hello, then answer ready — through the bounded
     // overlapped helpers, on the OVERLAPPED server handle.
     let server_thread = std::thread::spawn(move || {
@@ -306,21 +306,21 @@ fn helper_verify_is_read_only_and_requires_native_identity_and_ready() {
             winipc::ffi::write_bounded(file.as_raw_handle(), reply, wait).unwrap();
             std::thread::sleep(std::time::Duration::from_millis(200));
         });
-        let output = Command::new(HELPER).arg("--verify").env("LOCALAPPDATA", &base).env_remove("ABITO_ISLAND_DIR").output().unwrap();
+        let output = Command::new(HELPER).arg("--verify").env("LOCALAPPDATA", &base).env_remove("KODA_ISLAND_DIR").output().unwrap();
         server_thread.join().unwrap();
         assert_eq!(output.status.code(), Some(if ready { 0 } else { 1 }));
         assert!(output.stdout.is_empty() && output.stderr.is_empty(), "verdict code only");
         assert_eq!(std::fs::read(session_file(&base)).unwrap(), before);
-        assert_eq!(std::fs::read_dir(base.join("Abito/runtime")).unwrap().count(), 1);
+        assert_eq!(std::fs::read_dir(base.join("Koda/runtime")).unwrap().count(), 1);
         widen_dacl_to_everyone(&session_file(&base));
-        let refused = Command::new(HELPER).arg("--verify").env("LOCALAPPDATA", &base).env_remove("ABITO_ISLAND_DIR").output().unwrap();
+        let refused = Command::new(HELPER).arg("--verify").env("LOCALAPPDATA", &base).env_remove("KODA_ISLAND_DIR").output().unwrap();
         assert_eq!(refused.status.code(), Some(1));
         assert!(refused.stdout.is_empty() && refused.stderr.is_empty());
         assert_eq!(std::fs::read(session_file(&base)).unwrap(), before);
         let invalid = Command::new(HELPER).args(["--verify", "attacker-path"]).env("LOCALAPPDATA", &base).output().unwrap();
         assert_ne!(invalid.status.code(), Some(0), "no caller path argument");
         let outside = base.join("not-canonical");
-        let redirected = Command::new(HELPER).arg("--verify").env("LOCALAPPDATA", &base).env("ABITO_ISLAND_DIR", &outside).output().unwrap();
+        let redirected = Command::new(HELPER).arg("--verify").env("LOCALAPPDATA", &base).env("KODA_ISLAND_DIR", &outside).output().unwrap();
         assert_eq!(redirected.status.code(), Some(1));
         assert!(redirected.stdout.is_empty() && redirected.stderr.is_empty());
         assert!(!outside.exists(), "verify cannot create or inspect a caller-selected non-canonical root");

@@ -29,7 +29,7 @@ const NOTICE_STATUS = 'Koda island';
 const EVENTS = ['PermissionRequest', 'PreToolUse', 'PostToolUse', 'Stop'];
 // Codex's plan-mode questions arrive as the `request_user_input` tool: the ONLY PreToolUse we observe.
 const MATCHERS = { PreToolUse: 'request_user_input' };
-const USAGE = 'usage: abito-hook install codex (--settings <abs path to hooks.json> | --user) [--timeout-sec N] [--remove] [--apply]\n';
+const USAGE = 'usage: koda-hook install codex (--settings <abs path to hooks.json> | --user) [--timeout-sec N] [--remove] [--apply]\n';
 const refuse = m => new core.InstallError(65, 'refused: ' + m);
 
 // A Windows drive path (`C:\…`). Only those get a `commandWindows`; they are accepted as absolute on every OS.
@@ -55,6 +55,30 @@ const SUBS = { PermissionRequest: PERM_SUB + PERMISSION_TIMEOUT_SEC, PreToolUse:
   PostToolUse: 'post-tool-use', Stop: 'stop' };
 // The notice-era (S4/T2) subcommands, all recognized as ours. `permission-request` alone is the 5 s notice entry T3 migrates.
 const NOTICE_SUBS = ['permission-request', 'pre-tool-use', 'post-tool-use', 'stop'];
+// K2-04 (S2, S4): the same entry shape with a Koda 0.1 script name (`'<node>' '<.../abito-hook.cjs>' codex <sub>`, from
+// whichever directory that install lived in) is OURS too: it is replaced in place, so Codex keeps ONE card per notice. The
+// script word must be one complete POSIX-quoted word whose basename is exactly our script name (never a look-alike).
+const QUOTED_WORD = /^'(?:[^']|'\\'')*'$/;
+const unquote = word => word.slice(1, -1).replace(/'\\''/g, "'");
+/** `{script, tail}` when `command` is `<node> <script> codex <tail>`, else null. Anchored on both quoted words. */
+function splitCommand(command, execPath) {
+  let head;
+  try { head = shellQuote(execPath) + ' '; } catch { return null; }
+  if (!command.startsWith(head)) return null;
+  const rest = command.slice(head.length);
+  const at = rest.indexOf(' codex ');
+  if (at < 0) return null;
+  const word = rest.slice(0, at);
+  if (!QUOTED_WORD.test(word)) return null;
+  return { script: unquote(word), tail: rest.slice(at + ' codex '.length) };
+}
+/** A sub we install, current or from the notice era (same rules as the exact-command check below). */
+function isKnownSub(tail) {
+  if (NOTICE_SUBS.includes(tail)) return true;
+  if (!tail.startsWith(PERM_SUB)) return false;
+  const n = tail.slice(PERM_SUB.length);
+  return /^[0-9]{1,4}$/.test(n) && Number(n) >= 1 && Number(n) <= 3600 && String(Number(n)) === n;
+}
 
 // Fixed entries: no user value ever reaches the command string (the CLI `--timeout-sec` flag is validated and inert).
 function buildEntry(event, binPath, execPath) {
@@ -85,13 +109,16 @@ const CODEX_PROFILE = {
   // `commandWindows` never decides ownership: a changed one only makes our entry a `replace`.
   isOurs: (h, binPath, execPath) => {
     if (!core.isObj(h) || h.type !== 'command' || typeof h.command !== 'string') return false;
+    const c = h.command;
     let base;
     try { base = commandBase(execPath, binPath); } catch { return false; }
-    const c = h.command;
-    if (NOTICE_SUBS.some(sub => c === base + sub)) return true;
-    if (!c.startsWith(base + PERM_SUB)) return false;
-    const n = c.slice(base.length + PERM_SUB.length);
-    return /^[0-9]{1,4}$/.test(n) && Number(n) >= 1 && Number(n) <= 3600 && String(Number(n)) === n;
+    if (c.startsWith(base + PERM_SUB)) {
+      const n = c.slice(base.length + PERM_SUB.length);
+      if (/^[0-9]{1,4}$/.test(n) && Number(n) >= 1 && Number(n) <= 3600 && String(Number(n)) === n) return true;
+    } else if (NOTICE_SUBS.some(sub => c === base + sub)) return true;
+    // K2-04: a 0.1 entry (same rule as claude: the script basename must be exactly ours) is ours as well.
+    const parts = splitCommand(c, execPath);
+    return !!parts && core.isHookScript(parts.script) && isKnownSub(parts.tail);
   },
   previewNotes: plan => plan.remove ? [] : [
     `Target hooks file: ${plan.settingsPath}`,
@@ -105,4 +132,4 @@ const planCodexHooks = o => core.planClaudeSettings({ ...o, profile: CODEX_PROFI
 const runInstallCodex = (argv, opts = {}) => core.runInstall(argv, { ...opts, profile: CODEX_PROFILE });
 
 module.exports = { CODEX_PROFILE, USAGE, shellQuote, planCodexHooks, runInstallCodex, EVENTS, MATCHERS, NOTICE_TIMEOUT_SEC, STOP_TIMEOUT_SEC,
-  PERMISSION_TIMEOUT_SEC, WAITING_MESSAGE };
+  PERMISSION_TIMEOUT_SEC, WAITING_MESSAGE, splitCommand, isKnownSub };

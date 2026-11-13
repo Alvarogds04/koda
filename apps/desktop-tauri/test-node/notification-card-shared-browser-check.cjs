@@ -9,7 +9,7 @@
    Side effects of loading the full page (pre-existing, unrelated to this check): island.js/desktop.js call
    agent_action/prefs_action/island_shape/record_frontend_evidence/chat_action on the FAKE bridge, which answers null.
    Run: node apps/desktop-tauri/test-node/notification-card-shared-browser-check.cjs
-   Optional: ABITO_SHOT_DIR=<dir> writes one PNG per scenario. */
+   Optional: KODA_SHOT_DIR=<dir> writes one PNG per scenario. */
 const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -91,7 +91,7 @@ const uid = n => `0b3a5c9e-8f27-4d11-9a0e-${String(n).padStart(12, '0')}`;
   };
   const sentNow = () => page.evaluate(() => window.__sent.slice());
   const resetSent = () => page.evaluate(() => { window.__sent.length = 0; });
-  const shot = async name => { if (process.env.ABITO_SHOT_DIR) await page.screenshot({ path: path.join(process.env.ABITO_SHOT_DIR, `t4-${name}.png`) }); };
+  const shot = async name => { if (process.env.KODA_SHOT_DIR) await page.screenshot({ path: path.join(process.env.KODA_SHOT_DIR, `t4-${name}.png`) }); };
   // geometry of every interactive control the card shows (rendered boxes, not CSS text)
   const targets = () => page.evaluate(() => [...document.querySelectorAll('#question button, #question textarea, #question input')]
     .map(b => ({ id: b.id || b.className || b.tagName, text: (b.textContent || '').trim().slice(0, 18), r: b.getBoundingClientRect() }))

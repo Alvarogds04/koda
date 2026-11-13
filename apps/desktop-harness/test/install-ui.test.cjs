@@ -8,7 +8,7 @@ const os = require('node:os');
 const path = require('node:path');
 const ui = require('../src/install-ui.cjs');
 
-const BIN = path.resolve(__dirname, '../bin/abito-hook.cjs');
+const BIN = path.resolve(__dirname, '../bin/koda-hook.cjs');
 const hex64 = /^[0-9a-f]{64}$/;
 const CTRL = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/;
 
@@ -157,31 +157,31 @@ test('refusals are one fixed JSON line with the right exit code and never echo t
   }
 });
 
-test('island guard: needs ABITO_ISLAND_EXE equal to the parent executable', () => {
+test('island guard: needs KODA_ISLAND_EXE equal to the parent executable', () => {
   const exe = fs.realpathSync(process.execPath);
-  const ok = ui.checkIslandGuards({ ABITO_ISLAND_EXE: exe }, 42, () => exe);
+  const ok = ui.checkIslandGuards({ KODA_ISLAND_EXE: exe }, 42, () => exe);
   assert.equal(ok, true);
   assert.equal(ui.checkIslandGuards({}, 42, () => exe), false);
   // HU-047: Windows paths are case-insensitive; the same executable spelled with another case is the same parent.
   const w = 'C:\\Program Files\\PowerShell\\7\\pwsh.exe';
-  assert.equal(ui.checkIslandGuards({ ABITO_ISLAND_EXE: w }, 42, () => w.toLowerCase(), 'win32', p => p), true);
-  assert.equal(ui.checkIslandGuards({ ABITO_ISLAND_EXE: w }, 42, () => 'C:\\Other\\pwsh.exe', 'win32', p => p), false);
+  assert.equal(ui.checkIslandGuards({ KODA_ISLAND_EXE: w }, 42, () => w.toLowerCase(), 'win32', p => p), true);
+  assert.equal(ui.checkIslandGuards({ KODA_ISLAND_EXE: w }, 42, () => 'C:\\Other\\pwsh.exe', 'win32', p => p), false);
   if (process.platform === 'win32') { // the product compares case-insensitively here (asserted above with the injected win32 platform); the rest is POSIX path syntax
-    assert.equal(ui.checkIslandGuards({ ABITO_ISLAND_EXE: exe }, 42, () => exe.toUpperCase()), true, 'Windows comparison is case-insensitive by default');
+    assert.equal(ui.checkIslandGuards({ KODA_ISLAND_EXE: exe }, 42, () => exe.toUpperCase()), true, 'Windows comparison is case-insensitive by default');
     return;
   }
-  assert.equal(ui.checkIslandGuards({ ABITO_ISLAND_EXE: exe }, 42, () => exe.toUpperCase()), false, 'Linux comparison stays case-sensitive');
-  assert.equal(ui.checkIslandGuards({ ABITO_ISLAND_EXE: 'relative/node' }, 42, () => exe), false);
-  assert.equal(ui.checkIslandGuards({ ABITO_ISLAND_EXE: '/bin/sh' }, 42, () => exe), false);
-  assert.equal(ui.checkIslandGuards({ ABITO_ISLAND_EXE: exe }, 42, () => { throw new Error('no /proc'); }), false);
-  assert.equal(ui.checkIslandGuards({ ABITO_ISLAND_EXE: '/does/not/exist' }, 42, () => exe), false);
+  assert.equal(ui.checkIslandGuards({ KODA_ISLAND_EXE: exe }, 42, () => exe.toUpperCase()), false, 'Linux comparison stays case-sensitive');
+  assert.equal(ui.checkIslandGuards({ KODA_ISLAND_EXE: 'relative/node' }, 42, () => exe), false);
+  assert.equal(ui.checkIslandGuards({ KODA_ISLAND_EXE: '/bin/sh' }, 42, () => exe), false);
+  assert.equal(ui.checkIslandGuards({ KODA_ISLAND_EXE: exe }, 42, () => { throw new Error('no /proc'); }), false);
+  assert.equal(ui.checkIslandGuards({ KODA_ISLAND_EXE: '/does/not/exist' }, 42, () => exe), false);
 });
 
 test('island guard: every agent marker refuses; empty marker does not', () => {
   const exe = fs.realpathSync(process.execPath);
   const names = ['CLAUDECODE', 'CLAUDE_CODE_ENTRYPOINT', 'CODEX_SANDBOX', 'CODEX_SANDBOX_NETWORK_DISABLED', 'CODEX_THREAD_ID', 'CODEX_SESSION_ID', 'PI_SESSION_ID', 'PI_SESSION_FILE', 'OPENCODE', 'OPENCODE_X', 'AI_AGENT', 'GENTLE_PI_SESSION'];
-  for (const n of names) assert.equal(ui.checkIslandGuards({ ABITO_ISLAND_EXE: exe, [n]: '1' }, 1, () => exe), false, n);
-  assert.equal(ui.checkIslandGuards({ ABITO_ISLAND_EXE: exe, CLAUDECODE: '' }, 1, () => exe), true);
+  for (const n of names) assert.equal(ui.checkIslandGuards({ KODA_ISLAND_EXE: exe, [n]: '1' }, 1, () => exe), false, n);
+  assert.equal(ui.checkIslandGuards({ KODA_ISLAND_EXE: exe, CLAUDECODE: '' }, 1, () => exe), true);
 });
 
 test('audit log: creates dir 0700 and file 0600, appends lines, refuses unsafe dirs', t => {
@@ -212,7 +212,7 @@ test('audit log: creates dir 0700 and file 0600, appends lines, refuses unsafe d
 
 // ---- hardening round: case-insensitive markers, backup collisions, lock, refusal audit, rotation ----
 const EXE = fs.realpathSync(process.execPath);
-const applyOpts = (extra = {}) => ({ env: { ABITO_ISLAND_EXE: EXE }, ppid: 1, readExe: () => EXE, ...extra });
+const applyOpts = (extra = {}) => ({ env: { KODA_ISLAND_EXE: EXE }, ppid: 1, readExe: () => EXE, ...extra });
 const applyVia = (harness, p, audit, hash, extra = {}, more = []) => run([harness, '--settings', p, ...more, '--apply-plan', hash, '--audit-dir', audit, '--json'], applyOpts(extra));
 const auditLines = audit => fs.readFileSync(path.join(audit, 'hook-installs.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l));
 function world(t, content = '{"keep":true}\n') {
@@ -223,9 +223,9 @@ function world(t, content = '{"keep":true}\n') {
 
 test('island guard: agent markers are matched case-insensitively', () => {
   for (const n of ['claudecode', 'Claude_Code_Entrypoint', 'opencode', 'OpenCode_Foo', 'opencode_x', 'ai_agent', 'Pi_Session_Id'])
-    assert.equal(ui.checkIslandGuards({ ABITO_ISLAND_EXE: EXE, [n]: '1' }, 1, () => EXE), false, n);
-  assert.equal(ui.checkIslandGuards({ ABITO_ISLAND_EXE: EXE, claudecode: '' }, 1, () => EXE), true);
-  assert.equal(ui.checkIslandGuards({ ABITO_ISLAND_EXE: EXE, claudecode: undefined, opencode_x: '' }, 1, () => EXE), true);
+    assert.equal(ui.checkIslandGuards({ KODA_ISLAND_EXE: EXE, [n]: '1' }, 1, () => EXE), false, n);
+  assert.equal(ui.checkIslandGuards({ KODA_ISLAND_EXE: EXE, claudecode: '' }, 1, () => EXE), true);
+  assert.equal(ui.checkIslandGuards({ KODA_ISLAND_EXE: EXE, claudecode: undefined, opencode_x: '' }, 1, () => EXE), true);
 });
 
 test('backup name collision: same-millisecond backup gets a -1..-9 suffix, 0600, no apply_failed', async t => {
@@ -322,7 +322,7 @@ test('refusals after argument validation append a refused audit line; exit codes
   assert.deepEqual([l[0].event, l[0].code, l[0].plan_hash], ['refused', 'plan_changed', bogus]);
   assert.deepEqual([l[1].event, l[1].code, l[1].plan_hash], ['refused', 'not_island', good]);
   assert.ok(Number.isInteger(l[0].ts));
-  r = await applyVia('claude', w.p, w.audit, good, { lockWaitMs: 100, env: { ABITO_ISLAND_EXE: EXE } });
+  r = await applyVia('claude', w.p, w.audit, good, { lockWaitMs: 100, env: { KODA_ISLAND_EXE: EXE } });
   assert.equal(r.code, 0);
 });
 test('refused audit line is never written for usage errors or an invalid audit dir, and never changes the exit', unixOnly('win-install-fake.test.cjs (HU-047 Windows flow through the helper contract) + smoke-windows.ps1 on the installed helper'), async t => {
@@ -356,7 +356,7 @@ for (const harness of ['statusline']) test(`${harness}: user preview, bound appl
   const p = path.join(d, '.claude/settings.json'), audit = path.join(d, 'audit');
   const original = '{"model":"keep","statusLine":{"type":"command","command":"mine"},"hooks":{"Stop":[{"hooks":[{"type":"command","command":"third"}]}]}}\n';
   fs.writeFileSync(p, original);
-  const opts = { env: { HOME: d, ABITO_ISLAND_EXE: EXE }, homedir: () => d, readExe: () => EXE };
+  const opts = { env: { HOME: d, KODA_ISLAND_EXE: EXE }, homedir: () => d, readExe: () => EXE };
   const call = more => run([harness, '--user', ...more, '--json'], opts);
   let r = await call([]);
   assert.equal(r.code, 0, r.lines[0]);
@@ -400,7 +400,7 @@ test('recap (legacy, removal-only): bound apply removes the 0.1 entries with a b
   const mine = '{"model":"keep","hooks":{"Stop":[{"hooks":[{"type":"command","command":"third"}]}]}}\n';
   const original = JSON.stringify({ model: 'keep', hooks: { Stop: [{ hooks: [{ type: 'command', command: 'third' }] }, old], UserPromptSubmit: [old], PostToolUse: [old] } }) + '\n';
   fs.writeFileSync(p, original); fs.mkdirSync(audit, { mode: 0o700 });
-  const opts = { env: { HOME: d, ABITO_ISLAND_EXE: EXE }, homedir: () => d, readExe: () => EXE };
+  const opts = { env: { HOME: d, KODA_ISLAND_EXE: EXE }, homedir: () => d, readExe: () => EXE };
   const call = more => run(['recap', '--user', ...more, '--json'], opts);
   assert.equal((await call([])).json.code, 'usage');
   const rm = await call(['--remove']);
@@ -419,4 +419,21 @@ test('BIN path constant in preview is this package bin', async t => {
   const d = tmp(t); const p = path.join(d, 'settings.json');
   const r = await run(['claude', '--settings', p, '--json']);
   assert.ok(r.lines[0].includes(JSON.stringify(BIN).slice(1, -1)) || r.json.diff.lines.some(l => l.includes(BIN)) || r.lines[0].includes(JSON.stringify(JSON.stringify(BIN).slice(1, -1)).slice(1, -1)));
+});
+
+// K2-04 (S2, S4): the island preview installs at the Koda default names, and the Koda 0.1 artifact it retires is part of the
+// plan, so a change to that file between preview and apply is `plan_changed` and never a second install over somebody's bytes.
+test('K2-04: --user previews at the Koda default targets and binds the 0.1 artifact it retires', async t => {
+  const d = tmp(t);
+  // every parent is private to us: 0700, then umask cannot make them group-writable (the installers refuse that)
+  for (const dir of ['.copilot/hooks', '.config/opencode/plugins']) fs.mkdirSync(path.join(d, dir), { recursive: true, mode: 0o700 });
+  const opts = { env: { HOME: d }, homedir: () => d };
+  assert.equal((await run(['copilot', '--user', '--json'], opts)).json.target, path.join(d, '.copilot/hooks/koda-island.json'));
+  assert.equal((await run(['opencode', '--user', '--json'], opts)).json.target, path.join(d, '.config/opencode/plugins/koda-island.js'));
+  // Pi's own default target (and its 0.1 folder) is covered end-to-end in test/install-pi.test.cjs: its payload source files are
+  // read here from a development checkout, which this umask can make group-writable (planPi refuses that, correctly).
+  const before = (await run(['copilot', '--user', '--json'], opts)).json.plan_hash;
+  const legacy = { type: 'command', exec: process.execPath, args: ['/opt/koda-0.1/desktop-harness/bin/abito-hook.cjs', 'copilot', 'stop'], timeoutSec: 15 };
+  fs.writeFileSync(path.join(d, '.copilot/hooks/abito-island.json'), JSON.stringify({ version: 1, hooks: { sessionEnd: [legacy] } }, null, 2) + '\n');
+  assert.notEqual((await run(['copilot', '--user', '--json'], opts)).json.plan_hash, before, 'the retired 0.1 file is bound by the hash');
 });

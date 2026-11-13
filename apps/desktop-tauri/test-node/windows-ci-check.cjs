@@ -49,7 +49,7 @@ for (const diagnostic of [
 }
 assert.doesNotMatch(installer, /Remove-Item|New-Item/);
 assert.match(workflow, /cargo test --locked --lib identity::windows_path_tests/);
-assert.match(smoke, /if \(\$Mode -eq 'explicit-root'\) \{ \$env:ABITO_PROJECT_ROOT = \$workspace \}\s+else \{ Remove-Item Env:ABITO_PROJECT_ROOT/);
+assert.match(smoke, /if \(\$Mode -eq 'explicit-root'\) \{ \$env:KODA_PROJECT_ROOT = \$workspace \}\s+else \{ Remove-Item Env:KODA_PROJECT_ROOT/);
 assert.match(smoke, /Start-Island 'explicit-root'/);
 assert.match(smoke, /return \$candidate\.pid -eq \$script:process\.Id/);
 assert.match(smoke, /if \(\$metadata\.pid -ne \$script:process\.Id\) \{ throw 'Receiver metadata does not belong/);
@@ -128,7 +128,7 @@ ciRule('smoke-windows.ps1 (K2-02): the missing-runtime case is a BROKEN BUNDLED 
   assert.match(block, /Rename-Item -LiteralPath \$manifest/, 'the installed runtime manifest is moved away');
   assert.ok(block.includes("island host: no_daemon (bundled_runtime_invalid)"), 'exact code line');
   assert.ok(block.includes('La instalación de Koda está dañada: volvé a instalar Koda.'), 'exact sentence');
-  assert.match(block, /-match 'abito-island-daemon: running'\) \{ throw /, 'the daemon must not start');
+  assert.match(block, /-match 'koda-daemon: running'\) \{ throw /, 'the daemon must not start');
   assert.match(block, /finally \{[^}]*Rename-Item -LiteralPath \$moved/, 'the manifest is restored in a finally');
 });
 ciRule('smoke-windows.ps1 broken-runtime (RDD advisories): the manifest is restored even if Stop-Island throws, and both stderr lines are WAITED for (no read-before-write race)', () => {

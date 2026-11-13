@@ -41,6 +41,6 @@ test('validate.cjs drains with the quiet rule, reaps the startup group and scope
   const src = fs.readFileSync(path.join(__dirname, '../packaging/validate.cjs'), 'utf8');
   assert.doesNotMatch(src, /readableEnded, 3000/, 'no more waiting for EOF with a 3 s limit');
   assert.equal((src.match(/await drained\(/g) || []).length, 2, "the final wait and the startup loop (manual + login)");
-  assert.match(src, /ABITO_SESSIONS_SCOPE_PID = String\(process.pid\)/, "validation sees only its own sessions");
+  assert.match(src, /KODA_SESSIONS_SCOPE_PID = String\(process.pid\)/, "validation sees only its own sessions");
   assert.match(src, /stopGroup\(startup, 'SIGTERM'\)/);
 });

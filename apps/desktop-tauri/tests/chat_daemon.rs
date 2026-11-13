@@ -74,7 +74,7 @@ impl Island {
             .env_clear()
             .env("PATH", std::env::var("PATH").unwrap())
             .env("HOME", &base)
-            .env("ABITO_ISLAND_DIR", &root)
+            .env("KODA_ISLAND_DIR", &root)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())

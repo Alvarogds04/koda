@@ -462,7 +462,7 @@ mtest('T6-5 source: the toast paints the Koda slot and koda-skin draws it with t
   const js = fs.readFileSync(path.join(frontend, 'question-toast.js'), 'utf8');
   assert.match(js, /q-toast-koda/); assert.match(js, /koda\.dataset\.kodaSlot = T\.KODA_SLOT/);
   const code = js.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, ''); // comments explain the old behaviour; only CODE must be free of the clay character
-  assert.doesNotMatch(code, /AbitoClay|clay-engine|ABITO_POSE|q-toast-abito/, 'the toast never creates or drives the clay character');
+  assert.doesNotMatch(code, /AbitoClay|clay-engine|KODA_POSE|q-toast-abito/, 'the toast never creates or drives the clay character');
   const skin = fs.readFileSync(path.join(frontend, 'koda-skin.js'), 'utf8');
   assert.match(skin, /function placeFlow/);
   const flow = skin.slice(skin.indexOf('function placeFlow'), skin.indexOf('const mover'));

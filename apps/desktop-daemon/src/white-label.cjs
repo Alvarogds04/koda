@@ -11,8 +11,10 @@
  * wiring is a later step and this module ships with its own tests first.
  *
  * Koda additions over the upstream port, deliberately narrower than the first
- * cut (B3): only the internal 0.1 product PHRASES are hidden — the memory
- * project identifier `abito-island` (whose NAME stays `abito-island`, S4) and
+ * cut (B3): only the internal 0.1 product PHRASES are hidden — the internal
+ * binary/install name `abito-island` (the memory project is Koda's own name
+ * `koda` since K2-04 T2b, but the crate, binary, install dirs and hook markers
+ * keep it until T4/T6/T7) and
  * the product phrase "Abito island" (case-sensitive). A bare "Pi"/"Abito"
  * rewrite would corrupt legitimate text ("Raspberry Pi", "abito a Roma") and
  * is NOT done; upstream's own rewrites are kept exactly as upstream has them.

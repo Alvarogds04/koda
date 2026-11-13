@@ -6,7 +6,7 @@
 //
 // sherpa-onnx-sys 1.13.8 links prebuilt static libraries that carry the TTS path: piper_phonemize, espeak-ng
 // (GPL-3.0) and its ucd tables. Koda only ever *recognises* speech (Parakeet, Whisper, Silero VAD, the dictation
-// wake word) and never synthesises it, yet those archives were linked into abito-island and abito-transcribe.
+// wake word) and never synthesises it, yet those archives were linked into `koda` and `koda-transcribe`.
 // Upstream publishes the same v1.13.8 libraries built with -DSHERPA_ONNX_ENABLE_TTS=OFF for each shipped target, so
 // this script stages those in `target/sherpa-onnx-no-tts/lib` and `.cargo/config.toml` points the island crate's
 // rustc-link-lib list at them (static:-bundle=..., without espeak-ng, piper_phonemize or ucd). Two details make that

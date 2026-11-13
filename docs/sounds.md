@@ -32,13 +32,13 @@ Para volver al sonido de Koda, borra o renombra tu archivo y pulsa **Recargar so
 
 ### La carpeta en cada sistema
 
-Es la carpeta `sounds` dentro de la carpeta de configuración de Koda (identificador `com.abitog.AbitoTauri`):
+Es la carpeta `sounds` dentro de la carpeta de configuración de Koda (identificador `com.abitog.Koda`):
 
 | Sistema | Carpeta |
 | --- | --- |
-| Linux | `~/.config/com.abitog.AbitoTauri/sounds` (o `$XDG_CONFIG_HOME/com.abitog.AbitoTauri/sounds` si defines `XDG_CONFIG_HOME`) |
-| macOS | `~/Library/Application Support/com.abitog.AbitoTauri/sounds` |
-| Windows | `%APPDATA%\com.abitog.AbitoTauri\sounds` (es decir, `C:\Users\<tú>\AppData\Roaming\com.abitog.AbitoTauri\sounds`) |
+| Linux | `~/.config/com.abitog.Koda/sounds` (o `$XDG_CONFIG_HOME/com.abitog.Koda/sounds` si defines `XDG_CONFIG_HOME`) |
+| macOS | `~/Library/Application Support/com.abitog.Koda/sounds` |
+| Windows | `%APPDATA%\com.abitog.Koda\sounds` (es decir, `C:\Users\<tú>\AppData\Roaming\com.abitog.Koda\sounds`) |
 
 **Abrir la carpeta de sonidos** la muestra en el gestor de archivos: Finder en macOS, el Explorador en Windows y el gestor predeterminado (`xdg-open`) en Linux. Si el gestor no responde, ábrela a mano con la ruta de la tabla.
 

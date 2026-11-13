@@ -11,14 +11,14 @@ const script = path.join(crate, 'packaging/windows/stage-runtime.cjs');
 const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'abito-win-stage-'));
 const out = path.join(scratch, 'payload');
 const files = [...L.DAEMON_FILES.map(f => `desktop-daemon/${f}`), ...L.HARNESS_FILES.map(f => `desktop-harness/${f}`), ...L.PI_FILES.map(f => `desktop-pi/${f}`)].sort();
-const bins = ['abito-island.exe', 'abito-notice-relay.exe', 'abito-private-session.exe', 'abito-transcribe.exe', 'abito-install.json'];
+const bins = ['koda.exe', 'abito-notice-relay.exe', 'abito-private-session.exe', 'koda-transcribe.exe', 'abito-install.json'];
 function run(...args) { return spawnSync(process.execPath, [script, '--out', out, ...args], { encoding: 'utf8' }); }
 function runOut(dest, ...args) { return spawnSync(process.execPath, [script, '--out', dest, ...args], { encoding: 'utf8' }); }
 function entries(dir, prefix = '') { return fs.readdirSync(dir).flatMap(n => fs.statSync(path.join(dir, n)).isDirectory() ? entries(path.join(dir, n), `${prefix}${n}/`) : [`${prefix}${n}`]).sort(); }
 // HU-062: test-only helpers of the harness suite (the pipe preload, fake receivers, fixtures) are never part of the shipped closed list,
 // and no shipped file references the preload or its switch.
-assert.ok(!files.some(f => /(^|\/)test\//.test(f) || /pipe-preload|fake-receiver|platform-env|ABITO_TEST_PIPE/.test(f)), 'test-only harness files must not be shipped');
-for (const f of files.filter(f => f.endsWith('.cjs'))) assert.doesNotMatch(fs.readFileSync(path.join(crate, '..', f), 'utf8'), /pipe-preload|ABITO_TEST_PIPE/, `${f} must not reference the test preload`);
+assert.ok(!files.some(f => /(^|\/)test\//.test(f) || /pipe-preload|fake-receiver|platform-env|KODA_TEST_PIPE/.test(f)), 'test-only harness files must not be shipped');
+for (const f of files.filter(f => f.endsWith('.cjs'))) assert.doesNotMatch(fs.readFileSync(path.join(crate, '..', f), 'utf8'), /pipe-preload|KODA_TEST_PIPE/, `${f} must not reference the test preload`);
 try {
   let r = run();
   assert.equal(r.status, 0, r.stderr);
@@ -45,7 +45,7 @@ try {
   assert.ok(nsis.includes('!include "${RUNTIMEDIR}\\runtime.nsh"'));
   // Per-user install only into the protected default (%LOCALAPPDATA%\Programs): no directory page, so a tester can
   // never pick a folder other local users can modify (e.g. C:\Abito) and plant binaries the island trusts.
-  assert.ok(nsis.includes('InstallDir "$LOCALAPPDATA\\Programs\\abito-island"'));
+  assert.ok(nsis.includes('InstallDir "$LOCALAPPDATA\\Programs\\Koda"'));
   assert.doesNotMatch(nsis, /MUI_PAGE_DIRECTORY/);
   assert.doesNotMatch(nsis, /^InstallDirRegKey/m);
   const deleted = [...macro.matchAll(/^  Delete "\$INSTDIR\\([^"]+)"$/gm)].map(m => m[1].replaceAll('\\', '/')).sort();
@@ -314,8 +314,8 @@ try {
     assert.equal(bad.stderr, 'unexpected staged entry: desktop-daemon/linked\n');
   });
   rule('K2-13 S8: the Windows build completes the closed binary set in the real dist/ from target/release (the preview workflow copies only three of the four)', () => {
-    // The preview workflow copies abito-island, abito-notice-relay and abito-private-session from target/release
-    // into dist/ and then runs install-manifest.cjs without --dist. abito-transcribe.exe (K2-13 S8, S15) is built by
+    // The preview workflow copies koda, abito-notice-relay and abito-private-session from target/release
+    // into dist/ and then runs install-manifest.cjs without --dist. koda-transcribe.exe (K2-13 S8, S15) is built by
     // the same `cargo build --release --bins` but the copy list predates it, and $BINDIR must hold every
     // BINARY_FILE before makensis Files it. The default dist/ is this build's own output, so it is completed there.
     const { completeBinaries } = require('../packaging/windows/stage-runtime.cjs');
@@ -324,12 +324,12 @@ try {
     const exes = bins.filter((b) => b.endsWith('.exe')); // target/release/ holds the executables, never abito-install.json
     fs.mkdirSync(distFixture2); fs.mkdirSync(releaseFixture);
     for (const b of exes) fs.writeFileSync(path.join(releaseFixture, b), `release ${b}`);
-    for (const b of ['abito-island.exe', 'abito-notice-relay.exe', 'abito-private-session.exe']) {
+    for (const b of ['koda.exe', 'abito-notice-relay.exe', 'abito-private-session.exe']) {
       fs.writeFileSync(path.join(distFixture2, b), `workflow ${b}`);
     }
-    assert.deepEqual(completeBinaries(distFixture2, releaseFixture), ['abito-transcribe.exe'], 'only the missing binary is staged');
-    assert.equal(fs.readFileSync(path.join(distFixture2, 'abito-transcribe.exe'), 'utf8'), 'release abito-transcribe.exe');
-    assert.equal(fs.readFileSync(path.join(distFixture2, 'abito-island.exe'), 'utf8'), 'workflow abito-island.exe', 'a binary the caller already staged is never replaced');
+    assert.deepEqual(completeBinaries(distFixture2, releaseFixture), ['koda-transcribe.exe'], 'only the missing binary is staged');
+    assert.equal(fs.readFileSync(path.join(distFixture2, 'koda-transcribe.exe'), 'utf8'), 'release koda-transcribe.exe');
+    assert.equal(fs.readFileSync(path.join(distFixture2, 'koda.exe'), 'utf8'), 'workflow koda.exe', 'a binary the caller already staged is never replaced');
     assert.deepEqual(completeBinaries(distFixture2, releaseFixture), [], 'idempotent: a second run stages nothing');
     // A host without a Windows release build (Linux/macOS CI, a plain checkout) copies nothing at all.
     const emptyRelease = path.join(scratch, 'release-empty'); fs.mkdirSync(emptyRelease);
@@ -340,11 +340,11 @@ try {
     const fixtureRelease = path.join(fixtureCrate, 'target/release');
     fs.mkdirSync(fixtureRelease, { recursive: true });
     for (const b of exes) fs.writeFileSync(path.join(fixtureRelease, b), `release ${b}`);
-    fs.unlinkSync(path.join(fixtureDist, 'abito-transcribe.exe'));
+    fs.unlinkSync(path.join(fixtureDist, 'koda-transcribe.exe'));
     const manifestRun = spawnSync(process.execPath, [path.join(fixtureCrate, 'packaging/windows/install-manifest.cjs')], { encoding: 'utf8' });
     assert.equal(manifestRun.status, 0, manifestRun.stderr);
-    assert.equal(fs.readFileSync(path.join(fixtureDist, 'abito-transcribe.exe'), 'utf8'), 'release abito-transcribe.exe');
-    assert.equal(fs.readFileSync(path.join(fixtureDist, 'abito-island.exe'), 'utf8'), 'fixture, not a Windows executable', 'the manifest step never rewrites a binary that is already in dist/');
+    assert.equal(fs.readFileSync(path.join(fixtureDist, 'koda-transcribe.exe'), 'utf8'), 'release koda-transcribe.exe');
+    assert.equal(fs.readFileSync(path.join(fixtureDist, 'koda.exe'), 'utf8'), 'fixture, not a Windows executable', 'the manifest step never rewrites a binary that is already in dist/');
   });
   let failedRules = 0;
   for (const [name, fn] of rules) {

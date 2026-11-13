@@ -7,7 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
-const BIN = path.resolve(__dirname, '../bin/abito-hook.cjs');
+const BIN = path.resolve(__dirname, '../bin/koda-hook.cjs');
 const hasPy = spawnSync('python3', ['-c', 'import pty'], { timeout: 10000 }).status === 0;
 
 const PY = `
@@ -60,7 +60,7 @@ test('pty codex: right word writes only the temp hooks.json + backup; wrong word
 
   let r = run('nope', base, home);
   assert.deepEqual(r, { code: 1, sent: true });
-  r = run('inst^D', base, home, { ABITO_INSTALL_PROMPT_TIMEOUT_MS: '300' });
+  r = run('inst^D', base, home, { KODA_INSTALL_PROMPT_TIMEOUT_MS: '300' });
   assert.deepEqual(r, { code: 1, sent: true });
   assert.equal(fs.readFileSync(p, 'utf8'), orig);
   assert.deepEqual(fs.readdirSync(dir), ['hooks.json']);

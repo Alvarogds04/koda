@@ -1,6 +1,6 @@
 # K2-13 (S8, S15; decisions L22/L23): sherpa-onnx v1.13.8 static libraries built with
 # -DSHERPA_ONNX_ENABLE_TTS=OFF, so they carry no espeak-ng (GPL-3.0), no piper_phonemize and no ucd tables.
-# Koda only recognises speech, so abito-island and abito-transcribe link these instead of the TTS build that
+# Koda only recognises speech, so `koda` and `koda-transcribe` link these instead of the TTS build that
 # sherpa-onnx-sys downloads by itself. build.rs reads this file, checks the sha256 of each archive before
 # unpacking it, and refuses an archive that does not match. darwin-arm64 is deliberately absent: the macOS
 # libraries and the Mac session are pending (L12), so that target still links the TTS build.

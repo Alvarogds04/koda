@@ -1,6 +1,6 @@
 'use strict';
 // K2-13 (S8, S15; decisions L22/L23): the shipped binaries must not carry espeak-ng (GPL-3.0) or piper_phonemize.
-// Koda only recognises speech, so abito-island and abito-transcribe link sherpa-onnx's own v1.13.8 libraries built with
+// Koda only recognises speech, so `koda` and `koda-transcribe` link sherpa-onnx's own v1.13.8 libraries built with
 // -DSHERPA_ONNX_ENABLE_TTS=OFF: build.rs stages them (sha256-verified against packaging/sherpa-onnx-no-tts.sha256) and
 // .cargo/config.toml replaces sherpa-onnx-sys's link list with the same archives minus the three TTS ones, without
 // +bundle so the staged directory is what the final link resolves. This check pins that wiring and, when artifacts
@@ -110,7 +110,7 @@ rule('no source file synthesises speech through sherpa-onnx: this is an ASR-only
   const speech = path.join(crate, 'src/speech');
   const walk = (dir) => fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => entry.isDirectory()
     ? walk(path.join(dir, entry.name)) : [path.join(dir, entry.name)]);
-  const offenders = [...walk(speech), path.join(crate, 'src/bin/abito-transcribe.rs')]
+  const offenders = [...walk(speech), path.join(crate, 'src/bin/koda-transcribe.rs')]
     .filter((file) => file.endsWith('.rs'))
     .filter((file) => /offline_tts|OfflineTts|tts::|Tts\./.test(fs.readFileSync(file, 'utf8')));
   assert.deepEqual(offenders, [], 'no speech synthesis is used, so removing the TTS libraries removes no feature');
@@ -146,7 +146,7 @@ rule('a built rlib and a built binary never carry espeak or piper code (streamed
   // (target-ship/) and the Windows staging dir dist/ — whenever this checkout has them.
   const SHIP_DIRS = ['target/debug', 'target/release', 'target-ship/release', 'dist'];
   for (const dir of SHIP_DIRS) {
-    for (const bin of ['abito-island', 'abito-transcribe', 'abito-notice-relay', 'abito-private-session']) {
+    for (const bin of ['koda', 'koda-transcribe', 'abito-notice-relay', 'abito-private-session']) {
       for (const name of [bin, `${bin}.exe`]) {
         const file = path.join(crate, dir, name);
         if (!fs.existsSync(file)) continue;

@@ -11,13 +11,55 @@ const ic = require('./install-claude.cjs');
 const winfs = require('./win-fs.cjs');
 const { previousShell } = require('./statusline.cjs');
 
-const STATUSLINE_BIN = path.resolve(__dirname, '../bin/abito-statusline.cjs');
-const MARKER = 'abito-statusline.cjs';
-const USAGE = 'usage: abito-hook install statusline (--settings <abs path> | --user) [--remove] [--apply]\n';
+const STATUSLINE_BIN = path.resolve(__dirname, '../bin/koda-statusline.cjs');
+// K2-04 (S1, S4): the marker is the script name. A status line installed by Koda 0.1 names `abito-statusline.cjs`; it is still
+// OURS, so installing replaces it in place and --remove takes it out, exactly like the current one.
+const MARKER = 'koda-statusline.cjs';
+const LEGACY_MARKER = 'abito-statusline.cjs';
+const USAGE = 'usage: koda-hook install statusline (--settings <abs path> | --user) [--remove] [--apply]\n';
 const { InstallError, scanSettings, shq, isObj, diffLines } = ic;
 const refuse = ic.InstallErrorRefuse;
 
-const isOurs = v => isObj(v) && typeof v.command === 'string' && v.command.includes(MARKER);
+// Anchored on the exact shape the installers write: `<interpreter> <script>` and NOTHING else (an optional leading `&` is the
+// PowerShell call operator). The second word must be the script itself: its last path component is exactly the Koda or the 0.1
+// script name. The first word must be the Node executable (basename `node` / `node.exe`); a bare script path must carry a path
+// separator. Anything with a third word, a redirect, `&&`, `;`, a variable prefix, or our script
+// name as an argument of another program is a FOREIGN status line and is never replaced or removed.
+const isScriptWord = w => [MARKER, LEGACY_MARKER].some(name => w === name || w.endsWith('/' + name) || w.endsWith('\\' + name));
+// A shell word is one or more adjacent pieces: 'single-quoted', "double-quoted" or bare text. The installer escapes an apostrophe
+// in a path as '\'' (close, escaped quote, reopen), which is therefore ONE word, not three. Anything else between words
+// (`;`, `&&`, `|`, a redirect, `$(...)`) is shell syntax and the line is not the shape we write.
+const WORD_PIECE = /'([^']*)'|"([^"]*)"|\\(['"])|((?:\\(?!['"])|[^\s"';&|<>$`()\\])+)/y;
+const words = command => {
+  const out = [];
+  let i = 0;
+  while (i < command.length) {
+    if (/\s/.test(command[i])) { i++; continue; }
+    let text = '', bare = true, any = false;
+    for (;;) {
+      WORD_PIECE.lastIndex = i;
+      const m = WORD_PIECE.exec(command);
+      if (!m) break;
+      any = true; i = WORD_PIECE.lastIndex;
+      if (m[4] === undefined) bare = false;
+      text += m[1] ?? m[2] ?? m[3] ?? m[4];
+    }
+    if (!any) return null; // shell syntax where a word should start
+    out.push({ text, bare });
+    if (i < command.length && !/\s/.test(command[i])) return null;
+  }
+  return out;
+};
+const isOurs = v => {
+  if (!isObj(v) || typeof v.command !== 'string') return false;
+  let w = words(v.command.trim().replace(/^&\s+/, ''));
+  if (!w || w.length !== 2) return false;
+  const [interpreter, script] = w;
+  // The installers write the Node executable (`process.execPath`, or the bundled runtime): its basename is `node` / `node.exe`.
+  if (!/^node(\.exe)?$/i.test(interpreter.text.split(/[\\/]/).pop())) return false;
+  if (script.bare && !/[\\/]/.test(script.text)) return false;
+  return isScriptWord(script.text);
+};
 const previousFile = home => path.join(home, '.abito', 'statusline-previous.json');
 const removePrevious = home => { const w = winfs.active(); if (w) w.remove(previousFile(home)); else fs.unlinkSync(previousFile(home)); };
 const ser = (v, style) => JSON.stringify(v, null, style.unit).replace(/\n/g, style.eol + style.mi);
@@ -213,4 +255,4 @@ function parseArgs(argv) {
   return o;
 }
 
-module.exports = { statusLineCommand, removePrevious, planStatusLine, runStatusLineInstall, STATUSLINE_BIN, isOurs, previousFile, writeSaved, verify, USAGE };
+module.exports = { statusLineCommand, removePrevious, planStatusLine, runStatusLineInstall, STATUSLINE_BIN, isOurs, previousFile, writeSaved, verify, USAGE, MARKER, LEGACY_MARKER };

@@ -20,11 +20,11 @@ Copy-Item -LiteralPath (Get-Command node.exe).Source -Destination $node
 & npm.cmd install --global --prefix (Join-Path $roaming 'npm') '@earendil-works/pi-coding-agent@1.4.0'
 if ($LASTEXITCODE -ne 0) { throw 'Isolated Pi installation failed' }
 $localData = [Environment]::GetFolderPath('LocalApplicationData')
-$islandData = Join-Path $localData 'com.abitog.AbitoTauri'
+$islandData = Join-Path $localData 'com.abitog.Koda'
 if (Test-Path -LiteralPath $islandData) { throw 'Runner already has island user data; refusing smoke against existing state' }
-if (Test-Path -LiteralPath (Join-Path $localData 'Abito')) { throw 'Runner already has island runtime data; refusing reuse' }
+if (Test-Path -LiteralPath (Join-Path $localData 'Koda')) { throw 'Runner already has island runtime data; refusing reuse' }
 $originalEnv = @{}
-foreach ($key in @('PATH', 'HOME', 'USERPROFILE', 'ABITO_ISLAND_EXE', 'APPDATA', 'LOCALAPPDATA', 'ProgramFiles', 'ABITO_PROJECT_ROOT', 'ABITO_ISLAND_DIR', 'ABITO_DESKTOP_SOCKET')) {
+foreach ($key in @('PATH', 'HOME', 'USERPROFILE', 'KODA_ISLAND_EXE', 'APPDATA', 'LOCALAPPDATA', 'ProgramFiles', 'KODA_PROJECT_ROOT', 'KODA_ISLAND_DIR', 'KODA_DESKTOP_SOCKET')) {
     $originalEnv[$key] = [Environment]::GetEnvironmentVariable($key, 'Process')
 }
 $process = $null
@@ -39,7 +39,7 @@ function Show-SmokeDiagnostics {
         Get-Content -LiteralPath $log.FullName -Tail 80 | ForEach-Object { Write-Host $_ }
     }
     Write-Host 'The app-owned daemon inherits island stderr; generic startup exceptions have a redacted diagnostic suffix.'
-    foreach ($dir in @((Join-Path $env:LOCALAPPDATA 'Abito'), (Join-Path $env:LOCALAPPDATA 'Abito/runtime'), (Join-Path $env:LOCALAPPDATA 'Abito/notices'))) {
+    foreach ($dir in @((Join-Path $env:LOCALAPPDATA 'Koda'), (Join-Path $env:LOCALAPPDATA 'Koda/runtime'), (Join-Path $env:LOCALAPPDATA 'Koda/notices'))) {
         if (Test-Path -LiteralPath $dir) {
             Write-Host "Directory: $dir"
             Get-ChildItem -LiteralPath $dir -Force | Select-Object Name,Length,Mode | Format-Table | Out-String | Write-Host
@@ -85,21 +85,21 @@ function Start-Island([string]$Mode) {
     $env:ProgramFiles = $empty
     $systemPath = "$env:SystemRoot\System32;$env:SystemRoot"
     $env:PATH = "$nodeDir;$systemPath"
-    if ($Mode -eq 'explicit-root') { $env:ABITO_PROJECT_ROOT = $workspace }
-    else { Remove-Item Env:ABITO_PROJECT_ROOT -ErrorAction SilentlyContinue }
-    Remove-Item Env:ABITO_ISLAND_DIR -ErrorAction SilentlyContinue
-    Remove-Item Env:ABITO_DESKTOP_SOCKET -ErrorAction SilentlyContinue
-    $script:process = Start-Process -FilePath (Join-Path $install 'abito-island.exe') -WorkingDirectory $workspace -PassThru `
+    if ($Mode -eq 'explicit-root') { $env:KODA_PROJECT_ROOT = $workspace }
+    else { Remove-Item Env:KODA_PROJECT_ROOT -ErrorAction SilentlyContinue }
+    Remove-Item Env:KODA_ISLAND_DIR -ErrorAction SilentlyContinue
+    Remove-Item Env:KODA_DESKTOP_SOCKET -ErrorAction SilentlyContinue
+    $script:process = Start-Process -FilePath (Join-Path $install 'koda.exe') -WorkingDirectory $workspace -PassThru `
         -RedirectStandardOutput (Join-Path $root "$Mode.stdout.log") -RedirectStandardError (Join-Path $root "$Mode.stderr.log")
     # A forced stop can leave the previous process's metadata. Wait for this
     # launch to publish its own record; existence alone is not readiness.
     Wait-For {
         try {
-            $candidate = Get-Content -Raw -LiteralPath (Join-Path $data 'Abito/notices/endpoint.json') | ConvertFrom-Json
+            $candidate = Get-Content -Raw -LiteralPath (Join-Path $data 'Koda/notices/endpoint.json') | ConvertFrom-Json
             return $candidate.pid -eq $script:process.Id
         } catch { return $false }
     } "$Mode receiver metadata"
-    $metadata = Get-Content -Raw -LiteralPath (Join-Path $data 'Abito/notices/endpoint.json') | ConvertFrom-Json
+    $metadata = Get-Content -Raw -LiteralPath (Join-Path $data 'Koda/notices/endpoint.json') | ConvertFrom-Json
     if ($metadata.pid -ne $script:process.Id) { throw 'Receiver metadata does not belong to installed island process' }
 }
 try {
@@ -118,7 +118,7 @@ try {
         if ((Get-FileHash -LiteralPath $source).Hash -ne (Get-FileHash -LiteralPath (Join-Path $install $file)).Hash) { throw "Installed hash mismatch: $file" }
     }
     Start-Island 'ready'
-    Wait-For { (Get-Content -Raw -LiteralPath (Join-Path $root 'ready.stderr.log')) -match 'abito-island-daemon: running' } 'installed daemon startup'
+    Wait-For { (Get-Content -Raw -LiteralPath (Join-Path $root 'ready.stderr.log')) -match 'koda-daemon: running' } 'installed daemon startup'
     # K2-01a: the installed island shows a top-level window and builds its tray (a person must still SEE them).
     Wait-For { (Get-Process -Id $script:process.Id).MainWindowHandle -ne [IntPtr]::Zero } 'installed island window'
     if ((Get-Content -Raw -LiteralPath (Join-Path $root 'ready.stderr.log')) -match 'tray unavailable:') { throw 'Installed island could not build its tray' }
@@ -127,7 +127,7 @@ try {
     & $node (Join-Path $install 'desktop-daemon/src/cli.cjs') status
     if ($LASTEXITCODE -ne 0) { throw 'Installed daemon status refused' }
     $payload = @{ hook_event_name = 'Stop'; cwd = $workspace; session_id = 'ci4-installed-stop'; stop_hook_active = $false } | ConvertTo-Json -Compress
-    $hookOutput = $payload | & $node (Join-Path $install 'desktop-harness/bin/abito-hook.cjs') claude stop 2> (Join-Path $root 'hook.stderr.log')
+    $hookOutput = $payload | & $node (Join-Path $install 'desktop-harness/bin/koda-hook.cjs') claude stop 2> (Join-Path $root 'hook.stderr.log')
     if ($LASTEXITCODE -ne 0 -or $hookOutput -or (Get-Item -LiteralPath (Join-Path $root 'hook.stderr.log')).Length -ne 0) { throw 'Installed hook contract failed' }
     # K2-03: only the island's accepted settled callback writes this content-free line (src/protocol.rs
     # SETTLED_NOTICE_LOG_LINE). CLI exit alone is NOT proof; exactly one line for exactly one Stop is.
@@ -141,7 +141,7 @@ try {
 
     # HU-047: install hooks and the Pi extension from the INSTALLED runtime with Windows ACL checks.
     # The profile below mirrors a real one (protected DACL: current user, SYSTEM, Administrators).
-    $hookCli = Join-Path $install 'desktop-harness/bin/abito-hook.cjs'
+    $hookCli = Join-Path $install 'desktop-harness/bin/koda-hook.cjs'
     $agentHome = Join-Path $root 'agent-home'
     function New-PrivateDir($path) {
         New-Item -ItemType Directory -Path $path -Force | Out-Null
@@ -150,13 +150,13 @@ try {
     }
     function Invoke-Install([string[]]$InstallArgs) {
         $env:HOME = $agentHome; $env:USERPROFILE = $agentHome
-        $env:ABITO_ISLAND_EXE = (Get-Process -Id $PID).Path
+        $env:KODA_ISLAND_EXE = (Get-Process -Id $PID).Path
         $out = & $node $hookCli install @InstallArgs 2> (Join-Path $root 'install.stderr.log')
         $code = $LASTEXITCODE
         if ((Get-Item -LiteralPath (Join-Path $root 'install.stderr.log')).Length -ne 0) { throw 'install wrote to stderr' }
         $json = $out | ConvertFrom-Json
         if ($json.PSObject.Properties['code'] -and $json.code -eq 'not_island') {
-            Write-Host "DIAG not_island: ABITO_ISLAND_EXE=$($env:ABITO_ISLAND_EXE) pid=$PID"
+            Write-Host "DIAG not_island: KODA_ISLAND_EXE=$($env:KODA_ISLAND_EXE) pid=$PID"
             $helper = Join-Path $install 'abito-private-session.exe'
             Write-Host "DIAG parent-check: $(& $helper --parent-check $PID 2>&1) exit=$LASTEXITCODE"
         }
@@ -173,7 +173,7 @@ try {
     $ap = Invoke-Install @('claude', '--user', '--json', '--apply-plan', $pv.Json.plan_hash, '--audit-dir', $auditDir)
     if ($ap.Code -ne 0 -or -not $ap.Json.ok -or $ap.Json.mode -ne 'applied') { throw "Windows claude apply failed: $($ap.Json | ConvertTo-Json -Compress)" }
     $written = Get-Content -Raw -LiteralPath $settings | ConvertFrom-Json
-    if ($written.keep -ne 1 -or -not (Get-Content -Raw -LiteralPath $settings).Contains('abito-hook.cjs')) { throw 'Windows claude settings not patched as planned' }
+    if ($written.keep -ne 1 -or -not (Get-Content -Raw -LiteralPath $settings).Contains('koda-hook.cjs')) { throw 'Windows claude settings not patched as planned' }
     $auditFile = Join-Path $auditDir 'hook-installs.jsonl'
     if (@(Get-Content -LiteralPath $auditFile).Count -ne 2) { throw 'Windows audit record missing' }
     if (@(Get-ChildItem -LiteralPath (Join-Path $agentHome '.claude') -Force | Where-Object { $_.Name -like '*.abito-lock' -or $_.Name -like '*abito-tmp*' }).Count -ne 0) { throw 'Windows install left lock or temp files' }
@@ -189,8 +189,8 @@ try {
     $ap = Invoke-Install @('statusline', '--user', '--json', '--apply-plan', $pv.Json.plan_hash, '--audit-dir', $auditDir)
     if ($ap.Code -ne 0 -or -not $ap.Json.ok) { throw "Windows statusline apply failed: $($ap.Json | ConvertTo-Json -Compress)" }
     $sl = (Get-Content -Raw -LiteralPath $settings | ConvertFrom-Json).statusLine.command
-    $bash = '^"[A-Za-z]:/[^"\\]+" "[A-Za-z]:/[^"\\]+/abito-statusline\.cjs"$'
-    $pwsh = '^& "[A-Za-z]:\\[^"]+" "[A-Za-z]:\\[^"]+\\abito-statusline\.cjs"$'
+    $bash = '^"[A-Za-z]:/[^"\\]+" "[A-Za-z]:/[^"\\]+/koda-statusline\.cjs"$'
+    $pwsh = '^& "[A-Za-z]:\\[^"]+" "[A-Za-z]:\\[^"]+\\koda-statusline\.cjs"$'
     if ($sl -notmatch $bash -and $sl -notmatch $pwsh) { throw "Windows statusline command is neither the Git Bash nor the PowerShell form: $sl" }
     Write-Host 'PASS Windows status-line relay installed with the command form of the shell Claude Code uses'
     # Refusals write nothing and say why. HU-047 messages: a refused parent folder reports unsafe_folder (folder + reason);
@@ -212,7 +212,7 @@ try {
     if ($pv.Code -ne 0 -or -not $pv.Json.ok) { throw "Windows Pi preview failed: $($pv.Json | ConvertTo-Json -Compress)" }
     $ap = Invoke-Install @('pi', '--user', '--json', '--apply-plan', $pv.Json.plan_hash, '--audit-dir', $auditDir)
     if ($ap.Code -ne 0 -or -not $ap.Json.ok) { throw "Windows Pi apply failed: $($ap.Json | ConvertTo-Json -Compress)" }
-    $ext = Join-Path $agentHome '.pi\agent\extensions\abito-island'
+    $ext = Join-Path $agentHome '.pi\agent\extensions\koda-island'
     foreach ($f in @('index.ts', 'adapter.cjs', '.abito-manifest.json')) { if (-not (Test-Path -LiteralPath (Join-Path $ext $f))) { throw "Pi extension file missing: $f" } }
     $tampered = Join-Path $install 'desktop-pi/adapter.cjs'
     $original = [IO.File]::ReadAllBytes($tampered)
@@ -225,10 +225,10 @@ try {
     $rm = Invoke-Install @('pi', '--user', '--json', '--remove', '--apply-plan', $rm.Json.plan_hash, '--audit-dir', $auditDir)
     if ($rm.Code -ne 0 -or (Test-Path -LiteralPath $ext)) { throw 'Windows Pi removal failed' }
     Write-Host 'PASS Windows Pi extension: installed, tamper refused (install_unverified), removed'
-    foreach ($key in @('HOME', 'USERPROFILE', 'ABITO_ISLAND_EXE')) { [Environment]::SetEnvironmentVariable($key, $originalEnv[$key], 'Process') }
+    foreach ($key in @('HOME', 'USERPROFILE', 'KODA_ISLAND_EXE')) { [Environment]::SetEnvironmentVariable($key, $originalEnv[$key], 'Process') }
 
     Start-Island 'explicit-root'
-    Wait-For { (Get-Content -Raw -LiteralPath (Join-Path $root 'explicit-root.stderr.log')) -match 'abito-island-daemon: running' } 'explicit Windows root daemon startup'
+    Wait-For { (Get-Content -Raw -LiteralPath (Join-Path $root 'explicit-root.stderr.log')) -match 'koda-daemon: running' } 'explicit Windows root daemon startup'
     Write-Host 'PASS installed receiver and daemon with explicit Windows project root'
     Stop-Island
     $runtimeFailures = [System.Collections.Generic.List[string]]::new()
@@ -248,7 +248,7 @@ try {
             Wait-For { $t = Get-Content -Raw -LiteralPath (Join-Path $root "$($case.mode).stderr.log") -ErrorAction SilentlyContinue; $t -like "*$($case.message)*" -and $t.Contains($case.code) } "$($case.code) + $($case.message)"
             $stderr = Get-Content -Raw -LiteralPath (Join-Path $root "$($case.mode).stderr.log")
             if (-not $stderr.Contains($case.code)) { throw "Missing the code line: $($case.code)" }
-            if ($stderr -match 'abito-island-daemon: running') { throw 'Daemon unexpectedly started on a broken bundled runtime' }
+            if ($stderr -match 'koda-daemon: running') { throw 'Daemon unexpectedly started on a broken bundled runtime' }
             Write-Host "PASS installed broken-runtime diagnostic: $($case.code) + $($case.message)"
         } catch {
             $runtimeFailures.Add("$($case.mode): $($_.Exception.Message)")
@@ -265,7 +265,7 @@ try {
     # Island user data (whatever the installed island wrote, plus a planted fixture) must survive uninstall byte for byte.
     # Tauri's Windows Known Folder lookup may use the actual profile or the child LOCALAPPDATA. EBWebView is WebView2's own
     # browser cache (not the person's data) and a lingering msedgewebview2 keeps files there locked (CI 42207296565).
-    $islandDataDirs = @($islandData, (Join-Path $env:LOCALAPPDATA 'com.abitog.AbitoTauri')) | Select-Object -Unique
+    $islandDataDirs = @($islandData, (Join-Path $env:LOCALAPPDATA 'com.abitog.Koda')) | Select-Object -Unique
     New-Item -ItemType Directory -Force -Path $islandData | Out-Null
     [IO.File]::WriteAllText((Join-Path $islandData 'smoke-user-data.txt'), 'island user data must survive uninstall')
     $islandDataHashes = { @(foreach ($dir in $islandDataDirs) { if (Test-Path -LiteralPath $dir) { Get-ChildItem -LiteralPath $dir -File -Recurse | Where-Object { -not $_.FullName.Contains('\EBWebView\') } | ForEach-Object { "$($_.FullName)=$((Get-FileHash -LiteralPath $_.FullName).Hash)" } } }) -join ';' }

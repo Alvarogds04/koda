@@ -21,7 +21,7 @@ const perm = (over = {}, tool = {}) => JSON.stringify({ session_id: 'sess-1', cw
 // The documented PermissionRequest answer for AskUserQuestion: allow + updatedInput (original questions echoed, answers added).
 const expected = (questions, answers) => ({ hookSpecificOutput: { hookEventName: 'PermissionRequest',
   decision: { behavior: 'allow', updatedInput: { questions, answers } } } });
-const envOf = r => ({ ABITO_DESKTOP_SOCKET: r.endpoint, ABITO_SOCKET_DIR: r.runtime });
+const envOf = r => ({ KODA_DESKTOP_SOCKET: r.endpoint, KODA_SOCKET_DIR: r.runtime });
 const answerer = (rcv, value) => rcv.next('question').then(q => rcv.send({ v: 1, type: 'answer', questionVersion: 1, project: q.project,
   sessionId: q.sessionId, at: Date.now(), id: q.id, source: 'human', answer: { type: 'option', value } }));
 const stub = status => () => ({ ask: async () => ({ status }), notify: async () => ({ status: 'sent' }) });
@@ -128,7 +128,7 @@ const start = (over = {}) => JSON.stringify({ session_id: 'sess-1', cwd, hook_ev
 
 test('SessionStart caches the title privately and prints nothing; the next question is labelled with it', async t => {
   const state = tmp(t), rcv = await fakeReceiver(t, { questions: true });
-  const env = { ...envOf(rcv), ABITO_STATE_DIR: state };
+  const env = { ...envOf(rcv), KODA_STATE_DIR: state };
   const r = await handleClaudeHook({ event: 'session-start', input: start(), env, argv: [] });
   assert.deepEqual(r, { stdout: '', stderr: '', exitCode: 0 });
   const dir = path.join(state, 'claude-titles');
@@ -142,7 +142,7 @@ test('SessionStart caches the title privately and prints nothing; the next quest
 test('a missing, hostile or oversized title is ignored: the label stays the project basename', async t => {
   for (const title of [undefined, '', '   ', 5, null, '\u202e\u0000', 'x'.repeat(5000)]) {
     const state = tmp(t), rcv = await fakeReceiver(t, { questions: true });
-    const env = { ...envOf(rcv), ABITO_STATE_DIR: state };
+    const env = { ...envOf(rcv), KODA_STATE_DIR: state };
     await handleClaudeHook({ event: 'session-start', input: start({ session_title: title }), env, argv: [] });
     const p = answerer(rcv, 'o0');
     await handleClaudeHook({ event: 'permission-request', input: perm(), env, argv: [] }); await p;
@@ -152,7 +152,7 @@ test('a missing, hostile or oversized title is ignored: the label stays the proj
 });
 test('titles are per session: another session id never reads it', async t => {
   const state = tmp(t), rcv = await fakeReceiver(t, { questions: true });
-  const env = { ...envOf(rcv), ABITO_STATE_DIR: state };
+  const env = { ...envOf(rcv), KODA_STATE_DIR: state };
   await handleClaudeHook({ event: 'session-start', input: start(), env, argv: [] });
   const p = answerer(rcv, 'o0');
   await handleClaudeHook({ event: 'permission-request', input: perm({ session_id: 'other' }), env, argv: [] }); await p;

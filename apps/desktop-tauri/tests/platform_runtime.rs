@@ -35,10 +35,10 @@ fn windows_home_accepts_native_drive_path_without_changing_explicit_setting() {
 
 #[test]
 fn installed_daemon_uses_platform_bundle_location() {
-    let exe = Path::new("/Applications/Abito.app/Contents/MacOS/abito-island");
+    let exe = Path::new("/Applications/Koda.app/Contents/MacOS/koda");
     let result = abito_island::daemonhost::installed_daemon_cli(exe).unwrap();
     #[cfg(target_os = "macos")]
-    assert_eq!(result, Path::new("/Applications/Abito.app/Contents/Resources/desktop-daemon/src/cli.cjs"));
+    assert_eq!(result, Path::new("/Applications/Koda.app/Contents/Resources/desktop-daemon/src/cli.cjs"));
     #[cfg(not(target_os = "macos"))]
     assert_eq!(result, exe.parent().unwrap().join("desktop-daemon/src/cli.cjs"));
 }

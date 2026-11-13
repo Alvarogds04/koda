@@ -10,7 +10,7 @@ only there (it removes the runner's Node; nothing is restored):
       then fail in a fresh login-free shell;
   (i) install: the .app is copied from the read-only mounted .dmg with ditto (what a person does);
   (s) start: the INSTALLED binary with a Finder-minimal environment (PATH=/usr/bin:/bin:/usr/sbin:/sbin, a
-      private HOME) reaches «abito-island-daemon: running»: the daemon only says that after Koda's own Pi answered
+      private HOME) reaches «koda-daemon: running»: the daemon only says that after Koda's own Pi answered
       its first RPC get_state (a model-free round-trip). The daemon process's executable must be
       <App>.app/Contents/Resources/runtime/node (`ps -o comm=`);
   (t) status: the installed `daemon status`, run by that bundled node, reports running:true.
@@ -113,14 +113,14 @@ def main():
             env[key] = os.environ[key]
     log_path = work / "island.log"
     with log_path.open("w") as log:
-        process = subprocess.Popen([str(app / "Contents/MacOS/abito-island")], cwd="/", env=env, stdout=log,
+        process = subprocess.Popen([str(app / "Contents/MacOS/koda")], cwd="/", env=env, stdout=log,
                                    stderr=subprocess.STDOUT, start_new_session=True)
     try:
-        ready = wait_for(lambda: "abito-island-daemon: running (pid " in log_path.read_text(), 180)
+        ready = wait_for(lambda: "koda-daemon: running (pid " in log_path.read_text(), 180)
         text = log_path.read_text()
         report("s", ready and "island host: no_daemon" not in text,
                "the daemon reported running" if ready else f"no daemon ready line; log tail: {text[-1500:]}")
-        pid = text.split("abito-island-daemon: running (pid ", 1)[1].split(")", 1)[0]
+        pid = text.split("koda-daemon: running (pid ", 1)[1].split(")", 1)[0]
         comm = subprocess.run(["/bin/ps", "-o", "comm=", "-p", pid], capture_output=True, text=True).stdout.strip()
         report("s", os.path.realpath(comm) == os.path.realpath(str(runtime_node)),
                f"the app-owned daemon (pid {pid}) runs on {comm}, expected {runtime_node}")

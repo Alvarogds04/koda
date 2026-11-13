@@ -4,12 +4,12 @@
  * K2-13 (S6, S7, S8, S9, S15, S16): the daemon's transcription service. A Minikoda that reads a video or an audio
  * post gets its transcript first; the media never reaches the model.
  *
- *   media file ──ffmpeg──▶ 16 kHz mono WAV ──▶ local:  abito-transcribe (sherpa-onnx, Parakeet v3 / Whisper turbo)
+ *   media file ──ffmpeg──▶ 16 kHz mono WAV ──▶ local:  koda-transcribe (sherpa-onnx, Parakeet v3 / Whisper turbo)
  *                                          └─▶ remote: ffmpeg → ≤180 s mono OGG/Opus chunks (≤25 MB each)
  *                                                      → POST {base}/audio/transcriptions, JSON `.text`, joined
  *
  * - ffmpeg is the BUNDLED one (`<install>/runtime/ffmpeg[.exe]`, pinned LGPL build, packaging/runtime), never PATH;
- *   the helper is the bundled `<install>/abito-transcribe[.exe]`. Both run with `shell:false`, a fixed argv, a
+ *   the helper is the bundled `<install>/koda-transcribe[.exe]`. Both run with `shell:false`, a fixed argv, a
  *   private working folder and a kill on cancel/timeout. ffmpeg only reads `file:` input (protocol whitelist) in a
  *   closed list of container formats (no playlists, no network). macOS (darwin-arm64): ffmpeg is NOT bundled yet
  *   (pending for the Mac session): every media transcription there answers `ffmpeg_unavailable`.
@@ -116,7 +116,7 @@ function bundledTools({ installRoot, platform = process.platform }) {
 	const exe = platform === "win32" ? ".exe" : "";
 	return {
 		ffmpeg: platform === "darwin" ? undefined : executableFile(path.join(installRoot, "runtime", `ffmpeg${exe}`), platform),
-		helper: executableFile(path.join(installRoot, `abito-transcribe${exe}`), platform),
+		helper: executableFile(path.join(installRoot, `koda-transcribe${exe}`), platform),
 	};
 }
 
@@ -191,7 +191,7 @@ class Transcriber {
 	 * @param {string} o.islandRoot
 	 * @param {() => object} o.setting       the current global setting (transcribe-setting.cjs)
 	 * @param {{command, commandArgs?}|undefined} o.ffmpeg   the bundled ffmpeg (undefined: unavailable)
-	 * @param {{command, commandArgs?}|undefined} o.helper   the bundled abito-transcribe (undefined: unavailable)
+	 * @param {{command, commandArgs?}|undefined} o.helper   the bundled koda-transcribe (undefined: unavailable)
 	 * @param {(accountId) => Promise<{baseUrl, apiKey}>} [o.remoteAccount]  a usable OpenAI-compatible account
 		 * @param {object} [o.env]               environment of the children (the helper finds the shared model store)
 		 * @param {object} [o.limits]            overrides of DEFAULT_LIMITS (tests)
@@ -274,7 +274,7 @@ class Transcriber {
 		const { code, stdout } = await this.run(this.helper, [
 			"transcribe", "--model", model, "--language", setting.language,
 			"--timeout-sec", String(remainingSec), "--max-seconds", String(this.limits.maxSeconds), wav,
-		], job, { label: "abito-transcribe", capture: true, allowFailure: true, cwd: work });
+		], job, { label: "koda-transcribe", capture: true, allowFailure: true, cwd: work });
 		let out;
 		try {
 			const line = stdout.toString("utf8").trim();
@@ -282,7 +282,7 @@ class Transcriber {
 			out = JSON.parse(line);
 		} catch {
 			if (code !== 0) {
-				this.log(`transcription: abito-transcribe exited ${code}`);
+				this.log(`transcription: koda-transcribe exited ${code}`);
 				fail("failed");
 			}
 			fail("invalid_response");
@@ -290,7 +290,7 @@ class Transcriber {
 		if (code !== 0 || typeof out?.error === "string") {
 			// The helper's own `--timeout-sec` IS the remaining transcription budget (S17), so its `timeout` is ours.
 			const mapped = { model_missing: "model_missing", too_long: "too_long", timeout: "budget_exceeded", bad_audio: "bad_media", bad_input: "bad_media" }[out?.error] ?? "failed";
-			this.log(`transcription: abito-transcribe answered ${mapped}`);
+			this.log(`transcription: koda-transcribe answered ${mapped}`);
 			fail(mapped);
 		}
 		if (typeof out?.text !== "string" || !Array.isArray(out.segments)) fail("invalid_response");

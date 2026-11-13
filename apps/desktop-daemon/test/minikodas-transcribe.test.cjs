@@ -1,7 +1,7 @@
 "use strict";
 
 // K2-13 T2c-2 (S6, S7 transcription part, S8, S9, S15, S16): the daemon's transcription service. Offline: a fake
-// ffmpeg, a fake `abito-transcribe` helper and a fake loopback OpenAI-compatible server; no model, no NaN, no network.
+// ffmpeg, a fake `koda-transcribe` helper and a fake loopback OpenAI-compatible server; no model, no NaN, no network.
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
@@ -152,18 +152,18 @@ test("bundled tools: fixed paths beside the daemon package, never PATH; macOS re
 	const linux = bundledTools({ installRoot: root, platform: "linux" });
 	assert.deepEqual(linux, { ffmpeg: undefined, helper: undefined }, "nothing there: unavailable, no fallback");
 	fs.writeFileSync(path.join(root, "runtime", "ffmpeg"), "bin", { mode: 0o755 });
-	fs.writeFileSync(path.join(root, "abito-transcribe"), "bin", { mode: 0o755 });
-	assert.deepEqual(bundledTools({ installRoot: root, platform: "linux" }), { ffmpeg: path.join(root, "runtime", "ffmpeg"), helper: path.join(root, "abito-transcribe") });
+	fs.writeFileSync(path.join(root, "koda-transcribe"), "bin", { mode: 0o755 });
+	assert.deepEqual(bundledTools({ installRoot: root, platform: "linux" }), { ffmpeg: path.join(root, "runtime", "ffmpeg"), helper: path.join(root, "koda-transcribe") });
 	assert.deepEqual(bundledTools({ installRoot: root, platform: "darwin" }).ffmpeg, undefined, "darwin-arm64: ffmpeg is not bundled yet");
 	fs.writeFileSync(path.join(root, "runtime", "ffmpeg.exe"), "bin");
-	fs.writeFileSync(path.join(root, "abito-transcribe.exe"), "bin");
-	assert.deepEqual(bundledTools({ installRoot: root, platform: "win32" }), { ffmpeg: path.join(root, "runtime", "ffmpeg.exe"), helper: path.join(root, "abito-transcribe.exe") });
+	fs.writeFileSync(path.join(root, "koda-transcribe.exe"), "bin");
+	assert.deepEqual(bundledTools({ installRoot: root, platform: "win32" }), { ffmpeg: path.join(root, "runtime", "ffmpeg.exe"), helper: path.join(root, "koda-transcribe.exe") });
 	if (posix) {
 		fs.rmSync(path.join(root, "runtime", "ffmpeg"));
 		fs.symlinkSync("/usr/bin/true", path.join(root, "runtime", "ffmpeg"));
 		assert.equal(bundledTools({ installRoot: root, platform: "linux" }).ffmpeg, undefined, "a symlink is never run");
-		fs.rmSync(path.join(root, "abito-transcribe"));
-		fs.writeFileSync(path.join(root, "abito-transcribe"), "bin", { mode: 0o644 });
+		fs.rmSync(path.join(root, "koda-transcribe"));
+		fs.writeFileSync(path.join(root, "koda-transcribe"), "bin", { mode: 0o644 });
 		assert.equal(bundledTools({ installRoot: root, platform: "linux" }).helper, undefined, "not executable");
 	}
 });

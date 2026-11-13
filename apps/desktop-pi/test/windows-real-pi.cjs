@@ -8,12 +8,12 @@ const assert = require('node:assert/strict');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 async function windowsTwin(t, root, receiver, { extra = [] } = {}) {
-  const vars = ['ABITO_SOCKET_DIR', 'ABITO_DESKTOP_SOCKET', 'ABITO_QUESTIONS', 'ABITO_QUESTION_TIMEOUT_MS'];
+  const vars = ['KODA_SOCKET_DIR', 'KODA_DESKTOP_SOCKET', 'KODA_QUESTIONS', 'KODA_QUESTION_TIMEOUT_MS'];
   const previous = Object.fromEntries(vars.map(k => [k, process.env[k]]));
   t.after(() => { for (const k of vars) { if (previous[k] === undefined) delete process.env[k]; else process.env[k] = previous[k]; } });
   // the metadata path IS valid, so the adapter reaches the relay step; no relay exists, so it must fail closed
-  Object.assign(process.env, { ABITO_DESKTOP_SOCKET: receiver.endpoint, ABITO_QUESTIONS: '2', ABITO_QUESTION_TIMEOUT_MS: '300000' });
-  delete process.env.ABITO_SOCKET_DIR;
+  Object.assign(process.env, { KODA_DESKTOP_SOCKET: receiver.endpoint, KODA_QUESTIONS: '2', KODA_QUESTION_TIMEOUT_MS: '300000' });
+  delete process.env.KODA_SOCKET_DIR;
   const loader = await import(pathToFileURL(path.join(root, 'dist/core/extensions/loader.js')));
   const { extensions, errors } = await loader.loadExtensions([path.resolve(__dirname, '../pi-extension.ts'), ...extra],
     path.resolve(__dirname, '..'), { on: () => () => {}, emit: () => {} }, loader.createExtensionRuntime());

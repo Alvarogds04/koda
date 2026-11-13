@@ -196,18 +196,18 @@ test("error messages never echo values", () => {
 	}
 });
 
-test("ABITO_WORKSPACE overrides the file and is validated", () => {
+test("KODA_WORKSPACE overrides the file and is validated", () => {
 	const root = island();
 	const fileWs = tmp();
 	const envWs = tmp();
 	writeConfig(root, { workspace: fileWs });
-	const cfg = load(root, { ABITO_WORKSPACE: envWs });
+	const cfg = load(root, { KODA_WORKSPACE: envWs });
 	assert.equal(cfg.workspace, envWs);
 	assert.equal(cfg.workspaceSource, "env");
-	rejects(() => load(root, { ABITO_WORKSPACE: "relative" }), "ABITO_WORKSPACE");
-	rejects(() => load(root, { ABITO_WORKSPACE: path.join(root, "home") }), "ABITO_WORKSPACE");
+	rejects(() => load(root, { KODA_WORKSPACE: "relative" }), "KODA_WORKSPACE");
+	rejects(() => load(root, { KODA_WORKSPACE: path.join(root, "home") }), "KODA_WORKSPACE");
 	// an empty env var is "not set"
-	assert.equal(load(root, { ABITO_WORKSPACE: "" }).workspace, fileWs);
+	assert.equal(load(root, { KODA_WORKSPACE: "" }).workspace, fileWs);
 });
 
 test("setWorkspace persists atomically at 0600, keeps other keys and clears the session pointer", () => {
@@ -236,9 +236,9 @@ test("setWorkspace refuses invalid input and leaves the file untouched", () => {
 	assert.equal(fs.readFileSync(path.join(root, "config.json"), "utf8"), before);
 });
 
-test("setWorkspace under ABITO_WORKSPACE persists but reports the override", () => {
+test("setWorkspace under KODA_WORKSPACE persists but reports the override", () => {
 	const root = island();
-	const result = config.setWorkspace(root, tmp(), { env: { ABITO_WORKSPACE: tmp() } });
+	const result = config.setWorkspace(root, tmp(), { env: { KODA_WORKSPACE: tmp() } });
 	assert.equal(result.overriddenByEnv, true);
 });
 
@@ -254,7 +254,7 @@ test("memory conflict detection is read-only", () => {
 	assert.equal(config.detectMemoryPinConflict(ws), true);
 	assert.equal(snapshot(), before);
 	assert.equal(fs.statSync(path.join(ws, ".engram", "config.json")).mtimeMs, mtime);
-	fs.writeFileSync(path.join(ws, ".engram", "config.json"), JSON.stringify({ project_name: "abito-island" }));
+	fs.writeFileSync(path.join(ws, ".engram", "config.json"), JSON.stringify({ project_name: "koda" }));
 	assert.equal(config.detectMemoryPinConflict(ws), false);
 	fs.writeFileSync(path.join(ws, ".engram", "config.json"), "garbage");
 	assert.equal(config.detectMemoryPinConflict(ws), false);

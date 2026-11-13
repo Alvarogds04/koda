@@ -8,7 +8,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const R6_PREFIX = '40625d7f';
-const IDENTIFIER = 'com.abitog.AbitoTauri';
+const IDENTIFIER = 'com.abitog.Koda';
 const RESERVED = ['com.abitog.Abito', 'com.abitog.Abito.Preview', 'abito-desktop', 'abito-desktop-preview'];
 const FRONTEND_FILES = ['DESIGN.md', 'avatar-colors.js', 'character-desktop-logic.js', 'character-minibots.js', 'character-motion.js', 'chat-cards.js', 'chat-markdown.css', 'chat-markdown.js', 'chat-view.js', 'chat.js', 'clay-engine.js', 'desktop-character.css', 'desktop-character.html', 'desktop-character.js', 'desktop.js', 'gmail-view.css', 'gmail-view.js', 'icons.js', 'index.html', 'integrations-deployments.js', 'integrations-finance.js', 'integrations-mail.js', 'integrations-n8n.js',
   'integrations-notion.js', 'integrations-payments.js', 'integrations-view.js', 'island-idle.js', 'island-integrations.js', 'island-integrations.css', 'island-header.js', 'island-github.js', 'island-shortcuts.js', 'island-desktop.js', 'island-dictation.js', 'island-voice.js', 'island-voice.css', 'island-plan.js', 'island-interaction.js', 'island.js', 'notify-view.js', 'notify.js', 'overview-view.js', 'pill-catalog.js', 'pill-settings.js', 'pills-view.js', 'paused.js', 'spotify-view.js', 'pills.js', 'sessions-ticker.js', 'settings-view.js', 'settings.js', 'sound-engine.js', 'sound-wiring.js', 'specialists-view.js', 'specialists.js', 'style.css', 'theme.js'];
@@ -62,11 +62,11 @@ FRONTEND_FILES.push(
 );
 const EXPECTED_WINDOWS = ['main', 'settings'];
 const EXPECTED_PERMISSIONS = ['core:event:allow-listen', 'core:event:allow-unlisten'];
-// Inverted logic: EVERY ABITO_* variable is refused except the one the
-// installed app is meant to receive (ABITO_PROJECT_ROOT); plus the whole LD_*
+// Inverted logic: EVERY KODA_* variable is refused except the one the
+// installed app is meant to receive (KODA_PROJECT_ROOT); plus the whole LD_*
 // loader family and the GTK/GDK/WebKit debug + inspector variables.
-const FORBIDDEN_ENV_PATTERN = '^(LD_[A-Za-z0-9_]*|GDK_(DEBUG|SYNCHRONIZE|RENDERING)|GTK_(DEBUG|MODULES|PATH|EXE_PREFIX|DATA_PREFIX)|WEBKIT_INSPECTOR_[A-Za-z_]*|ABITO_[A-Za-z0-9_]*)=';
-const ALLOWED_ABITO = 'ABITO_PROJECT_ROOT';
+const FORBIDDEN_ENV_PATTERN = '^(LD_[A-Za-z0-9_]*|GDK_(DEBUG|SYNCHRONIZE|RENDERING)|GTK_(DEBUG|MODULES|PATH|EXE_PREFIX|DATA_PREFIX)|WEBKIT_INSPECTOR_[A-Za-z_]*|KODA_[A-Za-z0-9_]*)=';
+const ALLOWED_ABITO = 'KODA_PROJECT_ROOT';
 
 const sha256 = buf => crypto.createHash('sha256').update(buf).digest('hex');
 const sha256File = file => sha256(fs.readFileSync(file));
@@ -148,7 +148,7 @@ function launcherText() {
   return `#!/bin/sh
 # Abito (Tauri) launcher — M4 format A. Accepts no arguments, refuses the
 # whole LD_* family, GTK/GDK/WebKit debug and inspector variables and every
-# ABITO_* test/probe/override knob (only ABITO_PROJECT_ROOT passes), forces
+# KODA_* test/probe/override knob (only KODA_PROJECT_ROOT passes), forces
 # X11/XWayland (absolute positioning and always-on-top). Never touches the
 # Preview's roots.
 set -eu
@@ -160,7 +160,7 @@ bad="$(env | grep -E '${FORBIDDEN_ENV_PATTERN}' | grep -v '^${ALLOWED_ABITO}=' |
 [ -z "$bad" ] || { echo "abito: refusing $bad" >&2; exit 64; }
 here="$(cd "$(dirname "$0")" && pwd)"
 export GDK_BACKEND=x11
-exec "$here/abito-island"
+exec "$here/koda"
 `;
 }
 function desktopText() {
@@ -168,11 +168,11 @@ function desktopText() {
 Type=Application
 Name=Koda
 Comment=Koda
-Exec="@INSTALL_DIR@/abito-island-launcher"
-Icon=@INSTALL_DIR@/abito-island.png
+Exec="@INSTALL_DIR@/koda-launcher"
+Icon=@INSTALL_DIR@/koda.png
 Terminal=false
 Categories=Utility;
-StartupWMClass=Abito-island
+StartupWMClass=Koda
 `;
 }
 
@@ -190,14 +190,14 @@ const DAEMON_FILES = ['package.json', 'identity.md', 'THIRD-PARTY-NOTICES.md',
   // K2-13 T1b (S10/S20): the Telegram session. The library it loads (`@mtcute/node`) does NOT ship from this package: it
   // rides inside the bundled runtime folder (L41), so this file's parse is reviewed in host-stage-check.
   'src/minikodas/telegram.cjs', 'src/minikodas/telegram-source.cjs',
-  // K2-13 T2c-2: video/audio transcription (bundled ffmpeg + abito-transcribe) and its global setting.
+  // K2-13 T2c-2: video/audio transcription (bundled ffmpeg + koda-transcribe) and its global setting.
   'src/minikodas/transcribe.cjs', 'src/minikodas/transcribe-setting.cjs',
   // K2-13 T2c-8 (S19): YouTube video links, read with the bundled yt-dlp inside the runtime folder.
   'src/minikodas/youtube.cjs'];
 // L42 F1: the hook installer (apps/desktop-harness) ships NEXT TO the daemon: the daemon derives
-// <package>/desktop-harness/bin/abito-hook.cjs from its own location (src/cli.cjs packagedInstallerBin), so Ajustes can
+// <package>/desktop-harness/bin/koda-hook.cjs from its own location (src/cli.cjs packagedInstallerBin), so Ajustes can
 // install the Claude/Codex/status-line hooks (and take out the removed Recap's 0.1 hooks, K2-03). Closed under require(): packaging-check pins that.
-const HARNESS_FILES = ['bin/abito-hook.cjs', 'bin/abito-statusline.cjs', 'package.json',
+const HARNESS_FILES = ['bin/koda-hook.cjs', 'bin/koda-statusline.cjs', 'package.json',
   'src/claude-ask.cjs', 'src/claude-suggestions.cjs', 'src/claude.cjs', 'src/client.cjs', 'src/codex-reviewer.cjs', 'src/codex.cjs', 'src/config.cjs', 'src/copilot.cjs', 'src/deadline.cjs', 'src/file-permission.cjs', 'src/hook-common.cjs', 'src/identity.cjs',
   'src/install-claude.cjs', 'src/install-codex.cjs', 'src/install-copilot.cjs', 'src/install-opencode.cjs', 'src/install-pi.cjs', 'src/install-pi-win.cjs', 'src/win-fs.cjs', 'src/install-recap.cjs', 'src/install-statusline.cjs', 'src/install-ui.cjs', 'src/installer-platform.cjs',
   'src/opencode.cjs', 'src/projection.cjs', 'src/redact.cjs', 'src/security.cjs', 'src/statusline.cjs', 'src/title-cache.cjs', 'src/windows-transport.cjs'];
@@ -207,11 +207,11 @@ const PI_FILES = ['pi-extension.ts', 'adapter.cjs', 'ask-tool.cjs', 'config.cjs'
 // other file; the Linux installer verifies its sha256 and its members before extracting it to
 // PREFIX/runtime. Windows stages the same archive; macOS ships the extracted folder instead.
 const RUNTIME_ARCHIVE = 'koda-runtime-linux-x64.tar.gz';
-// K2-13 T2c-2 (S8, S15): `abito-transcribe` (the island crate's sherpa-onnx batch helper the daemon spawns for Minikoda
-// transcriptions) ships beside the island binary; the daemon finds it at <prefix>/abito-transcribe, never on PATH. The pinned
+// K2-13 T2c-2 (S8, S15): `koda-transcribe` (the island crate's sherpa-onnx batch helper the daemon spawns for Minikoda
+// transcriptions) ships beside the island binary; the daemon finds it at <prefix>/koda-transcribe, never on PATH. The pinned
 // LGPL ffmpeg travels inside the runtime archive (PREFIX/runtime/ffmpeg).
-const TRANSCRIBE_BIN = 'abito-transcribe';
-const STAGED = ['abito-island', 'abito-island-launcher', TRANSCRIBE_BIN, 'abito-island.png', `${IDENTIFIER}.desktop`, RUNTIME_ARCHIVE,
+const TRANSCRIBE_BIN = 'koda-transcribe';
+const STAGED = ['koda', 'koda-launcher', TRANSCRIBE_BIN, 'koda.png', `${IDENTIFIER}.desktop`, RUNTIME_ARCHIVE,
   ...DAEMON_FILES.map(f => `desktop-daemon/${f}`), ...HARNESS_FILES.map(f => `desktop-harness/${f}`), ...PI_FILES.map(f => `desktop-pi/${f}`)];
 const STAGED_DIRS = ['desktop-pi', 'desktop-daemon', 'desktop-daemon/src', 'desktop-daemon/src/minikodas', 'desktop-harness', 'desktop-harness/bin', 'desktop-harness/src'];
 // Enumerate the complete tree without following links, including empty directories.
@@ -346,14 +346,14 @@ function verifyStage(dir, { sourceCrate } = {}) {
     if (POSIX_MODES() && (stat.mode & 0o022)) problems.push(`${name} is group/world writable`);
     if (sha256File(file) !== (receipt.files || {})[name]) problems.push(`${name} hash differs from the receipt`);
   }
-  if (fs.existsSync(path.join(dir, 'abito-island-launcher')) && fs.readFileSync(path.join(dir, 'abito-island-launcher'), 'utf8') !== launcherText()) problems.push('launcher differs from the closed template');
+  if (fs.existsSync(path.join(dir, 'koda-launcher')) && fs.readFileSync(path.join(dir, 'koda-launcher'), 'utf8') !== launcherText()) problems.push('launcher differs from the closed template');
   const desk = path.join(dir, `${IDENTIFIER}.desktop`);
   if (fs.existsSync(desk) && fs.readFileSync(desk, 'utf8') !== desktopText()) problems.push('desktop entry differs from the closed template');
-  const bin = path.join(dir, 'abito-island');
+  const bin = path.join(dir, 'koda');
   if (fs.existsSync(bin)) {
     const bytes = fs.readFileSync(bin);
     if (sourceCrate && bytes.includes(Buffer.from(sourceCrate))) problems.push('binary embeds the source-tree path');
-    for (const marker of ['--remote-debugging', 'devtools://', 'Prueba M3: propuesta servida por el backend falso', 'ABITO_PROBE', 'XTEST', 'abito-validator-fake-terminal-launcher']) if (bytes.includes(Buffer.from(marker))) problems.push(`binary contains «${marker}» (devtools/probe/fake)`);
+    for (const marker of ['--remote-debugging', 'devtools://', 'Prueba M3: propuesta servida por el backend falso', 'KODA_PROBE', 'XTEST', 'abito-validator-fake-terminal-launcher']) if (bytes.includes(Buffer.from(marker))) problems.push(`binary contains «${marker}» (devtools/probe/fake)`);
     for (const prefix of [process.env.HOME && `${process.env.HOME}/.cargo`, process.env.HOME && `${process.env.HOME}/Apps`].filter(Boolean)) if (bytes.includes(Buffer.from(prefix))) problems.push(`binary embeds the build machine path ${prefix}…`);
     if (POSIX_MODES() && !(fs.statSync(bin).mode & 0o100)) problems.push('binary is not executable');
   }
@@ -364,7 +364,7 @@ function verifyStage(dir, { sourceCrate } = {}) {
     if (POSIX_MODES() && !(fs.statSync(helper).mode & 0o100)) problems.push(`${TRANSCRIBE_BIN} is not executable`);
   }
   // K2-13: the two shipped binaries must not carry espeak-ng or piper_phonemize (see verifyTtsFree).
-  problems.push(...verifyTtsFree([['abito-island', bin], [TRANSCRIBE_BIN, helper]]
+  problems.push(...verifyTtsFree([['koda', bin], [TRANSCRIBE_BIN, helper]]
     .filter(([, file]) => fs.existsSync(file))
     .map(([name, file]) => ({ name, file }))));
   return problems;

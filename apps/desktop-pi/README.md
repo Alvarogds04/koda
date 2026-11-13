@@ -4,11 +4,11 @@ This directory is the **Pi-side producer**, not a desktop app. The explicit `abi
 
 **Verified layers:** offline Pi extension loading and fake-socket unit tests; the opt-in cross-integration below compiles and runs the **real Rust UDS receiver with the real Node producer**, without a GUI. **Not verified here:** rendered island/trusted UI clicks, a live model choosing the tool, or live Pi/provider turn duration. The receiver/UI belong to the `apps/desktop-tauri/` workstream, which this directory does not modify.
 
-**Three-agent reference:** what reaches the island per question kind, where it can be answered, what happens when it is answered in the terminal, installation and timeouts for Claude Code, Codex and Pi side by side: [`docs/desktop/agent-questions.md`](../../docs/desktop/agent-questions.md). Open product decisions (the `ABITO_QUESTIONS` default, the Pi installer proposal) are in [`docs/desktop/pi-question-parity-audit.md`](../../docs/desktop/pi-question-parity-audit.md); the hook side lives in [`apps/desktop-harness/README.md`](../desktop-harness/README.md).
+**Three-agent reference:** what reaches the island per question kind, where it can be answered, what happens when it is answered in the terminal, installation and timeouts for Claude Code, Codex and Pi side by side: [`docs/desktop/agent-questions.md`](../../docs/desktop/agent-questions.md). Open product decisions (the `KODA_QUESTIONS` default, the Pi installer proposal) are in [`docs/desktop/pi-question-parity-audit.md`](../../docs/desktop/pi-question-parity-audit.md); the hook side lives in [`apps/desktop-harness/README.md`](../desktop-harness/README.md).
 
 ## Install and enable
 
-Abito ships the closed Pi runtime beside its harness. On Linux/macOS, **Settings → Agents → Pi → Install** previews and installs it into `~/.pi/agent/extensions/abito-island/index.ts` without downloading dependencies. Restart Pi afterwards. The row reflects this extension's manifest, never a running session or the presence of Pi itself.
+Abito ships the closed Pi runtime beside its harness. On Linux/macOS, **Settings → Agents → Pi → Install** previews and installs it into `~/.pi/agent/extensions/koda-island/index.ts` without downloading dependencies. Restart Pi afterwards. The row reflects this extension's manifest, never a running session or the presence of Pi itself.
 
 Only the default `~/.pi/agent` directory is supported. A Pi session using another `PI_CODING_AGENT_DIR` will not load this installation; the row always states that limitation. Windows automatic installation remains explicitly unavailable, and the terminal installer is not a workaround.
 
@@ -17,14 +17,14 @@ Other opt-in loading mechanisms (not managed by the Settings installer):
 | How | Command / location | Useful for |
 | --- | --- | --- |
 | One invocation | `pi -e /abs/path/apps/desktop-pi/pi-extension.ts` | Trying it without touching any Pi setting. |
-| User extensions | copy this directory to `~/.pi/agent/extensions/abito-island/` (entry `index.ts`) | Every Pi session of this user. |
-| Project extensions | copy it to `<project>/.pi/extensions/abito-island/` | One repository, with Pi's project trust. |
+| User extensions | copy this directory to `~/.pi/agent/extensions/koda-island/` (entry `index.ts`) | Every Pi session of this user. |
+| Project extensions | copy it to `<project>/.pi/extensions/koda-island/` | One repository, with Pi's project trust. |
 
 Pi loads TypeScript directly (jiti), so no build step is needed. Only the Pi API and Node builtins are imported; there
 are no npm dependencies. The managed installer uses an exact eight-file manifest, refuses foreign/modified/unlisted files and symlinks, binds the shown hash to the current and bundled bytes, and makes a directory backup before replacement/removal. It never recursively removes unrelated files. See [the installer contract](../desktop-harness/docs/PI-INSTALL.md).
 
 Questions are ON by default (level 3): Pi's `ask_user_choice` / `ask_user_question` and `abito_ask` reach the island
-with no environment variable. Set `ABITO_QUESTIONS=0` in the environment Pi runs in to keep the island notice-only.
+with no environment variable. Set `KODA_QUESTIONS=0` in the environment Pi runs in to keep the island notice-only.
 
 ## Quick path — a new receiver only
 
@@ -35,24 +35,24 @@ node --test apps/desktop-pi/test/*.test.cjs
 
 # Set these to the NEW receiver's private root and the endpoint it prints.
 # Do not use the installed app's root for this verification.
-ABITO_SOCKET_DIR=/absolute/private/new-root \
-ABITO_DESKTOP_SOCKET=/absolute/private/new-root/p-abc123/s \
-ABITO_QUESTIONS=1 \
+KODA_SOCKET_DIR=/absolute/private/new-root \
+KODA_DESKTOP_SOCKET=/absolute/private/new-root/p-abc123/s \
+KODA_QUESTIONS=1 \
 pi -e "$PWD/apps/desktop-pi/pi-extension.ts"
 ```
 
-The example endpoint is a placeholder. An explicit `ABITO_DESKTOP_SOCKET` is used verbatim, and the only other source
+The example endpoint is a placeholder. An explicit `KODA_DESKTOP_SOCKET` is used verbatim, and the only other source
 is the **published handoff** of a running island (`<runtime>/endpoint.json`, see *Stable endpoint handoff*): this
 extension never creates, chmods, unlinks or scans runtime directories, and it never hunts for a socket. Explicit `-e`
 loads the extension for that Pi invocation without editing Pi settings. Do not load both this adapter and the legacy
 adapter in the same session.
 
-**Compatibility warning:** enable `ABITO_QUESTIONS=1` or `2` **only against a new QP/1 receiver at a separate root**. Against an old receiver, `questions_hello` is rejected and the shared socket closes. This interrupts **not only questions but also notices**. Conversely, the old Pi adapter destroys its connection on any byte after `ready`; a new receiver must never send `questions_ready` to an unsubscribed producer. Do not experiment against the installed app.
+**Compatibility warning:** enable `KODA_QUESTIONS=1` or `2` **only against a new QP/1 receiver at a separate root**. Against an old receiver, `questions_hello` is rejected and the shared socket closes. This interrupts **not only questions but also notices**. Conversely, the old Pi adapter destroys its connection on any byte after `ready`; a new receiver must never send `questions_ready` to an unsubscribed producer. Do not experiment against the installed app.
 
 ## Windows notice transport
 
-On Windows, discovery uses `%LOCALAPPDATA%\\Abito\\notices\\endpoint.json`;
-`ABITO_SOCKET_DIR` is a Unix-only setting. An explicit `ABITO_DESKTOP_SOCKET`
+On Windows, discovery uses `%LOCALAPPDATA%\\Koda\\notices\\endpoint.json`;
+`KODA_SOCKET_DIR` is a Unix-only setting. An explicit `KODA_DESKTOP_SOCKET`
 must instead name an absolute, normalized Windows `endpoint.json`, not a pipe.
 No UID or `/proc` lookup is performed.
 
@@ -63,7 +63,7 @@ leave the island unavailable; they never imply a human answer or bypass
 terminal decisions. Unix socket validation and framing are unchanged.
 
 Helper lookup uses only the installed sibling executable, the canonical
-`%LOCALAPPDATA%\\Programs\\abito-island` installation, or the fixed sibling
+`%LOCALAPPDATA%\\Programs\\Koda` installation, or the fixed sibling
 `desktop-tauri/target/debug` development build. It never searches PATH or CWD,
 and rejects a symlink in the executable slot. An externally copied Pi extension
 requires the canonical install or its own trusted sibling helper; arbitrary
@@ -73,13 +73,13 @@ custom installation directories are not discovered automatically.
 
 | Variable | Meaning and default |
 | --- | --- |
-| `ABITO_DESKTOP_SOCKET` | Optional explicit endpoint `<root>/p-XXXXXX/s`. When set it wins and `endpoint.json` is never read. Absent: the endpoint published by the running island is used (see *Stable endpoint handoff*). Absent **and** no valid handoff: no connection, no fallback, no scanning. |
-| `ABITO_SOCKET_DIR` | Allowed runtime root, and the root the handoff file is read from. Default `$XDG_RUNTIME_DIR/abito-island` (falling back to `/run/user/<uid>/abito-island`): the Tauri island's own leaf, exactly where it binds. The Electron production root `abito-desktop` and the Preview root `abito-desktop-preview` are NOT defaults: set them explicitly. |
-| `ABITO_QUESTIONS` | Absent: level 3 (default). `0`: notice-only. `1`: minimal QP/1. `2`: QP/1 plus negotiated native-transition busy reasons. `3`: level 2 plus the negotiated `structured` capability (multiSelect, questionnaires, larger limits; see *Structured questions*). All other values are invalid; there is no second boolean flag. Claude Code has **no** equivalent switch: its hooks always ask once installed, so `0` here is a Pi-only default and an open product decision (see the parity audit). |
-| `ABITO_QUESTION_TIMEOUT_MS` | Default deadline duration `300000` ms. Integer decimal `30000..900000`; a call's `timeoutMs` overrides it within the same bounds. |
+| `KODA_DESKTOP_SOCKET` | Optional explicit endpoint `<root>/p-XXXXXX/s`. When set it wins and `endpoint.json` is never read. Absent: the endpoint published by the running island is used (see *Stable endpoint handoff*). Absent **and** no valid handoff: no connection, no fallback, no scanning. |
+| `KODA_SOCKET_DIR` | Allowed runtime root, and the root the handoff file is read from. Default `$XDG_RUNTIME_DIR/koda` (falling back to `/run/user/<uid>/koda`): the Tauri island's own leaf, exactly where it binds. The Electron production root `abito-desktop` and the Preview root `abito-desktop-preview` are NOT defaults: set them explicitly. |
+| `KODA_QUESTIONS` | Absent: level 3 (default). `0`: notice-only. `1`: minimal QP/1. `2`: QP/1 plus negotiated native-transition busy reasons. `3`: level 2 plus the negotiated `structured` capability (multiSelect, questionnaires, larger limits; see *Structured questions*). All other values are invalid; there is no second boolean flag. Claude Code has **no** equivalent switch: its hooks always ask once installed, so `0` here is a Pi-only default and an open product decision (see the parity audit). |
+| `KODA_QUESTION_TIMEOUT_MS` | Default deadline duration `300000` ms. Integer decimal `30000..900000`; a call's `timeoutMs` overrides it within the same bounds. |
 | `PI_CODING_AGENT_ROOT` | Tests only: installed Pi package directory for offline real-loader verification when the `pi` launcher cannot be found on PATH. |
 
-Observed packaged identities are **production `com.abitog.Abito` → `abito-desktop`**, and **technical Preview `com.abitog.Abito.Preview` → `abito-desktop-preview`**, both below `/run/user/<uid>/`. These names are not interchangeable. The loader's default is the Tauri island's own leaf (`abito-island`); the two Electron roots above need an explicit `ABITO_SOCKET_DIR`. Development roots, including a receiver's `.runtime`, require an explicit override; no arbitrary endpoint is used to infer a trusted root.
+Observed packaged identities are **production `com.abitog.Abito` → `abito-desktop`**, and **technical Preview `com.abitog.Abito.Preview` → `abito-desktop-preview`**, both below `/run/user/<uid>/`. These names are not interchangeable. The loader's default is the Tauri island's own leaf (`koda`); the two Electron roots above need an explicit `KODA_SOCKET_DIR`. Development roots, including a receiver's `.runtime`, require an explicit override; no arbitrary endpoint is used to infer a trusted root.
 
 Paths must be absolute and normalized: no `..`, repeated separators, trailing slash, NUL or root `/`. Endpoint names use exactly six ASCII alphanumerics after `p-`; endpoint byte length is at most 107. Root and generated directory must be owned by the current Linux UID and exactly `0700`; socket must be owned by that UID and exactly `0600`. Every ancestor is a non-symlink directory owned by root or this UID, not world-writable. Endpoint ownership, mode and inode are checked before and after connecting. Configuration resolution is read-only. Invalid configuration fails closed without registering the extension's tools/transport.
 
@@ -110,7 +110,7 @@ Owner-only files are a local trust boundary, **not an attestation of the human o
 
 ### Several options and questionnaires (structured, level 3)
 
-With `ABITO_QUESTIONS=3` and a receiver that negotiates `structured:1`, `abito_ask` also takes the shape Claude Code's `AskUserQuestion` uses, so the island's «casillas + Hecho» (S7) and «pasos + resumen» (S8) are reachable from Pi:
+With `KODA_QUESTIONS=3` and a receiver that negotiates `structured:1`, `abito_ask` also takes the shape Claude Code's `AskUserQuestion` uses, so the island's «casillas + Hecho» (S7) and «pasos + resumen» (S8) are reachable from Pi:
 
 ```json
 {"questions":[
@@ -123,7 +123,7 @@ With `ABITO_QUESTIONS=3` and a receiver that negotiates `structured:1`, `abito_a
 - One question with several ticked options: the classic shape plus `multiSelect: true` (2–4 options).
 - The result text is the usual JSON plus `selected: [{header?, question?, selected:[labels…], text?}]` — every ticked option, in the order given, with the labels, one entry per step. `details.answer` keeps the wire answer (`form` / `options` / `option`).
 - A single legacy question is byte-for-byte what it was: same parameters, same result text.
-- Without level 3 a questionnaire or `multiSelect` is refused BEFORE anything is sent (`invalid_request`, `reasonCode: structured_unavailable`, text names `ABITO_QUESTIONS=3`); with no connection at all it is `unavailable`. Never a downgrade to a different question. Structured limits (text 2000, label 120, description 400) apply only on a structured connection; on a legacy one the old 500/60/160 are enforced by the broker.
+- Without level 3 a questionnaire or `multiSelect` is refused BEFORE anything is sent (`invalid_request`, `reasonCode: structured_unavailable`, text names `KODA_QUESTIONS=3`); with no connection at all it is `unavailable`. Never a downgrade to a different question. Structured limits (text 2000, label 120, description 400) apply only on a structured connection; on a legacy one the old 500/60/160 are enforced by the broker.
 - Mapping and answer reporting live in `ask-tool.cjs` (`test/ask-tool.test.cjs`); the wire already carried all of it (`questions.cjs`, `question.rs`).
 
 **The tool blocks its own execution while awaiting a reply.** Pi receives the result of that exact call, never a later injected chat message. Other tools in a parallel tool batch may still run; this is not a process-wide scheduler lock. No endpoint, missing socket, unfinished handshake or missing capability returns `unavailable` immediately rather than waiting the question deadline. There is **no terminal fallback**; the tool description tells the agent it may ask through normal chat instead.
@@ -134,18 +134,18 @@ The producer owns the deadline. Expiration returns `expired`, with **no answer, 
 
 ## Stable endpoint handoff (P2)
 
-The island binds a fresh `<runtime>/p-XXXXXX/s` on every start. So local consumers (agent hooks) need not export `ABITO_SOCKET_DIR`/`ABITO_DESKTOP_SOCKET` by hand, the island publishes **one stable file** after the bind and removes it on exit:
+The island binds a fresh `<runtime>/p-XXXXXX/s` on every start. So local consumers (agent hooks) need not export `KODA_SOCKET_DIR`/`KODA_DESKTOP_SOCKET` by hand, the island publishes **one stable file** after the bind and removes it on exit:
 
-`<runtime>/endpoint.json` — `runtime` is `ABITO_SOCKET_DIR` or the default `/run/user/<uid>/abito-island` of the installed app.
+`<runtime>/endpoint.json` — `runtime` is `KODA_SOCKET_DIR` or the default `/run/user/<uid>/koda` of the installed app.
 
 ```json
-{"v":1,"endpoint":"/run/user/1000/abito-island/p-AbC123/s","pid":12345}
+{"v":1,"endpoint":"/run/user/1000/koda/p-AbC123/s","pid":12345}
 ```
 
 - Mode `0600`, one line, closed key set (`v`, `endpoint`, `pid`), written to a temp file and `rename`d: a reader never sees a partial file.
 - Each start overwrites it with the new endpoint. On a clean exit the island removes it, but **only if it still names its own endpoint** (a newer instance's file survives); a symlink or a foreign file is never touched.
 - **A consumer must not trust it blindly.** Refuse the file unless: it is a regular file you own (not a symlink, ≤ 4096 bytes), `v` is `1`, `endpoint` has the exact shape `<runtime>/p-<6 alphanumerics>/s`, `pid` is alive (`/proc/<pid>`), and the endpoint is a socket. A crashed island (SIGKILL) leaves the file behind, which is why the pid and socket checks exist. The Rust reference is `handoff::read`.
-- It is a **pointer, not authority**: you still connect to the socket, which checks the peer uid, and the QP/1 handshake above still applies. An explicit `ABITO_DESKTOP_SOCKET` keeps winning when set.
+- It is a **pointer, not authority**: you still connect to the socket, which checks the peer uid, and the QP/1 handshake above still applies. An explicit `KODA_DESKTOP_SOCKET` keeps winning when set.
 - Not published (and never a fallback to some other socket) when the runtime root is not a private `0700` directory of the current user.
 
 ### How this producer consumes it
@@ -165,7 +165,7 @@ apps never require each other, so the code is a copy, not an import. It refuses 
 Any failure yields **no connection** (never a scan, never another root). The resolution runs on **every connection
 attempt**, not once at startup: a hook process is short-lived, while a Pi session outlives an island restart and each
 start binds a new `p-XXXXXX/s`. A session that starts before the island, or that survives its restart, therefore
-reconnects on the ordinary retry interval instead of staying dead. `ABITO_DESKTOP_SOCKET` short-circuits all of it.
+reconnects on the ordinary retry interval instead of staying dead. `KODA_DESKTOP_SOCKET` short-circuits all of it.
 
 Reading the handoff never creates, chmods or unlinks anything, and it never connects; the `0600`/`0700` rules above
 still decide whether the socket is usable.
@@ -175,12 +175,12 @@ still decide whether the socket is usable.
 | Question kind | Path | Needs |
 | --- | --- | --- |
 | Notice «`<project>` Pi terminó» | `agent_settled` → `settled`, with optional `projectName` + `agent` display keys | a connection (level 0 is enough) |
-| One question, 2–4 options, single choice | `abito_ask`, or Pi's `ask_user_choice` / single-question `ask_user_question` raced against the terminal | `ABITO_QUESTIONS>=1` |
-| One question, free text (with or without options) | `abito_ask` with `allowFreeText` | `ABITO_QUESTIONS>=1` |
-| Approval (exactly two opaque tokens, no free text) | `abito_ask` `kind:"approval"` | `ABITO_QUESTIONS>=1` |
-| One question, several ticked options | `abito_ask` `multiSelect: true` | `ABITO_QUESTIONS=3` + `structured:1` receiver |
-| 1–4 questions with steps and a summary (Claude Code's `AskUserQuestion` shape) | `abito_ask` `questions[]`, or a native multi-question `ask_user_question` raced at level 3 | `ABITO_QUESTIONS=3` + `structured:1` receiver |
-| Pi's own yes/no confirmation (`ctx.ui.confirm`, e.g. gentle-pi's «Allow guarded forced git branch deletion?») | raced against the terminal, first answer wins (see below) | `ABITO_QUESTIONS>=1` |
+| One question, 2–4 options, single choice | `abito_ask`, or Pi's `ask_user_choice` / single-question `ask_user_question` raced against the terminal | `KODA_QUESTIONS>=1` |
+| One question, free text (with or without options) | `abito_ask` with `allowFreeText` | `KODA_QUESTIONS>=1` |
+| Approval (exactly two opaque tokens, no free text) | `abito_ask` `kind:"approval"` | `KODA_QUESTIONS>=1` |
+| One question, several ticked options | `abito_ask` `multiSelect: true` | `KODA_QUESTIONS=3` + `structured:1` receiver |
+| 1–4 questions with steps and a summary (Claude Code's `AskUserQuestion` shape) | `abito_ask` `questions[]`, or a native multi-question `ask_user_question` raced at level 3 | `KODA_QUESTIONS=3` + `structured:1` receiver |
+| Pi's own yes/no confirmation (`ctx.ui.confirm`, e.g. gentle-pi's «Allow guarded forced git branch deletion?») | raced against the terminal, first answer wins (see below) | `KODA_QUESTIONS>=1` |
 | Sensitive confirmations (credentials, tokens, keys, passwords, login/OAuth/auth, consent, provider consent, permission grants, review/RDD consent, maintenance authorization, opaque tokens), and every select/input/editor prompt | **nothing** — not intercepted, the terminal dialog runs untouched | — |
 
 The island's «Ver» / *Abrir terminal* on a notice is host-owned (`focus_host {origin:'notice', id}`) and does not
@@ -208,7 +208,7 @@ only — `project` (the path hash) is informational, not an island-folder access
 key, a lone key, or a value outside the format refuses the whole frame (`Invalid schema or scope`), so old frames stay valid. This adapter
 sends them only after the receiver answered `questions_ready` (the extended protocol); with the flag off the frame is the exact legacy set.
 
-Every JSON frame ends in `\n`. `ready` is **exactly** `{"v":1,"type":"ready"}\n`. With the flag off, no QP/1 bytes are sent. With `ABITO_QUESTIONS=1`, **after ready**, Pi sends:
+Every JSON frame ends in `\n`. `ready` is **exactly** `{"v":1,"type":"ready"}\n`. With the flag off, no QP/1 bytes are sent. With `KODA_QUESTIONS=1`, **after ready**, Pi sends:
 
 ```json
 {"v":1,"type":"questions_hello","project":"<project>","sessionId":"<session>","at":1760000000000,"questionVersion":1}
@@ -329,7 +329,7 @@ sh apps/desktop-pi/scripts/test-real-receiver.sh
 
 This is an opt-in integration test, **not a fake receiver, Pi/model session, or UI test**. It builds `apps/desktop-tauri/tests/question_producer.rs` against the actual `abito_island::transport` library and launches `test-node/pi-question-producer.cjs`, which loads this producer's real config, adapter and `QuestionBroker`. Only Pi's registration/context and the human host are simulated. Every observed socket write still goes to the real UDS unchanged; no manufactured ready, answer or ACK is substituted.
 
-The runner uses `cargo test --offline --locked`, a target directory in this checkout, and a fresh private `ABITO_SOCKET_DIR` in this checkout. It removes `DISPLAY`, `WAYLAND_DISPLAY`, `DBUS_SESSION_BUS_ADDRESS`, `XAUTHORITY` and `XDG_SESSION_TYPE` from the child environment. No Tauri entry point, GTK initialization, X server, native window, display capture, provider or service is launched. Linking the app's cached GTK/Tauri dependencies does not create a window. Missing cached dependencies or tools fail explicitly: **no downloads, fallback or silent skip**.
+The runner uses `cargo test --offline --locked`, a target directory in this checkout, and a fresh private `KODA_SOCKET_DIR` in this checkout. It removes `DISPLAY`, `WAYLAND_DISPLAY`, `DBUS_SESSION_BUS_ADDRESS`, `XAUTHORITY` and `XDG_SESSION_TYPE` from the child environment. No Tauri entry point, GTK initialization, X server, native window, display capture, provider or service is launched. Linking the app's cached GTK/Tauri dependencies does not create a window. Missing cached dependencies or tools fail explicitly: **no downloads, fallback or silent skip**.
 
 Each Rust fixture exclusively creates a `0700` runtime leaf, checks its base stays canonical inside this checkout, and binds its real owned `0600` socket. The host calls the real Rust `Transport::answer`; that simulates a human answer at the trusted host API, **not an `isTrusted` WebView click**. Rust verifies the real `question_resolved` receipt disappears **while the originating Node connection is still open**, so disconnect cleanup cannot masquerade as successful ACK consumption. Fixture cleanup uses receiver close and non-recursive directory removal; an interrupted/nonempty root is preserved and reported, never recursively deleted.
 
@@ -357,23 +357,23 @@ Scope limits: different operating-system UID rejection is **not exercised** (no 
 `abito_ask` returning «No human answer: unavailable» means no connection was ever established; nothing was sent and
 nothing is queued. It is **not** an answer, a denial or an expiry. Check, in this order:
 
-1. **The level switch.** With `ABITO_QUESTIONS` absent or `0` the producer asks the island nothing, so every question
-   is `unavailable` while notices still work. Export `ABITO_QUESTIONS=1` (or `3`) in the environment Pi itself runs in:
+1. **The level switch.** With `KODA_QUESTIONS` absent or `0` the producer asks the island nothing, so every question
+   is `unavailable` while notices still work. Export `KODA_QUESTIONS=1` (or `3`) in the environment Pi itself runs in:
    a value exported in another terminal or only in your shell profile does not reach an already running session.
-2. **Islands that are running.** The default root is `$XDG_RUNTIME_DIR/abito-island`, the Tauri island's own leaf. The
+2. **Islands that are running.** The default root is `$XDG_RUNTIME_DIR/koda`, the Tauri island's own leaf. The
    Electron production root (`abito-desktop`) and the Preview root (`abito-desktop-preview`) are different leaves: if
-   that is the app you are using, set `ABITO_SOCKET_DIR` explicitly. There is no cross-root fallback by design.
-3. **The handoff.** `ls -l "$XDG_RUNTIME_DIR/abito-island/endpoint.json"` must show a `0600` regular file owned by you
+   that is the app you are using, set `KODA_SOCKET_DIR` explicitly. There is no cross-root fallback by design.
+3. **The handoff.** `ls -l "$XDG_RUNTIME_DIR/koda/endpoint.json"` must show a `0600` regular file owned by you
    with a live `pid` naming a `<runtime>/p-XXXXXX/s` socket. A crashed island leaves the file behind; a restart rewrites
    it. Pi re-reads it on every retry, so a session started before the island connects within one retry interval
    (5 s by default) — no restart of Pi needed.
-4. **Explicit override.** If `ABITO_DESKTOP_SOCKET` is set, it is used verbatim and `endpoint.json` is ignored; an
+4. **Explicit override.** If `KODA_DESKTOP_SOCKET` is set, it is used verbatim and `endpoint.json` is ignored; an
    endpoint from an older island instance fails the socket check and yields `unavailable`. Unset it to use the handoff.
 5. **Handshake level.** A receiver without the negotiated capability answers `unsupported_receiver` (naming the root)
    and notices stop too; that is not `unavailable` and there is no silent downgrade. Level `0`/`1` against an old
-   receiver is the documented compatibility hazard: set `ABITO_QUESTIONS=0` there.
-6. **Not injected wrong.** An invalid configuration (`ABITO_SOCKET_DIR` not absolute/normalized, a malformed
-   `ABITO_QUESTIONS`, an out-of-bounds `ABITO_QUESTION_TIMEOUT_MS`) makes the extension register **nothing** — no
+   receiver is the documented compatibility hazard: set `KODA_QUESTIONS=0` there.
+6. **Not injected wrong.** An invalid configuration (`KODA_SOCKET_DIR` not absolute/normalized, a malformed
+   `KODA_QUESTIONS`, an out-of-bounds `KODA_QUESTION_TIMEOUT_MS`) makes the extension register **nothing** — no
    `abito_ask` tool at all, so the model cannot even report `unavailable`.
 
 `busy`, `expired`, `cancelled`, `human_cancelled`, `disconnected`, `protocol_error` and `invalid_request` are
@@ -390,7 +390,7 @@ Run `node --test apps/desktop-pi/test/*.test.cjs`. The fake receiver uses real A
 
 Observed final producer verification (this change, on a clean worktree): **76 tests, 75 pass, 0 fail, 1 skipped** — the
 skip is the offline loader check (`Installed Pi not found; set PI_CODING_AGENT_ROOT`) and is **not** proof of
-compatibility. The new `test/handoff.test.cjs` covers the endpoint handoff: absent `ABITO_DESKTOP_SOCKET` resolves the
+compatibility. The new `test/handoff.test.cjs` covers the endpoint handoff: absent `KODA_DESKTOP_SOCKET` resolves the
 published endpoint; an explicit one still wins and never opens the file; a stale pid, wrong owner, `0644` file, foreign
 root, bad endpoint shape, zombie state, recycled `procStart`, extra key, symlinked file or missing socket each yield no
 connection; and a real Pi session connects to an island that started **after** Pi, and again to a **restarted** one
@@ -407,7 +407,7 @@ The handshake, FIFO admission (up to 8 pending, busy beyond that or for a duplic
 1. **Which Pi prompts should use `abito_ask`?** Explicit calls, plus the native `ask_user_choice` / single-question
    `ask_user_question` race described below. Nothing else is redirected, and that must not be simulated by observing
    assistant prose.
-2. **The `ABITO_QUESTIONS` default.** Claude Code has questions **on** once its hooks are installed (no equivalent
+2. **The `KODA_QUESTIONS` default.** Claude Code has questions **on** once its hooks are installed (no equivalent
    switch in `apps/desktop-harness`), while Pi defaults to `0`, notice-only. Raising it is a product decision, not a
    documentation fix: level ≥ 1 changes the shared socket's handshake, and a receiver that does not support it stops
    notices too. Options: keep `0` and document `1|3` (today), default to `1`, or default to `3` (full Claude Code
@@ -442,7 +442,7 @@ When Abito is connected, a call to Pi's own `ask_user_choice` (gentle-pi), or to
 - Option values are mapped to synthetic `o1..o4` for Abito and back; the original values never leave Pi.
 - **Consent and authorization prompts are never answerable from Abito.** Not intercepted (the native dialog runs untouched) when the question, labels, descriptions or previews mention consent, authorization, grant, decline, permission, token, binding, envelope, provider, credentials or secrets, or when any option value does not look like a plain word (opaque ids, hex, long digit runs, JSON, `granted`/`declined`). When in doubt, it is not intercepted.
 - Abito absent, disconnected, busy (queue full or another question live), or an input outside Abito's limits: **not intercepted at all**. If Abito fails mid-race (expiry, disconnect), the terminal dialog keeps waiting indefinitely; nothing is ever auto-answered.
-- `ABITO_NATIVE_ASK=0` disables the interception entirely.
+- `KODA_NATIVE_ASK=0` disables the interception entirely.
 
 ## Answering Pi's yes/no confirmations from Abito
 
@@ -457,7 +457,7 @@ Any `ctx.ui.confirm(title, message)` raised by Pi or by another extension (for e
 - **Sensitive confirmations never leave the terminal.** The check is a denylist that fails closed, applied to the title and the message after normalising them: accents removed, lower case, look-alike characters accepted for each letter (`0`→o, `1`→i/l, `2`→z, `3`→e, `4`/`@`→a, `5`/`$`→s, `6`/`9`→g, `7`/`+`→t, `8`→b, `(`/`<`→c, …) and spaces, dots, dashes and underscores removed, so `pass word`, `log_in`, `t0ken`, `6rant` or `ReviewRDD` still match. It covers credentials (*creds*), tokens, keys (*clave*, *llave*, and compounds such as `privatekey`, `keystore`, `keyfile`, `keygen`; only `keyboard` is let through), API keys, passwords (*pwd*), passcodes, passkeys, PINs, secrets, keychains, login/sign-in (*logging in*, *iniciar/abrir sesión*), OAuth, auth/authorization/authentication, consent (*consentimiento*), provider consent, permission grants, gentle-ai review/RDD consent, maintenance authorization, MFA/OTP and cookies. It also covers credentials inside an address (`user:token@host`, `//token@host`, and the percent-encoded `%40`/`%3A`), known secret shapes (`sk-…`, `sk_…`, `ghp_…`, `xoxb-…`, AWS keys, `Bearer …`), and opaque ids or tokens of 12 or more characters, including ones split by dashes, slashes or spaces.
 - **Only an explicit «Sí» approves.** «No» and a human cancel from Abito answer no. Expiry, busy, disconnect, an unknown answer or any error **decides nothing**: the terminal keeps waiting and decides. If the caller's own signal aborts, both sides are withdrawn and the answer is no.
 - No UI, Abito not connected or busy: the confirm is not routed.
-- `ABITO_NATIVE_CONFIRM=0` disables it entirely.
+- `KODA_NATIVE_CONFIRM=0` disables it entirely.
 
 A confirm answered from Abito posts one info line in Pi's terminal, `Respondido en Abito: Sí` or `Respondido en Abito: No`.
 
@@ -469,7 +469,7 @@ A confirm answered from Abito posts one info line in Pi's terminal, `Respondido 
 
 ## Structured questions (level 3)
 
-`ABITO_QUESTIONS=3` adds `structured: 1` to `questions_hello`. The receiver must echo `structured: 1` in `questions_ready` (exact key set; anything else is a capability error, never a silent downgrade). Only then do these apply, **per connection**; levels 0-2 and every old frame are byte-for-byte unchanged, and a receiver that did not negotiate it closes the connection on a structured field.
+`KODA_QUESTIONS=3` adds `structured: 1` to `questions_hello`. The receiver must echo `structured: 1` in `questions_ready` (exact key set; anything else is a capability error, never a silent downgrade). Only then do these apply, **per connection**; levels 0-2 and every old frame are byte-for-byte unchanged, and a receiver that did not negotiate it closes the connection on a structured field.
 
 | Rule | Plain (levels 1-2) | Structured (level 3) |
 | --- | --- | --- |

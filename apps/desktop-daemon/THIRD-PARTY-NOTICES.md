@@ -127,7 +127,7 @@ This package carries no other third-party runtime or test dependencies.
 
 ## sherpa-onnx (speech to text in the Koda binaries)
 
-Koda's binaries (`abito-island`, and `abito-transcribe`, the helper that transcribes Minikoda videos) link
+Koda's binaries (`koda` and `koda-transcribe`, the helper that transcribes Minikoda videos) link
 sherpa-onnx 1.13.8 statically: the `sherpa-onnx` and `sherpa-onnx-sys` crates
 (https://github.com/k2-fsa/sherpa-onnx, crates.io) and its prebuilt static libraries from the project's GitHub release
 v1.13.8. Koda only recognises speech, never synthesises it, so on Linux and Windows it links the upstream libraries

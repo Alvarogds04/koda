@@ -48,8 +48,8 @@ packaging receipts and the non-Linux limitation are documented in
 
 ## Island layout
 
-Everything private lives under one root: `~/.abito-island` by default, moved with
-`ABITO_ISLAND_DIR` (tests and embeddings use this). Created with mode `0700`, owned by
+Everything private lives under one root: `~/.koda` by default, moved with
+`KODA_ISLAND_DIR` (tests and embeddings use this). Created with mode `0700`, owned by
 the current user:
 
 | Path | Purpose |
@@ -57,7 +57,7 @@ the current user:
 | `<root>/home/` | The engine's private `HOME`, with the XDG tree (`.config`, `.cache`, `.local/share`, `.local/state`) under it; `<root>/home/.engram/` holds the private memory store |
 | `<root>/agent/` | The installed pi's agent directory (`PI_CODING_AGENT_DIR`); no user Pi settings, extensions or auth are reused |
 | `<root>/sessions/` | Private RPC sessions (`--session-dir` is always passed explicitly) |
-| `<root>/workspace/` | The engine's owned default workspace; its `.engram/config.json` pins the memory project `abito-island` |
+| `<root>/workspace/` | The engine's owned default workspace; its `.engram/config.json` pins the memory project `koda` |
 | `<root>/uploads-staging/` | K2-05: chat attachments the user has uploaded but not yet sent, written by the DAEMON (`src/uploads.cjs`; 0700 dir per id, 0600 files, generated ids), outside the engine's workspace |
 | `<root>/workspace/uploads/` | K2-05: attachments of an ACCEPTED send, moved here from `uploads-staging` by the daemon (the Tauri app never writes uploads) — the agent reads them as workspace files |
 | `<root>/tmp/` | Private `TMPDIR` |
@@ -92,8 +92,8 @@ foreign agent homes never reach the child. Explicitly set:
   offline; no model catalog refreshes, no version check, no telemetry
 - `GIT_CONFIG_GLOBAL` → the user's real `~/.gitconfig` when it exists, so git
   identity works without exposing the real `HOME`
-- `ABITO_MEMORY_PROJECT=abito-island` — the memory project pin
-- `ENGRAM_PORT` → Koda's private memory port (`7439`; `ABITO_ENGRAM_PORT` in the parent env
+- `KODA_MEMORY_PROJECT=koda` — the memory project pin
+- `ENGRAM_PORT` → Koda's private memory port (`7439`; `KODA_ENGRAM_PORT` in the parent env
   overrides it for tests/embeddings), `ENGRAM_BIN` → the pinned Engram binary the bundled
   runtime ships, `ENGRAM_NO_UPDATE_CHECK=1` — the private memory never phones home. The
   parent's `ENGRAM_URL`, `ENGRAM_DATA_DIR` and `ENGRAM_PORT` are never inherited: Koda's
@@ -109,7 +109,7 @@ const { AgentEngine } = require("@abito/desktop-daemon/runtime.cjs");
 
 const engine = new AgentEngine({
   command: "pi",              // configurable executable; never a direct model HTTP client
-  root: "~/.abito-island",    // island root
+  root: "~/.koda",    // island root
   identityPath: "identity.md" // source identity copied into the island before each spawn
 });
 await engine.start();                          // stopped -> starting -> ready
@@ -233,12 +233,12 @@ human decision L11: «esto sería un engram propio que tuviera aparte del que te
   read or written.
 - **Server**: on Koda's OWN port `7439` (one above Gentle Dot's private port `7438`, which
   is itself one above Engram's default `7437` — no collision with the user's servers).
-  `ABITO_ENGRAM_PORT` overrides it for tests/embeddings.
+  `KODA_ENGRAM_PORT` overrides it for tests/embeddings.
 - **Binary**: only the pinned Engram binary the bundled runtime ships (`engramBin` in
   `koda-runtime.json`). The former user-binary resolution order (a parent `ENGRAM_BIN`,
   the login shell, the known install dirs) is gone.
-- **Project**: `abito-island` (the owned workspace's `.engram/config.json` and the
-  `ABITO_MEMORY_PROJECT` + identity pin, unchanged).
+- **Project**: `koda` (the owned workspace's `.engram/config.json` and the
+  `KODA_MEMORY_PROJECT` + identity pin, unchanged).
 - **Lifecycle**: the daemon confirms the private port is EMPTY before the engine spawns and
   owns cleanup only then — a pre-existing listener is never claimed, an unknown port state
   refuses ownership (logged, engine still starts), and on daemon stop the listener is
@@ -248,7 +248,7 @@ human decision L11: «esto sería un engram propio que tuviera aparte del que te
   NOT migrated into the island store (human decision L11). The island memory starts empty.
 
 The owned default workspace carries `.engram/config.json` with
-`project_name: "abito-island"`, and the child env pins `ABITO_MEMORY_PROJECT`. A
+`project_name: "koda"`, and the child env pins `KODA_MEMORY_PROJECT`. A
 user-preferred working folder (`workspacePath` option) is only used as the spawn
 `cwd`: nothing is ever written there. **Known enforcement limit (see U4 section)**: for an
 arbitrary workspace the pin travels only via explicit env and the identity prompt —
@@ -326,7 +326,7 @@ THIRD-PARTY-NOTICES.md.
   child in a clean environment (no provider keys, no `PI_*`); one login flow at
   a time (`auth_busy`), bounded prompt/flow timeouts, `cancel` kills the child.
   Events: `auth_prompt`, `auth_event`, `auth_done` (never carry answers or keys).
-  The SDK is resolved via the `sdkModule` option / `ABITO_SDK_MODULE`; the user's
+  The SDK is resolved via the `sdkModule` option / `KODA_SDK_MODULE`; the user's
   Pi credentials are never imported.
 - `src/profiles.cjs` — `ProfileStore`: role profiles `{id,label,role,accountId,provider,modelId,thinkingLevel}`.
   `select` copies one credential into the owned `agent/auth.json` (0600), restarts
@@ -394,14 +394,14 @@ unlinks it. `stop` is a graceful SIGTERM, not a crash path.
 | `mcpConfigPath` | absolute path | Private MCP source, see below |
 | `connectorsCommand` | absolute path | ABSOLUTE, normalized path (`path.normalize(x) === x`, no `..`) of the installed `abito-connectors` binary; the host sets it. **No default and no bare names** (PATH lookup would let a planted binary run): unset → `connectors_list` answers `unavailable` and nothing executes. The binary is trusted code run as the user (`config.json` is `0600`, fail-closed). Checked before every spawn: regular file after realpath, executable, owned by you or root, not group/world-writable, secure parent chain. Invalid → `invalid config: connectorsCommand` |
 | `connectorsDir` | absolute path | Directory holding `connectors.json`, passed as `status --dir`. Clean absolute path (no `..`, no NUL); default `<island>/connectors`. Created `0700` by the daemon the first time `connectors_list` runs (symlinks and foreign owners are refused); invalid → `invalid config: connectorsDir` |
-| `hookInstallerBin` | absolute path | ABSOLUTE normalized path of `apps/desktop-harness/bin/abito-hook.cjs` (no default): enables `agent_connect`/`agent_disconnect`. Unset → every agent `unavailable`, nothing executes. Checked before every spawn: regular non-symlink file owned by you/root, not group/world-writable (a 664 checkout is refused), secure parents. Invalid → `invalid config: hookInstallerBin` |
+| `hookInstallerBin` | absolute path | ABSOLUTE normalized path of `apps/desktop-harness/bin/koda-hook.cjs` (no default): enables `agent_connect`/`agent_disconnect`. Unset → every agent `unavailable`, nothing executes. Checked before every spawn: regular non-symlink file owned by you/root, not group/world-writable (a 664 checkout is refused), secure parents. Invalid → `invalid config: hookInstallerBin` |
 | `connectorHostBin` | absolute path | ABSOLUTE normalized path of the `abito-connector-host` binary (no default; read at daemon start, changes require daemon restart). Unset → no supervisor is created and nothing executes. **Stricter than `connectorsCommand` and `hookInstallerBin`:** the configured path itself must be a regular, non-symlink executable (a symlinked install must configure the real path), owned by you or root, with no group/world-write or setuid/setgid/sticky bits. Every parent directory up to `/` must be a non-symlink owned by you or root and not group/world-writable; root-owned sticky world-writable ancestors such as `/tmp` may be traversed, but the binary's own directory must not be writable by group/world. The exact checked path is executed and rechecked immediately before every spawn. Invalid → `invalid config: connectorHostBin` |
 | `hotkey` | string | Global show/hide combo, stored only (the X11 capture lives elsewhere). Grammar: 1+ distinct modifiers `Ctrl`/`Alt`/`Shift`/`Super` joined by `+`, then ONE key: ASCII letter/digit, `F1`–`F24`, or `Space Enter Tab Escape Backspace Delete Insert Home End PageUp PageDown Up Down Left Right`. Case-insensitive input, canonical `Ctrl+Alt+Shift+Super+<Key>`; bare key, duplicates, whitespace/control/non-ASCII, > 40 chars are rejected as `invalid config: hotkey`. Changing it never restarts the engine; `config get` prints `null` when unset; `status` includes it. An invalid `hotkey` already on disk (hand edit) is inert: it is ignored on read paths (`run`, `config get`, `set-workspace` keep working; `status.hotkeyInvalid: true`, `config get` prints `hotkey: invalid (ignored)` on stderr, never the value) and is dropped on the next `set-workspace`/`set-hotkey` rewrite. Writes stay strict |
 | `paused` | boolean | Global pause switch (#379), written only by the `set_paused` protocol verb (no CLI key): strict boolean, `false` removes the key; a hand-edited non-boolean is `invalid config: paused`. Restored at the next daemon boot; `status.paused` reflects the live state |
 
 **Connectors (`connectors_list`).** Additive, read-only: the daemon runs the connectors CLI (5 s timeout, 256 KiB cap, private HOME, no `PI_*`/provider keys, no retries), revalidates its output against an allowlist and replies a sanitized `connectors` frame (see `docs/PROTOCOL.md`). The data are the PERSISTED `connectors.json` values, not live: no pending approvals or mutation actions are carried by this frame. Live control is separate (H2c below). DTOs never contain a connector secret or capability. `status.connectorsAvailable` is true only when a connectors view is actually wired (a valid `connectorsCommand` is configured). One snapshot spawns TWO processes (`catalog` + `status`), each in its own process group killed whole on timeout/oversize/failure; the 1 s minimum interval is per snapshot. The child gets a fixed `PATH=/usr/bin:/bin`. The daemon emits at most 128 connectors / 32 catalog entries and a frame of at most 200 KiB, otherwise `failed` (never truncated). Both keys are read at daemon start.
 
-**Agent hooks (`agents_list`, `agent_connect`, `agent_disconnect`).** Additive (see `docs/PROTOCOL.md`, "Agents frames"): the island connects/disconnects the Claude Code and Codex hooks and the Claude status-line relay (`statusline`, «Uso del plan (relay)») with a button; `recap` is no longer an agent id and is refused like any unknown id. The status-line relay preserves and prints an existing status line, uses `~/.claude/settings.json`, backs up first, removes by marker only and requires a shown plan hash. The status-line installer also saves/restores `~/.abito/statusline-previous.json` (0600), as in its interactive flow. `src/agents.cjs` drives the harness installer (`install <claude|codex|statusline> --user ... --json`, then `--apply-plan <hash> --audit-dir <island>/audit`) as a subprocess with an allowlisted env (`PATH`, the REAL `HOME`, `LANG`, `ABITO_ISLAND_EXE` = the daemon's node: installer guard (i) becomes "the parent is the daemon's node"), 10 s group-killed timeout, 256 KiB stdout cap, stderr never surfaced. One operation at a time globally (`busy`), `agents_list` cached 1 s. The `plan_hash` the island showed is the only plan that can be applied (otherwise `plan_changed`, nothing written). `status.agentsAvailable` is true when `hookInstallerBin` is configured.
+**Agent hooks (`agents_list`, `agent_connect`, `agent_disconnect`).** Additive (see `docs/PROTOCOL.md`, "Agents frames"): the island connects/disconnects the Claude Code and Codex hooks and the Claude status-line relay (`statusline`, «Uso del plan (relay)») with a button; `recap` is no longer an agent id and is refused like any unknown id. The status-line relay preserves and prints an existing status line, uses `~/.claude/settings.json`, backs up first, removes by marker only and requires a shown plan hash. The status-line installer also saves/restores `~/.abito/statusline-previous.json` (0600), as in its interactive flow. `src/agents.cjs` drives the harness installer (`install <claude|codex|statusline> --user ... --json`, then `--apply-plan <hash> --audit-dir <island>/audit`) as a subprocess with an allowlisted env (`PATH`, the REAL `HOME`, `LANG`, `KODA_ISLAND_EXE` = the daemon's node: installer guard (i) becomes "the parent is the daemon's node"), 10 s group-killed timeout, 256 KiB stdout cap, stderr never surfaced. One operation at a time globally (`busy`), `agents_list` cached 1 s. The `plan_hash` the island showed is the only plan that can be applied (otherwise `plan_changed`, nothing written). `status.agentsAvailable` is true when `hookInstallerBin` is configured.
 
 **Legacy Recap cleanup (K2-03).** Recap (the weekly summary) was removed in 0.2. At every start the daemon calls `removeLegacyRecap()` (`src/agents.cjs`, off the boot path, not awaited): it previews the removal-only installer profile `install recap --user --remove` (`apps/desktop-harness/src/install-recap.cjs`) and applies it only when something would be removed — dated backup first, marker-only removal, audited. It logs fixed strings only; a refusal writes nothing and is retried next start. TODO: remove one version after K2-03.
 
@@ -425,7 +425,7 @@ When `mcpConfigPath` is unset the daemon intentionally does not point the engine
 
 #### Endpoint handoff consumed by harness hooks
 
-An explicit `ABITO_DESKTOP_SOCKET` wins after endpoint-shape validation and means `endpoint.json` is not read. Otherwise runtime selection is ordered: `ABITO_SOCKET_DIR` (if set, it must be absolute, normalized and non-root), else `$XDG_RUNTIME_DIR/abito-island` only when `XDG_RUNTIME_DIR` is absolute, normalized and non-root, else `/run/user/<uid>/abito-island`.
+An explicit `KODA_DESKTOP_SOCKET` wins after endpoint-shape validation and means `endpoint.json` is not read. Otherwise runtime selection is ordered: `KODA_SOCKET_DIR` (if set, it must be absolute, normalized and non-root), else `$XDG_RUNTIME_DIR/koda` only when `XDG_RUNTIME_DIR` is absolute, normalized and non-root, else `/run/user/<uid>/koda`.
 
 The reader accepts `<runtime>/endpoint.json` only as a regular, non-symlink file owned by you, mode exactly `0600` including no special bits, one hard link, and at most 4096 bytes. Its complete text must equal `JSON.stringify(parsed)` or that exact compact JSON plus one LF; the object has exactly `v`, `endpoint`, `pid`, with `v: 1`. Duplicate keys, escaped key names, pretty printing, extra whitespace and CRLF are rejected. The Rust producer in `apps/desktop-tauri/src/handoff.rs` writes compact one-line `serde_json` followed by LF (`{"endpoint":"<..>","pid":N,"v":1}\n`); the `v,endpoint,pid` key order is accepted as well.
 
@@ -442,11 +442,11 @@ never echoed) and the daemon refuses to start. Writes go through `writePrivateFi
 
 | Variable | Effect |
 |---|---|
-| `ABITO_ISLAND_DIR` | island root (default `~/.abito-island`) |
-| `ABITO_WORKSPACE` | overrides `workspace` from the file; validated identically (analogue of `GENTLE_DOT_WORKSPACE`) |
-| `ABITO_MEMORY_PROJECT` | set by the engine to `abito-island` for the child; with the identity prompt it is the memory pin |
-| `ABITO_SDK_MODULE` | SDK entry for the auth helper (U2) |
-| `ABITO_E2E_PI=1` | enables `test/e2e-real.test.cjs` |
+| `KODA_ISLAND_DIR` | island root (default `~/.koda`) |
+| `KODA_WORKSPACE` | overrides `workspace` from the file; validated identically (analogue of `GENTLE_DOT_WORKSPACE`) |
+| `KODA_MEMORY_PROJECT` | set by the engine to `koda` for the child; with the identity prompt it is the memory pin |
+| `KODA_SDK_MODULE` | SDK entry for the auth helper (U2) |
+| `KODA_E2E_PI=1` | enables `test/e2e-real.test.cjs` |
 
 ### Changing the workspace (restart semantics)
 
@@ -464,14 +464,14 @@ running (`busy`). The CLI signals a live daemon with SIGHUP to apply it. SIGHUP
 `mcpConfigPath` change. `thinking` applies at the next engine start. `profile` is read
 at daemon start only; change it at runtime with the `profile_select` request (a selected
 profile also wins over the `thinking` default across restarts). When
-`ABITO_WORKSPACE` is set it wins: the file is still updated but nothing restarts
+`KODA_WORKSPACE` is set it wins: the file is still updated but nothing restarts
 (`overriddenByEnv: true`).
 
 ### Memory pin for arbitrary workspaces
 
-The daemon **never writes `.engram` into your folder**. The pin is `ABITO_MEMORY_PROJECT`
+The daemon **never writes `.engram` into your folder**. The pin is `KODA_MEMORY_PROJECT`
 + the identity prompt. It does detect (read-only) a conflicting
-`<workspace>/.engram/config.json` whose `project_name` is not `abito-island` and
+`<workspace>/.engram/config.json` whose `project_name` is not `koda` and
 reports `memoryPinConflict: true` in `Daemon.status()` and `abito-island-daemon status`.
 Whether Engram prefers that folder file over the env pin is Engram's behavior, not
 guaranteed here: treat the warning as "memories may land in the other project".
@@ -552,7 +552,7 @@ image; the tool is blocked before any capture when the model has no image input)
 - A workspace validated at start can be swapped for a symlink later (TOCTOU between validation and spawn); the engine runs as you, with your permissions, in that folder.
 - The engine is not a sandbox: the agent has your user's file access inside the chosen workspace and beyond.
 - History is replayed by paging (`get_history` / `get_earlier`, see PROTOCOL.md); the MCP projection is rewritten on SIGHUP when `mcpConfigPath` changes; no auto-start; POSIX only.
-- Tests: `npm test` (fake agent). `ABITO_E2E_PI=1 node --test test/e2e-real.test.cjs` starts the installed pi offline (no prompt, no model call).
+- Tests: `npm test` (fake agent). `KODA_E2E_PI=1 node --test test/e2e-real.test.cjs` starts the installed pi offline (no prompt, no model call).
 
 Attribution: structure adapted from the Gentle Dot daemon (MIT, © 2026 Gentleman Programming); see THIRD-PARTY-NOTICES.md.
 
@@ -577,7 +577,9 @@ Attribution: structure adapted from the Gentle Dot daemon (MIT, © 2026 Gentlema
 `hooks_preview` / `hooks_install` / `hooks_remove` (island-agent/1) manage the Abito island hooks of
 claude-code, codex and statusline (delegated to the AgentsManager) plus gemini-cli, copilot-cli, opencode, amp and cursor
 (`src/agent-hooks.cjs`, self-owned marker-tagged artifacts, notify-only). Preview is read-only; install and
-remove require the exact `plan_hash` shown, back everything up first and refuse foreign or unsafe targets.
+remove require the exact `plan_hash` shown, back everything up first and refuse foreign or unsafe targets. K2-04
+(S2/S4): the Koda 0.1 artifacts (`abito-island-hooks/1`, `abito-island*` names) are recognised as ours, retired into the
+same backup flow on install and removed on remove, so each client keeps exactly one artifact and one card per notice.
 Frames, invariants, sources and UNVERIFIED items: [`../../tests/PROTOCOL.md`](../../tests/PROTOCOL.md).
 
 ## The Telegram client library (K2-13)
@@ -732,10 +734,10 @@ there too. Implementation: `src/minikodas/telegram-source.cjs`.
   - **S18 «pues usamos solo ese modelo»: Parakeet is the only local model.** The local `local-whisper-turbo` option of the first build is gone: the validator, the `transcription` frames and Ajustes no longer offer it, and a stale frame is answered `bad_request`. A `config.json` still saying `local-whisper-turbo` is migrated to `{mode: "local-parakeet", language}` when it is read (`migrateTranscriptionSetting`), so an island written by that build keeps working; only the removed mode is migrated, every other invalid value stays a config error.
 - **Tools.** Both are bundled, found at fixed paths beside the daemon package and never on PATH:
   - ffmpeg: `<install>/runtime/ffmpeg[.exe]`, a pinned LGPL build (`apps/desktop-tauri/packaging/runtime/ffmpeg.sha256`).
-  - The helper: `<install>/abito-transcribe[.exe]`, the island crate's sherpa-onnx helper. It shares dictation's model store and Silero VAD (`apps/desktop-tauri/docs/dictation-build.md`).
+  - The helper: `<install>/koda-transcribe[.exe]`, the island crate's sherpa-onnx helper. It shares dictation's model store and Silero VAD (`apps/desktop-tauri/docs/dictation-build.md`).
   - Both are spawned with `shell:false` and a fixed argv. ffmpeg only opens `file:` input, in a closed list of containers (no playlists, no network) and decodes only the audio codecs those containers carry (`-codec_whitelist`: AAC, Opus, Vorbis, MP3/MP2, FLAC, ALAC, AC-3/E-AC-3 and the PCM variants; never a video or text decoder).
   - **macOS: ffmpeg is not bundled in this version** (pending for the Mac session), so every media transcription there fails with `ffmpeg_unavailable`.
-- **Local path.** ffmpeg extracts 16 kHz mono 16-bit WAV, then `abito-transcribe transcribe --model … --language … <wav>` runs. Its VAD segments are capped at 25 s. A model that is not downloaded is `model_missing`; the daemon never downloads models.
+- **Local path.** ffmpeg extracts 16 kHz mono 16-bit WAV, then `koda-transcribe transcribe --model … --language … <wav>` runs. Its VAD segments are capped at 25 s. A model that is not downloaded is `model_missing`; the daemon never downloads models.
 - **Remote path.** The WAV is cut into ≤ 175 s mono OGG/Opus chunks (refused above 24 MB). Each chunk is POSTed to `{base}/audio/transcriptions` (`model`, `language`, `response_format=json`, bearer key). Only the JSON `.text` is read, and the chunks are joined in order. A redirect is never followed, a 401/403 is `remote_auth`, and responses are bounded.
 - **Bounds.** At most 3 h of audio, **30 min per transcription** (`TRANSCRIPTION_BUDGET_MS`, one named constant shared by the local and the remote path), 180 s per remote request, and 20 media per run. Cancelling the run (pause, delete, daemon stop) kills the running ffmpeg or helper.
 - **S17 «1 lo que recomiendas»: transcription has its own budget.** Those 30 min do not count toward the run's 300 s engine budget: that clock starts only once the engine starts, after the transcript is ready. When the 30 min run out, the ffmpeg/helper/remote request is killed, the temp media and the transcription's work folder are deleted by the usual cleanup, the Minikoda's engine never starts, and «Hoy» gets an `error` item that says so: «La corrida de «X» falló (transcripción: el video tardó más de 30 minutos en transcribirse; no se resumió).»

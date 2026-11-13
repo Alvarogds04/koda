@@ -10,8 +10,9 @@
 //! Hugging Face at a pinned revision, are checked against their size and
 //! SHA-256 before they are used, and live in the data folder's `Models`
 //! (`data_dir()`: `$XDG_DATA_HOME/abito` or `~/.local/share/abito` on Linux
-//! and macOS, `%LOCALAPPDATA%\abito-data` on Windows — never `%LOCALAPPDATA%\abito`,
-//! which is the same folder as the island's protected root `%LOCALAPPDATA%\Abito`; see
+//! and macOS — unchanged by K2-04 — `%LOCALAPPDATA%\abito-data` on Windows: never
+//! `%LOCALAPPDATA%\koda` (the island's protected root `%LOCALAPPDATA%\Koda`) and never
+//! `%LOCALAPPDATA%\abito` (the Koda 0.1 island root, left on disk untouched); see
 //! `data_dir_for`). From then on everything runs offline.
 
 pub mod audio;
@@ -158,10 +159,12 @@ impl std::fmt::Display for NoDataDir {
 
 impl std::error::Error for NoDataDir {}
 
-/// The data folder's name on Windows. NOT `abito`: on case-insensitive NTFS that is the same folder as the island's
-/// protected root `%LOCALAPPDATA%\Abito`, which is a different thing entirely (see `data_dir_for`).
+/// The data folder's name on Windows. NOT `koda` (the island's protected root `%LOCALAPPDATA%\Koda`) and NOT `abito`
+/// (the Koda 0.1 island root, still on disk after the update): on case-insensitive NTFS either of those would be the
+/// same folder as an island root, which is a different thing entirely (see `data_dir_for`).
 pub const WINDOWS_DATA_LEAF: &str = "abito-data";
-/// The data folder's name everywhere else.
+/// The data folder's name everywhere else: the store dictation, the flow store and the helper already use (K2-04 did
+/// not rename it, so Windows keeps the `abito` family too instead of inventing a second spelling).
 pub const DATA_LEAF: &str = "abito";
 
 /// `<base>/<leaf>` for `os`, read through `var` (an environment lookup) instead of the process environment.
@@ -169,8 +172,10 @@ pub const DATA_LEAF: &str = "abito";
 /// - Windows: `%LOCALAPPDATA%\abito-data`, else `%USERPROFILE%\AppData\Local\abito-data`. A Windows GUI app gets no
 ///   `HOME` (and the transcription helper runs with the daemon's temporary work folder as its working directory), which
 ///   is exactly why the Linux chain cannot be reused there: it produced `<work>/.local/share/abito/Models` and every
-///   Minikoda answered `model_missing`. The leaf is `abito-data` and not `abito` on purpose: NTFS is case-insensitive,
-///   so `%LOCALAPPDATA%\abito` IS `%LOCALAPPDATA%\Abito`, the island's private root. That root is created — or
+///   Minikoda answered `model_missing`. The leaf is `abito-data`, never `koda` and never `abito`: NTFS is
+///   case-insensitive, so `%LOCALAPPDATA%\koda` IS `%LOCALAPPDATA%\Koda`, the island's private root, and
+///   `%LOCALAPPDATA%\abito` IS `%LOCALAPPDATA%\Abito`, the Koda 0.1 island root that the update leaves on disk
+///   untouched (K2-04 S1). That root is created — or
 ///   accepted — with an explicit protected owner-only DACL (`abito-private-session`), and the island verifies it
 ///   fail-closed (`winpolicy::dacl_private`: owner plus every ACE principal must be the user, SYSTEM or
 ///   Administrators). A data folder created there first by Node/`std::fs` inherits the whole `%LOCALAPPDATA%` profile
@@ -435,7 +440,7 @@ pub fn delete_model(id: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// The verified download of one catalog set, run to the end on the calling thread (the `abito-transcribe download`
+/// The verified download of one catalog set, run to the end on the calling thread (the `koda-transcribe download`
 /// command: an explicit user action, like the picker's click). Same pins, same store, same checks as `download_model`.
 pub fn download_set_now(set: &ModelSet, progress: &dyn Fn(f64)) -> Result<(), String> {
     tokio::runtime::Builder::new_current_thread()
@@ -640,7 +645,7 @@ pub fn recognizer() -> Option<Arc<OfflineRecognizer>> {
 }
 
 /// The recognizer configuration of one catalog model whose files live under `root` (the shared model store). Used by
-/// dictation and by the Minikodas' batch transcription (`abito-transcribe`), so both load a model the same way.
+/// dictation and by the Minikodas' batch transcription (`koda-transcribe`), so both load a model the same way.
 pub(crate) fn offline_config(entry: &catalog::Entry, language: &str, root: &Path) -> OfflineRecognizerConfig {
     let dir = entry.set.dir_in(root);
     let path = |name: &str| dir.join(name).to_string_lossy().to_string();
@@ -809,14 +814,17 @@ mod tests {
         // A relative folder is refused, never joined: the helper's working directory is its temp work folder.
         assert_eq!(data_dir_for(Os::Windows, env(vec![("LOCALAPPDATA", PathBuf::from("AppData/Local"))])), Err(NoDataDir));
         assert_eq!(data_dir_for(Os::Windows, env(vec![("USERPROFILE", PathBuf::from("."))])), Err(NoDataDir));
-        // And the leaf is NOT the island root's name: on case-insensitive NTFS `abito` and `Abito` are one folder.
+        // And the leaf is NOT one of the island roots' names: on case-insensitive NTFS `koda` and `Koda`, and `abito`
+        // and `Abito`, are the same folder each.
         // Compared lowercased on purpose: the two strings differ in case anyway, so comparing them as they are would
-        // pass even if the leaf went back to `abito` — that is exactly the collision this guards.
+        // pass even if the leaf went back to `koda` — that is exactly the collision this guards.
         assert_ne!(
             data_dir_for(Os::Windows, env(vec![("LOCALAPPDATA", at("abito-test-Local"))])).unwrap().to_string_lossy().to_lowercase(),
-            at("abito-test-Local").join("Abito").to_string_lossy().to_lowercase()
+            at("abito-test-Local").join("Koda").to_string_lossy().to_lowercase()
         );
-        // Same check on the leaf itself, which no case difference can hide.
+        // Same check on the leaf itself, which no case difference can hide: not the current island root (`Koda`), and
+        // not the Koda 0.1 island root (`Abito`), which the update deliberately leaves on disk.
+        assert_ne!(WINDOWS_DATA_LEAF.to_lowercase(), "koda");
         assert_ne!(WINDOWS_DATA_LEAF.to_lowercase(), "abito");
     }
 

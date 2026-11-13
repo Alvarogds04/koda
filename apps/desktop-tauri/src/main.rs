@@ -227,7 +227,7 @@ fn close_transport(app: &AppHandle) {
 }
 
 /// Legacy dev `project` (main.cjs): sha256 hex of the canonical worktree root
-/// in dev builds; an installed build takes it from `ABITO_PROJECT_ROOT` only
+/// in dev builds; an installed build takes it from `KODA_PROJECT_ROOT` only
 /// (see `identity`). None when no root can be established — the transport
 /// then refuses to start instead of pretending a project identity.
 fn project_id_for_this_checkout() -> Option<String> {
@@ -314,7 +314,7 @@ fn start_transport(app: &AppHandle) {
     }) {
         Ok(transport) => {
             // Local address only; no received payloads or labels are logged.
-            println!("ABITO_DESKTOP_SOCKET={}", transport.endpoint().display());
+            println!("KODA_DESKTOP_SOCKET={}", transport.endpoint().display());
             // P2: a stable `<runtime>/endpoint.json` so local hooks need no exported env.
             if let Err(error) = abito_island::handoff::publish(transport.runtime(), transport.endpoint()) {
                 eprintln!("endpoint handoff not published: {error}");
@@ -401,7 +401,7 @@ struct AppState {
     hooks: Mutex<Option<approval::SharedHooks>>,
     /// M3 probe only: the in-process fake backend THIS process started for
     /// its approval read-back. `None` in production and whenever
-    /// `ABITO_BRIDGE_BASE` was already set from outside.
+    /// `KODA_BRIDGE_BASE` was already set from outside.
     #[cfg(any(debug_assertions, feature = "probe"))]
     probe_fake: Mutex<Option<Arc<fakebridge::FakeBackend>>>,
     /// The bounded active chat lane, backed by #341 private local history.
@@ -1850,14 +1850,14 @@ fn record_frontend_evidence(
 }
 
 /// The read-back probe exists only in debug builds or with `--features probe`;
-/// a packaged release ignores `ABITO_PROBE`/`--probe` entirely.
+/// a packaged release ignores `KODA_PROBE`/`--probe` entirely.
 #[cfg(not(any(debug_assertions, feature = "probe")))]
 pub(crate) fn probe_requested() -> bool {
     false
 }
 #[cfg(any(debug_assertions, feature = "probe"))]
 pub(crate) fn probe_requested() -> bool {
-    let env = std::env::var("ABITO_PROBE")
+    let env = std::env::var("KODA_PROBE")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
     env || std::env::args().any(|a| a == "--probe")
@@ -1916,7 +1916,7 @@ fn main() {
     // exactly — `<stateRoot>/bridge.json`, read ONCE per process with the
     // descriptor-safe port of `readBridgeLogin`; absent/invalid means
     // `disabled` and zero traffic. In probe mode the lane is pointed at an
-    // in-process FAKE backend through the ABITO_BRIDGE_BASE override before
+    // in-process FAKE backend through the KODA_BRIDGE_BASE override before
     // it is constructed: the probe never talks to a real backend.
     let login = transport::resolve_runtime()
         .ok()
@@ -2218,20 +2218,38 @@ fn main() {
             // K2-05 T5 (S3): delete Koda 0.1's stored conversations (exact files only), synchronously on
             // this startup thread, first. U5a (K2-05 L59) removed the private Rust store, so nothing opens
             // `<app_data_dir>/conversations/` any more: this cleanup only ever deletes 0.1 files.
-            // Test dirs (ABITO_CONVERSATIONS_DATA_DIR) and probe runs never touch data.
-            let conversations_dir = if std::env::var_os("ABITO_CONVERSATIONS_DATA_DIR").is_some() || probe_requested() {
+            // Test dirs (KODA_CONVERSATIONS_DATA_DIR) and probe runs never touch data.
+            let conversations_dir = if std::env::var_os("KODA_CONVERSATIONS_DATA_DIR").is_some() || probe_requested() {
                 None
             } else {
-                handle.path().app_data_dir().ok().map(|p| p.join("conversations"))
+                // K2-04 T6: the 0.1 conversations live under the OLD identifier's folder, next to the new one.
+                handle.path().app_data_dir().ok()
+                    .and_then(|p| abito_island::legacy_identity::legacy_sibling(&p, abito_island::identity::APP_IDENTIFIER))
+                    .map(|p| p.join("conversations"))
             };
             if let Some(line) = abito_island::legacy_conversations::cleanup(conversations_dir.as_deref()).log_line() {
                 eprintln!("{line}");
+            }
+            // K2-04 T6: the Koda 0.1 left its own login entry (`autostart/abito-island.desktop`) pointing at the 0.1 binary, which
+            // stays installed. Remove that ONE exact file when it is the template the 0.1 wrote, so the 0.1 island does not start
+            // next to this one at login. Nothing is enabled in its place (preferences start from zero). Probe runs never touch it.
+            #[cfg(unix)]
+            if !probe_requested() {
+                let xdg = std::env::var("XDG_CONFIG_HOME").ok();
+                let home = std::env::var("HOME").ok();
+                if let Some(dir) = autostart::autostart_dir(xdg.as_deref(), home.as_deref()) {
+                    if let Some(line) = autostart::retire_legacy_entry(&dir).log_line() {
+                        eprintln!("{line}");
+                    }
+                }
             }
             // K2-05 T4 U3: the island chat talks to the daemon engine through ONE reconnecting
             // chat connection (the settings window keeps its own AgentConn).
             chathost::start_conn(&handle);
             // K2-03 T3 (S2, S4): delete the removed weekly Recap's data (exact files only), off the startup path.
-            let data_dir = handle.path().app_local_data_dir().ok();
+            // K2-04 T6: that 0.1 file lives under the OLD identifier's folder, next to the new one.
+            let data_dir = handle.path().app_local_data_dir().ok()
+                .and_then(|p| abito_island::legacy_identity::legacy_sibling(&p, abito_island::identity::APP_IDENTIFIER));
             std::thread::spawn(move || {
                 let runtime = abito_island::transport::resolve_runtime().ok();
                 let outcome = abito_island::legacy_recap::cleanup(data_dir.as_deref(), runtime.as_deref());

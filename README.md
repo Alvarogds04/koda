@@ -15,7 +15,7 @@ Get the latest build from **[Releases](https://github.com/Alvarogds04/koda/relea
 
 | Platform | File | Notes |
 | --- | --- | --- |
-| Linux x86_64 | `koda-linux-x64.tar.gz` | `tar -xzf koda-linux-x64.tar.gz && sh koda-linux-x64/install.sh koda-linux-x64/abito-island --project-root ~/your-project`, then open **Koda** from the applications menu |
+| Linux x86_64 | `koda-linux-x64.tar.gz` | `tar -xzf koda-linux-x64.tar.gz && sh koda-linux-x64/install.sh koda-linux-x64/koda --project-root ~/your-project`, then open **Koda** from the applications menu |
 | macOS (Apple Silicon) | `Koda-macos-arm64.dmg` / `.zip` | **not notarized**: open it once, then *System Settings → Privacy & Security → Open Anyway*. Step-by-step guide (Spanish): [docs/mac-guide.es.md](docs/mac-guide.es.md) |
 | Windows x64 | `koda-windows-x64-setup.exe` | **unsigned**: SmartScreen → *More info* → *Run anyway* |
 
@@ -60,8 +60,12 @@ Each agent row in *Ajustes → Agentes* works on its own: Claude Code and Codex 
 | `apps/desktop-sound` | sound engine |
 | `assets/koda` | Koda's 42 animations as transparent 512×512 GIF and animated WebP (stickers, wallpapers, avatars): [gallery](assets/koda/README.md) |
 
-Internal names (the `abito-island` binary, `~/.abito-island` data folder, `ABITO_*` variables, the protocol) still carry the
-old name; renaming them is planned separately so existing installs keep working.
+The installed binary is `koda`. A few internal names still carry the old name and are renamed separately: the Rust
+crate and library (`abito_island`), the two helper binaries (`abito-notice-relay`, `abito-private-session`), the line the
+agent daemon prints when it starts, the hook extension names that older installs left behind, and the phone-link
+protocol. The bundle identifier is `com.abitog.Koda`.
+Nothing from Koda 0.1 is migrated: its old data folder, keychain entries and memories stay where they
+are, untouched and unused, so you can always go back.
 
 Build on Linux: `cd apps/desktop-tauri && node packaging/runtime/build-runtime.cjs --target linux-x64 --out /tmp/koda-runtime --archive /tmp/koda-runtime-linux-x64.tar.gz && node packaging/build.cjs --out dist --runtime-archive /tmp/koda-runtime-linux-x64.tar.gz` (the first command downloads the pinned Node and Pi and checks their hashes). Tests: `../../run-node-checks.sh` (Node) and
 `cargo test --offline`.

@@ -1,12 +1,12 @@
-//! abito-transcribe — K2-13 (S8, S15, S16): batch speech-to-text for the Minikodas, spawned by the daemon with
+//! koda-transcribe — K2-13 (S8, S15, S16): batch speech-to-text for the Minikodas, spawned by the daemon with
 //! `shell:false` and a fixed argv. It reuses dictation's sherpa-onnx engine, model catalog, model store
 //! (`data_dir()/Models`: `$XDG_DATA_HOME/abito/Models`, `~/.local/share/abito/Models` on Linux and macOS,
 //! `%LOCALAPPDATA%\abito-data\Models` on Windows) and Silero VAD; see `abito_island::speech::transcribe` for the
 //! contract.
 //!
-//!   abito-transcribe transcribe [--model ID] [--language L] [--timeout-sec N] [--max-seconds N] <abs.wav>
-//!   abito-transcribe status   [--model ID]   -> {model, present, vad, downloadMb}
-//!   abito-transcribe download [--model ID]   -> the catalog's pinned, SHA-256-checked download (explicit action)
+//!   koda-transcribe transcribe [--model ID] [--language L] [--timeout-sec N] [--max-seconds N] <abs.wav>
+//!   koda-transcribe status   [--model ID]   -> {model, present, vad, downloadMb}
+//!   koda-transcribe download [--model ID]   -> the catalog's pinned, SHA-256-checked download (explicit action)
 //!
 //! stdout carries exactly ONE JSON line: the result, or `{error, message}` with a closed code. Only `download`
 //! touches the network. No GUI, no logging of audio or text to stderr.

@@ -13,7 +13,7 @@ const cwd = path.resolve(__dirname, '..');
 // camelCase is the native shape; the PascalCase/VS Code shape (snake_case) must work too.
 const camel = (over = {}) => JSON.stringify({ sessionId: 'cop-1', timestamp: 1, cwd, toolName: 'bash', toolInput: { command: 'ls' }, ...over });
 const snake = (over = {}) => JSON.stringify({ hook_event_name: 'PermissionRequest', session_id: 'cop-1', cwd, tool_name: 'bash', tool_input: { command: 'ls' }, ...over });
-const envOf = r => ({ ABITO_DESKTOP_SOCKET: r.endpoint, ABITO_SOCKET_DIR: r.runtime });
+const envOf = r => ({ KODA_DESKTOP_SOCKET: r.endpoint, KODA_SOCKET_DIR: r.runtime });
 const answerer = (rcv, value) => rcv.next('question').then(q => rcv.send({ v: 1, type: 'answer', questionVersion: 1, project: q.project,
   sessionId: q.sessionId, at: Date.now(), id: q.id, source: 'human', answer: { type: 'option', value } }));
 const stub = status => () => ({ ask: async () => ({ status }), notify: async () => ({ status: 'sent' }) });
@@ -96,7 +96,7 @@ test('a Windows process (no getuid) reaches the island client: ask and stop both
   const platform = Object.getOwnPropertyDescriptor(process, 'platform'), getuid = process.getuid;
   Object.defineProperty(process, 'platform', { value: 'win32' }); process.getuid = undefined;
   t.after(() => { Object.defineProperty(process, 'platform', platform); process.getuid = getuid; });
-  const env = { ABITO_DESKTOP_SOCKET: 'C:\\copilot-win\\endpoint.json' };
+  const env = { KODA_DESKTOP_SOCKET: 'C:\\copilot-win\\endpoint.json' };
   let asked = 0, notified = 0;
   const clientFactory = () => ({ ask: async () => { asked++; return { status: 'answered', answer: { type: 'option', value: 'allow' } }; }, notify: async () => { notified++; return { status: 'sent' }; } });
   const r = await raw_handleCopilotHook({ event: 'permission-request', input: camel(), env, argv: [], clientFactory });

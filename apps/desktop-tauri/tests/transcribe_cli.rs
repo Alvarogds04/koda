@@ -1,14 +1,14 @@
-//! K2-13 (S8, S15, S16): the `abito-transcribe` helper binary as the daemon runs it: argv in, ONE JSON line out.
+//! K2-13 (S8, S15, S16): the `koda-transcribe` helper binary as the daemon runs it: argv in, ONE JSON line out.
 //! Every case runs against an empty private model store (XDG_DATA_HOME in a temp dir): nothing is downloaded and the
-//! user's real store is never read. The real-model run is opt-in: ABITO_TRANSCRIBE_WAV=<16 kHz mono WAV> uses the
+//! user's real store is never read. The real-model run is opt-in: KODA_TRANSCRIBE_WAV=<16 kHz mono WAV> uses the
 //! user's existing store (`$XDG_DATA_HOME/abito/Models`, read-only) and prints the text.
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-const BIN: &str = env!("CARGO_BIN_EXE_abito-transcribe");
+const BIN: &str = env!("CARGO_BIN_EXE_koda-transcribe");
 
 fn scratch(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("abito-transcribe-cli-{}-{name}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("koda-transcribe-cli-{}-{name}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     dir
@@ -30,15 +30,15 @@ fn run(data_home: &Path, args: &[&str]) -> (Output, serde_json::Value) {
     if let Some(root) = std::env::var_os("SystemRoot") {
         cmd.env("SystemRoot", root);
     }
-    let out = cmd.output().expect("run abito-transcribe");
+    let out = cmd.output().expect("run koda-transcribe");
     let stdout = String::from_utf8(out.stdout.clone()).unwrap();
     assert_eq!(stdout.lines().count(), 1, "exactly one JSON line on stdout: {stdout:?}");
     let json = serde_json::from_str(stdout.trim()).expect("stdout is JSON");
     (out, json)
 }
 
-/// The data folder's name for this OS: `abito-data` on Windows (never `abito`: that is the island's protected root
-/// there), `abito` everywhere else.
+/// The data folder's name for this OS: `abito-data` on Windows (never `koda` or `abito`: those are the current and the
+/// Koda 0.1 island roots), `abito` everywhere else.
 fn data_leaf() -> &'static str {
     if cfg!(windows) {
         "abito-data"
@@ -86,7 +86,7 @@ fn without_a_data_folder_the_helper_answers_model_missing_and_never_uses_a_relat
     if let Some(root) = std::env::var_os("SystemRoot") {
         cmd.env("SystemRoot", root);
     }
-    let out = cmd.output().expect("run abito-transcribe");
+    let out = cmd.output().expect("run koda-transcribe");
     let stdout = String::from_utf8(out.stdout.clone()).unwrap();
     assert_eq!(stdout.lines().count(), 1, "one JSON line: {stdout:?}");
     let json: serde_json::Value = serde_json::from_str(stdout.trim()).expect("stdout is JSON");
@@ -158,16 +158,16 @@ fn usage_errors_exit_2_with_a_json_line_and_never_echo_the_input() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
-/// Opt-in real run (models already in the user's store; nothing is downloaded): ABITO_TRANSCRIBE_WAV=<wav>
-/// [ABITO_TRANSCRIBE_MODEL=whisper-turbo ABITO_TRANSCRIBE_LANGUAGE=es] cargo test --test transcribe_cli -- --nocapture
+/// Opt-in real run (models already in the user's store; nothing is downloaded): KODA_TRANSCRIBE_WAV=<wav>
+/// [KODA_TRANSCRIBE_MODEL=whisper-turbo KODA_TRANSCRIBE_LANGUAGE=es] cargo test --test transcribe_cli -- --nocapture
 #[test]
 fn real_model_run_when_asked() {
-    let Ok(wav) = std::env::var("ABITO_TRANSCRIBE_WAV") else {
-        eprintln!("skipped: set ABITO_TRANSCRIBE_WAV to run the real model");
+    let Ok(wav) = std::env::var("KODA_TRANSCRIBE_WAV") else {
+        eprintln!("skipped: set KODA_TRANSCRIBE_WAV to run the real model");
         return;
     };
-    let model = std::env::var("ABITO_TRANSCRIBE_MODEL").unwrap_or_else(|_| "parakeet-tdt-0.6b-v3-int8".into());
-    let language = std::env::var("ABITO_TRANSCRIBE_LANGUAGE").unwrap_or_else(|_| "es".into());
+    let model = std::env::var("KODA_TRANSCRIBE_MODEL").unwrap_or_else(|_| "parakeet-tdt-0.6b-v3-int8".into());
+    let language = std::env::var("KODA_TRANSCRIBE_LANGUAGE").unwrap_or_else(|_| "es".into());
     let mut cmd = Command::new(BIN);
     cmd.args(["transcribe", "--model", &model, "--language", &language, &wav]);
     let out = cmd.output().expect("run");

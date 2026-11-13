@@ -20,7 +20,7 @@ const frontend = resolve(here, '../../frontend');
 const fix = JSON.parse(readFileSync(join(here, 'fixtures.json'), 'utf8'));
 const BG = [128, 128, 128];
 // Ports and the harness page name are per run, so several runs (other worktrees) can coexist.
-const VITE_PORT = Number(arg('vite-port', 14421)), ABITO_PORT = Number(arg('abito-port', 14422));
+const VITE_PORT = Number(arg('vite-port', 14421)), KODA_PORT = Number(arg('abito-port', 14422));
 const HARNESS = `compare-${process.pid}`;
 
 const mockCore = readFileSync(join(here, 'mock-core.js'), 'utf8');
@@ -64,7 +64,7 @@ async function shot(browser, st, side) {
     } else {
       await page.addInitScript(pre('abito', spec.label, settings));
       if (spec.label === 'main') await page.addInitScript(flatBg);
-      await page.goto(`http://127.0.0.1:${ABITO_PORT}/${spec.url || 'index.html'}`);
+      await page.goto(`http://127.0.0.1:${KODA_PORT}/${spec.url || 'index.html'}`);
       await sleep(1200);
     }
     await page.eval(spec.run);
@@ -80,7 +80,7 @@ async function shot(browser, st, side) {
 mkdirSync(out, { recursive: true });
 const states = buildStates(fix).filter((s) => !only || only.includes(s.id));
 const vite = await startVite();
-const abitoSrv = await staticServer(frontend, ABITO_PORT);
+const abitoSrv = await staticServer(frontend, KODA_PORT);
 const browser = await connect(Number(arg('port', 9222)));
 const rows = [];
 try {

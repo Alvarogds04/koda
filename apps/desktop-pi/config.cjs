@@ -7,7 +7,7 @@ const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 
 // Windows (T2/S3): the island publishes the notice endpoint metadata at the
-// canonical `%LOCALAPPDATA%\Abito\notices\endpoint.json`. The hook clients
+// canonical `%LOCALAPPDATA%\Koda\notices\endpoint.json`. The hook clients
 // never read it as authority — the native relay re-verifies it — so config
 // only resolves the path (no /proc, no uid, no directory-chain walk).
 const DRIVE_RE = /^[A-Za-z]:[\\/]/;
@@ -29,7 +29,7 @@ function windowsEndpointShape(endpoint) {
 }
 function resolveConfigWindows(env, options = {}) {
   const stat = options.stat ?? fs.lstatSync;
-  const explicit = env.ABITO_DESKTOP_SOCKET;
+  const explicit = env.KODA_DESKTOP_SOCKET;
   if (explicit !== undefined) {
     // The override only chooses WHICH metadata file the relay verifies — it
     // never bypasses the relay itself.
@@ -37,7 +37,7 @@ function resolveConfigWindows(env, options = {}) {
     return { runtime: path.win32.dirname(explicit), endpoint: explicit, source: 'env' };
   }
   if (!windowsAbsolute(env.LOCALAPPDATA)) return { runtime: undefined, endpoint: undefined, source: undefined };
-  const runtime = path.win32.join(env.LOCALAPPDATA, 'Abito', 'notices');
+  const runtime = path.win32.join(env.LOCALAPPDATA, 'Koda', 'notices');
   const endpoint = path.win32.join(runtime, 'endpoint.json');
   try {
     const st = stat(endpoint);
@@ -186,12 +186,12 @@ function resolveConfig(env, owner, options = {}) {
   if ((options.platform ?? process.platform) === 'win32') return resolveConfigWindows(env, options);
   if (!Number.isInteger(owner) || owner < 0) throw new Error('Linux uid required');
   // Default: the Tauri island's own leaf, exactly where `src/transport.rs default_runtime` binds
-  // (`$XDG_RUNTIME_DIR/abito-island`). The Electron production (`abito-desktop`) and Preview
-  // (`abito-desktop-preview`) roots are never a default: they need an explicit ABITO_SOCKET_DIR.
+  // (`$XDG_RUNTIME_DIR/koda`). The Electron production (`abito-desktop`) and Preview
+  // (`abito-desktop-preview`) roots are never a default: they need an explicit KODA_SOCKET_DIR.
   const xdg = runtimeBase(env, owner);
-  const runtime = env.ABITO_SOCKET_DIR ?? `${xdg}/abito-island`;
-  if (!normalized(runtime)) throw new Error('Invalid ABITO_SOCKET_DIR');
-  const explicit = env.ABITO_DESKTOP_SOCKET;
+  const runtime = env.KODA_SOCKET_DIR ?? `${xdg}/koda`;
+  if (!normalized(runtime)) throw new Error('Invalid KODA_SOCKET_DIR');
+  const explicit = env.KODA_DESKTOP_SOCKET;
   if (explicit !== undefined) {
     if (!endpointShape(explicit, runtime)) throw new Error('Unexpected endpoint');
     return { runtime, endpoint: explicit, source: 'env' };
@@ -210,15 +210,15 @@ function resolveEndpoint(env, owner, options = {}) {
 }
 function resolveQuestionConfig(env) {
   const { timeoutValid, DEFAULT_TIMEOUT_MS } = require('./questions.cjs');
-  if (env.ABITO_QUESTIONS !== undefined && !['0', '1', '2', '3'].includes(env.ABITO_QUESTIONS)) {
-    throw new Error('ABITO_QUESTIONS must be 0, 1, 2 or 3');
+  if (env.KODA_QUESTIONS !== undefined && !['0', '1', '2', '3'].includes(env.KODA_QUESTIONS)) {
+    throw new Error('KODA_QUESTIONS must be 0, 1, 2 or 3');
   }
-  const raw = env.ABITO_QUESTION_TIMEOUT_MS;
+  const raw = env.KODA_QUESTION_TIMEOUT_MS;
   const questionTimeoutMs = raw === undefined ? DEFAULT_TIMEOUT_MS : /^\d+$/.test(raw) ? Number(raw) : NaN;
-  if (!timeoutValid(questionTimeoutMs)) throw new Error('Invalid ABITO_QUESTION_TIMEOUT_MS');
+  if (!timeoutValid(questionTimeoutMs)) throw new Error('Invalid KODA_QUESTION_TIMEOUT_MS');
   // Default 3 (human, 30-oct: «Arreglarlo en Abito: preguntas activadas por defecto»): the extension is installed by the
   // same Abito build as the island it talks to, so the island always speaks QP/1 and negotiates `structured` itself.
-  // ABITO_QUESTIONS=0 keeps the old notice-only behaviour.
-  return { questionLevel: Number(env.ABITO_QUESTIONS ?? '3'), questionTimeoutMs };
+  // KODA_QUESTIONS=0 keeps the old notice-only behaviour.
+  return { questionLevel: Number(env.KODA_QUESTIONS ?? '3'), questionTimeoutMs };
 }
 module.exports = { darwinProc: { ...darwinProc, runPs, parsePsLine, PS, PS_ARGS }, resolveConfig, resolveEndpoint, resolveQuestionConfig, endpointShape, windowsEndpointShape };

@@ -21,13 +21,13 @@ test('actual Pi loader exposes model-only abito_ask and returns the human reply 
   if (!root) { t.skip('Installed Pi not found; set PI_CODING_AGENT_ROOT'); return; }
   const receiver = await fakeReceiver(t, { questions: true, busyReason: true });
   if (process.platform === 'win32') return windowsTwin(t, root, receiver); // Windows twin: see windows-real-pi.cjs
-  const vars = ['ABITO_SOCKET_DIR', 'ABITO_DESKTOP_SOCKET', 'ABITO_QUESTIONS', 'ABITO_QUESTION_TIMEOUT_MS'];
+  const vars = ['KODA_SOCKET_DIR', 'KODA_DESKTOP_SOCKET', 'KODA_QUESTIONS', 'KODA_QUESTION_TIMEOUT_MS'];
   const previous = Object.fromEntries(vars.map(k => [k, process.env[k]]));
   t.after(() => { for (const k of vars) {
     if (previous[k] === undefined) delete process.env[k]; else process.env[k] = previous[k];
   } });
-  Object.assign(process.env, { ABITO_SOCKET_DIR: receiver.runtime, ABITO_DESKTOP_SOCKET: receiver.endpoint,
-    ABITO_QUESTIONS: '2', ABITO_QUESTION_TIMEOUT_MS: '300000' });
+  Object.assign(process.env, { KODA_SOCKET_DIR: receiver.runtime, KODA_DESKTOP_SOCKET: receiver.endpoint,
+    KODA_QUESTIONS: '2', KODA_QUESTION_TIMEOUT_MS: '300000' });
   const loader = await import(pathToFileURL(path.join(root, 'dist/core/extensions/loader.js')));
   const { extensions, errors, warnings } = await loader.loadExtensions([
     path.resolve(__dirname, '../pi-extension.ts')], path.resolve(__dirname, '..'),

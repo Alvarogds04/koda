@@ -7,8 +7,8 @@
 //! * Input: ONE bounded JSON object on stdin. The token NEVER travels on the
 //!   command line, in the environment or in a log.
 //! * Output path: exactly `<island>/runtime/session.json`, where `<island>` is
-//!   the canonical protected `%LOCALAPPDATA%\Abito` root — or an
-//!   `ABITO_ISLAND_DIR` override INSIDE it (`winpolicy::island_root` refuses
+//!   the canonical protected `%LOCALAPPDATA%\Koda` root — or an
+//!   `KODA_ISLAND_DIR` override INSIDE it (`winpolicy::island_root` refuses
 //!   anything else). No path ever comes from the input.
 //! * Write: `winipc::ffi::private_file_bytes` — CREATE_NEW temp with an
 //!   explicit protected owner-only DACL AT CREATION (O:<sid>D:P(A;;GA;;;<sid>)),
@@ -224,7 +224,7 @@ fn run_windows(verify: bool) -> i32 {
     // Canonical root only: an unsafe override is refused here (never bypasses
     // the protected LOCALAPPDATA root), matching the Rust reader's policy.
     let root = match winpolicy::island_root(
-        std::env::var("ABITO_ISLAND_DIR").ok().as_deref(),
+        std::env::var("KODA_ISLAND_DIR").ok().as_deref(),
         std::env::var("LOCALAPPDATA").ok().as_deref(),
     ) {
         Some(root) => root,

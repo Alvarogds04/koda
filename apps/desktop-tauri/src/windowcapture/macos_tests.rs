@@ -12,7 +12,7 @@ fn window(id: u32, pid: i32, app: &str, bundle_id: &str) -> MacWindow {
 fn the_topmost_window_that_is_not_kodas_is_chosen() {
     let own = 400;
     let rows = [
-        window(11, own, "Koda", "com.abitog.AbitoTauri"),
+        window(11, own, "Koda", "com.abitog.Koda"),
         window(12, 900, "Bitwarden", "com.bitwarden.desktop"),
         window(13, 901, "Code", "com.microsoft.VSCode"),
     ];

@@ -21,13 +21,17 @@ const realTree = {
  * occur in its file (a stale entry fails), and is then masked out of the scan.
  */
 const REVIEWED = [
-  { file: 'desktop-daemon/src/sdk-helper.mjs', text: 'import(primary)', why: 'the Pi SDK (ABITO_SDK_MODULE or its package name): provided by the Pi install, never shipped here' },
+  { file: 'desktop-daemon/src/sdk-helper.mjs', text: 'import(primary)', why: 'the Pi SDK (KODA_SDK_MODULE or its package name): provided by the Pi install, never shipped here' },
   { file: 'desktop-daemon/src/sdk-helper.mjs', text: 'import(fallback)', why: 'the Pi SDK found next to the installed `pi`, read-only' },
   { file: 'desktop-daemon/src/custom-provider-extension.cjs', text: 'import("@earendil-works/pi-ai/compat")', why: 'inside TEMPLATE: runs in the Pi process, which provides pi-ai' },
   { file: 'desktop-daemon/src/daemon.cjs', text: 'path.resolve(srcDir, "..", "..", "abito-private-session.exe")', why: 'Windows session helper placed by the Windows installer, verified by sha256 before use' },
   { file: 'desktop-harness/src/windows-transport.cjs', text: "path.resolve(__dirname, '..', '..', RELAY_NAME)", why: 'Windows relay exe placed by the Windows installer next to the package' },
   { file: 'desktop-harness/src/windows-transport.cjs', text: "path.resolve(__dirname, '..', '..', 'desktop-tauri', 'target', 'debug', RELAY_NAME)", why: 'development layout only' },
   { file: 'desktop-harness/src/install-recap.cjs', text: "path.resolve(__dirname, '../bin/abito-recap-hook.cjs')", why: 'the removed 0.1 Recap script: only its path is matched, to take old hooks out; never loaded' },
+  // K2-04 T4 rewrote this one as a constant that is concatenated: `'../bin/' + SCRIPT_NAME`. The hook script it runs
+  // does ship (bin/koda-hook.cjs, HARNESS_FILES; packaging-check asserts it is STAGED and that the staged daemon finds
+  // it), but the walker resolves only literal segments, so the concatenation is reviewed here instead of guessed at.
+  { file: 'desktop-harness/src/install-claude.cjs', text: "path.resolve(__dirname, '../bin/' + SCRIPT_NAME)", why: 'the hook script it runs ships as desktop-harness/bin/koda-hook.cjs (HARNESS_FILES, asserted by packaging-check); the name is a constant, so the concatenated segment cannot be followed statically' },
   // K2-13 T1b (S10/S20): the Telegram client library is NOT a file of this package. It ships inside the bundled runtime
   // folder (human decision L41: that is the one npm tree the installers verify, extract and write notices for), and the
   // daemon locates it at run time: beside the Node it runs on, then beside its own package. The pin, the empty
@@ -162,7 +166,7 @@ function checkTree(tree, reviewed = REVIEWED) {
     ['path.resolve(__dirname, …)', SVC, 'const g = path.resolve(__dirname, "ghost.js");'],
     ['new URL(…, import.meta.url)', 'desktop-daemon/src/sdk-helper.mjs', 'const g = new URL("./ghost.js", import.meta.url);'],
     ['literal dynamic import()', SVC, 'const g = import("../ghost.mjs");'],
-    ['harness module require', 'desktop-harness/bin/abito-hook.cjs', "const g = require('../src/ghost.cjs');"],
+    ['harness module require', 'desktop-harness/bin/koda-hook.cjs', "const g = require('../src/ghost.cjs');"],
     ['bare package require', SVC, 'const g = require("left-pad");'],
     ['unrecognised: require(variable)', SVC, 'const g = require(name);'],
     ['unrecognised: template with ${}', SVC, 'const g = require(`./${name}.cjs`);'],
@@ -188,10 +192,10 @@ function checkTree(tree, reviewed = REVIEWED) {
 const stage = fs.mkdtempSync(path.join(os.tmpdir(), 'abito-host-stage-fixture-'));
 let localDir = null; // Windows only: the private LOCALAPPDATA of the CLI probe below
 try {
-  fs.writeFileSync(path.join(stage, 'abito-island'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+  fs.writeFileSync(path.join(stage, 'koda'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
   fs.writeFileSync(path.join(stage, L.TRANSCRIBE_BIN), '#!/bin/sh\nexit 0\n', { mode: 0o755 }); // K2-13 helper
-  fs.writeFileSync(path.join(stage, 'abito-island-launcher'), L.launcherText(), { mode: 0o755 });
-  fs.writeFileSync(path.join(stage, 'abito-island.png'), fs.readFileSync(path.join(crate, 'icons/icon.png')), { mode: 0o644 });
+  fs.writeFileSync(path.join(stage, 'koda-launcher'), L.launcherText(), { mode: 0o755 });
+  fs.writeFileSync(path.join(stage, 'koda.png'), fs.readFileSync(path.join(crate, 'icons/icon.png')), { mode: 0o644 });
   fs.writeFileSync(path.join(stage, `${L.IDENTIFIER}.desktop`), L.desktopText(), { mode: 0o644 });
   for (const file of L.DAEMON_FILES) {
     const target = path.join(stage, 'desktop-daemon', file);
@@ -233,16 +237,16 @@ try {
   // Exercise the public CLI from the shipped tree, not the source checkout. A valid
   // receipt alone cannot prove that every transitively required module was shipped.
   // Windows (K2-01b, as in desktop-daemon/test/cli.test.cjs): the daemon refuses any island root outside the canonical
-  // %LOCALAPPDATA%\Abito, so the missing island sits under a private LOCALAPPDATA (a sibling temp dir: the stage is
+  // %LOCALAPPDATA%\Koda, so the missing island sits under a private LOCALAPPDATA (a sibling temp dir: the stage is
   // listed exactly below), and a child node needs the Windows system variables to bootstrap. Nothing
   // user-identifying leaves the temp dirs.
   const win = process.platform === 'win32';
   const local = win ? fs.mkdtempSync(path.join(os.tmpdir(), 'abito-host-stage-local-')) : null;
   localDir = local;
-  const island = win ? path.join(local, 'Abito', 'missing-island') : path.join(stage, 'missing-island');
-  const env = { PATH: win ? process.env.PATH : '/usr/bin:/bin', HOME: stage, ABITO_ISLAND_DIR: island };
+  const island = win ? path.join(local, 'Koda', 'missing-island') : path.join(stage, 'missing-island');
+  const env = { PATH: win ? process.env.PATH : '/usr/bin:/bin', HOME: stage, KODA_ISLAND_DIR: island };
   if (win) {
-    fs.mkdirSync(path.join(local, 'Abito'));
+    fs.mkdirSync(path.join(local, 'Koda'));
     env.LOCALAPPDATA = local;
     for (const key of ['SystemRoot', 'windir', 'SystemDrive', 'ComSpec', 'PATHEXT', 'OS', 'NUMBER_OF_PROCESSORS', 'PROCESSOR_ARCHITECTURE']) {
       if (process.env[key] !== undefined) env[key] = process.env[key];
@@ -256,7 +260,7 @@ try {
   assert.equal(baseline.signal, null);
   assert.equal(baseline.status, 3, baseline.stderr);
   assert.equal(baseline.stdout, '');
-  assert.equal(baseline.stderr, 'abito-island-daemon: not running (stale: no_session)\n');
+  assert.equal(baseline.stderr, 'koda-daemon: not running (stale: no_session)\n');
   assert.equal(fs.existsSync(island), false, 'status must not create or start an island');
   assert.deepEqual(L.verifyStage(stage), [], 'status must leave every shipped byte unchanged');
 

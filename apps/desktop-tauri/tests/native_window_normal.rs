@@ -67,13 +67,13 @@ impl Drop for OwnProcess {
 
 fn preflight() {
     let ps = Command::new("ps")
-        .args(["-C", "abito-island", "-o", "pid=,comm="])
+        .args(["-C", "koda", "-o", "pid=,comm="])
         .output()
         .expect("ps");
     assert!(ps.status.code() == Some(0) || ps.status.code() == Some(1));
     assert!(
         ps.stdout.is_empty(),
-        "STOP: abito-island already running; no launch permitted"
+        "STOP: koda already running; no launch permitted"
     );
     let bus = Command::new("dbus-send")
         .args([
@@ -82,7 +82,7 @@ fn preflight() {
             "--dest=org.freedesktop.DBus",
             "/org/freedesktop/DBus",
             "org.freedesktop.DBus.NameHasOwner",
-            "string:com.abitog.AbitoTauri.SingleInstance",
+            "string:com.abitog.Koda.SingleInstance",
         ])
         .output()
         .expect("DBus preflight");
@@ -140,15 +140,15 @@ fn number(output: &str, label: &str) -> i32 {
 // were observed, without attributing the difference to an environment cause.
 // Use this run's SDK scale, never fixed physical dimensions. NOAUDIT is a
 // separate observer-off check whose factor must come from the same environment's
-// preceding SDK audit; ABITO_NATIVE_EXPECT_SCALE does not change GTK scaling.
+// preceding SDK audit; KODA_NATIVE_EXPECT_SCALE does not change GTK scaling.
 #[test]
-#[ignore = "real display + NORMAL executable; ABITO_NATIVE_NORMAL_TEST=1 opts in"]
+#[ignore = "real display + NORMAL executable; KODA_NATIVE_NORMAL_TEST=1 opts in"]
 fn normal_compact_matches_actual_runtime_scale() {
     assert_eq!(
-        std::env::var("ABITO_NATIVE_NORMAL_TEST").as_deref(),
+        std::env::var("KODA_NATIVE_NORMAL_TEST").as_deref(),
         Ok("1")
     );
-    let no_audit = std::env::var("ABITO_NATIVE_NORMAL_NOAUDIT").as_deref() == Ok("1");
+    let no_audit = std::env::var("KODA_NATIVE_NORMAL_NOAUDIT").as_deref() == Ok("1");
     let crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let runtime = crate_dir.join(".runtime-probe");
     private_dir(&runtime);
@@ -182,7 +182,7 @@ fn normal_compact_matches_actual_runtime_scale() {
     .unwrap();
     let log_path = run.join("native.jsonl");
     let mut log = private_file(&log_path);
-    let mut command = Command::new(env!("CARGO_BIN_EXE_abito-island"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_koda"));
     command.env_clear();
     for name in [
         "DISPLAY",
@@ -197,8 +197,8 @@ fn normal_compact_matches_actual_runtime_scale() {
     }
     command
         .env("GDK_BACKEND", "x11")
-        .env("ABITO_SOCKET_DIR", &runtime)
-        .env("ABITO_MODELS_CONFIG_DIR", run.join("config"))
+        .env("KODA_SOCKET_DIR", &runtime)
+        .env("KODA_MODELS_CONFIG_DIR", run.join("config"))
         .env("HOME", run.join("home"))
         .env("XDG_CONFIG_HOME", run.join("config"))
         .env("XDG_CACHE_HOME", run.join("cache"))
@@ -207,10 +207,10 @@ fn normal_compact_matches_actual_runtime_scale() {
         .stderr(Stdio::piped());
     if !no_audit {
         command
-            .env("ABITO_NATIVE_AUDIT", "1")
-            .env("ABITO_NATIVE_VIEW_TEST", "1");
+            .env("KODA_NATIVE_AUDIT", "1")
+            .env("KODA_NATIVE_VIEW_TEST", "1");
     }
-    // No ABITO_PROBE, --probe, scale overrides, login or valid model selection.
+    // No KODA_PROBE, --probe, scale overrides, login or valid model selection.
     unsafe {
         command.pre_exec(|| {
             libc::umask(0o077);
@@ -224,14 +224,14 @@ fn normal_compact_matches_actual_runtime_scale() {
     preflight(); // immediately before EVERY own launch
     let mut child = OwnProcess(
         command.spawn().expect("NORMAL executable"),
-        fs::canonicalize(env!("CARGO_BIN_EXE_abito-island")).unwrap(),
+        fs::canonicalize(env!("CARGO_BIN_EXE_koda")).unwrap(),
     );
     let pid = child.0.id();
     let stderr = child.0.stderr.take().unwrap();
     let reader = thread::spawn(move || {
         let mut rows = Vec::new();
         for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-            if let Some(payload) = line.strip_prefix("ABITO_NATIVE_AUDIT ") {
+            if let Some(payload) = line.strip_prefix("KODA_NATIVE_AUDIT ") {
                 let row: Value = serde_json::from_str(payload).expect("audit JSON");
                 writeln!(log, "{row}").unwrap();
                 log.flush().unwrap();
@@ -388,7 +388,7 @@ fn normal_compact_matches_actual_runtime_scale() {
         );
         // Expected factor comes from the preceding actual SDK/GTK audit; this
         // test expectation never sets a runtime scale environment variable.
-        std::env::var("ABITO_NATIVE_EXPECT_SCALE")
+        std::env::var("KODA_NATIVE_EXPECT_SCALE")
             .unwrap()
             .parse::<f64>()
             .unwrap()

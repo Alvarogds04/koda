@@ -2,7 +2,7 @@
 
 // K2-13 Minikodas, T5 (S1/S7): the plain-language summary of a DRAFT. It is deterministic (no model call),
 // built only from the validated recipe, and it is the approval preview: getting it never activates anything.
-// Offline: fake accounts store; no model, no network, no real ~/.pi or ~/.abito-island.
+// Offline: fake accounts store; no model, no network, no real ~/.pi or ~/.koda.
 
 const test = require("node:test");
 const assert = require("node:assert/strict");

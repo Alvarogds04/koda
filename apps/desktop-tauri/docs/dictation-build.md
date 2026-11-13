@@ -31,8 +31,9 @@ Face at a pinned revision, verified by size and SHA-256 (`src/speech/mod.rs`),
 into `$XDG_DATA_HOME/abito/Models`.
 
 On Windows that folder is `%LOCALAPPDATA%\abito-data\Models`, **not**
-`%LOCALAPPDATA%\abito`: NTFS is case-insensitive, so `abito` and the island's
-protected root `Abito` would be the same directory. That root is created (or
+`%LOCALAPPDATA%\koda` and **not** `%LOCALAPPDATA%\abito`: NTFS is
+case-insensitive, so `koda` is the current island root (`%LOCALAPPDATA%\Koda`)
+and `abito` is the Koda 0.1 island root still on disk (`%LOCALAPPDATA%\Abito`). That root is created (or
 accepted) with an explicit protected owner-only DACL and verified fail-closed by
 the island (`winpolicy::dacl_private`: every ACE principal has to be the user,
 SYSTEM or Administrators), so a data folder born there with the inherited
@@ -52,7 +53,7 @@ again. No automatic migration runs on purpose: the guessed source could belong
 to something else, and the download is size- and SHA-256-checked while a copied
 file is not. To keep the files, copy them by hand with Koda closed:
 `%HOME%\.local\share\abito\Models` → `%LOCALAPPDATA%\abito-data\Models`
-(`abito-transcribe status` then reports `present: true` and nothing downloads).
+(`koda-transcribe status` then reports `present: true` and nothing downloads).
 
 `reqwest` is pinned to 0.12 (ring + webpki-roots TLS) because 0.13's rustls
 needs aws-lc-rs and rustls-platform-verifier.
@@ -63,8 +64,8 @@ The archive above also carries the text-to-speech path: `piper_phonemize`,
 `espeak-ng` (GPL-3.0) and the `ucd` tables, and sherpa-onnx-sys links all
 thirteen libraries. Koda only *recognises* speech (Parakeet, Whisper, Silero
 VAD, the dictation wake word); nothing in `src/speech` or
-`src/bin/abito-transcribe.rs` synthesises it. So `abito-island` and
-`abito-transcribe` link the same upstream v1.13.8 release built with
+`src/bin/koda-transcribe.rs` synthesises it. So `koda` and
+`koda-transcribe` link the same upstream v1.13.8 release built with
 `-DSHERPA_ONNX_ENABLE_TTS=OFF` instead:
 
 - `packaging/sherpa-onnx-no-tts.sha256` pins the TTS-free archive and its
@@ -89,7 +90,7 @@ VAD, the dictation wake word); nothing in `src/speech` or
   so does the Windows container (`xbuild.sh` mounts the crate at `/abito/src`).
 - The bytes of the staged files are checked too, not only the link list:
   `packaging/lib.cjs verifyStage` and `packaging/windows/stage-win.cjs --check`
-  stream `abito-island[.exe]` and `abito-transcribe[.exe]` and fail on an
+  stream `koda[.exe]` and `koda-transcribe[.exe]` and fail on an
   `espeak_` or `piper_phonemize` string, so a staged build from the wrong
   directory can never be packaged.
 
@@ -107,7 +108,7 @@ Consequences worth knowing:
   table and `build.rs` prints a warning, so `osx-arm64` keeps the crate's link
   list (espeak-ng included) until the Mac session takes the same three steps
   with the `osx-arm64-static-no-tts-lib` archive (decisions L12, L23).
-- Verify a build with `nm -a target/debug/abito-transcribe | grep -c espeak_`
+- Verify a build with `nm -a target/debug/koda-transcribe | grep -c espeak_`
   (must be `0`); `node test-node/sherpa-tts-free-check.cjs` pins the wiring and
   scans the newest rlib and the built binaries (`target/debug`,
   `target/release`, `target-ship/release` and the Windows `dist/`) for
@@ -115,13 +116,13 @@ Consequences worth knowing:
 - Bumping `sherpa-onnx` means updating the version inside the two archive names
   in the pin file (the check compares them with `Cargo.lock`).
 
-## Minikodas: `abito-transcribe` (K2-13, S8/S15/S16)
+## Minikodas: `koda-transcribe` (K2-13, S8/S15/S16)
 
-`src/bin/abito-transcribe.rs` is a second binary of this crate: batch
+`src/bin/koda-transcribe.rs` is a second binary of this crate: batch
 speech-to-text for the Minikodas, spawned by the daemon (`shell:false`, fixed
 argv). It links the same `sherpa-onnx` crate, so it needs the same
 `SHERPA_ONNX_LIB_DIR` / `SHERPA_ONNX_ARCHIVE_DIR` as the island
-(`cargo build --bin abito-transcribe`). It carries its own static onnxruntime,
+(`cargo build --bin koda-transcribe`). It carries its own static onnxruntime,
 so it adds roughly the size of the speech engine to each installer.
 
 It shares dictation's catalog, model store (`$XDG_DATA_HOME/abito/Models`) and
@@ -129,10 +130,10 @@ Silero VAD; a user who already downloaded Parakeet for dictation downloads
 nothing more.
 
 ```text
-abito-transcribe transcribe [--model parakeet-tdt-0.6b-v3-int8|whisper-turbo] [--language es|en|…]
+koda-transcribe transcribe [--model parakeet-tdt-0.6b-v3-int8|whisper-turbo] [--language es|en|…]
                             [--timeout-sec N] [--max-seconds N] <absolute 16 kHz mono WAV>
-abito-transcribe status   [--model ID]   # {model, present, vad, downloadMb}; reads the disk only
-abito-transcribe download [--model ID]   # the catalog's pinned, size + SHA-256 checked download
+koda-transcribe status   [--model ID]   # {model, present, vad, downloadMb}; reads the disk only
+koda-transcribe download [--model ID]   # the catalog's pinned, size + SHA-256 checked download
 ```
 
 - Models: Parakeet v3 int8 (default) or Whisper turbo int8. Whisper always
@@ -159,13 +160,13 @@ abito-transcribe download [--model ID]   # the catalog's pinned, size + SHA-256 
 - Tests: `cargo test --lib speech::transcribe_tests` (fake detector and
   recognizer) and `cargo test --test transcribe_cli` (the binary against an
   empty private store). The real model run is opt-in:
-  `ABITO_TRANSCRIBE_WAV=<wav> cargo test --test transcribe_cli -- --nocapture`.
+  `KODA_TRANSCRIBE_WAV=<wav> cargo test --test transcribe_cli -- --nocapture`.
 
-### Packaging `abito-transcribe` and ffmpeg (K2-13, S9)
+### Packaging `koda-transcribe` and ffmpeg (K2-13, S9)
 
-- **Linux.** `packaging/build.cjs` stages `target-ship/release/abito-transcribe` beside `abito-island` (`lib.cjs`
+- **Linux.** `packaging/build.cjs` stages `target-ship/release/koda-transcribe` beside `koda` (`lib.cjs`
   `STAGED`, executable in `install.sh` `EXEC_FILES`). Uninstall removes it with the other staged files.
-- **Windows.** `abito-transcribe.exe` is in `stage-runtime.cjs` `BINARY_FILES`, so the generated NSIS include installs
+- **Windows.** `koda-transcribe.exe` is in `stage-runtime.cjs` `BINARY_FILES`, so the generated NSIS include installs
   and deletes it. `xbuild.sh package` copies it into `dist/` with the other helpers, and so does
   `install-manifest.cjs` on the GitHub runner: `cargo build --release --bins` builds it, the workflow copies only three
   of the four binaries, and `completeBinaries()` (stage-runtime.cjs) stages what is missing in the default `dist/`
@@ -194,7 +195,7 @@ abito-transcribe download [--model ID]   # the catalog's pinned, size + SHA-256 
     «LGPL-3.0 §6», which is «Revised Versions», and combining a work with the Library is LGPL-3.0 §4/§5, so neither
     of those is where a source duty comes from.) The licence review of FFmpeg's obligations and its AAC/H.264 patent
     question has **not** been done; the notices say so instead of implying it was.
-- **macOS (darwin-arm64).** No ffmpeg and no `abito-transcribe` in this version: no LGPL macOS build exists (pending
+- **macOS (darwin-arm64).** No ffmpeg and no `koda-transcribe` in this version: no LGPL macOS build exists (pending
   for the Mac session, L12). The daemon reports `ffmpeg: "unavailable"`, and a Minikoda video run fails with a clear
   «Hoy» error.
 - **Notices.** `apps/desktop-daemon/THIRD-PARTY-NOTICES.md` (shipped) carries sherpa-onnx (Apache-2.0), ONNX Runtime

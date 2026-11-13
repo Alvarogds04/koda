@@ -2,7 +2,7 @@
 #
 # sherpa-onnx-sys 1.13.8's build script links thirteen static archives, three of which carry the text-to-speech path:
 # piper_phonemize, espeak-ng (GPL-3.0) and ucd. Koda only recognises speech, never synthesises it, but those archives
-# reached abito-island and abito-transcribe. Upstream publishes the same v1.13.8 libraries built with
+# reached `koda` and `koda-transcribe`. Upstream publishes the same v1.13.8 libraries built with
 # -DSHERPA_ONNX_ENABLE_TTS=OFF, and `build.rs` stages them, sha256-verified against
 # packaging/sherpa-onnx-no-tts.sha256, in `target/sherpa-onnx-no-tts/lib`.
 #

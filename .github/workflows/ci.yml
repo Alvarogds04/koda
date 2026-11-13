@@ -67,7 +67,7 @@ jobs:
           # with the exact pins the shipped runtime carries (gentle-pi 4.3.0 + Pi 1.4.0 and every peer,
           # sha512-pinned in packaging/runtime/package-lock.json). npm ci installs exactly that closure
           # (install scripts not run, as in the runtime build itself); GENTLE_PI_ROOT points the
-          # real-engine tests at it and ABITO_REQUIRE_GENTLE=1 (below) makes absence fail the job.
+          # real-engine tests at it and KODA_REQUIRE_GENTLE=1 (below) makes absence fail the job.
           DIR="$RUNNER_TEMP/gentle-engine"
           mkdir -p "$DIR"
           cp apps/desktop-tauri/packaging/runtime/package.json apps/desktop-tauri/packaging/runtime/package-lock.json "$DIR/"
@@ -96,14 +96,14 @@ jobs:
           cargo build --locked --bin abito-private-session
           cp target/debug/abito-private-session.exe ../abito-private-session.exe
           node packaging/windows/install-manifest.cjs --dist ../
-          echo "ABITO_TEST_HELPER=$(cd .. && pwd -W)/abito-private-session.exe" >> "$GITHUB_ENV"
+          echo "KODA_TEST_HELPER=$(cd .. && pwd -W)/abito-private-session.exe" >> "$GITHUB_ENV"
       - name: desktop-daemon
         if: ${{ !cancelled() }}
         working-directory: apps/desktop-daemon
         shell: bash
         env:
-          ABITO_REQUIRE_PI: '1'
-          ABITO_REQUIRE_GENTLE: '1'
+          KODA_REQUIRE_PI: '1'
+          KODA_REQUIRE_GENTLE: '1'
         run: npm test
       - name: desktop-harness (agent hooks)
         if: ${{ !cancelled() }}
@@ -327,7 +327,7 @@ jobs:
       - name: "No Node, no Pi: install and run on Koda's own runtime (K2-02 S1, S3; removes the runner's Node)"
         if: ${{ !cancelled() }}
         run: |
-          STAGE=$(find "$RUNNER_TEMP/koda-smoke/stage/abito-island" -mindepth 1 -maxdepth 1 -type d | head -n 1)
+          STAGE=$(find "$RUNNER_TEMP/koda-smoke/stage/koda" -mindepth 1 -maxdepth 1 -type d | head -n 1)
           sh apps/desktop-tauri/ci/public/smoke-linux-no-node.sh --app "$GITHUB_WORKSPACE/apps/desktop-tauri" \
             --stage "$STAGE" --work "$RUNNER_TEMP/koda-no-node"
       - name: Upload smoke logs

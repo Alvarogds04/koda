@@ -128,7 +128,7 @@ test('source gates pass on the real crate (R6 pin, curated frontend, config, cap
   assert.ok(L.checkR6(crate).startsWith('40625d7f'));
   assert.equal(L.checkFrontend(crate).length, L.FRONTEND_FILES.length);
   const cfg = L.checkConfig(crate);
-  assert.equal(cfg.identifier, 'com.abitog.AbitoTauri');
+  assert.equal(cfg.identifier, 'com.abitog.Koda');
 });
 
 test('R7 character controller is explicitly in the closed shipped list', () => {
@@ -169,7 +169,7 @@ test('each gate FAILS when its rule is broken', () => {
   edit('frontend/clay-engine.js', s => s + '\n// tweak', /R6 pin/);
   edit('tauri.conf.json', s => s.replace("default-src 'self'", "default-src 'self' https://evil.example"), /CSP/);
   edit('tauri.conf.json', s => s.replace("script-src 'self'", "script-src 'self' 'unsafe-eval'"), /CSP/);
-  edit('tauri.conf.json', s => s.replace('com.abitog.AbitoTauri', 'com.abitog.Abito.Preview'), /identifier/);
+  edit('tauri.conf.json', s => s.replace('com.abitog.Koda', 'com.abitog.Abito.Preview'), /identifier/);
   edit('capabilities/main.json', s => s.replace('"core:event:allow-unlisten"', '"core:event:allow-unlisten", "core:window:allow-close"'), /capabilities drifted/);
   edit('capabilities/main.json', s => s.replace('"windows": ["main", "settings"]', '"windows": ["main", "settings", "evil"]'), /capability windows/);
   edit('capabilities/main.json', s => s.replace('"windows": ["main", "settings"]', '"windows": ["main"]'), /capability windows/);
@@ -184,11 +184,11 @@ function fakeStage({ crateDir: _crateDir = crate } = {}) {
   // A child of the temp dir, never the temp dir itself: on Windows tmpdirs.cjs marks every dir it creates with
   // `.abito-tmpdirs`, and verifyStage lists the stage exactly (an extra file is a real problem there).
   const dir = path.join(T.make('abito-stage-'), 'stage'); fs.mkdirSync(dir);
-  fs.writeFileSync(path.join(dir, 'abito-island'), '#!/bin/true\nfake binary\n', { mode: 0o755 });
+  fs.writeFileSync(path.join(dir, 'koda'), '#!/bin/true\nfake binary\n', { mode: 0o755 });
   fs.writeFileSync(path.join(dir, L.TRANSCRIBE_BIN), '#!/bin/true\nfake transcriber\n', { mode: 0o755 }); // K2-13 helper
-  fs.writeFileSync(path.join(dir, 'abito-island-launcher'), L.launcherText(), { mode: 0o755 });
+  fs.writeFileSync(path.join(dir, 'koda-launcher'), L.launcherText(), { mode: 0o755 });
   fs.writeFileSync(path.join(dir, `${L.IDENTIFIER}.desktop`), L.desktopText(), { mode: 0o644 });
-  fs.writeFileSync(path.join(dir, 'abito-island.png'), 'png', { mode: 0o644 });
+  fs.writeFileSync(path.join(dir, 'koda.png'), 'png', { mode: 0o644 });
   for (const n of L.DAEMON_FILES) {
     const file = path.join(dir, 'desktop-daemon', n);
     fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o755 });
@@ -214,7 +214,7 @@ function fakeStage({ crateDir: _crateDir = crate } = {}) {
   return dir;
 }
 test('L42 F1: the package ships the hook installer and everything it requires, and the staged daemon resolves it', () => {
-  assert(Array.isArray(L.HARNESS_FILES) && L.HARNESS_FILES.includes('bin/abito-hook.cjs'), 'the installer is a shipped file');
+  assert(Array.isArray(L.HARNESS_FILES) && L.HARNESS_FILES.includes('bin/koda-hook.cjs'), 'the installer is a shipped file');
   assert(L.HARNESS_FILES.includes('src/installer-platform.cjs'), 'platform guard must ship');
   assert(L.PI_FILES?.includes('pi-extension.ts'), 'closed Pi runtime payload must ship beside harness');
   // closed under require(): every relative require of a shipped harness file is shipped too
@@ -226,11 +226,11 @@ test('L42 F1: the package ships the hook installer and everything it requires, a
       assert(sharedProbe || L.HARNESS_FILES.includes(target), `${rel} requires ${m[1]} (${target}) which is not shipped`);
     }
   }
-  assert(L.STAGED.includes('desktop-harness/bin/abito-hook.cjs'));
+  assert(L.STAGED.includes('desktop-harness/bin/koda-hook.cjs'));
   assert(L.STAGED_DIRS.includes('desktop-harness') && L.STAGED_DIRS.includes('desktop-harness/bin') && L.STAGED_DIRS.includes('desktop-harness/src'));
   const d = fakeStage();
   const { packagedInstallerBin } = require(path.join(d, 'desktop-daemon/src/cli.cjs'));
-  assert.equal(packagedInstallerBin(path.join(d, 'desktop-daemon/src')), path.join(d, 'desktop-harness/bin/abito-hook.cjs'), 'the staged daemon finds the staged installer');
+  assert.equal(packagedInstallerBin(path.join(d, 'desktop-daemon/src')), path.join(d, 'desktop-harness/bin/koda-hook.cjs'), 'the staged daemon finds the staged installer');
   assert.deepEqual(L.verifyStage(d, { sourceCrate: crate }), []);
   fs.rmSync(path.join(d, 'desktop-harness/src/install-ui.cjs'));
   assert(L.verifyStage(d, { sourceCrate: crate }).length > 0, 'a missing harness file fails verification');
@@ -239,7 +239,7 @@ test('HU-015: the daemon-free Agentes entry ships, closed under require(), besid
   assert(L.DAEMON_FILES.includes('src/agents-direct.cjs'), 'Ajustes → Agentes runs src/agents-direct.cjs with no daemon: it must be packaged');
   assert(L.STAGED.includes('desktop-daemon/src/agents-direct.cjs'));
   // K2-13 T2c-2: the transcription helper ships beside the island, and the daemon modules that spawn it ship too.
-  assert(L.STAGED.includes('abito-transcribe'));
+  assert(L.STAGED.includes('koda-transcribe'));
   assert(L.STAGED.includes('desktop-daemon/src/minikodas/transcribe.cjs') && L.STAGED.includes('desktop-daemon/src/minikodas/transcribe-setting.cjs'));
   // K2-13 T2c-8 (S19): the daemon module that reads YouTube links ships with it (it spawns the bundled runtime/yt-dlp).
   assert(L.STAGED.includes('desktop-daemon/src/minikodas/youtube.cjs'), 'the YouTube reader must be packaged');
@@ -261,17 +261,17 @@ test('HU-015: the daemon-free Agentes entry ships, closed under require(), besid
 test('verify: a pristine stage passes; tampering is caught without launching anything', () => {
   const d = fakeStage();
   assert.deepEqual(L.verifyStage(d, { sourceCrate: crate }), []);
-  fs.appendFileSync(path.join(d, 'abito-island'), 'x');
-  assert.match(L.verifyStage(d).join(), /abito-island hash differs/);
+  fs.appendFileSync(path.join(d, 'koda'), 'x');
+  assert.match(L.verifyStage(d).join(), /koda hash differs/);
   fs.rmSync(d, { recursive: true });
   const e = fakeStage();
-  fs.writeFileSync(path.join(e, 'abito-island-launcher'), '#!/bin/sh\nexec "$@"\n', { mode: 0o755 });
+  fs.writeFileSync(path.join(e, 'koda-launcher'), '#!/bin/sh\nexec "$@"\n', { mode: 0o755 });
   assert.match(L.verifyStage(e).join(), /launcher/);
   fs.writeFileSync(path.join(e, 'extra'), 'x');
   assert.match(L.verifyStage(e).join(), /unexpected stage entries/);
   fs.rmSync(e, { recursive: true });
   if (process.platform !== 'win32') { // the writable rule is unix-only by design (POSIX modes); the Windows twin is below
-    const w = fakeStage(); fs.chmodSync(path.join(w, 'abito-island'), 0o777);
+    const w = fakeStage(); fs.chmodSync(path.join(w, 'koda'), 0o777);
     assert.match(L.verifyStage(w).join(), /writable/);
     fs.rmSync(w, { recursive: true });
   }
@@ -295,26 +295,26 @@ test('Windows (NTFS modes 0o666, no exec bits): a valid stage verifies and its i
 });
 test('Windows: a tampered stage is still refused (hash, extra entry), only the POSIX mode rules are unix-only', () => {
   const d = fakeStage();
-  fs.appendFileSync(path.join(d, 'abito-island'), 'x');
+  fs.appendFileSync(path.join(d, 'koda'), 'x');
   fs.writeFileSync(path.join(d, 'extra'), 'x');
   const problems = asWindows(() => L.verifyStage(d)).join('\n');
-  assert.match(problems, /abito-island hash differs from the receipt/);
+  assert.match(problems, /koda hash differs from the receipt/);
   assert.match(problems, /unexpected stage entries/);
   assert.doesNotMatch(problems, /writable|not executable/);
 });
 test('unix keeps the POSIX mode rules (twin of the Windows case): group/world writable and a non-executable binary are refused', () => {
   if (process.platform === 'win32') return; // the rule is unix-only by design; the Windows twin is above
-  const w = fakeStage(); fs.chmodSync(path.join(w, 'abito-island'), 0o664);
+  const w = fakeStage(); fs.chmodSync(path.join(w, 'koda'), 0o664);
   const problems = L.verifyStage(w).join('\n');
-  assert.match(problems, /abito-island is group\/world writable/);
+  assert.match(problems, /koda is group\/world writable/);
   assert.match(problems, /binary is not executable/);
 });
 
 test('verify: devtools markers and an embedded source-tree path fail the stage', () => {
   for (const [marker, expect] of [['--remote-debugging-port', /devtools/], [crate, /source-tree path/]]) {
     const d = fakeStage();
-    fs.writeFileSync(path.join(d, 'abito-island'), `#!/bin/true\n${marker}\n`, { mode: 0o755 });
-    const r = readJson(path.join(d, 'receipt.json')); r.files['abito-island'] = L.sha256File(path.join(d, 'abito-island'));
+    fs.writeFileSync(path.join(d, 'koda'), `#!/bin/true\n${marker}\n`, { mode: 0o755 });
+    const r = readJson(path.join(d, 'receipt.json')); r.files['koda'] = L.sha256File(path.join(d, 'koda'));
     fs.writeFileSync(path.join(d, 'receipt.json'), JSON.stringify(r));
     assert.match(L.verifyStage(d, { sourceCrate: crate }).join(), expect);
     fs.rmSync(d, { recursive: true });
@@ -324,16 +324,16 @@ test('launcher: no args, refuses whole env families, forces X11, execs only its 
   const t = L.launcherText();
   assert.match(t, /\[ "\$#" -eq 0 \]/);
   assert.match(t, /export GDK_BACKEND=x11/);
-  assert.match(t, /exec "\$here\/abito-island"$/m);
+  assert.match(t, /exec "\$here\/koda"$/m);
   // behaviour: run the launcher's guards (the sibling binary is a stub that must NOT start when refused)
   if (process.platform === 'win32') return; // the launcher is a POSIX sh script: Windows ships no launcher and cannot run it
   const cp = require('node:child_process');
-  const d = fakeStage(); fs.writeFileSync(path.join(d, 'abito-island'), '#!/bin/sh\necho STARTED\n', { mode: 0o755 });
-  const run = (extra, env) => cp.spawnSync(path.join(d, 'abito-island-launcher'), extra, { env: { PATH: process.env.PATH, ...env }, encoding: 'utf8' });
+  const d = fakeStage(); fs.writeFileSync(path.join(d, 'koda'), '#!/bin/sh\necho STARTED\n', { mode: 0o755 });
+  const run = (extra, env) => cp.spawnSync(path.join(d, 'koda-launcher'), extra, { env: { PATH: process.env.PATH, ...env }, encoding: 'utf8' });
   assert.equal(run(['--devtools'], {}).status, 64);
   for (const name of ['LD_PRELOAD', 'LD_LIBRARY_PATH', 'LD_AUDIT', 'LD_DEBUG', 'LD_BIND_NOW', 'LD_ANYTHING_ELSE', 'GDK_DEBUG', 'GTK_MODULES',
-    'WEBKIT_INSPECTOR_SERVER', 'ABITO_PROBE', 'ABITO_PROBE_VISUAL_DIR', 'ABITO_SOCKET_DIR', 'ABITO_BRIDGE_BASE', 'ABITO_MODELS_CONFIG_DIR',
-    'ABITO_DESKTOP_SOCKET', 'ABITO_NATIVE_AUDIT', 'ABITO_NATIVE_VIEW_TEST', 'ABITO_FUTURE_KNOB_NOBODY_LISTED', 'GDK_SYNCHRONIZE', 'GTK_PATH']) {
+    'WEBKIT_INSPECTOR_SERVER', 'KODA_PROBE', 'KODA_PROBE_VISUAL_DIR', 'KODA_SOCKET_DIR', 'KODA_BRIDGE_BASE', 'KODA_MODELS_CONFIG_DIR',
+    'KODA_DESKTOP_SOCKET', 'KODA_NATIVE_AUDIT', 'KODA_NATIVE_VIEW_TEST', 'KODA_FUTURE_KNOB_NOBODY_LISTED', 'GDK_SYNCHRONIZE', 'GTK_PATH']) {
     const r = run([], { [name]: '1' });
     assert.equal(r.status, 64, name);
     assert.doesNotMatch(r.stdout, /STARTED/, name);
@@ -342,12 +342,12 @@ test('launcher: no args, refuses whole env families, forces X11, execs only its 
   assert.equal(run([], { LDXYZ_NOT_LD: '1', LANG: 'C', HOME: '/x' }).status, 0, 'unrelated variables pass');
   // S5 (abito-avisos-ux): the GNOME session itself exports GTK_MODULES=gail:atk-bridge, so the menu entry could never open Abito.
   // ONLY that exact accessibility value is dropped (not loaded) before the guard; any other GTK_MODULES value is still refused.
-  const a11y = run([], { GTK_MODULES: 'gail:atk-bridge', ABITO_PROJECT_ROOT: '/somewhere' });
+  const a11y = run([], { GTK_MODULES: 'gail:atk-bridge', KODA_PROJECT_ROOT: '/somewhere' });
   assert.equal(a11y.status, 0, a11y.stderr); assert.match(a11y.stdout, /STARTED/);
   for (const v of ['gail:atk-bridge:evil', 'evil:gail:atk-bridge', 'gail', 'atk-bridge', ' gail:atk-bridge']) {
     const r = run([], { GTK_MODULES: v }); assert.equal(r.status, 64, v); assert.doesNotMatch(r.stdout, /STARTED/, v);
   }
-  const ok = run([], { ABITO_PROJECT_ROOT: '/somewhere' }); assert.equal(ok.status, 0, 'ABITO_PROJECT_ROOT is the one allowed knob'); assert.match(ok.stdout, /STARTED/);
+  const ok = run([], { KODA_PROJECT_ROOT: '/somewhere' }); assert.equal(ok.status, 0, 'KODA_PROJECT_ROOT is the one allowed knob'); assert.match(ok.stdout, /STARTED/);
   fs.rmSync(d, { recursive: true });
 });
 test('provenance gate: a dirty or untracked product file fails; a clean tree passes (real git repo)', () => {
@@ -391,10 +391,10 @@ test('gates: missing frontend file, extra plugin dependency, missing capability 
   assert.throws(() => L.checkConfig(d)); fs.rmSync(d, { recursive: true });
 });
 test('verify: the shipped binary must not carry the probe or the fake backend strings', () => {
-  for (const marker of ['ABITO_PROBE', 'Prueba M3: propuesta servida por el backend falso', 'abito-validator-fake-terminal-launcher']) {
+  for (const marker of ['KODA_PROBE', 'Prueba M3: propuesta servida por el backend falso', 'abito-validator-fake-terminal-launcher']) {
     const d = fakeStage();
-    fs.writeFileSync(path.join(d, 'abito-island'), `#!/bin/true\n${marker}\n`, { mode: 0o755 });
-    const r = readJson(path.join(d, 'receipt.json')); r.files['abito-island'] = L.sha256File(path.join(d, 'abito-island'));
+    fs.writeFileSync(path.join(d, 'koda'), `#!/bin/true\n${marker}\n`, { mode: 0o755 });
+    const r = readJson(path.join(d, 'receipt.json')); r.files['koda'] = L.sha256File(path.join(d, 'koda'));
     fs.writeFileSync(path.join(d, 'receipt.json'), JSON.stringify(r));
     assert.match(L.verifyStage(d).join(), /probe\/fake/, marker);
     fs.rmSync(d, { recursive: true });
@@ -417,23 +417,23 @@ test('law: XTest (synthetic input) is never a production dependency, and the shi
   d = copyCrate();
   fs.writeFileSync(path.join(d, 'Cargo.toml'), fs.readFileSync(path.join(d, 'Cargo.toml'), 'utf8').replace('[dependencies]', '[dependencies]\nx11rb = { version = "0.13", features = ["xtest"] }'));
   assert.throws(() => L.checkConfig(d), /xtest/, 'xtest in the plain production table'); fs.rmSync(d, { recursive: true });
-  const st = fakeStage(); fs.writeFileSync(path.join(st, 'abito-island'), '#!/bin/true\nXTEST\n', { mode: 0o755 });
-  const r = readJson(path.join(st, 'receipt.json')); r.files['abito-island'] = L.sha256File(path.join(st, 'abito-island'));
+  const st = fakeStage(); fs.writeFileSync(path.join(st, 'koda'), '#!/bin/true\nXTEST\n', { mode: 0o755 });
+  const r = readJson(path.join(st, 'receipt.json')); r.files['koda'] = L.sha256File(path.join(st, 'koda'));
   fs.writeFileSync(path.join(st, 'receipt.json'), JSON.stringify(r));
   assert.match(L.verifyStage(st).join(), /XTEST/); fs.rmSync(st, { recursive: true });
 });
 test('desktop entry: quoted Exec, Icon, observed StartupWMClass; no unquoted path with spaces', () => {
   const t = L.desktopText();
-  assert.match(t, /^Exec="@INSTALL_DIR@\/abito-island-launcher"$/m);
-  assert.match(t, /^Icon=@INSTALL_DIR@\/abito-island\.png$/m);
-  assert.match(t, /^StartupWMClass=Abito-island$/m);
+  assert.match(t, /^Exec="@INSTALL_DIR@\/koda-launcher"$/m);
+  assert.match(t, /^Icon=@INSTALL_DIR@\/koda\.png$/m);
+  assert.match(t, /^StartupWMClass=Koda$/m);
 });
 test('identity never collides with the installed apps', () => {
-  assert.match(L.desktopText(), /Exec="@INSTALL_DIR@\/abito-island-launcher"/);
+  assert.match(L.desktopText(), /Exec="@INSTALL_DIR@\/koda-launcher"/);
   assert.doesNotMatch(L.desktopText() + L.launcherText(), /abito-desktop|com\.abitog\.Abito\b(?!Tauri)/);
 });
 test('K2-13: a staged binary that carries the TTS path (espeak_ or piper_phonemize) fails verifyStage', () => {
-  for (const [file, marker] of [['abito-island', 'espeak_Synth'], ['abito-island', 'espeak_ng_InitializePath'], [L.TRANSCRIBE_BIN, 'piper_phonemize'], [L.TRANSCRIBE_BIN, 'espeak_']]) {
+  for (const [file, marker] of [['koda', 'espeak_Synth'], ['koda', 'espeak_ng_InitializePath'], [L.TRANSCRIBE_BIN, 'piper_phonemize'], [L.TRANSCRIBE_BIN, 'espeak_']]) {
     const d = fakeStage();
     fs.appendFileSync(path.join(d, file), `${marker}\n`);
     const r = readJson(path.join(d, 'receipt.json')); r.files[file] = L.sha256File(path.join(d, file));
@@ -445,13 +445,13 @@ test('K2-13: a staged binary that carries the TTS path (espeak_ or piper_phonemi
   }
   // The scan is the same function the Windows receipt check uses, so a `.exe` name is covered here too.
   const exeDir = T.make('abito-tts-exe-');
-  const exe = path.join(exeDir, 'abito-transcribe.exe');
+  const exe = path.join(exeDir, 'koda-transcribe.exe');
   fs.writeFileSync(exe, Buffer.concat([Buffer.alloc(1024, 1), Buffer.from('piper_phonemize')]));
-  assert.match(L.verifyTtsFree([{ name: 'abito-transcribe.exe', file: exe }]).join(), /piper/);
+  assert.match(L.verifyTtsFree([{ name: 'koda-transcribe.exe', file: exe }]).join(), /piper/);
   const cleanDir = T.make('abito-tts-clean-');
-  const clean = path.join(cleanDir, 'abito-island.exe');
+  const clean = path.join(cleanDir, 'koda.exe');
   fs.writeFileSync(clean, Buffer.alloc(5 * 1024 * 1024 + 7, 2));
-  assert.deepEqual(L.verifyTtsFree([{ name: 'abito-island.exe', file: clean }]), [], 'a binary without the symbols passes');
+  assert.deepEqual(L.verifyTtsFree([{ name: 'koda.exe', file: clean }]), [], 'a binary without the symbols passes');
   fs.rmSync(exeDir, { recursive: true, force: true });
   fs.rmSync(cleanDir, { recursive: true, force: true });
 });

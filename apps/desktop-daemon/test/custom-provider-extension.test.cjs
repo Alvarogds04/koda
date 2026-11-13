@@ -717,10 +717,10 @@ const piAiCompat = () => piPackage().ai;
 
 /**
  * The REAL-pi proofs need the installed `pi` (and its pi-ai). Without it they are skipped with a visible reason,
- * unless ABITO_REQUIRE_PI=1 (CI sets it where pi is installed): then absence is a failure, never a silent skip.
+ * unless KODA_REQUIRE_PI=1 (CI sets it where pi is installed): then absence is a failure, never a silent skip.
  */
 const PI_SKIP = (() => {
-	if (process.env.ABITO_REQUIRE_PI === "1") return false;
+	if (process.env.KODA_REQUIRE_PI === "1") return false;
 	try { piPackage(); return false; } catch (error) { return `installed pi not found (${error.message})`; }
 })();
 
@@ -982,9 +982,9 @@ function findGentleRoot() {
 
 const GENTLE_ROOT = findGentleRoot();
 const GENTLE_MISSING = "Gentle Shell (gentle-pi) not found; set GENTLE_PI_ROOT or build the bundled runtime";
-if (!GENTLE_ROOT && process.env.ABITO_REQUIRE_GENTLE === "1") {
-	test("Gentle Shell is required here (ABITO_REQUIRE_GENTLE=1)", () => {
-		assert.fail("ABITO_REQUIRE_GENTLE=1 but no Gentle Shell was found (set GENTLE_PI_ROOT or build the bundled runtime)");
+if (!GENTLE_ROOT && process.env.KODA_REQUIRE_GENTLE === "1") {
+	test("Gentle Shell is required here (KODA_REQUIRE_GENTLE=1)", () => {
+		assert.fail("KODA_REQUIRE_GENTLE=1 but no Gentle Shell was found (set GENTLE_PI_ROOT or build the bundled runtime)");
 	});
 }
 const GENTLE_SKIP = GENTLE_ROOT ? undefined : GENTLE_MISSING;

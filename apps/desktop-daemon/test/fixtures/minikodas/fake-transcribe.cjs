@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 "use strict";
 
-// K2-13 test double for `abito-transcribe` (offline, no model). argv as the daemon builds it:
+// K2-13 test double for `koda-transcribe` (offline, no model). argv as the daemon builds it:
 //   transcribe --model ID --language L --timeout-sec N --max-seconds N <abs wav>
 // Prints ONE JSON line like the real helper. FAKE_HELPER_LOG receives the argv (one JSON line per call).
 // FAKE_HELPER_MODE: (default) a transcript naming the model and the audio length; model_missing; timeout (the

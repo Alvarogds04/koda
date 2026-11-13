@@ -281,7 +281,7 @@ fn ensure_agent(app: &AppHandle) {
         return;
     }
     let root = abito_island::agentconn::island_root(
-        std::env::var("ABITO_ISLAND_DIR").ok().as_deref(),
+        std::env::var("KODA_ISLAND_DIR").ok().as_deref(),
         std::env::var("HOME").ok().as_deref(),
     );
     if let Some(root) = root {

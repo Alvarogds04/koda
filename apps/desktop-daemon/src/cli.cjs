@@ -2,7 +2,7 @@
 "use strict";
 
 /**
- * abito-island-daemon — foreground CLI for the island agent daemon (U4).
+ * koda-daemon — foreground CLI for the island agent daemon (U4).
  *
  *   run [--app-owned]           start in foreground; app-owned adds a stdin lifetime lease
  *   status                      sanitized JSON incl. the health verdict {state,reason,ready} (never
@@ -20,14 +20,14 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const config = require("./config.cjs");
-const { Daemon, classifySession, isDaemonProcess, pidAlive, pidState, readSession, sessionPath } = require("./daemon.cjs");
+const { Daemon, classifySession, isDaemonProcess, pidState, readSession, sessionPath } = require("./daemon.cjs");
 const { ensureIsland, defaultIslandRoot, windowsIslandRootViolation } = require("./isolation.cjs");
 
-const USAGE = "usage: abito-island-daemon run [--app-owned] | status | stop | config get | config set-workspace <absolute-path> | config set-hotkey <combo>|--clear";
+const USAGE = "usage: koda-daemon run [--app-owned] | status | stop | config get | config set-workspace <absolute-path> | config set-hotkey <combo>|--clear";
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function fail(code, message) {
-	process.stderr.write(`abito-island-daemon: ${message}\n`);
+	process.stderr.write(`koda-daemon: ${message}\n`);
 	return code;
 }
 
@@ -62,13 +62,13 @@ function liveSession(root) {
 }
 
 /**
- * The hook installer that ships NEXT TO this daemon: <package>/desktop-daemon/src -> <package>/desktop-harness/bin/abito-hook.cjs
+ * The hook installer that ships NEXT TO this daemon: <package>/desktop-daemon/src -> <package>/desktop-harness/bin/koda-hook.cjs
  * (the same relative layout in the repo and in the installed package). Only when the file is there: a package without it
  * keeps every agent "unavailable" instead of a guessed path. It is a DEFAULT: `hookInstallerBin` in config.json wins, and
  * nothing here comes from the page.
  */
 function packagedInstallerBin(srcDir = __dirname) {
-	const file = path.resolve(srcDir, "..", "..", "desktop-harness", "bin", "abito-hook.cjs");
+	const file = path.resolve(srcDir, "..", "..", "desktop-harness", "bin", "koda-hook.cjs");
 	try {
 		return fs.statSync(file).isFile() ? file : undefined;
 	} catch {
@@ -118,7 +118,7 @@ async function run(root, appOwned = false) {
 	try {
 		if (!closing) await daemon.start();
 		if (!closing) {
-			process.stderr.write(`abito-island-daemon: running (pid ${process.pid}); session.json in ${path.join(daemon.root, "runtime")}\n`);
+			process.stderr.write(`koda-daemon: running (pid ${process.pid}); session.json in ${path.join(daemon.root, "runtime")}\n`);
 			await stopped;
 		}
 		await (closed ?? daemon.stop());

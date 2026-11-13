@@ -93,10 +93,10 @@ function craftedTarGz(out, members) {
 
 function stage() {
   const dir = tmp();
-  fs.writeFileSync(path.join(dir, 'abito-island'), '#!/bin/sh\necho toy binary\n', { mode: 0o755 });
-  fs.writeFileSync(path.join(dir, 'abito-transcribe'), '#!/bin/sh\necho toy transcriber\n', { mode: 0o755 });
-  fs.writeFileSync(path.join(dir, 'abito-island-launcher'), L.launcherText(), { mode: 0o755 });
-  fs.writeFileSync(path.join(dir, 'abito-island.png'), 'png-bytes', { mode: 0o644 });
+  fs.writeFileSync(path.join(dir, 'koda'), '#!/bin/sh\necho toy binary\n', { mode: 0o755 });
+  fs.writeFileSync(path.join(dir, 'koda-transcribe'), '#!/bin/sh\necho toy transcriber\n', { mode: 0o755 });
+  fs.writeFileSync(path.join(dir, 'koda-launcher'), L.launcherText(), { mode: 0o755 });
+  fs.writeFileSync(path.join(dir, 'koda.png'), 'png-bytes', { mode: 0o644 });
   fs.writeFileSync(path.join(dir, `${L.IDENTIFIER}.desktop`), L.desktopText(), { mode: 0o644 });
   for (const n of L.DAEMON_FILES) {
     const file = path.join(dir, 'desktop-daemon', n);
@@ -123,7 +123,7 @@ function stage() {
 }
 function env() {
   const home = tmp(); const root = path.join(home, 'project'); fs.mkdirSync(root);
-  return { home, root, prefix: path.join(home, 'share', 'abito-island'), apps: path.join(home, 'share', 'applications') };
+  return { home, root, prefix: path.join(home, 'share', 'koda'), apps: path.join(home, 'share', 'applications') };
 }
 const run = (args, e) => cp.spawnSync('sh', [SCRIPT, ...args], { encoding: 'utf8', env: { PATH: process.env.PATH, HOME: e.home } });
 const install = (st, e, extra = []) => run([st, '--prefix', e.prefix, '--applications-dir', e.apps, '--project-root', e.root, ...extra], e);
@@ -151,12 +151,12 @@ test('syntax: POSIX sh parses (sh -n) and has no bashisms in the shebang', () =>
   assert.match(fs.readFileSync(SCRIPT, 'utf8'), /^#!\/bin\/sh\n/);
 });
 
-test('happy path: installs binary+launcher+png(+template+receipt), executable, hashes printed, .desktop resolved with ABITO_PROJECT_ROOT', () => {
+test('happy path: installs binary+launcher+png(+template+receipt), executable, hashes printed, .desktop resolved with KODA_PROJECT_ROOT', () => {
   const st = stage(), e = env();
   const r = install(st, e);
   assert.equal(r.status, 0, r.stderr + r.stdout);
-  for (const n of ['abito-island', 'abito-island-launcher', 'abito-transcribe']) assert.ok(fs.statSync(path.join(e.prefix, n)).mode & 0o100, `${n} executable`);
-  assert.ok(L.STAGED.includes('abito-transcribe'), 'K2-13: the transcription helper ships beside the island');
+  for (const n of ['koda', 'koda-launcher', 'koda-transcribe']) assert.ok(fs.statSync(path.join(e.prefix, n)).mode & 0o100, `${n} executable`);
+  assert.ok(L.STAGED.includes('koda-transcribe'), 'K2-13: the transcription helper ships beside the island');
   for (const n of [...L.STAGED, 'receipt.json']) if (n !== ARCHIVE) assert.ok(fs.existsSync(path.join(e.prefix, n)), n);
   assert.equal(fs.existsSync(path.join(e.prefix, ARCHIVE)), false, 'the runtime archive itself is not installed');
   // the bundled runtime: exactly the archive's tree, extracted at PREFIX/runtime
@@ -171,13 +171,13 @@ test('happy path: installs binary+launcher+png(+template+receipt), executable, h
   assert.match(r.stderr, /koda-runtime-node-ran/, 'the extracted runtime node ran the verification');
   const desk = fs.readFileSync(path.join(e.apps, `${L.IDENTIFIER}.desktop`), 'utf8');
   assert.doesNotMatch(desk, /@INSTALL_DIR@/);
-  assert.ok(desk.split('\n').includes(`Exec=env ABITO_PROJECT_ROOT=${e.root} "${e.prefix}/abito-island-launcher"`), desk);
-  assert.ok(desk.split('\n').includes(`Icon=${e.prefix}/abito-island.png`), desk);
-  assert.match(desk, /^StartupWMClass=Abito-island$/m);
-  assert.match(r.stdout, new RegExp(sha(fs.readFileSync(path.join(st, 'abito-island')))));
-  assert.match(r.stdout, /abito-island-launcher/); assert.match(r.stdout, /Abito \(Tauri\)/);
+  assert.ok(desk.split('\n').includes(`Exec=env KODA_PROJECT_ROOT=${e.root} "${e.prefix}/koda-launcher"`), desk);
+  assert.ok(desk.split('\n').includes(`Icon=${e.prefix}/koda.png`), desk);
+  assert.match(desk, /^StartupWMClass=Koda$/m);
+  assert.match(r.stdout, new RegExp(sha(fs.readFileSync(path.join(st, 'koda')))));
+  assert.match(r.stdout, /koda-launcher/); assert.match(r.stdout, /Abito \(Tauri\)/);
   // and the toy binary runs through the launcher
-  const run2 = cp.spawnSync(path.join(e.prefix, 'abito-island-launcher'), [], { encoding: 'utf8', env: { PATH: process.env.PATH, ABITO_PROJECT_ROOT: e.root } });
+  const run2 = cp.spawnSync(path.join(e.prefix, 'koda-launcher'), [], { encoding: 'utf8', env: { PATH: process.env.PATH, KODA_PROJECT_ROOT: e.root } });
   assert.match(run2.stdout, /toy binary/);
 });
 
@@ -387,18 +387,18 @@ test('VERIFY FIRST: any mismatch / missing / extra / bad receipt aborts and touc
     'symlink daemon directory': st => { fs.renameSync(path.join(st, 'desktop-daemon/src'), path.join(st, 'moved')); fs.symlinkSync('../moved', path.join(st, 'desktop-daemon/src')); },
     'extra empty directory': st => fs.mkdirSync(path.join(st, 'desktop-daemon/extra')),
     'extra receipt key': st => { const r = receipt(st); r.files['desktop-daemon/extra'] = 'a'.repeat(64); fs.writeFileSync(path.join(st, 'receipt.json'), JSON.stringify(r, null, 2)); },
-    'tampered binary': st => fs.appendFileSync(path.join(st, 'abito-island'), 'x'),
-    'tampered launcher': st => fs.writeFileSync(path.join(st, 'abito-island-launcher'), '#!/bin/sh\nexec "$@"\n'),
-    'tampered png': st => fs.writeFileSync(path.join(st, 'abito-island.png'), 'other'),
+    'tampered binary': st => fs.appendFileSync(path.join(st, 'koda'), 'x'),
+    'tampered launcher': st => fs.writeFileSync(path.join(st, 'koda-launcher'), '#!/bin/sh\nexec "$@"\n'),
+    'tampered png': st => fs.writeFileSync(path.join(st, 'koda.png'), 'other'),
     'tampered desktop template': st => fs.appendFileSync(path.join(st, `${L.IDENTIFIER}.desktop`), 'Exec=evil\n'),
-    'missing file': st => fs.rmSync(path.join(st, 'abito-island.png')),
+    'missing file': st => fs.rmSync(path.join(st, 'koda.png')),
     'extra file': st => fs.writeFileSync(path.join(st, 'surprise'), 'x'),
     'no receipt': st => fs.rmSync(path.join(st, 'receipt.json')),
     'receipt not clean': st => { const r = receipt(st); r.provenance.clean = false; fs.writeFileSync(path.join(st, 'receipt.json'), JSON.stringify(r, null, 2)); },
     'receipt no head': st => { const r = receipt(st); delete r.provenance; fs.writeFileSync(path.join(st, 'receipt.json'), JSON.stringify(r, null, 2)); },
     'foreign identifier': st => { const r = receipt(st); r.identifier = 'com.abitog.Abito.Preview'; fs.writeFileSync(path.join(st, 'receipt.json'), JSON.stringify(r, null, 2)); },
-    'hash of another file listed': st => { const r = receipt(st); r.files['abito-island'] = r.files['abito-island.png']; fs.writeFileSync(path.join(st, 'receipt.json'), JSON.stringify(r, null, 2)); },
-    'binary is a symlink': st => { fs.rmSync(path.join(st, 'abito-island')); fs.symlinkSync('/bin/true', path.join(st, 'abito-island')); },
+    'hash of another file listed': st => { const r = receipt(st); r.files['koda'] = r.files['koda.png']; fs.writeFileSync(path.join(st, 'receipt.json'), JSON.stringify(r, null, 2)); },
+    'binary is a symlink': st => { fs.rmSync(path.join(st, 'koda')); fs.symlinkSync('/bin/true', path.join(st, 'koda')); },
   };
   for (const [name, mutate] of Object.entries(mutations)) {
     const st = stage(), e = env(); fs.mkdirSync(e.apps, { recursive: true });
@@ -432,10 +432,10 @@ test('installed directory symlink and extra files are refused without writing th
 
 test('a failed verification on a REINSTALL leaves the previous install untouched', () => {
   const st = stage(), e = env(); assert.equal(install(st, e).status, 0);
-  const before = sha(fs.readFileSync(path.join(e.prefix, 'abito-island')));
-  fs.appendFileSync(path.join(st, 'abito-island'), 'tamper');
+  const before = sha(fs.readFileSync(path.join(e.prefix, 'koda')));
+  fs.appendFileSync(path.join(st, 'koda'), 'tamper');
   assert.notEqual(install(st, e).status, 0);
-  assert.equal(sha(fs.readFileSync(path.join(e.prefix, 'abito-island'))), before);
+  assert.equal(sha(fs.readFileSync(path.join(e.prefix, 'koda'))), before);
 });
 
 test('idempotent: reinstall over itself gives identical files, a fresh runtime/, and no temp leftovers', () => {
@@ -457,10 +457,10 @@ test('idempotent: reinstall over itself gives identical files, a fresh runtime/,
 
 test('replaces a RUNNING binary (rename, not overwrite → no «text file busy»)', () => {
   const st = stage(), e = env(); assert.equal(install(st, e).status, 0);
-  fs.writeFileSync(path.join(st, 'abito-island'), '#!/bin/sh\nsleep 5\n', { mode: 0o755 });
-  const r0 = receipt(st); r0.files['abito-island'] = sha(fs.readFileSync(path.join(st, 'abito-island')));
+  fs.writeFileSync(path.join(st, 'koda'), '#!/bin/sh\nsleep 5\n', { mode: 0o755 });
+  const r0 = receipt(st); r0.files['koda'] = sha(fs.readFileSync(path.join(st, 'koda')));
   fs.writeFileSync(path.join(st, 'receipt.json'), JSON.stringify(r0, null, 2));
-  const child = cp.spawn(path.join(e.prefix, 'abito-island'), { stdio: 'ignore' });
+  const child = cp.spawn(path.join(e.prefix, 'koda'), { stdio: 'ignore' });
   try { assert.equal(install(st, e).status, 0); } finally { child.kill(); }
 });
 
@@ -485,7 +485,7 @@ test('Koda 0.1: the launcher entry shows «Koda»; file, binary and icon names s
   // Human 30-oct («Vamosa a cerrar esta version cambiar el nombre del repo por Koda y apartir de aqui empezaremos esta sera la version 0.1» → «Todo se llama Koda, repo nuevo desde 0.1» + «Solo lo visible»)
   const text = L.desktopText();
   assert.match(text, /^Name=Koda$/m); assert.match(text, /^Comment=Koda$/m);
-  assert.match(text, /abito-island-launcher/); assert.match(text, /abito-island\.png/);
+  assert.match(text, /koda-launcher/); assert.match(text, /koda\.png/);
 });
 
 test('upgrading over a 0.1.2 install that holds its private audit/ log keeps the log and installs (29-oct, human Linux)', () => {
@@ -558,7 +558,7 @@ test('unsafe or colliding inputs are refused before anything is touched', () => 
 test('defaults are documented: --help names the default prefix and says the project root is required; usage on no stage', () => {
   const e = env();
   const help = run(['--help'], e); assert.equal(help.status, 0);
-  assert.match(help.stdout, /\.local\/share\/abito-island/);
+  assert.match(help.stdout, /\.local\/share\/koda/);
   // public release (abito-release): no one else's checkout is a default — the project root is asked for
   assert.match(help.stdout, /--project-root DIR\s+\(required\)/); assert.doesNotMatch(help.stdout, /sb-second-brain/);
   assert.match(help.stdout, /--uninstall/); assert.match(help.stdout, /--prefix/); assert.match(help.stdout, /--project-root/);
@@ -572,6 +572,115 @@ test('public release: without --project-root nothing is installed and the error 
   assert.notEqual(r.status, 0);
   assert.match(r.stderr, /--project-root/);
   assert.equal(snapshot(e), before, 'nothing touched');
+});
+
+// ---- K2-04 T6: the Koda 0.1 menu entry ---------------------------------------------------------------
+// The 0.1 wrote ~/.local/share/applications/com.abitog.AbitoTauri.desktop and its binary stays installed. After updating the user
+// would see two «Koda» in the menu. install.sh removes THAT exact file, only when it is the 0.1 entry (a regular file whose Exec
+// names an `abito-island` launcher); it never removes the 0.1 install itself, and never touches any other file.
+const LEGACY_DESKTOP = 'com.abitog.AbitoTauri.desktop';
+// EXACTLY what the 0.1 install.sh produced: desktopText() with @INSTALL_DIR@ resolved and the Exec line rewritten.
+const OLD_PREFIX = '/home/u/.local/share/abito-island';
+const legacyEntry = (prefix = OLD_PREFIX, root = '/home/u/p') =>
+  `[Desktop Entry]\nType=Application\nName=Koda\nComment=Koda\nExec=env ABITO_PROJECT_ROOT=${root} "${prefix}/abito-island-launcher"\nIcon=${prefix}/abito-island.png\nTerminal=false\nCategories=Utility;\nStartupWMClass=Abito-island\n`;
+
+test('K2-04 T6: an update removes the 0.1 menu entry and leaves the 0.1 install and everything else alone', () => {
+  const st = stage(), e = env();
+  fs.mkdirSync(e.apps, { recursive: true });
+  fs.writeFileSync(path.join(e.apps, LEGACY_DESKTOP), legacyEntry());
+  fs.writeFileSync(path.join(e.apps, 'other-app.desktop'), '[Desktop Entry]\nName=Other\n');
+  const old01 = path.join(e.home, 'share', 'abito-island'); fs.mkdirSync(old01, { recursive: true });
+  fs.writeFileSync(path.join(old01, 'abito-island'), 'old binary');
+  const r = install(st, e);
+  assert.equal(r.status, 0, r.stderr + r.stdout);
+  assert.equal(fs.existsSync(path.join(e.apps, LEGACY_DESKTOP)), false, 'the 0.1 menu entry is gone');
+  assert.ok(fs.existsSync(path.join(e.apps, 'com.abitog.Koda.desktop')), 'the new entry is there');
+  assert.ok(fs.existsSync(path.join(e.apps, 'other-app.desktop')), 'other entries are untouched');
+  assert.equal(fs.readFileSync(path.join(old01, 'abito-island'), 'utf8'), 'old binary', 'the 0.1 install itself is never removed');
+  assert.match(r.stdout, /Removed the Koda 0\.1 menu entry/);
+});
+
+// The decision itself is one shell function in install.sh. The cases below run THAT function (extracted from the shipped script, not a
+// copy) against each file: a full install per case would cost ~0.7 s each and this check has a wall-clock cap (240 s on macOS).
+// Three full installs elsewhere in this block prove the wiring (removed on update, kept when edited, nothing on a clean machine).
+function legacyDecision(files) {
+  const src = fs.readFileSync(SCRIPT, 'utf8');
+  const start = src.indexOf('legacy_menu_entry_is_01() {');
+  assert.ok(start > 0, 'the function is in install.sh');
+  const end = src.indexOf('\n}\n', start);
+  assert.ok(end > start, 'the end of the function is found');
+  const fn = src.slice(start, end + 3);
+  assert.ok(fn.split('\n').length > 15 && fn.trimEnd().endsWith('}'), 'the WHOLE function was extracted, not a prefix');
+  const dir = tmp();
+  fs.writeFileSync(path.join(dir, 'fn.sh'), fn);
+  const out = {};
+  for (const [name, make] of Object.entries(files)) {
+    const apps = path.join(dir, name.replace(/\W+/g, '_')); fs.mkdirSync(apps);
+    make(apps);
+    const target = path.join(apps, LEGACY_DESKTOP);
+    const r = cp.spawnSync('sh', ['-c', 'set -eu; . "$1"; if legacy_menu_entry_is_01 "$2"; then echo yes; else echo no; fi', 'sh', path.join(dir, 'fn.sh'), target], { encoding: 'utf8' });
+    assert.equal(r.status, 0, `${name}: the function never aborts the installer (set -eu): ${r.stderr}`);
+    out[name] = r.stdout.trim();
+  }
+  return out;
+}
+
+test('K2-04 T6: the 0.1 menu entry check keeps every file that is not exactly the 0.1 one (links, directories, every realistic user edit)', () => {
+  const ours = legacyEntry();
+  const write = text => apps => fs.writeFileSync(path.join(apps, LEGACY_DESKTOP), text);
+  const keep = {
+    'another program': write(ours.replace(`"${OLD_PREFIX}/abito-island-launcher"`, '"/usr/bin/other-app"')),
+    'a look-alike launcher': write(ours.replace('/abito-island-launcher"', '/my-abito-island-launcher"')),
+    'a foreign program with our launcher as an argument': write(ours.replace('Exec=env', 'Exec=/usr/bin/other env')),
+    'a comment added': write('# my note\n' + ours),
+    'a blank line added': write(ours.replace('Type=Application\n', 'Type=Application\n\n')),
+    'Name changed': write(ours.replace('Name=Koda', 'Name=My Koda')),
+    'Icon elsewhere': write(ours.replace(`Icon=${OLD_PREFIX}/abito-island.png`, 'Icon=/usr/share/icons/x.png')),
+    'an extra key': write(ours + 'Hidden=true\n'),
+    'a duplicated Exec': write(ours.replace('Terminal=false\n', 'Terminal=false\nExec=/usr/bin/evil\n')),
+    'CRLF line endings': write(ours.replace(/\n/g, '\r\n')),
+    'an extra Exec argument': write(ours.replace('abito-island-launcher"', 'abito-island-launcher" --debug')),
+    'a command substitution as the project root': write(ours.replace('/home/u/p', '$(touch /tmp/koda-pwn)')),
+    'a project root with a space (the 0.1 refused it)': write(ours.replace('/home/u/p', '/srv/my project')),
+    'a prefix with a quote (the 0.1 refused it)': write(legacyEntry('/opt/we"ird/abito-island')),
+    'a relative project root': write(ours.replace('/home/u/p', 'relative/p')),
+    'a project root the 0.1 safe_path refused (// . .. trailing /)': write(ours.replace('/home/u/p', '/home//u/../p/')),
+    'a prefix the 0.1 safe_path refused (a . segment)': write(legacyEntry('/home/u/./abito-island')),
+    'the filesystem root as the project root': write(ours.replace('/home/u/p', '/')),
+    'a symlink': apps => { fs.writeFileSync(path.join(apps, 'real.desktop'), ours); fs.symlinkSync(path.join(apps, 'real.desktop'), path.join(apps, LEGACY_DESKTOP)); },
+    'a directory': apps => fs.mkdirSync(path.join(apps, LEGACY_DESKTOP)),
+    'a missing file': () => {},
+  };
+  const got = legacyDecision(keep);
+  for (const name of Object.keys(keep)) assert.equal(got[name], 'no', `${name}: kept`);
+  assert.equal(fs.existsSync('/tmp/koda-pwn'), false, 'the Exec line is never executed');
+});
+
+test('K2-04 T6: the 0.1 menu entry check recognises the exact 0.1 file for any prefix and project root the 0.1 install used', () => {
+  const yes = {};
+  for (const [prefix, root] of [['/home/u/.local/share/abito-island', '/home/u/p'], ['/opt/Koda_old-1.2/abito-island', '/srv/my-project_2/sub.dir'], ['/data/ab/abito-island', '/r']]) {
+    yes[`${prefix} ${root}`] = apps => fs.writeFileSync(path.join(apps, LEGACY_DESKTOP), legacyEntry(prefix, root));
+  }
+  const got = legacyDecision(yes);
+  for (const name of Object.keys(yes)) assert.equal(got[name], 'yes', `${name}: recognised`);
+});
+
+test('K2-04 T6: an edited 0.1 menu entry survives a real update (wiring of the check into the install)', () => {
+  const st = stage(), e = env();
+  fs.mkdirSync(e.apps, { recursive: true });
+  const edited = legacyEntry().replace('Name=Koda', 'Name=My Koda');
+  fs.writeFileSync(path.join(e.apps, LEGACY_DESKTOP), edited);
+  const r = install(st, e);
+  assert.equal(r.status, 0, r.stderr + r.stdout);
+  assert.equal(fs.readFileSync(path.join(e.apps, LEGACY_DESKTOP), 'utf8'), edited, 'byte-identical');
+  assert.doesNotMatch(r.stdout, /Removed the Koda 0\.1 menu entry/);
+});
+
+test('K2-04 T6: a clean machine (no 0.1 entry) installs exactly as before and prints no removal line', () => {
+  const st = stage(), e = env();
+  const r = install(st, e);
+  assert.equal(r.status, 0, r.stderr + r.stdout);
+  assert.doesNotMatch(r.stdout, /Removed the Koda 0\.1 menu entry/);
 });
 
 console.log(`install-check: ${passed} passed`);

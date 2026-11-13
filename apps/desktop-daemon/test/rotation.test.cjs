@@ -41,7 +41,7 @@ function tmp(prefix) {
 
 /**
  * A Daemon's island root + env for `base` (the same layout as turn-budget/daemon tests): on Windows
- * an island may only live inside the canonical protected `%LOCALAPPDATA%\Abito` root
+ * an island may only live inside the canonical protected `%LOCALAPPDATA%\Koda` root
  * (windowsIslandRootViolation), so the base (canonical long form) is the daemon's private
  * LOCALAPPDATA and the island sits at `<base>\Abito\<name>`. Linux/macOS: `<base>/<name>`, env
  * unchanged. Short names keep the Unix socket path under macOS's 104-byte limit.
@@ -49,7 +49,7 @@ function tmp(prefix) {
 function daemonRootEnv(base, name = "i") {
 	const local = fs.realpathSync.native(base);
 	return {
-		root: win ? path.join(local, "Abito", name) : path.join(base, name),
+		root: win ? path.join(local, "Koda", name) : path.join(base, name),
 		env: { PATH: process.env.PATH, ...(win ? { LOCALAPPDATA: local } : {}) },
 	};
 }
@@ -135,22 +135,22 @@ test("Gentle Dot's limits: 20 MB or 10 compactions, env-overridable", () => {
 	assert.deepEqual(DEFAULT_ROTATION, { bytes: 20 * 1024 * 1024, compactions: 10 });
 	assert.deepEqual(rotationLimits({}), DEFAULT_ROTATION);
 	assert.deepEqual(
-		rotationLimits({ ABITO_ROTATE_BYTES: "4096", ABITO_ROTATE_COMPACTIONS: "3" }),
+		rotationLimits({ KODA_ROTATE_BYTES: "4096", KODA_ROTATE_COMPACTIONS: "3" }),
 		{ bytes: 4096, compactions: 3 },
 	);
 	// Invalid values fall back to the default, never to zero or nonsense.
-	assert.deepEqual(rotationLimits({ ABITO_ROTATE_BYTES: "lots", ABITO_ROTATE_COMPACTIONS: "0" }), DEFAULT_ROTATION);
+	assert.deepEqual(rotationLimits({ KODA_ROTATE_BYTES: "lots", KODA_ROTATE_COMPACTIONS: "0" }), DEFAULT_ROTATION);
 	// F7: only plain positive decimal integers — no 1e3, no 0x10, no spaces.
-	assert.deepEqual(rotationLimits({ ABITO_ROTATE_BYTES: "1e3", ABITO_ROTATE_COMPACTIONS: "0x10" }), DEFAULT_ROTATION);
-	assert.deepEqual(rotationLimits({ ABITO_ROTATE_BYTES: " 4096", ABITO_ROTATE_COMPACTIONS: "2 " }), DEFAULT_ROTATION);
-	// F7: ABITO_ROTATE_BYTES keeps the 1024-byte minimum; a smaller env value never wins.
-	assert.deepEqual(rotationLimits({ ABITO_ROTATE_BYTES: "1024" }), { bytes: 1024, compactions: 10 });
-	assert.deepEqual(rotationLimits({ ABITO_ROTATE_BYTES: "512" }), DEFAULT_ROTATION);
-	assert.deepEqual(rotationLimits({ ABITO_ROTATE_BYTES: "512" }, { bytes: 4096 }), { bytes: 4096, compactions: 10 });
+	assert.deepEqual(rotationLimits({ KODA_ROTATE_BYTES: "1e3", KODA_ROTATE_COMPACTIONS: "0x10" }), DEFAULT_ROTATION);
+	assert.deepEqual(rotationLimits({ KODA_ROTATE_BYTES: " 4096", KODA_ROTATE_COMPACTIONS: "2 " }), DEFAULT_ROTATION);
+	// F7: KODA_ROTATE_BYTES keeps the 1024-byte minimum; a smaller env value never wins.
+	assert.deepEqual(rotationLimits({ KODA_ROTATE_BYTES: "1024" }), { bytes: 1024, compactions: 10 });
+	assert.deepEqual(rotationLimits({ KODA_ROTATE_BYTES: "512" }), DEFAULT_ROTATION);
+	assert.deepEqual(rotationLimits({ KODA_ROTATE_BYTES: "512" }, { bytes: 4096 }), { bytes: 4096, compactions: 10 });
 	// A config value wins over the default; the env wins over the config.
 	assert.deepEqual(rotationLimits({}, { bytes: 1000, compactions: 2 }), { bytes: 1000, compactions: 2 });
 	assert.deepEqual(
-		rotationLimits({ ABITO_ROTATE_BYTES: "4096" }, { bytes: 1000, compactions: 2 }),
+		rotationLimits({ KODA_ROTATE_BYTES: "4096" }, { bytes: 1000, compactions: 2 }),
 		{ bytes: 4096, compactions: 2 },
 	);
 });
@@ -515,8 +515,8 @@ test("config rotation key: ON by default with Gentle Dot's limits, strict valida
 	writePrivateFile(path.join(dir, "config.json"), `${JSON.stringify({ rotation: { enabled: true, bytes: 4096, compactions: 3 } })}\n`);
 	cfg = loadConfig(dir);
 	assert.deepEqual(cfg.rotation, { enabled: true, bytes: 4096, compactions: 3 });
-	// Env overrides win over the file (like ABITO_WORKSPACE).
-	cfg = loadConfig(dir, { env: { ABITO_ROTATE_BYTES: "8192", ABITO_ROTATE_COMPACTIONS: "5" } });
+	// Env overrides win over the file (like KODA_WORKSPACE).
+	cfg = loadConfig(dir, { env: { KODA_ROTATE_BYTES: "8192", KODA_ROTATE_COMPACTIONS: "5" } });
 	assert.deepEqual(cfg.rotation, { enabled: true, bytes: 8192, compactions: 5 });
 	// Invalid subkey, type or range -> ConfigError("rotation"), never a silent flip.
 	// (The v0.1.0 #386 keys thresholdPercent/keepTurns are NO LONGER here: B1 accepts
@@ -530,13 +530,13 @@ test("config rotation key: ON by default with Gentle Dot's limits, strict valida
 	}
 	// Invalid env values never win and never crash: the file/default stands.
 	writePrivateFile(path.join(dir, "config.json"), `${JSON.stringify({ rotation: { bytes: 4096 } })}\n`);
-	cfg = loadConfig(dir, { env: { ABITO_ROTATE_BYTES: "lots" } });
+	cfg = loadConfig(dir, { env: { KODA_ROTATE_BYTES: "lots" } });
 	assert.deepEqual(cfg.rotation, { enabled: true, bytes: 4096, compactions: 10 });
 	// F7 at the config level too: non-decimal env values and a bytes value under
 	// the 1024 minimum never win over the file.
-	cfg = loadConfig(dir, { env: { ABITO_ROTATE_BYTES: "1e3", ABITO_ROTATE_COMPACTIONS: "0x10" } });
+	cfg = loadConfig(dir, { env: { KODA_ROTATE_BYTES: "1e3", KODA_ROTATE_COMPACTIONS: "0x10" } });
 	assert.deepEqual(cfg.rotation, { enabled: true, bytes: 4096, compactions: 10 });
-	cfg = loadConfig(dir, { env: { ABITO_ROTATE_BYTES: "512" } });
+	cfg = loadConfig(dir, { env: { KODA_ROTATE_BYTES: "512" } });
 	assert.deepEqual(cfg.rotation, { enabled: true, bytes: 4096, compactions: 10 });
 });
 

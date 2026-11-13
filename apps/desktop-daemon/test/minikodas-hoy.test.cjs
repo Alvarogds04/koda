@@ -2,7 +2,7 @@
 
 // K2-13 Minikodas, commit 2 (T4, S3/S5): the «Hoy» inbox with approve-later (no PIN: L17), the protocol frames
 // (allowlist + DTOs), the server verbs and the daemon wiring end to end. Offline: fake Pi (loads the real kit
-// extension), fake auth helper; no model, no network, no real ~/.pi or ~/.abito-island.
+// extension), fake auth helper; no model, no network, no real ~/.pi or ~/.koda.
 
 const test = require("node:test");
 const assert = require("node:assert/strict");

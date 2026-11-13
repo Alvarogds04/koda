@@ -7,9 +7,9 @@
 //! - A selection takes effect on the NEXT turn: a running turn keeps the
 //!   target it froze at submit (no halfway swap).
 //! - Persistence: `models-selection.json` (`{"v":1,"selected":…}`) in the
-//!   app config dir (`com.abitog.AbitoTauri`, never the Preview's), dir 0700,
+//!   app config dir (`com.abitog.Koda`, never the Preview's), dir 0700,
 //!   file 0600, written atomically, read with O_NOFOLLOW. The probe never
-//!   writes the user's config: without `ABITO_MODELS_CONFIG_DIR` it keeps the
+//!   writes the user's config: without `KODA_MODELS_CONFIG_DIR` it keeps the
 //!   selection in memory only.
 
 use std::path::PathBuf;
@@ -25,7 +25,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::{chathost, now_ms, probe_requested, AppState, QUITTING};
 
-pub const CONFIG_ENV: &str = "ABITO_MODELS_CONFIG_DIR";
+pub const CONFIG_ENV: &str = "KODA_MODELS_CONFIG_DIR";
 
 fn err(e: ChatError) -> BridgeError {
     BridgeError {

@@ -10,9 +10,9 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { DAEMON_FILES, HARNESS_FILES, PI_FILES } = require('../lib.cjs');
 const crate = path.resolve(__dirname, '../..');
-// K2-13 T2c-2: abito-transcribe.exe (the Minikodas' sherpa-onnx transcription helper) installs beside the island; the
+// K2-13 T2c-2: koda-transcribe.exe (the Minikodas' sherpa-onnx transcription helper) installs beside the island; the
 // pinned LGPL ffmpeg.exe travels inside the runtime archive (runtime\ffmpeg.exe), removed with the runtime directory.
-const BINARY_FILES = ['abito-island.exe', 'abito-notice-relay.exe', 'abito-private-session.exe', 'abito-transcribe.exe', 'abito-install.json'];
+const BINARY_FILES = ['koda.exe', 'abito-notice-relay.exe', 'abito-private-session.exe', 'koda-transcribe.exe', 'abito-install.json'];
 const RUNTIME_FILES = [...DAEMON_FILES.map(f => `desktop-daemon/${f}`), ...HARNESS_FILES.map(f => `desktop-harness/${f}`), ...PI_FILES.map(f => `desktop-pi/${f}`)].sort();
 const ARCHIVE_NAME = 'koda-runtime.tar.gz';
 const DEFAULT_OUT = path.join(crate, 'dist/windows-runtime');
@@ -265,8 +265,8 @@ function stage(out, runtimeArchive) {
   fs.writeFileSync(path.join(out, 'runtime.nsh'), nsisInclude(out));
   return archiveSha;
 }
-// K2-13 T2c-2 (S8, S15): `cargo build --release --bins` builds abito-transcribe.exe with the island and its two
-// helpers, but the Windows preview workflow copies only abito-island, abito-notice-relay and abito-private-session
+// K2-13 T2c-2 (S8, S15): `cargo build --release --bins` builds koda-transcribe.exe with the island and its two
+// helpers, but the Windows preview workflow copies only `koda`, `abito-notice-relay` and `abito-private-session`
 // from target/release into dist/, and every BINARY_FILE must be in $BINDIR before makensis Files it. The default
 // dist/ is this build's own output directory, so the closed set is completed there from the release directory: a
 // missing binary is copied, a binary the caller already staged is never replaced, and a host that did not build the

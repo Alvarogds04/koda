@@ -18,7 +18,7 @@
  *   mcpConfigPath  absolute path of a private MCP source file (projectMcpConfig)
  *   connectorsCommand  connectors CLI: ABSOLUTE normalized path of the installed binary; NO default (unset => connectors_list is "unavailable", nothing executes)
  *   connectorsDir      absolute clean directory read by the connectors CLI, default <island>/connectors (0700, created on first use)
- *   hookInstallerBin   ABSOLUTE normalized path of apps/desktop-harness/bin/abito-hook.cjs; NO default (unset => every agent is "unavailable", nothing executes)
+ *   hookInstallerBin   ABSOLUTE normalized path of apps/desktop-harness/bin/koda-hook.cjs; NO default (unset => every agent is "unavailable", nothing executes)
  *   connectorHostBin   ABSOLUTE normalized path of the abito-connector-host binary; NO default (unset => no host is spawned)
  *   hotkey         global show/hide combo, e.g. "Ctrl+Alt+Space" (validateHotkey); stored only, never captured here
  *   paused         global pause switch (#379): strict boolean, false when absent; stored only, restored at the next boot
@@ -26,7 +26,7 @@
  *                  optional subkeys `enabled` (strict boolean, default TRUE: rotation is on by
  *                  default), `bytes` (1024..2147483647 session-file bytes, default 20 MB) and
  *                  `compactions` (1..1000000, default 10); unknown subkeys are rejected; the env
- *                  ABITO_ROTATE_BYTES / ABITO_ROTATE_COMPACTIONS overrides win over the file; the
+ *                  KODA_ROTATE_BYTES / KODA_ROTATE_COMPACTIONS overrides win over the file; the
  *                  v0.1.0 #386 keys thresholdPercent/keepTurns are accepted and ignored
  *   transcription  K2-13 (S7, S18) how a Minikoda transcribes videos/audios (minikodas/transcribe-setting.cjs):
  *                  {mode: "local-parakeet"|"remote", language?, remote?: {accountId, model}};
@@ -34,7 +34,7 @@
  *                  S18 (L32): Parakeet is the only local model; a `local-whisper-turbo` stored by an earlier build
  *                  is migrated to {mode: "local-parakeet", language} when the file is read, never rewritten here.
  *
- * `ABITO_WORKSPACE` (the Abito analogue of Gentle Dot's GENTLE_DOT_WORKSPACE)
+ * `KODA_WORKSPACE` (the Abito analogue of Gentle Dot's GENTLE_DOT_WORKSPACE)
  * overrides the file's workspace and is validated the same way.
  */
 
@@ -61,7 +61,7 @@ const MIN_ROTATE_BYTES = 1024;
 /** The v0.1.0 #386 rotation keys (B1): accepted and IGNORED, never a config error. */
 const OBSOLETE_ROTATION_KEYS = ["thresholdPercent", "keepTurns"];
 
-const WORKSPACE_ENV = "ABITO_WORKSPACE";
+const WORKSPACE_ENV = "KODA_WORKSPACE";
 const ALLOWED_KEYS = ["workspace", "command", "thinking", "profile", "mcpConfigPath", "hotkey", "paused", "connectorsCommand", "connectorsDir", "hookInstallerBin", "connectorHostBin", "rotation", "transcription"];
 // T2: the default engine is Koda's bundled Gentle Shell (resolved by the
 // runtime from the bundled runtime folder); re-exported from runtime.cjs.
@@ -378,7 +378,7 @@ function readConfigFile(islandRoot, log = () => {}) {
 	return out;
 }
 
-/** Effective config: file values, defaults, and the ABITO_WORKSPACE override (which wins). */
+/** Effective config: file values, defaults, and the KODA_WORKSPACE override (which wins). */
 function loadConfig(islandRoot, options = {}) {
 	const env = options.env ?? process.env;
 	const file = readConfigFile(islandRoot, options.log ?? (() => {}));
@@ -396,15 +396,15 @@ function loadConfig(islandRoot, options = {}) {
 		connectorsDir: file.connectorsDir ?? path.join(islandPaths(islandRoot).root, "connectors"),
 		rotation: {
 			enabled: fileRotation.enabled ?? ROTATION_DEFAULTS.enabled,
-			// The ABITO_ROTATE_* env overrides win over the file (rotationLimits); an
-			// invalid value never wins, like ABITO_WORKSPACE never flips silently.
+			// The KODA_ROTATE_* env overrides win over the file (rotationLimits); an
+			// invalid value never wins, like KODA_WORKSPACE never flips silently.
 			bytes: (() => {
 			// F7: the env override keeps the same 1024-byte minimum as the config;
-			// a smaller or non-decimal value never wins (like ABITO_WORKSPACE).
-			const fromEnv = intFromEnv(env.ABITO_ROTATE_BYTES);
+			// a smaller or non-decimal value never wins (like KODA_WORKSPACE).
+			const fromEnv = intFromEnv(env.KODA_ROTATE_BYTES);
 			return (fromEnv !== undefined && fromEnv >= MIN_ROTATE_BYTES ? fromEnv : undefined) ?? fileRotation.bytes ?? ROTATION_DEFAULTS.bytes;
 		})(),
-			compactions: intFromEnv(env.ABITO_ROTATE_COMPACTIONS) ?? fileRotation.compactions ?? ROTATION_DEFAULTS.compactions,
+			compactions: intFromEnv(env.KODA_ROTATE_COMPACTIONS) ?? fileRotation.compactions ?? ROTATION_DEFAULTS.compactions,
 		},
 		transcription: file.transcription ?? { ...TRANSCRIPTION_DEFAULT },
 		...(file.hotkeyInvalid ? { hotkeyInvalid: true } : {}),
@@ -500,7 +500,7 @@ function clearSessionPointer(islandRoot) {
 /**
  * READ-ONLY: true when `<workspace>/.engram/config.json` names a memory
  * project other than the Abito pin. The daemon never writes `.engram` into a
- * user folder; the pin for such folders is `ABITO_MEMORY_PROJECT` + identity,
+ * user folder; the pin for such folders is `KODA_MEMORY_PROJECT` + identity,
  * so the conflict is surfaced as a status warning instead.
  */
 function detectMemoryPinConflict(workspace) {

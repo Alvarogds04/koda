@@ -45,9 +45,9 @@ function tmp() {
 	TEST_BASES.add(base);
 	return base;
 }
-/** The daemon's island root: on Windows it MUST sit inside the private `%LOCALAPPDATA%\Abito` canonical root. */
+/** The daemon's island root: on Windows it MUST sit inside the private `%LOCALAPPDATA%\Koda` canonical root. */
 function islandRoot(base) {
-	return win ? path.join(base, "Abito", "i") : path.join(base, "i");
+	return win ? path.join(base, "Koda", "i") : path.join(base, "i");
 }
 /** The daemon env: on Windows %LOCALAPPDATA% anchors the canonical island root (a private temp dir, never the real one). */
 function daemonEnv(base, extra = {}) {
@@ -333,11 +333,11 @@ test("workspace change restarts the engine with the new cwd and forgets the old 
 	await daemon.stop();
 });
 
-test("ABITO_WORKSPACE wins: persisting a new workspace does not restart the engine", async () => {
+test("KODA_WORKSPACE wins: persisting a new workspace does not restart the engine", async () => {
 	const base = tmp();
 	const envWs = path.join(base, "envws");
 	fs.mkdirSync(envWs);
-	const { daemon, evidence } = make({ env: { ABITO_WORKSPACE: envWs } });
+	const { daemon, evidence } = make({ env: { KODA_WORKSPACE: envWs } });
 	await daemon.start();
 	const other = path.join(base, "other");
 	fs.mkdirSync(other);
@@ -390,7 +390,7 @@ test("memory pin conflict is surfaced in status without writing into the workspa
 	const ws = path.join(base, "ws");
 	fs.mkdirSync(path.join(ws, ".engram"), { recursive: true });
 	fs.writeFileSync(path.join(ws, ".engram", "config.json"), JSON.stringify({ project_name: "someone-else" }));
-	const { daemon } = make({ env: { ABITO_WORKSPACE: ws } });
+	const { daemon } = make({ env: { KODA_WORKSPACE: ws } });
 	await daemon.start();
 	const status = daemon.status();
 	assert.equal(status.memoryPinConflict, true);
@@ -1791,7 +1791,7 @@ test("the default engine's daemon owns the private memory and stops its own list
 	const seam = memorySeam();
 	const daemon = new Daemon({
 		root,
-		env: daemonEnv(base, { ENGRAM_URL: "http://127.0.0.1:9999", ENGRAM_DATA_DIR: "/elsewhere", ENGRAM_PORT: "7437", ABITO_ENGRAM_PORT: "7499" }),
+		env: daemonEnv(base, { ENGRAM_URL: "http://127.0.0.1:9999", ENGRAM_DATA_DIR: "/elsewhere", ENGRAM_PORT: "7437", KODA_ENGRAM_PORT: "7499" }),
 		log: (line) => seam.logs.push(String(line)),
 		engineOptions: { command: DEFAULT_COMMAND, commandArgs: [], runtimeDeps, backoffMs: [20], stopTimeoutMs: 500, requestTimeoutMs: 3000, startTimeoutMs: 5000 },
 		memoryOptions: { runListenerCommand: seam.runListenerCommand, kill: seam.kill, health: seam.health },

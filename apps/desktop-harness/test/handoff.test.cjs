@@ -13,31 +13,31 @@ const { resolveConfig } = require('../src/config.cjs');
 const { fakeReceiver } = require('./fake-receiver.cjs');
 
 const owner = process.getuid?.();
-const bin = path.resolve(__dirname, '../bin/abito-hook.cjs');
+const bin = path.resolve(__dirname, '../bin/koda-hook.cjs');
 const cwd = path.resolve(__dirname, '..');
 const handoff = (rcv, over = {}) => JSON.stringify({ v: 1, endpoint: rcv.endpoint, pid: process.pid, ...over });
 function put(rcv, text, mode = 0o600) {
   const file = path.join(rcv.runtime, 'endpoint.json');
   fs.writeFileSync(file, text); fs.chmodSync(file, mode); return file;
 }
-const resolve = (rcv, o, uid = owner) => resolveConfig({ ABITO_SOCKET_DIR: rcv.runtime }, uid, o);
+const resolve = (rcv, o, uid = owner) => resolveConfig({ KODA_SOCKET_DIR: rcv.runtime }, uid, o);
 
 // Linux: $XDG_RUNTIME_DIR, else /run/user/<uid>. macOS has neither: the canonical per-user temp dir (src/config.cjs defaultRuntime).
 const mac = process.platform === 'darwin';
 const macBase = () => fs.realpathSync(require('node:os').tmpdir());
 test('default runtime matrix', () => {
-  assert.equal(resolveConfig({ ABITO_SOCKET_DIR: '/x/r', XDG_RUNTIME_DIR: '/run/user/9' }, 1, { procExists: () => false }).runtime, '/x/r');
-  assert.equal(resolveConfig({ XDG_RUNTIME_DIR: '/tmp/xdg-none' }, 1).runtime, mac ? `${macBase()}/abito-island` : '/tmp/xdg-none/abito-island');
-  const fallback = mac ? `${macBase()}/abito-island` : '/run/user/1234/abito-island';
+  assert.equal(resolveConfig({ KODA_SOCKET_DIR: '/x/r', XDG_RUNTIME_DIR: '/run/user/9' }, 1, { procExists: () => false }).runtime, '/x/r');
+  assert.equal(resolveConfig({ XDG_RUNTIME_DIR: '/tmp/xdg-none' }, 1).runtime, mac ? `${macBase()}/koda` : '/tmp/xdg-none/koda');
+  const fallback = mac ? `${macBase()}/koda` : '/run/user/1234/koda';
   for (const xdg of [undefined, '', 'rel', '/', '/a/', '/a/../b', '/a\0b'])
     assert.equal(resolveConfig({ XDG_RUNTIME_DIR: xdg }, 1234, { procExists: () => false }).runtime, fallback, String(xdg));
-  assert.throws(() => resolveConfig({ ABITO_SOCKET_DIR: 'rel' }, 1), /Invalid ABITO_SOCKET_DIR/);
+  assert.throws(() => resolveConfig({ KODA_SOCKET_DIR: 'rel' }, 1), /Invalid KODA_SOCKET_DIR/);
 });
 test('handoff accepted with a real socket', async t => {
   const rcv = await fakeReceiver(t, {});
   put(rcv, handoff(rcv));
   assert.deepEqual(resolve(rcv), { runtime: rcv.runtime, endpoint: rcv.endpoint, source: 'handoff' });
-  assert.equal(resolveConfig({ ABITO_SOCKET_DIR: rcv.runtime }, owner).source, 'handoff');
+  assert.equal(resolveConfig({ KODA_SOCKET_DIR: rcv.runtime }, owner).source, 'handoff');
 });
 test('Rust producer compact JSON and the alternate compact key order are accepted', async t => {
   const rcv = await fakeReceiver(t, {});
@@ -89,7 +89,7 @@ test('handoff verifies endpoint directory chain, socket mode and owner', async t
   const rcv = await fakeReceiver(t, {});
   const failures = [];
   const bad = (label, runtime = rcv.runtime) => {
-    const endpoint = resolveConfig({ ABITO_SOCKET_DIR: runtime }, owner).endpoint;
+    const endpoint = resolveConfig({ KODA_SOCKET_DIR: runtime }, owner).endpoint;
     if (endpoint !== undefined) failures.push({ label, endpoint });
   };
   const endpointDir = path.dirname(rcv.endpoint);
@@ -245,11 +245,11 @@ test('explicit endpoint wins and the handoff is not read', async t => {
   const original = fs.openSync; let opened = 0;
   fs.openSync = (...a) => { opened++; return original(...a); };
   try {
-    const r = resolveConfig({ ABITO_SOCKET_DIR: rcv.runtime, ABITO_DESKTOP_SOCKET: rcv.endpoint }, owner);
+    const r = resolveConfig({ KODA_SOCKET_DIR: rcv.runtime, KODA_DESKTOP_SOCKET: rcv.endpoint }, owner);
     assert.deepEqual(r, { runtime: rcv.runtime, endpoint: rcv.endpoint, source: 'env' });
   } finally { fs.openSync = original; }
   assert.equal(opened, 0);
-  assert.throws(() => resolveConfig({ ABITO_SOCKET_DIR: rcv.runtime, ABITO_DESKTOP_SOCKET: '/other/p-abc123/s' }, owner), /Unexpected endpoint/);
+  assert.throws(() => resolveConfig({ KODA_SOCKET_DIR: rcv.runtime, KODA_DESKTOP_SOCKET: '/other/p-abc123/s' }, owner), /Unexpected endpoint/);
 });
 test('stale handoff after socket removal => undefined', async t => {
   const rcv = await fakeReceiver(t, {});
@@ -261,7 +261,7 @@ test('stale handoff after socket removal => undefined', async t => {
 
 function run(args, input, env) {
   return new Promise(res => {
-    const child = spawn(process.execPath, [bin, ...args], { env: { PATH: process.env.PATH, ABITO_SOCKET_DIR: '/nonexistent-abito-test', ...env }, stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn(process.execPath, [bin, ...args], { env: { PATH: process.env.PATH, KODA_SOCKET_DIR: '/nonexistent-abito-test', ...env }, stdio: ['pipe', 'pipe', 'pipe'] });
     let stdout = '';
     child.stdout.on('data', c => { stdout += c; });
     child.on('close', code => res({ code, stdout }));
@@ -272,7 +272,7 @@ function run(args, input, env) {
 test('e2e: hooks need no exported endpoint, only the runtime', async t => {
   const rcv = await fakeReceiver(t, { questions: true });
   put(rcv, handoff(rcv));
-  const env = { ABITO_SOCKET_DIR: rcv.runtime };
+  const env = { KODA_SOCKET_DIR: rcv.runtime };
   const stop = JSON.stringify({ session_id: 's1', cwd, hook_event_name: 'Stop', stop_hook_active: false, last_assistant_message: 'x' });
   const r1 = await run(['claude', 'stop'], stop, env);
   assert.equal(r1.code, 0);
@@ -287,7 +287,7 @@ test('e2e: hooks need no exported endpoint, only the runtime', async t => {
 });
 test('e2e: no handoff => unavailable, nothing sent', async t => {
   const rcv = await fakeReceiver(t, { questions: true });
-  const r = await run(['claude', 'stop'], '{}', { ABITO_SOCKET_DIR: rcv.runtime });
+  const r = await run(['claude', 'stop'], '{}', { KODA_SOCKET_DIR: rcv.runtime });
   assert.equal(r.code, 0); assert.equal(r.stdout, ''); assert.equal(rcv.frames.length, 0);
   void net;
 });

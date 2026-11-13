@@ -147,13 +147,13 @@
         <LogonCount>3</LogonCount>
       </AutoLogon>
       <FirstLogonCommands>
-        <!-- Find the ABITO_SETUP answer CD (DriveType 5) and run vm-setup.ps1.
+        <!-- Find the KODA_SETUP answer CD (DriveType 5) and run vm-setup.ps1.
              vm-setup.ps1 copies itself, registers the poll task, tries OpenSSH
              (best effort), and writes a status note to COM1. -->
         <SynchronousCommand wcm:action="add">
           <Order>1</Order>
           <RequiresUserInput>false</RequiresUserInput>
-          <CommandLine>powershell -NoProfile -ExecutionPolicy Bypass -Command &quot;$cd=Get-CimInstance Win32_LogicalDisk -Filter &apos;DriveType=5&apos; | Where-Object {$_.VolumeName -eq &apos;ABITO_SETUP&apos;} | Select-Object -First 1; if($cd){$f=($cd.DeviceID + &apos;\\&apos;) + &apos;vm-setup.ps1&apos;; if(Test-Path $f){powershell -NoProfile -ExecutionPolicy Bypass -File $f -Wait}}&quot;</CommandLine>
+          <CommandLine>powershell -NoProfile -ExecutionPolicy Bypass -Command &quot;$cd=Get-CimInstance Win32_LogicalDisk -Filter &apos;DriveType=5&apos; | Where-Object {$_.VolumeName -eq &apos;KODA_SETUP&apos;} | Select-Object -First 1; if($cd){$f=($cd.DeviceID + &apos;\\&apos;) + &apos;vm-setup.ps1&apos;; if(Test-Path $f){powershell -NoProfile -ExecutionPolicy Bypass -File $f -Wait}}&quot;</CommandLine>
         </SynchronousCommand>
         <!-- Backup: if the CD could not be found, try to install OpenSSH directly. -->
         <SynchronousCommand wcm:action="add">

@@ -1,4 +1,4 @@
-//! K2-13 (S8, S15, S16): batch transcription for the Minikodas, run by the `abito-transcribe` helper binary that the
+//! K2-13 (S8, S15, S16): batch transcription for the Minikodas, run by the `koda-transcribe` helper binary that the
 //! daemon spawns (option A1). Same engine, catalog, model store and Silero VAD as dictation: no second engine and no
 //! second model store.
 //!
@@ -110,7 +110,7 @@ pub enum Command {
     Status { entry: &'static catalog::Entry },
 }
 
-pub const USAGE: &str = "usage: abito-transcribe transcribe [--model parakeet-tdt-0.6b-v3-int8|whisper-turbo] [--language es|en|fr|de|it|pt|ca] [--timeout-sec N] [--max-seconds N] <absolute 16 kHz mono WAV>\n       abito-transcribe status [--model ID]\n       abito-transcribe download [--model ID]";
+pub const USAGE: &str = "usage: koda-transcribe transcribe [--model parakeet-tdt-0.6b-v3-int8|whisper-turbo] [--language es|en|fr|de|it|pt|ca] [--timeout-sec N] [--max-seconds N] <absolute 16 kHz mono WAV>\n       koda-transcribe status [--model ID]\n       koda-transcribe download [--model ID]";
 
 fn model_entry(id: &str) -> Result<&'static catalog::Entry, Failure> {
     if !MODELS.contains(&id) {

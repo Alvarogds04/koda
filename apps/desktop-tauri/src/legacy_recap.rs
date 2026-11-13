@@ -12,6 +12,8 @@
 //! The two DIRECTORIES themselves come from Koda (Tauri's `app_local_data_dir` and the transport runtime), never from
 //! the user or a file: if one of them is a symlink (for instance a data dir the user moved elsewhere), it is followed on
 //! purpose, because that is where Koda's own data lives. Only the final component of each target is guarded.
+//! K2-04 T6: the data dir is the sibling named after the OLD bundle identifier (`legacy_identity::legacy_sibling`), because the
+//! identifier is now `com.abitog.Koda`; `<app_local_data_dir>` above means that old folder. Nothing is copied or moved.
 //! Same code on Linux, macOS and Windows: the two directories come from Tauri (`app_local_data_dir`) and from
 //! `transport::resolve_runtime` for each OS.
 //! TODO(K2-03 follow-up): remove one version after K2-03 ships.

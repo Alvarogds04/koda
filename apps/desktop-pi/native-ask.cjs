@@ -230,7 +230,7 @@ function race({ controller, ctx, plan, request }) {
 function createNativeAskHandler({ controller, env = process.env } = {}) {
   return async function onToolCall(event, ctx) {
     try {
-      if (env.ABITO_NATIVE_ASK === '0' || !event) return undefined;
+      if (env.KODA_NATIVE_ASK === '0' || !event) return undefined;
       const plan = event.toolName === CHOICE ? planChoice(event.input)
         : event.toolName === QUESTIONNAIRE ? planQuestionnaire(event.input) : null;
       if (!plan || hasConsentMarker(event.input) || isSensitiveAsk(plan.scan, plan.items.some(i => i.free))) return undefined;
@@ -465,7 +465,7 @@ const CONFIRM_ROUTERS = new WeakMap();
 function installConfirmRouter({ ctx, controller, env = process.env } = {}) {
   try {
     const ui = ctx?.ui;
-    if (env.ABITO_NATIVE_CONFIRM === '0' || !isObject(ui) || typeof ui.confirm !== 'function' || CONFIRM_ROUTERS.has(ui)) return () => {};
+    if (env.KODA_NATIVE_CONFIRM === '0' || !isObject(ui) || typeof ui.confirm !== 'function' || CONFIRM_ROUTERS.has(ui)) return () => {};
     const original = ui.confirm;
     const state = { active: true };
     const wrapper = function confirm(title, message, opts) {

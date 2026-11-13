@@ -9,7 +9,7 @@
 // sha256 values, so the extra entries need no parser change).
 // K2-13 T2c-8 (S19): with --runtime it also pins the bundled runtime's yt-dlp.exe as runtime/yt-dlp.exe, like node.exe and
 // ffmpeg.exe. K2-13 T2c-2 (S8): without --dist this runs on this build's own dist/, so the closed binary set is completed there from
-// target/release first (completeBinaries: only what the caller did not copy, e.g. abito-transcribe.exe). A --dist
+// target/release first (completeBinaries: only what the caller did not copy, e.g. koda-transcribe.exe). A --dist
 // directory is somebody else's fixture: it is hashed exactly as it is, never written to beyond the manifest.
 const fs = require('node:fs');
 const path = require('node:path');
