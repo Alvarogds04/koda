@@ -491,7 +491,9 @@ test('«Reintentar» after a stalled download re-reads the host and never starts
   // while it is still moving, a click on the (hidden) button does nothing
   assert.deepEqual(M.modelClickAction(base, 1000), { kind: 'none' });
   // a real failure or a missing model starts the download with the closed payloads only
-  const failed = { ...base, parakeet: { state: 'failed', error: 'x' } };
+  // (the host's real shape: a failed download shows on BOTH trackers' state of that model, here the row and the legacy field)
+  const failedRow = { ...base.speech.models[0], state: { state: 'failed', error: 'x' } };
+  const failed = { ...base, parakeet: { state: 'failed', error: 'x' }, speech: { models: [failedRow] } };
   const act = M.modelClickAction(failed, 0);
   assert.equal(act.kind, 'download');
   assert.deepEqual(act.payloads, [{ action: 'model_download', id: 'parakeet-tdt-0.6b-v3-int8' }]);
@@ -507,6 +509,52 @@ test('the download click goes through modelClickAction', () => {
   const handler = src.slice(src.indexOf('modelBtn.addEventListener'));
   assert.match(handler.slice(0, 1400), /api\.modelClickAction\(/, 'the click asks the pure function what to do');
   assert.doesNotMatch(handler.slice(0, 1400), /api\.downloadPayloads\(/, 'the click no longer builds payloads from the raw host state');
+});
+
+test('the model state follows the tracker a download really updates (speech.models[].state), not only the legacy top-level one', () => {
+  // the host's real shape (src/voicehost.rs status_json / speech_json): `model_download` drives speech::model_dls, which is
+  // what speech.models[].state reports; the top-level `parakeet` reads the legacy tracker only the dictation page drives
+  const row = state => ({ id: 'parakeet-tdt-0.6b-v3-int8', sizeMb: 670, state, installed: false });
+  const reply = (top, rowState, vad = { state: 'ready' }) => ({ prefs: {}, vad, downloadMb: 1, parakeet: top, speech: { models: [row(rowState)] } });
+  // a click started a download: the legacy field still says missing, the row says downloading
+  const moving = M.modelView(reply({ state: 'missing' }, { state: 'downloading', fraction: 0.38 }));
+  assert.equal(moving.state, 'downloading');
+  assert.equal(moving.percent, 38);
+  // a failed download shows on the row only
+  assert.equal(M.modelView(reply({ state: 'missing' }, { state: 'failed', error: 'x' })).state, 'failed');
+  // ready from either one, with the detector present, is installed; ready on the row alone counts too
+  assert.equal(M.modelView(reply({ state: 'missing' }, { state: 'ready' })).state, 'ready');
+  assert.equal(M.modelView(reply({ state: 'ready' }, { state: 'missing' })).state, 'ready');
+  // a dictation download (legacy tracker) in flight is respected: downloading wins over a missing row
+  assert.equal(M.modelView(reply({ state: 'downloading', fraction: 0.5 }, { state: 'missing' })).state, 'downloading');
+  // nothing on the row: fall back to the top-level field, as before
+  assert.equal(M.modelView({ prefs: {}, vad: { state: 'ready' }, downloadMb: 1, parakeet: { state: 'ready' }, speech: { models: [{ id: 'parakeet-tdt-0.6b-v3-int8', sizeMb: 670 }] } }).state, 'ready');
+  // a stalled download seen on the row is a stall too, and the click re-reads
+  const stalledReply = reply({ state: 'missing' }, { state: 'downloading', fraction: 0.2 });
+  assert.deepEqual(M.modelClickAction(stalledReply, M.MODEL_STALL_MS + 1), { kind: 'reread' });
+  // while it moves on the row no click does anything
+  assert.deepEqual(M.modelClickAction(stalledReply, 1000), { kind: 'none' });
+  // the host's error text never travels into the view
+  assert.equal(JSON.stringify(M.modelView(reply({ state: 'missing' }, { state: 'failed', error: 'secret-path /home/u' }))).includes('secret-path'), false);
+});
+
+test('the model card never claims a failure before the host answered, drops a stale «descargando» note, and blames the right missing piece', () => {
+  const src = read('minikodas-settings.js');
+  // (a) `read()` must not mark the model as asked BEFORE the reply: a view reply that paints first would show «No se pudo leer»
+  const readFn = src.slice(src.indexOf('function read()'), src.indexOf('const observer = new MutationObserver'));
+  const before = readFn.slice(0, readFn.indexOf("callVoice({ action: 'status' })"));
+  assert.equal(/modelAsked\s*=\s*true/.test(before), false, 'modelAsked is set when the status reply (or its failure) arrives, not before');
+  assert.match(readFn, /modelAsked\s*=\s*true/, 'a failed status read is still said honestly once it fails');
+  // (c) the «descargando» note must not outlive the download
+  const apply = src.slice(src.indexOf('function applyModel'), src.indexOf('function paint()'));
+  assert.match(apply, /MODEL_SENTENCES\.downloading/, 'applyModel drops the stale downloading note when the state moved on');
+  // (b) Parakeet installed but the voice detector missing must not say the MODEL is missing
+  const base = { prefs: {}, downloadMb: 1, vad: { state: 'missing' }, parakeet: { state: 'ready' }, speech: { models: [{ id: 'parakeet-tdt-0.6b-v3-int8', sizeMb: 670, state: { state: 'ready' }, installed: true }] } };
+  const view = M.modelView(base);
+  assert.equal(view.state, 'missing');
+  assert.equal(view.sentence.includes('Falta el modelo'), false, 'the model is installed: the sentence names the detector');
+  assert.match(view.sentence, /detector/);
+  assert.equal(M.modelView({ ...base, parakeet: { state: 'missing' }, speech: { models: [{ id: 'parakeet-tdt-0.6b-v3-int8', sizeMb: 670, state: { state: 'missing' } }] } }).sentence.includes('Falta el modelo'), true);
 });
 
 console.log(`minikodas-settings-check: ${passed} passed`);

@@ -212,6 +212,7 @@
   // the host's text is never shown, parsed or copied.
   const MODEL_SENTENCES = Object.freeze({
     missing: 'Falta el modelo de transcripción: todavía no está descargado en esta PC.',
+    missingDetector: 'Falta el detector de voz que acompaña al modelo de transcripción: todavía no está descargado en esta PC.',
     downloading: 'Se está descargando el modelo. Mientras falta, los Minikodas que traen videos esperan: no hay transcripción a medias.',
     ready: 'Parakeet y el detector de voz están instalados en esta PC.',
     failed: 'La descarga del modelo no terminó. Puede haber sido la conexión o el espacio en disco: probá de nuevo.',
@@ -240,7 +241,24 @@
       // `id !== PARAKEET` is the whole allowlist (S18 has one local model); the regex is belt and braces so a URL, a path
       // or a file name can never travel even if the island's own list were wrong.
       if (typeof id !== 'string' || id !== PARAKEET || !MODEL_ID.test(id)) continue;
-      return Object.freeze({ id, sizeMb: megabytes(row.sizeMb) });
+      return Object.freeze({ id, sizeMb: megabytes(row.sizeMb), state: modelState(row.state) });
+    }
+    return null;
+  }
+  /**
+   * The Parakeet state out of the TWO trackers the host keeps: `speech.models[].state` is the one `model_download` drives
+   * (src/speech/mod.rs model_dls), the top-level `parakeet` is the legacy one only the dictation page drives (downloads).
+   * Both say «ready» from the same files on disk, so they only differ while a download runs or after it failed: a download
+   * in flight on either one wins, then ready, then failed, then missing. Reading only the legacy one would never show
+   * progress or a failure for the click this card sends.
+   */
+  function mergeModelStates(legacy, row) {
+    const states = [row, legacy].filter(Boolean);
+    const moving = states.find(state => state.kind === 'downloading');
+    if (moving) return moving;
+    for (const kind of ['ready', 'failed', 'missing']) {
+      const found = states.find(state => state.kind === kind);
+      if (found) return found;
     }
     return null;
   }
@@ -264,7 +282,9 @@
       pill: state === 'missing' ? `Falta${size}` : state === 'ready' ? `Instalado${size}` : state === 'downloading' ? `Descargando · ${percent} %` : state === 'failed' ? 'Falló' : '',
       // and the progress line, without the speed text the artboard draws and nobody reports
       detail: state === 'downloading' ? (sizeMb === null ? `${percent} %` : `${percent} % · ${doneMb} de ${sizeMb} MB`) : '',
-      sentence: state === 'failed' ? (stalled ? MODEL_SENTENCES.stalled : MODEL_SENTENCES.failed) : MODEL_SENTENCES[state] || MODEL_SENTENCES.unknown,
+      sentence: state === 'failed' ? (stalled ? MODEL_SENTENCES.stalled : MODEL_SENTENCES.failed)
+        : state === 'missing' && extra && extra.parakeetReady === true && extra.vadReady !== true ? MODEL_SENTENCES.missingDetector
+        : MODEL_SENTENCES[state] || MODEL_SENTENCES.unknown,
     });
   }
   /**
@@ -272,10 +292,10 @@
    * host did not say clearly is `unknown`; the host's own error text is never read.
    */
   function modelView(reply, options) {
-    const parakeet = modelState(reply && reply.parakeet);
     const detector = modelState(reply && reply.vad);
-    if (!parakeet || !detector) return modelViewOf('unknown', {});
     const entry = modelEntry(reply);
+    const parakeet = mergeModelStates(modelState(reply && reply.parakeet), entry && entry.state);
+    if (!parakeet || !detector) return modelViewOf('unknown', {});
     const parakeetReady = parakeet.kind === 'ready';
     const vadReady = detector.kind === 'ready';
     const vadMb = megabytes(reply && reply.downloadMb);
@@ -612,6 +632,8 @@ function mount(api) {
     modelStatus = reply;
     modelAsked = true;
     modelWait = Date.now();     // progress resets the stall budget, because it is a sign of life
+    // the «se está descargando» note was said on the click; once the state moved on (ready, failed) it must not stay
+    if (note && note.say === api.MODEL_SENTENCES.downloading && api.modelView(reply, {}).state !== 'downloading') note = null;
     paint();
   }
   function paint() {
@@ -802,9 +824,10 @@ function mount(api) {
     call({ action: 'view' }).then(next => { shown = true; apply(next); }, () => {
       live.textContent = 'No se pudo leer el estado de Telegram ni el de la transcripción.';
     });
-    // the model state is read once, here, when the card is shown: a hidden card has no business asking, and nothing polls
-    modelAsked = true;
-    callVoice({ action: 'status' }).then(applyModel, () => { modelStatus = null; paint(); });
+    // the model state is read once, here, when the card is shown: a hidden card has no business asking, and nothing polls.
+    // «asked» is set when the answer (or its failure) ARRIVES, never before: a card painted by the agent view in between
+    // must not claim a failure for a question nobody has answered yet.
+    callVoice({ action: 'status' }).then(applyModel, () => { modelStatus = null; modelAsked = true; paint(); });
   }
   const observer = new MutationObserver(() => { if (!host.hidden && !shown) read(); else if (host.hidden) shown = false; });
   observer.observe(host, { attributes: true, attributeFilter: ['hidden'] });
