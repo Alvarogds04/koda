@@ -408,9 +408,10 @@ function mount(api) {
     credentials = next.telegramCredentials === true;
     sessionStored = next.telegramSessionStored === true;
     telegram = api.telegramView(next.telegram, credentials, sessionStored);
-    // N6: the kept number belongs to a login IN FLIGHT. Any ending the daemon reports (a code it refused, a login another
-    // window started, «ya hay una cuenta conectada») leaves the folded step at none, and those endings never pass through
-    // the page's own success paths: the number is dropped here, where the step says the login is over.
+    // N6: the kept number belongs to a login IN FLIGHT. The folded step is null only once the account is connected, so this
+    // drops it when a login succeeds, including one another window completed. A login that ends back at «disconnected»
+    // keeps it until the next telegram_login_start overwrites it; that is harmless because «Pedir otro» is only enabled at
+    // the code step, where the number is the one of the login in flight.
     if (telegram.step === null) loginPhone = '';
     transcription = api.transcriptionView(next.transcription, next.accounts);
     const error = next.last_error && Number.isInteger(next.last_error.n) ? next.last_error : null;
