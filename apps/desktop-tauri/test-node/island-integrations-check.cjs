@@ -77,12 +77,18 @@ test('notion: only https notion pages link out', () => {
   assert.deepEqual([v.rows[0].title, v.rows[0].emoji, v.rows[0].url], ['Sin título', '📝', null]);
 });
 
-test('cal.com: soonest first, at most three, empty list is still a card', () => {
-  const b = n => ({ title: 'T' + n, start: new Date(2030, 0, n, 9, 5).toISOString() });
-  const v = M.view('integration_calcom', { id: 'integration_calcom', data: { bookings: [b(5), b(2), b(9), b(3), { title: 'x', start: 'nope' }] } }, NOW);
-  assert.deepEqual(v.rows.map(r => r.title), ['T2', 'T3', 'T5']);
-  assert.equal(v.rows[0].when, '02/01 09:05');
-  assert.equal(M.view('integration_calcom', { id: 'integration_calcom', data: { bookings: [] } }).kind, 'bookings');
+test('K2-11 S5: the fake Cal.com card left the island (the real calendar card replaces it)', () => {
+  assert.deepEqual([...M.IDS], ['integration_n8n', 'integration_vercel', 'integration_stripe', 'integration_resend', 'integration_notion'], 'the five services that keep their card; Cal.com is gone');
+  assert.equal(M.NAMES.integration_calcom, undefined);
+  assert.equal(M.COLORS.integration_calcom, undefined);
+  assert.equal(M.KINDS.integration_calcom, undefined);
+  assert.equal(M.openTarget('integration_calcom'), null, 'no «Abrir Cal.com» button either');
+  assert.equal(M.calendarView, undefined, 'its month/day view is gone with it');
+  assert.equal(M.view('integration_calcom', { id: 'integration_calcom', data: { bookings: [] } }).kind, 'idle', 'an update for a service we no longer paint is idle, never a card');
+  const src = fs.readFileSync(path.join(__dirname, '../frontend/island-integrations.js'), 'utf8');
+  for (const gone of [/integration_calcom/, /calendarView/, /calendarCard/, /'bookings'/, /https:\/\/cal\.com/]) assert.doesNotMatch(src, gone, `no Cal.com card code is left behind: ${gone}`);
+  // the real calendar is its own card in the shortcuts row (calendar-view.js), not a service card here
+  assert.ok(fs.existsSync(path.join(__dirname, '../frontend/calendar-view.js')));
 });
 
 test('the renderer never uses innerHTML', () => {
@@ -102,17 +108,6 @@ test('six services distinguish missing/error/stale/refresh and keep safe open ta
   assert.equal(M.openTarget('integration_github'),null);
 });
 
-test('Cal.com week/day/detail filters dates across month boundaries', () => {
-  const day=Date.UTC(2026,9,31);
-  const bookings=[{id:'one',start:'2026-10-31T10:00:00Z',title:'Demo',attendeeName:'Ana',attendeeNotes:'Consulta'},
-    {id:'two',start:'2026-11-01T10:00:00Z',title:'Next'}, {id:'bad',start:'invalid'}];
-  assert.equal(M.calendarView(bookings,'week',day,null).days.length,7);
-  assert.deepEqual(M.calendarView(bookings,'week',day,null).rows.map(r=>r.id),['one','two']);
-  assert.deepEqual(M.calendarView(bookings,'day',day,null).rows.map(r=>r.id),['one']);
-  assert.equal(M.calendarView(bookings,'day',day,'one').detail.attendee,'Ana');
-  assert.equal(M.calendarView(bookings,'day',day,'one').detail.notes,'Consulta');
-  assert.equal(M.calendarView(bookings,'day',day,'foreign').detail,null);
-});
 
 test('mounted actions survive equivalent island snapshots and foreign integration updates', async () => {
   const vm=require('node:vm'), observers=[], listeners={}, events={}, calls=[];

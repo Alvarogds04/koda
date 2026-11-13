@@ -41,53 +41,71 @@ console.log(`validate-scenes: verdict and catalog checks passed (${extraScenes.l
 // Exercise the real browser scene driver; emulate only the external trusted-input boundary.
 (async () => {
   const vm = require('node:vm');
-  let focused = false;
+  const fs = require('node:fs');
+  const path = require('node:path');
   const clicks = [];
   const element = (x, shown) => ({
-    disabled: false, textContent: 'GitHub 17', scrollIntoView() {}, addEventListener() {},
+    disabled: false, scrollIntoView() {}, addEventListener() {},
     getBoundingClientRect: () => ({ x, y: 10, width: shown() ? 20 : 0, height: shown() ? 20 : 0 }),
     closest: () => null,
   });
   // The island ignores blob clicks while it is busy (pills-view onScreen: a question outcome is on screen for 3-4 s after an answer). The GitHub
-  // scene runs right after «pi-pregunta», so it must WAIT for the calm overview before it clicks the row (gate: the click was dropped and the
+  // scene runs right after «pi-pregunta», so it must WAIT for the calm overview before it clicks the icon (gate: the click was dropped and the
   // card never opened). The capsule below reads «outcome» for its first reads, then calm.
   let capsuleReads = 0;
   const capsule = { dataset: new Proxy({}, { get: (_t, key) => { capsuleReads += 1; const calm = capsuleReads > 6; return { phase: 'expanded', view: 'overview', question: calm ? '' : 'outcome' }[key]; } }) };
   const calmNow = () => capsuleReads > 6;
-  const githubPill = element(10, () => !focused);
-  const abitoPill = element(50, () => true);
-  const card = element(90, () => focused);
-  const control = x => element(x, () => focused);
-  let section = 'pulse';
-  Object.defineProperty(card,'textContent',{get:()=>section==='pulse'?'GitHub 17 ★ 18 Fixture PR':section==='ci'?'main':'23 repos'});
-  card.querySelectorAll = () => [];
-  card.querySelector = selector => selector === '.gh-back' && section !== 'pulse' ? control(160) : selector === '.gh-spark' && section === 'pulse' ? control(180) : selector === '.gh-ci-main' && section === 'pulse' ? control(140) : ['.gh-row', '.gh-open'].includes(selector) && ['pulse', 'ci'].includes(section) ? control(200) : null;
+
+  // K2-11 S5/S6: GitHub is a card of the shortcuts row (island-shortcuts.js), not a pill of the column and not the overview's left card. The
+  // scene may only drive what the cards render today: the row's icon, the #nusa-card host, the three .gh-tile counters, a .gh-row list,
+  // .gh-back and the .gh-strip of the contribution graph.
+  let focused = false, section = 'pulse';
+  // x is the element's left edge and the trusted click lands in its centre (+10), so the emitted payload.x is x+10
+  const githubIcon = element(10, () => !focused);
+  const cardHost = element(80, () => focused);
+  const tile = (key, x) => { const el = element(x, () => focused && section === 'pulse'); el.getAttribute = name => (name === 'data-tile' ? key : null); return el; };
+  const tiles = [tile('review', 140), tile('pr', 150), tile('issue', 160)];
+  const back = element(170, () => focused && section === 'pr');
+  const strip = element(180, () => focused && section === 'pulse');
+  const list = element(190, () => focused && section === 'pr');
+  Object.defineProperty(cardHost, 'textContent', { get: () => (section === 'pr' ? 'Tus PR · 1 Fixture PR fallando' : 'GitHub me 1 Revisión pedida 1 Tus PR 0 Issues 23 repos') });
+  cardHost.querySelectorAll = selector => (selector === '.gh-tile' && focused && section === 'pulse' ? tiles : []);
+  cardHost.querySelector = selector => {
+    if (selector === '.gh-pulse-card') return focused ? element(100, () => focused) : null;
+    if (selector === '.gh-row') return focused && section === 'pr' ? list : null;
+    if (selector === '.gh-back') return section === 'pr' ? back : null;
+    if (selector === '.gh-strip') return focused && section === 'pulse' ? strip : null;
+    return null;
+  };
   const activity = { available: true, activity: { total: 17 } };
   const window = { __validateOrigin: { x: 0, y: 0, scale: 1 }, __TAURI__: {
-    core: { invoke: async (command,args) => command === 'prefs_action' ? { declaredPills: ['integration_github'] } : command === 'github_action' ? (args.payload.section==='pulse'?{available:true,stats:{totalStars:18,totalRepos:23}}:activity) : {} },
+    core: { invoke: async (command,args) => command === 'prefs_action' ? { declaredPills: [] } : command === 'github_action' ? (args.payload.section === 'pulse' ? { available: true, stats: { totalStars: 18, totalRepos: 23 } } : activity) : {} },
     event: { emit: async (event, payload) => {
       assert.equal(event, 'validate-input'); assert.equal(payload.kind, 'click');
       clicks.push(payload.x);
-      if (payload.x === 20) { assert.equal(calmNow(), true, 'the GitHub row was clicked while the island still showed a question outcome (the click is dropped there)'); focused = true; }
-      else if (payload.x === 60) focused = false;
-      else if (payload.x === 150) section='ci';
-      else if (payload.x === 170) section='pulse';
-      else if (payload.x === 190) section='activity';
+      if (payload.x === 20) { assert.equal(calmNow(), true, 'the GitHub icon was clicked while the island still showed a question outcome (the click is dropped there)'); focused = true; }
+      else if (payload.x === 160) { assert.equal(section, 'pulse', 'a counter of the pulse opens its list'); section = 'pr'; }
+      else if (payload.x === 180) { assert.equal(section, 'pr', '「‹ Pulso» only exists on a list'); section = 'pulse'; }
       else assert.fail('unexpected click target');
     } },
   } };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../packaging/validate/browser.js'), 'utf8'), {
     window, document: {
-      getElementById: id => ({ 'pill-choice-integration_github': githubPill, 'pill-choice-abito': abitoPill, capsule })[id],
-      querySelector: selector => selector === '.gh-card' ? card : null,
+      getElementById: id => ({ capsule })[id],
+      querySelector: selector => selector === '#nusa-apps button[data-go="github"]' ? githubIcon : selector === '#nusa-card .gh-host' ? cardHost : null,
     },
     addEventListener() {}, console: { error() {} }, performance,
     setTimeout: fn => { fn(); return 1; }, requestAnimationFrame: fn => fn(),
     getComputedStyle: () => ({ display: 'block', visibility: 'visible' }),
   });
   const result = await window.AbitoValidate.github();
-  assert.equal(result.ok, true); assert.equal(result.text, 'GitHub 17 ★ 18 Fixture PR'); assert.equal(result.data, activity);
-  assert.equal(focused, true, 'GitHub detail stays visible for its PNG; Spotify releases focus');
-  assert.deepEqual(clicks, [20, 150, 170, 190, 170], 'focus and cleanup both use the external trusted-click helper');
-  console.log('validate-scenes: GitHub scene isolates focus with trusted input');
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(result.text, 'GitHub me 1 Revisión pedida 1 Tus PR 0 Issues 23 repos');
+  assert.equal(result.data, activity);
+  assert.equal(focused, true, 'the pulse stays visible for its PNG; Spotify releases the row');
+  assert.deepEqual(clicks, [20, 160, 180], 'the icon, a counter and 「‹ Pulso»: every one a trusted click');
+  // F3 (K2-11 verifier): no scene may drive DOM that left the island — the Cal.com agenda and the old GitHub overview card are gone
+  const browser = fs.readFileSync(path.join(__dirname, '../packaging/validate/browser.js'), 'utf8');
+  for (const gone of ['.gh-card', '.gh-open', '.gh-ci-main', '.gh-spark', '[data-calendar', "button('Semana')", "button('Día')"]) assert(!browser.includes(gone), `a scene still drives removed DOM: ${gone}`);
+  console.log('validate-scenes: GitHub scene drives the shortcuts row with trusted input');
 })().catch(error => { console.error(error); process.exitCode = 1; });

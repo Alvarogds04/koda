@@ -23,12 +23,13 @@ const test = (name, fn) => {
 };
 
 // ---- registry ---------------------------------------------------------------
-test('registry: exactly the 9 closed services, frozen, Spanish labels, in card order', () => {
+test('registry: exactly the 8 closed services, frozen, Spanish labels, in card order', () => {
   assert.deepEqual(T.SERVICES.map(s => s.id),
-    ['github', 'deployments', 'email', 'payments', 'notion', 'n8n', 'calendar', 'slack', 'finance']);
+    ['github', 'deployments', 'email', 'payments', 'notion', 'n8n', 'slack', 'finance']);
   assert.deepEqual(T.SERVICES.map(s => s.name),
-    ['GitHub', 'Despliegues', 'Correo', 'Pagos', 'Notion', 'n8n', 'Calendario', 'Slack', 'Finanzas']);
+    ['GitHub', 'Despliegues', 'Correo', 'Pagos', 'Notion', 'n8n', 'Slack', 'Finanzas']);
   assert.ok(Object.isFrozen(T.SERVICES));
+  assert.equal(T.serviceById('calendar'), null, 'K2-11: the fake Cal.com row is gone');
   for (const s of T.SERVICES) assert.ok(Object.isFrozen(s), s.id);
 });
 
@@ -153,8 +154,8 @@ test('pause: only a connected service pauses and only a paused one resumes', () 
 // ---- open target ------------------------------------------------------------
 test('open target: the closed URL allowlist maps service -> URL (or null), and NOTHING else opens', () => {
   const allow = T.ALLOWLIST;
-  assert.deepEqual(Object.keys(allow).sort(), ['calendar', 'deployments', 'email', 'github', 'n8n', 'notion', 'payments', 'slack'],
-    'finance has no target; the allowlist is closed and exactly these 8');
+  assert.deepEqual(Object.keys(allow).sort(), ['deployments', 'email', 'github', 'n8n', 'notion', 'payments', 'slack'],
+    'finance has no target; the allowlist is closed and exactly these 7');
   for (const id of Object.keys(allow)) {
     assert.equal(T.serviceById(id) !== null, true, `${id} is a real service`);
     assert.equal(typeof allow[id], 'string');
@@ -207,7 +208,7 @@ test('view: registry order, Spanish labels, honest counters, fake is loud', () =
   assert.equal(gh.enabled, true);
   assert.equal(gh.canOpen, true);
   assert.equal(v.rows.find(r => r.id === 'n8n').stateLabel, 'error');
-  assert.equal(v.rows.find(r => r.id === 'calendar').stateLabel, 'sin conectar');
+  assert.equal(v.rows.find(r => r.id === 'slack').stateLabel, 'sin conectar');
   assert.equal(v.enabledCount, 2);
   assert.equal(v.connectedCount, 1);
   assert.equal(v.fake, true, 'the banner reads this: datos de ejemplo');
@@ -295,7 +296,7 @@ test('render: builds the 9 cards in registry order, textContent only, buttons wi
     assert.equal(demo.textContent, 'demo');
     assert.match(demo.getAttribute('title'), /Datos de ejemplo/);
   }
-  for (const name of ['GitHub', 'Despliegues', 'Correo', 'Pagos', 'Notion', 'n8n', 'Calendario', 'Slack', 'Finanzas']) {
+  for (const name of ['GitHub', 'Despliegues', 'Correo', 'Pagos', 'Notion', 'n8n', 'Slack', 'Finanzas']) {
     assert.ok(cards.some(c => c.querySelector('.int-name').textContent === name), name);
   }
   for (const card of cards) {
@@ -308,7 +309,7 @@ test('render: builds the 9 cards in registry order, textContent only, buttons wi
   assert.equal(gh.querySelector('.int-state').textContent, 'conectado');
   assert.equal(gh.querySelector('[data-action="open"]').textContent, 'Abrir');
   assert.equal(gh.querySelector('[data-action="pause"]').textContent, 'Pausar');
-  const cal = cards.find(c => c.dataset.serviceId === 'calendar');
+  const cal = cards.find(c => c.dataset.serviceId === 'slack');
   assert.equal(cal.querySelector('.int-state').textContent, 'sin conectar');
   assert.equal(cal.querySelector('[data-action="open"]'), null, 'disconnected never offers Abrir');
   assert.equal(cal.querySelector('[data-action="refresh"]').disabled, true, 'disabled service cannot refresh');
