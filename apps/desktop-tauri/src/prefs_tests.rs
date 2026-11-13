@@ -2279,3 +2279,57 @@ fn old_prefs_with_both_island_lists_round_trip_byte_identical_and_no_new_key_app
     assert_eq!(v.as_object().unwrap().keys().filter(|k| k.contains("island")).count(), 1, "no merged island key is invented");
     assert_eq!(Prefs::from_text(Some(&p.to_text())).to_text(), p.to_text(), "idempotent re-read");
 }
+
+// ---- K2-10 T4 (S5): the mail counter's last visit -----------------------------------------
+
+/// Absent by default and never written, so a file that never showed the mail card keeps its
+/// bytes; a hostile value reads as absent (the counter then counts everything as new).
+#[test]
+fn k2_10_the_mail_seen_mark_is_absent_by_default_and_an_old_file_keeps_its_bytes() {
+    assert_eq!(Prefs::default().gmail_last_seen_ms, None);
+    assert!(!Prefs::default().to_text().contains("gmail_last_seen_ms"));
+    let untouched = Prefs::from_text(Some(r#"{"v":1,"sound":true}"#));
+    assert_eq!(untouched.to_text(), r#"{"sound":true,"v":1}"#);
+    for bad in [
+        Some(r#"{"v":1,"gmail_last_seen_ms":0}"#),
+        Some(r#"{"v":1,"gmail_last_seen_ms":-5}"#),
+        Some(r#"{"v":1,"gmail_last_seen_ms":"5"}"#),
+        Some(r#"{"v":1,"gmail_last_seen_ms":null}"#),
+        Some(r#"{"v":1,"gmail_last_seen_ms":{}}"#),
+    ] {
+        let p = Prefs::from_text(bad);
+        assert_eq!(p.gmail_last_seen_ms, None, "{bad:?}");
+        assert!(!p.to_text().contains("gmail_last_seen_ms"), "{bad:?} leaves no key behind");
+    }
+}
+
+/// The mark round-trips through the v1 file and only ever moves FORWARDS: a stale write is
+/// accepted as a no-op (never stored), and zero is no visit at all.
+#[test]
+fn k2_10_the_mail_seen_mark_round_trips_and_never_moves_backwards() {
+    let at = |ms| update(&Prefs::default(), &Command::SetGmailLastSeen(ms), |_| true).unwrap();
+    let first = at(1_760_000_000_000);
+    assert_eq!(first.gmail_last_seen_ms, Some(1_760_000_000_000));
+    assert_eq!(Prefs::from_text(Some(&first.to_text())), first);
+    let later = update(&first, &Command::SetGmailLastSeen(1_760_000_600_000), |_| true).unwrap();
+    assert_eq!(later.gmail_last_seen_ms, Some(1_760_000_600_000));
+    let stale = update(&later, &Command::SetGmailLastSeen(1_760_000_000_000), |_| true).unwrap();
+    assert_eq!(stale.gmail_last_seen_ms, Some(1_760_000_600_000), "an earlier visit never wins");
+    assert_eq!(stale, later, "a stale write is a no-op, not a rewrite");
+    assert!(update(&Prefs::default(), &Command::SetGmailLastSeen(0), |_| true).is_err());
+    assert!(update(&Prefs::default(), &Command::SetGmailLastSeen(5), |_| false).is_err());
+}
+
+/// The page never supplies it: the closed wire command has no such action, and no spelling of
+/// it is accepted.
+#[test]
+fn k2_10_the_page_can_never_supply_the_mail_seen_mark() {
+    for bad in [
+        json!({"action":"set_gmail_last_seen","atMs":5}),
+        json!({"action":"set_gmail_last_seen","gmail_last_seen_ms":5}),
+        json!({"action":"set_gmail_last_seen"}),
+        json!({"action":"set_gmail_last_seen","atMs":"5"}),
+    ] {
+        assert_eq!(parse_command(&bad), Err(CommandError), "{bad} must be refused");
+    }
+}
