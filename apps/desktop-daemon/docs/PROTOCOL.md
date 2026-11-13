@@ -440,7 +440,7 @@ Everything else (thinking deltas, `turn_end`, `tool_execution_update`, unknown) 
 ### Client slots (K2-05 U2 follow-up, re-verified)
 
 The cap is **4 clients**: the island's settings window, the chat, and one reconnect overlap, with the
-daemon's own health probe (`classifySession`'s hello→ready exchange, used by `abito-island-daemon
+daemon's own health probe (`classifySession`'s hello→ready exchange, used by `koda-daemon
 status` and by the island to decide the daemon is alive) always answered. Three rules (F1, re-verify):
 
 - **The cap counts ONLY authenticated live clients** — a set filled when a handshake is admitted and
@@ -709,14 +709,14 @@ one-line log notice), and any other unknown `rotation` subkey is still refused.
 
 ## Obtaining endpoint and token (U4)
 
-The host does not generate the token: `abito-island-daemon run` does, and publishes `{protocol, endpoint, token, pid, procStart, startedAt}`
+The host does not generate the token: `koda-daemon run` does, and publishes `{protocol, endpoint, token, pid, procStart, startedAt}`
 in `<island>/runtime/session.json` (0600, removed on stop).
 
 **Boot order (K2-05, Gentle Dot `daemon.ts:470-481`).** The daemon validates its config and the bundled
 engine (a missing or broken bundled runtime still fails the boot, like Gentle Dot's `loadConfig`), opens
 its server, publishes `session.json` and only then starts the engine. Like Gentle Dot (`daemon.ts:477-481`
 `await supervisor.start().catch(log)`), the boot awaits that first engine start, but a stop does not:
-SIGTERM/SIGINT, stdin EOF of an app-owned `run` and `abito-island-daemon stop` act at once even while the
+SIGTERM/SIGINT, stdin EOF of an app-owned `run` and `koda-daemon stop` act at once even while the
 engine is still starting (Gentle Dot `close()`, `daemon.ts:410-458`): the server closes and `session.json` is
 withdrawn immediately — never after that first start settles — and the starting engine is asked to stop at
 once (its stdin closed). The PROCESS then exits when that starting engine answers or the stop timers fire

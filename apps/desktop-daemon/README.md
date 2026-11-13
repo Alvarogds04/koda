@@ -348,7 +348,7 @@ bounded JSONL) and `src/protocol.cjs` the pure codec/translation. Wire format, f
 limits: [docs/PROTOCOL.md](docs/PROTOCOL.md). The client cap is 4 (settings window + chat + one
 reconnect overlap + the daemon's own health probe): it counts clients that completed their
 handshake and is enforced when a connection's own `hello` is validated — never at connect time —
-so `abito-island-daemon status` still classifies the daemon healthy while the settings window and
+so `koda-daemon status` still classifies the daemon healthy while the settings window and
 the chat are both connected. No outbound line ever carries a lone UTF-16 surrogate (replaced with
 U+FFFD by the single outbound encoder), and every chunk/clip of outbound text cuts on whole code
 points; a history message whose text was clipped carries `clipped: true`. History is served by `get_history` and `get_earlier` (see docs/PROTOCOL.md, History frames); the CLI is in the U4 section.
@@ -358,12 +358,12 @@ points; a history message whose text was clipped carries `clipped: true`. Histor
 ### Run it
 
 ```sh
-abito-island-daemon run                      # foreground; Ctrl-C / SIGTERM / SIGINT stop it gracefully
-abito-island-daemon status                   # sanitized JSON (never the token); exit 3 if not running
-abito-island-daemon stop                     # SIGTERM to the pid in session.json, ownership-checked
-abito-island-daemon config get               # effective config
-abito-island-daemon config set-workspace /abs/dir
-abito-island-daemon config set-hotkey Ctrl+Alt+Space   # or --clear; persisted only, no engine restart
+koda-daemon run                      # foreground; Ctrl-C / SIGTERM / SIGINT stop it gracefully
+koda-daemon status                   # sanitized JSON (never the token); exit 3 if not running
+koda-daemon stop                     # SIGTERM to the pid in session.json, ownership-checked
+koda-daemon config get               # effective config
+koda-daemon config set-workspace /abs/dir
+koda-daemon config set-hotkey Ctrl+Alt+Space   # or --clear; persisted only, no engine restart
 ```
 
 (`node src/cli.cjs ...` without installing the `bin`.) Exit codes: `0` ok, `1` error
@@ -470,7 +470,7 @@ profile also wins over the `thinking` default across restarts). When
 The daemon **never writes `.engram` into your folder**. The pin is `KODA_MEMORY_PROJECT`
 + the identity prompt. It does detect (read-only) a conflicting
 `<workspace>/.engram/config.json` whose `project_name` is not `koda` and
-reports `memoryPinConflict: true` in `Daemon.status()` and `abito-island-daemon status`.
+reports `memoryPinConflict: true` in `Daemon.status()` and `koda-daemon status`.
 Whether Engram prefers that folder file over the env pin is Engram's behavior, not
 guaranteed here: treat the warning as "memories may land in the other project".
 
@@ -482,12 +482,12 @@ guaranteed here: treat the warning as "memories may land in the other project".
 
 Mode `0600`, written atomically after the socket listens, removed on stop (and on abnormal exits the process can observe; after SIGKILL it is stale and cleaned by `status`/`stop`). `procStart` is the daemon's own /proc start time, used to confirm identity. `ppid` (added by R8) is the boot-time parent pid, used to detect reparenting: a daemon whose current ppid is 1 OR differs from the recorded one is classified orphaned; on non-/proc platforms the check is skipped (no orphan detection). Legacy sessions without `ppid` keep the old ppid-1-only rule. The token
 is generated per launch, lives only in memory and in this file, and is never logged
-or printed by `status`. The Tauri host should: spawn `abito-island-daemon run`; wait
+or printed by `status`. The Tauri host should: spawn `koda-daemon run`; wait
 for `session.json` (parse; check `protocol`, `pid` alive); connect to the Unix socket
 `endpoint`; send `{"type":"hello","protocol":"island-agent/1","token":...}` within 3 s
 (see [docs/PROTOCOL.md](docs/PROTOCOL.md)); hand frames to the WebView **without** the
 token or the endpoint; on exit re-read `session.json` (a new launch means a new
- token). Stop with SIGTERM to `pid` or `abito-island-daemon stop`.
+ token). Stop with SIGTERM to `pid` or `koda-daemon stop`.
 
 ### Interrupted work record: `<island>/runtime/interrupted.json` (#385 OD066)
 
@@ -544,7 +544,7 @@ image; the tool is blocked before any capture when the model has no image input)
 
 - Island, runtime dir and socket dir are 0700, socket and files 0600; per-launch token.
 - `session.json` is a bearer secret for the local user only; keep the island on a local, private disk.
-- `abito-island-daemon stop`/`status` rely on `/proc` (start time, uid, cmdline) to confirm the daemon; without `/proc` they fail closed and refuse to signal.
+- `koda-daemon stop`/`status` rely on `/proc` (start time, uid, cmdline) to confirm the daemon; without `/proc` they fail closed and refuse to signal.
 - MCP source entries are written as the WHATWG-normalized URL; server ids `__proto__`, `constructor`, `prototype` are rejected.
 - `config.json` reads apply the same secure-path checks as writes (a symlinked island directory is refused).
 - A workspace validated at start can be swapped for a symlink later (TOCTOU between validation and spawn); the engine runs as you, with your permissions, in that folder.

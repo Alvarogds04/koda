@@ -152,7 +152,7 @@ The daemon source list includes `src/connector-host.cjs` and
 `connectorHostBin` is unset. Omitting either breaks the packaged CLI before it
 can report status. `test-node/host-stage-check.cjs` runs the staged CLI's public
 `status` command with an isolated, absent island: exit 3, empty stdout, and exactly
-`abito-island-daemon: not running` on stderr (with one LF), with no island created
+`koda-daemon: not running` on stderr (with one LF), with no island created
 and all receipt hashes unchanged. It then removes each module from its disposable
 stage in turn and proves that the CLI fails rather than falling back to the source
 checkout. This checks runtime module closure, not a release build or live connector
