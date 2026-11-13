@@ -16,7 +16,7 @@ const PROTOCOL_VERSIONS: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05"];
 
 pub const NOT_ALLOWED: &str = "The user did not allow Koda to look at their window. Nothing was captured.";
 pub const TURNED_OFF: &str = "Looking at the user's window is turned off in Koda's settings. Nothing was captured. \
-Tell the user they can turn it on in Settings → Chat → «Let Koda see my window».";
+Tell the user they can turn it on in Ajustes → Chat → «Dejar que Koda vea mi ventana».";
 const NO_WINDOW: &str = "Koda found no other window to look at. Ask the user to bring the window they mean to the front and try again.";
 
 /// The window the capture would take.

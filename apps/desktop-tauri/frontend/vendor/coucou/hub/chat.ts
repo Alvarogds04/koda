@@ -236,6 +236,10 @@ export async function renderChatSettings({ invoke, V, listen, timers }: any) {
     const live = trusted(toggle(prefs.liveContext !== false, value => { work(() => call('prefs_action', { action: 'set_live_context', live_context: value }), next => { prefs = next; paintContext(); }, () => paintContext()); }));
     (live as HTMLButtonElement).disabled = typeof prefs.liveContext !== 'boolean';
     ctxBody.append(row(t('Live context'), live), h('div', { class: 'hub-note', text: t('When you write in the chat, Koda adds a short read-only summary of what it already knows: your coding-agent sessions, pending questions and the status of your connected integrations. It makes no new requests, and sends no keys, mail bodies or diffs. The chat still cannot run or approve anything. On by default.') }));
+    // K2-06 S3: the window-capture tool's switch, OFF by default; the tool asks for a 30-minute grant before the first capture.
+    const capture = trusted(toggle(prefs.windowCapture === true, value => { work(() => call('prefs_action', { action: 'set_window_capture', window_capture: value }), next => { prefs = next; paintContext(); }, () => paintContext()); }));
+    (capture as HTMLButtonElement).disabled = typeof prefs.windowCapture !== 'boolean';
+    ctxBody.append(row('Dejar que Koda vea mi ventana', capture), h('div', { class: 'hub-note', text: 'Cuando le preguntás por la ventana que estás usando, Koda le saca una captura y se la pasa a un modelo que ve imágenes. Antes de la primera captura te pide permiso por 30 minutos. Nunca captura Koda, los ajustes del sistema, las ventanas de inicio de sesión ni los gestores de contraseñas. Apagado por defecto.' }));
     const available = prefs.windowContextAvailable;
     if (prefs.windowContextNative === true) {
       ctxBody.append(h('div', { class: 'hub-note', text: 'Koda lee la app y el título de la ventana activa del sistema. No se captura la URL.' + (typeof prefs.windowContextNote === 'string' ? ' Contexto ' + prefs.windowContextNote + '. Para activarlo: Ajustes del Sistema → Privacidad y seguridad → Grabación de pantalla. Koda no pide ese permiso por ti.' : '') }));
