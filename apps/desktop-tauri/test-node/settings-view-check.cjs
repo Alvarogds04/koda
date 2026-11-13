@@ -221,9 +221,12 @@ test('T6 General keeps reduced motion and all theme choices; custom auto-close i
 });
 
 // ---- screens (copied from gentle-dot: one screen per header button, each covering the chat body) -------
-test('#442 T7.4 four sub-tabs of ONE Ajustes entry, design order (DESIGN-NOTES §3/§9): General, Conexiones, Blobs, Apariencia — Especialistas is merged into Blobs; K2-05 U5c (L72) removed Modelos', () => {
-  assert.deepEqual(S.TABS.map(x => x.id), ['general', 'accounts', 'pills', 'appearance']);
-  assert.deepEqual(S.TABS.map(x => x.title), ['General', 'Conexiones', 'Blobs', 'Apariencia']);
+test('#442 T7.4 the sub-tabs of ONE Ajustes entry, design order (DESIGN-NOTES §3/§9): General, Conexiones, Minikodas, Blobs, Apariencia — Especialistas is merged into Blobs; K2-05 U5c (L72) removed Modelos; K2-13 T6b-3 (S7/S10) added Minikodas', () => {
+  assert.deepEqual(S.TABS.map(x => x.id), ['general', 'accounts', 'minikodas', 'pills', 'appearance']);
+  assert.deepEqual(S.TABS.map(x => x.title), ['General', 'Conexiones', 'Minikodas', 'Blobs', 'Apariencia']);
+  // K2-13 T6b-3: the Minikodas tab is reachable through its own id and owns its card; it is never an alias of another tab
+  assert.equal(S.tabAlias('minikodas'), 'minikodas');
+  assert.equal(S.servicesGroupVisible('minikodas'), false, 'the sample services stay on Conexiones');
   // S8: the old ids still resolve (deep links), to the merged tab
   assert.equal(S.tabAlias('connectors'), 'accounts');
   assert.equal(S.tabAlias('accounts'), 'accounts');
@@ -245,11 +248,14 @@ test('#442 T7.4 four sub-tabs of ONE Ajustes entry, design order (DESIGN-NOTES �
 
 test('#408 tablist keyboard: arrows wrap, Home/End jump, other keys are ignored', () => {
   assert.equal(S.tabKeyTarget('general', 'ArrowRight'), 'accounts');
-  assert.equal(S.tabKeyTarget('accounts', 'ArrowRight'), 'pills');
+  assert.equal(S.tabKeyTarget('accounts', 'ArrowRight'), 'minikodas');
+  assert.equal(S.tabKeyTarget('minikodas', 'ArrowRight'), 'pills');
   assert.equal(S.tabKeyTarget('pills', 'ArrowRight'), 'appearance');
   assert.equal(S.tabKeyTarget('appearance', 'ArrowRight'), 'general');
   assert.equal(S.tabKeyTarget('general', 'ArrowLeft'), 'appearance');
-  assert.equal(S.tabKeyTarget('pills', 'ArrowLeft'), 'accounts');
+  assert.equal(S.tabKeyTarget('minikodas', 'ArrowRight'), 'pills');
+  assert.equal(S.tabKeyTarget('pills', 'ArrowLeft'), 'minikodas');
+  assert.equal(S.tabKeyTarget('minikodas', 'ArrowLeft'), 'accounts');
   assert.equal(S.tabKeyTarget('pills', 'Home'), 'general');
   assert.equal(S.tabKeyTarget('pills', 'End'), 'appearance');
   assert.equal(S.tabKeyTarget('pills', 'a'), null);
@@ -1294,7 +1300,7 @@ console.log(`settings-view-check: ${passed} passed`);
 
 test('#408 rail: vertical tablist at the Settings size (Up/Down), wrapping row only as the 400 column fallback', () => {
   assert.equal(S.tabKeyTarget('pills', 'ArrowDown'), 'appearance');
-  assert.equal(S.tabKeyTarget('pills', 'ArrowUp'), 'accounts');
+  assert.equal(S.tabKeyTarget('pills', 'ArrowUp'), 'minikodas');
   const src = fs.readFileSync(path.join(frontend, 'settings.js'), 'utf8');
   assert.match(src, /setAttribute\('aria-orientation', wide \? 'vertical' : 'horizontal'\)/);
   const css = fs.readFileSync(path.join(frontend, 'style.css'), 'utf8');

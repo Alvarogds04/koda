@@ -105,6 +105,8 @@
   <script defer src="integrations-finance.js"></script>
   <script defer src="integrations-notion.js"></script>
   <script defer src="integrations-n8n.js"></script>
+  <!-- K2-13 T6b-3: Ajustes → Minikodas (Telegram + transcription). One classic script: pure view-model + its card. -->
+  <script defer src="minikodas-settings.js"></script>
 </head>
 <body>
   <main id="capsule" data-phase="compact" data-edge="top">
@@ -391,6 +393,10 @@
             <section id="integrations-notion" hidden></section>
             <section id="integrations-n8n" hidden></section>
           </div><!-- /connections-more -->
+          <!-- K2-13 T6b-3 (S7, S10, S16, S18): Ajustes → Minikodas (artboard 06). Like #connections-more it lives OUT of
+               #settings-body because render() wipes the body; settings.js re-appends it on its own tab, so the card keeps
+               its state (and a half-typed api_id) while other tabs are open. -->
+          <section id="minikodas-settings" hidden></section>
           <p id="settings-live" class="sr-only" role="status" aria-live="polite"></p>
         </div>
         <p id="chat-live" class="sr-only" role="status" aria-live="polite"></p>
