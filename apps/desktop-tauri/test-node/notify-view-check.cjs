@@ -108,11 +108,11 @@ test('outcomes: every host outcome has icon+word; «Enviada» is NEUTRAL (live p
 });
 
 // ---- sound cues (pure; no audio exists) ------------------------------------------
-test('sound cues follow the catalog: attention on a NEW pending question, expired once; «Enviada»/«Sin confirmar» NEVER sound', () => {
+test('sound cues follow the catalog: question on a NEW pending question, expired once; «Enviada»/«Sin confirmar» NEVER sound', () => {
   const none = snap(null);
-  assert.equal(N.soundFor(none, snap(pending())), 'snd.attention');
+  assert.equal(N.soundFor(none, snap(pending())), 'snd.question', 'K2-07 L10: a question plays its own cue');
   assert.equal(N.soundFor(snap(pending()), snap(pending())), null, 'same question: no repeat');
-  assert.equal(N.soundFor(snap(pending({ id: ID })), snap(pending({ id: '4a2b8a40-1c2d-4e5f-8a6b-7c8d9e0f1a2c' }))), 'snd.attention', 'a different question is new');
+  assert.equal(N.soundFor(snap(pending({ id: ID })), snap(pending({ id: '4a2b8a40-1c2d-4e5f-8a6b-7c8d9e0f1a2c' }))), 'snd.question', 'a different question is new');
   assert.equal(N.soundFor(null, snap(pending())), null, 'nothing sounds at start-up (no previous snapshot)');
   assert.equal(N.soundFor(snap(pending()), snap(null, { notice: 'expired' })), 'snd.expired');
   assert.equal(N.soundFor(snap(null, { notice: 'expired' }), snap(null, { notice: 'expired' })), null, 'a persisting condition sounds once');
@@ -122,6 +122,26 @@ test('sound cues follow the catalog: attention on a NEW pending question, expire
   assert.equal(N.soundFor(snap(null, { notice: 'sent' }), snap(null, { notice: 'ack_lost' })), null);
   // the cue is only an id: playing it is a separate switch, ON by default and the human can turn it off
   assert.equal(N.SOUND_ENABLED_DEFAULT, true);
+});
+
+test('K2-07 S1/L10: a permission plays snd.approval — Pi\'s kind=approval, and a question the island SHOWS as a permission', () => {
+  const none = snap(null);
+  const approval = pending({ kind: 'approval', text: '¿Me das permiso para ejecutar: git push?',
+    options: [{ index: 0, label: 'Aprobar', description: '' }, { index: 1, label: 'Rechazar', description: '' }] });
+  assert.equal(N.soundFor(none, snap(approval)), 'snd.approval', 'kind=approval is a permission');
+  assert.equal(N.soundFor(none, snap(approval), () => false), 'snd.approval', 'kind=approval never needs the look');
+  // a harness permission arrives as kind=question; the island decides it is a permission (approval look) and so does its cue
+  const harness = pending({ text: 'Codex pide permiso para Bash: cargo test',
+    options: [{ index: 0, label: 'Aprobar una vez', description: '' }, { index: 1, label: 'Rechazar', description: '' }] });
+  const seen = [];
+  assert.equal(N.soundFor(none, snap(harness), n => { seen.push(n.id); return n.kind === 'question'; }), 'snd.approval');
+  assert.deepEqual(seen, [ID], 'the classifier gets the validated notification');
+  assert.equal(N.soundFor(none, snap(harness), () => false), 'snd.question', 'not shown as a permission: a question');
+  assert.equal(N.soundFor(none, snap(harness)), 'snd.question', 'no classifier: a question');
+  assert.equal(N.soundFor(none, snap(harness), () => { throw new Error('layout'); }), 'snd.question', 'a throwing classifier never breaks the cue');
+  assert.equal(N.soundFor(snap(harness), snap(harness), () => true), null, 'the same permission never repeats');
+  assert.equal(N.soundFor(null, snap(approval)), null, 'nothing sounds at start-up');
+  assert.equal(N.soundFor(snap(approval), snap(null, { notice: 'expired' })), 'snd.expired');
 });
 
 test('rate limit: at most one cue per 250 ms and the same cue once per 2 s; bursts are dropped, not queued', () => {
