@@ -12,8 +12,8 @@ private directory checks, strict JSONL framing, transparent session rotation
 the read-only history projection over the rotated session chain (`pageHistory`,
 `historyFromMessages`, `describeTool`, `splitAttachments`; K2-05 T4 U1), the
 attachment upload store and prompt composition (`uploads.ts`; K2-05 attachments),
-the user-facing white-label rewriting of internal names, and the
-product-identity approach.
+the user-facing white-label rewriting of internal names, the screenshot-context
+extension (K2-06), and the product-identity approach.
 
 - Files adapted: `src/isolation.cjs` (including the engine-home marker logic
   from `claimEngineHome` and the private memory lifecycle from
@@ -26,7 +26,10 @@ product-identity approach.
   `src/white-label.cjs`, `src/uploads.cjs` (from `src/uploads.ts`: `sanitizeName`,
   `sniffMime`, the attachment limits and unsent-file expiry, `composePrompt`; K2-05
   attachments, transported over the island socket with per-client opaque ids
-  instead of `POST /upload`), `test/fixtures` and `identity.md`
+  instead of `POST /upload`), `src/window-capture.cjs` and the Pi extension it
+  installs, `<agent>/extensions/koda-window-capture.js` (K2-06: from
+  `src/extensions/screenshot-context.ts` — `pruneScreenshots`, `frontApp` and the
+  per-screenshot log line), `test/fixtures` and `identity.md`
   (text), `README.md` (in part)
 - Changes: rewritten in plain Node CJS with no third-party dependencies; Koda
   identity, island paths, environment allowlist and fail-closed path rules differ
@@ -34,7 +37,10 @@ product-identity approach.
   the original; Koda's memory is ALWAYS private (no user-store mode: the store
   lives in the island home, the port is Koda's own 7439, and only the bundled
   binary is resolved — Gentle Dot's user-binary order is not ported); the
-  hidden-name list adds Koda's own internal names (Abito, Pi).
+  hidden-name list adds Koda's own internal names (Abito, Pi); the
+  screenshot-context extension is converted from TypeScript to the fixed ESM
+  template Pi loads, and adds the no-vision refusal (`refusedReason`) that blocks
+  the capture before it happens when the active model has no image input (K2-06).
 
 Gentle Dot is distributed under the MIT License:
 

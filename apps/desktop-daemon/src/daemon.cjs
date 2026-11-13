@@ -35,6 +35,8 @@ const { defaultIslandRoot } = require("./isolation.cjs");
 // K2-05 T3 (S2): Gentle Dot's transparent rotation (rotation on by default).
 const { SessionRotator } = require("./rotation.cjs");
 const { IslandServer } = require("./server.cjs");
+// K2-06 (S1/S2/S3): the host's window-capture endpoint and the extension that keeps only the last screenshot.
+const windowCapture = require("./window-capture.cjs");
 
 const PROTOCOL = "island-agent/1";
 const SESSION_FILE = "session.json";
@@ -412,9 +414,12 @@ class Daemon extends EventEmitter {
 			}
 			replaced = true; // endpoint refuses AND pid confirmed dead: the only replaceable case
 		}
-		const mcp = config.writeMcpProjection(this.root, cfg.mcpConfigPath);
+		const mcp = config.writeMcpProjection(this.root, cfg.mcpConfigPath, { env: this.env, log: (line) => this.log(line) });
 		this.wroteMcp = true;
 		this.mcpServers = Object.keys(mcp.mcpServers).length;
+		// K2-06 T1/T3: the host configured its window-capture endpoint, so the extension that keeps only the
+		// last screenshot and refuses a blind capture is in place before the engine reads it.
+		windowCapture.install(this.root, this.env);
 		this.cfg = cfg;
 
 		const engine = new AgentEngine({
@@ -965,7 +970,8 @@ class Daemon extends EventEmitter {
 		if (mcpMoved) {
 			// Validates and writes before anything stops; throws leave the engine untouched.
 			this.wroteMcp = true;
-			this.mcpServers = Object.keys(config.writeMcpProjection(this.root, next.mcpConfigPath).mcpServers).length;
+			this.mcpServers = Object.keys(config.writeMcpProjection(this.root, next.mcpConfigPath, { env: this.env, log: (line) => this.log(line) }).mcpServers).length;
+			windowCapture.install(this.root, this.env);
 		}
 		if (!cwdMoved && !commandMoved && !mcpMoved) {
 			this.cfg = { ...this.cfg, ...next };

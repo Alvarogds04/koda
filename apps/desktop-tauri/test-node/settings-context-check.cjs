@@ -11,12 +11,13 @@ const { dom, all, text } = require('./settings-accounts-check.cjs');
   const base = path.resolve(__dirname, '../frontend/vendor/coucou/hub');
   const { renderChatSettings } = await import(pathToFileURL(path.join(base, 'chat.js')));
   const V = require('../frontend/settings-view.js'), C = require('../frontend/chat-view.js');
-  const calls = []; let live = true, on = false, available = false, ui;
+  const calls = []; let live = true, on = false, capture = false, available = false, ui;
   const invoke = async (cmd, { payload: p }) => {
     calls.push([cmd, p]);
     if (cmd === 'prefs_action' && p.action === 'set_window_context') { on = p.window_context; return { windowContext: on, liveContext: live, windowContextAvailable: available }; }
-    if (cmd === 'prefs_action' && p.action === 'set_live_context') { live = p.live_context; return { windowContext: on, liveContext: live, windowContextAvailable: available }; }
-    if (cmd === 'prefs_action') return { windowContext: on, liveContext: live, windowContextAvailable: available };
+    if (cmd === 'prefs_action' && p.action === 'set_live_context') { live = p.live_context; return { windowContext: on, liveContext: live, windowCapture: capture, windowContextAvailable: available }; }
+    if (cmd === 'prefs_action' && p.action === 'set_window_capture') { capture = p.window_capture; return { windowContext: on, liveContext: live, windowCapture: capture, windowContextAvailable: available }; }
+    if (cmd === 'prefs_action') return { windowContext: on, liveContext: live, windowCapture: capture, windowContextAvailable: available };
     if (cmd === 'secret_action') return { present: false };
     return {};
   };
@@ -43,7 +44,7 @@ const { dom, all, text } = require('./settings-accounts-check.cjs');
   assert.equal(section.attrs.id, 'chat-window-context', 'the section keeps its movable id');
   assert(text(section).includes('Contexto en vivo') && text(section).includes('solo lectura') && text(section).includes('No hace consultas nuevas'), 'copy says read-only and no new requests');
   const switches = () => all(ui).filter(e => e.tagName === 'button' && String(e.className).includes('switch') && all(section).includes(e));
-  assert.equal(switches().length, 2, 'window switch + live switch');
+  assert.equal(switches().length, 3, 'window switch + live switch + capture switch');
   const live1 = switches()[1];
   assert(!live1.disabled, 'live switch enabled');
   assert(live1.attrs['aria-checked'] === 'true' || String(live1.className).includes('on'), 'ON by default');
@@ -53,6 +54,18 @@ const { dom, all, text } = require('./settings-accounts-check.cjs');
   assert.deepEqual(calls.splice(0), [['prefs_action', { action: 'set_live_context', live_context: false }]]);
   switches()[1].fire('click'); await ui.settled();
   assert.deepEqual(calls.splice(0), [['prefs_action', { action: 'set_live_context', live_context: true }]]);
+  // K2-06 S3: «Dejar que Koda vea mi ventana» — the capture tool's switch, OFF by default, in the same section.
+  assert(text(section).includes('Dejar que Koda vea mi ventana'), 'the capture switch is named as the tool message says');
+  assert(text(section).includes('captura') && text(section).includes('30 minutos'), 'copy says it captures one window and asks for 30 minutes');
+  const cap = switches()[2];
+  assert(!cap.disabled, 'capture switch enabled once prefs are known');
+  assert(cap.attrs['aria-checked'] !== 'true' && !String(cap.className).includes(' on'), 'capture OFF by default');
+  calls.length = 0; cap.fire('click', false); await ui.settled();
+  assert.deepEqual(calls, [], 'an untrusted click sends nothing');
+  cap.fire('click'); await ui.settled();
+  assert.deepEqual(calls.splice(0), [['prefs_action', { action: 'set_window_capture', window_capture: true }]]);
+  switches()[2].fire('click'); await ui.settled();
+  assert.deepEqual(calls.splice(0), [['prefs_action', { action: 'set_window_capture', window_capture: false }]]);
   ui.dispose();
   available = true;
   ui = await renderChatSettings({ invoke, V, C, listen: async () => () => {}, timers: { setTimeout: () => 1, clearTimeout() {} } });
@@ -64,5 +77,6 @@ const { dom, all, text } = require('./settings-accounts-check.cjs');
   const guard = fs.readFileSync(path.resolve(__dirname, '../frontend/settings-app.js'), 'utf8');
   assert(guard.includes('set_window_context') && guard.includes("typeof args.payload.window_context !== 'boolean'"), 'exact guard in settings-app.js');
   assert(guard.includes('set_live_context') && guard.includes("typeof args.payload.live_context !== 'boolean'"), 'exact guard for the live switch');
+  assert(guard.includes('set_window_capture') && guard.includes("typeof args.payload.window_capture !== 'boolean'"), 'exact guard for the capture switch');
   console.log('settings-context-check ok');
 })().catch(e => { console.error(e); process.exit(1); });

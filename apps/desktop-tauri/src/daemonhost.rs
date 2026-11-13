@@ -300,6 +300,8 @@ fn start() -> Result<Host, StartupFailure> {
     let child_path = runtime_path_with(path.as_deref(), &node, &pi, first).map_err(|_| StartupFailure::SpawnFailed)?;
     let mut command = std::process::Command::new(node);
     command.arg(cli).args(["run", "--app-owned"]).env("PATH", child_path);
+    // K2-06: the capture endpoint (loopback URL + per-launch bearer) for the daemon's private mcp.json; empty when it did not start.
+    for (name, value) in crate::windowcapture::host::daemon_env() { command.env(name, value); }
     Host::spawn_command(command).map_err(|_| StartupFailure::SpawnFailed)
 }
 
