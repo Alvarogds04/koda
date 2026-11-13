@@ -21,12 +21,78 @@ const net = require("node:net");
 const path = require("node:path");
 
 const P = require("./protocol.cjs");
+// T2 white-label: internal /gentle: commands are refused at the island's prompt
+// intake (Gentle Dot bridge.ts dispatch), with a fixed error, before any
+// admission check. The user's own text is never otherwise rewritten here.
+const { isBlockedInput, presentText } = require("./white-label.cjs");
 const { awaitSafePoint, closedToast } = require("./interrupt.cjs");
+// T4 U1: the history projection over the engine's rotated chain (Gentle Dot's
+// conversations.ts, MIT); see THIRD-PARTY-NOTICES.md.
+const { pageHistory, sessionTail, nextRow, splitAttachments, textOf } = require("./conversations.cjs");
+// K2-05 attachments (L11 2a): Gentle Dot's upload store and prompt composition (uploads.ts, MIT).
+const { UploadStore, composePrompt } = require("./uploads.cjs");
+
+/** Gentle Dot's REMEMBERED_REQUEST_IDS (bridge.ts:122): a repeated send/steer requestId is ignored. */
+const REMEMBERED_REQUEST_IDS = 500;
+/** The steers the engine may still record in the running turn (each client's are bounded by the rate limit). */
+const MAX_STEER_REQUESTS = 32;
+/** K2-05 U4b: bounds of an ask's optional details (UTF-16 units, like every daemon clip). */
+const ASK_MESSAGE_CHARS = 2000;
+const ASK_PLACEHOLDER_CHARS = 200;
+
+/**
+ * K2-05 U4b: one optional harness-written ask detail as the island may show it (Gentle Dot
+ * bridge.ts onUiRequest: `message` / `placeholder` pass through presentText). Rewrite FIRST,
+ * clip SECOND (a clip first could cut a hidden name in half), control characters other than
+ * tab/newline removed, never cut between the two halves of a surrogate pair. Anything but a
+ * string is no detail at all.
+ */
+function askDetail(value, max) {
+	if (typeof value !== "string") return undefined;
+	const clean = presentText(value).replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g, "");
+	if (clean.length <= max) return clean;
+	let end = max;
+	const prev = clean.charCodeAt(end - 1);
+	if (prev >= 0xd800 && prev <= 0xdbff) end -= 1;
+	return clean.slice(0, end);
+}
+
+/**
+ * K2-05 U4b: the details a dialog shows next to its title — a confirm's `message` (what the
+ * user approves) and an input's `placeholder` — added to the pending ask (additive, optional).
+ * The user's ANSWER is never touched here: it travels to the engine as typed.
+ */
+function withAskDetails(ask, event) {
+	const message = askDetail(event?.message, ASK_MESSAGE_CHARS);
+	if (message) ask.message = message;
+	if (ask.kind === "input") {
+		const placeholder = askDetail(event?.placeholder, ASK_PLACEHOLDER_CHARS);
+		if (placeholder) ask.placeholder = placeholder;
+	}
+	return ask;
+}
+
+/** K2-05 review F6: an error answering a send/steer carries its requestId (additive, sender only). */
+const requestError = (code, requestId) => (requestId === undefined ? P.errorFrame(code) : { ...P.errorFrame(code), requestId });
 
 const DEFAULTS = {
 	handshakeMs: 3000,
-	maxClients: 2,
+	/** F1 (U2 re-verify): the cap counts ONLY authenticated live clients (the `auth` set,
+	 * filled when a handshake is admitted and removed synchronously on close/destroy): the
+	 * settings window + the chat + one reconnect overlap. A hello whose admission would
+	 * exceed the cap is still ANSWERED its `ready` first and only then dropped silently,
+	 * so the daemon's own health probe — and any burst of concurrent probes — is classified
+	 * healthy while settings and chat are connected. */
+	maxClients: 4,
+	/** F1 (U2 re-verify): independent bound for PRE-hello connections (each also bounded by
+	 * the handshake timeout): the connect-time client cap was removed in the U2 follow-up,
+	 * which left a connect burst unbounded until its handshake window closed it. */
+	maxHandshakes: 16,
 	framesPerMinute: 240,
+	/** K2-05 attachments: `upload` chunks have their OWN per-client budget (≈ 100 MB/min at the
+	 * 144 KiB chunk), so a large file never trips the 240 frames/min drop and chat frames never
+	 * compete with it. Over the budget the client is dropped, like the frame limit. */
+	uploadFramesPerMinute: 720,
 	maxOutboundBytes: 1024 * 1024,
 	askTimeoutMs: 120_000,
 	maxPendingAsks: 16,
@@ -36,6 +102,10 @@ const DEFAULTS = {
 	interruptSafePointMs: 30_000,
 	/** Minimum time between two /proc session scans (#360); the snapshot is cached for it. */
 	sessionsMinIntervalMs: 2000,
+	/** Messages per history page (T4 U1); Gentle Dot's HISTORY_PAGE. */
+	historyPage: 100,
+	/** K2-05 boot order: how long a get_history waits for a starting engine (Gentle Dot's READY_TIMEOUT_MS). */
+	readyWaitMs: 60_000,
 };
 /** sockaddr_un.sun_path holds 108 bytes including the NUL on Linux and 104 on macOS. */
 const MAX_SOCKET_PATH = process.platform === "darwin" ? 103 : 107;
@@ -51,16 +121,18 @@ const WIN_HANDSHAKE_MS = 2000;
 
 /**
  * #379 global pause: verbs refused with error{paused} while the switch is on —
- * agent-turn admission (send/steer/new_conversation) and every verb that spawns
+ * agent-turn admission (send/steer) and every verb that spawns
  * a process (agent_connect, connectors_list, agents_list). Stopping or reading
  * work (abort, agent_disconnect, every read-only query) stays allowed.
  */
-const PAUSED_REFUSED = new Set(["send", "steer", "new_conversation", "agent_connect", "hooks_install", "hooks_remove", "connectors_list", "agents_list", "minikoda_launch",
+const PAUSED_REFUSED = new Set(["send", "steer", "agent_connect", "hooks_install", "hooks_remove", "connectors_list", "agents_list", "minikoda_launch",
 	// K2-13 (S10): starting or advancing a Telegram login changes the user's account state, so the global pause stops it
 	// like any other work. `telegram_status` (read-only), `telegram_session_restore` (the island's hand-off of the keychain
 	// session at start, no new work) and `telegram_logout` still answer: #379 keeps account-safety actions available (it
 	// lets `agent_disconnect` through for the same reason), and revoking a session must never wait for the pause to end.
 	"telegram_login_start", "telegram_login_code", "telegram_login_password"]);
+// T4 U1 (K2-05): `new_conversation` is no longer here on purpose — the verb is refused conversations_off before any
+// gate (idle, busy or paused), so the pause branch can never answer it.
 
 const uid = () => (typeof process.getuid === "function" ? process.getuid() : undefined);
 
@@ -152,8 +224,6 @@ class IslandServer {
 	 * @param {object} [options.settings]  {get(): {hotkey}, setHotkey(value)}; a ConfigError from setHotkey -> bad_request
 	 * @param {boolean} [options.paused]   #379 initial global pause state (restored from config at daemon boot)
 	 * @param {object} [options.pausedStore] {get(): boolean, set(value)} persistence for the pause switch; a throw -> failed and no change
-	 * @param {((message:string)=>string|{message:string,commit?:()=>void})} [options.promptDecorator] #386 (R6: may return {message, commit}; commit runs after the engine accepted the prompt): rewrites the send frame's message just before the prompt (pending rotation summary); no decorator = identity
-	 * @param {(()=>void)} [options.onNewConversation] #386: called after a successful new_conversation (drops an undelivered summary)
  * @param {(()=>({at:number,turnActive:boolean,asks:number}|undefined))} [options.interruptedRecord] R5: reads the unconsumed interrupted-work record (bounded closed fields); exposed once in the ready frame
  * @param {(()=>boolean)} [options.onInterruptedAck] R5: marks the exposed record consumed; runs only after a client sends interrupted_ack. R4 (RDD): returns true on success (or when nothing is left to consume); a false result or a throw makes the server answer the failed error frame and keep the record pending for a retry
 	 */
@@ -175,31 +245,53 @@ class IslandServer {
 		this.telegram = options.telegram; // K2-13 Telegram session (S10/S20)
 		this.agentHooks = options.agentHooks; // #361 {preview(), install(id, hash), remove(id, hash)}
 		this.paused = options.paused === true; // #379 global pause switch; admission guards in handle()
-		this.promptDecorator = options.promptDecorator; // #386 pending rotation summary (no decorator = identity)
 		this.interruptedRecord = options.interruptedRecord; // R5
 		this.onInterruptedAck = options.onInterruptedAck; // R5
 		this.pendingInterrupted = undefined;
-		this.onNewConversation = options.onNewConversation; // #386 drops an undelivered summary
 		this.pausedStore = options.pausedStore;
+		// K2-05 attachments: unsent files wait OUTSIDE the engine workspace (R1-002); an accepted send moves them in.
+		this.uploads = options.uploads ?? new UploadStore({ workspace: () => this.engine?.island?.workspace, staging: () => (this.engine?.island?.root ? path.join(this.engine.island.root, "uploads-staging") : undefined), log: (line) => this.log(line) });
 		this.connectorsFlight = undefined; // the single in-flight snapshot promise (shared by all clients)
 		this.connectorsLast = undefined; // {at, outcome: Promise-settled frame | undefined}
 		this.sessionsFlight = undefined; // #360: the single in-flight scan promise (shared by all clients)
 		this.sessionsLast = undefined; // #360: {at, promise} served from cache inside the min interval
 		this.opts = { ...DEFAULTS, ...(options.limits ?? {}) };
+		if (!Number.isSafeInteger(this.opts.historyPage) || this.opts.historyPage < 1) this.opts.historyPage = DEFAULTS.historyPage;
 		this.log = options.log ?? (() => {});
 		this.clients = new Set();
 		this.clientSeq = 0; // K2-13: each connection gets an id, so a login can belong to the one that started it
+		// F1 (U2 re-verify): separate accounting, both removed synchronously on close/destroy.
+		// `pending` holds PRE-hello connections (bounded by maxHandshakes); `auth` holds admitted
+		// handshakes and is the ONLY thing maxClients counts. `clients` stays the registry of
+		// every live socket (broadcast, held prompts, shutdown).
+		this.pending = new Set();
+		this.auth = new Set();
 		this.busy = false;
 		this.switching = undefined; // the single in-flight profile/role selection
 		this.authFlow = undefined; // last sign-in flow seen: {flowId, accountId, method, phase}
 		this.authEarly = undefined; // phase of a flow whose auth_start reply has not landed yet
 		this.messageCounter = 0;
+		this.historySeq = 0; // T4 U1 freshness: bumped on every message announcement (Gentle Dot's nextMessage)
 		this.asks = new Map();
+		// K2-05 bind by id: requestIds already seen (Gentle Dot's dedupe, bounded, oldest first out),
+		// and the requests the engine may still record: the dispatched prompts (each its own request,
+		// oldest first: a run records its prompt first) and the steers of the running turn, each
+		// { client, requestId?, text }.
+		this.seenRequests = new Set();
+		this.promptRequests = [];
+		this.steerRequests = [];
+		// The open session's display rows, counted from the engine's message events since the
+		// last idle snapshot ({file, rows, role}); undefined when events may have been missed.
+		this.rowTail = undefined;
 		this.server = undefined;
 		this.endpoint = undefined;
 		this.directory = undefined;
 		this.closing = undefined;
 		this.listeners = [];
+		/** K2-05 boot order: the reads held while the engine starts (Gentle Dot whenReady), each with its own timer. */
+		this.readyWaiters = new Set();
+		/** The single engine `status` listener every held read shares (bounded, never one per call). */
+		this.readyWatch = undefined;
 	}
 
 	static generateToken() {
@@ -211,7 +303,122 @@ class IslandServer {
 	}
 
 	state() {
-		return { busy: this.busy || this.engine?.busy === true || this.switching !== undefined, status: this.engine?.status ?? "stopped", paused: this.paused === true };
+		// K2-05 U5c: `model` = the engine's own model identity (get_state), present only when it reported one.
+		const model = this.engine?.status === "ready" ? this.engine.model : undefined;
+		return { busy: this.busy || this.engine?.busy === true || this.switching !== undefined, status: this.engineStatus(), paused: this.paused === true, ...(model ? { model } : {}) };
+	}
+
+	/**
+	 * K2-05 boot order = Gentle Dot bridge.ts deriveState: the daemon listens before its engine
+	 * was launched, so a "stopped" engine that was never started reads "starting" (only an engine
+	 * that was started and then stopped is really "stopped"). An engine without `launched`
+	 * (tests, older shape) keeps its own status.
+	 */
+	engineStatus() {
+		const status = this.engine?.status ?? "stopped";
+		return status === "stopped" && this.engine?.launched === false ? "starting" : status;
+	}
+
+	/**
+	 * Gentle Dot bridge.ts:729-747 whenReady: resolves once the engine is ready; rejects when it
+	 * stops, or when READY_WAIT_MS (Gentle Dot's READY_TIMEOUT_MS, 60 s) elapses FROM THIS CALL —
+	 * the timer starts here, inside the call, exactly as upstream, so two reads 30 s apart time out
+	 * 30 s apart and a later read is never cut short by an earlier one's deadline.
+	 * What Koda does NOT copy is one listener per call: every held read shares ONE engine `status`
+	 * listener (registered by the first one), so a client repeating get_history cannot pile
+	 * listeners on the engine's emitter. It keeps the per-call timing above because each caller
+	 * owns its own timer; the shared listener only ever decides ready/stopped for all of them.
+	 */
+	whenReady() {
+		if (this.engine?.status === "ready") return Promise.resolve();
+		const engine = this.engine;
+		if (!engine?.on || this.closing) return Promise.reject(new Error("engine is not ready"));
+		// One timer per call, counted from now; the shared listener is already there or is added here.
+		const promise = new Promise((resolve, reject) => {
+			const waiter = { resolve, reject };
+			waiter.timer = setTimeout(() => {
+				this.readyWaiters.delete(waiter);
+				if (this.readyWaiters.size === 0) this.unwatchReady();
+				reject(new Error("the engine did not start in time"));
+			}, this.opts.readyWaitMs);
+			waiter.timer.unref?.();
+			this.readyWaiters.add(waiter);
+			this.watchReady(engine);
+		});
+		promise.catch(() => {});
+		return promise;
+	}
+
+	/** Registers the single shared `status` listener of the held reads (no-op when it exists). */
+	watchReady(engine) {
+		if (this.readyWatch) return;
+		const onStatus = ({ state }) => {
+			if (state === "ready") this.settleReady();
+			else if (state === "stopped") this.settleReady(new Error("the engine stopped"));
+		};
+		this.readyWatch = { engine, onStatus };
+		engine.on("status", onStatus);
+	}
+
+	/** Drops the shared `status` listener once no read is waiting for it. */
+	unwatchReady() {
+		const watch = this.readyWatch;
+		if (!watch) return;
+		this.readyWatch = undefined;
+		watch.engine.off("status", watch.onStatus);
+	}
+
+	/** Settles every read waiting for the engine at once: ready (no error) or the reason it never came. */
+	settleReady(error) {
+		const waiters = [...this.readyWaiters];
+		this.readyWaiters.clear();
+		this.unwatchReady();
+		for (const waiter of waiters) {
+			clearTimeout(waiter.timer);
+			if (error) waiter.reject(error);
+			else waiter.resolve();
+		}
+	}
+
+	/**
+	 * The open chat's session files, oldest first (T4 U1, Gentle Dot bridge.ts chain()).
+	 * K2-05 verifier fix: a chain file is read only when it is a regular, non-symlink,
+	 * owned file directly inside the engine's private sessions dir — the same rule the
+	 * runtime enforces for open sessions (isOwnedSessionFile). A planted symlink (one
+	 * answered "OUTSIDE-SECRET" to the verifier) or an outside path is dropped with a
+	 * log line, never read; `allowMissing` keeps a not-yet-written open session legible.
+	 */
+	historyChain() {
+		const file = this.engine?.sessionFile;
+		if (typeof file !== "string") return [];
+		const owned = (p) => {
+			if (this.engine.isOwnedSessionFile?.(p, true)) return true;
+			this.log(`history: a chain file is not an owned session file, skipped: ${p}`);
+			return false;
+		};
+		return [...(this.engine.previousSessions ?? []).filter(owned), ...(owned(file) ? [file] : [])];
+	}
+
+	/** One history page of the open chat; unreadable chain files are skipped with a log line. */
+	historyPage(before) {
+		return pageHistory(this.historyChain(), this.opts.historyPage, before, (line) => this.log(line));
+	}
+
+	/**
+	 * T4 U1 freshness (K2-05 verifier fix, Gentle Dot bridge.ts:1131-1145 currentHistory):
+	 * history replaces what a window shows, so it must not be older than the messages
+	 * already announced — the engine writes a message to its session file right after
+	 * announcing it, so one get_state round trip makes sure everything announced so far
+	 * is on disk; when a message was announced DURING that round trip, the page is read
+	 * again (bounded, like upstream). `get_earlier` does not do this (upstream parity).
+	 */
+	async currentHistory(before) {
+		for (let attempt = 0; ; attempt++) {
+			const seen = this.historySeq;
+			await this.engine.request({ type: "get_state" });
+			const page = this.historyPage(before);
+			if (this.historySeq === seen || attempt >= 2) return page;
+		}
 	}
 
 	async start() {
@@ -284,11 +491,20 @@ class IslandServer {
 		on(this.engine, "event", (event) => this.onEngineEvent(event));
 		on(this.engine, "status", () => this.onEngineStatus());
 		on(this.engine, "exit", () => this.onEngineStatus(true));
+		on(this.engine, "model", () => this.broadcastState());
 		on(this.engine, "turn_cancelled", ({ reason }) => {
+			// the runtime drops the cancelled turn's events: the row count is no longer known
+			this.rowTail = undefined;
+			this.forgetRequests();
 			for (const id of [...this.asks.keys()]) this.closeAsk(id, false);
 			// #378: the copy is fixed and sanitized; engine text never reaches a client.
 			this.broadcast(closedToast(reason));
 		});
+		// T4 U1: after a rotation the open session (and its chain) changes; every
+		// client gets the same chat again, now marked earlier (Gentle Dot
+		// bridge.ts:1124-1129). See onEngineHistoryEvent for which events qualify.
+		on(this.engine, "session_changed", (payload) => this.onEngineHistoryEvent("session_changed", payload));
+		on(this.engine, "sessions_linked", (payload) => this.onEngineHistoryEvent("sessions_linked", payload));
 		// Intermediate states (an operation started => "working") reach every client.
 		on(this.agents, "change", (entries) => {
 			try {
@@ -351,18 +567,37 @@ class IslandServer {
 	// ----- connections -------------------------------------------------------
 
 	onConnection(socket) {
-		if (this.clients.size >= this.opts.maxClients || this.closing) {
+		// F1 (U2 re-verify): two independent bounds. (a) PRE-hello connections are bounded HERE,
+		// at connect, by maxHandshakes — the connect-time client cap was removed in the U2
+		// follow-up, which left a connect burst unbounded until its handshake window closed it,
+		// and a surplus connect is destroyed silently (never counted, nothing sent).
+		// (b) The client cap itself counts only authenticated live clients and is evaluated in
+		// onHello, AFTER the ready reply is on the wire — a probing socket (classifySession's
+		// hello→ready, the island telling the daemon alive) holds a slot only for its handshake
+		// window (handshakeMs, bounded) and its classification can never be refused by the cap
+		// while settings and chat are connected. The pre-hello data caps still apply.
+		if (this.closing) {
 			socket.destroy();
 			return;
 		}
-		const client = { id: `c${++this.clientSeq}`, socket, ready: false, seq: 0, pending: Buffer.alloc(0), frames: 0, windowStart: Date.now(), dead: false };
+		if (this.pending.size >= this.opts.maxHandshakes) {
+			socket.destroy();
+			return;
+		}
+		const client = { id: `c${++this.clientSeq}`, socket, ready: false, seq: 0, pending: Buffer.alloc(0), frames: 0, windowStart: Date.now(), dead: false, uploadFrames: 0, uploadWindowStart: undefined, failedUploads: new Set() };
 		this.clients.add(client);
+		this.pending.add(client);
 		client.handshake = setTimeout(() => this.drop(client), WIN ? Math.min(this.opts.handshakeMs, WIN_HANDSHAKE_MS) : this.opts.handshakeMs);
 		socket.on("error", () => this.drop(client));
 		socket.on("close", () => {
 			clearTimeout(client.handshake);
 			client.dead = true;
+			// every accounting set is freed here too: the close event is the backstop for any
+			// path the synchronous drop() could have missed (they are all idempotent deletes)
 			this.clients.delete(client);
+			this.pending.delete(client);
+			this.auth.delete(client);
+			this.uploads.dropOwner(client); // K2-05: what it never sent is removed
 		});
 		socket.on("data", (chunk) => this.onData(client, chunk));
 	}
@@ -370,7 +605,29 @@ class IslandServer {
 	drop(client) {
 		client.dead = true;
 		clearTimeout(client.handshake);
+		// synchronous: a dropped socket frees its slots BEFORE the close event fires, so the
+		// very next hello sees the room (Sets also make the later close event a no-op)
+		this.clients.delete(client);
+		this.pending.delete(client);
+		this.auth.delete(client);
+		this.uploads.dropOwner(client); // K2-05: what it never sent is removed
 		client.socket.destroy();
+	}
+
+	/**
+	 * Counts one frame against its per-client minute budget (K2-05: `upload` chunks have their own);
+	 * false = over the budget (the caller drops the client, a ready one after a rate_limited frame).
+	 */
+	countFrame(client, upload) {
+		const now = Date.now();
+		const key = upload ? "uploadFrames" : "frames";
+		const start = upload ? "uploadWindowStart" : "windowStart";
+		if (now - (client[start] ?? now) >= 60_000 || client[start] === undefined) {
+			client[key] = 0;
+			client[start] = now;
+		}
+		client[key] += 1;
+		return client[key] <= (upload ? this.opts.uploadFramesPerMinute : this.opts.framesPerMinute);
 	}
 
 	onData(client, chunk) {
@@ -385,19 +642,16 @@ class IslandServer {
 			const limit = client.ready ? P.LIMITS.maxFrameBytes : P.LIMITS.maxHelloBytes;
 			if (line.length > limit) return this.drop(client);
 			if (line.length === 0) continue;
-			const now = Date.now();
-			if (now - client.windowStart >= 60_000) {
-				client.frames = 0;
-				client.windowStart = now;
-			}
-			if (++client.frames > this.opts.framesPerMinute) {
-				if (client.ready) this.sendTo(client, P.errorFrame("rate_limited"));
-				return this.drop(client);
-			}
 			if (!client.ready) {
+				if (!this.countFrame(client, false)) return this.drop(client);
 				this.onHello(client, line);
 			} else {
 				const decoded = P.decodeClientLine(line);
+				// K2-05 attachments: an upload chunk spends the upload budget, every other frame the frame budget
+				if (!this.countFrame(client, decoded.frame?.type === "upload")) {
+					this.sendTo(client, P.errorFrame("rate_limited"));
+					return this.drop(client);
+				}
 				if (decoded.error) this.sendTo(client, P.errorFrame("bad_request"));
 				else this.handle(client, decoded.frame).catch(() => this.sendTo(client, P.errorFrame("failed")));
 			}
@@ -410,18 +664,30 @@ class IslandServer {
 		// Same silent close for every failure; compare the token even on protocol mismatch.
 		const tokenOk = decoded.frame ? tokensEqual(this.token, decoded.frame.token) : false;
 		if (!decoded.frame || decoded.frame.protocol !== P.PROTOCOL || !tokenOk) return this.drop(client);
-		clearTimeout(client.handshake);
-		client.ready = true;
+		// F1 (U2 re-verify): the `ready` reply goes on the wire BEFORE the cap is evaluated, and
+		// the cap counts ONLY authenticated live clients (`this.auth`, filled here for admitted
+		// handshakes, removed synchronously on close/destroy). The daemon's own health probe
+		// (classifySession's hello→ready) reads only this first frame, so a burst of concurrent
+		// probes is always classified while settings and chat are connected; pre-hello sockets
+		// (bounded separately by maxHandshakes) never count here. A client refused by the cap
+		// gets its ready frame and is then closed silently, like every other refusal.
+		const accepted = this.auth.size < this.opts.maxClients;
 		this.sendTo(client, {
 			type: "ready",
 			protocol: P.PROTOCOL,
 			state: this.state(),
 			limits: { maxFrameBytes: P.LIMITS.maxFrameBytes, maxClients: this.opts.maxClients },
-			features: { history: false },
+			// T4 U1: one continuous chat (L3/L4/L7, Gentle Dot's features shape).
+			// History reads the whole rotated chain; the conversation list is off.
+			features: { history: true, conversations: false },
 			// R5: the unconsumed interrupted-work record, bounded closed fields
 			// (counts and time only); absent once a client acknowledged it.
 			...(this.pendingInterrupted ? { interrupted: this.pendingInterrupted } : {}),
 		});
+		if (!accepted || client.dead) return this.drop(client);
+		clearTimeout(client.handshake);
+		client.ready = true;
+		this.auth.add(client);
 		for (const ask of this.asks.values()) this.sendTo(client, this.askFrame(ask));
 	}
 
@@ -529,6 +795,24 @@ class IslandServer {
 			if (id) this.toolStream = stream = { id, key: `${this.engine.pid}:${this.engine.sessionEpoch}:${this.engine.sessionFile}`, history: new ToolHistory() };
 		}
 		stream?.history.accept(event);
+		// T4 U1 freshness (Gentle Dot bridge.ts nextMessage): every message announcement
+		// bumps the sequence the history read compares across its get_state round trip.
+		if (event?.type === "message_start" || event?.type === "message_update" || event?.type === "message_end"
+			|| event?.type === "tool_execution_start" || event?.type === "tool_execution_end") {
+			this.historySeq += 1;
+		}
+		// K2-05 bind by id (Gentle Dot bridge.ts onMessageStart): the engine starts recording a user message
+		if (event?.type === "message_start") {
+			// count the display row this message opens (only while the count is known for the open file)
+			let row;
+			if (this.rowTail && this.rowTail.file === this.engine?.sessionFile) {
+				const step = nextRow(this.rowTail, event.message?.role);
+				this.rowTail = { file: this.rowTail.file, ...step.tail };
+				row = step.userRow;
+			} else this.rowTail = undefined;
+			if (event.message?.role === "user") this.onUserMessage(event.message, row);
+		}
+		if (event?.type === "agent_settled") this.forgetRequests();
 		const out = P.translateEvent(event, this.messageId);
 		if (out.busy !== undefined && out.busy !== this.busy) {
 			this.busy = out.busy;
@@ -536,11 +820,261 @@ class IslandServer {
 		}
 		for (const frame of out.frames) this.broadcast(frame);
 		if (out.messageDone) this.messageCounter += 1;
-		if (out.ask) this.openAsk(out.ask);
+		if (out.ask) this.openAsk(withAskDetails(out.ask, event));
 		if (out.cancelUi) this.safeSend({ type: "extension_ui_response", id: out.cancelUi, cancelled: true });
 	}
 
+	/**
+	 * K2-05 F3: delivers the prompt a client typed during a rotation switch,
+	 * once the switch has settled (or failed and recovered). One held prompt per
+	 * client; the delivery follows the same optimistic-busy path as a normal
+	 * send. No-op while a switch is still in flight or a turn runs. Several held
+	 * prompts are each dispatched as their own prompt (Gentle Dot bridge.ts:404
+	 * does the same: every send awaiting the switch goes on as a plain prompt);
+	 * the engine runs one at a time and refuses the others, and each refusal
+	 * forgets only its OWN request (K2-05 F1), so the delivered prompt keeps its
+	 * sender's requestId and the refused sender gets `failed` and no requestId.
+	 */
+	flushHeldPrompts() {
+		if (!this.engine || this.engine.sessionChange || this.state().busy) return;
+		let alongside = false;
+		for (const client of [...this.clients]) {
+			const held = client.heldPrompt;
+			if (!held) continue;
+			client.heldPrompt = undefined;
+			this.busy = true; // optimistic: the agent_start event confirms
+			this.broadcastState();
+			const request = this.expectPrompt(client, held, alongside);
+			alongside = true;
+			// K2-05 attachments: the held files are moved into the workspace when the prompt goes
+			// (R1-001: reserved until the engine answers).
+			if (held.attachments && !this.uploads.accept(client, held.attachments)) {
+				this.forgetRequest(request);
+				if (this.engine && this.engine.status === "ready" && this.engine.busy !== true) this.busy = false;
+				this.broadcastState();
+				this.sendTo(client, requestError("upload_failed", held.requestId));
+				continue;
+			}
+			this.promptCommand(held.text, held.files, held.images).then((command) => this.engine.request(command)).then(() => {
+				if (held.attachments) this.uploads.consume(client, held.attachments);
+			}, () => {
+				if (held.attachments) this.uploads.release(client, held.attachments);
+				this.forgetRequest(request);
+				// A lost ACK may already have started Pi work; the runtime owns
+				// cutoff/recovery. An old rejection cannot free a new turn.
+				if (this.engine && this.engine.status === "ready" && this.engine.busy !== true) this.busy = false;
+				this.broadcastState();
+				this.sendTo(client, requestError("failed", held.requestId));
+			}).then(() => {
+				if (this.engine && this.engine.status === "ready" && this.engine.busy !== true && this.busy) {
+					this.busy = false;
+					this.broadcastState();
+				}
+			});
+		}
+	}
+
+	/**
+	 * T4 U1 (Gentle Dot bridge.ts:1124-1129): after a rotation every connected
+		 * client gets the same chat again, now marked earlier. Only a change of the
+		 * OPEN session that already carries its chain qualifies:
+		 * - `sessions_linked` fires when the rotator links a file; it is only
+		 *   broadcast when that file IS the open one (the rotation fallback links
+		 *   the fresh session right after it was created; the seed is linked while
+		 *   the old session is still open and stays silent).
+		 * - `session_changed` fires when the engine confirmed the open session; it
+		 *   is broadcast only when that session has a linked chain, so the
+		 *   fallback's window between the new session and its link never
+		 *   broadcasts an empty page that would clear the island's view.
+		 */
+	onEngineHistoryEvent(name, payload) {
+		const engine = this.engine;
+		if (!engine || engine.status !== "ready" || typeof engine.sessionFile !== "string") return;
+		const file = engine.sessionFile;
+		if (payload?.sessionFile !== undefined && payload.sessionFile !== file) return;
+		const linked = engine.chains?.[file];
+		if (name === "session_changed" && !(Array.isArray(linked) && linked.length > 0)) return;
+		try {
+			this.broadcast(P.historyFrame(this.historyPage(undefined)));
+		} catch {
+			this.log("history rebroadcast not sent");
+		}
+	}
+
+	// ----- K2-05 attachments ---------------------------------------------------------------------
+
+	/**
+	 * Whether the engine's current model accepts images (Gentle Dot supervisor.modelImages: Pi's
+	 * `get_state` model `input`); undefined when unknown — then images are saved, not inlined.
+	 */
+	async modelImages() {
+		try {
+			const state = await this.engine.request({ type: "get_state" });
+			const input = state?.data?.model?.input;
+			return Array.isArray(input) ? input.includes("image") : undefined;
+		} catch {
+			return undefined;
+		}
+	}
+
+	/**
+	 * The engine prompt of one send (Gentle Dot bridge.ts dispatch): plain text, or — with files —
+	 * composePrompt's `<attachments>` block (absolute stored paths the agent reads with its tools),
+	 * the images inline only for a vision model, read back as stored (no link, same size).
+	 */
+	async promptCommand(text, files, images) {
+		const command = { type: "prompt", message: text };
+		const all = [...(images ?? [])];
+		if (files?.length) {
+			const composed = composePrompt(text, files, { images: await this.modelImages() });
+			command.message = composed.message;
+			if (composed.images) all.push(...composed.images);
+		}
+		if (all.length) command.images = all;
+		return command;
+	}
+
+	/** One `upload` chunk: stored, refused once (later chunks of a refused upload are ignored), or finished. */
+	onUpload(client, frame) {
+		if (client.failedUploads.has(frame.requestId)) {
+			if (frame.offset + frame.data.length < frame.size) return undefined;
+			client.failedUploads.delete(frame.requestId); // the last chunk: the id is free again
+			return undefined;
+		}
+		const out = this.uploads.receive(client, frame);
+		if (!out.ok) {
+			if (frame.offset + frame.data.length < frame.size) {
+				client.failedUploads.add(frame.requestId);
+				if (client.failedUploads.size > 16) client.failedUploads.delete(client.failedUploads.values().next().value);
+			}
+			return this.sendTo(client, requestError(out.code, frame.requestId));
+		}
+		if (out.done) {
+			try {
+				return this.sendTo(client, P.uploadedFrame(frame.requestId, out.file));
+			} catch {
+				this.uploads.discard(client, out.file.id);
+				return this.sendTo(client, requestError("upload_failed", frame.requestId));
+			}
+		}
+		return undefined;
+	}
+
+	// ----- K2-05 bind by id: which recorded prompt answers which request -----------------------
+
+	/**
+	 * Gentle Dot's alreadySeen (bridge.ts:1380), split in two (K2-05 review F1): the repeat check
+	 * runs before every gate, but an id is only remembered once its request passed the daemon's
+	 * transient gates (engine ready, no session switch, busy/not busy, pause) — dispatched to the
+	 * engine or held for a rotation. A request those gates refused is not spent, so the client may
+	 * retry it with the same id. A request the engine itself rejected stays spent (a lost ACK may
+	 * already have started work; a repeat must never prompt twice).
+	 */
+	rememberRequest(requestId) {
+		if (requestId === undefined || this.seenRequests.has(requestId)) return;
+		this.seenRequests.add(requestId);
+		if (this.seenRequests.size > REMEMBERED_REQUEST_IDS) this.seenRequests.delete(this.seenRequests.values().next().value);
+	}
+
+	/**
+	 * The engine is idle and about to get a prompt: nothing is being written, so the open file's
+	 * rows are read once here; every later row is counted from the engine's events (Pi persists a
+	 * message right after announcing it, so reading the file at `message_start` would race it).
+	 */
+	snapshotRows() {
+		const file = this.engine?.sessionFile;
+		this.rowTail = typeof file === "string" ? { file, ...sessionTail(file, (line) => this.log(line)) } : undefined;
+	}
+
+	/**
+	 * A prompt goes to the engine: the first recorded user message of its run is its own. A prompt
+	 * dispatched to an idle engine starts a new run: nothing older can still be recorded (a prompt the
+	 * engine handled without a run never settles one), so its rows are read once and it is the only
+	 * pending prompt. `alongside` = dispatched right after another held prompt in the same flush
+	 * (K2-05 F1): it keeps the earlier one's request and its row count.
+	 */
+	expectPrompt(client, frame, alongside = false) {
+		if (!alongside) {
+			this.promptRequests = [];
+			this.snapshotRows();
+		}
+		const request = { client, requestId: frame.requestId, text: frame.text };
+		this.promptRequests.push(request);
+		return request;
+	}
+
+	expectSteer(client, frame) {
+		const request = { client, requestId: frame.requestId, text: frame.text };
+		this.steerRequests.push(request);
+		if (this.steerRequests.length > MAX_STEER_REQUESTS) this.steerRequests.shift();
+		return request;
+	}
+
+	/** The engine refused the request: it records nothing, so it can never name a record. Only that
+	 * request is forgotten: any other prompt or steer still on its way keeps its own (K2-05 F1). */
+	forgetRequest(request) {
+		this.promptRequests = this.promptRequests.filter((r) => r !== request);
+		this.steerRequests = this.steerRequests.filter((r) => r !== request);
+	}
+
+	/** The run settled (or the engine went away): whatever it did not record never will be. */
+	forgetRequests() {
+		this.promptRequests = [];
+		this.steerRequests = [];
+	}
+
+	/**
+	 * The request a recorded user message answers. Pi records the dispatched prompt first in its run
+	 * and the steers by their text, in order (agent-session.js removes a consumed steer by text): the
+	 * oldest pending prompt when the text is its own, else the oldest steer with that text, else the
+	 * oldest pending prompt (a template expansion changes the recorded text), else the oldest pending
+	 * steer (K2-05 F4: a steer's template expansion too; Pi records its queue in order) — but only
+	 * while every pending steer is the same client's (K2-05 review F2): the record may be any of them,
+	 * or an extension's own message, so with steers of two clients waiting it answers nobody's
+	 * request rather than hand one client's requestId to another's record. Once nothing is pending, a
+	 * record (an extension's own user message) answers nobody's request.
+	 */
+	takeRequest(text) {
+		const prompt = this.promptRequests[0];
+		if (prompt && prompt.text === text) return this.promptRequests.shift();
+		const at = this.steerRequests.findIndex((r) => r.text === text);
+		if (at >= 0) return this.steerRequests.splice(at, 1)[0];
+		if (prompt) return this.promptRequests.shift();
+		const steer = this.steerRequests[0];
+		if (steer && this.steerRequests.every((r) => r.client === steer.client)) return this.steerRequests.shift();
+		return undefined;
+	}
+
+	/**
+	 * Gentle Dot bridge.ts onMessageStart: every client is told about every prompt the engine records,
+	 * by the page id history gives it (`s<open file index>-<its row>`; the open file is the chain's last).
+	 * The client whose request it is also gets its requestId back. A session file the history would
+	 * not read (not owned) gets no frame: it could never be joined.
+	 */
+	onUserMessage(message, row) {
+		const { text, attachments } = splitAttachments(textOf(message));
+		const request = this.takeRequest(text);
+		const file = this.engine?.sessionFile;
+		const chain = this.historyChain();
+		if (row === undefined || typeof file !== "string" || chain.at(-1) !== file) return;
+		let frame;
+		let own;
+		try {
+			const record = { id: `s${chain.length - 1}-${row}`, text, attachments };
+			frame = P.userMessageFrame(record);
+			if (request?.requestId !== undefined) own = P.userMessageFrame(record, request.requestId);
+		} catch {
+			this.log("user message not sent");
+			return;
+		}
+		for (const client of [...this.clients]) if (client.ready) this.sendTo(client, own && client === request.client ? own : frame);
+	}
+
 	onEngineStatus(exited = false) {
+		if (exited || this.engine?.status !== "ready") {
+			this.forgetRequests();
+			this.rowTail = undefined;
+		}
 		const status = this.engine?.status;
 		if (exited || status !== "ready") {
 			// A half answer is never replayed; open asks die with the child.
@@ -552,6 +1086,8 @@ class IslandServer {
 			this.busy = this.engine.busy; // Readiness/verified session, not an ACK alone.
 		}
 		this.broadcastState();
+		// F3: the rotation switch settled (or failed and recovered) — held prompts go now.
+		this.flushHeldPrompts();
 	}
 
 	safeSend(record) {
@@ -566,7 +1102,16 @@ class IslandServer {
 	// ----- asks (extension UI) ---------------------------------------------------
 
 	askFrame(ask) {
-		return { type: "ask", id: ask.id, kind: ask.kind, title: ask.title, options: ask.options };
+		// K2-05 U4b: the optional details travel only when present (live frame and connect replay alike)
+		return {
+			type: "ask",
+			id: ask.id,
+			kind: ask.kind,
+			title: ask.title,
+			options: ask.options,
+			...(ask.message ? { message: ask.message } : {}),
+			...(ask.placeholder ? { placeholder: ask.placeholder } : {}),
+		};
 	}
 
 	openAsk(ask) {
@@ -583,19 +1128,45 @@ class IslandServer {
 		this.broadcast(this.askFrame(ask));
 	}
 
-	closeAsk(id, _answered) {
+	/**
+	 * K2-05 R1-001: the resolution names the outcome ONLY to the client whose own accepted
+	 * `ui_response` closed the ask (`ask_resolved{id, answered:true}`); every other client gets the
+	 * plain frame, because another client's answer or the 120 s expiry closed it and an answer
+	 * nobody accepted must never be shown as sent. An expiry, a cancel and an engine restart stay
+	 * plain to everyone.
+	 */
+	closeAsk(id, answered, answeringClient) {
 		const ask = this.asks.get(id);
 		if (!ask) return;
 		clearTimeout(ask.timer);
 		this.asks.delete(id);
-		this.broadcast({ type: "ask_resolved", id });
+		for (const client of [...this.clients]) {
+			if (!client.ready) continue;
+			const own = answered === true && client === answeringClient;
+			this.sendTo(client, own ? { type: "ask_resolved", id, answered: true } : { type: "ask_resolved", id });
+		}
 	}
 
 	// ----- client commands ---------------------------------------------------------
 
 	async handle(client, frame) {
 		const reply = (f) => this.sendTo(client, f);
-		const fail = (code) => reply(P.errorFrame(code));
+		// K2-05 review F6: an error answering a send/steer names it by its requestId (only to its
+		// sender), so the client never has to guess which of its commands a refusal answers.
+		const correlated = (frame.type === "send" || frame.type === "steer") ? frame.requestId : undefined;
+		const fail = (code) => reply(requestError(code, correlated));
+		// T2/F3: internal /gentle: commands are not part of the product. The fixed
+		// refusal (bad_request) is deterministic and runs BEFORE every other gate
+		// (paused included), and the command never reaches the engine.
+		if ((frame.type === "send" || frame.type === "steer") && isBlockedInput(frame.text)) return fail("bad_request");
+		// K2-05 bind by id (Gentle Dot bridge.ts:399): a repeated requestId is ignored, silently. The id
+		// is remembered only once the request passed the transient gates below (review F1).
+		if (correlated !== undefined && this.seenRequests.has(correlated)) return undefined;
+		// T4 U1 (L3/L4/L7, Gentle Dot bridge.ts conversationsOn 476-482/677-682):
+		// the island keeps ONE continuous chat, so its conversation verbs are
+		// refused with this fixed error BEFORE every other gate (busy, paused
+		// included) and no command ever reaches the engine.
+		if (frame.type === "new_conversation") return fail("conversations_off");
 		// #379: while the global pause is on, nothing new is admitted (turns, spawns).
 		if (this.paused === true && PAUSED_REFUSED.has(frame.type)) return fail("paused");
 		const ready = () => this.engine?.status === "ready";
@@ -659,22 +1230,51 @@ class IslandServer {
 				this.broadcastState();
 				return undefined;
 			}
+			case "upload":
+				// K2-05 attachments: not a turn (allowed while paused, like Gentle Dot's /upload)
+				return this.onUpload(client, frame);
+			case "upload_discard":
+				this.uploads.discard(client, frame.id);
+				return undefined;
 			case "send": {
+				// T2: blocked input was already refused above, before every gate.
 				if (!ready()) return fail("unavailable");
+				// K2-05 attachments (Gentle Dot bridge.ts attachedFiles): every id must be one this
+				// client uploaded and has not sent; nothing reaches the engine otherwise, and the
+				// refusal does not spend the requestId.
+				let files;
+				if (frame.attachments) {
+					const found = this.uploads.resolve(client, frame.attachments);
+					if (!found.ok) return fail(found.code);
+					files = found.files;
+				}
+				// K2-05 F3 (Gentle Dot bridge.ts:404): a prompt typed while a ROTATION
+				// switch is in flight is HELD — one per client, in order — and delivered
+				// once the switch settles, instead of a busy bounce the user would have
+				// to resend. A second prompt while one is already held is still refused
+				// (Gentle Dot holds exactly one). A NON-rotation session change (a user
+				// reset, new_conversation) is never held: it answers busy as always.
+				if (this.engine?.sessionChange?.switching === true) {
+					if (client.heldPrompt) return fail("busy");
+					this.rememberRequest(frame.requestId);
+					client.heldPrompt = { text: frame.text, images: frame.images, requestId: frame.requestId, attachments: frame.attachments, files };
+					return undefined;
+				}
 				if (this.state().busy) return fail("busy");
+				// R1-002/R1-001: only an accepted send moves the files in; they stay reserved until it settles.
+				if (frame.attachments && !this.uploads.accept(client, frame.attachments)) return fail("upload_failed");
+				this.rememberRequest(frame.requestId);
 				this.busy = true; // optimistic: the agent_start event confirms
 				this.broadcastState();
+				const request = this.expectPrompt(client, frame);
 				try {
-					// #386: the pending rotation summary (if any) prepends here, exactly once.
-					// R6: a decorator may return { message, commit }; commit runs only after the engine accepted the prompt.
-					const decorated = this.promptDecorator ? this.promptDecorator(frame.text) : frame.text;
-					const message = typeof decorated === "string" ? decorated : decorated.message;
-					const command = { type: "prompt", message };
-					if (frame.images.length) command.images = frame.images;
 					// The response only acknowledges the prompt; completion is agent_settled.
-					await this.engine.request(command);
-					if (typeof decorated !== "string") decorated.commit?.();
+					await this.engine.request(await this.promptCommand(frame.text, files, frame.images));
+					// K2-05: sent — the files stay for the agent, no other message can send them
+					if (frame.attachments) this.uploads.consume(client, frame.attachments);
 				} catch {
+					if (frame.attachments) this.uploads.release(client, frame.attachments);
+					this.forgetRequest(request);
 					// A lost ACK may already have started Pi work; the runtime owns
 					// cutoff/recovery. An old rejection cannot free a new turn.
 					if (ready() && this.engine.busy !== true) this.busy = false;
@@ -687,32 +1287,46 @@ class IslandServer {
 				if (!ready()) return fail("unavailable");
 				if (this.switching) return fail("busy");
 				if (!this.busy) return fail("not_busy");
-				return run(() => this.engine.request({ type: "steer", message: frame.text }));
+				{
+					this.rememberRequest(frame.requestId);
+					const request = this.expectSteer(client, frame);
+					return run(() => this.engine.request({ type: "steer", message: frame.text }).catch((error) => {
+						this.forgetRequest(request);
+						throw error;
+					}));
+				}
 			case "abort":
 				if (!ready()) return fail("unavailable");
 				return run(() => this.engine.request({ type: "abort" }));
-			case "new_conversation": {
-				if (!ready()) return fail("unavailable");
-				if (this.state().busy) return fail("busy");
-				const switching = {};
-				this.switching = switching;
-				this.busy = true; // Daemon config/workspace guards share this field.
-				this.broadcastState();
-				try {
-					await run(async () => {
-						await this.engine.request({ type: "new_session" });
-						this.messageCounter += 1;
-						// #386: a deliberate new conversation drops an undelivered summary.
-						this.onNewConversation?.();
-					});
-				} finally {
-					if (this.switching === switching) {
-						this.switching = undefined;
-						this.busy = this.engine?.busy === true;
-						this.broadcastState();
+			case "get_history": {
+				// T4 U1 + K2-05 boot order (Gentle Dot bridge.ts:622-624 whenReady): a client asks for
+				// history as soon as it connects, often while the engine starts; the read waits for the
+				// engine instead of being refused. An engine that stops (or does not start within
+				// readyWaitMs) answers unavailable, never an empty page that would clear what the
+				// island already shows. The read carries Gentle Dot's freshness round trip (currentHistory).
+				if (!ready()) {
+					try {
+						await this.whenReady();
+					} catch {
+						return fail("unavailable");
 					}
 				}
-				return undefined;
+				if (!ready() || typeof this.engine?.sessionFile !== "string") return fail("unavailable");
+				try {
+					return reply(P.historyFrame(await this.currentHistory(undefined)));
+				} catch {
+					this.log("command get_history failed");
+					return fail("failed");
+				}
+			}
+			case "get_earlier": {
+				if (!ready() || typeof this.engine?.sessionFile !== "string") return fail("unavailable");
+				try {
+					return reply(P.earlierFrame(frame.before, this.historyPage(frame.before)));
+				} catch {
+					this.log("command get_earlier failed");
+					return fail("failed");
+				}
 			}
 			case "ui_response": {
 				const ask = this.asks.get(frame.id);
@@ -720,7 +1334,7 @@ class IslandServer {
 				const response = P.buildUiResponse(ask, frame);
 				if (!response) return fail("bad_request");
 				if (!this.safeSend(response)) return fail("unavailable");
-				this.closeAsk(frame.id, true);
+				this.closeAsk(frame.id, true, client);
 				return undefined;
 			}
 			case "settings_get":
@@ -1157,6 +1771,7 @@ class IslandServer {
 		if (this.closing) return this.closing;
 		this.closing = (async () => {
 			for (const off of this.listeners.splice(0)) off();
+			this.settleReady(new Error("the server closed"));
 			for (const id of [...this.asks.keys()]) {
 				clearTimeout(this.asks.get(id).timer);
 				this.asks.delete(id);

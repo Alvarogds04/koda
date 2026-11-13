@@ -33,10 +33,13 @@
   }
 
   const SENDABLE = new Set(['ready', 'busy']);
-  function canSend(view, draft, inFlight) {
+  // K2-05 attachments (Gentle Dot parseClientMessage): with files attached the text may be empty;
+  // `files` = how many attachments wait in the composer (0 when omitted).
+  function canSend(view, draft, inFlight, files) {
     if (!view || inFlight || view.active_turn) return false;
     const a = view.availability;
     if (!a || !SENDABLE.has(a.state)) return false;
+    if (files > 0 && !String(draft).trim()) return true;
     return draftProblem(draft) === null;
   }
 
@@ -59,10 +62,15 @@
   // Design 14 (option A): the send disc is grey ONLY when there is nothing to send (empty draft), a turn runs, or a submit is in flight.
   // A model that is not ready no longer greys it out silently: pressing it says why (`blocked`), and canSend() still decides what is sent.
   const BLOCKED = Object.freeze({ unavailable: 'El modelo no está disponible todavía.', blocked: 'El modelo está bloqueado.', unchecked: 'Todavía se está revisando el modelo.' });
-  function sendState(view, draft, inFlight) {
-    const empty = !String(draft).trim();
+  // K2-05 boot order = Gentle Dot (ChatSurface statusText): the daemon answers while its engine starts or
+  // restarts; that is a WAIT said in Spanish, never «Modelo caído». The host's sentence is the reason.
+  const BOOTING = Object.freeze({ starting: 'Arrancando…', restarting: 'Reiniciando…' });
+  const BOOT_SAY = Object.freeze({ starting: 'Koda está arrancando… abriendo tu conversación.', restarting: 'Koda se está reiniciando… abriendo tu conversación.' });
+  function sendState(view, draft, inFlight, files) {
+    const empty = !String(draft).trim() && !(files > 0);
     if (empty || inFlight || (view && view.active_turn)) return { disabled: true, blocked: null };
     const a = view && view.availability;
+    if (a && BOOTING[a.state]) return { disabled: false, blocked: a.message || BOOT_SAY[a.state] };
     if (!a || !SENDABLE.has(a.state)) return { disabled: false, blocked: (a && BLOCKED[a.state]) || 'El modelo no está listo todavía.' };
     return { disabled: false, blocked: null };
   }
@@ -111,6 +119,8 @@
     if (state === 'busy') return mk('occupied', 'live', 'clock', 'Ocupado');
     if (state === 'blocked') return mk('blocked', 'red', 'triangle', 'Bloqueado');
     if (state === 'unavailable') return mk('down', 'red', 'triangle', 'Modelo caído');
+    // kind `checking` keeps the page's existing spinner (style.css #chat-state[data-kind="checking"])
+    if (BOOTING[state]) return mk('checking', 'live', 'ring', BOOTING[state]);
     return mk('checking', 'live', 'ring', '');
   }
   // R6 pose for the chat lane, from real state only: a turn thinking -> think,
@@ -196,16 +206,40 @@
   // The log used to be emptied and redrawn on every state push (a streaming answer pushes many), which made
   // every row flash and the first row jump. Rows are now compared by a key that covers everything drawn:
   // the unchanged prefix is left alone, a changed row is patched in place, new rows are appended.
-  const rowKey = row => JSON.stringify([row.kind, row.text, row.short || '', row.icon || '']);
-  function reconcileRows(before, after) {
+  const rowKey = row => JSON.stringify([row.kind, row.text, row.short || '', row.icon || '']); // `attachments` rows: the text names every chip
+  // S2 follow-up F5: the keys may come precomputed (the page keys each turn's rows once and reuses them while the turn
+  // is unchanged), so a push over a long loaded chat never re-serialises every row.
+  function reconcileRows(before, after, beforeKeys, afterKeys) {
     const a = Array.isArray(before) ? before : [];
     const b = Array.isArray(after) ? after : [];
+    const ka = Array.isArray(beforeKeys) && beforeKeys.length === a.length ? beforeKeys : a.map(rowKey);
+    const kb = Array.isArray(afterKeys) && afterKeys.length === b.length ? afterKeys : b.map(rowKey);
     let keep = 0;
-    while (keep < a.length && keep < b.length && rowKey(a[keep]) === rowKey(b[keep])) keep += 1;
+    while (keep < a.length && keep < b.length && ka[keep] === kb[keep]) keep += 1;
+    // S2 paging: an earlier page adds rows ON TOP; when everything drawn is still the tail, only the new
+    // rows are inserted before it (nothing already drawn is repainted, so the reader's place holds)
+    const top = b.length - a.length;
+    if (keep < a.length && top > 0 && ka.every((key, i) => key === kb[top + i])) {
+      return { keep: a.length, patch: [], append: [], remove: 0, prepend: b.slice(0, top) };
+    }
     const patch = [];
     let i = keep;
     for (; i < a.length && i < b.length; i += 1) patch.push({ index: i, row: b[i] });
     return { keep, patch, append: b.slice(i), remove: Math.max(0, a.length - b.length) };
+  }
+
+  // S2 follow-up F5: whether a turn draws exactly the same rows as before (everything turnRows reads). A turn the
+  // host re-sent unchanged keeps its drawn rows and their keys; only a changed turn is keyed again.
+  const sameList = (a, b) => (a === b) || (!a && !b) || (Array.isArray(a) && Array.isArray(b) && a.length === b.length && JSON.stringify(a) === JSON.stringify(b));
+  function sameTurn(a, b) {
+    if (a === b) return true;
+    if (!a || !b) return false;
+    const err = t => (t.error && t.error.safe_message) || '';
+    const ctx = t => (t.live_context && typeof t.live_context.text === 'string') ? `${t.live_context.text}\u0000${t.live_context.trimmed_lines}` : '';
+    return a.turn_id === b.turn_id && a.user_text === b.user_text && a.reply === b.reply && a.state === b.state &&
+      err(a) === err(b) && a.finish_reason === b.finish_reason && a.trimmed_turns === b.trimmed_turns && ctx(a) === ctx(b) &&
+      sameList(a.attachments && a.attachments.length ? a.attachments.map(x => x && `${x.name}\u0000${x.size}`) : null, b.attachments && b.attachments.length ? b.attachments.map(x => x && `${x.name}\u0000${x.size}`) : null) &&
+      sameList(a.tool_calls, b.tool_calls) && sameList(a.approvals, b.approvals);
   }
 
   // ---- #371 (OD002/OD024/GD031): tool-call receipts and approval cards ------
@@ -287,15 +321,26 @@
     return rows;
   }
 
+  // K2-05 attachments (Gentle Dot MessageList `message-attachments`): the chips of the files a
+  // prompt carried, name + size, under the user's text. The files live in the engine workspace on
+  // the daemon side; the log names them, it never links, opens or inlines them.
+  const ATTACH_NAME_MAX = 128;
+  function attachmentChips(list) {
+    if (!Array.isArray(list)) return [];
+    return list.slice(0, 16).flatMap(a => {
+      const name = cleanLine(a && a.name, ATTACH_NAME_MAX);
+      return name ? [{ name, size: formatSize(a.size) }] : [];
+    });
+  }
+
   function turnRows(turn) {
-    const rows = [{ kind: 'user', text: turn.user_text }];
-    // #343: what the turn carried, named — the files live in the island's
-    // uploads directory; the log names them, it never links or inlines them.
-    if (Array.isArray(turn.attachments) && turn.attachments.length) {
-      const names = turn.attachments.map(a => (a && typeof a.name === 'string') ? a.name : '?').join(', ');
+    const files = attachmentChips(turn.attachments);
+    // a files-only message has no text bubble, only its chips (Gentle Dot shows text only when present)
+    const rows = files.length && !String(turn.user_text || '').trim() ? [] : [{ kind: 'user', text: turn.user_text }];
+    if (files.length) {
       rows.push({
-        kind: 'note', short: 'Adjuntos', icon: 'info',
-        text: `Archivos adjuntos: ${names}`,
+        kind: 'attachments', files,
+        text: `Archivos adjuntos: ${files.map(f => `${f.name} (${f.size})`).join(', ')}`,
       });
     }
     // S3 (#503): «contexto» — exactly what the live-state context told the model on this turn.
@@ -326,133 +371,6 @@
     return rows;
   }
 
-  // ---- U2: model picker (plain-text rows) ---------------------------------
-  const GATES = Object.freeze({
-    ready: 'Listo',
-    queue: 'En cola',
-    needs_load: 'Requiere cargarlo (Koda no lo hace)',
-    unknown: 'Desconocido',
-    unavailable: 'No disponible',
-  });
-  const gateLabel = state => GATES[state] || 'Desconocido';
-  const thousands = n => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, '.');
-  const decimal = (value, unit) => {
-    const tenths = Math.round(value * 10);
-    return `${Math.floor(tenths / 10)},${tenths % 10} ${unit}`;
-  };
-  const port = origin => String(origin || '').replace(/^http:\/\//, '');
-
-  // Visual model row (docs/desktop-visual-language.md §2.4): chips carry the
-  // numbers, the gate gets ONE word only when it is not «ready» (§3: never
-  // hide a problem), and the full sentence stays in `aria`/`facts`.
-  const GATE_WORDS = Object.freeze({
-    queue: { word: 'En cola', icon: 'clock', tone: 'live' },
-    needs_load: { word: 'Sin cargar', icon: 'load-off', tone: 'faint' },
-    unknown: { word: 'Desconocido', icon: 'info', tone: 'faint' },
-    unavailable: { word: 'No disponible', icon: 'triangle', tone: 'red' },
-  });
-  const oneDecimal = n => {
-    const tenths = Math.round(n * 10);
-    return tenths % 10 === 0 ? String(tenths / 10) : `${Math.floor(tenths / 10)},${tenths % 10}`;
-  };
-  const kTokens = n => (n >= 1024 ? `${Math.round(n / 1024)}k` : String(n));
-
-  function modelChips(p) {
-    const chips = p.cloud === true ? [{ icon: '', text: 'nube', label: `Nube · ${p.provider || ''}` }] : [{ icon: 'lock', text: 'local', label: 'Sólo local' }];
-    if (Number.isFinite(p.context_tokens)) chips.push({ icon: '', text: kTokens(p.context_tokens), label: `Contexto ${thousands(p.context_tokens)} tokens` });
-    if (Number.isFinite(p.size_bytes)) chips.push({ icon: '', text: `${oneDecimal(p.size_bytes / 1e9)} GB`, label: `${decimal(p.size_bytes / 1e9, 'GB')} en memoria` });
-    if (Number.isFinite(p.params)) chips.push({ icon: '', text: `${oneDecimal(p.params / 1e9)}B`, label: `${decimal(p.params / 1e9, 'mil millones')} de parámetros` });
-    if (p.vision === false) chips.push({ icon: 'eye-off', text: '', label: 'Sin visión' });
-    if (p.vision === true) chips.push({ icon: 'eye', text: '', label: 'Con visión' });
-    return chips;
-  }
-
-  // #414: the Ajustes → Modelos allowlist (typed pref `chosen_models`). The picker offers ONLY
-  // the chosen models of the providers, falling back to ALL of them when nothing is chosen.
-  // A row the allowlist cannot vouch for (no `provider` field — today's local profiles) is never
-  // filtered out: the allowlist names provider models, not local ones.
-  function filterChosen(rows, chosen) {
-    const list = Array.isArray(rows) ? rows : [];
-    const store = chosen && typeof chosen === 'object' && !Array.isArray(chosen) ? chosen : {};
-    const ids = new Set();
-    for (const value of Object.values(store)) {
-      if (!Array.isArray(value)) continue;
-      for (const id of value) if (typeof id === 'string') ids.add(id);
-    }
-    if (!ids.size) return list;
-    return list.filter(r => !!r && typeof r === 'object' && (typeof r.provider !== 'string' || !r.provider || ids.has(r.id) || (r.cloud && ids.has(r.model))));
-  }
-
-  function modelRows(listing) {
-    const profiles = listing && Array.isArray(listing.profiles) ? listing.profiles : [];
-    return profiles.map(p => {
-      const facts = p.cloud === true ? [`nube · ${p.provider || ''}`] : [`local ${port(p.origin)}`];
-      if (Number.isFinite(p.context_tokens)) facts.push(`contexto ${thousands(p.context_tokens)} tokens`);
-      if (Number.isFinite(p.max_output_tokens)) facts.push(`salida ≤${thousands(p.max_output_tokens)}`);
-      if (Number.isFinite(p.size_bytes)) facts.push(`${decimal(p.size_bytes / 1e9, 'GB')} en memoria`);
-      if (Number.isFinite(p.params)) facts.push(`${decimal(p.params / 1e9, 'mil millones')} de parámetros`);
-      if (p.quantization) facts.push(p.quantization);
-      if (p.vision === false) facts.push('sin visión');
-      if (p.vision === true) facts.push('con visión');
-      const title = p.alias || `Puerto ${port(p.origin).split(':').pop()}`;
-      const gateState = p.gate && p.gate.state;
-      const selectable = p.selectable === true && !!p.profile_id;
-      let gate = GATE_WORDS[gateState] || (gateState === 'ready' ? null : GATE_WORDS.unknown);
-      if (!gate && !selectable) gate = { word: 'Sin verificar', icon: 'lock', tone: 'faint' };
-      const message = (p.gate && p.gate.message) || '';
-      const note = p.note || '';
-      return {
-        id: p.profile_id || null,
-        cloud: p.cloud === true,
-        model: p.alias,
-        title,
-        // #414: the provenance the allowlist needs — a provider model row names its provider;
-        // local profiles carry none and are never filtered out.
-        provider: typeof p.provider === 'string' && p.provider ? p.provider : undefined,
-        facts: facts.join(' · '),
-        state: gateLabel(gateState),
-        message,
-        note,
-        chips: modelChips(p),
-        word: gate ? gate.word : '',
-        wordIcon: gate ? gate.icon : '',
-        tone: gate ? gate.tone : 'go',
-        aria: `${title}: ${gateLabel(gateState)}. ${facts.join(', ')}. ${message} ${note}`.replace(/\s+/g, ' ').trim(),
-        selectable,
-        selected: !!p.profile_id && listing.selected === p.profile_id,
-      };
-    });
-  }
-
-  // Three meters (RAM, VRAM, GTT): fill = USED share; the numbers live in aria.
-  const gb = bytes => decimal(bytes / 1e9, 'GB');
-  function modelMeters(listing) {
-    const r = (listing && listing.resources) || {};
-    const gpu = r.gpu || null;
-    const make = (key, label, used, total, unknownText) => {
-      const known = Number.isFinite(used) && Number.isFinite(total) && total > 0;
-      return {
-        key, label, known,
-        fraction: known ? Math.max(0, Math.min(1, used / total)) : 0,
-        aria: known ? `${label}: ${gb(used)} en uso de ${gb(total)}` : `${label}: ${unknownText}`,
-      };
-    };
-    const ramUsed = Number.isFinite(r.mem_total) && Number.isFinite(r.mem_available) ? r.mem_total - r.mem_available : NaN;
-    return [
-      make('ram', 'RAM', ramUsed, r.mem_total, 'desconocida'),
-      make('vram', 'VRAM', gpu && gpu.vram_used, gpu && gpu.vram_total, 'desconocida'),
-      make('gtt', 'GTT', gpu && gpu.gtt_used, gpu && gpu.gtt_total, 'desconocida'),
-    ];
-  }
-
-  // «i» sentence for the panel: the paragraph that used to be on screen.
-  function modelsInfo(listing) {
-    if (!listing) return 'Leyendo modelos locales.';
-    const kept = listing.persisted === false && listing.selected ? ' Elección sólo en memoria: se pierde al cerrar Koda.' : '';
-    return `${listing.choice_note || ''} ${listing.remote || ''}${kept}`.replace(/\s+/g, ' ').trim();
-  }
-  const modelsCount = listing => (listing && Array.isArray(listing.profiles) ? listing.profiles.filter(p => p.selectable === true && p.profile_id).length : 0);
-
   // ---- Q1: notices + compact activation ----------------------------------
   // Announce a notice once, when a NEW first notice appears (never on
   // dismissal, never twice). Plain text.
@@ -464,84 +382,48 @@
   }
   const activates = e => !!e && !e.isComposing && !e.repeat && (e.key === 'Enter' || e.key === ' ');
 
-  // History pages are presentation-only; live snapshots win on matching native turn IDs.
+  // S2 paging (Gentle Dot's model): the page holds ONE contiguous run of turns, oldest first: the earlier pages it
+  // loaded, then the live window. Turn ids are the daemon's own record positions, so the same turn has the same id
+  // on every page; the run is joined in the order the host gave it (never re-sorted: an unrecorded island turn sits
+  // where it was sent), and the live window wins on a shared id.
   function mergeHistory(older, current) {
-    const turns = new Map();
-    for (const t of [...(Array.isArray(older) ? older : []), ...(Array.isArray(current) ? current : [])]) {
-      if (t && /^t-\d+$/.test(t.turn_id)) turns.set(t.turn_id, t);
-    }
-    return Array.from(turns.values()).sort((a,b) => Number(a.turn_id.slice(2)) - Number(b.turn_id.slice(2)));
+    const valid = list => (Array.isArray(list) ? list : []).filter(t => t && /^t-\d+$/.test(t.turn_id));
+    const live = valid(current);
+    const ids = new Set(live.map(t => t.turn_id));
+    const seen = new Set();
+    const run = valid(older).filter(t => !ids.has(t.turn_id) && !seen.has(t.turn_id) && seen.add(t.turn_id));
+    return run.concat(live);
   }
-  // S6 (#503): who the human can talk to: Abito first, then every specialist (valid id + name only).
-  function specialistRows(specialists) {
-    const list = specialists && Array.isArray(specialists.specialists) ? specialists.specialists : [];
-    const valid = list.filter(s => s && typeof s.id === 'string' && s.id && typeof s.name === 'string' && s.name.trim());
-    const active = specialists && valid.some(s => s.id === specialists.active) ? specialists.active : null;
-    return [{ id: null, text: 'Koda', aria: 'Hablar con Koda', current: active === null },
-      ...valid.map(s => ({ id: s.id, text: s.name.trim(), aria: `Hablar con ${s.name.trim()}`, current: s.id === active }))];
+  // The turns of the previous live window that left it at its top (the window slides as new turns arrive).
+  function leftWindow(previous, next) {
+    const before = Array.isArray(previous) ? previous : [];
+    const after = Array.isArray(next) ? next : [];
+    const ids = new Set(after.map(t => t && t.turn_id));
+    const at = after.length ? before.findIndex(t => t && t.turn_id === after[0].turn_id) : -1;
+    return (at >= 0 ? before.slice(0, at) : before).filter(t => t && !ids.has(t.turn_id));
   }
-  function conversationRows(listing) {
-    return ((listing && Array.isArray(listing.conversations)) ? listing.conversations : []).map(c => {
-      const specialist = c.specialist && c.specialist.name || 'Koda';
-      const activity = new Date(c.last_activity).toLocaleString('es-AR');
-      return { id: c.id, text: `${c.title} · ${specialist} · ${activity}`, aria: `${c.title}. ${specialist}. Última actividad: ${activity}` };
-    });
-  }
+  // One daemon page per request, and scroll-triggered requests at most one per PAGE_GAP_MS: a fast scroll through
+  // a long chat stays inside the island's read share (chatclient.rs CHAT_FRAMES_PER_MINUTE − CHAT_FRAMES_RESERVED =
+  // 100/min), so a send is never refused because paging spent the budget.
+  const PAGE_GAP_MS = 650;
+  const pageWait = (now, last) => Math.max(0, (Number(last) || 0) + PAGE_GAP_MS - now);
+  // K2-05 T4 U4: one continuous chat (L3/L4/L11) — the conversation list (conversationRows) and the «Hablar con…»
+  // specialist rows (specialistRows) are gone with their UI.
 
-  // ---- F024: the model row above the composer --------------------------------
-  // What the row shows and when it may be used. Pure text: the page writes it
-  // with textContent only. `view.target` is already the EFFECTIVE target
-  // (chathost::current_target → specialistshost: the active role's own model
-  // wins), so the row shows ONE model: the one the next turn will use (R1).
-  const NO_MODEL_LABEL = 'Sin modelo local elegido';
-
-  // The active role in the only shape the row needs, or null: a role that names
-  // no local model changes nothing here (R4).
-  function activeRole(specialists) {
-    if (!specialists || !Array.isArray(specialists.specialists)) return null;
-    const role = specialists.specialists.find(s => s && s.id === specialists.active);
-    return role && typeof role.model === 'string' && role.model
-      ? { id: role.id, name: role.name, model: role.model }
-      : null;
+  // ---- K2-05 U5c: which model answers (read-only) ---------------------------
+  // The ENGINE owns the model: the daemon reports it (`get_state`) and Rust projects it as
+  // `view.engine_model` ({ provider?, id, name? }, or null while unknown). The page only
+  // shows it: no picker, no choice, no endpoint, key or account. Unknown → nothing at all
+  // (never a placeholder name). Plain text only: the page writes it with textContent.
+  function engineModelName(view) {
+    const m = view && view.engine_model;
+    if (!m || typeof m !== 'object') return '';
+    const clean = value => (typeof value === 'string' ? value.replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, 128) : '');
+    return clean(m.name) || clean(m.id);
   }
-
-  // R1/R4: the target's alias (its profile id when it has none); the role is
-  // named only when that role is what supplies THIS target.
-  function modelButtonLabel(view, role) {
-    const t = view && view.target;
-    const name = t && (t.alias || t.profile_id || '');
-    if (!name) return NO_MODEL_LABEL;
-    return role && role.model && t.profile_id === role.model ? `${name} · ${role.name}` : name;
-  }
-
-  // R4: the ONE line the picker shows while the active role fixes the model.
-  function modelRoleNote(view, role) {
-    const t = view && view.target;
-    if (!role || !t || t.profile_id !== role.model) return '';
-    return `«${role.name}» fija este modelo: elegir acá no reemplaza el rol (el picker no lo cambia).`;
-  }
-
-  // R4/R5: the same identity as the accessible name — the origin without its
-  // scheme (targetAria) plus who owns the model. Never an endpoint, a key, an
-  // account or a provider name (S5).
-  function modelButtonAria(view, role) {
-    const base = targetAria(view && view.target);
-    const note = modelRoleNote(view, role);
-    return note ? `${base}. ${note}` : base;
-  }
-
-  // R2: the row is usable while no turn is running — the running turn keeps the
-  // target it froze at submit and a selection applies to the NEXT turn, so a
-  // frozen row protects nothing but still must not pretend to switch anything.
-  // With no target chosen (or no preflight verdict) it stays open: that is
-  // exactly the state where choosing is what unblocks the chat; an unavailable
-  // or blocked CHOSEN target closes it, the same refusal Send shows.
-  function modelButtonEnabled(view) {
-    if (!view || view.active_turn) return false;
-    if (!view.target) return true;
-    const state = view.availability && view.availability.state;
-    if (!state || state === 'unchecked') return true;
-    return SENDABLE.has(state);
+  function engineModelLine(view) {
+    const name = engineModelName(view);
+    return name ? { text: name, aria: `Koda responde con el modelo ${name}` } : null;
   }
 
   // #343: a byte size as one Spanish chip label (comma decimal, kB/MB).
@@ -572,5 +454,62 @@
     return n;
   }
   function chatHeight(view) { return Math.min(CHAT_MAX_H, CHAT_MIN_H + messageCount(view) * CHAT_GROWTH); }
-  return { staleSnapshot, messageCount, chatHeight, CHAT_MIN_H, CHAT_MAX_H, mergeHistory, conversationRows, reconcileRows, rowKey, poseFor, statusView, draftWord, targetAria, noticeAnnouncement, activates, gateLabel, filterChosen, modelRows, modelMeters, modelsInfo, modelsCount, emptyGreeting, cleanDisplayName, cleanLine, CARD_NAME_MAX, CARD_SUMMARY_MAX, DRAFT_MAX, stateLabel, scalarCount, draftProblem, canSend, sendState, needsCheck, checkPlan, statusLine, announcement, atBottom, newRequestId, turnRows, specialistRows, toolRows, approvalRows, activeTurn, activeRole, modelButtonLabel, modelButtonAria, modelButtonEnabled, modelRoleNote, formatSize };
+
+  // ---- K2-05 U4b: the agent's questions inside the chat (Gentle Dot AskCard) -------------------------------------
+  // `chat:state.asks` carries the daemon's pending asks (chatclient.rs asks_view): select (options), confirm (yes/no)
+  // or input (free text). Titles, details and options are harness text the daemon already white-labelled; what the
+  // human TYPES is theirs and is sent exactly as typed. Everything here is plain text (textContent only).
+  const ASK_KINDS = new Set(['select', 'confirm', 'input']);
+  const ASK_ID = /^[A-Za-z0-9_.:-]{1,128}$/;
+  const MAX_ASK_CARDS = 16; // chatclient.rs MAX_ASKS
+  const ASK_OUTCOME_MAX = 300;
+  const askText = value => (typeof value === 'string' ? value : '');
+  /** The well-formed pending asks of a view, bounded, as the card needs them. */
+  function askCards(view) {
+    const list = view && Array.isArray(view.asks) ? view.asks : [];
+    const out = [];
+    for (const a of list) {
+      if (out.length >= MAX_ASK_CARDS) break;
+      if (!a || typeof a !== 'object' || typeof a.id !== 'string' || !ASK_ID.test(a.id) || !ASK_KINDS.has(a.kind)) continue;
+      out.push({
+        id: a.id, kind: a.kind, title: askText(a.title), message: askText(a.message), placeholder: askText(a.placeholder),
+        options: a.kind === 'select' && Array.isArray(a.options) ? a.options.filter(o => typeof o === 'string') : [],
+        answering: a.answering === true,
+      });
+    }
+    return out;
+  }
+  /** U4b verifier F2: the asks whose answer from this island the daemon accepted (`chat:state.answered_asks`), bounded. */
+  function answeredAsks(view) {
+    const list = view && Array.isArray(view.answered_asks) ? view.answered_asks : [];
+    return new Set(list.filter(id => typeof id === 'string' && ASK_ID.test(id)).slice(0, MAX_ASK_CARDS));
+  }
+  /** The ONE closed `answer` verb for an answer: `{value}` (select/input), `{confirmed}` or `{cancelled}`. */
+  function askPayload(askId, answer) {
+    if (answer && typeof answer.value === 'string') return { action: 'answer', ask_id: askId, value: answer.value };
+    if (answer && typeof answer.confirmed === 'boolean') return { action: 'answer', ask_id: askId, confirmed: answer.confirmed };
+    return { action: 'answer', ask_id: askId, cancelled: true };
+  }
+  /** What happened to a question, in one Spanish sentence (`sent` = this page's answer; null = closed elsewhere). */
+  function askOutcome(ask, sent) {
+    if (!sent) return 'La pregunta se cerró: se respondió en otro lugar o venció.';
+    if (sent.answered === true) return 'Se envió tu respuesta.';
+    if (sent.cancelled) return 'Omitiste la pregunta.';
+    if (typeof sent.confirmed === 'boolean') return `Respondiste: ${sent.confirmed ? 'Sí' : 'No'}`;
+    const shown = cleanLine(sent.value, ASK_OUTCOME_MAX);
+    if (ask && ask.kind === 'select') return `Elegiste: ${shown}`;
+    return shown ? `Respondiste: ${shown}` : 'Respondiste sin texto.';
+  }
+  /** Roving focus in a select: the arrows wrap, Home/End jump; -1 = not a navigation key. */
+  function askNextOption(index, count, key) {
+    if (!(count > 0)) return -1;
+    if (key === 'ArrowDown' || key === 'ArrowRight') return (index + 1) % count;
+    if (key === 'ArrowUp' || key === 'ArrowLeft') return (index - 1 + count) % count;
+    if (key === 'Home') return 0;
+    if (key === 'End') return count - 1;
+    return -1;
+  }
+  const askAria = ask => (ask && ask.title ? `Koda necesita tu respuesta: ${ask.title}` : 'Koda necesita tu respuesta');
+  const askClosedAria = (ask, outcome) => `Pregunta de Koda${ask && ask.title ? `: ${ask.title}` : ''}. ${outcome}`;
+  return { askCards, answeredAsks, askPayload, askOutcome, askNextOption, askAria, askClosedAria, staleSnapshot, messageCount, chatHeight, CHAT_MIN_H, CHAT_MAX_H, mergeHistory, leftWindow, PAGE_GAP_MS, pageWait, reconcileRows, rowKey, sameTurn, poseFor, statusView, draftWord, targetAria, noticeAnnouncement, activates, engineModelLine, emptyGreeting, cleanDisplayName, cleanLine, CARD_NAME_MAX, CARD_SUMMARY_MAX, DRAFT_MAX, stateLabel, scalarCount, draftProblem, canSend, sendState, needsCheck, checkPlan, statusLine, announcement, atBottom, newRequestId, turnRows, toolRows, approvalRows, activeTurn, formatSize, attachmentChips };
 });

@@ -19,6 +19,13 @@ The Linux Tauri app starts this host as its direct child with
 `node src/cli.cjs run --app-owned`. The flag adds a stdin lifetime lease: EOF
 requests shutdown, including EOF received during startup. Plain `run` retains its
 foreground SIGINT/SIGTERM behavior; `status`, `stop` and config commands are unchanged.
+Like Gentle Dot's `close()` (`daemon.ts:410-458`), EOF, SIGINT/SIGTERM and `stop` act at
+once even while the engine is still starting: the server closes and `session.json` is
+withdrawn immediately, never after that first start settles, and the starting engine is
+asked to stop at once (its stdin closed). The PROCESS exits when that starting engine
+answers or the stop timers fire (`stopTimeoutMs`, 5 s → SIGTERM, two seconds later →
+SIGKILL), so a real engine still loading can keep the process alive for a few seconds after
+`session.json` is already gone — the same shape as Gentle Dot's `close()`.
 
 Generic CLI failures append a bounded diagnostic with an allowlisted error name/code
 and a fixed, path-redacted category. Unknown exception details are omitted, not
@@ -47,7 +54,7 @@ the current user:
 
 | Path | Purpose |
 |---|---|
-| `<root>/home/` | The engine's private `HOME`, with the XDG tree (`.config`, `.cache`, `.local/share`, `.local/state`) under it |
+| `<root>/home/` | The engine's private `HOME`, with the XDG tree (`.config`, `.cache`, `.local/share`, `.local/state`) under it; `<root>/home/.engram/` holds the private memory store |
 | `<root>/agent/` | The installed pi's agent directory (`PI_CODING_AGENT_DIR`); no user Pi settings, extensions or auth are reused |
 | `<root>/sessions/` | Private RPC sessions (`--session-dir` is always passed explicitly) |
 | `<root>/workspace/` | The engine's owned default workspace; its `.engram/config.json` pins the memory project `abito-island` |
@@ -56,7 +63,7 @@ the current user:
 | `<root>/identity.md` | The Abito identity file, regenerated from `identity.md` (mode `0600`) before every spawn |
 | `<root>/state.json` | The open session file, persisted for continuity across crash restarts (mode `0600`) |
 | `<root>/config.json` | User config (U4, section below; mode `0600`) |
-| `<root>/runtime/` | `session.json` host handoff, the `p-XXXXXX/s` socket (U4), the `launches.jsonl` ledger (#390) and the `interrupted.json` record (#385) |
+| `<root>/runtime/` | `session.json` host handoff (published once the server listens, before the engine is ready: K2-05 boot order), the `p-XXXXXX/s` socket (U4), the `launches.jsonl` ledger (#390) and the `interrupted.json` record (#385) |
 
 Path checks fail closed: any symlink component, any world-writable component without
 the sticky bit, any component owned by a foreign user, or an island root owned by
@@ -85,6 +92,12 @@ foreign agent homes never reach the child. Explicitly set:
 - `GIT_CONFIG_GLOBAL` → the user's real `~/.gitconfig` when it exists, so git
   identity works without exposing the real `HOME`
 - `ABITO_MEMORY_PROJECT=abito-island` — the memory project pin
+- `ENGRAM_PORT` → Koda's private memory port (`7439`; `ABITO_ENGRAM_PORT` in the parent env
+  overrides it for tests/embeddings), `ENGRAM_BIN` → the pinned Engram binary the bundled
+  runtime ships, `ENGRAM_NO_UPDATE_CHECK=1` — the private memory never phones home. The
+  parent's `ENGRAM_URL`, `ENGRAM_DATA_DIR` and `ENGRAM_PORT` are never inherited: Koda's
+  memory is ALWAYS private (no user-store mode), so the user's own Engram server and store
+  (`7437`/`7438`, `~/.engram`) are never read, probed or written
 
 The user's git identity is the only piece of the real home that crosses the boundary.
 
@@ -136,10 +149,12 @@ Behavior details:
   The private session is reopened, but prompts/partial answers are never replayed.
   Lost prompt ACKs are treated as ambiguous and use the same fail-closed cutoff,
   not a retry. Healthy natural settlement clears the timer without recycling.
-  Idle abort still reaches Pi, and new conversations remain refused while busy.
+  Idle abort still reaches Pi, and the island's conversation reset stays refused
+  outright (`conversations_off`) — busy or not.
 - **Session reset/switch admission**: `new_session`/`switch_session` acquire a
-  single-flight busy gate before writing. The socket's `new_conversation` does
-  the same before awaiting Pi, so send/profile/workspace/config changes keep their
+  single-flight busy gate before writing. The socket's `new_conversation` is refused
+  outright (`conversations_off`, one continuous chat) before every gate and never
+  awaits Pi, so send/profile/workspace/config changes keep their
   existing busy rejection without writes, queues or replay. Ordinary `get_state`
   reads remain available. A successful ACK is followed by an owned-session
   identity check through `get_state` before the gate is released. Timeout, lost
@@ -147,8 +162,10 @@ Behavior details:
   admission stays closed while the owned child is cut off and a replacement
   reopens the last verified session. The reset is never automatically retried.
   Stop/generation changes invalidate stale reset continuations. Cancelled/reset
-  recovery pins the last verified owned session: a replacement that merely ACKs
-  reopening but reports another identity stays busy/unavailable, never ready.
+  recovery reopens the session saved in `state.json` exactly like a boot (there is
+  no separate «recovery» session, Gentle Dot keeps none): a replacement that merely
+  ACKs reopening but reports another identity stays busy/unavailable, never ready;
+  a saved session whose file the engine never wrote is skipped (K2-05 F1, below).
 - **Limit of proof**: Pi reports events asynchronously and processes abort
   cooperatively. Observation/cutoff cannot guarantee a hard provider-call or tool
   side-effect ceiling or undo completed effects. One daemon has one current Pi
@@ -160,8 +177,11 @@ Behavior details:
 - **Exit**: all pending requests reject with `agent exited (...)`.
 - **Crash restart**: after a child that had reached `ready` exits unexpectedly, the
   engine respawns with exponential bounded backoff (default 1s, 2s, 4s, 8s, 16s, 30s,
-  repeating; reset after 30s of stable uptime). A first `start()` that never becomes
-  ready fails to the caller instead of restarting in the background. One
+  repeating; reset after 30s of stable uptime). K2-05 boot order (Gentle Dot
+  `supervisor.ts` start + `daemon.ts:477-481`): a first `start()` whose spawned child
+  never becomes ready rejects to the caller (the daemon logs `agent failed to start: …;
+  retrying`) AND the restart policy keeps retrying with the same backoff; only a spawn
+  that could not even be prepared (the private identity file refused) stays `stopped`. One
   initialization owns startup failure and one restart timer owns the next attempt;
   startup close never independently schedules a duplicate retry. No live child
   can be overwritten by another spawn. Stop awaits the owned initialization and
@@ -170,12 +190,61 @@ Behavior details:
   `<root>/state.json` on every spawn; after a crash restart, a persisted path is
   reopened with `switch_session` only when it is inside the island sessions dir,
   a regular non-symlink file owned by the current user. Anything else is ignored.
+  K2-05 (L44, L51): the reopen of the saved conversation, at boot, after a crash and after
+  a cut-off turn or reset, is Gentle Dot's (`supervisor.ts:311-330` `spawnAndInitialize`):
+  `get_state`; when the saved file differs from the engine's boot session AND exists
+  (Gentle Dot's `existsSync(wanted)`; here the owned-file rule above), `switch_session` to
+  it; then `get_state` again,
+  and only that answer is adopted and written to `state.json`. ANY error kills the child
+  (no late switch can land), `state.json` is left as it was, and the restart backoff
+  spawns a fresh child that tries again, with no attempt limit, until one reopens the
+  saved conversation or `stop()` is called. No other session is ever adopted while the
+  saved file is there, so a restart before the first message cannot lose it. A saved
+  session whose file does not exist is skipped, never waited for (K2-05 F1: with no
+  account the engine refuses the first prompt and never writes its session file; before,
+  every replacement refused to start with «agent recovery session is unavailable» and
+  the engine stayed not ready until the app restarted). At boot, a
+  failed reopen rejects `start()` like any first-start failure and the same retry runs
+  (Gentle Dot's daemon logs it and keeps serving). Two deviations: the boot reopen's `switch_session` gets the rotation
+  switch's budget (`requestTimeoutMs`, default 300 s) instead of Gentle Dot's 30 s,
+  because Windows CI 43025727185 showed the real engine's switch can take longer there;
+  and a switch the engine ACKs without applying is an error (Gentle Dot's `refreshSession`
+  would adopt the other session and overwrite the saved pointer).
+- **Known gap shared with Gentle Dot (K2-05 F2, kept for parity)**: a rotation that falls
+  back to `new_session` saves the fresh session and its chain in `state.json`, but the
+  engine writes that session's file only with its first message. A restart right after
+  the fallback, before the next message, finds no file to reopen, boots an empty session
+  and loses the chain link to the earlier conversation (its files stay on disk). Gentle
+  Dot (`rotation.ts:212-214`) has the same window.
 - **Stop**: `stop()` ends stdin, then SIGTERM after `stopTimeoutMs`, then SIGKILL; it
   disables restarts, clears turn/deadline/grace timers, and later requests reject with `engine is not ready`.
 - **Spawn args**: `--mode rpc --session-dir <island sessions> --append-system-prompt
   <island identity.md>` (plus configurable command/extra args).
 
 ## Memory
+
+Koda's memory is ALWAYS private — Gentle Dot's private mode is the only mode (K2-05 T1c,
+human decision L11: «esto sería un engram propio que tuviera aparte del que tenemos aquí»):
+
+- **Store**: inside the island. The engine's `HOME` is `<island>/home` and the child env
+  sets no `ENGRAM_DATA_DIR`, so Engram defaults its store to `<island>/home/.engram` —
+  exactly where Gentle Dot's private mode puts it. The user's own `~/.engram` is never
+  read or written.
+- **Server**: on Koda's OWN port `7439` (one above Gentle Dot's private port `7438`, which
+  is itself one above Engram's default `7437` — no collision with the user's servers).
+  `ABITO_ENGRAM_PORT` overrides it for tests/embeddings.
+- **Binary**: only the pinned Engram binary the bundled runtime ships (`engramBin` in
+  `koda-runtime.json`). The former user-binary resolution order (a parent `ENGRAM_BIN`,
+  the login shell, the known install dirs) is gone.
+- **Project**: `abito-island` (the owned workspace's `.engram/config.json` and the
+  `ABITO_MEMORY_PROJECT` + identity pin, unchanged).
+- **Lifecycle**: the daemon confirms the private port is EMPTY before the engine spawns and
+  owns cleanup only then — a pre-existing listener is never claimed, an unknown port state
+  refuses ownership (logged, engine still starts), and on daemon stop the listener is
+  verified to be Koda's own (the island's `.instance-id` + `GET /health`) with a stable PID
+  before any SIGTERM. A server that is not Koda's is never touched.
+- **Not migrated**: memories saved by Koda 0.1 in the user's own Engram stay there and are
+  NOT migrated into the island store (human decision L11). The island memory starts empty.
 
 The owned default workspace carries `.engram/config.json` with
 `project_name: "abito-island"`, and the child env pins `ABITO_MEMORY_PROJECT`. A
@@ -266,7 +335,7 @@ THIRD-PARTY-NOTICES.md.
 - `ProfileStore.deactivate()` undoes an activation (same lock, journal, busy guard and rollback; the refreshed credential is saved back first). With no active profile it does nothing.
 - Provider settings over the wire (v0.2): `account_create|remove|logout|status`, `profile_save|remove|deactivate` and `auth_state`; schemas and the setup sequence are in [docs/PROTOCOL.md](docs/PROTOCOL.md).
 - Local models (v0.2): `local_account_create` / `local_endpoint_set` connect Ollama, LM Studio, llama.cpp or vLLM as an account with no secret on the wire. Loopback only (`localhost`, `127.0.0.0/8`, `[::1]`) with an explicit path such as `http://127.0.0.1:11434/v1`; remote endpoints are intentionally unsupported. The hostname `localhost` is resolved by the Pi client at request time (it trusts the host resolver); `127.0.0.1` or `[::1]` is recommended; plain http means traffic never leaves the machine. `local_endpoint_set` also re-enables a logged-out local account. The endpoint stays in the account's private `models.json` (0600) and a fixed non-secret placeholder key; see [docs/PROTOCOL.md](docs/PROTOCOL.md).
-- Global pause (#379): the closed `set_paused{paused}` verb stops all admission — no new agent turns (`send`/`steer`/`new_conversation` refused with `error{paused}`), no process-spawning tool/connector calls (`agent_connect`, `connectors_list`, `agents_list` refused); `abort` and `agent_disconnect` (stopping work) and every read-only verb stay allowed. Pausing while a turn runs interrupts it through the engine's cancellation path (#378): a sanitized toast explains the pause, the child is recycled, the session reopens and no prompt is replayed. The switch is persisted as the strict boolean `paused` key in `config.json` and restored at the next boot; `ready.state`, `agent_state` and `status` carry it. Details in [docs/PROTOCOL.md](docs/PROTOCOL.md).
+- Global pause (#379): the closed `set_paused{paused}` verb stops all admission — no new agent turns (`send`/`steer` refused with `error{paused}`; the island's `new_conversation` stays refused with `conversations_off` before every gate, pause included), no process-spawning tool/connector calls (`agent_connect`, `connectors_list`, `agents_list` refused); `abort` and `agent_disconnect` (stopping work) and every read-only verb stay allowed. Pausing while a turn runs interrupts it through the engine's cancellation path (#378): a sanitized toast explains the pause, the child is recycled, the session reopens and no prompt is replayed. The switch is persisted as the strict boolean `paused` key in `config.json` and restored at the next boot; `ready.state`, `agent_state` and `status` carry it. Details in [docs/PROTOCOL.md](docs/PROTOCOL.md).
 - Live interruption (#378): when the user's access for the running agent is revoked (`account_logout` of the account backing the active profile) or the pause turns on, the in-flight turn yields at the next safe point with a fixed, engine-text-free closed event; the logout is applied only after the safe point (bounded wait; on timeout it answers `busy` and the credential is untouched). Details in [docs/PROTOCOL.md](docs/PROTOCOL.md).
 - Custom gateway provider (HU-041): `custom_account_create {label, baseUrl, accountId?}`, `custom_endpoint_set {accountId, baseUrl}` and `custom_models_refresh {accountId}` configure a LiteLLM / OpenAI-compatible gateway (for example `https://gateway.example/v1`). Each replies `account` (DTO adds `custom: true`; the Base URL is never on the wire) and broadcasts `accounts`. Base URL: `https` or `http` only for a literal loopback address (`127.0.0.0/8`, `[::1]`), no userinfo/query/fragment/escapes. The API key goes through the existing `auth_start {method:"api_key"}` / `auth_reply` (masked transient input) into the account's private `auth.json`; there is no second store. `custom_models_refresh` (and `custom_endpoint_set` while signed in) do one bounded `GET <baseUrl>/models` with the bearer key: no redirects followed (any 3xx fails, same-origin too), 10 s, 256 KiB, 128 models, 200-char ids; failures are `error{failed}` and keep the previous `models.json`. While a key is stored the host cannot be changed (sign out first). No automatic fallback, model start or switch. Control characters (including TAB, DEL and CR/LF) in a custom provider's API key are refused up front, before any side effect (the prompt stays open for a retry). `profile_save` / `profile_select` / `role_select` work for a custom account like any other once models have been discovered and the model is one of them; otherwise activation is refused and no file is touched.
 
@@ -277,7 +346,13 @@ THIRD-PARTY-NOTICES.md.
 
 `src/server.cjs` exports `IslandServer` (local 0600 Unix socket in a 0700 dir, token handshake,
 bounded JSONL) and `src/protocol.cjs` the pure codec/translation. Wire format, frame table and
-limits: [docs/PROTOCOL.md](docs/PROTOCOL.md). History replay is not implemented; the CLI is in the U4 section.
+limits: [docs/PROTOCOL.md](docs/PROTOCOL.md). The client cap is 4 (settings window + chat + one
+reconnect overlap + the daemon's own health probe): it counts clients that completed their
+handshake and is enforced when a connection's own `hello` is validated — never at connect time —
+so `abito-island-daemon status` still classifies the daemon healthy while the settings window and
+the chat are both connected. No outbound line ever carries a lone UTF-16 surrogate (replaced with
+U+FFFD by the single outbound encoder), and every chunk/clip of outbound text cuts on whole code
+points; a history message whose text was clipped carries `clipped: true`. History is served by `get_history` and `get_earlier` (see docs/PROTOCOL.md, History frames); the CLI is in the U4 section.
 
 ## User config, CLI and host handoff (U4)
 
@@ -473,7 +548,7 @@ Attribution: structure adapted from the Gentle Dot daemon (MIT, © 2026 Gentlema
 ## Hardening notes (switch journal, serialized selection, credential modes)
 
 - **Switch journal**: profile activation writes `<agent>/.switch.json` (`{from, to, startedAt}`) before touching `auth.json` and deletes it after the active-account marker is persisted. If a journal survives a crash, the next `ProfileStore` start (or the next activation) compares `auth.json` with the stored credentials of `from` and `to`, repairs the marker, and never runs the refresh write-back. If it cannot decide, no account is active (fail closed).
-- **Serialized selection**: `profile_select`/`role_select` run one at a time; while one is in flight the agent reports `busy` and `send`, `steer`, `new_conversation` and further selections are refused with `busy`.
+- **Serialized selection**: `profile_select`/`role_select` run one at a time; while one is in flight the agent reports `busy` and `send`, `steer` and further selections are refused with `busy` (the island's `new_conversation` stays refused with `conversations_off`, as always).
 - **Credential modes**: the SDK creates each account `auth.json` at 0600; after every login, enroll and logout the daemon re-asserts 0600 (file) and 0700 (account dir), refusing symlinks and foreign owners. The helper's `device-id` file is created via O_EXCL|O_NOFOLLOW temp + rename and a symlinked one is refused.
 
 ## MCP projection lifecycle
@@ -621,7 +696,7 @@ there too. Implementation: `src/minikodas/telegram-source.cjs`.
   - `--tools` = kit, so the model is only shown the kit;
   - the extension's `tool_call` guard blocks any tool outside `MINIKODA_KIT`.
   - Tested: `bash` is refused and never runs, and a negative control proves the marker does appear when both layers allow it.
-- The engine command is injectable (`engine: {command, commandArgs, env}`). release/0.2 still spawns plain `pi`. **Gentle Shell (decided, «usamos el motor de gentle shell») plugs in when K2-05 lands its spawning in release/0.2.** Pass the Gentle Shell command the chat engine resolves, keep the same flags, `GENTLE_PI_AGENTS=0` and `--tools` = kit. The PoC measured that `-ne`/`--no-skills` do not remove Gentle's own core, and that only `--tools` keeps its tools away from the model (`odd/evidence/k2-13-poc/gentle-shell-round/`).
+- The engine command is injectable (`engine: {command, commandArgs, env}`); the daemon passes the chat's own command, which in release/0.2 is Koda's bundled Gentle Shell (K2-05), so a Minikoda runs on the same engine («usamos el motor de gentle shell»). The engine keeps the same flags, `GENTLE_PI_AGENTS=0` and `--tools` = kit. The PoC measured that `-ne`/`--no-skills` do not remove Gentle's own core, and that only `--tools` keeps its tools away from the model (`odd/evidence/k2-13-poc/gentle-shell-round/`).
 - Runs never overlap per Minikoda (a second launch answers `running`). At most two run at once overall, and a run whose video is still being transcribed **holds its slot**: the 2-concurrent-runs rule counts it. Every run's engine is bounded by a timeout (default 300 s) whose clock starts only when the engine starts, after any transcription (S17).
 - A crash, a timeout, a start failure, an unavailable model or a cancelled run (daemon stop, delete, the global pause turning on) is a **failed run**. It lands in «Hoy» as an `error` item and in `lastRun`. It is never silent and never respawned. The proposals the kit parked before the failure are stored as pending in «Hoy» too, and the error item says so (S13: «3 si guardalo como pendiente, aunque avise al usuario que fallo»).
 - Proposal `target`: one plain line. Unicode format characters (bidi overrides such as U+202E, zero-width characters) are stripped; a line break or control character is refused by the kit and discarded by the runner.

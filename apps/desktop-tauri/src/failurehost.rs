@@ -19,11 +19,8 @@ fn err(code: &str) -> BridgeError {
 }
 
 fn open_browser(url: &str) -> Result<(), BridgeError> {
-    let mut child = std::process::Command::new("xdg-open").arg(url)
-        .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null())
-        .spawn().map_err(|_| err("unavailable"))?;
-    std::thread::spawn(move || { let _ = child.wait(); });
-    Ok(())
+    use abito_island::opener::{open_detached, Target};
+    open_detached(Target::Web(url)).map_err(|_| err("unavailable"))
 }
 
 fn view(dir: &std::path::Path) -> Value {

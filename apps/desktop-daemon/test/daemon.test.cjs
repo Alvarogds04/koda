@@ -145,6 +145,148 @@ test("start writes a private session.json, serves the protocol, stop removes it"
 	}
 });
 
+// K2-05 boot order = Gentle Dot (daemon.ts:470-481): the server listens and the session is
+// published BEFORE the engine is ready; clients read "starting"; a first start that fails is
+// logged («agent failed to start: …; retrying») and retried by the runtime, never fatal.
+function gated(extra = {}) {
+	const m = make(extra);
+	m.gate = path.join(m.base, "state-gate");
+	m.daemon.options.engineOptions.commandArgs.push("--state-gate", m.gate);
+	return m;
+}
+
+test("boot order: the session is published and clients are served while the engine starts (Gentle Dot)", async () => {
+	const { daemon, root, gate, logs } = gated();
+	const starting = daemon.start();
+	starting.catch(() => {});
+	try {
+		await waitFor(() => readSession(root) !== undefined, 10000);
+		const session = readSession(root);
+		assert.equal(daemon.engine.status, "starting", "published before the engine is ready");
+		// Windows: the real check is a synchronous native helper (spawnSync) that blocks this
+		// process's event loop, and this daemon lives in THIS process, so it could never answer the
+		// helper's hello (CI 43339026300). Same seam as the other in-process classify tests; the
+		// served-while-starting proof on Windows is the hello->ready of connect() just below.
+		const verified = [];
+		const deps = process.platform === "win32" ? { nativeVerify: (r) => (verified.push(r), true) } : {};
+		const verdict = await classifySession(root, deps);
+		assert.equal(verdict.ready, true, "the island's health check answers while the engine starts");
+		if (process.platform === "win32") assert.deepEqual(verified, [root], "the native identity check ran against this island");
+		const { socket, frames } = await connect(session);
+		await waitFor(() => frames.some((f) => f.type === "ready"));
+		assert.equal(frames.find((f) => f.type === "ready").state.status, "starting");
+		socket.write(`${JSON.stringify({ type: "get_history" })}\n`);
+		socket.write(`${JSON.stringify({ type: "send", text: "hola", requestId: "r-boot-3" })}\n`);
+		await waitFor(() => frames.some((f) => f.type === "error" && f.code === "unavailable"));
+		fs.writeFileSync(gate, "");
+		await starting;
+		assert.equal(daemon.engine.status, "ready");
+		await waitFor(() => frames.some((f) => f.type === "agent_state" && f.status === "ready"));
+		await waitFor(() => frames.some((f) => f.type === "history"), 10000);
+		socket.destroy();
+		assert.equal(logs.some((l) => l.includes(session.token)), false, "token must never be logged");
+	} finally {
+		fs.writeFileSync(gate, "");
+		await starting.catch(() => {});
+		await daemon.stop();
+	}
+	assert.equal(fs.existsSync(path.join(root, "runtime", "session.json")), false);
+});
+
+test("boot order: a first engine start that fails keeps the daemon up, is logged and retried until ready (Gentle Dot)", async () => {
+	const { daemon, root, gate, logs, evidence } = gated();
+	daemon.options.engineOptions.startTimeoutMs = 200;
+	try {
+		await daemon.start();
+		assert.ok(readSession(root), "the daemon stays up and keeps its session");
+		assert.ok(logs.some((l) => /^agent failed to start: .*; retrying$/.test(l)), JSON.stringify(logs));
+		assert.ok(["starting", "restarting"].includes(daemon.engine.status), daemon.engine.status);
+		fs.writeFileSync(gate, "");
+		await waitFor(() => daemon.engine.status === "ready", 10000);
+		assert.ok(fs.readFileSync(evidence.spawn, "utf8").split("\n").filter(Boolean).length >= 2, "the failed engine was replaced");
+	} finally {
+		fs.writeFileSync(gate, "");
+		await daemon.stop();
+	}
+});
+
+test("boot order: an engine command that cannot spawn keeps the daemon up and retrying (Gentle Dot)", async () => {
+	const { daemon, root, logs } = make({ options: { engineOptions: { command: path.join(tmp(), "nope"), commandArgs: [], backoffMs: [20], stopTimeoutMs: 200, startTimeoutMs: 300 } } });
+	try {
+		await daemon.start();
+		assert.ok(readSession(root));
+		assert.ok(logs.some((l) => /^agent failed to start: .*; retrying$/.test(l)), JSON.stringify(logs));
+		await waitFor(() => logs.filter((l) => /agent (restart failed|exited unexpectedly)/.test(l)).length >= 2);
+	} finally {
+		await daemon.stop();
+	}
+	assert.equal(fs.existsSync(path.join(root, "runtime", "session.json")), false);
+});
+
+// K2-05 boot follow-up = Gentle Dot close() (daemon.ts:410-458): a stop acts at once, even
+// while the engine is still starting, and a stop early in the boot publishes nothing at all.
+test("boot order: stop() while the engine is still starting acts at once and withdraws session.json (Gentle Dot close)", async () => {
+	const { daemon, root, evidence } = gated();
+	daemon.options.engineOptions.startTimeoutMs = 60_000;
+	const starting = daemon.start();
+	starting.catch(() => {});
+	try {
+		await waitFor(() => readSession(root) !== undefined && fs.existsSync(evidence.spawn), 10000);
+		assert.equal(daemon.engine.status, "starting");
+		const began = Date.now();
+		await daemon.stop();
+		const took = Date.now() - began;
+		assert.ok(took < 5000, `stop took ${took} ms`);
+		assert.equal(fs.existsSync(path.join(root, "runtime", "session.json")), false);
+		await starting;
+		assert.equal(daemon.status().state, "stopped");
+		assert.equal(daemon.engine.status, "stopped");
+	} finally {
+		await daemon.stop();
+		await starting.catch(() => {});
+	}
+});
+
+test("boot order: stop() right after start() publishes nothing and never spawns the engine", async () => {
+	const { daemon, root, evidence } = make();
+	const starting = daemon.start();
+	starting.catch(() => {});
+	await daemon.stop();
+	await starting.catch(() => {});
+	await sleep(300);
+	assert.equal(daemon.status().state, "stopped");
+	assert.equal(fs.existsSync(path.join(root, "runtime", "session.json")), false, "no session published after the stop");
+	assert.equal(fs.existsSync(evidence.spawn), false, "the engine was never spawned");
+	assert.equal(fs.readdirSync(path.join(root, "runtime")).filter((n) => n.startsWith("p-")).length, 0, "no socket directory left");
+	await daemon.stop();
+});
+
+test("boot order: the configured profile is activated once the retried engine becomes ready", async () => {
+	const { daemon, root, gate } = gated();
+	daemon.options.engineOptions.startTimeoutMs = 200;
+	fs.mkdirSync(root, { recursive: true, mode: 0o700 });
+	writePrivateFile(path.join(root, "config.json"), JSON.stringify({ profile: "work" }));
+	const selected = [];
+	try {
+		await daemon.start();
+		daemon.profiles.select = async (id) => { selected.push([id, daemon.engine.status]); };
+		assert.deepEqual(selected, []);
+		fs.writeFileSync(gate, "");
+		await waitFor(() => selected.length === 1, 10000);
+		assert.deepEqual(selected, [["work", "ready"]]);
+	} finally {
+		fs.writeFileSync(gate, "");
+		await daemon.stop();
+	}
+});
+
+test("boot order: a missing bundled engine still fails the boot before anything is published (Gentle Dot loadConfig)", async () => {
+	const { daemon, root } = make({ options: { engineOptions: { command: "gentle-shell", commandArgs: [], backoffMs: [20], stopTimeoutMs: 200, startTimeoutMs: 300 } } });
+	await assert.rejects(() => daemon.start(), /bundled runtime/);
+	assert.equal(fs.existsSync(path.join(root, "runtime", "session.json")), false);
+	assert.equal(daemon.memory, undefined, "no private memory was touched");
+});
+
 test("each launch generates a fresh token; double start is refused", async () => {
 	const a = make();
 	await a.daemon.start();
@@ -524,7 +666,9 @@ test("MCP projection: cleanupSync deletes it synchronously (process exit path)",
 });
 
 test("MCP projection: a boot that fails after writing it cleans it up", async () => {
-	const m = withMcp({ options: { engineOptions: { command: path.join(tmp(), "nope"), commandArgs: [], backoffMs: [20], stopTimeoutMs: 200, startTimeoutMs: 300 } } });
+	// K2-05 boot order: an unspawnable command no longer fails the boot (Gentle Dot retries it);
+	// a missing bundled engine still does, after the projection was written.
+	const m = withMcp({ options: { engineOptions: { command: "gentle-shell", commandArgs: [], backoffMs: [20], stopTimeoutMs: 200, startTimeoutMs: 300 } } });
 	await assert.rejects(() => m.daemon.start());
 	assert.equal(fs.existsSync(m.file), false);
 	assert.equal(fs.existsSync(path.join(m.root, "runtime", "session.json")), false);
@@ -1476,27 +1620,41 @@ test("R8: a daemon reparented away from its boot-time parent is orphaned even wh
 			writePrivateFile(path.join(root, "runtime", "session.json"), `${JSON.stringify({ ...session, ppid: recordedPpid })}\n`);
 		}
 		assert.equal(typeof recordedPpid, "number", "session.json records the boot-time parent pid");
-		const same = await classifySession(root, { ppid: () => recordedPpid });
+		// Windows decides the state from the native identity proof ALONE (its branch answers before the parent chain is read),
+		// and the real helper spawn from this in-process test is refused on the runner — the same note as GD014, which is why
+		// CI 43319173068 classified the unchanged parent 'foreign'. The proof is therefore asked through the product's own
+		// verification seam, never bypassed: the seam is still consulted about this exact root.
+		const verified = [];
+		const native = win ? { nativeVerify: (r) => (verified.push(r), true) } : {};
+		const same = await classifySession(root, { ppid: () => recordedPpid, ...native });
+		if (win) assert.deepEqual(verified, [root], "the native verification is consulted for this exact root");
 		assert.equal(same.state, "healthy", "unchanged parent: healthy");
 		// Under a systemd --user session an orphan is reparented to the user
-		// subreaper, whose pid is never 1 (the injected seam simulates it).
+		// subreaper, whose pid is never 1 (the injected seam simulates it). Windows has no parent identity yet (gap 2a), so
+		// the ppid comparison only exists where /proc does; the seam is injected on every OS to keep the fixture identical.
 		const subreaperPpid = recordedPpid === 4242 ? 4243 : 4242;
-		const reparented = await classifySession(root, { ppid: () => subreaperPpid });
-		assert.equal(reparented.state, "orphaned", "reparented away from the boot-time parent: orphaned");
-		assert.equal(reparented.reason, "parent_gone");
-		assert.equal(reparented.ready, true, "an orphaned daemon can still be serving");
-		// ppid 1 stays an accepted orphan shape (the old rule).
-		const classic = await classifySession(root, { ppid: () => 1 });
-		assert.equal(classic.state, "orphaned");
-		assert.equal(classic.reason, "parent_gone");
+		const reparented = await classifySession(root, { ppid: () => subreaperPpid, ...native });
+		assert.equal(reparented.state, win ? "healthy" : "orphaned", win ? "Windows: the native proof alone decides (gap 2a)" : "reparented away from the boot-time parent: orphaned");
+		if (win) {
+			// The refusal direction is untouched by that gap: without the native proof the same live session is foreign, never healthy.
+			const denied = await classifySession(root, { ppid: () => recordedPpid, nativeVerify: () => false });
+			assert.deepEqual([denied.state, denied.reason, denied.ready], ["foreign", "identity_unconfirmed", false], "no native proof: never healthy");
+		} else {
+			assert.equal(reparented.reason, "parent_gone");
+			assert.equal(reparented.ready, true, "an orphaned daemon can still be serving");
+			// ppid 1 stays an accepted orphan shape (the old rule).
+			const classic = await classifySession(root, { ppid: () => 1 });
+			assert.equal(classic.state, "orphaned");
+			assert.equal(classic.reason, "parent_gone");
+		}
 		// A legacy session without a recorded ppid keeps the old rule only.
 		const legacy = { ...session };
 		delete legacy.ppid;
 		writePrivateFile(path.join(root, "runtime", "session.json"), `${JSON.stringify(legacy)}\n`);
-		const old = await classifySession(root, { ppid: () => subreaperPpid });
+		const old = await classifySession(root, { ppid: () => subreaperPpid, ...native });
 		assert.equal(old.state, "healthy", "no recorded ppid: no reparenting evidence, old rules apply");
 		// A platform without /proc degrades honestly: no crash, no false orphan.
-		const blind = await classifySession(root, { ppid: () => undefined });
+		const blind = await classifySession(root, { ppid: () => undefined, ...native });
 		assert.equal(blind.state, "healthy");
 	} finally {
 		await daemon.stop();
@@ -1548,4 +1706,142 @@ test("K2-01b: mcp_import_preview reads the daemon's OWN env (its %APPDATA% on Wi
 	} finally {
 		await daemon.stop();
 	}
+});
+
+// ----- K2-05 T1c (S5/L11): the daemon owns the private memory lifecycle -----
+//
+// Koda's memory is ALWAYS private: the daemon takes the private port's
+// ownership before the default engine spawns, and stops the memory server on
+// daemon shutdown — but only after verifying it is Koda's own (the island's
+// .instance-id + GET /health) and that the listener pid is stable. A custom
+// `command` never gets private memory: no ownership, no stop.
+
+const { DEFAULT_COMMAND } = require("../src/runtime.cjs");
+
+/** A fake bundled runtime (POSIX launcher -> the FAKE agent) for default-engine boots. */
+function fakeRuntime(t) {
+	const runtime = fs.mkdtempSync(path.join(os.tmpdir(), "abito-d-memory-runtime-"));
+	t.after(() => fs.rmSync(runtime, { recursive: true, force: true }));
+	fs.writeFileSync(
+		path.join(runtime, "koda-runtime.json"),
+		`${JSON.stringify({ gentlePi: "4.3.0", gentleShell: "node_modules/gentle-pi/bin/gentle-shell.mjs" })}\n`,
+	);
+	const launcher = path.join(runtime, "gentle-shell");
+	fs.writeFileSync(launcher, `#!/bin/sh\nexec '${process.execPath}' '${FAKE}' "$@"\n`);
+	fs.chmodSync(launcher, 0o755);
+	return {
+		runtime,
+		runtimeDeps: { execPath: path.join(runtime, process.platform === "win32" ? "node.exe" : "node"), existsSync: fs.existsSync, lstatSync: fs.lstatSync, readFileSync: fs.readFileSync },
+	};
+}
+
+const MEMORY_INSTANCE = "cd34".repeat(8);
+
+/** A programmable private-memory seam: empty before boot, one listener later. */
+function memorySeam({ health = async () => ({ instance_id: MEMORY_INSTANCE }) } = {}) {
+	const seam = { lookups: [], occupied: false, pid: 4242, kills: [], logs: [] };
+	seam.runListenerCommand = async () => {
+		seam.lookups.push(seam.occupied);
+		return { code: 0, stdout: seam.occupied ? String(seam.pid) : "", stderr: "" };
+	};
+	seam.kill = (pid, signal) => seam.kills.push({ pid, signal });
+	seam.health = health;
+	return seam;
+}
+
+test("the default engine's daemon owns the private memory and stops its own listener on shutdown", unixOnly("needs a #!/bin/sh fake runtime launcher"), async (t) => {
+	const base = tmp();
+	const root = islandRoot(base);
+	const { runtimeDeps } = fakeRuntime(t);
+	const seam = memorySeam();
+	const daemon = new Daemon({
+		root,
+		env: daemonEnv(base, { ENGRAM_URL: "http://127.0.0.1:9999", ENGRAM_DATA_DIR: "/elsewhere", ENGRAM_PORT: "7437", ABITO_ENGRAM_PORT: "7499" }),
+		log: (line) => seam.logs.push(String(line)),
+		engineOptions: { command: DEFAULT_COMMAND, commandArgs: [], runtimeDeps, backoffMs: [20], stopTimeoutMs: 500, requestTimeoutMs: 3000, startTimeoutMs: 5000 },
+		memoryOptions: { runListenerCommand: seam.runListenerCommand, kill: seam.kill, health: seam.health },
+	});
+	try {
+		await daemon.start();
+		assert.ok(daemon.memory, "the daemon owns the private port for its default engine");
+		assert.deepEqual(seam.lookups, [false], "the port was checked once BEFORE the engine spawned");
+		assert.deepEqual(seam.kills, []);
+	} finally {
+		// The engine's own server has (in production) left its identity behind.
+		fs.mkdirSync(path.join(root, "home", ".engram"), { recursive: true, mode: 0o700 });
+		fs.writeFileSync(path.join(root, "home", ".engram", ".instance-id"), `${MEMORY_INSTANCE}\n`, { mode: 0o600 });
+		seam.occupied = true;
+		await daemon.stop();
+	}
+	assert.deepEqual(seam.kills, [{ pid: 4242, signal: "SIGTERM" }], "Koda's own listener is stopped on daemon shutdown");
+	assert.ok(!seam.logs.some((line) => /left running|serves other data/.test(line)), JSON.stringify(seam.logs));
+});
+
+test("the daemon never stops a listener that is not its own memory", unixOnly("needs a #!/bin/sh fake runtime launcher"), async (t) => {
+	const base = tmp();
+	const root = islandRoot(base);
+	const { runtimeDeps } = fakeRuntime(t);
+	// /health reports a DIFFERENT instance id: a foreign server on the port.
+	const seam = memorySeam({ health: async () => ({ instance_id: "f".repeat(32) }) });
+	const daemon = new Daemon({
+		root,
+		env: daemonEnv(base),
+		log: (line) => seam.logs.push(String(line)),
+		engineOptions: { command: DEFAULT_COMMAND, commandArgs: [], runtimeDeps, backoffMs: [20], stopTimeoutMs: 500, requestTimeoutMs: 3000, startTimeoutMs: 5000 },
+		memoryOptions: { runListenerCommand: seam.runListenerCommand, kill: seam.kill, health: seam.health },
+	});
+	await daemon.start();
+	assert.ok(daemon.memory);
+	// The island identity file is present, so the mismatch is /health's verdict.
+	fs.mkdirSync(path.join(root, "home", ".engram"), { recursive: true, mode: 0o700 });
+	fs.writeFileSync(path.join(root, "home", ".engram", ".instance-id"), `${MEMORY_INSTANCE}\n`, { mode: 0o600 });
+	seam.occupied = true;
+	await daemon.stop();
+	assert.deepEqual(seam.kills, [], "a foreign server is never signalled");
+	assert.ok(seam.logs.some((line) => /serves other data/.test(line)), `the refusal is reported: ${JSON.stringify(seam.logs)}`);
+});
+
+test("a custom command gets no private memory ownership and no stop", async () => {
+	const { daemon } = make(); // engine command: the fake agent (a custom command)
+	await daemon.start();
+	assert.equal(daemon.memory, undefined, "only Koda's own default engine gets private memory");
+	await daemon.stop();
+	assert.equal(daemon.memory, undefined);
+});
+
+// F6 (verifier): a SIGHUP config reload switching from a custom command BACK to
+// Koda's own engine starts private memory inside the engine's spawn — but only
+// the boot path claimed the port's ownership, so that server was left running
+// at daemon stop. The switch must claim ownership exactly like boot.
+test("a SIGHUP switch from a custom command back to Koda's engine claims the private port (F6)", unixOnly("needs a #!/bin/sh fake runtime launcher"), async (t) => {
+	const base = tmp();
+	const root = islandRoot(base);
+	const { runtimeDeps } = fakeRuntime(t);
+	fs.mkdirSync(root, { recursive: true, mode: 0o700 });
+	// Boot with a CUSTOM command: no private memory ownership (same as boot today).
+	writePrivateFile(path.join(root, "config.json"), JSON.stringify({ command: wrapperFor(base, "c.sh", path.join(base, "c.log")) }));
+	const seam = memorySeam();
+	const daemon = new Daemon({
+		root,
+		env: daemonEnv(base),
+		log: (line) => seam.logs.push(String(line)),
+		engineOptions: { commandArgs: [], runtimeDeps, backoffMs: [20], stopTimeoutMs: 500, requestTimeoutMs: 3000, startTimeoutMs: 5000 },
+		memoryOptions: { runListenerCommand: seam.runListenerCommand, kill: seam.kill, health: seam.health },
+	});
+	await daemon.start();
+	assert.equal(daemon.memory, undefined, "a custom command owns no private memory");
+	assert.deepEqual(seam.kills, []);
+
+	// The user's edited config switches back to Koda's own engine; SIGHUP restarts it.
+	writePrivateFile(path.join(root, "config.json"), JSON.stringify({ command: DEFAULT_COMMAND }));
+	assert.equal((await daemon.applyConfig()).restarted, true, "the engine restarts on the command change");
+	assert.ok(daemon.memory, "the switch claims the private port exactly like at boot");
+
+	// The engine's own server appears; daemon stop must stop it (the F6 leak).
+	fs.mkdirSync(path.join(root, "home", ".engram"), { recursive: true, mode: 0o700 });
+	fs.writeFileSync(path.join(root, "home", ".engram", ".instance-id"), `${MEMORY_INSTANCE}\n`, { mode: 0o600 });
+	seam.occupied = true;
+	await daemon.stop();
+	assert.deepEqual(seam.kills, [{ pid: 4242, signal: "SIGTERM" }], "the server started by the switched engine is stopped on daemon shutdown");
+	assert.ok(!seam.logs.some((line) => /left running|serves other data/.test(line)), JSON.stringify(seam.logs));
 });

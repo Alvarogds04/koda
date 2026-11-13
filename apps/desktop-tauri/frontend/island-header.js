@@ -85,12 +85,12 @@ function mount(api) {
     invoke('prefs_action', { payload: { action: 'view' } }).then(apply, () => {});
     if (listen) listen('prefs:state', e => apply(e && e.payload)).catch(() => {});
   }
-  // «+»: open the chat and start a new conversation there (the buttons' own handlers do the work).
+  // «+»: open the chat (K2-05 T4 U4: ONE continuous chat, L3/L4/L11 — there is no «new conversation»; the
+  // chat button's own handler does the work).
   const plus = doc.getElementById('open-new');
   if (plus) plus.addEventListener('click', e => {
     if (e.isTrusted !== true) return;
-    const chat = doc.getElementById('open-chat'), create = doc.getElementById('chat-create');
+    const chat = doc.getElementById('open-chat');
     if (chat) chat.click();
-    if (create) setTimeout(() => create.click(), 0);
   });
 }

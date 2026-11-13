@@ -106,7 +106,7 @@ test('T6 mounts Coucou sidebar and page without replacing existing tab hosts', (
   const start = src.indexOf('  function mountSettingsFrame()');
   const end = src.indexOf('  // ---- settings frame end', start);
   assert.ok(start > 0 && end > start, 'shipped sidebar frame exists');
-  const nodes = new Map(['settings-tabs', 'settings-bar', 'settings-hint', 'settings-body', 'models'].map(id => [id, { id }]));
+  const nodes = new Map(['settings-tabs', 'settings-bar', 'settings-hint', 'settings-body'].map(id => [id, { id }]));
   const panel = { children: [], append(...items) { this.children.push(...items); } };
   const el = (tag, className, textContent) => ({ tag, className, textContent, children: [], append(...items) { this.children.push(...items); } });
   require('node:vm').runInNewContext(src.slice(start, end) + '\nmountSettingsFrame();', { panel, el, $: id => nodes.get(id) });
@@ -114,7 +114,7 @@ test('T6 mounts Coucou sidebar and page without replacing existing tab hosts', (
   const [side, page] = panel.children;
   assert.equal(side.children[0].textContent, 'Abito');
   assert.equal(side.children[1], nodes.get('settings-tabs'));
-  assert.deepEqual(page.children.map(n => n.id), ['settings-bar', 'settings-hint', 'settings-body', 'models']);
+  assert.deepEqual(page.children.map(n => n.id), ['settings-bar', 'settings-hint', 'settings-body']);
   const html = fs.readFileSync(path.join(frontend, 'index.html'), 'utf8');
   assert.match(html, /id="coucou-settings-style"[^>]*href="vendor\/coucou\/settings\/settings.css"[^>]*media="not all"/);
   assert.match(src, /\$\('coucou-settings-style'\)\.media = 'all'/);
@@ -221,23 +221,22 @@ test('T6 General keeps reduced motion and all theme choices; custom auto-close i
 });
 
 // ---- screens (copied from gentle-dot: one screen per header button, each covering the chat body) -------
-test('#442 T7.4 five sub-tabs of ONE Ajustes entry, design order (DESIGN-NOTES §3/§9): General, Conexiones, Modelos, Blobs, Apariencia — Especialistas is merged into Blobs', () => {
-  assert.deepEqual(S.TABS.map(x => x.id), ['general', 'accounts', 'models', 'pills', 'appearance']);
-  assert.deepEqual(S.TABS.map(x => x.title), ['General', 'Conexiones', 'Modelos', 'Blobs', 'Apariencia']);
+test('#442 T7.4 four sub-tabs of ONE Ajustes entry, design order (DESIGN-NOTES §3/§9): General, Conexiones, Blobs, Apariencia — Especialistas is merged into Blobs; K2-05 U5c (L72) removed Modelos', () => {
+  assert.deepEqual(S.TABS.map(x => x.id), ['general', 'accounts', 'pills', 'appearance']);
+  assert.deepEqual(S.TABS.map(x => x.title), ['General', 'Conexiones', 'Blobs', 'Apariencia']);
   // S8: the old ids still resolve (deep links), to the merged tab
   assert.equal(S.tabAlias('connectors'), 'accounts');
   assert.equal(S.tabAlias('accounts'), 'accounts');
-  assert.equal(S.tabAlias('models'), 'models');
+  // K2-05 U5c (L72): «Modelos» is gone from Ajustes, so its id is no alias any more
+  assert.equal(S.tabAlias('models'), null);
   // #442 T7.4: the Especialistas deep link resolves to the tab that absorbed it
   assert.equal(S.tabAlias('specialists'), 'pills');
   assert.equal(S.tabAlias('nope'), null);
-  // T7.2 design §3: one title + one hint line at most. Modelos keeps the design's own line; the
-  // other tabs draw none (the regenerated ajustes-ventana-* PNGs show no hint line). Was: every
-  // tab a multi-sentence hint (hint.length > 10).
+  // T7.2 design §3: one title + one hint line at most. T7.2 draws none (the regenerated ajustes-ventana-*
+  // PNGs show no hint line). Was: every tab a multi-sentence hint (hint.length > 10).
   for (const x of S.TABS) {
     assert.ok(x.icon, x.id);
-    if (x.id === 'models') assert.equal(x.hint, 'Modelos que usa Koda', x.id);
-    else assert.equal(x.hint, '', x.id);
+    assert.equal(x.hint, '', x.id);
   }
   assert.equal(S.tabById('connectors'), null, 'resolved through tabAlias, not a tab of its own');
   assert.equal(S.tabById('nope'), null);
@@ -246,10 +245,11 @@ test('#442 T7.4 five sub-tabs of ONE Ajustes entry, design order (DESIGN-NOTES �
 
 test('#408 tablist keyboard: arrows wrap, Home/End jump, other keys are ignored', () => {
   assert.equal(S.tabKeyTarget('general', 'ArrowRight'), 'accounts');
-  assert.equal(S.tabKeyTarget('accounts', 'ArrowRight'), 'models');
-  assert.equal(S.tabKeyTarget('models', 'ArrowRight'), 'pills');
+  assert.equal(S.tabKeyTarget('accounts', 'ArrowRight'), 'pills');
+  assert.equal(S.tabKeyTarget('pills', 'ArrowRight'), 'appearance');
   assert.equal(S.tabKeyTarget('appearance', 'ArrowRight'), 'general');
   assert.equal(S.tabKeyTarget('general', 'ArrowLeft'), 'appearance');
+  assert.equal(S.tabKeyTarget('pills', 'ArrowLeft'), 'accounts');
   assert.equal(S.tabKeyTarget('pills', 'Home'), 'general');
   assert.equal(S.tabKeyTarget('pills', 'End'), 'appearance');
   assert.equal(S.tabKeyTarget('pills', 'a'), null);
@@ -430,7 +430,7 @@ test('markup: gear + every icon-only control is named; sections are real tabs; t
   assert.match(html, /id="settings"[^>]*role="dialog"[^>]*aria-label="Ajustes"/);
   assert.match(html, /id="settings-tabs"[^>]*role="tablist"[^>]*aria-label="[^"]{3,}"/, '#408: a real tablist');
   for (const id of ['accounts', 'connectors']) assert.doesNotMatch(html, new RegExp(`id="open-screen-${id}"`), id + ' has no header button of its own');
-  assert.doesNotMatch(html, /id="chat-models"/, 'the Modelo header button moved into the Modelos tab');
+  assert.doesNotMatch(html, /id="chat-models"/, 'the Modelo header button moved into Ajustes (K2-05 U5c: the tab itself is gone)');
   const gear = /<button[^>]*id="open-screen-settings"[^>]*>/.exec(html);
   assert.ok(gear); assert.match(gear[0], /aria-label="Ajustes"/); assert.match(gear[0], /aria-expanded="false"/);
   assert.match(html, /<h2[^>]*id="settings-title"/, 'the screen title is a real heading');
@@ -883,7 +883,7 @@ test('agents: the deadline for the engine to answer is a named constant', () => 
   assert.ok(Number.isInteger(S.AGENTS_WAIT_MS) && S.AGENTS_WAIT_MS >= 2000 && S.AGENTS_WAIT_MS <= 10000);
 });
 
-test('settings never asks for a terminal except the explicitly requested missing-Pi install advice', () => {
+test('settings never asks for a terminal, not even for a missing engine (K2-05: Koda ships its own, no npm advice)', () => {
   const strip = t => t.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
   const literals = text => [...strip(text).matchAll(/(['"`])((?:\\.|(?!\1)[^\\\n])*)\1/g)].map(m => m[2]).filter(x => /[a-záéíóúñ]{3,}/i.test(x));
   const bad = /\b(terminal|consola|l[ií]nea de comandos|comando|shell|bash|cli|sudo|npm|install)\b/i;
@@ -891,12 +891,11 @@ test('settings never asks for a terminal except the explicitly requested missing
   // draws (Gemini CLI, Copilot CLI), not instructions to open a terminal; the guard keeps
   // watching every other fixed string.
   const CLIENT_NAMES = new Set(['claude-code', 'codex', 'opencode', 'gemini-cli', 'copilot-cli', 'Copilot CLI', 'amp', 'cursor', 'CLI']);
-  // S2: the owner explicitly requests how to install the missing runtime.
-  // Exempt only that exact advice, not arbitrary commands elsewhere.
-  const PI_INSTALL_ADVICE = 'instalalo con npm install -g @earendil-works/pi-coding-agent.';
+  // K2-05 (S1, S4): the 0.1 exemption for the npm install advice of a missing Pi is gone — the engine is Koda's own,
+  // bundled, and its missing state says to reinstall Koda. Nothing in Ajustes is exempt any more.
   const where = [];
   for (const f of ['settings.js', 'settings-view.js']) {
-    for (const lit of literals(fs.readFileSync(path.join(frontend, f), 'utf8'))) if (bad.test(lit) && !/^(agent_|abito:|settings|agents_)/.test(lit) && !CLIENT_NAMES.has(lit) && !(f === 'settings-view.js' && lit === PI_INSTALL_ADVICE)) where.push(`${f}: ${lit}`);
+    for (const lit of literals(fs.readFileSync(path.join(frontend, f), 'utf8'))) if (bad.test(lit) && !/^(agent_|abito:|settings|agents_)/.test(lit) && !CLIENT_NAMES.has(lit)) where.push(`${f}: ${lit}`);
   }
   const html = fs.readFileSync(path.join(frontend, 'index.html'), 'utf8');
   const sect = html.slice(html.indexOf('id="settings"'), html.indexOf('id="chat-live"'));
@@ -1249,104 +1248,11 @@ test('#380 theme wiring: one closed sender, no local paint, and a failed save ke
   assert.match(html, /<script defer src="theme\.js"><\/script>/);
 });
 
-// ---- #414: Ajustes → Modelos, grouped by CONNECTED provider ------------------------------
-test('#414 modelsTabView: one group per engine provider, connected ones with their models', () => {
-  const state = {
-    connection: 'connected',
-    providers: [
-      { id: 'anthropic', name: 'Anthropic', methods: ['oauth'], configured: true },
-      { id: 'openai', name: 'OpenAI', methods: ['oauth', 'api_key'], configured: false },
-      { id: 'nan', name: 'NaN', methods: ['api_key'], configured: false },
-    ],
-    accounts: [{ accountId: 'a1', provider: 'openai', configured: true }],
-    models: [
-      { provider: 'anthropic', id: 'claude-sonnet-4-5', name: 'Claude Sonnet 4.5', reasoning: true, contextWindow: 200000 },
-      { provider: 'anthropic', id: 'claude-opus-4-6', name: 'Claude Opus 4.6', reasoning: true, contextWindow: 200000 },
-      { provider: 'openai', id: 'gpt-5.2', name: 'GPT-5.2', reasoning: false, contextWindow: 128000 },
-      { provider: 'gone', id: 'x', name: 'X' }, // a model whose provider row disappeared is never shown
-    ],
-  };
-  const v = S.modelsTabView(state, { anthropic: ['claude-opus-4-6'] });
-  assert.equal(v.kind, 'ready');
-  assert.deepEqual(v.groups.map(g => [g.id, g.connected]), [['anthropic', true], ['openai', true], ['nan', false]], 'one group per provider, engine order');
-  const anthropic = v.groups[0];
-  assert.deepEqual(anthropic.models.map(m => [m.id, m.name, m.chosen]), [
-    ['claude-sonnet-4-5', 'Claude Sonnet 4.5', false],
-    ['claude-opus-4-6', 'Claude Opus 4.6', true],
-  ], 'the chosen one is marked, others not');
-  assert.equal(v.groups[1].models.length, 1, 'a connected provider via a configured account shows its models');
-  assert.equal(v.groups[1].models[0].id, 'gpt-5.2');
-  // disconnected: one-line hint, no models, never invented ones
-  const nan = v.groups[2];
-  assert.equal(nan.models, undefined);
-  assert.ok(nan.hint.includes('NaN') && nan.hint.includes('Conexiones'), nan.hint);
-  assert.ok(!JSON.stringify(v).includes('"x"'), 'a model of an unknown provider never leaks in');
-});
-
-test('T7.2 modelsTabView: «Guardado · sin probar» only where the provider\'s ONLY account is a locally saved key', () => {
-  const state = {
-    connection: 'connected',
-    providers: [
-      { id: 'anthropic', name: 'Anthropic', methods: ['api_key'], configured: false },
-      { id: 'openai', name: 'OpenAI', methods: ['oauth', 'api_key'], configured: true },
-      { id: 'both', name: 'Both', methods: ['api_key'], configured: false },
-    ],
-    accounts: [
-      { accountId: 'l1', provider: 'anthropic', local: true, configured: true },
-      { accountId: 'a1', provider: 'openai', configured: true },
-      { accountId: 'l2', provider: 'both', local: true, configured: true },
-      { accountId: 'a2', provider: 'both', configured: true },
-    ],
-    models: [
-      { provider: 'anthropic', id: 'c1', name: 'C1' }, { provider: 'openai', id: 'g1', name: 'G1' }, { provider: 'both', id: 'b1', name: 'B1' },
-    ],
-  };
-  const v = S.modelsTabView(state, {});
-  const by = id => v.groups.find(g => g.id === id);
-  assert.equal(by('anthropic').connected, true, 'a saved key lists its models');
-  assert.equal(by('anthropic').models[0].sub, 'Guardado · sin probar');
-  assert.equal(by('openai').models[0].sub, '', 'an engine account stays bare');
-  assert.equal(by('both').models[0].sub, '', 'a local key next to an engine account is not the ONLY account');
-});
-
-test('#414 modelsTabView: the chosen map arrives only from typed prefs and never marks unknown models', () => {
-  const state = { connection: 'connected', providers: [{ id: 'p', name: 'P', methods: ['api_key'], configured: true }], models: [{ provider: 'p', id: 'm1', name: 'M1' }] };
-  const v = S.modelsTabView(state, { p: ['other', 'm1'] });
-  assert.deepEqual(v.groups[0].models.map(m => m.chosen), [true]);
-  assert.equal(S.modelsTabView(state, null).groups[0].models[0].chosen, false, 'no prefs yet = nothing chosen');
-  assert.equal(S.modelsTabView(state, 'junk').groups[0].models[0].chosen, false, 'a hostile stored value reads as nothing chosen');
-});
-
-test('#414 modelsTabView: no engine or no models yet is honest', () => {
-  for (const connection of ['no_daemon', 'lost', 'refused', 'bad_session']) {
-    const v = S.modelsTabView({ connection }, {});
-    assert.equal(v.kind, 'no_engine', connection);
-    assert.ok(v.word && v.icon, connection);
-  }
-  const waiting = S.modelsTabView(null, {});
-  assert.equal(waiting.kind, 'connecting');
-  // connected, but the engine has not answered models_list yet: groups render, models empty
-  const v = S.modelsTabView({ connection: 'connected', providers: [{ id: 'p', name: 'P', methods: ['oauth'], configured: true }] }, {});
-  assert.equal(v.kind, 'ready');
-  assert.deepEqual(v.groups[0].models, []);
-});
-
-test('#414 chosenToggle: one toggle returns the next map; the payload the page sends carries the whole list', () => {
-  const next = S.chosenToggle({ anthropic: ['a1'] }, 'anthropic', 'a2');
-  assert.deepEqual(next.anthropic, ['a1', 'a2']);
-  assert.deepEqual(S.chosenToggle(next, 'anthropic', 'a1').anthropic, ['a2'], 'a second click removes it');
-  const fresh = S.chosenToggle({}, 'openai', 'gpt-5.2');
-  assert.deepEqual(fresh.openai, ['gpt-5.2']);
-  assert.ok(!Object.hasOwn(S.chosenToggle({ anthropic: ['a1'] }, 'anthropic', 'a1'), 'anthropic'), 'clearing the last model of a provider drops its key');
-  // the wire payload: exactly the closed action, provider and its whole list
-  const payload = S.chosenModelsPayload({ anthropic: ['a1', 'a2'] }, 'anthropic');
-  assert.deepEqual(payload, { action: 'set_chosen_models', provider: 'anthropic', models: ['a1', 'a2'] });
-  assert.deepEqual(S.chosenModelsPayload({}, 'anthropic').models, [], 'a cleared provider sends the empty list');
-});
 
 // #467 UI wiring: Claves section (secret_action). Presence only, closed key list, our own words for errors.
 test('claves: rows follow the closed key list, with OUR labels and presence only', () => {
-  assert.equal(S.KEY_IDS.length, 24);
+  assert.equal(S.KEY_IDS.length, 25);
+  assert.equal(S.keyRows({}).find(r => r.id === 'calendar-ics-url').label, 'Calendario (URL ICS privada)', 'K2-11: the private ICS URL is a keychain entry, presence only');
   assert.ok(S.KEY_IDS.includes('anthropic-api-key') && S.KEY_IDS.includes('elevenlabs-api-key'));
   const rows = S.keyRows({ 'anthropic-api-key': true, 'github-token': false });
   assert.deepEqual(rows.map(r => r.id), S.KEY_IDS);
@@ -1382,7 +1288,7 @@ console.log(`settings-view-check: ${passed} passed`);
 
 test('#408 rail: vertical tablist at the Settings size (Up/Down), wrapping row only as the 400 column fallback', () => {
   assert.equal(S.tabKeyTarget('pills', 'ArrowDown'), 'appearance');
-  assert.equal(S.tabKeyTarget('pills', 'ArrowUp'), 'models');
+  assert.equal(S.tabKeyTarget('pills', 'ArrowUp'), 'accounts');
   const src = fs.readFileSync(path.join(frontend, 'settings.js'), 'utf8');
   assert.match(src, /setAttribute\('aria-orientation', wide \? 'vertical' : 'horizontal'\)/);
   const css = fs.readFileSync(path.join(frontend, 'style.css'), 'utf8');
@@ -1552,7 +1458,6 @@ test('T7.2 controls: theme thumbnails and service actions keep a 44px hit area; 
   assert.match(rule('.int-actions button'), /min-width: 44px/);
   assert.match(rule('.int-actions button::after'), /inset: 6px/, 'service buttons: 44px element, 32px visual');
   assert.match(rule('.switch'), /height: 44px/);
-  assert.match(rule('.models-prov-model'), /min-height: 44px/);
 });
 
 // ---- #390 GD027: the manual restart of the island agent daemon (Ajustes → Conexiones) --------
@@ -1770,7 +1675,7 @@ test('R16 cancel plan: binds to the flow this row started; no flow yet means a l
 const HU15_HASH = 'a'.repeat(64);
 const HU15_SUMMARY = 'Adds the Abito hooks (PermissionRequest, Stop) to ~/.claude/settings.json. A backup is made first.';
 const direct = (agents, extra = {}) => ({ agentsRuntime: 'ok', directAgents: agents, directHooks: [], ...extra });
-test('HU-015 S2: engine down, Pi missing — Claude Code and Codex are still installable, and nothing says «Falta Pi»', () => {
+test('HU-015 S2: engine down, engine missing — Claude Code and Codex are still installable, and nothing says «Falta el motor de Koda»', () => {
   const st = { connection: 'no_daemon', last_error: { code: 'pi_missing', n: 1 }, ...direct([
     { id: 'claude-code', state: 'not_connected', backup: false, detail: null, plan_hash: HU15_HASH, summary: HU15_SUMMARY, reviewable: true },
     { id: 'codex', state: 'not_connected', backup: false, detail: null, plan_hash: 'b'.repeat(64), summary: HU15_SUMMARY, reviewable: true }]) };
@@ -1780,7 +1685,7 @@ test('HU-015 S2: engine down, Pi missing — Claude Code and Codex are still ins
   assert.equal(by['claude-code'].primary.label, 'Agregar hooks');
   assert.deepEqual(by['claude-code'].primary.command, { action: 'agent_connect', agentId: 'claude-code', plan_hash: HU15_HASH });
   assert.equal(by['codex'].primary.label, 'Agregar hooks');
-  assert.ok(!JSON.stringify(v).includes('Falta Pi') && !JSON.stringify(v).includes('Sin motor'));
+  assert.ok(!JSON.stringify(v).includes('Falta el motor de Koda') && !JSON.stringify(v).includes('Sin motor'));
 });
 test('HU-015 S1/S3: each row depends only on its own hooks; an uninstalled agent reads disabled with the install action', () => {
   const v = S.agentsView(direct([
@@ -1807,14 +1712,15 @@ test('HU-015: missing Node.js is said per row (the only runtime message), never 
   const v = S.agentsView({ connection: 'no_daemon', agentsRuntime: 'node_missing', directAgents: [], directHooks: [] });
   assert.equal(v.kind, 'ready');
   assert.ok(v.rows.length >= 6 && v.rows.every(r => r.word === 'Falta Node.js' && !r.primary && !r.secondary));
-  assert.ok(!/Falta Pi/.test(JSON.stringify(v))); // Pi's own NAME is now a valid independent row.
+  assert.ok(!/Falta el motor de Koda/.test(JSON.stringify(v))); // the engine-missing word never reaches a row (Pi's bare NAME is a valid independent row).
   const failed = S.agentsView({ agentsRuntime: 'failed' });
   assert.ok(failed.rows.every(r => r.word === 'No se pudo'));
 });
-test('HU-015: the existing engine path (no direct answer yet) is unchanged — the chat diagnostics still say «Falta Pi»', () => {
+test('HU-015: the existing engine path (no direct answer yet) is unchanged — the chat diagnostics say «Falta el motor de Koda» (K2-05: Koda\'s own engine, never «Falta Pi»)', () => {
   assert.equal(S.agentsView(state({ connection: 'no_daemon', agents: null })).kind, 'no_engine');
   const missing = S.connectionView({ connection: 'no_daemon', last_error: { code: 'pi_missing', n: 1 } });
-  assert.equal(missing.word, 'Falta Pi');
+  assert.equal(missing.word, 'Falta el motor de Koda');
+  assert.ok(!/Falta Pi|npm install/.test(JSON.stringify(missing)), JSON.stringify(missing));
 });
 test('HU-015: a direct retry without a shown plan only refreshes the preview', () => {
   const row = S.agentsView(direct([{ id: 'codex', state: 'error', detail: 'install_failed' }])).rows.find(r => r.id === 'codex');
@@ -1828,3 +1734,23 @@ test('HU-015: directOutcome reports only the host answer for THAT agent', () => 
   assert.match(S.directOutcome({ agentsRuntime: 'node_missing' }, 'codex', 'ok').say, /Node\.js/);
   assert.equal(S.directOutcome(null, 'codex', 'ok').ok, false);
 });
+
+// K2-05 boot order = Gentle Dot (ChatSurface: starting/restarting is a wait; the daemon answers first):
+// Ajustes says Koda is starting, never «Sin motor»; «Sin motor» stays for a daemon that is really absent.
+test('K2-05 boot order: a connected daemon whose engine starts or restarts reads «Arrancando…», a wait in Spanish', () => {
+  for (const engine of ['starting', 'restarting']) {
+    const v = S.connectionView({ connection: 'connected', engine });
+    assert.ok(v, engine);
+    assert.equal(v.starting, true, engine);
+    assert.equal(v.word, 'Arrancando…', engine);
+    assert.deepEqual([v.icon, v.tone], ['ring', 'live'], `${engine}: a wait, not an error`);
+    assert.equal(v.aria, 'Arrancando…: Koda está arrancando… abriendo tu conversación.');
+    assert.notEqual(v.word, 'Sin motor');
+    // the vendor Ajustes banner (hub/accounts.js) maps only connecting/no_daemon to a non-error look
+    assert.equal(v.kind, 'no_daemon', 'quiet «○» look in the vendor banner, never its red «✗»');
+  }
+  for (const engine of ['ready', 'stopped', null, undefined, 'nope']) assert.equal(S.connectionView({ connection: 'connected', engine }), null, String(engine));
+  assert.equal(S.connectionView({ connection: 'no_daemon' }).word, 'Sin motor', 'a REAL no_daemon still says so');
+  assert.equal(S.connectionView({ connection: 'no_daemon', engine: 'starting' }).word, 'Sin motor', 'only a connected daemon can report its engine');
+});
+console.log(`settings-view-check (K2-05 boot order): ${passed} passed`);

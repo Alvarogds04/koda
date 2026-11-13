@@ -38,7 +38,7 @@ impl Hands for AppHands {
             Effect::Music(op) => music_control(&self.app, op),
             Effect::TogglePill(id) => crate::settingshost::voice_prefs_command(&self.app, &PrefsCommand::ToggleDeclaredPill(id.clone())).is_some(),
             Effect::SetMainPill(id) => crate::settingshost::voice_prefs_command(&self.app, &PrefsCommand::SetMainPill(id.clone())).is_some(),
-            Effect::OpenUrl(url) => url.starts_with("https://") && spawn_detached("xdg-open", Some(url)),
+            Effect::OpenUrl(url) => url.starts_with("https://") && abito_island::opener::open_detached(abito_island::opener::Target::Web(url)).is_ok(),
             Effect::OpenApp(bin) => spawn_detached(bin, None),
             Effect::AskChat(text) => self.app.emit("voice-ask", json!({ "text": text })).is_ok(),
         }

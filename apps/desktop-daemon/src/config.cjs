@@ -11,7 +11,8 @@
  *
  * Schema (all optional):
  *   workspace      absolute existing directory (see validateWorkspace)
- *   command        executable name or absolute path, default "pi"
+ *   command        executable name or absolute path; default "gentle-shell" (T2:
+ *                  resolved by the runtime from Koda's bundled runtime, never PATH)
  *   thinking       default thinking level (profiles.cjs THINKING_LEVELS)
  *   profile        saved profile id activated at daemon start
  *   mcpConfigPath  absolute path of a private MCP source file (projectMcpConfig)
@@ -21,9 +22,12 @@
  *   connectorHostBin   ABSOLUTE normalized path of the abito-connector-host binary; NO default (unset => no host is spawned)
  *   hotkey         global show/hide combo, e.g. "Ctrl+Alt+Space" (validateHotkey); stored only, never captured here
  *   paused         global pause switch (#379): strict boolean, false when absent; stored only, restored at the next boot
- *   rotation       continuous conversation rotation (#386): object with optional subkeys
- *                  `enabled` (strict boolean, default FALSE: opt-in), `thresholdPercent` (50..100,
- *                  default 85) and `keepTurns` (1..100, default 12); unknown subkeys are rejected
+ *   rotation       continuous conversation rotation (K2-05 T3, Gentle Dot's form): object with
+ *                  optional subkeys `enabled` (strict boolean, default TRUE: rotation is on by
+ *                  default), `bytes` (1024..2147483647 session-file bytes, default 20 MB) and
+ *                  `compactions` (1..1000000, default 10); unknown subkeys are rejected; the env
+ *                  ABITO_ROTATE_BYTES / ABITO_ROTATE_COMPACTIONS overrides win over the file; the
+ *                  v0.1.0 #386 keys thresholdPercent/keepTurns are accepted and ignored
  *   transcription  K2-13 (S7, S18) how a Minikoda transcribes videos/audios (minikodas/transcribe-setting.cjs):
  *                  {mode: "local-parakeet"|"remote", language?, remote?: {accountId, model}};
  *                  default {mode: "local-parakeet", language: "es"}; an invalid stored value is a config error.
@@ -37,15 +41,30 @@
 const fs = require("node:fs");
 const path = require("node:path");
 
+const { DEFAULT_COMMAND } = require("./runtime.cjs");
 const { MEMORY_PROJECT, assertSecurePath, islandPaths, writePrivateFile } = require("./isolation.cjs");
 const { THINKING_LEVELS, isStrictProfileId } = require("./profiles.cjs");
 const { TRANSCRIPTION_DEFAULT, validateTranscriptionSetting, migrateTranscriptionSetting } = require("./minikodas/transcribe-setting.cjs");
 // K2-01b: on Windows private files are judged by the verified HU-047 helper (null off Windows; see readPrivateJson).
 const winfs = require("./win-fs.cjs");
 
+/** K2-05 T3: a positive safe integer from the env, or undefined when it is absent or invalid. */
+const intFromEnv = (value) => {
+	if (typeof value !== "string" || !/^[0-9]+$/.test(value)) return undefined;
+	const number = Number(value);
+	return Number.isSafeInteger(number) && number > 0 ? number : undefined;
+};
+
+/** F7: the same 1024-byte minimum the rotation enforces for the env bytes override. */
+const MIN_ROTATE_BYTES = 1024;
+
+/** The v0.1.0 #386 rotation keys (B1): accepted and IGNORED, never a config error. */
+const OBSOLETE_ROTATION_KEYS = ["thresholdPercent", "keepTurns"];
+
 const WORKSPACE_ENV = "ABITO_WORKSPACE";
 const ALLOWED_KEYS = ["workspace", "command", "thinking", "profile", "mcpConfigPath", "hotkey", "paused", "connectorsCommand", "connectorsDir", "hookInstallerBin", "connectorHostBin", "rotation", "transcription"];
-const DEFAULT_COMMAND = "pi";
+// T2: the default engine is Koda's bundled Gentle Shell (resolved by the
+// runtime from the bundled runtime folder); re-exported from runtime.cjs.
 const MAX_CONFIG_BYTES = 16 * 1024;
 const MAX_MCP_BYTES = 64 * 1024;
 
@@ -254,23 +273,35 @@ function readPrivateJson(file, field, maxBytes) {
 	return value;
 }
 
-/** #386 rotation defaults: disabled until the user opts in. */
-const ROTATION_DEFAULTS = { enabled: false, thresholdPercent: 85, keepTurns: 12 };
+/** K2-05 T3 defaults: rotation ON, Gentle Dot's limits (20 MB per session file or 10 compactions). */
+const ROTATION_DEFAULTS = { enabled: true, bytes: 20 * 1024 * 1024, compactions: 10 };
 
 /**
- * #386 `rotation`: strict object with known optional subkeys only — `enabled`
- * (strict boolean), `thresholdPercent` (50..100) and `keepTurns` (1..100).
- * Unknown or mistyped subkeys are a config error, never a silent flip.
+ * K2-05 T3 `rotation`: strict object with known optional subkeys only —
+ * `enabled` (strict boolean), `bytes` (1024..2147483647) and `compactions`
+ * (1..1000000). Unknown or mistyped subkeys are a config error, never a silent
+ * flip. EXCEPTION (B1): the v0.1.0 #386 keys `thresholdPercent`/`keepTurns` are
+ * accepted and IGNORED — their old types/ranges are not validated and they can
+ * never fail the daemon; a one-line notice says they are obsolete. Any OTHER
+ * unknown subkey keeps the strict refusal.
  */
-function validateRotation(raw) {
+function validateRotation(raw, log = () => {}) {
 	if (raw === null || typeof raw !== "object" || Array.isArray(raw)) throw new ConfigError("rotation");
-	for (const key of Object.keys(raw)) if (key !== "enabled" && key !== "thresholdPercent" && key !== "keepTurns") throw new ConfigError("rotation");
+	const obsolete = Object.keys(raw).filter((key) => OBSOLETE_ROTATION_KEYS.includes(key));
+	for (const key of Object.keys(raw)) {
+		if (key === "enabled" || key === "bytes" || key === "compactions" || obsolete.includes(key)) continue;
+		throw new ConfigError("rotation");
+	}
+	if (obsolete.length > 0) {
+		// Logged once per load; the file itself is never rewritten behind the user's back.
+		log(`config rotation: ${obsolete.join(", ")} ${obsolete.length === 1 ? "is" : "are"} obsolete (the visible-summary rotation is gone) and ignored; the chat rotates by size and compaction count`);
+	}
 	const out = {};
 	if (raw.enabled !== undefined) {
 		if (typeof raw.enabled !== "boolean") throw new ConfigError("rotation");
 		out.enabled = raw.enabled;
 	}
-	for (const [key, min, max] of [["thresholdPercent", 50, 100], ["keepTurns", 1, 100]]) {
+	for (const [key, min, max] of [["bytes", 1024, 2_147_483_647], ["compactions", 1, 1_000_000]]) {
 		if (raw[key] === undefined) continue;
 		if (!Number.isSafeInteger(raw[key]) || raw[key] < min || raw[key] > max) throw new ConfigError("rotation");
 		out[key] = raw[key];
@@ -300,7 +331,7 @@ function migrateTranscription(raw) {
 }
 
 /** The raw, validated file content (no defaults, no env). */
-function readConfigFile(islandRoot) {
+function readConfigFile(islandRoot, log = () => {}) {
 	// Same parent-chain policy as writes: no symlinked/world-writable/foreign-owned island path.
 	try {
 		assertSecurePath(path.dirname(islandPaths(islandRoot).configFile));
@@ -333,7 +364,7 @@ function readConfigFile(islandRoot) {
 		if (typeof raw.paused !== "boolean") throw new ConfigError("paused");
 		out.paused = raw.paused;
 	}
-	if (raw.rotation !== undefined) out.rotation = validateRotation(raw.rotation);
+	if (raw.rotation !== undefined) out.rotation = validateRotation(raw.rotation, log);
 	if (raw.transcription !== undefined) out.transcription = migrateTranscription(raw.transcription);
 	if (raw.connectorHostBin !== undefined) out.connectorHostBin = validateConnectorHostBin(raw.connectorHostBin);
 	if (raw.hotkey !== undefined) {
@@ -350,7 +381,8 @@ function readConfigFile(islandRoot) {
 /** Effective config: file values, defaults, and the ABITO_WORKSPACE override (which wins). */
 function loadConfig(islandRoot, options = {}) {
 	const env = options.env ?? process.env;
-	const file = readConfigFile(islandRoot);
+	const file = readConfigFile(islandRoot, options.log ?? (() => {}));
+	const fileRotation = file.rotation ?? {};
 	const cfg = {
 		command: file.command ?? DEFAULT_COMMAND,
 		thinking: file.thinking,
@@ -362,7 +394,18 @@ function loadConfig(islandRoot, options = {}) {
 		hookInstallerBin: file.hookInstallerBin,
 		connectorHostBin: file.connectorHostBin,
 		connectorsDir: file.connectorsDir ?? path.join(islandPaths(islandRoot).root, "connectors"),
-		rotation: { ...ROTATION_DEFAULTS, ...(file.rotation ?? {}) },
+		rotation: {
+			enabled: fileRotation.enabled ?? ROTATION_DEFAULTS.enabled,
+			// The ABITO_ROTATE_* env overrides win over the file (rotationLimits); an
+			// invalid value never wins, like ABITO_WORKSPACE never flips silently.
+			bytes: (() => {
+			// F7: the env override keeps the same 1024-byte minimum as the config;
+			// a smaller or non-decimal value never wins (like ABITO_WORKSPACE).
+			const fromEnv = intFromEnv(env.ABITO_ROTATE_BYTES);
+			return (fromEnv !== undefined && fromEnv >= MIN_ROTATE_BYTES ? fromEnv : undefined) ?? fileRotation.bytes ?? ROTATION_DEFAULTS.bytes;
+		})(),
+			compactions: intFromEnv(env.ABITO_ROTATE_COMPACTIONS) ?? fileRotation.compactions ?? ROTATION_DEFAULTS.compactions,
+		},
 		transcription: file.transcription ?? { ...TRANSCRIPTION_DEFAULT },
 		...(file.hotkeyInvalid ? { hotkeyInvalid: true } : {}),
 		workspace: islandPaths(islandRoot).workspace,
@@ -525,9 +568,9 @@ function projectMcpConfig(file) {
 
 /**
  * Writes the projection to `<island>/agent/mcp.json` — the user-level MCP file
- * of the engine's private pi agent dir (`PI_CODING_AGENT_DIR`), which pi reads
- * natively (see docs/mcp.md). With no source it writes an empty projection so
- * a stale one never lingers.
+ * of the engine's own home (the directory passed to `--home`, T2), which the
+ * engine reads natively (see docs/mcp.md). With no source it writes an empty
+ * projection so a stale one never lingers.
  */
 function writeMcpProjection(islandRoot, sourceFile) {
 	const projection = sourceFile ? projectMcpConfig(sourceFile) : { mcpServers: {} };

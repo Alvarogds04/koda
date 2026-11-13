@@ -9,3 +9,4 @@ frontend/clay-engine.js -text
 # K2-02: hash-pinned runtime inputs (licence texts, the Node archive pins) are byte-identical on every OS checkout.
 packaging/runtime/licenses/*.txt -text
 packaging/runtime/node.sha256 -text
+packaging/runtime/engram.sha256 -text

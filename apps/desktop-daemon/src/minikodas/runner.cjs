@@ -7,13 +7,14 @@
  * root (`<island>/minikodas/engines/<id>`: its own HOME, agent dir, sessions, tmp and workspace; never the chat
  * engine's root, never shared between Minikodas). The engine command is injectable:
  *
- *   engine.command      default "pi" (release/0.2 still spawns plain Pi; tests inject node + a fake agent)
+ *   engine.command      default "pi" here; the daemon passes the chat's command (release/0.2 defaults to Koda's
+ *                       bundled Gentle Shell). Tests inject node + a fake agent.
  *   engine.commandArgs  argv prefix (e.g. [cli.js] or the fake agent fixture)
  *
  * Reduced profile, always: `-ne -e <kit-extension.js> --no-mcp --no-skills --no-prompt-templates --no-themes
  * --no-context-files --tools <kit> --model <provider>/<id>` plus GENTLE_PI_AGENTS=0 in the child env.
- * When K2-05 lands Gentle Shell spawning in release/0.2, the Gentle Shell engine plugs in through the same
- * seam: command "gentle-shell" (resolved like the chat's), same flags, same env (see README «Minikodas»).
+ * K2-05 now spawns Gentle Shell in release/0.2 and the daemon hands the chat's command to every Minikoda, so
+ * this seam carries "gentle-shell" (resolved like the chat's): same flags, same env (see README «Minikodas»).
  *
  * Closed kit, two layers: `--tools` = kit (the model is only shown the kit) and the `tool_call` guard in the
  * kit extension (anything outside MINIKODA_KIT is blocked). The prompt is Koda's fixed base rules plus the

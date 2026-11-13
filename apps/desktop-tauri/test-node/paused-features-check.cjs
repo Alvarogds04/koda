@@ -14,12 +14,13 @@ const test = (_n, fn) => { fn(); passed += 1; };
 
 test('one frontend list, the same as Ajustes and Rust', () => {
   assert.equal(P.LABEL, 'En pausa · próxima versión');
-  for (const f of ['dictation', 'voice', 'integrations', 'spotify', 'phone']) assert.equal(P.paused(f), true, f);
-  for (const f of ['chat', 'agents', 'general', 'shortcuts', 'privacy', 'sessions', 'notifications']) assert.equal(P.paused(f), false, f);
+  // K2 T1 (S2, S3): `phone` is out of the pause — Ajustes › Teléfono is live and the link still starts OFF there.
+  for (const f of ['dictation', 'voice', 'integrations', 'spotify']) assert.equal(P.paused(f), true, f);
+  for (const f of ['chat', 'agents', 'general', 'shortcuts', 'privacy', 'sessions', 'notifications', 'phone']) assert.equal(P.paused(f), false, f);
   const rust = fs.readFileSync(path.join(__dirname, '..', 'src', 'paused.rs'), 'utf8');
-  assert.match(rust, /Feature::Dictation \| Feature::Voice \| Feature::Integrations \| Feature::Spotify \| Feature::Phone => true/);
+  assert.match(rust, /Feature::Dictation \| Feature::Voice \| Feature::Integrations \| Feature::Spotify => true,\s*Feature::Phone => false/);
   const shell = fs.readFileSync(path.join(frontend, 'vendor', 'coucou', 'hub', 'shell.ts'), 'utf8');
-  assert.match(shell, /ACTIVE_PAGES: readonly string\[\] = Object\.freeze\(\["general", "agents", "chat", "shortcuts", "privacy"\]\)/, 'Ajustes keeps exactly the active pages');
+  assert.match(shell, /ACTIVE_PAGES: readonly string\[\] = Object\.freeze\(\["general", "agents", "chat", "phone", "shortcuts", "privacy"\]\)/, 'Ajustes keeps exactly the active pages');
 });
 test('Spotify: no card while paused, even with the pill declared on Linux; the old rule is kept for the next version', () => {
   const prefs = { mainPill: 'integration_spotify' };

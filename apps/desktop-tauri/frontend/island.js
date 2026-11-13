@@ -393,7 +393,7 @@
     // A collapse always leaves the chat view (Rust resets it too).
     if (t === 0) {
       noticeLane = null; delete capsule.dataset.noticeView; moveView(0);
-      // a collapse leaves the chat view: panels (models/settings) close with it, or they pin the dot's character out of place
+      // a collapse leaves the chat view: the settings panel closes with it, or it pins the dot's character out of place
       document.dispatchEvent(new CustomEvent('island:view', { detail: 'overview' }));
     }
     if (motionReduced() || Math.abs(t - p) < 1e-9) {
@@ -668,7 +668,6 @@
       !(active.tagName === 'INPUT' && NON_TEXT_INPUT.has(active.type)) && !(active.closest && active.closest('[inert], [hidden]')));
     const field = $('chat-input');
     const permission = $('permission');
-    const models = $('models');
     return {
       state: snap ? snap.state : 'unknown',
       view: capsule.dataset.view || 'unknown',
@@ -685,7 +684,6 @@
       composing: composingIME || editing,
       draft: !!(field && field.value),
       settings: capsule.dataset.settings === 'open',
-      models: !!(models && models.dataset.open === 'true'),
     };
   }
   // A manual pin is local to this expansion; protected cards have independent
@@ -982,7 +980,7 @@
     if (!snapshot || !noticesEl || !O) return;
     const notices = Array.isArray(snapshot.notices) ? snapshot.notices : [];
     announceNotice(notices);
-    soundCue('observeNotices', notices); // #313: only a NEW top notice sounds, never the ones already there at start-up
+    soundCue('observeNotices', notices); // #313/K2-07: a NEW notice sounds (finished turn: snd.finish), never the ones already there at start-up
     const arrivals = toastGate ? toastGate.arrivals(notices) : []; // the toast's own baseline gate: boot/retained rows are not arrivals
     const fresh = finishedCycle ? finishedCycle.observe(notices, finishedAllowed()) : revealGate?.notice(notices);
     // isla-cualquier-lado S2: the island is never hidden, so it always shows the new notice itself (its Avisos strip), attention
@@ -1431,7 +1429,9 @@
     paintCompactFlag();
     const card = current && current.card;
     const valid = validCard(card);
-    soundCue('observeCard', valid && card.state === 'pending' && typeof card.id === 'string' ? card.id : null); // #313: a card BECOMING pending
+    // #313/K2-07: a permission card ARRIVING plays snd.approval. The host card carries no id (card.rs project_card: four keys), so a
+    // still-waiting card (not expired) is keyed by its operation + expiry; deciding or folding it keeps the key, expiry clears it.
+    soundCue('observeCard', valid && Date.now() < Date.parse(card.expires_at) ? `${card.operation}\n${card.expires_at}` : null);
     const permission = $('permission');
     if (!permission || !O) return;
     const visible = valid && !noticeLane;
@@ -1691,18 +1691,6 @@
       });
     }
   }).catch(() => {});
-  // Filter the real model list only. The existing controller remains the sole
-  // owner of refresh, readiness, selection and host calls; no sample accounts.
-  const search = $('models-search'), modelList = $('models-list');
-  function filterModels() {
-    if (!search || !modelList) return;
-    const needle = String(search.value || '').trim().toLocaleLowerCase();
-    for (const row of modelList.querySelectorAll('li')) row.hidden = !!needle && !String(row.textContent || '').toLocaleLowerCase().includes(needle);
-  }
-  if (search && modelList) {
-    search.addEventListener('input', filterModels);
-    new MutationObserver(filterModels).observe(modelList, { childList: true });
-  }
 
   // #347 idle clock: real interaction, queued turns and focused/drafted composer keep Abito awake.
   let characterTurnBusy = false;

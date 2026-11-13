@@ -19,11 +19,14 @@ use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 /// #390 GD027: how long a `restart` waits for the fresh daemon to answer `ready`.
-/// The engine's own boot timeout is 60 s (desktop-daemon/src/runtime.cjs), so this
-/// bound lets the daemon reach its own verdict first; past it the answer is honestly
-/// `ready:false`, never a success. Polling is cheap (a missing session.json fails in
-/// one stat) and bounded — no unbounded wait anywhere.
-const RESTART_WAIT: Duration = Duration::from_secs(62);
+/// K2-05 boot order = Gentle Dot (daemon.ts:470-481): the daemon now publishes its session and
+/// answers `ready` as soon as its server listens — BEFORE its engine starts (the engine's own
+/// boot, up to minutes while it reopens a long conversation, is reported live as
+/// `starting`/`restarting`). So this bound covers only the daemon's pre-listen work (private
+/// memory probe, the optional connector host's 10 s start bound) and is Gentle Dot's
+/// DAEMON_START_TIMEOUT (shell.rs:52, 20 s); past it the answer is honestly `ready:false`, never a
+/// success. Polling is cheap (a missing session.json fails in one stat) and bounded.
+const RESTART_WAIT: Duration = Duration::from_secs(20);
 const RESTART_POLL: Duration = Duration::from_millis(200);
 
 pub struct SettingsHost {
@@ -159,7 +162,6 @@ fn view_prefs(p: &Prefs) -> Value {
         "mainPill": p.main_pill(), "declaredPills": p.declared_pills(),
         "pillColors": p.pill_colors,
         "theme": p.theme().as_str(),
-        "chosenModels": p.chosen_models,
         "autoCloseSeconds": p.auto_close_seconds(), "openOnHover": p.open_on_hover(),
         "customBlobs": p.custom_blobs_view(),
         "islandAgents": p.island_agents_view(),
@@ -167,6 +169,7 @@ fn view_prefs(p: &Prefs) -> Value {
         "monitor": p.monitor,
         "showPlanInNotch": p.show_plan_in_notch(),
         "showCodexPlanInNotch": p.show_codex_plan_in_notch(),
+        "phoneUsage": p.phone_usage(),
         "windowContext": p.window_context(),
         "liveContext": p.live_context(),
         "windowContextAvailable": context_extension_available(), "windowContextNote": context_title_note(), "windowContextNative": cfg!(not(target_os = "linux")),
@@ -292,6 +295,33 @@ pub fn save_settings_window_size(app: &AppHandle, w: u32, h: u32) -> bool {
     .is_ok()
 }
 
+/// K2-10 T4 (S5): the last visit of the mail card, ms since the epoch (0: never). Read from the
+/// in-memory prefs under the same lock every other preferences writer takes.
+pub fn gmail_last_seen_ms(app: &AppHandle) -> u64 {
+    app.state::<AppState>()
+        .settings
+        .prefs
+        .lock()
+        .expect("prefs lock")
+        .gmail_last_seen_ms()
+}
+
+/// K2-10 T4 (S5): remember a later visit through the SAME `prefs::transact` gate, file and atomic
+/// writer as every other preference, so the mark never races a settings change. The mark is
+/// monotonic (`prefs::apply` keeps the later of the two), never comes from the page and is never
+/// published in the settings view. `false`: it could not be saved and the stored one stands.
+pub fn remember_gmail_last_seen(app: &AppHandle, at_ms: u64) -> bool {
+    let state = app.state::<AppState>();
+    prefs::transact(
+        &state.settings.prefs_serial,
+        &state.settings.prefs,
+        &prefs::Command::SetGmailLastSeen(at_ms),
+        |p| persist_prefs(app, p),
+        |_| {},
+    )
+    .is_ok()
+}
+
 /// #442 T7.4: a deleted specialist leaves the island order. Rust-internal (never a wire
 /// command); a no-op when the id is not in the stored order, so it never writes needlessly.
 pub fn prune_island_agent(app: &AppHandle, id: &str) {
@@ -391,6 +421,23 @@ pub async fn prefs_action(
     Ok(view_prefs(&next))
 }
 
+/// The ONE place an `AgentConn` is created: the panel's first use, `daemon_action status`, and the fresh client
+/// after a restart all pass through here, so every connection carries the same two callbacks — the Ajustes emitter
+/// and the phone link's session feed (S5/D5: the phone hangs off this connection, never a second one).
+///
+/// The view is handed in on purpose: a callback fires while the caller holds the agent slot, so it must never lock
+/// it again (it did, once, and the first open of the panel hung forever).
+pub(crate) fn agent_conn(handle: &AppHandle) -> AgentConn {
+    let emitter = handle.clone();
+    #[cfg(target_os = "linux")]
+    let phone = handle.clone();
+    AgentConn::new(move |view: Value| {
+        #[cfg(target_os = "linux")]
+        crate::phonehost::publish_sessions(&phone, &view);
+        let _ = emitter.emit("agent:state", view);
+    })
+}
+
 /// The island agent: `view` (connects on first use), and the closed command set of
 /// `agentclient::parse_ui_command`. Abito account commands are committed locally before
 /// any daemon connection; snapshots expose credential presence only.
@@ -429,14 +476,8 @@ pub async fn agent_action(
             return Ok(abito_island::agents_direct::perform(&op));
         }
         let mut guard = state.settings.agent.lock().expect("agent lock");
-        let conn = guard.get_or_insert_with(|| {
-            let emitter = handle.clone();
-            // The view is handed in: this callback fires while `agent_action` holds the slot, so it must
-            // not lock it again (it did, once, and the first open of the panel hung forever).
-            AgentConn::new(move |view| {
-                let _ = emitter.emit("agent:state", view);
-            })
-        });
+        // The one constructor: this view also feeds the phone link, which hangs off this same connection (S5/D5).
+        let conn = guard.get_or_insert_with(|| agent_conn(&handle));
         let is_view_or_refresh = payload
             .get("action")
             .and_then(Value::as_str)
@@ -526,12 +567,7 @@ pub(crate) fn daemon_connect(
     watch: Option<&abito_island::daemonhost::HostSlot>,
 ) -> (String, bool) {
     let mut guard = state.settings.agent.lock().expect("agent lock");
-    let emitter = handle.clone();
-    let conn = guard.get_or_insert_with(|| {
-        AgentConn::new(move |view| {
-            let _ = emitter.emit("agent:state", view);
-        })
-    });
+    let conn = guard.get_or_insert_with(|| agent_conn(handle));
     let connected =
         |c: &AgentConn| c.view().get("connection").and_then(Value::as_str) == Some("connected");
     let deadline = wait.map(|w| Instant::now() + w);
@@ -643,6 +679,9 @@ pub async fn daemon_action(
         let root = island_root(std::env::var("ABITO_ISLAND_DIR").ok().as_deref(), std::env::var("HOME").ok().as_deref())
             .ok_or_else(|| err("no_island_root"))?;
         if action == "restart" {
+            // K2-05 (L51, copy Gentle Dot): like its tray «Restart assistant» (shell.rs:743-745 →
+            // restart_daemon), «Reiniciar» always restarts, even while the engine is starting; the
+            // saved conversation is safe because a failed or cut reopen never writes state.json.
             // The old client (and its reader) go BEFORE its daemon; the fresh one below
             // starts from `no_daemon`, never from a stale `connected`.
             let old = state.settings.agent.lock().expect("agent lock").take();
@@ -747,6 +786,12 @@ mod settings_view_tests {
         }
     }
 
+    /// K2-05 boot order: the restart wait is Gentle Dot's DAEMON_START_TIMEOUT (shell.rs:52).
+    #[test]
+    fn the_restart_wait_is_gentle_dots_daemon_start_timeout() {
+        assert_eq!(super::RESTART_WAIT, std::time::Duration::from_secs(20), "Gentle Dot's DAEMON_START_TIMEOUT");
+    }
+
     /// #390 fix: the restart answer carries exactly its four keys — no token, pid or path.
     #[test]
     fn restart_response_never_carries_a_token_pid_or_path() {
@@ -765,33 +810,48 @@ mod settings_view_tests {
         }
     }
 
-    /// #414: the chosen models of the connected providers reach the WebView only as the
-    /// validated typed pref; nothing chosen projects as null, like every optional field.
+    /// L72: the per-provider model allowlist pref was removed; the projection carries no
+    /// `chosenModels` key at all, and the removed command is refused with the same bridge
+    /// code as any unknown action — an old file that still has the key projects and saves clean.
     #[test]
-    fn f414_the_webview_projection_carries_the_chosen_models() {
+    fn l72_the_webview_projection_carries_no_chosen_models_key() {
         use abito_island::prefs::{parse_command, update, Prefs};
-        let prefs = Prefs::from_text(Some(
-            r#"{"v":1,"chosen_models":{"anthropic":["claude-sonnet-4-5"]}}"#,
+        let legacy = Prefs::from_text(Some(
+            r#"{"v":1,"sound":false,"chosen_models":{"anthropic":["claude-x"]}}"#,
         ));
-        let view = view_prefs(&prefs);
-        assert_eq!(
-            view["chosenModels"],
-            json!({"anthropic":["claude-sonnet-4-5"]})
+        let view = view_prefs(&legacy);
+        assert!(
+            view.get("chosenModels").is_none(),
+            "the projection carries no chosenModels key: {view}"
         );
-        assert_eq!(
-            view_prefs(&Prefs::default())["chosenModels"],
-            json!(null),
-            "nothing chosen is null, like the other optional fields"
+        assert!(
+            view_prefs(&Prefs::default()).get("chosenModels").is_none(),
+            "the defaults carry no key either"
         );
-        // a round trip through the closed command keeps the projection
-        let cmd = parse_command(
-            &json!({"action":"set_chosen_models","provider":"openai","models":["gpt-5.2"]}),
+        assert_eq!(view["sound"], json!(false), "the other prefs still project");
+        // The removed action never reaches a transaction: the same refusal as any unknown one.
+        let refused = parse_command(
+            &json!({"action":"set_chosen_models","provider":"anthropic","models":["claude-x"]}),
+        )
+        .map_err(|_| super::err("invalid_schema"))
+        .unwrap_err();
+        let unknown = parse_command(&json!({"action":"choose_models"}))
+            .map_err(|_| super::err("invalid_schema"))
+            .unwrap_err();
+        assert_eq!(refused.code, unknown.code, "exactly the unknown-command refusal");
+        assert_eq!(refused.code, "invalid_schema");
+        // A file that sourced the old key still takes an unrelated command, dropping the key.
+        let next = update(
+            &legacy,
+            &parse_command(&json!({"action":"sound_on"})).unwrap(),
+            |_| true,
         )
         .unwrap();
-        let next = update(&prefs, &cmd, |_| true).unwrap();
-        assert_eq!(
-            view_prefs(&next)["chosenModels"],
-            json!({"anthropic":["claude-sonnet-4-5"],"openai":["gpt-5.2"]})
+        assert!(next.to_text().contains(r#""sound":true"#));
+        assert!(
+            !next.to_text().contains("chosen_models"),
+            "the next save drops the key: {}",
+            next.to_text()
         );
     }
 
@@ -826,7 +886,6 @@ mod settings_view_tests {
             json!(true),
             "sound is on by default: a file with no `sound` key projects the default"
         );
-        assert_eq!(view["chosenModels"], json!(null));
     }
 
     /// #455: effective placement is always the window, without migrating stored keys.

@@ -74,7 +74,6 @@
   <script defer src="chat-view.js"></script>
   <script defer src="chat-cards.js"></script>
   <script defer src="chat.js"></script>
-  <script defer src="models.js"></script>
   <!-- #306: settings panel (providers, connectors, general). -->
   <script defer src="specialists-view.js"></script>
   <script defer src="pill-settings.js"></script>
@@ -332,44 +331,25 @@
           <button id="chat-back" class="icon-btn" type="button" aria-label="Volver"><span class="ico" data-icon="arrow-left"></span></button>
         </header>
         <p id="chat-history-warning" role="status" hidden></p>
-        <div id="conversations" role="dialog" aria-label="Conversaciones guardadas" hidden inert>
-          <div id="conversations-bar"><h2>Conversaciones</h2><button id="conversations-close" class="icon-btn" type="button" aria-label="Volver al chat"><span class="ico" data-icon="cross"></span></button></div>
-          <p id="conversations-note" role="status"></p>
-          <h3 id="specialists-title">Hablar con…</h3>
-          <ul id="specialists-list" aria-labelledby="specialists-title"></ul>
-          <ul id="conversations-list" aria-label="Conversaciones guardadas"></ul>
-        </div>
         <div id="chat-body">
           <div id="chat-drop" hidden aria-hidden="true"><strong>Soltá para adjuntar</strong><span>Imágenes y texto</span></div>
-          <div id="chat-history-controls" role="group" aria-label="Conversaciones">
-            <button id="chat-create" class="icon-btn" type="button" aria-label="Nueva conversación (Ctrl+N)" title="Nueva conversación (Ctrl+N)"><span class="ico" data-icon="plus"></span></button>
-            <button id="chat-conversations" class="icon-btn" type="button" aria-label="Conversaciones guardadas" aria-expanded="false" aria-controls="conversations"><span class="ico" data-icon="clock"></span></button>
+          <!-- K2-05 T4 U4: ONE continuous chat (L3/L4/L11): no conversation list, no «new». Earlier turns load by
+               scrolling to the top or with «Cargar anteriores» (shown only while older turns exist). -->
+          <div id="chat-history-controls" role="group" aria-label="Historial">
+            <button id="chat-load-earlier" type="button" hidden aria-controls="chat-log">Cargar anteriores</button>
             <span id="chat-history-label">Conversación nueva</span>
           </div>
           <ol id="chat-log" tabindex="0" aria-label="Historial de la conversación"></ol>
-          <button id="chat-new" type="button" hidden aria-label="Respuesta nueva"><span class="ico" data-icon="arrow-down"></span><span class="dot"></span></button>
-          <!-- F024: the model row above the composer — the LOCAL model of the NEXT turn
-               (chat:state.target, already resolved by Rust) and its picker. The picker reads
-               the SAME closed `models_action` set as Ajustes → Modelos (list/select): it can
-               never name an endpoint, a key, an account or a provider (S5). Plain text only. -->
-          <div id="chat-model-row">
-            <button id="chat-model-btn" type="button" disabled aria-expanded="false" aria-controls="chat-model-picker">
-              <span class="model-dot" aria-hidden="true"></span>
-              <!-- S3 (04 chat 2): with no model yet the row says so instead of showing an empty name at .55. chat.js
-                   overwrites it with the target alias as soon as the first chat:state arrives. -->
-              <span class="word" id="chat-model-name">Sin modelo local</span>
-              <span class="model-caret" aria-hidden="true"></span>
-            </button>
-            <div id="chat-model-picker" role="group" aria-label="Modelos locales" hidden inert>
-              <p id="chat-model-note" class="picker-note"></p>
-            </div>
-          </div>
+          <button id="chat-new" type="button" hidden aria-label="Ir al final" title="Ir al final"><span class="ico" data-icon="arrow-down"></span><span class="dot"></span></button>
+          <!-- K2-05 U5c: which model the engine answers with — read-only text (chat:state.engine_model), hidden while
+               unknown. No button, no picker: the engine owns the model. -->
+          <p id="chat-model-line" hidden></p>
           <form id="chat-composer" novalidate>
             <label for="chat-input" class="sr-only">Mensaje para Koda</label>
             <textarea id="chat-input" rows="1" maxlength="8000" spellcheck="true"
               aria-describedby="chat-help chat-problem" placeholder="Escribí…"></textarea>
             <span id="chat-draft-word" class="chip" data-tone="red" hidden></span>
-            <span id="chat-help" class="sr-only">Enter envía. Mayúsculas más Enter agrega una línea. Ctrl+N crea una conversación sin borrar el historial. Escape sale del campo; otro Escape pliega la isla.</span>
+            <span id="chat-help" class="sr-only">Enter envía. Mayúsculas más Enter agrega una línea. Escape sale del campo; otro Escape pliega la isla.</span>
             <button id="chat-cancel" class="round" type="button" hidden aria-label="Cancelar"><span class="ico" data-icon="square"></span></button>
             <button id="chat-mic" class="round" type="button" hidden aria-label="Dictar con el micrófono"><span class="ico" data-icon="mic"></span></button>
             <button id="chat-send" class="round" type="submit" disabled aria-label="Enviar"><span class="ico" data-icon="arrow-up"></span></button>
@@ -402,22 +382,6 @@
             <section id="integrations-n8n" hidden></section>
             <section id="integrations-calendar" hidden></section>
           </div><!-- /connections-more -->
-          <!-- U2: self-hosted model choice — an internal panel of the same
-               island (replaces the transcript while open). Local only, no
-               keys; listed is never shown as ready. -->
-          <div id="models" inert role="tabpanel" aria-labelledby="settings-tab-models" aria-label="Modelo local">
-            <!-- #309: the buttons come first so wrapping pushes the meters to a second row, never a button out of the island -->
-            <div id="models-bar">
-              <span id="models-count" class="chip" role="img"><span class="ico" data-icon="chip"></span><span class="word" id="models-count-word"></span></span>
-              <button id="models-info" class="icon-btn" type="button" aria-label="Ver detalle de los modelos" aria-expanded="false" aria-controls="models-note"><span class="ico" data-icon="info"></span></button>
-              <button id="models-refresh" class="icon-btn" type="button" aria-label="Actualizar modelos locales"><span class="ico" data-icon="refresh"></span></button>
-              <ul id="models-meters" aria-label="Recursos de esta máquina"></ul>
-            </div>
-            <p id="models-note" class="sr-only"></p>
-            <label class="models-search-field" for="models-search"><span class="sr-only">Buscar modelos locales</span><input id="models-search" type="search" placeholder="Buscar modelos" autocomplete="off"></label>
-            <ul id="models-list" aria-label="Modelos locales"></ul>
-            <p id="models-resources" class="sr-only"></p>
-          </div>
           <p id="settings-live" class="sr-only" role="status" aria-live="polite"></p>
         </div>
         <p id="chat-live" class="sr-only" role="status" aria-live="polite"></p>

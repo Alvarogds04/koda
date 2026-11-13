@@ -13,7 +13,7 @@ const { spawn, spawnSync } = require("node:child_process");
 const CLI = path.join(__dirname, "..", "src", "cli.cjs");
 const FAKE = path.join(__dirname, "fixtures", "fake-agent.cjs");
 const { assertMode } = require("./platform-env.cjs");
-const { pidState, procStartTicks } = require("../src/daemon.cjs");
+const { classifySession, pidState, procStartTicks } = require("../src/daemon.cjs");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const tempDirs = new Set();
 
@@ -136,7 +136,10 @@ function fakeIsland(extraConfig = {}) {
 		fs.mkdirSync(packageDir, { recursive: true });
 		fs.writeFileSync(path.join(packageDir, "package.json"), JSON.stringify({ name: "@earendil-works/pi-coding-agent", bin: { pi: "fake-agent.cjs" } }));
 		fs.copyFileSync(FAKE, path.join(packageDir, "fake-agent.cjs")); // only requires node:fs and node:path
-		fs.writeFileSync(path.join(root, "config.json"), JSON.stringify(extraConfig), { mode: 0o600 });
+		// K2-05 T2: with no `command` the daemon runs its default engine, Koda's bundled Gentle Shell,
+		// which a test tree has not got. A bare `pi` keeps the npm-prefix resolution above (the
+		// private AppData package), exactly like the Unix branch names its wrapper below.
+		fs.writeFileSync(path.join(root, "config.json"), JSON.stringify({ command: "pi", ...extraConfig }), { mode: 0o600 });
 		return { root, env: cliEnv(root, { AppData: path.join(base, "AppData") }) };
 	}
 	const wrapper = path.join(base, "fake-pi.sh");
@@ -145,11 +148,42 @@ function fakeIsland(extraConfig = {}) {
 	return { root, env: cliEnv(root) };
 }
 const sessionOf = (root) => path.join(root, "runtime", "session.json");
+const sessionPid = (root) => {
+	try { return JSON.parse(fs.readFileSync(sessionOf(root), "utf8")).pid; }
+	catch { return undefined; }
+};
 async function waitForSessionPid(root, pid) {
-	await waitFor(() => {
-		try { return JSON.parse(fs.readFileSync(sessionOf(root), "utf8")).pid === pid; }
-		catch { return false; }
-	}, 60000);
+	await waitFor(() => sessionPid(root) === pid, 60000);
+}
+/** The same wait, for a daemon this test starts itself. CI 43352802736 (windows, test 123) failed with `waitFor timed
+ *  out` where this wait reads session.json: a fixed 60 s bound for a boot that the runner was plainly stretching (the two
+ *  tests either side of it took 7.9 s and 23.6 s), and a silence that could not say whether the daemon was slow or dead.
+ *  So it waits for the EFFECT (this pid owns the island) with a generous bound, and fails at once, in the child's own
+ *  words, if the daemon dies first. What it proves is unchanged: the successor owns the island before the assertions. */
+async function waitForOwnSession(root, child) {
+	const tail = () => child.output || "(no output)";
+	const end = Date.now() + 180000;
+	while (Date.now() < end) {
+		if (sessionPid(root) === child.pid) return;
+		if (child.exitCode !== null || child.signalCode !== null) {
+			assert.fail(`the daemon exited (${child.exitCode ?? child.signalCode}) before owning the island: ${tail()}`);
+		}
+		await sleep(20);
+	}
+	assert.equal(sessionPid(root), child.pid, `the daemon did not own the island within 180 s: ${tail()}`);
+}
+/** Waits for the verdict the NEXT boot itself requires before it may replace a session: `stale`, i.e. a confirmed dead
+ *  pid. A hard kill leaves session.json behind (a documented Windows limit: POSIX status cleans it), and Windows answers
+ *  signal 0 for a pid the OS has not released yet, so a successor started too early is refused with words. Waiting for
+ *  this verdict waits for the effect; it does not relax anything the assertions below prove. */
+async function waitForReplaceable(root) {
+	const end = Date.now() + 60000;
+	let verdict = await classifySession(root);
+	while (verdict.state !== "stale" && Date.now() < end) {
+		await sleep(200);
+		verdict = await classifySession(root);
+	}
+	assert.equal(verdict.state, "stale", `the island cannot be replaced 60 s after a hard kill: ${JSON.stringify(verdict)}`);
 }
 
 test("app-owned run stops on stdin EOF and removes its session handoff", async () => {
@@ -175,6 +209,56 @@ test("app-owned run with immediate EOF never publishes a live session", async ()
 	try {
 		await waitFor(() => child.exitCode !== null);
 		assert.equal(child.exitCode, 0);
+		assert.equal(fs.existsSync(sessionOf(root)), false);
+	} finally { await reap(child); }
+});
+
+// K2-05 boot follow-up (Gentle Dot daemon.ts:410-458 close()): stopping acts at once, even while
+// the engine is still starting. The fake engine holds its first get_state behind a gate that is
+// never opened, so the first engine start would only end at the 60 s start timeout.
+function startingIsland() {
+	const { root, env } = fakeIsland();
+	const gate = path.join(path.dirname(root), "never-open");
+	const wrapper = path.join(path.dirname(root), "fake-pi-starting.sh");
+	fs.writeFileSync(wrapper, `#!/bin/sh\nexec "${process.execPath}" "${FAKE}" --state-gate "${gate}" "$@"\n`, { mode: 0o755 });
+	fs.writeFileSync(path.join(root, "config.json"), JSON.stringify({ command: wrapper }), { mode: 0o600 });
+	return { root, env };
+}
+const startingTwin = "needs a #!/bin/sh wrapper to hold the engine's first get_state; the shutdown path (cli.cjs run) is platform-independent";
+
+test("app-owned run stops at once on stdin EOF while the engine is still starting (Gentle Dot close)", unixOnly(startingTwin), async () => {
+	const { root, env } = startingIsland();
+	const child = spawn(process.execPath, [CLI, "run", "--app-owned"], { env, stdio: ["pipe", "pipe", "pipe"] });
+	let output = "";
+	child.stderr.on("data", (d) => { output += d; });
+	child.stdout.resume();
+	try {
+		await waitForSessionPid(root, child.pid);
+		const began = Date.now();
+		child.stdin.end();
+		await waitFor(() => child.exitCode !== null, 20000);
+		const took = Date.now() - began;
+		assert.equal(child.exitCode, 0, output);
+		assert.ok(took < 10000, `stopped after ${took} ms (the engine start would hold it 60 s)`);
+		assert.equal(fs.existsSync(sessionOf(root)), false);
+	} finally { await reap(child); }
+});
+
+test("cli stop (SIGTERM) acts at once while the engine is still starting and withdraws session.json", unixOnly(startingTwin), async () => {
+	const { root, env } = startingIsland();
+	const child = spawn(process.execPath, [CLI, "run"], { env, stdio: ["ignore", "pipe", "pipe"] });
+	let output = "";
+	child.stdout.on("data", (d) => { output += d; });
+	child.stderr.on("data", (d) => { output += d; });
+	try {
+		await waitForSessionPid(root, child.pid);
+		const began = Date.now();
+		const stop = cli(root, ["stop"], env);
+		const took = Date.now() - began;
+		assert.equal(stop.status, 0, stop.stderr);
+		assert.ok(took < 10000, `cli stop took ${took} ms (the engine start would hold it 60 s)`);
+		await waitFor(() => child.exitCode !== null, 20000);
+		assert.equal(child.exitCode, 0, output);
 		assert.equal(fs.existsSync(sessionOf(root)), false);
 	} finally { await reap(child); }
 });
@@ -206,7 +290,8 @@ test("config get prints the effective config; set-workspace persists it", () => 
 	let r = cli(root, ["config", "get"]);
 	assert.equal(r.status, 0);
 	const got = JSON.parse(r.stdout);
-	assert.equal(got.command, "pi");
+	// T2: the default engine is Koda's bundled Gentle Shell; config.json still overrides.
+	assert.equal(got.command, "gentle-shell");
 	assert.equal(got.workspaceSource, "default");
 	r = cli(root, ["config", "set-workspace", ws]);
 	assert.equal(r.status, 0, r.stderr);
@@ -367,12 +452,14 @@ test("MCP projection: written from mcpConfigPath, kept across a hard kill, overw
 	const children = [];
 	const runOwned = () => {
 		const child = spawn(process.execPath, [CLI, "run", "--app-owned"], { env, stdio: ["pipe", "pipe", "pipe"] });
+		child.output = "";
+		child.stderr.on("data", (d) => { child.output += d; }); // a refusal must reach the failure message, not a 60 s silence
 		children.push(child);
 		return child;
 	};
 	try {
 		let child = runOwned();
-		await waitForSessionPid(root, child.pid);
+		await waitForOwnSession(root, child);
 		assert.equal(fs.existsSync(projected), true, "the boot writes the projection from mcpConfigPath");
 		if (!WIN) assert.equal(fs.statSync(projected).mode & 0o777, 0o600, "the projection is private");
 		assert.deepEqual(Object.keys(JSON.parse(fs.readFileSync(projected, "utf8")).mcpServers), ["first"]);
@@ -381,9 +468,10 @@ test("MCP projection: written from mcpConfigPath, kept across a hard kill, overw
 		assert.equal(fs.existsSync(projected), true, "a hard kill cannot be handled: the projection stays");
 
 		fs.writeFileSync(src, entry("second"), { mode: 0o600 });
+		// The hard kill left a stale session.json: wait until the island really is replaceable, then for THIS child's own session.
+		await waitForReplaceable(root);
 		child = runOwned();
-		// The hard kill left a stale session.json: wait for THIS child's own session.
-		await waitForSessionPid(root, child.pid);
+		await waitForOwnSession(root, child);
 		assert.deepEqual(Object.keys(JSON.parse(fs.readFileSync(projected, "utf8")).mcpServers), ["second"], "next start overwrites the stale projection");
 		child.stdin.end(); // clean stop, no POSIX signals
 		await waitFor(() => child.exitCode !== null);
@@ -634,5 +722,50 @@ test("#390 check (5): a restart leaves the old pid dead, a fresh procStart and t
 	} finally {
 		if (child2) await reap(child2);
 		await reap(child1);
+	}
+});
+
+// F1 (verifier): with the island's settings window AND the chat connected, the client cap
+// used to be full, so the daemon's own health probe (classifySession's hello→ready, run by
+// `status`) was refused at connect time and the island was told the daemon was dead
+// (stale/endpoint_refused) while it was perfectly alive. The cap now counts clients that
+// completed their handshake and leaves room for the probe.
+test("F1: settings+chat connected -> status still classifies the daemon healthy", async () => {
+	const { root, env } = fakeIsland();
+	const child = spawn(process.execPath, [CLI, "run", "--app-owned"], { env, stdio: ["pipe", "pipe", "pipe"] });
+	const held = [];
+	try {
+		await waitForSessionPid(root, child.pid);
+		const session = JSON.parse(fs.readFileSync(sessionOf(root), "utf8"));
+		// Two clients (the settings window and the chat) hold their connections.
+		for (let i = 0; i < 2; i += 1) {
+			const socket = net.connect(session.endpoint);
+			await new Promise((resolve, reject) => {
+				socket.once("connect", resolve);
+				socket.once("error", reject);
+			});
+			socket.write(`${JSON.stringify({ type: "hello", protocol: "island-agent/1", token: session.token })}\n`);
+			await new Promise((resolve, reject) => {
+				socket.once("data", (chunk) => {
+					try {
+						assert.equal(JSON.parse(chunk.toString("utf8").split("\n")[0]).type, "ready");
+						resolve();
+					} catch (error) {
+						reject(error);
+					}
+				});
+				socket.once("error", reject);
+			});
+			held.push(socket);
+		}
+		const st = cli(root, ["status"], env);
+		assert.equal(st.status, 0, st.stderr);
+		const out = JSON.parse(st.stdout);
+		assert.equal(out.state, "healthy", `the daemon must classify healthy with both clients connected: ${JSON.stringify(out)}`);
+		assert.equal(out.ready, true);
+	} finally {
+		for (const socket of held) socket.destroy();
+		child.stdin.end();
+		await reap(child);
 	}
 });

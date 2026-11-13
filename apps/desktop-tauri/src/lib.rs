@@ -15,6 +15,15 @@
 
 pub mod agentclient;
 pub mod agents_direct;
+/// K2-05 T4 U2: the island chat client (closed chat commands + the allowlisted
+/// chat view) — separate from agentclient by design; its transport is
+/// `agentconn::ChatConn`, a second connection with its own fold callback.
+pub mod chatclient;
+/// K2-05 T4 U3: the chat host's routing tests (`ChatHost` lives in `chatclient`, the
+/// Tauri glue in the binary's `chathost.rs`, covered here by source guards).
+#[cfg(test)]
+#[path = "chathost_tests.rs"]
+mod chathost_tests;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod agentconn;
 #[cfg(windows)]
@@ -24,6 +33,7 @@ pub mod agentconn;
 #[path = "agentconn_unavailable.rs"]
 pub mod agentconn;
 pub mod winpolicy;
+pub mod opener;
 pub mod winipc;
 pub mod winfs;
 pub mod approval;
@@ -33,7 +43,6 @@ pub mod characterwin;
 pub mod chat;
 pub mod chatlane;
 pub mod chatsnapshot;
-pub mod conversations;
 pub mod core;
 pub mod desktop;
 pub mod failure;
@@ -48,6 +57,7 @@ pub mod sessionterm_mac;
 pub mod sessionterm_win;
 pub mod github;
 pub mod githubcmd;
+pub mod calendar;
 pub mod daemonhost;
 pub mod nodefinder;
 #[cfg(any(debug_assertions, feature = "probe"))]
@@ -70,7 +80,6 @@ pub mod integrations;
 pub mod integrations_net;
 pub mod servicedetail;
 pub mod localmodel;
-pub mod cloudmodel;
 pub mod cloudprofiles;
 pub mod imapcmd;
 pub mod mailcmd;
@@ -84,9 +93,13 @@ pub mod plan_cmd;
 pub mod paused;
 pub mod prefs;
 pub mod protocol;
+pub mod legacy_conversations;
 pub mod legacy_recap;
 pub mod secrets;
 pub mod provider_oauth;
+pub mod gmail_oauth;
+pub mod gmail_api;
+pub mod gmailcmd;
 pub mod oauthcmd;
 pub mod sounds;
 pub mod question;

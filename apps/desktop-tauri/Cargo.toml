@@ -110,7 +110,7 @@ keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
 cpal = { version = "0.18", features = ["pulseaudio"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-# #503 key store on macOS: the Keychain (same `keyring` API as Linux/Windows; this build is not compiled in CI yet).
+# #503 / K2-01c key store on macOS: the login Keychain (same `keyring` API and service name as Linux/Windows).
 keyring = { version = "3", features = ["apple-native"] }
 # HU-049/HU-050: frontmost app (NSWorkspace) and activate (NSRunningApplication); already in Cargo.lock via tauri/tao.
 core-foundation = "0.10"

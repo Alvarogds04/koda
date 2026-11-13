@@ -79,11 +79,21 @@ function packagedInstallerBin(srcDir = __dirname) {
 async function run(root, appOwned = false) {
 	const daemon = new Daemon({ root, log: (line) => process.stderr.write(`[abito] ${line}\n`), defaultInstallerBin: packagedInstallerBin() });
 	let closing = false;
+	let closed;
 	let finish;
 	const stopped = new Promise((resolve) => { finish = resolve; });
 	// Install the lifetime handlers BEFORE boot: parent EOF/signals during startup
 	// must not turn into a host which finishes boot after its owner has gone.
-	const shutdown = () => { closing = true; finish(); };
+	// K2-05 boot follow-up = Gentle Dot close() (daemon.ts:410-458): the stop starts AT ONCE,
+	// even while the boot still waits for the engine's first start — session.json is withdrawn
+	// and the starting engine is stopped now, not after that start settles.
+	const shutdown = () => {
+		if (closing) return;
+		closing = true;
+		closed = daemon.stop();
+		closed.catch(() => {});
+		finish();
+	};
 	const cleanup = () => daemon.cleanupSync();
 	const reload = () => {
 		if (!closing) daemon.applyConfig().catch((error) => process.stderr.write(`[abito] config reload refused: ${genericError(error)}\n`));
@@ -106,15 +116,17 @@ async function run(root, appOwned = false) {
 		ppidWatch.unref();
 	}
 	try {
-		await daemon.start();
+		if (!closing) await daemon.start();
 		if (!closing) {
 			process.stderr.write(`abito-island-daemon: running (pid ${process.pid}); session.json in ${path.join(daemon.root, "runtime")}\n`);
 			await stopped;
 		}
-		await daemon.stop();
+		await (closed ?? daemon.stop());
 		return 0;
 	} catch (error) {
 		await daemon.stop().catch(() => {});
+		// A stop asked for during the boot ends the boot early: that is a clean shutdown.
+		if (closing) return 0;
 		return fail(1, genericError(error));
 	} finally {
 		if (ppidWatch) clearInterval(ppidWatch);

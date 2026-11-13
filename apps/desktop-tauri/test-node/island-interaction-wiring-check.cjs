@@ -57,7 +57,7 @@ test('#336 the feed: facts update on native state/phase/view/DOM changes, prefs 
   assert.match(src, /interaction\.update\(interactionFacts\(\)\)/, 'facts reach the module');
   assert.match(src, /function interactionFacts\(/, 'facts are built in one place');
   // every blocker of the public contract is fed explicitly (fail closed on absence)
-  for (const key of ['question:', 'approval:', 'request:', 'decision:', 'card:', 'dragging:', 'editing:', 'composing:', 'draft:', 'settings:', 'models:']) {
+  for (const key of ['question:', 'approval:', 'request:', 'decision:', 'card:', 'dragging:', 'editing:', 'composing:', 'draft:', 'settings:']) {
     assert.ok(src.includes(key), `blocker fact ${key}`);
   }
   for (const key of ['state:', 'view:', 'settled:', 'nativeReady:']) assert.ok(src.includes(key), `host fact ${key}`);

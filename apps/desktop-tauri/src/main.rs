@@ -35,6 +35,8 @@ mod hotkeyhost;
 mod tray;
 mod trayhost;
 mod githubhost;
+mod calendarhost;
+mod gmailhost;
 mod mailhost;
 mod monitorshost;
 mod secretshost;
@@ -45,6 +47,7 @@ mod planhost;
 mod dictationhost;
 mod voicehost;
 mod settingshost;
+mod phonehost;
 mod islandhit;
 mod islandclick;
 mod settingswindow;
@@ -67,7 +70,6 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use abito_island::bridge::{self, Action, BridgeError};
-use abito_island::chat::ChatError;
 use abito_island::chatlane::{self, Target};
 use abito_island::core::{self, Core, ReleaseOutcome, TogglePlan, WindowIo};
 use abito_island::desktop::{self, IslandState};
@@ -419,6 +421,9 @@ struct AppState {
     /// principal; the store persists in `specialists.json` (0600) and never holds a colour.
     specialists: specialistshost::SpecialistsHost,
     /// U1: per-turn deadlines (the probe shortens them for its fake).
+    /// Kept for specialists/models until U5b/U5d (K2-05 L59): no Rust turn runs any more,
+    /// but the specialists' fixture builds this state.
+    #[allow(dead_code)]
     chat_deadlines: Mutex<abito_island::localmodel::Deadlines>,
     /// #487: the previous window's context for the chat (empty unless the opt-in is on).
     chat_context: Mutex<abito_island::contextwin::ChatContext>,
@@ -433,27 +438,6 @@ struct AppState {
     models_revision: AtomicU64,
     /// U2: whether the last explicit selection reached the 0600 file.
     models_persisted: AtomicBool,
-}
-
-/// U2 gate before dispatch: the target must still be a registered,
-/// selectable local profile at the same revision. The resource half of the
-/// gate (asleep → no load, other alias → no substitute, busy → visible
-/// queue, unknown → refuse, context budget) runs per turn in the
-/// `chatlane` preflight right before the single request.
-fn model_gate(state: &AppState, target: &Target) -> Result<(), ChatError> {
-    let registry = state
-        .models_registry
-        .lock()
-        .expect("models registry lock")
-        .clone();
-    let entry = abito_island::models::select(&registry, &target.profile.profile_id)?;
-    if entry.revision != target.profile.revision
-        || Some(target.alias.as_str()) != entry.alias
-        || target.endpoint.origin() != entry.origin
-    {
-        return Err(ChatError::profile_missing());
-    }
-    Ok(())
 }
 
 /// Adapter: the pure core handlers see the real window through this.
@@ -1138,7 +1122,8 @@ fn island_move_end(app: AppHandle, webview: tauri::Webview, state: State<AppStat
 }
 
 /// F025: only a trusted local sender may ask the host to open a parsed web
-/// URL. xdg-open receives exactly one URL argument, never a shell command.
+/// URL. The system opener (K2-01c: xdg-open, open or the Windows protocol handler) receives
+/// exactly one URL argument, never a shell command.
 #[tauri::command]
 async fn open_chat_url(
     webview: tauri::Webview,
@@ -1151,19 +1136,14 @@ async fn open_chat_url(
     {
         let mut rate = state.rate.lock().expect("rate lock");
         desktop::open_web_url(webview.label(), &origin, &payload, &mut rate, now_ms(), |url| {
-            child = Some(std::process::Command::new("xdg-open")
-                .arg(url)
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .spawn().map_err(|_| BridgeError::denied("external opener unavailable"))?);
+            child = Some(abito_island::opener::spawn(abito_island::opener::Target::Web(url))
+                .map_err(|_| BridgeError::denied("external opener unavailable"))?);
             Ok(())
         })?;
     } // Release shared rate guard before waiting, and reap only our own child.
     tauri::async_runtime::spawn_blocking(move || {
-        let status = child.ok_or_else(|| BridgeError::denied("external opener unavailable"))?.wait()
-            .map_err(|_| BridgeError::denied("external opener failed"))?;
-        if status.success() { Ok(()) } else { Err(BridgeError::denied("external opener failed")) }
+        let child = child.ok_or_else(|| BridgeError::denied("external opener unavailable"))?;
+        abito_island::opener::finish(child, true).map_err(|_| BridgeError::denied("external opener failed"))
     }).await.map_err(|_| BridgeError::denied("external opener aborted"))?
 }
 
@@ -2082,7 +2062,9 @@ fn main() {
             secretshost::secret_action,
             oauthhost::oauth_action,
             githubhost::github_action,
+            calendarhost::calendar_action,
             mailhost::mail_action,
+            gmailhost::gmail_action,
             monitorshost::monitor_action,
             soundshost::sound_action,
             failurehost::failure_action,
@@ -2091,6 +2073,7 @@ fn main() {
             voicehost::voice_action,
             settingshost::settings_view,
             settingshost::daemon_action,
+            phonehost::phone_link_action,
             settingswindow::settings_window_action,
             specialistshost::specialists_action,
             record_facade_evidence,
@@ -2233,7 +2216,21 @@ fn main() {
             hotkeyhost::start(&handle); // #305: global show/hide shortcut (config + X11 grab)
             // #306 settings prefs: `settingshost::start` runs before the island is placed (#264)
             specialistshost::start(&handle); // #327: the manual specialists (empty = the principal)
-            chathost::start_history(&handle); // #341: isolated private conversation store
+            // K2-05 T5 (S3): delete Koda 0.1's stored conversations (exact files only), synchronously on
+            // this startup thread, first. U5a (K2-05 L59) removed the private Rust store, so nothing opens
+            // `<app_data_dir>/conversations/` any more: this cleanup only ever deletes 0.1 files.
+            // Test dirs (ABITO_CONVERSATIONS_DATA_DIR) and probe runs never touch data.
+            let conversations_dir = if std::env::var_os("ABITO_CONVERSATIONS_DATA_DIR").is_some() || probe_requested() {
+                None
+            } else {
+                handle.path().app_data_dir().ok().map(|p| p.join("conversations"))
+            };
+            if let Some(line) = abito_island::legacy_conversations::cleanup(conversations_dir.as_deref()).log_line() {
+                eprintln!("{line}");
+            }
+            // K2-05 T4 U3: the island chat talks to the daemon engine through ONE reconnecting
+            // chat connection (the settings window keeps its own AgentConn).
+            chathost::start_conn(&handle);
             // K2-03 T3 (S2, S4): delete the removed weekly Recap's data (exact files only), off the startup path.
             let data_dir = handle.path().app_local_data_dir().ok();
             std::thread::spawn(move || {
@@ -2251,6 +2248,10 @@ fn main() {
             // Only the first instance reaches setup. Failure is optional and
             // never tears down the island; runtime errors reach agent:state.
             handle.state::<abito_island::daemonhost::HostSlot>().start();
+            // K2 (S2/S3/S5): the phone link starts OFF and only opens its LAN port when the human turned it
+            // on; it hangs the phone off the daemon connection started just above, never a second one.
+            #[cfg(target_os = "linux")]
+            phonehost::start(&handle);
             spawn_shutdown_watcher(handle.clone());
             // #315: the tray (menu: Mostrar/Ocultar/Arrancar al iniciar sesión/Salir)
             // plus one bounded, off-thread first connection attempt so the icon
@@ -2279,7 +2280,11 @@ fn main() {
         .expect("error while building abito island")
         .run(|app, event| {
             if let tauri::RunEvent::Exit = event {
+                chathost::stop_conn(app);
                 app.state::<abito_island::daemonhost::HostSlot>().stop();
+                // The phone link's port closes with the app: nothing of ours outlives this process.
+                #[cfg(target_os = "linux")]
+                phonehost::stop(app);
                 settingshost::stop(app);
                 close_transport(app);
             }
@@ -2477,14 +2482,22 @@ mod host_ctx_tests {
 
     /// #431: `chathost::chat_view` runs off the main thread (from `chat_action`
     /// while lane locks are taken), so it must read the CACHED scale, never the
-    /// blocking `scale_factor()` getter. Source guard plus cache semantics.
+    /// blocking `scale_factor()` getter. K2-05 moved the geometry into
+    /// `with_page_keys`, which `chat_view` delegates to: both bodies are guarded.
+    /// Source guard plus cache semantics.
     #[test]
     fn chat_view_reads_the_cached_scale_never_the_blocking_getter() {
         let src = include_str!("chathost.rs");
-        let body = &src[src.find("pub fn chat_view").expect("chat_view exists")..];
-        let body = &body[..body.find("\n}\n").expect("chat_view ends")];
-        assert!(!body.contains("scale_factor()"), "chat_view must not call the blocking getter");
-        assert!(body.contains("cached_scale()"), "chat_view reads the main-thread scale cache");
+        let body_of = |head: &str| {
+            let body = &src[src.find(head).unwrap_or_else(|| panic!("{head} exists"))..];
+            body[..body.find("\n}\n").unwrap_or_else(|| panic!("{head} ends"))].to_string()
+        };
+        let view = body_of("pub fn chat_view(");
+        let keys = body_of("fn with_page_keys(");
+        assert!(view.contains("with_page_keys("), "chat_view builds its geometry in with_page_keys");
+        assert!(!view.contains("scale_factor()"), "chat_view must not call the blocking getter");
+        assert!(!keys.contains("scale_factor()"), "with_page_keys must not call the blocking getter");
+        assert!(keys.contains("cached_scale()"), "with_page_keys reads the main-thread scale cache");
     }
 
     #[test]

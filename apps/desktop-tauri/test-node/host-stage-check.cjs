@@ -263,7 +263,10 @@ try {
   // Each connector-host module is required even when no host binary is configured.
   // Removing either file from this disposable stage must fail, never use a checkout
   // fallback or quietly change the CLI's not-running baseline.
-  for (const name of ['connector-host.cjs', 'connector-host-client.cjs', 'minikodas/index.cjs']) {
+  // K2-05 attachments (R1 lesson): the upload store is required by server.cjs; a stage without it must fail too.
+  // K2-13: the Minikoda service lives in a subfolder, so an omission probe must reach one level down.
+  const names = ['connector-host.cjs', 'connector-host-client.cjs', 'uploads.cjs', 'minikodas/index.cjs'];
+  for (const name of names) {
     const file = path.join(stage, 'desktop-daemon/src', name);
     const contents = fs.readFileSync(file);
     try {
@@ -278,5 +281,5 @@ try {
     } finally { fs.writeFileSync(file, contents, { mode: 0o644 }); }
     assert.deepEqual(L.verifyStage(stage), [], 'omission probe must restore the exact staged files');
   }
-  console.log('staged-cli: status baseline + 3 module-omission regressions passed');
+  console.log(`staged-cli: status baseline + ${names.length} module-omission regressions passed`);
 } finally { fs.rmSync(stage, { recursive: true, force: true }); if (localDir) fs.rmSync(localDir, { recursive: true, force: true }); }

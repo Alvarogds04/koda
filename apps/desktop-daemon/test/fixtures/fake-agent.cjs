@@ -6,12 +6,23 @@
 // Behaviour:
 // - get_state -> success with a session file inside the --session-dir it was given
 // - echo      -> success echoing { value } back (correlation tests)
-// - prompt    -> success { disposition: "started" } plus an event burst whose
-//                message_update contains U+2028/U+2029 and an emoji
+// - prompt    -> success { disposition: "started" } plus an event burst: agent_start, the
+//                user message it records (message_start/message_end role user, as Pi does),
+//                and a message_update that contains U+2028/U+2029 and an emoji
+// --persist-messages appends the user message and the reply to the session file the way Pi
+// does (each message right after it is announced), so history reads what the engine recorded.
 // - hang      -> never answered (timeout and pending-rejection tests)
 // - crash     -> exits with FAKE_EXIT_CODE (default 1)
 // - stdin end -> exits 0 (orderly shutdown like `pi --mode rpc`)
 // --argv-out / --env-out / --spawn-log dump the spawn evidence for assertions.
+// --lazy-session-file (K2-05 boot reopen B1): like real Pi (session-manager.js:794-799), the
+// session file is written only once there is a conversation: get_state reports the path but
+// creates nothing, the first prompt creates it.
+// --refuse-prompt (K2-05 boot follow-up F1): like real Pi with no account, every prompt is answered
+// with an error and nothing is recorded (with --lazy-session-file the session file is never written).
+// --ask-on-prompt (K2-05 U4b): after recording the user message the engine asks the user
+// (extension_ui_request `input`, with a hidden engine name in the title/placeholder) and
+// answers only once the extension_ui_response arrives, quoting what it received.
 
 const fs = require("node:fs");
 const path = require("node:path");
@@ -34,10 +45,32 @@ if (cwdOut) fs.writeFileSync(cwdOut, process.cwd());
 const delayMs = Number(process.env.FAKE_DELAY_MS || 0);
 const chunkedEvents = process.env.FAKE_CHUNKED === "1" || process.argv.includes("--chunked-events");
 const sessionDir = argValue("--session-dir") || ".";
+const modelFile = argValue("--model-file");
+function currentModel() {
+	if (!modelFile || !fs.existsSync(modelFile)) return undefined;
+	return JSON.parse(fs.readFileSync(modelFile, "utf8"));
+}
 
 // Session file is per-spawn so a restart sees a different current session than
-// the persisted one (exercises the switch_session recovery path).
-const sessionFile = path.join(sessionDir, `fake-session-${process.pid}.jsonl`);
+// the persisted one (exercises the switch_session recovery path). Like Pi, a
+// finished switch_session moves the open session, so a later get_state reports it.
+let sessionFile = path.join(sessionDir, `fake-session-${process.pid}.jsonl`);
+
+// K2-05 boot reopen (L44): --switch-script <file> scripts the switch_session
+// answers, one line consumed per switch (shared by every spawn of one test):
+// `fail` answers an error and stays put, `hang` never answers and never switches,
+// `late <ms>` switches and answers only after <ms> (Pi handles RPC lines
+// concurrently: a get_state meanwhile still reports the old file, rpc-mode.js
+// :474-479), and `ack` answers success WITHOUT moving the open session — a switch the
+// engine acknowledges but does not apply (the one documented Koda deviation from
+// Gentle Dot's refreshSession). An empty or missing script switches at once.
+const switchScript = argValue("--switch-script");
+function nextSwitchStep() {
+	if (!switchScript || !fs.existsSync(switchScript)) return "";
+	const lines = fs.readFileSync(switchScript, "utf8").split("\n").filter(Boolean);
+	fs.writeFileSync(switchScript, lines.slice(1).map((line) => `${line}\n`).join(""));
+	return lines[0] ?? "";
+}
 
 // Diagnostics-hygiene fixtures: this raw content must never reach engine logs.
 if (process.argv.includes("--malformed-first")) {
@@ -76,20 +109,75 @@ function writeChunked(record, done) {
 	}, 15);
 }
 
+const persistMessages = process.argv.includes("--persist-messages");
+// K2-05 boot order (Gentle Dot daemon.ts:470-481): --state-gate <file> holds every get_state
+// answer until <file> exists, so a test can keep the engine "starting" while clients connect.
+const stateGate = argValue("--state-gate");
+const lazySessionFile = process.argv.includes("--lazy-session-file");
+
+/** Pi's SessionManager.appendMessage: one `type:"message"` line per message, appended. */
+function persist(role, text) {
+	if (!persistMessages) return;
+	fs.appendFileSync(sessionFile, `${JSON.stringify({ type: "message", message: { role, content: [{ type: "text", text }] } })}\n`, { mode: 0o600 });
+}
+
 function respond(id, command, data) {
 	writeRecord({ id, type: "response", command, success: true, data });
 }
 
+const askOnPrompt = process.argv.includes("--ask-on-prompt");
+/** K2-05 U4b: the turn waiting for the user's answer (ask id → its continuation). */
+const waitingAsks = new Map();
+let askCounter = 0;
+
 function handle(command) {
 	logCommand(command);
 	switch (command.type) {
+		case "extension_ui_response": {
+			// a dialog answer is not a command: no response record (Pi's RPC shape)
+			const next = waitingAsks.get(command.id);
+			if (next) {
+				waitingAsks.delete(command.id);
+				next(command);
+			}
+			break;
+		}
 		case "get_state":
-			if (!fs.existsSync(sessionFile)) fs.writeFileSync(sessionFile, "", { mode: 0o600 });
-			respond(command.id, "get_state", { sessionFile });
+			if (stateGate && !fs.existsSync(stateGate)) {
+				// a slow engine boot: answer once the test opens the gate (polled, never busy-waiting)
+				const timer = setInterval(() => {
+					if (!fs.existsSync(stateGate)) return;
+					clearInterval(timer);
+					handle(command);
+				}, 10);
+				break;
+			}
+			if (!lazySessionFile && !fs.existsSync(sessionFile)) fs.writeFileSync(sessionFile, "", { mode: 0o600 });
+			// --model-file <file>: the model the engine reports in get_state (Pi's `data.model`), read at every
+			// answer so a test can change it between two reads; absent file = no model reported.
+			respond(command.id, "get_state", { sessionFile, ...(currentModel() ? { model: currentModel() } : {}) });
 			break;
-		case "switch_session":
-			respond(command.id, "switch_session", { sessionFile: command.sessionPath });
+		case "switch_session": {
+			const step = nextSwitchStep();
+			if (step === "hang") break;
+			if (step === "fail") {
+				writeRecord({ id: command.id, type: "response", command: "switch_session", success: false, error: "could not open the session" });
+				break;
+			}
+			if (step === "ack") {
+				// K2-05 boot deviation: the engine ACKs the switch and keeps its own session, so the
+				// get_state that follows still reports the boot session (acknowledged, not applied).
+				respond(command.id, "switch_session", { sessionFile });
+				break;
+			}
+			const finish = () => {
+				sessionFile = command.sessionPath;
+				respond(command.id, "switch_session", { sessionFile: command.sessionPath });
+			};
+			if (step.startsWith("late ")) setTimeout(finish, Number(step.slice(5)));
+			else finish();
 			break;
+		}
 		case "echo":
 			respond(command.id, "echo", { value: command.value });
 			break;
@@ -97,16 +185,47 @@ function handle(command) {
 			// Never answered on purpose.
 			break;
 		case "prompt": {
+			if (process.argv.includes("--refuse-prompt")) {
+				writeRecord({ id: command.id, type: "response", command: "prompt", success: false, error: "No API key found" });
+				break;
+			}
+			if (lazySessionFile && !fs.existsSync(sessionFile)) fs.writeFileSync(sessionFile, "", { mode: 0o600 });
 			respond(command.id, "prompt", { disposition: "started" });
 			writeRecord({ type: "agent_start" });
+			// K2-05 bind by id: the engine records the user message (Pi: message_start, then the
+			// append, then message_end) before the reply starts
+			const user = { role: "user", content: [{ type: "text", text: String(command.message) }] };
+			writeRecord({ type: "message_start", message: user });
+			persist("user", String(command.message));
+			writeRecord({ type: "message_end", message: user });
+			const reply = "hola 😀 línea\u2028separada\u2029fin";
+			if (askOnPrompt) {
+				const id = `ask-${process.pid}-${++askCounter}`;
+				waitingAsks.set(id, (answer) => {
+					const said = answer.cancelled ? "sin respuesta" : typeof answer.value === "string" ? `recibí ${answer.value.length} caracteres` : `confirmó ${answer.confirmed}`;
+					writeRecord({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: said } });
+					persist("assistant", said);
+					writeRecord({ type: "agent_end" });
+					writeRecord({ type: "agent_settled" });
+				});
+				writeRecord({ type: "extension_ui_request", id, method: "input", title: "Gentle Shell necesita un nombre", placeholder: "nombre para engram" });
+				break;
+			}
 			const emitRest = () => {
+				persist("assistant", reply);
 				writeRecord({ type: "agent_end" });
 				writeRecord({ type: "agent_settled" });
 			};
 			const update = {
 				type: "message_update",
-				assistantMessageEvent: { type: "text_delta", delta: "hola 😀 línea\u2028separada\u2029fin" },
+				assistantMessageEvent: { type: "text_delta", delta: reply },
 			};
+			if (process.argv.includes("--prompt-holds")) {
+				// F2: the assistant message is mid-stream and never settles, like a
+				// real turn the daemon aborts/timeout-cancels mid-answer.
+				writeRecord(update);
+				break;
+			}
 			if (chunkedEvents) writeChunked(update, emitRest);
 			else {
 				writeRecord(update);

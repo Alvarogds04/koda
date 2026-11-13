@@ -177,17 +177,6 @@ fn valid_island_size(s: &str) -> bool { matches!(s, "s" | "m" | "l" | "auto") }
 /// The optional theme mode key (#380). Absent = `system`, and absence is preserved.
 const THEME: &str = "theme";
 
-/// #414: the chosen models of the connected providers (Ajustes → Modelos), per provider.
-/// Absent from a file nobody customised, so an untouched `prefs.json` keeps exactly the
-/// bytes it had.
-const CHOSEN_MODELS: &str = "chosen_models";
-/// The provider key is the engine's own strict_id shape; ids keep their catalogue spelling.
-const MAX_PROVIDER_ID: usize = 64;
-const MAX_MODEL_ID: usize = 200;
-/// Bounds so the preference can never outgrow the panel that renders it.
-const MAX_MODELS_PER_PROVIDER: usize = 64;
-const MAX_PROVIDERS: usize = 32;
-
 /// #389 (GD012): the monitor the human chose for the island (Ajustes → Panel), stored as
 /// the platform's stable monitor name (see `workarea::monitor_key`). Absent = the island's
 /// current monitor (the behaviour before #389), and absence is preserved. A stored key the
@@ -270,9 +259,6 @@ pub struct Prefs {
     /// #380 optional theme mode. `None` means the default (`system`) and is never written,
     /// so an untouched or unknown-valued file keeps the bytes it had.
     pub theme: Option<Theme>,
-    /// #414: per provider, the model ids the human chose in Ajustes → Modelos. `None`
-    /// means nothing was chosen, and nothing is written for it.
-    pub chosen_models: Option<BTreeMap<String, Vec<String>>>,
     /// #336 T1b-a: the configured inactivity delay in seconds: 0 is «Nunca»
     /// (#438) and the rest is 5..=120. `None` means the default 15 and is never
     /// written, so an untouched file keeps its bytes.
@@ -316,11 +302,21 @@ pub settings_window: Option<bool>,
     /// #487: opt-in to read the previous window's app and title for the chat (NotchBuddy feature 8).
     /// `None` means off and is never written.
     pub window_context: Option<bool>,
+    /// K2 phone link (S3/D3): the switch that makes the desktop listen for the phone on the LAN.
+    /// `None` means OFF — nothing listens, nothing is announced — and is never written.
+    pub phone_link: Option<bool>,
+    /// K2 T6 (S11/§11): whether the phone is sent the Claude and Codex plan usage (`usage`). `None` means OFF and is
+    /// never written; while it is off no plan is read for the phone at all.
+    pub phone_usage: Option<bool>,
     /// S5 (#503): the chat's live-state context (sessions + integrations). `None` means ON; only `false` is written.
     pub live_context: Option<bool>,
     /// #486 W2 (Coucou `desktopMochi`): the character lives on the desktop and where it
     /// sits, physical px. `None` = lives in the island (off) and is never written.
     pub desktop_character: Option<DesktopCharacter>,
+    /// K2-10 T4 (S5): the last time the mail counter counted «nuevos», in ms since the epoch.
+    /// Non-secret and HOST-ONLY: written by the mail host, never by the page. `None` means
+    /// never counted and is never written, so an untouched file keeps its bytes.
+    pub gmail_last_seen_ms: Option<u64>,
 }
 
 /// #486 W2: the saved state of the desktop character. Written by the native drop path
@@ -332,6 +328,9 @@ pub struct DesktopCharacter {
 }
 
 const DESKTOP_CHARACTER: &str = "desktop_character";
+/// K2-10 T4 (S5): the mail counter's last visit, ms since the epoch. Written by the mail host
+/// only; absent from a file whose mail card was never shown.
+const GMAIL_LAST_SEEN_MS: &str = "gmail_last_seen_ms";
 
 /// A closed shape: `{"on":bool}` plus an optional bounded `{"x","y"}` spot; anything else
 /// reads as absent (the character stays in the island).
@@ -359,7 +358,6 @@ impl Default for Prefs {
             declared_pills: None,
             pill_colors: BTreeMap::new(),
             theme: None,
-            chosen_models: None,
             auto_close_seconds: None,
             open_on_hover: None,
             island_size: None,
@@ -373,8 +371,11 @@ impl Default for Prefs {
             show_plan_in_notch: None,
             show_codex_plan_in_notch: None,
             window_context: None,
+            phone_link: None,
+            phone_usage: None,
             live_context: None,
             desktop_character: None,
+            gmail_last_seen_ms: None,
         }
     }
 }
@@ -404,59 +405,6 @@ fn valid_identity(identity: &str) -> bool {
         return false;
     }
     bytes.all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'.' || b == b'_' || b == b'-')
-}
-
-/// The provider key of a chosen-models entry: the engine's own strict_id shape — bounded,
-/// lowercase slug, never a prototype key.
-fn valid_provider_id(id: &str) -> bool {
-    if id.is_empty() || id.len() > MAX_PROVIDER_ID || RESERVED.contains(&id) {
-        return false;
-    }
-    let bytes = id.as_bytes();
-    // the last byte is alphanumeric too: a trailing separator ("dot.") is not a slug
-    if !(bytes[bytes.len() - 1].is_ascii_lowercase() || bytes[bytes.len() - 1].is_ascii_digit()) {
-        return false;
-    }
-    let mut bytes = id.bytes();
-    let Some(first) = bytes.next() else { return false };
-    (first.is_ascii_lowercase() || first.is_ascii_digit())
-        && bytes.all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'.' | b'_' | b'-'))
-}
-
-/// A model id keeps its catalogue spelling (several engines key theirs "vendor/model"),
-/// bounded ASCII with no whitespace or control characters.
-fn valid_model_id(id: &str) -> bool {
-    !id.is_empty() && id.chars().count() <= MAX_MODEL_ID && id.trim() == id
-        && id.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-' | b'/' | b':'))
-}
-
-/// The chosen-models entries that survive validation, deduplicated, one provider at a time.
-/// A provider past the per-provider cap is dropped whole (a catalogue that big is not a
-/// human choice); the map overall is capped by dropping the rest one by one.
-fn chosen_models_from(value: Option<&Value>) -> BTreeMap<String, Vec<String>> {
-    let mut out = BTreeMap::new();
-    let Some(map) = value.and_then(Value::as_object) else { return out };
-    for (provider, models) in map {
-        if !valid_provider_id(provider) || out.len() >= MAX_PROVIDERS {
-            continue;
-        }
-        let Some(list) = models.as_array() else { continue };
-        let mut clean: Vec<String> = Vec::new();
-        for id in list {
-            if let Some(id) = id.as_str() {
-                if valid_model_id(id) && !clean.iter().any(|x| x == id) {
-                    clean.push(id.to_string());
-                }
-            }
-        }
-        if clean.len() > MAX_MODELS_PER_PROVIDER {
-            continue;
-        }
-        if !clean.is_empty() {
-            out.insert(provider.clone(), clean);
-        }
-    }
-    out
 }
 
 /// The stored monitor key is the platform monitor name verbatim: bounded, trimmed,
@@ -605,7 +553,15 @@ impl Prefs {
     /// S10 (L30): the effective Codex pill policy — absent means off (no `codex app-server` is ever started).
     pub fn show_codex_plan_in_notch(&self) -> bool { self.show_codex_plan_in_notch.unwrap_or(false) }
     pub fn window_context(&self) -> bool { self.window_context.unwrap_or(false) }
+    /// K2 phone link: OFF unless the human turned it on in Ajustes (S3).
+    pub fn phone_link(&self) -> bool { self.phone_link.unwrap_or(false) }
+    /// K2 T6: OFF unless the human asked the phone to show the plan usage (S11/§11).
+    pub fn phone_usage(&self) -> bool { self.phone_usage.unwrap_or(false) }
     pub fn live_context(&self) -> bool { self.live_context.unwrap_or(true) }
+
+    /// K2-10 T4 (S5): the stored mail mark, ms since the epoch; 0 means «never visited», which
+    /// makes every unread message count as new.
+    pub fn gmail_last_seen_ms(&self) -> u64 { self.gmail_last_seen_ms.unwrap_or(0) }
 
     /// #366 F093: the effective Ajustes placement — absent means in-island (#408).
     pub fn settings_window_on(&self) -> bool { self.settings_window.unwrap_or(false) }
@@ -630,7 +586,6 @@ impl Prefs {
                 .map(|ids| ids.iter().filter_map(Value::as_str).map(str::to_owned).collect()),
             pill_colors: pill_colors_from(v.get("pill_colors")),
             theme: v.get(THEME).and_then(Value::as_str).and_then(Theme::parse),
-            chosen_models: Some(chosen_models_from(v.get(CHOSEN_MODELS))),
             auto_close_seconds: v.get("auto_close_seconds").and_then(Value::as_u64)
                 .and_then(|s| u16::try_from(s).ok()).filter(|s| *s == 0 || (5..=120).contains(s)),
             open_on_hover: v.get("open_on_hover").and_then(Value::as_bool),
@@ -650,14 +605,13 @@ impl Prefs {
             show_plan_in_notch: v.get("show_plan_in_notch").and_then(Value::as_bool),
             show_codex_plan_in_notch: v.get("show_codex_plan_in_notch").and_then(Value::as_bool),
             window_context: v.get("window_context").and_then(Value::as_bool),
+            phone_link: v.get("phone_link").and_then(Value::as_bool),
+            phone_usage: v.get("phone_usage").and_then(Value::as_bool),
             live_context: v.get("live_context").and_then(Value::as_bool),
             desktop_character: desktop_character_from(v.get(DESKTOP_CHARACTER)),
+            gmail_last_seen_ms: v.get(GMAIL_LAST_SEEN_MS).and_then(Value::as_u64).filter(|ms| *ms > 0),
         };
         if prefs.declared_pills.is_some() { prefs.declared_pills = Some(prefs.declared_pills()); }
-        // A map whose every entry was dropped reads as absent: an untouched file keeps its bytes.
-        if prefs.chosen_models.as_ref().is_some_and(|m| m.is_empty()) {
-            prefs.chosen_models = None;
-        }
         prefs
     }
 
@@ -680,11 +634,6 @@ impl Prefs {
         if !self.pill_colors.is_empty() { v["pill_colors"] = json!(pill_colors_from(Some(&json!(self.pill_colors)))); }
         if let Some(theme) = self.theme {
             v[THEME] = json!(theme.as_str());
-        }
-        if let Some(map) = &self.chosen_models {
-            if !map.is_empty() {
-                v[CHOSEN_MODELS] = json!(map);
-            }
         }
         if let Some(seconds) = self.auto_close_seconds.filter(|s| *s == 0 || (5..=120).contains(s)) {
             v["auto_close_seconds"] = json!(seconds);
@@ -728,8 +677,17 @@ impl Prefs {
         if let Some(on) = self.window_context {
             v["window_context"] = json!(on);
         }
+        if let Some(on) = self.phone_link {
+            v["phone_link"] = json!(on);
+        }
+        if let Some(on) = self.phone_usage {
+            v["phone_usage"] = json!(on);
+        }
         if let Some(on) = self.live_context {
             v["live_context"] = json!(on);
+        }
+        if let Some(ms) = self.gmail_last_seen_ms.filter(|ms| *ms > 0) {
+            v[GMAIL_LAST_SEEN_MS] = json!(ms);
         }
         if let Some(c) = self.desktop_character.filter(|c| c.spot.is_none_or(|(x, y)| valid_position(x, y))) {
             v[DESKTOP_CHARACTER] = match c.spot {
@@ -785,8 +743,6 @@ pub enum Command {
     /// #435: the persisted created-blob order — exactly the stored names (exact,
     /// case-sensitive), reordered. A strict permutation is the only accepted input.
     ReorderBlobs(Vec<String>),
-    /// #414: the WHOLE list of one provider replaces what is stored; an empty list clears it.
-    SetChosenModels { provider: String, models: Vec<String> },
     /// #336 T1b-a: the island's inactivity interaction as one exact closed
     /// shape — integer `auto_close_seconds` 0 («Nunca», #438) or 5..=120 and
     /// `open_on_hover`.
@@ -811,6 +767,10 @@ pub enum Command {
     /// S10 (L30): show or hide the Codex plan-usage pill (an opt-in to `codex app-server`). `false` stores no key.
     SetShowCodexPlanInNotch(bool),
     SetWindowContext(bool),
+    /// K2 phone link (S3): the switch that opens the LAN port; `false` stores no key at all.
+    SetPhoneLink(bool),
+    /// K2 T6 (S11): whether the phone is sent the plan usage (§11).
+    SetPhoneUsage(bool),
     SetLiveContext(bool),
     /// #486 W2: the desktop character left or returned to the island, and the spot it sits
     /// at. Deliberately NOT produced by [`parse_command`]: only the native drop path saves
@@ -829,6 +789,10 @@ pub enum Command {
     PruneIslandAgent(String),
     /// #442 T7.4: the principal's «Qué hace»; an empty (or blank) text clears it.
     SetAbitoInstructions(String),
+    /// K2-10 T4 (S5): the mail counter's last visit, ms since the epoch. Deliberately NOT
+    /// produced by [`parse_command`]: the counter is the mail host's business, and the page
+    /// must never be able to move it forwards (hiding new mail) or backwards.
+    SetGmailLastSeen(u64),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -958,24 +922,6 @@ pub fn parse_command(payload: &Value) -> Result<Command, CommandError> {
                 Ok(Command::ReorderBlobs(order))
             }
         }
-        Some("set_chosen_models") if map.len() == 3 => {
-            let provider = map.get("provider").and_then(Value::as_str).ok_or(CommandError)?;
-            let models = map.get("models").and_then(Value::as_array).ok_or(CommandError)?;
-            if !valid_provider_id(provider) || models.len() > MAX_MODELS_PER_PROVIDER {
-                return Err(CommandError);
-            }
-            let mut clean: Vec<String> = Vec::new();
-            for id in models {
-                let id = id.as_str().ok_or(CommandError)?;
-                if !valid_model_id(id) {
-                    return Err(CommandError);
-                }
-                if !clean.iter().any(|x| x == id) {
-                    clean.push(id.to_string());
-                }
-            }
-            Ok(Command::SetChosenModels { provider: provider.to_string(), models: clean })
-        }
         // #336 T1b-a: exactly action + auto_close_seconds + open_on_hover.
         // `as_u64` already refuses floats, strings, null and negatives; the
         // accepted set is {0} («Nunca», #438) ∪ 5..=120, matching the public
@@ -1022,6 +968,16 @@ pub fn parse_command(payload: &Value) -> Result<Command, CommandError> {
             let on = map.get("window_context").and_then(Value::as_bool).ok_or(CommandError)?;
             Ok(Command::SetWindowContext(on))
         }
+        // K2 phone link (S3): exactly action + phone_link (a bool); no coercion.
+        Some("set_phone_link") if map.len() == 2 => {
+            let on = map.get("phone_link").and_then(Value::as_bool).ok_or(CommandError)?;
+            Ok(Command::SetPhoneLink(on))
+        }
+        // K2 T6 (S11, §11): exactly action + phone_usage (a bool); no coercion.
+        Some("set_phone_usage") if map.len() == 2 => {
+            let on = map.get("phone_usage").and_then(Value::as_bool).ok_or(CommandError)?;
+            Ok(Command::SetPhoneUsage(on))
+        }
         // S5 (#503): exactly action + live_context (a bool); no coercion.
         Some("set_live_context") if map.len() == 2 => {
             let on = map.get("live_context").and_then(Value::as_bool).ok_or(CommandError)?;
@@ -1055,7 +1011,15 @@ pub fn apply(current: &Prefs, command: &Command) -> Result<Prefs, CommandError> 
     match command {
         Command::View => {}
         Command::AutostartView | Command::SetAutostart(_) => return Err(CommandError),
-        Command::SetOpenSettingsAtLaunch(on) => next.open_settings_at_launch = on.then_some(true),
+        Command::SetGmailLastSeen(ms) => {
+            if *ms == 0 {
+                return Err(CommandError);
+            }
+            // K2-10 T4 (S5): monotonic by construction — a stale visit is a no-op (the stored
+            // mark is kept), so a late answer can never make already-seen mail «new» again.
+            let at = (*ms).max(current.gmail_last_seen_ms.unwrap_or(0));
+            next.gmail_last_seen_ms = (at > 0).then_some(at);
+        }        Command::SetOpenSettingsAtLaunch(on) => next.open_settings_at_launch = on.then_some(true),
         Command::SoundOn => next.sound = true,
         Command::SoundOff => next.sound = false,
         Command::SetSoundGain(gain) => {
@@ -1096,32 +1060,6 @@ pub fn apply(current: &Prefs, command: &Command) -> Result<Prefs, CommandError> 
             next.declared_pills = Some(ids);
         }
         Command::SetTheme(theme) => next.theme = Some(*theme),
-        Command::SetChosenModels { provider, models } => {
-            if !valid_provider_id(provider) {
-                return Err(CommandError);
-            }
-            // Deduplicate here too: apply is the direct-caller boundary as well as the
-            // IPC one (parse_command already deduplicates for the wire).
-            let mut clean: Vec<String> = Vec::new();
-            for m in models {
-                if !valid_model_id(m) {
-                    return Err(CommandError);
-                }
-                if !clean.contains(m) {
-                    clean.push(m.clone());
-                }
-            }
-            if clean.len() > MAX_MODELS_PER_PROVIDER {
-                return Err(CommandError);
-            }
-            let mut map = current.chosen_models.clone().unwrap_or_default();
-            if clean.is_empty() {
-                map.remove(provider);
-            } else {
-                map.insert(provider.clone(), clean);
-            }
-            next.chosen_models = if map.is_empty() { None } else { Some(map) };
-        }
         Command::SetPillColor { id, color } => {
             if !pill_offered(id) || !normalize_chosen_color(color).is_some() {
                 return Err(CommandError);
@@ -1218,6 +1156,8 @@ pub fn apply(current: &Prefs, command: &Command) -> Result<Prefs, CommandError> 
         Command::SetShowPlanInNotch(on) => next.show_plan_in_notch = on.then_some(true),
         Command::SetShowCodexPlanInNotch(on) => next.show_codex_plan_in_notch = on.then_some(true),
         Command::SetWindowContext(on) => next.window_context = on.then_some(true),
+        Command::SetPhoneLink(on) => next.phone_link = on.then_some(true),
+        Command::SetPhoneUsage(on) => next.phone_usage = on.then_some(true),
         Command::SetLiveContext(on) => next.live_context = (!on).then_some(false),
         Command::SetDesktopCharacter { on, spot } => {
             if spot.is_some_and(|(x, y)| !valid_position(x, y)) { return Err(CommandError); }

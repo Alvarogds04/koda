@@ -383,8 +383,8 @@ test('CSP: connect-src is EXACTLY self + ipc (no ipc.localhost.evil.com), object
   fs.rmSync(d, { recursive: true });
 });
 test('gates: missing frontend file, extra plugin dependency, missing capability file all fail', () => {
-  let d = copyCrate(); fs.rmSync(path.join(d, 'frontend', 'models.js'));
-  assert.throws(() => L.checkFrontend(d), /missing=\[models\.js\]/); fs.rmSync(d, { recursive: true });
+  let d = copyCrate(); fs.rmSync(path.join(d, 'frontend', 'notify-view.js'));
+  assert.throws(() => L.checkFrontend(d), /missing=\[notify-view\.js\]/); fs.rmSync(d, { recursive: true });
   d = copyCrate(); fs.appendFileSync(path.join(d, 'Cargo.toml'), '\ntauri-plugin-shell = "2"\n');
   assert.throws(() => L.checkConfig(d), /forbidden plugin/); fs.rmSync(d, { recursive: true });
   d = copyCrate(); fs.rmSync(path.join(d, 'capabilities', 'main.json'));

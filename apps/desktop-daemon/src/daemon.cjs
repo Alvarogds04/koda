@@ -5,8 +5,10 @@
  * account manager (auth.cjs), the profile store (profiles.cjs) and the island
  * server (server.cjs) from `<island>/config.json`.
  *
- * Host handoff: after everything is up, `<island>/runtime/session.json`
- * (0600, atomic) carries `{protocol, endpoint, token, pid, procStart, startedAt}`. The
+ * Host handoff: once the server listens, `<island>/runtime/session.json`
+ * (0600, atomic) carries `{protocol, endpoint, token, pid, procStart, startedAt}` — before
+ * the engine is ready, like Gentle Dot (daemon.ts:470-481): clients read the engine's
+ * "starting"/"restarting" state meanwhile. The
  * token is generated per launch, lives only in memory and that file, and is
  * never logged. The file is removed on stop.
  */
@@ -24,13 +26,13 @@ const { createAgentHooks } = require("./agent-hooks.cjs");
 const { ConnectorsControl, ConnectorsView } = require("./connectors.cjs");
 const { AgentsManager } = require("./agents.cjs");
 const { ConnectorHostSupervisor } = require("./connector-host.cjs");
-const { ensureIsland, ensurePrivateDir, islandPaths, writePrivateFile, windowsIslandRootViolation } = require("./isolation.cjs");
+const { ensureIsland, ensurePrivateDir, islandPaths, privateMemory, writePrivateFile, windowsIslandRootViolation } = require("./isolation.cjs");
 const { ProfileStore } = require("./profiles.cjs");
 const { scanSessions, sessionScope } = require("./sessions.cjs");
 const { runPs } = require("./procinfo.cjs");
-const { AgentEngine } = require("./runtime.cjs");
+const { AgentEngine, DEFAULT_COMMAND } = require("./runtime.cjs");
 const { defaultIslandRoot } = require("./isolation.cjs");
-// #386: continuous conversation rotation (opt-in via config `rotation`).
+// K2-05 T3 (S2): Gentle Dot's transparent rotation (rotation on by default).
 const { SessionRotator } = require("./rotation.cjs");
 const { IslandServer } = require("./server.cjs");
 // K2-13: Minikodas (recipes, runs in their own engine roots, scheduler) and the «Hoy» inbox.
@@ -352,24 +354,45 @@ class Daemon extends EventEmitter {
 		this.state = "stopped";
 		this.changing = Promise.resolve();
 		this.connectorsControl = undefined;
+		// K2-05 T1c (S5/L11): the private memory handle, taken at boot for Koda's
+		// own default engine only (see boot).
+		this.memory = undefined;
 	}
 
 	get sessionFile() {
 		return sessionPath(this.root);
 	}
 
-	async start() {
-		if (this.state !== "stopped") throw new Error("daemon already started");
+	start() {
+		if (this.state !== "stopped") return Promise.reject(new Error("daemon already started"));
 		this.state = "starting";
+		this.engineStarting = false;
+		const starting = this.startOnce();
+		this.starting = starting;
+		starting.catch(() => {});
+		return starting;
+	}
+
+	async startOnce() {
 		try {
 			await this.boot();
-			this.state = "running";
+			// A stop() that raced the boot (the engine may still be starting) keeps its verdict.
+			if (this.state === "starting") this.state = "running";
 			return { endpoint: this.endpoint, pid: process.pid };
 		} catch (error) {
 			await this.teardown();
 			this.state = "stopped";
 			throw error;
 		}
+	}
+
+	/**
+	 * K2-05 boot follow-up = Gentle Dot close() (daemon.ts:410-458, `if (!stopping)` before
+	 * supervisor.start): once a stop() was asked for, the boot creates and publishes nothing more.
+	 * Checked after each of the boot's short awaits; start() then tears down what the boot made.
+	 */
+	assertBooting() {
+		if (this.state !== "starting") throw new Error("daemon stopped during boot");
 	}
 
 	async boot() {
@@ -379,7 +402,7 @@ class Daemon extends EventEmitter {
 		const violation = windowsIslandRootViolation(this.root, this.env, this.platform);
 		if (violation) throw new Error(`refusing island root: ${violation}`);
 		ensureIsland(this.root);
-		const cfg = config.loadConfig(this.root, { env: this.env }); // fail-closed before anything spawns
+		const cfg = config.loadConfig(this.root, { env: this.env, log: (line) => this.log(line) }); // fail-closed before anything spawns
 		const existing = readSession(this.root);
 		// #390 GD029 arbitration: NEVER replace a session whose endpoint answers
 		// `ready`; replace only when the endpoint refuses AND the pid is confirmed
@@ -387,6 +410,7 @@ class Daemon extends EventEmitter {
 		let replaced = false;
 		if (existing) {
 			const verdict = await classifySession(this.root, { env: this.env });
+			this.assertBooting();
 			if (verdict.ready) {
 				this.recordLaunch({ reason: "endpoint_ready", outcome: "refused", incumbentPid: existing.pid });
 				throw new Error("daemon already running");
@@ -412,6 +436,20 @@ class Daemon extends EventEmitter {
 			...(this.options.engineOptions ?? {}),
 		});
 		this.engine = engine;
+		// K2-05 boot order = Gentle Dot (config.ts loadConfig → bundledGentleShell): a missing or
+		// broken bundled engine fails the boot here, before anything listens or is published —
+		// the one engine failure that is not retried (it is «Sin motor», not «arrancando»).
+		engine.spawnCommandPrefix();
+		// K2-05 T1c (S5/L11): Koda's memory is ALWAYS private, and the daemon owns
+		// its lifecycle — the port state is confirmed BEFORE the engine spawns, so
+		// cleanup is only ever taken for a port that was empty (a pre-existing
+		// listener is never claimed, an unknown state refuses ownership, and stop
+		// verifies the island identity + /health before any SIGTERM). Only Koda's
+		// own default engine gets private memory: a custom `command` never does.
+		this.memory = engine.command === DEFAULT_COMMAND
+			? await privateMemory(this.env, this.root, (line) => this.log(line), this.options.memoryOptions ?? {})
+			: undefined;
+		this.assertBooting();
 		this.accounts = new AccountManager({
 			accountsRoot: path.join(this.root, "accounts"),
 			env: this.env,
@@ -430,8 +468,6 @@ class Daemon extends EventEmitter {
 				engine.request({ type: "set_thinking_level", level: this.cfg.thinking }).catch(() => this.log("could not apply the thinking default"));
 			}
 		});
-		await engine.start();
-		if (cfg.profile) await this.profiles.select(cfg.profile).catch(() => this.log("could not activate the configured profile"));
 
 		this.connectorHost = undefined;
 		this.connectorHostUnavailable = false;
@@ -449,6 +485,7 @@ class Daemon extends EventEmitter {
 				this.connectorHostUnavailable = true;
 				this.log("connector host unavailable");
 			}
+			this.assertBooting();
 		}
 
 		const runtimeDir = ensurePrivateDir(path.join(this.root, "runtime"));
@@ -469,17 +506,23 @@ class Daemon extends EventEmitter {
 		this.telegram = this.makeTelegram();
 		this.minikodas = this.makeMinikodas(cfg);
 		this.token = IslandServer.generateToken();
-		// #386: rotation runs only when the user opted in; the summary travels
-		// with the user's NEXT prompt, never as a daemon-issued model request.
-		this.rotator = cfg.rotation?.enabled === true
-			? new SessionRotator({
-				engine,
+		// K2-05 T3 (S2): Gentle Dot's transparent rotation, ON by default (config
+		// `rotation.enabled: false` opts out). When the open session file passes the
+		// size/compaction limits, the rotator writes a new session seeded with ONE
+		// hidden handoff message, switches the engine to it and verifies the handoff
+		// reached the engine's context. The island keeps ONE continuous chat: no
+		// visible frame, no extra user message, nothing to decorate a prompt with.
+		if (cfg.rotation?.enabled === true) {
+			this.rotator = new SessionRotator(engine, {
+				limits: { bytes: cfg.rotation.bytes, compactions: cfg.rotation.compactions },
+				// The island's pause holds the rotation back, like every other turn.
+				canRotate: () => this.server?.paused !== true,
+				// The engine refuses to open a session whose stored cwd is missing; a
+				// previous session always carries its own cwd, this is only a fallback.
+				cwd: cfg.workspace,
 				log: (line) => this.log(line),
-				isPaused: () => this.server?.paused === true,
-				...(cfg.rotation.thresholdPercent !== undefined ? { thresholdPercent: cfg.rotation.thresholdPercent } : {}),
-				...(cfg.rotation.keepTurns !== undefined ? { keepTurns: cfg.rotation.keepTurns } : {}),
-			})
-			: undefined;
+			});
+		}
 		this.server = new IslandServer({
 			runtimeDir,
 			token: this.token,
@@ -498,14 +541,13 @@ class Daemon extends EventEmitter {
 			settings: { get: () => ({ hotkey: this.getHotkey() }), setHotkey: (value) => this.persistHotkey(value) },
 			paused: cfg.paused === true, // #379: the persisted pause is restored at every boot
 			pausedStore: { get: () => this.cfg?.paused === true, set: (value) => this.persistPaused(value) },
-			promptDecorator: (message) => this.rotator?.beginPrompt(message) ?? message, // #386 (R6: committed only after the engine accepts the prompt)
 			interruptedRecord: () => this.readInterruptedSummary(), // R5: bounded closed summary of the unconsumed record
 			onInterruptedAck: () => this.consumeInterruptedRecord(), // R5: consumption happens only after a client ack
-			onNewConversation: () => this.rotator?.discardPending(), // #386
 			log: (line) => this.log(line),
 			...(this.options.serverOptions ?? {}),
 		});
 		const { endpoint } = await this.server.start();
+		this.assertBooting();
 		this.endpoint = endpoint;
 		// K2-13: schedules arm only once the server is up; nothing runs before an approved recipe.
 		this.minikodas.start();
@@ -534,6 +576,41 @@ class Daemon extends EventEmitter {
 		void this.agents?.removeLegacyRecap?.();
 		// R5: a boot never consumes the interrupted-work record; it is exposed
 		// once through the ready frame and consumed only after interrupted_ack.
+
+		// K2-05 boot order = Gentle Dot (daemon.ts:470-481): the server already listens and the
+		// session is published, so the island's health check and its clients are answered while
+		// the engine starts (they read "starting"/"restarting", sends are refused unavailable).
+		// A failed first start is logged, never fatal: the runtime keeps retrying with its backoff.
+		if (cfg.profile) this.activateProfileWhenReady(cfg.profile);
+		// From here a stop() does not wait for the boot: it tears down at once and stops the
+		// starting engine (Gentle Dot close() during supervisor.start()).
+		this.engineStarting = true;
+		await engine.start().catch((error) => {
+			if (this.state === "stopping" || this.state === "stopped") return;
+			// Koda deviation: a spawn that could not even be prepared (the private identity file
+			// refused) is not retried by the runtime, so the line does not promise a retry.
+			this.log(`agent failed to start: ${error.message}${engine.status === "stopped" ? "" : "; retrying"}`);
+		});
+	}
+
+	/**
+	 * The configured profile is activated the first time the engine is ready (it restarts the
+	 * engine on the profile's model), exactly once per boot. Before K2-05's boot order this ran
+	 * right after an awaited engine start; now the engine may still be starting when boot returns.
+	 */
+	activateProfileWhenReady(profileId) {
+		const engine = this.engine;
+		const activate = () => {
+			if (this.state === "stopping" || this.state === "stopped" || this.engine !== engine) return;
+			this.profiles.select(profileId).catch(() => this.log("could not activate the configured profile"));
+		};
+		if (engine.status === "ready") return activate();
+		const onStatus = ({ state }) => {
+			if (state !== "ready") return;
+			engine.off("status", onStatus);
+			activate();
+		};
+		engine.on("status", onStatus);
 	}
 
 	/**
@@ -733,9 +810,10 @@ class Daemon extends EventEmitter {
 
 	/**
 	 * K2-13 Minikodas. Each Minikoda runs in its own engine root under `<island>/minikodas/engines/<id>` with
-	 * the same engine command as the chat (`cfg.command`, plain `pi` in release/0.2; the Gentle Shell command
-	 * once K2-05 lands). The model is validated against the accounts Koda already has; the default is the
-	 * chat's active profile. The global pause (#379) refuses launches and skips scheduled ticks.
+	 * the same engine command as the chat (`cfg.command`: after K2-05 merged into release/0.2 that is Koda's
+	 * bundled Gentle Shell, resolved by the runtime; the engine stays injectable for tests). The model is validated
+	 * against the accounts Koda already has; the default is the chat's active profile. The global pause (#379)
+	 * refuses launches and skips scheduled ticks.
 	 */
 	makeMinikodas(cfg) {
 		const { engine: engineOverrides, ...rest } = this.options.minikodasOptions ?? {};
@@ -899,7 +977,7 @@ class Daemon extends EventEmitter {
 	}
 
 	async teardown() {
-		this.rotator?.stop(); // #386: detach before the engine goes down
+		this.rotator?.stop(); // K2-05 T3: detach the settle listener before the engine goes down
 		if (this.wroteSession) {
 			try {
 				const current = readSession(this.root);
@@ -923,6 +1001,11 @@ class Daemon extends EventEmitter {
 		this.telegram = undefined;
 		await this.server?.close().catch(() => {});
 		await this.engine?.stop().catch(() => {});
+		// K2-05 T1c: the private memory server stops AFTER the engine is gone (its
+		// last user), and only when it was proven to be Koda's own (instance id +
+		// /health + stable pid): a foreign server is never touched.
+		await this.memory?.stop().catch(() => {});
+		this.memory = undefined;
 		// After the engine stop, so pi is gone before its MCP capability file is.
 		if (this.wroteMcp) {
 			config.removeMcpProjection(this.root);
@@ -934,7 +1017,16 @@ class Daemon extends EventEmitter {
 
 	async stop() {
 		if (this.state === "stopped") return;
+		// K2-05 boot follow-up = Gentle Dot close() (daemon.ts:410-458): a stop while the boot waits
+		// for the engine's first start acts at once (session.json withdrawn, the starting engine
+		// stopped). Earlier in the boot (short, bounded steps) the boot itself stops at its next
+		// check and tears down; this stop waits for that.
+		const booting = this.state === "starting" && !this.engineStarting ? this.starting : undefined;
 		this.state = "stopping";
+		if (booting) {
+			await booting.catch(() => {});
+			if (this.state === "stopped") return;
+		}
 		await this.teardown();
 		this.state = "stopped";
 	}
@@ -1007,7 +1099,7 @@ class Daemon extends EventEmitter {
 	}
 
 	async restartIfWorkspaceMoved() {
-		const next = config.loadConfig(this.root, { env: this.env });
+		const next = config.loadConfig(this.root, { env: this.env, log: (line) => this.log(line) });
 		const engine = this.engine;
 		const overrides = this.options.engineOptions ?? {};
 		const effective = (workspace) => engine.cwdOption ?? workspace ?? engine.island.workspace;
@@ -1028,6 +1120,14 @@ class Daemon extends EventEmitter {
 		if (cwdMoved) config.clearSessionPointer(this.root);
 		engine.workspacePath = next.workspace;
 		if (commandMoved) engine.command = next.command;
+		// F6: switching a custom command BACK to Koda's own engine starts private
+		// memory inside the engine's spawn — without claiming the port's ownership
+		// here, that server was left running at daemon stop. Claim it exactly like
+		// the boot path does (empty port, or a proven-Koda orphan via the F2
+		// reclaim; an unproven port stays unowned and is never stopped).
+		if (commandMoved && engine.command === DEFAULT_COMMAND && !this.memory) {
+			this.memory = await privateMemory(this.env, this.root, (line) => this.log(line), this.options.memoryOptions ?? {});
+		}
 		this.cfg = { ...this.cfg, ...next };
 		await engine.start();
 		return true;

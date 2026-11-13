@@ -9,7 +9,10 @@ import { session, trusted, foldable as foldableCard } from './runtime.js';
 import { t } from './i18n-es.js';
 import { keyAccountCommand, keyAccountId } from './keyaccounts.js';
 const UNAVAILABLE = 'No disponible todavía';
-const STORE = 'Secret Service (GNOME Keyring, KWallet)';
+// K2-01c: name the keychain this OS really uses, like hub/integrations.
+const UA = typeof navigator !== 'undefined' ? navigator.userAgent : '';
+const STORE = UA.includes('Windows') ? 'Windows Credential Manager'
+  : UA.includes('Mac OS X') ? 'macOS Keychain' : 'Secret Service (GNOME Keyring, KWallet)';
 // #503 S3: providers outside Coucou's table (core/providers.ts) name their keychain key here.
 const KEYS: Record<string, string> = { nan: 'nan-api-key', opencodego: 'opencode-go-api-key' };
 const CLOUD = [
@@ -28,7 +31,7 @@ export async function renderChatSettings({ invoke, V, listen, timers }: any) {
   root.style.setProperty('display', 'contents');
   s.message.className = 'abito-settings-feedback notice err';
   const present: Record<string,boolean | undefined> = {};
-  let state: any = null, prefs: any = {}, modelBusy = false;
+  let state: any = null, prefs: any = {};
   const keyRefresh: Record<string,() => void> = {};
   const subscriptionCleanups: (() => void)[] = [];
   function subscriptionRow(group: 'anthropic' | 'openai', provider: 'claude' | 'chatgpt') {
@@ -145,7 +148,7 @@ export async function renderChatSettings({ invoke, V, listen, timers }: any) {
         // The key also becomes (or stops being) a provider account the chat can use. The value only lives in this closure
         // until the one account command is sent; it is never rendered, logged or kept.
         const account = keyAccountCommand(id, action as 'set' | 'clear', value, V.ownedAccounts(state?.ownedAccounts));
-        if (account) work(() => call('agent_action', account), next => { state = { ...state, ...next }; drawModels(); },
+        if (account) work(() => call('agent_action', account), next => { state = { ...state, ...next }; },
           () => feedback.append(h('div', { class: 'notice err', text: 'La clave quedó guardada, pero no se pudo crear la cuenta del chat. Créala en Cuentas.' })));
       }, error => {
         dot.style.setProperty('background', '#f5a524');
@@ -180,48 +183,21 @@ export async function renderChatSettings({ invoke, V, listen, timers }: any) {
     keyRefresh[id] = refresh; refresh();
     return { r, dot, stateLabel, feedback, stateBadge, fieldError, testReason };
   }
-  // #503 S4: ONE list of AI providers; every card owns its credential and its model choice (no second system for the same keys).
+  // #503 S4: ONE list of AI providers; every card owns its credential. K2-05 U5c (L72): the model is the engine's —
+  // the per-provider model <select> and the chosen-models preference are gone, so no card offers a choice.
   const api = keyRow('anthropic-api-key', t('API key'), 'sk-ant-...', true);
-  const models: Record<string, HTMLSelectElement> = {};
-  const FALLBACK: Record<string, string[][]> = { anthropic: [['claude-opus-5','Claude Opus 5'],['claude-sonnet-5','Claude Sonnet 5'],['claude-haiku-4-5','Claude Haiku 4.5']] };
-  const modelPicker = (group: string) => {
-    const select = trusted(h('select', { id: `chat-${group}-model`, 'aria-label': t('Model') })) as HTMLSelectElement;
-    models[group] = select;
-    select.addEventListener('change', e => {
-      if (!e.isTrusted || select.disabled || modelBusy) return;
-      const g = V.modelsTabView(state, prefs.chosenModels || {}).groups?.find((x: any) => x.id === group && x.connected);
-      const choice = g?.models.find((m: any) => m.id === select.value); if (!choice || choice.chosen) return;
-      // Same chosen-model preference as the legacy Modelos tab; preserve the other chosen models.
-      const payload = V.chosenModelsPayload(V.chosenToggle(prefs.chosenModels || {}, group, choice.id), group);
-      if (!payload) return; modelBusy = true; select.disabled = true;
-      work(() => call('prefs_action', payload), next => { prefs = next; }).finally(() => { modelBusy = false; if (s.alive()) drawModels(); });
-    });
-    return select;
-  };
-  function drawModels() {
-    const view = V.modelsTabView(state, prefs.chosenModels || {});
-    for (const [group, select] of Object.entries(models)) {
-      clear(select);
-      const offered = view.groups?.find((g: any) => g.id === group && g.connected)?.models || [];
-      // Do not invent callable cloud model ids: show the upstream catalogue (Claude only), disabled.
-      if (!offered.length) for (const [id, name] of FALLBACK[group] || [['', UNAVAILABLE]]) select.append(h('option', { value: id, text: name }));
-      else for (const m of offered) select.append(h('option', { value: m.id, text: m.name }));
-      select.value = offered.find((m: any) => m.chosen)?.id || offered[0]?.id || FALLBACK[group]?.[0][0] || '';
-      select.disabled = modelBusy || !offered.length; select.title = offered.length ? 'Modelos elegidos de Koda; no cambia el modelo activo de una conversación.' : UNAVAILABLE;
-    }
-  }
   const engineSlots: Record<string, HTMLElement> = {};
   const engineSlot = (group: string) => engineSlots[group] = h('div', { id: `chat-engine-slot-${group}` });
   // L2 «Chat: A · Proveedores plegables»: each provider card folds to its title row (state badge stays visible). Open by default so no field is
   // ever hidden behind a gesture the human did not make; the fold is a view state only, nothing is stored.
   // HU-044: the old open-by-default fold (0.2.1 L2 A) is the shared `foldable` of runtime.ts: every Chat apartado now starts folded.
   const foldable = (card: HTMLElement) => foldableCard(card, card.getAttribute('aria-label') || (card.children[0]?.firstElementChild?.textContent || card.children[0]?.textContent || '').replace(/[▾▸]/g, '').trim());
-  const apiSection = notchCard('Claude', api.stateBadge, api.stateLabel, api.r, api.fieldError, api.testReason, row(t('Model'), modelPicker('anthropic')), api.feedback, subscriptionRow('anthropic', 'claude'), engineSlot('anthropic'));
+  const apiSection = notchCard('Claude', api.stateBadge, api.stateLabel, api.r, api.fieldError, api.testReason, api.feedback, subscriptionRow('anthropic', 'claude'), engineSlot('anthropic'));
   apiSection.children[0].prepend(api.dot); foldable(apiSection);
   const providerCards: HTMLElement[] = [];
   for (const [id, name, placeholder, site] of CLOUD) {
     const k = keyRow(KEYS[id] ?? providerDef(id).key!, name, placeholder);
-    const c = notchCard(name, k.stateBadge, k.stateLabel, k.r, k.fieldError, k.testReason, row(t('Model'), modelPicker(id)), k.feedback, engineSlot(id));
+    const c = notchCard(name, k.stateBadge, k.stateLabel, k.r, k.fieldError, k.testReason, k.feedback, engineSlot(id));
     if (id === 'openai') c.append(subscriptionRow('openai', 'chatgpt'));
     c.setAttribute('title', t('Key from {site}', {site})); // long explanation = tooltip, not a paragraph (S1)
     c.children[0].prepend(k.dot); foldable(c); providerCards.push(c);
@@ -245,7 +221,7 @@ export async function renderChatSettings({ invoke, V, listen, timers }: any) {
     const label = h('label', {}, h('i', { class:'dot', style:`background:${p.accent};margin-right:8px` }), h('span', { text:t(name) }));
     block.append(h('div', { class:'row' }, label, url, connect));
     if (id === 'custom') block.append(row('', key));
-    const na = hint(UNAVAILABLE); na.setAttribute('title', 'Conexión de direcciones arbitrarias no disponible todavía; los modelos verificados de Koda siguen debajo.');
+    const na = hint(UNAVAILABLE); na.setAttribute('title', 'Conexión de direcciones arbitrarias no disponible todavía.');
     block.append(na, exposure);
     showExposure(); locals.append(block);
   }
@@ -282,19 +258,18 @@ export async function renderChatSettings({ invoke, V, listen, timers }: any) {
   ctxCard.setAttribute('id', 'chat-window-context'); // S5 (#503): the live-context row lives inside it
   foldable(ctxCard);
   const localCard = section(t('Local models'), locals);
-  localCard.setAttribute('title', t('Chat with a model you run yourself: Ollama or LM Studio (leave the address empty for the usual one on this computer), or any server that speaks the OpenAI API, such as vLLM or llama.cpp. Once connected, pick it above the chat box.'));
+  localCard.setAttribute('title', t('Chat with a model you run yourself: Ollama or LM Studio (leave the address empty for the usual one on this computer), or any server that speaks the OpenAI API, such as vLLM or llama.cpp.'));
   localCard.setAttribute('id', 'chat-local-models');
   foldable(localCard);
   const engineOthers = h('div', { id: 'chat-engine-others' });
   root.append(apiSection,
     ...providerCards, engineOthers, h('div', { id: 'chat-extras' }), localCard,
     ctxCard, s.message);
-  drawModels();
-  watch('agent:state', next => { state = { ...state, ...next }; drawModels(); });
-  watch('prefs:state', next => { prefs = next; drawModels(); paintContext(); });
+  watch('agent:state', next => { state = { ...state, ...next }; });
+  watch('prefs:state', next => { prefs = next; paintContext(); });
   for (const key of ['anthropic-api-key', ...CLOUD.map(([id]) => KEYS[id] ?? providerDef(id).key!)]) work(() => call('secret_action', V.keyPayload('present', key)), result => { present[key] = result?.present === true; keyRefresh[key](); });
-  for (const action of ['view','models_list']) work(() => call('agent_action', { action }), next => { state = { ...state, ...next }; drawModels(); });
-  work(() => call('prefs_action', { action:'view' }), next => { prefs = next; drawModels(); paintContext(); });
+  work(() => call('agent_action', { action: 'view' }), next => { state = { ...state, ...next }; });
+  work(() => call('prefs_action', { action:'view' }), next => { prefs = next; paintContext(); });
   const result = s.finish(), dispose = result.dispose;
   return Object.assign(result, { dispose: () => { subscriptionCleanups.forEach(fn => fn()); dispose(); }, slotFor: (name: string) => engineSlots[name] || engineOthers });
 }

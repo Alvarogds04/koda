@@ -72,13 +72,47 @@ const SESSIONS = [
 const UUID = '0b3a5c9e-8f27-4d11-9a0e-1c2d3e4f5a6b';
 
 /** scenario = { sessions: [...]|[], notices: n, engine: 'down'|'account'|null, github: bool, question: 'plain'|'approval'|null, finished: text|null } */
+/* CI 43338707770 (island node shard 3, Windows): island-geometry-check failed opening its page with
+   net::ERR_NO_BUFFER_SPACE, the same Chromium network-buffer error test-node/avisos-interaction-check.cjs already
+   retries (a95d396): three Windows shards drive one runner's Chromium at once, and a page that cannot be fetched is
+   SETUP, never a verdict. Opening is retried once and every assertion still runs (twice if needed); a broken layout
+   fails both times, exactly as before. A failed attempt also releases its server and its browser HERE: a leaked http
+   server is what made the avisos twin hang until the 420 s shard cap instead of reporting the real error. */
+const TRANSIENT_PAGE_OPEN = /net::ERR_NO_BUFFER_SPACE|net::ERR_NETWORK_CHANGED|net::ERR_CONNECTION_RESET/;
+
 async function open(scenario = {}) {
+  let last;
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    try { return await openOnce(scenario); } catch (error) {
+      last = error;
+      if (attempt === 2 || !TRANSIENT_PAGE_OPEN.test(String((error && error.message) || error))) throw error;
+      console.error(`island-geometry harness: retrying a page that failed to load: ${(error && error.message) || error}`);
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+    }
+  }
+  throw last;
+}
+
+/** One attempt: the server, the browser and every SETUP step. It owns no verdict, and a failed attempt frees what it opened. */
+async function openOnce(scenario) {
   const pw = findPlaywright();
   if (!pw) return null;
   const server = await serve(scenario);
-  const base = `http://127.0.0.1:${server.address().port}`;
-  const browser = await pw.chromium.launch({ args: ['--no-sandbox'] });
-  const page = await browser.newPage({ viewport: { width: 752, height: 340 } });
+  let browser;
+  try {
+    const base = `http://127.0.0.1:${server.address().port}`;
+    browser = await pw.chromium.launch({ args: ['--no-sandbox'] });
+    const page = await browser.newPage({ viewport: { width: 752, height: 340 } });
+    return await setup({ scenario, server, base, browser, page });
+  } catch (error) {
+    await browser?.close().catch(() => {});
+    server.close();
+    throw error;
+  }
+}
+
+/** Everything once the page exists: init script, navigation and the waits the island needs. Still setup, never an assertion. */
+async function setup({ scenario, server, base, browser, page }) {
   await page.addInitScript(({ scenario, SESSIONS, UUID }) => {
     const listeners = {};
     const sessions = scenario.manyPi ? Array.from({ length: 14 }, (_, i) => ({ id: 's-' + (0x100 + i).toString(16).padStart(8, '0'), kind: 'pi', cwd: 'proyecto-' + i, state: i === 0 ? 'running' : 'sleeping', origin: null })) : scenario.sessions === undefined ? SESSIONS : scenario.sessions;
@@ -263,7 +297,7 @@ async function open(scenario = {}) {
       return hits;
     }, sel),
     screenshot: file => page.screenshot({ path: file }),
-    close: async () => { await browser.close(); server.close(); },
+    close: async () => { try { await browser.close(); } finally { server.close(); } },
   };
 }
 module.exports = { open, findPlaywright, unknownPhase, unknownPhaseInPage, knownPhaseInPage };
