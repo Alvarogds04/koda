@@ -25,6 +25,7 @@ const FIXTURE = () => answer([
   ev({ title: 'UTC de ayer en local', start: { date: '2026-05-12', time: '01:00:00', tz: 'UTC' }, end: { date: '2026-05-12', time: '02:00:00', tz: 'UTC' } }),
   ev({ title: 'Flotante mañana', location: 'Oficina', start: { date: '2026-05-13', time: '09:00:00', tz: null }, end: { date: '2026-05-13', time: '09:30:00', tz: null } }),
   ev({ title: 'Con zona escrita', start: { date: '2026-05-12', time: '18:00:00', tz: 'Europe/Madrid' }, end: { date: '2026-05-12', time: '19:00:00', tz: 'Europe/Madrid' } }),
+  ev({ title: 'Zona desconocida', start: { date: '2026-05-12', time: '20:00:00', tz: 'Mars/Olympus' }, end: { date: '2026-05-12', time: '21:00:00', tz: 'Mars/Olympus' } }),
   ev({ title: 'Feriado', allDay: true, start: { date: '2026-05-12', time: null, tz: null }, end: { date: '2026-05-13', time: null, tz: null } }),
   ev({ title: 'Todo el día mañana', allDay: true, start: { date: '2026-05-13', time: null, tz: null }, end: { date: '2026-05-14', time: null, tz: null } }),
   ev({ title: 'La semana que viene', start: { date: '2026-05-15', time: '10:00:00', tz: 'UTC' }, end: { date: '2026-05-15', time: '11:00:00', tz: 'UTC' } }),
@@ -45,11 +46,14 @@ if (process.argv[2] === '--zone') {
   assert.equal(v.kind, 'card', `${tz}: an available answer shows the card`);
   const labels = v.rows.map(r => `${r.day} ${r.time} ${r.title}`);
   if (tz === 'America/Argentina/Buenos_Aires') {
+    // A TZID is converted with the WebView's own zone database: 18:00 in Europe/Madrid (CEST, UTC+2) is 16:00Z, 13:00 here. A zone
+    // the database does not know (a Windows name, a typo) keeps its written wall time (20:00).
     // UTC-3: 14:30Z is 11:30 local; 13 May 02:00Z is 12 May 23:00 local (today!); 12 May 01:00Z is 11 May 22:00 (yesterday, dropped)
     assert.deepEqual(labels, [
       'Hoy Todo el día Feriado',
       'Hoy 11:30 UTC hoy',
-      'Hoy 18:00 Con zona escrita',
+      'Hoy 13:00 Con zona escrita',
+      'Hoy 20:00 Zona desconocida',
       'Hoy 23:00 UTC que cae hoy en local',
       'Mañana Todo el día Todo el día mañana',
       'Mañana 09:00 Flotante mañana',
@@ -61,7 +65,8 @@ if (process.argv[2] === '--zone') {
       'Hoy Todo el día Feriado',
       'Hoy 01:00 UTC de ayer en local',
       'Hoy 14:30 UTC hoy',
-      'Hoy 18:00 Con zona escrita',
+      'Hoy 16:00 Con zona escrita',
+      'Hoy 20:00 Zona desconocida',
       'Mañana Todo el día Todo el día mañana',
       'Mañana 02:00 UTC que cae hoy en local',
       'Mañana 09:00 Flotante mañana',

@@ -51,6 +51,25 @@
     return h > 23 || mi > 59 || s > 59 ? null : { h, mi, s };
   }
 
+  /** Milliseconds that `zone` is ahead of UTC at `instant`, read from the WebView's own zone database; null for a zone it does not know. */
+  function zoneOffset(zone, instant) {
+    try {
+      const parts = {};
+      for (const p of new Intl.DateTimeFormat('en-US', { timeZone: zone, hourCycle: 'h23', year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric', second: 'numeric' }).formatToParts(new Date(instant))) parts[p.type] = Number(p.value);
+      return Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, parts.second) - Math.floor(instant / 1000) * 1000;
+    } catch { return null; }
+  }
+
+  /** The instant (ms) of a wall time written in `zone` (a TZID), or null when the zone is unknown. Two passes settle the DST edge. */
+  function zonedInstant(zone, wallUtc) {
+    const first = zoneOffset(zone, wallUtc);
+    if (first === null) return null;
+    const second = zoneOffset(zone, wallUtc - first);
+    return wallUtc - (second === null ? first : second);
+  }
+
+  const localPlace = at => ({ day: key(at.getFullYear(), at.getMonth() + 1, at.getDate()), minutes: at.getHours() * 60 + at.getMinutes(), allDay: false });
+
   /** One Stamp of the answer → {day, minutes, allDay} in the user's zone, or null when it is not the shape we know. */
   function place(stamp) {
     if (!isObject(stamp)) return null;
@@ -60,11 +79,16 @@
     const time = parseTime(stamp.time);
     if (!time) return null;
     if (stamp.tz !== null && stamp.tz !== undefined && typeof stamp.tz !== 'string') return null;
-    // 'UTC' is an instant: the wall time moves to this machine's zone. A TZID or a floating stamp stays as written.
-    if (stamp.tz === 'UTC') {
-      const at = new Date(Date.UTC(date.y, date.m - 1, date.d, time.h, time.mi, time.s));
-      if (Number.isNaN(at.getTime())) return null;
-      return { day: key(at.getFullYear(), at.getMonth() + 1, at.getDate()), minutes: at.getHours() * 60 + at.getMinutes(), allDay: false };
+    // 'UTC' is an instant and a TZID is a wall time in that zone: both move to this machine's zone. A floating stamp, or a zone the
+    // database does not know (a Windows name, a typo), stays as written.
+    if (typeof stamp.tz === 'string' && stamp.tz) {
+      const wall = Date.UTC(date.y, date.m - 1, date.d, time.h, time.mi, time.s);
+      const instant = stamp.tz === 'UTC' ? wall : zonedInstant(stamp.tz, wall);
+      if (instant !== null) {
+        const at = new Date(instant);
+        if (Number.isNaN(at.getTime())) return null;
+        return localPlace(at);
+      }
     }
     return { day: key(date.y, date.m, date.d), minutes: time.h * 60 + time.mi, allDay: false };
   }
