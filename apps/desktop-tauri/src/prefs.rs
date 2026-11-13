@@ -302,6 +302,8 @@ pub settings_window: Option<bool>,
     /// #487: opt-in to read the previous window's app and title for the chat (NotchBuddy feature 8).
     /// `None` means off and is never written.
     pub window_context: Option<bool>,
+    /// K2-06 S3: lets the chat agent capture the user's window when asked. `None` means off and is never written.
+    pub window_capture: Option<bool>,
     /// K2 phone link (S3/D3): the switch that makes the desktop listen for the phone on the LAN.
     /// `None` means OFF — nothing listens, nothing is announced — and is never written.
     pub phone_link: Option<bool>,
@@ -377,6 +379,7 @@ impl Default for Prefs {
             show_plan_in_notch: None,
             show_codex_plan_in_notch: None,
             window_context: None,
+            window_capture: None,
             phone_link: None,
             phone_usage: None,
             live_context: None,
@@ -560,6 +563,7 @@ impl Prefs {
     /// S10 (L30): the effective Codex pill policy — absent means off (no `codex app-server` is ever started).
     pub fn show_codex_plan_in_notch(&self) -> bool { self.show_codex_plan_in_notch.unwrap_or(false) }
     pub fn window_context(&self) -> bool { self.window_context.unwrap_or(false) }
+    pub fn window_capture(&self) -> bool { self.window_capture.unwrap_or(false) }
     /// K2 phone link: OFF unless the human turned it on in Ajustes (S3).
     pub fn phone_link(&self) -> bool { self.phone_link.unwrap_or(false) }
     /// K2 T6: OFF unless the human asked the phone to show the plan usage (S11/§11).
@@ -614,6 +618,7 @@ impl Prefs {
             show_plan_in_notch: v.get("show_plan_in_notch").and_then(Value::as_bool),
             show_codex_plan_in_notch: v.get("show_codex_plan_in_notch").and_then(Value::as_bool),
             window_context: v.get("window_context").and_then(Value::as_bool),
+            window_capture: v.get("window_capture").and_then(Value::as_bool),
             phone_link: v.get("phone_link").and_then(Value::as_bool),
             phone_usage: v.get("phone_usage").and_then(Value::as_bool),
             live_context: v.get("live_context").and_then(Value::as_bool),
@@ -686,6 +691,9 @@ impl Prefs {
         }
         if let Some(on) = self.window_context {
             v["window_context"] = json!(on);
+        }
+        if let Some(on) = self.window_capture {
+            v["window_capture"] = json!(on);
         }
         if let Some(on) = self.phone_link {
             v["phone_link"] = json!(on);
@@ -780,6 +788,7 @@ pub enum Command {
     /// S10 (L30): show or hide the Codex plan-usage pill (an opt-in to `codex app-server`). `false` stores no key.
     SetShowCodexPlanInNotch(bool),
     SetWindowContext(bool),
+    SetWindowCapture(bool),
     /// K2 phone link (S3): the switch that opens the LAN port; `false` stores no key at all.
     SetPhoneLink(bool),
     /// K2 T6 (S11): whether the phone is sent the plan usage (§11).
@@ -984,6 +993,11 @@ pub fn parse_command(payload: &Value) -> Result<Command, CommandError> {
             let on = map.get("window_context").and_then(Value::as_bool).ok_or(CommandError)?;
             Ok(Command::SetWindowContext(on))
         }
+        // K2-06 S3: exactly action + window_capture (a bool); no coercion.
+        Some("set_window_capture") if map.len() == 2 => {
+            let on = map.get("window_capture").and_then(Value::as_bool).ok_or(CommandError)?;
+            Ok(Command::SetWindowCapture(on))
+        }
         // K2 phone link (S3): exactly action + phone_link (a bool); no coercion.
         Some("set_phone_link") if map.len() == 2 => {
             let on = map.get("phone_link").and_then(Value::as_bool).ok_or(CommandError)?;
@@ -1173,6 +1187,7 @@ pub fn apply(current: &Prefs, command: &Command) -> Result<Prefs, CommandError> 
         Command::SetShowPlanInNotch(on) => next.show_plan_in_notch = on.then_some(true),
         Command::SetShowCodexPlanInNotch(on) => next.show_codex_plan_in_notch = on.then_some(true),
         Command::SetWindowContext(on) => next.window_context = on.then_some(true),
+        Command::SetWindowCapture(on) => next.window_capture = on.then_some(true),
         Command::SetPhoneLink(on) => next.phone_link = on.then_some(true),
         Command::SetPhoneUsage(on) => next.phone_usage = on.then_some(true),
         Command::SetLiveContext(on) => next.live_context = (!on).then_some(false),

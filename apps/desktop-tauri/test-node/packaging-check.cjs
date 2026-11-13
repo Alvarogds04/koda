@@ -399,7 +399,7 @@ test('law: XTest (synthetic input) is never a production dependency, and the shi
   // the law must read tables, not just the first `[dev-dependencies]` header.
   assert.doesNotThrow(() => L.checkConfig(crate), 'the real Cargo.toml keeps xtest under a dev-dependencies table');
   let d = copyCrate();
-  fs.writeFileSync(path.join(d, 'Cargo.toml'), fs.readFileSync(path.join(d, 'Cargo.toml'), 'utf8').replace('x11rb = { version = "0.13", features = ["xkb"] }', 'x11rb = { version = "0.13", features = ["xkb", "xtest"] }'));
+  fs.writeFileSync(path.join(d, 'Cargo.toml'), fs.readFileSync(path.join(d, 'Cargo.toml'), 'utf8').replace('x11rb = { version = "0.13", features = ["xkb", "composite"] }', 'x11rb = { version = "0.13", features = ["xkb", "composite", "xtest"] }'));
   assert.throws(() => L.checkConfig(d), /xtest/); fs.rmSync(d, { recursive: true });
   // Same crate, renamed table: a dev-dependencies table relabelled as a
   // target-specific PRODUCTION table must trip the law even though the text of

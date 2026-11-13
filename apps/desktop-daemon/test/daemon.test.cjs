@@ -449,6 +449,41 @@ test("MCP: a valid private source is projected into the agent dir; an unsafe one
 	assert.equal(fs.existsSync(path.join(b.root, "agent", "mcp.json")) && fs.readFileSync(path.join(b.root, "agent", "mcp.json"), "utf8").includes("command"), false);
 });
 
+test("K2-06 T1/T3: the host's window endpoint is projected as `computer` and its extension installed; the token lives only in that 0600 file", async () => {
+	const token = "cap_0123456789abcdef";
+	const endpoint = "http://127.0.0.1:48217/mcp";
+	const { daemon, root, logs } = make({ env: { KODA_WINDOW_MCP_URL: endpoint, KODA_WINDOW_MCP_TOKEN: token } });
+	// A config the boot itself reports (B1 obsolete rotation keys) gives the log assertion a positive control.
+	fs.mkdirSync(root, { recursive: true, mode: 0o700 });
+	writePrivateFile(path.join(root, "config.json"), JSON.stringify({ rotation: { thresholdPercent: 80 } }));
+	await daemon.start();
+	try {
+		const projected = path.join(root, "agent", "mcp.json");
+		assertMode(projected, 0o600);
+		assert.deepEqual(JSON.parse(fs.readFileSync(projected, "utf8")).mcpServers, {
+			computer: { type: "http", url: endpoint, headers: { Authorization: `Bearer ${token}` } },
+		});
+		assert.equal(daemon.status().mcpServers, 1);
+		// The extension that keeps only the last screenshot and refuses a blind capture is already in place.
+		assertMode(path.join(root, "agent", "extensions", "koda-window-capture.js"), 0o600);
+		// The capability lives in the 0600 projection ONLY: no log line and no other island file carries it.
+		assert.ok(logs.length > 0, "the boot logged something");
+		for (const line of logs) assert.equal(line.includes(token), false, "the token must never be logged");
+		const leaks = [];
+		const walk = (dir) => {
+			for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+				const full = path.join(dir, entry.name);
+				if (entry.isDirectory()) walk(full);
+				else if (entry.isFile() && full !== projected && fs.readFileSync(full, "utf8").includes(token)) leaks.push(full);
+			}
+		};
+		walk(root);
+		assert.deepEqual(leaks, [], "the token only ever exists in <island>/agent/mcp.json");
+	} finally {
+		await daemon.stop();
+	}
+});
+
 test("a config error at start aborts before any process is spawned", async () => {
 	const { daemon, root, evidence } = make();
 	fs.mkdirSync(root, { recursive: true, mode: 0o700 });

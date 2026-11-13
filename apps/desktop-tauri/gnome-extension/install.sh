@@ -6,7 +6,11 @@ here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 uuid=abito-context@abito
 dest="${XDG_DATA_HOME:-$HOME/.local/share}/gnome-shell/extensions/$uuid"
 mkdir -p "$dest"
-cp "$here/$uuid/metadata.json" "$here/$uuid/extension.js" "$dest/"
+# Every file of the extension ships: extension.js imports its sibling modules (token.js), and a module
+# left behind makes the Shell refuse to load the whole extension. Nothing here is test-only.
+for file in "$here/$uuid"/*; do
+    [ -f "$file" ] && cp "$file" "$dest/"
+done
 echo "Copied to $dest"
 echo "To turn it on:  gnome-extensions enable $uuid   (on Wayland, log out and in once after the first copy)"
 echo "To remove it:   gnome-extensions disable $uuid && rm -r '$dest'"

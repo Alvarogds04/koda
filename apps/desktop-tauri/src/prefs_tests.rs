@@ -2358,6 +2358,34 @@ fn old_prefs_with_both_island_lists_round_trip_byte_identical_and_no_new_key_app
     assert_eq!(Prefs::from_text(Some(&p.to_text())).to_text(), p.to_text(), "idempotent re-read");
 }
 
+// ---- K2-06 S3: `windowCapture`, the opt-in for «ask Koda about my window» ----------------------------
+#[test]
+fn window_capture_is_an_exact_closed_two_key_command() {
+    assert_eq!(parse_command(&json!({"action":"set_window_capture","window_capture":true})), Ok(Command::SetWindowCapture(true)));
+    assert_eq!(parse_command(&json!({"action":"set_window_capture","window_capture":false})), Ok(Command::SetWindowCapture(false)));
+    for bad in [
+        json!({"action":"set_window_capture"}),
+        json!({"action":"set_window_capture","window_capture":"true"}),
+        json!({"action":"set_window_capture","window_capture":null}),
+        json!({"action":"set_window_capture","window_capture":true,"x":1}),
+    ] {
+        assert_eq!(parse_command(&bad), Err(CommandError), "{bad}");
+    }
+}
+
+#[test]
+fn window_capture_is_off_by_default_persists_and_is_independent_of_window_context() {
+    assert!(!Prefs::default().window_capture(), "off by default: Koda captures nothing");
+    let on = update(&Prefs::default(), &Command::SetWindowCapture(true), |_| true).unwrap();
+    assert!(on.window_capture() && !on.window_context());
+    assert!(Prefs::from_text(Some(&on.to_text())).window_capture());
+    let off = update(&on, &Command::SetWindowCapture(false), |_| true).unwrap();
+    assert!(!off.to_text().contains("window_capture"), "the default writes no key");
+    for hostile in ["1", "\"true\"", "null", "[true]"] {
+        assert!(!Prefs::from_text(Some(&format!(r#"{{"v":1,"window_capture":{hostile}}}"#))).window_capture(), "{hostile}");
+    }
+}
+
 // ---- K2-10 T4 (S5): the mail counter's last visit -----------------------------------------
 
 /// Absent by default and never written, so a file that never showed the mail card keeps its

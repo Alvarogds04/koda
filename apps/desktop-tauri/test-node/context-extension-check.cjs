@@ -32,7 +32,7 @@ for (const acting of ['activate(', 'get_pid']) {
   assert.ok(js.includes(acting), `${acting} is used by ActivateByPid`);
   assert.ok(!outside.includes(acting), `${acting} must not appear outside ActivateByPid`);
 }
-assert.strictEqual(meta.version, 2, 'a changed contract is a new extension version');
+assert.strictEqual(meta.version, 4, 'a changed contract is a new extension version (v4: K2-06 PickWindow/CaptureWindow, token-gated)');
 assert.ok(js.includes('<method name="ActivateByPid">') && js.includes('type="u" direction="in" name="pid"') && js.includes('type="b" direction="out" name="activated"'));
 // it never answers with anything but a boolean: no pid, id, title or geometry
 const body = /ActivateByPid\(pid\) \{([\s\S]*?)\n    \}\n/.exec(js)[1];
@@ -50,7 +50,9 @@ assert.ok(js.includes('get_frame_rect'));
 for (const bad of ['win.focus(', 'win.delete(', '.change_workspace(', '.resize(']) assert.ok(!js.includes(bad), bad);
 // Exercise the real method with a Shell fake: bottom-to-top stacking, no window mutations.
 const vm = require('node:vm');
-const ctx = { Extension: class {}, Shell: { WindowTracker: { get_default: () => ({ get_window_app: w => w.app }) } } };
+// K2-06: the module top level also touches Gio (_promisify) and logError; GLib and TokenGate are only used by the
+// token-gated methods, which this check does not call, so inert fakes are enough.
+const ctx = { Extension: class {}, Gio: { _promisify() {} }, GLib: {}, TokenGate: class {}, logError() {}, Shell: { WindowTracker: { get_default: () => ({ get_window_app: w => w.app }) } } };
 vm.createContext(ctx);
 vm.runInContext(js.replace(/^import .*;$/gm, '').replace('export default class', 'globalThis.Ext = class'), ctx);
 const windowAt = new ctx.Ext();
