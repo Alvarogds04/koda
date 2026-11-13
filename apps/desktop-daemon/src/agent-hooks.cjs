@@ -5,18 +5,22 @@
  * island hooks for the agent clients NOT covered by the harness installer
  * (agents.cjs drives claude-code and codex through apps/desktop-harness; this module
  * never touches its code or its clients' files). The four native clients are
- * "self-owned artifact" adapters: Abito writes whole files it owns, marker-tagged
- * `abito-island-hooks/1` on the first line, and removes only files that carry it.
+ * "self-owned artifact" adapters: Koda writes whole files it owns, marker-tagged
+ * `koda-island-hooks/1` on the first line, and removes only files that carry it.
+ * K2-04 (S2, S4): a Koda 0.1 artifact (`abito-island-hooks/1`, old `abito-island*`
+ * names, `.abito/agent-hooks/`) is recognised as OUR OWN: install retires it into the
+ * existing backup flow and writes the new one, so each client keeps exactly one card
+ * per notice; remove takes it out too. A file without either marker stays foreign.
  *
  * Verified formats (official sources read 2026-10-16; see tests/PROTOCOL.md):
- *  - gemini-cli: a Gemini CLI extension directory `~/.gemini/extensions/abito-island/`
+ *  - gemini-cli: a Gemini CLI extension directory `~/.gemini/extensions/koda-island/`
  *    with `gemini-extension.json` and `hooks/hooks.json` holding the event map DIRECTLY
  *    (verified against gemini-cli packages/core/src/hooks/hookRegistry.ts). Events used:
  *    SessionStart, SessionEnd, Notification (advisory only — it can never block).
- *  - copilot-cli: user-level hooks file `~/.copilot/hooks/abito-island.json`,
+ *  - copilot-cli: user-level hooks file `~/.copilot/hooks/koda-island.json`,
  *    `{version:1,hooks:{sessionStart:[...],sessionEnd:[...]}}`, entries
  *    `{type:"command",exec,args,timeoutSec}` (docs.github.com hooks reference).
- *  - opencode: whole-file plugin `~/.config/opencode/plugins/abito-island.js`
+ *  - opencode: whole-file plugin `~/.config/opencode/plugins/koda-island.js`
  *    (opencode.ai/docs/plugins); `event` hook for session.created / session.idle /
  *    permission.asked.
  *  - cursor (#467): the USER's `~/.cursor/hooks.json` (`{version:1,hooks:{<event>:[{command}]}}`,
@@ -26,7 +30,7 @@
  *    and keeps everything else byte-semantically; remove drops only entries carrying the
  *    marker (the file is deleted only when nothing but our `version` stub would be left).
  *    Unparseable JSON or an unexpected `hooks` shape is `foreign_file`, never rewritten.
- *  - amp: single-file plugin `~/.config/amp/plugins/abito-island.js`
+ *  - amp: single-file plugin `~/.config/amp/plugins/koda-island.js`
  *    (ampcode.com/docs/customize/plugins); default export, `amp.on("session.start")`
  *    and `amp.on("agent.end")` — Amp has NO session.end event.
  *
@@ -61,7 +65,10 @@ const { assertSecurePath } = require("./isolation.cjs");
 const { validateHome } = require("./mcp-import.cjs");
 
 const SCHEMA = "abito-agent-hooks/1";
-const MARKER = "abito-island-hooks/1";
+const MARKER = "koda-island-hooks/1";
+// K2-04 (S2, S4): the Koda 0.1 marker. Still OUR OWN: recognised by isOurs, so a 0.1 artifact is retired/removed instead of
+// being left behind to make the client show a second card. The protocol schema id above does not change.
+const LEGACY_MARKER = "abito-island-hooks/1";
 const ARTIFACT_VERSION = 1;
 const MAX_FILE_BYTES = 2 * 1024 * 1024;
 const MAX_DIFF_LINES = 200;
@@ -87,13 +94,30 @@ const CLIENTS = Object.freeze([
 	Object.freeze({ id: "amp", name: "Amp", script: false }),
 	Object.freeze({ id: "cursor", name: "Cursor", script: true }),
 ]);
-const SCRIPT_REL = ".abito/agent-hooks/island-notify.mjs";
+const SCRIPT_REL = ".koda/agent-hooks/island-notify.mjs";
 /** The clients whose generated hooks reference the shared notify script. */
 const SCRIPT_DEPENDENTS = Object.freeze(["gemini-cli", "copilot-cli", "cursor"]);
-/** Managed directory chains removed (rmdir, only when empty) after deletions. */
-const MANAGED_DIRS = Object.freeze([".gemini/extensions/abito-island/hooks", ".gemini/extensions/abito-island"]);
+/** K2-04: the Koda 0.1 names, recognised and retired in place. Same clients, same shapes. */
+const LEGACY_SCRIPT_REL = ".abito/agent-hooks/island-notify.mjs";
+const LEGACY_RELS = Object.freeze({
+	"gemini-cli": Object.freeze([".gemini/extensions/abito-island/gemini-extension.json", ".gemini/extensions/abito-island/hooks/hooks.json"]),
+	"copilot-cli": Object.freeze([".copilot/hooks/abito-island.json"]),
+	opencode: Object.freeze([".config/opencode/plugins/abito-island.js"]),
+	amp: Object.freeze([".config/amp/plugins/abito-island.js"]),
+	// cursor is the SAME file (~/.cursor/hooks.json): its 0.1 entries carry the legacy marker and are recognised there.
+	cursor: Object.freeze([]),
+});
+/** Managed directory chains removed (rmdir, only when empty) after deletions. Both names: the 0.1 ones go with the new ones. */
+const MANAGED_DIRS = Object.freeze([
+	".gemini/extensions/koda-island/hooks",
+	".gemini/extensions/koda-island",
+	".gemini/extensions/abito-island/hooks",
+	".gemini/extensions/abito-island",
+]);
 /** Contents each managed gemini directory may hold (anything else: unexpected_content). */
 const GEMINI_ALLOWED = Object.freeze([
+	{ dir: ".gemini/extensions/koda-island", allowed: ["gemini-extension.json", "hooks"] },
+	{ dir: ".gemini/extensions/koda-island/hooks", allowed: ["hooks.json"] },
 	{ dir: ".gemini/extensions/abito-island", allowed: ["gemini-extension.json", "hooks"] },
 	{ dir: ".gemini/extensions/abito-island/hooks", allowed: ["hooks.json"] },
 ]);
@@ -272,7 +296,8 @@ const CURSOR_EVENTS = Object.freeze(["sessionStart", "sessionEnd", "stop"]);
 /** The shell command of each Abito entry; the trailing comment carries the marker. */
 const cursorCommands = (nodeExe, scriptPath) =>
 	Object.fromEntries(CURSOR_EVENTS.map((event) => [event, `${singleQuote(nodeExe)} ${singleQuote(scriptPath)} cursor ${event} # ${MARKER}`]));
-const isOurCursorCommand = (command) => typeof command === "string" && command.includes(MARKER) && command.includes(" cursor ");
+const isOurCursorCommand = (command) =>
+	typeof command === "string" && (command.includes(MARKER) || command.includes(LEGACY_MARKER)) && command.includes(" cursor ");
 const isOurCursorEntry = (entry) => isObject(entry) && isOurCursorCommand(entry.command);
 
 /** Parses the user's file; `undefined` when it is not a shape we can safely edit. */
@@ -342,16 +367,16 @@ function artifactsFor(clientId, home, nodeExe) {
 	const out = [];
 	if (clientId === "gemini-cli") {
 		out.push({
-			rel: ".gemini/extensions/abito-island/gemini-extension.json",
-			content: `${JSON.stringify({ name: "abito-island", version: "1.0.0", description: `Abito island notifications (hooks) ${MARKER}` }, null, "\t")}\n`,
+			rel: ".gemini/extensions/koda-island/gemini-extension.json",
+			content: `${JSON.stringify({ name: "koda-island", version: "1.0.0", description: `Koda island notifications (hooks) ${MARKER}` }, null, "\t")}\n`,
 		});
 		out.push({
-			rel: ".gemini/extensions/abito-island/hooks/hooks.json",
+			rel: ".gemini/extensions/koda-island/hooks/hooks.json",
 			content: `${JSON.stringify(
 				{
-					SessionStart: [{ matcher: "", hooks: [{ name: "abito-island", description: `Abito island notice ${MARKER}`, type: "command", command: `${singleQuote(nodeExe)} ${singleQuote(scriptPath)} gemini session-start`, timeout: 10000 }] }],
-					SessionEnd: [{ matcher: "", hooks: [{ name: "abito-island", description: `Abito island notice ${MARKER}`, type: "command", command: `${singleQuote(nodeExe)} ${singleQuote(scriptPath)} gemini session-end`, timeout: 10000 }] }],
-					Notification: [{ matcher: "", hooks: [{ name: "abito-island", description: `Abito island notice ${MARKER}`, type: "command", command: `${singleQuote(nodeExe)} ${singleQuote(scriptPath)} gemini notification`, timeout: 10000 }] }],
+					SessionStart: [{ matcher: "", hooks: [{ name: "koda-island", description: `Koda island notice ${MARKER}`, type: "command", command: `${singleQuote(nodeExe)} ${singleQuote(scriptPath)} gemini session-start`, timeout: 10000 }] }],
+					SessionEnd: [{ matcher: "", hooks: [{ name: "koda-island", description: `Koda island notice ${MARKER}`, type: "command", command: `${singleQuote(nodeExe)} ${singleQuote(scriptPath)} gemini session-end`, timeout: 10000 }] }],
+					Notification: [{ matcher: "", hooks: [{ name: "koda-island", description: `Koda island notice ${MARKER}`, type: "command", command: `${singleQuote(nodeExe)} ${singleQuote(scriptPath)} gemini notification`, timeout: 10000 }] }],
 				},
 				null,
 				"\t",
@@ -359,7 +384,7 @@ function artifactsFor(clientId, home, nodeExe) {
 		});
 	} else if (clientId === "copilot-cli") {
 		out.push({
-			rel: ".copilot/hooks/abito-island.json",
+			rel: ".copilot/hooks/koda-island.json",
 			content: `${JSON.stringify(
 				{
 					version: 1,
@@ -373,9 +398,9 @@ function artifactsFor(clientId, home, nodeExe) {
 			)}\n`,
 		});
 	} else if (clientId === "opencode") {
-		out.push({ rel: ".config/opencode/plugins/abito-island.js", content: opencodePlugin() });
+		out.push({ rel: ".config/opencode/plugins/koda-island.js", content: opencodePlugin() });
 	} else if (clientId === "amp") {
-		out.push({ rel: ".config/amp/plugins/abito-island.js", content: ampPlugin() });
+		out.push({ rel: ".config/amp/plugins/koda-island.js", content: ampPlugin() });
 	} else if (clientId === "cursor") {
 		// merged: `content` is computed from the user's current file (see cursorMerge).
 		out.push({ rel: CURSOR_REL, merged: true, commands: cursorCommands(nodeExe, scriptPath), content: "" });
@@ -466,9 +491,9 @@ function readTarget(fsOps, file) {
 	}
 }
 
-/** `true` when the text is one of ours (marker tag on the first line). */
+/** `true` when the text is one of ours (marker tag on the first line, current or Koda 0.1). */
 const isOurs = (text, rel) =>
-	typeof text === "string" && (rel.endsWith(".json") ? text.includes(MARKER) : text.split("\n", 3).slice(0, 2).some((l) => l.includes(MARKER)));
+	typeof text === "string" && (rel.endsWith(".json") ? text.includes(MARKER) || text.includes(LEGACY_MARKER) : text.split("\n", 3).slice(0, 2).some((l) => l.includes(MARKER) || l.includes(LEGACY_MARKER)));
 
 // ----- diff ------------------------------------------------------------------------------
 
@@ -530,24 +555,24 @@ function planHash(clientId, action, targets) {
 
 const summaries = {
 	"gemini-cli": {
-		install: "Installs the Abito island extension for Gemini CLI (~/.gemini/extensions/abito-island). A backup is made first. Notifications only: the island never answers for Gemini CLI.",
-		remove: "Removes the Abito island extension for Gemini CLI. A backup is made first.",
+		install: "Installs the Koda island extension for Gemini CLI (~/.gemini/extensions/koda-island). A backup is made first. Notifications only: the island never answers for Gemini CLI.",
+		remove: "Removes the Koda island extension for Gemini CLI. A backup is made first.",
 	},
 	"copilot-cli": {
-		install: "Installs the Abito island hooks file for Copilot CLI (~/.copilot/hooks/abito-island.json). A backup is made first. Notifications only.",
-		remove: "Removes the Abito island hooks file for Copilot CLI. A backup is made first.",
+		install: "Installs the Koda island hooks file for Copilot CLI (~/.copilot/hooks/koda-island.json). A backup is made first. Notifications only.",
+		remove: "Removes the Koda island hooks file for Copilot CLI. A backup is made first.",
 	},
 	opencode: {
-		install: "Installs the Abito island plugin for OpenCode (~/.config/opencode/plugins/abito-island.js). A backup is made first. Notifications only.",
-		remove: "Removes the Abito island plugin for OpenCode. A backup is made first.",
+		install: "Installs the Koda island plugin for OpenCode (~/.config/opencode/plugins/koda-island.js). A backup is made first. Notifications only.",
+		remove: "Removes the Koda island plugin for OpenCode. A backup is made first.",
 	},
 	cursor: {
-		install: "Adds the Abito island hooks (sessionStart, sessionEnd, stop) to ~/.cursor/hooks.json, keeping your own hooks. A backup is made first. Notifications only. Restart Cursor to pick them up.",
-		remove: "Removes only the Abito island hooks from ~/.cursor/hooks.json. A backup is made first.",
+		install: "Adds the Koda island hooks (sessionStart, sessionEnd, stop) to ~/.cursor/hooks.json, keeping your own hooks. A backup is made first. Notifications only. Restart Cursor to pick them up.",
+		remove: "Removes only the Koda island hooks from ~/.cursor/hooks.json. A backup is made first.",
 	},
 	amp: {
-		install: "Installs the Abito island plugin for Amp (~/.config/amp/plugins/abito-island.js). A backup is made first. Notifications only.",
-		remove: "Removes the Abito island plugin for Amp. A backup is made first.",
+		install: "Installs the Koda island plugin for Amp (~/.config/amp/plugins/koda-island.js). A backup is made first. Notifications only.",
+		remove: "Removes the Koda island plugin for Amp. A backup is made first.",
 	},
 };
 
@@ -590,6 +615,67 @@ function scriptInUseByOthers(fsOps, home, nodeExe, clientId) {
 		if (scan.reads.some((r) => !r.artifact.shared && r.text !== undefined && (r.merged ? r.merged.hasOurs : isOurs(r.text, r.artifact.rel)))) return true;
 	}
 	return false;
+}
+
+// ----- K2-04: the Koda 0.1 artifacts, recognised and retired --------------------------------
+
+/**
+ * Strict reads of one client's Koda 0.1 artifacts. Only files carrying OUR marker (current or 0.1) become targets to delete;
+ * a file at an old name without it is somebody else's and is left exactly where it is. Like the current artifacts, an unsafe
+ * target refuses the whole plan instead of guessing.
+ */
+function readLegacy(fsOps, home, clientId) {
+	const targets = [];
+	for (const rel of LEGACY_RELS[clientId] ?? []) {
+		const abs = path.join(home, rel);
+		const read = readTarget(fsOps, abs);
+		if (read.problem) return { problem: read.problem };
+		if (read.absent || !isOurs(read.text, rel)) continue;
+		targets.push({ rel, abs, exists: true, before: read.text, size: read.size, action: "delete", legacy: true });
+	}
+	return { targets };
+}
+
+/** Cursor's 0.1 entries live in the user's own ~/.cursor/hooks.json: still calling the 0.1 script while one carries the 0.1 marker. */
+function cursorLegacyInUse(fsOps, home) {
+	const read = readTarget(fsOps, path.join(home, CURSOR_REL));
+	if (read.problem || read.absent) return false;
+	const root = parseCursor(read.text);
+	if (!root || !isObject(root.hooks)) return false;
+	return Object.values(root.hooks).some((list) => list.some((e) => isObject(e) && typeof e.command === "string" && e.command.includes(LEGACY_MARKER) && e.command.includes(" cursor ")));
+}
+
+/** The shared 0.1 notify script is in use while another dependent client's 0.1 artifact still carries our marker. */
+function legacyScriptInUse(fsOps, home, clientId) {
+	if (clientId !== "cursor" && cursorLegacyInUse(fsOps, home)) return true;
+	for (const other of SCRIPT_DEPENDENTS.filter((id) => id !== clientId && id !== "cursor")) {
+		const scan = readLegacy(fsOps, home, other);
+		if (scan.problem) continue; // unreadable others cannot prove the 0.1 script is free
+		if (scan.targets.length > 0) return true;
+	}
+	return false;
+}
+
+/** The 0.1 script itself, when it is ours and no other client still uses it (an unsafe one is simply left alone). */
+function legacyScriptTarget(fsOps, home, clientId, client) {
+	if (!client.script || legacyScriptInUse(fsOps, home, clientId)) return [];
+	const abs = path.join(home, LEGACY_SCRIPT_REL);
+	const read = readTarget(fsOps, abs);
+	if (read.problem || read.absent || !isOurs(read.text, LEGACY_SCRIPT_REL)) return [];
+	return [{ rel: LEGACY_SCRIPT_REL, abs, exists: true, before: read.text, size: read.size, action: "delete", legacy: true }];
+}
+
+/**
+ * Every target one action needs: the client's own artifacts plus the 0.1 artifacts it retires. `undefined` when a 0.1
+ * artifact cannot be read safely (the caller reports that detail and writes nothing).
+ */
+function targetsOf(fsOps, home, nodeExe, clientId, action, built, reads) {
+	const legacy = readLegacy(fsOps, home, clientId);
+	if (legacy.problem) return undefined;
+	const retiring = [...legacy.targets, ...legacyScriptTarget(fsOps, home, clientId, built.client)];
+	const keepScript = built.client.script && scriptInUseByOthers(fsOps, home, nodeExe, clientId);
+	const fresh = action === "install" ? installTargetsOf(reads) : removeTargetsOf(reads, keepScript);
+	return [...fresh, ...retiring];
 }
 
 /** Install targets from strict reads: everything that differs from the wanted bytes. */
@@ -656,14 +742,19 @@ function scanClient(clientId, fsOps, home, platform, nodeExe) {
 	const clientFiles = reads.filter((r) => !r.artifact.shared);
 	const script = reads.find((r) => r.artifact.shared);
 	const scriptOk = !built.client.script || (script !== undefined && script.text === script.artifact.content);
-	const allExact = clientFiles.every((r) => r.text === r.artifact.content) && scriptOk;
-	const nonePresent = clientFiles.every((r) => (r.merged ? !r.merged.hasOurs : r.text === undefined));
+	// K2-04: a 0.1 artifact still present (and ours) means the client is outdated, never "not connected": the next install
+	// replaces it, so exactly one card per notice survives.
+	const installTargets = targetsOf(fsOps, home, nodeExe, clientId, "install", built, reads);
+	const removeTargets = targetsOf(fsOps, home, nodeExe, clientId, "remove", built, reads);
+	if (installTargets === undefined || removeTargets === undefined) {
+		entry.detail = "unsafe_target";
+		return entry;
+	}
+	const legacyPending = installTargets.some((t) => t.legacy === true);
+	const allExact = clientFiles.every((r) => r.text === r.artifact.content) && scriptOk && !legacyPending;
+	const nonePresent = clientFiles.every((r) => (r.merged ? !r.merged.hasOurs : r.text === undefined)) && !legacyPending;
 	entry.state = allExact ? "connected" : nonePresent ? "not_connected" : "outdated";
 	entry.detail = null;
-
-	const keepScript = built.client.script && scriptInUseByOthers(fsOps, home, nodeExe, clientId);
-	const installTargets = installTargetsOf(reads);
-	const removeTargets = removeTargetsOf(reads, keepScript);
 
 	entry.install = planDto(clientId, "install", installTargets);
 	entry.remove = planDto(clientId, "remove", removeTargets);
@@ -826,7 +917,8 @@ function mutate(options, action) {
 		if (!plan.changed) return { ok: true, changed: false, client: entry };
 		const fresh = readArtifacts(ctx.fsOps, ctx.home, ctx.nodeExe, clientId);
 		if (fresh.problem) return { ok: false, code: fresh.problem, client: entry };
-		const targets = action === "install" ? installTargetsOf(fresh.reads) : removeTargetsOf(fresh.reads, fresh.built.client.script && scriptInUseByOthers(ctx.fsOps, ctx.home, ctx.nodeExe, clientId));
+		const targets = targetsOf(ctx.fsOps, ctx.home, ctx.nodeExe, clientId, action, fresh.built, fresh.reads);
+		if (targets === undefined) return { ok: false, code: "unsafe_target", client: scanClient(clientId, ctx.fsOps, ctx.home, ctx.platform, ctx.nodeExe) };
 		try {
 			applyTargets(ctx.fsOps, ctx.home, targets, ctx.now);
 		} catch {
@@ -914,4 +1006,4 @@ function createAgentHooks(options = {}) {
 	return { preview, install: (id, hash) => run("install", id, hash), remove: (id, hash) => run("remove", id, hash) };
 }
 
-module.exports = { SCHEMA, CLIENT_IDS, CATALOGUE_IDS, HARNESS_IDS, MARKER, scanAgentHooks, installAgentHook, removeAgentHook, createAgentHooks };
+module.exports = { SCHEMA, CLIENT_IDS, CATALOGUE_IDS, HARNESS_IDS, MARKER, LEGACY_MARKER, LEGACY_RELS, LEGACY_SCRIPT_REL, SCRIPT_REL, scanAgentHooks, installAgentHook, removeAgentHook, createAgentHooks };

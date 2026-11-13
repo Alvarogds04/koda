@@ -40,7 +40,7 @@ const HASH_R = "c".repeat(64);
 const SCHEMA = "abito-hook-install/1";
 
 function preview({ harness = "claude", action = "install", ops = ["add", "add"], changed, hash = HASH_A, hidden = 0, lines = ["@@ -1 +1 @@", "+ x"], target } = {}) {
-	const file = { claude: "settings.json", copilot: "abito-island.json", opencode: "abito-island.js" }[harness] ?? "hooks.json";
+	const file = { claude: "settings.json", copilot: "koda-island.json", opencode: "koda-island.js" }[harness] ?? "hooks.json";
 	const dir = { claude: ".claude", copilot: ".copilot/hooks", opencode: ".config/opencode/plugins" }[harness] ?? ".codex";
 	return {
 		schema: SCHEMA,
@@ -317,12 +317,12 @@ test("state mapping: not_connected with plan_hash and closed summaries", async (
 	assert.equal(claude.state, "not_connected");
 	assert.equal(claude.detail, null);
 	assert.equal(claude.plan_hash, HASH_A);
-	assert.equal(claude.summary, "Adds the Abito hooks (PermissionRequest, Stop) to ~/.claude/settings.json. A backup is made first.");
+	assert.equal(claude.summary, "Adds the Koda hooks (PermissionRequest, Stop) to ~/.claude/settings.json. A backup is made first.");
 	assert.equal(claude.reviewable, true);
 	assert.equal(claude.trust_review, false);
 	const codex = byId(list, "codex");
 	assert.equal(codex.plan_hash, HASH_B);
-	assert.equal(codex.summary, "Adds the Abito hooks (PermissionRequest, Stop) to ~/.codex/hooks.json. A backup is made first. Koda answers Codex permission requests from the island; Codex waits up to 120 s for your answer. Trust the Koda hooks again in Codex /hooks after every install or update.");
+	assert.equal(codex.summary, "Adds the Koda hooks (PermissionRequest, Stop) to ~/.codex/hooks.json. A backup is made first. Koda answers Codex permission requests from the island; Codex waits up to 120 s for your answer. Trust the Koda hooks again in Codex /hooks after every install or update.");
 	assert.equal(codex.trust_review, true);
 	assert.equal(byId(list, "opencode").state, "unavailable", "no OpenCode settings dir in the private HOME: not installed");
 	assert.equal(byId(list, "copilot-cli").state, "unavailable");
@@ -337,7 +337,7 @@ test("state mapping: connected has no plan fields; replace and mixed ops are out
 	for (const k of ["plan_hash", "summary", "reviewable", "trust_review"]) assert.equal(k in claude, false, k);
 	const codex = byId(list, "codex");
 	assert.equal(codex.state, "outdated");
-	assert.equal(codex.summary, "Updates the Abito hooks in ~/.codex/hooks.json. A backup is made first. Koda answers Codex permission requests from the island; Codex waits up to 120 s for your answer. Trust the Koda hooks again in Codex /hooks after every install or update.");
+	assert.equal(codex.summary, "Updates the Koda hooks in ~/.codex/hooks.json. A backup is made first. Koda answers Codex permission requests from the island; Codex waits up to 120 s for your answer. Trust the Koda hooks again in Codex /hooks after every install or update.");
 	assert.equal(codex.plan_hash, HASH_A);
 	s.write({ claude: { preview: { exit: 0, stdout: preview({ ops: ["add", "keep"] }) } }, codex: { preview: { exit: 0, stdout: preview({ harness: "codex" }) } } });
 	s.manager.invalidate();
@@ -484,7 +484,7 @@ test("connect with a stale plan_hash: plan_changed, nothing applied, new plan re
 	const s = setup(t, { claude: { preview: { exit: 0, stdout: preview({ hash: HASH_B }) }, apply: { exit: 0, stdout: applied({ hash: HASH_B }) } } });
 	const a = byId(await s.manager.connect("claude-code", HASH_A), "claude-code");
 	assert.deepEqual([a.state, a.detail, a.plan_hash], ["error", "plan_changed", HASH_B]);
-	assert.match(a.summary, /^Adds the Abito hooks/);
+	assert.match(a.summary, /^Adds the Koda hooks/);
 	assert.equal(s.calls().filter((c) => c.argv.includes("--apply-plan")).length, 0);
 });
 
@@ -581,8 +581,8 @@ test("copilot-cli and opencode drive their own harness installers with the same 
 	const list = await s.manager.list();
 	const copilot = byId(list, "copilot-cli");
 	assert.deepEqual([copilot.state, copilot.plan_hash, copilot.trust_review], ["not_connected", HASH_B, false]);
-	assert.equal(copilot.summary, "Adds the Abito hooks (permissionRequest, sessionEnd) to ~/.copilot/hooks/abito-island.json. A backup is made first.");
-	assert.equal(byId(list, "opencode").summary, "Adds the Abito plugin to ~/.config/opencode/plugins/abito-island.js. A backup is made first.");
+	assert.equal(copilot.summary, "Adds the Koda hooks (permissionRequest, sessionEnd) to ~/.copilot/hooks/koda-island.json. A backup is made first.");
+	assert.equal(byId(list, "opencode").summary, "Adds the Koda plugin to ~/.config/opencode/plugins/koda-island.js. A backup is made first.");
 	await assert.rejects(s.manager.connect("copilot-cli", undefined).then(() => s.manager.connect("copilot-cli", "zz")), (e) => e.code === "bad_request");
 	const done = byId(await s.manager.connect("copilot-cli", HASH_B), "copilot-cli");
 	assert.equal(done.state, "connected");
@@ -656,7 +656,7 @@ test("installer trust check: group-writable or symlinked script is refused befor
 	assert.equal(s.calls().length, 0);
 });
 
-test("a pending migration (old Abito PreToolUse entry to remove, every wire row keep) is outdated, not an error", async (t) => {
+test("a pending migration (old Koda PreToolUse entry to remove, every wire row keep) is outdated, not an error", async (t) => {
 	const json = preview({ ops: ["keep", "keep"], changed: true });
 	json.entries.push({ event: "PreToolUse", op: "remove" });
 	const s = setup(t, { claude: { preview: { exit: 0, stdout: json } } });
@@ -677,4 +677,34 @@ test("HU-047 L4: a timed-out installer is killed as a TREE on Windows (taskkill 
 	for (const bad of [[{ pid: 4 }, "win32"], [{ pid: "1; calc" }, "win32"], [null, "win32"], [{ pid: 4321 }, "linux"], [{ pid: 4321 }, "darwin"]]) killTree(bad[0], bad[1], run);
 	assert.equal(calls.length, 1, "never for a bogus pid or off Windows (POSIX uses the process group)");
 	assert.doesNotThrow(() => killTree({ pid: 4321 }, "win32", () => { throw new Error("x"); }));
+});
+
+// K2-04 (S2, S4): the installer retires the Koda 0.1 artifact into the same backup flow, so an agent whose only backup comes
+// from the 0.1 file/dir must still report it (and the file names Ajustes names are the ones Koda installs today).
+test("K2-04: a backup of the Koda 0.1 artifact counts as this agent's backup", async (t) => {
+	const layout = {
+		claude: [path.join(".claude", "settings.json"), null],
+		codex: [path.join(".codex", "hooks.json"), null],
+		statusline: [path.join(".claude", "settings.json"), [{ event: "statusLine", op: "add" }]],
+		copilot: [path.join(".copilot/hooks", "koda-island.json"), null],
+		opencode: [path.join(".config/opencode/plugins", "koda-island.js"), null],
+		pi: [path.join(".pi/agent/extensions", "koda-island"), [{ event: "extension", op: "add" }]],
+	};
+	const s = setup(t, {}, { run: async (argv) => {
+		const harness = argv[2];
+		const [rel, entries] = layout[harness];
+		const body = preview({ harness, ops: ["add", "add"], target: path.join(s.home, rel) });
+		if (entries) body.entries = entries;
+		return { exit: 0, stdout: Buffer.from(JSON.stringify(body)) };
+	} });
+	// A 0.1 backup beats no backup at all: the file sits next to the Copilot target, the folder in the Pi backup root.
+	fs.mkdirSync(path.join(s.home, ".copilot/hooks"), { recursive: true });
+	fs.writeFileSync(path.join(s.home, ".copilot/hooks", "abito-island.json.abito-backup-2026-01-02T03-04-05-000Z"), "{}");
+	fs.mkdirSync(path.join(s.home, ".pi/agent/abito-backups"), { recursive: true });
+	fs.mkdirSync(path.join(s.home, ".pi/agent/abito-backups", "abito-island.abito-backup-2026-01-02T03-04-05-000Z"));
+	const list = await s.manager.list();
+	assert.equal(byId(list, "copilot-cli").backup, true, "a 0.1 backup next to the target counts");
+	assert.equal(byId(list, "pi").backup, true, "a 0.1 extension backup in the backup root counts");
+	assert.equal(byId(list, "opencode").backup, false, "an unrelated agent keeps its honest false");
+	for (const agent of ["copilot-cli", "pi", "opencode"]) assert.notEqual(byId(list, agent).state, "error");
 });

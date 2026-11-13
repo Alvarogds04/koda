@@ -3,7 +3,7 @@
 /**
  * Agent hook manager (H2b): lets the island connect/disconnect the Abito hooks of Claude Code and
  * Codex with a button. The daemon DRIVES the installer CLI of apps/desktop-harness
- * (`bin/abito-hook.cjs install <harness> --user ... --json`, see that package's
+ * (`bin/koda-hook.cjs install <harness> --user ... --json`, see that package's
  * docs/ISLAND-INSTALL.md) as a subprocess and REBUILDS every answer from a closed vocabulary.
  *
  * PROTOCOL INVARIANTS (also in docs/PROTOCOL.md and the README):
@@ -64,11 +64,13 @@ const AGENTS = Object.freeze([
 	Object.freeze({ id: "claude-code", name: "Claude Code", harness: "claude", dir: ".claude", file: "settings.json", events: EVENTS, wireEvents: CLAUDE_EVENTS, migratedEvents: MIGRATED_EVENTS }),
 	Object.freeze({ id: "codex", name: "Codex", harness: "codex", dir: ".codex", file: "hooks.json", events: EVENTS, wireEvents: CODEX_EVENTS }),
 	Object.freeze({ id: "statusline", name: "Uso del plan (relay)", harness: "statusline", dir: ".claude", file: "settings.json", events: Object.freeze(["statusLine"]) }),
-	// Copilot CLI: the hooks file Abito owns under ~/.copilot/hooks; OpenCode: the plugin Abito owns under ~/.config/opencode/plugins.
+	// Copilot CLI: the hooks file Koda owns under ~/.copilot/hooks; OpenCode: the plugin Koda owns under ~/.config/opencode/plugins.
 	// Both answer permissions from the island and notify on session end (apps/desktop-harness install copilot|opencode).
-	Object.freeze({ id: "copilot-cli", name: "Copilot CLI", harness: "copilot", dir: ".copilot/hooks", file: "abito-island.json", events: Object.freeze(["permissionRequest", "sessionEnd"]) }),
-	Object.freeze({ id: "opencode", name: "OpenCode", harness: "opencode", dir: ".config/opencode/plugins", file: "abito-island.js", events: Object.freeze(["permission.ask", "event"]) }),
-	Object.freeze({ id: "pi", name: "Pi", harness: "pi", dir: ".pi/agent/extensions", file: "abito-island", events: Object.freeze(["extension"]) }),
+	// K2-04 (S2, S4): `file` is the name Koda installs today; `legacyFile` is the Koda 0.1 name the installer retires in the same
+	// pass, so the agent ends up with ONE entry and the human sees one card per notice.
+	Object.freeze({ id: "copilot-cli", name: "Copilot CLI", harness: "copilot", dir: ".copilot/hooks", file: "koda-island.json", legacyFile: "abito-island.json", events: Object.freeze(["permissionRequest", "sessionEnd"]) }),
+	Object.freeze({ id: "opencode", name: "OpenCode", harness: "opencode", dir: ".config/opencode/plugins", file: "koda-island.js", legacyFile: "abito-island.js", events: Object.freeze(["permission.ask", "event"]) }),
+	Object.freeze({ id: "pi", name: "Pi", harness: "pi", dir: ".pi/agent/extensions", file: "koda-island", legacyFile: "abito-island", events: Object.freeze(["extension"]) }),
 ]);
 
 /** The only error type thrown to callers; `code` is a protocol error code (busy, bad_request). */
@@ -144,7 +146,7 @@ function parseLine(buffer) {
 class AgentsManager extends EventEmitter {
 	/**
 	 * @param {object} options
-	 * @param {string} [options.installerBin]  ABSOLUTE path of apps/desktop-harness/bin/abito-hook.cjs; unset => every agent unavailable
+	 * @param {string} [options.installerBin]  ABSOLUTE path of apps/desktop-harness/bin/koda-hook.cjs; unset => every agent unavailable
 	 * @param {string} [options.nodeExe]       node executable that runs the installer (default process.execPath)
 	 * @param {string} options.home            the REAL home (the installer's --user target); passed as HOME to the child
 	 * @param {string} options.islandDir       island root; audit goes to <islandDir>/audit
@@ -407,10 +409,10 @@ class AgentsManager extends EventEmitter {
 		const file = `~/${agent.dir}/${agent.file}`;
 		let summary =
 			state === "outdated"
-				? `Updates the Abito hooks in ${file}. A backup is made first.`
-				: `Adds the Abito hooks (${agent.events.join(", ")}) to ${file}. A backup is made first.`;
-		if (agent.id === "pi") summary = "Installs the Abito Pi extension in the default ~/.pi/agent directory. A backup is made first.";
-		if (agent.id === "opencode") summary = state === "outdated" ? `Updates the Abito plugin in ${file}. A backup is made first.` : `Adds the Abito plugin to ${file}. A backup is made first.`;
+				? `Updates the Koda hooks in ${file}. A backup is made first.`
+				: `Adds the Koda hooks (${agent.events.join(", ")}) to ${file}. A backup is made first.`;
+		if (agent.id === "pi") summary = "Installs the Koda Pi extension in the default ~/.pi/agent directory. A backup is made first.";
+		if (agent.id === "opencode") summary = state === "outdated" ? `Updates the Koda plugin in ${file}. A backup is made first.` : `Adds the Koda plugin to ${file}. A backup is made first.`;
 		if (agent.id === "statusline") summary = "Adds the status-line relay in ~/.claude/settings.json. An existing status line keeps working (the relay prints it). A backup is made first.";
 		// K2-08 T3b: Koda answers Codex from the island (120 s entry); every install or update changes the hook hash, so the
 		// human trusts the Koda hooks again in Codex /hooks.
@@ -434,18 +436,19 @@ class AgentsManager extends EventEmitter {
 		}
 	}
 
-	/** True when a regular file `<target>.abito-backup-*` exists next to the target (bounded readdir). */
+	/** True when a regular file `<target>.abito-backup-*` exists next to the target (bounded readdir). A backup of the Koda 0.1
+	 * target counts too: the installer retires it into the same flow, so a connected agent always reports its backup. */
 	backupExists(agent) {
 		if (!agent.harness) return false;
 		const dir = agent.id === "pi" ? path.join(this.home, ".pi/agent/abito-backups") : path.join(this.home, agent.dir);
-		const prefix = `${agent.file}.abito-backup-`;
+		const prefixes = [`${agent.file}.abito-backup-`, ...(agent.legacyFile ? [`${agent.legacyFile}.abito-backup-`] : [])];
 		let handle;
 		try {
 			handle = fs.opendirSync(dir);
 			for (let i = 0; i < MAX_DIR_ENTRIES; i++) {
 				const item = handle.readSync();
 				if (!item) break;
-				if (!item.name.startsWith(prefix)) continue;
+				if (!prefixes.some((prefix) => item.name.startsWith(prefix))) continue;
 				try {
 					const st = fs.lstatSync(path.join(dir, item.name));
 					if ((agent.id === "pi" ? st.isDirectory() : st.isFile()) && !st.isSymbolicLink()) return true;
