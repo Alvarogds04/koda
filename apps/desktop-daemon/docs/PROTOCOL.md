@@ -21,7 +21,7 @@ Implementation: `src/protocol.cjs` (codec/validators/translation), `src/server.c
 
 | type | fields | notes |
 |---|---|---|
-| `send` | `text`, `images?[{data(base64),mimeType}]`, `requestId?`, `attachments?` | `busy` error while a turn runs; completion is `agent_settled`, not the prompt response. `requestId` (`[A-Za-z0-9_-]{1,64}`, anything else is `bad_request`): see "Recorded prompts". `attachments`: 1–10 distinct upload ids (`a-<16 hex>`) this client received in `uploaded`; with attachments `text` may be empty. See "Attachments" |
+| `send` | `text`, `images?[{data(base64),mimeType}]`, `requestId?`, `attachments?` | `busy` error while a turn runs; completion is `agent_settled`, not the prompt response. `requestId` (`[A-Za-z0-9_-]{1,64}`, anything else is `bad_request`): see "Recorded prompts". `attachments`: 1–10 distinct upload ids (`a-<16 hex>`) this client received in `uploaded` (the wire accepts up to 10, but the store refuses more than 5 per message: `message_too_large`); with attachments `text` may be empty. See "Attachments" |
 | `upload` | `requestId`, `name`, `size`, `offset`, `data` (base64) | one chunk of one file, in order; see "Attachments" |
 | `upload_discard` | `id` | deletes an unsent file this client uploaded (silent; another client's id is a no-op) |
 | `steer` | `text`, `requestId?` | only while busy (`not_busy` otherwise); `requestId` as for `send` |
@@ -353,8 +353,8 @@ Unknown/invalid post-handshake frames get `error{code:"bad_request"}`.
 
 | type | fields |
 |---|---|
-| `ready` | `protocol`, `state{busy,status,paused}`, `limits`, `features{history:true,conversations:false}`, `interrupted?` (`{at, turnActive, asks}` — bounded closed fields of the unconsumed interrupted-work record, counts and time only, never titles/ids/prompts/args/secrets; present until a client sends `interrupted_ack`) |
-| `agent_state` | `busy`, `status` (`starting`, `ready`, `restarting`, `stopped`), `paused` — `starting` also while the daemon listens but has not launched its engine yet (Gentle Dot `deriveState`) |
+| `ready` | `protocol`, `state{busy,status,paused,model?}` (`model` only while the engine is ready, see "Model readout"), `limits`, `features{history:true,conversations:false}`, `interrupted?` (`{at, turnActive, asks}` — bounded closed fields of the unconsumed interrupted-work record, counts and time only, never titles/ids/prompts/args/secrets; present until a client sends `interrupted_ack`) |
+| `agent_state` | `busy`, `status` (`starting`, `ready`, `restarting`, `stopped`), `paused`, `model?` (see "Model readout") — `starting` also while the daemon listens but has not launched its engine yet (Gentle Dot `deriveState`) |
 | `user_message` | `messageId` (`s<file>-<turn>`, the history id of that prompt), `text`, `attachments?`, `clipped?`, `requestId?` — a prompt the engine recorded; see "Recorded prompts" |
 | `message_delta` | `messageId`, `text` (≤ 16 K chars each; long texts are split into several deltas, every chunk cut on a whole code point — never inside a surrogate pair) |
 | `message_done` | `messageId` |
@@ -556,23 +556,30 @@ prompt is its own — not by counting engine cycles, not by matching text.
 ### Attachments (additive, K2-05, L11 2a — Gentle Dot's uploads)
 
 Port of Gentle Dot's `packages/daemon/src/uploads.ts` + bridge.ts `attachedFiles`/`composePrompt`
-(MIT; `src/uploads.cjs`). Any file; the daemon stores it in the island's OWN engine workspace
-(`<island>/workspace/uploads/<id>/<name>`, never a user-chosen folder); images reach a vision model.
+(MIT; `src/uploads.cjs`). Any file; images reach a vision model. Koda difference (RDD review of the
+first version): a file that has not been sent yet is NOT in the engine's workspace. It is staged in
+`<island>/uploads-staging/<id>/<name>` (outside `<island>/workspace`, so the engine cannot read it and
+no other client can make it read it); only an ACCEPTED send moves it to
+`<island>/workspace/uploads/<id>/<name>` (never a user-chosen folder), where the agent reads it.
 
 - **Upload.** `upload{requestId, name, size, offset, data}` carries one chunk: `data` is standard
   base64 (≤ 192 Ki chars = 144 KiB, a multiple of 4; an empty file is one empty chunk with `size:0`),
   `offset` is where it goes (chunks in order), `size` the whole declared size (same on every chunk),
-  `name` ≤ 255 chars, a display name only: the daemon keeps its last path segment, without
-  control/invisible/direction marks, a leading dot or a reserved name (`sanitizeName`). Files are
-  created `0600` with O_EXCL|O_NOFOLLOW in a fresh `0700` folder named by the id; the `uploads` folder
-  must be a private directory (a planted link is refused). The last chunk is answered, to the sender
+  `name` ≤ 255 chars on the wire, a display name only: the daemon keeps its last path segment, without
+  control/invisible/direction marks, a leading dot or a reserved name (a reserved name becomes `file`),
+  cut on whole characters to 120 characters / 240 bytes with an extension of at most 16 characters
+  (`sanitizeName`). Files are created `0600` with O_EXCL|O_NOFOLLOW in a fresh `0700` folder named by
+  the id under `uploads-staging`; that folder must be a private directory (a planted link is refused,
+  and a stored file is read back only through its own real `a-…` folder, on the open handle: regular
+  file, declared size, one link (`nlink` 1), same device/inode as before the open; Windows has no
+  O_NOFOLLOW, so there an `lstat` check on the file and every folder up to the root stands in for it). The last chunk is answered, to the sender
   only, with `uploaded{requestId, attachment:{id, name, size, mime}}` — never the path. `mime` is
   sniffed from content (PNG/JPEG/GIF/WebP/PDF, else `application/octet-stream`). A refused upload
   answers ONE `error{code, requestId}` (`file_too_large`, `message_too_large`, `too_many_files`,
   `upload_failed`, `bad_request`), leaves nothing on disk, and its later chunks are ignored.
 - **Limits (daemon-enforced).** 25 MB per file; per client, the files waiting to be sent (finished
-  plus the declared size of unfinished ones) are at most 10 and 50 MB (Gentle Dot's per-message
-  limits). Upload chunks have their own budget of 720 frames/min per client (over it the client is
+  plus the declared size of unfinished ones) are at most **5** files and 50 MB (Gentle Dot allows 10
+  files; Koda's refusal says «hasta 5»: `too_many_files` at upload, `message_too_large` at send). Upload chunks have their own budget of 720 frames/min per client (over it the client is
   dropped, like the 240 frames/min limit that every other frame keeps). Uploads are allowed while
   paused (they are not a turn).
 - **Refs.** The id `a-<16 hex>` is random, issued by the daemon, and OWNED by the uploading client
@@ -585,12 +592,40 @@ Port of Gentle Dot's `packages/daemon/src/uploads.ts` + bridge.ts `attachedFiles
   is ALSO passed as an RPC image when the engine's model accepts images (`get_state` →
   `model.input` includes `image`); otherwise the line says it was saved but the model cannot see
   images. The image bytes are read back as stored (no link, same size). Once the engine accepted the
-  prompt the files are spent: they stay on disk for the agent but no message can send them again. A
-  prompt held during a rotation keeps its files and spends them when delivered.
-- **Cleanup.** `upload_discard`, the uploading client going away, and one hour without being sent
-  delete an unsent file; an unfinished upload idle 2 minutes is dropped. Sent files are kept.
+  prompt the files are moved into `<workspace>/uploads` and spent: they stay on disk for the agent but
+  no message can send them again. A prompt held during a rotation keeps its files and spends them when
+  delivered. A file reserved by a send that is in flight is NOT deleted when the uploading client goes
+  away (otherwise the engine would be told about a file that no longer exists); if the send fails the
+  reservation is released and the file is an unsent upload again (same discard rules).
+- **Cleanup.** `upload_discard`, the uploading client going away (unless a send reserved the file), and
+  one hour without being sent delete an unsent file (from `uploads-staging`, never through a folder that
+  was swapped for a link); an unfinished upload idle 2 minutes is dropped. Sent files are kept.
 - **Display.** `user_message` and history split the block back into `text` + `attachments`
   (`[{name,size,mime}]`), so the live frame, reconnects and reloads show the same chips.
+
+### Model readout (additive, K2-05 U5c)
+
+`ready.state` and every `agent_state` may carry `model: {provider?, id, name?}`: the model the engine
+answers with, shown by the island as a read-only line (there is no way to change it from the chat).
+Each field is a trimmed string of at most 128 characters; the daemon reads it ONLY from Pi's own
+`get_state` `data.model` (`modelIdentity`, `src/runtime.cjs`), and nothing else in that object (input
+kinds, costs, keys) leaves the daemon. The key is absent (unknown, never a guess) while the engine is
+not `ready`, when the state has no usable `id`, and after the engine child exits. It is read again
+after a confirmed session switch or rotation and after a profile/role activation, and an
+`agent_state` is broadcast only when the value really changed.
+
+## Window-capture MCP projection (K2-06)
+
+When the Tauri app starts the daemon it may set `KODA_WINDOW_MCP_URL` and `KODA_WINDOW_MCP_TOKEN`
+(the host's loopback screenshot endpoint and its per-launch bearer token). The daemon writes them into
+the engine's private `<island>/agent/mcp.json` (mode `0600`) as one more server, id `computer`,
+through the same proxy-only validator as any other entry (plain `http` to a loopback host, exactly one
+`Authorization: Bearer` header); half-set or unsafe values project nothing and log one fixed line
+without the token. The agent then sees the tool as `mcp__computer__screenshot_my_window`. The daemon
+also installs a fixed extension, `<island>/agent/extensions/koda-window-capture.js`, which keeps only
+the LAST screenshot as an image (earlier ones become a one-line note) and blocks the tool, before any
+capture, when the engine's model has no image input. Nothing of this travels on the socket. See
+`docs/desktop/window-capture.md` in the repository root for the whole feature.
 
 ## Private memory (K2-05 T1c, the only mode)
 

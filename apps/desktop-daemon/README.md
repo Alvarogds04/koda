@@ -58,7 +58,8 @@ the current user:
 | `<root>/agent/` | The installed pi's agent directory (`PI_CODING_AGENT_DIR`); no user Pi settings, extensions or auth are reused |
 | `<root>/sessions/` | Private RPC sessions (`--session-dir` is always passed explicitly) |
 | `<root>/workspace/` | The engine's owned default workspace; its `.engram/config.json` pins the memory project `abito-island` |
-| `<root>/workspace/uploads/` | #343: chat file attachments, written by the Tauri app (0700 dir, 0600 files, generated names) — the agent reads them as workspace files |
+| `<root>/uploads-staging/` | K2-05: chat attachments the user has uploaded but not yet sent, written by the DAEMON (`src/uploads.cjs`; 0700 dir per id, 0600 files, generated ids), outside the engine's workspace |
+| `<root>/workspace/uploads/` | K2-05: attachments of an ACCEPTED send, moved here from `uploads-staging` by the daemon (the Tauri app never writes uploads) — the agent reads them as workspace files |
 | `<root>/tmp/` | Private `TMPDIR` |
 | `<root>/identity.md` | The Abito identity file, regenerated from `identity.md` (mode `0600`) before every spawn |
 | `<root>/state.json` | The open session file, persisted for continuity across crash restarts (mode `0600`) |
@@ -529,7 +530,17 @@ top-level key. No file configured → an empty projection is written so a stale 
 never lingers. Pi natively reads `<PI_CODING_AGENT_DIR>/mcp.json` (docs/mcp.md), and
 the engine's agent dir is the island's, so no extra flag or invention is needed. The
 user's own `~/.pi/agent/mcp.json` is never read. Changing `mcpConfigPath` takes effect
-at the next daemon start. Pi still decides exposure (default `codemode`).
+at the next daemon start or on SIGHUP (see above: the projection is rewritten and the engine restarts).
+Pi still decides exposure (default `codemode`).
+
+**Window-capture server (K2-06).** Independently of `mcpConfigPath`, when the environment carries
+`KODA_WINDOW_MCP_URL` and `KODA_WINDOW_MCP_TOKEN` (set by the Tauri app for its own child: a loopback
+`http` endpoint and a per-launch bearer token) the projection also holds one server with id `computer`,
+validated like any other entry; with only one of the two variables, or an unsafe value, nothing is
+projected and one fixed log line says so (never the token). The daemon installs
+`<root>/agent/extensions/koda-window-capture.js` (a fixed template: only the last screenshot stays an
+image; the tool is blocked before any capture when the model has no image input). Details:
+`docs/desktop/window-capture.md`.
 
 ### Security notes and known limits
 
@@ -540,7 +551,7 @@ at the next daemon start. Pi still decides exposure (default `codemode`).
 - `config.json` reads apply the same secure-path checks as writes (a symlinked island directory is refused).
 - A workspace validated at start can be swapped for a symlink later (TOCTOU between validation and spawn); the engine runs as you, with your permissions, in that folder.
 - The engine is not a sandbox: the agent has your user's file access inside the chosen workspace and beyond.
-- No history replay; MCP projection is read once at start; no auto-start; POSIX only.
+- History is replayed by paging (`get_history` / `get_earlier`, see PROTOCOL.md); the MCP projection is rewritten on SIGHUP when `mcpConfigPath` changes; no auto-start; POSIX only.
 - Tests: `npm test` (fake agent). `ABITO_E2E_PI=1 node --test test/e2e-real.test.cjs` starts the installed pi offline (no prompt, no model call).
 
 Attribution: structure adapted from the Gentle Dot daemon (MIT, © 2026 Gentleman Programming); see THIRD-PARTY-NOTICES.md.
