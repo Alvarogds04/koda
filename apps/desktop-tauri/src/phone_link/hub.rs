@@ -316,6 +316,12 @@ impl Hub {
         self.lock().usage.as_deref().and_then(|l| serde_json::from_str(l).ok())
     }
 
+    /// Forgets the last `usage` line (unpair, link off): nothing is replayed until the plans are read again, and the
+    /// next read is sent even if its numbers equal the forgotten ones.
+    pub fn clear_usage(&self) {
+        self.lock().usage = None;
+    }
+
     /// Registers an authenticated connection; the first line it gets is the current sessions, rendered for the
     /// capabilities this connection negotiated in its `hello`, and after it whatever is still pending (§5: a link drop
     /// clears the phone's book, so a reconnect is re-offered the same fingerprints). A phone with `usage` is then

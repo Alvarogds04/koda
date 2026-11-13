@@ -2108,6 +2108,50 @@ impl Features for Switch {
     }
 }
 
+/// Verifier O2 (T6): the plan numbers belong to the pairing they were shown to. After an unpair, or after the link was
+/// switched off and on, a phone that pairs again gets the sessions and then nothing until the desktop reads the plans
+/// again — never the previous pairing's last `usage` line.
+#[test]
+fn a_phone_paired_again_is_not_replayed_the_previous_pairings_usage() {
+    let link = super::link::Link::with_seams(FakeMdns::working(), Arc::new(UsageOnly), Arc::new(super::link::RefuseDecisions));
+    let store = Mem::default();
+    assert_eq!(link.enable(&store, "127.0.0.1:0".parse().unwrap()), Ok(()));
+    let fingerprint = pairing::load_or_create_identity(&store).unwrap().fingerprint;
+    let port = || u16::try_from(link.status_for(None)["port"].as_u64().unwrap()).unwrap();
+    // After the opening lines, a ping is answered by the very next line: no usage line was waiting in between.
+    async fn opens_without_usage(port: u16, fingerprint: &str, token: &str) {
+        let (mut r, mut w) = connect(port, fingerprint).await.unwrap();
+        send(&mut w, json!({"type":"hello","v":PROTOCOL,"token":token,"caps":["usage"]})).await;
+        assert_eq!(recv(&mut r).await.unwrap()["caps"], json!(["usage"]));
+        assert_eq!(recv(&mut r).await.unwrap()["type"], "sessions");
+        send(&mut w, json!({"type":"ping"})).await;
+        let next = recv(&mut r).await.unwrap();
+        assert_eq!(next["type"], "pong", "no usage of the previous pairing is replayed: {next}");
+    }
+    run(async {
+        // The first pairing sees its numbers.
+        let token = pairing::token(&store).unwrap();
+        let (mut r, mut w) = connect(port(), &fingerprint).await.unwrap();
+        send(&mut w, json!({"type":"hello","v":PROTOCOL,"token":token,"caps":["usage"]})).await;
+        assert_eq!(recv(&mut r).await.unwrap()["type"], "welcome");
+        assert_eq!(recv(&mut r).await.unwrap()["type"], "sessions");
+        link.publish_usage(usage_line(40));
+        assert_eq!(recv(&mut r).await.unwrap(), usage_line(40));
+
+        // Unpair: the phone that pairs again with the new token starts without them.
+        assert_eq!(link.unlink(&store), Ok(()));
+        let token = pairing::token(&store).unwrap();
+        opens_without_usage(port(), &fingerprint, &token).await;
+
+        // Off and on again: the same.
+        link.publish_usage(usage_line(55));
+        link.disable();
+        assert_eq!(link.enable(&store, "127.0.0.1:0".parse().unwrap()), Ok(()));
+        opens_without_usage(port(), &fingerprint, &token).await;
+    });
+    link.disable();
+}
+
 #[test]
 fn the_link_reads_its_features_on_every_hello_so_a_switch_takes_effect_at_the_next_connection() {
     let switch = Arc::new(Switch(std::sync::atomic::AtomicBool::new(false)));
