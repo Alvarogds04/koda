@@ -16,6 +16,8 @@
   <link rel="stylesheet" href="koda-skin.css">
   <!-- HU-057 T1/T2: the Nusa notch (expanded idle overview), after the skins so it wins at equal specificity. -->
   <link rel="stylesheet" href="island-nusa.css">
+  <!-- K2-10 T5: the Gmail card of the icon row (design 08, «Gmail · solo lo nuevo»), after the Nusa styles it refines. -->
+  <link rel="stylesheet" href="gmail-view.css">
   <!-- MIT settings/frame styling; enabled only by the settings window label. -->
   <link rel="stylesheet" id="coucou-settings-style" href="vendor/coucou/settings/settings.css" media="not all">
   <!-- R7 clay character (sha256 40625d7f…): Abito's own SVG-DOM, no reserved assets. -->
@@ -49,6 +51,8 @@
   <script defer src="island-nusa-mount.js"></script>
   <script defer src="paused.js"></script>
   <script defer src="spotify-view.js"></script>
+  <!-- K2-10 T5 (S12): the Gmail card of the icon row — read-only mail, shown only while Gmail is really connected (S3). -->
+  <script defer src="gmail-view.js"></script>
   <!-- N6: notification with 1..N reply options (Pi questions QP/1 are one case). -->
   <script defer src="notify-view.js"></script>
   <script defer src="character-motion.js"></script>
@@ -94,7 +98,6 @@
   <script defer src="integrations-view.js"></script>
   <script defer src="integrations-github.js"></script>
   <script defer src="integrations-deployments.js"></script>
-  <script defer src="integrations-email.js"></script>
   <script defer src="integrations-mail.js"></script>
   <script defer src="integrations-payments.js"></script>
   <script defer src="integrations-finance.js"></script>
@@ -346,14 +349,16 @@
           <div id="settings-tabs" role="tablist" aria-label="Secciones de Ajustes" aria-orientation="horizontal"></div>
           <p id="settings-hint" class="snote"></p>
           <div id="settings-body" tabindex="-1" role="tabpanel"></div>
-          <!-- Servicios (datos de ejemplo): FAKE cards. settings.js re-appends this group to the body only on the Conexiones tab (render() wipes the body). -->
+          <!-- K2-10 T6 (S3): the LIVE Gmail card has its own section and its own heading, OUT of the sample-data group:
+               what is connected is never read as an example. #connections-more stays the one wrapper settings.js re-appends to the
+               body on the Conexiones tab (render() wipes the body), so the live card travels with it. -->
           <div id="connections-more" hidden>
+            <h3 class="ssection">Correo · Gmail</h3>
+            <section id="integrations-mail" hidden></section>
             <h3 class="ssection">Servicios · Datos de ejemplo</h3>
             <section id="integrations" hidden></section>
             <section id="integrations-github" hidden></section>
             <section id="integrations-deployments" hidden></section>
-            <section id="integrations-email" hidden></section>
-            <section id="integrations-mail" hidden></section>
             <section id="integrations-payments" hidden></section>
             <section id="integrations-finance" hidden></section>
             <section id="integrations-notion" hidden></section>
