@@ -160,10 +160,12 @@ fn the_grant_is_asked_once_per_session_and_again_after_thirty_minutes() {
 
 #[test]
 fn a_sensitive_app_is_refused_and_not_captured() {
-    let rig = rig_with(true, Ok(target("keepassxc", "KeePassXC")));
+    // 1Password is on the macOS, Windows and Linux lists alike (KeePassXC is not on Gentle Dot's macOS
+    // list), so this rule is exercised on whatever platform runs the test.
+    let rig = rig_with(true, Ok(target("1password", "1Password")));
     let body = rig.call(TOOL);
     assert_eq!(body["result"]["isError"], true);
-    assert!(text(&body).contains("KeePassXC"), "{body}");
+    assert!(text(&body).contains("1Password"), "{body}");
     assert_eq!(rig.desktop.captures.load(Ordering::SeqCst), 0);
 }
 
