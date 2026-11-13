@@ -267,7 +267,7 @@ const es = {
   "{0} custom": "{0} personalizados",
   "Open sounds folder": "Abrir la carpeta de sonidos",
   "Reload sounds": "Recargar sonidos",
-  "Drop a file named like one of el personaje's sounds (finish.wav, approval.mp3, greet.m4a…) in the sounds folder to replace it, then Reload.": "Dejá en la carpeta de sonidos un archivo con el nombre de uno de los sonidos del personaje (finish.wav, approval.mp3, greet.m4a…) para reemplazarlo y luego recargá.",
+  "Drop a file named like one of el personaje's sounds (question.wav, approval.mp3, finish.ogg…) in the sounds folder to replace it, then Reload.": "Dejá en la carpeta de sonidos un archivo con el nombre de uno de los sonidos del personaje (question.wav, approval.mp3, finish.ogg…) para reemplazarlo y luego recargá.",
   "Hovering the island opens it; it folds again shortly after the pointer leaves. Click inside to keep it open.": "Pasar el cursor por la isla la abre; se pliega poco después de que el cursor salga. Hacé clic dentro para dejarla abierta.",
   "seconds after you leave the island": "segundos después de salir de la isla",
   "Island lives on": "La isla vive en",

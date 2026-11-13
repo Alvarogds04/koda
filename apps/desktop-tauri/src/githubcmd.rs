@@ -192,7 +192,35 @@ mod parity_tests {
         let answer = Cache::default().refresh(Section::Pulse, 1000, |_| Ok(root)).unwrap();
         assert_eq!(answer["stats"], json!({"totalStars":18,"totalRepos":23}));
     }
-    #[cfg(target_os = "linux")]
+    /// One canned HTTP answer on a loopback port; returns the endpoint and the request text.
+    fn one_shot(status: &str, body: &'static str) -> (String, std::thread::JoinHandle<String>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}/graphql", listener.local_addr().unwrap());
+        let status = status.to_string();
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket.set_read_timeout(Some(std::time::Duration::from_secs(3))).unwrap();
+            let mut input = [0; 8192]; let n = socket.read(&mut input).unwrap();
+            write!(socket,"HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",body.len(),body).unwrap();
+            String::from_utf8_lossy(&input[..n]).to_lowercase()
+        });
+        (endpoint, server)
+    }
+    #[test]
+    fn rejected_token_is_not_signed_in_and_redirects_are_not_followed() {
+        let (endpoint, server) = one_shot("401 Unauthorized", "{}");
+        assert_eq!(token_fetch_at(Section::Pulse, "fixture-key", &endpoint), Err(Unavailable::NotSignedIn));
+        server.join().unwrap();
+        let (endpoint, server) = one_shot("302 Found\r\nLocation: http://127.0.0.1:1/x", "");
+        assert_eq!(token_fetch_at(Section::Pulse, "fixture-key", &endpoint), Err(Unavailable::BadAnswer));
+        server.join().unwrap();
+    }
+    #[test]
+    fn saved_token_never_uses_gh_on_any_os() {
+        // K2-11 S4: the saved token goes to api.github.com over HTTPS on Linux, macOS and Windows.
+        assert_eq!(GITHUB_GRAPHQL, "https://api.github.com/graphql");
+    }
     #[test]
     fn saved_key_reads_same_pulse_from_local_http_without_gh() {
         use std::io::{Read, Write};
@@ -222,16 +250,14 @@ mod parity_tests {
     }
 }
 
-/// Saved key uses native HTTPS independently of gh. No redirects or proxy credential forwarding.
-#[cfg(target_os = "linux")]
+/// The only endpoint a saved token is ever sent to.
+pub const GITHUB_GRAPHQL: &str = "https://api.github.com/graphql";
+
+/// Saved key uses native HTTPS (reqwest + rustls) independently of gh, on every OS (K2-11).
+/// No redirects or proxy credential forwarding. Without a saved key the host falls back to `gh`.
 pub fn run_token(section: Section, token: &str) -> Result<Value, Unavailable> {
-    token_fetch_at(section, token, "https://api.github.com/graphql")
+    token_fetch_at(section, token, GITHUB_GRAPHQL)
 }
-#[cfg(not(target_os = "linux"))]
-pub fn run_token(section: Section, token: &str) -> Result<Value, Unavailable> {
-    run_gh_with_token(section, Some(token))
-}
-#[cfg(target_os = "linux")]
 fn token_fetch_at(section: Section, token: &str, endpoint: &str) -> Result<Value, Unavailable> {
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|_| Unavailable::BadAnswer)?;
     runtime.block_on(async {

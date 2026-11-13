@@ -3,9 +3,9 @@
 //!
 //! Same gate as `prefs_action` (known WebView label + page URL, shared rate limiter, closed
 //! schema). Reachable from the settings window on purpose: Coucou's Settings → "Open sounds
-//! folder" / "Reload sounds" live there. It can only read files named after one of the ten
-//! cue stems inside the app's own `sounds` folder (see `abito_island::sounds`), and `reveal`
-//! opens that fixed folder with no caller-influenced argument.
+//! folder" / "Reload sounds" live there. It can only read files named after one of the
+//! thirty-seven cue stems (`sounds::STEMS`) inside the app's own `sounds` folder (see
+//! `abito_island::sounds`), and `reveal` opens that fixed folder with no caller-influenced argument.
 use crate::{now_ms, AppState};
 use abito_island::bridge::{self, BridgeError};
 use abito_island::sounds::{self, Command};
@@ -27,7 +27,8 @@ fn folder(app: &AppHandle) -> Option<PathBuf> {
         .map(|d| d.join(sounds::FOLDER))
 }
 
-/// Shows the folder in the file manager. The path is ours, never the caller's.
+/// Shows the folder in the file manager through the shared opener (K2-01c). The path is ours,
+/// never the caller's.
 fn reveal(dir: &std::path::Path) -> Result<(), BridgeError> {
     std::fs::create_dir_all(dir).map_err(|_| err("save_failed"))?;
     // K2-01c: xdg-open, Finder (`open`) or Explorer; only a spawn failure counts (explorer.exe

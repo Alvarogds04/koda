@@ -495,7 +495,7 @@
     'vercel-token': 'Vercel', 'github-token': 'GitHub', 'stripe-api-key': 'Stripe', 'resend-api-key': 'Resend', 'resend-from': 'Resend (remitente)',
     'smtp-host': 'Correo SMTP (servidor)', 'smtp-user': 'Correo SMTP (usuario)', 'smtp-password': 'Correo SMTP (contraseña)', 'smtp-from': 'Correo SMTP (remitente)',
     'imap-host': 'Correo IMAP (servidor)', 'imap-user': 'Correo IMAP (usuario)', 'imap-password': 'Correo IMAP (contraseña)',
-    'notion-api-key': 'Notion', 'calcom-api-key': 'Cal.com', 'elevenlabs-api-key': 'ElevenLabs',
+    'notion-api-key': 'Notion', 'calcom-api-key': 'Cal.com', 'calendar-ics-url': 'Calendario (URL ICS privada)', 'elevenlabs-api-key': 'ElevenLabs',
   });
   const KEY_IDS = Object.freeze(Object.keys(KEY_LABELS));
   const KEY_MAX_BYTES = 2048;
