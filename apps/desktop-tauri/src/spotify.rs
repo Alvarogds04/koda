@@ -1,6 +1,8 @@
-//! #470 Spotify control over MPRIS (D-Bus), Linux only. Abito's own `zbus` (blocking), no new
-//! crate. A closed command set (`parse_command`) drives Spotify; the player's state is pushed
-//! through a sink the host turns into an island event.
+//! #470 Spotify control: MPRIS (D-Bus) on Linux, the system media controls on Windows
+//! ([`crate::spotify_smtc`]) and AppleScript on macOS ([`crate::spotify_mac`]). Abito's own `zbus`
+//! (blocking) on Linux, no new crate anywhere: the three backends fill this same [`PlayerState`].
+//! A closed command set (`parse_command`) drives Spotify; the player's state is pushed through a sink
+//! the host turns into an island event.
 //!
 //! Adapted from Coucou src-tauri/src/spotify.rs @434d6a2b, Copyright (c) 2026 Louis Raillé, MIT.
 //! (The state model, metadata parsing and title/artist trimming are Coucou's; the transport is
@@ -103,6 +105,15 @@ pub struct PlayerState {
     pub repeat: bool,
     /// 0…100.
     pub volume: i32,
+    /// macOS only (K2-09 S3/S6): the user refused the Automation prompt (`osascript` -1743), so the
+    /// card shows design 08 F7 instead of a track. Never serialised while false, so the Linux and
+    /// Windows payloads are unchanged.
+    #[serde(skip_serializing_if = "is_false")]
+    pub needs_permission: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 impl Default for PlayerState {
@@ -116,6 +127,7 @@ impl Default for PlayerState {
             shuffle: false,
             repeat: false,
             volume: 50,
+            needs_permission: false,
         }
     }
 }
@@ -339,6 +351,9 @@ pub enum Action {
     Repeat(bool),
     /// 0…=100.
     Volume(u8),
+    /// macOS only: open Ajustes del Sistema › Automatización so the user can grant the Apple Events
+    /// permission the card is asking for. Refused everywhere else.
+    OpenPermission,
 }
 
 /// `{action}` for view/stop/play_pause/next/previous; `{action, value}` for seek (finite
@@ -357,6 +372,7 @@ pub fn parse_command(payload: &Json) -> Option<Action> {
         "play_pause" => bare(Action::PlayPause),
         "next" => bare(Action::Next),
         "previous" => bare(Action::Previous),
+        "open_permission" => bare(Action::OpenPermission),
         "shuffle" => valued(&|v| v.as_bool().map(Action::Shuffle)),
         "repeat" => valued(&|v| v.as_bool().map(Action::Repeat)),
         "seek" => valued(&|v| v.as_f64().filter(|s| s.is_finite() && *s >= 0.0).map(Action::Seek)),
@@ -795,7 +811,9 @@ mod client {
                         Action::Shuffle(on) => p.set_property("Shuffle", on).map_err(zbus::Error::from),
                         Action::Repeat(on) => p.set_property("LoopStatus", if on { "Playlist" } else { "None" }).map_err(zbus::Error::from),
                         Action::Volume(v) => p.set_property("Volume", f64::from(v) / 100.0).map_err(zbus::Error::from),
-                        Action::View | Action::Stop => Err(zbus::Error::Failure("not a control".into())),
+                        Action::View | Action::Stop | Action::OpenPermission => {
+                            Err(zbus::Error::Failure("not a control".into()))
+                        }
                     }
                 })
                 .is_some();

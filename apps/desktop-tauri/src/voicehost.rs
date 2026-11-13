@@ -62,14 +62,9 @@ fn spawn_detached(program: &str, arg: Option<&str>) -> bool {
     }
 }
 
-#[cfg(target_os = "linux")]
+// K2-09 (S1, S5): all three systems answer now — `spotifyhost` picks MPRIS, SMTC or AppleScript.
 fn music_state(app: &AppHandle) -> (bool, bool, u8, Option<(String, Option<String>)>) {
-    let s = crate::spotifyhost::state_of(app);
-    (s.0, s.1, s.2, s.3)
-}
-#[cfg(not(target_os = "linux"))]
-fn music_state(_app: &AppHandle) -> (bool, bool, u8, Option<(String, Option<String>)>) {
-    (false, false, 50, None)
+    crate::spotifyhost::state_of(app)
 }
 
 fn music_control(app: &AppHandle, op: &MusicOp) -> bool {
