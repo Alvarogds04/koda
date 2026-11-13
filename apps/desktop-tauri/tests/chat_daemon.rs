@@ -11,9 +11,9 @@
 //! The island setup mirrors `tests/agent_daemon.rs` (`Island::start`), with its own base
 //! name shape (`.akchat<pid>-<n>`) so neither test's cleanup can touch the other's.
 
-use abito_island::agentconn::ChatConn;
-use abito_island::chat::{parse_command, Command};
-use abito_island::chatclient::{ChatFeed, ChatHost, ChatLink, Routed, CHAT_CONVERSATION_ID};
+use koda_island::agentconn::ChatConn;
+use koda_island::chat::{parse_command, Command};
+use koda_island::chatclient::{ChatFeed, ChatHost, ChatLink, Routed, CHAT_CONVERSATION_ID};
 use serde_json::{json, Value};
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};

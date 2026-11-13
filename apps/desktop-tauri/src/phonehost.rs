@@ -8,16 +8,16 @@
 //!
 //! S6: Linux only in 0.2. Everywhere else the command answers the closed "unsupported" status and nothing runs.
 use crate::{now_ms, AppState};
-use abito_island::bridge::{self, BridgeError};
+use koda_island::bridge::{self, BridgeError};
 use serde_json::{json, Value};
 // `phone_link_action` takes the handle on every platform (S6: it answers `unsupported` off Linux), so the import
 // is unconditional; the traits and the Linux-only module below are not.
 use tauri::{AppHandle, State};
 
 #[cfg(target_os = "linux")]
-use abito_island::phone_link::ids::DEFAULT_PORT;
+use koda_island::phone_link::ids::DEFAULT_PORT;
 #[cfg(target_os = "linux")]
-use abito_island::phone_link::{ids, keystore, link::Link, server::Features};
+use koda_island::phone_link::{ids, keystore, link::Link, server::Features};
 #[cfg(target_os = "linux")]
 use std::net::SocketAddr;
 #[cfg(target_os = "linux")]
@@ -108,12 +108,12 @@ const USAGE_EVERY_MS: u64 = 60_000;
 /// human decisions, and the ONE place they will be turned on is the list below.
 #[cfg(target_os = "linux")]
 pub(crate) struct PrefsFeatures {
-    read: Box<dyn Fn() -> abito_island::prefs::Prefs + Send + Sync>,
+    read: Box<dyn Fn() -> koda_island::prefs::Prefs + Send + Sync>,
 }
 
 #[cfg(target_os = "linux")]
 impl PrefsFeatures {
-    pub(crate) fn new(read: impl Fn() -> abito_island::prefs::Prefs + Send + Sync + 'static) -> PrefsFeatures {
+    pub(crate) fn new(read: impl Fn() -> koda_island::prefs::Prefs + Send + Sync + 'static) -> PrefsFeatures {
         PrefsFeatures { read: Box::new(read) }
     }
 }
@@ -192,7 +192,7 @@ pub fn stop(app: &AppHandle) {
 #[cfg(target_os = "linux")]
 pub(crate) fn publish_sessions(app: &AppHandle, view: &Value) {
     let Some(host) = app.try_state::<PhoneHost>() else { return };
-    host.link.publish_sessions(&view["sessions"], abito_island::phone_link::server::now_ms());
+    host.link.publish_sessions(&view["sessions"], koda_island::phone_link::server::now_ms());
 }
 
 #[cfg(target_os = "linux")]
@@ -203,7 +203,7 @@ fn wanted(app: &AppHandle) -> bool {
 /// The switch's own preference, through the same transaction and atomic writer as every other setting.
 #[cfg(target_os = "linux")]
 fn persist(app: &AppHandle, on: bool) -> Result<(), BridgeError> {
-    crate::settingshost::voice_prefs_command(app, &abito_island::prefs::Command::SetPhoneLink(on))
+    crate::settingshost::voice_prefs_command(app, &koda_island::prefs::Command::SetPhoneLink(on))
         .map(|_| ())
         .ok_or_else(|| err("save_failed"))
 }
@@ -261,7 +261,7 @@ fn enable(app: &AppHandle) {
 /// attempt is dropped rather than waited for.
 #[cfg(target_os = "linux")]
 fn ensure_agent(app: &AppHandle) {
-    let now = abito_island::phone_link::server::now_ms();
+    let now = koda_island::phone_link::server::now_ms();
     let host = link_of(app);
     let last = host.last_connect.load(Ordering::SeqCst);
     if last != 0 && now.saturating_sub(last) < RECONNECT {
@@ -276,11 +276,11 @@ fn ensure_agent(app: &AppHandle) {
     if conn.view().get("connection").and_then(Value::as_str) == Some("connected") {
         return;
     }
-    if let Some(reason) = app.state::<abito_island::daemonhost::HostSlot>().failure() {
+    if let Some(reason) = app.state::<koda_island::daemonhost::HostSlot>().failure() {
         conn.startup_failed(reason);
         return;
     }
-    let root = abito_island::agentconn::island_root(
+    let root = koda_island::agentconn::island_root(
         std::env::var("KODA_ISLAND_DIR").ok().as_deref(),
         std::env::var("HOME").ok().as_deref(),
     );
@@ -299,7 +299,7 @@ fn tick(app: &AppHandle) {
     if conn.view().get("connection").and_then(Value::as_str) != Some("connected") {
         return;
     }
-    if let Ok(command) = abito_island::agentclient::parse_ui_command(&json!({"action": "sessions_list"})) {
+    if let Ok(command) = koda_island::agentclient::parse_ui_command(&json!({"action": "sessions_list"})) {
         let _ = conn.send(&command);
     }
 }
@@ -352,17 +352,17 @@ fn usage_tick(app: &AppHandle) {
     if !prefs.phone_usage() {
         return;
     }
-    let now = abito_island::phone_link::server::now_ms();
+    let now = koda_island::phone_link::server::now_ms();
     let last = host.last_usage.load(Ordering::SeqCst);
     if last != 0 && now.saturating_sub(last) < USAGE_EVERY_MS {
         return;
     }
     host.last_usage.store(now, Ordering::SeqCst);
-    let claude = abito_island::transport::resolve_runtime()
+    let claude = koda_island::transport::resolve_runtime()
         .ok()
-        .and_then(|runtime| abito_island::claude_plan::read(&runtime));
-    let codex = prefs.show_codex_plan_in_notch().then(abito_island::codex_plan::read).flatten();
-    host.link.publish_usage(abito_island::phone_link::usage::line(claude.as_ref(), codex.as_ref(), now as i64));
+        .and_then(|runtime| koda_island::claude_plan::read(&runtime));
+    let codex = prefs.show_codex_plan_in_notch().then(koda_island::codex_plan::read).flatten();
+    host.link.publish_usage(koda_island::phone_link::usage::line(claude.as_ref(), codex.as_ref(), now as i64));
 }
 
 #[cfg(test)]
@@ -375,13 +375,13 @@ mod tests {
     #[test]
     #[cfg(target_os = "linux")]
     fn the_features_seam_reads_the_switch_on_every_hello_and_offers_only_what_is_wired() {
-        use abito_island::phone_link::server::Features;
+        use koda_island::phone_link::server::Features;
         use std::sync::Arc;
         use std::sync::atomic::{AtomicBool, Ordering};
         let on = Arc::new(AtomicBool::new(false));
         let read = {
             let on = on.clone();
-            move || abito_island::prefs::Prefs { phone_usage: on.load(Ordering::SeqCst).then_some(true), ..Default::default() }
+            move || koda_island::prefs::Prefs { phone_usage: on.load(Ordering::SeqCst).then_some(true), ..Default::default() }
         };
         let features = super::PrefsFeatures::new(read);
         assert!(features.offered().is_empty(), "S11: off by default, so nothing of the plans is offered");

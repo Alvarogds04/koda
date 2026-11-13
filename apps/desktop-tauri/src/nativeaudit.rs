@@ -8,7 +8,7 @@ pub(crate) fn enabled() -> bool {
 }
 
 pub(crate) fn expected(_view: &str, scale: f64, _area_h: i32) -> (i32, i32) {
-    use abito_island::geometry;
+    use koda_island::geometry;
     geometry::scaled_size(geometry::ISLAND_WINDOW, scale)
 }
 
@@ -86,9 +86,9 @@ pub(crate) fn sample(
         let gtk = win.gtk_window().expect("GTK window on main thread");
         let mut tree = Vec::new();
         widgets(gtk.upcast_ref(), 0, &mut tree);
-        let wa = abito_island::workarea::current(&win);
-        let rect = |r: abito_island::geometry::Rect| [r.x, r.y, r.w, r.h];
-        let own = abito_island::workarea::x11_find_own_window(abito_island::workarea::WINDOW_TITLE).ok();
+        let wa = koda_island::workarea::current(&win);
+        let rect = |r: koda_island::geometry::Rect| [r.x, r.y, r.w, r.h];
+        let own = koda_island::workarea::x11_find_own_window(koda_island::workarea::WINDOW_TITLE).ok();
         let row = json!({
             "pid": std::process::id(), "time_ms": super::now_ms(),
             "stage": stage, "attempt": attempt, "view": view,

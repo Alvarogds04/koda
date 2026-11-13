@@ -6,8 +6,8 @@
 //! Unsupported when the system refuses it. The backend string is `win32` so
 //! the frontend can say «Atajo de Windows» instead of lying about X11.
 use crate::AppState;
-use abito_island::bridge::{self, BridgeError};
-use abito_island::hotkey::{self, Command, HotkeyConfig, View};
+use koda_island::bridge::{self, BridgeError};
+use koda_island::hotkey::{self, Command, HotkeyConfig, View};
 use serde_json::{json, Value};
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -20,14 +20,14 @@ const FILE: &str = "hotkey.json";
 const HOTKEY_ID: u32 = 1;
 
 #[cfg(windows)]
-use abito_island::hotkey::win32::Grabber;
+use koda_island::hotkey::win32::Grabber;
 
 /// The Windows host is only ever compiled for the Windows target (main.rs
 /// mounts this file under cfg(not(unix)), and the only non-unix build here is
 /// x86_64-pc-windows-msvc). The alias documents the shape this file would have
 /// elsewhere: a grab that exists but holds nothing.
 #[cfg(target_os = "macos")]
-use abito_island::hotkey::macos::Grabber;
+use koda_island::hotkey::macos::Grabber;
 
 #[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
 #[derive(Default)]
@@ -194,7 +194,7 @@ pub async fn hotkey_action(
 /// probe calls the same function: one route, the Unix `on_press`, with its
 /// X11 focus hand-back replaced by `hotkey::foreground` (HU-049).
 #[allow(dead_code)]
-pub(crate) fn press_target_from_action(app: &AppHandle, _target: abito_island::hotkey::Target) { press_on_main(app); }
+pub(crate) fn press_target_from_action(app: &AppHandle, _target: koda_island::hotkey::Target) { press_on_main(app); }
 
 pub(crate) fn press_on_main(app: &AppHandle) {
     let inner = app.clone();
@@ -212,7 +212,7 @@ pub(crate) fn press_on_main(app: &AppHandle) {
             return;
         }
         let state = inner.state::<AppState>();
-        let hidden = *state.phase.lock().expect("phase lock") == abito_island::desktop::IslandState::Hidden;
+        let hidden = *state.phase.lock().expect("phase lock") == koda_island::desktop::IslandState::Hidden;
         let pending = crate::questionhost::with_pending(&state, |pending| pending);
         match hotkey::toggle_decision(hidden, pending) {
             hotkey::ToggleDecision::Show => {

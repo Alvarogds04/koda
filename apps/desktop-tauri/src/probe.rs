@@ -16,8 +16,8 @@ use serde_json::json;
 use tauri::Emitter;
 use tauri::{AppHandle, Manager};
 
-use abito_island::core::{screen_at, ReleaseOutcome, WindowIo};
-use abito_island::geometry;
+use koda_island::core::{screen_at, ReleaseOutcome, WindowIo};
+use koda_island::geometry;
 use crate::{apply_plan, main_window, refresh_work_area, store_requested, AppState, TauriIo};
 
 const NO_POINTER: &str =
@@ -50,7 +50,7 @@ fn wait_for_size(app: &AppHandle, want: (i32, i32), timeout: Duration) -> bool {
 fn readback(app: &AppHandle, step: &str) {
     let Some(win) = main_window(app) else { return };
     let state = app.state::<AppState>();
-    let wa = abito_island::workarea::current(&win);
+    let wa = koda_island::workarea::current(&win);
     let pos = win.outer_position().ok().map(|p| (p.x, p.y));
     let size = win.inner_size().ok().map(|s| (s.width as i32, s.height as i32));
     let scale = win.scale_factor().ok();
@@ -64,7 +64,7 @@ fn readback(app: &AppHandle, step: &str) {
     // Tauri getters from what the WM actually applied.
     // FIX-B: identified by _NET_WM_PID == our pid (title secondary); a
     // failure is printed as `x11_window_error`, never replaced by a guess.
-    let found = abito_island::workarea::x11_find_own_window(abito_island::workarea::WINDOW_TITLE);
+    let found = koda_island::workarea::x11_find_own_window(koda_island::workarea::WINDOW_TITLE);
     let x11_error = found.as_ref().err().map(|e| e.as_str());
     let x11win = found.ok();
     let x11json = x11win.as_ref().map(|w| {
@@ -150,9 +150,9 @@ fn fixed_window_evidence(app: &AppHandle) {
     let state = app.state::<AppState>();
     for step in ["fixed_compact", "fixed_overview", "fixed_chat", "fixed_compact_again"] {
         match step {
-            "fixed_overview" => { let _ = crate::dispatch_action(app, &state, abito_island::bridge::Action::Expand, None); }
+            "fixed_overview" => { let _ = crate::dispatch_action(app, &state, koda_island::bridge::Action::Expand, None); }
             "fixed_chat" => crate::chathost::switch_view(app, &state, true),
-            "fixed_compact_again" => { let _ = crate::dispatch_action(app, &state, abito_island::bridge::Action::Close, None); }
+            "fixed_compact_again" => { let _ = crate::dispatch_action(app, &state, koda_island::bridge::Action::Close, None); }
             _ => {}
         }
         sleep(Duration::from_secs(3));
@@ -329,7 +329,7 @@ pub fn run(app: AppHandle) {
         }
         sleep(Duration::from_millis(100));
     }
-    let mut expected_verbs: Vec<&str> = abito_island::bridge::ACTIONS.to_vec();
+    let mut expected_verbs: Vec<&str> = koda_island::bridge::ACTIONS.to_vec();
     expected_verbs.push("onState"); // the one facade-only subscription verb
     expected_verbs.sort_unstable();
     let expected_json = serde_json::json!(expected_verbs);
@@ -426,7 +426,7 @@ fn transport_evidence(app: &AppHandle) {
     use std::os::unix::net::UnixStream;
 
     let state = app.state::<AppState>();
-    let scans = abito_island::transport::preview_scan();
+    let scans = koda_island::transport::preview_scan();
     let endpoint = state
         .transport
         .lock()
@@ -436,7 +436,7 @@ fn transport_evidence(app: &AppHandle) {
     let mut line = json!({
         "step": "transport_evidence",
         "pointer_input": NO_POINTER,
-        "socket_dir_env": std::env::var(abito_island::transport::SOCKET_DIR_ENV).ok(),
+        "socket_dir_env": std::env::var(koda_island::transport::SOCKET_DIR_ENV).ok(),
         "endpoint": endpoint.as_ref().map(|path| path.display().to_string()),
         "socket_dir_owned_by_this_process": true,
         "project": state.project.clone(),
@@ -474,7 +474,7 @@ fn transport_evidence(app: &AppHandle) {
         frames += 1;
         let mut buffer = [0u8; 128];
         let ready_ok = match stream.read(&mut buffer) {
-            Ok(count) => &buffer[..count] == abito_island::protocol::READY_LINE,
+            Ok(count) => &buffer[..count] == koda_island::protocol::READY_LINE,
             Err(error) => return Err(format!("read ready: {error}")),
         };
         if !ready_ok {
@@ -542,7 +542,7 @@ fn transport_evidence(app: &AppHandle) {
         };
         let before = count_notices(app);
         let outcome =
-            crate::dispatch_verb(app, &state, abito_island::bridge::Action::Dismiss, None);
+            crate::dispatch_verb(app, &state, koda_island::bridge::Action::Dismiss, None);
         let after = count_notices(app);
         line["dismiss"] = json!({
             "dispatched_ok": outcome.is_ok(),
@@ -689,7 +689,7 @@ fn overview_visual_evidence(app: &AppHandle) {
             let count = stream
                 .read(&mut buffer)
                 .map_err(|error| format!("read ready: {error}"))?;
-            if &buffer[..count] != abito_island::protocol::READY_LINE {
+            if &buffer[..count] != koda_island::protocol::READY_LINE {
                 return Ok(false);
             }
             // Keep the stream open across BOTH captures: connected first, then
@@ -793,7 +793,7 @@ fn overview_visual_evidence(app: &AppHandle) {
         // tarjeta-resuelta: the human's explicit choice through the SAME
         // dispatch funnel the webview's `allow` verb reaches.
         let outcome =
-            crate::dispatch_verb(app, state.inner(), abito_island::bridge::Action::Allow, None);
+            crate::dispatch_verb(app, state.inner(), koda_island::bridge::Action::Allow, None);
         let resolved_ok = outcome.is_ok();
         {
             let deadline = Instant::now() + Duration::from_secs(3);
@@ -962,7 +962,7 @@ fn capture_sequence(app: &AppHandle, name: &str, fps: u32, millis: u64, action: 
         return;
     };
     let Some(page) = main_window(app) else { return };
-    let Ok(win) = abito_island::workarea::x11_find_own_window(abito_island::workarea::WINDOW_TITLE) else {
+    let Ok(win) = koda_island::workarea::x11_find_own_window(koda_island::workarea::WINDOW_TITLE) else {
         action();
         return;
     };
@@ -1039,7 +1039,7 @@ fn notification_scenes(app: &AppHandle) {
         send(&mut stream, json!({"v":1,"type":"hello","project":project,"sessionId":session,"at":now()}))?;
         let mut buf = [0u8; 128];
         let n = stream.read(&mut buf).map_err(|e| format!("ready: {e}"))?;
-        if &buf[..n] != abito_island::protocol::READY_LINE {
+        if &buf[..n] != koda_island::protocol::READY_LINE {
             return Err("no ready".into());
         }
         send(&mut stream, json!({"v":1,"type":"questions_hello","questionVersion":1,"project":project,"sessionId":session,"at":now()}))?;
@@ -1197,7 +1197,7 @@ fn hotkey_evidence(app: &AppHandle) {
         s.write_all(format!("{hello}\n").as_bytes()).ok()?;
         let mut b = [0u8; 64];
         let n = s.read(&mut b).ok()?;
-        (&b[..n] == abito_island::protocol::READY_LINE).then_some(s)
+        (&b[..n] == koda_island::protocol::READY_LINE).then_some(s)
     });
     sleep(Duration::from_millis(400));
     let before = json!({"phase": phase(&state), "visible": visible(&win), "focused": win.is_focused().unwrap_or(false), "connections": conns(&state), "transport": transport_ok(&state)});
@@ -1442,7 +1442,7 @@ fn approval_evidence(app: &AppHandle) {
     let mut line = json!({
         "step": "approval_evidence",
         "pointer_input": NO_POINTER,
-        "base_origin_env": std::env::var(abito_island::approval::BASE_ENV).ok(),
+        "base_origin_env": std::env::var(koda_island::approval::BASE_ENV).ok(),
         "fake_backend_spawned": fake.is_some(),
         "decision": serde_json::Value::Null,
         "error": serde_json::Value::Null,
@@ -1496,7 +1496,7 @@ fn approval_evidence(app: &AppHandle) {
     // pointer nor the renderer: it drives the host handler
     // programmatically, which is exactly what makes "nothing approves by
     // itself" provable (posts_before_choice must be 0).
-    let outcome = crate::dispatch_verb(app, &state, abito_island::bridge::Action::Allow, None);
+    let outcome = crate::dispatch_verb(app, &state, koda_island::bridge::Action::Allow, None);
     line["decision"] = json!({
         "dispatched_ok": outcome.is_ok(),
         "error": outcome.as_ref().err().map(|error| serde_json::to_value(error).unwrap_or_default()),
@@ -1714,7 +1714,7 @@ fn native_resize_flash_scene(app: &AppHandle) {
     let (g2, s2) = (geom.clone(), stop.clone());
     let sampler = std::thread::spawn(move || {
         while !s2.load(std::sync::atomic::Ordering::SeqCst) {
-            if let Ok(w) = abito_island::workarea::x11_find_own_window(abito_island::workarea::WINDOW_TITLE) {
+            if let Ok(w) = koda_island::workarea::x11_find_own_window(koda_island::workarea::WINDOW_TITLE) {
                 if let Ok(mut g) = g2.lock() {
                     if g.len() < 4000 {
                         g.push((crate::now_ms(), w.x, w.y, w.w, w.h));
@@ -1867,7 +1867,7 @@ fn send_flicker_diagnosis(app: &AppHandle) {
 /// per-state scenes) left with the direct Rust chat lane: the island chat is the daemon
 /// engine now, and a probe without a daemon cannot honestly show an answer.
 fn chat_evidence(app: &AppHandle) {
-    use abito_island::fakemodel::{FakeModel, FakeModelConfig, Reply};
+    use koda_island::fakemodel::{FakeModel, FakeModelConfig, Reply};
 
     let state = app.state::<AppState>();
     let fake = FakeModel::start(FakeModelConfig {
@@ -1887,7 +1887,7 @@ fn chat_evidence(app: &AppHandle) {
     *state.models_registry.lock().expect("models registry lock") = original_registry
         .iter()
         .map(|e| if e.profile_id == "local-abito-gpt" {
-            abito_island::models::Entry { origin: fake_origin, ..*e }
+            koda_island::models::Entry { origin: fake_origin, ..*e }
         } else { *e })
         .collect();
 
@@ -1979,7 +1979,7 @@ fn chat_evidence(app: &AppHandle) {
     *state.models_registry.lock().expect("models registry lock") = original_registry
         .iter()
         .map(|e| if e.profile_id == "local-abito-gpt" {
-            abito_island::models::Entry { origin: fake_origin, ..*e }
+            koda_island::models::Entry { origin: fake_origin, ..*e }
         } else { *e })
         .collect();
     let models_seen_before = fake.seen().len();
@@ -2198,7 +2198,7 @@ fn capture_visual(app: &AppHandle, name: &str) {
     };
     let _ = app;
     let Some(page) = main_window(app) else { return }; // WebviewWindow, for the body class only
-    let win = match abito_island::workarea::x11_find_own_window(abito_island::workarea::WINDOW_TITLE) {
+    let win = match koda_island::workarea::x11_find_own_window(koda_island::workarea::WINDOW_TITLE) {
         Ok(w) => w,
         Err(e) => {
             emit(&json!({"step": "visual", "name": name, "error": e.as_str()}));
@@ -2308,15 +2308,15 @@ fn island_validation(app: &AppHandle) {
     let visible = compact.first().and_then(|v| v["visible"].as_array());
     let small = visible.map_or(false, |v| (v[0].as_f64().unwrap_or(0.0) - geometry::COMPACT_DOT.0 as f64).abs() <= 0.5 && (v[1].as_f64().unwrap_or(0.0) - geometry::COMPACT_DOT.1 as f64).abs() <= 0.5);
     scene("isla-compacta", compact_size && small, "tamaño compacto no observado", json!({"page":compact,"native_expected":[native_size.0,native_size.1]}));
-    let above = wait(&|| abito_island::workarea::x11_find_own_window(abito_island::workarea::WINDOW_TITLE).map(|w| w.wm_state_above == Some(true)).unwrap_or(false));
+    let above = wait(&|| koda_island::workarea::x11_find_own_window(koda_island::workarea::WINDOW_TITLE).map(|w| w.wm_state_above == Some(true)).unwrap_or(false));
     scene("isla-siempre-encima", above, "falta _NET_WM_STATE_ABOVE al arrancar", json!({"above":above}));
-    let _ = crate::dispatch_action(app, &state, abito_island::bridge::Action::Expand, None);
+    let _ = crate::dispatch_action(app, &state, koda_island::bridge::Action::Expand, None);
     let expanded = page_state("expanded");
     scene("isla-expandir", !expanded.is_empty(), "la isla no se expandió", json!({"page":expanded}));
-    let _ = crate::dispatch_action(app, &state, abito_island::bridge::Action::Close, None);
+    let _ = crate::dispatch_action(app, &state, koda_island::bridge::Action::Close, None);
     let collapsed = page_state("compact");
     scene("isla-colapsar", !collapsed.is_empty(), "la isla no colapsó", json!({"page":collapsed}));
-    let _ = crate::dispatch_action(app, &state, abito_island::bridge::Action::Expand, None);
+    let _ = crate::dispatch_action(app, &state, koda_island::bridge::Action::Expand, None);
     let expanded = page_state("expanded");
     if let (Some(point), Ok(pos)) = (expanded.first().and_then(|v|v["fold"].as_array()), win.outer_position()) {
         emit(&json!({"step":"validation_input","kind":"click","x":pos.x+(point[0].as_f64().unwrap_or(0.0)*scale) as i32,"y":pos.y+(point[1].as_f64().unwrap_or(0.0)*scale) as i32}));
@@ -2351,20 +2351,20 @@ fn island_validation(app: &AppHandle) {
         let rival_ready = wait(&|| stack().contains(&rival));
         let before = stack();
         // Two deliberate presses, not duplicate reports from two backends.
-        wait(&|| first_press.elapsed() >= Duration::from_millis(abito_island::hotkey::PRESS_DEDUP_MS + 50));
+        wait(&|| first_press.elapsed() >= Duration::from_millis(koda_island::hotkey::PRESS_DEDUP_MS + 50));
         crate::hotkeyhost::press_on_main(app);
-        wait(&|| win.is_visible().unwrap_or(false) && abito_island::workarea::x11_find_own_window(abito_island::workarea::WINDOW_TITLE).is_ok());
-        let own = abito_island::workarea::x11_find_own_window(abito_island::workarea::WINDOW_TITLE).map_err(|e|e.as_str().to_owned())?.id;
+        wait(&|| win.is_visible().unwrap_or(false) && koda_island::workarea::x11_find_own_window(koda_island::workarea::WINDOW_TITLE).is_ok());
+        let own = koda_island::workarea::x11_find_own_window(koda_island::workarea::WINDOW_TITLE).map_err(|e|e.as_str().to_owned())?.id;
         let mapped = || conn.get_window_attributes(own).ok().and_then(|c|c.reply().ok()).map(|a|a.map_state == MapState::VIEWABLE).unwrap_or(false);
         let on_top = wait(&|| {
             let list = stack();
             let order = match (list.iter().position(|w| *w==own), list.iter().position(|w| *w==rival)) {
                 (Some(a),Some(b)) => a>b, _=>false
             };
-            mapped() && order && abito_island::workarea::x11_find_own_window(abito_island::workarea::WINDOW_TITLE).map(|w|w.wm_state_above == Some(true)).unwrap_or(false)
+            mapped() && order && koda_island::workarea::x11_find_own_window(koda_island::workarea::WINDOW_TITLE).map(|w|w.wm_state_above == Some(true)).unwrap_or(false)
         });
         // Keep the rival connection alive until after the capture.
-        let evidence = json!({"hidden":hidden,"rival_ready":rival_ready,"rival":rival,"own":own,"stack_before":before,"stack_after":stack(),"mapped":mapped(),"above":abito_island::workarea::x11_find_own_window(abito_island::workarea::WINDOW_TITLE).map(|w|w.wm_state_above == Some(true)).unwrap_or(false),"withdrawal_fixture":"clear ABOVE while hidden, as Mutter does","input":"hotkeyhost::press_on_main, same shortcut callback; not injected keys"});
+        let evidence = json!({"hidden":hidden,"rival_ready":rival_ready,"rival":rival,"own":own,"stack_before":before,"stack_after":stack(),"mapped":mapped(),"above":koda_island::workarea::x11_find_own_window(koda_island::workarea::WINDOW_TITLE).map(|w|w.wm_state_above == Some(true)).unwrap_or(false),"withdrawal_fixture":"clear ABOVE while hidden, as Mutter does","input":"hotkeyhost::press_on_main, same shortcut callback; not injected keys"});
         scene("isla-atajo-sobre-rival", hidden && rival_ready && on_top, "atajo no restauró la isla mapeada y encima del rival con ABOVE", evidence);
         Ok(json!(true))
     })();
@@ -2396,7 +2396,7 @@ fn feature_validation(app: &AppHandle) {
     // button's launch is replaced by a counter the page can read back.
     {
         let page = win.clone();
-        abito_island::focushost::validation_launcher::install(move || {
+        koda_island::focushost::validation_launcher::install(move || {
             let _ = page.eval("window.__validatorTerminalLaunches=(window.__validatorTerminalLaunches||0)+1;");
         });
     }
@@ -2451,7 +2451,7 @@ fn feature_validation(app: &AppHandle) {
     };
     let context_fixture = validator_context::start();
     install(&win);
-    let _ = crate::dispatch_action(app, &state, abito_island::bridge::Action::Expand, None);
+    let _ = crate::dispatch_action(app, &state, koda_island::bridge::Action::Expand, None);
     sleep(Duration::from_millis(500));
     record("dictado-inactivo", run(&win,"AbitoValidate.dictationIdle()"));
     record("isla-ausencia", run(&win,"AbitoValidate.edgeIdle()"));
@@ -2485,7 +2485,7 @@ fn feature_validation(app: &AppHandle) {
         let read = |reader:&mut BufReader<UnixStream>| -> Result<String,String> {let mut line=String::new();reader.read_line(&mut line).map_err(|e|e.to_string())?;Ok(line)};
         producer.send(json!({"type":"hello"}))?;
         let ready=read(&mut reader)?;
-        if ready.as_bytes()!=abito_island::protocol::READY_LINE {return Err(format!("hello: {ready}"));}
+        if ready.as_bytes()!=koda_island::protocol::READY_LINE {return Err(format!("hello: {ready}"));}
         if std::env::var("KODA_PROBE_VALIDATE_PRODUCER_FAILURE").as_deref() == Ok("1") {
             stream.shutdown(std::net::Shutdown::Both).map_err(|e|e.to_string())?;
             producer.send(json!({"type":"heartbeat"}))?;
@@ -2520,7 +2520,7 @@ fn feature_validation(app: &AppHandle) {
         terminal_conn.flush().map_err(|e|e.to_string())?;
         sleep(Duration::from_millis(400));
         let mut shortcuts=run(&win,"AbitoValidate.shortcutDispatch()");
-        let active=abito_island::hotkey::x11::active_window(None);
+        let active=koda_island::hotkey::x11::active_window(None);
         shortcuts["terminal_native"]=json!({"expected":terminal,"active":active,"class_only":true});
         shortcuts["ok"]=json!(shortcuts["ok"]==true && active==Some(terminal));
         producer.send(json!({"type":"questions_hello","questionVersion":1}))?;
@@ -2579,7 +2579,7 @@ fn feature_validation(app: &AppHandle) {
     let sound_dir=app.path().app_config_dir().expect("private app config").join("sounds");
     std::fs::create_dir_all(&sound_dir).expect("private sounds folder");
     let wav: &[u8]=b"RIFF\x26\x00\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00\x40\x1f\x00\x00\x80\x3e\x00\x00\x02\x00\x10\x00data\x02\x00\x00\x00\x00\x00";
-    for stem in abito_island::sounds::STEMS {
+    for stem in koda_island::sounds::STEMS {
         std::fs::write(sound_dir.join(format!("{stem}.wav")),wav).expect("private own PCM cue");
     }
     record("sonidos-controles",run(&win,"AbitoValidate.sounds()"));
@@ -2625,7 +2625,7 @@ fn feature_validation(app: &AppHandle) {
     character["ok"]=json!(character["ok"]==true && off["ok"]==true && mapped && unmapped);
     character["mapped_and_above"]=json!(mapped);character["unmapped_after_off"]=json!(unmapped);
     record("personaje-escritorio",character);
-    let _ = crate::dispatch_action(app, &state, abito_island::bridge::Action::Expand, None);
+    let _ = crate::dispatch_action(app, &state, koda_island::bridge::Action::Expand, None);
     sleep(Duration::from_millis(500));
     let gear=run(&win,"AbitoValidate.gear()");
     let end=Instant::now()+Duration::from_secs(10);
@@ -2776,7 +2776,7 @@ pub fn fake(calls: Arc<Mutex<Vec<String>>>) -> Connection {
 #[cfg(target_os = "linux")]
 mod validator_context {
     use std::sync::{Arc, Mutex, atomic::{AtomicUsize, Ordering}};
-    use abito_island::{contextwin, flow::{self, Backend, cleanup, store::{Store, Style}}};
+    use koda_island::{contextwin, flow::{self, Backend, cleanup, store::{Store, Style}}};
     use serde_json::{json, Value};
     struct Extension(Arc<AtomicUsize>);
     #[zbus::interface(name = "org.abito.Context")]

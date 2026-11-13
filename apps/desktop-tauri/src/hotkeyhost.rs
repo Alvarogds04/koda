@@ -6,11 +6,11 @@
 //! Pi socket, the chat conversation, the models listing and the approval lane
 //! keep running while the island is hidden (hide = `window.hide()`, nothing else).
 use crate::{dispatch_verb, now_ms, questionhost, restore, AppState, QUITTING};
-use abito_island::bridge::{self, Action, BridgeError};
-use abito_island::desktop::IslandState;
-use abito_island::hotkey::gnome;
-use abito_island::hotkey::portal::{self, client::PortalHub, Backend, PortalState};
-use abito_island::hotkey::{backend_limited, backend_name,
+use koda_island::bridge::{self, Action, BridgeError};
+use koda_island::desktop::IslandState;
+use koda_island::hotkey::gnome;
+use koda_island::hotkey::portal::{self, client::PortalHub, Backend, PortalState};
+use koda_island::hotkey::{backend_limited, backend_name,
     self, idle_status, session_kind, toggle_decision, x11::GrabEvent, x11::Grabber, Command, HotkeyConfig, Target, ToggleDecision, View,
 };
 use serde_json::{json, Value};

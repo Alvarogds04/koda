@@ -2,7 +2,7 @@
 //! bus and player are never touched. Adapted from Coucou src-tauri/src/spotify.rs @434d6a2b
 //! (fake player test), Copyright (c) 2026 Louis Raillé, MIT.
 #![cfg(target_os = "linux")]
-use abito_island::spotify::{Action, Client, PlayerState};
+use koda_island::spotify::{Action, Client, PlayerState};
 use std::collections::HashMap;
 use std::os::unix::fs::DirBuilderExt;
 use std::process::{Child, Command, Stdio};

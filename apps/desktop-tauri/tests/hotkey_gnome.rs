@@ -1,8 +1,8 @@
 //! The GNOME custom-keybindings route against a FAKE `gsettings` (a shell script over a temp dir).
 //! The real dconf of the session is never read or written.
 #![cfg(unix)]
-use abito_island::hotkey::gnome::{self, Gsettings};
-use abito_island::hotkey::{Combo, HotkeyConfig, Status, Target};
+use koda_island::hotkey::gnome::{self, Gsettings};
+use koda_island::hotkey::{Combo, HotkeyConfig, Status, Target};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};

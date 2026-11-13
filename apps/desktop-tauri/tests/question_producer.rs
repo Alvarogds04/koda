@@ -5,7 +5,7 @@
 //! Default runs deliberately ignore these tests; --ignored requires the source
 //! directory and Node and fails loudly if either is unavailable (no fallback).
 mod common;
-use abito_island::{protocol, transport::{self, Transport, TransportOptions}};
+use koda_island::{protocol, transport::{self, Transport, TransportOptions}};
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;

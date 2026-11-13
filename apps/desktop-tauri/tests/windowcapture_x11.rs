@@ -1,6 +1,6 @@
 //! K2-06: the REAL X11 capture, on a PRIVATE Xvfb (never the human's display).
 #![cfg(target_os = "linux")]
-use abito_island::windowcapture::{image, mcp::CaptureError, x11};
+use koda_island::windowcapture::{image, mcp::CaptureError, x11};
 use std::process::{Child, Command, Stdio};
 use x11rb::connection::Connection;
 use x11rb::protocol::xproto::*;

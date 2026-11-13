@@ -1,13 +1,13 @@
 //! Subscription OAuth stays in Abito; no dependency on the user's Pi installation.
 use crate::{now_ms, AppState};
-use abito_island::{bridge::{self, BridgeError}, oauthcmd::{self, Flows}, provider_oauth::{OAuth, RustlsHttp}, secrets::Keychain};
+use koda_island::{bridge::{self, BridgeError}, oauthcmd::{self, Flows}, provider_oauth::{OAuth, RustlsHttp}, secrets::Keychain};
 use serde_json::{json, Value};
 use std::sync::OnceLock;
 static FLOWS: OnceLock<Flows> = OnceLock::new();
 fn err(code: &str) -> BridgeError { BridgeError { code: code.into(), message: "No se pudo completar el inicio de sesión. Vuelve a intentarlo.".into() } }
 fn open(url: &str) -> bool {
-    if abito_island::desktop::validated_web_url(&json!({"url":url})).is_err() { return false; }
-    abito_island::opener::open_detached(abito_island::opener::Target::Web(url)).is_ok()
+    if koda_island::desktop::validated_web_url(&json!({"url":url})).is_err() { return false; }
+    koda_island::opener::open_detached(koda_island::opener::Target::Web(url)).is_ok()
 }
 #[tauri::command]
 pub async fn oauth_action(app: tauri::AppHandle, webview: tauri::Webview, state: tauri::State<'_, AppState>, payload: Value) -> Result<Value, BridgeError> {

@@ -9,10 +9,10 @@
 //! rate limiter as chat/models/questions and speaks a closed schema. The agent's
 //! per-launch token and socket path never cross to the WebView (`agentclient`).
 use crate::{now_ms, AppState};
-use abito_island::agentclient::{is_account_action, AccountStore};
-use abito_island::agentconn::{island_root, AgentConn};
-use abito_island::bridge::{self, BridgeError};
-use abito_island::prefs::{self, Command, Prefs};
+use koda_island::agentclient::{is_account_action, AccountStore};
+use koda_island::agentconn::{island_root, AgentConn};
+use koda_island::bridge::{self, BridgeError};
+use koda_island::prefs::{self, Command, Prefs};
 use serde_json::{json, Value};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -118,7 +118,7 @@ pub fn start(app: &AppHandle) {
         .path()
         .app_config_dir()
         .map_err(|_| err("account_store_unavailable"))
-        .and_then(|dir| AccountStore::load(dir.join("accounts.json"), std::sync::Arc::new(abito_island::secrets::Keychain)));
+        .and_then(|dir| AccountStore::load(dir.join("accounts.json"), std::sync::Arc::new(koda_island::secrets::Keychain)));
 }
 
 /// #488: the same transaction `prefs_action` runs, for a voice command ("add GitHub").
@@ -144,7 +144,7 @@ pub(crate) fn voice_prefs_snapshot(app: &AppHandle) -> Prefs {
 
 fn context_extension_available() -> bool {
     #[cfg(target_os = "linux")]
-    { abito_island::contextwin::dbus::available(None) }
+    { koda_island::contextwin::dbus::available(None) }
     #[cfg(not(target_os = "linux"))]
     { true } // HU-050: Windows/macOS read the native window list, no extension needed
 }
@@ -153,7 +153,7 @@ fn context_extension_available() -> bool {
 /// Abito never asks for that permission; the page says so instead.
 fn context_title_note() -> Option<&'static str> {
     #[cfg(not(target_os = "linux"))]
-    { if !abito_island::contextwin::titles_allowed() { return Some("sin título: falta permiso de Grabación de pantalla"); } }
+    { if !koda_island::contextwin::titles_allowed() { return Some("sin título: falta permiso de Grabación de pantalla"); } }
     None
 }
 
@@ -194,7 +194,7 @@ pub fn window_context(host: &SettingsHost) -> bool {
 
 /// #489: whether the human put this integration pill on the island (main or declared).
 pub fn pill_declared(host: &SettingsHost, id: &str) -> bool {
-    abito_island::integrations::declared(&host.prefs.lock().expect("prefs lock"), id)
+    koda_island::integrations::declared(&host.prefs.lock().expect("prefs lock"), id)
 }
 
 /// Only the already loaded, explicitly selected local preference reaches chat.
@@ -337,8 +337,8 @@ pub fn migrate_retired_mail_accounts(app: &AppHandle) {
     if done { return; }
     let app = app.clone();
     std::thread::spawn(move || {
-        let outcome = abito_island::mailmigration::run(&abito_island::secrets::LegacyKeychain, false);
-        if outcome == abito_island::mailmigration::Outcome::Done {
+        let outcome = koda_island::mailmigration::run(&koda_island::secrets::LegacyKeychain, false);
+        if outcome == koda_island::mailmigration::Outcome::Done {
             let state = app.state::<AppState>();
             let saved = prefs::transact(
                 &state.settings.prefs_serial,
@@ -506,9 +506,9 @@ pub async fn agent_action(
         }
         // HU-015: every Ajustes → Agentes hook read and change takes the daemon-free route, whether the engine is up
         // or down (one owner, no daemon/direct race). It never touches the engine slot below.
-        if let Some(op) = abito_island::agents_direct::parse(&payload) {
+        if let Some(op) = koda_island::agents_direct::parse(&payload) {
             let op = op.map_err(|_| err("invalid_schema"))?;
-            return Ok(abito_island::agents_direct::perform(&op));
+            return Ok(koda_island::agents_direct::perform(&op));
         }
         let mut guard = state.settings.agent.lock().expect("agent lock");
         // The one constructor: this view also feeds the phone link, which hangs off this same connection (S5/D5).
@@ -520,7 +520,7 @@ pub async fn agent_action(
         let connected = conn.view().get("connection").and_then(Value::as_str) == Some("connected");
         if !connected && is_view_or_refresh {
             if let Some(reason) = handle
-                .state::<abito_island::daemonhost::HostSlot>()
+                .state::<koda_island::daemonhost::HostSlot>()
                 .failure()
             {
                 conn.startup_failed(reason);
@@ -599,7 +599,7 @@ pub(crate) fn daemon_connect(
     state: &AppState,
     root: &std::path::Path,
     wait: Option<Duration>,
-    watch: Option<&abito_island::daemonhost::HostSlot>,
+    watch: Option<&koda_island::daemonhost::HostSlot>,
 ) -> (String, bool) {
     let mut guard = state.settings.agent.lock().expect("agent lock");
     let conn = guard.get_or_insert_with(|| agent_conn(handle));
@@ -642,7 +642,7 @@ pub(crate) fn start_host_after_install(handle: &AppHandle) -> bool {
     let Some(root) = island_root(std::env::var("KODA_ISLAND_DIR").ok().as_deref(), std::env::var("HOME").ok().as_deref()) else { return false };
     let old = state.settings.agent.lock().expect("agent lock").take();
     drop(old);
-    let slot = handle.state::<abito_island::daemonhost::HostSlot>();
+    let slot = handle.state::<koda_island::daemonhost::HostSlot>();
     slot.stop();
     slot.start();
     daemon_connect(handle, &state, &root, Some(RESTART_WAIT), Some(&*slot));
@@ -652,7 +652,7 @@ pub(crate) fn start_host_after_install(handle: &AppHandle) -> bool {
 /// The pid in `<root>/runtime/session.json`, read ONLY to compare it with our own
 /// child inside Rust (#390 fix). It never crosses to the page.
 fn session_pid(root: &std::path::Path) -> Option<u32> {
-    let text = std::fs::read_to_string(abito_island::agentconn::session_path(root)).ok()?;
+    let text = std::fs::read_to_string(koda_island::agentconn::session_path(root)).ok()?;
     let value: Value = serde_json::from_str(&text).ok()?;
     value.get("pid")?.as_u64()?.try_into().ok()
 }
@@ -722,7 +722,7 @@ pub async fn daemon_action(
             let old = state.settings.agent.lock().expect("agent lock").take();
             drop(old);
             // Bounded stop (daemonhost Drop: TERM group, KILL, reap) then a fresh spawn.
-            let slot = handle.state::<abito_island::daemonhost::HostSlot>();
+            let slot = handle.state::<koda_island::daemonhost::HostSlot>();
             slot.stop();
             slot.start();
             let own = slot.pid();
@@ -850,7 +850,7 @@ mod settings_view_tests {
     /// code as any unknown action — an old file that still has the key projects and saves clean.
     #[test]
     fn l72_the_webview_projection_carries_no_chosen_models_key() {
-        use abito_island::prefs::{parse_command, update, Prefs};
+        use koda_island::prefs::{parse_command, update, Prefs};
         let legacy = Prefs::from_text(Some(
             r#"{"v":1,"sound":false,"chosen_models":{"anthropic":["claude-x"]}}"#,
         ));
@@ -894,7 +894,7 @@ mod settings_view_tests {
     /// typed pref; no choice projects as null, like every optional field.
     #[test]
     fn f389_the_webview_projection_carries_the_chosen_monitor() {
-        use abito_island::prefs::{parse_command, update, Prefs};
+        use koda_island::prefs::{parse_command, update, Prefs};
         let prefs = Prefs::from_text(Some(r#"{"v":1,"monitor":"DP-1"}"#));
         assert_eq!(view_prefs(&prefs)["monitor"], json!("DP-1"));
         assert_eq!(
@@ -926,7 +926,7 @@ mod settings_view_tests {
     /// #455: effective placement is always the window, without migrating stored keys.
     #[test]
     fn f093_the_webview_projection_carries_the_settings_window_choice() {
-        use abito_island::prefs::Prefs;
+        use koda_island::prefs::Prefs;
         let defaults = view_prefs(&Prefs::default());
         assert_eq!(
             defaults["settingsWindow"],
@@ -952,7 +952,7 @@ mod settings_view_tests {
     /// validated canonical palette hex only, and a cleared pill simply has no key.
     #[test]
     fn f033_the_webview_projection_carries_validated_pill_colours_and_a_clear_drops_the_key() {
-        use abito_island::prefs::{parse_command, update, Prefs};
+        use koda_island::prefs::{parse_command, update, Prefs};
         let prefs = Prefs::from_text(Some(r#"{"v":1,"pill_colors":{"agent_amp":"mint"},"avatar_colors":{"abito":"mint"}}"#));
         let view = view_prefs(&prefs);
         assert_eq!(
@@ -986,7 +986,7 @@ mod settings_view_tests {
     /// colour entries; nothing created projects as null, like every optional field.
     #[test]
     fn f415_the_webview_projection_carries_created_blobs_or_null() {
-        use abito_island::prefs::{parse_command, update, Prefs};
+        use koda_island::prefs::{parse_command, update, Prefs};
         let defaults = view_prefs(&Prefs::default());
         assert_eq!(
             defaults["customBlobs"],
@@ -1044,7 +1044,7 @@ mod settings_view_tests {
     /// value was dropped at load. The established fields keep their shapes.
     #[test]
     fn f003_the_webview_projection_carries_the_effective_interaction_values() {
-        use abito_island::prefs::Prefs;
+        use koda_island::prefs::Prefs;
         let defaults = view_prefs(&Prefs::default());
         assert_eq!(defaults["autoCloseSeconds"], json!(15));
         assert_eq!(defaults["openOnHover"], json!(false));

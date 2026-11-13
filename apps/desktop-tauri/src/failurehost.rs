@@ -2,9 +2,9 @@
 //! `sound_action`). It reads the LOCAL failure store, builds the redacted preview, and — only on the human's «Reportar» click —
 //! opens the system browser at a pre-filled GitHub issue (or copies the text when it does not fit in a URL). No token, no API.
 use crate::{now_ms, AppState};
-use abito_island::bridge::{self, BridgeError};
-use abito_island::failure::{self, Env, IssueUrl};
-use abito_island::failure_cmd::{self as cmd, Command, Prefs};
+use koda_island::bridge::{self, BridgeError};
+use koda_island::failure::{self, Env, IssueUrl};
+use koda_island::failure_cmd::{self as cmd, Command, Prefs};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -19,7 +19,7 @@ fn err(code: &str) -> BridgeError {
 }
 
 fn open_browser(url: &str) -> Result<(), BridgeError> {
-    use abito_island::opener::{open_detached, Target};
+    use koda_island::opener::{open_detached, Target};
     open_detached(Target::Web(url)).map_err(|_| err("unavailable"))
 }
 
@@ -61,7 +61,7 @@ fn run(command: Command, dir: PathBuf) -> Result<Value, BridgeError> {
             IssueUrl::Url(url) => { open_browser(&url)?; Ok(json!({"opened": true, "copied": false})) }
             IssueUrl::TooLong => {
                 // too long for a URL: the FULL text goes to the clipboard, the browser opens an empty form to paste it into
-                let copied = abito_island::flow::paste::copy(&out.clipboard) == abito_island::flow::paste::Outcome::Copied;
+                let copied = koda_island::flow::paste::copy(&out.clipboard) == koda_island::flow::paste::Outcome::Copied;
                 if !copied { return Err(err("clipboard_unavailable")); }
                 open_browser(&format!("https://github.com/{}/issues/new?labels={}", failure::REPO, "bug%2Cauto-report"))?;
                 Ok(json!({"opened": true, "copied": true}))
@@ -71,7 +71,7 @@ fn run(command: Command, dir: PathBuf) -> Result<Value, BridgeError> {
     }
 }
 
-/// Closed failure-report command; shapes in `abito_island::failure_cmd::parse_command`.
+/// Closed failure-report command; shapes in `koda_island::failure_cmd::parse_command`.
 #[tauri::command]
 pub async fn failure_action(webview: tauri::Webview, state: State<'_, AppState>, payload: Value) -> Result<Value, BridgeError> {
     let url = webview.url().map(|u| u.to_string()).unwrap_or_default();
