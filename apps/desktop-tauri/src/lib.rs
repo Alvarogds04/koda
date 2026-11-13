@@ -15,6 +15,15 @@
 
 pub mod agentclient;
 pub mod agents_direct;
+/// K2-05 T4 U2: the island chat client (closed chat commands + the allowlisted
+/// chat view) — separate from agentclient by design; its transport is
+/// `agentconn::ChatConn`, a second connection with its own fold callback.
+pub mod chatclient;
+/// K2-05 T4 U3: the chat host's routing tests (`ChatHost` lives in `chatclient`, the
+/// Tauri glue in the binary's `chathost.rs`, covered here by source guards).
+#[cfg(test)]
+#[path = "chathost_tests.rs"]
+mod chathost_tests;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod agentconn;
 #[cfg(windows)]
@@ -34,7 +43,6 @@ pub mod characterwin;
 pub mod chat;
 pub mod chatlane;
 pub mod chatsnapshot;
-pub mod conversations;
 pub mod core;
 pub mod desktop;
 pub mod failure;
@@ -72,7 +80,6 @@ pub mod integrations;
 pub mod integrations_net;
 pub mod servicedetail;
 pub mod localmodel;
-pub mod cloudmodel;
 pub mod cloudprofiles;
 pub mod imapcmd;
 pub mod mailcmd;
@@ -86,6 +93,7 @@ pub mod plan_cmd;
 pub mod paused;
 pub mod prefs;
 pub mod protocol;
+pub mod legacy_conversations;
 pub mod legacy_recap;
 pub mod secrets;
 pub mod provider_oauth;

@@ -11,7 +11,7 @@ const R6_PREFIX = '40625d7f';
 const IDENTIFIER = 'com.abitog.AbitoTauri';
 const RESERVED = ['com.abitog.Abito', 'com.abitog.Abito.Preview', 'abito-desktop', 'abito-desktop-preview'];
 const FRONTEND_FILES = ['DESIGN.md', 'avatar-colors.js', 'character-desktop-logic.js', 'character-minibots.js', 'character-motion.js', 'chat-cards.js', 'chat-markdown.css', 'chat-markdown.js', 'chat-view.js', 'chat.js', 'clay-engine.js', 'desktop-character.css', 'desktop-character.html', 'desktop-character.js', 'desktop.js', 'icons.js', 'index.html', 'integrations-calendar.js', 'integrations-deployments.js', 'integrations-email.js', 'integrations-finance.js', 'integrations-github.js', 'integrations-mail.js', 'integrations-n8n.js',
-  'integrations-notion.js', 'integrations-payments.js', 'integrations-view.js', 'island-idle.js', 'island-integrations.js', 'island-integrations.css', 'island-header.js', 'island-github.js', 'island-shortcuts.js', 'island-desktop.js', 'island-dictation.js', 'island-voice.js', 'island-voice.css', 'island-plan.js', 'island-interaction.js', 'island.js', 'models.js', 'notify-view.js', 'notify.js', 'overview-view.js', 'pill-catalog.js', 'pill-settings.js', 'pills-view.js', 'paused.js', 'spotify-view.js', 'pills.js', 'sessions-ticker.js', 'settings-view.js', 'settings.js', 'sound-engine.js', 'sound-wiring.js', 'specialists-view.js', 'specialists.js', 'style.css', 'theme.js'];
+  'integrations-notion.js', 'integrations-payments.js', 'integrations-view.js', 'island-idle.js', 'island-integrations.js', 'island-integrations.css', 'island-header.js', 'island-github.js', 'island-shortcuts.js', 'island-desktop.js', 'island-dictation.js', 'island-voice.js', 'island-voice.css', 'island-plan.js', 'island-interaction.js', 'island.js', 'notify-view.js', 'notify.js', 'overview-view.js', 'pill-catalog.js', 'pill-settings.js', 'pills-view.js', 'paused.js', 'spotify-view.js', 'pills.js', 'sessions-ticker.js', 'settings-view.js', 'settings.js', 'sound-engine.js', 'sound-wiring.js', 'specialists-view.js', 'specialists.js', 'style.css', 'theme.js'];
 FRONTEND_FILES.push('koda-catalog.js', 'koda-logic.js', 'koda-skin.js', 'koda-skin.css', 'koda/koda-chibi-24.png', 'koda/koda-chibi-32.png');
 FRONTEND_FILES.push('desktop-highlight.html', 'desktop-highlight.css', 'question-toast.css', 'question-toast.js', 'island-layout.js', 'island-nusa.js', 'island-nusa-bodies.js', 'island-nusa-mount.js', 'island-nusa.css', 'island-shortcuts-mount.js', 'settings-nusa.css', 'settings-nusa.js', 'settings-nusa-mount.js', 'settings-isla.js', 'settings-isla-mount.js');
 // Every embedded vendor source, generated module and license is a closed input.
@@ -177,10 +177,10 @@ StartupWMClass=Abito-island
 // ---- receipt verification (no launch) -------------------------------------
 const DAEMON_FILES = ['package.json', 'identity.md', 'THIRD-PARTY-NOTICES.md',
   'src/agent-hooks.cjs', 'src/agents-direct.cjs', 'src/agents.cjs', 'src/auth.cjs', 'src/cli.cjs', 'src/config.cjs',
-  'src/connectors.cjs', 'src/connector-host.cjs', 'src/connector-host-client.cjs', 'src/custom-provider.cjs', 'src/custom-provider-extension.cjs',
+  'src/connectors.cjs', 'src/connector-host.cjs', 'src/connector-host-client.cjs', 'src/conversations.cjs', 'src/custom-provider.cjs', 'src/custom-provider-extension.cjs',
   'src/daemon.cjs', 'src/interrupt.cjs', 'src/isolation.cjs', 'src/mcp-import.cjs', 'src/profiles.cjs',
   'src/protocol.cjs', 'src/rotation.cjs', 'src/runtime.cjs', 'src/sdk-helper.mjs', 'src/server.cjs',
-  'src/sessions.cjs', 'src/procinfo.cjs', 'src/spaces.cjs', 'src/win-fs.cjs'];
+  'src/sessions.cjs', 'src/procinfo.cjs', 'src/spaces.cjs', 'src/uploads.cjs', 'src/white-label.cjs', 'src/win-fs.cjs'];
 // L42 F1: the hook installer (apps/desktop-harness) ships NEXT TO the daemon: the daemon derives
 // <package>/desktop-harness/bin/abito-hook.cjs from its own location (src/cli.cjs packagedInstallerBin), so Ajustes can
 // install the Claude/Codex/status-line hooks (and take out the removed Recap's 0.1 hooks, K2-03). Closed under require(): packaging-check pins that.

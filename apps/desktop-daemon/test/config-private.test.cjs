@@ -95,7 +95,8 @@ test("K2-01b D1: an absent file is still `null` (defaults apply), as on POSIX; a
 	const root = tmp();
 	const absent = scripted((p) => facts(p, { exists: false, kind: "none", private: false, nlink: 0, size: 0 }));
 	const cfg = withBackend(absent.backend, () => config.loadConfig(root, { env: {} }));
-	assert.equal(cfg.command, "pi", "defaults when config.json is absent");
+	// T2: the default engine is Koda's bundled Gentle Shell (config.json overrides).
+	assert.equal(cfg.command, "gentle-shell", "defaults when config.json is absent");
 	const gone = path.join(root, "gone.json");
 	const lying = scripted((p) => facts(p, { size: 10 }));
 	rejects(() => withBackend(lying.backend, () => config.projectMcpConfig(gone)), "mcpConfigPath");

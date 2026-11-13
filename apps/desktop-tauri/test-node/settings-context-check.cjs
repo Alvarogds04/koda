@@ -14,9 +14,9 @@ const { dom, all, text } = require('./settings-accounts-check.cjs');
   const calls = []; let live = true, on = false, available = false, ui;
   const invoke = async (cmd, { payload: p }) => {
     calls.push([cmd, p]);
-    if (cmd === 'prefs_action' && p.action === 'set_window_context') { on = p.window_context; return { windowContext: on, liveContext: live, windowContextAvailable: available, chosenModels: {} }; }
-    if (cmd === 'prefs_action' && p.action === 'set_live_context') { live = p.live_context; return { windowContext: on, liveContext: live, windowContextAvailable: available, chosenModels: {} }; }
-    if (cmd === 'prefs_action') return { windowContext: on, liveContext: live, windowContextAvailable: available, chosenModels: {} };
+    if (cmd === 'prefs_action' && p.action === 'set_window_context') { on = p.window_context; return { windowContext: on, liveContext: live, windowContextAvailable: available }; }
+    if (cmd === 'prefs_action' && p.action === 'set_live_context') { live = p.live_context; return { windowContext: on, liveContext: live, windowContextAvailable: available }; }
+    if (cmd === 'prefs_action') return { windowContext: on, liveContext: live, windowContextAvailable: available };
     if (cmd === 'secret_action') return { present: false };
     return {};
   };

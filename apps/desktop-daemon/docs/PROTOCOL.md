@@ -2,7 +2,12 @@
 
 Transport: Unix-domain socket `<runtimeDir>/p-XXXXXX/s` (dir 0700, socket 0600, path ≤ 107 bytes).
 Framing: one JSON object per line, split on LF (0x0A) only. Inbound ≤ 256 KiB (hello ≤ 4 KiB),
-max 240 frames/min per client, max 2 clients, outbound queue ≤ 1 MiB (slow client is dropped).
+max 240 frames/min per client, max 4 clients (see "Client slots"), outbound queue ≤ 1 MiB (slow client is dropped).
+Outbound text invariant (K2-05 U2 follow-up): NO outbound line ever carries a lone UTF-16 surrogate —
+`encodeServerFrame`, the single outbound encoder, replaces any lone surrogate in any string with U+FFFD
+(a `\udXXX` escape for a lone half is what the island's serde_json rejects, dropping the connection),
+and every chunk/clip of outbound text (`message_delta` chunking, history clips) cuts on whole code points,
+never between the two halves of a surrogate pair.
 Implementation: `src/protocol.cjs` (codec/validators/translation), `src/server.cjs` (`IslandServer`).
 
 ## Handshake
@@ -16,14 +21,18 @@ Implementation: `src/protocol.cjs` (codec/validators/translation), `src/server.c
 
 | type | fields | notes |
 |---|---|---|
-| `send` | `text`, `images?[{data(base64),mimeType}]` | `busy` error while a turn runs; completion is `agent_settled`, not the prompt response |
-| `steer` | `text` | only while busy (`not_busy` otherwise) |
+| `send` | `text`, `images?[{data(base64),mimeType}]`, `requestId?`, `attachments?` | `busy` error while a turn runs; completion is `agent_settled`, not the prompt response. `requestId` (`[A-Za-z0-9_-]{1,64}`, anything else is `bad_request`): see "Recorded prompts". `attachments`: 1–10 distinct upload ids (`a-<16 hex>`) this client received in `uploaded`; with attachments `text` may be empty. See "Attachments" |
+| `upload` | `requestId`, `name`, `size`, `offset`, `data` (base64) | one chunk of one file, in order; see "Attachments" |
+| `upload_discard` | `id` | deletes an unsent file this client uploaded (silent; another client's id is a no-op) |
+| `steer` | `text`, `requestId?` | only while busy (`not_busy` otherwise); `requestId` as for `send` |
 | `abort` | – | Cancels a running turn; its child is recycled before another prompt. An ACK alone never frees busy. Idle abort still reaches Pi. |
 | `set_paused` | `paused: bool` | Global pause switch (#379); see "Global pause" |
-| `new_conversation` | – | refused while busy |
+| `new_conversation` | – | **Refused** with a fixed `error{conversations_off}` (K2-05 T4 U1): the island keeps ONE continuous chat (L3/L4/L7, Gentle Dot's `conversationsOn` gate). The refusal precedes every other gate (busy, paused included) and no command ever reaches the engine |
+| `get_history` | – | replies `history{messages,hasEarlier}` — the newest page of the open chat; see "History frames". Asked while the engine starts or restarts, it waits until the engine is ready (Gentle Dot `whenReady`, up to 60 s); `unavailable` when the engine stops instead, does not start in time, or holds no open session |
+| `get_earlier` | `before: s<file>-<turn>` | replies `earlier{before,messages,hasEarlier}` — the page ending just before that message id. Ids are canonical (no leading zeros): a non-canonical or non-page-id `before` is `bad_request`; a canonical id that names no turn — `sN-0`, a turn beyond what that file ever held, or an index past the chain — yields an EMPTY page with `hasEarlier:false` (the island keeps what it shows) |
 | `status` | – | replies `agent_state` |
 | `interrupted_ack` | – | acknowledges the interrupted-work record exposed in `ready.interrupted` (#385/R5): the daemon marks it consumed (never at boot) and replies `interrupted_acknowledged`; idempotent, allowed while paused; if persisting the record fails it replies the `error`/`failed` frame and the record stays pending so a retry can persist it (R4) |
-| `ui_response` | `id`, one of `value` / `confirmed` / `cancelled` | answers an `ask`; validated against the pending ask |
+| `ui_response` | `id`, one of `value` / `confirmed` / `cancelled` | answers an `ask`; validated against the pending ask. Only the FIRST answer is accepted: it reaches the engine once and closes the ask, and every other answer is refused `unknown_ask` |
 | `accounts_list` / `providers_list` / `profiles_list` | – | reply `accounts` / `providers` / `profiles` |
 | `connectors_list` | – | reply `connectors` (read-only, persisted; see "Connectors frames") |
 | `mcp_import_preview` | – | reply `mcp_import` (read-only scan of OTHER clients' MCP configs; see "MCP import preview frames") |
@@ -69,8 +78,10 @@ One global switch, backend only this round (a UI card comes later):
 Setting the same value again replies the current `agent_state` and changes nothing. While `paused` is true the
 daemon admits nothing new:
 
-- REFUSED with a new closed error code `error{paused}`: `send`, `steer`, `new_conversation` (agent-turn admission)
+- REFUSED with a new closed error code `error{paused}`: `send`, `steer` (agent-turn admission)
   and `agent_connect`, `connectors_list`, `agents_list` (each spawns a process: a tool/connector call).
+  `new_conversation` is NOT on this list since K2-05 T4 U1: it is refused `conversations_off` regardless of the
+  pause state (the refusal precedes every gate).
 - STILL ALLOWED: `abort` and `agent_disconnect` (stopping work is always possible), every read-only query
   (`status`, `accounts_list`, `providers_list`, `models_list`, `profiles_list`, `settings_get`, `mcp_import_preview`,
   `agents_list` while unpaused, `auth_state`), and all account/profile/settings/auth verbs. Scheduled tasks have no
@@ -341,13 +352,14 @@ Unknown/invalid post-handshake frames get `error{code:"bad_request"}`.
 
 | type | fields |
 |---|---|
-| `ready` | `protocol`, `state{busy,status,paused}`, `limits`, `features{history:false}`, `interrupted?` (`{at, turnActive, asks}` — bounded closed fields of the unconsumed interrupted-work record, counts and time only, never titles/ids/prompts/args/secrets; present until a client sends `interrupted_ack`) |
-| `agent_state` | `busy`, `status` (`ready`, `restarting`, `stopped`…), `paused` |
-| `message_delta` | `messageId`, `text` (≤ 16 K chars each) |
+| `ready` | `protocol`, `state{busy,status,paused}`, `limits`, `features{history:true,conversations:false}`, `interrupted?` (`{at, turnActive, asks}` — bounded closed fields of the unconsumed interrupted-work record, counts and time only, never titles/ids/prompts/args/secrets; present until a client sends `interrupted_ack`) |
+| `agent_state` | `busy`, `status` (`starting`, `ready`, `restarting`, `stopped`), `paused` — `starting` also while the daemon listens but has not launched its engine yet (Gentle Dot `deriveState`) |
+| `user_message` | `messageId` (`s<file>-<turn>`, the history id of that prompt), `text`, `attachments?`, `clipped?`, `requestId?` — a prompt the engine recorded; see "Recorded prompts" |
+| `message_delta` | `messageId`, `text` (≤ 16 K chars each; long texts are split into several deltas, every chunk cut on a whole code point — never inside a surrogate pair) |
 | `message_done` | `messageId` |
 | `activity` | `name` (sanitized tool name), `state: running\|done\|error`, optional `callId` (SAFE_ID, present only when the engine names the call) and optional closed `summary` (error only) — never arguments/results |
 | `queue` | `steering`, `followUp` (counts) |
-| `ask` / `ask_resolved` | `id`, `kind: select\|confirm\|input`, `title`, `options` / `id` |
+| `ask` / `ask_resolved` | `id`, `kind: select\|confirm\|input`, `title`, `options` / `id`. A `select` ask's `options` are the SHOWN labels: white-labelled, unique, non-empty, ≤ 200 chars, and free of C0/C1 control characters (each control run becomes a space; a label that is only controls presents as `Option <position>`). The island MUST answer a `select` ask with `ui_response{value}` set to the EXACT option string as sent in the ask frame — the daemon maps the answer back to the engine's original option BY POSITION; an answer matching no shown option is refused. K2-05 U4b (additive, optional — Gentle Dot `Ask.message`/`Ask.placeholder`): `message` (any kind; what the user approves, ≤ 2000 UTF-16 units) and `placeholder` (`input` only, ≤ 200) travel only when the engine sent a non-empty string; both are harness text, white-labelled (`presentText`, rewrite first, clip second), control characters other than tab/newline removed, on the live frame and on the connect replay alike. The user's `ui_response{value}` is never rewritten. K2-05 R1-001 (additive, optional): `ask_resolved` carries `answered:true` ONLY in the copy sent to the client whose own accepted `ui_response` closed the ask; every other client gets the plain `ask_resolved{id}` (another client's answer, a cancel, an engine restart or the 120 s expiry closed it). A client MUST NOT read a plain `ask_resolved` as its own answer having been sent, and `unknown_ask` means the answer it sent was discarded |
 | `toast` | `level`, `message` |
 | `settings` | `hotkey: string\|null` |
 | `connectors` | `schema`, `catalog[]`, `connectors[]` — see "Connectors frames" |
@@ -355,18 +367,21 @@ Unknown/invalid post-handshake frames get `error{code:"bad_request"}`.
 | `agents` | `agents[]` of `{id,name,state,backup,detail,plan_hash?,summary?,reviewable?,trust_review?}` — see "Agents frames" |
 | `accounts`, `providers`, `models`, `profiles` | allowlisted DTOs only (no keys, baseUrl, headers, env) |
 | `auth_started`, `auth_prompt`, `auth_event`, `auth_done` | passthrough from AccountManager, rebuilt from an allowlist; the daemon never answers prompts |
-| `error` | `code` ∈ `bad_request, busy, not_busy, unavailable, rate_limited, unknown_ask, paused, failed`, plus the H2c connector codes below — generic only |
+| `uploaded` | `requestId`, `attachment{id,name,size,mime}` — the last chunk of this client's upload was stored (sender only; see "Attachments") |
+| `error` | `code` ∈ `bad_request, busy, not_busy, unavailable, rate_limited, unknown_ask, paused, failed`, the attachment codes `file_too_large, message_too_large, too_many_files, upload_failed, attachment_not_found`, plus the H2c connector codes below — generic only; `requestId?` — the `send`/`steer` it answers (see "Recorded prompts") |
 
 ## Event translation (Pi RPC → frames)
 
-Allowlist: `agent_start`/`agent_settled` (busy state), `message_update` with `text_delta`,
+Allowlist: `agent_start`/`agent_settled` (busy state), `message_start` with role `user` (→ `user_message`,
+see "Recorded prompts"), `message_update` with `text_delta`,
 `message_end` (assistant), `tool_execution_start|end`, `queue_update`, `extension_ui_request`
 (`select`/`confirm`/`input` → `ask`; `notify` → `toast`; `editor` auto-cancelled; other UI chrome dropped).
 Everything else (thinking deltas, `turn_end`, `tool_execution_update`, unknown) is dropped, never forwarded raw.
 
 ## Semantics and limits
 
-- Pending asks: max 16, answered once; unanswered asks are cancelled toward the agent after 120 s.
+- Pending asks: max 16, answered once; unanswered asks are cancelled toward the agent after 120 s. Every pending ask is
+  replayed to a client right after its `ready` (a reconnecting island shows and answers it again).
 - Engine restart/exit: `agent_state{status:"restarting"}`, open asks closed, no half-answer replay. Ordinary crash clears busy. A cancelled turn remains busy/unavailable until its replacement generation is ready.
 - Full-turn technical defaults (Pi adaptation, not AG-UI/TanStack parity): 300,000 ms
   monotonic elapsed time from prompt submission and 32 observed Pi `turn_start`
@@ -382,10 +397,13 @@ Everything else (thinking deltas, `turn_end`, `tool_execution_update`, unknown) 
   guarded until the replacement is actually ready. The private session persists,
   but no prompt is automatically replayed, including after ambiguous prompt ACK loss.
   Healthy natural `agent_settled` clears the timer without forced recycling.
-- `new_conversation` acquires the single-flight busy gate before sending Pi
-  `new_session`. Concurrent send/profile/workspace/config changes retain their
-  existing `busy` rejection and do not modify stored config or action counters.
-  The runtime also gates direct `new_session`/`switch_session` requests.
+- The island's `new_conversation` is REFUSED outright with the fixed `error{conversations_off}`
+  before every gate (busy, paused included): Koda keeps ONE continuous chat and no reset ever
+  reaches the engine from the island. The RUNTIME-level single-flight busy gate remains for the
+  engine's own `new_session`/`switch_session` requests (the rotation and its fallback): a request
+  during a cut-off generation or a session switch in flight is refused with `busy`/`not ready`, and
+  concurrent send/profile/workspace/config changes retain their existing `busy` rejection without
+  modifying stored config or action counters.
   A successful reset/switch response is checked against Pi's owned session
   identity via `get_state` before admission reopens; ordinary state reads remain
   usable. Lost ACK/timeout/failed response/child failure is ambiguous: the gate
@@ -406,39 +424,268 @@ Everything else (thinking deltas, `turn_end`, `tool_execution_update`, unknown) 
   replay. The `account_logout` permission change is applied only AFTER the safe point (the canonical `state().busy`
   guard clears, bounded by `interruptSafePointMs`, default 30000 ms): on timeout it answers `busy` and the credential
   and the active profile are untouched. `profile_deactivate` and `agent_disconnect` keep their existing guards.
-- History/replay: **not implemented** (`features.history=false`); a late client only gets current state and open asks.
+- History/replay (K2-05 T4 U1): **implemented** as read-only pages of the open chat — see "History frames".
+  A late client asks `get_history` once it has Handshook; the daemon never pushes an unrequested full history
+  except after a rotation (below).
 - Stale `p-*` socket dirs of dead servers (connection refused) are removed at start, with dev/ino checks.
-- `ui_response` and `send` are not tied to the originating client; all clients share one session (max 2).
+- `ui_response` and `send` are not tied to the originating client; all clients share one session (a
+  `send`'s `requestId` is echoed only to its sender, on the `user_message` of the prompt recorded for it).
 
-## Continuous conversation rotation (additive, #386)
+### Client slots (K2-05 U2 follow-up, re-verified)
 
-Opt-in via the strict `rotation` config key (`enabled` strict boolean, default **false**; `thresholdPercent`
-50..100, default 85; `keepTurns` 1..100, default 12). Disabled by default: zero-config behavior is unchanged.
+The cap is **4 clients**: the island's settings window, the chat, and one reconnect overlap, with the
+daemon's own health probe (`classifySession`'s hello→ready exchange, used by `abito-island-daemon
+status` and by the island to decide the daemon is alive) always answered. Three rules (F1, re-verify):
 
-- **Trigger.** After every natural `agent_settled`, the daemon reads Pi `get_session_stats`; when
-  `contextUsage.percent >= thresholdPercent` it rotates to a fresh session (`new_session`) seeded by the
-  NEXT user prompt. Rotation itself issues NO model request: only `get_session_stats`, `get_messages`
-  and `new_session`.
-- **Summary.** Deterministic and bounded (`buildSummary` over `get_messages`): only `user`/`assistant`
-  visible text becomes turns; the last `keepTurns` turns are ALWAYS retained (per-message truncation
-  only); older turns are dropped newest-first while the total character cap holds, and the dropped count
-  is stated in the summary. Same messages in, same summary out.
-- **Delivery.** The summary is stored pending and prepended (with a Spanish voseo framing block) to the
-  user's NEXT `send` frame by the server's `promptDecorator`, exactly once, then cleared. A deliberate
-  `new_conversation` drops an undelivered summary. No new frames: the summary travels inside the
-  existing `prompt` message.
-- **Failure keeps history.** Any summary failure (request error, unexpected shape, empty result) aborts
-  the rotation and keeps the old session. A failed `new_session` recovers the previous session through
-  the engine's existing reset recovery; nothing is left pending. Missing/null `contextUsage.percent`
-  (no model, or right after a compaction) never rotates.
-- **Guards.** Rotation is skipped while the engine is busy or not ready, while the global pause (#379)
-  is active, while a summary is still pending (never overwritten), and for a session file that was
-  already rotated (loop protection). Rotation runs at most once per settled turn, serialized.
+- **The cap counts ONLY authenticated live clients** — a set filled when a handshake is admitted and
+  removed synchronously on close/destroy, so a dropped socket frees its slot immediately. Pre-hello
+  connections (the separate bound below) never count against the cap.
+- **The `ready` reply goes on the wire BEFORE the cap is evaluated.** A client the cap refuses
+  receives its `ready` frame first and is then closed silently, like every other refusal — so its
+  classification (the probe reads only that first frame) can never be `refused` by the cap while
+  settings and chat are connected, not even under a burst of concurrent probes.
+- **Pre-hello connections are bounded at connect time by a separate `maxHandshakes` bound (16)**,
+  each also bounded by the handshake timeout: a surplus connect is destroyed silently at connect and
+  is never counted anywhere. A hello'd client admitted by the cap releases its handshake-window
+  bound at admission.
+
+### History frames (additive, read-only, K2-05 T4 U1)
+
+One continuous chat, read from the engine's whole rotated session chain (`engine.previousSessions` + the
+open `sessionFile`, oldest file first). Port of the projection half of Gentle Dot's
+`packages/daemon/src/conversations.ts` (MIT): user and assistant `type:"message"` records become display
+turns; hidden `custom_message` handoffs and every other context-only entry NEVER appear; tool calls become
+activities (closed kind `read/edit/run/search/memory/delegate/other`, title without tool names or
+arguments, status `done`/`failed` from the engine's failed results); consecutive assistant messages join
+into ONE turn; a user message's `<attachments>` block is split back into `text` and attachment chips.
+ALL assistant text passes the white-label rewriter (`presentText`); the user's own text never does.
+
+| frame | fields |
+|---|---|
+| `history` | `messages: HistoryMessage[]`, `hasEarlier: bool` |
+| `earlier` | `before: string`, `messages: HistoryMessage[]`, `hasEarlier: bool` (the page ends just BEFORE the requested id) |
+
+`HistoryMessage` = `{ id: "s<file>-<turn>", role: "user"\|"assistant", text, activities: Activity[],
+attachments?: [{name,size,mime}], earlier?: true, clipped?: true }`. Ids are per-file (`s0-…` = the oldest file) and stay
+STABLE while the chain grows, so `get_earlier` cursors survive a rotation. Messages of every file but the
+last carry `earlier:true`.
+
+- **Bounds.** A page is at most 100 messages (Gentle Dot's `HISTORY_PAGE`) and at most **192 KiB** of
+  serialized frame — a named ceiling tied to the island reader's per-frame limit of 256 KiB
+  (`FrameError::TooLarge` in `apps/desktop-tauri/src/agentclient.rs`), kept safely below it. The page is
+  built from the newest message backwards and stops before the budget is exceeded; a single message
+  larger than the budget is CLIPPED (its text, always already white-labelled, cut on whole code points;
+  never a partial hidden name or a split surrogate), so one page always fits and size never becomes
+  `error{failed}`. The frame rebuild clips each text to 64 KiB (the same ceiling the `send` verb
+  accepts), caps activities at 100 (closed vocabulary, non-conforming entries dropped) and attachments
+  at 16, and THROWS — the server answers `error{failed}` — if a rebuilt page still exceeds 1 MiB (a
+  defense-in-depth ceiling the byte-bounded build never reaches). A message whose text was clipped — by
+  the 64 KiB rebuild ceiling or by the page budget — carries `clipped: true` (K2-05 U2 follow-up: the
+  clip is MARKED, never silent, so the island can show that history shows less than the live stream did;
+  a text cut by the page budget is additionally marked `clipped: true` there too) — the cut always lands
+  on a whole code point. A chain file that is missing or
+  unreadable is skipped with a one-line daemon log (one over 64 MiB is skipped instead of blocking the
+  read); torn/corrupt lines inside a file are skipped (the engine rewrites them as it appends).
+- **Readiness.** `get_history` asked while the engine starts or restarts waits for it (K2-05 boot order, Gentle
+  Dot `bridge.ts` `whenReady`, 60 s); an engine that stops, does not start in time or holds no open session
+  answers `error{unavailable}` (retryable), and so does `get_earlier` while the engine is not `ready` — never
+  an empty page, which would clear what the island shows.
+- **Chain files are owned.** A chain file is read only when it is a regular, non-symlink, owned file
+  directly inside the engine's private sessions dir (the runtime's `isOwnedSessionFile` rule) — a
+  planted symlink or an outside path is dropped with a one-line log, never read — and `linkSessions`
+  refuses such paths BEFORE a chain entry is persisted to `state.json`.
+- **Freshness.** `get_history` carries Gentle Dot's `currentHistory` round trip (bridge.ts:1131-1145):
+  one engine `get_state` round trip makes sure every message announced so far is already on disk, and
+  the page is read again (bounded) when a message was announced during that round trip. `get_earlier`
+  reads directly, as upstream does.
+- **Rotation re-broadcast.** When a rotation (or its fallback `new_session`) replaces the open session and
+  the new one already carries its chain, the daemon re-broadcasts ONE `history` frame per confirmed
+  session change to every connected client: the same chat, now marked earlier (Gentle Dot
+  bridge.ts:1124-1129). The broadcast fires on the engine's `session_changed` (chain present, engine
+  ready — including a crash-recovery reopen, whose emit now fires only once ready) and `sessions_linked`
+  (linked file == open session) events, so the fallback's confirmed-but-unlinked window never
+  broadcasts an empty page. When the rotation's switch CONFIRMS but its verification fails and the
+  fallback runs, TWO frames are broadcast: the confirmed seed's session change, then the fallback's
+  linked fresh session.
+
+### Recorded prompts (additive, K2-05 bind by id)
+
+Port of Gentle Dot's `send{requestId}` dedupe (bridge.ts:399, 500 remembered ids) and its
+`user_message` broadcast (bridge.ts onMessageStart, MIT). A client never has to infer which recorded
+prompt is its own — not by counting engine cycles, not by matching text.
+
+- **`requestId` on `send`/`steer`** (optional, closed grammar `[A-Za-z0-9_-]{1,64}`). A requestId the
+  daemon has already seen (the last 500) makes the frame a silent no-op — no error, nothing reaches the
+  engine — so a client never sends the same prompt twice. The check runs right after the `/gentle:`
+  refusal, before every other gate, but an id is only REMEMBERED once its request passed the transient
+  gates (engine ready, no session switch, `busy`/`not_busy`, pause): dispatched to the engine or held for
+  a rotation. A request those gates refused (or the `/gentle:` refusal) leaves its id unspent, so the
+  client may retry with the same id; a request the engine itself rejected stays spent (a lost ACK may
+  already have started work). Each `error` answering a `send`/`steer` that carried a `requestId` echoes
+  it, to its sender only, so the client never guesses which of its commands a refusal answers (frame-
+  level refusals — `rate_limited` drops, undecodable frames — carry none).
+- **`user_message`** is broadcast to EVERY client each time the engine starts recording a user message
+  (Pi's `message_start`, role `user`): the island's own prompts, other clients' prompts, held prompts
+  delivered after a rotation, consumed steers, and an extension's own user messages alike.
+  - `messageId` is the page id the history frames give that same prompt (`s<open file index>-<row>`), so
+    it joins with `history`/`earlier` exactly. The daemon counts the open file's display rows from the
+    engine's message events since its last idle read of the file — never by reading the file while the
+    engine writes it — and sends no `user_message` when that count is not known (after a cancelled turn,
+    an engine restart or a session change, until the next prompt it dispatches).
+  - `requestId` is echoed ONLY on the copy sent to the client whose `send`/`steer` the engine recorded
+    (not a secret, but nobody else's correlation). The dispatched prompt is the run's first recorded
+    user message whose text is its own; steers are matched by text in order (Pi removes a consumed
+    steer from its queue by text); a recorded text that matches no pending steer falls back to the
+    dispatched prompt (a template expansion changes the recorded text), and once no prompt is pending,
+    to the oldest pending steer (a steer's template expansion; Pi records its queue in order) — only
+    while every pending steer is the same client's: with steers of two clients waiting, an unmatched
+    record is announced without any `requestId` rather than risk naming another client's request. Prompts
+    held during a rotation are dispatched one after another when the switch settles; each keeps its own
+    request, so the engine refusing a later one (it runs one turn at a time) forgets only that one: the
+    delivered prompt keeps its sender's `requestId`, the refused sender gets `failed` and no `requestId`.
+    A request the engine refused (the `prompt`/`steer` request failed), and every request still pending
+    when the run settles or the engine goes away, is forgotten: it never names a later record. An
+    unmatched record (an extension's own message) carries no `requestId`.
+  - `text` is the user's own text (never white-labelled), split from its `<attachments>` block like
+    history and clipped the same way (64 Ki chars, `clipped:true`). The frame is byte-bounded like one
+    history page (192 KiB, measured with every field in place: `clipped`, `requestId`, the largest
+    `seq` and the LF; under the island reader's 256 KiB): a longer text is cut on whole code points and
+    marked `clipped:true`.
+
+### Attachments (additive, K2-05, L11 2a — Gentle Dot's uploads)
+
+Port of Gentle Dot's `packages/daemon/src/uploads.ts` + bridge.ts `attachedFiles`/`composePrompt`
+(MIT; `src/uploads.cjs`). Any file; the daemon stores it in the island's OWN engine workspace
+(`<island>/workspace/uploads/<id>/<name>`, never a user-chosen folder); images reach a vision model.
+
+- **Upload.** `upload{requestId, name, size, offset, data}` carries one chunk: `data` is standard
+  base64 (≤ 192 Ki chars = 144 KiB, a multiple of 4; an empty file is one empty chunk with `size:0`),
+  `offset` is where it goes (chunks in order), `size` the whole declared size (same on every chunk),
+  `name` ≤ 255 chars, a display name only: the daemon keeps its last path segment, without
+  control/invisible/direction marks, a leading dot or a reserved name (`sanitizeName`). Files are
+  created `0600` with O_EXCL|O_NOFOLLOW in a fresh `0700` folder named by the id; the `uploads` folder
+  must be a private directory (a planted link is refused). The last chunk is answered, to the sender
+  only, with `uploaded{requestId, attachment:{id, name, size, mime}}` — never the path. `mime` is
+  sniffed from content (PNG/JPEG/GIF/WebP/PDF, else `application/octet-stream`). A refused upload
+  answers ONE `error{code, requestId}` (`file_too_large`, `message_too_large`, `too_many_files`,
+  `upload_failed`, `bad_request`), leaves nothing on disk, and its later chunks are ignored.
+- **Limits (daemon-enforced).** 25 MB per file; per client, the files waiting to be sent (finished
+  plus the declared size of unfinished ones) are at most 10 and 50 MB (Gentle Dot's per-message
+  limits). Upload chunks have their own budget of 720 frames/min per client (over it the client is
+  dropped, like the 240 frames/min limit that every other frame keeps). Uploads are allowed while
+  paused (they are not a turn).
+- **Refs.** The id `a-<16 hex>` is random, issued by the daemon, and OWNED by the uploading client
+  connection: a `send` naming an id this client did not upload, already sent, unknown or twice is
+  refused `attachment_not_found` before any other effect (the `requestId` is not spent). Ids never
+  name a path; a path or a name in `attachments` is `bad_request`.
+- **Send.** The prompt is Gentle Dot's: the user's text, a blank line, then
+  `<attachments>`, the fixed intro line, one JSON line per file `{name,size,type,path}` (absolute
+  stored path — the agent reads it with its tools, as the engine), `</attachments>`. An image ≤ 3.75 MB
+  is ALSO passed as an RPC image when the engine's model accepts images (`get_state` →
+  `model.input` includes `image`); otherwise the line says it was saved but the model cannot see
+  images. The image bytes are read back as stored (no link, same size). Once the engine accepted the
+  prompt the files are spent: they stay on disk for the agent but no message can send them again. A
+  prompt held during a rotation keeps its files and spends them when delivered.
+- **Cleanup.** `upload_discard`, the uploading client going away, and one hour without being sent
+  delete an unsent file; an unfinished upload idle 2 minutes is dropped. Sent files are kept.
+- **Display.** `user_message` and history split the block back into `text` + `attachments`
+  (`[{name,size,mime}]`), so the live frame, reconnects and reloads show the same chips.
+
+## Private memory (K2-05 T1c, the only mode)
+
+Koda's memory is ALWAYS private — Gentle Dot's private mode (its `packages/daemon/src/isolation.ts`,
+`privateMemory`, MIT), with no user-store mode. The engine child gets `ENGRAM_PORT` = Koda's own
+port **7439** (`ABITO_ENGRAM_PORT` in the parent env overrides it for tests/embeddings),
+`ENGRAM_BIN` = ONLY the pinned binary the bundled runtime manifest names, `ENGRAM_NO_UPDATE_CHECK=1`,
+and NO `ENGRAM_URL`/`ENGRAM_DATA_DIR`/inherited `ENGRAM_PORT`: the store follows the engine's island
+`HOME` (`<island>/home/.engram`), so the user's own Engram server and store (`7437`/`7438`,
+`~/.engram`) are never read, probed or inherited. The memory project stays `abito-island`
+(`<workspace>/.engram/config.json`, `ABITO_MEMORY_PROJECT` + identity pin). The daemon confirms the
+private port is EMPTY before the engine spawns and owns cleanup only then; a failed or ambiguous
+lookup refuses ownership (logged, the engine still starts); on daemon stop the listener is verified
+against the island's `.instance-id` + `GET /health` with a stable PID before any SIGTERM — a server
+that is not Koda's is never touched. **Koda 0.1 memories saved in the user's own Engram are NOT
+migrated** into the island store (human decision L11); the island memory starts empty. Only Koda's
+own default engine gets private memory: a custom `command` gets no memory env and no ownership.
+
+## Continuous conversation rotation (K2-05 T3, on by default)
+
+One continuous chat that never grows unbounded: when the open session file passes a limit, the daemon
+replaces it the way Gentle Dot does (its `packages/daemon/src/rotation.ts`, MIT) and the island sees
+nothing. There is no opt-in step and no visible summary frame — #386's opt-in rotation
+(`thresholdPercent`/`keepTurns`, Spanish framing block prepended to the next prompt by
+`promptDecorator`) is GONE: a v0.1.0 config with those keys still boots (they are ignored, with a
+one-line log notice), and any other unknown `rotation` subkey is still refused.
+
+- **Config.** The strict `rotation` key: `enabled` (strict boolean, default **true**), `bytes`
+  (1024..2147483647, default 20971520 = 20 MB) and `compactions` (1..1000000, default 10). The env
+  `ABITO_ROTATE_BYTES` / `ABITO_ROTATE_COMPACTIONS` overrides win over the file; only plain positive
+  decimal integers are accepted (no `1e3`, `0x10` or spaces), and `ABITO_ROTATE_BYTES` keeps the same
+  1024-byte minimum. An invalid env value never wins; the file/default stands.
+- **Trigger.** After every natural `agent_settled` (while idle, not paused, nothing in flight) the
+  daemon checks the open session file: past `bytes` of file size OR `compactions` compaction entries
+  it rotates. Rotation itself issues NO model request: only `switch_session`, `get_messages` and, on
+  failure, one fallback `new_session`.
+- **Handoff.** The daemon writes a NEW session file next to the open one holding ONE hidden custom
+  message (`customType: "abito.handoff"`, `display: false`) that carries the earlier conversation:
+  the latest engine compaction summary, or — before any compaction or with an empty summary — the
+  previous handoff plus the last 12 user/assistant messages truncated at 2000 chars. The seed links
+  the previous file (`parentSession`), the daemon links the chain (`previousSessions`/`state.json`),
+  and history keeps reading across the rotation. The engine is switched with `switch_session` and
+  the daemon verifies the handoff is in the engine's context before it calls the rotation done.
+  state.json only ever names a session the engine actually holds: a failed switch never leaves the
+  persisted pointer at the seed.
+- **Reopen on boot/restart (L44, L51: Gentle Dot's).** The engine reopens the session named in
+  state.json with `switch_session` only when that file exists (Gentle Dot `supervisor.ts:317`
+  `existsSync(wanted)`; Koda's check is the stricter owned-file rule), then adopts what `get_state`
+  reports, and only then writes state.json. A cut-off turn, a crash or an unconfirmed reset reopen
+  the same saved session the same way: there is no separate «recovery» session (Gentle Dot keeps
+  none), so a session file the engine never wrote (a first prompt refused with no account: real Pi
+  writes its file only after a message) is skipped and never blocks the engine (K2-05 F1). Any error
+  kills the child (no late switch can land), leaves state.json untouched, never reports `ready` on
+  another session, and a fresh child retries with the restart backoff, with no attempt limit, until
+  the saved session reopens or the daemon stops. Two deviations from Gentle Dot: the switch budget is
+  `requestTimeoutMs` (the rotation switch's, 300 s), not 30 s, because Windows CI 43025727185 showed
+  the real engine's switch can take longer; and a switch the engine ACKs without applying it is an
+  error (Gentle Dot's `refreshSession` would adopt the other session and overwrite the saved pointer).
+- **Known gap shared with Gentle Dot (F2).** A rotation that falls back to `new_session` names the
+  fresh session in state.json with its chain (`rotation.ts:212-214`, here `rotation.cjs:311-317`),
+  but the engine writes that session's file only with its first message. A daemon or engine restart
+  right after such a fallback, before the next message, finds no file to reopen (the `existsSync`
+  skip above), boots a new empty session and the chain link to the earlier conversation is lost (the
+  earlier session files stay on disk). Gentle Dot has the same window; Koda keeps that behaviour for
+  parity.
+- **Failure.** A seed-write failure, an unparseable or wrong-version session header (fail closed),
+  or a failed fallback leaves the chat where it was and logs it. A failed switch or verification
+  falls back to `new_session` seeded the same way (Gentle Dot's fallback), removes the orphan handoff
+  file the attempt created (exactly that file), and links the fresh session into the chain — no retry
+  storm: never more than one orphan seed per attempt window, and the fresh session is not oversized.
+- **Prompt during a rotation.** A `send` that arrives while the switch is in flight is HELD (one per
+  client, in order) and delivered once the rotation settles or fails — the user is never told to
+  resend; a second prompt while one is already held still answers `busy`.
+- **Guards.** Rotation is skipped while the engine is busy or not ready and while the global pause
+  (#379) is active; at most one rotation runs at a time, at most one per settled turn.
 
 ## Obtaining endpoint and token (U4)
 
 The host does not generate the token: `abito-island-daemon run` does, and publishes `{protocol, endpoint, token, pid, procStart, startedAt}`
-in `<island>/runtime/session.json` (0600, removed on stop). The endpoint and token stay valid across engine restarts
+in `<island>/runtime/session.json` (0600, removed on stop).
+
+**Boot order (K2-05, Gentle Dot `daemon.ts:470-481`).** The daemon validates its config and the bundled
+engine (a missing or broken bundled runtime still fails the boot, like Gentle Dot's `loadConfig`), opens
+its server, publishes `session.json` and only then starts the engine. Like Gentle Dot (`daemon.ts:477-481`
+`await supervisor.start().catch(log)`), the boot awaits that first engine start, but a stop does not:
+SIGTERM/SIGINT, stdin EOF of an app-owned `run` and `abito-island-daemon stop` act at once even while the
+engine is still starting (Gentle Dot `close()`, `daemon.ts:410-458`): the server closes and `session.json` is
+withdrawn immediately — never after that first start settles — and the starting engine is asked to stop at
+once (its stdin closed). The PROCESS then exits when that starting engine answers or the stop timers fire
+(`stopTimeoutMs`, 5 s → SIGTERM, two seconds later → SIGKILL), so an engine still loading can keep the
+process alive for a few seconds after `session.json` is already gone, exactly like Gentle Dot's `close()`; a
+stop asked for before the server listens lets the boot publish nothing.
+Clients that connect meanwhile get `ready{state.status:"starting"}` (then `agent_state` as it changes);
+`send`/`steer` answer `unavailable` until the engine is `ready`. A first engine start that fails is logged
+(`agent failed to start: …; retrying`) and retried by the runtime with its backoff; the daemon stays up. The
+configured `profile` is activated the first time the engine is ready. The endpoint and token stay valid across engine restarts
 (crash, workspace change, profile switch); a new daemon launch means a new token. See README "User config, CLI and host handoff".
 
 #### Local OpenAI-compatible endpoints (v0.2)
@@ -496,7 +743,7 @@ The daemon does not automatically assign `<island>/connectors/mcp-source.json` t
 
 ## Connectors control frames (H2c)
 
-These additive commands are available only after the authenticated `island-agent/1` hello. They are separate from `connectors_list`: that command still returns the persisted CLI view; control snapshots use the running host and their `connectors` frame has `live:true`. All newly defined request/result keys below use snake_case. Existing auth frames retain their shipped `flowId`/`promptId`/`accountId` spelling. Unknown request fields are dropped, except the forbidden setup-value keys on `connectors_connect`, which reject the entire frame as `bad_request`. Every request counts against the existing 240-frames/minute per-client limit (max two clients).
+These additive commands are available only after the authenticated `island-agent/1` hello. They are separate from `connectors_list`: that command still returns the persisted CLI view; control snapshots use the running host and their `connectors` frame has `live:true`. All newly defined request/result keys below use snake_case. Existing auth frames retain their shipped `flowId`/`promptId`/`accountId` spelling. Unknown request fields are dropped, except the forbidden setup-value keys on `connectors_connect`, which reject the entire frame as `bad_request`. Every request counts against the existing 240-frames/minute per-client limit (max four clients).
 
 ### Client → server
 

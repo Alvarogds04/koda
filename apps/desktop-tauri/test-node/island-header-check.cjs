@@ -45,9 +45,10 @@ test('header-actions: Coucou gap 14 / padding-right 16, 44px hit around a 14px g
   assert.match(isl, /#island-header \.hdr-action \{ margin: 0 -15px; \}/);
 });
 
-test('wiring: «+» opens the chat and creates a conversation; mute uses prefs_action sound_on/off; trusted clicks only; inert in the settings window', () => {
+test('wiring: «+» opens the ONE continuous chat (K2-05 T4 U4: no new conversation); mute uses prefs_action sound_on/off; trusted clicks only; inert in the settings window', () => {
   const src = read('island-header.js');
-  assert.match(src, /getElementById\('open-chat'\)[\s\S]*getElementById\('chat-create'\)/);
+  assert.match(src, /getElementById\('open-chat'\)/);
+  assert.doesNotMatch(src, /chat-create/, 'one continuous chat: «+» never starts a new conversation');
   assert.match(src, /prefs_action', \{ payload: \{ action: view\.action \} \}/);
   assert.equal((src.match(/e\.isTrusted !== true/g) || []).length, 2);
   assert.match(src, /label !== 'settings'/);
@@ -224,14 +225,16 @@ test('chat wears Coucou\'s tokens: bubble .13 r12 6/10 12.5px, reply #b0b5be, in
   assert.match(isl, /#chat-log li\.assistant \{ color: #b0b5be; font: 400 12\.5px var\(--font\); \}/);
   assert.match(isl, /#chat-input \{\s*border: 0; border-radius: 12px; background: rgba\(255, 255, 255, 0\.07\); color: var\(--ink\); font: 400 13px\/1\.35 var\(--font\);/);
   assert.match(isl, /#chat-send \{ background: var\(--ink\) !important;/);
-  assert.match(isl, /#chat-model-btn \{ padding: 4px 10px; border: 0; background: rgba\(255, 255, 255, 0\.06\); color: #7b8089; font: 500 10\.5px var\(--font\); \}/);
-  for (const sel of ['#settings', '#models', '#conversations']) assert.ok(!new RegExp('(^|[\\s,}])' + sel + '[^{]*\\{').test(isl.slice(isl.indexOf('#chat-log li.user') - 1)), sel + ' untouched by the chat block');
+  // K2-05 U5c (L72): the model chip (`#chat-model-btn`: min-height 24px + r999, styles in style.css) is gone with the
+  // picker; the chat now shows a read-only text line, so this contract no longer has a control to cover.
+  assert.doesNotMatch(read('index.html'), /chat-model-btn|chat-model-picker/);
+  for (const sel of ['#settings', '#conversations']) assert.ok(!new RegExp('(^|[\\s,}])' + sel + '[^{]*\\{').test(isl.slice(isl.indexOf('#chat-log li.user') - 1)), sel + ' untouched by the chat block');
 });
 
 // ---- #480: the chat in the island's own visual language -------------------------------------------------------------
 test('chat: keeps every id and verb; the island header stays on top at the island width (720); body is a Coucou card; controls are Coucou tabs/discs with 44px hits', () => {
   const html = read('index.html');
-  for (const id of ['chat-header', 'chat-title', 'chat-target-chip', 'chat-specialist', 'open-screen-settings', 'chat-back', 'chat-state', 'chat-history-controls', 'chat-create', 'chat-conversations', 'chat-history-label', 'chat-log', 'chat-model-btn', 'chat-composer', 'chat-input', 'chat-mic', 'chat-send', 'chat-cancel'])
+  for (const id of ['chat-header', 'chat-title', 'chat-target-chip', 'chat-specialist', 'open-screen-settings', 'chat-back', 'chat-state', 'chat-history-controls', 'chat-load-earlier', 'chat-history-label', 'chat-log', 'chat-model-line', 'chat-composer', 'chat-input', 'chat-mic', 'chat-send', 'chat-cancel'])
     assert.match(html, new RegExp(`id="${id}"`), id + ' is still there');
   const isl = read('vendor/coucou/island/island.css').replace(/\/\*[\s\S]*?\*\//g, '');
   const from = isl.indexOf('#capsule[data-phase="expanded"][data-view="chat"] #island-header');
@@ -246,7 +249,9 @@ test('chat: keeps every id and verb; the island header stays on top at the islan
   assert.match(blk, /#chat-header \.icon-btn \{[^}]*min-width: 44px; min-height: 44px;/, 'the quiet round buttons keep a 44px hit');
   // chat behaviour files are not part of this change: the verbs the chat sends are the same closed ones
   const chat = read('chat.js');
-  for (const verb of ["action({ action: 'new' })", "action({ action: 'open' })", "action({ action: 'back' })", "action({ action: 'list' })"]) assert.ok(chat.includes(verb), verb);
+  for (const verb of ["action({ action: 'open' })", "action({ action: 'back' })"]) assert.ok(chat.includes(verb), verb);
+  // K2-05 T4 U4: one continuous chat — the conversation-list verbs are gone from the page
+  for (const verb of ["action({ action: 'new' })", "action({ action: 'list' })"]) assert.ok(!chat.includes(verb), verb);
 });
 
 if (failed) process.exit(1);

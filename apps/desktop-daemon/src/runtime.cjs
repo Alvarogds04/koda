@@ -21,13 +21,35 @@
 const { EventEmitter } = require("node:events");
 const { performance } = require("node:perf_hooks");
 const { spawn } = require("node:child_process");
-const { lstatSync, readFileSync } = require("node:fs");
+const { existsSync, lstatSync, readFileSync, readdirSync, renameSync, rmSync } = require("node:fs");
+const { createHash } = require("node:crypto");
 const path = require("node:path");
 
-const { MEMORY_PROJECT, defaultIslandRoot, ensureIsland, isolatedEnv, writePrivateFile } = require("./isolation.cjs");
+const {
+	MEMORY_PROJECT,
+	assertPrivateMemoryPort,
+	claimEngineHome,
+	defaultIslandRoot,
+	ensureIsland,
+	ensurePrivateDir,
+	isolatedEnv,
+	privateMemoryPort,
+	writePrivateFile,
+} = require("./isolation.cjs");
+// F2: the daemon-owned flush marker for a cancelled turn. A Symbol cannot be
+// produced by JSON.parse, so a child record can never forge this event.
+const { MESSAGE_FLUSH } = require("./protocol.cjs");
 
 const DEFAULT_BACKOFF_MS = [1000, 2000, 4000, 8000, 16000, 30000];
 const DEFAULT_REQUEST_TIMEOUT_MS = 300_000;
+/**
+ * F4: the only ENGRAM_* keys a caller may still set on Koda's own engine —
+ * diagnostics that move no memory state (the companion logs richer stderr
+ * traces when set). Everything else ENGRAM_* is stripped from envOverrides for
+ * the default engine: the memory selection (binary, URL, data dir, port,
+ * socket, database URL, startup policy, update check) is daemon-owned.
+ */
+const ENGRAM_DIAGNOSTIC_OVERRIDES = new Set(["ENGRAM_PI_SESSION_TRACE"]);
 const DEFAULT_START_TIMEOUT_MS = 60_000;
 const DEFAULT_STOP_TIMEOUT_MS = 5_000;
 const DEFAULT_STABLE_MS = 30_000;
@@ -37,8 +59,17 @@ const DEFAULT_TURN_TIMEOUT_MS = 300_000;
 const DEFAULT_MAX_TURN_ITERATIONS = 32;
 const DEFAULT_ABORT_GRACE_MS = 2_000;
 
-/** The npm global package that provides Pi on Windows (T2/S4). */
+/** The npm global package that provides Pi on Windows (custom bare commands only since T2). */
 const PI_PACKAGE_SEGMENTS = ["node_modules", "@earendil-works", "pi-coding-agent"];
+
+/**
+ * The default engine (T2): Gentle Shell, Koda's bundled Gentle Pi. Never a
+ * binary from PATH or an npm prefix; config.json `command` overrides it.
+ */
+const DEFAULT_COMMAND = "gentle-shell";
+
+/** The manifest T1 ships in Koda's bundled runtime folder. */
+const RUNTIME_MANIFEST = "koda-runtime.json";
 
 /**
  * Windows (T2): Pi's npm install is a `.cmd` shim backed by JS. A shim is NEVER
@@ -80,9 +111,468 @@ function windowsPackageCliJs(binName, deps = {}) {
 	return undefined;
 }
 
+/** The parsed `koda-runtime.json` of `runtime`, or undefined when absent/unreadable. */
+function readRuntimeManifest(runtime, deps = {}) {
+	try {
+		return JSON.parse((deps.readFileSync ?? readFileSync)(path.join(runtime, RUNTIME_MANIFEST), "utf8"));
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * T1b-b (S5): the `engramBin` of the runtime's manifest, validated like the
+ * gentleShell script (relative, inside the runtime, real file, no symlinks).
+ * Throws on a manifest that names an invalid one; callers skip the call when
+ * the manifest does not name one at all.
+ */
+function engramBinPath(manifest, runtime, deps) {
+	return runtimeScript(manifest?.engramBin, runtime, deps, "engramBin");
+}
+
+/**
+ * T1b-b (S5), reshaped by T1c (S5/L11): the private memory environment of
+ * Koda's DEFAULT bundled engine, in the shape of Gentle Dot's private mode
+ * (isolation.ts:208-211). Koda's memory is ALWAYS private — there is no
+ * user-store mode anymore: the store follows the engine's own HOME
+ * (`<island>/home/.engram`, Engram's default when `ENGRAM_DATA_DIR` is unset),
+ * the server runs on Koda's own port (`privateMemoryPort`: 7439, or the
+ * parent's `ABITO_ENGRAM_PORT`), and the ONLY binary Koda resolves is the
+ * pinned one its runtime manifest names (`engramBin`) — the former Gentle Dot
+ * user-binary order (the parent's ENGRAM_BIN, the login shell, the known dirs)
+ * is deleted, so the user's own Engram server and store (7437/7438, ~/.engram)
+ * are never read, probed or inherited: the allowlist in isolatedEnv never copies
+ * them in the first place, ENGRAM_* caller overrides are stripped for the
+ * default engine (spawnChild, F4), and a missing or invalid `engramBin` never
+ * blocks the engine (F7): the degradation (ENGRAM_STARTUP_POLICY=disabled, F1 —
+ * the companion never falls back to a PATH `engram`) is logged, and the chat
+ * starts without memory tools.
+ * GENTLE_SHELL_PREFIX is NEVER set: the engine's companion comes from the
+ * island seed, not from a user prefix. This env is only ever built for the
+ * default engine (see spawnChild); a foreign `command` learns nothing about
+ * Koda's memory.
+ */
+function bundledMemoryEnv(baseEnv, runtime, deps = {}) {
+	const env = {};
+	let bin;
+	if (runtime !== undefined) {
+		const manifest = readRuntimeManifest(runtime, deps);
+		try {
+			bin = engramBinPath(manifest, runtime, deps);
+		} catch (error) {
+			(deps.log ?? (() => {}))(`the bundled memory binary is not available (${error.message}); the chat starts without memory`);
+		}
+	} else {
+		(deps.log ?? (() => {}))("the bundled runtime is unavailable; the chat starts without memory");
+	}
+	if (bin !== undefined) {
+		env.ENGRAM_BIN = bin;
+	} else {
+		// F1: without the pinned binary the companion's ENGRAM_BIN would fall back
+		// to `engram` on the inherited PATH (gentle-engram index.ts:27) — the user's
+		// binary on a real machine. ENGRAM_STARTUP_POLICY=disabled makes the
+		// companion fail closed (index.ts:30-31): no tools, no server spawn, no
+		// PATH lookup — the bundled pinned binary stays the ONLY engram the default
+		// engine can ever run, and the degradation log above stays true.
+		env.ENGRAM_STARTUP_POLICY = "disabled";
+	}
+	// F3 (defence in depth): the port is validated here too, exactly like the
+	// lifecycle in isolation.cjs — the user's own Engram ports (7437/7438) and
+	// anything non-numeric are a configuration error, never an env the engine sees.
+	const port = privateMemoryPort(baseEnv);
+	assertPrivateMemoryPort(port);
+	env.ENGRAM_PORT = port;
+	// The private memory never phones home for updates (offline by design).
+	env.ENGRAM_NO_UPDATE_CHECK = "1";
+	return env;
+}
+
+/**
+ * B1/F5: every path segment from `base` down through `parts` must be a real
+ * directory (never a symlink or a file that would redirect work outside
+ * `base`); absent segments are fine (they are created later, fail closed).
+ * Throws on any symlink or non-directory segment; a missing segment ends the
+ * walk (nothing can exist below it).
+ */
+function validateRealSegments(base, parts, deps) {
+	const lstat = deps.lstatSync ?? lstatSync;
+	const resolvedBase = path.resolve(base);
+	for (let i = 0; i <= parts.length; i++) {
+		const at = i === 0 ? resolvedBase : path.join(resolvedBase, ...parts.slice(0, i));
+		const rel = path.relative(resolvedBase, at);
+		if (rel === ".." || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) {
+			throw new Error(`refusing a path outside ${resolvedBase}`);
+		}
+		let stats;
+		try {
+			stats = lstat(at);
+		} catch (error) {
+			if (error?.code === "ENOENT") return; // later segments will be created
+			throw error;
+		}
+		if (stats.isSymbolicLink()) throw new Error(`refusing symlinked segment: ${at}`);
+		if (!stats.isDirectory()) throw new Error(`refusing non-directory segment: ${at}`);
+	}
+}
+
+/**
+ * F4 (re-verified): a content-shaped fingerprint of a real file tree — the
+ * package version plus one line per file as `<relative-path>:<size>:<sha256>`
+ * (sorted), hashed once, computed with lstat + file reads (a symlink or a
+ * non-regular entry anywhere, or an unreadable/unhashable tree, yields
+ * undefined so the caller treats it as "not equal" and repairs). Size alone is
+ * NOT enough: a companion upgrade with same-size files (0.4.2 → 0.4.3) and a
+ * zero-filled same-size file must both fail the equality and be repaired; the
+ * version is folded in so a version bump can never pass on identical bytes.
+ * The seed idempotency check compares the bundled companion's fingerprint with
+ * the installed one, so a partial or corrupt copy is always repaired instead
+ * of surviving on version or size equality alone.
+ */
+function treeFingerprint(dir, deps = {}, version = "") {
+	const lstat = deps.lstatSync ?? lstatSync;
+	const readdir = deps.readdirSync ?? readdirSync;
+	const readFile = deps.readFileSync ?? readFileSync;
+	try {
+		const stats = lstat(dir);
+		if (stats.isSymbolicLink() || !stats.isDirectory()) return undefined;
+		const lines = [];
+		const walk = (abs, rel) => {
+			for (const entry of readdir(abs)) {
+				const child = path.join(abs, entry);
+				const childRel = rel === "" ? entry : `${rel}/${entry}`;
+				const childStats = lstat(child);
+				if (childStats.isSymbolicLink() || (!childStats.isDirectory() && !childStats.isFile())) return undefined;
+				if (childStats.isDirectory()) {
+					const nested = walk(child, childRel);
+					if (nested === undefined) return undefined;
+				} else {
+					const hash = createHash("sha256").update(readFile(child)).digest("hex");
+					lines.push(`${childRel}:${childStats.size}:${hash}`);
+				}
+			}
+			return lines;
+		};
+		const out = walk(dir, "");
+		if (out === undefined) return undefined;
+		return createHash("sha256").update(`${version}\n${out.sort().join("\n")}`).digest("hex");
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * T1b-b (S5): seeds the bundled Engram companion into the island's agent dir
+ * before the first spawn, the result gentle-shell's auto-setup would produce
+ * (Gentle Dot isolation.ts:104-137, 208-217) but offline: the companion
+ * `<runtime>/node_modules/gentle-engram` is copied — real files, never links,
+ * any symlink refused, everything through the fail-closed private writes — to
+ * `<agentDir>/npm/node_modules/gentle-engram`, and
+ * `packages: ["npm:gentle-engram@<version>"]` is merged into
+ * `<agentDir>/settings.json` (PI_OFFLINE makes Pi load it with no network;
+ * profiles.cjs preserves foreign keys when it writes its model defaults).
+ *
+ * B1 (verifier): every component from the island's agent dir down to the
+ * target — and from the runtime root down to the source (F5) — is validated
+ * BEFORE any destructive operation, so a symlinked segment can never make the
+ * seed delete or write a gentle-engram folder outside the island. F4: the copy
+ * itself is atomic — staged in a temp sibling inside the validated parent,
+ * verified against the source's fingerprint, then renamed into place; a
+ * failing copy leaves no partial target, and the refresh never follows a link
+ * (an existing target is first renamed to a sibling of the validated parent,
+ * then removed — rmSync never walks a path that could leave the island).
+ * Idempotent: a tree-equal install is left as it is; anything else (a partial
+ * copy among them) is repaired whole. Throws on refused/refusing targets (a
+ * planted symlink is never written through); a runtime without the companion
+ * is a `{ ok: false }` report, never a hard error (the engine still starts).
+ */
+function seedEngramCompanion(runtime, agentDir, deps = {}) {
+	const lstat = deps.lstatSync ?? lstatSync;
+	const readFile = deps.readFileSync ?? readFileSync;
+	const source = path.join(runtime, "node_modules", "gentle-engram");
+	// F5: validate the runtime side first, like runtimeScript validates
+	// gentleShell — missing segments mean no bundled companion (a report, not
+	// an error); a symlink there is a corrupted runtime and fails closed.
+	let sourceMissing = false;
+	try {
+		validateRealSegments(runtime, ["node_modules", "gentle-engram"], deps);
+	} catch (error) {
+		if (error?.code !== "ENOENT") throw error;
+		sourceMissing = true;
+	}
+	if (sourceMissing) {
+		return { ok: false, reason: `the bundled runtime has no gentle-engram companion (ENOENT)` };
+	}
+	let sourceStats;
+	try {
+		sourceStats = lstat(source);
+	} catch (error) {
+		if (error?.code === "ENOENT") return { ok: false, reason: "the bundled runtime has no gentle-engram companion (ENOENT)" };
+		throw error;
+	}
+	if (sourceStats.isSymbolicLink() || !sourceStats.isDirectory()) {
+		return { ok: false, reason: "the bundled gentle-engram companion is not a real directory" };
+	}
+	let pkg;
+	try {
+		pkg = JSON.parse(readFile(path.join(source, "package.json"), "utf8"));
+	} catch (error) {
+		return { ok: false, reason: `cannot read the companion's package.json: ${error.message}` };
+	}
+	if (pkg?.name !== "gentle-engram" || typeof pkg.version !== "string" || pkg.version === "") {
+		return { ok: false, reason: "the bundled companion package.json does not name gentle-engram" };
+	}
+	// B1: validate the whole island path down to the parent BEFORE anything is
+	// read, renamed or destroyed: a symlinked <agentDir>/npm or .../node_modules
+	// is refused and the folder it leads to is never touched.
+	validateRealSegments(agentDir, ["npm", "node_modules"], deps);
+	const modules = path.join(agentDir, "npm", "node_modules");
+	const target = path.join(modules, "gentle-engram");
+	let existing;
+	try {
+		existing = lstat(target);
+	} catch (error) {
+		if (error?.code !== "ENOENT") throw error;
+	}
+	if (existing?.isSymbolicLink()) throw new Error(`refusing symlinked companion target: ${target}`);
+	if (existing && !existing.isDirectory()) throw new Error(`refusing non-directory companion target: ${target}`);
+	// F4: same version + same content (sha256 per file) -> nothing to repair.
+	const sourceFingerprint = treeFingerprint(source, deps, pkg.version);
+	if (existing && sourceFingerprint !== undefined && treeFingerprint(target, deps, pkg.version) === sourceFingerprint) {
+		mergeCompanionSettings(agentDir, pkg.version, deps);
+		return { ok: true };
+	}
+	// Real copy, staged whole and renamed into place; the source tree is fully
+	// validated BEFORE anything is written, so a refused copy leaves the island
+	// untouched.
+	validateRealTree(source, deps);
+	ensurePrivateDir(modules);
+	const staging = path.join(modules, `.gentle-engram.new-${process.pid}-${Date.now()}`);
+	try {
+		copyPrivateTree(source, staging, deps);
+		if (sourceFingerprint === undefined || treeFingerprint(staging, deps, pkg.version) !== sourceFingerprint) {
+			throw new Error("the staged companion copy does not match the bundled one");
+		}
+	} catch (error) {
+		try {
+			rmSync(staging, { recursive: true, force: true });
+		} catch (cleanup) {
+			error.cleanUpError = cleanup;
+		}
+		throw error;
+	}
+	if (existing) {
+		// Refresh (F4/B1): the old tree is renamed to a sibling inside the
+		// validated parent and only then removed — never a path rmSync could
+		// follow out of the island, never a link followed.
+		const replaced = path.join(modules, `.gentle-engram.old-${process.pid}-${Date.now()}`);
+		renameSync(target, replaced);
+		try {
+			renameSync(staging, target);
+		} catch (error) {
+			try {
+				renameSync(replaced, target); // restore the previous install
+			} catch (restore) {
+				error.restoreError = restore;
+			}
+			throw error;
+		}
+		rmSync(replaced, { recursive: true, force: true });
+	} else {
+		renameSync(staging, target);
+	}
+	mergeCompanionSettings(agentDir, pkg.version, deps);
+	return { ok: true };
+}
+
+/** Refuses any symlink (or non-regular, non-directory entry) inside `dir`. */
+function validateRealTree(dir, deps) {
+	const lstat = deps.lstatSync ?? lstatSync;
+	const readdir = deps.readdirSync ?? readdirSync;
+	const stats = lstat(dir);
+	if (stats.isSymbolicLink()) throw new Error(`refusing symlink in the companion: ${dir}`);
+	if (!stats.isDirectory()) {
+		if (!stats.isFile()) throw new Error(`refusing non-regular companion entry: ${dir}`);
+		return;
+	}
+	for (const entry of readdir(dir)) validateRealTree(path.join(dir, entry), deps);
+}
+
+/** Recursively copies a real file tree through the fail-closed private writes. */
+function copyPrivateTree(source, target, deps) {
+	const lstat = deps.lstatSync ?? lstatSync;
+	const readFile = deps.readFileSync ?? readFileSync;
+	const readdir = deps.readdirSync ?? readdirSync;
+	const stats = lstat(source);
+	if (stats.isSymbolicLink()) throw new Error(`refusing symlink in the companion: ${source}`);
+	if (stats.isDirectory()) {
+		ensurePrivateDir(target);
+		for (const entry of readdir(source)) copyPrivateTree(path.join(source, entry), path.join(target, entry), deps);
+		return;
+	}
+	if (!stats.isFile()) throw new Error(`refusing non-regular companion entry: ${source}`);
+	writePrivateFile(target, readFile(source), { mode: 0o600 });
+}
+
+/**
+ * Merges the pinned companion into `<agentDir>/settings.json`: every other key
+ * is preserved, stale `npm:gentle-engram@…` pins are replaced by the bundled
+ * one, and anything else in `packages` (and every other key — the model
+ * defaults profiles.cjs writes, gentle-shell's own `extensions` entries) stays.
+ */
+function mergeCompanionSettings(agentDir, version, deps = {}) {
+	const settingsFile = path.join(agentDir, "settings.json");
+	// Fail closed before reading: a symlink planted at settings.json is never
+	// followed (its content would land in the parse error otherwise).
+	const lstat = deps.lstatSync ?? lstatSync;
+	let existing;
+	try {
+		existing = lstat(settingsFile);
+	} catch (error) {
+		if (error?.code !== "ENOENT") throw error;
+	}
+	if (existing !== undefined && (existing.isSymbolicLink() || !existing.isFile())) {
+		throw new Error(`refusing to merge through a non-regular settings.json: ${settingsFile}`);
+	}
+	let settings = {};
+	try {
+		const parsed = JSON.parse((deps.readFileSync ?? readFileSync)(settingsFile, "utf8"));
+		if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+			throw new Error("settings.json is not an object; refusing to touch it");
+		}
+		settings = parsed;
+	} catch (error) {
+		if (error?.code !== "ENOENT") throw error;
+	}
+	const pin = `npm:gentle-engram@${version}`;
+	const packages = Array.isArray(settings.packages) ? settings.packages.filter((entry) => !/^npm:gentle-engram@/.test(typeof entry === "string" ? entry : entry?.source ?? "")) : [];
+	if (!packages.some((entry) => (typeof entry === "string" ? entry : entry?.source) === pin)) packages.push(pin);
+	settings.packages = packages;
+	writePrivateFile(settingsFile, `${JSON.stringify(settings, null, 2)}\n`);
+}
+
 function positiveBudget(value, name, max = 2_147_483_647) {
 	if (!Number.isSafeInteger(value) || value < 1 || value > max) throw new Error(`invalid ${name}`);
 	return value;
+}
+
+/**
+ * Koda's bundled runtime root (T1): the directory of the Node running the
+ * daemon when it carries `koda-runtime.json` — the installed app always runs
+ * the daemon on its own bundled Node, so this finds the runtime without any
+ * PATH or npm-prefix search. Pure and injectable for tests; undefined when the
+ * daemon does not run on a bundled runtime (a dev checkout).
+ */
+function runtimeRoot(deps = {}) {
+	const execPath = deps.execPath ?? process.execPath;
+	const exists = deps.existsSync ?? existsSync;
+	if (typeof execPath === "string" && path.isAbsolute(execPath) && exists(path.join(path.dirname(execPath), RUNTIME_MANIFEST))) {
+		return path.dirname(execPath);
+	}
+	return undefined;
+}
+
+/** A real, non-symlink regular file (the runtime build ships no links; fail closed). */
+function isRealFile(file, deps) {
+	try {
+		const stats = (deps.lstatSync ?? lstatSync)(file);
+		return stats.isFile() && !stats.isSymbolicLink();
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * A relative path inside the runtime that must be a real file — anything else
+ * is refused (undefined shape, fail closed, like windowsPackageCliJs). A
+ * symlink at ANY path segment between the runtime root and the file is refused
+ * too (like the Rust runtime's inside_file): a link part-way down could
+ * redirect the file outside the runtime. `what` names the manifest key in
+ * errors ("gentleShell", "engramBin").
+ */
+function runtimeScript(rel, runtime, deps, what) {
+	if (typeof rel !== "string" || rel.length === 0 || path.isAbsolute(rel)) {
+		throw new Error(`${RUNTIME_MANIFEST} names no ${what}`);
+	}
+	const script = path.resolve(runtime, rel);
+	const within = path.relative(runtime, script);
+	if (within === "" || within === ".." || within.startsWith(`..${path.sep}`) || path.isAbsolute(within)) {
+		throw new Error(`${RUNTIME_MANIFEST} names a ${what} outside the runtime`);
+	}
+	const lstat = deps.lstatSync ?? lstatSync;
+	const parts = within.split(path.sep);
+	for (let i = 0; i < parts.length; i++) {
+		const segment = path.join(runtime, ...parts.slice(0, i + 1));
+		let stats;
+		try {
+			stats = lstat(segment);
+		} catch (error) {
+			throw new Error(`the bundled runtime is missing ${parts.slice(0, i + 1).join(path.sep)} (${error.code ?? error.message})`);
+		}
+		if (stats.isSymbolicLink()) {
+			throw new Error(`${RUNTIME_MANIFEST} names a ${what} behind a symlink: ${segment}`);
+		}
+	}
+	if (!isRealFile(script, deps)) {
+		throw new Error(`the bundled runtime is missing ${rel}`);
+	}
+	return script;
+}
+
+function gentleShellScript(manifest, runtime, deps) {
+	return runtimeScript(manifest?.gentleShell, runtime, deps, "gentleShell");
+}
+
+/**
+ * The engine Koda launches by default: Gentle Shell from Koda's own bundled
+ * runtime, never one from PATH or an npm prefix (Gentle Dot
+ * `bundledGentleShell`). Linux/macOS: the runtime's `gentle-shell` launcher.
+ * Windows: the bundled node.exe plus the script `koda-runtime.json` names
+ * (`gentleShell`), mirroring how the old default `pi` resolved on Windows.
+ * Anything missing from an existing runtime is a hard error, never a fall-back.
+ * Pure and injectable for tests.
+ */
+function bundledGentleShell(deps = {}) {
+	const platform = deps.platform ?? process.platform;
+	const runtime = runtimeRoot(deps);
+	if (!runtime) {
+		throw new Error(
+			`no bundled runtime found next to the daemon's Node (${deps.execPath ?? process.execPath}); set "command" in the island config.json to override the default engine`,
+		);
+	}
+	if (platform === "win32") {
+		const nodeExe = path.join(runtime, "node.exe");
+		if (!isRealFile(nodeExe, deps)) {
+			throw new Error(`the bundled runtime is missing node.exe: ${runtime}`);
+		}
+		let manifest;
+		try {
+			manifest = JSON.parse((deps.readFileSync ?? readFileSync)(path.join(runtime, RUNTIME_MANIFEST), "utf8"));
+		} catch (error) {
+			throw new Error(`cannot read ${path.join(runtime, RUNTIME_MANIFEST)}: ${error.message}`);
+		}
+		return { command: nodeExe, commandArgs: [gentleShellScript(manifest, runtime, deps)] };
+	}
+	const launcher = path.join(runtime, "gentle-shell");
+	if (!isRealFile(launcher, deps)) {
+		throw new Error(`the bundled runtime is missing the gentle-shell launcher: ${runtime}`);
+	}
+	return { command: launcher, commandArgs: [] };
+}
+
+/**
+ * The bundled runtime's gentle-pi version (T1 manifest), or undefined when the
+ * daemon is not on a bundled runtime or the manifest cannot be read:
+ * informational only (the `.gentle-shell-home` marker names it).
+ */
+function gentlePiVersion(deps = {}) {
+	const runtime = runtimeRoot(deps);
+	if (!runtime) return undefined;
+	try {
+		const manifest = JSON.parse((deps.readFileSync ?? readFileSync)(path.join(runtime, RUNTIME_MANIFEST), "utf8"));
+		return typeof manifest.gentlePi === "string" ? manifest.gentlePi : undefined;
+	} catch {
+		return undefined;
+	}
 }
 /** Cap for one unframed child record; anything larger is discarded, never buffered. */
 const DEFAULT_MAX_RECORD_BYTES = 1_048_576;
@@ -222,6 +712,22 @@ function encodeRecord(record) {
 }
 
 /**
+ * K2-05 U5c: the model the engine answers with, as the closed identity the island may show
+ * (provider, id, name: bounded plain strings). It is read ONLY from Pi's own `get_state`
+ * `data.model`; anything else in that object (inputs, costs, keys) never leaves here, and a
+ * state without a usable model is `undefined` (unknown), never a guess.
+ */
+function modelIdentity(model) {
+	if (!model || typeof model !== "object") return undefined;
+	const text = (value) => (typeof value === "string" && value.trim() ? value.trim().slice(0, 128) : undefined);
+	const id = text(model.id);
+	if (!id) return undefined;
+	const provider = text(model.provider);
+	const name = text(model.name);
+	return { ...(provider ? { provider } : {}), id, ...(name ? { name } : {}) };
+}
+
+/**
  * The island agent engine. Start with `start()`, send commands with
  * `request()` (correlated, timeout-bounded) or `send()` (no response
  * expected), stop with `stop()`.
@@ -229,8 +735,12 @@ function encodeRecord(record) {
 class AgentEngine extends EventEmitter {
 	constructor(options = {}) {
 		super();
-		/** Executable to run; the default `pi` assumes it is on PATH (configurable, not a direct model call). */
-		this.command = options.command ?? "pi";
+		/**
+		 * Executable to run. The default is Koda's own bundled Gentle Shell
+		 * (DEFAULT_COMMAND, resolved only from Koda's runtime, never PATH — see
+		 * spawnCommandPrefix); the island config.json `command` overrides it.
+		 */
+		this.command = options.command ?? DEFAULT_COMMAND;
 		this.commandArgs = options.commandArgs ?? [];
 		this.extraArgs = options.extraArgs ?? [];
 		/** Working directory override; defaults to the owned island workspace. */
@@ -246,6 +756,8 @@ class AgentEngine extends EventEmitter {
 		this.baseEnv = options.env ?? process.env;
 		this.envOverrides = options.envOverrides ?? {};
 		this.identityPath = options.identityPath ?? path.join(__dirname, "..", "identity.md");
+		/** Dependency injection for bundled-runtime resolution (tests); production resolves against the real process. */
+		this.runtimeDeps = options.runtimeDeps ?? {};
 		this.backoffMs = options.backoffMs ?? DEFAULT_BACKOFF_MS;
 		this.stableMs = options.stableMs ?? DEFAULT_STABLE_MS;
 		this.requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
@@ -259,9 +771,14 @@ class AgentEngine extends EventEmitter {
 		this.turn = undefined;
 		this.recycling = false;
 		this.sessionFile = undefined;
+		// K2-05 T3 (S2): the earlier session files of the open chat, oldest first
+		// (Gentle Dot's chains): rotation links the files so history keeps reading
+		// across the boundary, and the chain survives restarts in state.json.
+		this.chains = {};
 		this.sessionChange = undefined;
-		this.recoverySessionFile = undefined;
 		this.sessionEpoch = 0;
+		/** K2-05 U5c: the model the engine reports it answers with (closed identity), or undefined = unknown. */
+		this.model = undefined;
 		this.turnCounter = 0;
 		this.log = options.log ?? (() => {});
 		this.status = "stopped";
@@ -277,27 +794,101 @@ class AgentEngine extends EventEmitter {
 		this.restarting = false;
 		this.restartTimer = undefined;
 		this.initialization = undefined;
-		this.initialStartPending = false;
+		/** Whether start() or stop() was called: before that, "stopped" only means not started yet (Gentle Dot supervisor.launched). */
+		this.wasLaunched = false;
 	}
 
 	get pid() {
 		return this.child?.pid;
 	}
 
-	/** Ensures the private island, spawns the agent and waits for its first `get_state`. */
+	/** Gentle Dot (supervisor.ts launched): whether start() or stop() was called. */
+	get launched() {
+		return this.wasLaunched;
+	}
+
+	/** The earlier session files of the open chat, oldest first (K2-05 T3 rotation chains). */
+	get previousSessions() {
+		return (this.sessionFile && this.chains[this.sessionFile]) || [];
+	}
+
+	/** Records that `sessionFile` continues the chat held in `previous` (oldest first). */
+	linkSessions(sessionFile, previous) {
+		if (typeof sessionFile !== "string" || !Array.isArray(previous) || previous.length === 0) return;
+		// K2-05 T4 U1 verifier fix: only owned session files enter a chain — the same
+		// rule the history read applies (regular, non-symlink, inside the sessions dir)
+		// — so a planted symlink or an outside path is refused BEFORE it is ever
+		// persisted to state.json, not just skipped at read time.
+		const chain = previous.filter((p) => typeof p === "string" && this.isOwnedSessionFile(p));
+		if (chain.length === 0) {
+			this.log(`session chain refused: none of the ${previous.length} linked paths is an owned session file`);
+			return;
+		}
+		if (chain.length !== previous.length) this.log(`session chain: ${previous.length - chain.length} linked path(s) refused, not owned session files`);
+		this.chains[sessionFile] = chain;
+		// Gentle Dot (supervisor.ts:137): linking alone never persists the seed.
+		// state.json keeps pointing at the session the engine actually holds, so
+		// a crash or a failed switch before the seed is opened makes the next
+		// boot reopen the USER's session, never an orphan seed. When the engine
+		// confirms the switch (changeSession / startup reopen), persistSession
+		// writes the new open session together with the chain.
+		if (this.sessionFile) this.persistSession(this.sessionFile);
+		// T4 U1: the server re-broadcasts history once the open session carries the
+		// linked chain (sessions_linked fires only when the linked file becomes or
+		// already is the open one; see server.cjs onEngineHistoryEvent).
+		this.emit("sessions_linked", { sessionFile });
+	}
+
+	/**
+	 * Ensures the private island, spawns the agent and waits for its first `get_state`.
+	 * Gentle Dot (supervisor.ts start + daemon.ts:477-481): a spawned engine that fails to
+	 * become ready rejects start() — the daemon logs it — and the restart policy keeps
+	 * retrying with the backoff until one is ready or stop() is called. Only a spawn that
+	 * could not even be prepared (identity file refused, no engine to run) stays stopped.
+	 */
 	async start() {
 		if (this.status !== "stopped") throw new Error(`cannot start from status "${this.status}"`);
 		this.stopping = false;
-		// An initial spawn that never becomes ready surfaces to the caller; only
-		// a child that reached ready is supervised with crash restarts.
-		this.initialStartPending = true;
+		this.wasLaunched = true;
 		this.island = ensureIsland(this.root);
+		// Mark Koda's own engine home as gentle-shell's BEFORE the first spawn
+		// (T2): gentle-shell runs its first-run setup only in a home it created,
+		// and Koda writes auth/mcp/extension files there first. Informational,
+		// logged-only on failure; an existing marker is left as it is.
+		claimEngineHome(this.island.agentDir, gentlePiVersion(), this.log);
+		// T1b-b (S5): seed the bundled Engram companion into the engine's home
+		// before the first spawn — the offline equivalent of gentle-shell's auto
+		// setup. Only for Koda's own default engine, only from the bundled
+		// runtime. Logged-only on failure: the chat still works without memory.
+		if (this.command === DEFAULT_COMMAND) {
+			const runtime = runtimeRoot(this.runtimeDeps);
+			if (runtime !== undefined) {
+				try {
+					const seeded = seedEngramCompanion(runtime, this.island.agentDir, this.runtimeDeps);
+					if (!seeded.ok) this.log(`could not seed the bundled memory companion: ${seeded.reason}`);
+				} catch (error) {
+					this.log(`could not seed the bundled memory companion: ${error.message}`);
+				}
+			}
+		}
 		this.setStatus("starting");
+		let initializing;
 		try {
-			await this.spawnAndInitialize();
+			initializing = this.spawnAndInitialize();
 		} catch (error) {
-			this.initialStartPending = false;
+			// Nothing was spawned: nothing to retry.
 			this.setStatus("stopped");
+			throw error;
+		}
+		try {
+			await initializing;
+		} catch (error) {
+			if (this.stopping) {
+				this.setStatus("stopped");
+				throw error;
+			}
+			// A child still closing schedules the next attempt itself (handleClose).
+			if (!this.child) this.scheduleRestart();
 			throw error;
 		}
 	}
@@ -331,7 +922,10 @@ class AgentEngine extends EventEmitter {
 	}
 
 	async changeSession(command, timeoutMs) {
-		const change = { child: this.child, sessionFile: this.sessionFile };
+		// K2-05 F3: only a switch_session (the rotation's move; no server verb ever
+		// sends one) marks a holdable switch. A user reset (new_session, the
+		// new_conversation verb) keeps answering busy with no side effects.
+		const change = { child: this.child, sessionFile: this.sessionFile, switching: command.type === "switch_session" };
 		this.sessionChange = change; // Acquire before the first write/await.
 		this.emit("status", { state: this.status }); // Canonical daemon/server busy guard.
 		const checkGeneration = () => {
@@ -351,17 +945,21 @@ class AgentEngine extends EventEmitter {
 				throw new Error("agent session switch was not confirmed");
 			}
 			this.sessionFile = sessionFile;
+			this.adoptModel(modelIdentity(state?.data?.model));
 			this.sessionEpoch += 1;
 			this.persistSession(sessionFile);
 			this.sessionChange = undefined;
 			this.emit("status", { state: this.status });
+			// T4 U1: the open session changed (a rotation switch confirmed, or the
+			// rotation fallback's fresh session). The server decides whether the
+			// change carries a chain worth re-broadcasting.
+			this.emit("session_changed", { sessionFile });
 			return response;
 		} catch (error) {
 			if (this.sessionChange === change && this.child === change.child && !this.stopping) {
 				// Applied-but-unacknowledged resets are ambiguous: cut off, reopen
 				// the last verified session, and NEVER retry the reset automatically.
 				this.recycling = true;
-				this.recoverySessionFile = change.sessionFile;
 				this.sessionFile = undefined;
 				this.setStatus("restarting");
 				change.child.kill("SIGKILL");
@@ -397,8 +995,12 @@ class AgentEngine extends EventEmitter {
 		if (this.turn !== turn || this.child !== turn.child || this.stopping) return Promise.resolve();
 		turn.cancelled = true;
 		this.recycling = true;
-		this.recoverySessionFile = turn.sessionFile;
 		clearTimeout(turn.timer);
+		// F2: a cancelled turn never reaches message_end, so the held delta tail
+		// the stream filter still holds would be dropped. Flush it once, as a
+		// final delta, BEFORE the rest of the turn is shut down. Daemon-owned: the
+		// marker is a Symbol and child records of this type are dropped below.
+		this.emit("event", { type: "message_flush", flush: MESSAGE_FLUSH });
 		// Admission closes synchronously, before any asynchronous abort ACK.
 		this.setStatus("restarting");
 		this.emit("turn_cancelled", { reason });
@@ -439,9 +1041,9 @@ class AgentEngine extends EventEmitter {
 	/** Stops the agent, disables crash restarts, and terminates it gracefully then forcibly. */
 	async stop() {
 		this.stopping = true;
+		this.wasLaunched = true;
 		this.clearTurn();
 		this.sessionChange = undefined;
-		this.recoverySessionFile = undefined;
 		this.recycling = false;
 		clearTimeout(this.restartTimer);
 		this.restartTimer = undefined;
@@ -474,10 +1076,22 @@ class AgentEngine extends EventEmitter {
 		}
 	}
 
-	/** The persisted session file of the open conversation, if any. */
+	/** The persisted session file of the open conversation, if any; the rotation chains ride along. */
 	readPersistedSession() {
 		try {
 			const saved = JSON.parse(readFileSync(path.join(this.island.root, "state.json"), "utf8"));
+			// K2-05 T3: every restored chain entry must be an owned session path —
+			// anything else is dropped, never honoured.
+			if (saved.chains && typeof saved.chains === "object" && !Array.isArray(saved.chains)) {
+				for (const [file, previous] of Object.entries(saved.chains)) {
+					if (
+						Array.isArray(previous) && previous.length > 0 && previous.every((p) => typeof p === "string")
+						&& this.isOwnedSessionFile(file, true) && previous.every((p) => this.isOwnedSessionFile(p, true))
+					) {
+						this.chains[file] = previous;
+					}
+				}
+			}
 			return typeof saved.sessionFile === "string" ? saved.sessionFile : undefined;
 		} catch {
 			return undefined;
@@ -506,7 +1120,7 @@ class AgentEngine extends EventEmitter {
 	persistSession(sessionFile) {
 		if (typeof sessionFile !== "string" || sessionFile === "") return;
 		try {
-			writePrivateFile(path.join(this.island.root, "state.json"), `${JSON.stringify({ sessionFile })}\n`);
+			writePrivateFile(path.join(this.island.root, "state.json"), `${JSON.stringify({ sessionFile, chains: this.chains })}\n`);
 		} catch (error) {
 			this.log(`could not persist the session file: ${error.message}`);
 		}
@@ -524,38 +1138,50 @@ class AgentEngine extends EventEmitter {
 				child.kill("SIGKILL");
 				return;
 			}
-			// Session continuity: reopen the conversation the previous child held.
-			const expected = this.recoverySessionFile;
-			const saved = expected ?? this.readPersistedSession();
-			if (expected && !this.isOwnedSessionFile(expected)) throw new Error("agent recovery session is unavailable");
+			// Session continuity = Gentle Dot's spawnAndInitialize (supervisor.ts:311-330):
+			// reopen the saved conversation only when its file exists (existsSync; here the
+			// stricter owned-file check), then refreshSession's get_state names the open
+			// session. Gentle Dot keeps no separate «recovery» session: a cut-off turn or an
+			// unconfirmed reset reopens state.json's session like any boot (K2-05 F1: a refused
+			// first prompt leaves a session file Pi never wrote; it is skipped, never awaited).
+			// ANY error kills the child (below), so a late switch cannot land, and state.json
+			// is written only after that get_state.
+			const wanted = this.readPersistedSession();
 			const current = state?.data?.sessionFile;
-			if (saved && saved !== current && this.isOwnedSessionFile(saved)) {
-				await this.rawRequest({ type: "switch_session", sessionPath: saved }, this.switchTimeoutMs).catch(
-					(error) => {
-						if (expected) throw error;
-						this.log(`could not reopen the previous session: ${error.message}`);
-					},
-				);
+			const switching = Boolean(wanted && wanted !== current && this.isOwnedSessionFile(wanted));
+			if (switching) {
+				// The one deviation from Gentle Dot (30 s): the reopen gets the rotation
+				// switch's budget, requestTimeoutMs, because Windows CI 43025727185 showed
+				// the real engine's switch_session can take longer than 30 s there.
+				await this.rawRequest({ type: "switch_session", sessionPath: wanted }, this.requestTimeoutMs);
 			}
-			const after = await this.rawRequest({ type: "get_state" }, this.switchTimeoutMs).catch((error) => {
-				if (expected) throw error;
-				return undefined;
-			});
+			const after = await this.rawRequest({ type: "get_state" }, this.switchTimeoutMs);
 			if (this.child !== child) throw new Error("agent exited during startup");
 			if (this.stopping) {
 				child.kill("SIGKILL");
 				return;
 			}
-			this.sessionFile = after?.data?.sessionFile ?? current;
-			if (!this.isOwnedSessionFile(this.sessionFile, true)) throw new Error("agent session is unavailable");
-			if (expected && this.sessionFile !== expected) throw new Error("agent recovery session was not confirmed");
+			// The reported session is adopted only after every check below: an unconfirmed boot
+			// session must never be visible as the open one, not even until the killed child closes.
+			const opened = after?.data?.sessionFile ?? current;
+			if (!this.isOwnedSessionFile(opened, true)) throw new Error("agent session is unavailable");
+			// Koda deviation (kept from the former recovery check, now for every reopen): a
+			// switch the engine ACKs but does not apply is an error like any other, so ready
+			// is never reported on another session while the saved file is on disk (Gentle
+			// Dot's refreshSession would adopt it and overwrite the saved pointer).
+			if (switching && path.resolve(opened) !== path.resolve(wanted)) throw new Error("agent session switch was not confirmed");
+			this.sessionFile = opened;
+			this.model = modelIdentity(after?.data?.model); // announced by the `ready` status that follows
 			this.sessionEpoch += 1;
 			this.persistSession(this.sessionFile);
-			this.initialStartPending = false;
 			this.spawnedAt = Date.now();
 			this.recycling = false;
-			this.recoverySessionFile = undefined;
 			this.setStatus("ready");
+			// K2-05 T4 U1 verifier fix: the reopen's session_changed fires only once the
+			// engine is ready — before, the server's history re-broadcast guard (status
+			// must be ready) dropped it silently. The server still decides whether the
+			// confirmed session carries a chain worth re-broadcasting.
+			this.emit("session_changed", { sessionFile: this.sessionFile });
 		};
 		initialization.promise = run().catch((error) => {
 			if (this.child === child) child.kill("SIGKILL");
@@ -567,13 +1193,21 @@ class AgentEngine extends EventEmitter {
 	}
 
 	/**
-	 * The argv prefix that starts the engine: the command itself — except on
-	 * Windows with a bare command name, where the default `pi` resolves to Node
-	 * + the npm package's CLI JS (a `.cmd` shim is never executed, and spawn
-	 * without a shell cannot run one). Fails closed when it cannot resolve.
+	 * The argv prefix that starts the engine. An absolute command runs as it is.
+	 * The default `gentle-shell` (T2) resolves ONLY from Koda's bundled runtime —
+	 * the launcher on Linux/macOS, node.exe + the manifest script on Windows —
+	 * and fails closed when the runtime is absent or incomplete: never a PATH or
+	 * npm search. Any other bare command name keeps the historical Windows
+	 * resolution through the npm package's own CLI JS (a `.cmd` shim is never
+	 * executed), and fails closed when it cannot resolve.
 	 */
 	spawnCommandPrefix() {
-		if (process.platform !== "win32" || path.isAbsolute(this.command)) return [this.command];
+		if (path.isAbsolute(this.command)) return [this.command];
+		if (this.command === DEFAULT_COMMAND) {
+			const resolved = bundledGentleShell(this.runtimeDeps);
+			return [resolved.command, ...resolved.commandArgs];
+		}
+		if (process.platform !== "win32") return [this.command];
 		const cli = windowsPackageCliJs(this.command);
 		if (!cli) {
 			throw new Error(`the "${this.command}" command is not available on Windows; install it with npm install -g @earendil-works/pi-coding-agent`);
@@ -586,8 +1220,28 @@ class AgentEngine extends EventEmitter {
 		const cwd = this.cwdOption ?? this.workspacePath ?? this.island.workspace;
 		// Regenerate private files first so the identity argument can point at them.
 		this.prepareSpawn();
+		// Home transport (B2, Gentle Dot's shape): only Koda's default engine — the
+		// bundled Gentle Shell — gets its home on the argv (--home <island>/agent,
+		// the same directory Koda writes auth/mcp/extension files into) and never
+		// sees PI_CODING_AGENT_DIR. Any other `command` (a plain Pi override, for
+		// instance) refuses unknown options like --home, so it keeps the pre-T2
+		// transport: no --home, PI_CODING_AGENT_DIR=<agentDir> in the child env.
+		const defaultEngine = this.command === DEFAULT_COMMAND;
+		// F4: envOverrides is applied last, so an ENGRAM_* key a caller re-added
+		// would silently break the «no user ENGRAM_* for the default engine» rule
+		// (the parent's server/store/binary choice must never reach Koda's own
+		// engine). Enforced, not just documented: for the default engine EVERY
+		// ENGRAM_* caller override is dropped except the diagnostic-only stderr
+		// trace flag (ENGRAM_PI_SESSION_TRACE moves no memory state); a custom
+		// command (no private memory) keeps the caller's env as is.
+		const callerOverrides = defaultEngine
+			? Object.fromEntries(
+					Object.entries(this.envOverrides).filter(([key]) => !key.startsWith("ENGRAM_") || ENGRAM_DIAGNOSTIC_OVERRIDES.has(key)),
+			  )
+			: this.envOverrides;
 		const args = [
 			...this.commandArgs,
+			...(defaultEngine ? ["--home", this.island.agentDir] : []),
 			"--mode",
 			"rpc",
 			"--session-dir",
@@ -596,7 +1250,17 @@ class AgentEngine extends EventEmitter {
 			...this.extraArgs,
 		];
 		const env = {
-			...isolatedEnv(this.baseEnv, this.island, { ABITO_MEMORY_PROJECT: MEMORY_PROJECT, ...this.envOverrides }),
+			...isolatedEnv(this.baseEnv, this.island, {
+				ABITO_MEMORY_PROJECT: MEMORY_PROJECT,
+				...(defaultEngine ? {} : { PI_CODING_AGENT_DIR: this.island.agentDir }),
+				// T1b-b/T1c (S5): the bundled Engram binary and Koda's private memory
+				// store and port travel ONLY with Koda's default engine. F7: a missing or
+				// invalid engramBin never blocks the engine — the degradation
+				// (ENGRAM_STARTUP_POLICY=disabled, F1) is logged by the resolution
+				// itself. F4: ENGRAM_* caller overrides are stripped above.
+				...(defaultEngine ? bundledMemoryEnv(this.baseEnv, runtimeRoot(this.runtimeDeps), { ...this.runtimeDeps, log: this.log }) : {}),
+				...callerOverrides,
+			}),
 		};
 		const prefix = this.spawnCommandPrefix();
 		const child = spawn(prefix[0], [...prefix.slice(1), ...args], { cwd, env, stdio: ["pipe", "pipe", "pipe"] });
@@ -643,6 +1307,12 @@ class AgentEngine extends EventEmitter {
 			else pending.reject(new Error(record.error ?? `${record.command} failed`));
 			return;
 		}
+		if (record.type === "message_flush") {
+			// F2: `message_flush` belongs to the daemon (cancelTurn emits it); the
+			// child can never send it through.
+			this.log("agent wrote a daemon-reserved record (discarded)");
+			return;
+		}
 		if (this.sessionChange || (this.recycling && !this.turn)) return;
 		const turn = this.turn;
 		if (turn?.cancelled) {
@@ -659,13 +1329,11 @@ class AgentEngine extends EventEmitter {
 
 	handleClose(child, code, signal) {
 		if (child !== this.child) return;
-		if (this.sessionChange && !this.stopping) {
-			this.recycling = true;
-			this.recoverySessionFile = this.sessionChange.sessionFile;
-		}
+		if (this.sessionChange && !this.stopping) this.recycling = true;
 		this.sessionChange = undefined;
 		this.clearTurn();
 		this.sessionFile = undefined;
+		this.model = undefined; // a stopped engine answers with nothing
 		this.child = undefined;
 		const reason = new Error(`agent exited (${signal ?? `code ${code}`})`);
 		for (const pending of [...this.pending.values()]) {
@@ -683,10 +1351,6 @@ class AgentEngine extends EventEmitter {
 		}
 		if (this.restarting) {
 			this.restarting = false;
-			return;
-		}
-		if (this.initialStartPending) {
-			this.initialStartPending = false;
 			return;
 		}
 		if (this.stopping) {
@@ -713,6 +1377,28 @@ class AgentEngine extends EventEmitter {
 		this.setStatus("restarting");
 	}
 
+	/** Adopts the reported model; emits "model" only when it really changed. */
+	adoptModel(next) {
+		if (JSON.stringify(next ?? null) === JSON.stringify(this.model ?? null)) return;
+		this.model = next;
+		this.emit("model", next);
+	}
+
+	/**
+	 * K2-05 U5c: asks the engine which model it answers with now (Pi `get_state` `data.model`),
+	 * for a change that does not restart it (a model switch). A failed read changes nothing.
+	 */
+	async refreshModel() {
+		if (this.status !== "ready") return;
+		const child = this.child;
+		try {
+			const state = await this.rawRequest({ type: "get_state" }, this.switchTimeoutMs);
+			if (child === this.child && this.status === "ready") this.adoptModel(modelIdentity(state?.data?.model));
+		} catch {
+			// unknown stays as it was: the readout never guesses
+		}
+	}
+
 	setStatus(state) {
 		if (this.status === state) return;
 		this.status = state;
@@ -720,4 +1406,4 @@ class AgentEngine extends EventEmitter {
 	}
 }
 
-module.exports = { AgentEngine, JsonlDecoder, encodeRecord, windowsPackageCliJs };
+module.exports = { AgentEngine, JsonlDecoder, DEFAULT_COMMAND, bundledGentleShell, bundledMemoryEnv, encodeRecord, gentlePiVersion, runtimeRoot, seedEngramCompanion, windowsPackageCliJs };

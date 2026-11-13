@@ -50,7 +50,10 @@ function makeNonPrivate(file) {
 test("defaults when config.json is absent", () => {
 	const root = island();
 	const cfg = load(root);
-	assert.equal(cfg.command, "pi");
+	// T2: the default engine is Koda's bundled Gentle Shell (resolved by the
+	// runtime from the bundled runtime folder), never a `pi` from PATH.
+	assert.equal(config.DEFAULT_COMMAND, "gentle-shell");
+	assert.equal(cfg.command, config.DEFAULT_COMMAND);
 	assert.equal(cfg.workspace, path.join(root, "workspace"));
 	assert.equal(cfg.workspaceSource, "default");
 	assert.equal(cfg.mcpConfigPath, undefined);

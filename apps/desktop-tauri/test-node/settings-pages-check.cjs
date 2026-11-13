@@ -18,7 +18,7 @@ const { dom, Element, all, text } = require('./settings-accounts-check.cjs');
   const host = new Element('div'); document.getElementById = () => host;
   const rawCalls=[];
   const context = { window: {__TAURI__:{core:{invoke:async(c,a)=>{rawCalls.push([c,a]);return {};}}}}, document, inactivePages, renderUnavailable,
-    renderAccounts: fake('accounts'), renderModels: fake('models'), renderPills: fake('pills'),
+    renderAccounts: fake('accounts'), renderPills: fake('pills'),
     renderAgentSettings: fake('agent-settings'), renderChatSettings: fake('chat-settings'),
     renderIntegrations: fake('integrations'), renderShortcuts: fake('shortcuts'),
     setInvoke() {}, dictationPage: fake('dictation'), flowSettingsPage: fake('flowsettings'),
@@ -55,7 +55,7 @@ const { dom, Element, all, text } = require('./settings-accounts-check.cjs');
       } else assert(text(container).includes('pendiente de conectar'), id);
     } else {
       const cleanup = await config.renderNotch(id, container);
-      const expected = {general:[['general',undefined],['pills',undefined]], chat:[['chat-settings',undefined],['accounts','chat'],['models',undefined]], integrations:[['integrations',undefined]], agents:[['pills',undefined],['agent-settings',undefined],['pills',undefined]], shortcuts:[['shortcuts',undefined]]}[id];
+      const expected = {general:[['general',undefined],['pills',undefined]], chat:[['chat-settings',undefined],['accounts','chat']], integrations:[['integrations',undefined]], agents:[['pills',undefined],['agent-settings',undefined],['pills',undefined]], shortcuts:[['shortcuts',undefined]]}[id];
       if (expected) { assert.deepEqual(invoked, expected); assert(container.children.length); cleanup?.(); }
       else {
         assert(text(container).includes('pendiente de conectar'));
@@ -69,6 +69,6 @@ const { dom, Element, all, text } = require('./settings-accounts-check.cjs');
   assert(disposed.includes('agent-settings') && disposed.includes('chat-settings'), 'new page adapters are disposed');
   const generalSource = fs.readFileSync(path.join(base,'general.ts'),'utf8');
   assert(!generalSource.includes('renderRecapRows'), 'General has no recap rows (K2-03: Recap removed)');
-  assert(disposed.includes('accounts') && disposed.includes('models') && disposed.includes('pills'));
+  assert(disposed.includes('accounts') && disposed.includes('pills'), 'the accounts and Blobs adapters are disposed with their page');
   console.log('PASS settings-pages: 15 routes, mapped renderer lifecycles, inactive controls and hero bands');
 })().catch(e => { console.error(e); process.exitCode = 1; });

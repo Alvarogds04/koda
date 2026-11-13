@@ -94,22 +94,24 @@ test('chat top bar: visible title «Koda» before the gear/back buttons (design 
   assert.equal(t['font-size'], 'var(--fs-body)');
   assert.equal(t['font-weight'], '600');
 });
-test('chat body top row: «+» and history left-aligned, then the label «Conversación nueva» (existing verbs only)', () => {
+test('chat body top row (K2-05 T4 U4, one continuous chat): «Cargar anteriores» then the label «Conversación nueva», left-aligned; no «+»/history list', () => {
   const html = fs.readFileSync(path.join(dir, 'index.html'), 'utf8');
   const row = html.slice(html.indexOf('id="chat-history-controls"'), html.indexOf('<ol id="chat-log"'));
-  assert.match(row, /id="chat-create"[^>]*>[\s\S]*data-icon="plus"[\s\S]*id="chat-conversations"[\s\S]*id="chat-history-label"[^>]*>Conversación nueva</);
+  assert.match(row, /id="chat-load-earlier"[^>]*>Cargar anteriores<[\s\S]*id="chat-history-label"[^>]*>Conversación nueva</);
+  assert.doesNotMatch(row, /chat-create|chat-conversations/);
+  assert.equal(decls('#chat-load-earlier')['min-height'], '44px', 'the keyboard control keeps a 44px hit');
   assert.equal(decls('#chat-history-controls')['justify-content'], 'flex-start');
   assert.equal(decls('#chat-history-controls')['align-items'], 'center');
   assert.equal(decls('#chat-history-label')['font-size'], 'var(--fs-caption)');
   assert.match(fs.readFileSync(path.join(dir, 'chat.js'), 'utf8'), /chat-history-label[\s\S]{0,200}turns\.length/, 'the label shows only while the conversation has no turns');
-  assert.ok(require(path.join(dir, 'icons.js')).NAMES.includes('plus'));
 });
-test('chat model chip keeps its 24px chip and wears Coucou\'s model-btn tokens (500 10.5px, rgba .06 fill, r999) (S10 L22)', () => {
-  const c = decls('#chat-model-btn');
-  assert.equal(c['min-height'], '24px');
-  assert.equal(c.font, '500 10.5px var(--font)');
-  assert.equal(c.background, 'rgba(255, 255, 255, 0.06)');
-  assert.equal(c['border-radius'], 'var(--radius-full)');
+test('K2-05 U5c (L72): the read-only model line keeps its own tokens and hides while unknown; the chip/picker are gone', () => {
+  const c = decls('#chat-model-line');
+  assert.equal(c['text-overflow'], 'ellipsis', 'a long model name truncates instead of wrapping the composer');
+  assert.equal(c.font, '600 var(--fs-caption)/1.2 var(--font-ui)');
+  assert.equal(decls('#chat-model-line[hidden]')['display'], 'none', 'hidden until the engine says which model answers');
+  const html = fs.readFileSync(path.join(dir, 'index.html'), 'utf8');
+  assert.doesNotMatch(html, /chat-model-btn|chat-model-picker|id="chat-model-row"/, 'no button, no picker: the engine owns the model');
 });
 console.log(`island-controls-check: ${failed ? failed + ' FAILED' : 'all passed'}`);
 if (failed) process.exitCode = 1;

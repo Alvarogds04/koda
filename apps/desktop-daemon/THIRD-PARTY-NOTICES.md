@@ -3,17 +3,38 @@
 ## Gentle Dot (adapted code)
 
 Parts of this package are adapted from the Gentle Dot project
-(`packages/daemon`: `supervisor.ts`, `isolation.ts`, `jsonl.ts`, and the product
-identity document `identity.md`), used as the MIT-licensed reference for the
-supervised isolated RPC runtime, fail-closed private directory checks, strict JSONL
-fring, and product-identity approach.
+(`packages/daemon`: `supervisor.ts`, `isolation.ts`, `jsonl.ts`, `rotation.ts`,
+`conversations.ts` (projection half) and `presentation.ts`/`uploads.ts` (via the
+projection), `white-label.ts`, and the product identity document `identity.md`), used as the
+MIT-licensed reference for the supervised isolated RPC runtime, fail-closed
+private directory checks, strict JSONL framing, transparent session rotation
+(hidden handoff message, session-file chains, 20 MB / 10 compaction limits),
+the read-only history projection over the rotated session chain (`pageHistory`,
+`historyFromMessages`, `describeTool`, `splitAttachments`; K2-05 T4 U1), the
+attachment upload store and prompt composition (`uploads.ts`; K2-05 attachments),
+the user-facing white-label rewriting of internal names, and the
+product-identity approach.
 
-- Files adapted: `src/isolation.cjs`, `src/runtime.cjs` (in part), `test/fixtures` and
-  `identity.md` (concept), `README.md` (in part)
-- Changes: rewritten in plain Node CJS with no third-party dependencies; Abito
-  identity, island paths, environment allowlist and fail-closed path rules differ from
-  the original; supervision state machine and JSONL framing closely follow the
-  original.
+- Files adapted: `src/isolation.cjs` (including the engine-home marker logic
+  from `claimEngineHome` and the private memory lifecycle from
+  `privateMemory`/`listeningPid`/`memoryHealth`), `src/runtime.cjs` (in part,
+  including the bundled default-engine resolution from `bundledGentleShell` and
+  the session chains from the supervisor's session persistence),
+  `src/rotation.cjs` (from `src/rotation.ts`), `src/conversations.cjs` (from the
+  projection half of `src/conversations.ts` plus `describeTool`/`textOf` from
+  `src/presentation.ts` and `splitAttachments` from `src/uploads.ts`),
+  `src/white-label.cjs`, `src/uploads.cjs` (from `src/uploads.ts`: `sanitizeName`,
+  `sniffMime`, the attachment limits and unsent-file expiry, `composePrompt`; K2-05
+  attachments, transported over the island socket with per-client opaque ids
+  instead of `POST /upload`), `test/fixtures` and `identity.md`
+  (text), `README.md` (in part)
+- Changes: rewritten in plain Node CJS with no third-party dependencies; Koda
+  identity, island paths, environment allowlist and fail-closed path rules differ
+  from the original; supervision state machine and JSONL framing closely follow
+  the original; Koda's memory is ALWAYS private (no user-store mode: the store
+  lives in the island home, the port is Koda's own 7439, and only the bundled
+  binary is resolved — Gentle Dot's user-binary order is not ported); the
+  hidden-name list adds Koda's own internal names (Abito, Pi).
 
 Gentle Dot is distributed under the MIT License:
 

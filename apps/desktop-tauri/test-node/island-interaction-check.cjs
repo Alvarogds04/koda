@@ -14,7 +14,7 @@ const overview = extra => ({
   state: 'expanded', view: 'overview', settled: true, nativeReady: true,
   question: false, approval: false, request: false, decision: false, card: false,
   dragging: false, editing: false, composing: false, draft: false,
-  settings: false, models: false, ...extra,
+  settings: false, ...extra,
 });
 const mouse = extra => ({ isTrusted: true, pointerType: 'mouse', buttons: 0, ...extra });
 const click = extra => ({ isTrusted: true, type: 'click', button: 0, ...extra });
@@ -136,7 +136,7 @@ function fixture(effects = {}) {
   });
   await test('S3 eligibility is overview-only and fails closed for every unknown guard', () => {
     assert.equal(I.eligible(overview()), true);
-    for (const field of ['question', 'approval', 'request', 'decision', 'card', 'dragging', 'editing', 'composing', 'draft', 'settings', 'models']) {
+    for (const field of ['question', 'approval', 'request', 'decision', 'card', 'dragging', 'editing', 'composing', 'draft', 'settings']) {
       for (const value of [true, undefined, null, 0]) assert.equal(I.eligible(overview({ [field]: value })), false, field);
     }
     for (const facts of [null, {}, overview({ state: 'compact' }), overview({ state: 'hidden' }),
@@ -212,7 +212,7 @@ function fixture(effects = {}) {
   });
   await test('S3 every blocker cancels, removal outside starts full delay', () => {
     for (const change of [{ view: 'chat' }, { state: 'hidden' }, { settled: false }, { nativeReady: false },
-      ...['question', 'approval', 'request', 'decision', 'card', 'dragging', 'editing', 'composing', 'draft', 'settings', 'models'].map(k => ({ [k]: true }))]) {
+      ...['question', 'approval', 'request', 'decision', 'card', 'dragging', 'editing', 'composing', 'draft', 'settings'].map(k => ({ [k]: true }))]) {
       const f = fixture(); f.controller.update(overview()); f.advance(14999); f.controller.update(overview(change));
       assert.equal(f.jobs.size, 0); f.advance(30000); assert.deepEqual(f.calls, []);
       f.controller.update(overview()); f.advance(14999); assert.deepEqual(f.calls, []);

@@ -37,6 +37,40 @@ class FakeEngine extends EventEmitter {
 		this.turnActive = false;
 		this.interruptedWith = undefined;
 		this.stuckAfterInterrupt = false;
+		// K2-05 F3: a session switch in flight (a rotation); the server holds a
+		// prompt typed during it instead of answering busy.
+		this.sessionChange = undefined;
+		// K2-05 T4 U1: the rotated chain of the open session (real AgentEngine shape.
+		this.sessionFile = undefined;
+		this.chains = {};
+		// K2-05 T4 U1 verifier fix: a private sessions dir + the ownership rule the real
+		// runtime enforces (isOwnedSessionFile), so history reads refuse planted files.
+		this.sessionsDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "abito-fake-engine-")));
+		// K2-05 attachments: the island's own engine workspace (runtime.cjs island.workspace)
+		this.island = { workspace: path.join(this.sessionsDir, "workspace") };
+		this.pendingPersist = undefined; // freshness test hook: a reply persisted only when a get_state arrives
+	this.onGetState = undefined; // freshness test hook: an announcement during the round trip
+}
+	/** The server's busy guard reads this: true only while a switch is in flight. */
+	get busy() {
+		return this.sessionChange !== undefined;
+	}
+	/** The earlier session files of the open chat, oldest first (runtime.cjs shape). */
+	get previousSessions() {
+		return this.chains[this.sessionFile] ?? [];
+	}
+	/** The ownership rule the real runtime enforces for session files (verifier fix 4). */
+	isOwnedSessionFile(file, allowMissing = false) {
+		if (typeof file !== "string") return false;
+		const resolved = path.resolve(file);
+		if (!resolved.startsWith(`${this.sessionsDir}${path.sep}`)) return false;
+		let stats;
+		try {
+			stats = fs.lstatSync(resolved);
+		} catch (error) {
+			return allowMissing && error?.code === "ENOENT" && path.dirname(resolved) === this.sessionsDir;
+		}
+		return !stats.isSymbolicLink() && stats.isFile();
 	}
 	/** Intercepts fake agent records to track the turn lifecycle without registering a listener. */
 	emit(type, payload) {
@@ -46,8 +80,27 @@ class FakeEngine extends EventEmitter {
 		}
 		return super.emit(type, payload);
 	}
-	async request(command) {
+async request(command) {
 		this.requests.push(command);
+		// Freshness test hooks (verifier fix 2): a pending reply is persisted only when a
+		// get_state round trip reaches it — a plain file read would miss it — and
+		// onGetState fires an announcement DURING the round trip so the retry re-reads.
+		if (command.type === "get_state") {
+				// K2-05 attachments: the engine's model, as Pi's get_state reports it (input: text/image)
+				if (this.stateData) return { type: "response", success: true, data: this.stateData };
+				if (this.pendingPersist) {
+						const flush = this.pendingPersist;
+						this.pendingPersist = undefined;
+						flush();
+				}
+				if (this.onGetState) {
+						const announce = this.onGetState;
+						this.onGetState = undefined;
+						announce();
+				}
+		}
+		// K2-05 bind by id: an engine that rejects the prompt/steer (nothing is recorded).
+		if (this.reject?.includes(command.type)) throw new Error(`${command.type} rejected`);
 		if (command.type === "prompt") {
 			this.turnActive = true;
 			if (this.hold) await new Promise(() => {});
@@ -153,6 +206,7 @@ async function setup(t, { limits = {}, token = TOKEN, paused = false, pausedStor
 	const profiles = new FakeProfiles();
 	const runtimeDir = tmpRuntime(t);
 	const server = new IslandServer({ runtimeDir, token, engine, accounts, profiles, limits, paused, ...(pausedStore ? { pausedStore } : {}), ...(connectors ? { connectors } : {}), ...(agents ? { agents } : {}) });
+	t.after(() => fs.rmSync(engine.sessionsDir, { recursive: true, force: true }));
 	const { endpoint } = await server.start();
 	t.after(() => server.close().catch(() => {}));
 	return { server, engine, accounts, profiles, endpoint, runtimeDir };
@@ -240,11 +294,115 @@ test("rate limit closes a flooding client", async (t) => {
 	await waitFor(() => c.closed);
 });
 
-test("max clients is enforced", async (t) => {
+test("max clients is enforced at hello AFTER the ready reply: the probe is always classified (F1)", async (t) => {
 	const { endpoint } = await setup(t, { limits: { maxClients: 1 } });
 	await login(t, endpoint);
 	const second = connect(endpoint);
+	await new Promise((r) => second.socket.once("connect", r));
+	// The cap counts ONLY authenticated live clients. The `ready` reply goes on the wire BEFORE
+	// the cap is evaluated, so the daemon's own health probe (classifySession's hello→ready,
+	// which reads only the first frame) is never refused by the cap even when it is full — a
+	// connect-time refusal used to make `status` report stale/endpoint_refused while the
+	// settings window and the chat were both connected. The refused client is closed silently
+	// right after its ready frame, like every other refusal.
+	second.send(hello());
+	await second.wait((f) => f.type === "ready");
 	await waitFor(() => second.closed);
+	assert.equal(second.frames.length, 1, "ready first (the probe's classification), then a silent close");
+});
+
+// F1 (re-verify): the island's settings window and the chat both stay connected; chat
+// reconnects must be accepted, and a 5th concurrent client is still refused — but its ready
+// frame always leaves first, so a probe sharing the burst is never left unclassified.
+test("the client cap is 4: a third and a fourth client are accepted, a 5th is refused (F1)", async (t) => {
+	const { endpoint } = await setup(t);
+	const a = await login(t, endpoint);
+	const b = await login(t, endpoint);
+	const c = await login(t, endpoint); // a reconnecting chat client, slots were full
+	assert.equal(c.frames[0].type, "ready");
+	const d = await login(t, endpoint);
+	assert.equal(d.frames[0].type, "ready");
+	const fifth = connect(endpoint);
+	await new Promise((r) => fifth.socket.once("connect", r));
+	fifth.send(hello());
+	await fifth.wait((f) => f.type === "ready");
+	await waitFor(() => fifth.closed);
+	assert.equal(fifth.frames.length, 1, "ready first, then the silent cap refusal");
+	// The four accepted clients keep working.
+	for (const client of [a, b]) {
+		client.send({ type: "status" });
+		await client.wait((f) => f.type === "agent_state");
+	}
+});
+
+// L1 (U2 re-verify): the cap counts ONLY authenticated live clients — pre-hello sockets never
+// count against it — so a burst of concurrent health probes (classifySession's hello→ready,
+// run by `abito-island-daemon status` and by the island) is entirely answered ready while the
+// settings window and the chat are connected: no probe can ever report the daemon
+// stale/endpoint_refused. Each probe reads at least its ready frame; a probe refused by the
+// cap simply gets ready and is closed right after, which classifySession reads as healthy.
+test("settings + chat + a burst of 8 concurrent probes: every probe reads a ready frame", async (t) => {
+	const { endpoint } = await setup(t);
+	const settings = await login(t, endpoint);
+	const chat = await login(t, endpoint);
+	const probes = [];
+	await Promise.all([...Array(8)].map(async (_, i) => {
+		const c = connect(endpoint);
+		t.after(() => c.socket.destroy());
+		await new Promise((r) => c.socket.once("connect", r));
+		c.send(hello());
+		probes[i] = c;
+	}));
+	for (const probe of probes) await probe.wait((f) => f.type === "ready");
+	assert.deepEqual(probes.map((probe) => probe.frames[0].type), Array(8).fill("ready"),
+		"every concurrent probe is classified: its first frame is ready");
+	// and both authenticated clients keep working
+	settings.send({ type: "status" });
+	chat.send({ type: "status" });
+	await settings.wait((f) => f.type === "agent_state");
+	await chat.wait((f) => f.type === "agent_state");
+});
+
+// L1 (U2 re-verify): pre-hello connections have their OWN bound (maxHandshakes; each is also
+// bounded by the handshake timeout). A surplus connect is destroyed silently at connect —
+// never counted anywhere — and the connected authenticated clients are unaffected.
+test("20 pre-hello sockets: the 17th+ are refused at connect, authenticated clients are unaffected", async (t) => {
+	const { endpoint, server } = await setup(t, { limits: { maxHandshakes: 16 } });
+	const settings = await login(t, endpoint);
+	const chat = await login(t, endpoint);
+	const sockets = [];
+	for (let i = 0; i < 20; i += 1) {
+		const socket = net.connect(endpoint);
+		t.after(() => socket.destroy());
+		await new Promise((r) => socket.once("connect", r));
+		sockets.push(socket);
+	}
+	// the first 16 hold their pre-hello slot; the remaining 4 were destroyed at connect
+	await waitFor(() => server.pending.size === 16, 5000);
+	assert.equal(server.pending.size, 16, "the 16th connect was the last one admitted pre-hello");
+	await waitFor(() => sockets.filter((s) => !s.destroyed && !s.readableEnded && s.readyState !== "closed").length <= 16, 5000);
+	// and the two authenticated clients still work
+	for (const c of [settings, chat]) {
+		c.send({ type: "status" });
+		await c.wait((f) => f.type === "agent_state");
+	}
+});
+
+// L1 (U2 re-verify): a dropped socket frees its slots SYNCHRONOUSLY — drop() deletes from
+// every accounting set before the close event ever fires, so the very next hello sees the room.
+test("a dropped client frees its slots immediately", async (t) => {
+	const { endpoint, server } = await setup(t, { limits: { maxClients: 1 } });
+	const first = await login(t, endpoint);
+	assert.equal(first.frames[0].type, "ready");
+	assert.equal(server.auth.size, 1, "the admitted handshake counts");
+	// Server-side drop (the same path every refusal, timeout and overflow uses):
+	server.drop([...server.auth][0]);
+	assert.equal(server.auth.size, 0, "the authenticated slot is free before any close event");
+	assert.equal(server.clients.size, 0, "the socket registry is free too");
+	const next = await login(t, endpoint);
+	assert.equal(next.frames[0].type, "ready", "the very next hello is admitted into the freed slot");
+	next.send({ type: "status" });
+	await next.wait((f) => f.type === "agent_state");
 });
 
 const WIN = process.platform === "win32";
@@ -324,7 +482,59 @@ test("prompt flow: busy rejected, deltas translated, settle frees the turn", asy
 	await waitFor(() => engine.requests.filter((r) => r.type === "prompt").length === 2);
 });
 
-test("steer needs a busy turn; abort and new_conversation reach the engine", async (t) => {
+test("the user's own prompt text reaches the engine untouched (T2)", async (t) => {
+	const { endpoint, engine } = await setup(t);
+	const c = await login(t, endpoint);
+	// T2: the user's own prompt text is never white-labelled — their words (their
+	// Raspberry Pi, their "gentle shell" mention, their abito) reach the engine
+	// exactly as typed. presentText is assistant/harness output only.
+	const raw = "cuéntame de Raspberry Pi, de mi abito y de Gentle Shell";
+	c.send({ type: "send", text: raw });
+	await waitFor(() => engine.requests.some((r) => r.type === "prompt" && r.message === raw));
+	assert.equal(engine.requests.filter((r) => r.type === "prompt").at(-1).message, raw);
+	await waitFor(() => c.frames.filter((f) => f.type === "agent_state").at(-1).busy === true);
+	engine.emit("event", { type: "agent_settled" });
+	await waitFor(() => c.frames.filter((f) => f.type === "agent_state").at(-1).busy === false);
+});
+
+test("internal /gentle: commands are refused with a fixed error and never reach the engine (T2)", async (t) => {
+	const { endpoint, engine } = await setup(t);
+	const c = await login(t, endpoint);
+	for (const text of ["/gentle:memory-save", "  /gentle:x", "/GENTLE:jobs"]) {
+		c.send({ type: "send", text });
+		await c.wait((f) => f.type === "error" && f.code === "bad_request");
+	}
+	assert.equal(engine.requests.filter((r) => r.type === "prompt").length, 0, "no /gentle: command reached the engine");
+	// Mid-turn steering refuses it too.
+	engine.emit("event", { type: "agent_start" });
+	await c.wait((f) => f.type === "agent_state" && f.busy);
+	c.send({ type: "steer", text: "/gentle:memory-search" });
+	await c.wait((f) => f.type === "error" && f.code === "bad_request");
+	assert.equal(engine.requests.filter((r) => r.type === "steer").length, 0, "no /gentle: steer reached the engine");
+	// Normal steering text still flows: the busy turn accepts it.
+	c.send({ type: "steer", text: "hola" });
+	await waitFor(() => engine.requests.some((r) => r.type === "steer" && r.message === "hola"));
+});
+
+// F3 (verifier): the /gentle: refusal runs before the pause gate, so the
+// answer is always bad_request — never `paused`, and nothing ever queues it.
+test("a /gentle: command is bad_request even while paused (F3)", async (t) => {
+	const store = { paused: false, writes: [], get() { return store.paused; }, set(value) { store.writes.push(value); store.paused = value; } };
+	const { endpoint, engine } = await setup(t, { pausedStore: store });
+	const c = await login(t, endpoint);
+	c.send({ type: "set_paused", paused: true });
+	await c.wait((f) => f.type === "agent_state" && f.paused === true);
+	c.send({ type: "send", text: "/gentle:memory-save" });
+	await c.wait((f) => f.type === "error" && f.code === "bad_request");
+	c.send({ type: "steer", text: "/gentle:memory-search" });
+	await c.wait((f) => f.type === "error" && f.code === "bad_request");
+	// A normal send while paused is still refused with `paused`, not bad_request.
+	c.send({ type: "send", text: "hola" });
+	await c.wait((f) => f.type === "error" && f.code === "paused");
+	assert.equal(engine.requests.filter((r) => r.type === "prompt").length, 0, "nothing reached the engine");
+});
+
+test("steer needs a busy turn; abort keeps working; new_conversation is refused conversations_off (T4 U1)", async (t) => {
 	const { endpoint, engine } = await setup(t);
 	const c = await login(t, endpoint);
 	c.send({ type: "steer", text: "x" });
@@ -334,12 +544,14 @@ test("steer needs a busy turn; abort and new_conversation reach the engine", asy
 	c.send({ type: "steer", text: "left" });
 	c.send({ type: "abort" });
 	await waitFor(() => engine.requests.some((r) => r.type === "abort") && engine.requests.some((r) => r.type === "steer"));
+	// T4 U1: conversations are always off — the refusal is fixed, busy included.
 	c.send({ type: "new_conversation" });
-	await c.wait((f) => f.type === "error" && f.code === "busy");
+	await c.wait((f) => f.type === "error" && f.code === "conversations_off");
 	engine.emit("event", { type: "agent_settled" });
 	await waitFor(() => c.frames.filter((f) => f.type === "agent_state").at(-1).busy === false);
 	c.send({ type: "new_conversation" });
-	await waitFor(() => engine.requests.some((r) => r.type === "new_session"));
+	await c.wait((f) => f.type === "error" && f.code === "conversations_off");
+	assert.equal(engine.requests.some((r) => r.type === "new_session"), false, "no conversation reset ever reaches the engine");
 });
 
 test("event allowlist on the wire: unknown dropped, tool args and secret markers never leak", async (t) => {
@@ -398,12 +610,70 @@ test("ask round-trip: select answered; invalid and unknown answers rejected", as
 	await waitFor(() => c.frames.filter((f) => f.code === "unknown_ask").length === 2);
 });
 
+// K2-05 R1-001 (native review, CRITICAL): only the client whose own `ui_response` closed the ask
+// is told the answer was accepted (`ask_resolved{answered:true}`). Every other client gets the
+// plain frame — another client's answer or the 120 s expiry closed it — so a client that lost the
+// race can never present its discarded answer as sent.
+test("ask_resolved names the accepted answer only to the client whose answer closed the ask", async (t) => {
+	const { endpoint, engine } = await setup(t);
+	const a = await login(t, endpoint);
+	const b = await login(t, endpoint);
+	engine.emit("event", { type: "extension_ui_request", id: "r1", method: "confirm", title: "¿Borrar?" });
+	await a.wait((f) => f.type === "ask" && f.id === "r1");
+	await b.wait((f) => f.type === "ask" && f.id === "r1");
+	// B answers first and wins; A is still holding its own answer
+	b.send({ type: "ui_response", id: "r1", confirmed: true });
+	const own = await b.wait((f) => f.type === "ask_resolved" && f.id === "r1");
+	assert.equal(own.answered, true, "the answering client is told its answer was accepted");
+	const other = await a.wait((f) => f.type === "ask_resolved" && f.id === "r1");
+	assert.equal("answered" in other, false, "every other client learns only that the ask is gone");
+	// A's late answer is discarded: the daemon refuses it, so it was never sent
+	a.send({ type: "ui_response", id: "r1", confirmed: true });
+	await a.wait((f) => f.type === "error" && f.code === "unknown_ask");
+	assert.equal("answered" in b.frames.find((f) => f.type === "ask_resolved" && f.id === "r1"), true, "B keeps its accepted mark");
+	assert.deepEqual(engine.sent, [{ type: "extension_ui_response", id: "r1", confirmed: true }], "exactly one answer reached the engine");
+});
+
+// K2-05 U4b: the island's ask card shows what the user approves (Gentle Dot Ask.message /
+// Ask.placeholder). Additive optional fields, white-labelled like the title, bounded, on the
+// live frame AND on the replay a late client gets; the user's typed answer travels verbatim.
+test("ask carries the confirm message and the input placeholder, white-labelled, bounded and replayed; the typed answer is never rewritten", async (t) => {
+	const { endpoint, engine } = await setup(t);
+	const c = await login(t, endpoint);
+	engine.emit("event", { type: "extension_ui_request", id: "c1", method: "confirm", title: "¿Borrar?", message: "Gentle Shell va a borrar notas.md via engram" });
+	const confirm = await c.wait((f) => f.type === "ask" && f.id === "c1");
+	assert.equal(confirm.message, "Koda va a borrar notas.md via memory");
+	assert.equal("placeholder" in confirm, false, "a confirm has no placeholder");
+	engine.emit("event", { type: "extension_ui_request", id: "i1", method: "input", title: "Nombre", placeholder: "tu pi-coding-agent favorito" });
+	const input = await c.wait((f) => f.type === "ask" && f.id === "i1");
+	assert.equal(input.placeholder, "tu assistant favorito");
+	assert.equal("message" in input, false, "no message was asked");
+	// bounded: a huge message is clipped (2000 UTF-16 units), a non-string is dropped, controls never travel
+	engine.emit("event", { type: "extension_ui_request", id: "c2", method: "confirm", title: "t", message: `a\u0000b${"x".repeat(5000)}` });
+	const big = await c.wait((f) => f.type === "ask" && f.id === "c2");
+	assert.equal(big.message.length, 2000);
+	assert.ok(big.message.startsWith("abx"));
+	engine.emit("event", { type: "extension_ui_request", id: "i2", method: "input", title: "t", placeholder: 7 });
+	const odd = await c.wait((f) => f.type === "ask" && f.id === "i2");
+	assert.equal("placeholder" in odd, false);
+	// a late client gets the same fields in the replay
+	const late = await login(t, endpoint);
+	await waitFor(() => late.frames.filter((f) => f.type === "ask").length === 4);
+	assert.equal(late.frames.find((f) => f.type === "ask" && f.id === "c1").message, "Koda va a borrar notas.md via memory");
+	assert.equal(late.frames.find((f) => f.type === "ask" && f.id === "i1").placeholder, "tu assistant favorito");
+	// the user's own typed answer reaches the engine verbatim (never white-labelled)
+	c.send({ type: "ui_response", id: "i1", value: "mi Raspberry Pi con engram y Gentle Shell" });
+	await c.wait((f) => f.type === "ask_resolved" && f.id === "i1");
+	assert.deepEqual(engine.sent.at(-1), { type: "extension_ui_response", id: "i1", value: "mi Raspberry Pi con engram y Gentle Shell" });
+});
+
 test("ask timeout cancels toward the agent; editor dialogs are cancelled at once", async (t) => {
 	const { endpoint, engine } = await setup(t, { limits: { askTimeoutMs: 60 } });
 	const c = await login(t, endpoint);
 	engine.emit("event", { type: "extension_ui_request", id: "u2", method: "confirm", title: "Sure?" });
 	await c.wait((f) => f.type === "ask");
-	await c.wait((f) => f.type === "ask_resolved");
+	const expired = await c.wait((f) => f.type === "ask_resolved");
+	assert.equal("answered" in expired, false, "an expiry closes the ask for everyone, never as this client's answer");
 	assert.deepEqual(engine.sent.at(-1), { type: "extension_ui_response", id: "u2", cancelled: true });
 	engine.emit("event", { type: "extension_ui_request", id: "u3", method: "editor", title: "E" });
 	assert.deepEqual(engine.sent.at(-1), { type: "extension_ui_response", id: "u3", cancelled: true });
@@ -537,6 +807,62 @@ test("a failed selection releases the switch guard", async (t) => {
 const types = (c, type) => c.frames.filter((f) => f.type === type);
 const errorCodes = (c) => types(c, "error").map((f) => f.code);
 const nextError = async (c, from) => (await c.wait((f) => f.type === "error" && c.frames.indexOf(f) >= from)).code;
+
+// ----- K2-05 T3: a prompt during a rotation is held, not bounced (F3) --------
+
+test("a prompt typed during a rotation switch is held and sent when the switch ends (F3)", async (t) => {
+	const { engine, endpoint } = await setup(t);
+	const c = await login(t, endpoint);
+	// A rotation switch is in flight (the daemon's rotator owns it).
+	engine.sessionChange = { switching: true };
+	c.send({ type: "send", text: "durante" });
+	await sleep(100);
+	assert.equal(errorCodes(c).includes("busy"), false, "the prompt is held, not bounced with busy");
+	assert.deepEqual(engine.requests, [], "and nothing reaches the engine while the switch runs");
+	// When the switch finishes (or fails) the engine says so (a status event,
+	// exactly what changeSession emits), and the held prompt is sent, once.
+	engine.sessionChange = undefined;
+	engine.emit("status", {});
+	await waitFor(() => engine.requests.some((r) => r.type === "prompt" && r.message === "durante"));
+	await sleep(50);
+	assert.equal(engine.requests.filter((r) => r.type === "prompt").length, 1, "exactly one held prompt is delivered");
+});
+
+test("at most one held prompt per client; a busy turn is still refused (F3)", async (t) => {
+	const { server, engine, endpoint } = await setup(t);
+	const c = await login(t, endpoint);
+	engine.sessionChange = { switching: true };
+	c.send({ type: "send", text: "primero" });
+	await sleep(50);
+	c.send({ type: "send", text: "segundo" });
+	await c.wait((f) => f.type === "error" && f.code === "busy");
+	assert.equal(engine.requests.length, 0, "the second prompt was not held");
+	engine.sessionChange = undefined;
+	engine.emit("status", {});
+	await waitFor(() => engine.requests.some((r) => r.type === "prompt" && r.message === "primero"));
+	await sleep(50);
+	assert.equal(engine.requests.filter((r) => r.type === "prompt").length, 1, "only the held prompt was sent");
+	// A busy TURN (no switch in flight) keeps the classic busy refusal: steer owns it.
+	engine.emit("event", { type: "agent_start" });
+	await waitFor(() => server.state().busy === true);
+	c.send({ type: "send", text: "en turno" });
+	await c.wait((f) => f.type === "error" && f.code === "busy");
+	assert.equal(engine.requests.filter((r) => r.type === "prompt").length, 1, "nothing extra was sent during the turn");
+});
+
+test("a prompt during a NON-rotation session change (a user reset) is still busy, never held (F3 regression)", async (t) => {
+	const { engine, endpoint } = await setup(t);
+	const c = await login(t, endpoint);
+	// A user-driven new_session reset is in flight (new_conversation): no hold.
+	engine.sessionChange = { switching: false };
+	c.send({ type: "send", text: "denied" });
+	await c.wait((f) => f.type === "error" && f.code === "busy");
+	assert.equal(engine.requests.length, 0, "nothing was held or sent for a non-rotation change");
+	engine.sessionChange = undefined;
+	engine.emit("status", {});
+	await sleep(50);
+	assert.equal(engine.requests.filter((r) => r.type === "prompt").length, 0, "no held prompt materialises after the reset");
+});
 
 test("account_create: replies account to the caller and broadcasts accounts to every client; extras never reach the store", async (t) => {
 	const { endpoint, accounts } = await setup(t);
@@ -1437,6 +1763,26 @@ test("set_paused: persists, broadcasts agent_state{paused} to every client, resu
 	assert.deepEqual(store.writes, [true, false]);
 });
 
+test("U5c: ready and agent_state carry the engine's model identity only when it reported one, and follow a change", async (t) => {
+	const { endpoint, engine } = await setup(t);
+	const a = await login(t, endpoint);
+	assert.equal("model" in a.frames[0].state, false, "no model reported: the key is absent (unknown, never a placeholder)");
+	engine.model = { provider: "anthropic", id: "claude-sonnet-5-5", name: "Claude Sonnet 5.5" };
+	engine.emit("model", engine.model);
+	await a.wait((f) => f.type === "agent_state" && f.model);
+	assert.deepEqual(a.frames.find((f) => f.type === "agent_state" && f.model).model, { provider: "anthropic", id: "claude-sonnet-5-5", name: "Claude Sonnet 5.5" });
+	const b = await login(t, endpoint);
+	assert.deepEqual(b.frames[0].state.model, engine.model, "a late client reads it from ready");
+	engine.model = undefined;
+	engine.emit("model", undefined);
+	await a.wait((f) => f.type === "agent_state" && !f.model && a.frames.filter((g) => g.type === "agent_state").length >= 2);
+	engine.status = "stopped";
+	engine.model = { id: "stale" };
+	engine.emit("status", { state: "stopped" });
+	await a.wait((f) => f.type === "agent_state" && f.status === "stopped");
+	assert.equal("model" in a.frames.filter((f) => f.type === "agent_state").pop(), false, "a stopped engine shows no model");
+});
+
 test("set_paused: non-boolean reaches the server as bad_request (validator) and changes nothing", async (t) => {
 	const store = makePausedStore();
 	const { server, endpoint } = await setup(t, { pausedStore: store });
@@ -1463,13 +1809,15 @@ test("while paused, admission verbs are refused with error{paused} and change no
 	for (const frame of [
 		{ type: "send", text: "hi" },
 		{ type: "steer", text: "go" },
-		{ type: "new_conversation" },
 		{ type: "agent_connect", agentId: "claude-code" },
 		{ type: "connectors_list" },
 		{ type: "agents_list" },
 	]) a.send(frame);
-	await waitFor(() => a.frames.slice(before).filter((f) => f.type === "error").length >= 6);
+	await waitFor(() => a.frames.slice(before).filter((f) => f.type === "error").length >= 5);
 	assert.ok(a.frames.slice(before).filter((f) => f.type === "error").every((f) => f.code === "paused"), JSON.stringify(a.frames.slice(before)));
+	// T4 U1: new_conversation is refused conversations_off regardless of the pause state.
+	a.send({ type: "new_conversation" });
+	await a.wait((f) => f.type === "error" && f.code === "conversations_off");
 	// No turn was admitted, no process-spawning list ran, nothing was persisted again.
 	assert.deepEqual(engine.requests, []);
 	assert.deepEqual(connectorCalls, []);
@@ -1633,4 +1981,893 @@ test("a refused (non-private) credential store reaches the client as the closed 
 	const c = await login(t, endpoint);
 	c.send({ type: "account_create", label: "x", provider: "p" });
 	await c.wait((f) => f.type === "error" && f.code === "store_not_private");
+});
+
+// ----- K2-05 T4 U1: history ---------------------------------------------------
+
+test("ready features: history on, conversations off (one continuous chat)", async (t) => {
+	const { endpoint } = await setup(t);
+	const c = await login(t, endpoint);
+	assert.deepEqual(c.frames[0].features, { history: true, conversations: false });
+});
+
+/** A v3 session file whose message entries the projection reads back. */
+function writeChatSession(dir, name, messages) {
+	const file = path.join(dir, name);
+	const lines = [
+		JSON.stringify({ type: "session", version: 3, id: name, timestamp: new Date().toISOString(), cwd: dir }),
+		...messages.map((entry) => JSON.stringify(entry)),
+	];
+	fs.writeFileSync(file, `${lines.join("\n")}\n`);
+	return file;
+}
+
+test("get_history projects the whole rotated chain oldest first; assistant text is white-labelled, user text is not", async (t) => {
+	const { endpoint, engine, server } = await setup(t);
+	const dir = engine.sessionsDir;
+	const f1 = writeChatSession(dir, "one.jsonl", [
+		{ type: "message", message: { role: "user", content: "mi engram" } },
+		{ type: "message", message: { role: "assistant", content: "leo tu engram del Gentle Shell" } },
+	]);
+	const f2 = writeChatSession(dir, "two.jsonl", [
+		{ type: "message", message: { role: "user", content: "sigue" } },
+		{ type: "message", message: { role: "assistant", content: "ok" } },
+	]);
+	const f3 = writeChatSession(dir, "three.jsonl", [{ type: "message", message: { role: "user", content: "última" } }]);
+	engine.sessionFile = f3;
+	engine.chains[f3] = [f1, f2];
+	const c = await login(t, endpoint);
+	c.send({ type: "get_history" });
+	const frame = await c.wait((f) => f.type === "history");
+	assert.deepEqual(
+		frame.messages.map((m) => [m.id, m.role, m.text, m.earlier]),
+		[
+			["s0-1", "user", "mi engram", true],
+			["s0-2", "assistant", "leo tu memory del Koda", true],
+			["s1-1", "user", "sigue", true],
+			["s1-2", "assistant", "ok", true],
+			["s2-1", "user", "última", undefined],
+		],
+	);
+	assert.equal(frame.hasEarlier, false);
+	assert.deepEqual(engine.requests, [{ type: "get_state" }], "the freshness round trip (Gentle Dot's currentHistory) is the only engine traffic");
+	await server.close();
+});
+
+test("get_earlier pages backwards; an unknown but valid before yields an empty page", async (t) => {
+	const { endpoint, engine } = await setup(t);
+	const dir = engine.sessionsDir;
+	const f1 = writeChatSession(dir, "one.jsonl", [
+		{ type: "message", message: { role: "user", content: "a" } },
+		{ type: "message", message: { role: "assistant", content: "b" } },
+	]);
+	const f2 = writeChatSession(dir, "two.jsonl", [{ type: "message", message: { role: "user", content: "c" } }]);
+	engine.sessionFile = f2;
+	engine.chains[f2] = [f1];
+	const c = await login(t, endpoint);
+	c.send({ type: "get_earlier", before: "s1-1" });
+	const frame = await c.wait((f) => f.type === "earlier");
+	assert.equal(frame.before, "s1-1");
+	assert.deepEqual(frame.messages.map((m) => m.id), ["s0-1", "s0-2"]);
+	assert.equal(frame.hasEarlier, false);
+	c.send({ type: "get_earlier", before: "s9-9" });
+	const empty = await c.wait((f) => f.type === "earlier" && f.before === "s9-9");
+	assert.deepEqual(empty.messages, []);
+	assert.equal(empty.hasEarlier, false, "the island keeps what it already shows");
+	c.send({ type: "get_earlier", before: "garbage" });
+	await c.wait((f) => f.type === "error" && f.code === "bad_request");
+});
+
+test("get_history and get_earlier are unavailable without a ready engine or an open session", async (t) => {
+	const { endpoint, engine } = await setup(t);
+	const c = await login(t, endpoint);
+	c.send({ type: "get_history" });
+	await c.wait((f) => f.type === "error" && f.code === "unavailable");
+	engine.status = "ready";
+	c.send({ type: "get_earlier", before: "s0-1" });
+	await c.wait((f) => f.type === "error" && f.code === "unavailable", 3000);
+});
+
+// K2-05 boot order (Gentle Dot daemon.ts:470-481 + bridge.ts deriveState/whenReady): the daemon
+// listens before its engine is ready, so clients connect while it starts.
+test("a client connecting before the engine was launched reads starting, like Gentle Dot's deriveState", async (t) => {
+	const { endpoint, engine } = await setup(t);
+	engine.status = "stopped";
+	engine.launched = false;
+	const c = await login(t, endpoint);
+	assert.equal(c.frames.find((f) => f.type === "ready").state.status, "starting");
+	c.send({ type: "send", text: "hola", requestId: "r-boot-1" });
+	await c.wait((f) => f.type === "error" && f.code === "unavailable");
+	assert.deepEqual(engine.requests, [], "nothing reaches an engine that is not ready");
+	engine.launched = true;
+	c.send({ type: "status" });
+	await c.wait((f) => f.type === "agent_state" && f.status === "stopped");
+});
+
+test("get_history asked while the engine starts waits and is answered once it is ready (Gentle Dot whenReady)", async (t) => {
+	const { endpoint, engine } = await setup(t);
+	const file = writeChatSession(engine.sessionsDir, "saved.jsonl", [
+		{ type: "message", message: { role: "user", content: "hola" } },
+		{ type: "message", message: { role: "assistant", content: "buenas" } },
+	]);
+	engine.status = "starting";
+	const c = await login(t, endpoint);
+	assert.equal(c.frames.find((f) => f.type === "ready").state.status, "starting");
+	c.send({ type: "get_history" });
+	c.send({ type: "send", text: "hola", requestId: "r-boot-2" });
+	await c.wait((f) => f.type === "error" && f.code === "unavailable");
+	await sleep(80);
+	assert.equal(c.frames.some((f) => f.type === "history"), false, "no page while the engine starts");
+	assert.equal(c.frames.filter((f) => f.type === "error").length, 1, "the history read is not refused");
+	engine.status = "restarting";
+	engine.emit("status", { state: "restarting" });
+	await c.wait((f) => f.type === "agent_state" && f.status === "restarting");
+	engine.sessionFile = file;
+	engine.status = "ready";
+	engine.emit("status", { state: "ready" });
+	const page = await c.wait((f) => f.type === "history");
+	assert.deepEqual(page.messages.map((m) => m.text), ["hola", "buenas"]);
+});
+
+test("get_history waiting for a starting engine is refused unavailable when the engine stops instead", async (t) => {
+	const { endpoint, engine, server } = await setup(t);
+	engine.status = "starting";
+	const c = await login(t, endpoint);
+	c.send({ type: "get_history" });
+	await sleep(40);
+	engine.status = "stopped";
+	engine.launched = true;
+	engine.emit("status", { state: "stopped" });
+	await c.wait((f) => f.type === "error" && f.code === "unavailable");
+	// Many reads while the engine starts share ONE engine listener (no pile-up on the emitter).
+	engine.status = "starting";
+	const before = engine.listenerCount("status");
+	for (let i = 0; i < 20; i += 1) c.send({ type: "get_history" });
+	await waitFor(() => engine.listenerCount("status") === before + 1);
+	await sleep(40);
+	assert.equal(engine.listenerCount("status"), before + 1);
+	engine.status = "stopped";
+	engine.emit("status", { state: "stopped" });
+	await waitFor(() => c.frames.filter((f) => f.type === "error" && f.code === "unavailable").length === 21);
+	assert.equal(engine.listenerCount("status"), before, "the shared wait leaves no listener behind");
+	// A wait still open when the server closes never hangs.
+	engine.status = "starting";
+	c.send({ type: "get_history" });
+	await sleep(40);
+	await server.close();
+});
+
+test("each read held for a starting engine times out on its own deadline, like Gentle Dot's per-call whenReady timer", async (t) => {
+	// Gentle Dot starts the timer INSIDE whenReady (bridge.ts:729-747), so a read asked later gets
+	// its own deadline counted from the moment it was asked; Koda keeps ONE engine listener for
+	// every held read (asserted below), but that sharing must never move a deadline onto an
+	// earlier call.
+	const { endpoint, engine } = await setup(t, { limits: { readyWaitMs: 500 } });
+	engine.status = "starting";
+	const c = await login(t, endpoint);
+	const askedAt = [];
+	const failedAt = [];
+	c.send({ type: "get_history" });
+	askedAt.push(Date.now());
+	await sleep(300);
+	c.send({ type: "get_history" });
+	askedAt.push(Date.now());
+	const deadline = Date.now() + 5000;
+	while (failedAt.length < 2 && Date.now() < deadline) {
+		const errors = c.frames.filter((f) => f.type === "error" && f.code === "unavailable").length;
+		while (failedAt.length < errors) failedAt.push(Date.now());
+		if (failedAt.length < 2) await sleep(5);
+	}
+	assert.equal(failedAt.length, 2, "both held reads end unavailable when the engine never starts");
+	assert.ok(failedAt[0] - askedAt[0] >= 450, `the first read waits its own deadline (${failedAt[0] - askedAt[0]} ms)`);
+	assert.ok(
+		failedAt[1] - askedAt[1] >= 450,
+		`the second read waits its OWN deadline, counted from when it was asked (${failedAt[1] - askedAt[1]} ms; sharing the first read's timer would end it ${failedAt[0] - askedAt[1]} ms after it asked)`,
+	);
+	assert.ok(failedAt[1] - failedAt[0] >= 250, "the two deadlines stay 300 ms apart, as the two reads did");
+	// Many reads while the engine starts still share ONE engine listener (no pile-up on the emitter).
+	engine.status = "starting";
+	const before = engine.listenerCount("status");
+	for (let i = 0; i < 10; i += 1) c.send({ type: "get_history" });
+	await waitFor(() => engine.listenerCount("status") === before + 1);
+	engine.status = "ready";
+	engine.emit("status", { state: "ready" });
+	await waitFor(() => engine.listenerCount("status") === before);
+});
+
+test("new_conversation is refused conversations_off before any gate: idle, busy and paused; nothing reaches the engine", async (t) => {
+	const store = { paused: false, get() { return store.paused; }, set(value) { store.paused = value; } };
+	const { endpoint, engine } = await setup(t, { pausedStore: store });
+	const c = await login(t, endpoint);
+	// Idle.
+	c.send({ type: "new_conversation" });
+	await c.wait((f) => f.type === "error" && f.code === "conversations_off");
+	// Busy.
+	engine.emit("event", { type: "agent_start" });
+	await c.wait((f) => f.type === "agent_state" && f.busy);
+	c.send({ type: "new_conversation" });
+	await c.wait((f) => f.type === "error");
+	const busyRefusal = c.frames.filter((f) => f.type === "error").at(-1);
+	assert.equal(busyRefusal.code, "conversations_off");
+	// Paused.
+	c.send({ type: "set_paused", paused: true });
+	await c.wait((f) => f.type === "agent_state" && f.paused === true);
+	c.send({ type: "new_conversation" });
+	const pausedRefusal = await c.wait((f) => f.type === "error" && f.code === "conversations_off");
+	assert.equal(pausedRefusal.code, "conversations_off");
+	assert.equal(engine.requests.length, 0, "no new_session ever reaches the engine");
+	engine.emit("event", { type: "agent_settled" });
+});
+
+test("after a rotation the history is re-broadcast to every client, marked earlier (bridge.ts:1124-1129)", async (t) => {
+	const { endpoint, engine } = await setup(t);
+	const dir = engine.sessionsDir;
+	const f1 = writeChatSession(dir, "one.jsonl", [{ type: "message", message: { role: "user", content: "antigua" } }]);
+	const f2 = writeChatSession(dir, "two.jsonl", [{ type: "message", message: { role: "user", content: "nueva" } }]);
+	engine.sessionFile = f2;
+	const a = await login(t, endpoint);
+	const b = await login(t, endpoint);
+	// A link for a session the engine does not hold yet (the rotation links before switching): silent.
+	engine.chains[f1] = [f1];
+	engine.emit("sessions_linked", { sessionFile: f1 });
+	await new Promise((r) => setTimeout(r, 50));
+	assert.equal(a.frames.some((f) => f.type === "history"), false);
+	// The switch confirms: the linked file IS the open one, and it carries its chain.
+	engine.chains[f2] = [f1];
+	engine.emit("session_changed", { sessionFile: f2 });
+	for (const c of [a, b]) {
+		const frame = await c.wait((f) => f.type === "history");
+		assert.deepEqual(
+			frame.messages.map((m) => [m.id, m.text, m.earlier]),
+			[["s0-1", "antigua", true], ["s1-1", "nueva", undefined]],
+			"the same chat, now marked earlier (the page limit keeps the entire small chain together)",
+		);
+		assert.equal(frame.hasEarlier, false, "the whole chain still fits one page");
+	}
+	// A session_changed without a linked chain (the rotation fallback's window) stays silent.
+	engine.chains[f2] = [];
+	engine.emit("session_changed", { sessionFile: f2 });
+	await new Promise((r) => setTimeout(r, 50));
+	assert.equal(a.frames.filter((f) => f.type === "history").length, 1);
+	// While the engine is not ready, nothing is broadcast.
+	engine.status = "restarting";
+	engine.emit("sessions_linked", { sessionFile: f2 });
+	await new Promise((r) => setTimeout(r, 50));
+	assert.equal(a.frames.filter((f) => f.type === "history").length, 1);
+});
+
+// ----- K2-05 T4 U1 verifier fixes -------------------------------------------
+
+/** The island reader's per-frame limit (agentclient.rs FrameError::TooLarge). */
+const ISLAND_FRAME_LIMIT = 256 * 1024;
+/** The daemon's own byte budget for one history page, safely below it. */
+const PAGE_BUDGET = 192 * 1024;
+/** Numeric order of the page ids `s<file>-<turn>`. */
+const idOrder = (id) => {
+	const [, f, t] = /^(\d+)-(\d+)$/.exec(id.slice(1));
+	return Number(f) * 1e9 + Number(t);
+};
+
+test("get_history frames never exceed the island reader's limit; walking get_earlier returns every turn exactly once", async (t) => {
+	const { endpoint, engine } = await setup(t);
+	const dir = engine.sessionsDir;
+	const lines = [JSON.stringify({ type: "session", version: 3, id: "long", timestamp: "t", cwd: dir })];
+	for (let i = 1; i <= 60; i++) {
+		lines.push(JSON.stringify({ type: "message", message: { role: "user", content: `pregunta ${i} sobre el procedimiento completo de despliegue` } }));
+		lines.push(JSON.stringify({
+			type: "message",
+			message: {
+				role: "assistant",
+				content: [
+					{ type: "text", text: `respuesta ${i}: ${"x".repeat(2700)}` },
+					...Array.from({ length: 20 }, (_, k) => ({ type: "toolCall", id: `t${i}-${k}`, name: "read", arguments: { path: `/proyecto/modulo${k}/archivo-con-nombre-largo.ts` } })),
+				],
+			},
+		}));
+	}
+	const file = path.join(dir, "long.jsonl");
+	fs.writeFileSync(file, `${lines.join("\n")}\n`);
+	engine.sessionFile = file;
+	const c = await login(t, endpoint);
+	c.send({ type: "get_history" });
+	const first = await c.wait((f) => f.type === "history");
+	assert.ok(Buffer.byteLength(JSON.stringify(first)) <= PAGE_BUDGET, `one page stays under the island-safe budget`);
+	assert.ok(Buffer.byteLength(JSON.stringify(first)) <= ISLAND_FRAME_LIMIT, `and under the island reader's own limit`);
+	assert.equal(first.hasEarlier, true, "a bounded long chat has earlier pages");
+	// Walk back exactly the way the island does: the oldest id of each page is the cursor.
+	const seen = [...first.messages];
+	let cursor = first.messages[0].id; // the OLDEST id of the page the island already shows
+	for (let guard = 0; cursor && guard < 100; guard++) {
+		c.send({ type: "get_earlier", before: cursor });
+		const frame = await c.wait((f) => f.type === "earlier" && f.before === cursor);
+		if (frame.messages.length === 0) {
+			assert.equal(frame.hasEarlier, false, "the walk ends with a consistent empty page");
+			break;
+		}
+		assert.ok(Buffer.byteLength(JSON.stringify(frame)) <= PAGE_BUDGET, `every frame fits (${seen.length} in)`);
+		seen.push(...frame.messages);
+		cursor = frame.messages[0].id;
+	}
+	const ids = seen.map((m) => m.id);
+	assert.equal(new Set(ids).size, ids.length, "no turn is repeated");
+	assert.deepEqual(
+		[...ids].sort((a, b) => idOrder(a) - idOrder(b)),
+		Array.from({ length: 120 }, (_, i) => `s0-${i + 1}`),
+		"every turn exactly once",
+	);
+});
+
+test("get_history includes a reply the engine announced but persisted late (Gentle Dot's currentHistory round trip)", async (t) => {
+	const { endpoint, engine } = await setup(t);
+	const dir = engine.sessionsDir;
+	const append = (text) => fs.appendFileSync(path.join(dir, "fresh.jsonl"), `${JSON.stringify({ type: "message", message: { role: "assistant", content: text } })}\n`);
+	const f1 = writeChatSession(dir, "fresh.jsonl", [{ type: "message", message: { role: "user", content: "primera" } }]);
+	engine.sessionFile = f1;
+	// The reply settles: the island hears the announcement (the engine event), but the
+	// session file only gains the message when a get_state round trip reaches the engine.
+	engine.emit("event", { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "tardía" } });
+	// A SECOND announcement lands while that round trip is in flight; its message is
+	// persisted only by the retry's own round trip, so the page must be read again.
+	engine.onGetState = () => {
+		engine.emit("event", { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "segunda" } });
+		engine.pendingPersist = () => append("respuesta segunda");
+	};
+	engine.pendingPersist = () => append("respuesta tardía");
+	const c = await login(t, endpoint);
+	c.send({ type: "get_history" });
+	const frame = await c.wait((f) => f.type === "history");
+	assert.equal(frame.messages.at(-1).text, "respuesta tardía\n\nrespuesta segunda", "both replies are in: the pre-read one and the one announced during the round trip (the retry)");
+	assert.equal(frame.messages.length, 2, "user + the merged assistant turn");
+});
+
+test("a chain entry that is a symlink or lives outside the sessions dir is never read, even holding a secret", async (t) => {
+	const { endpoint, engine } = await setup(t);
+	const dir = engine.sessionsDir;
+	const outside = path.join(dir, "..", "outside-secret.jsonl");
+	fs.writeFileSync(outside, `${JSON.stringify({ type: "message", message: { role: "user", content: "OUTSIDE-SECRET" } })}\n`);
+	t.after(() => fs.rmSync(outside, { force: true }));
+	const planted = path.join(dir, "planted.jsonl");
+	fs.symlinkSync(outside, planted);
+	const own = writeChatSession(dir, "own.jsonl", [{ type: "message", message: { role: "user", content: "propia" } }]);
+	engine.sessionFile = own;
+	engine.chains[own] = [planted, outside];
+	const c = await login(t, endpoint);
+	c.send({ type: "get_history" });
+	const frame = await c.wait((f) => f.type === "history");
+	assert.deepEqual(frame.messages.map((m) => [m.id, m.text]), [["s0-1", "propia"]], "only the owned session file projects");
+	assert.ok(!JSON.stringify(frame).includes("OUTSIDE-SECRET"), "the planted secret never reaches a client");
+	assert.equal(frame.hasEarlier, false, "refused entries do not invent earlier pages");
+});
+
+// ----- K2-05 bind by id (Gentle Dot bridge.ts onMessageStart + send requestId dedupe) ---------
+
+/** The engine announces a user message it records (Pi's message_start, role user). */
+const recordUser = (engine, content) => engine.emit("event", { type: "message_start", message: { role: "user", content } });
+/** The engine persists one message to the open session file (Pi appends on message_end). */
+const persist = (engine, role, content) => fs.appendFileSync(engine.sessionFile, `${JSON.stringify({ type: "message", message: { role, content } })}\n`);
+const userMessages = (c) => c.frames.filter((f) => f.type === "user_message");
+
+async function chatOnFile(t, existing = []) {
+	const ctx = await setup(t);
+	const dir = ctx.engine.sessionsDir;
+	const old = writeChatSession(dir, "old.jsonl", [
+		{ type: "message", message: { role: "user", content: "antes" } },
+		{ type: "message", message: { role: "assistant", content: "r-antes" } },
+	]);
+	ctx.engine.sessionFile = writeChatSession(dir, "open.jsonl", existing);
+	ctx.engine.chains[ctx.engine.sessionFile] = [old];
+	return ctx;
+}
+
+test("user_message: the recorded prompt is broadcast with its record id; the requestId reaches the sender only", async (t) => {
+	const { endpoint, engine } = await chatOnFile(t, [
+		{ type: "message", message: { role: "user", content: "vieja" } },
+		{ type: "message", message: { role: "assistant", content: "r-vieja" } },
+	]);
+	const a = await login(t, endpoint);
+	const b = await login(t, endpoint);
+	a.send({ type: "send", text: "hola Gentle Shell", requestId: "isla-1" });
+	await waitFor(() => engine.requests.some((r) => r.type === "prompt"));
+	engine.emit("event", { type: "agent_start" });
+	recordUser(engine, "hola Gentle Shell");
+	const own = await a.wait((f) => f.type === "user_message");
+	const theirs = await b.wait((f) => f.type === "user_message");
+	assert.deepEqual({ ...own, seq: 0 }, { type: "user_message", messageId: "s1-3", text: "hola Gentle Shell", requestId: "isla-1", seq: 0 }, "the user's own text, never white-labelled");
+	assert.deepEqual({ ...theirs, seq: 0 }, { type: "user_message", messageId: "s1-3", text: "hola Gentle Shell", seq: 0 }, "other clients see the record without the requestId");
+	// joinable: once persisted, history names the same prompt with the same id
+	persist(engine, "user", "hola Gentle Shell");
+	persist(engine, "assistant", "hola");
+	engine.emit("event", { type: "agent_settled" });
+	b.send({ type: "get_history" });
+	const page = await b.wait((f) => f.type === "history");
+	assert.deepEqual(page.messages.find((m) => m.id === own.messageId), { id: "s1-3", role: "user", text: "hola Gentle Shell", activities: [] });
+});
+
+test("user_message: two clients with identical text each get their own record id; other prompts carry no requestId", async (t) => {
+	const { endpoint, engine } = await chatOnFile(t);
+	const a = await login(t, endpoint);
+	const b = await login(t, endpoint);
+	b.send({ type: "send", text: "hola", requestId: "otro-1" });
+	await waitFor(() => engine.requests.some((r) => r.type === "prompt"));
+	engine.emit("event", { type: "agent_start" });
+	await a.wait((f) => f.type === "agent_state" && f.busy);
+	a.send({ type: "steer", text: "hola", requestId: "isla-1" });
+	await waitFor(() => engine.requests.some((r) => r.type === "steer"));
+	// the engine records b's prompt, answers, then consumes a's steer
+	recordUser(engine, "hola");
+	persist(engine, "user", "hola");
+	engine.emit("event", { type: "message_start", message: { role: "assistant" } });
+	persist(engine, "assistant", "r1");
+	recordUser(engine, "hola");
+	persist(engine, "user", "hola");
+	// an extension's own user message: nobody's request
+	recordUser(engine, "despertar");
+	await waitFor(() => userMessages(a).length === 3 && userMessages(b).length === 3);
+	assert.deepEqual(userMessages(b).map((f) => [f.messageId, f.text, f.requestId]), [["s1-1", "hola", "otro-1"], ["s1-3", "hola", undefined], ["s1-4", "despertar", undefined]]);
+	assert.deepEqual(userMessages(a).map((f) => [f.messageId, f.text, f.requestId]), [["s1-1", "hola", undefined], ["s1-3", "hola", "isla-1"], ["s1-4", "despertar", undefined]]);
+});
+
+test("a repeated requestId is ignored (send and steer), like Gentle Dot's dedupe", async (t) => {
+	const { endpoint, engine } = await chatOnFile(t);
+	const a = await login(t, endpoint);
+	a.send({ type: "send", text: "hola", requestId: "r-1" });
+	await waitFor(() => engine.requests.some((r) => r.type === "prompt"));
+	engine.emit("event", { type: "agent_start" });
+	a.send({ type: "steer", text: "más", requestId: "r-2" });
+	a.send({ type: "steer", text: "más", requestId: "r-2" });
+	a.send({ type: "steer", text: "otro", requestId: "r-1" });
+	a.send({ type: "status" });
+	await waitFor(() => a.frames.filter((f) => f.type === "agent_state").length >= 2);
+	await sleep(30);
+	engine.emit("event", { type: "agent_settled" });
+	await waitFor(() => a.frames.filter((f) => f.type === "agent_state").at(-1).busy === false);
+	a.send({ type: "send", text: "hola", requestId: "r-1" });
+	a.send({ type: "send", text: "nueva", requestId: "r-3" });
+	await waitFor(() => engine.requests.filter((r) => r.type === "prompt").length === 2);
+	await sleep(30);
+	assert.deepEqual(engine.requests.filter((r) => r.type === "prompt" || r.type === "steer").map((r) => [r.type, r.message]), [["prompt", "hola"], ["steer", "más"], ["prompt", "nueva"]]);
+	assert.equal(a.frames.some((f) => f.type === "error"), false, "a repeat is ignored silently, never an error");
+});
+
+test("a failed send or steer never claims a record: the next recorded prompt carries no requestId", async (t) => {
+	const { endpoint, engine } = await chatOnFile(t);
+	const a = await login(t, endpoint);
+	engine.reject = ["prompt"];
+	a.send({ type: "send", text: "hola", requestId: "r-fail" });
+	await a.wait((f) => f.type === "error" && f.code === "failed");
+	engine.reject = ["steer"];
+	engine.emit("event", { type: "agent_start" });
+	await a.wait((f) => f.type === "agent_state" && f.busy);
+	a.send({ type: "steer", text: "hola", requestId: "r-fail-2" });
+	await waitFor(() => a.frames.filter((f) => f.type === "error").length === 2);
+	recordUser(engine, "hola");
+	const frame = await a.wait((f) => f.type === "user_message");
+	assert.equal(frame.requestId, undefined, "a request the engine refused never names a record");
+	assert.equal(frame.messageId, "s1-1");
+});
+
+test("an expanded prompt (the engine records other text) still binds to its send; settled turns forget stale requests", async (t) => {
+	const { endpoint, engine } = await chatOnFile(t);
+	const a = await login(t, endpoint);
+	a.send({ type: "send", text: "/plantilla", requestId: "r-exp" });
+	await waitFor(() => engine.requests.some((r) => r.type === "prompt"));
+	engine.emit("event", { type: "agent_start" });
+	recordUser(engine, "texto expandido de la plantilla");
+	const own = await a.wait((f) => f.type === "user_message");
+	assert.equal(own.requestId, "r-exp");
+	a.send({ type: "steer", text: "nunca registrado", requestId: "r-stale" });
+	await waitFor(() => engine.requests.some((r) => r.type === "steer"));
+	engine.emit("event", { type: "agent_settled" });
+	await waitFor(() => a.frames.filter((f) => f.type === "agent_state").at(-1).busy === false);
+	recordUser(engine, "nunca registrado");
+	await waitFor(() => userMessages(a).length === 2);
+	assert.equal(userMessages(a)[1].requestId, undefined, "a request the settled turn never recorded can no longer claim a later record");
+});
+
+test("a prompt held during a rotation keeps its requestId until the engine records it", async (t) => {
+	const { endpoint, engine } = await chatOnFile(t);
+	const a = await login(t, endpoint);
+	engine.sessionChange = { switching: true };
+	a.send({ type: "send", text: "retenido", requestId: "r-held" });
+	await sleep(30);
+	assert.equal(engine.requests.some((r) => r.type === "prompt"), false);
+	engine.sessionChange = undefined;
+	engine.emit("status", { state: "ready" });
+	await waitFor(() => engine.requests.some((r) => r.type === "prompt"));
+	recordUser(engine, "retenido");
+	assert.equal((await a.wait((f) => f.type === "user_message")).requestId, "r-held");
+});
+
+test("two prompts held during a rotation: the refused one never takes the delivered one's requestId (F1)", async (t) => {
+	const { endpoint, engine } = await chatOnFile(t);
+	const a = await login(t, endpoint);
+	const b = await login(t, endpoint);
+	engine.sessionChange = { switching: true };
+	a.send({ type: "send", text: "primero", requestId: "r-held-a" });
+	b.send({ type: "send", text: "segundo", requestId: "r-held-b" });
+	await sleep(30);
+	assert.equal(engine.requests.some((r) => r.type === "prompt"), false, "both are held during the switch");
+	// the real runtime refuses a second prompt while the first one's turn runs (runtime.cjs request)
+	const request = engine.request.bind(engine);
+	engine.request = async (command) => {
+		if (command.type === "prompt" && engine.requests.some((r) => r.type === "prompt")) {
+			engine.requests.push(command);
+			throw new Error("engine is busy");
+		}
+		return request(command);
+	};
+	engine.sessionChange = undefined;
+	engine.emit("status", { state: "ready" });
+	await waitFor(() => engine.requests.filter((r) => r.type === "prompt").length === 2);
+	await b.wait((f) => f.type === "error" && f.code === "failed");
+	assert.equal(a.frames.some((f) => f.type === "error"), false, "the delivered prompt's sender gets no error");
+	engine.emit("event", { type: "agent_start" });
+	recordUser(engine, "primero");
+	const own = await a.wait((f) => f.type === "user_message");
+	const theirs = await b.wait((f) => f.type === "user_message");
+	assert.equal(own.requestId, "r-held-a", "the delivered prompt is announced with its own sender's requestId");
+	assert.equal(theirs.requestId, undefined, "the refused prompt's sender never gets a requestId");
+	assert.equal(own.messageId, "s1-1");
+});
+
+test("a steer the engine rewrites (template) still binds to its request, by order (F4)", async (t) => {
+	const { endpoint, engine } = await chatOnFile(t);
+	const a = await login(t, endpoint);
+	const b = await login(t, endpoint);
+	b.send({ type: "send", text: "pregunta", requestId: "r-prompt" });
+	await waitFor(() => engine.requests.some((r) => r.type === "prompt"));
+	engine.emit("event", { type: "agent_start" });
+	await a.wait((f) => f.type === "agent_state" && f.busy);
+	a.send({ type: "steer", text: "/plantilla x", requestId: "r-steer-1" });
+	a.send({ type: "steer", text: "literal", requestId: "r-steer-2" });
+	await waitFor(() => engine.requests.filter((r) => r.type === "steer").length === 2);
+	recordUser(engine, "pregunta");
+	persist(engine, "user", "pregunta");
+	// the engine records the first steer expanded (other text), then the second as typed
+	recordUser(engine, "texto expandido de la plantilla x");
+	persist(engine, "user", "texto expandido de la plantilla x");
+	recordUser(engine, "literal");
+	persist(engine, "user", "literal");
+	// nothing is pending any more: an extension's own message is nobody's
+	recordUser(engine, "despertar");
+	await waitFor(() => userMessages(a).length === 4 && userMessages(b).length === 4);
+	assert.deepEqual(userMessages(a).map((f) => [f.messageId, f.requestId]), [["s1-1", undefined], ["s1-2", "r-steer-1"], ["s1-3", "r-steer-2"], ["s1-4", undefined]]);
+	assert.deepEqual(userMessages(b).map((f) => [f.messageId, f.requestId]), [["s1-1", "r-prompt"], ["s1-2", undefined], ["s1-3", undefined], ["s1-4", undefined]]);
+});
+
+test("user_message for a 64 Ki-char prompt is one bounded frame under the island reader's limit", async (t) => {
+	const { endpoint, engine } = await chatOnFile(t);
+	const a = await login(t, endpoint);
+	let biggest = 0;
+	a.socket.on("data", () => {});
+	const text = "€".repeat(P.LIMITS.maxTextChars);
+	a.send({ type: "send", text, requestId: "r-big" });
+	await waitFor(() => engine.requests.some((r) => r.type === "prompt"));
+	recordUser(engine, text);
+	const frame = await a.wait((f) => f.type === "user_message");
+	biggest = Buffer.byteLength(JSON.stringify(frame));
+	assert.ok(biggest <= 192 * 1024, `${biggest} bytes`);
+	assert.equal(frame.clipped, true);
+	assert.equal(frame.requestId, "r-big");
+});
+
+test("the record id never depends on when the engine writes the file (Pi persists right after message_start)", async (t) => {
+	const { endpoint, engine } = await chatOnFile(t, [
+		{ type: "message", message: { role: "user", content: "vieja" } },
+		{ type: "message", message: { role: "assistant", content: "r-vieja" } },
+	]);
+	const a = await login(t, endpoint);
+	a.send({ type: "send", text: "hola", requestId: "r-race" });
+	await waitFor(() => engine.requests.some((r) => r.type === "prompt"));
+	engine.emit("event", { type: "agent_start" });
+	// the engine already appended the user message when the daemon handles its message_start
+	persist(engine, "user", "hola");
+	recordUser(engine, "hola");
+	// a tool round: assistant, tool result, assistant again — ONE display row, as history projects it
+	for (const role of ["assistant", "toolResult", "assistant"]) {
+		persist(engine, role, role === "toolResult" ? "ok" : "r");
+		engine.emit("event", { type: "message_start", message: { role } });
+	}
+	persist(engine, "user", "dos");
+	recordUser(engine, "dos");
+	await waitFor(() => userMessages(a).length === 2);
+	assert.deepEqual(userMessages(a).map((f) => [f.messageId, f.requestId]), [["s1-3", "r-race"], ["s1-5", undefined]]);
+	engine.emit("event", { type: "agent_settled" });
+	a.send({ type: "get_history" });
+	const page = await a.wait((f) => f.type === "history");
+	assert.deepEqual(page.messages.filter((m) => m.role === "user").map((m) => [m.id, m.text]), [["s0-1", "antes"], ["s1-1", "vieja"], ["s1-3", "hola"], ["s1-5", "dos"]]);
+});
+
+// ----- K2-05 native-review follow-ups (advisory findings at 9e6aac6) ---------------------------
+
+test("review F1: a requestId refused by a transient gate (busy, not ready, paused, not busy) is accepted on retry", async (t) => {
+	const { endpoint, engine, server } = await chatOnFile(t);
+	const a = await login(t, endpoint);
+	const errors = () => a.frames.filter((f) => f.type === "error").length;
+	// busy: another prompt runs
+	a.send({ type: "send", text: "primero", requestId: "r-first" });
+	await waitFor(() => engine.requests.some((r) => r.type === "prompt"));
+	a.send({ type: "send", text: "reintento", requestId: "r-busy" });
+	await a.wait((f) => f.type === "error" && f.code === "busy");
+	engine.emit("event", { type: "agent_settled" });
+	await waitFor(() => a.frames.filter((f) => f.type === "agent_state").at(-1)?.busy === false);
+	// not busy: a steer with no turn running
+	a.send({ type: "steer", text: "giro", requestId: "r-steer" });
+	await waitFor(() => errors() === 2);
+	// not ready: the engine restarts
+	engine.status = "restarting";
+	a.send({ type: "send", text: "caído", requestId: "r-down" });
+	await waitFor(() => errors() === 3);
+	engine.status = "ready";
+	// paused
+	server.paused = true;
+	a.send({ type: "send", text: "pausa", requestId: "r-paused" });
+	await waitFor(() => errors() === 4);
+	server.paused = false;
+	assert.deepEqual(a.frames.filter((f) => f.type === "error").map((f) => f.code), ["busy", "not_busy", "unavailable", "paused"]);
+	// each retry with the SAME requestId reaches the engine once the gate is gone
+	a.send({ type: "send", text: "reintento", requestId: "r-busy" });
+	await waitFor(() => engine.requests.filter((r) => r.type === "prompt").length === 2);
+	a.send({ type: "steer", text: "giro", requestId: "r-steer" });
+	await waitFor(() => engine.requests.some((r) => r.type === "steer"));
+	engine.emit("event", { type: "agent_settled" });
+	await waitFor(() => a.frames.filter((f) => f.type === "agent_state").at(-1)?.busy === false);
+	a.send({ type: "send", text: "caído", requestId: "r-down" });
+	await waitFor(() => engine.requests.filter((r) => r.type === "prompt").length === 3);
+	engine.emit("event", { type: "agent_settled" });
+	await waitFor(() => a.frames.filter((f) => f.type === "agent_state").at(-1)?.busy === false);
+	a.send({ type: "send", text: "pausa", requestId: "r-paused" });
+	await waitFor(() => engine.requests.filter((r) => r.type === "prompt").length === 4);
+	// an accepted id stays spent: its repeat is ignored silently, even while its own turn runs
+	a.send({ type: "send", text: "pausa", requestId: "r-paused" });
+	a.send({ type: "send", text: "primero", requestId: "r-first" });
+	await sleep(30);
+	assert.deepEqual(engine.requests.filter((r) => r.type === "prompt" || r.type === "steer").map((r) => [r.type, r.message]),
+		[["prompt", "primero"], ["prompt", "reintento"], ["steer", "giro"], ["prompt", "caído"], ["prompt", "pausa"]]);
+	assert.equal(errors(), 4, "a repeat of an accepted id is never an error");
+});
+
+test("review F1: a second prompt held during a rotation is refused without spending its requestId", async (t) => {
+	const { endpoint, engine } = await chatOnFile(t);
+	const a = await login(t, endpoint);
+	engine.sessionChange = { switching: true };
+	a.send({ type: "send", text: "retenido", requestId: "r-held-1" });
+	a.send({ type: "send", text: "otro", requestId: "r-held-2" });
+	await a.wait((f) => f.type === "error" && f.code === "busy");
+	// the held prompt's own repeat is ignored (it was accepted)
+	a.send({ type: "send", text: "retenido", requestId: "r-held-1" });
+	engine.sessionChange = undefined;
+	engine.emit("status", { state: "ready" });
+	await waitFor(() => engine.requests.some((r) => r.type === "prompt"));
+	engine.emit("event", { type: "agent_settled" });
+	await waitFor(() => a.frames.filter((f) => f.type === "agent_state").at(-1)?.busy === false);
+	a.send({ type: "send", text: "otro", requestId: "r-held-2" });
+	await waitFor(() => engine.requests.filter((r) => r.type === "prompt").length === 2);
+	await sleep(30);
+	assert.deepEqual(engine.requests.filter((r) => r.type === "prompt").map((r) => r.message), ["retenido", "otro"]);
+});
+
+test("review F2: an unmatched record never hands a requestId to the wrong client when steers of two clients wait", async (t) => {
+	const { endpoint, engine } = await chatOnFile(t);
+	const a = await login(t, endpoint);
+	const b = await login(t, endpoint);
+	b.send({ type: "send", text: "pregunta", requestId: "r-prompt" });
+	await waitFor(() => engine.requests.some((r) => r.type === "prompt"));
+	engine.emit("event", { type: "agent_start" });
+	await a.wait((f) => f.type === "agent_state" && f.busy);
+	a.send({ type: "steer", text: "/plantilla a", requestId: "r-steer-a" });
+	await waitFor(() => engine.requests.filter((r) => r.type === "steer").length === 1);
+	b.send({ type: "steer", text: "/plantilla b", requestId: "r-steer-b" });
+	await waitFor(() => engine.requests.filter((r) => r.type === "steer").length === 2);
+	recordUser(engine, "pregunta");
+	persist(engine, "user", "pregunta");
+	// an extension's own user message while both steers wait: nobody's request
+	recordUser(engine, "despertar");
+	persist(engine, "user", "despertar");
+	// then each steer, expanded by the engine (other text than what was typed)
+	recordUser(engine, "texto expandido a");
+	persist(engine, "user", "texto expandido a");
+	recordUser(engine, "texto expandido b");
+	persist(engine, "user", "texto expandido b");
+	await waitFor(() => userMessages(a).length === 4 && userMessages(b).length === 4);
+	const ids = (c) => userMessages(c).map((f) => [f.messageId, f.requestId]);
+	// a requestId is only ever echoed for a record that is that client's own
+	for (const [messageId, requestId] of ids(a)) if (requestId !== undefined) assert.equal([messageId, requestId].join(), ["s1-3", "r-steer-a"].join(), `a got ${requestId} on ${messageId}`);
+	for (const [messageId, requestId] of ids(b)) if (requestId !== undefined) assert.ok(messageId === "s1-1" && requestId === "r-prompt" || messageId === "s1-4" && requestId === "r-steer-b", `b got ${requestId} on ${messageId}`);
+	assert.deepEqual(ids(b)[0], ["s1-1", "r-prompt"], "the dispatched prompt still binds");
+});
+
+test("review F6: an error answering a send carries that send's requestId (only to its sender)", async (t) => {
+	const { endpoint, engine } = await chatOnFile(t);
+	const a = await login(t, endpoint);
+	const b = await login(t, endpoint);
+	engine.reject = ["prompt"];
+	a.send({ type: "send", text: "hola", requestId: "r-rejected" });
+	const rejected = await a.wait((f) => f.type === "error");
+	assert.equal(rejected.code, "failed");
+	assert.equal(rejected.requestId, "r-rejected", "the engine's rejection names the send it answers");
+	engine.reject = undefined;
+	a.send({ type: "send", text: "otra", requestId: "r-ok" });
+	await waitFor(() => engine.requests.filter((r) => r.type === "prompt").length === 2);
+	a.send({ type: "send", text: "ocupado", requestId: "r-busy" });
+	const busy = await a.wait((f) => f.type === "error" && f.code === "busy");
+	assert.equal(busy.requestId, "r-busy");
+	a.send({ type: "send", text: "sin id" });
+	await waitFor(() => a.frames.filter((f) => f.type === "error").length === 3);
+	assert.equal(a.frames.filter((f) => f.type === "error").at(-1).requestId, undefined, "no requestId, none echoed");
+	await sleep(30);
+	assert.equal(b.frames.some((f) => f.type === "error"), false, "nobody else gets the sender's error");
+});
+
+// ----- K2-05 attachments (L11 2a; Gentle Dot uploads.ts + bridge.ts attachedFiles/composePrompt) ------
+
+const PNG_BYTES = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3, 4]);
+const CHUNK = 6;
+/** Uploads one file in CHUNK-byte base64 chunks and waits for the daemon's answer (uploaded or error). */
+async function upload(c, name, bytes, requestId) {
+	const parts = bytes.length === 0 ? [Buffer.alloc(0)] : Array.from({ length: Math.ceil(bytes.length / CHUNK) }, (_, i) => bytes.subarray(i * CHUNK, (i + 1) * CHUNK));
+	let offset = 0;
+	for (const part of parts) {
+		c.send({ type: "upload", requestId, name, size: bytes.length, offset, data: part.toString("base64") });
+		offset += part.length;
+	}
+	return c.wait((f) => f.requestId === requestId && (f.type === "uploaded" || f.type === "error"));
+}
+const uploadsDir = (engine) => path.join(engine.island.workspace, "uploads");
+const stagingDir = (engine) => path.join(engine.island.workspace, "..", "uploads-staging");
+
+test("attachments: an upload waits in the daemon's staging folder, outside the engine's workspace; only its sender learns its id", async (t) => {
+	const { endpoint, engine } = await chatOnFile(t);
+	const a = await login(t, endpoint);
+	const b = await login(t, endpoint);
+	const done = await upload(a, "../../secreto/informe.txt", Buffer.from("hola mundo"), "up-1");
+	assert.equal(done.type, "uploaded");
+	assert.match(done.attachment.id, /^a-[0-9a-f]{16}$/);
+	assert.deepEqual({ ...done.attachment, id: "x" }, { id: "x", name: "informe.txt", size: 10, mime: "application/octet-stream" });
+	assert.equal(fs.readFileSync(path.join(stagingDir(engine), done.attachment.id, "informe.txt"), "utf8"), "hola mundo");
+	assert.equal(fs.existsSync(uploadsDir(engine)), false, "the engine cannot list or read a file that was never sent");
+	assert.equal(JSON.stringify(a.frames).includes(engine.island.workspace), false, "the stored path never travels");
+	await sleep(30);
+	assert.equal(b.frames.some((f) => f.type === "uploaded"), false);
+	assert.equal(engine.requests.length, 0, "an upload never reaches the engine");
+});
+
+test("attachments: a send still awaiting the engine keeps its file when its client goes away (R1-001)", async (t) => {
+	const { endpoint, engine } = await chatOnFile(t);
+	const a = await login(t, endpoint);
+	const doc = (await upload(a, "pedido.txt", Buffer.from("x"), "up-1")).attachment;
+	engine.hold = true; // the prompt is in flight inside the engine
+	a.send({ type: "send", text: "leelo", requestId: "r-1", attachments: [doc.id] });
+	await waitFor(() => engine.requests.some((r) => r.type === "prompt"));
+	const stored = path.join(uploadsDir(engine), doc.id, "pedido.txt");
+	assert.ok(fs.existsSync(stored), "the accepted send moved it into the workspace");
+	a.socket.destroy();
+	await sleep(60);
+	assert.ok(fs.existsSync(stored), "a file already promised to the engine is not deleted on close");
+});
+
+test("attachments: send composes Gentle Dot's prompt (path read as the engine, image inline for a vision model); user_message and history show the chips", async (t) => {
+	const { endpoint, engine } = await chatOnFile(t);
+	engine.stateData = { model: { id: "vision", input: ["text", "image"] } };
+	const a = await login(t, endpoint);
+	const b = await login(t, endpoint);
+	const img = (await upload(a, "foto.png", PNG_BYTES, "up-img")).attachment;
+	const doc = (await upload(a, "datos.csv", Buffer.from("a,b\n1,2\n"), "up-doc")).attachment;
+	a.send({ type: "send", text: "mirá esto", requestId: "r-att", attachments: [img.id, doc.id] });
+	await waitFor(() => engine.requests.some((r) => r.type === "prompt"));
+	const prompt = engine.requests.find((r) => r.type === "prompt");
+	const stored = (att) => path.join(uploadsDir(engine), att.id, att.name);
+	assert.ok(prompt.message.startsWith("mirá esto\n\n<attachments>\nThe user attached these files, saved in your workspace."), prompt.message);
+	assert.ok(prompt.message.includes(JSON.stringify({ name: "datos.csv", size: 8, type: "application/octet-stream", path: stored(doc) })), prompt.message);
+	assert.ok(prompt.message.includes(`"image":"attached to this message"`), prompt.message);
+	assert.deepEqual(prompt.images, [{ type: "image", mimeType: "image/png", data: PNG_BYTES.toString("base64") }]);
+	// the engine records the composed prompt: every client sees the user's text and the chips
+	engine.emit("event", { type: "agent_start" });
+	recordUser(engine, [{ type: "text", text: prompt.message }, { type: "image", data: "x", mimeType: "image/png" }]);
+	const own = await a.wait((f) => f.type === "user_message");
+	const theirs = await b.wait((f) => f.type === "user_message");
+	const chips = [{ name: "foto.png", size: PNG_BYTES.length, mime: "image/png" }, { name: "datos.csv", size: 8, mime: "application/octet-stream" }];
+	assert.deepEqual({ ...own, seq: 0 }, { type: "user_message", messageId: "s1-1", text: "mirá esto", attachments: chips, requestId: "r-att", seq: 0 });
+	assert.deepEqual(theirs.attachments, chips);
+	persist(engine, "user", prompt.message);
+	persist(engine, "assistant", "listo");
+	engine.emit("event", { type: "agent_settled" });
+	b.send({ type: "get_history" });
+	const page = await b.wait((f) => f.type === "history");
+	assert.deepEqual(page.messages.find((m) => m.id === "s1-1"), { id: "s1-1", role: "user", text: "mirá esto", activities: [], attachments: chips });
+	// a ref is used once: the files stay for the agent, a second send naming them is refused
+	assert.ok(fs.existsSync(stored(doc)));
+	a.send({ type: "send", text: "otra vez", requestId: "r-again", attachments: [doc.id] });
+	const again = await a.wait((f) => f.type === "error" && f.requestId === "r-again");
+	assert.equal(again.code, "attachment_not_found");
+	assert.equal(engine.requests.filter((r) => r.type === "prompt").length, 1);
+});
+
+test("attachments: a model without vision gets the path only; files-only messages have empty text", async (t) => {
+	const { endpoint, engine } = await chatOnFile(t);
+	engine.stateData = { model: { id: "text-only", input: ["text"] } };
+	const a = await login(t, endpoint);
+	const img = (await upload(a, "foto.png", PNG_BYTES, "up-img")).attachment;
+	a.send({ type: "send", text: "", requestId: "r-only", attachments: [img.id] });
+	await waitFor(() => engine.requests.some((r) => r.type === "prompt"));
+	const prompt = engine.requests.find((r) => r.type === "prompt");
+	assert.equal(prompt.images, undefined);
+	assert.ok(prompt.message.startsWith("<attachments>\n"), prompt.message);
+	assert.ok(prompt.message.includes("the current model cannot see images"));
+});
+
+test("attachments: another client's ref, an unknown ref and a malformed ref never reach the engine", async (t) => {
+	const { endpoint, engine } = await chatOnFile(t);
+	const a = await login(t, endpoint);
+	const b = await login(t, endpoint);
+	const doc = (await upload(a, "nota.txt", Buffer.from("x"), "up-a")).attachment;
+	b.send({ type: "send", text: "robo", requestId: "r-b", attachments: [doc.id] });
+	assert.equal((await b.wait((f) => f.type === "error" && f.requestId === "r-b")).code, "attachment_not_found");
+	b.send({ type: "send", text: "inventado", requestId: "r-c", attachments: ["a-0000000000000000"] });
+	assert.equal((await b.wait((f) => f.type === "error" && f.requestId === "r-c")).code, "attachment_not_found");
+	b.send({ type: "send", text: "ruta", attachments: [path.join(uploadsDir(engine), doc.id, "nota.txt")] });
+	await b.wait((f) => f.type === "error" && f.code === "bad_request");
+	await sleep(30);
+	assert.equal(engine.requests.some((r) => r.type === "prompt"), false);
+	// the refused request is not spent: its sender may retry it
+	a.send({ type: "send", text: "mío", requestId: "r-b", attachments: [doc.id] });
+	await waitFor(() => engine.requests.some((r) => r.type === "prompt"));
+});
+
+test("attachments: per-client quota and size are enforced daemon-side; one error per refused upload", async (t) => {
+	const { endpoint, server } = await chatOnFile(t);
+	server.uploads.limits = { fileBytes: 10, messageBytes: 12, files: 2 };
+	const a = await login(t, endpoint);
+	const b = await login(t, endpoint);
+	assert.equal((await upload(a, "grande.bin", Buffer.alloc(11), "up-big")).code, "file_too_large");
+	await sleep(30);
+	assert.equal(a.frames.filter((f) => f.requestId === "up-big").length, 1, "the later chunks of a refused upload are ignored, not answered");
+	assert.equal((await upload(a, "1.bin", Buffer.alloc(8), "up-1")).type, "uploaded");
+	assert.equal((await upload(a, "2.bin", Buffer.alloc(5), "up-2")).code, "message_too_large");
+	assert.equal((await upload(a, "2.bin", Buffer.alloc(4), "up-3")).type, "uploaded");
+	assert.equal((await upload(a, "3.bin", Buffer.alloc(1), "up-4")).code, "too_many_files");
+	assert.equal((await upload(b, "1.bin", Buffer.alloc(8), "up-b")).type, "uploaded", "every client has its own quota");
+});
+
+test("attachments: removed before sending, or its client gone: the unsent file is deleted; a sent one stays", async (t) => {
+	const { endpoint, engine } = await chatOnFile(t);
+	const a = await login(t, endpoint);
+	const kept = (await upload(a, "enviado.txt", Buffer.from("1"), "up-1")).attachment;
+	const removed = (await upload(a, "quitado.txt", Buffer.from("2"), "up-2")).attachment;
+	const left = (await upload(a, "olvidado.txt", Buffer.from("3"), "up-3")).attachment;
+	a.send({ type: "upload_discard", id: removed.id });
+	await waitFor(() => !fs.existsSync(path.join(stagingDir(engine), removed.id)));
+	a.send({ type: "send", text: "va", requestId: "r-1", attachments: [kept.id] });
+	await waitFor(() => engine.requests.some((r) => r.type === "prompt"));
+	a.socket.destroy();
+	await waitFor(() => !fs.existsSync(path.join(stagingDir(engine), left.id)));
+	assert.ok(fs.existsSync(path.join(uploadsDir(engine), kept.id, "enviado.txt")), "a sent file stays for the agent");
+});
+
+test("attachments: upload chunks have their own frame budget (a large file never trips the 240/min limit)", async (t) => {
+	const { endpoint } = await setup(t, { limits: { framesPerMinute: 5, uploadFramesPerMinute: 400 } });
+	const a = await login(t, endpoint);
+	const done = await upload(a, "largo.bin", Buffer.alloc(CHUNK * 300, 7), "up-long");
+	assert.equal(done.type, "uploaded");
+	assert.equal(a.closed, false);
+	const { endpoint: e2 } = await setup(t, { limits: { uploadFramesPerMinute: 3 } });
+	const flood = await login(t, e2);
+	upload(flood, "x.bin", Buffer.alloc(CHUNK * 10), "up-flood").catch(() => {});
+	await waitFor(() => flood.closed);
+});
+
+test("attachments: a prompt held during a rotation carries its files and spends them when delivered", async (t) => {
+	const { endpoint, engine } = await chatOnFile(t);
+	const a = await login(t, endpoint);
+	const doc = (await upload(a, "nota.txt", Buffer.from("x"), "up-1")).attachment;
+	engine.sessionChange = { switching: true };
+	a.send({ type: "send", text: "después", requestId: "r-held", attachments: [doc.id] });
+	await sleep(30);
+	assert.equal(engine.requests.some((r) => r.type === "prompt"), false);
+	engine.sessionChange = undefined;
+	engine.emit("status");
+	await waitFor(() => engine.requests.some((r) => r.type === "prompt"));
+	assert.ok(engine.requests.find((r) => r.type === "prompt").message.includes(`"name":"nota.txt"`));
+	a.send({ type: "send", text: "repetido", requestId: "r-2", attachments: [doc.id] });
+	assert.equal((await a.wait((f) => f.requestId === "r-2" && f.type === "error")).code, "attachment_not_found");
 });

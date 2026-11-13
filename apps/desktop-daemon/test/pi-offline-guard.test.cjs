@@ -1,9 +1,11 @@
 "use strict";
-// K2-02 follow-up (RDD advisory 6): the S3 proof (pi-offline.test.cjs) must never pass silently when no real Pi is
-// available. Run as a user runs it (`node --test`, a child process) with NO Pi anywhere (no PI_CODING_AGENT_ROOT, a PATH
+// K2-02 follow-up (RDD advisory 6), K2-05 T2: the S1/S3 proof (pi-offline.test.cjs) must never pass
+// silently when no real engine is available. Run as a user runs it (`node --test`, a child process)
+// with NO Gentle Shell anywhere (no GENTLE_PI_ROOT, no bundled runtime next to this Node, a PATH
 // without `pi`):
-//   - default (a dev machine): the two real-Pi tests are reported as SKIPPED with the reason — never a bare pass;
-//   - ABITO_REQUIRE_PI=1 (what CI sets in every desktop-daemon job): the run FAILS and says that Pi is required.
+//   - default (a dev machine): the real-engine test is reported as SKIPPED with the reason — never a
+//     bare pass; the pure env test still runs;
+//   - ABITO_REQUIRE_GENTLE=1: the run FAILS and says that Gentle Shell is required.
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
@@ -13,41 +15,43 @@ const { spawnSync } = require("node:child_process");
 
 const TARGET = path.join(__dirname, "pi-offline.test.cjs");
 
-function runWithoutPi(t, extraEnv) {
-	const empty = fs.mkdtempSync(path.join(os.tmpdir(), "abito-no-pi-"));
+function runWithoutEngine(t, extraEnv) {
+	const empty = fs.mkdtempSync(path.join(os.tmpdir(), "abito-no-gentle-"));
 	t.after(() => fs.rmSync(empty, { recursive: true, force: true }));
 	const env = { ...process.env, ...extraEnv };
 	delete env.PI_CODING_AGENT_ROOT;
+	delete env.GENTLE_PI_ROOT;
 	// A child `node --test` that inherits NODE_TEST_CONTEXT reports to this runner instead of printing its TAP.
 	delete env.NODE_TEST_CONTEXT;
 	delete env.ABITO_PI_OFFLINE_RED;
 	if (!("ABITO_REQUIRE_PI" in extraEnv)) delete env.ABITO_REQUIRE_PI;
-	// No `pi` reachable: the runner's node dir may also hold an npm-global `pi`, so it stays off PATH (the child is
-	// spawned by absolute path).
+	if (!("ABITO_REQUIRE_GENTLE" in extraEnv)) delete env.ABITO_REQUIRE_GENTLE;
+	// No `pi` reachable either: the runner's node dir may also hold an npm-global `pi`, so it stays
+	// off PATH (the child is spawned by absolute path).
 	env.PATH = empty;
 	return spawnSync(process.execPath, ["--test", "--test-reporter=tap", TARGET], { encoding: "utf8", env, timeout: 60_000 });
 }
 
-test("no Pi on a dev machine: the S3 proof reports its two real-Pi tests as SKIPPED with the reason, never a bare pass", (t) => {
-	const r = runWithoutPi(t, {});
+test("no engine on a dev machine: the real-engine test is SKIPPED with the reason, the pure env test still runs", (t) => {
+	const r = runWithoutEngine(t, {});
 	assert.equal(r.status, 0, r.stdout + r.stderr);
-	assert.match(r.stdout, /^# skipped 2$/m, r.stdout);
-	assert.match(r.stdout, /^# pass 0$/m, r.stdout);
-	assert.match(r.stdout, /# SKIP Installed Pi not found; set PI_CODING_AGENT_ROOT/, r.stdout);
+	assert.match(r.stdout, /^# skipped 1$/m, r.stdout);
+	assert.match(r.stdout, /^# pass 1$/m, r.stdout);
+	assert.match(r.stdout, /# SKIP Gentle Shell \(gentle-pi\) not found; set GENTLE_PI_ROOT/, r.stdout);
 });
 
-test("no Pi with ABITO_REQUIRE_PI=1 (CI): the S3 proof FAILS loudly and names the reason", (t) => {
-	const r = runWithoutPi(t, { ABITO_REQUIRE_PI: "1" });
+test("no engine with ABITO_REQUIRE_GENTLE=1: the proof FAILS loudly and names the reason", (t) => {
+	const r = runWithoutEngine(t, { ABITO_REQUIRE_GENTLE: "1" });
 	assert.notEqual(r.status, 0, "must fail");
-	assert.match(r.stdout + r.stderr, /ABITO_REQUIRE_PI=1 but no installed Pi was found \(set PI_CODING_AGENT_ROOT or put `pi` on PATH\)/);
+	assert.match(r.stdout + r.stderr, /ABITO_REQUIRE_GENTLE=1 but no Gentle Shell was found \(set GENTLE_PI_ROOT or build the bundled runtime\)/);
 	assert.doesNotMatch(r.stdout + r.stderr, /ERR_INVALID_ARG_TYPE/, "not a TypeError from path.join(undefined)");
 });
 
-test("the S3 proof and this guard are part of `npm test`, the script every CI desktop-daemon job runs", () => {
+test("the engine proof and this guard are part of `npm test`, the script every CI desktop-daemon job runs", () => {
 	let pkg;
 	try { pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8")); } catch (e) { assert.fail(`cannot read package.json: ${e.message}`); }
 	const script = pkg.scripts.test;
-	for (const file of ["test/pi-offline.test.cjs", "test/pi-offline-guard.test.cjs"]) {
+	for (const file of ["test/pi-offline.test.cjs", "test/pi-offline-guard.test.cjs", "test/white-label.test.cjs"]) {
 		assert.ok(script.split(/\s+/).includes(file), `${file} is run by npm test`);
 	}
 });

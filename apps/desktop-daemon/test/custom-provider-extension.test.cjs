@@ -19,6 +19,56 @@ const { PROVIDER_ID, TEMPLATE, EXTENSION_FILE, RUNTIME_FILE, runtimeDocument } =
 const { ProfileStore } = require("../src/profiles.cjs");
 const { AccountManager, helperEnv } = require("../src/auth.cjs");
 const { discoverModels } = require("../src/custom-provider.cjs");
+const { AgentEngine, DEFAULT_COMMAND, runtimeRoot } = require("../src/runtime.cjs");
+
+/**
+ * A minimal fake Koda bundled runtime (T2-fix): the layout the engine's
+ * runtimeRoot/bundledGentleShell accept through the runtimeDeps seam, so the
+ * real-engine test drives the PRODUCTION launch path — `command` is
+ * DEFAULT_COMMAND, the engine resolves the runtime itself and appends
+ * --home <island>/agent (B2), and gentle-shell derives PI_CODING_AGENT_DIR from
+ * that home for the Pi child it launches. The manifest's gentleShell is a real
+ * WRAPPER file (never a symlink: the engine refuses links) that imports the
+ * REAL gentle-shell entry, so the engine code under test is the real one.
+ * POSIX mirrors the shipped `gentle-shell` launcher (a real exec file, not a
+ * link); Windows mirrors node.exe + the manifest script.
+ */
+function fakeKodaRuntime(t, gentleRoot) {
+	const runtime = fs.mkdtempSync(path.join(os.tmpdir(), "abito-fake-runtime-"));
+	t.after(() => fs.rmSync(runtime, { recursive: true, force: true }));
+	const scriptRel = "node_modules/gentle-pi/bin/gentle-shell.mjs";
+	const script = path.join(runtime, ...scriptRel.split("/"));
+	fs.mkdirSync(path.dirname(script), { recursive: true });
+	const realEntry = path.join(gentleRoot, "bin", "gentle-shell.mjs");
+	fs.writeFileSync(
+		script,
+		`// Test wrapper: run the REAL engine entry from the fake runtime's path.\n` +
+			`import { pathToFileURL } from "node:url";\n` +
+			`await import(pathToFileURL(${JSON.stringify(realEntry)}).href);\n`,
+	);
+	fs.writeFileSync(
+		path.join(runtime, "koda-runtime.json"),
+		`${JSON.stringify({ gentlePi: "4.3.0", gentleShell: scriptRel })}\n`,
+	);
+	if (process.platform === "win32") {
+		// The shipped Windows runtime shape: the runtime's own node.exe runs the
+		// script the manifest names. A real copy (never a link).
+		fs.copyFileSync(process.execPath, path.join(runtime, "node.exe"));
+	} else {
+		const launcher = path.join(runtime, "gentle-shell");
+		fs.writeFileSync(launcher, `#!/bin/sh\nexec '${process.execPath}' '${script}' "$@"\n`);
+		fs.chmodSync(launcher, 0o755);
+	}
+	return {
+		runtime,
+		runtimeDeps: {
+			execPath: path.join(runtime, process.platform === "win32" ? "node.exe" : "node"),
+			existsSync: fs.existsSync,
+			lstatSync: fs.lstatSync,
+			readFileSync: fs.readFileSync,
+		},
+	};
+}
 
 const SECRET = "sk-fake-SECRET-2468-DO-NOT-LEAK";
 const FIXTURE = path.join(__dirname, "fixtures", "fake-auth.cjs");
@@ -907,4 +957,88 @@ test("a synchronous HTTP setup error rejects with a fixed reason and clears the 
 	const code = `const {discoverModels}=require(${JSON.stringify(path.join(__dirname, "..", "src", "custom-provider.cjs"))});discoverModels({baseUrl:"http://127.0.0.1:9/v1",apiKey:"bad\\u0001key",timeoutMs:600000}).catch(()=>{});`;
 	const exit = await new Promise((resolve) => { const c = spawn(process.execPath, ["-e", code]); const k = setTimeout(() => { c.kill("SIGKILL"); resolve("leaked"); }, 5000); c.on("close", (n) => { clearTimeout(k); resolve(n); }); });
 	assert.equal(exit, 0, "process exits promptly: no pending timeout");
+});
+
+// ----- real ENGINE (Koda's launch, T2): Gentle Shell passes the island agent dir on ---
+
+/** A gentle-pi package directory (it holds bin/gentle-shell.mjs), or undefined. Same discovery as pi-offline.test.cjs. */
+function findGentleRoot() {
+	if (process.env.GENTLE_PI_ROOT) return process.env.GENTLE_PI_ROOT;
+	const runtime = runtimeRoot();
+	if (runtime) {
+		try {
+			const manifest = JSON.parse(readFileSync(path.join(runtime, "koda-runtime.json"), "utf8"));
+			return path.dirname(path.dirname(path.join(runtime, manifest.gentleShell)));
+		} catch {
+			// read-only discovery: fall through
+		}
+	}
+	return undefined;
+}
+
+const GENTLE_ROOT = findGentleRoot();
+const GENTLE_MISSING = "Gentle Shell (gentle-pi) not found; set GENTLE_PI_ROOT or build the bundled runtime";
+if (!GENTLE_ROOT && process.env.ABITO_REQUIRE_GENTLE === "1") {
+	test("Gentle Shell is required here (ABITO_REQUIRE_GENTLE=1)", () => {
+		assert.fail("ABITO_REQUIRE_GENTLE=1 but no Gentle Shell was found (set GENTLE_PI_ROOT or build the bundled runtime)");
+	});
+}
+const GENTLE_SKIP = GENTLE_ROOT ? undefined : GENTLE_MISSING;
+
+test("REAL engine (Koda's launch): the extension inside Gentle Shell resolves the island agent dir through PI_CODING_AGENT_DIR and registers the custom provider", { skip: GENTLE_SKIP, timeout: 180_000 }, async (t) => {
+	const script = path.join(GENTLE_ROOT, "bin", "gentle-shell.mjs");
+	if (!existsSync(script)) throw new Error(`GENTLE_PI_ROOT has no bin/gentle-shell.mjs: ${GENTLE_ROOT}`);
+	const r = await realSetup(t, (req, res) => (req.url === "/v1/chat/completions" ? okStream(res) : (res.writeHead(404), res.end())));
+	const events = [];
+	const { runtimeDeps } = fakeKodaRuntime(t, GENTLE_ROOT);
+	const engine = new AgentEngine({
+		// Exactly Koda's production launch (T2-fix): command = DEFAULT_COMMAND, so
+		// the engine itself resolves Koda's bundled runtime through runtimeDeps
+		// (here a fake runtime whose launcher/wrapper execs the REAL gentle-shell
+		// entry) and appends --home <island>/agent --mode rpc --session-dir … and
+		// builds isolatedEnv — which deliberately sets NO PI_CODING_AGENT_DIR. The
+		// extension finds <agentDir>/custom-provider.json through PI_CODING_AGENT_DIR
+		// that gentle-shell itself derives from --home for the Pi child it launches
+		// (gentle-pi lib/gentle-shell-launcher.ts:1085).
+		command: DEFAULT_COMMAND,
+		commandArgs: [],
+		runtimeDeps,
+		root: r.island,
+		env: { PATH: process.env.PATH, HOME: r.home },
+		backoffMs: [10_000, 10_000],
+		stableMs: 60_000,
+		startTimeoutMs: 90_000,
+		requestTimeoutMs: 30_000,
+		switchTimeoutMs: 30_000,
+		stopTimeoutMs: 2_000,
+		log: () => {},
+	});
+	engine.on("event", (event) => events.push(event));
+	try {
+		await engine.start();
+		assert.equal(engine.status, "ready");
+		// set_model only succeeds when the extension registered the provider — and
+		// it registers it only when it found <agentDir>/custom-provider.json through
+		// PI_CODING_AGENT_DIR (gentle-shell sets it to the --home dir for the Pi
+		// child it launches; gentle-pi lib/gentle-shell-launcher.ts:1085).
+		const setModel = await engine.request({ type: "set_model", provider: "custom-gw", modelId: "model-a" }, 60_000);
+		assert.equal(setModel.success, true, `extension provider registered in the engine: ${JSON.stringify(setModel)}`);
+		await engine.request({ type: "prompt", message: "ping" }, 60_000);
+		const deadline = Date.now() + 60_000;
+		while (!events.some((e) => e.type === "agent_settled")) {
+			assert.ok(Date.now() < deadline, "the turn never settled");
+			await new Promise((resolve) => setTimeout(resolve, 50));
+		}
+	} finally {
+		await engine.stop();
+	}
+	const msg = events.filter((e) => e.type === "message_end" && e.message?.role === "assistant").at(-1)?.message;
+	assert.equal(msg?.stopReason, "stop", JSON.stringify(msg));
+	assert.equal(msg.content.map((c) => c.text ?? "").join(""), "pong");
+	assert.equal(msg.provider, "custom-gw");
+	const chat = r.gw.hits.filter((h) => h.url === "/v1/chat/completions");
+	assert.equal(chat.length, 1);
+	assert.equal(chat[0].authorization, `Bearer ${SECRET}`);
+	assert.equal(JSON.parse(chat[0].body).model, "model-a");
+	assert.equal(r.gw.hits.length, 1, `no request other than the single chat completion: ${describeHits(r.gw.hits)}`);
 });
