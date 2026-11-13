@@ -121,7 +121,7 @@
   // Copyright (c) 2026 Louis Raillé, MIT. No Flow, reserved artwork or new IPC.
   function mountSettingsFrame() {
     const side = el('nav', 'hub-side');
-    side.append(el('div', 'hub-brand', 'Abito'), $('settings-tabs'));
+    side.append(el('div', 'hub-brand', 'Koda'), $('settings-tabs'));
     const page = el('main', 'hub-panel');
     page.append($('settings-bar'), $('settings-hint'), $('settings-body'));
     panel.append(side, page);
@@ -151,7 +151,7 @@
   // radiogroup of real buttons (keyboard reachable, each with its own name) and the CURRENT
   // colour is also written as a word: the meaning never rides on colour alone
   // (docs/desktop-visual-language.md §1.1 C5).
-  const avatarName = id => (AVATAR && AVATAR.isPrincipal(id) ? 'Abito' : specialistIdentities().identities.find(identity => identity.id === id)?.name || String(id));
+  const avatarName = id => (AVATAR && AVATAR.isPrincipal(id) ? 'Koda' : specialistIdentities().identities.find(identity => identity.id === id)?.name || String(id));
   function colorRow(row) {
     const line = el('div', 'srow scolors');
     line.dataset.identity = row.id;
@@ -595,7 +595,7 @@
     agent({ action: 'abito_account_remove', accountId }).then(r => {
       accountSaving = false;
       if (r && Object.hasOwn(r, "ownedAccounts") && r.ownedAccounts) ownedAccounts = { accounts: V.ownedAccounts(r.ownedAccounts) };
-      accountNote = { tone: 'go', say: 'Conexión quitada. La clave se borró del almacén de Abito.' }; render(); say(accountNote.say);
+      accountNote = { tone: 'go', say: 'Conexión quitada. La clave se borró del almacén de Koda.' }; render(); say(accountNote.say);
     }, () => { accountSaving = false; accountNote = { tone: 'red', say: 'No se pudo quitar la conexión. No se cambió nada.' }; render(); });
   }
   function makeAccountForm(saved) {
@@ -888,7 +888,7 @@
       }
       if (!av.rows.length) list.append(el('li', 'sempty', 'Sin agentes'));
       // Honest limit of asking from the island: a Claude Code run that cannot show its own prompt (`claude -p`, background subagents) treats "no answer" as DENIED.
-      list.append(el('li', 'snote', 'Claude Code en modo no interactivo (claude -p, subagentes): si no respondés a tiempo desde Abito, el permiso se niega. Abito nunca lo acepta por vos.'));
+      list.append(el('li', 'snote', 'Claude Code en modo no interactivo (claude -p, subagentes): si no respondés a tiempo desde Koda, el permiso se niega. Koda nunca lo acepta por vos.'));
       sec.append(list);
     }
     body.append(sec);
@@ -1247,9 +1247,9 @@
     // nothing on screen (a pose, an agent, a notice) repaints it. Sub-Abito rows appear when real
     // identities exist — the list above is the single place they will come from.
     const identities = specialistIdentities();
-    const rows = V.colorRows(prefs, AVATAR ? [{ id: AVATAR.PRINCIPAL_ID, name: 'Abito' }, ...identities.identities] : [], AVATAR);
+    const rows = V.colorRows(prefs, AVATAR ? [{ id: AVATAR.PRINCIPAL_ID, name: 'Koda' }, ...identities.identities] : [], AVATAR);
     if (rows.length) {
-      const color = group('appearance', 'Color', 'Abito mantiene su color en la isla.');
+      const color = group('appearance', 'Color', 'Koda mantiene su color en la isla.');
       for (const row of rows) color.append(colorRow(row));
       if (identities.kind !== 'ready') {
         const notice = el('p', 'snote', identities.kind === 'loading' ? 'Leyendo los colores de tus especialistas…' : 'Colores de especialistas no disponibles: no se pudieron cargar sus identidades.');

@@ -119,7 +119,7 @@ export async function voicePage(page: HTMLElement, ctx: HubContext) {
       }
       list.append(row(`${m.name} · ${m.sizeMb} MB`, `${m.note} Idiomas: ${(m.languages as string[]).join(', ')}. Licencia: ${m.license}. ${state}.`, actions));
     }
-    const words = trusted(h('textarea', { id: 'voice-words', rows: '3', 'aria-label': 'Palabras personalizadas', placeholder: 'Una por línea. «Abito» ya está incluida.', text: (sp.words as string[]).join('\n') })) as HTMLTextAreaElement;
+    const words = trusted(h('textarea', { id: 'voice-words', rows: '3', 'aria-label': 'Palabras personalizadas', placeholder: 'Una por línea. «Koda» ya está incluida.', text: (sp.words as string[]).join('\n') })) as HTMLTextAreaElement;
     words.addEventListener('change', () => apply(s => { s.words = words.value.split('\n').map(w => w.trim()).filter(Boolean); }));
     return card(row('Idioma', 'El que escucha Koda para «OK Koda» y el dictado.', lang), langNote, divider(), list, divider(),
       row('Palabras personalizadas', 'Nombres o términos que Koda corrige al transcribir, además de «Koda».', words));

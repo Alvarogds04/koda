@@ -300,7 +300,7 @@ async function handle(msg) {
 					const runtime = await runtimeFor(msg.accountId);
 					await runtime.login(msg.providerId, msg.method, makeInteraction(flow), {
 						getDeviceId,
-						agentName: "Abito",
+						agentName: "Koda",
 					});
 					writeRecord({ type: "result", id, ok: true });
 				} catch {
@@ -329,7 +329,7 @@ async function handle(msg) {
 					const runtime = await runtimeFor(msg.accountId);
 					await runtime.login(msg.providerId, "api_key", makeInteraction(flow, { autoAnswer: msg.apiKey }), {
 						getDeviceId,
-						agentName: "Abito",
+						agentName: "Koda",
 					});
 					writeRecord({ type: "result", id, ok: true });
 				} catch {

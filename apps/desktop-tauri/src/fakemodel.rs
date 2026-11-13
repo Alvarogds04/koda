@@ -67,7 +67,7 @@ impl Default for FakeModelConfig {
             size_bytes: 18_198_045_184,
             reply: Reply::Stream {
                 reasoning: false,
-                pieces: vec!["Hola, ".into(), "soy Abito.".into()],
+                pieces: vec!["Hola, ".into(), "soy Koda.".into()],
                 finish: "stop",
                 gap_ms: 0,
             },

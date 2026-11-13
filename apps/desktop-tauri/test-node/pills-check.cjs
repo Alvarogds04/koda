@@ -575,7 +575,7 @@ test('#409 T2 «Quitar conexión» lives on the owned-account row: exact sentenc
   assert.ok(buttons(b).includes('Quitar conexión'), 'the owned-account row offers deletion'); // RED before T2
   b.get('owned-accounts').querySelectorAll('button').find(x => allText(x) === 'Quitar conexión').fire('click'); await flush();
   assert.deepEqual(store.removes, ['nan'], 'abito_account_remove carries the accountId');
-  assert.equal(b.get('settings-live').textContent, 'Conexión quitada. La clave se borró del almacén de Abito.');
+  assert.equal(b.get('settings-live').textContent, 'Conexión quitada. La clave se borró del almacén de Koda.');
   assert.ok(!buttons(b).includes('Quitar conexión'), 'the row is gone after a successful removal');
   // failure: OUR sentence, the store untouched, the row still there
   const failing = fakeStore({ accounts: [account], failRemove: true });

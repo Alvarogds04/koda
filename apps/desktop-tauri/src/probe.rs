@@ -1873,7 +1873,7 @@ fn chat_evidence(app: &AppHandle) {
     let fake = FakeModel::start(FakeModelConfig {
         reply: Reply::Stream {
             reasoning: true,
-            pieces: vec!["Hola, ".into(), "soy Abito ".into(), "(modelo local falso del probe).".into()],
+            pieces: vec!["Hola, ".into(), "soy Koda ".into(), "(modelo local falso del probe).".into()],
             finish: "stop",
             gap_ms: 60,
         },
