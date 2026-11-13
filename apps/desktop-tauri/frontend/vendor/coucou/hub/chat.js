@@ -8,7 +8,8 @@ import { session, trusted, foldable as foldableCard } from "./runtime.js";
 import { t } from "./i18n-es.js";
 import { keyAccountCommand, keyAccountId } from "./keyaccounts.js";
 const UNAVAILABLE = "No disponible todavía";
-const STORE = "Secret Service (GNOME Keyring, KWallet)";
+const UA = typeof navigator !== "undefined" ? navigator.userAgent : "";
+const STORE = UA.includes("Windows") ? "Windows Credential Manager" : UA.includes("Mac OS X") ? "macOS Keychain" : "Secret Service (GNOME Keyring, KWallet)";
 const KEYS = { nan: "nan-api-key", opencodego: "opencode-go-api-key" };
 const CLOUD = [
   ["google", "Google AI", "AIza…", "aistudio.google.com"],

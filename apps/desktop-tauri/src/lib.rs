@@ -33,6 +33,7 @@ pub mod agentconn;
 #[path = "agentconn_unavailable.rs"]
 pub mod agentconn;
 pub mod winpolicy;
+pub mod opener;
 pub mod winipc;
 pub mod winfs;
 pub mod approval;

@@ -9,7 +9,10 @@ import { session, trusted, foldable as foldableCard } from './runtime.js';
 import { t } from './i18n-es.js';
 import { keyAccountCommand, keyAccountId } from './keyaccounts.js';
 const UNAVAILABLE = 'No disponible todavía';
-const STORE = 'Secret Service (GNOME Keyring, KWallet)';
+// K2-01c: name the keychain this OS really uses, like hub/integrations.
+const UA = typeof navigator !== 'undefined' ? navigator.userAgent : '';
+const STORE = UA.includes('Windows') ? 'Windows Credential Manager'
+  : UA.includes('Mac OS X') ? 'macOS Keychain' : 'Secret Service (GNOME Keyring, KWallet)';
 // #503 S3: providers outside Coucou's table (core/providers.ts) name their keychain key here.
 const KEYS: Record<string, string> = { nan: 'nan-api-key', opencodego: 'opencode-go-api-key' };
 const CLOUD = [

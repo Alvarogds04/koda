@@ -22,16 +22,14 @@ fn unix_now() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64)
 }
 
-/// `xdg-open mailto:…` with one argument, like `open_chat_url` (never a shell).
+/// The system mail client opens `mailto:…` as one argument, like `open_chat_url` (never a shell;
+/// K2-01c: `xdg-open`, `open` or the Windows protocol handler).
 fn open_mailto(url: String) -> Result<(), BridgeError> {
-    let status = std::process::Command::new("xdg-open")
-        .arg(url)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map_err(|_| BridgeError::denied("external opener unavailable"))?;
-    if status.success() { Ok(()) } else { Err(BridgeError::denied("external opener failed")) }
+    use abito_island::opener::{open_and_wait, OpenError, Target};
+    open_and_wait(Target::Mailto(&url)).map_err(|e| match e {
+        OpenError::Unavailable => BridgeError::denied("external opener unavailable"),
+        OpenError::Failed => BridgeError::denied("external opener failed"),
+    })
 }
 
 #[tauri::command]
