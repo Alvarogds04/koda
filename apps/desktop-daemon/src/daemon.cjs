@@ -41,7 +41,7 @@ const windowCapture = require("./window-capture.cjs");
 const PROTOCOL = "island-agent/1";
 const SESSION_FILE = "session.json";
 /** What a daemon process's command line contains (Linux /proc ownership check). */
-const DAEMON_CMDLINE = /(abito-island-daemon|cli\.cjs)/;
+const DAEMON_CMDLINE = /(koda-daemon|abito-island-daemon|cli\.cjs)/;
 
 /** stdin size bound and timeout for the native session helper (Windows). */
 const SESSION_HELPER_LIMIT = 4096;

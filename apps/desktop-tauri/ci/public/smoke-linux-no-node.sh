@@ -13,7 +13,7 @@
 #   (i) install     packaging/install.sh installs the stage built by the previous
 #                   smoke into a fresh private prefix — with no Node on the machine.
 #   (s) start       the INSTALLED launcher, under a GUI-like environment and under
-#                   `strace -f -e trace=connect`, reaches «abito-island-daemon:
+#                   `strace -f -e trace=connect`, reaches «koda-daemon:
 #                   running». The daemon only says that after the bundled Pi answered
 #                   its first RPC `get_state` (a model-free round-trip). Its process
 #                   image (/proc/<pid>/exe) must be <prefix>/runtime/node.
@@ -160,10 +160,10 @@ EXEC=$(sed -n 's/^Exec=//p' "$APPS/com.abitog.Koda.desktop")
 [ -n "$EXEC" ] || failx "(s) start — no Exec line in the installed .desktop entry"
 smoke_env strace -f -qq -s 4096 -e trace=connect,execve -o "$WORK/connect.trace" sh -c "$EXEC" > "$WORK/island.log" 2>&1 &
 ISLAND_PID=$!
-wait_for 180 grep -q 'abito-island-daemon: running (pid ' "$WORK/island.log" \
-  || failx "(s) start — no «abito-island-daemon: running (pid » line: the daemon did not start on the bundled runtime"
+wait_for 180 grep -q 'koda-daemon: running (pid ' "$WORK/island.log" \
+  || failx "(s) start — no «koda-daemon: running (pid » line: the daemon did not start on the bundled runtime"
 if grep -q 'island host: no_daemon' "$WORK/island.log"; then failx "(s) start — the island reported «island host: no_daemon»"; fi
-DAEMON_PID=$(sed -n 's/.*abito-island-daemon: running (pid \([0-9]*\)).*/\1/p' "$WORK/island.log" | head -n 1)
+DAEMON_PID=$(sed -n 's/.*koda-daemon: running (pid \([0-9]*\)).*/\1/p' "$WORK/island.log" | head -n 1)
 [ -n "$DAEMON_PID" ] || failx "(s) start — could not read the daemon pid"
 DAEMON_EXE=$(readlink "/proc/$DAEMON_PID/exe" || true)
 if [ "$DAEMON_EXE" = "$PREFIX/runtime/node" ]; then

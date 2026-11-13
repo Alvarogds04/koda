@@ -91,7 +91,7 @@ try {
   assert.equal(baseline.signal, null);
   assert.equal(baseline.status, 3, baseline.stderr);
   assert.equal(baseline.stdout, '');
-  assert.equal(baseline.stderr, 'abito-island-daemon: not running (stale: no_session)\n');
+  assert.equal(baseline.stderr, 'koda-daemon: not running (stale: no_session)\n');
   assert.equal(fs.existsSync(island), false, 'status must not create or start an island');
   assert.deepEqual(L.verifyStage(stage), [], 'status must leave every shipped byte unchanged');
 

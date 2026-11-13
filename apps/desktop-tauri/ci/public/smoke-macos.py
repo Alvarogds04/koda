@@ -68,7 +68,7 @@ def endpoint_published(pid):
 
 healthy = launch("runtime-present", endpoint_published)
 assert "endpoint handoff not published" not in healthy, "the handoff must be published on macOS"
-assert "abito-island-daemon: running (pid " in healthy, "daemon never became ready"
+assert "koda-daemon: running (pid " in healthy, "daemon never became ready"
 assert "KODA_DESKTOP_SOCKET=" in healthy, "notice transport never started"
 assert "no_daemon" not in healthy and "transport unavailable" not in healthy
 # K2-02: an installed Koda ships its own Node and Pi (Contents/Resources/runtime), so hiding the runner's Pi no longer
@@ -85,7 +85,7 @@ try:
     assert "island host: no_daemon (bundled_runtime_invalid)" in broken, "broken runtime was not identified"
     assert "La instalación de Koda está dañada: volvé a instalar Koda." in broken
     assert "KODA_DESKTOP_SOCKET=" in broken, "notices must work on a broken runtime"
-    assert "abito-island-daemon: running" not in broken, "daemon unexpectedly started on a broken bundled runtime"
+    assert "koda-daemon: running" not in broken, "daemon unexpectedly started on a broken bundled runtime"
 finally:
     moved.rename(manifest)
 print("macOS smoke: bundled daemon + notice transport ready; broken-runtime advice verified")

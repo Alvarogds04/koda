@@ -128,7 +128,7 @@ ciRule('smoke-windows.ps1 (K2-02): the missing-runtime case is a BROKEN BUNDLED 
   assert.match(block, /Rename-Item -LiteralPath \$manifest/, 'the installed runtime manifest is moved away');
   assert.ok(block.includes("island host: no_daemon (bundled_runtime_invalid)"), 'exact code line');
   assert.ok(block.includes('La instalación de Koda está dañada: volvé a instalar Koda.'), 'exact sentence');
-  assert.match(block, /-match 'abito-island-daemon: running'\) \{ throw /, 'the daemon must not start');
+  assert.match(block, /-match 'koda-daemon: running'\) \{ throw /, 'the daemon must not start');
   assert.match(block, /finally \{[^}]*Rename-Item -LiteralPath \$moved/, 'the manifest is restored in a finally');
 });
 ciRule('smoke-windows.ps1 broken-runtime (RDD advisories): the manifest is restored even if Stop-Island throws, and both stderr lines are WAITED for (no read-before-write race)', () => {

@@ -1,7 +1,7 @@
 #![cfg(target_os = "linux")]
 // Linux-only integration: Unix agent sockets and the Linux session/daemon policy.
 
-//! #306: the island-agent client against the REAL `abito-island-daemon` (apps/desktop-daemon)
+//! #306: the island-agent client against the REAL `koda-daemon` (apps/desktop-daemon)
 //! running a FAKE agent in a private temp island. No provider account, no network, no credential.
 //! The fake agent replaces only the engine: listing providers goes through the daemon's real Pi SDK
 //! helper, so a `pi` on PATH is required (CI installs the pinned Pi in the Rust job; never skip).

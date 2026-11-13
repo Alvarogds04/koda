@@ -118,7 +118,7 @@ try {
         if ((Get-FileHash -LiteralPath $source).Hash -ne (Get-FileHash -LiteralPath (Join-Path $install $file)).Hash) { throw "Installed hash mismatch: $file" }
     }
     Start-Island 'ready'
-    Wait-For { (Get-Content -Raw -LiteralPath (Join-Path $root 'ready.stderr.log')) -match 'abito-island-daemon: running' } 'installed daemon startup'
+    Wait-For { (Get-Content -Raw -LiteralPath (Join-Path $root 'ready.stderr.log')) -match 'koda-daemon: running' } 'installed daemon startup'
     # K2-01a: the installed island shows a top-level window and builds its tray (a person must still SEE them).
     Wait-For { (Get-Process -Id $script:process.Id).MainWindowHandle -ne [IntPtr]::Zero } 'installed island window'
     if ((Get-Content -Raw -LiteralPath (Join-Path $root 'ready.stderr.log')) -match 'tray unavailable:') { throw 'Installed island could not build its tray' }
@@ -228,7 +228,7 @@ try {
     foreach ($key in @('HOME', 'USERPROFILE', 'KODA_ISLAND_EXE')) { [Environment]::SetEnvironmentVariable($key, $originalEnv[$key], 'Process') }
 
     Start-Island 'explicit-root'
-    Wait-For { (Get-Content -Raw -LiteralPath (Join-Path $root 'explicit-root.stderr.log')) -match 'abito-island-daemon: running' } 'explicit Windows root daemon startup'
+    Wait-For { (Get-Content -Raw -LiteralPath (Join-Path $root 'explicit-root.stderr.log')) -match 'koda-daemon: running' } 'explicit Windows root daemon startup'
     Write-Host 'PASS installed receiver and daemon with explicit Windows project root'
     Stop-Island
     $runtimeFailures = [System.Collections.Generic.List[string]]::new()
@@ -248,7 +248,7 @@ try {
             Wait-For { $t = Get-Content -Raw -LiteralPath (Join-Path $root "$($case.mode).stderr.log") -ErrorAction SilentlyContinue; $t -like "*$($case.message)*" -and $t.Contains($case.code) } "$($case.code) + $($case.message)"
             $stderr = Get-Content -Raw -LiteralPath (Join-Path $root "$($case.mode).stderr.log")
             if (-not $stderr.Contains($case.code)) { throw "Missing the code line: $($case.code)" }
-            if ($stderr -match 'abito-island-daemon: running') { throw 'Daemon unexpectedly started on a broken bundled runtime' }
+            if ($stderr -match 'koda-daemon: running') { throw 'Daemon unexpectedly started on a broken bundled runtime' }
             Write-Host "PASS installed broken-runtime diagnostic: $($case.code) + $($case.message)"
         } catch {
             $runtimeFailures.Add("$($case.mode): $($_.Exception.Message)")

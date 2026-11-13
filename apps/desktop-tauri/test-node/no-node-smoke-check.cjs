@@ -50,7 +50,7 @@ test('Linux: quarantines every node/npm/npx/pi/corepack (all PATH hits) and the 
 });
 test('Linux: installs the shipped stage with install.sh, launches it, and asserts the daemon runs on <prefix>/runtime/node', () => {
   assert.match(linux, /sh "\$APP\/packaging\/install\.sh" "\$STAGE"/);
-  assert.match(linux, /abito-island-daemon: running \(pid /);
+  assert.match(linux, /koda-daemon: running \(pid /);
   assert.match(linux, /readlink "\/proc\/\$DAEMON_PID\/exe"/);
   assert.match(linux, /= "\$PREFIX\/runtime\/node"/);
   assert.match(linux, /"\$PREFIX\/runtime\/node" "\$PREFIX\/desktop-daemon\/src\/cli\.cjs" status/);
@@ -107,7 +107,7 @@ test('macOS: quarantines node/npm/npx/pi/corepack (which -a), the toolcache and 
 });
 test('macOS: installs from the dmg, starts the installed binary with a Finder-minimal env, daemon on Resources/runtime/node, status running', () => {
   assert.match(mac, /"PATH": "\/usr\/bin:\/bin:\/usr\/sbin:\/sbin"/);
-  assert.match(mac, /abito-island-daemon: running \(pid /);
+  assert.match(mac, /koda-daemon: running \(pid /);
   assert.match(mac, /app \/ "Contents\/Resources\/runtime\/node"/);
   assert.match(mac, /"\/bin\/ps", "-o", "comm=", "-p", pid/);
   assert.match(mac, /os\.path\.realpath\(comm\) == os\.path\.realpath\(str\(runtime_node\)\)/);
@@ -138,7 +138,7 @@ test('smoke-macos.py (K2-02): the missing-runtime case is a BROKEN BUNDLED RUNTI
   assert.match(block, /broken = launch\("broken-runtime"\)/);
   assert.ok(block.includes('"island host: no_daemon (bundled_runtime_invalid)" in broken'), 'exact code line');
   assert.ok(block.includes('"La instalación de Koda está dañada: volvé a instalar Koda." in broken'), 'exact sentence');
-  assert.match(block, /"abito-island-daemon: running" not in broken/, 'the daemon must not start');
+  assert.match(block, /"koda-daemon: running" not in broken/, 'the daemon must not start');
   assert.match(block, /"KODA_DESKTOP_SOCKET=" in broken/, 'notices still work on a broken runtime');
   assert.match(block, /finally:\n\s+moved\.rename\(manifest\)/, 'the manifest is put back');
   const j = job('installer-smoke-macos');
@@ -160,7 +160,7 @@ test('Windows: the runtime smoke quarantines every node/npm/npx/pi/corepack (Get
   assert.ok(guard > 0 && guard < win.indexOf('Rename-Item -LiteralPath $hit'), 'hosted-runner guard before any quarantine');
 });
 test('Windows: the installed island starts with no node anywhere; its daemon runs on <install>\\runtime\\node.exe; installed status ok; stopped before uninstall', () => {
-  assert.ok(win.includes(String.raw`'abito-island-daemon: running \(pid (\d+)\)'`), 'parses the daemon pid from the ready line');
+  assert.ok(win.includes(String.raw`'koda-daemon: running \(pid (\d+)\)'`), 'parses the daemon pid from the ready line');
   assert.match(win, /\(Get-Process -Id \$daemonPid\)\.Path/);
   assert.match(win, /-ne \$runtimeNode\) \{ throw /);
   assert.match(win, /& \$runtimeNode \(Join-Path \$install 'desktop-daemon\\cli\.cjs'\) status|& \$runtimeNode \(Join-Path \$install 'desktop-daemon\/src\/cli\.cjs'\) status/);

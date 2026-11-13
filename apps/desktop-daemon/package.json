@@ -12,6 +12,6 @@
 		"node": ">=18"
 	},
 	"bin": {
-		"abito-island-daemon": "src/cli.cjs"
+		"koda-daemon": "src/cli.cjs"
 	}
 }

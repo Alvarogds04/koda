@@ -415,9 +415,9 @@ fi
 smoke_env sh -c "$EXEC" > "$WORK/island.log" 2>&1 &
 ISLAND_PID=$!
 
-daemon_ready() { grep -q 'abito-island-daemon: running (pid ' "$WORK/island.log"; }
+daemon_ready() { grep -q 'koda-daemon: running (pid ' "$WORK/island.log"; }
 if ! wait_for 180 'the app-owned daemon ready line' daemon_ready; then
-  fail "(b) start — $REASON (island.log has no «abito-island-daemon: running (pid » line)"
+  fail "(b) start — $REASON (island.log has no «koda-daemon: running (pid » line)"
   fail_rest "(b)" "(c-island) show" "(c-tray) tray" "(d) notice"
   diag
   exit 1

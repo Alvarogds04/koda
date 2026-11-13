@@ -6,7 +6,7 @@ Usage: python3 ci/public/smoke-macos-installed.py <path/to/Koda.dmg> <work-dir>
 
 Prints one line per criterion part and exits non-zero if any part fails:
   (a) install: mount the .dmg read-only, copy the .app with ditto into <work-dir>/Applications, detach;
-  (b) start:   the INSTALLED binary, Finder-minimal environment, reaches «abito-island-daemon: running»
+  (b) start:   the INSTALLED binary, Finder-minimal environment, reaches «koda-daemon: running»
                and publishes its endpoint handoff;
   (c-island)   the installed app owns an on-screen window with a real size, read from the window server
                (CGWindowListCopyWindowInfo through JXA: owner pid, bounds and on-screen state need no
@@ -137,7 +137,7 @@ def main():
                                    start_new_session=True)
         try:
             # (b) the installed app starts its daemon and publishes the handoff hooks and Pi read.
-            ready = wait_for(lambda: "abito-island-daemon: running (pid " in log_path.read_text(), 90)
+            ready = wait_for(lambda: "koda-daemon: running (pid " in log_path.read_text(), 90)
             handoff = runtime / "endpoint.json"
             published = wait_for(handoff.is_file, 30)
             alive = process.poll() is None

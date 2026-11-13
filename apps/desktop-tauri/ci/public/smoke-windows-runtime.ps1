@@ -93,7 +93,7 @@ try {
         do {
             Start-Sleep -Milliseconds 500
             $text = if (Test-Path -LiteralPath $islandErr) { Get-Content -Raw -LiteralPath $islandErr } else { '' }
-            if ($text -match 'abito-island-daemon: running \(pid (\d+)\)') { $daemonPid = [int]$Matches[1]; break }
+            if ($text -match 'koda-daemon: running \(pid (\d+)\)') { $daemonPid = [int]$Matches[1]; break }
             if ($island.HasExited) { break }
         } while ([DateTime]::UtcNow -lt $deadline)
         if ($null -eq $daemonPid) { throw "Installed island did not start its daemon with no Node on the machine:`n$text" }
