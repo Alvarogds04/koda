@@ -151,9 +151,13 @@ test("bundled tools: fixed paths beside the daemon package, never PATH; macOS re
 	fs.mkdirSync(path.join(root, "runtime"), { recursive: true });
 	const linux = bundledTools({ installRoot: root, platform: "linux" });
 	assert.deepEqual(linux, { ffmpeg: undefined, helper: undefined }, "nothing there: unavailable, no fallback");
-	fs.writeFileSync(path.join(root, "runtime", "ffmpeg"), "bin", { mode: 0o755 });
-	fs.writeFileSync(path.join(root, "koda-transcribe"), "bin", { mode: 0o755 });
-	assert.deepEqual(bundledTools({ installRoot: root, platform: "linux" }), { ffmpeg: path.join(root, "runtime", "ffmpeg"), helper: path.join(root, "koda-transcribe") });
+	// «linux» asks for the execute bit, which NTFS cannot hold: on a Windows host the product rightly refuses these
+	// files, so this case only means something where the filesystem keeps the bit (the win32 case below runs everywhere).
+	if (posix) {
+		fs.writeFileSync(path.join(root, "runtime", "ffmpeg"), "bin", { mode: 0o755 });
+		fs.writeFileSync(path.join(root, "koda-transcribe"), "bin", { mode: 0o755 });
+		assert.deepEqual(bundledTools({ installRoot: root, platform: "linux" }), { ffmpeg: path.join(root, "runtime", "ffmpeg"), helper: path.join(root, "koda-transcribe") });
+	}
 	assert.deepEqual(bundledTools({ installRoot: root, platform: "darwin" }).ffmpeg, undefined, "darwin-arm64: ffmpeg is not bundled yet");
 	fs.writeFileSync(path.join(root, "runtime", "ffmpeg.exe"), "bin");
 	fs.writeFileSync(path.join(root, "koda-transcribe.exe"), "bin");
