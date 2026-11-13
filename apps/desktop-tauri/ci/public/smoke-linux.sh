@@ -6,7 +6,7 @@
 #   (a) install    packaging/build.cjs stages an offline release build and
 #                  packaging/install.sh verifies every hash against receipt.json
 #                  and installs it into a PRIVATE prefix (never ~/.local).
-#   (b) start      the INSTALLED launcher (abito-island-launcher, started exactly
+#   (b) start      the INSTALLED launcher (koda-launcher, started exactly
 #                  as the generated .desktop Exec line starts it) reaches the
 #                  app-owned daemon ready line and publishes the notice socket.
 #   (c-island)     the island window is mapped on the private X display with the
@@ -17,7 +17,7 @@
 #                  here: «Ocultar»/«Mostrar Koda» change app state a black-box smoke
 #                  cannot observe reliably, and the probe build already proves that
 #                  scene (bandeja-menu) from inside the page.
-#   (d) notice     the INSTALLED desktop-harness/bin/abito-hook.cjs receives a
+#   (d) notice     the INSTALLED desktop-harness/bin/koda-hook.cjs receives a
 #                  Claude «Stop» payload and the island log carries EXACTLY one
 #                  content-free «island: settled notice accepted» line (src/protocol.rs
 #                  SETTLED_NOTICE_LOG_LINE) — the same proof ci/public/smoke-windows.ps1
@@ -172,7 +172,7 @@ case "$APP" in "$WORK"/*) die "--work must not contain --app: $WORK" ;; esac
 [ "$WORK" != "$HOME" ] || die "--work must not be your home directory"
 # sockaddr_un.sun_path is 108 bytes on Linux, NUL included: keep the notice socket
 # inside that limit instead of failing later inside the app.
-SOCKET_SUFFIX='/run/abito-island/p-XXXXXX/s'
+SOCKET_SUFFIX='/run/koda/p-XXXXXX/s'
 [ $(( ${#WORK} + ${#SOCKET_SUFFIX} )) -le 107 ] || die "--work is too deep: ${#WORK} + ${#SOCKET_SUFFIX} bytes exceeds the 107-byte unix socket limit (use a shorter --work)"
 
 if [ -e "$WORK" ]; then
@@ -215,7 +215,7 @@ for dir in "$SMOKE_HOME" "$XDG_RUNTIME" "$XDG_CONFIG" "$XDG_DATA" "$XDG_CACHE" "
 done
 
 # The OS-standard environment a GUI launch gets, rebuilt from nothing: no
-# DISPLAY/XAUTHORITY/WAYLAND/DBUS of the caller, no ABITO_* override (the launcher
+# DISPLAY/XAUTHORITY/WAYLAND/DBUS of the caller, no KODA_* override (the launcher
 # refuses those and so does this smoke).
 smoke_env() {
   env -i \
@@ -238,7 +238,7 @@ smoke_env() {
 # The caller's own Koda install must not be touched by this run: presence plus
 # mtime+size of the two paths install.sh would write without explicit overrides.
 real_state() {
-  for path in "$HOME/.local/share/abito-island" "$HOME/.local/share/applications/com.abitog.AbitoTauri.desktop"; do
+  for path in "$HOME/.local/share/koda" "$HOME/.local/share/applications/com.abitog.Koda.desktop"; do
     if [ -e "$path" ]; then printf '%s=%s;' "$path" "$(stat -c '%Y:%s' "$path")"; else printf '%s=absent;' "$path"; fi
   done
 }
@@ -321,7 +321,7 @@ json_ok() { # reads a {"ok":true|false} document on stdin
 say "smoke-linux: app=$APP work=$WORK pi=$PI"
 say '== (a) install: build.cjs + install.sh into a private prefix'
 if ( cd "$APP" && node packaging/build.cjs --out "$WORK/stage" --runtime-archive "$RUNTIME_ARCHIVE" ) > "$WORK/build.log" 2>&1; then
-  STAGE=$(find "$WORK/stage/abito-island" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | head -n 1 || true)
+  STAGE=$(find "$WORK/stage/koda" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | head -n 1 || true)
   if [ -z "$STAGE" ] || [ ! -f "$STAGE/receipt.json" ]; then
     fail "(a) install — build.cjs produced no stage with a receipt"
     fail_rest "(a)" "(b) start" "(c-island) show" "(c-tray) tray" "(d) notice"
@@ -331,15 +331,15 @@ if ( cd "$APP" && node packaging/build.cjs --out "$WORK/stage" --runtime-archive
   if smoke_env sh "$APP/packaging/install.sh" "$STAGE" --prefix "$PREFIX" --project-root "$PROJECT" --applications-dir "$APPS" > "$WORK/install.log" 2>&1 \
      && grep -q 'Stage verified against receipt.json' "$WORK/install.log" \
      && grep -q "Installed Abito (Tauri) in $PREFIX" "$WORK/install.log" \
-     && [ -x "$PREFIX/abito-island" ] && [ -x "$PREFIX/abito-island-launcher" ] \
-     && [ -f "$PREFIX/receipt.json" ] && [ -f "$APPS/com.abitog.AbitoTauri.desktop" ] \
+     && [ -x "$PREFIX/koda" ] && [ -x "$PREFIX/koda-launcher" ] \
+     && [ -f "$PREFIX/receipt.json" ] && [ -f "$APPS/com.abitog.Koda.desktop" ] \
      && [ -d "$PREFIX/runtime" ] && [ ! -L "$PREFIX/runtime" ] \
      && [ -x "$PREFIX/runtime/node" ] && [ -x "$PREFIX/runtime/pi" ] \
      && grep -q '"features": "tauri/custom-protocol (no probe)"' "$PREFIX/receipt.json" \
-     && [ "$(sha256sum "$STAGE/abito-island" | cut -d' ' -f1)" = "$(sha256sum "$PREFIX/abito-island" | cut -d' ' -f1)" ]; then
-    EXEC=$(sed -n 's/^Exec=//p' "$APPS/com.abitog.AbitoTauri.desktop")
-    if [ "$EXEC" = "env ABITO_PROJECT_ROOT=$PROJECT \"$PREFIX/abito-island-launcher\"" ]; then
-      pass "(a) install: build.cjs staged $(basename "$STAGE") offline with the verified runtime archive (receipt: no probe feature); install.sh re-verified every hash against receipt.json, audited the runtime members, extracted the bundled Node+Pi to $PREFIX/runtime and installed the app in $PREFIX (binary sha256 $(sha256sum "$PREFIX/abito-island" | cut -d' ' -f1))"
+     && [ "$(sha256sum "$STAGE/koda" | cut -d' ' -f1)" = "$(sha256sum "$PREFIX/koda" | cut -d' ' -f1)" ]; then
+    EXEC=$(sed -n 's/^Exec=//p' "$APPS/com.abitog.Koda.desktop")
+    if [ "$EXEC" = "env KODA_PROJECT_ROOT=$PROJECT \"$PREFIX/koda-launcher\"" ]; then
+      pass "(a) install: build.cjs staged $(basename "$STAGE") offline with the verified runtime archive (receipt: no probe feature); install.sh re-verified every hash against receipt.json, audited the runtime members, extracted the bundled Node+Pi to $PREFIX/runtime and installed the app in $PREFIX (binary sha256 $(sha256sum "$PREFIX/koda" | cut -d' ' -f1))"
     else
       fail "(a) install — the generated .desktop Exec line is not the expected one: $EXEC"
       fail_rest "(a)" "(b) start" "(c-island) show" "(c-tray) tray" "(d) notice"
@@ -415,9 +415,9 @@ fi
 smoke_env sh -c "$EXEC" > "$WORK/island.log" 2>&1 &
 ISLAND_PID=$!
 
-daemon_ready() { grep -q 'abito-island-daemon: running (pid ' "$WORK/island.log"; }
+daemon_ready() { grep -q 'koda-daemon: running (pid ' "$WORK/island.log"; }
 if ! wait_for 180 'the app-owned daemon ready line' daemon_ready; then
-  fail "(b) start — $REASON (island.log has no «abito-island-daemon: running (pid » line)"
+  fail "(b) start — $REASON (island.log has no «koda-daemon: running (pid » line)"
   fail_rest "(b)" "(c-island) show" "(c-tray) tray" "(d) notice"
   diag
   exit 1
@@ -428,8 +428,8 @@ if grep -q 'island host: no_daemon' "$WORK/island.log"; then
   diag
   exit 1
 fi
-SOCKET=$(sed -n 's/^ABITO_DESKTOP_SOCKET=//p' "$WORK/island.log" | head -n 1)
-HANDOFF="$XDG_RUNTIME/abito-island/endpoint.json"
+SOCKET=$(sed -n 's/^KODA_DESKTOP_SOCKET=//p' "$WORK/island.log" | head -n 1)
+HANDOFF="$XDG_RUNTIME/koda/endpoint.json"
 if [ -S "$SOCKET" ] && [ -f "$HANDOFF" ] && [ "$(stat -c %a "$HANDOFF")" = 600 ]; then
   pass "(b) start: the installed launcher started the app-owned daemon (ready line received) and published $HANDOFF (0600) for socket $SOCKET"
 else
@@ -452,7 +452,7 @@ island_id() {
   done
   # A window manager that publishes no _NET_CLIENT_LIST still has the window in the
   # tree: accept the app's own class there, so the check never depends on the WM's bookkeeping.
-  id=$(smoke_env xwininfo -root -tree 2>/dev/null | grep '"Koda": ("abito-island"' | head -n 1 | sed -n 's/^ *\(0x[0-9a-f]*\) .*/\1/p')
+  id=$(smoke_env xwininfo -root -tree 2>/dev/null | grep '"Koda": ("koda"' | head -n 1 | sed -n 's/^ *\(0x[0-9a-f]*\) .*/\1/p')
   if [ -n "$id" ]; then
     printf '%s' "$id"
     return 0
@@ -514,7 +514,7 @@ settled_seen() { [ "$(settled_count)" -ge 1 ]; }
 PAYLOAD=$(printf '{"hook_event_name":"Stop","cwd":"%s","session_id":"ci-linux-installed-stop","stop_hook_active":false}' "$PROJECT")
 REASON=''
 hook_exit=0
-printf '%s' "$PAYLOAD" | smoke_env node "$PREFIX/desktop-harness/bin/abito-hook.cjs" claude stop \
+printf '%s' "$PAYLOAD" | smoke_env node "$PREFIX/desktop-harness/bin/koda-hook.cjs" claude stop \
   > "$WORK/hook.stdout.log" 2> "$WORK/hook.stderr.log" || hook_exit=$?
 if [ "$hook_exit" -ne 0 ]; then
   REASON="the installed hook exited $hook_exit"
@@ -543,7 +543,7 @@ if [ "$REAL_AFTER" != "$REAL_BEFORE" ]; then
   diag
   exit 1
 fi
-say "isolation: the caller's own $HOME/.local/share/abito-island and .desktop are byte-identical (mtime+size) before and after"
+say "isolation: the caller's own $HOME/.local/share/koda and .desktop are byte-identical (mtime+size) before and after"
 
 say ''
 say 'smoke-linux: all five parts passed on the shipped binary (S2 a/b/c-island/c-tray/d).'

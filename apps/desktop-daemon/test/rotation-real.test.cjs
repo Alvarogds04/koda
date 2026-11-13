@@ -16,7 +16,7 @@
 //
 // Engine discovery follows test/pi-offline.test.cjs: GENTLE_PI_ROOT (a
 // gentle-pi package directory) or Koda's bundled runtime; SKIPPED (never
-// silently passed) when neither exists; with ABITO_REQUIRE_GENTLE=1 absence
+// silently passed) when neither exists; with KODA_REQUIRE_GENTLE=1 absence
 // FAILS instead. Only private temp dirs are used: the user's ~/.pi, ~/.engram
 // and real config are never read or written.
 
@@ -99,9 +99,9 @@ function findGentleRoot() {
 }
 
 const gentleRoot = findGentleRoot();
-if (!gentleRoot && process.env.ABITO_REQUIRE_GENTLE === "1") {
-	test("Gentle Shell is required here (ABITO_REQUIRE_GENTLE=1)", () => {
-		assert.fail("ABITO_REQUIRE_GENTLE=1 but no Gentle Shell was found (set GENTLE_PI_ROOT or build the bundled runtime)");
+if (!gentleRoot && process.env.KODA_REQUIRE_GENTLE === "1") {
+	test("Gentle Shell is required here (KODA_REQUIRE_GENTLE=1)", () => {
+		assert.fail("KODA_REQUIRE_GENTLE=1 but no Gentle Shell was found (set GENTLE_PI_ROOT or build the bundled runtime)");
 	});
 }
 const gentleSkip = gentleRoot ? undefined : "Gentle Shell (gentle-pi) not found; set GENTLE_PI_ROOT or build the bundled runtime";

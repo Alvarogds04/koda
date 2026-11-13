@@ -112,7 +112,7 @@ test('T6 mounts Coucou sidebar and page without replacing existing tab hosts', (
   require('node:vm').runInNewContext(src.slice(start, end) + '\nmountSettingsFrame();', { panel, el, $: id => nodes.get(id) });
   assert.deepEqual(panel.children.map(n => n.className), ['hub-side', 'hub-panel']);
   const [side, page] = panel.children;
-  assert.equal(side.children[0].textContent, 'Abito');
+  assert.equal(side.children[0].textContent, 'Koda');
   assert.equal(side.children[1], nodes.get('settings-tabs'));
   assert.deepEqual(page.children.map(n => n.id), ['settings-bar', 'settings-hint', 'settings-body']);
   const html = fs.readFileSync(path.join(frontend, 'index.html'), 'utf8');
@@ -1357,7 +1357,7 @@ test('#409 T3 docs and source pins: manual editor fields, row removal, and the p
   assert.match(src, /removeAccount\(account\.accountId\)/, 'the row wires removal through the closed verb');
   // a public check must keep pinning the removal sentences (S5) and the manual path (S4)
   const pills = read(path.join(__dirname, 'pills-check.cjs'));
-  assert.ok(pills.includes('Conexión quitada. La clave se borró del almacén de Abito.'), 'pills-check pins the removal success sentence');
+  assert.ok(pills.includes('Conexión quitada. La clave se borró del almacén de Koda.'), 'pills-check pins the removal success sentence');
   // the failure sentence lives in a regex literal in pills-check (backslash-escaped dots)
   assert.ok(pills.includes('No se pudo quitar la conexión') && pills.includes('No se cambió nada'), 'pills-check pins the removal failure sentence');
   assert.ok(pills.includes('account-credential'), 'pills-check drives the manual credential options');

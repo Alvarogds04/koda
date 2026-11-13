@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 'use strict';
-// Install: node bin/abito-hook.cjs install <claude|codex|copilot|opencode|statusline> (--settings <abs path> | --user) [--timeout-sec N] [--remove] [--apply]
-// Legacy:  node bin/abito-hook.cjs install recap --user --remove [--apply]   (K2-03: Recap was removed; only its 0.1 hooks can be taken out)
-// Usage: node bin/abito-hook.cjs <claude|codex> <permission-request|pre-tool-use|post-tool-use|session-start|stop> [--timeout-sec N]
+// Install: node bin/koda-hook.cjs install <claude|codex|copilot|opencode|statusline> (--settings <abs path> | --user) [--timeout-sec N] [--remove] [--apply]
+// Legacy:  node bin/koda-hook.cjs install recap --user --remove [--apply]   (K2-03: Recap was removed; only its 0.1 hooks can be taken out)
+// Usage: node bin/koda-hook.cjs <claude|codex> <permission-request|pre-tool-use|post-tool-use|session-start|stop> [--timeout-sec N]
 // stdout is either empty or exactly one hook JSON line; exit 0 always except usage errors (64).
 const { handleClaudeHook, parseArgs, watchdogMs, startWatchdog, MAX_STDIN_BYTES } = require('../src/claude.cjs');
 const { handleCodexHook } = require('../src/codex.cjs');
@@ -21,7 +21,7 @@ function allowedEvent(subcommand, event) {
   if (subcommand === 'codex') return CODEX_EVENTS.includes(event);
   return event === 'permission-request'; // copilot | opencode
 }
-function usage() { process.stderr.write(`usage: abito-hook <claude|codex> <${EVENTS.join('|')}> [--timeout-sec 1..3600]\n`); process.exit(64); }
+function usage() { process.stderr.write(`usage: koda-hook <claude|codex> <${EVENTS.join('|')}> [--timeout-sec 1..3600]\n`); process.exit(64); }
 
 function readStdin() {
   return new Promise(resolve => {
@@ -72,7 +72,7 @@ async function runInstaller(argv) {
     return;
   }
   if (argv[0] === 'pi') {
-    process.stderr.write('usage: abito-hook install pi --user [--remove] --json [--apply-plan <hash> --audit-dir <abs path>] (Linux, macOS and Windows)\n');
+    process.stderr.write('usage: koda-hook install pi --user [--remove] --json [--apply-plan <hash> --audit-dir <abs path>] (Linux, macOS and Windows)\n');
     process.exitCode = 64; return;
   }
   const { runInstall, askLine, promptTimeoutFromEnv } = require('../src/install-claude.cjs');

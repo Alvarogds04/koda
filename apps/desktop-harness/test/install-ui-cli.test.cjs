@@ -1,7 +1,7 @@
 'use strict';
 const { tmpBase, assertMode, unixOnly } = require('./platform-env.cjs');
 // End-to-end tests of `abito-hook install <claude|codex> ... --json / --apply-plan` through REAL child processes.
-// The CLI is started by a wrapper node process, so its parent executable is node (ABITO_ISLAND_EXE = realpath(node)).
+// The CLI is started by a wrapper node process, so its parent executable is node (KODA_ISLAND_EXE = realpath(node)).
 // Temp dirs only; the real ~/.claude and ~/.codex are never touched.
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
@@ -13,7 +13,7 @@ const { spawnSync } = require('node:child_process');
 const core = require('../src/install-claude.cjs');
 const codex = require('../src/install-codex.cjs');
 
-const BIN = path.resolve(__dirname, '../bin/abito-hook.cjs');
+const BIN = path.resolve(__dirname, '../bin/koda-hook.cjs');
 const NODE_REAL = fs.realpathSync(process.execPath);
 const sha = b => crypto.createHash('sha256').update(b).digest('hex');
 const MARKERS = ['CLAUDECODE', 'CLAUDE_CODE_ENTRYPOINT', 'CODEX_SANDBOX', 'CODEX_SANDBOX_NETWORK_DISABLED', 'CODEX_THREAD_ID', 'CODEX_SESSION_ID', 'PI_SESSION_ID', 'PI_SESSION_FILE', 'AI_AGENT', 'GENTLE_PI_SESSION'];
@@ -26,7 +26,7 @@ function tmp(t) {
 }
 const ls = d => fs.readdirSync(d).sort();
 function cleanEnv(home, extra = {}) {
-  const env = { ...process.env, HOME: home, USERPROFILE: home, ABITO_ISLAND_EXE: NODE_REAL, ...extra }; // Windows os.homedir() reads USERPROFILE
+  const env = { ...process.env, HOME: home, USERPROFILE: home, KODA_ISLAND_EXE: NODE_REAL, ...extra }; // Windows os.homedir() reads USERPROFILE
   for (const k of Object.keys(env)) if (MARKERS.includes(k) || k === 'OPENCODE' || k.startsWith('OPENCODE_')) delete env[k];
   for (const [k, v] of Object.entries(extra)) if (v === undefined) delete env[k]; else env[k] = v;
   return env;
@@ -64,7 +64,7 @@ test('Windows UI install with an unverifiable install manifest refuses before re
     const root = path.join(dir, 'untrusted-install', 'desktop-harness');
     const pkg = path.resolve(path.dirname(BIN), '..');
     for (const sub of ['bin', 'src']) fs.cpSync(path.join(pkg, sub), path.join(root, sub), { recursive: true });
-    bin = path.join(root, 'bin', 'abito-hook.cjs');
+    bin = path.join(root, 'bin', 'koda-hook.cjs');
   }
   for (const harness of ['claude', 'codex', 'copilot', 'opencode', 'recap', 'statusline']) {
     for (const extra of [[], ['--apply-plan', 'a'.repeat(64), '--audit-dir', path.join(dir, 'audit')]]) {
@@ -203,9 +203,9 @@ function refusal(name, { harness = 'claude', code, jcode, setup, env, content, a
     if (code !== 73 || !fs.existsSync(w.audit)) assert.equal(fs.existsSync(path.join(w.audit, 'hook-installs.jsonl')), false);
   });
 }
-refusal('no ABITO_ISLAND_EXE', { code: 77, jcode: 'not_island', env: w => cleanEnv(w.home, { ABITO_ISLAND_EXE: undefined }) });
-refusal('wrong ABITO_ISLAND_EXE', { code: 77, jcode: 'not_island', env: w => cleanEnv(w.home, { ABITO_ISLAND_EXE: fs.realpathSync(process.platform === 'win32' ? process.env.ComSpec : '/bin/sh') }) });
-refusal('relative ABITO_ISLAND_EXE', { code: 77, jcode: 'not_island', env: w => cleanEnv(w.home, { ABITO_ISLAND_EXE: 'node' }) });
+refusal('no KODA_ISLAND_EXE', { code: 77, jcode: 'not_island', env: w => cleanEnv(w.home, { KODA_ISLAND_EXE: undefined }) });
+refusal('wrong KODA_ISLAND_EXE', { code: 77, jcode: 'not_island', env: w => cleanEnv(w.home, { KODA_ISLAND_EXE: fs.realpathSync(process.platform === 'win32' ? process.env.ComSpec : '/bin/sh') }) });
+refusal('relative KODA_ISLAND_EXE', { code: 77, jcode: 'not_island', env: w => cleanEnv(w.home, { KODA_ISLAND_EXE: 'node' }) });
 for (const m of [...MARKERS, 'OPENCODE', 'OPENCODE_FOO']) {
   refusal('agent marker ' + m, { code: 77, jcode: 'not_island', env: w => cleanEnv(w.home, { [m]: '1' }) });
 }
@@ -341,5 +341,5 @@ test('crash AFTER the result JSON was produced: no stack, exit code matches that
 test('TTY installers still reject the new flags (usage 64, text on stderr)', t => {
   const d = tmp(t);
   const r = spawnSync(process.execPath, [BIN, 'install', 'claude', '--settings', path.join(d, 's.json'), '--bogus'], { encoding: 'utf8', timeout: 20000, env: cleanEnv(d) });
-  assert.equal(r.status, 64); assert.match(r.stderr, /^usage: abito-hook install claude/);
+  assert.equal(r.status, 64); assert.match(r.stderr, /^usage: koda-hook install claude/);
 });

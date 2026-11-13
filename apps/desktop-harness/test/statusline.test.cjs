@@ -10,7 +10,7 @@ const { extractPlan, writeChannel, readPrevious, channelPath, previousPath, runP
 
 const NOW = 1_800_000_000_000;
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'abito-sl-'));
-const BIN = path.resolve(__dirname, '../bin/abito-statusline.cjs');
+const BIN = path.resolve(__dirname, '../bin/koda-statusline.cjs');
 
 test('only the two windows survive; every other field of the status JSON is dropped', () => {
   const plan = extractPlan({
@@ -80,7 +80,7 @@ test('the script prints the previous line untouched and writes the channel', () 
   fs.writeFileSync(previousPath(home), JSON.stringify({ type: 'command', command: 'printf "[%s]" "$(head -c 5)"' }));
   const at = Math.floor(Date.now() / 1000);
   const input = JSON.stringify({ cwd: '/p', hello: 'world', rate_limits: { five_hour: { used_percentage: 3, resets_at: at + 3600 } } });
-  const r = spawnSync(process.execPath, [BIN], { input, env: { ...process.env, ABITO_SOCKET_DIR: rt, HOME: home }, encoding: 'utf8' });
+  const r = spawnSync(process.execPath, [BIN], { input, env: { ...process.env, KODA_SOCKET_DIR: rt, HOME: home }, encoding: 'utf8' });
   assert.equal(r.status, 0);
   assert.equal(r.stdout, '[{"cwd]');
   const written = JSON.parse(fs.readFileSync(channelPath(rt), 'utf8'));
@@ -89,7 +89,7 @@ test('the script prints the previous line untouched and writes the channel', () 
 });
 
 test('garbage input or no runtime never fails the status line', () => {
-  const r = spawnSync(process.execPath, [BIN], { input: 'not json', env: { PATH: process.env.PATH, HOME: tmp(), ABITO_SOCKET_DIR: '/nonexistent-abito-dir/x' }, encoding: 'utf8' });
+  const r = spawnSync(process.execPath, [BIN], { input: 'not json', env: { PATH: process.env.PATH, HOME: tmp(), KODA_SOCKET_DIR: '/nonexistent-abito-dir/x' }, encoding: 'utf8' });
   assert.equal(r.status, 0);
   assert.equal(r.stdout, '');
 });

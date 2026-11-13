@@ -300,9 +300,15 @@ The hooks catalogue also accepts `statusline` in `hooks_install`/`hooks_remove`,
 **Hooks catalogue addendum (#467, `hooks_preview` / `hooks_install` / `hooks_remove`, `src/agent-hooks.cjs`).** `clientId` also accepts `cursor`
 (closed set: `claude-code, codex, statusline, gemini-cli, copilot-cli, opencode, amp, cursor`). Cursor is the one MERGED client: `~/.cursor/hooks.json` belongs to the
 user, so install adds three marker-tagged notify-only entries (`sessionStart`, `sessionEnd`, `stop`; `{version:1,hooks:{<event>:[{command}]}}`) next to their
-hooks and creates the file with `version: 1` only when absent; remove deletes only the entries carrying `abito-island-hooks/1` (and the file only if nothing
+hooks and creates the file with `version: 1` only when absent; remove deletes only the entries carrying `koda-island-hooks/1` (and the file only if nothing
 but our stub remains). Unparseable JSON or an unexpected `hooks` shape is `foreign_file` (never rewritten). Backup first, hash-bound plan, shared notify
-script `~/.abito/agent-hooks/island-notify.mjs` kept while another dependent client (gemini-cli, copilot-cli, cursor) still uses it. Cursor needs a restart.
+script `~/.koda/agent-hooks/island-notify.mjs` kept while another dependent client (gemini-cli, copilot-cli, cursor) still uses it. Cursor needs a restart.
+
+**Koda 0.1 artifacts (K2-04, S2/S4).** A Koda 0.1 install left `abito-island-hooks/1`, `abito-island*` names and `~/.abito/agent-hooks/island-notify.mjs`
+behind. Both markers are ours: install retires the 0.1 file/dir into the existing dated-backup flow (a file that only held our entries is deleted, one
+that also holds other entries is rewritten without ours) and remove takes it out, so each client keeps exactly ONE artifact and the human sees one card
+per notice. A file at an old name without either marker stays `foreign_file` and is never rewritten nor retired; the 0.1 notify script is kept while
+another dependent client's 0.1 artifact still carries our marker.
 
 **Invariants.** `agent_connect` / `agent_disconnect` and all `connectors_*` control commands are reachable ONLY through the authenticated
 `island-agent/1` channel: there is NO MCP tool, engine tool or CLI path that triggers them. They are rate-limited by the per-client limiter and each
@@ -313,15 +319,15 @@ inherited socket (no discoverable session file): a security follow-up, NOT done.
 
 **Grave same-UID limit for approvals:** `connectors_approve` is a privileged command reachable only through the authenticated island channel (not an MCP/engine tool, not a CLI); but the channel token lives in `<island>/runtime/session.json` (0600) and the Abito engine agent, Claude Code and Codex run as the same user and can read it: an approval card the agent can click is NOT a human gate. This matters MORE for approvals than for agents. Closing it needs the daemon launched by the island with an inherited socket (security follow-up, not done).
 
-**How the installer is run.** `hookInstallerBin` (absolute normalized path of `apps/desktop-harness/bin/abito-hook.cjs`, no default) is checked before every
+**How the installer is run.** `hookInstallerBin` (absolute normalized path of `apps/desktop-harness/bin/koda-hook.cjs`, no default) is checked before every
 spawn (regular non-symlink file owned by you/root, not group/world-writable, secure parent chain; a checkout with mode 664 is refused) and spawned as
 `[node, installer, install <claude|codex|statusline> --user [--remove] --json]` (preview) / `... --apply-plan <hash> --audit-dir <island>/audit --json` (apply):
 shell:false, own process group killed whole after 10 s, stdout capped at 256 KiB, stderr drained and never surfaced. The removal-only legacy
 profile `install recap --user --remove [--apply]` (Koda 0.1 recap-hook cleanup; install without `--remove` is a usage error) runs through this same
 spawn path once per daemon start. The env is an ALLOWLIST
-(`PATH=/usr/bin:/bin`, `HOME` = the daemon's REAL home, `LANG`) plus `ABITO_ISLAND_EXE` = realpath of the daemon's node; no agent markers, `PI_*` or provider vars.
+(`PATH=/usr/bin:/bin`, `HOME` = the daemon's REAL home, `LANG`) plus `KODA_ISLAND_EXE` = realpath of the daemon's node; no agent markers, `PI_*` or provider vars.
 The daemon is the authenticated caller, so installer guard (i) becomes "the parent is the daemon's node" (guard (ii) is satisfied by the scrubbed env).
-**Endpoint handoff consumed by hooks (enforced rules).** An explicit `ABITO_DESKTOP_SOCKET` wins after endpoint-shape validation and causes no `endpoint.json` read. Otherwise runtime selection is ordered: `ABITO_SOCKET_DIR` (when set, absolute, normalized and non-root), else `$XDG_RUNTIME_DIR/abito-island` only when `XDG_RUNTIME_DIR` is absolute, normalized and non-root, else `/run/user/<uid>/abito-island`.
+**Endpoint handoff consumed by hooks (enforced rules).** An explicit `KODA_DESKTOP_SOCKET` wins after endpoint-shape validation and causes no `endpoint.json` read. Otherwise runtime selection is ordered: `KODA_SOCKET_DIR` (when set, absolute, normalized and non-root), else `$XDG_RUNTIME_DIR/koda` only when `XDG_RUNTIME_DIR` is absolute, normalized and non-root, else `/run/user/<uid>/koda`.
 
 The reader accepts `<runtime>/endpoint.json` only as a regular, non-symlink file owned by you, mode exactly `0600` including no special bits, a single hard link, and at most 4096 bytes. Its complete text must equal `JSON.stringify(parsed)` or that exact compact serialization plus one LF; it has exactly `v`, `endpoint`, `pid` (with `v: 1`). Duplicate keys, escaped key names, pretty printing, other whitespace and CRLF are refused. The Rust producer at `apps/desktop-tauri/src/handoff.rs` writes compact one-line `serde_json` plus LF as `{"endpoint":"<..>","pid":N,"v":1}\n`; the alternate `v,endpoint,pid` order is accepted as well.
 
@@ -630,12 +636,12 @@ capture, when the engine's model has no image input. Nothing of this travels on 
 
 Koda's memory is ALWAYS private — Gentle Dot's private mode (its `packages/daemon/src/isolation.ts`,
 `privateMemory`, MIT), with no user-store mode. The engine child gets `ENGRAM_PORT` = Koda's own
-port **7439** (`ABITO_ENGRAM_PORT` in the parent env overrides it for tests/embeddings),
+port **7439** (`KODA_ENGRAM_PORT` in the parent env overrides it for tests/embeddings),
 `ENGRAM_BIN` = ONLY the pinned binary the bundled runtime manifest names, `ENGRAM_NO_UPDATE_CHECK=1`,
 and NO `ENGRAM_URL`/`ENGRAM_DATA_DIR`/inherited `ENGRAM_PORT`: the store follows the engine's island
 `HOME` (`<island>/home/.engram`), so the user's own Engram server and store (`7437`/`7438`,
-`~/.engram`) are never read, probed or inherited. The memory project stays `abito-island`
-(`<workspace>/.engram/config.json`, `ABITO_MEMORY_PROJECT` + identity pin). The daemon confirms the
+`~/.engram`) are never read, probed or inherited. The memory project stays `koda`
+(`<workspace>/.engram/config.json`, `KODA_MEMORY_PROJECT` + identity pin). The daemon confirms the
 private port is EMPTY before the engine spawns and owns cleanup only then; a failed or ambiguous
 lookup refuses ownership (logged, the engine still starts); on daemon stop the listener is verified
 against the island's `.instance-id` + `GET /health` with a stable PID before any SIGTERM — a server
@@ -654,8 +660,8 @@ one-line log notice), and any other unknown `rotation` subkey is still refused.
 
 - **Config.** The strict `rotation` key: `enabled` (strict boolean, default **true**), `bytes`
   (1024..2147483647, default 20971520 = 20 MB) and `compactions` (1..1000000, default 10). The env
-  `ABITO_ROTATE_BYTES` / `ABITO_ROTATE_COMPACTIONS` overrides win over the file; only plain positive
-  decimal integers are accepted (no `1e3`, `0x10` or spaces), and `ABITO_ROTATE_BYTES` keeps the same
+  `KODA_ROTATE_BYTES` / `KODA_ROTATE_COMPACTIONS` overrides win over the file; only plain positive
+  decimal integers are accepted (no `1e3`, `0x10` or spaces), and `KODA_ROTATE_BYTES` keeps the same
   1024-byte minimum. An invalid env value never wins; the file/default stands.
 - **Trigger.** After every natural `agent_settled` (while idle, not paused, nothing in flight) the
   daemon checks the open session file: past `bytes` of file size OR `compactions` compaction entries

@@ -19,7 +19,7 @@ const WIRE = {
 	statusline: ["statusLine"],
 	pi: ["extension"],
 };
-const FILES = { pi: ".pi/agent/extensions/abito-island", claude: ".claude/settings.json", codex: ".codex/hooks.json", copilot: ".copilot/hooks/abito-island.json", opencode: ".config/opencode/plugins/abito-island.js", statusline: ".claude/settings.json" };
+const FILES = { pi: ".pi/agent/extensions/koda-island", claude: ".claude/settings.json", codex: ".codex/hooks.json", copilot: ".copilot/hooks/koda-island.json", opencode: ".config/opencode/plugins/koda-island.js", statusline: ".claude/settings.json" };
 
 /** Fake installer: `installed` = harnesses whose hooks are already there; `broken` = harnesses that refuse. */
 function fakeRun(home, { installed = [], broken = [] } = {}, seen = []) {
@@ -44,7 +44,7 @@ function setup(t) {
 	const home = path.join(base, "home");
 	for (const d of [".claude", ".codex"]) fs.mkdirSync(path.join(home, d), { recursive: true });
 	const island = path.join(base, "island");
-	const env = { HOME: home, ABITO_ISLAND_DIR: island };
+	const env = { HOME: home, KODA_ISLAND_DIR: island };
 	const installerBin = path.join(base, "installer.cjs");
 	fs.writeFileSync(installerBin, "// fake\n", { mode: 0o644 });
 	// On Windows the product verifies the installer bytes against the install manifest (HU-047) before every
@@ -135,10 +135,10 @@ test("bad arguments and a missing installer fail closed with one closed line", a
 	assert.equal(await main(["connect", "pi"], {}, { write: (v) => (text += v) }), 2);
 	assert.deepEqual(JSON.parse(text), { error: "bad_request" });
 	text = "";
-	await main(["list"], { HOME: s.home, ABITO_ISLAND_DIR: "relative" }, { write: (v) => (text += v) });
+	await main(["list"], { HOME: s.home, KODA_ISLAND_DIR: "relative" }, { write: (v) => (text += v) });
 	assert.deepEqual(JSON.parse(text), { error: "failed" });
 	text = "";
-	const code = await main(["list"], { HOME: s.home, ABITO_ISLAND_DIR: s.island }, { write: (v) => (text += v) }, { installerBin: undefined });
+	const code = await main(["list"], { HOME: s.home, KODA_ISLAND_DIR: s.island }, { write: (v) => (text += v) }, { installerBin: undefined });
 	assert.equal(code, 0);
 	assert.ok(JSON.parse(text).agents.agents.every((a) => a.state === "unavailable"));
 });
@@ -156,5 +156,5 @@ test("plan-less connect is refused before any installer or user-state write", as
 
 test("the installer is the harness next to the daemon, never from argv/env", () => {
 	const bin = packagedInstallerBin();
-	assert.ok(bin && bin.endsWith(path.join("desktop-harness", "bin", "abito-hook.cjs")));
+	assert.ok(bin && bin.endsWith(path.join("desktop-harness", "bin", "koda-hook.cjs")));
 });

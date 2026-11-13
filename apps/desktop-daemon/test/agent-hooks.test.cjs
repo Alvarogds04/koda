@@ -15,12 +15,12 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const { SCHEMA, CLIENT_IDS, scanAgentHooks, installAgentHook, removeAgentHook } = require("../src/agent-hooks.cjs");
+const { SCHEMA, CLIENT_IDS, MARKER: OWN_MARKER, LEGACY_RELS: LEGACY_PATHS, LEGACY_SCRIPT_REL, scanAgentHooks, installAgentHook, removeAgentHook } = require("../src/agent-hooks.cjs");
 const { win, assertMode } = require("./platform-env.cjs");
 
 const NODE = "/usr/bin/node-fake";
 const HEX = /^[0-9a-f]{64}$/;
-const MARKER = "abito-island-hooks/1";
+const MARKER = "koda-island-hooks/1";
 
 function tmp() {
 	return fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "abito-agenthooks-")));
@@ -50,6 +50,9 @@ const entryOf = (result, id) => result.clients.find((c) => c.id === id);
 test("schema and closed catalogue", () => {
 	assert.equal(SCHEMA, "abito-agent-hooks/1");
 	assert.deepEqual([...CLIENT_IDS], ["gemini-cli", "copilot-cli", "opencode", "amp", "cursor"]);
+	// K2-04 (S2, S4): the installed marker is Koda's; the 0.1 marker stays recognised, and they are never the same string.
+	assert.equal(MARKER, OWN_MARKER);
+	assert.notEqual(MARKER, "abito-island-hooks/1");
 });
 
 // --- preview: read-only states -------------------------------------------------
@@ -109,33 +112,33 @@ test("installed artifact contents match the verified client formats", () => {
 		assert.equal(installAgentHook({ home, clientId: id, planHash: plan.plan_hash, platform: "linux", nodeExe: NODE }).ok, true);
 	}
 	// copilot: user-level hooks file, {version:1,hooks:{...}}, exec+args entries
-	const copilot = JSON.parse(fs.readFileSync(path.join(home, ".copilot/hooks/abito-island.json"), "utf8"));
+	const copilot = JSON.parse(fs.readFileSync(path.join(home, ".copilot/hooks/koda-island.json"), "utf8"));
 	assert.equal(copilot.version, 1);
 	assert.ok(Array.isArray(copilot.hooks.sessionStart));
 	assert.deepEqual(copilot.hooks.sessionStart[0].args.slice(-2), ["copilot", "session-start"]);
 	assert.equal(copilot.hooks.sessionStart[0].exec, NODE);
 	// gemini: extension manifest + hooks.json as the EVENT MAP directly (verified in hookRegistry.ts)
-	const manifest = JSON.parse(fs.readFileSync(path.join(home, ".gemini/extensions/abito-island/gemini-extension.json"), "utf8"));
-	assert.equal(manifest.name, "abito-island");
-	const ghooks = JSON.parse(fs.readFileSync(path.join(home, ".gemini/extensions/abito-island/hooks/hooks.json"), "utf8"));
+	const manifest = JSON.parse(fs.readFileSync(path.join(home, ".gemini/extensions/koda-island/gemini-extension.json"), "utf8"));
+	assert.equal(manifest.name, "koda-island");
+	const ghooks = JSON.parse(fs.readFileSync(path.join(home, ".gemini/extensions/koda-island/hooks/hooks.json"), "utf8"));
 	assert.ok(Array.isArray(ghooks.Notification));
 	assert.ok(Array.isArray(ghooks.SessionStart));
 	assert.ok(Array.isArray(ghooks.SessionEnd));
 	assert.equal(ghooks.Notification[0].hooks[0].type, "command");
 	assert.ok(ghooks.Notification[0].hooks[0].command.includes("gemini notification"));
 	// opencode / amp: whole-file plugins, marker first, node builtins only
-	const oc = fs.readFileSync(path.join(home, ".config/opencode/plugins/abito-island.js"), "utf8");
+	const oc = fs.readFileSync(path.join(home, ".config/opencode/plugins/koda-island.js"), "utf8");
 	assert.ok(oc.startsWith(`// ${MARKER}`));
 	assert.ok(oc.includes("export const AbitoIslandPlugin"));
 	assert.ok(oc.includes(`"session.created"`));
-	const amp = fs.readFileSync(path.join(home, ".config/amp/plugins/abito-island.js"), "utf8");
+	const amp = fs.readFileSync(path.join(home, ".config/amp/plugins/koda-island.js"), "utf8");
 	assert.ok(amp.startsWith(`// ${MARKER}`));
 	assert.ok(amp.includes("export default function"));
 	assert.ok(amp.includes(`"session.start"`));
 	assert.ok(amp.includes(`"agent.end"`));
 	assert.ok(!amp.includes(`"session.end"`)); // Amp has no session.end event (docs)
 	// shared notify script written exactly once for the two dependent clients
-	const script = fs.readFileSync(path.join(home, ".abito/agent-hooks/island-notify.mjs"), "utf8");
+	const script = fs.readFileSync(path.join(home, ".koda/agent-hooks/island-notify.mjs"), "utf8");
 	assert.ok(script.startsWith("#!/usr/bin/env node"));
 	assert.ok(script.includes(MARKER));
 });
@@ -145,7 +148,7 @@ test("installed artifact contents match the verified client formats", () => {
 test("foreign file at a target: error state, no plans, install refused", () => {
 	const home = tmp();
 	fs.mkdirSync(path.join(home, ".copilot/hooks"), { recursive: true });
-	fs.writeFileSync(path.join(home, ".copilot/hooks/abito-island.json"), '{"version":1,"hooks":{}}');
+	fs.writeFileSync(path.join(home, ".copilot/hooks/koda-island.json"), '{"version":1,"hooks":{}}');
 	const entry = scan(home).clients.find((c) => c.id === "copilot-cli");
 	assert.equal(entry.state, "error");
 	assert.equal(entry.detail, "foreign_file");
@@ -154,13 +157,13 @@ test("foreign file at a target: error state, no plans, install refused", () => {
 	const result = installAgentHook({ home, clientId: "copilot-cli", planHash: "0".repeat(64), platform: "linux", nodeExe: NODE });
 	assert.equal(result.ok, false);
 	assert.equal(result.code, "foreign_file");
-	assert.equal(fs.readFileSync(path.join(home, ".copilot/hooks/abito-island.json"), "utf8"), '{"version":1,"hooks":{}}');
+	assert.equal(fs.readFileSync(path.join(home, ".copilot/hooks/koda-island.json"), "utf8"), '{"version":1,"hooks":{}}');
 });
 
 test("symlink at a target: error state, no plans", () => {
 	const home = tmp();
 	fs.mkdirSync(path.join(home, ".config/opencode/plugins"), { recursive: true });
-	fs.symlinkSync("/etc/hostname", path.join(home, ".config/opencode/plugins/abito-island.js"));
+	fs.symlinkSync("/etc/hostname", path.join(home, ".config/opencode/plugins/koda-island.js"));
 	const entry = scan(home).clients.find((c) => c.id === "opencode");
 	assert.equal(entry.state, "error");
 	assert.equal(entry.detail, "unsafe_target");
@@ -171,7 +174,7 @@ test("marker-tagged but edited file: outdated, updatable with a fresh plan", () 
 	const home = tmp();
 	const plan = scan(home).clients.find((c) => c.id === "copilot-cli").install;
 	assert.equal(installAgentHook({ home, clientId: "copilot-cli", planHash: plan.plan_hash, platform: "linux", nodeExe: NODE }).ok, true);
-	const file = path.join(home, ".copilot/hooks/abito-island.json");
+	const file = path.join(home, ".copilot/hooks/koda-island.json");
 	fs.writeFileSync(file, `${fs.readFileSync(file, "utf8").trimEnd()}\n// local edit\n`);
 	const entry = scan(home).clients.find((c) => c.id === "copilot-cli");
 	assert.equal(entry.state, "outdated");
@@ -191,7 +194,6 @@ test("unsupported platform: listed, unavailable, no plans", () => {
 test("wrong or malformed hash: plan_changed / bad_request, nothing written", () => {
 	const home = tmp();
 	const g = guard(home);
-	const before = scan(home, { fs: g.fs });
 	const stale = scan(tmp()).clients.find((c) => c.id === "amp").install.plan_hash;
 	for (const [hash, code] of [[stale, "plan_changed"], ["nothex", "bad_request"], [undefined, "bad_request"]]) {
 		const result = installAgentHook({ home, clientId: "amp", planHash: hash, platform: "linux", nodeExe: NODE, fs: g.fs });
@@ -212,14 +214,14 @@ test("install backs up the replaced marker-tagged file with the old bytes", () =
 	const home = tmp();
 	const plan = scan(home).clients.find((c) => c.id === "copilot-cli").install;
 	installAgentHook({ home, clientId: "copilot-cli", planHash: plan.plan_hash, platform: "linux", nodeExe: NODE });
-	const file = path.join(home, ".copilot/hooks/abito-island.json");
+	const file = path.join(home, ".copilot/hooks/koda-island.json");
 	const old = fs.readFileSync(file, "utf8");
 	fs.writeFileSync(file, `${old.trimEnd()}\n// local edit\n`);
 	const fresh = scan(home).clients.find((c) => c.id === "copilot-cli").install;
 	const done = installAgentHook({ home, clientId: "copilot-cli", planHash: fresh.plan_hash, platform: "linux", nodeExe: NODE, now: Date.UTC(2026, 0, 2, 3, 4, 5) });
 	assert.equal(done.ok, true);
 	const backups = fs.readdirSync(path.join(home, ".copilot/hooks")).filter((n) => n.includes(".abito-backup-"));
-	assert.deepEqual(backups, ["abito-island.json.abito-backup-2026-01-02T03-04-05-000Z"]);
+	assert.deepEqual(backups, ["koda-island.json.abito-backup-2026-01-02T03-04-05-000Z"]);
 	const backup = path.join(home, ".copilot/hooks", backups[0]);
 	assert.equal(fs.readFileSync(backup, "utf8"), `${old.trimEnd()}\n// local edit\n`);
 	// 0600 backup on Unix; the same owner-only privacy through the real DACL on Windows.
@@ -238,17 +240,17 @@ test("remove with the remove-plan hash deletes only Abito artifacts; script outl
 	const rm = scan(home).clients.find((c) => c.id === "copilot-cli").remove;
 	const done = removeAgentHook({ home, clientId: "copilot-cli", planHash: rm.plan_hash, platform: "linux", nodeExe: NODE });
 	assert.equal(done.ok, true);
-	assert.ok(!fs.existsSync(path.join(home, ".copilot/hooks/abito-island.json")));
-	assert.ok(fs.existsSync(path.join(home, ".abito/agent-hooks/island-notify.mjs")));
+	assert.ok(!fs.existsSync(path.join(home, ".copilot/hooks/koda-island.json")));
+	assert.ok(fs.existsSync(path.join(home, ".koda/agent-hooks/island-notify.mjs")));
 	// remove gemini: extension dir goes and the script goes with the last dependent
 	const rm2 = scan(home).clients.find((c) => c.id === "gemini-cli").remove;
 	assert.equal(removeAgentHook({ home, clientId: "gemini-cli", planHash: rm2.plan_hash, platform: "linux", nodeExe: NODE }).ok, true);
 	// reversible: only backups remain next to the removed artifacts, never a live one
 	const walk = (dir) => fs.readdirSync(dir, { withFileTypes: true }).flatMap((d) => (d.isDirectory() ? walk(path.join(dir, d.name)) : [d.name]));
-	const left = walk(path.join(home, ".gemini/extensions/abito-island"));
+	const left = walk(path.join(home, ".gemini/extensions/koda-island"));
 	assert.ok(left.length > 0 && left.every((n) => n.includes(".abito-backup-")), `live artifact left: ${left}`);
-	assert.ok(!fs.existsSync(path.join(home, ".gemini/extensions/abito-island/hooks/hooks.json")));
-	assert.ok(!fs.existsSync(path.join(home, ".abito/agent-hooks/island-notify.mjs")));
+	assert.ok(!fs.existsSync(path.join(home, ".gemini/extensions/koda-island/hooks/hooks.json")));
+	assert.ok(!fs.existsSync(path.join(home, ".koda/agent-hooks/island-notify.mjs")));
 	const after = scan(home);
 	assert.ok(after.clients.every((c) => c.state === "not_connected"));
 });
@@ -257,7 +259,7 @@ test("remove refuses when the gemini extension directory holds foreign content",
 	const home = tmp();
 	const plan = scan(home).clients.find((c) => c.id === "gemini-cli").install;
 	installAgentHook({ home, clientId: "gemini-cli", planHash: plan.plan_hash, platform: "linux", nodeExe: NODE });
-	fs.writeFileSync(path.join(home, ".gemini/extensions/abito-island/user-file.txt"), "mine");
+	fs.writeFileSync(path.join(home, ".gemini/extensions/koda-island/user-file.txt"), "mine");
 	const entry = scan(home).clients.find((c) => c.id === "gemini-cli");
 	assert.equal(entry.state, "error");
 	assert.equal(entry.detail, "unexpected_content");
@@ -265,7 +267,7 @@ test("remove refuses when the gemini extension directory holds foreign content",
 	const result = removeAgentHook({ home, clientId: "gemini-cli", planHash: rmHash, platform: "linux", nodeExe: NODE });
 	assert.equal(result.ok, false);
 	assert.equal(result.code, "unexpected_content");
-	assert.ok(fs.existsSync(path.join(home, ".gemini/extensions/abito-island/gemini-extension.json")));
+	assert.ok(fs.existsSync(path.join(home, ".gemini/extensions/koda-island/gemini-extension.json")));
 });
 
 test("remove with a wrong hash: plan_changed, nothing removed", () => {
@@ -276,7 +278,7 @@ test("remove with a wrong hash: plan_changed, nothing removed", () => {
 	const result = removeAgentHook({ home, clientId: "opencode", planHash: other, platform: "linux", nodeExe: NODE });
 	assert.equal(result.ok, false);
 	assert.equal(result.code, "plan_changed");
-	assert.ok(fs.existsSync(path.join(home, ".config/opencode/plugins/abito-island.js")));
+	assert.ok(fs.existsSync(path.join(home, ".config/opencode/plugins/koda-island.js")));
 });
 
 // --- composed service + protocol frames (wiring) ----------------------------------
@@ -382,11 +384,11 @@ test("backup of a 0644 source is exactly 0600 and an existing backup name is nev
 	const plan = scan(home).clients.find((c) => c.id === "copilot-cli").install;
 	installAgentHook({ home, clientId: "copilot-cli", planHash: plan.plan_hash, platform: "linux", nodeExe: NODE });
 	const dir = path.join(home, ".copilot/hooks");
-	const file = path.join(dir, "abito-island.json");
+	const file = path.join(dir, "koda-island.json");
 	fs.writeFileSync(file, `${fs.readFileSync(file, "utf8").trimEnd()}\n// local edit\n`);
 	fs.chmodSync(file, 0o644);
 	const now = Date.UTC(2026, 0, 2, 3, 4, 5);
-	const taken = path.join(dir, "abito-island.json.abito-backup-2026-01-02T03-04-05-000Z");
+	const taken = path.join(dir, "koda-island.json.abito-backup-2026-01-02T03-04-05-000Z");
 	fs.writeFileSync(taken, "precious", { mode: 0o644 });
 	const fresh = scan(home).clients.find((c) => c.id === "copilot-cli").install;
 	assert.equal(installAgentHook({ home, clientId: "copilot-cli", planHash: fresh.plan_hash, platform: "linux", nodeExe: NODE, now }).ok, true);
@@ -423,10 +425,10 @@ test("cursor: fresh home creates hooks.json {version:1} with notify-only camelCa
 	for (const list of Object.values(json.hooks)) {
 		assert.equal(list.length, 1);
 		assert.ok(ours(list[0]));
-		assert.ok(list[0].command.includes(path.join(home, ".abito/agent-hooks/island-notify.mjs")));
+		assert.ok(list[0].command.includes(path.join(home, ".koda/agent-hooks/island-notify.mjs")));
 		assert.ok(list[0].command.includes(" cursor "));
 	}
-	assert.ok(fs.existsSync(path.join(home, ".abito/agent-hooks/island-notify.mjs")));
+	assert.ok(fs.existsSync(path.join(home, ".koda/agent-hooks/island-notify.mjs")));
 	assert.equal(cursorEntry(home).state, "connected");
 	assert.equal(cursorEntry(home).install.changed, false); // a second plan is a noop
 });
@@ -459,7 +461,7 @@ test("cursor: remove takes out only Abito's entries and leaves the user's file a
 	assert.equal(cursorRemove(home).ok, true);
 	assert.deepEqual(JSON.parse(fs.readFileSync(path.join(home, CURSOR_FILE), "utf8")), mine);
 	assert.equal(cursorEntry(home).state, "not_connected");
-	assert.ok(!fs.existsSync(path.join(home, ".abito/agent-hooks/island-notify.mjs")));
+	assert.ok(!fs.existsSync(path.join(home, ".koda/agent-hooks/island-notify.mjs")));
 });
 
 test("cursor: remove of a file Abito created deletes it (backup stays)", () => {
@@ -490,11 +492,11 @@ test("cursor: shared notify script is kept while another dependent uses it, and 
 	installAgentHook({ home, clientId: "copilot-cli", planHash: plan.plan_hash, platform: "linux", nodeExe: NODE });
 	cursorInstall(home);
 	cursorRemove(home);
-	assert.ok(fs.existsSync(path.join(home, ".abito/agent-hooks/island-notify.mjs")));
+	assert.ok(fs.existsSync(path.join(home, ".koda/agent-hooks/island-notify.mjs")));
 	cursorInstall(home);
 	const rm = scan(home).clients.find((c) => c.id === "copilot-cli").remove;
 	removeAgentHook({ home, clientId: "copilot-cli", planHash: rm.plan_hash, platform: "linux", nodeExe: NODE });
-	assert.ok(fs.existsSync(path.join(home, ".abito/agent-hooks/island-notify.mjs"))); // cursor still uses it
+	assert.ok(fs.existsSync(path.join(home, ".koda/agent-hooks/island-notify.mjs"))); // cursor still uses it
 });
 
 test("cursor: edited Abito entries read as outdated and a re-install repairs them", () => {
@@ -532,7 +534,7 @@ test("R17: a quote in HOME or the node path cannot break out of the gemini hook 
 	const entry = scanAgentHooks({ home, platform: "linux", nodeExe }).clients.find((c) => c.id === "gemini-cli");
 	const done = installAgentHook({ home, clientId: "gemini-cli", planHash: entry.install.plan_hash, platform: "linux", nodeExe });
 	assert.equal(done.ok, true);
-	const hooks = JSON.parse(fs.readFileSync(path.join(home, ".gemini/extensions/abito-island/hooks/hooks.json"), "utf8"));
+	const hooks = JSON.parse(fs.readFileSync(path.join(home, ".gemini/extensions/koda-island/hooks/hooks.json"), "utf8"));
 	const command = hooks.SessionStart[0].hooks[0].command;
 	// the shell must see exactly four words: node, script, client, event
 	const words = execFileSync("sh", ["-c", `printf '%s|' ${command}`], { encoding: "utf8" }).split("|").slice(0, -1);
@@ -582,4 +584,172 @@ test("R18: the same holds when an already-installed tree is later replaced by a 
 	const removed = removeAgentHook({ home, clientId: "opencode", planHash: "0".repeat(64), platform: "linux", nodeExe: NODE });
 	assert.equal(removed.ok, false);
 	assert.equal(JSON.stringify(fs.readdirSync(path.join(outside, "oc/plugins"))), snapshot);
+});
+
+// --- K2-04 (S2, S4): a Koda 0.1 install is recognised, replaced and removed ------------------
+// The 0.1 artifacts carried `abito-island-hooks/1` and lived at names with `abito-island` in them. Each agent must end up
+// with exactly ONE card per notice: the 0.1 artifact is retired into the existing backup flow, never duplicated and never
+// silently left running next to the new one. A look-alike without our marker stays foreign, exactly as before.
+
+const LEGACY = "abito-island-hooks/1";
+
+/** Byte-shape of a 0.1 artifact: legacy marker, old names. */
+function seedLegacy(home, clientId) {
+	for (const rel of LEGACY_PATHS[clientId]) {
+		const abs = path.join(home, rel);
+		fs.mkdirSync(path.dirname(abs), { recursive: true });
+		fs.writeFileSync(abs, rel.endsWith(".json") ? `{"name":"abito-island","marker":"${LEGACY}"}\n` : `// ${LEGACY} abito plugin\n`);
+	}
+}
+function seedLegacyScript(home) {
+	const abs = path.join(home, LEGACY_SCRIPT_REL);
+	fs.mkdirSync(path.dirname(abs), { recursive: true });
+	fs.writeFileSync(abs, `#!/usr/bin/env node\n// ${LEGACY} shared island notify script\n`);
+}
+const install = (home, clientId, now) => {
+	const plan = scan(home).clients.find((c) => c.id === clientId).install;
+	return installAgentHook({ home, clientId, planHash: plan.plan_hash, platform: "linux", nodeExe: NODE, now });
+};
+const remove = (home, clientId, now) => {
+	const plan = scan(home).clients.find((c) => c.id === clientId).remove;
+	return removeAgentHook({ home, clientId, planHash: plan.plan_hash, platform: "linux", nodeExe: NODE, now });
+};
+
+test("K2-04: a 0.1 install reads as outdated (not missing) and installs over it with exactly one Koda artifact per client", () => {
+	// cursor has no separate 0.1 file: it is the user's own hooks.json, covered by its own test below.
+	for (const clientId of CLIENT_IDS.filter((id) => id !== "cursor")) {
+		const home = tmp();
+		seedLegacy(home, clientId);
+		const before = entryOf(scan(home), clientId);
+		assert.equal(before.state, "outdated", `${clientId} sees the 0.1 install`);
+		assert.equal(before.install.changed, true);
+		assert.equal(install(home, clientId).ok, true, `${clientId} installs over 0.1`);
+		const entry = entryOf(scan(home), clientId);
+		assert.equal(entry.state, "connected", `${clientId} is connected`);
+		for (const rel of LEGACY_PATHS[clientId]) assert.ok(!fs.existsSync(path.join(home, rel)), `${clientId} 0.1 ${rel} is gone`);
+		// the 0.1 bytes are kept next to where they were, as a dated backup (never deleted outright)
+		const dir = LEGACY_PATHS[clientId].length > 0 ? path.dirname(path.join(home, LEGACY_PATHS[clientId][0])) : path.join(home, ".cursor");
+		assert.ok(fs.readdirSync(dir).some((n) => n.includes(".abito-backup-")), `${clientId} backed the 0.1 bytes up`);
+	}
+});
+
+test("K2-04: a 0.1 artifact next to foreign content leaves the foreign bytes exactly as they were", () => {
+	const home = tmp();
+	// gemini: a 0.1 extension whose folder also holds a file the human put there is NOT ours to delete
+	seedLegacy(home, "gemini-cli");
+	fs.writeFileSync(path.join(home, ".gemini/extensions/abito-island/user-file.txt"), "mine");
+	const entry = entryOf(scan(home), "gemini-cli");
+	assert.equal(entry.state, "error");
+	assert.equal(entry.detail, "unexpected_content");
+	assert.equal(entry.install, null);
+	assert.equal(fs.readFileSync(path.join(home, ".gemini/extensions/abito-island/user-file.txt"), "utf8"), "mine");
+	// copilot: a FILE at the old name without our marker is somebody else's and stays put, byte for byte (its own home: the
+	// gemini folder check above is shared by every client, exactly as before)
+	const other = tmp();
+	const foreign = path.join(other, ".copilot/hooks/abito-island.json");
+	fs.mkdirSync(path.dirname(foreign), { recursive: true });
+	const bytes = `${JSON.stringify({ version: 1, hooks: { sessionStart: [{ type: "command", command: "echo mine" }] } }, null, 2)}\n`;
+	fs.writeFileSync(foreign, bytes);
+	const cp = entryOf(scan(other), "copilot-cli");
+	assert.equal(cp.state, "not_connected");
+	assert.equal(install(other, "copilot-cli").ok, true);
+	assert.equal(fs.readFileSync(foreign, "utf8"), bytes, "a foreign look-alike is never rewritten nor retired");
+	assert.ok(fs.existsSync(path.join(other, ".copilot/hooks/koda-island.json")));
+});
+
+test("K2-04: cursor — a 0.1 entry plus the user's own entry ends with ONE Koda entry, the user's untouched", () => {
+	const home = tmp();
+	const file = path.join(home, ".cursor/hooks.json");
+	fs.mkdirSync(path.dirname(file), { recursive: true });
+	const mine = { command: "my-own-hook --flag" };
+	fs.writeFileSync(file, `${JSON.stringify({ version: 1, hooks: {
+		sessionStart: [{ command: `'${NODE}' '/home/old/.abito/agent-hooks/island-notify.mjs' cursor sessionStart # ${LEGACY}` }],
+		sessionEnd: [{ command: `'${NODE}' '/home/old/.abito/agent-hooks/island-notify.mjs' cursor sessionEnd # ${LEGACY}` }, mine],
+		stop: [mine],
+	} }, null, 2)}\n`);
+	const entry = entryOf(scan(home), "cursor");
+	assert.equal(entry.state, "outdated");
+	assert.equal(install(home, "cursor").ok, true);
+	const hooks = JSON.parse(fs.readFileSync(file, "utf8")).hooks;
+	for (const ev of ["sessionStart", "sessionEnd", "stop"]) {
+		const ours = hooks[ev].filter((e) => String(e.command).includes(MARKER));
+		assert.equal(ours.length, 1, `${ev} has exactly one Koda entry`);
+		assert.ok(String(ours[0].command).replace(/\\/g, "/").includes(".koda/agent-hooks/island-notify.mjs"), `${ev} points at the Koda script`);
+		assert.ok(!JSON.stringify(hooks).includes(LEGACY), "no 0.1 entry survives");
+	}
+	assert.deepEqual(hooks.stop.filter((e) => JSON.stringify(e) === JSON.stringify(mine)), [mine]);
+	assert.deepEqual(hooks.sessionEnd.filter((e) => JSON.stringify(e) === JSON.stringify(mine)), [mine]);
+	// idempotent afterwards
+	const again = scan(home).clients.find((c) => c.id === "cursor");
+	assert.equal(again.state, "connected");
+	assert.equal(again.install.changed, false);
+});
+
+test("K2-04: a 0.1-only cursor file is removable, and install twice is idempotent", () => {
+	const home = tmp();
+	const file = path.join(home, ".cursor/hooks.json");
+	fs.mkdirSync(path.dirname(file), { recursive: true });
+	fs.writeFileSync(file, `${JSON.stringify({ version: 1, hooks: {
+		stop: [{ command: `'${NODE}' '/x/.abito/agent-hooks/island-notify.mjs' cursor stop # ${LEGACY}` }],
+	} }, null, 2)}\n`);
+	assert.equal(remove(home, "cursor").ok, true, "remove takes the 0.1 entry out");
+	assert.equal(fs.existsSync(file), false, "the file only held our stub, so it is deleted");
+	// and an install over 0.1 is stable the second time
+	seedLegacy(home, "amp");
+	assert.equal(install(home, "amp").ok, true);
+	assert.equal(install(home, "amp").changed, false);
+});
+
+test("K2-04: remove also retires a 0.1 artifact and leaves the new one alone", () => {
+	for (const clientId of CLIENT_IDS.filter((id) => id !== "cursor")) {
+		const home = tmp();
+		seedLegacy(home, clientId);
+		const entry = entryOf(scan(home), clientId);
+		assert.equal(entry.remove.changed, true, `${clientId} can remove a 0.1 install`);
+		const done = remove(home, clientId);
+		assert.equal(done.ok, true, `${clientId} removes 0.1`);
+		for (const rel of LEGACY_PATHS[clientId]) assert.ok(!fs.existsSync(path.join(home, rel)), `${clientId} 0.1 ${rel} gone`);
+	}
+});
+
+test("K2-04: the 0.1 notify script survives while another dependent client still uses it", () => {
+	const home = tmp();
+	seedLegacy(home, "gemini-cli");
+	seedLegacy(home, "copilot-cli");
+	seedLegacyScript(home);
+	// installing one dependent retires its own 0.1 file but the script is still used by the other
+	assert.equal(install(home, "copilot-cli").ok, true);
+	assert.ok(fs.existsSync(path.join(home, LEGACY_SCRIPT_REL)), "the 0.1 script is kept: gemini's 0.1 artifact still calls it");
+	// installing the last dependent retires the script too
+	assert.equal(install(home, "gemini-cli").ok, true);
+	assert.ok(!fs.existsSync(path.join(home, LEGACY_SCRIPT_REL)), "nothing uses the 0.1 script any more");
+	assert.ok(fs.existsSync(path.join(home, ".koda/agent-hooks/island-notify.mjs")), "the Koda script is there");
+});
+
+test("K2-04: the 0.1 notify script survives while Cursor's 0.1 entries still call it", () => {
+	const home = tmp();
+	seedLegacy(home, "gemini-cli");
+	seedLegacyScript(home);
+	// Cursor's 0.1 entries live in the user's own ~/.cursor/hooks.json, not in a Koda-owned file
+	fs.mkdirSync(path.join(home, ".cursor"), { recursive: true });
+	fs.writeFileSync(
+		path.join(home, ".cursor/hooks.json"),
+		JSON.stringify({ version: 1, hooks: { stop: [{ command: `'${NODE}' '${path.join(home, LEGACY_SCRIPT_REL)}' cursor stop # ${LEGACY}` }] } }, null, 2) + "\n",
+	);
+	assert.equal(install(home, "gemini-cli").ok, true);
+	assert.ok(fs.existsSync(path.join(home, LEGACY_SCRIPT_REL)), "Cursor's 0.1 entry still points at the 0.1 script: it must stay");
+	// once Cursor is reinstalled its entries name the Koda script and the 0.1 one is free to go
+	assert.equal(install(home, "cursor").ok, true);
+	assert.ok(!fs.existsSync(path.join(home, LEGACY_SCRIPT_REL)), "nothing uses the 0.1 script any more");
+});
+
+test("K2-04: installing again over an untouched 0.1 install is idempotent (no second artifact, no second plan)", () => {
+	const home = tmp();
+	seedLegacy(home, "opencode");
+	assert.equal(install(home, "opencode").ok, true);
+	const entry = entryOf(scan(home), "opencode");
+	assert.equal(entry.state, "connected");
+	assert.equal(entry.install.changed, false);
+	assert.equal(entry.remove.changed, true);
+	assert.deepEqual(fs.readdirSync(path.join(home, ".config/opencode/plugins")).filter((n) => n.endsWith(".js")), ["koda-island.js"]);
 });

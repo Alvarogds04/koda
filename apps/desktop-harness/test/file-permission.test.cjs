@@ -95,7 +95,7 @@ test('R11: terminal selection withdraws the card with existing question_resolved
     project: q.project, sessionId: q.sessionId, at: Date.now(), id: q.id, source: 'human', answer: { type: 'option', value: 'terminal' } }));
   const result = await handleClaudeHook({ event: 'permission-request',
     input: JSON.stringify({ cwd, session_id: 'test', hook_event_name: 'PermissionRequest', tool_name: 'NotebookEdit', tool_input: {} }),
-    env: { ABITO_DESKTOP_SOCKET: receiver.endpoint, ABITO_SOCKET_DIR: receiver.runtime } });
+    env: { KODA_DESKTOP_SOCKET: receiver.endpoint, KODA_SOCKET_DIR: receiver.runtime } });
   await answering; const closed = await receiver.next('question_resolved');
   assert.equal(closed.status, 'answered'); assert.equal(result.stdout, '');
 });

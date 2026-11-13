@@ -14,7 +14,7 @@ const root = path.join(base, 'island');
 const cli = path.resolve(__dirname, '../../desktop-daemon/src/cli.cjs');
 const childPath = `${process.env.PATH || '/usr/bin:/bin'}:${process.env.HOME}/.local/bin:/usr/bin`;
 const child = cp.spawn(process.execPath, [cli, 'run', '--app-owned'], {
-  env: { PATH: childPath, HOME: process.env.HOME, ABITO_ISLAND_DIR: root },
+  env: { PATH: childPath, HOME: process.env.HOME, KODA_ISLAND_DIR: root },
   stdio: ['pipe', 'pipe', 'pipe'],
 });
 let log = '';

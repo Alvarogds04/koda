@@ -441,9 +441,9 @@ mod bundled_runtime_tests {
         }
         fn exe(&self, rel: &str) -> PathBuf {
             self.dir(rel).join(if cfg!(windows) {
-                "abito-island.exe"
+                "koda.exe"
             } else {
-                "abito-island"
+                "koda"
             })
         }
     }

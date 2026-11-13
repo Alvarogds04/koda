@@ -5,7 +5,7 @@
 //! `worktrees/legacy-electron/apps/desktop/main.cjs`):
 //! - `readBridgeLogin` (87) — credential file, descriptor-safe read of the
 //!   SAME file legacy reads (`<stateRoot>/bridge.json`, dev state root =
-//!   the crate-side `.runtime`, overridable by `ABITO_SOCKET_DIR` like every
+//!   the crate-side `.runtime`, overridable by `KODA_SOCKET_DIR` like every
 //!   other state path in this port),
 //! - `mode`/`status`/`stopAuth` (110/115/118) — auth mode diagnostics
 //!   (mode name only, nothing else) and `bridgeStatus`,
@@ -26,7 +26,7 @@
 //!
 //! Configuration follows legacy: base origin `http://127.0.0.1:11003`
 //! (`security.cjs BRIDGE_ORIGIN`) with a test/probe-only env override
-//! `ABITO_BRIDGE_BASE`, credential only from `bridge.json`. Nothing here
+//! `KODA_BRIDGE_BASE`, credential only from `bridge.json`. Nothing here
 //! writes credentials, and nothing logs values — only the auth mode name.
 
 use std::path::Path;
@@ -51,7 +51,7 @@ pub const POLL_MS: u64 = 10_000;
 /// BRIDGE_ORIGIN` has no env knob in legacy; this one exists so tests and
 /// the probe can point the lane at an in-process fake backend instead of the
 /// real one — it is documented in the README).
-pub const BASE_ENV: &str = "ABITO_BRIDGE_BASE";
+pub const BASE_ENV: &str = "KODA_BRIDGE_BASE";
 
 /// The credential file name inside the state root (`main.cjs
 /// `path.join(stateRoot, 'bridge.json')`, 93).
@@ -298,7 +298,7 @@ impl Approval {
         Approval::new(fallback, None).expect("the legacy origin always parses")
     }
 
-    /// Production configuration: `ABITO_BRIDGE_BASE` (tests/probe) or the
+    /// Production configuration: `KODA_BRIDGE_BASE` (tests/probe) or the
     /// legacy origin, plus the `bridge.json` login read once at startup
     /// (`main.cjs readBridgeLogin`, called exactly once per process).
     pub fn from_environment(login: Option<String>) -> Self {

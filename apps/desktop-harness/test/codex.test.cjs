@@ -28,7 +28,7 @@ const stopInput = (over = {}) => JSON.stringify({ session_id: 'sess-1', cwd, hoo
   turn_id: 't1', model: 'm', last_assistant_message: 'SECRETREPLY', ...over });
 const postToolInput = (over = {}) => JSON.stringify({ session_id: 'sess-1', cwd, hook_event_name: 'PostToolUse', tool_name: 'Bash',
   tool_input: { command: 'ls' }, tool_response: 'SECRETOUTPUT', ...over });
-const envOf = r => ({ ABITO_DESKTOP_SOCKET: r.endpoint, ABITO_SOCKET_DIR: r.runtime });
+const envOf = r => ({ KODA_DESKTOP_SOCKET: r.endpoint, KODA_SOCKET_DIR: r.runtime });
 // The ONLY legal output of these hooks: nothing at all.
 function assertSilent(r) {
   assert.equal(r.exitCode, 0); assert.equal(r.stdout, ''); assert.equal(r.stderr, '');

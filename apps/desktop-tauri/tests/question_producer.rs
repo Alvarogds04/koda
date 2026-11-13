@@ -21,14 +21,14 @@ struct Fixture {
 }
 impl Fixture {
     fn new() -> Self {
-        let source = PathBuf::from(std::env::var("ABITO_PI_PRODUCER_DIR")
-            .expect("opt-in test requires ABITO_PI_PRODUCER_DIR; no fake producer fallback"));
+        let source = PathBuf::from(std::env::var("KODA_PI_PRODUCER_DIR")
+            .expect("opt-in test requires KODA_PI_PRODUCER_DIR; no fake producer fallback"));
         assert!(source.is_absolute() && source.is_dir(), "explicit producer directory required");
         for name in ["adapter.cjs", "questions.cjs"] { assert!(source.join(name).is_file(), "real producer source required"); }
-        // Main's hardening, kept: the base honours the ABITO_SOCKET_DIR override, must stay
+        // Main's hardening, kept: the base honours the KODA_SOCKET_DIR override, must stay
         // inside this checkout (never an installed root), be canonical and pass directory_chain.
         let cwd = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().unwrap();
-        let base = std::env::var_os("ABITO_SOCKET_DIR").map(PathBuf::from)
+        let base = std::env::var_os("KODA_SOCKET_DIR").map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(env!("CARGO_TARGET_TMPDIR")));
         assert!(base.is_absolute() && base.starts_with(&cwd), "fixtures stay in this checkout, never installed roots");
         assert_eq!(base.canonicalize().unwrap(), base, "no symlink or unnormalized fixture base");
@@ -107,7 +107,7 @@ fn wait(mut condition: impl FnMut() -> bool) {
 }
 
 #[test]
-#[ignore = "requires ABITO_PI_PRODUCER_DIR and Node"]
+#[ignore = "requires KODA_PI_PRODUCER_DIR and Node"]
 fn real_producer_question_host_answer_and_ack() {
     for (mode, level2) in [("questions",false), ("questions-level2",true)] {
     let f = Fixture::new(); let mut node = f.start(mode);
@@ -148,7 +148,7 @@ fn real_producer_question_host_answer_and_ack() {
 }
 
 #[test]
-#[ignore = "requires ABITO_PI_PRODUCER_DIR and Node"]
+#[ignore = "requires KODA_PI_PRODUCER_DIR and Node"]
 fn real_producer_default_flag_off_exact_v1_and_unavailable() {
     let f = Fixture::new(); let mut node = f.start("legacy"); let report = node.next();
     assert_eq!(report["result"], json!({"status":"unavailable"}));
@@ -186,7 +186,7 @@ fn wire_line(stream: &mut UnixStream) -> Vec<u8> {
 fn epoch_ms() -> u64 { SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64 }
 
 #[test]
-#[ignore = "requires ABITO_PI_PRODUCER_DIR and Node"]
+#[ignore = "requires KODA_PI_PRODUCER_DIR and Node"]
 fn real_producer_foreign_project_reaches_question_and_answer() {
     let f = Fixture::new(); let mut node = f.start_as("questions", &f.runtime, "foreign-project");
     let report = node.next();
@@ -205,7 +205,7 @@ fn real_producer_foreign_project_reaches_question_and_answer() {
 }
 
 #[test]
-#[ignore = "requires ABITO_PI_PRODUCER_DIR and Node"]
+#[ignore = "requires KODA_PI_PRODUCER_DIR and Node"]
 fn real_producer_sessions_global_busy_and_cross_origin_cannot_consume() {
     for mode in ["questions", "questions-level2"] {
         let f = Fixture::new(); let mut owner = f.start_as(mode, &f.cwd, "owner-session");

@@ -1,5 +1,5 @@
 # First-logon setup for the Abito Windows-port test VM.
-# Runs elevated once, launched by win11-autounattend.xml from the ABITO_SETUP CD.
+# Runs elevated once, launched by win11-autounattend.xml from the KODA_SETUP CD.
 # Everything it prints also goes to COM1, which the host logs, so the port
 # session can watch provisioning without any inbound connection to the guest.
 $ErrorActionPreference = 'Continue'
@@ -17,9 +17,9 @@ function Log($m) {
 
 Log 'ABITO-SETUP begin'
 
-# DriveType 5 = removable: the ABITO_SETUP answer/command CD.
+# DriveType 5 = removable: the KODA_SETUP answer/command CD.
 $cd = Get-CimInstance -ClassName Win32_LogicalDisk -Filter 'DriveType=5' |
-  Where-Object { $_.VolumeName -eq 'ABITO_SETUP' } | Select-Object -First 1
+  Where-Object { $_.VolumeName -eq 'KODA_SETUP' } | Select-Object -First 1
 $cdroot = if ($cd) { "$($cd.DeviceID)\" } else { 'C:\' }
 Log "ABITO-SETUP answer media: $cdroot"
 
@@ -31,7 +31,7 @@ if (-not (Test-Path 'C:\abito\vm-poll.ps1')) {
 }
 
 # The command channel: a poll task that looks for command-<N>.bat on the
-# ABITO_SETUP CD. The CD is read-only from the guest's point of view, so each
+# KODA_SETUP CD. The CD is read-only from the guest's point of view, so each
 # round is named by its own number; the last one executed lives in
 # C:\abito\last.txt.
 schtasks /Delete /TN AbitoPortPoll /F 2>&1 | Out-Null

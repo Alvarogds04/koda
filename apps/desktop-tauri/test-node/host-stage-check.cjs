@@ -24,9 +24,9 @@ const crate = path.resolve(__dirname, '..');
 const stage = fs.mkdtempSync(path.join(os.tmpdir(), 'abito-host-stage-fixture-'));
 let localDir = null; // Windows only: the private LOCALAPPDATA of the CLI probe below
 try {
-  fs.writeFileSync(path.join(stage, 'abito-island'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
-  fs.writeFileSync(path.join(stage, 'abito-island-launcher'), L.launcherText(), { mode: 0o755 });
-  fs.writeFileSync(path.join(stage, 'abito-island.png'), fs.readFileSync(path.join(crate, 'icons/icon.png')), { mode: 0o644 });
+  fs.writeFileSync(path.join(stage, 'koda'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+  fs.writeFileSync(path.join(stage, 'koda-launcher'), L.launcherText(), { mode: 0o755 });
+  fs.writeFileSync(path.join(stage, 'koda.png'), fs.readFileSync(path.join(crate, 'icons/icon.png')), { mode: 0o644 });
   fs.writeFileSync(path.join(stage, `${L.IDENTIFIER}.desktop`), L.desktopText(), { mode: 0o644 });
   for (const file of L.DAEMON_FILES) {
     const target = path.join(stage, 'desktop-daemon', file);
@@ -68,16 +68,16 @@ try {
   // Exercise the public CLI from the shipped tree, not the source checkout. A valid
   // receipt alone cannot prove that every transitively required module was shipped.
   // Windows (K2-01b, as in desktop-daemon/test/cli.test.cjs): the daemon refuses any island root outside the canonical
-  // %LOCALAPPDATA%\Abito, so the missing island sits under a private LOCALAPPDATA (a sibling temp dir: the stage is
+  // %LOCALAPPDATA%\Koda, so the missing island sits under a private LOCALAPPDATA (a sibling temp dir: the stage is
   // listed exactly below), and a child node needs the Windows system variables to bootstrap. Nothing
   // user-identifying leaves the temp dirs.
   const win = process.platform === 'win32';
   const local = win ? fs.mkdtempSync(path.join(os.tmpdir(), 'abito-host-stage-local-')) : null;
   localDir = local;
-  const island = win ? path.join(local, 'Abito', 'missing-island') : path.join(stage, 'missing-island');
-  const env = { PATH: win ? process.env.PATH : '/usr/bin:/bin', HOME: stage, ABITO_ISLAND_DIR: island };
+  const island = win ? path.join(local, 'Koda', 'missing-island') : path.join(stage, 'missing-island');
+  const env = { PATH: win ? process.env.PATH : '/usr/bin:/bin', HOME: stage, KODA_ISLAND_DIR: island };
   if (win) {
-    fs.mkdirSync(path.join(local, 'Abito'));
+    fs.mkdirSync(path.join(local, 'Koda'));
     env.LOCALAPPDATA = local;
     for (const key of ['SystemRoot', 'windir', 'SystemDrive', 'ComSpec', 'PATHEXT', 'OS', 'NUMBER_OF_PROCESSORS', 'PROCESSOR_ARCHITECTURE']) {
       if (process.env[key] !== undefined) env[key] = process.env[key];
@@ -91,7 +91,7 @@ try {
   assert.equal(baseline.signal, null);
   assert.equal(baseline.status, 3, baseline.stderr);
   assert.equal(baseline.stdout, '');
-  assert.equal(baseline.stderr, 'abito-island-daemon: not running (stale: no_session)\n');
+  assert.equal(baseline.stderr, 'koda-daemon: not running (stale: no_session)\n');
   assert.equal(fs.existsSync(island), false, 'status must not create or start an island');
   assert.deepEqual(L.verifyStage(stage), [], 'status must leave every shipped byte unchanged');
 

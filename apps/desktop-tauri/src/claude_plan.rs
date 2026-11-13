@@ -1,5 +1,5 @@
 //! #467 Claude plan usage, read from the file channel the Abito status-line script writes
-//! (`apps/desktop-harness/bin/abito-statusline.cjs` → `<runtime>/plan-claude.json`).
+//! (`apps/desktop-harness/bin/koda-statusline.cjs` → `<runtime>/plan-claude.json`).
 //!
 //! The channel holds only `{v:1, at, five_hour?, seven_day?}` (numbers). This reader still treats
 //! it as untrusted: no symlinks, regular file owned by us with mode 0600, at most 4 KiB, strict shape,

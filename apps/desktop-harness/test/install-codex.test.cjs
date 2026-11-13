@@ -12,7 +12,7 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const cx = require('../src/install-codex.cjs');
 
-const BIN = path.resolve(__dirname, '../bin/abito-hook.cjs');
+const BIN = path.resolve(__dirname, '../bin/koda-hook.cjs');
 function tmp(t) {
   const d = fs.realpathSync(fs.mkdtempSync(path.join(tmpBase(), 'abito-instcodex-')));
   fs.chmodSync(d, 0o700);
@@ -208,7 +208,7 @@ test('remove with a shared matcher group leaves third-party hooks untouched', t 
 
 test('identification works when the bin path contains quotes', t => {
   const d = tmp(t); const p = path.join(d, 'hooks.json');
-  const bin = "/tmp/it's a \"dir\"/abito-hook.cjs";
+  const bin = "/tmp/it's a \"dir\"/koda-hook.cjs";
   const pl = plan(p, { binPath: bin });
   fs.writeFileSync(p, pl.after);
   assert.equal(plan(p, { binPath: bin }).changed, false);
@@ -401,7 +401,7 @@ function msvcrtArgv(line) {
   return out;
 }
 const WIN_NODE = 'C:\\Program Files\\nodejs\\node.exe';
-const WIN_BIN = 'C:\\Users\\Ana María\\AppData\\Local\\Programs\\Koda\\resources\\desktop-harness\\bin\\abito-hook.cjs';
+const WIN_BIN = 'C:\\Users\\Ana María\\AppData\\Local\\Programs\\Koda\\resources\\desktop-harness\\bin\\koda-hook.cjs';
 
 test('Windows paths with spaces: every entry carries a cmd-style commandWindows that splits into the intended argv', t => {
   const d = tmp(t);
@@ -454,9 +454,9 @@ test('Windows paths cmd would expand or split are refused (65); POSIX paths get 
     assert.throws(() => plan(p, { execPath: bad, binPath: WIN_BIN }), e => e.exitCode === 65, bad);
     assert.throws(() => plan(p, { execPath: WIN_NODE, binPath: bad }), e => e.exitCode === 65, bad);
   }
-  const posix = cx.CODEX_PROFILE.buildEntry('PermissionRequest', 120, '/opt/koda/bin/abito-hook.cjs', '/usr/bin/node');
+  const posix = cx.CODEX_PROFILE.buildEntry('PermissionRequest', 120, '/opt/koda/bin/koda-hook.cjs', '/usr/bin/node');
   assert.equal(posix.commandWindows, undefined);
-  assert.equal(posix.command, "'/usr/bin/node' '/opt/koda/bin/abito-hook.cjs' codex permission-request --timeout-sec 120");
+  assert.equal(posix.command, "'/usr/bin/node' '/opt/koda/bin/koda-hook.cjs' codex permission-request --timeout-sec 120");
 });
 
 test('win32: the real cmd.exe /C runs commandWindows with a spaced, non-ASCII script path as one argument', { skip: process.platform !== 'win32' && 'cmd.exe exists only on Windows; the emulation above covers the quoting on every OS' }, t => {
@@ -468,4 +468,52 @@ test('win32: the real cmd.exe /C runs commandWindows with a spaced, non-ASCII sc
   const r = spawnSync(process.env.ComSpec || 'cmd.exe', ['/C', e.commandWindows], { windowsVerbatimArguments: true, encoding: 'utf8', timeout: 20000 });
   assert.equal(r.status, 0, r.stderr);
   assert.deepEqual(JSON.parse(r.stdout), [stub, 'codex', 'permission-request', '--timeout-sec', '120']);
+});
+
+// --- K2-04 (S2, S4): a Koda 0.1 entry is ours and is replaced in place -------------------------
+// Codex has no args array: the 0.1 script name appears inside the shell string. One card per notice means one entry per event,
+// so the 0.1 entry is replaced (never duplicated) and a look-alike stays third-party.
+
+const LEGACY_C = '/opt/koda-0.1/desktop-harness/bin/abito-hook.cjs';
+const legacyCmd = sub => `'/usr/bin/node' '${LEGACY_C}' codex ${sub}`;
+const oursIn = (hooks, ev) => (hooks[ev] || []).flatMap(g => (g.hooks || [])).filter(h => typeof h.command === 'string' && h.command.includes(BIN));
+
+test('K2-04: a 0.1 entry plus third-party hooks ends with exactly ONE Koda entry per event, the others byte-identical', t => {
+  const d = tmp(t);
+  const p = fixture(d, JSON.stringify({ hooks: {
+    PermissionRequest: [{ hooks: [moshi('moshi-hook perm'), { type: 'command', command: legacyCmd('permission-request --timeout-sec 120') }] }],
+    Stop: [{ hooks: [{ type: 'command', command: legacyCmd('stop') }] }],
+    UserPromptSubmit: [{ hooks: [moshi('moshi-hook prompt')] }],
+  } }, null, 2) + '\n');
+  const pl = cx.planCodexHooks({ settingsPath: p, binPath: BIN, execPath: '/usr/bin/node' });
+  const h = JSON.parse(pl.after).hooks;
+  for (const ev of ['PermissionRequest', 'PreToolUse', 'PostToolUse', 'Stop']) assert.equal(oursIn(h, ev).length, 1, `one Koda entry in ${ev}`);
+  assert.equal(h.PermissionRequest[0].hooks[0].command, 'moshi-hook perm', 'the third-party hook is untouched and first');
+  assert.deepEqual(h.UserPromptSubmit, [{ hooks: [moshi('moshi-hook prompt')] }], 'an event we never touch is byte-identical');
+  assert.ok(!pl.after.includes('abito-hook.cjs'), 'no 0.1 entry survives');
+  fs.writeFileSync(p, pl.after, { mode: 0o600 });
+  assert.equal(cx.planCodexHooks({ settingsPath: p, binPath: BIN, execPath: '/usr/bin/node' }).changed, false, 'installing again is a no-op');
+});
+
+test('K2-04: a 0.1 entry next to a Koda entry collapses to one, and --remove recognizes 0.1', t => {
+  const d = tmp(t);
+  const current = { type: 'command', command: `'/usr/bin/node' '${BIN}' codex stop` };
+  const p = fixture(d, JSON.stringify({ hooks: {
+    Stop: [{ hooks: [{ type: 'command', command: legacyCmd('stop') }, current, current] }],
+    PreToolUse: [{ matcher: 'Bash', hooks: [moshi('herdr-agent-state.sh tool'), { type: 'command', command: legacyCmd('pre-tool-use') }] }],
+  } }, null, 2) + '\n');
+  const h = JSON.parse(cx.planCodexHooks({ settingsPath: p, binPath: BIN, execPath: '/usr/bin/node' }).after).hooks;
+  assert.equal(oursIn(h, 'Stop').length, 1, 'one Stop entry, whatever mix of 0.1 and current was there');
+  const gone = JSON.parse(cx.planCodexHooks({ settingsPath: p, binPath: BIN, execPath: '/usr/bin/node', remove: true }).after).hooks;
+  assert.equal(oursIn(gone, 'Stop').length, 0, '--remove takes the 0.1 entry out');
+  assert.deepEqual(gone.PreToolUse, [{ matcher: 'Bash', hooks: [moshi('herdr-agent-state.sh tool')] }], 'the third-party hook stays, ours goes');
+});
+
+test('K2-04: a look-alike script name stays third-party and is never replaced', t => {
+  const d = tmp(t);
+  const lookalike = { type: 'command', command: `'/usr/bin/node' '/opt/tool/my-abito-hook.cjs' codex stop` };
+  const p = fixture(d, JSON.stringify({ hooks: { Stop: [{ hooks: [lookalike] }] } }, null, 2) + '\n');
+  const h = JSON.parse(cx.planCodexHooks({ settingsPath: p, binPath: BIN, execPath: '/usr/bin/node' }).after).hooks;
+  assert.deepEqual(h.Stop[0].hooks[0], lookalike, 'the look-alike is left exactly as it was');
+  assert.equal(oursIn(h, 'Stop').length, 1, 'and ours is added next to it');
 });

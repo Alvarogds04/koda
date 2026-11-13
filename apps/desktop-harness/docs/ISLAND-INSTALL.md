@@ -5,8 +5,8 @@ The island (Tauri lane) installs and removes the Abito hooks of Claude Code and 
 Two calls, both direct children of Abito's Node adapter (or compatibility daemon), on Linux/macOS:
 
 ```
-1. node bin/abito-hook.cjs install <claude|codex|statusline> --user [--remove] --json
-2. node bin/abito-hook.cjs install <claude|codex|statusline> --user [same args] --apply-plan <plan_hash> --audit-dir <abs dir> --json
+1. node bin/koda-hook.cjs install <claude|codex|statusline> --user [--remove] --json
+2. node bin/koda-hook.cjs install <claude|codex|statusline> --user [same args] --apply-plan <plan_hash> --audit-dir <abs dir> --json
 ```
 
 `recap` is accepted only as `install recap --user --remove [--apply]` (the removal-only legacy profile; install is a usage error).
@@ -96,7 +96,7 @@ Requires `--json` and `--audit-dir`; mutually exclusive with `--apply`; `--audit
 ## Apply sequence (what the CLI does, in order)
 
 1. **Island guards** (exit 77 before anything else is read or written):
-   (i) `ABITO_ISLAND_EXE` is set to an absolute path and `realpath(/proc/<ppid>/exe) == realpath(ABITO_ISLAND_EXE)` on Linux (unchanged). On macOS, fixed `/bin/ps -ww -o uid= -o comm= -p <ppid>` must return the current uid and canonical Node executable; failures refuse; timeout 2 s, output bound 8 KiB, no shell;
+   (i) `KODA_ISLAND_EXE` is set to an absolute path and `realpath(/proc/<ppid>/exe) == realpath(KODA_ISLAND_EXE)` on Linux (unchanged). On macOS, fixed `/bin/ps -ww -o uid= -o comm= -p <ppid>` must return the current uid and canonical Node executable; failures refuse; timeout 2 s, output bound 8 KiB, no shell;
    (ii) none of `CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT`, `CODEX_SANDBOX`, `CODEX_SANDBOX_NETWORK_DISABLED`, `CODEX_THREAD_ID`, `CODEX_SESSION_ID`, `PI_SESSION_ID`, `PI_SESSION_FILE`, `OPENCODE`, `OPENCODE_*`, `AI_AGENT`, `GENTLE_PI_SESSION` is present and non-empty. Names are compared **case-insensitively** (`claudecode`, `OpenCode_x` count); an empty or unset value is ignored, any non-empty value counts.
 2. Recompute the plan from scratch and compare hashes in constant time (`plan_changed` otherwise). A per-target lock (`.<name>.abito-lock` directory next to the target holding an `owner` file with a random token; released only while the token still matches; stale after 30 s) serializes concurrent applies. A regular file or symlink found at the lock path (lstat, never followed) is unlinked when older than 30 s and means `busy` while younger; then the plan is recomputed once more under the lock.
 3. **Audit first, fail closed**: `--audit-dir` must be absolute and normalized; it is created `0700` if missing (its parent must exist); symlinks, foreign owners and group/world-writable directories are refused; `hook-installs.jsonl` is opened `O_APPEND|O_CREAT|O_NOFOLLOW` mode `0600` (must be a regular, single-link, owner-only file) and the `intent` line is appended. Past 1 MiB the file is first rotated to `hook-installs.jsonl.1` (replaced, `0600`; best effort). Any failure on the intent line: exit 73, settings untouched.
@@ -123,9 +123,9 @@ Refusals that happen after argument validation (`not_island`, `plan_changed`, `b
 
 ## What the Tauri lane must do
 
-1. Set `ABITO_ISLAND_EXE` to the canonical Node executable of the app-owned adapter that directly spawns the installer.
+1. Set `KODA_ISLAND_EXE` to the canonical Node executable of the app-owned adapter that directly spawns the installer.
 2. Scrub every agent marker listed above from the child environment (guard (ii) refuses otherwise).
-3. The app-owned Node adapter spawns `node bin/abito-hook.cjs install ...` directly (no shell); `ppid` identifies that adapter's Node executable.
+3. The app-owned Node adapter spawns `node bin/koda-hook.cjs install ...` directly (no shell); `ppid` identifies that adapter's Node executable.
 4. Run the preview, render `diff.lines` (and `notes`, `requires_trust_review`) to the human, and let the **click** be the confirmation. Store the `plan_hash` the human saw and pass exactly that hash and the same args to the apply.
 5. Pass `--audit-dir` (an island-owned `0700` directory) and treat exit 73 as "not installed".
 6. On `requires_trust_review: true` (Codex, fresh install or update), tell the human to open Codex `/hooks` and trust the Koda hooks again; until then they are inactive (and an updated entry, e.g. the T3 move to the 120 s «Esperando tu respuesta en Koda» entry, stays inactive too). The installer never touches `~/.codex/config.toml`.
@@ -140,7 +140,7 @@ Recap was removed in Koda 0.2. The `recap` harness id remains only as the REMOVA
 Install (without `--remove`) is a usage error (exit 64; JSON `code:"usage"`). It never answers a permission
 request. TODO: remove one version after K2-03.
 
-`statusline` uses `install-statusline.cjs` and the sibling `bin/abito-statusline.cjs`.
+`statusline` uses `install-statusline.cjs` and the sibling `bin/koda-statusline.cjs`.
 Only the top-level `statusLine` member is patched (not `hooks`). A user's existing
 status line is saved in `~/.abito/statusline-previous.json` (0600); the relay runs it
 and prints its output. Marker-only removal restores that saved value, or drops only
@@ -171,8 +171,17 @@ Interactive `--apply` still requires a TTY and the typed word.
 The daemon (not the island UI directly) may drive this CLI for `agent_connect` / `agent_disconnect`:
 
 - It runs the CLI as a **subprocess** with an **absolute, validated node path and script path** (no shell, no PATH lookup).
-- It sets `ABITO_ISLAND_EXE` to **the daemon's own node executable**, so guard (i) becomes "the parent is the daemon's node".
+- It sets `KODA_ISLAND_EXE` to **the daemon's own node executable**, so guard (i) becomes "the parent is the daemon's node".
 - It scrubs every agent marker (case-insensitively, see guard (ii)) from the child environment.
 - `agent_connect` / `agent_disconnect` are reachable **only through the authenticated `island-agent/1` channel**: never through MCP or agent tools, and never through the CLI without these guards.
 
 Honest same-uid limit: any process of the user that can read `<island>/runtime/session.json` can talk to the daemon, including Abito's own engine agent and Claude Code / Codex. Closing that needs the daemon launched by the island with an **inherited socket** (no discoverable session file); it is tracked as a security follow-up.
+
+## Koda 0.1 installs (K2-04, S2/S4)
+
+An install that finds a Koda 0.1 artifact recognises it as its own and replaces it in place, so the island never ends up
+with two entries for one notice. The retired artifact is part of the plan and of `plan_hash`: retiring a 0.1 file changes
+the hash, and if the file changes between preview and apply the apply is refused with `plan_changed` and nothing is written.
+For Copilot CLI and OpenCode the 0.1 file lived next to the new one under a different name, so it is renamed to a dated
+`.abito-backup-` file (never deleted outright) and the new file carries the only entry; a 0.1 file that also holds other
+entries is rewritten without ours and keeps the rest byte-for-byte.

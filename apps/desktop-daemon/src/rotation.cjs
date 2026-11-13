@@ -48,10 +48,10 @@ const HANDOFF_INTRO =
 	"This conversation continues from an earlier session that grew too long. The user sees one continuous chat and cannot see this note; carry on naturally and do not mention it.";
 
 /**
- * Rotation limits: the ABITO_ROTATE_* environment wins over the config values,
+ * Rotation limits: the KODA_ROTATE_* environment wins over the config values,
  * the config wins over the defaults (an invalid value never wins, like Gentle
  * Dot's GENTLE_DOT_ROTATE_*). F7: an env value is accepted only as a plain
- * positive decimal integer (no 1e3, 0x10 or spaces), and ABITO_ROTATE_BYTES
+ * positive decimal integer (no 1e3, 0x10 or spaces), and KODA_ROTATE_BYTES
  * keeps the same 1024-byte minimum the config has — a smaller value never wins.
  */
 const MIN_ROTATE_BYTES = 1024;
@@ -63,10 +63,10 @@ const intFromEnv = (value) => {
 };
 
 function rotationLimits(env = process.env, config = {}) {
-	const envBytes = intFromEnv(env.ABITO_ROTATE_BYTES);
+	const envBytes = intFromEnv(env.KODA_ROTATE_BYTES);
 	return {
 		bytes: (envBytes !== undefined && envBytes >= MIN_ROTATE_BYTES ? envBytes : undefined) ?? config.bytes ?? DEFAULT_ROTATION.bytes,
-		compactions: intFromEnv(env.ABITO_ROTATE_COMPACTIONS) ?? config.compactions ?? DEFAULT_ROTATION.compactions,
+		compactions: intFromEnv(env.KODA_ROTATE_COMPACTIONS) ?? config.compactions ?? DEFAULT_ROTATION.compactions,
 	};
 }
 

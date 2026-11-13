@@ -82,7 +82,7 @@ fn sibling_temp(path: &Path) -> std::path::PathBuf {
     let name = path
         .file_name()
         .map(|n| n.to_os_string())
-        .unwrap_or_else(|| std::ffi::OsString::from("abito-island.tmp"));
+        .unwrap_or_else(|| std::ffi::OsString::from("koda.tmp"));
     let mut tmp = std::ffi::OsString::from(".");
     tmp.push(&name);
     tmp.push(format!(".{}", std::process::id()));
@@ -128,7 +128,7 @@ mod tests {
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .expect("the name-less root keeps the fallback dot-name");
-        assert!(name.starts_with(".abito-island.tmp."), "got {name}");
+        assert!(name.starts_with(".koda.tmp."), "got {name}");
         let pid = name.rsplit('.').next().unwrap();
         assert_eq!(pid.parse::<u32>().unwrap(), std::process::id());
         assert_eq!(tmp.parent(), Some(root), "the dotfile stays beside the root");

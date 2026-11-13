@@ -1,8 +1,8 @@
 //! #306 (Windows, W1) — the connection half of the island-agent client over a
 //! NAMED PIPE. Same contract as `agentconn.rs` (keep in sync), different gate:
 //!
-//! * `session.json` lives under `%LOCALAPPDATA%\Abito\runtime` (or an
-//!   `ABITO_ISLAND_DIR` override INSIDE that canonical protected root); before
+//! * `session.json` lives under `%LOCALAPPDATA%\Koda\runtime` (or an
+//!   `KODA_ISLAND_DIR` override INSIDE that canonical protected root); before
 //!   reading it the island root, the runtime directory AND THE FILE ITSELF are
 //!   verified by owner and DACL — the file must be strictly owner-only (as the
 //!   native `abito-private-session` helper writes it), bounded and a plain
@@ -61,8 +61,8 @@ pub fn session_path(island_root: &Path) -> PathBuf {
     island_root.join("runtime").join("session.json")
 }
 
-/// Island root: an `ABITO_ISLAND_DIR` override INSIDE the canonical protected
-/// `%LOCALAPPDATA%\Abito` root, or that root itself (`winpolicy::island_root`).
+/// Island root: an `KODA_ISLAND_DIR` override INSIDE the canonical protected
+/// `%LOCALAPPDATA%\Koda` root, or that root itself (`winpolicy::island_root`).
 /// `home` is unused here.
 pub fn island_root(env_dir: Option<&str>, _home: Option<&str>) -> Option<PathBuf> {
     winpolicy::island_root(env_dir, std::env::var("LOCALAPPDATA").ok().as_deref())

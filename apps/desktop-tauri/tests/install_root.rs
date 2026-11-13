@@ -16,7 +16,7 @@ const BUILD_TREE: &str = env!("CARGO_MANIFEST_DIR");
 #[test]
 fn installed_default_is_the_own_leaf_under_xdg_and_never_the_source_tree() {
     let root = default_runtime_for(Some("/run/user/1000"), None).expect("installed default");
-    assert_eq!(root, PathBuf::from("/run/user/1000/abito-island"));
+    assert_eq!(root, PathBuf::from("/run/user/1000/koda"));
     assert!(!root.starts_with(BUILD_TREE), "installed root must not point at the build tree");
     assert!(!INSTALLED_RUNTIME_LEAF.is_empty());
     assert!(!RESERVED_RUNTIME_NAMES.contains(&INSTALLED_RUNTIME_LEAF));
@@ -51,7 +51,7 @@ fn this_binary_resolves_to_the_source_tree_only_in_a_debug_build() {
         if let Ok(path) = root {
             assert!(!path.starts_with(BUILD_TREE), "release runtime root points at the source tree");
         }
-        let project = std::env::var("ABITO_PROJECT_ROOT").ok();
+        let project = std::env::var("KODA_PROJECT_ROOT").ok();
         let from_tree = project_root_for(Some(BUILD_TREE), None).and_then(|p| p.to_str().map(str::to_owned));
         if let (Some(tree), Some(env_root)) = (from_tree, project.as_deref()) {
             assert_ne!(identity::project_root_for(None, Some(env_root)).and_then(|p| p.to_str().map(str::to_owned)), Some(tree));

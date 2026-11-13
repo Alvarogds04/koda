@@ -326,7 +326,7 @@ test('S3 a missing or undecodable file falls back to Koda\'s own cue', async () 
 
 test('docs: the user guide docs/sounds.md names the folder per OS, the names that play, formats, the limit and «Recargar sonidos»', () => {
   const guide = fs.readFileSync(path.join(__dirname, '..', '..', '..', 'docs', 'sounds.md'), 'utf8');
-  for (const must of ['question', 'approval', 'finish', '2 MiB', 'Recargar sonidos', 'com.abitog.AbitoTauri', 'Library/Application Support', '.config', 'AppData',
+  for (const must of ['question', 'approval', 'finish', '2 MiB', 'Recargar sonidos', 'com.abitog.Koda', 'Library/Application Support', '.config', 'AppData',
     '.wav', '.mp3', '.ogg', '.m4a', '.flac']) {
     assert.ok(guide.includes(must), `docs/sounds.md names ${must}`);
   }

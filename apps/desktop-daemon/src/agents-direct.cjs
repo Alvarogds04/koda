@@ -15,7 +15,7 @@
  *   node agents-direct.cjs connect <agentId> <planHash>
  *   node agents-direct.cjs disconnect <agentId>
  *
- * Env: ABITO_ISLAND_DIR (absolute; audit goes to <dir>/audit), HOME or USERPROFILE.
+ * Env: KODA_ISLAND_DIR (absolute; audit goes to <dir>/audit), HOME or USERPROFILE.
  */
 
 const fs = require("node:fs");
@@ -45,7 +45,7 @@ function parseArgs(argv) {
 
 /** The harness installer that ships next to this file (same layout as cli.cjs packagedInstallerBin). */
 function packagedInstallerBin(srcDir = __dirname) {
-	const file = path.resolve(srcDir, "..", "..", "desktop-harness", "bin", "abito-hook.cjs");
+	const file = path.resolve(srcDir, "..", "..", "desktop-harness", "bin", "koda-hook.cjs");
 	try {
 		return fs.statSync(file).isFile() ? file : undefined;
 	} catch {
@@ -77,7 +77,7 @@ async function main(argv, env, out, deps = {}) {
 	}
 	try {
 		const home = validateHome(env.HOME || env.USERPROFILE || os.homedir());
-		const dir = env.ABITO_ISLAND_DIR || path.join(home, ".abito-island");
+		const dir = env.KODA_ISLAND_DIR || path.join(home, ".koda");
 		if (!path.isAbsolute(dir)) throw new Error("island dir");
 		const islandDir = ensurePrivateDir(dir);
 		ensurePrivateDir(path.join(islandDir, "audit"));

@@ -60,7 +60,7 @@ function selectedOf(mapped, answer) {
   return [one(mapped.request.options, answer)];
 }
 
-const NO_STRUCTURED = 'No human answer: this Koda connection does not carry multi-select questions or questionnaires (it needs question level 3: ABITO_QUESTIONS=3 and a receiver that supports it). Ask ONE single-choice question with abito_ask, or ask through normal chat instead. Do not infer a decision or choose a default.';
+const NO_STRUCTURED = 'No human answer: this Koda connection does not carry multi-select questions or questionnaires (it needs question level 3: KODA_QUESTIONS=3 and a receiver that supports it). Ask ONE single-choice question with abito_ask, or ask through normal chat instead. Do not infer a decision or choose a default.';
 
 /** Runs one abito_ask call. Returns { text, details, isError } for the tool result. Never throws for a bad request. */
 async function runAsk(controller, params, ctx, signal) {

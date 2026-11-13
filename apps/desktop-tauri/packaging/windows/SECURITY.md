@@ -35,7 +35,7 @@ follow-up.
   is opened and its token user SID must equal ours. The process handle stays
   open for the connection's life, so a recycled pid cannot inherit an
   admission. A foreign user gets a disconnect, never a decode.
-- **Discovery metadata**: `%LOCALAPPDATA%\Abito\notices\endpoint.json`,
+- **Discovery metadata**: `%LOCALAPPDATA%\Koda\notices\endpoint.json`,
   `{v,pipe,pid,sid}` (closed key set; the pipe name must embed the same SID),
   written atomically (temp + `MoveFileExW`) where the temp file is CREATED
   with the explicit protected owner-only DACL in its `SECURITY_ATTRIBUTES`
@@ -80,7 +80,7 @@ blocks).
 `abito-private-session.exe` receives at most 4097 bytes on stdin and rejects
 payloads over 4096 bytes before parsing or writing. Tokens never appear in its
 arguments, environment, or diagnostics. It writes only `runtime/session.json`
-inside `%LOCALAPPDATA%\Abito` (or an explicitly confined child root), using the
+inside `%LOCALAPPDATA%\Koda` (or an explicitly confined child root), using the
 same creation-time owner-only DACL and atomic replacement as notice metadata.
 The Windows CLI and daemon reject out-of-root overrides before creating state;
 the native writer repeats the check. The island reader checks the session

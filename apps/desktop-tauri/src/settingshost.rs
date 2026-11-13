@@ -337,7 +337,7 @@ pub fn migrate_retired_mail_accounts(app: &AppHandle) {
     if done { return; }
     let app = app.clone();
     std::thread::spawn(move || {
-        let outcome = abito_island::mailmigration::run(&abito_island::secrets::Keychain, false);
+        let outcome = abito_island::mailmigration::run(&abito_island::secrets::LegacyKeychain, false);
         if outcome == abito_island::mailmigration::Outcome::Done {
             let state = app.state::<AppState>();
             let saved = prefs::transact(
@@ -527,7 +527,7 @@ pub async fn agent_action(
                 return Ok(conn.view());
             }
             let root = island_root(
-                std::env::var("ABITO_ISLAND_DIR").ok().as_deref(),
+                std::env::var("KODA_ISLAND_DIR").ok().as_deref(),
                 std::env::var("HOME").ok().as_deref(),
             );
             match root {
@@ -639,7 +639,7 @@ pub(crate) fn daemon_connect(
 /// «pi_missing» failure on success. Returns whether the host is running.
 pub(crate) fn start_host_after_install(handle: &AppHandle) -> bool {
     let state = handle.state::<AppState>();
-    let Some(root) = island_root(std::env::var("ABITO_ISLAND_DIR").ok().as_deref(), std::env::var("HOME").ok().as_deref()) else { return false };
+    let Some(root) = island_root(std::env::var("KODA_ISLAND_DIR").ok().as_deref(), std::env::var("HOME").ok().as_deref()) else { return false };
     let old = state.settings.agent.lock().expect("agent lock").take();
     drop(old);
     let slot = handle.state::<abito_island::daemonhost::HostSlot>();
@@ -711,7 +711,7 @@ pub async fn daemon_action(
     let handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let state = handle.state::<AppState>();
-        let root = island_root(std::env::var("ABITO_ISLAND_DIR").ok().as_deref(), std::env::var("HOME").ok().as_deref())
+        let root = island_root(std::env::var("KODA_ISLAND_DIR").ok().as_deref(), std::env::var("HOME").ok().as_deref())
             .ok_or_else(|| err("no_island_root"))?;
         if action == "restart" {
             // K2-05 (L51, copy Gentle Dot): like its tray «Restart assistant» (shell.rs:743-745 →

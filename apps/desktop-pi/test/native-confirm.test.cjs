@@ -218,7 +218,7 @@ test('ordinary confirms still reach Abito after normalisation (git, paths, Spani
 });
 
 test('no UI, Abito unavailable or opted out → the original confirm, nothing sent', async () => {
-  for (const [opt, env] of [[{ hasUI: false }, {}], [{ available: false }, {}], [{}, { ABITO_NATIVE_CONFIRM: '0' }]]) {
+  for (const [opt, env] of [[{ hasUI: false }, {}], [{ available: false }, {}], [{}, { KODA_NATIVE_CONFIRM: '0' }]]) {
     const r = rig(opt); install(r, env);
     r.ui.confirm(TITLE, PREVIEW); await tick();
     assert.equal(r.abito.asks.length, 0, JSON.stringify([opt, env]));

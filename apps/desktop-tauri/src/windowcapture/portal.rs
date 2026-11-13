@@ -30,7 +30,7 @@ const REQUEST_IFACE: &str = "org.freedesktop.portal.Request";
 /// `org.freedesktop.host.portal.Registry`: how an app that is NOT sandboxed tells the portal its id.
 const REGISTRY_IFACE: &str = "org.freedesktop.host.portal.Registry";
 /// The id of Koda's installed `.desktop` (the tauri identifier), exactly as hotkey/portal sends it.
-const APP_ID: &str = "com.abitog.AbitoTauri";
+const APP_ID: &str = "com.abitog.Koda";
 
 /// The human is choosing a window on screen: this is how long the dialog may stay open.
 pub const PICK_WAIT: Duration = Duration::from_secs(180);

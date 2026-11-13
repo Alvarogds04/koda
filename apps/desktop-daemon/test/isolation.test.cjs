@@ -46,7 +46,7 @@ test("ensureIsland creates a private 0700 layout with the pinned memory project"
 	// The owned default workspace pins the memory project.
 	const config = JSON.parse(fs.readFileSync(path.join(island.workspace, ".engram", "config.json"), "utf8"));
 	assert.equal(config.project_name, MEMORY_PROJECT);
-	assert.equal(MEMORY_PROJECT, "abito-island");
+	assert.equal(MEMORY_PROJECT, "koda");
 });
 
 test("isolatedEnv allowlists only OS essentials and applies explicit private overrides", (t) => {
@@ -71,7 +71,7 @@ test("isolatedEnv allowlists only OS essentials and applies explicit private ove
 			ENGRAM_PORT: "7437",
 		},
 		island,
-		{ ABITO_MEMORY_PROJECT: "abito-island" },
+		{ KODA_MEMORY_PROJECT: "koda" },
 	);
 
 	assert.equal(env.HOME, island.home);
@@ -115,7 +115,7 @@ test("isolatedEnv allowlists only OS essentials and applies explicit private ove
 	assert.equal(env.PATH, pathWithNodeFirst(path.dirname(process.execPath), "/usr/local/bin:/usr/bin:/bin"));
 	assert.equal(env.LANG, "es_ES.UTF-8");
 	assert.equal(env.SHELL, "/bin/zsh");
-	assert.equal(env.ABITO_MEMORY_PROJECT, "abito-island");
+	assert.equal(env.KODA_MEMORY_PROJECT, "koda");
 });
 
 // K2-02 (S2): with no inherited PATH the engine child still gets the daemon's node dir first.
@@ -137,9 +137,19 @@ test("pathWithNodeFirst uses the right separator on every platform", () => {
 	assert.equal(pathWithNodeFirst("/koda/runtime", undefined), `/koda/runtime${path.delimiter}/usr/bin:/bin`);
 });
 
-test("defaultIslandRoot honours ABITO_ISLAND_DIR and defaults to ~/.abito-island", () => {
-	assert.equal(defaultIslandRoot({ ABITO_ISLAND_DIR: "/x/y" }), "/x/y");
-	assert.equal(defaultIslandRoot({ HOME: "/home/user" }), path.join("/home/user", ".abito-island"));
+test("defaultIslandRoot honours KODA_ISLAND_DIR and defaults to ~/.koda", () => {
+	assert.equal(defaultIslandRoot({ KODA_ISLAND_DIR: "/x/y" }), "/x/y");
+	assert.equal(defaultIslandRoot({ HOME: "/home/user" }), path.join("/home/user", ".koda"));
+});
+
+// L4 (13 Nov, human): no ABITO_* alias and no fallback to a 0.1 variable. The 0.1 name is
+// written out literally here on purpose (the only place the old name survives): it must not be
+// read at all, so setting only it leaves the default root in place.
+test("the 0.1 ABITO_ISLAND_DIR is no longer honoured (no alias, no fallback)", () => {
+	const legacy = { HOME: "/home/user", ABITO_ISLAND_DIR: "/legacy/root" };
+	assert.equal(defaultIslandRoot(legacy), path.join("/home/user", ".koda"));
+	// and the new name still wins, even with the old one set beside it
+	assert.equal(defaultIslandRoot({ ...legacy, KODA_ISLAND_DIR: "/x/y" }), "/x/y");
 });
 
 // Windows (Gentle Dot isolatedAgentEnv): the engine and its tools resolve the
@@ -357,7 +367,7 @@ function writeInstanceId(island, id = INSTANCE_ID) {
 	fs.writeFileSync(path.join(island.home, ".engram", ".instance-id"), `${id}\n`, { mode: 0o600 });
 }
 
-test("privateMemoryPort defaults to Koda's private port and honours ABITO_ENGRAM_PORT", () => {
+test("privateMemoryPort defaults to Koda's private port and honours KODA_ENGRAM_PORT", () => {
 	assert.equal(PRIVATE_ENGRAM_PORT, "7439", "one above Gentle Dot's own private port (7438): never the user's 7437/7438");
 	assert.equal(privateMemoryPort({}), "7439");
 	assert.equal(privateMemoryPort({ [PRIVATE_ENGRAM_PORT_ENV]: "7499" }), "7499");

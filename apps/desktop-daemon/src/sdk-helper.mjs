@@ -59,9 +59,9 @@ function packageEntry(dir) {
 	}
 }
 
-/** Configurable SDK module: ABITO_SDK_MODULE may be a package directory or an entry file. */
+/** Configurable SDK module: KODA_SDK_MODULE may be a package directory or an entry file. */
 function resolveSdkModule() {
-	const explicit = process.env.ABITO_SDK_MODULE;
+	const explicit = process.env.KODA_SDK_MODULE;
 	if (explicit && existsSync(explicit)) {
 		return packageEntry(explicit) ?? pathToFileURL(explicit).href;
 	}
@@ -300,7 +300,7 @@ async function handle(msg) {
 					const runtime = await runtimeFor(msg.accountId);
 					await runtime.login(msg.providerId, msg.method, makeInteraction(flow), {
 						getDeviceId,
-						agentName: "Abito",
+						agentName: "Koda",
 					});
 					writeRecord({ type: "result", id, ok: true });
 				} catch {
@@ -329,7 +329,7 @@ async function handle(msg) {
 					const runtime = await runtimeFor(msg.accountId);
 					await runtime.login(msg.providerId, "api_key", makeInteraction(flow, { autoAnswer: msg.apiKey }), {
 						getDeviceId,
-						agentName: "Abito",
+						agentName: "Koda",
 					});
 					writeRecord({ type: "result", id, ok: true });
 				} catch {

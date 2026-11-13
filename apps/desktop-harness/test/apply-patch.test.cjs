@@ -194,7 +194,7 @@ async function hook(t, command, value, cwd = dir) {
   const rcv = await fakeReceiver(t, { questions: true });
   const answered = rcv.next('question').then(qq => rcv.send({ v: 1, type: 'answer', questionVersion: 1, project: qq.project,
     sessionId: qq.sessionId, at: Date.now(), id: qq.id, source: 'human', answer: { type: 'option', value } }));
-  const r = await handleCodexHook({ event: 'permission-request', argv: [], env: { ABITO_DESKTOP_SOCKET: rcv.endpoint, ABITO_SOCKET_DIR: rcv.runtime },
+  const r = await handleCodexHook({ event: 'permission-request', argv: [], env: { KODA_DESKTOP_SOCKET: rcv.endpoint, KODA_SOCKET_DIR: rcv.runtime },
     input: JSON.stringify({ session_id: 's', cwd, hook_event_name: 'PermissionRequest', turn_id: 't', tool_name: 'apply_patch', tool_input: { command } }) });
   await answered;
   return { r, q: rcv.frames.find(f => f.type === 'question'), wire: rcv.rawFrames.join('') };

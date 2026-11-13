@@ -17,8 +17,15 @@ use serde_json::{json, Value};
 #[path = "secrets_tests.rs"]
 mod tests;
 
-/// Keychain service name: Abito's own app identifier (tauri.conf.json).
-pub const SERVICE: &str = "com.abitog.AbitoTauri";
+/// Keychain service name: Koda's own entry, independent of the bundle identifier (T6 renames that
+/// one; this constant keeps the two apart on purpose).
+pub const SERVICE: &str = "com.abitog.Koda";
+
+/// The 0.1 keychain service. NOTHING reads credentials from it any more (no alias, no fallback,
+/// L4); it exists for exactly one purpose — a one-time cleanup of 0.1 entries, which must keep
+/// naming it explicitly (K2-10 T8 deletes the seven retired imap-*/smtp-* keys). Using [`SERVICE`]
+/// there would silently leave the 0.1 entries in the user's keychain forever.
+pub const LEGACY_KEYCHAIN_SERVICE: &str = "com.abitog.AbitoTauri";
 
 /// Every key the island may store. Anything outside this list is refused.
 pub const KNOWN_KEYS: &[&str] = &[
@@ -154,6 +161,17 @@ pub fn apply(store: &dyn SecretStore, command: &Command) -> Result<Value, Secret
     Ok(json!({"key": key, "present": present}))
 }
 
+/// The 0.1 keychain, for the one-time cleanup of retired 0.1 entries and nothing else (K2-04 L4):
+/// it targets [`LEGACY_KEYCHAIN_SERVICE`], only deletes, and refuses to read or write, so the old
+/// service can never become an alias or a fallback for Koda's own entries.
+pub struct LegacyKeychain;
+
+impl LegacyKeychain {
+    pub fn service() -> &'static str {
+        LEGACY_KEYCHAIN_SERVICE
+    }
+}
+
 /// The real keychain. Linux: Secret Service; macOS: the login Keychain (K2-01c); Windows:
 /// Credential Manager; any other OS has no store and is honestly `Unavailable` (never a file).
 pub struct Keychain;
@@ -163,7 +181,11 @@ mod native {
     use super::{StoreError, SERVICE};
 
     pub fn entry(key: &str) -> Result<keyring::Entry, StoreError> {
-        keyring::Entry::new(SERVICE, key).map_err(map)
+        entry_in(SERVICE, key)
+    }
+
+    pub fn entry_in(service: &str, key: &str) -> Result<keyring::Entry, StoreError> {
+        keyring::Entry::new(service, key).map_err(map)
     }
 
     /// Error text is dropped on purpose (see [`StoreError`]).
@@ -194,6 +216,35 @@ impl SecretStore for Keychain {
             Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
             Err(e) => Err(native::map(e)),
         }
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+impl SecretStore for LegacyKeychain {
+    fn read(&self, _: &str) -> Result<Option<String>, StoreError> {
+        Err(StoreError::Failed)
+    }
+    fn write(&self, _: &str, _: &str) -> Result<(), StoreError> {
+        Err(StoreError::Failed)
+    }
+    fn delete(&self, key: &str) -> Result<(), StoreError> {
+        match native::entry_in(LEGACY_KEYCHAIN_SERVICE, key)?.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(e) => Err(native::map(e)),
+        }
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+impl SecretStore for LegacyKeychain {
+    fn read(&self, _: &str) -> Result<Option<String>, StoreError> {
+        Err(StoreError::Failed)
+    }
+    fn write(&self, _: &str, _: &str) -> Result<(), StoreError> {
+        Err(StoreError::Failed)
+    }
+    fn delete(&self, _: &str) -> Result<(), StoreError> {
+        Err(StoreError::Unavailable)
     }
 }
 

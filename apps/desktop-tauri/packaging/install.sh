@@ -4,8 +4,8 @@
 #   sh install.sh <stage-dir> [--prefix DIR] [--project-root DIR] [--applications-dir DIR]
 #   sh install.sh --uninstall [--prefix DIR] [--applications-dir DIR]
 #
-# <stage-dir> is what packaging/build.cjs stages (dist/abito-island/<version>) or a
-# copy of it (artifacts/abito-island-<version>-<commit>). POSIX sh; coreutils +
+# <stage-dir> is what packaging/build.cjs stages (dist/koda/<version>) or a
+# copy of it (artifacts/koda-<version>-<commit>). POSIX sh; coreutils +
 # tar + sha256sum (or shasum). Keep install.sh beside lib.cjs. No root, no network.
 # NO NODE IS REQUIRED, USED OR LOOKED UP on the machine (K2-02, decision A): the
 # stage carries the bundled runtime archive (koda-runtime-linux-x64.tar.gz) and the
@@ -27,12 +27,12 @@
 #      file; the extracted runtime moves into place as PREFIX/runtime by atomic
 #      rename (an old runtime is moved aside, then removed). On any failure nothing
 #      is replaced and every temp dir is removed.
-#   5. Write ~/.local/share/applications/com.abitog.AbitoTauri.desktop with
-#      @INSTALL_DIR@ resolved and Exec=env ABITO_PROJECT_ROOT=<project root> "<launcher>"
+#   5. Write ~/.local/share/applications/com.abitog.Koda.desktop with
+#      @INSTALL_DIR@ resolved and Exec=env KODA_PROJECT_ROOT=<project root> "<launcher>"
 #      (the one variable the closed launcher accepts).
 #
 # Defaults (documented):
-#   PREFIX        $XDG_DATA_HOME/abito-island, i.e. ~/.local/share/abito-island
+#   PREFIX        $XDG_DATA_HOME/koda, i.e. ~/.local/share/koda
 #   APPLICATIONS  $XDG_DATA_HOME/applications, i.e. ~/.local/share/applications
 #   PROJECT ROOT  required: --project-root DIR (the folder your agent sessions run in;
 #                 the island derives its project id from this directory).
@@ -44,12 +44,12 @@
 set -eu
 umask 022
 
-ID="com.abitog.AbitoTauri"
+ID="com.abitog.Koda"
 DESKTOP="$ID.desktop"
 RUNTIME_ARCHIVE="koda-runtime-linux-x64.tar.gz"
 # Closed-set verifier beside this script; run by the EXTRACTED runtime's node.
 LIB="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)/lib.cjs"
-EXEC_FILES="abito-island abito-island-launcher"
+EXEC_FILES="koda koda-launcher"
 
 die() { printf 'install.sh: %s\n' "$*" >&2; exit 1; }
 note() { printf '%s\n' "$*"; }
@@ -61,10 +61,10 @@ Abito (Tauri) one-command installer (user-local, no root, no network).
   sh install.sh <stage-dir> [--prefix DIR] [--project-root DIR] [--applications-dir DIR]
   sh install.sh --uninstall [--prefix DIR] [--applications-dir DIR]
 
-  <stage-dir>           staged build: dist/abito-island/<version> or a copy of it
-                        (artifacts/abito-island-<version>-<commit>)
-  --prefix DIR          install dir (default: ~/.local/share/abito-island)
-  --project-root DIR    (required) ABITO_PROJECT_ROOT written into the launcher entry:
+  <stage-dir>           staged build: dist/koda/<version> or a copy of it
+                        (artifacts/koda-<version>-<commit>)
+  --prefix DIR          install dir (default: ~/.local/share/koda)
+  --project-root DIR    (required) KODA_PROJECT_ROOT written into the launcher entry:
                         the folder your agent sessions run in
   --applications-dir D  where the .desktop goes (default: ~/.local/share/applications)
   --uninstall           remove the installed files, PREFIX/runtime and the .desktop entry
@@ -83,7 +83,7 @@ USAGE
 # ---- arguments ---------------------------------------------------------------
 [ -n "${HOME:-}" ] || die "HOME is not set"
 DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
-PREFIX="$DATA_HOME/abito-island"
+PREFIX="$DATA_HOME/koda"
 APPS="$DATA_HOME/applications"
 ROOT=""
 STAGE=""
@@ -282,7 +282,7 @@ for f in $names; do [ "$f" = "$RUNTIME_ARCHIVE" ] || INSTALL_FILES="$INSTALL_FIL
 # ---- 4. stage everything in temp files next to the targets, re-verify, then rename -----------
 # the .desktop is generated and validated BEFORE any file is replaced
 mkdir -p "$PREFIX" "$APPS"
-sed -e "s|^Exec=.*|Exec=env ABITO_PROJECT_ROOT=$ROOT \"$PREFIX/abito-island-launcher\"|" \
+sed -e "s|^Exec=.*|Exec=env KODA_PROJECT_ROOT=$ROOT \"$PREFIX/koda-launcher\"|" \
     -e "s|@INSTALL_DIR@|$PREFIX|g" "$STAGE/$DESKTOP" > "$APPS/.new.$$.$DESKTOP"
 if grep -q '@INSTALL_DIR@' "$APPS/.new.$$.$DESKTOP"; then die "unresolved @INSTALL_DIR@ in the .desktop"; fi
 if command -v desktop-file-validate >/dev/null 2>&1; then
@@ -303,6 +303,43 @@ chmod 644 "$APPS/.new.$$.$DESKTOP"
 
 for f in $INSTALL_FILES receipt.json; do mv -f "$PREFIX/$f$TMP_SUFFIX" "$PREFIX/$f"; done
 mv -f "$APPS/.new.$$.$DESKTOP" "$APPS/$DESKTOP"
+
+# K2-04 T6: the Koda 0.1 left its own menu entry (com.abitog.AbitoTauri.desktop) and its install stays in place, so after
+# updating there would be two «Koda» in the menu. Remove THAT exact file, and only when it is EXACTLY what the 0.1 installer
+# wrote: the 0.1 generated it from a fixed template (desktopText) by resolving @INSTALL_DIR@ and rewriting the Exec line, so the
+# whole file is rebuilt here from its own Exec line and compared byte for byte. A file the user edited (a comment, another
+# Exec, an extra key, CRLF), a link or a directory stays. The 0.1 install itself is never removed.
+LEGACY_DESKTOP="com.abitog.AbitoTauri.desktop"
+legacy_menu_entry_is_01() {
+  f="$1"
+  [ -f "$f" ] && [ ! -L "$f" ] || return 1
+  [ "$(wc -c < "$f")" -le 4096 ] || return 1
+  [ "$(grep -c '^Exec=' "$f")" = 1 ] || return 1
+  exec_line="$(sed -n 's/^Exec=//p' "$f")"
+  # Exec=env ABITO_PROJECT_ROOT=<root> "<prefix>/abito-island-launcher"
+  case "$exec_line" in env\ ABITO_PROJECT_ROOT=*\ \"*/abito-island-launcher\") ;; *) return 1 ;; esac
+  launcher="${exec_line##* \"}"; launcher="${launcher%\"}"
+  old_prefix="${launcher%/abito-island-launcher}"
+  [ -n "$old_prefix" ] || return 1
+  # The 0.1 installer only accepted absolute paths made of [A-Za-z0-9_./-] for its prefix and for the project root (safe_path),
+  # so a root or prefix with a space, quote, $ or backtick was never written by it: that file is not the 0.1 one.
+  old_root="${exec_line#env ABITO_PROJECT_ROOT=}"; old_root="${old_root% \"$launcher\"}"
+  for p in "$old_prefix" "$old_root"; do
+    case "$p" in /*) ;; *) return 1 ;; esac
+    case "$p" in *[!A-Za-z0-9_./-]*) return 1 ;; esac
+    case "$p" in *//*|*/./*|*/../*|*/.|*/..|*/) return 1 ;; esac # normalized, as the 0.1 safe_path required
+    [ "$p" != "/" ] || return 1
+  done
+  want="$(mktemp "${TMPDIR:-/tmp}/koda-legacy-entry.XXXXXX")" || return 1
+  printf '%s\n' '[Desktop Entry]' 'Type=Application' 'Name=Koda' 'Comment=Koda' "Exec=$exec_line" \
+    "Icon=$old_prefix/abito-island.png" 'Terminal=false' 'Categories=Utility;' 'StartupWMClass=Abito-island' > "$want"
+  cmp -s "$f" "$want"; rc=$?
+  rm -f "$want"
+  return $rc
+}
+if legacy_menu_entry_is_01 "$APPS/$LEGACY_DESKTOP"; then
+  if rm -f "$APPS/$LEGACY_DESKTOP"; then LEGACY_REMOVED=1; fi
+fi
 refresh_desktop_db
 
 # the runtime: atomic rename into place (an old runtime is moved aside, then removed)
@@ -322,11 +359,12 @@ note "Installed Abito (Tauri) in $PREFIX"
 for f in $INSTALL_FILES; do printf '  %-34s %s\n' "$f" "$(sha_of "$PREFIX/$f")"; done
 note "  (+ receipt.json; runtime/ holds the bundled Node + Pi extracted from the verified $RUNTIME_ARCHIVE)"
 note "Menu entry: $APPS/$DESKTOP  — «Abito (Tauri)»"
+if [ "${LEGACY_REMOVED:-}" = 1 ]; then note "Removed the Koda 0.1 menu entry ($LEGACY_DESKTOP); the 0.1 install in ~/.local/share/abito-island is left in place."; fi
 note "Project root: $ROOT"
 note ""
 note "Launch:"
 note "  from the app menu: Abito (Tauri)"
-note "  from a terminal:   ABITO_PROJECT_ROOT=$ROOT $PREFIX/abito-island-launcher"
-note "  (the launcher takes no arguments and refuses every other ABITO_* variable)"
+note "  from a terminal:   KODA_PROJECT_ROOT=$ROOT $PREFIX/koda-launcher"
+note "  (the launcher takes no arguments and refuses every other KODA_* variable)"
 note "Reinstall: run this command again. Uninstall: sh install.sh --uninstall"
 note "The installed Abito/Preview apps were not touched."

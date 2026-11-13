@@ -11,14 +11,14 @@ const script = path.join(crate, 'packaging/windows/stage-runtime.cjs');
 const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'abito-win-stage-'));
 const out = path.join(scratch, 'payload');
 const files = [...L.DAEMON_FILES.map(f => `desktop-daemon/${f}`), ...L.HARNESS_FILES.map(f => `desktop-harness/${f}`), ...L.PI_FILES.map(f => `desktop-pi/${f}`)].sort();
-const bins = ['abito-island.exe', 'abito-notice-relay.exe', 'abito-private-session.exe', 'abito-install.json'];
+const bins = ['koda.exe', 'abito-notice-relay.exe', 'abito-private-session.exe', 'abito-install.json'];
 function run(...args) { return spawnSync(process.execPath, [script, '--out', out, ...args], { encoding: 'utf8' }); }
 function runOut(dest, ...args) { return spawnSync(process.execPath, [script, '--out', dest, ...args], { encoding: 'utf8' }); }
 function entries(dir, prefix = '') { return fs.readdirSync(dir).flatMap(n => fs.statSync(path.join(dir, n)).isDirectory() ? entries(path.join(dir, n), `${prefix}${n}/`) : [`${prefix}${n}`]).sort(); }
 // HU-062: test-only helpers of the harness suite (the pipe preload, fake receivers, fixtures) are never part of the shipped closed list,
 // and no shipped file references the preload or its switch.
-assert.ok(!files.some(f => /(^|\/)test\//.test(f) || /pipe-preload|fake-receiver|platform-env|ABITO_TEST_PIPE/.test(f)), 'test-only harness files must not be shipped');
-for (const f of files.filter(f => f.endsWith('.cjs'))) assert.doesNotMatch(fs.readFileSync(path.join(crate, '..', f), 'utf8'), /pipe-preload|ABITO_TEST_PIPE/, `${f} must not reference the test preload`);
+assert.ok(!files.some(f => /(^|\/)test\//.test(f) || /pipe-preload|fake-receiver|platform-env|KODA_TEST_PIPE/.test(f)), 'test-only harness files must not be shipped');
+for (const f of files.filter(f => f.endsWith('.cjs'))) assert.doesNotMatch(fs.readFileSync(path.join(crate, '..', f), 'utf8'), /pipe-preload|KODA_TEST_PIPE/, `${f} must not reference the test preload`);
 try {
   let r = run();
   assert.equal(r.status, 0, r.stderr);
@@ -45,7 +45,7 @@ try {
   assert.ok(nsis.includes('!include "${RUNTIMEDIR}\\runtime.nsh"'));
   // Per-user install only into the protected default (%LOCALAPPDATA%\Programs): no directory page, so a tester can
   // never pick a folder other local users can modify (e.g. C:\Abito) and plant binaries the island trusts.
-  assert.ok(nsis.includes('InstallDir "$LOCALAPPDATA\\Programs\\abito-island"'));
+  assert.ok(nsis.includes('InstallDir "$LOCALAPPDATA\\Programs\\Koda"'));
   assert.doesNotMatch(nsis, /MUI_PAGE_DIRECTORY/);
   assert.doesNotMatch(nsis, /^InstallDirRegKey/m);
   const deleted = [...macro.matchAll(/^  Delete "\$INSTDIR\\([^"]+)"$/gm)].map(m => m[1].replaceAll('\\', '/')).sort();

@@ -137,7 +137,7 @@ function engramBinPath(manifest, runtime, deps) {
  * user-store mode anymore: the store follows the engine's own HOME
  * (`<island>/home/.engram`, Engram's default when `ENGRAM_DATA_DIR` is unset),
  * the server runs on Koda's own port (`privateMemoryPort`: 7439, or the
- * parent's `ABITO_ENGRAM_PORT`), and the ONLY binary Koda resolves is the
+ * parent's `KODA_ENGRAM_PORT`), and the ONLY binary Koda resolves is the
  * pinned one its runtime manifest names (`engramBin`) — the former Gentle Dot
  * user-binary order (the parent's ENGRAM_BIN, the login shell, the known dirs)
  * is deleted, so the user's own Engram server and store (7437/7438, ~/.engram)
@@ -748,7 +748,7 @@ class AgentEngine extends EventEmitter {
 		/**
 		 * Arbitrary working folder the user prefers (U4 refines validation and
 		 * restart semantics). When set, nothing is ever written there; the
-		 * memory-project pin travels via `ABITO_MEMORY_PROJECT` and the
+		 * memory-project pin travels via `KODA_MEMORY_PROJECT` and the
 		 * identity prompt instead. See README.md for enforcement limits.
 		 */
 		this.workspacePath = options.workspacePath;
@@ -1251,7 +1251,7 @@ class AgentEngine extends EventEmitter {
 		];
 		const env = {
 			...isolatedEnv(this.baseEnv, this.island, {
-				ABITO_MEMORY_PROJECT: MEMORY_PROJECT,
+				KODA_MEMORY_PROJECT: MEMORY_PROJECT,
 				...(defaultEngine ? {} : { PI_CODING_AGENT_DIR: this.island.agentDir }),
 				// T1b-b/T1c (S5): the bundled Engram binary and Koda's private memory
 				// store and port travel ONLY with Koda's default engine. F7: a missing or

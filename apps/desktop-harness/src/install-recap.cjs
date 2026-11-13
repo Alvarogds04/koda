@@ -13,7 +13,7 @@ const ic = require('./install-claude.cjs');
 const RECAP_BIN = path.resolve(__dirname, '../bin/abito-recap-hook.cjs');
 const EVENTS = ['UserPromptSubmit', 'PostToolUse', 'Stop'];
 const TIMEOUT_SEC = 5;
-const USAGE = 'usage: abito-hook install recap --user --remove [--apply]   (Recap was removed: only its old hooks can be taken out)\n';
+const USAGE = 'usage: koda-hook install recap --user --remove [--apply]   (Recap was removed: only its old hooks can be taken out)\n';
 
 const PROFILE = {
   name: 'recap',

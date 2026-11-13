@@ -1,4 +1,4 @@
-//! `ABITO_PROBE=1` (or `--probe`) read-back script for unit M1a.
+//! `KODA_PROBE=1` (or `--probe`) read-back script for unit M1a.
 //!
 //! The probe drives the SAME core handlers the pointer commands use — press,
 //! drag, release/snap, toggle — programmatically. It is NOT a real pointer:
@@ -165,7 +165,7 @@ fn fixed_window_evidence(app: &AppHandle) {
 }
 
 pub fn run(app: AppHandle) {
-    let launch_mode = std::env::var("ABITO_PROBE_VALIDATE").unwrap_or_default();
+    let launch_mode = std::env::var("KODA_PROBE_VALIDATE").unwrap_or_default();
     if launch_mode == "island" || launch_mode.starts_with("startup-") {
         sleep(Duration::from_millis(900));
         let name = match launch_mode.as_str() {
@@ -182,12 +182,12 @@ pub fn run(app: AppHandle) {
             "visible":visible,"enabled":enabled,"expected":expected,"reason":"ventana de ajustes al arrancar"}}));
         if launch_mode.starts_with("startup-") { crate::quit_clean(&app); return; }
     }
-    if std::env::var("ABITO_PROBE_VALIDATE").as_deref() == Ok("island") {
+    if std::env::var("KODA_PROBE_VALIDATE").as_deref() == Ok("island") {
         island_validation(&app);
         crate::quit_clean(&app);
         return;
     }
-    if std::env::var("ABITO_PROBE_FIXED_WINDOW").as_deref() == Ok("1") {
+    if std::env::var("KODA_PROBE_FIXED_WINDOW").as_deref() == Ok("1") {
         sleep(Duration::from_secs(3));
         fixed_window_evidence(&app);
         crate::quit_clean(&app);
@@ -360,7 +360,7 @@ pub fn run(app: AppHandle) {
     }));
 
     // 9. transport evidence (M2): the probe itself acts as the Pi producer
-    //    against OUR OWN receiver (default `.runtime` or the ABITO_SOCKET_DIR
+    //    against OUR OWN receiver (default `.runtime` or the KODA_SOCKET_DIR
     //    override this process owns): hello → ready → ONE settled frame, then
     //    the notice count read back through the real snapshot path. The
     //    installed Preview's reserved socket roots are DETECTED read-only —
@@ -368,7 +368,7 @@ pub fn run(app: AppHandle) {
     transport_evidence(&app);
 
     // 9b. overview visual evidence (UI.1): PNGs of the overview scenes on a
-    //     known background (opt-in: ABITO_PROBE_VISUAL=1). Driven through the
+    //     known background (opt-in: KODA_PROBE_VISUAL=1). Driven through the
     //     same host paths the real lanes use; nothing here approves by itself.
     overview_visual_evidence(&app);
 
@@ -376,10 +376,10 @@ pub fn run(app: AppHandle) {
     //     in-process fake backend (env override set at startup), so this
     //     performs the human's explicit choice and reads card/bridgeStatus
     //     back through the REAL snapshot path before and after.
-    //     With ABITO_PROBE_VISUAL=1 the visual scenes already consumed the
+    //     With KODA_PROBE_VISUAL=1 the visual scenes already consumed the
     //     (sticky) card, so approval/a11y are skipped there: they have their
     //     own non-visual run, and this keeps the visual run reaching chat/models.
-    let visual_run = std::env::var("ABITO_PROBE_VISUAL").as_deref() == Ok("1");
+    let visual_run = std::env::var("KODA_PROBE_VISUAL").as_deref() == Ok("1");
     if !visual_run {
         approval_evidence(&app);
     }
@@ -400,7 +400,7 @@ pub fn run(app: AppHandle) {
     if visual_run {
         notification_scenes(&app);
         hotkey_evidence(&app);
-        settings_scenes(&app, &std::env::var("ABITO_PROBE_SETTINGS_TAG").unwrap_or_else(|_| "sin-motor".into()));
+        settings_scenes(&app, &std::env::var("KODA_PROBE_SETTINGS_TAG").unwrap_or_else(|_| "sin-motor".into()));
         column_transition_scenes(&app);
         hotkey_hide_from_views(&app);
         panel_open_timing(&app);
@@ -577,7 +577,7 @@ fn transport_evidence(_app: &AppHandle) {
 /// A fresh pending proposal is left served so the later approval_evidence
 /// step still exercises its own decision.
 fn overview_visual_evidence(app: &AppHandle) {
-    if std::env::var("ABITO_PROBE_VISUAL").as_deref() != Ok("1") {
+    if std::env::var("KODA_PROBE_VISUAL").as_deref() != Ok("1") {
         return; // opt-in: the default probe flow is unchanged
     }
     let state = app.state::<AppState>();
@@ -601,7 +601,7 @@ fn overview_visual_evidence(app: &AppHandle) {
     // Two complementary runs (the lane's selected candidate is STICKY — a
     // served proposal can never legally un-serve, so a clean no-card overview
     // is only reachable when the bridge never became healthy):
-    //   no fake  (ABITO_BRIDGE_BASE set from outside → dead origin):
+    //   no fake  (KODA_BRIDGE_BASE set from outside → dead origin):
     //             sinpi / conectado / aviso, card is null all run.
     //   fake     (default probe backend): tarjeta-pendiente / -resuelta.
     let card_scenes = fake.is_some();
@@ -639,7 +639,7 @@ fn overview_visual_evidence(app: &AppHandle) {
         let _ = main_window(app).map(|win| win.eval("document.getElementById('notice-info').click()"));
         sleep(Duration::from_millis(300));
         // compacta-sin-puente: no-card run = the approval bridge never became healthy
-        // (ABITO_BRIDGE_BASE dead) -> the compact dot carries the RED triangle badge.
+        // (KODA_BRIDGE_BASE dead) -> the compact dot carries the RED triangle badge.
         {
             let plan = state.core.lock().expect("core lock").toggle(&io, area);
             apply_plan(app, state.inner(), plan);
@@ -731,11 +731,11 @@ fn overview_visual_evidence(app: &AppHandle) {
     } else {
         // tarjeta-pendiente: serve a FRESH pending proposal (same payload_hash
         // the fake accepts), wait for the REAL snapshot to project it.
-        // ABITO_PROBE_VISUAL_DECISION=sent: keep serving the SAME proposal id
+        // KODA_PROBE_VISUAL_DECISION=sent: keep serving the SAME proposal id
         // the lane already selected (sticky), so the fake answers the
         // decision with a real 2xx → the lane's own `Decisión enviada.`
         // (tarjeta-enviada). Default: a different id → 404 → `Sin confirmar`.
-        let sent_run = std::env::var("ABITO_PROBE_VISUAL_DECISION").as_deref() == Ok("sent");
+        let sent_run = std::env::var("KODA_PROBE_VISUAL_DECISION").as_deref() == Ok("sent");
         if !sent_run {
             r6_live_evidence(app, state.inner());
         }
@@ -844,7 +844,7 @@ fn overview_visual_evidence(app: &AppHandle) {
 }
 
 /// M3 approval read-back: the lane was started at `setup` against the
-/// in-process fake backend (`ABITO_BRIDGE_BASE` override), so this drives
+/// in-process fake backend (`KODA_BRIDGE_BASE` override), so this drives
 /// the LEGAL gates — expand (legacy requires an open overlay), wait for
 /// `healthy` + `pending` — then performs the human's explicit choice
 /// through the SAME dispatch funnel the webview's `allow` verb reaches,
@@ -953,11 +953,11 @@ fn sample_motion(app: &AppHandle, name: &str, millis: u64, action: impl FnOnce()
 /// BEFORE `action` runs so the transition is inside the clip. Same sand
 /// background class as `capture_visual`; no pointer drawn; never the screen.
 fn capture_sequence(app: &AppHandle, name: &str, fps: u32, millis: u64, action: impl FnOnce()) {
-    if std::env::var("ABITO_PROBE_VISUAL").as_deref() != Ok("1") {
+    if std::env::var("KODA_PROBE_VISUAL").as_deref() != Ok("1") {
         action();
         return;
     }
-    let Some(root) = std::env::var_os("ABITO_SOCKET_DIR") else {
+    let Some(root) = std::env::var_os("KODA_SOCKET_DIR") else {
         action();
         return;
     };
@@ -966,7 +966,7 @@ fn capture_sequence(app: &AppHandle, name: &str, fps: u32, millis: u64, action: 
         action();
         return;
     };
-    let dir = match std::env::var_os("ABITO_PROBE_VISUAL_DIR") {
+    let dir = match std::env::var_os("KODA_PROBE_VISUAL_DIR") {
         Some(custom) => std::path::PathBuf::from(custom),
         None => std::path::Path::new(&root).join("visual"),
     };
@@ -995,7 +995,7 @@ fn capture_sequence(app: &AppHandle, name: &str, fps: u32, millis: u64, action: 
     emit(&json!({"step": "visual_sequence", "name": name, "fps": fps, "millis": millis, "pattern": pattern.display().to_string()}));
 }
 
-/// N6 evidence (opt-in `ABITO_PROBE_VISUAL=1`): REAL QP/1 frames over a real
+/// N6 evidence (opt-in `KODA_PROBE_VISUAL=1`): REAL QP/1 frames over a real
 /// socket to OUR receiver, with the island showing the notification. One
 /// connection plays the Pi producer; the human's gesture is the only thing
 /// that answers. PNGs on the sand background, one per state.
@@ -1003,7 +1003,7 @@ fn capture_sequence(app: &AppHandle, name: &str, fps: u32, millis: u64, action: 
 fn notification_scenes(app: &AppHandle) {
     use std::io::{BufRead, BufReader, Read, Write};
     use std::os::unix::net::UnixStream;
-    if std::env::var("ABITO_PROBE_VISUAL").as_deref() != Ok("1") {
+    if std::env::var("KODA_PROBE_VISUAL").as_deref() != Ok("1") {
         return;
     }
     let state = app.state::<AppState>();
@@ -1175,7 +1175,7 @@ fn notification_scenes(_app: &AppHandle) {
 /// grabbed by a probe). Shows: hide keeps the Pi socket, the chat lane and the model
 /// listing alive; the pending-question guard; show restores without taking focus.
 fn hotkey_evidence(app: &AppHandle) {
-    if std::env::var("ABITO_PROBE_VISUAL").as_deref() != Ok("1") {
+    if std::env::var("KODA_PROBE_VISUAL").as_deref() != Ok("1") {
         return;
     }
     let state = app.state::<AppState>();
@@ -1276,10 +1276,10 @@ fn column_transition_scenes(app: &AppHandle) {
 }
 
 /// #306 evidence (opt-in visual run): the settings panel in each section, driven through the
-/// page's own gear/tabs. The daemon state comes from `ABITO_ISLAND_DIR` (a REAL daemon with a
+/// page's own gear/tabs. The daemon state comes from `KODA_ISLAND_DIR` (a REAL daemon with a
 /// fake agent when the caller started one, or nothing running = honest «Sin motor»).
 fn settings_scenes(app: &AppHandle, tag: &str) {
-    if std::env::var("ABITO_PROBE_VISUAL").as_deref() != Ok("1") {
+    if std::env::var("KODA_PROBE_VISUAL").as_deref() != Ok("1") {
         return;
     }
     let state = app.state::<AppState>();
@@ -1361,7 +1361,7 @@ fn settings_scenes(app: &AppHandle, tag: &str) {
 /// growing frame counter + the body path changing between samples, and six
 /// sequential PNGs of the same scene that must differ from each other.
 fn r6_live_evidence(app: &AppHandle, state: &AppState) {
-    if std::env::var("ABITO_PROBE_VISUAL").as_deref() != Ok("1") {
+    if std::env::var("KODA_PROBE_VISUAL").as_deref() != Ok("1") {
         return;
     }
     let Some(win) = main_window(app) else { return };
@@ -1407,7 +1407,7 @@ fn r6_live_evidence(app: &AppHandle, state: &AppState) {
 /// `staticPose`; the island's real #clay is hidden for the grab and restored.
 /// Nothing in production code changes the pose.
 fn capture_poses(app: &AppHandle, suffix: &str) {
-    if std::env::var("ABITO_PROBE_VISUAL").as_deref() != Ok("1") {
+    if std::env::var("KODA_PROBE_VISUAL").as_deref() != Ok("1") {
         return;
     }
     let Some(page) = main_window(app) else { return };
@@ -1449,7 +1449,7 @@ fn approval_evidence(app: &AppHandle) {
     });
     let Some(fake) = fake else {
         line["error"] = json!(
-            "ABITO_BRIDGE_BASE was set from outside: the probe reads snapshots \
+            "KODA_BRIDGE_BASE was set from outside: the probe reads snapshots \
              but NEVER decides against a non-probe backend"
         );
         emit(&line);
@@ -1655,16 +1655,16 @@ pub(crate) fn mark(label: impl Into<String>) {
 /// timeline. Frames and timeline are analysed offline (a pre-compositor view: it shows what the X window
 /// holds at each instant, not what a Wayland compositor then does with it).
 fn native_resize_flash_scene(app: &AppHandle) {
-    if std::env::var("ABITO_PROBE_VISUAL").as_deref() != Ok("1") {
+    if std::env::var("KODA_PROBE_VISUAL").as_deref() != Ok("1") {
         return;
     }
-    let Some(root) = std::env::var_os("ABITO_SOCKET_DIR") else { return };
-    let dir = match std::env::var_os("ABITO_PROBE_VISUAL_DIR") {
+    let Some(root) = std::env::var_os("KODA_SOCKET_DIR") else { return };
+    let dir = match std::env::var_os("KODA_PROBE_VISUAL_DIR") {
         Some(c) => std::path::PathBuf::from(c),
         None => std::path::Path::new(&root).join("visual"),
     };
     let _ = std::fs::create_dir_all(&dir);
-    let tag = std::env::var("ABITO_PROBE_FLASH_TAG").unwrap_or_else(|_| "ahora".into());
+    let tag = std::env::var("KODA_PROBE_FLASH_TAG").unwrap_or_else(|_| "ahora".into());
     let video = dir.join(format!("flash-{tag}.mkv"));
     let state = app.state::<AppState>();
     let Some(win) = main_window(app) else { return };
@@ -1814,7 +1814,7 @@ fn hotkey_hide_from_views(app: &AppHandle) {
 /// watches itself frame by frame — rows destroyed and recreated, the log and composer boxes, any frame in
 /// which the visible chat is partly transparent or missing — and reports counts, not pictures.
 fn send_flicker_diagnosis(app: &AppHandle) {
-    if std::env::var("ABITO_PROBE_VISUAL").as_deref() != Ok("1") {
+    if std::env::var("KODA_PROBE_VISUAL").as_deref() != Ok("1") {
         return;
     }
     let state = app.state::<AppState>();
@@ -1873,7 +1873,7 @@ fn chat_evidence(app: &AppHandle) {
     let fake = FakeModel::start(FakeModelConfig {
         reply: Reply::Stream {
             reasoning: true,
-            pieces: vec!["Hola, ".into(), "soy Abito ".into(), "(modelo local falso del probe).".into()],
+            pieces: vec!["Hola, ".into(), "soy Koda ".into(), "(modelo local falso del probe).".into()],
             finish: "stop",
             gap_ms: 60,
         },
@@ -1989,7 +1989,7 @@ fn chat_evidence(app: &AppHandle) {
     //     selectable LOCAL router — never inference, never a diagnostic port.
     //     The probe keeps the selection in memory (no config file written).
     state.chat_probe.lock().expect("chat probe lock").clear();
-    let visual = std::env::var("ABITO_PROBE_VISUAL").as_deref() == Ok("1");
+    let visual = std::env::var("KODA_PROBE_VISUAL").as_deref() == Ok("1");
     if visual {
         let _ = win.eval("window.__abitoProbeHold = 3500");
     }
@@ -2175,11 +2175,11 @@ fn visual_stamp() -> String {
     format!("{y:04}{m:02}{d:02}-{h:02}{mnt:02}{sec:02}")
 }
 
-/// Opt-in visual evidence (`ABITO_PROBE_VISUAL=1` + `ABITO_SOCKET_DIR`):
+/// Opt-in visual evidence (`KODA_PROBE_VISUAL=1` + `KODA_SOCKET_DIR`):
 /// one PNG of OUR window only. ffmpeg `x11grab -window_id <wid>` reads the
 /// island window's own drawable (found by `_NET_WM_PID`, FIX-B) — never the
 /// root window, the desktop or another client; no pointer drawn; one frame.
-/// Files: `<ABITO_SOCKET_DIR>/visual/<name>-<YYYYMMDD-HHMMSS>.png`
+/// Files: `<KODA_SOCKET_DIR>/visual/<name>-<YYYYMMDD-HHMMSS>.png`
 /// (gitignored `.runtime*`).
 ///
 /// Known-background contract (UI.1 review): during the grab ONLY, the body
@@ -2187,12 +2187,12 @@ fn visual_stamp() -> String {
 /// radius, margins and the island contour are visible in the PNG; the class
 /// is removed right after and production rendering never carries it.
 fn capture_visual(app: &AppHandle, name: &str) {
-    if std::env::var("ABITO_PROBE_VISUAL").as_deref() != Ok("1") {
+    if std::env::var("KODA_PROBE_VISUAL").as_deref() != Ok("1") {
         return;
     }
-    let Some(root) = std::env::var_os("ABITO_SOCKET_DIR") else {
+    let Some(root) = std::env::var_os("KODA_SOCKET_DIR") else {
         emit(
-            &json!({"step": "visual", "name": name, "error": "ABITO_SOCKET_DIR unset: nowhere private to write"}),
+            &json!({"step": "visual", "name": name, "error": "KODA_SOCKET_DIR unset: nowhere private to write"}),
         );
         return;
     };
@@ -2206,7 +2206,7 @@ fn capture_visual(app: &AppHandle, name: &str) {
         }
     };
     // Optional private output dir (UI.1 evidence); default stays `<root>/visual`.
-    let dir = match std::env::var_os("ABITO_PROBE_VISUAL_DIR") {
+    let dir = match std::env::var_os("KODA_PROBE_VISUAL_DIR") {
         Some(custom) => std::path::PathBuf::from(custom),
         None => std::path::Path::new(&root).join("visual"),
     };
@@ -2440,7 +2440,7 @@ fn feature_validation(app: &AppHandle) {
     // Capture only our private nonzero Xvfb screen. For Settings this also
     // proves the separate window, rather than re-capturing the island.
     let record = |name: &str, observation: serde_json::Value| {
-        if let (Ok(display), Ok(dir)) = (std::env::var("DISPLAY"), std::env::var("ABITO_PROBE_VISUAL_DIR")) {
+        if let (Ok(display), Ok(dir)) = (std::env::var("DISPLAY"), std::env::var("KODA_PROBE_VISUAL_DIR")) {
             if display.starts_with(':') && display.split('.').next() != Some(":0") {
                 let out = std::path::Path::new(&dir).join(format!("{name}.png"));
                 let status = std::process::Command::new("timeout").args(["8s","ffmpeg","-hide_banner","-loglevel","error","-y","-f","x11grab","-draw_mouse","0","-video_size","1280x900","-i",&display,"-frames:v","1"]).arg(&out).output();
@@ -2473,7 +2473,7 @@ fn feature_validation(app: &AppHandle) {
     crate::chathost::switch_view(app, &state, false);
     sleep(Duration::from_millis(500));
     // This is the test producer used by transport_receiver.rs, on the actual
-    // receiver endpoint (the ABITO_DESKTOP_SOCKET used by the Pi adapter).
+    // receiver endpoint (the KODA_DESKTOP_SOCKET used by the Pi adapter).
     let producer_began = Instant::now();
     let producer = (|| -> Result<(),String> {
         let endpoint = state.transport.lock().expect("transport").as_ref().map(|t|t.endpoint().to_path_buf()).ok_or("sin receptor")?;
@@ -2486,7 +2486,7 @@ fn feature_validation(app: &AppHandle) {
         producer.send(json!({"type":"hello"}))?;
         let ready=read(&mut reader)?;
         if ready.as_bytes()!=abito_island::protocol::READY_LINE {return Err(format!("hello: {ready}"));}
-        if std::env::var("ABITO_PROBE_VALIDATE_PRODUCER_FAILURE").as_deref() == Ok("1") {
+        if std::env::var("KODA_PROBE_VALIDATE_PRODUCER_FAILURE").as_deref() == Ok("1") {
             stream.shutdown(std::net::Shutdown::Both).map_err(|e|e.to_string())?;
             producer.send(json!({"type":"heartbeat"}))?;
         }
@@ -2610,7 +2610,7 @@ fn feature_validation(app: &AppHandle) {
     menu["hidden_after_hide"]=json!(hidden);
     menu["shown_after_show"]=json!(win.is_visible().unwrap_or(false));
     record("bandeja-menu",menu);
-    let entry=std::path::PathBuf::from(std::env::var("XDG_CONFIG_HOME").expect("private config")).join("autostart/abito-island.desktop");
+    let entry=std::path::PathBuf::from(std::env::var("XDG_CONFIG_HOME").expect("private config")).join("autostart/koda.desktop");
     let on=tray("autostart");
     sleep(Duration::from_millis(350));
     let text=std::fs::read_to_string(&entry).unwrap_or_default();
@@ -2681,7 +2681,7 @@ fn feature_validation(app: &AppHandle) {
         let chat_index = catalog.as_array().unwrap().iter().position(|v| v == "chat").unwrap();
         record("ajustes-contexto-sin-extension", run(&page,&format!("AbitoValidate.contextMissing({chat_index})")));
     }
-    if let Ok(origin) = std::env::var("ABITO_VALIDATE_INTEGRATIONS") {
+    if let Ok(origin) = std::env::var("KODA_VALIDATE_INTEGRATIONS") {
         let mut results=Vec::new();
         for mode in ["missing_key","error","ready","stale"] {
             crate::integrationshost::set_validation_fixture(Some(&origin),mode);
@@ -2761,7 +2761,7 @@ impl Fake {
 
 pub fn fake(calls: Arc<Mutex<Vec<String>>>) -> Connection {
     let conn = connection::Builder::session().unwrap()
-        .serve_at("/org/mpris/MediaPlayer2", Fake { calls, art_url: tauri::Url::from_file_path(std::path::PathBuf::from(std::env::var("ABITO_PROBE_VISUAL_DIR").unwrap()).join("spotify-cover.png")).unwrap().to_string(), playing: true, position: 30_000_000, shuffle: false, volume: 0.8, conn: Default::default() })
+        .serve_at("/org/mpris/MediaPlayer2", Fake { calls, art_url: tauri::Url::from_file_path(std::path::PathBuf::from(std::env::var("KODA_PROBE_VISUAL_DIR").unwrap()).join("spotify-cover.png")).unwrap().to_string(), playing: true, position: 30_000_000, shuffle: false, volume: 0.8, conn: Default::default() })
         .unwrap().name("org.mpris.MediaPlayer2.spotify").unwrap().build().unwrap();
     let iface = conn.object_server().interface::<_, Fake>("/org/mpris/MediaPlayer2").unwrap();
     iface.get().conn.set(conn.clone()).ok();
@@ -2783,7 +2783,7 @@ mod validator_context {
     impl Extension {
         fn get_recent_windows(&self) -> Vec<(String, String, String)> {
             self.0.fetch_add(1, Ordering::SeqCst);
-            vec![("com.abitog.AbitoTauri".into(), "Abito".into(), "Abito".into()),
+            vec![("com.abitog.Koda".into(), "Abito".into(), "Abito".into()),
                 ("org.example.Writer.desktop".into(), "Writer del validador".into(), "Documento privado del validador".into())]
         }
     }

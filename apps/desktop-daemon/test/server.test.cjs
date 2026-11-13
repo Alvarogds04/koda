@@ -337,7 +337,7 @@ test("the client cap is 4: a third and a fourth client are accepted, a 5th is re
 
 // L1 (U2 re-verify): the cap counts ONLY authenticated live clients — pre-hello sockets never
 // count against it — so a burst of concurrent health probes (classifySession's hello→ready,
-// run by `abito-island-daemon status` and by the island) is entirely answered ready while the
+// run by `koda-daemon status` and by the island) is entirely answered ready while the
 // settings window and the chat are connected: no probe can ever report the daemon
 // stale/endpoint_refused. Each probe reads at least its ready frame; a probe refused by the
 // cap simply gets ready and is closed right after, which classifySession reads as healthy.

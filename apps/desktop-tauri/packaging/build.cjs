@@ -3,7 +3,7 @@
 /* M4 format A build: OFFLINE release build + stage + receipt. Stages files
    only: it installs nothing, touches no installed app and never launches the
    binary. Usage: node packaging/build.cjs --runtime-archive <file> [--out <dir>] [--skip-cargo] [--smoke-variant]
-   (--skip-cargo reuses target/release/abito-island, for re-staging). The runtime
+   (--skip-cargo reuses target/release/koda, for re-staging). The runtime
    archive comes from packaging/runtime/build-runtime.cjs --archive (CI runs it
    first; this build stays offline) and is staged + hashed like every other file. */
 const fs = require('node:fs');
@@ -54,20 +54,20 @@ function cargoBuild(extraArgs, targetDir) {
   const r = cp.spawnSync('cargo', argv, { cwd: crate, stdio: 'inherit', env });
   if (r.status !== 0) { console.error('cargo build failed (offline: no download is attempted)'); process.exit(1); }
 }
-// The SHIPPED binary: no `probe` feature (ABITO_PROBE/--probe do nothing, no fakes).
+// The SHIPPED binary: no `probe` feature (KODA_PROBE/--probe do nothing, no fakes).
 const shipTarget = path.join(crate, 'target-ship');
 if (!args.includes('--skip-cargo')) cargoBuild(['--features', 'tauri/custom-protocol'], shipTarget);
-const built = path.join(shipTarget, 'release', 'abito-island');
+const built = path.join(shipTarget, 'release', 'koda');
 if (!fs.existsSync(built)) { console.error('release binary missing'); process.exit(1); }
 
-const stage = path.join(outRoot, 'abito-island', cfg.version);
+const stage = path.join(outRoot, 'koda', cfg.version);
 fs.rmSync(stage, { recursive: true, force: true });
 fs.mkdirSync(stage, { recursive: true, mode: 0o755 });
-fs.copyFileSync(built, path.join(stage, 'abito-island'));
-fs.chmodSync(path.join(stage, 'abito-island'), 0o755);
-fs.copyFileSync(path.join(crate, 'icons', 'icon.png'), path.join(stage, 'abito-island.png'));
-fs.chmodSync(path.join(stage, 'abito-island.png'), 0o644);
-fs.writeFileSync(path.join(stage, 'abito-island-launcher'), L.launcherText(), { mode: 0o755 });
+fs.copyFileSync(built, path.join(stage, 'koda'));
+fs.chmodSync(path.join(stage, 'koda'), 0o755);
+fs.copyFileSync(path.join(crate, 'icons', 'icon.png'), path.join(stage, 'koda.png'));
+fs.chmodSync(path.join(stage, 'koda.png'), 0o644);
+fs.writeFileSync(path.join(stage, 'koda-launcher'), L.launcherText(), { mode: 0o755 });
 fs.writeFileSync(path.join(stage, `${L.IDENTIFIER}.desktop`), L.desktopText(), { mode: 0o644 });
 
 for (const name of L.DAEMON_FILES) {
@@ -115,9 +115,9 @@ if (args.includes('--smoke-variant')) {
   cargoBuild(['--features', 'tauri/custom-protocol,probe'], path.join(crate, 'target-smoke'));
   const smoke = path.join(outRoot, 'smoke-variant');
   fs.mkdirSync(smoke, { recursive: true });
-  fs.copyFileSync(path.join(crate, 'target-smoke', 'release', 'abito-island'), path.join(smoke, 'abito-island'));
-  console.log(`smoke variant (probe feature, NOT for install): ${smoke}/abito-island`);
+  fs.copyFileSync(path.join(crate, 'target-smoke', 'release', 'koda'), path.join(smoke, 'koda'));
+  console.log(`smoke variant (probe feature, NOT for install): ${smoke}/koda`);
 }
 const problems = L.verifyStage(stage, { sourceCrate: crate });
 if (problems.length) { console.error('verify failed:\n - ' + problems.join('\n - ')); process.exit(1); }
-console.log(`staged ${stage}\nbinary sha256 ${files['abito-island']}`);
+console.log(`staged ${stage}\nbinary sha256 ${files['koda']}`);

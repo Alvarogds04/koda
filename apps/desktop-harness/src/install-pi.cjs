@@ -7,6 +7,12 @@ const core = require('./install-claude.cjs');
 const winfs = require('./win-fs.cjs');
 const MANIFEST = '.abito-manifest.json';
 const SCHEMA = 'abito-pi-extension/1';
+// K2-04 (S2, S4): the extension folder is Koda's. A Koda 0.1 folder (`abito-island`, recognised by its own manifest and file
+// hashes through owned()) is retired into the existing backup flow, so Pi loads ONE extension and shows one card per notice.
+// A folder at the old name that is NOT ours is never touched (no marker, no manifest, no retirement).
+const TARGET = 'koda-island';
+const LEGACY_TARGET = 'abito-island';
+const BACKUP_RE = /^(?:koda|abito)-island\.abito-backup-[0-9TZ]+(?:-[1-9])?$/;
 const FILES = Object.freeze(['adapter.cjs', 'ask-tool.cjs', 'config.cjs', 'index.ts', 'native-ask.cjs', 'questions.cjs', 'security.cjs', 'windows-transport.cjs']);
 const SOURCE = path.resolve(__dirname, '../../desktop-pi');
 const hash = b => crypto.createHash('sha256').update(b).digest('hex');
@@ -85,35 +91,44 @@ function backupRoot(home, uid, create = false, made = []) {
   if (fs.lstatSync(root).mode & 0o077) throw refuse();
   return root;
 }
-function pruneBackups(root, keep, uid) {
+function pruneBackups(root, keep, uid, alsoKeep = null) {
   // Unknown or modified entries are not ours to remove. Never descend recursively.
+  // `alsoKeep` is the 0.1 folder this run just retired: it is the only copy of it, so the prune never takes it.
   for (const name of fs.readdirSync(root)) {
-    if (!/^abito-island\.abito-backup-[0-9TZ]+(?:-[1-9])?$/.test(name)) continue;
+    if (!BACKUP_RE.test(name)) continue;
     const dir = path.join(root, name);
-    if (dir === keep) continue;
+    if (dir === keep || dir === alsoKeep) continue;
     try { if (owned(dir, uid)) cleanStage(dir); } catch { /* preserve foreign/modified backup */ }
   }
 }
 function planPi({home, uid, remove, execPath, binPath}) {
   if (winfs.active()) return require('./install-pi-win.cjs').planPi({home, remove, execPath, binPath});
   const parent = parents(home, uid);
-  const target = path.join(parent, 'abito-island');
+  const target = path.join(parent, TARGET);
+  const legacyPath = path.join(parent, LEGACY_TARGET);
   const root = backupRoot(home, uid);
   const current = owned(target, uid), next = payload(uid);
+  const legacy = ownedIfOurs(legacyPath, uid);
   const before = current ? JSON.stringify(current.files, null, 2) : '';
   const after = remove ? '' : JSON.stringify(next.files, null, 2);
-  const changed = remove ? !!current : before !== after;
+  const changed = remove ? !!(current || legacy) : before !== after || !!legacy;
   return { settingsPath:target, home, uid, remove, execPath, binPath, timeoutSec:null,
-    backupRoot:root, backupTarget:path.join(root, 'abito-island'),
+    backupRoot:root, backupTarget:path.join(root, TARGET),
+    legacyPath, legacyExists:!!legacy, legacySig:legacy ? legacy.signature : null, legacyBackupTarget:path.join(root, LEGACY_TARGET),
     lockTarget:path.join(home, '.abito-pi-extension'), exists:!!current,
     sig:current ? {sha256:current.signature,size:Buffer.byteLength(before)} : null,
     before, after, changed, data:next.data, files:next.files,
     actions:[{event:'extension',action:!changed ? 'unchanged' : remove ? 'remove' : current ? 'replace' : 'add'}] };
 }
+/** `owned()` but never fatal: a folder that is not a verified Koda install is simply not ours to retire. */
+function ownedIfOurs(dir, uid) {
+  try { return owned(dir, uid); } catch { return null; }
+}
 function same(plan) {
   parents(plan.home, plan.uid);
   const now = owned(plan.settingsPath, plan.uid);
-  return (now?.signature || '') === (plan.sig?.sha256 || '');
+  if ((now?.signature || '') !== (plan.sig?.sha256 || '')) return false;
+  return (ownedIfOurs(plan.legacyPath, plan.uid)?.signature || '') === (plan.legacySig || '');
 }
 function write(file, data) {
   const fd = fs.openSync(file, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW, 0o600);
@@ -134,10 +149,11 @@ function cleanStage(dir) {
 function removeMade(made, rmdir) {
   for (const dir of [...made].reverse()) { try { rmdir(dir); } catch { /* not empty or not ours any more: leave it */ } }
 }
-async function applyPi(plan, {backupPath, out, err}) {
-  if (winfs.active()) return require('./install-pi-win.cjs').applyPi(plan, {backupPath, out, err});
-  let stage = null, saved = false, published = false, done = false;
+async function applyPi(plan, {backupPath, out, err, now = () => new Date()}) {
+  if (winfs.active()) return require('./install-pi-win.cjs').applyPi(plan, {backupPath, out, err, now});
+  let stage = null, saved = false, published = false, done = false, retired = null;
   const made = [];
+  const freeDir = base => core.freeBackupName(base, now(), p => { try { fs.lstatSync(p); return true; } catch { return false; } });
   try {
     if (!same(plan)) { err('changed since the preview'); return 70; }
     const parent = parents(plan.home, plan.uid, true, made);
@@ -156,12 +172,18 @@ async function applyPi(plan, {backupPath, out, err}) {
       try { fs.renameSync(plan.settingsPath, backupPath); saved = true; }
       catch (e) { fs.rmdirSync(backupPath); throw e; }
     }
+    if (plan.legacyExists) {
+      // The 0.1 folder goes into the same backup flow (a dated folder in ~/.pi/agent/abito-backups), never deleted.
+      const to = freeDir(plan.legacyBackupTarget);
+      if (!to) throw refuse();
+      fs.renameSync(plan.legacyPath, to); retired = {from: plan.legacyPath, to};
+    }
     if (!plan.remove) {
       // Directory rename never replaces a populated foreign extension directory.
       fs.renameSync(stage, plan.settingsPath); stage = null; published = true;
       if (listing(owned(plan.settingsPath, plan.uid)?.files) !== listing(plan.files)) throw refuse();
     }
-    if (saved) pruneBackups(root, backupPath, plan.uid);
+    if (saved) pruneBackups(root, backupPath, plan.uid, retired ? retired.to : null);
     out('Done. Pi extension updated.\n');
     done = true;
     return 0;
@@ -175,9 +197,10 @@ async function applyPi(plan, {backupPath, out, err}) {
         published = false;
       }
       if (saved) { fs.renameSync(backupPath, plan.settingsPath); saved = false; }
+      if (retired) { fs.renameSync(retired.to, retired.from); retired = null; }
     } catch { err('could not restore'); return 70; }
     err(verificationFailed ? 'verification failed; previous state restored' : 'could not apply Pi extension');
     return 70;
   } finally { cleanStage(stage); if (!done) removeMade(made, d => fs.rmdirSync(d)); }
 }
-module.exports = { removeMade, FILES, MANIFEST, SCHEMA, planPi, applyPi};
+module.exports = { removeMade, FILES, MANIFEST, SCHEMA, TARGET, LEGACY_TARGET, ownedIfOurs, planPi, applyPi};

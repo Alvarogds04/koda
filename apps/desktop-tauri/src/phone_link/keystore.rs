@@ -25,7 +25,7 @@ impl<S: crate::secrets::SecretStore> KeychainStore<S> {
     }
 }
 
-/// The app's store: the Secret Service / Credential Manager entry Abito already uses for its own keys.
+/// The app's store: the Secret Service / Credential Manager entry Koda uses for its own keys.
 pub fn keychain() -> KeychainStore<crate::secrets::Keychain> {
     KeychainStore::new(crate::secrets::Keychain)
 }

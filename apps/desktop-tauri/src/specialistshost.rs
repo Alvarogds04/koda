@@ -15,7 +15,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use crate::specialists::{self, Command, Specialist, Store};
 use crate::{modelshost, now_ms, probe_requested, AppState, QUITTING};
 
-pub const CONFIG_ENV: &str = "ABITO_SPECIALISTS_CONFIG_DIR";
+pub const CONFIG_ENV: &str = "KODA_SPECIALISTS_CONFIG_DIR";
 
 #[derive(Debug, Default)]
 pub struct SpecialistsHost {

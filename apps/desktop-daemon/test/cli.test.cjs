@@ -69,8 +69,8 @@ function tmp() {
 const tmpBase = () => fs.realpathSync.native(os.tmpdir());
 /**
  * Island root for direct staging (no fake agent). On Windows an island may only live inside the
- * canonical protected %LOCALAPPDATA%\Abito root (windowsIslandRootViolation), so every island
- * gets a PRIVATE LOCALAPPDATA temp dir and sits at `<LOCALAPPDATA>\Abito\i`; cliEnv() puts the
+ * canonical protected %LOCALAPPDATA%\Koda root (windowsIslandRootViolation), so every island
+ * gets a PRIVATE LOCALAPPDATA temp dir and sits at `<LOCALAPPDATA>\Koda\i`; cliEnv() puts the
  * matching LOCALAPPDATA into the child env. Linux/macOS: `<tmp>/i`, env unchanged as before.
  */
 function islandRoot() {
@@ -79,12 +79,12 @@ function islandRoot() {
 	tempDirs.add(local);
 	// The app creates the protected root and the island inside it (ensureIsland); the fixture mirrors that
 	// layout so the single-component mkdir of `i` below (fakeIsland, explicit mkdirs) always has its parent.
-	fs.mkdirSync(path.join(local, "Abito"), { mode: 0o700 });
-	return path.join(local, "Abito", "i");
+	fs.mkdirSync(path.join(local, "Koda"), { mode: 0o700 });
+	return path.join(local, "Koda", "i");
 }
-/** Child env for `root`: private HOME, ABITO_ISLAND_DIR, and on Windows the private LOCALAPPDATA. */
+/** Child env for `root`: private HOME, KODA_ISLAND_DIR, and on Windows the private LOCALAPPDATA. */
 function cliEnv(root, extra = {}) {
-	const env = { PATH: process.env.PATH, HOME: tmp(), ABITO_ISLAND_DIR: root, ...extra };
+	const env = { PATH: process.env.PATH, HOME: tmp(), KODA_ISLAND_DIR: root, ...extra };
 	if (WIN) {
 		// A child node cannot bootstrap without the Windows system variables; everything
 		// user-identifying stays private: LOCALAPPDATA (and TEMP/TMP) point at the private
@@ -92,7 +92,7 @@ function cliEnv(root, extra = {}) {
 		for (const key of ["SystemRoot", "windir", "SystemDrive", "ComSpec", "PATHEXT", "OS", "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE"]) {
 			if (process.env[key] !== undefined && env[key] === undefined) env[key] = process.env[key];
 		}
-		if (env.ABITO_ISLAND_DIR === root) env.LOCALAPPDATA = path.dirname(path.dirname(root)); // <local>\Abito\i -> <local>
+		if (env.KODA_ISLAND_DIR === root) env.LOCALAPPDATA = path.dirname(path.dirname(root)); // <local>\Koda\i -> <local>
 		const privateTemp = path.join(path.dirname(env.HOME), "tmp");
 		fs.mkdirSync(privateTemp, { recursive: true });
 		env.TEMP = privateTemp;

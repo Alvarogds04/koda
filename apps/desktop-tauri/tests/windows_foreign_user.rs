@@ -21,7 +21,7 @@
 //!
 //! Guard policy (fail-safe, never silent):
 //! * The bodies run ONLY when `GITHUB_ACTIONS=true`, `RUNNER_OS=Windows`,
-//!   `RUNNER_ENVIRONMENT=github-hosted` and `ABITO_FOREIGN_USER_TEST=1`.
+//!   `RUNNER_ENVIRONMENT=github-hosted` and `KODA_FOREIGN_USER_TEST=1`.
 //!   Anywhere else the tests print an explicit
 //!   `ignored:` line and return — a skip is visible, never faked proof.
 //! * Inside an authorized run, a missing account env var, a failing launcher
@@ -160,17 +160,17 @@ fn authorization() -> Authorization {
     let on_ci = std::env::var("GITHUB_ACTIONS").as_deref() == Ok("true")
         && std::env::var("RUNNER_OS").as_deref() == Ok("Windows")
         && std::env::var("RUNNER_ENVIRONMENT").as_deref() == Ok("github-hosted");
-    let opted_in = std::env::var("ABITO_FOREIGN_USER_TEST").as_deref() == Ok("1");
+    let opted_in = std::env::var("KODA_FOREIGN_USER_TEST").as_deref() == Ok("1");
     if !on_ci || !opted_in {
         return Authorization::Skip(
-            "actual foreign-user probes need GITHUB_ACTIONS=true, RUNNER_OS=Windows, RUNNER_ENVIRONMENT=github-hosted and ABITO_FOREIGN_USER_TEST=1",
+            "actual foreign-user probes need GITHUB_ACTIONS=true, RUNNER_OS=Windows, RUNNER_ENVIRONMENT=github-hosted and KODA_FOREIGN_USER_TEST=1",
         );
     }
     // Authorized run: a broken setup is a FAILURE, not a skip.
-    let user = std::env::var("ABITO_FU_USER").unwrap_or_default();
-    let cred = std::env::var("ABITO_FU_CRED").unwrap_or_default();
+    let user = std::env::var("KODA_FU_USER").unwrap_or_default();
+    let cred = std::env::var("KODA_FU_CRED").unwrap_or_default();
     if user.is_empty() || cred.is_empty() {
-        panic!("authorized foreign-user run is missing ABITO_FU_USER/ABITO_FU_CRED: the workflow setup step did not run or did not export them");
+        panic!("authorized foreign-user run is missing KODA_FU_USER/KODA_FU_CRED: the workflow setup step did not run or did not export them");
     }
     if !Path::new(&cred).is_file() {
         panic!("authorized foreign-user run: credential blob {} is missing", cred);
@@ -233,7 +233,7 @@ fn run_foreign(scratch: &Path, child: &[&str], timeout_secs: u64) -> Output {
         .arg(scratch)
         .arg("--")
         .args(child)
-        .env("ABITO_FU_CHILD_TIMEOUT", timeout_secs.to_string())
+        .env("KODA_FU_CHILD_TIMEOUT", timeout_secs.to_string())
         .output()
         .expect("foreign-user launcher runs")
 }
@@ -539,12 +539,12 @@ fn relay_refuses_a_pipe_server_actually_running_as_another_user() {
 fn session_fixture(tag: &str) -> PathBuf {
     let base = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(tag);
     let _ = std::fs::remove_dir_all(&base); // stale fixture of ours
-    std::fs::create_dir_all(base.join("Abito").join("runtime")).expect("island scratch");
+    std::fs::create_dir_all(base.join("Koda").join("runtime")).expect("island scratch");
     let sid = winipc::ffi::current_user_sid().expect("fixture owner");
     // Protect the existing child first, before the parent's non-inheritable
     // DACL removes the child's inherited grants (same fixture as windows_daemon).
-    winipc::ffi::set_owner_only_acl(&base.join("Abito").join("runtime"), &sid).expect("private runtime dir");
-    winipc::ffi::set_owner_only_acl(&base.join("Abito"), &sid).expect("private Abito dir");
+    winipc::ffi::set_owner_only_acl(&base.join("Koda").join("runtime"), &sid).expect("private runtime dir");
+    winipc::ffi::set_owner_only_acl(&base.join("Koda"), &sid).expect("private Abito dir");
     base
 }
 
@@ -575,7 +575,7 @@ fn foreign_user_cannot_read_private_session_or_notice_metadata() {
     .to_string();
     let mut helper = Command::new(HELPER)
         .env("LOCALAPPDATA", &base)
-        .env_remove("ABITO_ISLAND_DIR")
+        .env_remove("KODA_ISLAND_DIR")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -594,7 +594,7 @@ fn foreign_user_cannot_read_private_session_or_notice_metadata() {
         "helper writes the session fixture; stderr: {}",
         String::from_utf8_lossy(&helper_out.stderr)
     );
-    let session_file = base.join("Abito").join("runtime").join("session.json");
+    let session_file = base.join("Koda").join("runtime").join("session.json");
 
     // (b) endpoint.json, published by the ACTUAL receiver.
     let receiver = Receiver::new("fu-files");
