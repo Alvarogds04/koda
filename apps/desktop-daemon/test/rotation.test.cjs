@@ -704,7 +704,6 @@ test("daemon wiring: the island pause also pauses the rotation", async (t) => {
 
 test("the chain of session files survives an engine restart", async (t) => {
 	const dir = tmp("abito-rot-chain-");
-	t.after(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
 	const messagesFile = writeHandoffMessages(dir);
 	const root = path.join(dir, "island");
 	const engineOptions = () => ({
@@ -715,7 +714,14 @@ test("the chain of session files survives an engine restart", async (t) => {
 		turnTimeoutMs: 10_000, abortGraceMs: 100,
 	});
 	const engine = new AgentEngine(engineOptions());
-	t.after(async () => { await engine.stop(); });
+	let again;
+	// One hook, in order (release a95d396, CI test 506): both engines stop before their island (a
+	// child's cwd) is removed, or Windows refuses the rmdir with EBUSY.
+	t.after(async () => {
+		await engine.stop();
+		await again?.stop();
+		fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+	});
 	await engine.start();
 	const first = engine.sessionFile;
 	bloat(engine, 100);
@@ -725,12 +731,10 @@ test("the chain of session files survives an engine restart", async (t) => {
 	assert.deepEqual(engine.previousSessions, [first]);
 	await engine.stop();
 	// A fresh engine reopens the chat where it was, chain included.
-	const again = new AgentEngine(engineOptions());
+	again = new AgentEngine(engineOptions());
 	await again.start();
 	assert.equal(again.sessionFile, seed, "the chat reopens on the seeded session");
 	assert.deepEqual(again.previousSessions, [first], "the chain is restored");
-	await again.stop();
-	fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 // ------------------------------------------------------- verifier findings
