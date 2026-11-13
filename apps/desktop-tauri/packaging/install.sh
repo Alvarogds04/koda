@@ -303,6 +303,15 @@ chmod 644 "$APPS/.new.$$.$DESKTOP"
 
 for f in $INSTALL_FILES receipt.json; do mv -f "$PREFIX/$f$TMP_SUFFIX" "$PREFIX/$f"; done
 mv -f "$APPS/.new.$$.$DESKTOP" "$APPS/$DESKTOP"
+
+# K2-04 T6: the Koda 0.1 left its own menu entry (com.abitog.AbitoTauri.desktop) and its install stays in place, so after
+# updating there would be two «Koda» in the menu. Remove THAT exact file, and only when it is the 0.1 one: a regular file
+# (never a link or a directory) whose Exec names an `abito-island` launcher. The 0.1 install itself is never removed.
+LEGACY_DESKTOP="com.abitog.AbitoTauri.desktop"
+if [ -f "$APPS/$LEGACY_DESKTOP" ] && [ ! -L "$APPS/$LEGACY_DESKTOP" ] \
+   && grep -Eq '^Exec=.*/abito-island-launcher"?$' "$APPS/$LEGACY_DESKTOP"; then
+  if rm -f "$APPS/$LEGACY_DESKTOP"; then LEGACY_REMOVED=1; fi
+fi
 refresh_desktop_db
 
 # the runtime: atomic rename into place (an old runtime is moved aside, then removed)
@@ -322,6 +331,7 @@ note "Installed Abito (Tauri) in $PREFIX"
 for f in $INSTALL_FILES; do printf '  %-34s %s\n' "$f" "$(sha_of "$PREFIX/$f")"; done
 note "  (+ receipt.json; runtime/ holds the bundled Node + Pi extracted from the verified $RUNTIME_ARCHIVE)"
 note "Menu entry: $APPS/$DESKTOP  — «Abito (Tauri)»"
+if [ "${LEGACY_REMOVED:-}" = 1 ]; then note "Removed the Koda 0.1 menu entry ($LEGACY_DESKTOP); the 0.1 install in ~/.local/share/abito-island is left in place."; fi
 note "Project root: $ROOT"
 note ""
 note "Launch:"

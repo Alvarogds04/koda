@@ -276,3 +276,91 @@ fn non_unix_enable_refuses_honestly_and_never_writes() {
     assert!(!path.exists(), "no file, no directory: the stub is inert");
     let _ = std::fs::remove_dir_all(&root);
 }
+
+// --- K2-04 T6: retire the Koda 0.1 autostart entry -------------------------------------------------
+// The 0.1 wrote `autostart/abito-island.desktop` (Exec = its own `abito-island --autostart`). The 0.2 installs elsewhere and
+// leaves the 0.1 binary in place, so that entry would start the 0.1 island next to this one at every login. The 0.2 removes
+// exactly that file, only when it is the closed template the 0.1 wrote; it never turns the 0.2 autostart on in its place.
+
+#[cfg(unix)]
+fn legacy_template(exe: &str) -> String {
+    format!(
+        "[Desktop Entry]\nType=Application\nName=Koda\nComment=Koda\nExec=\"{exe}\" --autostart\nIcon={exe}.png\nTerminal=false\nCategories=Utility;\nStartupWMClass=Abito-island\nX-GNOME-Autostart-enabled=true\n"
+    )
+}
+
+#[cfg(unix)]
+#[test]
+fn the_legacy_entry_is_removed_and_the_new_one_is_not_created() {
+    let dir = unique_dir("legacy-gone");
+    let file = dir.join(LEGACY_ENTRY_FILE_NAME);
+    std::fs::write(&file, legacy_template("/home/u/.local/share/abito-island/abito-island")).unwrap();
+    assert_eq!(retire_legacy_entry(&dir), LegacyOutcome::Removed);
+    assert!(!file.exists(), "the 0.1 entry is gone");
+    assert!(!dir.join(ENTRY_FILE_NAME).exists(), "and nothing is enabled in its place");
+    assert_eq!(retire_legacy_entry(&dir), LegacyOutcome::NotThere, "a second run is a no-op");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(unix)]
+#[test]
+fn an_entry_the_user_changed_or_that_is_not_ours_stays_untouched() {
+    let dir = unique_dir("legacy-keep");
+    let file = dir.join(LEGACY_ENTRY_FILE_NAME);
+    let ours = legacy_template("/home/u/.local/share/abito-island/abito-island");
+    let cases: Vec<(&str, String)> = vec![
+        ("an extra key the user added", format!("{ours}X-MyKey=1\n")),
+        ("a different program", ours.replace("/abito-island\" --autostart", "/other-app\" --autostart")),
+        ("a look-alike binary name", ours.replace("/abito-island\" --autostart", "/not-abito-island\" --autostart")),
+        ("an extra argument", ours.replace("--autostart", "--autostart --debug")),
+        ("not a desktop entry", "Exec=/x/abito-island --autostart\n".to_string()),
+        ("terminal app", ours.replace("Terminal=false", "Terminal=true")),
+        ("too large", format!("{ours}{}", "# pad\n".repeat(2000))),
+    ];
+    for (why, text) in cases {
+        std::fs::write(&file, &text).unwrap();
+        assert_eq!(retire_legacy_entry(&dir), LegacyOutcome::Kept, "{why}");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), text, "{why}: byte-identical");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_symlink_or_a_directory_at_the_legacy_name_is_never_followed_or_removed() {
+    let dir = unique_dir("legacy-link");
+    let target = dir.join("target.desktop");
+    std::fs::write(&target, legacy_template("/home/u/.local/share/abito-island/abito-island")).unwrap();
+    let file = dir.join(LEGACY_ENTRY_FILE_NAME);
+    std::os::unix::fs::symlink(&target, &file).unwrap();
+    assert_eq!(retire_legacy_entry(&dir), LegacyOutcome::Kept);
+    assert!(std::fs::symlink_metadata(&file).unwrap().file_type().is_symlink(), "the link stays");
+    assert!(target.exists(), "and so does its target");
+    std::fs::remove_file(&file).unwrap();
+    std::fs::create_dir(&file).unwrap();
+    assert_eq!(retire_legacy_entry(&dir), LegacyOutcome::Kept);
+    assert!(file.is_dir());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(unix)]
+#[test]
+fn the_new_entry_and_other_files_in_the_autostart_dir_are_left_alone() {
+    let dir = unique_dir("legacy-others");
+    let new_entry = dir.join(ENTRY_FILE_NAME);
+    std::fs::write(&new_entry, "[Desktop Entry]\nExec=/x/koda --autostart\n").unwrap();
+    std::fs::write(dir.join("other.desktop"), "x").unwrap();
+    assert_eq!(retire_legacy_entry(&dir), LegacyOutcome::NotThere);
+    assert!(new_entry.exists() && dir.join("other.desktop").exists());
+    assert_eq!(retire_legacy_entry(&dir.join("missing")), LegacyOutcome::NotThere, "a missing autostart dir is not an error");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(unix)]
+#[test]
+fn the_legacy_log_line_carries_no_path_or_content() {
+    assert_eq!(LegacyOutcome::Removed.log_line().as_deref(), Some("legacy autostart entry removed"));
+    assert_eq!(LegacyOutcome::Failed.log_line().as_deref(), Some("legacy autostart entry could not be removed; will retry on the next start"));
+    assert_eq!(LegacyOutcome::NotThere.log_line(), None);
+    assert_eq!(LegacyOutcome::Kept.log_line(), None);
+}

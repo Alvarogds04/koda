@@ -126,6 +126,86 @@ pub fn is_enabled_at(path: &Path) -> bool {
     path.is_file()
 }
 
+// --- the Koda 0.1 entry (K2-04 T6) -------------------------------------------
+
+/// The file the Koda 0.1 wrote in the XDG autostart directory.
+pub const LEGACY_ENTRY_FILE_NAME: &str = "abito-island.desktop";
+
+/// What [`retire_legacy_entry`] did. Nothing here carries a path or any file content.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LegacyOutcome {
+    /// There was no 0.1 entry (or no autostart directory).
+    NotThere,
+    /// The 0.1 entry was ours and is gone.
+    Removed,
+    /// Something is at the name but it is not the file the 0.1 wrote (edited by the user, a link, a directory): untouched.
+    Kept,
+    /// It was ours but could not be removed; the next start retries.
+    Failed,
+}
+
+impl LegacyOutcome {
+    /// A log line without any path or file content; `None` when nothing happened.
+    pub fn log_line(self) -> Option<String> {
+        match self {
+            LegacyOutcome::Removed => Some("legacy autostart entry removed".into()),
+            LegacyOutcome::Failed => Some("legacy autostart entry could not be removed; will retry on the next start".into()),
+            LegacyOutcome::NotThere | LegacyOutcome::Kept => None,
+        }
+    }
+}
+
+/// True only for the closed template the Koda 0.1 wrote: every line is one of its fixed keys, `Exec` is the 0.1 binary
+/// (`.../abito-island`, the whole path as one quoted or plain word) followed by exactly `--autostart`, and nothing else.
+/// A file the user edited (an extra key, another program, an extra argument) is not ours and is never removed.
+fn is_legacy_template(text: &str) -> bool {
+    const KEYS: [&str; 10] = ["Type", "Name", "Comment", "Exec", "Icon", "Terminal", "Categories", "StartupWMClass", "X-GNOME-Autostart-enabled", "[Desktop Entry]"];
+    let mut lines = text.lines();
+    if lines.next() != Some("[Desktop Entry]") { return false; }
+    let mut exec_ok = false;
+    for line in lines {
+        let Some((key, value)) = line.split_once('=') else { return false };
+        if !KEYS.contains(&key) { return false; }
+        match key {
+            "Terminal" if value != "false" => return false,
+            "Exec" => {
+                let Some(command) = value.strip_suffix(" --autostart") else { return false };
+                let command = command.trim_matches('"');
+                exec_ok = command.rsplit('/').next() == Some("abito-island");
+            }
+            _ => {}
+        }
+    }
+    exec_ok
+}
+
+/// Removes the Koda 0.1 autostart entry from `autostart_dir` and nothing else: that ONE exact file name, only when it is a
+/// regular file (never a link or a directory, never followed), small, and the closed template the 0.1 wrote. It does not turn
+/// the 0.2 autostart on in its place (the human decided nothing from 0.1 is migrated; preferences start from zero).
+#[cfg(unix)]
+pub fn retire_legacy_entry(autostart_dir: &Path) -> LegacyOutcome {
+    const MAX_ENTRY: u64 = 4096;
+    let path = autostart_dir.join(LEGACY_ENTRY_FILE_NAME);
+    let meta = match std::fs::symlink_metadata(&path) {
+        Ok(meta) => meta,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return LegacyOutcome::NotThere,
+        Err(_) => return LegacyOutcome::Failed,
+    };
+    if !meta.file_type().is_file() || meta.len() > MAX_ENTRY { return LegacyOutcome::Kept; }
+    let Ok(text) = std::fs::read_to_string(&path) else { return LegacyOutcome::Kept };
+    if !is_legacy_template(&text) { return LegacyOutcome::Kept; }
+    match std::fs::remove_file(&path) {
+        Ok(()) => LegacyOutcome::Removed,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => LegacyOutcome::NotThere,
+        Err(_) => LegacyOutcome::Failed,
+    }
+}
+
+#[cfg(not(unix))]
+pub fn retire_legacy_entry(_autostart_dir: &Path) -> LegacyOutcome {
+    LegacyOutcome::NotThere
+}
+
 // --- enable / disable (platform seam) ----------------------------------------
 
 /// Install (`enabled = true`) or remove (`enabled = false`) the entry.

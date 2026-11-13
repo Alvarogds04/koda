@@ -572,4 +572,55 @@ test('public release: without --project-root nothing is installed and the error 
   assert.equal(snapshot(e), before, 'nothing touched');
 });
 
+// ---- K2-04 T6: the Koda 0.1 menu entry ---------------------------------------------------------------
+// The 0.1 wrote ~/.local/share/applications/com.abitog.AbitoTauri.desktop and its binary stays installed. After updating the user
+// would see two «Koda» in the menu. install.sh removes THAT exact file, only when it is the 0.1 entry (a regular file whose Exec
+// names an `abito-island` launcher); it never removes the 0.1 install itself, and never touches any other file.
+const LEGACY_DESKTOP = 'com.abitog.AbitoTauri.desktop';
+const legacyEntry = (exec = '"/home/u/.local/share/abito-island/abito-island-launcher"') =>
+  `[Desktop Entry]\nType=Application\nName=Abito (Tauri)\nExec=env ABITO_PROJECT_ROOT=/home/u/p ${exec}\nIcon=/home/u/.local/share/abito-island/abito-island.png\nTerminal=false\n`;
+
+test('K2-04 T6: an update removes the 0.1 menu entry and leaves the 0.1 install and everything else alone', () => {
+  const st = stage(), e = env();
+  fs.mkdirSync(e.apps, { recursive: true });
+  fs.writeFileSync(path.join(e.apps, LEGACY_DESKTOP), legacyEntry());
+  fs.writeFileSync(path.join(e.apps, 'other-app.desktop'), '[Desktop Entry]\nName=Other\n');
+  const old01 = path.join(e.home, 'share', 'abito-island'); fs.mkdirSync(old01, { recursive: true });
+  fs.writeFileSync(path.join(old01, 'abito-island'), 'old binary');
+  const r = install(st, e);
+  assert.equal(r.status, 0, r.stderr + r.stdout);
+  assert.equal(fs.existsSync(path.join(e.apps, LEGACY_DESKTOP)), false, 'the 0.1 menu entry is gone');
+  assert.ok(fs.existsSync(path.join(e.apps, 'com.abitog.Koda.desktop')), 'the new entry is there');
+  assert.ok(fs.existsSync(path.join(e.apps, 'other-app.desktop')), 'other entries are untouched');
+  assert.equal(fs.readFileSync(path.join(old01, 'abito-island'), 'utf8'), 'old binary', 'the 0.1 install itself is never removed');
+  assert.match(r.stdout, /Removed the Koda 0\.1 menu entry/);
+});
+
+test('K2-04 T6: a menu entry at the 0.1 name that is not the 0.1 one stays (a link, another program, a directory)', () => {
+  for (const [why, make] of [
+    ['another program', apps => fs.writeFileSync(path.join(apps, LEGACY_DESKTOP), legacyEntry('"/usr/bin/other-app"'))],
+    ['a look-alike launcher', apps => fs.writeFileSync(path.join(apps, LEGACY_DESKTOP), legacyEntry('"/x/not-abito-island-launcher"'))],
+    ['a symlink', apps => { fs.writeFileSync(path.join(apps, 'real.desktop'), legacyEntry()); fs.symlinkSync(path.join(apps, 'real.desktop'), path.join(apps, LEGACY_DESKTOP)); }],
+    ['a directory', apps => fs.mkdirSync(path.join(apps, LEGACY_DESKTOP))],
+  ]) {
+    const st = stage(), e = env();
+    fs.mkdirSync(e.apps, { recursive: true });
+    make(e.apps);
+    const before = fs.lstatSync(path.join(e.apps, LEGACY_DESKTOP));
+    const r = install(st, e);
+    assert.equal(r.status, 0, `${why}: ${r.stderr}${r.stdout}`);
+    const after = fs.lstatSync(path.join(e.apps, LEGACY_DESKTOP));
+    assert.equal(after.isSymbolicLink(), before.isSymbolicLink(), `${why}: still there, same kind`);
+    assert.equal(after.isDirectory(), before.isDirectory(), `${why}: still there`);
+    assert.doesNotMatch(r.stdout, /Removed the Koda 0\.1 menu entry/, why);
+  }
+});
+
+test('K2-04 T6: a clean machine (no 0.1 entry) installs exactly as before and prints no removal line', () => {
+  const st = stage(), e = env();
+  const r = install(st, e);
+  assert.equal(r.status, 0, r.stderr + r.stdout);
+  assert.doesNotMatch(r.stdout, /Removed the Koda 0\.1 menu entry/);
+});
+
 console.log(`install-check: ${passed} passed`);

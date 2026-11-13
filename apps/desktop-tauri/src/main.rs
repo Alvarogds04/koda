@@ -2230,6 +2230,19 @@ fn main() {
             if let Some(line) = abito_island::legacy_conversations::cleanup(conversations_dir.as_deref()).log_line() {
                 eprintln!("{line}");
             }
+            // K2-04 T6: the Koda 0.1 left its own login entry (`autostart/abito-island.desktop`) pointing at the 0.1 binary, which
+            // stays installed. Remove that ONE exact file when it is the template the 0.1 wrote, so the 0.1 island does not start
+            // next to this one at login. Nothing is enabled in its place (preferences start from zero). Probe runs never touch it.
+            #[cfg(unix)]
+            if !probe_requested() {
+                let xdg = std::env::var("XDG_CONFIG_HOME").ok();
+                let home = std::env::var("HOME").ok();
+                if let Some(dir) = autostart::autostart_dir(xdg.as_deref(), home.as_deref()) {
+                    if let Some(line) = autostart::retire_legacy_entry(&dir).log_line() {
+                        eprintln!("{line}");
+                    }
+                }
+            }
             // K2-05 T4 U3: the island chat talks to the daemon engine through ONE reconnecting
             // chat connection (the settings window keeps its own AgentConn).
             chathost::start_conn(&handle);
