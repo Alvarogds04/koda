@@ -757,7 +757,9 @@ async function realSetup(t, gwHandler) {
 	const gw = await listen(gwHandler);
 	t.after(() => close(gw.server));
 	const root = tempRoot();
-	t.after(() => rmSync(root, { recursive: true, force: true }));
+	// Windows: the real engine's children (pi-pretty's frecency LMDB) can keep data.mdb open a moment after the
+	// engine stopped, so the removal retries briefly instead of failing the test with EBUSY (CI 43368431138).
+	t.after(() => rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 }));
 	const home = path.join(root, "home");
 	mkdirSync(home, { recursive: true });
 	const s = setupCustom(root, { baseUrl: gw.base });
