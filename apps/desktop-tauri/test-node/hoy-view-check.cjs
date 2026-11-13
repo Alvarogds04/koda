@@ -86,12 +86,15 @@ test('a result row reads without pressing anything and never offers an approval'
   assert.equal(r.chip, '', 'no provenance in the frame: no chip, never an invented one');
 });
 
-test('the provenance chip appears only when the item carries it (S19)', () => {
+test('the provenance chip appears only when the item carries it (S19, F4)', () => {
   const sub = prov => N.hoyRows(view([result(A, { provenance: prov })]), NOW)[0].chip;
   assert.equal(sub('youtube_subtitles'), 'subtítulos de YouTube');
   assert.equal(sub('local_transcription'), 'transcripto en esta PC');
+  assert.equal(sub('remote_transcription'), 'transcripto con tu cuenta', 'the user\'s own account, in his words');
   assert.equal(sub('downloaded_somewhere'), '', 'an unknown provenance is not shown');
   assert.equal(sub(undefined), '');
+  // the daemon's closed list (protocol.cjs HOY_PROVENANCE) is exactly what the island labels
+  assert.deepEqual(Object.keys(N.HOY_PROVENANCE).sort(), ['local_transcription', 'remote_transcription', 'youtube_subtitles']);
 });
 
 test('an error row says what failed and what was kept (S13)', () => {

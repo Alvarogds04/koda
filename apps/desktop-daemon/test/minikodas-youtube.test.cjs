@@ -144,6 +144,9 @@ test("S19 manual subtitles win: one call for the metadata, one for the track, no
 	assert.deepEqual(argv[1].slice(argv[1].indexOf("--sub-format"), argv[1].indexOf("--sub-format") + 2), ["--sub-format", "vtt"]);
 	assert.deepEqual(argv[1].slice(argv[1].indexOf("--sub-langs"), argv[1].indexOf("--sub-langs") + 2), ["--sub-langs", "es"]);
 	assert.deepEqual(allFiles(workRoot), [], "the work folder is removed");
+	// S19/F4: what this read contributed to the run's provenance counts — YouTube's own subtitles, and nothing else
+	assert.deepEqual(out.sources, { youtube_subtitles: out.text.slice(`Post del canal: mirá ${WATCH(id)}`.length + `\n[Video de YouTube ${WATCH(id)} · subtítulos de YouTube]\n`.length).length, local_transcription: 0, remote_transcription: 0 });
+	assert.ok(out.sources.youtube_subtitles > "Hola a todos, hoy vemos el mercado.".length, "the whole track, not only its first cue");
 });
 
 test("S19 without manual subtitles YouTube's automatic captions are used, in the video's own language", async (t) => {
@@ -195,6 +198,9 @@ test("S19 no subtitles at all: only the audio is downloaded and the chosen trans
 	assert.equal(transcribed[0].size, 4096);
 	assert.equal(transcribed[0].options.deleteMedia, true, "the media is deleted after its audio is extracted");
 	assert.ok(Number.isFinite(transcribed[0].options.deadline), "the transcription shares the read's deadline (S17)");
+	// S19/F4: this text came from the transcription, so it is counted as one (the fake transcriber names no mode, which
+	// is the local default; the real one reports the setting it used).
+	assert.deepEqual(out.sources, { youtube_subtitles: 0, local_transcription: "texto transcripto del audio".length, remote_transcription: 0 });
 	const audio = calls(log).find((a) => a.includes("-f"));
 	assert.ok(audio, "the audio download really ran");
 	assert.deepEqual(audio.slice(audio.indexOf("-f"), audio.indexOf("-f") + 2), ["-f", "bestaudio/best"]);
@@ -392,6 +398,7 @@ test("S19 a run whose post links a video reads its subtitles: the Minikoda sees 
 	assert.match(source, /Post del canal/);
 	assert.match(source, /subtítulos de YouTube/);
 	assert.match(source, /Hola a todos, hoy vemos el mercado/);
+	assert.equal(results.runs[0].provenance, "youtube_subtitles", "«Hoy» can say the text came from YouTube's own subtitles (S19)");
 });
 
 test("S19 a video without subtitles is transcribed by the daemon's own transcription service during the run", async (t) => {
@@ -407,6 +414,9 @@ test("S19 a video without subtitles is transcribed by the daemon's own transcrip
 	assert.match(source, /hola desde parakeet-tdt-0\.6b-v3-int8 en es/);
 	assert.deepEqual(allFiles(path.join(island, "minikodas", "youtube")), [], "the read's work folder is gone");
 	assert.deepEqual(allFiles(path.join(island, "minikodas", "transcribe")), [], "the transcription's work folder is gone");
+	// The rule counts characters: this post's own words are longer than the 43-character transcript the fake helper
+	// writes, so the own text dominates and «Hoy» honestly says nothing. The counts themselves are asserted above.
+	assert.equal(results.runs[0].provenance, undefined);
 });
 
 test("S19 a video that cannot be read leaves a Spanish «Hoy» item and the run still happens", async (t) => {

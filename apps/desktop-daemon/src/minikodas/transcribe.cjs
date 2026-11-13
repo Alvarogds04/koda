@@ -216,8 +216,9 @@ class Transcriber {
 	}
 
 	/**
-	 * Transcribes one media file. Resolves {text, model, durationSec, segments?, chunks?}; rejects with a
-	 * TranscriptionError. `signal` cancels (the running child is killed). `deleteMedia` removes the input after.
+	 * Transcribes one media file. Resolves {text, model, mode, durationSec, segments?, chunks?} — `mode` is the setting
+	 * the text came from ("local-parakeet" or "remote"), which is what a result's provenance is built from; rejects with
+	 * a TranscriptionError. `signal` cancels (the running child is killed). `deleteMedia` removes the input after.
 	 * `deadline` (S17/S19) lets the caller share ONE budget across several transcriptions — the YouTube reader gives
 	 * its downloads and transcripts the same 30 min — and it can only shorten this transcription, never extend it.
 	 */
@@ -297,7 +298,8 @@ class Transcriber {
 		const segments = out.segments
 			.filter((s) => Number.isFinite(s?.start) && Number.isFinite(s?.end) && typeof s?.text === "string")
 			.map((s) => ({ start: s.start, end: s.end, text: s.text }));
-		return { text: out.text.slice(0, this.limits.maxTextChars), segments, model, durationSec: Number(out.durationSec) || 0 };
+		// `mode` says which of the two paths produced this text: the caller's provenance (`service.cjs`) needs it.
+		return { text: out.text.slice(0, this.limits.maxTextChars), segments, model, durationSec: Number(out.durationSec) || 0, mode: setting.mode };
 	}
 
 	async remote(setting, wav, seconds, work, job) {
@@ -328,7 +330,7 @@ class Transcriber {
 			if (text.trim() !== "") texts.push(text.trim());
 			index += 1;
 		}
-		return { text: texts.join(" ").slice(0, this.limits.maxTextChars), model: setting.remote.model, durationSec: seconds, chunks: index };
+		return { text: texts.join(" ").slice(0, this.limits.maxTextChars), model: setting.remote.model, durationSec: seconds, chunks: index, mode: setting.mode };
 	}
 
 	/** One POST {base}/audio/transcriptions; resolves the JSON `.text`. No redirect is ever followed. */

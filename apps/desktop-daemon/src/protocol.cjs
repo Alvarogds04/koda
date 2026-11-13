@@ -1052,6 +1052,12 @@ const SUMMARY_FORBIDDEN_BLOCK = /[\u0000-\u0009\u000b-\u001f\u007f-\u009f\p{Cf}\
 const RUN_OUTCOMES = new Set(["done", "failed"]);
 const HOY_KINDS = new Set(["result", "proposal", "error"]);
 const HOY_STATUSES = new Set(["pending", "approved", "rejected"]);
+/**
+ * S19 / F4: where a result's text came from. A CLOSED list, mirrored by the island (`agentclient.rs` HOY_PROVENANCE,
+ * `island-nusa.js` labels): YouTube's own subtitles, Parakeet on this PC, or the user's own transcribing account. Only a
+ * `result` may carry it, and only one of these three exact strings.
+ */
+const HOY_PROVENANCE = Object.freeze(["youtube_subtitles", "local_transcription", "remote_transcription"]);
 const PROPOSAL_ACTIONS_EMIT = new Set(["buy", "sell", "send"]);
 const minikodasFail = () => {
 	throw new Error("minikodas frame invalid");
@@ -1142,6 +1148,12 @@ function hoyFrame(items) {
 			out.target = clip(i.target, 200);
 		}
 		if (typeof i.decidedAt === "string") out.decidedAt = clip(i.decidedAt, 40);
+		// S19: where the text came from, for a result that can say it. An unknown value fails the frame instead of
+		// reaching the island, where the chip would be invented; a proposal or an error never carries one.
+		if (i.provenance !== undefined) {
+			if (i.kind !== "result" || !HOY_PROVENANCE.includes(i.provenance)) minikodasFail();
+			out.provenance = i.provenance;
+		}
 		return out;
 	});
 	const pending = rows.filter((r) => r.kind === "proposal" && r.status === "pending").reverse();
@@ -1526,6 +1538,7 @@ module.exports = {
 	minikodaFrame,
 	hoyFrame,
 	hoyApprovedFrame,
+	HOY_PROVENANCE,
 	transcriptionFrame,
 	MINIKODAS_EMIT,
 	providersFrame,

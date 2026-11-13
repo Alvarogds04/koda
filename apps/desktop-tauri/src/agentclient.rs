@@ -43,7 +43,10 @@ const HOY_STATUSES: [&str; 3] = ["pending", "approved", "rejected"];
 const HOY_ACTIONS: [&str; 3] = ["buy", "sell", "send"];
 /// S19: where the text of a video result came from. The daemon does not send it yet; when it does, only these two
 /// closed values reach the page (the island draws its chip with the row, and nothing when it is absent).
-const HOY_PROVENANCE: [&str; 2] = ["youtube_subtitles", "local_transcription"];
+/// S19/F4: the closed list of `provenance` values the daemon may put on a result (`protocol.cjs` HOY_PROVENANCE): the
+/// text came from YouTube's own subtitles, from Parakeet on this PC, or from the account the user configured to
+/// transcribe. Anything else is dropped here, never shown as a chip.
+const HOY_PROVENANCE: [&str; 3] = ["youtube_subtitles", "local_transcription", "remote_transcription"];
 
 fn hoy_id(s: &str) -> bool {
     let b = s.as_bytes();

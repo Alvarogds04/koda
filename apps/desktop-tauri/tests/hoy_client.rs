@@ -12,6 +12,9 @@ use serde_json::{json, Value};
 
 const A: &str = "0b3a5c9e-8f27-4d11-9a0e-1c2d3e4f5a6b";
 const B: &str = "11111111-2222-4333-8444-555555555555";
+const C: &str = "22222222-3333-4444-8555-666666666666";
+const D: &str = "33333333-4444-4555-8666-777777777777";
+const E: &str = "44444444-5555-4666-8777-888888888888";
 
 fn connected(items: Value) -> ClientState {
     let mut state = ClientState::connected();
@@ -201,13 +204,21 @@ fn a_decision_is_final_and_pending_is_never_one() {
 
 #[test]
 fn provenance_is_a_closed_field_the_island_may_show() {
+    // S19 / F4: the daemon says where a result's text came from, when it can. Three values, and the island shows a chip
+    // for exactly those; anything else is dropped, never guessed at (the daemon validates it too).
     let state = connected(json!([
         { "id": A, "minikoda": "videos", "kind": "result", "status": "approved", "text": "uno", "createdAt": "2026-11-06T08:15:00.000Z", "provenance": "youtube_subtitles" },
-        { "id": B, "minikoda": "videos", "kind": "result", "status": "approved", "text": "otro", "createdAt": "2026-11-06T08:16:00.000Z", "provenance": "made_up" }
+        { "id": B, "minikoda": "videos", "kind": "result", "status": "approved", "text": "otro", "createdAt": "2026-11-06T08:16:00.000Z", "provenance": "made_up" },
+        { "id": C, "minikoda": "videos", "kind": "result", "status": "approved", "text": "tercero", "createdAt": "2026-11-06T08:17:00.000Z", "provenance": "local_transcription" },
+        { "id": D, "minikoda": "videos", "kind": "result", "status": "approved", "text": "cuarto", "createdAt": "2026-11-06T08:18:00.000Z", "provenance": "remote_transcription" },
+        { "id": E, "minikoda": "videos", "kind": "result", "status": "approved", "text": "quinto", "createdAt": "2026-11-06T08:19:00.000Z" }
     ]));
     let r = rows(&state);
     assert_eq!(r[0]["provenance"], json!("youtube_subtitles"));
     assert!(r[1].get("provenance").is_none(), "an off-vocabulary provenance is dropped, never shown");
+    assert_eq!(r[2]["provenance"], json!("local_transcription"));
+    assert_eq!(r[3]["provenance"], json!("remote_transcription"), "the user's own transcribing account is a value too");
+    assert!(r[4].get("provenance").is_none(), "a result whose source cannot be named carries no provenance at all");
 }
 
 #[test]

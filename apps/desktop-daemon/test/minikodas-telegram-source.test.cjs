@@ -627,6 +627,36 @@ test("S6 service: a media that cannot be transcribed is a short note for its pos
 	assert.equal(lastSeen(stateFile), 2, "the successful run moved the marker");
 });
 
+test("S19 service: a result says where its text came from when one transcription dominated the read", async (t) => {
+	// The chip of «Hoy» (F4 of the island verifier): the transcript is much longer than the post, so it dominates.
+	const local = transcriptionStep({ 1: { text: "a".repeat(600) } });
+	const one = await mediaService(t, { steps: [{ tool: "source_read" }, { text: "Listo." }], messages: [post(1, "mirá", video())], transcriber: local });
+	await waitFor(() => one.results.runs.length === 1);
+	assert.equal(one.results.runs[0].provenance, "local_transcription", "Parakeet on this PC");
+
+	const remote = transcriptionStep({ 1: { text: "b".repeat(600), mode: "remote" } });
+	const two = await mediaService(t, { steps: [{ tool: "source_read" }, { text: "Listo." }], messages: [post(1, "mirá", video())], transcriber: remote });
+	await waitFor(() => two.results.runs.length === 1);
+	assert.equal(two.results.runs[0].provenance, "remote_transcription", "the user's own account");
+});
+
+test("S19 service: a read whose own text dominates carries NO provenance, and a text-only read carries none either", async (t) => {
+	// The rule, stated: the marked source must be strictly the largest. Here the channel's own words are, so the chip
+	// would be a lie and the item carries nothing.
+	const talkative = transcriptionStep({ 1: { text: "corta" } });
+	const long = await mediaService(t, {
+		steps: [{ tool: "source_read" }, { text: "Listo." }],
+		messages: [post(1, "una publicación larga ".repeat(40), video())],
+		transcriber: talkative,
+	});
+	await waitFor(() => long.results.runs.length === 1);
+	assert.equal(long.results.runs[0].provenance, undefined);
+
+	const text = await mediaService(t, { steps: [{ tool: "source_read" }, { text: "Listo." }], messages: [post(1, "solo texto"), post(2, "y más texto")] });
+	await waitFor(() => text.results.runs.length === 1);
+	assert.equal(text.results.runs[0].provenance, undefined, "nothing was transcribed: nothing to say");
+});
+
 test("S6 service: with no transcription step wired, the media are a note and a «Hoy» error, never a silent drop", async (t) => {
 	const { results, sourceFile } = await mediaService(t, { steps: [{ tool: "source_read" }, { text: "Listo." }] });
 	await waitFor(() => results.runs.length === 1);
