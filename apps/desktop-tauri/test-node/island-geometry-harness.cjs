@@ -53,7 +53,7 @@ function serve(scenario = {}) {
     res.writeHead(200, { 'content-type': MIME[path.extname(f)] || 'application/octet-stream' });
     let body = fs.readFileSync(f);
     if (path.basename(f) === 'paused.js' && needsIntegrations(scenario)) {
-      const text = body.toString('utf8'), live = text.replace("'integrations', ", '');
+      const text = body.toString('utf8'), live = text.replace(/,\s*'integrations'(?=\s*\])|'integrations',\s*/, '');
       if (live === text) throw new Error('paused.js no longer lists integrations: update the harness unpause rule');
       body = Buffer.from(live);
     }

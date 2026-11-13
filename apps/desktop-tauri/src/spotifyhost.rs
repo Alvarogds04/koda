@@ -1,13 +1,22 @@
 //! #470 host: the `spotify_action` command and the `spotify:state` island event.
 //!
-//! One closed command (see `abito_island::spotify::parse_command`). `view` starts the MPRIS
-//! listener and answers the current state; `stop` ends it; the rest drive Spotify. State is
-//! pushed with `app.emit("spotify:state", …)` whenever Spotify's player moves. Linux only: other
-//! platforms answer `unsupported` (the pill is offered on Linux only).
+//! One closed command (see `abito_island::spotify::parse_command`). `view` starts the platform's
+//! backend and answers the current state; `stop` ends it; the rest drive Spotify. State is pushed with
+//! `app.emit("spotify:state", …)` whenever Spotify's player moves.
+//!
+//! K2-09 (S1, S5): three systems, one wire. Linux is the MPRIS client in `spotify.rs`, Windows is the
+//! system media transport controls (`spotify_smtc`), macOS is AppleScript (`spotify_mac`). The two new
+//! backends fill the same `PlayerState` and are driven through the same five calls, so only the file
+//! behind `spotify_backend` changes; macOS alone can also answer `open_permission` (design 08 F7).
 use abito_island::bridge::{self, BridgeError};
 use abito_island::spotify::{self, Action};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Webview};
+
+#[cfg(windows)]
+use abito_island::spotify_smtc as spotify_backend;
+#[cfg(target_os = "macos")]
+use abito_island::spotify_mac as spotify_backend;
 
 fn err(code: &str) -> BridgeError {
     BridgeError {
@@ -28,8 +37,18 @@ fn client(app: &AppHandle) -> &'static spotify::Client {
     })
 }
 
+#[cfg(any(windows, target_os = "macos"))]
+fn event_sink(app: &AppHandle) -> impl Fn(&spotify::PlayerState) + Send + Sync + 'static {
+    use tauri::Emitter;
+    let app = app.clone();
+    move |state| {
+        let _ = app.emit(spotify::STATE_EVENT, spotify::with_artwork(state));
+    }
+}
+
 /// `{"action": …}` closed set: view, stop, play_pause, next, previous, seek, shuffle, repeat,
-/// volume. Answers `{ok, state}`; `ok` is false when Spotify is not running or refused.
+/// volume, and (macOS only) open_permission. Answers `{ok, state}`; `ok` is false when Spotify is not
+/// running or refused.
 #[tauri::command]
 pub async fn spotify_action(
     app: AppHandle,
@@ -73,7 +92,33 @@ async fn run(app: AppHandle, action: Action) -> Result<Value, BridgeError> {
     .map_err(|_| err("unavailable"))
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(any(windows, target_os = "macos"))]
+async fn run(app: AppHandle, action: Action) -> Result<Value, BridgeError> {
+    // the platform calls never block the WebView thread
+    tauri::async_runtime::spawn_blocking(move || {
+        let ok = match action {
+            Action::View => {
+                spotify_backend::start(event_sink(&app));
+                true
+            }
+            Action::Stop => {
+                spotify_backend::stop();
+                true
+            }
+            control => spotify_backend::control(control),
+        };
+        let state = if matches!(action, Action::View) {
+            spotify_backend::refresh().unwrap_or_else(spotify_backend::state)
+        } else {
+            spotify_backend::state()
+        };
+        json!({ "ok": ok, "state": spotify::with_artwork(&state) })
+    })
+    .await
+    .map_err(|_| err("unavailable"))
+}
+
+#[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
 async fn run(_app: AppHandle, _action: Action) -> Result<Value, BridgeError> {
     Err(err("unsupported"))
 }
@@ -104,9 +149,25 @@ pub(crate) fn voice_view(v: &Value) -> (bool, bool, u8, Option<(String, Option<S
 pub(crate) fn control(app: &AppHandle, action: Action) -> bool {
     client(app).control(action)
 }
-#[cfg(not(target_os = "linux"))]
+#[cfg(any(windows, target_os = "macos"))]
+pub(crate) fn control(_app: &AppHandle, action: Action) -> bool {
+    spotify_backend::control(action)
+}
+#[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
 pub(crate) fn control(_app: &AppHandle, _action: Action) -> bool {
     false
+}
+
+// The two new backends are driven exactly like the MPRIS client: start, read, answer.
+#[cfg(any(windows, target_os = "macos"))]
+pub(crate) fn state_of(app: &AppHandle) -> (bool, bool, u8, Option<(String, Option<String>)>) {
+    spotify_backend::start(event_sink(app));
+    let st = spotify_backend::refresh().unwrap_or_else(spotify_backend::state);
+    voice_view(&serde_json::to_value(&st).unwrap_or(Value::Null))
+}
+#[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
+pub(crate) fn state_of(_app: &AppHandle) -> (bool, bool, u8, Option<(String, Option<String>)>) {
+    (false, false, 50, None)
 }
 
 #[cfg(test)]

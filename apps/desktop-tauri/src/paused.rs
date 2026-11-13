@@ -14,9 +14,11 @@ pub enum Feature { Dictation, Voice, Integrations, Spotify, Phone, Mail }
 /// The phone link left the list in K2 (S2): it starts off and only opens its LAN port when the human turns it on (S3).
 pub const fn paused(feature: Feature) -> bool {
     match feature {
-        Feature::Dictation | Feature::Voice | Feature::Integrations | Feature::Spotify => true,
+        Feature::Dictation | Feature::Voice | Feature::Integrations => true,
         Feature::Phone => false,
         Feature::Mail => false,
+        // K2-09: music from the island ships in 0.2
+        Feature::Spotify => false,
     }
 }
 
@@ -31,11 +33,14 @@ mod tests {
     use super::*;
     #[test]
     fn every_non_chat_non_agent_feature_is_paused_and_never_starts_even_if_enabled() {
-        for f in [Feature::Dictation, Feature::Voice, Feature::Integrations, Feature::Spotify] {
+        for f in [Feature::Dictation, Feature::Voice, Feature::Integrations] {
             assert!(paused(f), "{f:?}");
             assert!(!effective(f, true), "{f:?}: a stored «on» must not start a paused feature");
             assert!(!effective(f, false), "{f:?}");
         }
+        // K2-09 S5: «se quita la pausa de Spotify»
+        assert!(!paused(Feature::Spotify));
+        assert!(effective(Feature::Spotify, true));
         assert_eq!(LABEL, "En pausa · próxima versión");
     }
 

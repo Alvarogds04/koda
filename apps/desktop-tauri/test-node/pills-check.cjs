@@ -875,7 +875,7 @@ for (const existing of [0, 1]) {
   });
 }
 
-test('abito-pausa 0.1.2: the island «Del catálogo» chooser hides paused services (GitHub, n8n, …, Spotify); stored declarations are untouched', async () => {
+test('abito-pausa 0.1.2: the island «Del catálogo» chooser hides paused services (GitHub, n8n, …); Spotify is offered again (K2-09); stored declarations are untouched', async () => {
   const b = boot({ prefs: { declaredPills: ['integration_resend'] }, specs: SPECS }); await flush();
   b.load('paused.js');
   for (const file of ['avatar-colors.js', 'settings-view.js', 'pill-settings.js', 'settings.js', 'specialists.js']) b.load(file);
@@ -884,8 +884,9 @@ test('abito-pausa 0.1.2: the island «Del catálogo» chooser hides paused servi
   const rows = () => b.get('pill-catalog-list').children.map(r => r.dataset.pillId);
   const shown = rows();
   assert.ok(shown.length > 0, 'the chooser still lists the active ones');
-  for (const id of ['integration_github', 'integration_n8n', 'integration_vercel', 'integration_stripe', 'integration_resend', 'integration_notion', 'integration_calcom', 'integration_spotify'])
+  for (const id of ['integration_github', 'integration_n8n', 'integration_vercel', 'integration_stripe', 'integration_resend', 'integration_notion', 'integration_calcom'])
     assert.ok(!shown.includes(id), `${id} is paused: not offered on the island`);
+  assert.ok(shown.includes('integration_spotify'), 'K2-09: Spotify is no longer paused, so the chooser offers it (no switch that does nothing: S2)');
   b.get('pill-catalog-search').value = 'n8n'; b.get('pill-catalog-search').fire('input');
   assert.deepEqual(rows().filter(Boolean), [], 'searching does not bring a paused one back');
   assert.deepEqual(b.backend.prefs.declaredPills, ['integration_resend'], 'the stored declaration is never rewritten');

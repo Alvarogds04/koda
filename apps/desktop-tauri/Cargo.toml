@@ -121,6 +121,15 @@ keyring = { version = "3", features = ["windows-native"] }
 # ReadFile/WriteFile/MoveFileExW, Security_Cryptography for BCryptGenRandom
 # (128-bit pipe instance). Symbols verified against the cached 0.61.2 source.
 windows-sys = { version = "0.61.2", default-features = false, features = ["Win32_Foundation", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging", "Win32_System_Threading", "Win32_Graphics_Gdi", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Diagnostics_ToolHelp", "Win32_System_SystemInformation", "Win32_Security_Authorization", "Win32_System_Pipes", "Win32_System_IO", "Win32_Storage_FileSystem", "Win32_Security_Cryptography", "Win32_Graphics_Dwm"] }
+# K2-09 T3: Spotify on Windows is read from the system media transport controls, and that is the
+# WinRT `windows` crate, not windows-sys: the session manager, its change events and the transport
+# requests are COM/WinRT interfaces windows-sys does not generate. `windows` 0.62.2 is ALREADY in
+# Cargo.lock (Tauri's own stack depends on it), so this declares the same crate and version and adds
+# only this crate's edge: the lock gains its dependency line, no package, no checksum, no version
+# change. Features are the minimal set — Foundation (the typed event handlers), Media + Media_Control
+# (the SMTC session and its properties) and Win32_System_Com (CoInitializeEx on the listener thread,
+# which WinRT needs). Every symbol was checked against the cached 0.62.2 source before declaring it.
+windows = { version = "0.62", features = ["Foundation", "Media", "Media_Control", "Win32_System_Com"] }
 
 [target.'cfg(unix)'.dev-dependencies]
 # tests only: fake key presses on a PRIVATE Xvfb (tests/hotkey_x11.rs). Never shipped.

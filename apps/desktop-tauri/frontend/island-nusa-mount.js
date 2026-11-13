@@ -12,7 +12,12 @@
   // T5: the state a Pregunta / Permiso / Terminó / Error takes over, read from the data the island already publishes
   const qEl = $('question'), noticeCardEl = $('notice-card');
   const takeoverData = () => ({ ...capsule.dataset, look: qEl ? qEl.dataset.look : '', outcomeWord: ($('question-state-word') || {}).textContent || '', severity: noticeCardEl ? noticeCardEl.dataset.severity : '', cardShown: !!noticeCardEl && !noticeCardEl.hidden });
-  function paintTitle() { $('nusa-title').textContent = (capsule && N.takeoverTitle(takeoverData())) || tabTitle; }
+  // K2-09 S7 (option A): while an app of the icon row is focused (island-shortcuts-mount.js writes #nusa data-app) the island is named
+  // after the app and the tabs' arrows step aside; «Hablar con Koda» brings the tab title and the arrows back.
+  const appItem = () => (nusa.dataset.app && window.AbitoShortcuts ? window.AbitoShortcuts.row().find(it => it.id === nusa.dataset.app) : null);
+  const appFocused = () => !!appItem();
+  function paintTitle() { const app = appItem(); $('nusa-title').textContent = app ? app.label : (capsule && N.takeoverTitle(takeoverData())) || tabTitle; }
+  function paintArrows() { const a = N.arrows(current); $('nusa-prev').hidden = appFocused() || !a.prev; $('nusa-next').hidden = appFocused() || !a.next; }
 
   // hover icons (20px grid, stroke), one per tab id
   const ICONS = {
@@ -44,15 +49,15 @@
       if (on && focus) b.focus();
     }
     const panel = $('nusa-panel'); if (panel) panel.setAttribute('aria-labelledby', `nusa-tab-${tab.id}`);
-    const a = N.arrows(next);
-    $('nusa-prev').hidden = !a.prev; $('nusa-next').hidden = !a.next;
+    paintArrows();
     doc.dispatchEvent(new CustomEvent('abito:nusa-tab', { detail: { tab: tab.id, index: next } }));
   }
-  const go = (delta, focus) => { const to = N.step(current, delta); if (to !== current) select(to, focus); };
+  const go = (delta, focus) => { if (appFocused()) return; const to = N.step(current, delta); if (to !== current) select(to, focus); };
+  const tabOf = b => N.TABS.findIndex(t => t.id === b.dataset.tab);
 
   nusa.querySelectorAll('[role="tab"]').forEach(b => b.addEventListener('click', e => {
-    if (e.isTrusted !== true) return;
-    select(N.TABS.findIndex(t => t.id === b.dataset.tab));
+    if (e.isTrusted !== true || appFocused()) return;
+    select(tabOf(b));
   }));
   $('nusa-prev').addEventListener('click', e => { if (e.isTrusted === true) go(-1); });
   $('nusa-next').addEventListener('click', e => { if (e.isTrusted === true) go(1); });
@@ -66,6 +71,8 @@
     const d = N.keyStep(e, { typing: typingIn(doc.activeElement) });
     if (d) { e.preventDefault(); go(d, nusa.contains(doc.activeElement)); }
   });
+  // K2-09 S7: the app's label replaces the tab title while its card is up, and back
+  doc.addEventListener('abito:nusa-app', () => { paintTitle(); paintArrows(); });
 
   // clock: progress ring of the day + date + bold time, refreshed every 30 s
   function paintClock() {

@@ -124,6 +124,29 @@ fn the_state_reaches_the_page_in_camel_case_without_the_object_path() {
 }
 
 #[test]
+fn k2_09_open_permission_is_one_more_closed_verb() {
+    // S3/S6 (design 08 F7): the macOS card's only button asks the host to open Ajustes del Sistema.
+    assert_eq!(parse_command(&json!({"action": "open_permission"})), Some(Action::OpenPermission));
+    for bad in [
+        json!({"action": "open_permission", "value": true}),
+        json!({"action": "open_permission", "url": "x-apple.systempreferences:"}),
+        json!({"action": "permission"}),
+        json!({"action": "open"}),
+    ] {
+        assert_eq!(parse_command(&bad), None, "{bad}");
+    }
+}
+
+#[test]
+fn k2_09_the_macos_permission_flag_is_camel_case_and_only_sent_when_true() {
+    // The field is new on PlayerState, so the Linux and Windows payloads must stay as they were.
+    let none = serde_json::to_value(PlayerState::default()).unwrap();
+    assert!(none.get("needsPermission").is_none(), "false is never serialised: {none}");
+    let denied = PlayerState { needs_permission: true, ..PlayerState::default() };
+    assert_eq!(serde_json::to_value(&denied).unwrap()["needsPermission"], json!(true));
+}
+
+#[test]
 fn the_closed_command_set_parses_exactly() {
     assert_eq!(parse_command(&json!({"action": "view"})), Some(Action::View));
     assert_eq!(parse_command(&json!({"action": "stop"})), Some(Action::Stop));
