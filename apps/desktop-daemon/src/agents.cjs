@@ -409,11 +409,13 @@ class AgentsManager extends EventEmitter {
 		const file = `~/${agent.dir}/${agent.file}`;
 		let summary =
 			state === "outdated"
-				? `Updates the Koda hooks in ${file}. A backup is made first.`
-				: `Adds the Koda hooks (${agent.events.join(", ")}) to ${file}. A backup is made first.`;
-		if (agent.id === "pi") summary = "Installs the Koda Pi extension in the default ~/.pi/agent directory. A backup is made first.";
-		if (agent.id === "opencode") summary = state === "outdated" ? `Updates the Koda plugin in ${file}. A backup is made first.` : `Adds the Koda plugin to ${file}. A backup is made first.`;
+				? `Updates the Abito hooks in ${file}. A backup is made first.`
+				: `Adds the Abito hooks (${agent.events.join(", ")}) to ${file}. A backup is made first.`;
+		if (agent.id === "pi") summary = "Installs the Abito Pi extension in the default ~/.pi/agent directory. A backup is made first.";
+		if (agent.id === "opencode") summary = state === "outdated" ? `Updates the Abito plugin in ${file}. A backup is made first.` : `Adds the Abito plugin to ${file}. A backup is made first.`;
 		if (agent.id === "statusline") summary = "Adds the status-line relay in ~/.claude/settings.json. An existing status line keeps working (the relay prints it). A backup is made first.";
+		// K2-04: these four sentences are a CLOSED template the island page (settings-view.js PLAN_RE / NOTIFY_PLANS) recognises and
+		// translates; the page never shows engine text. They keep their wire wording on purpose: rename both ends together (T7).
 		// K2-08 T3b: Koda answers Codex from the island (120 s entry); every install or update changes the hook hash, so the
 		// human trusts the Koda hooks again in Codex /hooks.
 		if (trust) summary += " Koda answers Codex permission requests from the island; Codex waits up to 120 s for your answer. Trust the Koda hooks again in Codex /hooks after every install or update.";
