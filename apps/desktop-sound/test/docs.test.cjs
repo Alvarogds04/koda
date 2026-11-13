@@ -38,7 +38,7 @@ test('README documents every reason, every cue and the unverified items', () => 
 test('package.json: private, main, explicit test paths', () => {
   const p = JSON.parse(fs.readFileSync(path.join(PKG, 'package.json'), 'utf8'));
   assert.equal(p.private, true);
-  assert.equal(p.name, 'abito-desktop-sound');
+  assert.equal(p.name, 'koda-desktop-sound');
   assert.equal(p.main, 'sound-engine.js');
   assert.match(p.scripts.test, /test\/engine\.test\.cjs/);
   assert.equal(p.dependencies, undefined);

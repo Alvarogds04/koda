@@ -103,7 +103,7 @@ The user's git identity is the only piece of the real home that crosses the boun
 ## API (for U2/U3)
 
 ```js
-const { AgentEngine } = require("@abito/desktop-daemon/runtime.cjs");
+const { AgentEngine } = require("@koda/desktop-daemon/runtime.cjs");
 
 const engine = new AgentEngine({
   command: "pi",              // configurable executable; never a direct model HTTP client
