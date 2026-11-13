@@ -45,7 +45,7 @@ function parseArgs(argv) {
 
 /** The harness installer that ships next to this file (same layout as cli.cjs packagedInstallerBin). */
 function packagedInstallerBin(srcDir = __dirname) {
-	const file = path.resolve(srcDir, "..", "..", "desktop-harness", "bin", "abito-hook.cjs");
+	const file = path.resolve(srcDir, "..", "..", "desktop-harness", "bin", "koda-hook.cjs");
 	try {
 		return fs.statSync(file).isFile() ? file : undefined;
 	} catch {

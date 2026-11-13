@@ -19,7 +19,7 @@ const WIRE = {
 	statusline: ["statusLine"],
 	pi: ["extension"],
 };
-const FILES = { pi: ".pi/agent/extensions/abito-island", claude: ".claude/settings.json", codex: ".codex/hooks.json", copilot: ".copilot/hooks/abito-island.json", opencode: ".config/opencode/plugins/abito-island.js", statusline: ".claude/settings.json" };
+const FILES = { pi: ".pi/agent/extensions/koda-island", claude: ".claude/settings.json", codex: ".codex/hooks.json", copilot: ".copilot/hooks/koda-island.json", opencode: ".config/opencode/plugins/koda-island.js", statusline: ".claude/settings.json" };
 
 /** Fake installer: `installed` = harnesses whose hooks are already there; `broken` = harnesses that refuse. */
 function fakeRun(home, { installed = [], broken = [] } = {}, seen = []) {
@@ -156,5 +156,5 @@ test("plan-less connect is refused before any installer or user-state write", as
 
 test("the installer is the harness next to the daemon, never from argv/env", () => {
 	const bin = packagedInstallerBin();
-	assert.ok(bin && bin.endsWith(path.join("desktop-harness", "bin", "abito-hook.cjs")));
+	assert.ok(bin && bin.endsWith(path.join("desktop-harness", "bin", "koda-hook.cjs")));
 });

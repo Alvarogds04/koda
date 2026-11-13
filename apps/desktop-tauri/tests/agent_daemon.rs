@@ -413,7 +413,7 @@ fn strict_harness_copy(into: &Path) -> PathBuf {
     }
     let root = into.join("harness");
     copy(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../desktop-harness"), &root);
-    let bin = root.join("bin/abito-hook.cjs");
+    let bin = root.join("bin/koda-hook.cjs");
     std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
     bin
 }

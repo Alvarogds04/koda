@@ -127,7 +127,7 @@ try {
     & $node (Join-Path $install 'desktop-daemon/src/cli.cjs') status
     if ($LASTEXITCODE -ne 0) { throw 'Installed daemon status refused' }
     $payload = @{ hook_event_name = 'Stop'; cwd = $workspace; session_id = 'ci4-installed-stop'; stop_hook_active = $false } | ConvertTo-Json -Compress
-    $hookOutput = $payload | & $node (Join-Path $install 'desktop-harness/bin/abito-hook.cjs') claude stop 2> (Join-Path $root 'hook.stderr.log')
+    $hookOutput = $payload | & $node (Join-Path $install 'desktop-harness/bin/koda-hook.cjs') claude stop 2> (Join-Path $root 'hook.stderr.log')
     if ($LASTEXITCODE -ne 0 -or $hookOutput -or (Get-Item -LiteralPath (Join-Path $root 'hook.stderr.log')).Length -ne 0) { throw 'Installed hook contract failed' }
     # K2-03: only the island's accepted settled callback writes this content-free line (src/protocol.rs
     # SETTLED_NOTICE_LOG_LINE). CLI exit alone is NOT proof; exactly one line for exactly one Stop is.
@@ -141,7 +141,7 @@ try {
 
     # HU-047: install hooks and the Pi extension from the INSTALLED runtime with Windows ACL checks.
     # The profile below mirrors a real one (protected DACL: current user, SYSTEM, Administrators).
-    $hookCli = Join-Path $install 'desktop-harness/bin/abito-hook.cjs'
+    $hookCli = Join-Path $install 'desktop-harness/bin/koda-hook.cjs'
     $agentHome = Join-Path $root 'agent-home'
     function New-PrivateDir($path) {
         New-Item -ItemType Directory -Path $path -Force | Out-Null
@@ -173,7 +173,7 @@ try {
     $ap = Invoke-Install @('claude', '--user', '--json', '--apply-plan', $pv.Json.plan_hash, '--audit-dir', $auditDir)
     if ($ap.Code -ne 0 -or -not $ap.Json.ok -or $ap.Json.mode -ne 'applied') { throw "Windows claude apply failed: $($ap.Json | ConvertTo-Json -Compress)" }
     $written = Get-Content -Raw -LiteralPath $settings | ConvertFrom-Json
-    if ($written.keep -ne 1 -or -not (Get-Content -Raw -LiteralPath $settings).Contains('abito-hook.cjs')) { throw 'Windows claude settings not patched as planned' }
+    if ($written.keep -ne 1 -or -not (Get-Content -Raw -LiteralPath $settings).Contains('koda-hook.cjs')) { throw 'Windows claude settings not patched as planned' }
     $auditFile = Join-Path $auditDir 'hook-installs.jsonl'
     if (@(Get-Content -LiteralPath $auditFile).Count -ne 2) { throw 'Windows audit record missing' }
     if (@(Get-ChildItem -LiteralPath (Join-Path $agentHome '.claude') -Force | Where-Object { $_.Name -like '*.abito-lock' -or $_.Name -like '*abito-tmp*' }).Count -ne 0) { throw 'Windows install left lock or temp files' }
@@ -189,8 +189,8 @@ try {
     $ap = Invoke-Install @('statusline', '--user', '--json', '--apply-plan', $pv.Json.plan_hash, '--audit-dir', $auditDir)
     if ($ap.Code -ne 0 -or -not $ap.Json.ok) { throw "Windows statusline apply failed: $($ap.Json | ConvertTo-Json -Compress)" }
     $sl = (Get-Content -Raw -LiteralPath $settings | ConvertFrom-Json).statusLine.command
-    $bash = '^"[A-Za-z]:/[^"\\]+" "[A-Za-z]:/[^"\\]+/abito-statusline\.cjs"$'
-    $pwsh = '^& "[A-Za-z]:\\[^"]+" "[A-Za-z]:\\[^"]+\\abito-statusline\.cjs"$'
+    $bash = '^"[A-Za-z]:/[^"\\]+" "[A-Za-z]:/[^"\\]+/koda-statusline\.cjs"$'
+    $pwsh = '^& "[A-Za-z]:\\[^"]+" "[A-Za-z]:\\[^"]+\\koda-statusline\.cjs"$'
     if ($sl -notmatch $bash -and $sl -notmatch $pwsh) { throw "Windows statusline command is neither the Git Bash nor the PowerShell form: $sl" }
     Write-Host 'PASS Windows status-line relay installed with the command form of the shell Claude Code uses'
     # Refusals write nothing and say why. HU-047 messages: a refused parent folder reports unsafe_folder (folder + reason);

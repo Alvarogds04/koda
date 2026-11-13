@@ -1,6 +1,6 @@
 "use strict";
 
-// REAL end-to-end: AgentsManager drives the actual apps/desktop-harness/bin/abito-hook.cjs against a
+// REAL end-to-end: AgentsManager drives the actual apps/desktop-harness/bin/koda-hook.cjs against a
 // temp HOME (fake .claude/.codex with third-party hooks). The real ~/.claude, ~/.codex and
 // ~/.koda are never written: only their mtimes are READ (stat) before/after to prove it.
 
@@ -66,7 +66,7 @@ function copyInstaller(dest) {
 	};
 	walk(path.join(dest, "desktop-harness", "bin"));
 	walk(path.join(dest, "desktop-harness", "src"));
-	return path.join(dest, "desktop-harness", "bin", "abito-hook.cjs");
+	return path.join(dest, "desktop-harness", "bin", "koda-hook.cjs");
 }
 
 const THIRD = { hooks: { PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "/usr/bin/true" }] }] }, theme: "dark" };
@@ -120,7 +120,7 @@ test('packaged installer: Claude preview in a private HOME never reports install
   else assert.equal(fs.statSync(dest).mode & 0o777, 0o644);
  }
  if (win && hasHelper()) stageHelper(path.join(s.base, 'package')); // the packaged layout resolves its own helper through desktop-harness/src/../.. — see stageHelper
- const manager = new AgentsManager({installerBin:path.join(packaged, 'bin/abito-hook.cjs'), home, islandDir:s.islandDir, ...(win ? { verifyBundled: () => {} } : {})});
+ const manager = new AgentsManager({installerBin:path.join(packaged, 'bin/koda-hook.cjs'), home, islandDir:s.islandDir, ...(win ? { verifyBundled: () => {} } : {})});
  const list = await manager.list();
  const claude = byId(list, 'claude-code');
  assert.notEqual(claude.detail, 'install_failed');
@@ -146,7 +146,7 @@ test('real statusline CLI: preview is read-only, coexist, hash-bound apply and m
   assert.equal(byId(await s.manager.connect(id, hash), id).state, 'connected');
  }
  const installed = JSON.parse(fs.readFileSync(s.claudeFile));
- assert.match(installed.statusLine.command, /abito-statusline\.cjs/);
+ assert.match(installed.statusLine.command, /koda-statusline\.cjs/);
  assert.equal(JSON.parse(fs.readFileSync(path.join(s.home, '.abito/statusline-previous.json'))).command, 'mine');
  for (const id of ['statusline']) assert.equal(byId(await s.manager.disconnect(id), id).state, id === 'statusline' ? 'outdated' : 'not_connected');
  assert.deepEqual(JSON.parse(fs.readFileSync(s.claudeFile)), original);

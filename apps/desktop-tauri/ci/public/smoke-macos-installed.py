@@ -111,7 +111,7 @@ def main():
     try:
         app = install(dmg, work / "Applications")
         binary = app / "Contents/MacOS/abito-island"
-        hook = app / "Contents/Resources/desktop-harness/bin/abito-hook.cjs"
+        hook = app / "Contents/Resources/desktop-harness/bin/koda-hook.cjs"
         daemon = app / "Contents/Resources/desktop-daemon/src/cli.cjs"
         missing = [p.name for p in (binary, hook, daemon) if not p.is_file()]
         report("a", not missing, f"installed {app} from {dmg.name}" if not missing else f"installed app lacks {missing}")

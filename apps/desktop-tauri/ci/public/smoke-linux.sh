@@ -17,7 +17,7 @@
 #                  here: «Ocultar»/«Mostrar Koda» change app state a black-box smoke
 #                  cannot observe reliably, and the probe build already proves that
 #                  scene (bandeja-menu) from inside the page.
-#   (d) notice     the INSTALLED desktop-harness/bin/abito-hook.cjs receives a
+#   (d) notice     the INSTALLED desktop-harness/bin/koda-hook.cjs receives a
 #                  Claude «Stop» payload and the island log carries EXACTLY one
 #                  content-free «island: settled notice accepted» line (src/protocol.rs
 #                  SETTLED_NOTICE_LOG_LINE) — the same proof ci/public/smoke-windows.ps1
@@ -514,7 +514,7 @@ settled_seen() { [ "$(settled_count)" -ge 1 ]; }
 PAYLOAD=$(printf '{"hook_event_name":"Stop","cwd":"%s","session_id":"ci-linux-installed-stop","stop_hook_active":false}' "$PROJECT")
 REASON=''
 hook_exit=0
-printf '%s' "$PAYLOAD" | smoke_env node "$PREFIX/desktop-harness/bin/abito-hook.cjs" claude stop \
+printf '%s' "$PAYLOAD" | smoke_env node "$PREFIX/desktop-harness/bin/koda-hook.cjs" claude stop \
   > "$WORK/hook.stdout.log" 2> "$WORK/hook.stderr.log" || hook_exit=$?
 if [ "$hook_exit" -ne 0 ]; then
   REASON="the installed hook exited $hook_exit"

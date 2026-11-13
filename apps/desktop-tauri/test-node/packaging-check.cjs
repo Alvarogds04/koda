@@ -213,7 +213,7 @@ function fakeStage({ crateDir: _crateDir = crate } = {}) {
   return dir;
 }
 test('L42 F1: the package ships the hook installer and everything it requires, and the staged daemon resolves it', () => {
-  assert(Array.isArray(L.HARNESS_FILES) && L.HARNESS_FILES.includes('bin/abito-hook.cjs'), 'the installer is a shipped file');
+  assert(Array.isArray(L.HARNESS_FILES) && L.HARNESS_FILES.includes('bin/koda-hook.cjs'), 'the installer is a shipped file');
   assert(L.HARNESS_FILES.includes('src/installer-platform.cjs'), 'platform guard must ship');
   assert(L.PI_FILES?.includes('pi-extension.ts'), 'closed Pi runtime payload must ship beside harness');
   // closed under require(): every relative require of a shipped harness file is shipped too
@@ -225,11 +225,11 @@ test('L42 F1: the package ships the hook installer and everything it requires, a
       assert(sharedProbe || L.HARNESS_FILES.includes(target), `${rel} requires ${m[1]} (${target}) which is not shipped`);
     }
   }
-  assert(L.STAGED.includes('desktop-harness/bin/abito-hook.cjs'));
+  assert(L.STAGED.includes('desktop-harness/bin/koda-hook.cjs'));
   assert(L.STAGED_DIRS.includes('desktop-harness') && L.STAGED_DIRS.includes('desktop-harness/bin') && L.STAGED_DIRS.includes('desktop-harness/src'));
   const d = fakeStage();
   const { packagedInstallerBin } = require(path.join(d, 'desktop-daemon/src/cli.cjs'));
-  assert.equal(packagedInstallerBin(path.join(d, 'desktop-daemon/src')), path.join(d, 'desktop-harness/bin/abito-hook.cjs'), 'the staged daemon finds the staged installer');
+  assert.equal(packagedInstallerBin(path.join(d, 'desktop-daemon/src')), path.join(d, 'desktop-harness/bin/koda-hook.cjs'), 'the staged daemon finds the staged installer');
   assert.deepEqual(L.verifyStage(d, { sourceCrate: crate }), []);
   fs.rmSync(path.join(d, 'desktop-harness/src/install-ui.cjs'));
   assert(L.verifyStage(d, { sourceCrate: crate }).length > 0, 'a missing harness file fails verification');

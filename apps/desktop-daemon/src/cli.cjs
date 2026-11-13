@@ -62,13 +62,13 @@ function liveSession(root) {
 }
 
 /**
- * The hook installer that ships NEXT TO this daemon: <package>/desktop-daemon/src -> <package>/desktop-harness/bin/abito-hook.cjs
+ * The hook installer that ships NEXT TO this daemon: <package>/desktop-daemon/src -> <package>/desktop-harness/bin/koda-hook.cjs
  * (the same relative layout in the repo and in the installed package). Only when the file is there: a package without it
  * keeps every agent "unavailable" instead of a guessed path. It is a DEFAULT: `hookInstallerBin` in config.json wins, and
  * nothing here comes from the page.
  */
 function packagedInstallerBin(srcDir = __dirname) {
-	const file = path.resolve(srcDir, "..", "..", "desktop-harness", "bin", "abito-hook.cjs");
+	const file = path.resolve(srcDir, "..", "..", "desktop-harness", "bin", "koda-hook.cjs");
 	try {
 		return fs.statSync(file).isFile() ? file : undefined;
 	} catch {

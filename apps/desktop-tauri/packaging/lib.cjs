@@ -182,9 +182,9 @@ const DAEMON_FILES = ['package.json', 'identity.md', 'THIRD-PARTY-NOTICES.md',
   'src/protocol.cjs', 'src/rotation.cjs', 'src/runtime.cjs', 'src/sdk-helper.mjs', 'src/server.cjs',
   'src/sessions.cjs', 'src/procinfo.cjs', 'src/spaces.cjs', 'src/uploads.cjs', 'src/white-label.cjs', 'src/win-fs.cjs', 'src/window-capture.cjs'];
 // L42 F1: the hook installer (apps/desktop-harness) ships NEXT TO the daemon: the daemon derives
-// <package>/desktop-harness/bin/abito-hook.cjs from its own location (src/cli.cjs packagedInstallerBin), so Ajustes can
+// <package>/desktop-harness/bin/koda-hook.cjs from its own location (src/cli.cjs packagedInstallerBin), so Ajustes can
 // install the Claude/Codex/status-line hooks (and take out the removed Recap's 0.1 hooks, K2-03). Closed under require(): packaging-check pins that.
-const HARNESS_FILES = ['bin/abito-hook.cjs', 'bin/abito-statusline.cjs', 'package.json',
+const HARNESS_FILES = ['bin/koda-hook.cjs', 'bin/koda-statusline.cjs', 'package.json',
   'src/claude-ask.cjs', 'src/claude-suggestions.cjs', 'src/claude.cjs', 'src/client.cjs', 'src/codex-reviewer.cjs', 'src/codex.cjs', 'src/config.cjs', 'src/copilot.cjs', 'src/deadline.cjs', 'src/file-permission.cjs', 'src/hook-common.cjs', 'src/identity.cjs',
   'src/install-claude.cjs', 'src/install-codex.cjs', 'src/install-copilot.cjs', 'src/install-opencode.cjs', 'src/install-pi.cjs', 'src/install-pi-win.cjs', 'src/win-fs.cjs', 'src/install-recap.cjs', 'src/install-statusline.cjs', 'src/install-ui.cjs', 'src/installer-platform.cjs',
   'src/opencode.cjs', 'src/projection.cjs', 'src/redact.cjs', 'src/security.cjs', 'src/statusline.cjs', 'src/title-cache.cjs', 'src/windows-transport.cjs'];

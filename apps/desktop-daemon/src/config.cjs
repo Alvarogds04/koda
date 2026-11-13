@@ -18,7 +18,7 @@
  *   mcpConfigPath  absolute path of a private MCP source file (projectMcpConfig)
  *   connectorsCommand  connectors CLI: ABSOLUTE normalized path of the installed binary; NO default (unset => connectors_list is "unavailable", nothing executes)
  *   connectorsDir      absolute clean directory read by the connectors CLI, default <island>/connectors (0700, created on first use)
- *   hookInstallerBin   ABSOLUTE normalized path of apps/desktop-harness/bin/abito-hook.cjs; NO default (unset => every agent is "unavailable", nothing executes)
+ *   hookInstallerBin   ABSOLUTE normalized path of apps/desktop-harness/bin/koda-hook.cjs; NO default (unset => every agent is "unavailable", nothing executes)
  *   connectorHostBin   ABSOLUTE normalized path of the abito-connector-host binary; NO default (unset => no host is spawned)
  *   hotkey         global show/hide combo, e.g. "Ctrl+Alt+Space" (validateHotkey); stored only, never captured here
  *   paused         global pause switch (#379): strict boolean, false when absent; stored only, restored at the next boot

@@ -20,7 +20,7 @@ binary = app / "Contents/MacOS/abito-island"
 pi = home / ".npm-global/bin/pi"
 assert binary.is_file() and pi.is_file()
 assert (app / "Contents/Resources/desktop-daemon/src/cli.cjs").is_file()
-assert (app / "Contents/Resources/desktop-harness/bin/abito-hook.cjs").is_file()
+assert (app / "Contents/Resources/desktop-harness/bin/koda-hook.cjs").is_file()
 # Standard OS environment only: no project, socket, dev, agent or probe overrides.
 env = {"HOME": str(home), "PATH": "/usr/bin:/bin:/usr/sbin:/sbin"}
 for key in ("USER", "LOGNAME", "TMPDIR"):

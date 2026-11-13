@@ -300,9 +300,15 @@ The hooks catalogue also accepts `statusline` in `hooks_install`/`hooks_remove`,
 **Hooks catalogue addendum (#467, `hooks_preview` / `hooks_install` / `hooks_remove`, `src/agent-hooks.cjs`).** `clientId` also accepts `cursor`
 (closed set: `claude-code, codex, statusline, gemini-cli, copilot-cli, opencode, amp, cursor`). Cursor is the one MERGED client: `~/.cursor/hooks.json` belongs to the
 user, so install adds three marker-tagged notify-only entries (`sessionStart`, `sessionEnd`, `stop`; `{version:1,hooks:{<event>:[{command}]}}`) next to their
-hooks and creates the file with `version: 1` only when absent; remove deletes only the entries carrying `abito-island-hooks/1` (and the file only if nothing
+hooks and creates the file with `version: 1` only when absent; remove deletes only the entries carrying `koda-island-hooks/1` (and the file only if nothing
 but our stub remains). Unparseable JSON or an unexpected `hooks` shape is `foreign_file` (never rewritten). Backup first, hash-bound plan, shared notify
-script `~/.abito/agent-hooks/island-notify.mjs` kept while another dependent client (gemini-cli, copilot-cli, cursor) still uses it. Cursor needs a restart.
+script `~/.koda/agent-hooks/island-notify.mjs` kept while another dependent client (gemini-cli, copilot-cli, cursor) still uses it. Cursor needs a restart.
+
+**Koda 0.1 artifacts (K2-04, S2/S4).** A Koda 0.1 install left `abito-island-hooks/1`, `abito-island*` names and `~/.abito/agent-hooks/island-notify.mjs`
+behind. Both markers are ours: install retires the 0.1 file/dir into the existing dated-backup flow (a file that only held our entries is deleted, one
+that also holds other entries is rewritten without ours) and remove takes it out, so each client keeps exactly ONE artifact and the human sees one card
+per notice. A file at an old name without either marker stays `foreign_file` and is never rewritten nor retired; the 0.1 notify script is kept while
+another dependent client's 0.1 artifact still carries our marker.
 
 **Invariants.** `agent_connect` / `agent_disconnect` and all `connectors_*` control commands are reachable ONLY through the authenticated
 `island-agent/1` channel: there is NO MCP tool, engine tool or CLI path that triggers them. They are rate-limited by the per-client limiter and each
@@ -313,7 +319,7 @@ inherited socket (no discoverable session file): a security follow-up, NOT done.
 
 **Grave same-UID limit for approvals:** `connectors_approve` is a privileged command reachable only through the authenticated island channel (not an MCP/engine tool, not a CLI); but the channel token lives in `<island>/runtime/session.json` (0600) and the Abito engine agent, Claude Code and Codex run as the same user and can read it: an approval card the agent can click is NOT a human gate. This matters MORE for approvals than for agents. Closing it needs the daemon launched by the island with an inherited socket (security follow-up, not done).
 
-**How the installer is run.** `hookInstallerBin` (absolute normalized path of `apps/desktop-harness/bin/abito-hook.cjs`, no default) is checked before every
+**How the installer is run.** `hookInstallerBin` (absolute normalized path of `apps/desktop-harness/bin/koda-hook.cjs`, no default) is checked before every
 spawn (regular non-symlink file owned by you/root, not group/world-writable, secure parent chain; a checkout with mode 664 is refused) and spawned as
 `[node, installer, install <claude|codex|statusline> --user [--remove] --json]` (preview) / `... --apply-plan <hash> --audit-dir <island>/audit --json` (apply):
 shell:false, own process group killed whole after 10 s, stdout capped at 256 KiB, stderr drained and never surfaced. The removal-only legacy

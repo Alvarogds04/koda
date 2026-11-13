@@ -5,8 +5,8 @@ The island (Tauri lane) installs and removes the Abito hooks of Claude Code and 
 Two calls, both direct children of Abito's Node adapter (or compatibility daemon), on Linux/macOS:
 
 ```
-1. node bin/abito-hook.cjs install <claude|codex|statusline> --user [--remove] --json
-2. node bin/abito-hook.cjs install <claude|codex|statusline> --user [same args] --apply-plan <plan_hash> --audit-dir <abs dir> --json
+1. node bin/koda-hook.cjs install <claude|codex|statusline> --user [--remove] --json
+2. node bin/koda-hook.cjs install <claude|codex|statusline> --user [same args] --apply-plan <plan_hash> --audit-dir <abs dir> --json
 ```
 
 `recap` is accepted only as `install recap --user --remove [--apply]` (the removal-only legacy profile; install is a usage error).
@@ -125,7 +125,7 @@ Refusals that happen after argument validation (`not_island`, `plan_changed`, `b
 
 1. Set `KODA_ISLAND_EXE` to the canonical Node executable of the app-owned adapter that directly spawns the installer.
 2. Scrub every agent marker listed above from the child environment (guard (ii) refuses otherwise).
-3. The app-owned Node adapter spawns `node bin/abito-hook.cjs install ...` directly (no shell); `ppid` identifies that adapter's Node executable.
+3. The app-owned Node adapter spawns `node bin/koda-hook.cjs install ...` directly (no shell); `ppid` identifies that adapter's Node executable.
 4. Run the preview, render `diff.lines` (and `notes`, `requires_trust_review`) to the human, and let the **click** be the confirmation. Store the `plan_hash` the human saw and pass exactly that hash and the same args to the apply.
 5. Pass `--audit-dir` (an island-owned `0700` directory) and treat exit 73 as "not installed".
 6. On `requires_trust_review: true` (Codex, fresh install or update), tell the human to open Codex `/hooks` and trust the Koda hooks again; until then they are inactive (and an updated entry, e.g. the T3 move to the 120 s «Esperando tu respuesta en Koda» entry, stays inactive too). The installer never touches `~/.codex/config.toml`.
@@ -140,7 +140,7 @@ Recap was removed in Koda 0.2. The `recap` harness id remains only as the REMOVA
 Install (without `--remove`) is a usage error (exit 64; JSON `code:"usage"`). It never answers a permission
 request. TODO: remove one version after K2-03.
 
-`statusline` uses `install-statusline.cjs` and the sibling `bin/abito-statusline.cjs`.
+`statusline` uses `install-statusline.cjs` and the sibling `bin/koda-statusline.cjs`.
 Only the top-level `statusLine` member is patched (not `hooks`). A user's existing
 status line is saved in `~/.abito/statusline-previous.json` (0600); the relay runs it
 and prints its output. Marker-only removal restores that saved value, or drops only
@@ -176,3 +176,12 @@ The daemon (not the island UI directly) may drive this CLI for `agent_connect` /
 - `agent_connect` / `agent_disconnect` are reachable **only through the authenticated `island-agent/1` channel**: never through MCP or agent tools, and never through the CLI without these guards.
 
 Honest same-uid limit: any process of the user that can read `<island>/runtime/session.json` can talk to the daemon, including Abito's own engine agent and Claude Code / Codex. Closing that needs the daemon launched by the island with an **inherited socket** (no discoverable session file); it is tracked as a security follow-up.
+
+## Koda 0.1 installs (K2-04, S2/S4)
+
+An install that finds a Koda 0.1 artifact recognises it as its own and replaces it in place, so the island never ends up
+with two entries for one notice. The retired artifact is part of the plan and of `plan_hash`: retiring a 0.1 file changes
+the hash, and if the file changes between preview and apply the apply is refused with `plan_changed` and nothing is written.
+For Copilot CLI and OpenCode the 0.1 file lived next to the new one under a different name, so it is renamed to a dated
+`.abito-backup-` file (never deleted outright) and the new file carries the only entry; a 0.1 file that also holds other
+entries is rewritten without ours and keeps the rest byte-for-byte.
