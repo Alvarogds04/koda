@@ -315,11 +315,8 @@ test("bundled yt-dlp and the bundled Node it runs with: fixed paths inside the r
 	const root = path.join(base, "prefix");
 	fs.mkdirSync(path.join(root, "runtime"), { recursive: true });
 	assert.equal(bundledYtDlp({ installRoot: root, platform: "linux" }), undefined, "nothing there: unavailable, no fallback");
-	// «linux» asks for the execute bit, which NTFS cannot hold (see minikodas-transcribe.test.cjs): POSIX hosts only.
-	if (process.platform !== "win32") {
-		fs.writeFileSync(path.join(root, "runtime", "yt-dlp"), "bin", { mode: 0o755 });
-		assert.equal(bundledYtDlp({ installRoot: root, platform: "linux" }), path.join(root, "runtime", "yt-dlp"));
-	}
+	fs.writeFileSync(path.join(root, "runtime", "yt-dlp"), "bin", { mode: 0o755 });
+	assert.equal(bundledYtDlp({ installRoot: root, platform: "linux" }), path.join(root, "runtime", "yt-dlp"));
 	fs.writeFileSync(path.join(root, "runtime", "yt-dlp.exe"), "bin");
 	assert.equal(bundledYtDlp({ installRoot: root, platform: "win32" }), path.join(root, "runtime", "yt-dlp.exe"));
 	if (process.platform !== "win32") {
@@ -329,10 +326,8 @@ test("bundled yt-dlp and the bundled Node it runs with: fixed paths inside the r
 	}
 	// The JavaScript runtime yt-dlp needs is the Node the runtime already ships, at its own absolute path.
 	assert.equal(bundledNode({ installRoot: root, platform: "linux" }), undefined, "no bundled Node there");
-	if (process.platform !== "win32") {
-		fs.writeFileSync(path.join(root, "runtime", "node"), "bin", { mode: 0o755 });
-		assert.equal(bundledNode({ installRoot: root, platform: "linux" }), path.join(root, "runtime", "node"));
-	}
+	fs.writeFileSync(path.join(root, "runtime", "node"), "bin", { mode: 0o755 });
+	assert.equal(bundledNode({ installRoot: root, platform: "linux" }), path.join(root, "runtime", "node"));
 	fs.writeFileSync(path.join(root, "runtime", "node.exe"), "bin");
 	assert.equal(bundledNode({ installRoot: root, platform: "win32" }), path.join(root, "runtime", "node.exe"));
 });
@@ -380,7 +375,13 @@ function service(t, base, { fixture, env = {}, limits, youtube, steps } = {}) {
 		youtube: youtube ?? r,
 		source: async () => `Post del canal: mirá ${WATCH(VID(1))}`,
 	});
-	t.after(() => svc.stop());
+	// Stop the service (and with it the Minikoda's engine, which still holds its workspace open) BEFORE tmp(t)'s
+	// removal of `base`: node:test runs after() hooks in the order they were registered, and tmp(t) registered first,
+	// so a plain t.after here would run too late and Windows would answer EBUSY on the engine's workspace.
+	t.after(async () => {
+		await svc.stop();
+		fs.rmSync(base, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
+	});
 	svc.start();
 	return { svc, results, island: path.join(base, "island"), reader: r };
 }
