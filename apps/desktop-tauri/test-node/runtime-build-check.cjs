@@ -294,7 +294,74 @@ function tree(dir, prefix = '') {
 }
 
 /* ---------- tests ---------- */
+const builder = require(BUILDER); // the retry itself: the check proves it without needing Windows
 const fx = fixture();
+
+/* CI 43352802736 (installer smoke, windows): build-runtime: EPERM: operation not permitted, rename
+   'D:\a\_temp\koda-runtime.partial-9116' -> 'D:\a\_temp\koda-runtime'. Windows answers a rename of a folder it has
+   just written with a transient EPERM/EBUSY/EACCES while Defender or the indexer holds it. Both directions are proven
+   here, on every OS: the retry wins the race without losing a guarantee, and a rename that never succeeds still fails
+   the build with nothing half-installed. */
+test('Windows: a rename refused with a transient EPERM is retried and succeeds, with no partial left behind', () => {
+  const dir = T.make('koda-runtime-rename-');
+  const partial = path.join(dir, 'koda-runtime.partial-1');
+  const out = path.join(dir, 'koda-runtime');
+  fs.mkdirSync(partial);
+  fs.writeFileSync(path.join(partial, 'koda-runtime.json'), '{}\n');
+  let attempts = 0;
+  const rename = (from, to) => {
+    attempts += 1;
+    if (attempts <= 2) throw Object.assign(new Error(`EPERM: operation not permitted, rename '${from}' -> '${to}'`), { code: 'EPERM' });
+    return fs.renameSync(from, to);
+  };
+  builder.renameWithRetry(partial, out, { rename, platform: 'win32' });
+  assert.equal(attempts, 3, 'two transient refusals, then the real rename');
+  assert.equal(fs.existsSync(partial), false, 'the partial became the output: nothing is left half-written');
+  assert.deepEqual(fs.readdirSync(out), ['koda-runtime.json']);
+});
+
+test('Windows: a rename that keeps failing surfaces the same error after a bounded number of attempts and moves nothing', () => {
+  const dir = T.make('koda-runtime-rename-stuck-');
+  const partial = path.join(dir, 'koda-runtime.partial-2');
+  const out = path.join(dir, 'koda-runtime');
+  fs.mkdirSync(partial);
+  fs.writeFileSync(path.join(partial, 'koda-runtime.json'), '{}\n');
+  let attempts = 0;
+  const rename = () => { attempts += 1; throw Object.assign(new Error('EPERM: operation not permitted, rename'), { code: 'EPERM' }); };
+  assert.throws(() => builder.renameWithRetry(partial, out, { rename, platform: 'win32' }), /EPERM: operation not permitted/);
+  assert.equal(attempts, builder.RENAME_ATTEMPTS, 'bounded: the builder never spins on a stuck folder');
+  assert.equal(fs.existsSync(out), false, 'nothing was installed');
+  assert.deepEqual(fs.readdirSync(partial), ['koda-runtime.json'], 'the partial is untouched (the caller removes it)');
+});
+
+test('every other OS and every other error keep a single attempt and the identical error (Linux behaviour unchanged)', () => {
+  const attempts = (code, platform) => {
+    let calls = 0;
+    assert.throws(() => builder.renameWithRetry('/x/a', '/x/b', {
+      platform, rename: () => { calls += 1; throw Object.assign(new Error(`${code}: rename`), { code }); },
+    }), { code }); // the very error the rename threw: no wrapper, no new code
+    return calls;
+  };
+  assert.equal(attempts('EPERM', 'linux'), 1, 'a transient code on Linux is not retried: same error, same attempt count');
+  assert.equal(attempts('EPERM', 'darwin'), 1);
+  assert.equal(attempts('ENOENT', 'win32'), 1, 'Windows retries only the three codes a held handle produces');
+  assert.equal(attempts('ENOTEMPTY', 'win32'), 1);
+});
+
+test('Windows: the real build wins a commit rename refused twice with EPERM, and one that never succeeds exits 1 with no partial', () => {
+  const out = path.join(fx.dir, 'out-rename-retry');
+  let r = build(fx, ['--target', 'linux-x64', '--out', out, '--node-archive', fx.archives['linux-x64']], { KODA_RUNTIME_TEST_RENAME_EPERM: '2' });
+  assert.equal(r.status, 0, `exit ${r.status}\nstdout=${r.stdout}\nstderr=${r.stderr}`);
+  assert.match(r.stdout, new RegExp(`^runtime linux-x64: Node ${NODE_VERSION} \\+ Pi 1\\.4\\.0 \\+ gentle-pi 4\\.3\\.0 \\+ engram 3\\.4\\.0 -> `));
+  assert.ok(tree(out).includes('koda-runtime.json'), 'the runtime is complete after the retried rename');
+  assert.deepEqual(fs.readdirSync(fx.dir).filter((n) => n.startsWith('out-rename-retry.partial-')), [], 'the partial took the output\'s place');
+  const failed = path.join(fx.dir, 'out-rename-fail');
+  r = build(fx, ['--target', 'linux-x64', '--out', failed, '--node-archive', fx.archives['linux-x64']], { KODA_RUNTIME_TEST_RENAME_EPERM: '99' });
+  assert.equal(r.status, 1, r.stdout);
+  assert.match(r.stderr, /^build-runtime: EPERM: operation not permitted, rename '/, 'the build fails with the error it kept getting');
+  assert.equal(fs.existsSync(failed), false, 'no half-installed output');
+  assert.deepEqual(fs.readdirSync(fx.dir).filter((n) => n.startsWith('out-rename-fail.partial-')), [], 'no partial output left behind');
+});
 
 for (const target of ['linux-x64', 'darwin-arm64', 'win-x64']) {
   test(`${target}: the runtime folder holds only the pinned Node, its licence, Pi and a manifest`, () => {
