@@ -405,7 +405,13 @@ test("service: a Minikoda that reads a Telegram channel lands a Spanish «Hoy» 
 		telegram: { connectedClient: () => undefined },
 		engine: { command: process.execPath, commandArgs: ["-e", "process.exit(0)"], env: { PATH: process.env.PATH }, startTimeoutMs: 5_000 },
 	});
-	t.after(() => svc.stop());
+	// Stop the service (and its Minikoda engine, which still holds its workspace) BEFORE tmp(t)'s removal of `base`:
+	// node:test runs after() hooks in registration order and tmp(t) registered first, so a plain t.after here would
+	// run too late and Windows would answer EBUSY on the engine's workspace.
+	t.after(async () => {
+		await svc.stop();
+		fs.rmSync(base, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
+	});
 	svc.start();
 	const draft = await svc.createDraft({
 		name: "Canal",
@@ -450,7 +456,13 @@ async function mediaService(t, { steps }) {
 		telegram: { connectedClient: () => client },
 		engine: { command: process.execPath, commandArgs: [FAKE_PI, "--script", scriptFile], env: { PATH: process.env.PATH }, startTimeoutMs: 10_000 },
 	});
-	t.after(() => svc.stop());
+	// Stop the service (and its Minikoda engine, which still holds its workspace) BEFORE tmp(t)'s removal of `base`:
+	// node:test runs after() hooks in registration order and tmp(t) registered first, so a plain t.after here would
+	// run too late and Windows would answer EBUSY on the engine's workspace.
+	t.after(async () => {
+		await svc.stop();
+		fs.rmSync(base, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
+	});
 	svc.start();
 	const draft = await svc.createDraft({
 		name: "Canal",

@@ -477,7 +477,13 @@ function service(t, base, { env = {}, source, steps, limits, transcriber: custom
 		transcriber: custom ?? tr,
 		source,
 	});
-	t.after(() => svc.stop());
+	// Stop the service (and its Minikoda engine, which still holds its workspace) BEFORE tmp(t)'s removal of `base`:
+	// node:test runs after() hooks in registration order and tmp(t) registered first, so a plain t.after here would
+	// run too late and Windows would answer EBUSY on the engine's workspace.
+	t.after(async () => {
+		await svc.stop();
+		fs.rmSync(base, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
+	});
 	svc.start();
 	return { svc, results, island: path.join(base, "island") };
 }
