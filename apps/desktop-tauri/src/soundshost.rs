@@ -27,23 +27,13 @@ fn folder(app: &AppHandle) -> Option<PathBuf> {
         .map(|d| d.join(sounds::FOLDER))
 }
 
-/// Shows the folder in the file manager (`sounds::reveal_command`: Finder via `open` on macOS,
-/// Explorer on Windows, `xdg-open` elsewhere). The path is ours, never the caller's.
+/// Shows the folder in the file manager through the shared opener (K2-01c). The path is ours,
+/// never the caller's.
 fn reveal(dir: &std::path::Path) -> Result<(), BridgeError> {
     std::fs::create_dir_all(dir).map_err(|_| err("save_failed"))?;
-    let opener = sounds::reveal_command(std::env::consts::OS);
-    let mut child = std::process::Command::new(opener)
-        .arg(dir)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .map_err(|_| err("unavailable"))?;
-    // reap our own child; explorer.exe reports 1 even on success, so only spawn failure counts
-    std::thread::spawn(move || {
-        let _ = child.wait();
-    });
-    Ok(())
+    // K2-01c: xdg-open, Finder (`open`) or Explorer; only a spawn failure counts (explorer.exe
+    // reports 1 even on success).
+    abito_island::opener::open_detached(abito_island::opener::Target::Folder(dir)).map_err(|_| err("unavailable"))
 }
 
 /// Closed custom-sounds command: `{action:"list"}` → `{names:[stem…]}`,
