@@ -26,16 +26,29 @@ const refuse = ic.InstallErrorRefuse;
 // separator. Anything with a third word, a redirect, `&&`, `;`, a variable prefix, or our script
 // name as an argument of another program is a FOREIGN status line and is never replaced or removed.
 const isScriptWord = w => [MARKER, LEGACY_MARKER].some(name => w === name || w.endsWith('/' + name) || w.endsWith('\\' + name));
+// A shell word is one or more adjacent pieces: 'single-quoted', "double-quoted" or bare text. The installer escapes an apostrophe
+// in a path as '\'' (close, escaped quote, reopen), which is therefore ONE word, not three. Anything else between words
+// (`;`, `&&`, `|`, a redirect, `$(...)`) is shell syntax and the line is not the shape we write.
+const WORD_PIECE = /'([^']*)'|"([^"]*)"|\\(['"])|((?:\\(?!['"])|[^\s"';&|<>$`()\\])+)/y;
 const words = command => {
   const out = [];
-  const re = /"([^"]*)"|'([^']*)'|([^\s"';&|<>$`()]+)/g;
-  let last = 0, m;
-  while ((m = re.exec(command)) !== null) {
-    if (command.slice(last, m.index).trim() !== '') return null; // shell syntax between words: not our shape
-    out.push({ text: m[1] ?? m[2] ?? m[3], bare: m[3] !== undefined });
-    last = re.lastIndex;
+  let i = 0;
+  while (i < command.length) {
+    if (/\s/.test(command[i])) { i++; continue; }
+    let text = '', bare = true, any = false;
+    for (;;) {
+      WORD_PIECE.lastIndex = i;
+      const m = WORD_PIECE.exec(command);
+      if (!m) break;
+      any = true; i = WORD_PIECE.lastIndex;
+      if (m[4] === undefined) bare = false;
+      text += m[1] ?? m[2] ?? m[3] ?? m[4];
+    }
+    if (!any) return null; // shell syntax where a word should start
+    out.push({ text, bare });
+    if (i < command.length && !/\s/.test(command[i])) return null;
   }
-  return command.slice(last).trim() === '' ? out : null;
+  return out;
 };
 const isOurs = v => {
   if (!isObj(v) || typeof v.command !== 'string') return false;

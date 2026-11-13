@@ -201,3 +201,12 @@ test('K2-04: the exact shapes the installers write are still ours (Unix, Git Bas
   ];
   for (const command of ours) assert.equal(isOurs({ type: 'command', command }), true, command);
 });
+
+test("K2-04: the line the installer writes is ours even when a path holds an apostrophe (shq escapes it)", () => {
+  const { shq } = require('../src/install-claude.cjs');
+  for (const [node, script] of [["/home/o'brien/bin/node", '/opt/koda/bin/koda-statusline.cjs'], ['/usr/bin/node', "/home/o'brien/koda/bin/koda-statusline.cjs"], ["/o'b/node", "/o'b/bin/abito-statusline.cjs"]]) {
+    const command = `${shq(node)} ${shq(script)}`;
+    assert.equal(isOurs({ type: 'command', command }), true, command);
+  }
+  assert.equal(isOurs({ type: 'command', command: `${shq("/o'b/node")} ${shq('/x/my-koda-statusline.cjs')}` }), false, 'a look-alike with an apostrophe is still foreign');
+});
