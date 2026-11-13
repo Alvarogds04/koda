@@ -35,6 +35,8 @@ mod hotkeyhost;
 mod tray;
 mod trayhost;
 mod githubhost;
+mod calendarhost;
+mod gmailhost;
 mod mailhost;
 mod monitorshost;
 mod secretshost;
@@ -2078,7 +2080,9 @@ fn main() {
             secretshost::secret_action,
             oauthhost::oauth_action,
             githubhost::github_action,
+            calendarhost::calendar_action,
             mailhost::mail_action,
+            gmailhost::gmail_action,
             monitorshost::monitor_action,
             soundshost::sound_action,
             failurehost::failure_action,

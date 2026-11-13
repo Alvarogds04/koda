@@ -6,12 +6,15 @@
 
 /// The features of this build. `paused` is the single switch the hosts read at startup.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Feature { Dictation, Voice, Integrations, Spotify, Phone }
+pub enum Feature { Dictation, Voice, Integrations, Spotify, Phone, Mail }
 
 /// Paused in this version (everything that is neither Chat nor Agentes nor the general shell).
+/// K2-10 T4 (S11): `Mail` gets its OWN entry and is NOT paused — the island's mail reads the user's
+/// own Gmail; the pause of `Integrations` (service cards) is untouched.
 pub const fn paused(feature: Feature) -> bool {
     match feature {
         Feature::Dictation | Feature::Voice | Feature::Integrations | Feature::Phone => true,
+        Feature::Mail => false,
         // K2-09: music from the island ships in 0.2
         Feature::Spotify => false,
     }
@@ -37,5 +40,15 @@ mod tests {
         assert!(!paused(Feature::Spotify));
         assert!(effective(Feature::Spotify, true));
         assert_eq!(LABEL, "En pausa · próxima versión");
+    }
+
+    /// K2-10 T4 (S11): el correo tiene su PROPIA entrada y no está en pausa en esta versión: la
+    /// tarjeta de la isla y su ajuste tienen que andar, a diferencia de las de Integraciones.
+    #[test]
+    fn k2_10_mail_is_not_paused_and_keeps_its_own_entry() {
+        assert!(!paused(Feature::Mail), "el correo no se pausa en esta versión");
+        assert!(effective(Feature::Mail, true), "un «on» guardado arranca el correo");
+        assert!(!effective(Feature::Mail, false), "un «off» guardado se respeta igual");
+        assert!(paused(Feature::Integrations), "el resto de Integraciones sigue en pausa");
     }
 }

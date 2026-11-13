@@ -47,12 +47,14 @@ pub const KNOWN_KEYS: &[&str] = &[
     "imap-password",
     "notion-api-key",
     "calcom-api-key",
+    "calendar-ics-url",
     "elevenlabs-api-key",
 ];
 
-/// Keys the host itself keeps in the keychain (phone link certificate, key and pairing token, #490).
+/// Keys the host itself keeps in the keychain (phone link certificate, key and pairing token, #490;
+/// the Gmail client and tokens, K2-10).
 /// They are NOT in [`KNOWN_KEYS`]: the page can never set, clear or ask about them.
-pub const INTERNAL_KEYS: &[&str] = &["phone-link-cert", "phone-link-key", "phone-link-token"];
+pub const INTERNAL_KEYS: &[&str] = &["phone-link-cert", "phone-link-key", "phone-link-token", "gmail-oauth"];
 
 /// Upper bound of a stored value (Windows Credential Manager caps a secret near 2.5 KB).
 pub const MAX_VALUE_BYTES: usize = 2048;

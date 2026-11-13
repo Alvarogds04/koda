@@ -49,6 +49,7 @@ pub mod sessionterm_mac;
 pub mod sessionterm_win;
 pub mod github;
 pub mod githubcmd;
+pub mod calendar;
 pub mod daemonhost;
 pub mod nodefinder;
 #[cfg(any(debug_assertions, feature = "probe"))]
@@ -88,6 +89,9 @@ pub mod protocol;
 pub mod legacy_recap;
 pub mod secrets;
 pub mod provider_oauth;
+pub mod gmail_oauth;
+pub mod gmail_api;
+pub mod gmailcmd;
 pub mod oauthcmd;
 pub mod sounds;
 pub mod question;
