@@ -319,6 +319,8 @@ impl fmt::Debug for UiCommand {
             UiCommand::View => f.write_str("View"),
             UiCommand::Account(_) => f.write_str("Account(<redacted>)"),
             UiCommand::Refresh => f.write_str("Refresh"),
+            // a Telegram line carries the api hash, the phone, the login code or the 2FA password: never printed
+            UiCommand::Wire(w) if w.contains("telegram_") => f.write_str("Wire(<redacted>)"),
             UiCommand::Wire(w) => f.debug_tuple("Wire").field(w).finish(),
             UiCommand::AuthReply { flow_id, prompt_id, .. } => f
                 .debug_struct("AuthReply").field("flow_id", flow_id).field("prompt_id", prompt_id).field("value", &"<redacted>").finish(),
@@ -671,6 +673,17 @@ pub enum Reason {
     Lost,
 }
 
+/// The Telegram session string waiting for the host to store it. Its `Debug` never prints it: `{:?}` of the whole state
+/// reaches panic messages, `assert_eq!` failures and any future `dbg!`.
+#[derive(Clone, PartialEq)]
+struct ParkedSession(String);
+
+impl fmt::Debug for ParkedSession {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("ParkedSession(<redacted>)")
+    }
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct ClientState {
     connection: String,
@@ -713,7 +726,7 @@ pub struct ClientState {
     /// only ever learn that a session arrived. The host drains it with [`ClientState::take_session`] and stores it in
     /// the OS keychain.
     #[serde(skip)]
-    session: Option<String>,
+    session: Option<ParkedSession>,
 }
 
 /// A plan hash from the engine: exactly 64 lowercase hex characters.
@@ -785,7 +798,7 @@ impl ClientState {
     /// Take the `telegram_session` this connection received, if any. Only the host calls this: the value goes to the OS
     /// keychain and never back into a view, an event or a log.
     pub fn take_session(&mut self) -> Option<String> {
-        self.session.take()
+        self.session.take().map(|parked| parked.0)
     }
     /// Whether a `telegram_session` is waiting to be stored. The view says so as a boolean, never as the value.
     pub fn has_pending_session(&self) -> bool {
@@ -1103,7 +1116,7 @@ impl ClientState {
                 // host (which stores it in the OS keychain) and NEVER folded into the view: the page must not be able to read
                 // a credential, not even out of a state event.
                 let Some(session) = frame.get("session").and_then(Value::as_str).filter(|s| carriable_session(s)) else { return Ok(()) };
-                self.session = Some(session.to_owned());
+                self.session = Some(ParkedSession(session.to_owned()));
             }
             "transcription" => {
                 // K2-13 (S7/S18): the global setting plus whether the bundled tools are there. A frame whose mode, language,

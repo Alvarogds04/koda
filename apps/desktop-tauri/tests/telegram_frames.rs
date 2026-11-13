@@ -236,6 +236,27 @@ fn the_session_reply_is_parked_for_the_host_and_never_serialised() {
 }
 
 #[test]
+fn debug_output_never_carries_a_secret() {
+    // `{:?}` reaches panic messages, `assert_eq!` failures and any future `dbg!`: none of them may print a secret.
+    let mut state = ClientState::connected();
+    state.apply(&json!({ "type": "telegram_session", "session": SESSION })).unwrap();
+    assert!(state.has_pending_session());
+    let printed = format!("{state:?}");
+    assert!(!printed.contains(SESSION), "the parked session must not be printed: {printed}");
+    for payload in [
+        json!({ "action": "telegram_login_start", "apiId": 20405128, "apiHash": HASH, "phone": "+5491155554321" }),
+        json!({ "action": "telegram_login_code", "code": "48151" }),
+        json!({ "action": "telegram_login_password", "password": "hunter2-2fa" }),
+    ] {
+        let command = parse_ui_command(&payload).expect("a valid Telegram command");
+        let printed = format!("{command:?}");
+        for secret in [HASH, "+5491155554321", "48151", "hunter2-2fa"] {
+            assert!(!printed.contains(secret), "the command must not print {secret}: {printed}");
+        }
+    }
+}
+
+#[test]
 fn the_session_reply_of_a_lying_daemon_is_dropped() {
     let mut state = ClientState::connected();
     for bad in [json!(""), json!("sesión"), json!("a\nb"), json!("x".repeat(4097)), json!(42)] {
