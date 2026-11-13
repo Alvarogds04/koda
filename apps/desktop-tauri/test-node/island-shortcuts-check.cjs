@@ -59,4 +59,16 @@ test('keys: Ctrl on Linux/Windows, Cmd on macOS; untrusted or other modifiers do
   assert.equal(S.keyFocus({ ...ev('2', { ctrlKey: true }), isTrusted: false }, ids, 'linux'), null);
   assert.equal(S.keyFocus(ev('2', { ctrlKey: true, shiftKey: true }), ids, 'linux'), null);
 });
+test('S7: a card whose available() turns true/false later (Spotify opened, closed) wakes the row through refresh()', () => {
+  let on = false;
+  S.registerCard(card('spotify', false, { available: () => on }));
+  let n = 0;
+  S.onChange(() => { n += 1; });
+  assert.deepEqual(S.row(), [], 'no icon while the app is closed');
+  on = true;
+  assert.deepEqual(S.row().map(it => it.id), ['koda', 'spotify'], 'the model already answers with the icon…');
+  assert.equal(n, 0, '…but the mount only repaints when the change is announced');
+  S.refresh();
+  assert.equal(n, 1, 'refresh() wakes every listener; a card whose availability changed without a registration says so this way');
+});
 console.log(`island-shortcuts-check: ${passed} checks ok`);

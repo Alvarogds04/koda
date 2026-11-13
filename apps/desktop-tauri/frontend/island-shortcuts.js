@@ -3,8 +3,7 @@
    music, mail, GitHub and calendar cards live, with the icon row at the bottom, centred. Pure model only (Node-testable, no DOM);
    classic script (window.AbitoShortcuts) and test-node module.
 
-   MOUNT POINT for K2-10 (mail) and K2-11 (GitHub, calendar):
-     AbitoShortcuts.registerCard({
+   MOUNT POINT for K2-10 (mail) and K2-11 (GitHub, calendar):     AbitoShortcuts.registerCard({
        id: 'gmail',                   // one of ORDER, or any new [a-z0-9-] id (it goes after the known ones)
        label: 'Gmail',                // accessible name of its icon («Hablar con Koda» is reserved for the first icon)
        icon: 'mail',                  // icon key the mount paints
@@ -12,7 +11,10 @@
        mount: (el) => () => void,     // paints the card into `el` when it is focused; returns an unmount function
        badge: () => number,           // optional counter on the icon (0 = none)
      });
-   A card that is not `available()` gets no icon and no card. With no available card there is no row: the island is the usual Nusa. */
+   A card that is not `available()` gets no icon and no card. With no available card there is no row: the island is the usual Nusa.
+   `available()` is read on every render, so a card whose app opens or closes while the island is up calls `AbitoShortcuts.refresh()`
+   to have the row repainted (registration alone only wakes it when a card is added or removed; the Spotify pill does exactly that).
+   The browser mount is island-shortcuts-mount.js (#nusa-apps inside #nusa; the focused card paints into #nusa-card). */
 (function (root, factory) {
   const api = factory();
   if (typeof module === 'object' && module.exports) module.exports = api;
@@ -74,6 +76,10 @@
     return e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : null;
   }
   const onChange = fn => { listeners.add(fn); return () => listeners.delete(fn); };
+  // the frozen definition of a registered card (label, icon, mount…): what the mount paints, never part of the row's own data
+  const card = id => (typeof id === 'string' ? cards.get(id) || null : null);
+  // a card whose availability changed without a registration (Spotify opened or closed) asks for a repaint this way
+  const refresh = () => changed();
   const _reset = () => { cards.clear(); listeners.clear(); };
-  return { ORDER, KODA, registerCard, visible, row, rowWidth, focusAfter, stepFocus, keyFocus, onChange, _reset };
+  return { ORDER, KODA, registerCard, card, visible, row, rowWidth, focusAfter, stepFocus, keyFocus, onChange, refresh, _reset };
 });
