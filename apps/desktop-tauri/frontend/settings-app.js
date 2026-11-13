@@ -70,6 +70,8 @@ const invoke = (command, args) => {
   }
   if (command === 'prefs_action' && args?.payload?.action === 'set_window_context' &&
     (Object.keys(args).length !== 1 || Object.keys(args.payload).length !== 2 || typeof args.payload.window_context !== 'boolean')) return Promise.reject(new Error('No disponible'));
+  if (command === 'prefs_action' && args?.payload?.action === 'set_window_capture' &&
+    (Object.keys(args).length !== 1 || Object.keys(args.payload).length !== 2 || typeof args.payload.window_capture !== 'boolean')) return Promise.reject(new Error('No disponible'));
   if (command === 'prefs_action' && args?.payload?.action === 'set_live_context' &&
     (Object.keys(args).length !== 1 || Object.keys(args.payload).length !== 2 || typeof args.payload.live_context !== 'boolean')) return Promise.reject(new Error('No disponible'));
   if (command === 'monitor_action' && (Object.keys(args || {}).length !== 1 || Object.keys(args?.payload || {}).length !== 1 || args.payload.action !== 'list')) return Promise.reject(new Error('No disponible'));
