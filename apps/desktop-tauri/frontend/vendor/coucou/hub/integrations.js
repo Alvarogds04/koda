@@ -15,7 +15,7 @@ const INTEGRATIONS = [
   { id: "integration_github", name: "GitHub", color: "#F4505E", fields: [["github-token", "Token", "ghp_…"]], hint: "Classic token with the repo scope, or fine-grained with read access to Pull requests, Commit statuses and Actions." },
   { id: "integration_vercel", name: "Vercel", color: "#7C5CFF", fields: [["vercel-token", "Token", "…"]] },
   { id: "integration_n8n", name: "n8n", color: "#F29B38", fields: [["n8n-url", "Instance URL", "https://n8n.example.com"], ["n8n-api-key", "API key", "…"]] },
-  { id: "integration_resend", name: "Resend", color: "#22C55E", fields: [["resend-api-key", "API key", "re_…"], ["resend-from", "Sender address", "Koda <you@yourdomain.com>"]], hint: "Sender must belong to a domain verified in Resend. It is used when you send mail from the island." },
+  { id: "integration_resend", name: "Resend", color: "#22C55E", fields: [["resend-api-key", "API key", "re_…"], ["resend-from", "Sender address", "Koda <you@yourdomain.com>"]], hint: "Sender must belong to a domain verified in Resend. Koda only shows the account status; replying to mail opens your own mail client." },
   { id: "integration_notion", name: "Notion", color: "#8C8C8C", fields: [["notion-api-key", "Integration token", "ntn_…"]] },
   { id: "integration_calcom", name: "Cal.com", color: "#C9956A", fields: [["calcom-api-key", "API key", "cal_…"]] },
   { id: "integration_spotify", name: "Spotify", color: "#1DB954", fields: [] }
