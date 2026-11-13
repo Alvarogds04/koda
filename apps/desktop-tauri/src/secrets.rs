@@ -47,6 +47,7 @@ pub const KNOWN_KEYS: &[&str] = &[
     "imap-password",
     "notion-api-key",
     "calcom-api-key",
+    "calendar-ics-url",
     "elevenlabs-api-key",
 ];
 
