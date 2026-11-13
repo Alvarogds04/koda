@@ -165,3 +165,11 @@ test('K2-04: the recogniser is anchored on the exact script name, so a look-alik
   }
   assert.equal(isOurs({ type: 'command', command: 'my-status --wrap koda-statusline.cjs' }), false, 'a bare mention inside another command');
 });
+
+test('K2-04: an unquoted script path is ours when it has a path separator; a bare name inside another command is not', () => {
+  assert.equal(isOurs({ type: 'command', command: 'node /x/koda-statusline.cjs' }), true);
+  assert.equal(isOurs({ type: 'command', command: 'node /opt/old/abito-statusline.cjs' }), true);
+  assert.equal(isOurs({ type: 'command', command: 'node C:\\x\\koda-statusline.cjs' }), true);
+  assert.equal(isOurs({ type: 'command', command: 'node /x/my-abito-statusline.cjs' }), false, 'look-alike');
+  assert.equal(isOurs({ type: 'command', command: 'my-status --wrap koda-statusline.cjs' }), false, 'a bare name is not a path');
+});

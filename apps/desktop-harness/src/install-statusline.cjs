@@ -20,12 +20,16 @@ const USAGE = 'usage: koda-hook install statusline (--settings <abs path> | --us
 const { InstallError, scanSettings, shq, isObj, diffLines } = ic;
 const refuse = ic.InstallErrorRefuse;
 
-// Anchored: ours only when one quoted word of the command IS the script, i.e. its last path component is exactly the Koda or the
-// 0.1 script name. A look-alike (`my-abito-statusline.cjs`, `koda-statusline.cjs.bak`, a bare mention inside another command) is foreign.
+// Anchored: ours only when a word of the command IS the script, i.e. its last path component is exactly the Koda or the 0.1 script
+// name. A word is a quoted string (every install writes it quoted) or a bare token; a bare token must carry a path separator, so a
+// look-alike (`my-abito-statusline.cjs`, `koda-statusline.cjs.bak`) and a bare name inside another command stay foreign.
 const isScriptWord = w => [MARKER, LEGACY_MARKER].some(name => w === name || w.endsWith('/' + name) || w.endsWith('\\' + name));
 const isOurs = v => {
   if (!isObj(v) || typeof v.command !== 'string') return false;
-  for (const m of v.command.matchAll(/(["'])(.*?)\1/g)) if (isScriptWord(m[2])) return true;
+  for (const m of v.command.matchAll(/"([^"]*)"|'([^']*)'|(\S+)/g)) {
+    if (m[3] !== undefined) { if (/[\\/]/.test(m[3]) && isScriptWord(m[3])) return true; }
+    else if (isScriptWord(m[1] ?? m[2])) return true;
+  }
   return false;
 };
 const previousFile = home => path.join(home, '.abito', 'statusline-previous.json');
