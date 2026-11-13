@@ -168,6 +168,17 @@ test('the view carries the tool state the daemon reports and nothing invented', 
 });
 
 // ---- the source ------------------------------------------------------------------------------------------
+test('«Pedir otro» asks for the number the person typed, never for the example in the placeholder', () => {
+  const src = read('minikodas-settings.js');
+  // the phone field is emptied as soon as the login starts, so a second request must come from a value the card kept
+  assert.doesNotMatch(src, /\|\|\s*stepNodes\.phone\.field\.placeholder/, 'the placeholder is an example, not a number to dial');
+  assert.doesNotMatch(src, /loginStartPayload\([^)]*\.placeholder/, 'no payload is built from a placeholder');
+  assert.match(src, /let loginPhone\b/, 'the number of the login in flight is kept in a closure variable');
+  const again = src.slice(src.indexOf("#telegram-code-again').addEventListener"));
+  assert.match(again.slice(0, 400), /loginStartPayload\(idInput\.value, hashInput\.value, loginPhone\)/, '«Pedir otro» uses the kept number');
+  assert.match(src, /loginPhone = ''/, 'the kept number is dropped when the login ends');
+});
+
 test('the card never writes markup, never stores a secret and never names a removed option', () => {
   const src = read('minikodas-settings.js');
   assert.doesNotMatch(src, /\.innerHTML\s*=|insertAdjacentHTML|outerHTML\s*=|document\.write\(/, 'text only: markup is never written');

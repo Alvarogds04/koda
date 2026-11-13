@@ -211,6 +211,9 @@ function mount(api) {
   let transcription = api.transcriptionView(null, []);
   let note = null;        // { tone: 'go'|'sun'|'red', say } — a sentence of OURS
   let busy = false;
+  // The number of the login in flight. The phone FIELD is emptied as soon as the login starts, so «Pedir otro» needs this
+  // copy; it is dropped when the login ends. The field's placeholder is an example, never a number to dial.
+  let loginPhone = '';
   let waitedError = 0;    // the last_error counter we have already answered
   let lastSent = null;    // { action, at } of the command in flight, for the honest timeout
   let timer = 0;
@@ -252,7 +255,7 @@ function mount(api) {
     field.autocomplete = 'off'; field.spellcheck = false;
     if (key === 'phone') { field.type = 'tel'; field.inputMode = 'tel'; field.placeholder = '+5491155554321'; field.maxLength = 20; }
     if (key === 'code') { field.type = 'text'; field.inputMode = 'numeric'; field.maxLength = api.CODE_MAX; field.placeholder = 'Código'; }
-    if (key === 'password') { field.type = 'password'; field.autocomplete = 'current-password'; field.maxLength = api.PASSWORD_MAX; field.placeholder = 'Tu contraseña de dos pasos'; }
+    if (key === 'password') { field.type = 'password'; field.autocomplete = 'off'; field.maxLength = api.PASSWORD_MAX; field.placeholder = 'Tu contraseña de dos pasos'; }
     field.setAttribute('aria-label', `Telegram: ${title}`);
     const act = el('span', 'srow-actions');
     const submit = el('button', 'sbtn primary', key === 'code' ? 'Entrar' : key === 'password' ? 'Entrar' : 'Pedir código');
@@ -430,9 +433,15 @@ function mount(api) {
       if (payload.action === 'telegram_login_start') stepNodes.phone.field.value = '';
       // a successful connect means the stored pair is no longer needed on screen
       if (payload.action !== 'telegram_login_start' && telegram.connected) { hashInput.value = ''; idInput.value = ''; }
+      if (telegram.connected || payload.action === 'telegram_logout') loginPhone = '';
       paint();
     }, () => {
       busy = false; clearTimeout(timer);
+      // a rejected request must not leave a secret sitting in the page either
+      if (payload.action === 'telegram_login_password') stepNodes.password.field.value = '';
+      if (payload.action === 'telegram_login_code') stepNodes.code.field.value = '';
+      if (payload.action === 'telegram_login_start') { stepNodes.phone.field.value = ''; hashInput.value = ''; }
+      if (payload.action === 'telegram_login_start' || payload.action === 'telegram_logout') loginPhone = '';
       note = { tone: 'red', say: 'No se pudo completar el pedido.' };
       paint();
     });
@@ -462,6 +471,7 @@ function mount(api) {
     const payload = api.loginStartPayload(idInput.value, hashInput.value, stepNodes.phone.field.value);
     pairProblem.textContent = payload ? '' : api.phoneProblem(stepNodes.phone.field.value) || api.apiHashProblem(hashInput.value);
     if (!payload) return;
+    loginPhone = payload.phone;
     send(payload, 'Te mandamos el código: escribilo acá abajo.');
     stepNodes.code.field.focus();
   });
@@ -474,7 +484,7 @@ function mount(api) {
   });
   stepNodes.code.li.querySelector('#telegram-code-again').addEventListener('click', e => {
     if (e.isTrusted !== true) return;
-    const payload = api.loginStartPayload(idInput.value, hashInput.value, stepNodes.phone.field.value || stepNodes.phone.field.placeholder);
+    const payload = api.loginStartPayload(idInput.value, hashInput.value, loginPhone);
     if (payload) send(payload, 'Pedimos otro código.');
   });
   stepNodes.password.submit.addEventListener('click', e => {
