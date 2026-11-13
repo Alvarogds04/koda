@@ -34,6 +34,81 @@ pub const MAX_SESSION_BYTES: usize = 4096;
 pub const MAX_FRAME_BYTES: usize = 256 * 1024;
 pub const MAX_REPLY_CHARS: usize = 4096;
 
+// ---- K2-13 «Hoy»: the daemon's own closed vocabularies (PROTOCOL.md, «Minikodas and «Hoy» frames») ----
+/// An item id is the daemon's uuid: lowercase hex in the 8-4-4-4-12 shape.
+const MAX_HOY_ITEMS: usize = 100;
+const MAX_HOY_TEXT: usize = 4000;
+const HOY_KINDS: [&str; 3] = ["result", "proposal", "error"];
+const HOY_STATUSES: [&str; 3] = ["pending", "approved", "rejected"];
+const HOY_ACTIONS: [&str; 3] = ["buy", "sell", "send"];
+/// S19: where the text of a video result came from. The daemon does not send it yet; when it does, only these two
+/// closed values reach the page (the island draws its chip with the row, and nothing when it is absent).
+const HOY_PROVENANCE: [&str; 2] = ["youtube_subtitles", "local_transcription"];
+
+fn hoy_id(s: &str) -> bool {
+    let b = s.as_bytes();
+    b.len() == 36
+        && b.iter().enumerate().all(|(i, c)| match i {
+            8 | 13 | 18 | 23 => *c == b'-',
+            _ => c.is_ascii_digit() || (b'a'..=b'f').contains(c),
+        })
+}
+/// The Unicode `Cf` (format) ranges of Unicode 16.0, in one table: bidi overrides and isolates, zero-width joiners and
+/// spaces, soft hyphens, word joiners, tag characters, interlinear annotations and the Egyptian / musical format controls.
+/// Rust's `char::is_control` is `Cc` only, so the format characters have to be named here (F2: the first version listed
+/// just U+200B-200F, 202A-202E, 2066-2069 and FEFF and let the rest through).
+const FORMAT_RANGES: [(u32, u32); 22] = [
+    (0x00ad, 0x00ad),
+    (0x0600, 0x0605),
+    (0x061c, 0x061c),
+    (0x06dd, 0x06dd),
+    (0x070f, 0x070f),
+    (0x0890, 0x0891),
+    (0x08e2, 0x08e2),
+    (0x180e, 0x180e),
+    (0x200b, 0x200f),
+    (0x202a, 0x202e),
+    (0x2060, 0x2064),
+    (0x2066, 0x206f),
+    (0xfeff, 0xfeff),
+    (0xfff9, 0xfffb),
+    (0x110bd, 0x110bd),
+    (0x110cd, 0x110cd),
+    (0x13430, 0x1343f),
+    (0x1bca0, 0x1bca3),
+    (0x1d173, 0x1d17a),
+    (0xe0001, 0xe0001),
+    (0xe0020, 0xe007f),
+    // Zl / Zp (line and paragraph separators): not Cc, not Cf, and just as able to reflow or hide a row
+    (0x2028, 0x2029),
+];
+/// True for a character «Hoy» must not carry: the whole `Cf` set above, the two separators, and any `Cc` control.
+fn hoy_denied(c: char) -> bool {
+    if c.is_control() {
+        return true;
+    }
+    let cp = c as u32;
+    FORMAT_RANGES.iter().any(|(lo, hi)| cp >= *lo && cp <= *hi)
+}
+/// «Hoy» text is untrusted (it comes from models and Telegram posts). Control characters, every Unicode format character
+/// and U+2028/U+2029 go, so nothing on the page can reverse, hide or reflow what it says.
+fn hoy_text(v: &Value, key: &str, max: usize) -> Value {
+    v.get(key)
+        .and_then(Value::as_str)
+        .map(|s| Value::from(s.chars().filter(|c| !hoy_denied(*c)).take(max).collect::<String>()))
+        .unwrap_or(Value::Null)
+}
+fn closed_cell(v: &Value, key: &str, allowed: &'static [&'static str]) -> Option<&'static str> {
+    let raw = v.get(key).and_then(Value::as_str)?;
+    allowed.iter().copied().find(|a| *a == raw)
+}
+fn iso_cell(v: &Value, key: &str) -> Value {
+    match v.get(key).and_then(Value::as_str) {
+        Some(s) if !s.is_empty() && s.len() <= 40 && !has_control(s) => Value::from(s),
+        _ => Value::Null,
+    }
+}
+
 // ---- session.json ----------------------------------------------------------------------
 pub struct Session {
     pub endpoint: String,
@@ -280,6 +355,21 @@ pub fn parse_ui_command(payload: &Value) -> Result<UiCommand, CommandError> {
             exact(1)?;
             wire(&[("type", "hooks_preview")])
         }
+        // K2-13 T6b-1 (S3/L17): «Hoy» is read-only to ask for, and a proposal is decided by its ID ALONE. `exact(2)`
+        // is the PIN gate: the human removed it (L17), so a payload carrying `pin` — or any other stray field — is not
+        // a command at all and never reaches the socket. The id must be the daemon's lowercase uuid.
+        "hoy_list" => {
+            exact(1)?;
+            wire(&[("type", "hoy_list")])
+        }
+        "hoy_approve" | "hoy_reject" => {
+            exact(2)?;
+            let id = get("id")?;
+            if !hoy_id(id) {
+                return Err(CommandError);
+            }
+            wire(&[("type", action), ("id", id)])
+        }
         "agent_connect" => {
             // The plan the human SAW travels back with the click; the engine previews again and refuses to apply
             // a different one. Optional (absent = the engine applies a fresh preview), and exactly 64 lowercase hex.
@@ -424,6 +514,10 @@ pub struct ClientState {
     /// #436 T6.5: the engine's `hooks` frame (the read-only hooks preview), folded to a
     /// bounded closed view (null until the engine answers a `hooks_preview` ask).
     hooks: Value,
+    /// K2-13 T6b-1: the daemon's «Hoy» frame, folded to a bounded closed view
+    /// (`{items, truncated}`, null until the daemon answers a `hoy_list` ask). The island renders
+    /// these rows as plain text: nothing here is markup, and no field is invented.
+    hoy: Value,
 }
 
 /// A plan hash from the engine: exactly 64 lowercase hex characters.
@@ -485,6 +579,7 @@ impl ClientState {
             models: Value::Null,
             sessions: Value::Null,
             hooks: Value::Null,
+            hoy: Value::Null,
         }
     }
     /// #490: the closed live-sessions view (`{rows, truncated}`, `Null` until the engine answers). The ONE
@@ -621,6 +716,55 @@ impl ClientState {
                 }
                 self.agents = Value::Array(out);
             }
+            "hoy" => {
+                // K2-13 T6b-1 (S2/S3/S5): «Hoy» is what the DAEMON stored, folded row by row. A row is rebuilt field
+                // by field and anything off the closed vocabulary DROPS the row (never sanitised into a lie); text
+                // loses control + bidi characters; a `proposal` without a real action and target cannot exist. What
+                // never reaches the page: any other field the frame carried, and any row past the 100-item cap.
+                let Some(list) = frame.get("items").and_then(Value::as_array) else { return Ok(()) };
+                let truncated = frame.get("truncated").and_then(Value::as_bool).unwrap_or(false);
+                let mut items: Vec<Value> = Vec::new();
+                for i in list.iter().take(MAX_HOY_ITEMS) {
+                    let Some(kind) = closed_cell(i, "kind", &HOY_KINDS) else { continue };
+                    let Some(status) = closed_cell(i, "status", &HOY_STATUSES) else { continue };
+                    let (Some(id), Some(minikoda)) = (
+                        i.get("id").and_then(Value::as_str).filter(|s| hoy_id(s)),
+                        i.get("minikoda").and_then(Value::as_str).filter(|s| strict_id(s)),
+                    ) else { continue };
+                    let mut row = json!({
+                        "id": id, "minikoda": minikoda, "kind": kind, "status": status,
+                        "text": hoy_text(i, "text", MAX_HOY_TEXT), "createdAt": iso_cell(i, "createdAt"),
+                    });
+                    if kind == "proposal" {
+                        let (Some(action), target) = (closed_cell(i, "action", &HOY_ACTIONS), hoy_text(i, "target", 200)) else { continue };
+                        if !target.is_string() { continue; }
+                        row["action"] = json!(action);
+                        row["target"] = target;
+                    }
+                    if let Some(p) = closed_cell(i, "provenance", &HOY_PROVENANCE) { row["provenance"] = json!(p); }
+                    if let Value::String(d) = iso_cell(i, "decidedAt") { row["decidedAt"] = json!(d); }
+                    items.push(row);
+                }
+                self.hoy = json!({"items": items, "truncated": truncated});
+            }
+            "hoy_decided" | "hoy_approved" => {
+                // One decision, folded in place: the daemon said so (never the click). A decision for a row we do not
+                // hold invents nothing; `hoy_approved` is the ONE execution record, so it means `approved`; `pending` is
+                // a status and never a decision (F3).
+                let (Some(id), Some(status)) = (frame.get("id").and_then(Value::as_str).filter(|s| hoy_id(s)),
+                    if t == "hoy_approved" { Some("approved") } else { closed_cell(frame, "status", &["approved", "rejected"]) })
+                else { return Ok(()) };
+                let Some(list) = self.hoy.get_mut("items").and_then(Value::as_array_mut) else { return Ok(()) };
+                for row in list.iter_mut() {
+                    if row.get("id").and_then(Value::as_str) != Some(id) || row.get("kind").and_then(Value::as_str) != Some("proposal") { continue; }
+                    // a decision is FINAL: only a pending row can be decided, and a second frame never re-decides it.
+                    // The execution record of the SAME decision may still arrive and stamp its time.
+                    let current = row.get("status").and_then(Value::as_str);
+                    if current == Some("pending") { row["status"] = json!(status); }
+                    else if current != Some(status) { continue; }
+                    if let Value::String(at) = iso_cell(frame, "executedAt") { row["decidedAt"] = json!(at); }
+                }
+            }
             "models" => {
                 // #414: the connected providers' catalogue, a bounded closed view: only rows with a
                 // slug-shaped provider and id survive, names are clipped text, and nothing else the
@@ -717,7 +861,8 @@ impl ClientState {
             "error" => {
                 // the daemon's closed code set (anything else reads as plain `failed`), never free text
                 let code = match frame.get("code").and_then(Value::as_str) {
-                    Some(c @ ("bad_request" | "busy" | "not_busy" | "unavailable" | "rate_limited" | "unknown_ask" | "failed" | "store_not_private")) => c,
+                    Some(c @ ("bad_request" | "busy" | "not_busy" | "unavailable" | "rate_limited" | "unknown_ask" | "failed" | "store_not_private"
+                        | "paused" | "unknown_minikoda" | "not_active" | "not_pending" | "exists" | "limit" | "model_unavailable" | "unknown_item")) => c,
                     _ => "failed",
                 };
                 let n = self.last_error["n"].as_u64().unwrap_or(0) + 1;

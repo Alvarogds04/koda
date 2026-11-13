@@ -204,5 +204,207 @@
   }
   const dismissFeedback = r => (!r || !r.failed ? '' : r.failed === 1 ? '1 aviso no se pudo marcar como leído.' : `${r.failed} avisos no se pudieron marcar como leídos.`);
 
-  return { dismissAll, dismissFeedback, TABS, step, arrows, wheelStep, keyStep, VEIL, veilState, agentRows, AGENT_ROWS, AGENT_ROWS_LINKED, moreAgents, STATE_WORD, clockText, noticeLines, agentHex, focusView, veilColor, noticeAgentColor, takeoverState, chatInert, takeoverTitle, sendCheck, requestId, replyLine, DRAFT_MAX, SIZES, sizeScale, shortTitle };
+  // ---- K2-13 T6b-1 «Hoy» (S2/S3/S5/S13/S17/S19): the island's day ----
+  // The daemon's folded `hoy` view (agentclient.rs) says what happened; this model only decides how it is SAID. Everything the
+  // daemon or a model wrote is untrusted text: it is cleaned of control characters, of the WHOLE Unicode Cf category
+  // (\p{Cf}: bidi overrides, zero-width, word joiners, tag letters, soft hyphens…) and of the U+2028/U+2029 line and
+  // paragraph separators (Zl/Zp), collapsed and capped here, and the mount writes it with textContent — never as markup.
+  // The first version listed only the bidi ranges (U+200B-200F, 202A-202E, 2066-2069, FEFF) and let the rest through (F2).
+  const HOY_TABS = Object.freeze([
+    Object.freeze({ id: 'propuestas', title: 'Propuestas' }),
+    Object.freeze({ id: 'resultados', title: 'Resultados' }),
+    Object.freeze({ id: 'errores', title: 'Errores' }),
+  ]);
+  const HOY_GROUP = Object.freeze({ proposal: 'propuestas', result: 'resultados', error: 'errores' });
+  // the closed Spanish verbs («action label in Spanish») — the wire words buy / sell / send are never shown
+  const HOY_ACTION = Object.freeze({ buy: 'Comprar', sell: 'Vender', send: 'Enviar' });
+  const HOY_VERB = Object.freeze({ buy: 'Proponer una compra', sell: 'Proponer una venta', send: 'Proponer un envío' });
+  // S19: where the text of a video result came from. The daemon does not send it yet; the chip appears when it does.
+  const HOY_PROVENANCE = Object.freeze({ youtube_subtitles: 'subtítulos de YouTube', local_transcription: 'transcripto en esta PC' });
+  // a refused approval is read by its CLOSED code (protocol.cjs), never by free text from the daemon
+  const HOY_REFUSAL = Object.freeze({
+    not_pending: 'Esa propuesta ya no espera tu respuesta.',
+    unknown_item: 'El daemon ya no tiene esa propuesta.',
+    not_active: 'Ese Minikoda no está activo.',
+    unknown_minikoda: 'Ese Minikoda ya no existe.',
+    paused: 'Los Minikodas están en pausa: no se aprobó nada.',
+    unavailable: 'El daemon no está disponible ahora.',
+    failed: 'El daemon no pudo registrar la decisión.',
+  });
+  const FORMAT_CHARS = /[\p{Cf}\u2028\u2029]/gu;
+  const CONTROL_CHARS = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g;
+  function hoyClean(text, max) {
+    const s = String(text == null ? '' : text).replace(FORMAT_CHARS, '').replace(CONTROL_CHARS, ' ').replace(/\s+/g, ' ').trim();
+    const a = Array.from(s);
+    const cap = Number.isFinite(max) && max > 1 ? max : 120;
+    return a.length > cap ? `${a.slice(0, cap - 1).join('').trimEnd()}…` : s;
+  }
+  function hoyTime(iso, now) {
+    const d = new Date(String(iso == null ? '' : iso));
+    if (Number.isNaN(d.getTime())) return '';
+    const t = new Date(Number.isFinite(now) ? now : Date.now());
+    const p = n => String(n).padStart(2, '0');
+    const same = (a, b) => a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+    if (same(d, t)) return `${p(d.getHours())}:${p(d.getMinutes())}`;
+    if (same(d, new Date(t.getFullYear(), t.getMonth(), t.getDate() - 1))) return 'ayer';
+    return `${d.getDate()} ${MONTHS[d.getMonth()]}`;
+  }
+  function hoyCounts(view) {
+    const items = view && Array.isArray(view.items) ? view.items : [];
+    const c = { pending: 0, propuestas: 0, resultados: 0, errores: 0, truncated: !!(view && view.truncated === true) };
+    for (const i of items) {
+      if (!i || typeof i !== 'object') continue;
+      const tab = HOY_GROUP[i.kind];
+      if (!tab) continue;
+      // the Propuestas number is what WAITS, not what happened (the artboard): a decided proposal keeps its row all day
+      // but stops being counted, and the tab can read 0 while it still lists yesterday's decisions as history.
+      if (tab === 'propuestas') { if (i.status === 'pending') { c.pending += 1; c.propuestas += 1; } } else c[tab] += 1;
+    }
+    return c;
+  }
+  // Propuestas is the opening tab only while something waits (the artboard); the human's own tab is kept otherwise.
+  function hoyTab(counts, current) {
+    const ids = HOY_TABS.map(t => t.id);
+    if (typeof current === 'string' && ids.includes(current)) return current;
+    return counts && counts.pending > 0 ? 'propuestas' : 'resultados';
+  }
+  function hoyTabKey(e, index) {
+    if (!e || e.isTrusted !== true || e.ctrlKey || e.altKey || e.metaKey || e.shiftKey) return null;
+    const last = HOY_TABS.length - 1;
+    const at = Number.isInteger(index) && index >= 0 && index <= last ? index : 0;
+    if (e.key === 'ArrowRight') return Math.min(last, at + 1);
+    if (e.key === 'ArrowLeft') return Math.max(0, at - 1);
+    if (e.key === 'Home') return 0;
+    if (e.key === 'End') return last;
+    return null;
+  }
+  const HOY_STATE = Object.freeze({ approved: 'Aprobada · se ejecutó', rejected: 'Rechazada · no se hizo nada' });
+  /** One sentence into «what failed» + «what was kept»: the daemon already writes it as prose; we never invent a word. */
+  function hoySplit(text) {
+    const s = hoyClean(text, 400);
+    const at = s.indexOf('. ');
+    if (at > 12 && at <= 140) return [s.slice(0, at + 1), s.slice(at + 2)];
+    return [hoyClean(s, 140), ''];
+  }
+  // B3: the target of a proposal is what a buy / sell / send is ABOUT, and the recipient of a send lives at its end. The
+  // daemon bounds it at 200, so the page shows all 200 and lets the row grow and the list scroll: a cut target is a
+  // decision made blind. The row's other lines keep their own bounds.
+  const HOY_TARGET_MAX = 200, HOY_TITLE_MAX = 140, HOY_SUB_MAX = 220, HOY_FULL_MAX = 1200;
+  function hoyRow(item, now) {
+    const tab = HOY_GROUP[item && item.kind];
+    if (!tab || typeof item.id !== 'string' || !item.id) return null;
+    const when = hoyTime(item.createdAt, now);
+    const source = hoyClean(item.minikoda, 40);
+    const stamp = [source, when].filter(Boolean).join(' · ');
+    const text = hoyClean(item.text, HOY_FULL_MAX);
+    const pending = tab === 'propuestas' && item.status === 'pending';
+    const action = tab === 'propuestas' && Object.prototype.hasOwnProperty.call(HOY_ACTION, item.action) ? item.action : '';
+    let title = '', sub = '', chip = '', state = '';
+    if (tab === 'propuestas') {
+      const target = hoyClean(item.target, HOY_TARGET_MAX);
+      title = action ? `${HOY_ACTION[action]} ${target}` : `${HOY_VERB[item.action] || 'Propuesta'}${target ? `: ${target}` : ''}`;
+      sub = [stamp, hoyClean(text, 60)].filter(Boolean).join(' · ');
+      // the artboard's words: «Aprobada · se ejecutó · 09:46» (when it ran) and «Rechazada · no se hizo nada» (no time: nothing ran)
+      if (!pending && HOY_STATE[item.status]) state = `${HOY_STATE[item.status]}${item.status === 'approved' && item.decidedAt ? ` · ${hoyTime(item.decidedAt, now)}` : ''}`.trim();
+    } else if (tab === 'resultados') {
+      title = stamp || 'Resultado';
+      sub = text;
+      chip = Object.prototype.hasOwnProperty.call(HOY_PROVENANCE, item.provenance) ? HOY_PROVENANCE[item.provenance] : '';
+    } else {
+      const [head, rest] = hoySplit(text);
+      title = hoyClean(head, HOY_TITLE_MAX) || 'Un Minikoda falló';
+      sub = [stamp, rest].filter(Boolean).join(' · ');
+    }
+    if (tab !== 'propuestas') title = hoyClean(title, HOY_TITLE_MAX); // a proposal's title IS its target: shown whole
+    sub = hoyClean(sub, HOY_SUB_MAX);
+    const full = hoyClean(text, HOY_FULL_MAX);
+    // `status` is the CLOSED state the CSS keys on (pending / approved / rejected, and `info` for what is only read):
+    // `state` is the sentence a person reads («Aprobada · se ejecutó · 09:46»), never a value selector.
+    const status = tab === 'propuestas' ? (item.status === 'approved' || item.status === 'rejected' ? item.status : 'pending') : 'info';
+    return {
+      id: item.id, tab, kind: item.kind, action, pending, status, state, title, sub, chip, full, when,
+      approve: `Aprobar: ${title}`, reject: `Rechazar: ${title}`,
+      actions: pending,
+      aria: [title, sub, pending ? 'Espera tu sí.' : state].filter(Boolean).join('. '),
+    };
+  }
+  function hoyRows(view, now) {
+    const items = view && Array.isArray(view.items) ? view.items : [];
+    const out = [];
+    for (const item of items) {
+      const row = hoyRow(item, now);
+      if (row) out.push(row);
+    }
+    return out;
+  }
+  function hoySummary(counts) {
+    const c = counts || { pending: 0, resultados: 0 };
+    const wait = c.pending === 0 ? 'Nada espera tu sí' : `${c.pending} ${c.pending === 1 ? 'espera' : 'esperan'} tu sí`;
+    return `${wait} · ${c.resultados} ${c.resultados === 1 ? 'resultado' : 'resultados'}`;
+  }
+  function hoyEmpty(tab) {
+    if (tab === 'propuestas') return 'Nada espera tu sí.';
+    if (tab === 'resultados') return 'Todavía no hay resultados hoy.';
+    if (tab === 'errores') return 'Ningún aviso: todo salió bien.';
+    return 'Nada en esta pestaña.';
+  }
+  const hoyRefusal = code => (Object.prototype.hasOwnProperty.call(HOY_REFUSAL, typeof code === 'string' ? code : '') ? HOY_REFUSAL[code] : HOY_REFUSAL.failed);
+
+  // ---- a decision in flight (verifier mwdtsadz B1/B2) ----
+  // AgentConn::command hands the page the state at WRITE time (`self.view()` right after sending), and the daemon's
+  // answer to a decision arrives later as `agent:state` — the contract settings.js documents. So NOTHING is judged from
+  // the reply: the decision is held until the daemon's own state shows that row moved or its error counter moved, and
+  // the deadline says it does not know instead of guessing either way. Until then every decision on the panel is closed.
+  const HOY_WAIT_MS = 3000;        // how long one decision waits for the daemon before its outcome is «no sabemos»
+  const HOY_CLICK_GUARD_MS = 400;  // a click this soon after a repaint that moved rows hits a row nobody chose
+  /** The daemon's error counter: how the page tells «an error arrived AFTER my command» without reading its text. */
+  function hoyErrorN(view) {
+    const n = view && view.last_error ? view.last_error.n : 0;
+    return Number.isFinite(n) && n >= 0 ? n : 0;
+  }
+  /**
+   * One decision against one view the page received (the write-time reply or an `agent:state`).
+   * `beforeN` is `hoyErrorN` captured when the command left. `{state:'ok'}` only when the daemon's row carries the
+   * wanted status; `{state:'refused', code}` only when its counter moved; anything else is still waiting.
+   */
+  function hoyDecision(beforeN, after, id, want) {
+    const items = after && after.hoy && Array.isArray(after.hoy.items) ? after.hoy.items : null;
+    const row = items ? items.find(i => i && i.id === id) : null;
+    if (row && row.status === want) return { state: 'ok' };
+    const from = Number.isFinite(beforeN) && beforeN > 0 ? beforeN : 0;
+    if (hoyErrorN(after) > from) return { state: 'refused', code: after.last_error && after.last_error.code };
+    return { state: 'waiting' };
+  }
+  /** A read («hoy_list» / «view») has no click to confirm: it either brings the day or the daemon's closed reason (F5). */
+  function hoyReadProblem(beforeN, view) {
+    if (!view || typeof view !== 'object') return HOY_REFUSAL.unavailable;
+    if (typeof view.connection === 'string' && view.connection !== 'connected') return HOY_REFUSAL.unavailable;
+    const from = Number.isFinite(beforeN) && beforeN > 0 ? beforeN : 0;
+    if (hoyErrorN(view) > from) return hoyRefusal(view.last_error && view.last_error.code);
+    return '';
+  }
+  /**
+   * The order rows are DRAWN in: ids already on screen keep the place they had (a decided row never sinks while the
+   * panel is open, so the buttons under the cursor never become another proposal's), and ids seen for the first time
+   * follow in the daemon's own order.
+   */
+  function hoyOrder(previous, rows) {
+    const list = Array.isArray(rows) ? rows.filter(r => r && typeof r.id === 'string') : [];
+    const seen = Array.isArray(previous) ? previous : [];
+    if (!seen.length) return list;
+    const rank = new Map(seen.map((id, i) => [id, i]));
+    const kept = list.filter(r => rank.has(r.id)).sort((a, b) => rank.get(a.id) - rank.get(b.id));
+    return kept.concat(list.filter(r => !rank.has(r.id)));
+  }
+  /**
+   * F6: motion is reduced when the app's own switch says so OR when the OS asks for it. The first version read only
+   * `html[data-motion="reduce"]`, so a system set to reduce motion still animated the grown box.
+   */
+  const motionReduced = (motionAttr, mediaMatches) => motionAttr === 'reduce' || mediaMatches === true;
+  /** A click is honoured only once the rows have been still for `HOY_CLICK_GUARD_MS` (an armed guard, not a moving one). */
+  const hoyGuardOpen = (movedAt, now) => !(Number.isFinite(movedAt) && movedAt > 0) || !Number.isFinite(now) || now - movedAt >= HOY_CLICK_GUARD_MS;
+
+  return { dismissAll, dismissFeedback, TABS, step, arrows, wheelStep, keyStep, VEIL, veilState, agentRows, AGENT_ROWS, AGENT_ROWS_LINKED, moreAgents, STATE_WORD, clockText, noticeLines, agentHex, focusView, veilColor, noticeAgentColor, takeoverState, chatInert, takeoverTitle, sendCheck, requestId, replyLine, DRAFT_MAX, SIZES, sizeScale, shortTitle,
+    HOY_TABS, HOY_ACTION, HOY_STATE, HOY_PROVENANCE, hoyClean, hoyCounts, hoyTab, hoyTabKey, hoyRows, hoySummary, hoyEmpty, hoyRefusal, hoySplit,
+    HOY_WAIT_MS, HOY_CLICK_GUARD_MS, HOY_TARGET_MAX, motionReduced, hoyErrorN, hoyDecision, hoyReadProblem, hoyOrder, hoyGuardOpen };
 });

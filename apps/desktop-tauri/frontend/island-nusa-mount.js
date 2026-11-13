@@ -12,7 +12,8 @@
   // T5: the state a Pregunta / Permiso / Terminó / Error takes over, read from the data the island already publishes
   const qEl = $('question'), noticeCardEl = $('notice-card');
   const takeoverData = () => ({ ...capsule.dataset, look: qEl ? qEl.dataset.look : '', outcomeWord: ($('question-state-word') || {}).textContent || '', severity: noticeCardEl ? noticeCardEl.dataset.severity : '', cardShown: !!noticeCardEl && !noticeCardEl.hidden });
-  function paintTitle() { $('nusa-title').textContent = (capsule && N.takeoverTitle(takeoverData())) || tabTitle; }
+  // K2-13 T6b-1: while «Hoy» is open the notch is the day, so its title says so (the panel's own line says how many wait).
+  function paintTitle() { $('nusa-title').textContent = capsule.dataset.hoy === 'open' ? 'Hoy' : ((capsule && N.takeoverTitle(takeoverData())) || tabTitle); }
 
   // hover icons (20px grid, stroke), one per tab id
   const ICONS = {
@@ -59,6 +60,7 @@
   nusa.addEventListener('wheel', e => { const d = N.wheelStep(e); if (d) { e.preventDefault(); go(d); } }, { passive: false });
 
   const active = () => capsule && capsule.dataset.phase === 'expanded' && capsule.dataset.view === 'overview' && !capsule.dataset.card
+    && capsule.dataset.hoy !== 'open' /* the pager is behind Hoy: an arrow key must never walk hidden tabs */
     && !['pending', 'expired', 'outcome'].includes(capsule.dataset.question || '');
   const typingIn = el => !!el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName));
   doc.addEventListener('keydown', e => {
