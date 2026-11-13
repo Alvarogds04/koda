@@ -64,6 +64,36 @@ html[data-motion="reduce"] #nusa-bars i { animation: none; }
 #nusa-dots [role="tab"]:focus-visible { outline: 2px solid #fff; outline-offset: 1px; border-radius: 4px; }
 html[data-motion="reduce"] #nusa * { transition: none; }
 
+/* ── K2-09 S7 (opción A, L5; design/k2-09-atajos/08-isla-unida.html F1 «BOTTOM · icon-only row»): the icon row of the 08 inside the
+   current Nusa. With at least one available app (island-shortcuts-mount.js writes data-apps) the dots give way to this row, at the
+   bottom and centred: «Hablar con Koda» first with its ring, then each app. 22px visible inside a 44x24 hit zone — the design's own
+   «Accesibilidad» note says the row does not reach 44 and the keys are the alternative — so the row is n x 44 + 4 wide (a 4px air
+   after the ring of Koda). Identity tones are the ICON's colour only, never a state; the focused app is a white disc, and a hairline
+   on top marks it without colour. No apps → none of this paints (S6). */
+#nusa { --id-koda: #4d9fff; --id-spotify: var(--dot-mint-1); } /* «Identidad» of design 08: Koda #4d9fff, Spotify mint 1 */
+#nusa-apps { position: absolute; left: 50%; bottom: 6px; transform: translateX(-50%); height: 24px; margin: 0; padding: 0; display: flex; flex-direction: row; z-index: 4; }
+#nusa[data-apps="true"] #nusa-dots { display: none; }
+#nusa-apps .sb { --pid: var(--id-koda); position: relative; z-index: 0; width: 44px; height: 24px; flex: none; padding: 0; border: 0; background: none; color: var(--pid); display: grid; place-items: center; cursor: pointer; }
+#nusa-apps .sb::before { content: ""; position: absolute; left: 11px; top: 1px; width: 22px; height: 22px; z-index: -1; border-radius: 50%; background: #141518; box-shadow: inset 0 0 0 1px rgba(255,255,255,.06); transition: background .15s, transform .3s var(--nusa-spring); }
+#nusa-apps .sb:hover::before { background: #1D1F23; transform: scale(1.08); }
+#nusa-apps .sb:focus-visible { outline: 2px solid #fff; outline-offset: -1px; border-radius: 12px; }
+#nusa-apps .sb svg { width: 12px; height: 12px; }
+#nusa-apps .sb.talk { margin-right: 4px; }
+#nusa-apps .sb.talk::before { box-shadow: inset 0 0 0 1px rgba(255,255,255,.45); }
+#nusa-apps .sb[data-go="spotify"] { --pid: var(--id-spotify); }
+#nusa-apps .sb.on { color: #000; cursor: default; }
+#nusa-apps .sb.on::before { background: #fff; box-shadow: none; }
+#nusa-apps .sb.on:hover::before { transform: none; }
+#nusa-apps .sb.on::after { content: ""; position: absolute; left: 17px; top: -2px; width: 10px; height: 2px; border-radius: 2px; background: #fff; }
+#nusa-apps .bdg { position: absolute; left: 25px; top: -2px; min-width: 14px; height: 14px; padding: 0 3px; border-radius: 99px; background: #fff; color: #000; box-shadow: 0 0 0 2px #000; font-size: 10px; font-weight: 700; line-height: 14px; text-align: center; }
+#nusa-apps .sb.on .bdg { background: #000; color: #fff; box-shadow: 0 0 0 1px #fff; }
+html[data-motion="reduce"] #nusa-apps .sb, html[data-motion="reduce"] #nusa-apps .sb::before { transition: none; }
+@media (prefers-reduced-motion: reduce) { #nusa-apps .sb, #nusa-apps .sb::before { transition: none; } }
+
+/* the focused app's card takes the body's first column (the tabs' #nusa-panel steps aside with its own [hidden]) */
+#nusa-card { grid-column: 1; grid-row: 1; min-width: 0; align-self: stretch; display: flex; flex-direction: column; justify-content: center; overflow: hidden; }
+#nusa-card[hidden] { display: none; }
+
 /* T3/T4 bodies: Abito type scale 13 / 12 / 11 */
 .nusa-home { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .nusa-sub { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -135,7 +165,7 @@ html #capsule[data-edge="bottom"][data-view="overview"][data-notice-strip="on"] 
 #capsule[data-phase="expanded"]:is([data-takeover="waiting"], [data-takeover="finished"], [data-takeover="error"][data-view="notices"]) #island { background: #000; border-radius: 26px; }
 /* the Nusa layer is only veil + header strip here: behind the card, never in the way of a click */
 #capsule[data-phase="expanded"]:is([data-takeover="waiting"], [data-takeover="finished"], [data-takeover="error"][data-view="notices"]) #nusa { display: block; bottom: 0; height: auto; z-index: 0; pointer-events: none; }
-#capsule[data-phase="expanded"]:is([data-takeover="waiting"], [data-takeover="finished"], [data-takeover="error"][data-view="notices"]) #nusa :is(#nusa-panel, #nusa-state, #nusa-dots, #nusa-prev, #nusa-next, #nusa-bars) { display: none; }
+#capsule[data-phase="expanded"]:is([data-takeover="waiting"], [data-takeover="finished"], [data-takeover="error"][data-view="notices"]) #nusa :is(#nusa-panel, #nusa-state, #nusa-dots, #nusa-prev, #nusa-next, #nusa-bars, #nusa-apps, #nusa-card) { display: none; } /* K2-09: a take-over owns the island, so the icon row and the app's card step aside with the rest of the Nusa body */
 /* Koda (koda-skin.js parks it in #nusa-right while #nusa shows) is the BIG mascot column at the island's LEFT edge (human, 29-oct: «Koda mas grande a la izquierda», reverses the 28-oct right placement); the cards reserve a 112px left gutter */
 #capsule[data-phase="expanded"]:is([data-takeover="waiting"], [data-takeover="finished"], [data-takeover="error"][data-view="notices"]) #nusa-body { display: block; left: 8px; right: auto; top: 34px; bottom: 10px; width: 104px; height: auto; }
 #capsule[data-phase="expanded"]:is([data-takeover="waiting"], [data-takeover="finished"], [data-takeover="error"][data-view="notices"]) #nusa-right { height: 100%; justify-content: center; }

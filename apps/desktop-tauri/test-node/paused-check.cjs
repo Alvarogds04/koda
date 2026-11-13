@@ -32,17 +32,19 @@ test('one list on both sides: the paused features of paused.rs are exactly the P
 test('mail has its own entry and is NOT paused on either side', () => {
   assert.equal(P.paused('mail'), false, 'paused.js must not pause mail');
   assert.equal(P.PAUSED.includes('mail'), false, 'mail is never in the paused list');
-  assert.deepEqual([...P.NOT_PAUSED], ['mail'], 'the one feature this version turns on');
+  assert.deepEqual([...P.NOT_PAUSED], ['mail', 'spotify'], 'the features this version turns on (K2-10 mail, K2-09 music)');
   assert.match(rust, /Feature::Mail => false/, 'paused.rs gives mail its own, active entry');
   assert.doesNotMatch(pausedArm().join(' '), /mail/, 'mail never joins the paused arm');
 });
 
 test('the rest of the pause is untouched, and the label still matches', () => {
-  // K2 T1 (S2, S3): `phone` left the paused arm (its own `Feature::Phone => false`); the link still starts OFF.
-  assert.deepEqual(pausedArm().sort(), ['dictation', 'integrations', 'spotify', 'voice']);
+  // K2 T1 (S2, S3): `phone` left the paused arm (its own `Feature::Phone => false`); the link still starts OFF. K2-09: so did spotify.
+  assert.deepEqual(pausedArm().sort(), ['dictation', 'integrations', 'voice']);
   assert.match(rust, /Feature::Phone => false/, 'paused.rs gives the phone link its own, active entry');
   assert.equal(P.paused('integrations'), true, 'Integraciones keeps its pause');
-  assert.equal(P.paused('spotify'), true);
+  // K2-09: «se quita la pausa de Spotify»
+  assert.equal(P.paused('spotify'), false);
+  assert.match(rust, /Feature::Spotify => false/);
   assert.equal(P.LABEL, 'En pausa · próxima versión');
   assert.match(rust, /pub const LABEL: &str = "En pausa · próxima versión"/);
   for (const active of ['chat', 'agents', 'general', 'mail', 'phone']) assert.equal(P.paused(active), false, active);

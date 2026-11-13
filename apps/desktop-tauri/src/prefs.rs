@@ -119,8 +119,8 @@ pub const PILL_IDS: [&str; 25] = [
 ];
 pub fn pill_offered(id: &str) -> bool {
     PILL_IDS.contains(&id) && id != "integration_music" &&
-        (id != "agent_claude-desktop" || cfg!(target_os = "windows")) &&
-        (id != "integration_spotify" || cfg!(target_os = "linux"))
+        (id != "agent_claude-desktop" || cfg!(target_os = "windows"))
+    // K2-09: integration_spotify is offered on every desktop OS (MPRIS, SMTC, AppleScript)
 }
 
 /// Closed stored chosen-colour catalog. Defaults remain absent and are painted by CSS.
