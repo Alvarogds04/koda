@@ -16,39 +16,12 @@
 //!   header, LF, the bytes) the command still parses before handing the file
 //!   to the daemon.
 //!
-//! K2-10 T7 (L21/L22): the mail card lost IMAP and SMTP, so [`MAX_FILE_BYTES`]
-//! and [`sanitize_name`] have no caller left inside Koda. They stay because
-//! they are public and still describe the one rule a dropped file must keep;
-//! deleting them is a separate call, not a side effect of retiring a card.
+//! K2-10 (L26): the per-file size cap and the display-name sanitiser left too;
+//! their last caller was the retired IMAP/SMTP mail path.
 
 use std::path::{Path, PathBuf};
 
 use crate::chat::ChatError;
-
-/// Hard size cap for one attached file.
-pub const MAX_FILE_BYTES: usize = 10 * 1024 * 1024;
-
-/// Sanitize a DISPLAY name: basename of any separator style, control
-/// characters stripped, path-significant and unusual characters folded to
-/// `_`, leading/trailing dots and spaces removed, bounded to 80 chars,
-/// never empty and never a dot name.
-pub fn sanitize_name(raw: &str) -> String {
-    let base = raw.rsplit(['/', '\\']).next().unwrap_or("");
-    let mut out = String::new();
-    for c in base.chars().filter(|c| !c.is_control()) {
-        if c.is_alphanumeric() || matches!(c, ' ' | '.' | '_' | '-' | '(' | ')') {
-            out.push(c);
-        } else {
-            out.push('_');
-        }
-    }
-    let trimmed: String = out.trim_matches(|c| c == '.' || c == ' ').to_string();
-    let mut bounded: String = trimmed.chars().take(80).collect();
-    if bounded.is_empty() {
-        bounded = "archivo".to_string();
-    }
-    bounded
-}
 
 fn invalid(why: &str) -> ChatError {
     ChatError::invalid_input(why)
