@@ -293,6 +293,33 @@ pub fn save_settings_window_size(app: &AppHandle, w: u32, h: u32) -> bool {
     .is_ok()
 }
 
+/// K2-10 T4 (S5): the last visit of the mail card, ms since the epoch (0: never). Read from the
+/// in-memory prefs under the same lock every other preferences writer takes.
+pub fn gmail_last_seen_ms(app: &AppHandle) -> u64 {
+    app.state::<AppState>()
+        .settings
+        .prefs
+        .lock()
+        .expect("prefs lock")
+        .gmail_last_seen_ms()
+}
+
+/// K2-10 T4 (S5): remember a later visit through the SAME `prefs::transact` gate, file and atomic
+/// writer as every other preference, so the mark never races a settings change. The mark is
+/// monotonic (`prefs::apply` keeps the later of the two), never comes from the page and is never
+/// published in the settings view. `false`: it could not be saved and the stored one stands.
+pub fn remember_gmail_last_seen(app: &AppHandle, at_ms: u64) -> bool {
+    let state = app.state::<AppState>();
+    prefs::transact(
+        &state.settings.prefs_serial,
+        &state.settings.prefs,
+        &prefs::Command::SetGmailLastSeen(at_ms),
+        |p| persist_prefs(app, p),
+        |_| {},
+    )
+    .is_ok()
+}
+
 /// #442 T7.4: a deleted specialist leaves the island order. Rust-internal (never a wire
 /// command); a no-op when the id is not in the stored order, so it never writes needlessly.
 pub fn prune_island_agent(app: &AppHandle, id: &str) {

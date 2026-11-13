@@ -327,6 +327,10 @@ pub settings_window: Option<bool>,
     /// #486 W2 (Coucou `desktopMochi`): the character lives on the desktop and where it
     /// sits, physical px. `None` = lives in the island (off) and is never written.
     pub desktop_character: Option<DesktopCharacter>,
+    /// K2-10 T4 (S5): the last time the mail counter counted «nuevos», in ms since the epoch.
+    /// Non-secret and HOST-ONLY: written by the mail host, never by the page. `None` means
+    /// never counted and is never written, so an untouched file keeps its bytes.
+    pub gmail_last_seen_ms: Option<u64>,
 }
 
 /// #486 W2: the saved state of the desktop character. Written by the native drop path
@@ -338,6 +342,9 @@ pub struct DesktopCharacter {
 }
 
 const DESKTOP_CHARACTER: &str = "desktop_character";
+/// K2-10 T4 (S5): the mail counter's last visit, ms since the epoch. Written by the mail host
+/// only; absent from a file whose mail card was never shown.
+const GMAIL_LAST_SEEN_MS: &str = "gmail_last_seen_ms";
 
 /// A closed shape: `{"on":bool}` plus an optional bounded `{"x","y"}` spot; anything else
 /// reads as absent (the character stays in the island).
@@ -383,6 +390,7 @@ impl Default for Prefs {
             phone_usage: None,
             live_context: None,
             desktop_character: None,
+            gmail_last_seen_ms: None,
         }
     }
 }
@@ -619,6 +627,10 @@ impl Prefs {
     pub fn phone_usage(&self) -> bool { self.phone_usage.unwrap_or(false) }
     pub fn live_context(&self) -> bool { self.live_context.unwrap_or(true) }
 
+    /// K2-10 T4 (S5): the stored mail mark, ms since the epoch; 0 means «never visited», which
+    /// makes every unread message count as new.
+    pub fn gmail_last_seen_ms(&self) -> u64 { self.gmail_last_seen_ms.unwrap_or(0) }
+
     /// #366 F093: the effective Ajustes placement — absent means in-island (#408).
     pub fn settings_window_on(&self) -> bool { self.settings_window.unwrap_or(false) }
     pub fn open_settings_at_launch(&self) -> bool { self.open_settings_at_launch.unwrap_or(false) }
@@ -666,6 +678,7 @@ impl Prefs {
             phone_usage: v.get("phone_usage").and_then(Value::as_bool),
             live_context: v.get("live_context").and_then(Value::as_bool),
             desktop_character: desktop_character_from(v.get(DESKTOP_CHARACTER)),
+            gmail_last_seen_ms: v.get(GMAIL_LAST_SEEN_MS).and_then(Value::as_u64).filter(|ms| *ms > 0),
         };
         if prefs.declared_pills.is_some() { prefs.declared_pills = Some(prefs.declared_pills()); }
         // A map whose every entry was dropped reads as absent: an untouched file keeps its bytes.
@@ -750,6 +763,9 @@ impl Prefs {
         }
         if let Some(on) = self.live_context {
             v["live_context"] = json!(on);
+        }
+        if let Some(ms) = self.gmail_last_seen_ms.filter(|ms| *ms > 0) {
+            v[GMAIL_LAST_SEEN_MS] = json!(ms);
         }
         if let Some(c) = self.desktop_character.filter(|c| c.spot.is_none_or(|(x, y)| valid_position(x, y))) {
             v[DESKTOP_CHARACTER] = match c.spot {
@@ -853,6 +869,10 @@ pub enum Command {
     PruneIslandAgent(String),
     /// #442 T7.4: the principal's «Qué hace»; an empty (or blank) text clears it.
     SetAbitoInstructions(String),
+    /// K2-10 T4 (S5): the mail counter's last visit, ms since the epoch. Deliberately NOT
+    /// produced by [`parse_command`]: the counter is the mail host's business, and the page
+    /// must never be able to move it forwards (hiding new mail) or backwards.
+    SetGmailLastSeen(u64),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1089,7 +1109,15 @@ pub fn apply(current: &Prefs, command: &Command) -> Result<Prefs, CommandError> 
     match command {
         Command::View => {}
         Command::AutostartView | Command::SetAutostart(_) => return Err(CommandError),
-        Command::SetOpenSettingsAtLaunch(on) => next.open_settings_at_launch = on.then_some(true),
+        Command::SetGmailLastSeen(ms) => {
+            if *ms == 0 {
+                return Err(CommandError);
+            }
+            // K2-10 T4 (S5): monotonic by construction — a stale visit is a no-op (the stored
+            // mark is kept), so a late answer can never make already-seen mail «new» again.
+            let at = (*ms).max(current.gmail_last_seen_ms.unwrap_or(0));
+            next.gmail_last_seen_ms = (at > 0).then_some(at);
+        }        Command::SetOpenSettingsAtLaunch(on) => next.open_settings_at_launch = on.then_some(true),
         Command::SoundOn => next.sound = true,
         Command::SoundOff => next.sound = false,
         Command::SetSoundGain(gain) => {

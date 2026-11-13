@@ -432,11 +432,14 @@ mod tests {
     /// never silently become reachable from the settings window.
     #[test]
     fn f093_the_commands_reachable_from_settings_are_pinned_exactly() {
-        const REACHABLE: [&str; 16] = [
+        // K2-10 T4 (S11): `gmail_action` joins this list on purpose — the Gmail card lives in Ajustes,
+        // so it must answer in the own settings window too (shared sender gate, like prefs_action).
+        const REACHABLE: [&str; 17] = [
             "agent_action",
             "daemon_action",
             "dictation_action",
             "failure_action",
+            "gmail_action",
             "hotkey_action",
             "models_action",
             "monitor_action",
@@ -506,6 +509,26 @@ mod tests {
     #[test]
     fn f093_the_label_is_the_exact_string_the_gate_admits() {
         assert_eq!(SETTINGS_LABEL, "settings");
+    }
+
+    /// K2-10 T4 (S11): «lo que se configure en Ajustes tiene que andar también en su ventana
+    /// propia». The Gmail card lives in Ajustes, so its command gates on the SHARED sender gate and
+    /// never on `main_window_only` — otherwise the card would answer in the island and fail in the
+    /// own window it is drawn in.
+    #[test]
+    fn k2_10_the_gmail_command_answers_in_the_island_and_in_the_own_settings_window() {
+        let src = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/gmailhost.rs"),
+        )
+        .expect("gmailhost.rs");
+        assert!(src.contains("bridge::sender_ok(webview.label(), &url)"), "the shared sender gate is the one that admits both windows");
+        assert!(!src.contains("main_window_only("), "the Gmail card is configured in Ajustes: it must work there");
+        // The gate itself, as the command uses it: both labels and both pages.
+        assert!(abito_island::bridge::sender_ok("main", "tauri://localhost/index.html").is_ok());
+        assert!(abito_island::bridge::sender_ok(SETTINGS_LABEL, "tauri://localhost/settings.html").is_ok());
+        assert!(abito_island::bridge::sender_ok("settings", "tauri://localhost/index.html").is_ok(), "the island page is served under both labels");
+        assert!(abito_island::bridge::sender_ok("main", "tauri://localhost/settings.html").is_err(), "the Ajustes page belongs to the settings window alone");
+        assert!(abito_island::bridge::sender_ok("foreign", "tauri://localhost/index.html").is_err());
     }
 
     // ---- T6.2: the opening size of the own window (pure, no window system) ---
