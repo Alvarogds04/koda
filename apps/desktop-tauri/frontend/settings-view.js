@@ -512,7 +512,7 @@
     return { action, key, value };
   }
   const KEY_ERRORS = Object.freeze({
-    unavailable: 'El llavero del sistema (Secret Service) no está disponible. La clave no se guardó y Koda no la guarda en ningún otro lado.',
+    unavailable: 'El llavero del sistema no está disponible. La clave no se guardó y Koda no la guarda en ningún otro lado.',
     save_failed: 'No se pudo guardar el cambio en el llavero del sistema.',
     invalid_schema: 'La clave o el valor no son válidos. No se cambió nada.',
   });

@@ -7,20 +7,7 @@ static FLOWS: OnceLock<Flows> = OnceLock::new();
 fn err(code: &str) -> BridgeError { BridgeError { code: code.into(), message: "No se pudo completar el inicio de sesión. Vuelve a intentarlo.".into() } }
 fn open(url: &str) -> bool {
     if abito_island::desktop::validated_web_url(&json!({"url":url})).is_err() { return false; }
-    use std::process::{Command, Stdio};
-    #[cfg(target_os = "linux")]
-    let mut command = Command::new("xdg-open");
-    #[cfg(target_os = "macos")]
-    let mut command = Command::new("open");
-    #[cfg(target_os = "windows")]
-    let mut command = { let mut c = Command::new("rundll32"); c.arg("url.dll,FileProtocolHandler"); c };
-    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-    return false;
-    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-    match command.arg(url).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn() {
-        Ok(mut child) => { std::thread::spawn(move || { let _ = child.wait(); }); true },
-        Err(_) => false,
-    }
+    abito_island::opener::open_detached(abito_island::opener::Target::Web(url)).is_ok()
 }
 #[tauri::command]
 pub async fn oauth_action(app: tauri::AppHandle, webview: tauri::Webview, state: tauri::State<'_, AppState>, payload: Value) -> Result<Value, BridgeError> {
