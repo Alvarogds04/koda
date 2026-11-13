@@ -23,7 +23,7 @@ mod tests;
 
 /// The only API root this module can build a URL for.
 pub const API_BASE: &str = "https://gmail.googleapis.com/gmail/v1/users/me";
-/// Messages the island lists at once (the card frame cap, `imapcmd::MAX_MESSAGES`).
+/// Messages the island lists at once (the card frame cap).
 pub const MAX_MESSAGES: usize = 20;
 /// Largest page the counters read; a full page means «at least this many».
 pub const MAX_PAGE: usize = 100;
@@ -302,7 +302,7 @@ pub fn message(auth: &dyn Tokens, http: &dyn GmailHttp, id: &str) -> Result<Deta
     detail_of(&session.get(&format!("messages/{}?format=full", encode(id)))?).ok_or(ApiError::Invalid)
 }
 
-/// `mailto:` for «Responder», through the shared builder in [`crate::mailcmd`].
+/// `mailto:` for «Responder», through [`mailto`] below.
 /// `None` when the address cannot be quoted safely (control characters, `?`, `&`, no single `@`).
 pub fn reply_mailto(detail: &Detail) -> Option<String> {
     let address = detail.reply_to.as_str();
@@ -312,7 +312,25 @@ pub fn reply_mailto(detail: &Detail) -> Option<String> {
         && !address.contains(['?', '&', ' ', '<', '>', ',', ';', '"', '\\'])
         && address.matches('@').count() == 1
         && !address.starts_with('@') && !address.ends_with('@');
-    quote_safe.then(|| crate::mailcmd::mailto(address, &detail.reply_subject))
+    quote_safe.then(|| mailto(address, &detail.reply_subject))
+}
+
+/// Everything but an unreserved character is percent-encoded (RFC 3986), uppercase hex.
+fn pct(s: &str) -> String {
+    let mut out = String::new();
+    for b in s.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
+/// `mailto:` for a reply. `to` is already a validated plain address, so `@` stays readable.
+fn mailto(to: &str, subject: &str) -> String {
+    format!("mailto:{}?subject={}", pct(to).replace("%40", "@"), pct(subject))
 }
 
 // ---- parsing: headers and summaries ------------------------------------------------------------

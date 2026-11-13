@@ -81,8 +81,6 @@ pub mod integrations_net;
 pub mod servicedetail;
 pub mod localmodel;
 pub mod cloudprofiles;
-pub mod imapcmd;
-pub mod mailcmd;
 #[cfg(target_os = "linux")]
 pub mod phone_link;
 pub mod models;
@@ -100,6 +98,7 @@ pub mod provider_oauth;
 pub mod gmail_oauth;
 pub mod gmail_api;
 pub mod gmailcmd;
+pub mod mailmigration;
 pub mod oauthcmd;
 pub mod sounds;
 pub mod question;

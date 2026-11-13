@@ -322,6 +322,36 @@ pub fn remember_gmail_last_seen(app: &AppHandle, at_ms: u64) -> bool {
     .is_ok()
 }
 
+/// K2-10 T8 (L23, L24): removes the 0.1 IMAP/SMTP mail accounts from the keychain once. Runs
+/// off the startup thread; one attempt per launch, never a loop. The mark is stored only when
+/// all seven keys are gone (or never existed), so a keychain that failed is retried on the next
+/// launch, and a finished migration never touches the keychain again. Nothing here can stop Koda:
+/// a failure only leaves a log line, which carries no value and no key name.
+pub fn migrate_retired_mail_accounts(app: &AppHandle) {
+    let done = app.state::<AppState>().settings.prefs.lock().expect("prefs lock").mail_migration_done();
+    if done { return; }
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let outcome = abito_island::mailmigration::run(&abito_island::secrets::Keychain, false);
+        if outcome == abito_island::mailmigration::Outcome::Done {
+            let state = app.state::<AppState>();
+            let saved = prefs::transact(
+                &state.settings.prefs_serial,
+                &state.settings.prefs,
+                &Command::SetMailMigrationDone,
+                |p| persist_prefs(&app, p),
+                |_| {},
+            );
+            if saved.is_err() {
+                eprintln!("mail migration: the keychain was cleaned but the mark could not be saved; the next launch checks again");
+                return;
+            }
+        }
+        let line = outcome.log_line();
+        if !line.is_empty() { eprintln!("{line}"); }
+    });
+}
+
 /// #442 T7.4: a deleted specialist leaves the island order. Rust-internal (never a wire
 /// command); a no-op when the id is not in the stored order, so it never writes needlessly.
 pub fn prune_island_agent(app: &AppHandle, id: &str) {

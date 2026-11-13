@@ -207,8 +207,9 @@ D-Bus, no por un panel GNOME.
 
 ### Qué significa «no verificable aquí»
 
-- **Correo y cuentas:** no hay keyring privado. Se exige la respuesta honesta
-  `keychain_unavailable`; no se leen claves reales ni se afirma que IMAP/SMTP funcionen.
+- **Correo y cuentas:** no hay keyring privado. `gmail_action` (`status`) solo tiene que
+  responder con su forma cerrada (`{ok:false, reason:"keychain"}` sin llavero); no se leen
+  claves reales ni se afirma que Gmail funcione.
 - **Audio audible:** list/reload no demuestra que una persona oye el sonido.
 - **Reconocimiento y micrófono:** sin modelos ni micrófono privado no se demuestra
   transcripción, wake word ni voz hablada. El portal de GNOME y la integración

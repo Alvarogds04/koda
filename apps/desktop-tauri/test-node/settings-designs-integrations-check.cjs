@@ -51,7 +51,7 @@ test('S23 Integraciones: every service is a card with its state as icon + word, 
   assert.equal(stateOf(card(bad.ui, 'integration_stripe')), '· No disponible todavía', 'an unreadable keychain says so instead of «sin clave»');
   for (const c of all(ui).filter(e => e.className.split(' ').includes('int-card'))) assert(all(c).some(e => e.className === 'state-ico' && e.attrs['aria-hidden'] === 'true'), `${c.attrs.id}: decorative icon, the word carries the state`);
   assert.deepEqual(all(ui).find(e => e.attrs.id === 'integration-list').children.map(e => e.attrs.id),
-    ['integration_stripe', 'integration_github', 'integration_vercel', 'integration_n8n', 'integration_resend', 'integration_notion', 'integration_calcom', 'integration_spotify', 'mail_smtp', 'mail_imap'], 'same services, same order');
+    ['integration_stripe', 'integration_github', 'integration_vercel', 'integration_n8n', 'integration_resend', 'integration_notion', 'integration_calcom', 'integration_spotify'], 'same services, same order (L21/L22: the IMAP and SMTP cards are gone)');
 });
 
 test('S23 Integraciones: connected -> Probar + Quitar; not connected -> Conectar; the key panel is closed until asked', async () => {
@@ -111,12 +111,15 @@ test('S23 Integraciones: every pre-existing control survives: pill switch, colou
     const c = card(ui, `integration_${id}`);
     assert(all(c).some(e => e.attrs.id === `declare-integration_${id}`), `${id}: pill switch`); assert(all(c).some(e => e.className.includes('color-dot')), `${id}: colour dot`);
   }
-  for (const key of ['stripe-api-key', 'github-token', 'vercel-token', 'n8n-url', 'n8n-api-key', 'resend-api-key', 'resend-from', 'notion-api-key', 'calcom-api-key', 'smtp-host', 'smtp-user', 'smtp-password', 'smtp-from', 'imap-host', 'imap-user', 'imap-password']) {
+  for (const key of ['stripe-api-key', 'github-token', 'vercel-token', 'n8n-url', 'n8n-api-key', 'resend-api-key', 'resend-from', 'notion-api-key', 'calcom-api-key']) {
     const input = all(ui).find(e => e.attrs.id === `integration-key-${key}`); assert(input, key); assert.equal(input.type, 'password', `${key} stays masked`);
   }
   calls.length = 0; const sw = all(ui).find(e => e.attrs.id === 'declare-integration_stripe');
   sw.fire('click', false); await ui.settled(); assert.deepEqual(calls, []);
   sw.fire('click'); await ui.settled(); assert.deepEqual(calls, [['prefs_action', { action: 'toggle_declared_pill', id: 'integration_stripe' }]]);
-  assert(all(ui).some(e => e.attrs.id === 'mail_smtp') && all(ui).some(e => e.attrs.id === 'mail_imap'), 'the mail accounts are cards too');
-  assert.equal(stateOf(card(ui, 'mail_smtp')), '✗ sin clave');
+  // K2-10 T7 (L21/L22): the Mail (IMAP) and Mail (SMTP) cards left with the IMAP/SMTP path; their
+  // keys keep no field here and the Resend card is still the one way to send mail from Koda.
+  assert(!all(ui).some(e => e.attrs.id === 'mail_smtp') && !all(ui).some(e => e.attrs.id === 'mail_imap'), 'no IMAP/SMTP account cards');
+  assert(!all(ui).some(e => /^integration-key-(smtp|imap)-/.test(e.attrs.id || '')), 'no smtp-*/imap-* field is offered');
+  assert(all(card(ui, 'integration_resend')), 'the Resend integration is untouched');
 });

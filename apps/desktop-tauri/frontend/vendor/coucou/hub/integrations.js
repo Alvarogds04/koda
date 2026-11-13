@@ -15,13 +15,10 @@ const INTEGRATIONS = [
   { id: "integration_github", name: "GitHub", color: "#F4505E", fields: [["github-token", "Token", "ghp_…"]], hint: "Classic token with the repo scope, or fine-grained with read access to Pull requests, Commit statuses and Actions." },
   { id: "integration_vercel", name: "Vercel", color: "#7C5CFF", fields: [["vercel-token", "Token", "…"]] },
   { id: "integration_n8n", name: "n8n", color: "#F29B38", fields: [["n8n-url", "Instance URL", "https://n8n.example.com"], ["n8n-api-key", "API key", "…"]] },
-  { id: "integration_resend", name: "Resend", color: "#22C55E", fields: [["resend-api-key", "API key", "re_…"], ["resend-from", "Sender address", "Koda <you@yourdomain.com>"]], hint: "Sender must belong to a domain verified in Resend. It is used when you send mail from the island." },
+  { id: "integration_resend", name: "Resend", color: "#22C55E", fields: [["resend-api-key", "API key", "re_…"], ["resend-from", "Sender address", "Koda <you@yourdomain.com>"]], hint: "Sender must belong to a domain verified in Resend. Koda only shows the account status; replying to mail opens your own mail client." },
   { id: "integration_notion", name: "Notion", color: "#8C8C8C", fields: [["notion-api-key", "Integration token", "ntn_…"]] },
   { id: "integration_calcom", name: "Cal.com", color: "#C9956A", fields: [["calcom-api-key", "API key", "cal_…"]] },
-  { id: "integration_spotify", name: "Spotify", color: "#1DB954", fields: [] },
-  // Abito-owned (#490): not a pill. The user's own SMTP account for sending mail from the island when Resend is not set.
-  { id: "mail_smtp", name: "Mail (SMTP)", color: "#8C8C8C", noPill: true, fields: [["smtp-host", "Server (port 465 = TLS, otherwise STARTTLS)", "smtp.example.com:587"], ["smtp-user", "User", "you@example.com"], ["smtp-password", "Password", "…"], ["smtp-from", "Sender (optional)", "Koda <you@example.com>"]], hint: "Used to send mail from the island when no Resend key and sender are saved. The connection is always encrypted." },
-  { id: "mail_imap", name: "Mail (IMAP)", color: "#8C8C8C", noPill: true, fields: [["imap-host", "Server (TLS, port 993 by default)", "imap.example.com"], ["imap-user", "User", "you@example.com"], ["imap-password", "Password", "…"]], hint: "Your inbox in the island: unread, sender, time and preview. Koda only reads; it changes a message only when you press Mark as read. The connection is always encrypted." }
+  { id: "integration_spotify", name: "Spotify", color: "#1DB954", fields: [] }
 ];
 const KEY_SITE = {
   integration_stripe: "dashboard.stripe.com/apikeys",
