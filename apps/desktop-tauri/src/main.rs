@@ -36,6 +36,7 @@ mod tray;
 mod trayhost;
 mod githubhost;
 mod calendarhost;
+mod gmailhost;
 mod mailhost;
 mod monitorshost;
 mod secretshost;
@@ -2081,6 +2082,7 @@ fn main() {
             githubhost::github_action,
             calendarhost::calendar_action,
             mailhost::mail_action,
+            gmailhost::gmail_action,
             monitorshost::monitor_action,
             soundshost::sound_action,
             failurehost::failure_action,

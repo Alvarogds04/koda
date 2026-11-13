@@ -1,8 +1,10 @@
 'use strict';
-/* #370 F103 — pure checks for frontend/integrations-mail.js (the Mail service
-   card: a read-list, an open message and a compose form inside the island).
-   FAKE data only: no network, no accounts, no tokens. Sending is NOT wired: it
-   returns a closed «no conectado» refusal and changes nothing.
+/* K2-10 T4 (S4, S8, S10, S11) — pure checks for frontend/integrations-mail.js, which is now the
+   GMAIL SETUP card of Ajustes → Conexiones: paste the user's own desktop client, «Guardar»,
+   «Conectar con Google» (begin + poll every second), «Desconectar», the state line and the help
+   block of S10 (publish the own app, the unverified warning, free).
+   No network, no accounts, no tokens: every call goes to a fake `gmail_action` and its answers are
+   the closed shapes src/gmailcmd.rs produces.
    Run: node apps/desktop-tauri/test-node/integrations-mail-check.cjs */
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -10,255 +12,273 @@ const path = require('node:path');
 const frontend = path.join(__dirname, '..', 'frontend');
 const M = require(path.join(frontend, 'integrations-mail.js'));
 
+const ID = '123456789012-abcdefghijklmnopqrstuvwxyz012345.apps.googleusercontent.com';
+const SECRET = 'GOCSPX-abcDEF_123-xyz';
+
 let passed = 0;
 const queue = [];
 const test = (name, fn) => { queue.push([name, fn]); };
-const store0 = () => M.storeFromFrame(M.fakeFrame());
-const goodDraft = () => ({ to: 'ana@example.com', subject: 'Hola', body: 'Texto de ejemplo.' });
+const src = fs.readFileSync(path.join(frontend, 'integrations-mail.js'), 'utf8');
+// The prose may legitimately NAME what was removed (S8); the code must not carry it.
+const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
 
-// ---- frame / store ----------------------------------------------------------
-test('fake frame: closed shape, marked fake, accepted by its own validator', () => {
-  const f = M.fakeFrame();
-  assert.equal(f.type, 'mail');
-  assert.equal(f.schema, M.SCHEMA);
-  assert.equal(f.fake, true);
-  assert.ok(f.messages.length > 0 && f.messages.length <= M.MAX_MESSAGES);
-  assert.ok(M.storeFromFrame(f));
-  assert.deepEqual(M.fakeFrame(), M.fakeFrame(), 'deterministic');
-});
+/** A fake host: records every (command, payload) and answers from the handler. */
+const host = handler => {
+  const calls = [];
+  const invoke = async (cmd, args) => {
+    calls.push([cmd, args && args.payload]);
+    return handler(cmd, (args && args.payload) || {}, calls.length);
+  };
+  return { calls, invoke, payloads: () => calls.map(c => c[1]) };
+};
+const answers = list => {
+  const rest = list.slice();
+  return host(() => (rest.length ? rest.shift() : undefined));
+};
 
-test('storeFromFrame: malformed frames are refused whole', () => {
-  const ok = M.fakeFrame();
-  const m = ok.messages[0];
-  const cases = [null, {}, [], 'x', 7,
-    { ...ok, type: 'other' }, { ...ok, schema: 'foreign/1' }, { ...ok, fake: 'yes' },
-    { ...ok, messages: 'x' }, { ...ok, token: 't' },
-    { ...ok, messages: Array.from({ length: M.MAX_MESSAGES + 1 }, (_, i) => ({ ...m, id: `x${i}` })) },
-    { ...ok, messages: [m, { ...m }] }, // duplicate id
-    { ...ok, messages: [{ ...m, id: '__proto__' }] }, { ...ok, messages: [{ ...m, id: '' }] },
-    { ...ok, messages: [{ ...m, from: '' }] }, { ...ok, messages: [{ ...m, from: 'x'.repeat(M.MAX_FROM + 1) }] },
-    { ...ok, messages: [{ ...m, subject: 'x'.repeat(M.MAX_SUBJECT + 1) }] },
-    { ...ok, messages: [{ ...m, body: 'x'.repeat(M.MAX_BODY + 1) }] },
-    { ...ok, messages: [{ ...m, read: 1 }] }, { ...ok, messages: [{ ...m, minutesAgo: -1 }] },
-    { ...ok, messages: [{ ...m, url: 'https://x' }] }, { ...ok, messages: [null] }];
-  for (const bad of cases) assert.equal(M.storeFromFrame(bad), null, JSON.stringify(bad).slice(0, 80));
-});
-
-test('store is frozen; nothing is open at the start', () => {
-  const s = store0();
-  assert.ok(Object.isFrozen(s) && Object.isFrozen(s.messages));
-  for (const msg of s.messages) assert.ok(Object.isFrozen(msg));
-  assert.equal(s.openId, null);
-});
-
-// ---- read-list + open message -------------------------------------------------
-test('view: list rows in order with unread count, ago, bounded preview; banner is loud', () => {
-  const v = M.view(store0());
-  assert.equal(v.fake, true);
-  assert.match(v.banner, /datos de ejemplo/i);
-  assert.equal(v.rows.length, store0().messages.length);
-  assert.equal(v.unread, v.rows.filter(r => !r.read).length);
-  for (const r of v.rows) { assert.ok(r.preview.length <= M.MAX_PREVIEW); assert.match(r.ago, /^(ahora|hace )/); }
-  assert.equal(v.open, null);
-  const real = M.view(M.storeFromFrame({ ...M.fakeFrame(), fake: false }));
-  assert.equal(real.banner, null);
-  assert.equal(M.view(null), null);
-});
-
-test('openMessage: opens one message WITHOUT marking it read (NotchBuddy has an explicit button); setRead marks it; unknown ids change nothing', () => {
-  const s = store0();
-  const unreadId = s.messages.find(x => !x.read).id;
-  const opened = M.openMessage(s, unreadId);
-  assert.equal(opened.openId, unreadId);
-  assert.equal(opened.messages.find(x => x.id === unreadId).read, false, 'opening is not reading');
-  const marked = M.setRead(opened, unreadId);
-  assert.equal(marked.messages.find(x => x.id === unreadId).read, true);
-  assert.equal(marked.openId, unreadId);
-  assert.equal(M.setRead(opened, 'nope'), null); assert.equal(M.setRead({}, unreadId), null);
-  assert.equal(s.messages.find(x => x.id === unreadId).read, false, 'the old store is untouched');
-  const v = M.view(opened);
-  assert.equal(v.open.id, unreadId);
-  assert.equal(typeof v.open.body, 'string');
-  assert.equal(M.view(marked).unread, M.view(s).unread - 1);
-  for (const bad of ['nope', '', '__proto__', 'constructor', null, undefined, 7]) assert.equal(M.openMessage(s, bad), null, String(bad));
-  assert.equal(M.openMessage({}, unreadId), null);
-});
-
-test('closeMessage returns to the list and keeps the read state', () => {
-  const s = store0();
-  const id = s.messages[0].id;
-  const closed = M.closeMessage(M.openMessage(s, id));
-  assert.equal(closed.openId, null);
-  assert.equal(M.closeMessage(M.setRead(M.openMessage(s, id), id)).messages.find(x => x.id === id).read, true);
-  assert.equal(M.closeMessage({}), null);
-});
-
-// ---- compose form model --------------------------------------------------------
-test('createDraft: empty, frozen, three closed fields', () => {
-  const d = M.createDraft();
-  assert.deepEqual(d, { to: '', subject: '', body: '' });
-  assert.ok(Object.isFrozen(d));
-});
-
-test('setField: closed fields, strings only, bounded; rejected input leaves the draft untouched', () => {
-  const d = M.createDraft();
-  const next = M.setField(d, 'to', 'ana@example.com');
-  assert.equal(next.to, 'ana@example.com');
-  assert.equal(d.to, '', 'immutable');
-  for (const [f, v] of [['cc', 'x'], ['__proto__', 'x'], ['to', 5], ['to', null],
-    ['to', 'x'.repeat(M.MAX_TO + 1)], ['subject', 'x'.repeat(M.MAX_SUBJECT + 1)], ['body', 'x'.repeat(M.MAX_BODY + 1)]]) {
-    assert.equal(M.setField(d, f, v), null, `${f}`);
+// ---- the pasted client (S4) --------------------------------------------------------------
+test('setClientPayload: only a Google desktop client id, the secret is optional and never trimmed', () => {
+  assert.deepEqual(M.setClientPayload(ID, ''), { action: 'set_client', clientId: ID });
+  assert.deepEqual(M.setClientPayload(`  ${ID}  `, ''), null, 'pasted whitespace is the page\'s problem: it never reaches the host silently');
+  assert.deepEqual(M.setClientPayload(ID, SECRET), { action: 'set_client', clientId: ID, clientSecret: SECRET });
+  assert.deepEqual(M.setClientPayload(ID, undefined), { action: 'set_client', clientId: ID });
+  for (const bad of ['', '   ', 'nope', 'ana@example.com', `${ID}.extra`, 'x'.repeat(M.MAX_CLIENT_ID + 1), `${ID}\n`, null, 5, {}]) {
+    assert.equal(M.setClientPayload(bad, ''), null, JSON.stringify(bad));
   }
-  assert.equal(M.setField({ to: 1 }, 'to', 'a'), null, 'not a draft');
-});
-
-test('validateDraft: like NotchBuddy only the recipient is required; each rule reports its own Spanish error', () => {
-  assert.deepEqual(M.validateDraft(goodDraft()), { ok: true, errors: {} });
-  const e = (over) => M.validateDraft({ ...goodDraft(), ...over });
-  assert.equal(e({ to: '' }).errors.to, 'Falta el destinatario.');
-  for (const bad of ['ana', 'ana@', '@example.com', 'a b@example.com', 'ana@example', 'a@b@c.com', 'ana@example.com, bob@example.com', 'ana@example.com\n']) {
-    assert.equal(e({ to: bad }).errors.to, 'El destinatario no es una dirección válida.', JSON.stringify(bad));
+  for (const bad of ['se cret', 'a\nb', 'x'.repeat(M.MAX_SECRET + 1), 5]) {
+    assert.equal(M.setClientPayload(ID, bad), null, JSON.stringify(bad));
   }
-  assert.equal(e({ to: '  ana@example.com ' }).ok, true, 'surrounding spaces are forgiven');
-  assert.equal(e({ subject: '   ' }).ok, true, 'an empty subject falls back to the file name or «File» in Rust');
-  assert.equal(e({ body: '' }).ok, true, 'an empty body is sent as one space');
-  assert.equal(e({ subject: 'a\nb' }).errors.subject, 'El asunto no admite saltos de línea ni caracteres de control.');
-  assert.equal(e({ body: 'ok\nlínea\ttab' }).ok, true, 'the body keeps newlines and tabs');
-  assert.equal(e({ body: 'a\u0000b' }).errors.body, 'El mensaje contiene caracteres de control.');
-  const all = M.validateDraft(M.createDraft());
-  assert.equal(all.ok, false);
-  assert.deepEqual(Object.keys(all.errors), ['to']);
-  assert.equal(M.validateDraft(null).ok, false);
-  assert.equal(M.validateDraft({ to: 1, subject: 2, body: 3 }).ok, false);
+  assert.equal(M.CLIENT_SUFFIX, '.apps.googleusercontent.com');
 });
 
-const answers = (a) => { const calls = []; return { calls, invoke: (cmd, args) => { calls.push([cmd, args]); return a instanceof Error ? Promise.reject(a) : Promise.resolve(a); } }; };
-
-test('send: a valid draft goes through mail_action with the closed payload and reports success', async () => {
-  const f = answers({ ok: true });
-  const r = await M.send(Object.freeze(goodDraft()), null, f.invoke);
-  assert.deepEqual(r, { ok: true, message: 'Mensaje enviado.' });
-  assert.deepEqual(f.calls, [['mail_action', { payload: { action: 'send', to: 'ana@example.com', subject: 'Hola', body: 'Texto de ejemplo.' } }]]);
-  assert.ok(Object.isFrozen(r));
+// ---- closed answers ----------------------------------------------------------------------
+test('statusAnswer: the four states with a masked id and hasSecret, and nothing else', () => {
+  const ok = { ok: true, state: 'connected', clientId: '123456…', hasSecret: true };
+  assert.deepEqual(M.statusAnswer(ok), { state: 'connected', clientId: '123456…', hasSecret: true });
+  assert.deepEqual(M.statusAnswer({ ok: true, state: 'no_client', clientId: null, hasSecret: false }), { state: 'no_client', clientId: null, hasSecret: false });
+  for (const state of M.STATES) assert.ok(M.statusAnswer({ ok: true, state, clientId: null, hasSecret: false }), state);
+  const bad = a => assert.equal(M.statusAnswer(a), null, JSON.stringify(a));
+  bad(null); bad({}); bad({ ok: false, reason: 'network' }); bad({ ok: true, state: 'spam', hasSecret: false });
+  bad({ ok: true, state: 'connected' }); bad({ ok: true, state: 'connected', clientId: null, hasSecret: 'yes' });
+  bad({ ok: true, state: 'connected', clientId: ID, hasSecret: true }); // a whole client id never comes back
+  bad({ ok: true, state: 'connected', clientId: '123456…\n', hasSecret: true });
+  assert.equal(M.STATES.length, 4);
 });
 
-test('send: the attachment rides as {name,data} and the recipient is trimmed', async () => {
-  const f = answers({ ok: true });
-  await M.send({ ...goodDraft(), to: ' ana@example.com ' }, { name: 'r.txt', data: 'QQ==' }, f.invoke);
-  assert.deepEqual(f.calls[0][1].payload.attachment, { name: 'r.txt', data: 'QQ==' });
-  assert.equal(f.calls[0][1].payload.to, 'ana@example.com');
+test('flowAnswer: waiting with or without a browser, done, none — the URL is only Google\'s', () => {
+  assert.deepEqual(M.flowAnswer({ ok: true, state: 'waiting', browserOpened: true }), { state: 'waiting', browserOpened: true, authUrl: null });
+  assert.deepEqual(M.flowAnswer({ ok: true, state: 'waiting' }), { state: 'waiting', browserOpened: null, authUrl: null }, 'a poll answers waiting with nothing else');
+  const manual = { ok: true, state: 'waiting', browserOpened: false, authUrl: 'https://accounts.google.com/o/oauth2/v2/auth?client_id=x' };
+  assert.deepEqual(M.flowAnswer(manual), { state: 'waiting', browserOpened: false, authUrl: manual.authUrl });
+  assert.deepEqual(M.flowAnswer({ ok: true, state: 'done' }), { state: 'done', browserOpened: null, authUrl: null });
+  assert.deepEqual(M.flowAnswer({ ok: true, state: 'none' }), { state: 'none', browserOpened: null, authUrl: null });
+  const bad = a => assert.equal(M.flowAnswer(a), null, JSON.stringify(a));
+  bad(null); bad({ ok: true, state: 'waiting', browserOpened: 'si' });
+  bad({ ok: true, state: 'waiting', browserOpened: false, authUrl: 'https://evil.test/auth' });
+  bad({ ok: true, state: 'waiting', browserOpened: false, authUrl: 'javascript:alert(1)' });
+  bad({ ok: true, state: 'waiting', browserOpened: false, authUrl: 5 });
+  bad({ ok: true, state: 'finished' }); bad({ ok: false, reason: 'network' });
 });
 
-test('send: an invalid draft reports validation and never calls the host', async () => {
-  const f = answers({ ok: true });
-  const r = await M.send(M.createDraft(), null, f.invoke);
-  assert.equal(r.ok, false);
-  assert.equal(r.reason, 'invalid');
-  assert.ok(r.errors.to);
-  assert.equal((await M.send(null, null, f.invoke)).reason, 'invalid');
-  assert.equal(f.calls.length, 0);
-});
-
-test('send: every refusal has its own Spanish message; a thrown or off-shape answer is a plain failure', async () => {
-  const msg = async (a) => (await M.send(goodDraft(), null, answers(a).invoke));
-  for (const reason of ['not_configured', 'smtp_config', 'no_sender', 'keychain_unavailable', 'rejected', 'network']) {
-    const r = await msg({ ok: false, reason });
-    assert.equal(r.ok, false); assert.equal(r.reason, reason); assert.ok(r.message.length > 10, reason);
+// ---- the one closed verb -----------------------------------------------------------------
+test('status: asks for the closed action and says each state in Spanish', async () => {
+  for (const [state, label] of Object.entries(M.STATE_LABELS)) {
+    const f = answers([{ ok: true, state, clientId: state === 'no_client' ? null : '123456…', hasSecret: state !== 'no_client' }]);
+    const r = await M.status(f.invoke);
+    assert.equal(r.ok, true, state);
+    assert.equal(r.state, state);
+    assert.equal(r.label, label, state);
+    assert.deepEqual(f.payloads(), [{ action: 'status' }]);
   }
-  assert.match((await msg({ ok: false, reason: 'no_sender' })).message, /remitente/i);
-  assert.equal((await msg(new Error('x'))).reason, 'failed');
-  assert.equal((await msg({ ok: true, extra: 1 })).reason, 'failed');
-  assert.equal((await msg({ ok: false, reason: 'weird' })).reason, 'failed');
-  assert.equal((await msg(null)).reason, 'failed');
-  assert.equal((await M.send(goodDraft(), null, undefined)).reason, 'failed');
+  assert.equal(M.STATE_LABELS.no_client, 'Sin configurar');
+  assert.equal(M.STATE_LABELS.signed_out, 'Sin conectar');
+  assert.equal(M.STATE_LABELS.connected, 'Conectado');
+  assert.equal(M.STATE_LABELS.reconnect, 'Volvé a conectar Gmail');
+  const refused = await M.status(answers([{ ok: false, reason: 'keychain' }]).invoke);
+  assert.equal(refused.ok, false);
+  assert.equal(refused.reason, 'keychain');
+  assert.match(refused.message, /llavero/);
+  assert.equal((await M.status(answers([{ ok: true, nope: 1 }]).invoke)).reason, 'failed');
+  assert.equal((await M.status(answers([null]).invoke)).reason, 'failed');
+  assert.equal((await M.status(undefined)).reason, 'failed');
 });
 
-test('attachmentFromFile: bounded by size, name and base64 of the bytes', () => {
-  const ok = M.attachmentFromBytes('../r.txt', new Uint8Array([65]));
-  assert.deepEqual(ok, { name: 'r.txt', data: 'QQ==' });
-  assert.equal(M.attachmentFromBytes('a', new Uint8Array(0)), null);
-  assert.equal(M.attachmentFromBytes('a', { length: M.MAX_ATTACHMENT_BYTES + 1 }), null);
-  assert.equal(M.attachmentFromBytes('', new Uint8Array([1])), null);
+test('saveClient: an invalid field never reaches the host; a valid one does, and the answer is the state', async () => {
+  const f = answers([{ ok: true, state: 'signed_out', clientId: '123456…', hasSecret: true }]);
+  const r = await M.saveClient(f.invoke, ID, SECRET);
+  assert.equal(r.ok, true);
+  assert.equal(r.state, 'signed_out');
+  assert.deepEqual(f.payloads(), [{ action: 'set_client', clientId: ID, clientSecret: SECRET }]);
+  const none = answers([{ ok: true, state: 'signed_out', clientId: '123456…', hasSecret: false }]);
+  await M.saveClient(none.invoke, ID, '');
+  assert.deepEqual(none.payloads(), [{ action: 'set_client', clientId: ID }], 'an empty secret is not sent');
+  const refusal = answers([]);
+  const invalid = await M.saveClient(refusal.invoke, 'not-a-client', '');
+  assert.equal(invalid.ok, false);
+  assert.equal(invalid.reason, 'invalid');
+  assert.match(invalid.message, /apps\.googleusercontent\.com/);
+  assert.equal(refusal.calls.length, 0, 'the host is never asked with an invalid client');
 });
 
-// ---- live inbox (IMAP via mail_action) -------------------------------------------------------
-const liveAnswer = () => ({ ok: true, messages: [
-  { uid: 7, from: 'Ana', address: 'ana@example.com', subject: 'Hola', preview: 'Texto', minutesAgo: 4, read: false },
-  { uid: 5, from: 'Bruno', address: 'bruno@example.com', subject: 'Re: algo', preview: 'Otro', minutesAgo: 90, read: true }] });
-
-test('inboxFromAnswer: a closed answer becomes a real (not fake) frame plus a private id→uid/address map', () => {
-  const r = M.inboxFromAnswer(liveAnswer());
-  assert.equal(r.frame.fake, false);
-  assert.deepEqual(r.frame.messages.map(m => m.id), ['u7', 'u5']);
-  assert.ok(M.storeFromFrame(r.frame), 'accepted by the store validator');
-  assert.deepEqual(r.meta.u7, { uid: 7, address: 'ana@example.com' });
-  assert.equal(r.frame.messages[0].body, 'Texto');
-  assert.equal(M.view(M.storeFromFrame(r.frame)).banner, null);
-  const bad = a => assert.equal(M.inboxFromAnswer(a), null, JSON.stringify(a).slice(0, 70));
-  bad(null); bad({ ok: true }); bad({ ok: true, messages: 'x' }); bad({ ok: true, messages: [], extra: 1 });
-  bad({ ok: true, messages: Array.from({ length: M.MAX_MESSAGES + 1 }, (_, i) => ({ ...liveAnswer().messages[0], uid: i + 1 })) });
-  for (const over of [{ uid: 0 }, { uid: 1.5 }, { uid: '7' }, { from: '' }, { address: 5 }, { read: 'no' }, { minutesAgo: -1 }, { token: 1 }])
-    bad({ ok: true, messages: [{ ...liveAnswer().messages[0], ...over }] });
-  bad({ ok: true, messages: [liveAnswer().messages[0], liveAnswer().messages[0]] });
-  assert.deepEqual(M.inboxFromAnswer({ ok: true, messages: [] }).frame.messages, []);
+test('begin / poll / cancel ask exactly the closed actions', async () => {
+  const f = answers([
+    { ok: true, state: 'waiting', browserOpened: true },
+    { ok: true, state: 'waiting' },
+    { ok: true, state: 'none' },
+  ]);
+  assert.equal((await M.begin(f.invoke)).state, 'waiting');
+  assert.equal((await M.poll(f.invoke)).state, 'waiting');
+  assert.equal((await M.cancel(f.invoke)).ok, true);
+  assert.deepEqual(f.payloads(), [{ action: 'begin' }, { action: 'poll' }, { action: 'cancel' }]);
 });
 
-test('loadInbox: asks the host for the inbox; refusals have their own Spanish message; throws are plain failures', async () => {
-  const f = answers(liveAnswer());
-  const ok = await M.loadInbox(f.invoke);
-  assert.equal(ok.ok, true);
-  assert.deepEqual(f.calls, [['mail_action', { payload: { action: 'inbox' } }]]);
-  for (const reason of ['imap_not_configured', 'imap_config', 'imap_auth', 'imap_tls', 'imap_network', 'imap_protocol', 'keychain_unavailable']) {
-    const r = await M.loadInbox(answers({ ok: false, reason }).invoke);
-    assert.equal(r.ok, false); assert.equal(r.reason, reason); assert.ok(r.message.length > 10, reason);
+test('connect: begin, poll every second, and stop on done', async () => {
+  const f = answers([
+    { ok: true, state: 'waiting', browserOpened: true },
+    { ok: true, state: 'waiting' },
+    { ok: true, state: 'waiting' },
+    { ok: true, state: 'done' },
+  ]);
+  const waits = [];
+  const r = await M.connect(f.invoke, { wait: ms => { waits.push(ms); return Promise.resolve(); }, now: () => 0 });
+  assert.equal(r.ok, true);
+  assert.equal(r.state, 'done');
+  assert.deepEqual(f.payloads().map(p => p.action), ['begin', 'poll', 'poll', 'poll']);
+  assert.deepEqual(waits, [M.POLL_MS, M.POLL_MS, M.POLL_MS]);
+  assert.equal(M.POLL_MS, 1000);
+  assert.equal(M.POLL_TIMEOUT_MS, 600000);
+});
+
+test('connect: an error ends it and cancels; a cancelled flow is not a success; ten minutes is the cap', async () => {
+  const failed = answers([{ ok: true, state: 'waiting', browserOpened: true }, { ok: false, reason: 'network' }]);
+  const error = await M.connect(failed.invoke, { wait: () => Promise.resolve(), now: () => 0 });
+  assert.equal(error.ok, false);
+  assert.equal(error.reason, 'network');
+  assert.equal(failed.payloads().at(-1).action, 'cancel', 'an abandoned flow is released');
+  const gone = answers([{ ok: true, state: 'waiting', browserOpened: true }, { ok: true, state: 'none' }]);
+  const cancelled = await M.connect(gone.invoke, { wait: () => Promise.resolve(), now: () => 0 });
+  assert.equal(cancelled.reason, 'cancelled');
+  assert.equal((await M.connect(answers([{ ok: false, reason: 'no_client' }]).invoke, { wait: () => Promise.resolve(), now: () => 0 })).reason, 'no_client');
+  // Ten minutes of waiting, then it gives up honestly (it never polls for ever).
+  let t = 0;
+  const waiting = host(() => ({ ok: true, state: 'waiting', browserOpened: true }));
+  let wait = () => Promise.resolve();
+  const stuck = await M.connect(waiting.invoke, { wait: () => { t += M.POLL_MS; return wait(); }, now: () => t });
+  assert.equal(stuck.ok, false);
+  assert.equal(stuck.reason, 'timeout');
+  assert.match(stuck.message, /10 minutos/);
+  assert.equal(waiting.payloads().filter(p => p.action === 'poll').length, M.POLL_TIMEOUT_MS / M.POLL_MS);
+  assert.equal(waiting.payloads().at(-1).action, 'cancel');
+});
+
+test('forget: forgets the credential and lands on «Sin configurar»', async () => {
+  const f = answers([{ ok: true, state: 'no_client' }]);
+  const r = await M.forget(f.invoke);
+  assert.equal(r.ok, true);
+  assert.equal(r.state, 'no_client');
+  assert.equal(r.label, 'Sin configurar');
+  assert.deepEqual(f.payloads(), [{ action: 'forget' }]);
+  const refused = await M.forget(answers([{ ok: false, reason: 'keychain' }]).invoke);
+  assert.equal(refused.ok, false);
+  assert.equal(refused.reason, 'keychain');
+});
+
+test('every refusal has its own Spanish message; an unknown code is a plain failure', async () => {
+  assert.ok(M.MESSAGES.no_client.length > 10);
+  for (const code of ['denied', 'expired', 'rejected', 'scope_missing', 'network', 'port_busy', 'rate_limited', 'server', 'prefs']) {
+    assert.ok(M.MESSAGES[code] && M.MESSAGES[code].length > 15, code);
   }
-  assert.match((await M.loadInbox(answers({ ok: false, reason: 'imap_not_configured' }).invoke)).message, /IMAP/);
-  assert.equal((await M.loadInbox(answers(new Error('x')).invoke)).reason, 'failed');
-  assert.equal((await M.loadInbox(answers({ ok: false, reason: 'weird' }).invoke)).reason, 'failed');
-  assert.equal((await M.loadInbox(answers({ ok: true, messages: [{}] }).invoke)).reason, 'failed');
-  assert.equal((await M.loadInbox(undefined)).reason, 'failed');
+  const weird = await M.status(answers([{ ok: false, reason: 'weird_code_from_the_future' }]).invoke);
+  assert.equal(weird.reason, 'failed');
+  assert.equal(weird.message, M.MESSAGES.failed);
+  assert.equal((await M.status(answers([{ ok: false, reason: 'failed' }]).invoke)).reason, 'failed');
 });
 
-test('markRead / reply / openClient send exactly the closed payloads', async () => {
-  const f = answers({ ok: true });
-  assert.equal((await M.markRead(f.invoke, 7)).ok, true);
-  assert.equal((await M.reply(f.invoke, 'ana@example.com', 'Hola')).ok, true);
-  assert.equal((await M.openClient(f.invoke)).ok, true);
-  assert.deepEqual(f.calls.map(c => c[1].payload), [
-    { action: 'mark_read', uid: 7 }, { action: 'reply', to: 'ana@example.com', subject: 'Hola' }, { action: 'open_client' }]);
-  for (const bad of [0, -1, 1.5, '7', null, 2 ** 32]) assert.equal((await M.markRead(f.invoke, bad)).ok, false, String(bad));
-  assert.equal((await M.reply(f.invoke, 'nope', 'x')).ok, false);
-  assert.equal(f.calls.length, 3, 'invalid input never reaches the host');
-  assert.equal((await M.markRead(answers(new Error('x')).invoke, 7)).ok, false);
+// ---- S10: the help that makes the own app work -------------------------------------------
+test('S10: the help guides to publish the app, explains the unverified warning and says it is free', () => {
+  const help = M.HELP_STEPS.join('\n');
+  assert.match(help, /Publicar app/i, 'it must say «Publicar app»');
+  assert.match(help, /no verificó esta app/);
+  assert.match(help, /Configuración avanzada/);
+  assert.match(help, /no seguro/);
+  assert.match(help, /gratis/);
+  assert.match(help, /App de escritorio/);
+  assert.match(help, /gmail\.readonly/);
+  assert.match(help, /Gmail API/);
+  assert.match(help, /Externo/);
+  assert.match(help, /no vence/, 'publishing is what keeps the connection alive');
+  assert.match(M.HELP_TITLE, /gratis/i);
+  assert.match(M.HELP_FOOT, /llavero/);
+  assert.ok(M.HELP_STEPS.length >= 6 && M.HELP_STEPS.every(s => s.length > 20 && !/[\u0000-\u001f]/.test(s)), 'plain, complete sentences');
 });
 
-// ---- source hygiene ---------------------------------------------------------------
-test('source: textContent only, only the closed mail_action, no window.open, no raw colours, mount inert', () => {
-  const src = fs.readFileSync(path.join(frontend, 'integrations-mail.js'), 'utf8');
+// ---- S8: what this card no longer offers --------------------------------------------------
+test('S8: IMAP, SMTP and Resend are gone, and so are composing and «marcar como leído» (S5)', () => {
+  for (const gone of [/\bIMAP\b/i, /\bSMTP\b/i, /\bResend\b/i, /['"`]mail_action['"`]/, /mark_read|['"`]markread['"`]|el\('button'[^)]*Marcar como leído/, /integrations-email/, /adjunt/i]) {
+    assert.doesNotMatch(code, gone, String(gone));
+  }
+  assert.doesNotMatch(code, /<form[^>]*ml-compose|compose/i, 'no compose form: the island mail is read-only');
+});
+
+// ---- source hygiene ----------------------------------------------------------------------
+test('source: textContent only, only gmail_action, no browser storage, mount inert, trusted gestures', () => {
   assert.doesNotMatch(src, /innerHTML|insertAdjacentHTML|outerHTML|document\.write/);
-  assert.doesNotMatch(src, /window\.open|fetch\(|XMLHttpRequest|WebSocket|localStorage|open_chat_url/);
-  assert.match(src, /mail_action/);
-  assert.doesNotMatch(src.slice(src.indexOf('function mount')), /fakeFrame/, 'the live card never shows invented mail');
-  assert.doesNotMatch(src, /NOT WIRED|no conectado/i);
+  assert.doesNotMatch(src, /window\.open|fetch\(|XMLHttpRequest|WebSocket|localStorage|sessionStorage/);
+  assert.match(src, /gmail_action/);
+  assert.doesNotMatch(src, /['"`]mail_action['"`]|integration_action/);
   assert.match(src, /getElementById\('integrations-mail'\)/);
   assert.match(src, /if \(!host\) return/);
   assert.match(src, /isTrusted !== true/, 'synthetic events never act');
   assert.doesNotMatch(src.replace(/\/\*[\s\S]*?\*\//g, ''), /['"`]#[0-9a-fA-F]{3,8}['"`]|rgba?\(/);
+  assert.doesNotMatch(src, /Datos de ejemplo|fakeFrame/i, 'this card is live: no invented mail');
+  assert.match(src, /type = 'password'/, 'the secret is typed masked');
+  assert.match(src, /idInput\.value = /, 'the fields are drawn from the model, never from a stored secret');
+  assert.match(src, /draft: \{ id: '', secret: '' \}/, 'the typed client and secret are dropped once they are saved');
+  assert.match(src, /addEventListener\('input'/, 'a repaint never loses what is being typed');
 });
 
-test('render (DOM-guarded): list, open message and compose form; invalid view hides the host', () => {
+// ---- renderer (DOM only) -----------------------------------------------------------------
+test('render: state line, the two fields, save/connect/disconnect and the help block', () => {
   if (typeof document === 'undefined') return;
-  const host = document.createElement('div');
-  const s = store0();
-  M.render(host, M.view(s), M.createDraft(), null);
-  assert.equal(host.hidden, false);
-  assert.ok(host.querySelector('.ml-fake').textContent.includes('datos de ejemplo'));
-  assert.equal(host.querySelectorAll('.ml-row').length, s.messages.length);
-  assert.ok(host.querySelector('form.ml-compose'));
-  M.render(host, M.view(M.openMessage(s, s.messages[0].id)), M.createDraft(), null);
-  assert.ok(host.querySelector('.ml-open'));
-  M.render(host, null, M.createDraft(), null);
-  assert.equal(host.hidden, true);
+  const hostNode = document.createElement('section');
+  M.render(hostNode, { state: 'no_client', clientId: null, hasSecret: false });
+  assert.equal(hostNode.hidden, false);
+  assert.match(hostNode.querySelector('.ml-unread').textContent, /Sin configurar/);
+  assert.equal(hostNode.querySelector('input[name="clientId"]').value, '');
+  assert.equal(hostNode.querySelector('input[name="clientSecret"]').value, '');
+  M.render(hostNode, { state: 'no_client', draft: { id: 'abc', secret: 'GOCSPX-x' } });
+  assert.equal(hostNode.querySelector('input[name="clientId"]').value, 'abc');
+  assert.equal(hostNode.querySelector('input[name="clientSecret"]').value, 'GOCSPX-x', 'while typing, the field keeps what was typed');
+  M.render(hostNode, { state: 'signed_out', clientId: '123456…', hasSecret: true, draft: { id: '', secret: '' } });
+  assert.equal(hostNode.querySelector('input[name="clientSecret"]').value, '', 'after saving, the secret is gone from the DOM');
+  assert.equal(hostNode.querySelector('input[name="clientSecret"]').type, 'password');
+  assert.ok(hostNode.querySelector('button[data-action="save"]'));
+  const connect = hostNode.querySelector('button[data-action="connect"]');
+  assert.ok(connect && connect.disabled, 'without a saved client there is nothing to connect');
+  assert.equal(hostNode.querySelector('button[data-action="forget"]'), null);
+  assert.ok(hostNode.querySelector('details.mail-help'), 'the S10 help is there');
+  assert.ok(hostNode.querySelectorAll('details.mail-help li').length >= 6);
+
+  M.render(hostNode, { state: 'connected', clientId: '123456…', hasSecret: true });
+  assert.match(hostNode.querySelector('.ml-unread').textContent, /^Conectado$/);
+  assert.ok(hostNode.querySelector('button[data-action="connect"]:not([disabled])'));
+  assert.ok(hostNode.querySelector('button[data-action="forget"]'));
+  const text = hostNode.textContent;
+  assert.match(text, /123456…/);
+  assert.doesNotMatch(text, new RegExp(ID.slice(6)), 'only the masked prefix is drawn');
+  assert.doesNotMatch(text, /GOCSPX/, 'a secret is never drawn');
+
+  M.render(hostNode, { state: 'signed_out', connecting: true, clientId: '123456…', hasSecret: false });
+  assert.ok(hostNode.querySelector('button[data-action="cancel"]'), 'while waiting there is a «Cancelar»');
+  assert.equal(hostNode.querySelector('button[data-action="connect"]'), null);
+  assert.equal(hostNode.querySelector('button[data-action="forget"]'), null);
+
+  M.render(hostNode, { state: 'reconnect', clientId: '123456…', hasSecret: false, note: { ok: false, text: 'Google rechazó la conexión.' } });
+  assert.match(hostNode.querySelector('.ml-unread').textContent, /Volvé a conectar Gmail/);
+  assert.equal(hostNode.querySelector('[role="status"]').textContent, 'Google rechazó la conexión.');
+
+  M.render(hostNode, { state: 'signed_out', clientId: '123456…', hasSecret: false, authUrl: 'https://accounts.google.com/o/oauth2/v2/auth?client_id=x' });
+  assert.match(hostNode.querySelector('[data-field="authUrl"]').textContent, /^https:\/\/accounts\.google\.com\//);
 });
 
 (async () => {
