@@ -103,6 +103,11 @@ pub mod oauthcmd;
 pub mod sounds;
 pub mod question;
 pub mod spotify;
+// K2-09: the same Spotify state from the other two systems — Windows reads the system media
+// transport controls (spotify_smtc), macOS drives Spotify with AppleScript (spotify_mac). Both
+// keep their pure parts outside the platform `cfg` so they are unit-tested on every OS.
+pub mod spotify_mac;
+pub mod spotify_smtc;
 pub mod questioncmd;
 pub mod requests;
 pub mod renderenv;

@@ -10,13 +10,57 @@ let passed = 0;
 const test = async (_n, fn) => { await fn(); passed += 1; };
 
 (async () => {
-  await test('wanted: only Linux and only when prefs name the pill (main or declared) — the rule kept for when Spotify returns', () => {
+  await test('wanted: only when prefs name the pill (main or declared) — the rule kept for when Spotify returns', () => {
     assert.equal(S.wantedIgnoringPause({ mainPill: 'integration_spotify' }, 'linux'), true);
     assert.equal(S.wantedIgnoringPause({ mainPill: 'integration_claude', declaredPills: ['integration_spotify'] }, 'linux'), true);
-    assert.equal(S.wantedIgnoringPause({ mainPill: 'integration_spotify' }, 'windows'), false);
+    assert.equal(S.wantedIgnoringPause({ mainPill: 'integration_spotify' }, 'windows'), true);
     for (const bad of [null, undefined, [], 'x', {}, { declaredPills: 'integration_spotify' }, { declaredPills: ['integration_github'] }]) assert.equal(S.wantedIgnoringPause(bad, 'linux'), false);
-    // abito-pausa: Spotify is paused in this version, so no card shows whatever the prefs say
-    assert.equal(S.wanted({ mainPill: 'integration_spotify' }, 'linux'), false);
+    // K2-09: Spotify is no longer paused, so the card follows the prefs
+    assert.equal(S.wanted({ mainPill: 'integration_spotify' }, 'linux'), true);
+    assert.equal(S.wanted({ mainPill: 'integration_claude' }, 'linux'), false);
+  });
+
+  // K2-09 S5: the three desktop systems all have a backend now (MPRIS, SMTC, AppleScript).
+  await test('S5: the card is wanted on Linux, Windows and macOS, and nowhere else', () => {
+    for (const os of ['linux', 'windows', 'macos']) {
+      assert.equal(S.wantedIgnoringPause({ mainPill: 'integration_spotify' }, os), true, os);
+      assert.equal(S.wantedIgnoringPause({ declaredPills: ['integration_spotify'] }, os), true, os);
+      assert.equal(S.wanted({ declaredPills: ['integration_spotify'] }, os), true, os);
+    }
+    for (const os of ['android', 'ios', '', undefined, null]) assert.equal(S.wantedIgnoringPause({ mainPill: 'integration_spotify' }, os), false, String(os));
+    assert.equal(S.wantedIgnoringPause({ mainPill: 'integration_claude' }, 'macos'), false);
+  });
+
+  // K2-09 S3/S6 (design 08 F7): macOS Automation denied — one phrase, one button, no transport.
+  await test('S3/S6 F7: a refused macOS Automation shows the permission card, not a guess', () => {
+    const v = S.cardView({ needsPermission: true, running: false });
+    assert.equal(v.kind, 'permission');
+    assert.equal(v.title, 'Spotify necesita permiso');
+    assert.equal(v.artist, 'Permití a Koda controlar Spotify en Automatización');
+    assert.deepEqual([v.controls, v.permission, v.playing], [false, true, false]);
+    assert.match(v.aria, /Spotify necesita permiso/);
+    assert.equal(S.cardView({ needsPermission: true, running: true, playing: true, track: { title: 'T' } }).kind, 'permission', 'the refusal wins over a stale track');
+    assert.equal(S.cardView({ needsPermission: false, running: true, track: { title: 'T' } }).kind, 'track');
+    assert.equal(S.cardView({ needsPermission: 'yes', running: false }).kind, 'closed', 'only a real true counts');
+    assert.equal(S.cardView({ running: false }).kind, 'closed', 'the field is absent on Linux and Windows');
+  });
+
+  await test('S6 F7: «Dar permiso» is the one extra closed verb; the deep link lives in the host, never in the page', () => {
+    assert.deepEqual(S.payload('open_permission'), { action: 'open_permission' });
+    for (const bad of ['open', 'permission', 'allow', '', undefined, null]) assert.equal(S.payload(bad), null, String(bad));
+    const src = fs.readFileSync(path.join(frontend, 'spotify-view.js'), 'utf8');
+    assert.match(src, /Dar permiso/);
+    assert.ok(!/x-apple\.systempreferences/.test(src), 'the Automation deep link is the host\'s job');
+    assert.match(src, /perm\.textContent = api\.PERMISSION\.label/, 'the label is set as text, never as markup');
+  });
+
+  await test('S6 F7: the permission button sends exactly open_permission, only while the card is shown', async () => {
+    const calls = [];
+    const ctl = S.controller({ invoke: (_c, a) => { calls.push(a.payload); return Promise.resolve({ ok: true }); }, onState() {} });
+    await ctl.control('open_permission');
+    assert.deepEqual(calls, [], 'nothing before the card is shown');
+    await ctl.show(); await ctl.control('open_permission');
+    assert.deepEqual(calls, [{ action: 'view' }, { action: 'open_permission' }]);
   });
 
   await test('cardView: track/artist from the state, quiet line when Spotify is closed', () => {
