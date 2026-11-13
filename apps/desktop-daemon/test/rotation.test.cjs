@@ -303,26 +303,33 @@ async function socketClient(t, endpoint, token) {
 
 test("server send frames go through the pending-summary decorator", async (t) => {
 	const dir = tmp("abito-rot-srv-");
-	t.after(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
+	let engine, rotator, server;
+	// ONE teardown, in the order the resources are held (CI 43319173068 test 506): node:test runs `after` hooks in
+	// registration order, so a cleanup registered before the engine stop ran while the fake agent was still alive with
+	// <dir>/island/workspace as its cwd, and Windows refuses to rmdir a directory a live process has open (EBUSY, which
+	// the bounded retries cannot outlast). Stop the rotator, the server and the engine first, then remove the tree.
+	t.after(async () => {
+		rotator?.stop();
+		await server?.close();
+		await engine?.stop();
+		fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+	});
 	const commandLog = path.join(dir, "commands");
 	const messagesFile = writeMessagesFile(dir, twentyTurns());
-	const engine = new AgentEngine({
+	engine = new AgentEngine({
 		command: process.execPath,
 		commandArgs: [FAKE, "--command-log", commandLog, "--usage-percent", "90", "--messages-file", messagesFile, "--settle-all"],
 		root: path.join(dir, "island"), identityPath: null,
 		backoffMs: [10], startTimeoutMs: 2000, stopTimeoutMs: 50, requestTimeoutMs: 2000,
 		turnTimeoutMs: 10_000, abortGraceMs: 100,
 	});
-	t.after(async () => { await engine.stop(); });
 	await engine.start();
-	const rotator = new SessionRotator({ engine, log: () => {} });
-	t.after(() => rotator.stop());
-	const server = new IslandServer({
+	rotator = new SessionRotator({ engine, log: () => {} });
+	server = new IslandServer({
 		runtimeDir: path.join(dir, "run"), token: "t".repeat(43), engine,
 		promptDecorator: (message) => rotator.decoratePrompt(message),
 	});
 	const { endpoint } = await server.start();
-	t.after(() => server.close());
 	const { send } = await socketClient(t, endpoint, "t".repeat(43));
 	const commands = () => fs.readFileSync(commandLog, "utf8").trim().split("\n").filter(Boolean).map(JSON.parse);
 	// First user turn: no summary pending yet, message goes through as-is.
@@ -341,7 +348,6 @@ test("server send frames go through the pending-summary decorator", async (t) =>
 
 test("daemon wiring: rotation after settle decorates only the next send", async (t) => {
 	const base = tmp("abito-rot-daemon-");
-	t.after(() => fs.rmSync(base, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
 	// Windows (B5/S6): the island root must sit inside %LOCALAPPDATA%\\Abito, so the test anchors both at `base`.
 	const root = process.platform === "win32" ? path.join(base, "Abito", "i") : path.join(base, "i");
 	const commandLog = path.join(base, "commands");
@@ -358,7 +364,13 @@ test("daemon wiring: rotation after settle decorates only the next send", async 
 			turnTimeoutMs: 10_000, abortGraceMs: 200,
 		},
 	});
-	t.after(async () => { await daemon.stop(); });
+	// Stop FIRST, then remove (CI 43319173068 tests 507/508): node:test runs `after` hooks in registration order, so a
+	// cleanup registered before this one ran while the fake agent was alive with <root>/workspace as its cwd, and Windows
+	// refuses to rmdir a directory a live process has open (EBUSY; the bounded retries cannot outlast it).
+	t.after(async () => {
+		await daemon.stop();
+		fs.rmSync(base, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+	});
 	// Opt in explicitly: rotation is disabled by default.
 	writePrivateFile(path.join(root, "config.json"), `${JSON.stringify({ rotation: { enabled: true, thresholdPercent: 50 } })}\n`);
 	await daemon.start();
@@ -382,7 +394,6 @@ test("daemon wiring: rotation after settle decorates only the next send", async 
 
 test("daemon wiring: a rejected prompt keeps the pending summary for the retry (R6)", async (t) => {
 	const base = tmp("abito-rot-r6-");
-	t.after(() => fs.rmSync(base, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
 	// Windows (B5/S6): the island root must sit inside %LOCALAPPDATA%\\Abito, so the test anchors both at `base`.
 	const root = process.platform === "win32" ? path.join(base, "Abito", "i") : path.join(base, "i");
 	const commandLog = path.join(base, "commands");
@@ -398,7 +409,13 @@ test("daemon wiring: a rejected prompt keeps the pending summary for the retry (
 			turnTimeoutMs: 10_000, abortGraceMs: 200,
 		},
 	});
-	t.after(async () => { await daemon.stop(); });
+	// Stop FIRST, then remove (CI 43319173068 tests 507/508): node:test runs `after` hooks in registration order, so a
+	// cleanup registered before this one ran while the fake agent was alive with <root>/workspace as its cwd, and Windows
+	// refuses to rmdir a directory a live process has open (EBUSY; the bounded retries cannot outlast it).
+	t.after(async () => {
+		await daemon.stop();
+		fs.rmSync(base, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+	});
 	writePrivateFile(path.join(root, "config.json"), `${JSON.stringify({ rotation: { enabled: true, thresholdPercent: 50 } })}\n`);
 	await daemon.start();
 	const session = readSession(root);
