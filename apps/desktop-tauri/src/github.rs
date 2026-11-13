@@ -83,6 +83,27 @@ pub struct GitHubRepoCi {
     pub head_sha: Option<String>,
 }
 
+/// Why an open issue is in the pulse (K2-11, decision 10c).
+#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum IssueReason {
+    Assigned,
+    Mentioned,
+}
+
+/// An open issue assigned to me or mentioning me.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct GitHubIssue {
+    /// "owner/repo#number"
+    pub id: String,
+    pub title: String,
+    pub url: String,
+    pub repo: String,
+    pub number: i64,
+    pub reason: IssueReason,
+}
+
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct GitHubPulse {
     pub login: String,
@@ -92,6 +113,8 @@ pub struct GitHubPulse {
     pub to_review: Vec<GitHubPr>,
     #[serde(rename = "mainCI")]
     pub main_ci: Vec<GitHubRepoCi>,
+    /// Open issues assigned to me first, then the ones mentioning me; one row per issue.
+    pub issues: Vec<GitHubIssue>,
     /// Unix time in milliseconds.
     #[serde(rename = "fetchedAt")]
     pub fetched_at: u64,
@@ -228,7 +251,22 @@ impl GitHubPulse {
             });
         }
 
-        Some(GitHubPulse { login, my_prs, to_review, main_ci, fetched_at: now_ms })
+        // Open issues: assigned to me, then mentioning me (an issue in both stays "assigned").
+        let mut issues: Vec<GitHubIssue> = Vec::new();
+        for (key, reason) in [("assigned", IssueReason::Assigned), ("mentioned", IssueReason::Mentioned)] {
+            for node in nodes(data.get(key)) {
+                let (Some(number), Some(title), Some(url)) =
+                    (node.get("number").and_then(Value::as_i64), str_at(node, "title"), str_at(node, "url")) else { continue };
+                let Some(repo) = node.get("repository").and_then(|r| str_at(r, "nameWithOwner")) else { continue };
+                let id = format!("{repo}#{number}");
+                if issues.iter().any(|i| i.id == id) {
+                    continue;
+                }
+                issues.push(GitHubIssue { id, title: title.into(), url: url.into(), repo: repo.into(), number, reason });
+            }
+        }
+
+        Some(GitHubPulse { login, my_prs, to_review, main_ci, issues, fetched_at: now_ms })
     }
 
     /// True when a PR's CI or a default branch is still running — the next poll
@@ -403,6 +441,12 @@ query {
       }
     }
   }
+  assigned: search(query: "is:issue is:open assignee:@me archived:false", type: ISSUE, first: 20) {
+    nodes { ... on Issue { number title url repository { nameWithOwner } } }
+  }
+  mentioned: search(query: "is:issue is:open mentions:@me archived:false", type: ISSUE, first: 20) {
+    nodes { ... on Issue { number title url repository { nameWithOwner } } }
+  }
 }
 "#;
 
@@ -482,6 +526,36 @@ mod tests {
             }
           }
         })
+    }
+
+    #[test]
+    fn pulse_query_asks_for_issues_assigned_to_me_and_mentioning_me() {
+        assert!(PULSE_QUERY.contains("assigned: search(query: \"is:issue is:open assignee:@me archived:false\""));
+        assert!(PULSE_QUERY.contains("mentioned: search(query: \"is:issue is:open mentions:@me archived:false\""));
+    }
+
+    #[test]
+    fn parses_assigned_and_mentioned_issues_assigned_first_without_duplicates() {
+        let mut root = valid_pulse();
+        let issue = |n: i64, t: &str| json!({"number": n, "title": t,
+            "url": format!("https://github.com/o/r/issues/{n}"),
+            "repository": {"nameWithOwner": "o/r"}});
+        root["data"]["assigned"] = json!({"nodes": [issue(1, "Mine"), issue(1, "Mine"), {"title": "no number"}]});
+        root["data"]["mentioned"] = json!({"nodes": [issue(2, "Ping"), issue(1, "Mine")]});
+        let pulse = GitHubPulse::parse(&root, 5).unwrap();
+        assert_eq!(pulse.issues, vec![
+            GitHubIssue { id: "o/r#1".into(), title: "Mine".into(), url: "https://github.com/o/r/issues/1".into(),
+                repo: "o/r".into(), number: 1, reason: IssueReason::Assigned },
+            GitHubIssue { id: "o/r#2".into(), title: "Ping".into(), url: "https://github.com/o/r/issues/2".into(),
+                repo: "o/r".into(), number: 2, reason: IssueReason::Mentioned },
+        ]);
+        let v = serde_json::to_value(&pulse).unwrap();
+        assert_eq!(v["issues"][1], json!({"id":"o/r#2","title":"Ping","url":"https://github.com/o/r/issues/2","repo":"o/r","number":2,"reason":"mentioned"}));
+    }
+
+    #[test]
+    fn missing_issue_searches_give_an_empty_list() {
+        assert!(GitHubPulse::parse(&valid_pulse(), 0).unwrap().issues.is_empty());
     }
 
     fn empty_pulse() -> GitHubPulse {

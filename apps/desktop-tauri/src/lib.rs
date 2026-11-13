@@ -57,6 +57,7 @@ pub mod sessionterm_mac;
 pub mod sessionterm_win;
 pub mod github;
 pub mod githubcmd;
+pub mod calendar;
 pub mod daemonhost;
 pub mod nodefinder;
 #[cfg(any(debug_assertions, feature = "probe"))]
