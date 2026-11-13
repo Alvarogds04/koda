@@ -177,13 +177,19 @@ pub fn verify_session(island_root: &Path) -> Result<(), Reason> {
 
 impl AgentConn {
     pub fn new(changed: impl Fn(Value) + Send + Sync + 'static) -> AgentConn {
+        AgentConn::with_session_sink(changed, Arc::new(|_: &str| {}))
+    }
+
+    /// K2-13 (S20): a connection whose `telegram_session` reply is handed to `sink` (the keychain bridge); keep in sync
+    /// with `agentconn.rs`, the unix twin.
+    pub fn with_session_sink(changed: impl Fn(Value) + Send + Sync + 'static, sink: SessionSink) -> AgentConn {
         AgentConn {
             state: Arc::new(Mutex::new(ClientState::disconnected(Reason::NoDaemon))),
             writer: Arc::new(Mutex::new(None)),
             stop: Mutex::new(Arc::new(AtomicBool::new(false))),
             epoch: Arc::new(AtomicU64::new(0)),
             changed: Arc::new(changed),
-            session_sink: Arc::new(|_: &str| {}),
+            session_sink: sink,
         }
     }
 
