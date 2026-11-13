@@ -337,7 +337,7 @@ pub fn migrate_retired_mail_accounts(app: &AppHandle) {
     if done { return; }
     let app = app.clone();
     std::thread::spawn(move || {
-        let outcome = abito_island::mailmigration::run(&abito_island::secrets::Keychain, false);
+        let outcome = abito_island::mailmigration::run(&abito_island::secrets::LegacyKeychain, false);
         if outcome == abito_island::mailmigration::Outcome::Done {
             let state = app.state::<AppState>();
             let saved = prefs::transact(

@@ -176,3 +176,15 @@ fn nan_and_opencode_go_keys_are_known() {
         assert!(parse_command(&json!({"action":"set","key":key,"value":"v"})).is_some(), "{key}");
     }
 }
+
+/// K2-04 L4: the one-time 0.1 cleanup runs through its OWN store. It must target the old service
+/// (the retired imap-*/smtp-* keys live there), only delete, and refuse to read or write, so
+/// nothing can start using the 0.1 service as an alias or fallback.
+#[test]
+fn the_legacy_cleanup_store_targets_the_old_service_and_only_deletes() {
+    use super::{LegacyKeychain, SecretStore, StoreError};
+    assert_eq!(LegacyKeychain::service(), super::LEGACY_KEYCHAIN_SERVICE);
+    assert_ne!(LegacyKeychain::service(), SERVICE);
+    assert_eq!(LegacyKeychain.read("anthropic-api-key"), Err(StoreError::Failed));
+    assert_eq!(LegacyKeychain.write("anthropic-api-key", "x"), Err(StoreError::Failed));
+}
