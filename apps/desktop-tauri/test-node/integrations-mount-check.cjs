@@ -13,7 +13,7 @@ let passed = 0;
 const test = (_name, fn) => { fn(); passed += 1; };
 
 // K2-11 S5: the fake Cal.com calendar card left Ajustes (no container, no script); K2-10 retired the fake email card:
-const CARDS = ['github', 'deployments', 'mail', 'payments', 'finance', 'notion', 'n8n'];
+const CARDS = ['deployments', 'mail', 'payments', 'finance', 'notion', 'n8n']; // K2-11: the fake GitHub card left Ajustes too
 const GROUP = /<div id="connections-more"[^>]*\bhidden\b[^>]*>([\s\S]*?)<!-- \/connections-more -->/;
 
 test('the group wrapper lives inside #settings, outside #settings-body (render() wipes the body)', () => {
