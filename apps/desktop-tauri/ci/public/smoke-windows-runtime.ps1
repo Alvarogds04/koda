@@ -85,7 +85,7 @@ try {
     Set-Acl -LiteralPath $localData -AclObject $acl
     $env:LOCALAPPDATA = $localData
     $islandErr = Join-Path $root 'no-node.stderr.log'
-    $island = Start-Process -FilePath (Join-Path $install 'abito-island.exe') -WorkingDirectory $privateHome -PassThru `
+    $island = Start-Process -FilePath (Join-Path $install 'koda.exe') -WorkingDirectory $privateHome -PassThru `
         -RedirectStandardOutput (Join-Path $root 'no-node.stdout.log') -RedirectStandardError $islandErr
     try {
         $deadline = [DateTime]::UtcNow.AddSeconds(180)

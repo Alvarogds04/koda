@@ -74,7 +74,7 @@ async function main(args = process.argv.slice(2)) {
     provenance = L.provenance(crate);
     L.checkConfig(crate); L.checkR6(crate); L.checkFrontend(crate);
     const target = path.join(crate, 'target-smoke');
-    const binary = path.join(target, 'release', 'abito-island');
+    const binary = path.join(target, 'release', 'koda');
     const manifestPath = path.join(target, 'validate-build.json');
     const fingerprint = inputs();
     if (!args.includes('--skip-build')) {
@@ -146,7 +146,7 @@ async function main(args = process.argv.slice(2)) {
     // Recreate the packaged sibling layout in the private output directory.
     // The release binary's normal host startup resolves desktop-daemon beside
     // current_exe; never let it see an installed daemon or the user's HOME.
-    const candidate = path.join(out, 'abito-island');
+    const candidate = path.join(out, 'koda');
     fs.copyFileSync(binary, candidate); fs.chmodSync(candidate, 0o700);
     for (const [dir, files] of [['desktop-daemon', L.DAEMON_FILES], ['desktop-harness', L.HARNESS_FILES], ['desktop-pi', L.PI_FILES]]) {
       for (const file of files) {

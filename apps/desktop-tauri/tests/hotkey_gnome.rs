@@ -60,7 +60,7 @@ impl Fake {
 }
 impl Drop for Fake { fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.dir); } }
 
-const EXE: &str = "/home/u/.local/bin/abito-island";
+const EXE: &str = "/home/u/.local/bin/koda";
 fn all() -> gnome::Wanted { Target::ALL.into_iter().map(|t| (t, HotkeyConfig::default_for(t).combo)).collect() }
 fn entry(t: Target, key: &str, f: &Fake) -> Option<String> {
     f.key(&format!("org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:{}", gnome::entry_path(t)), key)

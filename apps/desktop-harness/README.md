@@ -60,7 +60,7 @@ leave the island unavailable; they never imply a human answer or bypass
 terminal decisions. Unix socket validation and framing are unchanged.
 
 Helper lookup uses only the installed sibling executable, the canonical
-`%LOCALAPPDATA%\\Programs\\abito-island` installation, or the fixed sibling
+`%LOCALAPPDATA%\\Programs\\Koda` installation, or the fixed sibling
 `desktop-tauri/target/debug` development build. It never searches PATH or CWD,
 and rejects a symlink in the executable slot. An externally copied Pi extension
 requires the canonical install or its own trusted sibling helper; arbitrary

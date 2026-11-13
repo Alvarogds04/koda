@@ -15,7 +15,7 @@ fn unique_dir(tag: &str) -> std::path::PathBuf {
     dir
 }
 
-const EXE: &str = "/opt/abito/bin/abito-island";
+const EXE: &str = "/opt/abito/bin/koda";
 
 /// A per-OS absolute binary path. `desktop_entry` is a pure text function,
 /// but its absoluteness rule is the HOST's own (POSIX wants a leading `/`,
@@ -25,7 +25,7 @@ const EXE: &str = "/opt/abito/bin/abito-island";
 /// on Linux, macOS and Windows instead of being a POSIX-only premise.
 fn sample_exe() -> std::path::PathBuf {
     if cfg!(windows) {
-        std::path::PathBuf::from(r"C:\Program Files\Koda\bin\abito-island.exe")
+        std::path::PathBuf::from(r"C:\Program Files\Koda\bin\koda.exe")
     } else {
         std::path::PathBuf::from(EXE)
     }
@@ -54,7 +54,7 @@ fn spec_quoted(text: &str) -> String {
 #[test]
 fn entry_is_the_closed_template() {
     let exe = sample_exe();
-    let icon = exe.parent().expect("the sample has a parent").join("abito-island.png");
+    let icon = exe.parent().expect("the sample has a parent").join("koda.png");
     let text = desktop_entry(&exe).expect("valid exe");
     let mut lines = text.lines();
     assert_eq!(lines.next(), Some("[Desktop Entry]"), "entry must start with the section header");
@@ -69,7 +69,7 @@ fn entry_is_the_closed_template() {
         icon.as_str(),
         "Terminal=false",
         "Categories=Utility;",
-        "StartupWMClass=Abito-island",
+        "StartupWMClass=Koda",
         "X-GNOME-Autostart-enabled=true",
     ] {
         assert!(rest.contains(&key), "closed template must carry {key:?} — got:\n{text}");
@@ -80,7 +80,7 @@ fn entry_is_the_closed_template() {
     // escaping doubles every separator backslash inside the quoted Exec value.
     #[cfg(windows)]
     assert!(
-        text.contains(r#"Exec="C:\\Program Files\\Koda\\bin\\abito-island.exe" --autostart"#),
+        text.contains(r#"Exec="C:\\Program Files\\Koda\\bin\\koda.exe" --autostart"#),
         "pinned Windows Exec literal — got:\n{text}"
     );
 }
@@ -115,11 +115,11 @@ fn entry_quoting_escapes_and_refuses_hostile_paths() {
     // `C:\…` path exercises where the backslash IS the separator. Pinned as a
     // literal so the doubling is never derived from the code it tests.
     if !cfg!(windows) {
-        let win_shape = "/opt/C:\\Program Files\\Koda\\bin\\abito-island.exe";
+        let win_shape = "/opt/C:\\Program Files\\Koda\\bin\\koda.exe";
         let text = desktop_entry(std::path::Path::new(win_shape)).expect("absolute on POSIX");
         assert!(
             text.contains(
-                r#"Exec="/opt/C:\\Program Files\\Koda\\bin\\abito-island.exe" --autostart"#
+                r#"Exec="/opt/C:\\Program Files\\Koda\\bin\\koda.exe" --autostart"#
             ),
             "Windows-shaped backslashes double through the real template — got:\n{text}"
         );
@@ -129,7 +129,7 @@ fn entry_quoting_escapes_and_refuses_hostile_paths() {
         assert!(desktop_entry(std::path::Path::new(bad)).is_none(), "{bad:?} refused");
     }
     // relative paths are refused: autostart must point at an absolute binary
-    assert!(desktop_entry(std::path::Path::new("abito-island")).is_none());
+    assert!(desktop_entry(std::path::Path::new("koda")).is_none());
     assert!(desktop_entry(std::path::Path::new("")).is_none());
 }
 
@@ -166,7 +166,7 @@ fn enable_writes_the_entry_and_disable_removes_it() {
     let path = entry_path(Some(xdg.to_str().expect("ascii")), None).expect("path");
     assert!(!is_enabled_at(&path), "nothing installed yet");
 
-    let exe = root.join("bin").join("abito-island");
+    let exe = root.join("bin").join("koda");
     std::fs::create_dir_all(exe.parent().expect("bin dir")).expect("bin dir");
     set_enabled_at(&path, true, &exe).expect("enable");
     assert!(is_enabled_at(&path), "entry installed");
@@ -198,7 +198,7 @@ fn enable_replaces_a_corrupt_or_foreign_entry() {
     let path = entry_path(Some(xdg.to_str().expect("ascii")), None).expect("path");
     std::fs::write(&path, "not a desktop entry\n").expect("corrupt entry");
     assert!(is_enabled_at(&path), "a file is present: the toggle must say enabled, never lie");
-    let exe = root.join("abito-island");
+    let exe = root.join("koda");
     set_enabled_at(&path, true, &exe).expect("enable replaces");
     let text = std::fs::read_to_string(&path).expect("entry text");
     assert_eq!(Some(text.as_str()), desktop_entry(&exe).as_deref(), "corrupt entry replaced");
@@ -212,7 +212,7 @@ fn enable_without_a_config_root_fails_honestly() {
     assert_eq!(path, None, "no usable config root: no honest path at all");
     // The real contract on a resolvable path: an unwritable location must
     // fail, not pretend. /proc/... can never take a new directory.
-    let impossible = std::path::PathBuf::from("/proc/abito-cannot-exist/autostart/abito-island.desktop");
+    let impossible = std::path::PathBuf::from("/proc/abito-cannot-exist/autostart/koda.desktop");
     let result = set_enabled_at(&impossible, true, std::path::Path::new(EXE));    assert!(result.is_err(), "unwritable location must fail, not pretend");
     assert!(!is_enabled_at(&impossible));
 }
@@ -221,19 +221,19 @@ fn enable_without_a_config_root_fails_honestly() {
 #[test]
 fn enable_creates_a_missing_autostart_directory() {
     let root = unique_dir("mkdir");
-    let path = root.join("cfg").join("autostart").join("abito-island.desktop");
+    let path = root.join("cfg").join("autostart").join("koda.desktop");
     set_enabled_at(&path, true, std::path::Path::new(EXE)).expect("enable creates the dir");
     assert!(is_enabled_at(&path));
     let _ = std::fs::remove_dir_all(&root);
 }
 
-/// Koda 0.1 — Human 30-oct («Vamosa a cerrar esta version cambiar el nombre del repo por Koda y apartir de aqui empezaremos esta sera la version 0.1» → «Todo se llama Koda, repo nuevo desde 0.1» + «Solo lo visible»): the visible launcher name is «Koda»; the binary, icon file and class stay internal.
+/// Koda 0.1 — Human 30-oct («Vamosa a cerrar esta version cambiar el nombre del repo por Koda y apartir de aqui empezaremos esta sera la version 0.1» → «Todo se llama Koda, repo nuevo desde 0.1» + «Solo lo visible»): the visible launcher name is «Koda». K2-04 T6: the installed launcher and the binary it execs are named `koda` too (the binary is the installed main bin, not the crate).
 #[test]
 fn the_visible_app_name_is_koda() {
     let exe = if cfg!(windows) {
-        std::path::PathBuf::from(r"C:\opt\abito\abito-island-launcher.exe")
+        std::path::PathBuf::from(r"C:\opt\abito\koda-launcher.exe")
     } else {
-        std::path::PathBuf::from("/opt/abito/abito-island-launcher")
+        std::path::PathBuf::from("/opt/abito/koda-launcher")
     };
     let text = super::desktop_entry(&exe).unwrap();
     assert!(text.contains("\nName=Koda\n"), "{text}");
@@ -243,7 +243,7 @@ fn the_visible_app_name_is_koda() {
             "Exec={} --autostart",
             spec_quoted(exe.to_str().expect("utf-8"))
         )),
-        "the launcher keeps its internal name: {text}"
+        "the launcher path is quoted into Exec: {text}"
     );
     assert!(!text.contains("Tauri"), "{text}");
 }
@@ -267,7 +267,7 @@ fn login_entry_identifies_itself_so_settings_stays_closed_at_login() {
 #[test]
 fn non_unix_enable_refuses_honestly_and_never_writes() {
     let root = unique_dir("stub");
-    let path = root.join("autostart").join("abito-island.desktop");
+    let path = root.join("autostart").join("koda.desktop");
     let err = set_enabled_at(&path, true, &sample_exe()).expect_err("non-Unix autostart must refuse");
     assert!(matches!(err, AutostartError::Unsupported), "got {err:?}");
     assert!(!is_enabled_at(&path), "nothing may be written by the stub");

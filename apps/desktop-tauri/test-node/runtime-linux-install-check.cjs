@@ -45,9 +45,9 @@ console.log(`runtime archive: ${archive} sha256 ${sha(fs.readFileSync(archive))}
 /* A FAKE stage (toy binary; the real archive is what is under test). */
 function stage() {
   const dir = T.make('koda-rt-stage-');
-  fs.writeFileSync(path.join(dir, 'abito-island'), '#!/bin/sh\necho toy binary\n', { mode: 0o755 });
-  fs.writeFileSync(path.join(dir, 'abito-island-launcher'), L.launcherText(), { mode: 0o755 });
-  fs.writeFileSync(path.join(dir, 'abito-island.png'), 'png-bytes', { mode: 0o644 });
+  fs.writeFileSync(path.join(dir, 'koda'), '#!/bin/sh\necho toy binary\n', { mode: 0o755 });
+  fs.writeFileSync(path.join(dir, 'koda-launcher'), L.launcherText(), { mode: 0o755 });
+  fs.writeFileSync(path.join(dir, 'koda.png'), 'png-bytes', { mode: 0o644 });
   fs.writeFileSync(path.join(dir, `${L.IDENTIFIER}.desktop`), L.desktopText(), { mode: 0o644 });
   for (const n of L.DAEMON_FILES) {
     const file = path.join(dir, 'desktop-daemon', n);
@@ -86,7 +86,7 @@ function noNodeBin() {
 const st = stage();
 const home = T.make('koda-rt-home-');
 const root = path.join(home, 'project'); fs.mkdirSync(root);
-const prefix = path.join(home, 'share', 'abito-island');
+const prefix = path.join(home, 'share', 'koda');
 const apps = path.join(home, 'share', 'applications');
 const r = cp.spawnSync('/bin/sh', [SCRIPT, st, '--prefix', prefix, '--applications-dir', apps, '--project-root', root], {
   encoding: 'utf8', env: { PATH: noNodeBin(), HOME: home }, timeout: 300_000,

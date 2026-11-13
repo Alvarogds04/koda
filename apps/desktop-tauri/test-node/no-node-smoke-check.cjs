@@ -68,7 +68,7 @@ test('ci.yml installer-smoke-linux: installs strace, then runs the no-node smoke
   assert.ok(existing > 0 && noNode > existing, 'no-node smoke after the existing smoke');
   const step = j.slice(j.lastIndexOf('      - name:', noNode), j.indexOf('      - name:', noNode));
   assert.match(step, /if: \$\{\{ !cancelled\(\) \}\}/, 'runs even if a later part of the existing smoke failed');
-  assert.match(step, /STAGE=\$\(find "\$RUNNER_TEMP\/koda-smoke\/stage\/abito-island" -mindepth 1 -maxdepth 1 -type d/, 'the stage the existing smoke built');
+  assert.match(step, /STAGE=\$\(find "\$RUNNER_TEMP\/koda-smoke\/stage\/koda" -mindepth 1 -maxdepth 1 -type d/, 'the stage the existing smoke built');
   assert.match(step, /--stage "\$STAGE" --work "\$RUNNER_TEMP\/koda-no-node"/);
   assert.match(j, /koda-no-node\/\*\.log/, 'its logs are uploaded');
 });

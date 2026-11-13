@@ -6,7 +6,7 @@
 #   (a) install    packaging/build.cjs stages an offline release build and
 #                  packaging/install.sh verifies every hash against receipt.json
 #                  and installs it into a PRIVATE prefix (never ~/.local).
-#   (b) start      the INSTALLED launcher (abito-island-launcher, started exactly
+#   (b) start      the INSTALLED launcher (koda-launcher, started exactly
 #                  as the generated .desktop Exec line starts it) reaches the
 #                  app-owned daemon ready line and publishes the notice socket.
 #   (c-island)     the island window is mapped on the private X display with the
@@ -238,7 +238,7 @@ smoke_env() {
 # The caller's own Koda install must not be touched by this run: presence plus
 # mtime+size of the two paths install.sh would write without explicit overrides.
 real_state() {
-  for path in "$HOME/.local/share/abito-island" "$HOME/.local/share/applications/com.abitog.Koda.desktop"; do
+  for path in "$HOME/.local/share/koda" "$HOME/.local/share/applications/com.abitog.Koda.desktop"; do
     if [ -e "$path" ]; then printf '%s=%s;' "$path" "$(stat -c '%Y:%s' "$path")"; else printf '%s=absent;' "$path"; fi
   done
 }
@@ -321,7 +321,7 @@ json_ok() { # reads a {"ok":true|false} document on stdin
 say "smoke-linux: app=$APP work=$WORK pi=$PI"
 say '== (a) install: build.cjs + install.sh into a private prefix'
 if ( cd "$APP" && node packaging/build.cjs --out "$WORK/stage" --runtime-archive "$RUNTIME_ARCHIVE" ) > "$WORK/build.log" 2>&1; then
-  STAGE=$(find "$WORK/stage/abito-island" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | head -n 1 || true)
+  STAGE=$(find "$WORK/stage/koda" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | head -n 1 || true)
   if [ -z "$STAGE" ] || [ ! -f "$STAGE/receipt.json" ]; then
     fail "(a) install — build.cjs produced no stage with a receipt"
     fail_rest "(a)" "(b) start" "(c-island) show" "(c-tray) tray" "(d) notice"
@@ -331,15 +331,15 @@ if ( cd "$APP" && node packaging/build.cjs --out "$WORK/stage" --runtime-archive
   if smoke_env sh "$APP/packaging/install.sh" "$STAGE" --prefix "$PREFIX" --project-root "$PROJECT" --applications-dir "$APPS" > "$WORK/install.log" 2>&1 \
      && grep -q 'Stage verified against receipt.json' "$WORK/install.log" \
      && grep -q "Installed Abito (Tauri) in $PREFIX" "$WORK/install.log" \
-     && [ -x "$PREFIX/abito-island" ] && [ -x "$PREFIX/abito-island-launcher" ] \
+     && [ -x "$PREFIX/koda" ] && [ -x "$PREFIX/koda-launcher" ] \
      && [ -f "$PREFIX/receipt.json" ] && [ -f "$APPS/com.abitog.Koda.desktop" ] \
      && [ -d "$PREFIX/runtime" ] && [ ! -L "$PREFIX/runtime" ] \
      && [ -x "$PREFIX/runtime/node" ] && [ -x "$PREFIX/runtime/pi" ] \
      && grep -q '"features": "tauri/custom-protocol (no probe)"' "$PREFIX/receipt.json" \
-     && [ "$(sha256sum "$STAGE/abito-island" | cut -d' ' -f1)" = "$(sha256sum "$PREFIX/abito-island" | cut -d' ' -f1)" ]; then
+     && [ "$(sha256sum "$STAGE/koda" | cut -d' ' -f1)" = "$(sha256sum "$PREFIX/koda" | cut -d' ' -f1)" ]; then
     EXEC=$(sed -n 's/^Exec=//p' "$APPS/com.abitog.Koda.desktop")
-    if [ "$EXEC" = "env KODA_PROJECT_ROOT=$PROJECT \"$PREFIX/abito-island-launcher\"" ]; then
-      pass "(a) install: build.cjs staged $(basename "$STAGE") offline with the verified runtime archive (receipt: no probe feature); install.sh re-verified every hash against receipt.json, audited the runtime members, extracted the bundled Node+Pi to $PREFIX/runtime and installed the app in $PREFIX (binary sha256 $(sha256sum "$PREFIX/abito-island" | cut -d' ' -f1))"
+    if [ "$EXEC" = "env KODA_PROJECT_ROOT=$PROJECT \"$PREFIX/koda-launcher\"" ]; then
+      pass "(a) install: build.cjs staged $(basename "$STAGE") offline with the verified runtime archive (receipt: no probe feature); install.sh re-verified every hash against receipt.json, audited the runtime members, extracted the bundled Node+Pi to $PREFIX/runtime and installed the app in $PREFIX (binary sha256 $(sha256sum "$PREFIX/koda" | cut -d' ' -f1))"
     else
       fail "(a) install — the generated .desktop Exec line is not the expected one: $EXEC"
       fail_rest "(a)" "(b) start" "(c-island) show" "(c-tray) tray" "(d) notice"
@@ -452,7 +452,7 @@ island_id() {
   done
   # A window manager that publishes no _NET_CLIENT_LIST still has the window in the
   # tree: accept the app's own class there, so the check never depends on the WM's bookkeeping.
-  id=$(smoke_env xwininfo -root -tree 2>/dev/null | grep '"Koda": ("abito-island"' | head -n 1 | sed -n 's/^ *\(0x[0-9a-f]*\) .*/\1/p')
+  id=$(smoke_env xwininfo -root -tree 2>/dev/null | grep '"Koda": ("koda"' | head -n 1 | sed -n 's/^ *\(0x[0-9a-f]*\) .*/\1/p')
   if [ -n "$id" ]; then
     printf '%s' "$id"
     return 0
@@ -543,7 +543,7 @@ if [ "$REAL_AFTER" != "$REAL_BEFORE" ]; then
   diag
   exit 1
 fi
-say "isolation: the caller's own $HOME/.local/share/abito-island and .desktop are byte-identical (mtime+size) before and after"
+say "isolation: the caller's own $HOME/.local/share/koda and .desktop are byte-identical (mtime+size) before and after"
 
 say ''
 say 'smoke-linux: all five parts passed on the shipped binary (S2 a/b/c-island/c-tray/d).'

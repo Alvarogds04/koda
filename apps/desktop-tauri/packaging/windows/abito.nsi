@@ -39,7 +39,7 @@ Unicode true
 
 Name "Koda"
 OutFile "${OUTDIR}\koda-${VERSION}-win-x64-setup.exe"
-InstallDir "$LOCALAPPDATA\Programs\abito-island"
+InstallDir "$LOCALAPPDATA\Programs\Koda"
 RequestExecutionLevel user
 
 !define MUI_ICON "${ICON}"
@@ -60,11 +60,13 @@ Section "Koda"
   WriteUninstaller "$INSTDIR\uninstall.exe"
   !insertmacro AbitoInstallRuntime
   SetOutPath "$INSTDIR"
-  ; Koda 0.1: an upgrade replaces the old «Abito Island» Start-menu entry with «Koda» (same binary, same install dir).
+  ; Koda 0.1: an upgrade replaces the old «Abito Island» Start-menu entry with «Koda». K2-04 T6: the install dir moved from
+  ; Programs\abito-island to Programs\Koda; the old folder and its uninstaller are NOT touched (no 0.1 migration), so they stay
+  ; behind until the user removes them.
   Delete "$SMPROGRAMS\Abito Island\Abito Island.lnk"
   RMDir "$SMPROGRAMS\Abito Island"
   CreateDirectory "$SMPROGRAMS\Koda"
-  CreateShortCut "$SMPROGRAMS\Koda\Koda.lnk" "$INSTDIR\abito-island.exe"
+  CreateShortCut "$SMPROGRAMS\Koda\Koda.lnk" "$INSTDIR\koda.exe"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\com.abitog.Koda" "DisplayName" "Koda"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\com.abitog.Koda" "DisplayVersion" "${VERSION}"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\com.abitog.Koda" "InstallLocation" "$INSTDIR"

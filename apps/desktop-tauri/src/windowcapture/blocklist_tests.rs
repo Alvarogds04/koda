@@ -24,12 +24,16 @@ fn every_listed_app_is_refused_on_each_platform() {
         assert!(blocked_reason_on(Platform::Windows, "", name).is_some(), "windows {name}");
     }
     assert!(blocked_reason_on(Platform::Windows, "bitwarden.exe", "x").is_some());
+    // K2-04 T6: the installed main binary is `koda` (its WM_CLASS / exe stem), blurred by the same Koda entry.
+    assert!(blocked_reason_on(Platform::Windows, "koda.exe", "Koda").is_some(), "koda.exe");
     assert!(blocked_reason_on(Platform::Windows, "C:\\Program Files\\KeePassXC\\KeePassXC.exe", "x").is_some());
     let linux = [
         ("org.gnome.Settings", "Settings"), ("polkit-gnome-authentication-agent-1", "x"),
         ("org.gnome.seahorse.Application", "Passwords and Keys"), ("1password", "1Password"),
         ("bitwarden", "Bitwarden"), ("keepassxc", "KeePassXC"), ("org.keepassxc.KeePassXC", "x"),
         ("com.abitog.Koda", "Koda"), ("dashlane", "x"), ("lastpass", "x"), ("keepass", "x"),
+        // K2-04 T6: the installed binary/window id is `koda`, not `abito-island`.
+        ("koda", "x"),
     ];
     for (id, name) in linux {
         assert!(blocked_reason_on(Platform::Linux, id, name).is_some(), "linux {id}");
@@ -43,10 +47,23 @@ fn helpers_and_case_do_not_slip_through() {
 }
 
 #[test]
+fn the_koda_entry_names_every_identifier_of_ours() {
+    // K2-04 T6 (L20/L22): the installed main binary is `koda`, so its window id/WM_CLASS is `koda` too. The id list
+    // must carry it explicitly: a substring or name match would be the only thing catching it otherwise, and a
+    // renaming later (T7) must not silently drop Koda out of its own blocklist.
+    assert!(KODA.ids.contains(&"koda"), "the installed binary id: {:?}", KODA.ids);
+    assert!(KODA.ids.contains(&"com.abitog.Koda"), "the bundle id: {:?}", KODA.ids);
+    assert!(KODA.ids.contains(&"abito-island"), "the 0.1 binary still running: {:?}", KODA.ids);
+}
+
+#[test]
 fn ordinary_apps_are_allowed() {
     assert_eq!(blocked_reason_on(Platform::MacOs, "com.apple.Safari", "Safari"), None);
     assert_eq!(blocked_reason_on(Platform::MacOs, "com.apple.PasswordsX", "x"), None);
     assert_eq!(blocked_reason_on(Platform::Linux, "firefox", "Firefox"), None);
     assert_eq!(blocked_reason_on(Platform::Linux, "org.gnome.Terminal", "Terminal"), None);
     assert_eq!(blocked_reason_on(Platform::Windows, "", "Notepad"), None);
+    // K2-04 T6: the id match is exact (or dot-prefixed), so a neighbour name is never blurred.
+    assert_eq!(blocked_reason_on(Platform::Linux, "kodak", "x"), None);
+    assert_eq!(blocked_reason_on(Platform::Windows, "kodak.exe", "x"), None);
 }

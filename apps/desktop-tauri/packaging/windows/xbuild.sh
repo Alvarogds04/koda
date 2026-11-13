@@ -64,7 +64,7 @@ case "$cmd" in
   build)
     run cargo xwin build --release --locked --target x86_64-pc-windows-msvc \
       --features tauri/custom-protocol "$@"
-    echo "artifact: /abito/target/x86_64-pc-windows-msvc/release/abito-island.exe (volume $VOL_TARGET)"
+    echo "artifact: /abito/target/x86_64-pc-windows-msvc/release/koda.exe (volume $VOL_TARGET)"
     ;;
   package)
     # U4, decision B (NSIS-direct): cross-release build + installer, all inside
@@ -87,11 +87,11 @@ case "$cmd" in
         # onnxruntime (inside the sherpa static lib) asks the linker for PathCch.lib; xwin ships it lower/upper case only
         for d in /xwin-cache/xwin/sdk/lib/um/x86_64; do [ -e \$d/PathCch.lib ] || ln -s pathcch.lib \$d/PathCch.lib; done
         cargo xwin build --release --locked --target x86_64-pc-windows-msvc --features tauri/custom-protocol --bins
-        for bin in abito-island abito-notice-relay abito-private-session; do
+        for bin in koda abito-notice-relay abito-private-session; do
           cp /abito/target/x86_64-pc-windows-msvc/release/\$bin.exe /abito/dist/\$bin.exe
         done
         makensis -V2 -DVERSION=$version -DBINDIR=/abito/dist -DICON=/abito/src/icons/icon.ico -DOUTDIR=/abito/dist /abito/src/packaging/windows/abito.nsi
-        sha256sum /abito/dist/abito-island.exe /abito/dist/koda-$version-win-x64-setup.exe"
+        sha256sum /abito/dist/koda.exe /abito/dist/koda-$version-win-x64-setup.exe"
     echo "artifacts: $crate/dist (exe + setup + hashes above; receipt: packaging/windows/stage-win.cjs)"
     ;;
   sherpa)

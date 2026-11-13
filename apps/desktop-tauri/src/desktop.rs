@@ -487,21 +487,21 @@ mod tests {
 
     #[test]
     fn plain_second_launch_restores_without_focus() {
-        assert_eq!(launch_intent(&args(&["abito-island"])), LaunchIntent::Restore);
+        assert_eq!(launch_intent(&args(&["koda"])), LaunchIntent::Restore);
         assert_eq!(launch_intent(&args(&[])), LaunchIntent::Restore);
         assert!(!LaunchIntent::Restore.takes_focus());
     }
 
     #[test]
     fn only_the_exact_chat_flag_is_a_deliberate_typing_request() {
-        assert_eq!(launch_intent(&args(&["abito-island", "--chat"])), LaunchIntent::Chat);
+        assert_eq!(launch_intent(&args(&["koda", "--chat"])), LaunchIntent::Chat);
         assert!(LaunchIntent::Chat.takes_focus());
         for other in [
-            vec!["abito-island", "--chat=1"],
-            vec!["abito-island", "--CHAT"],
-            vec!["abito-island", "chat"],
-            vec!["abito-island", "--chat", "--probe"],
-            vec!["abito-island", "--focus"],
+            vec!["koda", "--chat=1"],
+            vec!["koda", "--CHAT"],
+            vec!["koda", "chat"],
+            vec!["koda", "--chat", "--probe"],
+            vec!["koda", "--focus"],
         ] {
             assert_eq!(launch_intent(&args(&other)), LaunchIntent::Restore, "{other:?}");
         }

@@ -327,7 +327,7 @@ jobs:
       - name: "No Node, no Pi: install and run on Koda's own runtime (K2-02 S1, S3; removes the runner's Node)"
         if: ${{ !cancelled() }}
         run: |
-          STAGE=$(find "$RUNNER_TEMP/koda-smoke/stage/abito-island" -mindepth 1 -maxdepth 1 -type d | head -n 1)
+          STAGE=$(find "$RUNNER_TEMP/koda-smoke/stage/koda" -mindepth 1 -maxdepth 1 -type d | head -n 1)
           sh apps/desktop-tauri/ci/public/smoke-linux-no-node.sh --app "$GITHUB_WORKSPACE/apps/desktop-tauri" \
             --stage "$STAGE" --work "$RUNNER_TEMP/koda-no-node"
       - name: Upload smoke logs

@@ -1,6 +1,6 @@
 'use strict';
 // Windows transport for hook clients (T2/S3/S6). On win32 the island's notice
-// receiver is a local named pipe served by abito-island.exe; hook clients NEVER
+// receiver is a local named pipe served by koda.exe; hook clients NEVER
 // open that pipe directly. They spawn the native stdio relay
 // `abito-notice-relay.exe` with the endpoint metadata path as its only
 // argument; the relay re-verifies everything (metadata shape, owner-only DACL,
@@ -21,7 +21,7 @@ const RELAY_NAME = 'abito-notice-relay.exe';
 // The canonical install root of the island (NSIS InstallDir), derived ONLY from
 // LOCALAPPDATA. This fallback exists because the Pi extension may live in a
 // global/external npm directory where no sibling relay exists.
-const INSTALL_DIR = ['Programs', 'abito-island'];
+const INSTALL_DIR = ['Programs', 'Koda'];
 // Windows drive-absolute path: one ASCII letter, a colon, a slash (the same
 // rule the island's winpolicy uses). Control characters are refused outright.
 const DRIVE_RE = /^[A-Za-z]:[\\/]/;

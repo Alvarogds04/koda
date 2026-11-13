@@ -1,10 +1,19 @@
 [package]
+# K2-04 T6: the PACKAGE keeps its name so the library stays `abito_island` and every `use abito_island::`
+# keeps compiling; only the INSTALLED main binary is named `koda` (the `[[bin]]` below). T7 renames the crate.
 name = "abito-island"
 version = "0.1.0"
 edition = "2021"
 description = "Abito island — Electron to Rust+Tauri migration, unit M2 (host/bridge + Pi transport receiver)"
 publish = false
-default-run = "abito-island"
+default-run = "koda"
+
+# The shipped binary is `koda` (K2-04 T6). Autobins stays on, so the two helper binaries
+# (src/bin/abito-notice-relay.rs, src/bin/abito-private-session.rs) are still discovered and
+# keep their names: the helper rename is a separate unit.
+[[bin]]
+name = "koda"
+path = "src/main.rs"
 
 [features]
 # Test/probe scaffolding (fake backend/model, read-back probe). Always on in debug

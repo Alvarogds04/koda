@@ -413,7 +413,7 @@ mod tests {
         }
         fn dir(&self, rel: &str) -> PathBuf { let d = self.0.join(rel); fs::create_dir_all(&d).unwrap(); d }
         fn exe(&self, rel: &str) -> PathBuf {
-            self.dir(rel).join(if cfg!(windows) { "abito-island.exe" } else { "abito-island" })
+            self.dir(rel).join(if cfg!(windows) { "koda.exe" } else { "koda" })
         }
     }
     impl Drop for Rt { fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); } }
@@ -455,15 +455,15 @@ mod tests {
     #[test]
     fn the_bundled_runtime_folder_sits_beside_the_binary_on_every_os() {
         // Pure layout derivation: every OS's install layout is derived on every OS.
-        let exe = Path::new("/prefix/bin").join("abito-island");
+        let exe = Path::new("/prefix/bin").join("koda");
         assert_eq!(bundled_runtime_dir(&exe, Os::Linux), Some(PathBuf::from("/prefix/bin/runtime")));
-        let win_exe = Path::new("/prefix/bin").join("abito-island.exe");
+        let win_exe = Path::new("/prefix/bin").join("koda.exe");
         assert_eq!(bundled_runtime_dir(&win_exe, Os::Windows), Some(PathBuf::from("/prefix/bin/runtime")));
-        let mac_exe = Path::new("/Applications/Abito.app/Contents/MacOS").join("abito-island");
+        let mac_exe = Path::new("/Applications/Koda.app/Contents/MacOS").join("koda");
         assert_eq!(bundled_runtime_dir(&mac_exe, Os::Mac),
-            Some(PathBuf::from("/Applications/Abito.app/Contents/Resources/runtime")),
+            Some(PathBuf::from("/Applications/Koda.app/Contents/Resources/runtime")),
             "macOS: Tauri puts resources beside MacOS/, so runtime lives in Resources");
-        assert_eq!(bundled_runtime_dir(Path::new("abito-island"), Os::Linux), None, "no parent, no derivation");
+        assert_eq!(bundled_runtime_dir(Path::new("koda"), Os::Linux), None, "no parent, no derivation");
     }
 
     #[test]

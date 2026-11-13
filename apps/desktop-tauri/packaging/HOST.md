@@ -1,6 +1,6 @@
 # App-owned island host
 
-The user-local Linux install includes `desktop-daemon/` beside `abito-island`.
+The user-local Linux install includes `desktop-daemon/` beside `koda`.
 The first instance starts `node desktop-daemon/src/cli.cjs run --app-owned` during
 Tauri setup. A second instance does not reach setup and creates no second host.
 No service, global installation, or new `KODA_*` override is introduced. The

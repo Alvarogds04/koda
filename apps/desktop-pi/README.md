@@ -8,7 +8,7 @@ This directory is the **Pi-side producer**, not a desktop app. The explicit `abi
 
 ## Install and enable
 
-Abito ships the closed Pi runtime beside its harness. On Linux/macOS, **Settings → Agents → Pi → Install** previews and installs it into `~/.pi/agent/extensions/abito-island/index.ts` without downloading dependencies. Restart Pi afterwards. The row reflects this extension's manifest, never a running session or the presence of Pi itself.
+Abito ships the closed Pi runtime beside its harness. On Linux/macOS, **Settings → Agents → Pi → Install** previews and installs it into `~/.pi/agent/extensions/koda-island/index.ts` without downloading dependencies. Restart Pi afterwards. The row reflects this extension's manifest, never a running session or the presence of Pi itself.
 
 Only the default `~/.pi/agent` directory is supported. A Pi session using another `PI_CODING_AGENT_DIR` will not load this installation; the row always states that limitation. Windows automatic installation remains explicitly unavailable, and the terminal installer is not a workaround.
 
@@ -17,8 +17,8 @@ Other opt-in loading mechanisms (not managed by the Settings installer):
 | How | Command / location | Useful for |
 | --- | --- | --- |
 | One invocation | `pi -e /abs/path/apps/desktop-pi/pi-extension.ts` | Trying it without touching any Pi setting. |
-| User extensions | copy this directory to `~/.pi/agent/extensions/abito-island/` (entry `index.ts`) | Every Pi session of this user. |
-| Project extensions | copy it to `<project>/.pi/extensions/abito-island/` | One repository, with Pi's project trust. |
+| User extensions | copy this directory to `~/.pi/agent/extensions/koda-island/` (entry `index.ts`) | Every Pi session of this user. |
+| Project extensions | copy it to `<project>/.pi/extensions/koda-island/` | One repository, with Pi's project trust. |
 
 Pi loads TypeScript directly (jiti), so no build step is needed. Only the Pi API and Node builtins are imported; there
 are no npm dependencies. The managed installer uses an exact eight-file manifest, refuses foreign/modified/unlisted files and symlinks, binds the shown hash to the current and bundled bytes, and makes a directory backup before replacement/removal. It never recursively removes unrelated files. See [the installer contract](../desktop-harness/docs/PI-INSTALL.md).
@@ -63,7 +63,7 @@ leave the island unavailable; they never imply a human answer or bypass
 terminal decisions. Unix socket validation and framing are unchanged.
 
 Helper lookup uses only the installed sibling executable, the canonical
-`%LOCALAPPDATA%\\Programs\\abito-island` installation, or the fixed sibling
+`%LOCALAPPDATA%\\Programs\\Koda` installation, or the fixed sibling
 `desktop-tauri/target/debug` development build. It never searches PATH or CWD,
 and rejects a symlink in the executable slot. An externally copied Pi extension
 requires the canonical install or its own trusted sibling helper; arbitrary
@@ -79,7 +79,7 @@ custom installation directories are not discovered automatically.
 | `KODA_QUESTION_TIMEOUT_MS` | Default deadline duration `300000` ms. Integer decimal `30000..900000`; a call's `timeoutMs` overrides it within the same bounds. |
 | `PI_CODING_AGENT_ROOT` | Tests only: installed Pi package directory for offline real-loader verification when the `pi` launcher cannot be found on PATH. |
 
-Observed packaged identities are **production `com.abitog.Abito` → `abito-desktop`**, and **technical Preview `com.abitog.Abito.Preview` → `abito-desktop-preview`**, both below `/run/user/<uid>/`. These names are not interchangeable. The loader's default is the Tauri island's own leaf (`abito-island`); the two Electron roots above need an explicit `KODA_SOCKET_DIR`. Development roots, including a receiver's `.runtime`, require an explicit override; no arbitrary endpoint is used to infer a trusted root.
+Observed packaged identities are **production `com.abitog.Abito` → `abito-desktop`**, and **technical Preview `com.abitog.Abito.Preview` → `abito-desktop-preview`**, both below `/run/user/<uid>/`. These names are not interchangeable. The loader's default is the Tauri island's own leaf (`koda`); the two Electron roots above need an explicit `KODA_SOCKET_DIR`. Development roots, including a receiver's `.runtime`, require an explicit override; no arbitrary endpoint is used to infer a trusted root.
 
 Paths must be absolute and normalized: no `..`, repeated separators, trailing slash, NUL or root `/`. Endpoint names use exactly six ASCII alphanumerics after `p-`; endpoint byte length is at most 107. Root and generated directory must be owned by the current Linux UID and exactly `0700`; socket must be owned by that UID and exactly `0600`. Every ancestor is a non-symlink directory owned by root or this UID, not world-writable. Endpoint ownership, mode and inode are checked before and after connecting. Configuration resolution is read-only. Invalid configuration fails closed without registering the extension's tools/transport.
 

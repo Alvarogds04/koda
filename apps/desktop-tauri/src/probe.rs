@@ -2610,7 +2610,7 @@ fn feature_validation(app: &AppHandle) {
     menu["hidden_after_hide"]=json!(hidden);
     menu["shown_after_show"]=json!(win.is_visible().unwrap_or(false));
     record("bandeja-menu",menu);
-    let entry=std::path::PathBuf::from(std::env::var("XDG_CONFIG_HOME").expect("private config")).join("autostart/abito-island.desktop");
+    let entry=std::path::PathBuf::from(std::env::var("XDG_CONFIG_HOME").expect("private config")).join("autostart/koda.desktop");
     let on=tray("autostart");
     sleep(Duration::from_millis(350));
     let text=std::fs::read_to_string(&entry).unwrap_or_default();

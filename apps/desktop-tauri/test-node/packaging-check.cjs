@@ -184,10 +184,10 @@ function fakeStage({ crateDir: _crateDir = crate } = {}) {
   // A child of the temp dir, never the temp dir itself: on Windows tmpdirs.cjs marks every dir it creates with
   // `.abito-tmpdirs`, and verifyStage lists the stage exactly (an extra file is a real problem there).
   const dir = path.join(T.make('abito-stage-'), 'stage'); fs.mkdirSync(dir);
-  fs.writeFileSync(path.join(dir, 'abito-island'), '#!/bin/true\nfake binary\n', { mode: 0o755 });
-  fs.writeFileSync(path.join(dir, 'abito-island-launcher'), L.launcherText(), { mode: 0o755 });
+  fs.writeFileSync(path.join(dir, 'koda'), '#!/bin/true\nfake binary\n', { mode: 0o755 });
+  fs.writeFileSync(path.join(dir, 'koda-launcher'), L.launcherText(), { mode: 0o755 });
   fs.writeFileSync(path.join(dir, `${L.IDENTIFIER}.desktop`), L.desktopText(), { mode: 0o644 });
-  fs.writeFileSync(path.join(dir, 'abito-island.png'), 'png', { mode: 0o644 });
+  fs.writeFileSync(path.join(dir, 'koda.png'), 'png', { mode: 0o644 });
   for (const n of L.DAEMON_FILES) {
     const file = path.join(dir, 'desktop-daemon', n);
     fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o755 });
@@ -255,17 +255,17 @@ test('HU-015: the daemon-free Agentes entry ships, closed under require(), besid
 test('verify: a pristine stage passes; tampering is caught without launching anything', () => {
   const d = fakeStage();
   assert.deepEqual(L.verifyStage(d, { sourceCrate: crate }), []);
-  fs.appendFileSync(path.join(d, 'abito-island'), 'x');
-  assert.match(L.verifyStage(d).join(), /abito-island hash differs/);
+  fs.appendFileSync(path.join(d, 'koda'), 'x');
+  assert.match(L.verifyStage(d).join(), /koda hash differs/);
   fs.rmSync(d, { recursive: true });
   const e = fakeStage();
-  fs.writeFileSync(path.join(e, 'abito-island-launcher'), '#!/bin/sh\nexec "$@"\n', { mode: 0o755 });
+  fs.writeFileSync(path.join(e, 'koda-launcher'), '#!/bin/sh\nexec "$@"\n', { mode: 0o755 });
   assert.match(L.verifyStage(e).join(), /launcher/);
   fs.writeFileSync(path.join(e, 'extra'), 'x');
   assert.match(L.verifyStage(e).join(), /unexpected stage entries/);
   fs.rmSync(e, { recursive: true });
   if (process.platform !== 'win32') { // the writable rule is unix-only by design (POSIX modes); the Windows twin is below
-    const w = fakeStage(); fs.chmodSync(path.join(w, 'abito-island'), 0o777);
+    const w = fakeStage(); fs.chmodSync(path.join(w, 'koda'), 0o777);
     assert.match(L.verifyStage(w).join(), /writable/);
     fs.rmSync(w, { recursive: true });
   }
@@ -289,26 +289,26 @@ test('Windows (NTFS modes 0o666, no exec bits): a valid stage verifies and its i
 });
 test('Windows: a tampered stage is still refused (hash, extra entry), only the POSIX mode rules are unix-only', () => {
   const d = fakeStage();
-  fs.appendFileSync(path.join(d, 'abito-island'), 'x');
+  fs.appendFileSync(path.join(d, 'koda'), 'x');
   fs.writeFileSync(path.join(d, 'extra'), 'x');
   const problems = asWindows(() => L.verifyStage(d)).join('\n');
-  assert.match(problems, /abito-island hash differs from the receipt/);
+  assert.match(problems, /koda hash differs from the receipt/);
   assert.match(problems, /unexpected stage entries/);
   assert.doesNotMatch(problems, /writable|not executable/);
 });
 test('unix keeps the POSIX mode rules (twin of the Windows case): group/world writable and a non-executable binary are refused', () => {
   if (process.platform === 'win32') return; // the rule is unix-only by design; the Windows twin is above
-  const w = fakeStage(); fs.chmodSync(path.join(w, 'abito-island'), 0o664);
+  const w = fakeStage(); fs.chmodSync(path.join(w, 'koda'), 0o664);
   const problems = L.verifyStage(w).join('\n');
-  assert.match(problems, /abito-island is group\/world writable/);
+  assert.match(problems, /koda is group\/world writable/);
   assert.match(problems, /binary is not executable/);
 });
 
 test('verify: devtools markers and an embedded source-tree path fail the stage', () => {
   for (const [marker, expect] of [['--remote-debugging-port', /devtools/], [crate, /source-tree path/]]) {
     const d = fakeStage();
-    fs.writeFileSync(path.join(d, 'abito-island'), `#!/bin/true\n${marker}\n`, { mode: 0o755 });
-    const r = readJson(path.join(d, 'receipt.json')); r.files['abito-island'] = L.sha256File(path.join(d, 'abito-island'));
+    fs.writeFileSync(path.join(d, 'koda'), `#!/bin/true\n${marker}\n`, { mode: 0o755 });
+    const r = readJson(path.join(d, 'receipt.json')); r.files['koda'] = L.sha256File(path.join(d, 'koda'));
     fs.writeFileSync(path.join(d, 'receipt.json'), JSON.stringify(r));
     assert.match(L.verifyStage(d, { sourceCrate: crate }).join(), expect);
     fs.rmSync(d, { recursive: true });
@@ -318,12 +318,12 @@ test('launcher: no args, refuses whole env families, forces X11, execs only its 
   const t = L.launcherText();
   assert.match(t, /\[ "\$#" -eq 0 \]/);
   assert.match(t, /export GDK_BACKEND=x11/);
-  assert.match(t, /exec "\$here\/abito-island"$/m);
+  assert.match(t, /exec "\$here\/koda"$/m);
   // behaviour: run the launcher's guards (the sibling binary is a stub that must NOT start when refused)
   if (process.platform === 'win32') return; // the launcher is a POSIX sh script: Windows ships no launcher and cannot run it
   const cp = require('node:child_process');
-  const d = fakeStage(); fs.writeFileSync(path.join(d, 'abito-island'), '#!/bin/sh\necho STARTED\n', { mode: 0o755 });
-  const run = (extra, env) => cp.spawnSync(path.join(d, 'abito-island-launcher'), extra, { env: { PATH: process.env.PATH, ...env }, encoding: 'utf8' });
+  const d = fakeStage(); fs.writeFileSync(path.join(d, 'koda'), '#!/bin/sh\necho STARTED\n', { mode: 0o755 });
+  const run = (extra, env) => cp.spawnSync(path.join(d, 'koda-launcher'), extra, { env: { PATH: process.env.PATH, ...env }, encoding: 'utf8' });
   assert.equal(run(['--devtools'], {}).status, 64);
   for (const name of ['LD_PRELOAD', 'LD_LIBRARY_PATH', 'LD_AUDIT', 'LD_DEBUG', 'LD_BIND_NOW', 'LD_ANYTHING_ELSE', 'GDK_DEBUG', 'GTK_MODULES',
     'WEBKIT_INSPECTOR_SERVER', 'KODA_PROBE', 'KODA_PROBE_VISUAL_DIR', 'KODA_SOCKET_DIR', 'KODA_BRIDGE_BASE', 'KODA_MODELS_CONFIG_DIR',
@@ -387,8 +387,8 @@ test('gates: missing frontend file, extra plugin dependency, missing capability 
 test('verify: the shipped binary must not carry the probe or the fake backend strings', () => {
   for (const marker of ['KODA_PROBE', 'Prueba M3: propuesta servida por el backend falso', 'abito-validator-fake-terminal-launcher']) {
     const d = fakeStage();
-    fs.writeFileSync(path.join(d, 'abito-island'), `#!/bin/true\n${marker}\n`, { mode: 0o755 });
-    const r = readJson(path.join(d, 'receipt.json')); r.files['abito-island'] = L.sha256File(path.join(d, 'abito-island'));
+    fs.writeFileSync(path.join(d, 'koda'), `#!/bin/true\n${marker}\n`, { mode: 0o755 });
+    const r = readJson(path.join(d, 'receipt.json')); r.files['koda'] = L.sha256File(path.join(d, 'koda'));
     fs.writeFileSync(path.join(d, 'receipt.json'), JSON.stringify(r));
     assert.match(L.verifyStage(d).join(), /probe\/fake/, marker);
     fs.rmSync(d, { recursive: true });
@@ -411,19 +411,19 @@ test('law: XTest (synthetic input) is never a production dependency, and the shi
   d = copyCrate();
   fs.writeFileSync(path.join(d, 'Cargo.toml'), fs.readFileSync(path.join(d, 'Cargo.toml'), 'utf8').replace('[dependencies]', '[dependencies]\nx11rb = { version = "0.13", features = ["xtest"] }'));
   assert.throws(() => L.checkConfig(d), /xtest/, 'xtest in the plain production table'); fs.rmSync(d, { recursive: true });
-  const st = fakeStage(); fs.writeFileSync(path.join(st, 'abito-island'), '#!/bin/true\nXTEST\n', { mode: 0o755 });
-  const r = readJson(path.join(st, 'receipt.json')); r.files['abito-island'] = L.sha256File(path.join(st, 'abito-island'));
+  const st = fakeStage(); fs.writeFileSync(path.join(st, 'koda'), '#!/bin/true\nXTEST\n', { mode: 0o755 });
+  const r = readJson(path.join(st, 'receipt.json')); r.files['koda'] = L.sha256File(path.join(st, 'koda'));
   fs.writeFileSync(path.join(st, 'receipt.json'), JSON.stringify(r));
   assert.match(L.verifyStage(st).join(), /XTEST/); fs.rmSync(st, { recursive: true });
 });
 test('desktop entry: quoted Exec, Icon, observed StartupWMClass; no unquoted path with spaces', () => {
   const t = L.desktopText();
-  assert.match(t, /^Exec="@INSTALL_DIR@\/abito-island-launcher"$/m);
-  assert.match(t, /^Icon=@INSTALL_DIR@\/abito-island\.png$/m);
-  assert.match(t, /^StartupWMClass=Abito-island$/m);
+  assert.match(t, /^Exec="@INSTALL_DIR@\/koda-launcher"$/m);
+  assert.match(t, /^Icon=@INSTALL_DIR@\/koda\.png$/m);
+  assert.match(t, /^StartupWMClass=Koda$/m);
 });
 test('identity never collides with the installed apps', () => {
-  assert.match(L.desktopText(), /Exec="@INSTALL_DIR@\/abito-island-launcher"/);
+  assert.match(L.desktopText(), /Exec="@INSTALL_DIR@\/koda-launcher"/);
   assert.doesNotMatch(L.desktopText() + L.launcherText(), /abito-desktop|com\.abitog\.Abito\b(?!Tauri)/);
 });
 console.log(`packaging-check: ${passed} passed`);

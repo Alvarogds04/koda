@@ -4,8 +4,8 @@
 #   sh install.sh <stage-dir> [--prefix DIR] [--project-root DIR] [--applications-dir DIR]
 #   sh install.sh --uninstall [--prefix DIR] [--applications-dir DIR]
 #
-# <stage-dir> is what packaging/build.cjs stages (dist/abito-island/<version>) or a
-# copy of it (artifacts/abito-island-<version>-<commit>). POSIX sh; coreutils +
+# <stage-dir> is what packaging/build.cjs stages (dist/koda/<version>) or a
+# copy of it (artifacts/koda-<version>-<commit>). POSIX sh; coreutils +
 # tar + sha256sum (or shasum). Keep install.sh beside lib.cjs. No root, no network.
 # NO NODE IS REQUIRED, USED OR LOOKED UP on the machine (K2-02, decision A): the
 # stage carries the bundled runtime archive (koda-runtime-linux-x64.tar.gz) and the
@@ -32,7 +32,7 @@
 #      (the one variable the closed launcher accepts).
 #
 # Defaults (documented):
-#   PREFIX        $XDG_DATA_HOME/abito-island, i.e. ~/.local/share/abito-island
+#   PREFIX        $XDG_DATA_HOME/koda, i.e. ~/.local/share/koda
 #   APPLICATIONS  $XDG_DATA_HOME/applications, i.e. ~/.local/share/applications
 #   PROJECT ROOT  required: --project-root DIR (the folder your agent sessions run in;
 #                 the island derives its project id from this directory).
@@ -49,7 +49,7 @@ DESKTOP="$ID.desktop"
 RUNTIME_ARCHIVE="koda-runtime-linux-x64.tar.gz"
 # Closed-set verifier beside this script; run by the EXTRACTED runtime's node.
 LIB="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)/lib.cjs"
-EXEC_FILES="abito-island abito-island-launcher"
+EXEC_FILES="koda koda-launcher"
 
 die() { printf 'install.sh: %s\n' "$*" >&2; exit 1; }
 note() { printf '%s\n' "$*"; }
@@ -61,9 +61,9 @@ Abito (Tauri) one-command installer (user-local, no root, no network).
   sh install.sh <stage-dir> [--prefix DIR] [--project-root DIR] [--applications-dir DIR]
   sh install.sh --uninstall [--prefix DIR] [--applications-dir DIR]
 
-  <stage-dir>           staged build: dist/abito-island/<version> or a copy of it
-                        (artifacts/abito-island-<version>-<commit>)
-  --prefix DIR          install dir (default: ~/.local/share/abito-island)
+  <stage-dir>           staged build: dist/koda/<version> or a copy of it
+                        (artifacts/koda-<version>-<commit>)
+  --prefix DIR          install dir (default: ~/.local/share/koda)
   --project-root DIR    (required) KODA_PROJECT_ROOT written into the launcher entry:
                         the folder your agent sessions run in
   --applications-dir D  where the .desktop goes (default: ~/.local/share/applications)
@@ -83,7 +83,7 @@ USAGE
 # ---- arguments ---------------------------------------------------------------
 [ -n "${HOME:-}" ] || die "HOME is not set"
 DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
-PREFIX="$DATA_HOME/abito-island"
+PREFIX="$DATA_HOME/koda"
 APPS="$DATA_HOME/applications"
 ROOT=""
 STAGE=""
@@ -282,7 +282,7 @@ for f in $names; do [ "$f" = "$RUNTIME_ARCHIVE" ] || INSTALL_FILES="$INSTALL_FIL
 # ---- 4. stage everything in temp files next to the targets, re-verify, then rename -----------
 # the .desktop is generated and validated BEFORE any file is replaced
 mkdir -p "$PREFIX" "$APPS"
-sed -e "s|^Exec=.*|Exec=env KODA_PROJECT_ROOT=$ROOT \"$PREFIX/abito-island-launcher\"|" \
+sed -e "s|^Exec=.*|Exec=env KODA_PROJECT_ROOT=$ROOT \"$PREFIX/koda-launcher\"|" \
     -e "s|@INSTALL_DIR@|$PREFIX|g" "$STAGE/$DESKTOP" > "$APPS/.new.$$.$DESKTOP"
 if grep -q '@INSTALL_DIR@' "$APPS/.new.$$.$DESKTOP"; then die "unresolved @INSTALL_DIR@ in the .desktop"; fi
 if command -v desktop-file-validate >/dev/null 2>&1; then
@@ -326,7 +326,7 @@ note "Project root: $ROOT"
 note ""
 note "Launch:"
 note "  from the app menu: Abito (Tauri)"
-note "  from a terminal:   KODA_PROJECT_ROOT=$ROOT $PREFIX/abito-island-launcher"
+note "  from a terminal:   KODA_PROJECT_ROOT=$ROOT $PREFIX/koda-launcher"
 note "  (the launcher takes no arguments and refuses every other KODA_* variable)"
 note "Reinstall: run this command again. Uninstall: sh install.sh --uninstall"
 note "The installed Abito/Preview apps were not touched."

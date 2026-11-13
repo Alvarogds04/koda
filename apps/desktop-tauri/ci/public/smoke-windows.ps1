@@ -89,7 +89,7 @@ function Start-Island([string]$Mode) {
     else { Remove-Item Env:KODA_PROJECT_ROOT -ErrorAction SilentlyContinue }
     Remove-Item Env:KODA_ISLAND_DIR -ErrorAction SilentlyContinue
     Remove-Item Env:KODA_DESKTOP_SOCKET -ErrorAction SilentlyContinue
-    $script:process = Start-Process -FilePath (Join-Path $install 'abito-island.exe') -WorkingDirectory $workspace -PassThru `
+    $script:process = Start-Process -FilePath (Join-Path $install 'koda.exe') -WorkingDirectory $workspace -PassThru `
         -RedirectStandardOutput (Join-Path $root "$Mode.stdout.log") -RedirectStandardError (Join-Path $root "$Mode.stderr.log")
     # A forced stop can leave the previous process's metadata. Wait for this
     # launch to publish its own record; existence alone is not readiness.

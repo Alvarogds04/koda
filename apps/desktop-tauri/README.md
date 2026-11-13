@@ -395,7 +395,7 @@ IPC path (observed 2026-10-09, this stack):
   launch hands its argv to the first instance, which restores (→ compact,
   clamp), shows and focuses the island; the second process exits before
   `Builder::run`. Observed: second instance exit 0 in 0.06 s, exactly one
-  `abito-island` process remained.
+  `koda` process remained.
 - **Work-area re-clamp**: Tauri/Tao expose no display events, so
   `workarea::current` (same source Electron's `display-*` handlers used) is
   polled every second and a CHANGED rect re-clamps the window through the
@@ -1153,7 +1153,7 @@ and no capability widens. The UI says so («Declarativo: todavía no se aplica»
 ### Verifying #327
 
 ```sh
-cargo test --manifest-path apps/desktop-tauri/Cargo.toml --bin abito-island specialists
+cargo test --manifest-path apps/desktop-tauri/Cargo.toml --bin koda specialists
 #   Store/host contracts: opaque/reserved ids, bounds and controls, fail-closed
 #   store, closed command set, invalid input never mutates, principal prompt
 #   unchanged, 0600/O_NOFOLLOW/atomic file, failed write keeps the store,
@@ -1172,7 +1172,7 @@ node apps/desktop-tauri/test-node/specialists-view-check.cjs   # 21 checks
   (second launch) shows the island without `set_focus`. Probe
   `a11y_evidence`: `window_focused_at_start/after_restore/after_expand:
   false`, `document_has_focus: false`. The ONLY focusing path is the
-  deliberate second launch `abito-island --chat` (exact argv, pure
+  deliberate second launch `koda --chat` (exact argv, pure
   `desktop::launch_intent`, tested): opens the chat and puts the caret in the
   composer — bind it to a GNOME shortcut yourself; Abito installs no global
   hook.
@@ -1276,9 +1276,9 @@ DISPLAY=:0 XAUTHORITY=/run/user/1000/.mutter-Xwaylandauth.UV9RW3 \
 #   rate.rejections == 10 of 40 with code "rate-exceeded"
 
 # single instance
-DISPLAY=:0 XAUTHORITY=… GDK_BACKEND=x11 nohup ./target/debug/abito-island &
-DISPLAY=:0 XAUTHORITY=… GDK_BACKEND=x11 ./target/debug/abito-island  # exits 0 at once
-pgrep -c -x abito-island   # → 1
+DISPLAY=:0 XAUTHORITY=… GDK_BACKEND=x11 nohup ./target/debug/koda &
+DISPLAY=:0 XAUTHORITY=… GDK_BACKEND=x11 ./target/debug/koda  # exits 0 at once
+pgrep -c -x koda   # → 1
 ```
 
 ## Verifying M2
@@ -1571,7 +1571,7 @@ launches an installed app.
 
 ```sh
 node packaging/build.cjs --out "$PWD/dist"   # offline release build + stage + receipt
-node packaging/verify.cjs dist/abito-island/<version>   # re-hash vs receipt, no launch
+node packaging/verify.cjs dist/koda/<version>   # re-hash vs receipt, no launch
 ```
 
 - Build: `cargo build --release --locked --offline --features tauri/custom-protocol`
@@ -1579,7 +1579,7 @@ node packaging/verify.cjs dist/abito-island/<version>   # re-hash vs receipt, no
   the build-tree path as a dev build). Gates before building: engine pin (public `checkR6`, now R7)
   (`b699ebbc…`), curated `frontend/` list, CSP without remote/unsafe sources,
   capabilities = listen/unlisten only, no `devtools`/shell/fs/http features.
-- Stage: `abito-island` (release binary), `abito-island-launcher` (no args;
+- Stage: `koda` (release binary), `koda-launcher` (no args;
   refuses the whole `LD_*` family, `GDK_DEBUG`/`GTK_*` debug, WebKit inspector vars and every `KODA_*` knob except `KODA_PROJECT_ROOT`; forces X11),
   `com.abitog.Koda.desktop` (template, `@INSTALL_DIR@`), `receipt.json`
   (sha256 of every file, `Cargo.lock`, config, frontend, rustc, git HEAD and a
@@ -1605,14 +1605,14 @@ node packaging/verify.cjs dist/abito-island/<version>   # re-hash vs receipt, no
 ## N9 — one-command install (user-local)
 
 ```sh
-sh packaging/install.sh artifacts/abito-island-0.1.0-<commit>   # or dist/abito-island/<version>
+sh packaging/install.sh artifacts/koda-0.1.0-<commit>   # or dist/koda/<version>
 sh packaging/install.sh --uninstall
 ```
 
 Verifies EVERY file against `receipt.json` first (any mismatch, extra file, symlink,
 non-clean provenance or foreign identity aborts without touching anything), then
 installs binary + launcher + icon (+ template and receipt) into
-`~/.local/share/abito-island` (`--prefix` to override) via temp-file + rename (a
+`~/.local/share/koda` (`--prefix` to override) via temp-file + rename (a
 running binary can be replaced), and writes
 `~/.local/share/applications/com.abitog.Koda.desktop` with
 `Exec=env KODA_PROJECT_ROOT=<root> "<launcher>"`. The project root is required:
@@ -1652,7 +1652,7 @@ removes exactly our files and the entry. Tests: `test-node/install-check.cjs`
   step fails soft: a host without a working tray service runs tray-less and
   says why on stderr. Non-Unix builds compile honest no-op stubs.
 - **Autostart (user-local XDG):** `src/autostart.rs` installs or removes
-  `autostart/abito-island.desktop` under `$XDG_CONFIG_HOME` (default
+  `autostart/koda.desktop` under `$XDG_CONFIG_HOME` (default
   `$HOME/.config`), mirroring the packaging `.desktop` template (quoted
   `Exec`, unquoted `Icon`). The entry file IS the toggle's state — no
   parallel preference store; enabling is idempotent (temp file + rename,

@@ -24,9 +24,9 @@ const crate = path.resolve(__dirname, '..');
 const stage = fs.mkdtempSync(path.join(os.tmpdir(), 'abito-host-stage-fixture-'));
 let localDir = null; // Windows only: the private LOCALAPPDATA of the CLI probe below
 try {
-  fs.writeFileSync(path.join(stage, 'abito-island'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
-  fs.writeFileSync(path.join(stage, 'abito-island-launcher'), L.launcherText(), { mode: 0o755 });
-  fs.writeFileSync(path.join(stage, 'abito-island.png'), fs.readFileSync(path.join(crate, 'icons/icon.png')), { mode: 0o644 });
+  fs.writeFileSync(path.join(stage, 'koda'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+  fs.writeFileSync(path.join(stage, 'koda-launcher'), L.launcherText(), { mode: 0o755 });
+  fs.writeFileSync(path.join(stage, 'koda.png'), fs.readFileSync(path.join(crate, 'icons/icon.png')), { mode: 0o644 });
   fs.writeFileSync(path.join(stage, `${L.IDENTIFIER}.desktop`), L.desktopText(), { mode: 0o644 });
   for (const file of L.DAEMON_FILES) {
     const target = path.join(stage, 'desktop-daemon', file);

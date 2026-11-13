@@ -1,7 +1,7 @@
 //! #315 — user-local XDG autostart entry for the island (F095/T02).
 //!
 //! Launch Abito automatically at session login by installing or removing
-//! `autostart/abito-island.desktop` under `$XDG_CONFIG_HOME` (default
+//! `autostart/koda.desktop` under `$XDG_CONFIG_HOME` (default
 //! `$HOME/.config`). The toggle's persistent state IS the file's presence:
 //! the same mechanism Coucou's T02 uses, no parallel preference store to
 //! desync. The entry is the closed template below; enabling again is
@@ -14,7 +14,7 @@
 use std::path::{Path, PathBuf};
 
 /// Fixed name of the autostart entry (one app, one entry, no surprises).
-pub const ENTRY_FILE_NAME: &str = "abito-island.desktop";
+pub const ENTRY_FILE_NAME: &str = "koda.desktop";
 
 /// Why an autostart change can fail. `Unsupported` is the honest non-Unix
 /// answer; `Io` carries the OS reason verbatim.
@@ -47,13 +47,13 @@ mod tests;
 // --- pure template -----------------------------------------------------------
 
 /// The closed autostart template for `exe`. The Icon is the packaging-staged
-/// `abito-island.png` beside the binary, mirroring `packaging/lib.cjs`
-/// desktopText (`Icon` is a plain string value, unquoted — only `Exec` is a
-/// quoted argument list). Returns `None` for a path that can never be quoted
+/// `koda.png` beside the binary, mirroring `packaging/lib.cjs` desktopText
+/// (`Icon` is a plain string value, unquoted — only `Exec` is a quoted
+/// argument list). Returns `None` for a path that can never be quoted
 /// honestly (relative, empty, or carrying control characters).
 pub fn desktop_entry(exe: &Path) -> Option<String> {
     let exec = quote_exec(exe)?;
-    let icon = exe.parent()?.join("abito-island.png");
+    let icon = exe.parent()?.join("koda.png");
     let icon = plain_value(&icon)?;
     Some(format!(
         "[Desktop Entry]\n\
@@ -64,7 +64,7 @@ pub fn desktop_entry(exe: &Path) -> Option<String> {
          Icon={icon}\n\
          Terminal=false\n\
          Categories=Utility;\n\
-         StartupWMClass=Abito-island\n\
+         StartupWMClass=Koda\n\
          X-GNOME-Autostart-enabled=true\n"
     ))
 }

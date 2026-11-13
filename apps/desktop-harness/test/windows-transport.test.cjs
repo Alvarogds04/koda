@@ -94,7 +94,7 @@ test('relay candidates are fixed sibling locations, never PATH or env-chosen exe
   // installed sibling (this file ships at <install>/desktop-harness/src)
   assert.ok(candidates.includes(require('node:path').resolve(__dirname, '..', '..', RELAY_NAME)));
   // canonical installed location derived only from LOCALAPPDATA
-  assert.ok(candidates.includes(`${LOCAL}\\Programs\\abito-island\\${RELAY_NAME}`));
+  assert.ok(candidates.includes(`${LOCAL}\\Programs\\Koda\\${RELAY_NAME}`));
   // development/CI build location, fixed
   assert.ok(candidates.includes(require('node:path').resolve(__dirname, '..', '..', 'desktop-tauri', 'target', 'debug', RELAY_NAME)));
   // no env knob can inject a candidate

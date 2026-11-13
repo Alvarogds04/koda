@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "abito-island",
+  "productName": "Koda",
   "version": "0.1.0",
   "identifier": "com.abitog.Koda",
   "build": {

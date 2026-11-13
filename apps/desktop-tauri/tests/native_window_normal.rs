@@ -67,13 +67,13 @@ impl Drop for OwnProcess {
 
 fn preflight() {
     let ps = Command::new("ps")
-        .args(["-C", "abito-island", "-o", "pid=,comm="])
+        .args(["-C", "koda", "-o", "pid=,comm="])
         .output()
         .expect("ps");
     assert!(ps.status.code() == Some(0) || ps.status.code() == Some(1));
     assert!(
         ps.stdout.is_empty(),
-        "STOP: abito-island already running; no launch permitted"
+        "STOP: koda already running; no launch permitted"
     );
     let bus = Command::new("dbus-send")
         .args([
@@ -182,7 +182,7 @@ fn normal_compact_matches_actual_runtime_scale() {
     .unwrap();
     let log_path = run.join("native.jsonl");
     let mut log = private_file(&log_path);
-    let mut command = Command::new(env!("CARGO_BIN_EXE_abito-island"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_koda"));
     command.env_clear();
     for name in [
         "DISPLAY",
@@ -224,7 +224,7 @@ fn normal_compact_matches_actual_runtime_scale() {
     preflight(); // immediately before EVERY own launch
     let mut child = OwnProcess(
         command.spawn().expect("NORMAL executable"),
-        fs::canonicalize(env!("CARGO_BIN_EXE_abito-island")).unwrap(),
+        fs::canonicalize(env!("CARGO_BIN_EXE_koda")).unwrap(),
     );
     let pid = child.0.id();
     let stderr = child.0.stderr.take().unwrap();

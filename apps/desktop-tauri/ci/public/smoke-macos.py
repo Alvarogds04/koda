@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Smoke the packaged release binary with Finder's minimal PATH, not dev env.
 
-Usage: python3 ci/public/smoke-macos.py /path/to/Abito.app /path/to/isolated-home
+Usage: python3 ci/public/smoke-macos.py /path/to/Koda.app /path/to/isolated-home
 Install Pi under <isolated-home>/.npm-global first and link Node in its bin/.
 Only disposable GitHub runner homes are supported; never run on a user's app.
 """
@@ -16,7 +16,7 @@ if sys.platform != "darwin" or os.environ.get("GITHUB_ACTIONS") != "true":
     sys.exit("smoke-macos requires a disposable macOS GitHub Actions runner")
 app = pathlib.Path(sys.argv[1]).resolve()
 home = pathlib.Path(sys.argv[2]).resolve()
-binary = app / "Contents/MacOS/abito-island"
+binary = app / "Contents/MacOS/koda"
 pi = home / ".npm-global/bin/pi"
 assert binary.is_file() and pi.is_file()
 assert (app / "Contents/Resources/desktop-daemon/src/cli.cjs").is_file()

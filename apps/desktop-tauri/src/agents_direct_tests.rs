@@ -49,7 +49,7 @@ fn argv_is_the_closed_grammar_of_the_node_entry() {
 
 #[test]
 fn the_script_is_the_one_beside_the_installed_daemon_never_a_path_from_outside() {
-    let exe = PathBuf::from("/opt/abito/abito-island");
+    let exe = PathBuf::from("/opt/abito/koda");
     let got = script_beside(&exe).unwrap();
     #[cfg(not(target_os = "macos"))]
     assert_eq!(got, PathBuf::from("/opt/abito/desktop-daemon/src/agents-direct.cjs"));

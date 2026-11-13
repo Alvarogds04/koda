@@ -110,7 +110,7 @@ def main():
     # (a) install the way a person does: from the dmg into an Applications folder.
     try:
         app = install(dmg, work / "Applications")
-        binary = app / "Contents/MacOS/abito-island"
+        binary = app / "Contents/MacOS/koda"
         hook = app / "Contents/Resources/desktop-harness/bin/koda-hook.cjs"
         daemon = app / "Contents/Resources/desktop-daemon/src/cli.cjs"
         missing = [p.name for p in (binary, hook, daemon) if not p.is_file()]

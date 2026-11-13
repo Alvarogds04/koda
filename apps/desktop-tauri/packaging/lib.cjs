@@ -160,7 +160,7 @@ bad="$(env | grep -E '${FORBIDDEN_ENV_PATTERN}' | grep -v '^${ALLOWED_ABITO}=' |
 [ -z "$bad" ] || { echo "abito: refusing $bad" >&2; exit 64; }
 here="$(cd "$(dirname "$0")" && pwd)"
 export GDK_BACKEND=x11
-exec "$here/abito-island"
+exec "$here/koda"
 `;
 }
 function desktopText() {
@@ -168,11 +168,11 @@ function desktopText() {
 Type=Application
 Name=Koda
 Comment=Koda
-Exec="@INSTALL_DIR@/abito-island-launcher"
-Icon=@INSTALL_DIR@/abito-island.png
+Exec="@INSTALL_DIR@/koda-launcher"
+Icon=@INSTALL_DIR@/koda.png
 Terminal=false
 Categories=Utility;
-StartupWMClass=Abito-island
+StartupWMClass=Koda
 `;
 }
 
@@ -196,7 +196,7 @@ const PI_FILES = ['pi-extension.ts', 'adapter.cjs', 'ask-tool.cjs', 'config.cjs'
 // other file; the Linux installer verifies its sha256 and its members before extracting it to
 // PREFIX/runtime. Windows stages the same archive; macOS ships the extracted folder instead.
 const RUNTIME_ARCHIVE = 'koda-runtime-linux-x64.tar.gz';
-const STAGED = ['abito-island', 'abito-island-launcher', 'abito-island.png', `${IDENTIFIER}.desktop`, RUNTIME_ARCHIVE,
+const STAGED = ['koda', 'koda-launcher', 'koda.png', `${IDENTIFIER}.desktop`, RUNTIME_ARCHIVE,
   ...DAEMON_FILES.map(f => `desktop-daemon/${f}`), ...HARNESS_FILES.map(f => `desktop-harness/${f}`), ...PI_FILES.map(f => `desktop-pi/${f}`)];
 const STAGED_DIRS = ['desktop-pi', 'desktop-daemon', 'desktop-daemon/src', 'desktop-harness', 'desktop-harness/bin', 'desktop-harness/src'];
 // Enumerate the complete tree without following links, including empty directories.
@@ -288,10 +288,10 @@ function verifyStage(dir, { sourceCrate } = {}) {
     if (POSIX_MODES() && (stat.mode & 0o022)) problems.push(`${name} is group/world writable`);
     if (sha256File(file) !== (receipt.files || {})[name]) problems.push(`${name} hash differs from the receipt`);
   }
-  if (fs.existsSync(path.join(dir, 'abito-island-launcher')) && fs.readFileSync(path.join(dir, 'abito-island-launcher'), 'utf8') !== launcherText()) problems.push('launcher differs from the closed template');
+  if (fs.existsSync(path.join(dir, 'koda-launcher')) && fs.readFileSync(path.join(dir, 'koda-launcher'), 'utf8') !== launcherText()) problems.push('launcher differs from the closed template');
   const desk = path.join(dir, `${IDENTIFIER}.desktop`);
   if (fs.existsSync(desk) && fs.readFileSync(desk, 'utf8') !== desktopText()) problems.push('desktop entry differs from the closed template');
-  const bin = path.join(dir, 'abito-island');
+  const bin = path.join(dir, 'koda');
   if (fs.existsSync(bin)) {
     const bytes = fs.readFileSync(bin);
     if (sourceCrate && bytes.includes(Buffer.from(sourceCrate))) problems.push('binary embeds the source-tree path');

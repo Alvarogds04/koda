@@ -6,7 +6,7 @@ From `apps/desktop-tauri`, run `sh packaging/windows/xbuild.sh package` with the
 
 The installer contains these sibling executables:
 
-- `abito-island.exe`
+- `koda.exe`
 - `abito-notice-relay.exe`
 - `abito-private-session.exe`
 

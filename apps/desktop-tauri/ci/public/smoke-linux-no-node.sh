@@ -129,7 +129,7 @@ pass "(q) quarantine: no node and no pi anywhere on PATH or in the canonical loc
 # ------------------------------------------------------------------ (i) ------
 say '== (i) install the shipped stage with no Node on the machine'
 if sh "$APP/packaging/install.sh" "$STAGE" --prefix "$PREFIX" --applications-dir "$APPS" --project-root "$PROJECT" > "$WORK/install.log" 2>&1 \
-   && [ -x "$PREFIX/runtime/node" ] && [ ! -L "$PREFIX/runtime" ] && [ -x "$PREFIX/abito-island-launcher" ]; then
+   && [ -x "$PREFIX/runtime/node" ] && [ ! -L "$PREFIX/runtime" ] && [ -x "$PREFIX/koda-launcher" ]; then
   pass "(i) install: install.sh verified the receipt and the runtime archive and installed into $PREFIX using only the bundled node"
 else
   failx "(i) install — install.sh failed or left no $PREFIX/runtime/node"

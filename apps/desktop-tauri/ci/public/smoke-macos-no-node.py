@@ -113,7 +113,7 @@ def main():
             env[key] = os.environ[key]
     log_path = work / "island.log"
     with log_path.open("w") as log:
-        process = subprocess.Popen([str(app / "Contents/MacOS/abito-island")], cwd="/", env=env, stdout=log,
+        process = subprocess.Popen([str(app / "Contents/MacOS/koda")], cwd="/", env=env, stdout=log,
                                    stderr=subprocess.STDOUT, start_new_session=True)
     try:
         ready = wait_for(lambda: "abito-island-daemon: running (pid " in log_path.read_text(), 180)
