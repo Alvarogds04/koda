@@ -2222,7 +2222,10 @@ fn main() {
             let conversations_dir = if std::env::var_os("KODA_CONVERSATIONS_DATA_DIR").is_some() || probe_requested() {
                 None
             } else {
-                handle.path().app_data_dir().ok().map(|p| p.join("conversations"))
+                // K2-04 T6: the 0.1 conversations live under the OLD identifier's folder, next to the new one.
+                handle.path().app_data_dir().ok()
+                    .and_then(|p| abito_island::legacy_identity::legacy_sibling(&p, abito_island::identity::APP_IDENTIFIER))
+                    .map(|p| p.join("conversations"))
             };
             if let Some(line) = abito_island::legacy_conversations::cleanup(conversations_dir.as_deref()).log_line() {
                 eprintln!("{line}");
@@ -2231,7 +2234,9 @@ fn main() {
             // chat connection (the settings window keeps its own AgentConn).
             chathost::start_conn(&handle);
             // K2-03 T3 (S2, S4): delete the removed weekly Recap's data (exact files only), off the startup path.
-            let data_dir = handle.path().app_local_data_dir().ok();
+            // K2-04 T6: the 0.1 Recap file lives under the OLD identifier's folder, next to the new one.
+            let data_dir = handle.path().app_local_data_dir().ok()
+                .and_then(|p| abito_island::legacy_identity::legacy_sibling(&p, abito_island::identity::APP_IDENTIFIER));
             std::thread::spawn(move || {
                 let runtime = abito_island::transport::resolve_runtime().ok();
                 let outcome = abito_island::legacy_recap::cleanup(data_dir.as_deref(), runtime.as_deref());

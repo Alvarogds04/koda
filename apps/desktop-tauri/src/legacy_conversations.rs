@@ -8,7 +8,7 @@
 //! - `<app_data_dir>/conversations/index.json` (the rebuilt index)
 //! - `<app_data_dir>/conversations/index-<pid>-<n>.tmp` (atomic-rename leftovers of the index)
 //!
-//! Accounts, preferences, secrets (keychain `com.abitog.AbitoTauri`), the Engram memory and every
+//! Accounts, preferences, secrets (keychain `com.abitog.AbitoTauri`, the 0.1 service), the Engram memory and every
 //! other file in the app data dir are the user's and are never touched.
 //!
 //! Guards: the folder is opened ONCE without following a link (Unix `O_DIRECTORY|O_NOFOLLOW`; Windows reparse point refused)
@@ -22,6 +22,8 @@
 //! the user moved elsewhere), it is followed on purpose, because that is where Koda's own data
 //! lives; only the final component of each target is guarded.
 //! Same code on Linux, macOS and Windows: the directory comes from Tauri (`app_data_dir`).
+//! K2-04 T6: the 0.1 folder is the sibling named after the OLD bundle identifier (`legacy_identity::legacy_sibling`), because the
+//! identifier is now `com.abitog.Koda`; `<app_data_dir>` above means that old folder. Nothing is copied or moved.
 //! Independent of `conversations.rs`/`chathost` on purpose: U5 deletes them, this module survives.
 //! TODO(K2-05 follow-up): remove one version after K2-05 ships.
 use std::fs;
