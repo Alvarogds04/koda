@@ -32,9 +32,21 @@ test('one list on both sides: the paused features of paused.rs are exactly the P
 test('mail has its own entry and is NOT paused on either side', () => {
   assert.equal(P.paused('mail'), false, 'paused.js must not pause mail');
   assert.equal(P.PAUSED.includes('mail'), false, 'mail is never in the paused list');
-  assert.deepEqual([...P.NOT_PAUSED], ['mail', 'spotify'], 'the features this version turns on (K2-10 mail, K2-09 music)');
+  assert.deepEqual([...P.NOT_PAUSED], ['mail', 'spotify', 'github', 'calendar'], 'the features this version turns on (K2-10 mail, K2-09 music, K2-11 GitHub and calendar)');
   assert.match(rust, /Feature::Mail => false/, 'paused.rs gives mail its own, active entry');
   assert.doesNotMatch(pausedArm().join(' '), /mail/, 'mail never joins the paused arm');
+});
+
+test('K2-11 (S6): GitHub and the calendar have their OWN entry and are not paused; the 0.3 services stay paused', () => {
+  for (const id of ['github', 'calendar']) {
+    assert.equal(P.paused(id), false, `paused.js must not pause ${id}`);
+    assert.equal(P.PAUSED.includes(id), false, `${id} is never in the paused list`);
+    assert.equal(P.NOT_PAUSED.includes(id), true, `${id} is listed as a feature this version turns on`);
+    assert.doesNotMatch(pausedArm().join(' '), new RegExp(`(^| )${id}( |$)`), `${id} never joins the paused arm`);
+  }
+  assert.match(rust, /Feature::Github => false/, 'paused.rs gives GitHub its own, active entry');
+  assert.match(rust, /Feature::Calendar => false/, 'paused.rs gives the calendar its own, active entry');
+  assert.match(rust, /Feature::Dictation \| Feature::Voice \| Feature::Integrations => true/, 'the 0.3 services keep their pause: the two cards never un-pause them');
 });
 
 test('the rest of the pause is untouched, and the label still matches', () => {
@@ -47,7 +59,7 @@ test('the rest of the pause is untouched, and the label still matches', () => {
   assert.match(rust, /Feature::Spotify => false/);
   assert.equal(P.LABEL, 'En pausa · próxima versión');
   assert.match(rust, /pub const LABEL: &str = "En pausa · próxima versión"/);
-  for (const active of ['chat', 'agents', 'general', 'mail', 'phone']) assert.equal(P.paused(active), false, active);
+  for (const active of ['chat', 'agents', 'general', 'mail', 'phone', 'spotify', 'github', 'calendar']) assert.equal(P.paused(active), false, active);
 });
 
 console.log(`paused-check: ${passed} checks ok`);
