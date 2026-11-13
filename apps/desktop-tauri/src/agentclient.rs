@@ -45,6 +45,45 @@ const HOY_ACTIONS: [&str; 3] = ["buy", "sell", "send"];
 /// closed values reach the page (the island draws its chip with the row, and nothing when it is absent).
 const HOY_PROVENANCE: [&str; 2] = ["youtube_subtitles", "local_transcription"];
 
+// ---- K2-13 Telegram + transcription setting (S7, S10, S16, S18, S20; PROTOCOL.md «Telegram frames» and
+// «Transcription setting») ------------------------------------------------------------------------------------
+/// The four states the daemon may report. Anything else is not a status and changes nothing.
+const TELEGRAM_STATES: [&str; 4] = ["disconnected", "awaiting_code", "awaiting_password", "connected"];
+/// PROTOCOL.md: the account name is capped at 80 chars and the username is `[A-Za-z0-9_]{1,32}`.
+const TELEGRAM_NAME_MAX: usize = 80;
+const TELEGRAM_USERNAME_MAX: usize = 32;
+/// The daemon's own bounds (protocol.cjs TELEGRAM_LIMITS). The island refuses BEFORE the socket, so a payload the
+/// daemon would reject never leaves the WebView.
+const TELEGRAM_API_ID_MAX: u64 = 2_147_483_647;
+const TELEGRAM_CODE_MAX: usize = 32;
+const TELEGRAM_PASSWORD_MAX: usize = 1024;
+/// A session string is printable ASCII and bounded (`isCarriableSession` in the daemon).
+const TELEGRAM_SESSION_MAX: usize = 4096;
+const TRANSCRIPTION_MODES: [&str; 2] = ["local-parakeet", "remote"];
+const TRANSCRIPTION_LANGUAGES: [&str; 7] = ["es", "en", "fr", "de", "it", "pt", "ca"];
+const TRANSCRIPTION_MODEL_MAX: usize = 200;
+
+/// PROTOCOL.md «Client → server»: `apiHash` is exactly 32 lowercase hex.
+fn api_hash_ok(s: &str) -> bool {
+    s.len() == 32 && s.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+/// E.164 as the daemon validates it: `+`, a non-zero first digit and 7–15 digits in total.
+fn phone_ok(s: &str) -> bool {
+    let b = s.as_bytes();
+    b.len() >= 8 && b.len() <= 16 && b[0] == b'+' && (b'1'..=b'9').contains(&b[1]) && b[1..].iter().all(u8::is_ascii_digit)
+}
+/// The session contract the daemon and the island share: non-empty, printable ASCII, bounded. A value that cannot ever
+/// have been exported by the daemon is not one the island may hand back or store.
+pub fn carriable_session(s: &str) -> bool {
+    !s.is_empty() && s.len() <= TELEGRAM_SESSION_MAX && s.bytes().all(|b| (0x20..=0x7e).contains(&b))
+}
+/// A transcription setting's remote account id: `[a-z0-9][a-z0-9._-]{0,63}` (transcribe-setting.cjs ACCOUNT_ID).
+fn transcription_account_ok(s: &str) -> bool {
+    let b = s.as_bytes();
+    !b.is_empty() && b.len() <= 64 && (b[0].is_ascii_lowercase() || b[0].is_ascii_digit())
+        && b[1..].iter().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, b'.' | b'_' | b'-'))
+}
+
 fn hoy_id(s: &str) -> bool {
     let b = s.as_bytes();
     b.len() == 36
@@ -527,6 +566,97 @@ pub fn parse_ui_command(payload: &Value) -> Result<UiCommand, CommandError> {
             }
             wire(&[("type", "profile_select"), ("id", id)])
         }
+        // K2-13 (S10/S20): the Telegram verbs Ajustes uses. The api id, the api hash, the phone, the code and the
+        // password are validated here with the daemon's own rules and then travel in ONE line; none of them is stored in
+        // this client (the state, the events and the logs never see them) and the session only ever comes back in the
+        // `telegram_session` reply the fold parks for the host.
+        "telegram_status" | "telegram_logout" | "transcription_get" => {
+            exact(1)?;
+            wire(&[("type", action)])
+        }
+        "telegram_login_start" => {
+            exact(4)?;
+            let api_id = map.get("apiId").and_then(Value::as_u64).filter(|n| (1..=TELEGRAM_API_ID_MAX).contains(n)).ok_or(CommandError)?;
+            let (api_hash, phone) = (get("apiHash")?, get("phone")?);
+            if !api_hash_ok(api_hash) || !phone_ok(phone) {
+                return Err(CommandError);
+            }
+            Ok(UiCommand::Wire(format!(
+                "{{\"type\":\"telegram_login_start\",\"apiId\":{api_id},\"apiHash\":{},\"phone\":{}}}\n",
+                serde_json::to_string(api_hash).unwrap_or_default(),
+                serde_json::to_string(phone).unwrap_or_default()
+            )))
+        }
+        "telegram_login_code" => {
+            exact(2)?;
+            let code = get("code")?;
+            if code.is_empty() || code.chars().count() > TELEGRAM_CODE_MAX || has_control(code) {
+                return Err(CommandError);
+            }
+            wire(&[("type", "telegram_login_code"), ("code", code)])
+        }
+        "telegram_login_password" => {
+            // The 2FA password is never stored, never logged and cleared from the page right after the round trip; only the
+            // daemon's bound (1–1024 chars) and the absence of control characters are enforced here.
+            exact(2)?;
+            let password = get("password")?;
+            if password.is_empty() || password.chars().count() > TELEGRAM_PASSWORD_MAX || has_control(password) {
+                return Err(CommandError);
+            }
+            wire(&[("type", "telegram_login_password"), ("password", password)])
+        }
+        "telegram_session_restore" => {
+            // The island's start-up hand-off of a session it already holds in the keychain. The session must satisfy the
+            // daemon's carry contract BEFORE it goes on the wire, and the api id/api hash are its pair.
+            exact(4)?;
+            let api_id = map.get("apiId").and_then(Value::as_u64).filter(|n| (1..=TELEGRAM_API_ID_MAX).contains(n)).ok_or(CommandError)?;
+            let (api_hash, session) = (get("apiHash")?, get("session")?);
+            if !api_hash_ok(api_hash) || !carriable_session(session) {
+                return Err(CommandError);
+            }
+            Ok(UiCommand::Wire(format!(
+                "{{\"type\":\"telegram_session_restore\",\"apiId\":{api_id},\"apiHash\":{},\"session\":{}}}\n",
+                serde_json::to_string(api_hash).unwrap_or_default(),
+                serde_json::to_string(session).unwrap_or_default()
+            )))
+        }
+        "transcription_set" => {
+            // K2-13 (S7/S18): the setting is validated exactly as the daemon validates it (transcribe-setting.cjs), so a
+            // frame it would refuse never leaves the WebView. Parakeet is the ONLY local mode: `local-whisper-turbo` is
+            // not in the closed set, and an unknown key inside the setting refuses the whole command.
+            exact(2)?;
+            let setting = map.get("setting").and_then(Value::as_object).ok_or(CommandError)?;
+            let mode = setting.get("mode").and_then(Value::as_str).and_then(|m| TRANSCRIPTION_MODES.iter().copied().find(|x| *x == m)).ok_or(CommandError)?;
+            let language = match setting.get("language") {
+                None => "es",
+                Some(v) => v.as_str().and_then(|l| TRANSCRIPTION_LANGUAGES.iter().copied().find(|x| *x == l)).ok_or(CommandError)?,
+            };
+            let mut folded = serde_json::Map::new();
+            folded.insert("mode".into(), Value::from(mode));
+            folded.insert("language".into(), Value::from(language));
+            match (mode, setting.get("remote")) {
+                ("remote", Some(remote)) => {
+                    let remote = remote.as_object().ok_or(CommandError)?;
+                    if remote.len() != 2 || !remote.contains_key("accountId") || !remote.contains_key("model") {
+                        return Err(CommandError);
+                    }
+                    let account = remote.get("accountId").and_then(Value::as_str).filter(|a| transcription_account_ok(a)).ok_or(CommandError)?;
+                    let model = remote.get("model").and_then(Value::as_str).filter(|m| {
+                        !m.trim().is_empty() && m.chars().count() <= TRANSCRIPTION_MODEL_MAX && !has_control(m)
+                    }).ok_or(CommandError)?;
+                    folded.insert("remote".into(), json!({"accountId": account, "model": model}));
+                }
+                ("local-parakeet", None) => {}
+                // a remote without its account, or a local mode carrying one, is not a setting
+                _ => return Err(CommandError),
+            }
+            // exactly `action` + `setting` at the top level, and no key inside the setting beyond the three allowed ones
+            if setting.keys().any(|k| !matches!(k.as_str(), "mode" | "language" | "remote")) {
+                return Err(CommandError);
+            }
+            let line = json!({"type": "transcription_set", "setting": Value::Object(folded)});
+            Ok(UiCommand::Wire(format!("{}\n", serde_json::to_string(&line).map_err(|_| CommandError)?)))
+        }
         _ => Err(CommandError),
     }
 }
@@ -571,6 +701,19 @@ pub struct ClientState {
     /// `ready`/`agent_state` frames, closed set (`ready|starting|restarting|stopped|unavailable`);
     /// null until the daemon says so. The daemon answers before its engine is ready.
     engine: Value,
+    /// K2-13 (S10): the daemon's `telegram_status`, folded to a bounded closed view
+    /// (`{state, account?, notice?, retryAfterMinutes?}`, null until the daemon speaks). It never carries the phone,
+    /// the api hash, the code, the password or the session.
+    telegram: Value,
+    /// K2-13 (S7/S18): the daemon's `transcription` setting, folded to a closed view
+    /// (`{setting, ffmpeg, local}`), null until the daemon answers.
+    transcription: Value,
+    /// K2-13 (S20): the ONE `telegram_session` reply of this connection. It is a CREDENTIAL and is deliberately NOT
+    /// serialised: `#[serde(skip)]` is the boundary that keeps it out of every `agent:state` event, so the WebView can
+    /// only ever learn that a session arrived. The host drains it with [`ClientState::take_session`] and stores it in
+    /// the OS keychain.
+    #[serde(skip)]
+    session: Option<String>,
 }
 
 /// A plan hash from the engine: exactly 64 lowercase hex characters.
@@ -634,7 +777,19 @@ impl ClientState {
             hooks: Value::Null,
             hoy: Value::Null,
             engine: Value::Null,
+            telegram: Value::Null,
+            transcription: Value::Null,
+            session: None,
         }
+    }
+    /// Take the `telegram_session` this connection received, if any. Only the host calls this: the value goes to the OS
+    /// keychain and never back into a view, an event or a log.
+    pub fn take_session(&mut self) -> Option<String> {
+        self.session.take()
+    }
+    /// Whether a `telegram_session` is waiting to be stored. The view says so as a boolean, never as the value.
+    pub fn has_pending_session(&self) -> bool {
+        self.session.is_some()
     }
     /// #490: the closed live-sessions view (`{rows, truncated}`, `Null` until the engine answers). The ONE
     /// accessor the phone link reads, so what the island shows and what the phone gets cannot drift apart.
@@ -919,11 +1074,66 @@ impl ClientState {
                 }
                 self.hooks = Value::Array(out);
             }
+            "telegram_status" => {
+                // K2-13 (S10/S20): the public account state, rebuilt field by field. Nothing else the frame carried reaches
+                // the page, and there is no phone, api hash, code, password or session in it by construction.
+                let Some(state) = closed_cell(frame, "state", &TELEGRAM_STATES) else { return Ok(()) };
+                let mut view = json!({"state": state});
+                if let Some(account) = frame.get("account").filter(|a| a.is_object()) {
+                    let name = clip(account, "name", TELEGRAM_NAME_MAX);
+                    let username = match account.get("username").and_then(Value::as_str) {
+                        Some(u) if !u.is_empty() && u.len() <= TELEGRAM_USERNAME_MAX && u.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') => Value::from(u),
+                        _ => Value::Null,
+                    };
+                    if name.is_string() {
+                        view["account"] = json!({"name": name, "username": username});
+                    }
+                }
+                // Koda's own Spanish sentence (the daemon writes it; Telegram's raw text never travels).
+                if let Some(notice) = frame.get("notice").and_then(Value::as_str).filter(|n| !n.is_empty() && n.chars().count() <= 300 && !has_control(n)) {
+                    view["notice"] = json!(notice);
+                }
+                if let Some(m) = frame.get("retryAfterMinutes").and_then(Value::as_u64).filter(|m| (1..=1440).contains(m)) {
+                    view["retryAfterMinutes"] = json!(m);
+                }
+                self.telegram = view;
+            }
+            "telegram_session" => {
+                // S20: this frame is the ONLY carrier of the session, and it is a reply to our own login. It is parked for the
+                // host (which stores it in the OS keychain) and NEVER folded into the view: the page must not be able to read
+                // a credential, not even out of a state event.
+                let Some(session) = frame.get("session").and_then(Value::as_str).filter(|s| carriable_session(s)) else { return Ok(()) };
+                self.session = Some(session.to_owned());
+            }
+            "transcription" => {
+                // K2-13 (S7/S18): the global setting plus whether the bundled tools are there. A frame whose mode, language,
+                // remote or tool state is off the closed vocabulary changes nothing (never sanitised into a lie).
+                let Some(setting) = frame.get("setting").filter(|s| s.is_object()) else { return Ok(()) };
+                let Some(mode) = closed_cell(setting, "mode", &TRANSCRIPTION_MODES) else { return Ok(()) };
+                let language = closed_cell(setting, "language", &TRANSCRIPTION_LANGUAGES);
+                let mut folded = json!({"mode": mode, "language": language});
+                if mode == "remote" {
+                    let Some(remote) = setting.get("remote").filter(|r| r.is_object()) else { return Ok(()) };
+                    let Some(account) = remote.get("accountId").and_then(Value::as_str).filter(|a| transcription_account_ok(a)) else { return Ok(()) };
+                    let Some(model) = remote.get("model").and_then(Value::as_str).filter(|m| {
+                        !m.trim().is_empty() && m.chars().count() <= TRANSCRIPTION_MODEL_MAX && !has_control(m)
+                    }) else { return Ok(()) };
+                    folded["remote"] = json!({"accountId": account, "model": model});
+                }
+                let tool = |key: &str| closed_cell(frame, key, &["available", "unavailable"]);
+                let (Some(ffmpeg), Some(local)) = (tool("ffmpeg"), tool("local")) else { return Ok(()) };
+                self.transcription = json!({"setting": folded, "ffmpeg": ffmpeg, "local": local});
+            }
             "error" => {
                 // the daemon's closed code set (anything else reads as plain `failed`), never free text
                 let code = match frame.get("code").and_then(Value::as_str) {
                     Some(c @ ("bad_request" | "busy" | "not_busy" | "unavailable" | "rate_limited" | "unknown_ask" | "failed" | "store_not_private"
-                        | "paused" | "unknown_minikoda" | "not_active" | "not_pending" | "exists" | "limit" | "model_unavailable" | "unknown_item")) => c,
+                        | "paused" | "unknown_minikoda" | "not_active" | "not_pending" | "exists" | "limit" | "model_unavailable" | "unknown_item"
+                        // K2-13 Telegram (S10/S20): the daemon's closed set; each code has a sentence of ours in the page.
+                        | "telegram_unavailable" | "telegram_already_connected" | "telegram_not_awaiting_code" | "telegram_not_awaiting_password"
+                        | "telegram_credentials_invalid" | "telegram_code_invalid" | "telegram_password_invalid" | "telegram_password_required"
+                        | "telegram_flood_wait" | "telegram_session_invalid" | "telegram_cancelled" | "telegram_login_other_connection"
+                        | "telegram_failed" | "telegram_not_connected" | "telegram_channel_invalid")) => c,
                     _ => "failed",
                 };
                 let n = self.last_error["n"].as_u64().unwrap_or(0) + 1;
