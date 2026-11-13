@@ -31,7 +31,10 @@
   const NOTHING = 'Nada por aquí';
   const STRIP_DAYS = 14;
   const isObject = v => v !== null && typeof v === 'object' && !Array.isArray(v);
-  const clean = (v, max = MAX_TEXT) => (typeof v === 'string' ? [...v.replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ').trim()].slice(0, max).join('') : '');
+  /** C0/C1 controls PLUS the bidi overrides, zero-width and separator characters a title (or a repo name) can carry from
+      outside: each becomes a space and the result is capped, because they are text, never direction. */
+  const HOSTILE = /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]/g;
+  const clean = (v, max = MAX_TEXT) => (typeof v === 'string' ? [...v.replace(HOSTILE, ' ').trim()].slice(0, max).join('') : '');
   /** Why there is no card. Closed: anything else reads as «bad answer», never as the user's fault. */
   const REASONS = Object.freeze({
     gh_not_installed: 'Guardá una clave GitHub en Ajustes o instalá la CLI de GitHub (gh).',
@@ -75,7 +78,8 @@
     if (!isObject(pr) || typeof pr.title !== 'string' || typeof pr.repo !== 'string' || !Number.isSafeInteger(pr.number) || pr.number < 1) return null;
     const url = safeUrl(pr.url);
     if (!url) return null;
-    const ref = `${pr.repo.split('/').pop() || pr.repo}#${pr.number}`;
+    // the ref is painted and goes into a tooltip: the same sanitiser and the same cap as every other text of the card
+    const ref = clean(`${pr.repo.split('/').pop() || pr.repo}#${pr.number}`);
     const meta = pr.isDraft === true ? 'borrador' : (CI_WORDS[pr.ci] || CI_WORDS.unknown);
     return { ref, title: clean(pr.title), meta, url };
   }
@@ -88,7 +92,7 @@
       if (!Object.prototype.hasOwnProperty.call(REASON_WORDS, issue.reason)) continue;
       const url = safeUrl(issue.url);
       if (!url) continue;
-      out.push({ ref: `${issue.repo.split('/').pop() || issue.repo}#${issue.number}`, title: clean(issue.title), repo: issue.repo, number: issue.number, url, reason: issue.reason });
+      out.push({ ref: clean(`${issue.repo.split('/').pop() || issue.repo}#${issue.number}`), title: clean(issue.title), repo: issue.repo, number: issue.number, url, reason: issue.reason });
     }
     return out;
   }
@@ -219,11 +223,13 @@ function mount(api) {
   const badge = () => (pulse ? pulse.toReview.length : 0);
   const paint = () => {
     if (!cardHost) return;
-    // a poll that changed nothing must not detach the row the user is on (the old card pinned the same rule)
-    const next = [pulse, stats, activity, section];
-    if (drawn && next.every((v, i) => v === drawn[i])) return;
+    // a poll that changed nothing must not detach the row the user is on nor reset the scroll: the guard is a stable serialisation
+    // of the view model, never object identity (a host answer is a new object every poll)
+    const view = api.cardView({ pulse, stats, activity, section });
+    const next = JSON.stringify(view);
+    if (drawn !== null && next === drawn) return;
     drawn = next;
-    api.render(cardHost, api.cardView({ pulse, stats, activity, section }), open, pick);
+    api.render(cardHost, view, open, pick);
   };
   function pick(key) { section = key; paint(); }
   function open(url) {

@@ -7,10 +7,12 @@
        -> {available:true, events:[{title,location,allDay,start:{date,time,tz},end:{...}}], fetchedAt}
        -> {available:false, reason:'not_configured'|'bad_url'|'unreachable'|'refused'|'bad_answer'}
 
-   The host fetches a UTC window of [today-1, today+3]; THIS file keeps the events that are today or tomorrow in the user's own
-   zone (L5) and paints them with their time. A stamp with tz 'UTC' is an instant, so it is converted to local; a stamp with a
-   TZID or none (floating) has no zone database behind it, so its written wall time is shown as written. An all-day stamp is a
-   date, never an instant.
+   The host fetches a UTC window of [today-1, today+3]; THIS file keeps the events that COVER today or tomorrow in the user's own
+   zone (L5) and paints them with their time. An event covers days, not only its start day: an all-day event spans
+   [start day, end day) — the end is EXCLUSIVE, so 30-jun→03-jul is on every day in between — and a timed event that began before
+   today still covers it, shown under «Hoy» as «Hasta HH:MM» with the time it ends. A stamp with tz 'UTC' is an instant, so it is
+   converted to local; a stamp with a TZID or none (floating) has no zone database behind it, so its written wall time is shown as
+   written. An all-day stamp is a date, never an instant.
    Criterion 3 (S3): the card exists only while the answer really is available:true. There is no sample event anywhere in this
    file, and nothing but title, location, day and time is projected (the private URL never leaves the host).
    Pure view-model first (Node-testable), then the browser-only mount at the tail (house pattern: spotify-view.js). */
@@ -29,11 +31,16 @@
   const REASONS = Object.freeze(['not_configured', 'bad_url', 'unreachable', 'refused', 'bad_answer']);
   const DAYS = Object.freeze(['Hoy', 'Mañana']);
   const ALL_DAY = 'Todo el día';
+  const HASTA = 'Hasta';
   const MAX_TEXT = 200;
   const POLL_MS = 60000; // the host caches a fetch for 5 min; a minute is what shows a new event soon after it is added
   const isObject = v => v !== null && typeof v === 'object' && !Array.isArray(v);
-  const clean = (v, max = MAX_TEXT) => (typeof v === 'string' ? [...v.replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ').trim()].slice(0, max).join('') : '');
+  /** C0/C1 controls PLUS the bidi overrides, zero-width and separator characters a title can carry from outside (an invitation
+      writes the title, not us): control characters are text, never direction, so each one becomes a space and the result is capped. */
+  const HOSTILE = /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]/g;
+  const clean = (v, max = MAX_TEXT) => (typeof v === 'string' ? [...v.replace(HOSTILE, ' ').trim()].slice(0, max).join('') : '');
   const pad = n => String(n).padStart(2, '0');
+  const DAY_MS = 86400000;
   const key = (y, m, d) => `${y}-${pad(m)}-${pad(d)}`;
   const daysIn = (y, m) => new Date(Date.UTC(y, m, 0)).getUTCDate();
 
@@ -60,12 +67,17 @@
     } catch { return null; }
   }
 
-  /** The instant (ms) of a wall time written in `zone` (a TZID), or null when the zone is unknown. Two passes settle the DST edge. */
+  /** The instant (ms) of a wall time written in `zone` (a TZID), or null when the zone is unknown. A local time that exists once
+      resolves to that instant; a DST gap (a time that never happens) resolves with the offset in force BEFORE the gap, and an
+      overlap (a time that happens twice) to its FIRST occurrence — the larger offset — as RFC 5545 asks. */
   function zonedInstant(zone, wallUtc) {
-    const first = zoneOffset(zone, wallUtc);
-    if (first === null) return null;
-    const second = zoneOffset(zone, wallUtc - first);
-    return wallUtc - (second === null ? first : second);
+    const before = zoneOffset(zone, wallUtc - DAY_MS), after = zoneOffset(zone, wallUtc + DAY_MS);
+    if (before === null || after === null) return null;
+    // every offset around this wall time is a candidate; the ones that read back as themselves are the real occurrences
+    const real = [before, after].filter((offset, i, all) => all.indexOf(offset) === i)
+      .filter(offset => zoneOffset(zone, wallUtc - offset) === offset);
+    if (real.length) return wallUtc - Math.max(...real); // ambiguous (fall back): the first occurrence has the larger offset
+    return wallUtc - before; // the gap: the offset before it, as RFC 5545 says
   }
 
   const localPlace = at => ({ day: key(at.getFullYear(), at.getMonth() + 1, at.getDate()), minutes: at.getHours() * 60 + at.getMinutes(), allDay: false });
@@ -104,26 +116,51 @@
   /** True only for a real available:true answer (criterion 3: no card, and no sample data, otherwise). */
   const available = answer => isObject(answer) && answer.available === true;
 
-  /** One event of the answer → the closed row data, or null when it is not the shape we know. */
+  /** One event of the answer → the closed row data, or null when it is not the shape we know. The end is read as well as the
+      start: the days an event covers come from both. */
   function readEvent(event) {
     if (!isObject(event) || typeof event.title !== 'string' || typeof event.allDay !== 'boolean') return null;
     if (event.location !== null && event.location !== undefined && typeof event.location !== 'string') return null;
-    const placed = place(event.start);
-    if (!placed || placed.allDay !== event.allDay) return null;
-    return { title: clean(event.title), location: clean(event.location) || null, placed };
+    const placed = place(event.start), ended = place(event.end);
+    if (!placed || !ended) return null;
+    // an all-day event has all-day ends and a timed one has timed ends: anything else is a shape we do not know
+    if (placed.allDay !== event.allDay || ended.allDay !== event.allDay) return null;
+    return { title: clean(event.title), location: clean(event.location) || null, placed, ended };
   }
 
-  /** The read event → one row of the card, or null when it is not today or tomorrow where the user is. */
-  function rowOf(read, days) {
-    const placed = read.placed;
-    const at = days.indexOf(placed.day);
-    if (at < 0) return null;
-    const time = placed.allDay ? ALL_DAY : `${pad(Math.floor(placed.minutes / 60))}:${pad(placed.minutes % 60)}`;
+  const clock = placed => `${pad(Math.floor(placed.minutes / 60))}:${pad(placed.minutes % 60)}`;
+  /** One covered day → one row of the card (the fields are closed; nothing of the event rides along beyond them). */
+  function rowAt(read, at, time, spoken, rank) {
     return {
-      day: DAYS[at], title: read.title, location: read.location, time, allDay: placed.allDay,
-      aria: `${DAYS[at]}, ${time === ALL_DAY ? ALL_DAY : 'a las ' + time}, ${read.title}${read.location ? ', ' + read.location : ''}`,
-      rank: [at, placed.allDay ? 0 : 1, placed.minutes],
+      day: DAYS[at], title: read.title, location: read.location, time, allDay: rank[1] === 0,
+      aria: `${DAYS[at]}, ${spoken}, ${read.title}${read.location ? ', ' + read.location : ''}`, rank,
     };
+  }
+
+  /** The read event → the rows it paints, one for each of today/tomorrow it COVERS (zero, one or two). */
+  function rowsOf(read, days) {
+    const out = [];
+    if (read.placed.allDay) {
+      // an all-day event spans [start day, end day), end exclusive; the keys are YYYY-MM-DD, so comparing them is comparing dates
+      for (let at = 0; at < days.length; at += 1) {
+        if (days[at] >= read.placed.day && days[at] < read.ended.day) out.push(rowAt(read, at, ALL_DAY, ALL_DAY, [at, 0, 0]));
+      }
+      return out;
+    }
+    const at = days.indexOf(read.placed.day);
+    if (at >= 0) {
+      const time = clock(read.placed);
+      out.push(rowAt(read, at, time, `a las ${time}`, [at, 1, read.placed.minutes]));
+      return out;
+    }
+    // it began before today: it still covers today while its end is after 00:00 here, and the time column says until when
+    const today = days[0];
+    const covers = read.ended.day > today || (read.ended.day === today && read.ended.minutes > 0);
+    if (read.placed.day < today && covers) {
+      const until = clock(read.ended);
+      out.push(rowAt(read, 0, `${HASTA} ${until}`, `hasta las ${until}`, [0, 1, 0]));
+    }
+    return out;
   }
 
   /** A `calendar_action` answer → what the card paints. Off-shape is «unavailable», never a guess. */
@@ -140,8 +177,7 @@
       const read = readEvent(event);
       // an event we cannot read is a shape we do not know: the whole answer is refused, never a half card
       if (!read) return { kind: 'unavailable', reason: 'bad_answer' };
-      const row = rowOf(read, days);
-      if (row) rows.push(row); // readable, just outside today and tomorrow
+      for (const row of rowsOf(read, days)) rows.push(row); // readable, just outside today and tomorrow
     }
     rows.sort((a, b) => a.rank[0] - b.rank[0] || a.rank[1] - b.rank[1] || a.rank[2] - b.rank[2]);
     return {
@@ -183,7 +219,7 @@
     return !!(P && P.paused('calendar'));
   };
 
-  return { CARD_ID, LABEL, ICON, NOTE, EMPTY, REASONS, DAYS, ALL_DAY, MAX_TEXT, POLL_MS, available, cardView, readEvent, render, place, windowDays, pausedNow };
+  return { CARD_ID, LABEL, ICON, NOTE, EMPTY, REASONS, DAYS, ALL_DAY, MAX_TEXT, POLL_MS, available, cardView, readEvent, render, place, windowDays, zonedInstant, pausedNow };
 });
 
 function mount(api) {
@@ -217,7 +253,8 @@ function mount(api) {
     if (on() !== before) shortcuts.refresh();
   }
   function refresh() {
-    if (inFlight || doc.hidden) return;
+    // a hidden page and a paused card both stay quiet: GitHub does exactly the same with its own switch (K2-11 S6)
+    if (inFlight || doc.hidden || api.pausedNow()) return;
     inFlight = true;
     invoke('calendar_action', { payload: { action: 'refresh' } })
       .then(answer => api.cardView(answer, Date.now()), () => api.cardView(null, Date.now()))

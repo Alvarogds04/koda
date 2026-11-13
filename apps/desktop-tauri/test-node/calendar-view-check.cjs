@@ -132,7 +132,12 @@ test('off-shape answers are refused whole: never a guess, never a half card', ()
     { ...ok, events: [{ ...ev(), title: 7 }] }, { ...ok, events: [{ ...ev(), allDay: 'yes' }] },
     { ...ok, events: [{ ...ev(), start: 'hoy' }] }, { ...ok, events: [{ ...ev(), start: { date: '2026-13-01', time: '10:00:00', tz: 'UTC' } }] },
     { ...ok, events: [{ ...ev(), start: { date: '2026-05-12', time: '25:00:00', tz: 'UTC' } }] },
-    { ...ok, events: [{ ...ev(), start: null }] }, { ...ok, events: [{ ...ev(), start: { date: '2026-05-12', time: '10:00:00', tz: 7 } }] }];
+    { ...ok, events: [{ ...ev(), start: null }] }, { ...ok, events: [{ ...ev(), start: { date: '2026-05-12', time: '10:00:00', tz: 7 } }] },
+    // F2: the end is read now, so an end we cannot place refuses the answer too
+    { ...ok, events: [{ ...ev(), end: null }] }, { ...ok, events: [{ ...ev(), end: { date: '2026-02-30', time: '10:00:00', tz: 'UTC' } }] },
+    { ...ok, events: [{ ...ev(), end: { date: '2026-05-12', time: '25:00:00', tz: 'UTC' } }] },
+    { ...ok, events: [{ ...ev(), allDay: true, start: { date: '2026-05-12', time: null, tz: null } }] },
+    { ...ok, events: [{ ...ev(), end: { date: '2026-05-12', time: null, tz: null } }] }];
   for (const bad of bads) assert.equal(C.cardView(bad, NOW).kind, 'unavailable', JSON.stringify(bad));
   assert.equal(C.cardView(ok, 'now').kind, 'unavailable', 'a bad clock is refused too');
 });
@@ -144,6 +149,83 @@ test('the rows carry only the closed fields: a title, a location, a day and a ti
   const long = C.cardView(answer([ev({ title: 'x'.repeat(400), url: 'https://privado.example/cal?token=abc' })]), NOW);
   assert.equal(long.rows[0].title.length, 200);
   assert.doesNotMatch(JSON.stringify(long.rows), /privado\.example|token=/, 'nothing but the closed fields is projected');
+});
+
+// ── F2 · an event covers days, not only its start day ─────────────────────────────────────────────────────────
+// Floating stamps (no TZID) keep their written wall day in every zone, so these run in the ambient TZ of this process.
+const COVER_NOW = Date.now();
+const dayAt = offset => { const d = new Date(COVER_NOW); d.setDate(d.getDate() + offset); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
+const floatingAt = (o = {}) => ({ title: 'Feriado', location: null, allDay: false,
+  start: { date: dayAt(0), time: '22:00:00', tz: null }, end: { date: dayAt(0), time: '23:00:00', tz: null }, ...o });
+const allDayAt = (o = {}) => ({ title: 'Congreso', location: null, allDay: true,
+  start: { date: dayAt(0), time: null, tz: null }, end: { date: dayAt(1), time: null, tz: null }, ...o });
+
+test('F2: an all-day event shows on every day of the window it covers — its end is exclusive', () => {
+  const v = C.cardView(answer([
+    allDayAt({ title: 'Congreso', start: { date: dayAt(-1), time: null, tz: null }, end: { date: dayAt(2), time: null, tz: null } }),
+    allDayAt({ title: 'Termina hoy', start: { date: dayAt(-2), time: null, tz: null }, end: { date: dayAt(0), time: null, tz: null } }),
+    allDayAt({ title: 'Empieza mañana', start: { date: dayAt(1), time: null, tz: null }, end: { date: dayAt(2), time: null, tz: null } }),
+  ]), COVER_NOW);
+  assert.equal(v.kind, 'card');
+  assert.deepEqual(v.rows.map(r => `${r.day} ${r.time} ${r.title}`), [
+    'Hoy Todo el día Congreso', 'Mañana Todo el día Congreso', 'Mañana Todo el día Empieza mañana',
+  ], 'a 30-jun→03-jul event is on both days; an end at 00:00 today covers nothing of today');
+  for (const r of v.rows) assert.equal(r.allDay, true, 'an all-day event still says «Todo el día»');
+});
+
+test('F2: a timed event that began before today and still covers it shows under «Hoy» with its end', () => {
+  const v = C.cardView(answer([
+    floatingAt({ title: 'Guardia', start: { date: dayAt(-1), time: '22:00:00', tz: null }, end: { date: dayAt(0), time: '01:30:00', tz: null } }),
+    floatingAt({ title: 'Ya pasó', start: { date: dayAt(-1), time: '10:00:00', tz: null }, end: { date: dayAt(-1), time: '11:00:00', tz: null } }),
+    floatingAt({ title: 'Terminó a medianoche', start: { date: dayAt(-1), time: '20:00:00', tz: null }, end: { date: dayAt(0), time: '00:00:00', tz: null } }),
+  ]), COVER_NOW);
+  assert.deepEqual(v.rows.map(r => `${r.day} ${r.time} ${r.title}`), ['Hoy Hasta 01:30 Guardia'],
+    'an event entirely before today is dropped, and one that ends at 00:00 does not cover today');
+  assert.equal(v.rows[0].allDay, false);
+  assert.equal(v.rows[0].aria, 'Hoy, hasta las 01:30, Guardia');
+});
+
+test('F2: all-day rows stay «Todo el día» and sort before the timed ones of the same day', () => {
+  const v = C.cardView(answer([
+    floatingAt({ title: 'Reunión', start: { date: dayAt(0), time: '09:00:00', tz: null }, end: { date: dayAt(0), time: '10:00:00', tz: null } }),
+    allDayAt({ title: 'Feriado' }),
+    floatingAt({ title: 'Guardia', start: { date: dayAt(-1), time: '22:00:00', tz: null }, end: { date: dayAt(0), time: '01:30:00', tz: null } }),
+  ]), COVER_NOW);
+  assert.deepEqual(v.rows.map(r => `${r.day} ${r.time}`), ['Hoy Todo el día', 'Hoy Hasta 01:30', 'Hoy 09:00']);
+  assert.deepEqual(v.rows.map(r => r.allDay), [true, false, false]);
+});
+
+test('F4: a DST gap resolves with the offset before it, an overlap to its FIRST occurrence (RFC 5545)', () => {
+  const table = [
+    ['Europe/Madrid', [2026, 3, 29, 2, 30], '2026-03-29T01:30:00.000Z'], // 02:30 does not exist that night: +01:00, the offset before the gap
+    ['America/New_York', [2026, 3, 8, 2, 30], '2026-03-08T07:30:00.000Z'], // idem: -05:00
+    ['Europe/Madrid', [2026, 10, 25, 2, 30], '2026-10-25T00:30:00.000Z'], // 02:30 happens twice: the first one, +02:00
+    ['America/New_York', [2026, 11, 1, 1, 30], '2026-11-01T05:30:00.000Z'], // idem: -04:00
+  ];
+  for (const [zone, [y, m, d, h, mi], expected] of table) {
+    assert.equal(new Date(C.zonedInstant(zone, Date.UTC(y, m - 1, d, h, mi))).toISOString(), expected, `${zone} ${y}-${m}-${d} ${h}:${mi}`);
+  }
+  // a zone the WebView does not know stays null, never a guess (a Windows name, a typo)
+  assert.equal(C.zonedInstant('Mars/Olympus', Date.UTC(2026, 0, 1)), null);
+});
+
+const BIDI = /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]/;
+
+test('F7: the sanitiser strips bidi controls and separators too, not only C0/C1 (titles come from outside invitations)', () => {
+  // U+202E right-to-left override, U+2066/U+2069 isolates, U+200E mark, U+FEFF, U+200B, U+2028 line separator
+  const hostile = 'Factura\u202E\u2066gpj.exe\u2069\u200E\uFEFF\u200B y\u2028algo';
+  const v = C.cardView(answer([floatingAt({ title: hostile, location: 'Sala\u202Etxt\u200F' })]), COVER_NOW);
+  assert.equal(v.rows.length, 1);
+  assert.doesNotMatch(v.rows[0].title, BIDI, JSON.stringify(v.rows[0].title));
+  assert.doesNotMatch(v.rows[0].location, BIDI, JSON.stringify(v.rows[0].location));
+  assert.match(v.rows[0].title, /^Factura/);
+  assert.match(v.rows[0].title, /gpj\.exe/);
+  assert.match(v.rows[0].title, /algo$/);
+  // and the font of all of it is textContent: what the row carries is what the DOM paints, hostile characters included or not
+  const doc2 = fakeDocument();
+  const host = doc2.createElement('div');
+  C.render(host, v);
+  assert.doesNotMatch(text(host), BIDI);
 });
 
 test('the card DOM is textContent only and hides itself when there is no real answer', () => {
@@ -189,23 +271,25 @@ test('the wiring: one registered card, a 60 s poll, the shortcuts refresh and th
 const zone0 = 'America/Argentina/Buenos_Aires', zone1 = 'UTC';
 for (const tz of [zone0, zone1]) zone(tz);
 
-async function mounted(answer) {
+async function mounted(answer, opts = {}) {
   const vm = require('node:vm');
   const doc = fakeDocument();
   const registry = { card: null, refreshes: 0 };
   const calls = [];
+  const state = { paused: opts.paused === true, tick: null };
+  const handlers = {};
   doc.hidden = false;
-  doc.addEventListener = () => {};
+  doc.addEventListener = (type, fn) => { handlers[type] = fn; };
   const shortcuts = { registerCard: def => { registry.card = def; }, refresh: () => { registry.refreshes += 1; } };
   const sandbox = {
-    document: doc, AbitoShortcuts: shortcuts, AbitoPaused: { paused: () => false },
-    setInterval: () => 1, clearInterval: () => {}, addEventListener: () => {},
+    document: doc, AbitoShortcuts: shortcuts, AbitoPaused: { paused: () => state.paused },
+    setInterval: fn => { state.tick = fn; return 1; }, clearInterval: () => {}, addEventListener: () => {},
     __TAURI__: { core: { invoke: (cmd, args) => { calls.push({ cmd, args }); return Promise.resolve(typeof answer === 'function' ? answer() : answer); } } },
   };
   sandbox.window = sandbox; sandbox.self = sandbox;
   vm.runInNewContext(fs.readFileSync(path.join(frontend, 'calendar-view.js'), 'utf8'), sandbox, { filename: 'calendar-view.js' });
   for (let i = 0; i < 6; i += 1) await new Promise(r => setImmediate(r));
-  return { doc, registry, calls };
+  return { doc, registry, calls, state, handlers };
 }
 const todayKey = () => {
   const t = new Date();
@@ -243,5 +327,18 @@ const todayAnswer = title => ({ available: true, fetchedAt: Date.now(), events: 
   const bad = await mounted({ available: true, events: 'x', fetchedAt: 1 });
   assert.equal(bad.registry.card.available(), false);
   passed += 2;
+
+  // F5: the card's own pause entry silences its 60 s poll, exactly as the GitHub card does (K2-11 S6)
+  const paused = await mounted(() => todayAnswer('Daily del equipo'), { paused: true });
+  const settle = async () => { for (let i = 0; i < 6; i += 1) await new Promise(r => setImmediate(r)); };
+  assert.deepEqual(paused.calls, [], 'F5: paused, the card does not even ask the host');
+  paused.state.tick(); // the 60 s poll fires while it is still paused
+  await settle();
+  assert.deepEqual(paused.calls, [], 'F5: and the 60 s poll skips the host too, not only a hidden page');
+  paused.state.paused = false;
+  paused.state.tick();
+  await settle();
+  assert.equal(paused.calls.length, 1, 'F5: a poll after the pause is lifted does ask');
+  passed += 1;
   console.log(`calendar-view-check: ${passed} checks ok + 2 zones (Buenos Aires, UTC)`);
 })().catch(e => { console.error('FAIL', e.stack); process.exit(1); });

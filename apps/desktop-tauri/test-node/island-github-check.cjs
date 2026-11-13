@@ -103,6 +103,29 @@ const pulseOf = (o = {}) => ({ available: true, pulse: { ...PULSE, ...o } });
     }
   });
 
+  // F7: bidi overrides and separators are stripped like every other control character (a title comes from outside)
+  const BIDI = /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]/;
+
+  test('F7: hostile titles and refs lose their bidi controls, and the ref goes through the same cap', () => {
+    // U+202E/U+2066/U+2069/U+200F/U+200E/FEFF/2028: the overrides and separators a title can carry from an outside invitation
+    const hostile = 'Arreglar\u202E\u2066\u200F el \u2028login\uFEFF';
+    const prRows = G.cardView({ pulse: { ...PULSE, myPRs: [pr({ title: hostile })] }, section: 'pr' }).rows;
+    assert.doesNotMatch(prRows[0].title, BIDI, JSON.stringify(prRows[0].title));
+    assert.match(prRows[0].title, /^Arreglar/);
+    assert.match(prRows[0].title, /login$/);
+    // the ref is repo + number, so a repo name can carry them too: same sanitiser, same length cap
+    const issueRows = G.cardView({ pulse: { ...PULSE, issues: [issue({ title: 'ok', repo: 'o/r\u202Ex' })] }, section: 'issue' }).rows;
+    assert.doesNotMatch(issueRows[0].ref, BIDI, JSON.stringify(issueRows[0].ref));
+    assert.equal(issueRows[0].ref, 'r x#7');
+    const long = G.issuesView([issue({ repo: 'o/' + 'p'.repeat(400) })]);
+    assert.equal(long[0].ref.length, 200, 'the ref is capped like any other text');
+    // the DOM only ever gets the sanitised strings
+    const host = doc.createElement('div');
+    G.render(host, G.cardView({ pulse: { ...PULSE, issues: [issue({ title: hostile })] }, section: 'issue' }), () => {});
+    assert.doesNotMatch(text(host), BIDI);
+    assert.doesNotMatch(host.children[0].children[1].children[0].getAttribute('title'), BIDI, 'the tooltip is sanitised too');
+  });
+
   // ---- the pulse model of design 08 F4/F4b ---------------------------------------------------
   test('cardView: three tiles — Revisión pedida, Tus PR, Issues — with the counts the answer really has', () => {
     const v = G.cardView({ pulse: PULSE, stats: { totalStars: 18, totalRepos: 23 } });
@@ -223,19 +246,21 @@ const pulseOf = (o = {}) => ({ available: true, pulse: { ...PULSE, ...o } });
     const vm = require('node:vm');
     const registry = { card: null, refreshes: 0 };
     const calls = [];
+    const state = { tick: null, paused: false };
     const page = { ...fakeDocument(), hidden: false, addEventListener: () => {} };
     const sandbox = {
       document: page,
       AbitoShortcuts: { registerCard: def => { registry.card = def; }, refresh: () => { registry.refreshes += 1; } },
-      AbitoPaused: { paused: () => false },
-      setInterval: () => 1, clearInterval: () => {}, addEventListener: () => {},
+      AbitoPaused: { paused: () => state.paused },
+      setInterval: fn => { state.tick = fn; return 1; }, clearInterval: () => {}, addEventListener: () => {},
       URL, TextEncoder,
-      __TAURI__: { core: { invoke: (cmd, args) => { calls.push({ cmd, args }); return Promise.resolve(answer); } } },
+      // the host answer; a function builds a NEW object per poll, exactly as a real answer arrives
+      __TAURI__: { core: { invoke: (cmd, args) => { calls.push({ cmd, args }); return Promise.resolve(typeof answer === 'function' ? answer(args) : answer); } } },
     };
     sandbox.window = sandbox; sandbox.self = sandbox;
     vm.runInNewContext(fs.readFileSync(path.join(frontend, 'island-github.js'), 'utf8'), sandbox, { filename: 'island-github.js' });
     for (let i = 0; i < 8; i += 1) await new Promise(r => setImmediate(r));
-    return { page, registry, calls };
+    return { page, registry, calls, state };
   };
 
   const ok = await mounted(pulseOf());
@@ -267,6 +292,40 @@ const pulseOf = (o = {}) => ({ available: true, pulse: { ...PULSE, ...o } });
   assert.equal(empty.registry.card.available(), true, 'an empty but real pulse is still a connected GitHub');
   assert.equal(empty.registry.card.badge(), 0, 'nothing waiting for me: no counter');
   assert.equal(empty.calls.length, 1, 'one pulse call: with nothing to show it does not ask for the contribution grid');
+
+  // F6: a poll that changed nothing must not repaint, or it detaches the row the user pressed and resets the scroll. The guard
+  // compares a stable serialisation of the view model, exactly as the calendar card does.
+  await testAsync('F6: two identical polls paint once, and a real change (a review answered) still repaints', async () => {
+    let waiting = PULSE.toReview;
+    const answerNow = args => (args && args.payload && args.payload.section === 'activity'
+      ? { available: true, activity: { total: 30, weeks: [[{ date: '2026-01-04', count: 3, level: 2, weekday: 0 }]] } }
+      : pulseOf({ toReview: waiting })); // a fresh object every poll, exactly as the host sends it
+    const r = await mounted(answerNow);
+    const host = r.page.createElement('div');
+    const off = r.registry.card.mount(host);
+    const cardHost = host.children[0];
+    assert.equal(cls(cardHost, 'gh-tile').length, 3, 'first paint: the pulse');
+    assert.equal(cls(cardHost, 'gh-cell').length, 1, 'and its contribution strip');
+    const painted = cardHost.childNodes.slice();
+    let repaints = 0;
+    const replace = cardHost.replaceChildren.bind(cardHost);
+    cardHost.replaceChildren = (...nodes) => { repaints += 1; replace(...nodes); };
+    const tickAndSettle = async () => {
+      const before = r.calls.length;
+      r.state.tick();
+      for (let i = 0; i < 8; i += 1) await new Promise(res => setImmediate(res));
+      assert.ok(r.calls.length > before, 'the 60 s poll really ran');
+    };
+    await tickAndSettle();
+    assert.equal(repaints, 0, 'F6: the same answer twice repaints nothing');
+    assert.deepEqual(cardHost.childNodes, painted, 'F6: and the nodes on screen are the very same ones, so a pressed row is never detached');
+    waiting = []; // the review was answered: the badge goes 1 → 0, and that IS a change
+    await tickAndSettle();
+    assert.equal(repaints, 1, 'a different answer repaints once');
+    const review = cls(cardHost, 'gh-tile').find(t => t.getAttribute('data-tile') === 'review');
+    assert.equal(review.children[0].textContent, '0', 'and the tile shows the count the new answer really has');
+    off();
+  });
 
   passed += 2;
   console.log(`island-github-check: ${passed} checks ok`);
