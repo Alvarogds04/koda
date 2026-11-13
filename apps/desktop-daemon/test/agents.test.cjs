@@ -1,7 +1,7 @@
 "use strict";
 
 // AgentsManager unit tests against a FAKE installer (test/fixtures/fake-installer.cjs). Temp dirs only:
-// the real ~/.claude, ~/.codex and ~/.abito-island are never touched.
+// the real ~/.claude, ~/.codex and ~/.koda are never touched.
 
 const test = require("node:test");
 const assert = require("node:assert/strict");

@@ -189,7 +189,7 @@ impl TransportOptions {
 
 /// Own leaf of the installed app inside `$XDG_RUNTIME_DIR` (M4 packaging
 /// plan §3): never one of [`RESERVED_RUNTIME_NAMES`].
-pub const INSTALLED_RUNTIME_LEAF: &str = "abito-island";
+pub const INSTALLED_RUNTIME_LEAF: &str = "koda";
 
 /// Read-only report of one runtime root: socket files under generated
 /// `p-XXXXXX` dirs. Never connects, never unlinks, never follows symlinks.

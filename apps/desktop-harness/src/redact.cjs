@@ -462,7 +462,7 @@ const CREDENTIAL_PATHS = [
   /\.(?:bashrc|bash_profile|bash_login|profile|zshrc|zprofile|zshenv)(?![A-Za-z0-9_])/i, /\/etc\/(?:profile|bash\.bashrc|environment|zshrc|zshenv)/i,
   /\$\{?SSH_AUTH_SOCK/i, /\.git-credentials/i, /\.gitconfig/i, /kubectl\b[^;&|]*--raw/i, /(?<![\w-])vault\s+(?:read|kv\s+get)/i,
   /(?<![\w-])pass\s+show/i, /(?<![\w-])op\s+read/i, /\.claude(?![A-Za-z0-9])/i, /\.codex(?![A-Za-z0-9])/i,
-  /\.abito-island/i, /\.(?:pem|key|p12|pfx)(?![A-Za-z0-9])/i, /cookies/i,
+  /\.koda(?![A-Za-z0-9])/i, /\.abito-island/i, /\.(?:pem|key|p12|pfx)(?![A-Za-z0-9])/i, /cookies/i,
 ];
 const touchesCredentialPath = s => CREDENTIAL_PATHS.some(re => re.test(s));
 const INDIRECTION = [

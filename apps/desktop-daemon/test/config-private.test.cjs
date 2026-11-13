@@ -111,7 +111,7 @@ test("K2-01b D1: the bytes read are bounded even if the file grew after the help
 
 test("K2-01b D1 (Windows, real helper): config.json written by the product is read back", { skip: process.platform !== "win32" && "real HU-047 helper (Windows CI layout); the scripted tests above cover this branch on every OS" }, () => {
 	const local = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "abito-cfgpriv-local-")));
-	const root = path.join(local, "Abito", "i");
+	const root = path.join(local, "Koda", "i");
 	const { ensureIsland } = require("../src/isolation.cjs");
 	ensureIsland(root);
 	const ws = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "abito-cfgpriv-ws-")));

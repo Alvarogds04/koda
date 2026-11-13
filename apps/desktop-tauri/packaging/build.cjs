@@ -116,7 +116,7 @@ if (args.includes('--smoke-variant')) {
   const smoke = path.join(outRoot, 'smoke-variant');
   fs.mkdirSync(smoke, { recursive: true });
   fs.copyFileSync(path.join(crate, 'target-smoke', 'release', 'abito-island'), path.join(smoke, 'abito-island'));
-  console.log(`smoke variant (probe feature, NOT for install): ${smoke}/abito-island`);
+  console.log(`smoke variant (probe feature, NOT for install): ${smoke}/koda`);
 }
 const problems = L.verifyStage(stage, { sourceCrate: crate });
 if (problems.length) { console.error('verify failed:\n - ' + problems.join('\n - ')); process.exit(1); }

@@ -5,8 +5,8 @@ const { EventEmitter } = require('node:events');
 const { PassThrough } = require('node:stream');
 const { resolveConfig, resolveEndpoint } = require('../config.cjs');
 const { registerAdapter } = require('../adapter.cjs');
-const META = 'C:\\Users\\runner\\AppData\\Local\\Abito\\notices\\endpoint.json';
-const ROOT = 'C:\\Users\\runner\\AppData\\Local\\Abito\\notices';
+const META = 'C:\\Users\\runner\\AppData\\Local\\Koda\\notices\\endpoint.json';
+const ROOT = 'C:\\Users\\runner\\AppData\\Local\\Koda\\notices';
 const tick = () => new Promise(resolve => setImmediate(resolve));
 const stat = () => ({ isFile: () => true, isSymbolicLink: () => false });
 

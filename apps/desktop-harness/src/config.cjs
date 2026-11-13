@@ -9,7 +9,7 @@ const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 
 // Windows (T2/S3): the island publishes the notice endpoint metadata at the
-// canonical `%LOCALAPPDATA%\Abito\notices\endpoint.json`. The hook clients
+// canonical `%LOCALAPPDATA%\Koda\notices\endpoint.json`. The hook clients
 // never read it as authority — the native relay re-verifies it — so config
 // only resolves the path (no /proc, no uid, no directory-chain walk).
 const DRIVE_RE = /^[A-Za-z]:[\\/]/;
@@ -39,7 +39,7 @@ function resolveConfigWindows(env, options = {}) {
     return { runtime: path.win32.dirname(explicit), endpoint: explicit, source: 'env' };
   }
   if (!windowsAbsolute(env.LOCALAPPDATA)) return { runtime: undefined, endpoint: undefined, source: undefined };
-  const runtime = path.win32.join(env.LOCALAPPDATA, 'Abito', 'notices');
+  const runtime = path.win32.join(env.LOCALAPPDATA, 'Koda', 'notices');
   const endpoint = path.win32.join(runtime, 'endpoint.json');
   try {
     const st = stat(endpoint);
@@ -59,15 +59,15 @@ function endpointShape(endpoint, runtime, options = {}) {
     path.dirname(path.dirname(endpoint)) === runtime && path.basename(endpoint) === 's' &&
     /^p-[a-zA-Z0-9]{6}$/.test(path.basename(path.dirname(endpoint)));
 }
-// Default runtime: ABITO_SOCKET_DIR, else $XDG_RUNTIME_DIR/abito-island, else /run/user/<uid>/abito-island.
+// Default runtime: ABITO_SOCKET_DIR, else $XDG_RUNTIME_DIR/koda, else /run/user/<uid>/koda.
 function defaultRuntime(env, owner) {
   if (env.ABITO_SOCKET_DIR !== undefined) return env.ABITO_SOCKET_DIR;
   if (process.platform === 'darwin') {
-    try { return `${fs.realpathSync(os.tmpdir())}/abito-island`; } catch { throw new Error('No runtime base'); }
+    try { return `${fs.realpathSync(os.tmpdir())}/koda`; } catch { throw new Error('No runtime base'); }
   }
   const xdg = env.XDG_RUNTIME_DIR;
-  if (normalized(xdg)) return `${xdg}/abito-island`;
-  return `/run/user/${owner}/abito-island`;
+  if (normalized(xdg)) return `${xdg}/koda`;
+  return `/run/user/${owner}/koda`;
 }
 const MAX_HANDOFF = 4096;
 // macOS has no /proc: the same pid facts come from `/bin/ps` (absolute path, fixed argv, no shell, bounded timeout).

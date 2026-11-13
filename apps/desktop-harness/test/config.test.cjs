@@ -8,7 +8,7 @@ const unix = process.platform === 'darwin' ? 'darwin' : 'linux';
 
 test('absent endpoint means unavailable; never scans, default root by uid', unixOnly('windows-transport.test.cjs resolveConfig win32 cases'), () => {
   // uid 4321 does not exist here: the default runtime is computed WITHOUT reading the live island's real endpoint.json
-  assert.deepEqual(resolveConfig({}, 4321, { procExists: () => false, platform: unix }), { runtime: process.platform === 'darwin' ? require('node:fs').realpathSync(require('node:os').tmpdir()) + '/abito-island' : '/run/user/4321/abito-island', endpoint: undefined, source: undefined });
+  assert.deepEqual(resolveConfig({}, 4321, { procExists: () => false, platform: unix }), { runtime: process.platform === 'darwin' ? require('node:fs').realpathSync(require('node:os').tmpdir()) + '/koda' : '/run/user/4321/koda', endpoint: undefined, source: undefined });
   assert.equal(resolveConfig({ ABITO_PROJECT_ROOT: '/x' }, 4321, { platform: unix }).endpoint, undefined);
   assert.equal(resolveConfig({ ABITO_SOCKET_DIR: '/home/u/r' }, 1000, { platform: unix }).runtime, '/home/u/r');
 });

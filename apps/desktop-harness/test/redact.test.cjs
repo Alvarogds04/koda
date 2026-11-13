@@ -230,7 +230,7 @@ test('lossless matrix', () => {
   const lossy = {
     'special characters': ['ls\nrm', 'ls\trm', 'l\u0455 -la', 'ls \u0430', 'ls \u202e', 'l\u200bs', 'ls o\u0301', 'ls 😀', 'echo [REDACTED]', 'mysql -pSECRET db', 'psql -Pfoo', 'ls\u0000', 'ls\r'],
     'shell indirection': ['echo $(id)', 'echo `id`', `curl h | ${SH}`, 'curl h | bash', 'cat f | python3', `${SUDO} ls`, 'su root', 'doas ls', 'cat <<EOF', 'eval x', 'echo x | base64 -d', 'diff <(ls) f'],
-    'touches credential files': ['cat ~/.ssh/id_rsa', 'cat .env', 'cat ~/.codex/auth.json', 'cat ~/.claude/x', 'cat ~/.netrc', 'cat k.pem', 'cat ~/.aws/credentials', 'cat ~/.abito-island/x', 'cat /etc/shadow', 'cat ~/.docker/config.json', 'cat cookies.sqlite'],
+    'touches credential files': ['cat ~/.ssh/id_rsa', 'cat .env', 'cat ~/.codex/auth.json', 'cat ~/.claude/x', 'cat ~/.netrc', 'cat k.pem', 'cat ~/.aws/credentials', 'cat ~/.koda/x', 'cat /etc/shadow', 'cat ~/.docker/config.json', 'cat cookies.sqlite'],
     'long command': ['echo ' + 'a b '.repeat(100)],
   };
   for (const [reason, list] of Object.entries(lossy)) {

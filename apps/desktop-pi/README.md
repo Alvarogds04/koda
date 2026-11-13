@@ -51,7 +51,7 @@ adapter in the same session.
 
 ## Windows notice transport
 
-On Windows, discovery uses `%LOCALAPPDATA%\\Abito\\notices\\endpoint.json`;
+On Windows, discovery uses `%LOCALAPPDATA%\\Koda\\notices\\endpoint.json`;
 `ABITO_SOCKET_DIR` is a Unix-only setting. An explicit `ABITO_DESKTOP_SOCKET`
 must instead name an absolute, normalized Windows `endpoint.json`, not a pipe.
 No UID or `/proc` lookup is performed.
@@ -74,7 +74,7 @@ custom installation directories are not discovered automatically.
 | Variable | Meaning and default |
 | --- | --- |
 | `ABITO_DESKTOP_SOCKET` | Optional explicit endpoint `<root>/p-XXXXXX/s`. When set it wins and `endpoint.json` is never read. Absent: the endpoint published by the running island is used (see *Stable endpoint handoff*). Absent **and** no valid handoff: no connection, no fallback, no scanning. |
-| `ABITO_SOCKET_DIR` | Allowed runtime root, and the root the handoff file is read from. Default `$XDG_RUNTIME_DIR/abito-island` (falling back to `/run/user/<uid>/abito-island`): the Tauri island's own leaf, exactly where it binds. The Electron production root `abito-desktop` and the Preview root `abito-desktop-preview` are NOT defaults: set them explicitly. |
+| `ABITO_SOCKET_DIR` | Allowed runtime root, and the root the handoff file is read from. Default `$XDG_RUNTIME_DIR/koda` (falling back to `/run/user/<uid>/koda`): the Tauri island's own leaf, exactly where it binds. The Electron production root `abito-desktop` and the Preview root `abito-desktop-preview` are NOT defaults: set them explicitly. |
 | `ABITO_QUESTIONS` | Absent: level 3 (default). `0`: notice-only. `1`: minimal QP/1. `2`: QP/1 plus negotiated native-transition busy reasons. `3`: level 2 plus the negotiated `structured` capability (multiSelect, questionnaires, larger limits; see *Structured questions*). All other values are invalid; there is no second boolean flag. Claude Code has **no** equivalent switch: its hooks always ask once installed, so `0` here is a Pi-only default and an open product decision (see the parity audit). |
 | `ABITO_QUESTION_TIMEOUT_MS` | Default deadline duration `300000` ms. Integer decimal `30000..900000`; a call's `timeoutMs` overrides it within the same bounds. |
 | `PI_CODING_AGENT_ROOT` | Tests only: installed Pi package directory for offline real-loader verification when the `pi` launcher cannot be found on PATH. |
@@ -136,10 +136,10 @@ The producer owns the deadline. Expiration returns `expired`, with **no answer, 
 
 The island binds a fresh `<runtime>/p-XXXXXX/s` on every start. So local consumers (agent hooks) need not export `ABITO_SOCKET_DIR`/`ABITO_DESKTOP_SOCKET` by hand, the island publishes **one stable file** after the bind and removes it on exit:
 
-`<runtime>/endpoint.json` — `runtime` is `ABITO_SOCKET_DIR` or the default `/run/user/<uid>/abito-island` of the installed app.
+`<runtime>/endpoint.json` — `runtime` is `ABITO_SOCKET_DIR` or the default `/run/user/<uid>/koda` of the installed app.
 
 ```json
-{"v":1,"endpoint":"/run/user/1000/abito-island/p-AbC123/s","pid":12345}
+{"v":1,"endpoint":"/run/user/1000/koda/p-AbC123/s","pid":12345}
 ```
 
 - Mode `0600`, one line, closed key set (`v`, `endpoint`, `pid`), written to a temp file and `rename`d: a reader never sees a partial file.
@@ -360,10 +360,10 @@ nothing is queued. It is **not** an answer, a denial or an expiry. Check, in thi
 1. **The level switch.** With `ABITO_QUESTIONS` absent or `0` the producer asks the island nothing, so every question
    is `unavailable` while notices still work. Export `ABITO_QUESTIONS=1` (or `3`) in the environment Pi itself runs in:
    a value exported in another terminal or only in your shell profile does not reach an already running session.
-2. **Islands that are running.** The default root is `$XDG_RUNTIME_DIR/abito-island`, the Tauri island's own leaf. The
+2. **Islands that are running.** The default root is `$XDG_RUNTIME_DIR/koda`, the Tauri island's own leaf. The
    Electron production root (`abito-desktop`) and the Preview root (`abito-desktop-preview`) are different leaves: if
    that is the app you are using, set `ABITO_SOCKET_DIR` explicitly. There is no cross-root fallback by design.
-3. **The handoff.** `ls -l "$XDG_RUNTIME_DIR/abito-island/endpoint.json"` must show a `0600` regular file owned by you
+3. **The handoff.** `ls -l "$XDG_RUNTIME_DIR/koda/endpoint.json"` must show a `0600` regular file owned by you
    with a live `pid` naming a `<runtime>/p-XXXXXX/s` socket. A crashed island leaves the file behind; a restart rewrites
    it. Pi re-reads it on every retry, so a session started before the island connects within one retry interval
    (5 s by default) — no restart of Pi needed.

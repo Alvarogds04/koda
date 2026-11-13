@@ -129,7 +129,7 @@ def main():
             env[key] = os.environ[key]
     if not env.get("TMPDIR"):
         sys.exit("TMPDIR is not set: a Finder launch always has one, so this runner is not a normal macOS session")
-    runtime = pathlib.Path(os.path.realpath(env["TMPDIR"])) / "abito-island"
+    runtime = pathlib.Path(os.path.realpath(env["TMPDIR"])) / "koda"
     log_path = work / "installed-island.log"
 
     with log_path.open("w") as log:

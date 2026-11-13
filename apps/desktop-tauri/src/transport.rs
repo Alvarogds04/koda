@@ -255,7 +255,7 @@ pub const SUN_PATH_MAX: usize = 103;
 
 /// Pure choice of the default root. `Some(manifest)` = dev layout
 /// (`<crate>/.runtime`, the one the legacy app used); `None` = installed
-/// layout `$XDG_RUNTIME_DIR/abito-island`, which needs an absolute,
+/// layout `$XDG_RUNTIME_DIR/koda`, which needs an absolute,
 /// normalized XDG dir and otherwise refuses (no invented location).
 pub fn default_runtime_for(
     xdg_runtime_dir: Option<&str>,

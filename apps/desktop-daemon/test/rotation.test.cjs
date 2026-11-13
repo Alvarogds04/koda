@@ -41,7 +41,7 @@ function tmp(prefix) {
 
 /**
  * A Daemon's island root + env for `base` (the same layout as turn-budget/daemon tests): on Windows
- * an island may only live inside the canonical protected `%LOCALAPPDATA%\Abito` root
+ * an island may only live inside the canonical protected `%LOCALAPPDATA%\Koda` root
  * (windowsIslandRootViolation), so the base (canonical long form) is the daemon's private
  * LOCALAPPDATA and the island sits at `<base>\Abito\<name>`. Linux/macOS: `<base>/<name>`, env
  * unchanged. Short names keep the Unix socket path under macOS's 104-byte limit.
@@ -49,7 +49,7 @@ function tmp(prefix) {
 function daemonRootEnv(base, name = "i") {
 	const local = fs.realpathSync.native(base);
 	return {
-		root: win ? path.join(local, "Abito", name) : path.join(base, name),
+		root: win ? path.join(local, "Koda", name) : path.join(base, name),
 		env: { PATH: process.env.PATH, ...(win ? { LOCALAPPDATA: local } : {}) },
 	};
 }

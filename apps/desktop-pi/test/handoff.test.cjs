@@ -125,7 +125,7 @@ unix('an ordinary Pi session reaches an island it did not know at start, and a r
 test('Windows twin: metadata handoff is found after Pi started, followed across an island restart, and absent means no connection', {
   skip: process.platform !== 'win32' && 'Windows-only mechanism; the Unix tests above cover the same behaviour' }, async t => {
   const local = fs.mkdtempSync(path.join(path.resolve(__dirname, '..'), '.test-local-'));
-  const notices = path.join(local, 'Abito', 'notices');
+  const notices = path.join(local, 'Koda', 'notices');
   fs.mkdirSync(notices, { recursive: true });
   t.after(() => fs.rmSync(local, { recursive: true, force: true }));
   const first = await fakeReceiver(t, { runtime: notices });

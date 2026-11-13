@@ -175,12 +175,12 @@ test("windowsIslandRootViolation mirrors the canonical policy (win semantics)", 
 	const local = "C:\\Users\\a\\AppData\\Local";
 	const win = { platform: "win32", env: { LOCALAPPDATA: local } };
 	// The canonical root itself and anything inside it are accepted.
-	assert.equal(windowsIslandRootViolation(path.join(local, "Abito"), win.env, win.platform), null);
-	assert.equal(windowsIslandRootViolation(path.join(local, "Abito", "test-island"), win.env, win.platform), null);
+	assert.equal(windowsIslandRootViolation(path.join(local, "Koda"), win.env, win.platform), null);
+	assert.equal(windowsIslandRootViolation(path.join(local, "Koda", "test-island"), win.env, win.platform), null);
 	for (const bad of [
 		path.join(local, "Elsewhere"),
 		"D:\\island",
-		path.join(local, "Abito", "..", "..", "steal"),
+		path.join(local, "Koda", "..", "..", "steal"),
 		path.join(local, "AbitoEvil"),
 		"relative\\root",
 		"",
@@ -189,13 +189,13 @@ test("windowsIslandRootViolation mirrors the canonical policy (win semantics)", 
 			`refused: ${bad}`);
 	}
 	// Missing LOCALAPPDATA: nothing canonical to anchor on — refused.
-	assert.match(windowsIslandRootViolation(path.join(local, "Abito"), {}, win.platform), /LOCALAPPDATA/);
+	assert.match(windowsIslandRootViolation(path.join(local, "Koda"), {}, win.platform), /LOCALAPPDATA/);
 	// Off Windows (injected platform): no Windows rule, root passes through.
 	assert.equal(windowsIslandRootViolation("/any/root", {}, "linux"), null);
 	// The DEFAULT platform call must accept the canonical root of THIS platform (a POSIX path is only
-	// acceptable where the POSIX rule applies; Windows requires the %LOCALAPPDATA%\Abito anchor).
+	// acceptable where the POSIX rule applies; Windows requires the %LOCALAPPDATA%\Koda anchor).
 	const defaultRoot = process.platform === "win32"
-		? path.join(process.env.LOCALAPPDATA, "Abito")
+		? path.join(process.env.LOCALAPPDATA, "Koda")
 		: "/any/root";
 	assert.equal(windowsIslandRootViolation(defaultRoot), null);
 });
@@ -208,7 +208,7 @@ test("Daemon refuses a forbidden Windows root BEFORE creating anything", async (
 		await assert.rejects(() => daemon.start(), /refusing island root/);
 		// Nothing was created in the forbidden root and the state is untouched.
 		assert.equal(fs.existsSync(forbidden), false, "the forbidden root must stay untouched");
-		assert.equal(fs.existsSync(path.join(base, "Abito")), false);
+		assert.equal(fs.existsSync(path.join(base, "Koda")), false);
 		assert.equal(daemon.status().state, "stopped");
 	} finally {
 		fs.rmSync(base, { recursive: true, force: true });
@@ -219,7 +219,7 @@ test("live Windows OS: a non-canonical root is refused before any write", { skip
 	const base = fs.mkdtempSync(path.join(os.tmpdir(), "abito-root-live-"));
 	try {
 		// Real drive paths: the canonical-bypass refusal itself (root outside
-		// %LOCALAPPDATA%\Abito) fires before anything is created.
+		// %LOCALAPPDATA%\Koda) fires before anything is created.
 		const local = path.join(base, "Users", "a", "AppData", "Local");
 		fs.mkdirSync(local, { recursive: true });
 		const daemon = new Daemon({
@@ -228,7 +228,7 @@ test("live Windows OS: a non-canonical root is refused before any write", { skip
 		});
 		await assert.rejects(() => daemon.start(), /refusing island root.*canonical/s);
 		assert.equal(fs.existsSync(path.join(local, "Elsewhere")), false);
-		assert.equal(fs.existsSync(path.join(local, "Abito")), false);
+		assert.equal(fs.existsSync(path.join(local, "Koda")), false);
 	} finally {
 		fs.rmSync(base, { recursive: true, force: true });
 	}
@@ -244,7 +244,7 @@ const hasHelper = WIN && helper && fs.existsSync(helper) && fs.statSync(helper).
 test("live helper writes the canonical session file and refuses unsafe input", { skip: !hasHelper && "needs Windows + compiled abito-private-session.exe (missing native proof on this platform)" }, () => {
 	const base = fs.mkdtempSync(path.join(os.tmpdir(), "abito-session-"));
 	try {
-		const runtime = path.join(base, "Abito", "runtime");
+		const runtime = path.join(base, "Koda", "runtime");
 		fs.mkdirSync(runtime, { recursive: true });
 		const spawnSync = require("node:child_process").spawnSync;
 		const run = (input, env = {}) =>
@@ -252,7 +252,7 @@ test("live helper writes the canonical session file and refuses unsafe input", {
 		// Happy path: the session lands exactly at <canonical>/runtime/session.json.
 		let result = run(JSON.stringify(PAYLOAD()));
 		assert.equal(result.status, 0, String(result.stderr));
-		const file = path.join(base, "Abito", "runtime", "session.json");
+		const file = path.join(base, "Koda", "runtime", "session.json");
 		const written = JSON.parse(fs.readFileSync(file, "utf8"));
 		assert.equal(written.protocol, PROTOCOL);
 		assert.equal(written.token, PAYLOAD().token);

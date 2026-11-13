@@ -539,12 +539,12 @@ fn relay_refuses_a_pipe_server_actually_running_as_another_user() {
 fn session_fixture(tag: &str) -> PathBuf {
     let base = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(tag);
     let _ = std::fs::remove_dir_all(&base); // stale fixture of ours
-    std::fs::create_dir_all(base.join("Abito").join("runtime")).expect("island scratch");
+    std::fs::create_dir_all(base.join("Koda").join("runtime")).expect("island scratch");
     let sid = winipc::ffi::current_user_sid().expect("fixture owner");
     // Protect the existing child first, before the parent's non-inheritable
     // DACL removes the child's inherited grants (same fixture as windows_daemon).
-    winipc::ffi::set_owner_only_acl(&base.join("Abito").join("runtime"), &sid).expect("private runtime dir");
-    winipc::ffi::set_owner_only_acl(&base.join("Abito"), &sid).expect("private Abito dir");
+    winipc::ffi::set_owner_only_acl(&base.join("Koda").join("runtime"), &sid).expect("private runtime dir");
+    winipc::ffi::set_owner_only_acl(&base.join("Koda"), &sid).expect("private Abito dir");
     base
 }
 
@@ -594,7 +594,7 @@ fn foreign_user_cannot_read_private_session_or_notice_metadata() {
         "helper writes the session fixture; stderr: {}",
         String::from_utf8_lossy(&helper_out.stderr)
     );
-    let session_file = base.join("Abito").join("runtime").join("session.json");
+    let session_file = base.join("Koda").join("runtime").join("session.json");
 
     // (b) endpoint.json, published by the ACTUAL receiver.
     let receiver = Receiver::new("fu-files");

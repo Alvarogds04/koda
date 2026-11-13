@@ -68,16 +68,16 @@ try {
   // Exercise the public CLI from the shipped tree, not the source checkout. A valid
   // receipt alone cannot prove that every transitively required module was shipped.
   // Windows (K2-01b, as in desktop-daemon/test/cli.test.cjs): the daemon refuses any island root outside the canonical
-  // %LOCALAPPDATA%\Abito, so the missing island sits under a private LOCALAPPDATA (a sibling temp dir: the stage is
+  // %LOCALAPPDATA%\Koda, so the missing island sits under a private LOCALAPPDATA (a sibling temp dir: the stage is
   // listed exactly below), and a child node needs the Windows system variables to bootstrap. Nothing
   // user-identifying leaves the temp dirs.
   const win = process.platform === 'win32';
   const local = win ? fs.mkdtempSync(path.join(os.tmpdir(), 'abito-host-stage-local-')) : null;
   localDir = local;
-  const island = win ? path.join(local, 'Abito', 'missing-island') : path.join(stage, 'missing-island');
+  const island = win ? path.join(local, 'Koda', 'missing-island') : path.join(stage, 'missing-island');
   const env = { PATH: win ? process.env.PATH : '/usr/bin:/bin', HOME: stage, ABITO_ISLAND_DIR: island };
   if (win) {
-    fs.mkdirSync(path.join(local, 'Abito'));
+    fs.mkdirSync(path.join(local, 'Koda'));
     env.LOCALAPPDATA = local;
     for (const key of ['SystemRoot', 'windir', 'SystemDrive', 'ComSpec', 'PATHEXT', 'OS', 'NUMBER_OF_PROCESSORS', 'PROCESSOR_ARCHITECTURE']) {
       if (process.env[key] !== undefined) env[key] = process.env[key];

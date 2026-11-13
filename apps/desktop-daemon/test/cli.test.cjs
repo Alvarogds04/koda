@@ -69,7 +69,7 @@ function tmp() {
 const tmpBase = () => fs.realpathSync.native(os.tmpdir());
 /**
  * Island root for direct staging (no fake agent). On Windows an island may only live inside the
- * canonical protected %LOCALAPPDATA%\Abito root (windowsIslandRootViolation), so every island
+ * canonical protected %LOCALAPPDATA%\Koda root (windowsIslandRootViolation), so every island
  * gets a PRIVATE LOCALAPPDATA temp dir and sits at `<LOCALAPPDATA>\Abito\i`; cliEnv() puts the
  * matching LOCALAPPDATA into the child env. Linux/macOS: `<tmp>/i`, env unchanged as before.
  */
@@ -79,8 +79,8 @@ function islandRoot() {
 	tempDirs.add(local);
 	// The app creates the protected root and the island inside it (ensureIsland); the fixture mirrors that
 	// layout so the single-component mkdir of `i` below (fakeIsland, explicit mkdirs) always has its parent.
-	fs.mkdirSync(path.join(local, "Abito"), { mode: 0o700 });
-	return path.join(local, "Abito", "i");
+	fs.mkdirSync(path.join(local, "Koda"), { mode: 0o700 });
+	return path.join(local, "Koda", "i");
 }
 /** Child env for `root`: private HOME, ABITO_ISLAND_DIR, and on Windows the private LOCALAPPDATA. */
 function cliEnv(root, extra = {}) {

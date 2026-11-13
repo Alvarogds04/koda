@@ -118,7 +118,7 @@ test('Windows: a restarted island (same endpoint.json path, new pipe inside) is 
   // The Windows endpoint file never moves; only its content (the pipe) changes on restart. Exercised through the public
   // adapter with an injected win32 connection, so it runs on every OS (the native relay is covered by the Windows CI).
   const { EventEmitter } = require('node:events');
-  const runtime = 'C:\\Users\\t\\AppData\\Local\\Abito\\notices', endpoint = runtime + '\\endpoint.json';
+  const runtime = 'C:\\Users\\t\\AppData\\Local\\Koda\\notices', endpoint = runtime + '\\endpoint.json';
   let content = JSON.stringify({ v: 1, pipe: 'abito-' + 'a'.repeat(32) });
   const opened = [];
   const open = () => { const c = new EventEmitter(); Object.assign(c, { destroyed: false, setTimeout() {}, write(b, cb) { if (String(b).includes('questions_hello')) setImmediate(() => c.destroy()); cb?.(); return true; },

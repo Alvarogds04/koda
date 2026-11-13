@@ -4,7 +4,7 @@
  * Abito island isolation (U1).
  *
  * Everything the island agent touches lives under one private root
- * (`~/.abito-island` by default, overridable with `ABITO_ISLAND_DIR`):
+ * (`~/.koda` by default, overridable with `ABITO_ISLAND_DIR`):
  * its own HOME, XDG directories, the engine home for the bundled Gentle Shell
  * (passed to the engine as `--home`; T2), private sessions and a private temp
  * directory. The user's own Pi/Gentle Shell setup, extensions, auth and
@@ -76,19 +76,19 @@ function currentUid() {
 	return typeof process.getuid === "function" ? process.getuid() : undefined;
 }
 
-/** The island root: `ABITO_ISLAND_DIR` or `~/.abito-island`. */
+/** The island root: `ABITO_ISLAND_DIR` or `~/.koda`. */
 function defaultIslandRoot(env = process.env) {
 	if (env[ISLAND_ROOT_ENV]) return env[ISLAND_ROOT_ENV];
-	// Windows (W1): %LOCALAPPDATA%\\Abito is user-private by default (inherited ACL), which is the
+	// Windows (W1): %LOCALAPPDATA%\\Koda is user-private by default (inherited ACL), which is the
 	// only privacy node can rely on there; the Rust host verifies owner and DACL before trusting it.
-	if (process.platform === "win32" && env.LOCALAPPDATA) return path.join(env.LOCALAPPDATA, "Abito");
-	return path.join(env.HOME || homedir(), ".abito-island");
+	if (process.platform === "win32" && env.LOCALAPPDATA) return path.join(env.LOCALAPPDATA, "Koda");
+	return path.join(env.HOME || homedir(), ".koda");
 }
 
 /**
  * Windows (B5/S6): is `root` a forbidden island root? Returns a fixed refusal
  * reason, or null when the root is acceptable. On Windows the root MUST be the
- * canonical protected `%LOCALAPPDATA%\\Abito` or sit inside it — the same
+ * canonical protected `%LOCALAPPDATA%\\Koda` or sit inside it — the same
  * policy the Rust reader (`winpolicy::island_root`) and the native session
  * helper enforce — so a non-canonical, climbing or relative root is refused
  * BEFORE the daemon creates anything in it. Off Windows: null (Unix behavior
@@ -104,7 +104,7 @@ function windowsIslandRootViolation(root, env = process.env, platform = process.
 	if (typeof root !== "string" || !absoluteDrivePath(root)) {
 		return "island root is not an absolute drive path";
 	}
-	const canonical = path.join(local, "Abito");
+	const canonical = path.join(local, "Koda");
 	if (!withinCanonicalRoot(root, canonical)) {
 		return "island root bypasses the canonical protected root";
 	}

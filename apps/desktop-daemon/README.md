@@ -46,7 +46,7 @@ packaging receipts and the non-Linux limitation are documented in
 
 ## Island layout
 
-Everything private lives under one root: `~/.abito-island` by default, moved with
+Everything private lives under one root: `~/.koda` by default, moved with
 `ABITO_ISLAND_DIR` (tests and embeddings use this). Created with mode `0700`, owned by
 the current user:
 
@@ -106,7 +106,7 @@ const { AgentEngine } = require("@abito/desktop-daemon/runtime.cjs");
 
 const engine = new AgentEngine({
   command: "pi",              // configurable executable; never a direct model HTTP client
-  root: "~/.abito-island",    // island root
+  root: "~/.koda",    // island root
   identityPath: "identity.md" // source identity copied into the island before each spawn
 });
 await engine.start();                          // stopped -> starting -> ready
@@ -422,7 +422,7 @@ When `mcpConfigPath` is unset the daemon intentionally does not point the engine
 
 #### Endpoint handoff consumed by harness hooks
 
-An explicit `ABITO_DESKTOP_SOCKET` wins after endpoint-shape validation and means `endpoint.json` is not read. Otherwise runtime selection is ordered: `ABITO_SOCKET_DIR` (if set, it must be absolute, normalized and non-root), else `$XDG_RUNTIME_DIR/abito-island` only when `XDG_RUNTIME_DIR` is absolute, normalized and non-root, else `/run/user/<uid>/abito-island`.
+An explicit `ABITO_DESKTOP_SOCKET` wins after endpoint-shape validation and means `endpoint.json` is not read. Otherwise runtime selection is ordered: `ABITO_SOCKET_DIR` (if set, it must be absolute, normalized and non-root), else `$XDG_RUNTIME_DIR/koda` only when `XDG_RUNTIME_DIR` is absolute, normalized and non-root, else `/run/user/<uid>/koda`.
 
 The reader accepts `<runtime>/endpoint.json` only as a regular, non-symlink file owned by you, mode exactly `0600` including no special bits, one hard link, and at most 4096 bytes. Its complete text must equal `JSON.stringify(parsed)` or that exact compact JSON plus one LF; the object has exactly `v`, `endpoint`, `pid`, with `v: 1`. Duplicate keys, escaped key names, pretty printing, extra whitespace and CRLF are rejected. The Rust producer in `apps/desktop-tauri/src/handoff.rs` writes compact one-line `serde_json` followed by LF (`{"endpoint":"<..>","pid":N,"v":1}\n`); the `v,endpoint,pid` key order is accepted as well.
 
@@ -439,7 +439,7 @@ never echoed) and the daemon refuses to start. Writes go through `writePrivateFi
 
 | Variable | Effect |
 |---|---|
-| `ABITO_ISLAND_DIR` | island root (default `~/.abito-island`) |
+| `ABITO_ISLAND_DIR` | island root (default `~/.koda`) |
 | `ABITO_WORKSPACE` | overrides `workspace` from the file; validated identically (analogue of `GENTLE_DOT_WORKSPACE`) |
 | `ABITO_MEMORY_PROJECT` | set by the engine to `abito-island` for the child; with the identity prompt it is the memory pin |
 | `ABITO_SDK_MODULE` | SDK entry for the auth helper (U2) |

@@ -1,7 +1,7 @@
 'use strict';
 // Supplemental sound check runs every test file under strace; command idea: `strace -f -e trace=connect,openat npm test`
 // and inspect that socket connections and handoff reads stay in test-owned temporary directories.
-// Structural guard: no test may resolve the REAL island runtime (/run/user/<uid>/abito-island), because with a
+// Structural guard: no test may resolve the REAL island runtime (/run/user/<uid>/koda), because with a
 // live island a test could read its handoff and send a real question to the human's screen. Every test that
 // calls a hook handler, resolveConfig or spawns the hook binary must pin ABITO_SOCKET_DIR or ABITO_DESKTOP_SOCKET.
 const { test } = require('node:test');

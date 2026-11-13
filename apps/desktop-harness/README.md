@@ -48,7 +48,7 @@ Only Claude's `PermissionRequest` reads `permission_suggestions`. These are perm
 
 ## Windows notice transport
 
-On Windows, discovery uses `%LOCALAPPDATA%\\Abito\\notices\\endpoint.json`;
+On Windows, discovery uses `%LOCALAPPDATA%\\Koda\\notices\\endpoint.json`;
 `ABITO_SOCKET_DIR` is a Unix-only setting. An explicit `ABITO_DESKTOP_SOCKET`
 must instead name an absolute, normalized Windows `endpoint.json`, not a pipe.
 No UID or `/proc` lookup is performed.
@@ -71,11 +71,11 @@ custom installation directories are not discovered automatically.
 | Variable | Meaning |
 | --- | --- |
 | `ABITO_DESKTOP_SOCKET` | Optional explicit endpoint `<root>/p-XXXXXX/s`; wins over the handoff (test receivers). Absent => read `<root>/endpoint.json`. |
-| `ABITO_SOCKET_DIR` | Runtime root; default `$XDG_RUNTIME_DIR/abito-island` (absolute, normalized), else `/run/user/<uid>/abito-island`. |
+| `ABITO_SOCKET_DIR` | Runtime root; default `$XDG_RUNTIME_DIR/koda` (absolute, normalized), else `/run/user/<uid>/koda`. |
 
 ## Endpoint handoff consumed by hooks
 
-An explicit `ABITO_DESKTOP_SOCKET` wins after endpoint-shape validation; when set, the consumer does not read `endpoint.json`. Otherwise runtime selection is ordered: `ABITO_SOCKET_DIR` (if set, it must be absolute, normalized and non-root), else `$XDG_RUNTIME_DIR/abito-island` only when `XDG_RUNTIME_DIR` is absolute, normalized and non-root, else `/run/user/<uid>/abito-island`.
+An explicit `ABITO_DESKTOP_SOCKET` wins after endpoint-shape validation; when set, the consumer does not read `endpoint.json`. Otherwise runtime selection is ordered: `ABITO_SOCKET_DIR` (if set, it must be absolute, normalized and non-root), else `$XDG_RUNTIME_DIR/koda` only when `XDG_RUNTIME_DIR` is absolute, normalized and non-root, else `/run/user/<uid>/koda`.
 
 The reader accepts `<runtime>/endpoint.json` only as a regular, non-symlink file owned by you, with mode exactly `0600` (including no special bits), one hard link and at most 4096 bytes. Its complete text must be canonical compact JSON: exactly the keys `v`, `endpoint`, and `pid`, with `v: 1`, and raw text equal to `JSON.stringify(parsed)` or that exact string plus one LF. No duplicate or escaped key names, pretty printing, leading/trailing spaces or CRLF are accepted. The Rust producer in `apps/desktop-tauri/src/handoff.rs` writes compact one-line `serde_json` output plus LF (`{"endpoint":"<..>","pid":N,"v":1}\n`); the compact `v,endpoint,pid` key order is accepted too.
 
@@ -117,7 +117,7 @@ More than four questions, options outside 2–4, duplicate question keys, malfor
 
 **Non-interactive Claude sessions** (`claude -p`, background subagents) cannot show their own prompt, so an empty hook output there means **deny**. Abito never auto-allows: if you are not at the island in time, those runs are refused.
 
-**Session name.** `SessionStart` stores `session_title` (from `--name` / `/rename`) in `$ABITO_STATE_DIR` (default `~/.local/state/abito-island/claude-titles/<session>`, dir 0700, files 0600, 14-day pruning). Later events label the island with it; without a title the label is the project folder name.
+**Session name.** `SessionStart` stores `session_title` (from `--name` / `/rename`) in `$ABITO_STATE_DIR` (default `~/.local/state/koda/claude-titles/<session>`, dir 0700, files 0600, 14-day pruning). Later events label the island with it; without a title the label is the project folder name.
 
 > **WARNING: nothing is installed by default.** Claude Code settings are only touched by the previewed installer below, and only when the human types the confirmation word. Run manually: `node bin/abito-hook.cjs claude <permission-request|stop> [--timeout-sec N]` (JSON on stdin).
 

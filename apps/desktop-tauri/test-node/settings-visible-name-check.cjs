@@ -5,7 +5,7 @@
 const assert = require('node:assert/strict');
 const { open } = require('./settings-layout-harness.cjs');
 
-const ALLOW = [/^Abito-gpt$/, /^abito-(web|docs)$/, /abito-island/, /%LOCALAPPDATA%\\Abito/, /\bABITO_[A-Z_]+\b/];
+const ALLOW = [/^Abito-gpt$/, /^abito-(web|docs)$/, /abito-island/, /%LOCALAPPDATA%\\Koda/, /\bABITO_[A-Z_]+\b/];
 const walk = () => {
   const hits = [];
   const vis = el => { for (let e = el; e && e.nodeType === 1; e = e.parentElement) { const s = getComputedStyle(e); if (s.display === 'none' || s.visibility === 'hidden') return false; } return true; };
