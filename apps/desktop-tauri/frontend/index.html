@@ -69,8 +69,11 @@
   <script defer src="island-header.js"></script>
   <!-- S10 (L30): plan usage pills + card (Coucou views/usage), fed by plan_action; off until the human turns it on. -->
   <script defer src="island-plan.js"></script>
-  <!-- S10 (L30): GitHub card (Coucou views/github), fed by github_action; shown only for the main pill integration_github. -->
+  <!-- S10 (L30) + K2-11 S1/S6: the GitHub card of the shortcuts row (Coucou's pulse), fed by github_action; it exists while that
+       answer really is available:true (a saved token or a working gh), never as a sample. -->
   <script defer src="island-github.js"></script>
+  <!-- K2-11 S2/S6: the calendar card of the shortcuts row (today and tomorrow from the user's ICS URL), fed by calendar_action. -->
+  <script defer src="calendar-view.js"></script>
   <script defer src="island-integrations.js"></script>
   <!-- S10 (L30): the dictation pill (Coucou pill/main.ts) in the expanded header, fed by dictation:* events and dictation_action. -->
   <script defer src="island-dictation.js"></script>
@@ -100,7 +103,6 @@
   <script defer src="integrations-finance.js"></script>
   <script defer src="integrations-notion.js"></script>
   <script defer src="integrations-n8n.js"></script>
-  <script defer src="integrations-calendar.js"></script>
 </head>
 <body>
   <main id="capsule" data-phase="compact" data-edge="top">
@@ -358,7 +360,6 @@
             <section id="integrations-finance" hidden></section>
             <section id="integrations-notion" hidden></section>
             <section id="integrations-n8n" hidden></section>
-            <section id="integrations-calendar" hidden></section>
           </div><!-- /connections-more -->
           <p id="settings-live" class="sr-only" role="status" aria-live="polite"></p>
         </div>

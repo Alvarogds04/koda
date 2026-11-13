@@ -1,159 +1,286 @@
 'use strict';
-/* S10 (L30) — the GitHub card of the island, as Coucou's views/github.ts: the pulse (my PRs, to review, default-branch CI)
-   with its detail lists, and the contribution grid. The DOM and the numbers' presentation are the vendored Coucou modules
-   (vendor/coucou/views/github.js, core/github.js, MIT); THIS file only feeds them from Abito's closed host verb
-   `github_action {action:'refresh', section:'pulse'|'activity'}` (native keychain token first, existing `gh` session otherwise) and
-   decides when the card shows: it takes the overview's left card while `integration_github` is focused, exactly where
-   Coucou puts it when that pill is focused. Links open through the existing `open_chat_url` (re-validated in Rust).
-   Pure view-model first (Node-testable), then the browser-only mount at the tail (house pattern). */
+/* K2-11 S1/S3/S6 — the GitHub card of the island's shortcuts row (island-shortcuts.js, the part built by K2-09; design
+   k2-09-atajos/08-isla-unida.html F4/F4b: «el pulso de Coucou dentro de la misma tarjeta»). One closed host verb feeds it:
+
+     invoke('github_action', {payload:{action:'refresh', section:'pulse'|'activity'}})
+       -> {available:true, pulse:{login, myPRs, toReview, mainCI, issues, fetchedAt}, stats?}
+       -> {available:false, reason:'gh_not_installed'|'gh_not_signed_in'|'gh_bad_answer'}
+       -> {available:true, activity:{total, weeks}}
+
+   S1: my open PRs, the PRs that ask me for a review, and the issues assigned to me or mentioning me (decision 10c), with the
+   Coucou pulse as the card's own header: three tiles that open their list inside the SAME card («‹ Pulso» comes back). The tiles
+   and rows are Abito's own DOM builders (textContent only); the CI vocabulary is Coucou's (`CI_WORDS` mirrors
+   vendor/coucou/core/github.js `ciWord`, and the test keeps both equal).
+   S3 (criterion 3): the card exists only while the answer really is available:true — no token and no `gh` means no card, and
+   there is no sample row anywhere in this file. GitHub has its OWN pause entry (paused.js/paused.rs), so it is visible without
+   un-pausing the 0.3 services.
+   Links open with K2-01c's opener, through the existing `open_chat_url` (re-validated in Rust), and only github.com https URLs
+   are ever offered. Pure view-model first (Node-testable), then the browser-only mount at the tail (house pattern). */
 (function (root, factory) {
   const api = factory();
   if (typeof module === 'object' && module.exports) { module.exports = Object.freeze(api); return; }
   root.AbitoIslandGithub = Object.freeze(api);
   mount(api);
 })(typeof self !== 'undefined' ? self : this, () => {
-  const PILL_ID = 'integration_github';
+  const CARD_ID = 'github';
+  const LABEL = 'GitHub';
+  const ICON = 'pr';
+  const POLL_MS = 60000; // the host caches the pulse for 60 s and the grid for 300 s; polling faster only hits the cache
+  const MAX_TEXT = 200;
+  const BACK = '‹ Pulso';
+  const NOTHING = 'Nada por aquí';
+  const STRIP_DAYS = 14;
   const isObject = v => v !== null && typeof v === 'object' && !Array.isArray(v);
-  /** Discover GitHub only when declared; focusing its pill, not the chat target, opens the card. */
-  const wantedIgnoringPause = prefs => isObject(prefs) && (prefs.mainPill === PILL_ID || (Array.isArray(prefs.declaredPills) && prefs.declaredPills.includes(PILL_ID)));
-  // abito-pausa: integrations are paused in this version — no card, no polling (the stored prefs are kept)
-  const pausedNow = () => { const P = typeof module === 'object' && module.exports ? require('./paused.js') : (typeof window !== 'undefined' ? window.AbitoPaused : null); return !!(P && P.paused('integrations')); };
-  const wanted = prefs => !pausedNow() && wantedIgnoringPause(prefs);
+  const clean = (v, max = MAX_TEXT) => (typeof v === 'string' ? [...v.replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ').trim()].slice(0, max).join('') : '');
+  /** Why there is no card. Closed: anything else reads as «bad answer», never as the user's fault. */
   const REASONS = Object.freeze({
     gh_not_installed: 'Guardá una clave GitHub en Ajustes o instalá la CLI de GitHub (gh).',
     gh_not_signed_in: 'Revisá tu clave GitHub en Ajustes o iniciá sesión con «gh auth login».',
     gh_bad_answer: 'GitHub no respondió como se esperaba.',
   });
-  /** An answer of `github_action` → what the card draws. Anything off-shape is «unavailable», never a guess. */
+  /** Coucou's CI vocabulary (vendor/coucou/core/github.js ciWord) plus the «no CI» case. */
+  const CI_WORDS = Object.freeze({ failure: 'fallando', pending: 'en curso', success: 'pasando', unknown: 'sin CI' });
+  /** The three tiles of design 08 F4, in the design's order. */
+  const TILES = Object.freeze(['review', 'pr', 'issue']);
+  const TITLES = Object.freeze({ review: 'Revisión pedida', pr: 'Tus PR', issue: 'Issues' });
+  const REASON_WORDS = Object.freeze({ assigned: 'asignada', mentioned: 'te mencionan' });
+  const isStat = v => Number.isSafeInteger(v) && v >= 0;
+
+  /** Only https links to github.com leave the page (the host re-validates before handing it to the OS opener). */
+  function safeUrl(raw) {
+    if (typeof raw !== 'string' || !raw || raw.length > 2000 || /[\s\u0000-\u001f\u007f-\u009f]/.test(raw)) return null;
+    let u; try { u = new URL(raw); } catch { return null; }
+    return u.protocol === 'https:' && u.hostname === 'github.com' && !u.username && !u.password ? u.href : null;
+  }
+  const validStats = s => isObject(s) && isStat(s.totalStars) && isStat(s.totalRepos);
+
+  /** An answer of `github_action` → what the card draws or why it has nothing to draw. */
   function answerView(answer, section) {
     if (!isObject(answer)) return { kind: 'unavailable', note: REASONS.gh_bad_answer };
     if (answer.available !== true) return { kind: 'unavailable', note: REASONS[answer.reason] || REASONS.gh_bad_answer };
     if (section === 'pulse') {
       const p = answer.pulse;
-      return isObject(p) && Array.isArray(p.myPRs) && Array.isArray(p.toReview) && Array.isArray(p.mainCI) && typeof p.login === 'string'
-        ? { kind: 'pulse', data: p, ...(validStats(answer.stats) ? { stats: answer.stats } : {}) } : { kind: 'unavailable', note: REASONS.gh_bad_answer };
+      const shaped = isObject(p) && Array.isArray(p.myPRs) && Array.isArray(p.toReview) && Array.isArray(p.mainCI)
+        && Array.isArray(p.issues) && typeof p.login === 'string';
+      return shaped ? { kind: 'pulse', data: p, ...(validStats(answer.stats) ? { stats: answer.stats } : {}) } : { kind: 'unavailable', note: REASONS.gh_bad_answer };
     }
     const a = answer.activity;
     return isObject(a) && Array.isArray(a.weeks) && typeof a.total === 'number' ? { kind: 'activity', data: a } : { kind: 'unavailable', note: REASONS.gh_bad_answer };
   }
-  /** Only https/http links to github.com leave the page (Coucou's safeGitHubUrl, plus the host's own checks). */
-  function safeUrl(raw) {
-    if (typeof raw !== 'string' || !raw || raw.length > 2000 || /[\s\u0000-\u001f\u007f-\u009f]/.test(raw)) return null;
-    let u; try { u = new URL(raw); } catch { return null; }
-    return (u.protocol === 'https:' || u.protocol === 'http:') && u.hostname === 'github.com' && !u.username && !u.password ? u.href : null;
+  /** S3: true only for a real, complete pulse answer — the one thing that may put an icon in the row. */
+  const available = answer => answerView(answer, 'pulse').kind === 'pulse';
+
+  /** A PR of the pulse → the closed row data, or null when it is not the shape we know. */
+  function prView(pr) {
+    if (!isObject(pr) || typeof pr.title !== 'string' || typeof pr.repo !== 'string' || !Number.isSafeInteger(pr.number) || pr.number < 1) return null;
+    const url = safeUrl(pr.url);
+    if (!url) return null;
+    const ref = `${pr.repo.split('/').pop() || pr.repo}#${pr.number}`;
+    const meta = pr.isDraft === true ? 'borrador' : (CI_WORDS[pr.ci] || CI_WORDS.unknown);
+    return { ref, title: clean(pr.title), meta, url };
   }
-  const validStats = s => isObject(s) && Number.isSafeInteger(s.totalStars) && s.totalStars >= 0 && Number.isSafeInteger(s.totalRepos) && s.totalRepos >= 0;
-  function navigateDetail(key, selection, count) {
-    if (key === 'Escape' || key === 'ArrowLeft') return { back: true };
-    if (key === 'Enter') return selection !== null && selection < count ? { open: selection } : null;
-    if (!count) return null;
-    if (key === 'ArrowDown') return { selection: selection === null ? 0 : (selection + 1) % count };
-    if (key === 'ArrowUp') return { selection: selection === null ? count - 1 : (selection + count - 1) % count };
-    return null;
+  /** The issues assigned to me or mentioning me (10c): closed fields, unknown reasons dropped (never relabelled). */
+  function issuesView(list) {
+    if (!Array.isArray(list)) return [];
+    const out = [];
+    for (const issue of list) {
+      if (!isObject(issue) || typeof issue.title !== 'string' || typeof issue.repo !== 'string' || !Number.isSafeInteger(issue.number) || issue.number < 1) continue;
+      if (!Object.prototype.hasOwnProperty.call(REASON_WORDS, issue.reason)) continue;
+      const url = safeUrl(issue.url);
+      if (!url) continue;
+      out.push({ ref: `${issue.repo.split('/').pop() || issue.repo}#${issue.number}`, title: clean(issue.title), repo: issue.repo, number: issue.number, url, reason: issue.reason });
+    }
+    return out;
   }
-  const POLL_MS = 60000; // the host caches the pulse for 60 s and the grid for 300 s; polling faster only hits the cache
-  return { PILL_ID, REASONS, wanted, wantedIgnoringPause, answerView, safeUrl, navigateDetail, POLL_MS };
+  /** The contribution strip of the design: the level of each of the last 14 days (colours belong to the stylesheet). */
+  function stripView(activity) {
+    if (!isObject(activity) || !Array.isArray(activity.weeks)) return [];
+    const days = activity.weeks.flat().filter(isObject).slice(-STRIP_DAYS);
+    return days.map(d => (Number.isInteger(d.level) && d.level >= 0 && d.level <= 4 ? d.level : 0));
+  }
+
+  const plural = (n, one, many) => (n === 1 ? one : many);
+  /** The pulse: design 08 F4's three tiles, each with the count the answer really has (0 included). */
+  function tilesOf(pulse) {
+    const n = { review: pulse.toReview.length, pr: pulse.myPRs.length, issue: Array.isArray(pulse.issues) ? pulse.issues.length : 0 };
+    return TILES.map(key => {
+      const aria = key === 'review' ? `${n.review} ${plural(n.review, 'revisión pedida', 'revisiones pedidas')}. Ver la lista`
+        : key === 'pr' ? `${n.pr} ${plural(n.pr, 'PR tuya abierta', 'PR tuyas abiertas')}. Ver la lista`
+          : `${n.issue} ${plural(n.issue, 'issue asignada o que te menciona', 'issues asignadas o que te mencionan')}. Ver la lista`;
+      return { key, label: TITLES[key], count: n[key], aria };
+    });
+  }
+  /** The rows of one tile, built from the same pulse: what the user taps opens GitHub in the browser. */
+  function rowsOf(section, pulse) {
+    if (section === 'issue') {
+      return issuesView(pulse.issues).map(i => ({ ref: i.ref, title: i.title, meta: REASON_WORDS[i.reason], url: i.url, aria: `Abrir ${i.ref} en GitHub` }));
+    }
+    const list = section === 'pr' ? pulse.myPRs : section === 'review' ? pulse.toReview : [];
+    return list.map(prView).filter(Boolean).map(r => ({ ...r, aria: `Abrir ${r.ref} en GitHub` }));
+  }
+
+  /**
+   * What the card paints: the pulse (`section` absent/«pulse») or one of its lists. `null` when there is no card to draw.
+   */
+  function cardView({ pulse, stats, activity, section } = {}) {
+    if (!isObject(pulse) || !Array.isArray(pulse.myPRs) || !Array.isArray(pulse.toReview) || !Array.isArray(pulse.issues)) return null;
+    const at = section === undefined || section === null || section === 'pulse' ? 'pulse' : section;
+    if (at === 'pulse') {
+      const tiles = tilesOf(pulse);
+      return {
+        kind: 'pulse', label: LABEL, login: clean(pulse.login),
+        repos: isObject(stats) && isStat(stats.totalRepos) ? stats.totalRepos : null,
+        tiles, strip: stripView(activity), activityLabel: `contribuciones · ${STRIP_DAYS} días`,
+        aria: tiles.map(t => t.aria).join(' '),
+      };
+    }
+    if (!TILES.includes(at)) return null;
+    const rows = rowsOf(at, pulse);
+    return { kind: 'list', section: at, label: LABEL, back: BACK, title: `${TITLES[at]} · ${rows.length}`, empty: rows.length === 0, nothing: NOTHING, rows };
+  }
+
+  // ── renderer: textContent only, buttons for everything the user can tap ────────────────────────────────────
+  function render(host, view, open, pick) {
+    const doc = host && host.ownerDocument;
+    if (!doc || typeof doc.createElement !== 'function' || typeof host.replaceChildren !== 'function') return;
+    if (!view || view.kind === 'unavailable') { host.replaceChildren(); host.hidden = true; return; }
+    const el = (tag, cls, txt) => { const n = doc.createElement(tag); if (cls) n.className = cls; if (txt !== undefined) n.textContent = txt; return n; };
+    const button = (cls, aria, txt) => { const b = el('button', cls, txt); b.type = 'button'; b.setAttribute('aria-label', aria); return b; };
+    const card = el('div', 'int-card gh-pulse-card');
+    const head = el('div', 'int-head');
+    const dot = el('i', 'dot gh-dot');
+    head.append(dot, el('b', '', view.label));
+    if (view.login) head.append(el('span', 'gh-login', '@' + view.login));
+    if (view.kind === 'pulse' && view.repos !== null) head.append(el('span', 'gh-repos', `${view.repos} ${plural(view.repos, 'repo', 'repos')}`));
+    if (view.kind === 'list') {
+      const back = button('gh-back', 'Volver al pulso', view.back);
+      back.addEventListener('click', e => { if (e.isTrusted === true && typeof pick === 'function') pick(null); });
+      head.append(back, el('span', 'gh-list-title', view.title));
+    }
+    card.append(head);
+    if (view.kind === 'pulse') {
+      if (view.strip.length) {
+        const strip = el('div', 'gh-strip');
+        strip.setAttribute('role', 'img');
+        strip.setAttribute('aria-label', view.activityLabel);
+        for (const level of view.strip) strip.append(el('i', `gh-cell l${level}`));
+        strip.append(el('span', 'gh-strip-label', view.activityLabel));
+        card.append(strip);
+      }
+      const tiles = el('div', 'gh-tiles');
+      for (const tile of view.tiles) {
+        const b = button('gh-tile', tile.aria, null);
+        b.setAttribute('data-tile', tile.key);
+        b.append(el('b', 'gh-tile-count', String(tile.count)), el('span', 'gh-tile-label', tile.label));
+        b.addEventListener('click', e => { if (e.isTrusted === true && typeof pick === 'function') pick(tile.key); });
+        tiles.append(b);
+      }
+      card.append(tiles);
+    } else if (view.empty) {
+      card.append(el('div', 'gh-empty', view.nothing));
+    } else {
+      const list = el('div', 'gh-list');
+      for (const row of view.rows) {
+        const b = button('gh-row', row.aria, null);
+        b.setAttribute('title', `${row.ref} ${row.title}`);
+        b.append(el('span', 'gh-ref', row.ref), el('span', 'gh-title', row.title), el('span', 'gh-meta', row.meta));
+        b.addEventListener('click', e => { if (e.isTrusted === true && typeof open === 'function' && row.url) open(row.url); });
+        list.append(b);
+      }
+      card.append(list);
+    }
+    host.replaceChildren(card);
+    host.hidden = false;
+  }
+
+  const pausedNow = () => {
+    const P = typeof module === 'object' && module.exports ? require('./paused.js') : (typeof window !== 'undefined' ? window.AbitoPaused : null);
+    return !!(P && P.paused('github'));
+  };
+
+  return { CARD_ID, LABEL, ICON, POLL_MS, REASONS, CI_WORDS, TILES, TITLES, REASON_WORDS, BACK, NOTHING, STRIP_DAYS, answerView, available, issuesView, stripView, tilesOf, rowsOf, cardView, render, safeUrl, pausedNow };
 });
 
 function mount(api) {
   const doc = typeof document === 'object' ? document : null;
   const root = typeof window === 'object' ? window : null;
   if (!doc || !root) return;
-  const capsule = doc.getElementById('capsule');
-  const overview = doc.getElementById('overview-view');
-  const leftCard = overview && overview.querySelector('.card-left');
-  if (!capsule || !leftCard) return;
   const internals = root.__TAURI_INTERNALS__;
   const label = internals && internals.metadata && internals.metadata.currentWindow && internals.metadata.currentWindow.label;
   const invoke = (root.__TAURI__ && root.__TAURI__.core && root.__TAURI__.core.invoke) || (internals && internals.invoke);
-  const listen = root.__TAURI__ && root.__TAURI__.event && root.__TAURI__.event.listen;
+  // the host refuses any window but the island's; the settings window runs this same page, so stay inert there
   if (!invoke || label === 'settings') return;
+  const shortcuts = root.AbitoShortcuts || null;
+  if (!shortcuts) return;
 
-  let view = null, prefs = {}, pulse = null, stats = null, selection = null, activity = null, note = '', detail = false, timer = null, inFlight = false;
-  let focused = false, connected = false, rendered = null;
-  function announce(on) {
-    if (connected === on) return;
-    connected = on;
-    doc.dispatchEvent(new CustomEvent('abito:integration-seen', { detail: { source: 'github', ids: on ? [api.PILL_ID] : [] } }));
-  }
-  const host = doc.createElement('div'); host.className = 'gh-card'; host.style.pointerEvents = 'auto'; host.hidden = true; leftCard.append(host);
-  const onScreen = () => {
-    const d = capsule.dataset;
-    return d.phase === 'expanded' && d.view === 'overview' && !d.card && d.settings !== 'open' &&
-      !['pending', 'expired', 'outcome'].includes(d.question) && d.noticeView !== 'notices' && !doc.hidden;
+  let pulse = null, stats = null, activity = null, section = null;
+  let cardHost = null, timer = null, inFlight = false, drawn = null;
+  const on = () => !!pulse && !api.pausedNow();
+  const badge = () => (pulse ? pulse.toReview.length : 0);
+  const paint = () => {
+    if (!cardHost) return;
+    // a poll that changed nothing must not detach the row the user is on (the old card pinned the same rule)
+    const next = [pulse, stats, activity, section];
+    if (drawn && next.every((v, i) => v === drawn[i])) return;
+    drawn = next;
+    api.render(cardHost, api.cardView({ pulse, stats, activity, section }), open, pick);
   };
-  const el = (tag, cls, text) => { const n = doc.createElement(tag); if (cls) n.className = cls; if (text) n.textContent = text; return n; };
-
-  function draw() {
-    // Poll declared GitHub even before focus: otherwise its pill can never be discovered.
-    schedule(api.wanted(prefs) && onScreen());
-    const show = !!view && focused && api.wanted(prefs) && onScreen();
-    host.hidden = !show;
-    if (show) overview.dataset.github = 'on'; else delete overview.dataset.github;
-    if (!show) { detail = false; rendered = null; return; }
-    // Capsule hover/focus writes attributes even when the values are unchanged.
-    // Never detach a pressed button between pointerdown and pointerup.
-    const next = [pulse, stats, activity, note, detail];
-    if (rendered && next.every((v, i) => v === rendered[i])) return;
-    rendered = next;
-    host.replaceChildren();
-    if (pulse) {
-      host.append(detail ? view.githubDetail(pulse, stats, activity, () => { detail = false; selection = null; draw(); }) : view.githubPulseCard(pulse, stats, activity, () => { detail = true; selection = null; draw(); }));
-    } else {
-      const card = el('div', 'int-card'), head = el('div', 'int-head');
-      head.append(el('i', 'dot'), el('b', '', 'GitHub'));
-      card.append(head, el('div', 'int-status', note || 'Cargando…'));
-      host.append(card);
-    }
-    if (pulse && note) { const status = el('div', 'int-status', note); status.setAttribute('role', 'status'); host.append(status); }
+  function pick(key) { section = key; paint(); }
+  function open(url) {
+    const safe = api.safeUrl(url);
+    if (safe) invoke('open_chat_url', { payload: { url: safe } }).catch(() => {});
   }
-  function fetchSection(section) {
-    return invoke('github_action', { payload: { action: 'refresh', section } }).then(answer => api.answerView(answer, section), () => ({ kind: 'unavailable', note: api.REASONS.gh_bad_answer }));
+  // S3: the icon appears and disappears with the truth of the answer; the row is repainted only when that moves
+  function settle(next) {
+    const before = on(), count = badge();
+    pulse = next.pulse;
+    stats = next.stats;
+    if (!pulse) { activity = null; section = null; }
+    paint();
+    if (on() !== before || badge() !== count) shortcuts.refresh();
   }
+  const fetchSection = sectionName => invoke('github_action', { payload: { action: 'refresh', section: sectionName } })
+    .then(answer => api.answerView(answer, sectionName), () => ({ kind: 'unavailable', note: api.REASONS.gh_bad_answer }));
   function refresh() {
-    if (inFlight || !api.wanted(prefs) || !onScreen()) return;
+    if (inFlight || doc.hidden || api.pausedNow()) return;
     inFlight = true;
     fetchSection('pulse').then(r => {
-      if (!api.wanted(prefs)) return;
-      if (r.kind === 'pulse') { pulse = r.data; stats = r.stats || null; note = ''; } else { pulse = null; activity = null; note = r.note; }
-      announce(!!pulse);
-      draw();
-      return pulse && fetchSection('activity').then(a => { if (api.wanted(prefs) && a.kind === 'activity') { activity = a.data; draw(); } });
-    }).finally(() => { inFlight = false; });
+      inFlight = false;
+      if (r.kind !== 'pulse') { settle({ pulse: null }); return; }
+      settle({ pulse: r.data, stats: r.stats || null });
+      if (!r.data.issues.length && !r.data.myPRs.length && !r.data.toReview.length) return;
+      return fetchSection('activity').then(a => { if (a.kind === 'activity' && pulse === r.data) { activity = a.data; paint(); } });
+    }, () => { inFlight = false; settle({ pulse: null }); });
   }
-  function schedule(on) {
-    if (on && !timer) { timer = setInterval(refresh, api.POLL_MS); refresh(); }
-    else if (!on && timer) { clearInterval(timer); timer = null; }
-  }
+  function stop() { if (timer) { clearInterval(timer); timer = null; } }
 
-  import('./vendor/coucou/views/github.js').then(mod => {
-    view = mod;
-    mod.hooks.openUrl = url => { const safe = api.safeUrl(url); if (safe) invoke('open_chat_url', { payload: { url: safe } }).catch(() => {}); };
-    mod.hooks.refresh = section => { if (focused && api.wanted(prefs) && onScreen()) fetchSection(section).then(r => { if (r.kind === 'pulse') { pulse = r.data; stats = r.stats || null; note = ''; } else if (r.kind === 'unavailable') note = r.note; if (r.kind === 'activity') activity = r.data; draw(); }); };
-    doc.addEventListener('keydown', e => {
-      if (!detail || host.hidden || !focused || !onScreen() || !e.isTrusted || /INPUT|TEXTAREA/.test(e.target.tagName)) return;
-      const rows = view.listRows(host), next = api.navigateDetail(e.key, selection, rows.length);
-      if (!next) return;
-      e.preventDefault(); e.stopImmediatePropagation();
-      if (next.back) { detail = false; selection = null; draw(); }
-      else if ('open' in next) view.openRow(rows[next.open]);
-      else { selection = next.selection; view.highlightRow(rows, selection, true); }
-    }, true);
-    if (typeof MutationObserver !== 'undefined') new MutationObserver(draw).observe(capsule, { attributes: true, attributeFilter: ['data-phase', 'data-view', 'data-settings', 'data-card', 'data-question', 'data-notice-view'] });
-    doc.addEventListener('visibilitychange', draw);
-    draw();
-  }).catch(() => {});
-
-  const isObject = v => v !== null && typeof v === 'object' && !Array.isArray(v);
-  doc.addEventListener('abito:integration-focus', e => {
-    focused = e?.detail?.id === api.PILL_ID;
-    draw();
+  shortcuts.registerCard({
+    id: 'github', label: 'GitHub', icon: 'pr',
+    available: () => on(),
+    badge: () => badge(),
+    mount: el => {
+      const card = doc.createElement('div');
+      card.className = 'gh-host';
+      el.append(card);
+      cardHost = card;
+      drawn = null;
+      paint();
+      return () => { card.replaceChildren(); if (card.parentNode) card.parentNode.removeChild(card); cardHost = null; drawn = null; };
+    },
   });
-  const apply = p => {
-    prefs = isObject(p) ? p : {};
-    if (!api.wanted(prefs)) { focused = false; pulse = null; activity = null; announce(false); }
-    draw();
-  };
-  invoke('prefs_action', { payload: { action: 'view' } }).then(apply, () => {});
-  if (listen) listen('prefs:state', e => apply(e && e.payload)).catch(() => {});
+
+  // The pill column still speaks `abito:integration-focus` (pills-view.js) and the island stylesheet hides the overview's
+  // left card under #overview-view[data-github="on"]. The card itself is a card of the shortcuts row now, so this mirror is
+  // all that is left of the focused-pill path: it never paints anything (test-node/island-geometry-check.cjs pins it).
+  doc.addEventListener('abito:integration-focus', e => {
+    if (typeof doc.getElementById !== 'function') return;
+    const overview = doc.getElementById('overview-view');
+    if (!overview || !overview.dataset) return;
+    if (e && e.detail && e.detail.id === 'integration_github') overview.dataset.github = 'on';
+    else delete overview.dataset.github;
+  });
+  doc.addEventListener('visibilitychange', () => { if (!doc.hidden) refresh(); });
+  root.addEventListener('pagehide', stop);
+  timer = setInterval(refresh, api.POLL_MS);
+  refresh();
 }

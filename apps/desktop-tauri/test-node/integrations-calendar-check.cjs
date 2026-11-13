@@ -1,7 +1,8 @@
 'use strict';
-/* #359 F045 — pure checks for frontend/integrations-calendar.js (Cal.com bookings with month/day
-   navigation and a detail view; navigation is pure state). Times are UTC on purpose: the fake data
-   and the checks never depend on the machine's timezone. FAKE data only: no network, no accounts.
+/* #359 F045 — pure checks for frontend/integrations-calendar.js (bookings with month/day navigation and a
+   detail view; navigation is pure state). Times are UTC on purpose: the checks never depend on the
+   machine's timezone. K2-11 S5: the FAKE provider and its mount in Ajustes are gone (the real calendar is
+   calendar-view.js on the island), so this file only keeps the closed view-model that a real frame would feed.
    Run: node apps/desktop-tauri/test-node/integrations-calendar-check.cjs */
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -21,13 +22,14 @@ const okFrame = (o = {}) => ({ type: 'calendar', schema: C.SCHEMA, fake: true,
     bk({ id: 'b3', title: 'Demo', start: at(2023, 10, 21) }), bk({ id: 'b4', title: 'Cierre', start: at(2023, 11, 5) })], ...o });
 const store = () => C.storeFromFrame(okFrame(), NOW);
 
-test('fake provider: loud, closed shape, bounded, deterministic', () => {
-  const f = C.fakeFrame();
-  assert.equal(f.fake, true);
-  assert.ok(f.bookings.length > 0 && f.bookings.length <= C.MAX_BOOKINGS);
-  for (const b of f.bookings) assert.deepEqual(Object.keys(b).sort(), ['attendee', 'durationMin', 'id', 'start', 'title']);
-  assert.deepEqual(C.fakeFrame(), f);
-  assert.ok(C.storeFromFrame(f, C.FAKE_BASE));
+test('K2-11 S5: the fake provider left Ajustes — no sample booking exists anywhere', () => {
+  assert.equal(C.fakeFrame, undefined, 'no fake frame to paint');
+  assert.equal(C.FAKE_BASE, undefined, 'nor the anchored «today» of the sample data');
+  const src = fs.readFileSync(path.join(frontend, 'integrations-calendar.js'), 'utf8');
+  for (const gone of [/Datos de ejemplo/, /FAKE_/, /fakeFrame/, /getElementById/, /Ana Pérez|Luis Gómez|Marta Ruiz/]) assert.doesNotMatch(src, gone, `no sample data is left: ${gone}`);
+  const html = fs.readFileSync(path.join(frontend, 'index.html'), 'utf8');
+  assert.doesNotMatch(html, /id="integrations-calendar"/, 'Ajustes has no calendar container to fill with invented bookings');
+  assert.doesNotMatch(html, /src="integrations-calendar\.js"/, 'and the page no longer loads it');
 });
 
 test('storeFromFrame: builds a frozen store on the month of `now`, no day, no detail', () => {
@@ -106,8 +108,7 @@ test('view: month grid is Monday-first with honest per-day counts', () => {
   assert.equal(v.cells.find(c => c.day === 15).count, 0);
   assert.equal(v.cells.find(c => c.day === 14).isToday, true);
   assert.equal(v.cells.find(c => c.day === 15).isToday, false);
-  assert.match(v.banner, /datos de ejemplo/i);
-  assert.equal(C.view(C.storeFromFrame(okFrame({ fake: false }), NOW), NOW).banner, null);
+  assert.equal(v.banner, null, 'K2-11 S5: no «datos de ejemplo» banner: the card no longer has sample data to flag');
 });
 
 test('view: the list shows the month sorted by start, or only the chosen day', () => {
@@ -132,16 +133,13 @@ test('view: detail mode carries the booking; bad input yields null', () => {
   assert.equal(C.view(store(), 'now'), null);
 });
 
-test('hygiene: frozen API, textContent only, no network, guarded trusted mount', () => {
+test('hygiene: frozen API, textContent only, no network, and no mount of its own', () => {
   assert.ok(Object.isFrozen(C));
   const src = fs.readFileSync(path.join(frontend, 'integrations-calendar.js'), 'utf8');
   assert.doesNotMatch(src, /innerHTML|insertAdjacentHTML|outerHTML|document\.write|window\.open/);
   assert.doesNotMatch(src, /fetch\(|XMLHttpRequest|WebSocket|localStorage/);
   assert.doesNotMatch(src, /(api[_-]?key|secret|token)\s*[:=]\s*['"][^'"]{8,}/i);
-  assert.match(src, /Datos de ejemplo/);
-  assert.match(src, /getElementById\('integrations-calendar'\)/);
-  assert.match(src, /if \(!host\) return/);
-  assert.match(src, /e\.isTrusted !== true/);
+  assert.doesNotMatch(src, /e\.isTrusted !== true/, 'the fake card\'s click wiring is gone with the card');
 });
 
 test('render: month grid, day buttons and detail are keyboard buttons (browser only)', () => {

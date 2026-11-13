@@ -12,7 +12,8 @@ const html = read('index.html');
 let passed = 0;
 const test = (_name, fn) => { fn(); passed += 1; };
 
-const CARDS = ['github', 'deployments', 'email', 'mail', 'payments', 'finance', 'notion', 'n8n', 'calendar'];
+// K2-11 S5: the fake Cal.com calendar card left Ajustes (no container, no script):
+const CARDS = ['github', 'deployments', 'email', 'mail', 'payments', 'finance', 'notion', 'n8n'];
 const GROUP = /<div id="connections-more"[^>]*\bhidden\b[^>]*>([\s\S]*?)<!-- \/connections-more -->/;
 
 test('the group wrapper lives inside #settings, outside #settings-body (render() wipes the body)', () => {

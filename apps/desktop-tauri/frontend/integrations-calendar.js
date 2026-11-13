@@ -1,24 +1,19 @@
 'use strict';
-/* #359 F045 — the Calendario (Cal.com) service card: bookings with month/day navigation and a
-   booking detail. ONE file, the house pattern (integrations-view.js): pure view-model, textContent
-   -only renderer, a LOUD fake provider, browser-only mount at the tail.
+/* #359 F045 — the Calendario service card, kept as a CLOSED view-model only: bookings with month/day
+   navigation and a booking detail, fed by a frame nobody invents any more.
+
+   K2-11 S5 (criterion 3): the LOUD fake provider and its browser mount are GONE. Ajustes no longer
+   ships a container or a script for this file, so nothing is painted with sample bookings; the real
+   calendar is the island's own card (frontend/calendar-view.js, today and tomorrow from the user's
+   private ICS URL, src/calendar.rs). What stays is the pure state model a real frame would feed.
 
    Navigation is PURE STATE in the store (year, month, day, selected): every action returns a new
    frozen store or null, and rejected input leaves the old store untouched. Dates are read as UTC on
-   purpose, so the fake data and the checks never depend on the machine's timezone.
-
-   FAKE DATA ONLY: no network, no account, no token. Every rendered view carries the visible
-   «datos de ejemplo» marker while the frame says fake:true.
-
-   MOUNT CONTRACT (index.html wiring — coordinator's approval needed): inert until the page has
-     <section id="integrations-calendar" hidden></section>
-   plus <script src="integrations-calendar.js" defer></script>. With the container absent it costs
-   nothing. The open-in-Cal.com target stays with the framework (integrations-view.js allowlist). */
+   purpose, so the checks never depend on the machine's timezone. */
 (function (root, factory) {
   const api = factory();
   if (typeof module === 'object' && module.exports) { module.exports = Object.freeze(api); return; }
   root.AbitoCalendar = Object.freeze(api);
-  mount(api);
 })(typeof self !== 'undefined' ? self : this, () => {
   const SCHEMA = 'abito-integrations/calendar/1';
   const MAX_BOOKINGS = 40;
@@ -26,7 +21,6 @@
   const MAX_ATTENDEE = 60;
   const MIN_YEAR = 2000;
   const MAX_YEAR = 2100;
-  const FAKE_BANNER = 'Datos de ejemplo — nada está conectado todavía.';
   const ID_RE = /^[a-z0-9-]{1,32}$/;
   const MONTHS = Object.freeze(['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre']);
   const WEEKDAYS = Object.freeze(['lun', 'mar', 'mié', 'jue', 'vie', 'sáb', 'dom']);
@@ -131,7 +125,7 @@
         whenLabel: `${WEEKDAYS_LONG[d.getUTCDay()]} ${d.getUTCDate()} de ${MONTHS[d.getUTCMonth()]} · ${range(picked)}`,
         durationLabel: durationLabel(picked.durationMin) });
     })() : null;
-    return Object.freeze({ fake: store.fake, banner: store.fake ? FAKE_BANNER : null,
+    return Object.freeze({ fake: store.fake, banner: null,
       mode: detail ? 'detail' : 'list', monthLabel: `${MONTHS[month]} de ${year}`, weekdays: WEEKDAYS,
       cells: Object.freeze(cells), dayLabel: store.day === null ? null : `${store.day} de ${MONTHS[month]}`,
       rows: Object.freeze(rows), detail });
@@ -202,43 +196,6 @@
     host.append(list);
   }
 
-  // ---- fake provider (LOUD, deterministic, no network) -------------------------
-  const FAKE_BASE = Date.UTC(2023, 10, 14, 12, 0);
-  const FAKE_BOOKINGS = Object.freeze([
-    ['ej-1', 'Llamada de descubrimiento', 'Ana Pérez', Date.UTC(2023, 10, 6, 14, 0), 30],
-    ['ej-2', 'Revisión de proyecto', 'Luis Gómez', Date.UTC(2023, 10, 14, 9, 30), 45],
-    ['ej-3', 'Demo del producto', 'Marta Ruiz', Date.UTC(2023, 10, 14, 16, 0), 60],
-    ['ej-4', 'Seguimiento', 'Ana Pérez', Date.UTC(2023, 10, 21, 15, 0), 30],
-    ['ej-5', 'Cierre de año', 'Equipo', Date.UTC(2023, 11, 5, 10, 0), 90],
-  ]);
-  function fakeFrame() {
-    return { type: 'calendar', schema: SCHEMA, fake: true,
-      bookings: FAKE_BOOKINGS.map(([id, title, attendee, start, durationMin]) => ({ id, title, attendee, start, durationMin })) };
-  }
-
-  return { SCHEMA, MAX_BOOKINGS, MAX_TITLE, MAX_ATTENDEE, MIN_YEAR, MAX_YEAR, FAKE_BASE,
-    storeFromFrame, nextMonth, prevMonth, selectDay, openBooking, closeBooking, view, render, fakeFrame };
+  return { SCHEMA, MAX_BOOKINGS, MAX_TITLE, MAX_ATTENDEE, MIN_YEAR, MAX_YEAR,
+    storeFromFrame, nextMonth, prevMonth, selectDay, openBooking, closeBooking, view, render };
 });
-
-// ---- browser-only wiring: self-mount into #integrations-calendar, FAKE provider only ----
-function mount(C) {
-  if (typeof document === 'undefined') return;
-  const host = document.getElementById('integrations-calendar');
-  if (!host) return; // inert until index.html carries the container (mount contract)
-  let store = C.storeFromFrame(C.fakeFrame(), C.FAKE_BASE);
-  const paint = () => C.render(host, C.view(store, C.FAKE_BASE)); // fake data is anchored: «hoy» stays stable
-  host.addEventListener('click', e => {
-    if (!e || e.isTrusted !== true) return; // only trusted gestures change anything
-    const target = e.target && typeof e.target.closest === 'function' ? e.target : null;
-    const button = target ? target.closest('[data-action]') : null;
-    if (!button || !host.contains(button)) return;
-    const { action, id } = button.dataset;
-    const next = action === 'prev-month' ? C.prevMonth(store)
-      : action === 'next-month' ? C.nextMonth(store)
-        : action === 'day' ? C.selectDay(store, Number(id))
-          : action === 'open' ? C.openBooking(store, id)
-            : action === 'close' ? C.closeBooking(store) : null;
-    if (next) { store = next; paint(); }
-  });
-  paint();
-}

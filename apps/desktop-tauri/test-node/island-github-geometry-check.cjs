@@ -4,13 +4,14 @@
 const assert = require('node:assert/strict');
 const H = require('./island-geometry-harness.cjs');
 
-// HU-072: GitHub is paused (frontend/paused.js) and the HU-057 notch has no GitHub surface yet; flip to true when HU-072 lands.
-const GITHUB_ON_ISLAND = false;
-if (!GITHUB_ON_ISLAND) {
-  // Deliberate pause, not a skip: run only what is true today (island-github-paused-check) and say plainly that this is NOT a pass.
+// K2-11 T3: the GitHub card is no longer the overview's left card (it is a card of the shortcuts row, island-github.js); the
+// harness scenario below still measures the RETIRED left card, so these 12 assertions cannot run until that scenario is
+// re-targeted. Until then, run what IS true (island-github-paused-check) and say plainly that this is NOT a pass of the geometry.
+const LEFT_CARD_MEASURED = false;
+if (!LEFT_CARD_MEASURED) {
   const r = require('node:child_process').spawnSync(process.execPath, [require('node:path').join(__dirname, 'island-github-paused-check.cjs')], { stdio: 'inherit' });
-  if (r.status !== 0) { console.error('FAIL island-github-geometry-check: the paused-GitHub verification failed'); process.exit(r.status || 1); }
-  console.log('PAUSED island-github-geometry-check: GitHub on the island is paused (HU-072); 12 assertions kept but not run — NOT a pass of the GitHub geometry, see HU-072');
+  if (r.status !== 0) { console.error('FAIL island-github-geometry-check: the GitHub-surface verification failed'); process.exit(r.status || 1); }
+  console.log('RETIRED island-github-geometry-check: the harness scenario measures the overview left card K2-11 retired; 12 assertions kept but not run — NOT a pass of the shortcuts-row card geometry');
   process.exit(0);
 }
 if (!H.findPlaywright()) { console.log('SKIPPED island-github-geometry-check: playwright is not installed here (no real layout engine) — NOT a pass'); process.exit(0); }
