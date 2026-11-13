@@ -20,17 +20,32 @@ const USAGE = 'usage: koda-hook install statusline (--settings <abs path> | --us
 const { InstallError, scanSettings, shq, isObj, diffLines } = ic;
 const refuse = ic.InstallErrorRefuse;
 
-// Anchored: ours only when a word of the command IS the script, i.e. its last path component is exactly the Koda or the 0.1 script
-// name. A word is a quoted string (every install writes it quoted) or a bare token; a bare token must carry a path separator, so a
-// look-alike (`my-abito-statusline.cjs`, `koda-statusline.cjs.bak`) and a bare name inside another command stay foreign.
+// Anchored on the exact shape the installers write: `<interpreter> <script>` and NOTHING else (an optional leading `&` is the
+// PowerShell call operator). The second word must be the script itself: its last path component is exactly the Koda or the 0.1
+// script name. The first word must be the Node executable (basename `node` / `node.exe`); a bare script path must carry a path
+// separator. Anything with a third word, a redirect, `&&`, `;`, a variable prefix, or our script
+// name as an argument of another program is a FOREIGN status line and is never replaced or removed.
 const isScriptWord = w => [MARKER, LEGACY_MARKER].some(name => w === name || w.endsWith('/' + name) || w.endsWith('\\' + name));
+const words = command => {
+  const out = [];
+  const re = /"([^"]*)"|'([^']*)'|([^\s"';&|<>$`()]+)/g;
+  let last = 0, m;
+  while ((m = re.exec(command)) !== null) {
+    if (command.slice(last, m.index).trim() !== '') return null; // shell syntax between words: not our shape
+    out.push({ text: m[1] ?? m[2] ?? m[3], bare: m[3] !== undefined });
+    last = re.lastIndex;
+  }
+  return command.slice(last).trim() === '' ? out : null;
+};
 const isOurs = v => {
   if (!isObj(v) || typeof v.command !== 'string') return false;
-  for (const m of v.command.matchAll(/"([^"]*)"|'([^']*)'|(\S+)/g)) {
-    if (m[3] !== undefined) { if (/[\\/]/.test(m[3]) && isScriptWord(m[3])) return true; }
-    else if (isScriptWord(m[1] ?? m[2])) return true;
-  }
-  return false;
+  let w = words(v.command.trim().replace(/^&\s+/, ''));
+  if (!w || w.length !== 2) return false;
+  const [interpreter, script] = w;
+  // The installers write the Node executable (`process.execPath`, or the bundled runtime): its basename is `node` / `node.exe`.
+  if (!/^node(\.exe)?$/i.test(interpreter.text.split(/[\\/]/).pop())) return false;
+  if (script.bare && !/[\\/]/.test(script.text)) return false;
+  return isScriptWord(script.text);
 };
 const previousFile = home => path.join(home, '.abito', 'statusline-previous.json');
 const removePrevious = home => { const w = winfs.active(); if (w) w.remove(previousFile(home)); else fs.unlinkSync(previousFile(home)); };

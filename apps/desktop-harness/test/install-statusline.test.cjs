@@ -173,3 +173,31 @@ test('K2-04: an unquoted script path is ours when it has a path separator; a bar
   assert.equal(isOurs({ type: 'command', command: 'node /x/my-abito-statusline.cjs' }), false, 'look-alike');
   assert.equal(isOurs({ type: 'command', command: 'my-status --wrap koda-statusline.cjs' }), false, 'a bare name is not a path');
 });
+
+test('K2-04: a foreign status line is never ours, even when it carries our script path as an argument', () => {
+  const foreign = [
+    'node /x/old/abito-statusline.cjs && rm -rf ~',
+    '/usr/bin/foreign-statusline /x/koda-statusline.cjs',
+    'cat /x/koda-statusline.cjs',
+    'echo x>/x/koda-statusline.cjs',
+    'my-status --config=/x/koda-statusline.cjs',
+    "bash -c 'echo /x/koda-statusline.cjs'",
+    "my-status --wrap 'koda-statusline.cjs'",
+    "node '/x/koda-statusline.cjs' --extra",
+    'node /x/koda-statusline.cjs; rm -rf ~',
+    'FOO=1 node /x/koda-statusline.cjs',
+  ];
+  for (const command of foreign) assert.equal(isOurs({ type: 'command', command }), false, command);
+});
+
+test('K2-04: the exact shapes the installers write are still ours (Unix, Git Bash, PowerShell, 0.1)', () => {
+  const ours = [
+    "'/usr/bin/node' '/opt/koda/bin/koda-statusline.cjs'",
+    "'/usr/bin/node' '/Users/a/Abito.app/Contents/Resources/desktop-harness/bin/abito-statusline.cjs'",
+    '"C:/Program Files/nodejs/node.exe" "C:/k/bin/koda-statusline.cjs"',
+    '& "C:\\Program Files\\nodejs\\node.exe" "C:\\k\\bin\\koda-statusline.cjs"',
+    'node /x/koda-statusline.cjs',
+    'node C:\\x\\koda-statusline.cjs',
+  ];
+  for (const command of ours) assert.equal(isOurs({ type: 'command', command }), true, command);
+});
