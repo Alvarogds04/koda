@@ -220,7 +220,8 @@
   const HOY_ACTION = Object.freeze({ buy: 'Comprar', sell: 'Vender', send: 'Enviar' });
   const HOY_VERB = Object.freeze({ buy: 'Proponer una compra', sell: 'Proponer una venta', send: 'Proponer un envío' });
   // S19: where the text of a video result came from. The daemon does not send it yet; the chip appears when it does.
-  const HOY_PROVENANCE = Object.freeze({ youtube_subtitles: 'subtítulos de YouTube', local_transcription: 'transcripto en esta PC' });
+  // S19/F4: the closed list the daemon sends on a result item; unknown values draw no chip
+  const HOY_PROVENANCE = Object.freeze({ youtube_subtitles: 'subtítulos de YouTube', local_transcription: 'transcripto en esta PC', remote_transcription: 'transcripto con tu cuenta' });
   // a refused approval is read by its CLOSED code (protocol.cjs), never by free text from the daemon
   const HOY_REFUSAL = Object.freeze({
     not_pending: 'Esa propuesta ya no espera tu respuesta.',

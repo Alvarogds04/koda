@@ -671,22 +671,31 @@ there too. Implementation: `src/minikodas/telegram-source.cjs`.
   after the result reaches «Hoy»): a failed run reads the same posts again instead of skipping them.
 - **Text.** The posts arrive oldest → newest, each as `[id] texto`, inside `Canal @canal: N publicaciones nuevas.`, capped
   at 60 000 chars. That text is what `source_read` returns; the Minikoda never sees the channel itself.
-- **Media.** Video (round video notes and GIF animations included), audio and voice messages are downloaded with
-  `downloadAsNodeStream` into the run's private folder `<island>/minikodas/media/<run>/` (folder 0700, files 0600) —
-  but only after Telegram's own metadata says the file is **≤ 200 MB and ≤ 3 hours**; a bigger or longer one, or one
-  whose size Telegram does not report, is skipped with a note in the text. Photos and documents are ignored, and
-  content-protected (noforwards) media is skipped with a note. `FILE_REFERENCE_EXPIRED` refetches that one message **in
-  its channel** (`getMessages("@canal", [id])`: mtcute's media objects carry no `.chat`) and retries the download once,
-  never in a loop.
-- **`source.media` is the contract with the transcription step.** `prepare()` resolves
-  `{text, media: [{path, mimeType, durationSec, messageId, kind}], commit}`. Nothing is transcribed on this branch and
-  the post text says exactly that («video de 95 s, adjunto; todavía sin transcribir»). The run's media folder is removed
-  as soon as the run ends — success, engine failure, timeout or cancel (`TelegramSource.removeRun`, called by
-  `service.cjs` in a `finally`) — so a video per run never accumulates in the island.
-  **Merge note (`feat/k2-13-transcribe`):** the transcription step is what reconnects the two. It consumes
-  `source.media`, attaches each transcript to its `messageId` and then calls the same `removeRun(runId)`; it runs while
-  the folder still exists (before the `finally`). Until that merge, deleting in the `finally` is the correct end state:
-  nothing reads those files after the run.
+- **Media → transcription (S6, S17).** Video (round video notes and GIF animations included), audio and voice messages are
+  downloaded with `downloadAsNodeStream` into the run's private folder `<island>/minikodas/media/<run>/` (folder 0700,
+  files 0600) — but only after Telegram's own metadata says the file is **≤ 200 MB and ≤ 3 hours**; a bigger or longer
+  one, or one whose size Telegram does not report, is skipped with a note in the text. Photos and documents are ignored,
+  and content-protected (noforwards) media is skipped with a note. `FILE_REFERENCE_EXPIRED` refetches that one message
+  **in its channel** (`getMessages("@canal", [id])`: mtcute's media objects carry no `.chat`) and retries the download
+  once, never in a loop.
+  - Every downloaded media goes through the SAME transcription service the plain-file source uses (Parakeet by
+    default, or the setting's remote account; `transcribe.cjs`) through the source's `transcribe(entry)` callback, and
+    its transcript joins the text **right after the post it belongs to**: `[Transcripción de la publicación 12 del
+    2026-11-10]` followed by the text. The marker names the post by id and date only — never a file name, a path or the
+    run id, because none of those mean anything to the Minikoda.
+  - The media of one read share **one 30-minute budget** (S17), the same one every transcription has; the run's 300 s
+    engine budget only starts once the engine starts. A cancelled run (pause, delete, daemon stop) cancels the
+    transcription, and an exhausted budget ends the run with `reason: "transcription"` and «Hoy» saying «el video tardó
+    más de 30 minutos en transcribirse; no se resumió».
+  - A media that cannot be transcribed (too long, unreadable, ffmpeg or the helper unavailable, no voice) is **a short
+    Spanish note in its own post** («(video de 95 s: el video o audio no se pudo leer)») **and a «Hoy» error item**. It
+    never drops the post, never loses the other posts and never fails the run, so a channel read with one bad video
+    still lands its result.
+  - `prepare()` resolves `{text, media: [{path, mimeType, durationSec, messageId, kind}], ownChars, commit}`. Each file
+    is deleted right after its transcription, and the run's media folder is removed as soon as the run ends — success,
+    engine failure, timeout or cancel (`TelegramSource.removeRun`, called by `service.cjs` in a `finally`) — so a video
+    per run never accumulates in the island. `ownChars` is the length of the channel's own text, which the provenance
+    rule below counts.
 - **Failures are «Hoy» errors, never silence.** A long `FLOOD_WAIT` (mtcute absorbs ≤ 10 s), no connected account, an
   invalid channel or a revoked session fail the run with `reason: "source"` and the Spanish sentence from
   `telegram.cjs` («Telegram pidió esperar 5 minutos», «No hay ninguna cuenta de Telegram conectada»). There is no retry
@@ -728,6 +737,7 @@ there too. Implementation: `src/minikodas/telegram-source.cjs`.
 
 **Video and audio posts: transcription** (K2-13 S6-S9, S15, S16, S17, S18; `transcribe.cjs`, `transcribe-setting.cjs`):
 - A source may hand a run `{text, media: [files]}`. Each media file must be a regular file inside the run's own folder `<island>/minikodas/media/<runId>/`. It is transcribed, deleted, and its transcript is appended to what `source_read` returns. The media never reaches the model. The folder is removed after the run.
+- A **Telegram channel read** hands its media to the same service through the source's own callback, so each transcript lands inside its own post (post id and date only) and one bad media is a note plus a «Hoy» error item instead of a failed run — see «A Telegram channel as the source» above. One read's media share one 30-minute budget, like every other transcription.
 - **Setting** (global, `config.json` key `transcription`, frames `transcription_get`/`transcription_set`):
   - `{mode: "local-parakeet", language}`: the default. Parakeet v3 int8 on this computer, no network. The language is always fixed.
   - `{mode: "remote", language, remote: {accountId, model}}`: an OpenAI-compatible (custom gateway) account Koda already has, e.g. NaN with model `whisper`. The Base URL and the key are that account's own; the setting never holds them. `language` defaults to `es`.
@@ -739,7 +749,7 @@ there too. Implementation: `src/minikodas/telegram-source.cjs`.
   - **macOS: ffmpeg is not bundled in this version** (pending for the Mac session), so every media transcription there fails with `ffmpeg_unavailable`.
 - **Local path.** ffmpeg extracts 16 kHz mono 16-bit WAV, then `koda-transcribe transcribe --model … --language … <wav>` runs. Its VAD segments are capped at 25 s. A model that is not downloaded is `model_missing`; the daemon never downloads models.
 - **Remote path.** The WAV is cut into ≤ 175 s mono OGG/Opus chunks (refused above 24 MB). Each chunk is POSTed to `{base}/audio/transcriptions` (`model`, `language`, `response_format=json`, bearer key). Only the JSON `.text` is read, and the chunks are joined in order. A redirect is never followed, a 401/403 is `remote_auth`, and responses are bounded.
-- **Bounds.** At most 3 h of audio, **30 min per transcription** (`TRANSCRIPTION_BUDGET_MS`, one named constant shared by the local and the remote path), 180 s per remote request, and 20 media per run. Cancelling the run (pause, delete, daemon stop) kills the running ffmpeg or helper.
+- **Bounds.** At most 3 h of audio, **30 min per transcription phase** (`TRANSCRIPTION_BUDGET_MS`, one named constant shared by the local and the remote path, and by a channel read's whole batch of media), 180 s per remote request, and 20 media per run. Cancelling the run (pause, delete, daemon stop) kills the running ffmpeg or helper.
 - **S17 «1 lo que recomiendas»: transcription has its own budget.** Those 30 min do not count toward the run's 300 s engine budget: that clock starts only once the engine starts, after the transcript is ready. When the 30 min run out, the ffmpeg/helper/remote request is killed, the temp media and the transcription's work folder are deleted by the usual cleanup, the Minikoda's engine never starts, and «Hoy» gets an `error` item that says so: «La corrida de «X» falló (transcripción: el video tardó más de 30 minutos en transcribirse; no se resumió).»
 - **Cleanup.** Work files live in `<island>/minikodas/transcribe/<uuid>/` and are removed after every transcription. The media is deleted after its audio is extracted, and again in `finally`. A killed ffmpeg or helper must be gone before its folder is removed (Windows keeps it busy until the process really exits), so the runner waits for the child's `close` and the removal retries a few short times: a cleanup failure is logged and never replaces the error that ended the transcription. On `start()` the service also sweeps what a previous daemon left in `<island>/minikodas/media/` and `<island>/minikodas/transcribe/`, only inside those two folders and never through a symlink.
 - **Never logged:** the key, the media path, the media content, the transcript. ffmpeg's and the helper's stderr is drained and dropped.
@@ -756,7 +766,8 @@ there too. Implementation: `src/minikodas/telegram-source.cjs`.
 - **Update the pin often.** YouTube breaks yt-dlp regularly, so a release that stops extracting is expected: refresh `packaging/runtime/ytdlp.sha256` (tag, both sha256 from the release `SHA2-256SUMS`, and the two licence texts) and regenerate the runtime, instead of shipping a binary that no longer works. The licence situation — yt-dlp is Unlicense, but its official standalone builds also carry GNU Readline (GPL-3.0-or-later) and mutagen (GPL-2.0-or-later) — and the source-access record are in the root `THIRD-PARTY-NOTICES.md`.
 
 **«Hoy» and approve-later** (`hoy.cjs`, frames in `docs/PROTOCOL.md` «Minikodas and «Hoy» frames»):
-- `<island>/minikodas/hoy/hoy.jsonl` holds every item `{id, minikoda, kind: result|proposal|error, text, action?, target?, status: pending|approved|rejected, createdAt}`. The list is built from this file only, never from the model's text.
+- `<island>/minikodas/hoy/hoy.jsonl` holds every item `{id, minikoda, kind: result|proposal|error, text, action?, target?, status: pending|approved|rejected, createdAt}` plus, on a result, `provenance`. The list is built from this file only, never from the model's text.
+- **Where a result's text came from (S19, F4).** A result item carries an optional `provenance` from a closed list — `youtube_subtitles` (YouTube's own subtitles), `local_transcription` (Parakeet on this PC), `remote_transcription` (the account the user configured) — and the island draws its chip («subtítulos de YouTube», «transcripto en esta PC», «transcripto con tu cuenta»). Each phase counts the characters it contributed (the channel's own posts or the plain-text file included, as a fourth bucket that is none of the three), and the item carries the value with the most characters **only when it is strictly the biggest**: a tie, the run's own text on top, or nothing marked at all means no chip, because the daemon cannot say. The rule is `dominantProvenance` in `service.cjs`; `hoy.cjs` stores the value (an unknown one is dropped) and `protocol.cjs` validates it on the way out.
 - A proposal executes only on `hoy_approve {id}`. In K2-13 «execute» means: mark the item `approved`, append one line to `approved.jsonl` and broadcast `hoy_approved`. **There is no real buy, sell or send integration yet.**
 - No PIN (human decision L17): `hoy_approve {id}` approves. Approvals run one at a time, so a proposal executes exactly once even when two approvals arrive together (a second approve is refused with `not_pending`). The decision is persisted before the execution record. Reject never executes.
 - Same-uid limit: any process of the user that holds the session token (`runtime/session.json`, readable by every same-uid process) can approve a proposal. A separate OS user for the agent is K2-14 criterion 3.

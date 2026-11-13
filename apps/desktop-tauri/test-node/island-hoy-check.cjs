@@ -137,6 +137,20 @@ test('css: tokens only for colour, and the artboard\'s sizes', () => {
   assert.match(hoyCss, /font-size: 11px|font-size: 12px|font-size: 13px/, 'the notch type scale');
 });
 
+test('provenance: the island labels the daemon\'s three closed values and nothing else (S19, F4)', () => {
+  // The chip is what tells the human where a result's text came from: YouTube's own subtitles, Parakeet on this PC, or
+  // the account he configured. It is a closed list on both sides (protocol.cjs HOY_PROVENANCE), never free text.
+  const nusa = read('island-nusa.js');
+  const list = nusa.match(/HOY_PROVENANCE = Object\.freeze\(\{([^}]*)\}\)/);
+  assert.ok(list, 'the labels are one closed frozen map');
+  const keys = [...list[1].matchAll(/(\w+):/g)].map(m => m[1]);
+  assert.deepEqual(keys, ['youtube_subtitles', 'local_transcription', 'remote_transcription']);
+  assert.match(list[1], /youtube_subtitles: 'subtítulos de YouTube'/);
+  assert.match(list[1], /local_transcription: 'transcripto en esta PC'/);
+  assert.match(list[1], /remote_transcription: 'transcripto con tu cuenta'/);
+  assert.match(nusa, /hasOwnProperty\.call\(HOY_PROVENANCE, item\.provenance\)/, 'an unknown value draws no chip');
+});
+
 test('a proposal target wraps instead of being ellipsised away (B3)', () => {
   const rule = hoyCss.match(/\.hoy-row\[data-kind="proposal"\] \.hoy-tt \{([^}]*)\}/);
   assert.ok(rule, 'a proposal title has its own rule');

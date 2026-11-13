@@ -15,6 +15,7 @@ const path = require("node:path");
 const P = require("../src/protocol.cjs");
 const { IslandServer } = require("../src/server.cjs");
 const { HoyInbox } = require("../src/minikodas/hoy.cjs");
+const S = require("../src/minikodas/service.cjs");
 const { Minikodas } = require("../src/minikodas/index.cjs");
 
 const FAKE_PI = path.join(__dirname, "fixtures", "minikodas", "fake-pi.cjs");
@@ -149,6 +150,24 @@ test("S5 Hoy stores only buy/sell/send proposals even if a caller hands it somet
 	assert.deepEqual(added.map((i) => [i.kind, i.action]), [["result", undefined], ["proposal", "send"]]);
 });
 
+// ---------- provenance (K2-13 S19 / F4 of the island verifier) ----------
+
+test("S19 the provenance rule: the marked source that dominates by characters, or nothing when it cannot say", () => {
+	// The rule `service.cjs` applies to a finished run. Four buckets: the three closed provenance values and the run's own
+	// text (the channel's posts, the plain-text file), which is none of them and therefore competes like any other.
+	// The winner must be STRICTLY the biggest; a tie, the own text on top, or nothing marked at all means no provenance.
+	const own = (n) => ({ own: n, youtube_subtitles: 0, local_transcription: 0, remote_transcription: 0 });
+	assert.equal(S.dominantProvenance(own(0)), undefined, "a run that read nothing says nothing");
+	assert.equal(S.dominantProvenance(own(10)), undefined, "only the channel's own text: none of the three");
+	assert.equal(S.dominantProvenance({ own: 10, local_transcription: 900, youtube_subtitles: 0, remote_transcription: 0 }), "local_transcription");
+	assert.equal(S.dominantProvenance({ own: 10, youtube_subtitles: 300, local_transcription: 0, remote_transcription: 0 }), "youtube_subtitles");
+	assert.equal(S.dominantProvenance({ own: 10, remote_transcription: 900, youtube_subtitles: 0, local_transcription: 0 }), "remote_transcription");
+	assert.equal(S.dominantProvenance({ own: 900, local_transcription: 899, youtube_subtitles: 0, remote_transcription: 0 }), undefined, "the own text on top wins: the chip would lie");
+	assert.equal(S.dominantProvenance({ own: 0, local_transcription: 500, youtube_subtitles: 500, remote_transcription: 0 }), undefined, "a tie: the daemon cannot say");
+	assert.equal(S.dominantProvenance({ own: 500, local_transcription: 500, youtube_subtitles: 0, remote_transcription: 0 }), undefined, "a tie with the own text is a tie too");
+	assert.deepEqual([...P.HOY_PROVENANCE], ["youtube_subtitles", "local_transcription", "remote_transcription"], "the closed list the island knows");
+});
+
 // ---------- protocol allowlist ----------
 
 test("protocol: Minikodas and Hoy client frames are validated and rebuilt; anything off-contract is bad_request", () => {
@@ -200,6 +219,34 @@ test("protocol: hoy frame is rebuilt field by field from stored items, pending p
 	assert.equal(frame.items[2].secret, undefined);
 	assert.equal(frame.truncated, false);
 	assert.throws(() => P.hoyFrame([{ id: id(1), minikoda: "m", kind: "proposal", action: "delete", target: "x", text: "t", status: "pending" }]), /invalid/);
+});
+
+test("S19 protocol: provenance is a closed field of a RESULT item, and an unknown value fails the frame", () => {
+	const id = (n) => `00000000-0000-4000-8000-00000000000${n}`;
+	const result = (over) => ({ id: id(1), minikoda: "m", kind: "result", text: "r", status: "approved", createdAt: "a", ...over });
+	for (const value of ["youtube_subtitles", "local_transcription", "remote_transcription"]) {
+		assert.equal(P.hoyFrame([result({ provenance: value })]).items[0].provenance, value);
+	}
+	assert.equal(P.hoyFrame([result({})]).items[0].provenance, undefined, "a run that cannot say carries no field at all");
+	assert.throws(() => P.hoyFrame([result({ provenance: "downloaded_somewhere" })]), /invalid/, "off-vocabulary never reaches the island");
+	assert.throws(() => P.hoyFrame([result({ provenance: "LOCAL_TRANSCRIPTION" })]), /invalid/, "exact values only");
+	assert.throws(() => P.hoyFrame([{ ...result({}), kind: "proposal", action: "buy", target: "ACME", status: "pending", provenance: "local_transcription" }]), /invalid/, "only a result says where its text came from");
+	assert.throws(() => P.hoyFrame([{ ...result({}), kind: "error", provenance: "local_transcription" }]), /invalid/);
+});
+
+test("S19 the store keeps a result's provenance, and never an unknown one", async (t) => {
+	const inbox = new HoyInbox({ dir: path.join(tmp(t), "hoy") });
+	const [kept] = await inbox.addRun({ minikoda: "m", resultText: "r", provenance: "remote_transcription" });
+	assert.equal(kept.provenance, "remote_transcription");
+	assert.equal(inbox.get(kept.id).provenance, "remote_transcription", "it is stored with the item, not rebuilt on the way out");
+	const [dropped] = await inbox.addRun({ minikoda: "m", resultText: "r", provenance: "invented" });
+	assert.equal(dropped.provenance, undefined, "an unknown value is dropped, never stored");
+	const [none] = await inbox.addRun({ minikoda: "m", resultText: "r" });
+	assert.equal(none.provenance, undefined);
+	const [err] = await inbox.addError({ minikoda: "m", text: "falló", provenance: "local_transcription" });
+	assert.equal(err.provenance, undefined, "an error item says nothing about provenance");
+	const frame = P.hoyFrame(inbox.list());
+	assert.deepEqual(frame.items.map((i) => i.provenance).filter((v) => v !== undefined), ["remote_transcription"], "the frame carries only the one that was kept");
 });
 
 // ---------- server verbs (fake engine, real Minikodas facade) ----------

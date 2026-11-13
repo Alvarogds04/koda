@@ -230,20 +230,23 @@ class YouTubeReader {
 	}
 
 	/**
-	 * Reads every YouTube video link of `text` and returns `{text, videos, skipped, failures}`: `text` is the source
-	 * with the transcripts appended behind their markers; `failures` are `{id, url, code, userText}` for «Hoy».
+	 * Reads every YouTube video link of `text` and returns `{text, videos, skipped, failures, sources}`: `text` is the
+	 * source with the transcripts appended behind their markers; `failures` are `{id, url, code, userText}` for «Hoy»;
+	 * `sources` counts the characters each provenance value contributed (`youtube_subtitles`, `local_transcription`,
+	 * `remote_transcription`), which is what a result's provenance is decided from (`service.cjs`).
 	 * Throws YouTubeError(`cancelled`) when the run is cancelled and (`budget_exceeded`) when the shared transcription
 	 * budget ran out — both end the run (S17).
 	 */
 	async read(text, { signal } = {}) {
 		const source = String(text ?? "");
 		const { links, skipped } = findYouTubeLinks(source);
-		if (links.length === 0) return { text: source, videos: 0, skipped: 0, failures: [] };
+		const sources = { youtube_subtitles: 0, local_transcription: 0, remote_transcription: 0 };
+		if (links.length === 0) return { text: source, videos: 0, skipped: 0, failures: [], sources };
 		const failures = [];
 		if (!this.ytdlp || !this.transcriber) {
 			// macOS (no ffmpeg, no yt-dlp yet) and a development checkout: the post is still read, without the video.
 			for (const link of links) failures.push({ ...link, code: "youtube_unavailable", userText: USER_TEXT.youtube_unavailable });
-			return { text: source, videos: 0, skipped, failures };
+			return { text: source, videos: 0, skipped, failures, sources };
 		}
 		const job = { signal, deadline: Date.now() + this.limits.budgetMs };
 		let work;
@@ -256,6 +259,10 @@ class YouTubeReader {
 				try {
 					const video = await this.readOne(link, work, job);
 					parts.push(`\n[Video de YouTube ${link.url} · ${MARKS[video.from]}]\n${video.text}`);
+					// Which of the three closed provenance values this text belongs to: YouTube's own subtitles, or the
+					// transcription that ran (its own mode says local or remote).
+					const bucket = video.from === "subtitles" ? "youtube_subtitles" : video.mode === "remote" ? "remote_transcription" : "local_transcription";
+					sources[bucket] += video.text.length;
 				} catch (error) {
 					if (error instanceof YouTubeError && (error.code === "cancelled" || error.code === "budget_exceeded")) throw error;
 					const code = error instanceof YouTubeError ? error.code : "failed";
@@ -266,7 +273,7 @@ class YouTubeReader {
 		} finally {
 			if (work) await this.removeWork(work);
 		}
-		return { text: parts.length ? source + parts.join("") : source, videos: parts.length, skipped, failures };
+		return { text: parts.length ? source + parts.join("") : source, videos: parts.length, skipped, failures, sources };
 	}
 
 	/** Work folders retry a few short times (Windows keeps a just-killed child's folder busy); cleanup never throws. */
@@ -296,7 +303,7 @@ class YouTubeReader {
 		}
 		const audio = await this.downloadAudio(link, dir, job);
 		const out = await this.transcriber.transcribe(audio, { signal: job.signal, deleteMedia: true, deadline: job.deadline });
-		return { from: "transcript", text: String(out?.text ?? "").trim() };
+		return { from: "transcript", text: String(out?.text ?? "").trim(), mode: out?.mode };
 	}
 
 	/**

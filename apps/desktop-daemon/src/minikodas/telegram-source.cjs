@@ -15,12 +15,19 @@
  *    (`<island>/minikodas/media/<run>/`, 0700/0600) — but only after Telegram's OWN metadata says they are within
  *    200 MB and 3 hours; photos and documents are ignored, and content-protected (noforwards) media are skipped with a
  *    note. `FILE_REFERENCE_EXPIRED` refetches that one message and retries the download ONCE;
- * 4. the result is `{text, media:[{path, mimeType, durationSec, messageId, kind}], commit}`. `text` is what the Minikoda
- *    reads through `source_read`; `media` is the contract the transcription step consumes (K2-13 T2c, branch
- *    feat/k2-13-transcribe): it turns each file into text. Nothing is transcribed here, and the run's media folder is
- *    removed as soon as the run ends (`removeRun`, called by the service in a finally);
- * 5. `commit()` moves `lastSeenId`, and the service calls it only when the run really succeeded. A failed run reads the
+ * 4. every downloaded media is handed to the caller's `transcribe(entry)` (the daemon's transcription service, S6/S17)
+ *    and its transcript joins the text RIGHT AFTER the post it belongs to, under a marker that names the post by its id
+ *    and date — never the file, which only the daemon knows. A media that cannot be transcribed is a short Spanish
+ *    note in that same post; only a cancelled run or an exhausted transcription budget ends the read (the callback
+ *    throws those). The transcript never has to travel through the model: `source_read` gives the Minikoda the text;
+ * 5. the result is `{text, media:[{path, mimeType, durationSec, messageId, kind}], ownChars, commit}`. `media` is the
+ *    contract with the transcription step and holds files that are already transcribed and deleted; `ownChars` is how
+ *    many characters the channel's own posts took (the provenance step counts what each source contributed);
+ * 6. `commit()` moves `lastSeenId`, and the service calls it only when the run really succeeded. A failed run reads the
  *    same posts again next time instead of skipping them.
+ *
+ * The run's media folder is removed when the run ends, whatever the outcome (success, engine failure, cancel):
+ * `removeRun`, called by the service in a finally.
  *
  * Errors are the Telegram session's closed codes (`telegram_not_connected`, `telegram_flood_wait` with its minutes,
  * `telegram_session_invalid`, …) so «Hoy» can explain them in Spanish. There is no retry loop: a long FLOOD_WAIT fails
@@ -55,6 +62,8 @@ const SOURCE_LIMITS = Object.freeze({
 });
 
 const MEGABYTES = SOURCE_LIMITS.maxMediaBytes / (1024 * 1024);
+/** What a post says when the caller wired no transcription step (a checkout without one, a unit test). */
+const NO_TRANSCRIPTION = "sin transcribir";
 
 /** `@name`, `name`, `t.me/name`, `https://t.me/name`, `telegram.me/name` → `@name`; anything else → undefined. */
 function normalizeChannel(value) {
@@ -101,6 +110,17 @@ const fileExtension = (mimeType) => {
 	const known = { "video/mp4": "mp4", "video/quicktime": "mov", "video/webm": "webm", "audio/mpeg": "mp3", "audio/mp4": "m4a", "audio/ogg": "ogg", "audio/opus": "opus", "audio/x-wav": "wav", "audio/wav": "wav" };
 	return known[String(mimeType)] ?? "bin";
 };
+
+/**
+ * ` del 2026-11-10` for a post whose date Telegram reported, "" otherwise. mtcute hands a `Date`; a numeric timestamp or
+ * an ISO string is accepted too, so the marker never depends on one shape of the client. Never the media, never a path.
+ */
+function postDate(message) {
+	const raw = message?.date;
+	const when = raw instanceof Date ? raw : typeof raw === "number" || typeof raw === "string" ? new Date(raw) : undefined;
+	if (!(when instanceof Date) || Number.isNaN(when.getTime())) return "";
+	return ` del ${when.toISOString().slice(0, 10)}`;
+}
 
 /** An `@canal` source reader. One per daemon; every run gets its own state read, its own media folder and its own commit. */
 class TelegramSource {
@@ -179,10 +199,12 @@ class TelegramSource {
 	}
 
 	/**
-	 * Reads the channel for one run. Resolves `{text, media, commit}`; `commit()` is the only thing that moves the marker.
-	 * `signal` aborts a download (the run was cancelled or timed out).
+	 * Reads the channel for one run. Resolves `{text, media, ownChars, commit}`; `commit()` is the only thing that moves
+	 * the marker. `signal` aborts a download (the run was cancelled or timed out). `transcribe(entry)` — the daemon's
+	 * transcription service — turns one downloaded media into text; it resolves `{text}` (a transcript) or `{note}` (a
+	 * short Spanish sentence for that post) and THROWS when the run must end (cancelled, or its 30-minute budget is over).
 	 */
-	async prepare({ recipe, runId, signal }) {
+	async prepare({ recipe, runId, signal, transcribe }) {
 		const parsed = parseSource(recipe?.reads?.source);
 		if (!parsed || parsed.type !== "telegram") throw new TelegramError("telegram_channel_invalid");
 		const client = this.getClient();
@@ -218,20 +240,23 @@ class TelegramSource {
 		const mediaDir = path.join(this.mediaRoot, String(runId));
 		const media = [];
 		try {
-			const lines = [];
+			const sections = [];
+			let ownChars = 0;
 			let truncated = false;
 			for (const message of posts) {
-				const block = await this.#post(message, client, peer, mediaDir, media, signal);
-				if (lines.join("\n").length + block.length > this.limits.maxTextChars) {
+				const { block, segments } = await this.#post(message, client, peer, mediaDir, media, signal, transcribe);
+				// The cap is the channel's own text: transcripts come after it and are capped together with everything else.
+				if (ownChars + block.length > this.limits.maxTextChars) {
 					truncated = true;
 					break;
 				}
-				lines.push(block);
+				ownChars += block.length;
+				sections.push(block, ...segments);
 			}
 			const header = posts.length === 0
 				? `Canal ${parsed.channel}: sin publicaciones nuevas.`
 				: `Canal ${parsed.channel}: ${posts.length} ${posts.length === 1 ? "publicación nueva" : "publicaciones nuevas"}.`;
-			const text = [header, ...lines, ...(truncated ? ["[… el resto de las publicaciones quedó fuera por tamaño]"] : [])].join("\n\n");
+			const text = [header, ...sections, ...(truncated ? ["[… el resto de las publicaciones quedó fuera por tamaño]"] : [])].join("\n\n");
 			const highest = posts.length > 0 ? posts[posts.length - 1].id : (minId ?? 0);
 			const alreadySeen = useCache ? state.lastSeenId : 0;
 			this.saveState(id, { channel: parsed.channel, lastSeenId: alreadySeen });
@@ -239,6 +264,8 @@ class TelegramSource {
 			return {
 				text: text.slice(0, this.limits.maxTextChars),
 				media,
+				// How much of the text came from the channel itself (never from a transcript): the provenance rule needs it.
+				ownChars: Math.min(ownChars + header.length, this.limits.maxTextChars),
 				commit: async () => this.saveState(id, { channel: parsed.channel, lastSeenId: Math.max(highest, minId ?? 0) }),
 			};
 		} catch (error) {
@@ -248,33 +275,48 @@ class TelegramSource {
 		}
 	}
 
-	/** One post as the Minikoda reads it, downloading its media when Telegram's metadata says it is within the caps. */
-	async #post(message, client, peer, mediaDir, media, signal) {
+	/**
+	 * One post as the Minikoda reads it, downloading its media when Telegram's metadata says it is within the caps and
+	 * transcribing it right away. Returns `{block, segments}`: the post's own line and the transcripts that belong to it,
+	 * which the caller puts immediately after it. A media that cannot be transcribed leaves a short Spanish note in the
+	 * block instead — the post is never dropped — while a cancellation or an exhausted budget (the callback throws)
+	 * ends the read.
+	 */
+	async #post(message, client, peer, mediaDir, media, signal, transcribe) {
 		const text = typeof message.text === "string" ? message.text.trim().slice(0, this.limits.maxPostChars) : "";
-		const blocks = [`[${message.id}]${text === "" ? "" : ` ${text}`}`];
+		const line = [`[${message.id}]${text === "" ? "" : ` ${text}`}`];
+		const segments = [];
 		const kind = message.media?.type;
 		if (typeof kind === "string" && MEDIA_KINDS.has(kind)) {
 			if (message.isContentProtected === true) {
-				blocks.push(`(${kind} con contenido protegido: se omite, no se puede reenviar)`);
+				line.push(`(${kind} con contenido protegido: se omite, no se puede reenviar)`);
 			} else {
 				const fileSize = Number(message.media?.fileSize);
 				const durationSec = Number(message.media?.duration ?? 0);
 				if (!Number.isFinite(fileSize) || fileSize <= 0) {
-					blocks.push(`(${kind} omitido: Telegram no informó su tamaño)`);
+					line.push(`(${kind} omitido: Telegram no informó su tamaño)`);
 				} else if (fileSize > this.limits.maxMediaBytes) {
-					blocks.push(`(${kind} omitido: demasiado pesado, ${MEGABYTES} MB como máximo)`);
+					line.push(`(${kind} omitido: demasiado pesado, ${MEGABYTES} MB como máximo)`);
 				} else if (Number.isFinite(durationSec) && durationSec > this.limits.maxMediaDurationSec) {
-					blocks.push(`(${kind} omitido: demasiado largo, 3 horas como máximo)`);
+					line.push(`(${kind} omitido: demasiado largo, 3 horas como máximo)`);
 				} else {
 					const file = await this.#download(message, client, peer, mediaDir, signal);
-					media.push({ path: file, mimeType: String(message.media?.mimeType ?? "application/octet-stream"), durationSec, messageId: message.id, kind });
-					// Transcription is another branch (feat/k2-13-transcribe): until it is merged this run carries the file and
-					// says so plainly. The Minikoda is told what was attached, never where the media went.
-					blocks.push(`(${kind} de ${durationSec} s, adjunto; todavía sin transcribir)`);
+					const entry = { path: file, mimeType: String(message.media?.mimeType ?? "application/octet-stream"), durationSec, messageId: message.id, kind };
+					media.push(entry);
+					// S6: the media never reaches the model. Its transcript joins the text right after the post it belongs to,
+					// named by the post's id and date — never by the file, which only the daemon knows.
+					const done = transcribe ? await transcribe(entry) : { note: NO_TRANSCRIPTION };
+					const transcript = typeof done?.text === "string" ? done.text.trim() : "";
+					if (transcript !== "") {
+						segments.push(`[Transcripción de la publicación ${message.id}${postDate(message)}]\n${transcript}`);
+					} else {
+						const note = typeof done?.note === "string" && done.note !== "" ? done.note : NO_TRANSCRIPTION;
+						line.push(`(${kind} de ${durationSec} s: ${note})`);
+					}
 				}
 			}
 		}
-		return blocks.join(" ");
+		return { block: line.join(" "), segments };
 	}
 
 	/**
@@ -304,8 +346,8 @@ class TelegramSource {
 
 	/**
 	 * Removes one run's media folder (the service calls it after EVERY run: success, engine failure or cancel).
-	 * The transcription step (K2-13 T2c, branch feat/k2-13-transcribe) will consume `source.media` BEFORE this happens,
-	 * so merging the two branches deletes the files the same way, only later.
+	 * The transcription step consumes `source.media` BEFORE this happens; each file is also deleted right after its own
+	 * transcription, so a long channel read never keeps a folder full of videos while the engine works.
 	 */
 	removeRun(runId) {
 		if (typeof runId !== "string" && typeof runId !== "number") return;

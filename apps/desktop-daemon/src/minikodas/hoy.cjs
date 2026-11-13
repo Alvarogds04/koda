@@ -5,7 +5,10 @@
  *
  * Store: `<island>/minikodas/hoy/` (0700), outside every Minikoda engine root.
  * - hoy.jsonl       one item per line, rewritten atomically (writePrivateFile, 0600).
- *                   Item {id, minikoda, kind: result|proposal|error, text, action?, target?, status, createdAt, decidedAt?}.
+ *                   Item {id, minikoda, kind: result|proposal|error, text, action?, target?, status, createdAt, decidedAt?}
+ *                   plus, on a result, `provenance` (S19: where the text came from — YouTube's own subtitles, Parakeet on
+ *                   this PC or the user's account; a closed list shared with `protocol.cjs`, and an unknown value is
+ *                   dropped instead of stored, because the frame would refuse it).
  *                   Proposals are created `pending`; result and error items are informational and are created
  *                   with status `approved` (nothing to decide). The list is built ONLY from this file: what the
  *                   daemon really stored, never what a Minikoda says it did.
@@ -22,6 +25,7 @@ const { randomUUID } = require("node:crypto");
 const { appendFileSync, existsSync, readFileSync } = require("node:fs");
 const path = require("node:path");
 const { ensurePrivateDir, writePrivateFile } = require("../isolation.cjs");
+const { HOY_PROVENANCE } = require("../protocol.cjs");
 const { PROPOSAL_ACTIONS } = require("./recipe.cjs");
 
 const MAX_ITEMS = 500;
@@ -92,12 +96,19 @@ class HoyInbox extends EventEmitter {
 
 	/**
 	 * Lands one finished run: its result text plus each proposal the kit REALLY parked (already re-validated by
-	 * the runner; re-checked here). Returns the added items.
+	 * the runner; re-checked here). `provenance` (S19) is where that text came from, when the service could tell: it is
+	 * one of the closed values, and anything else is dropped and logged rather than stored (a stored unknown value would
+	 * make the whole `hoy` frame invalid). Returns the added items.
 	 */
-	addRun({ minikoda, resultText, proposals = [] }) {
+	addRun({ minikoda, resultText, proposals = [], provenance }) {
 		return this.serial(async () => {
 			const createdAt = new Date(this.now()).toISOString();
-			const added = [{ id: randomUUID(), minikoda, kind: "result", text: clean(resultText, MAX_TEXT_CHARS), status: "approved", createdAt }, ...this.proposalItems(minikoda, proposals, createdAt)];
+			const item = { id: randomUUID(), minikoda, kind: "result", text: clean(resultText, MAX_TEXT_CHARS), status: "approved", createdAt };
+			if (provenance !== undefined) {
+				if (HOY_PROVENANCE.includes(provenance)) item.provenance = provenance;
+				else this.log("hoy: discarded an unknown provenance");
+			}
+			const added = [item, ...this.proposalItems(minikoda, proposals, createdAt)];
 			this.save([...this.list(), ...added]);
 			return added;
 		});

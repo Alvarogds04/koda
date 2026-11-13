@@ -29,6 +29,10 @@
  * transcribed (options.transcriber, transcribe.cjs) and deleted, and its transcript is appended to the source the
  * Minikoda reads. A transcription failure ends the run before its engine starts: a «Hoy» error item that says why.
  * Cancelling the run (pause, delete, daemon stop) cancels the transcription too.
+ * A Telegram channel read (`telegram:@canal`) hands its media to the same transcriber through the source's own
+ * `transcribe` callback: each transcript sits right after the post it belongs to (post id and date only, never a file
+ * name), and a media that cannot be transcribed is a short Spanish note for that post PLUS a «Hoy» error item — one bad
+ * media never loses the other posts and never fails the run. Only a cancelled run or the 30-minute budget ends it.
  *
  * S17: transcription has its OWN budget (`TRANSCRIPTION_BUDGET_MS`, 30 min) and never counts toward the run's engine
  * budget (`runTimeoutMs`, 300 s). That clock starts only when `runMinikoda` starts the engine, i.e. AFTER the source
@@ -49,7 +53,7 @@ const { runMinikoda, DEFAULT_RUN_TIMEOUT_MS } = require("./runner.cjs");
 const { buildSummary } = require("./summary.cjs");
 const { Scheduler } = require("./scheduler.cjs");
 const { freshestCredential, isOauth, readRunCredential, writeBackCredential } = require("./credentials.cjs");
-const { TranscriptionError, removeWorkDir } = require("./transcribe.cjs");
+const { TranscriptionError, removeWorkDir, TRANSCRIPTION_BUDGET_MS } = require("./transcribe.cjs");
 const { YouTubeError, MAX_LINKS_PER_RUN } = require("./youtube.cjs");
 const { TelegramSource, TelegramError, parseSource } = require("./telegram-source.cjs");
 
@@ -65,6 +69,35 @@ const DEFAULT_MAX_CONCURRENT_RUNS = 2;
 const SESSION_MIN_LIFETIME_EXTRA_MS = 5 * 60_000 + 60_000;
 
 const MAX_MEDIA_PER_RUN = 20;
+/** A transcript with no text (silence, music): the post says so instead of carrying an empty transcript. */
+const NO_SPEECH = "no se reconoció voz en el audio";
+
+/**
+ * S19 / F4: how much of a run's text came from each place. The three closed provenance values are counted, plus `own`:
+ * the text the run's source already carried (the channel's posts, the plain-text file), which is none of the three and
+ * therefore competes with them for dominance.
+ */
+function newSourceCounts() {
+	return { own: 0, youtube_subtitles: 0, local_transcription: 0, remote_transcription: 0 };
+}
+
+/** The provenance bucket a transcription's setting belongs to: the user's account, or this PC. */
+const transcriptionBucket = (mode) => (mode === "remote" ? "remote_transcription" : "local_transcription");
+
+/**
+ * THE PROVENANCE RULE. A result carries the closed value whose source contributed the MOST characters of the text the
+ * Minikoda read — but only when that value is STRICTLY the biggest. A tie between the three (or with `own`), `own` on
+ * top (the channel's own words, or the plain-text file, dominating) or nothing marked at all means the daemon cannot
+ * say where the result came from, and the item carries no `provenance` at all: the island then draws no chip, instead
+ * of one that would be a guess. Counted per phase, before the 200 000-char cap of the source text.
+ */
+function dominantProvenance(counts) {
+	const marked = [["youtube_subtitles", counts?.youtube_subtitles ?? 0], ["local_transcription", counts?.local_transcription ?? 0], ["remote_transcription", counts?.remote_transcription ?? 0]];
+	const best = Math.max(counts?.own ?? 0, ...marked.map(([, n]) => n));
+	if (best <= 0 || (counts?.own ?? 0) === best) return undefined;
+	const leaders = marked.filter(([, n]) => n === best);
+	return leaders.length === 1 ? leaders[0][0] : undefined;
+}
 
 /** A run that ended in its transcription phase (never reaches the engine). */
 class TranscriptionPhaseError extends Error {
@@ -476,26 +509,37 @@ class MinikodaService extends EventEmitter {
 	 * only when the run succeeded.
 	 */
 	async prepareSource(recipe, runId, signal) {
+		const counts = newSourceCounts();
 		if (this.options.source) {
 			let text;
 			const mediaDir = ensurePrivateDir(path.join(this.mediaDir, runId ?? randomUUID()));
 			try {
 				const got = await this.options.source(recipe, { mediaDir, runId, signal });
-				text = got === null || typeof got !== "object"
-					? String(got ?? "")
-					: await this.withTranscripts(String(got.text ?? ""), Array.isArray(got.media) ? got.media : [], mediaDir, signal);
+				text = String(got !== null && typeof got === "object" ? got.text ?? "" : got ?? "");
+				counts.own = text.length;
+				if (got !== null && typeof got === "object") text = await this.withTranscripts(text, Array.isArray(got.media) ? got.media : [], mediaDir, signal, counts);
 			} finally {
 				await removeWorkDir(mediaDir, { log: this.log }); // retried, never throws: the run's own error stands
 			}
-			return { text: await this.withYouTube(recipe, text, { signal }), media: [] };
+			const withYouTube = await this.withYouTube(recipe, text, { signal, counts });
+			return { text: withYouTube, media: [], provenance: dominantProvenance(counts) };
 		}
 		const parsed = parseSource(recipe.reads.source);
 		if (parsed !== undefined && parsed.type === "telegram") {
 			if (!this.telegramSource) throw new TelegramError("telegram_unavailable");
-			const got = await this.telegramSource.prepare({ recipe, runId, signal });
-			// S19: the posts' YouTube links are read like any other source text (the channel's own media stay the
-			// running source's business: transcribing them is the next integration step).
-			return { ...got, text: await this.withYouTube(recipe, got.text, { signal }) };
+			// S6/S17: every media of the read is transcribed under ONE 30-minute budget, before the engine starts. The
+			// source translates the result into the run's text (its own post keeps its transcript or its note).
+			const deadline = Date.now() + TRANSCRIPTION_BUDGET_MS;
+			const got = await this.telegramSource.prepare({
+				recipe,
+				runId,
+				signal,
+				transcribe: (entry) => this.transcribePostMedia(recipe, entry, { signal, deadline, counts }),
+			});
+			counts.own = Number.isSafeInteger(got.ownChars) ? got.ownChars : 0;
+			// S19: the posts' YouTube links are read like any other source text.
+			const withYouTube = await this.withYouTube(recipe, got.text, { signal, counts });
+			return { ...got, text: withYouTube, provenance: dominantProvenance(counts) };
 		}
 		if (parsed === undefined) {
 			// A malformed `telegram:` descriptor is refused whenever this daemon can really read Telegram (a typo must
@@ -504,7 +548,10 @@ class MinikodaService extends EventEmitter {
 			if (this.telegramSource) throw new TelegramError("telegram_channel_invalid");
 			this.log(`minikoda ${recipe.id}: the source descriptor is not a Telegram channel (reading the text source)`);
 		}
-		return { text: await this.withYouTube(recipe, this.readTextSource(recipe), { signal }), media: [] };
+		const text = this.readTextSource(recipe);
+		counts.own = text.length;
+		const withYouTube = await this.withYouTube(recipe, text, { signal, counts });
+		return { text: withYouTube, media: [], provenance: dominantProvenance(counts) };
 	}
 
 	/** The plain-text source of a run: `sources/<id>.txt`, bounded, and never through a link or a folder. */
@@ -521,9 +568,10 @@ class MinikodaService extends EventEmitter {
 
 	/**
 	 * S6: transcribes every media file of the run (in order) and appends the transcripts to the source text. A file
-	 * outside the run's own media folder is refused and never touched. Throws TranscriptionPhaseError.
+	 * outside the run's own media folder is refused and never touched. Throws TranscriptionPhaseError. The whole batch
+	 * shares ONE 30-minute budget (S17), exactly like a channel read's media.
 	 */
-	async withTranscripts(text, media, mediaDir, signal) {
+	async withTranscripts(text, media, mediaDir, signal, counts) {
 		if (media.length === 0) return text;
 		const failed = (error) => {
 			if (signal?.aborted || error?.code === "cancelled") throw new TranscriptionPhaseError(signal?.reason === "paused" ? "paused" : "cancelled");
@@ -533,18 +581,54 @@ class MinikodaService extends EventEmitter {
 		const inside = (file) => typeof file === "string" && path.isAbsolute(file) && path.dirname(path.resolve(file)) === mediaDir;
 		if (!media.every(inside)) failed(new TranscriptionError("bad_media"));
 		if (!this.options.transcriber) failed(new TranscriptionError("ffmpeg_unavailable"));
+		const deadline = Date.now() + TRANSCRIPTION_BUDGET_MS;
 		const parts = [text];
 		for (const [i, file] of media.entries()) {
 			let out;
 			try {
-				out = await this.options.transcriber.transcribe(file, { signal, deleteMedia: true });
+				out = await this.options.transcriber.transcribe(file, { signal, deleteMedia: true, deadline });
 			} catch (error) {
 				failed(error);
 			}
 			parts.push(`\n[Transcripción automática (${i + 1} de ${media.length}) del video o audio del post]\n${out.text}`);
+			if (counts) counts[transcriptionBucket(out?.mode)] += String(out?.text ?? "").length;
 		}
 		const joined = parts.join("\n");
 		return joined.length > MAX_SOURCE_BYTES ? joined.slice(0, MAX_SOURCE_BYTES) : joined;
+	}
+
+	/**
+	 * S6/S17: ONE media file of a Telegram post, transcribed for the run's text. Resolves `{text}` with the transcript or
+	 * `{note}` with a short Spanish sentence for that post — a media that cannot be transcribed (too long, unreadable,
+	 * no ffmpeg, no voice) is a «Hoy» error item and a note, never a silent drop and never a failed run. Two things DO
+	 * end the run: a cancellation (pause, delete, daemon stop) and the transcription budget (S17), exactly like any other
+	 * transcription phase. The file is deleted by `transcribe` whatever the outcome; the run's folder goes in `execute()`.
+	 */
+	async transcribePostMedia(recipe, entry, { signal, deadline, counts }) {
+		const name = recipe.name;
+		const note = async (userText) => {
+			this.log(`minikoda ${recipe.id}: a media of the channel could not be transcribed`);
+			try {
+				await this.results.addError({ minikoda: recipe.id, text: `La corrida de «${name}» no pudo transcribir un video o audio del canal (${userText}).` });
+			} catch {
+				this.log(`minikoda ${recipe.id}: could not record a transcription notice in «Hoy»`);
+			}
+			return { note: userText };
+		};
+		if (!this.options.transcriber) return note(new TranscriptionError("ffmpeg_unavailable").userText);
+		let out;
+		try {
+			out = await this.options.transcriber.transcribe(entry.path, { signal, deleteMedia: true, deadline });
+		} catch (error) {
+			if (signal?.aborted || error?.code === "cancelled") throw new TranscriptionPhaseError(signal?.reason === "paused" ? "paused" : "cancelled");
+			if (error?.code === "budget_exceeded") throw new TranscriptionPhaseError("transcription", new TranscriptionError("budget_exceeded").userText);
+			return note(error instanceof TranscriptionError ? error.userText : new TranscriptionError("failed").userText);
+		}
+		const transcript = String(out?.text ?? "").trim();
+		// An empty transcript (silence, music, a language the model does not know) says nothing to the Minikoda: say so.
+		if (transcript === "") return note(NO_SPEECH);
+		if (counts) counts[transcriptionBucket(out?.mode)] += transcript.length;
+		return { text: transcript };
 	}
 
 	/**
@@ -554,7 +638,7 @@ class MinikodaService extends EventEmitter {
 	 * (S17), exactly like a failing transcription. Without a wired reader (tests, a checkout with no daemon) the text
 	 * is returned untouched.
 	 */
-	async withYouTube(recipe, text, { signal } = {}) {
+	async withYouTube(recipe, text, { signal, counts } = {}) {
 		if (!this.options.youtube) return text;
 		let out;
 		try {
@@ -578,6 +662,7 @@ class MinikodaService extends EventEmitter {
 		if (out.skipped > 0) {
 			await landed(`La corrida de «${name}» leyó como mucho ${MAX_LINKS_PER_RUN} videos de YouTube: ${out.skipped} video(s) más del post quedaron sin leer.`);
 		}
+		if (counts && out.sources) for (const key of ["youtube_subtitles", "local_transcription", "remote_transcription"]) counts[key] += Number(out.sources[key]) || 0;
 		const joined = String(out.text ?? "");
 		return joined.length > MAX_SOURCE_BYTES ? joined.slice(0, MAX_SOURCE_BYTES) : joined;
 	}
@@ -669,7 +754,7 @@ class MinikodaService extends EventEmitter {
 		let result;
 		let notice = "";
 		await this.leftovers;
-		let source = { text: "", media: [] };
+		let source = { text: "", media: [], provenance: undefined };
 		try {
 			try {
 				source = await this.prepareSource(recipe, runId, signal);
@@ -735,7 +820,8 @@ class MinikodaService extends EventEmitter {
 		// next run retries it (removing it would lose a rotated refresh token).
 		if (copied !== undefined && (await this.settleRunCredential(recipe, agentDir, copied))) this.removeRunCredential(agentDir);
 		if (result.outcome === "done") {
-			await this.results.addRun({ minikoda: recipe.id, resultText: result.resultText, proposals: result.proposals });
+			// S19/F4: «Hoy» shows where the text came from when one source dominated it (the rule is `dominantProvenance`).
+			await this.results.addRun({ minikoda: recipe.id, resultText: result.resultText, proposals: result.proposals, provenance: source.provenance });
 			// S6: the channel marker moves only now, so a failed run reads the same posts again instead of skipping them.
 			await source.commit?.();
 		} else {
@@ -759,4 +845,4 @@ class MinikodaService extends EventEmitter {
 	}
 }
 
-module.exports = { MinikodaService, MinikodaError, MAX_MINIKODAS, RecipeError };
+module.exports = { MinikodaService, MinikodaError, MAX_MINIKODAS, RecipeError, dominantProvenance };
