@@ -32,7 +32,6 @@ dependencies = [
  "tauri-plugin-single-instance",
  "tokio",
  "tokio-rustls",
- "webpki-roots 1.0.9",
  "windows-sys 0.61.2",
  "x11rb",
  "zbus 5.19.0",
