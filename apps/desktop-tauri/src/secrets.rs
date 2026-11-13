@@ -223,9 +223,11 @@ impl TelegramCredentials {
     }
 }
 
-/// Whether a login this island started is in flight. A `telegram_session` reply is stored ONLY for our own login: the
-/// daemon sends it as the reply to the connection that asked, and this guard is the island's half of that rule (two
-/// windows, a restore and a login can never be confused for each other).
+/// Whether a session reply this island asked for is in flight. A `telegram_session` reply is stored ONLY for our own
+/// request: the daemon sends it as the reply to the connection that asked (a login we began, or the
+/// `telegram_session_restore` we sent), and this guard is the island's half of that rule (two windows, a restore and a
+/// login can never be confused for each other). F4: a restore arms it too — the rotated session the daemon answers with
+/// is the one a later start needs, and it used to be dropped.
 pub struct LoginGuard(std::sync::atomic::AtomicBool);
 
 impl Default for LoginGuard {
@@ -240,6 +242,12 @@ impl LoginGuard {
     }
     /// `telegram_login_start` is on its way: from here on a session reply is ours.
     pub fn begin(&self) {
+        self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+    /// `telegram_session_restore` is on its way (F4): the daemon answers it with a ROTATED session when Telegram
+    /// re-authorized the stored one, and that reply is as much ours as a login's. Same single flag on purpose: at most
+    /// one request is in flight per connection, and a reply consumes it either way.
+    pub fn begin_restore(&self) {
         self.0.store(true, std::sync::atomic::Ordering::SeqCst);
     }
     /// Logout, a refused login or a dead session: nothing that arrives from now on is ours to store.
@@ -260,26 +268,48 @@ fn read_opt(store: &dyn SecretStore, key: &str) -> Result<Option<String>, Secret
 }
 
 /// Remember the pair the person typed in Ajustes (S10). The api id travels as its decimal text; the hash is validated
-/// here so a store can never hold a value the daemon would refuse.
+/// here so a store can never hold a value the daemon would refuse. F8: all or nothing — when the second write is refused
+/// the first is deleted again, so a half pair can never make the island look configured while nothing usable is stored
+/// (a half pair is also not a restore: [`telegram_credentials`] would answer `None` and the pair would be rewritten byte
+/// for byte on the next attempt anyway).
 pub fn remember_api_pair(store: &dyn SecretStore, api_id: u64, api_hash: &str) -> Result<(), SecretError> {
     if api_id == 0 || api_id > TELEGRAM_API_ID_MAX || !telegram_api_hash_ok(api_hash) {
         return Err(SecretError::Failed);
     }
     store.write(TELEGRAM_API_ID, &api_id.to_string()).map_err(SecretError::from)?;
-    store.write(TELEGRAM_API_HASH, api_hash).map_err(SecretError::from)
+    if let Err(e) = store.write(TELEGRAM_API_HASH, api_hash) {
+        // Best effort on the rollback: the answer is the second write's failure either way, and a store that refuses
+        // this delete holds no half pair it could serve as a restore (the triple needs all three keys).
+        let _ = store.delete(TELEGRAM_API_ID);
+        return Err(SecretError::from(e));
+    }
+    Ok(())
 }
 
-/// Store the session the daemon just returned — ONLY when this island started the login (`LoginGuard`). Returns whether
-/// it was stored: `Ok(false)` means the reply was not ours (or the session was off-contract), and nothing was written.
-pub fn accept_session(store: &dyn SecretStore, guard: &LoginGuard, session: &str) -> Result<bool, SecretError> {
+/// What became of a `telegram_session` reply. A closed vocabulary on purpose: the host decides whether to say «quedó en
+/// el llavero» from it, and it can never carry the session, a keychain text or a reason.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionReply {
+    /// Nothing this island asked for was in flight: a stale frame, a replay, another window's answer. Dropped, and the
+    /// stored session is left exactly as it was.
+    Foreign,
+    /// Ours, but the session is off-contract (empty, unprintable, or too long for one keychain entry): nothing written.
+    Refused,
+    /// Written to the store.
+    Stored,
+}
+
+/// Store the session the daemon just returned — ONLY when this island asked for it (`LoginGuard`). Returns what became of
+/// the reply: [`SessionReply::Foreign`] and [`SessionReply::Refused`] wrote nothing.
+pub fn accept_session(store: &dyn SecretStore, guard: &LoginGuard, session: &str) -> Result<SessionReply, SecretError> {
     if !guard.take() {
-        return Ok(false);
+        return Ok(SessionReply::Foreign);
     }
     if !telegram_session_ok(session) {
-        return Ok(false);
+        return Ok(SessionReply::Refused);
     }
     store.write(TELEGRAM_SESSION, session).map_err(SecretError::from)?;
-    Ok(true)
+    Ok(SessionReply::Stored)
 }
 
 /// The triple, or `None` when ANY of the three is missing or off-contract. A partial pair is never a restore: the daemon

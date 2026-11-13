@@ -73,6 +73,7 @@ test('every closed Telegram code has its own sentence, and none of them is the d
   const codes = ['telegram_unavailable', 'telegram_already_connected', 'telegram_not_awaiting_code', 'telegram_not_awaiting_password',
     'telegram_credentials_invalid', 'telegram_code_invalid', 'telegram_password_invalid', 'telegram_password_required',
     'telegram_session_invalid', 'telegram_cancelled', 'telegram_login_other_connection', 'telegram_failed',
+    'telegram_forget_failed',
     'paused', 'unavailable', 'bad_request', 'failed'];
   const said = new Set();
   for (const code of codes) {
@@ -125,6 +126,34 @@ test('the notice the daemon attaches is bounded and control-free, or it is dropp
   assert.equal(M.telegramView({ state: 'awaiting_code', notice: 'x'.repeat(301) }, false).notice, '');
   assert.equal(M.telegramView({ state: 'awaiting_code', notice: 'ma\u0007l' }, false).notice, '');
   assert.equal(M.telegramView({ state: 'awaiting_code', retryAfterMinutes: 5000 }, false).minutes, 0);
+});
+
+// ---- the keychain is claimed only when the host says it holds the session (F3) ------------------------------
+test('the keychain is claimed only when the host answered that the session was really stored', () => {
+  const stored = M.connectedSentence(true);
+  const notStored = M.connectedSentence(false);
+  assert.match(stored, /quedó en el llavero/, `the stored sentence says it: ${stored}`);
+  assert.match(notStored, /no se pudo guardar la sesión en el llavero/, `the honest sentence: ${notStored}`);
+  assert.match(notStored, /al reiniciar tendrás que entrar de nuevo/, 'and it says what it costs');
+  assert.notEqual(stored, notStored);
+  for (const say of [stored, notStored]) {
+    assert.ok(!/[0-9a-f]{32}|AQAA|api_hash/.test(say), `never a secret and never a field name: ${say}`);
+  }
+  // the card folds the host's own boolean; a view that does not carry it is «not stored», never an invented success
+  assert.equal(M.telegramView({ state: 'connected' }, true, true).sessionStored, true);
+  assert.equal(M.telegramView({ state: 'connected' }, true).sessionStored, false);
+  assert.equal(M.telegramView({ state: 'connected' }, true, 'yes').sessionStored, false, 'only a true boolean counts');
+});
+
+test('the card asks the host before it says anything about the keychain, and shows our sentence for a refused command', () => {
+  const src = read('minikodas-settings.js');
+  // the old line claimed the keychain on every «connected», without asking: it is gone
+  assert.doesNotMatch(src, /note = \{ tone: 'go', say: 'Telegram conectado\./, 'no unconditional claim survives in the card');
+  assert.match(src, /api\.connectedSentence\(telegram\.sessionStored\)/, 'the sentence comes from the host’s own flag');
+  assert.match(src, /next\.telegramSessionStored === true/, 'the flag is read from the view, strictly');
+  // F8: a rejected command carries a closed code, and the card shows OUR sentence for it (never the host or keychain text)
+  assert.match(src, /error && typeof error\.code === 'string'/, 'the rejection code is read');
+  assert.doesNotMatch(src, /error\.message/, 'the message of a command is never shown as-is');
 });
 
 // ---- transcription --------------------------------------------------------------------------------------

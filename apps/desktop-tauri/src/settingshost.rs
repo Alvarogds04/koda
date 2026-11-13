@@ -13,8 +13,9 @@ use abito_island::agentclient::{is_account_action, AccountStore};
 use abito_island::agentconn::{island_root, AgentConn};
 use abito_island::bridge::{self, BridgeError};
 use abito_island::prefs::{self, Command, Prefs};
-use abito_island::secrets::{self, LoginGuard};
+use abito_island::secrets::{self, LoginGuard, SessionReply};
 use serde_json::{json, Value};
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -39,6 +40,79 @@ static TELEGRAM_LOGIN: LoginGuard = LoginGuard::new();
 /// a stale one stays in every later view: acting on it each time would, after ONE revoked session, wipe the credentials of
 /// every login that follows (and keep suppressing the session hand-off after a `telegram_unavailable`).
 static TELEGRAM_ERROR_SEEN: Mutex<Option<(String, u64)>> = Mutex::new(None);
+
+/// K2-13 F3: what this host knows about the ONE `telegram_session` reply of the current connection. The sink used to throw
+/// `accept_session`'s answer away while the page claimed «la sesión quedó en el llavero» on any `connected`; the page now
+/// gets this verdict as a boolean.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum SessionStored {
+    /// Nothing arrived on this connection (a start that restored an unchanged session, or a logout): the keychain's own
+    /// copy is the session in use when the triple is there.
+    Unknown,
+    /// The reply this connection received was written.
+    Stored,
+    /// A reply of ours could not be written (the keychain refused it, or the session was off-contract).
+    NotStored,
+}
+
+impl SessionStored {
+    /// The stored form of the flag: a closed byte, never a value.
+    const fn code(self) -> u8 {
+        match self {
+            SessionStored::Unknown => 0,
+            SessionStored::Stored => 1,
+            SessionStored::NotStored => 2,
+        }
+    }
+}
+
+impl From<u8> for SessionStored {
+    fn from(n: u8) -> Self {
+        match n {
+            1 => SessionStored::Stored,
+            2 => SessionStored::NotStored,
+            _ => SessionStored::Unknown,
+        }
+    }
+}
+
+/// No app, no connection: process-wide, like [`TELEGRAM_LOGIN`], and reset by every login, logout, restore and dead session.
+static TELEGRAM_SESSION_STORED: AtomicU8 = AtomicU8::new(SessionStored::Unknown.code());
+
+fn remember_session_flag(flag: SessionStored) {
+    TELEGRAM_SESSION_STORED.store(flag.code(), Ordering::SeqCst);
+}
+
+/// Record what became of one `telegram_session` reply. A `Foreign` reply (a replay, a stale frame, another window's
+/// answer) says nothing about the keychain: it is dropped without touching the verdict.
+fn note_session_reply(reply: Result<SessionReply, secrets::SecretError>) {
+    match reply {
+        Ok(SessionReply::Stored) => remember_session_flag(SessionStored::Stored),
+        Ok(SessionReply::Refused) | Err(_) => remember_session_flag(SessionStored::NotStored),
+        Ok(SessionReply::Foreign) => {}
+    }
+}
+
+/// The single boolean the page receives. `Unknown` is answered from the keychain: a stored session Telegram did not rotate
+/// is exactly the one the daemon is using, so it must not read as «no se pudo guardar».
+fn session_stored_view(flag: SessionStored, credentials: bool) -> bool {
+    match flag {
+        SessionStored::Stored => true,
+        SessionStored::NotStored => false,
+        SessionStored::Unknown => credentials,
+    }
+}
+
+/// The two booleans the page may know about the Telegram credentials — whether the triple exists, and whether the session
+/// this connection uses is really in the OS keychain. Never one of the values. Computed in ONE place so the command reply
+/// and the emitted `agent:state` can never drift apart (the event used to carry neither, and the page's flag flipped
+/// false on every event).
+fn telegram_flags(view: &mut Value) {
+    let credentials = secrets::has_telegram_credentials(&secrets::Keychain);
+    let stored = session_stored_view(TELEGRAM_SESSION_STORED.load(Ordering::SeqCst).into(), credentials);
+    view["telegramCredentials"] = Value::Bool(credentials);
+    view["telegramSessionStored"] = Value::Bool(stored);
+}
 
 /// The code of the view's `last_error` when it is one this host has not acted on yet, and marks it as acted on. `None` for
 /// no error, a null code, or an error already handled. Compared by (code, n), not by order: a reconnect starts `n` over.
@@ -491,12 +565,15 @@ pub(crate) fn agent_conn(handle: &AppHandle) -> AgentConn {
     #[cfg(target_os = "linux")]
     let phone = handle.clone();
     // K2-13 T6b-3 (S20): the ONE `telegram_session` reply of this connection goes straight into the OS keychain, from the
-    // reader thread and BEFORE the «connected» view is published. It never reaches the WebView, a log line or a frame.
+    // reader thread and BEFORE the «connected» view is published. It never reaches the WebView, a log line or a frame. F3:
+    // what became of it is recorded, so the next view says honestly whether the session really is in the keychain.
     let session_sink: abito_island::agentconn::SessionSink = Arc::new(|session: &str| {
-        let _ = secrets::accept_session(&secrets::Keychain, &TELEGRAM_LOGIN, session);
+        note_session_reply(secrets::accept_session(&secrets::Keychain, &TELEGRAM_LOGIN, session));
     });
     AgentConn::with_session_sink(
-        move |view: Value| {
+        move |mut view: Value| {
+            // F3: the same two booleans the command reply carries, so the page's flags never flip on an event.
+            telegram_flags(&mut view);
             #[cfg(target_os = "linux")]
             crate::phonehost::publish_sessions(&phone, &view);
             let _ = emitter.emit("agent:state", view);
@@ -508,14 +585,22 @@ pub(crate) fn agent_conn(handle: &AppHandle) -> AgentConn {
 /// K2-13 T6b-3 (S20): hand the stored session to the daemon when the triple is complete and the daemon has none. It runs
 /// at island start (the connect right above), after a reconnect and whenever Ajustes reads the Telegram state; the
 /// daemon answers `telegram_status` and, only if Telegram rotated the session, one more `telegram_session` that the
-/// reader thread stores. Returns whether a restore was sent.
+/// reader thread stores — which is why the restore arms [`TELEGRAM_LOGIN`] (F4: that rotated session used to be dropped).
+/// Returns whether a restore was sent.
 fn telegram_restore_if_needed(conn: &AgentConn, telegram: &Value) -> bool {
     if telegram.get("state").and_then(Value::as_str) != Some("disconnected") {
         return false;
     }
     let Ok(Some(credentials)) = secrets::telegram_credentials(&secrets::Keychain) else { return false };
     let Ok(line) = serde_json::to_string(&credentials.restore_frame()) else { return false };
-    conn.send(&abito_island::agentclient::UiCommand::Wire(format!("{line}\n"))).is_ok()
+    if conn.send(&abito_island::agentclient::UiCommand::Wire(format!("{line}\n"))).is_err() {
+        return false;
+    }
+    // The frame left: a `telegram_session` answering it is ours to store. Armed only on a send that succeeded — a line
+    // that never left cannot be answered, and an armed guard would accept whatever arrived next.
+    TELEGRAM_LOGIN.begin_restore();
+    remember_session_flag(SessionStored::Unknown);
+    true
 }
 
 /// The island agent: `view` (connects on first use), and the closed command set of
@@ -593,11 +678,17 @@ pub async fn agent_action(
             let api_hash = payload.get("apiHash").and_then(Value::as_str).unwrap_or_default();
             secrets::remember_api_pair(&secrets::Keychain, api_id, api_hash).map_err(|e| err(e.code()))?;
             TELEGRAM_LOGIN.begin();
+            // A new login stores a NEW session: until that reply lands, the keychain's old copy is not the answer.
+            remember_session_flag(SessionStored::Unknown);
         }
         if telegram_action == Some("telegram_logout") {
             // Account safety: whoever logs out, the stored triple goes (a revoked session must not be replayed).
             TELEGRAM_LOGIN.cancel();
-            let _ = secrets::forget_telegram(&secrets::Keychain);
+            // F8: a logout that could not clear the keychain is NOT a success, and it is not this host's to swallow. The
+            // page gets a closed code of ours (never the keychain's text) and the daemon is not told to log out, so the
+            // account and the stored session never drift apart: they stay together until the delete works.
+            secrets::forget_telegram(&secrets::Keychain).map_err(|_| err("telegram_forget_failed"))?;
+            remember_session_flag(SessionStored::Unknown);
         }
         let mut view = match conn.command(&payload) {
             Ok(view) => view,
@@ -611,10 +702,15 @@ pub async fn agent_action(
         // Each `last_error` is acted on ONCE (see TELEGRAM_ERROR_SEEN): a stale one must not keep touching the keychain.
         let fresh_error = fresh_error_code(&view, &mut TELEGRAM_ERROR_SEEN.lock().expect("telegram error lock"));
         // A dead session (AUTH_KEY_UNREGISTERED and friends) means the keychain copy is worthless: forget it so the next
-        // start does not hand the daemon a credential Telegram already revoked.
+        // start does not hand the daemon a credential Telegram already revoked. F8: the delete is attempted here and its
+        // failure is NOT turned into a false «borrado» — the page must still get the daemon's verdict, so the failure is
+        // recorded as a log line without a value and the next start retries.
         if fresh_error.as_deref() == Some("telegram_session_invalid") {
             TELEGRAM_LOGIN.cancel();
-            let _ = secrets::forget_telegram(&secrets::Keychain);
+            if secrets::forget_telegram(&secrets::Keychain).is_err() {
+                eprintln!("telegram: the revoked session could not be deleted from the keychain; the next start retries");
+            }
+            remember_session_flag(SessionStored::Unknown);
         }
         // The hand-off of a session this island already holds: at start (this is the first connect), after a reconnect
         // and whenever Ajustes reads the state. Only when the daemon says it has none, and not on the call that just
@@ -626,8 +722,9 @@ pub async fn agent_action(
                 }
             }
         }
-        // The page may know whether the island holds the three values. It never learns any of them.
-        view["telegramCredentials"] = Value::Bool(secrets::has_telegram_credentials(&secrets::Keychain));
+        // The page may know whether the island holds the three values, and whether the session it is using is really in the
+        // keychain. It never learns any of them.
+        telegram_flags(&mut view);
         view["ownedAccounts"] = state
             .settings
             .accounts
@@ -881,6 +978,28 @@ mod telegram_error_tests {
         assert_eq!(fresh_error_code(&json!({}), &mut seen), None);
         assert_eq!(fresh_error_code(&view(json!(null), 0), &mut seen), None);
         assert_eq!(seen, None, "nothing was recorded for a view with no error");
+    }
+}
+
+#[cfg(test)]
+mod telegram_session_flag_tests {
+    use super::{session_stored_view, SessionStored};
+
+    /// K2-13 F3: the page may only claim «la sesión quedó en el llavero» when the host knows it did. The flag is the
+    /// host's own verdict on the ONE reply this connection received; `Unknown` (nothing arrived) is answered from the
+    /// keychain itself, because a session Telegram did not rotate is the stored one the daemon is using.
+    #[test]
+    fn the_session_is_flagged_stored_only_when_the_keychain_really_holds_it() {
+        // the reply this connection received was written: stored, whatever the triple read says a moment later
+        assert!(session_stored_view(SessionStored::Stored, true));
+        assert!(session_stored_view(SessionStored::Stored, false));
+        // a write the keychain refused, or a session that was off-contract: NOT stored, even while an older triple is
+        // still there (the page says «no se pudo guardar» instead of claiming a session it never wrote)
+        assert!(!session_stored_view(SessionStored::NotStored, true));
+        assert!(!session_stored_view(SessionStored::NotStored, false));
+        // no reply on this connection (a start that restored an unchanged session): the stored triple IS that session
+        assert!(session_stored_view(SessionStored::Unknown, true));
+        assert!(!session_stored_view(SessionStored::Unknown, false), "no triple, no stored session: never an invented one");
     }
 }
 

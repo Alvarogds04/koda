@@ -51,10 +51,11 @@
     telegram_code_invalid: 'El código no es el correcto o ya venció. Podés pedir otro y probar de nuevo.',
     telegram_password_invalid: 'La contraseña de dos pasos no es la correcta.',
     telegram_password_required: 'Tu cuenta tiene contraseña de dos pasos: escribila para terminar de conectar.',
-    telegram_session_invalid: 'Telegram cerró esa sesión (o la revocaste desde el teléfono). Las credenciales guardadas se borraron: volvé a conectar.',
+    telegram_session_invalid: 'Telegram cerró esa sesión (o la revocaste desde el teléfono). La sesión guardada ya no sirve: volvé a conectar.',
     telegram_cancelled: 'El pedido se canceló. Podés empezar de nuevo cuando quieras.',
     telegram_login_other_connection: 'El ingreso lo empezó otra ventana y sólo esa puede terminarlo. Cerrá la otra ventana de Ajustes y volvé a conectar desde acá.',
     telegram_failed: 'Telegram no completó el pedido. Probá de nuevo en un momento.',
+    telegram_forget_failed: 'No se pudo borrar la sesión guardada del llavero, así que la cuenta sigue conectada. Probá desconectar de nuevo en un momento.',
     paused: 'Koda está en pausa: quitá la pausa y volvé a intentar.',
     unavailable: 'El motor de Koda no está disponible ahora mismo.',
     bad_request: 'Faltó un dato o no tenía el formato esperado. Revisalo y probá de nuevo.',
@@ -74,10 +75,12 @@
 
   // ---- the Telegram card's state ------------------------------------------------------------------------------
   /**
-   * The folded `telegram` view + the host's boolean → what the card draws. The step is derived from the daemon's state and
-   * nothing else: the page never claims a step the daemon did not reach.
+   * The folded `telegram` view + the host's two booleans → what the card draws. The step is derived from the daemon's
+   * state and nothing else: the page never claims a step the daemon did not reach. `credentials` says the three values
+   * exist in the keychain; `stored` says the session THIS connection received really went in (F3) — the host resolves the
+   * «nothing arrived, the stored session is the one in use» case itself, so the page only ever sees a boolean.
    */
-  function telegramView(view, credentials) {
+  function telegramView(view, credentials, stored) {
     const state = view && STATES.includes(view.state) ? view.state : 'disconnected';
     const account = view && view.account && typeof view.account.name === 'string'
       ? { name: view.account.name, username: typeof view.account.username === 'string' ? view.account.username : null }
@@ -89,6 +92,7 @@
       step,
       account,
       credentials: credentials === true,
+      sessionStored: stored === true,
       // the notice the daemon attached (Koda's own Spanish sentence, e.g. a FLOOD_WAIT), bounded and control-free
       notice: view && typeof view.notice === 'string' && view.notice.length > 0 && view.notice.length <= 300 && !CONTROL.test(view.notice) ? view.notice : '',
       minutes: view && Number.isInteger(view.retryAfterMinutes) && view.retryAfterMinutes >= 1 && view.retryAfterMinutes <= MAX_MINUTES ? view.retryAfterMinutes : 0,
@@ -98,6 +102,16 @@
   function accountLine(account) {
     if (!account || typeof account.name !== 'string' || !account.name.trim()) return '';
     return account.username ? `${account.name} · @${account.username}` : account.name;
+  }
+  /**
+   * What «conectado» means for the keychain, from the HOST's own verdict (`telegramSessionStored`), never from the fact that
+   * the daemon says connected: storing the session can fail (a locked keychain, a session too long for one entry) and the
+   * old card claimed it had worked anyway.
+   */
+  function connectedSentence(stored) {
+    return stored === true
+      ? 'Telegram conectado. La sesión quedó en el llavero de tu sistema.'
+      : 'Conectado, pero no se pudo guardar la sesión en el llavero: al reiniciar tendrás que entrar de nuevo.';
   }
 
   // ---- field validation: the same rules the host and the daemon apply -----------------------------------------
@@ -187,7 +201,7 @@
 
   return Object.freeze({
     API_ID_MAX, CODE_MAX, PASSWORD_MAX, MODEL_MAX, MODES, LANGUAGES, STATES, SENTENCES,
-    errorSentence, telegramView, accountLine,
+    errorSentence, telegramView, accountLine, connectedSentence,
     apiIdProblem, apiHashProblem, phoneProblem, codeProblem, passwordProblem, modelProblem,
     loginStartPayload, codePayload, passwordPayload,
     accountsForTranscription, transcriptionView, transcriptionPayload, oneLine,
@@ -207,6 +221,7 @@ function mount(api) {
 
   let agentState = null;
   let credentials = false;
+  let sessionStored = false;
   let telegram = api.telegramView(null, false);
   let transcription = api.transcriptionView(null, []);
   let note = null;        // { tone: 'go'|'sun'|'red', say } — a sentence of OURS
@@ -391,7 +406,8 @@ function mount(api) {
     if (!next || typeof next !== 'object') return;
     agentState = next;
     credentials = next.telegramCredentials === true;
-    telegram = api.telegramView(next.telegram, credentials);
+    sessionStored = next.telegramSessionStored === true;
+    telegram = api.telegramView(next.telegram, credentials, sessionStored);
     transcription = api.transcriptionView(next.transcription, next.accounts);
     const error = next.last_error && Number.isInteger(next.last_error.n) ? next.last_error : null;
     if (error && error.n > waitedError) {
@@ -402,7 +418,8 @@ function mount(api) {
       }
     }
     if (lastSent && telegram.connected && lastSent.action !== 'telegram_logout') {
-      note = { tone: 'go', say: 'Telegram conectado. La sesión quedó en el llavero de tu sistema.' };
+      // F3: the keychain sentence is the host's verdict, never the fact that the daemon says connected
+      note = { tone: telegram.sessionStored ? 'go' : 'sun', say: api.connectedSentence(telegram.sessionStored) };
     }
     if (lastSent && lastSent.action === 'telegram_logout' && !telegram.connected) {
       note = { tone: 'go', say: 'Desconectado. La sesión guardada se borró de este equipo.' };
@@ -435,14 +452,17 @@ function mount(api) {
       if (payload.action !== 'telegram_login_start' && telegram.connected) { hashInput.value = ''; idInput.value = ''; }
       if (telegram.connected || payload.action === 'telegram_logout') loginPhone = '';
       paint();
-    }, () => {
+    }, error => {
       busy = false; clearTimeout(timer);
       // a rejected request must not leave a secret sitting in the page either
       if (payload.action === 'telegram_login_password') stepNodes.password.field.value = '';
       if (payload.action === 'telegram_login_code') stepNodes.code.field.value = '';
       if (payload.action === 'telegram_login_start') { stepNodes.phone.field.value = ''; hashInput.value = ''; }
       if (payload.action === 'telegram_login_start' || payload.action === 'telegram_logout') loginPhone = '';
-      note = { tone: 'red', say: 'No se pudo completar el pedido.' };
+      // F8: the host refuses with a CLOSED code (e.g. a logout whose keychain delete failed). Our sentence for that code,
+      // never the host's or the keychain's own text, and the generic one when the code is one we do not know.
+      const code = error && typeof error.code === 'string' ? error.code : '';
+      note = { tone: 'red', say: code ? api.errorSentence(code, null) : 'No se pudo completar el pedido.' };
       paint();
     });
   }

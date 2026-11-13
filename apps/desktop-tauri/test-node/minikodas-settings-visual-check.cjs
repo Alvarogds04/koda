@@ -54,6 +54,7 @@ function initScript({ scenario }) {
     telegram: scenario.telegram || { state: 'disconnected' },
     transcription: scenario.transcription || { setting: { mode: 'local-parakeet', language: 'es' }, ffmpeg: 'available', local: 'available' },
     telegramCredentials: scenario.credentials === true,
+    telegramSessionStored: scenario.credentials === true,
     last_error: { code: null, n: 0 },
   };
   window.__state = state;
@@ -74,10 +75,11 @@ function initScript({ scenario }) {
       if (p.action === 'telegram_login_password') {
         state.telegram = { state: 'connected', account: { name: 'Álvaro', username: 'alvaro' } };
         state.telegramCredentials = true;
+        state.telegramSessionStored = true;
         setTimeout(() => window.__emit('agent:state', structuredClone(state)), 10);
         return structuredClone(state);
       }
-      if (p.action === 'telegram_logout') { state.telegram = { state: 'disconnected' }; state.telegramCredentials = false; setTimeout(() => window.__emit('agent:state', structuredClone(state)), 10); return structuredClone(state); }
+      if (p.action === 'telegram_logout') { state.telegram = { state: 'disconnected' }; state.telegramCredentials = false; state.telegramSessionStored = false; setTimeout(() => window.__emit('agent:state', structuredClone(state)), 10); return structuredClone(state); }
       if (p.action === 'transcription_set') {
         state.transcription = { ...state.transcription, setting: p.setting };
         setTimeout(() => window.__emit('agent:state', structuredClone(state)), 10);

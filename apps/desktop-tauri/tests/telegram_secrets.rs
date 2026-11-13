@@ -4,20 +4,25 @@
 //! keychain. What must hold:
 //! 1. the triple is restored only when ALL THREE values are present and on-contract — a partial or off-contract set is
 //!    never handed to the daemon;
-//! 2. the session is stored ONLY from the reply to a login this island started (`LoginGuard`), and only when it satisfies
-//!    the daemon's carry contract AND fits one keychain entry;
+//! 2. the session is stored ONLY from the reply to a request this island started (`LoginGuard`: the login it began or the
+//!    `telegram_session_restore` it sent), and only when it satisfies the daemon's carry contract AND fits one keychain
+//!    entry; a reply with nothing of ours in flight is a replay and is dropped;
+//! 2b. a pair is stored all-or-nothing: when the second write is refused the first is rolled back, so a half pair never
+//!    survives to make the island look configured while nothing usable is stored;
 //! 3. logout (and a revoked session) deletes the three, attempting every deletion;
 //! 4. no secret appears in a `Debug` line, in the restore frame beyond its own three fields, or in any state the page sees.
 use abito_island::secrets::{
     accept_session, forget_telegram, has_telegram_credentials, remember_api_pair, telegram_api_hash_ok, telegram_credentials,
-    telegram_session_ok, LoginGuard, SecretError, SecretStore, StoreError, TelegramCredentials, TELEGRAM_API_HASH, TELEGRAM_API_ID,
-    TELEGRAM_API_ID_MAX, TELEGRAM_SESSION,
+    telegram_session_ok, LoginGuard, SecretError, SecretStore, SessionReply, StoreError, TelegramCredentials, TELEGRAM_API_HASH,
+    TELEGRAM_API_ID, TELEGRAM_API_ID_MAX, TELEGRAM_SESSION,
 };
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 
 const HASH: &str = "8f3c1d9ae2b74c05d61fa8b3c0e7d294";
 const SESSION: &str = "AQAAAAAabcdef0123456789+/base64sessionstring==";
+/// What the daemon hands back after it re-authorized a stored session (`telegram_session_restore` → `telegram_session`).
+const ROTATED: &str = "AQAAAAArotated0123456789+/base64sessionstring==";
 
 /// The in-memory stand-in for the OS keychain (never the user's real one).
 #[derive(Default)]
@@ -25,16 +30,22 @@ struct FakeStore {
     values: Mutex<BTreeMap<String, String>>,
     /// One key whose deletion always fails, to prove `forget` keeps going and still reports the failure.
     fail_delete: Option<&'static str>,
+    /// The 1-based write the store refuses, to prove a refused second write leaves no half pair behind.
+    fail_write_at: Option<usize>,
+    writes: Mutex<Vec<String>>,
     deletes: Mutex<Vec<String>>,
 }
 
 impl FakeStore {
     fn with(pairs: &[(&str, &str)]) -> FakeStore {
-        let store = FakeStore { fail_delete: None, ..Default::default() };
+        let store = FakeStore { fail_delete: None, fail_write_at: None, ..Default::default() };
         for (k, v) in pairs {
             store.values.lock().unwrap().insert((*k).to_string(), (*v).to_string());
         }
         store
+    }
+    fn written(&self) -> Vec<String> {
+        self.writes.lock().unwrap().clone()
     }
     fn get(&self, key: &str) -> Option<String> {
         self.values.lock().unwrap().get(key).cloned()
@@ -49,6 +60,12 @@ impl SecretStore for FakeStore {
         Ok(self.get(key))
     }
     fn write(&self, key: &str, value: &str) -> Result<(), StoreError> {
+        let mut writes = self.writes.lock().unwrap();
+        writes.push(key.to_string());
+        if self.fail_write_at == Some(writes.len()) {
+            return Err(StoreError::Failed);
+        }
+        drop(writes);
         self.values.lock().unwrap().insert(key.to_string(), value.to_string());
         Ok(())
     }
@@ -119,10 +136,28 @@ fn nothing_is_stored_until_the_pair_or_the_session_could_ever_be_valid() {
     let guard = LoginGuard::new();
     guard.begin();
     for bad in ["", "sesión", "a\nb", &"x".repeat(abito_island::secrets::MAX_VALUE_BYTES + 1)] {
-        assert_eq!(accept_session(&store, &guard, bad).unwrap(), false, "session {bad:?} is not stored");
+        assert_eq!(accept_session(&store, &guard, bad).unwrap(), SessionReply::Refused, "session {bad:?} is not stored");
         guard.begin(); // the guard is only consumed by a reply we accept
     }
     assert!(store.get(TELEGRAM_SESSION).is_none(), "no session was written by a refused value");
+}
+
+#[test]
+fn a_refused_half_pair_is_rolled_back_so_no_half_pair_survives() {
+    // the api id lands and the store refuses the api hash: the pair must not be left half-written
+    let store = FakeStore { fail_write_at: Some(2), ..Default::default() };
+    assert_eq!(remember_api_pair(&store, 20_405_128, HASH).unwrap_err(), SecretError::Failed);
+    assert!(store.get(TELEGRAM_API_ID).is_none(), "the api id written first was rolled back: {:?}", store.keys());
+    assert!(store.keys().is_empty(), "a half pair never survives: {:?}", store.keys());
+    assert_eq!(store.written().len(), 2, "a rollback deletes what it wrote instead of writing again");
+    assert_eq!(store.deletes.lock().unwrap().clone(), vec![TELEGRAM_API_ID.to_string()], "exactly the key that landed is deleted");
+    assert!(!has_telegram_credentials(&store), "nothing usable is stored, and the island does not pretend otherwise");
+
+    // the very first write refused: there is nothing to roll back, and nothing is deleted
+    let nothing = FakeStore { fail_write_at: Some(1), ..Default::default() };
+    assert_eq!(remember_api_pair(&nothing, 20_405_128, HASH).unwrap_err(), SecretError::Failed);
+    assert!(nothing.keys().is_empty());
+    assert!(nothing.deletes.lock().unwrap().is_empty(), "no delete is attempted for a write that never landed");
 }
 
 // ----- the session hears only our own login ------------------------------------------------
@@ -132,16 +167,38 @@ fn the_session_is_stored_only_from_the_reply_to_our_own_login() {
     let store = FakeStore::default();
     let guard = LoginGuard::new();
     // a `telegram_session` that arrives while no login of ours is running is not ours to keep
-    assert_eq!(accept_session(&store, &guard, SESSION).unwrap(), false);
+    assert_eq!(accept_session(&store, &guard, SESSION).unwrap(), SessionReply::Foreign);
     assert!(store.get(TELEGRAM_SESSION).is_none(), "nothing stored without our own login");
 
     guard.begin();
-    assert_eq!(accept_session(&store, &guard, SESSION).unwrap(), true);
+    assert_eq!(accept_session(&store, &guard, SESSION).unwrap(), SessionReply::Stored);
     assert_eq!(store.get(TELEGRAM_SESSION).as_deref(), Some(SESSION), "the reply of our own login is stored");
     assert!(!guard.pending(), "and the guard is spent");
     // a second reply (a stale frame, a second window) is not stored
-    assert_eq!(accept_session(&store, &guard, "AQAAAAAothersession==").unwrap(), false);
+    assert_eq!(accept_session(&store, &guard, "AQAAAAAothersession==").unwrap(), SessionReply::Foreign);
     assert_eq!(store.get(TELEGRAM_SESSION).as_deref(), Some(SESSION), "the stored session is the first, not the replay");
+}
+
+/// K2-13 F4: the daemon answers `telegram_session_restore` with a ROTATED session (server.cjs:1711-1715). That reply is
+/// ours — this island sent the restore on this connection — so it replaces the stored session. A reply with nothing of
+/// ours in flight stays a replay and is still dropped.
+#[test]
+fn a_session_the_daemon_rotated_after_our_own_restore_is_stored_too() {
+    let store = FakeStore::with(&[(TELEGRAM_SESSION, SESSION)]);
+    let guard = LoginGuard::new();
+    // nothing of ours is in flight on this fresh guard: the first reply is a replay
+    assert_eq!(accept_session(&store, &guard, ROTATED).unwrap(), SessionReply::Foreign);
+    assert_eq!(store.get(TELEGRAM_SESSION).as_deref(), Some(SESSION), "a stray reply never touches the stored session");
+
+    // the island sent the restore: the rotated session it answered with is stored, replacing the old one
+    guard.begin_restore();
+    assert_eq!(accept_session(&store, &guard, ROTATED).unwrap(), SessionReply::Stored);
+    assert_eq!(store.get(TELEGRAM_SESSION).as_deref(), Some(ROTATED), "the rotated session replaces the stored one");
+    assert!(!guard.pending(), "one restore, one reply");
+
+    // the same reply repeated with nothing of ours in flight is a replay again
+    assert_eq!(accept_session(&store, &guard, SESSION).unwrap(), SessionReply::Foreign);
+    assert_eq!(store.get(TELEGRAM_SESSION).as_deref(), Some(ROTATED), "the replay never overwrites what was stored");
 }
 
 #[test]
@@ -150,7 +207,13 @@ fn a_cancelled_login_never_stores_what_arrives_after_it() {
     let guard = LoginGuard::new();
     guard.begin();
     guard.cancel(); // logout, a refused login, a paused daemon
-    assert_eq!(accept_session(&store, &guard, SESSION).unwrap(), false);
+    assert_eq!(accept_session(&store, &guard, SESSION).unwrap(), SessionReply::Foreign);
+    assert!(store.get(TELEGRAM_SESSION).is_none());
+
+    // a restore of ours that a logout cancelled is not stored either
+    guard.begin_restore();
+    guard.cancel();
+    assert_eq!(accept_session(&store, &guard, SESSION).unwrap(), SessionReply::Foreign);
     assert!(store.get(TELEGRAM_SESSION).is_none());
 }
 
