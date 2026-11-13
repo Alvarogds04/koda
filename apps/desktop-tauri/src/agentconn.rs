@@ -18,6 +18,11 @@ use std::time::{Duration, Instant};
 
 const HELLO_WAIT: Duration = Duration::from_secs(3);
 
+/// K2-13 (S20): handed the ONE `telegram_session` this connection received, on the reader thread, before the new view is
+/// published. The host stores it in the OS keychain. The value is a credential: it is never logged, never published and
+/// never sent back to the daemon inside any other frame.
+pub type SessionSink = Arc<dyn Fn(&str) + Send + Sync>;
+
 /// The reader's exit guard, shared shape for both connections: a reader may wipe the
 /// writer and report the loss only when its OWN flag is still false AND its connection
 /// epoch is still the current one. An old reader can then never touch a newer
@@ -39,6 +44,9 @@ pub struct AgentConn {
     /// Told whenever the state moves, HANDED the new view: a callback must never need to re-lock
     /// anything the caller may hold (the host once re-locked its own slot here and deadlocked).
     changed: Arc<dyn Fn(Value) + Send + Sync>,
+    /// K2-13 (S20): where a `telegram_session` reply goes (the keychain, through the host). A no-op by default, so a
+    /// connection created without a keychain never holds a session either.
+    session_sink: SessionSink,
 }
 
 /// `<island>/runtime/session.json` for the configured island root.
@@ -95,12 +103,18 @@ fn pid_exists(pid: u32) -> bool {
 
 impl AgentConn {
     pub fn new(changed: impl Fn(Value) + Send + Sync + 'static) -> AgentConn {
+        AgentConn::with_session_sink(changed, Arc::new(|_: &str| {}))
+    }
+
+    /// K2-13 (S20): a connection whose `telegram_session` reply is handed to `sink` (the keychain bridge).
+    pub fn with_session_sink(changed: impl Fn(Value) + Send + Sync + 'static, sink: SessionSink) -> AgentConn {
         AgentConn {
             state: Arc::new(Mutex::new(ClientState::disconnected(Reason::NoDaemon))),
             writer: Arc::new(Mutex::new(None)),
             stop: Mutex::new(Arc::new(AtomicBool::new(false))),
             epoch: Arc::new(AtomicU64::new(0)),
             changed: Arc::new(changed),
+            session_sink: sink,
         }
     }
 
@@ -184,21 +198,25 @@ impl AgentConn {
     }
 
     fn spawn_reader(&self, mut reader: UnixStream, mut buf: FrameBuffer, pending: Vec<Value>, stop: Arc<AtomicBool>, epochs: Arc<AtomicU64>, epoch: u64) {
-        let (state, changed, writer) = (self.state.clone(), self.changed.clone(), self.writer.clone());
+        let (state, changed, writer, sink) = (self.state.clone(), self.changed.clone(), self.writer.clone(), self.session_sink.clone());
         let _ = reader.set_read_timeout(Some(Duration::from_millis(500)));
         std::thread::spawn(move || {
             let mut chunk = [0u8; 8192];
             // the handshake burst: frames that arrived in the same read as `ready`
             if !pending.is_empty() {
-                let emit = {
+                let (emit, session) = {
                     let mut st = state.lock().expect("agent state lock");
                     let before = serde_json::to_value(&*st).unwrap_or(Value::Null);
                     for f in &pending {
                         let _ = st.apply(f);
                     }
                     let after = serde_json::to_value(&*st).unwrap_or(Value::Null);
-                    (before != after).then_some(after)
+                    ((before != after).then_some(after), st.take_session())
                 };
+                // K2-13 S20: the keychain write happens BEFORE the view that says «connected» is published
+                if let Some(session) = session {
+                    sink(&session);
+                }
                 if let Some(view) = emit {
                     changed(view);
                 }
@@ -221,15 +239,19 @@ impl AgentConn {
                         }
                         // emit the view only when at least one complete frame CHANGED the
                         // state — bursts coalesce into one emission, idle reads into none
-                        let emit = {
+                        let (emit, session) = {
                             let mut st = state.lock().expect("agent state lock");
                             let before = serde_json::to_value(&*st).unwrap_or(Value::Null);
                             for f in &frames {
                                 let _ = st.apply(f);
                             }
                             let after = serde_json::to_value(&*st).unwrap_or(Value::Null);
-                            (before != after).then_some(after)
+                            ((before != after).then_some(after), st.take_session())
                         };
+                        // K2-13 S20: stored in the keychain BEFORE the «connected» view is published
+                        if let Some(session) = session {
+                            sink(&session);
+                        }
                         if let Some(view) = emit {
                             changed(view);
                         }
@@ -395,6 +417,8 @@ impl ChatConn {
     }
 
     fn spawn_reader(&self, mut reader: UnixStream, mut buf: FrameBuffer, pending: Vec<Value>, stop: Arc<AtomicBool>, epochs: Arc<AtomicU64>, epoch: u64) {
+        // The chat connection never receives a `telegram_session` (that frame is the reply to the connection that asked
+        // for the login), so it has no session sink and its fold stays exactly as it was.
         let (state, changed, writer) = (self.state.clone(), self.changed.clone(), self.writer.clone());
         let _ = reader.set_read_timeout(Some(Duration::from_millis(500)));
         std::thread::spawn(move || {

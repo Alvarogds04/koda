@@ -28,6 +28,10 @@ use windows_sys::Win32::Foundation::HANDLE;
 use windows_sys::Win32::System::Pipes::{GetNamedPipeServerProcessId, PeekNamedPipe};
 
 const HELLO_WAIT: Duration = Duration::from_secs(3);
+
+/// K2-13 (S20): the ONE `telegram_session` reply of this connection, handed to the host on the reader thread BEFORE the
+/// new view is published so it reaches the OS keychain first (keep in sync with `agentconn.rs`, the unix twin).
+pub type SessionSink = Arc<dyn Fn(&str) + Send + Sync>;
 const POLL: Duration = Duration::from_millis(10);
 /// Windows FILE_ATTRIBUTE_REPARSE_POINT: any name surrogate (symlink,
 /// junction, mount point) is never a plain session file.
@@ -54,6 +58,8 @@ pub struct AgentConn {
     /// may never touch the writer or the state of a newer connection.
     epoch: Arc<AtomicU64>,
     changed: Arc<dyn Fn(Value) + Send + Sync>,
+    /// K2-13 (S20): where a `telegram_session` reply goes (the keychain, through the host).
+    session_sink: SessionSink,
 }
 
 /// `<island>/runtime/session.json` for the configured island root.
@@ -177,6 +183,7 @@ impl AgentConn {
             stop: Mutex::new(Arc::new(AtomicBool::new(false))),
             epoch: Arc::new(AtomicU64::new(0)),
             changed: Arc::new(changed),
+            session_sink: Arc::new(|_: &str| {}),
         }
     }
 
@@ -252,20 +259,23 @@ impl AgentConn {
     }
 
     fn spawn_reader(&self, reader: Arc<Pipe>, mut buf: FrameBuffer, pending: Vec<Value>, stop: Arc<AtomicBool>, epochs: Arc<AtomicU64>, epoch: u64) {
-        let (state, changed, writer) = (self.state.clone(), self.changed.clone(), self.writer.clone());
+        let (state, changed, writer, sink) = (self.state.clone(), self.changed.clone(), self.writer.clone(), self.session_sink.clone());
         std::thread::spawn(move || {
             let mut chunk = [0u8; 8192];
             // the handshake burst: frames that arrived in the same read as `ready`
             if !pending.is_empty() {
-                let emit = {
+                let (emit, session) = {
                     let mut st = state.lock().expect("agent state lock");
                     let before = serde_json::to_value(&*st).unwrap_or(Value::Null);
                     for f in &pending {
                         let _ = st.apply(f);
                     }
                     let after = serde_json::to_value(&*st).unwrap_or(Value::Null);
-                    (before != after).then_some(after)
+                    ((before != after).then_some(after), st.take_session())
                 };
+                if let Some(session) = session {
+                    sink(&session);
+                }
                 if let Some(view) = emit {
                     changed(view);
                 }
@@ -286,15 +296,18 @@ impl AgentConn {
                         }
                         // emit the view only when at least one complete frame CHANGED the
                         // state — bursts coalesce into one emission, idle reads into none
-                        let emit = {
+                        let (emit, session) = {
                             let mut st = state.lock().expect("agent state lock");
                             let before = serde_json::to_value(&*st).unwrap_or(Value::Null);
                             for f in &frames {
                                 let _ = st.apply(f);
                             }
                             let after = serde_json::to_value(&*st).unwrap_or(Value::Null);
-                            (before != after).then_some(after)
+                            ((before != after).then_some(after), st.take_session())
                         };
+                        if let Some(session) = session {
+                            sink(&session);
+                        }
                         if let Some(view) = emit {
                             changed(view);
                         }

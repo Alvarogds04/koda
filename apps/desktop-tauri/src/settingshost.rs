@@ -13,8 +13,9 @@ use abito_island::agentclient::{is_account_action, AccountStore};
 use abito_island::agentconn::{island_root, AgentConn};
 use abito_island::bridge::{self, BridgeError};
 use abito_island::prefs::{self, Command, Prefs};
+use abito_island::secrets::{self, LoginGuard};
 use serde_json::{json, Value};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -28,6 +29,11 @@ use tauri::{AppHandle, Emitter, Manager, State};
 /// success. Polling is cheap (a missing session.json fails in one stat) and bounded.
 const RESTART_WAIT: Duration = Duration::from_secs(20);
 const RESTART_POLL: Duration = Duration::from_millis(200);
+
+/// K2-13 T6b-3 (S10/S20): «a login THIS island started is in flight». One app, one Telegram account, one login: the
+/// reader thread consults it before a `telegram_session` reply is allowed into the OS keychain, so a session that
+/// arrived while no login of ours was running (a stale reply, a second window, a replay) is never stored.
+static TELEGRAM_LOGIN: LoginGuard = LoginGuard::new();
 
 pub struct SettingsHost {
     // #315: the tray derives its connection state from this slot's view
@@ -466,11 +472,32 @@ pub(crate) fn agent_conn(handle: &AppHandle) -> AgentConn {
     let emitter = handle.clone();
     #[cfg(target_os = "linux")]
     let phone = handle.clone();
-    AgentConn::new(move |view: Value| {
-        #[cfg(target_os = "linux")]
-        crate::phonehost::publish_sessions(&phone, &view);
-        let _ = emitter.emit("agent:state", view);
-    })
+    // K2-13 T6b-3 (S20): the ONE `telegram_session` reply of this connection goes straight into the OS keychain, from the
+    // reader thread and BEFORE the «connected» view is published. It never reaches the WebView, a log line or a frame.
+    let session_sink: abito_island::agentconn::SessionSink = Arc::new(|session: &str| {
+        let _ = secrets::accept_session(&secrets::Keychain, &TELEGRAM_LOGIN, session);
+    });
+    AgentConn::with_session_sink(
+        move |view: Value| {
+            #[cfg(target_os = "linux")]
+            crate::phonehost::publish_sessions(&phone, &view);
+            let _ = emitter.emit("agent:state", view);
+        },
+        session_sink,
+    )
+}
+
+/// K2-13 T6b-3 (S20): hand the stored session to the daemon when the triple is complete and the daemon has none. It runs
+/// at island start (the connect right above), after a reconnect and whenever Ajustes reads the Telegram state; the
+/// daemon answers `telegram_status` and, only if Telegram rotated the session, one more `telegram_session` that the
+/// reader thread stores. Returns whether a restore was sent.
+fn telegram_restore_if_needed(conn: &AgentConn, telegram: &Value) -> bool {
+    if telegram.get("state").and_then(Value::as_str) != Some("disconnected") {
+        return false;
+    }
+    let Ok(Some(credentials)) = secrets::telegram_credentials(&secrets::Keychain) else { return false };
+    let Ok(line) = serde_json::to_string(&credentials.restore_frame()) else { return false };
+    conn.send(&abito_island::agentclient::UiCommand::Wire(format!("{line}\n"))).is_ok()
 }
 
 /// The island agent: `view` (connects on first use), and the closed command set of
@@ -535,9 +562,51 @@ pub async fn agent_action(
                 None => return Err(err("no_island_root")),
             }
         }
-        let mut view = conn
-            .command(&payload)
-            .map_err(|_| err("agent_unavailable"))?;
+        // K2-13 T6b-3 (S10/S20): the Telegram credential bridge. The page sends the api id, the api hash, the phone, the
+        // code and the password ONCE; this side validates them with the daemon's own rules (agentclient's closed set),
+        // keeps only the api pair in the OS keychain and forwards the rest, so the page never holds a stored secret. The
+        // session travels the other way: `telegram_session` -> keychain -> `telegram_session_restore`, and never into a
+        // view, an event or a log.
+        let telegram_action = payload.get("action").and_then(Value::as_str).filter(|a| a.starts_with("telegram_"));
+        if telegram_action == Some("telegram_login_start") {
+            // A login is only worth starting when the pair can be stored: with no reachable keychain the answer is the
+            // keychain's own code and NOTHING travels to the daemon (never a plaintext fallback, secrets.rs contract).
+            let api_id = payload.get("apiId").and_then(Value::as_u64).unwrap_or(0);
+            let api_hash = payload.get("apiHash").and_then(Value::as_str).unwrap_or_default();
+            secrets::remember_api_pair(&secrets::Keychain, api_id, api_hash).map_err(|e| err(e.code()))?;
+            TELEGRAM_LOGIN.begin();
+        }
+        if telegram_action == Some("telegram_logout") {
+            // Account safety: whoever logs out, the stored triple goes (a revoked session must not be replayed).
+            TELEGRAM_LOGIN.cancel();
+            let _ = secrets::forget_telegram(&secrets::Keychain);
+        }
+        let mut view = match conn.command(&payload) {
+            Ok(view) => view,
+            Err(_) => {
+                if telegram_action == Some("telegram_login_start") {
+                    TELEGRAM_LOGIN.cancel();
+                }
+                return Err(err("agent_unavailable"));
+            }
+        };
+        // A dead session (AUTH_KEY_UNREGISTERED and friends) means the keychain copy is worthless: forget it so the next
+        // start does not hand the daemon a credential Telegram already revoked.
+        if view.get("last_error").and_then(|e| e.get("code")).and_then(Value::as_str) == Some("telegram_session_invalid") {
+            TELEGRAM_LOGIN.cancel();
+            let _ = secrets::forget_telegram(&secrets::Keychain);
+        }
+        // The hand-off of a session this island already holds: at start (this is the first connect), after a reconnect
+        // and whenever Ajustes reads the state. Only when the daemon says it has none.
+        if view.get("last_error").and_then(|e| e.get("code")).and_then(Value::as_str) != Some("telegram_unavailable") {
+            if let Some(telegram) = view.get("telegram").cloned() {
+                if telegram_restore_if_needed(&conn, &telegram) {
+                    view = conn.view();
+                }
+            }
+        }
+        // The page may know whether the island holds the three values. It never learns any of them.
+        view["telegramCredentials"] = Value::Bool(secrets::has_telegram_credentials(&secrets::Keychain));
         view["ownedAccounts"] = state
             .settings
             .accounts
