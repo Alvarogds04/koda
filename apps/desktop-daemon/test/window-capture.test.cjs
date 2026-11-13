@@ -230,6 +230,9 @@ test("T2: a model without image input is refused before any capture, with the se
 	assert.deepEqual(blocked, { block: true, reason: windowCapture.NO_VISION_MESSAGE });
 	assert.match(windowCapture.NO_VISION_MESSAGE, /cannot see images/);
 	assert.match(windowCapture.NO_VISION_MESSAGE, /image input \(vision\)/);
+	// K2-05 removed the model picker: the message names where the user can really change it today.
+	assert.match(windowCapture.NO_VISION_MESSAGE, /Ajustes → Cuentas/);
+	assert.doesNotMatch(windowCapture.NO_VISION_MESSAGE, /model settings/i, "no pointer to a selector that no longer exists");
 	// A model that sees images, an unknown model and any other tool are never blocked.
 	assert.equal(await toolCall(call, { model: { input: ["text", "image"] } }), undefined);
 	assert.equal(await toolCall(call, { model: undefined }), undefined);
