@@ -133,7 +133,8 @@ const LEGACY_CMD = "'/usr/bin/node' '/opt/koda-0.1/desktop-harness/bin/abito-sta
 
 test('K2-04: a 0.1 status line is replaced in place and the installed one names the Koda script', async () => {
   const t0 = home(`{\n  "statusLine": {"type": "command", "command": ${JSON.stringify(LEGACY_CMD)}}\n}\n`);
-  const pl = planStatusLine({ settingsPath: t0.file, home: t0.h, binPath: STATUSLINE_BIN, execPath: '/usr/bin/node' });
+  // On Windows the installer only quotes an absolute drive path, so the test uses the real node executable on every OS.
+  const pl = planStatusLine({ settingsPath: t0.file, home: t0.h, binPath: STATUSLINE_BIN, execPath: process.execPath });
   assert.equal(pl.action, 'replace', 'the 0.1 relay is recognised as ours');
   assert.ok(pl.after.includes('koda-statusline.cjs'), 'the new relay names the Koda script');
   assert.ok(!pl.after.includes('abito-statusline.cjs'), 'and no 0.1 name survives');

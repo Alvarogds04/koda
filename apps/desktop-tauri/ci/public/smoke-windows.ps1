@@ -212,7 +212,7 @@ try {
     if ($pv.Code -ne 0 -or -not $pv.Json.ok) { throw "Windows Pi preview failed: $($pv.Json | ConvertTo-Json -Compress)" }
     $ap = Invoke-Install @('pi', '--user', '--json', '--apply-plan', $pv.Json.plan_hash, '--audit-dir', $auditDir)
     if ($ap.Code -ne 0 -or -not $ap.Json.ok) { throw "Windows Pi apply failed: $($ap.Json | ConvertTo-Json -Compress)" }
-    $ext = Join-Path $agentHome '.pi\agent\extensions\abito-island'
+    $ext = Join-Path $agentHome '.pi\agent\extensions\koda-island'
     foreach ($f in @('index.ts', 'adapter.cjs', '.abito-manifest.json')) { if (-not (Test-Path -LiteralPath (Join-Path $ext $f))) { throw "Pi extension file missing: $f" } }
     $tampered = Join-Path $install 'desktop-pi/adapter.cjs'
     $original = [IO.File]::ReadAllBytes($tampered)

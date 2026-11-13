@@ -18,7 +18,13 @@ const WIN_POSIX_INSTALLER = new Set([
   "Pi post-publication verification failure quarantines new bytes and restores prior payload",
   "Pi rejects hardlinks and conflicting target options without changing installed files",
   "Pi refuses cross-device publication and preserves foreign backup entries when pruning",
-  "Pi upgrades an older owned payload with backup and refuses modified or unlisted files"
+  "Pi upgrades an older owned payload with backup and refuses modified or unlisted files",
+  // K2-04: the 0.1 folder retire flow is the POSIX installer's; the Windows twin is covered by win-install-fake.test.cjs.
+  "K2-04: a Koda 0.1 extension folder is retired, so Pi keeps exactly ONE extension",
+  "K2-04: the retired 0.1 folder stays in the backup folder after a successful install (the backup prune never removes it)",
+  "K2-04: a failed replacement puts the 0.1 folder back (retired, never deleted outright)",
+  "K2-04: a folder at the old name that is not a Koda install is never touched",
+  "K2-04: --remove also retires a 0.1 extension folder"
 ]);
 const test = (name, ...rest) => (process.platform === 'win32' && WIN_POSIX_INSTALLER.has(name)
   ? baseTest(name, { skip: 'POSIX Pi installer; Windows: registered gap «Windows: Pi installer tests» (install-pi-win.cjs, twin win-install-fake.test.cjs)' }, rest[rest.length - 1])

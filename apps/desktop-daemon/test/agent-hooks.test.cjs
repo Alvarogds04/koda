@@ -674,7 +674,7 @@ test("K2-04: cursor — a 0.1 entry plus the user's own entry ends with ONE Koda
 	for (const ev of ["sessionStart", "sessionEnd", "stop"]) {
 		const ours = hooks[ev].filter((e) => String(e.command).includes(MARKER));
 		assert.equal(ours.length, 1, `${ev} has exactly one Koda entry`);
-		assert.ok(ours[0].command.includes(".koda/agent-hooks/island-notify.mjs"), `${ev} points at the Koda script`);
+		assert.ok(String(ours[0].command).replace(/\\/g, "/").includes(".koda/agent-hooks/island-notify.mjs"), `${ev} points at the Koda script`);
 		assert.ok(!JSON.stringify(hooks).includes(LEGACY), "no 0.1 entry survives");
 	}
 	assert.deepEqual(hooks.stop.filter((e) => JSON.stringify(e) === JSON.stringify(mine)), [mine]);
