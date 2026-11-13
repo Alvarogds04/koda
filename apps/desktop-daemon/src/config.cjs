@@ -522,6 +522,12 @@ const MCP_BEARER = /^Bearer [A-Za-z0-9._~+/=-]{8,512}$/;
 const FORBIDDEN_IDS = new Set(["__proto__", "constructor", "prototype"]);
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]"]);
 
+/** K2-06 T1: the Rust host's loopback window-capture endpoint, set at spawn (apps/desktop-tauri/src/daemonhost.rs). */
+const WINDOW_MCP_URL_ENV = "KODA_WINDOW_MCP_URL";
+const WINDOW_MCP_TOKEN_ENV = "KODA_WINDOW_MCP_TOKEN";
+/** The one server id Koda projects itself: the host's screenshot tool reaches the agent as `mcp__computer__*`. */
+const COMPUTER_SERVER_ID = "computer";
+
 function projectEntry(entry) {
 	if (entry === null || typeof entry !== "object" || Array.isArray(entry)) return undefined;
 	for (const key of Object.keys(entry)) if (!["type", "url", "headers"].includes(key)) return undefined;
@@ -567,13 +573,49 @@ function projectMcpConfig(file) {
 }
 
 /**
+ * K2-06 T1: the host's window-capture endpoint, projected as the `computer` server.
+ *
+ * Both env vars must be present, and the result must satisfy the SAME proxy-only rule as any
+ * imported server (http on a literal loopback host, exactly one Bearer header), so the island
+ * keeps its one accepted entry shape. Anything else is no server at all: never an invalid
+ * projection, never a crash. The token is a capability — it is only ever written into the 0600
+ * projection, never logged.
+ */
+function windowMcpEntry(env) {
+	if (env === null || typeof env !== "object") return undefined;
+	const url = env[WINDOW_MCP_URL_ENV];
+	const token = env[WINDOW_MCP_TOKEN_ENV];
+	if (typeof url !== "string" || typeof token !== "string") return undefined;
+	return projectEntry({ type: "http", url, headers: { Authorization: `Bearer ${token}` } });
+}
+
+/** True when the host set EITHER variable: a half-set endpoint is reported, never silently ignored. */
+function hasWindowEnv(env) {
+	if (env === null || typeof env !== "object") return false;
+	return env[WINDOW_MCP_URL_ENV] !== undefined || env[WINDOW_MCP_TOKEN_ENV] !== undefined;
+}
+
+/**
  * Writes the projection to `<island>/agent/mcp.json` — the user-level MCP file
  * of the engine's own home (the directory passed to `--home`, T2), which the
  * engine reads natively (see docs/mcp.md). With no source it writes an empty
  * projection so a stale one never lingers.
+ *
+ * K2-06 T1: Koda's OWN window-capture endpoint (`options.env`) is added as the
+ * `computer` server when the host configured it, through the very same
+ * proxy-only rule — a non-loopback URL, another header or a malformed Bearer
+ * token yields no server at all, never an invalid projection and never a
+ * crash. Koda's own endpoint wins over an imported server of the same id. The
+ * token is a capability: it is only ever written into this 0600 file, and the
+ * refusal notice (`options.log`) is a fixed sentence that never carries it.
  */
-function writeMcpProjection(islandRoot, sourceFile) {
+function writeMcpProjection(islandRoot, sourceFile, options = {}) {
 	const projection = sourceFile ? projectMcpConfig(sourceFile) : { mcpServers: {} };
+	const window = windowMcpEntry(options.env);
+	if (window) projection.mcpServers[COMPUTER_SERVER_ID] = window;
+	else if (hasWindowEnv(options.env)) {
+		(options.log ?? (() => {}))("window capture: KODA_WINDOW_MCP_URL / KODA_WINDOW_MCP_TOKEN were refused (the endpoint must be http on a loopback host with a Bearer token); no computer server projected");
+	}
 	const target = path.join(islandPaths(islandRoot).agentDir, "mcp.json");
 	writePrivateFile(target, `${JSON.stringify(projection, null, 2)}\n`);
 	return projection;
@@ -599,7 +641,10 @@ function removeMcpProjection(islandRoot) {
 
 module.exports = {
 	ConfigError,
+	COMPUTER_SERVER_ID,
 	DEFAULT_COMMAND,
+	WINDOW_MCP_TOKEN_ENV,
+	WINDOW_MCP_URL_ENV,
 	WORKSPACE_ENV,
 	clearSessionPointer,
 	detectMemoryPinConflict,
@@ -618,5 +663,6 @@ module.exports = {
 	validateConnectorHostBin,
 	validateHotkey,
 	validateWorkspace,
+	windowMcpEntry,
 	writeMcpProjection,
 };

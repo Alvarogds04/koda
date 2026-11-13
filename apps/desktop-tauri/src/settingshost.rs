@@ -171,6 +171,7 @@ fn view_prefs(p: &Prefs) -> Value {
         "showCodexPlanInNotch": p.show_codex_plan_in_notch(),
         "phoneUsage": p.phone_usage(),
         "windowContext": p.window_context(),
+        "windowCapture": p.window_capture(),
         "liveContext": p.live_context(),
         "windowContextAvailable": context_extension_available(), "windowContextNote": context_title_note(), "windowContextNative": cfg!(not(target_os = "linux")),
         "openSettingsAtLaunch": p.open_settings_at_launch(),
@@ -181,6 +182,10 @@ fn view_prefs(p: &Prefs) -> Value {
 /// S5 (#503): the chat's live-state context switch (default ON).
 pub fn live_context(host: &SettingsHost) -> bool {
     host.prefs.lock().expect("prefs lock").live_context()
+}
+
+pub fn window_capture(host: &SettingsHost) -> bool {
+    host.prefs.lock().expect("prefs lock").window_capture()
 }
 
 pub fn window_context(host: &SettingsHost) -> bool {

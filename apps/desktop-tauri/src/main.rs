@@ -2246,6 +2246,16 @@ fn main() {
             install_shutdown_handlers();
             // Only the first instance reaches setup. Failure is optional and
             // never tears down the island; runtime errors reach agent:state.
+            // K2-06: the «screenshot my window» endpoint must exist before the daemon child reads its environment.
+            // `windowCapture` (off by default) is read on every call, so turning it off stops captures at once.
+            {
+                let enabled_app = handle.clone();
+                abito_island::windowcapture::host::start(
+                    abito_island::windowcapture::host::system_desktop(),
+                    std::sync::Arc::new(abito_island::windowcapture::host::AppDialogs(handle.clone())),
+                    std::sync::Arc::new(move || settingshost::window_capture(&enabled_app.state::<AppState>().settings)),
+                );
+            }
             handle.state::<abito_island::daemonhost::HostSlot>().start();
             // K2 (S2/S3/S5): the phone link starts OFF and only opens its LAN port when the human turned it
             // on; it hangs the phone off the daemon connection started just above, never a second one.
