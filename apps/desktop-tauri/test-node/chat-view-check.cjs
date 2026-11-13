@@ -512,7 +512,21 @@ test('flicker: renderLog uses the reconciler and never empties the log while tur
 
 // ---- F027 / TaskView342: the personalized empty-chat greeting -----------------
 // The neutral sentence is shipped copy: it may not drift when a name is absent.
-const NEUTRAL_EMPTY_ARIA = 'Escribile a Koda. Responde el modelo local de esta máquina; no ve tu pantalla ni ejecuta nada.';
+const NEUTRAL_EMPTY_ARIA = 'Escribile a Koda. Te responde el agente de Koda; sólo ve tu ventana si se lo pedís y lo activaste en Ajustes → Chat.';
+
+test('empty-chat and header copy describe the engine chat: never «modelo local», «sólo local» or «nube»', () => {
+  for (const text of [NEUTRAL_EMPTY_ARIA, V.targetAria(null), V.targetAria(undefined),
+    V.targetAria({ alias: 'claude', profile_id: 'cloud-x', origin: 'https://x' }), V.targetAria({ alias: 'm', profile_id: 'local', origin: 'http://127.0.0.1:1' })]) {
+    assert.doesNotMatch(text, /modelo local|s[oó]lo local|nube|no ve tu pantalla/i, text);
+  }
+  assert.equal(V.emptyGreeting(null).aria, NEUTRAL_EMPTY_ARIA);
+  // The header chip used to show a lock and the word «local» (the removed local-only promise).
+  const html = require('node:fs').readFileSync(require('node:path').join(__dirname, '../frontend/index.html'), 'utf8');
+  const chip = html.slice(html.indexOf('id="chat-target-chip"'), html.indexOf('id="chat-target"'));
+  assert.ok(chip.length > 20, 'the chip is still there (other checks pin its id)');
+  assert.doesNotMatch(chip, /data-icon="lock"|>local</, 'no lock and no «local»: the engine may answer from a cloud provider');
+  assert.match(V.targetAria(null), /agente de Koda/);
+});
 
 test('greeting: an explicit name yields «Hola, <nombre>.», absent or blank keeps the shipped neutral sentence', () => {
   const named = V.emptyGreeting({ display_name: 'Ana' });

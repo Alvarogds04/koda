@@ -142,7 +142,8 @@
     if (/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/.test(normalized)) return 'Caracteres no válidos';
     return '';
   }
-  const targetAria = t => (t ? `${t.alias}, ${String(t.profile_id || '').startsWith('cloud-') ? 'nube' : 'sólo local'}, ${String(t.origin || '').replace(/^https?:\/\//, '')}` : 'Sin modelo local elegido');
+  // K2-05: the engine owns the model, so the header chip says what answers, never a local/cloud target.
+  const targetAria = () => 'Responde el agente de Koda';
 
   const lastTurn = view => (view && Array.isArray(view.turns) && view.turns.length)
     ? view.turns[view.turns.length - 1] : null;
@@ -174,7 +175,7 @@
   // T7.3 (design isla-chat-empty): the empty state is ONE visible line; the long honest sentence stays in aria.
   const EMPTY_ICONS = Object.freeze([]);
   const EMPTY_LINE = 'Escribile a Koda';
-  const EMPTY_ARIA = 'Escribile a Koda. Responde el modelo local de esta máquina; no ve tu pantalla ni ejecuta nada.';
+  const EMPTY_ARIA = 'Escribile a Koda. Te responde el agente de Koda; sólo ve tu ventana si se lo pedís y lo activaste en Ajustes → Chat.';
 
   // A name is text the person typed: never markup. A non-string is absent (fail
   // closed), control characters become spaces, the length is bounded in Unicode
