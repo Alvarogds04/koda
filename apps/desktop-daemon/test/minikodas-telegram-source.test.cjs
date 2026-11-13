@@ -21,6 +21,7 @@ const {
 	SOURCE_LIMITS,
 } = require("../src/minikodas/telegram-source.cjs");
 const { MinikodaService } = require("../src/minikodas/service.cjs");
+const { TranscriptionError } = require("../src/minikodas/transcribe.cjs");
 const { validateRecipe } = require("../src/minikodas/recipe.cjs");
 
 const posix = process.platform !== "win32";
@@ -234,8 +235,79 @@ test("source: video, audio, voice and round video are downloaded into the run's 
 	}
 	assert.equal(client.calls.downloads.length, 4);
 	assert.match(out.text, /video/i, "the text tells the Minikoda that the post carries media");
-	assert.match(out.text, /adjunto; todavía sin transcribir/, "it says what was attached and that it is not transcribed yet");
+	assert.doesNotMatch(out.text, /todavía sin transcribir/, "the old promise is gone: this branch transcribes (S6)");
+	assert.match(out.text, /video de 95 s: sin transcribir/, "read with no transcription step wired, the post says exactly that");
 	assert.doesNotMatch(out.text, /se transcribe aparte/, "no promise about a later step the Minikoda cannot see");
+});
+
+// ---------- S6 media → transcription ----------
+
+/** A stand-in for the transcription step: records what it was asked, answers per post id (or throws that error). */
+function fakeTranscribe(script = {}) {
+	const asked = [];
+	const run = async (entry) => {
+		asked.push(entry);
+		const outcome = script[entry.messageId] ?? { text: `texto transcripto del post ${entry.messageId}` };
+		if (outcome instanceof Error) throw outcome;
+		return outcome;
+	};
+	run.asked = asked;
+	return run;
+}
+
+test("source: each post's media is transcribed, and the transcript sits right after that post, named by the post only", async (t) => {
+	const client = fakeClient({
+		messages: [post(3, "una nota de voz", voice()), post(2, "solo texto"), post(1, "el video", video(), { date: new Date("2026-11-10T13:00:00Z") })],
+	});
+	const { src } = source(t, { client });
+	const transcribe = fakeTranscribe({ 1: { text: "esto dice el video uno" }, 3: { text: "esto dice la nota tres" } });
+	const out = await src.prepare({ recipe: recipeWith("@valmar_canal"), runId: "r", transcribe });
+	assert.deepEqual(transcribe.asked.map((e) => e.messageId), [1, 3], "oldest first, one call per media");
+	assert.deepEqual(transcribe.asked.map((e) => e.kind), ["video", "voice"]);
+	// text ↔ transcript order: the transcript of a post follows that post, before the next one
+	const at = (needle) => out.text.indexOf(needle);
+	assert.ok(at("el video") < at("esto dice el video uno"), "the transcript comes after its own post");
+	assert.ok(at("esto dice el video uno") < at("solo texto"), "and before the next post");
+	assert.ok(at("solo texto") < at("una nota de voz"));
+	assert.ok(at("una nota de voz") < at("esto dice la nota tres"));
+	assert.match(out.text, /\[Transcripción de la publicación 1 del 2026-11-10\]/, "the marker names the post by id and date");
+	assert.match(out.text, /\[Transcripción de la publicación 3\]/, "a post without a date is named by its id alone");
+	assert.doesNotMatch(out.text, /\.mp4|\.ogg|minikodas[/\\]media|run-media/, "no file name and no path reaches the model");
+	assert.equal(out.media.length, 2, "the media contract still carries the files the run downloaded");
+});
+
+test("source: text-only posts are untouched by the transcription step", async (t) => {
+	const client = fakeClient({ messages: [post(2, "una noticia sin video"), post(1, "otra noticia")] });
+	const { src } = source(t, { client });
+	const transcribe = fakeTranscribe();
+	const out = await src.prepare({ recipe: recipeWith("@valmar_canal"), runId: "r", transcribe });
+	assert.deepEqual(transcribe.asked, [], "nothing to transcribe");
+	assert.doesNotMatch(out.text, /Transcripción|sin transcribir/);
+	// exactly the header plus one block per post, as before this step existed
+	assert.equal(out.text.split("\n\n").length, 3);
+	assert.match(out.text, /\[1\] otra noticia/);
+	assert.match(out.text, /\[2\] una noticia sin video/);
+});
+
+test("source: a media that cannot be transcribed leaves a short note for its post, never a hole", async (t) => {
+	const client = fakeClient({ messages: [post(2, "el que falla", voice()), post(1, "el que anda", video())] });
+	const { src } = source(t, { client });
+	const transcribe = fakeTranscribe({ 1: { text: "esto dice el video uno" }, 2: { note: "el video o audio no se pudo leer" } });
+	const out = await src.prepare({ recipe: recipeWith("@valmar_canal"), runId: "r", transcribe });
+	assert.match(out.text, /esto dice el video uno/, "the other posts are transcribed as usual");
+	assert.match(out.text, /\(voice de 12 s: el video o audio no se pudo leer\)/, "the failed media keeps its post, with a Spanish note");
+	assert.match(out.text, /el que falla/, "the post itself is not lost either");
+});
+
+test("source: a transcription that ends the run (cancel or budget) leaves no media behind", async (t) => {
+	const client = fakeClient({ messages: [post(2, "el video", video()), post(1, "una nota", voice())] });
+	const { src, base } = source(t, { client });
+	const fatal = new TranscriptionError("budget_exceeded");
+	const transcribe = async () => {
+		throw fatal;
+	};
+	await assert.rejects(() => src.prepare({ recipe: recipeWith("@valmar_canal"), runId: "run-x", transcribe }), (error) => error === fatal);
+	assert.equal(fs.existsSync(path.join(base, "island", "minikodas", "media", "run-x")), false, "the run's media folder is removed");
 });
 
 test("source: photos and documents are ignored, never downloaded", async (t) => {
@@ -431,11 +503,15 @@ test("service: a Minikoda that reads a Telegram channel lands a Spanish «Hoy» 
 
 const FAKE_PI = path.join(__dirname, "fixtures", "minikodas", "fake-pi.cjs");
 
-/** A service whose only Minikoda reads the fake channel, with the engine's turn scripted by `steps`. */
-async function mediaService(t, { steps }) {
+/**
+ * A service whose only Minikoda reads the fake channel, with the engine's turn scripted by `steps`. `transcriber` is a
+ * fake transcription step (the real one needs ffmpeg and the Parakeet helper); without one the run has nothing to
+ * transcribe with, which is itself a case the tests want.
+ */
+async function mediaService(t, { steps, messages, transcriber }) {
 	const base = tmp(t);
 	const fx = accountsFixture(base);
-	const client = fakeClient({ messages: [post(1, "el video", video())] });
+	const client = fakeClient({ messages: messages ?? [post(1, "el video", video())] });
 	const scriptFile = path.join(base, "script.json");
 	fs.writeFileSync(scriptFile, JSON.stringify({ steps }));
 	const results = { runs: [], errors: [], addRun: async (run) => results.runs.push(run), addError: async (err) => results.errors.push(err) };
@@ -448,6 +524,7 @@ async function mediaService(t, { steps }) {
 		minEveryMs: 1,
 		runTimeoutMs: 20_000,
 		telegram: { connectedClient: () => client },
+		...(transcriber === undefined ? {} : { transcriber }),
 		engine: { command: process.execPath, commandArgs: [FAKE_PI, "--script", scriptFile], env: { PATH: process.env.PATH }, startTimeoutMs: 10_000 },
 	});
 	t.after(() => svc.stop());
@@ -463,29 +540,136 @@ async function mediaService(t, { steps }) {
 	await svc.approveCreate(draft.id);
 	const { runId } = await svc.launch(draft.id);
 	const mediaRoot = path.join(base, "island", "minikodas", "media");
-	return { base, svc, client, results, runId, mediaRoot, mediaDir: path.join(mediaRoot, runId) };
+	const engineRoot = path.join(base, "island", "minikodas", "engines", draft.id);
+	return { base, svc, client, results, id: draft.id, runId, mediaRoot, mediaDir: path.join(mediaRoot, runId), sourceFile: path.join(engineRoot, "run", "source.txt"), stateFile: path.join(base, "island", "minikodas", "telegram", `${draft.id}.json`) };
 }
 
+/** The transcription step as a test double: records the call, deletes the media like the real one, answers per post. */
+function transcriptionStep(script = {}) {
+	const calls = [];
+	return {
+		calls,
+		async transcribe(file, options = {}) {
+			const messageId = Number(path.basename(file).split("-")[0]);
+			calls.push({ messageId, file, ...options });
+			if (options.deleteMedia === true) fs.rmSync(file, { force: true });
+			const outcome = script[messageId] ?? { text: `texto transcripto del post ${messageId}` };
+			if (outcome instanceof Error) throw outcome;
+			return outcome;
+		},
+	};
+}
+
+/** The last post read, as the source cached it (0 when a failed run never got to write its state). */
+const lastSeen = (file) => (fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")).lastSeenId : 0);
+
+/** A real TranscriptionError (closed code + its Spanish userText), as transcribe.cjs raises it. */
+const transcriptionError = (code) => new TranscriptionError(code);
+
 test("service: the media a run downloaded are gone when the run ends (success, engine failure and cancel)", async (t) => {
-	// The transcription step of feat/k2-13-transcribe will consume source.media first; until that merge nothing reads
-	// those files after the run, and a video per run would grow the island without a limit.
-	const ok = await mediaService(t, { steps: [{ tool: "source_read" }, { text: "Listo." }] });
+	const ok = await mediaService(t, { steps: [{ tool: "source_read" }, { text: "Listo." }], transcriber: transcriptionStep() });
 	await waitFor(() => ok.results.runs.length === 1);
 	assert.equal(ok.client.calls.downloads.length, 1, "the video was really downloaded during the run");
 	assert.equal(fs.existsSync(ok.mediaDir), false, "and it is gone once the result reached «Hoy»");
 
-	const bad = await mediaService(t, { steps: [{ crash: 3 }] });
+	const bad = await mediaService(t, { steps: [{ crash: 3 }], transcriber: transcriptionStep() });
 	await waitFor(() => bad.results.errors.length === 1);
 	assert.equal(bad.client.calls.downloads.length, 1);
 	assert.equal(fs.existsSync(bad.mediaDir), false, "an engine failure leaves no media behind either");
 
-	const paused = await mediaService(t, { steps: [{ hang: true }] });
+	const paused = await mediaService(t, { steps: [{ hang: true }], transcriber: transcriptionStep() });
 	await waitFor(() => paused.client.calls.downloads.length === 1);
 	await paused.svc.cancelRuns("paused");
 	await waitFor(() => paused.results.errors.length === 1);
 	assert.match(paused.results.errors[0].text, /paused/);
 	assert.equal(fs.existsSync(paused.mediaDir), false, "a cancelled run cleans up too");
 	assert.deepEqual(fs.existsSync(paused.mediaRoot) ? fs.readdirSync(paused.mediaRoot) : [], [], "no folder of any run survives");
+});
+
+// ---------- S6: the channel's media are transcribed before the engine reads the source ----------
+
+test("S6 service: the videos of a channel read are transcribed before the engine starts, next to their post, and the media are deleted", async (t) => {
+	const messages = [post(3, "una nota de voz", voice()), post(2, "solo texto"), post(1, "el video", video())];
+	const step = transcriptionStep({ 1: { text: "esto dice el video uno" }, 3: { text: "esto dice la nota tres" } });
+	const { results, sourceFile, stateFile } = await mediaService(t, { steps: [{ tool: "source_read" }, { text: "Listo." }], messages, transcriber: step });
+	await waitFor(() => results.runs.length + results.errors.length === 1);
+	assert.deepEqual(results.errors, [], "a channel read with videos is a normal run");
+	const source = fs.readFileSync(sourceFile, "utf8");
+	const at = (needle) => source.indexOf(needle);
+	assert.ok(at("el video") < at("esto dice el video uno"), "the transcript follows its own post");
+	assert.ok(at("esto dice el video uno") < at("solo texto"), "and comes before the next post");
+	assert.ok(at("solo texto") < at("una nota de voz"));
+	assert.ok(at("una nota de voz") < at("esto dice la nota tres"));
+	assert.match(source, /Transcripción de la publicación 1/);
+	assert.match(source, /Transcripción de la publicación 3/);
+	assert.doesNotMatch(source, /todavía sin transcribir/);
+	assert.doesNotMatch(source, /\.mp4|\.ogg|minikodas[/\\]media|run-|[0-9a-f]{8}-[0-9a-f]{4}/, "no file name, no folder and no run id reaches the model");
+	assert.deepEqual(step.calls.map((c) => c.messageId), [1, 3], "oldest first, one transcription per media");
+	assert.equal(step.calls.every((c) => c.deleteMedia === true), true, "each media is deleted after its transcription");
+	assert.ok(Number.isFinite(step.calls[0].deadline), "the transcription runs against the run's own budget (S17)");
+	assert.equal(lastSeen(stateFile), 3, "the channel marker moved because the run succeeded");
+});
+
+test("S6 service: a media that cannot be transcribed is a short note for its post AND a «Hoy» error, and the other posts still arrive", async (t) => {
+	const messages = [post(2, "el segundo", voice()), post(1, "el primero", video())];
+	const step = transcriptionStep({ 1: { text: "primero transcripto" }, 2: transcriptionError("bad_media") });
+	const { results, sourceFile, stateFile } = await mediaService(t, { steps: [{ tool: "source_read" }, { text: "Listo." }], messages, transcriber: step });
+	await waitFor(() => results.runs.length === 1);
+	assert.equal(results.errors.length, 1, "«Hoy» says which media could not be transcribed; it is never a silent drop");
+	assert.match(results.errors[0].text, /no pudo transcribir/);
+	assert.match(results.errors[0].text, /el video o audio no se pudo leer/);
+	assert.doesNotMatch(results.errors[0].text, /\.mp4|\.ogg|minikodas/);
+	const source = fs.readFileSync(sourceFile, "utf8");
+	assert.match(source, /primero transcripto/, "the media that worked is transcribed");
+	assert.match(source, /\(voice de 12 s: el video o audio no se pudo leer\)/, "the failed one leaves a Spanish note in its own post");
+	assert.match(source, /el segundo/, "and the post itself is still read");
+	assert.equal(results.runs.length, 1, "one bad media never loses the run");
+	assert.equal(lastSeen(stateFile), 2, "the successful run moved the marker");
+});
+
+test("S6 service: with no transcription step wired, the media are a note and a «Hoy» error, never a silent drop", async (t) => {
+	const { results, sourceFile } = await mediaService(t, { steps: [{ tool: "source_read" }, { text: "Listo." }] });
+	await waitFor(() => results.runs.length === 1);
+	assert.equal(results.errors.length, 1);
+	assert.match(results.errors[0].text, /ffmpeg no está disponible/);
+	assert.match(fs.readFileSync(sourceFile, "utf8"), /\(video de 95 s: ffmpeg no está disponible/);
+});
+
+test("S17 service: the transcription budget running out ends the run in Spanish and deletes the media", async (t) => {
+	const step = transcriptionStep({ 1: transcriptionError("budget_exceeded") });
+	const { svc, results, mediaDir, stateFile, id } = await mediaService(t, { steps: [{ tool: "source_read" }, { text: "Listo." }], transcriber: step });
+	await waitFor(() => results.errors.length === 1);
+	assert.equal(results.runs.length, 0, "the engine never starts");
+	assert.match(results.errors[0].text, /tardó más de 30 minutos en transcribirse/);
+	assert.equal(svc.find(id).lastRun.outcome, "failed");
+	assert.equal(svc.find(id).lastRun.reason, "transcription");
+	assert.equal(fs.existsSync(mediaDir), false, "the temp media are deleted in all outcomes");
+	assert.equal(lastSeen(stateFile), 0, "a failed run leaves the marker where it was");
+});
+
+test("S17 service: a cancelled run cancels the transcription too and deletes the media", async (t) => {
+	let release;
+	const step = {
+		calls: [],
+		async transcribe(file, options = {}) {
+			step.calls.push({ file, ...options });
+			await new Promise((resolve) => {
+				release = resolve;
+				options.signal?.addEventListener("abort", resolve, { once: true });
+			});
+			if (options.signal?.aborted) throw transcriptionError("cancelled");
+			return { text: "tarde" };
+		},
+	};
+	const { svc, results, mediaDir } = await mediaService(t, { steps: [{ tool: "source_read" }, { text: "Listo." }], transcriber: step });
+	await waitFor(() => step.calls.length === 1);
+	assert.equal(step.calls[0].signal.aborted, false);
+	await svc.cancelRuns("paused");
+	release();
+	await waitFor(() => results.errors.length === 1);
+	assert.match(results.errors[0].text, /paused/);
+	assert.equal(step.calls[0].signal.aborted, true, "the transcription sees the same cancellation as the run");
+	assert.equal(fs.existsSync(mediaDir), false);
 });
 
 // ---------- why no peer is cached ----------

@@ -29,6 +29,10 @@
  * transcribed (options.transcriber, transcribe.cjs) and deleted, and its transcript is appended to the source the
  * Minikoda reads. A transcription failure ends the run before its engine starts: a «Hoy» error item that says why.
  * Cancelling the run (pause, delete, daemon stop) cancels the transcription too.
+ * A Telegram channel read (`telegram:@canal`) hands its media to the same transcriber through the source's own
+ * `transcribe` callback: each transcript sits right after the post it belongs to (post id and date only, never a file
+ * name), and a media that cannot be transcribed is a short Spanish note for that post PLUS a «Hoy» error item — one bad
+ * media never loses the other posts and never fails the run. Only a cancelled run or the 30-minute budget ends it.
  *
  * S17: transcription has its OWN budget (`TRANSCRIPTION_BUDGET_MS`, 30 min) and never counts toward the run's engine
  * budget (`runTimeoutMs`, 300 s). That clock starts only when `runMinikoda` starts the engine, i.e. AFTER the source
@@ -49,7 +53,7 @@ const { runMinikoda, DEFAULT_RUN_TIMEOUT_MS } = require("./runner.cjs");
 const { buildSummary } = require("./summary.cjs");
 const { Scheduler } = require("./scheduler.cjs");
 const { freshestCredential, isOauth, readRunCredential, writeBackCredential } = require("./credentials.cjs");
-const { TranscriptionError, removeWorkDir } = require("./transcribe.cjs");
+const { TranscriptionError, removeWorkDir, TRANSCRIPTION_BUDGET_MS } = require("./transcribe.cjs");
 const { YouTubeError, MAX_LINKS_PER_RUN } = require("./youtube.cjs");
 const { TelegramSource, TelegramError, parseSource } = require("./telegram-source.cjs");
 
@@ -65,6 +69,8 @@ const DEFAULT_MAX_CONCURRENT_RUNS = 2;
 const SESSION_MIN_LIFETIME_EXTRA_MS = 5 * 60_000 + 60_000;
 
 const MAX_MEDIA_PER_RUN = 20;
+/** A transcript with no text (silence, music): the post says so instead of carrying an empty transcript. */
+const NO_SPEECH = "no se reconoció voz en el audio";
 
 /** A run that ended in its transcription phase (never reaches the engine). */
 class TranscriptionPhaseError extends Error {
@@ -492,9 +498,16 @@ class MinikodaService extends EventEmitter {
 		const parsed = parseSource(recipe.reads.source);
 		if (parsed !== undefined && parsed.type === "telegram") {
 			if (!this.telegramSource) throw new TelegramError("telegram_unavailable");
-			const got = await this.telegramSource.prepare({ recipe, runId, signal });
-			// S19: the posts' YouTube links are read like any other source text (the channel's own media stay the
-			// running source's business: transcribing them is the next integration step).
+			// S6/S17: every media of the read is transcribed under ONE 30-minute budget, before the engine starts. The
+			// source translates the result into the run's text (its own post keeps its transcript or its note).
+			const deadline = Date.now() + TRANSCRIPTION_BUDGET_MS;
+			const got = await this.telegramSource.prepare({
+				recipe,
+				runId,
+				signal,
+				transcribe: (entry) => this.transcribePostMedia(recipe, entry, { signal, deadline }),
+			});
+			// S19: the posts' YouTube links are read like any other source text.
 			return { ...got, text: await this.withYouTube(recipe, got.text, { signal }) };
 		}
 		if (parsed === undefined) {
@@ -521,7 +534,8 @@ class MinikodaService extends EventEmitter {
 
 	/**
 	 * S6: transcribes every media file of the run (in order) and appends the transcripts to the source text. A file
-	 * outside the run's own media folder is refused and never touched. Throws TranscriptionPhaseError.
+	 * outside the run's own media folder is refused and never touched. Throws TranscriptionPhaseError. The whole batch
+	 * shares ONE 30-minute budget (S17), exactly like a channel read's media.
 	 */
 	async withTranscripts(text, media, mediaDir, signal) {
 		if (media.length === 0) return text;
@@ -533,11 +547,12 @@ class MinikodaService extends EventEmitter {
 		const inside = (file) => typeof file === "string" && path.isAbsolute(file) && path.dirname(path.resolve(file)) === mediaDir;
 		if (!media.every(inside)) failed(new TranscriptionError("bad_media"));
 		if (!this.options.transcriber) failed(new TranscriptionError("ffmpeg_unavailable"));
+		const deadline = Date.now() + TRANSCRIPTION_BUDGET_MS;
 		const parts = [text];
 		for (const [i, file] of media.entries()) {
 			let out;
 			try {
-				out = await this.options.transcriber.transcribe(file, { signal, deleteMedia: true });
+				out = await this.options.transcriber.transcribe(file, { signal, deleteMedia: true, deadline });
 			} catch (error) {
 				failed(error);
 			}
@@ -545,6 +560,39 @@ class MinikodaService extends EventEmitter {
 		}
 		const joined = parts.join("\n");
 		return joined.length > MAX_SOURCE_BYTES ? joined.slice(0, MAX_SOURCE_BYTES) : joined;
+	}
+
+	/**
+	 * S6/S17: ONE media file of a Telegram post, transcribed for the run's text. Resolves `{text}` with the transcript or
+	 * `{note}` with a short Spanish sentence for that post — a media that cannot be transcribed (too long, unreadable,
+	 * no ffmpeg, no voice) is a «Hoy» error item and a note, never a silent drop and never a failed run. Two things DO
+	 * end the run: a cancellation (pause, delete, daemon stop) and the transcription budget (S17), exactly like any other
+	 * transcription phase. The file is deleted by `transcribe` whatever the outcome; the run's folder goes in `execute()`.
+	 */
+	async transcribePostMedia(recipe, entry, { signal, deadline }) {
+		const name = recipe.name;
+		const note = async (userText) => {
+			this.log(`minikoda ${recipe.id}: a media of the channel could not be transcribed`);
+			try {
+				await this.results.addError({ minikoda: recipe.id, text: `La corrida de «${name}» no pudo transcribir un video o audio del canal (${userText}).` });
+			} catch {
+				this.log(`minikoda ${recipe.id}: could not record a transcription notice in «Hoy»`);
+			}
+			return { note: userText };
+		};
+		if (!this.options.transcriber) return note(new TranscriptionError("ffmpeg_unavailable").userText);
+		let out;
+		try {
+			out = await this.options.transcriber.transcribe(entry.path, { signal, deleteMedia: true, deadline });
+		} catch (error) {
+			if (signal?.aborted || error?.code === "cancelled") throw new TranscriptionPhaseError(signal?.reason === "paused" ? "paused" : "cancelled");
+			if (error?.code === "budget_exceeded") throw new TranscriptionPhaseError("transcription", new TranscriptionError("budget_exceeded").userText);
+			return note(error instanceof TranscriptionError ? error.userText : new TranscriptionError("failed").userText);
+		}
+		const transcript = String(out?.text ?? "").trim();
+		// An empty transcript (silence, music, a language the model does not know) says nothing to the Minikoda: say so.
+		if (transcript === "") return note(NO_SPEECH);
+		return { text: transcript };
 	}
 
 	/**
