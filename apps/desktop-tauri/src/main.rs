@@ -2163,6 +2163,7 @@ fn main() {
             let win = main_window(&handle).ok_or("main window unavailable")?;
             // Load preferences before placement so the chosen monitor is available, and the spot the human dragged the island to.
             settingshost::start(&handle);
+            settingshost::migrate_retired_mail_accounts(&handle); // K2-10 T8: once, off the startup thread
             *app.state::<AppState>().island_origin.lock().unwrap_or_else(|e| e.into_inner()) = settingshost::island_position(&handle);
             islandclick::start(&handle); // HU-043: Windows/macOS only (no-op on Linux, which has the GDK input region)
             dictationhost::start(&handle);

@@ -1251,7 +1251,8 @@ test('#380 theme wiring: one closed sender, no local paint, and a failed save ke
 
 // #467 UI wiring: Claves section (secret_action). Presence only, closed key list, our own words for errors.
 test('claves: rows follow the closed key list, with OUR labels and presence only', () => {
-  assert.equal(S.KEY_IDS.length, 25);
+  assert.equal(S.KEY_IDS.length, 18, 'K2-10 T8 (L23): the 7 imap-*/smtp-* keys left the list (25 -> 18)');
+  for (const gone of ['imap-host','imap-user','imap-password','smtp-host','smtp-user','smtp-password','smtp-from']) assert.ok(!S.KEY_IDS.includes(gone), gone);
   assert.equal(S.keyRows({}).find(r => r.id === 'calendar-ics-url').label, 'Calendario (URL ICS privada)', 'K2-11: the private ICS URL is a keychain entry, presence only');
   assert.ok(S.KEY_IDS.includes('anthropic-api-key') && S.KEY_IDS.includes('elevenlabs-api-key'));
   const rows = S.keyRows({ 'anthropic-api-key': true, 'github-token': false });

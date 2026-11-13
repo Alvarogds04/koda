@@ -135,7 +135,8 @@ const { dom, Element, all, text } = require('./settings-accounts-check.cjs');
   for(const name of ['integrations','shortcuts'])assert(!/innerHTML|setAttribute\(['"]style|console\.|localStorage|sessionStorage/.test(fs.readFileSync(path.join(base,name+'.ts'),'utf8')));
   for(const name of ['general','agents'])assert(!/recap_action|renderRecapRows/.test(fs.readFileSync(path.join(base,name+'.ts'),'utf8')),name);
   // K2-10 T7 (L21/L22): the retirement is pinned HERE — no `mail_action` verb left, no Mail (IMAP)
-  // or Mail (SMTP) card in the hub, and the 7 imap-*/smtp-* keys still in the keychain allow-list.
+  // or Mail (SMTP) card in the hub; K2-10 T8 (L23): the 7 imap-*/smtp-* keys left the keychain allow-list,
+  // and the startup migration removes exactly those 7 (pinned in src/mailmigration_tests.rs).
   {
     const src=name=>fs.readFileSync(path.resolve(__dirname,'../src',name),'utf8');
     const main=src('main.rs');
@@ -147,7 +148,11 @@ const { dom, Element, all, text } = require('./settings-accounts-check.cjs');
     const known=src('secrets.rs').match(/pub const KNOWN_KEYS: &\[&str\] = &\[([\s\S]*?)\];/);
     assert(known,'KNOWN_KEYS must remain readable');
     const ids=[...known[1].matchAll(/"([^"]+)"/g)].map(m=>m[1]);
-    for(const key of ['imap-host','imap-user','imap-password','smtp-host','smtp-user','smtp-password','smtp-from']) assert(ids.includes(key),`L22: ${key} stays in KNOWN_KEYS; nothing stored is deleted`);
+    for(const key of ['imap-host','imap-user','imap-password','smtp-host','smtp-user','smtp-password','smtp-from']) assert(!ids.includes(key),`L23: ${key} left KNOWN_KEYS`);
+    const retired=src('mailmigration.rs').match(/pub const RETIRED_KEYS: &\[&str\] = &\[([^\]]*)\];/);
+    assert(retired,'the migration names its keys');
+    assert.deepEqual([...retired[1].matchAll(/"([^"]+)"/g)].map(m=>m[1]),['imap-host','imap-user','imap-password','smtp-host','smtp-user','smtp-password','smtp-from'],'L23: the migration removes exactly the 7 retired keys');
+    assert(/migrate_retired_mail_accounts\(&handle\)/.test(main),'L23: the migration runs at startup');
     assert(ids.includes('resend-api-key') && ids.includes('resend-from'),'the Resend integration is untouched');
   }
   console.log('PASS settings-integrations: exact integration rows, truthful copy, secrets, capacity, colours, shortcut controls and trusted IPC');
