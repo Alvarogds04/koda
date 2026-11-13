@@ -799,7 +799,10 @@ test('#442 Ajustes → Blobs paints the principal (Abito), the agent tiles from 
 test('#442 the Especialistas tab is gone and its deep link lands on Blobs', async () => {
   const b = await settingsBoot({ specs: SPECS });
   assert.equal(b.get('settings-tab-specialists'), null);
-  assert.deepEqual(['general', 'accounts', 'models', 'pills', 'appearance'].map(id => !!b.get('settings-tab-' + id)), [true, true, true, true, true]);
+  assert.deepEqual(['general', 'accounts', 'pills', 'appearance'].map(id => !!b.get('settings-tab-' + id)), [true, true, true, true]);
+  // K2-05 U5c (L72): the «Modelos» tab and its panel are gone from Ajustes
+  assert.equal(b.get('settings-tab-models'), null);
+  assert.equal(b.get('models'), null);
 });
 
 test('#442 editing an agent sends the closed specialists update with the unchanged fields; a refusal keeps the previous one and says so', async () => {
@@ -1149,9 +1152,9 @@ test('S13 unrelated prefs preserve Blobs nodes, editor caret and actual continui
   assert.ok(after.t > before.t); assert.notEqual(after.d, before.d, 'actual scheduled frames change the live SVG geometry');
 });
 
-test('S13 Blobs disposes real instances on Models and Connections exits and remounts on return', async () => {
+test('S13 Blobs disposes real instances on Connections exits and remounts on return', async () => {
   const b = await settingsBoot({ specs: SPECS });
-  for (const tab of ['models', 'accounts']) {
+  for (const tab of ['accounts']) {
     const instances = b.clayStatus().filter(i => !i.testDestroyed && b.get('settings-body').contains(i.svg));
     assert.ok(instances.length > 0);
     b.advanceFrames(8);

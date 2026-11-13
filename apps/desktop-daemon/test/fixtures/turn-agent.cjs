@@ -4,7 +4,9 @@ const fs = require("node:fs");
 const path = require("node:path");
 const readline = require("node:readline");
 const args = process.argv;
-const arg = (name) => args[args.indexOf(name) + 1];
+// Absent flags answer undefined, never argv[0]: an unsigned index would make
+// `--messages-file` point at node itself (ELF bytes) and crash the child.
+const arg = (name) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined; };
 const log = arg("--command-log");
 const sessions = arg("--session-dir");
 // #386 rotation fixture extensions (all optional):
@@ -22,7 +24,16 @@ let sessionFile = path.join(sessions, `turn-${process.pid}.jsonl`);
 let sessionCounter = 0;
 // Real Pi reports its session path but writes the file only after the first message.
 const lazy = args.includes("--lazy-session");
-const touch = () => { if (!fs.existsSync(sessionFile)) fs.writeFileSync(sessionFile, "", { mode: 0o600 }); };
+const touch = () => {
+	if (fs.existsSync(sessionFile)) return;
+	// K2-05 F4: real Pi writes a v3 session header the moment it creates the
+	// file; the rotation fail-closes on a header it cannot parse.
+	fs.writeFileSync(
+		sessionFile,
+		`${JSON.stringify({ type: "session", version: 3, id: `fixture-${process.pid}`, timestamp: new Date().toISOString(), cwd: path.dirname(path.dirname(sessionFile)) })}\n`,
+		{ mode: 0o600 },
+	);
+};
 if (!lazy) touch();
 const write = (record) => process.stdout.write(JSON.stringify(record) + "\n");
 const reply = (c, data = {}) => write({ type: "response", id: c.id, command: c.type, success: true, data });
@@ -46,12 +57,20 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
 			if (c.type === "switch_session" && args.includes("--reopen-crash-once") &&
 				fs.readFileSync(log, "utf8").trim().split("\n").map(JSON.parse).filter((r) => r.type === "switch_session").length === 1) process.exit(1);
 			if (c.type === "switch_session" && args.includes("--switch-unconfirmed")) return reply(c);
+			// The FIRST switch fails to confirm; later ones (the recovery reopen) succeed.
+			if (c.type === "switch_session" && args.includes("--switch-unconfirm-once") &&
+				fs.readFileSync(log, "utf8").trim().split("\n").map(JSON.parse).filter((r) => r.type === "switch_session").length === 1) return reply(c);
 			if (c.type === "new_session" && args.includes("--reset-fail")) return write({ type: "response", id: c.id, command: c.type, success: false, error: "reset failed" });
 			sessionFile = c.type === "switch_session" ? c.sessionPath : path.join(sessions, `new-${process.pid}-${++sessionCounter}.jsonl`);
 			if (!lazy || c.type === "switch_session") touch();
 			// Faults target the requested reset, not the separate recovery reopen.
 			if (c.type === "new_session" && args.includes("--reset-crash")) return process.exit(1);
 			if (c.type === "new_session" && args.includes("--reset-lost")) return;
+			if (c.type === "switch_session" && args.includes("--switch-delay")) {
+				// K2-05 F3: holds the switch ACK open (AFTER the session is owned) so
+				// tests can act while the rotation is in flight.
+				return setTimeout(() => reply(c, { sessionFile }), Number(arg("--switch-delay")));
+			}
 			if (args.includes("--reset-delay")) return setTimeout(() => reply(c, { sessionFile }), 180);
 			return reply(c, { sessionFile });
 		}

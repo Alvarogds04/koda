@@ -40,7 +40,7 @@ test('S26 Conexiones: the engine banner is the FIRST thing, with icon + word fro
 test('S2 missing runtimes show installation advice as visible Motor text, not only aria', async () => {
   for (const [code, name, advice] of [
     ['node_missing', 'Falta Node.js', 'instalalo desde nodejs.org.'],
-    ['pi_missing', 'Falta Pi', 'instalalo con npm install -g @earendil-works/pi-coding-agent.'],
+    ['pi_missing', 'Falta el motor de Koda', 'La instalación de Koda está incompleta: falta el motor propio de Koda; volvé a instalar Koda.'],
   ]) {
     const { ui } = await mount(base({ connection: 'no_daemon', last_error: { code, n: 1 } }));
     const banner = byId(ui, 'engine-status');

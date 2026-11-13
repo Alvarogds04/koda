@@ -10,7 +10,7 @@
   const DEFAULTS = Object.freeze({ autoCloseSeconds: 15, openOnHover: false });
   const HOVER_DELAY_MS = 600;
   const BLOCKERS = Object.freeze(['question', 'approval', 'request', 'decision', 'card',
-    'dragging', 'editing', 'composing', 'draft', 'settings', 'models']);
+    'dragging', 'editing', 'composing', 'draft', 'settings']);
 
   // #438: accepted values are {0} («Nunca») ∪ 5..=120 — the same closed shape
   // the stored contract now knows. Everything else is refused.

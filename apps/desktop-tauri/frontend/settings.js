@@ -123,7 +123,7 @@
     const side = el('nav', 'hub-side');
     side.append(el('div', 'hub-brand', 'Abito'), $('settings-tabs'));
     const page = el('main', 'hub-panel');
-    page.append($('settings-bar'), $('settings-hint'), $('settings-body'), $('models'));
+    page.append($('settings-bar'), $('settings-hint'), $('settings-body'));
     panel.append(side, page);
   }
   // ---- settings frame end
@@ -240,7 +240,7 @@
       const b = el('button', 'stab');
       b.type = 'button'; b.id = `settings-tab-${def.id}`; b.dataset.tab = def.id;
       b.setAttribute('role', 'tab');
-      b.setAttribute('aria-controls', def.id === 'models' ? 'models' : 'settings-body');
+      b.setAttribute('aria-controls', 'settings-body');
       const i = el('span', 'ico'); putIcon(i, def.icon);
       b.append(i, el('span', 'word', def.label));
       b.addEventListener('click', e => { if (e.isTrusted === true) showScreen(def.id); });
@@ -289,7 +289,6 @@
       b.setAttribute('aria-selected', on ? 'true' : 'false');
       b.tabIndex = on ? 0 : -1;
     }
-    body.hidden = id === 'models'; // the model picker is its own panel (models.js), shown by the event below
     // #410: the open sub-tab is a PUBLIC DOM attribute of the tabpanel. The compact Conexiones rules
     // (#410 block in style.css) are scoped to it, so every other Ajustes tab keeps its own look.
     body.dataset.screen = id;
@@ -375,7 +374,6 @@
   for (const b of [...openers, $('open-settings')].filter(Boolean)) b.addEventListener('click', e => {
     if (e.isTrusted === true) openSettingsWindow();
   });
-  const gear = $('open-settings');
   document.addEventListener('island:view', e => {
     if (e.detail === 'chat' && pendingOpen) { const id = pendingOpen; pendingOpen = false; open(id); }
     else if (e.detail !== 'chat' && isOpen()) close(false);
@@ -527,7 +525,7 @@
   function render() {
     if (!isOpen()) return;
     queueMicrotask(focusPendingSection);
-    // Every tab exit disposes Blobs, including Models/Connections, which bypass renderGeneral().
+    // Every tab exit disposes Blobs, including Connections, which bypasses renderGeneral().
     if (screen !== 'pills' && blobsMounted) {
       window.AbitoPillSettings?.dispose(blobsHost);
       blobsMounted = false;
@@ -545,7 +543,6 @@
     chip.hidden = !conn || screen !== 'accounts';
     if (conn) { chip.dataset.tone = conn.tone; chip.setAttribute('aria-label', conn.aria); putIcon($('settings-conn-icon'), conn.icon); $('settings-conn-word').textContent = conn.word; }
     if (screen === 'accounts') { renderAccounts(); renderConnectors(); renderKeys(); }
-    else if (screen === 'models') { /* models.js owns this panel */ }
     else renderGeneral(); // pills / appearance / general: each section names its tab
     if (moreGroup) { moreGroup.hidden = !V.servicesGroupVisible(screen); if (!moreGroup.hidden) body.append(moreGroup); }
     body.scrollTop = keep;

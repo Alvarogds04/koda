@@ -402,8 +402,6 @@ html[data-motion="reduce"] .shimmer { animation: none; }
 #chat-input::placeholder { color: var(--dim-3); }
 /* the send button: Coucou's white disc with dark glyph (it was Abito's lime) */
 #chat-send { background: var(--ink) !important; border-color: var(--ink) !important; color: #0b0c0e !important; }
-#chat-model-btn { padding: 4px 10px; border: 0; background: rgba(255, 255, 255, 0.06); color: #7b8089; font: 500 10.5px var(--font); }
-#chat-model-btn:hover:not(:disabled), #chat-model-btn[aria-expanded="true"] { background: rgba(255, 255, 255, 0.1); color: #7b8089; }
 #chat-title { font: 600 13px var(--font); }
 #chat-history-label { font: 400 11px var(--font); color: var(--dim-2); }
 
@@ -618,7 +616,7 @@ html[data-motion="reduce"] .dcapsule, html[data-motion="reduce"] .dcontent, html
 #chat-body { margin: 0; }
 #chat-log { padding-left: 100px; padding-right: 8px; } /* the bot's column, as in every Coucou card (108px text indent) */
 #chat-composer { padding-left: 100px; flex-wrap: nowrap; }
-#chat-model-row { padding-left: 100px; justify-content: flex-start; }
+#chat-model-line { padding-left: 100px; } /* the bot's column, like the composer below */
 #chat-composer #chat-input { flex: 1 1 auto; min-width: 0; }
 #chat-history-controls { padding-left: 92px; }
 
@@ -632,7 +630,7 @@ html[data-motion="reduce"] .dcapsule, html[data-motion="reduce"] .dcontent, html
 #chat-history-controls { min-height: 28px; margin: 0 0 -2px; padding-left: 92px; }
 #chat-history-controls .icon-btn { min-height: 44px; margin: -8px 0; }
 #chat-log { min-height: 0; padding-top: 0; padding-bottom: 2px; }
-#chat-model-row { margin-top: 2px; }
+#chat-model-line { margin-top: 2px; }
 #chat-composer { margin-top: 2px; }
 #chat-input { min-height: 36px; padding: 6px 10px; }
 

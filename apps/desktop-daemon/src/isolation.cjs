@@ -5,11 +5,11 @@
  *
  * Everything the island agent touches lives under one private root
  * (`~/.abito-island` by default, overridable with `ABITO_ISLAND_DIR`):
- * its own HOME, XDG directories, agent directory for the installed pi
- * (`PI_CODING_AGENT_DIR`; pi has no supported `--home` flag), private
- * sessions and a private temp directory. The user's own Pi setup,
- * extensions, auth and provider variables are never inherited: the child
- * environment is built from a small allowlist plus explicit overrides.
+ * its own HOME, XDG directories, the engine home for the bundled Gentle Shell
+ * (passed to the engine as `--home`; T2), private sessions and a private temp
+ * directory. The user's own Pi/Gentle Shell setup, extensions, auth and
+ * provider variables are never inherited: the child environment is built from
+ * a small allowlist plus explicit overrides.
  *
  * Paths fail closed: any symlink component, world-writable component
  * without the sticky bit, or component owned by a foreign user is refused;
@@ -29,11 +29,13 @@ const {
 	lstatSync,
 	mkdirSync,
 	openSync,
+	readFileSync,
 	readlinkSync,
 	renameSync,
 	unlinkSync,
 	writeSync,
 } = require("node:fs");
+const { execFile } = require("node:child_process");
 const { homedir } = require("node:os");
 const path = require("node:path");
 // HU-061: on Windows (verified HU-047 helper) credential dirs/files are made and checked through the native helper.
@@ -66,6 +68,9 @@ const ENV_ALLOWLIST = [
 	"COLORTERM",
 	"GIT_CONFIG_GLOBAL",
 ];
+
+/** Windows process-launch essentials, copied through on win32 (Gentle Dot keeps them). */
+const ENV_WINDOWS_ALLOWLIST = ["SystemRoot", "windir", "ComSpec", "PATHEXT"];
 
 function currentUid() {
 	return typeof process.getuid === "function" ? process.getuid() : undefined;
@@ -145,6 +150,8 @@ function islandPaths(root) {
 		workspace: path.join(absolute, "workspace"),
 		tmp: path.join(absolute, "tmp"),
 		configFile: path.join(absolute, "config.json"),
+		/** gentle-ai's own config home inside the island (T2). */
+		gentleAi: path.join(absolute, "gentle-ai"),
 	};
 }
 
@@ -398,34 +405,60 @@ function pathWithNodeFirst(nodeDir, existing, delimiter = path.delimiter) {
 }
 
 /**
- * The engine child's environment: allowlisted OS essentials from `base`,
- * the private HOME/XDG/TMPDIR, the explicit private pi agent directory, and
- * offline/no-telemetry markers. Provider credentials, the parent's PI_*
- * variables and foreign agent settings never pass through. `overrides`
+ * The engine's environment: allowlisted OS essentials from `base`, the private
+ * HOME/XDG/TMPDIR, the offline/no-telemetry markers and the Gentle Shell launch
+ * gates. Provider credentials, the parent's PI_* and GENTLE_* variables
+ * (including GENTLE_SHELL_PI, which gentle-shell would honour over Koda's
+ * bundled Pi) and foreign agent settings never pass through. `overrides`
  * carries explicit engine-owned additions (memory project pin now, provider
  * auth in U2) and always wins.
  */
-function isolatedEnv(base, paths, overrides = {}) {
+function isolatedEnv(base, paths, overrides = {}, options = {}) {
+	const platform = options.platform ?? process.platform;
 	const env = {};
-	for (const key of ENV_ALLOWLIST) {
+	const allowlist = platform === "win32" ? [...ENV_ALLOWLIST, ...ENV_WINDOWS_ALLOWLIST] : ENV_ALLOWLIST;
+	for (const key of allowlist) {
 		const value = base[key];
 		if (typeof value === "string" && value !== "") env[key] = value;
 	}
 	env.PATH = pathWithNodeFirst(path.dirname(process.execPath), env.PATH);
-	const realHome = base.HOME || homedir();
+	// On Windows the engine (and its tools) resolve the home and state folders
+	// through USERPROFILE/APPDATA/LOCALAPPDATA/TEMP/TMP, not HOME: without these
+	// the child would read and keep state in the user's real profile — the exact
+	// leak the private island exists to prevent (Gentle Dot isolatedAgentEnv, win32).
+	const realHome = platform === "win32" ? base.USERPROFILE || base.HOME || homedir() : base.HOME || homedir();
 	env.HOME = paths.home;
 	env.TMPDIR = paths.tmp;
 	env.XDG_CONFIG_HOME = path.join(paths.home, ".config");
 	env.XDG_DATA_HOME = path.join(paths.home, ".local", "share");
 	env.XDG_CACHE_HOME = path.join(paths.home, ".cache");
 	env.XDG_STATE_HOME = path.join(paths.home, ".local", "state");
-	// The installed pi keeps its agent directory here; the unsupported
-	// `--home` flag is never used.
-	env.PI_CODING_AGENT_DIR = paths.agentDir;
+	if (platform === "win32") {
+		env.USERPROFILE = paths.home;
+		env.TEMP = env.TMP = paths.tmp;
+		// Windows' counterparts of the XDG folders, created private inside the
+		// island home so the engine's tools keep no state in the user's own.
+		env.APPDATA = path.join(paths.home, "AppData", "Roaming");
+		env.LOCALAPPDATA = path.join(paths.home, "AppData", "Local");
+		ensurePrivateDir(env.APPDATA);
+		ensurePrivateDir(env.LOCALAPPDATA);
+	}
+	// T2 (B2): for Koda's default bundled Gentle Shell the engine home travels on
+	// the `--home` argv flag (Gentle Dot's shape), so PI_CODING_AGENT_DIR is never
+	// set and never inherited here. A non-default `command` (a plain Pi override)
+	// cannot take --home and carries its home in PI_CODING_AGENT_DIR, which the
+	// engine's spawn adds as an explicit override for that branch only.
 	// Offline by default: no model catalog refreshes, no version check, no telemetry.
 	env.PI_OFFLINE = "1";
 	env.PI_SKIP_VERSION_CHECK = "1";
 	env.PI_TELEMETRY = "0";
+	// gentle-shell's first-run companion provisioning gate and its missing
+	// package-local gentle-ai self-heal/installer gate (Gentle Dot agentSpawnEnv):
+	// the installed engine must never try to install or self-heal anything.
+	env.GENTLE_SHELL_NO_AUTO_SETUP = "1";
+	env.GENTLE_PI_SKIP_GENTLE_AI_INSTALL = "1";
+	// gentle-ai's own config home inside the island.
+	env.GENTLE_PI_CONFIG_HOME = paths.gentleAi;
 	// Keep the user's git identity without exposing their real HOME.
 	if (!base.GIT_CONFIG_GLOBAL) {
 		const gitConfig = path.join(realHome, ".gitconfig");
@@ -434,17 +467,331 @@ function isolatedEnv(base, paths, overrides = {}) {
 	return { ...env, ...overrides };
 }
 
+/** The file gentle-shell writes into a home it created (gentle-pi `bin/gentle-shell.mjs`). */
+const ENGINE_HOME_MARKER = ".gentle-shell-home";
+
+/**
+ * Marks Koda's own engine home (`<island>/agent`, the directory passed to
+ * `--home`) as gentle-shell's, before the engine's first spawn (Gentle Dot
+ * `claimEngineHome`): gentle-shell runs its first-run setup only in a home it
+ * created — one that holds its marker. Koda writes auth/mcp/extension files
+ * there before the engine's first start, so without the marker the engine took
+ * the home for someone else's. The marker has gentle-shell's own format
+ * (`{"createdBy":"gentle-shell","version":…}`; it checks only that the file
+ * exists); `version` is the bundled runtime's gentle-pi version, informational
+ * only. One already there is left exactly as it is. Called ONLY for Koda's own
+ * island agent dir — never for any other home. Written through the same
+ * fail-closed private write as identity.md; a failure is logged, never fatal
+ * (the launch gates in `isolatedEnv` keep the engine from provisioning anyway).
+ */
+function claimEngineHome(agentDir, version, log = () => {}) {
+	const marker = path.join(agentDir, ENGINE_HOME_MARKER);
+	// Exclusive create (no check-then-write window): the marker either does not
+	// exist and is created here, or something (another daemon, an attacker's
+	// planted link) already holds the name and is never touched. O_EXCL|O_NOFOLLOW
+	// keeps the fail-closed private-file semantics end to end.
+	try {
+		const fd = openSync(marker, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | O_NOFOLLOW, 0o600);
+		try {
+			writeSync(fd, `${JSON.stringify({ createdBy: "gentle-shell", version })}\n`);
+			fchmodSync(fd, 0o600);
+		} finally {
+			closeSync(fd);
+		}
+		return true;
+	} catch (error) {
+		if (error?.code !== "EEXIST") {
+			log(`could not mark the engine's home as its own: ${error.message}`);
+			return false;
+		}
+	}
+	// The name is taken: refused unless it is exactly the marker this daemon
+	// (or a previous run of it) already wrote — a symlink, directory or any
+	// other file is never written through, and the refusal is logged.
+	let existing;
+	try {
+		existing = lstatSync(marker);
+	} catch (error) {
+		log(`could not mark the engine's home as its own: ${error.message}`);
+		return false;
+	}
+	if (existing.isFile() && !existing.isSymbolicLink()) {
+		try {
+			const claimed = JSON.parse(readFileSync(marker, "utf8"));
+			if (claimed.createdBy === "gentle-shell") return false; // already claimed: left exactly as it is
+		} catch {}
+	}
+	log(`could not mark the engine's home as its own: ${marker} exists and is not gentle-shell's marker`);
+	return false;
+}
+
+// ----- K2-05 T1c (S5/L11): Koda's private memory ----------------------------
+
+/**
+ * The memory server port of Koda's own private memory. Koda's memory is ALWAYS
+ * private (no user-store mode): the store lives inside the island — the engine's
+ * HOME is `<island>/home` and Engram defaults its store to `<HOME>/.engram` when
+ * `ENGRAM_DATA_DIR` is unset, exactly where Gentle Dot's private mode puts it —
+ * and the server runs on this port. 7439 is one above Gentle Dot's own private
+ * memory port (7438), which is itself one above Engram's global default (7437):
+ * a user's own Engram server on 7437/7438 can never collide with it, and the
+ * lifecycle below never touches a server that is not Koda's. Overridable for
+ * tests/embeddings with `ABITO_ENGRAM_PORT`.
+ */
+const PRIVATE_ENGRAM_PORT = "7439";
+
+/** The parent-env variable that overrides `PRIVATE_ENGRAM_PORT`. */
+const PRIVATE_ENGRAM_PORT_ENV = "ABITO_ENGRAM_PORT";
+
+/** The private memory port for `base`: the override, or Koda's default. */
+function privateMemoryPort(base = {}) {
+	const value = base[PRIVATE_ENGRAM_PORT_ENV];
+	return typeof value === "string" && value !== "" ? value : PRIVATE_ENGRAM_PORT;
+}
+
+/** The seams `privateMemory` accepts (all optional; production runs the real ones). */
+
+/** How long the listener lookup may take (Gentle Dot: Windows CIM is slow). */
+function listenerLookupTimeoutMs(platform) {
+	return platform === "win32" ? 15000 : 5000;
+}
+
+function runListenerCommand(command, args) {
+	return new Promise((resolve) => {
+		execFile(
+			command,
+			[...args],
+			{
+				encoding: "utf8",
+				timeout: listenerLookupTimeoutMs(command === "powershell.exe" ? "win32" : process.platform),
+				windowsHide: true,
+			},
+			(error, stdout, stderr) => {
+				let code = 0;
+				if (error && typeof error.code === "number") code = error.code;
+				else if (error) code = -1;
+				// F2: a missing binary (ENOENT) is reported distinctly — it is the one
+				// failure the Linux ss fallback may answer, never a listener fact.
+				resolve({
+					code,
+					stdout: String(stdout),
+					stderr: String(stderr),
+					missing: error !== undefined && error !== null && error.code === "ENOENT",
+				});
+			},
+		);
+	});
+}
+
+/**
+ * F2 (Linux only): parse `ss -ltnpH` when lsof is missing, keeping the same
+ * fail-closed rules as the lsof lookup — a listener on the port with no visible
+ * pid (a foreign process an unprivileged ss cannot attribute) is a FAILED
+ * lookup, never "empty"; two pids sharing the port are ambiguous; a missing or
+ * failing ss is a failure too. Every line is `State Recv-Q Send-Q Local:Port
+ * Peer:Port [Process]`; only lines whose LOCAL column ends in `:<port>` count.
+ */
+async function listeningPidViaSs(port, options) {
+	try {
+		const result = await (options.runListenerCommand ?? runListenerCommand)("ss", ["-ltnpH"]);
+		if (result.missing || result.code !== 0 || result.stderr.trim()) return { kind: "failed" };
+		const pids = new Set();
+		let sawPortListener = false;
+		for (const line of result.stdout.split(/\r?\n/)) {
+			const fields = line.trim().split(/\s+/);
+			if (fields.length < 4 || fields[0] !== "LISTEN" || !fields[3].endsWith(`:${port}`)) continue;
+			sawPortListener = true;
+			for (const match of fields.slice(4).join(" ").matchAll(/pid=(\d+)/g)) pids.add(Number(match[1]));
+		}
+		if (!sawPortListener) return { kind: "empty" };
+		if (pids.size === 0) return { kind: "failed" };
+		if (pids.size > 1) return { kind: "ambiguous" };
+		return { kind: "one", pid: [...pids][0] };
+	} catch {
+		return { kind: "failed" };
+	}
+}
+
+/** Enumerate Windows listeners before filtering, so an unused port is not a query error. */
+async function listeningPid(port, options) {
+	const windows = (options.platform ?? process.platform) === "win32";
+	const command = windows ? "powershell.exe" : "lsof";
+	const args = windows
+		? [
+				"-NoLogo",
+				"-NoProfile",
+				"-NonInteractive",
+				"-Command",
+				`$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; try { Get-NetTCPConnection -State Listen -ErrorAction Stop | Where-Object { $_.LocalPort -eq ${Number(port)} } | Select-Object -ExpandProperty OwningProcess } catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }`,
+			]
+		: ["-w", "-t", "-n", "-P", `-iTCP:${port}`, "-sTCP:LISTEN"];
+	try {
+		const result = await (options.runListenerCommand ?? runListenerCommand)(command, args);
+		// F2: only a MISSING lsof on Linux may be answered by the ss fallback —
+		// every other lsof failure stays a failure (fail closed, same as before).
+		if (result.missing && (options.platform ?? process.platform) === "linux") {
+			return listeningPidViaSs(port, options);
+		}
+		const text = result.stdout.trim();
+		// lsof exits 1 for no matches. Missing commands, diagnostics and timeouts are failures.
+		if (!windows && result.code === 1 && !text && !result.stderr.trim()) return { kind: "empty" };
+		if (result.code !== 0 || result.stderr.trim()) return { kind: "failed" };
+		if (!text) return { kind: "empty" };
+		const values = text.split(/\r?\n/).map((value) => value.trim());
+		if (values.some((value) => !/^[1-9]\d*$/.test(value) || !Number.isSafeInteger(Number(value)))) {
+			return { kind: "failed" };
+		}
+		const pids = [...new Set(values.map(Number))];
+		return pids.length === 1 ? { kind: "one", pid: pids[0] } : { kind: "ambiguous" };
+	} catch {
+		return { kind: "failed" };
+	}
+}
+
+function memoryHealth(port) {
+	return fetch(`http://127.0.0.1:${port}/health`, { signal: AbortSignal.timeout(2000) })
+		.then((response) => response.json())
+		.catch(() => undefined);
+}
+
+/**
+ * The island identity file the engine's own Engram server leaves behind
+ * (`<island>/home/.engram/.instance-id`): read fail-closed — regular,
+ * non-symlink, owner-only, small, owned by the current user. Any refusal
+ * yields undefined, and undefined ownership never signals anything.
+ */
+function readInstanceIdFile(file, options) {
+	const fsOps = options.fs ?? { lstatSync, readFileSync };
+	try {
+		const stats = fsOps.lstatSync(file);
+		if (!stats.isFile() || stats.isSymbolicLink() || (process.platform !== "win32" && (stats.mode & 0o077) !== 0) || stats.size > 4096) {
+			return undefined;
+		}
+		if (typeof process.getuid === "function" && stats.uid !== process.getuid()) return undefined;
+		const value = fsOps.readFileSync(file, "utf8").trim();
+		return /^[0-9a-f]{32}$/i.test(value) ? value : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * Owns cleanup of Koda's private memory: after confirming an EMPTY private port
+ * before startup (Gentle Dot `privateMemory`, isolation.ts:155-300), or — F2 —
+ * after reclaiming an orphaned server from a crashed daemon that is PROVEN to
+ * be Koda's own (same identity proof as the stop path). A failed or ambiguous
+ * lookup refuses ownership, not startup: the daemon starts, logs it, and leaves
+ * that memory server running when it closes. An invalid port (including the
+ * user's own Engram ports 7437/7438, F3) is a configuration error and does stop
+ * startup. Before termination, both the private data identity
+ * (`<dataDir>/home/.engram/.instance-id`) and a repeated stable listener PID
+ * must match. PID reuse after the final check remains possible; nothing is
+ * killed by name, and a server that is not Koda's own is never touched. Pure
+ * seams (`options.runListenerCommand`, `options.kill`, `options.health`,
+ * `options.fs`, `options.platform`) are for tests only.
+ */
+/**
+ * F3: the port of Koda's private memory is validated wherever it is used — the
+ * lifecycle below and the engine env (runtime.cjs, defence in depth). Anything
+ * non-numeric is invalid; the USER's own Engram defaults (7437 global, 7438
+ * Gentle Dot's private port) are refused as a configuration error with a clear
+ * message, never silently inherited.
+ */
+const FORBIDDEN_PRIVATE_PORTS = new Set(["7437", "7438"]);
+function assertPrivateMemoryPort(port) {
+	// Canonical decimal only: no sign, no leading zeros. gentle-engram reads the port with
+	// Number.parseInt, so "07437" would silently mean the user's own 7437.
+	if (!/^[1-9]\d*$/.test(port) || !Number.isSafeInteger(Number(port)) || Number(port) > 65535) {
+		throw new Error("Cannot start private memory: port must be an integer from 1 to 65535");
+	}
+	if (FORBIDDEN_PRIVATE_PORTS.has(port)) {
+		throw new Error(`Cannot start private memory: port ${port} belongs to the user's own Engram server; set ${PRIVATE_ENGRAM_PORT_ENV} to another port`);
+	}
+}
+
+async function privateMemory(base, dataDir, log = () => {}, options = {}) {
+	const port = privateMemoryPort(base);
+	assertPrivateMemoryPort(port);
+	const before = await listeningPid(port, options);
+	if (before.kind === "one") {
+		// F2: an orphaned server left by a crashed daemon used to run until reboot
+		// (on Linux without lsof, a stop could never even look). Reclaim it ONLY
+		// with the same proof the stop path demands — the island's .instance-id, a
+		// matching /health and a stable listener pid; anything else is never ours.
+		if (await verifyOwnMemoryListener(port, dataDir, before.pid, options, log)) {
+			log(`reclaimed the private memory server of a previous run (pid ${before.pid})`);
+		} else {
+			return undefined;
+		}
+	} else if (before.kind !== "empty") {
+		// Not knowing is no reason to keep the assistant from starting, nor to claim the server.
+		log(`cannot verify private memory listener on port ${port} (${before.kind} lookup); will not stop it`);
+		return undefined;
+	}
+	return {
+		async stop() {
+			const listener = await listeningPid(port, options);
+			if (listener.kind !== "one") {
+				if (listener.kind !== "empty") {
+					log(`cannot verify private memory listener on port ${port}; left running`);
+				}
+				return;
+			}
+			if (!(await verifyOwnMemoryListener(port, dataDir, listener.pid, options, log))) return;
+			try {
+				(options.kill ?? process.kill)(listener.pid, "SIGTERM");
+				log(`stopped the private memory server (pid ${listener.pid})`);
+			} catch (error) {
+				log(`could not stop private memory server (pid ${listener.pid}): ${String(error)}`);
+			}
+		},
+	};
+}
+
+/**
+ * The ownership proof shared by the stop path and the F2 reclaim: the private
+ * data identity (`<dataDir>/home/.engram/.instance-id`), a matching /health and
+ * a repeated stable listener pid. Returns true only when every check passes;
+ * every refusal is logged and nothing is ever signalled.
+ */
+async function verifyOwnMemoryListener(port, dataDir, pid, options, log) {
+	const expected = readInstanceIdFile(path.join(dataDir, "home", ".engram", ".instance-id"), options);
+	if (!expected) {
+		log(`cannot read the private memory identity of port ${port}; left running`);
+		return false;
+	}
+	const health = await (options.health ?? memoryHealth)(port).catch(() => undefined);
+	if (health?.instance_id !== expected) {
+		log(`the memory server on port ${port} serves other data; left running`);
+		return false;
+	}
+	const again = await listeningPid(port, options);
+	if (again.kind !== "one" || again.pid !== pid) {
+		log(`the private memory listener changed on port ${port}; left running`);
+		return false;
+	}
+	return true;
+}
+
 module.exports = {
+	ENGINE_HOME_MARKER,
 	ENV_ALLOWLIST,
+	ENV_WINDOWS_ALLOWLIST,
 	ISLAND_ROOT_ENV,
 	MEMORY_PROJECT,
+	PRIVATE_ENGRAM_PORT,
+	PRIVATE_ENGRAM_PORT_ENV,
+	assertPrivateMemoryPort,
 	assertSecurePath,
+	claimEngineHome,
 	defaultIslandRoot,
 	ensureIsland,
 	ensurePrivateDir,
 	islandPaths,
 	isolatedEnv,
 	pathWithNodeFirst,
+	privateMemory,
+	privateMemoryPort,
 	windowsIslandRootViolation,
 	writePrivateFile,
 };

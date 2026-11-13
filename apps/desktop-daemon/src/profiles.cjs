@@ -590,6 +590,7 @@ class ProfileStore {
 		if (model?.success === false) throw fail("Model switch failed");
 		const level = await engine.request({ type: "set_thinking_level", level: profile.thinkingLevel });
 		if (level?.success === false) throw fail("Thinking level switch failed");
+		await engine.refreshModel?.(); // K2-05 U5c: the island's read-only model line follows the switch
 	}
 
 	async rollback(files, snapshot, wasRunning) {

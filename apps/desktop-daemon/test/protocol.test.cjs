@@ -22,7 +22,7 @@ test("client frames: invalid, unknown and malformed are rejected without detail"
 		{ type: "profile_select", id: "../x" },
 		{ type: "auth_start", accountId: "a", method: "magic" },
 		{ type: "ui_response", id: "a1" },
-		{ type: "get_history" },
+		{ type: "get_earlier", before: "a1-2" }, // not a page id
 		{ type: "hello", protocol: P.PROTOCOL, token: "t" },
 		[],
 		null,
@@ -44,7 +44,16 @@ test("server frames carry seq and end with a single LF", () => {
 test("translateEvent: allowlist, unknown dropped", () => {
 	assert.deepEqual(P.translateEvent({ type: "agent_start" }), { frames: [], busy: true });
 	assert.deepEqual(P.translateEvent({ type: "agent_settled" }), { frames: [], busy: false });
-	assert.deepEqual(P.translateEvent({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "hel" } }, "m3").frames, [{ type: "message_delta", messageId: "m3", text: "hel" }]);
+	// T2 white-label wiring: a short delta is HELD, not emitted — it could still
+	// be the start of a hidden name ("Gen"|"tle Shell"). It flushes on the
+	// assistant's message_end, before the message_done frame.
+	assert.deepEqual(P.translateEvent({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "hel" } }, "m3").frames, []);
+	const end3 = P.translateEvent({ type: "message_end", message: { role: "assistant", content: "full" } }, "m3");
+	assert.deepEqual(end3.frames, [
+		{ type: "message_delta", messageId: "m3", text: "hel" },
+		{ type: "message_done", messageId: "m3" },
+	]);
+	assert.equal(end3.messageDone, true);
 	assert.deepEqual(P.translateEvent({ type: "message_update", assistantMessageEvent: { type: "thinking_delta", delta: "secret thought" } }).frames, []);
 	assert.deepEqual(P.translateEvent({ type: "message_end", message: { role: "user" } }).frames, []);
 	assert.equal(P.translateEvent({ type: "message_end", message: { role: "assistant", content: "full" } }).messageDone, true);
@@ -78,7 +87,7 @@ test("translateEvent: tool activity carries a sanitized callId and a closed summ
 
 test("translateEvent: extension UI requests", () => {
 	const sel = P.translateEvent({ type: "extension_ui_request", id: "u1", method: "select", title: "Pick", options: ["a", "b", 3] });
-	assert.deepEqual(sel.ask, { id: "u1", kind: "select", title: "Pick", options: ["a", "b"] });
+	assert.deepEqual(sel.ask, { id: "u1", kind: "select", title: "Pick", options: ["a", "b"], originalOptions: ["a", "b"] });
 	assert.equal(P.translateEvent({ type: "extension_ui_request", id: "u2", method: "confirm", title: "Sure?" }).ask.kind, "confirm");
 	assert.equal(P.translateEvent({ type: "extension_ui_request", id: "u3", method: "input", title: "Name" }).ask.kind, "input");
 	assert.equal(P.translateEvent({ type: "extension_ui_request", id: "u4", method: "editor" }).cancelUi, "u4");
@@ -93,6 +102,31 @@ test("buildUiResponse validates against the pending ask", () => {
 	assert.equal(P.buildUiResponse(sel, { value: "zzz" }), undefined);
 	assert.equal(P.buildUiResponse({ id: "c", kind: "confirm", options: [] }, { value: "yes" }), undefined);
 	assert.deepEqual(P.buildUiResponse(sel, { cancelled: true }), { type: "extension_ui_response", id: "u1", cancelled: true });
+});
+
+// B2 (verifier): the island shows the REWRITTEN options, but the user's choice
+// must reach the engine as its ORIGINAL text (Gentle Dot bridge.ts maps the
+// answer back by position). Truncated and rewritten options round-trip too.
+test("buildUiResponse maps a shown select answer back to the engine's original option (B2)", () => {
+	const long = ("palabra ").repeat(45).trimEnd(); // 360 chars: over maxOptionChars
+	const shown = P.translateEvent({
+		type: "extension_ui_request",
+		id: "um",
+		method: "select",
+		title: "Memory",
+		options: ["Install engram", "/gentle:memory-save", long],
+	}).ask;
+	assert.equal(shown.options[0], "Install memory", "the shown option is white-labelled");
+	assert.equal(shown.options[1], "Option 2", "an internal command option presents a neutral non-empty placeholder");
+	assert.ok(shown.options[2].length <= 200 && shown.options[2] !== long, "a long option is shown truncated");
+
+	const answer = (ask, value) => P.buildUiResponse(ask, { value });
+	assert.deepEqual(answer(shown, shown.options[0]), { type: "extension_ui_response", id: "um", value: "Install engram" }, "rewritten shown option answers with the original");
+	assert.deepEqual(answer(shown, shown.options[1]), { type: "extension_ui_response", id: "um", value: "/gentle:memory-save" }, "an option that presents empty still round-trips to the original");
+	assert.deepEqual(answer(shown, shown.options[2]), { type: "extension_ui_response", id: "um", value: long }, "a truncated option round-trips to the original");
+	// Nothing shown is still refused (the user's own typed value is not an option).
+	assert.equal(answer(shown, "Install engram"), undefined, "the ORIGINAL text is not a shown option and is refused");
+	assert.equal(answer(shown, "otra cosa"), undefined);
 });
 
 test("DTO sanitizers drop everything outside the allowlist", () => {
@@ -115,6 +149,208 @@ test("auth passthrough frames are allowlisted", () => {
 	assert.equal(prompt.secret, true);
 });
 
+// ----- T2: white-label wiring (frames never carry a hidden name) ------------
+
+// The stream filter is keyed by messageId and reset by agent_start; each test
+// uses its own id and closes its stream with message_end so nothing leaks
+// between tests.
+const stream = (frames) =>
+	frames
+		.filter((f) => f.type === "message_delta")
+		.map((f) => f.text)
+		.join("");
+
+const noHiddenName = (frames, label) => {
+	const shown = stream(frames);
+	for (const name of ["gentle shell", "gentle-pi", "gentle-ai", "el gentleman", "pi-coding-agent", "engram", "abito-island", "organic driven development", "/gentle:"]) {
+		assert.ok(!shown.toLowerCase().includes(name), `${label}: hidden name "${name}" leaked in ${JSON.stringify(shown)}`);
+	}
+	return shown;
+};
+
+test("translateEvent: a whole hidden name inside the deltas is rewritten (T2)", () => {
+	// Long enough to stream (over the hold-back window), with the name well inside.
+	const pad = "x".repeat(60);
+	const out = P.translateEvent(
+		{ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: `${pad} Gentle Shell is ready. ${pad}` } },
+		"w1",
+	);
+	const shown = noHiddenName(out.frames, "single delta");
+	assert.ok(shown.includes("Koda is ready"), JSON.stringify(shown));
+	P.translateEvent({ type: "message_end", message: { role: "assistant" } }, "w1");
+});
+
+test("translateEvent: a hidden name split across deltas never reaches the user (T2)", () => {
+	// "Gentle" ends delta one, " Shell" starts delta two — the split must never
+	// show "Gentle" and then a non-sequitur.
+	const pad = "x".repeat(60);
+	const a = P.translateEvent(
+		{ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: `${pad} and Gentle` } },
+		"w2",
+	);
+	const b = P.translateEvent(
+		{ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: ` Shell works. ${pad}` } },
+		"w2",
+	);
+	const shown = noHiddenName([...a.frames, ...b.frames], "split name");
+	assert.ok(shown.includes("Koda works"), JSON.stringify(shown));
+	P.translateEvent({ type: "message_end", message: { role: "assistant" } }, "w2");
+});
+
+test("translateEvent: a name split letter by letter across many deltas stays hidden (T2)", () => {
+	const word = "Gentle Shell";
+	const frames = [];
+	for (const ch of word) {
+		frames.push(...P.translateEvent({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: ch } }, "w3").frames);
+	}
+	frames.push(...P.translateEvent({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: " contestó." } }, "w3").frames);
+	frames.push(...P.translateEvent({ type: "message_end", message: { role: "assistant" } }, "w3").frames);
+	assert.equal(stream(frames), "Koda contestó.", JSON.stringify(frames));
+});
+
+test("translateEvent: an open /gentle: command token is never split into the visible stream (T2)", () => {
+	const pad = "x".repeat(60);
+	const a = P.translateEvent(
+		{ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: `${pad} /gentle:` } },
+		"w4",
+	);
+	const b = P.translateEvent(
+		{ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: `memory-save ahora. ${pad}` } },
+		"w4",
+	);
+	const shown = noHiddenName([...a.frames, ...b.frames], "open token");
+	assert.ok(shown.includes("ahora"), JSON.stringify(shown));
+	P.translateEvent({ type: "message_end", message: { role: "assistant" } }, "w4");
+});
+
+test("translateEvent: agent_start resets the stream state (a new turn never replays a held tail)", () => {
+	P.translateEvent({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "held" } }, "w5");
+	assert.deepEqual(P.translateEvent({ type: "agent_start" }), { frames: [], busy: true });
+	assert.deepEqual(P.translateEvent({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "nuevo turno " } }, "w5").frames, []);
+	const end = P.translateEvent({ type: "message_end", message: { role: "assistant" } }, "w5");
+	assert.equal(stream(end.frames), "nuevo turno ", JSON.stringify(end.frames));
+});
+
+test("translateEvent: info toasts are dropped; warning toasts are rewritten (T2)", () => {
+	assert.deepEqual(
+		P.translateEvent({ type: "extension_ui_request", id: "u7", method: "notify", message: "saved via engram", notifyType: "info" }).frames,
+		[],
+	);
+	const warn = P.translateEvent({ type: "extension_ui_request", id: "u8", method: "notify", message: "Gentle Shell was updated", notifyType: "warning" });
+	assert.deepEqual(warn.frames, [{ type: "toast", level: "warning", message: "Koda was updated" }]);
+	const err = P.translateEvent({ type: "extension_ui_request", id: "u9", method: "notify", message: "falló", notifyType: "error" });
+	assert.deepEqual(err.frames, [{ type: "toast", level: "error", message: "falló" }]);
+});
+
+// F2 re-verify (clip-before-rewrite): clipping BEFORE presentText can cut a
+// hidden name in half (e.g. 260 chars ending in «…memory engr»), leaving a
+// partial internal name in the shown label. presentText must run FIRST and the
+// clip second; the cut must never land inside a surrogate pair.
+test("select options are rewritten before they are clipped, never showing a partial hidden name", () => {
+	// The verifier's repro: a long option whose clip boundary falls INSIDE a
+	// hidden name (…memory en|gram) used to show the fragment «…memory engr».
+	const leaky = `${"palabra ".repeat(24)}via engram now`; // 206 chars: the maxOptionChars boundary falls inside «engram»
+	const ask = P.translateEvent({ type: "extension_ui_request", id: "uc", method: "select", title: "Pick", options: [leaky] }).ask;
+	assert.ok(ask.options[0].length <= P.LIMITS.maxOptionChars, "the shown option is still clipped");
+	assert.ok(!/eng/i.test(ask.options[0]), `partial hidden name shown: ${JSON.stringify(ask.options[0].slice(-20))}`);
+	// The original still round-trips untouched (B2).
+	assert.deepEqual(P.buildUiResponse(ask, { value: ask.options[0] }), { type: "extension_ui_response", id: "uc", value: leaky });
+});
+
+// K2-05 U4b verifier F1: an ask TITLE was clipped to maxTitleChars BEFORE the white-label, so a
+// hidden name crossing the cut showed in part («…Gentle She»). Like the options, message and
+// placeholder, the title is rewritten first and clipped second. The sweep puts every hidden name
+// at every offset around the cut, for each ask kind.
+test("ask titles are rewritten before they are clipped: a long title never shows part of a hidden name", () => {
+	const max = P.LIMITS.maxTitleChars;
+	const names = ["Gentle Shell", "gentle-ai", "Gentle Pi", "engram", "pi-coding-agent", "abito-island", "el Gentleman", "organic driven development"];
+	for (const method of ["select", "confirm", "input"]) {
+		for (const name of names) {
+			const stem = name.slice(0, 3).toLowerCase();
+			for (let lead = max - name.length - 3; lead <= max + 3; lead += 1) {
+				const title = `${"x".repeat(lead)} ${name} fin`;
+				const event = { type: "extension_ui_request", id: "ut", method, title, ...(method === "select" ? { options: ["a"] } : {}) };
+				const shown = P.translateEvent(event).ask.title;
+				assert.ok(shown.length <= max, `${method} lead ${lead}: the title is still clipped (${shown.length})`);
+				assert.ok(!shown.toLowerCase().replace(/x+/g, "").includes(stem), `${method} lead ${lead}: part of «${name}» shown: ${JSON.stringify(shown.slice(-20))}`);
+			}
+		}
+	}
+	// a short title still rewrites whole, as before
+	assert.equal(P.translateEvent({ type: "extension_ui_request", id: "us", method: "input", title: "Gentle Shell asks" }).ask.title, "Koda asks");
+});
+
+// Clipping never cuts inside a UTF-16 surrogate pair (a lone half would reach
+// the island as U+FFFD or an invalid sequence): an ask title of 299 chars ends
+// right between the pair's halves.
+test("clip never splits a surrogate pair at the boundary", () => {
+	const emoji = "🙂"; // one surrogate pair
+	const title = "x".repeat(299) + emoji;
+	const ask = P.translateEvent({ type: "extension_ui_request", id: "uf", method: "input", title }).ask;
+	const shown = ask.title;
+	assert.ok(shown.length <= P.LIMITS.maxTitleChars);
+	for (const ch of shown) {
+		const code = ch.codePointAt(0);
+		const lone = (code >= 0xd800 && code <= 0xdbff) || (code >= 0xdc00 && code <= 0xdfff);
+		assert.equal(lone, false, `lone surrogate in clipped title: ${JSON.stringify(shown.slice(-5))}`);
+	}
+});
+
+// Finding 3: two options that rewrite to the same shown label made the answer
+// map back to the wrong original (first indexOf match). Every shown label must
+// be unique AND non-empty, so the answer maps back by position.
+test("select options that rewrite to the same label are made unique and non-empty", () => {
+	const ask = P.translateEvent({
+		type: "extension_ui_request",
+		id: "ud",
+		method: "select",
+		title: "Setup",
+		options: ["Gentle Shell setup", "Gentle AI setup", "/gentle:memory-save", "/gentle:memory-search"],
+	}).ask;
+	assert.deepEqual(ask.originalOptions, ["Gentle Shell setup", "Gentle AI setup", "/gentle:memory-save", "/gentle:memory-search"]);
+	const unique = new Set(ask.options);
+	assert.equal(unique.size, ask.options.length, `duplicate shown labels: ${JSON.stringify(ask.options)}`);
+	for (const option of ask.options) assert.ok(option !== "", `empty shown label: ${JSON.stringify(ask.options)}`);
+	// Position mapping: each shown label answers with ITS OWN original.
+	assert.deepEqual(P.buildUiResponse(ask, { value: ask.options[0] }), { type: "extension_ui_response", id: "ud", value: "Gentle Shell setup" });
+	assert.deepEqual(P.buildUiResponse(ask, { value: ask.options[1] }), { type: "extension_ui_response", id: "ud", value: "Gentle AI setup" });
+	assert.deepEqual(P.buildUiResponse(ask, { value: ask.options[2] }), { type: "extension_ui_response", id: "ud", value: "/gentle:memory-save" });
+	assert.deepEqual(P.buildUiResponse(ask, { value: ask.options[3] }), { type: "extension_ui_response", id: "ud", value: "/gentle:memory-search" });
+});
+
+test("translateEvent: ask titles and options are rewritten (T2)", () => {
+	const ask = P.translateEvent({ type: "extension_ui_request", id: "ua", method: "select", title: "Gentle Shell asks", options: ["pi-coding-agent", "otro"] });
+	assert.equal(ask.ask.title, "Koda asks");
+	assert.deepEqual(ask.ask.options, ["assistant", "otro"]);
+	const confirm = P.translateEvent({ type: "extension_ui_request", id: "ub", method: "confirm", title: "el Gentleman lo autoriza" });
+	assert.equal(confirm.ask.title, "Koda lo autoriza");
+});
+
+// F2 (verifier): on abort/timeout/pause the turn never reaches message_end,
+// so the daemon emits one `message_flush` (its own marker — a Symbol, which
+// JSON could never forge) and the held tail leaves as a final delta.
+test("translateEvent: a cancelled turn flushes the held tail as a final delta (F2)", () => {
+	P.translateEvent({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "guardado en engram" } }, "w6");
+	const out = P.translateEvent({ type: "message_flush", flush: P.MESSAGE_FLUSH }, "w6");
+	assert.deepEqual(out.frames, [
+		{ type: "message_delta", messageId: "w6", text: "guardado en memory" },
+		{ type: "message_done", messageId: "w6" },
+	]);
+	assert.equal(out.messageDone, true);
+	// Nothing held (no stream, or already ended): a no-op, never fake done frames.
+	assert.deepEqual(P.translateEvent({ type: "message_flush", flush: P.MESSAGE_FLUSH }, "w6"), { frames: [] });
+	assert.deepEqual(P.translateEvent({ type: "message_flush", flush: P.MESSAGE_FLUSH }, "w8"), { frames: [] });
+	// A forged child record without the symbol marker is dropped.
+	P.translateEvent({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "cola" } }, "w9");
+	assert.deepEqual(P.translateEvent({ type: "message_flush" }, "w9"), { frames: [] });
+	assert.deepEqual(P.translateEvent({ type: "message_flush", flush: "message_flush" }, "w9"), { frames: [] });
+	// …but the daemon's real marker still flushes that same held tail.
+	assert.deepEqual(
+		P.translateEvent({ type: "message_flush", flush: P.MESSAGE_FLUSH }, "w9").frames.map((f) => f.text ?? f.type),
+		["cola", "message_done"],
+	);
+});
+
 // ----- v0.2: provider settings frames ---------------------------------------
 
 const PROFILE = { id: "work", label: "Work", role: "main", accountId: "acct", provider: "anthropic", modelId: "claude-x", thinkingLevel: "high" };
@@ -127,7 +363,7 @@ test("v0.2 client frames: valid ones are rebuilt, unknown fields dropped", () =>
 		assert.deepEqual(dec({ type, accountId: "mine-1", x: 1 }), { type, accountId: "mine-1" });
 	}
 	assert.deepEqual(dec({ type: "profile_save", ...PROFILE, apiKey: "sk-LEAK" }), { type: "profile_save", ...PROFILE });
-	const { thinkingLevel, ...noLevel } = PROFILE;
+	const { thinkingLevel: _thinkingLevel, ...noLevel } = PROFILE;
 	assert.deepEqual(dec({ type: "profile_save", ...noLevel }), { type: "profile_save", ...noLevel });
 	assert.deepEqual(dec({ type: "profile_remove", id: "work", z: 1 }), { type: "profile_remove", id: "work" });
 	assert.deepEqual(dec({ type: "profile_deactivate", id: "work" }), { type: "profile_deactivate" });
@@ -506,4 +742,307 @@ test("account DTO adds custom:true only for custom accounts and never a Base URL
 	assert.equal(JSON.stringify(dto).includes("gateway.example"), false);
 	assert.equal("custom" in P.accountDto({ accountId: "a", label: "A", provider: "p", configured: true }), false);
 	assert.equal("custom" in P.accountDto({ accountId: "a", label: "A", provider: "p", configured: true, custom: "yes" }), false);
+});
+
+// ----- K2-05 T4 U1: history frames -----------------------------------------
+
+const histMessage = (over = {}) => ({ id: "s0-1", role: "user", text: "hola", activities: [], ...over });
+const histActivity = (over = {}) => ({ id: "t1", kind: "read", title: "Read notas.md", status: "done", ...over });
+
+test("get_history / get_earlier validation: get_earlier needs a `before` page id", () => {
+	assert.deepEqual(P.validateClientFrame({ type: "get_history", junk: 1 }), { type: "get_history" }, "fieldless verb: extras dropped, like sessions_list");
+	assert.deepEqual(P.validateClientFrame({ type: "get_earlier", before: "s1-2" }), { type: "get_earlier", before: "s1-2" });
+	for (const bad of [
+		{ type: "get_earlier" },
+		{ type: "get_earlier", before: "nonsense" },
+		{ type: "get_earlier", before: 3 },
+		{ type: "get_earlier", before: "s-1" },
+		{ type: "get_earlier", before: "s1-2\n" },
+		{ type: "get_earlier", before: "x".repeat(200) },
+	]) assert.equal(P.validateClientFrame(bad), undefined, JSON.stringify(bad));
+	// K2-05 T4 U1 verifier fix: ids are canonical — no leading zeros anywhere.
+	for (const bad of [
+		{ type: "get_earlier", before: "s00-1" },
+		{ type: "get_earlier", before: "s0-01" },
+		{ type: "get_earlier", before: "s01-2" },
+		{ type: "get_earlier", before: "s1-00" },
+	]) assert.equal(P.validateClientFrame(bad), undefined, `non-canonical: ${JSON.stringify(bad)}`);
+	// `sN-0` and a turn past the chain are canonical SHAPE: they pass validation and
+	// the history projection answers them with an empty page (never bad_request).
+	assert.deepEqual(P.validateClientFrame({ type: "get_earlier", before: "s0-0" }), { type: "get_earlier", before: "s0-0" });
+	assert.deepEqual(P.validateClientFrame({ type: "get_earlier", before: "s0-99" }), { type: "get_earlier", before: "s0-99" });
+});
+
+test("historyFrame rebuilds messages from an allowlist: closed role/kind/status, ids and text bounded, extras dropped", () => {
+	const page = {
+		hasEarlier: true,
+		messages: [
+			histMessage({ secret: "sk-SECRETMARK", text: "tú".padEnd(70_000, "x") }),
+			{
+				id: "s0-2",
+				role: "assistant",
+				text: "leo",
+				activities: [histActivity({ zzz: 1 }), { ...histActivity(), kind: "dancing", status: "vibrating", title: 5 }],
+				attachments: [{ name: "notas.txt", size: 12, mime: "text/plain", secret: "x" }, { name: 5 }, "nope"],
+			},
+			{ id: 7, role: "system", text: "nope" },
+		],
+	};
+	const frame = P.historyFrame(page);
+	assert.equal(frame.type, "history");
+	assert.equal(frame.hasEarlier, true);
+	assert.deepEqual(frame.messages.map((m) => m.role), ["user", "assistant"], "only user/assistant messages travel");
+	assert.equal(frame.messages[0].text.length, P.HISTORY_EMIT.maxTextChars, "text is bounded");
+	assert.ok(!JSON.stringify(frame).includes("SECRETMARK"));
+	const assistant = frame.messages[1];
+	assert.deepEqual(assistant.activities, [histActivity()], "off-vocabulary activities are dropped, extras with them");
+	assert.deepEqual(assistant.attachments, [{ name: "notas.txt", size: 12, mime: "text/plain" }]);
+});
+
+test("historyFrame bounds: 100 messages ok, 101 or a frame over 1 MiB -> throws", () => {
+	const many = (n) => ({ hasEarlier: false, messages: Array.from({ length: n }, (_, i) => histMessage({ id: `s0-${i}`, text: "a".repeat(4000) })) });
+	assert.equal(P.historyFrame(many(100)).messages.length, 100);
+	assert.throws(() => P.historyFrame(many(101)), /history frame invalid/);
+	assert.throws(() => P.historyFrame(undefined));
+	assert.throws(() => P.historyFrame({ messages: [], hasEarlier: "yes" }));
+	// 100 messages of 64 KiB text cannot legally fit in 1 MiB: the byte cap throws.
+	const huge = { hasEarlier: false, messages: Array.from({ length: 20 }, (_, i) => histMessage({ id: `s0-${i}`, text: "b".repeat(64 * 1024) })) };
+	assert.throws(() => P.historyFrame(huge), /history frame invalid/);
+});
+
+test("earlierFrame echoes the requested `before`; hasEarlier defaults to false", () => {
+	const page = { messages: [histMessage()], hasEarlier: true };
+	assert.deepEqual(P.earlierFrame("s2-1", page), { type: "earlier", before: "s2-1", hasEarlier: true, messages: page.messages });
+	const empty = { messages: [], hasEarlier: false };
+	assert.deepEqual(P.earlierFrame("s2-9", empty), { type: "earlier", before: "s2-9", hasEarlier: false, messages: [] });
+});
+
+test("conversations_off is an emitted error code (the island's new_conversation refusal)", () => {
+	assert.deepEqual(P.errorFrame("conversations_off"), { type: "error", code: "conversations_off" });
+});
+
+// ----- K2-05 U2 follow-up (verifier): surrogate-safe outbound text (B1) -----
+
+// Every string reachable in a decoded frame, depth-first.
+const frameStrings = (value, out = []) => {
+	if (typeof value === "string") out.push(value);
+	else if (Array.isArray(value)) for (const v of value) frameStrings(v, out);
+	else if (value !== null && typeof value === "object") for (const v of Object.values(value)) frameStrings(v, out);
+	return out;
+};
+/** True when `s` contains a UTF-16 surrogate unit that is not half of a valid pair. */
+const hasLoneSurrogate = (s) => {
+	for (let i = 0; i < s.length; i += 1) {
+		const c = s.charCodeAt(i);
+		if (c >= 0xd800 && c <= 0xdbff) {
+			const next = s.charCodeAt(i + 1);
+			if (!(next >= 0xdc00 && next <= 0xdfff)) return true;
+			i += 1;
+		} else if (c >= 0xdc00 && c <= 0xdfff) return true;
+	}
+	return false;
+};
+
+// The island's serde_json rejects a lone surrogate (JSON.stringify serializes one as a
+// \udXXX escape); a chunk cut between the two halves of a pair made the island drop the
+// connection — chat AND settings, frames are broadcast. An emoji sits at EVERY cut
+// position, so the old unit-based slice is guaranteed to split a pair.
+test("deltaFrames cuts only on code-point boundaries: an emoji at every cut position (B1)", () => {
+	const max = P.LIMITS.maxDeltaChars;
+	// 50,001 units with an emoji straddling each cut boundary (high half at boundary-1).
+	let text = "x".repeat(50_001);
+	for (const cut of [3 * max, 2 * max, max]) {
+		if (cut >= text.length) continue;
+		text = text.slice(0, cut - 1) + "😀" + text.slice(cut + 1);
+	}
+	assert.equal(text.length, 50_001);
+	const frames = P.deltaFrames(text, "m1");
+	assert.equal(frames.length, Math.ceil(50_001 / max));
+	assert.equal(frames.map((f) => f.text).join(""), text, "the concatenation is exactly the input");
+	for (const frame of frames) {
+		assert.ok(frame.text.length <= max, "each chunk stays within the delta cap");
+		assert.ok(!hasLoneSurrogate(frame.text), `a chunk carries a split surrogate pair: ${JSON.stringify(frame.text.slice(-4))}`);
+	}
+	// Also: an emoji that STARTS exactly at a boundary and one that ENDS exactly at one.
+	for (const pos of [max - 2, max]) {
+		const t = "x".repeat(pos) + "😀" + "y".repeat(50_001 - pos - 2);
+		for (const frame of P.deltaFrames(t, "m2")) assert.ok(!hasLoneSurrogate(frame.text), "no chunk carries a split pair");
+	}
+});
+
+// Defence in depth: encodeServerFrame is the single outbound encoder; no encoded line may
+// ever carry a lone surrogate escape, whatever a DTO or a session file contained.
+test("property: no encoded line carries a lone surrogate (B1)", () => {
+	// Deterministic xorshift so failures reproduce.
+	let seed = 0x2f6e2b1;
+	const next = () => {
+		seed ^= seed << 13; seed ^= seed >>> 17; seed ^= seed << 5;
+		return (seed >>> 0) / 0x100000000;
+	};
+	const pieces = ["a", "b", " ", "ñ", "😀", "𝐀", "\ud800", "\udc00", "\ud83d\ude00", "fin", ""];
+	for (let i = 0; i < 300; i += 1) {
+		let text = "";
+		const parts = 1 + Math.floor(next() * 12);
+		for (let p = 0; p < parts; p += 1) text += pieces[Math.floor(next() * pieces.length)];
+		const frame = { type: "message_delta", messageId: "m1", text };
+		const parsed = JSON.parse(P.encodeServerFrame(frame, i + 1).toString("utf8"));
+		for (const s of frameStrings(parsed)) assert.ok(!hasLoneSurrogate(s), `iteration ${i}: an encoded line carried a lone surrogate: ${JSON.stringify(text)}`);
+		// Valid pairs survive untouched; lone ones become U+FFFD.
+		const cleaned = text.replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]|[\uD800-\uDFFF]/g, (m) => (m.length === 2 ? m : "\uFFFD"));
+		assert.equal(parsed.text, cleaned, `iteration ${i}: only lone surrogates were replaced`);
+	}
+});
+
+// A session file whose reply holds a lone surrogate (the escape reaches the daemon through
+// JSON.parse) used to make every get_history encode a lone-surrogate escape forever.
+test("historyFrame of a text holding a lone surrogate encodes U+FFFD, never the lone half (B1)", () => {
+	const frame = P.historyFrame({ hasEarlier: false, messages: [histMessage({ id: "s0-1", role: "assistant", text: "antes \ud800 después 😀" })] });
+	const parsed = JSON.parse(P.encodeServerFrame(frame, 1).toString("utf8"));
+	for (const s of frameStrings(parsed)) assert.ok(!hasLoneSurrogate(s), "the encoded history line carries a lone surrogate");
+	assert.ok(parsed.messages[0].text.includes("\uFFFD"), "the lone surrogate was replaced with U+FFFD");
+	assert.ok(parsed.messages[0].text.includes("😀"), "the valid pair right after it is untouched");
+});
+
+// ----- K2-05 U2 follow-up (verifier): a clipped history text is MARKED (F2) -----
+
+test("historyMessage marks a text clipped at 64 KiB with clipped:true, cut on a code-point boundary (F2)", () => {
+	const max = P.LIMITS.maxTextChars;
+	const clipped = P.historyFrame({ hasEarlier: false, messages: [histMessage({ id: "s0-1", role: "assistant", text: "x".repeat(max + 10) })] });
+	assert.equal(clipped.messages[0].clipped, true, "the clip is marked, never silent");
+	assert.ok(clipped.messages[0].text.length <= max);
+	// The cut must not split the pair an emoji places right at the boundary.
+	const straddling = P.historyFrame({ hasEarlier: false, messages: [histMessage({ id: "s0-1", role: "assistant", text: "a".repeat(max - 1) + "😀" })] });
+	assert.equal(straddling.messages[0].clipped, true);
+	assert.ok(!hasLoneSurrogate(straddling.messages[0].text), "the 64 KiB clip never splits a surrogate pair");
+	// An unclipped message carries no marker at all.
+	const whole = P.historyFrame({ hasEarlier: false, messages: [histMessage()] });
+	assert.equal("clipped" in whole.messages[0], false, "no marker when nothing was cut");
+	const earlier = P.earlierFrame("s0-2", { hasEarlier: false, messages: [histMessage({ id: "s0-1", role: "assistant", text: "y".repeat(max + 1) })] });
+	assert.equal(earlier.messages[0].clipped, true, "the earlier DTO marks the clip too");
+});
+
+// ----- K2-05 U2 follow-up (verifier): shown select labels are control-free (F3) -----
+
+// The island strips C0/C1 control characters for display; the shown labels the answer is
+// matched against must already be what the island displays, so the daemon replaces them
+// with a space itself. The answer still round-trips to the engine's ORIGINAL string.
+test("select ask: shown labels are free of C0/C1 control characters; answers round-trip (F3)", () => {
+	const ask = P.translateEvent({
+		type: "extension_ui_request",
+		id: "u9",
+		method: "select",
+		title: "Elige",
+		options: ["instalar\u0000ahora", "línea1\nlínea2\r\tx", "\u009fcentellear\u007f", "ok"],
+	}).ask;
+	for (const shown of ask.options) assert.ok(!/[\u0000-\u001f\u007f\u0080-\u009f]/.test(shown), `a shown label carries a control character: ${JSON.stringify(shown)}`);
+	assert.deepEqual(ask.options, ["instalar ahora", "línea1 línea2 x", "centellear", "ok"]);
+	// The user's answer (the shown string) still maps back to the engine's original by position.
+	assert.deepEqual(P.buildUiResponse(ask, { value: ask.options[0] }), { type: "extension_ui_response", id: "u9", value: "instalar\u0000ahora" });
+	assert.deepEqual(P.buildUiResponse(ask, { value: ask.options[3] }), { type: "extension_ui_response", id: "u9", value: "ok" });
+	// A label that is only control characters presents as a neutral placeholder, like an empty one.
+	const blank = P.translateEvent({ type: "extension_ui_request", id: "u10", method: "select", title: "t", options: ["\u0000\u0000", "real"] }).ask;
+	assert.equal(blank.options[0], "Option 1");
+	assert.equal(blank.options[1], "real");
+});
+
+// ----- K2-05 bind by id: send/steer requestId and the user_message frame -----------------------
+
+test("send and steer accept an optional bounded requestId; any other shape is bad_request", () => {
+	assert.deepEqual(P.decodeClientLine(line({ type: "send", text: "hola", requestId: "i-1_A" })).frame, { type: "send", text: "hola", images: [], requestId: "i-1_A" });
+	assert.deepEqual(P.decodeClientLine(line({ type: "steer", text: "hola", requestId: "x".repeat(64) })).frame, { type: "steer", text: "hola", requestId: "x".repeat(64) });
+	assert.deepEqual(P.decodeClientLine(line({ type: "send", text: "hola" })).frame, { type: "send", text: "hola", images: [] }, "absent stays absent");
+	for (const requestId of ["", "a b", "x".repeat(65), "a.b", "ñ", 5, null, ["a"]]) {
+		assert.deepEqual(P.decodeClientLine(line({ type: "send", text: "hola", requestId })), { error: "bad_request" }, JSON.stringify(requestId));
+		assert.deepEqual(P.decodeClientLine(line({ type: "steer", text: "hola", requestId })), { error: "bad_request" }, JSON.stringify(requestId));
+	}
+});
+
+test("user_message frame: closed shape, record id grammar, requestId only when given, user text never white-labelled", () => {
+	const own = P.userMessageFrame({ id: "s1-3", text: "mi engram y Gentle Shell", attachments: [] }, "req-1");
+	assert.deepEqual(own, { type: "user_message", messageId: "s1-3", text: "mi engram y Gentle Shell", requestId: "req-1" });
+	const other = P.userMessageFrame({ id: "s1-3", text: "x", attachments: [{ name: "a.png", size: 3, mime: "image/png", path: "/etc" }] });
+	assert.deepEqual(other, { type: "user_message", messageId: "s1-3", text: "x", attachments: [{ name: "a.png", size: 3, mime: "image/png" }] });
+	assert.throws(() => P.userMessageFrame({ id: "h3", text: "x" }), /user message/);
+	assert.throws(() => P.userMessageFrame({ id: "s0-1", text: "x" }, "a b"), /user message/);
+});
+
+test("user_message frame is byte-bounded below the island reader's limit: whole code points, marked clipped", () => {
+	const text = "€".repeat(P.LIMITS.maxTextChars); // 196,608 UTF-8 bytes of text alone
+	const frame = P.userMessageFrame({ id: "s0-1", text }, "r1");
+	const bytes = P.encodeServerFrame(frame, 99).length;
+	assert.ok(bytes <= 192 * 1024, `${bytes} bytes`);
+	assert.equal(frame.clipped, true);
+	assert.ok(text.startsWith(frame.text) && frame.text.length > 60_000, "a prefix, cut on whole code points");
+	const small = P.userMessageFrame({ id: "s0-1", text: "\n".repeat(P.LIMITS.maxTextChars) });
+	assert.ok(P.encodeServerFrame(small, 1).length <= 192 * 1024);
+	assert.equal(small.clipped, undefined, "an escaped 64 Ki text still fits whole");
+});
+
+test("user_message frame stays within 192 KiB with every field: clipped, the longest requestId and the largest seq (F5)", () => {
+	const limit = 192 * 1024;
+	const requestId = "r".repeat(64);
+	const attachments = Array.from({ length: 8 }, (_, i) => ({ name: `${"n".repeat(120)}${i}.png`, size: Number.MAX_SAFE_INTEGER, mime: "image/png" }));
+	// sweep the texts around the cut: the encoded frame (seq + LF included) never passes the limit
+	let worst = 0;
+	for (const unit of ["€", "\"", "😀"]) {
+		const base = Buffer.byteLength(JSON.stringify(P.userMessageFrame({ id: "s99999-99999", text: "", attachments }, requestId)));
+		const per = Buffer.byteLength(JSON.stringify(unit)) - 2;
+		const around = Math.floor((limit - base) / per);
+		for (let n = around - 40; n <= around + 40; n += 1) {
+			const text = unit.repeat(Math.min(n, P.LIMITS.maxTextChars));
+			const frame = P.userMessageFrame({ id: "s99999-99999", text, attachments }, requestId);
+			const bytes = P.encodeServerFrame(frame, Number.MAX_SAFE_INTEGER).length;
+			worst = Math.max(worst, bytes);
+			assert.ok(bytes <= limit, `${JSON.stringify(unit)} × ${n}: ${bytes} bytes`);
+			if (frame.text.length < text.length) assert.equal(frame.clipped, true, "a cut text is marked");
+		}
+	}
+	assert.ok(worst > limit - 64, `the sweep reached the bound (${worst})`);
+});
+
+// ----- K2-05 attachments (L11 2a, Gentle Dot send{attachments}) ----------------------------------
+
+test("upload: one chunk of one file, rebuilt; anything off-grammar is bad_request", () => {
+	const chunk = { type: "upload", requestId: "up-1", name: "foto final.png", size: 3, offset: 0, data: "AAAA", extra: "/etc/passwd" };
+	assert.deepEqual(P.decodeClientLine(line(chunk)).frame, { type: "upload", requestId: "up-1", name: "foto final.png", size: 3, offset: 0, data: Buffer.from("AAAA", "base64") });
+	assert.deepEqual(P.decodeClientLine(line({ ...chunk, size: 0, data: "" })).frame.data, Buffer.alloc(0), "an empty file is one empty chunk");
+	for (const bad of [
+		{ ...chunk, requestId: "a b" },
+		{ ...chunk, requestId: undefined },
+		{ ...chunk, name: "" },
+		{ ...chunk, name: "x".repeat(256) },
+		{ ...chunk, name: "a\u0000b" },
+		{ ...chunk, size: -1 },
+		{ ...chunk, size: 1.5 },
+		{ ...chunk, size: "3" },
+		{ ...chunk, offset: -1 },
+		{ ...chunk, offset: 4 },
+		{ ...chunk, data: "not base64!" },
+		{ ...chunk, data: "" },
+		{ ...chunk, data: "A".repeat(P.LIMITS.maxUploadChunkChars + 4) },
+		{ ...chunk, path: undefined, data: undefined },
+	]) assert.deepEqual(P.decodeClientLine(line(bad)), { error: "bad_request" }, JSON.stringify(bad).slice(0, 120));
+	// one whole chunk frame fits the inbound frame bound
+	const biggest = { ...chunk, name: "x".repeat(255), requestId: "r".repeat(64), size: Number.MAX_SAFE_INTEGER, offset: Number.MAX_SAFE_INTEGER, data: "A".repeat(P.LIMITS.maxUploadChunkChars) };
+	assert.ok(Buffer.byteLength(JSON.stringify(biggest)) < P.LIMITS.maxFrameBytes);
+});
+
+test("send: attachments are 1-10 daemon ids, never a path; with files the text may be empty", () => {
+	const id = "a-0123456789abcdef";
+	assert.deepEqual(P.decodeClientLine(line({ type: "send", text: "mirá", requestId: "r1", attachments: [id] })).frame, { type: "send", text: "mirá", images: [], requestId: "r1", attachments: [id] });
+	assert.deepEqual(P.decodeClientLine(line({ type: "send", text: "", attachments: [id] })).frame, { type: "send", text: "", images: [], attachments: [id] });
+	const ten = Array.from({ length: 10 }, (_, i) => `a-${i.toString(16).padStart(16, "0")}`);
+	assert.equal(P.decodeClientLine(line({ type: "send", text: "x", attachments: ten })).frame.attachments.length, 10);
+	for (const attachments of [[], [...ten, "a-ffffffffffffffff"], ["../etc/passwd"], ["/ws/uploads/a-0123456789abcdef/x"], ["a-0123456789ABCDEF"], [{ uploadId: id, name: "x" }], [id, id], id, null]) {
+		assert.deepEqual(P.decodeClientLine(line({ type: "send", text: "x", attachments })), { error: "bad_request" }, JSON.stringify(attachments));
+	}
+	assert.deepEqual(P.decodeClientLine(line({ type: "send", text: "  " })), { error: "bad_request" }, "no files: the text is required");
+	assert.deepEqual(P.decodeClientLine(line({ type: "upload_discard", id, junk: 1 })).frame, { type: "upload_discard", id });
+	assert.deepEqual(P.decodeClientLine(line({ type: "upload_discard", id: "../x" })), { error: "bad_request" });
+});
+
+test("uploaded frame: the stored file as its chip shows it, never its path", () => {
+	const frame = P.uploadedFrame("up-1", { id: "a-0123456789abcdef", name: "nota.txt", size: 4, mime: "application/octet-stream", path: "/secret/ws/uploads/x" });
+	assert.deepEqual(frame, { type: "uploaded", requestId: "up-1", attachment: { id: "a-0123456789abcdef", name: "nota.txt", size: 4, mime: "application/octet-stream" } });
+	for (const code of ["file_too_large", "message_too_large", "too_many_files", "upload_failed", "attachment_not_found"]) assert.equal(P.errorFrame(code).code, code);
 });
