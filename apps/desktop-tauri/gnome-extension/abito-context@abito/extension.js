@@ -110,6 +110,8 @@ function _writePrivatePng(bytes) {
 export default class AbitoContextExtension extends Extension {
     enable() {
         this._history = []; // Meta.Window, most recent first
+        this._issued = new Map(); // opaque id this extension issued -> WeakRef(Meta.Window); the Shell's own window id never leaves
+        this._issuedOf = new WeakMap(); // Meta.Window -> the opaque id already issued for it
         this._unmanaged = new Map(); // window -> signal id
         this._gate = new TokenGate(); // the launch token Koda registered, if any
         this._watches = []; // bus name watches that release a token when its owner leaves
@@ -134,6 +136,9 @@ export default class AbitoContextExtension extends Extension {
         for (const [win, id] of this._unmanaged) win.disconnect(id);
         this._unmanaged.clear();
         this._history = [];
+        this._issued?.clear();
+        this._issued = null;
+        this._issuedOf = null;
     }
 
     _remember(win) {
@@ -226,7 +231,7 @@ export default class AbitoContextExtension extends Extension {
             const id = app?.get_id() ?? win.get_wm_class() ?? '';
             const name = app?.get_name() ?? win.get_wm_class() ?? '';
             if (`${id} ${name} ${win.get_wm_class() ?? ''}`.toLowerCase().includes('abito') || !name.trim()) continue;
-            invocation.return_value(new GLib.Variant('(tsss)', [win.get_id(), id, name, win.get_title() ?? '']));
+            invocation.return_value(new GLib.Variant('(tsss)', [this._issueId(win), id, name, win.get_title() ?? '']));
             return;
         }
         invocation.return_value(new GLib.Variant('(tsss)', [0, '', '', '']));
@@ -261,16 +266,27 @@ export default class AbitoContextExtension extends Extension {
         return _writePrivatePng(stream.steal_as_bytes());
     }
 
-    // An opaque id from PickWindow (or from this extension's own history): found in the history first, then in
-    // the live window list, so a window that was refocused in between is still found.
+    // An opaque id this extension issued in PickWindow: it names the window only inside this extension (the
+    // Shell's own window id is never read or sent). The window is looked up through a weak reference, so a
+    // window that closed in between is simply gone.
     _windowById(id) {
-        for (const win of this._history) {
-            if (win.get_id() === id) return win;
+        return this._issued?.get(id)?.deref() ?? null;
+    }
+
+    // One random, non-guessable, positive id per window, reused while the window lives; ids of closed windows
+    // are dropped each time a new one is issued so the table stays as small as the open windows.
+    _issueId(win) {
+        const known = this._issuedOf.get(win);
+        if (known) return known;
+        for (const [id, ref] of this._issued) {
+            if (!ref.deref()) this._issued.delete(id);
         }
-        for (const actor of global.get_window_actors()) {
-            const win = actor.meta_window;
-            if (win && win.get_id() === id) return win;
-        }
-        return null;
+        let id;
+        do {
+            id = GLib.random_int_range(1, 2147483647);
+        } while (this._issued.has(id));
+        this._issued.set(id, new WeakRef(win));
+        this._issuedOf.set(win, id);
+        return id;
     }
 }
