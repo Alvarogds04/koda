@@ -105,6 +105,8 @@
   <script defer src="integrations-finance.js"></script>
   <script defer src="integrations-notion.js"></script>
   <script defer src="integrations-n8n.js"></script>
+  <!-- K2-13 T6b-3: Ajustes → Minikodas (Telegram + transcription). One classic script: pure view-model + its card. -->
+  <script defer src="minikodas-settings.js"></script>
 </head>
 <body>
   <main id="capsule" data-phase="compact" data-edge="top">
@@ -142,6 +144,11 @@
           <button id="open-new" class="tab" type="button" aria-label="Nueva conversación" aria-pressed="false"><span class="ico" data-cc-icon="plus"></span></button>
         </div>
         <div class="header-actions">
+          <!-- K2-13 T6b-1 «Hoy» (design/k2-13-minikodas/02-hoy-todo-en-la-isla.html): the island's day. The notch keeps home /
+               «+» out of the header (HU-057: the pager owns those), so the entry is a fourth disc in the ONE visible control
+               cluster, next to Ajustes / Silenciar / Plegar, and it grows the notch to 300 — the height the chat already
+               reaches. The count of what waits rides its accessible name (no badge on a 24px disc). -->
+          <button id="open-hoy" class="hdr-action" type="button" aria-label="Hoy" aria-pressed="false"><span class="ico" data-cc-icon="stack"></span></button>
           <button id="open-settings" class="hdr-action" type="button" aria-label="Ajustes"><span class="ico" data-cc-icon="gear"></span></button>
           <button id="toggle-sound" class="hdr-action" type="button" aria-label="Silenciar" aria-pressed="false"><span class="ico" data-cc-icon="speakerOn"></span></button>
           <button id="header-fold" class="hdr-action" type="button" aria-label="Minimizar Koda" title="Minimizar Koda"><span class="ico" data-cc-icon="chevronUp"></span></button>
@@ -169,6 +176,28 @@
           <button id="nusa-tab-agentes" type="button" role="tab" data-tab="agentes" aria-selected="false" aria-label="Agentes" tabindex="-1"><i class="nd"></i><span class="ni" aria-hidden="true"></span></button>
           <button id="nusa-tab-avisos" type="button" role="tab" data-tab="avisos" aria-selected="false" aria-label="Avisos" tabindex="-1"><i class="nd"></i><span class="ni" aria-hidden="true"></span></button>
         </div>
+      </section>
+      <!-- K2-13 T6b-1 «Hoy»: the island's day, from the daemon's folded `hoy` items (agentclient.rs). It is a SIBLING of
+           #nusa — the notch keeps its own three-tab pager — and shows only in the idle expanded overview. Rows and their
+           Aprobar / Rechazar buttons are built at runtime by island-nusa-bodies.js with textContent: the item text comes
+           from models and Telegram posts, so it is NEVER markup, and a row without a real pending proposal has no button
+           to press. Three tabs (Propuestas · Resultados · Errores) with roving focus. -->
+      <section id="hoy" aria-label="Hoy">
+        <div id="hoy-head">
+          <span id="hoy-summary"></span>
+          <span id="hoy-problem" role="status" hidden></span>
+        </div>
+        <div id="hoy-tabs" role="tablist" aria-label="Qué ver en «Hoy»">
+          <button id="hoy-tab-propuestas" type="button" role="tab" data-tab="propuestas" aria-selected="true" aria-controls="hoy-panel" tabindex="0">Propuestas <span class="hoy-n" aria-hidden="true">0</span></button>
+          <button id="hoy-tab-resultados" type="button" role="tab" data-tab="resultados" aria-selected="false" aria-controls="hoy-panel" tabindex="-1" aria-label="Resultados">Resultados <span class="hoy-n" aria-hidden="true">0</span></button>
+          <button id="hoy-tab-errores" type="button" role="tab" data-tab="errores" aria-selected="false" aria-controls="hoy-panel" tabindex="-1" aria-label="Errores">Errores <span class="hoy-n" aria-hidden="true">0</span></button>
+        </div>
+        <div id="hoy-panel" role="tabpanel" aria-labelledby="hoy-tab-propuestas" tabindex="-1">
+          <ul id="hoy-list" aria-label="Lo de hoy"></ul>
+          <p id="hoy-empty" hidden></p>
+        </div>
+        <p id="hoy-foot" hidden></p>
+        <p id="hoy-live" class="sr-only" role="status" aria-live="polite"></p>
       </section>
       <section id="overview-view" aria-label="Vista general">
         <div class="card card-left">
@@ -364,6 +393,10 @@
             <section id="integrations-notion" hidden></section>
             <section id="integrations-n8n" hidden></section>
           </div><!-- /connections-more -->
+          <!-- K2-13 T6b-3 (S7, S10, S16, S18): Ajustes → Minikodas (artboard 06). Like #connections-more it lives OUT of
+               #settings-body because render() wipes the body; settings.js re-appends it on its own tab, so the card keeps
+               its state (and a half-typed api_id) while other tabs are open. -->
+          <section id="minikodas-settings" hidden></section>
           <p id="settings-live" class="sr-only" role="status" aria-live="polite"></p>
         </div>
         <p id="chat-live" class="sr-only" role="status" aria-live="polite"></p>

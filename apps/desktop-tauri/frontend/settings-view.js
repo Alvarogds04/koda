@@ -18,6 +18,9 @@
   const TABS = Object.freeze([
     Object.freeze({ id: 'general', title: 'General', icon: 'gear', label: 'General', hint: '' }),
     Object.freeze({ id: 'accounts', title: 'Conexiones', icon: 'plug', label: 'Conexiones', hint: '' }),
+    // K2-13 T6b-3 (S7/S10): «Minikodas» is where the Telegram account is connected and the transcription is chosen. The
+    // section lives in its own card (minikodas-settings.js), so this tab owns it and nothing else.
+    Object.freeze({ id: 'minikodas', title: 'Minikodas', icon: 'chip', label: 'Minikodas', hint: '' }),
     Object.freeze({ id: 'pills', title: 'Blobs', icon: 'ring', label: 'Blobs', hint: '' }),
     Object.freeze({ id: 'appearance', title: 'Apariencia', icon: 'eye', label: 'Apariencia', hint: '' }),
 

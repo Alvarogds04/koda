@@ -16,7 +16,11 @@
   // after the app and the tabs' arrows step aside; «Hablar con Koda» brings the tab title and the arrows back.
   const appItem = () => (nusa.dataset.app && window.AbitoShortcuts ? window.AbitoShortcuts.row().find(it => it.id === nusa.dataset.app) : null);
   const appFocused = () => !!appItem();
-  function paintTitle() { const app = appItem(); $('nusa-title').textContent = app ? app.label : (capsule && N.takeoverTitle(takeoverData())) || tabTitle; }
+  // K2-13 T6b-1: while «Hoy» is open the notch is the day, so its title says so (the panel's own line says how many wait).
+  function paintTitle() {
+    const app = appItem();
+    $('nusa-title').textContent = capsule.dataset.hoy === 'open' ? 'Hoy' : app ? app.label : (capsule && N.takeoverTitle(takeoverData())) || tabTitle;
+  }
   function paintArrows() { const a = N.arrows(current); $('nusa-prev').hidden = appFocused() || !a.prev; $('nusa-next').hidden = appFocused() || !a.next; }
 
   // hover icons (20px grid, stroke), one per tab id
@@ -64,6 +68,7 @@
   nusa.addEventListener('wheel', e => { const d = N.wheelStep(e); if (d) { e.preventDefault(); go(d); } }, { passive: false });
 
   const active = () => capsule && capsule.dataset.phase === 'expanded' && capsule.dataset.view === 'overview' && !capsule.dataset.card
+    && capsule.dataset.hoy !== 'open' /* the pager is behind Hoy: an arrow key must never walk hidden tabs */
     && !['pending', 'expired', 'outcome'].includes(capsule.dataset.question || '');
   const typingIn = el => !!el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName));
   doc.addEventListener('keydown', e => {

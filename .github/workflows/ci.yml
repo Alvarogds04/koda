@@ -71,9 +71,10 @@ jobs:
           DIR="$RUNNER_TEMP/gentle-engine"
           mkdir -p "$DIR"
           cp apps/desktop-tauri/packaging/runtime/package.json apps/desktop-tauri/packaging/runtime/package-lock.json "$DIR/"
+          cp -r apps/desktop-tauri/packaging/runtime/stubs "$DIR/stubs"
           # Retried ONLY on registry/network errors; any other npm failure fails at once (same policy as the Pi install above).
           for attempt in 1 2 3 4 5 6; do
-            if (cd "$DIR" && npm ci --ignore-scripts --omit=dev --no-audit --no-fund 2>&1 | tee "$RUNNER_TEMP/npm-gentle.log"); then break; fi
+            if (cd "$DIR" && npm ci --install-links --ignore-scripts --omit=dev --no-audit --no-fund 2>&1 | tee "$RUNNER_TEMP/npm-gentle.log"); then break; fi
             if ! grep -qE 'npm error code (ETARGET|ETIMEDOUT|ECONNRESET|ECONNREFUSED|EAI_AGAIN|ENOTFOUND|E5[0-9][0-9]|ESOCKETTIMEDOUT|EPIPE)|network (timeout|socket)' \
               "$RUNNER_TEMP/npm-gentle.log"; then
               echo "npm failed with a non-network error: not retrying"; exit 1

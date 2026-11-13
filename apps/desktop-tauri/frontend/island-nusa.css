@@ -454,3 +454,100 @@ html #capsule[data-notice-list="open"] #nusa :is(#nusa-dots, #nusa-prev, #nusa-n
 #question[data-enter="next"] :is(#question-asker, #question-body, #question-approval, #question-options) { animation: k2-next-in .32s var(--ease-out); }
 html[data-motion="reduce"] #question[data-enter] :is(#question-asker, #question-body, #question-approval, #question-options) { animation: none; transform: none; }
 @media (prefers-reduced-motion: reduce) { #question[data-enter] :is(#question-asker, #question-body, #question-approval, #question-options) { animation: none; transform: none; } }
+
+/* ── K2-13 T6b-1 «Hoy» (design/k2-13-minikodas/02-hoy-todo-en-la-isla.html, the human's choice L38) ─────────────────────
+   The island's day: three tabs (Propuestas · Resultados · Errores) over the daemon's stored items. The notch grows to 300
+   — the height the chat already reaches (geometry::CHAT_MAX_H), so no new measure is invented — and the Hoy panel takes
+   the notch's left column while Koda keeps its 92px one. TOKENS ONLY: #000 island (N:7), white ink .62/.78 (N:5, N:170),
+   fills .06/.12/.2 (N:88, N:51, N:109), --go/--sun/--red-11/--island-live (S:11-16), radii 10/99 (N:88, S:28-29), type
+   13/12/11 (N:67), the notch font (N:4). No token is invented and nothing here is themed: the island is black in both. */
+#hoy { display: none; }
+/* #island's box is written inline by island.js every frame, so the grown box can only win with !important. It goes back to
+   the 150 notch the moment data-hoy is gone (one attribute is the whole state). */
+#capsule[data-hoy="open"][data-phase="expanded"][data-view="overview"] #island { height: 300px !important; }
+#capsule[data-hoy="open"][data-phase="expanded"][data-view="overview"] #nusa { height: 300px; }
+/* an empty day needs no room: Hoy stays the 150 notch and only says that nothing waits (the artboard's fifth frame) */
+#capsule[data-hoy="open"][data-hoy-empty="true"][data-phase="expanded"][data-view="overview"] #island { height: 150px !important; }
+#capsule[data-hoy="open"][data-hoy-empty="true"][data-phase="expanded"][data-view="overview"] #nusa { height: 150px; }
+/* the Inicio body would otherwise show through the row gaps: it goes invisible but KEEPS ITS GRID CELL, so the right column
+   (Koda + state chip) stays where it is instead of collapsing into the Hoy panel's place */
+#capsule[data-hoy="open"] #nusa-panel { visibility: hidden; }
+/* the pager's arrows are for the 150 notch; at 300 they land in the middle of the day. The dots below Hoy stay. */
+#capsule[data-hoy="open"] #nusa-prev, #capsule[data-hoy="open"] #nusa-next { display: none; }
+#capsule[data-phase="expanded"][data-view="overview"][data-hoy="open"]:not([data-card]):not([data-question="pending"]):not([data-question="expired"]):not([data-question="outcome"]) #hoy {
+  display: flex; flex-direction: column; gap: 4px; position: absolute; left: 44px; right: 148px; top: 30px; bottom: 16px;
+  z-index: 4; min-width: 0; color: #fff; font-size: 12px; }
+/* the entry: a fourth disc in the header's visible control cluster (the notch hides .tabs, HU-057), same 36x44 zone and
+   24px ::after disc as Ajustes / Silenciar / Plegar, and out of the way of a take-over (which owns the island). */
+/* F1: no `top` here — .header-actions already carries the -9px offset in the take-over layout, and repeating it on the
+   disc alone put the Hoy icon 9 px above Ajustes / Silenciar / Plegar (measured -15 vs -6). */
+#capsule[data-phase="expanded"][data-view="overview"] #island-header #open-hoy { position: relative; width: 36px; height: 44px; min-width: 36px; flex: 0 0 36px;
+  margin: 0; border: 0; border-radius: 0; background: transparent; color: #fff; display: grid; place-items: center; pointer-events: auto; cursor: pointer; }
+#capsule[data-phase="expanded"][data-view="overview"] #island-header #open-hoy::after { content: ""; position: absolute; display: block; top: 10px; right: 6px; bottom: 10px; left: 6px;
+  width: auto; height: auto; transform: none; z-index: -1; border-radius: 50%; background: rgba(255,255,255,.12); }
+#capsule[data-phase="expanded"][data-view="overview"] #island-header #open-hoy:hover::after { background: rgba(255,255,255,.2); }
+#capsule[data-phase="expanded"][data-view="overview"] #island-header #open-hoy[aria-pressed="true"] { color: #000; }
+#capsule[data-phase="expanded"][data-view="overview"] #island-header #open-hoy[aria-pressed="true"]::after { background: #fff; }
+#capsule[data-phase="expanded"][data-view="overview"] #island-header #open-hoy:focus-visible { outline: 2px solid #fff; outline-offset: -4px; border-radius: 50%; }
+#capsule[data-takeover] #island-header #open-hoy { display: none; }
+#capsule:not([data-phase="expanded"]) #island-header #open-hoy, #capsule[data-view="chat"] #island-header #open-hoy { display: none; }
+
+#hoy-head { flex: none; display: flex; align-items: center; gap: 8px; height: 20px; min-width: 0; font-size: 12px; color: rgba(255,255,255,.62); white-space: nowrap; }
+#hoy-summary { overflow: hidden; text-overflow: ellipsis; }
+#hoy-problem { margin-left: auto; font-size: 11px; color: var(--sun); overflow: hidden; text-overflow: ellipsis; }
+
+/* the tabs: the artboard's pills (20 visible, 24 with the hit ring), selected by FILL and by weight, never by colour alone */
+#hoy-tabs { flex: none; display: flex; gap: 2px; height: 22px; }
+#hoy-tabs [role="tab"] { position: relative; height: 20px; padding: 0 8px; border: 0; border-radius: 99px; background: linear-gradient(rgba(255,255,255,.06), rgba(255,255,255,.06)) #000; color: rgba(255,255,255,.78);
+  font: inherit; font-size: 11px; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+#hoy-tabs [role="tab"]::after { content: ""; position: absolute; inset: -2px 0; }
+#hoy-tabs [role="tab"]:hover { background: rgba(255,255,255,.12); color: #fff; }
+#hoy-tabs [role="tab"][aria-selected="true"] { background: #fff; color: #000; font-weight: 600; }
+#hoy-tabs [role="tab"]:focus-visible { outline: 2px solid #fff; outline-offset: 1px; }
+#hoy-tabs .hoy-n { font-variant-numeric: tabular-nums; min-width: 8px; text-align: center; }
+
+#hoy-panel { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 2px; }
+#hoy-list { list-style: none; margin: 0; padding: 0; flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 2px;
+  scrollbar-width: thin; scrollbar-color: rgba(255,255,255,.4) transparent; }
+/* a row: 32 for two lines, 44 when a result carries its summary. Opaque .06 over the black island, so the veil never runs under the text. */
+.hoy-row { flex: none; display: flex; align-items: center; gap: 10px; min-height: 32px; padding: 4px 10px; border-radius: 10px;
+  background: linear-gradient(rgba(255,255,255,.06), rgba(255,255,255,.06)) #000; min-width: 0; }
+.hoy-row:focus-visible { outline: 2px solid #fff; outline-offset: -2px; }
+.hoy-row[data-kind="result"] { min-height: 44px; }
+.hoy-glyph { flex: none; width: 14px; height: 14px; display: grid; place-items: center; color: rgba(255,255,255,.62); }
+.hoy-glyph svg { width: 14px; height: 14px; }
+/* shape + word, never colour alone: each kind has its own glyph (up / down / send / doc / warning) */
+.hoy-row[data-kind="proposal"] .hoy-glyph { color: var(--go); }
+.hoy-row[data-kind="proposal"][data-action="sell"] .hoy-glyph { color: var(--sun); }
+.hoy-row[data-kind="proposal"][data-action="send"] .hoy-glyph { color: var(--island-live); }
+.hoy-row[data-kind="error"] .hoy-glyph { color: var(--red-11); }
+.hoy-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.hoy-tt { font-size: 12px; font-weight: 600; line-height: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* B3: a proposal's title is its TARGET (what the buy / sell / send is about, and to whom a send goes). It is never cut:
+   the row grows over as many lines as the daemon's 200 characters need, and the list scrolls. */
+.hoy-row[data-kind="proposal"] .hoy-tt { white-space: normal; overflow: visible; text-overflow: clip; overflow-wrap: anywhere; }
+.hoy-sub { font-size: 11px; line-height: 14px; color: rgba(255,255,255,.62); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hoy-row[data-kind="result"] .hoy-sub, .hoy-row[data-kind="error"] .hoy-sub { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.hoy-chip { align-self: flex-start; margin-top: 1px; font-size: 11px; line-height: 14px; padding: 0 6px; border-radius: 99px; background: rgba(255,255,255,.12); color: #fff; white-space: nowrap; }
+/* what was decided, in words: approved keeps its row and says when it ran; rejected is struck through and says nothing ran */
+.hoy-row[data-state="approved"] .hoy-tt { color: var(--go); }
+.hoy-row[data-state="rejected"] .hoy-tt { color: rgba(255,255,255,.62); text-decoration: line-through; }
+.hoy-state { flex: none; display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 600; white-space: nowrap; }
+.hoy-state svg { width: 11px; height: 11px; }
+.hoy-row[data-state="approved"] .hoy-state { color: var(--go); }
+.hoy-row[data-state="rejected"] .hoy-state { color: rgba(255,255,255,.62); }
+/* Aprobar / Rechazar: 24 visible (the artboard) inside a 28 hit ring; Aprobar is the white face, never the default focus */
+.hoy-acts { flex: none; display: flex; gap: 4px; }
+.hoy-btn { position: relative; height: 24px; padding: 0 10px; border: 0; border-radius: 99px; background: rgba(255,255,255,.12); color: #fff;
+  font: 600 11.5px/24px "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif; cursor: pointer; white-space: nowrap; }
+.hoy-btn::after { content: ""; position: absolute; inset: -2px; }
+.hoy-btn:hover:not(:disabled) { background: rgba(255,255,255,.2); }
+.hoy-btn:disabled { opacity: .4; cursor: default; }
+.hoy-btn:focus-visible { outline: 2px solid #fff; outline-offset: 1px; }
+.hoy-approve { background: #fff; color: #000; }
+.hoy-approve:hover:not(:disabled) { background: #e6e6e6; }
+#hoy-empty { flex: none; margin: 0; padding: 10px; border-radius: 10px; background: linear-gradient(rgba(255,255,255,.06), rgba(255,255,255,.06)) #000; font-size: 12px; color: rgba(255,255,255,.62); text-align: center; }
+#hoy-foot { flex: none; margin: 0; min-height: 14px; font-size: 11px; color: rgba(255,255,255,.62); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#hoy-foot[hidden], #hoy-empty[hidden], #hoy-problem[hidden] { display: none; }
+html[data-motion="reduce"] #capsule #island, html[data-motion="reduce"] #capsule #nusa { transition: none; }
+@media (prefers-reduced-motion: reduce) { #capsule #island, #capsule #nusa { transition: none; } }

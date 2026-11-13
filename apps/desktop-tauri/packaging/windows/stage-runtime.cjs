@@ -10,7 +10,9 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { DAEMON_FILES, HARNESS_FILES, PI_FILES } = require('../lib.cjs');
 const crate = path.resolve(__dirname, '../..');
-const BINARY_FILES = ['koda.exe', 'abito-notice-relay.exe', 'abito-private-session.exe', 'abito-install.json'];
+// K2-13 T2c-2: koda-transcribe.exe (the Minikodas' sherpa-onnx transcription helper) installs beside the island; the
+// pinned LGPL ffmpeg.exe travels inside the runtime archive (runtime\ffmpeg.exe), removed with the runtime directory.
+const BINARY_FILES = ['koda.exe', 'abito-notice-relay.exe', 'abito-private-session.exe', 'koda-transcribe.exe', 'abito-install.json'];
 const RUNTIME_FILES = [...DAEMON_FILES.map(f => `desktop-daemon/${f}`), ...HARNESS_FILES.map(f => `desktop-harness/${f}`), ...PI_FILES.map(f => `desktop-pi/${f}`)].sort();
 const ARCHIVE_NAME = 'koda-runtime.tar.gz';
 const DEFAULT_OUT = path.join(crate, 'dist/windows-runtime');
@@ -263,6 +265,24 @@ function stage(out, runtimeArchive) {
   fs.writeFileSync(path.join(out, 'runtime.nsh'), nsisInclude(out));
   return archiveSha;
 }
+// K2-13 T2c-2 (S8, S15): `cargo build --release --bins` builds koda-transcribe.exe with the island and its two
+// helpers, but the Windows preview workflow copies only `koda`, `abito-notice-relay` and `abito-private-session`
+// from target/release into dist/, and every BINARY_FILE must be in $BINDIR before makensis Files it. The default
+// dist/ is this build's own output directory, so the closed set is completed there from the release directory: a
+// missing binary is copied, a binary the caller already staged is never replaced, and a host that did not build the
+// Windows binaries (Linux/macOS) copies nothing and creates nothing. Returns exactly what it staged.
+function completeBinaries(dist, releaseDir = path.join(crate, 'target/release')) {
+  const staged = [];
+  for (const f of BINARY_FILES) {
+    if (fs.lstatSync(path.join(dist, f), { throwIfNoEntry: false })) continue;
+    const src = path.join(releaseDir, f);
+    if (!fs.lstatSync(src, { throwIfNoEntry: false })?.isFile()) continue;
+    if (staged.length === 0) fs.mkdirSync(dist, { recursive: true });
+    fs.copyFileSync(src, path.join(dist, f));
+    staged.push(f);
+  }
+  return staged;
+}
 function parseArgs(argv) {
   const opts = {};
   const takes = { '--out': 'out', '--runtime-archive': 'runtimeArchive' };
@@ -290,4 +310,4 @@ if (require.main === module) {
     }
   }
 }
-module.exports = { ARCHIVE_NAME, BINARY_FILES, RUNTIME_FILES, validateStage, nsisInclude };
+module.exports = { ARCHIVE_NAME, BINARY_FILES, RUNTIME_FILES, completeBinaries, validateStage, nsisInclude };

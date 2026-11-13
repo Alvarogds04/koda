@@ -46,6 +46,7 @@ console.log(`runtime archive: ${archive} sha256 ${sha(fs.readFileSync(archive))}
 function stage() {
   const dir = T.make('koda-rt-stage-');
   fs.writeFileSync(path.join(dir, 'koda'), '#!/bin/sh\necho toy binary\n', { mode: 0o755 });
+  fs.writeFileSync(path.join(dir, 'koda-transcribe'), '#!/bin/sh\necho toy transcriber\n', { mode: 0o755 });
   fs.writeFileSync(path.join(dir, 'koda-launcher'), L.launcherText(), { mode: 0o755 });
   fs.writeFileSync(path.join(dir, 'koda.png'), 'png-bytes', { mode: 0o644 });
   fs.writeFileSync(path.join(dir, `${L.IDENTIFIER}.desktop`), L.desktopText(), { mode: 0o644 });

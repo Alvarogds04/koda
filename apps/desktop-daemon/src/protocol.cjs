@@ -15,6 +15,11 @@
 const { SCHEMA: CONNECTORS_SCHEMA, buildCatalog, buildConnectors } = require("./connectors.cjs");
 const { SCHEMA: MCP_IMPORT_SCHEMA, buildFiles, buildServers } = require("./mcp-import.cjs");
 const { SCHEMA: SESSIONS_SCHEMA, buildSessions } = require("./sessions.cjs");
+const { validateRecipe, recipeToJson, ID_PATTERN: MINIKODA_ID } = require("./minikodas/recipe.cjs");
+const { validateTranscriptionSetting } = require("./minikodas/transcribe-setting.cjs");
+// The session contract (printable ASCII, bounded) is defined where the login produces it, and shared here: the frame
+// builder, the decoder and the login cannot disagree about what a `telegram_session` may carry.
+const { isCarriableSession, SESSION_MAX_CHARS } = require("./minikodas/telegram.cjs");
 // T2 white-label: only assistant/harness-generated text the island will show
 // passes through presentText; the user's own prompt text never does.
 const { createTextFilter, presentText, shouldShowToast } = require("./white-label.cjs");
@@ -61,6 +66,15 @@ const SAFE_ID = /^[A-Za-z0-9_.:-]{1,128}$/;
 const BASE64 = /^[A-Za-z0-9+/]+={0,2}$/;
 /** Any control character (tabs and newlines included) is refused in short labels/ids. */
 const CONTROL = /[\u0000-\u001f\u007f]/;
+/**
+ * K2-13 (S10/S20) Telegram frames. Bounds are what a session string, a code and a 2FA password can be, never unbounded:
+ * the session contract (printable ASCII, bounded) lives in minikodas/telegram.cjs, next to the login that produces it, so
+ * the frame builder, the frame decoder and the login can never disagree.
+ */
+const TELEGRAM_LIMITS = Object.freeze({ maxSession: SESSION_MAX_CHARS, maxCode: 32, maxPassword: 1024, maxNotice: 300, maxApiId: 2 ** 31 - 1 });
+/** An E.164 phone number: `+`, a non-zero country digit, 7-15 digits in total. */
+const E164 = /^\+[1-9]\d{6,14}$/;
+const API_HASH = /^[0-9a-f]{32}$/;
 /** Hook-managed agents (agents.cjs); the closed set of agent_connect/agent_disconnect targets. */
 const AGENT_IDS = Object.freeze(["pi", "claude-code", "codex", "statusline", "copilot-cli", "opencode"]);
 const PLAN_HASH = /^[0-9a-f]{64}$/;
@@ -467,10 +481,80 @@ function validateClientFrame(raw) {
 		case "auth_cancel":
 			if (!isString(raw.flowId, 128)) return undefined;
 			return { type: "auth_cancel", flowId: raw.flowId };
+		// ----- K2-13 Minikodas and «Hoy» -----
+		case "minikodas_list":
+		case "hoy_list":
+			return { type: raw.type };
+		case "minikoda_get":
+		case "minikoda_approve_create":
+		case "minikoda_delete":
+		case "minikoda_launch":
+			if (!isMinikodaId(raw.id)) return undefined;
+			return { type: raw.type, id: raw.id };
+		case "minikoda_create": {
+			// Shape only (the daemon re-validates with its own minimum period, the clock and the accounts).
+			let recipe;
+			try {
+				recipe = validateRecipe(raw.recipe, { draft: true, minEveryMs: 1 });
+			} catch {
+				return undefined;
+			}
+			const out = { name: recipe.name, when: { ...recipe.when }, reads: { ...recipe.reads }, kit: [...recipe.kit], prompt: recipe.prompt, never: [...recipe.never] };
+			if (recipe.id !== undefined) out.id = recipe.id;
+			if (recipe.model !== undefined) out.model = { ...recipe.model };
+			return { type: "minikoda_create", recipe: out };
+		}
+		// ----- K2-13 transcription setting (S7, S16) -----
+		case "transcription_get":
+			return { type: "transcription_get" };
+		case "transcription_set": {
+			let setting;
+			try {
+				setting = validateTranscriptionSetting(raw.setting);
+			} catch {
+				return undefined;
+			}
+			return { type: "transcription_set", setting };
+		}
+		// ----- K2-13 Telegram (S10/S20) -----
+		case "telegram_status":
+		case "telegram_logout":
+			return { type: raw.type };
+		case "telegram_login_start": {
+			// S10: the api_id/api_hash come from Ajustes and the phone is the person's; all three are validated here and
+			// never logged, stored or echoed back (only the closed frames below can carry Telegram's answers).
+			if (!Number.isSafeInteger(raw.apiId) || raw.apiId <= 0 || raw.apiId > TELEGRAM_LIMITS.maxApiId) return undefined;
+			if (typeof raw.apiHash !== "string" || !API_HASH.test(raw.apiHash)) return undefined;
+			if (typeof raw.phone !== "string" || !E164.test(raw.phone)) return undefined;
+			return { type: "telegram_login_start", apiId: raw.apiId, apiHash: raw.apiHash, phone: raw.phone };
+		}
+		case "telegram_login_code":
+			if (typeof raw.code !== "string" || raw.code === "" || raw.code.length > TELEGRAM_LIMITS.maxCode || CONTROL.test(raw.code)) return undefined;
+			return { type: "telegram_login_code", code: raw.code };
+		case "telegram_login_password":
+			if (typeof raw.password !== "string" || raw.password === "" || raw.password.length > TELEGRAM_LIMITS.maxPassword) return undefined;
+			return { type: "telegram_login_password", password: raw.password };
+		case "telegram_session_restore": {
+			if (!Number.isSafeInteger(raw.apiId) || raw.apiId <= 0 || raw.apiId > TELEGRAM_LIMITS.maxApiId) return undefined;
+			if (typeof raw.apiHash !== "string" || !API_HASH.test(raw.apiHash)) return undefined;
+			// PROTOCOL.md says printable ASCII: a value with a control character or a non-ASCII byte is not a session this
+			// daemon could ever have exported, and the island has no business handing one over.
+			if (!isCarriableSession(raw.session)) return undefined;
+			return { type: "telegram_session_restore", apiId: raw.apiId, apiHash: raw.apiHash, session: raw.session };
+		}
+		case "hoy_approve":
+		case "hoy_reject":
+			// No PIN (L17): only the id travels; any other field (a stray `pin` included) is dropped.
+			if (!isHoyId(raw.id)) return undefined;
+			return { type: raw.type, id: raw.id };
 		default:
 			return undefined;
 	}
 }
+
+const HOY_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const isMinikodaId = (v) => typeof v === "string" && MINIKODA_ID.test(v);
+const isHoyId = (v) => typeof v === "string" && HOY_ID.test(v);
 
 /**
  * Parses one LF-delimited line into a frame. `hello` is only accepted when
@@ -540,6 +624,15 @@ function encodeServerFrame(frame, seq) {
 const EMITTED_ERROR_CODES = new Set([
 	"bad_request", "busy", "not_busy", "unavailable", "rate_limited", "unknown_ask", "paused", "failed",
 	"unknown_proposal", "digest_mismatch", "needs_setup", "signin_failed", "store_not_private",
+	// K2-13 Minikodas and «Hoy»
+	"unknown_minikoda", "not_active", "not_pending", "exists", "limit", "model_unavailable",
+	"unknown_item",
+	// K2-13 Telegram (S10/S20): closed codes, each with a fixed Spanish sentence in minikodas/telegram.cjs
+	"telegram_unavailable", "telegram_already_connected", "telegram_not_awaiting_code", "telegram_not_awaiting_password",
+	"telegram_credentials_invalid", "telegram_code_invalid", "telegram_password_invalid", "telegram_password_required",
+	"telegram_flood_wait", "telegram_session_invalid", "telegram_cancelled", "telegram_login_other_connection", "telegram_failed",
+	// a source ('telegram:@canal') failure never reaches the wire, but the closed set stays one set
+	"telegram_not_connected", "telegram_channel_invalid",
 	"conversations_off", // T4 U1: one continuous chat; new_conversation is refused outright
 	// K2-05 attachments (Gentle Dot uploads.ts refusals): limits, a failed store, an unknown/spent ref
 	"file_too_large", "message_too_large", "too_many_files", "upload_failed", "attachment_not_found",
@@ -945,6 +1038,184 @@ function hooksFrame(data) {
 	return frame;
 }
 
+// ----- K2-13 Minikodas and «Hoy» frames -----------------------------------------------------------
+
+// maxHoyFrameBytes: the island refuses lines over 256 KiB (agentclient.rs); leave room for `seq` and the LF.
+const MINIKODAS_EMIT = Object.freeze({ maxMinikodas: 32, maxHoyItems: 100, maxHoyTextChars: 4000, maxHoyFrameBytes: 200 * 1024 });
+// The plain-language summary of a DRAFT (src/minikodas/summary.cjs): fixed sections, one plain line each.
+const MINIKODA_SUMMARY = Object.freeze({ maxSections: 8, maxTitleChars: 40, maxSectionBytes: 512, maxTextBytes: 3600 });
+const SUMMARY_SECTION_KEYS = Object.freeze(["when", "reads", "does", "shows", "never", "model"]);
+/** A summary section is exactly one plain line: no control, format (bidi, zero-width), separator or surrogate. */
+const SUMMARY_FORBIDDEN = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Cs}]/u;
+/** The whole summary is the same, line by line: only LF separates the sections. */
+const SUMMARY_FORBIDDEN_BLOCK = /[\u0000-\u0009\u000b-\u001f\u007f-\u009f\p{Cf}\p{Zl}\p{Zp}\p{Cs}]/u;
+const RUN_OUTCOMES = new Set(["done", "failed"]);
+const HOY_KINDS = new Set(["result", "proposal", "error"]);
+const HOY_STATUSES = new Set(["pending", "approved", "rejected"]);
+/**
+ * S19 / F4: where a result's text came from. A CLOSED list, mirrored by the island (`agentclient.rs` HOY_PROVENANCE,
+ * `island-nusa.js` labels): YouTube's own subtitles, Parakeet on this PC, or the user's own transcribing account. Only a
+ * `result` may carry it, and only one of these three exact strings.
+ */
+const HOY_PROVENANCE = Object.freeze(["youtube_subtitles", "local_transcription", "remote_transcription"]);
+const PROPOSAL_ACTIONS_EMIT = new Set(["buy", "sell", "send"]);
+const minikodasFail = () => {
+	throw new Error("minikodas frame invalid");
+};
+
+/**
+ * The draft's summary `{sections: [{key, title, text}], text}`: fixed keys, one plain line per field, capped by
+ * count and by bytes. A summary that is off-contract fails the frame; it is never repaired or truncated.
+ */
+function summaryDto(summary) {
+	if (!isObject(summary)) minikodasFail();
+	const extra = Object.keys(summary).filter((k) => k !== "sections" && k !== "text");
+	if (extra.length) minikodasFail();
+	if (!Array.isArray(summary.sections) || summary.sections.length === 0 || summary.sections.length > MINIKODA_SUMMARY.maxSections) minikodasFail();
+	if (typeof summary.text !== "string" || summary.text === "" || Buffer.byteLength(summary.text) > MINIKODA_SUMMARY.maxTextBytes || SUMMARY_FORBIDDEN_BLOCK.test(summary.text)) minikodasFail();
+	const sections = summary.sections.map((s) => {
+		if (!isObject(s) || Object.keys(s).some((k) => !["key", "title", "text"].includes(k))) minikodasFail();
+		if (!SUMMARY_SECTION_KEYS.includes(s.key)) minikodasFail();
+		if (typeof s.title !== "string" || s.title === "" || s.title.length > MINIKODA_SUMMARY.maxTitleChars || SUMMARY_FORBIDDEN.test(s.title)) minikodasFail();
+		if (typeof s.text !== "string" || s.text === "" || Buffer.byteLength(s.text) > MINIKODA_SUMMARY.maxSectionBytes || SUMMARY_FORBIDDEN.test(s.text)) minikodasFail();
+		return { key: s.key, title: s.title, text: s.text };
+	});
+	return { sections, text: summary.text };
+}
+
+/** One Minikoda, rebuilt through the recipe validator. `withPrompt` only for minikoda_get / create replies. */
+function minikodaDto(m, withPrompt) {
+	if (!isObject(m) || (m.status !== "draft" && m.status !== "active")) minikodasFail();
+	let r;
+	try {
+		r = recipeToJson(validateRecipe({ id: m.id, name: m.name, when: m.when, reads: m.reads, kit: m.kit, prompt: typeof m.prompt === "string" ? m.prompt : "-", model: m.model, never: m.never }, { minEveryMs: 1 }));
+	} catch {
+		minikodasFail();
+	}
+	const out = { id: r.id, name: r.name, when: r.when, reads: r.reads, kit: r.kit, model: r.model, never: r.never, status: m.status, running: m.running === true, createdAt: clip(m.createdAt, 40) };
+	if (withPrompt) {
+		if (typeof m.prompt !== "string") minikodasFail();
+		out.prompt = r.prompt;
+	}
+	// Only a draft carries its summary: it is the approval preview (S1) and never a stored field.
+	if (m.summary !== undefined) {
+		if (m.status !== "draft") minikodasFail();
+		out.summary = summaryDto(m.summary);
+	}
+	if (isObject(m.lastRun) && RUN_OUTCOMES.has(m.lastRun.outcome)) {
+		out.lastRun = { at: clip(m.lastRun.at, 40), outcome: m.lastRun.outcome, ...(typeof m.lastRun.reason === "string" ? { reason: clip(m.lastRun.reason, 32) } : {}) };
+	}
+	return out;
+}
+
+const TOOL_STATES = new Set(["available", "unavailable"]);
+/**
+ * Reply to transcription_get / broadcast after transcription_set: the global setting (re-validated, so a Base URL or
+ * a key can never ride along) plus whether the bundled ffmpeg and the local transcriber are there. THROWS on invalid data.
+ */
+function transcriptionFrame(s) {
+	if (!isObject(s) || !TOOL_STATES.has(s.ffmpeg) || !TOOL_STATES.has(s.local)) minikodasFail();
+	let setting;
+	try {
+		setting = validateTranscriptionSetting({ mode: s.mode, language: s.language, ...(s.remote ? { remote: { accountId: s.remote.accountId, model: s.remote.model } } : {}) });
+	} catch {
+		minikodasFail();
+	}
+	return { type: "transcription", setting, ffmpeg: s.ffmpeg, local: s.local };
+}
+
+/** Reply/broadcast `minikodas`: the stored Minikodas (no prompts). THROWS on invalid data (the server answers failed). */
+function minikodasFrame(items) {
+	if (!Array.isArray(items) || items.length > MINIKODAS_EMIT.maxMinikodas) minikodasFail();
+	return { type: "minikodas", minikodas: items.map((m) => minikodaDto(m, false)) };
+}
+
+/** Reply to minikoda_get / minikoda_create / minikoda_approve_create: one Minikoda with its prompt. */
+const minikodaFrame = (m) => ({ type: "minikoda", minikoda: minikodaDto(m, true) });
+
+/**
+ * Reply/broadcast `hoy`: built ONLY from the stored items (hoy.cjs), field by field. Pending proposals first,
+ * then the newest items, at most MINIKODAS_EMIT.maxHoyItems (`truncated` says when some were left out).
+ */
+function hoyFrame(items) {
+	if (!Array.isArray(items)) minikodasFail();
+	const rows = items.map((i) => {
+		if (!isObject(i) || !HOY_KINDS.has(i.kind) || !HOY_STATUSES.has(i.status) || typeof i.id !== "string" || !HOY_ID.test(i.id) || !isMinikodaId(i.minikoda)) minikodasFail();
+		const out = { id: i.id, minikoda: i.minikoda, kind: i.kind, status: i.status, text: clip(i.text, MINIKODAS_EMIT.maxHoyTextChars), createdAt: clip(i.createdAt, 40) };
+		if (i.kind === "proposal") {
+			if (!PROPOSAL_ACTIONS_EMIT.has(i.action)) minikodasFail();
+			out.action = i.action;
+			out.target = clip(i.target, 200);
+		}
+		if (typeof i.decidedAt === "string") out.decidedAt = clip(i.decidedAt, 40);
+		// S19: where the text came from, for a result that can say it. An unknown value fails the frame instead of
+		// reaching the island, where the chip would be invented; a proposal or an error never carries one.
+		if (i.provenance !== undefined) {
+			if (i.kind !== "result" || !HOY_PROVENANCE.includes(i.provenance)) minikodasFail();
+			out.provenance = i.provenance;
+		}
+		return out;
+	});
+	const pending = rows.filter((r) => r.kind === "proposal" && r.status === "pending").reverse();
+	const rest = rows.filter((r) => !(r.kind === "proposal" && r.status === "pending")).reverse();
+	const ordered = [...pending, ...rest];
+	// Bounded by count AND by bytes: items are kept in order while the frame stays under maxHoyFrameBytes.
+	const kept = [];
+	let bytes = Buffer.byteLength(JSON.stringify({ type: "hoy", items: [], truncated: true, seq: Number.MAX_SAFE_INTEGER }));
+	for (const row of ordered.slice(0, MINIKODAS_EMIT.maxHoyItems)) {
+		const size = Buffer.byteLength(JSON.stringify(row)) + 1; // + the comma
+		if (bytes + size > MINIKODAS_EMIT.maxHoyFrameBytes) break;
+		bytes += size;
+		kept.push(row);
+	}
+	return { type: "hoy", items: kept, truncated: kept.length < ordered.length };
+}
+
+/** Broadcast after an approved proposal was executed (K2-13: recorded only; no real integration yet). */
+function hoyApprovedFrame(e) {
+	if (!isObject(e) || typeof e.itemId !== "string" || !HOY_ID.test(e.itemId) || !isMinikodaId(e.minikoda) || !PROPOSAL_ACTIONS_EMIT.has(e.action)) minikodasFail();
+	return { type: "hoy_approved", id: e.itemId, minikoda: e.minikoda, action: e.action, target: clip(e.target, 200), executedAt: clip(e.executedAt, 40) };
+}
+
+const TELEGRAM_STATES_EMIT = Object.freeze(["disconnected", "awaiting_code", "awaiting_password", "connected"]);
+const telegramFail = () => {
+	throw new Error("telegram frame invalid");
+};
+/**
+ * Reply/broadcast `telegram_status`: the public account state, never a phone, apiHash, code, password or session.
+ * `notice` is Koda's own Spanish sentence and `retryAfterMinutes` the only detail it can carry.
+ */
+function telegramStatusFrame(status) {
+	if (!isObject(status) || !TELEGRAM_STATES_EMIT.includes(status.state)) telegramFail();
+	const frame = { type: "telegram_status", state: status.state };
+	if (status.account !== undefined) {
+		const account = status.account;
+		if (!isObject(account) || typeof account.name !== "string" || !safeLabel(account.name)) telegramFail();
+		if (account.username !== null && account.username !== undefined) {
+			if (typeof account.username !== "string" || account.username === "" || account.username.length > 32 || !/^[A-Za-z0-9_]+$/.test(account.username)) telegramFail();
+		}
+		frame.account = { name: account.name, username: typeof account.username === "string" ? account.username : null };
+	}
+	if (status.notice !== undefined) {
+		if (typeof status.notice !== "string" || status.notice === "" || CONTROL.test(status.notice)) telegramFail();
+		frame.notice = clip(status.notice, TELEGRAM_LIMITS.maxNotice);
+	}
+	if (status.retryAfterMinutes !== undefined) {
+		if (!Number.isSafeInteger(status.retryAfterMinutes) || status.retryAfterMinutes < 1 || status.retryAfterMinutes > 1440) telegramFail();
+		frame.retryAfterMinutes = status.retryAfterMinutes;
+	}
+	return frame;
+}
+
+/**
+ * Reply `telegram_session` (S20): the exported session the island stores in the OS keychain. It is built from the one
+ * field that matters, so nothing else can ride along, and it is ONLY ever a reply to the asking connection.
+ */
+function telegramSessionFrame(data) {
+	if (!isObject(data) || !isCarriableSession(data.session)) telegramFail();
+	return { type: "telegram_session", session: data.session };
+}
+
 const list = (items, fn, max = 500) => (Array.isArray(items) ? items.slice(0, max).map(fn) : []);
 
 const accountsFrame = (items) => ({ type: "accounts", accounts: list(items, accountDto) });
@@ -1260,6 +1531,16 @@ module.exports = {
 	MCP_IMPORT_EMIT,
 	SESSIONS_EMIT,
 	accountsFrame,
+	telegramStatusFrame,
+	telegramSessionFrame,
+	TELEGRAM_LIMITS,
+	minikodasFrame,
+	minikodaFrame,
+	hoyFrame,
+	hoyApprovedFrame,
+	HOY_PROVENANCE,
+	transcriptionFrame,
+	MINIKODAS_EMIT,
 	providersFrame,
 	modelsFrame,
 	profilesFrame,

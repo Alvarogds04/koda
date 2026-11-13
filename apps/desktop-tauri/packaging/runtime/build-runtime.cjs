@@ -4,14 +4,32 @@
    its own pinned Pi and its own pinned gentle-pi (Gentle Shell), so Koda never needs (nor touches) a Node or a Pi
    installed on the machine.
 
+   K2-13 (L41): the same folder carries the daemon's own runtime dependencies (@mtcute/node, the Telegram client library),
+   because this is the one npm tree every installer already verifies, extracts and writes licence notices for. They add no
+   native addon: mtcute's crypto is WASM and better-sqlite3 — its one hard native dependency — is replaced by the empty
+   stub in stubs/better-sqlite3 (the daemon always passes mtcute's MemoryStorage, so the SqliteStorage that would load the
+   addon is never constructed; the stub throws if it ever is). assertNoNativeAddons() fails the build otherwise.
+
    Usage: node packaging/runtime/build-runtime.cjs --target <linux-x64|darwin-arm64|win-x64> --out <dir>
-            [--node-archive <file>] [--engram-archive <file>] [--cache <dir>] [--self-check] [--archive <file.tar.gz>]
+            [--node-archive <file>] [--engram-archive <file>] [--ffmpeg-archive <file>] [--ytdlp-dir <dir>] [--cache <dir>] [--self-check] [--archive <file.tar.gz>]
 
    Inputs, all pinned in this directory:
    - node.sha256: one official Node archive per target with its sha256 (the lines of the release's signed SHASUMS256.txt).
      The archive comes from --node-archive (offline) or from https://nodejs.org/dist/; a sha256 mismatch fails closed.
-   - package.json + package-lock.json: Pi, gentle-pi and every peer gentle-pi declares, pinned exactly; npm ci installs
-     every package against its lockfile sha512.
+   - package.json + package-lock.json: Pi, gentle-pi and every peer gentle-pi declares, plus the daemon's runtime
+     dependencies, all pinned exactly; npm ci installs every package against its lockfile sha512. The only non-registry
+     entry is Koda's own better-sqlite3 stub (stubs/).
+   - ytdlp.sha256 (K2-13 T2c-8, S19): the standalone yt-dlp executable for linux-x64 and for win-x64 (none for
+     darwin-arm64), by release tag + sha256, plus the sha256 of the two licence texts it ships with (yt-dlp's
+     Unlicense and the release's THIRD_PARTY_LICENSES.txt, in packaging/runtime/ytdlp/). The binary comes from
+     --ytdlp-dir (offline) or from github.com/yt-dlp/yt-dlp/releases; a sha256 mismatch fails closed, and so does a
+     file that carries no PyInstaller archive (i.e. is not an official standalone build). yt-dlp breaks whenever
+     YouTube changes, so this pin has to be refreshed often: see the header of ytdlp.sha256.
+   - ffmpeg.sha256 (K2-13 S9): one BtbN/FFmpeg-Builds LGPL archive for linux-x64 and for win-x64 (none for darwin-arm64:
+     no LGPL macOS build exists yet), from --ffmpeg-archive (offline) or its GitHub release; a sha256 mismatch fails
+     closed. Only bin/ffmpeg[.exe] and LICENSE.txt leave the archive (no ffprobe, ffplay, docs). The build refuses a
+     binary whose embedded configure string has --enable-gpl or --enable-nonfree (or has no configure string at all)
+     and a LICENSE.txt that is not the LGPL text.
    - engram.sha256 (K2-05 T1b, S5): one PREBUILT release asset of the Gentleman-Programming/engram binary per target
      (linux-x64 -> linux_amd64.tar.gz, darwin-arm64 -> darwin_arm64.tar.gz, win-x64 -> windows_amd64.zip; the release
      lists exactly one supported Windows archive, the same rule Gentle Dot applies), never built from Go. The archive
@@ -27,13 +45,19 @@
      LICENSE.node          Node's licence (MIT plus its bundled components)
      THIRD-PARTY-NOTICES.md  Node and every shipped package with its licence (texts from licenses/ for packages
                            that ship no licence file; a licence with no text there fails the build)
-     node_modules/...      Pi, gentle-pi and their dependencies, install scripts not run, no .bin symlinks, no symlink at all
+     node_modules/...      Pi, gentle-pi, the daemon's runtime dependencies and their dependencies, install scripts not
+                           run, no .bin symlinks, no symlink at all, and no native addon of Koda's own
      pi                    (Linux, macOS) launcher that runs Pi with THIS Node; Windows needs none: the daemon starts
                            node.exe with Pi's own CLI JS resolved next to it (desktop-daemon runtime.cjs)
      gentle-shell          (Linux, macOS) launcher of the same shape that runs gentle-pi's bin/gentle-shell.mjs with THIS
                            Node; Windows gets none (T2 resolves node.exe + the script in the daemon)
      bin/engram | bin\\engram.exe  the pinned Engram binary (K2-05 T1b)
-     koda-runtime.json     {target, node, pi, piCli, gentlePi, gentleShell, engram, engramBin}
+     ffmpeg | ffmpeg.exe   (linux-x64, win-x64) the pinned LGPL ffmpeg the daemon spawns for Minikoda transcriptions
+     LICENSE.ffmpeg.txt    its LGPL v3 text (from the archive); THIRD-PARTY-NOTICES.md says where its source is
+     yt-dlp | yt-dlp.exe   (linux-x64, win-x64) the pinned standalone yt-dlp the daemon spawns to read YouTube links
+     LICENSE.yt-dlp.txt    yt-dlp's Unlicense text
+     THIRD-PARTY-NOTICES.yt-dlp.txt  its release's THIRD_PARTY_LICENSES.txt (Python, GNU Readline, mutagen, …)
+     koda-runtime.json     {target, node, pi, piCli, gentlePi, gentleShell, engram, engramBin, ffmpeg?, ytdlp?}
    --archive also packs <out> into ONE tar.gz (members relative to the runtime folder's root, no links) and prints its
    sha256: the single file the Linux and Windows installers ship and verify before extracting. macOS ships the folder.
    --self-check runs the built Pi (`pi --version`), the built Engram (`bin/engram version`, offline, requires the pinned
@@ -61,21 +85,42 @@ const ENGRAM_RELEASE = 'https://github.com/Gentleman-Programming/engram/releases
 // (https://raw.githubusercontent.com/Gentleman-Programming/engram/v3.4.0/LICENSE), not from the release archive.
 const ENGRAM_LICENCE = { id: 'MIT', holder: '2026 Alan Buscaglia', repository: 'https://github.com/Gentleman-Programming/engram' };
 
+/* K2-13 (S9): the BtbN asset flavour per target; darwin-arm64 ships no ffmpeg (pending for the Mac session). */
+const FFMPEG_TARGETS = { 'linux-x64': { flavour: 'linux64', ext: '.tar.xz', exe: 'ffmpeg' }, 'win-x64': { flavour: 'win64', ext: '.zip', exe: 'ffmpeg.exe' } };
+const FFMPEG_RELEASES = 'https://github.com/BtbN/FFmpeg-Builds/releases/download';
+
+/* K2-13 T2c-8 (S19): the standalone yt-dlp the daemon spawns to read the YouTube links of a post; darwin-arm64 ships
+   none (pending for the Mac session, decision L12), where the daemon answers youtube_unavailable. The two licence
+   texts of the release travel beside the binary: yt-dlp is Unlicense, and its official standalone executables are
+   PyInstaller bundles that also carry copyleft components (GNU Readline GPL-3.0-or-later, mutagen GPL-2.0-or-later),
+   named in the release's THIRD_PARTY_LICENSES.txt. */
+const YTDLP_TARGETS = { 'linux-x64': { asset: 'yt-dlp_linux', exe: 'yt-dlp' }, 'win-x64': { asset: 'yt-dlp.exe', exe: 'yt-dlp.exe' } };
+const YTDLP_RELEASES = 'https://github.com/yt-dlp/yt-dlp/releases/download';
+/** [file in packaging/runtime/, name it gets in the runtime folder] — both pinned in ytdlp.sha256. */
+const YTDLP_LICENCES = [
+  ['ytdlp/unlicense.txt', 'LICENSE.yt-dlp.txt'],
+  ['ytdlp/third-party-licenses.txt', 'THIRD-PARTY-NOTICES.yt-dlp.txt'],
+];
+/** Present in every official PyInstaller standalone build; a file without it is not one. */
+const YTDLP_PYINSTALLER_MARK = 'pyimod01_archive';
+
 class Fail extends Error {
   constructor(message, code = 1) { super(message); this.code = code; }
 }
 
 function parseArgs(argv) {
   const opts = { selfCheck: false };
-  const takes = { '--target': 'target', '--out': 'out', '--node-archive': 'nodeArchive', '--engram-archive': 'engramArchive', '--cache': 'cache', '--archive': 'archive' };
+  const takes = { '--target': 'target', '--out': 'out', '--node-archive': 'nodeArchive', '--engram-archive': 'engramArchive', '--ffmpeg-archive': 'ffmpegArchive', '--ytdlp-dir': 'ytdlpDir', '--cache': 'cache', '--archive': 'archive' };
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
     if (a === '--self-check') { opts.selfCheck = true; continue; }
-    if (!takes[a] || i + 1 >= argv.length) throw new Fail(`usage: build-runtime.cjs --target <${Object.keys(TARGETS).join('|')}> --out <dir> [--node-archive <file>] [--engram-archive <file>] [--cache <dir>] [--self-check] [--archive <file.tar.gz>] (bad argument: ${a})`, 2);
+    if (!takes[a] || i + 1 >= argv.length) throw new Fail(`usage: build-runtime.cjs --target <${Object.keys(TARGETS).join('|')}> --out <dir> [--node-archive <file>] [--engram-archive <file>] [--ffmpeg-archive <file>] [--ytdlp-dir <dir>] [--cache <dir>] [--self-check] [--archive <file.tar.gz>] (bad argument: ${a})`, 2);
     opts[takes[a]] = argv[(i += 1)];
   }
   if (!opts.target || !opts.out) throw new Fail('usage: build-runtime.cjs --target <target> --out <dir> (both are required)', 2);
   if (!TARGETS[opts.target]) throw new Fail(`unknown target ${opts.target}; known: ${Object.keys(TARGETS).join(', ')}`, 2);
+  if (opts.ffmpegArchive && !FFMPEG_TARGETS[opts.target]) throw new Fail(`--ffmpeg-archive: ${opts.target} ships no ffmpeg (no LGPL build for it yet)`, 2);
+  if (opts.ytdlpDir && !YTDLP_TARGETS[opts.target]) throw new Fail(`--ytdlp-dir: ${opts.target} ships no yt-dlp`, 2);
   return opts;
 }
 
@@ -142,6 +187,200 @@ function nodePin(target) {
   const m = /^node-v(\d+\.\d+\.\d+)-/.exec(name);
   if (!/^[0-9a-f]{64}$/.test(sha) || !m) throw new Fail(`malformed node.sha256 line for ${target}`);
   return { sha, name, version: m[1], dir: name.slice(0, -t.ext.length) };
+}
+
+/* The ffmpeg pin for a target, or null (darwin-arm64). Exactly one BtbN LGPL asset per shipped target. */
+function ffmpegPin(target) {
+  const f = FFMPEG_TARGETS[target];
+  if (!f) return null;
+  const lines = fs.readFileSync(path.join(HERE, 'ffmpeg.sha256'), 'utf8').split(/\r?\n/).map((l) => l.trim()).filter((l) => l && !l.startsWith('#'));
+  const shape = new RegExp(`^(autobuild-\\d{4}-\\d{2}-\\d{2}-\\d{2}-\\d{2})/(ffmpeg-(n\\d+(?:\\.\\d+)*-\\d+-g[0-9a-f]+)-${f.flavour}-lgpl-\\d+(?:\\.\\d+)*)${f.ext.replace(/\./g, '\\.')}$`);
+  const pins = lines.map((l) => l.split(/\s+/)).map(([sha, rel]) => ({ sha, m: shape.exec(rel || '') })).filter((p) => p.m && /^[0-9a-f]{64}$/.test(p.sha));
+  const flavoured = lines.filter((l) => l.includes(`-${f.flavour}-`));
+  if (pins.length !== 1 || flavoured.length !== 1) throw new Fail(`ffmpeg.sha256 must pin exactly one BtbN LGPL archive for ${target} (<sha256>  autobuild-<date>/ffmpeg-<rev>-${f.flavour}-lgpl-<ver>${f.ext})`);
+  const { sha, m } = pins[0];
+  return { sha, tag: m[1], dir: m[2], name: `${m[2]}${f.ext}`, version: m[3], exe: f.exe, ext: f.ext };
+}
+
+async function ffmpegArchive(pin, opts, cache) {
+  let file = opts.ffmpegArchive ? path.resolve(opts.ffmpegArchive) : path.join(cache, pin.name);
+  if (!opts.ffmpegArchive && !fs.existsSync(file)) {
+    const partial = `${file}.partial-${process.pid}`;
+    await download(`${FFMPEG_RELEASES}/${pin.tag}/${pin.name}`, partial);
+    fs.renameSync(partial, file);
+  }
+  if (!fs.existsSync(file)) throw new Fail(`ffmpeg archive not found: ${file}`);
+  if (path.basename(file) !== pin.name) throw new Fail(`ffmpeg archive must be ${pin.name}, got ${path.basename(file)}`);
+  const got = sha256File(file);
+  if (got !== pin.sha) {
+    if (!opts.ffmpegArchive) fs.rmSync(file, { force: true });
+    throw new Fail(`ffmpeg archive SHA256 mismatch for ${pin.name}: expected ${pin.sha}, got ${got}`);
+  }
+  return file;
+}
+
+/* Only bin/ffmpeg[.exe] and LICENSE.txt leave the archive; then the LGPL proof: the binary's embedded configure string
+   (FFmpeg compiles it in; `ffmpeg -version` prints it) must exist and carry neither --enable-gpl nor --enable-nonfree,
+   and the licence must be the LGPL. Byte checks, so a cross-target build proves it without running the binary. */
+function extractFfmpeg(archive, pin, dest) {
+  const scratch = fs.mkdtempSync(path.join(path.dirname(dest), '.ffmpeg-extract-'));
+  try {
+    const members = [`${pin.dir}/bin/${pin.exe}`, `${pin.dir}/LICENSE.txt`];
+    if (process.platform === 'win32') {
+      run(path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe'), ['-xf', archive, '-C', scratch, ...members], {}, 'tar (ffmpeg)');
+    } else if (pin.ext === '.zip') {
+      run('unzip', ['-q', archive, ...members, '-d', scratch], {}, 'unzip (ffmpeg)');
+    } else {
+      run('tar', ['-xf', archive, '-C', scratch, ...members], {}, 'tar (ffmpeg)'); // compression detected from the bytes
+    }
+    for (const m of members) {
+      const st = fs.lstatSync(path.join(scratch, m), { throwIfNoEntry: false });
+      if (!st || !st.isFile()) throw new Fail(`ffmpeg archive ${pin.name} lacks a regular file ${m}`);
+    }
+    const bin = fs.readFileSync(path.join(scratch, members[0]));
+    if (!bin.includes(Buffer.from('--prefix='))) throw new Fail(`ffmpeg ${pin.name} carries no configure string: cannot prove it is an LGPL build`);
+    for (const flag of ['--enable-gpl', '--enable-nonfree']) {
+      if (bin.includes(Buffer.from(flag))) throw new Fail(`ffmpeg ${pin.name} was configured with ${flag}: only LGPL builds ship`);
+    }
+    const licence = fs.readFileSync(path.join(scratch, members[1]), 'utf8');
+    if (licence.trimStart().split(/\r?\n/)[0].trim() !== 'GNU LESSER GENERAL PUBLIC LICENSE') throw new Fail(`ffmpeg archive ${pin.name}: LICENSE.txt is not the GNU LESSER GENERAL PUBLIC LICENSE`);
+    fs.copyFileSync(path.join(scratch, members[0]), path.join(dest, pin.exe));
+    fs.chmodSync(path.join(dest, pin.exe), 0o755);
+    fs.copyFileSync(path.join(scratch, members[1]), path.join(dest, 'LICENSE.ffmpeg.txt'));
+    fs.chmodSync(path.join(dest, 'LICENSE.ffmpeg.txt'), 0o644);
+  } finally {
+    fs.rmSync(scratch, { recursive: true, force: true });
+  }
+}
+
+/* The full commit id behind the abbreviated `-g<rev>` FFmpeg's own version string carries (a describe label, not the
+   identity). An unknown revision is stated as the abbreviation alone: the notices never invent a hash. */
+const FFMPEG_FULL_REV = { c179411bbb: 'c179411bbb2864cc71323d3055acda25d5c2aace' };
+
+/* The FFmpeg section of the runtime notices: the licence, the exact binary it came from and where its source is. */
+function ffmpegNotice(pin) {
+  const rev = /-g([0-9a-f]+)$/.exec(pin.version)[1];
+  const full = FFMPEG_FULL_REV[rev];
+  const revision = full ? `${full} (the commit ${pin.version} labels \`${rev}\`)` : rev;
+  const tree = `https://github.com/FFmpeg/FFmpeg/tree/${full ?? rev}`;
+  return [`## FFmpeg ${pin.version} (\`${pin.exe}\`)`, '',
+    'License: LGPL-3.0-or-later. Full text: `LICENSE.ffmpeg.txt` in this folder.',
+    `The \`${pin.exe}\` in this folder is FFmpeg (https://ffmpeg.org), built by BtbN/FFmpeg-Builds as an LGPL build:`,
+    'configured with --enable-version3 and built without --enable-gpl and without --enable-nonfree. Koda runs it as a separate',
+    'program, unmodified, only to extract and split the audio of videos for transcription.',
+    `- Binary: ${FFMPEG_RELEASES}/${pin.tag}/${pin.name} (sha256 ${pin.sha})`,
+    `- Corresponding Source: the FFmpeg source at revision ${revision}, ${tree}`,
+    `  and the scripts that built it, https://github.com/BtbN/FFmpeg-Builds (release ${pin.tag}), which also list the`,
+    '  libraries linked into it and their licences. The version string is a label, never the identity of the source:',
+    '  the revision hash above is.',
+    '- Source access (GPL-3.0 §6(d), incorporated by LGPL-3.0 — the clause that applies to a downloadable installer):',
+    '  whoever downloads this binary has to be able to obtain the Corresponding Source above from a designated place (a',
+    '  network server or an equivalent), in the same way they obtained the binary, with clear directions next to the',
+    '  download. A written offer to send the source on request (GPL-3.0 §6(b), the clause for a copy handed over in a',
+    '  physical product) on its own, is NOT sufficient for a download.',
+    '- NOT DONE YET, before a public release: Koda does not mirror that Corresponding Source itself, so no designated',
+    '  place exists yet and the obligation above is unmet. The mirror must exist and be linked from this notice and from',
+    '  the download page before the first public release, and it also has to make the BtbN/FFmpeg-Builds scripts and the',
+    '  library versions they name available. As an additional measure Koda offers a copy on request (GPL-3.0 §6(b)): for',
+    '  at least three years after the release that shipped it, anyone who received this binary can ask, through the',
+    '  issue tracker of the repository Koda is published from, for no more than the cost of making and sending the copy.',
+    '  The licence review of FFmpeg (LGPL-3.0 obligations and the AAC/H.264 patent question) has NOT been done. This is',
+    '  an engineering record, not legal advice.',
+    'You may replace this file with your own build of FFmpeg; Koda calls it by this path with command-line arguments only.', ''];
+}
+
+/* The pin lines of a sha256 file: [sha, path], comments and blanks dropped. */
+function pinLines(name) {
+  return fs.readFileSync(path.join(HERE, name), 'utf8').split(/\r?\n/).map((l) => l.trim()).filter((l) => l && !l.startsWith('#')).map((l) => l.split(/\s+/));
+}
+
+/* The yt-dlp pin for a target, or null (darwin-arm64). Exactly one official asset per shipped target. */
+function ytdlpPin(target) {
+  const t = YTDLP_TARGETS[target];
+  if (!t) return null;
+  const pins = pinLines('ytdlp.sha256');
+  const mine = pins.filter(([, rel]) => rel && rel.endsWith(`/${t.asset}`));
+  if (mine.length !== 1) throw new Fail(`ytdlp.sha256 must pin exactly one ${t.asset} for ${target}, found ${mine.length}`);
+  const [sha, rel] = mine[0];
+  const m = new RegExp(`^(\\d{4}\\.\\d{2}\\.\\d{2})/(${t.asset.replace(/[.]/g, '\\.')})$`).exec(rel);
+  if (!/^[0-9a-f]{64}$/.test(sha) || !m) throw new Fail(`malformed ytdlp.sha256 line for ${target} (<sha256>  <yyyy.mm.dd>/${t.asset})`);
+  return { sha, tag: m[1], asset: t.asset, exe: t.exe, name: rel };
+}
+
+/* The two licence texts, each verified against its own pin: the file that ships is the pinned one, byte for byte. */
+function ytdlpLicences() {
+  const pins = pinLines('ytdlp.sha256').filter(([, rel]) => rel && rel.startsWith('ytdlp/'));
+  if (pins.length !== YTDLP_LICENCES.length) throw new Fail(`ytdlp.sha256 must pin the ${YTDLP_LICENCES.length} yt-dlp licence texts, found ${pins.length}`);
+  for (const [source] of YTDLP_LICENCES) {
+    const pin = pins.find(([, rel]) => rel === source);
+    if (!pin) throw new Fail(`ytdlp.sha256 does not pin ${source}`);
+    const file = path.join(HERE, source);
+    if (!fs.existsSync(file)) throw new Fail(`missing yt-dlp licence text ${source}`);
+    const got = sha256File(file);
+    if (got !== pin[0]) throw new Fail(`${source} does not match its pinned sha256: expected ${pin[0]}, got ${got}`);
+  }
+  return YTDLP_LICENCES.map(([source, output]) => ({ source: path.join(HERE, source), output }));
+}
+
+async function ytdlpBinary(pin, opts, cache) {
+  let file = opts.ytdlpDir ? path.join(path.resolve(opts.ytdlpDir), pin.asset) : path.join(cache, pin.asset);
+  if (!opts.ytdlpDir && !fs.existsSync(file)) {
+    const partial = `${file}.partial-${process.pid}`;
+    await download(`${YTDLP_RELEASES}/${pin.tag}/${pin.asset}`, partial);
+    fs.renameSync(partial, file);
+  }
+  if (!fs.existsSync(file)) throw new Fail(`yt-dlp binary not found: ${file}`);
+  if (path.basename(file) !== pin.asset) throw new Fail(`yt-dlp binary must be ${pin.asset}, got ${path.basename(file)}`);
+  const got = sha256File(file);
+  if (got !== pin.sha) {
+    if (!opts.ytdlpDir) fs.rmSync(file, { force: true });
+    throw new Fail(`yt-dlp SHA256 mismatch for ${pin.asset}: expected ${pin.sha}, got ${got}`);
+  }
+  return file;
+}
+
+/* The PyInstaller marker proves the file is an official standalone build and not an arbitrary executable that happens
+   to have the right hash for our own pin. It is copied byte for byte and made executable; its licence texts follow. */
+function stageYtdlp(file, pin, dest, licences) {
+  const bytes = fs.readFileSync(file);
+  if (!bytes.includes(Buffer.from(YTDLP_PYINSTALLER_MARK))) throw new Fail(`yt-dlp ${pin.asset} carries no PyInstaller archive: it is not the official standalone build`);
+  fs.copyFileSync(file, path.join(dest, pin.exe));
+  fs.chmodSync(path.join(dest, pin.exe), 0o755);
+  for (const { source, output } of licences) {
+    fs.copyFileSync(source, path.join(dest, output));
+    fs.chmodSync(path.join(dest, output), 0o644);
+  }
+}
+
+/* The yt-dlp section of the runtime notices: what ships, its licence, the copyleft components inside the official
+   executable, and the source-access record (the same shape as the FFmpeg one). */
+function ytdlpNotice(pin) {
+  return [`## yt-dlp ${pin.tag} (\`${pin.exe}\`)`, '',
+    'License: Unlicense (public domain). Full text: `LICENSE.yt-dlp.txt` in this folder.', '',
+    `The \`${pin.exe}\` in this folder is yt-dlp (https://github.com/yt-dlp/yt-dlp), the official standalone build of release`,
+    `${pin.tag}, unmodified. Koda runs it as a separate, unmodified program with command-line arguments only — the daemon spawns it to read`,
+    'the subtitles or the audio of a YouTube video link that a Minikoda found in a post. Its own code is not linked with it.',
+    `- Binary: ${YTDLP_RELEASES}/${pin.tag}/${pin.asset} (sha256 ${pin.sha})`,
+    '- The official standalone executables are PyInstaller bundles: they also carry Python (PSF-2.0) and third-party',
+    '  components, including copyleft ones — GNU Readline (GPL-3.0-or-later, bundled as its own shared object) and mutagen',
+    '  (GPL-2.0-or-later) — plus libidn2, libunistring and libintl (LGPL-3.0-or-later / LGPL-2.1-or-later), libstdc++ and',
+    '  libgcc (GPL-3.0-with-GCC-exception) and BoringSSL, curl, nghttp2, Tornado and others under permissive licences.',
+    '  Their texts travel in this folder, verbatim from the release: `THIRD-PARTY-NOTICES.yt-dlp.txt`.',
+    '- Corresponding Source: the yt-dlp source at tag ' + pin.tag + `, https://github.com/yt-dlp/yt-dlp/tree/${pin.tag}, and`,
+    '  the source of each bundled component from its original project; yt-dlp states that the maintainers provide it on',
+    '  request (maintainers@yt-dlp.org) as the licences require.',
+    '- Source access (GPL-3.0 §6(d) through the GPL-3.0-or-later components; the clause that applies to a downloadable',
+    '  installer): a recipient has to be able to obtain that Corresponding Source from a designated place (a network',
+    '  server or an equivalent) in the same way they obtained the binary, with clear directions next to the download.',
+    '- NOT DONE YET, before a public release: Koda does not mirror that Corresponding Source itself, so no designated',
+    '  place exists yet and the obligation above is unmet. The mirror must exist and be linked from this notice and from',
+    '  the download page before the first public release. As an additional measure Koda offers a copy on request',
+    '  (GPL-3.0 §6(b)) for at least three years after the release that shipped it. The licence review of yt-dlp and of',
+    '  the copyleft components inside its standalone builds has NOT been done. This is an engineering record, not legal',
+    "  advice. (YouTube's own terms do not allow downloading outside its apps; the product decision to read links",
+    '  through subtitles or a downloaded audio track was taken knowingly — decision L33.)',
+    '- YouTube breaks yt-dlp regularly: this pin has to be refreshed often (tag, both sha256 values from the release',
+    '  SHA2-256SUMS and the two licence texts) instead of shipping a binary that no longer extracts a video.', ''];
 }
 
 /* K2-05 T1b (S5): the Engram pin, the same shape as nodePin: one prebuilt release asset per target, whose sha256 is
@@ -309,6 +548,11 @@ function npmCli() {
 
 function installPi(dest, cache, target, t) {
   for (const f of ['package.json', 'package-lock.json']) fs.copyFileSync(path.join(HERE, f), path.join(dest, f));
+  // K2-13: a `file:` dependency (Koda's better-sqlite3 stub) resolves from the build directory, so the stub folder travels
+  // with the pins and is removed again after the install: the output holds the installed copy, never the source folder.
+  const stubs = path.join(HERE, 'stubs');
+  const hasStubs = fs.lstatSync(stubs, { throwIfNoEntry: false })?.isDirectory() === true;
+  if (hasStubs) fs.cpSync(stubs, path.join(dest, 'stubs'), { recursive: true });
   // Private, empty npm configurations: no user or global .npmrc may redirect the registry or change what is installed.
   // Two files: npm refuses to load one file as both the user and the global config.
   const userrc = path.join(cache, 'user.npmrc');
@@ -320,9 +564,10 @@ function installPi(dest, cache, target, t) {
     npm_config_userconfig: userrc, npm_config_globalconfig: globalrc, npm_config_cache: path.join(cache, 'npm'),
     npm_config_update_notifier: 'false', npm_config_fund: 'false', npm_config_audit: 'false',
   };
-  run(process.execPath, [npmCli(), 'ci', '--ignore-scripts', '--omit=dev', '--no-audit', '--no-fund', '--registry=https://registry.npmjs.org/'], { cwd: dest, env }, 'npm ci');
+  run(process.execPath, [npmCli(), 'ci', '--install-links', '--ignore-scripts', '--omit=dev', '--no-audit', '--no-fund', '--registry=https://registry.npmjs.org/'], { cwd: dest, env }, 'npm ci');
   auditTargetPlatforms(dest, target, t);
   for (const f of ['package.json', 'package-lock.json']) fs.rmSync(path.join(dest, f));
+  if (hasStubs) fs.rmSync(path.join(dest, 'stubs'), { recursive: true, force: true });
   // npm-only bookkeeping and the .bin symlinks; Koda starts Pi through its own launcher (or the daemon on Windows).
   fs.rmSync(path.join(dest, 'node_modules', '.bin'), { recursive: true, force: true });
   fs.rmSync(path.join(dest, 'node_modules', '.package-lock.json'), { force: true });
@@ -412,10 +657,14 @@ const repository = (manifest) => (typeof manifest.repository === 'string' ? mani
 /* THIRD-PARTY-NOTICES.md for the runtime folder: Node first, then every package with its declared licence and the
    path of the licence file it ships. A package that ships no licence file gets its author and repository from its
    package.json and the canonical text from licenses/<id>.txt, reproduced once; with no such text the build fails. */
-function writeNotices(dest, nodeVersion, engram) {
+function writeNotices(dest, nodeVersion, engram, ffPin, ytPin) {
   const lines = ['# Third-party notices: Koda\'s bundled runtime', '',
     'Koda ships Node.js, Pi, Gentle Shell (gentle-pi) and Engram in this folder (K2-02, K2-05). Their licences and those of every package they include follow.', '',
-    `## Node.js ${nodeVersion}`, '', 'License: MIT (with bundled components). Full text: `LICENSE.node` in this folder.', ''];
+    'The daemon\'s own runtime dependencies ship here too (K2-13): @mtcute/node, the Telegram client library, with the empty',
+    'better-sqlite3 stub this folder carries in place of its native addon. They are listed below with every other package.', '',
+    `## Node.js ${nodeVersion}`, '', 'License: MIT (with bundled components). Full text: `LICENSE.node` in this folder.', '',
+    ...(ffPin ? ffmpegNotice(ffPin) : []),
+    ...(ytPin ? ytdlpNotice(ytPin) : [])];
   const texts = new Map();
   for (const { dir, manifest } of packagesIn(path.join(dest, 'node_modules'))) {
     const id = licenseId(manifest);
@@ -477,6 +726,38 @@ function noSymlinks(dir) {
     const p = path.join(dir, e.name);
     if (e.isSymbolicLink()) throw new Fail(`runtime contains a symlink: ${path.relative(dir, p)}`);
     if (e.isDirectory()) noSymlinks(p);
+  }
+}
+
+/* K2-13: nothing the daemon's dependencies bring in may be a native addon. Scoped to what K2-13 adds (@mtcute, @fuman and
+   the better-sqlite3 slot) so a Pi release with its own platform prebuild never breaks this build: Pi's prebuilds under
+   @earendil-works/pi-tui/native/ shipped before K2-13 and are not ours to police here. */
+const NO_ADDON_SCOPE = ['@mtcute', '@fuman', 'better-sqlite3'];
+function assertNoNativeAddons(dest) {
+  const modules = path.join(dest, 'node_modules');
+  const st = fs.lstatSync(modules, { throwIfNoEntry: false });
+  if (!st || !st.isDirectory()) return;
+  const addons = [];
+  const walk = (dir) => {
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      const p = path.join(dir, e.name);
+      if (e.isSymbolicLink()) continue; // noSymlinks() reports every link; this walk never follows one
+      if (e.isDirectory()) walk(p);
+      else if (e.name.endsWith('.node')) addons.push(path.relative(modules, p).split(path.sep).join('/'));
+    }
+  };
+  for (const scope of NO_ADDON_SCOPE) {
+    const dir = path.join(modules, ...scope.split('/'));
+    const own = fs.lstatSync(dir, { throwIfNoEntry: false });
+    if (own && own.isDirectory()) walk(dir);
+  }
+  if (addons.length) {
+    throw new Fail(`Koda's runtime dependencies ship a native addon: ${addons.sort().join(', ')}. mtcute's crypto is WASM and better-sqlite3 must stay the empty stub: refusing to build a runtime that needs a compiled module.`);
+  }
+  let sqlite;
+  try { sqlite = JSON.parse(fs.readFileSync(path.join(modules, 'better-sqlite3', 'package.json'), 'utf8')); } catch { sqlite = undefined; }
+  if (sqlite && sqlite.kodaStub !== 'better-sqlite3') {
+    throw new Fail('node_modules/better-sqlite3 is the real package, not Koda\'s empty stub: the native addon must never ship (see stubs/better-sqlite3)');
   }
 }
 
@@ -628,11 +909,29 @@ function sizeOf(dir) {
   return { bytes, files };
 }
 
+/**
+ * Whether the runtime archive is asked for INSIDE the folder it packs (82c27cf). Such an archive would be packed into
+ * itself: GNU tar reads a file that is still growing and fails with «file changed as we read it» (a small tree only ever
+ * passed by luck).
+ *
+ * Three cases are NOT inside: the folder itself, anything that starts with `..` (a sibling or an ancestor) and any
+ * ABSOLUTE result — on Windows `path.relative` returns `D:\…` for a path on another drive, and treating that as inside
+ * would pack beside the folder and then try to move the archive onto another drive.
+ */
+function archiveInsideOut(out, archive, relative = path.relative) {
+  const rel = relative(out, archive);
+  if (rel === '' || rel.startsWith('..') || path.isAbsolute(rel) || path.win32.isAbsolute(rel)) return false;
+  return true;
+}
+
 async function main() {
   const opts = parseArgs(process.argv.slice(2));
   const t = TARGETS[opts.target];
   const out = path.resolve(opts.out);
   const pin = nodePin(opts.target);
+  const ffPin = ffmpegPin(opts.target);
+  const ytPin = ytdlpPin(opts.target);
+  const ytLicences = ytPin ? ytdlpLicences() : [];
   const tmpCache = !opts.cache;
   const cache = opts.cache ? path.resolve(opts.cache) : fs.mkdtempSync(path.join(os.tmpdir(), 'koda-runtime-cache-'));
   fs.mkdirSync(cache, { recursive: true });
@@ -646,22 +945,30 @@ async function main() {
     fs.mkdirSync(partial, { mode: 0o755 });
     extractNode(archive, pin, opts.target, partial);
     extractEngram(engramFile, engram, opts.target, partial);
+    if (ffPin) extractFfmpeg(await ffmpegArchive(ffPin, opts, cache), ffPin, partial);
+    if (ytPin) stageYtdlp(await ytdlpBinary(ytPin, opts, cache), ytPin, partial, ytLicences);
     const pi = installPi(partial, cache, opts.target, t);
-    writeNotices(partial, pin.version, engram);
+    assertNoNativeAddons(partial);
+    writeNotices(partial, pin.version, engram, ffPin, ytPin);
     if (t.platform !== 'win32') {
       fs.writeFileSync(path.join(partial, 'pi'), piLauncher(pi.pi.cli, 'Pi (K2-02)'), { mode: 0o755 });
       fs.writeFileSync(path.join(partial, 'gentle-shell'), piLauncher(pi.gentle.cli, 'Gentle Shell (K2-05)'), { mode: 0o755 });
     }
-    fs.writeFileSync(path.join(partial, 'koda-runtime.json'), `${JSON.stringify({ target: opts.target, node: pin.version, pi: pi.pi.version, piCli: pi.pi.cli, gentlePi: pi.gentle.version, gentleShell: pi.gentle.cli, engram: engram.version, engramBin: `bin/${t.engramExe}` }, null, 2)}\n`, { mode: 0o644 });
+    fs.writeFileSync(path.join(partial, 'koda-runtime.json'), `${JSON.stringify({ target: opts.target, node: pin.version, pi: pi.pi.version, piCli: pi.pi.cli, gentlePi: pi.gentle.version, gentleShell: pi.gentle.cli, engram: engram.version, engramBin: `bin/${t.engramExe}`, ...(ffPin ? { ffmpeg: ffPin.version } : {}), ...(ytPin ? { ytdlp: ytPin.tag } : {}) }, null, 2)}\n`, { mode: 0o644 });
     noSymlinks(partial);
     if (opts.selfCheck) await selfCheck(partial, opts.target, pi.pi.version);
     fs.rmSync(out, { recursive: true, force: true });
     renameWithRetry(partial, out, commitDeps());
     const s = sizeOf(out);
-    console.log(`runtime ${opts.target}: Node ${pin.version} + Pi ${pi.pi.version} + gentle-pi ${pi.gentle.version} + engram ${engram.version} -> ${out} (${s.files} files, ${(s.bytes / 1048576).toFixed(1)} MiB)${opts.selfCheck ? ', self-check ok' : ''}`);
+    console.log(`runtime ${opts.target}: Node ${pin.version} + Pi ${pi.pi.version} + gentle-pi ${pi.gentle.version} + engram ${engram.version}${ffPin ? ` + ffmpeg ${ffPin.version}` : ''}${ytPin ? ` + yt-dlp ${ytPin.tag}` : ''} -> ${out} (${s.files} files, ${(s.bytes / 1048576).toFixed(1)} MiB)${opts.selfCheck ? ', self-check ok' : ''}`);
     if (opts.archive) {
       const archive = path.resolve(opts.archive);
-      const a = packArchive(out, archive);
+      const inside = archiveInsideOut(out, archive);
+      // The temporary MUST live outside the folder being packed: a file created inside it is read while it grows
+      // («tar: file changed as we read it»), which is the whole bug.
+      const target = inside ? path.join(path.dirname(out), `.${path.basename(archive)}.pack-${process.pid}`) : archive;
+      const a = packArchive(out, target); // packArchive removes its own partial on failure
+      if (inside) fs.renameSync(target, archive);
       console.log(`archive ${archive} sha256 ${a.sha} (${a.bytes} bytes)`);
     }
   } finally {
@@ -670,12 +977,13 @@ async function main() {
   }
 }
 
+/* The guard and the archive-path test are exported so test-node/ can hold them to fixtures (K2-13); RENAME_ATTEMPTS and
+   renameWithRetry are exported too, because runtime-build-check.cjs tests the retry itself (K2-05 Windows flakies).
+   Running this file as a script is unchanged below. */
+module.exports = { RENAME_ATTEMPTS, archiveInsideOut, assertNoNativeAddons, renameWithRetry };
 if (require.main === module) {
   main().catch((e) => {
     console.error(`build-runtime: ${e.message}`);
     process.exit(e instanceof Fail ? e.code : 1);
   });
 }
-
-// Required by runtime-build-check.cjs to test the retry itself; running this file as a script is unchanged above.
-module.exports = { RENAME_ATTEMPTS, renameWithRetry };

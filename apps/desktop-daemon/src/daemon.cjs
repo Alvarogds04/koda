@@ -35,6 +35,13 @@ const { defaultIslandRoot } = require("./isolation.cjs");
 // K2-05 T3 (S2): Gentle Dot's transparent rotation (rotation on by default).
 const { SessionRotator } = require("./rotation.cjs");
 const { IslandServer } = require("./server.cjs");
+// K2-13: Minikodas (recipes, runs in their own engine roots, scheduler) and the «Hoy» inbox.
+const { Minikodas } = require("./minikodas/index.cjs");
+// K2-13 (S6-S9, S15, S16): video/audio transcription for the Minikodas (bundled ffmpeg + koda-transcribe helper).
+const { Transcriber, TranscriptionError, bundledTools } = require("./minikodas/transcribe.cjs");
+const { YouTubeReader, bundledYtDlp, bundledNode } = require("./minikodas/youtube.cjs");
+// K2-13 (S10/S20): the daemon's one Telegram session (login over the island protocol, keychain session, no file).
+const { createTelegram } = require("./minikodas/telegram.cjs");
 // K2-06 (S1/S2/S3): the host's window-capture endpoint and the extension that keeps only the last screenshot.
 const windowCapture = require("./window-capture.cjs");
 
@@ -334,6 +341,9 @@ class Daemon extends EventEmitter {
 	 * @param {object} [options.engineOptions]  extra AgentEngine options (tests: fake command)
 	 * @param {object} [options.accountsOptions]
 	 * @param {object} [options.serverOptions]  extra IslandServer options (limits)
+	 * @param {object} [options.minikodasOptions]  extra Minikodas options (tests: fake engine command, minEveryMs)
+	 * @param {object} [options.transcriberOptions]  tests only: {ffmpeg, helper, limits, ytdlp, jsRuntime, youtubeLimits} instead of the bundled tools
+	 * @param {object} [options.telegramOptions]   extra Telegram session options (tests: a fake client library, log)
 	 */
 	constructor(options = {}) {
 		super();
@@ -498,6 +508,8 @@ class Daemon extends EventEmitter {
 		}
 		this.agents = this.makeAgents(cfg);
 		this.agentHooks = this.makeAgentHooks();
+		this.telegram = this.makeTelegram();
+		this.minikodas = this.makeMinikodas(cfg);
 		this.token = IslandServer.generateToken();
 		// K2-05 T3 (S2): Gentle Dot's transparent rotation, ON by default (config
 		// `rotation.enabled: false` opts out). When the open session file passes the
@@ -527,6 +539,9 @@ class Daemon extends EventEmitter {
 			connectorsControl: this.connectorsControl,
 			agents: this.agents,
 			agentHooks: this.agentHooks,
+			minikodas: this.minikodas,
+			transcription: { get: () => this.transcriber.status(), set: (value) => this.persistTranscription(value) },
+			telegram: this.telegram,
 			sessions: { snapshot: async () => scanSessions({ scopePid: sessionScope(this.env) }) }, // #360: read-only /proc discovery (L52: was never wired)
 			settings: { get: () => ({ hotkey: this.getHotkey() }), setHotkey: (value) => this.persistHotkey(value) },
 			paused: cfg.paused === true, // #379: the persisted pause is restored at every boot
@@ -539,6 +554,8 @@ class Daemon extends EventEmitter {
 		const { endpoint } = await this.server.start();
 		this.assertBooting();
 		this.endpoint = endpoint;
+		// K2-13: schedules arm only once the server is up; nothing runs before an approved recipe.
+		this.minikodas.start();
 		this.startedAt = Date.now();
 		// R8: the boot-time parent pid lets a later launch detect reparenting
 		// (an orphan under systemd --user lands on the user subreaper, ppid != 1).
@@ -787,6 +804,127 @@ class Daemon extends EventEmitter {
 		return createAgentHooks({ home, agents: this.agents, nodeExe: process.execPath, log: (line) => this.log(line), ...(this.options.agentHooksOptions ?? {}) });
 	}
 
+	/**
+	 * K2-13 (S10/S20): the daemon's Telegram session. One client, always mtcute's MemoryStorage: the session lives in the
+	 * island's keychain and in memory only, never in a file. Options come from `telegramOptions` (tests inject a fake
+	 * client library, so no test ever logs in to Telegram).
+	 */
+	makeTelegram() {
+		return createTelegram({ log: (line) => this.log(line), ...(this.options.telegramOptions ?? {}) });
+	}
+
+	/**
+	 * K2-13 Minikodas. Each Minikoda runs in its own engine root under `<island>/minikodas/engines/<id>` with
+	 * the same engine command as the chat (`cfg.command`: after K2-05 merged into release/0.2 that is Koda's
+	 * bundled Gentle Shell, resolved by the runtime; the engine stays injectable for tests). The model is validated
+	 * against the accounts Koda already has; the default is the chat's active profile. The global pause (#379)
+	 * refuses launches and skips scheduled ticks.
+	 */
+	makeMinikodas(cfg) {
+		const { engine: engineOverrides, ...rest } = this.options.minikodasOptions ?? {};
+		this.transcriber = this.makeTranscriber();
+		this.youtube = this.makeYouTube(this.transcriber);
+		return new Minikodas({
+			islandRoot: this.root,
+			accountsRoot: path.join(this.root, "accounts"),
+			accounts: this.accounts,
+			profiles: this.profiles,
+			// S11: the chat's live credential (freshest wins) receives a Minikoda's refreshed OAuth token.
+			chat: { agentDir: path.join(this.root, "agent"), activeAccountPath: path.join(this.root, "active-account.json") },
+			engine: { command: cfg.command, commandArgs: [], env: this.env, ...(engineOverrides ?? {}) },
+			isPaused: () => this.server?.paused === true,
+			transcriber: this.transcriber,
+			// S19: YouTube links are read with the bundled yt-dlp; the transcripts go through that same transcriber.
+			youtube: this.youtube,
+			log: (line) => this.log(line),
+			...rest,
+		});
+	}
+
+	/**
+	 * K2-13 (S6-S9, S15, S16): the transcriber. The tools are the BUNDLED ones beside this daemon package
+	 * (`<install>/runtime/ffmpeg[.exe]`, `<install>/koda-transcribe[.exe]`), never PATH; absent (a development
+	 * checkout, or macOS where ffmpeg is not bundled yet) they are reported unavailable and every media transcription
+	 * fails with a clear «Hoy» error. The setting is read live from the config (`transcription`). The helper gets the
+	 * user's HOME/XDG_DATA_HOME so it finds the model store dictation shares; nothing else from the environment.
+	 */
+	makeTranscriber() {
+		const tools = bundledTools({ installRoot: path.resolve(__dirname, "..", ".."), platform: this.platform });
+		const overrides = this.options.transcriberOptions ?? {};
+		const asTool = (file) => (file ? { command: file, commandArgs: [] } : undefined);
+		return new Transcriber({
+			islandRoot: this.root,
+			setting: () => this.transcriptionSetting(),
+			ffmpeg: "ffmpeg" in overrides ? overrides.ffmpeg : asTool(tools.ffmpeg),
+			helper: "helper" in overrides ? overrides.helper : asTool(tools.helper),
+			remoteAccount: (accountId) => this.transcriptionAccount(accountId),
+			env: overrides.env ?? this.toolEnv(),
+			limits: overrides.limits,
+			log: (line) => this.log(line),
+		});
+	}
+
+	/** The global transcription setting, read live from the config (S7, S18). */
+	transcriptionSetting() {
+		return this.cfg?.transcription ?? config.loadConfig(this.root, { env: this.env }).transcription;
+	}
+
+	/**
+	 * The environment of the bundled tools: the user's HOME/XDG_DATA_HOME (the helper finds the model store it shares
+	 * with dictation), the platform's own variables and a locale. Nothing else from the daemon's environment.
+	 */
+	toolEnv() {
+		const env = {};
+		for (const key of ["HOME", "XDG_DATA_HOME", "USERPROFILE", "LOCALAPPDATA", "APPDATA", "SystemRoot", "TEMP", "TMP", "LANG"]) {
+			if (typeof this.env[key] === "string") env[key] = this.env[key];
+		}
+		return env;
+	}
+
+	/**
+	 * K2-13 (S19): the YouTube reader of the Minikodas. `yt-dlp` is the BUNDLED binary at `<install>/runtime/yt-dlp[.exe]`
+	 * — never PATH, never a shell — and the audio it downloads is transcribed by the same transcriber as any other
+	 * media. macOS ships neither ffmpeg nor yt-dlp yet (pending for the Mac session), so there every YouTube link
+	 * answers `youtube_unavailable` and the rest of the post is still read. YouTube extraction needs a JavaScript
+	 * runtime, so yt-dlp gets Koda's own bundled Node (`--js-runtimes node:<absolute path>`); never PATH.
+	 */
+	makeYouTube(transcriber) {
+		const overrides = this.options.transcriberOptions ?? {};
+		const installRoot = path.resolve(__dirname, "..", "..");
+		const file = bundledYtDlp({ installRoot, platform: this.platform });
+		return new YouTubeReader({
+			islandRoot: this.root,
+			ytdlp: "ytdlp" in overrides ? overrides.ytdlp : file ? { command: file, commandArgs: [] } : undefined,
+			jsRuntime: "jsRuntime" in overrides ? overrides.jsRuntime : bundledNode({ installRoot, platform: this.platform }),
+			transcriber,
+			setting: () => this.transcriptionSetting(),
+			env: overrides.env ?? this.toolEnv(),
+			limits: overrides.youtubeLimits,
+			log: (line) => this.log(line),
+		});
+	}
+
+	/**
+	 * K2-13 (S7): the remote transcription account must be one Koda already has, signed in, and OpenAI-compatible
+	 * (a custom gateway account: its Base URL and key are the account's own). Anything else is remote_unavailable.
+	 */
+	async transcriptionAccount(accountId) {
+		const meta = this.accounts?.readMeta(accountId);
+		if (!meta || meta.kind !== "custom" || meta.configured !== true) throw new TranscriptionError("remote_unavailable");
+		try {
+			return { baseUrl: this.accounts.customConfig(meta).baseUrl, apiKey: this.accounts.storedApiKey(meta) };
+		} catch {
+			throw new TranscriptionError("remote_unavailable");
+		}
+	}
+
+	/** Validates + persists the transcription setting (no engine restart: the next transcription reads it). */
+	persistTranscription(value) {
+		const result = config.setTranscription(this.root, value);
+		this.cfg = { ...(this.cfg ?? {}), transcription: result.transcription };
+		return result;
+	}
+
 	/** The persisted global hotkey (canonical) or null. */
 	getHotkey() {
 		return this.cfg?.hotkey ?? null;
@@ -860,6 +998,12 @@ class Daemon extends EventEmitter {
 		this.connectorsControl = undefined;
 		// The connector host removes its MCP source before the engine and daemon projection stop.
 		await this.connectorHost?.stop().catch(() => {});
+		// K2-13: timers stop and runs in flight are cancelled (recorded as failed runs) before the server goes.
+		await this.minikodas?.stop().catch(() => {});
+		this.minikodas = undefined;
+		// K2-13: the Telegram client is torn down (in memory only; the island keeps the session in the keychain).
+		await this.telegram?.stop().catch(() => {});
+		this.telegram = undefined;
 		await this.server?.close().catch(() => {});
 		await this.engine?.stop().catch(() => {});
 		// K2-05 T1c: the private memory server stops AFTER the engine is gone (its

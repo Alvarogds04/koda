@@ -49,7 +49,7 @@ DESKTOP="$ID.desktop"
 RUNTIME_ARCHIVE="koda-runtime-linux-x64.tar.gz"
 # Closed-set verifier beside this script; run by the EXTRACTED runtime's node.
 LIB="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)/lib.cjs"
-EXEC_FILES="koda koda-launcher"
+EXEC_FILES="koda koda-launcher koda-transcribe"
 
 die() { printf 'install.sh: %s\n' "$*" >&2; exit 1; }
 note() { printf '%s\n' "$*"; }
@@ -175,7 +175,7 @@ if [ "$UNINSTALL" -eq 1 ]; then
   elif [ -L "$PREFIX/runtime" ]; then
     note "Kept $PREFIX/runtime: it is a symlink, not ours to remove."
   fi
-  rmdir "$PREFIX/desktop-daemon/src" "$PREFIX/desktop-daemon" "$PREFIX/desktop-harness/bin" "$PREFIX/desktop-harness/src" "$PREFIX/desktop-harness" "$PREFIX/desktop-pi" "$PREFIX" 2>/dev/null || true
+  rmdir "$PREFIX/desktop-daemon/src/minikodas" "$PREFIX/desktop-daemon/src" "$PREFIX/desktop-daemon" "$PREFIX/desktop-harness/bin" "$PREFIX/desktop-harness/src" "$PREFIX/desktop-harness" "$PREFIX/desktop-pi" "$PREFIX" 2>/dev/null || true
   refresh_desktop_db
   if [ -n "$removed" ]; then note "Removed:$removed"; else note "Nothing to remove (not installed under $PREFIX)."; fi
   if [ -d "$PREFIX" ]; then note "Kept $PREFIX: it still holds files that are not ours."; fi

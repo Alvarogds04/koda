@@ -3,8 +3,10 @@
 The island chat is a full agent, not a direct model call: this package supervises the
 installed `pi` running `--mode rpc` as a child process inside a private island, with an
 Abito identity, isolated environment, session privacy, request correlation, crash
-restart with bounded backoff, and clean stops. Plain Node CJS, zero runtime
-dependencies.
+restart with bounded backoff, and clean stops. Plain Node CJS: one runtime
+dependency (`@mtcute/node`, the Telegram client library, K2-13), and it ships inside
+the bundled runtime folder, never from this package (see «The Telegram client
+library» below).
 
 Status: U1–U4 implemented (runtime, profiles, island transport, config/CLI/daemon). The installed `pi` on this machine is the default
 runtime and was smoke-verified offline (`start` → `get_state` → `stop` against the
@@ -579,3 +581,193 @@ remove require the exact `plan_hash` shown, back everything up first and refuse 
 (S2/S4): the Koda 0.1 artifacts (`abito-island-hooks/1`, `abito-island*` names) are recognised as ours, retired into the
 same backup flow on install and removed on remove, so each client keeps exactly one artifact and one card per notice.
 Frames, invariants, sources and UNVERIFIED items: [`../../tests/PROTOCOL.md`](../../tests/PROTOCOL.md).
+
+## The Telegram client library (K2-13)
+
+Reading Telegram channels with the user's own account (S6) needs a client library: **`@mtcute/node` 0.32.8**, pinned
+exactly here (with every `@mtcute/*` package it pulls frozen by `overrides`) and pinned to the same version in
+`../desktop-tauri/packaging/runtime/package.json`. Evidence and the library comparison: `odd/evidence/k2-13-spike/`.
+
+**Nothing ships from this package.** The bytes travel inside the bundled runtime folder Koda already installs and
+verifies (`S6`; decided by the human, K2-13 L41), because that is the one npm tree every installer verifies, extracts and
+writes licence notices for:
+
+- installed: `<runtime>/node_modules/@mtcute/node` (`<prefix>/runtime`, `Contents/Resources/runtime` on macOS);
+- development: `npm ci` in this package (no install scripts needed) puts it in `node_modules/`, and ordinary Node
+  resolution finds it — `npm test` never needs it, because the tests inject a fake client.
+
+The Telegram module resolves the library in that order: beside the Node the daemon runs on (`<folder>/node_modules`),
+then beside its own package (`../runtime/node_modules`), then by ordinary Node resolution; if none of them has it, the
+Telegram frames answer `unavailable` instead of crashing the daemon.
+
+**No native addon.** mtcute's `better-sqlite3` is replaced by Koda's empty stub
+(`../desktop-tauri/packaging/runtime/stubs/better-sqlite3`, wired as a `file:` dependency in both `package.json` files,
+exactly as `overrides` cannot express in npm 9). The daemon always passes `MemoryStorage`, so the `SqliteStorage` that
+would load the addon is never constructed; the stub throws if it ever is, and mtcute's crypto is WASM. The build fails
+if a `.node` file appears under `@mtcute`, `@fuman` or `better-sqlite3`
+(`packaging/runtime/build-runtime.cjs` `assertNoNativeAddons`), and `apps/desktop-tauri/test-node/telegram-deps-check.cjs`
+keeps both pins, the stub and the licences in step.
+
+### Login and the session (S10, S20)
+
+`src/minikodas/telegram.cjs` is the daemon's one Telegram client. The login happens in Ajustes over the island protocol
+(`docs/PROTOCOL.md`, «Telegram frames»): `telegram_login_start{apiId, apiHash, phone}` asks Telegram for a code,
+`telegram_login_code{code}` delivers it, and `telegram_login_password{password}` answers a two-step login. Every answer is
+a frame; nothing is read from a terminal, and a refused code or password leaves the login where it was so the person can
+try again.
+
+**The session is a credential and never touches the disk.** The client is always built with mtcute's `MemoryStorage`
+(the wrapper refuses a caller-supplied storage, and a test proves that no `client.session` — mtcute's own default — or
+sqlite file can appear in the working directory or `HOME`). When a login finishes, or when restoring rotates the session,
+the daemon replies `telegram_session{session}` to the connection that asked, and only to that connection: the island
+stores it in the OS keychain and hands it back at start with `telegram_session_restore{apiId, apiHash, session}`. An
+unchanged session is never echoed back.
+
+`apiHash`, the phone, the code, the password and the session never appear in a log line, a broadcast, «Hoy» or an error.
+Failures are closed codes with a fixed Spanish sentence (`telegram_flood_wait` carries `retryAfterMinutes`, e.g.
+«Telegram pidió esperar 4 minutos»); Telegram's own text is never forwarded because it can echo the phone number. A
+revoked session answers `telegram_session_invalid` and disconnects instead of pretending to be connected. The global
+pause refuses the login frames (they change the account's state) but keeps answering status, the start-up restore and
+`telegram_logout`: revoking a session is an account-safety action, like `agent_disconnect`. A login belongs to the
+connection that started it, so another window can neither answer its code nor replace the flow
+(`telegram_login_other_connection`). The library's own logging is passed level 0 (OFF) explicitly, so a
+`MTCUTE_LOG_LEVEL` in the environment can never make mtcute print phone numbers, codes or payloads to the daemon's
+stdio; a display name longer than the frame's 80 chars is clipped where the account is stored.
+
+**Island contract.** The island must store the session in the keychain, must never write it to a file, must never echo it
+back inside another frame, and after `telegram_logout` must delete its keychain entry (the daemon already revoked the auth
+key on Telegram when it could reach it).
+
+## Minikodas (K2-13)
+
+A Minikoda is a small helper that runs a recipe on its own. Code: `src/minikodas/`.
+
+**Recipe** (`recipe.cjs`, strict validation; anything unknown or out of range is refused, never repaired):
+`{id, name, when, reads, kit, prompt, model, never}`.
+- `when`: exactly one of `{manual: true}`, `{everyMs}` (≥ 60 s) or `{at: ISO date}` (future, ≤ 1 year).
+- `reads`: `{source}`, a descriptor. Before each run the daemon prepares the source's content and hands it to the Minikoda only through `source_read`. A plain-text descriptor reads `<island>/minikodas/sources/<id>.txt`; `telegram:@canal` (or `telegram:t.me/canal`) reads that public Telegram channel with the user's own account (see «A Telegram channel as the source»). The descriptor is validated **when the Minikoda is created**: a channel typed without the prefix (`@canal`, `t.me/canal`) is refused there with a Spanish sentence («para leer un canal de Telegram hace falta el prefijo «telegram:»») instead of being stored as a text file name and read as empty on every run, and so is a malformed `telegram:` value.
+- `kit`: names from the closed catalogue `source_read`, `inbox_propose`.
+- `prompt`: the Minikoda's specialised prompt. It is appended after Koda's fixed base rules.
+- `model`: `{provider, id, accountId}`. It must come from an account Koda already has (`accounts/`): the account must exist, be signed in, serve that provider and offer that model. A provider served by two accounts needs `accountId`. Without a choice, the model is the chat's current model (the active profile).
+- `never`: must be exactly `buy, sell, send, delete`.
+
+### A Telegram channel as the source (S6)
+
+`reads.source` is `telegram:@canal` (also accepted: `telegram:canal`, `telegram:t.me/canal`, `telegram:https://t.me/canal`).
+Anything else after `telegram:` is refused **when the Minikoda is created** (`recipe.cjs` asks `telegram-source.cjs` for the
+grammar), so a typo never becomes a text source read as empty at run time; a channel typed without the prefix is refused
+there too. Implementation: `src/minikodas/telegram-source.cjs`.
+
+- **Read by its `@username`, and almost nothing is cached.** Each run asks for the channel by its username
+  (`getHistory("@canal")`): mtcute resolves it once per client and caches the result in its own storage, so
+  `contacts.resolveUsername` is spent once per daemon lifetime, not once per run. The Minikoda's private state
+  `<island>/minikodas/telegram/<id>.json` (0600) holds only `{version: 2, channel, lastSeenId}`. It deliberately does
+  **not** cache the `accessHash`: JSON has no 64-bit integer and mtcute's TL writer reads `.low`/`.high`, so a hash
+  stored as a string would reach Telegram as access hash 0 and every later run would have to re-resolve the channel
+  after `CHANNEL_INVALID` (`telegram-source.test.cjs` pins this with the library's own writer). A username mtcute cached
+  before the channel changed hands is resolved again, once.
+- **Only what is new.** Each run asks for posts newer than the stored `lastSeenId` (`getHistory({minId})`), reading at
+  most 20 posts; the first run reads the latest 5. The marker moves **only when the run succeeded** (`commit()` runs
+  after the result reaches «Hoy»): a failed run reads the same posts again instead of skipping them.
+- **Text.** The posts arrive oldest → newest, each as `[id] texto`, inside `Canal @canal: N publicaciones nuevas.`, capped
+  at 60 000 chars. That text is what `source_read` returns; the Minikoda never sees the channel itself.
+- **Media → transcription (S6, S17).** Video (round video notes and GIF animations included), audio and voice messages are
+  downloaded with `downloadAsNodeStream` into the run's private folder `<island>/minikodas/media/<run>/` (folder 0700,
+  files 0600) — but only after Telegram's own metadata says the file is **≤ 200 MB and ≤ 3 hours**; a bigger or longer
+  one, or one whose size Telegram does not report, is skipped with a note in the text. Photos and documents are ignored,
+  and content-protected (noforwards) media is skipped with a note. `FILE_REFERENCE_EXPIRED` refetches that one message
+  **in its channel** (`getMessages("@canal", [id])`: mtcute's media objects carry no `.chat`) and retries the download
+  once, never in a loop.
+  - Every downloaded media goes through the SAME transcription service the plain-file source uses (Parakeet by
+    default, or the setting's remote account; `transcribe.cjs`) through the source's `transcribe(entry)` callback, and
+    its transcript joins the text **right after the post it belongs to**: `[Transcripción de la publicación 12 del
+    2026-11-10]` followed by the text. The marker names the post by id and date only — never a file name, a path or the
+    run id, because none of those mean anything to the Minikoda.
+  - The media of one read share **one 30-minute budget** (S17), the same one every transcription has; the run's 300 s
+    engine budget only starts once the engine starts. A cancelled run (pause, delete, daemon stop) cancels the
+    transcription, and an exhausted budget ends the run with `reason: "transcription"` and «Hoy» saying «el video tardó
+    más de 30 minutos en transcribirse; no se resumió».
+  - A media that cannot be transcribed (too long, unreadable, ffmpeg or the helper unavailable, no voice) is **a short
+    Spanish note in its own post** («(video de 95 s: el video o audio no se pudo leer)») **and a «Hoy» error item**. It
+    never drops the post, never loses the other posts and never fails the run, so a channel read with one bad video
+    still lands its result.
+  - `prepare()` resolves `{text, media: [{path, mimeType, durationSec, messageId, kind}], ownChars, commit}`. Each file
+    is deleted right after its transcription, and the run's media folder is removed as soon as the run ends — success,
+    engine failure, timeout or cancel (`TelegramSource.removeRun`, called by `service.cjs` in a `finally`) — so a video
+    per run never accumulates in the island. `ownChars` is the length of the channel's own text, which the provenance
+    rule below counts.
+- **Failures are «Hoy» errors, never silence.** A long `FLOOD_WAIT` (mtcute absorbs ≤ 10 s), no connected account, an
+  invalid channel or a revoked session fail the run with `reason: "source"` and the Spanish sentence from
+  `telegram.cjs` («Telegram pidió esperar 5 minutos», «No hay ninguna cuenta de Telegram conectada»). There is no retry
+  loop, and the media downloaded so far are removed.
+
+**Store** (`service.cjs`): `<island>/minikodas/recipes.json` (0600, dir 0700). Creating a Minikoda takes two steps. `createDraft` stores a validated draft that never runs; only `approveCreate` makes it `active` and arms its schedule (S1: «solo lo crea si lo apruebo»).
+
+**Summary of a draft** (`summary.cjs`, S1/S7): `createDraft`'s reply and `minikoda_get` of a draft carry `summary {sections: [{key, title, text}], text}`, the plain-language «qué entendió» shown before the user approves: «Cuándo corre» (a mano / cada N minutos u horas / a una hora, in UTC), «Qué lee» (the source descriptor), «Qué hace» (the task text), «Dónde te lo muestra» («Hoy»), «Qué nunca hará solo» (the `never` verbs and the fact that such an action waits for approval) and «Con qué modelo» (S7: the account's visible label plus the model id, or «el mismo del chat»). It is deterministic: built only from the validated recipe, with no model call. Every field is one plain line — Unicode format characters (bidi, zero-width), control characters and breaks are stripped — and capped in bytes (512 per section, 3600 for the block). It never carries the accountId, a credential, a path or prompt internals. Getting it activates nothing: only `approveCreate` does. Frames and caps: `docs/PROTOCOL.md` «Minikodas and «Hoy» frames».
+
+**Runner** (`runner.cjs`): every run is a supervised `pi --mode rpc` child (`AgentEngine`) in the Minikoda's own private root, `<island>/minikodas/engines/<id>/`. That root has its own HOME, agent dir, sessions, tmp and workspace. It is never the chat engine's root and never shared between Minikodas. Before each run the chosen model is projected into that agent dir, using the same files profile activation writes for the chat: one credential, the account's `models.json` and the defaults. A custom gateway is served by the guarded custom-provider extension, passed explicitly with `-e` (the reduced profile's `-ne` turns off the auto-loaded `agent/extensions/`). Every run starts a fresh session. The copied `auth.json` is removed after every run, once the write-back below has completed, and when the copy step fails. The only exception is a copy whose write-back failed (see below): it stays in the Minikoda root until it is written back.
+- **Credential copy and write-back (S11, decision «1a»; `credentials.cjs`).**
+  - Copy-in: the run gets the freshest copy of the account's credential. That is the account store's, or the chat's live `agent/auth.json` when the chat's active profile uses the same account and provider and both hold OAuth tokens, the chat's expiring later (the chat refreshes there and saves back to the account only on a profile switch). An API key always comes from the account store.
+  - Lifetime gate (F-B): an OAuth session is copied in only when it outlives the run timeout plus 6 minutes (5 minutes plus a 1-minute margin), so the Minikoda's engine never has to refresh it while the chat may be refreshing the same refresh token. The daemon has no refresh path of its own (the SDK helper only signs in and out), so a session closer to expiry is not copied: the run fails as `model_unavailable` and «Hoy» says «la sesión de <cuenta> vence pronto; abrí el chat para renovarla».
+  - Write-back: the Minikoda's copy is untrusted (its engine could rewrite it). After the run (any outcome) it goes back to the account store and, when the chat's active profile uses that account, to the chat's live `agent/auth.json` only as a refresh of the OAuth token that was copied in. The copied-in credential must be OAuth. The account store, and the chat file when it is targeted, must hold OAuth for that provider now: an API key is never replaced and logout is never undone. The new token must expire strictly later than the copied-in one and than what each side holds now, and at most one year from now. Only `type`, `access`, `refresh`, `expires` and the fields the copied-in credential already had are written.
+  - Locking: every read and write takes the same lock directories the SDK's credential store uses (`<dir>/auth.json.lock`, chat dir first, then account dir) and writes atomically (temp + rename, 0600). The chat engine re-reads `auth.json` when its revision changes, so it picks the new token up on its next request. A leftover profile-switch journal leaves the chat side alone.
+  - Failed write-back (F-C): a write-back that cannot take the lock (20 s) keeps the Minikoda's copy. The kept copy is written back before that Minikoda's next run, when the daemon starts again (runs wait for it) and before a delete. While it still fails, `minikoda_delete` answers `failed` and leaves the Minikoda, its schedule and its copy in place.
+  - Engine stop (F-D): a run's engine gets 20 s to exit after its stdin closes before SIGTERM (SIGKILL 2 s later), so an OAuth refresh in flight (bounded at 15 s by the SDK) can save its rotated token. The engine's turn-recycle SIGKILL (2 s after a cancelled turn) does not apply in practice: the runner calls `stop()` as soon as a turn is cancelled, which cancels the recycle. In a narrow race the engine can settle its cancelled turn before `stop()` runs; it is then killed at once. A refresh in flight at that moment, or one that outlasts the 20 s grace, is lost. The lifetime gate keeps such a refresh from starting in the first place.
+- Reduced profile: `-ne -e src/minikodas/kit-extension.js --no-mcp --no-skills --no-prompt-templates --no-themes --no-context-files --tools <kit> --model <provider>/<id>`, plus `GENTLE_PI_AGENTS=0` in the child env.
+- Closed kit, two layers:
+  - `--tools` = kit, so the model is only shown the kit;
+  - the extension's `tool_call` guard blocks any tool outside `MINIKODA_KIT`.
+  - Tested: `bash` is refused and never runs, and a negative control proves the marker does appear when both layers allow it.
+- The engine command is injectable (`engine: {command, commandArgs, env}`); the daemon passes the chat's own command, which in release/0.2 is Koda's bundled Gentle Shell (K2-05), so a Minikoda runs on the same engine («usamos el motor de gentle shell»). The engine keeps the same flags, `GENTLE_PI_AGENTS=0` and `--tools` = kit. The PoC measured that `-ne`/`--no-skills` do not remove Gentle's own core, and that only `--tools` keeps its tools away from the model (`odd/evidence/k2-13-poc/gentle-shell-round/`).
+- Runs never overlap per Minikoda (a second launch answers `running`). At most two run at once overall, and a run whose video is still being transcribed **holds its slot**: the 2-concurrent-runs rule counts it. Every run's engine is bounded by a timeout (default 300 s) whose clock starts only when the engine starts, after any transcription (S17).
+- A crash, a timeout, a start failure, an unavailable model or a cancelled run (daemon stop, delete, the global pause turning on) is a **failed run**. It lands in «Hoy» as an `error` item and in `lastRun`. It is never silent and never respawned. The proposals the kit parked before the failure are stored as pending in «Hoy» too, and the error item says so (S13: «3 si guardalo como pendiente, aunque avise al usuario que fallo»).
+- Proposal `target`: one plain line. Unicode format characters (bidi overrides such as U+202E, zero-width characters) are stripped; a line break or control character is refused by the kit and discarded by the runner.
+- Proposals are read only from the file the kit wrote (re-validated: buy/sell/send). The model's text is never parsed for proposals.
+
+**Scheduler** (`scheduler.cjs`): Koda's own timer.
+- `everyMs` repeats; `at` fires once and is marked `firedAt`, so a restart never fires it again; `manual` never fires by itself.
+- A tick that lands while the previous run is still going is skipped, never queued.
+- The global pause (#379) skips ticks and refuses launches; turning it on also cancels the Minikodas that are running (failed runs, reason `paused`).
+- A one-time `at` run that is due while paused, busy or already running never comes back, so it lands in «Hoy» as an `error` item («no se hizo»). Repeating ticks just skip.
+
+**Known limits**:
+- The agent runs as the same OS user as the daemon. The kit cannot reach the «Hoy» store or the daemon token: no kit tool reads files, and those live outside the engine root. Any same-uid process can still read them, though. Running the agent as another OS user is K2-14 criterion 3.
+- Left for later (verifier mwdat8g0, not implemented): `hoy_approve` is still accepted while the global pause is on.
+- Tests use `test/fixtures/minikodas/fake-pi.cjs`, a fake `pi --mode rpc` that loads the real kit extension and mimics Pi's tool selection and `tool_call` blocking. The real-Pi proof of the two layers is the PoC (`odd/evidence/k2-13-poc/poc-minikodas/evidence/`).
+
+**Video and audio posts: transcription** (K2-13 S6-S9, S15, S16, S17, S18; `transcribe.cjs`, `transcribe-setting.cjs`):
+- A source may hand a run `{text, media: [files]}`. Each media file must be a regular file inside the run's own folder `<island>/minikodas/media/<runId>/`. It is transcribed, deleted, and its transcript is appended to what `source_read` returns. The media never reaches the model. The folder is removed after the run.
+- A **Telegram channel read** hands its media to the same service through the source's own callback, so each transcript lands inside its own post (post id and date only) and one bad media is a note plus a «Hoy» error item instead of a failed run — see «A Telegram channel as the source» above. One read's media share one 30-minute budget, like every other transcription.
+- **Setting** (global, `config.json` key `transcription`, frames `transcription_get`/`transcription_set`):
+  - `{mode: "local-parakeet", language}`: the default. Parakeet v3 int8 on this computer, no network. The language is always fixed.
+  - `{mode: "remote", language, remote: {accountId, model}}`: an OpenAI-compatible (custom gateway) account Koda already has, e.g. NaN with model `whisper`. The Base URL and the key are that account's own; the setting never holds them. `language` defaults to `es`.
+  - **S18 «pues usamos solo ese modelo»: Parakeet is the only local model.** The local `local-whisper-turbo` option of the first build is gone: the validator, the `transcription` frames and Ajustes no longer offer it, and a stale frame is answered `bad_request`. A `config.json` still saying `local-whisper-turbo` is migrated to `{mode: "local-parakeet", language}` when it is read (`migrateTranscriptionSetting`), so an island written by that build keeps working; only the removed mode is migrated, every other invalid value stays a config error.
+- **Tools.** Both are bundled, found at fixed paths beside the daemon package and never on PATH:
+  - ffmpeg: `<install>/runtime/ffmpeg[.exe]`, a pinned LGPL build (`apps/desktop-tauri/packaging/runtime/ffmpeg.sha256`).
+  - The helper: `<install>/koda-transcribe[.exe]`, the island crate's sherpa-onnx helper. It shares dictation's model store and Silero VAD (`apps/desktop-tauri/docs/dictation-build.md`).
+  - Both are spawned with `shell:false` and a fixed argv. ffmpeg only opens `file:` input, in a closed list of containers (no playlists, no network) and decodes only the audio codecs those containers carry (`-codec_whitelist`: AAC, Opus, Vorbis, MP3/MP2, FLAC, ALAC, AC-3/E-AC-3 and the PCM variants; never a video or text decoder).
+  - **macOS: ffmpeg is not bundled in this version** (pending for the Mac session), so every media transcription there fails with `ffmpeg_unavailable`.
+- **Local path.** ffmpeg extracts 16 kHz mono 16-bit WAV, then `koda-transcribe transcribe --model … --language … <wav>` runs. Its VAD segments are capped at 25 s. A model that is not downloaded is `model_missing`; the daemon never downloads models.
+- **Remote path.** The WAV is cut into ≤ 175 s mono OGG/Opus chunks (refused above 24 MB). Each chunk is POSTed to `{base}/audio/transcriptions` (`model`, `language`, `response_format=json`, bearer key). Only the JSON `.text` is read, and the chunks are joined in order. A redirect is never followed, a 401/403 is `remote_auth`, and responses are bounded.
+- **Bounds.** At most 3 h of audio, **30 min per transcription phase** (`TRANSCRIPTION_BUDGET_MS`, one named constant shared by the local and the remote path, and by a channel read's whole batch of media), 180 s per remote request, and 20 media per run. Cancelling the run (pause, delete, daemon stop) kills the running ffmpeg or helper.
+- **S17 «1 lo que recomiendas»: transcription has its own budget.** Those 30 min do not count toward the run's 300 s engine budget: that clock starts only once the engine starts, after the transcript is ready. When the 30 min run out, the ffmpeg/helper/remote request is killed, the temp media and the transcription's work folder are deleted by the usual cleanup, the Minikoda's engine never starts, and «Hoy» gets an `error` item that says so: «La corrida de «X» falló (transcripción: el video tardó más de 30 minutos en transcribirse; no se resumió).»
+- **Cleanup.** Work files live in `<island>/minikodas/transcribe/<uuid>/` and are removed after every transcription. The media is deleted after its audio is extracted, and again in `finally`. A killed ffmpeg or helper must be gone before its folder is removed (Windows keeps it busy until the process really exits), so the runner waits for the child's `close` and the removal retries a few short times: a cleanup failure is logged and never replaces the error that ended the transcription. On `start()` the service also sweeps what a previous daemon left in `<island>/minikodas/media/` and `<island>/minikodas/transcribe/`, only inside those two folders and never through a symlink.
+- **Never logged:** the key, the media path, the media content, the transcript. ffmpeg's and the helper's stderr is drained and dropped.
+- **Failures** are a «Hoy» `error` item that says why (`transcripción: el modelo local no está descargado`, …). The Minikoda's engine never starts.
+
+**YouTube links in a post** (K2-13 S19; `youtube.cjs`). «de youtube nada más» (L32) + «2a» (L33): a video link is read from YouTube itself, and only when it really is a YouTube video.
+- **Which links**: `youtube.com/watch?v=`, `youtube.com/shorts/`, `youtu.be/` (`www.` and `m.` accepted), parsed strictly with `new URL` and a video id that must match `^[A-Za-z0-9_-]{11}$`. Every other site — and other YouTube shapes such as playlists, channels or `/embed` — is ignored. At most **three different videos per run**; the rest are reported in «Hoy» («leyó como mucho 3 videos de YouTube: N video(s) más del post quedaron sin leer»). A repeated link is one video.
+- **Subtitles first**: `yt-dlp --skip-download --write-subs` (manual tracks) or `--write-auto-subs` (YouTube's automatic captions) `--sub-format vtt --sub-langs <lang>`, where the language is the video's own (`info.language`) and only then the setting's. The VTT is converted to plain text: no timings, no cue numbers, no inline tags, and YouTube's rolling captions are folded (the repeated line is dropped, a line that only grows the previous one replaces it).
+- **Then the audio**: only when the video has no subtitles Koda could use, `-f bestaudio/best --max-filesize 200M` downloads the audio and the SAME transcription service (Parakeet by default, or the setting's remote account) transcribes it, inside the SAME 30-minute budget (S17). The metadata call runs first, so a video longer than **3 hours** is refused before anything is downloaded.
+- **The text** joins the source behind a short marker: `[Video de YouTube <url> · subtítulos de YouTube]` or `[Video de YouTube <url> · transcripto]`.
+- **Safety**: yt-dlp is the bundled `<install>/runtime/yt-dlp[.exe]` (never PATH, see `packaging/runtime/ytdlp.sha256`), spawned with `shell:false` and a fixed argv that carries `--ignore-config --no-playlist --no-exec --no-cache-dir --no-remote-components --socket-timeout --retries`, plus a per-call timeout. YouTube extraction needs a JavaScript runtime (only `deno` is enabled by default in yt-dlp), so the argv also carries `--js-runtimes node:<install>/runtime/node[.exe]`: Koda's own bundled Node, by absolute path — never a Node from PATH. Without it yt-dlp refuses most videos («This video is not available»), which is exactly what the real run showed. The URL is always `https://www.youtube.com/watch?v=<validated id>`: nothing from the post is ever passed through. No cookies, no browser profile, no plugins. Cancelling the run (pause, delete, daemon stop) kills the child, and the work folder `<island>/minikodas/youtube/<uuid>/` is removed in `finally` on success and on failure (and swept at `start()` like the other work folders).
+- **Failures** become «Hoy» `error` items in Spanish — «el video no está disponible (es privado, fue eliminado o tiene restricciones)», «el video dura más de 3 horas», «el audio del video supera los 200 MB», «el video no tiene subtítulos ni audio que se pudiera descargar» — and the Minikoda still reads the rest of the post. A cancelled run or the 30-minute budget running out still ends it (S17), like a failing transcription.
+- **macOS**: neither ffmpeg nor yt-dlp is bundled yet (pending for the Mac session), so every link answers `youtube_unavailable` and the post is read without the video.
+- **Update the pin often.** YouTube breaks yt-dlp regularly, so a release that stops extracting is expected: refresh `packaging/runtime/ytdlp.sha256` (tag, both sha256 from the release `SHA2-256SUMS`, and the two licence texts) and regenerate the runtime, instead of shipping a binary that no longer works. The licence situation — yt-dlp is Unlicense, but its official standalone builds also carry GNU Readline (GPL-3.0-or-later) and mutagen (GPL-2.0-or-later) — and the source-access record are in the root `THIRD-PARTY-NOTICES.md`.
+
+**«Hoy» and approve-later** (`hoy.cjs`, frames in `docs/PROTOCOL.md` «Minikodas and «Hoy» frames»):
+- `<island>/minikodas/hoy/hoy.jsonl` holds every item `{id, minikoda, kind: result|proposal|error, text, action?, target?, status: pending|approved|rejected, createdAt}` plus, on a result, `provenance`. The list is built from this file only, never from the model's text.
+- **Where a result's text came from (S19, F4).** A result item carries an optional `provenance` from a closed list — `youtube_subtitles` (YouTube's own subtitles), `local_transcription` (Parakeet on this PC), `remote_transcription` (the account the user configured) — and the island draws its chip («subtítulos de YouTube», «transcripto en esta PC», «transcripto con tu cuenta»). Each phase counts the characters it contributed (the channel's own posts or the plain-text file included, as a fourth bucket that is none of the three), and the item carries the value with the most characters **only when it is strictly the biggest**: a tie, the run's own text on top, or nothing marked at all means no chip, because the daemon cannot say. The rule is `dominantProvenance` in `service.cjs`; `hoy.cjs` stores the value (an unknown one is dropped) and `protocol.cjs` validates it on the way out.
+- A proposal executes only on `hoy_approve {id}`. In K2-13 «execute» means: mark the item `approved`, append one line to `approved.jsonl` and broadcast `hoy_approved`. **There is no real buy, sell or send integration yet.**
+- No PIN (human decision L17): `hoy_approve {id}` approves. Approvals run one at a time, so a proposal executes exactly once even when two approvals arrive together (a second approve is refused with `not_pending`). The decision is persisted before the execution record. Reject never executes.
+- Same-uid limit: any process of the user that holds the session token (`runtime/session.json`, readable by every same-uid process) can approve a proposal. A separate OS user for the agent is K2-14 criterion 3.

@@ -1,0 +1,16 @@
+# K2-13 (S8, S15; decisions L22/L23): sherpa-onnx v1.13.8 static libraries built with
+# -DSHERPA_ONNX_ENABLE_TTS=OFF, so they carry no espeak-ng (GPL-3.0), no piper_phonemize and no ucd tables.
+# Koda only recognises speech, so `koda` and `koda-transcribe` link these instead of the TTS build that
+# sherpa-onnx-sys downloads by itself. build.rs reads this file, checks the sha256 of each archive before
+# unpacking it, and refuses an archive that does not match. darwin-arm64 is deliberately absent: the macOS
+# libraries and the Mac session are pending (L12), so that target still links the TTS build.
+#
+# sha256                                                           archive
+36f2ebd0b9aa09248ff6461a30dcb7edfe7eecf2deb67dfb0ceb3aaf4906051f  sherpa-onnx-v1.13.8-linux-x64-static-no-tts-lib.tar.bz2
+# The Windows line is a DIFFERENT archive from the one packaging/windows/sherpa-onnx.sha256 pins for the crate
+# (`…win-x64-static-MT-Release-lib`, the TTS build that .github/workflows/{ci,preview-windows}.yml download into the
+# xwin volume). This one is the same v1.13.8 release built with -DSHERPA_ONNX_ENABLE_TTS=OFF, downloaded and
+# sha256-verified by build.rs on its first Windows build and cached in target/sherpa-onnx-no-tts/archives (an
+# additional download that the workflows do not make). The crate's TTS archive is no longer linked, so the workflow
+# pin is now unused; it stays as it is because CI is not edited (L24).
+f0aa074ddc39553b30208b53e84c12275d09702911c9faa8d34fa932428e4641  sherpa-onnx-v1.13.8-win-x64-static-MT-Release-no-tts-lib.tar.bz2

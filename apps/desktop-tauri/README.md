@@ -1190,6 +1190,49 @@ node apps/desktop-tauri/test-node/specialists-view-check.cjs   # 21 checks
   `role=status` region (`Aviso: <title>. <detail>`), never on dismissal;
   the chat has its own polite region (per state change, not per token).
 
+## K2-13 T6b-1 — «Hoy» inside the island
+
+The island's day, per `design/k2-13-minikodas/02-hoy-todo-en-la-isla.html` (the human's choice, L38): three tabs
+(Propuestas · Resultados · Errores) over the items the daemon really stored in `<island>/minikodas/hoy/`, the notch grown to
+**300** — the height the chat already reaches (`geometry::CHAT_MAX_H`), so no new measure is invented.
+
+- **Bridge.** `agentclient.rs` allowlists exactly three commands — `hoy_list`, `hoy_approve {id}`, `hoy_reject {id}` — and
+  folds the daemon's `hoy` / `hoy_decided` / `hoy_approved` frames into ONE bounded closed view (`{items, truncated}`, 100
+  rows, 4 000 chars of text). A row is rebuilt field by field: an off-vocabulary kind, status, action, id or provenance
+  drops the row (never sanitised into a lie), and text loses control characters, the whole Unicode `Cf` set and
+  U+2028/U+2029. A decision is final in the fold too: only a `pending` row can become `approved` or `rejected`, and a
+  second frame never re-decides it. The command payload is exact: `pin` — or any other stray field — is not a command, so
+  there is no PIN to carry (human decision L17 removed it).
+- **View.** `#hoy` is a sibling of the notch body (`island-nusa-bodies.js`, model in `island-nusa.js`), opened from the
+  fourth disc in the header's visible control cluster and shown only in the idle expanded overview. Rows are built with
+  `textContent` from the model: item text comes from models and Telegram posts, so it is never markup. A proposal carries
+  Aprobar / Rechazar (`24`, the artboard), and its TARGET is drawn whole (the daemon's 200 characters, wrapped, never
+  ellipsised) because that is what is being approved — including who a `send` goes to.
+- **A click never announces its own success.** `AgentConn::command` answers with the state at WRITE time, so the outcome
+  only exists in a later `agent:state` (the path `settings.js` documents). One decision is therefore held until that state
+  shows the row moved (`hoyDecision`) or the daemon's error counter moved (`last_error.n`), with a 3 s deadline that says
+  the outcome is unknown and asks the day again; silence is never a success and never a failure. Every Aprobar / Rechazar
+  is disabled while a decision is in flight, rows keep the order they were first drawn in (`hoyOrder`, so a decided row
+  never sinks under the cursor), clicks are ignored for 400 ms after a repaint that moved rows, a refusal is shown from the
+  daemon's closed code, and a read that could not be answered says so. Aprobar is never the default focus and Enter on a
+  row never approves.
+- **Height and clicks.** `#island` is sized inline by `island.js`, so the grown box is declarative (`data-hoy="open"`,
+  `height: 300px !important`) and the page reports it to the host itself (`island_shape`, destination then settled). Without
+  that report the lower half of `Hoy` would take no clicks. An empty day gives the room back (150).
+- **Not wired here.** «Tus Minikodas ›» and the footer's next-run line need the Minikodas list (its island view is not
+  designed yet); the S19 provenance chip is rendered when an item carries `provenance` and the daemon does not send it yet.
+
+### Verifying K2-13 T6b-1
+
+```
+cd apps/desktop-tauri
+node test-node/hoy-view-check.cjs           # the pure model: tabs, counts, rows, text safety, decisions, refusals
+node test-node/island-hoy-check.cjs         # structure, wiring, tokens (no browser)
+node test-node/island-hoy-visual-check.cjs  # the REAL island in headless Chromium (skips loudly without Playwright)
+cargo test --test hoy_client                # the closed command set and the fold
+cargo test --lib agentclient                # the client state the page is given
+```
+
 ## Configuration: pointing at the real backend later
 
 Nothing to do for the shipped default: the lane targets

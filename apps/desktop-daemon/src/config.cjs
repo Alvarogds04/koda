@@ -26,7 +26,13 @@
  *                  optional subkeys `enabled` (strict boolean, default TRUE: rotation is on by
  *                  default), `bytes` (1024..2147483647 session-file bytes, default 20 MB) and
  *                  `compactions` (1..1000000, default 10); unknown subkeys are rejected; the env
- *                  KODA_ROTATE_BYTES / KODA_ROTATE_COMPACTIONS overrides win over the file
+ *                  KODA_ROTATE_BYTES / KODA_ROTATE_COMPACTIONS overrides win over the file; the
+ *                  v0.1.0 #386 keys thresholdPercent/keepTurns are accepted and ignored
+ *   transcription  K2-13 (S7, S18) how a Minikoda transcribes videos/audios (minikodas/transcribe-setting.cjs):
+ *                  {mode: "local-parakeet"|"remote", language?, remote?: {accountId, model}};
+ *                  default {mode: "local-parakeet", language: "es"}; an invalid stored value is a config error.
+ *                  S18 (L32): Parakeet is the only local model; a `local-whisper-turbo` stored by an earlier build
+ *                  is migrated to {mode: "local-parakeet", language} when the file is read, never rewritten here.
  *
  * `KODA_WORKSPACE` (the Abito analogue of Gentle Dot's GENTLE_DOT_WORKSPACE)
  * overrides the file's workspace and is validated the same way.
@@ -38,6 +44,7 @@ const path = require("node:path");
 const { DEFAULT_COMMAND } = require("./runtime.cjs");
 const { MEMORY_PROJECT, assertSecurePath, islandPaths, writePrivateFile } = require("./isolation.cjs");
 const { THINKING_LEVELS, isStrictProfileId } = require("./profiles.cjs");
+const { TRANSCRIPTION_DEFAULT, validateTranscriptionSetting, migrateTranscriptionSetting } = require("./minikodas/transcribe-setting.cjs");
 // K2-01b: on Windows private files are judged by the verified HU-047 helper (null off Windows; see readPrivateJson).
 const winfs = require("./win-fs.cjs");
 
@@ -55,7 +62,7 @@ const MIN_ROTATE_BYTES = 1024;
 const OBSOLETE_ROTATION_KEYS = ["thresholdPercent", "keepTurns"];
 
 const WORKSPACE_ENV = "KODA_WORKSPACE";
-const ALLOWED_KEYS = ["workspace", "command", "thinking", "profile", "mcpConfigPath", "hotkey", "paused", "connectorsCommand", "connectorsDir", "hookInstallerBin", "connectorHostBin", "rotation"];
+const ALLOWED_KEYS = ["workspace", "command", "thinking", "profile", "mcpConfigPath", "hotkey", "paused", "connectorsCommand", "connectorsDir", "hookInstallerBin", "connectorHostBin", "rotation", "transcription"];
 // T2: the default engine is Koda's bundled Gentle Shell (resolved by the
 // runtime from the bundled runtime folder); re-exported from runtime.cjs.
 const MAX_CONFIG_BYTES = 16 * 1024;
@@ -302,6 +309,27 @@ function validateRotation(raw, log = () => {}) {
 	return out;
 }
 
+/** K2-13 `transcription`: the strict setting validator, as a ConfigError that never echoes the value. */
+function validateTranscription(raw) {
+	try {
+		return validateTranscriptionSetting(raw);
+	} catch {
+		throw new ConfigError("transcription");
+	}
+}
+
+/**
+ * K2-13 (S18) `transcription` read back from disk: the same strict validator plus the one migration, so a config
+ * written by a build that still offered `local-whisper-turbo` loads as `local-parakeet` instead of locking Ajustes.
+ */
+function migrateTranscription(raw) {
+	try {
+		return migrateTranscriptionSetting(raw);
+	} catch {
+		throw new ConfigError("transcription");
+	}
+}
+
 /** The raw, validated file content (no defaults, no env). */
 function readConfigFile(islandRoot, log = () => {}) {
 	// Same parent-chain policy as writes: no symlinked/world-writable/foreign-owned island path.
@@ -337,6 +365,7 @@ function readConfigFile(islandRoot, log = () => {}) {
 		out.paused = raw.paused;
 	}
 	if (raw.rotation !== undefined) out.rotation = validateRotation(raw.rotation, log);
+	if (raw.transcription !== undefined) out.transcription = migrateTranscription(raw.transcription);
 	if (raw.connectorHostBin !== undefined) out.connectorHostBin = validateConnectorHostBin(raw.connectorHostBin);
 	if (raw.hotkey !== undefined) {
 		// Inert metadata: an invalid value must never lock the user out of recovery. Drop it, flag it.
@@ -377,6 +406,7 @@ function loadConfig(islandRoot, options = {}) {
 		})(),
 			compactions: intFromEnv(env.KODA_ROTATE_COMPACTIONS) ?? fileRotation.compactions ?? ROTATION_DEFAULTS.compactions,
 		},
+		transcription: file.transcription ?? { ...TRANSCRIPTION_DEFAULT },
 		...(file.hotkeyInvalid ? { hotkeyInvalid: true } : {}),
 		workspace: islandPaths(islandRoot).workspace,
 		workspaceSource: "default",
@@ -446,6 +476,20 @@ function setPaused(islandRoot, value) {
 		writePrivateFile(islandPaths(islandRoot).configFile, `${JSON.stringify(value ? { ...current, paused: true } : current, null, 2)}\n`);
 	}
 	return { paused: value, changed };
+}
+
+/**
+ * K2-13: persists the global transcription setting (validated first; nothing is written when it is refused),
+ * merging the other keys, atomically with 0600. Returns `{transcription, changed}`.
+ */
+function setTranscription(islandRoot, value) {
+	const next = validateTranscription(value);
+	const { hotkeyInvalid, transcription: old, ...current } = readConfigFile(islandRoot);
+	const changed = JSON.stringify(old ?? TRANSCRIPTION_DEFAULT) !== JSON.stringify(next);
+	if (changed || hotkeyInvalid === true || old === undefined) {
+		writePrivateFile(islandPaths(islandRoot).configFile, `${JSON.stringify({ ...current, transcription: next }, null, 2)}\n`);
+	}
+	return { transcription: next, changed };
 }
 
 /** Forgets the persisted session pointer (overwrites `state.json`, never deletes the session itself). */
@@ -610,6 +654,7 @@ module.exports = {
 	removeMcpProjection,
 	setHotkey,
 	setPaused,
+	setTranscription,
 	setWorkspace,
 	validateCommand,
 	validateConnectorsCommand,

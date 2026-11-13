@@ -84,8 +84,9 @@ daemon admits nothing new:
   pause state (the refusal precedes every gate).
 - STILL ALLOWED: `abort` and `agent_disconnect` (stopping work is always possible), every read-only query
   (`status`, `accounts_list`, `providers_list`, `models_list`, `profiles_list`, `settings_get`, `mcp_import_preview`,
-  `agents_list` while unpaused, `auth_state`), and all account/profile/settings/auth verbs. Scheduled tasks have no
-  admission path in the daemon yet; when one exists it must honor this switch.
+  `agents_list` while unpaused, `auth_state`), and all account/profile/settings/auth verbs. K2-13 Minikodas honor it:
+  `minikoda_launch` is refused with `paused`, scheduled ticks are skipped, and turning the pause on cancels the
+  Minikodas that are running (see «Minikodas and «Hoy» frames»).
 - In-flight work is interrupted at the next safe point (#378): pausing while a turn is active cancels the turn
   through the engine's cancellation path (reason `paused`): admission closes, open asks resolve, one sanitized
   warning `toast` explains the pause ("La pausa interrumpió el turno del agente."), the child is recycled and the
@@ -847,3 +848,142 @@ Only one setup flow may be active. Catalog setup has at most eight fields; promp
 The error enum also retains existing codes such as `not_busy` and `unknown_ask`; error strings and raw host detail are never sent.
 
 **Grave same-UID note (next to the agents invariant).** `connectors_approve` is a privileged command reachable only through the authenticated island channel (not an MCP/engine tool, not a CLI); but the channel token lives in `<island>/runtime/session.json` (0600) and the Abito engine agent, Claude Code and Codex run as the same user and can read it: an approval card the agent can click is NOT a human gate. This matters MORE for approvals than for agents. Closing it needs the daemon launched by the island with an inherited socket (security follow-up, not done).
+
+## Telegram frames (additive, K2-13: S10/S20)
+
+Implementation: `src/protocol.cjs` (allowlist, closed frames), `src/server.cjs` (`handleTelegram`),
+`src/minikodas/telegram.cjs` (the one client). Without a Telegram session every verb answers `unavailable`.
+
+The daemon holds **one** Telegram client, always with mtcute's `MemoryStorage`. The `api_id`/`api_hash` are entered in
+Ajustes (S10), the login happens here, and the **session is a credential**: it is returned to the island only in the one
+frame `telegram_session`, only as the reply to the connection that asked for it, and the island stores it in the OS
+keychain. No file is ever written by the daemon (`client.session` and every sqlite path are impossible: the storage is
+never a default). `apiHash`, phone, code, password and session never appear in a log line, in a broadcast, in «Hoy» or
+in an error.
+
+### Client → server
+
+| type | fields (validated exactly; unknown fields dropped) | reply |
+| --- | --- | --- |
+| `telegram_status` | – | `telegram_status` (this client) |
+| `telegram_login_start` | `apiId` (positive integer), `apiHash` (exactly 32 lowercase hex), `phone` (E.164: `+`, non-zero, 7–15 digits) | `telegram_status{state:"awaiting_code"}`; the code request's outcome arrives as a broadcast `telegram_status` with `notice` (and `retryAfterMinutes` on FLOOD_WAIT) |
+| `telegram_login_code` | `code` (1–32 chars, no control characters) | `telegram_status` (next step: `awaiting_password`, or `awaiting_code` again after a refused code) or `telegram_session` when the login finished |
+| `telegram_login_password` | `password` (1–1024 chars) | `telegram_status` or `telegram_session` |
+| `telegram_logout` | – | `telegram_status{state:"disconnected"}`; the auth key is revoked on Telegram when reachable, and always forgotten locally. Allowed while the global pause is on (account safety, like `agent_disconnect`) |
+| `telegram_session_restore` | `apiId`, `apiHash`, `session` (1–4096 **printable ASCII** chars; anything else is `bad_request`) | `telegram_status{state:"connected"}`; `telegram_session` **only** when Telegram rotated the session (an unchanged one is never echoed back) |
+
+Error codes (closed set; each has a fixed Spanish sentence in `src/minikodas/telegram.cjs`):
+`telegram_unavailable`, `telegram_already_connected`, `telegram_not_awaiting_code`, `telegram_not_awaiting_password`,
+`telegram_credentials_invalid`, `telegram_code_invalid`, `telegram_password_invalid`, `telegram_password_required`,
+`telegram_flood_wait`, `telegram_session_invalid`, `telegram_cancelled`, `telegram_login_other_connection`,
+`telegram_failed`. Telegram's own text is never forwarded (it can echo a phone number); an unrecognised failure is
+`telegram_failed`.
+
+### Server → client
+
+| type | fields |
+| --- | --- |
+| `telegram_status` | `state: disconnected\|awaiting_code\|awaiting_password\|connected`, `account?{name (≤80), username (≤32) \| null}`, `notice?` (Koda's Spanish sentence, ≤300), `retryAfterMinutes?` (1–1440) |
+| `telegram_session` | `session` (the exported session string) — **reply only, never broadcast**. The island must store it in the keychain and must never echo it back inside any other frame |
+
+`telegram_status` is broadcast on every state change (that frame carries no secret) so every connected client shows the
+same account state.
+
+### Semantics
+
+- **Phone → code → 2FA, driven by frames, never readline.** `telegram_login_start` sends the code request and returns at
+  once; the person's answers arrive later as their own frames. A refused code or password keeps the login where it was
+  (`awaiting_code` / `awaiting_password`) instead of restarting it, so the island can ask again.
+- **FLOOD_WAIT.** mtcute absorbs waits up to 10 s. A longer one surfaces as `telegram_flood_wait` with
+  `retryAfterMinutes` (rounded up, minimum 1) and «Telegram pidió esperar N minutos». No frame retries in a loop.
+- **`AUTH_KEY_UNREGISTERED` and friends** mean the keychain session died: the daemon answers `telegram_session_invalid`
+  and goes `disconnected`, never pretending to be connected.
+- **One client.** A second `telegram_login_start` while connected is `telegram_already_connected`; a new start while a
+  login is pending replaces the pending attempt (the old client is destroyed) — but only from the connection that
+  started it.
+- **A login belongs to its connection.** `telegram_login_start` tags the flow with the connection that sent it; a
+  `telegram_login_code` or `telegram_login_password` from ANY other connection is refused with
+  `telegram_login_other_connection`, and so is a `telegram_login_start` from another connection while a flow is pending
+  (two windows starting at once used to both receive the session). After the login lands there is nothing left to own:
+  the verbs answer `telegram_not_awaiting_code` / `telegram_not_awaiting_password`. `telegram_logout` is not bound: any
+  connection may revoke the session, and it may do so while paused.
+- **A session that cannot travel does not connect.** The exported session leaves in the one `telegram_session` frame, so
+  it must be printable ASCII and at most 4096 chars (a real mtcute session is ~350). A client that answers anything else
+  fails the login with `telegram_failed` and its client is destroyed, instead of the daemon looking connected with a
+  session the island could never store or restore.
+- **Global pause (#379).** `telegram_login_start`, `telegram_login_code` and `telegram_login_password` answer `paused`
+  while the switch is on: they change the user's account state. `telegram_status` (read only), `telegram_logout`
+  (account safety, like `agent_disconnect`) and `telegram_session_restore` (the island's start-up hand-off of a session it
+  already holds, no new work) still answer, so a paused daemon can still report whether the stored session is valid and
+  the person can still disconnect.
+- **Same-UID limit**, as for «Hoy»: any process of the same OS user could send these frames on the daemon's socket. The
+  keychain session is what protects the account off-machine, and K2-14 criterion 3 (agent as its own OS user) is the
+  durable fix.
+
+## Minikodas and «Hoy» frames (additive, K2-13)
+
+Implementation: `src/protocol.cjs` (allowlist and DTOs), `src/server.cjs` (`handleMinikodas`), `src/minikodas/` (service, runner, kit, scheduler, «Hoy»). Without a Minikodas service every verb answers `unavailable`.
+
+### Client → server
+
+| type | fields | reply |
+| --- | --- | --- |
+| `minikodas_list` | – | `minikodas` (no prompts) |
+| `minikoda_get` | `id` | `minikoda` (with prompt) |
+| `minikoda_create` | `recipe{id?, name, when, reads{source}, kit[], prompt, model?{provider, id, accountId?}, never[]}` | `minikoda` with `status: "draft"`; broadcast `minikodas`. `reads.source` is validated here: `telegram:@canal` must be a channel, and a channel typed without the prefix (`@canal`, `t.me/canal`) is `bad_request` — the daemon never stores it as a text file name that every run would read as empty |
+| `minikoda_approve_create` | `id` | `minikoda` with `status: "active"` (the schedule is armed); broadcast `minikodas` |
+| `minikoda_delete` | `id` | `minikoda_deleted{id}`; broadcast `minikodas` (its run is cancelled, its engine root removed; «Hoy» items stay). `failed` when a refreshed credential kept in its root still cannot be written back: the Minikoda stays (README «Minikodas», S11) |
+| `minikoda_launch` | `id` | `minikoda_launched{id, started, reason?: running\|busy\|paused\|stopped}`; the run lands later as a `hoy` broadcast. Refused with `paused` while the global pause is on |
+| `hoy_list` | – | `hoy` |
+| `hoy_approve` | `id` (uuid) | `hoy_decided{id, status: "approved"}` and ONE broadcast `hoy_approved`; or `error` (`unknown_item`, `not_pending`) |
+| `hoy_reject` | `id` | `hoy_decided{id, status: "rejected"}`; never executes |
+
+`id` of a Minikoda: `[a-z0-9][a-z0-9-]{0,39}`. A recipe is validated twice: shape in `protocol.cjs`, then fully in the daemon (minimum period 60 s, `at` in the future, model against the configured accounts). A `kit` outside `source_read, inbox_propose`, a `never` other than exactly `buy, sell, send, delete`, or any unknown field is `bad_request`, and the store is left unchanged.
+
+### Server → client
+
+| type | fields |
+| --- | --- |
+| `minikodas` | `minikodas[]` of `{id, name, when, reads, kit, model, never, status: draft\|active, running, createdAt, lastRun?{at, outcome: done\|failed, reason?}}`; a draft also carries `summary` |
+| `minikoda` | `minikoda` = the same plus `prompt`, and `summary?{sections: [{key, title, text}], text}` on a `draft` |
+| `hoy` | `items[]` of `{id, minikoda, kind: result\|proposal\|error, status: pending\|approved\|rejected, text, createdAt, action?: buy\|sell\|send, target?, decidedAt?, provenance?}` (pending proposals first, then newest; ≤ 100 items and ≤ 200 KiB per frame, below the island's 256 KiB line limit), `truncated` (true when items were left out by either bound) |
+| `hoy_approved` | `id, minikoda, action, target, executedAt`: broadcast once per executed approval |
+| `hoy_decided` | `id, status` |
+| `minikoda_launched`, `minikoda_deleted` | see above |
+
+New error codes: `unknown_minikoda, not_active, not_pending, exists, limit, model_unavailable, unknown_item`.
+
+### Transcription setting (K2-13, S7/S18)
+
+| type | fields | reply |
+| --- | --- | --- |
+| `transcription_get` | – | `transcription` |
+| `transcription_set` | `setting{mode, language?, remote?{accountId, model}}` | broadcast `transcription`; `bad_request` for anything off-contract (unknown mode or key, a `baseUrl`, a malformed account id) |
+
+`transcription` (server → client): `setting{mode: local-parakeet\|remote, language: es\|en\|fr\|de\|it\|pt\|ca, remote?{accountId, model}}`, `ffmpeg: available\|unavailable`, `local: available\|unavailable`. S18 (L32): `local-parakeet` is the only local mode; `local-whisper-turbo` was removed from the contract, so a client that still sends it is answered `bad_request`, while a stored setting from that build is migrated to `local-parakeet` (keeping its language) when the daemon reads its config. The frame never carries a Base URL or a key: the remote account's are read from the account store when a transcription runs. `ffmpeg` is always `unavailable` on macOS in this version (darwin-arm64 does not bundle ffmpeg yet). Without a transcriber both verbs answer `unavailable`.
+
+S6 (`telegram-source.cjs` + `service.cjs`): the video, audio and voice posts of a Telegram channel read are transcribed by the same service and with the same rules before the engine starts. Each transcript is placed right after its own post in the source text, under a marker that names the post by id and, when Telegram reports one, its date («[Transcripción de la publicación 12 del 2026-11-10]»); no file name, folder or run id ever reaches the model. The media of one read share ONE 30-minute budget (S17). A media that cannot be transcribed (too long, unreadable, no ffmpeg or helper, no voice) is a short Spanish note in that same post plus a «Hoy» `error` item in Spanish, and the run continues: one bad video never loses the other posts and never fails the run. A pause or a delete still cancels the transcription (`reason: paused` / `cancelled`), and the exhausted budget is still `reason: "transcription"`. The run's media folder is deleted in every outcome. No new frames: this happens while the daemon prepares the run.
+
+S19 (`youtube.cjs`): the source the daemon prepares for a run is scanned for YouTube video links (`youtube.com/watch?v=`, `/shorts/`, `youtu.be/`; every other site and shape ignored; at most three different videos). Each one is read from YouTube's own subtitles first — manual tracks before automatic ones, in the video's language — and, only when there are none, by downloading its audio (`bestaudio`, refused above 3 h of duration and above 200 MB) and transcribing it with the setting's transcription, inside the same 30-minute budget (S17). The text joins the source behind `[Video de YouTube <url> · subtítulos de YouTube]` or `[Video de YouTube <url> · transcripto]`. A video that cannot be read is a «Hoy» `error` item in Spanish and the run still happens; more videos than the cap is also said there. No new frames: this happens while the daemon prepares the run.
+
+A failed transcription ends the Minikoda's run before its engine starts: a «Hoy» `error` item «La corrida de «X» falló (transcripción: <why>)» and `lastRun.reason: "transcription"`. A pause or a delete during the transcription cancels it (`reason: paused` / `cancelled`). Transcription has its own 30-minute budget (S17): it does not count toward the run's 300 s engine budget, whose clock starts only after the transcript is ready, and when it runs out the item says «el video tardó más de 30 minutos en transcribirse; no se resumió». A transcribing run still holds its run slot (at most two runs at once, transcription included).
+
+### Semantics
+
+- **«Hoy» is built only from what the daemon stored.** It is never built from the Minikoda's text. A proposal exists only if the kit's `inbox_propose` parked it, and the runner re-validated it (buy, sell or send only). Whatever the model claims in its final text stays plain `result` text.
+- **`provenance` (S19 / F4): where a result's text came from.** An OPTIONAL field of a `result` item, absent when the daemon cannot say it, and never present on a proposal or an error. Closed list: `youtube_subtitles` (YouTube's own subtitles), `local_transcription` (Parakeet on this PC), `remote_transcription` (the account the user configured to transcribe). The daemon stores it with the item (`hoy.cjs`) and validates it here: a value outside the list, or one on a non-result item, fails the whole frame instead of reaching the island, where the chip would be invented. `agentclient.rs` (`HOY_PROVENANCE`) and `island-nusa.js` keep the same list and label it («subtítulos de YouTube», «transcripto en esta PC», «transcripto con tu cuenta»); an unknown value draws no chip.
+  - **The rule** (`dominantProvenance` in `service.cjs`): each phase counts the characters it contributed to the text the run read — the source's own text (the channel's posts, the plain-text file), YouTube's subtitles, and each transcription (local or remote). The result carries the value with the MOST characters only when it is STRICTLY the biggest. A tie between values, a tie with the run's own text, the own text on top, or nothing marked at all means no `provenance`: the daemon cannot say, so it says nothing.
+- **The draft's summary (S1, S7).** `minikoda_create` stores the draft and its reply carries `summary`; `minikoda_get` of a draft carries it too, and the `minikodas` broadcast includes it for drafts. An `active` Minikoda never carries one (it is the approval preview).
+  - Built by the daemon from the VALIDATED recipe alone (`src/minikodas/summary.cjs`), with no model call: the same recipe always renders the same text. Plain Rioplatense Spanish with the fixed sections «Cuándo corre», «Qué lee», «Qué hace», «Dónde te lo muestra», «Qué nunca hará solo» and «Con qué modelo» (S7: «Podemos hacer que el usuario escoja el modelo»).
+  - `key` is one of `when, reads, does, shows, never, model`; `title` is the section's heading; `text` is the whole summary as one block, the six lines joined by LF.
+  - Every field is one plain line: Unicode format characters (Cf: bidi overrides, zero-width), control and separator characters are removed, and lengths are capped in bytes (each section ≤ 512, the block ≤ 3600, at most 8 sections). The daemon fails the frame instead of sending an off-contract summary; nothing is repaired or truncated inside `protocol.cjs`.
+  - It never carries the accountId, a credential, a file path or prompt internals. «Con qué modelo» shows the account's VISIBLE label plus the model id, or «el mismo del chat» when the recipe kept the chat's current model; without a label it falls back to `provider/id`.
+  - Getting the summary changes nothing: `minikoda_approve_create` stays the only way to activate a draft (criterion 1: «solo lo crea si lo apruebo»).
+- **Approve-later.** A proposal executes only on `hoy_approve {id}`. There is no PIN (human decision L17); a `pin` field, like any unknown field, is dropped by the allowlist.
+  - The decision (`approved`) is persisted before the execution record, so a crash between the two can lose an execution, never repeat one.
+  - Approvals run one at a time; a second approval of the same item is `not_pending` and never executes again.
+  - `hoy_reject` never executes.
+- **What «execute» means in K2-13.** The item is marked `approved`, one line is appended to `<island>/minikodas/hoy/approved.jsonl` and `hoy_approved` is broadcast. Real buy, sell or send integrations do not exist yet; nothing leaves the machine.
+- **Failed runs.** A crash, timeout, start failure, unavailable model or cancelled run (daemon stop, delete, or `set_paused{paused:true}`, reason `paused`) lands as a `kind: "error"` item and in `lastRun`. It is never silent. Proposals the kit parked before the failure are stored as `pending` proposals next to it (S13). A one-time scheduled (`at`) run that was due while paused, busy or already running lands as an `error` item too.
+- **Proposal `target`** is one plain line: Unicode format characters (Cf, e.g. U+202E) are stripped, and a line break or control character is refused.
+- **Same-UID limit.** The kit has no tool that reads files. The «Hoy» store and the daemon token live outside every Minikoda engine root, so a Minikoda cannot reach them through its kit. But any process of the same OS user can read them, and any process holding the session token can send `hoy_approve` and approve a proposal. That holds until the agent runs as a separate OS user (K2-14 criterion 3), as with the `connectors_approve` note above.

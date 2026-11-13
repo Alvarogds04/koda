@@ -154,7 +154,45 @@ async function setup({ scenario, server, base, browser, page }) {
           if (a === 'expand') { snap.state = 'expanded'; snap.revision += 1; queueMicrotask(() => window.__islandSetState && window.__islandSetState('overview')); }
           return structuredClone(snap);
         }
-        if (cmd === 'agent_action') return a === 'sessions_list' ? { connection, accounts, sessions: { rows: sessions, truncated: false } } : { connection, accounts };
+        if (cmd === 'agent_action') {
+          if (a === 'sessions_list') return { connection, accounts, sessions: { rows: sessions, truncated: false } };
+          // K2-13 T6b-1 «Hoy»: the folded `hoy` view the Rust client hands the page, plus the daemon's closed refusal.
+          // A decision is ASYNCHRONOUS, like the real path (AgentConn::command in agentconn.rs hands back the view at
+          // WRITE time and the daemon's answer arrives later as `agent:state`, which settings.js documents too):
+          // `hoy_approve` / `hoy_reject` answer with the state BEFORE the decision, then mutate the stored item and push
+          // the new state out after `hoyReplyDelay` ms. `hoySilent` is a daemon that never answers.
+          if (scenario.hoy && (a === 'view' || a === 'hoy_list' || a === 'hoy_approve' || a === 'hoy_reject')) {
+            const hoy = window.__hoy || (window.__hoy = { items: (scenario.hoy || []).map(i => ({ ...i })), truncated: scenario.hoyTruncated === true });
+            const err = window.__hoyErr || (window.__hoyErr = scenario.hoyError ? { ...scenario.hoyError } : { code: null, n: 0 });
+            if (scenario.hoyDown) return { connection: 'no_daemon', accounts: [], hoy: structuredClone(hoy), last_error: { ...err } };
+            const state = () => ({ connection, accounts, hoy: structuredClone(hoy), last_error: { ...err } });
+            if (a === 'hoy_list' && scenario.hoyListRefuse) {
+              err.code = scenario.hoyListRefuse; err.n = (err.n || 0) + 1;
+              return state();
+            }
+            if (a === 'hoy_approve' || a === 'hoy_reject') {
+              const want = a === 'hoy_approve' ? 'approved' : 'rejected';
+              const id = args.payload && args.payload.id;
+              const reply = state();
+              const apply = () => {
+                const item = hoy.items.find(i => i.id === id);
+                if (scenario.hoyRefuse) { err.code = scenario.hoyRefuse; err.n = (err.n || 0) + 1; }
+                else if (item && item.status === 'pending') {
+                  item.status = want; item.decidedAt = new Date().toISOString();
+                  // the daemon's next `hoy` frame is sorted pending-first: a decided row SINKS. A page that re-sorts on
+                  // it puts a different proposal under the cursor (the verifier's B1).
+                  if (scenario.hoyResort !== false) hoy.items.sort((x, y) => (x.status === 'pending' ? 0 : 1) - (y.status === 'pending' ? 0 : 1));
+                } else { err.code = 'not_pending'; err.n = (err.n || 0) + 1; }
+                window.__emit('agent:state', state());
+              };
+              const delay = Number.isFinite(scenario.hoyReplyDelay) ? scenario.hoyReplyDelay : 15;
+              if (!scenario.hoySilent) setTimeout(apply, delay);
+              return reply;
+            }
+            return state();
+          }
+          return { connection, accounts };
+        }
         if (cmd === 'prefs_action') return { sound: true, declaredPills: scenario.declared ? scenario.declared : scenario.github ? ['integration_github'] : [], mainPill: 'abito', pillColors: {}, avatarColors: {}, autoCloseSeconds: 0, openOnHover: false };
         if (cmd === 'github_action' && scenario.githubData === 'real') {
           // the shape src/github.rs serialises (what the validator's fake `gh` produces): PRs carry `repo`/`isDraft`/`review`, mainCI rows carry repo+branch
@@ -199,6 +237,14 @@ async function setup({ scenario, server, base, browser, page }) {
   if (scenario.github) await page.evaluate(() => document.dispatchEvent(new CustomEvent('abito:integration-seen', { detail: { ids: ['integration_github'], source: 'github' } })));
   if (scenario.focusGithub) { await page.waitForTimeout(600); await page.evaluate(() => document.getElementById('pill-choice-integration_github')?.click()); }
   await page.waitForTimeout(scenario.quick ? 1800 : 4200); // spring + the ticker's first poll (`quick`: measurements that only need the card, not the first ticker poll)
+  // K2-13 T6b-1: «Hoy» opens from its header tab once the island finished expanding (the header is only shown then).
+  // Playwright's click is a trusted input event, which is what the mount requires.
+  if (scenario.hoyTab) {
+    await page.waitForFunction(() => document.getElementById('capsule').dataset.phase === 'expanded', null, { timeout: 15000 });
+    await page.waitForTimeout(200);
+    await page.click('#open-hoy');
+    await page.waitForTimeout(scenario.hoyWait || 700);
+  }
   if (scenario.finishedCard && !scenario.noLane) { await page.evaluate(id => window.__emit('desktop:notice-open', { id, kind: 'finished' }), UUID); await page.waitForTimeout(1500); }
   if (scenario.question) {
     await page.waitForTimeout(600);

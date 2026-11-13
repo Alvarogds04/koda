@@ -182,7 +182,18 @@ const DAEMON_FILES = ['package.json', 'identity.md', 'THIRD-PARTY-NOTICES.md',
   'src/connectors.cjs', 'src/connector-host.cjs', 'src/connector-host-client.cjs', 'src/conversations.cjs', 'src/custom-provider.cjs', 'src/custom-provider-extension.cjs',
   'src/daemon.cjs', 'src/interrupt.cjs', 'src/isolation.cjs', 'src/mcp-import.cjs', 'src/profiles.cjs',
   'src/protocol.cjs', 'src/rotation.cjs', 'src/runtime.cjs', 'src/sdk-helper.mjs', 'src/server.cjs',
-  'src/sessions.cjs', 'src/procinfo.cjs', 'src/spaces.cjs', 'src/uploads.cjs', 'src/white-label.cjs', 'src/win-fs.cjs', 'src/window-capture.cjs'];
+  'src/sessions.cjs', 'src/procinfo.cjs', 'src/spaces.cjs', 'src/uploads.cjs', 'src/white-label.cjs', 'src/win-fs.cjs', 'src/window-capture.cjs',
+  // K2-13 Minikodas: required by daemon.cjs; kit-extension.js is loaded by Pi through its path (-e).
+  'src/minikodas/credentials.cjs', 'src/minikodas/hoy.cjs', 'src/minikodas/index.cjs', 'src/minikodas/kit-extension.js', 'src/minikodas/model.cjs',
+  'src/minikodas/recipe.cjs', 'src/minikodas/runner.cjs', 'src/minikodas/scheduler.cjs', 'src/minikodas/service.cjs',
+  'src/minikodas/summary.cjs',
+  // K2-13 T1b (S10/S20): the Telegram session. The library it loads (`@mtcute/node`) does NOT ship from this package: it
+  // rides inside the bundled runtime folder (L41), so this file's parse is reviewed in host-stage-check.
+  'src/minikodas/telegram.cjs', 'src/minikodas/telegram-source.cjs',
+  // K2-13 T2c-2: video/audio transcription (bundled ffmpeg + koda-transcribe) and its global setting.
+  'src/minikodas/transcribe.cjs', 'src/minikodas/transcribe-setting.cjs',
+  // K2-13 T2c-8 (S19): YouTube video links, read with the bundled yt-dlp inside the runtime folder.
+  'src/minikodas/youtube.cjs'];
 // L42 F1: the hook installer (apps/desktop-harness) ships NEXT TO the daemon: the daemon derives
 // <package>/desktop-harness/bin/koda-hook.cjs from its own location (src/cli.cjs packagedInstallerBin), so Ajustes can
 // install the Claude/Codex/status-line hooks (and take out the removed Recap's 0.1 hooks, K2-03). Closed under require(): packaging-check pins that.
@@ -196,9 +207,13 @@ const PI_FILES = ['pi-extension.ts', 'adapter.cjs', 'ask-tool.cjs', 'config.cjs'
 // other file; the Linux installer verifies its sha256 and its members before extracting it to
 // PREFIX/runtime. Windows stages the same archive; macOS ships the extracted folder instead.
 const RUNTIME_ARCHIVE = 'koda-runtime-linux-x64.tar.gz';
-const STAGED = ['koda', 'koda-launcher', 'koda.png', `${IDENTIFIER}.desktop`, RUNTIME_ARCHIVE,
+// K2-13 T2c-2 (S8, S15): `koda-transcribe` (the island crate's sherpa-onnx batch helper the daemon spawns for Minikoda
+// transcriptions) ships beside the island binary; the daemon finds it at <prefix>/koda-transcribe, never on PATH. The pinned
+// LGPL ffmpeg travels inside the runtime archive (PREFIX/runtime/ffmpeg).
+const TRANSCRIBE_BIN = 'koda-transcribe';
+const STAGED = ['koda', 'koda-launcher', TRANSCRIBE_BIN, 'koda.png', `${IDENTIFIER}.desktop`, RUNTIME_ARCHIVE,
   ...DAEMON_FILES.map(f => `desktop-daemon/${f}`), ...HARNESS_FILES.map(f => `desktop-harness/${f}`), ...PI_FILES.map(f => `desktop-pi/${f}`)];
-const STAGED_DIRS = ['desktop-pi', 'desktop-daemon', 'desktop-daemon/src', 'desktop-harness', 'desktop-harness/bin', 'desktop-harness/src'];
+const STAGED_DIRS = ['desktop-pi', 'desktop-daemon', 'desktop-daemon/src', 'desktop-daemon/src/minikodas', 'desktop-harness', 'desktop-harness/bin', 'desktop-harness/src'];
 // Enumerate the complete tree without following links, including empty directories.
 // `prune` names ONE top-level directory whose contents are not enumerated: only PREFIX/runtime
 // uses it (K2-02 T2). Its integrity comes from the hash-verified runtime archive, not from the
@@ -263,6 +278,49 @@ function isUserAuditDir(dir) {
   }
   return true;
 }
+// ---- K2-13 (S8, S15; decisions L22/L23): no TTS path in a shipped binary -----------------------
+// sherpa-onnx's default libraries carry the text-to-speech path: piper_phonemize and espeak-ng (GPL-3.0). Koda only
+// recognises speech, so `build.rs` stages the upstream libraries built with -DSHERPA_ONNX_ENABLE_TTS=OFF and the crate
+// links those. A silent fallback to the TTS build (a build started outside apps/desktop-tauri, so .cargo/config.toml is
+// not read) used to happen without a trace; the bytes of the shipped binaries are the last word on it.
+const TTS_SYMBOLS = ['espeak_', 'piper_phonemize', 'piper-phonemize'];
+/**
+ * Streams a binary and returns the first TTS symbol it carries, or null. The file is read in chunks with an
+ * overlap (a release binary is hundreds of megabytes: it is never loaded whole).
+ */
+function ttsSymbolsIn(file) {
+  const needles = TTS_SYMBOLS.map((s) => Buffer.from(s, 'latin1'));
+  const overlap = Math.max(...needles.map((n) => n.length)) - 1;
+  const fd = fs.openSync(file, 'r');
+  try {
+    const size = fs.fstatSync(fd).size;
+    const chunk = Buffer.allocUnsafe(4 * 1024 * 1024 + overlap);
+    let carry = Buffer.alloc(0);
+    for (let offset = 0; offset < size; offset += 4 * 1024 * 1024) {
+      const read = fs.readSync(fd, chunk, 0, chunk.length, offset);
+      if (read <= 0) break;
+      const window = Buffer.concat([carry, chunk.subarray(0, read)]);
+      for (let i = 0; i < needles.length; i += 1) if (window.includes(needles[i])) return TTS_SYMBOLS[i];
+      carry = window.subarray(window.length - overlap);
+    }
+  } finally {
+    fs.closeSync(fd);
+  }
+  return null;
+}
+/**
+ * The TTS-free problems of `[{name, file}]`: empty when every named binary is clean. A missing file is the caller's
+ * problem (existence is checked where the file set is checked), so it is skipped here.
+ */
+function verifyTtsFree(entries) {
+  const problems = [];
+  for (const { name, file } of entries) {
+    const found = ttsSymbolsIn(file);
+    if (found) problems.push(`${name} contains «${found}»: it carries sherpa-onnx's TTS path (espeak-ng GPL-3.0 / piper_phonemize); build from apps/desktop-tauri, where .cargo/config.toml links the TTS-free archives`);
+  }
+  return problems;
+}
+
 function verifyStage(dir, { sourceCrate } = {}) {
   const problems = [];
   const receiptPath = path.join(dir, 'receipt.json');
@@ -299,6 +357,16 @@ function verifyStage(dir, { sourceCrate } = {}) {
     for (const prefix of [process.env.HOME && `${process.env.HOME}/.cargo`, process.env.HOME && `${process.env.HOME}/Apps`].filter(Boolean)) if (bytes.includes(Buffer.from(prefix))) problems.push(`binary embeds the build machine path ${prefix}…`);
     if (POSIX_MODES() && !(fs.statSync(bin).mode & 0o100)) problems.push('binary is not executable');
   }
+  const helper = path.join(dir, TRANSCRIBE_BIN);
+  if (fs.existsSync(helper)) {
+    const bytes = fs.readFileSync(helper);
+    if (sourceCrate && bytes.includes(Buffer.from(sourceCrate))) problems.push(`${TRANSCRIBE_BIN} embeds the source-tree path`);
+    if (POSIX_MODES() && !(fs.statSync(helper).mode & 0o100)) problems.push(`${TRANSCRIBE_BIN} is not executable`);
+  }
+  // K2-13: the two shipped binaries must not carry espeak-ng or piper_phonemize (see verifyTtsFree).
+  problems.push(...verifyTtsFree([['koda', bin], [TRANSCRIBE_BIN, helper]]
+    .filter(([, file]) => fs.existsSync(file))
+    .map(([name, file]) => ({ name, file }))));
   return problems;
 }
 
@@ -321,5 +389,5 @@ function requireClean(crate) {
   return p;
 }
 
-module.exports = { provenance, requireClean, FORBIDDEN_ENV_PATTERN, ALLOWED_ABITO, R6_PREFIX, IDENTIFIER, FRONTEND_FILES, EXPECTED_PERMISSIONS, DAEMON_FILES, HARNESS_FILES, PI_FILES, RUNTIME_ARCHIVE, STAGED, STAGED_DIRS, checkInstalledLayout, sha256, sha256File,
+module.exports = { provenance, requireClean, FORBIDDEN_ENV_PATTERN, ALLOWED_ABITO, R6_PREFIX, IDENTIFIER, FRONTEND_FILES, EXPECTED_PERMISSIONS, DAEMON_FILES, HARNESS_FILES, PI_FILES, RUNTIME_ARCHIVE, TRANSCRIBE_BIN, STAGED, STAGED_DIRS, checkInstalledLayout, sha256, sha256File, verifyTtsFree, ttsSymbolsIn,
   checkR6, checkFrontend, checkConfig, launcherText, desktopText, verifyStage };

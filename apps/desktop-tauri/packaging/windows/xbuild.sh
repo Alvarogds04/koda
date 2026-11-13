@@ -87,7 +87,7 @@ case "$cmd" in
         # onnxruntime (inside the sherpa static lib) asks the linker for PathCch.lib; xwin ships it lower/upper case only
         for d in /xwin-cache/xwin/sdk/lib/um/x86_64; do [ -e \$d/PathCch.lib ] || ln -s pathcch.lib \$d/PathCch.lib; done
         cargo xwin build --release --locked --target x86_64-pc-windows-msvc --features tauri/custom-protocol --bins
-        for bin in koda abito-notice-relay abito-private-session; do
+        for bin in koda abito-notice-relay abito-private-session koda-transcribe; do
           cp /abito/target/x86_64-pc-windows-msvc/release/\$bin.exe /abito/dist/\$bin.exe
         done
         makensis -V2 -DVERSION=$version -DBINDIR=/abito/dist -DICON=/abito/src/icons/icon.ico -DOUTDIR=/abito/dist /abito/src/packaging/windows/abito.nsi
@@ -95,8 +95,11 @@ case "$cmd" in
     echo "artifacts: $crate/dist (exe + setup + hashes above; receipt: packaging/windows/stage-win.cjs)"
     ;;
   sherpa)
-    # One-time, human-authorised download (123 MB, official k2-fsa release) into the xwin volume; the
-    # build then runs offline through SHERPA_ONNX_ARCHIVE_DIR. The SHA-256 is pinned in sherpa-onnx.sha256.
+    # One-time, human-authorised download (123 MB, official k2-fsa release) into the xwin volume; the crate's
+    # build script then finds it through SHERPA_ONNX_ARCHIVE_DIR and downloads nothing. The SHA-256 is pinned in
+    # sherpa-onnx.sha256. That archive carries the TTS build and is no longer linked (K2-13, L22/L23): build.rs
+    # separately downloads its pinned TTS-free archive the first time it builds in this target/ (sha256-checked,
+    # cached in target/sherpa-onnx-no-tts/archives), so the container needs network on that first build.
     f=$(cut -d' ' -f3 "$crate/packaging/windows/sherpa-onnx.sha256")
     "$rt" run --rm -v "$VOL_XWIN":/xwin-cache:U -v "$crate/packaging/windows":/pin:ro "$IMAGE" sh -eu -c "
       mkdir -p /xwin-cache/sherpa && cd /xwin-cache/sherpa
