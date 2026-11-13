@@ -21,6 +21,7 @@
 use super::image::{self, Raw};
 use super::mcp::{CaptureError, Desktop, Shot, Target};
 use block2::RcBlock;
+use objc2::AnyThread;
 use core_foundation::base::{CFType, TCFType};
 use core_foundation::dictionary::{CFDictionary, CFDictionaryRef};
 use core_foundation::number::CFNumber;

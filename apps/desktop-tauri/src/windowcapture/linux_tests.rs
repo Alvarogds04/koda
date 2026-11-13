@@ -23,10 +23,12 @@ fn without_the_extension_or_x11_a_wayland_session_refuses_instead_of_picking_for
     let error = desktop.pick_target().expect_err("an unidentified window is never captured");
     assert!(matches!(&error, CaptureError::Unsupported(why) if why.contains("cannot tell which app a window belongs to")), "{error:?}");
     assert!(matches!(&error, CaptureError::Unsupported(why) if why.contains("GNOME extension")), "{error:?}");
-    // On an X11 session with a display that has no window, the answer is that there is no window,
-    // not a system picker the human never asked for.
-    let broken = LinuxDesktop::fixed(Some("unix:path=/nonexistent/koda-bus"), Some(":98"), None, Some("x11"));
-    assert_eq!(broken.pick_target(), Err(CaptureError::NoWindow));
+    // On an X11 session whose display cannot be reached, the answer is that the display is not
+    // reachable, not a system picker the human never asked for. The display number is one nobody
+    // serves, so the test never depends on an X server that happens to be running on the machine
+    // (a window-less display answering NoWindow is covered by tests/windowcapture_x11.rs).
+    let broken = LinuxDesktop::fixed(Some("unix:path=/nonexistent/koda-bus"), Some(":987"), None, Some("x11"));
+    assert!(matches!(broken.pick_target(), Err(CaptureError::Unsupported(why)) if why.contains("X11 display is not reachable")), "{:?}", broken.pick_target());
 }
 
 #[test]
