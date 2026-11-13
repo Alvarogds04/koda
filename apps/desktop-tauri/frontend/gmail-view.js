@@ -13,6 +13,12 @@
    S3 (criterion 3): with no connection, on `no_client`, `signed_out` or `reconnect` there is NO icon and NO card, and there is
    never a sample row. `available()` is true ONLY for the host's `connected`.
 
+   D1-D6 (the verifier of 2c605e2): the icon's «nuevos» is read on the island's STATUS cadence — a counts-only read, so the
+   badge lives without the card ever being opened (D1); the visit is stamped once per focus session and only after the rows are
+   really painted, so a periodic refresh, a filter switch or a stale answer never empties «Nuevos» (D2); list and message answers
+   carry SEPARATE tickets and the timers restart when the island is shown again (D3); the chip's domain comes from the URL, never
+   from the host's `domain` field (D4); repainting a message cancels a pending link question (D6).
+
    Wire (src/gmailcmd.rs, `gmail_action`, ONE closed verb — host src/gmailhost.rs):
      {action:'status'}                         -> {ok, state:'no_client'|'signed_out'|'connected'|'reconnect', clientId, hasSecret}
      {action:'inbox', filter}                  -> {ok, messages:[Summary], newCount, newCountCapped, unreadCount, lastSeenMs}
@@ -62,6 +68,7 @@
   // Design 3c: «Cancelar» (focus starts here, Esc too) and «Abrir» (the one primary action).
   const CONFIRM = Object.freeze({ yes: 'Abrir', no: 'Cancelar' });
   const REFRESH_MS = 60000;   // the list refreshes every minute while the card is on screen (design 2b: «nuevos» moves)
+  const COUNTS_MS = 60000;    // the icon's counters are a FULL inbox read on Google's API: one a minute at most, never on the status cadence
   const STATUS_MS = 15000;    // the connection is read again slowly, so the icon appears/disappears on its own
   const MAX_ROWS = 20;        // gmail_api::MAX_MESSAGES: the host pages 20, the card never paints more
   const MAX_LINKS = 30;       // gmail_api::MAX_LINKS
@@ -70,11 +77,13 @@
   const MAX_TEXT = 160;
   const BADGE_CAP = 100;      // newCountCapped: the icon paints a NUMBER (island-shortcuts-mount.js), so «100+» reads 100
   const CONTROL = /[\u0000-\u001f\u007f]/g;
+  // One-line text never keeps a bidi override or a zero-width mark: a sender could reorder what the row seems to say.
+  const MARKS = /[\u200e\u200f\u202a-\u202e\u2066-\u2069]/g;
 
   const isObject = v => v !== null && typeof v === 'object' && !Array.isArray(v);
   const isStr = v => typeof v === 'string';
-  /** One line of plain text: control characters out, whitespace collapsed, bounded. */
-  const clean = (v, max = MAX_TEXT) => (isStr(v) ? [...v.replace(CONTROL, ' ').replace(/\s+/g, ' ').trim()].slice(0, max).join('') : '');
+  /** One line of plain text: control characters out, bidi/zero-width marks out, whitespace collapsed, bounded. */
+  const clean = (v, max = MAX_TEXT) => (isStr(v) ? [...v.replace(CONTROL, ' ').replace(MARKS, '').replace(/\s+/g, ' ').trim()].slice(0, max).join('') : '');
   const count = v => { const n = Math.floor(Number(v)); return Number.isFinite(n) && n > 0 ? n : 0; };
   const pad = n => String(n).padStart(2, '0');
 
@@ -184,13 +193,19 @@
     if ((url.protocol !== 'http:' && url.protocol !== 'https:') || !url.hostname || url.username || url.password) return null;
     return url.href;
   }
-  const hostOf = href => { try { return new URL(href).hostname; } catch { return ''; } };
-  /** S7: the chip shows the REAL domain, never the anchor text. A non-http link is not a chip at all. */
+  const hostOf = href => {
+    try { const h = new URL(href).hostname.toLowerCase(); return h.startsWith('www.') ? h.slice(4) : h; } catch { return ''; }
+  };
+  /**
+   * S7: the chip shows the REAL domain, never the anchor text. The domain is read from the URL itself — lowercased, `www.`
+   * stripped — and never from the `domain` string the host sent beside it (D4): one source of truth, the one the opener will
+   * use. `sameAsSender` stays the host's verdict, whatever the URL says. A non-http link is not a chip at all.
+   */
   function linkView(link) {
     if (!isObject(link)) return null;
     const url = safeUrl(link.url);
     if (!url) return null;
-    const domain = clean(link.domain, 100) || hostOf(url);
+    const domain = hostOf(url);
     return Object.freeze({ label: domain, url, domain, text: clean(link.text, MAX_PREVIEW), sameAsSender: link.sameAsSender === true });
   }
   /** `lucia.perez@estudiolua.es` -> `estudiolua.es` (the host decides `sameAsSender`; this only says WHO it was). */
@@ -246,12 +261,13 @@
     const invoke = typeof options.invoke === 'function' ? options.invoke : null;
     const clock = typeof options.now === 'function' ? options.now : () => Date.now();
     const open = typeof options.open === 'function' ? options.open : null;
-    let state = null, filter = DEFAULT_FILTER, pending = null;
+    let state = null, filter = DEFAULT_FILTER, pending = null, session = null;
     let counts = Object.freeze({ newCount: 0, newCountCapped: false, unreadCount: 0 });
     const call = payload => {
       if (!invoke || !payload) return Promise.resolve(undefined);
       try { return Promise.resolve(invoke('gmail_action', { payload })).catch(() => undefined); } catch { return Promise.resolve(undefined); }
     };
+    const keepCounts = view => { if (view.ok) counts = Object.freeze({ newCount: view.newCount, newCountCapped: view.newCountCapped, unreadCount: view.unreadCount }); };
     const ctl = {
       state: () => state,
       filter: () => filter,
@@ -265,24 +281,39 @@
         if (!available(state)) counts = Object.freeze({ newCount: 0, newCountCapped: false, unreadCount: 0 });
         return state;
       },
+      /**
+       * D1: the icon's «nuevos» — the same counters the head uses, read WITHOUT a visit, without rows and without touching the
+       * card: the filter it is showing stays where it is, an opened message is not disturbed. The island calls this on its slow
+       * status cadence while the app is connected and on screen, so the number follows the post without the card being opened.
+       */
+      async refreshCounts() {
+        if (!available(state)) return ctl.badge();
+        const view = rowsOf(await call(inboxPayload(DEFAULT_FILTER)), clock(), DEFAULT_FILTER);
+        keepCounts(view); // a failed read keeps the number it had: a hiccup never reads as «no mail»
+        return ctl.badge();
+      },
       async inbox(next) {
         if (FILTER_IDS.includes(next)) filter = next;
         const view = rowsOf(await call(inboxPayload(filter)), clock(), filter);
-        if (view.ok) counts = Object.freeze({ newCount: view.newCount, newCountCapped: view.newCountCapped, unreadCount: view.unreadCount });
+        keepCounts(view);
         return view;
       },
-      /** S5: «visto» lives only in this machine; the host stores the mark, monotonic and never in the future. */
-      async seen() {
+      /** D2: one focus session = the card is on screen, from its first paint until it is unmounted. */
+      beginSession() { session = { stamped: false }; return session; },
+      endSession() { session = null; },
+      /**
+       * S5/D2: the visit. Stamped once per focus session, and only from a paint of the current list (the mount calls it after
+       * checking its ticket, so a discarded stale answer never stamps one). The host keeps the mark monotonic and never in the
+       * future; a stamp the host refused is not counted as done, so the next paint of the session asks again.
+       */
+      async markSeen() {
+        if (!session || session.stamped) return false;
         const payload = seenPayload(clock());
         if (!payload) return false;
         const answer = await call(payload);
-        return isObject(answer) && answer.ok === true;
-      },
-      /** The list, shown, and ONLY THEN the visit is stamped (a failed load is not a visit). */
-      async showList(next) {
-        const view = await ctl.inbox(next);
-        if (view.ok) await ctl.seen();
-        return view;
+        const ok = isObject(answer) && answer.ok === true;
+        if (ok) session.stamped = true;
+        return ok;
       },
       async openMessage(id) {
         const payload = messagePayload(id);
@@ -323,7 +354,14 @@
       id: 'gmail', label: 'Gmail', icon: 'mail',
       available: () => ctl.available(),
       badge: () => ctl.badge(),
-      mount: el => paintCard(el, ctl),
+      // D2: painting the card opens the focus session its one visit belongs to; unmounting closes it.
+      mount: el => {
+        ctl.beginSession();
+        const off = paintCard(el, ctl);
+        const end = () => { ctl.endSession(); off(); };
+        if (typeof off.refresh === 'function') end.refresh = off.refresh; // the mount's 60 s timer keeps its way in
+        return end;
+      },
     };
     return { def, ctl };
   }
@@ -379,7 +417,7 @@
     root.append(head, list, empty, problem, openPage);
     el.replaceChildren(root);
 
-    const state = { filter: DEFAULT_FILTER, message: null, question: null, ticket: 0 };
+    const state = { filter: DEFAULT_FILTER, message: null, question: null, listTicket: 0, msgTicket: 0, fetching: 0 };
     const show = (node, on) => { node.hidden = !on; };
     const pressed = id => { for (const [key, b] of chips) b.setAttribute('aria-pressed', String(key === id)); };
     /** The design's head: «4 nuevos» in white bold, «· 128 sin leer» muted, on one line. */
@@ -431,15 +469,21 @@
       list.replaceChildren(...rows);
       show(list, true);
     }
-    /** S5: the list of a filter; the visit is stamped by the controller once the rows are on screen. */
+    /** S5/D3: the list of a filter. Two tickets — one for lists, one for messages — so neither answer discards the other. */
     async function load(next) {
-      const ticket = ++state.ticket;
-      state.filter = FILTER_IDS.includes(next) ? next : state.filter;
-      const view = await ctl.showList(state.filter);
-      if (ticket !== state.ticket) return; // a later filter won: never paint a stale answer
-      if (view.ok) paintRows(view); else fail(view.message);
+      const ticket = ++state.listTicket;
+      const openedAt = state.msgTicket; // a message opened while this load was in flight makes the answer stale
+      if (FILTER_IDS.includes(next)) state.filter = next;
+      const view = await ctl.inbox(state.filter);
+      if (ticket !== state.listTicket || openedAt !== state.msgTicket) return; // a later load or an opened message won
+      if (!view.ok) { fail(view.message); return; }
+      paintRows(view);
+      // D2: the visit belongs to the first list of the focus session, and only to a list that really reached the screen.
+      // The controller decides whether this session still owes a visit, so the periodic refresh and the filter switches do not
+      // move the mark and «Nuevos» does not empty by itself.
+      ctl.markSeen();
     }
-    const refresh = () => { if (state.message === null) load(state.filter); };
+    const refresh = () => { if (state.message === null && state.fetching === 0) load(state.filter); };
 
     // ---- S6: the opened message, plain text with chips -------------------------------
     function paintText(blocks) {
@@ -475,6 +519,7 @@
     function paintDetail(view) {
       state.message = view;
       state.question = null;
+      ctl.cancelPending(); // D6: a link question of the previous message never survives painting this one
       sum.textContent = `${view.from}${view.when ? ` · ${view.when}` : ''}`;
       sum.title = sum.textContent;
       show(list, false);
@@ -515,9 +560,11 @@
       show(openPage, true);
     }
     async function openMessage(id) {
-      const ticket = ++state.ticket;
-      const view = await ctl.openMessage(id);
-      if (ticket !== state.ticket) return;
+      const ticket = ++state.msgTicket;
+      state.fetching += 1; // D3: a periodic refresh must not start while a message is being fetched
+      let view;
+      try { view = await ctl.openMessage(id); } finally { state.fetching = Math.max(0, state.fetching - 1); }
+      if (ticket !== state.msgTicket) return;
       if (view.ok) paintDetail(view.detail); else fail(view.message);
     }
 
@@ -525,7 +572,9 @@
     load(DEFAULT_FILTER);
 
     const unmount = () => {
-      state.ticket += 1;
+      state.listTicket += 1;
+      state.msgTicket += 1;
+      state.fetching = 0;
       ctl.cancelPending();
       state.message = null;
       state.question = null;
@@ -536,7 +585,7 @@
     return unmount;
   }
 
-  return { FILTERS, FILTER_IDS, DEFAULT_FILTER, STATUSES, EMPTY, ERRORS, CONFIRM, REFRESH_MS, STATUS_MS,
+  return { FILTERS, FILTER_IDS, DEFAULT_FILTER, STATUSES, EMPTY, ERRORS, CONFIRM, REFRESH_MS, STATUS_MS, COUNTS_MS,
     MAX_ROWS, MAX_LINKS, MAX_ID, MAX_PREVIEW, BADGE_CAP, clean, counterHead, counterText, badgeOf, statusAnswer, errorText, refusal,
     available, whenText, rowView, rowsOf, runsOf, bodyBlocks, safeUrl, linkView, senderDomain, confirmText, openAction,
     detailView, messageAnswer, statusPayload, inboxPayload, messagePayload, replyPayload, seenPayload,
@@ -571,18 +620,36 @@ function mount(api) {
     return d.phase === 'expanded' && d.view === 'overview' && !d.card && d.settings !== 'open' &&
       !['pending', 'expired', 'outcome'].includes(d.question || '');
   };
-  let painted = 0, lastState = null, statusTimer = null, inboxTimer = null;
+  let painted = 0, lastState = null, lastBadge = 0, statusTimer = null, inboxTimer = null, countsTimer = null, countsRead = false;
   // S3/S12: the icon appears the moment the host says «connected» and disappears when it stops. `available()` is read on every
-  // render; refresh() is what makes the row repaint, so every move of the state announces itself exactly once.
+  // render; refresh() is what makes the row repaint, so every move — the state, and the icon's counter — announces itself once.
   function syncStatus() {
     return ctl.status().then(() => {
       if (ctl.state() !== lastState) { lastState = ctl.state(); shortcuts.refresh(); }
-      return ctl.available();
+      if (!ctl.available()) { countsRead = false; return false; }
+      // D1: «nuevos» follows the status cadence too, so the icon counts the post even when the card was never opened (and keeps
+      // counting while a message is open, which the list refresh deliberately does not disturb): a counts-only read, no visit.
+      // The status read above is cheap (keychain only); the counters are a full inbox read, so they have their own slower timer
+      // (COUNTS_MS). Here only the FIRST read after the connection appears is taken, so the icon does not wait a minute for its number.
+      if (countsRead) return true;
+      countsRead = true;
+      return Promise.resolve(ctl.refreshCounts()).then(() => {
+        if (ctl.badge() !== lastBadge) { lastBadge = ctl.badge(); shortcuts.refresh(); }
+        return true;
+      });
     }, () => null);
   }
   let card = null; // the painted card's unmount (+ .refresh), while it is on screen
   function stopTimers() {
     if (inboxTimer) { clearInterval(inboxTimer); inboxTimer = null; }
+  }
+  /** D3: the list timer exists while a card is painted AND the island is on screen; leaving and coming back restarts it. */
+  function startTimers() {
+    if (inboxTimer) return;
+    if (painted === 0 || !islandOn() || !card || typeof card.refresh !== 'function') return;
+    inboxTimer = setInterval(() => {
+      if (painted > 0 && islandOn() && card && typeof card.refresh === 'function') card.refresh();
+    }, api.REFRESH_MS);
   }
   shortcuts.registerCard({
     ...def,
@@ -593,9 +660,7 @@ function mount(api) {
       syncStatus(); // the card asks who it is as soon as it is painted
       stopTimers();
       // S1/S5: the list moves under the human's eyes: every minute while the card is on screen.
-      inboxTimer = setInterval(() => {
-        if (painted > 0 && islandOn() && card && typeof card.refresh === 'function') card.refresh();
-      }, api.REFRESH_MS);
+      startTimers();
       return () => {
         painted = Math.max(0, painted - 1);
         card = null;
@@ -607,7 +672,13 @@ function mount(api) {
   // The icon lives on the row even when the card is not focused: the connection is read when the island is shown and on a slow
   // timer, never in a tight loop; the card's own data refreshes only while it is painted and the island is on screen.
   statusTimer = setInterval(() => { if (islandOn()) syncStatus(); }, api.STATUS_MS);
-  const wake = () => { if (islandOn()) syncStatus(); };
+  // The icon's counters, on their own cadence: a full inbox read at most once a minute, only while connected and on screen.
+  countsTimer = setInterval(() => {
+    if (!islandOn() || !ctl.available()) return;
+    Promise.resolve(ctl.refreshCounts()).then(() => { if (ctl.badge() !== lastBadge) { lastBadge = ctl.badge(); shortcuts.refresh(); } }, () => {});
+  }, api.COUNTS_MS);
+  // D3: showing the island again revives the polling that hiding it stopped — the tariff belongs to the visible island alone.
+  const wake = () => { if (!islandOn()) return; startTimers(); syncStatus(); };
   doc.addEventListener('visibilitychange', () => {
     if (doc.hidden) { stopTimers(); return; }
     wake();
@@ -620,6 +691,6 @@ function mount(api) {
   if (capsule && typeof MutationObserver !== 'undefined') {
     new MutationObserver(wake).observe(capsule, { attributes: true, attributeFilter: ['data-phase', 'data-view', 'data-card', 'data-question', 'data-settings'] });
   }
-  root.addEventListener('pagehide', () => { if (statusTimer) clearInterval(statusTimer); stopTimers(); });
+  root.addEventListener('pagehide', () => { if (statusTimer) clearInterval(statusTimer); if (countsTimer) clearInterval(countsTimer); stopTimers(); });
   wake();
 }

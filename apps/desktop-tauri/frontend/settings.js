@@ -53,7 +53,7 @@
     document.body.append(panel); // the settings window has no island ancestor or clipping
     $('coucou-settings-style').media = 'all'; // never apply the vendor reset to the island
   }
-  const moreGroup = $('connections-more'); // FAKE services cards; render() wipes the body, so it is re-appended per render
+  const moreGroup = $('connections-more'); // the real connection cards (Gmail since K2-10 T6); render() wipes the body, so it is re-appended per render
   const tabsHost = $('settings-tabs');
   const live = $('settings-live');
   let screen = 'general'; // #442 T7.4: Ajustes opens on General (design §3 order, flows lane 4)
