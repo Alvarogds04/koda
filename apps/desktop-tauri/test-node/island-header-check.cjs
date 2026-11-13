@@ -124,6 +124,15 @@ test('finished card markup + wiring: lives inside #notices, survives the boot re
   const notices = html.slice(html.indexOf('<div id="notices"'), html.indexOf('<p id="notice-live"'));
   assert.match(notices, /id="notice-card"[^>]*hidden[\s\S]*id="notice-card-name"[\s\S]*id="notice-card-verb"[\s\S]*id="notice-card-message"[\s\S]*id="notice-card-terminal"[\s\S]*id="notice-card-ok"/);
   assert.doesNotMatch(notices, /id="notice-card-terminal"[^>]*disabled/);
+  // S3 (04 avisos 5): the visible word is «Ver» inside a button that opens the terminal, so the accessible name must CONTAIN
+  // «Ver» (WCAG 2.5.3, label in name) — «Abrir terminal» did not.
+  const terminalTag = /<button[^>]*id="notice-card-terminal"[^>]*>([\s\S]*?)<\/button>/.exec(notices);
+  assert.ok(terminalTag, 'the terminal button is in the finished card');
+  const visible = terminalTag[1].replace(/<[^>]*>/g, '').trim();
+  const accessible = /aria-label="([^"]*)"/.exec(terminalTag[0]);
+  assert.equal(visible, 'Ver', 'the visible label');
+  assert.ok(accessible && accessible[1].includes(visible), `the accessible name contains «${visible}» (got ${accessible && accessible[1]})`);
+  assert.equal(accessible[1], 'Ver en la terminal', 'and it still says where it goes');
   const src = read('island.js');
   assert.match(src, /noticesEl\.replaceChildren\(noticeChips, noticePill, noticeDetail, noticeList, \.\.\.\(\$\('notice-card'\)/, 'the boot rebuild keeps the card');
   assert.match(src, /O\.finishedCardView\(selected, NV && NV\.agentLabel\)/);
@@ -216,14 +225,16 @@ test('chat wears Coucou\'s tokens: bubble .13 r12 6/10 12.5px, reply #b0b5be, in
   assert.match(isl, /#chat-log li\.assistant \{ color: #b0b5be; font: 400 12\.5px var\(--font\); \}/);
   assert.match(isl, /#chat-input \{\s*border: 0; border-radius: 12px; background: rgba\(255, 255, 255, 0\.07\); color: var\(--ink\); font: 400 13px\/1\.35 var\(--font\);/);
   assert.match(isl, /#chat-send \{ background: var\(--ink\) !important;/);
-  assert.match(isl, /#chat-model-btn \{ padding: 4px 10px; border: 0; background: rgba\(255, 255, 255, 0\.06\); color: #7b8089; font: 500 10\.5px var\(--font\); \}/);
-  for (const sel of ['#settings', '#models', '#conversations']) assert.ok(!new RegExp('(^|[\\s,}])' + sel + '[^{]*\\{').test(isl.slice(isl.indexOf('#chat-log li.user') - 1)), sel + ' untouched by the chat block');
+  // K2-05 U5c (L72): the model chip (`#chat-model-btn`: min-height 24px + r999, styles in style.css) is gone with the
+  // picker; the chat now shows a read-only text line, so this contract no longer has a control to cover.
+  assert.doesNotMatch(read('index.html'), /chat-model-btn|chat-model-picker/);
+  for (const sel of ['#settings', '#conversations']) assert.ok(!new RegExp('(^|[\\s,}])' + sel + '[^{]*\\{').test(isl.slice(isl.indexOf('#chat-log li.user') - 1)), sel + ' untouched by the chat block');
 });
 
 // ---- #480: the chat in the island's own visual language -------------------------------------------------------------
 test('chat: keeps every id and verb; the island header stays on top at the island width (720); body is a Coucou card; controls are Coucou tabs/discs with 44px hits', () => {
   const html = read('index.html');
-  for (const id of ['chat-header', 'chat-title', 'chat-target-chip', 'chat-specialist', 'open-screen-settings', 'chat-back', 'chat-state', 'chat-history-controls', 'chat-load-earlier', 'chat-history-label', 'chat-log', 'chat-model-btn', 'chat-composer', 'chat-input', 'chat-mic', 'chat-send', 'chat-cancel'])
+  for (const id of ['chat-header', 'chat-title', 'chat-target-chip', 'chat-specialist', 'open-screen-settings', 'chat-back', 'chat-state', 'chat-history-controls', 'chat-load-earlier', 'chat-history-label', 'chat-log', 'chat-model-line', 'chat-composer', 'chat-input', 'chat-mic', 'chat-send', 'chat-cancel'])
     assert.match(html, new RegExp(`id="${id}"`), id + ' is still there');
   const isl = read('vendor/coucou/island/island.css').replace(/\/\*[\s\S]*?\*\//g, '');
   const from = isl.indexOf('#capsule[data-phase="expanded"][data-view="chat"] #island-header');

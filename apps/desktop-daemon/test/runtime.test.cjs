@@ -82,6 +82,36 @@ function makeEngine(t, overrides = {}) {
 	return { engine, dir, spawnLog, argvOut, envOut, cmdLog };
 }
 
+test("U5c: the engine reports the model it answers with (get_state data.model), nothing when it reports none", async (t) => {
+	const none = makeEngine(t);
+	await none.engine.start();
+	assert.equal(none.engine.model, undefined, "no model reported: unknown, never a guess");
+	await none.engine.stop();
+
+	const modelDir = fs.mkdtempSync(path.join(os.tmpdir(), "abito-model-test-"));
+	t.after(() => fs.rmSync(modelDir, { recursive: true, force: true }));
+	const modelFile = path.join(modelDir, "model.json");
+	fs.writeFileSync(modelFile, JSON.stringify({ provider: "anthropic", id: "claude-sonnet-5-5", name: "Claude Sonnet 5.5", input: ["text", "image"], apiKey: "sk-never" }));
+	const { engine } = makeEngine(t, { extraArgs: ["--model-file", modelFile] });
+	t.after(() => engine.stop().catch(() => {}));
+	await engine.start();
+	assert.deepEqual(engine.model, { provider: "anthropic", id: "claude-sonnet-5-5", name: "Claude Sonnet 5.5" }, "only the closed identity fields");
+
+	const seen = [];
+	engine.on("model", (m) => seen.push(m));
+	fs.writeFileSync(modelFile, JSON.stringify({ provider: "openai", id: "gpt-x" }));
+	await engine.refreshModel();
+	assert.deepEqual(engine.model, { provider: "openai", id: "gpt-x" });
+	assert.deepEqual(seen, [{ provider: "openai", id: "gpt-x" }]);
+	await engine.refreshModel();
+	assert.equal(seen.length, 1, "an unchanged model emits nothing");
+	fs.unlinkSync(modelFile);
+	await engine.refreshModel();
+	assert.equal(engine.model, undefined, "the engine stopped reporting one: unknown again");
+	await engine.stop();
+	assert.equal(engine.model, undefined);
+});
+
 test("start reaches ready and correlates a get_state request", async (t) => {
 	const { engine, argvOut, envOut } = makeEngine(t);
 	const statuses = [];
@@ -110,7 +140,9 @@ test("start reaches ready and correlates a get_state request", async (t) => {
 	assert.equal(argv[sessionIdx + 1], engine.island.sessions);
 	assert.equal(argv[identityIdx + 1], path.join(engine.island.root, "identity.md"));
 	assert.ok(fs.existsSync(argv[identityIdx + 1]));
-	assert.equal(fs.statSync(argv[identityIdx + 1]).mode & 0o777, 0o600);
+	// 0600 is a Unix fact (mode bits); on Windows the same privacy rule is asserted through the verified helper's real
+	// DACL check (platform-env.assertMode -> test/win-private.cjs), never by weakening the assertion.
+	assertMode(argv[identityIdx + 1], 0o600);
 
 	// The child environment is isolated from the parent's secrets and Pi setup:
 	// a custom command keeps the pre-T2 home transport (B2) — PI_CODING_AGENT_DIR
@@ -473,7 +505,10 @@ test("start refuses an identity target replaced by a symlink and leaves the vict
 	const victim = path.join(dir, "victim.md");
 	fs.writeFileSync(victim, "keep\n");
 	fs.symlinkSync(victim, path.join(island.root, "identity.md"));
-	await assert.rejects(() => engine.start(), /symlink|refusing/);
+	// Same refusal, platform message (as isolation.test.cjs:201): POSIX names the symlink, the Windows helper names the
+	// reparse point it refused. Only the message is platform-correct; the refusal itself and the victim checks below are
+	// unchanged, so nothing is written through the link on either OS.
+	await assert.rejects(() => engine.start(), win ? /reparse/ : /symlink|refusing/);
 	assert.equal(fs.readFileSync(victim, "utf8"), "keep\n");
 	assert.ok(fs.lstatSync(path.join(island.root, "identity.md")).isSymbolicLink());
 });

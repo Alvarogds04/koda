@@ -108,7 +108,7 @@ async function rig(t, options = {}, flags = []) {
 		turnTimeoutMs: 10_000, maxTurnIterations: 32, abortGraceMs: 100,
 		...options,
 	});
-	t.after(async () => { await engine.stop(); fs.rmSync(dir, { recursive: true, force: true }); });
+	t.after(async () => { await engine.stop(); fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); });
 	await engine.start();
 	const commands = () => fs.existsSync(commandLog)
 		? fs.readFileSync(commandLog, "utf8").trim().split("\n").filter(Boolean).map(JSON.parse)
@@ -157,7 +157,7 @@ test("Gentle Dot's limits: 20 MB or 10 compactions, env-overridable", () => {
 
 test("rotates by size, not by context percent", async (t) => {
 	const dir = tmp("abito-rot-size-");
-	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+	t.after(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
 	const messagesFile = writeHandoffMessages(dir);
 	const { engine, rotator, commands } = await rig(t, { rotatorLimits: { bytes: 1000 } }, ["--messages-file", messagesFile]);
 	const first = engine.sessionFile;
@@ -173,7 +173,7 @@ test("rotates by size, not by context percent", async (t) => {
 
 test("rotates after enough compactions; one below the limit does nothing", async (t) => {
 	const dir = tmp("abito-rot-comp-");
-	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+	t.after(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
 	const messagesFile = writeHandoffMessages(dir);
 	const { engine, rotator, commands } = await rig(t, { rotatorLimits: { compactions: 2 } }, ["--messages-file", messagesFile]);
 	const first = engine.sessionFile;
@@ -187,7 +187,7 @@ test("rotates after enough compactions; one below the limit does nothing", async
 
 test("does nothing below both limits: no engine request at all", async (t) => {
 	const dir = tmp("abito-rot-below-");
-	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+	t.after(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
 	const { engine, rotator, commands } = await rig(t);
 	bloat(engine, 64);
 	assert.equal(await rotator.maybeRotate(), false);
@@ -198,7 +198,7 @@ test("does nothing below both limits: no engine request at all", async (t) => {
 
 test("fail closed: a session header of another version skips rotation", async (t) => {
 	const dir = tmp("abito-rot-ver-");
-	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+	t.after(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
 	const messagesFile = writeHandoffMessages(dir);
 	const logs = [];
 	const { engine, rotator, commands } = await rig(t, { rotatorLimits: { bytes: 100 }, rotatorOptions: { log: (line) => logs.push(line) } }, ["--messages-file", messagesFile]);
@@ -214,7 +214,7 @@ test("fail closed: a session header of another version skips rotation", async (t
 
 test("fail closed: a header that cannot be parsed skips rotation (F4)", async (t) => {
 	const dir = tmp("abito-rot-hbad-");
-	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+	t.after(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
 	const messagesFile = writeHandoffMessages(dir);
 	const logs = [];
 	const { engine, rotator, commands } = await rig(t, { rotatorLimits: { bytes: 100 }, rotatorOptions: { log: (line) => logs.push(line) } }, ["--messages-file", messagesFile]);
@@ -236,7 +236,7 @@ test("fail closed: a header that cannot be parsed skips rotation (F4)", async (t
 
 test("rotation is skipped while the engine is busy or the chat is not idle", async (t) => {
 	const dir = tmp("abito-rot-busy-");
-	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+	t.after(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
 	const messagesFile = writeHandoffMessages(dir);
 	const { engine, rotator, commands } = await rig(t, { rotatorLimits: { bytes: 100 } }, ["--messages-file", messagesFile]);
 	bloat(engine);
@@ -259,7 +259,7 @@ test("rotation is skipped while the engine is busy or the chat is not idle", asy
 
 test("only one rotation at a time; a session already rotated is left alone", async (t) => {
 	const dir = tmp("abito-rot-once-");
-	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+	t.after(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
 	const messagesFile = writeHandoffMessages(dir);
 	const { engine, rotator } = await rig(t, { rotatorLimits: { bytes: 100 } }, ["--messages-file", messagesFile]);
 	const first = engine.sessionFile;
@@ -276,7 +276,7 @@ test("only one rotation at a time; a session already rotated is left alone", asy
 
 test("handoffText prefers the latest compaction summary", async (t) => {
 	const dir = tmp("abito-rot-hcomp-");
-	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+	t.after(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
 	const file = writeCompactedFile(dir, "s.jsonl", ["primero", "segundo", "tercero"]);
 	const text = handoffText(file);
 	assert.ok(text.startsWith("This conversation continues from an earlier session"), "Gentle Dot's intro");
@@ -287,7 +287,7 @@ test("handoffText prefers the latest compaction summary", async (t) => {
 
 test("handoffText without compactions: the last 12 user/assistant messages, 2000 chars each", async (t) => {
 	const dir = tmp("abito-rot-hmsg-");
-	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+	t.after(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
 	const file = writeSessionFile(dir, "s.jsonl", twentyMessages());
 	const text = handoffText(file);
 	assert.ok(text.includes("User: mensaje usuario 20"), "the newest message is kept");
@@ -304,7 +304,7 @@ test("handoffText without compactions: the last 12 user/assistant messages, 2000
 
 test("handoffText links the previous handoff so history keeps crossing rotations", async (t) => {
 	const dir = tmp("abito-rot-hprev-");
-	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+	t.after(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
 	const handoff = { type: "custom_message", customType: HANDOFF_TYPE, content: "This conversation continues from an earlier session that grew too long. The user sees one continuous chat and cannot see this note; carry on naturally and do not mention it.\n\nEarlier context:\n\nAntes del rotado anterior.", display: false };
 	const file = writeSessionFile(dir, "s.jsonl", [handoff, message("user", "hola")]);
 	const text = handoffText(file);
@@ -316,7 +316,7 @@ test("handoffText links the previous handoff so history keeps crossing rotations
 
 test("handoffText falls back to the recent messages when the latest summary is empty (F4)", async (t) => {
 	const dir = tmp("abito-rot-hempty-");
-	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+	t.after(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
 	const file = writeSessionFile(dir, "s.jsonl", [{ type: "compaction", summary: "" }, ...twentyMessages()]);
 	const text = handoffText(file);
 	assert.ok(!text.includes("Summary of the conversation so far:"), "an empty summary is no summary: no empty handoff");
@@ -326,7 +326,7 @@ test("handoffText falls back to the recent messages when the latest summary is e
 
 test("handoffText skips torn or non-message lines", async (t) => {
 	const dir = tmp("abito-rot-htorn-");
-	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+	t.after(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
 	const file = path.join(dir, "torn.jsonl");
 	fs.writeFileSync(file, `${JSON.stringify({ type: "session", version: SESSION_VERSION, id: "p", timestamp: new Date().toISOString(), cwd: dir })}\n${JSON.stringify(message("user", "visible"))}\n{"type":"message","mess\nnot json at all\n${JSON.stringify({ type: "toolResult", content: "ruido" })}\n`);
 	const text = handoffText(file);
@@ -338,7 +338,7 @@ test("handoffText skips torn or non-message lines", async (t) => {
 
 test("writeHandoffSession: one hidden custom_message in a v3 session next to the previous one", async (t) => {
 	const dir = tmp("abito-rot-seed-");
-	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+	t.after(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
 	const previous = writeSessionFile(dir, "prev.jsonl", twentyMessages());
 	const file = await writeHandoffSession(previous, "Summary: el usuario planea un viaje.");
 	assert.equal(path.dirname(file), dir, "the seed lives next to the previous session");
@@ -377,7 +377,7 @@ assert.ok(JSON.parse(fs.readFileSync(file, "utf8").split("\n")[1]).content.inclu
 
 test("rotate: switch_session is verified against the engine's context", async (t) => {
 	const dir = tmp("abito-rot-verify-");
-	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+	t.after(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
 	const previousFile = writeSessionFile(dir, "prev.jsonl", twentyMessages());
 	const messagesFile = writeHandoffMessages(dir, "El usuario planea un viaje.");
 	const { engine, rotator, commands } = await rig(t, { rotatorLimits: { bytes: 100 } }, ["--messages-file", messagesFile]);
@@ -399,7 +399,7 @@ test("rotate: switch_session is verified against the engine's context", async (t
 
 test("verify failure: a fresh session continues the chat and the orphan seed is removed (F2)", async (t) => {
 	const dir = tmp("abito-rot-verfail-");
-	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+	t.after(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
 	const logs = [];
 	// The engine never reports the handoff in its context (--messages-file absent → empty).
 	const { engine, rotator, commands } = await rig(t, { rotatorLimits: { bytes: 1000 }, rotatorOptions: { log: (line) => logs.push(line) } });
@@ -433,7 +433,7 @@ test("verify failure: a fresh session continues the chat and the orphan seed is 
 
 test("write failure: the rotation is skipped, the session and its history stay", async (t) => {
 	const dir = tmp("abito-rot-wfail-");
-	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+	t.after(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
 	const messagesFile = writeHandoffMessages(dir);
 	const { engine, rotator, commands } = await rig(t, { rotatorLimits: { bytes: 100 } }, ["--messages-file", messagesFile]);
 	const first = engine.sessionFile;
@@ -462,7 +462,7 @@ test("write failure: the rotation is skipped, the session and its history stay",
 
 test("switch failure: the chat continues in a fresh session and the orphan seed is removed (F2)", async (t) => {
 	const dir = tmp("abito-rot-sfail-");
-	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+	t.after(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
 	const messagesFile = writeHandoffMessages(dir);
 	const logs = [];
 	const { engine, rotator, commands } = await rig(t, { rotatorLimits: { bytes: 1000 }, rotatorOptions: { log: (line) => logs.push(line) } }, ["--messages-file", messagesFile, "--switch-unconfirm-once"]);
@@ -482,7 +482,7 @@ test("switch failure: the chat continues in a fresh session and the orphan seed 
 
 test("rotation runs after a settled turn, with no prompt of its own", async (t) => {
 	const dir = tmp("abito-rot-settle-");
-	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+	t.after(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
 	const messagesFile = writeHandoffMessages(dir);
 	const { engine, commands } = await rig(t, { rotatorLimits: { bytes: 100 } }, ["--messages-file", messagesFile, "--settle-all"]);
 	const first = engine.sessionFile;
@@ -504,7 +504,7 @@ const { loadConfig } = require("../src/config.cjs");
 
 test("config rotation key: ON by default with Gentle Dot's limits, strict validation", () => {
 	const dir = tmp("abito-rot-cfg-");
-	process.on("exit", () => { try { fs.rmSync(dir, { recursive: true, force: true }); } catch {} });
+	process.on("exit", () => { try { fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); } catch {} });
 	// Absent key: rotation is ON by default (K2-05 T3), Gentle Dot's limits.
 	let cfg = loadConfig(dir);
 	assert.deepEqual(cfg.rotation, { enabled: true, bytes: 20 * 1024 * 1024, compactions: 10 });
@@ -542,7 +542,7 @@ test("config rotation key: ON by default with Gentle Dot's limits, strict valida
 
 test("obsolete v0.1 #386 rotation keys are accepted, ignored and logged once (B1)", () => {
 	const dir = tmp("abito-rot-old-");
-	process.on("exit", () => { try { fs.rmSync(dir, { recursive: true, force: true }); } catch {} });
+	process.on("exit", () => { try { fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); } catch {} });
 	const logs = [];
 	// The exact v0.1.0 shape: the old #386 keys never make loadConfig throw.
 	writePrivateFile(path.join(dir, "config.json"), `${JSON.stringify({ rotation: { thresholdPercent: 85, keepTurns: 12 } })}\n`);
@@ -704,7 +704,7 @@ test("daemon wiring: the island pause also pauses the rotation", async (t) => {
 
 test("the chain of session files survives an engine restart", async (t) => {
 	const dir = tmp("abito-rot-chain-");
-	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+	t.after(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
 	const messagesFile = writeHandoffMessages(dir);
 	const root = path.join(dir, "island");
 	const engineOptions = () => ({
@@ -730,7 +730,7 @@ test("the chain of session files survives an engine restart", async (t) => {
 	assert.equal(again.sessionFile, seed, "the chat reopens on the seeded session");
 	assert.deepEqual(again.previousSessions, [first], "the chain is restored");
 	await again.stop();
-	fs.rmSync(dir, { recursive: true, force: true });
+	fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 // ------------------------------------------------------- verifier findings
@@ -857,7 +857,7 @@ test("a crash-recovery reopen emits session_changed only once the engine is read
 
 test("a rotation emits sessions_linked then session_changed for the new open session (history re-broadcast hooks)", async (t) => {
 	const dir = tmp("abito-rot-emit-");
-	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+	t.after(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
 	const messagesFile = writeHandoffMessages(dir);
 	const { engine, rotator } = await rig(t, { rotatorLimits: { bytes: 1000 } }, ["--messages-file", messagesFile]);
 	const events = [];
@@ -873,7 +873,7 @@ test("a rotation emits sessions_linked then session_changed for the new open ses
 
 test("the rotation fallback emits session_changed BEFORE its link, so no empty history is broadcast", async (t) => {
 	const dir = tmp("abito-rot-emit-fb-");
-	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+	t.after(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
 	const messagesFile = writeHandoffMessages(dir);
 	const { engine, rotator } = await rig(t, { rotatorLimits: { bytes: 1000 } }, ["--messages-file", messagesFile, "--switch-unconfirm-once"]);
 	const events = [];

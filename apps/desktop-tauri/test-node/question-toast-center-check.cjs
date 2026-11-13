@@ -39,13 +39,19 @@ async function layout() {
       if (mode === 'media') await r.page.emulateMedia({ reducedMotion: 'reduce' });
       if (mode === 'attr') await r.page.evaluate(() => { document.documentElement.dataset.motion = 'reduce'; });
       await r.page.evaluate(() => window.__islandSetState('compact')); await r.page.waitForTimeout(700);
+      // isla-cualquier-lado (L21, human «1»): a NEW question opens the folded island, so the toast is the signal only for a phase it
+      // cannot classify. The disc (folded above) is what it hangs from; the phase is what still sends the question to the toast.
+      await H.unknownPhase(r.page);
+      // isla-cualquier-lado S3/S5 (T6): the toast hangs from the FOLDED disc, and L21 leaves it only the unknown phase, switched on
+      // above: the question fed here is the case that still shows it.
       if (c.feed) await r.page.evaluate(p => window.__emit('question:state', p), c.feed);
       if (c.disconnect) {
         await r.page.evaluate(({ id }) => window.__emit('question:state', { available: true, queued: [], queued_count: 0, deliveries: [], notice: null,
           pending: { id, kind: 'question', agent: 'pi', agent_label: 'Pi', project_name: 'api', text: '¿Café o té?', allow_free_text: false, options: [{ index: 0, label: 'Café', description: '' }, { index: 1, label: 'Té', description: '' }], expires_at: Date.now() + 600000, free_text_max: 2000 } }), { id: ID });
         await r.page.waitForTimeout(100);
       }
-      await r.page.evaluate(() => { document.getElementById('capsule').dataset.edgeHidden = 'true'; });
+      // isla-cualquier-lado S3/S5 (T6, L21): the toast hangs from the FOLDED disc, and only the phase switched on above — the one
+      // the toast cannot classify — still routes the question there.
       if (c.arrival) await r.page.evaluate(d => document.dispatchEvent(new CustomEvent('abito:notice-arrival', { detail: d })), c.arrival);
       if (c.disconnect) await r.page.evaluate(() => window.__emit('question:state', { available: true, pending: null, queued: [], queued_count: 0, deliveries: [], notice: 'disconnected' }));
       const tag = `${theme}/${c.name}/${mode}`;
@@ -80,6 +86,76 @@ async function layout() {
   for (const c of CASES.filter(x => ['plain', 'permission-short', 'finished'].includes(x.name))) await run(c, 'dark', 'mid');
   for (const c of CASES) await run(c, 'dark', 'attr');
   for (const c of CASES.filter(x => ['plain', 'permission-short', 'finished'].includes(x.name))) await run(c, 'light', 'media');
+  n += await disc();
+  return n;
+}
+/** T6: the toast hangs from the DISC on the side that faces the centre of the screen, and never shows with the island open. */
+async function disc() {
+  let n = 0;
+  const show = (edge) => async () => {
+    const r = await H.open({ question: 'plain', theme: 'dark', quick: true });
+    try {
+      await r.page.evaluate(e => window.__islandSetState('compact', e), edge);
+      await r.page.waitForTimeout(1600);
+      // L21 («1»): compact alone no longer sends the question to the toast; the unknown phase is what still does.
+      await H.unknownPhase(r.page);
+      await r.page.evaluate(() => window.__emit('question:state', { available: true, queued: [], queued_count: 0, deliveries: [], notice: null, pending: null }));
+      await r.page.evaluate(({ id }) => window.__emit('question:state', { available: true, queued: [], queued_count: 0, deliveries: [], notice: null,
+        pending: { id, kind: 'question', agent: 'pi', agent_label: 'Pi', project_name: 'api', text: '¿Café o té?', allow_free_text: false,
+          options: [{ index: 0, label: 'Café', description: '' }, { index: 1, label: 'Té', description: '' }], expires_at: Date.now() + 600000, free_text_max: 2000 } }), { id: '0b3a5c9e-8f27-4d11-9a0e-1c2d3e4f5a6b' });
+      await r.page.waitForTimeout(2200);
+      const m = await r.page.evaluate(() => {
+        const t = document.getElementById('question-toast'), i = document.getElementById('island'), c = document.getElementById('capsule');
+        const box = e => { const b = e.getBoundingClientRect(); return { t: b.top, b: b.bottom, l: b.left, r: b.right, w: b.width, h: b.height }; };
+        const shape = k => box(t.querySelector('.q-toast-' + k));
+        return { hidden: t.hidden, edge: t.dataset.edge, expanded: t.dataset.expanded, phase: c.getAttribute('data-phase'), capsule: box(c),
+          toast: box(t), island: box(i), badge: box(t.querySelector('.q-toast-badge')), slot: box(t.querySelector('.q-toast-koda')),
+          neck: shape('neck'), pill: shape('pill'), body: shape('bodyrect') };
+      });
+      assert.equal(m.hidden, false, `${edge}/folded: the question arrives as the toast hanging from the disc`);
+      assert.equal(m.phase, 'compact', `${edge}: the island stayed folded`);
+      assert.equal(m.edge, edge, `${edge}: it hangs from the side the page's own data-edge names`);
+      assert.equal(m.toast.w, 350, `${edge}: width 350`);
+      if (edge === 'top') assert.ok(Math.abs(m.toast.t - m.island.b) <= 1, `${edge}: below the disc (toast top ${m.toast.t.toFixed(1)} vs disc bottom ${m.island.b.toFixed(1)})`);
+      else assert.ok(Math.abs(m.toast.b - m.island.t) <= 1, `${edge}: above the disc (toast bottom ${m.toast.b.toFixed(1)} vs disc top ${m.island.t.toFixed(1)})`);
+      assert.ok(Math.abs((m.island.l + m.island.r) / 2 - 376) <= 1, `${edge}: the disc stays centred in the 752 window`);
+      // T6b: the gooey pill, neck and body are PAINTED on the disc side the edge names (the shape was mirrored about the wrong line
+      // and the whole card was drawn one box height away from its text), and all of it inside the native window's capsule
+      if (edge === 'top') {
+        assert.ok(Math.abs(m.neck.b - m.island.b) <= 1, `${edge}: the neck joins the disc at its bottom edge (neck bottom ${m.neck.b.toFixed(1)} vs disc ${m.island.b.toFixed(1)})`);
+        assert.ok(Math.abs(m.pill.t - m.island.b) <= 1, `${edge}: the pill sits under the disc (pill top ${m.pill.t.toFixed(1)})`);
+        assert.ok(m.body.b - m.island.b >= 32, `${edge}: the body grows down, away from the disc`);
+      } else {
+        assert.ok(Math.abs(m.neck.t - m.island.t) <= 1, `${edge}: the neck joins the disc at its top edge (neck top ${m.neck.t.toFixed(1)} vs disc ${m.island.t.toFixed(1)})`);
+        assert.ok(Math.abs(m.pill.b - m.island.t) <= 1, `${edge}: the pill sits above the disc (pill bottom ${m.pill.b.toFixed(1)})`);
+        assert.ok(m.island.t - m.body.t >= 32, `${edge}: the body grows up, away from the disc`);
+      }
+      for (const k of ['neck', 'pill', 'body']) assert.ok(m[k].t >= m.capsule.t - 1 && m[k].b <= m.capsule.b + 1, `${edge}: the painted ${k} is inside the native window`);
+      // T6b (R3-koda-slot-position-unproved): the toast's Koda is drawn INSIDE the 28 px badge, never spilling out of it
+      assert.ok(m.slot.w >= 1 && m.slot.h >= 1, `${edge}: the toast badge paints Koda`);
+      assert.ok(m.badge.w <= 28.5 && m.badge.h <= 28.5, `${edge}: the badge is the 28 px circle (${m.badge.w}x${m.badge.h})`);
+      assert.ok(m.slot.l >= m.badge.l - 1 && m.slot.r <= m.badge.r + 1 && m.slot.t >= m.badge.t - 1 && m.slot.b <= m.badge.b + 1,
+        `${edge}: the Koda sprite (${m.slot.l.toFixed(1)}..${m.slot.r.toFixed(1)}, ${m.slot.t.toFixed(1)}..${m.slot.b.toFixed(1)}) stays inside the badge (${m.badge.l.toFixed(1)}..${m.badge.r.toFixed(1)}, ${m.badge.t.toFixed(1)}..${m.badge.b.toFixed(1)})`);
+      assert.ok(m.slot.w <= 28.5 && m.slot.h <= 28.5, `${edge}: the Koda sprite is ${m.slot.w}x${m.slot.h}, not 32x32 in a 28 px badge`);
+      if (edge === 'top') await r.screenshot('/tmp/toast-disc-below.png'); else await r.screenshot('/tmp/toast-disc-above.png');
+      n += 1;
+    } finally { await r.close(); }
+  };
+  await show('top')(); await show('bottom')();
+  // with the island OPEN the toast never shows: the card is the signal
+  const r = await H.open({ question: 'plain', theme: 'dark', quick: true });
+  try {
+    await r.page.evaluate(() => window.__islandSetState('overview'));
+    await r.page.waitForTimeout(1600);
+    const m = await r.page.evaluate(() => {
+      const t = document.getElementById('question-toast'), slot = t.querySelector('.q-toast-koda'), b = slot.getBoundingClientRect();
+      return { hidden: t.hidden, phase: document.getElementById('capsule').dataset.phase, slot: { w: b.width, h: b.height } };
+    });
+    assert.equal(m.phase, 'expanded'); assert.equal(m.hidden, true, 'open island: no toast (the card itself shows the question)');
+    // T6b (R2-koda-slot-hidden-toast): the slot exists in the DOM but a hidden toast paints nothing — its sprite has no box at all
+    assert.equal(m.slot.w, 0); assert.equal(m.slot.h, 0);
+    n += 1;
+  } finally { await r.close(); }
   return n;
 }
 layout().then(n => { console.log(`question-toast-center-check: ${passed} ok + ${n} layout`); }).catch(e => { console.error('FAIL', e.message); process.exit(1); });

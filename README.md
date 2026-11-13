@@ -1,6 +1,7 @@
 # Koda
 
-Koda is a small desktop island for your coding agents. It sits at the top of the screen, shows what **Claude Code**, **Codex**
+Koda is a small desktop island for your coding agents. Folded, it is just the circle: click it to open, drag it to move
+it anywhere (it remembers the spot). Opened, it shows what **Claude Code**, **Codex**
 and **Pi** are doing, and lets you answer their questions and permission requests without switching to the terminal.
 
 > **Status:** first release (0.1). This version works on **Chat** and **Agentes**; dictation, voice wake word, integrations,

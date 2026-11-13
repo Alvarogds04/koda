@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use abito_island::characterwin::{self as cw, Display, Rect};
 use abito_island::contextwin;
+use abito_island::geometry;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, State, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
@@ -112,9 +113,24 @@ fn island_rect(app: &AppHandle) -> Option<(Rect, f64)> {
     Some((rect, win.scale_factor().unwrap_or(1.0)))
 }
 
+/// Where the pet lives while it is in the island: centred under the top edge of what the human actually SEES — the folded disc or
+/// the open card — never under the transparent native window. isla-cualquier-lado T6c: since T5/T6b the island stands on the
+/// window's BOTTOM edge in the lower half, so aiming at the window top landed the pet ~308 px above the disc.
+/// geometry::island_visible_top is that one rule (folded the disc, open the card); the edge and the drawn height come from the same
+/// places the placement does.
 fn island_origin(app: &AppHandle) -> Option<(f64, f64)> {
     let (r, scale) = island_rect(app)?;
-    Some(cw::island_spot(r.x + r.w / 2.0, r.y, cw::SIZE, scale))
+    // the page's report BEFORE the core lock: islandshape takes SHAPE and then the core, so never the reverse
+    let reported = crate::islandshape::last_visible_height();
+    let state = app.state::<crate::AppState>();
+    let (expanded, edge, chat, chat_height) = {
+        let core = state.core.lock().expect("core lock");
+        (core.expanded, core.edge, core.chat, core.chat_height())
+    };
+    // The arithmetic is pure and lives in geometry (R3-wiring-source-grep-only, T7): here it is only the window and the core read.
+    let window = geometry::Rect { x: r.x.round() as i32, y: r.y.round() as i32, w: r.w.round() as i32, h: r.h.round() as i32 };
+    let top = geometry::island_visible_top(window, edge, expanded, reported, chat, chat_height, scale);
+    Some(cw::island_spot(r.x + r.w / 2.0, f64::from(top), cw::SIZE, scale))
 }
 
 /// Click-through everywhere but the round body (Coucou: `set_desktop_shape`). GDK sets the X11

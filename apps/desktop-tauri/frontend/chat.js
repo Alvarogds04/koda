@@ -2,12 +2,11 @@
 /* U1 — the chat surface inside the island (same window, same surface).
    - Talks to Rust through `chat_action` with the closed command set
      (view/open/back/check/submit/cancel, and K2-05 U4b `answer` for the agent's
-     questions) and, for the F024 model row, through
-     two more CLOSED sets: `models_action` (list/select of the verified local
-     registry — the same verbs Ajustes → Modelos uses) and `specialists_action`
-     (view only, to name the role that fixes a model). It never names an
-     endpoint, a key, an account, a provider or an approval: Rust owns the
-     local target.
+     questions) and, for the role the chat may need to name, through
+     `specialists_action` (view only). It never names an endpoint, a key,
+     an account, a provider or an approval. K2-05 U5c: the chat shows which
+     model the ENGINE answers with as one read-only line (`engine_model`);
+     there is no model picker and nothing here ever chooses a model.
    - Message rows use the small F025 markdown DOM renderer (text nodes only).
      Safe web links use open_chat_url, which independently validates in Rust.
      Greeting, notifications and error/system text retain their plain handlers.
@@ -35,11 +34,8 @@
   const form = $('chat-composer');
   const status = $('chat-status');
   const targetEl = $('chat-target');
-  // F024: the model row above the composer (index.html `chat-model-row`).
-  const modelBtn = $('chat-model-btn');
-  const modelName = $('chat-model-name');
-  const modelPicker = $('chat-model-picker');
-  const modelNote = $('chat-model-note');
+  // K2-05 U5c: the read-only line saying which model the engine answers with (index.html `chat-model-line`).
+  const modelLine = $('chat-model-line');
   const problem = $('chat-problem');
   const live = $('chat-live');
   const newer = $('chat-new');
@@ -67,7 +63,6 @@
   const listen = (window.__TAURI__ && window.__TAURI__.event && window.__TAURI__.event.listen) || null;
   const call = (cmd, payload) => (invoke ? invoke(cmd, { payload }) : Promise.reject(new Error('no ipc')));
   const action = payload => call('chat_action', payload);
-  const modelsAction = payload => call('models_action', payload);
   const specialistsAction = payload => call('specialists_action', payload);
 
   let view = null;
@@ -104,118 +99,23 @@
     $('chat-target-chip').setAttribute('aria-label', V.targetAria(t));
   }
 
-  // ---- F024: the model row above the composer ---------------------------------
-  // The row shows the EFFECTIVE target of the next turn (Rust already resolved
-  // the active role into it) and opens a picker over the SAME closed
-  // `models_action` set Ajustes → Modelos uses (R3): a click selects a
-  // registered, selectable local profile and it applies from the NEXT message.
-  // The page never learns or sends an endpoint, a key or a provider (S5).
+  // ---- K2-05 U5c: which model answers (read-only) ---------------------------
+  // The line shows the model the ENGINE reports (`chat:state.engine_model`, projected by Rust from the
+  // daemon's status). There is nothing to click and nothing to choose; with no model known it is hidden.
   let specialistsView = null; // `specialists_action view` + `specialists:state`
-  let modelListing = null;    // `models_action list` + `models:state`
-  let modelBusy = false;      // one selection in flight
-  let pickerOpen = false;
-  // #414: the Ajustes → Modelos allowlist (typed pref, read-only here). The picker offers only
-  // the chosen models, falling back to all when none is chosen; the host republishes it as
-  // `prefs:state`, so a change in Ajustes reaches the row without a new command.
-  let chosenModels = null;
-  function applyChosenModels(p) {
-    if (!p || typeof p !== 'object') return;
-    chosenModels = p.chosenModels && typeof p.chosenModels === 'object' && !Array.isArray(p.chosenModels) ? p.chosenModels : {};
-    if (pickerOpen) renderPicker();
-  }
 
-  function renderPicker() {
-    if (!modelPicker || !modelNote) return;
-    modelPicker.replaceChildren();
-    // R4: ONE line, inside the picker, re-appended after every repaint (the
-    // children were just cleared). The node itself lives in index.html.
-    const note = V.modelRoleNote(view, V.activeRole(specialistsView));
-    modelNote.textContent = note;
-    modelNote.hidden = !note;
-    if (note) modelPicker.append(modelNote);
-    const enabled = V.modelButtonEnabled(view);
-    for (const row of V.filterChosen(V.modelRows(modelListing), chosenModels)) {
-      const b = document.createElement('button');
-      b.type = 'button';
-      b.className = 'picker-row';
-      const name = document.createElement('span');
-      name.className = 'picker-name';
-      name.textContent = row.title;
-      const state = document.createElement('span');
-      state.className = 'picker-state';
-      state.textContent = row.cloud ? `${row.provider} · nube` : row.state;
-      b.append(name, state);
-      b.setAttribute('aria-pressed', row.selected ? 'true' : 'false');
-      b.setAttribute('aria-label', `${row.selected ? 'Elegido. ' : 'Elegir. '}${row.aria}`);
-      b.disabled = !row.selectable || row.selected || modelBusy || !enabled;
-      if (row.selectable && !row.selected) b.addEventListener('click', () => selectModel(row.id, row.title));
-      modelPicker.append(b);
-    }
-  }
-
-  function renderModelRow() {
-    if (!modelBtn || !modelName) return;
-    const role = V.activeRole(specialistsView);
-    modelName.textContent = V.modelButtonLabel(view, role); // R1: text, never markup
-    modelBtn.setAttribute('aria-label', V.modelButtonAria(view, role)); // R4/R5
-    const availability = view && view.availability ? view.availability.state : 'unchecked';
-    modelBtn.dataset.avail = view && view.target ? availability : 'unchecked';
-    const enabled = V.modelButtonEnabled(view); // R2
-    modelBtn.disabled = !enabled || modelBusy;
-    if (!enabled && pickerOpen) {
-      // A running turn freezes the target; a down/blocked chosen one refuses
-      // like Send does. The row closes instead of offering a dead choice.
-      pickerOpen = false;
-      if (modelPicker) { modelPicker.hidden = true; modelPicker.inert = true; }
-      modelBtn.setAttribute('aria-expanded', 'false');
-      if (modelNote) { modelNote.textContent = ''; modelNote.hidden = true; }
-      return;
-    }
-    if (!pickerOpen && modelNote) { modelNote.textContent = ''; modelNote.hidden = true; }
-    if (pickerOpen) renderPicker();
-  }
-
-  function loadModelListing() {
-    modelsAction({ action: 'list' }).then(next => {
-      modelListing = next;
-      if (pickerOpen) renderPicker();
-    }, () => { /* the picker keeps the last listing it has, if any */ });
-  }
-
-  function setPicker(open) {
-    pickerOpen = !!open && V.modelButtonEnabled(view);
-    if (modelPicker) {
-      modelPicker.hidden = !pickerOpen;
-      modelPicker.inert = !pickerOpen;
-    }
-    modelBtn.setAttribute('aria-expanded', pickerOpen ? 'true' : 'false');
-    renderModelRow();
-    if (pickerOpen) loadModelListing();
-  }
-
-  function selectModel(id, title) {
-    if (modelBusy) return;
-    modelBusy = true;
-    renderModelRow();
-    modelsAction({ action: 'select', profile_id: id }).then(() => {
-      modelBusy = false;
-      setPicker(false); // upstream parity: the picker closes on a choice
-      renderModelRow(); // the republished chat:state carries the new target
-      setLive(`${title} elegido. Se usa desde el próximo mensaje.`);
-    }, error => {
-      modelBusy = false;
-      renderModelRow();
-      setLive((error && error.message) || 'No se pudo elegir el modelo.');
-    });
+  function renderModelLine() {
+    if (!modelLine) return;
+    const line = V.engineModelLine(view);
+    modelLine.textContent = line ? line.text : ''; // text, never markup
+    if (line) modelLine.setAttribute('aria-label', line.aria); else modelLine.removeAttribute('aria-label');
+    modelLine.hidden = !line;
   }
 
   function applySpecialists(next) {
     if (!next || typeof next !== 'object') return;
     specialistsView = next;
-    renderModelRow();
   }
-
-  if (modelBtn) modelBtn.addEventListener('click', () => setPicker(!pickerOpen));
 
   // #310: the history is reconciled against what is drawn, never rebuilt. Measured before the fix: sending one
   // message removed 23 nodes to go from 2 to 4 rows and moved the first row twice (the flash).
@@ -706,7 +606,7 @@
     renderTarget();
     renderLog();
     renderControls();
-    renderModelRow();
+    renderModelLine();
     scheduleCheck();
     if (capsule.dataset.view === 'chat') setLive(said);
     presentAsks();
@@ -803,7 +703,6 @@
     clearTimeout(inertTimer);
     if (event.detail === 'chat') chat.inert = false;
     else inertTimer = setTimeout(() => { if (capsule.dataset.view !== 'chat') chat.inert = true; }, 220); // after the 160ms exit
-    if (event.detail !== 'chat' && pickerOpen) setPicker(false); // F024: the row belongs to the chat view
     if (event.detail === 'chat') {
       renderLog();
       renderControls();
@@ -1069,7 +968,6 @@
       if (why && !inFlight) { localProblem = why; setLive(why); }
       renderControls(); return;
     }
-    if (pickerOpen) setPicker(false); // upstream parity: choosing ends the row's job
     const text = input.value;
     const bytes = new Uint8Array(12);
     crypto.getRandomValues(bytes);
@@ -1123,8 +1021,7 @@
     const inChat = capsule.dataset.view === 'chat';
     const typing = document.activeElement === input;
     if (event.key === 'Escape') {
-      if (pickerOpen) { event.preventDefault(); setPicker(false); modelBtn.focus(); return; } // F024: first Escape leaves the picker
-      // #408: the model picker is a tab of Ajustes; settings.js closes Ajustes on Escape (capture phase) before this runs.
+      // #408: settings.js closes Ajustes on Escape (capture phase) before this runs.
       if (typing) { input.blur(); log.focus(); event.preventDefault(); return; } // leave typing mode
       if (expanded && window.desktop) { event.preventDefault(); window.desktop.close().catch(() => {}); }
       return;
@@ -1166,17 +1063,9 @@
     listen('tauri://drag-leave', () => showDrop(false)).catch(() => {});
     listen('tauri://drag-drop', () => showDrop(false)).catch(() => {});
     listen('specialists:state', event => applySpecialists(event && event.payload)).catch(() => {});
-    listen('models:state', event => {
-      const next = event && event.payload;
-      if (next && typeof next === 'object') { modelListing = next; if (pickerOpen) renderPicker(); }
-    }).catch(() => {});
-    // #414: the allowlist arrives with the prefs stream; the host republishes it on every change.
-    listen('prefs:state', event => applyChosenModels(event && event.payload)).catch(() => {});
   }
   action({ action: 'view' }).then(apply, () => {});
   // R4 needs to know whether the ACTIVE role fixes a model: one read-only
   // `view` (the section issues the same one); the page never writes a role.
   specialistsAction({ action: 'view' }).then(applySpecialists, () => {});
-  // #414: the allowlist the row honours — one read-only view; nothing here ever writes a pref.
-  call('prefs_action', { action: 'view' }).then(applyChosenModels, () => {});
 })();

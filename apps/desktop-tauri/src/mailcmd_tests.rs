@@ -37,6 +37,7 @@ impl SecretStore for Fake {
 }
 
 /// One-shot local HTTP server: answers `status`, hands the raw request to the test.
+#[cfg(target_os = "linux")] // only the Linux send_resend talks HTTP
 fn fake_resend(status: u16) -> (String, mpsc::Receiver<String>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}/emails", listener.local_addr().unwrap());
@@ -125,6 +126,7 @@ fn resend_body_has_the_notchbuddy_shape() {
 }
 
 #[test]
+#[cfg(target_os = "linux")] // send_resend really POSTs only on Linux; elsewhere it is a stub answering Network
 fn resend_send_posts_with_the_bearer_key_and_never_follows_redirects() {
     let (url, rx) = fake_resend(200);
     let d = parse_mail(&good()).unwrap();
@@ -139,6 +141,7 @@ fn resend_send_posts_with_the_bearer_key_and_never_follows_redirects() {
 }
 
 #[test]
+#[cfg(target_os = "linux")] // send_resend really POSTs only on Linux; elsewhere it is a stub answering Network
 fn only_200_and_201_count_as_sent() {
     let d = parse_mail(&good()).unwrap();
     for (status, ok) in [(200, true), (201, true), (202, false), (400, false), (401, false), (422, false), (500, false)] {
@@ -149,6 +152,7 @@ fn only_200_and_201_count_as_sent() {
 }
 
 #[test]
+#[cfg(target_os = "linux")] // send_resend really POSTs only on Linux; elsewhere it is a stub answering Network
 fn the_answer_depends_on_what_is_configured_and_never_carries_the_key() {
     let d = parse_mail(&good()).unwrap();
     let none = Fake::default();

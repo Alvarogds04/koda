@@ -1,6 +1,6 @@
 //! HU-043 (human, verbatim: «la hitbox de cuando abito esta compactado es muy grande en windows» and «¿las correcciones de windows
 //! están implementadas para mac también?»). On Windows and macOS the island window is a fixed 752x340 transparent rectangle that took
-//! EVERY click while the compact pill is 288x32. Linux already limits input to the drawn shape (a GDK input region built from
+//! EVERY click while the compact island is only Koda's disc (40x32, geometry::COMPACT_DOT). Linux already limits input to the drawn shape (a GDK input region built from
 //! `islandshape::input_rects`). Elsewhere the window is made click-through (`set_ignore_cursor_events`) whenever the cursor is NOT over
 //! that same shape. This module is the pure decision: no window, no thread, no OS call, so it is tested on every platform.
 // On Linux the click-through poller (islandclick) is not started (Linux uses the GDK input region), so these items are only exercised by tests there.
@@ -52,7 +52,7 @@ mod tests {
     use super::*;
     use crate::islandshape::{input_rects, Report};
     const WINDOW: (i32, i32) = (752, 340);
-    fn pill() -> Vec<Rect> { input_rects(Report { w: 288, h: 32, settled: true }, WINDOW, false) }
+    fn disc() -> Vec<Rect> { input_rects(Report { w: 40, h: 32, settled: true }, WINDOW, false) }
 
     #[test]
     fn the_cursor_is_converted_to_the_windows_logical_pixels_and_an_unusable_scale_is_unknown() {
@@ -71,29 +71,27 @@ mod tests {
         assert!(!covers(&[], (0.0, 0.0)));
     }
 
-    /// The bug itself. The compact pill is a small box at the top centre of a 752x340 window: a click anywhere else in that window must
-    /// reach whatever is below, and a click on the pill must stay with Abito.
+    /// The bug itself. The compact disc is a small box at the top centre of a 752x340 window: a click anywhere else in that window must
+    /// reach whatever is below, and a click on the disc must stay with Abito.
     #[test]
-    fn a_click_on_the_compact_pill_stays_and_a_click_anywhere_else_in_the_window_passes_through() {
-        let rects = pill();
+    fn a_click_on_the_compact_disc_stays_and_a_click_anywhere_else_in_the_window_passes_through() {
+        let rects = disc();
         let centre = (376.0, 16.0);
-        assert!(!click_through(Some(centre), &rects, false, false, true), "the pill takes the click");
-        for point in [(5.0, 5.0), (376.0, 100.0), (376.0, 339.0), (700.0, 16.0), (10.0, 330.0), (231.0, 16.0), (520.0, 16.0)] {
+        assert!(!click_through(Some(centre), &rects, false, false, true), "the disc takes the click");
+        for point in [(5.0, 5.0), (376.0, 100.0), (376.0, 339.0), (700.0, 16.0), (10.0, 330.0), (355.0, 16.0), (397.0, 16.0)] {
             assert!(click_through(Some(point), &rects, false, false, true), "{point:?} is transparent window area: the click goes to the app below");
         }
-        // the rounded corners of the pill (r16) are transparent too, exactly like the Linux input region (#503 S29)
-        assert!(click_through(Some((232.5, 0.5)), &rects, false, false, true), "top-left corner pixel of the pill passes clicks");
+        // the disc's rounded corners (r16 on all four) are transparent too, exactly like the Linux input region (#503 S29)
+        assert!(click_through(Some((356.5, 0.5)), &rects, false, false, true), "top-left corner pixel of the disc passes clicks");
         // the rounded edge gives up at most one drawn pixel per row (inset rounded UP, islandshape S29), so probe one pixel inside it
-        assert!(!click_through(Some((234.5, 16.5)), &rects, false, false, true), "the middle of its left edge takes them");
+        assert!(!click_through(Some((357.5, 16.5)), &rects, false, false, true), "the middle of its left edge takes them");
     }
 
     #[test]
-    fn the_wider_compact_pills_and_the_expanded_island_are_covered_exactly() {
-        for w in [440, 560] {
-            let rects = input_rects(Report { w, h: 32, settled: true }, WINDOW, false);
-            assert!(!click_through(Some((376.0, 16.0)), &rects, false, false, true), "{w}");
-            assert!(click_through(Some((376.0, 40.0)), &rects, false, false, true), "{w}: below the pill is transparent");
-        }
+    fn the_disc_and_the_expanded_island_are_covered_exactly() {
+        let disc = input_rects(Report { w: 40, h: 32, settled: true }, WINDOW, false);
+        assert!(!click_through(Some((376.0, 16.0)), &disc, false, false, true), "the disc takes its own click");
+        assert!(click_through(Some((376.0, 40.0)), &disc, false, false, true), "below the disc is transparent");
         let expanded = input_rects(Report { w: 720, h: 150, settled: true }, WINDOW, false);
         assert!(!click_through(Some((376.0, 100.0)), &expanded, false, false, true), "an open island takes clicks on its body");
         assert!(click_through(Some((376.0, 250.0)), &expanded, false, false, true), "below an open island is transparent");
@@ -102,7 +100,7 @@ mod tests {
     /// Condition 2 of the approval: questions and approval cards must never become click-through while shown.
     #[test]
     fn a_protected_question_or_approval_card_is_never_click_through_wherever_the_cursor_is() {
-        let rects = pill();
+        let rects = disc();
         for y in (0..=WINDOW.1).step_by(10) { for x in (-40..=WINDOW.0 + 40).step_by(10) {
             assert!(!click_through(Some((f64::from(x), f64::from(y))), &rects, true, false, true), "protected: ({x},{y}) must stay clickable");
         } }
@@ -113,7 +111,7 @@ mod tests {
 
     #[test]
     fn everything_uncertain_keeps_the_window_clickable() {
-        let rects = pill();
+        let rects = disc();
         let outside = Some((5.0, 300.0));
         assert!(click_through(outside, &rects, false, false, true), "control: this position passes clicks");
         assert!(!click_through(None, &rects, false, false, true), "unknown cursor");

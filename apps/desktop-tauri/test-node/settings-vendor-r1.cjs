@@ -35,6 +35,31 @@ const K2_03 = Object.freeze({
   [`${V}island/island.css`]: 'recap card styles removed',
   'apps/desktop-tauri/frontend/settings-view.js': 'recap agent id, rows and plan summary removed',
 });
+// K2-05 U5c (human decision L72): Ajustes → Modelos and the per-provider/local model lists inside the Ajustes window
+// hub are removed. Exactly these files change, and why (specialists keep choosing their model: they are untouched).
+const K2_05 = Object.freeze({
+  [`${V}hub/accounts.ts`]: 'model list renderer removed: Ajustes no longer lists or chooses models (K2-05 U5c)',
+  [`${V}hub/accounts.js`]: 'generated from hub/accounts.ts',
+  [`${V}hub/chat.ts`]: 'per-provider model <select> and the chosen-models writes removed (K2-05 U5c)',
+  [`${V}hub/chat.js`]: 'generated from hub/chat.ts',
+  'apps/desktop-tauri/frontend/settings-view.js': 'Modelos tab and its model view-models removed (K2-05 U5c)',
+  'apps/desktop-tauri/frontend/settings.js': 'models panel mount, hidden body and render branch removed (K2-05 U5c)',
+});
+// isla-cualquier-lado T7 (S3, artboard 04 ajustes 2 and 4): the hub pages are settings pages too, so they speak the chat's voseo
+// register, and the hub has ONE focus ring (2px #fff, design/system.md:249). Copy and CSS only: no vendor behaviour, ids or verbs change.
+const T7 = Object.freeze({
+  [`${V}hub/accounts.ts`]: 'S3 (04 ajustes 2): the login note in voseo («Abrí este enlace…»)',
+  [`${V}hub/accounts.js`]: 'generated from hub/accounts.ts',
+  [`${V}hub/chat.ts`]: 'S3 (04 ajustes 2): Chat page copy in voseo (Usá, Pegá, Volvé, ejecutá)',
+  [`${V}hub/chat.js`]: 'generated from hub/chat.ts',
+  [`${V}hub/abito.css`]: 'S3 (04 ajustes 4): one 2px #fff focus ring for .hub-item, .hub-segmented button and .hub-info (the ⓘ wore a green #4ade80)',
+});
+/** Every authorised vendored change, by file, with its reason. A file both K2-05 and T7 touch keeps BOTH reasons (merge of K2-05 and release/0.2). */
+const ALLOWED = Object.freeze((() => {
+  const all = { ...K2_03 };
+  for (const part of [K2_05, T7]) for (const [file, why] of Object.entries(part)) all[file] = all[file] && all[file] !== why ? `${all[file]}; ${why}` : why;
+  return all;
+})());
 
 /** Repository-relative paths changed against HEAD under `root` (throws a clear error outside a git checkout). */
 function changedSinceHead(root) {
@@ -54,13 +79,13 @@ function onlyRenamed(root, p) {
   return JSON.stringify(minus) === JSON.stringify(plus);
 }
 
-/** The changed files in scope that are neither a pure rename nor a listed K2-03 change. Pure: `renamed` is injectable. */
+/** The changed files in scope that are neither a pure rename nor an authorised change. Pure: `renamed` is injectable. */
 function violations(changed, inScope, renamed) {
-  return changed.filter(inScope).filter(p => !Object.prototype.hasOwnProperty.call(K2_03, p) && !renamed(p));
+  return changed.filter(inScope).filter(p => !Object.prototype.hasOwnProperty.call(ALLOWED, p) && !renamed(p));
 }
 
 function check(root, inScope) {
   return violations(changedSinceHead(root), inScope, p => onlyRenamed(root, p));
 }
 
-module.exports = { K2_03, changedSinceHead, onlyRenamed, violations, check };
+module.exports = { K2_03, K2_05, T7, ALLOWED, changedSinceHead, onlyRenamed, violations, check };

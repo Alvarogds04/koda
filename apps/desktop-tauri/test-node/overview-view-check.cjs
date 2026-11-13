@@ -658,9 +658,11 @@ test('§9.2 motion table in CSS: view enter spring after 160ms delay, exit 160ms
   for (const m of css.replace(/\.dcapsule \{[^}]*\}/, '').matchAll(/transition:([^;]*);/g)) assert.doesNotMatch(m[1], /\b(width|height|left|top|right|bottom|margin|padding)\b/, m[1]);
   assert.match(css, /#clay \{[^}]*scale\(var\(--hover, 1\)\)[^}]*transition: transform var\(--dur-state\)/);
   assert.match(css, /:where\(button, textarea\) \{[^}]*outline: 2px solid transparent[^}]*var\(--dur-focus\)/);
-  assert.match(css, /#models-list \.choose\[aria-pressed="true"\] \.ico \{ animation: control-pop var\(--dur-control\) var\(--spring\)/);
+  // K2-05 U5c (L72): `control-pop` animated the chosen model of the removed Ajustes model list, so it and its
+  // only consumer are gone with it (the control timing token --dur-control is still asserted above).
+  assert.doesNotMatch(css, /control-pop/);
   const reduced = [...css.matchAll(/html\[data-motion="reduce"\][^{]*\{[^}]*\}/g)].map(m => m[0]).join('\n');
-  assert.match(reduced, /html\[data-motion="reduce"\] #notices, html\[data-motion="reduce"\] #permission, html\[data-motion="reduce"\] #open-chat, html\[data-motion="reduce"\] #chat, html\[data-motion="reduce"\] #models, html\[data-motion="reduce"\] #chat-body, html\[data-motion="reduce"\] #question \{ transition: none !important; transform: none !important/);
+  assert.match(reduced, /html\[data-motion="reduce"\] #notices, html\[data-motion="reduce"\] #permission, html\[data-motion="reduce"\] #open-chat, html\[data-motion="reduce"\] #chat, html\[data-motion="reduce"\] #chat-body, html\[data-motion="reduce"\] #question \{ transition: none !important; transform: none !important/);
   assert.match(reduced, /html\[data-motion="reduce"\] #clay \{ transition: none !important/);
 });
 
@@ -747,24 +749,21 @@ test('night review: the bridge is shown (chip «Sin puente», compact triangle) 
 test('night review: views are NOT display:none while animating (inert instead), so the §9.2 motion actually runs', () => {
   const html = fs.readFileSync(path.join(frontend, 'index.html'), 'utf8');
   assert.match(html, /<section id="chat" inert/); assert.doesNotMatch(html, /<section id="chat"[^>]*\shidden/);
-  assert.match(html, /<div id="models" inert/); assert.doesNotMatch(html, /<div id="models"[^>]*\shidden/);
+  // K2-05 U5c (L72): the Ajustes model panel, its script tag and its styles are gone; #chat keeps the contract above.
+  assert.doesNotMatch(html, /id="models"/); assert.doesNotMatch(html, /src="models\.js"/);
   const chatSrc = fs.readFileSync(path.join(frontend, 'chat.js'), 'utf8');
-  const modelsSrc = fs.readFileSync(path.join(frontend, 'models.js'), 'utf8');
   assert.doesNotMatch(chatSrc, /\bchat\.hidden\s*=/);
-  assert.doesNotMatch(modelsSrc, /panel\.hidden\s*=/);
   assert.match(chatSrc, /chat\.inert = false/); assert.match(chatSrc, /chat\.inert = true; \}, 220\)/);
-  assert.match(css, /#models\[data-open="true"\] \{[^}]*var\(--dur-view-delay\)/);
-  assert.doesNotMatch(css, /#models\[hidden\]/);
-  assert.doesNotMatch(css, /#capsule\[data-models="open"\] #chat-body \{ display: none/);
+  assert.doesNotMatch(css, /#models/);
 });
 
-test('N8 vertical chat entrance: the chat (and its models panel) travel along the docked edge, with the contract timing, no display:none', () => {
+test('N8 vertical chat entrance: the chat travels along the docked edge, with the contract timing, no display:none', () => {
   const root = css.slice(css.indexOf(':root'), css.indexOf('}', css.indexOf(':root')));
   // a variable distance, a direction per docked edge
   assert.match(root, /--view-shift:\s*16px/);
   assert.match(css, /#capsule\[data-edge="top"\]\s*\{[^}]*--view-dir:\s*-1/);
   assert.match(css, /#capsule\[data-edge="bottom"\]\s*\{[^}]*--view-dir:\s*1/);
-  for (const sel of ['#chat', '#models']) {
+  for (const sel of ['#chat']) {
     const rule = new RegExp(`\\n${sel} \\{([^}]*)\\}`).exec(css);
     assert.ok(rule, sel);
     assert.match(rule[1], /transform: translateY\(calc\(var\(--view-dir\) \* var\(--view-shift\)\)\)/, `${sel} starts displaced along the edge`);
@@ -777,7 +776,7 @@ test('N8 vertical chat entrance: the chat (and its models panel) travel along th
   const chatRule = /\n#chat \{([^}]*)\}/.exec(css)[1];
   assert.doesNotMatch(chatRule, /translateY\(6px\)/);
   // reduced motion still jumps
-  assert.match(css, /html\[data-motion="reduce"\] #chat, html\[data-motion="reduce"\] #models/);
+  assert.match(css, /html\[data-motion="reduce"\] #chat/);
 });
 
 test('#304 motionState: Abito animates ALWAYS by default; the system preference counts only when the human opted to honor it', () => {
@@ -810,29 +809,33 @@ test('#304 wiring: the page decides motion itself (data-motion on <html>), start
   assert.match(islandSrc, /AbitoClay\.setForced\(!honorSystem\)/);
 });
 
-test('L34 Coucou\'s bar: the collapsed island is 288x32 with corners 0 0 14 14 inside the fixed native window', () => {
+test('island-free-drag S3: the collapsed island is Koda\'s disc (40x32, r16 on all four corners) inside the fixed native window', () => {
   const geo = fs.readFileSync(path.join(__dirname, '..', 'src', 'geometry.rs'), 'utf8');
-  assert.match(geo, /pub const COMPACT_BAR: \(i32, i32\) = \(288, 32\);/);
+  assert.match(geo, /pub const COMPACT_DOT: \(i32, i32\) = \(40, 32\);/);
   assert.match(geo, /pub const ISLAND_WINDOW: \(i32, i32\) = \(752, 340\);/);
   assert.doesNotMatch(geo, /pub const DOT_DIAMETER/, 'the disc is gone');
+  assert.doesNotMatch(geo, /COMPACT_BAR|COMPACT_WIDTHS/, 'the compact bar and its three widths are gone: compact is only the disc');
   const m = /const COMPACT = \{ w: (\d+), h: (\d+), r: (\d+), gap: (\d+), clay: (\d+), clayX: (\d+), drop: (\d+) \}/.exec(islandSrc);
   assert.ok(m, 'COMPACT constant');
   const [w, h, r, gap, clay, clayX] = m.slice(1, 7).map(Number);
-  assert.deepEqual([w, h, r, gap], [288, 32, 16, 0], 'S29: the compact pill is a Sileo-family pill (r16), flush to the top edge (human: «pegada»)');
-  assert.equal(clayX, 40, 'Coucou botPosition(compact): cx 40');
+  assert.deepEqual([w, h, r, gap], [40, 32, 16, 0], 'the disc: 40x32, r16 on ALL four corners (it floats free now, not only at the top edge)');
+  assert.equal(clayX, 20, '#clay is -50% translated: 20 is the disc\'s centre');
   const vbx = /OVERVIEW_VB = \[(\d+), (\d+), (\d+), (\d+)\]/.exec(islandSrc).slice(1).map(Number);
   const visible = clay * 112 / vbx[2];
   assert.ok(Math.abs(visible - 20) <= 1, `the visible character (${visible.toFixed(1)}px) is Coucou's 20px bot`);
-  assert.ok(clayX - clay / 2 >= 0 && clay <= h, 'the character box sits inside the bar');
-  // HU-057: the corner expression changed (rTop/rBottom now lerp separately: square top, rounded bottom); the corner contract is asserted on the
-  // rendered island (compact r16 below / expanded r26 below, square top) in the browser block at the end of this file.
+  assert.ok(clayX - clay / 2 >= 0 && clay <= h, 'the character box sits inside the disc');
+  // S4: the pet leaves only from the OPEN island (the character press is gated by the phase)
+  assert.match(islandSrc, /pickUpDecision\(\{ onCharacter: true, available, expanded: expandedNow\(\) \}/, 'the pick-up gate asks the phase');
 });
 
 test('L34 the bar keeps the badge/contour vocabulary: the sun badge rides the character, the contour is inside the bar (no window margin to draw outside)', () => {
+  // island-free-drag S5: the loose 14px flag is never DRAWN on the disc (the disc carries its own state dot), but it stays in the
+  // accessibility tree with its aria-label, so a waiting question/permission still has a name while compact.
+  const nusa = fs.readFileSync(path.join(frontend, 'island-nusa.css'), 'utf8');
+  assert.match(nusa, /#capsule\[data-phase="compact"\] #compact-flag[^{]*\{[^}]*clip-path: inset\(50%\)/, 'visually hidden');
+  assert.doesNotMatch(nusa, /#compact-flag \{ display: none !important; \}/, 'never removed from AT');
   const flag = /#compact-flag \{([^}]*)\}/.exec(css)[1];
-  const left = Number(/left:\s*(\d+)px/.exec(flag)[1]), top = Number(/top:\s*(\d+)px/.exec(flag)[1]), size = Number(/width:\s*(\d+)px/.exec(flag)[1]);
-  const cx = left + size / 2, cy = top + size / 2;
-  assert.ok(Math.abs(cx - 47) <= 1.5 && Math.abs(cy - 8) <= 1.5, `badge centre (${cx}, ${cy}) rides the top-right of the character (47, 8)`);
+  assert.match(flag, /pointer-events: none/, 'decoration: it can never take the press that opens the island');
   const html = fs.readFileSync(path.join(frontend, 'index.html'), 'utf8');
   const chat = html.indexOf('id="chat-live"'); // last element inside #island
   assert.ok(html.indexOf('id="compact-flag"') > chat, 'the badge is after the last #island child');
@@ -854,8 +857,8 @@ test('L34 mini grid: up to four small characters on the bar, 13px cells 3px apar
 test('fixed-window gestures retain click reporting and character pick-up without frontend docking policy', () => {
   assert.doesNotMatch(islandSrc, /snap_to_edge|nearest_vertical_edge|anchor_toggle/);
   assert.match(islandSrc, /send\('drag_press'/); assert.match(islandSrc, /send\('drag_release'/);
-  // HU-057: the borderRadius source line is now `${rTopUsed}… ${rBottom}…`; «square top corners, rounded bottom» is asserted on the rendered island
-  // (browser block at the end of this file), compact and expanded.
+  // isla-cualquier-lado S1: the borderRadius source line is `${radius}px` on all four corners; «r26 all round» is asserted on the rendered
+  // island (browser block at the end of this file), compact and expanded.
 });
 
 test('CSS structure: braces balance (no stray «}» swallowing the next rule) and every critical top-level rule exists', () => {
@@ -872,7 +875,7 @@ test('CSS structure: braces balance (no stray «}» swallowing the next rule) an
     if (plain[i] === '{') { if (d === 0) top.push(plain.slice(start, i).trim()); d += 1; }
     else if (plain[i] === '}') { d -= 1; if (d === 0) start = i + 1; }
   }
-  for (const sel of ['.sr-only', '#clay', '#island', '#compact-flag', '#open-chat', '#chat', '#models', '#question']) assert.ok(top.includes(sel), `top-level rule ${sel} must exist; got ${top.length} rules`);
+  for (const sel of ['.sr-only', '#clay', '#island', '#compact-flag', '#open-chat', '#chat', '#question']) assert.ok(top.includes(sel), `top-level rule ${sel} must exist; got ${top.length} rules`);
   assert.ok(top.some(t => t.startsWith('html[data-motion="reduce"] #notices')), 'the reduced-motion rules are top-level rules');
 });
 
@@ -1045,11 +1048,13 @@ test('T7.3 approval card markup: «Espera tu respuesta» caption, fold inside th
     const [isl] = await ui.measure('#island');
     const radii = await ui.page.evaluate(() => { const c = getComputedStyle(document.getElementById('island')); return [c.borderTopLeftRadius, c.borderTopRightRadius, c.borderBottomRightRadius, c.borderBottomLeftRadius].map(parseFloat); });
     assert.deepEqual([Math.round(isl.w), Math.round(isl.h)], [720, 150], 'HU-057 plain overview is the 720x150 Nusa notch');
-    assert.deepEqual(radii, [0, 0, 26, 26], 'HU-057 notch: square top, r26 bottom');
-    // the same corner contract on the compact pill (hangs from the top edge: square top, r16 below = COMPACT.r)
+    assert.deepEqual(radii, [26, 26, 26, 26], 'isla-cualquier-lado S1: the floating card is r26 on all four corners (was the notch [0,0,26,26])');
+    // island-free-drag S3: compact is the disc (40x32, r16 on ALL four corners), so it reads as a circle wherever it floats
     await ui.page.evaluate(() => window.__islandSetState('compact')); await ui.page.waitForTimeout(1500);
     const compactRadii = await ui.page.evaluate(() => { const c = getComputedStyle(document.getElementById('island')); return [c.borderTopLeftRadius, c.borderTopRightRadius, c.borderBottomRightRadius, c.borderBottomLeftRadius].map(parseFloat); });
-    assert.deepEqual(compactRadii, [0, 0, 16, 16], 'compact pill: square top, r16 below');
+    assert.deepEqual(compactRadii, [16, 16, 16, 16], 'compact disc: round on all four corners');
+    const compactBox = await ui.page.evaluate(() => { const b = document.getElementById('island').getBoundingClientRect(); return [Math.round(b.width), Math.round(b.height)]; });
+    assert.deepEqual(compactBox, [40, 32], 'compact disc box');
     await ui.page.evaluate(() => window.__islandSetState('overview')); await ui.page.waitForTimeout(1500);
     const kodas = (await ui.measure('.koda-sprite')).filter(b => b.shown);
     assert.equal(kodas.length, 1, 'only Koda is drawn in the plain overview: ' + JSON.stringify(kodas));

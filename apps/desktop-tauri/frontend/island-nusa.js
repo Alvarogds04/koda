@@ -190,13 +190,8 @@
     return k;
   }
 
-  // ---- S12: the compact pill fits its content ----
-  const COMPACT = Object.freeze({ h: 32, radius: 16, padLeft: 8, padRight: 10, gap: 16, koda: 24, min: 96, max: 420, kodaOnly: 40 });
-  function compactWidth(textW) {
-    const t = Number.isFinite(textW) && textW > 0 ? Math.ceil(textW) : 0;
-    if (!t) return COMPACT.kodaOnly; // nothing to say: just Koda in a small capsule (8 + 24 + 8); text pill: padLeft 8 + Koda 24 + gap 16 (the state dot lives in that gap) + text + padRight 10
-    return Math.max(COMPACT.min, Math.min(COMPACT.max, COMPACT.padLeft + t + COMPACT.gap + COMPACT.koda + COMPACT.padRight));
-  }
+  // island-free-drag S3: the fitted compact pill (HU-057 S12) is GONE — compact is only the disc, whose box lives in ONE place
+  // (island-layout.js COMPACT_DOT_W/H = geometry::COMPACT_DOT). No width model here.
 
   // ---- «Marcar todo como leído»: the exact-id verb once per notice; one refusal never stops the rest and is reported ----
   async function dismissAll(dismiss, ids) {
@@ -209,5 +204,5 @@
   }
   const dismissFeedback = r => (!r || !r.failed ? '' : r.failed === 1 ? '1 aviso no se pudo marcar como leído.' : `${r.failed} avisos no se pudieron marcar como leídos.`);
 
-  return { dismissAll, dismissFeedback, TABS, step, arrows, wheelStep, keyStep, VEIL, veilState, agentRows, AGENT_ROWS, AGENT_ROWS_LINKED, moreAgents, STATE_WORD, clockText, noticeLines, agentHex, focusView, veilColor, noticeAgentColor, takeoverState, chatInert, takeoverTitle, sendCheck, requestId, replyLine, DRAFT_MAX, SIZES, sizeScale, COMPACT, compactWidth, shortTitle };
+  return { dismissAll, dismissFeedback, TABS, step, arrows, wheelStep, keyStep, VEIL, veilState, agentRows, AGENT_ROWS, AGENT_ROWS_LINKED, moreAgents, STATE_WORD, clockText, noticeLines, agentHex, focusView, veilColor, noticeAgentColor, takeoverState, chatInert, takeoverTitle, sendCheck, requestId, replyLine, DRAFT_MAX, SIZES, sizeScale, shortTitle };
 });

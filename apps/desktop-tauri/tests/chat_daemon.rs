@@ -644,11 +644,15 @@ fn an_attached_file_reaches_the_engine_workspace_and_its_chip_survives_a_reload(
     assert_eq!(file["name"], json!("informe final.bin"));
     assert_eq!(file["size"], json!(bytes.len()));
     assert!(file.get("path").is_none(), "never a path");
+    // R1-002: an unsent file waits in the daemon's staging folder, OUTSIDE the engine workspace;
+    // it moves into <workspace>/uploads only when a send is accepted.
+    let staged = island.root.join("uploads-staging").join(&id).join("informe final.bin");
     let stored = island.root.join("workspace/uploads").join(&id).join("informe final.bin");
-    assert_eq!(std::fs::read(&stored).unwrap(), bytes, "stored daemon-side, in the engine workspace");
+    assert_eq!(std::fs::read(&staged).unwrap(), bytes, "stored daemon-side, outside the engine workspace");
+    assert!(!stored.exists(), "nothing unsent sits in the engine workspace");
     {
         use std::os::unix::fs::PermissionsExt;
-        assert_eq!(std::fs::metadata(&stored).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(std::fs::metadata(&staged).unwrap().permissions().mode() & 0o777, 0o600);
     }
 
     // another island connection (another client) can neither send nor discard it
@@ -657,7 +661,8 @@ fn an_attached_file_reaches_the_engine_workspace_and_its_chip_survives_a_reload(
     other.action("main", json!({"action": "discard", "id": id})).unwrap();
     assert!(other.action("main", json!({"action": "submit", "text": "robo", "client_request_id": "req-other-001", "attachments": [id]})).is_ok(), "the island sends; the daemon refuses");
     other.wait("the daemon refused another client's file", |v| last_turn(v)["state"] == json!("error"));
-    assert!(stored.exists(), "another client's discard deletes nothing");
+    assert!(staged.exists(), "another client's discard deletes nothing");
+    assert!(!stored.exists(), "another client's refused send moves nothing into the workspace");
     std::thread::sleep(Duration::from_millis(200));
     assert!(!std::fs::read_to_string(&cmd_log).unwrap_or_default().contains("\"prompt\""), "nothing reached the engine");
     drop(other);
@@ -675,6 +680,8 @@ fn an_attached_file_reaches_the_engine_workspace_and_its_chip_survives_a_reload(
     let message = prompt["message"].as_str().unwrap();
     assert!(message.starts_with("resumilo\n\n<attachments>\nThe user attached these files, saved in your workspace."), "{message}");
     assert!(message.contains(&format!("\"path\":{}", serde_json::to_string(stored.to_str().unwrap()).unwrap())), "{message}");
+    assert_eq!(std::fs::read(&stored).unwrap(), bytes, "the accepted send moved the file into the engine workspace");
+    assert!(!staged.exists(), "and out of the staging folder");
 
     // a relaunched island reads the turn back from the daemon's history, with its chip
     let again = Chat::connect(&island);

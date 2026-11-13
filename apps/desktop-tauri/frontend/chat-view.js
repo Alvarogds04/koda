@@ -371,133 +371,6 @@
     return rows;
   }
 
-  // ---- U2: model picker (plain-text rows) ---------------------------------
-  const GATES = Object.freeze({
-    ready: 'Listo',
-    queue: 'En cola',
-    needs_load: 'Requiere cargarlo (Koda no lo hace)',
-    unknown: 'Desconocido',
-    unavailable: 'No disponible',
-  });
-  const gateLabel = state => GATES[state] || 'Desconocido';
-  const thousands = n => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, '.');
-  const decimal = (value, unit) => {
-    const tenths = Math.round(value * 10);
-    return `${Math.floor(tenths / 10)},${tenths % 10} ${unit}`;
-  };
-  const port = origin => String(origin || '').replace(/^http:\/\//, '');
-
-  // Visual model row (docs/desktop-visual-language.md §2.4): chips carry the
-  // numbers, the gate gets ONE word only when it is not «ready» (§3: never
-  // hide a problem), and the full sentence stays in `aria`/`facts`.
-  const GATE_WORDS = Object.freeze({
-    queue: { word: 'En cola', icon: 'clock', tone: 'live' },
-    needs_load: { word: 'Sin cargar', icon: 'load-off', tone: 'faint' },
-    unknown: { word: 'Desconocido', icon: 'info', tone: 'faint' },
-    unavailable: { word: 'No disponible', icon: 'triangle', tone: 'red' },
-  });
-  const oneDecimal = n => {
-    const tenths = Math.round(n * 10);
-    return tenths % 10 === 0 ? String(tenths / 10) : `${Math.floor(tenths / 10)},${tenths % 10}`;
-  };
-  const kTokens = n => (n >= 1024 ? `${Math.round(n / 1024)}k` : String(n));
-
-  function modelChips(p) {
-    const chips = p.cloud === true ? [{ icon: '', text: 'nube', label: `Nube · ${p.provider || ''}` }] : [{ icon: 'lock', text: 'local', label: 'Sólo local' }];
-    if (Number.isFinite(p.context_tokens)) chips.push({ icon: '', text: kTokens(p.context_tokens), label: `Contexto ${thousands(p.context_tokens)} tokens` });
-    if (Number.isFinite(p.size_bytes)) chips.push({ icon: '', text: `${oneDecimal(p.size_bytes / 1e9)} GB`, label: `${decimal(p.size_bytes / 1e9, 'GB')} en memoria` });
-    if (Number.isFinite(p.params)) chips.push({ icon: '', text: `${oneDecimal(p.params / 1e9)}B`, label: `${decimal(p.params / 1e9, 'mil millones')} de parámetros` });
-    if (p.vision === false) chips.push({ icon: 'eye-off', text: '', label: 'Sin visión' });
-    if (p.vision === true) chips.push({ icon: 'eye', text: '', label: 'Con visión' });
-    return chips;
-  }
-
-  // #414: the Ajustes → Modelos allowlist (typed pref `chosen_models`). The picker offers ONLY
-  // the chosen models of the providers, falling back to ALL of them when nothing is chosen.
-  // A row the allowlist cannot vouch for (no `provider` field — today's local profiles) is never
-  // filtered out: the allowlist names provider models, not local ones.
-  function filterChosen(rows, chosen) {
-    const list = Array.isArray(rows) ? rows : [];
-    const store = chosen && typeof chosen === 'object' && !Array.isArray(chosen) ? chosen : {};
-    const ids = new Set();
-    for (const value of Object.values(store)) {
-      if (!Array.isArray(value)) continue;
-      for (const id of value) if (typeof id === 'string') ids.add(id);
-    }
-    if (!ids.size) return list;
-    return list.filter(r => !!r && typeof r === 'object' && (typeof r.provider !== 'string' || !r.provider || ids.has(r.id) || (r.cloud && ids.has(r.model))));
-  }
-
-  function modelRows(listing) {
-    const profiles = listing && Array.isArray(listing.profiles) ? listing.profiles : [];
-    return profiles.map(p => {
-      const facts = p.cloud === true ? [`nube · ${p.provider || ''}`] : [`local ${port(p.origin)}`];
-      if (Number.isFinite(p.context_tokens)) facts.push(`contexto ${thousands(p.context_tokens)} tokens`);
-      if (Number.isFinite(p.max_output_tokens)) facts.push(`salida ≤${thousands(p.max_output_tokens)}`);
-      if (Number.isFinite(p.size_bytes)) facts.push(`${decimal(p.size_bytes / 1e9, 'GB')} en memoria`);
-      if (Number.isFinite(p.params)) facts.push(`${decimal(p.params / 1e9, 'mil millones')} de parámetros`);
-      if (p.quantization) facts.push(p.quantization);
-      if (p.vision === false) facts.push('sin visión');
-      if (p.vision === true) facts.push('con visión');
-      const title = p.alias || `Puerto ${port(p.origin).split(':').pop()}`;
-      const gateState = p.gate && p.gate.state;
-      const selectable = p.selectable === true && !!p.profile_id;
-      let gate = GATE_WORDS[gateState] || (gateState === 'ready' ? null : GATE_WORDS.unknown);
-      if (!gate && !selectable) gate = { word: 'Sin verificar', icon: 'lock', tone: 'faint' };
-      const message = (p.gate && p.gate.message) || '';
-      const note = p.note || '';
-      return {
-        id: p.profile_id || null,
-        cloud: p.cloud === true,
-        model: p.alias,
-        title,
-        // #414: the provenance the allowlist needs — a provider model row names its provider;
-        // local profiles carry none and are never filtered out.
-        provider: typeof p.provider === 'string' && p.provider ? p.provider : undefined,
-        facts: facts.join(' · '),
-        state: gateLabel(gateState),
-        message,
-        note,
-        chips: modelChips(p),
-        word: gate ? gate.word : '',
-        wordIcon: gate ? gate.icon : '',
-        tone: gate ? gate.tone : 'go',
-        aria: `${title}: ${gateLabel(gateState)}. ${facts.join(', ')}. ${message} ${note}`.replace(/\s+/g, ' ').trim(),
-        selectable,
-        selected: !!p.profile_id && listing.selected === p.profile_id,
-      };
-    });
-  }
-
-  // Three meters (RAM, VRAM, GTT): fill = USED share; the numbers live in aria.
-  const gb = bytes => decimal(bytes / 1e9, 'GB');
-  function modelMeters(listing) {
-    const r = (listing && listing.resources) || {};
-    const gpu = r.gpu || null;
-    const make = (key, label, used, total, unknownText) => {
-      const known = Number.isFinite(used) && Number.isFinite(total) && total > 0;
-      return {
-        key, label, known,
-        fraction: known ? Math.max(0, Math.min(1, used / total)) : 0,
-        aria: known ? `${label}: ${gb(used)} en uso de ${gb(total)}` : `${label}: ${unknownText}`,
-      };
-    };
-    const ramUsed = Number.isFinite(r.mem_total) && Number.isFinite(r.mem_available) ? r.mem_total - r.mem_available : NaN;
-    return [
-      make('ram', 'RAM', ramUsed, r.mem_total, 'desconocida'),
-      make('vram', 'VRAM', gpu && gpu.vram_used, gpu && gpu.vram_total, 'desconocida'),
-      make('gtt', 'GTT', gpu && gpu.gtt_used, gpu && gpu.gtt_total, 'desconocida'),
-    ];
-  }
-
-  // «i» sentence for the panel: the paragraph that used to be on screen.
-  function modelsInfo(listing) {
-    if (!listing) return 'Leyendo modelos locales.';
-    const kept = listing.persisted === false && listing.selected ? ' Elección sólo en memoria: se pierde al cerrar Koda.' : '';
-    return `${listing.choice_note || ''} ${listing.remote || ''}${kept}`.replace(/\s+/g, ' ').trim();
-  }
-  const modelsCount = listing => (listing && Array.isArray(listing.profiles) ? listing.profiles.filter(p => p.selectable === true && p.profile_id).length : 0);
-
   // ---- Q1: notices + compact activation ----------------------------------
   // Announce a notice once, when a NEW first notice appears (never on
   // dismissal, never twice). Plain text.
@@ -537,60 +410,20 @@
   // K2-05 T4 U4: one continuous chat (L3/L4/L11) — the conversation list (conversationRows) and the «Hablar con…»
   // specialist rows (specialistRows) are gone with their UI.
 
-  // ---- F024: the model row above the composer --------------------------------
-  // What the row shows and when it may be used. Pure text: the page writes it
-  // with textContent only. `view.target` is already the EFFECTIVE target
-  // (chathost::current_target → specialistshost: the active role's own model
-  // wins), so the row shows ONE model: the one the next turn will use (R1).
-  const NO_MODEL_LABEL = 'Sin modelo local elegido';
-
-  // The active role in the only shape the row needs, or null: a role that names
-  // no local model changes nothing here (R4).
-  function activeRole(specialists) {
-    if (!specialists || !Array.isArray(specialists.specialists)) return null;
-    const role = specialists.specialists.find(s => s && s.id === specialists.active);
-    return role && typeof role.model === 'string' && role.model
-      ? { id: role.id, name: role.name, model: role.model }
-      : null;
+  // ---- K2-05 U5c: which model answers (read-only) ---------------------------
+  // The ENGINE owns the model: the daemon reports it (`get_state`) and Rust projects it as
+  // `view.engine_model` ({ provider?, id, name? }, or null while unknown). The page only
+  // shows it: no picker, no choice, no endpoint, key or account. Unknown → nothing at all
+  // (never a placeholder name). Plain text only: the page writes it with textContent.
+  function engineModelName(view) {
+    const m = view && view.engine_model;
+    if (!m || typeof m !== 'object') return '';
+    const clean = value => (typeof value === 'string' ? value.replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, 128) : '');
+    return clean(m.name) || clean(m.id);
   }
-
-  // R1/R4: the target's alias (its profile id when it has none); the role is
-  // named only when that role is what supplies THIS target.
-  function modelButtonLabel(view, role) {
-    const t = view && view.target;
-    const name = t && (t.alias || t.profile_id || '');
-    if (!name) return NO_MODEL_LABEL;
-    return role && role.model && t.profile_id === role.model ? `${name} · ${role.name}` : name;
-  }
-
-  // R4: the ONE line the picker shows while the active role fixes the model.
-  function modelRoleNote(view, role) {
-    const t = view && view.target;
-    if (!role || !t || t.profile_id !== role.model) return '';
-    return `«${role.name}» fija este modelo: elegir acá no reemplaza el rol (el picker no lo cambia).`;
-  }
-
-  // R4/R5: the same identity as the accessible name — the origin without its
-  // scheme (targetAria) plus who owns the model. Never an endpoint, a key, an
-  // account or a provider name (S5).
-  function modelButtonAria(view, role) {
-    const base = targetAria(view && view.target);
-    const note = modelRoleNote(view, role);
-    return note ? `${base}. ${note}` : base;
-  }
-
-  // R2: the row is usable while no turn is running — the running turn keeps the
-  // target it froze at submit and a selection applies to the NEXT turn, so a
-  // frozen row protects nothing but still must not pretend to switch anything.
-  // With no target chosen (or no preflight verdict) it stays open: that is
-  // exactly the state where choosing is what unblocks the chat; an unavailable
-  // or blocked CHOSEN target closes it, the same refusal Send shows.
-  function modelButtonEnabled(view) {
-    if (!view || view.active_turn) return false;
-    if (!view.target) return true;
-    const state = view.availability && view.availability.state;
-    if (!state || state === 'unchecked') return true;
-    return SENDABLE.has(state);
+  function engineModelLine(view) {
+    const name = engineModelName(view);
+    return name ? { text: name, aria: `Koda responde con el modelo ${name}` } : null;
   }
 
   // #343: a byte size as one Spanish chip label (comma decimal, kB/MB).
@@ -678,5 +511,5 @@
   }
   const askAria = ask => (ask && ask.title ? `Koda necesita tu respuesta: ${ask.title}` : 'Koda necesita tu respuesta');
   const askClosedAria = (ask, outcome) => `Pregunta de Koda${ask && ask.title ? `: ${ask.title}` : ''}. ${outcome}`;
-  return { askCards, answeredAsks, askPayload, askOutcome, askNextOption, askAria, askClosedAria, staleSnapshot, messageCount, chatHeight, CHAT_MIN_H, CHAT_MAX_H, mergeHistory, leftWindow, PAGE_GAP_MS, pageWait, reconcileRows, rowKey, sameTurn, poseFor, statusView, draftWord, targetAria, noticeAnnouncement, activates, gateLabel, filterChosen, modelRows, modelMeters, modelsInfo, modelsCount, emptyGreeting, cleanDisplayName, cleanLine, CARD_NAME_MAX, CARD_SUMMARY_MAX, DRAFT_MAX, stateLabel, scalarCount, draftProblem, canSend, sendState, needsCheck, checkPlan, statusLine, announcement, atBottom, newRequestId, turnRows, toolRows, approvalRows, activeTurn, activeRole, modelButtonLabel, modelButtonAria, modelButtonEnabled, modelRoleNote, formatSize, attachmentChips };
+  return { askCards, answeredAsks, askPayload, askOutcome, askNextOption, askAria, askClosedAria, staleSnapshot, messageCount, chatHeight, CHAT_MIN_H, CHAT_MAX_H, mergeHistory, leftWindow, PAGE_GAP_MS, pageWait, reconcileRows, rowKey, sameTurn, poseFor, statusView, draftWord, targetAria, noticeAnnouncement, activates, engineModelLine, emptyGreeting, cleanDisplayName, cleanLine, CARD_NAME_MAX, CARD_SUMMARY_MAX, DRAFT_MAX, stateLabel, scalarCount, draftProblem, canSend, sendState, needsCheck, checkPlan, statusLine, announcement, atBottom, newRequestId, turnRows, toolRows, approvalRows, activeTurn, formatSize, attachmentChips };
 });

@@ -97,15 +97,12 @@ function hostDtoFixture(host) {
     const values = {
       'p.sound': true, 'p.display_name': null, 'p.avatar_colors': {},
       'p.pill_colors': {},
-      // #414: the chosen models reach the page only as the validated typed pref; nothing chosen is null
-      'p.chosen_models': null,
       'p.gain': 0, 'p.gain()': 0,
       'p.main_pill()': JSON.parse(main[1]),
       'p.declared_pills()': JSON.parse(declared[1]),
       'p.theme().as_str()': 'system',
       'p.auto_close_seconds()': 15,
       'p.open_on_hover()': false,
-      'p.absence_seconds()': 10,
       'p.show_plan_in_notch()': false,
       'p.show_codex_plan_in_notch()': false,
       'p.window_context()': false,
@@ -134,9 +131,9 @@ test('Host DTO fixture extracts complete legacy and multiline typed projections 
   const host = fs.readFileSync(path.join(__dirname, '..', 'src', 'settingshost.rs'), 'utf8');
   const dto = hostDtoFixture(host);
   assert.deepEqual(dto, { sound: true, gain: 0, displayName: null, avatarColors: {},
-    pillColors: {}, chosenModels: null,
+    pillColors: {},
     mainPill: 'integration_claude', declaredPills: ['integration_resend', 'integration_n8n', 'integration_vercel', 'integration_github'], theme: 'system',
-    autoCloseSeconds: 15, openOnHover: false, absenceSeconds: 10, openSettingsAtLaunch: false, settingsWindow: true, customBlobs: null, islandAgents: null, abitoInstructions: null, monitor: null, showPlanInNotch: false, showCodexPlanInNotch: false, windowContext: false, liveContext: true, windowContextAvailable: false, windowContextNote: null, windowContextNative: false });
+    autoCloseSeconds: 15, openOnHover: false, openSettingsAtLaunch: false, settingsWindow: true, customBlobs: null, islandAgents: null, abitoInstructions: null, monitor: null, showPlanInNotch: false, showCodexPlanInNotch: false, windowContext: false, liveContext: true, windowContextAvailable: false, windowContextNote: null, windowContextNative: false });
   const legacy = 'fn view_prefs(p: &Prefs) -> Value { json!({"sound": p.sound, "gain": p.gain(), "displayName": p.display_name, "avatarColors": p.avatar_colors}) }';
   assert.deepEqual(hostDtoFixture(legacy), { sound: true, gain: 0, displayName: null, avatarColors: {} });
   const quoted = 'complete ) with "quoted" text';

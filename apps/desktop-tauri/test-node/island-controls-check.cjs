@@ -105,12 +105,13 @@ test('chat body top row (K2-05 T4 U4, one continuous chat): «Cargar anteriores�
   assert.equal(decls('#chat-history-label')['font-size'], 'var(--fs-caption)');
   assert.match(fs.readFileSync(path.join(dir, 'chat.js'), 'utf8'), /chat-history-label[\s\S]{0,200}turns\.length/, 'the label shows only while the conversation has no turns');
 });
-test('chat model chip keeps its 24px chip and wears Coucou\'s model-btn tokens (500 10.5px, rgba .06 fill, r999) (S10 L22)', () => {
-  const c = decls('#chat-model-btn');
-  assert.equal(c['min-height'], '24px');
-  assert.equal(c.font, '500 10.5px var(--font)');
-  assert.equal(c.background, 'rgba(255, 255, 255, 0.06)');
-  assert.equal(c['border-radius'], 'var(--radius-full)');
+test('K2-05 U5c (L72): the read-only model line keeps its own tokens and hides while unknown; the chip/picker are gone', () => {
+  const c = decls('#chat-model-line');
+  assert.equal(c['text-overflow'], 'ellipsis', 'a long model name truncates instead of wrapping the composer');
+  assert.equal(c.font, '600 var(--fs-caption)/1.2 var(--font-ui)');
+  assert.equal(decls('#chat-model-line[hidden]')['display'], 'none', 'hidden until the engine says which model answers');
+  const html = fs.readFileSync(path.join(dir, 'index.html'), 'utf8');
+  assert.doesNotMatch(html, /chat-model-btn|chat-model-picker|id="chat-model-row"/, 'no button, no picker: the engine owns the model');
 });
 console.log(`island-controls-check: ${failed ? failed + ' FAILED' : 'all passed'}`);
 if (failed) process.exitCode = 1;
@@ -147,10 +148,13 @@ test('B the card keeps room below the last option (Coucou ~35px of air, never 6p
   assert.match(String(q['padding-bottom'] || q.padding || ''), /\b(1[2-9]|[2-9]\d)px/, 'bottom padding of at least 12px');
 });
 // ---- F: the chat field's focus ring is thin and consistent (human audit: «anillo lima grueso desalineado con el tema») ---------------
-test('F the chat input\'s focus ring is 1px in a muted accent, not the global 2px lime; it stays visible (>= 1px, not transparent, not none)', () => {
+// ---- F: the chat field's focus ring (human audit: «anillo lima grueso desalineado con el tema»). S3 (04 chat 3): the island's
+// ONE ring is 2px #fff (design/system.md: notch and toast), so the field and the model row wear that one instead of accents.
+// ----
+test('F the chat input\'s focus ring is the island\'s one 2px #fff, not the global lime halo nor a blue accent of its own', () => {
   const ring = decls('#chat-input:focus-visible');
   assert.ok(Object.keys(ring).length > 0, 'the chat field has its own focus rule');
-  assert.equal(ring.outline, '1px solid var(--island-live)', 'design 14 A: a 1px accent edge');
+  assert.equal(ring.outline, '2px solid #fff', 'S3 (04 chat 3): one 2px #fff ring on the field');
   assert.equal(ring['outline-offset'], '0', 'drawn on the field\'s own edge, not floating 2px away');
   const base = decls(':focus-visible');
   assert.equal(base.outline, '2px solid var(--go)', 'the global ring is untouched for every other control');
@@ -161,7 +165,7 @@ test('F --focus-ring is a muted accent token defined once, never lime and never 
   assert.doesNotMatch(root['--focus-ring'], /var\(--go\)|#b8ff2e|transparent/i);
   assert.match(root['--focus-ring'], /rgba\(255, 255, 255, 0?\.[3-9]\d*\)|var\(--dim-[123]\)/, 'a muted white or a dim token');
 });
-test('F the same thin ring applies to the other text fields of the island (question free text, model search), not to buttons', () => {
+test('F the same thin ring applies to the other text fields of the island (question free text), not to buttons', () => {
   assert.equal(decls('#question-text:focus-visible').outline, '1px solid var(--focus-ring)');
-  assert.equal(decls('#chat-input:focus-visible').outline, '1px solid var(--island-live)');
+  assert.equal(decls('#chat-input:focus-visible').outline, '2px solid #fff');
 });

@@ -234,6 +234,26 @@ fn history_replaces_the_view_and_an_earlier_page_is_kept_whole_and_apart() {
 }
 
 #[test]
+fn agent_state_folds_the_engines_model_identity_into_a_closed_view() {
+    let mut st = ChatState::connected();
+    st.apply(&json!({"type":"ready","state":{"busy":false,"status":"ready","paused":false,
+        "model":{"provider":"anthropic","id":"claude-sonnet-5-5","name":"Claude Sonnet 5.5","apiKey":"sk-never","input":["text"]}}}));
+    assert_eq!(
+        view(&st)["agent"]["model"],
+        json!({"provider":"anthropic","id":"claude-sonnet-5-5","name":"Claude Sonnet 5.5"}),
+        "only the closed identity fields survive"
+    );
+    // the next agent_state without a model: unknown again, never the last one
+    st.apply(&json!({"type":"agent_state","busy":false,"status":"ready","paused":false}));
+    assert_eq!(view(&st)["agent"]["model"], json!(null));
+    // malformed: no id, non-string fields, oversized, control characters → unknown
+    for bad in [json!({"provider":"x"}), json!({"id":7}), json!({"id":"a".repeat(129)}), json!({"id":"bad\nline"}), json!("str")] {
+        st.apply(&json!({"type":"agent_state","busy":false,"status":"ready","paused":false,"model":bad}));
+        assert_eq!(view(&st)["agent"]["model"], json!(null), "{bad}");
+    }
+}
+
+#[test]
 fn asks_queue_toasts_and_agent_state_fold_into_closed_views() {
     let mut st = ChatState::connected();
     st.apply(&json!({"type":"agent_state","busy":true,"status":"restarting","paused":true}));

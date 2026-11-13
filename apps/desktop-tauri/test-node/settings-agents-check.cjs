@@ -27,10 +27,10 @@ const { dom, all, text } = require('./settings-accounts-check.cjs');
     if (cmd === 'secret_action') { if (secretFailure) throw new Error('fixture-secret-error'); if (p.action === 'set') keychain.add(p.key); if (p.action === 'clear') keychain.delete(p.key); return {present:keychain.has(p.key)}; }
     if (cmd === 'plan_action') return planReply[p.action];
     if (cmd === 'agent_action' && /^abito_account_/.test(p.action)) { if (accountFailure) throw new Error('fixture-account-error'); const secretNow = p.config?.apiKey; calls.push(['__secret_seen', secretNow ? 'yes' : 'no']); if (p.action === 'abito_account_remove') state.ownedAccounts = { accounts: (state.ownedAccounts?.accounts || []).filter(a => a.accountId !== p.accountId) }; else state.ownedAccounts = { accounts: [...(state.ownedAccounts?.accounts || []).filter(a => a.accountId !== p.accountId), { accountId: p.accountId, provider: p.provider, hasCredential: keychain.has(`${p.provider}-api-key`), config: { nombre: p.config.nombre, baseUrl: p.config.baseUrl, api: p.config.api, compat: {}, models: p.config.models, defaultModel: p.config.defaultModel } }] }; return structuredClone(state); }
-    if (cmd === 'prefs_action' && p.action === 'view') return {chosenModels:{}, showPlanInNotch: planPrefs.claude, showCodexPlanInNotch: planPrefs.codex};
+    if (cmd === 'prefs_action' && p.action === 'view') return {showPlanInNotch: planPrefs.claude, showCodexPlanInNotch: planPrefs.codex};
     if (cmd === 'prefs_action' && p.action === 'set_show_plan_in_notch') { planPrefs.claude = p.show_plan_in_notch; return {showPlanInNotch: planPrefs.claude, showCodexPlanInNotch: planPrefs.codex}; }
     if (cmd === 'prefs_action' && p.action === 'set_show_codex_plan_in_notch') { planPrefs.codex = p.show_codex_plan_in_notch; return {showPlanInNotch: planPrefs.claude, showCodexPlanInNotch: planPrefs.codex}; }
-    if (cmd === 'prefs_action') return {chosenModels:{}};
+    if (cmd === 'prefs_action') return {};
     if (cmd === 'models_action') return {profiles:[]};
     return structuredClone(state);
   };
@@ -182,11 +182,12 @@ const { dom, all, text } = require('./settings-accounts-check.cjs');
   const anthRow=all(ui).find(e=>e.className==='row'&&e.children.includes(anthKey));
   secretFailure=true;anthKey.value='fixture-only';button(anthRow,'Guardar clave').fire('click');await ui.settled();
   assert.equal(anthKey.value,'');assert(!text(ui).includes('fixture-secret-error'));secretFailure=false;
-  const pick=all(ui).find(e=>e.attrs.id==='chat-anthropic-model');assert.equal(pick.disabled,true);
+  // K2-05 U5c (L72): the cards no longer offer a model <select> and «Modelos» is gone; the local block stays
+  // (it hosts the Ollama / LM Studio / OpenAI-compatible addresses, which no model list owned).
+  assert.equal(all(ui).find(e=>e.attrs.id==='chat-anthropic-model'),undefined);
   events['agent:state']({payload:{connection:'connected',providers:[{id:'anthropic',name:'Anthropic',configured:true}],accounts:[],models:[{provider:'anthropic',id:'m1',name:'First'},{provider:'anthropic',id:'m2',name:'Second'}]}});
-  events['prefs:state']({payload:{chosenModels:{anthropic:['m1']}}});
-  assert.equal(pick.tagName,'select');assert.equal(pick.disabled,false);calls.length=0;pick.value='m2';pick.fire('change',false);await ui.settled();assert.deepEqual(calls,[]);
-  pick.fire('change');await ui.settled();assert.deepEqual(calls,[['prefs_action',{action:'set_chosen_models',provider:'anthropic',models:['m1','m2']}]]);
+  events['prefs:state']({payload:{windowContext:false,liveContext:true}});
+  assert(!calls.some(([c,p])=>c==='prefs_action'&&/chosen/i.test(JSON.stringify(p||{}))),'nothing in the chat page writes the removed chosen-models pref');
   const local=all(ui).find(e=>e.attrs.id==='chat-local-models');
   assert(text(local).includes('Ollama'));assert(text(local).includes('LM Studio'));assert(text(local).includes('Compatible con OpenAI'));
   for(const b of all(local).filter(e=>e.textContent==='Conectar')) assert.equal(b.disabled,true,'arbitrary endpoint connection has no host command');

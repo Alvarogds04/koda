@@ -95,7 +95,7 @@ function describeTool(name, input, { home } = {}) {
 const emptyInput = v => v !== null && typeof v === 'object' && !Array.isArray(v) && Object.keys(v).length === 0;
 const BASH_EXTRA_OK = new Set(['command', 'description', 'timeout']);
 const MAX_BASH_DISPLAY = 380, MAX_BASH_LOSSY_DISPLAY = 300;
-const REASONS = Object.freeze({ long: 'long command', special: 'special characters', creds: 'touches credential files', indirection: 'shell indirection', hidden: 'hidden text may contain shell syntax' });
+const REASONS = Object.freeze({ long: 'long command', special: 'special characters', creds: 'touches credential files', indirection: 'shell indirection', hidden: 'hidden text may contain shell syntax', path: 'hidden text may be a path' });
 // Full redacted Bash command. Lossless (allow may be offered) only when the display is a faithful, single-line,
 // printable ASCII / closed visible Latin allow-list, NFC, short, indirection-free, credential-path-free
 // rendering. Checks use the ORIGINAL command; never normalize or escape a command into approval.
@@ -112,7 +112,7 @@ function describeBash(full, fallbackText) {
   const isLong = full.length > MAX_BASH_SCAN;
   let command = isLong ? full.slice(0, MAX_BASH_SCAN) : full;
   if (isLong && /[\ud800-\udbff]$/.test(command)) command = command.slice(0, -1); // never end on a lone high surrogate
-  const { text: redacted, redactions, spans } = redactCommand(command);
+  const { text: redacted, redactions, spans, pathSpans } = redactCommand(command);
   let reason = null;
   if (!BASH_VISIBLE.test(command) || command !== command.normalize('NFC') || command.trim() === '' || command.includes('[REDACTED]')) reason = REASONS.special;
   else if (hasIndirection(command)) reason = REASONS.indirection;
@@ -120,6 +120,7 @@ function describeBash(full, fallbackText) {
   else if (hasDbAttachedOption(command)) reason = REASONS.special;
   else if (hiddenShellSyntax(spans) || (redactions > 0 && quoteParityLoss(command, redacted))) reason = REASONS.hidden;
   else if (redacted.startsWith('[REDACTED]')) reason = REASONS.special; // the command word itself is hidden
+  else if (pathSpans.length > 0) reason = REASONS.path; // K2-08 T1b (L8): a hidden argument may be the path being acted on
   else if (isLong || [...redacted].length > MAX_BASH_DISPLAY) reason = REASONS.long;
   if (!reason) return { text: 'Bash: ' + redacted, lossy: false, redactions };
   const shown = sanitizeText(redacted, { max: MAX_BASH_LOSSY_DISPLAY, home: null });

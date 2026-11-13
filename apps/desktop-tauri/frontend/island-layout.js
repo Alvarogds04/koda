@@ -240,50 +240,32 @@
     return { left, top: below + 24 > H ? Math.max(4, at.y - h - 8) : below };
   }
 
-  // ---- T1 · S1 (01 oculta, A): the hidden island is ONE thread whose colour is the most urgent state -----------------------------
-  const EDGE_STRIP = Object.freeze({ w: 160, h: 3, zone: 8 });
-  function edgeStripView(o) {
-    const pending = o && (o.pending === 'question' || o.pending === 'approval') ? o.pending : null;
-    const queued = o && Number.isInteger(o.queued) && o.queued > 0 && o.queued <= MAX_QUEUED ? o.queued : 0;
-    if (pending) {
-      const n = 1 + queued;
-      const what = pending === 'approval' ? (n === 1 ? 'un permiso espera' : `${n} permisos esperan`) : (n === 1 ? 'una pregunta espera' : `${n} preguntas esperan`);
-      return { state: pending, pulse: true, aria: `Koda: ${what}` };
-    }
-    if (o && o.finished) return { state: 'finished', pulse: true, aria: 'Koda: algo terminó' };
-    return { state: 'rest', pulse: false, aria: 'Koda, en reposo' };
-  }
+  // isla-cualquier-lado S2: the folded island never hides at the edge any more, so the hidden thread (EDGE_STRIP/edgeStripView) is gone.
 
-  // ---- T1 · S2 (02 compacta, A): the mascot + up to 3 coloured mini-mascots + «+N», the real activity line, a state badge -----------
-  const COMPACT_W = 288, COMPACT_WIDE = 440, COMPACT_ASK = 560, MINIS = 3;
+  // ---- T1 · S2 (02 compacta, A) → island-free-drag S3/S5: compact Koda is ONLY the disc ----------------------------------------
+  // The human (island-free-drag L6/L7): «que no aparezca la barra y que directamente sea nada más el circulito. Y si le haces
+  // clic al circulito, te abre». So NO compact state widens the island: the disc is the whole compact surface, whatever is running
+  // or waiting. A pending question/permission rides it as a state badge (S5) and is READ when the island is opened. The box is the
+  // same one geometry::COMPACT_DOT declares (a Rust test keeps the two in step) and the one the bare pill already drew.
+  const COMPACT_DOT_W = 40;
+  const COMPACT_DOT_H = 32;
+  const COMPACT_DOT = Object.freeze({ w: COMPACT_DOT_W, h: COMPACT_DOT_H });
   function compactView(o) {
     const rows = o && Array.isArray(o.rows) ? o.rows.filter(r => r && typeof r.id === 'string') : [];
     const pending = o && o.pending && typeof o.pending === 'object' ? o.pending : null;
-    const focus = rows.find(r => r.id === (o && o.focusId)) || rows.find(isRunning) || rows[0] || null;
-    const minis = rows.slice(0, MINIS).map(r => ({ id: r.id, color: r.color || 'blue', name: bound(projectLabel(r.cwd) || r.kindLabel || 'Sesión', NAME_MAX), pose: isRunning(r) ? 'working' : 'idle' }));
-    let activity = '', badge = '';
-    if (focus) {
-      const name = bound(projectLabel(focus.cwd) || focus.kindLabel || 'Sesión', 18);
-      const step = focus.tools && Array.isArray(focus.tools.steps) ? focus.tools.steps.find(s => s.state === 'running') : null;
-      activity = step ? `${name} · ${step.name}…` : name;
-      if (isRunning(focus)) badge = 'working';
-    }
-    // S3 (03 alerta, A): a waiting question/permission widens the pill and shows its first line + «Responder»; no separate toast
-    let reply = false;
+    // the SIGNAL, never the content: approval > question > a notice's tone > a running session
+    let badge = '';
     if (pending) {
-      badge = approvalView(pending, '') ? 'approval' : (pending.kind === 'approval' ? 'approval' : 'question');
-      const first = String(pending.text || '').split(/\r?\n/).map(l => l.trim()).find(Boolean) || '';
-      const av = approvalView(pending, '');
-      activity = bound(av ? `${av.title} ${av.command}` : first, 44); reply = true;
+      badge = approvalView(pending, '') || pending.kind === 'approval' ? 'approval' : 'question';
     } else if (o && o.notice && typeof o.notice === 'object' && (o.notice.kind === 'settled' || o.notice.kind === 'attention') &&
       typeof o.notice.title === 'string' && o.notice.title.trim()) {
-      // HU-006 S4: a notice reads inside the compact pill at the width it already has; opening it stays the human's click (S6).
-      activity = bound(o.notice.title.trim(), 44); badge = o.notice.kind === 'attention' ? 'attention' : 'finished';
-    }
-    return { minis: reply ? [] : minis, more: reply ? 0 : Math.max(0, rows.length - MINIS), activity, badge, reply, width: reply ? COMPACT_ASK : rows.length ? COMPACT_WIDE : COMPACT_W };
+      badge = o.notice.kind === 'attention' ? 'attention' : 'finished';
+    } else if (rows.some(isRunning)) badge = 'working';
+    // minis/more/activity/reply stay in the shape (consumers read it) and are always empty: the disc has no room for them
+    return { minis: [], more: 0, activity: '', badge, reply: false, width: COMPACT_DOT_W, height: COMPACT_DOT_H };
   }
 
-  return { isRunning, tipFor, tipPlacement, ROW, rowsViewport, EDGE_STRIP, edgeStripView, compactView, pickFocus, centreView, emptyView, finishedLayout, STATE_WORD, badgePosition, W, columnWidths, statusCounts, attribute, blobRows, focusOverflow, layoutMode, approvalView, approvalKey, MAX_QUEUED };
+  return { isRunning, tipFor, tipPlacement, ROW, rowsViewport, compactView, COMPACT_DOT, pickFocus, centreView, emptyView, finishedLayout, STATE_WORD, badgePosition, W, columnWidths, statusCounts, attribute, blobRows, focusOverflow, layoutMode, approvalView, approvalKey, MAX_QUEUED };
 });
 
 function mount(L) {
@@ -357,16 +339,10 @@ function mount(L) {
     doc.addEventListener('focusout', hideTip);
     doc.addEventListener('keydown', e => { if (e.key === 'Escape') hideTip(); }, true);
   }
-  // S1 + S2 + S3: the compact pill and the hidden thread, from the same real data.
-  const strip = doc.getElementById('edge-strip');
+  // S2 + S3: the compact disc, from the real data.
   function paintCompact(rows) {
-    const kind = pending ? (approvalView(pending, '') || pending.kind === 'approval' ? 'approval' : 'question') : null;
     const c = L.compactView({ rows, focusId, pending, notice: compactNotice });
     doc.dispatchEvent(new CustomEvent('abito:compact-view', { detail: c }));
-    if (strip) {
-      const e = L.edgeStripView({ pending: kind, queued: queuedCount, finished });
-      strip.dataset.state = e.state; strip.dataset.pulse = String(e.pulse); strip.setAttribute('aria-label', e.aria);
-    }
   }
   function approvalView(p, label) { return L.approvalView(p && Object.assign({}, p, { options: Array.isArray(p.options) ? p.options.map((o, i) => ({ index: Number.isInteger(o && o.index) ? o.index : i, label: String((o && o.label) || '') })) : [], allowFreeText: p && p.allow_free_text === true }), label); }
   // E + I: the centre column. Real state, real tool steps only; nothing waiting and nothing running -> the calm state with a CTA.

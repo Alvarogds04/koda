@@ -221,6 +221,22 @@ test('onScreen: expanded questions are answerable in every view, with no coverin
 });
 
 // ---- BEHAVIOUR: run the real notify.js against a tiny fake DOM --------------------------------
+test('hiddenExpired (K2-08 S6): announced only when the «expired» notice is fresh, or the hidden request\'s own deadline passed', () => {
+  const P = (n, exp = 2000000) => pending({ id: `3f2b8a40-1c2d-4e5f-8a6b-7c8d9e0f1a${String(n).padStart(2, '0')}`, expires_at: exp });
+  const S = (queued, notice) => snap(P(1), { queued, queued_count: queued.length, notice });
+  // fresh: the notice turned into «expired» on this transition
+  assert.deepEqual(N.hiddenExpired(S([P(2), P(3)], null), S([P(3)], 'expired'), 1000).map(q => q.id), [P(2).id]);
+  // stale: «expired» was already there, and the request left before its deadline (a disconnect): no announcement
+  assert.deepEqual(N.hiddenExpired(S([P(3)], 'expired'), S([], 'expired'), 1000), []);
+  // stale notice, but the request's own deadline passed: it really expired
+  assert.deepEqual(N.hiddenExpired(S([P(3, 900)], 'expired'), S([], 'expired'), 1000).map(q => q.id), [P(3).id]);
+  // stale notice and the host did not list who left: never guessed
+  assert.deepEqual(N.hiddenExpired({ ...S([], 'expired'), queued_count: 2 }, { ...S([], 'expired'), queued_count: 1 }, 1000), []);
+  // a fresh notice with an unlisted queue still counts
+  assert.deepEqual(N.hiddenExpired({ ...S([], null), queued_count: 2 }, { ...S([], 'expired'), queued_count: 1 }, 1000), [null]);
+});
+
+// ---- BEHAVIOUR: run the real notify.js against a tiny fake DOM --------------------------------
 function harness(dataset) {
   const vm = require('node:vm');
   const calls = [];
@@ -240,14 +256,18 @@ function harness(dataset) {
     'question-approval', 'question-approval-title', 'question-approval-cmd', 'question-approval-note', 'question-approval-actions'];
   const nodes = Object.fromEntries(ids.map(id => [id, node(id)]));
   Object.assign(nodes.capsule.dataset, dataset);
+  const focusedList = { tagName: 'OL' }; // the focus sits on the card's own options list (inside #question)
+  nodes.question.contains = e => e === focusedList;
   const doc = { getElementById: id => nodes[id] || null, createElement: tag => node(tag), addEventListener(t, f) { (listeners[t] = listeners[t] || []).push(f); },
-    dispatchEvent() {}, activeElement: { tagName: 'OL' } };
-  const win = { AbitoNotify: N, AbitoIcons: { svg: () => '' }, __TAURI__: { core: { invoke: (name, args) => { calls.push(args.payload); return Promise.resolve(args.payload.action === 'view' ? view : {}); } } } };
+    dispatchEvent() {}, activeElement: focusedList };
+  const win = { AbitoNotify: N, AbitoIcons: { svg: () => '' }, __TAURI__: { core: { invoke: (_name, args) => { calls.push(args.payload); return Promise.resolve(args.payload.action === 'view' ? view : {}); } } } };
   const view = snap(pending({ expires_at: Date.now() + 120000 }));
+  // K2-08 S4: a head is guarded for a moment when it first becomes visible; the monotonic clock lets the check step past that guard
+  const mono = { t: 0 };
   const ctx = vm.createContext({ window: win, document: doc, setInterval: () => 0, clearInterval() {}, requestAnimationFrame: f => f(), MutationObserver: class { observe() {} },
-    CustomEvent: class { constructor(t, o) { this.type = t; this.detail = o && o.detail; } }, Date });
+    CustomEvent: class { constructor(t, o) { this.type = t; this.detail = o && o.detail; } }, Date, performance: { now: () => mono.t } });
   vm.runInContext(fs.readFileSync(path.join(frontend, 'notify.js'), 'utf8'), ctx);
-  return { calls, nodes, key: (k, extra) => { for (const f of listeners.keydown || []) f({ key: k, isTrusted: true, ctrlKey: false, altKey: false, metaKey: false, isComposing: false, repeat: false, preventDefault() {}, stopPropagation() {}, ...extra }); } };
+  return { calls, nodes, pastGuard: () => { mono.t += 1000; }, key: (k, extra) => { for (const f of listeners.keydown || []) f({ key: k, isTrusted: true, ctrlKey: false, altKey: false, metaKey: false, isComposing: false, repeat: false, preventDefault() {}, stopPropagation() {}, ...extra }); } };
 }
 const settle = () => new Promise(r => setImmediate(r));
 
@@ -265,6 +285,7 @@ test('BEHAVIOUR: a real digit answers ONLY while the notification is on screen (
     await settle(); await settle();
     h.nodes.question.inert = !expected ? h.nodes.question.inert : h.nodes.question.inert; // the guard must NOT rely on inert alone
     h.nodes.question.inert = false; // worst case: inert says «live»
+    h.pastGuard();
     h.key('1');
     await settle();
     const answered = h.calls.some(c => c.action === 'answer');
@@ -273,7 +294,7 @@ test('BEHAVIOUR: a real digit answers ONLY while the notification is on screen (
   }
   // typing / modifiers / untrusted never answer even when visible
   for (const extra of [{ isTrusted: false }, { ctrlKey: true }, { repeat: true }]) {
-    const h = harness({ phase: 'expanded', view: 'overview' }); await settle(); await settle(); h.nodes.question.inert = false;
+    const h = harness({ phase: 'expanded', view: 'overview' }); await settle(); await settle(); h.nodes.question.inert = false; h.pastGuard();
     h.key('1', extra); await settle();
     assert.equal(h.calls.some(c => c.action === 'answer'), false, JSON.stringify(extra));
   }

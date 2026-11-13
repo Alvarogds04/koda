@@ -287,7 +287,9 @@ class IslandServer {
 	}
 
 	state() {
-		return { busy: this.busy || this.engine?.busy === true || this.switching !== undefined, status: this.engineStatus(), paused: this.paused === true };
+		// K2-05 U5c: `model` = the engine's own model identity (get_state), present only when it reported one.
+		const model = this.engine?.status === "ready" ? this.engine.model : undefined;
+		return { busy: this.busy || this.engine?.busy === true || this.switching !== undefined, status: this.engineStatus(), paused: this.paused === true, ...(model ? { model } : {}) };
 	}
 
 	/**
@@ -473,6 +475,7 @@ class IslandServer {
 		on(this.engine, "event", (event) => this.onEngineEvent(event));
 		on(this.engine, "status", () => this.onEngineStatus());
 		on(this.engine, "exit", () => this.onEngineStatus(true));
+		on(this.engine, "model", () => this.broadcastState());
 		on(this.engine, "turn_cancelled", ({ reason }) => {
 			// the runtime drops the cancelled turn's events: the row count is no longer known
 			this.rowTail = undefined;

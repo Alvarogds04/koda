@@ -194,6 +194,31 @@ test('T4b approvalView: the Spanish producer pair wears the approval look and ke
   assert.deepEqual([mcp.tool, mcp.command, mcp.title], [null, 'herramienta MCP foo', 'Permiso:']);
   assert.equal(L.compactView({ rows: [], focusId: null, pending: { kind: 'question', agent: 'claude-code', text: 'Codex pide permiso para Bash: ls', options: [{ index: 0, label: 'Aprobar una vez' }, { index: 1, label: 'Rechazar' }] } }).badge, 'approval');
 });
+// K2-08 T1/T4: the exact cards the Codex hook now sends (apps/desktop-harness/src/codex.cjs, file-permission.cjs). A Bash command
+// shown in full is an approval; apply_patch is an approval only for a single-file card shown in full (path + change, borrar, mover);
+// several files, a path outside the session folder, anything recortado/oculto or not representable never gets an approve button.
+test('K2-08 T1/T4 approvalView: the Codex hook cards — Bash and single-file apply_patch approvable, lossy cards never', () => {
+  const bash = L.approvalView(es('Codex pide permiso para Bash: ls'), 'Codex');
+  assert.deepEqual([bash.title, bash.tool, bash.command], ['Ejecutar:', 'Bash', 'ls']);
+  assert.deepEqual(rows2(bash), [['reject', 'Rechazar', 'N', 1], ['approve', 'Aprobar una vez', 'Y', 0]]);
+  for (const detail of ['"/w/uno.txt"; añadir: "hola\\nmundo"', '"/w/uno.txt"; modificar: "a" → "b"', 'borrar "/w/uno.txt"',
+    'mover "/w/uno.txt" → "/w/dos.txt"; modificar: "a" → "b"']) {
+    const v = L.approvalView(es(`Codex pide permiso para apply_patch: ${detail}`), 'Codex');
+    assert.deepEqual([v.title, v.tool, v.command, v.secretsHidden], ['Permiso:', 'apply_patch', detail, false], detail);
+    assert.deepEqual(rows2(v), [['reject', 'Rechazar', 'N', 1], ['approve', 'Aprobar una vez', 'Y', 0]], detail);
+  }
+  const lossyOpts = [opt(0, 'Rechazar'), opt(1, 'Decidir en la terminal')];
+  for (const text of ['Codex pide permiso para apply_patch (edición de archivo) (detalles solo en la terminal; decidir en la terminal)',
+    'Codex pide permiso para apply_patch (solicitud no representable; detalles solo en la terminal; decidir en la terminal)',
+    'Codex pide permiso para apply_patch: varios archivos: "/w/a.txt", "/w/b.txt" (varios archivos; detalles solo en la terminal; decidir en la terminal)',
+    'Codex pide permiso para apply_patch: "/x/fuera.txt" (fuera de la carpeta de sesión; detalles solo en la terminal; decidir en la terminal)',
+    'Codex pide permiso para apply_patch: "/w/uno.txt"; contenido: [REDACTED] (secretos ocultos) (contenido oculto; detalles solo en la terminal; decidir en la terminal)',
+    'Codex pide permiso para apply_patch: "/w/uno.txt"; añadir: "l\\nl" (contenido recortado (8 líneas / 160 bytes); detalles solo en la terminal; decidir en la terminal)',
+    'Codex pide permiso para Bash: cat ~/.ssh/id_rsa (ruta sensible; detalles solo en la terminal; decidir en la terminal)']) {
+    assert.equal(L.approvalView(es(text, lossyOpts), 'Codex'), null, text);
+    assert.equal(L.approvalView(es(text), 'Codex'), null, 'a lossy text stays non-approvable even with a forged pair');
+  }
+});
 test('T4b approvalView: near matches, lossy, extra options, free text, forms and mixed wording stay NOT an approval', () => {
   const T0 = 'Claude Code pide permiso para Bash: ls';
   const no = (n, l) => assert.equal(L.approvalView(n, 'Claude Code'), null, l);
@@ -524,68 +549,54 @@ test('wiring: ONE delegated tooltip in the island — shows on hover AND keyboar
 });
 
 // ======== T1 · S1 (01 oculta A) + S2 (02 compacta A) ========================================================================
-test('S1 edgeStripView: ONE strip whose colour is the most urgent state (reposo gris / pregunta cian / permiso ámbar / listo verde) and never colour alone', () => {
-  assert.deepEqual(L.edgeStripView({}), { state: 'rest', pulse: false, aria: 'Koda, en reposo' });
-  assert.deepEqual(L.edgeStripView({ pending: 'question' }), { state: 'question', pulse: true, aria: 'Koda: una pregunta espera' });
-  assert.deepEqual(L.edgeStripView({ pending: 'approval' }), { state: 'approval', pulse: true, aria: 'Koda: un permiso espera' });
-  assert.deepEqual(L.edgeStripView({ finished: true }), { state: 'finished', pulse: true, aria: 'Koda: algo terminó' });
-  assert.equal(L.edgeStripView({ pending: 'question', finished: true }).state, 'question', 'pending beats finished');
-  assert.equal(L.edgeStripView({ pending: 'approval', finished: true }).state, 'approval');
-  assert.equal(L.edgeStripView({ pending: 'question', queued: 2 }).aria, 'Koda: 3 preguntas esperan', 'the aria says how many wait (the colour cannot)');
-  assert.equal(L.edgeStripView(null).state, 'rest');
-  assert.deepEqual(L.EDGE_STRIP, { w: 160, h: 3, zone: 8 });
+test('isla-cualquier-lado S2: the hidden edge thread is retired (no edgeStripView, no EDGE_STRIP)', () => {
+  assert.equal(L.edgeStripView, undefined); assert.equal(L.EDGE_STRIP, undefined);
 });
-test('S2 compactView: up to 3 coloured minis + «+N», the activity line from REAL data, the status badge, and the width it needs', () => {
+test('S3 compactView: compact is ONLY the disc — a state badge and never a widened bar (island-free-drag L6/L7)', () => {
   const rows = [row({ id: 's-0000000a', kindLabel: 'Pi', cwd: 'workspace', state: 'running', tools: { total: 2, steps: [{ index: 1, name: 'read', state: 'done' }, { index: 2, name: 'bash', state: 'running' }] }, color: 'green' }),
-    row({ id: 's-0000000b', kindLabel: 'Claude Code', cwd: 'api', color: 'orange' }), row({ id: 's-0000000c', kindLabel: 'Codex', cwd: 'web', color: 'purple' }),
-    row({ id: 's-0000000d', kindLabel: 'Gemini', cwd: 'docs', color: 'mint' }), row({ id: 's-0000000e', kindLabel: 'OpenCode', cwd: 'x', color: 'blue' })];
-  const c = L.compactView({ rows, focusId: 's-0000000a', pending: null });
-  assert.deepEqual(c.minis.map(m => [m.id, m.color]), [['s-0000000a', 'green'], ['s-0000000b', 'orange'], ['s-0000000c', 'purple']]);
-  assert.equal(c.more, 2, '5 sessions: 3 minis + «+2»');
-  assert.equal(c.activity, 'workspace · bash…', 'the real running tool of the focused session, never an invented verb');
-  assert.equal(c.badge, 'working');
-  assert.equal(c.width, 440);
+    row({ id: 's-0000000b', kindLabel: 'Claude Code', cwd: 'api', color: 'orange' })];
+  const dot = L.COMPACT_DOT;
+  assert.deepEqual([dot.w, dot.h], [40, 32], 'the disc is the box the bare pill already drew (geometry::COMPACT_DOT)');
+  const busy = L.compactView({ rows, focusId: 's-0000000a', pending: null });
+  assert.deepEqual([busy.width, busy.activity, busy.minis, busy.more, busy.reply], [dot.w, '', [], 0, false], 'a running session never widens the disc');
+  assert.equal(busy.badge, 'working', 'it still reaches the disc as its own state signal');
   const idle = L.compactView({ rows: rows.slice(1, 2), focusId: 's-0000000b', pending: null });
-  assert.deepEqual([idle.activity, idle.badge, idle.more, idle.minis.length], ['api', '', 0, 1], 'idle: the session name only, no «…» and no badge');
+  assert.deepEqual([idle.width, idle.activity, idle.badge], [dot.w, '', ''], 'an idle session shows nothing but the disc');
   const none = L.compactView({ rows: [], focusId: null, pending: null });
-  assert.deepEqual([none.minis, none.more, none.activity, none.badge, none.width], [[], 0, '', '', 288], 'nothing running: the plain 288 pill');
-  assert.equal(L.compactView({ rows, focusId: null, pending: { kind: 'question', agent: 'pi', text: '¿Qué editor?' } }).badge, 'question');
-  const ask = L.compactView({ rows, focusId: null, pending: { kind: 'question', agent: 'pi', text: '¿Qué editor preferís?\nvim o emacs' } });
-  assert.deepEqual([ask.width, ask.activity, ask.reply, ask.minis.length, ask.more], [560, '¿Qué editor preferís?', true, 0, 0], 'S3: a question widens the pill, shows its first line + «Responder», drops the minis');
+  assert.deepEqual([none.minis, none.more, none.activity, none.badge, none.width], [[], 0, '', '', dot.w], 'nothing running: the bare disc');
+  const question = L.compactView({ rows, focusId: null, pending: { kind: 'question', agent: 'pi', text: '¿Qué editor preferís?\nvim o emacs' } });
+  assert.deepEqual([question.width, question.activity, question.reply, question.badge], [dot.w, '', false, 'question'], 'S5: a question is a SIGNAL on the disc, never a wide bar with «Responder»');
   const perm = L.compactView({ rows: [], focusId: null, pending: { kind: 'question', agent: 'claude-code', text: 'Claude Code asks permission: Bash: rm -rf build/', options: [{ index: 0, label: 'Allow once' }, { index: 1, label: 'Deny' }] } });
-  assert.equal(perm.badge, 'approval'); assert.match(perm.activity, /^Ejecutar: rm -rf build/);
-  assert.equal(L.compactView({ rows, focusId: null, pending: null }).reply, false);
-  assert.equal(L.compactView(null).width, 288);
+  assert.deepEqual([perm.badge, perm.width, perm.activity], ['approval', dot.w, ''], 'a permission is the approval signal, no text');
+  assert.equal(L.compactView(null).width, dot.w);
+  assert.equal(L.COMPACT_WIDTHS, undefined, 'the bar widths (288/440/560) are gone');
 });
-test('HU-006 S4 compactView: a notice shows inside the compact pill without widening it; a waiting question still wins', () => {
+test('HU-006 S4 + island-free-drag S5 compactView: a notice never widens the island; its tone is the disc signal; a waiting question wins', () => {
+  const dot = L.COMPACT_DOT.w;
   const done = L.compactView({ rows: [], focusId: null, pending: null, notice: { kind: 'settled', title: 'Terminó: tests verdes' } });
-  assert.deepEqual([done.activity, done.badge, done.width, done.reply], ['Terminó: tests verdes', 'finished', 288, false]);
+  assert.deepEqual([done.activity, done.badge, done.width, done.reply], ['', 'finished', dot, false]);
   const busy = [row({ id: 's-0000000a', kindLabel: 'Pi', cwd: 'workspace', state: 'running' })];
   const withRows = L.compactView({ rows: busy, focusId: 's-0000000a', pending: null, notice: { kind: 'attention', title: 'Codex te pide permiso' } });
-  assert.deepEqual([withRows.activity, withRows.badge, withRows.width], ['Codex te pide permiso', 'attention', 440], 'same width as without the notice');
+  assert.deepEqual([withRows.activity, withRows.badge, withRows.width], ['', 'attention', dot], 'the same disc, only its tone changes');
   const ask = L.compactView({ rows: busy, focusId: null, pending: { kind: 'question', agent: 'pi', text: '¿Seguro?' }, notice: { kind: 'settled', title: 'x' } });
-  assert.deepEqual([ask.badge, ask.activity], ['question', '¿Seguro?']);
-  const long = L.compactView({ rows: [], pending: null, notice: { kind: 'settled', title: 'x'.repeat(200) } });
-  assert.ok(long.activity.length <= 44, 'bounded');
+  assert.deepEqual([ask.badge, ask.activity], ['question', ''], 'a waiting question outranks a notice');
   for (const bad of [{ kind: 'evil', title: 'x' }, { kind: 'settled', title: 7 }, { kind: 'settled', title: '' }, 'text']) {
     const v = L.compactView({ rows: [], pending: null, notice: bad });
     assert.deepEqual([v.activity, v.badge], ['', ''], JSON.stringify(bad));
   }
-  const css = fs.readFileSync(path.join(frontend, 'vendor/coucou/island/island.css'), 'utf8');
-  for (const kind of ['finished', 'attention']) assert.match(css, new RegExp(`#compact-badge\\[data-kind="${kind}"\\]::before`), kind);
 });
-test('S1/S2 wiring + CSS: the strip element, the 8px activation zone (24px hidden offset), the mini row and the activity line exist', () => {
+test('S2 wiring + CSS: the mini row and the activity line exist; the edge thread and the hidden offset are gone (isla-cualquier-lado S2)', () => {
   const html = fs.readFileSync(path.join(frontend, 'index.html'), 'utf8');
-  for (const id of ['edge-strip', 'compact-activity', 'compact-badge']) assert.match(html, new RegExp(`id="${id}"`), id);
+  for (const id of ['compact-activity', 'compact-badge']) assert.match(html, new RegExp(`id="${id}"`), id);
+  assert.doesNotMatch(html, /id="edge-strip"/, 'no hidden edge thread');
   const isl = fs.readFileSync(path.join(frontend, 'island.js'), 'utf8');
-  assert.match(isl, /24 \* conceal\.target/, 'hidden = 24px up: 8px of activation zone stay under the pointer');
-  assert.doesNotMatch(isl, /28 \* conceal/, 'the old 4px slice is gone');
+  assert.doesNotMatch(isl, /conceal/, 'the island is never slid up into the edge');
   assert.match(isl, /abito:compact-view/);
   assert.match(isl, /compactW/);
-  assert.equal(decls('#edge-strip').width, '160px'); assert.equal(decls('#edge-strip').height, '3px');
-  assert.equal(decls('#capsule[data-edge-hidden="true"] #island').background, 'transparent', 'only the coloured thread is seen, not the black slice');
-  for (const st of ['rest', 'question', 'approval', 'finished']) assert.ok(decls(`#edge-strip[data-state="${st}"]`).background, st);
-  assert.match(css, /@media \(prefers-reduced-motion: no-preference\) \{[^}]*#edge-strip\[data-pulse="true"\]/, 'the slow pulse exists only when motion is allowed');
+  const nusa = fs.readFileSync(path.join(frontend, 'island-nusa.css'), 'utf8');
+  for (const [name, text] of [['vendor island.css', css], ['island-nusa.css', nusa]]) {
+    assert.doesNotMatch(text.replace(/\/\*[\s\S]*?\*\//g, ''), /#edge-strip|data-edge-hidden|edge-pulse/, name + ': no hidden-state rules left');
+  }
   assert.equal(decls('#mini-grid')['flex-direction'], 'row', 'a row of minis, not a 2x2 grid');
   assert.equal(decls('#capsule[data-phase="compact"] #mini-grid[data-count]:not([data-count="0"])').display, 'flex');
   assert.ok(decls('.mini-more'));

@@ -74,7 +74,6 @@
   <script defer src="chat-view.js"></script>
   <script defer src="chat-cards.js"></script>
   <script defer src="chat.js"></script>
-  <script defer src="models.js"></script>
   <!-- #306: settings panel (providers, connectors, general). -->
   <script defer src="specialists-view.js"></script>
   <script defer src="pill-settings.js"></script>
@@ -108,13 +107,12 @@
       <svg id="clay" aria-hidden="true" focusable="false"></svg>
       <div id="island-tip" role="tooltip" hidden></div>
       <span id="compact-badge" aria-hidden="true" hidden></span>
-      <span id="compact-activity" class="compact-activity"></span>
-      <button id="compact-reply" type="button" hidden>Responder</button>
+      <!-- island-free-drag S3/S5: the disc is the whole compact island, so it has no room for a text line or a «Responder» pill;
+           a pending question/permission rides it as a state signal and is READ when the island is opened. -->
+      <span id="compact-activity" class="compact-activity" hidden></span>
       <!-- S11 (11 error/sin motor, B): a band under the overview, only while something needs attention; «Omitir» silences that problem -->
       <div id="engine-band" role="status" hidden><span class="eb-icon" aria-hidden="true"></span><span id="engine-band-label"></span><button id="engine-band-link" type="button"></button><button id="engine-band-skip" type="button">Omitir</button></div>
       <div id="mini-grid" aria-hidden="true"></div>
-      <!-- S1 (01 oculta, A): the hidden island is ONE thread; its colour is the most urgent state (island-layout.js edgeStripView) -->
-      <div id="edge-strip" data-state="rest" data-pulse="false" role="img" aria-label="Koda, en reposo"></div>
       <!-- S10 (L22): Coucou's state badge on the character («!» approval, «?» question, ✓ finished); decoration only. -->
       <span id="clay-badge" aria-hidden="true" hidden><i></i></span>
       <!-- #419: visual auto-close countdown — pure decoration (aria-hidden,
@@ -224,7 +222,7 @@
         <div id="notice-card" hidden>
           <div class="who-row"><span class="dot" aria-hidden="true"></span><strong id="notice-card-name"></strong><span id="notice-card-verb"></span></div>
           <div id="notice-card-message" class="one-line"></div>
-          <div class="actions"><button id="notice-card-terminal" class="btn primary" type="button" aria-label="Abrir terminal"><span>Ver</span></button><button id="notice-card-ok" class="btn secondary" type="button"><span>OK</span></button></div>
+          <div class="actions"><button id="notice-card-terminal" class="btn primary" type="button" aria-label="Ver en la terminal"><span>Ver</span></button><button id="notice-card-ok" class="btn secondary" type="button"><span>OK</span></button></div>
         </div>
       </div>
       <!-- Q1: notices are announced once to screen readers (polite). -->
@@ -316,26 +314,15 @@
           </div>
           <ol id="chat-log" tabindex="0" aria-label="Historial de la conversación"></ol>
           <button id="chat-new" type="button" hidden aria-label="Ir al final" title="Ir al final"><span class="ico" data-icon="arrow-down"></span><span class="dot"></span></button>
-          <!-- F024: the model row above the composer — the LOCAL model of the NEXT turn
-               (chat:state.target, already resolved by Rust) and its picker. The picker reads
-               the SAME closed `models_action` set as Ajustes → Modelos (list/select): it can
-               never name an endpoint, a key, an account or a provider (S5). Plain text only. -->
-          <div id="chat-model-row">
-            <button id="chat-model-btn" type="button" disabled aria-expanded="false" aria-controls="chat-model-picker">
-              <span class="model-dot" aria-hidden="true"></span>
-              <span class="word" id="chat-model-name"></span>
-              <span class="model-caret" aria-hidden="true"></span>
-            </button>
-            <div id="chat-model-picker" role="group" aria-label="Modelos locales" hidden inert>
-              <p id="chat-model-note" class="picker-note"></p>
-            </div>
-          </div>
+          <!-- K2-05 U5c: which model the engine answers with — read-only text (chat:state.engine_model), hidden while
+               unknown. No button, no picker: the engine owns the model. -->
+          <p id="chat-model-line" hidden></p>
           <form id="chat-composer" novalidate>
             <label for="chat-input" class="sr-only">Mensaje para Koda</label>
             <textarea id="chat-input" rows="1" maxlength="8000" spellcheck="true"
               aria-describedby="chat-help chat-problem" placeholder="Escribí…"></textarea>
             <span id="chat-draft-word" class="chip" data-tone="red" hidden></span>
-            <span id="chat-help" class="sr-only">Enter envía. Mayúsculas más Enter agrega una línea. Escape sale del campo; otro Escape cierra la isla.</span>
+            <span id="chat-help" class="sr-only">Enter envía. Mayúsculas más Enter agrega una línea. Escape sale del campo; otro Escape pliega la isla.</span>
             <button id="chat-cancel" class="round" type="button" hidden aria-label="Cancelar"><span class="ico" data-icon="square"></span></button>
             <button id="chat-mic" class="round" type="button" hidden aria-label="Dictar con el micrófono"><span class="ico" data-icon="mic"></span></button>
             <button id="chat-send" class="round" type="submit" disabled aria-label="Enviar"><span class="ico" data-icon="arrow-up"></span></button>
@@ -368,22 +355,6 @@
             <section id="integrations-n8n" hidden></section>
             <section id="integrations-calendar" hidden></section>
           </div><!-- /connections-more -->
-          <!-- U2: self-hosted model choice — an internal panel of the same
-               island (replaces the transcript while open). Local only, no
-               keys; listed is never shown as ready. -->
-          <div id="models" inert role="tabpanel" aria-labelledby="settings-tab-models" aria-label="Modelo local">
-            <!-- #309: the buttons come first so wrapping pushes the meters to a second row, never a button out of the island -->
-            <div id="models-bar">
-              <span id="models-count" class="chip" role="img"><span class="ico" data-icon="chip"></span><span class="word" id="models-count-word"></span></span>
-              <button id="models-info" class="icon-btn" type="button" aria-label="Ver detalle de los modelos" aria-expanded="false" aria-controls="models-note"><span class="ico" data-icon="info"></span></button>
-              <button id="models-refresh" class="icon-btn" type="button" aria-label="Actualizar modelos locales"><span class="ico" data-icon="refresh"></span></button>
-              <ul id="models-meters" aria-label="Recursos de esta máquina"></ul>
-            </div>
-            <p id="models-note" class="sr-only"></p>
-            <label class="models-search-field" for="models-search"><span class="sr-only">Buscar modelos locales</span><input id="models-search" type="search" placeholder="Buscar modelos" autocomplete="off"></label>
-            <ul id="models-list" aria-label="Modelos locales"></ul>
-            <p id="models-resources" class="sr-only"></p>
-          </div>
           <p id="settings-live" class="sr-only" role="status" aria-live="polite"></p>
         </div>
         <p id="chat-live" class="sr-only" role="status" aria-live="polite"></p>

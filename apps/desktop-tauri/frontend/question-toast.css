@@ -1,5 +1,7 @@
 /* Sileo-style question toast (port of hiaaryan/sileo styles.css, MIT): spring easing, 350x40 pill, gooey body, badge + title header.
-   Sits BELOW the island (top: island bottom + gap); the island itself is untouched. */
+   isla-cualquier-lado S3/S5 (T6): it hangs from the FOLDED disc, on the side of the disc that faces the centre of the screen — below it
+   when the disc is in the upper half (data-edge="top", the default) and above it in the lower half (data-edge="bottom", mirrored). The
+   island itself is untouched. */
 :root {
   --sileo-spring-easing: linear(0, 0.002 0.6%, 0.007 1.2%, 0.015 1.8%, 0.026 2.4%, 0.041 3.1%, 0.06 3.8%, 0.108 5.3%, 0.157 6.6%, 0.214 8%, 0.467 13.7%, 0.577 16.3%, 0.631 17.7%, 0.682 19.1%, 0.73 20.5%, 0.771 21.8%, 0.808 23.1%, 0.844 24.5%, 0.874 25.8%, 0.903 27.2%, 0.928 28.6%, 0.952 30.1%, 0.972 31.6%, 0.988 33.1%, 1.01 35.7%, 1.025 38.5%, 1.034 41.6%, 1.038 45%, 1.035 50.1%, 1.012 64.2%, 1.003 73%, 0.999 83.7%, 1);
   --sileo-duration: 600ms;
@@ -23,20 +25,28 @@
 .q-toast[data-ready="true"][data-expanded="true"] { height: 96px; }
 .q-toast[data-exiting="true"] { pointer-events: none; }
 @media (prefers-reduced-motion: reduce) { .q-toast, .q-toast[data-ready="true"] { transition: opacity 0.01ms; } }
-.q-toast:focus-visible { outline: 2px solid var(--dim-2, #9aa0a8); outline-offset: 3px; border-radius: 18px; }
+.q-toast:focus-visible { outline: 2px solid #fff; outline-offset: 3px; border-radius: 18px; } /* T6/S3: ONE 2px white ring (design/system.md:249), never the grey --dim-2 */
 .q-toast-canvas { position: absolute; left: 0; top: 0; right: 0; pointer-events: none; overflow: visible; }
 .q-toast-svg { overflow: visible; }
 .q-toast-neck, .q-toast-pill, .q-toast-bodyrect { fill: #000; }
 .q-toast-canvas { top: -12px; } /* human 26-oct «sin transparencia»: SVG y=0 (the island's bottom edge, NECK_H 12 above) = the toast's top, so the
    pill and body are drawn exactly under the header and body text, never offset with text over the background */
+/* T6/T6b: with the disc in the LOWER half of the screen the toast hangs ABOVE it, so the whole shape is mirrored about the line that
+   joins the two: the toast's BOTTOM edge, which is the disc's top edge. The canvas is 12 px taller than the box, so `top: calc(100% -
+   12px)` puts its SVG y=0 on that line and `transform-origin: 50% 12px` mirrors about it: the pill ends on the disc's top, the gooey
+   neck points 12 px DOWN INTO the disc and the body grows up, while the box keeps its 40/96 px and the text layers below stay upright
+   and swap ends instead. (Mirroring about the canvas' default 12 px from the toast's TOP drew the whole card one box height above its
+   own text; the canvas holds rects only — no text, no icon — so the flip itself is safe.) */
+.q-toast[data-edge="bottom"] .q-toast-canvas { top: calc(100% - 12px); transform: scaleY(-1); transform-origin: 50% 12px; }
 .q-toast-header { position: absolute; z-index: 20; left: 0; top: 0; display: flex; align-items: center; justify-content: center; gap: 8px; height: var(--sileo-height); padding: 6px 8px; max-width: 100%; box-sizing: border-box; overflow: hidden; animation: q-toast-header-in var(--sileo-duration) var(--sileo-spring-easing) both; }
+/* T6: hanging above the disc, the pill sits on the toast box's BOTTOM edge — the one that touches the disc — and the body grows up from it */
+.q-toast[data-edge="bottom"] .q-toast-header { top: auto; bottom: 0; }
 .q-toast-badge { order: 0; } .q-toast-dot { order: 1; } .q-toast-title { order: 2; } .q-toast-queue { order: 3; }
 .q-toast-dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--q-accent, #4d9fff); box-shadow: 0 0 8px var(--q-accent, #4d9fff); }
-.q-toast-badge { display: flex; width: 28px; height: 28px; flex: none; align-items: center; justify-content: center; padding: 2px; box-sizing: border-box; border-radius: 9999px; color: var(--q-title, #fff); background: color-mix(in oklch, var(--q-title, #fff) 20%, transparent); }
-.q-toast-badge svg { width: 16px; height: 16px; }
-/* the actual Abito (clay-engine SVG): fills the compact 28px badge, decorative (the toast button carries the label) */
-.q-toast-badge[data-pose] { padding: 0; }
-.q-toast-badge .q-toast-abito { display: block; width: 28px; height: 28px; overflow: visible; }
+.q-toast-badge { display: flex; width: 28px; height: 28px; flex: none; align-items: center; justify-content: center; padding: 0; box-sizing: border-box; border-radius: 9999px; color: var(--q-title, #fff); background: color-mix(in oklch, var(--q-title, #fff) 20%, transparent); }
+/* isla-cualquier-lado S7/S5 (T6): the badge is KODA, the same sprite/skin the folded disc draws — never the green clay Abito figure
+   (island-free-drag S7). question-toast.js owns the empty slot (.q-toast-koda[data-koda-slot="toast"]) and koda-skin.js paints it with the
+   disc's own sheet and integer layout; koda-skin.css sizes that slot, so the badge only has to hold it centred. */
 .q-toast-title { font-size: 13px; line-height: 16px; font-weight: 600; color: var(--q-title, #fff); white-space: nowrap; }
 .q-toast-queue { font-size: 11px; color: rgba(255, 255, 255, 0.55); white-space: nowrap; }
 .q-toast-queue[hidden] { display: none; }
@@ -46,6 +56,8 @@
 /* informational toasts (terminó / outcomes) answer nothing and open nothing: no pointer affordance */
 .q-toast[data-actionable="false"] { cursor: default; }
 .q-toast-content { position: absolute; z-index: 10; left: 0; top: var(--sileo-height); width: 100%; box-sizing: border-box; padding: 2px 14px 10px; opacity: 0; pointer-events: none; transition: opacity var(--sileo-content-out) ease var(--sileo-content-out-delay); }
+/* T6: above the disc the body sits above the pill, so it grows away from the disc instead of under it */
+.q-toast[data-edge="bottom"] .q-toast-content { top: auto; bottom: var(--sileo-height); }
 .q-toast[data-expanded="true"] .q-toast-content { opacity: 1; transition: opacity var(--sileo-content-in) ease var(--sileo-content-in-delay); }
 .q-toast-body { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; font-size: 12px; line-height: 1.15rem; color: rgba(255, 255, 255, 0.78); font-weight: 400; }
 @keyframes q-toast-header-in { from { opacity: 0; filter: blur(6px); } to { opacity: 1; filter: blur(0); } }

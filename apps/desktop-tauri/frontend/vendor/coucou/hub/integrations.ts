@@ -9,8 +9,10 @@ import { notchSection as section, notchHint as hint, infoTip, notchTipSection } 
 import { session, trusted } from './runtime.js';
 import { t } from './i18n-es.js';
 const UNAVAILABLE = 'No disponible todavía';
-const STORE = typeof navigator !== 'undefined' && navigator.userAgent.includes('Windows')
-  ? 'Windows Credential Manager' : 'Secret Service (GNOME Keyring, KWallet)';
+// K2-01c: name the keychain this OS really uses (macOS: the login Keychain).
+const UA = typeof navigator !== 'undefined' ? navigator.userAgent : '';
+const STORE = UA.includes('Windows') ? 'Windows Credential Manager'
+  : UA.includes('Mac OS X') ? 'macOS Keychain' : 'Secret Service (GNOME Keyring, KWallet)';
 const INTEGRATIONS = [
   {id:'integration_stripe',name:'Stripe',color:'#0570DE',fields:[['stripe-api-key','Secret key','sk_live_…']]},
   {id:'integration_github',name:'GitHub',color:'#F4505E',fields:[['github-token','Token','ghp_…']],hint:'Classic token with the repo scope, or fine-grained with read access to Pull requests, Commit statuses and Actions.'},

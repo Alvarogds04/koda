@@ -2,15 +2,15 @@
 // HU-057 S12 (human, 29-oct, canvas replica): the COMPACT pill in the real layout.
 //  1) «esto no esta centrado koda»: Koda's DRAWN pixels are centred vertically in the 32px pill (±1px), with a real left padding.
 //  2) «Koda no tiene espacio aqui»: Koda and the text never touch: >= 8px between their boxes in every compact variant.
-//  15) «porque esto es de color azul?»: the legacy thread #edge-strip (cyan) is hidden while the pill is visible, and when the island
-//      is hidden it wears ROLE colours (never the fixed cyan / green / amber of the vendor sheet).
+//  15) «porque esto es de color azul?»: the legacy thread #edge-strip (cyan) was painted over the pill. isla-cualquier-lado S2 retired
+//      the edge hide and its thread altogether: the visible pill has no thread on it and is never concealed.
 const assert = require('node:assert/strict');
 const H = require('./island-geometry-harness.cjs');
 
 const NOTICE = t => ({ id: 'n-pill', title: t, detail: 'Listo', severity: 'info', kind: 'settled', expiresAt: Date.now() + 600000, agent: 'pi', projectName: 'workspace' });
 const snap = (s, notices) => ({ state: s, notices, card: null, request: null, revision: Date.now(), motionOverride: false, unavailable: false, connections: 1 });
 
-// page-side probe: boxes, Koda's opaque-pixel bbox (from the sprite sheet at the current frame), strip colours
+// page-side probe: boxes, Koda's opaque-pixel bbox (from the sprite sheet at the current frame), the retired thread's absence
 const probe = () => page => page.evaluate(async () => {
   const R = e => { const b = e.getBoundingClientRect(); return { l: b.left, t: b.top, r: b.right, b: b.bottom, w: b.width, h: b.height }; };
   const isl = document.getElementById('island'), act = document.getElementById('compact-activity'), k = document.querySelector('.koda-sprite');
@@ -22,9 +22,9 @@ const probe = () => page => page.evaluate(async () => {
   for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) if (d[(j * w + i) * 4 + 3] > 40) { t = Math.min(t, j); b = Math.max(b, j); l = Math.min(l, i); r = Math.max(r, i); }
   const ib = R(isl), ink = { l: kb.l + l, r: kb.l + r + 1, t: kb.t + t, b: kb.t + b + 1 };
   const reply = document.getElementById('compact-reply'), rv = reply && reply.offsetWidth ? R(reply) : null;
-  const strip = document.getElementById('edge-strip'), cs = getComputedStyle(strip), cap = document.getElementById('capsule');
+  const cap = document.getElementById('capsule');
   return { island: ib, koda: kb, ink, act: act.textContent ? R(act) : null, text: act.textContent, scrollW: act.scrollWidth, clientW: act.clientWidth, reply: rv,
-    fit: cap.dataset.pillFit, phase: cap.dataset.phase, strip: { op: cs.opacity, disp: cs.display, bg: cs.backgroundColor, state: strip.dataset.state },
+    fit: cap.dataset.compactDisc, phase: cap.dataset.phase, strip: !!document.getElementById('edge-strip'), edgeHidden: cap.dataset.edgeHidden,
     shapes: (window.__shapes || []).slice(-1)[0] || null };
 });
 const P = probe();
@@ -81,35 +81,10 @@ const VARIANTS = [
         if (m.shapes) { const rw = Array.isArray(m.shapes) ? m.shapes[0] : m.shapes.w; if (rw) assert.ok(m.island.w <= rw + 0.5, `${tag}: pill ${m.island.w} <= reported ${rw}`); }
         assert.ok(m.island.w <= 560.5, `${tag}: <= 560`);
         if (bare) assert.equal(Math.round(m.island.w), 40, `${tag}: the idle Koda-only capsule stays 40px`);
-        // 15) the legacy thread is hidden while the pill is visible
-        assert.ok(m.strip.op === '0' || m.strip.disp === 'none', `${tag}: edge thread hidden under the visible pill (opacity ${m.strip.op}, state ${m.strip.state})`);
+        // 15) no legacy thread over the visible pill, and the pill is not concealed (isla-cualquier-lado S2)
+        assert.equal(m.strip, false, `${tag}: no edge thread element`);
+        assert.equal(m.edgeHidden, undefined, `${tag}: the pill is never concealed`);
         if (theme === 'dark') await ui.screenshot(`/tmp/pill-fix-${name}-dark.png`); else await ui.screenshot(`/tmp/pill-fix-${name}-light.png`);
-      } finally { await ui.close(); }
-    }
-  }
-  // 15b) the island IS hidden: the thread is the only indicator, with ROLE colours
-  for (const theme of ['dark', 'light']) {
-    for (const [state, sc, role] of [['question', { compact: true, question: 'plain' }, '--sun'], ['approval', { compact: true, question: 'approvalPi' }, '--sun'], ['finished', { compact: true }, '--go'], ['error', { compact: true }, '--red-11'], ['working', { compact: true }, '--pill-dot']]) {
-      const ui = await H.open(Object.assign({ theme }, sc));
-      try {
-        const { page } = ui; ran++;
-        await page.evaluate(() => window.__islandSetState('compact')); await page.waitForTimeout(1000);
-        await page.evaluate(() => window.__islandConceal(true)); await page.waitForTimeout(1200);
-        const r = await page.evaluate(({ state, role }) => {
-          const strip = document.getElementById('edge-strip'), cap = document.getElementById('capsule');
-          if (!['question', 'approval'].includes(state) || strip.dataset.state !== state) { strip.dataset.state = state; strip.dataset.pulse = 'false'; }
-          const probeEl = document.createElement('i'); cap.append(probeEl); probeEl.style.background = `var(${role}, var(--island-live))`;
-          const want = getComputedStyle(probeEl).backgroundColor; probeEl.remove();
-          const cs = getComputedStyle(strip); return { hidden: cap.dataset.edgeHidden, got: cs.backgroundColor, want, op: cs.opacity, st: strip.dataset.state };
-        }, { state, role });
-        const tag = `${theme}/hidden-${state}`;
-        assert.equal(r.hidden, 'true', `${tag}: island concealed`);
-        await page.waitForTimeout(400);
-        const got = await page.evaluate(() => getComputedStyle(document.getElementById('edge-strip')).backgroundColor);
-        for (const bad of ['rgb(34, 211, 238)', 'rgb(34, 197, 94)', 'rgb(245, 165, 36)']) assert.notEqual(got, bad, `${tag}: the thread never wears the vendor colour ${bad}`);
-        assert.equal(got, r.want, `${tag}: the thread wears the role colour ${role} (${got} vs ${r.want})`);
-        assert.ok(Number(r.op) > 0.3, `${tag}: the thread is visible when the island is hidden (${r.op})`);
-        await ui.screenshot(`/tmp/pill-fix-hidden-${state}-${theme}.png`);
       } finally { await ui.close(); }
     }
   }

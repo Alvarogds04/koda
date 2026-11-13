@@ -84,14 +84,14 @@ test('S21 Chat: «Probar» is VISIBLE on a card without a key, disabled, and its
   for (const p of probes) { assert(p.visible, `${p.card}: Probar not visible`); assert(p.disabled, `${p.card}: Probar must be disabled without a key`); assert.equal(p.reason, 'Guarda una clave para poder probarla.'); assert(p.reasonVisible, `${p.card}: the reason must be on screen`); }
 });
 
-test('S4 Chat: ONE list of AI providers: no second «Configuración de proveedores» / «Buscar proveedor» system, one key field per provider, each card has its model', async r => {
+test('S4 Chat: ONE list of AI providers: no second «Configuración de proveedores» / «Buscar proveedor» system, one key field per provider, and no card offers a model (K2-05 U5c)', async r => {
   await r.go('Chat');
   const page = await r.text('.hub-page');
   for (const dup of ['Configuración de proveedores', 'Buscar proveedor', 'Cuentas conectadas']) assert(!page.includes(dup), `duplicate system still on Chat: ${dup}`);
   const keys = await r.page.evaluate(() => [...document.querySelectorAll('input[id^="chat-key-"]')].map(i => i.id));
   assert.equal(new Set(keys).size, keys.length, `a key field twice: ${JSON.stringify(keys)}`);
   const cards = await r.page.evaluate(() => [...document.querySelectorAll('.abito-card')].filter(c => c.querySelector('input[id^="chat-key-"]')).map(c => [c.querySelector('h2').textContent.trim().split(/\s/)[0], !!c.querySelector('select[id^="chat-"][id$="-model"]')]));
-  assert(cards.length >= 4 && cards.every(([, hasModel]) => hasModel), `every provider card owns its model: ${JSON.stringify(cards)}`);
+  assert(cards.length >= 4 && cards.every(([, hasModel]) => !hasModel), `no card offers a model: the engine owns the model (${JSON.stringify(cards)})`);
   const names = cards.map(c => c[0]); assert.equal(new Set(names).size, names.length, `a provider twice: ${names}`);
   assert(await r.page.evaluate(() => !!document.getElementById('chat-window-context') && !!document.getElementById('chat-extras')), 'slots for the context toggle');
 });
@@ -107,7 +107,7 @@ test('S2 Chat: subscription rows belong to Claude/OpenAI only and fit within the
   assert.deepEqual(rows.map(r => [r.id,r.card]), [['chat-subscription-anthropic','Claude'],['chat-subscription-openai','OpenAI']]);
   for (const row of rows) { assert(row.text.includes('✗ sin sesión')); assert(row.text.includes('Iniciar sesión con suscripción')); assert.deepEqual(row.bad,[]); }
   const claude = r.page.locator('#chat-subscription-anthropic'); await claude.getByText('Iniciar sesión con suscripción',{exact:true}).click();
-  await claude.getByPlaceholder('Pega aquí el código').waitFor({state:'visible'});
+  await claude.getByPlaceholder('Pegá aquí el código').waitFor({state:'visible'});
   const overflow = await claude.evaluate(row => { const cb = row.closest('.abito-card').getBoundingClientRect(); return [...row.querySelectorAll('input,button')].some(el => { const b = el.getBoundingClientRect(); return b.width && b.right > cb.right - 8; }); });
   assert.equal(overflow,false); await claude.getByText('Cancelar',{exact:true}).click();
 });
@@ -164,7 +164,7 @@ test('S25 Atajos: an assigned key reads «Ctrl+Shift+N» (the page\'s canonical 
   // same modifier order as every other row of the page (Ctrl, Alt, Shift): one convention, not two
   for (const k of keys) { const mods = k.split('+').slice(0, -1); const order = ['Ctrl', 'Alt', 'Shift', 'Win']; assert.deepEqual(mods, [...mods].sort((a, b) => order.indexOf(a) - order.indexOf(b)), `modifier order in ${k}`); }
   await r.page.locator('#global-shortcuts .keycap').first().click(); await r.page.waitForTimeout(300);
-  assert.match(await r.page.locator('#global-shortcuts .keycap').first().textContent(), /Pulsa/, 'while capturing, the cell asks for the keys');
+  assert.match(await r.page.locator('#global-shortcuts .keycap').first().textContent(), /Pulsá/, 'while capturing, the cell asks for the keys');
 });
 
 test('Ajustes opens without waiting for the dictation status: the sidebar is there at once even when that host answer takes 3 s', async r => {
@@ -187,7 +187,7 @@ test('S25 Atajos: while ONE row is capturing, the other rows keep their key and 
   for (const [, , state] of before) assert.match(state, /activo/, 'idle rows are active');
   await r.page.locator('#global-shortcuts .shortcut').nth(1).locator('.keycap').click(); await r.page.waitForTimeout(500);
   const during = await read();
-  assert.match(during[1][1], /Pulsa/, 'the capturing row asks for the keys');
+  assert.match(during[1][1], /Pulsá/, 'the capturing row asks for the keys');
   for (let i = 0; i < during.length; i++) { if (i === 1) continue; assert.deepEqual(during[i], before[i], `row ${during[i][0]} changed while another row was capturing: ${JSON.stringify([before[i], during[i]])}`); }
   assert.match(during[1][2], /activo|apagado|grabando/i, 'the capturing row keeps a truthful state');
   await r.page.keyboard.press('Escape'); await r.page.waitForTimeout(500);

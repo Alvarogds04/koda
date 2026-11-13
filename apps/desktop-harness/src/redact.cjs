@@ -134,8 +134,9 @@ function jsonValueEnd(s, i, clamp) {
   return i;
 }
 
-// Generic head-then-value scanner. decide(match, text) => null | {start, end} (range to replace by MARKER).
-function scan(text, head, decide, spans) {
+// Generic head-then-value scanner. decide(match, text) => null | {start, end, auth?} (range to replace by MARKER).
+// `auth` (optional Set): indices into `spans` of hidden Authorization scheme values (see authScheme below).
+function scan(text, head, decide, spans, auth) {
   head.lastIndex = 0;
   let out = '', last = 0, count = 0, m;
   while ((m = head.exec(text)) !== null) {
@@ -143,7 +144,11 @@ function scan(text, head, decide, spans) {
     const r = decide(m, text);
     if (!r || r.end <= r.start || r.start < last) continue;
     out += text.slice(last, r.start) + MARKER;
-    if (text.slice(r.start, r.end) !== MARKER) { count++; spans.push(text.slice(r.start, r.end)); }
+    if (text.slice(r.start, r.end) !== MARKER) {
+      count++;
+      if (r.auth && auth) auth.add(spans.length);
+      spans.push(text.slice(r.start, r.end));
+    }
     last = r.end;
     if (head.lastIndex < r.end) head.lastIndex = r.end;
   }
@@ -217,7 +222,40 @@ const valueAfter = (m, s) => {
   if (s[start] === '-' && /[A-Za-z-]/.test(s[start + 1] || '')) return null;
   return { start, end: valueEnd(s, start) };
 };
-function onePass(input, spans) {
+// K2-08 T1b (L8, L10): a hidden part that may be a path. ANY span (whatever rule hid it) is path-like when its original
+// text contains / or \, is exactly . or .. once surrounding quotes are stripped, or starts like a path root (~, drive).
+// Shape runs (hex/base64) are also path-like when they sit right next to a separator (a whole path component; L10
+// dropped the old `://` exception, D-b). The ONLY exception (L10): the scheme-prefixed value of an Authorization /
+// Proxy-Authorization header written inside a shell quote (`-H "Authorization: Bearer …"`, httpie
+// `Authorization:"Basic …"`): that shell word starts with the visible header name, so it is never a bare path.
+const PATH_ROOT = /^(?:\$?['"])?(?:[\/\\~]|\.{1,2}[\/\\]|[A-Za-z]:[\/\\])/;
+const DOTS = /\$?['"]/g;
+// L10 / D-c: the shell removes every quote, so `..""`, `.''.` and `"..".` are `.`/`..` too.
+const pathLikeSpan = x => /[\/\\]/.test(x) || PATH_ROOT.test(x) || ['.', '..'].includes(x.replace(DOTS, ''));
+const isSep = c => c === '/' || c === '\\';
+const shapeNextToSep = (s, offset, m) => isSep(s[offset - 1]) || isSep(s[offset + m.length]);
+// Even inside the exception, a dot path segment (./ ../ /. /..) is never a token: fail closed.
+const DOT_SEGMENT = /(?:^|[\/\\])\.{1,2}(?:[\/\\]|$)/;
+const AUTH_NAME = '(?:proxy-)?authorization[ \\t]*:[ \\t]*';
+// The header name must begin the shell word: `"Authorization: …` / `-H'Authorization: …` / `--header="…`, or httpie
+// `Authorization:"…` (name unquoted at word start, quote after the colon). Text before the name/value is tested.
+// L10 / D-d: `-H` or `--opt=` only count at the start of a shell word, so `/tmp/a="Authorization: …` is not a header.
+const AUTH_WORD_START = /(?:^|\s)(?:-H|--?[A-Za-z][\w-]*=)?\$?['"]$/;
+const AUTH_BEFORE = new RegExp(`(?:(?:^|\\s)(?:-H|--?[A-Za-z][\\w-]*=)?\\$?['"]${AUTH_NAME}|(?:^|\\s)${AUTH_NAME}\\$?['"])$`, 'i');
+const authScheme = (value, quoted) => quoted && /^(?:Bearer|Basic)[ \t]+\S/i.test(value) && !DOT_SEGMENT.test(value);
+// Like sub() for the generic shape rules (no capture groups): also records the indices of runs next to a separator.
+function shapeSub(text, re, hide, spans, shapeIdx) {
+  let count = 0;
+  const out = text.replace(re, (m, offset, s) => {
+    if (!hide(m)) return m;
+    count++;
+    if (shapeNextToSep(s, offset, m)) shapeIdx.add(spans.length);
+    spans.push(m);
+    return MARKER;
+  });
+  return { text: out, count };
+}
+function onePass(input, spans, shapeIdx, auth) {
   let text = input, total = 0;
   const step = r => { text = r.text; total += r.count; };
   // PEM: through END; unterminated => stop at the first quote or ; & | < > so the rest of the command stays visible.
@@ -260,11 +298,27 @@ function onePass(input, spans) {
     const q = quoteTracker(text);
     step(scan(text, HEADER_HEAD, (m, s) => {
       if (!HEADER_NAME.test(m[1])) return null;
-      const start = m.index + m[0].length;
-      return { start, end: headerEnd(s, start, q(m.index) !== 0) };
-    }, spans));
+      const start = m.index + m[0].length, quoted = q(m.index) !== 0;
+      const end = headerEnd(s, start, quoted);
+      return { start, end, auth: /^(?:proxy-)?authorization$/i.test(m[1]) && AUTH_WORD_START.test(s.slice(Math.max(0, m.index - 12), m.index))
+        && authScheme(s.slice(start, end), quoted) };
+    }, spans, auth));
   }
-  step(sub(text, BEARER, (m, word) => `${word} ${MARKER}`, spans, m => m.slice(m.search(/[ \t]/)).trimStart()));
+  {
+    // bare `Bearer <tok>` / `Basic <b64>`: exempt (L10) only inside a quote right after an Authorization header name
+    const q = quoteTracker(text);
+    let count = 0;
+    text = text.replace(BEARER, (m, word, offset, s) => {
+      const r = `${word} ${MARKER}`;
+      if (r === m) return m;
+      count++;
+      const quoted = q(offset) !== 0;
+      if (authScheme(m, quoted) && AUTH_BEFORE.test(s.slice(Math.max(0, offset - 40), offset))) auth.add(spans.length);
+      spans.push(m.slice(m.search(/[ \t]/)).trimStart());
+      return r;
+    });
+    total += count;
+  }
   {
     const q = quoteTracker(text);
     step(scan(text, JSON_HEAD, (m, s) => {
@@ -315,28 +369,30 @@ function onePass(input, spans) {
     text = out + text.slice(last);
   }
   for (const re of TOKEN_SHAPES) step(sub(text, re, () => MARKER, spans));
-  step(sub(text, HEX_RUN, () => MARKER, spans));
-  step(sub(text, B64_SLASH, m => (m.includes('/') && /[a-z]/.test(m) && /[A-Z]/.test(m) && /[0-9]/.test(m) ? MARKER : m), spans));
-  step(sub(text, B64_PLAIN, () => MARKER, spans));
+  step(shapeSub(text, HEX_RUN, () => true, spans, shapeIdx));
+  step(shapeSub(text, B64_SLASH, m => m.includes('/') && /[a-z]/.test(m) && /[A-Z]/.test(m) && /[0-9]/.test(m), spans, shapeIdx));
+  step(shapeSub(text, B64_PLAIN, () => true, spans, shapeIdx));
   return { text, count: total };
 }
 
-// Returns {text, redactions, spans}; `spans` are the original substrings that were replaced by the marker.
+// Returns {text, redactions, spans, pathSpans}; `spans` are the original substrings that were replaced by the marker,
+// `pathSpans` the subset that may be a path (see pathLikeSpan; L10).
 // Never throws; on any internal error the whole input is hidden (the span is the whole command).
 function redactCommand(command) {
-  if (typeof command !== 'string') return { text: '', redactions: 0, spans: [] };
+  if (typeof command !== 'string') return { text: '', redactions: 0, spans: [], pathSpans: [] };
   try {
     let text = command, redactions = 0;
-    const spans = [];
+    const spans = [], shapeIdx = new Set(), auth = new Set();
     for (let i = 0; i < MAX_PASSES; i++) {
-      const r = onePass(text, spans);
+      const r = onePass(text, spans, shapeIdx, auth);
       redactions += r.count;
       if (r.text === text) break;
       text = r.text;
     }
-    return { text, redactions, spans };
+    const pathSpans = spans.filter((x, i) => !auth.has(i) && (shapeIdx.has(i) || pathLikeSpan(x)));
+    return { text, redactions, spans, pathSpans };
   } catch {
-    return { text: MARKER, redactions: 1, spans: [command] };
+    return { text: MARKER, redactions: 1, spans: [command], pathSpans: [] }; // the command word is hidden: lossy anyway
   }
 }
 // Shell syntax that a hidden span could carry: ; & | < > ` $ ( ) { } \ newline CR. False positives are accepted.
