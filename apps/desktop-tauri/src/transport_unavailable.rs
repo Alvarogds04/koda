@@ -4,8 +4,8 @@
 //! human decisions; this fallback never pretends that a receiver exists.
 
 pub use crate::transport_view::{
-    DeliveryState, HumanReplyError, PendingQuestionView, PreviewScan, QuestionDeliveryView,
-    QuestionOptionView, QuestionOutcome, QuestionSnapshot, TransportError, TransportOptions,
+    DeliveryState, HumanReplyError, PendingAskOptionView, PendingAskView, PendingQuestionView, PreviewScan,
+    QuestionDeliveryView, QuestionOptionView, QuestionOutcome, QuestionSnapshot, TransportError, TransportOptions,
     INSTALLED_RUNTIME_LEAF, RESERVED_RUNTIME_NAMES, SOCKET_DIR_ENV,
 };
 
@@ -35,6 +35,11 @@ impl Transport {
     }
 
     pub fn question_snapshot(&self) -> QuestionSnapshot {
+        match self.never {}
+    }
+
+    /// No receiver, so no request ever waits here and the phone link has nothing to offer.
+    pub fn pending_asks(&self) -> Vec<PendingAskView> {
         match self.never {}
     }
 

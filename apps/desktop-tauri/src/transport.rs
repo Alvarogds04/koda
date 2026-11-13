@@ -42,9 +42,9 @@ use crate::protocol::{self, Message};
 use crate::question::{self, Admission, HumanAnswer, Inbound, QuestionSlot, ResolutionStatus};
 use crate::questioncmd::NativeTransition;
 pub use crate::transport_view::{
-    DeliveryState, FormItemView, HumanReplyError, PendingQuestionView, PreviewScan, QuestionDeliveryView,
-    QuestionOptionView, QuestionOutcome, QuestionSnapshot, TransportError, TransportOptions,
-    INSTALLED_RUNTIME_LEAF, RESERVED_RUNTIME_NAMES, SOCKET_DIR_ENV,
+    DeliveryState, FormItemView, HumanReplyError, PendingAskOptionView, PendingAskView, PendingQuestionView,
+    PreviewScan, QuestionDeliveryView, QuestionOptionView, QuestionOutcome, QuestionSnapshot, TransportError,
+    TransportOptions, INSTALLED_RUNTIME_LEAF, RESERVED_RUNTIME_NAMES, SOCKET_DIR_ENV,
 };
 
 /// No transcript: at most eight unacknowledged, text-free delivery receipts.
@@ -551,6 +551,14 @@ impl Transport {
         };
         if changed { self.inner.question_changed(); }
         snapshot
+    }
+    /// The pending requests, oldest first, as the phone link reads them: the queue's own display text plus the asking
+    /// session's id (which only enters the phone's fingerprint, §8.1, and never reaches a phone as a field). Read-only
+    /// on purpose — no prune, no ticket, no origin write — so a caller that must not publish (the phone host's worker)
+    /// can call it at any time. Only the head is answerable (`slot.active`): keeping that rule is the caller's job.
+    pub fn pending_asks(&self) -> Vec<PendingAskView> {
+        let q = self.inner.questions.lock().expect("questions lock");
+        q.slot.queue().map(crate::transport_view::pending_ask_view).collect()
     }
     /// Read-only budget for the matching live slot. No prune, ticket commit,
     /// origin write or private scope is exposed. Send revalidates at its own time.

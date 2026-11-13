@@ -78,6 +78,9 @@ pub enum Ask {
         /// The **full** command or one-line summary; the wire text is cut, the fingerprint is not.
         command: String,
         created_at: u64,
+        /// D12: the request was built from a card the island could not show whole, so the phone must never offer
+        /// Allow for it. The line is then sent with `truncated: true` (§8.4) and the phone shows only Denegar.
+        truncated: bool,
     },
     Question {
         pill_id: String,
@@ -96,6 +99,19 @@ impl Ask {
             tool: tool.to_string(),
             command: command.to_string(),
             created_at,
+            truncated: false,
+        }
+    }
+
+    /// D12: this request came from a card the island could not show whole. The phone is told so with `truncated`
+    /// (`ApprovalSheetPlan.canAllowHere = !truncated`), which leaves Denegar as the only tap — the same rule the
+    /// island's own lossy card applies (`hook-common.cjs` never offers `allow` there).
+    pub fn lossy(self) -> Ask {
+        match self {
+            Ask::Approval { pill_id, fingerprint, tool, command, created_at, .. } =>
+                Ask::Approval { pill_id, fingerprint, tool, command, created_at, truncated: true },
+            // A question is never lossy: it is shown to the phone exactly as the agent asked it.
+            other => other,
         }
     }
 
@@ -164,7 +180,7 @@ impl Ask {
     /// `approval` (§6): the command is cut to 500 characters on a character boundary, and flagged only when it was
     /// cut (§8.4). The fingerprint is untouched: it was computed over the whole command.
     pub fn approval_line(&self) -> String {
-        let Ask::Approval { pill_id, fingerprint, tool, command, created_at } = self else { return String::new() };
+        let Ask::Approval { pill_id, fingerprint, tool, command, created_at, truncated } = self else { return String::new() };
         let shown = clip(command, MAX_COMMAND_CHARS);
         let mut line = json!({
             "type": "approval",
@@ -174,7 +190,7 @@ impl Ask {
             "command": shown,
             "createdAt": created_at,
         });
-        if shown.chars().count() < command.chars().count() {
+        if *truncated || shown.chars().count() < command.chars().count() {
             line["truncated"] = json!(true);
         }
         line.to_string()

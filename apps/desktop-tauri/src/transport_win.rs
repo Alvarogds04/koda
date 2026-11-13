@@ -38,9 +38,9 @@ use crate::question::{self, Admission, HumanAnswer, Inbound, QuestionSlot, Resol
 use crate::questioncmd::NativeTransition;
 use crate::sessionterm::Origin;
 pub use crate::transport_view::{
-    DeliveryState, FormItemView, HumanReplyError, PendingQuestionView, PreviewScan, QuestionDeliveryView,
-    QuestionOptionView, QuestionOutcome, QuestionSnapshot, TransportError, TransportOptions,
-    INSTALLED_RUNTIME_LEAF, RESERVED_RUNTIME_NAMES, SOCKET_DIR_ENV,
+    DeliveryState, FormItemView, HumanReplyError, PendingAskOptionView, PendingAskView, PendingQuestionView,
+    PreviewScan, QuestionDeliveryView, QuestionOptionView, QuestionOutcome, QuestionSnapshot, TransportError,
+    TransportOptions, INSTALLED_RUNTIME_LEAF, RESERVED_RUNTIME_NAMES, SOCKET_DIR_ENV,
 };
 use std::collections::{HashMap, HashSet};
 use std::io::ErrorKind;
@@ -338,6 +338,13 @@ impl Transport {
         };
         if changed { self.inner.question_changed(); }
         snapshot
+    }
+    /// The pending requests, oldest first, as the phone link reads them (same reading as the Linux receiver): the
+    /// queue's display text plus the asking session's id, which only enters the phone's fingerprint (§8.1). Read-only:
+    /// no prune, no ticket, no origin write. Only the head is answerable, and that rule belongs to the caller.
+    pub fn pending_asks(&self) -> Vec<PendingAskView> {
+        let q = self.inner.questions.lock().expect("questions lock");
+        q.slot.queue().map(crate::transport_view::pending_ask_view).collect()
     }
     /// Read-only budget for the matching live slot. No prune, ticket commit,
     /// origin write or private scope is exposed. Send revalidates at its own time.

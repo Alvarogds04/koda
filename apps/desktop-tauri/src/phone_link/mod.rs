@@ -8,11 +8,15 @@
 pub mod admission;
 pub mod announce;
 pub mod asks;
+/// U2: the queue's head → the phone's `approval` / `question`, and the phone's answer → the desktop's queue.
+pub mod bridge;
 pub mod hub;
 pub mod ids;
 pub mod keystore;
 pub mod link;
 pub mod pairing;
+/// D9/D12: the tool and the command of a permission, read from the card text the hook already wrote.
+pub mod permission;
 pub mod server;
 pub mod source;
 pub mod usage;

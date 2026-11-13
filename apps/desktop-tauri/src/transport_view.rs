@@ -40,6 +40,53 @@ pub struct FormItemView {
     pub header: String, pub text: String, pub options: Vec<QuestionOptionView>,
     pub multi_select: bool, pub allow_free_text: bool,
 }
+/// One option of a pending request, as the phone's bridge reads it: the producer's own token and the exact label.
+/// The token is what the agent is told back (`allow`, `deny`, `terminal`, `o0`…); the label is what the human sees.
+#[derive(Clone, Serialize)]
+pub struct PendingAskOptionView { pub value: String, pub label: String }
+/// One pending request as the phone link reads it: display text only, plus the asking session's own id.
+///
+/// The session id leaves the desktop nowhere else: it never reaches a webview, a notice or a log, and it exists here
+/// only because it enters the phone's fingerprint of the request (§8.1, `f2`). `text` is the card the human already
+/// sees in the island (the permission sentence or the question's wording), never an answer, a free-text entry or an
+/// option token of a different request.
+#[derive(Clone)]
+pub struct PendingAskView {
+    pub id: String,
+    pub kind: question::Kind,
+    pub agent: String,
+    pub session_id: String,
+    pub text: String,
+    /// The plain question's options, in the order they were offered; empty for a questionnaire (see `form`).
+    pub options: Vec<PendingAskOptionView>,
+    /// A questionnaire (AskUserQuestion): 1-4 questions in ONE queue slot.
+    pub form: Option<Vec<FormItemView>>,
+    pub multi_select: bool,
+    pub expires_at: u64,
+}
+
+/// The phone's reading of one pending request. Read-only: no prune, no delivery, no origin write — the expiry worker
+/// owns those, and this is called from a thread that must never publish (the phone host's own worker).
+pub fn pending_ask_view(active: &question::Active) -> PendingAskView {
+    let q = active.question();
+    PendingAskView {
+        id: q.id().into(),
+        kind: q.kind(),
+        agent: q.agent().into(),
+        session_id: active.identity().session_id.clone(),
+        text: q.text().into(),
+        options: q.options().iter().map(|o| PendingAskOptionView {
+            value: o.value().into(), label: o.label().into(),
+        }).collect(),
+        form: q.form().map(|items| items.iter().map(|i| FormItemView {
+            header: i.header().into(), text: i.text().into(), multi_select: i.multi_select(), allow_free_text: i.allow_free_text(),
+            options: i.options().iter().enumerate().map(|(index, o)| QuestionOptionView {
+                index, label: o.label().into(), description: o.description().into() }).collect(),
+        }).collect()),
+        multi_select: q.multi_select(),
+        expires_at: q.expires_at(),
+    }
+}
 #[derive(Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DeliveryState { Sent }

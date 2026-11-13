@@ -13,6 +13,14 @@
 use super::hub::{Hub, SessionIn};
 use serde_json::Value;
 
+/// The phone pill an asking agent belongs to: the SAME catalogue the island draws, keyed by the agent slug the
+/// question frame carries (`agentclient::AGENT_IDS`), so the phone's sheet never names a pill that has no row.
+/// An agent with no pill of its own (`pi`, `copilot-cli`) is not invented: the request stays where the human already
+/// sees it, on the island's own card.
+pub fn pill_of_agent(agent: &str) -> Option<&'static str> {
+    pill_of(agent).map(|(pill, _)| pill)
+}
+
 /// The agent pill an engine `kind` belongs to, and its label.
 fn pill_of(kind: &str) -> Option<(&'static str, &'static str)> {
     match kind {
