@@ -167,6 +167,7 @@ fn view_prefs(p: &Prefs) -> Value {
         "monitor": p.monitor,
         "showPlanInNotch": p.show_plan_in_notch(),
         "showCodexPlanInNotch": p.show_codex_plan_in_notch(),
+        "phoneUsage": p.phone_usage(),
         "windowContext": p.window_context(),
         "liveContext": p.live_context(),
         "windowContextAvailable": context_extension_available(), "windowContextNote": context_title_note(), "windowContextNative": cfg!(not(target_os = "linux")),
@@ -418,6 +419,23 @@ pub async fn prefs_action(
     Ok(view_prefs(&next))
 }
 
+/// The ONE place an `AgentConn` is created: the panel's first use, `daemon_action status`, and the fresh client
+/// after a restart all pass through here, so every connection carries the same two callbacks — the Ajustes emitter
+/// and the phone link's session feed (S5/D5: the phone hangs off this connection, never a second one).
+///
+/// The view is handed in on purpose: a callback fires while the caller holds the agent slot, so it must never lock
+/// it again (it did, once, and the first open of the panel hung forever).
+pub(crate) fn agent_conn(handle: &AppHandle) -> AgentConn {
+    let emitter = handle.clone();
+    #[cfg(target_os = "linux")]
+    let phone = handle.clone();
+    AgentConn::new(move |view: Value| {
+        #[cfg(target_os = "linux")]
+        crate::phonehost::publish_sessions(&phone, &view);
+        let _ = emitter.emit("agent:state", view);
+    })
+}
+
 /// The island agent: `view` (connects on first use), and the closed command set of
 /// `agentclient::parse_ui_command`. Abito account commands are committed locally before
 /// any daemon connection; snapshots expose credential presence only.
@@ -456,14 +474,8 @@ pub async fn agent_action(
             return Ok(abito_island::agents_direct::perform(&op));
         }
         let mut guard = state.settings.agent.lock().expect("agent lock");
-        let conn = guard.get_or_insert_with(|| {
-            let emitter = handle.clone();
-            // The view is handed in: this callback fires while `agent_action` holds the slot, so it must
-            // not lock it again (it did, once, and the first open of the panel hung forever).
-            AgentConn::new(move |view| {
-                let _ = emitter.emit("agent:state", view);
-            })
-        });
+        // The one constructor: this view also feeds the phone link, which hangs off this same connection (S5/D5).
+        let conn = guard.get_or_insert_with(|| agent_conn(&handle));
         let is_view_or_refresh = payload
             .get("action")
             .and_then(Value::as_str)
@@ -553,12 +565,7 @@ pub(crate) fn daemon_connect(
     watch: Option<&abito_island::daemonhost::HostSlot>,
 ) -> (String, bool) {
     let mut guard = state.settings.agent.lock().expect("agent lock");
-    let emitter = handle.clone();
-    let conn = guard.get_or_insert_with(|| {
-        AgentConn::new(move |view| {
-            let _ = emitter.emit("agent:state", view);
-        })
-    });
+    let conn = guard.get_or_insert_with(|| agent_conn(handle));
     let connected =
         |c: &AgentConn| c.view().get("connection").and_then(Value::as_str) == Some("connected");
     let deadline = wait.map(|w| Instant::now() + w);

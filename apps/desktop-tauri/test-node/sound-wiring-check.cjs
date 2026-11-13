@@ -107,6 +107,8 @@ function hostDtoFixture(host) {
       'p.open_on_hover()': false,
       'p.show_plan_in_notch()': false,
       'p.show_codex_plan_in_notch()': false,
+      // K2 T6 (S11): the phone's plan-usage switch, off unless the human turns it on
+      'p.phone_usage()': false,
       'p.window_context()': false,
       'p.live_context()': true,
       'p.settings_window_on()': false,
@@ -135,7 +137,7 @@ test('Host DTO fixture extracts complete legacy and multiline typed projections 
   assert.deepEqual(dto, { sound: true, gain: 0, displayName: null, avatarColors: {},
     pillColors: {}, chosenModels: null,
     mainPill: 'integration_claude', declaredPills: ['integration_resend', 'integration_n8n', 'integration_vercel', 'integration_github'], theme: 'system',
-    autoCloseSeconds: 15, openOnHover: false, openSettingsAtLaunch: false, settingsWindow: true, customBlobs: null, islandAgents: null, abitoInstructions: null, monitor: null, showPlanInNotch: false, showCodexPlanInNotch: false, windowContext: false, liveContext: true, windowContextAvailable: false, windowContextNote: null, windowContextNative: false });
+    autoCloseSeconds: 15, openOnHover: false, openSettingsAtLaunch: false, settingsWindow: true, customBlobs: null, islandAgents: null, abitoInstructions: null, monitor: null, showPlanInNotch: false, showCodexPlanInNotch: false, phoneUsage: false, windowContext: false, liveContext: true, windowContextAvailable: false, windowContextNote: null, windowContextNative: false });
   const legacy = 'fn view_prefs(p: &Prefs) -> Value { json!({"sound": p.sound, "gain": p.gain(), "displayName": p.display_name, "avatarColors": p.avatar_colors}) }';
   assert.deepEqual(hostDtoFixture(legacy), { sound: true, gain: 0, displayName: null, avatarColors: {} });
   const quoted = 'complete ) with "quoted" text';
