@@ -238,7 +238,7 @@ smoke_env() {
 # The caller's own Koda install must not be touched by this run: presence plus
 # mtime+size of the two paths install.sh would write without explicit overrides.
 real_state() {
-  for path in "$HOME/.local/share/abito-island" "$HOME/.local/share/applications/com.abitog.AbitoTauri.desktop"; do
+  for path in "$HOME/.local/share/abito-island" "$HOME/.local/share/applications/com.abitog.Koda.desktop"; do
     if [ -e "$path" ]; then printf '%s=%s;' "$path" "$(stat -c '%Y:%s' "$path")"; else printf '%s=absent;' "$path"; fi
   done
 }
@@ -332,12 +332,12 @@ if ( cd "$APP" && node packaging/build.cjs --out "$WORK/stage" --runtime-archive
      && grep -q 'Stage verified against receipt.json' "$WORK/install.log" \
      && grep -q "Installed Abito (Tauri) in $PREFIX" "$WORK/install.log" \
      && [ -x "$PREFIX/abito-island" ] && [ -x "$PREFIX/abito-island-launcher" ] \
-     && [ -f "$PREFIX/receipt.json" ] && [ -f "$APPS/com.abitog.AbitoTauri.desktop" ] \
+     && [ -f "$PREFIX/receipt.json" ] && [ -f "$APPS/com.abitog.Koda.desktop" ] \
      && [ -d "$PREFIX/runtime" ] && [ ! -L "$PREFIX/runtime" ] \
      && [ -x "$PREFIX/runtime/node" ] && [ -x "$PREFIX/runtime/pi" ] \
      && grep -q '"features": "tauri/custom-protocol (no probe)"' "$PREFIX/receipt.json" \
      && [ "$(sha256sum "$STAGE/abito-island" | cut -d' ' -f1)" = "$(sha256sum "$PREFIX/abito-island" | cut -d' ' -f1)" ]; then
-    EXEC=$(sed -n 's/^Exec=//p' "$APPS/com.abitog.AbitoTauri.desktop")
+    EXEC=$(sed -n 's/^Exec=//p' "$APPS/com.abitog.Koda.desktop")
     if [ "$EXEC" = "env KODA_PROJECT_ROOT=$PROJECT \"$PREFIX/abito-island-launcher\"" ]; then
       pass "(a) install: build.cjs staged $(basename "$STAGE") offline with the verified runtime archive (receipt: no probe feature); install.sh re-verified every hash against receipt.json, audited the runtime members, extracted the bundled Node+Pi to $PREFIX/runtime and installed the app in $PREFIX (binary sha256 $(sha256sum "$PREFIX/abito-island" | cut -d' ' -f1))"
     else

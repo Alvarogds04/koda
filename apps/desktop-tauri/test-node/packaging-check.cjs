@@ -128,7 +128,7 @@ test('source gates pass on the real crate (R6 pin, curated frontend, config, cap
   assert.ok(L.checkR6(crate).startsWith('40625d7f'));
   assert.equal(L.checkFrontend(crate).length, L.FRONTEND_FILES.length);
   const cfg = L.checkConfig(crate);
-  assert.equal(cfg.identifier, 'com.abitog.AbitoTauri');
+  assert.equal(cfg.identifier, 'com.abitog.Koda');
 });
 
 test('R7 character controller is explicitly in the closed shipped list', () => {
@@ -169,7 +169,7 @@ test('each gate FAILS when its rule is broken', () => {
   edit('frontend/clay-engine.js', s => s + '\n// tweak', /R6 pin/);
   edit('tauri.conf.json', s => s.replace("default-src 'self'", "default-src 'self' https://evil.example"), /CSP/);
   edit('tauri.conf.json', s => s.replace("script-src 'self'", "script-src 'self' 'unsafe-eval'"), /CSP/);
-  edit('tauri.conf.json', s => s.replace('com.abitog.AbitoTauri', 'com.abitog.Abito.Preview'), /identifier/);
+  edit('tauri.conf.json', s => s.replace('com.abitog.Koda', 'com.abitog.Abito.Preview'), /identifier/);
   edit('capabilities/main.json', s => s.replace('"core:event:allow-unlisten"', '"core:event:allow-unlisten", "core:window:allow-close"'), /capabilities drifted/);
   edit('capabilities/main.json', s => s.replace('"windows": ["main", "settings"]', '"windows": ["main", "settings", "evil"]'), /capability windows/);
   edit('capabilities/main.json', s => s.replace('"windows": ["main", "settings"]', '"windows": ["main"]'), /capability windows/);

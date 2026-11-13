@@ -15,7 +15,7 @@ struct Entry {
 /// The name Windows gives an app it does not identify. It is blocked.
 pub const UNIDENTIFIED: &str = "Unidentified app";
 
-const KODA: Entry = Entry { label: "Koda", ids: &["com.abitog.AbitoTauri", "abito-island"], names: &["Koda", "Abito"] };
+const KODA: Entry = Entry { label: "Koda", ids: &["com.abitog.Koda", "abito-island"], names: &["Koda", "Abito"] };
 
 const MACOS: &[Entry] = &[
     KODA,

@@ -2783,7 +2783,7 @@ mod validator_context {
     impl Extension {
         fn get_recent_windows(&self) -> Vec<(String, String, String)> {
             self.0.fetch_add(1, Ordering::SeqCst);
-            vec![("com.abitog.AbitoTauri".into(), "Abito".into(), "Abito".into()),
+            vec![("com.abitog.Koda".into(), "Abito".into(), "Abito".into()),
                 ("org.example.Writer.desktop".into(), "Writer del validador".into(), "Documento privado del validador".into())]
         }
     }

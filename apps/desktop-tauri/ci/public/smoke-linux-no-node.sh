@@ -156,7 +156,7 @@ wait_for 15 grep -q / "$WORK/dbus.log" || failx "(s) start — the private sessi
 DBUS_ADDRESS=$(head -n 1 "$WORK/dbus.log")
 smoke_env openbox --sm-disable > "$WORK/openbox.log" 2>&1 &
 WM_PID=$!
-EXEC=$(sed -n 's/^Exec=//p' "$APPS/com.abitog.AbitoTauri.desktop")
+EXEC=$(sed -n 's/^Exec=//p' "$APPS/com.abitog.Koda.desktop")
 [ -n "$EXEC" ] || failx "(s) start — no Exec line in the installed .desktop entry"
 smoke_env strace -f -qq -s 4096 -e trace=connect,execve -o "$WORK/connect.trace" sh -c "$EXEC" > "$WORK/island.log" 2>&1 &
 ISLAND_PID=$!

@@ -27,7 +27,7 @@
 #      file; the extracted runtime moves into place as PREFIX/runtime by atomic
 #      rename (an old runtime is moved aside, then removed). On any failure nothing
 #      is replaced and every temp dir is removed.
-#   5. Write ~/.local/share/applications/com.abitog.AbitoTauri.desktop with
+#   5. Write ~/.local/share/applications/com.abitog.Koda.desktop with
 #      @INSTALL_DIR@ resolved and Exec=env KODA_PROJECT_ROOT=<project root> "<launcher>"
 #      (the one variable the closed launcher accepts).
 #
@@ -44,7 +44,7 @@
 set -eu
 umask 022
 
-ID="com.abitog.AbitoTauri"
+ID="com.abitog.Koda"
 DESKTOP="$ID.desktop"
 RUNTIME_ARCHIVE="koda-runtime-linux-x64.tar.gz"
 # Closed-set verifier beside this script; run by the EXTRACTED runtime's node.

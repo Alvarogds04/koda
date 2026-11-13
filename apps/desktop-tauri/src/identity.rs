@@ -6,7 +6,7 @@
 use std::path::PathBuf;
 
 /// Installed identity (tauri.conf.json `identifier`), never the Preview's.
-pub const APP_IDENTIFIER: &str = "com.abitog.AbitoTauri";
+pub const APP_IDENTIFIER: &str = "com.abitog.Koda";
 /// Env var the launcher/config sets for an installed app (absolute path).
 pub const PROJECT_ROOT_ENV: &str = "KODA_PROJECT_ROOT";
 

@@ -20,7 +20,7 @@ Copy-Item -LiteralPath (Get-Command node.exe).Source -Destination $node
 & npm.cmd install --global --prefix (Join-Path $roaming 'npm') '@earendil-works/pi-coding-agent@1.4.0'
 if ($LASTEXITCODE -ne 0) { throw 'Isolated Pi installation failed' }
 $localData = [Environment]::GetFolderPath('LocalApplicationData')
-$islandData = Join-Path $localData 'com.abitog.AbitoTauri'
+$islandData = Join-Path $localData 'com.abitog.Koda'
 if (Test-Path -LiteralPath $islandData) { throw 'Runner already has island user data; refusing smoke against existing state' }
 if (Test-Path -LiteralPath (Join-Path $localData 'Koda')) { throw 'Runner already has island runtime data; refusing reuse' }
 $originalEnv = @{}
@@ -265,7 +265,7 @@ try {
     # Island user data (whatever the installed island wrote, plus a planted fixture) must survive uninstall byte for byte.
     # Tauri's Windows Known Folder lookup may use the actual profile or the child LOCALAPPDATA. EBWebView is WebView2's own
     # browser cache (not the person's data) and a lingering msedgewebview2 keeps files there locked (CI 42207296565).
-    $islandDataDirs = @($islandData, (Join-Path $env:LOCALAPPDATA 'com.abitog.AbitoTauri')) | Select-Object -Unique
+    $islandDataDirs = @($islandData, (Join-Path $env:LOCALAPPDATA 'com.abitog.Koda')) | Select-Object -Unique
     New-Item -ItemType Directory -Force -Path $islandData | Out-Null
     [IO.File]::WriteAllText((Join-Path $islandData 'smoke-user-data.txt'), 'island user data must survive uninstall')
     $islandDataHashes = { @(foreach ($dir in $islandDataDirs) { if (Test-Path -LiteralPath $dir) { Get-ChildItem -LiteralPath $dir -File -Recurse | Where-Object { -not $_.FullName.Contains('\EBWebView\') } | ForEach-Object { "$($_.FullName)=$((Get-FileHash -LiteralPath $_.FullName).Hash)" } } }) -join ';' }

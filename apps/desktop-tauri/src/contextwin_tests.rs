@@ -47,17 +47,28 @@ fn c(id: &str, name: &str, title: &str) -> Candidate {
 #[test]
 fn skips_abito_windows_and_returns_the_most_recent_external_one() {
     let recent = vec![
-        c("com.abitog.AbitoTauri", "Abito", "Abito"),
+        c("com.abitog.Koda", "Abito", "Abito"),
         c("firefox.desktop", "Firefox", "Docs"),
         c("code.desktop", "Code", "main.rs"),
     ];
     assert_eq!(pick_external(&recent), Some(ActiveWindow { app: "Firefox".into(), title: "Docs".into() }));
 }
 
+// K2-04 T6: the app's own window is recognised by its CURRENT names (Koda), not by the old ones. The new identifier
+// `com.abitog.Koda` still contains «abito» (as «abitog»), so a test on the app name alone proves the rule is not an accident.
+#[test]
+fn koda_own_windows_are_skipped_by_their_current_names() {
+    assert!(is_abito(&c("com.abitog.Koda", "Koda", "Koda")));
+    assert!(is_abito(&c("koda", "Koda", "")), "the renamed binary's WM_CLASS / app id");
+    assert!(is_abito(&c("", "Koda", "Ajustes")), "an app name alone");
+    assert!(!is_abito(&c("firefox.desktop", "Firefox", "Koda docs")), "a title never makes a window ours");
+    assert!(!is_abito(&c("org.gnome.Todo", "Soda", "x")), "no loose substring: soda is not koda");
+}
+
 #[test]
 fn nothing_external_means_no_context() {
     assert_eq!(pick_external(&[]), None);
-    assert_eq!(pick_external(&[c("com.abitog.AbitoTauri", "Abito", "x")]), None);
+    assert_eq!(pick_external(&[c("com.abitog.Koda", "Abito", "x")]), None);
     // NotchBuddy: `guard let appName` — an unnamed app yields no context.
     assert_eq!(pick_external(&[c("x", "  ", "t")]), None);
 }

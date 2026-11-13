@@ -81,7 +81,7 @@ fn publish(x: &Xvfb, wins: &[(&str, &str, &str)]) -> RustConnection {
 #[test]
 fn the_extension_answer_wins_and_abito_is_skipped() {
     let bus = Bus::start();
-    let _svc = serve(&bus, vec![("com.abitog.AbitoTauri", "Abito", "Abito"), ("firefox.desktop", "Firefox", "Docs")]);
+    let _svc = serve(&bus, vec![("com.abitog.Koda", "Abito", "Abito"), ("firefox.desktop", "Firefox", "Docs")]);
     let got = capture(Some(&bus.address), Some(":9999")); // the X display does not exist: never reached
     assert_eq!(got, Some(ActiveWindow { app: "Firefox".into(), title: "Docs".into() }));
 }
@@ -118,7 +118,7 @@ fn x11_without_a_window_manager_list_gives_no_context() {
 #[test]
 fn flow_uses_the_gnome_reader_on_wayland() {
     let bus = Bus::start();
-    let _svc = serve(&bus, vec![("com.abitog.AbitoTauri", "Abito", "Abito"), ("org.example.Writer.desktop", "Writer", "Private title")]);
+    let _svc = serve(&bus, vec![("com.abitog.Koda", "Abito", "Abito"), ("org.example.Writer.desktop", "Writer", "Private title")]);
     let child = Command::new(std::env::current_exe().unwrap())
         .args(["--exact", "flow_gnome_child", "--nocapture"])
         .env("KODA_TEST_CONTEXT_CHILD", "1")

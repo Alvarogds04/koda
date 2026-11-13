@@ -60,8 +60,9 @@ Each agent row in *Ajustes → Agentes* works on its own: Claude Code and Codex 
 | `apps/desktop-sound` | sound engine |
 | `assets/koda` | Koda's 42 animations as transparent 512×512 GIF and animated WebP (stickers, wallpapers, avatars): [gallery](assets/koda/README.md) |
 
-Internal names (the `abito-island` binary and crate, the bundle identifier `com.abitog.AbitoTauri`, the hook
-extension names and the phone-link protocol) still carry the old name; renaming them is planned separately.
+Internal names (the `abito-island` binary and crate, the hook extension names that older installs left behind and the
+phone-link protocol) still carry the old name; renaming them is planned separately. The bundle identifier is
+`com.abitog.Koda`.
 Nothing from Koda 0.1 is migrated: its old data folder, keychain entries and memories stay where they
 are, untouched and unused, so you can always go back.
 

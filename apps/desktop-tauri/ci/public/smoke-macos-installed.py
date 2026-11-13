@@ -26,7 +26,7 @@ import subprocess
 import sys
 import time
 
-APP_ID = "com.abitog.AbitoTauri"
+APP_ID = "com.abitog.Koda"
 # K2-03: the island's one content-free line per accepted settled notice (src/protocol.rs SETTLED_NOTICE_LOG_LINE).
 SETTLED_LINE = "island: settled notice accepted"
 results = []

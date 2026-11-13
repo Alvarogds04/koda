@@ -1581,12 +1581,12 @@ node packaging/verify.cjs dist/abito-island/<version>   # re-hash vs receipt, no
   capabilities = listen/unlisten only, no `devtools`/shell/fs/http features.
 - Stage: `abito-island` (release binary), `abito-island-launcher` (no args;
   refuses the whole `LD_*` family, `GDK_DEBUG`/`GTK_*` debug, WebKit inspector vars and every `KODA_*` knob except `KODA_PROJECT_ROOT`; forces X11),
-  `com.abitog.AbitoTauri.desktop` (template, `@INSTALL_DIR@`), `receipt.json`
+  `com.abitog.Koda.desktop` (template, `@INSTALL_DIR@`), `receipt.json`
   (sha256 of every file, `Cargo.lock`, config, frontend, rustc, git HEAD and a
   clean-tree attestation). `build.cjs` REFUSES to build when the product paths
   have uncommitted or untracked changes: build from a clean checkout
   (`git worktree add ../abito-m4-clean <commit>`).
-- Identity: `com.abitog.AbitoTauri`; installed runtime root
+- Identity: `com.abitog.Koda`; installed runtime root
   `$XDG_RUNTIME_DIR/koda` (never `abito-desktop*`); the project root of
   an installed build comes only from `KODA_PROJECT_ROOT` (absolute,
   normalized, existing dir) — otherwise the transport reports unavailable.
@@ -1614,7 +1614,7 @@ non-clean provenance or foreign identity aborts without touching anything), then
 installs binary + launcher + icon (+ template and receipt) into
 `~/.local/share/abito-island` (`--prefix` to override) via temp-file + rename (a
 running binary can be replaced), and writes
-`~/.local/share/applications/com.abitog.AbitoTauri.desktop` with
+`~/.local/share/applications/com.abitog.Koda.desktop` with
 `Exec=env KODA_PROJECT_ROOT=<root> "<launcher>"`. The project root is required:
 `--project-root DIR` (the folder your agent sessions run in). Idempotent; `--uninstall`
 removes exactly our files and the entry. Tests: `test-node/install-check.cjs`

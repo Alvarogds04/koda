@@ -82,7 +82,7 @@ fn preflight() {
             "--dest=org.freedesktop.DBus",
             "/org/freedesktop/DBus",
             "org.freedesktop.DBus.NameHasOwner",
-            "string:com.abitog.AbitoTauri.SingleInstance",
+            "string:com.abitog.Koda.SingleInstance",
         ])
         .output()
         .expect("DBus preflight");

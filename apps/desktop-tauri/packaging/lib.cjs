@@ -8,7 +8,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const R6_PREFIX = '40625d7f';
-const IDENTIFIER = 'com.abitog.AbitoTauri';
+const IDENTIFIER = 'com.abitog.Koda';
 const RESERVED = ['com.abitog.Abito', 'com.abitog.Abito.Preview', 'abito-desktop', 'abito-desktop-preview'];
 const FRONTEND_FILES = ['DESIGN.md', 'avatar-colors.js', 'character-desktop-logic.js', 'character-minibots.js', 'character-motion.js', 'chat-cards.js', 'chat-markdown.css', 'chat-markdown.js', 'chat-view.js', 'chat.js', 'clay-engine.js', 'desktop-character.css', 'desktop-character.html', 'desktop-character.js', 'desktop.js', 'gmail-view.css', 'gmail-view.js', 'icons.js', 'index.html', 'integrations-deployments.js', 'integrations-finance.js', 'integrations-mail.js', 'integrations-n8n.js',
   'integrations-notion.js', 'integrations-payments.js', 'integrations-view.js', 'island-idle.js', 'island-integrations.js', 'island-integrations.css', 'island-header.js', 'island-github.js', 'island-shortcuts.js', 'island-desktop.js', 'island-dictation.js', 'island-voice.js', 'island-voice.css', 'island-plan.js', 'island-interaction.js', 'island.js', 'notify-view.js', 'notify.js', 'overview-view.js', 'pill-catalog.js', 'pill-settings.js', 'pills-view.js', 'paused.js', 'spotify-view.js', 'pills.js', 'sessions-ticker.js', 'settings-view.js', 'settings.js', 'sound-engine.js', 'sound-wiring.js', 'specialists-view.js', 'specialists.js', 'style.css', 'theme.js'];

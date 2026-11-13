@@ -61,9 +61,14 @@ pub const METHOD: &str = "GetRecentWindows";
 /// The extension answers from memory; anything slower is treated as absent.
 pub const DBUS_DEADLINE: Duration = Duration::from_millis(800);
 
-/// True for Abito's own windows (app id `com.abitog.AbitoTauri`, WM_CLASS, desktop file).
+/// True for Koda's own windows (app id `com.abitog.Koda`, WM_CLASS, desktop file, app name). The old name stays in the test
+/// on purpose: a 0.1 install running next to this one, or a binary still called `abito-island`, is also "ours" to skip.
 pub fn is_abito(c: &Candidate) -> bool {
-    c.app_id.to_lowercase().contains("abito") || c.app_name.to_lowercase().contains("abito")
+    let own = |text: &str| {
+        let text = text.to_lowercase();
+        text.contains("abito") || text.contains("koda")
+    };
+    own(&c.app_id) || own(&c.app_name)
 }
 
 /// Longest app name / window title sent to the model, in characters, on every OS: a title can be a

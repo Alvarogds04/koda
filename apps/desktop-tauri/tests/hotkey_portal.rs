@@ -329,7 +329,7 @@ fn the_client_registers_its_app_id_so_a_strict_portal_accepts_the_session() {
     assert!(wait_status(&g, Status::Active, 4000), "a strict portal needs the app id: got {:?}", g.status());
     remember(&bus);
     let registered: Vec<String> = STATES.lock().unwrap().get(&bus.address).unwrap().registered.lock().unwrap().values().cloned().collect();
-    assert_eq!(registered, vec!["com.abitog.AbitoTauri".to_string()], "exactly Abito's own id, once");
+    assert_eq!(registered, vec!["com.abitog.Koda".to_string()], "exactly Abito's own id, once");
     activate(&srv_conn, SHORTCUT_ID);
     rx.recv_timeout(Duration::from_secs(3)).expect("and the activation reaches the island");
     g.stop();

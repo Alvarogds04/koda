@@ -4,7 +4,7 @@ use super::*;
 fn every_listed_app_is_refused_on_each_platform() {
     // S5: the list of Gentle Dot, plus Koda itself and the Linux equivalents.
     let macos = [
-        ("com.abitog.AbitoTauri", "Koda"), ("com.apple.systempreferences", "System Settings"),
+        ("com.abitog.Koda", "Koda"), ("com.apple.systempreferences", "System Settings"),
         ("com.apple.SecurityAgent", "SecurityAgent"), ("com.apple.loginwindow", "loginwindow"),
         ("com.apple.UserNotificationCenter", "x"), ("com.apple.LocalAuthentication.UIAgent", "x"),
         ("com.apple.CoreServicesUIAgent", "x"), ("com.apple.keychainaccess", "Keychain Access"),
@@ -29,7 +29,7 @@ fn every_listed_app_is_refused_on_each_platform() {
         ("org.gnome.Settings", "Settings"), ("polkit-gnome-authentication-agent-1", "x"),
         ("org.gnome.seahorse.Application", "Passwords and Keys"), ("1password", "1Password"),
         ("bitwarden", "Bitwarden"), ("keepassxc", "KeePassXC"), ("org.keepassxc.KeePassXC", "x"),
-        ("com.abitog.AbitoTauri", "Koda"), ("dashlane", "x"), ("lastpass", "x"), ("keepass", "x"),
+        ("com.abitog.Koda", "Koda"), ("dashlane", "x"), ("lastpass", "x"), ("keepass", "x"),
     ];
     for (id, name) in linux {
         assert!(blocked_reason_on(Platform::Linux, id, name).is_some(), "linux {id}");
