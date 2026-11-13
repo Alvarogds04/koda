@@ -319,9 +319,9 @@ spawn (regular non-symlink file owned by you/root, not group/world-writable, sec
 shell:false, own process group killed whole after 10 s, stdout capped at 256 KiB, stderr drained and never surfaced. The removal-only legacy
 profile `install recap --user --remove [--apply]` (Koda 0.1 recap-hook cleanup; install without `--remove` is a usage error) runs through this same
 spawn path once per daemon start. The env is an ALLOWLIST
-(`PATH=/usr/bin:/bin`, `HOME` = the daemon's REAL home, `LANG`) plus `ABITO_ISLAND_EXE` = realpath of the daemon's node; no agent markers, `PI_*` or provider vars.
+(`PATH=/usr/bin:/bin`, `HOME` = the daemon's REAL home, `LANG`) plus `KODA_ISLAND_EXE` = realpath of the daemon's node; no agent markers, `PI_*` or provider vars.
 The daemon is the authenticated caller, so installer guard (i) becomes "the parent is the daemon's node" (guard (ii) is satisfied by the scrubbed env).
-**Endpoint handoff consumed by hooks (enforced rules).** An explicit `ABITO_DESKTOP_SOCKET` wins after endpoint-shape validation and causes no `endpoint.json` read. Otherwise runtime selection is ordered: `ABITO_SOCKET_DIR` (when set, absolute, normalized and non-root), else `$XDG_RUNTIME_DIR/koda` only when `XDG_RUNTIME_DIR` is absolute, normalized and non-root, else `/run/user/<uid>/koda`.
+**Endpoint handoff consumed by hooks (enforced rules).** An explicit `KODA_DESKTOP_SOCKET` wins after endpoint-shape validation and causes no `endpoint.json` read. Otherwise runtime selection is ordered: `KODA_SOCKET_DIR` (when set, absolute, normalized and non-root), else `$XDG_RUNTIME_DIR/koda` only when `XDG_RUNTIME_DIR` is absolute, normalized and non-root, else `/run/user/<uid>/koda`.
 
 The reader accepts `<runtime>/endpoint.json` only as a regular, non-symlink file owned by you, mode exactly `0600` including no special bits, a single hard link, and at most 4096 bytes. Its complete text must equal `JSON.stringify(parsed)` or that exact compact serialization plus one LF; it has exactly `v`, `endpoint`, `pid` (with `v: 1`). Duplicate keys, escaped key names, pretty printing, other whitespace and CRLF are refused. The Rust producer at `apps/desktop-tauri/src/handoff.rs` writes compact one-line `serde_json` plus LF as `{"endpoint":"<..>","pid":N,"v":1}\n`; the alternate `v,endpoint,pid` order is accepted as well.
 
@@ -595,12 +595,12 @@ Port of Gentle Dot's `packages/daemon/src/uploads.ts` + bridge.ts `attachedFiles
 
 Koda's memory is ALWAYS private — Gentle Dot's private mode (its `packages/daemon/src/isolation.ts`,
 `privateMemory`, MIT), with no user-store mode. The engine child gets `ENGRAM_PORT` = Koda's own
-port **7439** (`ABITO_ENGRAM_PORT` in the parent env overrides it for tests/embeddings),
+port **7439** (`KODA_ENGRAM_PORT` in the parent env overrides it for tests/embeddings),
 `ENGRAM_BIN` = ONLY the pinned binary the bundled runtime manifest names, `ENGRAM_NO_UPDATE_CHECK=1`,
 and NO `ENGRAM_URL`/`ENGRAM_DATA_DIR`/inherited `ENGRAM_PORT`: the store follows the engine's island
 `HOME` (`<island>/home/.engram`), so the user's own Engram server and store (`7437`/`7438`,
-`~/.engram`) are never read, probed or inherited. The memory project stays `abito-island`
-(`<workspace>/.engram/config.json`, `ABITO_MEMORY_PROJECT` + identity pin). The daemon confirms the
+`~/.engram`) are never read, probed or inherited. The memory project stays `koda`
+(`<workspace>/.engram/config.json`, `KODA_MEMORY_PROJECT` + identity pin). The daemon confirms the
 private port is EMPTY before the engine spawns and owns cleanup only then; a failed or ambiguous
 lookup refuses ownership (logged, the engine still starts); on daemon stop the listener is verified
 against the island's `.instance-id` + `GET /health` with a stable PID before any SIGTERM — a server
@@ -619,8 +619,8 @@ one-line log notice), and any other unknown `rotation` subkey is still refused.
 
 - **Config.** The strict `rotation` key: `enabled` (strict boolean, default **true**), `bytes`
   (1024..2147483647, default 20971520 = 20 MB) and `compactions` (1..1000000, default 10). The env
-  `ABITO_ROTATE_BYTES` / `ABITO_ROTATE_COMPACTIONS` overrides win over the file; only plain positive
-  decimal integers are accepted (no `1e3`, `0x10` or spaces), and `ABITO_ROTATE_BYTES` keeps the same
+  `KODA_ROTATE_BYTES` / `KODA_ROTATE_COMPACTIONS` overrides win over the file; only plain positive
+  decimal integers are accepted (no `1e3`, `0x10` or spaces), and `KODA_ROTATE_BYTES` keeps the same
   1024-byte minimum. An invalid env value never wins; the file/default stands.
 - **Trigger.** After every natural `agent_settled` (while idle, not paused, nothing in flight) the
   daemon checks the open session file: past `bytes` of file size OR `compactions` compaction entries

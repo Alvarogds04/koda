@@ -254,7 +254,7 @@ fn spawn_initial_connect(app: &AppHandle) {
             return;
         }
         let root = abito_island::agentconn::island_root(
-            std::env::var("ABITO_ISLAND_DIR").ok().as_deref(),
+            std::env::var("KODA_ISLAND_DIR").ok().as_deref(),
             std::env::var("HOME").ok().as_deref(),
         );
         let Some(root) = root else { return };

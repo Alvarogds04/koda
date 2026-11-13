@@ -7,7 +7,7 @@
 #   sh packaging/windows/xbuild.sh build   # cargo build --release (bare .exe)
 #   sh packaging/windows/xbuild.sh shell   # interactive shell in the image
 #
-# Container runtime: $ABITO_XBUILD_RUNTIME (docker|podman) wins; otherwise
+# Container runtime: $KODA_XBUILD_RUNTIME (docker|podman) wins; otherwise
 # `docker` if present, else `podman`. Only flags both accept are used.
 #
 # Caches live in named volumes (cargo registry, target dir, Windows SDK), so
@@ -15,13 +15,13 @@
 set -eu
 
 crate=$(CDPATH= cd -- "$(dirname "$0")/../.." && pwd)
-IMAGE=${ABITO_XBUILD_IMAGE:-abito-xwin-build:latest}
-VOL_CARGO=${ABITO_XBUILD_VOL_CARGO:-abito-xbuild-cargo}
-VOL_TARGET=${ABITO_XBUILD_VOL_TARGET:-abito-xbuild-target}
-VOL_XWIN=${ABITO_XBUILD_VOL_XWIN:-abito-xbuild-xwin}
+IMAGE=${KODA_XBUILD_IMAGE:-abito-xwin-build:latest}
+VOL_CARGO=${KODA_XBUILD_VOL_CARGO:-abito-xbuild-cargo}
+VOL_TARGET=${KODA_XBUILD_VOL_TARGET:-abito-xbuild-target}
+VOL_XWIN=${KODA_XBUILD_VOL_XWIN:-abito-xbuild-xwin}
 
-if [ -n "${ABITO_XBUILD_RUNTIME:-}" ]; then
-  rt=$ABITO_XBUILD_RUNTIME
+if [ -n "${KODA_XBUILD_RUNTIME:-}" ]; then
+  rt=$KODA_XBUILD_RUNTIME
 elif command -v docker >/dev/null 2>&1; then
   rt=docker
 else

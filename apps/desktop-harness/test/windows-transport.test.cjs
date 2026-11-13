@@ -58,18 +58,18 @@ test('windows config: no LOCALAPPDATA or a non-drive path yields no endpoint, ne
     assert.equal(resolveConfig({ LOCALAPPDATA: local }, undefined, { platform: 'win32', stat: () => { throw new Error('x'); } }).endpoint, undefined, String(local));
   }
 });
-test('windows config: explicit ABITO_DESKTOP_SOCKET override keeps the relay metadata shape', () => {
-  const cfg = resolveConfig({ ABITO_DESKTOP_SOCKET: 'C:\\elsewhere\\endpoint.json' }, undefined, { platform: 'win32' });
+test('windows config: explicit KODA_DESKTOP_SOCKET override keeps the relay metadata shape', () => {
+  const cfg = resolveConfig({ KODA_DESKTOP_SOCKET: 'C:\\elsewhere\\endpoint.json' }, undefined, { platform: 'win32' });
   assert.deepEqual(cfg, { runtime: 'C:\\elsewhere', endpoint: 'C:\\elsewhere\\endpoint.json', source: 'env' });
   for (const bad of ['', 'relative\\endpoint.json', 'C:\\x\\other.json', 'C:\\x\\endpoint.json\\', 'C:\\x\\end\\point.json',
     '\\\\srv\\share\\endpoint.json', 'C:\\x\0\\endpoint.json', 'C:\\x\\..\\endpoint.json']) {
-    assert.throws(() => resolveConfig({ ABITO_DESKTOP_SOCKET: bad }, undefined, { platform: 'win32' }), bad);
+    assert.throws(() => resolveConfig({ KODA_DESKTOP_SOCKET: bad }, undefined, { platform: 'win32' }), bad);
   }
 });
 test('linux config behaviour is unchanged (same function, default platform)', { skip: process.platform === 'win32' && 'Unix path rules use the host path module; the win32 rules are the tests above' }, () => {
   assert.deepEqual(resolveConfig({}, 4321, { procExists: () => false, platform: process.platform === 'darwin' ? 'darwin' : 'linux' }),
     { runtime: process.platform === 'darwin' ? require('node:fs').realpathSync(require('node:os').tmpdir()) + '/koda' : '/run/user/4321/koda', endpoint: undefined, source: undefined });
-  assert.throws(() => resolveConfig({ ABITO_SOCKET_DIR: '/nonexistent/abito-windows-test' }, undefined, { platform: 'linux' }));
+  assert.throws(() => resolveConfig({ KODA_SOCKET_DIR: '/nonexistent/abito-windows-test' }, undefined, { platform: 'linux' }));
 });
 
 // --- security (Windows branch) ----------------------------------------------
@@ -98,7 +98,7 @@ test('relay candidates are fixed sibling locations, never PATH or env-chosen exe
   // development/CI build location, fixed
   assert.ok(candidates.includes(require('node:path').resolve(__dirname, '..', '..', 'desktop-tauri', 'target', 'debug', RELAY_NAME)));
   // no env knob can inject a candidate
-  for (const env of [{ PATH: '\\evil', ABITO_RELAY: 'C:\\evil\\x.exe', LOCALAPPDATA: LOCAL }, { LOCALAPPDATA: 'C:\\other' }]) {
+  for (const env of [{ PATH: '\\evil', KODA_RELAY: 'C:\\evil\\x.exe', LOCALAPPDATA: LOCAL }, { LOCALAPPDATA: 'C:\\other' }]) {
     for (const c of relayCandidates(env)) assert.doesNotMatch(c, /evil/);
   }
   assert.equal(relayCandidates({}).length, 2, 'no LOCALAPPDATA: installed sibling + dev build only');

@@ -18,7 +18,7 @@
 //
 // Assert: no attempt reaches any pi.dev host — ideally no outbound attempt at all.
 //
-// RED: with ABITO_PI_OFFLINE_RED=1 the same spawn is run with the three offline
+// RED: with KODA_PI_OFFLINE_RED=1 the same spawn is run with the three offline
 // switches REMOVED from the env; the same assertion is then expected to FAIL and
 // name the pi.dev attempt (run once by hand for evidence; never part of the
 // default suite).
@@ -27,9 +27,9 @@
 // daemon's Node — the installed app's layout), else GENTLE_PI_ROOT (a gentle-pi
 // package directory, the CI convention like PI_CODING_AGENT_ROOT). Skipped
 // (never silently passed) when neither exists: a dev machine reports the
-// real-engine test as SKIPPED with this reason; with ABITO_REQUIRE_GENTLE=1
+// real-engine test as SKIPPED with this reason; with KODA_REQUIRE_GENTLE=1
 // absence FAILS instead. CI note (reported, not editable here): the
-// desktop-daemon CI job must install gentle-pi and set ABITO_REQUIRE_GENTLE=1.
+// desktop-daemon CI job must install gentle-pi and set KODA_REQUIRE_GENTLE=1.
 // Only private temp dirs are used: the island HOME/agent dir is isolatedEnv's
 // own; the user's ~/.pi, ~/.gentle* and real config are never read or written.
 
@@ -116,12 +116,12 @@ function findGentleRoot() {
 
 const gentleRoot = findGentleRoot();
 // No real engine: a dev machine reports the real-engine test as SKIPPED with this
-// reason (never a bare pass); with ABITO_REQUIRE_GENTLE=1 the run FAILS instead:
+// reason (never a bare pass); with KODA_REQUIRE_GENTLE=1 the run FAILS instead:
 // the S1/S3 proof may never be silently absent.
 const GENTLE_MISSING = "Gentle Shell (gentle-pi) not found; set GENTLE_PI_ROOT or build the bundled runtime";
-if (!gentleRoot && process.env.ABITO_REQUIRE_GENTLE === "1") {
-	test("Gentle Shell is required here (ABITO_REQUIRE_GENTLE=1)", () => {
-		assert.fail("ABITO_REQUIRE_GENTLE=1 but no Gentle Shell was found (set GENTLE_PI_ROOT or build the bundled runtime)");
+if (!gentleRoot && process.env.KODA_REQUIRE_GENTLE === "1") {
+	test("Gentle Shell is required here (KODA_REQUIRE_GENTLE=1)", () => {
+		assert.fail("KODA_REQUIRE_GENTLE=1 but no Gentle Shell was found (set GENTLE_PI_ROOT or build the bundled runtime)");
 	});
 }
 const gentleSkip = gentleRoot ? undefined : GENTLE_MISSING;
@@ -141,7 +141,7 @@ try {
 	const dns = require("node:dns");
 	const net = require("node:net");
 	const tls = require("node:tls");
-	const file = process.env.ABITO_NET_LOG;
+	const file = process.env.KODA_NET_LOG;
 	const record = (via, host, port) => {
 		if (!file || !host) return;
 		const h = String(host);
@@ -265,7 +265,7 @@ if (gentleSkip) {
 			runtimeDeps,
 			root: path.join(base, "island"),
 			env: { PATH: process.env.PATH, HOME: base },
-			envOverrides: { ABITO_NET_LOG: netLog },
+			envOverrides: { KODA_NET_LOG: netLog },
 			backoffMs: [10_000, 10_000],
 			stableMs: 60_000,
 			startTimeoutMs: 60_000,
@@ -302,12 +302,12 @@ if (gentleSkip) {
 
 	// RED harness: never part of the default suite. Same spawn, same argv, same env builder —
 	// but with the three offline switches REMOVED, to prove this test can FAIL.
-	test("RED: without the offline switches the same launch is expected to reach pi.dev", { skip: process.env.ABITO_PI_OFFLINE_RED === "1" ? false : "set ABITO_PI_OFFLINE_RED=1 (evidence run only)", timeout: BOOT_TIMEOUT_MS }, async () => {
+	test("RED: without the offline switches the same launch is expected to reach pi.dev", { skip: process.env.KODA_PI_OFFLINE_RED === "1" ? false : "set KODA_PI_OFFLINE_RED=1 (evidence run only)", timeout: BOOT_TIMEOUT_MS }, async () => {
 		const base = makeTemp("red");
 		const netLog = path.join(base, "net-attempts.jsonl");
 		const preload = writePreload(base);
 		const island = ensureIsland(path.join(base, "island"));
-		const env = isolatedEnv({ PATH: process.env.PATH, HOME: base }, island, { ABITO_NET_LOG: netLog });
+		const env = isolatedEnv({ PATH: process.env.PATH, HOME: base }, island, { KODA_NET_LOG: netLog });
 		delete env.PI_OFFLINE;
 		delete env.PI_SKIP_VERSION_CHECK;
 		delete env.PI_TELEMETRY;

@@ -70,7 +70,7 @@ function defaultReadExe(pid) {
 // Canonical executable identity AND no agent marker are required. Non-Linux probes also require own uid/SID.
 function checkIslandGuards(env, ppid, readExe = defaultReadExe, platform = process.platform, realpath = platform === 'win32' ? fs.realpathSync.native : fs.realpathSync) {
   try {
-    const exe = env.ABITO_ISLAND_EXE;
+    const exe = env.KODA_ISLAND_EXE;
     const win = platform === 'win32';
     if (typeof exe !== 'string' || exe === '' || !(win ? path.win32 : path).isAbsolute(exe)) return false;
     const mine = realpath(exe), theirs = readExe(ppid);

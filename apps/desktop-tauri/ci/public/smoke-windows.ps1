@@ -24,7 +24,7 @@ $islandData = Join-Path $localData 'com.abitog.AbitoTauri'
 if (Test-Path -LiteralPath $islandData) { throw 'Runner already has island user data; refusing smoke against existing state' }
 if (Test-Path -LiteralPath (Join-Path $localData 'Koda')) { throw 'Runner already has island runtime data; refusing reuse' }
 $originalEnv = @{}
-foreach ($key in @('PATH', 'HOME', 'USERPROFILE', 'ABITO_ISLAND_EXE', 'APPDATA', 'LOCALAPPDATA', 'ProgramFiles', 'ABITO_PROJECT_ROOT', 'ABITO_ISLAND_DIR', 'ABITO_DESKTOP_SOCKET')) {
+foreach ($key in @('PATH', 'HOME', 'USERPROFILE', 'KODA_ISLAND_EXE', 'APPDATA', 'LOCALAPPDATA', 'ProgramFiles', 'KODA_PROJECT_ROOT', 'KODA_ISLAND_DIR', 'KODA_DESKTOP_SOCKET')) {
     $originalEnv[$key] = [Environment]::GetEnvironmentVariable($key, 'Process')
 }
 $process = $null
@@ -85,10 +85,10 @@ function Start-Island([string]$Mode) {
     $env:ProgramFiles = $empty
     $systemPath = "$env:SystemRoot\System32;$env:SystemRoot"
     $env:PATH = "$nodeDir;$systemPath"
-    if ($Mode -eq 'explicit-root') { $env:ABITO_PROJECT_ROOT = $workspace }
-    else { Remove-Item Env:ABITO_PROJECT_ROOT -ErrorAction SilentlyContinue }
-    Remove-Item Env:ABITO_ISLAND_DIR -ErrorAction SilentlyContinue
-    Remove-Item Env:ABITO_DESKTOP_SOCKET -ErrorAction SilentlyContinue
+    if ($Mode -eq 'explicit-root') { $env:KODA_PROJECT_ROOT = $workspace }
+    else { Remove-Item Env:KODA_PROJECT_ROOT -ErrorAction SilentlyContinue }
+    Remove-Item Env:KODA_ISLAND_DIR -ErrorAction SilentlyContinue
+    Remove-Item Env:KODA_DESKTOP_SOCKET -ErrorAction SilentlyContinue
     $script:process = Start-Process -FilePath (Join-Path $install 'abito-island.exe') -WorkingDirectory $workspace -PassThru `
         -RedirectStandardOutput (Join-Path $root "$Mode.stdout.log") -RedirectStandardError (Join-Path $root "$Mode.stderr.log")
     # A forced stop can leave the previous process's metadata. Wait for this
@@ -150,13 +150,13 @@ try {
     }
     function Invoke-Install([string[]]$InstallArgs) {
         $env:HOME = $agentHome; $env:USERPROFILE = $agentHome
-        $env:ABITO_ISLAND_EXE = (Get-Process -Id $PID).Path
+        $env:KODA_ISLAND_EXE = (Get-Process -Id $PID).Path
         $out = & $node $hookCli install @InstallArgs 2> (Join-Path $root 'install.stderr.log')
         $code = $LASTEXITCODE
         if ((Get-Item -LiteralPath (Join-Path $root 'install.stderr.log')).Length -ne 0) { throw 'install wrote to stderr' }
         $json = $out | ConvertFrom-Json
         if ($json.PSObject.Properties['code'] -and $json.code -eq 'not_island') {
-            Write-Host "DIAG not_island: ABITO_ISLAND_EXE=$($env:ABITO_ISLAND_EXE) pid=$PID"
+            Write-Host "DIAG not_island: KODA_ISLAND_EXE=$($env:KODA_ISLAND_EXE) pid=$PID"
             $helper = Join-Path $install 'abito-private-session.exe'
             Write-Host "DIAG parent-check: $(& $helper --parent-check $PID 2>&1) exit=$LASTEXITCODE"
         }
@@ -225,7 +225,7 @@ try {
     $rm = Invoke-Install @('pi', '--user', '--json', '--remove', '--apply-plan', $rm.Json.plan_hash, '--audit-dir', $auditDir)
     if ($rm.Code -ne 0 -or (Test-Path -LiteralPath $ext)) { throw 'Windows Pi removal failed' }
     Write-Host 'PASS Windows Pi extension: installed, tamper refused (install_unverified), removed'
-    foreach ($key in @('HOME', 'USERPROFILE', 'ABITO_ISLAND_EXE')) { [Environment]::SetEnvironmentVariable($key, $originalEnv[$key], 'Process') }
+    foreach ($key in @('HOME', 'USERPROFILE', 'KODA_ISLAND_EXE')) { [Environment]::SetEnvironmentVariable($key, $originalEnv[$key], 'Process') }
 
     Start-Island 'explicit-root'
     Wait-For { (Get-Content -Raw -LiteralPath (Join-Path $root 'explicit-root.stderr.log')) -match 'abito-island-daemon: running' } 'explicit Windows root daemon startup'

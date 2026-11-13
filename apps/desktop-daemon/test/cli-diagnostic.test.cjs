@@ -60,7 +60,7 @@ test("CLI startup diagnostics name failures without paths or secrets", () => {
       `;
       const result = spawnSync(process.execPath, ["-e", source], {
         cwd: path.join(__dirname, ".."), encoding: "utf8",
-        env: { ...process.env, LOCALAPPDATA: root, ABITO_ISLAND_DIR: path.join(root, "Koda") },
+        env: { ...process.env, LOCALAPPDATA: root, KODA_ISLAND_DIR: path.join(root, "Koda") },
       });
       assert.equal(result.status, 1, result.stderr);
       assert.equal(result.stdout, "");

@@ -1,8 +1,8 @@
 'use strict';
 // mirrors apps/desktop-pi/config.cjs (own copy; no cross-app require). Both read the island's `<runtime>/endpoint.json`
-// handoff with the same checks; this copy has no question config, and an absent ABITO_DESKTOP_SOCKET with no valid
+// handoff with the same checks; this copy has no question config, and an absent KODA_DESKTOP_SOCKET with no valid
 // handoff yields {endpoint: undefined}: callers treat it as unavailable and never scan.
-// ABITO_PROJECT_ROOT is intentionally NOT read here.
+// KODA_PROJECT_ROOT is intentionally NOT read here.
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -31,7 +31,7 @@ function windowsEndpointShape(endpoint) {
 }
 function resolveConfigWindows(env, options = {}) {
   const stat = options.stat ?? fs.lstatSync;
-  const explicit = env.ABITO_DESKTOP_SOCKET;
+  const explicit = env.KODA_DESKTOP_SOCKET;
   if (explicit !== undefined) {
     // The override only chooses WHICH metadata file the relay verifies — it
     // never bypasses the relay itself.
@@ -59,9 +59,9 @@ function endpointShape(endpoint, runtime, options = {}) {
     path.dirname(path.dirname(endpoint)) === runtime && path.basename(endpoint) === 's' &&
     /^p-[a-zA-Z0-9]{6}$/.test(path.basename(path.dirname(endpoint)));
 }
-// Default runtime: ABITO_SOCKET_DIR, else $XDG_RUNTIME_DIR/koda, else /run/user/<uid>/koda.
+// Default runtime: KODA_SOCKET_DIR, else $XDG_RUNTIME_DIR/koda, else /run/user/<uid>/koda.
 function defaultRuntime(env, owner) {
-  if (env.ABITO_SOCKET_DIR !== undefined) return env.ABITO_SOCKET_DIR;
+  if (env.KODA_SOCKET_DIR !== undefined) return env.KODA_SOCKET_DIR;
   if (process.platform === 'darwin') {
     try { return `${fs.realpathSync(os.tmpdir())}/koda`; } catch { throw new Error('No runtime base'); }
   }
@@ -189,8 +189,8 @@ function resolveConfig(env, owner, options = {}) {
   if ((options.platform ?? process.platform) === 'win32') return resolveConfigWindows(env, options);
   if (!Number.isInteger(owner) || owner < 0) throw new Error('Linux uid required');
   const runtime = defaultRuntime(env, owner);
-  if (!normalized(runtime)) throw new Error('Invalid ABITO_SOCKET_DIR');
-  const explicit = env.ABITO_DESKTOP_SOCKET;
+  if (!normalized(runtime)) throw new Error('Invalid KODA_SOCKET_DIR');
+  const explicit = env.KODA_DESKTOP_SOCKET;
   if (explicit !== undefined) {
     if (!endpointShape(explicit, runtime)) throw new Error('Unexpected endpoint');
     return { runtime, endpoint: explicit, source: 'env' };

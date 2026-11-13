@@ -14,7 +14,7 @@
 use serde_json::Value;
 
 /// `security.cjs BRIDGE_ORIGIN` — the legacy backend origin. Runtime
-/// overrides (`ABITO_BRIDGE_BASE`, tests/probe only) replace it, never the
+/// overrides (`KODA_BRIDGE_BASE`, tests/probe only) replace it, never the
 /// route table below.
 pub const BRIDGE_ORIGIN: &str = "http://127.0.0.1:11003";
 

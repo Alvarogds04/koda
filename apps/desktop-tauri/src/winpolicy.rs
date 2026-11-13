@@ -24,7 +24,7 @@ pub fn dacl_private(owner: &str, current_user: &str, allowed_entries: Option<&[S
 }
 
 /// Default island root on Windows: `%LOCALAPPDATA%\Koda`, which inherits a
-/// user-only profile DACL. `ABITO_ISLAND_DIR` is honoured ONLY as a
+/// user-only profile DACL. `KODA_ISLAND_DIR` is honoured ONLY as a
 /// parallel-island/test seam INSIDE that canonical protected root: an
 /// override pointing anywhere else would bypass the profile ACLs that guard
 /// the token file, so it is refused (`None`), never guessed.
@@ -157,7 +157,7 @@ mod tests {
     fn island_root_is_absolute_and_defaults_under_local_app_data() {
         let local = r"C:\Users\a\AppData\Local";
         assert_eq!(island_root(None, Some(local)).unwrap(), std::path::Path::new(local).join("Koda"));
-        // An ABITO_ISLAND_DIR override is honoured ONLY inside the canonical
+        // An KODA_ISLAND_DIR override is honoured ONLY inside the canonical
         // protected root: anything else would bypass the profile ACLs that
         // guard the token file, so it is refused, never guessed.
         assert_eq!(

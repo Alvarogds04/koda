@@ -54,7 +54,7 @@ function cargoBuild(extraArgs, targetDir) {
   const r = cp.spawnSync('cargo', argv, { cwd: crate, stdio: 'inherit', env });
   if (r.status !== 0) { console.error('cargo build failed (offline: no download is attempted)'); process.exit(1); }
 }
-// The SHIPPED binary: no `probe` feature (ABITO_PROBE/--probe do nothing, no fakes).
+// The SHIPPED binary: no `probe` feature (KODA_PROBE/--probe do nothing, no fakes).
 const shipTarget = path.join(crate, 'target-ship');
 if (!args.includes('--skip-cargo')) cargoBuild(['--features', 'tauri/custom-protocol'], shipTarget);
 const built = path.join(shipTarget, 'release', 'abito-island');

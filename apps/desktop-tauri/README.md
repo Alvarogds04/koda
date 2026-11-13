@@ -255,7 +255,7 @@ initialises), because the launcher alone cannot cover every entry point.
 ```sh
 cd apps/desktop-tauri
 DISPLAY=:0 XAUTHORITY=/run/user/1000/.mutter-Xwaylandauth.UV9RW3 \
-  GDK_BACKEND=x11 ABITO_PROBE=1 timeout 120 cargo run
+  GDK_BACKEND=x11 KODA_PROBE=1 timeout 120 cargo run
 # (equivalent: cargo run -- --probe)
 ```
 
@@ -287,7 +287,7 @@ line per step with:
   the REAL snapshot path, with `connections_while_connected` →
   `connections_after_disconnect`. `preview_roots_detected_only` lists the
   installed Preview's reserved socket roots READ-ONLY — detected and
-  reported, never connected, never unlinked (an `ABITO_SOCKET_DIR` override
+  reported, never connected, never unlinked (an `KODA_SOCKET_DIR` override
   keeps the probe in its own directory).
 
 Exits only this app (`std::process::exit(0)`).
@@ -468,7 +468,7 @@ re-interpretation (the receiver tests were written first: RED → GREEN):
 | `onNotice` gated by a store before the app | `transport.cjs:83` | `Inner.store` — `src/transport.rs:801` handler |
 | `dismiss` drops the first notice | `main.cjs:461-463` | `main.rs:752` |
 | transport wiring + callbacks + publish | `main.cjs:488-491` | `start_transport` — `main.rs:138` |
-| `ABITO_DESKTOP_SOCKET=…` stdout line | `main.cjs:493` | `main.rs:182` |
+| `KODA_DESKTOP_SOCKET=…` stdout line | `main.cjs:493` | `main.rs:182` |
 | `unavailable = true` only when the receiver fails to start | `main.cjs:495-497` | `start_transport` — `main.rs:138` |
 | cleanup refusal line on quit | `main.cjs:383-384` | `main.rs:108,119` |
 | SIGINT/SIGTERM run the clean quit | `main.cjs:393` | `install_shutdown_handlers` — `main.rs:71` |
@@ -494,9 +494,9 @@ Deliberate, documented deltas (no wire change):
 - Default runtime root: `apps/desktop-tauri/.runtime` — the dev layout
   `apps/desktop/.runtime` had — created 0700; endpoint
   `<root>/p-XXXXXX/s` (`XXXXXX` = six alphanumerics per launch), generated
-  dir 0700, socket 0600. Startup prints `ABITO_DESKTOP_SOCKET=<endpoint>`
+  dir 0700, socket 0600. Startup prints `KODA_DESKTOP_SOCKET=<endpoint>`
   (`main.rs:182`), byte-for-byte the legacy line.
-- Override: `ABITO_SOCKET_DIR=<absolute, normalized dir>` for tests/probe.
+- Override: `KODA_SOCKET_DIR=<absolute, normalized dir>` for tests/probe.
   Relative or unnormalized paths fail closed; anything resolving into the
   installed Preview's reserved roots is refused (`resolve_runtime_from`,
   `src/transport.rs:199`). **A socket this process did not create is never
@@ -557,7 +557,7 @@ sha256 equals the receiver's, the connection is counted, and the settlement
 becomes exactly one notice. `pi-extension.ts` and `adapter.cjs` are
 unmodified. (The adapter's own opt-in loader would only accept the legacy
 `.runtime` or the Preview's root; the harness passes the runtime explicitly,
-which is what a Pi session wiring would do through `ABITO_DESKTOP_SOCKET`.)
+which is what a Pi session wiring would do through `KODA_DESKTOP_SOCKET`.)
 
 ## What M3 proves (and what it does not)
 
@@ -598,8 +598,8 @@ by the tests or the probe.
 ### What the approval evidence shows (probe, `approval_evidence` line)
 
 - The lane starts against the **in-process fake backend** through the
-  `ABITO_BRIDGE_BASE` override (set before the lane is built): the probe
-  never talks to a real backend, and when `ABITO_BRIDGE_BASE` was set from
+  `KODA_BRIDGE_BASE` override (set before the lane is built): the probe
+  never talks to a real backend, and when `KODA_BRIDGE_BASE` was set from
   OUTSIDE, the probe reads snapshots but refuses to decide.
 - `posts_before_choice: 0` — nothing (notice, snapshot, poll) ever writes;
   only the explicit `allow` dispatch reaches `/execute`, and then
@@ -771,7 +771,7 @@ History uses append-only JSONL in `app_data_dir/conversations/` (Unix directory
 reported, and interrupted turns restore as cancelled without resuming inference.
 Accepted message text is persisted as written; app credentials, headers, account
 state and system/specialist instructions are not copied. Files are not encrypted.
-Probe mode is memory-only unless `ABITO_CONVERSATIONS_DATA_DIR` names an absolute
+Probe mode is memory-only unless `KODA_CONVERSATIONS_DATA_DIR` names an absolute
 isolated test directory. Deletion, retention limits, cloud sync and import are
 out of scope. See [Local conversations](../../docs/conversations.md) for IPC,
 paging, privacy and the **partial final verification evidence**. No live app
@@ -859,7 +859,7 @@ node apps/desktop-tauri/test-node/chat-view-check.cjs
 node apps/desktop-tauri/tests/composer-ime-check.cjs
 
 # opt-in: one short real turn against 127.0.0.1:11002 (local, free)
-ABITO_REAL_LOCAL_MODEL=1 cargo test --manifest-path apps/desktop-tauri/Cargo.toml \
+KODA_REAL_LOCAL_MODEL=1 cargo test --manifest-path apps/desktop-tauri/Cargo.toml \
   --test chat_local_model real_local -- --nocapture
 
 # probe: adds chat_open (672x256 from the X server), chat_evidence (one turn
@@ -867,7 +867,7 @@ ABITO_REAL_LOCAL_MODEL=1 cargo test --manifest-path apps/desktop-tauri/Cargo.tom
 # unreachable target), chat_back_to_overview (672x176), chat_collapse
 cd apps/desktop-tauri
 DISPLAY=:0 XAUTHORITY=/run/user/1000/.mutter-Xwaylandauth.UV9RW3 \
-  GDK_BACKEND=x11 ABITO_PROBE=1 ABITO_SOCKET_DIR="$PWD/.runtime-probe" \
+  GDK_BACKEND=x11 KODA_PROBE=1 KODA_SOCKET_DIR="$PWD/.runtime-probe" \
   timeout 200 cargo run
 ```
 
@@ -913,7 +913,7 @@ turn keeps its frozen target. It is persisted as
 checks). Absent → the approved initial `local-abito-gpt`; corrupt, foreign
 or unknown → **no model selected** (the chat says so, nothing substituted).
 The probe never writes it (`persisted_config_dir: null`); tests use a temp
-dir; `ABITO_MODELS_CONFIG_DIR=<abs dir>` overrides.
+dir; `KODA_MODELS_CONFIG_DIR=<abs dir>` overrides.
 
 ### Verifying U2
 
@@ -979,7 +979,7 @@ mutations with code `load_error` and message
 No success event, auto-reset, repair, quarantine or overwrite occurs; recovery
 is outside this feature and requires an explicit decision. Moving a bad file
 after startup does not clear the latch. `active: null` IS the principal (Abito).
-`ABITO_SPECIALISTS_CONFIG_DIR=<abs dir>` overrides; without that override,
+`KODA_SPECIALISTS_CONFIG_DIR=<abs dir>` overrides; without that override,
 the probe keeps it in memory only. Unix permissions/owner checks are not a
 verified Windows security guarantee.
 
@@ -1103,7 +1103,7 @@ node apps/desktop-tauri/test-node/specialists-view-check.cjs   # 21 checks
 Nothing to do for the shipped default: the lane targets
 `http://127.0.0.1:11003` (`security.cjs BRIDGE_ORIGIN`) and reads
 `<stateRoot>/bridge.json` — the dev state root is `apps/desktop-tauri/.runtime`
-(`ABITO_SOCKET_DIR` overrides the whole state root, as for M2). To enable the
+(`KODA_SOCKET_DIR` overrides the whole state root, as for M2). To enable the
 real lane:
 
 1. Create `.runtime/bridge.json` (mode **0600** — the descriptor gate
@@ -1111,7 +1111,7 @@ real lane:
    `{"v":1,"login":"your-login@tailnet.ts.net"}` — the same tailnet login
    the backend allows.
 2. Start the Second Brain bridge on `127.0.0.1:11003`. If it lives
-   elsewhere, set `ABITO_BRIDGE_BASE=http://127.0.0.1:<port>` (origin shape
+   elsewhere, set `KODA_BRIDGE_BASE=http://127.0.0.1:<port>` (origin shape
    only: `http://host:port`, no path/query/fragment). **Only point this at a
    backend you intend the app to drive** — it is the approval authority.
 3. Without `bridge.json` the lane reports `bridgeStatus: disabled` and makes
@@ -1128,10 +1128,10 @@ cargo build --manifest-path apps/desktop-tauri/Cargo.toml
 sha256sum apps/desktop-tauri/frontend/clay-engine.js   # R6 frozen, unchanged
 
 # probe WITH the socket override; the approval step spawns its own fake
-# backend and sets ABITO_BRIDGE_BASE itself (in-process, loopback only):
+# backend and sets KODA_BRIDGE_BASE itself (in-process, loopback only):
 cd apps/desktop-tauri
 DISPLAY=:0 XAUTHORITY=/run/user/1000/.mutter-Xwaylandauth.UV9RW3 \
-  GDK_BACKEND=x11 ABITO_PROBE=1 ABITO_SOCKET_DIR="$PWD/.runtime-probe" \
+  GDK_BACKEND=x11 KODA_PROBE=1 KODA_SOCKET_DIR="$PWD/.runtime-probe" \
   timeout 150 cargo run
 # → approval_evidence line:
 #     base_origin_env "http://127.0.0.1:<fake>", fake_backend_spawned true,
@@ -1178,7 +1178,7 @@ cargo test --manifest-path apps/desktop-tauri/Cargo.toml
 # read-back probe: geometry + facade verbs + typed rejections + rate limit
 cd apps/desktop-tauri
 DISPLAY=:0 XAUTHORITY=/run/user/1000/.mutter-Xwaylandauth.UV9RW3 \
-  GDK_BACKEND=x11 ABITO_PROBE=1 timeout 120 cargo run
+  GDK_BACKEND=x11 KODA_PROBE=1 timeout 120 cargo run
 # → check the `facade_evidence` line: verbs_match_preload true,
 #   invalid_call.rejected true with code "denied",
 #   rate.rejections == 10 of 40 with code "rate-exceeded"
@@ -1202,13 +1202,13 @@ sha256sum apps/desktop-tauri/frontend/clay-engine.js   # R6 frozen, unchanged
 # probe WITH the socket override (its own dir — never the Preview's root):
 cd apps/desktop-tauri
 DISPLAY=:0 XAUTHORITY=/run/user/1000/.mutter-Xwaylandauth.UV9RW3 \
-  GDK_BACKEND=x11 ABITO_PROBE=1 ABITO_SOCKET_DIR="$PWD/.runtime-probe" \
+  GDK_BACKEND=x11 KODA_PROBE=1 KODA_SOCKET_DIR="$PWD/.runtime-probe" \
   timeout 120 cargo run
 # → transport_evidence line:
 #     ready_ok true, frames_sent 2, notice_count 1,
 #     connections_while_connected 1 → connections_after_disconnect 0,
 #     preview_roots_detected_only[].connected_or_removed false
-# → stdout also prints ABITO_DESKTOP_SOCKET=<endpoint> (legacy line)
+# → stdout also prints KODA_DESKTOP_SOCKET=<endpoint> (legacy line)
 ```
 
 ## Behaviour notes
@@ -1455,7 +1455,7 @@ apps/desktop-tauri/
 │   ├── fakemodel.rs      # U1: in-process fake llama.cpp router (tests + probe only)
 │   ├── models.rs         # PURE U2: verified local registry, metadata, resource gate, listing, saved selection
 │   ├── modelshost.rs     # U2: models_action command, models:state, selection → chat target
-│   ├── probe.rs          # ABITO_PROBE read-back script (geometry + facade + transport + approval + chat)
+│   ├── probe.rs          # KODA_PROBE read-back script (geometry + facade + transport + approval + chat)
 │   └── main.rs           # wiring, commands, publish, lifecycle, transport/signal, approval, placement
 └── frontend/
     ├── index.html        # island markup + M3 approval card (display-only)
@@ -1483,7 +1483,7 @@ node packaging/verify.cjs dist/abito-island/<version>   # re-hash vs receipt, no
   (`b699ebbc…`), curated `frontend/` list, CSP without remote/unsafe sources,
   capabilities = listen/unlisten only, no `devtools`/shell/fs/http features.
 - Stage: `abito-island` (release binary), `abito-island-launcher` (no args;
-  refuses the whole `LD_*` family, `GDK_DEBUG`/`GTK_*` debug, WebKit inspector vars and every `ABITO_*` knob except `ABITO_PROJECT_ROOT`; forces X11),
+  refuses the whole `LD_*` family, `GDK_DEBUG`/`GTK_*` debug, WebKit inspector vars and every `KODA_*` knob except `KODA_PROJECT_ROOT`; forces X11),
   `com.abitog.AbitoTauri.desktop` (template, `@INSTALL_DIR@`), `receipt.json`
   (sha256 of every file, `Cargo.lock`, config, frontend, rustc, git HEAD and a
   clean-tree attestation). `build.cjs` REFUSES to build when the product paths
@@ -1491,7 +1491,7 @@ node packaging/verify.cjs dist/abito-island/<version>   # re-hash vs receipt, no
   (`git worktree add ../abito-m4-clean <commit>`).
 - Identity: `com.abitog.AbitoTauri`; installed runtime root
   `$XDG_RUNTIME_DIR/koda` (never `abito-desktop*`); the project root of
-  an installed build comes only from `ABITO_PROJECT_ROOT` (absolute,
+  an installed build comes only from `KODA_PROJECT_ROOT` (absolute,
   normalized, existing dir) — otherwise the transport reports unavailable.
   Debug builds keep the dev layout. Tests: `tests/install_root.rs`
   (also under `cargo test --release`), `test-node/packaging-check.cjs`.
@@ -1500,7 +1500,7 @@ node packaging/verify.cjs dist/abito-island/<version>   # re-hash vs receipt, no
   path or devtools markers; a smoke run of the release binary (probe, private
   roots) reached `ready_ok: true`, 18 SVG R6 elements, exit 0. Smoke script
   (`packaging/smoke.sh <stage-dir>`) is versioned: it runs the binary with
-  `ABITO_PROBE=1 ABITO_PROJECT_ROOT=<private dir> ABITO_SOCKET_DIR=<private dir>/sock`
+  `KODA_PROBE=1 KODA_PROJECT_ROOT=<private dir> KODA_SOCKET_DIR=<private dir>/sock`
   directly (not through the launcher, which refuses those knobs).
 - NOT verified: reproducibility across different checkout paths; behaviour
   of an actually installed copy; Pi session against the new root.
@@ -1518,7 +1518,7 @@ installs binary + launcher + icon (+ template and receipt) into
 `~/.local/share/abito-island` (`--prefix` to override) via temp-file + rename (a
 running binary can be replaced), and writes
 `~/.local/share/applications/com.abitog.AbitoTauri.desktop` with
-`Exec=env ABITO_PROJECT_ROOT=<root> "<launcher>"`. The project root is required:
+`Exec=env KODA_PROJECT_ROOT=<root> "<launcher>"`. The project root is required:
 `--project-root DIR` (the folder your agent sessions run in). Idempotent; `--uninstall`
 removes exactly our files and the entry. Tests: `test-node/install-check.cjs`
 (11, toy stage in temp dirs). Never touches `com.abitog.Abito*` roots.

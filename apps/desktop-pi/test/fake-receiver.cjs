@@ -11,9 +11,9 @@ const { EventEmitter } = require('node:events');
 // production uses in between is covered by windows-transport.test.cjs and the island's Rust tests).
 // `runtime` (optional) binds a SECOND receiver under an existing private root: the handoff test needs the same
 // runtime to publish a different endpoint, exactly as an island restart does.
-// Bounded CI diagnostics (HU-054): with ABITO_TEST_DIAG=1 the Windows pipe path logs, per client write, writableLength before and
+// Bounded CI diagnostics (HU-054): with KODA_TEST_DIAG=1 the Windows pipe path logs, per client write, writableLength before and
 // after, the write-callback latency, 'drain' events, and each frame the server actually reads. Off by default; never alters timing.
-const DIAG = process.env.ABITO_TEST_DIAG === '1';
+const DIAG = process.env.KODA_TEST_DIAG === '1';
 const t0 = Date.now();
 let diagLines = 0;
 const diag = message => { if (DIAG && diagLines++ < 400) console.log(`# diag +${Date.now() - t0}ms ${message}`); };
@@ -112,7 +112,7 @@ async function fakeReceiver(t, { questions = false, busyReason = false, structur
 }
 function harness(registerAdapter, options) {
   const handlers = new Map();
-  // ABITO_TEST_DIAG=1: log every Pi lifecycle event the test delivers and whether the handler threw (CI evidence only).
+  // KODA_TEST_DIAG=1: log every Pi lifecycle event the test delivers and whether the handler threw (CI evidence only).
   const traced = (name, handler) => !DIAG ? handler : (...args) => {
     diag(`pi event ${name}`);
     try { return handler(...args); } catch (error) { diag(`pi event ${name} THREW ${error?.message}`); throw error; }

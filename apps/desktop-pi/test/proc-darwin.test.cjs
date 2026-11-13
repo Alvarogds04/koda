@@ -41,8 +41,8 @@ test('a live process writing an island-like endpoint.json is discovered (macOS p
   fs.writeFileSync(file, JSON.stringify({ v: 1, endpoint: rcv.endpoint, pid: process.pid }));
   fs.chmodSync(file, 0o600);
   const options = process.platform === 'darwin' ? { platform: 'darwin' } : {};
-  assert.equal(resolveConfig({ ABITO_SOCKET_DIR: rcv.runtime }, process.getuid(), options).endpoint, rcv.endpoint);
+  assert.equal(resolveConfig({ KODA_SOCKET_DIR: rcv.runtime }, process.getuid(), options).endpoint, rcv.endpoint);
   // a pid that does not exist is refused on every Unix
   fs.writeFileSync(file, JSON.stringify({ v: 1, endpoint: rcv.endpoint, pid: 2147483646 }));
-  assert.equal(resolveConfig({ ABITO_SOCKET_DIR: rcv.runtime }, process.getuid(), options).endpoint, undefined);
+  assert.equal(resolveConfig({ KODA_SOCKET_DIR: rcv.runtime }, process.getuid(), options).endpoint, undefined);
 });

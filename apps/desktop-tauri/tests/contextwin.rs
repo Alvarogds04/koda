@@ -121,7 +121,7 @@ fn flow_uses_the_gnome_reader_on_wayland() {
     let _svc = serve(&bus, vec![("com.abitog.AbitoTauri", "Abito", "Abito"), ("org.example.Writer.desktop", "Writer", "Private title")]);
     let child = Command::new(std::env::current_exe().unwrap())
         .args(["--exact", "flow_gnome_child", "--nocapture"])
-        .env("ABITO_TEST_CONTEXT_CHILD", "1")
+        .env("KODA_TEST_CONTEXT_CHILD", "1")
         .env("DBUS_SESSION_BUS_ADDRESS", &bus.address)
         .env("XDG_SESSION_TYPE", "wayland")
         .env("DISPLAY", ":9999")
@@ -131,7 +131,7 @@ fn flow_uses_the_gnome_reader_on_wayland() {
 
 #[test]
 fn flow_gnome_child() {
-    if std::env::var("ABITO_TEST_CONTEXT_CHILD").ok().as_deref() != Some("1") { return; }
+    if std::env::var("KODA_TEST_CONTEXT_CHILD").ok().as_deref() != Some("1") { return; }
     use abito_island::flow::{self, Backend, System};
     assert_eq!(System.foreground_app(), Some(("org.example.writer".into(), "Writer".into())));
     assert_eq!(flow::running_apps(), vec![("org.example.writer".into(), "Writer".into())]);

@@ -666,7 +666,7 @@ fn principal_preferences_preserve_internal_line_breaks_and_trim_edges() {
 
 #[test]
 fn principal_preferences_are_capped_in_unicode_scalars() {
-    let max = abito_island::prefs::MAX_ABITO_INSTRUCTIONS_CHARS;
+    let max = abito_island::prefs::MAX_KODA_INSTRUCTIONS_CHARS;
     let text = format!("  {}NO_INCLUIR  ", "🦀".repeat(max));
     let prompt = system_prompt_with_principal("BASE", None, Some(&text));
     assert_eq!(prompt.matches('🦀').count(), max);

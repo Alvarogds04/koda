@@ -215,7 +215,7 @@ for dir in "$SMOKE_HOME" "$XDG_RUNTIME" "$XDG_CONFIG" "$XDG_DATA" "$XDG_CACHE" "
 done
 
 # The OS-standard environment a GUI launch gets, rebuilt from nothing: no
-# DISPLAY/XAUTHORITY/WAYLAND/DBUS of the caller, no ABITO_* override (the launcher
+# DISPLAY/XAUTHORITY/WAYLAND/DBUS of the caller, no KODA_* override (the launcher
 # refuses those and so does this smoke).
 smoke_env() {
   env -i \
@@ -338,7 +338,7 @@ if ( cd "$APP" && node packaging/build.cjs --out "$WORK/stage" --runtime-archive
      && grep -q '"features": "tauri/custom-protocol (no probe)"' "$PREFIX/receipt.json" \
      && [ "$(sha256sum "$STAGE/abito-island" | cut -d' ' -f1)" = "$(sha256sum "$PREFIX/abito-island" | cut -d' ' -f1)" ]; then
     EXEC=$(sed -n 's/^Exec=//p' "$APPS/com.abitog.AbitoTauri.desktop")
-    if [ "$EXEC" = "env ABITO_PROJECT_ROOT=$PROJECT \"$PREFIX/abito-island-launcher\"" ]; then
+    if [ "$EXEC" = "env KODA_PROJECT_ROOT=$PROJECT \"$PREFIX/abito-island-launcher\"" ]; then
       pass "(a) install: build.cjs staged $(basename "$STAGE") offline with the verified runtime archive (receipt: no probe feature); install.sh re-verified every hash against receipt.json, audited the runtime members, extracted the bundled Node+Pi to $PREFIX/runtime and installed the app in $PREFIX (binary sha256 $(sha256sum "$PREFIX/abito-island" | cut -d' ' -f1))"
     else
       fail "(a) install — the generated .desktop Exec line is not the expected one: $EXEC"
@@ -428,7 +428,7 @@ if grep -q 'island host: no_daemon' "$WORK/island.log"; then
   diag
   exit 1
 fi
-SOCKET=$(sed -n 's/^ABITO_DESKTOP_SOCKET=//p' "$WORK/island.log" | head -n 1)
+SOCKET=$(sed -n 's/^KODA_DESKTOP_SOCKET=//p' "$WORK/island.log" | head -n 1)
 HANDOFF="$XDG_RUNTIME/koda/endpoint.json"
 if [ -S "$SOCKET" ] && [ -f "$HANDOFF" ] && [ "$(stat -c %a "$HANDOFF")" = 600 ]; then
   pass "(b) start: the installed launcher started the app-owned daemon (ready line received) and published $HANDOFF (0600) for socket $SOCKET"

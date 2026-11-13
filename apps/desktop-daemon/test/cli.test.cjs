@@ -82,9 +82,9 @@ function islandRoot() {
 	fs.mkdirSync(path.join(local, "Koda"), { mode: 0o700 });
 	return path.join(local, "Koda", "i");
 }
-/** Child env for `root`: private HOME, ABITO_ISLAND_DIR, and on Windows the private LOCALAPPDATA. */
+/** Child env for `root`: private HOME, KODA_ISLAND_DIR, and on Windows the private LOCALAPPDATA. */
 function cliEnv(root, extra = {}) {
-	const env = { PATH: process.env.PATH, HOME: tmp(), ABITO_ISLAND_DIR: root, ...extra };
+	const env = { PATH: process.env.PATH, HOME: tmp(), KODA_ISLAND_DIR: root, ...extra };
 	if (WIN) {
 		// A child node cannot bootstrap without the Windows system variables; everything
 		// user-identifying stays private: LOCALAPPDATA (and TEMP/TMP) point at the private
@@ -92,7 +92,7 @@ function cliEnv(root, extra = {}) {
 		for (const key of ["SystemRoot", "windir", "SystemDrive", "ComSpec", "PATHEXT", "OS", "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE"]) {
 			if (process.env[key] !== undefined && env[key] === undefined) env[key] = process.env[key];
 		}
-		if (env.ABITO_ISLAND_DIR === root) env.LOCALAPPDATA = path.dirname(path.dirname(root)); // <local>\Abito\i -> <local>
+		if (env.KODA_ISLAND_DIR === root) env.LOCALAPPDATA = path.dirname(path.dirname(root)); // <local>\Abito\i -> <local>
 		const privateTemp = path.join(path.dirname(env.HOME), "tmp");
 		fs.mkdirSync(privateTemp, { recursive: true });
 		env.TEMP = privateTemp;

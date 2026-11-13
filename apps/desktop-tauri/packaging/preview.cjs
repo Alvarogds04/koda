@@ -34,7 +34,7 @@ async function main(args = process.argv.slice(2)) {
     if (fingerprint !== validator.inputs() || JSON.stringify(before) !== JSON.stringify(L.provenance(crate))) throw Error('árbol cambió durante la validación');
     const binary = path.join(target,'release','abito-island');
     const bytes = fs.readFileSync(binary);
-    for (const marker of ['ABITO_PROBE','AbitoValidate','validation_scene','validation_observation','validate-result','XTEST']) if (bytes.includes(Buffer.from(marker))) throw Error(`binario contiene marcador de prueba: ${marker}`);
+    for (const marker of ['KODA_PROBE','AbitoValidate','validation_scene','validation_observation','validate-result','XTEST']) if (bytes.includes(Buffer.from(marker))) throw Error(`binario contiene marcador de prueba: ${marker}`);
     if (fs.realpathSync(path.dirname(out)) !== parent) throw Error('destino cambió durante la validación');
     fs.mkdirSync(out,{mode:0o700});
     fs.copyFileSync(binary,path.join(out,'abito-island'));

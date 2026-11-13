@@ -18,7 +18,7 @@ pub fn session_path(island_root: &Path) -> PathBuf {
     island_root.join("runtime").join("session.json")
 }
 
-/// Island root: `ABITO_ISLAND_DIR` (absolute) or `~/.koda`.
+/// Island root: `KODA_ISLAND_DIR` (absolute) or `~/.koda`.
 // keep in sync with agentconn.rs
 pub fn island_root(env_dir: Option<&str>, home: Option<&str>) -> Option<PathBuf> {
     if let Some(d) = env_dir.filter(|d| !d.is_empty()) {

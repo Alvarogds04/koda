@@ -1127,13 +1127,13 @@ test("bundledMemoryEnv runs Koda's private memory: the bundled binary, Koda's po
 			ENGRAM_PORT: "7437",
 			ENGRAM_DATA_DIR: "/home/user/.engram",
 			ENGRAM_BIN: "/custom/user-engram",
-			ABITO_ENGRAM_PORT: "7499",
+			KODA_ENGRAM_PORT: "7499",
 		},
 		runtime,
 		deps,
 	);
 	assert.equal(env.ENGRAM_BIN, path.join(runtime, "bin", "engram"), "ONLY the bundled binary: the parent's ENGRAM_BIN is ignored");
-	assert.equal(env.ENGRAM_PORT, "7499", "ABITO_ENGRAM_PORT overrides Koda's private port");
+	assert.equal(env.ENGRAM_PORT, "7499", "KODA_ENGRAM_PORT overrides Koda's private port");
 	assert.equal(env.ENGRAM_URL, undefined, "the user's server is never inherited");
 	assert.equal(env.ENGRAM_DATA_DIR, undefined, "the user's store is never inherited: the store follows the island HOME");
 	assert.equal(env.GENTLE_SHELL_PREFIX, undefined, "GENTLE_SHELL_PREFIX is never set");
@@ -1266,13 +1266,13 @@ test("the default engine's child gets the memory env and the seeded companion; a
 		assert.equal(childEnv.ENGRAM_PORT, "7439", "Koda's private port, not the parent's ENGRAM_PORT");
 		assert.equal(childEnv.ENGRAM_DATA_DIR, undefined, "the user's store is never inherited");
 		assert.equal(childEnv.ENGRAM_URL, undefined, "the user's server is never inherited");
-		assert.equal(childEnv.ABITO_MEMORY_PROJECT, "abito-island");
+		assert.equal(childEnv.KODA_MEMORY_PROJECT, "koda");
 		assert.equal(childEnv.GENTLE_SHELL_PREFIX, undefined, "never GENTLE_SHELL_PREFIX");
 		// The companion was seeded into the engine's own home before the first spawn.
 		assert.equal(JSON.parse(fs.readFileSync(path.join(engine.island.agentDir, "npm", "node_modules", "gentle-engram", "package.json"), "utf8")).version, "0.4.2");
 		assert.deepEqual(JSON.parse(fs.readFileSync(path.join(engine.island.agentDir, "settings.json"), "utf8")).packages, ["npm:gentle-engram@0.4.2"]);
 		// The memory project pin is untouched.
-		assert.equal(JSON.parse(fs.readFileSync(path.join(engine.island.workspace, ".engram", "config.json"), "utf8")).project_name, "abito-island");
+		assert.equal(JSON.parse(fs.readFileSync(path.join(engine.island.workspace, ".engram", "config.json"), "utf8")).project_name, "koda");
 	} finally {
 		await engine.stop().catch(() => {});
 	}
@@ -1289,7 +1289,7 @@ test("the default engine's child gets the memory env and the seeded companion; a
 		assert.equal(plainEnv.ENGRAM_DATA_DIR, undefined, "the user's store is never exposed to a foreign command");
 		assert.equal(plainEnv.ENGRAM_URL, undefined);
 		assert.equal(plainEnv.ENGRAM_PORT, undefined);
-		assert.equal(plainEnv.ABITO_MEMORY_PROJECT, "abito-island");
+		assert.equal(plainEnv.KODA_MEMORY_PROJECT, "koda");
 	} finally {
 		await plain.engine.stop().catch(() => {});
 	}
@@ -1302,9 +1302,9 @@ test("bundledMemoryEnv refuses the user's own Engram ports as a configuration er
 	const deps = runtimeDepsFor(runtime);
 	for (const reserved of ["7437", "7438"]) {
 		assert.throws(
-			() => bundledMemoryEnv({ HOME: "/home/user", ABITO_ENGRAM_PORT: reserved }, runtime, deps),
+			() => bundledMemoryEnv({ HOME: "/home/user", KODA_ENGRAM_PORT: reserved }, runtime, deps),
 			new RegExp(`${reserved} belongs to the user's own Engram server`),
-			`ABITO_ENGRAM_PORT=${reserved} must be refused, not inherited into the engine`,
+			`KODA_ENGRAM_PORT=${reserved} must be refused, not inherited into the engine`,
 		);
 	}
 });
@@ -1368,15 +1368,15 @@ test("the default engine drops ENGRAM_* caller overrides; a custom command keeps
 // F5 (verifier): the identity told the agent to «search broadly… the user keeps
 // knowledge from many projects there» — written for the OLD shared-store shape.
 // Koda's memory is now its own private store (T1c, L11) that starts empty, and
-// the hidden-names list stays intact. The SAVE rule (project abito-island,
+// the hidden-names list stays intact. The SAVE rule (project koda,
 // never another) is a product decision (L5) and must stay byte-identical.
 test("identity.md fits the private memory store: no broad cross-project search, the save rule intact (F5)", () => {
 	const identity = fs.readFileSync(path.join(__dirname, "..", "identity.md"), "utf8");
 	assert.equal(
-		identity.split("\n").includes("- When you save a memory, always save it to the project `abito-island` and never pass a different one."),
+		identity.split("\n").includes("- When you save a memory, always save it to the project `koda` and never pass a different one."),
 		true,
 		"the save rule stays byte-identical (L5)",
 	);
 	assert.doesNotMatch(identity, /all projects|match_mode|search broadly|knowledge from many projects/, "no shared-store cross-project search advice");
-	assert.match(identity, /abito-island/, "the memory rules still name the one project");
+	assert.match(identity, /`koda`/, "the memory rules still name the one project");
 });

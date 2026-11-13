@@ -396,7 +396,7 @@ fn regrab(app: &AppHandle, target: Target) {
 /// the human's keyboard unless they ask for it).
 pub fn start(app: &AppHandle) {
     #[cfg(any(debug_assertions, feature = "probe"))]
-    if crate::probe_requested() && std::env::var_os("ABITO_PROBE_HOTKEY").is_none() {
+    if crate::probe_requested() && std::env::var_os("KODA_PROBE_HOTKEY").is_none() {
         return;
     }
     let state = app.state::<AppState>();

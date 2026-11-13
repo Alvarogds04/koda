@@ -112,7 +112,7 @@ test('without the structured capability a questionnaire is refused WITHOUT sendi
   const before = receiver.frames.length;
   const out = await runAsk(h.controller, { questions: [Q('A')] }, h.ctx, new AbortController().signal);
   assert.equal(out.isError, true); assert.equal(out.details.status, 'invalid_request'); assert.equal(out.details.reasonCode, 'structured_unavailable');
-  assert.match(out.text, /ABITO_QUESTIONS=3/); assert.match(out.text, /normal chat/);
+  assert.match(out.text, /KODA_QUESTIONS=3/); assert.match(out.text, /normal chat/);
   assert.equal(receiver.frames.length, before, 'nothing was written');
 });
 

@@ -60,8 +60,10 @@ Each agent row in *Ajustes → Agentes* works on its own: Claude Code and Codex 
 | `apps/desktop-sound` | sound engine |
 | `assets/koda` | Koda's 42 animations as transparent 512×512 GIF and animated WebP (stickers, wallpapers, avatars): [gallery](assets/koda/README.md) |
 
-Internal names (the `abito-island` binary, `~/.koda` data folder, `ABITO_*` variables, the protocol) still carry the
-old name; renaming them is planned separately so existing installs keep working.
+Internal names (the `abito-island` binary and crate, the bundle identifier `com.abitog.AbitoTauri`, the hook
+extension names and the phone-link protocol) still carry the old name; renaming them is planned separately.
+Nothing from Koda 0.1 is migrated: its old data folder, keychain entries and memories stay where they
+are, untouched and unused, so you can always go back.
 
 Build on Linux: `cd apps/desktop-tauri && node packaging/runtime/build-runtime.cjs --target linux-x64 --out /tmp/koda-runtime --archive /tmp/koda-runtime-linux-x64.tar.gz && node packaging/build.cjs --out dist --runtime-archive /tmp/koda-runtime-linux-x64.tar.gz` (the first command downloads the pinned Node and Pi and checks their hashes). Tests: `../../run-node-checks.sh` (Node) and
 `cargo test --offline`.

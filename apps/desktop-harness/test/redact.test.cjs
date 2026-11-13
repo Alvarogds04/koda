@@ -464,7 +464,7 @@ test('R3: shell indirection is lossy; plain pipes, redirects and && are not', ()
 });
 
 // ---- end to end with the fake receiver, both adapters ----
-const envOf = r => ({ ABITO_DESKTOP_SOCKET: r.endpoint, ABITO_SOCKET_DIR: r.runtime });
+const envOf = r => ({ KODA_DESKTOP_SOCKET: r.endpoint, KODA_SOCKET_DIR: r.runtime });
 const answerer = (rcv, value) => rcv.next('question').then(q => rcv.send({ v: 1, type: 'answer', questionVersion: 1, project: q.project,
   sessionId: q.sessionId, at: Date.now(), id: q.id, source: 'human', answer: { type: 'option', value } }));
 // S2 (ad0ae382) keeps Claude answering; K2-08 T1 (S4) makes Codex answer the same way, so both run the same rows:

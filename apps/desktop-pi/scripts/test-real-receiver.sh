@@ -15,11 +15,11 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
-printf '%s\n' "Headless real Rust/Node integration; private ABITO_SOCKET_DIR=$private_root"
+printf '%s\n' "Headless real Rust/Node integration; private KODA_SOCKET_DIR=$private_root"
 env -u DISPLAY -u WAYLAND_DISPLAY -u DBUS_SESSION_BUS_ADDRESS -u XAUTHORITY -u XDG_SESSION_TYPE \
   CARGO_NET_OFFLINE=true \
   CARGO_TARGET_DIR="$root/apps/desktop-tauri/target" \
-  ABITO_SOCKET_DIR="$private_root" \
-  ABITO_PI_PRODUCER_DIR="$root/apps/desktop-pi" \
+  KODA_SOCKET_DIR="$private_root" \
+  KODA_PI_PRODUCER_DIR="$root/apps/desktop-pi" \
   cargo test --manifest-path "$root/apps/desktop-tauri/Cargo.toml" \
     --offline --locked --test question_producer --jobs 2 -- --ignored --test-threads=1

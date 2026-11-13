@@ -35,7 +35,7 @@ test('Windows flow: preview then apply a Claude settings file through the helper
   const pv = (await run(['claude', '--settings', settings, '--json'])).json;
   assert.equal(pv.ok, true); assert.equal(pv.changed, true);
   const exe = fs.realpathSync(process.execPath);
-  const ap = await run(['claude', '--settings', settings, '--json', '--apply-plan', pv.plan_hash, '--audit-dir', audit], { env: { ABITO_ISLAND_EXE: exe }, readExe: () => exe });
+  const ap = await run(['claude', '--settings', settings, '--json', '--apply-plan', pv.plan_hash, '--audit-dir', audit], { env: { KODA_ISLAND_EXE: exe }, readExe: () => exe });
   assert.equal(ap.json.ok, true, JSON.stringify(ap.json));
   assert.equal(ap.json.rollback, null);
   assert.match(fs.readFileSync(settings, 'utf8'), /abito-hook/);

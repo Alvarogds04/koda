@@ -1,7 +1,7 @@
 'use strict';
 // Koda 0.1 T2: what a hook prints in the user's terminal (and the denial message the model sees) names the product «Koda».
 // Common failure paths of every agent: unavailable, no answer, timeout too short, invalid configuration, denied.
-// Internal names (abito-hook, ABITO_* variables, paths) are NOT part of this contract.
+// Internal names (abito-hook, KODA_* variables, paths) are NOT part of this contract.
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
@@ -16,7 +16,7 @@ const claudeIn = JSON.stringify({ hook_event_name: 'PermissionRequest', session_
 const copilotIn = JSON.stringify({ sessionId: 'c1', cwd, toolName: 'bash', toolInput: { command: 'ls' } });
 const ocIn = JSON.stringify({ sessionID: 'ses_1', directory: cwd, type: 'bash', title: 'Run: ls', pattern: 'ls', metadata: { command: 'ls' } });
 const stub = (status, answer) => () => ({ ask: async () => ({ status, answer }), notify: async () => ({ status: 'sent' }) });
-const BAD_CONFIG = { ABITO_SOCKET_DIR: 'relative/dir', ABITO_DESKTOP_SOCKET: 'relative/dir/s' };
+const BAD_CONFIG = { KODA_SOCKET_DIR: 'relative/dir', KODA_DESKTOP_SOCKET: 'relative/dir/s' };
 const AGENTS = [
   ['claude', handleClaudeHook, claudeIn, 'permission-request'],
   ['copilot', handleCopilotHook, copilotIn, 'permission-request'],

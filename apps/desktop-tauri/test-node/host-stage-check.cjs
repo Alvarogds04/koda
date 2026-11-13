@@ -75,7 +75,7 @@ try {
   const local = win ? fs.mkdtempSync(path.join(os.tmpdir(), 'abito-host-stage-local-')) : null;
   localDir = local;
   const island = win ? path.join(local, 'Koda', 'missing-island') : path.join(stage, 'missing-island');
-  const env = { PATH: win ? process.env.PATH : '/usr/bin:/bin', HOME: stage, ABITO_ISLAND_DIR: island };
+  const env = { PATH: win ? process.env.PATH : '/usr/bin:/bin', HOME: stage, KODA_ISLAND_DIR: island };
   if (win) {
     fs.mkdirSync(path.join(local, 'Koda'));
     env.LOCALAPPDATA = local;

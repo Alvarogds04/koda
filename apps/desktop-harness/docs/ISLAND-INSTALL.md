@@ -96,7 +96,7 @@ Requires `--json` and `--audit-dir`; mutually exclusive with `--apply`; `--audit
 ## Apply sequence (what the CLI does, in order)
 
 1. **Island guards** (exit 77 before anything else is read or written):
-   (i) `ABITO_ISLAND_EXE` is set to an absolute path and `realpath(/proc/<ppid>/exe) == realpath(ABITO_ISLAND_EXE)` on Linux (unchanged). On macOS, fixed `/bin/ps -ww -o uid= -o comm= -p <ppid>` must return the current uid and canonical Node executable; failures refuse; timeout 2 s, output bound 8 KiB, no shell;
+   (i) `KODA_ISLAND_EXE` is set to an absolute path and `realpath(/proc/<ppid>/exe) == realpath(KODA_ISLAND_EXE)` on Linux (unchanged). On macOS, fixed `/bin/ps -ww -o uid= -o comm= -p <ppid>` must return the current uid and canonical Node executable; failures refuse; timeout 2 s, output bound 8 KiB, no shell;
    (ii) none of `CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT`, `CODEX_SANDBOX`, `CODEX_SANDBOX_NETWORK_DISABLED`, `CODEX_THREAD_ID`, `CODEX_SESSION_ID`, `PI_SESSION_ID`, `PI_SESSION_FILE`, `OPENCODE`, `OPENCODE_*`, `AI_AGENT`, `GENTLE_PI_SESSION` is present and non-empty. Names are compared **case-insensitively** (`claudecode`, `OpenCode_x` count); an empty or unset value is ignored, any non-empty value counts.
 2. Recompute the plan from scratch and compare hashes in constant time (`plan_changed` otherwise). A per-target lock (`.<name>.abito-lock` directory next to the target holding an `owner` file with a random token; released only while the token still matches; stale after 30 s) serializes concurrent applies. A regular file or symlink found at the lock path (lstat, never followed) is unlinked when older than 30 s and means `busy` while younger; then the plan is recomputed once more under the lock.
 3. **Audit first, fail closed**: `--audit-dir` must be absolute and normalized; it is created `0700` if missing (its parent must exist); symlinks, foreign owners and group/world-writable directories are refused; `hook-installs.jsonl` is opened `O_APPEND|O_CREAT|O_NOFOLLOW` mode `0600` (must be a regular, single-link, owner-only file) and the `intent` line is appended. Past 1 MiB the file is first rotated to `hook-installs.jsonl.1` (replaced, `0600`; best effort). Any failure on the intent line: exit 73, settings untouched.
@@ -123,7 +123,7 @@ Refusals that happen after argument validation (`not_island`, `plan_changed`, `b
 
 ## What the Tauri lane must do
 
-1. Set `ABITO_ISLAND_EXE` to the canonical Node executable of the app-owned adapter that directly spawns the installer.
+1. Set `KODA_ISLAND_EXE` to the canonical Node executable of the app-owned adapter that directly spawns the installer.
 2. Scrub every agent marker listed above from the child environment (guard (ii) refuses otherwise).
 3. The app-owned Node adapter spawns `node bin/abito-hook.cjs install ...` directly (no shell); `ppid` identifies that adapter's Node executable.
 4. Run the preview, render `diff.lines` (and `notes`, `requires_trust_review`) to the human, and let the **click** be the confirmation. Store the `plan_hash` the human saw and pass exactly that hash and the same args to the apply.
@@ -171,7 +171,7 @@ Interactive `--apply` still requires a TTY and the typed word.
 The daemon (not the island UI directly) may drive this CLI for `agent_connect` / `agent_disconnect`:
 
 - It runs the CLI as a **subprocess** with an **absolute, validated node path and script path** (no shell, no PATH lookup).
-- It sets `ABITO_ISLAND_EXE` to **the daemon's own node executable**, so guard (i) becomes "the parent is the daemon's node".
+- It sets `KODA_ISLAND_EXE` to **the daemon's own node executable**, so guard (i) becomes "the parent is the daemon's node".
 - It scrubs every agent marker (case-insensitively, see guard (ii)) from the child environment.
 - `agent_connect` / `agent_disconnect` are reachable **only through the authenticated `island-agent/1` channel**: never through MCP or agent tools, and never through the CLI without these guards.
 

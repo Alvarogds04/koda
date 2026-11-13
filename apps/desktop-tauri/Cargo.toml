@@ -8,7 +8,7 @@ default-run = "abito-island"
 
 [features]
 # Test/probe scaffolding (fake backend/model, read-back probe). Always on in debug
-# builds; OFF in the packaged release so `--probe`/ABITO_PROBE cannot do anything.
+# builds; OFF in the packaged release so `--probe`/KODA_PROBE cannot do anything.
 probe = []
 
 [build-dependencies]

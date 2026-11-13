@@ -17,8 +17,8 @@ function runOut(dest, ...args) { return spawnSync(process.execPath, [script, '--
 function entries(dir, prefix = '') { return fs.readdirSync(dir).flatMap(n => fs.statSync(path.join(dir, n)).isDirectory() ? entries(path.join(dir, n), `${prefix}${n}/`) : [`${prefix}${n}`]).sort(); }
 // HU-062: test-only helpers of the harness suite (the pipe preload, fake receivers, fixtures) are never part of the shipped closed list,
 // and no shipped file references the preload or its switch.
-assert.ok(!files.some(f => /(^|\/)test\//.test(f) || /pipe-preload|fake-receiver|platform-env|ABITO_TEST_PIPE/.test(f)), 'test-only harness files must not be shipped');
-for (const f of files.filter(f => f.endsWith('.cjs'))) assert.doesNotMatch(fs.readFileSync(path.join(crate, '..', f), 'utf8'), /pipe-preload|ABITO_TEST_PIPE/, `${f} must not reference the test preload`);
+assert.ok(!files.some(f => /(^|\/)test\//.test(f) || /pipe-preload|fake-receiver|platform-env|KODA_TEST_PIPE/.test(f)), 'test-only harness files must not be shipped');
+for (const f of files.filter(f => f.endsWith('.cjs'))) assert.doesNotMatch(fs.readFileSync(path.join(crate, '..', f), 'utf8'), /pipe-preload|KODA_TEST_PIPE/, `${f} must not reference the test preload`);
 try {
   let r = run();
   assert.equal(r.status, 0, r.stderr);

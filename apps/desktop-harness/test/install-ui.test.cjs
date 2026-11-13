@@ -157,31 +157,31 @@ test('refusals are one fixed JSON line with the right exit code and never echo t
   }
 });
 
-test('island guard: needs ABITO_ISLAND_EXE equal to the parent executable', () => {
+test('island guard: needs KODA_ISLAND_EXE equal to the parent executable', () => {
   const exe = fs.realpathSync(process.execPath);
-  const ok = ui.checkIslandGuards({ ABITO_ISLAND_EXE: exe }, 42, () => exe);
+  const ok = ui.checkIslandGuards({ KODA_ISLAND_EXE: exe }, 42, () => exe);
   assert.equal(ok, true);
   assert.equal(ui.checkIslandGuards({}, 42, () => exe), false);
   // HU-047: Windows paths are case-insensitive; the same executable spelled with another case is the same parent.
   const w = 'C:\\Program Files\\PowerShell\\7\\pwsh.exe';
-  assert.equal(ui.checkIslandGuards({ ABITO_ISLAND_EXE: w }, 42, () => w.toLowerCase(), 'win32', p => p), true);
-  assert.equal(ui.checkIslandGuards({ ABITO_ISLAND_EXE: w }, 42, () => 'C:\\Other\\pwsh.exe', 'win32', p => p), false);
+  assert.equal(ui.checkIslandGuards({ KODA_ISLAND_EXE: w }, 42, () => w.toLowerCase(), 'win32', p => p), true);
+  assert.equal(ui.checkIslandGuards({ KODA_ISLAND_EXE: w }, 42, () => 'C:\\Other\\pwsh.exe', 'win32', p => p), false);
   if (process.platform === 'win32') { // the product compares case-insensitively here (asserted above with the injected win32 platform); the rest is POSIX path syntax
-    assert.equal(ui.checkIslandGuards({ ABITO_ISLAND_EXE: exe }, 42, () => exe.toUpperCase()), true, 'Windows comparison is case-insensitive by default');
+    assert.equal(ui.checkIslandGuards({ KODA_ISLAND_EXE: exe }, 42, () => exe.toUpperCase()), true, 'Windows comparison is case-insensitive by default');
     return;
   }
-  assert.equal(ui.checkIslandGuards({ ABITO_ISLAND_EXE: exe }, 42, () => exe.toUpperCase()), false, 'Linux comparison stays case-sensitive');
-  assert.equal(ui.checkIslandGuards({ ABITO_ISLAND_EXE: 'relative/node' }, 42, () => exe), false);
-  assert.equal(ui.checkIslandGuards({ ABITO_ISLAND_EXE: '/bin/sh' }, 42, () => exe), false);
-  assert.equal(ui.checkIslandGuards({ ABITO_ISLAND_EXE: exe }, 42, () => { throw new Error('no /proc'); }), false);
-  assert.equal(ui.checkIslandGuards({ ABITO_ISLAND_EXE: '/does/not/exist' }, 42, () => exe), false);
+  assert.equal(ui.checkIslandGuards({ KODA_ISLAND_EXE: exe }, 42, () => exe.toUpperCase()), false, 'Linux comparison stays case-sensitive');
+  assert.equal(ui.checkIslandGuards({ KODA_ISLAND_EXE: 'relative/node' }, 42, () => exe), false);
+  assert.equal(ui.checkIslandGuards({ KODA_ISLAND_EXE: '/bin/sh' }, 42, () => exe), false);
+  assert.equal(ui.checkIslandGuards({ KODA_ISLAND_EXE: exe }, 42, () => { throw new Error('no /proc'); }), false);
+  assert.equal(ui.checkIslandGuards({ KODA_ISLAND_EXE: '/does/not/exist' }, 42, () => exe), false);
 });
 
 test('island guard: every agent marker refuses; empty marker does not', () => {
   const exe = fs.realpathSync(process.execPath);
   const names = ['CLAUDECODE', 'CLAUDE_CODE_ENTRYPOINT', 'CODEX_SANDBOX', 'CODEX_SANDBOX_NETWORK_DISABLED', 'CODEX_THREAD_ID', 'CODEX_SESSION_ID', 'PI_SESSION_ID', 'PI_SESSION_FILE', 'OPENCODE', 'OPENCODE_X', 'AI_AGENT', 'GENTLE_PI_SESSION'];
-  for (const n of names) assert.equal(ui.checkIslandGuards({ ABITO_ISLAND_EXE: exe, [n]: '1' }, 1, () => exe), false, n);
-  assert.equal(ui.checkIslandGuards({ ABITO_ISLAND_EXE: exe, CLAUDECODE: '' }, 1, () => exe), true);
+  for (const n of names) assert.equal(ui.checkIslandGuards({ KODA_ISLAND_EXE: exe, [n]: '1' }, 1, () => exe), false, n);
+  assert.equal(ui.checkIslandGuards({ KODA_ISLAND_EXE: exe, CLAUDECODE: '' }, 1, () => exe), true);
 });
 
 test('audit log: creates dir 0700 and file 0600, appends lines, refuses unsafe dirs', t => {
@@ -212,7 +212,7 @@ test('audit log: creates dir 0700 and file 0600, appends lines, refuses unsafe d
 
 // ---- hardening round: case-insensitive markers, backup collisions, lock, refusal audit, rotation ----
 const EXE = fs.realpathSync(process.execPath);
-const applyOpts = (extra = {}) => ({ env: { ABITO_ISLAND_EXE: EXE }, ppid: 1, readExe: () => EXE, ...extra });
+const applyOpts = (extra = {}) => ({ env: { KODA_ISLAND_EXE: EXE }, ppid: 1, readExe: () => EXE, ...extra });
 const applyVia = (harness, p, audit, hash, extra = {}, more = []) => run([harness, '--settings', p, ...more, '--apply-plan', hash, '--audit-dir', audit, '--json'], applyOpts(extra));
 const auditLines = audit => fs.readFileSync(path.join(audit, 'hook-installs.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l));
 function world(t, content = '{"keep":true}\n') {
@@ -223,9 +223,9 @@ function world(t, content = '{"keep":true}\n') {
 
 test('island guard: agent markers are matched case-insensitively', () => {
   for (const n of ['claudecode', 'Claude_Code_Entrypoint', 'opencode', 'OpenCode_Foo', 'opencode_x', 'ai_agent', 'Pi_Session_Id'])
-    assert.equal(ui.checkIslandGuards({ ABITO_ISLAND_EXE: EXE, [n]: '1' }, 1, () => EXE), false, n);
-  assert.equal(ui.checkIslandGuards({ ABITO_ISLAND_EXE: EXE, claudecode: '' }, 1, () => EXE), true);
-  assert.equal(ui.checkIslandGuards({ ABITO_ISLAND_EXE: EXE, claudecode: undefined, opencode_x: '' }, 1, () => EXE), true);
+    assert.equal(ui.checkIslandGuards({ KODA_ISLAND_EXE: EXE, [n]: '1' }, 1, () => EXE), false, n);
+  assert.equal(ui.checkIslandGuards({ KODA_ISLAND_EXE: EXE, claudecode: '' }, 1, () => EXE), true);
+  assert.equal(ui.checkIslandGuards({ KODA_ISLAND_EXE: EXE, claudecode: undefined, opencode_x: '' }, 1, () => EXE), true);
 });
 
 test('backup name collision: same-millisecond backup gets a -1..-9 suffix, 0600, no apply_failed', async t => {
@@ -322,7 +322,7 @@ test('refusals after argument validation append a refused audit line; exit codes
   assert.deepEqual([l[0].event, l[0].code, l[0].plan_hash], ['refused', 'plan_changed', bogus]);
   assert.deepEqual([l[1].event, l[1].code, l[1].plan_hash], ['refused', 'not_island', good]);
   assert.ok(Number.isInteger(l[0].ts));
-  r = await applyVia('claude', w.p, w.audit, good, { lockWaitMs: 100, env: { ABITO_ISLAND_EXE: EXE } });
+  r = await applyVia('claude', w.p, w.audit, good, { lockWaitMs: 100, env: { KODA_ISLAND_EXE: EXE } });
   assert.equal(r.code, 0);
 });
 test('refused audit line is never written for usage errors or an invalid audit dir, and never changes the exit', unixOnly('win-install-fake.test.cjs (HU-047 Windows flow through the helper contract) + smoke-windows.ps1 on the installed helper'), async t => {
@@ -356,7 +356,7 @@ for (const harness of ['statusline']) test(`${harness}: user preview, bound appl
   const p = path.join(d, '.claude/settings.json'), audit = path.join(d, 'audit');
   const original = '{"model":"keep","statusLine":{"type":"command","command":"mine"},"hooks":{"Stop":[{"hooks":[{"type":"command","command":"third"}]}]}}\n';
   fs.writeFileSync(p, original);
-  const opts = { env: { HOME: d, ABITO_ISLAND_EXE: EXE }, homedir: () => d, readExe: () => EXE };
+  const opts = { env: { HOME: d, KODA_ISLAND_EXE: EXE }, homedir: () => d, readExe: () => EXE };
   const call = more => run([harness, '--user', ...more, '--json'], opts);
   let r = await call([]);
   assert.equal(r.code, 0, r.lines[0]);
@@ -400,7 +400,7 @@ test('recap (legacy, removal-only): bound apply removes the 0.1 entries with a b
   const mine = '{"model":"keep","hooks":{"Stop":[{"hooks":[{"type":"command","command":"third"}]}]}}\n';
   const original = JSON.stringify({ model: 'keep', hooks: { Stop: [{ hooks: [{ type: 'command', command: 'third' }] }, old], UserPromptSubmit: [old], PostToolUse: [old] } }) + '\n';
   fs.writeFileSync(p, original); fs.mkdirSync(audit, { mode: 0o700 });
-  const opts = { env: { HOME: d, ABITO_ISLAND_EXE: EXE }, homedir: () => d, readExe: () => EXE };
+  const opts = { env: { HOME: d, KODA_ISLAND_EXE: EXE }, homedir: () => d, readExe: () => EXE };
   const call = more => run(['recap', '--user', ...more, '--json'], opts);
   assert.equal((await call([])).json.code, 'usage');
   const rm = await call(['--remove']);

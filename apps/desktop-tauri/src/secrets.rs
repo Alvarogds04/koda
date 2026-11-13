@@ -17,8 +17,15 @@ use serde_json::{json, Value};
 #[path = "secrets_tests.rs"]
 mod tests;
 
-/// Keychain service name: Abito's own app identifier (tauri.conf.json).
-pub const SERVICE: &str = "com.abitog.AbitoTauri";
+/// Keychain service name: Koda's own entry, independent of the bundle identifier (T6 renames that
+/// one; this constant keeps the two apart on purpose).
+pub const SERVICE: &str = "com.abitog.Koda";
+
+/// The 0.1 keychain service. NOTHING reads credentials from it any more (no alias, no fallback,
+/// L4); it exists for exactly one purpose — a one-time cleanup of 0.1 entries, which must keep
+/// naming it explicitly (K2-10 T8 deletes the seven retired imap-*/smtp-* keys). Using [`SERVICE`]
+/// there would silently leave the 0.1 entries in the user's keychain forever.
+pub const LEGACY_KEYCHAIN_SERVICE: &str = "com.abitog.AbitoTauri";
 
 /// Every key the island may store. Anything outside this list is refused.
 pub const KNOWN_KEYS: &[&str] = &[

@@ -116,7 +116,7 @@ const sessionToken = (raw) => {
 // pointer, never authority. Any failure => no notification (silent, always exit 0).
 function discoverEndpoint(env, uid) {
   let runtime;
-  if (typeof env.ABITO_SOCKET_DIR === "string" && env.ABITO_SOCKET_DIR.startsWith("/")) runtime = env.ABITO_SOCKET_DIR;
+  if (typeof env.KODA_SOCKET_DIR === "string" && env.KODA_SOCKET_DIR.startsWith("/")) runtime = env.KODA_SOCKET_DIR;
   else if (typeof env.XDG_RUNTIME_DIR === "string" && env.XDG_RUNTIME_DIR.startsWith("/")) runtime = env.XDG_RUNTIME_DIR + "/koda";
   else runtime = "/run/user/" + uid + "/koda";
   let fd;
@@ -364,8 +364,8 @@ function artifactsFor(clientId, home, nodeExe) {
 				{
 					version: 1,
 					hooks: {
-						sessionStart: [{ type: "command", env: { ABITO_ISLAND_HOOKS: MARKER }, exec: nodeExe, args: [scriptPath, "copilot", "session-start"], timeoutSec: 10 }],
-						sessionEnd: [{ type: "command", env: { ABITO_ISLAND_HOOKS: MARKER }, exec: nodeExe, args: [scriptPath, "copilot", "session-end"], timeoutSec: 10 }],
+						sessionStart: [{ type: "command", env: { KODA_ISLAND_HOOKS: MARKER }, exec: nodeExe, args: [scriptPath, "copilot", "session-start"], timeoutSec: 10 }],
+						sessionEnd: [{ type: "command", env: { KODA_ISLAND_HOOKS: MARKER }, exec: nodeExe, args: [scriptPath, "copilot", "session-end"], timeoutSec: 10 }],
 					},
 				},
 				null,

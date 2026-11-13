@@ -59,9 +59,9 @@ function packageEntry(dir) {
 	}
 }
 
-/** Configurable SDK module: ABITO_SDK_MODULE may be a package directory or an entry file. */
+/** Configurable SDK module: KODA_SDK_MODULE may be a package directory or an entry file. */
 function resolveSdkModule() {
-	const explicit = process.env.ABITO_SDK_MODULE;
+	const explicit = process.env.KODA_SDK_MODULE;
 	if (explicit && existsSync(explicit)) {
 		return packageEntry(explicit) ?? pathToFileURL(explicit).href;
 	}

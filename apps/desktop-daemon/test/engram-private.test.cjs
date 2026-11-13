@@ -17,7 +17,7 @@
 //  - the engine reaches ready offline, with the memory tools registered
 //    (the companion's session_start lifecycle trace; no extension_error);
 //  - the Engram server the companion spawns listens on KODA'S PRIVATE PORT
-//    (7439, or ABITO_ENGRAM_PORT) and nowhere else (loopback-only binding,
+//    (7439, or KODA_ENGRAM_PORT) and nowhere else (loopback-only binding,
 //    checked passively), its /health reports the exact instance identity the
 //    server left inside the island (<island>/home/.engram/.instance-id) and
 //    version 3.4.0, and its store lives under the temp island's home;
@@ -32,7 +32,7 @@
 // Engine discovery / skip-require gate: the same convention as
 // test/engram-seed.test.cjs — GENTLE_PI_ROOT (a gentle-pi package directory)
 // or a real bundled runtime; skipped with the reason when absent, FAILED under
-// ABITO_REQUIRE_GENTLE=1. Only private temp dirs are used.
+// KODA_REQUIRE_GENTLE=1. Only private temp dirs are used.
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
@@ -80,22 +80,22 @@ function findGentleRoot() {
 
 const gentleRoot = findGentleRoot();
 const GENTLE_MISSING = "Gentle Shell (gentle-pi) not found; set GENTLE_PI_ROOT or build the bundled runtime";
-if (!gentleRoot && process.env.ABITO_REQUIRE_GENTLE === "1") {
-	test("Gentle Shell is required here (ABITO_REQUIRE_GENTLE=1)", () => {
-		assert.fail("ABITO_REQUIRE_GENTLE=1 but no Gentle Shell was found (set GENTLE_PI_ROOT or build the bundled runtime)");
+if (!gentleRoot && process.env.KODA_REQUIRE_GENTLE === "1") {
+	test("Gentle Shell is required here (KODA_REQUIRE_GENTLE=1)", () => {
+		assert.fail("KODA_REQUIRE_GENTLE=1 but no Gentle Shell was found (set GENTLE_PI_ROOT or build the bundled runtime)");
 	});
 }
 const gentleSkip = gentleRoot ? undefined : GENTLE_MISSING;
 
 /**
  * The real gentle-engram package directory (F8, sha512-checked only): from
- * ABITO_ENGRAM_PKG when set, else the sibling of an installed engine closure
+ * KODA_ENGRAM_PKG when set, else the sibling of an installed engine closure
  * (CI: GENTLE_PI_ROOT points into the runtime lockfile install), else a fresh
  * `npm ci --ignore-scripts` from Koda's OWN runtime lockfile into a temp dir.
  */
 function engramPackageDir() {
-	if (process.env.ABITO_ENGRAM_PKG) {
-		const dir = process.env.ABITO_ENGRAM_PKG;
+	if (process.env.KODA_ENGRAM_PKG) {
+		const dir = process.env.KODA_ENGRAM_PKG;
 		const pkg = JSON.parse(fs.readFileSync(path.join(dir, "package.json"), "utf8"));
 		assert.equal(pkg.name, "gentle-engram");
 		return dir;
@@ -212,7 +212,7 @@ try {
 	const dns = require("node:dns");
 	const net = require("node:net");
 	const tls = require("node:tls");
-	const file = process.env.ABITO_NET_LOG;
+	const file = process.env.KODA_NET_LOG;
 	const record = (via, host, port) => {
 		if (!file || !host) return;
 		const h = String(host);
@@ -398,7 +398,7 @@ if (gentleSkip) {
 				root: islandRoot,
 				env: baseEnv,
 				envOverrides: {
-					ABITO_NET_LOG: netLog,
+					KODA_NET_LOG: netLog,
 					ENGRAM_PI_SESSION_TRACE: "1",
 				},
 				backoffMs: [10_000, 10_000],
@@ -434,7 +434,7 @@ if (gentleSkip) {
 				// The memory project pin is untouched (S4/L5).
 				assert.equal(
 					JSON.parse(fs.readFileSync(path.join(engine.island.workspace, ".engram", "config.json"), "utf8")).project_name,
-					"abito-island",
+					"koda",
 				);
 
 				// Trigger the companion's session_start, which brings the private

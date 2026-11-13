@@ -94,7 +94,7 @@ test('S3: reviewer user → the card reaches the island and «Aprobar» / «Rech
       const answered = rcv.next('question').then(q => rcv.send({ v: 1, type: 'answer', questionVersion: 1, project: q.project,
         sessionId: q.sessionId, at: Date.now(), id: q.id, source: 'human', answer: { type: 'option', value } }));
       const r = await handleCodexHook({ event: 'permission-request', input: permission(over),
-        env: { ABITO_DESKTOP_SOCKET: rcv.endpoint, ABITO_SOCKET_DIR: rcv.runtime, CODEX_HOME: FIX }, argv: [] });
+        env: { KODA_DESKTOP_SOCKET: rcv.endpoint, KODA_SOCKET_DIR: rcv.runtime, CODEX_HOME: FIX }, argv: [] });
       await answered;
       assert.equal(r.stdout, line_, JSON.stringify(over));
       assert.equal(rcv.frames.filter(f => f.type === 'question').length, 1);

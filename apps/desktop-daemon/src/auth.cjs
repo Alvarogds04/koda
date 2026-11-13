@@ -250,7 +250,7 @@ class AccountManager extends EventEmitter {
 		const home = path.join(island, "home");
 		const tmp = path.join(island, "tmp");
 		const env = helperEnv(options.env ?? process.env, { home, tmp });
-		if (options.sdkModule) env.ABITO_SDK_MODULE = options.sdkModule;
+		if (options.sdkModule) env.KODA_SDK_MODULE = options.sdkModule;
 		return {
 			command: process.execPath,
 			args: [path.join(__dirname, "sdk-helper.mjs"), "--accounts-root", this.accountsRoot],

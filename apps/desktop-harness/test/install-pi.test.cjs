@@ -52,7 +52,7 @@ function fixture(t) {
   const extraEnv = {};
   const run = (...args) => {
     const result = spawnSync(process.execPath, [cli, 'install', 'pi', '--user', '--json', ...args], {
-      env: { HOME: home, USERPROFILE: home, PATH: '/usr/bin:/bin', ABITO_ISLAND_EXE: process.execPath, ...extraEnv }, encoding: 'utf8', timeout: 10000,
+      env: { HOME: home, USERPROFILE: home, PATH: '/usr/bin:/bin', KODA_ISLAND_EXE: process.execPath, ...extraEnv }, encoding: 'utf8', timeout: 10000,
     });
     assert.ifError(result.error);
     assert.equal(result.stderr, '', 'machine mode uses one JSON line, never stderr');

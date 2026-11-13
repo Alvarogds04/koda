@@ -19,7 +19,7 @@ function titleName(raw) {
 }
 
 function stateDir(env) {
-  const own = env && env.ABITO_STATE_DIR;
+  const own = env && env.KODA_STATE_DIR;
   if (typeof own === 'string' && path.isAbsolute(own) && path.normalize(own) === own) return own;
   const xdg = env && env.XDG_STATE_HOME;
   if (typeof xdg === 'string' && path.isAbsolute(xdg) && path.normalize(xdg) === xdg) return path.join(xdg, 'koda');
@@ -34,7 +34,7 @@ const dirOf = (env, kind) => { const base = stateDir(env); return base ? path.jo
 function dirChain(dir, env, pathMod = path.win32) {
   const local = env && env.LOCALAPPDATA;
   const norm = typeof local === 'string' && pathMod.isAbsolute(local) ? pathMod.normalize(local).replace(/[\\/]+$/, '') : null;
-  const root = norm && dir.toLowerCase().startsWith(norm.toLowerCase() + '\\') ? norm : pathMod.dirname(dir), out = []; // outside LOCALAPPDATA (ABITO_STATE_DIR / XDG) the base must already exist: only the kind folder is created
+  const root = norm && dir.toLowerCase().startsWith(norm.toLowerCase() + '\\') ? norm : pathMod.dirname(dir), out = []; // outside LOCALAPPDATA (KODA_STATE_DIR / XDG) the base must already exist: only the kind folder is created
   for (let d = dir; d !== root && d !== pathMod.dirname(d); d = pathMod.dirname(d)) out.unshift(d);
   return out;
 }

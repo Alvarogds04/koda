@@ -1,7 +1,7 @@
 'use strict';
 const { tmpBase, assertMode, unixOnly } = require('./platform-env.cjs');
 // End-to-end tests of `abito-hook install <claude|codex> ... --json / --apply-plan` through REAL child processes.
-// The CLI is started by a wrapper node process, so its parent executable is node (ABITO_ISLAND_EXE = realpath(node)).
+// The CLI is started by a wrapper node process, so its parent executable is node (KODA_ISLAND_EXE = realpath(node)).
 // Temp dirs only; the real ~/.claude and ~/.codex are never touched.
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
@@ -26,7 +26,7 @@ function tmp(t) {
 }
 const ls = d => fs.readdirSync(d).sort();
 function cleanEnv(home, extra = {}) {
-  const env = { ...process.env, HOME: home, USERPROFILE: home, ABITO_ISLAND_EXE: NODE_REAL, ...extra }; // Windows os.homedir() reads USERPROFILE
+  const env = { ...process.env, HOME: home, USERPROFILE: home, KODA_ISLAND_EXE: NODE_REAL, ...extra }; // Windows os.homedir() reads USERPROFILE
   for (const k of Object.keys(env)) if (MARKERS.includes(k) || k === 'OPENCODE' || k.startsWith('OPENCODE_')) delete env[k];
   for (const [k, v] of Object.entries(extra)) if (v === undefined) delete env[k]; else env[k] = v;
   return env;
@@ -203,9 +203,9 @@ function refusal(name, { harness = 'claude', code, jcode, setup, env, content, a
     if (code !== 73 || !fs.existsSync(w.audit)) assert.equal(fs.existsSync(path.join(w.audit, 'hook-installs.jsonl')), false);
   });
 }
-refusal('no ABITO_ISLAND_EXE', { code: 77, jcode: 'not_island', env: w => cleanEnv(w.home, { ABITO_ISLAND_EXE: undefined }) });
-refusal('wrong ABITO_ISLAND_EXE', { code: 77, jcode: 'not_island', env: w => cleanEnv(w.home, { ABITO_ISLAND_EXE: fs.realpathSync(process.platform === 'win32' ? process.env.ComSpec : '/bin/sh') }) });
-refusal('relative ABITO_ISLAND_EXE', { code: 77, jcode: 'not_island', env: w => cleanEnv(w.home, { ABITO_ISLAND_EXE: 'node' }) });
+refusal('no KODA_ISLAND_EXE', { code: 77, jcode: 'not_island', env: w => cleanEnv(w.home, { KODA_ISLAND_EXE: undefined }) });
+refusal('wrong KODA_ISLAND_EXE', { code: 77, jcode: 'not_island', env: w => cleanEnv(w.home, { KODA_ISLAND_EXE: fs.realpathSync(process.platform === 'win32' ? process.env.ComSpec : '/bin/sh') }) });
+refusal('relative KODA_ISLAND_EXE', { code: 77, jcode: 'not_island', env: w => cleanEnv(w.home, { KODA_ISLAND_EXE: 'node' }) });
 for (const m of [...MARKERS, 'OPENCODE', 'OPENCODE_FOO']) {
   refusal('agent marker ' + m, { code: 77, jcode: 'not_island', env: w => cleanEnv(w.home, { [m]: '1' }) });
 }

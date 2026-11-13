@@ -4,7 +4,7 @@
 //! Port of `transport.cjs` (read-only legacy source) plus the receiver wiring
 //! of `main.cjs`:
 //! - same endpoint naming: `<runtime>/p-XXXXXX/s` (six alphanumerics from
-//!   `mkdtemp`), same `ABITO_DESKTOP_SOCKET=…` line on stdout,
+//!   `mkdtemp`), same `KODA_DESKTOP_SOCKET=…` line on stdout,
 //! - same permissions and owner rules: runtime + generated dir 0700, socket
 //!   0600, no symlink anywhere in the chain, world-writable parents refused,
 //! - same quotas: [`protocol::CONNECTIONS`] clients, per-connection frame
@@ -19,7 +19,7 @@
 //!   receiver never touches a socket it did not create.
 //!
 //! Env overrides:
-//! - `ABITO_SOCKET_DIR` — transport runtime root for tests/probe (absolute,
+//! - `KODA_SOCKET_DIR` — transport runtime root for tests/probe (absolute,
 //!   normalized, never a reserved Preview root).
 //!
 //! Legacy note: `transport.cjs` kept a private `NoticeStore` as a pre-filter
@@ -192,7 +192,7 @@ pub fn runtime_allowed(path: &Path, xdg_runtime_dir: Option<&str>) -> bool {
     })
 }
 
-/// Resolve the runtime root: `ABITO_SOCKET_DIR` override (absolute,
+/// Resolve the runtime root: `KODA_SOCKET_DIR` override (absolute,
 /// normalized, never reserved) or the default `<crate>/.runtime`.
 pub fn resolve_runtime_from(
     override_dir: Option<&str>,
@@ -277,7 +277,7 @@ pub fn default_runtime() -> Result<PathBuf, TransportError> {
     default_runtime_for(xdg.as_deref(), dev_manifest_dir())
 }
 
-/// Runtime root for this process (`ABITO_SOCKET_DIR` or the default).
+/// Runtime root for this process (`KODA_SOCKET_DIR` or the default).
 pub fn resolve_runtime() -> Result<PathBuf, TransportError> {
     let override_dir = std::env::var(SOCKET_DIR_ENV).ok();
     let default = default_runtime()?;
@@ -535,7 +535,7 @@ impl Transport {
         self.inner.terminal_origins.lock().expect("terminal origins").retain(|id, _| !ids.contains(id));
     }
 
-    /// The `ABITO_DESKTOP_SOCKET=…` path the producer connects to.
+    /// The `KODA_DESKTOP_SOCKET=…` path the producer connects to.
     pub fn endpoint(&self) -> &Path {
         &self.inner.endpoint
     }

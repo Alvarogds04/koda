@@ -26,24 +26,24 @@ unix('the default root is the Tauri island\'s own leaf; the Electron production 
   for (const bad of ['', 'relative', '/a/../b', '/a//b', '/a/', '/']) {
     assert.equal(resolveConfig({ XDG_RUNTIME_DIR: bad }, 1000).runtime, `${base(1000)}/koda`, `an unusable XDG_RUNTIME_DIR ${JSON.stringify(bad)} falls back to the uid path`);
   }
-  assert.equal(resolveConfig({ ABITO_SOCKET_DIR: '/run/user/1000/abito-desktop' }, 1000).runtime, '/run/user/1000/abito-desktop', 'the Electron production root is still reachable, explicitly');
-  assert.equal(resolveConfig({ ABITO_SOCKET_DIR: '/run/user/1000/abito-desktop-preview' }, 1000).runtime,
+  assert.equal(resolveConfig({ KODA_SOCKET_DIR: '/run/user/1000/abito-desktop' }, 1000).runtime, '/run/user/1000/abito-desktop', 'the Electron production root is still reachable, explicitly');
+  assert.equal(resolveConfig({ KODA_SOCKET_DIR: '/run/user/1000/abito-desktop-preview' }, 1000).runtime,
     '/run/user/1000/abito-desktop-preview');
-  assert.equal(resolveConfig({ ABITO_SOCKET_DIR: '/home/u/new-root' }, 1000).runtime, '/home/u/new-root');
+  assert.equal(resolveConfig({ KODA_SOCKET_DIR: '/home/u/new-root' }, 1000).runtime, '/home/u/new-root');
   // with no handoff published (or no island running) there is no connection
   assert.deepEqual(resolveConfig({}, 4321, offline), { runtime: `${base(4321)}/koda`, endpoint: undefined, source: undefined });
 });
 
 unix('override is exact, normalized, never inferred from arbitrary endpoint', () => {
   for (const value of ['', 'relative', '/a/../b', '/a//b', '/a/', '/']) {
-    assert.throws(() => resolveConfig({ ABITO_SOCKET_DIR: value }, 1000));
+    assert.throws(() => resolveConfig({ KODA_SOCKET_DIR: value }, 1000));
   }
-  assert.throws(() => resolveConfig({ ABITO_DESKTOP_SOCKET: '/home/u/root/p-abc123/s' }, 1000));
-  assert.deepEqual(resolveConfig({ ABITO_SOCKET_DIR: '/home/u/root',
-    ABITO_DESKTOP_SOCKET: '/home/u/root/p-abc123/s' }, 1000),
+  assert.throws(() => resolveConfig({ KODA_DESKTOP_SOCKET: '/home/u/root/p-abc123/s' }, 1000));
+  assert.deepEqual(resolveConfig({ KODA_SOCKET_DIR: '/home/u/root',
+    KODA_DESKTOP_SOCKET: '/home/u/root/p-abc123/s' }, 1000),
     { runtime: '/home/u/root', endpoint: '/home/u/root/p-abc123/s', source: 'env' });
   for (const endpoint of ['/home/u/root/p-abc123/no', '/home/u/root/p-a/s', '/home/u/else/p-abc123/s']) {
-    assert.throws(() => resolveConfig({ ABITO_SOCKET_DIR: '/home/u/root', ABITO_DESKTOP_SOCKET: endpoint }, 1000));
+    assert.throws(() => resolveConfig({ KODA_SOCKET_DIR: '/home/u/root', KODA_DESKTOP_SOCKET: endpoint }, 1000));
   }
 });
 
@@ -55,9 +55,9 @@ test('Windows twin of the default root and the exact override: %LOCALAPPDATA%\\K
     { runtime: `${local}\\Koda\\notices`, endpoint: undefined, source: undefined });
   assert.equal(resolveConfig({}, undefined, { platform: 'win32' }).runtime, undefined, 'no LOCALAPPDATA: no connection');
   const good = `${local}\\Koda\\notices\\endpoint.json`;
-  assert.deepEqual(resolveConfig({ ABITO_DESKTOP_SOCKET: good }, undefined, { platform: 'win32' }),
+  assert.deepEqual(resolveConfig({ KODA_DESKTOP_SOCKET: good }, undefined, { platform: 'win32' }),
     { runtime: `${local}\\Koda\\notices`, endpoint: good, source: 'env' });
   for (const bad of ['', 'relative\\endpoint.json', `${local}\\Koda\\notices\\other.json`, `${local}\\Koda\\..\\x\\endpoint.json`, `${local}\\Koda\\notices\\`]) {
-    assert.throws(() => resolveConfig({ ABITO_DESKTOP_SOCKET: bad }, undefined, { platform: 'win32' }), /Unexpected endpoint/, JSON.stringify(bad));
+    assert.throws(() => resolveConfig({ KODA_DESKTOP_SOCKET: bad }, undefined, { platform: 'win32' }), /Unexpected endpoint/, JSON.stringify(bad));
   }
 });

@@ -139,7 +139,7 @@ test('smoke-macos.py (K2-02): the missing-runtime case is a BROKEN BUNDLED RUNTI
   assert.ok(block.includes('"island host: no_daemon (bundled_runtime_invalid)" in broken'), 'exact code line');
   assert.ok(block.includes('"La instalación de Koda está dañada: volvé a instalar Koda." in broken'), 'exact sentence');
   assert.match(block, /"abito-island-daemon: running" not in broken/, 'the daemon must not start');
-  assert.match(block, /"ABITO_DESKTOP_SOCKET=" in broken/, 'notices still work on a broken runtime');
+  assert.match(block, /"KODA_DESKTOP_SOCKET=" in broken/, 'notices still work on a broken runtime');
   assert.match(block, /finally:\n\s+moved\.rename\(manifest\)/, 'the manifest is put back');
   const j = job('installer-smoke-macos');
   assert.match(j, /- name: Broken bundled runtime fails closed with notices still available \(installed copy\)\n/);

@@ -83,7 +83,7 @@ mod run {
         std::fs::create_dir_all(&dir).unwrap();
         let script = dir.join("fake.sh");
         std::fs::write(&script, body).unwrap();
-        Runtime { node: Some("/bin/sh".into()), script: Some(script), env: vec![("ABITO_TEST".into(), "1".into())] }
+        Runtime { node: Some("/bin/sh".into()), script: Some(script), env: vec![("KODA_TEST".into(), "1".into())] }
     }
     const OK: &str = r#"printf '%s\n' '{"agents":{"type":"agents","agents":[{"id":"codex","state":"not_connected","backup":false,"detail":null}]},"hooks":{"type":"hooks","clients":[]}}'"#;
 
@@ -159,7 +159,7 @@ mod run {
     #[test]
     fn the_child_gets_only_the_allowlisted_environment() {
         std::env::set_var("SECRET_TOKEN", "leak");
-        let out = run_bounded(Path::new("/bin/sh"), &["-c".into(), "echo \"$SECRET_TOKEN|$ABITO_TEST\"".into()], &[("ABITO_TEST".into(), "yes".into())], Duration::from_secs(5), 1024).unwrap();
+        let out = run_bounded(Path::new("/bin/sh"), &["-c".into(), "echo \"$SECRET_TOKEN|$KODA_TEST\"".into()], &[("KODA_TEST".into(), "yes".into())], Duration::from_secs(5), 1024).unwrap();
         assert_eq!(String::from_utf8(out).unwrap().trim(), "|yes");
     }
 

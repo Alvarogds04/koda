@@ -130,7 +130,7 @@ test('the agent run being aborted withdraws both sides', async () => {
 
 test('not intercepted (undefined, no Abito question, no terminal dialog): off switch, no Abito, no UI, other tools', async () => {
   const cases = [
-    ['ABITO_NATIVE_ASK=0', rig(), { ABITO_NATIVE_ASK: '0' }, choiceEvent()],
+    ['KODA_NATIVE_ASK=0', rig(), { KODA_NATIVE_ASK: '0' }, choiceEvent()],
     ['Abito not available', rig({ available: false }), {}, choiceEvent()],
     ['no UI', Object.assign(rig(), {}), {}, choiceEvent()],
     ['another tool', rig(), {}, { ...choiceEvent(), toolName: 'bash' }],
@@ -206,7 +206,7 @@ test('wiring: the extension hooks tool_call with the handler, the adapter expose
   assert.match(ext, /pi\.on\('tool_call', nativeAsk\.createNativeAskHandler\(/);
   assert.match(fs.readFileSync(path.join(__dirname, '../adapter.cjs'), 'utf8'), /canAsk/);
   const readme = fs.readFileSync(path.join(__dirname, '../README.md'), 'utf8');
-  for (const needle of ['ABITO_NATIVE_ASK', 'ask_user_choice', 'tool error', 'plain', 'receipts']) assert.match(readme, new RegExp(needle), needle);
+  for (const needle of ['KODA_NATIVE_ASK', 'ask_user_choice', 'tool error', 'plain', 'receipts']) assert.match(readme, new RegExp(needle), needle);
 });
 
 

@@ -20,7 +20,7 @@
  *
  * The installer is spawned as [nodeExe, installerBin, ...args], shell:false, in its own process
  * group (group SIGKILL on timeout), stdout capped, stderr drained and never surfaced, with an
- * ALLOWLISTED environment (PATH, HOME = the REAL home, LANG) plus ABITO_ISLAND_EXE=<realpath of
+ * ALLOWLISTED environment (PATH, HOME = the REAL home, LANG) plus KODA_ISLAND_EXE=<realpath of
  * nodeExe>: the daemon IS the authenticated caller, so installer guard (i) ("the parent is the
  * island executable") becomes "the parent is the daemon's node". No agent markers, PI_* or provider
  * variables are inherited, which also satisfies guard (ii).
@@ -468,7 +468,7 @@ class AgentsManager extends EventEmitter {
 			? { HOME: this.home, USERPROFILE: this.home, ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot, PATH: path.win32.join(process.env.SystemRoot, "System32") } : {}) }
 			: { PATH: pathWithNodeFirst(path.dirname(this.nodeExe), CHILD_PATH, ":"), HOME: this.home }; // K2-02: the Node running the installer leads PATH
 		if (typeof process.env.LANG === "string" && process.env.LANG !== "") env.LANG = process.env.LANG;
-		env.ABITO_ISLAND_EXE = fs.realpathSync(this.nodeExe);
+		env.KODA_ISLAND_EXE = fs.realpathSync(this.nodeExe);
 		return env;
 	}
 

@@ -47,7 +47,7 @@ packaging receipts and the non-Linux limitation are documented in
 ## Island layout
 
 Everything private lives under one root: `~/.koda` by default, moved with
-`ABITO_ISLAND_DIR` (tests and embeddings use this). Created with mode `0700`, owned by
+`KODA_ISLAND_DIR` (tests and embeddings use this). Created with mode `0700`, owned by
 the current user:
 
 | Path | Purpose |
@@ -55,7 +55,7 @@ the current user:
 | `<root>/home/` | The engine's private `HOME`, with the XDG tree (`.config`, `.cache`, `.local/share`, `.local/state`) under it; `<root>/home/.engram/` holds the private memory store |
 | `<root>/agent/` | The installed pi's agent directory (`PI_CODING_AGENT_DIR`); no user Pi settings, extensions or auth are reused |
 | `<root>/sessions/` | Private RPC sessions (`--session-dir` is always passed explicitly) |
-| `<root>/workspace/` | The engine's owned default workspace; its `.engram/config.json` pins the memory project `abito-island` |
+| `<root>/workspace/` | The engine's owned default workspace; its `.engram/config.json` pins the memory project `koda` |
 | `<root>/workspace/uploads/` | #343: chat file attachments, written by the Tauri app (0700 dir, 0600 files, generated names) — the agent reads them as workspace files |
 | `<root>/tmp/` | Private `TMPDIR` |
 | `<root>/identity.md` | The Abito identity file, regenerated from `identity.md` (mode `0600`) before every spawn |
@@ -89,8 +89,8 @@ foreign agent homes never reach the child. Explicitly set:
   offline; no model catalog refreshes, no version check, no telemetry
 - `GIT_CONFIG_GLOBAL` → the user's real `~/.gitconfig` when it exists, so git
   identity works without exposing the real `HOME`
-- `ABITO_MEMORY_PROJECT=abito-island` — the memory project pin
-- `ENGRAM_PORT` → Koda's private memory port (`7439`; `ABITO_ENGRAM_PORT` in the parent env
+- `KODA_MEMORY_PROJECT=koda` — the memory project pin
+- `ENGRAM_PORT` → Koda's private memory port (`7439`; `KODA_ENGRAM_PORT` in the parent env
   overrides it for tests/embeddings), `ENGRAM_BIN` → the pinned Engram binary the bundled
   runtime ships, `ENGRAM_NO_UPDATE_CHECK=1` — the private memory never phones home. The
   parent's `ENGRAM_URL`, `ENGRAM_DATA_DIR` and `ENGRAM_PORT` are never inherited: Koda's
@@ -230,12 +230,12 @@ human decision L11: «esto sería un engram propio que tuviera aparte del que te
   read or written.
 - **Server**: on Koda's OWN port `7439` (one above Gentle Dot's private port `7438`, which
   is itself one above Engram's default `7437` — no collision with the user's servers).
-  `ABITO_ENGRAM_PORT` overrides it for tests/embeddings.
+  `KODA_ENGRAM_PORT` overrides it for tests/embeddings.
 - **Binary**: only the pinned Engram binary the bundled runtime ships (`engramBin` in
   `koda-runtime.json`). The former user-binary resolution order (a parent `ENGRAM_BIN`,
   the login shell, the known install dirs) is gone.
-- **Project**: `abito-island` (the owned workspace's `.engram/config.json` and the
-  `ABITO_MEMORY_PROJECT` + identity pin, unchanged).
+- **Project**: `koda` (the owned workspace's `.engram/config.json` and the
+  `KODA_MEMORY_PROJECT` + identity pin, unchanged).
 - **Lifecycle**: the daemon confirms the private port is EMPTY before the engine spawns and
   owns cleanup only then — a pre-existing listener is never claimed, an unknown port state
   refuses ownership (logged, engine still starts), and on daemon stop the listener is
@@ -245,7 +245,7 @@ human decision L11: «esto sería un engram propio que tuviera aparte del que te
   NOT migrated into the island store (human decision L11). The island memory starts empty.
 
 The owned default workspace carries `.engram/config.json` with
-`project_name: "abito-island"`, and the child env pins `ABITO_MEMORY_PROJECT`. A
+`project_name: "koda"`, and the child env pins `KODA_MEMORY_PROJECT`. A
 user-preferred working folder (`workspacePath` option) is only used as the spawn
 `cwd`: nothing is ever written there. **Known enforcement limit (see U4 section)**: for an
 arbitrary workspace the pin travels only via explicit env and the identity prompt —
@@ -323,7 +323,7 @@ THIRD-PARTY-NOTICES.md.
   child in a clean environment (no provider keys, no `PI_*`); one login flow at
   a time (`auth_busy`), bounded prompt/flow timeouts, `cancel` kills the child.
   Events: `auth_prompt`, `auth_event`, `auth_done` (never carry answers or keys).
-  The SDK is resolved via the `sdkModule` option / `ABITO_SDK_MODULE`; the user's
+  The SDK is resolved via the `sdkModule` option / `KODA_SDK_MODULE`; the user's
   Pi credentials are never imported.
 - `src/profiles.cjs` — `ProfileStore`: role profiles `{id,label,role,accountId,provider,modelId,thinkingLevel}`.
   `select` copies one credential into the owned `agent/auth.json` (0600), restarts
@@ -398,7 +398,7 @@ unlinks it. `stop` is a graceful SIGTERM, not a crash path.
 
 **Connectors (`connectors_list`).** Additive, read-only: the daemon runs the connectors CLI (5 s timeout, 256 KiB cap, private HOME, no `PI_*`/provider keys, no retries), revalidates its output against an allowlist and replies a sanitized `connectors` frame (see `docs/PROTOCOL.md`). The data are the PERSISTED `connectors.json` values, not live: no pending approvals or mutation actions are carried by this frame. Live control is separate (H2c below). DTOs never contain a connector secret or capability. `status.connectorsAvailable` is true only when a connectors view is actually wired (a valid `connectorsCommand` is configured). One snapshot spawns TWO processes (`catalog` + `status`), each in its own process group killed whole on timeout/oversize/failure; the 1 s minimum interval is per snapshot. The child gets a fixed `PATH=/usr/bin:/bin`. The daemon emits at most 128 connectors / 32 catalog entries and a frame of at most 200 KiB, otherwise `failed` (never truncated). Both keys are read at daemon start.
 
-**Agent hooks (`agents_list`, `agent_connect`, `agent_disconnect`).** Additive (see `docs/PROTOCOL.md`, "Agents frames"): the island connects/disconnects the Claude Code and Codex hooks and the Claude status-line relay (`statusline`, «Uso del plan (relay)») with a button; `recap` is no longer an agent id and is refused like any unknown id. The status-line relay preserves and prints an existing status line, uses `~/.claude/settings.json`, backs up first, removes by marker only and requires a shown plan hash. The status-line installer also saves/restores `~/.abito/statusline-previous.json` (0600), as in its interactive flow. `src/agents.cjs` drives the harness installer (`install <claude|codex|statusline> --user ... --json`, then `--apply-plan <hash> --audit-dir <island>/audit`) as a subprocess with an allowlisted env (`PATH`, the REAL `HOME`, `LANG`, `ABITO_ISLAND_EXE` = the daemon's node: installer guard (i) becomes "the parent is the daemon's node"), 10 s group-killed timeout, 256 KiB stdout cap, stderr never surfaced. One operation at a time globally (`busy`), `agents_list` cached 1 s. The `plan_hash` the island showed is the only plan that can be applied (otherwise `plan_changed`, nothing written). `status.agentsAvailable` is true when `hookInstallerBin` is configured.
+**Agent hooks (`agents_list`, `agent_connect`, `agent_disconnect`).** Additive (see `docs/PROTOCOL.md`, "Agents frames"): the island connects/disconnects the Claude Code and Codex hooks and the Claude status-line relay (`statusline`, «Uso del plan (relay)») with a button; `recap` is no longer an agent id and is refused like any unknown id. The status-line relay preserves and prints an existing status line, uses `~/.claude/settings.json`, backs up first, removes by marker only and requires a shown plan hash. The status-line installer also saves/restores `~/.abito/statusline-previous.json` (0600), as in its interactive flow. `src/agents.cjs` drives the harness installer (`install <claude|codex|statusline> --user ... --json`, then `--apply-plan <hash> --audit-dir <island>/audit`) as a subprocess with an allowlisted env (`PATH`, the REAL `HOME`, `LANG`, `KODA_ISLAND_EXE` = the daemon's node: installer guard (i) becomes "the parent is the daemon's node"), 10 s group-killed timeout, 256 KiB stdout cap, stderr never surfaced. One operation at a time globally (`busy`), `agents_list` cached 1 s. The `plan_hash` the island showed is the only plan that can be applied (otherwise `plan_changed`, nothing written). `status.agentsAvailable` is true when `hookInstallerBin` is configured.
 
 **Legacy Recap cleanup (K2-03).** Recap (the weekly summary) was removed in 0.2. At every start the daemon calls `removeLegacyRecap()` (`src/agents.cjs`, off the boot path, not awaited): it previews the removal-only installer profile `install recap --user --remove` (`apps/desktop-harness/src/install-recap.cjs`) and applies it only when something would be removed — dated backup first, marker-only removal, audited. It logs fixed strings only; a refusal writes nothing and is retried next start. TODO: remove one version after K2-03.
 
@@ -422,7 +422,7 @@ When `mcpConfigPath` is unset the daemon intentionally does not point the engine
 
 #### Endpoint handoff consumed by harness hooks
 
-An explicit `ABITO_DESKTOP_SOCKET` wins after endpoint-shape validation and means `endpoint.json` is not read. Otherwise runtime selection is ordered: `ABITO_SOCKET_DIR` (if set, it must be absolute, normalized and non-root), else `$XDG_RUNTIME_DIR/koda` only when `XDG_RUNTIME_DIR` is absolute, normalized and non-root, else `/run/user/<uid>/koda`.
+An explicit `KODA_DESKTOP_SOCKET` wins after endpoint-shape validation and means `endpoint.json` is not read. Otherwise runtime selection is ordered: `KODA_SOCKET_DIR` (if set, it must be absolute, normalized and non-root), else `$XDG_RUNTIME_DIR/koda` only when `XDG_RUNTIME_DIR` is absolute, normalized and non-root, else `/run/user/<uid>/koda`.
 
 The reader accepts `<runtime>/endpoint.json` only as a regular, non-symlink file owned by you, mode exactly `0600` including no special bits, one hard link, and at most 4096 bytes. Its complete text must equal `JSON.stringify(parsed)` or that exact compact JSON plus one LF; the object has exactly `v`, `endpoint`, `pid`, with `v: 1`. Duplicate keys, escaped key names, pretty printing, extra whitespace and CRLF are rejected. The Rust producer in `apps/desktop-tauri/src/handoff.rs` writes compact one-line `serde_json` followed by LF (`{"endpoint":"<..>","pid":N,"v":1}\n`); the `v,endpoint,pid` key order is accepted as well.
 
@@ -439,11 +439,11 @@ never echoed) and the daemon refuses to start. Writes go through `writePrivateFi
 
 | Variable | Effect |
 |---|---|
-| `ABITO_ISLAND_DIR` | island root (default `~/.koda`) |
-| `ABITO_WORKSPACE` | overrides `workspace` from the file; validated identically (analogue of `GENTLE_DOT_WORKSPACE`) |
-| `ABITO_MEMORY_PROJECT` | set by the engine to `abito-island` for the child; with the identity prompt it is the memory pin |
-| `ABITO_SDK_MODULE` | SDK entry for the auth helper (U2) |
-| `ABITO_E2E_PI=1` | enables `test/e2e-real.test.cjs` |
+| `KODA_ISLAND_DIR` | island root (default `~/.koda`) |
+| `KODA_WORKSPACE` | overrides `workspace` from the file; validated identically (analogue of `GENTLE_DOT_WORKSPACE`) |
+| `KODA_MEMORY_PROJECT` | set by the engine to `koda` for the child; with the identity prompt it is the memory pin |
+| `KODA_SDK_MODULE` | SDK entry for the auth helper (U2) |
+| `KODA_E2E_PI=1` | enables `test/e2e-real.test.cjs` |
 
 ### Changing the workspace (restart semantics)
 
@@ -461,14 +461,14 @@ running (`busy`). The CLI signals a live daemon with SIGHUP to apply it. SIGHUP
 `mcpConfigPath` change. `thinking` applies at the next engine start. `profile` is read
 at daemon start only; change it at runtime with the `profile_select` request (a selected
 profile also wins over the `thinking` default across restarts). When
-`ABITO_WORKSPACE` is set it wins: the file is still updated but nothing restarts
+`KODA_WORKSPACE` is set it wins: the file is still updated but nothing restarts
 (`overriddenByEnv: true`).
 
 ### Memory pin for arbitrary workspaces
 
-The daemon **never writes `.engram` into your folder**. The pin is `ABITO_MEMORY_PROJECT`
+The daemon **never writes `.engram` into your folder**. The pin is `KODA_MEMORY_PROJECT`
 + the identity prompt. It does detect (read-only) a conflicting
-`<workspace>/.engram/config.json` whose `project_name` is not `abito-island` and
+`<workspace>/.engram/config.json` whose `project_name` is not `koda` and
 reports `memoryPinConflict: true` in `Daemon.status()` and `abito-island-daemon status`.
 Whether Engram prefers that folder file over the env pin is Engram's behavior, not
 guaranteed here: treat the warning as "memories may land in the other project".
@@ -539,7 +539,7 @@ at the next daemon start. Pi still decides exposure (default `codemode`).
 - A workspace validated at start can be swapped for a symlink later (TOCTOU between validation and spawn); the engine runs as you, with your permissions, in that folder.
 - The engine is not a sandbox: the agent has your user's file access inside the chosen workspace and beyond.
 - No history replay; MCP projection is read once at start; no auto-start; POSIX only.
-- Tests: `npm test` (fake agent). `ABITO_E2E_PI=1 node --test test/e2e-real.test.cjs` starts the installed pi offline (no prompt, no model call).
+- Tests: `npm test` (fake agent). `KODA_E2E_PI=1 node --test test/e2e-real.test.cjs` starts the installed pi offline (no prompt, no model call).
 
 Attribution: structure adapted from the Gentle Dot daemon (MIT, © 2026 Gentleman Programming); see THIRD-PARTY-NOTICES.md.
 

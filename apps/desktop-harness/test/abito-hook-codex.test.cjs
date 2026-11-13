@@ -17,7 +17,7 @@ const postTool = JSON.stringify({ session_id: 's1', cwd, hook_event_name: 'PostT
 
 function run(args, input, env, { closeStdin = true } = {}) {
   return new Promise(resolve => {
-    const child = spawn(process.execPath, [...hookNodeArgs, bin, ...args], { env: { PATH: process.env.PATH, ABITO_SOCKET_DIR: '/nonexistent-abito-test', ...env }, stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn(process.execPath, [...hookNodeArgs, bin, ...args], { env: { PATH: process.env.PATH, KODA_SOCKET_DIR: '/nonexistent-abito-test', ...env }, stdio: ['pipe', 'pipe', 'pipe'] });
     let stdout = '', stderr = '';
     child.stdout.on('data', c => { stdout += c; }); child.stderr.on('data', c => { stderr += c; });
     child.on('close', (code, signal) => resolve({ code, signal, stdout, stderr }));
@@ -26,7 +26,7 @@ function run(args, input, env, { closeStdin = true } = {}) {
     if (closeStdin) child.stdin.end();
   });
 }
-const envOf = r => ({ ABITO_DESKTOP_SOCKET: r.endpoint, ABITO_SOCKET_DIR: r.runtime, ...pipeEnv(r) });
+const envOf = r => ({ KODA_DESKTOP_SOCKET: r.endpoint, KODA_SOCKET_DIR: r.runtime, ...pipeEnv(r) });
 const silent = r => { assert.equal(r.code, 0); assert.equal(r.stdout, ''); assert.equal(r.stderr, ''); };
 const answerer = (rcv, value) => rcv.next('question').then(q => rcv.send({ v: 1, type: 'answer', questionVersion: 1, project: q.project,
   sessionId: q.sessionId, at: Date.now(), id: q.id, source: 'human', answer: { type: 'option', value } }));
@@ -70,7 +70,7 @@ test('codex e2e: plan-mode questions (PreToolUse request_user_input) send «Code
 
 test('codex e2e: every no-island path is silent (exit 0, empty stdout, empty stderr)', async t => {
   for (const input of [permission, 'garbage', '']) {
-    silent(await run(['codex', 'permission-request'], input, { ABITO_SOCKET_DIR: '/nonexistent-abito-test' }));
+    silent(await run(['codex', 'permission-request'], input, { KODA_SOCKET_DIR: '/nonexistent-abito-test' }));
   }
   const rcv = await fakeReceiver(t, { questions: true });
   silent(await run(['codex', 'permission-request'], 'x'.repeat(2 * 1024 * 1024), envOf(rcv)));

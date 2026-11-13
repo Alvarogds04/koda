@@ -25,7 +25,7 @@ pub struct Transport {
 }
 
 impl Transport {
-    /// The `ABITO_DESKTOP_SOCKET=…` path the producer connects to.
+    /// The `KODA_DESKTOP_SOCKET=…` path the producer connects to.
     pub fn endpoint(&self) -> &Path {
         match self.never {}
     }

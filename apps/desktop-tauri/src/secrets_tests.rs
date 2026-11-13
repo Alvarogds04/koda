@@ -124,9 +124,20 @@ fn the_secret_value_never_reaches_debug_or_errors() {
 }
 
 #[test]
-fn the_service_name_is_abitos_own() {
-    assert_eq!(SERVICE, "com.abitog.AbitoTauri");
+fn the_service_name_is_kodas_own() {
+    assert_eq!(SERVICE, "com.abitog.Koda");
     assert!(!SERVICE.to_lowercase().contains("coucou"));
+}
+
+/// L4 (13 Nov, human): the keychain service is Koda's, with no alias and no fallback, so a 0.1
+/// entry under the old service is simply not read. Exactly ONE thing may still target the old
+/// service: a one-time cleanup of 0.1 entries (K2-10 T8 deletes the seven imap-*/smtp-* keys).
+/// That constant is pinned here so the cleanup can never silently follow the rename.
+#[test]
+fn the_legacy_service_is_pinned_for_one_time_cleanups_only() {
+    assert_eq!(super::LEGACY_KEYCHAIN_SERVICE, "com.abitog.AbitoTauri");
+    assert_ne!(SERVICE, LEGACY_KEYCHAIN_SERVICE, "the migration must name the old service explicitly");
+    assert!(SERVICE.starts_with("com.abitog."), "still Abito's own reverse-DNS namespace (the bundle id is T6)");
 }
 
 /// K2-01c S1: on macOS a saved value lands in the login Keychain under Abito's own service and is

@@ -60,11 +60,11 @@ FRONTEND_FILES.push(
 );
 const EXPECTED_WINDOWS = ['main', 'settings'];
 const EXPECTED_PERMISSIONS = ['core:event:allow-listen', 'core:event:allow-unlisten'];
-// Inverted logic: EVERY ABITO_* variable is refused except the one the
-// installed app is meant to receive (ABITO_PROJECT_ROOT); plus the whole LD_*
+// Inverted logic: EVERY KODA_* variable is refused except the one the
+// installed app is meant to receive (KODA_PROJECT_ROOT); plus the whole LD_*
 // loader family and the GTK/GDK/WebKit debug + inspector variables.
-const FORBIDDEN_ENV_PATTERN = '^(LD_[A-Za-z0-9_]*|GDK_(DEBUG|SYNCHRONIZE|RENDERING)|GTK_(DEBUG|MODULES|PATH|EXE_PREFIX|DATA_PREFIX)|WEBKIT_INSPECTOR_[A-Za-z_]*|ABITO_[A-Za-z0-9_]*)=';
-const ALLOWED_ABITO = 'ABITO_PROJECT_ROOT';
+const FORBIDDEN_ENV_PATTERN = '^(LD_[A-Za-z0-9_]*|GDK_(DEBUG|SYNCHRONIZE|RENDERING)|GTK_(DEBUG|MODULES|PATH|EXE_PREFIX|DATA_PREFIX)|WEBKIT_INSPECTOR_[A-Za-z_]*|KODA_[A-Za-z0-9_]*)=';
+const ALLOWED_ABITO = 'KODA_PROJECT_ROOT';
 
 const sha256 = buf => crypto.createHash('sha256').update(buf).digest('hex');
 const sha256File = file => sha256(fs.readFileSync(file));
@@ -146,7 +146,7 @@ function launcherText() {
   return `#!/bin/sh
 # Abito (Tauri) launcher — M4 format A. Accepts no arguments, refuses the
 # whole LD_* family, GTK/GDK/WebKit debug and inspector variables and every
-# ABITO_* test/probe/override knob (only ABITO_PROJECT_ROOT passes), forces
+# KODA_* test/probe/override knob (only KODA_PROJECT_ROOT passes), forces
 # X11/XWayland (absolute positioning and always-on-top). Never touches the
 # Preview's roots.
 set -eu
@@ -293,7 +293,7 @@ function verifyStage(dir, { sourceCrate } = {}) {
   if (fs.existsSync(bin)) {
     const bytes = fs.readFileSync(bin);
     if (sourceCrate && bytes.includes(Buffer.from(sourceCrate))) problems.push('binary embeds the source-tree path');
-    for (const marker of ['--remote-debugging', 'devtools://', 'Prueba M3: propuesta servida por el backend falso', 'ABITO_PROBE', 'XTEST', 'abito-validator-fake-terminal-launcher']) if (bytes.includes(Buffer.from(marker))) problems.push(`binary contains «${marker}» (devtools/probe/fake)`);
+    for (const marker of ['--remote-debugging', 'devtools://', 'Prueba M3: propuesta servida por el backend falso', 'KODA_PROBE', 'XTEST', 'abito-validator-fake-terminal-launcher']) if (bytes.includes(Buffer.from(marker))) problems.push(`binary contains «${marker}» (devtools/probe/fake)`);
     for (const prefix of [process.env.HOME && `${process.env.HOME}/.cargo`, process.env.HOME && `${process.env.HOME}/Apps`].filter(Boolean)) if (bytes.includes(Buffer.from(prefix))) problems.push(`binary embeds the build machine path ${prefix}…`);
     if (POSIX_MODES() && !(fs.statSync(bin).mode & 0o100)) problems.push('binary is not executable');
   }

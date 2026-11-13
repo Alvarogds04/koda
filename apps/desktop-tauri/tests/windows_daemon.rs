@@ -78,9 +78,9 @@ fn run_helper(base: &Path, input: &[u8], island_dir: Option<&Path>) -> std::proc
     let mut command = Command::new(HELPER);
     command.env("LOCALAPPDATA", base).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
     if let Some(dir) = island_dir {
-        command.env("ABITO_ISLAND_DIR", dir);
+        command.env("KODA_ISLAND_DIR", dir);
     } else {
-        command.env_remove("ABITO_ISLAND_DIR");
+        command.env_remove("KODA_ISLAND_DIR");
     }
     let mut child = command.spawn().expect("spawn helper");
     child.stdin.as_mut().expect("helper stdin").write_all(input).expect("write stdin");
@@ -306,21 +306,21 @@ fn helper_verify_is_read_only_and_requires_native_identity_and_ready() {
             winipc::ffi::write_bounded(file.as_raw_handle(), reply, wait).unwrap();
             std::thread::sleep(std::time::Duration::from_millis(200));
         });
-        let output = Command::new(HELPER).arg("--verify").env("LOCALAPPDATA", &base).env_remove("ABITO_ISLAND_DIR").output().unwrap();
+        let output = Command::new(HELPER).arg("--verify").env("LOCALAPPDATA", &base).env_remove("KODA_ISLAND_DIR").output().unwrap();
         server_thread.join().unwrap();
         assert_eq!(output.status.code(), Some(if ready { 0 } else { 1 }));
         assert!(output.stdout.is_empty() && output.stderr.is_empty(), "verdict code only");
         assert_eq!(std::fs::read(session_file(&base)).unwrap(), before);
         assert_eq!(std::fs::read_dir(base.join("Koda/runtime")).unwrap().count(), 1);
         widen_dacl_to_everyone(&session_file(&base));
-        let refused = Command::new(HELPER).arg("--verify").env("LOCALAPPDATA", &base).env_remove("ABITO_ISLAND_DIR").output().unwrap();
+        let refused = Command::new(HELPER).arg("--verify").env("LOCALAPPDATA", &base).env_remove("KODA_ISLAND_DIR").output().unwrap();
         assert_eq!(refused.status.code(), Some(1));
         assert!(refused.stdout.is_empty() && refused.stderr.is_empty());
         assert_eq!(std::fs::read(session_file(&base)).unwrap(), before);
         let invalid = Command::new(HELPER).args(["--verify", "attacker-path"]).env("LOCALAPPDATA", &base).output().unwrap();
         assert_ne!(invalid.status.code(), Some(0), "no caller path argument");
         let outside = base.join("not-canonical");
-        let redirected = Command::new(HELPER).arg("--verify").env("LOCALAPPDATA", &base).env("ABITO_ISLAND_DIR", &outside).output().unwrap();
+        let redirected = Command::new(HELPER).arg("--verify").env("LOCALAPPDATA", &base).env("KODA_ISLAND_DIR", &outside).output().unwrap();
         assert_eq!(redirected.status.code(), Some(1));
         assert!(redirected.stdout.is_empty() && redirected.stderr.is_empty());
         assert!(!outside.exists(), "verify cannot create or inspect a caller-selected non-canonical root");

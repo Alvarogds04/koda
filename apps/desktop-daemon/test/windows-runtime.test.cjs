@@ -262,7 +262,7 @@ test("live helper writes the canonical session file and refuses unsafe input", {
 		// Unsafe override outside the canonical root: refused, nothing written anywhere.
 		const outside = path.join(base, "elsewhere");
 		fs.mkdirSync(path.join(outside, "runtime"), { recursive: true });
-		result = run(JSON.stringify(PAYLOAD()), { ABITO_ISLAND_DIR: outside });
+		result = run(JSON.stringify(PAYLOAD()), { KODA_ISLAND_DIR: outside });
 		assert.notEqual(result.status, 0);
 		assert.equal(fs.existsSync(path.join(outside, "runtime", "session.json")), false);
 	} finally {
@@ -272,8 +272,8 @@ test("live helper writes the canonical session file and refuses unsafe input", {
 
 // K2-01b P1: the daemon validates its island root against ITS env's %LOCALAPPDATA% (options.env), so the native helper,
 // which re-checks the same canonical-root policy, must be given that same LOCALAPPDATA — not the process's. Production
-// passes process.env, so the helper env stays exactly process.env + ABITO_ISLAND_DIR there.
-test("K2-01b: the session helper gets the daemon env's LOCALAPPDATA; without an injected env it is process.env + ABITO_ISLAND_DIR", async () => {
+// passes process.env, so the helper env stays exactly process.env + KODA_ISLAND_DIR there.
+test("K2-01b: the session helper gets the daemon env's LOCALAPPDATA; without an injected env it is process.env + KODA_ISLAND_DIR", async () => {
 	const { verifySessionWindows, classifySession } = require("../src/daemon.cjs");
 	const root = path.join(os.tmpdir(), "abito-p1-root");
 	const env = { LOCALAPPDATA: "C:\\Users\\a\\AppData\\Local-private", PATH: "x" };
@@ -283,17 +283,17 @@ test("K2-01b: the session helper gets the daemon env's LOCALAPPDATA; without an 
 	assert.equal(verifySessionWindows(root, { spawnSync, helperPath: "H.exe", env }), true);
 	for (const e of seen) {
 		assert.equal(e.LOCALAPPDATA, env.LOCALAPPDATA, "the helper checks the root against the daemon's LOCALAPPDATA");
-		assert.equal(e.ABITO_ISLAND_DIR, path.resolve(root));
+		assert.equal(e.KODA_ISLAND_DIR, path.resolve(root));
 	}
 	// An injected env WITHOUT LOCALAPPDATA never inherits the process's: the helper fails closed like the daemon did.
 	seen.length = 0;
 	publishSessionWindows(root, PAYLOAD(), { spawnSync, helperPath: "H.exe", env: { PATH: "x" } });
 	assert.equal("LOCALAPPDATA" in seen[0], false);
-	// Production: no env injected -> exactly process.env plus ABITO_ISLAND_DIR.
+	// Production: no env injected -> exactly process.env plus KODA_ISLAND_DIR.
 	seen.length = 0;
 	publishSessionWindows(root, PAYLOAD(), { spawnSync, helperPath: "H.exe" });
 	verifySessionWindows(root, { spawnSync, helperPath: "H.exe" });
-	for (const e of seen) assert.deepEqual(e, { ...process.env, ABITO_ISLAND_DIR: path.resolve(root) });
+	for (const e of seen) assert.deepEqual(e, { ...process.env, KODA_ISLAND_DIR: path.resolve(root) });
 	// classifySession forwards its env to the native verification (a well-formed session file makes it ask).
 	const island = fs.mkdtempSync(path.join(os.tmpdir(), "abito-p1-"));
 	fs.mkdirSync(path.join(island, "runtime"), { mode: 0o700 });

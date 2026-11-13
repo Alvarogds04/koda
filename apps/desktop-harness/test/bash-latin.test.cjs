@@ -121,7 +121,7 @@ for (const [agent, handle] of agents) test(`R22 UTF-8 boundaries reach the wire:
         at: Date.now(), id: q.id, source: 'human', answer: { type: 'option', value: 'deny' } });
     });
     const out = await handle({ event: 'permission-request', input: input(command),
-      env: { ABITO_SOCKET_DIR: rcv.runtime, ABITO_DESKTOP_SOCKET: rcv.endpoint },
+      env: { KODA_SOCKET_DIR: rcv.runtime, KODA_DESKTOP_SOCKET: rcv.endpoint },
       clientFactory: o => new IslandClient({ ...o, ...transportOf(rcv) }) });
     await answer;
     assert.equal(JSON.parse(out.stdout).hookSpecificOutput.decision.behavior, 'deny');

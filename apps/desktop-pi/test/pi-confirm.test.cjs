@@ -25,12 +25,12 @@ test('real Pi runner: a guarded-command confirm is answerable from Abito; sensit
   if (!root) { t.skip('Installed Pi not found; set PI_CODING_AGENT_ROOT'); return; }
   const receiver = await fakeReceiver(t, { questions: true, busyReason: true });
   if (process.platform === 'win32') return windowsTwin(t, root, receiver); // Windows twin: see windows-real-pi.cjs
-  const vars = ['ABITO_SOCKET_DIR', 'ABITO_DESKTOP_SOCKET', 'ABITO_QUESTIONS', 'ABITO_QUESTION_TIMEOUT_MS', 'ABITO_NATIVE_CONFIRM'];
+  const vars = ['KODA_SOCKET_DIR', 'KODA_DESKTOP_SOCKET', 'KODA_QUESTIONS', 'KODA_QUESTION_TIMEOUT_MS', 'KODA_NATIVE_CONFIRM'];
   const previous = Object.fromEntries(vars.map(k => [k, process.env[k]]));
   t.after(() => { for (const k of vars) { if (previous[k] === undefined) delete process.env[k]; else process.env[k] = previous[k]; } });
-  Object.assign(process.env, { ABITO_SOCKET_DIR: receiver.runtime, ABITO_DESKTOP_SOCKET: receiver.endpoint,
-    ABITO_QUESTIONS: '2', ABITO_QUESTION_TIMEOUT_MS: '300000' });
-  delete process.env.ABITO_NATIVE_CONFIRM;
+  Object.assign(process.env, { KODA_SOCKET_DIR: receiver.runtime, KODA_DESKTOP_SOCKET: receiver.endpoint,
+    KODA_QUESTIONS: '2', KODA_QUESTION_TIMEOUT_MS: '300000' });
+  delete process.env.KODA_NATIVE_CONFIRM;
 
   // The stand-in guard (gentle-pi shape): confirm(title, preview) with no signal/timeout, approve only on === true.
   const dir = fs.mkdtempSync(path.join(path.resolve(__dirname, '..'), '.test-guard-'));

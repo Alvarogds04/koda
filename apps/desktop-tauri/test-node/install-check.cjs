@@ -150,7 +150,7 @@ test('syntax: POSIX sh parses (sh -n) and has no bashisms in the shebang', () =>
   assert.match(fs.readFileSync(SCRIPT, 'utf8'), /^#!\/bin\/sh\n/);
 });
 
-test('happy path: installs binary+launcher+png(+template+receipt), executable, hashes printed, .desktop resolved with ABITO_PROJECT_ROOT', () => {
+test('happy path: installs binary+launcher+png(+template+receipt), executable, hashes printed, .desktop resolved with KODA_PROJECT_ROOT', () => {
   const st = stage(), e = env();
   const r = install(st, e);
   assert.equal(r.status, 0, r.stderr + r.stdout);
@@ -169,13 +169,13 @@ test('happy path: installs binary+launcher+png(+template+receipt), executable, h
   assert.match(r.stderr, /koda-runtime-node-ran/, 'the extracted runtime node ran the verification');
   const desk = fs.readFileSync(path.join(e.apps, `${L.IDENTIFIER}.desktop`), 'utf8');
   assert.doesNotMatch(desk, /@INSTALL_DIR@/);
-  assert.ok(desk.split('\n').includes(`Exec=env ABITO_PROJECT_ROOT=${e.root} "${e.prefix}/abito-island-launcher"`), desk);
+  assert.ok(desk.split('\n').includes(`Exec=env KODA_PROJECT_ROOT=${e.root} "${e.prefix}/abito-island-launcher"`), desk);
   assert.ok(desk.split('\n').includes(`Icon=${e.prefix}/abito-island.png`), desk);
   assert.match(desk, /^StartupWMClass=Abito-island$/m);
   assert.match(r.stdout, new RegExp(sha(fs.readFileSync(path.join(st, 'abito-island')))));
   assert.match(r.stdout, /abito-island-launcher/); assert.match(r.stdout, /Abito \(Tauri\)/);
   // and the toy binary runs through the launcher
-  const run2 = cp.spawnSync(path.join(e.prefix, 'abito-island-launcher'), [], { encoding: 'utf8', env: { PATH: process.env.PATH, ABITO_PROJECT_ROOT: e.root } });
+  const run2 = cp.spawnSync(path.join(e.prefix, 'abito-island-launcher'), [], { encoding: 'utf8', env: { PATH: process.env.PATH, KODA_PROJECT_ROOT: e.root } });
   assert.match(run2.stdout, /toy binary/);
 });
 

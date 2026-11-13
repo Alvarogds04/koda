@@ -19,7 +19,7 @@ test('Windows config resolves metadata without getuid and refreshes discovery', 
   assert.equal(resolveEndpoint(env, undefined, options), META);
   assert.equal(resolveEndpoint(env, undefined, { ...options, stat: () => { throw Error('missing'); } }), undefined);
   assert.equal(resolveEndpoint({ LOCALAPPDATA: 'relative' }, undefined, options), undefined);
-  assert.throws(() => resolveConfig({ ABITO_DESKTOP_SOCKET: '\\\\.\\pipe\\unverified' }, undefined, options));
+  assert.throws(() => resolveConfig({ KODA_DESKTOP_SOCKET: '\\\\.\\pipe\\unverified' }, undefined, options));
 });
 
 test('Windows Pi relay carries hello, notice and human question; shutdown kills relay', async () => {

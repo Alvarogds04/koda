@@ -326,8 +326,8 @@ test('launcher: no args, refuses whole env families, forces X11, execs only its 
   const run = (extra, env) => cp.spawnSync(path.join(d, 'abito-island-launcher'), extra, { env: { PATH: process.env.PATH, ...env }, encoding: 'utf8' });
   assert.equal(run(['--devtools'], {}).status, 64);
   for (const name of ['LD_PRELOAD', 'LD_LIBRARY_PATH', 'LD_AUDIT', 'LD_DEBUG', 'LD_BIND_NOW', 'LD_ANYTHING_ELSE', 'GDK_DEBUG', 'GTK_MODULES',
-    'WEBKIT_INSPECTOR_SERVER', 'ABITO_PROBE', 'ABITO_PROBE_VISUAL_DIR', 'ABITO_SOCKET_DIR', 'ABITO_BRIDGE_BASE', 'ABITO_MODELS_CONFIG_DIR',
-    'ABITO_DESKTOP_SOCKET', 'ABITO_NATIVE_AUDIT', 'ABITO_NATIVE_VIEW_TEST', 'ABITO_FUTURE_KNOB_NOBODY_LISTED', 'GDK_SYNCHRONIZE', 'GTK_PATH']) {
+    'WEBKIT_INSPECTOR_SERVER', 'KODA_PROBE', 'KODA_PROBE_VISUAL_DIR', 'KODA_SOCKET_DIR', 'KODA_BRIDGE_BASE', 'KODA_MODELS_CONFIG_DIR',
+    'KODA_DESKTOP_SOCKET', 'KODA_NATIVE_AUDIT', 'KODA_NATIVE_VIEW_TEST', 'KODA_FUTURE_KNOB_NOBODY_LISTED', 'GDK_SYNCHRONIZE', 'GTK_PATH']) {
     const r = run([], { [name]: '1' });
     assert.equal(r.status, 64, name);
     assert.doesNotMatch(r.stdout, /STARTED/, name);
@@ -336,12 +336,12 @@ test('launcher: no args, refuses whole env families, forces X11, execs only its 
   assert.equal(run([], { LDXYZ_NOT_LD: '1', LANG: 'C', HOME: '/x' }).status, 0, 'unrelated variables pass');
   // S5 (abito-avisos-ux): the GNOME session itself exports GTK_MODULES=gail:atk-bridge, so the menu entry could never open Abito.
   // ONLY that exact accessibility value is dropped (not loaded) before the guard; any other GTK_MODULES value is still refused.
-  const a11y = run([], { GTK_MODULES: 'gail:atk-bridge', ABITO_PROJECT_ROOT: '/somewhere' });
+  const a11y = run([], { GTK_MODULES: 'gail:atk-bridge', KODA_PROJECT_ROOT: '/somewhere' });
   assert.equal(a11y.status, 0, a11y.stderr); assert.match(a11y.stdout, /STARTED/);
   for (const v of ['gail:atk-bridge:evil', 'evil:gail:atk-bridge', 'gail', 'atk-bridge', ' gail:atk-bridge']) {
     const r = run([], { GTK_MODULES: v }); assert.equal(r.status, 64, v); assert.doesNotMatch(r.stdout, /STARTED/, v);
   }
-  const ok = run([], { ABITO_PROJECT_ROOT: '/somewhere' }); assert.equal(ok.status, 0, 'ABITO_PROJECT_ROOT is the one allowed knob'); assert.match(ok.stdout, /STARTED/);
+  const ok = run([], { KODA_PROJECT_ROOT: '/somewhere' }); assert.equal(ok.status, 0, 'KODA_PROJECT_ROOT is the one allowed knob'); assert.match(ok.stdout, /STARTED/);
   fs.rmSync(d, { recursive: true });
 });
 test('provenance gate: a dirty or untracked product file fails; a clean tree passes (real git repo)', () => {
@@ -385,7 +385,7 @@ test('gates: missing frontend file, extra plugin dependency, missing capability 
   assert.throws(() => L.checkConfig(d)); fs.rmSync(d, { recursive: true });
 });
 test('verify: the shipped binary must not carry the probe or the fake backend strings', () => {
-  for (const marker of ['ABITO_PROBE', 'Prueba M3: propuesta servida por el backend falso', 'abito-validator-fake-terminal-launcher']) {
+  for (const marker of ['KODA_PROBE', 'Prueba M3: propuesta servida por el backend falso', 'abito-validator-fake-terminal-launcher']) {
     const d = fakeStage();
     fs.writeFileSync(path.join(d, 'abito-island'), `#!/bin/true\n${marker}\n`, { mode: 0o755 });
     const r = readJson(path.join(d, 'receipt.json')); r.files['abito-island'] = L.sha256File(path.join(d, 'abito-island'));

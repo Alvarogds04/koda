@@ -114,7 +114,7 @@ jobs:
       - name: Actual foreign-SID receiver, relay and private-file probes
         timeout-minutes: 10
         env:
-          ABITO_FOREIGN_USER_TEST: '1'
+          KODA_FOREIGN_USER_TEST: '1'
         run: |
           cargo test --locked --test windows_foreign_user -- `
             --test-threads=1 --nocapture

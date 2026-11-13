@@ -109,7 +109,7 @@ test('R13 wire exposes only derived options, fixed tokens; real QP/1 selection e
     receiver.send({ v: 1, type: 'answer', questionVersion: 1, project: q.project, sessionId: q.sessionId,
       at: Date.now(), id: q.id, source: 'human', answer: { type: 'option', value: 'allow_suggestion_1' } });
   });
-  const result = await handleClaudeHook({ event: 'permission-request', env: { ABITO_DESKTOP_SOCKET: receiver.endpoint, ABITO_SOCKET_DIR: receiver.runtime },
+  const result = await handleClaudeHook({ event: 'permission-request', env: { KODA_DESKTOP_SOCKET: receiver.endpoint, KODA_SOCKET_DIR: receiver.runtime },
     input: JSON.stringify({ cwd, hook_event_name: 'PermissionRequest', tool_name: 'Bash', tool_input: { command: 'ls' }, permission_suggestions: [entry] }) });
   await pending;
   assert.deepEqual(decision(result).updatedPermissions, [entry]);
@@ -140,6 +140,13 @@ test('R13 h + differential: HEAD source in memory, Bash/Write/Codex stdout and e
     return mod.exports;
   }
   const oldClaude = base('apps/desktop-harness/src/claude.cjs').handleClaudeHook;
+  // K2-04 T2b: the reference is the last COMMITTED source, which still read the 0.1 `ABITO_*`
+  // names. Give that side its own spelling of the same values, so the differential keeps
+  // comparing behaviour and not the variable names (the only intended stdout difference stays
+  // the product name, asserted below). Once the rename is committed both sides read the same.
+  const legacyEnv = env => Object.fromEntries(Object.entries(env).flatMap(([key, value]) => [
+    [key, value], ...(key.startsWith('KODA_') ? [['ABITO_' + key.slice(5), value]] : []),
+  ]));
   const { handleCodexHook } = require('../src/codex.cjs');
   let count = 0;
   // S4/T2: Codex is not in this differential any more — it can no longer answer, so its output is asserted below instead.
@@ -150,8 +157,9 @@ test('R13 h + differential: HEAD source in memory, Bash/Write/Codex stdout and e
         const input = JSON.stringify({ cwd, session_id: 'r13-diff', hook_event_name: 'PermissionRequest', tool_name: 'Bash', tool_input: { command: 'ls' }, ...over });
         const opts = { event: 'permission-request', env: TEST_ENV, input,
           clientFactory: () => ({ ask: async () => ({ status, answer: { type: 'option', value } }) }) };
-        const a = await current(opts), b = await old(opts);
-        // Koda 0.1 T2: the product name in what the hook prints is the ONLY intended difference from the old source; every other byte (and the exit code) must match
+        // Koda 0.1 T2: the product name in what the hook prints is the ONLY intended difference in
+        // stdout; every other byte (and the exit code) must match.
+        const a = await current(opts), b = await old({ ...opts, env: legacyEnv(opts.env) });
         const renamed = text => (typeof text === 'string' ? text.replace(/\bAbito island\b/g, 'Koda island') : text);
         assert.deepEqual({ stdout: a.stdout, exitCode: a.exitCode }, { stdout: renamed(b.stdout), exitCode: b.exitCode }); count++;
       }

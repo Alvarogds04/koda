@@ -8,7 +8,7 @@ use std::path::PathBuf;
 /// Installed identity (tauri.conf.json `identifier`), never the Preview's.
 pub const APP_IDENTIFIER: &str = "com.abitog.AbitoTauri";
 /// Env var the launcher/config sets for an installed app (absolute path).
-pub const PROJECT_ROOT_ENV: &str = "ABITO_PROJECT_ROOT";
+pub const PROJECT_ROOT_ENV: &str = "KODA_PROJECT_ROOT";
 
 /// Build-tree path baked by cargo — debug builds only.
 #[cfg(debug_assertions)]

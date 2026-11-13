@@ -73,7 +73,7 @@ function findSessionHelper(deps = {}) {
  * temp file with an explicit protected owner-only DACL AT CREATION and replaces
  * the target atomically. The token travels on the helper's STDIN only: never
  * argv, never the environment, never a log. The daemon root is passed as
- * ABITO_ISLAND_DIR (the same var the daemon itself honours); the helper refuses
+ * KODA_ISLAND_DIR (the same var the daemon itself honours); the helper refuses
  * any root that bypasses the canonical protected %LOCALAPPDATA%\Koda root.
  * Fails closed: without the helper or without a zero exit, NO session is
  * published and the boot fails.
@@ -98,10 +98,10 @@ function publishSessionWindows(root, payload, deps = {}) {
 /**
  * The helper's environment (K2-01b): the process env plus the daemon root, with %LOCALAPPDATA% taken from the env the
  * daemon validated its root against (`daemonEnv`, i.e. `options.env`) — the helper re-checks the same canonical-root
- * policy, so it must see the same LOCALAPPDATA. Without an injected env this is exactly process.env + ABITO_ISLAND_DIR.
+ * policy, so it must see the same LOCALAPPDATA. Without an injected env this is exactly process.env + KODA_ISLAND_DIR.
  */
 function helperEnv(root, daemonEnv) {
-	const env = { ...process.env, ABITO_ISLAND_DIR: path.resolve(root) };
+	const env = { ...process.env, KODA_ISLAND_DIR: path.resolve(root) };
 	if (daemonEnv && daemonEnv !== process.env) {
 		delete env.LOCALAPPDATA;
 		if (typeof daemonEnv.LOCALAPPDATA === "string") env.LOCALAPPDATA = daemonEnv.LOCALAPPDATA;
@@ -328,7 +328,7 @@ async function classifySession(root, deps = {}) {
 class Daemon extends EventEmitter {
 	/**
 	 * @param {object} [options]
-	 * @param {string} [options.root]           island root (default ABITO_ISLAND_DIR / ~/.koda)
+	 * @param {string} [options.root]           island root (default KODA_ISLAND_DIR / ~/.koda)
 	 * @param {object} [options.env]            environment (default process.env)
 	 * @param {(line:string)=>void} [options.log]
 	 * @param {object} [options.engineOptions]  extra AgentEngine options (tests: fake command)

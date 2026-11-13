@@ -49,7 +49,7 @@ for (const diagnostic of [
 }
 assert.doesNotMatch(installer, /Remove-Item|New-Item/);
 assert.match(workflow, /cargo test --locked --lib identity::windows_path_tests/);
-assert.match(smoke, /if \(\$Mode -eq 'explicit-root'\) \{ \$env:ABITO_PROJECT_ROOT = \$workspace \}\s+else \{ Remove-Item Env:ABITO_PROJECT_ROOT/);
+assert.match(smoke, /if \(\$Mode -eq 'explicit-root'\) \{ \$env:KODA_PROJECT_ROOT = \$workspace \}\s+else \{ Remove-Item Env:KODA_PROJECT_ROOT/);
 assert.match(smoke, /Start-Island 'explicit-root'/);
 assert.match(smoke, /return \$candidate\.pid -eq \$script:process\.Id/);
 assert.match(smoke, /if \(\$metadata\.pid -ne \$script:process\.Id\) \{ throw 'Receiver metadata does not belong/);

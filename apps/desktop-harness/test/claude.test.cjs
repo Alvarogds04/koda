@@ -15,7 +15,7 @@ const stopInput = (over = {}) => JSON.stringify({ session_id: 'sess-1', cwd, hoo
   last_assistant_message: 'SECRETREPLY', ...over });
 // An empty env would resolve the REAL default runtime (/run/user/<uid>/koda) and could reach the live island.
 const NO_ISLAND = offlineDir('nonexistent-abito-test');
-const envOf = r => ({ ABITO_DESKTOP_SOCKET: r.endpoint, ABITO_SOCKET_DIR: r.runtime });
+const envOf = r => ({ KODA_DESKTOP_SOCKET: r.endpoint, KODA_SOCKET_DIR: r.runtime });
 const stub = status => () => ({ ask: async () => ({ status }), notify: async () => ({ status: 'sent' }) });
 function assertOut(r) { assert.equal(r.exitCode, 0); assert.ok(r.stdout === '' || (/\n$/.test(r.stdout) && r.stdout.trim().split('\n').length === 1 && JSON.parse(r.stdout))); }
 const settle = async rcv => { for (let i = 0; i < 40 && !rcv.frames.some(f => f.type === 'settled'); i++) await new Promise(r => setTimeout(r, 25)); };

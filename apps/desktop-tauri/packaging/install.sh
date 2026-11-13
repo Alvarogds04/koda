@@ -28,7 +28,7 @@
 #      rename (an old runtime is moved aside, then removed). On any failure nothing
 #      is replaced and every temp dir is removed.
 #   5. Write ~/.local/share/applications/com.abitog.AbitoTauri.desktop with
-#      @INSTALL_DIR@ resolved and Exec=env ABITO_PROJECT_ROOT=<project root> "<launcher>"
+#      @INSTALL_DIR@ resolved and Exec=env KODA_PROJECT_ROOT=<project root> "<launcher>"
 #      (the one variable the closed launcher accepts).
 #
 # Defaults (documented):
@@ -64,7 +64,7 @@ Abito (Tauri) one-command installer (user-local, no root, no network).
   <stage-dir>           staged build: dist/abito-island/<version> or a copy of it
                         (artifacts/abito-island-<version>-<commit>)
   --prefix DIR          install dir (default: ~/.local/share/abito-island)
-  --project-root DIR    (required) ABITO_PROJECT_ROOT written into the launcher entry:
+  --project-root DIR    (required) KODA_PROJECT_ROOT written into the launcher entry:
                         the folder your agent sessions run in
   --applications-dir D  where the .desktop goes (default: ~/.local/share/applications)
   --uninstall           remove the installed files, PREFIX/runtime and the .desktop entry
@@ -282,7 +282,7 @@ for f in $names; do [ "$f" = "$RUNTIME_ARCHIVE" ] || INSTALL_FILES="$INSTALL_FIL
 # ---- 4. stage everything in temp files next to the targets, re-verify, then rename -----------
 # the .desktop is generated and validated BEFORE any file is replaced
 mkdir -p "$PREFIX" "$APPS"
-sed -e "s|^Exec=.*|Exec=env ABITO_PROJECT_ROOT=$ROOT \"$PREFIX/abito-island-launcher\"|" \
+sed -e "s|^Exec=.*|Exec=env KODA_PROJECT_ROOT=$ROOT \"$PREFIX/abito-island-launcher\"|" \
     -e "s|@INSTALL_DIR@|$PREFIX|g" "$STAGE/$DESKTOP" > "$APPS/.new.$$.$DESKTOP"
 if grep -q '@INSTALL_DIR@' "$APPS/.new.$$.$DESKTOP"; then die "unresolved @INSTALL_DIR@ in the .desktop"; fi
 if command -v desktop-file-validate >/dev/null 2>&1; then
@@ -326,7 +326,7 @@ note "Project root: $ROOT"
 note ""
 note "Launch:"
 note "  from the app menu: Abito (Tauri)"
-note "  from a terminal:   ABITO_PROJECT_ROOT=$ROOT $PREFIX/abito-island-launcher"
-note "  (the launcher takes no arguments and refuses every other ABITO_* variable)"
+note "  from a terminal:   KODA_PROJECT_ROOT=$ROOT $PREFIX/abito-island-launcher"
+note "  (the launcher takes no arguments and refuses every other KODA_* variable)"
 note "Reinstall: run this command again. Uninstall: sh install.sh --uninstall"
 note "The installed Abito/Preview apps were not touched."

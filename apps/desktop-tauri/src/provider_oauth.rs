@@ -11,8 +11,8 @@ pub const CLAUDE_OAUTH_BETA: &str = "oauth-2025-04-20";
 pub const CODEX_URL: &str = "https://chatgpt.com/backend-api/codex/responses";
 pub const CODEX_BETA: &str = "responses=experimental";
 pub const CODEX_ORIGINATOR: &str = "codex_cli_rs";
-pub const CLAUDE_CODE_CLIENT_ID: &str = match option_env!("ABITO_CLAUDE_CLIENT_ID") { Some(v) => v, None => "9d1c250a-e61b-44d9-88ed-5944d1962f5e" };
-pub const CODEX_CLI_CLIENT_ID: &str = match option_env!("ABITO_CODEX_CLIENT_ID") { Some(v) => v, None => "app_EMoamEEZ73f0CkXaXp7hrann" };
+pub const CLAUDE_CODE_CLIENT_ID: &str = match option_env!("KODA_CLAUDE_CLIENT_ID") { Some(v) => v, None => "9d1c250a-e61b-44d9-88ed-5944d1962f5e" };
+pub const CODEX_CLI_CLIENT_ID: &str = match option_env!("KODA_CODEX_CLIENT_ID") { Some(v) => v, None => "app_EMoamEEZ73f0CkXaXp7hrann" };
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Provider { Claude, Chatgpt }
 impl Provider {

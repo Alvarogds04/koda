@@ -239,7 +239,7 @@ test('0.1.2 paused pages are hidden: the sidebar lists exactly the active pages,
   const want = Object.keys(PAGE_IDS).filter(t => !['Teléfono', 'Ajustes'].includes(t) && !isPaused(t)).concat('Isla'); // HU-063 S2: the new additive «Isla» page
   assert.deepEqual([...items].sort(), [...want].sort(), JSON.stringify(items));
   assert.equal(await r.page.locator('.hub-side .hub-paused, .hub-side .hub-item.paused, .hub-side [disabled]').count(), 0, 'nothing greyed out');
-  if (process.env.ABITO_SHOT_DIR) await r.page.locator('.hub-side').screenshot({ path: require('node:path').join(process.env.ABITO_SHOT_DIR, 'hub-side.png') });
+  if (process.env.KODA_SHOT_DIR) await r.page.locator('.hub-side').screenshot({ path: require('node:path').join(process.env.KODA_SHOT_DIR, 'hub-side.png') });
 });
 
 test('0.2.1 S1 (option B): «Integraciones» and «Agentes» are two sidebar entries; «Pestañas activas» and the combined entry are gone', async r => {

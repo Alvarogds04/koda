@@ -564,12 +564,12 @@ test('runInstall: a timed-out prompt aborts with exit 1, message, nothing writte
   assert.match(r.err, /confirmation timed out/);
   assert.deepEqual(fs.readFileSync(p), bytes); assert.deepEqual(ls(d), ['settings.json']);
 });
-test('install CLI clamps ABITO_INSTALL_PROMPT_TIMEOUT_MS to 100..600000', () => {
+test('install CLI clamps KODA_INSTALL_PROMPT_TIMEOUT_MS to 100..600000', () => {
   assert.equal(ic.promptTimeoutFromEnv({}), 120000);
-  assert.equal(ic.promptTimeoutFromEnv({ ABITO_INSTALL_PROMPT_TIMEOUT_MS: '1' }), 100);
-  assert.equal(ic.promptTimeoutFromEnv({ ABITO_INSTALL_PROMPT_TIMEOUT_MS: '99999999' }), 600000);
-  assert.equal(ic.promptTimeoutFromEnv({ ABITO_INSTALL_PROMPT_TIMEOUT_MS: 'abc' }), 120000);
-  assert.equal(ic.promptTimeoutFromEnv({ ABITO_INSTALL_PROMPT_TIMEOUT_MS: '500' }), 500);
+  assert.equal(ic.promptTimeoutFromEnv({ KODA_INSTALL_PROMPT_TIMEOUT_MS: '1' }), 100);
+  assert.equal(ic.promptTimeoutFromEnv({ KODA_INSTALL_PROMPT_TIMEOUT_MS: '99999999' }), 600000);
+  assert.equal(ic.promptTimeoutFromEnv({ KODA_INSTALL_PROMPT_TIMEOUT_MS: 'abc' }), 120000);
+  assert.equal(ic.promptTimeoutFromEnv({ KODA_INSTALL_PROMPT_TIMEOUT_MS: '500' }), 500);
 });
 
 // ---- HU-068: hooks Abito wrote from a FORMER location (AppTranslocation, Downloads, an old install dir) ----

@@ -24,7 +24,7 @@ const FIXTURE = path.join(__dirname, "fixtures", "fake-installer.cjs");
  * keys that come back are exactly what the OS injects. It stays non-tautological: a leaked marker of the parent (a real
  * variable the product did not pass) is in neither the pinned set nor this one, so the leak assertion still fails.
  */
-const ENV_PROBE_KEY = "ABITO_ENV_PROBE";
+const ENV_PROBE_KEY = "KODA_ENV_PROBE";
 const OS_INJECTED_ENV = (() => {
 	const probe = spawnSync(process.execPath, ["-e", "process.stdout.write(JSON.stringify(Object.keys(process.env)))"], {
 		env: { [ENV_PROBE_KEY]: "1" }, encoding: "utf8", timeout: 60_000, windowsHide: true,
@@ -202,7 +202,7 @@ for (const [id, events] of [['statusline', ['statusLine']]]) {
   assert.deepEqual(call.argv, [s.installerBin, 'install', id, '--user', '--json']);
   // The recorded child env is each platform's own closed allowlist: POSIX PATH+HOME (+LANG), the Windows
   // SystemRoot-shaped env with USERPROFILE (the product's HU-047 contract, asserted the same way above).
-  const allowedEnv = win ? ['HOME', 'USERPROFILE', 'SystemRoot', 'PATH', 'LANG', 'ABITO_ISLAND_EXE'] : ['PATH', 'HOME', 'LANG', 'ABITO_ISLAND_EXE'];
+  const allowedEnv = win ? ['HOME', 'USERPROFILE', 'SystemRoot', 'PATH', 'LANG', 'KODA_ISLAND_EXE'] : ['PATH', 'HOME', 'LANG', 'KODA_ISLAND_EXE'];
   assert.ok(Object.keys(call.env).every(k => allowedEnv.includes(k)));
   await assert.rejects(s.manager.connect(id), e => e.code === 'bad_request');
   for (const entries of [events.slice(1).map(event => ({ event, op: 'add' })), events.map(event => ({ event, op: 'execute' })), events.map(() => ({ event: 'PermissionRequest', op: 'add' }))]) {
@@ -440,13 +440,13 @@ test("K2-02 (S2): the Node that runs the installer leads its PATH, so a bare `no
 	assert.ok(calls.length >= 1, "the installer ran through the bundled node");
 	for (const call of calls) {
 		assert.equal(call.env.PATH, `${runtimeDir}:/usr/bin:/bin`);
-		assert.equal(call.env.ABITO_ISLAND_EXE, fs.realpathSync(nodeExe), "hooks are written with the bundled node path (new installs)");
+		assert.equal(call.env.KODA_ISLAND_EXE, fs.realpathSync(nodeExe), "hooks are written with the bundled node path (new installs)");
 	}
 });
 
-test("child env: allowlist + ABITO_ISLAND_EXE only, HOME is the real home passed in", async (t) => {
+test("child env: allowlist + KODA_ISLAND_EXE only, HOME is the real home passed in", async (t) => {
 	const s = setup(t, { claude: { preview: { exit: 0, stdout: preview() } }, codex: { preview: { exit: 0, stdout: preview({ harness: "codex" }) } } });
-	const names = ["PI_SESSION_ID", "OPENAI_API_KEY", "CLAUDECODE", "CODEX_THREAD_ID", "GENTLE_PI_SESSION", "ABITO_SOCKET_DIR"];
+	const names = ["PI_SESSION_ID", "OPENAI_API_KEY", "CLAUDECODE", "CODEX_THREAD_ID", "GENTLE_PI_SESSION", "KODA_SOCKET_DIR"];
 	const saved = Object.fromEntries(names.map((k) => [k, process.env[k]]));
 	for (const k of names) process.env[k] = "leak-value";
 	try {
@@ -463,7 +463,7 @@ test("child env: allowlist + ABITO_ISLAND_EXE only, HOME is the real home passed
 	// it is never a hand-written list of names, and the injected-run HU-047 tests pin the env OPTION itself).
 	// Review (non-tautological): the CLOSED set is pinned here as literals per OS. A key added to childEnv() itself must
 	// fail this test, not widen it; the derived set must equal the pinned one, and the recorded child env stays inside it.
-	const PINNED_ENV = (win ? ["HOME", "USERPROFILE", "SystemRoot", "PATH", "ABITO_ISLAND_EXE"] : ["PATH", "HOME", "ABITO_ISLAND_EXE"]).concat(process.env.LANG ? ["LANG"] : []);
+	const PINNED_ENV = (win ? ["HOME", "USERPROFILE", "SystemRoot", "PATH", "KODA_ISLAND_EXE"] : ["PATH", "HOME", "KODA_ISLAND_EXE"]).concat(process.env.LANG ? ["LANG"] : []);
 	assert.deepEqual(Object.keys(s.manager.childEnv()).sort(), [...PINNED_ENV].sort(), "the product's child env is exactly the pinned closed set");
 	const allowedEnv = [...PINNED_ENV, ...OS_INJECTED_ENV];
 	for (const call of s.calls()) {
@@ -475,7 +475,7 @@ test("child env: allowlist + ABITO_ISLAND_EXE only, HOME is the real home passed
 		} else {
 			assert.equal(call.env.PATH, `${path.dirname(process.execPath)}:/usr/bin:/bin`, "the Node that runs the installer leads PATH (K2-02)");
 		}
-		assert.equal(call.env.ABITO_ISLAND_EXE, fs.realpathSync(process.execPath));
+		assert.equal(call.env.KODA_ISLAND_EXE, fs.realpathSync(process.execPath));
 		assert.equal(call.ppid, process.pid, "direct child of the daemon process");
 	}
 });

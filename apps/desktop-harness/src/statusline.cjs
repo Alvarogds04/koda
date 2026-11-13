@@ -20,9 +20,9 @@ const isNum = v => typeof v === 'number' && Number.isFinite(v);
 function normalized(v) {
   return typeof v === 'string' && v !== '/' && path.isAbsolute(v) && path.normalize(v) === v && !v.endsWith('/') && !v.includes('\0');
 }
-// Same default as the harness config: ABITO_SOCKET_DIR, else $XDG_RUNTIME_DIR/koda, else /run/user/<uid>/koda.
+// Same default as the harness config: KODA_SOCKET_DIR, else $XDG_RUNTIME_DIR/koda, else /run/user/<uid>/koda.
 function runtimeDir(env, uid) {
-  if (env.ABITO_SOCKET_DIR !== undefined) return normalized(env.ABITO_SOCKET_DIR) ? env.ABITO_SOCKET_DIR : null;
+  if (env.KODA_SOCKET_DIR !== undefined) return normalized(env.KODA_SOCKET_DIR) ? env.KODA_SOCKET_DIR : null;
   if (normalized(env.XDG_RUNTIME_DIR)) return `${env.XDG_RUNTIME_DIR}/koda`;
   return `/run/user/${uid}/koda`;
 }

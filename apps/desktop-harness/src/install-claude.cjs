@@ -266,7 +266,7 @@ function numberIsLossless(tok) {
 
 const DEFAULT_PROMPT_TIMEOUT_MS = 120000;
 function promptTimeoutFromEnv(env) {
-  const raw = env && env.ABITO_INSTALL_PROMPT_TIMEOUT_MS;
+  const raw = env && env.KODA_INSTALL_PROMPT_TIMEOUT_MS;
   if (typeof raw !== 'string' || !/^[0-9]{1,9}$/.test(raw)) return DEFAULT_PROMPT_TIMEOUT_MS;
   return Math.min(600000, Math.max(100, Number(raw)));
 }

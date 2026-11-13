@@ -44,7 +44,7 @@ impl Island {
         std::fs::write(root.join("config.json"), config.to_string()).unwrap();
         { use std::os::unix::fs::PermissionsExt; std::fs::set_permissions(root.join("config.json"), std::fs::Permissions::from_mode(0o600)).unwrap(); }
         let child = Command::new(node.trim()).arg(daemon_dir().join("src/cli.cjs")).arg("run")
-            .env_clear().env("PATH", std::env::var("PATH").unwrap()).env("HOME", &base).env("ABITO_ISLAND_DIR", &root)
+            .env_clear().env("PATH", std::env::var("PATH").unwrap()).env("HOME", &base).env("KODA_ISLAND_DIR", &root)
             .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().expect("node is required (no skip, no fake)");
         let island = Island { root: root.clone(), child: Some(child) };
         let end = Instant::now() + Duration::from_secs(20);
@@ -319,10 +319,10 @@ fn the_change_callback_may_read_the_view_while_connect_is_running_no_self_deadlo
 }
 
 /// Against a daemon that is ALREADY running (the probe's), same sequence the host runs on first open.
-/// Opt-in: only when `ABITO_PROBE_ISLAND_DIR` names a live island; otherwise it is a no-op.
+/// Opt-in: only when `KODA_PROBE_ISLAND_DIR` names a live island; otherwise it is a no-op.
 #[test]
 fn live_island_first_open_sequence_returns_promptly() {
-    let Some(dir) = std::env::var_os("ABITO_PROBE_ISLAND_DIR") else { return };
+    let Some(dir) = std::env::var_os("KODA_PROBE_ISLAND_DIR") else { return };
     let conn = AgentConn::new(|_| {});
     let t0 = Instant::now();
     conn.connect(Path::new(&dir));
