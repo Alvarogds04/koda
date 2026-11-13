@@ -35,7 +35,9 @@ const { AgentEngine, DEFAULT_COMMAND, runtimeRoot } = require("../src/runtime.cj
  */
 function fakeKodaRuntime(t, gentleRoot) {
 	const runtime = fs.mkdtempSync(path.join(os.tmpdir(), "abito-fake-runtime-"));
-	t.after(() => fs.rmSync(runtime, { recursive: true, force: true }));
+	// Windows: the copied node.exe can still be mapped by the engine child for a moment after it stopped, so the
+	// removal retries briefly instead of failing the test with EPERM (release/0.2 CI 43416743111, test 313).
+	t.after(() => fs.rmSync(runtime, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 }));
 	const scriptRel = "node_modules/gentle-pi/bin/gentle-shell.mjs";
 	const script = path.join(runtime, ...scriptRel.split("/"));
 	fs.mkdirSync(path.dirname(script), { recursive: true });

@@ -620,7 +620,78 @@ by the tests or the probe.
   from the state root with the legacy descriptor discipline. It is never
   printed and never committed (`.runtime*/` is gitignored).
 
+## K2-05 — the chat is the daemon's engine (Gentle Shell with Koda identity)
+
+Since K2-05 (merged into `release/0.2`) the island chat is **not** answered by a model lane inside this
+app any more. What answers is the **engine**: Gentle Shell (Pi) with Koda's identity, run and supervised
+by the daemon (`apps/desktop-daemon`, see its README and `docs/PROTOCOL.md`). This app is a client of
+the daemon's socket (`island-agent/1`):
+
+- **`src/chatclient.rs`** is the PURE half: the closed set of commands the chat may send to the daemon
+  (`send`, `steer`, `abort`, `ui_response`, `get_history`, `get_earlier`, `status`) and the allowlisted
+  `ChatState` the page receives as `chat:state`. It never sees the socket path or the token, and refuses
+  every caller whose window label is not `main`.
+- **`src/chathost.rs`** is the impure half: the `chat_action`, `chat_attach` and `chat_attach_data`
+  Tauri commands, one reconnecting connection to the daemon, the native drop set and the `chat:state`
+  projection.
+- **The page's verbs are a closed set** (`chat_action`, exact keys each, in `chat.rs`):
+  `view`, `open`, `back`, `height`, `check`, `submit` (text, a client request id and up to 5 attachment
+  ids), `answer` (an agent question), `discard` (an unsent attachment), `cancel` and `history`. The
+  conversation verbs of the 0.1 chat (`new`, `new_with`, `list`, `restore`) still parse but are answered
+  with `conversations_off` («Koda tiene un solo chat continuo.»): there is no new-conversation button.
+  A page cannot name a model, an endpoint, a key or a path.
+
+**One continuous chat.** There is a single conversation, the engine's. When it grows, the daemon rotates
+the session (rotation is on) and the island keeps showing the whole chain: the history is read from the
+daemon, the newest page on every connect and earlier pages one request per page with the daemon's
+cursor, and a reopen after a restart shows the same chat, like Gentle Dot. While the daemon is
+booting the chat says «Koda está arrancando…» (or «Koda se está reiniciando…» on a restart) instead of
+failing.
+
+**Attachments.** Any file, up to 25 MB and up to 5 per message (the daemon enforces its own quota; Gentle
+Dot allows 10, Koda says «hasta 5»). The app never stores an upload: a dropped, picked or pasted file is
+read here and sent to the daemon as `upload` chunks; the daemon stages it in `<island>/uploads-staging`,
+**outside the engine's workspace**, and moves it into `<workspace>/uploads` only when a send naming it is
+accepted. The page refers to a file only by the opaque id the daemon issued. Hardening of a **dropped
+path** (`chathost.rs`): it must be one the OS reported through the main window's native drop event
+(one-shot, 16 entries, 60 s), it is looked at with `symlink_metadata` first and only a regular file goes
+on (a link, FIFO or device is refused with «Eso no es un archivo.»), it is opened without following a link
+(`O_NOFOLLOW | O_NONBLOCK` on Unix; on Windows the reparse point is opened itself and refused), and size
+and type are judged on the open handle.
+
+**The model line.** The chat shows, read-only, which model the engine answers with, taken from the
+engine's own `get_state` through the daemon; it is hidden when unknown. See «K2-05 U5c» below.
+
+**What is gone.** The old Rust chat lane for the chat (`run_turn`, the direct local/cloud path), the
+local-model-only rule and its per-turn preflight, the island-side upload store, the 0.1 local
+conversations store (#341), the model picker in the chat, Ajustes → Modelos, the per-provider and local
+model lists in the Ajustes hub, and the `chosen_models` preference (an old `prefs.json` that still
+carries the key loads normally; the key is dropped on the next save). The 0.1 conversation files are
+**deleted on upgrade**: `legacy_conversations::cleanup` runs once per start, before the chat connects, and
+removes only the exact 0.1 files (`<id>.jsonl` and its `.tmp`) in `<app_data_dir>/conversations/`; that
+folder is opened once without following a link (a symlink or anything not a real directory is refused) and
+every look and delete is relative to that opened handle. No running path opens or writes the 0.1 format.
+
+**What stays, for specialists.** `models_action`, the `chatlane`, `localmodel` and `cloudprofiles` support
+modules and the `models` registry are still compiled and registered because the manual specialists
+(#327) choose a model through them; they are marked «kept for specialists/models until U5b/U5d» in the
+sources and leave with the specialists removal (U5d), which is a separate feature. The sections «What U1
+proves» and «What U2 proves» below describe that old lane and are historical.
+
 ## What U1 proves — chat inside the island, answered by the LOCAL model
+
+> **SUPERSEDED by K2-05 — kept as historical evidence of the M-series milestone; the chat is no longer
+> answered by a local model lane. See the K2-05 section.**
+>
+> Of this section, these no longer apply: the **local-model-only rule** and the per-turn lane preflight
+> (`/health`, `/props`, `/slots`, `/v1/models`; «Local model only — never a silent fallback»); the
+> **Rust-side upload store** and the `chat_attach` / `chat_attach_data` semantics (they now forward the
+> file to the daemon: 25 MB, 5 per message, nothing stored by the app; the «≤10 MiB» and «`uploads/`
+> directory» statements are wrong); the **local conversations** store and its IPC verbs (#341; replaced by
+> the engine's one continuous chat); the lane-specific parts of the closed `chat_action` set (it is now
+> `view|open|back|height|check|submit|answer|discard|cancel|history`, and the conversation verbs answer
+> `conversations_off`); and the greeting that says the local model answers. The window sizes, placement,
+> accessibility and motion paragraphs still describe the chat column.
 
 **One table of logical sizes per view (#337 F009).** Every native window size the
 island ever takes — compact dot (#302), overview (#309 contract), chat column
@@ -873,6 +944,13 @@ DISPLAY=:0 XAUTHORITY=/run/user/1000/.mutter-Xwaylandauth.UV9RW3 \
 
 ## What U2 proves — choosing a self-hosted model (local only, no keys)
 
+> **SUPERSEDED by K2-05 — kept as historical evidence of the M-series milestone; the chat is no longer
+> answered by a local model lane. See the K2-05 section.**
+>
+> None of this section applies to the chat any more: the **model picker** (the «Modelo» button and
+> internal panel), Ajustes → Modelos and the saved chat selection (`chosen_models`) were removed in K2-05
+> (U5c). Only `models_action` and the registry behind it survive, for the specialists, until U5d.
+
 The chat header's **Modelo** button opens an internal panel of the SAME chat
 view (the transcript is replaced while it is open). It lists the verified
 local inventory (`models::REGISTRY`, a reviewed code constant):
@@ -956,6 +1034,20 @@ node apps/desktop-tauri/test-node/chat-view-check.cjs         # pure helpers + t
 node apps/desktop-tauri/tests/composer-ime-check.cjs          # 10 checks: the keyboard contract still holds
 # cargo test runs both harnesses through tests/frontend_chat_view.rs
 ```
+
+## K2-06 — ask Koda about my window
+
+In the chat you can ask about the window you are using and Koda answers from **one picture of it**, if the model
+sees images. It is the agent's tool `screenshot_my_window`, served by a loopback MCP server in this app
+(`src/windowcapture/`) and projected by the daemon into the engine's `mcp.json` (`KODA_WINDOW_MCP_URL` /
+`KODA_WINDOW_MCP_TOKEN`). **Off by default**: Ajustes → Chat → «Dejar que Koda vea mi ventana» (`window_capture`
+pref). The first capture asks for a 30-minute permission; sensitive apps (password managers, system settings,
+login and authorization prompts, Koda itself) are refused with Gentle Dot's list; only the last screenshot
+travels as an image; a model without vision gets a clear message and nothing is captured. Linux X11, GNOME
+Wayland (through Koda's GNOME extension), macOS 14+ (ScreenCaptureKit) and Windows (`PrintWindow`).
+Nothing of it has been run live yet on GNOME, macOS or Windows. Full description, per-OS details and what is not
+verified: [docs/desktop/window-capture.md](../../docs/desktop/window-capture.md); the extension's privacy contract and
+known limits: [docs/desktop/context-extension.md](../../docs/desktop/context-extension.md).
 
 ## #327 — manual specialists (roles the human creates and chooses)
 
@@ -1448,13 +1540,18 @@ apps/desktop-tauri/
 │   ├── fakebridge.rs     # M3: in-process fake api.py backend (tests + probe only)
 │   ├── transport.rs      # M2: UDS receiver (perms, owner, quotas, cleanup) (+policy tests)
 │   ├── workarea.rs       # X11 _NET_WORKAREA ∩ monitor, fallbacks
-│   ├── chat.rs           # PURE U1: abito.chat.v1 turn machine, limits, prompt budget, IPC commands (+tests)
-│   ├── localmodel.rs     # U1: loopback-only endpoint, SSE/chunked decoders, one-request streaming client
-│   ├── chatlane.rs       # U1: preflight (no-load/no-substitute), one turn, cancel, availability
-│   ├── chathost.rs       # U1: chat_action command, chat:state, overview<->chat resize
-│   ├── fakemodel.rs      # U1: in-process fake llama.cpp router (tests + probe only)
-│   ├── models.rs         # PURE U2: verified local registry, metadata, resource gate, listing, saved selection
-│   ├── modelshost.rs     # U2: models_action command, models:state, selection → chat target
+│   ├── chat.rs           # PURE: the closed chat_action verb set, draft/answer validators, typed safe errors (K2-05 removed the turn machine)
+│   ├── chatclient.rs     # K2-05 PURE: the island's chat client of the daemon protocol: closed command set + ChatState view
+│   ├── chathost.rs       # K2-05: chat_action / chat_attach / chat_attach_data, the reconnecting daemon connection, chat:state, drop set
+│   ├── chatsnapshot.rs   # pure bounded snapshot of live state (see its header; predates K2-05)
+│   ├── uploads.rs        # K2-05: only the native DropSet and raw-body helpers (the island upload store is gone)
+│   ├── legacy_conversations.rs # K2-05: deletes the 0.1 conversation files on upgrade
+│   ├── windowcapture/    # K2-06: ask Koda about my window (see docs/desktop/window-capture.md)
+│   ├── localmodel.rs     # kept for specialists until U5d (was U1: loopback-only local endpoint client)
+│   ├── chatlane.rs       # kept for specialists until U5d (was U1: lane types, availability)
+│   ├── fakemodel.rs      # in-process fake llama.cpp router (tests + probe only)
+│   ├── models.rs         # PURE U2: verified local registry, resource gate, listing; kept for specialists until U5d
+│   ├── modelshost.rs     # U2: models_action command; kept for specialists until U5d
 │   ├── probe.rs          # KODA_PROBE read-back script (geometry + facade + transport + approval + chat)
 │   └── main.rs           # wiring, commands, publish, lifecycle, transport/signal, approval, placement
 └── frontend/
