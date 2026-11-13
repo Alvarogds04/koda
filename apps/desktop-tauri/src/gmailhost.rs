@@ -32,29 +32,19 @@ impl Seen for PrefsSeen<'_> {
     }
 }
 
-/// The 3-OS opener, the same shape `oauthhost` uses (one argument, never a shell, no output).
-/// `mailto:` is validated separately because `desktop::validated_web_url` admits only http(s).
+/// Hands a link or a `mailto:` to the system through the shared K2-01c opener (never a shell).
+/// This command keeps its own validation: `desktop::validated_web_url` for links (it admits only
+/// http(s)) and `gmailcmd::safe_mailto` for replies.
 fn open(target: &str) -> bool {
-    let allowed = if target.starts_with("mailto:") {
-        gmailcmd::safe_mailto(target)
+    use abito_island::opener::{open_detached, Target};
+    let target = if target.starts_with("mailto:") {
+        if !gmailcmd::safe_mailto(target) { return false; }
+        Target::Mailto(target)
     } else {
-        abito_island::desktop::validated_web_url(&json!({"url": target})).is_ok()
+        if abito_island::desktop::validated_web_url(&json!({"url": target})).is_err() { return false; }
+        Target::Web(target)
     };
-    if !allowed { return false; }
-    use std::process::{Command, Stdio};
-    #[cfg(target_os = "linux")]
-    let mut command = Command::new("xdg-open");
-    #[cfg(target_os = "macos")]
-    let mut command = Command::new("open");
-    #[cfg(target_os = "windows")]
-    let mut command = { let mut c = Command::new("rundll32"); c.arg("url.dll,FileProtocolHandler"); c };
-    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-    return false;
-    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-    match command.arg(target).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn() {
-        Ok(mut child) => { std::thread::spawn(move || { let _ = child.wait(); }); true },
-        Err(_) => false,
-    }
+    open_detached(target).is_ok()
 }
 
 #[tauri::command]
