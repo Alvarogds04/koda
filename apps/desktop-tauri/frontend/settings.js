@@ -54,6 +54,9 @@
     $('coucou-settings-style').media = 'all'; // never apply the vendor reset to the island
   }
   const moreGroup = $('connections-more'); // the real connection cards (Gmail since K2-10 T6); render() wipes the body, so it is re-appended per render
+  // K2-13 T6b-3 (S7/S10): Ajustes → Minikodas owns its own card (minikodas-settings.js); same re-append rule as the
+  // connection cards, so switching tabs never throws away a half-typed api_id, a login step or the transcription choice.
+  const minikodasGroup = $('minikodas-settings');
   const tabsHost = $('settings-tabs');
   const live = $('settings-live');
   let screen = 'general'; // #442 T7.4: Ajustes opens on General (design §3 order, flows lane 4)
@@ -545,6 +548,7 @@
     if (screen === 'accounts') { renderAccounts(); renderConnectors(); renderKeys(); }
     else renderGeneral(); // pills / appearance / general: each section names its tab
     if (moreGroup) { moreGroup.hidden = !V.servicesGroupVisible(screen); if (!moreGroup.hidden) body.append(moreGroup); }
+    if (minikodasGroup) { minikodasGroup.hidden = screen !== 'minikodas'; if (!minikodasGroup.hidden) body.append(minikodasGroup); }
     body.scrollTop = keep;
     if (focused && $(focused) && body.contains($(focused))) {
       $(focused).focus();
