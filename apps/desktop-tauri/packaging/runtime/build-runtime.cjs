@@ -79,6 +79,51 @@ function parseArgs(argv) {
   return opts;
 }
 
+/* Windows-only, bounded rename retry (CI 43352802736, installer smoke windows): Defender and the search indexer keep a
+   handle on a folder that was just written, and the rename of it fails with a TRANSIENT EPERM/EBUSY/EACCES. Only those
+   three codes, only on win32, at most RENAME_ATTEMPTS attempts: every guarantee stays (the partial is still what is
+   renamed, the swap is still one rename, and a rename that still fails surfaces exactly the error it failed with). */
+const RENAME_ATTEMPTS = 6;
+const RENAME_BACKOFF_MS = 50;
+const TRANSIENT_RENAME = new Set(['EPERM', 'EBUSY', 'EACCES']);
+
+/* Synchronous pause: this is a script with no event loop to yield to between attempts. */
+function pauseSync(ms) { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); }
+
+function renameRetries(error, platform) { return platform === 'win32' && TRANSIENT_RENAME.has(error && error.code); }
+
+/* `deps` is the seam runtime-build-check.cjs uses to prove both directions without Windows; production passes nothing. */
+function renameWithRetry(from, to, deps = {}) {
+  const rename = deps.rename || fs.renameSync;
+  const platform = deps.platform || process.platform;
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return rename(from, to);
+    } catch (error) {
+      if (attempt >= RENAME_ATTEMPTS || !renameRetries(error, platform)) throw error;
+      pauseSync(RENAME_BACKOFF_MS * attempt);
+    }
+  }
+}
+
+/* Test seam (runtime-build-check.cjs), inert unless a check sets it: the first N commit renames fail with the code
+   Windows raises, as if this build ran there. A build that reads no environment variable behaves exactly as before. */
+function commitDeps() {
+  const faults = Number(process.env.KODA_RUNTIME_TEST_RENAME_EPERM || 0);
+  if (!Number.isInteger(faults) || faults <= 0) return {};
+  let left = faults;
+  return {
+    platform: 'win32',
+    rename: (from, to) => {
+      if (left > 0) {
+        left -= 1;
+        throw Object.assign(new Error(`EPERM: operation not permitted, rename '${from}' -> '${to}'`), { code: 'EPERM' });
+      }
+      return fs.renameSync(from, to);
+    },
+  };
+}
+
 function sha256File(file) {
   return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 }
@@ -128,7 +173,7 @@ async function nodeArchive(pin, opts, cache) {
   if (!opts.nodeArchive && !fs.existsSync(file)) {
     const partial = `${file}.partial-${process.pid}`;
     await download(`https://nodejs.org/dist/v${pin.version}/${pin.name}`, partial);
-    fs.renameSync(partial, file);
+    renameWithRetry(partial, file);
   }
   if (!fs.existsSync(file)) throw new Fail(`Node archive not found: ${file}`);
   if (path.basename(file) !== pin.name) throw new Fail(`Node archive must be ${pin.name}, got ${path.basename(file)}`);
@@ -567,7 +612,7 @@ function packArchive(dir, archive) {
   const owner = process.platform === 'linux' ? ['--owner=0', '--group=0', '--numeric-owner', '--sort=name'] : [];
   try {
     run(tar, ['-czf', partial, ...owner, '-C', dir, '.'], {}, 'tar (pack runtime)');
-    fs.renameSync(partial, archive);
+    renameWithRetry(partial, archive);
   } finally {
     fs.rmSync(partial, { force: true });
   }
@@ -611,7 +656,7 @@ async function main() {
     noSymlinks(partial);
     if (opts.selfCheck) await selfCheck(partial, opts.target, pi.pi.version);
     fs.rmSync(out, { recursive: true, force: true });
-    fs.renameSync(partial, out);
+    renameWithRetry(partial, out, commitDeps());
     const s = sizeOf(out);
     console.log(`runtime ${opts.target}: Node ${pin.version} + Pi ${pi.pi.version} + gentle-pi ${pi.gentle.version} + engram ${engram.version} -> ${out} (${s.files} files, ${(s.bytes / 1048576).toFixed(1)} MiB)${opts.selfCheck ? ', self-check ok' : ''}`);
     if (opts.archive) {
@@ -625,7 +670,12 @@ async function main() {
   }
 }
 
-main().catch((e) => {
-  console.error(`build-runtime: ${e.message}`);
-  process.exit(e instanceof Fail ? e.code : 1);
-});
+if (require.main === module) {
+  main().catch((e) => {
+    console.error(`build-runtime: ${e.message}`);
+    process.exit(e instanceof Fail ? e.code : 1);
+  });
+}
+
+// Required by runtime-build-check.cjs to test the retry itself; running this file as a script is unchanged above.
+module.exports = { RENAME_ATTEMPTS, renameWithRetry };
