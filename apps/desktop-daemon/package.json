@@ -1,6 +1,6 @@
 {
 	"name": "@koda/desktop-daemon",
-	"version": "0.1.0",
+	"version": "0.2.0",
 	"private": true,
 	"description": "Abito island agent daemon: supervised, isolated Pi RPC runtime with config, CLI and island-agent/1 server",
 	"license": "MIT",

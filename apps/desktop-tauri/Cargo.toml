@@ -3,7 +3,7 @@
 # (the `[[bin]]` below). The library is NOT called `koda`: the bin is, and two targets named alike would emit the same
 # `koda.*` artifacts (koda.pdb on Windows) and collide in the docs output.
 name = "koda-island"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Koda island — Electron to Rust+Tauri migration, unit M2 (host/bridge + Pi transport receiver)"
 publish = false
