@@ -146,18 +146,18 @@ function checkConfig(crate) {
 // ---- launcher / desktop entry (content is closed and hashed) -------------
 function launcherText() {
   return `#!/bin/sh
-# Abito (Tauri) launcher — M4 format A. Accepts no arguments, refuses the
+# Koda launcher — M4 format A. Accepts no arguments, refuses the
 # whole LD_* family, GTK/GDK/WebKit debug and inspector variables and every
 # KODA_* test/probe/override knob (only KODA_PROJECT_ROOT passes), forces
 # X11/XWayland (absolute positioning and always-on-top). Never touches the
 # Preview's roots.
 set -eu
-[ "$#" -eq 0 ] || { echo "abito: no arguments accepted" >&2; exit 64; }
+[ "$#" -eq 0 ] || { echo "koda: no arguments accepted" >&2; exit 64; }
 # The GNOME session itself exports GTK_MODULES=gail:atk-bridge (accessibility bridge): only that exact value is dropped (not
 # loaded), so the menu entry opens Abito; any other GTK_MODULES value is still refused below.
 if [ "\${GTK_MODULES:-}" = "gail:atk-bridge" ]; then unset GTK_MODULES; fi
 bad="$(env | grep -E '${FORBIDDEN_ENV_PATTERN}' | grep -v '^${ALLOWED_ABITO}=' | cut -d= -f1 | head -n 1 || true)"
-[ -z "$bad" ] || { echo "abito: refusing $bad" >&2; exit 64; }
+[ -z "$bad" ] || { echo "koda: refusing $bad" >&2; exit 64; }
 here="$(cd "$(dirname "$0")" && pwd)"
 export GDK_BACKEND=x11
 exec "$here/koda"
