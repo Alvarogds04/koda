@@ -330,7 +330,7 @@ if ( cd "$APP" && node packaging/build.cjs --out "$WORK/stage" --runtime-archive
   fi
   if smoke_env sh "$APP/packaging/install.sh" "$STAGE" --prefix "$PREFIX" --project-root "$PROJECT" --applications-dir "$APPS" > "$WORK/install.log" 2>&1 \
      && grep -q 'Stage verified against receipt.json' "$WORK/install.log" \
-     && grep -q "Installed Abito (Tauri) in $PREFIX" "$WORK/install.log" \
+     && grep -q "Installed Koda in $PREFIX" "$WORK/install.log" \
      && [ -x "$PREFIX/koda" ] && [ -x "$PREFIX/koda-launcher" ] \
      && [ -f "$PREFIX/receipt.json" ] && [ -f "$APPS/com.abitog.Koda.desktop" ] \
      && [ -d "$PREFIX/runtime" ] && [ ! -L "$PREFIX/runtime" ] \

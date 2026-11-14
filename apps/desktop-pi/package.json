@@ -1,6 +1,6 @@
 {
   "name": "koda-desktop-pi",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Local opt-in Pi companion producer; no desktop runtime",
   "scripts": {

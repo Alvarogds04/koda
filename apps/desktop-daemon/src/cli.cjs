@@ -77,7 +77,7 @@ function packagedInstallerBin(srcDir = __dirname) {
 }
 
 async function run(root, appOwned = false) {
-	const daemon = new Daemon({ root, log: (line) => process.stderr.write(`[abito] ${line}\n`), defaultInstallerBin: packagedInstallerBin() });
+	const daemon = new Daemon({ root, log: (line) => process.stderr.write(`[koda] ${line}\n`), defaultInstallerBin: packagedInstallerBin() });
 	let closing = false;
 	let closed;
 	let finish;
@@ -96,7 +96,7 @@ async function run(root, appOwned = false) {
 	};
 	const cleanup = () => daemon.cleanupSync();
 	const reload = () => {
-		if (!closing) daemon.applyConfig().catch((error) => process.stderr.write(`[abito] config reload refused: ${genericError(error)}\n`));
+		if (!closing) daemon.applyConfig().catch((error) => process.stderr.write(`[koda] config reload refused: ${genericError(error)}\n`));
 	};
 	process.on("exit", cleanup);
 	process.on("SIGTERM", shutdown);

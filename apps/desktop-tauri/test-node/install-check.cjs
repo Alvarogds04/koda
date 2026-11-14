@@ -175,7 +175,7 @@ test('happy path: installs binary+launcher+png(+template+receipt), executable, h
   assert.ok(desk.split('\n').includes(`Icon=${e.prefix}/koda.png`), desk);
   assert.match(desk, /^StartupWMClass=Koda$/m);
   assert.match(r.stdout, new RegExp(sha(fs.readFileSync(path.join(st, 'koda')))));
-  assert.match(r.stdout, /koda-launcher/); assert.match(r.stdout, /Abito \(Tauri\)/);
+  assert.match(r.stdout, /koda-launcher/); assert.match(r.stdout, /from the app menu: Koda/); assert.doesNotMatch(r.stdout.replace(/\S*(abito-inst|com\.abitog\.Koda)\S*/g, ''), /Abito/i, 'the 0.2 installer never says Abito in a sentence (the test temp dir and the com.abitog.Koda identifier are not sentences)');
   // and the toy binary runs through the launcher
   const run2 = cp.spawnSync(path.join(e.prefix, 'koda-launcher'), [], { encoding: 'utf8', env: { PATH: process.env.PATH, KODA_PROJECT_ROOT: e.root } });
   assert.match(run2.stdout, /toy binary/);

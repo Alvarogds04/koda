@@ -373,12 +373,12 @@ mod tests {
         assert_ne!(env!("CARGO_PKG_VERSION"), "0.1.2", "never the stale 0.1.2 label");
     }
 
-    /// Koda 0.1 — Human 30-oct («Vamosa a cerrar esta version cambiar el nombre del repo por Koda y apartir de aqui empezaremos esta sera la version 0.1» → «Todo se llama Koda, repo nuevo desde 0.1» + «Solo lo visible»): the first Koda release is 0.1.0 stable (no preview label).
+    /// Koda 0.2.0 (13-nov, human «Saca la versión de Linux y Windows»), stable, no preview label. Koda 0.1 — Human 30-oct («Vamosa a cerrar esta version cambiar el nombre del repo por Koda y apartir de aqui empezaremos esta sera la version 0.1» → «Todo se llama Koda, repo nuevo desde 0.1» + «Solo lo visible»): the first Koda release is 0.1.0 stable (no preview label).
     #[test]
-    fn koda_first_release_is_0_1_0_stable() {
-        assert_eq!(env!("CARGO_PKG_VERSION"), "0.1.0");
+    fn koda_release_is_0_2_0_stable() {
+        assert_eq!(env!("CARGO_PKG_VERSION"), "0.2.0");
         assert_eq!(super::RELEASE_CHANNEL.trim(), "", "a stable release has no preview label");
-        assert_eq!(super::display_version(), "0.1.0");
+        assert_eq!(super::display_version(), "0.2.0");
     }
 
     /// #366 F093: island-window commands refuse every label but the exact `main`.

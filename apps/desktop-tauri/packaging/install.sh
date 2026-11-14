@@ -1,5 +1,5 @@
 #!/bin/sh
-# Abito (Tauri) — one-command user install of a STAGED build (M4 format A).
+# Koda — one-command user install of a STAGED build (M4 format A).
 #
 #   sh install.sh <stage-dir> [--prefix DIR] [--project-root DIR] [--applications-dir DIR]
 #   sh install.sh --uninstall [--prefix DIR] [--applications-dir DIR]
@@ -56,7 +56,7 @@ note() { printf '%s\n' "$*"; }
 
 usage() {
   cat <<'USAGE'
-Abito (Tauri) one-command installer (user-local, no root, no network).
+Koda one-command installer (user-local, no root, no network).
 
   sh install.sh <stage-dir> [--prefix DIR] [--project-root DIR] [--applications-dir DIR]
   sh install.sh --uninstall [--prefix DIR] [--applications-dir DIR]
@@ -118,7 +118,7 @@ not_foreign() {
 }
 check_dir_arg() { # name value
   safe_path "$2" || die "$1 must be an absolute, normalized path made of [A-Za-z0-9_./-]: $2"
-  not_foreign "$2" || die "$1 points at an installed Abito/Preview root, refusing: $2"
+  not_foreign "$2" || die "$1 points at another installed app root, refusing: $2"
 }
 check_dir_arg "--prefix" "$PREFIX"
 check_dir_arg "--applications-dir" "$APPS"
@@ -179,7 +179,7 @@ if [ "$UNINSTALL" -eq 1 ]; then
   refresh_desktop_db
   if [ -n "$removed" ]; then note "Removed:$removed"; else note "Nothing to remove (not installed under $PREFIX)."; fi
   if [ -d "$PREFIX" ]; then note "Kept $PREFIX: it still holds files that are not ours."; fi
-  note "The installed Abito/Preview apps were not touched."
+  note "No other installed app was touched."
   exit 0
 fi
 
@@ -355,16 +355,16 @@ if [ -d "$RUNTIME_OLD" ]; then rm -rf "$RUNTIME_OLD"; fi
 
 # ---- 5. report ----------------------------------------------------------------------------------
 note ""
-note "Installed Abito (Tauri) in $PREFIX"
+note "Installed Koda in $PREFIX"
 for f in $INSTALL_FILES; do printf '  %-34s %s\n' "$f" "$(sha_of "$PREFIX/$f")"; done
 note "  (+ receipt.json; runtime/ holds the bundled Node + Pi extracted from the verified $RUNTIME_ARCHIVE)"
-note "Menu entry: $APPS/$DESKTOP  — «Abito (Tauri)»"
+note "Menu entry: $APPS/$DESKTOP  — «Koda»"
 if [ "${LEGACY_REMOVED:-}" = 1 ]; then note "Removed the Koda 0.1 menu entry ($LEGACY_DESKTOP); the 0.1 install in ~/.local/share/abito-island is left in place."; fi
 note "Project root: $ROOT"
 note ""
 note "Launch:"
-note "  from the app menu: Abito (Tauri)"
+note "  from the app menu: Koda"
 note "  from a terminal:   KODA_PROJECT_ROOT=$ROOT $PREFIX/koda-launcher"
 note "  (the launcher takes no arguments and refuses every other KODA_* variable)"
 note "Reinstall: run this command again. Uninstall: sh install.sh --uninstall"
-note "The installed Abito/Preview apps were not touched."
+note "No other installed app was touched."
