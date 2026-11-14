@@ -103,7 +103,7 @@ const text = e => [e.textContent || '', ...e.children.map(text)].join(' ');
   assert.doesNotMatch(entry, /version:\s*['"]\d/, 'no hardcoded version literal in Ajustes');
   assert.match(entry, /version:\s*window\.__abitoVersion\b/, 'the shell gets the package version Rust hands the window');
   assert(entry.includes("import { renderAgentSettings }")); assert(entry.includes("import { renderChatSettings }"));
-  assert.equal(entry.match(/const allowed = new Set\(([^;]+)\);/)[1], "['prefs_action', 'hotkey_action', 'settings_window_action', 'agent_action', 'secret_action', 'oauth_action', 'models_action', 'specialists_action', 'daemon_action', 'plan_action', 'monitor_action', 'sound_action', 'dictation_action', 'voice_action', 'failure_action']", 'only closed host commands, including subscription OAuth; the removed «Instalar Pi» command of HU-046 stays gone (K2-02 S4)');
+  assert.equal(entry.match(/const allowed = new Set\(([^;]+)\);/)[1], "['prefs_action', 'hotkey_action', 'settings_window_action', 'agent_action', 'secret_action', 'oauth_action', 'models_action', 'specialists_action', 'daemon_action', 'plan_action', 'monitor_action', 'sound_action', 'dictation_action', 'voice_action', 'failure_action', 'phone_link_action']", 'only closed host commands, including subscription OAuth; the removed «Instalar Pi» command of HU-046 stays gone (K2-02 S4)');
   const guardCalls = [], guardContext = { window: { __TAURI__: { core: { invoke: async (...args) => guardCalls.push(args) } } }, document: {getElementById: () => ({})},
     setInvoke() {}, dictationPage() {}, flowSettingsPage() {}, dictionaryPage() {}, snippetsPage() {}, stylesPage() {}, insightsPage() {}, voicePage() {}, inactivePages: {}, startHub: async () => {}, TextEncoder };
   require('node:vm').runInNewContext(entry.replace(/^import .*;\n/gm, '') + '\nglobalThis.closedInvoke = invoke;', guardContext);
@@ -118,6 +118,15 @@ const text = e => [e.textContent || '', ...e.children.map(text)].join(' ');
     {action:'set_prefs',prefs:Object.fromEntries(Object.entries(seven).filter(([k])=>k!=='mic'))}, {action:'set_prefs',prefs:[]}, {action:'set_prefs',prefs:seven,extra:0}]) await assert.rejects(guardContext.closedInvoke('dictation_action',{payload}));
   for (const args of [undefined, {}, {payload:{action:'status'},extra:1}, {payload:null}, {payload:[]}]) await assert.rejects(guardContext.closedInvoke('dictation_action',args));
   assert.deepEqual(guardCalls, [], 'dictation guard rejects extras, malformed preferences and capture actions before IPC');
+  // 0.2 fix: the Teléfono page asks `phone_link_action` through this window's guard; it was missing from the allow-list, so the
+  // page read «No se pudo leer el estado del enlace.» with a grey switch and no host call ever happened. Closed payload, same
+  // four actions Rust parses (src/phonehost.rs parse_action): nothing else crosses.
+  for (const action of ['status', 'enable', 'disable', 'unlink']) {
+    await guardContext.closedInvoke('phone_link_action', {payload: {action}}); assert.deepEqual(guardCalls.pop(), ['phone_link_action', {payload: {action}}]);
+  }
+  for (const args of [undefined, {}, {payload: {}}, {payload: null}, {payload: []}, {payload: {action: 'restart'}}, {payload: {action: 'Status'}}, {payload: {action: 1}},
+    {payload: {action: 'status', extra: 1}}, {payload: {action: 'enable', port: 1}}, {payload: {action: 'status'}, extra: 1}]) await assert.rejects(guardContext.closedInvoke('phone_link_action', args));
+  assert.deepEqual(guardCalls, [], 'phone_link_action guard lets only the four closed actions reach IPC');
   for(const payload of [{action:'autostart_view'},{action:'set_autostart',enabled:true},{action:'set_open_settings_at_launch',enabled:false}]) {
     await guardContext.closedInvoke('prefs_action',{payload});assert.deepEqual(guardCalls.pop(),['prefs_action',{payload}]);
   }

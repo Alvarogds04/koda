@@ -32,7 +32,7 @@ import { renderGeneral } from './vendor/coucou/hub/general.js';
 import { card, row } from './vendor/coucou/hub/ui.js';
 import { hero } from './vendor/coucou/hub/hero.js';
 const rawInvoke = window.__TAURI__?.core?.invoke || window.__TAURI_INTERNALS__?.invoke;
-const allowed = new Set(['prefs_action', 'hotkey_action', 'settings_window_action', 'agent_action', 'secret_action', 'oauth_action', 'models_action', 'specialists_action', 'daemon_action', 'plan_action', 'monitor_action', 'sound_action', 'dictation_action', 'voice_action', 'failure_action']);
+const allowed = new Set(['prefs_action', 'hotkey_action', 'settings_window_action', 'agent_action', 'secret_action', 'oauth_action', 'models_action', 'specialists_action', 'daemon_action', 'plan_action', 'monitor_action', 'sound_action', 'dictation_action', 'voice_action', 'failure_action', 'phone_link_action']);
 // The host answers these commands through ONE shared limiter: 30 calls per fixed 1 s window (src/bridge.rs RATE_LIMIT_PER_WINDOW),
 // shared with the island window. A page that reads a lot at load (the combined «Integraciones y agentes» makes ~34 calls) used to get
 // `rate-exceeded` on its tail calls and paint «No se pudo completar» before the human touched anything (#503 S32 gate). So they leave
@@ -93,6 +93,9 @@ const invoke = (command, args) => {
           ['bottom', 'left', 'right'].includes(p.prefs.edge) && typeof p.prefs.mic === 'string' && new TextEncoder().encode(p.prefs.mic).length <= 200 &&
           [0, 7, 30, 365, -1].includes(p.prefs.keepDays) && typeof p.prefs.cleanup === 'boolean' && ['verbatim', 'natural', 'polished'].includes(p.prefs.defaultStyle)))) return Promise.reject(new Error('No disponible'));
   }
+  // The Teléfono page's one command: exactly {payload:{action}} with the four actions the host parses (src/phonehost.rs parse_action).
+  if (command === 'phone_link_action' && (Object.keys(args || {}).length !== 1 || Object.keys(args?.payload || {}).length !== 1 ||
+    !['status', 'enable', 'disable', 'unlink'].includes(args.payload.action))) return Promise.reject(new Error('No disponible'));
   if (command === 'failure_action') {
     const p = args?.payload, ks = Object.keys(p || {}).sort().join(',');
     const fp = v => typeof v === 'string' && /^[0-9a-f]{12}$/.test(v);
