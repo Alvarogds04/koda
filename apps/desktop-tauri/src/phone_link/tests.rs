@@ -1081,6 +1081,104 @@ fn a_link_that_was_never_switched_on_listens_nowhere_and_says_so() {
     assert_eq!(link.hub().clients(), 0);
 }
 
+// ---- phone-qr-visible (odd/tasks/phone-qr-visible.md): the QR is there while the link is off; nothing listens ----------
+
+/// A locked Secret Service: reads nothing, accepts nothing.
+struct Refusing;
+impl SecretStore for Refusing {
+    fn get(&self, _key: &str) -> Option<String> {
+        None
+    }
+    fn set(&self, _key: &str, _value: &str) -> Result<(), String> {
+        Err(super::keystore::WRITE_FAILED.to_string())
+    }
+}
+
+/// One `key=value` of the pairing link, as the phone reads it.
+fn field(text: &str, key: &str) -> String {
+    let start = text.find(&format!("{key}=")).unwrap_or_else(|| panic!("{key} is in {text}")) + key.len() + 1;
+    text[start..].split('&').next().unwrap().to_string()
+}
+
+#[test]
+fn a_prepared_link_draws_its_qr_while_it_is_off_and_listens_nowhere() {
+    let store = Mem::default();
+    let (link, mdns) = test_link();
+    assert_eq!(link.prepare(&store), Ok(()));
+    let status = link.status_for(Some("192.168.1.20".to_string()));
+    assert_eq!((status["enabled"].as_bool(), status["running"].as_bool()), (Some(false), Some(false)), "S3: still off");
+    assert_eq!(status["port"], json!(0), "S3: nothing is bound");
+    assert_eq!(status["mdns"], json!("off"), "S3: nothing is announced");
+    assert!(status["error"].is_null());
+    let text = status["link"].as_str().expect("S2: the pairing link is there while the link is off").to_string();
+    assert!(text.starts_with("abito://pair?v=1&"), "{text}");
+    assert_eq!(field(&text, "fp"), pairing::load_or_create_identity(&store).unwrap().fingerprint);
+    assert_eq!(field(&text, "token"), pairing::token(&store).unwrap());
+    assert_eq!(field(&text, "port"), super::ids::DEFAULT_PORT.to_string(), "the port it will listen on once turned on");
+    assert!(status["qrSvg"].as_str().expect("S2: and its QR").contains("<svg"));
+    assert!(mdns.records().is_empty(), "S3: no announcement, no daemon");
+    assert!(!link.running());
+    assert_eq!(link.hub().clients(), 0);
+    assert_eq!(link.prepare(&store), Ok(()), "idempotent");
+    assert_eq!(link.status_for(Some("192.168.1.20".to_string()))["link"].as_str(), Some(text.as_str()));
+    let nowhere = link.status_for(None);
+    assert!(nowhere["link"].is_null() && nowhere["qrSvg"].is_null(), "a machine with no network has no link nobody could use");
+}
+
+#[test]
+fn turning_it_on_uses_the_prepared_credential_and_turning_it_off_brings_the_qr_back() {
+    let store = Mem::default();
+    let (link, _mdns) = test_link();
+    assert_eq!(link.prepare(&store), Ok(()));
+    let before = link.status_for(Some("192.168.1.20".to_string()))["link"].as_str().expect("the QR is there").to_string();
+    assert_eq!(link.enable(&store, "127.0.0.1:0".parse().unwrap()), Ok(()));
+    let running = link.status_for(Some("192.168.1.20".to_string()))["link"].as_str().expect("and while it runs").to_string();
+    assert_eq!((field(&running, "fp"), field(&running, "token")), (field(&before, "fp"), field(&before, "token")), "S5: the QR on screen is the one that pairs");
+    link.disable();
+    let off = link.status_for(Some("192.168.1.20".to_string()));
+    assert_eq!((off["running"].as_bool(), off["port"].clone()), (Some(false), json!(0)));
+    assert_eq!(off["link"].as_str(), Some(before.as_str()), "S2: switched off again, the same QR is back");
+}
+
+#[test]
+fn after_unlinking_the_old_qr_is_never_shown_and_the_new_one_carries_the_new_token() {
+    let store = Mem::default();
+    let (link, _mdns) = test_link();
+    assert_eq!(link.prepare(&store), Ok(()));
+    let old = field(link.status_for(Some("192.168.1.20".to_string()))["link"].as_str().expect("the QR is there"), "token");
+    assert_eq!(link.unlink(&store), Ok(()));
+    let after = link.status_for(Some("192.168.1.20".to_string()));
+    assert!(after["link"].is_null() && after["qrSvg"].is_null(), "a QR with the token that was just revoked is never drawn");
+    assert_eq!(link.prepare(&store), Ok(()));
+    let new = field(link.status_for(Some("192.168.1.20".to_string()))["link"].as_str().expect("prepared again"), "token");
+    assert_ne!(new, old);
+    assert_eq!(new, pairing::token(&store).unwrap());
+}
+
+#[test]
+fn a_failed_start_takes_the_qr_down_so_it_never_points_at_a_port_that_is_not_ours() {
+    let held = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = held.local_addr().unwrap().port();
+    let store = Mem::default();
+    let (link, _mdns) = test_link();
+    assert_eq!(link.prepare(&store), Ok(()));
+    assert!(link.status_for(Some("192.168.1.20".to_string()))["link"].is_string(), "the QR is there before the try");
+    assert_eq!(link.enable(&store, format!("127.0.0.1:{port}").parse().unwrap()), Err("port_in_use"));
+    let status = link.status_for(Some("192.168.1.20".to_string()));
+    assert_eq!(status["error"].as_str(), Some("port_in_use"));
+    assert!(status["link"].is_null() && status["qrSvg"].is_null(), "an error is shown, not a QR for a port something else holds");
+}
+
+#[test]
+fn a_keychain_that_refuses_is_a_closed_error_and_no_qr() {
+    let (link, mdns) = test_link();
+    assert_eq!(link.prepare(&Refusing), Err("keystore"));
+    let status = link.status_for(Some("192.168.1.20".to_string()));
+    assert_eq!((status["running"].as_bool(), status["error"].as_str()), (Some(false), Some("keystore")));
+    assert!(status["link"].is_null() && status["qrSvg"].is_null(), "no credential was made, so none is drawn");
+    assert!(mdns.records().is_empty());
+}
+
 #[test]
 fn the_link_serves_a_paired_phone_and_everything_stops_when_it_is_switched_off() {
     run(async {

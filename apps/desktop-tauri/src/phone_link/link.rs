@@ -63,6 +63,16 @@ struct On {
     announcement: Option<Box<dyn Announcement>>,
     /// [`MDNS_ON`], [`MDNS_OFF`] or [`MDNS_ERROR`] — the non-fatal half of the status.
     mdns: &'static str,
+    /// The credential [`Link::prepare`] read or made while the link is off, so the QR can be drawn without a listener.
+    /// It lives in memory only (the keychain stays the one place it is stored) and is dropped by `unlink`.
+    prepared: Option<Prepared>,
+}
+
+/// What the QR of a link that is off encodes: the same certificate pin and token `enable` will use.
+struct Prepared {
+    fingerprint: String,
+    token: String,
+    name: String,
 }
 
 impl Default for On {
@@ -77,6 +87,7 @@ impl Default for On {
             error: None,
             announcement: None,
             mdns: MDNS_OFF,
+            prepared: None,
         }
     }
 }
@@ -184,6 +195,34 @@ impl Link {
     /// listener and the token it already has).
     fn note_error(&self, error: &'static str) {
         self.lock().error = Some(error);
+    }
+
+    /// Makes (or reads) the certificate and the token so Ajustes can draw the QR while the link is OFF. It binds no
+    /// port, starts no thread and announces nothing (S3): a QR is just text, and the phone can pair only after the human
+    /// switches the link on. Idempotent: the keychain is read the first time and after an `unlink`, never on every
+    /// status (a keychain that fails now and then must not mint a new certificate each time and lock a paired phone out).
+    pub fn prepare(&self, store: &dyn SecretStore) -> Result<(), &'static str> {
+        let _life = self.life();
+        {
+            let on = self.lock();
+            if on.shared.is_some() || on.prepared.is_some() {
+                return Ok(());
+            }
+        }
+        let identity = match pairing::load_or_create_identity(store) {
+            Ok(identity) => identity,
+            Err(_) => return Err(self.failed("keystore")),
+        };
+        let token = match pairing::token(store) {
+            Ok(token) => token,
+            Err(_) => return Err(self.failed("keystore")),
+        };
+        let mut on = self.lock();
+        on.prepared = Some(Prepared { fingerprint: identity.fingerprint, token, name: pairing::computer_name() });
+        if on.error == Some("keystore") {
+            on.error = None;
+        }
+        Ok(())
     }
 
     /// Starts listening on `bind` (`0.0.0.0:47821` in the app; `127.0.0.1:0` in tests, where the bound port is
@@ -331,6 +370,8 @@ impl Link {
             if shared.is_some() {
                 on.error = None;
             }
+            // The token the QR carried was just revoked: it is never drawn again, `prepare` reads the new one.
+            on.prepared = None;
             shared
         };
         if let Some(shared) = shared {
@@ -373,6 +414,11 @@ impl Link {
                 let token = shared.token.lock().unwrap_or_else(|e| e.into_inner()).clone();
                 Some(pairing::pairing_link(host, on.port, &on.fingerprint, &token, &on.name))
             }
+            // Off, but prepared: the QR of the link that will listen on the default port once the human turns it on. An
+            // error (a port that something else holds, a keychain that refused) is shown instead of a QR that cannot pair.
+            (None, Some(host)) if on.error.is_none() => on.prepared.as_ref().map(|p| {
+                pairing::pairing_link(host, super::ids::DEFAULT_PORT, &p.fingerprint, &p.token, &p.name)
+            }),
             _ => None,
         };
         let qr_svg = link.as_deref().and_then(pairing::qr_svg);

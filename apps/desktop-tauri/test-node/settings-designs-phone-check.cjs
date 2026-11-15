@@ -16,6 +16,8 @@ const LINK = 'abito://pair?v=1&h=192.168.1.7&p=47821&t=token-de-prueba&fp=012345
 // The host builds the markup (an accent included: the encoding must be UTF-8, not btoa's Latin-1).
 const QR = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 8 8"><rect width="3" height="3" fill="#000"/><desc>código</desc></svg>';
 const ON = { ...OFF, enabled: true, running: true, host: '192.168.1.7', link: LINK, qrSvg: QR };
+// phone-qr-visible (B1): switched OFF the host still hands a QR to draw (identity and token prepared, nothing listening).
+const PREPARED = { ...OFF, host: '192.168.1.7', link: LINK, qrSvg: QR };
 
 const words = e => text(e).replace(/\s+/g, ' ').trim();
 const byId = (ui, id) => all(ui).find(e => e.attrs.id === id);
@@ -104,8 +106,21 @@ register('K2 T1/S4 Teléfono: the page is live — the switch follows the host a
   assert.equal(sw(page).attrs['aria-pressed'], 'false', 'the switch reads the host, not its own optimism');
   assert(!String(sw(page).className).split(' ').includes('on'));
   assert.equal(sw(page).disabled, false, 'a live switch is not inert');
-  assert.equal(qrImg(page), undefined, 'no QR while the link is off: nothing is fabricated');
+  assert.equal(qrImg(page), undefined, 'a host that handed no QR gets none drawn: nothing is fabricated');
   assert.equal(linkRow(page).hidden, true, 'no link row to copy from while there is no link');
+  assert.equal(byId(page, 'phone-qr-hint').hidden, true, 'and no instruction about a QR that is not there');
+});
+
+register('phone-qr-visible Teléfono: switched off, the QR is there with the instruction, the port stays shut, and the link text is not shown', async () => {
+  const { page } = await mount(PREPARED);
+  assert.equal(statusWords(page), '○ Apagado', 'the state is still «apagado»: no word promises a listener');
+  assert(qrImg(page), 'S2: the QR is drawn while the link is off');
+  assert.equal(qrImg(page).attrs.alt, 'Código QR para emparejar');
+  assert.equal(byId(page, 'phone-qr-hint').hidden, false, 'S4: it says what has to happen before the phone can pair');
+  assert.equal(words(byId(page, 'phone-qr-hint')), 'Encendé el enlace para emparejar');
+  assert.equal(linkRow(page).hidden, true, 'the link as copyable text is only for a link that listens (the QR is the one exposure while off)');
+  assert.equal(sw(page).attrs['aria-pressed'], 'false');
+  assert.equal(sw(page).disabled, false, 'and the switch is the way to start');
 });
 
 register('K2 T1/S4 Teléfono: the switch calls enable and disable — and only those two verbs', async () => {
@@ -198,13 +213,17 @@ register('K2 T1/S4 Teléfono: errors are said in words per code; «unsupported»
 
 register('K2 T1 Teléfono: the `phone:state` event repaints the page without asking again', async () => {
   const { page, calls, push } = await mount();
-  assert.equal(qrImg(page), undefined);
+  assert.equal(qrImg(page), undefined, 'a plain OFF has no QR');
   push(ON); await tick();
   assert.equal(statusWords(page), '● Escuchando en 192.168.1.7:47821', 'the event carries the same object as the command');
   assert(qrImg(page), 'the QR appears with the event');
   assert.equal(linkField(page).value, LINK);
+  push(PREPARED); await tick();
+  assert(qrImg(page), 'switched off, the same QR is still there (B1)');
+  assert.equal(byId(page, 'phone-qr-hint').hidden, false);
+  assert.equal(linkRow(page).hidden, true, 'but the link text goes away with the listener');
   push(OFF); await tick();
-  assert.equal(qrImg(page), undefined, 'and goes away with it');
+  assert.equal(qrImg(page), undefined, 'a host that hands no QR (unpaired, keychain refused, non-Linux) shows none');
   assert.deepEqual(calls, [{ action: 'status' }], 'events never make the page call the host');
 });
 

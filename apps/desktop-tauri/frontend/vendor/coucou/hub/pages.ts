@@ -67,6 +67,10 @@ export const phonePage: FlowPageRenderer = async (page: HTMLElement, ctx: any) =
     h('li', { text: 'Listo: tus agentes aparecen en el teléfono.' }));
   const qr = h('div', { class: 'phone-qr' });
   qr.hidden = true;
+  // phone-qr-visible (B1): while the link is off the host still hands a QR (identity and token prepared, nothing listening). This line
+  // says what has to happen first, so a phone that scans it does not look like a failed pairing.
+  const qrHint = h('p', { id: 'phone-qr-hint', class: 'hint', text: 'Encendé el enlace para emparejar' });
+  qrHint.hidden = true;
   const linkField = h('input', { id: 'phone-link', class: 'phone-link-field', type: 'text', readonly: true, 'aria-label': 'Link para emparejar' }) as HTMLInputElement;
   const copyNote = h('span', { class: 'hint', role: 'status' });
   const linkRow = h('div', { class: 'phone-link' }, linkField, trusted(button('Copiar', () => void copyLink())), copyNote);
@@ -86,7 +90,7 @@ export const phonePage: FlowPageRenderer = async (page: HTMLElement, ctx: any) =
     notchHint(t("Send your agents' sessions to Koda for Android and answer permission requests from the phone. Off by default; it only listens on your local network.")),
     notchRow(t('Phone link'), sw),
     notchHint('Muestra en el teléfono cuánto usaste de Claude y Codex.'),
-    notchRow('Uso de los planes', usage), steps, qr, linkRow, devices, message);
+    notchRow('Uso de los planes', usage), steps, qr, qrHint, linkRow, devices, message);
 
   function paint() {
     const error = st?.error ?? null;
@@ -112,14 +116,16 @@ export const phonePage: FlowPageRenderer = async (page: HTMLElement, ctx: any) =
     else { glyph = '●'; word = `Escuchando en el puerto ${st!.port}`; }
     clear(status);
     status.append(icon(glyph), h('span', { class: 'state-word', text: word }));
-    // QR: only while the link is really listening and the host handed a link to encode.
+    // QR: whenever the host handed one to draw. While the link is off that is the prepared one (B1); it carries the same token the
+    // link will use, so the hint says it only pairs once the link is on. The link as copyable text is for a link that listens.
     const svg = st?.qrSvg ?? null, link = st?.link ?? null;
     clear(qr);
-    if (running && svg) {
+    if (svg && !unsupported) {
       qr.append(h('img', { class: 'phone-qr-img', src: `data:image/svg+xml;base64,${base64Utf8(svg)}`, alt: 'Código QR para emparejar' }));
       qr.hidden = false;
     } else qr.hidden = true;
-    if (link && !unsupported) { linkField.value = link; linkRow.hidden = false; }
+    qrHint.hidden = qr.hidden || running;
+    if (link && running && !unsupported) { linkField.value = link; linkRow.hidden = false; }
     else { linkField.value = ''; linkRow.hidden = true; }
     count.textContent = clients > 0 ? phones(clients) : 'Ninguno vinculado.';
   }

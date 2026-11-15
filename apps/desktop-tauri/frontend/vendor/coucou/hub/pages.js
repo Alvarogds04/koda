@@ -56,6 +56,8 @@ const phonePage = async (page, ctx) => {
   );
   const qr = h("div", { class: "phone-qr" });
   qr.hidden = true;
+  const qrHint = h("p", { id: "phone-qr-hint", class: "hint", text: "Encendé el enlace para emparejar" });
+  qrHint.hidden = true;
   const linkField = h("input", { id: "phone-link", class: "phone-link-field", type: "text", readonly: true, "aria-label": "Link para emparejar" });
   const copyNote = h("span", { class: "hint", role: "status" });
   const linkRow = h("div", { class: "phone-link" }, linkField, trusted(button("Copiar", () => void copyLink())), copyNote);
@@ -92,6 +94,7 @@ const phonePage = async (page, ctx) => {
     notchRow("Uso de los planes", usage),
     steps,
     qr,
+    qrHint,
     linkRow,
     devices,
     message
@@ -137,11 +140,12 @@ const phonePage = async (page, ctx) => {
     status.append(icon(glyph), h("span", { class: "state-word", text: word }));
     const svg = st?.qrSvg ?? null, link = st?.link ?? null;
     clear(qr);
-    if (running && svg) {
+    if (svg && !unsupported) {
       qr.append(h("img", { class: "phone-qr-img", src: `data:image/svg+xml;base64,${base64Utf8(svg)}`, alt: "Código QR para emparejar" }));
       qr.hidden = false;
     } else qr.hidden = true;
-    if (link && !unsupported) {
+    qrHint.hidden = qr.hidden || running;
+    if (link && running && !unsupported) {
       linkField.value = link;
       linkRow.hidden = false;
     } else {
