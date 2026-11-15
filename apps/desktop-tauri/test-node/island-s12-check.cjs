@@ -19,7 +19,7 @@ if (!H.findPlaywright()) { console.log('SKIPPED island-s12-check: no playwright 
       const sa = (await r.measure('#blobs-links .see-all'))[0];
       assert.ok(!sa || !sa.shown, '«Todas» is hidden in the Nusa idle overview (HU-057: no mascot grid by design)');
       assert.equal(await r.page.evaluate(() => document.querySelector('.sessions-all').hidden), true, 'the mascot grid stays closed');
-      await r.page.click('[data-tab=agentes]'); await r.page.waitForTimeout(300);
+      await H.goTab(r.page, 'agentes'); await r.page.waitForTimeout(300);
       const isl = (await r.measure('#island'))[0];
       const rows = (await r.measure('.nusa-agent')).filter(b => b.shown);
       assert.equal(rows.length, 2, 'Nusa Agentes: 2 whole rows when «Ver todas (N)» is needed (14 sessions)');
@@ -34,7 +34,7 @@ if (!H.findPlaywright()) { console.log('SKIPPED island-s12-check: no playwright 
     const long = 'isla-expandida-con-un-nombre-muy-largo';
     const r = await H.open({ sessions: [{ id: 's-00000001', kind: 'pi', cwd: long, state: 'running', origin: null }, { id: 's-00000002', kind: 'pi', cwd: 'settings-pantalla-ajustes-generales', state: 'sleeping', origin: null }] });
     try {
-      await r.page.click('[data-tab=agentes]'); await r.page.waitForTimeout(300);
+      await H.goTab(r.page, 'agentes'); await r.page.waitForTimeout(300);
       const m = await r.page.evaluate(() => [...document.querySelectorAll('.nusa-agent')].map(row => { const n = row.querySelector('.nusa-agent-name'), b = row.getBoundingClientRect(), nb = n.getBoundingClientRect(); return { aria: row.getAttribute('aria-label'), inside: nb.left >= b.left - 0.5 && nb.right <= b.right + 0.5, ellipsis: getComputedStyle(n).textOverflow === 'ellipsis' }; }));
       assert.equal(m.length, 2);
       assert.ok(m[0].aria.includes('…') && !m[0].aria.includes(long), `the long name is truncated with «…» by the Nusa model: ${m[0].aria}`);

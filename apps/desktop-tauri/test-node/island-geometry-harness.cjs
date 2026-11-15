@@ -300,4 +300,12 @@ async function setup({ scenario, server, base, browser, page }) {
     close: async () => { try { await browser.close(); } finally { server.close(); } },
   };
 }
-module.exports = { open, findPlaywright, unknownPhase, unknownPhaseInPage, knownPhaseInPage };
+/** Go to the Agentes / Avisos tab with a REAL click. On the Inicio the pager dots are hidden (welcome-home: the dock below Koda is the navigation there),
+ *  so use the dock icon when it is on screen and the dot everywhere else. */
+async function goTab(page, id, opts) {
+  const label = { agentes: 'Agentes', avisos: 'Avisos' }[id];
+  const dock = label && page.locator(`#nusa-panel .nusa-dock button[aria-label="${label}"]`);
+  if (dock && await dock.count() && await dock.first().isVisible()) return page.click(`#nusa-panel .nusa-dock button[aria-label="${label}"]`);
+  return page.click(`#nusa-tab-${id}`, opts);
+}
+module.exports = { open, findPlaywright, unknownPhase, unknownPhaseInPage, knownPhaseInPage, goTab };

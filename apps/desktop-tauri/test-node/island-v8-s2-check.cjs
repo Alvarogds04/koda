@@ -21,7 +21,7 @@ const glow = page => page.evaluate(() => getComputedStyle(document.getElementByI
     // expanded Inicio: Koda only
     assert.deepEqual(await visibleMinis(r.page), [], 'HU-057: no mini-characters / blobs in the expanded Inicio');
     // expanded Agentes: no minis, but the sessions are reachable (rows + «Ver todas (14)»)
-    await r.page.click('#nusa-tab-agentes', { force: true }); await r.page.waitForTimeout(800);
+    await H.goTab(r.page, 'agentes', { force: true }); await r.page.waitForTimeout(800);
     assert.deepEqual(await visibleMinis(r.page), [], 'HU-057: no mini-characters / blobs in the Agentes tab');
     const rows = (await r.measure('.nusa-agent')).filter(b => b.shown);
     assert.ok(rows.length >= 2, `the Agentes tab lists the sessions as rows (.nusa-agent): ${rows.length}`);

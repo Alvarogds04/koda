@@ -58,7 +58,7 @@ function koda(m, name) {
       koda(m, name);
       assert.equal(m.bandHit, false, `${name}: Koda overlaps the band`); assert.deepEqual(m.kodaHits, [], `${name}: Koda overlaps controls`);
       assert.equal(await r.page.evaluate(() => window.__koda.current), 'error', `${name}: Koda error`);
-      for (const tab of ['agentes', 'avisos']) { await r.page.click(`#nusa-tab-${tab}`); await r.page.waitForTimeout(500); const t = await measure(r); koda(t, `${name}/${tab}`, false); assert.deepEqual(t.kodaHits, [], `${name}/${tab}: Koda overlaps controls`); }
+      for (const tab of ['agentes', 'avisos']) { await H.goTab(r.page, tab); await r.page.waitForTimeout(500); const t = await measure(r); koda(t, `${name}/${tab}`, false); assert.deepEqual(t.kodaHits, [], `${name}/${tab}: Koda overlaps controls`); }
       await r.page.click('#nusa-tab-inicio'); await r.page.waitForTimeout(300);
       await r.screenshot(`/tmp/nusa-engine-${engine === 'down' ? 'down' : 'no-account'}-${theme}.png`);
     } finally { await r.close(); }

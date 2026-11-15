@@ -25,6 +25,9 @@ async function sequence(theme, pre = {}) {
     const pendingH = await r.page.evaluate(() => Math.round(document.getElementById('island').getBoundingClientRect().height));
     const opt = await r.page.$('#question-options .q-option'); const bb = await opt.boundingBox();
     const t0 = Date.now(); await r.page.mouse.click(bb.x + bb.width / 2, bb.y + 10);
+    // welcome-home: the click leaves the mouse where the option was, which is over a dock icon of the new Inicio; a hovered icon draws its label over
+    // the state line. Take the pointer away at once so BOTH frames compared below (first after the exit, steady) are the Inicio at rest.
+    await r.page.mouse.move(2, 2);
     const rows = []; const shots = {}; let exitShot = null, lastOutcomeShot = null, firstAfter = null;
     for (let i = 0; i < 46; i++) {
       await r.page.waitForTimeout(100);
@@ -36,7 +39,6 @@ async function sequence(theme, pre = {}) {
       } else if (rows.some(x => x.q === 'outcome') && !firstAfter) { firstAfter = await grab(r.page, `/tmp/recibida-${theme}-exit-first.png`); fs.writeFileSync(`/tmp/recibida-${theme}-last-outcome.png`, lastOutcomeShot); }
     }
     // Koda painted: the same box with and without the sprite must differ (sampled while the outcome shows)
-    await r.page.waitForTimeout(0);
     const steady = await r.page.screenshot({ clip: { x: 0, y: 0, width: 752, height: 270 } });
     return { rows, pendingH, firstAfter, steady, r: null };
   } finally { await r.close(); }
@@ -116,7 +118,7 @@ async function kodaPainted(theme) {
   console.log('island-nusa-recibida-check: ok');
 })().catch(e => { console.error('FAIL', e.message); process.exit(1); });
 
-// decode two PNG screenshots in a throwaway page canvas and return the max per-channel diff over the former card's top band (x 20..600, y 36..76: past the header, left of the Inicio Koda, above the veil gradient)
+// decode two PNG screenshots in a throwaway page canvas and return the max per-channel diff over the former card's top band (x 20..600, y 36..76: past the header, above the veil gradient), leaving out the Koda sprite's box
 async function pixelDiff(a, b, theme) {
   const { chromium } = H.findPlaywright();
   const br = await chromium.launch(); const p = await br.newPage();
@@ -125,7 +127,14 @@ async function pixelDiff(a, b, theme) {
       const load = u => new Promise(res => { const i = new Image(); i.onload = () => res(i); i.src = u; });
       const g = async u => { const i = await load(u); const c = document.createElement('canvas'); c.width = i.width; c.height = i.height; const t = c.getContext('2d'); t.drawImage(i, 0, 0); return t.getImageData(20, 36, 580, 40).data; };
       const A = await g('data:image/png;base64,' + x), B = await g('data:image/png;base64,' + y); let m = 0;
-      for (let i = 0; i < A.length; i++) m = Math.max(m, Math.abs(A[i] - B[i])); return m;
+      // welcome-home: Koda is centred in the Inicio (x344..408, y28..92), inside this band, and it animates (its frame changes every ~166 ms and an idle
+      // beat swaps the whole sheet row): compare everything EXCEPT its box (+2px), so the check still catches a ghost of the former card anywhere else.
+      for (let px = 0; px < A.length / 4; px++) {
+        const cx = 20 + (px % 580), cy = 36 + Math.floor(px / 580);
+        if (cx >= 342 && cx <= 410 && cy >= 26 && cy <= 94) continue;
+        for (let k = 0; k < 4; k++) m = Math.max(m, Math.abs(A[px * 4 + k] - B[px * 4 + k]));
+      }
+      return m;
     }, [a.toString('base64'), b.toString('base64')]);
   } finally { await br.close(); }
 }

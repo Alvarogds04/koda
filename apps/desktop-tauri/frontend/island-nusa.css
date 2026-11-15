@@ -98,20 +98,9 @@ html[data-motion="reduce"] #nusa-apps .sb, html[data-motion="reduce"] #nusa-apps
 .nusa-home { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .nusa-sub { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .nusa-live { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.nusa-field { display: flex; align-items: center; gap: 4px; height: 34px; padding: 0 4px 0 12px; border-radius: 99px; background: rgba(255,255,255,.12); }
-.nusa-field:focus-within { outline: 2px solid rgba(255,255,255,.7); }
-.nusa-input { flex: 1; min-width: 0; border: 0; outline: 0; background: none; color: #fff; font: inherit; font-size: 13px; }
-.nusa-input::placeholder { color: rgba(255,255,255,.55); }
-.nusa-fbtn { flex: none; width: 26px; height: 26px; padding: 0; border: 0; border-radius: 50%; background: none; color: #fff; display: grid; place-items: center; cursor: pointer; }
-.nusa-fbtn[hidden] { display: none; }
-.nusa-fbtn:hover:not(:disabled) { background: rgba(255,255,255,.2); }
-.nusa-send { background: #fff; color: #000; } .nusa-send:hover:not(:disabled) { background: #e6e6e6; }
-.nusa-send:disabled { opacity: .35; cursor: default; }
-.nusa-fbtn:focus-visible, .nusa-link:focus-visible, .nusa-markall:focus-visible, .nusa-reply:focus-visible { outline: 2px solid #fff; outline-offset: 1px; }
+.nusa-link:focus-visible, .nusa-markall:focus-visible { outline: 2px solid #fff; outline-offset: 1px; }
 .nusa-problem { font-size: 11px; color: var(--sun); }
-.nusa-problem[hidden], .nusa-reply[hidden], .nusa-live[hidden] { display: none; }
-.nusa-reply { font: inherit; font-size: 12px; text-align: left; padding: 0; border: 0; background: none; color: #fff; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.nusa-reply:hover { text-decoration: underline; text-underline-offset: 3px; }
+.nusa-problem[hidden], .nusa-live[hidden] { display: none; }
 .nusa-chip-dot { width: 6px; height: 6px; border-radius: 50%; flex: none; }
 
 .nusa-agents, .nusa-notices { display: flex; flex-direction: column; gap: 4px; }
@@ -551,3 +540,23 @@ html[data-motion="reduce"] #question[data-enter] :is(#question-asker, #question-
 #hoy-foot[hidden], #hoy-empty[hidden], #hoy-problem[hidden] { display: none; }
 html[data-motion="reduce"] #capsule #island, html[data-motion="reduce"] #capsule #nusa { transition: none; }
 @media (prefers-reduced-motion: reduce) { #capsule #island, #capsule #nusa { transition: none; } }
+
+/* welcome-home (odd/tasks/welcome-home.md S1-S8): the Inicio is Koda alone, centred, «Koda · en reposo» under it and five icon buttons.
+   Scoped to the Inicio tab in the plain idle overview: take-over cards (waiting / finished / error list), «Hoy» open and the shortcut row
+   (data-apps) keep the layout they already have. The notch stays 150: Koda x2 = 64 (koda-skin.js, parked in #nusa-right), one 14px text line,
+   one 36px row. The label (data-tip, drawn by ::after so it is not panel text) shows over the focused/hovered icon and never reserves a line. */
+#capsule:not([data-hoy="open"]):not([data-takeover="waiting"]):not([data-takeover="finished"]):not([data-takeover="error"][data-view="notices"]) #nusa[data-tab="inicio"]:not([data-apps="true"]) #nusa-body { left: 44px; right: 44px; top: 28px; bottom: 6px; display: flex; flex-direction: column; align-items: center; justify-content: flex-start; gap: 0; }
+#capsule:not([data-hoy="open"]):not([data-takeover="waiting"]):not([data-takeover="finished"]):not([data-takeover="error"][data-view="notices"]) #nusa[data-tab="inicio"]:not([data-apps="true"]) #nusa-right { order: 1; align-self: center; flex: none; height: 64px; justify-content: center; }
+#capsule:not([data-hoy="open"]):not([data-takeover="waiting"]):not([data-takeover="finished"]):not([data-takeover="error"][data-view="notices"]) #nusa[data-tab="inicio"]:not([data-apps="true"]) #nusa-panel { order: 2; flex: none; width: 100%; max-height: none; overflow: visible; }
+#capsule:not([data-hoy="open"]):not([data-takeover="waiting"]):not([data-takeover="finished"]):not([data-takeover="error"][data-view="notices"]) #nusa[data-tab="inicio"]:not([data-apps="true"]) .nusa-home { display: flex; flex-direction: column; align-items: center; gap: 2px; }
+#capsule:not([data-hoy="open"]):not([data-takeover="waiting"]):not([data-takeover="finished"]):not([data-takeover="error"][data-view="notices"]) #nusa[data-tab="inicio"]:not([data-apps="true"]) .nusa-sub { text-align: center; }
+#capsule:not([data-hoy="open"]):not([data-takeover="waiting"]):not([data-takeover="finished"]):not([data-takeover="error"][data-view="notices"]) #nusa[data-tab="inicio"]:not([data-apps="true"]) #nusa-state { display: none; }
+#capsule:not([data-hoy="open"]):not([data-takeover="waiting"]):not([data-takeover="finished"]):not([data-takeover="error"][data-view="notices"]) #nusa[data-tab="inicio"]:not([data-apps="true"]) #nusa-dots { display: none; } /* the dock below Koda is the navigation here (Agentes / Avisos are in it); the pager dots would sit on top of it in 150px. Same rule the shortcut row already uses (data-apps). Arrows, wheel and keys still work */
+.nusa-dock { display: flex; justify-content: center; gap: 8px; margin-top: 2px; } /* body ends at 144: the notice strip starts there (island-nusa.css #notices top) */
+.nusa-dock-btn { position: relative; width: 36px; height: 30px; padding: 0; border: 0; border-radius: 99px; background: rgba(255,255,255,.12); color: #fff; display: grid; place-items: center; cursor: pointer; }
+.nusa-dock-btn:hover { background: rgba(255,255,255,.2); }
+.nusa-dock-btn:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+.nusa-dock-btn svg { width: 14px; height: 14px; }
+.nusa-dock-btn::after { content: attr(data-tip); position: absolute; left: 50%; bottom: calc(100% + 2px); transform: translateX(-50%); padding: 1px 8px; border-radius: 99px; background: #fff; color: #000; font-size: 11px; line-height: 16px; white-space: nowrap; opacity: 0; pointer-events: none; z-index: 2; }
+.nusa-dock-btn:is(:hover, :focus-visible)::after { opacity: 1; }
+@media (prefers-reduced-motion: no-preference) { .nusa-dock-btn, .nusa-dock-btn::after { transition: background .15s, opacity .15s; } }
