@@ -377,7 +377,12 @@
   for (const b of [...openers, $('open-settings')].filter(Boolean)) b.addEventListener('click', e => {
     if (e.isTrusted === true) openSettingsWindow();
   });
-  document.addEventListener('abito:nusa-open-settings', () => openSettingsWindow()); // asked by the Inicio dock after ITS trusted click (island-nusa-bodies.js)
+  // Asked by the Inicio dock after ITS trusted click (island-nusa-bodies.js). A script's CustomEvent is never trusted: only from the plain idle Inicio.
+  document.addEventListener('abito:nusa-open-settings', () => {
+    const d = (document.getElementById('capsule') || { dataset: {} }).dataset, nusa = document.getElementById('nusa');
+    if (nusa && nusa.dataset.tab === 'inicio' && d.phase === 'expanded' && d.view === 'overview' && !d.card && d.hoy !== 'open'
+      && !['pending', 'expired', 'outcome'].includes(d.question || '') && !['waiting', 'finished'].includes(d.takeover || '')) openSettingsWindow();
+  });
   document.addEventListener('island:view', e => {
     if (e.detail === 'chat' && pendingOpen) { const id = pendingOpen; pendingOpen = false; open(id); }
     else if (e.detail !== 'chat' && isOpen()) close(false);

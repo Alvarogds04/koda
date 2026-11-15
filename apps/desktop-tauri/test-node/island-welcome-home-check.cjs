@@ -50,5 +50,19 @@ const DOCK = [['Conversar con Koda'], ['Hoy'], ['Agentes'], ['Avisos'], ['Ajuste
     assert.equal((await st()).hoy, null, 'Hoy closes again'); assert.equal((await st()).tab, 'inicio');
     await dock('Conversar con Koda'); await r.page.waitForTimeout(300); assert.ok((await st()).inv.includes('chat_action:open'), 'S2: «Conversar con Koda» really asks the host to open the chat: ' + JSON.stringify((await st()).inv));
   } finally { await r.close(); }
+  // The dock asks the destinations with events, and an event dispatched by a script is never trusted: the listeners must only act when the plain
+  // idle Inicio (the one that has the dock) is showing. With a question waiting for an answer none of the three may do anything.
+  const q = await H.open({ question: 'plain', sessions: [], engine: 'account' });
+  try {
+    await q.page.waitForTimeout(900);
+    const before = await q.page.evaluate(() => ({ q: document.getElementById('capsule').dataset.question || '', tab: document.getElementById('nusa').dataset.tab, hoy: document.getElementById('capsule').dataset.hoy || null }));
+    assert.equal(before.q, 'pending', 'a question is waiting: ' + JSON.stringify(before));
+    await q.page.evaluate(() => { window.__allCalls = []; for (const [n, d] of [['abito:nusa-go', { tab: 'agentes' }], ['abito:nusa-go', { tab: 'avisos' }], ['abito:nusa-open-hoy'], ['abito:nusa-open-settings']]) document.dispatchEvent(new CustomEvent(n, d ? { detail: d } : undefined)); });
+    await q.page.waitForTimeout(500);
+    const after = await q.page.evaluate(() => ({ tab: document.getElementById('nusa').dataset.tab, hoy: document.getElementById('capsule').dataset.hoy || null, inv: (window.__allCalls || []).map(c => c.cmd + ':' + (c.payload && c.payload.action)) }));
+    assert.equal(after.tab, before.tab, 'a forged abito:nusa-go does not move the tabs behind a pending question');
+    assert.equal(after.hoy, before.hoy, 'a forged abito:nusa-open-hoy does not open Hoy behind a pending question');
+    assert.ok(!after.inv.includes('settings_window_action:open'), 'a forged abito:nusa-open-settings does not open Ajustes behind a pending question: ' + JSON.stringify(after.inv));
+  } finally { await q.close(); }
   console.log('island-welcome-home-check: ok');
 })().catch(e => { console.error('FAIL', e.message); process.exit(1); });

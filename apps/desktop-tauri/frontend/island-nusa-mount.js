@@ -59,7 +59,6 @@
   const go = (delta, focus) => { if (appFocused()) return; const to = N.step(current, delta); if (to !== current) select(to, focus); };
   const tabOf = b => N.TABS.findIndex(t => t.id === b.dataset.tab);
   // the Inicio dock (island-nusa-bodies.js) asks for a tab by id: the same guard as a dot click, then the same select()
-  doc.addEventListener('abito:nusa-go', e => { const to = N.TABS.findIndex(t => e.detail && t.id === e.detail.tab); if (to >= 0 && !appFocused()) select(to); });
 
   nusa.querySelectorAll('[role="tab"]').forEach(b => b.addEventListener('click', e => {
     if (e.isTrusted !== true || appFocused()) return;
@@ -73,6 +72,12 @@
     && capsule.dataset.hoy !== 'open' /* the pager is behind Hoy: an arrow key must never walk hidden tabs */
     && !['pending', 'expired', 'outcome'].includes(capsule.dataset.question || '');
   const typingIn = el => !!el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName));
+  // The Inicio dock asks for a tab by id. A script's CustomEvent is never trusted, so the listener is gated by STATE instead: only while the plain
+  // idle overview (the one that shows the dock) is on screen, the same `active()` the keyboard uses and no take-over card.
+  doc.addEventListener('abito:nusa-go', e => {
+    const to = N.TABS.findIndex(t => e.detail && t.id === e.detail.tab);
+    if (to >= 0 && active() && !['waiting', 'finished'].includes(capsule.dataset.takeover || '') && !appFocused()) select(to);
+  });
   doc.addEventListener('keydown', e => {
     if (!active()) return;
     const d = N.keyStep(e, { typing: typingIn(doc.activeElement) });

@@ -467,7 +467,13 @@
       });
     }
     if (parts.open) parts.open.addEventListener('click', e => { if (e.isTrusted !== true) return; setOpen(!isOpen(), true); });
-    doc.addEventListener('abito:nusa-open-hoy', () => setOpen(!isOpen(), true)); // asked by the Inicio dock after ITS trusted click
+    // Asked by the Inicio dock after ITS trusted click. A script's CustomEvent is never trusted, so it only OPENS Hoy, and only from the plain idle Inicio
+    // (the state that shows the dock): never behind a pending question, a take-over card or an open Hoy.
+    doc.addEventListener('abito:nusa-open-hoy', () => {
+      const d = capsule.dataset;
+      if (tab === 'inicio' && d.phase === 'expanded' && d.view === 'overview' && !d.card && d.hoy !== 'open'
+        && !['pending', 'expired', 'outcome'].includes(d.question || '') && !['waiting', 'finished'].includes(d.takeover || '')) setOpen(true, true);
+    });
     const homeTab = byId('home-tab');
     if (homeTab) homeTab.addEventListener('click', () => { if (isOpen()) setOpen(false, false); }, true);
     doc.addEventListener('abito:nusa-tab', () => { if (isOpen()) { setOpen(false, false); const b = byId('open-hoy'); if (b && typeof b.focus === 'function') b.focus(); } });
