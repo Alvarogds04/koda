@@ -76,12 +76,20 @@ test('T3/T4: bodies build DOM with textContent only (no markup sink) and never i
   const verbs = [...strip(bodies).matchAll(/call\(\s*'([a-z_]+)'/g)].map(m => m[1]).sort();
   // K2-13 T6b-1 «Hoy» reads and decides through the EXISTING agent_action (the same command Ajustes → Agentes already uses):
   // no new Tauri command, no new bridge and no capability is added by the notch. Nothing else may join this list.
-  assert.deepEqual([...new Set(verbs)], ['agent_action', 'chat_action', 'dictation_action']);
+  // welcome-home: the Inicio has no ask field any more, so chat_action (submit/view) and dictation_action (status/hands_free) left the notch;
+  // «Hoy» is the only host reader/decider left here. The icon buttons click existing elements and add no verb.
+  assert.deepEqual([...new Set(verbs)], ['agent_action']);
 });
-test('T3: Inicio — the one field, mic only with dictation on, trusted-only send, id reuse, 8000, chat opens from the reply line', () => {
-  for (const s of ['Pedile algo a Koda… (o dictalo)', "'submit'", 'client_request_id', 'getRandomValues', 'requestId', 'sendCheck', "'status'", "'hands_free'", 'prefs.enabled === true', // Koda 0.1 T2
-    'isTrusted', "'view'", 'replyLine', 'open-chat', 'focusView', 'maxLength', 'DRAFT_MAX']) assert.ok(bodies.includes(s), s);
-  assert.equal((bodies.match(/placeholder/g) || []).length >= 1, true);
+test('T3: Inicio (welcome-home) — Koda alone, five icon buttons that click the real destinations, no ask field, no host verb', () => {
+  const body = strip(bodies);
+  for (const s of ['Koda · en reposo', 'nusa-dock', 'nusa-dock-btn', 'dataset.tip', 'isTrusted', 'focusView',
+    'open-chat', 'open-hoy', 'nusa-tab-agentes', 'nusa-tab-avisos', 'open-settings']) assert.ok(bodies.includes(s), s);
+  for (const label of ['Conversar con Koda', 'Hoy', 'Agentes', 'Avisos', 'Ajustes']) assert.ok(bodies.includes(`label: '${label}'`), label);
+  // the ask field and everything that fed it is gone (a request is made from Chat)
+  for (const gone of ['Pedile algo a Koda', 'nusa-field', 'nusa-input', 'nusa-send', 'nusa-reply', 'sendCheck', 'requestId', 'getRandomValues', 'hands_free', 'DRAFT_MAX', 'placeholder'])
+    assert.ok(!body.includes(gone), `the Inicio no longer has «${gone}»`);
+  // each dock button reuses the real element with a click and never reimplements the destination
+  assert.match(body, /to\.click\(\)/);
 });
 test('T4: Agentes rows (bar, name, chip, ticker) with no avatar, and Avisos one line + mark all through desktop.dismiss', () => {
   for (const s of ['agentRows', 'abito:sessions-view', 'noticeLines', 'Marcar todo como leído', 'desktop.click', 'onState']) assert.ok(bodies.includes(s), s);
@@ -93,9 +101,10 @@ test('S13: the mount paints the veil colour from the model onto #nusa, following
   const js = read('island-nusa-mount.js');
   for (const s of ['veilColor', 'focusView', 'abito:sessions-view', "setProperty('--veil'"]) assert.ok(js.includes(s), s);
 });
-test('T3/T4 css: type scale 13/12/11, field and rows exist', () => {
+test('T3/T4 css: type scale 13/12/11, dock and rows exist', () => {
   const css = read('island-nusa.css');
-  for (const s of ['.nusa-field', '.nusa-agent', '.nusa-notice', '.nusa-reply', 'font-size: 13px', 'font-size: 12px', 'font-size: 11px']) assert.ok(css.includes(s), s);
+  for (const s of ['.nusa-dock', '.nusa-dock-btn', '.nusa-dock-btn::after', '.nusa-agent', '.nusa-notice', 'font-size: 13px', 'font-size: 12px', 'font-size: 11px']) assert.ok(css.includes(s), s);
+  for (const gone of ['.nusa-field', '.nusa-input', '.nusa-send', '.nusa-reply']) assert.ok(!css.includes(gone), `${gone} left with the field`);
 });
 test('Ver todas: the opener event is dispatched only from a trusted click; the ticker listens and re-checks canFocus; no innerHTML', () => {
   const b = read('island-nusa-bodies.js'), t = read('sessions-ticker.js'), css = read('island-nusa.css');

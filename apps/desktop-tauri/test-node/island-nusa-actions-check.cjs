@@ -74,8 +74,8 @@ const covered = list => list.filter(c => !c.ok);
       const c = await controls(r, '#engine-band'); const words = c.map(x => x.text);
       assert.deepEqual(words.sort(), ['Omitir', 'Revisar'], 'engine band: Revisar + Omitir');
       assert.deepEqual(covered(c), [], 'engine band: no control covered');
-      const ik = await r.page.evaluate(() => { const k = document.querySelector('.koda-sprite[data-koda-slot="nusa"]'); const b = k && k.getBoundingClientRect(), i = document.getElementById('island').getBoundingClientRect(); return b && { w: b.width, h: b.height, right: b.left > i.left + i.width / 2 }; });
-      assert.deepEqual(ik, { w: 64, h: 64, right: true }, 'Inicio keeps Koda k=2 on the right');
+      const ik = await r.page.evaluate(() => { const k = document.querySelector('.koda-sprite[data-koda-slot="nusa"]'); const b = k && k.getBoundingClientRect(), i = document.getElementById('island').getBoundingClientRect(); return b && { w: b.width, h: b.height, centred: Math.abs((b.left + b.right) / 2 - (i.left + i.right) / 2) <= 3 }; }); // welcome-home: Koda is centred in the Inicio
+      assert.deepEqual(ik, { w: 64, h: 64, centred: true }, 'Inicio keeps Koda k=2, now centred');
       await r.page.waitForTimeout(500); assert.equal(await r.page.evaluate(() => window.__koda.current), 'error', 'engine band: Koda error');
       await r.screenshot('/tmp/nusa-t4-engine.png');
     } finally { await r.close(); }

@@ -11,7 +11,7 @@ const inIsland = (b, isl) => b.left >= isl.left - 0.5 && b.right <= isl.right + 
     const r = await H.open({ manyPi: true, theme });
     try {
       const { page } = r;
-      await page.click('[data-tab=agentes]'); await page.waitForTimeout(300);
+      await H.goTab(page, 'agentes'); await page.waitForTimeout(300);
       const isl = (await r.measure('#island'))[0];
       const link = (await r.measure('.nusa-all')).filter(b => b.shown);
       assert.equal(link.length, 1, 'one link');
@@ -74,7 +74,7 @@ const inIsland = (b, isl) => b.left >= isl.left - 0.5 && b.right <= isl.right + 
     const sessions = Array.from({ length: n }, (_, i) => ({ id: 's-' + (0x200 + i).toString(16).padStart(8, '0'), kind: 'pi', cwd: 'p' + i, state: 'sleeping', origin: null }));
     const r = await H.open({ sessions });
     try {
-      await r.page.click('[data-tab=agentes]'); await r.page.waitForTimeout(300);
+      await H.goTab(r.page, 'agentes'); await r.page.waitForTimeout(300);
       assert.equal(await r.page.evaluate(() => document.querySelectorAll('.nusa-all').length), 0, `${n} sessions: no link`);
       assert.equal((await r.measure('.nusa-agent')).filter(b => b.shown).length, n);
     } finally { await r.close(); }

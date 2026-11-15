@@ -60,9 +60,13 @@ const SCENES = [
   assert.match(titles.text, /Koda · en reposo/, 'Inicio sub-line «Koda · en reposo»');
   const r = await H.open({ sessions: [], theme: 'dark' });
   try {
-    await r.page.waitForTimeout(700); await r.page.evaluate(() => window.__islandSetView('chat', 720, 240)); await r.page.waitForTimeout(900);
-    const ph = await r.page.evaluate(() => [...document.querySelectorAll('[placeholder]')].map(e => e.getAttribute('placeholder')));
-    assert.ok(ph.includes('Pedile algo a Koda… (o dictalo)'), `field placeholder: ${JSON.stringify(ph)}`);
+    await r.page.waitForTimeout(900);
+    // welcome-home: the Inicio has no ask field (no placeholder anywhere); its visible name is the state line and the dock's labels
+    // scoped to the Inicio panel: the chat's «Escribí…» textarea and the question's free-text field exist in the page, hidden by opacity/visibility
+    const ph = await r.page.evaluate(() => [...document.querySelectorAll('#nusa-panel [placeholder], #nusa-panel input, #nusa-panel textarea')].map(e => e.getAttribute('placeholder')));
+    assert.deepEqual(ph, [], `no ask field in the Inicio: ${JSON.stringify(ph)}`);
+    const names = await r.page.evaluate(() => [...document.querySelectorAll('#nusa-panel .nusa-dock button')].map(b => b.getAttribute('aria-label')));
+    assert.ok(names.includes('Conversar con Koda') && !names.some(n => /abito/i.test(n)), `the dock speaks Koda: ${JSON.stringify(names)}`);
   } finally { await r.close(); }
   console.log('koda-visible-name-island-check: ok');
 })().catch(e => { console.error(e.message || e); process.exit(1); });

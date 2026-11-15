@@ -19,7 +19,7 @@ const ERR = { id: '0b3a5c9e-8f27-4d11-9a0e-1c2d3e4f5a6b', title: 'Pi falló', de
 const NOTICE = t => ({ id: 'n-pill', title: t, detail: 'Listo', severity: 'info', kind: 'settled', expiresAt: Date.now() + 600000, agent: 'pi', projectName: 'workspace' });
 const snap = (s, notices) => ({ state: s, notices, card: null, request: null, revision: Date.now(), motionOverride: false, unavailable: false, connections: 1 });
 const compact = p => p.evaluate(() => window.__islandSetState('compact'));
-const tab = id => async p => { await p.click('#nusa-tab-' + id, { force: true }); await p.waitForTimeout(800); };
+const tab = id => async p => { await H.goTab(p, id, { force: true }); await p.waitForTimeout(800); };
 const none = async () => {};
 
 // kind: 'expanded' (the floating card) | 'pill' (compact disc). w/h: measured on the tree BEFORE this change (720x150 notch, etc.).
