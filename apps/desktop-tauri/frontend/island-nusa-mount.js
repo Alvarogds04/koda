@@ -58,6 +58,8 @@
   }
   const go = (delta, focus) => { if (appFocused()) return; const to = N.step(current, delta); if (to !== current) select(to, focus); };
   const tabOf = b => N.TABS.findIndex(t => t.id === b.dataset.tab);
+  // the Inicio dock (island-nusa-bodies.js) asks for a tab by id: the same guard as a dot click, then the same select()
+  doc.addEventListener('abito:nusa-go', e => { const to = N.TABS.findIndex(t => e.detail && t.id === e.detail.tab); if (to >= 0 && !appFocused()) select(to); });
 
   nusa.querySelectorAll('[role="tab"]').forEach(b => b.addEventListener('click', e => {
     if (e.isTrusted !== true || appFocused()) return;

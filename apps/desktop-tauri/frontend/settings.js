@@ -377,6 +377,7 @@
   for (const b of [...openers, $('open-settings')].filter(Boolean)) b.addEventListener('click', e => {
     if (e.isTrusted === true) openSettingsWindow();
   });
+  document.addEventListener('abito:nusa-open-settings', () => openSettingsWindow()); // asked by the Inicio dock after ITS trusted click (island-nusa-bodies.js)
   document.addEventListener('island:view', e => {
     if (e.detail === 'chat' && pendingOpen) { const id = pendingOpen; pendingOpen = false; open(id); }
     else if (e.detail !== 'chat' && isOpen()) close(false);

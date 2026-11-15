@@ -23,7 +23,7 @@ if (!H.findPlaywright()) { console.log('SKIPPED island-idle-word-check: no Playw
       assert.equal((await visibleWords(r, '#nusa')).length, 0);
     });
     await test('idle session: «En reposo» appears 1 time(s) in the Nusa Agentes tab (one row chip)', async () => {
-      await r.page.click('[data-tab=agentes]'); await r.page.waitForTimeout(300);
+      await H.goTab(r.page, 'agentes'); await r.page.waitForTimeout(300);
       assert.equal((await visibleWords(r, '#nusa')).length, 1, JSON.stringify(await visibleWords(r, '#nusa')));
     });
   } finally { await r.close(); }

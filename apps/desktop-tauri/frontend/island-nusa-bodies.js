@@ -1,8 +1,8 @@
 'use strict';
 /* HU-057 T3/T4: the three bodies of the Nusa notch (Inicio · Agentes · Avisos), drawn into #nusa-panel with DOM nodes and
-   textContent only. Decisions live in the pure model (island-nusa.js). No host verb is added: chat_action (submit/view),
-   dictation_action (status/hands_free) and window.desktop (snapshot/onState/dismiss/click) are the ones chat.js and island.js
-   already use. Every action needs a trusted event. */
+   textContent only. Decisions live in the pure model (island-nusa.js). No host verb is added: agent_action (Hoy) and
+   window.desktop (snapshot/onState/dismiss/click) are the ones island.js already uses. The Inicio has no ask field: it is Koda, its state
+   line and five icon buttons that click the real destinations. Every action needs a trusted event. */
 (function () {
   const N = window.AbitoNusa, doc = document;
   const panel = doc.getElementById('nusa-panel'), chip = doc.getElementById('nusa-state'), capsule = doc.getElementById('capsule');
@@ -28,59 +28,48 @@
   const focus = () => N.focusView(rows(), focusId, flags());
 
   // ---- Inicio ----
+  // welcome-home (odd/tasks/welcome-home.md): Koda alone (drawn by koda-skin.js, centred by CSS), «Koda · en reposo» under it and five icon
+  // buttons. No ask field: a request is made from Chat. Every button REUSES the real destination with a click; it adds no host verb and no state.
   const home = { built: false };
+  const NS_FILL = 'http://www.w3.org/2000/svg';
+  // real glyphs: bubble / stack / gear are the vendored Coucou paths (24 grid, filled); plug / bell are the notch's own strokes (20 grid)
+  const DOCK = [
+    { label: 'Conversar con Koda', tip: 'Chat', target: 'open-chat', fill: 'M12 3.6c-5 0-9 3.3-9 7.4 0 2.3 1.3 4.4 3.3 5.7-.2 1.2-.8 2.4-1.7 3.4 1.9-.2 3.6-.9 4.9-1.9 .8.2 1.6.3 2.5.3 5 0 9-3.3 9-7.5s-4-7.4-9-7.4z' },
+    { label: 'Hoy', tip: 'Hoy', target: 'open-hoy', event: 'abito:nusa-open-hoy', fill: 'M5 8h14v11.5H5V8zm1.8-3h10.4v1.6H6.8V5zm1.6-2.6h7.2V4H8.4V2.4z' },
+    { label: 'Agentes', tip: 'Agentes', target: 'nusa-tab-agentes', tab: 'agentes', stroke: ['M7 2v4M13 2v4M5 6h10v3a5 5 0 0 1-10 0zM10 14v4'] },
+    { label: 'Avisos', tip: 'Avisos', target: 'nusa-tab-avisos', tab: 'avisos', stroke: ['M5 14V9a5 5 0 0 1 10 0v5l1.5 2h-13z', 'M8.5 18a1.5 1.5 0 0 0 3 0'] },
+    { label: 'Ajustes', tip: 'Ajustes', target: 'open-settings', event: 'abito:nusa-open-settings', fill: 'M12 8.6a3.4 3.4 0 1 0 0 6.8 3.4 3.4 0 0 0 0-6.8zm0 1.8a1.6 1.6 0 1 1 0 3.2 1.6 1.6 0 0 1 0-3.2zM10.9 2h2.2l.35 2.1c.6.17 1.16.4 1.67.71l1.9-1 1.55 1.55-1 1.9c.3.5.54 1.07.7 1.67l2.13.35v2.2l-2.12.35c-.17.6-.4 1.16-.71 1.67l1 1.9-1.55 1.55-1.9-1c-.5.3-1.07.54-1.67.7L13.1 22h-2.2l-.35-2.12c-.6-.17-1.16-.4-1.67-.71l-1.9 1L5.43 18.6l1-1.9c-.3-.5-.54-1.07-.7-1.67L3.6 14.7v-2.2l2.12-.35c.17-.6.4-1.16.71-1.67l-1-1.9 1.55-1.55 1.9 1c.5-.3 1.07-.54 1.67-.7L10.9 2z' },
+  ];
+  function dockGlyph(spec) {
+    const svg = doc.createElementNS(NS_FILL, 'svg'); svg.setAttribute('aria-hidden', 'true');
+    if (spec.stroke) {
+      for (const [k, v] of [['viewBox', '0 0 20 20'], ['fill', 'none'], ['stroke', 'currentColor'], ['stroke-width', '1.8'], ['stroke-linecap', 'round'], ['stroke-linejoin', 'round']]) svg.setAttribute(k, v);
+      for (const d of spec.stroke) { const p = doc.createElementNS(NS_FILL, 'path'); p.setAttribute('d', d); svg.append(p); }
+      return svg;
+    }
+    svg.setAttribute('viewBox', '0 0 24 24'); svg.setAttribute('fill', 'currentColor');
+    const p = doc.createElementNS(NS_FILL, 'path'); p.setAttribute('d', spec.fill); svg.append(p); return svg;
+  }
   function buildHome() {
     home.root = el('div', 'nusa-home');
     home.sub = el('div', 'nusa-sub'); home.live = el('div', 'nusa-live');
-    const form = el('form', 'nusa-field'); form.autocomplete = 'off';
-    home.input = el('input', 'nusa-input'); home.input.type = 'text'; home.input.maxLength = N.DRAFT_MAX;
-    home.input.placeholder = 'Pedile algo a Koda… (o dictalo)'; home.input.setAttribute('aria-label', 'Pedile algo a Koda');
-    home.mic = el('button', 'nusa-fbtn'); home.mic.type = 'button'; home.mic.hidden = true; home.mic.setAttribute('aria-label', 'Dictar');
-    home.mic.append(icon(['M10 3a2.5 2.5 0 0 0-2.5 2.5v4a2.5 2.5 0 0 0 5 0v-4A2.5 2.5 0 0 0 10 3z', 'M5 9.5a5 5 0 0 0 10 0M10 14.5V17']));
-    home.send = el('button', 'nusa-fbtn nusa-send'); home.send.type = 'submit'; home.send.setAttribute('aria-label', 'Enviar'); home.send.disabled = true;
-    home.send.append(icon(['M4 10h11M10.5 5 15.5 10l-5 5']));
-    form.append(home.input, home.mic, home.send);
-    home.reply = el('button', 'nusa-reply'); home.reply.type = 'button'; home.reply.hidden = true;
-    home.reply.setAttribute('aria-label', 'Abrir la conversación completa');
-    home.problem = el('div', 'nusa-problem'); home.problem.setAttribute('role', 'status'); home.problem.hidden = true;
-    home.root.append(home.sub, home.live, form, home.problem, home.reply);
-    let pendingId = null, inFlight = false;
-    const sync = () => { home.send.disabled = inFlight || N.sendCheck(home.input.value) !== null; };
-    home.input.addEventListener('input', () => { pendingId = null; home.problem.hidden = true; sync(); }); // a changed draft is a new request: never reuse the old id
-    home.input.addEventListener('keydown', e => e.stopPropagation()); // arrows move the caret, never the tabs
-    form.addEventListener('submit', e => {
-      e.preventDefault();
-      if (e.isTrusted !== true || inFlight) return;
-      const text = home.input.value, why = N.sendCheck(text);
-      if (why) { home.problem.textContent = why; home.problem.hidden = false; return; }
-      const bytes = new Uint8Array(12); crypto.getRandomValues(bytes);
-      pendingId = pendingId || N.requestId(bytes); // a failed send retries with the same id
-      inFlight = true; sync();
-      call('chat_action', { action: 'submit', text, client_request_id: pendingId }).then(() => {
-        inFlight = false; pendingId = null;
-        if (home.input.value === text) home.input.value = '';
-        sync(); refreshReply();
-      }, error => {
-        inFlight = false; // keep the text and the id
-        home.problem.textContent = (error && error.message) || 'No se pudo enviar.'; home.problem.hidden = false; sync();
+    home.dock = el('div', 'nusa-dock'); home.dock.setAttribute('role', 'group'); home.dock.setAttribute('aria-label', 'Ir a');
+    for (const spec of DOCK) {
+      const b = el('button', 'nusa-dock-btn'); b.type = 'button'; b.setAttribute('aria-label', spec.label); b.dataset.target = spec.target;
+      b.dataset.tip = spec.tip; b.append(dockGlyph(spec)); // the visible label is CSS (::after): it is not panel text and never reserves a line
+      b.addEventListener('click', e => {
+        if (e.isTrusted !== true) return;
+        // Agentes / Avisos: the pager dots ignore a synthetic click (isTrusted), so the dock asks the mount to switch tab itself (same select())
+        if (spec.tab) { doc.dispatchEvent(new CustomEvent('abito:nusa-go', { detail: { tab: spec.tab } })); return; }
+        // Hoy and Ajustes also ignore a synthetic click: each owner listens for a request event and runs its own opener (no logic copied here)
+        if (spec.event) { doc.dispatchEvent(new CustomEvent(spec.event)); return; }
+        const to = doc.getElementById(spec.target); // Chat: its opener accepts a click
+        if (to) to.click();
       });
-    });
-    home.reply.addEventListener('click', e => {
-      if (e.isTrusted !== true) return;
-      const open = doc.getElementById('open-chat'); // the same entry the chat tab uses: opens the full conversation
-      if (open) open.click();
-    });
-    call('dictation_action', { action: 'status' }).then(s => { home.mic.hidden = !(s && s.prefs && s.prefs.enabled === true); }, () => {});
-    home.mic.addEventListener('click', e => { if (e.isTrusted === true) call('dictation_action', { action: 'hands_free' }).catch(() => {}); });
+      home.dock.append(b);
+    }
+    home.root.append(home.sub, home.live, home.dock);
     home.built = true;
-  }
-  function refreshReply() {
-    call('chat_action', { action: 'view' }).then(v => { applyReply(N.replyLine(v)); }, () => {});
-  }
-  function applyReply(text) {
-    if (!home.built) return;
-    home.reply.hidden = !text; home.reply.textContent = text;
-    if (text) home.reply.title = 'Abrir la conversación completa';
   }
   function paintHome() {
     if (!home.built) buildHome();
@@ -230,12 +219,11 @@
     view = e.detail ? e.detail.view : null; focusId = e.detail ? e.detail.focusId : null;
     if (tab === 'avisos') { paintChip(); return; } // notices come from their own snapshot: a session event never rebuilds them (it would eat a click)
     if (tab === 'agentes') { if (!updateAgents()) paintAgents(); paintChip(); return; }
-    if (home.built && doc.activeElement === home.input) { const f = focus(); home.sub.textContent = f ? f.line : 'Koda · en reposo'; home.live.textContent = f && f.live ? f.live : ''; home.live.hidden = !(f && f.live); paintChip(); } else paint();
+    if (tab === 'inicio' && home.built && home.dock.contains(doc.activeElement)) { const f = focus(); home.sub.textContent = f ? f.line : 'Koda · en reposo'; home.live.textContent = f && f.live ? f.live : ''; home.live.hidden = !(f && f.live); paintChip(); } else paint(); // a focused dock button must not be rebuilt under the keyboard
   });
-  doc.addEventListener('abito:nusa-tab', e => { tab = e.detail.tab; paint(); if (tab === 'inicio') refreshReply(); });
+  doc.addEventListener('abito:nusa-tab', e => { tab = e.detail.tab; paint(); });
   if (capsule) new MutationObserver(paintChip).observe(capsule, { attributes: true, attributeFilter: ['data-question', 'data-notice-band'] });
   try { if (window.desktop) { window.desktop.onState(s => setNotices(s && s.notices)); window.desktop.snapshot().then(s => setNotices(s && s.notices), () => {}); } } catch { /* facade optional */ }
-  try { const listen = window.__TAURI__ && window.__TAURI__.event && window.__TAURI__.event.listen; if (listen) listen('chat:state', ev => applyReply(N.replyLine(ev && ev.payload))).catch(() => {}); } catch { /* optional */ }
 
   // ---- K2-13 T6b-1 «Hoy» (S2/S3/S5/S13/S17/S19): the island's day ------------------------------------------------
   // The data arrives already folded by the client (agentclient.rs: one bounded, closed `hoy` view per frame). This mount
@@ -479,6 +467,7 @@
       });
     }
     if (parts.open) parts.open.addEventListener('click', e => { if (e.isTrusted !== true) return; setOpen(!isOpen(), true); });
+    doc.addEventListener('abito:nusa-open-hoy', () => setOpen(!isOpen(), true)); // asked by the Inicio dock after ITS trusted click
     const homeTab = byId('home-tab');
     if (homeTab) homeTab.addEventListener('click', () => { if (isOpen()) setOpen(false, false); }, true);
     doc.addEventListener('abito:nusa-tab', () => { if (isOpen()) { setOpen(false, false); const b = byId('open-hoy'); if (b && typeof b.focus === 'function') b.focus(); } });
@@ -496,5 +485,5 @@
     } catch { /* optional facade */ }
     paintHoy();
   })();
-  paint(); refreshReply();
+  paint();
 })();
