@@ -1179,35 +1179,38 @@ fn a_keychain_that_refuses_is_a_closed_error_and_no_qr() {
     assert!(mdns.records().is_empty());
 }
 
-/// A keychain whose FIRST read parks until the test lets it go, the way a Secret Service waiting on an unlock prompt does.
+/// A keychain whose first read (of `key`, or of anything when `key` is None) PARKS after it has read its value, until the test lets it go, the way
+/// a Secret Service waiting on an unlock prompt does. The value it hands back is the one it read BEFORE parking: what was true when the read began.
 struct Gated {
     inner: Arc<Mem>,
+    key: Option<&'static str>,
     started: std::sync::mpsc::Sender<()>,
     release: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
     once: std::sync::atomic::AtomicBool,
 }
 impl SecretStore for Gated {
     fn get(&self, key: &str) -> Option<String> {
-        if !self.once.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        let value = self.inner.get(key);
+        if self.key.map_or(true, |k| k == key) && !self.once.swap(true, std::sync::atomic::Ordering::SeqCst) {
             let _ = self.started.send(());
             let _ = self.release.lock().unwrap().recv();
         }
-        self.inner.get(key)
+        value
     }
     fn set(&self, key: &str, value: &str) -> Result<(), String> {
         self.inner.set(key, value)
     }
 }
-fn gated(inner: &Arc<Mem>) -> (Gated, std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>) {
+fn gated(inner: &Arc<Mem>, key: Option<&'static str>) -> (Gated, std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>) {
     let (started_tx, started_rx) = std::sync::mpsc::channel();
     let (release_tx, release_rx) = std::sync::mpsc::channel();
-    (Gated { inner: inner.clone(), started: started_tx, release: std::sync::Mutex::new(release_rx), once: Default::default() }, started_rx, release_tx)
+    (Gated { inner: inner.clone(), key, started: started_tx, release: std::sync::Mutex::new(release_rx), once: Default::default() }, started_rx, release_tx)
 }
 
 #[test]
 fn a_keychain_that_waits_for_an_unlock_never_blocks_switching_the_link_off() {
     let mem = Arc::new(Mem::default());
-    let (slow, started, release) = gated(&mem);
+    let (slow, started, release) = gated(&mem, None);
     let link = Arc::new(test_link().0);
     let preparing = { let link = link.clone(); std::thread::spawn(move || link.prepare(&slow)) };
     started.recv_timeout(std::time::Duration::from_secs(5)).expect("prepare reached the keychain");
@@ -1224,10 +1227,11 @@ fn a_keychain_that_waits_for_an_unlock_never_blocks_switching_the_link_off() {
 fn an_unlink_while_the_qr_is_being_prepared_never_leaves_the_revoked_token_on_screen() {
     let mem = Arc::new(Mem::default());
     let old = { pairing::load_or_create_identity(&*mem).unwrap(); pairing::token(&*mem).unwrap() };
-    let (slow, started, release) = gated(&mem);
+    // Parked AFTER it read the token: it holds the OLD one while the human unpairs, the case a stale publish would show.
+    let (slow, started, release) = gated(&mem, Some(pairing::TOKEN_KEY));
     let link = Arc::new(test_link().0);
     let preparing = { let link = link.clone(); std::thread::spawn(move || link.prepare(&slow)) };
-    started.recv_timeout(std::time::Duration::from_secs(5)).expect("prepare is parked on its first read, with the old token on the way");
+    started.recv_timeout(std::time::Duration::from_secs(5)).expect("prepare has read the old token and is parked");
     // The human unpairs while the read is parked. Run it on its own thread with a bounded wait: if it had to queue behind the parked read it
     // would otherwise hang this test.
     let unlinking = { let link = link.clone(); let mem = mem.clone(); std::thread::spawn(move || link.unlink(&*mem)) };
