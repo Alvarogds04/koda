@@ -211,7 +211,7 @@ fn persist(app: &AppHandle, on: bool) -> Result<(), BridgeError> {
 #[cfg(target_os = "linux")]
 fn act(app: &AppHandle, action: &'static str) -> Result<Value, BridgeError> {
     match action {
-        "status" => Ok(link_of(app).link.status()),
+        "status" => Ok(status_with_qr(app)),
         "enable" => {
             // The wish is recorded first: a taken port must not read as «the human turned it off».
             persist(app, true)?;
@@ -237,10 +237,21 @@ fn act(app: &AppHandle, action: &'static str) -> Result<Value, BridgeError> {
     }
 }
 
+/// The status with the pairing QR while the link is OFF (odd/tasks/phone-qr-visible.md): the certificate and the token
+/// are made (or read) first, in memory and in the keychain only, so the QR can be drawn. `prepare` binds no port, starts
+/// nothing and announces nothing; it does nothing while the link runs, and after the first call it does not touch the
+/// keychain again. A keychain that refuses is already in the status as its closed error, so its answer is not needed here.
+#[cfg(target_os = "linux")]
+fn status_with_qr(app: &AppHandle) -> Value {
+    let link = link_of(app);
+    let _ = link.link.prepare(&keystore::keychain());
+    link.link.status()
+}
+
 /// The status after a change, told to every page on `phone:state` (neither the switch nor the page ever guesses).
 #[cfg(target_os = "linux")]
 fn finish(app: &AppHandle) -> Result<Value, BridgeError> {
-    let value = link_of(app).link.status();
+    let value = status_with_qr(app);
     // D6: the status carries the pairing link (and so the token): only the Ajustes window gets it, never a broadcast.
     let _ = app.emit_to(PHONE_STATE_TARGET, PHONE_STATE, value.clone());
     Ok(value)
@@ -406,6 +417,22 @@ mod tests {
         assert!(!code.contains(".emit("), "no broadcast emit in the phone host");
         assert_eq!(code.matches(".emit_to(PHONE_STATE_TARGET, PHONE_STATE,").count(), 1, "one targeted send");
         assert_eq!(code.matches(".emit_to(").count(), 1, "no other window is ever sent the status");
+    }
+
+    /// phone-qr-visible: a platform that does not run the link must never draw a QR or make a credential. The non-Linux answer keeps `link` and
+    /// `qrSvg` null, and the code that prepares the credential (`status_with_qr`) exists only on Linux. This pins the source because the non-Linux
+    /// path does not compile on the machine the tests run on.
+    #[test]
+    fn a_platform_without_the_link_never_gets_a_qr_or_a_credential() {
+        let src = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/phonehost.rs")).unwrap();
+        let body = src.split("#[cfg(test)]").next().unwrap();
+        let start = body.find("fn unsupported()").expect("the closed non-Linux answer exists");
+        let answer = &body[start..body[start..].find("\n}\n").map(|i| start + i).expect("its end")];
+        assert!(answer.contains(r#""link": null, "qrSvg": null"#), "the closed answer carries no link and no QR: {answer}");
+        assert!(answer.contains(r#""running": false"#) && answer.contains(r#""error": "unsupported""#));
+        let at = body.find("fn status_with_qr").expect("the status with the QR exists");
+        let before: Vec<&str> = body[..at].lines().rev().take(2).collect();
+        assert!(before.iter().any(|l| l.trim() == r#"#[cfg(target_os = "linux")]"#), "status_with_qr is Linux-only: {before:?}");
     }
 
     /// The closed schema of the one phone-link command: exactly one action out of four, no coercion.

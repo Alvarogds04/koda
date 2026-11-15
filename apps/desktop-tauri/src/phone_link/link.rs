@@ -14,7 +14,7 @@ use super::server::{self, Decisions, Features, Shared};
 use super::source;
 use serde_json::{json, Value};
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use tokio::sync::oneshot;
@@ -63,6 +63,16 @@ struct On {
     announcement: Option<Box<dyn Announcement>>,
     /// [`MDNS_ON`], [`MDNS_OFF`] or [`MDNS_ERROR`] — the non-fatal half of the status.
     mdns: &'static str,
+    /// The credential [`Link::prepare`] read or made while the link is off, so the QR can be drawn without a listener.
+    /// It lives in memory only (the keychain stays the one place it is stored) and is dropped by `unlink`.
+    prepared: Option<Prepared>,
+}
+
+/// What the QR of a link that is off encodes: the same certificate pin and token `enable` will use.
+struct Prepared {
+    fingerprint: String,
+    token: String,
+    name: String,
 }
 
 impl Default for On {
@@ -77,6 +87,7 @@ impl Default for On {
             error: None,
             announcement: None,
             mdns: MDNS_OFF,
+            prepared: None,
         }
     }
 }
@@ -97,6 +108,12 @@ pub struct Link {
     /// second enable that loses the bind reports `port_in_use` and clears what the first one started, and a disable
     /// can slip under an enable that has not bound yet and leave the link running after the human turned it off.
     life: Mutex<()>,
+    /// Serialises the keychain read-or-mint of the certificate and the token: `prepare` (a status read) and `enable` both do it, and with an
+    /// empty keychain two at once would each mint a certificate. Lock order is `life` → `prep` → `on`; `prepare` takes `prep` and never `life`, so
+    /// a keychain that waits for an unlock prompt can hold up another preparation but never `disable`, `unlink` or the exit path.
+    prep: Mutex<()>,
+    /// Bumped by `unlink` every time the token is replaced. A `prepare` that read the keychain before that must not publish what it read.
+    epoch: AtomicU64,
     on: Mutex<On>,
 }
 
@@ -129,6 +146,8 @@ impl Link {
             decisions,
             enabled: AtomicBool::new(false),
             life: Mutex::new(()),
+            prep: Mutex::new(()),
+            epoch: AtomicU64::new(0),
             on: Mutex::new(On::default()),
         }
     }
@@ -186,6 +205,52 @@ impl Link {
         self.lock().error = Some(error);
     }
 
+    /// Makes (or reads) the certificate and the token so Ajustes can draw the QR while the link is OFF. It binds no
+    /// port, starts no thread and announces nothing (S3): a QR is just text, and the phone can pair only after the human
+    /// switches the link on. Idempotent: the keychain is read the first time and after an `unlink`, never on every
+    /// status (a keychain that fails now and then must not mint a new certificate each time and lock a paired phone out).
+    ///
+    /// It does NOT take the lifecycle lock: the keychain can wait on an unlock prompt for as long as the human takes, and a status read must
+    /// never hold `disable`, `unlink` or the exit path behind it. What it read is published only if nothing that could have made it stale
+    /// happened meanwhile (an `unlink` bumps `epoch`; a running link already has its own credential).
+    pub fn prepare(&self, store: &dyn SecretStore) -> Result<(), &'static str> {
+        if self.prepared_or_running() {
+            return Ok(());
+        }
+        let _prep = self.prep.lock().unwrap_or_else(|e| e.into_inner());
+        if self.prepared_or_running() {
+            return Ok(()); // another status read finished while this one waited
+        }
+        let epoch = self.epoch.load(Ordering::SeqCst);
+        let read = pairing::load_or_create_identity(store)
+            .and_then(|identity| pairing::token(store).map(|token| (identity, token)));
+        let mut on = self.lock();
+        match read {
+            Err(_) => {
+                // No `failed()` here: it resets the listener's bookkeeping and assumes the lifecycle lock is held. Only tell why there is no QR.
+                if on.error.is_none() {
+                    on.error = Some("keystore");
+                }
+                Err("keystore")
+            }
+            Ok((identity, token)) => {
+                if self.epoch.load(Ordering::SeqCst) == epoch && on.shared.is_none() && on.prepared.is_none() {
+                    on.prepared = Some(Prepared { fingerprint: identity.fingerprint, token, name: pairing::computer_name() });
+                }
+                // A keystore error from a failed `enable` (the switch is on) is not ours to clear; one left by an earlier status read is.
+                if on.error == Some("keystore") && !self.enabled.load(Ordering::SeqCst) {
+                    on.error = None;
+                }
+                Ok(())
+            }
+        }
+    }
+
+    fn prepared_or_running(&self) -> bool {
+        let on = self.lock();
+        on.shared.is_some() || on.prepared.is_some()
+    }
+
     /// Starts listening on `bind` (`0.0.0.0:47821` in the app; `127.0.0.1:0` in tests, where the bound port is
     /// then reported by [`Link::status`]). Idempotent: a running link is left exactly as it is.
     pub fn enable(&self, store: &dyn SecretStore, bind: SocketAddr) -> Result<(), &'static str> {
@@ -194,14 +259,16 @@ impl Link {
         if self.running() {
             return Ok(());
         }
-        let identity = match pairing::load_or_create_identity(store) {
-            Ok(identity) => identity,
+        let loaded = {
+            // Under `prep`: a status read preparing the QR must not mint a second certificate next to this one.
+            let _prep = self.prep.lock().unwrap_or_else(|e| e.into_inner());
+            pairing::load_or_create_identity(store).and_then(|identity| pairing::token(store).map(|token| (identity, token)))
+        };
+        let (identity, token) = match loaded {
+            Ok(pair) => pair,
             Err(_) => return Err(self.failed("keystore")),
         };
-        let token = match pairing::token(store) {
-            Ok(token) => token,
-            Err(_) => return Err(self.failed("keystore")),
-        };
+        let qr_token = token.clone();
         let acceptor = match server::tls_acceptor(&identity) {
             Ok(acceptor) => acceptor,
             Err(_) => return Err(self.failed("tls")),
@@ -261,6 +328,8 @@ impl Link {
                     Err(_) => (None, MDNS_ERROR),
                 };
                 let mut on = self.lock();
+                // What the link serves is what the QR shows once it is switched off again (no stale pin or token from an earlier read).
+                on.prepared = Some(Prepared { fingerprint: identity.fingerprint.clone(), token: qr_token, name: name.clone() });
                 on.stop = Some(stop_tx);
                 on.thread = Some(thread);
                 on.shared = Some(shared);
@@ -331,6 +400,10 @@ impl Link {
             if shared.is_some() {
                 on.error = None;
             }
+            // The token the QR carried was just revoked: it is never drawn again, `prepare` reads the new one. The epoch tells a
+            // `prepare` that is still reading the keychain to throw away what it read.
+            self.epoch.fetch_add(1, Ordering::SeqCst);
+            on.prepared = None;
             shared
         };
         if let Some(shared) = shared {
@@ -373,6 +446,11 @@ impl Link {
                 let token = shared.token.lock().unwrap_or_else(|e| e.into_inner()).clone();
                 Some(pairing::pairing_link(host, on.port, &on.fingerprint, &token, &on.name))
             }
+            // Off, but prepared: the QR of the link that will listen on the default port once the human turns it on. An
+            // error (a port that something else holds, a keychain that refused) is shown instead of a QR that cannot pair.
+            (None, Some(host)) if on.error.is_none() => on.prepared.as_ref().map(|p| {
+                pairing::pairing_link(host, super::ids::DEFAULT_PORT, &p.fingerprint, &p.token, &p.name)
+            }),
             _ => None,
         };
         let qr_svg = link.as_deref().and_then(pairing::qr_svg);
