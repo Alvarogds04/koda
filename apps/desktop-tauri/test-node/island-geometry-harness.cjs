@@ -151,6 +151,8 @@ async function setup({ scenario, server, base, browser, page }) {
             snap.revision += 1; queueMicrotask(() => window.__emit('desktop:state', structuredClone(snap)));
           }
           if (a === 'autoClose') { (window.__autoCloses = window.__autoCloses || []).push(performance.now()); if (!window.__refuseClose) { snap.state = 'compact'; snap.revision += 1; queueMicrotask(() => window.__islandSetState && window.__islandSetState('compact')); } else throw new Error('pendiente'); }
+          // opt-in (island-koda-open-check): the real host folds on `close`, which the fold button sends; the fake otherwise ignores it
+          if (a === 'close' && scenario.closeFolds) { snap.state = 'compact'; snap.revision += 1; queueMicrotask(() => window.__islandSetState && window.__islandSetState('compact')); }
           if (a === 'expand') { snap.state = 'expanded'; snap.revision += 1; queueMicrotask(() => window.__islandSetState && window.__islandSetState('overview')); }
           return structuredClone(snap);
         }
