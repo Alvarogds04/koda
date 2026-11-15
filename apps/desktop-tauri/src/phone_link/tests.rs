@@ -1179,6 +1179,92 @@ fn a_keychain_that_refuses_is_a_closed_error_and_no_qr() {
     assert!(mdns.records().is_empty());
 }
 
+/// A keychain whose FIRST read parks until the test lets it go, the way a Secret Service waiting on an unlock prompt does.
+struct Gated {
+    inner: Arc<Mem>,
+    started: std::sync::mpsc::Sender<()>,
+    release: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+    once: std::sync::atomic::AtomicBool,
+}
+impl SecretStore for Gated {
+    fn get(&self, key: &str) -> Option<String> {
+        if !self.once.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            let _ = self.started.send(());
+            let _ = self.release.lock().unwrap().recv();
+        }
+        self.inner.get(key)
+    }
+    fn set(&self, key: &str, value: &str) -> Result<(), String> {
+        self.inner.set(key, value)
+    }
+}
+fn gated(inner: &Arc<Mem>) -> (Gated, std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>) {
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    (Gated { inner: inner.clone(), started: started_tx, release: std::sync::Mutex::new(release_rx), once: Default::default() }, started_rx, release_tx)
+}
+
+#[test]
+fn a_keychain_that_waits_for_an_unlock_never_blocks_switching_the_link_off() {
+    let mem = Arc::new(Mem::default());
+    let (slow, started, release) = gated(&mem);
+    let link = Arc::new(test_link().0);
+    let preparing = { let link = link.clone(); std::thread::spawn(move || link.prepare(&slow)) };
+    started.recv_timeout(std::time::Duration::from_secs(5)).expect("prepare reached the keychain");
+    // The status read is parked on the keychain. Turning the link off must not wait for it (it used to share the lifecycle lock).
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    { let link = link.clone(); std::thread::spawn(move || { link.disable(); let _ = done_tx.send(()); }); }
+    let returned = done_rx.recv_timeout(std::time::Duration::from_secs(2)).is_ok();
+    let _ = release.send(());
+    assert_eq!(preparing.join().unwrap(), Ok(()));
+    assert!(returned, "disable returned while the keychain read was still parked");
+}
+
+#[test]
+fn an_unlink_while_the_qr_is_being_prepared_never_leaves_the_revoked_token_on_screen() {
+    let mem = Arc::new(Mem::default());
+    let old = { pairing::load_or_create_identity(&*mem).unwrap(); pairing::token(&*mem).unwrap() };
+    let (slow, started, release) = gated(&mem);
+    let link = Arc::new(test_link().0);
+    let preparing = { let link = link.clone(); std::thread::spawn(move || link.prepare(&slow)) };
+    started.recv_timeout(std::time::Duration::from_secs(5)).expect("prepare is parked on its first read, with the old token on the way");
+    // The human unpairs while the read is parked. Run it on its own thread with a bounded wait: if it had to queue behind the parked read it
+    // would otherwise hang this test.
+    let unlinking = { let link = link.clone(); let mem = mem.clone(); std::thread::spawn(move || link.unlink(&*mem)) };
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let _ = release.send(());
+    assert_eq!(unlinking.join().unwrap(), Ok(()), "the human unpairs meanwhile");
+    assert_eq!(preparing.join().unwrap(), Ok(()));
+    let status = link.status_for(Some("192.168.1.20".to_string()));
+    assert!(status["link"].is_null() && status["qrSvg"].is_null(), "no QR rather than a QR with the token that was just revoked: {status}");
+    assert_eq!(link.prepare(&*mem), Ok(()));
+    let new = field(link.status_for(Some("192.168.1.20".to_string()))["link"].as_str().expect("prepared again"), "token");
+    assert_ne!(new, old, "the next QR carries the new token");
+    assert_eq!(new, pairing::token(&*mem).unwrap());
+}
+
+#[test]
+fn preparing_never_hides_why_an_enable_failed() {
+    let mem = Mem::default();
+    let (link, _mdns) = test_link();
+    assert_eq!(link.enable(&Refusing, "127.0.0.1:0".parse().unwrap()), Err("keystore"));
+    assert_eq!(link.prepare(&mem), Ok(()), "a keychain that answers now");
+    let status = link.status_for(Some("192.168.1.20".to_string()));
+    assert_eq!(status["error"].as_str(), Some("keystore"), "the failed enable is still told");
+    assert!(status["link"].is_null(), "and no QR sits next to «could not turn on»");
+}
+
+#[test]
+fn what_enable_serves_is_what_the_qr_shows_once_the_link_is_switched_off() {
+    let (link, _mdns) = test_link();
+    let mem = Mem::default();
+    assert_eq!(link.enable(&mem, "127.0.0.1:0".parse().unwrap()), Ok(()), "turned on without ever opening Ajustes");
+    let running = field(link.status_for(Some("192.168.1.20".to_string()))["link"].as_str().expect("while it runs"), "token");
+    link.disable();
+    let off = link.status_for(Some("192.168.1.20".to_string()));
+    assert_eq!(field(off["link"].as_str().expect("off again: the QR is there without a prepare"), "token"), running);
+}
+
 #[test]
 fn the_link_serves_a_paired_phone_and_everything_stops_when_it_is_switched_off() {
     run(async {
@@ -1216,7 +1302,9 @@ fn the_link_serves_a_paired_phone_and_everything_stops_when_it_is_switched_off()
         let off = link.status_for(Some("192.168.1.20".to_string()));
         assert_eq!((off["enabled"].as_bool(), off["running"].as_bool()), (Some(false), Some(false)));
         assert_eq!(off["port"], json!(0));
-        assert!(off["link"].is_null() && off["qrSvg"].is_null());
+        // phone-qr-visible: switched off the QR is back (the same credential the link served), with nothing listening.
+        assert_eq!(field(off["link"].as_str().expect("S2: the QR is there once it is off again"), "token"), field(&text, "token"));
+        assert!(off["qrSvg"].is_string());
     });
 }
 
