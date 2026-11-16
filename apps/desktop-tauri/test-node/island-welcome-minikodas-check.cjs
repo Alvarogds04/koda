@@ -18,6 +18,7 @@ const read = r => r.page.evaluate(() => {
   const dock = [...document.querySelectorAll('#nusa-panel .nusa-dock button')].map(b => ({ ...box(b), label: b.getAttribute('aria-label') }));
   return { apps, dock, koda: k && box(k), island: box(isl), ih: Math.round(isl.getBoundingClientRect().height), apps2: document.getElementById('nusa').dataset.apps };
 });
+const tracks = cols => String(cols).trim().split(/\s+/).length; // 3 = the three-column Inicio, 2 = the usual body + Koda column
 const rowsOf = apps => { const m = new Map(); for (const a of apps) { const k = Math.round(a.cy); m.set(k, [...(m.get(k) || []), a]); } return [...m.entries()].sort((x, y) => x[0] - y[0]).map(e => e[1]); };
 (async () => {
   const r = await H.open({ sessions: [], engine: 'ok' });
@@ -53,5 +54,23 @@ const rowsOf = apps => { const m = new Map(); for (const a of apps) { const k = 
     const fit = await r.page.evaluate(() => { const i = document.getElementById('island').getBoundingClientRect(); return [...document.querySelectorAll('#nusa-apps button')].every(b => { const x = b.getBoundingClientRect(); return x.bottom <= i.bottom && x.right <= i.right; }); });
     assert.ok(fit, 'every disc stays inside the island at the ceiling');
   } finally { await r.close(); }
+  // review R4-001: the three-column grid must NOT apply with a card up or a question waiting. A pending question also carries data-takeover=waiting (the older
+  // exclusion), so it guards the scope; the data-card exclusion is pinned by setting the attribute and reading the grid in the SAME task (nothing can repaint it).
+  const q = await H.open({ question: 'plain', sessions: [], engine: 'ok' });
+  try {
+    await q.page.waitForTimeout(600); await register(q, 8, 0); await q.page.waitForTimeout(500);
+    const st = await q.page.evaluate(() => ({ q: document.getElementById('capsule').dataset.question || '', cols: getComputedStyle(document.getElementById('nusa-body')).gridTemplateColumns, rows: document.getElementById('capsule').dataset.appRows || null }));
+    assert.equal(st.q, 'pending', 'a question is waiting: ' + JSON.stringify(st));
+    assert.equal(tracks(st.cols), 2, 'a pending question does NOT get the three-column grid: ' + JSON.stringify(st));
+    assert.equal(st.rows, null, 'the island does not grow rows behind a question: ' + JSON.stringify(st));
+  } finally { await q.close(); }
+  const c = await H.open({ sessions: [], engine: 'ok' });
+  try {
+    await c.page.waitForTimeout(500); await register(c, 3, 0);
+    const both = await c.page.evaluate(() => { const cap = document.getElementById('capsule'), cols = () => getComputedStyle(document.getElementById('nusa-body')).gridTemplateColumns;
+      const before = cols(); cap.dataset.card = 'github'; const withCard = cols(); delete cap.dataset.card; return { before, withCard }; });
+    assert.equal(tracks(both.before), 3, 'plain Inicio with apps IS the three-column grid: ' + JSON.stringify(both));
+    assert.equal(tracks(both.withCard), 2, 'R4-001: with a card up (data-card) the three-column grid does NOT apply: ' + JSON.stringify(both));
+  } finally { await c.close(); }
   console.log('island-welcome-minikodas-check: ok');
 })().catch(e => { console.error('FAIL', e.message); process.exit(1); });
