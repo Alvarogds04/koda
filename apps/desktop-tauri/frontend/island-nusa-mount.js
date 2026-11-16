@@ -58,6 +58,40 @@
   }
   const go = (delta, focus) => { if (appFocused()) return; const to = N.step(current, delta); if (to !== current) select(to, focus); };
   const tabOf = b => N.TABS.findIndex(t => t.id === b.dataset.tab);
+
+  // nusa-home (human, 16-nov: «cuando este navegando por pantallas de koda que tenga el boton home en el medio»; «abajo al centro»): away from the Inicio
+  // (Agentes, Avisos, or Hoy open) a house disc, bottom and centred, goes back to the Inicio. The pager dots step to its left (CSS, #nusa[data-home]).
+  // select(0) also closes Hoy: island-nusa-bodies.js listens for abito:nusa-tab. A script's click is never a decision: only a trusted click moves.
+  const island = $('island');
+  const homeBtn = doc.createElement('button');
+  homeBtn.id = 'nusa-home'; homeBtn.type = 'button'; homeBtn.hidden = true; homeBtn.setAttribute('aria-label', 'Inicio'); homeBtn.setAttribute('data-tip', 'Inicio');
+  (() => {
+    const svg = doc.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 20 20'); svg.setAttribute('width', '14'); svg.setAttribute('height', '14'); svg.setAttribute('aria-hidden', 'true');
+    svg.setAttribute('fill', 'none'); svg.setAttribute('stroke', 'currentColor'); svg.setAttribute('stroke-width', '1.8');
+    svg.setAttribute('stroke-linecap', 'round'); svg.setAttribute('stroke-linejoin', 'round');
+    for (const d of ['M3.5 9.5 10 4l6.5 5.5', 'M5 8.5V16h10V8.5']) { const path = doc.createElementNS('http://www.w3.org/2000/svg', 'path'); path.setAttribute('d', d); svg.append(path); }
+    homeBtn.append(svg);
+  })();
+  if (island) island.append(homeBtn);
+  homeBtn.addEventListener('click', e => { if (e.isTrusted !== true) return; select(0, false); });
+  function paintHome() {
+    if (!capsule) return;
+    const calm = capsule.dataset.phase === 'expanded' && capsule.dataset.view === 'overview' && !capsule.dataset.card
+      && !['pending', 'expired', 'outcome'].includes(capsule.dataset.question || '') && !['waiting', 'finished', 'error'].includes(capsule.dataset.takeover || '');
+    const away = capsule.dataset.hoy === 'open' || (nusa.dataset.tab !== 'inicio' && !appFocused());
+    const on = calm && away;
+    homeBtn.hidden = !on;
+    if (on) nusa.dataset.home = 'on'; else delete nusa.dataset.home;
+  }
+  doc.addEventListener('abito:nusa-tab', paintHome);
+  doc.addEventListener('abito:nusa-app', paintHome);
+  if (typeof MutationObserver === 'function' && capsule) {
+    const watch = new MutationObserver(paintHome);
+    watch.observe(capsule, { attributes: true, attributeFilter: ['data-hoy', 'data-takeover', 'data-card', 'data-question', 'data-view', 'data-phase'] });
+    watch.observe(nusa, { attributes: true, attributeFilter: ['data-tab', 'data-app'] });
+  }
+  paintHome();
   // the Inicio dock (island-nusa-bodies.js) asks for a tab by id: the same guard as a dot click, then the same select()
 
   nusa.querySelectorAll('[role="tab"]').forEach(b => b.addEventListener('click', e => {
