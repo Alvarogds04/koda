@@ -42,6 +42,14 @@ function koda(m, name) {
     const name = `${engine}/${theme}`, r = await H.open({ engine, theme });
     try {
       await r.page.waitForTimeout(600);
+      // welcome-home (human, 16-nov): the Inicio is Koda's welcome; the engine band must NOT be there (it confuses a new user), the island stays 150
+      // and Koda is not stuck in the error pose. The band stays on the other tabs and is measured there exactly as before.
+      const w = await measure(r);
+      assert.equal(await r.page.evaluate(() => getComputedStyle(document.getElementById('engine-band')).display), 'none', `${name}: no engine band on the Inicio`);
+      assert.equal(w.island.h, 150, `${name}: the Inicio island stays 150`);
+      assert.notEqual(await r.page.evaluate(() => window.__koda.current), 'error', `${name}: Koda is not in the error pose on the Inicio`);
+      assert.ok(w.kodaOp > 0, `${name}: Koda visible`); assert.deepEqual([w.koda.w, w.koda.h], [64, 64], `${name}: Koda k=2`); koda(w, name);
+      await H.goTab(r.page, 'agentes'); await r.page.waitForTimeout(600);
       const m = await measure(r);
       assert.deepEqual(m.btns.map(b => b.text), words, `${name}: band buttons`);
       assert.equal(m.island.h, 186, `${name}: island height frozen`); assert.equal(m.band.h, 32, `${name}: band height frozen`);
@@ -52,13 +60,8 @@ function koda(m, name) {
         assert.ok(x.vis.r <= m.island.r - 8 && x.vis.b <= m.island.t + m.island.h, `${name}: ${x.text} clipped by the island edge`);
         const air = x.vis.t - m.dots.b; assert.ok(air >= 8, `${name}: ${x.text} only ${air}px below the dots box (dots ${m.dots.t}-${m.dots.b}, button ${x.vis.t}-${x.vis.b})`);
       }
-      // (A) Koda
-      assert.ok(m.kodaOp > 0, `${name}: Koda visible`);
-      assert.deepEqual([m.koda.w, m.koda.h], [64, 64], `${name}: Koda k=2`);
-      koda(m, name);
-      assert.equal(m.bandHit, false, `${name}: Koda overlaps the band`); assert.deepEqual(m.kodaHits, [], `${name}: Koda overlaps controls`);
-      assert.equal(await r.page.evaluate(() => window.__koda.current), 'error', `${name}: Koda error`);
-      for (const tab of ['agentes', 'avisos']) { await H.goTab(r.page, tab); await r.page.waitForTimeout(500); const t = await measure(r); koda(t, `${name}/${tab}`, false); assert.deepEqual(t.kodaHits, [], `${name}/${tab}: Koda overlaps controls`); }
+      // the band appears when the human leaves the Inicio, and Koda startles («asustado») for a moment before it settles into the error pose: measure the settled frame, as on the Inicio before
+      await H.goTab(r.page, 'avisos'); await r.page.waitForTimeout(2500); const t = await measure(r); koda(t, `${name}/avisos`, false); assert.deepEqual(t.kodaHits, [], `${name}/avisos: Koda overlaps controls`);
       await r.page.click('#nusa-tab-inicio'); await r.page.waitForTimeout(300);
       await r.screenshot(`/tmp/nusa-engine-${engine === 'down' ? 'down' : 'no-account'}-${theme}.png`);
     } finally { await r.close(); }

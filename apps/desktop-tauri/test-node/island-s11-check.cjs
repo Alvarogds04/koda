@@ -8,6 +8,9 @@ if (!H.findPlaywright()) { console.log('SKIPPED island-s11-check: no playwright 
   {
     const r = await H.open({ engine: 'down' });
     try {
+      // welcome-home: the Inicio has no band; it is on the other tabs
+      assert.ok(!(await r.measure('#engine-band'))[0].shown, 'no band on the Inicio'); assert.equal(Math.round((await r.measure('#island'))[0].h), 150, 'the Inicio stays 150');
+      await H.goTab(r.page, 'agentes'); await r.page.waitForTimeout(800);
       const isl = (await r.measure('#island'))[0]; assert.equal(Math.round(isl.h), 186, 'band zone: 150 + 36 (HU-057 L4/L5: Nusa notch is 150 high, was 184 -> 220)');
       const b = (await r.measure('#engine-band'))[0]; assert.ok(b && b.shown, 'the band is drawn');
       assert.equal(Math.round(b.h), 32); assert.equal(Math.round(b.top - isl.top), 144) /* HU-057: 150-6, was 184-6 */; assert.ok(b.bottom <= isl.bottom + 0.5);
@@ -23,6 +26,7 @@ if (!H.findPlaywright()) { console.log('SKIPPED island-s11-check: no playwright 
   {
     const r = await H.open({ engine: 'account' });
     try {
+      await H.goTab(r.page, 'agentes'); await r.page.waitForTimeout(800);
       const k = await r.page.evaluate(() => [document.getElementById('engine-band').dataset.kind, document.getElementById('engine-band-label').textContent]);
       assert.deepEqual(k, ['account', 'Sin cuenta']);
     } finally { await r.close(); }

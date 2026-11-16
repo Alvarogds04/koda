@@ -71,12 +71,18 @@ const covered = list => list.filter(c => !c.ok);
   {
     const r = await H.open({ engine: 'down' });
     try {
+      // welcome-home (human, 16-nov): the Inicio has NO engine band (it confuses a new user) and keeps Koda k=2 centred, not in the error pose;
+      // the band stays on the other tabs, where its controls are tested as before.
+      await r.page.waitForTimeout(800);
+      const ik = await r.page.evaluate(() => { const k = document.querySelector('.koda-sprite[data-koda-slot="nusa"]'); const b = k && k.getBoundingClientRect(), i = document.getElementById('island').getBoundingClientRect(); return b && { w: b.width, h: b.height, centred: Math.abs((b.left + b.right) / 2 - (i.left + i.right) / 2) <= 3 }; }); // welcome-home: Koda is centred in the Inicio
+      assert.deepEqual(ik, { w: 64, h: 64, centred: true }, 'Inicio keeps Koda k=2, now centred');
+      assert.equal(await r.page.evaluate(() => getComputedStyle(document.getElementById('engine-band')).display), 'none', 'Inicio: no engine band');
+      assert.notEqual(await r.page.evaluate(() => window.__koda.current), 'error', 'Inicio: Koda is not in the error pose');
+      await H.goTab(r.page, 'agentes'); await r.page.waitForTimeout(2500);
       const c = await controls(r, '#engine-band'); const words = c.map(x => x.text);
       assert.deepEqual(words.sort(), ['Omitir', 'Revisar'], 'engine band: Revisar + Omitir');
       assert.deepEqual(covered(c), [], 'engine band: no control covered');
-      const ik = await r.page.evaluate(() => { const k = document.querySelector('.koda-sprite[data-koda-slot="nusa"]'); const b = k && k.getBoundingClientRect(), i = document.getElementById('island').getBoundingClientRect(); return b && { w: b.width, h: b.height, centred: Math.abs((b.left + b.right) / 2 - (i.left + i.right) / 2) <= 3 }; }); // welcome-home: Koda is centred in the Inicio
-      assert.deepEqual(ik, { w: 64, h: 64, centred: true }, 'Inicio keeps Koda k=2, now centred');
-      await r.page.waitForTimeout(500); assert.equal(await r.page.evaluate(() => window.__koda.current), 'error', 'engine band: Koda error');
+      assert.equal(await r.page.evaluate(() => window.__koda.current), 'error', 'engine band: Koda error (on the tabs the band is still shown)');
       await r.screenshot('/tmp/nusa-t4-engine.png');
     } finally { await r.close(); }
   }

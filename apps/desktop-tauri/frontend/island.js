@@ -776,8 +776,11 @@
     }
     // S11: a resolved problem forgets its «Omitir»; a skipped one stays silent until it resolves and comes back
     if (!engineRow && omitted()) setOmitted(null);
-    const band = $('engine-band'), on = !!engineRow && omitted() !== engineRow.kind;
-    capsule.dataset.engineBand = engineRow ? (on ? 'on' : 'omitted') : 'off';
+    // welcome-home (human, 16-nov): the Inicio is Koda's welcome, and an engine/account notice there («Sin motor», «Sin cuenta») only confuses a new user. The
+    // band stays for the other tabs and states exactly as before; on the welcome it is not drawn, the island stays 150 and Koda is not put in the error pose.
+    const nusaEl = document.getElementById('nusa'), onWelcome = capsule.dataset.view === 'overview' && !!nusaEl && nusaEl.dataset.tab === 'inicio';
+    const band = $('engine-band'), on = !!engineRow && omitted() !== engineRow.kind && !onWelcome;
+    capsule.dataset.engineBand = engineRow ? (on ? 'on' : (onWelcome ? 'welcome' : 'omitted')) : 'off';
     if (band) {
       band.hidden = !on;
       if (engineRow) {
@@ -788,6 +791,9 @@
     }
     if (on !== engineBandOn) { engineBandOn = on; render(); }
   }
+  // the band depends on WHERE the human is (the welcome hides it), not only on the engine: repaint when the tab or the view changes
+  document.addEventListener('abito:nusa-tab', () => paintEngine());
+  new MutationObserver(() => paintEngine()).observe(capsule, { attributes: true, attributeFilter: ['data-view'] });
   const skipEngine = $('engine-band-skip');
   if (skipEngine) skipEngine.addEventListener('click', event => { if (event.isTrusted === true && engineRow) { setOmitted(engineRow.kind); paintEngine(); } });
   const linkEngine = $('engine-band-link');
