@@ -1068,4 +1068,19 @@
   // R4 needs to know whether the ACTIVE role fixes a model: one read-only
   // `view` (the section issues the same one); the page never writes a role.
   specialistsAction({ action: 'view' }).then(applySpecialists, () => {});
+  // welcome-home (human, 16-nov): the engine/account notice («Sin cuenta», «Sin motor»…) is shown HERE, in the conversations, and no longer in the island.
+  // island.js hands over the row (display text + the settings target it already used); the button only asks Ajustes for that section, after a trusted click.
+  {
+    const note = document.getElementById('chat-engine-note'), label = document.getElementById('chat-engine-note-label'), btn = document.getElementById('chat-engine-note-btn');
+    let target = null;
+    if (note && label && btn) {
+      document.addEventListener('abito:engine-row', event => {
+        const row = event.detail && typeof event.detail === 'object' ? event.detail : null;
+        target = row && row.target ? row.target : null;
+        note.hidden = !row;
+        if (row) { label.textContent = row.label || ''; btn.textContent = row.link || ''; btn.setAttribute('aria-label', row.aria || row.link || ''); btn.hidden = !target; }
+      });
+      btn.addEventListener('click', event => { if (event.isTrusted === true && target) document.dispatchEvent(new CustomEvent('abito:settings-select', { detail: target })); });
+    }
+  }
 })();
