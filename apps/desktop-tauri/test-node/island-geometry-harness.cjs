@@ -157,6 +157,8 @@ async function setup({ scenario, server, base, browser, page }) {
           return structuredClone(snap);
         }
         if (cmd === 'agent_action') {
+          // welcome-minikodas T3: the folded `minikodas` view the Rust client hands the page for the read-only `minikodas_list` ask
+          if (a === 'minikodas_list' && scenario.minikodas) return { connection, accounts, minikodas: { items: structuredClone(scenario.minikodas), truncated: false } };
           if (a === 'sessions_list') return { connection, accounts, sessions: { rows: sessions, truncated: false } };
           // K2-13 T6b-1 «Hoy»: the folded `hoy` view the Rust client hands the page, plus the daemon's closed refusal.
           // A decision is ASYNCHRONOUS, like the real path (AgentConn::command in agentconn.rs hands back the view at

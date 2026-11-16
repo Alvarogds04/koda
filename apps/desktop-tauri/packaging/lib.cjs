@@ -15,7 +15,7 @@ const FRONTEND_FILES = ['DESIGN.md', 'avatar-colors.js', 'character-desktop-logi
 FRONTEND_FILES.push('koda-catalog.js', 'koda-logic.js', 'koda-skin.js', 'koda-skin.css', 'koda/koda-chibi-24.png', 'koda/koda-chibi-32.png');
 // K2-11 S2/S6: the calendar card of the island's shortcuts row (its own line, next to the GitHub one).
 FRONTEND_FILES.push('calendar-view.js');
-FRONTEND_FILES.push('desktop-highlight.html', 'desktop-highlight.css', 'question-toast.css', 'question-toast.js', 'island-layout.js', 'island-nusa.js', 'island-nusa-bodies.js', 'island-nusa-mount.js', 'island-nusa.css', 'island-shortcuts-mount.js', 'settings-nusa.css', 'settings-nusa.js', 'settings-nusa-mount.js', 'settings-isla.js', 'settings-isla-mount.js');
+FRONTEND_FILES.push('desktop-highlight.html', 'desktop-highlight.css', 'question-toast.css', 'question-toast.js', 'island-layout.js', 'island-nusa.js', 'island-nusa-bodies.js', 'island-nusa-mount.js', 'island-nusa.css', 'island-shortcuts-mount.js', 'island-minikodas.js', 'settings-nusa.css', 'settings-nusa.js', 'settings-nusa-mount.js', 'settings-isla.js', 'settings-isla-mount.js');
 // Every embedded vendor source, generated module and license is a closed input.
 FRONTEND_FILES.push(
   'vendor/coucou/LICENSE', 'vendor/coucou/bridge-abito.js', 'vendor/coucou/package.json',

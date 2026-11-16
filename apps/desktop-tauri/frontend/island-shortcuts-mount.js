@@ -103,6 +103,8 @@
       b.className = it.id === KODA ? 'sb talk' : 'sb';
       b.setAttribute('data-go', it.id);
       b.setAttribute('title', it.label);
+      // island-layout.js moves every title inside the island to data-tip (its own tooltip), so the visible label of the Inicio discs reads data-tip
+      b.setAttribute('data-tip', it.label);
       b.setAttribute('aria-label', it.badge > 0 ? `${it.num} · ${it.label}: ${it.badge}` : `${it.num} · ${it.label}`);
       b.append(icon(it.icon));
       if (it.badge > 0) {
@@ -115,7 +117,7 @@
     }).concat(hidden ? [(() => {
       const more = doc.createElement('button');
       more.type = 'button'; more.className = 'sb more'; more.disabled = true;
-      more.setAttribute('title', `+${hidden.size} más`); more.setAttribute('aria-label', `${hidden.size} apps más, que no caben en la fila`);
+      more.setAttribute('title', `+${hidden.size} más`); more.setAttribute('data-tip', `+${hidden.size} más`); more.setAttribute('aria-label', `${hidden.size} apps más, que no caben en la fila`);
       more.textContent = `+${hidden.size}`;
       return more;
     })()] : []));

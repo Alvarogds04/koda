@@ -14,7 +14,7 @@ async function register(r, n, from) {
 const read = r => r.page.evaluate(() => {
   const box = e => { const b = e.getBoundingClientRect(); return { l: b.left, r: b.right, t: b.top, b: b.bottom, cx: (b.left + b.right) / 2, cy: (b.top + b.bottom) / 2 }; };
   const k = document.querySelector('.koda-sprite[data-koda-slot="nusa"]'), isl = document.getElementById('island'), nav = document.getElementById('nusa-apps');
-  const apps = nav ? [...nav.querySelectorAll('button:not(.talk)')].filter(b => getComputedStyle(b).display !== 'none').map(b => ({ ...box(b), label: b.getAttribute('title') })) : [];
+  const apps = nav ? [...nav.querySelectorAll('button:not(.talk)')].filter(b => getComputedStyle(b).display !== 'none').map(b => ({ ...box(b), label: b.getAttribute('data-tip') || b.getAttribute('title') })) : [];
   const dock = [...document.querySelectorAll('#nusa-panel .nusa-dock button')].map(b => ({ ...box(b), label: b.getAttribute('aria-label') }));
   return { apps, dock, koda: k && box(k), island: box(isl), ih: Math.round(isl.getBoundingClientRect().height), apps2: document.getElementById('nusa').dataset.apps };
 });
