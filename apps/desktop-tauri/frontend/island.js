@@ -766,9 +766,9 @@
   const setOmitted = v => { try { if (v) localStorage.setItem(OMIT_KEY, v); else localStorage.removeItem(OMIT_KEY); } catch { /* storage may be unavailable */ } };
   function paintEngine() {
     engineRow = O.engineRowView(lastConn, piState);
-    // the chat shows this notice (the island does not): hand it the row, display text only. A notice the human already dismissed with the old «Omitir»
-    // (localStorage OMIT_KEY) is not handed over: it must not come back in the chat with nothing to dismiss it (review R4-engine-note-omission)
-    document.dispatchEvent(new CustomEvent('abito:engine-row', { detail: engineRow && omitted() !== engineRow.kind ? { kind: engineRow.kind, label: engineRow.label, link: engineRow.link, target: engineRow.target, aria: engineRow.aria } : null }));
+    // the chat shows this notice (the island does not): hand it the row, display text only. The old island band's «Omitir» (localStorage OMIT_KEY) does NOT
+    // apply here: that band is gone and the chat note is now the one place the notice lives (the human, on his real Koda: «si le escribo no me sale eso»).
+    document.dispatchEvent(new CustomEvent('abito:engine-row', { detail: engineRow ? { kind: engineRow.kind, label: engineRow.label, link: engineRow.link, target: engineRow.target, aria: engineRow.aria } : null }));
     const centreEl = $('col-centre'); if (centreEl) centreEl.dataset.engine = engineRow ? 'on' : 'off';
     // the in-centre rows stay in the DOM (state + tests) but are never drawn: the band below is the one place this is shown
     for (const [box, label, link] of [['overview-engine', 'overview-engine-label', 'overview-engine-link'], ['overview-engine-live', 'overview-engine-live-label', 'overview-engine-live-link']]) {
