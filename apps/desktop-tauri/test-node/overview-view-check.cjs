@@ -1060,8 +1060,9 @@ test('T7.3 approval card markup: «Espera tu respuesta» caption, fold inside th
     assert.equal(kodas.length, 1, 'only Koda is drawn in the plain overview: ' + JSON.stringify(kodas));
     const k = kodas[0], relX = k.left - isl.left, relY = k.top - isl.top;
     assert.deepEqual([Math.round(k.w), Math.round(k.h)], [64, 64], 'Koda is 64px (OVERVIEW.clay)');
-    assert.ok(Math.abs(relX - 598) <= 2, 'Koda column: box left 598 from the island edge, measured ' + relX);
-    assert.ok(Math.abs(relY - 49) <= 2, 'Koda sits in the notch body (box top ~49), measured ' + relY);
+    // welcome-home (human, 16-nov): the plain Inicio is Koda CENTRED ((720 - 64) / 2 = 328 from the island edge), no longer the right-hand column at 598
+    assert.ok(Math.abs(relX - 328) <= 2, 'Koda is centred: box left 328 from the island edge, measured ' + relX);
+    assert.ok(Math.abs(relY - 28) <= 2, 'Koda sits at the top of the Inicio body (welcome-home: body top 28), measured ' + relY);
     assert.ok(relX + k.w <= isl.w - 20 && relY + k.h <= isl.h - 20, 'Koda keeps >=20px of air to the right/bottom edge of the notch');
   } finally { await ui.close(); }
   console.log('overview-view-check (HU-057 real layout): ok');
