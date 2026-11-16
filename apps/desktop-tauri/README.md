@@ -414,7 +414,9 @@ IPC path (observed 2026-10-09, this stack):
   go through the app's own commands, which Tauri gates by origin (a remote
   origin cannot reach them — enforced by Tauri's ACL, not by us).
 - **CSP** (`tauri.conf.json`): `default-src 'self'` plus explicit
-  `script-src/style-src/img-src/font-src 'self'`,
+  `script-src/style-src/font-src 'self'` and `img-src 'self' data:` (the `data:`
+  is for the phone-pairing QR, an `<img>` of an inline SVG: without it the QR is
+  a blank box; an SVG used as an image runs no script and loads nothing remote),
   `connect-src 'self' ipc: http://ipc.localhost` (Tauri IPC), `object-src
   'none'; base-uri 'none'; form-action 'none'; frame-src 'none'`. No remote
   origins, no `unsafe-eval`, **no inline script or style at all** (the page

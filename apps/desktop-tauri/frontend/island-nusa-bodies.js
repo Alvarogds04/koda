@@ -32,13 +32,12 @@
   // buttons. No ask field: a request is made from Chat. Every button REUSES the real destination with a click; it adds no host verb and no state.
   const home = { built: false };
   const NS_FILL = 'http://www.w3.org/2000/svg';
-  // real glyphs: bubble / stack / gear are the vendored Coucou paths (24 grid, filled); plug / bell are the notch's own strokes (20 grid)
+  // real glyphs: bubble is the vendored Coucou path (24 grid, filled); plug / bell are the notch's own strokes (20 grid). Hoy and Ajustes are NOT here: the
+  // header already has their discs (#open-hoy, #open-settings) and the human saw the repetition on his screen (16-nov).
   const DOCK = [
     { label: 'Conversar con Koda', tip: 'Chat', target: 'open-chat', fill: 'M12 3.6c-5 0-9 3.3-9 7.4 0 2.3 1.3 4.4 3.3 5.7-.2 1.2-.8 2.4-1.7 3.4 1.9-.2 3.6-.9 4.9-1.9 .8.2 1.6.3 2.5.3 5 0 9-3.3 9-7.5s-4-7.4-9-7.4z' },
-    { label: 'Hoy', tip: 'Hoy', target: 'open-hoy', event: 'abito:nusa-open-hoy', fill: 'M5 8h14v11.5H5V8zm1.8-3h10.4v1.6H6.8V5zm1.6-2.6h7.2V4H8.4V2.4z' },
     { label: 'Agentes', tip: 'Agentes', target: 'nusa-tab-agentes', tab: 'agentes', stroke: ['M7 2v4M13 2v4M5 6h10v3a5 5 0 0 1-10 0zM10 14v4'] },
     { label: 'Avisos', tip: 'Avisos', target: 'nusa-tab-avisos', tab: 'avisos', stroke: ['M5 14V9a5 5 0 0 1 10 0v5l1.5 2h-13z', 'M8.5 18a1.5 1.5 0 0 0 3 0'] },
-    { label: 'Ajustes', tip: 'Ajustes', target: 'open-settings', event: 'abito:nusa-open-settings', fill: 'M12 8.6a3.4 3.4 0 1 0 0 6.8 3.4 3.4 0 0 0 0-6.8zm0 1.8a1.6 1.6 0 1 1 0 3.2 1.6 1.6 0 0 1 0-3.2zM10.9 2h2.2l.35 2.1c.6.17 1.16.4 1.67.71l1.9-1 1.55 1.55-1 1.9c.3.5.54 1.07.7 1.67l2.13.35v2.2l-2.12.35c-.17.6-.4 1.16-.71 1.67l1 1.9-1.55 1.55-1.9-1c-.5.3-1.07.54-1.67.7L13.1 22h-2.2l-.35-2.12c-.6-.17-1.16-.4-1.67-.71l-1.9 1L5.43 18.6l1-1.9c-.3-.5-.54-1.07-.7-1.67L3.6 14.7v-2.2l2.12-.35c.17-.6.4-1.16.71-1.67l-1-1.9 1.55-1.55 1.9 1c.5-.3 1.07-.54 1.67-.7L10.9 2z' },
   ];
   function dockGlyph(spec) {
     const svg = doc.createElementNS(NS_FILL, 'svg'); svg.setAttribute('aria-hidden', 'true');
@@ -61,8 +60,6 @@
         if (e.isTrusted !== true) return;
         // Agentes / Avisos: the pager dots ignore a synthetic click (isTrusted), so the dock asks the mount to switch tab itself (same select())
         if (spec.tab) { doc.dispatchEvent(new CustomEvent('abito:nusa-go', { detail: { tab: spec.tab } })); return; }
-        // Hoy and Ajustes also ignore a synthetic click: each owner listens for a request event and runs its own opener (no logic copied here)
-        if (spec.event) { doc.dispatchEvent(new CustomEvent(spec.event)); return; }
         const to = doc.getElementById(spec.target); // Chat: its opener accepts a click
         if (to) to.click();
       });
@@ -467,13 +464,6 @@
       });
     }
     if (parts.open) parts.open.addEventListener('click', e => { if (e.isTrusted !== true) return; setOpen(!isOpen(), true); });
-    // Asked by the Inicio dock after ITS trusted click. A script's CustomEvent is never trusted, so it only OPENS Hoy, and only from the plain idle Inicio
-    // (the state that shows the dock): never behind a pending question, a take-over card or an open Hoy.
-    doc.addEventListener('abito:nusa-open-hoy', () => {
-      const d = capsule.dataset;
-      if (tab === 'inicio' && d.phase === 'expanded' && d.view === 'overview' && !d.card && d.hoy !== 'open'
-        && !['pending', 'expired', 'outcome'].includes(d.question || '') && !['waiting', 'finished'].includes(d.takeover || '')) setOpen(true, true);
-    });
     const homeTab = byId('home-tab');
     if (homeTab) homeTab.addEventListener('click', () => { if (isOpen()) setOpen(false, false); }, true);
     doc.addEventListener('abito:nusa-tab', () => { if (isOpen()) { setOpen(false, false); const b = byId('open-hoy'); if (b && typeof b.focus === 'function') b.focus(); } });

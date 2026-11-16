@@ -1011,6 +1011,9 @@ html[data-motion="reduce"] #capsule #island-header { transition: none; }
    keyboard-reachable «Cargar anteriores» control (44px hit, plain text). */
 #chat-history-controls { display: flex; flex: 0 0 auto; justify-content: flex-end; gap: 6px; min-height: 44px; }
 #chat-history-warning { margin: 0 10px 6px; color: var(--muted); font-size: var(--fs-caption); }
+#chat-engine-note { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 0 10px 6px; padding: 6px 10px; border-radius: 10px; background: color-mix(in srgb, var(--red-9, #e5484d) 14%, transparent); color: var(--text, inherit); font-size: var(--fs-caption); }
+#chat-engine-note[hidden] { display: none; }
+#chat-engine-note button { min-height: 28px; padding: 0 10px; border-radius: 8px; border: 1px solid currentColor; background: transparent; color: inherit; font: inherit; cursor: pointer; }
 #chat-load-earlier { min-height: 44px; padding: 0 12px; color: var(--island-muted); background: transparent; border: 0; border-radius: 11px; font: inherit; font-size: var(--fs-caption); cursor: pointer; }
 #chat-load-earlier:hover, #chat-load-earlier:focus-visible { color: var(--island-ink); background: rgba(255, 255, 255, .07); }
 #chat-load-earlier:disabled { opacity: .5; cursor: default; }

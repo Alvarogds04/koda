@@ -136,10 +136,16 @@
     const r = clayEl.getBoundingClientRect(), ir = island.getBoundingClientRect();
     const box = parseFloat(clayEl.style.width) || r.width;
     mainSlot.pref = box < 28 ? 'small' : 'auto';
+    // welcome-home: while the island grows or shrinks, #nusa is not on screen yet (it shows only in the settled `expanded` phase), so this free branch
+    // would walk Koda after the Dot to its old place on the right and then snap it to the centre of the Inicio. When the destination (or the origin) is the
+    // plain Inicio, Koda waits out the motion: it is the disc's before and the Inicio's after. Same conditions as the Inicio layout in island-nusa.css.
+    const c = cap(), welcomeMotion = !!(c && nusa && (c.dataset.phase === 'expanding' || c.dataset.phase === 'collapsing') && c.dataset.view === 'overview'
+      && !c.dataset.card && !c.dataset.takeover && c.dataset.hoy !== 'open' && !['pending', 'expired', 'outcome'].includes(c.dataset.question || '')
+      && nusa.dataset.tab === 'inicio' && nusa.dataset.apps !== 'true');
     const shown = r.width > 0 && getComputedStyle(clayEl).display !== 'none';
-    mainSlot.el.hidden = !shown;
+    mainSlot.el.hidden = !shown || welcomeMotion;
     const px = draw(mainSlot, id, box);
-    if (!px || !shown) return;
+    if (!px || !shown || welcomeMotion) return;
     mainSlot.el.style.left = Math.round(r.left + r.width / 2 - ir.left - px / 2) + 'px';
     mainSlot.el.style.top = Math.round(r.top + r.height / 2 - ir.top - px / 2) + 'px';
     if (cap() && cap().dataset.compactDisc === 'true' && cap().dataset.phase === 'compact') { // the DISC: the drawn pixels, not the cell, are centred (island-free-drag S3: it is bare in every compact state, so the ink is centred both ways)

@@ -46,6 +46,7 @@
        Sin ninguna app disponible no dibuja nada (S6). -->
   <script defer src="island-shortcuts.js"></script>
   <script defer src="island-shortcuts-mount.js"></script>
+  <script defer src="island-minikodas.js"></script>
   <script defer src="island-nusa.js"></script>
   <script defer src="island-nusa-bodies.js"></script>
   <script defer src="island-nusa-mount.js"></script>
@@ -355,6 +356,8 @@
           <!-- K2-05 U5c: which model the engine answers with — read-only text (chat:state.engine_model), hidden while
                unknown. No button, no picker: the engine owns the model. -->
           <p id="chat-model-line" hidden></p>
+          <!-- welcome-home (human, 16-nov): the engine/account notice lives here, in the chat, not in the island. Filled from abito:engine-row (island.js). -->
+          <div id="chat-engine-note" role="status" hidden><span id="chat-engine-note-label"></span><button id="chat-engine-note-btn" type="button"></button></div>
           <form id="chat-composer" novalidate>
             <label for="chat-input" class="sr-only">Mensaje para Koda</label>
             <textarea id="chat-input" rows="1" maxlength="8000" spellcheck="true"

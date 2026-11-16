@@ -26,6 +26,26 @@ test('C1: idle blinks / flicks an ear / waves the tail now and then, then return
   for (const a of seen) assert.ok(['respirar', 'parpadear', 'tic-oreja', 'cola', 'estirarse', 'lamerse', 'sentarse', 'jugueton', 'perseguir-cola'].includes(a), a); // HU-070 widened the awake variety; still never a sleeping row
 });
 
+// welcome-home (human, 16-nov): «cuando Koda no haga nada que haga las animaciones de reposo y de jugar». Awake and idle, Koda must REST (breathe, blink,
+// flick an ear, wave the tail) and PLAY (jugueton, perseguir-cola) in turns, more than once, before it yawns at 30 s; it sleeps at 45 s as before.
+// With reduced motion it only breathes.
+test('idle play: awake and alone, Koda plays more than once between rests before it yawns, whatever the dice say', () => {
+  for (const seed of [0, 0.25, 0.5, 0.75, 0.99]) {
+    const m = make(seed); m.step(); const frames = [];
+    for (let t = 0; t < 29000; t += 250) { m.adv(250); frames.push(m.step()); }
+    let plays = 0, prev = null; const rests = new Set();
+    for (const a of frames) { if ((a === 'jugueton' || a === 'perseguir-cola') && prev !== a) plays++; if (['parpadear', 'tic-oreja', 'cola', 'estirarse', 'lamerse', 'sentarse', 'respirar'].includes(a)) rests.add(a); prev = a; }
+    assert.ok(plays >= 2, `seed ${seed}: played ${plays} time(s) in 29 s: ${[...new Set(frames)].join()}`);
+    assert.ok(rests.has('respirar') && rests.size >= 2, `seed ${seed}: it rests between plays: ${[...rests].join()}`);
+    assert.ok(!frames.includes('dormir') && !frames.includes('bostezar'), `seed ${seed}: still awake before 30 s`);
+  }
+});
+test('idle play: reduced motion never plays', () => {
+  const m = make(0); m.step({ reduced: true }); const seen = new Set();
+  for (let t = 0; t < 29000; t += 250) { m.adv(250); seen.add(m.step({ reduced: true })); }
+  assert.deepEqual([...seen], ['respirar']);
+});
+
 test('C2: app states map to Koda animations', () => {
   const m = { step: o => make().step(o) };
   assert.equal(m.step({ running: true }), 'trabaja');

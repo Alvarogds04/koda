@@ -12,7 +12,9 @@
   // Awake-rest variety (HU-056 + HU-070): short, low-priority beats; `respirar` is the base between them.
   const EXTRAS = [['parpadear', 650], ['tic-oreja', 650], ['cola', 1500], ['estirarse', 1700], ['lamerse', 2000], ['sentarse', 1600], ['parpadear', 650]];
   const MISCHIEF = [['jugueton', 2400], ['perseguir-cola', 2400]];
-  const MISCHIEF_FROM_MS = 20000, MISCHIEF_TO_MS = 27000, MISCHIEF_EVERY_MS = 60000, OVILLO_MS = 4000, LONG_RUN_MS = 120000;
+  // welcome-home (human, 16-nov: «cuando Koda no haga nada que haga las animaciones de reposo y de jugar»): while it is awake and alone it plays from 8 s on and
+  // again every ~9 s, alternating with the rest gestures above, and never starts a 2.4 s beat that would still be running when it has to yawn (YAWN_MS: 30 s). It used to play ONCE a minute inside a 7 s window.
+  const MISCHIEF_FROM_MS = 8000, MISCHIEF_TO_MS = YAWN_MS - 2400, MISCHIEF_EVERY_MS = 9000, OVILLO_MS = 4000, LONG_RUN_MS = 120000;
   const calm = pose => pose === 'idle' || pose === 'sleeping' || !pose;
 
   function frameAt(id, elapsedMs, reduced) {

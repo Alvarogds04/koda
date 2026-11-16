@@ -82,7 +82,7 @@ async function goAgentes(r) { const d = '.nusa-dock-btn[aria-label="Agentes"]'; 
         return hits;
       };
       const inicio = await sweep('Inicio');
-      assert.equal(inicio.filter(h => h.id === 'nusa-dock-btn').length, 5, `${name}: the five dock icons were hit-tested: ${inicio.map(h => h.id)}`); // welcome-home: the ask field, send and the pager dots left the Inicio (the dock is the navigation there)
+      assert.equal(inicio.filter(h => h.id === 'nusa-dock-btn').length, 3, `${name}: the three dock icons were hit-tested: ${inicio.map(h => h.id)}`); // welcome-home: the ask field, send and the pager dots left the Inicio (the dock is the navigation there)
       await realClick(r, '.nusa-dock-btn[aria-label="Agentes"]'); // a real click on the dock's Agentes icon opens Agentes (the dots are hidden in the Inicio)
       const agentes = await sweep('Agentes');
       if (!empty) {

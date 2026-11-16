@@ -70,14 +70,41 @@
     if (dots) dots.hidden = true;
   }
 
+  // welcome-minikodas (odd/tasks/welcome-minikodas.md S1-S3, S6; design 10, comment m8eankv9): on the plain Inicio the row is the RIGHT column, 5 discs per
+  // row, each row centred; the island grows 70 per extra row up to 290 (the Hoy pattern: island.js writes the box inline, CSS wins with !important and the
+  // host is told the destination, then the settled box). At most 15 discs: beyond that the last one reads «+N más» and the rest stay out of the row.
+  const PER_ROW = 5, MAX_DISCS = 15, BASE_H = 150, ROW_H = 70, CEIL_H = 290;
+  const invoke = (window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke) || null;
+  let shownApps = 0, grownRows = 1, shapeTimer = 0;
+  const rowsFor = n => Math.max(1, Math.ceil(Math.min(n, MAX_DISCS) / PER_ROW));
+  const plainInicio = () => !!capsule && nusa.dataset.apps === 'true' && nusa.dataset.tab === 'inicio' && !nusa.dataset.app
+    && capsule.dataset.phase === 'expanded' && capsule.dataset.view === 'overview' && capsule.dataset.hoy !== 'open' && !capsule.dataset.card
+    && !['waiting', 'finished', 'error'].includes(capsule.dataset.takeover || '') && !['pending', 'expired', 'outcome'].includes(capsule.dataset.question || '');
+  const shape = (h, settled) => { if (!invoke) return; try { invoke('island_shape', { payload: { w: 720, h, settled } }).catch(() => {}); } catch { /* optional bridge */ } };
+  function syncGrowth() {
+    const rows = plainInicio() ? rowsFor(shownApps) : 1;
+    if (rows === grownRows) return;
+    grownRows = rows;
+    if (rows > 1) capsule.dataset.appRows = String(rows); else delete capsule.dataset.appRows;
+    const h = Math.min(CEIL_H, BASE_H + (rows - 1) * ROW_H);
+    shape(h, false);
+    clearTimeout(shapeTimer);
+    shapeTimer = setTimeout(() => { const i = $('island'), r = i ? i.getBoundingClientRect() : null; shape(r && r.height > 0 ? Math.round(r.height) : h, true); }, 340);
+  }
+
   function paintRow(rows) {
     const had = !!doc.activeElement && !!nav && nav.contains(doc.activeElement);
-    nav.replaceChildren(...rows.map(it => {
+    const apps = rows.filter(it => it.id !== KODA);
+    shownApps = apps.length;
+    const hidden = apps.length > MAX_DISCS ? new Set(apps.slice(MAX_DISCS - 1).map(it => it.id)) : null;
+    nav.replaceChildren(...rows.filter(it => !hidden || !hidden.has(it.id)).map(it => {
       const b = doc.createElement('button');
       b.type = 'button';
       b.className = it.id === KODA ? 'sb talk' : 'sb';
       b.setAttribute('data-go', it.id);
       b.setAttribute('title', it.label);
+      // island-layout.js moves every title inside the island to data-tip (its own tooltip), so the visible label of the Inicio discs reads data-tip
+      b.setAttribute('data-tip', it.label);
       b.setAttribute('aria-label', it.badge > 0 ? `${it.num} · ${it.label}: ${it.badge}` : `${it.num} · ${it.label}`);
       b.append(icon(it.icon));
       if (it.badge > 0) {
@@ -87,7 +114,13 @@
       }
       b.addEventListener('click', e => { if (e.isTrusted !== true) return; setFocus(it.id); });
       return b;
-    }));
+    }).concat(hidden ? [(() => {
+      const more = doc.createElement('button');
+      more.type = 'button'; more.className = 'sb more'; more.disabled = true;
+      more.setAttribute('title', `+${hidden.size} más`); more.setAttribute('data-tip', `+${hidden.size} más`); more.setAttribute('aria-label', `${hidden.size} apps más, que no caben en la fila`);
+      more.textContent = `+${hidden.size}`;
+      return more;
+    })()] : []));
     if (had) focusButton(focus);
   }
 
@@ -137,6 +170,7 @@
     if (cardHost) { cardHost.remove(); cardHost = null; }
     delete nusa.dataset.apps; delete nusa.dataset.app;
     focus = KODA;
+    shownApps = 0; syncGrowth();
     if (dots) dots.hidden = false;
     if (panel) panel.hidden = false;
     doc.dispatchEvent(new CustomEvent('abito:nusa-app', { detail: { app: null } }));
@@ -149,6 +183,7 @@
     focus = S.focusAfter(focus, rows.map(it => it.id));
     paintRow(rows);
     paintFocus();
+    syncGrowth();
   }
 
   const isShown = () => !capsule || (capsule.dataset.phase === 'expanded' && capsule.dataset.view === 'overview' && !capsule.dataset.card
@@ -166,6 +201,14 @@
     setFocus(typeof key === 'number' ? S.stepFocus(focus, list, key) : key, true);
   });
 
+  // the growth follows WHERE the human is (tab, take-over, Hoy, a focused app), not only the apps list
+  doc.addEventListener('abito:nusa-tab', syncGrowth);
+  doc.addEventListener('abito:nusa-app', syncGrowth);
+  if (typeof MutationObserver === 'function') {
+    const watch = new MutationObserver(syncGrowth);
+    if (capsule) watch.observe(capsule, { attributes: true, attributeFilter: ['data-hoy', 'data-takeover', 'data-card', 'data-question', 'data-view', 'data-phase'] });
+    watch.observe(nusa, { attributes: true, attributeFilter: ['data-tab', 'data-app'] });
+  }
   S.onChange(render);
   render();
 })();

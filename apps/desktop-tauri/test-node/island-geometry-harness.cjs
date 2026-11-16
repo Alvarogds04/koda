@@ -151,10 +151,14 @@ async function setup({ scenario, server, base, browser, page }) {
             snap.revision += 1; queueMicrotask(() => window.__emit('desktop:state', structuredClone(snap)));
           }
           if (a === 'autoClose') { (window.__autoCloses = window.__autoCloses || []).push(performance.now()); if (!window.__refuseClose) { snap.state = 'compact'; snap.revision += 1; queueMicrotask(() => window.__islandSetState && window.__islandSetState('compact')); } else throw new Error('pendiente'); }
+          // opt-in (island-koda-open-check): the real host folds on `close`, which the fold button sends; the fake otherwise ignores it
+          if (a === 'close' && scenario.closeFolds) { snap.state = 'compact'; snap.revision += 1; queueMicrotask(() => window.__islandSetState && window.__islandSetState('compact')); }
           if (a === 'expand') { snap.state = 'expanded'; snap.revision += 1; queueMicrotask(() => window.__islandSetState && window.__islandSetState('overview')); }
           return structuredClone(snap);
         }
         if (cmd === 'agent_action') {
+          // welcome-minikodas T3: the folded `minikodas` view the Rust client hands the page for the read-only `minikodas_list` ask
+          if (a === 'minikodas_list' && scenario.minikodas) return { connection, accounts, minikodas: { items: structuredClone(scenario.minikodas), truncated: false } };
           if (a === 'sessions_list') return { connection, accounts, sessions: { rows: sessions, truncated: false } };
           // K2-13 T6b-1 «Hoy»: the folded `hoy` view the Rust client hands the page, plus the daemon's closed refusal.
           // A decision is ASYNCHRONOUS, like the real path (AgentConn::command in agentconn.rs hands back the view at

@@ -83,8 +83,10 @@ test('T3/T4: bodies build DOM with textContent only (no markup sink) and never i
 test('T3: Inicio (welcome-home) — Koda alone, five icon buttons that click the real destinations, no ask field, no host verb', () => {
   const body = strip(bodies);
   for (const s of ['Koda · en reposo', 'nusa-dock', 'nusa-dock-btn', 'dataset.tip', 'isTrusted', 'focusView',
-    'open-chat', 'open-hoy', 'nusa-tab-agentes', 'nusa-tab-avisos', 'open-settings']) assert.ok(bodies.includes(s), s);
-  for (const label of ['Conversar con Koda', 'Hoy', 'Agentes', 'Avisos', 'Ajustes']) assert.ok(bodies.includes(`label: '${label}'`), label);
+    'open-chat', 'nusa-tab-agentes', 'nusa-tab-avisos']) assert.ok(bodies.includes(s), s);
+  // the header already has Hoy and Ajustes: the dock must not repeat them (human, 16-nov)
+  for (const s of ["label: 'Hoy'", "label: 'Ajustes'", 'abito:nusa-open-hoy', 'abito:nusa-open-settings']) assert.ok(!bodies.includes(s), 'the dock no longer has ' + s);
+  for (const label of ['Conversar con Koda', 'Agentes', 'Avisos']) assert.ok(bodies.includes(`label: '${label}'`), label);
   // the ask field and everything that fed it is gone (a request is made from Chat)
   for (const gone of ['Pedile algo a Koda', 'nusa-field', 'nusa-input', 'nusa-send', 'nusa-reply', 'sendCheck', 'requestId', 'getRandomValues', 'hands_free', 'DRAFT_MAX', 'placeholder'])
     assert.ok(!body.includes(gone), `the Inicio no longer has «${gone}»`);

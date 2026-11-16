@@ -766,6 +766,9 @@
   const setOmitted = v => { try { if (v) localStorage.setItem(OMIT_KEY, v); else localStorage.removeItem(OMIT_KEY); } catch { /* storage may be unavailable */ } };
   function paintEngine() {
     engineRow = O.engineRowView(lastConn, piState);
+    // the chat shows this notice (the island does not): hand it the row, display text only. A notice the human already dismissed with the old «Omitir»
+    // (localStorage OMIT_KEY) is not handed over: it must not come back in the chat with nothing to dismiss it (review R4-engine-note-omission)
+    document.dispatchEvent(new CustomEvent('abito:engine-row', { detail: engineRow && omitted() !== engineRow.kind ? { kind: engineRow.kind, label: engineRow.label, link: engineRow.link, target: engineRow.target, aria: engineRow.aria } : null }));
     const centreEl = $('col-centre'); if (centreEl) centreEl.dataset.engine = engineRow ? 'on' : 'off';
     // the in-centre rows stay in the DOM (state + tests) but are never drawn: the band below is the one place this is shown
     for (const [box, label, link] of [['overview-engine', 'overview-engine-label', 'overview-engine-link'], ['overview-engine-live', 'overview-engine-live-label', 'overview-engine-live-link']]) {
@@ -776,8 +779,11 @@
     }
     // S11: a resolved problem forgets its «Omitir»; a skipped one stays silent until it resolves and comes back
     if (!engineRow && omitted()) setOmitted(null);
-    const band = $('engine-band'), on = !!engineRow && omitted() !== engineRow.kind;
-    capsule.dataset.engineBand = engineRow ? (on ? 'on' : 'omitted') : 'off';
+    // welcome-home (human, 16-nov): an engine/account notice in the island («Sin motor», «Sin cuenta») only confuses a new user, so the island never draws the
+    // band (not on the Inicio, not on Agentes or Avisos). The notice belongs inside the chat. The band's markup and model stay for now (nothing shows them), so
+    // data-engine-band is 'hidden' while there is a problem and 'off' otherwise, Koda is never put in the error pose by it, and the island stays 150.
+    const band = $('engine-band'), on = false;
+    capsule.dataset.engineBand = engineRow ? 'hidden' : 'off';
     if (band) {
       band.hidden = !on;
       if (engineRow) {
@@ -1005,6 +1011,8 @@
     connectionEl.disabled = !conn.action;
     lastConn = conn;
     connectionEl.dataset.kind = conn.kind;
+    // welcome-home (human, 16-nov): «Sin motor» is the same notice as the engine band, so it is not drawn in the Agentes/Avisos row either (the chat will say it)
+    connectionEl.style.display = conn.kind === 'down' ? 'none' : '';
     putIcon($('connection-icon'), iconNode(icon(conn.icon)));
     $('connection-word').textContent = conn.word;
     paintEngine();
