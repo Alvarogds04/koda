@@ -48,6 +48,13 @@ const HOY_ACTIONS: [&str; 3] = ["buy", "sell", "send"];
 /// transcribe. Anything else is dropped here, never shown as a chip.
 const HOY_PROVENANCE: [&str; 3] = ["youtube_subtitles", "local_transcription", "remote_transcription"];
 
+// ---- welcome-minikodas T2: the Minikodas list, read-only (PROTOCOL.md `minikodas_list` → `minikodas` frame) ----
+/// The daemon never sends more than 32 (`protocol.cjs`); the page gets at most that many, and says when the frame had more.
+const MAX_MINIKODAS: usize = 32;
+const MAX_MINIKODA_NAME: usize = 80;
+const MINIKODA_STATUSES: [&str; 2] = ["draft", "active"];
+const MINIKODA_OUTCOMES: [&str; 2] = ["done", "failed"];
+
 // ---- K2-13 Telegram + transcription setting (S7, S10, S16, S18, S20; PROTOCOL.md «Telegram frames» and
 // «Transcription setting») ------------------------------------------------------------------------------------
 /// The four states the daemon may report. Anything else is not a status and changes nothing.
@@ -455,6 +462,12 @@ pub fn parse_ui_command(payload: &Value) -> Result<UiCommand, CommandError> {
             exact(1)?;
             wire(&[("type", "hoy_list")])
         }
+        // welcome-minikodas T2 (S4/S5): the Minikodas list is READ-ONLY to ask for, like «Hoy». One closed ask, no fields.
+        // There is deliberately NO create / run / launch / delete here: a launch can spend a model and is out of scope.
+        "minikodas_list" => {
+            exact(1)?;
+            wire(&[("type", "minikodas_list")])
+        }
         "hoy_approve" | "hoy_reject" => {
             exact(2)?;
             let id = get("id")?;
@@ -713,6 +726,10 @@ pub struct ClientState {
     /// (`{items, truncated}`, null until the daemon answers a `hoy_list` ask). The island renders
     /// these rows as plain text: nothing here is markup, and no field is invented.
     hoy: Value,
+    /// welcome-minikodas T2: the daemon's `minikodas` frame, folded to a bounded closed view (`{items, truncated}`, null until the
+    /// daemon answers a `minikodas_list` ask). Only what a disc needs: id, name, status, running and the outcome of the last run.
+    /// The prompt, summary, sources, kit, rules, model and run reason NEVER reach the page.
+    minikodas: Value,
     /// K2-05 boot order (Gentle Dot `agent_state`): the engine's status from the daemon's
     /// `ready`/`agent_state` frames, closed set (`ready|starting|restarting|stopped|unavailable`);
     /// null until the daemon says so. The daemon answers before its engine is ready.
@@ -792,6 +809,7 @@ impl ClientState {
             sessions: Value::Null,
             hooks: Value::Null,
             hoy: Value::Null,
+            minikodas: Value::Null,
             engine: Value::Null,
             telegram: Value::Null,
             transcription: Value::Null,
@@ -978,6 +996,25 @@ impl ClientState {
                     items.push(row);
                 }
                 self.hoy = json!({"items": items, "truncated": truncated});
+            }
+            "minikodas" => {
+                // welcome-minikodas T2 (S4): rebuilt row by row. A row off the closed vocabulary (bad id, no name, an unknown
+                // status) is DROPPED, never sanitised into a lie; `lastRun` keeps only a known outcome. A frame without a list
+                // leaves the last good view alone.
+                let Some(list) = frame.get("minikodas").and_then(Value::as_array) else { return Ok(()) };
+                let mut items: Vec<Value> = Vec::new();
+                for i in list.iter().take(MAX_MINIKODAS) {
+                    let Some(id) = i.get("id").and_then(Value::as_str).filter(|s| strict_id(s)) else { continue };
+                    let Some(status) = closed_cell(i, "status", &MINIKODA_STATUSES) else { continue };
+                    let Value::String(name) = hoy_text(i, "name", MAX_MINIKODA_NAME) else { continue };
+                    if name.is_empty() { continue; }
+                    let mut row = json!({ "id": id, "name": name, "status": status, "running": i.get("running").and_then(Value::as_bool).unwrap_or(false) });
+                    if let Some(outcome) = i.get("lastRun").and_then(|r| closed_cell(r, "outcome", &MINIKODA_OUTCOMES)) {
+                        row["lastRun"] = json!({ "outcome": outcome });
+                    }
+                    items.push(row);
+                }
+                self.minikodas = json!({"items": items, "truncated": list.len() > MAX_MINIKODAS});
             }
             "hoy_decided" | "hoy_approved" => {
                 // One decision, folded in place: the daemon said so (never the click). A decision for a row we do not
