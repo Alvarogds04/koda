@@ -25,6 +25,18 @@ const read = r => r.page.evaluate(() => { const n = document.getElementById('cha
       }
     } finally { await r.close(); }
   }
+  // review R4-engine-note-omission: a notice the human already dismissed with the old «Omitir» (localStorage abito.engineOmit) must NOT come back in the chat
+  const om = await H.open({ engine: 'account' });
+  try {
+    await om.page.waitForTimeout(1200);
+    const first = await read(om); assert.equal(first.hidden, false, 'before omitting, the note is shown: ' + JSON.stringify(first));
+    await om.page.evaluate(() => { localStorage.setItem('abito.engineOmit', 'account'); document.dispatchEvent(new CustomEvent('abito:pi-state', { detail: { connection: 'connected', accounts: [] } })); });
+    await om.page.waitForTimeout(500);
+    const after = await read(om); assert.ok(after.hidden, 'R4: an omitted notice stays out of the chat: ' + JSON.stringify(after));
+    await om.page.evaluate(() => { localStorage.removeItem('abito.engineOmit'); document.dispatchEvent(new CustomEvent('abito:pi-state', { detail: { connection: 'connected', accounts: [] } })); });
+    await om.page.waitForTimeout(500);
+    assert.equal((await read(om)).hidden, false, 'forgetting the omission shows it again');
+  } finally { await om.close(); }
   const ok = await H.open({ engine: 'ok' });
   try { await ok.page.waitForTimeout(1200); const n = await read(ok); assert.ok(n && (n.hidden || n.display === 'none'), 'a healthy engine: the chat shows no note: ' + JSON.stringify(n)); } finally { await ok.close(); }
   console.log('chat-engine-note-check: ok');
