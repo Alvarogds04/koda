@@ -77,7 +77,9 @@ fn tick(app: &tauri::AppHandle, current: &std::sync::Mutex<Option<bool>>, next: 
     let protected = crate::islandshape::is_protected(app, &state);
     let logical_window = ((f64::from(size.0) / scale).round() as i32, (f64::from(size.1) / scale).round() as i32);
     // isla-cualquier-lado S1: a card anchored on its bottom edge takes clicks at the bottom of the window
-    let rects = crate::islandshape::current_rects(logical_window, protected, crate::islandshape::anchor_bottom(&state));
+    // compact-anywhere T3: the folded disc is drawn `disc_shift` logical px from the window's centre and takes clicks there
+    let shift = state.disc_shift.load(Ordering::SeqCst);
+    let rects = crate::islandshape::current_rects(logical_window, protected, crate::islandshape::anchor_bottom(&state), shift);
     let point = cursor.and_then(|c| crate::islandhit::cursor_in_window(c, origin, scale));
     let ignore = crate::islandhit::click_through(point, &rects, protected, DRAGGING.load(Ordering::SeqCst), visible);
     set(&win, ignore);

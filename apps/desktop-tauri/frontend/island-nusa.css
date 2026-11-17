@@ -182,6 +182,7 @@ html #capsule[data-edge="bottom"][data-view="overview"][data-notice-strip="on"] 
    COMPACT_DOT_W/H), black, with its own state dot. NO compact state widens it and no text, minis or «Responder» live on it.
    #data-compact-disc marks «the island is settled at the disc's size»; island.js writes the box and the radius inline. */
 html #capsule:is([data-phase="compact"], [data-compact-disc="true"]) #island { background: #000; border-radius: 16px; overflow: hidden;
+  transform: translateX(calc(-50% + var(--disc-shift, 0px))); /* compact-anywhere T4: the folded disc sits where the host put it inside its window */
   box-shadow: inset 0 -12px 14px -12px var(--pill-dot, transparent), 0 0 0 1px var(--win-line); } /* isla-cualquier-lado S1: the .1 hairline ring reads on a black wallpaper */
 html #capsule:is([data-phase="compact"], [data-compact-disc="true"]) :is(#mini-grid, #compact-badge, #compact-activity) { display: none !important; }
 /* isla-cualquier-lado S2: the folded island never hides at the screen edge, so the legacy hidden thread (#edge-strip) is gone; the
