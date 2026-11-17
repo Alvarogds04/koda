@@ -206,6 +206,28 @@ pub struct Placed { pub origin: (i32, i32), pub expanded: bool }
 /// collapsing returns it to `origin`. The DISC's screen position never changes: only the window around it moves.
 pub fn island_window_rect_placed(placed: Placed, area: Rect, scale: f64, height: i32) -> Rect {
     let (w, h) = scaled_size((ISLAND_WINDOW.0, height), scale);
+    let (kept, side, edge) = placed_kept(placed, area, scale, height);
+    let y = if edge == Edge::Bottom { kept.bottom() - h } else { kept.y };
+    // compact-anywhere: the FOLDED window is centred on the disc, 376 px of transparent air on each side, and the system (mutter/XWayland) keeps a
+    // window inside the work area. A window that hung off the screen was pushed back, and the disc, centred in it, could never get closer to the
+    // edge than half a window (the human's 0.2.0 and 0.2.1: «de ahi no pasa»). So the window the system gets stays inside the area and the DISC
+    // takes the difference (compact_disc_shift). The open card already keeps itself inside (EDGE_GAP) and keeps its behaviour.
+    let x = if placed.expanded { kept.x - side } else { clamp_x(kept.x - side, w, area) };
+    Rect { x, y, w, h }
+}
+/// How far the folded DISC sits from the centre of its window, in physical px (negative: towards the window's left). The disc is where the
+/// human dropped it (kept on screen); the window is that spot's window moved horizontally the least that puts it inside the work area, so the
+/// shift is exactly the move: disc on screen = window.x + (window.w - disc.w) / 2 + shift. 0 away from the sides and for the open card.
+pub fn compact_disc_shift(placed: Placed, area: Rect, scale: f64, height: i32) -> i32 {
+    if placed.expanded { return 0; }
+    let (w, _) = scaled_size((ISLAND_WINDOW.0, height), scale);
+    let (kept, side, _) = placed_kept(placed, area, scale, height);
+    (kept.x - side) - clamp_x(kept.x - side, w, area)
+}
+/// The box the placement keeps on screen (the disc folded, the open card's column expanded), the transparent air beside it inside the
+/// window, and the growth edge: the one place island_window_rect_placed and compact_disc_shift agree on.
+fn placed_kept(placed: Placed, area: Rect, scale: f64, height: i32) -> (Rect, i32, Edge) {
+    let (w, h) = scaled_size((ISLAND_WINDOW.0, height), scale);
     let disc = scaled_size(COMPACT_DOT, scale);
     let edge = growth_edge_at(placed.origin.1, area, scale);
     let (keep, room, keep_y) = if placed.expanded {
@@ -214,9 +236,7 @@ pub fn island_window_rect_placed(placed: Placed, area: Rect, scale: f64, height:
     } else { (disc, area, placed.origin.1) };
     let (kw, kh) = (keep.0.min(w), keep.1.min(h));
     let side = (w - kw) / 2;
-    let kept = clamp_rect(Rect { x: placed.origin.0 + side, y: keep_y, w: kw, h: kh }, room);
-    let y = if edge == Edge::Bottom { kept.bottom() - h } else { kept.y };
-    Rect { x: kept.x - side, y, w, h }
+    (clamp_rect(Rect { x: placed.origin.0 + side, y: keep_y, w: kw, h: kh }, room), side, edge)
 }
 /// `island_window_rect_for`, or the dragged placement when the human moved the island. No monitor still means «wait».
 pub fn island_window_rect_where(monitor: Option<Rect>, area: Rect, reported_scale: f64, height: i32, placed: Option<Placed>) -> Option<Rect> {
@@ -279,15 +299,19 @@ mod tests {
         // lower half, so what the human sees is read as the disc, never as the window.
         let side = (ISLAND_WINDOW.0 - COMPACT_DOT.0) / 2; // transparent air beside the disc
         let compact = |origin| island_window_rect_placed(Placed { origin, expanded: false }, area(), 1.0, ISLAND_WINDOW.1);
+        // compact-anywhere: the native window the system gets is ALWAYS inside the work area (mutter pushes a window that leaves it, which is what
+        // stopped the disc 376 px from the edge); the disc is read from the window plus its shift inside it
         let disc = |origin| {
             let w = compact(origin);
-            Rect { x: w.x + side, y: disc_origin_y(w, growth_edge_at(origin.1, area(), 1.0), 1.0), w: COMPACT_DOT.0, h: COMPACT_DOT.1 }
+            let shift = compact_disc_shift(Placed { origin, expanded: false }, area(), 1.0, ISLAND_WINDOW.1);
+            Rect { x: w.x + side + shift, y: disc_origin_y(w, growth_edge_at(origin.1, area(), 1.0), 1.0), w: COMPACT_DOT.0, h: COMPACT_DOT.1 }
         };
         assert_eq!(disc((-5000, 300)), Rect { x: 0, y: 300, w: COMPACT_DOT.0, h: COMPACT_DOT.1 }, "left edge");
-        assert_eq!(compact((-5000, 300)).x, -side, "the window's transparent air may leave the screen");
+        assert_eq!(compact((-5000, 300)).x, 0, "the window itself stays inside the work area: the disc moves inside it");
         assert_eq!(disc((5000, 300)), Rect { x: 1920 - COMPACT_DOT.0, y: 300, w: COMPACT_DOT.0, h: COMPACT_DOT.1 }, "right edge: the disc is clamped to the screen");
         assert_eq!(disc((500, 5000)), Rect { x: 500 + side, y: 1080 - COMPACT_DOT.1, w: COMPACT_DOT.0, h: COMPACT_DOT.1 }, "bottom edge: the disc, not the window");
         assert_eq!(compact((500, 5000)), Rect { x: 500, y: 1080 - 340, w: 752, h: 340 }, "the window stands on the disc at the bottom edge");
+        assert_eq!(compact_disc_shift(Placed { origin: (500, 5000), expanded: false }, area(), 1.0, ISLAND_WINDOW.1), 0, "a disc away from the sides is not shifted");
         assert_eq!(disc((500, -5000)), Rect { x: 500 + side, y: 32, w: COMPACT_DOT.0, h: COMPACT_DOT.1 }, "never above the top panel");
         assert_eq!(compact((500, -5000)), Rect { x: 500, y: 32, w: 752, h: 340 });
     }
@@ -302,7 +326,70 @@ mod tests {
         let hidpi = island_window_rect_placed(Placed { origin: (5000, 5000), expanded: false }, area(), 2.0, ISLAND_WINDOW.1);
         // compact at scale 2: the 80x64 disc is what stays on screen; the 1504-wide window may hang off it, and in the lower
         // half it stands on the disc (clamped to the work area's bottom, 1080 - 64), so the window ends there
-        assert_eq!(hidpi, Rect { x: 1920 - 80 - (1504 - 80) / 2, y: 1080 - 680, w: 1504, h: 680 });
+        // compact-anywhere: the window stays inside the work area (1920 - 1504 = 416) and the disc takes the difference as its shift
+        assert_eq!(hidpi, Rect { x: 1920 - 1504, y: 1080 - 680, w: 1504, h: 680 });
+    }
+    // compact-anywhere (human, 17-nov: «tiene que poder moversele libremente por toda la ventana»; his 0.2.0 and 0.2.1 both stopped the disc 376 px
+    // from the edge). The disc is centred in a 752 px window and the system keeps that window inside the work area, so the disc could never get
+    // closer than half a window. The window is now always inside the area and the DISC shifts inside it.
+    fn human_area() -> Rect { Rect { x: 47, y: 32, w: 1873, h: 1048 } } // his screen: 1920x1080 with a 47 px dock on the left and the top bar
+    fn disc_on_screen(origin: (i32, i32), area: Rect, scale: f64) -> i32 {
+        let placed = Placed { origin, expanded: false };
+        let w = island_window_rect_placed(placed, area, scale, ISLAND_WINDOW.1);
+        let (dw, _) = scaled_size(COMPACT_DOT, scale);
+        let side = (w.w - dw) / 2;
+        w.x + side + compact_disc_shift(placed, area, scale, ISLAND_WINDOW.1)
+    }
+    #[test]
+    fn the_compact_disc_reaches_both_edges_of_his_real_work_area() {
+        let area = human_area();
+        let side = (ISLAND_WINDOW.0 - COMPACT_DOT.0) / 2;
+        // left edge: the disc is dropped at the dock's edge; the window sits at the dock, the disc is pushed to its left side
+        let left = Placed { origin: (area.x - side, 300), expanded: false };
+        assert_eq!(island_window_rect_placed(left, area, 1.0, ISLAND_WINDOW.1), Rect { x: 47, y: 300, w: 752, h: 340 });
+        assert_eq!(compact_disc_shift(left, area, 1.0, ISLAND_WINDOW.1), -side, "the disc moves to the window's left side");
+        assert_eq!(disc_on_screen(left.origin, area, 1.0), 47, "and stands at the work area's left edge");
+        // right edge: his real window was 752x340+1168+288, so the screen's right edge (1920) was the window's: the disc could not pass 1544
+        let right = Placed { origin: (area.right() - COMPACT_DOT.0 - side, 288), expanded: false };
+        let w = island_window_rect_placed(right, area, 1.0, ISLAND_WINDOW.1);
+        assert_eq!(w.right(), 1920, "the window ends at the screen's right edge");
+        assert_eq!(compact_disc_shift(right, area, 1.0, ISLAND_WINDOW.1), side, "the disc moves to the window's right side");
+        assert_eq!(disc_on_screen(right.origin, area, 1.0) + COMPACT_DOT.0, 1920, "and its right edge touches the screen's");
+    }
+    #[test]
+    fn the_disc_never_moves_whatever_the_shift() {
+        // the invariant: wherever the human drops it, the disc is on screen exactly there and the window is inside the area
+        for scale in [1.0, 2.0] {
+            let (dw, _) = scaled_size(COMPACT_DOT, scale);
+            let (ww, _) = scaled_size(ISLAND_WINDOW, scale);
+            let side = (ww - dw) / 2;
+            for area in [area(), human_area(), Rect { x: 0, y: 0, w: 2560, h: 1440 }] {
+                for dx in [-3000, -1, 0, 1, 300, 1000, 2000, 5000] {
+                    let origin = (dx, 400);
+                    let placed = Placed { origin, expanded: false };
+                    let w = island_window_rect_placed(placed, area, scale, ISLAND_WINDOW.1);
+                    let wanted = (origin.0 + side).max(area.x).min(area.right() - dw); // the disc is kept on screen
+                    assert_eq!(disc_on_screen(origin, area, scale), wanted, "scale {scale} area {area:?} origin {origin:?}: the disc is where it was dropped");
+                    assert!(w.x >= area.x && w.right() <= area.right(), "scale {scale} area {area:?} origin {origin:?}: the window {w:?} is inside the area");
+                }
+            }
+        }
+    }
+    #[test]
+    fn an_expanded_island_has_no_shift() {
+        for origin in [(-300, 300), (500, 300), (1900, 300)] {
+            assert_eq!(compact_disc_shift(Placed { origin, expanded: true }, area(), 1.0, ISLAND_WINDOW.1), 0);
+        }
+    }
+    #[test]
+    fn an_area_narrower_than_the_window_keeps_the_window_at_its_left_and_shifts_the_disc() {
+        // the native window is 752 wide whatever the screen; on a 600 px area it cannot be inside, so it starts at the area's left (what the
+        // system would do anyway) and the disc shift still puts the disc exactly where it was dropped
+        let narrow = Rect { x: 0, y: 0, w: 600, h: 800 };
+        let side = (ISLAND_WINDOW.0 - COMPACT_DOT.0) / 2;
+        let placed = Placed { origin: (100, 200), expanded: false };
+        assert_eq!(island_window_rect_placed(placed, narrow, 1.0, ISLAND_WINDOW.1).x, 0);
+        assert_eq!(disc_on_screen(placed.origin, narrow, 1.0), 100 + side);
     }
     #[test]
     fn without_a_dragged_origin_the_island_is_placed_top_centre_as_before() {
