@@ -61,7 +61,7 @@ test('T5b R3-drop-card-height: the drop spot uses the height the page DRAWS, not
 
 test('T5b R3-drop-edge-ordering: one read of the final spot decides the spot, the edge and the page', () => {
   const end = between(main, 'fn island_move_end(', 'fn open_chat_url');
-  assert.match(end, /let \(spot, edge\) = geometry::drop_spot\(Rect \{ x, y, w, h \}, expanded, edge, card_h, area, io\.scale\(\)\)/,
+  assert.match(end, /let \(spot, edge\) = geometry::drop_spot\(Rect \{ x(?:: x \+ shift)?, y, w, h \}, expanded, edge, card_h, area, io\.scale\(\)\)/,
     'the drop returns the spot and the edge it derives from that same spot');
   assert.doesNotMatch(end, /let \(spot, _\) = geometry::drop_spot/, 'the edge the placement derives is never dropped');
   let last = -1;

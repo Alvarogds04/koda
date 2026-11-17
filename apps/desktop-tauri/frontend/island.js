@@ -173,6 +173,7 @@
   let cardShown = false; // UI.1: a valid approval card is on screen
   let questionShown = false; // N6: a Pi question/notification is on screen (R6 shrinks like with a card)
   let p = 0;            // progress 0 = compact, 1 = overview
+  let discShift = 0, cardShift = 0; // T6: offsets of the disc and of the card from the window's centre (window.__islandSetShift)
   let v = 0;            // spring velocity
   let target = 0;
   let mode = 'idle';    // 'idle' | 'spring' | 'shrink'
@@ -277,6 +278,8 @@
     const cs = lerp(COMPACT.clay, ov.clay, p);
     put(island, 'width', w + 'px');
     put(island, 'height', h + 'px');
+    // T6: the box centre travels from the disc to the card with the same progress that grows it
+    put(island, 'transform', `translateX(calc(-50% + ${lerp(discShift, cardShift, p).toFixed(2)}px))`);
     put(island, 'borderRadius', `${radius}px ${radius}px ${radius}px ${radius}px`);
     put(island, 'top', anchorBottom ? 'auto' : gap + 'px');
     put(island, 'bottom', anchorBottom ? gap + 'px' : 'auto');
@@ -407,6 +410,16 @@
     if (!raf) raf = requestAnimationFrame(tick);
   }
   window.__islandSetState = setPhase;
+  // compact-anywhere T4/T6: called from Rust (main.rs push_shift) with where the DISC and the CARD sit from the window's centre, logical px.
+  // The native window moves when the island opens or folds (the card keeps its gap from the screen edge, the folded window only stays inside
+  // the work area), so the page draws the island at disc + (card - disc) * progress: it grows out of the disc and folds back onto it, and the
+  // box never jumps whichever window it is in. A junk value reads as 0; with one argument the card stays centred (T4's contract).
+  const num = (n) => (Number.isFinite(Number(n)) ? Math.round(Number(n)) : 0);
+  window.__islandSetShift = (disc, card) => {
+    discShift = num(disc); cardShift = card === undefined ? 0 : num(card);
+    capsule.style.setProperty('--disc-shift', `${discShift}px`);
+    render();
+  };
   // U1: called from Rust (chathost::apply_view) with the chat height from
   // geometry::CHAT_VISIBLE — the frontend never owns that number.
   window.__islandSetView = (view, vw, vh) => {

@@ -114,11 +114,35 @@ pub(crate) fn is_protected(app: &tauri::AppHandle, state: &crate::AppState) -> b
 #[cfg(not(target_os = "linux"))]
 static LAST: std::sync::Mutex<((i32, i32), Report)> = std::sync::Mutex::new(((288, 32), Report { w: 288, h: 32, settled: true }));
 
+/// compact-anywhere T3 (S7): the rects moved `shift` logical px along x, clipped to the window (a rect fully outside is dropped). The folded
+/// disc is drawn that far from the window's centre (the host's `disc_shift`). A window with no width yet (<= 0: not realized, nothing to clip
+/// against) gets the rects unshifted, exactly as before this change, rather than an empty region that would make the whole island click-through.
+pub(crate) fn shifted(rects: Vec<(i32, i32, i32, i32)>, shift: i32, window: (i32, i32)) -> Vec<(i32, i32, i32, i32)> {
+    if shift == 0 || window.0 <= 0 { return rects; }
+    rects.into_iter().filter_map(|(x, y, w, h)| {
+        let (left, right) = ((x + shift).max(0), (x + shift + w).min(window.0));
+        (right > left).then_some((left, y, right - left, h))
+    }).collect()
+}
+/// `shape_rects_anchored` for a folded disc `shift` logical px from the window's centre. Only the settled DISC is drawn shifted; the open
+/// card never is (it keeps itself inside the window). While the island folds or opens the page may draw it centred or shifted, and the
+/// host may change the shift before the page reports again, so a transition takes clicks over both: its union, centred and shifted.
+pub(crate) fn shape_rects_shifted(state: &mut ((i32, i32), Report), report: Option<Report>, window: (i32, i32), protected: bool, bottom: bool, shift: i32) -> Vec<(i32, i32, i32, i32)> {
+    let rects = shape_rects_anchored(state, report, window, protected, bottom);
+    let last = state.1;
+    if !last.settled {
+        let mut both = rects.clone();
+        both.extend(shifted(rects, shift, window));
+        return both;
+    }
+    if last.w == koda_island::geometry::COMPACT_DOT.0 { shifted(rects, shift, window) } else { rects }
+}
+
 /// Windows/macOS: remember the page's report (`apply` is called from `island_shape`), and read the current rects for the click-through.
 #[cfg(not(target_os = "linux"))]
-pub(crate) fn current_rects(window: (i32, i32), protected: bool, bottom: bool) -> Vec<(i32, i32, i32, i32)> {
+pub(crate) fn current_rects(window: (i32, i32), protected: bool, bottom: bool, shift: i32) -> Vec<(i32, i32, i32, i32)> {
     let mut state = LAST.lock().expect("island shape lock");
-    shape_rects_anchored(&mut state, None, window, protected, bottom)
+    shape_rects_shifted(&mut state, None, window, protected, bottom, shift)
 }
 
 /// The island's input rects for the current report, shared by every platform. `state` = (the last SETTLED destination, the last report):
@@ -162,7 +186,8 @@ pub(crate) fn apply(app: &tauri::AppHandle, report: Option<Report>) {
             let app_state = handle.state::<crate::AppState>();
             let protected = is_protected(&handle, &app_state);
             let bottom = anchor_bottom(&app_state);
-            let rects: Vec<_> = shape_rects_anchored(&mut state, report, window, protected, bottom)
+            let shift = app_state.disc_shift.load(std::sync::atomic::Ordering::SeqCst);
+            let rects: Vec<_> = shape_rects_shifted(&mut state, report, window, protected, bottom, shift)
                 .into_iter().map(|(x, y, w, h)| gtk::cairo::RectangleInt::new(x, y, w, h)).collect();
             let region = gtk::cairo::Region::create_rectangles(&rects);
             gdk.input_shape_combine_region(&region, 0, 0);
@@ -512,5 +537,78 @@ mod shared_rects {
         let mut state = ((288, 32), Report { w: 288, h: 32, settled: true });
         let first = shape_rects(&mut state, Some(Report { w: 440, h: 32, settled: true }), W, false);
         assert_eq!(shape_rects(&mut state, None, W, false), first);
+    }
+}
+
+// compact-anywhere T3 (S7): the folded disc is drawn `shift` logical px from its window's centre (the window stays inside the work area,
+// geometry::compact_disc_shift), so the region that takes clicks moves with it: every rect, the settled disc and a transition's union
+// alike, and nothing outside the window.
+#[cfg(test)]
+mod shifted_rects {
+    use super::*;
+    const W: (i32, i32) = koda_island::geometry::ISLAND_WINDOW;
+    fn disc() -> Report { Report { w: 40, h: 32, settled: true } }
+    #[test]
+    fn the_folded_disc_takes_clicks_where_it_is_drawn_at_both_edges() {
+        let centred = input_rects_anchored(disc(), W, false, false);
+        let side = (W.0 - 40) / 2;
+        assert!(centred.iter().all(|r| r.0 >= side && r.0 + r.2 <= side + 40));
+        let left = shifted(centred.clone(), -side, W);
+        let inset = centred.iter().map(|r| r.0).min().unwrap() - side; // the rounded disc gives up its outermost pixel, shifted or not
+        assert_eq!(left.iter().map(|r| r.0).min(), Some(inset), "pushed to the window's left: the disc takes clicks from its left edge");
+        assert!(left.iter().all(|r| r.0 + r.2 <= 40), "and nothing right of the disc does");
+        let right = shifted(centred.clone(), side, W);
+        assert_eq!(right.iter().map(|r| r.0 + r.2).max(), Some(W.0 - inset), "pushed to the right: up to the window's right edge");
+        assert_eq!(shifted(centred.clone(), 0, W), centred, "no shift, no change");
+        for (a, b) in centred.iter().zip(left.iter()) { assert_eq!((a.1, a.2, a.3), (b.1, b.2, b.3), "only x moves"); }
+    }
+    #[test]
+    fn a_transition_union_is_moved_whole_and_clipped_to_the_window() {
+        let union = vec![(100, 0, 552, 200)];
+        assert_eq!(shifted(union.clone(), -200, W), vec![(0, 0, 452, 200)], "clipped at the left");
+        assert_eq!(shifted(union.clone(), 200, W), vec![(300, 0, 452, 200)], "clipped at the right");
+        assert_eq!(shifted(vec![(0, 0, 40, 32)], -100, W), Vec::<(i32, i32, i32, i32)>::new(), "a rect fully outside is dropped");
+    }
+    #[test]
+    fn a_window_with_no_width_keeps_the_rects_instead_of_dropping_them() {
+        let disc = input_rects_anchored(disc(), W, false, false);
+        assert_eq!(shifted(disc.clone(), -356, (0, 340)), disc, "nothing to clip against: unshifted, never an empty click-through region");
+        assert_eq!(shifted(disc.clone(), -356, (-5, 340)), disc);
+    }
+    #[test]
+    fn a_bottom_anchored_folded_disc_takes_clicks_shifted_at_the_window_bottom() {
+        let side = (W.0 - 40) / 2;
+        let mut state = ((40, 32), disc());
+        let centred = input_rects_anchored(disc(), W, false, true);
+        let rects = shape_rects_shifted(&mut state, Some(disc()), W, false, true, -side);
+        assert_eq!(rects, shifted(centred.clone(), -side, W));
+        assert!(rects.iter().all(|r| r.1 >= W.1 - 32 && r.1 + r.3 <= W.1), "the disc stands on the window's bottom edge");
+        assert!(rects.iter().all(|r| r.0 + r.2 <= 40), "and at its left side");
+    }
+    #[test]
+    fn only_the_settled_disc_is_shifted_never_the_card() {
+        let card = Report { w: 720, h: 150, settled: true };
+        let mut state = ((40, 32), disc());
+        let centred = input_rects_anchored(card, W, false, false);
+        assert_eq!(shape_rects_shifted(&mut state, Some(card), W, false, false, -356), centred, "a stale shift never moves the open card");
+    }
+    #[test]
+    fn a_transition_takes_clicks_centred_and_shifted_whatever_the_shift_does_meanwhile() {
+        // folding from the card to a disc at the left edge: the host sets the shift (ensure_island_window) before the page settles
+        let side = (W.0 - 40) / 2;
+        let moving = Report { w: 200, h: 80, settled: false };
+        let mut state = ((720, 150), Report { w: 720, h: 150, settled: true });
+        let mut plain = state;
+        let centred = shape_rects_anchored(&mut plain, Some(moving), W, false, false);
+        let rects = shape_rects_shifted(&mut state, Some(moving), W, false, false, -side);
+        for r in &centred { assert!(rects.contains(r), "the centred union still takes clicks: {r:?}"); }
+        for r in shifted(centred.clone(), -side, W) { assert!(rects.contains(&r), "and so does the shifted one: {r:?}"); }
+        // the shift changes again (a new placement) with no new report: the next repaint (apply(None)) follows it
+        let again = shape_rects_shifted(&mut state, None, W, false, false, 0);
+        assert_eq!(again.len(), centred.len() * 2);
+        assert!(again.iter().all(|r| centred.contains(r)), "no shift left: only the centred union");
+        // and once settled at the disc, only the shifted disc
+        let done = shape_rects_shifted(&mut state, Some(disc()), W, false, false, -side);
+        assert_eq!(done, shifted(input_rects_anchored(disc(), W, false, false), -side, W));
     }
 }

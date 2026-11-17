@@ -108,6 +108,15 @@ fn ensure_island_window(app: &AppHandle) -> Rect {
     if !dragging && io.outer_position() != (wanted.x, wanted.y) {
         io.set_outer_position(wanted.x, wanted.y);
     }
+    // compact-anywhere T2: the folded window stays inside the work area and the disc shifts inside it, by the placement's own rule.
+    // No dragged spot (top centre): no shift. Mid-drag the drag owns it (island_move). T6: the OPEN island gets its offsets too (the disc is
+    // still where it was, the page grows the card out of it); only the folded drag's shift (`shift`) is zero when open.
+    if !dragging {
+        let height = state.window_h.load(Ordering::SeqCst);
+        let shift = placed.map_or(0, |placed| geometry::compact_disc_shift(placed, area, io.scale(), height));
+        let (disc, card) = placed.map_or((0, 0), |placed| geometry::island_shift_pair(placed, area, io.scale(), height));
+        set_disc_shift(app, &state, shift, (disc, card), io.scale());
+    }
     // isla-cualquier-lado T6b: the window around the disc follows the same growth edge as the open card. One read of the spot
     // decides the placement above, the edge the core keeps and the `data-edge` the page lays the island out for, so a monitor,
     // work-area or scale change can never make the page draw a lower-half island from the top of its window.
@@ -361,6 +370,12 @@ struct AppState {
     /// Where the human dragged the island (window top-left, physical px); None keeps the top-centre default. Loaded from
     /// prefs at launch and replaced only by `island_move_end`.
     island_origin: Mutex<Option<(i32, i32)>>,
+    /// compact-anywhere T2: how far the folded disc sits from its window's centre, physical px (the drag and the saved spot)…
+    disc_shift_px: AtomicI32,
+    /// …and logical px (what the page draws and the click region takes). 0 when not folded at a side.
+    disc_shift: AtomicI32,
+    /// compact-anywhere T6: where the open card sits from its window's centre, logical px (0 once the island is open).
+    card_shift: AtomicI32,
     /// The pill drag in progress: (screen pointer at the press, logical px; window origin at the press, physical px).
     island_drag: Mutex<Option<((f64, f64), (f64, f64))>>,
     /// Mirrors `core.expanded` for placement without taking the core lock (written by `apply_plan`, the single toggle funnel).
@@ -504,6 +519,27 @@ fn edge_str(edge: Edge) -> &'static str {
         Edge::Top => "top",
         Edge::Bottom => "bottom",
     }
+}
+
+/// compact-anywhere T2/T6: keep the folded drag's shift (`shift`, physical px: the drag and the saved spot) and the two offsets the page
+/// draws the island from, `(disc, card)` from the window's centre (physical in, logical px stored: the page and the click region). Tells
+/// the page when either changed.
+fn set_disc_shift(app: &AppHandle, state: &AppState, shift: i32, offsets: (i32, i32), scale: f64) {
+    state.disc_shift_px.store(shift, Ordering::SeqCst);
+    let (disc, card) = (geometry::logical_shift(offsets.0, scale), geometry::logical_shift(offsets.1, scale));
+    let disc_changed = state.disc_shift.swap(disc, Ordering::SeqCst) != disc;
+    let card_changed = state.card_shift.swap(card, Ordering::SeqCst) != card; // both are stored, never short-circuited
+    let changed = disc_changed || card_changed;
+    if changed {
+        push_shift(app, disc, card);
+    }
+}
+
+/// Push the disc's and the card's offsets (logical px, from the window's centre) into the webview: the page draws the island at
+/// `disc + (card - disc) * progress`, so it grows out of the disc wherever it is.
+fn push_shift(app: &AppHandle, disc: i32, card: i32) {
+    let Some(win) = main_window(app) else { return };
+    let _ = win.eval(format!("window.__islandSetShift && window.__islandSetShift({disc}, {card});"));
 }
 
 /// Push the island phase into the webview; animation stays inside the fixed window.
@@ -1061,6 +1097,8 @@ fn island_move_begin(app: AppHandle, webview: tauri::Webview, state: State<AppSt
     let Some(press) = koda_island::characterwin::valid_point(x, y) else { return };
     let Some(win) = main_window(&app) else { return };
     let (ox, oy) = TauriIo(&win).outer_position();
+    // compact-anywhere T2: the drag moves the VIRTUAL window (the one centred on the disc), which may hang past the work area's edge
+    let ox = ox + state.disc_shift_px.load(Ordering::SeqCst);
     state.user_touch.store(true, Ordering::SeqCst);
     islandclick::DRAGGING.store(true, Ordering::SeqCst); // HU-043: never click-through under the pointer mid-drag
     *state.island_drag.lock().unwrap_or_else(|e| e.into_inner()) = Some((press, (f64::from(ox), f64::from(oy))));
@@ -1074,7 +1112,21 @@ fn island_move(app: AppHandle, webview: tauri::Webview, state: State<AppState>, 
     let Some(win) = main_window(&app) else { return };
     let io = TauriIo(&win);
     let (nx, ny) = koda_island::characterwin::drag_top_left(origin, now, press, io.scale());
-    io.set_outer_position(nx.round() as i32, ny.round() as i32);
+    let (nx, ny) = (nx.round() as i32, ny.round() as i32);
+    if state.island_open.load(Ordering::SeqCst) {
+        io.set_outer_position(nx, ny);
+        return;
+    }
+    // compact-anywhere T2 (S5): folded, the window follows the pointer up to the work area's edge and the disc goes on inside it
+    let area = *state.work_area.lock().expect("work area lock");
+    let (wx, shift) = geometry::folded_drag_x(nx, area, io.scale(), state.window_h.load(Ordering::SeqCst));
+    io.set_outer_position(wx, ny);
+    let before = state.disc_shift_px.load(Ordering::SeqCst);
+    let (disc, card) = geometry::island_shift_pair(geometry::Placed { origin: (nx, ny), expanded: false }, area, io.scale(), state.window_h.load(Ordering::SeqCst));
+    set_disc_shift(&app, &state, shift, (disc, card), io.scale());
+    if before != shift {
+        islandshape::apply(&app, None);
+    }
 }
 
 /// The pill was released: remember the spot (clamped so the bar stays on screen), persist it, and settle the window there.
@@ -1092,6 +1144,9 @@ fn island_move_end(app: AppHandle, webview: tauri::Webview, state: State<AppStat
     // height is what the page reports (T5b R3-drop-card-height): a 240 chat or a taller take-over, never a guess from the window.
     let (x, y) = io.outer_position();
     let (w, h) = io.size();
+    // compact-anywhere T2: the saved spot keeps its meaning (the left of the window centred on the disc, which may leave the area), so
+    // it is the real window plus the disc's shift inside it; the clamped window alone would put the disc back 356 px from the edge
+    let shift = state.disc_shift_px.load(Ordering::SeqCst);
     // read before the core lock: islandshape's own lock must never be taken under it (islandshape::apply takes SHAPE then the core)
     let reported = islandshape::last_visible_height();
     let (edge, card_h) = {
@@ -1099,7 +1154,7 @@ fn island_move_end(app: AppHandle, webview: tauri::Webview, state: State<AppStat
         (core.edge, geometry::visible_card_height(reported, core.chat, core.chat_height()))
     };
     let expanded = state.island_open.load(Ordering::SeqCst);
-    let (spot, edge) = geometry::drop_spot(Rect { x, y, w, h }, expanded, edge, card_h, area, io.scale());
+    let (spot, edge) = geometry::drop_spot(Rect { x: x + shift, y, w, h }, expanded, edge, card_h, area, io.scale());
     // ONE read of the final spot decides all three BEFORE anything is applied (T5b R3-drop-edge-ordering): the spot that is
     // saved, the edge the placement derives from it, and the edge the page lays the island out for. Nothing can disagree.
     // The saved spot is the DISC's (x is the window's left, y the disc's top), so a restart rebuilds this same window.
@@ -1990,6 +2045,9 @@ fn main() {
         chat_rate: Mutex::new(bridge::RateLimiter::new()),
         window_h: AtomicI32::new(geometry::ISLAND_WINDOW.1),
         island_origin: Mutex::new(None),
+        disc_shift_px: AtomicI32::new(0),
+        disc_shift: AtomicI32::new(0),
+        card_shift: AtomicI32::new(0),
         island_drag: Mutex::new(None),
         island_open: AtomicBool::new(false),
         hotkey: hotkeyhost::HotkeyHost::default(),
@@ -2091,6 +2149,7 @@ fn main() {
                     (phase == IslandState::Expanded, state.core.lock().expect("core lock").edge)
                 };
                 push_phase(webview.app_handle(), if expanded { "overview" } else { "compact" }, edge);
+                push_shift(webview.app_handle(), state.disc_shift.load(Ordering::SeqCst), state.card_shift.load(Ordering::SeqCst));
             }
             publish(webview.app_handle(), &state);
         })
