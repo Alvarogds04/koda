@@ -235,6 +235,19 @@ pub fn folded_drag_x(virtual_x: i32, area: Rect, scale: f64, height: i32) -> (i3
 pub fn logical_shift(shift: i32, scale: f64) -> i32 {
     (f64::from(shift) / valid_scale(scale)).round() as i32
 }
+/// compact-anywhere T6: what the PAGE needs to draw the island growing out of its disc, for the window it is in right now (folded or open).
+/// Returns (disc, card) in physical px, both as an offset from that window's centre: `disc` is where the folded disc is, `card` where the open
+/// card's column ends up. The window moves when the island opens or folds (the card keeps EDGE_GAP from the area's edges, the folded window only
+/// stays inside the area), so the page draws the box at `disc + (card - disc) * progress` and nothing jumps: the disc and the card are the same
+/// place on screen whichever window draws them. Folded, `disc` is `compact_disc_shift`. A disc away from the sides is (0, 0).
+pub fn island_shift_pair(placed: Placed, area: Rect, scale: f64, height: i32) -> (i32, i32) {
+    let folded = Placed { expanded: false, ..placed };
+    let open = Placed { expanded: true, ..placed };
+    let here = island_window_rect_placed(placed, area, scale, height);
+    let (kept, side, _) = placed_kept(folded, area, scale, height);
+    let disc_window_left = kept.x - side; // the window centred on the disc, which may leave the area
+    (disc_window_left - here.x, island_window_rect_placed(open, area, scale, height).x - here.x)
+}
 /// The box the placement keeps on screen (the disc folded, the open card's column expanded), the transparent air beside it inside the
 /// window, and the growth edge: the one place island_window_rect_placed and compact_disc_shift agree on.
 fn placed_kept(placed: Placed, area: Rect, scale: f64, height: i32) -> (Rect, i32, Edge) {
@@ -424,6 +437,49 @@ mod tests {
                 assert_eq!(island_window_rect_placed(placed, a, scale, ISLAND_WINDOW.1).x, window_x, "x {virtual_x} scale {scale}: the release keeps the window");
                 assert_eq!(compact_disc_shift(placed, a, scale, ISLAND_WINDOW.1), shift, "x {virtual_x} scale {scale}: and the shift");
             }
+        }
+    }
+    // compact-anywhere T6 (human, 17-nov: «al abrir la animacion no sale desde donde esta el koda compactado»). The window moves when the island
+    // opens (the card column keeps EDGE_GAP, the folded window only stays inside the area), so the page needs, for the window it is IN right now,
+    // where the DISC is and where the CARD ends up, both as offsets from that window's centre: it draws the box between the two while it grows.
+    #[test]
+    fn the_disc_and_the_card_offsets_from_the_window_he_opens_at_the_left_edge() {
+        let area = human_area();
+        let side = (ISLAND_WINDOW.0 - COMPACT_DOT.0) / 2;
+        let origin = (area.x - side, 300); // his disc dropped at the dock's edge
+        let folded = Placed { origin, expanded: false };
+        let open = Placed { origin, expanded: true };
+        assert_eq!(island_window_rect_placed(open, area, 1.0, ISLAND_WINDOW.1).x, 43, "the open card keeps 12 px from the dock: the window moves 4 px");
+        assert_eq!(island_shift_pair(folded, area, 1.0, ISLAND_WINDOW.1), (-356, -4), "folded: the disc is 356 left of the centre, the card will be 4 left of it");
+        assert_eq!(island_shift_pair(open, area, 1.0, ISLAND_WINDOW.1), (-352, 0), "open: the disc is still at the same screen spot, 352 left of the card's centre");
+    }
+    #[test]
+    fn the_disc_and_the_card_never_move_on_screen_whichever_window_the_page_is_in() {
+        // continuity: the disc on screen and the card on screen come out the same from the folded and from the open window
+        for scale in [1.0, 2.0] {
+            let (dw, _) = scaled_size(COMPACT_DOT, scale);
+            let (ww, _) = scaled_size(ISLAND_WINDOW, scale);
+            for area in [area(), human_area(), Rect { x: 0, y: 0, w: 2560, h: 1440 }] {
+                for dx in [-3000, -300, 0, 47, 500, 1300, 2000, 5000] {
+                    let origin = (dx, 400);
+                    let (folded, open) = (Placed { origin, expanded: false }, Placed { origin, expanded: true });
+                    let (wf, wo) = (island_window_rect_placed(folded, area, scale, ISLAND_WINDOW.1), island_window_rect_placed(open, area, scale, ISLAND_WINDOW.1));
+                    let (df, cf) = island_shift_pair(folded, area, scale, ISLAND_WINDOW.1);
+                    let (d_o, co) = island_shift_pair(open, area, scale, ISLAND_WINDOW.1);
+                    let at = |w: Rect, off: i32| w.x + ww / 2 + off;
+                    assert_eq!(at(wf, df), at(wo, d_o), "scale {scale} {area:?} x {dx}: the disc stays where it is on screen");
+                    assert_eq!(at(wf, cf), at(wo, co), "scale {scale} {area:?} x {dx}: the card is the same card whichever window draws it");
+                    assert_eq!(at(wo, co), wo.x + ww / 2, "the open window is centred on its card");
+                    assert_eq!(df, compact_disc_shift(folded, area, scale, ISLAND_WINDOW.1), "folded, the disc offset is the compact shift");
+                    assert!(dw > 0);
+                }
+            }
+        }
+    }
+    #[test]
+    fn a_disc_away_from_the_sides_has_nothing_to_travel() {
+        for p in [Placed { origin: (900, 300), expanded: false }, Placed { origin: (900, 300), expanded: true }] {
+            assert_eq!(island_shift_pair(p, area(), 1.0, ISLAND_WINDOW.1), (0, 0));
         }
     }
     #[test]

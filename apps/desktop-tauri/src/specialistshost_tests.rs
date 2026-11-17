@@ -213,6 +213,7 @@ fn principal_test_state(instructions: &str) -> AppState {
         island_origin: Mutex::new(None),
         disc_shift_px: std::sync::atomic::AtomicI32::new(0),
         disc_shift: std::sync::atomic::AtomicI32::new(0),
+        card_shift: std::sync::atomic::AtomicI32::new(0),
         island_drag: Mutex::new(None),
         island_open: AtomicBool::new(false),
         requested: Mutex::new(Requested::default()),

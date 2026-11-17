@@ -27,7 +27,7 @@ test('T2: placing the folded island computes the shift from the same placement',
   const ensure = between(main, 'fn ensure_island_window(', '\n}\n');
   assert.match(ensure, /geometry::compact_disc_shift\(/, 'the placement shift');
   assert.match(ensure, /set_disc_shift\(/, 'is kept and published');
-  assert.match(ensure, /if !dragging[\s\S]{0,200}set_disc_shift/, 'mid-drag the drag owns the shift');
+  assert.match(ensure, /if !dragging \{[\s\S]{0,700}set_disc_shift/, 'mid-drag the drag owns the shift');
 });
 
 test('T2: the drag moves the disc on past the edge and the release saves the virtual window left', () => {
@@ -44,4 +44,19 @@ test('T2: the drag moves the disc on past the edge and the release saves the vir
 test('T2: a page that (re)loads learns the current shift', () => {
   const load = between(main, '.on_page_load(', '.on_window_event(');
   assert.match(load, /push_shift\(/);
+});
+
+test('T6: the page gets the disc and the card offsets in EVERY phase, so opening and folding grow out of the disc', () => {
+  const state = between(main, 'struct AppState {', '\n}\n');
+  assert.match(state, /card_shift: AtomicI32,/, 'the card offset is kept next to the disc offset');
+  const ensure = between(main, 'fn ensure_island_window(', '\n}\n');
+  assert.match(ensure, /geometry::island_shift_pair\(/, 'both offsets come from the one placement rule');
+  assert.doesNotMatch(ensure, /island_open[\s\S]{0,120}set_disc_shift|expanded[\s\S]{0,60}\(0, 0\)/, 'the open island is NOT given zero offsets: the disc is still where it was');
+  assert.match(ensure, /placed\.map_or\(\(0, 0\), \|placed\| geometry::island_shift_pair\(placed,/, 'only a island with no saved spot (top centre) has none');
+  const setter = between(main, 'fn set_disc_shift(', '\n}\n');
+  assert.match(setter, /card_shift/, 'a change of either offset reaches the page');
+  const push = between(main, 'fn push_shift(', '\n}\n');
+  assert.match(push, /__islandSetShift\(\{disc\},\s*\{card\}\)/, 'the page gets both numbers');
+  const moving = between(main, 'fn island_move(', '\n}\n');
+  assert.match(moving, /geometry::island_shift_pair\(/, 'mid-drag the page follows both offsets too');
 });
