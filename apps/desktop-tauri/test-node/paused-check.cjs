@@ -1,0 +1,65 @@
+'use strict';
+/* K2-10 T4 (S11) — la pausa del correo: `frontend/paused.js` y `src/paused.rs` tienen que quedar de
+   acuerdo. El correo tiene entrada PROPIA y NO está en pausa en esta versión (la tarjeta de la isla y
+   su ajuste tienen que andar); Integraciones sigue en pausa, sin cambios.
+   Run: node apps/desktop-tauri/test-node/paused-check.cjs */
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const frontend = path.join(__dirname, '..', 'frontend');
+const P = require(path.join(frontend, 'paused.js'));
+const rust = fs.readFileSync(path.join(__dirname, '..', 'src', 'paused.rs'), 'utf8');
+
+let passed = 0;
+const test = (_name, fn) => { fn(); passed += 1; };
+
+/** The Rust `true` arm of `paused()` names every paused feature; the JS list must name the same ones. */
+function pausedArm() {
+  const at = rust.indexOf('pub const fn paused');
+  assert.ok(at > 0, 'src/paused.rs has no paused()');
+  const body = rust.slice(at, rust.indexOf('\n}', at));
+  const m = /=> true/.exec(body);
+  assert.ok(m, 'src/paused.rs paused() has no `=> true` arm');
+  const arm = body.slice(0, m.index + m[0].length);
+  return [...arm.matchAll(/Feature::([A-Za-z]+)/g)].map(x => x[1].toLowerCase());
+}
+
+test('one list on both sides: the paused features of paused.rs are exactly the PAUSED list of paused.js', () => {
+  assert.deepEqual(pausedArm().sort(), [...P.PAUSED].sort());
+  for (const id of P.PAUSED) assert.equal(P.paused(id), true, id);
+});
+
+test('mail has its own entry and is NOT paused on either side', () => {
+  assert.equal(P.paused('mail'), false, 'paused.js must not pause mail');
+  assert.equal(P.PAUSED.includes('mail'), false, 'mail is never in the paused list');
+  assert.deepEqual([...P.NOT_PAUSED], ['mail', 'spotify', 'github', 'calendar'], 'the features this version turns on (K2-10 mail, K2-09 music, K2-11 GitHub and calendar)');
+  assert.match(rust, /Feature::Mail => false/, 'paused.rs gives mail its own, active entry');
+  assert.doesNotMatch(pausedArm().join(' '), /mail/, 'mail never joins the paused arm');
+});
+
+test('K2-11 (S6): GitHub and the calendar have their OWN entry and are not paused; the 0.3 services stay paused', () => {
+  for (const id of ['github', 'calendar']) {
+    assert.equal(P.paused(id), false, `paused.js must not pause ${id}`);
+    assert.equal(P.PAUSED.includes(id), false, `${id} is never in the paused list`);
+    assert.equal(P.NOT_PAUSED.includes(id), true, `${id} is listed as a feature this version turns on`);
+    assert.doesNotMatch(pausedArm().join(' '), new RegExp(`(^| )${id}( |$)`), `${id} never joins the paused arm`);
+  }
+  assert.match(rust, /Feature::Github => false/, 'paused.rs gives GitHub its own, active entry');
+  assert.match(rust, /Feature::Calendar => false/, 'paused.rs gives the calendar its own, active entry');
+  assert.match(rust, /Feature::Dictation \| Feature::Voice \| Feature::Integrations => true/, 'the 0.3 services keep their pause: the two cards never un-pause them');
+});
+
+test('the rest of the pause is untouched, and the label still matches', () => {
+  // K2 T1 (S2, S3): `phone` left the paused arm (its own `Feature::Phone => false`); the link still starts OFF. K2-09: so did spotify.
+  assert.deepEqual(pausedArm().sort(), ['dictation', 'integrations', 'voice']);
+  assert.match(rust, /Feature::Phone => false/, 'paused.rs gives the phone link its own, active entry');
+  assert.equal(P.paused('integrations'), true, 'Integraciones keeps its pause');
+  // K2-09: «se quita la pausa de Spotify»
+  assert.equal(P.paused('spotify'), false);
+  assert.match(rust, /Feature::Spotify => false/);
+  assert.equal(P.LABEL, 'En pausa · próxima versión');
+  assert.match(rust, /pub const LABEL: &str = "En pausa · próxima versión"/);
+  for (const active of ['chat', 'agents', 'general', 'mail', 'phone', 'spotify', 'github', 'calendar']) assert.equal(P.paused(active), false, active);
+});
+
+console.log(`paused-check: ${passed} checks ok`);

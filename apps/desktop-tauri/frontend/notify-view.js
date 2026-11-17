@@ -33,8 +33,8 @@
   const PROJECT_NAME = /^[A-Za-z0-9._-](?:[A-Za-z0-9._ -]{0,62}[A-Za-z0-9._-])?$/;
   // S4 (abito-avisos-ux, human: «quita lo de sb y dejalo todo como abito»): the Abito project lives in the folder «sb-second-brain»;
   // on screen it is «Abito». Display only: ids, paths and wire fields keep the real folder name. Any other project keeps its own.
-  const ABITO_FOLDERS = /^sb-second-brain$/i;
-  const projectLabel = name => (typeof name === 'string' && ABITO_FOLDERS.test(name.trim()) ? 'Koda' : name);
+  const KODA_FOLDERS = /^sb-second-brain$/i;
+  const projectLabel = name => (typeof name === 'string' && KODA_FOLDERS.test(name.trim()) ? 'Koda' : name);
   const askerLine = n => {
     const name = n && typeof n.projectName === 'string' && PROJECT_NAME.test(n.projectName) ? projectLabel(n.projectName) : null;
     return name ? `${askerName(n)} · ${name}` : askerName(n);
@@ -47,6 +47,42 @@
     if (!Number.isInteger(waiting) || waiting < 1 || waiting + 1 > MAX_QUEUE) return '';
     return `1 de ${waiting + 1}`;
   };
+  // K2-08 (design 01 · «Una a la vez con contador»): what the polite live region says while requests wait in the FIFO queue.
+  // «Codex, koda»: the who-row with a comma for the screen reader.
+  const whoSays = n => askerLine(n).replace(' · ', ', ');
+  /** A new head while others wait: «Permiso 1 de 3: Codex, koda quiere ejecutar cargo test». `approval` is the island's approvalView
+   *  (null for a plain question). Empty without a queue: one request keeps today's announcement. */
+  function headAnnouncement(n, snap, approval) {
+    const label = queueLabel(snap);
+    if (!n || !label) return '';
+    if (!approval) return `Pregunta ${label}: ${whoSays(n)}: ${n.text}`;
+    const what = approval.title === 'Ejecutar:' ? `ejecutar ${approval.command}` : `permiso para ${approval.tool ? `${approval.tool}: ` : ''}${approval.command}`;
+    return `Permiso ${label}: ${whoSays(n)} quiere ${what}`;
+  }
+  const ANSWERED_WORD = Object.freeze({ approve: 'Permitido', reject: 'Rechazado', decline: 'Omitido' });
+  /** The head that follows the one just answered: «Permitido. Siguiente: Claude Code, api». */
+  const nextAnnouncement = (role, n) => `${ANSWERED_WORD[role] || 'Respondido'}. Siguiente: ${whoSays(n)}`;
+  /** Requests that left the queue BEHIND the head while it stayed on screen and the host says «expired»: each went to its terminal.
+   *  [] when nothing hidden expired (the head itself expiring, a new head, or a retained notice are not this event). An entry is null
+   *  when the host did not list who it was. The host carries no notice sequence, so a notice that was ALREADY «expired» before this
+   *  transition is stale: then only a request whose own deadline (`expires_at`, ms) has passed by `now` counts as expired; one that
+   *  left earlier was disconnected or answered elsewhere and is never announced as «pasó a la terminal». */
+  function hiddenExpired(prev, next, now) {
+    if (!prev || !next || next.notice !== 'expired') return [];
+    const a = fromPending(prev.pending), b = fromPending(next.pending);
+    if (!a || !b || a.id !== b.id) return [];
+    const before = Number.isInteger(prev.queued_count) ? prev.queued_count : 0, after = Number.isInteger(next.queued_count) ? next.queued_count : 0;
+    if (after >= before) return [];
+    const still = new Set((Array.isArray(next.queued) ? next.queued : []).map(q => q && q.id));
+    const gone = (Array.isArray(prev.queued) ? prev.queued : []).map(fromPending).filter(q => q && !still.has(q.id));
+    if (prev.notice === 'expired') return gone.filter(q => Number.isFinite(now) && q.expiresAt <= now);
+    return gone.length ? gone : Array.from({ length: before - after }, () => null);
+  }
+  function hiddenExpiredAnnouncement(gone) {
+    if (!Array.isArray(gone) || !gone.length) return '';
+    if (gone.length > 1) return `${gone.length} permisos pasaron a la terminal`;
+    return gone[0] ? `Un permiso de ${askerName(gone[0])} pasó a la terminal` : 'Un permiso pasó a la terminal';
+  }
   // Structured questions (contract fix/seguridad-app 5a57a4d): multi_select, a questionnaire `form`, free_text_max (2000 | 4000).
   const FORM_MAX_ITEMS = 4, HEADER_MAX = 32;
   const optionsOf = raw => (Array.isArray(raw) ? raw.slice(0, MAX_OPTIONS) : []).map((o, i) => ({
@@ -168,12 +204,20 @@
     return outcome ? { kind: 'outcome', outcome, controlsEnabled: false } : { kind: 'none', controlsEnabled: false };
   }
 
-  // ---- sound cues (catalog ids only; playing them is a separate OFF-by-default switch) --------
+  // ---- sound cues (catalog ids only; the sound engine and the human's preference decide whether they play) --------
   const SILENT = new Set(['sent', 'ack_lost', 'outcome_unknown', 'answered', 'human_cancelled', 'rejected', 'busy', 'disconnected', 'cancelled']);
-  function soundFor(prev, next) {
+  // K2-07 L10 «Un sonido distinto para cada aviso»: a new question plays snd.question, a new permission snd.approval.
+  // A permission is Pi's kind=approval, or a question the island SHOWS as a permission: `isPermission(n)` is the page's own
+  // approval-look classifier (island-layout approvalView), so the cue and the card the human sees never disagree.
+  function soundFor(prev, next, isPermission) {
     if (!prev || !next) return null; // nothing sounds at start-up or without history
     const before = fromPending(prev.pending), after = fromPending(next.pending);
-    if (after && (!before || before.id !== after.id)) return 'snd.attention';
+    if (after && (!before || before.id !== after.id)) {
+      if (after.kind === 'approval') return 'snd.approval';
+      let look = false;
+      try { look = typeof isPermission === 'function' && isPermission(after) === true; } catch { look = false; }
+      return look ? 'snd.approval' : 'snd.question';
+    }
     // an expiry is an EVENT: the question that was pending last time is gone and the host says expired
     // (a retained old notice must not swallow a second expiry, nor re-fire on an unrelated update)
     if (!after && before && next.notice === 'expired') return 'snd.expired';
@@ -493,6 +537,6 @@
   // L5: a click on the blobs column while «Recibida» (the question outcome) shows ends the outcome early; nothing else is dismissible this way.
   const outcomeDismissible = d => !!d && d.question === 'outcome';
 
-  return { projectLabel, outcomeDismissible, sizeSync, optionRows, singleItem, toggleOther, OTHER_LABEL, newDraft, toggleOption, setDraftText, textFits, draftAnswered, itemPayload, multiView, manyPayload, formStart, formReduce, formView, formPayload, keyIntent, windowHeightFor, questionLayout, textareaHeight, QUESTION_MAX_ISLAND_H, QUESTION_MIN_CARD_H, replyIsCurrent, regressesToSent, MAX_OPTIONS, SOUND_ENABLED_DEFAULT, fromPending, askedBy, askerName, askerLine, queueLabel, agentLabel, trusted, openPayload, onScreen, optionForKey, expired, expiryWord, fraction,
+  return { projectLabel, outcomeDismissible, sizeSync, optionRows, singleItem, toggleOther, OTHER_LABEL, newDraft, toggleOption, setDraftText, textFits, draftAnswered, itemPayload, multiView, manyPayload, formStart, formReduce, formView, formPayload, keyIntent, windowHeightFor, questionLayout, textareaHeight, QUESTION_MAX_ISLAND_H, QUESTION_MIN_CARD_H, replyIsCurrent, regressesToSent, MAX_OPTIONS, SOUND_ENABLED_DEFAULT, fromPending, askedBy, askerName, askerLine, queueLabel, whoSays, headAnnouncement, nextAnnouncement, hiddenExpired, hiddenExpiredAnnouncement, agentLabel, trusted, openPayload, onScreen, optionForKey, expired, expiryWord, fraction,
     outcomeView, phase, soundFor, outcomeEvent, createCueLimiter, createRevealGate, createFinishedCycle, FINISHED_MS, revealAction, NOTICE_SEEN_MAX, utf8Bytes, textWord, canSendText };
 });

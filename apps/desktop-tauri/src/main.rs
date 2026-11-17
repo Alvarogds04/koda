@@ -35,7 +35,8 @@ mod hotkeyhost;
 mod tray;
 mod trayhost;
 mod githubhost;
-mod mailhost;
+mod calendarhost;
+mod gmailhost;
 mod monitorshost;
 mod secretshost;
 mod oauthhost;
@@ -45,6 +46,7 @@ mod planhost;
 mod dictationhost;
 mod voicehost;
 mod settingshost;
+mod phonehost;
 mod islandhit;
 mod islandclick;
 mod settingswindow;
@@ -66,17 +68,16 @@ use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use abito_island::bridge::{self, Action, BridgeError};
-use abito_island::chat::ChatError;
-use abito_island::chatlane::{self, Target};
-use abito_island::core::{self, Core, ReleaseOutcome, TogglePlan, WindowIo};
-use abito_island::desktop::{self, IslandState};
+use koda_island::bridge::{self, Action, BridgeError};
+use koda_island::chatlane::{self, Target};
+use koda_island::core::{self, Core, ReleaseOutcome, TogglePlan, WindowIo};
+use koda_island::desktop::{self, IslandState};
 #[cfg(target_os = "linux")]
-use abito_island::hotkey;
-use abito_island::geometry::{self, Edge, Rect};
+use koda_island::hotkey;
+use koda_island::geometry::{self, Edge, Rect};
 #[cfg(any(debug_assertions, feature = "probe"))]
-use abito_island::fakebridge;
-use abito_island::{approval, protocol, transport, workarea};
+use koda_island::fakebridge;
+use koda_island::{approval, protocol, transport, workarea};
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 
@@ -106,6 +107,24 @@ fn ensure_island_window(app: &AppHandle) -> Rect {
     let dragging = state.island_drag.lock().unwrap_or_else(|e| e.into_inner()).is_some();
     if !dragging && io.outer_position() != (wanted.x, wanted.y) {
         io.set_outer_position(wanted.x, wanted.y);
+    }
+    // isla-cualquier-lado T6b: the window around the disc follows the same growth edge as the open card. One read of the spot
+    // decides the placement above, the edge the core keeps and the `data-edge` the page lays the island out for, so a monitor,
+    // work-area or scale change can never make the page draw a lower-half island from the top of its window.
+    if dragging {
+        // mid-drag the window keeps the layout it was released with; the release settles everything below
+    } else if let Some(placed) = placed {
+        let edge = geometry::growth_edge_at(placed.origin.1, area, io.scale());
+        let changed = {
+            let mut core = state.core.lock().expect("core lock");
+            let was = core.edge;
+            core.edge = edge;
+            was != edge
+        };
+        if changed {
+            let expanded = { *state.phase.lock().expect("phase lock") == IslandState::Expanded };
+            push_phase(app, if expanded { "overview" } else { "compact" }, edge);
+        }
     }
     islandshape::apply(app, None);
     wanted
@@ -141,7 +160,7 @@ fn quit_clean(app: &AppHandle) {
     hotkeyhost::stop(app); // release the X11 grab before leaving
     settingshost::stop(app);
     close_transport(app);
-    app.state::<abito_island::daemonhost::HostSlot>().stop();
+    app.state::<koda_island::daemonhost::HostSlot>().stop();
     app.exit(0);
 }
 
@@ -173,13 +192,13 @@ fn spawn_shutdown_watcher(app: AppHandle) {
         if QUITTING.swap(true, Ordering::SeqCst) {
             // A normal quit is already running: give it a moment, then leave.
             std::thread::sleep(Duration::from_millis(500));
-            app.state::<abito_island::daemonhost::HostSlot>().stop();
+            app.state::<koda_island::daemonhost::HostSlot>().stop();
             std::process::exit(0);
         }
         approval::abort_lane(&app.state::<AppState>().approval);
         characterhost::shutdown(&app);
         close_transport(&app);
-        app.state::<abito_island::daemonhost::HostSlot>().stop();
+        app.state::<koda_island::daemonhost::HostSlot>().stop();
         // Release the single-instance name before a hard exit (probe does the
         // same), so a later launch is never mistaken for a live one.
         tauri_plugin_single_instance::destroy(&app);
@@ -202,17 +221,17 @@ fn close_transport(app: &AppHandle) {
     if let Err(error) = transport.close() {
         eprintln!("Private socket cleanup refused; inspect the local runtime directory.");
     // P2: the stable pointer goes first, and only if it still names OUR socket.
-    abito_island::handoff::clear(transport.runtime(), transport.endpoint());
+    koda_island::handoff::clear(transport.runtime(), transport.endpoint());
         eprintln!("transport cleanup: {error}");
     }
 }
 
 /// Legacy dev `project` (main.cjs): sha256 hex of the canonical worktree root
-/// in dev builds; an installed build takes it from `ABITO_PROJECT_ROOT` only
+/// in dev builds; an installed build takes it from `KODA_PROJECT_ROOT` only
 /// (see `identity`). None when no root can be established — the transport
 /// then refuses to start instead of pretending a project identity.
 fn project_id_for_this_checkout() -> Option<String> {
-    abito_island::identity::project_id_of_this_process()
+    koda_island::identity::project_id_of_this_process()
 }
 
 /// main.cjs lines 487-497: start the optional local notice transport; on any
@@ -295,9 +314,9 @@ fn start_transport(app: &AppHandle) {
     }) {
         Ok(transport) => {
             // Local address only; no received payloads or labels are logged.
-            println!("ABITO_DESKTOP_SOCKET={}", transport.endpoint().display());
+            println!("KODA_DESKTOP_SOCKET={}", transport.endpoint().display());
             // P2: a stable `<runtime>/endpoint.json` so local hooks need no exported env.
-            if let Err(error) = abito_island::handoff::publish(transport.runtime(), transport.endpoint()) {
+            if let Err(error) = koda_island::handoff::publish(transport.runtime(), transport.endpoint()) {
                 eprintln!("endpoint handoff not published: {error}");
             }
             *state.transport.lock().expect("transport lock") = Some(transport);
@@ -382,7 +401,7 @@ struct AppState {
     hooks: Mutex<Option<approval::SharedHooks>>,
     /// M3 probe only: the in-process fake backend THIS process started for
     /// its approval read-back. `None` in production and whenever
-    /// `ABITO_BRIDGE_BASE` was already set from outside.
+    /// `KODA_BRIDGE_BASE` was already set from outside.
     #[cfg(any(debug_assertions, feature = "probe"))]
     probe_fake: Mutex<Option<Arc<fakebridge::FakeBackend>>>,
     /// The bounded active chat lane, backed by #341 private local history.
@@ -390,7 +409,7 @@ struct AppState {
     /// U1: the selected LOCAL target (U2 picker writes it; `None` = no
     /// verified local model selected → Send refuses with `profile_missing`).
     chat_target: Mutex<Option<Target>>,
-    chat_cloud: Mutex<Option<abito_island::cloudprofiles::CloudSelection>>,
+    chat_cloud: Mutex<Option<koda_island::cloudprofiles::CloudSelection>>,
     /// U1: `chat_action` rate gate (same 30/s rule, its own budget).
     chat_rate: Mutex<bridge::RateLimiter>,
     /// #305: the global show/hide shortcut (config + X11 grab).
@@ -401,41 +420,23 @@ struct AppState {
     /// principal; the store persists in `specialists.json` (0600) and never holds a colour.
     specialists: specialistshost::SpecialistsHost,
     /// U1: per-turn deadlines (the probe shortens them for its fake).
-    chat_deadlines: Mutex<abito_island::localmodel::Deadlines>,
+    /// Kept for specialists/models until U5b/U5d (K2-05 L59): no Rust turn runs any more,
+    /// but the specialists' fixture builds this state.
+    #[allow(dead_code)]
+    chat_deadlines: Mutex<koda_island::localmodel::Deadlines>,
     /// #487: the previous window's context for the chat (empty unless the opt-in is on).
-    chat_context: Mutex<abito_island::contextwin::ChatContext>,
+    chat_context: Mutex<koda_island::contextwin::ChatContext>,
     /// U1 probe only: evidence lines the webview reports for the chat step.
     chat_probe: Mutex<Vec<Value>>,
     /// U2: the verified local registry in force. Production: exactly
     /// `models::REGISTRY`. Only the probe replaces it (its fake router) —
     /// there is no IPC or env path that can add an entry.
-    models_registry: Mutex<Vec<abito_island::models::Entry>>,
+    models_registry: Mutex<Vec<koda_island::models::Entry>>,
     /// U2: last redacted model listing and its revision.
     models_last: Mutex<Value>,
     models_revision: AtomicU64,
     /// U2: whether the last explicit selection reached the 0600 file.
     models_persisted: AtomicBool,
-}
-
-/// U2 gate before dispatch: the target must still be a registered,
-/// selectable local profile at the same revision. The resource half of the
-/// gate (asleep → no load, other alias → no substitute, busy → visible
-/// queue, unknown → refuse, context budget) runs per turn in the
-/// `chatlane` preflight right before the single request.
-fn model_gate(state: &AppState, target: &Target) -> Result<(), ChatError> {
-    let registry = state
-        .models_registry
-        .lock()
-        .expect("models registry lock")
-        .clone();
-    let entry = abito_island::models::select(&registry, &target.profile.profile_id)?;
-    if entry.revision != target.profile.revision
-        || Some(target.alias.as_str()) != entry.alias
-        || target.endpoint.origin() != entry.origin
-    {
-        return Err(ChatError::profile_missing());
-    }
-    Ok(())
 }
 
 /// Adapter: the pure core handlers see the real window through this.
@@ -491,7 +492,7 @@ impl core::WindowIo for TauriIo<'_> {
 }
 
 fn characterhost_label() -> &'static str {
-    abito_island::characterwin::LABEL
+    koda_island::characterwin::LABEL
 }
 
 fn main_window(app: &AppHandle) -> Option<WebviewWindow> {
@@ -793,7 +794,7 @@ fn load_motion_override(app: &AppHandle) -> bool {
         .app_config_dir()
         .ok()
         .and_then(|dir| std::fs::read_to_string(dir.join("motion.json")).ok());
-    abito_island::desktop::motion_override_from_config(text.as_deref())
+    koda_island::desktop::motion_override_from_config(text.as_deref())
 }
 
 fn persist_motion_override(app: &AppHandle, value: bool) {
@@ -819,18 +820,21 @@ fn persist_motion_override(app: &AppHandle, value: bool) {
 /// process exits before reaching `Builder::run`.
 pub(crate) fn restore(app: &AppHandle) {
     let state = app.state::<AppState>();
-    questionhost::with_pending(&state, |pending| {
-        if pending {
-            // Preserve phase, view and geometry; a second launch is not an answer.
-            let Some(win) = main_window(app) else { return };
-            let _ = win.unminimize();
-            show_on_top(&win);
-            sync_host_visible(&win);
-            publish(app, &state);
-            return;
-        }
-        restore_without_question(app, &state);
-    });
+    // Read the flag and release the transport lock first: publish() -> build_snapshot() locks
+    // `state.transport` again, and std's Mutex is not reentrant, so publishing inside
+    // with_pending hung the main thread (tray "Mostrar Koda", the toggle shortcut, a second
+    // launch). Lock order: host transport -> questions -> core/phase; publication follows unlock.
+    let pending = questionhost::with_pending(&state, |pending| pending);
+    if pending {
+        // Preserve phase, view and geometry; a second launch is not an answer.
+        let Some(win) = main_window(app) else { return };
+        let _ = win.unminimize();
+        show_on_top(&win);
+        sync_host_visible(&win);
+        publish(app, &state);
+        return;
+    }
+    restore_without_question(app, &state);
 }
 
 fn restore_without_question(app: &AppHandle, state: &AppState) {
@@ -944,7 +948,7 @@ fn navigation_lock() -> tauri::plugin::TauriPlugin<tauri::Wry> {
             // settings.html, never anything else and never by the page's choice.
             let allowed = bridge::sender_ok(webview.label(), url.as_str()).is_ok()
                 // #486: the two Rust-created character windows load exactly their own page.
-                || abito_island::characterwin::navigation_allowed(webview.label(), url.as_str());
+                || koda_island::characterwin::navigation_allowed(webview.label(), url.as_str());
             if !allowed {
                 eprintln!("navigation blocked from {}: {url}", webview.label());
             }
@@ -1031,7 +1035,7 @@ fn drag_release(app: AppHandle, webview: tauri::Webview, state: State<AppState>,
             // request. Shutdown alone vetoes both directions.
             let blocked = QUITTING.load(Ordering::SeqCst) || appr.active.is_quit()
                 || (core.expanded && manual_close_verdict(&mut appr, true, visible, now).is_err());
-            abito_island::questioncmd::guarded_release(
+            koda_island::questioncmd::guarded_release(
                 &mut core, &io, area, (x, y), cancelled || blocked, pending,
             )
         };
@@ -1054,7 +1058,7 @@ fn drag_release(app: AppHandle, webview: tauri::Webview, state: State<AppState>,
 #[tauri::command]
 fn island_move_begin(app: AppHandle, webview: tauri::Webview, state: State<AppState>, x: f64, y: f64) {
     if settingswindow::main_window_only(webview.label()).is_err() { return; }
-    let Some(press) = abito_island::characterwin::valid_point(x, y) else { return };
+    let Some(press) = koda_island::characterwin::valid_point(x, y) else { return };
     let Some(win) = main_window(&app) else { return };
     let (ox, oy) = TauriIo(&win).outer_position();
     state.user_touch.store(true, Ordering::SeqCst);
@@ -1065,11 +1069,11 @@ fn island_move_begin(app: AppHandle, webview: tauri::Webview, state: State<AppSt
 #[tauri::command]
 fn island_move(app: AppHandle, webview: tauri::Webview, state: State<AppState>, x: f64, y: f64) {
     if settingswindow::main_window_only(webview.label()).is_err() { return; }
-    let Some(now) = abito_island::characterwin::valid_point(x, y) else { return };
+    let Some(now) = koda_island::characterwin::valid_point(x, y) else { return };
     let Some((press, origin)) = *state.island_drag.lock().unwrap_or_else(|e| e.into_inner()) else { return };
     let Some(win) = main_window(&app) else { return };
     let io = TauriIo(&win);
-    let (nx, ny) = abito_island::characterwin::drag_top_left(origin, now, press, io.scale());
+    let (nx, ny) = koda_island::characterwin::drag_top_left(origin, now, press, io.scale());
     io.set_outer_position(nx.round() as i32, ny.round() as i32);
 }
 
@@ -1083,19 +1087,42 @@ fn island_move_end(app: AppHandle, webview: tauri::Webview, state: State<AppStat
     let Some(win) = main_window(&app) else { return };
     let io = TauriIo(&win);
     let area = refresh_work_area(&app, &state);
-    let compact = geometry::Placed { origin: io.outer_position(), expanded: false };
-    let anchor = geometry::island_window_rect_placed(compact, area, io.scale(), state.window_h.load(Ordering::SeqCst));
-    *state.island_origin.lock().unwrap_or_else(|e| e.into_inner()) = Some((anchor.x, anchor.y));
-    if !settingshost::save_island_position(&app, (anchor.x, anchor.y)) {
+    // isla-cualquier-lado S1/T6b: the island is placed AROUND the disc, so the spot is read back for the edge it was laid out with
+    // (geometry::drop_spot) and the disc stays where the human released it, folding and opening alike. The card's own visible
+    // height is what the page reports (T5b R3-drop-card-height): a 240 chat or a taller take-over, never a guess from the window.
+    let (x, y) = io.outer_position();
+    let (w, h) = io.size();
+    // read before the core lock: islandshape's own lock must never be taken under it (islandshape::apply takes SHAPE then the core)
+    let reported = islandshape::last_visible_height();
+    let (edge, card_h) = {
+        let core = state.core.lock().expect("core lock");
+        (core.edge, geometry::visible_card_height(reported, core.chat, core.chat_height()))
+    };
+    let expanded = state.island_open.load(Ordering::SeqCst);
+    let (spot, edge) = geometry::drop_spot(Rect { x, y, w, h }, expanded, edge, card_h, area, io.scale());
+    // ONE read of the final spot decides all three BEFORE anything is applied (T5b R3-drop-edge-ordering): the spot that is
+    // saved, the edge the placement derives from it, and the edge the page lays the island out for. Nothing can disagree.
+    // The saved spot is the DISC's (x is the window's left, y the disc's top), so a restart rebuilds this same window.
+    *state.island_origin.lock().unwrap_or_else(|e| e.into_inner()) = Some(spot);
+    state.core.lock().expect("core lock").edge = edge;
+    if !settingshost::save_island_position(&app, spot) {
         eprintln!("island position not saved");
     }
     let safe = ensure_island_window(&app);
     store_requested(&state, "drag", Some((safe.x, safe.y)), Some((safe.w, safe.h)));
+    // the page lays the island out for the edge the drop chose (data-edge): the open card or the folded disc, same phase, so
+    // nothing animates; a folded drop across the midpoint moves the disc's window and the page must follow it
+    if expanded {
+        push_phase(&app, "overview", edge);
+    } else {
+        push_phase(&app, "compact", edge);
+    }
     publish(&app, &state);
 }
 
 /// F025: only a trusted local sender may ask the host to open a parsed web
-/// URL. xdg-open receives exactly one URL argument, never a shell command.
+/// URL. The system opener (K2-01c: xdg-open, open or the Windows protocol handler) receives
+/// exactly one URL argument, never a shell command.
 #[tauri::command]
 async fn open_chat_url(
     webview: tauri::Webview,
@@ -1108,19 +1135,14 @@ async fn open_chat_url(
     {
         let mut rate = state.rate.lock().expect("rate lock");
         desktop::open_web_url(webview.label(), &origin, &payload, &mut rate, now_ms(), |url| {
-            child = Some(std::process::Command::new("xdg-open")
-                .arg(url)
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .spawn().map_err(|_| BridgeError::denied("external opener unavailable"))?);
+            child = Some(koda_island::opener::spawn(koda_island::opener::Target::Web(url))
+                .map_err(|_| BridgeError::denied("external opener unavailable"))?);
             Ok(())
         })?;
     } // Release shared rate guard before waiting, and reap only our own child.
     tauri::async_runtime::spawn_blocking(move || {
-        let status = child.ok_or_else(|| BridgeError::denied("external opener unavailable"))?.wait()
-            .map_err(|_| BridgeError::denied("external opener failed"))?;
-        if status.success() { Ok(()) } else { Err(BridgeError::denied("external opener failed")) }
+        let child = child.ok_or_else(|| BridgeError::denied("external opener unavailable"))?;
+        koda_island::opener::finish(child, true).map_err(|_| BridgeError::denied("external opener failed"))
     }).await.map_err(|_| BridgeError::denied("external opener aborted"))?
 }
 
@@ -1139,7 +1161,7 @@ async fn focus_host(
     crate::settingswindow::main_window_only(webview.label())?;
     let origin = webview.url().map(|u| u.to_string()).unwrap_or_default();
     let mut rate = state.rate.lock().expect("rate lock");
-    abito_island::focushost::focus_command_with_origin(
+    koda_island::focushost::focus_command_with_origin(
         webview.label(),
         &origin,
         &payload,
@@ -1147,7 +1169,7 @@ async fn focus_host(
         now_ms(),
         |target, session, origin_request| {
             let Some(request) = origin_request else {
-                return abito_island::focushost::focus_running(target, session);
+                return koda_island::focushost::focus_running(target, session);
             };
             // Refresh the app-owned notice lifecycle before reading the transport's private map.
             let ids: Vec<String> = state.notices.lock().expect("notices lock").snapshot(now_ms() as u64)
@@ -1155,12 +1177,12 @@ async fn focus_host(
             let saved = {
                 let transport = state.transport.lock().expect("transport lock");
                 transport.as_ref().and_then(|t| {
-                    if request.kind == abito_island::focushost::OriginKind::Notice
+                    if request.kind == koda_island::focushost::OriginKind::Notice
                         && ids.iter().filter(|id| *id == &request.id).count() != 1 { return None; }
                     t.origin_for(request)
                 })
-            }.ok_or_else(|| abito_island::sessionterm::ORIGIN_UNKNOWN.to_string())?;
-            abito_island::sessionterm::focus_origin(&saved)
+            }.ok_or_else(|| koda_island::sessionterm::ORIGIN_UNKNOWN.to_string())?;
+            koda_island::sessionterm::focus_origin(&saved)
         },
     )
 }
@@ -1409,7 +1431,7 @@ fn manual_close_verdict(
     let mutation_busy = appr.mutation_busy;
     let standing_request = appr.request.is_some();
     let status = appr.status;
-    let card = abito_island::card::project_card(
+    let card = koda_island::card::project_card(
         appr.selected.as_mut(), &status, quitting, poll_busy, mutation_busy,
         expanded, visible, now,
     );
@@ -1435,7 +1457,7 @@ fn dispatch_manual_close(app: &AppHandle, state: &AppState) -> Result<Value, Bri
             if !manual_close_verdict(&mut appr, expanded, visible, now)? {
                 return Ok(false);
             }
-            if !abito_island::questioncmd::collapse_allowed(expanded, pending) {
+            if !koda_island::questioncmd::collapse_allowed(expanded, pending) {
                 return Err(questionhost::pending_error());
             }
             core.toggle(&io, area)
@@ -1518,7 +1540,7 @@ fn dispatch_auto_close(app: &AppHandle, state: &AppState) -> Result<Value, Bridg
             let status = appr.status;
             // Same projection the snapshot shows the human: a card that is
             // merely inert (expired/quitting/busy state) is not a live claim.
-            let card = abito_island::card::project_card(
+            let card = koda_island::card::project_card(
                 appr.selected.as_mut(),
                 &status,
                 quitting,
@@ -1828,14 +1850,14 @@ fn record_frontend_evidence(
 }
 
 /// The read-back probe exists only in debug builds or with `--features probe`;
-/// a packaged release ignores `ABITO_PROBE`/`--probe` entirely.
+/// a packaged release ignores `KODA_PROBE`/`--probe` entirely.
 #[cfg(not(any(debug_assertions, feature = "probe")))]
 pub(crate) fn probe_requested() -> bool {
     false
 }
 #[cfg(any(debug_assertions, feature = "probe"))]
 pub(crate) fn probe_requested() -> bool {
-    let env = std::env::var("ABITO_PROBE")
+    let env = std::env::var("KODA_PROBE")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
     env || std::env::args().any(|a| a == "--probe")
@@ -1873,8 +1895,8 @@ fn main() {
     #[cfg(target_os = "macos")]
     {
         let args: Vec<String> = std::env::args().skip(1).collect();
-        if args.first().map(String::as_str) == Some(abito_island::daemonhost::SENTINEL_FLAG) {
-            abito_island::daemonhost::sentinel_main(&args[1..]);
+        if args.first().map(String::as_str) == Some(koda_island::daemonhost::SENTINEL_FLAG) {
+            koda_island::daemonhost::sentinel_main(&args[1..]);
         }
     }
     // Heavy constraint (HANDOFF): GTK/Tao under Wayland cannot position a window
@@ -1885,16 +1907,16 @@ fn main() {
         std::env::set_var("GDK_BACKEND", "x11");
     }
     // #310: the renderer choice that stops the window going blank for 2 frames when it shrinks (see renderenv).
-    abito_island::renderenv::apply();
+    koda_island::renderenv::apply();
     // #503 S1: any panic leaves a LOCAL failure record (redacted, no network); the human decides later whether to report it.
-    if let Some(dir) = abito_island::failure::default_dir() { abito_island::failure::install_panic_hook("island", dir); }
+    if let Some(dir) = koda_island::failure::default_dir() { koda_island::failure::install_panic_hook("island", dir); }
 
     let project = project_id_for_this_checkout().unwrap_or_default();
     // M3: approval lane configuration. The credential source follows legacy
     // exactly — `<stateRoot>/bridge.json`, read ONCE per process with the
     // descriptor-safe port of `readBridgeLogin`; absent/invalid means
     // `disabled` and zero traffic. In probe mode the lane is pointed at an
-    // in-process FAKE backend through the ABITO_BRIDGE_BASE override before
+    // in-process FAKE backend through the KODA_BRIDGE_BASE override before
     // it is constructed: the probe never talks to a real backend.
     let login = transport::resolve_runtime()
         .ok()
@@ -1976,7 +1998,7 @@ fn main() {
         chat_deadlines: Mutex::new(chathost::default_deadlines()),
         chat_context: Mutex::new(Default::default()),
         chat_probe: Mutex::new(Vec::new()),
-        models_registry: Mutex::new(abito_island::models::REGISTRY.to_vec()),
+        models_registry: Mutex::new(koda_island::models::REGISTRY.to_vec()),
         models_last: Mutex::new(Value::Null),
         models_revision: AtomicU64::new(0),
         models_persisted: AtomicBool::new(false),
@@ -1989,7 +2011,7 @@ fn main() {
             // Q1: a plain second launch restores WITHOUT stealing focus; only
             // the exact `--chat` flag is a deliberate request to type.
             // A GNOME keybinding runs `<exe> --action <id>`: a closed set of catalog ids, nothing else.
-            if let Some(target) = abito_island::hotkey::gnome::parse_action(&argv) {
+            if let Some(target) = koda_island::hotkey::gnome::parse_action(&argv) {
                 hotkeyhost::press_target_from_action(app, target);
                 return;
             }
@@ -2003,7 +2025,7 @@ fn main() {
         }))
         .plugin(navigation_lock())
         .manage(state)
-        .manage(abito_island::daemonhost::HostSlot::default())
+        .manage(koda_island::daemonhost::HostSlot::default())
         .invoke_handler(tauri::generate_handler![
             drag_press,
             drag_move,
@@ -2039,7 +2061,8 @@ fn main() {
             secretshost::secret_action,
             oauthhost::oauth_action,
             githubhost::github_action,
-            mailhost::mail_action,
+            calendarhost::calendar_action,
+            gmailhost::gmail_action,
             monitorshost::monitor_action,
             soundshost::sound_action,
             failurehost::failure_action,
@@ -2048,6 +2071,7 @@ fn main() {
             voicehost::voice_action,
             settingshost::settings_view,
             settingshost::daemon_action,
+            phonehost::phone_link_action,
             settingswindow::settings_window_action,
             specialistshost::specialists_action,
             record_facade_evidence,
@@ -2058,6 +2082,16 @@ fn main() {
         // Electron `win.webContents.on('did-finish-load', publish)`.
         .on_page_load(|webview, _payload| {
             let state = webview.state::<AppState>();
+            // isla-cualquier-lado T6b: the page's edge starts at 'top' and Rust only pushes it with a later phase change. A folded
+            // island restored in the lower half is laid out on its BOTTOM edge, so the page must learn the edge the moment its
+            // scripts have run — otherwise it would draw the disc at the window top while Rust takes clicks at the bottom.
+            if webview.label() == "main" {
+                let (expanded, edge) = {
+                    let phase = *state.phase.lock().expect("phase lock");
+                    (phase == IslandState::Expanded, state.core.lock().expect("core lock").edge)
+                };
+                push_phase(webview.app_handle(), if expanded { "overview" } else { "compact" }, edge);
+            }
             publish(webview.app_handle(), &state);
         })
         // Electron `win.on('close', preventDefault + quit)`: closing the
@@ -2129,6 +2163,7 @@ fn main() {
             let win = main_window(&handle).ok_or("main window unavailable")?;
             // Load preferences before placement so the chosen monitor is available, and the spot the human dragged the island to.
             settingshost::start(&handle);
+            settingshost::migrate_retired_mail_accounts(&handle); // K2-10 T8: once, off the startup thread
             *app.state::<AppState>().island_origin.lock().unwrap_or_else(|e| e.into_inner()) = settingshost::island_position(&handle);
             islandclick::start(&handle); // HU-043: Windows/macOS only (no-op on Linux, which has the GDK input region)
             dictationhost::start(&handle);
@@ -2150,8 +2185,8 @@ fn main() {
             // (main thread here, so the live getter is inline and safe).
             sync_host_visible(&win);
             let state = app.state::<AppState>();
-            // ensure_island_window has cached the chosen work area already.
-            state.core.lock().expect("core lock").edge = Edge::Top;
+            // ensure_island_window has cached the chosen work area AND the edge the restored spot is laid out for
+            // (geometry::growth_edge_at), so a folded island restored in the lower half keeps its bottom edge.
             store_requested(&state, "initial", Some((rect.x, rect.y)), Some((w, h)));
             platform::audit::sample(&handle, "setup", 0, Some((w, h)));
             // Read-only sampling stops with this process. No probe or UI actions.
@@ -2175,17 +2210,49 @@ fn main() {
             spawn_publish_ticker(handle.clone());
             #[cfg(target_os = "macos")] { // HU-065: «Ver» activates the terminal app on the main thread
                 let main = handle.clone();
-                abito_island::sessionterm_mac::set_main_runner(move |job| { let _ = main.run_on_main_thread(job); });
+                koda_island::sessionterm_mac::set_main_runner(move |job| { let _ = main.run_on_main_thread(job); });
             }
             hotkeyhost::start(&handle); // #305: global show/hide shortcut (config + X11 grab)
             // #306 settings prefs: `settingshost::start` runs before the island is placed (#264)
             specialistshost::start(&handle); // #327: the manual specialists (empty = the principal)
-            chathost::start_history(&handle); // #341: isolated private conversation store
+            // K2-05 T5 (S3): delete Koda 0.1's stored conversations (exact files only), synchronously on
+            // this startup thread, first. U5a (K2-05 L59) removed the private Rust store, so nothing opens
+            // `<app_data_dir>/conversations/` any more: this cleanup only ever deletes 0.1 files.
+            // Test dirs (KODA_CONVERSATIONS_DATA_DIR) and probe runs never touch data.
+            let conversations_dir = if std::env::var_os("KODA_CONVERSATIONS_DATA_DIR").is_some() || probe_requested() {
+                None
+            } else {
+                // K2-04 T6: the 0.1 conversations live under the OLD identifier's folder, next to the new one.
+                handle.path().app_data_dir().ok()
+                    .and_then(|p| koda_island::legacy_identity::legacy_sibling(&p, koda_island::identity::APP_IDENTIFIER))
+                    .map(|p| p.join("conversations"))
+            };
+            if let Some(line) = koda_island::legacy_conversations::cleanup(conversations_dir.as_deref()).log_line() {
+                eprintln!("{line}");
+            }
+            // K2-04 T6: the Koda 0.1 left its own login entry (`autostart/abito-island.desktop`) pointing at the 0.1 binary, which
+            // stays installed. Remove that ONE exact file when it is the template the 0.1 wrote, so the 0.1 island does not start
+            // next to this one at login. Nothing is enabled in its place (preferences start from zero). Probe runs never touch it.
+            #[cfg(unix)]
+            if !probe_requested() {
+                let xdg = std::env::var("XDG_CONFIG_HOME").ok();
+                let home = std::env::var("HOME").ok();
+                if let Some(dir) = autostart::autostart_dir(xdg.as_deref(), home.as_deref()) {
+                    if let Some(line) = autostart::retire_legacy_entry(&dir).log_line() {
+                        eprintln!("{line}");
+                    }
+                }
+            }
+            // K2-05 T4 U3: the island chat talks to the daemon engine through ONE reconnecting
+            // chat connection (the settings window keeps its own AgentConn).
+            chathost::start_conn(&handle);
             // K2-03 T3 (S2, S4): delete the removed weekly Recap's data (exact files only), off the startup path.
-            let data_dir = handle.path().app_local_data_dir().ok();
+            // K2-04 T6: that 0.1 file lives under the OLD identifier's folder, next to the new one.
+            let data_dir = handle.path().app_local_data_dir().ok()
+                .and_then(|p| koda_island::legacy_identity::legacy_sibling(&p, koda_island::identity::APP_IDENTIFIER));
             std::thread::spawn(move || {
-                let runtime = abito_island::transport::resolve_runtime().ok();
-                let outcome = abito_island::legacy_recap::cleanup(data_dir.as_deref(), runtime.as_deref());
+                let runtime = koda_island::transport::resolve_runtime().ok();
+                let outcome = koda_island::legacy_recap::cleanup(data_dir.as_deref(), runtime.as_deref());
                 if let Some(line) = outcome.log_line() {
                     eprintln!("{line}");
                 }
@@ -2197,7 +2264,21 @@ fn main() {
             install_shutdown_handlers();
             // Only the first instance reaches setup. Failure is optional and
             // never tears down the island; runtime errors reach agent:state.
-            handle.state::<abito_island::daemonhost::HostSlot>().start();
+            // K2-06: the «screenshot my window» endpoint must exist before the daemon child reads its environment.
+            // `windowCapture` (off by default) is read on every call, so turning it off stops captures at once.
+            {
+                let enabled_app = handle.clone();
+                koda_island::windowcapture::host::start(
+                    koda_island::windowcapture::host::system_desktop(),
+                    std::sync::Arc::new(koda_island::windowcapture::host::AppDialogs(handle.clone())),
+                    std::sync::Arc::new(move || settingshost::window_capture(&enabled_app.state::<AppState>().settings)),
+                );
+            }
+            handle.state::<koda_island::daemonhost::HostSlot>().start();
+            // K2 (S2/S3/S5): the phone link starts OFF and only opens its LAN port when the human turned it
+            // on; it hangs the phone off the daemon connection started just above, never a second one.
+            #[cfg(target_os = "linux")]
+            phonehost::start(&handle);
             spawn_shutdown_watcher(handle.clone());
             // #315: the tray (menu: Mostrar/Ocultar/Arrancar al iniciar sesión/Salir)
             // plus one bounded, off-thread first connection attempt so the icon
@@ -2226,7 +2307,11 @@ fn main() {
         .expect("error while building abito island")
         .run(|app, event| {
             if let tauri::RunEvent::Exit = event {
-                app.state::<abito_island::daemonhost::HostSlot>().stop();
+                chathost::stop_conn(app);
+                app.state::<koda_island::daemonhost::HostSlot>().stop();
+                // The phone link's port closes with the app: nothing of ours outlives this process.
+                #[cfg(target_os = "linux")]
+                phonehost::stop(app);
                 settingshost::stop(app);
                 close_transport(app);
             }
@@ -2303,11 +2388,11 @@ mod manual_close_tests {
             let mut appr = approval::Approval::disabled();
             appr.status = desktop::BridgeStatus { state: "healthy", reason: "" };
             match fact {
-                "card" => appr.selected = Some(abito_island::card::Candidate {
+                "card" => appr.selected = Some(koda_island::card::Candidate {
                     id: "host-card".into(), hash: "hash".into(), operation: "write".into(),
                     expires_at: "future".into(), expires: now + 30_000, reason: None,
                 }),
-                "request" => appr.request = Some(abito_island::card::StandingRequest {
+                "request" => appr.request = Some(koda_island::card::StandingRequest {
                     origin: "host".into(), question: "Approve?".into(), options: vec![],
                 }),
                 "mutation" => appr.mutation_busy = true,
@@ -2324,7 +2409,7 @@ mod manual_close_tests {
         let mut appr = approval::Approval::disabled();
         assert_eq!(manual_close_verdict(&mut appr, true, true, 100_000), Ok(true));
         assert_eq!(manual_close_verdict(&mut appr, false, true, 100_000), Ok(false));
-        appr.selected = Some(abito_island::card::Candidate {
+        appr.selected = Some(koda_island::card::Candidate {
             id: "expired".into(), hash: "hash".into(), operation: "write".into(),
             expires_at: "past".into(), expires: 99_999, reason: None,
         });
@@ -2424,14 +2509,22 @@ mod host_ctx_tests {
 
     /// #431: `chathost::chat_view` runs off the main thread (from `chat_action`
     /// while lane locks are taken), so it must read the CACHED scale, never the
-    /// blocking `scale_factor()` getter. Source guard plus cache semantics.
+    /// blocking `scale_factor()` getter. K2-05 moved the geometry into
+    /// `with_page_keys`, which `chat_view` delegates to: both bodies are guarded.
+    /// Source guard plus cache semantics.
     #[test]
     fn chat_view_reads_the_cached_scale_never_the_blocking_getter() {
         let src = include_str!("chathost.rs");
-        let body = &src[src.find("pub fn chat_view").expect("chat_view exists")..];
-        let body = &body[..body.find("\n}\n").expect("chat_view ends")];
-        assert!(!body.contains("scale_factor()"), "chat_view must not call the blocking getter");
-        assert!(body.contains("cached_scale()"), "chat_view reads the main-thread scale cache");
+        let body_of = |head: &str| {
+            let body = &src[src.find(head).unwrap_or_else(|| panic!("{head} exists"))..];
+            body[..body.find("\n}\n").unwrap_or_else(|| panic!("{head} ends"))].to_string()
+        };
+        let view = body_of("pub fn chat_view(");
+        let keys = body_of("fn with_page_keys(");
+        assert!(view.contains("with_page_keys("), "chat_view builds its geometry in with_page_keys");
+        assert!(!view.contains("scale_factor()"), "chat_view must not call the blocking getter");
+        assert!(!keys.contains("scale_factor()"), "with_page_keys must not call the blocking getter");
+        assert!(keys.contains("cached_scale()"), "with_page_keys reads the main-thread scale cache");
     }
 
     #[test]
@@ -2527,5 +2620,37 @@ mod main_thread_routing_tests {
                 "{action:?} must run inline on the main thread"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod restore_lock_order_tests {
+    // Structural pin (a live AppHandle is not available in unit tests): restore() must read the
+    // pending flag and drop the transport lock BEFORE publishing, because publish() ->
+    // build_snapshot() locks `state.transport` again and std's Mutex is not reentrant. Calling
+    // publish inside the with_pending closure hung the macOS main thread on tray "Mostrar Koda".
+    #[test]
+    fn restore_reads_the_pending_flag_before_publishing() {
+        let src = include_str!("main.rs");
+        let start = src.find("pub(crate) fn restore(app: &AppHandle)").expect("restore()");
+        let body = &src[start..start + src[start..].find("\n}\n").expect("end of restore()")];
+        assert!(body.contains("let pending = questionhost::with_pending(&state, |pending| pending);"),
+            "restore() must only read the flag inside with_pending");
+        assert_eq!(body.matches("with_pending(").count(), 1);
+    }
+}
+
+#[cfg(test)]
+mod island_window_config_tests {
+    // island-free-drag S3: «Un clic en el círculo abre la isla». The island never takes focus, so on
+    // macOS its window is usually not key and the app is not active: without acceptFirstMouse AppKit
+    // swallows the first click to activate Koda and the disc needs a second click (and a first drag
+    // does not move it). The flag is macOS-only; Linux and Windows ignore it.
+    #[test]
+    fn the_island_window_accepts_the_first_click_on_macos() {
+        let conf: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        let main = &conf["app"]["windows"][0];
+        assert_eq!(main["label"], "main");
+        assert_eq!(main["acceptFirstMouse"], true);
     }
 }

@@ -1,9 +1,9 @@
 //! QP.3a host only. A main-webview sender is not proof of trusted human input;
 //! QP.3b must gate gestures. These questions never authorize backend proposals.
 use crate::{now_ms, AppState, QUITTING};
-use abito_island::bridge::{self, BridgeError};
-use abito_island::questioncmd::{self, Command};
-use abito_island::transport::HumanReplyError;
+use koda_island::bridge::{self, BridgeError};
+use koda_island::questioncmd::{self, Command};
+use koda_island::transport::HumanReplyError;
 use serde_json::{json, Value};
 use std::sync::atomic::Ordering;
 use tauri::{AppHandle, Emitter, Manager, State};

@@ -7,7 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
-const BIN = path.resolve(__dirname, '../bin/abito-hook.cjs');
+const BIN = path.resolve(__dirname, '../bin/koda-hook.cjs');
 const hasPy = spawnSync('python3', ['-c', 'import pty'], { timeout: 10000 }).status === 0;
 
 const PY = `
@@ -60,7 +60,7 @@ test('pty codex: right word writes only the temp hooks.json + backup; wrong word
 
   let r = run('nope', base, home);
   assert.deepEqual(r, { code: 1, sent: true });
-  r = run('inst^D', base, home, { ABITO_INSTALL_PROMPT_TIMEOUT_MS: '300' });
+  r = run('inst^D', base, home, { KODA_INSTALL_PROMPT_TIMEOUT_MS: '300' });
   assert.deepEqual(r, { code: 1, sent: true });
   assert.equal(fs.readFileSync(p, 'utf8'), orig);
   assert.deepEqual(fs.readdirSync(dir), ['hooks.json']);
@@ -70,8 +70,9 @@ test('pty codex: right word writes only the temp hooks.json + backup; wrong word
   const parsed = JSON.parse(fs.readFileSync(p, 'utf8'));
   assert.equal(parsed.hooks.Stop.length, 2);
   assert.equal(parsed.hooks.Stop[0].hooks[0].command, 'moshi-hook stop');
-  // S4/T2: the notice entries carry no `--timeout-sec` any more (a notice never waits for an answer).
-  assert.ok(parsed.hooks.PermissionRequest[0].hooks[0].command.endsWith(' codex permission-request'));
+  // K2-08 T3 (S5): the answered PermissionRequest entry waits 120 s; the notice entries carry no `--timeout-sec`.
+  assert.ok(parsed.hooks.PermissionRequest[0].hooks[0].command.endsWith(' codex permission-request --timeout-sec 120'));
+  assert.equal(parsed.hooks.PermissionRequest[0].hooks[0].timeout, 120);
   assert.equal(parsed.hooks.PreToolUse[0].matcher, 'request_user_input');
   assert.ok(parsed.hooks.PreToolUse[0].hooks[0].command.endsWith(' codex pre-tool-use'));
   assert.ok(parsed.hooks.PostToolUse[0].hooks[0].command.endsWith(' codex post-tool-use'), 'the mid-turn clearing entry');

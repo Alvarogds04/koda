@@ -114,3 +114,80 @@ test('sanitizeText tries every home candidate (HOME in Git Bash style does not h
     assert.equal(p.sanitizeText('cat C:\\Users\\dev\\a'), 'cat ~\\a');
   } finally { for (const [k, v] of Object.entries(saved)) if (v === undefined) delete process.env[k]; else process.env[k] = v; }
 });
+
+// K2-08 T1b (S7, decision L8 «a»): a hidden part that LOOKS LIKE A PATH makes the card lossy (no «Aprobar»);
+// real secrets (Bearer, sk-, ghp_, userinfo, standalone hex/base64 runs) stay hidden and approvable as before.
+// The redacted text itself is unchanged: only the lossy decision moves.
+test('T1b: a hidden path makes Bash lossy; the redacted display is unchanged', () => {
+  const { redactCommand } = require('../src/redact.cjs');
+  const d = c => p.describeToolDetailed('Bash', { command: c });
+  const PATH_REASON = 'hidden text may be a path';
+  const cases = [
+    ['rm -rf /home/alvaro/Apps/koda/worktrees/k2-08-codex-respuesta/apps', 'rm -rf [REDACTED]'], // the verifier's D1 example
+    ['rm -rf C:/Users/Runner1/AppData/Local/Temp/abc123XYZdefGHI456jklMNO789pqrSTU012vwx', 'rm -rf C:[REDACTED]'],
+    ['rm -rf C:\\Users\\Runner1\\AppData\\Local\\Temp\\abc123XYZdefGHI456jklMNO789pqrSTU012vwxYZ', 'rm -rf C:\\Users\\Runner1\\AppData\\Local\\Temp\\[REDACTED]'],
+    ['ls ~/Apps2/koda/worktrees/k2-08-codex-respuesta/apps', 'ls ~[REDACTED]'],
+    ['rm -rf apps/Desktop2/src/AbcDefGhi123/xyz/one/two', 'rm -rf [REDACTED]'],
+    ['rm -rf build/0123456789abcdef0123456789abcdef/out', 'rm -rf build/[REDACTED]/out'],
+    ['mytool --token-file /home/dev/tok.txt run', 'mytool --token-file [REDACTED] run'],
+  ];
+  for (const [c, shown] of cases) {
+    assert.equal(redactCommand(c).text, shown, 'redaction unchanged: ' + c);
+    const r = d(c);
+    assert.equal(r.lossy, true, c);
+    assert.equal(r.reason, PATH_REASON, c);
+    assert.equal(r.text, 'Bash: ' + shown, c);
+    assert.ok(r.redactions > 0, c);
+  }
+});
+test('T1b: real tokens stay hidden and approvable; commands without redaction are unchanged', () => {
+  const { redactCommand } = require('../src/redact.cjs');
+  const d = c => p.describeToolDetailed('Bash', { command: c });
+  const JWT = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U';
+  const tokenCases = [
+    [`curl -H "Authorization: Bearer ${JWT}" https://api.example.com`, 'curl -H "Authorization: [REDACTED]" https://api.example.com', JWT],
+    ['curl -H "Authorization: Bearer AbC9/xYz+12q" https://api.example.com', 'curl -H "Authorization: [REDACTED]" https://api.example.com', 'AbC9/xYz+12q'],
+    ['OPENAI_API_KEY=sk-proj-AbCdEf1234567890GhIjKl npm test', 'OPENAI_API_KEY=[REDACTED] npm test', 'AbCdEf1234567890GhIjKl'],
+    ['gh api -H x ghp_AbCdEf1234567890GhIjKlMnOpQrSt', 'gh api -H x [REDACTED]', 'ghp_AbCdEf'],
+    ['git push https://x-access-token:ghp_AbCdEf1234567890GhIjKlMnOpQrSt@github.com/o/r.git', 'git push https://[REDACTED]@github.com/o/r.git', 'ghp_AbCdEf'],
+    ['mytool verify 0123456789abcdef0123456789abcdef01234567', 'mytool verify [REDACTED]', '0123456789abcdef'],
+    ['rm -rf /tmp/build-0123456789abcdef0123456789abcdef', 'rm -rf /tmp/build-[REDACTED]', '0123456789abcdef'],
+    ['echo aGVsbG8gd29ybGQgdGhpcyBpcyBhIGxvbmcgYmFzZTY0IHN0cmluZwAb1', 'echo [REDACTED]', 'aGVsbG8'],
+  ];
+  for (const [c, shown, token] of tokenCases) {
+    const r = d(c);
+    assert.equal(r.lossy, false, c);
+    assert.equal(r.text, 'Bash: ' + shown, c);
+    assert.ok(r.redactions > 0, c);
+    assert.ok(!r.text.includes(token), c);
+    assert.equal(redactCommand(c).text, shown, c);
+  }
+  for (const c of ['ls -la /tmp', 'rm -rf /tmp/x', 'cat C:\\Users\\dev\\notes.txt', 'git -C ../other status']) {
+    const r = d(c);
+    assert.deepEqual([r.lossy, r.text, r.redactions], [false, 'Bash: ' + c, 0], c);
+  }
+});
+// K2-08 T1b (L10 «a», D-a/D-b): a hidden relative path, a hidden `.`/`..`, or a hex run after `://` is lossy; the display
+// stays exactly the redacted text. Only a quoted Authorization scheme value (Bearer/Basic) is exempt from the separator rule.
+test('T1b L10: hidden relative paths and dots are lossy with the same display; Authorization schemes stay approvable', () => {
+  const d = c => p.describeToolDetailed('Bash', { command: c });
+  const RM = ['rm', '-rf'].join(' '), HEX40 = '0123456789abcdef0123456789abcdef01234567';
+  for (const [c, shown] of [[`${RM} --password=foo/../../etc/pw`, `${RM} --password=[REDACTED]`], ['mytool --api-key etc/pw', 'mytool --api-key [REDACTED]'],
+    ['mytool --token=a/b', 'mytool --token=[REDACTED]'], ['mytool --token "a b/c"', 'mytool --token [REDACTED]'],
+    ['mytool --password-file=mystuff/pw.txt', 'mytool --password-file=[REDACTED]'], ['PASSWORD=mystuff/pw.txt mytool run', 'PASSWORD=[REDACTED] mytool run'],
+    ['curl --key certs/client.crt https://h', 'curl --key [REDACTED] https://h'], ['curl -H "X-Api-Key: dir/sub/file" https://h', 'curl -H "X-Api-Key: [REDACTED]" https://h'],
+    [`${RM} --token ..`, `${RM} --token [REDACTED]`], [`${RM} --token .`, `${RM} --token [REDACTED]`], [`${RM} ~/x://${HEX40}`, `${RM} ~/x://[REDACTED]`]]) {
+    const r = d(c);
+    assert.deepEqual([r.lossy, r.reason, r.text], [true, 'hidden text may be a path', 'Bash: ' + shown], c);
+  }
+  for (const [c, shown] of [['curl -H "Authorization: Bearer abc/def+ghi=" https://api.example.com', 'curl -H "Authorization: [REDACTED]" https://api.example.com'],
+    ['curl -H "Authorization: Basic dXNlcjpwYXNz/w==" https://api.example.com', 'curl -H "Authorization: [REDACTED]" https://api.example.com'],
+    ['http GET https://h Authorization:"Bearer abc/def"', 'http GET https://h Authorization:"Bearer [REDACTED]"']]) {
+    const r = d(c);
+    assert.deepEqual([r.lossy, r.text], [false, 'Bash: ' + shown], c);
+  }
+  // the exception needs the header name at the start of a quoted shell word and no dot segment
+  for (const c of [`${RM} "/tmp/Authorization: Bearer a/b"`, 'curl -H "Authorization: Bearer ../../x" h', 'curl -H "Authorization: Token a/b" h']) {
+    assert.equal(d(c).lossy, true, c);
+  }
+});

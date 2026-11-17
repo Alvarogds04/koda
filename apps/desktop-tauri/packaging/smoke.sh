@@ -17,7 +17,7 @@ cleanup() {
   rmdir "$root/project" "$root" 2>/dev/null || true
 }
 trap cleanup EXIT
-GDK_BACKEND=x11 ABITO_PROBE=1 ABITO_PROJECT_ROOT="$root/project" ABITO_SOCKET_DIR="$root/sock" \
-  timeout -s KILL 70 "$stage/abito-island" > "$root/probe.log" 2>&1 || true
+GDK_BACKEND=x11 KODA_PROBE=1 KODA_PROJECT_ROOT="$root/project" KODA_SOCKET_DIR="$root/sock" \
+  timeout -s KILL 70 "$stage/koda" > "$root/probe.log" 2>&1 || true
 grep -o '"ready_ok":[a-z]*\|"notice_count":[0-9]*\|"connections_while_connected":[0-9]*\|"svg_elements_rendered_by_clay_engine":[0-9]*\|"canvas_elements":[0-9]*' "$root/probe.log"
 rm -f "$root/probe.log"

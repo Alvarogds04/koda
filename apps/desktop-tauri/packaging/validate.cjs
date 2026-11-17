@@ -74,7 +74,7 @@ async function main(args = process.argv.slice(2)) {
     provenance = L.provenance(crate);
     L.checkConfig(crate); L.checkR6(crate); L.checkFrontend(crate);
     const target = path.join(crate, 'target-smoke');
-    const binary = path.join(target, 'release', 'abito-island');
+    const binary = path.join(target, 'release', 'koda');
     const manifestPath = path.join(target, 'validate-build.json');
     const fingerprint = inputs();
     if (!args.includes('--skip-build')) {
@@ -89,7 +89,7 @@ async function main(args = process.argv.slice(2)) {
     // Fresh allowlisted environment: no host credentials/config/session bus,
     // PulseAudio, Wayland socket or user-supplied ABITO overrides are inherited.
     const env = { PATH: process.env.PATH || '/usr/bin:/bin', LANG: 'C.UTF-8', GDK_BACKEND: 'x11', NO_AT_BRIDGE: '1', LIBGL_ALWAYS_SOFTWARE: '1' };
-    for (const [key, sub] of Object.entries({ HOME: 'home', XDG_CONFIG_HOME: 'config', XDG_CACHE_HOME: 'cache', XDG_DATA_HOME: 'data', XDG_RUNTIME_DIR: 'runtime', ABITO_SOCKET_DIR: 'sockets' })) {
+    for (const [key, sub] of Object.entries({ HOME: 'home', XDG_CONFIG_HOME: 'config', XDG_CACHE_HOME: 'cache', XDG_DATA_HOME: 'data', XDG_RUNTIME_DIR: 'runtime', KODA_SOCKET_DIR: 'sockets' })) {
       env[key] = path.join(out, sub); fs.mkdirSync(env[key], { mode: 0o700 });
     }
     // Exercise a real read-only Claude installer preview, not just the missing-tool path.
@@ -100,8 +100,8 @@ async function main(args = process.argv.slice(2)) {
     const parentStat = fs.lstatSync(piParent);
     if (!parentStat.isDirectory() || parentStat.isSymbolicLink() || parentStat.uid !== process.getuid() || (parentStat.mode & 0o777) !== 0o700) throw new Error('runtime Pi padre inseguro');
     piRuntime = fs.mkdtempSync(path.join(piParent, 'run-'));
-    env.ABITO_SOCKET_DIR = piRuntime;
-    env.ABITO_MODELS_CONFIG_DIR = env.XDG_CONFIG_HOME;
+    env.KODA_SOCKET_DIR = piRuntime;
+    env.KODA_MODELS_CONFIG_DIR = env.XDG_CONFIG_HOME;
     // Replace only the private validator's Pi executable with a deterministic
     // RPC fixture. Never start a real provider or change installed hooks.
     const fixturePi = path.join(out, 'pi');
@@ -118,11 +118,11 @@ async function main(args = process.argv.slice(2)) {
     const fixtureCodex = path.join(out, 'codex');
     fs.copyFileSync(fixturePi, fixtureCodex); fs.chmodSync(fixtureCodex, 0o700);
     launch('node', [fixtureCodex, '--discovery-project', secondProject], env, 'discovery-project.log');
-    env.ABITO_PROJECT_ROOT = path.resolve(crate, '../..');
+    env.KODA_PROJECT_ROOT = path.resolve(crate, '../..');
     // The island lists live agent sessions from /proc. A validation run must see only ITS OWN fixtures (children of
     // this process), never the human's real Pi/Claude/Codex sessions: they fill the four pill slots and hide the
     // integration pill the GitHub scenes wait for.
-    env.ABITO_SESSIONS_SCOPE_PID = String(process.pid);
+    env.KODA_SESSIONS_SCOPE_PID = String(process.pid);
     // Xvfb atomically chooses a free display; never guess, and never touch :0.
     const xvfb = launch('Xvfb', ['-displayfd', '1', '-screen', '0', '1280x900x24', '-nolisten', 'tcp', '-noreset'], env, 'xvfb.log');
     let display = '';
@@ -141,12 +141,12 @@ async function main(args = process.argv.slice(2)) {
       const r = cp.spawnSync('xprop', ['-root', '_NET_SUPPORTING_WM_CHECK'], { env, encoding: 'utf8', timeout: 1000 });
       return r.status === 0 && /window id # 0x[1-9a-f]/i.test(r.stdout);
     }, 10000, 'gestor de ventanas');
-    Object.assign(env, { ABITO_PROBE: '1', ABITO_PROBE_VALIDATE: 'island', ABITO_PROBE_VISUAL: '1', ABITO_PROBE_VISUAL_DIR: out, ABITO_BRIDGE_BASE: 'http://127.0.0.1:1' });
-    if (args.includes('--fail-producer')) env.ABITO_PROBE_VALIDATE_PRODUCER_FAILURE = '1';
+    Object.assign(env, { KODA_PROBE: '1', KODA_PROBE_VALIDATE: 'island', KODA_PROBE_VISUAL: '1', KODA_PROBE_VISUAL_DIR: out, KODA_BRIDGE_BASE: 'http://127.0.0.1:1' });
+    if (args.includes('--fail-producer')) env.KODA_PROBE_VALIDATE_PRODUCER_FAILURE = '1';
     // Recreate the packaged sibling layout in the private output directory.
     // The release binary's normal host startup resolves desktop-daemon beside
     // current_exe; never let it see an installed daemon or the user's HOME.
-    const candidate = path.join(out, 'abito-island');
+    const candidate = path.join(out, 'koda');
     fs.copyFileSync(binary, candidate); fs.chmodSync(candidate, 0o700);
     for (const [dir, files] of [['desktop-daemon', L.DAEMON_FILES], ['desktop-harness', L.HARNESS_FILES], ['desktop-pi', L.PI_FILES]]) {
       for (const file of files) {
@@ -210,7 +210,7 @@ async function main(args = process.argv.slice(2)) {
       // Reopen the same private persisted configuration, not a simulated startup handler.
       for (const mode of ['manual', 'login']) {
         const args = mode === 'login' ? ['--probe', '--autostart'] : ['--probe'];
-        const startup = launch(candidate, args, {...env, ABITO_PROBE_VALIDATE:`startup-${mode}`}, `startup-${mode}.stderr.log`);
+        const startup = launch(candidate, args, {...env, KODA_PROBE_VALIDATE:`startup-${mode}`}, `startup-${mode}.stderr.log`);
         startup.stdout.on('data', onData);
         try {
           await until(() => {if(startup.launchError) throw startup.launchError; return exited(startup);}, 30000, `arranque ${mode}`);

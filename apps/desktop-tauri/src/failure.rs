@@ -654,7 +654,7 @@ pub fn neutralize_escapes(s: &str) -> String {
 pub fn default_dir() -> Option<PathBuf> {
     let base = std::env::var_os("XDG_STATE_HOME").map(PathBuf::from).filter(|p| p.is_absolute())
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/state")))?;
-    Some(base.join("abito-island").join("failures"))
+    Some(base.join("koda").join("failures"))
 }
 
 pub fn store(dir: &Path, rec: &FailureRecord) -> std::io::Result<()> {

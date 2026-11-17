@@ -4,7 +4,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
-const { sensitivePath, secret, canonical } = require('./file-permission.cjs');
+const { sensitivePath, secret, secretPath, canonical } = require('./file-permission.cjs');
 const { sanitizeText } = require('./projection.cjs');
 const plain = v => v !== null && typeof v === 'object' && Object.getPrototypeOf(v) === Object.prototype;
 const exact = (v, keys) => plain(v) && Object.keys(v).length === keys.length && keys.every(k => Object.hasOwn(v, k));
@@ -17,7 +17,7 @@ function freeze(v) {
 function safePath(raw, cwd) {
   const expanded = raw.startsWith('~/') ? path.join(os.homedir(), raw.slice(2)) : raw;
   const p = path.resolve(cwd, expanded);
-  try { return !sensitivePath(expanded) && !sensitivePath(p) && !secret(p) && canonical(p) === p; } catch { return false; }
+  try { return !sensitivePath(expanded) && !sensitivePath(p) && !secretPath(p, cwd) && canonical(p) === p; } catch { return false; }
 }
 function planSuggestions(data, detail) {
   const out = [];

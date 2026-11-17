@@ -118,3 +118,37 @@ fn every_reference_cue_stem_accepts_a_private_custom_override() {
         assert_eq!(read(&dir, stem).unwrap()["data"], "b3duLWF1ZGlv");
     }
 }
+
+#[test]
+fn reveal_opens_the_folder_with_the_file_manager_of_each_os() {
+    // K2-07 S3: macOS has no xdg-open; `open` shows a folder in Finder.
+    assert_eq!(reveal_command("macos"), "open");
+    assert_eq!(reveal_command("windows"), "explorer");
+    assert_eq!(reveal_command("linux"), "xdg-open");
+    assert_eq!(reveal_command("freebsd"), "xdg-open");
+    // the command this build will really run
+    let expected = if cfg!(target_os = "macos") {
+        "open"
+    } else if cfg!(target_os = "windows") {
+        "explorer"
+    } else {
+        "xdg-open"
+    };
+    assert_eq!(reveal_command(std::env::consts::OS), expected);
+}
+
+#[test]
+fn a_config_folder_with_non_ascii_characters_still_lists_and_reads_the_users_files() {
+    // K2-07 S3: the app config dir lives under the user's home, which may hold any name (Álvaro, 日本, Zoë).
+    let dir = scratch("ñandú-Álvaro-日本-Zoë").join("sounds");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("question.wav"), b"own-question").unwrap();
+    std::fs::write(dir.join("approval.mp3"), b"own-approval").unwrap();
+    std::fs::write(dir.join("finish.ogg"), b"own-finish").unwrap();
+    assert_eq!(list(&dir), vec!["approval", "finish", "question"]);
+    assert_eq!(read(&dir, "question").unwrap()["data"], STANDARD.encode(b"own-question"));
+    assert_eq!(read(&dir, "approval").unwrap()["mime"], "audio/mpeg");
+    assert_eq!(read(&dir, "finish").unwrap()["mime"], "audio/ogg");
+    assert_eq!(custom_file(&dir, "finish"), Some(dir.join("finish.ogg")));
+    let _ = std::fs::remove_dir_all(dir.parent().unwrap());
+}

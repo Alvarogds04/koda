@@ -53,7 +53,10 @@
     document.body.append(panel); // the settings window has no island ancestor or clipping
     $('coucou-settings-style').media = 'all'; // never apply the vendor reset to the island
   }
-  const moreGroup = $('connections-more'); // FAKE services cards; render() wipes the body, so it is re-appended per render
+  const moreGroup = $('connections-more'); // the real connection cards (Gmail since K2-10 T6); render() wipes the body, so it is re-appended per render
+  // K2-13 T6b-3 (S7/S10): Ajustes → Minikodas owns its own card (minikodas-settings.js); same re-append rule as the
+  // connection cards, so switching tabs never throws away a half-typed api_id, a login step or the transcription choice.
+  const minikodasGroup = $('minikodas-settings');
   const tabsHost = $('settings-tabs');
   const live = $('settings-live');
   let screen = 'general'; // #442 T7.4: Ajustes opens on General (design §3 order, flows lane 4)
@@ -121,9 +124,9 @@
   // Copyright (c) 2026 Louis Raillé, MIT. No Flow, reserved artwork or new IPC.
   function mountSettingsFrame() {
     const side = el('nav', 'hub-side');
-    side.append(el('div', 'hub-brand', 'Abito'), $('settings-tabs'));
+    side.append(el('div', 'hub-brand', 'Koda'), $('settings-tabs'));
     const page = el('main', 'hub-panel');
-    page.append($('settings-bar'), $('settings-hint'), $('settings-body'), $('models'));
+    page.append($('settings-bar'), $('settings-hint'), $('settings-body'));
     panel.append(side, page);
   }
   // ---- settings frame end
@@ -151,7 +154,7 @@
   // radiogroup of real buttons (keyboard reachable, each with its own name) and the CURRENT
   // colour is also written as a word: the meaning never rides on colour alone
   // (docs/desktop-visual-language.md §1.1 C5).
-  const avatarName = id => (AVATAR && AVATAR.isPrincipal(id) ? 'Abito' : specialistIdentities().identities.find(identity => identity.id === id)?.name || String(id));
+  const avatarName = id => (AVATAR && AVATAR.isPrincipal(id) ? 'Koda' : specialistIdentities().identities.find(identity => identity.id === id)?.name || String(id));
   function colorRow(row) {
     const line = el('div', 'srow scolors');
     line.dataset.identity = row.id;
@@ -240,7 +243,7 @@
       const b = el('button', 'stab');
       b.type = 'button'; b.id = `settings-tab-${def.id}`; b.dataset.tab = def.id;
       b.setAttribute('role', 'tab');
-      b.setAttribute('aria-controls', def.id === 'models' ? 'models' : 'settings-body');
+      b.setAttribute('aria-controls', 'settings-body');
       const i = el('span', 'ico'); putIcon(i, def.icon);
       b.append(i, el('span', 'word', def.label));
       b.addEventListener('click', e => { if (e.isTrusted === true) showScreen(def.id); });
@@ -289,7 +292,6 @@
       b.setAttribute('aria-selected', on ? 'true' : 'false');
       b.tabIndex = on ? 0 : -1;
     }
-    body.hidden = id === 'models'; // the model picker is its own panel (models.js), shown by the event below
     // #410: the open sub-tab is a PUBLIC DOM attribute of the tabpanel. The compact Conexiones rules
     // (#410 block in style.css) are scoped to it, so every other Ajustes tab keeps its own look.
     body.dataset.screen = id;
@@ -375,7 +377,6 @@
   for (const b of [...openers, $('open-settings')].filter(Boolean)) b.addEventListener('click', e => {
     if (e.isTrusted === true) openSettingsWindow();
   });
-  const gear = $('open-settings');
   document.addEventListener('island:view', e => {
     if (e.detail === 'chat' && pendingOpen) { const id = pendingOpen; pendingOpen = false; open(id); }
     else if (e.detail !== 'chat' && isOpen()) close(false);
@@ -527,7 +528,7 @@
   function render() {
     if (!isOpen()) return;
     queueMicrotask(focusPendingSection);
-    // Every tab exit disposes Blobs, including Models/Connections, which bypass renderGeneral().
+    // Every tab exit disposes Blobs, including Connections, which bypasses renderGeneral().
     if (screen !== 'pills' && blobsMounted) {
       window.AbitoPillSettings?.dispose(blobsHost);
       blobsMounted = false;
@@ -545,9 +546,9 @@
     chip.hidden = !conn || screen !== 'accounts';
     if (conn) { chip.dataset.tone = conn.tone; chip.setAttribute('aria-label', conn.aria); putIcon($('settings-conn-icon'), conn.icon); $('settings-conn-word').textContent = conn.word; }
     if (screen === 'accounts') { renderAccounts(); renderConnectors(); renderKeys(); }
-    else if (screen === 'models') { /* models.js owns this panel */ }
     else renderGeneral(); // pills / appearance / general: each section names its tab
     if (moreGroup) { moreGroup.hidden = !V.servicesGroupVisible(screen); if (!moreGroup.hidden) body.append(moreGroup); }
+    if (minikodasGroup) { minikodasGroup.hidden = screen !== 'minikodas'; if (!minikodasGroup.hidden) body.append(minikodasGroup); }
     body.scrollTop = keep;
     if (focused && $(focused) && body.contains($(focused))) {
       $(focused).focus();
@@ -598,7 +599,7 @@
     agent({ action: 'abito_account_remove', accountId }).then(r => {
       accountSaving = false;
       if (r && Object.hasOwn(r, "ownedAccounts") && r.ownedAccounts) ownedAccounts = { accounts: V.ownedAccounts(r.ownedAccounts) };
-      accountNote = { tone: 'go', say: 'Conexión quitada. La clave se borró del almacén de Abito.' }; render(); say(accountNote.say);
+      accountNote = { tone: 'go', say: 'Conexión quitada. La clave se borró del almacén de Koda.' }; render(); say(accountNote.say);
     }, () => { accountSaving = false; accountNote = { tone: 'red', say: 'No se pudo quitar la conexión. No se cambió nada.' }; render(); });
   }
   function makeAccountForm(saved) {
@@ -891,7 +892,7 @@
       }
       if (!av.rows.length) list.append(el('li', 'sempty', 'Sin agentes'));
       // Honest limit of asking from the island: a Claude Code run that cannot show its own prompt (`claude -p`, background subagents) treats "no answer" as DENIED.
-      list.append(el('li', 'snote', 'Claude Code en modo no interactivo (claude -p, subagentes): si no respondés a tiempo desde Abito, el permiso se niega. Abito nunca lo acepta por vos.'));
+      list.append(el('li', 'snote', 'Claude Code en modo no interactivo (claude -p, subagentes): si no respondés a tiempo desde Koda, el permiso se niega. Koda nunca lo acepta por vos.'));
       sec.append(list);
     }
     body.append(sec);
@@ -1250,9 +1251,9 @@
     // nothing on screen (a pose, an agent, a notice) repaints it. Sub-Abito rows appear when real
     // identities exist — the list above is the single place they will come from.
     const identities = specialistIdentities();
-    const rows = V.colorRows(prefs, AVATAR ? [{ id: AVATAR.PRINCIPAL_ID, name: 'Abito' }, ...identities.identities] : [], AVATAR);
+    const rows = V.colorRows(prefs, AVATAR ? [{ id: AVATAR.PRINCIPAL_ID, name: 'Koda' }, ...identities.identities] : [], AVATAR);
     if (rows.length) {
-      const color = group('appearance', 'Color', 'Abito mantiene su color en la isla.');
+      const color = group('appearance', 'Color', 'Koda mantiene su color en la isla.');
       for (const row of rows) color.append(colorRow(row));
       if (identities.kind !== 'ready') {
         const notice = el('p', 'snote', identities.kind === 'loading' ? 'Leyendo los colores de tus especialistas…' : 'Colores de especialistas no disponibles: no se pudieron cargar sus identidades.');

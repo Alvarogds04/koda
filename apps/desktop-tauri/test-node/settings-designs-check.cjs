@@ -21,7 +21,7 @@ test('S18 General: three titled cards (Apariencia, Isla, Sonido), every control 
   dom();
   const { renderGeneral } = await load('general.js');
   const V = require('../frontend/settings-view.js');
-  let prefs = { sound: true, gain: .12, autoCloseSeconds: 15, openOnHover: false, declaredPills: [], pillColors: {}, mainPill: 'integration_claude', theme: 'system', displayName: '', monitor: null, absenceSeconds: 10 };
+  let prefs = { sound: true, gain: .12, autoCloseSeconds: 15, openOnHover: false, declaredPills: [], pillColors: {}, mainPill: 'integration_claude', theme: 'system', displayName: '', monitor: null };
   const invoke = async (cmd, { payload: p }) => {
     if (cmd === 'prefs_action' && p.action === 'autostart_view') return { enabled: false };
     if (cmd === 'monitor_action') return { monitors: [{ key: 'DP-1' }] };
@@ -35,17 +35,21 @@ test('S18 General: three titled cards (Apariencia, Isla, Sonido), every control 
   assert.equal(all(ui).filter(e => e.tagName === 'section').length, 3, 'no stray sections: exactly the three cards');
   // each task group holds its own controls; the order inside a card follows the wireframe
   const [look, island, sound] = c.map(labelsIn);
-  assert.deepEqual(look.slice(0, 2), ['Idioma', 'Tema'], 'Apariencia opens with Idioma and Tema, as in the wireframe');
+  // S3 (04 ajustes 3): the dead «Idioma» control is hidden, so Apariencia opens with Tema
+  assert.deepEqual(look.slice(0, 1), ['Tema'], 'Apariencia opens with Tema: «Idioma» is hidden until it works');
   for (const l of ['Nombre visible', 'Abrir al iniciar sesión']) assert(look.includes(l), l);
-  assert.deepEqual(island.slice(0, 3), ['Abrir al pasar el cursor', 'Plegar tras (s)', 'Ocultar plegada tras (s)']);
+  // isla-cualquier-lado S2: the folded island never hides at the edge, so «Ocultar plegada tras (s)» is gone
+  assert.deepEqual(island.slice(0, 3), ['Abrir al pasar el cursor', 'Plegar tras (s)', 'La isla vive en']);
+  assert(!island.includes('Ocultar plegada tras (s)') && !byId(ui, 'hub-absence'), 'no «Ocultar plegada» row');
   for (const l of ['La isla vive en', 'Atajo global']) assert(island.includes(l), l);
   assert.deepEqual(sound.slice(0, 1), ['Sonido']);
   assert(byId(c[2], 'hub-volume') && byId(c[2], 'hub-sounds-folder') && byId(c[2], 'hub-sounds-reload'), 'Volumen, Abrir carpeta y Recargar live in Sonido');
-  assert(byId(c[0], 'hub-language') && byId(c[0], 'hub-autostart'));
-  assert(byId(c[1], 'hub-hover') && byId(c[1], 'hub-absence') && byId(c[1], 'hub-screen'));
-  // nothing that existed disappeared
-  for (const id of ['hub-sound', 'hub-volume', 'hub-hover', 'hub-absence', 'hub-screen', 'hub-language', 'hub-autostart', 'hub-sounds-folder', 'hub-sounds-reload']) assert(byId(ui, id), id);
-  for (const label of ['Nombre visible', 'Atajo global', 'Cierre automático en segundos', 'Segundos antes de ocultar la isla plegada']) assert(all(ui).some(e => e.attrs['aria-label'] === label || e.textContent === label), label);
+  assert(byId(c[0], 'hub-autostart'));
+  assert(byId(c[1], 'hub-hover') && byId(c[1], 'hub-screen'));
+  // nothing that existed disappeared, except the two dead controls S3 (04 ajustes 3) hides
+  for (const id of ['hub-sound', 'hub-volume', 'hub-hover', 'hub-screen', 'hub-autostart', 'hub-sounds-folder', 'hub-sounds-reload']) assert(byId(ui, id), id);
+  assert(!byId(ui, 'hub-language') && !look.includes('Idioma'), 'a dead «Idioma» control is not offered');
+  for (const label of ['Nombre visible', 'Atajo global', 'Cierre automático en segundos']) assert(all(ui).some(e => e.attrs['aria-label'] === label || e.textContent === label), label);
   // visible helper text under the fields (input-helper-text), and the one status line is outside the cards
   assert(all(ui).some(e => e.attrs.role === 'tooltip' && e.textContent.includes('Sistema sigue el tema de tu escritorio.')), '0.2.1 S7: an ⓘ');
   // the mechanism that registers the global shortcut is a sentence, never a bare label with nothing to show

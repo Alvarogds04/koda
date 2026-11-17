@@ -11,7 +11,7 @@ const scan = r => r.page.evaluate(() => {
   const visible = el => { for (let e = el; e && e.nodeType === 1; e = e.parentElement) { const s = getComputedStyle(e); if (s.display === 'none' || s.visibility === 'hidden' || +s.opacity === 0 || e.hidden) return false; } return true; };
   const rect = b => ({ l: b.left, r: b.right, t: b.top, b: b.bottom }), items = [];
   const root = document.getElementById('capsule'), isl = document.getElementById('island');
-  const skip = el => el.closest('#nusa-body, #nusa-veil, #nusa-ear, .koda-sprite, .sr-only, #nusa-dots');
+  const skip = el => el.closest('#nusa-body, #nusa-veil, .koda-sprite, .sr-only, #nusa-dots'); /* isla-cualquier-lado S1: #nusa-ear is gone */
   const name = el => el.id || (typeof el.className === 'string' && el.className) || el.tagName;
   const walker = document.createTreeWalker(isl.parentElement, NodeFilter.SHOW_TEXT);
   for (let n; (n = walker.nextNode());) {

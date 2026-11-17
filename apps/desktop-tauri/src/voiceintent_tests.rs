@@ -84,7 +84,7 @@ fn fuzzy_names_resolve_and_ambiguous_ones_do_not() {
 }
 
 #[test]
-fn apps_web_search_and_ask_abito() {
+fn apps_web_search_and_ask_koda() {
     assert_eq!(p("abre Firefox"), Intent::OpenApp("Firefox".into()));
     assert_eq!(p("open Figma"), Intent::OpenApp("Figma".into()));
     assert_eq!(p("abre la aplicación Spotify"), Intent::OpenApp("Spotify".into()));
@@ -206,7 +206,7 @@ fn open_app_is_a_closed_allowlist() {
 }
 
 #[test]
-fn ask_abito_goes_to_the_chat_and_unknown_says_what_was_heard() {
+fn ask_koda_goes_to_the_chat_and_unknown_says_what_was_heard() {
     let out = plan(&Intent::AskAbito("qué es un mutex".into()), &state(&[], false), Lang::Es);
     assert_eq!(out.effects, vec![Effect::AskChat("qué es un mutex".into())]);
     let out = plan(&Intent::Unknown, &state(&[], false), Lang::Es);

@@ -25,7 +25,7 @@ const NOTCH_PAGES = [
   { id: "privacy", icon: "lock", title: () => "Privacidad", subtitle: () => "Avisos de fallos y reportes que vos decidís enviar." }
 ];
 const ALL = [...FLOW_PAGES, ...NOTCH_PAGES];
-const ACTIVE_PAGES = Object.freeze(["general", "agents", "chat", "shortcuts", "privacy"]);
+const ACTIVE_PAGES = Object.freeze(["general", "agents", "chat", "phone", "shortcuts", "privacy"]);
 const PAUSED_PAGES = Object.freeze(ALL.map((p) => p.id).filter((id) => !ACTIVE_PAGES.includes(id)));
 const PAUSED_LABEL = "En pausa · próxima versión";
 const isPaused = (id) => PAUSED_PAGES.includes(id);

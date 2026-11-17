@@ -3,12 +3,12 @@
 //!
 //! Same gate as `prefs_action` (known WebView label + page URL, shared rate limiter, closed
 //! schema). Reachable from the settings window on purpose: Coucou's Settings → "Open sounds
-//! folder" / "Reload sounds" live there. It can only read files named after one of the ten
-//! cue stems inside the app's own `sounds` folder (see `abito_island::sounds`), and `reveal`
-//! opens that fixed folder with no caller-influenced argument.
+//! folder" / "Reload sounds" live there. It can only read files named after one of the
+//! thirty-seven cue stems (`sounds::STEMS`) inside the app's own `sounds` folder (see
+//! `koda_island::sounds`), and `reveal` opens that fixed folder with no caller-influenced argument.
 use crate::{now_ms, AppState};
-use abito_island::bridge::{self, BridgeError};
-use abito_island::sounds::{self, Command};
+use koda_island::bridge::{self, BridgeError};
+use koda_island::sounds::{self, Command};
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -27,25 +27,13 @@ fn folder(app: &AppHandle) -> Option<PathBuf> {
         .map(|d| d.join(sounds::FOLDER))
 }
 
-/// Shows the folder in the file manager. The path is ours, never the caller's.
+/// Shows the folder in the file manager through the shared opener (K2-01c). The path is ours,
+/// never the caller's.
 fn reveal(dir: &std::path::Path) -> Result<(), BridgeError> {
     std::fs::create_dir_all(dir).map_err(|_| err("save_failed"))?;
-    #[cfg(target_os = "windows")]
-    let opener = "explorer";
-    #[cfg(not(target_os = "windows"))]
-    let opener = "xdg-open";
-    let mut child = std::process::Command::new(opener)
-        .arg(dir)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .map_err(|_| err("unavailable"))?;
-    // reap our own child; explorer.exe reports 1 even on success, so only spawn failure counts
-    std::thread::spawn(move || {
-        let _ = child.wait();
-    });
-    Ok(())
+    // K2-01c: xdg-open, Finder (`open`) or Explorer; only a spawn failure counts (explorer.exe
+    // reports 1 even on success).
+    koda_island::opener::open_detached(koda_island::opener::Target::Folder(dir)).map_err(|_| err("unavailable"))
 }
 
 /// Closed custom-sounds command: `{action:"list"}` → `{names:[stem…]}`,

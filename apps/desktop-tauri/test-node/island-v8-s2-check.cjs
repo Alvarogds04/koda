@@ -21,7 +21,7 @@ const glow = page => page.evaluate(() => getComputedStyle(document.getElementByI
     // expanded Inicio: Koda only
     assert.deepEqual(await visibleMinis(r.page), [], 'HU-057: no mini-characters / blobs in the expanded Inicio');
     // expanded Agentes: no minis, but the sessions are reachable (rows + «Ver todas (14)»)
-    await r.page.click('#nusa-tab-agentes', { force: true }); await r.page.waitForTimeout(800);
+    await H.goTab(r.page, 'agentes', { force: true }); await r.page.waitForTimeout(800);
     assert.deepEqual(await visibleMinis(r.page), [], 'HU-057: no mini-characters / blobs in the Agentes tab');
     const rows = (await r.measure('.nusa-agent')).filter(b => b.shown);
     assert.ok(rows.length >= 2, `the Agentes tab lists the sessions as rows (.nusa-agent): ${rows.length}`);
@@ -36,6 +36,8 @@ const glow = page => page.evaluate(() => getComputedStyle(document.getElementByI
     assert.equal(compact.minis, 0, 'zero rendered minis on the pill'); assert.equal(compact.badge, 0, 'the «•••» badge is not drawn on the fitted pill'); assert.equal(compact.fit, 'true');
     const working = await glow(r.page);
     assert.match(working, /rgb\(\d+, \d+, \d+\) 0px -12px 14px -12px inset/, 'a working session lights the pill dot: ' + working);
+    // isla-cualquier-lado S1: the disc also wears the .1 hairline ring, so it reads on a black wallpaper
+    assert.match(working, /rgba\(255, 255, 255, 0\.1\) 0px 0px 0px 1px/, 'the disc has its hairline ring: ' + working);
   } finally { await r.close(); }
   // contrast: with nothing running the pill dot must not claim «working» (so the check above cannot pass vacuously)
   const idle = await H.open({ sessions: [], quick: true });

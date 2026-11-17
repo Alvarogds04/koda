@@ -11,7 +11,7 @@ export default function (pi: ExtensionAPI) {
   try { options = { ...config.resolveConfig(process.env, process.getuid?.()),
     ...config.resolveQuestionConfig(process.env) }; }
   catch { return; } // Invalid configuration cannot register active transport.
-  // Without an explicit ABITO_DESKTOP_SOCKET, the island's stable handoff (<runtime>/endpoint.json) is re-read on
+  // Without an explicit KODA_DESKTOP_SOCKET, the island's stable handoff (<runtime>/endpoint.json) is re-read on
   // EVERY connection attempt, with the same checks the Claude Code/Codex hooks use: the island binds a new
   // `p-XXXXXX/s` on each start, so a path resolved once would go stale.
   if (options.endpoint === undefined) {
@@ -22,10 +22,10 @@ export default function (pi: ExtensionAPI) {
     notify?.(`The receiver at ${error.runtime} does not support the requested question capability level (handshake failed). Notices also stopped; no silent downgrade.`);
   } });
   // Pi's own ask tools (gentle-pi's ask_user_choice / one-question ask_user_question) are answerable from Abito too;
-  // ABITO_NATIVE_ASK=0 turns this off. See README.
+  // KODA_NATIVE_ASK=0 turns this off. See README.
   pi.on('tool_call', nativeAsk.createNativeAskHandler({ controller, env: process.env }));
   // HU-042: Pi's own yes/no confirmations (ctx.ui.confirm) are answerable from Abito too, unless sensitive;
-  // ABITO_NATIVE_CONFIRM=0 turns this off. Installed once per shared ui object, restored on shutdown. See README.
+  // KODA_NATIVE_CONFIRM=0 turns this off. Installed once per shared ui object, restored on shutdown. See README.
   let uninstallConfirm: () => void = () => {};
   pi.on('session_start', (_event, ctx) => {
     notify = ctx.hasUI ? message => ctx.ui.notify(message, 'warning') : undefined;

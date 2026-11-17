@@ -355,7 +355,7 @@ async function check(name, fn) {
   });
 
   // S10 — pure helpers: size formatting and the log note row.
-  await check('chat-view sizes are Spanish and turns with attachments gain one note row', async () => {
+  await check('chat-view sizes are Spanish and turns with attachments gain one chips row', async () => {
     const V = require(path.join(FRONTEND, 'chat-view.js'));
     assert.equal(V.formatSize(512), '512 B');
     assert.equal(V.formatSize(2048), '2,0 kB');
@@ -365,7 +365,8 @@ async function check(name, fn) {
     ] });
     assert.equal(rows[0].kind, 'user');
     assert.equal(rows.length, 2, JSON.stringify(rows));
-    assert.equal(rows[1].kind, 'note');
+    assert.equal(rows[1].kind, 'attachments');
+    assert.deepEqual(rows[1].files, [{ name: 'notas.txt', size: '9 B' }]);
     assert.match(rows[1].text, /notas\.txt/);
     // No attachments: exactly the historical rows.
     const plain = V.turnRows({ user_text: 'hola' });

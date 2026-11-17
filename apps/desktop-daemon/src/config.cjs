@@ -11,35 +11,60 @@
  *
  * Schema (all optional):
  *   workspace      absolute existing directory (see validateWorkspace)
- *   command        executable name or absolute path, default "pi"
+ *   command        executable name or absolute path; default "gentle-shell" (T2:
+ *                  resolved by the runtime from Koda's bundled runtime, never PATH)
  *   thinking       default thinking level (profiles.cjs THINKING_LEVELS)
  *   profile        saved profile id activated at daemon start
  *   mcpConfigPath  absolute path of a private MCP source file (projectMcpConfig)
  *   connectorsCommand  connectors CLI: ABSOLUTE normalized path of the installed binary; NO default (unset => connectors_list is "unavailable", nothing executes)
  *   connectorsDir      absolute clean directory read by the connectors CLI, default <island>/connectors (0700, created on first use)
- *   hookInstallerBin   ABSOLUTE normalized path of apps/desktop-harness/bin/abito-hook.cjs; NO default (unset => every agent is "unavailable", nothing executes)
+ *   hookInstallerBin   ABSOLUTE normalized path of apps/desktop-harness/bin/koda-hook.cjs; NO default (unset => every agent is "unavailable", nothing executes)
  *   connectorHostBin   ABSOLUTE normalized path of the abito-connector-host binary; NO default (unset => no host is spawned)
  *   hotkey         global show/hide combo, e.g. "Ctrl+Alt+Space" (validateHotkey); stored only, never captured here
  *   paused         global pause switch (#379): strict boolean, false when absent; stored only, restored at the next boot
- *   rotation       continuous conversation rotation (#386): object with optional subkeys
- *                  `enabled` (strict boolean, default FALSE: opt-in), `thresholdPercent` (50..100,
- *                  default 85) and `keepTurns` (1..100, default 12); unknown subkeys are rejected
+ *   rotation       continuous conversation rotation (K2-05 T3, Gentle Dot's form): object with
+ *                  optional subkeys `enabled` (strict boolean, default TRUE: rotation is on by
+ *                  default), `bytes` (1024..2147483647 session-file bytes, default 20 MB) and
+ *                  `compactions` (1..1000000, default 10); unknown subkeys are rejected; the env
+ *                  KODA_ROTATE_BYTES / KODA_ROTATE_COMPACTIONS overrides win over the file; the
+ *                  v0.1.0 #386 keys thresholdPercent/keepTurns are accepted and ignored
+ *   transcription  K2-13 (S7, S18) how a Minikoda transcribes videos/audios (minikodas/transcribe-setting.cjs):
+ *                  {mode: "local-parakeet"|"remote", language?, remote?: {accountId, model}};
+ *                  default {mode: "local-parakeet", language: "es"}; an invalid stored value is a config error.
+ *                  S18 (L32): Parakeet is the only local model; a `local-whisper-turbo` stored by an earlier build
+ *                  is migrated to {mode: "local-parakeet", language} when the file is read, never rewritten here.
  *
- * `ABITO_WORKSPACE` (the Abito analogue of Gentle Dot's GENTLE_DOT_WORKSPACE)
+ * `KODA_WORKSPACE` (the Abito analogue of Gentle Dot's GENTLE_DOT_WORKSPACE)
  * overrides the file's workspace and is validated the same way.
  */
 
 const fs = require("node:fs");
 const path = require("node:path");
 
+const { DEFAULT_COMMAND } = require("./runtime.cjs");
 const { MEMORY_PROJECT, assertSecurePath, islandPaths, writePrivateFile } = require("./isolation.cjs");
 const { THINKING_LEVELS, isStrictProfileId } = require("./profiles.cjs");
+const { TRANSCRIPTION_DEFAULT, validateTranscriptionSetting, migrateTranscriptionSetting } = require("./minikodas/transcribe-setting.cjs");
 // K2-01b: on Windows private files are judged by the verified HU-047 helper (null off Windows; see readPrivateJson).
 const winfs = require("./win-fs.cjs");
 
-const WORKSPACE_ENV = "ABITO_WORKSPACE";
-const ALLOWED_KEYS = ["workspace", "command", "thinking", "profile", "mcpConfigPath", "hotkey", "paused", "connectorsCommand", "connectorsDir", "hookInstallerBin", "connectorHostBin", "rotation"];
-const DEFAULT_COMMAND = "pi";
+/** K2-05 T3: a positive safe integer from the env, or undefined when it is absent or invalid. */
+const intFromEnv = (value) => {
+	if (typeof value !== "string" || !/^[0-9]+$/.test(value)) return undefined;
+	const number = Number(value);
+	return Number.isSafeInteger(number) && number > 0 ? number : undefined;
+};
+
+/** F7: the same 1024-byte minimum the rotation enforces for the env bytes override. */
+const MIN_ROTATE_BYTES = 1024;
+
+/** The v0.1.0 #386 rotation keys (B1): accepted and IGNORED, never a config error. */
+const OBSOLETE_ROTATION_KEYS = ["thresholdPercent", "keepTurns"];
+
+const WORKSPACE_ENV = "KODA_WORKSPACE";
+const ALLOWED_KEYS = ["workspace", "command", "thinking", "profile", "mcpConfigPath", "hotkey", "paused", "connectorsCommand", "connectorsDir", "hookInstallerBin", "connectorHostBin", "rotation", "transcription"];
+// T2: the default engine is Koda's bundled Gentle Shell (resolved by the
+// runtime from the bundled runtime folder); re-exported from runtime.cjs.
 const MAX_CONFIG_BYTES = 16 * 1024;
 const MAX_MCP_BYTES = 64 * 1024;
 
@@ -248,23 +273,35 @@ function readPrivateJson(file, field, maxBytes) {
 	return value;
 }
 
-/** #386 rotation defaults: disabled until the user opts in. */
-const ROTATION_DEFAULTS = { enabled: false, thresholdPercent: 85, keepTurns: 12 };
+/** K2-05 T3 defaults: rotation ON, Gentle Dot's limits (20 MB per session file or 10 compactions). */
+const ROTATION_DEFAULTS = { enabled: true, bytes: 20 * 1024 * 1024, compactions: 10 };
 
 /**
- * #386 `rotation`: strict object with known optional subkeys only — `enabled`
- * (strict boolean), `thresholdPercent` (50..100) and `keepTurns` (1..100).
- * Unknown or mistyped subkeys are a config error, never a silent flip.
+ * K2-05 T3 `rotation`: strict object with known optional subkeys only —
+ * `enabled` (strict boolean), `bytes` (1024..2147483647) and `compactions`
+ * (1..1000000). Unknown or mistyped subkeys are a config error, never a silent
+ * flip. EXCEPTION (B1): the v0.1.0 #386 keys `thresholdPercent`/`keepTurns` are
+ * accepted and IGNORED — their old types/ranges are not validated and they can
+ * never fail the daemon; a one-line notice says they are obsolete. Any OTHER
+ * unknown subkey keeps the strict refusal.
  */
-function validateRotation(raw) {
+function validateRotation(raw, log = () => {}) {
 	if (raw === null || typeof raw !== "object" || Array.isArray(raw)) throw new ConfigError("rotation");
-	for (const key of Object.keys(raw)) if (key !== "enabled" && key !== "thresholdPercent" && key !== "keepTurns") throw new ConfigError("rotation");
+	const obsolete = Object.keys(raw).filter((key) => OBSOLETE_ROTATION_KEYS.includes(key));
+	for (const key of Object.keys(raw)) {
+		if (key === "enabled" || key === "bytes" || key === "compactions" || obsolete.includes(key)) continue;
+		throw new ConfigError("rotation");
+	}
+	if (obsolete.length > 0) {
+		// Logged once per load; the file itself is never rewritten behind the user's back.
+		log(`config rotation: ${obsolete.join(", ")} ${obsolete.length === 1 ? "is" : "are"} obsolete (the visible-summary rotation is gone) and ignored; the chat rotates by size and compaction count`);
+	}
 	const out = {};
 	if (raw.enabled !== undefined) {
 		if (typeof raw.enabled !== "boolean") throw new ConfigError("rotation");
 		out.enabled = raw.enabled;
 	}
-	for (const [key, min, max] of [["thresholdPercent", 50, 100], ["keepTurns", 1, 100]]) {
+	for (const [key, min, max] of [["bytes", 1024, 2_147_483_647], ["compactions", 1, 1_000_000]]) {
 		if (raw[key] === undefined) continue;
 		if (!Number.isSafeInteger(raw[key]) || raw[key] < min || raw[key] > max) throw new ConfigError("rotation");
 		out[key] = raw[key];
@@ -272,8 +309,29 @@ function validateRotation(raw) {
 	return out;
 }
 
+/** K2-13 `transcription`: the strict setting validator, as a ConfigError that never echoes the value. */
+function validateTranscription(raw) {
+	try {
+		return validateTranscriptionSetting(raw);
+	} catch {
+		throw new ConfigError("transcription");
+	}
+}
+
+/**
+ * K2-13 (S18) `transcription` read back from disk: the same strict validator plus the one migration, so a config
+ * written by a build that still offered `local-whisper-turbo` loads as `local-parakeet` instead of locking Ajustes.
+ */
+function migrateTranscription(raw) {
+	try {
+		return migrateTranscriptionSetting(raw);
+	} catch {
+		throw new ConfigError("transcription");
+	}
+}
+
 /** The raw, validated file content (no defaults, no env). */
-function readConfigFile(islandRoot) {
+function readConfigFile(islandRoot, log = () => {}) {
 	// Same parent-chain policy as writes: no symlinked/world-writable/foreign-owned island path.
 	try {
 		assertSecurePath(path.dirname(islandPaths(islandRoot).configFile));
@@ -306,7 +364,8 @@ function readConfigFile(islandRoot) {
 		if (typeof raw.paused !== "boolean") throw new ConfigError("paused");
 		out.paused = raw.paused;
 	}
-	if (raw.rotation !== undefined) out.rotation = validateRotation(raw.rotation);
+	if (raw.rotation !== undefined) out.rotation = validateRotation(raw.rotation, log);
+	if (raw.transcription !== undefined) out.transcription = migrateTranscription(raw.transcription);
 	if (raw.connectorHostBin !== undefined) out.connectorHostBin = validateConnectorHostBin(raw.connectorHostBin);
 	if (raw.hotkey !== undefined) {
 		// Inert metadata: an invalid value must never lock the user out of recovery. Drop it, flag it.
@@ -319,10 +378,11 @@ function readConfigFile(islandRoot) {
 	return out;
 }
 
-/** Effective config: file values, defaults, and the ABITO_WORKSPACE override (which wins). */
+/** Effective config: file values, defaults, and the KODA_WORKSPACE override (which wins). */
 function loadConfig(islandRoot, options = {}) {
 	const env = options.env ?? process.env;
-	const file = readConfigFile(islandRoot);
+	const file = readConfigFile(islandRoot, options.log ?? (() => {}));
+	const fileRotation = file.rotation ?? {};
 	const cfg = {
 		command: file.command ?? DEFAULT_COMMAND,
 		thinking: file.thinking,
@@ -334,7 +394,19 @@ function loadConfig(islandRoot, options = {}) {
 		hookInstallerBin: file.hookInstallerBin,
 		connectorHostBin: file.connectorHostBin,
 		connectorsDir: file.connectorsDir ?? path.join(islandPaths(islandRoot).root, "connectors"),
-		rotation: { ...ROTATION_DEFAULTS, ...(file.rotation ?? {}) },
+		rotation: {
+			enabled: fileRotation.enabled ?? ROTATION_DEFAULTS.enabled,
+			// The KODA_ROTATE_* env overrides win over the file (rotationLimits); an
+			// invalid value never wins, like KODA_WORKSPACE never flips silently.
+			bytes: (() => {
+			// F7: the env override keeps the same 1024-byte minimum as the config;
+			// a smaller or non-decimal value never wins (like KODA_WORKSPACE).
+			const fromEnv = intFromEnv(env.KODA_ROTATE_BYTES);
+			return (fromEnv !== undefined && fromEnv >= MIN_ROTATE_BYTES ? fromEnv : undefined) ?? fileRotation.bytes ?? ROTATION_DEFAULTS.bytes;
+		})(),
+			compactions: intFromEnv(env.KODA_ROTATE_COMPACTIONS) ?? fileRotation.compactions ?? ROTATION_DEFAULTS.compactions,
+		},
+		transcription: file.transcription ?? { ...TRANSCRIPTION_DEFAULT },
 		...(file.hotkeyInvalid ? { hotkeyInvalid: true } : {}),
 		workspace: islandPaths(islandRoot).workspace,
 		workspaceSource: "default",
@@ -406,6 +478,20 @@ function setPaused(islandRoot, value) {
 	return { paused: value, changed };
 }
 
+/**
+ * K2-13: persists the global transcription setting (validated first; nothing is written when it is refused),
+ * merging the other keys, atomically with 0600. Returns `{transcription, changed}`.
+ */
+function setTranscription(islandRoot, value) {
+	const next = validateTranscription(value);
+	const { hotkeyInvalid, transcription: old, ...current } = readConfigFile(islandRoot);
+	const changed = JSON.stringify(old ?? TRANSCRIPTION_DEFAULT) !== JSON.stringify(next);
+	if (changed || hotkeyInvalid === true || old === undefined) {
+		writePrivateFile(islandPaths(islandRoot).configFile, `${JSON.stringify({ ...current, transcription: next }, null, 2)}\n`);
+	}
+	return { transcription: next, changed };
+}
+
 /** Forgets the persisted session pointer (overwrites `state.json`, never deletes the session itself). */
 function clearSessionPointer(islandRoot) {
 	writePrivateFile(path.join(islandPaths(islandRoot).root, "state.json"), "{}\n");
@@ -414,7 +500,7 @@ function clearSessionPointer(islandRoot) {
 /**
  * READ-ONLY: true when `<workspace>/.engram/config.json` names a memory
  * project other than the Abito pin. The daemon never writes `.engram` into a
- * user folder; the pin for such folders is `ABITO_MEMORY_PROJECT` + identity,
+ * user folder; the pin for such folders is `KODA_MEMORY_PROJECT` + identity,
  * so the conflict is surfaced as a status warning instead.
  */
 function detectMemoryPinConflict(workspace) {
@@ -435,6 +521,12 @@ const MCP_ID = /^[A-Za-z0-9_-]{1,64}$/;
 const MCP_BEARER = /^Bearer [A-Za-z0-9._~+/=-]{8,512}$/;
 const FORBIDDEN_IDS = new Set(["__proto__", "constructor", "prototype"]);
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]"]);
+
+/** K2-06 T1: the Rust host's loopback window-capture endpoint, set at spawn (apps/desktop-tauri/src/daemonhost.rs). */
+const WINDOW_MCP_URL_ENV = "KODA_WINDOW_MCP_URL";
+const WINDOW_MCP_TOKEN_ENV = "KODA_WINDOW_MCP_TOKEN";
+/** The one server id Koda projects itself: the host's screenshot tool reaches the agent as `mcp__computer__*`. */
+const COMPUTER_SERVER_ID = "computer";
 
 function projectEntry(entry) {
 	if (entry === null || typeof entry !== "object" || Array.isArray(entry)) return undefined;
@@ -481,13 +573,49 @@ function projectMcpConfig(file) {
 }
 
 /**
- * Writes the projection to `<island>/agent/mcp.json` — the user-level MCP file
- * of the engine's private pi agent dir (`PI_CODING_AGENT_DIR`), which pi reads
- * natively (see docs/mcp.md). With no source it writes an empty projection so
- * a stale one never lingers.
+ * K2-06 T1: the host's window-capture endpoint, projected as the `computer` server.
+ *
+ * Both env vars must be present, and the result must satisfy the SAME proxy-only rule as any
+ * imported server (http on a literal loopback host, exactly one Bearer header), so the island
+ * keeps its one accepted entry shape. Anything else is no server at all: never an invalid
+ * projection, never a crash. The token is a capability — it is only ever written into the 0600
+ * projection, never logged.
  */
-function writeMcpProjection(islandRoot, sourceFile) {
+function windowMcpEntry(env) {
+	if (env === null || typeof env !== "object") return undefined;
+	const url = env[WINDOW_MCP_URL_ENV];
+	const token = env[WINDOW_MCP_TOKEN_ENV];
+	if (typeof url !== "string" || typeof token !== "string") return undefined;
+	return projectEntry({ type: "http", url, headers: { Authorization: `Bearer ${token}` } });
+}
+
+/** True when the host set EITHER variable: a half-set endpoint is reported, never silently ignored. */
+function hasWindowEnv(env) {
+	if (env === null || typeof env !== "object") return false;
+	return env[WINDOW_MCP_URL_ENV] !== undefined || env[WINDOW_MCP_TOKEN_ENV] !== undefined;
+}
+
+/**
+ * Writes the projection to `<island>/agent/mcp.json` — the user-level MCP file
+ * of the engine's own home (the directory passed to `--home`, T2), which the
+ * engine reads natively (see docs/mcp.md). With no source it writes an empty
+ * projection so a stale one never lingers.
+ *
+ * K2-06 T1: Koda's OWN window-capture endpoint (`options.env`) is added as the
+ * `computer` server when the host configured it, through the very same
+ * proxy-only rule — a non-loopback URL, another header or a malformed Bearer
+ * token yields no server at all, never an invalid projection and never a
+ * crash. Koda's own endpoint wins over an imported server of the same id. The
+ * token is a capability: it is only ever written into this 0600 file, and the
+ * refusal notice (`options.log`) is a fixed sentence that never carries it.
+ */
+function writeMcpProjection(islandRoot, sourceFile, options = {}) {
 	const projection = sourceFile ? projectMcpConfig(sourceFile) : { mcpServers: {} };
+	const window = windowMcpEntry(options.env);
+	if (window) projection.mcpServers[COMPUTER_SERVER_ID] = window;
+	else if (hasWindowEnv(options.env)) {
+		(options.log ?? (() => {}))("window capture: KODA_WINDOW_MCP_URL / KODA_WINDOW_MCP_TOKEN were refused (the endpoint must be http on a loopback host with a Bearer token); no computer server projected");
+	}
 	const target = path.join(islandPaths(islandRoot).agentDir, "mcp.json");
 	writePrivateFile(target, `${JSON.stringify(projection, null, 2)}\n`);
 	return projection;
@@ -513,7 +641,10 @@ function removeMcpProjection(islandRoot) {
 
 module.exports = {
 	ConfigError,
+	COMPUTER_SERVER_ID,
 	DEFAULT_COMMAND,
+	WINDOW_MCP_TOKEN_ENV,
+	WINDOW_MCP_URL_ENV,
 	WORKSPACE_ENV,
 	clearSessionPointer,
 	detectMemoryPinConflict,
@@ -523,6 +654,7 @@ module.exports = {
 	removeMcpProjection,
 	setHotkey,
 	setPaused,
+	setTranscription,
 	setWorkspace,
 	validateCommand,
 	validateConnectorsCommand,
@@ -531,5 +663,6 @@ module.exports = {
 	validateConnectorHostBin,
 	validateHotkey,
 	validateWorkspace,
+	windowMcpEntry,
 	writeMcpProjection,
 };

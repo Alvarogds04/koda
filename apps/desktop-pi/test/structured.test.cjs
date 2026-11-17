@@ -23,8 +23,8 @@ function fixture(structured = true) {
 }
 
 test('config: level 3 is accepted (QP/1 + busyReason + structured); other values stay invalid', () => {
-  assert.equal(resolveQuestionConfig({ ABITO_QUESTIONS: '3' }).questionLevel, 3);
-  for (const value of ['4', '03', '-1', 'true', '']) assert.throws(() => resolveQuestionConfig({ ABITO_QUESTIONS: value }), value);
+  assert.equal(resolveQuestionConfig({ KODA_QUESTIONS: '3' }).questionLevel, 3);
+  for (const value of ['4', '03', '-1', 'true', '']) assert.throws(() => resolveQuestionConfig({ KODA_QUESTIONS: value }), value);
 });
 
 test('normalizeRequest: legacy limits and keys are unchanged without the capability', () => {

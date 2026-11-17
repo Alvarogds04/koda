@@ -178,7 +178,7 @@ fn context_apps(foreground: bool) -> Vec<(String, String)> {
     if let Some(rows) = crate::contextwin::dbus::recent_windows(None) {
         let mut apps = Vec::new();
         for row in rows {
-            if crate::contextwin::is_abito(&row) { continue; }
+            if crate::contextwin::is_koda(&row) { continue; }
             let id = row.app_id.trim().to_lowercase();
             let id = id.strip_suffix(".desktop").unwrap_or(&id).to_string();
             let name = row.app_name.trim().to_string();

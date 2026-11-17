@@ -15,6 +15,14 @@
 const { SCHEMA: CONNECTORS_SCHEMA, buildCatalog, buildConnectors } = require("./connectors.cjs");
 const { SCHEMA: MCP_IMPORT_SCHEMA, buildFiles, buildServers } = require("./mcp-import.cjs");
 const { SCHEMA: SESSIONS_SCHEMA, buildSessions } = require("./sessions.cjs");
+const { validateRecipe, recipeToJson, ID_PATTERN: MINIKODA_ID } = require("./minikodas/recipe.cjs");
+const { validateTranscriptionSetting } = require("./minikodas/transcribe-setting.cjs");
+// The session contract (printable ASCII, bounded) is defined where the login produces it, and shared here: the frame
+// builder, the decoder and the login cannot disagree about what a `telegram_session` may carry.
+const { isCarriableSession, SESSION_MAX_CHARS } = require("./minikodas/telegram.cjs");
+// T2 white-label: only assistant/harness-generated text the island will show
+// passes through presentText; the user's own prompt text never does.
+const { createTextFilter, presentText, shouldShowToast } = require("./white-label.cjs");
 
 const PROTOCOL = "island-agent/1";
 
@@ -32,8 +40,25 @@ const LIMITS = Object.freeze({
 	maxOptions: 50,
 	maxOptionChars: 200,
 	maxIdChars: 128,
+	/** K2-05 attachments: one `upload` chunk's base64 text (≤ 144 KiB of file bytes; the frame stays under maxFrameBytes). */
+	maxUploadChunkChars: 192 * 1024,
+	/** K2-05 attachments: files one `send` names (Gentle Dot ATTACHMENT_LIMITS.files). */
+	maxAttachments: 10,
+	/** K2-05 attachments: a file name as the client sends it (Gentle Dot MAX_NAME). */
+	maxUploadNameChars: 255,
 });
 
+/** Page ids of the rotated chain: `s<file index>-<turn>` (T4 U1, Gentle Dot conversations.ts). */
+/** One canonical page id `s<file>-<turn>`: no leading zeros anywhere (K2-05 verifier fix); `sN-0` and out-of-range turns pass shape and answer an empty page. */
+const HISTORY_BEFORE = /^s(0|[1-9]\d*)-(0|[1-9]\d*)$/;
+/**
+ * K2-05 bind by id (Gentle Dot protocol `send{requestId?}`): the client's own correlation id of a
+ * send/steer. Closed and bounded; the daemon echoes it ONLY to the sender, on the `user_message`
+ * frame of the prompt the engine recorded for that request.
+ */
+const REQUEST_ID = /^[A-Za-z0-9_-]{1,64}$/;
+/** K2-05 attachments: the daemon's own opaque id of one stored upload (uploads.cjs UPLOAD_ID). */
+const ATTACHMENT_ID = /^a-[0-9a-f]{16}$/;
 const IMAGE_MIMES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
 const STRICT_ID = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const SAFE_NAME = /^[A-Za-z0-9_.:-]{1,64}$/;
@@ -41,6 +66,15 @@ const SAFE_ID = /^[A-Za-z0-9_.:-]{1,128}$/;
 const BASE64 = /^[A-Za-z0-9+/]+={0,2}$/;
 /** Any control character (tabs and newlines included) is refused in short labels/ids. */
 const CONTROL = /[\u0000-\u001f\u007f]/;
+/**
+ * K2-13 (S10/S20) Telegram frames. Bounds are what a session string, a code and a 2FA password can be, never unbounded:
+ * the session contract (printable ASCII, bounded) lives in minikodas/telegram.cjs, next to the login that produces it, so
+ * the frame builder, the frame decoder and the login can never disagree.
+ */
+const TELEGRAM_LIMITS = Object.freeze({ maxSession: SESSION_MAX_CHARS, maxCode: 32, maxPassword: 1024, maxNotice: 300, maxApiId: 2 ** 31 - 1 });
+/** An E.164 phone number: `+`, a non-zero country digit, 7-15 digits in total. */
+const E164 = /^\+[1-9]\d{6,14}$/;
+const API_HASH = /^[0-9a-f]{32}$/;
 /** Hook-managed agents (agents.cjs); the closed set of agent_connect/agent_disconnect targets. */
 const AGENT_IDS = Object.freeze(["pi", "claude-code", "codex", "statusline", "copilot-cli", "opencode"]);
 const PLAN_HASH = /^[0-9a-f]{64}$/;
@@ -58,11 +92,57 @@ const isObject = (v) => v !== null && typeof v === "object" && !Array.isArray(v)
 const isString = (v, max) => typeof v === "string" && v.length <= max;
 const strictId = (v) => isString(v, 64) && STRICT_ID.test(v);
 const safeLabel = (v) => isString(v, 80) && v.trim() !== "" && !CONTROL.test(v);
+const isHighSurrogate = (code) => code >= 0xd800 && code <= 0xdbff;
+const isLowSurrogate = (code) => code >= 0xdc00 && code <= 0xdfff;
 const clip = (v, max) => {
 	const s = typeof v === "string" ? v : v === undefined || v === null ? "" : String(v);
 	// Control characters (except tab/newline) never travel to the UI.
-	return s.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "").slice(0, max);
+	const clean = s.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "");
+	if (clean.length <= max) return clean;
+	// Re-verify finding: the cut must never land between the two halves of a
+	// UTF-16 surrogate pair — the island would render a lone half as U+FFFD.
+	let end = max;
+	if (end > 0) {
+		const prev = clean.charCodeAt(end - 1);
+		const next = clean.charCodeAt(end);
+		if (prev >= 0xd800 && prev <= 0xdbff && next >= 0xdc00 && next <= 0xdfff) end -= 1;
+	}
+	return clean.slice(0, end);
 };
+
+/**
+ * Re-verify finding: shown select labels must be unique and non-empty, because
+ * the answer is matched against what was SHOWN — duplicates made the answer
+ * pick the wrong original and an empty label (a fully rewritten /gentle:
+ * option) could collide with another empty one. Duplicates get a positional
+ * suffix «label (2)», «label (3)»…; an empty label becomes a neutral
+ * placeholder «Option <position>» (1-based, so the first option never needs
+ * one). Everything stays within `max` chars.
+ *
+ * F3 (U2 verifier follow-up): the island strips C0/C1 control characters for
+ * display, so a label carrying one would be answered by the user with text the
+ * daemon never sent. The SHOWN labels — what the answer is matched against —
+ * are therefore cleaned here: every C0/C1 control character (and DEL) becomes
+ * a space before the uniqueness pass; a label that is only controls presents
+ * as the neutral placeholder, like an empty one. The stored ORIGINAL option is
+ * untouched (buildUiResponse maps the answer back by position).
+ */
+const SHOW_CONTROL = /[\u0000-\u001f\u007f\u0080-\u009f]+/g;
+function uniqueShownLabels(labels, max) {
+	const seen = new Map();
+	return labels.map((label, i) => {
+		// F3: controls become spaces BEFORE the clip (clip deletes them), and each
+		// shown label is length-clipped and trimmed here so what the island receives
+		// is already clean and bounded. A label that is only controls presents as the
+		// placeholder, like an empty one.
+		let shown = clip(typeof label === "string" ? label.replace(SHOW_CONTROL, " ") : "", max).trim();
+		if (shown === "") shown = `Option ${i + 1}`;
+		const count = seen.get(shown) ?? 0;
+		seen.set(shown, count + 1);
+		if (count > 0) shown = clip(`${shown} (${count + 1})`, max);
+		return shown;
+	});
+}
 
 // ----- local OpenAI-compatible endpoint (V5) ---------------------------------
 
@@ -162,6 +242,14 @@ function validImages(images) {
 	return out;
 }
 
+/** K2-05 attachments: 1..maxAttachments distinct daemon upload ids, or null. */
+function validAttachmentIds(ids) {
+	if (!Array.isArray(ids) || ids.length === 0 || ids.length > LIMITS.maxAttachments) return null;
+	if (!ids.every((id) => typeof id === "string" && ATTACHMENT_ID.test(id))) return null;
+	if (new Set(ids).size !== ids.length) return null;
+	return [...ids];
+}
+
 /**
  * Validates one decoded client frame (after hello) and rebuilds it with only
  * the allowed fields. Returns undefined for anything invalid or unknown.
@@ -170,19 +258,49 @@ function validateClientFrame(raw) {
 	if (!isObject(raw) || typeof raw.type !== "string") return undefined;
 	switch (raw.type) {
 		case "send": {
-			if (!isString(raw.text, LIMITS.maxTextChars) || raw.text.trim() === "") return undefined;
+			// K2-05 attachments (Gentle Dot parseAttachments): 1-10 ids the daemon issued, never a
+			// path or a name; with files the text may be empty, without them it is required.
+			const attachments = raw.attachments === undefined ? undefined : validAttachmentIds(raw.attachments);
+			if (attachments === null) return undefined;
+			if (!isString(raw.text, LIMITS.maxTextChars) || (raw.text.trim() === "" && !attachments)) return undefined;
 			const images = validImages(raw.images);
 			if (images === null) return undefined;
-			return { type: "send", text: raw.text, images };
+			if (raw.requestId !== undefined && !(typeof raw.requestId === "string" && REQUEST_ID.test(raw.requestId))) return undefined;
+			return { type: "send", text: raw.text, images, ...(raw.requestId !== undefined ? { requestId: raw.requestId } : {}), ...(attachments ? { attachments } : {}) };
 		}
+		case "upload": {
+			// K2-05 attachments: one chunk (base64) of one file, in order. The name is only ever a
+			// display name (uploads.cjs sanitizeName keeps its last segment); nothing names a path.
+			if (typeof raw.requestId !== "string" || !REQUEST_ID.test(raw.requestId)) return undefined;
+			if (!isString(raw.name, LIMITS.maxUploadNameChars) || raw.name === "" || raw.name.includes("\u0000")) return undefined;
+			if (!Number.isSafeInteger(raw.size) || raw.size < 0) return undefined;
+			if (!Number.isSafeInteger(raw.offset) || raw.offset < 0 || raw.offset > raw.size) return undefined;
+			if (typeof raw.data !== "string" || raw.data.length > LIMITS.maxUploadChunkChars) return undefined;
+			if (raw.data === "" ? raw.size !== 0 : !BASE64.test(raw.data) || raw.data.length % 4 !== 0) return undefined;
+			return { type: "upload", requestId: raw.requestId, name: raw.name, size: raw.size, offset: raw.offset, data: Buffer.from(raw.data, "base64") };
+		}
+		case "upload_discard":
+			if (typeof raw.id !== "string" || !ATTACHMENT_ID.test(raw.id)) return undefined;
+			return { type: "upload_discard", id: raw.id };
 		case "steer":
 			if (!isString(raw.text, LIMITS.maxTextChars) || raw.text.trim() === "") return undefined;
-			return { type: "steer", text: raw.text };
+			if (raw.requestId !== undefined && !(typeof raw.requestId === "string" && REQUEST_ID.test(raw.requestId))) return undefined;
+			return { type: "steer", text: raw.text, ...(raw.requestId !== undefined ? { requestId: raw.requestId } : {}) };
 		case "abort":
-		case "new_conversation":
 		case "status":
 		case "interrupted_ack": // R5: acknowledges the interrupted-work record exposed in the ready frame
+			return { type: raw.type };
+		case "new_conversation": // T4 U1: validated but refused by the server (conversations_off, one continuous chat)
+			return { type: "new_conversation" };
 
+		case "get_history": // T4 U1: read-only, no fields; references the open session only
+			return { type: "get_history" };
+		case "get_earlier": {
+			// One page id of the chain (`s<file>-<turn>`); anything else is bad_request at the
+			// protocol layer, while a VALID-looking id the chain does not know yields an empty page.
+			if (!isString(raw.before, LIMITS.maxIdChars) || !HISTORY_BEFORE.test(raw.before)) return undefined;
+			return { type: "get_earlier", before: raw.before };
+		}
 		case "accounts_list":
 		case "providers_list":
 		case "profiles_list":
@@ -363,10 +481,80 @@ function validateClientFrame(raw) {
 		case "auth_cancel":
 			if (!isString(raw.flowId, 128)) return undefined;
 			return { type: "auth_cancel", flowId: raw.flowId };
+		// ----- K2-13 Minikodas and «Hoy» -----
+		case "minikodas_list":
+		case "hoy_list":
+			return { type: raw.type };
+		case "minikoda_get":
+		case "minikoda_approve_create":
+		case "minikoda_delete":
+		case "minikoda_launch":
+			if (!isMinikodaId(raw.id)) return undefined;
+			return { type: raw.type, id: raw.id };
+		case "minikoda_create": {
+			// Shape only (the daemon re-validates with its own minimum period, the clock and the accounts).
+			let recipe;
+			try {
+				recipe = validateRecipe(raw.recipe, { draft: true, minEveryMs: 1 });
+			} catch {
+				return undefined;
+			}
+			const out = { name: recipe.name, when: { ...recipe.when }, reads: { ...recipe.reads }, kit: [...recipe.kit], prompt: recipe.prompt, never: [...recipe.never] };
+			if (recipe.id !== undefined) out.id = recipe.id;
+			if (recipe.model !== undefined) out.model = { ...recipe.model };
+			return { type: "minikoda_create", recipe: out };
+		}
+		// ----- K2-13 transcription setting (S7, S16) -----
+		case "transcription_get":
+			return { type: "transcription_get" };
+		case "transcription_set": {
+			let setting;
+			try {
+				setting = validateTranscriptionSetting(raw.setting);
+			} catch {
+				return undefined;
+			}
+			return { type: "transcription_set", setting };
+		}
+		// ----- K2-13 Telegram (S10/S20) -----
+		case "telegram_status":
+		case "telegram_logout":
+			return { type: raw.type };
+		case "telegram_login_start": {
+			// S10: the api_id/api_hash come from Ajustes and the phone is the person's; all three are validated here and
+			// never logged, stored or echoed back (only the closed frames below can carry Telegram's answers).
+			if (!Number.isSafeInteger(raw.apiId) || raw.apiId <= 0 || raw.apiId > TELEGRAM_LIMITS.maxApiId) return undefined;
+			if (typeof raw.apiHash !== "string" || !API_HASH.test(raw.apiHash)) return undefined;
+			if (typeof raw.phone !== "string" || !E164.test(raw.phone)) return undefined;
+			return { type: "telegram_login_start", apiId: raw.apiId, apiHash: raw.apiHash, phone: raw.phone };
+		}
+		case "telegram_login_code":
+			if (typeof raw.code !== "string" || raw.code === "" || raw.code.length > TELEGRAM_LIMITS.maxCode || CONTROL.test(raw.code)) return undefined;
+			return { type: "telegram_login_code", code: raw.code };
+		case "telegram_login_password":
+			if (typeof raw.password !== "string" || raw.password === "" || raw.password.length > TELEGRAM_LIMITS.maxPassword) return undefined;
+			return { type: "telegram_login_password", password: raw.password };
+		case "telegram_session_restore": {
+			if (!Number.isSafeInteger(raw.apiId) || raw.apiId <= 0 || raw.apiId > TELEGRAM_LIMITS.maxApiId) return undefined;
+			if (typeof raw.apiHash !== "string" || !API_HASH.test(raw.apiHash)) return undefined;
+			// PROTOCOL.md says printable ASCII: a value with a control character or a non-ASCII byte is not a session this
+			// daemon could ever have exported, and the island has no business handing one over.
+			if (!isCarriableSession(raw.session)) return undefined;
+			return { type: "telegram_session_restore", apiId: raw.apiId, apiHash: raw.apiHash, session: raw.session };
+		}
+		case "hoy_approve":
+		case "hoy_reject":
+			// No PIN (L17): only the id travels; any other field (a stray `pin` included) is dropped.
+			if (!isHoyId(raw.id)) return undefined;
+			return { type: raw.type, id: raw.id };
 		default:
 			return undefined;
 	}
 }
+
+const HOY_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const isMinikodaId = (v) => typeof v === "string" && MINIKODA_ID.test(v);
+const isHoyId = (v) => typeof v === "string" && HOY_ID.test(v);
 
 /**
  * Parses one LF-delimited line into a frame. `hello` is only accepted when
@@ -393,13 +581,61 @@ function decodeClientLine(bytes, { expectHello = false } = {}) {
 // ----- server -> client --------------------------------------------------
 
 /** Adds the per-client monotonic sequence number and frames the record with LF. */
+const SURROGATE = /[\uD800-\uDFFF]/;
+/** A valid surrogate pair, or any surrogate unit left over (a lone one). */
+const PAIRED_OR_LONE = /[\uD800-\uDBFF][\uDC00-\uDFFF]|[\uD800-\uDFFF]/g;
+
+/**
+ * B1 (U2 verifier follow-up), defence in depth: JSON.stringify serializes a lone UTF-16
+ * surrogate as a `\udXXX` escape, and the island's serde_json rejects it — dropping the
+ * connection (chat AND settings, frames are broadcast); a lone surrogate that reached the
+ * daemon from a session file made every get_history fail the same way, forever. The single
+ * outbound encoder therefore replaces any lone surrogate in ANY string of the frame with
+ * U+FFFD before serializing (chunk/clip boundaries additionally never split a pair).
+ * Inputs are returned untouched unless they actually contain a surrogate unit.
+ */
+function withoutLoneSurrogates(value) {
+	if (typeof value === "string") return SURROGATE.test(value) ? value.replace(PAIRED_OR_LONE, (m) => (m.length === 2 ? m : "\uFFFD")) : value;
+	if (Array.isArray(value)) {
+		let changed = false;
+		const out = new Array(value.length);
+		for (let i = 0; i < value.length; i += 1) {
+			out[i] = withoutLoneSurrogates(value[i]);
+			if (out[i] !== value[i]) changed = true;
+		}
+		return changed ? out : value;
+	}
+	if (isObject(value)) {
+		let changed = false;
+		const out = {};
+		for (const key of Object.keys(value)) {
+			out[key] = withoutLoneSurrogates(value[key]);
+			if (out[key] !== value[key]) changed = true;
+		}
+		return changed ? out : value;
+	}
+	return value;
+}
+
 function encodeServerFrame(frame, seq) {
-	return Buffer.from(`${JSON.stringify({ ...frame, seq })}\n`, "utf8");
+	return Buffer.from(`${JSON.stringify({ ...withoutLoneSurrogates(frame), seq })}\n`, "utf8");
 }
 
 const EMITTED_ERROR_CODES = new Set([
 	"bad_request", "busy", "not_busy", "unavailable", "rate_limited", "unknown_ask", "paused", "failed",
 	"unknown_proposal", "digest_mismatch", "needs_setup", "signin_failed", "store_not_private",
+	// K2-13 Minikodas and «Hoy»
+	"unknown_minikoda", "not_active", "not_pending", "exists", "limit", "model_unavailable",
+	"unknown_item",
+	// K2-13 Telegram (S10/S20): closed codes, each with a fixed Spanish sentence in minikodas/telegram.cjs
+	"telegram_unavailable", "telegram_already_connected", "telegram_not_awaiting_code", "telegram_not_awaiting_password",
+	"telegram_credentials_invalid", "telegram_code_invalid", "telegram_password_invalid", "telegram_password_required",
+	"telegram_flood_wait", "telegram_session_invalid", "telegram_cancelled", "telegram_login_other_connection", "telegram_failed",
+	// a source ('telegram:@canal') failure never reaches the wire, but the closed set stays one set
+	"telegram_not_connected", "telegram_channel_invalid",
+	"conversations_off", // T4 U1: one continuous chat; new_conversation is refused outright
+	// K2-05 attachments (Gentle Dot uploads.ts refusals): limits, a failed store, an unknown/spent ref
+	"file_too_large", "message_too_large", "too_many_files", "upload_failed", "attachment_not_found",
 ]);
 // Recognized by the host's broader enum, but collapsed to stale/failed before H2c can emit them.
 const RESERVED_CONNECTOR_ERROR_CODES = new Set(["already_decided", "session_mismatch", "pending_full"]);
@@ -511,6 +747,122 @@ const mcpImportFrame = (data) => {
 	if (Buffer.byteLength(JSON.stringify(frame)) > MCP_IMPORT_EMIT.maxFrameBytes) throw new Error("mcp import frame too large");
 	return frame;
 };
+
+// ----- K2-05 T4 U1: history frames -----------------------------------------
+
+/**
+ * Emission bounds of a history/earlier page. The page itself is already cut by
+ * pageHistory (Gentle Dot's page size, 100); this is the allowlist rebuild plus
+ * a defense-in-depth byte cap. Nothing is truncated silently EXCEPT the text
+ * of a single message, whose ceiling is the same 64 KiB the `send` verb accepts.
+ */
+const HISTORY_EMIT = Object.freeze({
+	maxMessages: 100,
+	maxTextChars: 64 * 1024,
+	maxActivities: 100,
+	maxTitleChars: 300,
+	maxAttachments: 16,
+	maxFrameBytes: 1024 * 1024,
+});
+const HISTORY_ROLES = new Set(["user", "assistant"]);
+const ACTIVITY_KINDS = new Set(["read", "edit", "run", "search", "memory", "delegate", "other"]);
+const ACTIVITY_STATUSES = new Set(["running", "done", "failed"]);
+
+function historyMessageDto(m) {
+	if (!isObject(m) || !HISTORY_ROLES.has(m.role) || !isString(m.id, LIMITS.maxIdChars) || typeof m.text !== "string") return undefined;
+	// F2 (U2 verifier follow-up): a text clipped here — or by the page-budget clip of
+	// clipTurn (conversations.cjs, marked `textClipped`) — is MARKED `clipped: true`, never
+	// silently shortened while live streaming shows much more. The cut itself is on whole
+	// code points (clip).
+	const clipped = m.text.length > LIMITS.maxTextChars || m.textClipped === true;
+	const out = {
+		id: m.id,
+		role: m.role,
+		text: clip(m.text, LIMITS.maxTextChars),
+		activities: [],
+		...(clipped ? { clipped: true } : {}),
+	};
+	if (Array.isArray(m.activities)) {
+		for (const a of m.activities.slice(0, HISTORY_EMIT.maxActivities)) {
+			if (!isObject(a) || !isString(a.id, LIMITS.maxIdChars) || !ACTIVITY_KINDS.has(a.kind) || !isString(a.title, HISTORY_EMIT.maxTitleChars) || !ACTIVITY_STATUSES.has(a.status)) continue;
+			out.activities.push({ id: clip(a.id, LIMITS.maxIdChars), kind: a.kind, title: clip(a.title, HISTORY_EMIT.maxTitleChars), status: a.status });
+		}
+	}
+	if (Array.isArray(m.attachments)) {
+		const chips = [];
+		for (const a of m.attachments.slice(0, HISTORY_EMIT.maxAttachments)) {
+			if (!isObject(a) || !isString(a.name, 128) || !Number.isSafeInteger(a.size) || a.size < 0 || !isString(a.mime, 64)) continue;
+			chips.push({ name: clip(a.name, 128), size: a.size, mime: clip(a.mime, 64) });
+		}
+		if (chips.length > 0) out.attachments = chips;
+	}
+	if (m.earlier === true) out.earlier = true;
+	return out;
+}
+
+function historyPageFrame(type, before, page) {
+	if (!isObject(page) || !Array.isArray(page.messages) || page.messages.length > HISTORY_EMIT.maxMessages) throw new Error("history frame invalid");
+	if (page.hasEarlier !== undefined && typeof page.hasEarlier !== "boolean") throw new Error("history frame invalid");
+	const messages = page.messages.map(historyMessageDto).filter(Boolean);
+	const frame = {
+		type,
+		...(before !== undefined ? { before: clip(before, LIMITS.maxIdChars) } : {}),
+		messages,
+		hasEarlier: page.hasEarlier === true,
+	};
+	if (Buffer.byteLength(JSON.stringify(frame)) > HISTORY_EMIT.maxFrameBytes) throw new Error("history frame invalid");
+	return frame;
+}
+
+const historyFrame = (page) => historyPageFrame("history", undefined, page);
+
+/**
+ * K2-05 bind by id (Gentle Dot bridge.ts onMessageStart → `user_message{messageId,text}`): one
+ * prompt the engine recorded, named by the SAME page id (`s<file>-<turn>`) the history frames give
+ * it, so a client joins it with history exactly. `requestId` is set only on the copy sent to the
+ * client whose send/steer the engine recorded. The text is the user's own (clipped like history,
+ * never white-labelled); the frame is byte-bounded like one history page (192 KiB, under the
+ * island reader's 256 KiB): an over-budget text is cut on whole code points and marked `clipped`.
+ * THROWS on an invalid id or requestId (the server then sends nothing).
+ */
+const USER_MESSAGE_MAX_BYTES = 192 * 1024;
+function userMessageFrame(message, requestId) {
+	if (!isObject(message) || typeof message.id !== "string" || !HISTORY_BEFORE.test(message.id) || typeof message.text !== "string") throw new Error("user message frame invalid");
+	if (requestId !== undefined && !(typeof requestId === "string" && REQUEST_ID.test(requestId))) throw new Error("user message frame invalid");
+	const shown = historyMessageDto({ id: message.id, role: "user", text: message.text, attachments: message.attachments });
+	const frame = { type: "user_message", messageId: shown.id, text: shown.text };
+	if (shown.attachments) frame.attachments = shown.attachments;
+	if (shown.clipped) frame.clipped = true;
+	if (requestId !== undefined) frame.requestId = requestId;
+	// K2-05 F5: measured as the encoder writes it, with every field in place — `clipped`, the
+	// requestId and the largest `seq` (a safe integer) plus the LF — never with a guessed headroom
+	const encoded = (f) => Buffer.byteLength(JSON.stringify({ ...f, seq: Number.MAX_SAFE_INTEGER })) + 1;
+	if (encoded(frame) > USER_MESSAGE_MAX_BYTES) {
+		frame.clipped = true; // set before measuring: its own bytes count too
+		// cut whole code points from the end until the serialized frame fits
+		let text = frame.text;
+		let excess = encoded(frame) - USER_MESSAGE_MAX_BYTES;
+		while (excess > 0 && text !== "") {
+			const tail = text.charCodeAt(text.length - 1);
+			const last = tail >= 0xdc00 && tail <= 0xdfff && text.length >= 2 ? 2 : 1;
+			const cut = text.slice(text.length - last);
+			excess -= Buffer.byteLength(JSON.stringify(cut)) - 2;
+			text = text.slice(0, text.length - last);
+		}
+		frame.text = text;
+		if (encoded(frame) > USER_MESSAGE_MAX_BYTES) throw new Error("user message frame invalid");
+	}
+	return frame;
+}
+/**
+ * K2-05 attachments: the reply to the LAST chunk of an upload, to its sender only — the stored
+ * file as its chip shows it plus the daemon's opaque id the next `send` names. Never the path.
+ */
+function uploadedFrame(requestId, file) {
+	if (typeof requestId !== "string" || !REQUEST_ID.test(requestId) || !isObject(file) || !ATTACHMENT_ID.test(file.id)) throw new Error("uploaded frame invalid");
+	return { type: "uploaded", requestId, attachment: { id: file.id, name: clip(file.name, 128), size: file.size, mime: clip(file.mime, 64) } };
+}
+const earlierFrame = (before, page) => historyPageFrame("earlier", before, page);
 
 /**
  * Reply to sessions_list (#360): rebuilt field by field from the strict builders of
@@ -686,6 +1038,184 @@ function hooksFrame(data) {
 	return frame;
 }
 
+// ----- K2-13 Minikodas and «Hoy» frames -----------------------------------------------------------
+
+// maxHoyFrameBytes: the island refuses lines over 256 KiB (agentclient.rs); leave room for `seq` and the LF.
+const MINIKODAS_EMIT = Object.freeze({ maxMinikodas: 32, maxHoyItems: 100, maxHoyTextChars: 4000, maxHoyFrameBytes: 200 * 1024 });
+// The plain-language summary of a DRAFT (src/minikodas/summary.cjs): fixed sections, one plain line each.
+const MINIKODA_SUMMARY = Object.freeze({ maxSections: 8, maxTitleChars: 40, maxSectionBytes: 512, maxTextBytes: 3600 });
+const SUMMARY_SECTION_KEYS = Object.freeze(["when", "reads", "does", "shows", "never", "model"]);
+/** A summary section is exactly one plain line: no control, format (bidi, zero-width), separator or surrogate. */
+const SUMMARY_FORBIDDEN = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Cs}]/u;
+/** The whole summary is the same, line by line: only LF separates the sections. */
+const SUMMARY_FORBIDDEN_BLOCK = /[\u0000-\u0009\u000b-\u001f\u007f-\u009f\p{Cf}\p{Zl}\p{Zp}\p{Cs}]/u;
+const RUN_OUTCOMES = new Set(["done", "failed"]);
+const HOY_KINDS = new Set(["result", "proposal", "error"]);
+const HOY_STATUSES = new Set(["pending", "approved", "rejected"]);
+/**
+ * S19 / F4: where a result's text came from. A CLOSED list, mirrored by the island (`agentclient.rs` HOY_PROVENANCE,
+ * `island-nusa.js` labels): YouTube's own subtitles, Parakeet on this PC, or the user's own transcribing account. Only a
+ * `result` may carry it, and only one of these three exact strings.
+ */
+const HOY_PROVENANCE = Object.freeze(["youtube_subtitles", "local_transcription", "remote_transcription"]);
+const PROPOSAL_ACTIONS_EMIT = new Set(["buy", "sell", "send"]);
+const minikodasFail = () => {
+	throw new Error("minikodas frame invalid");
+};
+
+/**
+ * The draft's summary `{sections: [{key, title, text}], text}`: fixed keys, one plain line per field, capped by
+ * count and by bytes. A summary that is off-contract fails the frame; it is never repaired or truncated.
+ */
+function summaryDto(summary) {
+	if (!isObject(summary)) minikodasFail();
+	const extra = Object.keys(summary).filter((k) => k !== "sections" && k !== "text");
+	if (extra.length) minikodasFail();
+	if (!Array.isArray(summary.sections) || summary.sections.length === 0 || summary.sections.length > MINIKODA_SUMMARY.maxSections) minikodasFail();
+	if (typeof summary.text !== "string" || summary.text === "" || Buffer.byteLength(summary.text) > MINIKODA_SUMMARY.maxTextBytes || SUMMARY_FORBIDDEN_BLOCK.test(summary.text)) minikodasFail();
+	const sections = summary.sections.map((s) => {
+		if (!isObject(s) || Object.keys(s).some((k) => !["key", "title", "text"].includes(k))) minikodasFail();
+		if (!SUMMARY_SECTION_KEYS.includes(s.key)) minikodasFail();
+		if (typeof s.title !== "string" || s.title === "" || s.title.length > MINIKODA_SUMMARY.maxTitleChars || SUMMARY_FORBIDDEN.test(s.title)) minikodasFail();
+		if (typeof s.text !== "string" || s.text === "" || Buffer.byteLength(s.text) > MINIKODA_SUMMARY.maxSectionBytes || SUMMARY_FORBIDDEN.test(s.text)) minikodasFail();
+		return { key: s.key, title: s.title, text: s.text };
+	});
+	return { sections, text: summary.text };
+}
+
+/** One Minikoda, rebuilt through the recipe validator. `withPrompt` only for minikoda_get / create replies. */
+function minikodaDto(m, withPrompt) {
+	if (!isObject(m) || (m.status !== "draft" && m.status !== "active")) minikodasFail();
+	let r;
+	try {
+		r = recipeToJson(validateRecipe({ id: m.id, name: m.name, when: m.when, reads: m.reads, kit: m.kit, prompt: typeof m.prompt === "string" ? m.prompt : "-", model: m.model, never: m.never }, { minEveryMs: 1 }));
+	} catch {
+		minikodasFail();
+	}
+	const out = { id: r.id, name: r.name, when: r.when, reads: r.reads, kit: r.kit, model: r.model, never: r.never, status: m.status, running: m.running === true, createdAt: clip(m.createdAt, 40) };
+	if (withPrompt) {
+		if (typeof m.prompt !== "string") minikodasFail();
+		out.prompt = r.prompt;
+	}
+	// Only a draft carries its summary: it is the approval preview (S1) and never a stored field.
+	if (m.summary !== undefined) {
+		if (m.status !== "draft") minikodasFail();
+		out.summary = summaryDto(m.summary);
+	}
+	if (isObject(m.lastRun) && RUN_OUTCOMES.has(m.lastRun.outcome)) {
+		out.lastRun = { at: clip(m.lastRun.at, 40), outcome: m.lastRun.outcome, ...(typeof m.lastRun.reason === "string" ? { reason: clip(m.lastRun.reason, 32) } : {}) };
+	}
+	return out;
+}
+
+const TOOL_STATES = new Set(["available", "unavailable"]);
+/**
+ * Reply to transcription_get / broadcast after transcription_set: the global setting (re-validated, so a Base URL or
+ * a key can never ride along) plus whether the bundled ffmpeg and the local transcriber are there. THROWS on invalid data.
+ */
+function transcriptionFrame(s) {
+	if (!isObject(s) || !TOOL_STATES.has(s.ffmpeg) || !TOOL_STATES.has(s.local)) minikodasFail();
+	let setting;
+	try {
+		setting = validateTranscriptionSetting({ mode: s.mode, language: s.language, ...(s.remote ? { remote: { accountId: s.remote.accountId, model: s.remote.model } } : {}) });
+	} catch {
+		minikodasFail();
+	}
+	return { type: "transcription", setting, ffmpeg: s.ffmpeg, local: s.local };
+}
+
+/** Reply/broadcast `minikodas`: the stored Minikodas (no prompts). THROWS on invalid data (the server answers failed). */
+function minikodasFrame(items) {
+	if (!Array.isArray(items) || items.length > MINIKODAS_EMIT.maxMinikodas) minikodasFail();
+	return { type: "minikodas", minikodas: items.map((m) => minikodaDto(m, false)) };
+}
+
+/** Reply to minikoda_get / minikoda_create / minikoda_approve_create: one Minikoda with its prompt. */
+const minikodaFrame = (m) => ({ type: "minikoda", minikoda: minikodaDto(m, true) });
+
+/**
+ * Reply/broadcast `hoy`: built ONLY from the stored items (hoy.cjs), field by field. Pending proposals first,
+ * then the newest items, at most MINIKODAS_EMIT.maxHoyItems (`truncated` says when some were left out).
+ */
+function hoyFrame(items) {
+	if (!Array.isArray(items)) minikodasFail();
+	const rows = items.map((i) => {
+		if (!isObject(i) || !HOY_KINDS.has(i.kind) || !HOY_STATUSES.has(i.status) || typeof i.id !== "string" || !HOY_ID.test(i.id) || !isMinikodaId(i.minikoda)) minikodasFail();
+		const out = { id: i.id, minikoda: i.minikoda, kind: i.kind, status: i.status, text: clip(i.text, MINIKODAS_EMIT.maxHoyTextChars), createdAt: clip(i.createdAt, 40) };
+		if (i.kind === "proposal") {
+			if (!PROPOSAL_ACTIONS_EMIT.has(i.action)) minikodasFail();
+			out.action = i.action;
+			out.target = clip(i.target, 200);
+		}
+		if (typeof i.decidedAt === "string") out.decidedAt = clip(i.decidedAt, 40);
+		// S19: where the text came from, for a result that can say it. An unknown value fails the frame instead of
+		// reaching the island, where the chip would be invented; a proposal or an error never carries one.
+		if (i.provenance !== undefined) {
+			if (i.kind !== "result" || !HOY_PROVENANCE.includes(i.provenance)) minikodasFail();
+			out.provenance = i.provenance;
+		}
+		return out;
+	});
+	const pending = rows.filter((r) => r.kind === "proposal" && r.status === "pending").reverse();
+	const rest = rows.filter((r) => !(r.kind === "proposal" && r.status === "pending")).reverse();
+	const ordered = [...pending, ...rest];
+	// Bounded by count AND by bytes: items are kept in order while the frame stays under maxHoyFrameBytes.
+	const kept = [];
+	let bytes = Buffer.byteLength(JSON.stringify({ type: "hoy", items: [], truncated: true, seq: Number.MAX_SAFE_INTEGER }));
+	for (const row of ordered.slice(0, MINIKODAS_EMIT.maxHoyItems)) {
+		const size = Buffer.byteLength(JSON.stringify(row)) + 1; // + the comma
+		if (bytes + size > MINIKODAS_EMIT.maxHoyFrameBytes) break;
+		bytes += size;
+		kept.push(row);
+	}
+	return { type: "hoy", items: kept, truncated: kept.length < ordered.length };
+}
+
+/** Broadcast after an approved proposal was executed (K2-13: recorded only; no real integration yet). */
+function hoyApprovedFrame(e) {
+	if (!isObject(e) || typeof e.itemId !== "string" || !HOY_ID.test(e.itemId) || !isMinikodaId(e.minikoda) || !PROPOSAL_ACTIONS_EMIT.has(e.action)) minikodasFail();
+	return { type: "hoy_approved", id: e.itemId, minikoda: e.minikoda, action: e.action, target: clip(e.target, 200), executedAt: clip(e.executedAt, 40) };
+}
+
+const TELEGRAM_STATES_EMIT = Object.freeze(["disconnected", "awaiting_code", "awaiting_password", "connected"]);
+const telegramFail = () => {
+	throw new Error("telegram frame invalid");
+};
+/**
+ * Reply/broadcast `telegram_status`: the public account state, never a phone, apiHash, code, password or session.
+ * `notice` is Koda's own Spanish sentence and `retryAfterMinutes` the only detail it can carry.
+ */
+function telegramStatusFrame(status) {
+	if (!isObject(status) || !TELEGRAM_STATES_EMIT.includes(status.state)) telegramFail();
+	const frame = { type: "telegram_status", state: status.state };
+	if (status.account !== undefined) {
+		const account = status.account;
+		if (!isObject(account) || typeof account.name !== "string" || !safeLabel(account.name)) telegramFail();
+		if (account.username !== null && account.username !== undefined) {
+			if (typeof account.username !== "string" || account.username === "" || account.username.length > 32 || !/^[A-Za-z0-9_]+$/.test(account.username)) telegramFail();
+		}
+		frame.account = { name: account.name, username: typeof account.username === "string" ? account.username : null };
+	}
+	if (status.notice !== undefined) {
+		if (typeof status.notice !== "string" || status.notice === "" || CONTROL.test(status.notice)) telegramFail();
+		frame.notice = clip(status.notice, TELEGRAM_LIMITS.maxNotice);
+	}
+	if (status.retryAfterMinutes !== undefined) {
+		if (!Number.isSafeInteger(status.retryAfterMinutes) || status.retryAfterMinutes < 1 || status.retryAfterMinutes > 1440) telegramFail();
+		frame.retryAfterMinutes = status.retryAfterMinutes;
+	}
+	return frame;
+}
+
+/**
+ * Reply `telegram_session` (S20): the exported session the island stores in the OS keychain. It is built from the one
+ * field that matters, so nothing else can ride along, and it is ONLY ever a reply to the asking connection.
+ */
+function telegramSessionFrame(data) {
+	if (!isObject(data) || !isCarriableSession(data.session)) telegramFail();
+	return { type: "telegram_session", session: data.session };
+}
+
 const list = (items, fn, max = 500) => (Array.isArray(items) ? items.slice(0, max).map(fn) : []);
 
 const accountsFrame = (items) => ({ type: "accounts", accounts: list(items, accountDto) });
@@ -770,13 +1300,54 @@ function activityFrame(event, state) {
 	return frame;
 }
 
-/** Splits a long delta so no server frame exceeds LIMITS.maxDeltaChars. */
+/**
+ * Splits a long delta so no server frame exceeds LIMITS.maxDeltaChars (B1, U2 verifier
+ * follow-up: every chunk is cut on a CODE-POINT boundary — the old unit-based slice cut
+ * between the halves of a surrogate pair, and the island's serde_json rejected the lone
+ * half and dropped the connection).
+ */
 function deltaFrames(text, messageId) {
 	const frames = [];
-	for (let i = 0; i < text.length; i += LIMITS.maxDeltaChars) {
-		frames.push({ type: "message_delta", messageId, text: text.slice(i, i + LIMITS.maxDeltaChars) });
+	for (let i = 0; i < text.length; ) {
+		let end = Math.min(i + LIMITS.maxDeltaChars, text.length);
+		if (end < text.length && isHighSurrogate(text.charCodeAt(end - 1)) && isLowSurrogate(text.charCodeAt(end))) end -= 1;
+		frames.push({ type: "message_delta", messageId, text: text.slice(i, end) });
+		i = end;
 	}
 	return frames;
+}
+
+// ----- T2 white-label delta streams -----------------------------------------
+
+/**
+ * F2: the marker the daemon's runtime attaches to its one `message_flush`
+ * event when a turn is cancelled (abort/timeout/pause/iteration limit). A
+ * Symbol can never arrive through JSON.parse, so a child record of this type
+ * is inert even though runtime.cjs also drops it before forwarding.
+ */
+const MESSAGE_FLUSH = Symbol("abito.message_flush");
+
+// One filter per in-flight assistant message, keyed by the caller's messageId
+// (the server's `m<n>`). Bounded: entries are removed on the assistant's
+// message_end and everything is reset on agent_start; a stream that never ends
+// (a killed engine) is evicted oldest-first once the cap is reached.
+const STREAM_FILTERS = new Map();
+const STREAM_FILTERS_MAX = 64;
+
+function streamFilterFor(messageId) {
+	let filter = STREAM_FILTERS.get(messageId);
+	if (filter === undefined) {
+		if (STREAM_FILTERS.size >= STREAM_FILTERS_MAX) {
+			STREAM_FILTERS.delete(STREAM_FILTERS.keys().next().value);
+		}
+		filter = createTextFilter();
+		STREAM_FILTERS.set(messageId, filter);
+	}
+	return filter;
+}
+
+function resetStreamFilters() {
+	STREAM_FILTERS.clear();
 }
 
 /**
@@ -790,17 +1361,45 @@ function translateEvent(event, messageId = "m0") {
 	if (!isObject(event) || typeof event.type !== "string") return none;
 	switch (event.type) {
 		case "agent_start":
+			// A new turn: held tails of previous turns are never replayed (T2).
+			resetStreamFilters();
 			return { frames: [], busy: true };
 		case "agent_settled":
 			return { frames: [], busy: false };
 		case "message_update": {
 			const inner = event.assistantMessageEvent;
 			if (!isObject(inner) || inner.type !== "text_delta" || typeof inner.delta !== "string" || inner.delta === "") return none;
-			return { frames: deltaFrames(clip(inner.delta, 1_000_000), messageId) };
+			// T2: the delta stream is white-labelled across chunk boundaries; a
+			// bounded tail is held back until it can no longer start a hidden name.
+			const visible = streamFilterFor(messageId).push(clip(inner.delta, 1_000_000));
+			return visible === "" ? none : { frames: deltaFrames(visible, messageId) };
 		}
-		case "message_end":
+		case "message_end": {
 			if (event.message?.role !== "assistant") return none;
-			return { frames: [{ type: "message_done", messageId }], messageDone: true };
+			// T2: flush whatever the stream still holds before the message ends.
+			const filter = STREAM_FILTERS.get(messageId);
+			STREAM_FILTERS.delete(messageId);
+			const tail = filter === undefined ? "" : filter.flush();
+			return {
+				frames: tail === "" ? [{ type: "message_done", messageId }] : [...deltaFrames(tail, messageId), { type: "message_done", messageId }],
+				messageDone: true,
+			};
+		}
+		case "message_flush": {
+			// F2: a cancelled turn never reaches message_end; the daemon emits ONE
+			// flush so the held tail still reaches the island. Daemon-only (the
+			// symbol marker cannot be forged by the child); a no-op when nothing is
+			// held — never fake done frames on a turn without a stream.
+			if (event.flush !== MESSAGE_FLUSH) return none;
+			const filter = STREAM_FILTERS.get(messageId);
+			if (filter === undefined) return none;
+			STREAM_FILTERS.delete(messageId);
+			const tail = filter.flush();
+			return {
+				frames: tail === "" ? [{ type: "message_done", messageId }] : [...deltaFrames(tail, messageId), { type: "message_done", messageId }],
+				messageDone: true,
+			};
+		}
 		case "tool_execution_start":
 			return { frames: [activityFrame(event, "running")] };
 		case "tool_execution_end":
@@ -820,31 +1419,51 @@ function translateEvent(event, messageId = "m0") {
 	}
 }
 
+/**
+ * K2-05 U4b verifier F1: an ask title as the island may show it, like its options, message and
+ * placeholder: control characters out, rewritten FIRST and clipped SECOND (a clip first could
+ * cut a hidden name in half: «…Gentle She»); the clip never splits a surrogate pair.
+ */
+const askTitle = (title) => clip(presentText(clip(title, Infinity)), LIMITS.maxTitleChars);
+
 function translateUiRequest(event) {
 	const none = { frames: [] };
 	if (typeof event.id !== "string" || !SAFE_ID.test(event.id)) return none;
 	switch (event.method) {
 		case "notify": {
 			const level = event.notifyType === "error" ? "error" : event.notifyType === "warning" ? "warning" : "info";
-			return { frames: [{ type: "toast", level, message: clip(event.message, 300) }] };
+			// T2: informational toasts are harness chatter (Gentle Dot shouldShowToast).
+			if (!shouldShowToast(level)) return none;
+			return { frames: [{ type: "toast", level, message: presentText(clip(event.message, 300)) }] };
 		}
 		case "select": {
 			if (!Array.isArray(event.options)) return { frames: [], cancelUi: event.id };
-			const options = event.options
-				.filter((o) => typeof o === "string")
-				.slice(0, LIMITS.maxOptions)
-				.map((o) => clip(o, LIMITS.maxOptionChars));
-			return { frames: [], ask: { id: event.id, kind: "select", title: clip(event.title, LIMITS.maxTitleChars), options } };
+			// Gentle Dot bridge.ts (onUiRequest): what the island shows is the rewritten
+			// text, but the PENDING ask keeps the engine's original strings too — the
+			// answer is mapped back BY POSITION (buildUiResponse), never sent back as
+			// the rewritten label. The wire never carries the originals (askFrame).
+			// Re-verify finding: rewrite FIRST, clip SECOND — clipping first could cut
+			// a hidden name in half («…memory engr») so the rewrite no longer matched.
+			// The stored original stays untouched for the B2 round trip. The clip and
+			// the F3 control cleaning happen inside uniqueShownLabels, after the
+			// rewrite, so every shown label is clean and bounded.
+			const originalOptions = event.options.filter((o) => typeof o === "string").slice(0, LIMITS.maxOptions);
+			// Re-verify finding: two options that rewrite to the same shown label
+			// («Koda setup» twice, or two /gentle: options → "") made the answer, matched
+			// by value, pick the wrong original. Every shown label is made unique and
+			// non-empty, so the answer maps back to the right original by position.
+			const options = uniqueShownLabels(originalOptions.map((o) => presentText(o)), LIMITS.maxOptionChars);
+			return { frames: [], ask: { id: event.id, kind: "select", title: askTitle(event.title), options, originalOptions } };
 		}
 		case "confirm":
 			return {
 				frames: [],
-				ask: { id: event.id, kind: "confirm", title: clip(event.title, LIMITS.maxTitleChars), options: [] },
+				ask: { id: event.id, kind: "confirm", title: askTitle(event.title), options: [] },
 			};
 		case "input":
 			return {
 				frames: [],
-				ask: { id: event.id, kind: "input", title: clip(event.title, LIMITS.maxTitleChars), options: [] },
+				ask: { id: event.id, kind: "input", title: askTitle(event.title), options: [] },
 			};
 		case "editor":
 			// A dialog we cannot show must not hang the agent: the server cancels it.
@@ -862,19 +1481,33 @@ function buildUiResponse(ask, answer) {
 		return typeof answer.confirmed === "boolean" ? { type: "extension_ui_response", id: ask.id, confirmed: answer.confirmed } : undefined;
 	}
 	if (typeof answer.value !== "string") return undefined;
-	if (ask.kind === "select" && !ask.options.includes(answer.value)) return undefined;
+	if (ask.kind === "select") {
+		// B2: the island shows the rewritten (and length-clipped) options; the
+		// user's choice is matched against what was SHOWN and sent back as the
+		// engine's ORIGINAL string, by position (Gentle Dot bridge.ts:1326-1327).
+		// An answer that matches no shown option is refused.
+		const index = ask.options.indexOf(answer.value);
+		if (index === -1) return undefined;
+		return { type: "extension_ui_response", id: ask.id, value: ask.originalOptions?.[index] ?? answer.value };
+	}
 	return { type: "extension_ui_response", id: ask.id, value: answer.value };
 }
 
 module.exports = {
 	PROTOCOL,
 	LIMITS,
+	MESSAGE_FLUSH,
 	validateClientFrame,
 	validateLocalBaseUrl,
 	validateCustomBaseUrl,
 	validateLocalModelIds,
 	decodeClientLine,
+	deltaFrames,
 	encodeServerFrame,
+	userMessageFrame,
+	uploadedFrame,
+	ATTACHMENT_ID,
+	REQUEST_ID,
 	errorFrame,
 	accountDto,
 	providerDto,
@@ -889,12 +1522,25 @@ module.exports = {
 	pendingFrame,
 	agentsFrame,
 	hooksFrame,
+	HISTORY_EMIT,
+	historyFrame,
+	earlierFrame,
 	HOOK_CLIENT_IDS,
 	AGENT_IDS,
 	CONNECTORS_EMIT,
 	MCP_IMPORT_EMIT,
 	SESSIONS_EMIT,
 	accountsFrame,
+	telegramStatusFrame,
+	telegramSessionFrame,
+	TELEGRAM_LIMITS,
+	minikodasFrame,
+	minikodaFrame,
+	hoyFrame,
+	hoyApprovedFrame,
+	HOY_PROVENANCE,
+	transcriptionFrame,
+	MINIKODAS_EMIT,
 	providersFrame,
 	modelsFrame,
 	profilesFrame,

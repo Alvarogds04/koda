@@ -1,5 +1,7 @@
-//! Unit U1 — tests for the pure local-model pieces: endpoint policy, chunked
-//! transfer decoding, SSE/OpenAI stream decoding, request body. RED → GREEN.
+//! K2-05 U5a — tests for what is left of the local-model support: endpoint
+//! policy, alias shape, deadlines and the closed set of metadata routes. The
+//! chunked/SSE/head/body decoders and the one-shot client left with the direct
+//! Rust chat lane.
 
 use super::*;
 
@@ -39,152 +41,19 @@ fn model_alias_is_a_bounded_plain_token() {
     assert!(!valid_alias(&"a".repeat(65)));
 }
 
-// --- chunked transfer decoding ---------------------------------------------------
+// --- the kept support: deadlines and the closed metadata-route set -----------
 
 #[test]
-fn chunked_decoder_handles_split_sizes_extensions_and_the_last_chunk() {
-    let mut d = Chunked::default();
-    let mut out = Vec::new();
-    for piece in [
-        &b"5\r\nhel"[..],
-        b"lo\r\n",
-        b"6;ext=1\r\n wor",
-        b"ld\r\n0\r\n\r\n",
-    ] {
-        out.extend(d.push(piece).unwrap());
+fn deadlines_are_bounded_and_ordered() {
+    assert!(DEFAULT_DEADLINES.connect_ms > 0);
+    assert!(DEFAULT_DEADLINES.connect_ms < DEFAULT_DEADLINES.total_ms);
+    assert!(DEFAULT_DEADLINES.idle_ms < DEFAULT_DEADLINES.total_ms);
+}
+
+#[test]
+fn only_the_four_metadata_routes_are_read_and_nothing_is_sent() {
+    let e = LocalEndpoint::parse("http://127.0.0.1:9").unwrap(); // nothing listens: no I/O can succeed
+    for path in ["/v1/chat/completions", "/completion", "/v1/embeddings", "/props/../chat"] {
+        assert!(get_json(&e, path, 10).is_none(), "{path} is not a metadata route");
     }
-    assert_eq!(out, b"hello world");
-    assert!(d.finished());
-}
-
-#[test]
-fn chunked_decoder_rejects_garbage_and_oversized_chunks() {
-    assert!(Chunked::default().push(b"zz\r\n").is_err());
-    assert!(Chunked::default().push(b"5\r\nhelloXX").is_err());
-    assert!(Chunked::default().push(b"FFFFFFFFF\r\n").is_err());
-    let mut d = Chunked::default();
-    assert!(d.push(&[b'1'; 40]).is_err()); // size line never ends
-}
-
-// --- SSE / OpenAI-compatible stream decoding ----------------------------------
-
-fn frame(json: &str) -> String {
-    format!("data: {json}\n\n")
-}
-
-#[test]
-fn sse_decodes_content_reasoning_finish_and_done() {
-    let mut s = Sse::default();
-    let mut items = Vec::new();
-    let text = frame(r#"{"choices":[{"delta":{"reasoning_content":"pienso"}}]}"#)
-        + &frame(r#"{"choices":[{"delta":{"content":"Ho"}}]}"#)
-        + &frame(r#"{"choices":[{"delta":{"content":"la"},"finish_reason":null}]}"#)
-        + &frame(r#"{"choices":[{"delta":{},"finish_reason":"stop"}]}"#)
-        + "data: [DONE]\n\n";
-    // feed in awkward splits, including inside a multi-byte char
-    let bytes = text.into_bytes();
-    for chunk in bytes.chunks(7) {
-        items.extend(s.push(chunk).unwrap());
-    }
-    assert_eq!(
-        items,
-        vec![
-            StreamItem::Reasoning,
-            StreamItem::Content("Ho".into()),
-            StreamItem::Content("la".into()),
-            StreamItem::Finish(Finish::Stop),
-            StreamItem::Done,
-        ]
-    );
-}
-
-#[test]
-fn sse_keeps_utf8_split_across_pushes() {
-    let mut s = Sse::default();
-    let text = frame(r#"{"choices":[{"delta":{"content":"ñandú"}}]}"#).into_bytes();
-    let cut = text.iter().position(|b| *b == 0xc3).unwrap() + 1; // mid 'ñ'
-    let mut items = s.push(&text[..cut]).unwrap();
-    items.extend(s.push(&text[cut..]).unwrap());
-    assert_eq!(items, vec![StreamItem::Content("ñandú".into())]);
-}
-
-#[test]
-fn sse_ignores_comments_empty_deltas_and_role_only_chunks() {
-    let mut s = Sse::default();
-    let text = ": keep-alive\n\n".to_string()
-        + &frame(r#"{"choices":[{"delta":{"role":"assistant"}}]}"#)
-        + &frame(r#"{"choices":[{"delta":{"content":""}}]}"#)
-        + &frame(r#"{"choices":[]}"#);
-    assert!(s.push(text.as_bytes()).unwrap().is_empty());
-}
-
-#[test]
-fn sse_maps_length_to_limit_and_unknown_finish_to_stop() {
-    let mut s = Sse::default();
-    let items = s
-        .push(frame(r#"{"choices":[{"delta":{},"finish_reason":"length"}]}"#).as_bytes())
-        .unwrap();
-    assert_eq!(items, vec![StreamItem::Finish(Finish::Length)]);
-}
-
-#[test]
-fn sse_malformed_json_or_error_object_is_a_typed_failure() {
-    assert!(Sse::default().push(b"data: {not json}\n\n").is_err());
-    assert!(Sse::default()
-        .push(frame(r#"{"error":{"message":"secret upstream detail"}}"#).as_bytes())
-        .is_err());
-}
-
-#[test]
-fn sse_line_without_terminator_is_bounded() {
-    let mut s = Sse::default();
-    let long = vec![b'a'; SSE_MAX_LINE + 1];
-    assert!(s.push(&long).is_err());
-}
-
-// --- request body ---------------------------------------------------------------
-
-#[test]
-fn request_body_is_streaming_bounded_and_names_only_the_alias() {
-    let messages = vec![
-        crate::chat::Message { role: "system", content: "S".into() },
-        crate::chat::Message { role: "user", content: "hola".into() },
-    ];
-    let body: serde_json::Value =
-        serde_json::from_str(&completion_body("Abito-gpt", &messages, 1024)).unwrap();
-    assert_eq!(body["model"], "Abito-gpt");
-    assert_eq!(body["stream"], true);
-    assert_eq!(body["max_tokens"], 1024);
-    assert_eq!(body["messages"][1]["role"], "user");
-    assert_eq!(body["messages"][1]["content"], "hola");
-    // nothing that could make the router reach elsewhere or use tools
-    for forbidden in ["tools", "tool_choice", "api_key", "user", "n"] {
-        assert!(body.get(forbidden).is_none(), "{forbidden}");
-    }
-}
-
-// --- response head ------------------------------------------------------------------
-
-#[test]
-fn response_head_parses_status_and_framing() {
-    let h = parse_head(
-        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked",
-    )
-    .unwrap();
-    assert_eq!(h.status, 200);
-    assert!(h.chunked);
-    assert!(h.event_stream);
-    let h = parse_head("HTTP/1.1 503 Service Unavailable\r\nContent-Length: 10").unwrap();
-    assert_eq!(h.status, 503);
-    assert_eq!(h.content_length, Some(10));
-    assert!(parse_head("SSH-2.0-OpenSSH").is_err());
-}
-
-#[test]
-fn http_status_maps_to_safe_errors_and_redirects_are_never_followed() {
-    assert_eq!(status_error(503).code, "local_model_unavailable"); // loading
-    assert_eq!(status_error(404).code, "local_model_unavailable"); // alias gone
-    assert_eq!(status_error(500).code, "inference_error");
-    assert_eq!(status_error(302).code, "inference_error");
-    assert_eq!(status_error(400).code, "inference_error");
 }

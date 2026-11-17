@@ -13,9 +13,9 @@ const permission = (over = {}) => JSON.stringify({ session_id: 'sess-1', transcr
   tool_input: { command: 'ls' }, ...over });
 const stopInput = (over = {}) => JSON.stringify({ session_id: 'sess-1', cwd, hook_event_name: 'Stop', stop_hook_active: false,
   last_assistant_message: 'SECRETREPLY', ...over });
-// An empty env would resolve the REAL default runtime (/run/user/<uid>/abito-island) and could reach the live island.
+// An empty env would resolve the REAL default runtime (/run/user/<uid>/koda) and could reach the live island.
 const NO_ISLAND = offlineDir('nonexistent-abito-test');
-const envOf = r => ({ ABITO_DESKTOP_SOCKET: r.endpoint, ABITO_SOCKET_DIR: r.runtime });
+const envOf = r => ({ KODA_DESKTOP_SOCKET: r.endpoint, KODA_SOCKET_DIR: r.runtime });
 const stub = status => () => ({ ask: async () => ({ status }), notify: async () => ({ status: 'sent' }) });
 function assertOut(r) { assert.equal(r.exitCode, 0); assert.ok(r.stdout === '' || (/\n$/.test(r.stdout) && r.stdout.trim().split('\n').length === 1 && JSON.parse(r.stdout))); }
 const settle = async rcv => { for (let i = 0; i < 40 && !rcv.frames.some(f => f.type === 'settled'); i++) await new Promise(r => setTimeout(r, 25)); };
@@ -174,6 +174,16 @@ test('hook island wait is capped at 60 s regardless of --timeout-sec', async t =
   await p;
   const q = rcv.frames.find(f => f.type === 'question');
   assert.equal(q.expiresAt - q.at, 60000);
+});
+// K2-08 T3: Codex's longer wait (115 s with --timeout-sec 120) is Codex-only; Claude keeps its 60 s cap.
+test('Claude with --timeout-sec 120 still waits 60 s (the Codex wait does not leak into Claude)', async t => {
+  const rcv = await fakeReceiver(t, { questions: true });
+  const p = answerer(rcv, 'deny');
+  await handleClaudeHook({ event: 'permission-request', env: envOf(rcv), argv: ['--timeout-sec', '120'], input: permission() });
+  await p;
+  const q = rcv.frames.find(f => f.type === 'question');
+  assert.equal(q.expiresAt - q.at, 60000);
+  assert.equal(require('../src/hook-common.cjs').MAX_ISLAND_WAIT_MS, 60000);
 });
 test('stop: one settled frame; none when stop_hook_active; last_assistant_message never sent', async t => {
   let rcv = await fakeReceiver(t, {});

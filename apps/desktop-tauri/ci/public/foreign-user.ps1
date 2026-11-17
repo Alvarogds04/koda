@@ -17,11 +17,11 @@ $name = 'abito-ci-' + $env:GITHUB_RUN_ID
 $temp = [IO.Path]::GetFullPath($env:RUNNER_TEMP)
 $credPath = Join-Path $temp ($name + '.cred')
 $intentPath = Join-Path $temp ($name + '.intent.json')
-if ($env:ABITO_FU_USER -and $env:ABITO_FU_USER -cne $name) {
+if ($env:KODA_FU_USER -and $env:KODA_FU_USER -cne $name) {
     throw 'Account environment does not match this run.'
 }
-if ($env:ABITO_FU_CRED -and
-    [IO.Path]::GetFullPath($env:ABITO_FU_CRED) -ine $credPath) {
+if ($env:KODA_FU_CRED -and
+    [IO.Path]::GetFullPath($env:KODA_FU_CRED) -ine $credPath) {
     throw 'Credential environment does not match this run.'
 }
 
@@ -65,7 +65,7 @@ function Remove-OwnedAccount {
             throw 'Probe account cleanup did not complete.'
         }
     }
-    # Paths are derived above, never selected by ABITO_FU_CRED. No profile
+    # Paths are derived above, never selected by KODA_FU_CRED. No profile
     # recursion or wildcard deletion: the runner itself is disposable.
     if (Test-Path -LiteralPath $credPath) {
         Remove-Item -LiteralPath $credPath -Force
@@ -119,8 +119,8 @@ if ($mode -eq 'setup') {
         ConvertFrom-SecureString $secure |
             Set-Content -LiteralPath $credPath -Encoding ascii
         $setupStage = 'publish-environment'
-        Add-Content -LiteralPath $env:GITHUB_ENV -Value "ABITO_FU_USER=$name"
-        Add-Content -LiteralPath $env:GITHUB_ENV -Value "ABITO_FU_CRED=$credPath"
+        Add-Content -LiteralPath $env:GITHUB_ENV -Value "KODA_FU_USER=$name"
+        Add-Content -LiteralPath $env:GITHUB_ENV -Value "KODA_FU_CRED=$credPath"
     } catch {
         # Keep only bounded diagnostic metadata; never emit the exception
         # message, invocation, arguments, password, or credential contents.
@@ -160,7 +160,7 @@ if ($args.Count -gt 4) {
 $stdout = Join-Path $outdir 'foreign-stdout.txt'
 $stderr = Join-Path $outdir 'foreign-stderr.txt'
 $timeout = 180
-if ($env:ABITO_FU_CHILD_TIMEOUT) { $timeout = [int]$env:ABITO_FU_CHILD_TIMEOUT }
+if ($env:KODA_FU_CHILD_TIMEOUT) { $timeout = [int]$env:KODA_FU_CHILD_TIMEOUT }
 if ($timeout -lt 1 -or $timeout -gt 180) { throw 'Invalid child timeout.' }
 $child = Start-Process -FilePath $exe -ArgumentList ($quoted -join ' ') `
     -Credential $credential -WorkingDirectory $outdir -WindowStyle Hidden `

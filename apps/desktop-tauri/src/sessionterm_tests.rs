@@ -283,7 +283,7 @@ fn the_gnome_extension_can_raise_a_window_by_pid_and_documents_what_it_now_does(
     let doc = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/desktop/context-extension.md")).unwrap();
     assert!(doc.contains("ActivateByPid"), "the privacy contract in the docs states the new focus method");
     let meta: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/gnome-extension/abito-context@abito/metadata.json")).unwrap()).unwrap();
-    assert_eq!(meta["version"], 2, "a changed contract is a new extension version");
+    assert_eq!(meta["version"], 4, "a changed contract is a new extension version (4: K2-06 token-gated PickWindow/CaptureWindow)");
 }
 
 

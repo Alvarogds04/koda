@@ -3,12 +3,19 @@
 //!
 //! Slice A: wire identifiers (`ids`), pairing (certificate + token + link + QR), admission bookkeeping
 //! and the TLS server's way in. While the link is off nothing listens, nothing is announced and no timer runs.
+//! `keystore` is where the identity and the token really live, and `link` is the switch that turns the listener on
+//! for as long as the human wants it (S2/S3). `announce` is the mDNS half of that switch (S7).
 pub mod admission;
+pub mod announce;
+pub mod asks;
 pub mod hub;
 pub mod ids;
+pub mod keystore;
+pub mod link;
 pub mod pairing;
 pub mod server;
 pub mod source;
+pub mod usage;
 
 use ring::digest;
 

@@ -509,7 +509,7 @@ fn app_to_open(raw: &str) -> Option<String> {
     (!name.is_empty()).then_some(name)
 }
 
-fn ask_abito(raw: &str) -> Option<String> {
+fn ask_koda(raw: &str) -> Option<String> {
     let toks = tokens(raw);
     let i = toks.iter().position(|(n, _)| matches!(n.as_str(), "abito" | "abbito"))?;
     let lead: Vec<&str> = toks[..i].iter().map(|t| t.0.as_str()).collect();
@@ -629,7 +629,7 @@ pub fn parse(raw: &str) -> Intent {
     if toks.is_empty() {
         return Intent::Unknown;
     }
-    if let Some(q) = ask_abito(raw) {
+    if let Some(q) = ask_koda(raw) {
         return Intent::AskAbito(q);
     }
     if let Some(q) = web_query(raw) {

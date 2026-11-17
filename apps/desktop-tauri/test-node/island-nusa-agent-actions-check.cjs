@@ -17,7 +17,7 @@ const mid = b => [(b.left + b.right) / 2, (b.top + b.bottom) / 2];
     const r = await H.open({ sessions: SESS, theme });
     try {
       const { page } = r;
-      await page.click('[data-tab=agentes]'); await page.waitForTimeout(300);
+      await H.goTab(page, 'agentes'); await page.waitForTimeout(300);
       await page.evaluate(() => { window.__sel = []; document.addEventListener('abito:session-focused', e => window.__sel.push(e.detail.id)); });
       const isl = (await r.measure('#island'))[0];
       const rows = (await r.measure('.nusa-agent')).filter(b => b.shown), jumps = (await r.measure('.nusa-jump')).filter(b => b.shown);
@@ -56,7 +56,7 @@ const mid = b => [(b.left + b.right) / 2, (b.top + b.bottom) / 2];
   const r = await H.open({ sessions: [{ id: 'weird id', kind: 'pi', cwd: 'x', state: 'running', origin: null }, { id: 's-000000b1', kind: 'codex', cwd: 'y', state: 'sleeping', origin: null }] });
   try {
     const { page } = r;
-    await page.click('[data-tab=agentes]'); await page.waitForTimeout(300);
+    await H.goTab(page, 'agentes'); await page.waitForTimeout(300);
     const n = await page.evaluate(() => [...document.querySelectorAll('.nusa-agent')].map(x => !!x.querySelector('.nusa-jump')));
     assert.ok(n.every(Boolean) && n.length <= 2, 'every shown row has a jump (the view already drops malformed ids)');
     await page.evaluate(() => { for (const id of ['weird id', '../x', 'S-000000B1', null]) document.dispatchEvent(new CustomEvent('abito:session-jump', { detail: { id } })); });

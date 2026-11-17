@@ -17,8 +17,8 @@ const close = (q, extra = {}) => ({ v: 1, type: 'question_closed', questionVersi
   project: q.project, sessionId: q.sessionId, at: Date.now(), id: q.id, source: 'system', reason: 'busy', ...extra });
 
 test('single config level enables capabilities; other values invalid', () => {
-  assert.equal(resolveQuestionConfig({ ABITO_QUESTIONS: '2' }).questionLevel, 2);
-  for (const value of ['4', '01', '-1', 'true', '']) assert.throws(() => resolveQuestionConfig({ ABITO_QUESTIONS: value }));
+  assert.equal(resolveQuestionConfig({ KODA_QUESTIONS: '2' }).questionLevel, 2);
+  for (const value of ['4', '01', '-1', 'true', '']) assert.throws(() => resolveQuestionConfig({ KODA_QUESTIONS: value }));
 });
 test('level2 negotiated reason returns immediately as busy with no answer', async t => {
   for (const reasonCode of ['native_transition_busy', 'native_transition_degraded']) {

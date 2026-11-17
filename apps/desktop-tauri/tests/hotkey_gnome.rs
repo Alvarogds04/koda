@@ -1,8 +1,8 @@
 //! The GNOME custom-keybindings route against a FAKE `gsettings` (a shell script over a temp dir).
 //! The real dconf of the session is never read or written.
 #![cfg(unix)]
-use abito_island::hotkey::gnome::{self, Gsettings};
-use abito_island::hotkey::{Combo, HotkeyConfig, Status, Target};
+use koda_island::hotkey::gnome::{self, Gsettings};
+use koda_island::hotkey::{Combo, HotkeyConfig, Status, Target};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -60,7 +60,7 @@ impl Fake {
 }
 impl Drop for Fake { fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.dir); } }
 
-const EXE: &str = "/home/u/.local/bin/abito-island";
+const EXE: &str = "/home/u/.local/bin/koda";
 fn all() -> gnome::Wanted { Target::ALL.into_iter().map(|t| (t, HotkeyConfig::default_for(t).combo)).collect() }
 fn entry(t: Target, key: &str, f: &Fake) -> Option<String> {
     f.key(&format!("org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:{}", gnome::entry_path(t)), key)

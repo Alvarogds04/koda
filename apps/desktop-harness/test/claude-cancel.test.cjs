@@ -14,7 +14,7 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { fakeReceiver } = require('./fake-receiver.cjs');
 
-const bin = path.resolve(__dirname, '../bin/abito-hook.cjs');
+const bin = path.resolve(__dirname, '../bin/koda-hook.cjs');
 const cwd = path.resolve(__dirname, '..');
 // One question (S2 shape): the island answers it through PermissionRequest.
 const askInput = JSON.stringify({ session_id: 's1', cwd, permission_mode: 'default', hook_event_name: 'PermissionRequest',
@@ -27,7 +27,7 @@ const permInput = JSON.stringify({ session_id: 's1', cwd, permission_mode: 'defa
 function launch(rcv, input) {
   // The runtime is always the fake receiver, never the real one (no-live-island.test.cjs enforces it).
   const child = spawn(process.execPath, [bin, 'claude', 'permission-request'], {
-    env: { PATH: process.env.PATH, ABITO_DESKTOP_SOCKET: rcv.endpoint, ABITO_SOCKET_DIR: rcv.runtime },
+    env: { PATH: process.env.PATH, KODA_DESKTOP_SOCKET: rcv.endpoint, KODA_SOCKET_DIR: rcv.runtime },
     stdio: ['pipe', 'pipe', 'pipe'] });
   let stdout = '', stderr = '';
   child.stdout.on('data', c => { stdout += c; });

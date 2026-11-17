@@ -181,10 +181,11 @@ test('T2: island reports a NEW settled notice to the Sileo toast through its own
   // F6 (SN1): a Codex attention notice («te pide permiso / te pregunta») reaches the Sileo pill with its one display line
   assert.match(src, /arrivals\.filter\(x => x\.kind === 'attention'\)\.at\(-1\)/, 'the latest attention arrival');
   assert.match(src, /new CustomEvent\('abito:notice-arrival', \{ detail: \{ id: attention\.id, kind: 'attention', title: attention\.title, detail: attention\.detail, agent: attention\.agent, projectName: attention\.projectName \} \}\)/);
-  assert.match(src, /const attentionOnly = arrivals\.length > 0 && arrivals\.every\(x => x\.kind === 'attention'\);/);
-  assert.match(src, /if \(fresh\) \{ if \(attentionOnly && capsule\.dataset\.edgeHidden === 'true'\) edgeInteraction\?\.alert\(\); else revealIsland\(false, true\); \}/, 'attention alone while Abito is hidden: the Sileo pill is the signal; otherwise a notice reveal (HU-006: never grows a compact island)');
+  // isla-cualquier-lado S2: the island is never hidden at the edge, so every fresh arrival (attention included) is a notice reveal
+  // (HU-006: a notice reveal never grows a compact island); the old «attention alone while hidden» branch is gone
+  assert.doesNotMatch(src, /attentionOnly|edgeInteraction/);
+  assert.match(src, /if \(fresh\) revealIsland\(false, true\);/, 'every fresh arrival is a notice reveal');
   assert.ok(src.indexOf('finishedCycle.observe(notices, finishedAllowed())') < src.indexOf("'abito:notice-arrival'"), 'the existing finished cycle runs first and is untouched');
-  assert.match(src, /else revealIsland\(false, true\); \}/, 'every other arrival is a notice reveal');
   assert.match(src, /start\(id\) \{[\s\S]{0,300}revealIsland\(false, true\);/, 'HU-006: the finished cycle is a notice reveal too');
   assert.match(src, /NV\.revealAction\(\{[^}]*notice \}\)/, 'the notice flag reaches the pure policy');
   assert.match(src, /'abito:compact-notice'/, 'HU-006: the compact pill receives the attention notice');

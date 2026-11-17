@@ -2,7 +2,7 @@
 //!
 //! On Linux the audit samples the GTK widget tree, the GTK/X11 window hints and
 //! the X work area to explain why a resize settled where it did
-//! (`ABITO_NATIVE_AUDIT=1`, opt-in, no resize authority). Its evidence is a
+//! (`KODA_NATIVE_AUDIT=1`, opt-in, no resize authority). Its evidence is a
 //! *GTK-and-X11* view of the window: Windows has neither the widget tree nor
 //! `_NET_WM_STATE_ABOVE`, and the Win32 equivalents (DWM attributes,
 //! UI Automation) are the observation surface this unit is explicitly NOT

@@ -68,7 +68,7 @@
       } catch {
         for (const f of mine.splice(0)) { try { f(); } catch { /* best effort */ } }
         const card = el('section', 'abito-card'); card.setAttribute('aria-label', 'Isla');
-        card.append(el('p', 'hub-note', 'No se pudieron leer los ajustes. Vuelve a abrir esta página.'));
+        card.append(el('p', 'hub-note', 'No se pudieron leer los ajustes. Volvé a abrir esta página.'));
         container.append(card);
       }
       return { node: root_, mine };

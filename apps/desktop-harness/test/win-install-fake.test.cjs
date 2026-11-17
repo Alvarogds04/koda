@@ -35,10 +35,10 @@ test('Windows flow: preview then apply a Claude settings file through the helper
   const pv = (await run(['claude', '--settings', settings, '--json'])).json;
   assert.equal(pv.ok, true); assert.equal(pv.changed, true);
   const exe = fs.realpathSync(process.execPath);
-  const ap = await run(['claude', '--settings', settings, '--json', '--apply-plan', pv.plan_hash, '--audit-dir', audit], { env: { ABITO_ISLAND_EXE: exe }, readExe: () => exe });
+  const ap = await run(['claude', '--settings', settings, '--json', '--apply-plan', pv.plan_hash, '--audit-dir', audit], { env: { KODA_ISLAND_EXE: exe }, readExe: () => exe });
   assert.equal(ap.json.ok, true, JSON.stringify(ap.json));
   assert.equal(ap.json.rollback, null);
-  assert.match(fs.readFileSync(settings, 'utf8'), /abito-hook/);
+  assert.match(fs.readFileSync(settings, 'utf8'), /koda-hook/);
   assert.equal(JSON.parse(fs.readFileSync(settings, 'utf8')).a, 1);
   const auditLines = fs.readFileSync(path.join(audit, 'hook-installs.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
   assert.deepEqual(auditLines.map(l => l.event), ['intent', 'result']);
@@ -75,12 +75,12 @@ test('Windows flow: Pi extension installs, replaces and removes through the help
   assert.equal(plan.changed, true);
   let msg = '';
   assert.equal(await piwin.applyPi(plan, { backupPath: null, out: () => {}, err: s => { msg += s; } }), 0, msg);
-  const target = path.join(home, '.pi', 'agent', 'extensions', 'abito-island');
+  const target = path.join(home, '.pi', 'agent', 'extensions', 'koda-island');
   assert.deepEqual(fs.readdirSync(target).sort(), [...piwin.FILES, piwin.MANIFEST].sort());
   const again = piwin.planPi({ home, remove: false, execPath: process.execPath, binPath: '/x' });
   assert.equal(again.changed, false);
   const rm = piwin.planPi({ home, remove: true, execPath: process.execPath, binPath: '/x' });
-  const bk = path.join(rm.backupRoot, 'abito-island.abito-backup-20260101T000000000Z');
+  const bk = path.join(rm.backupRoot, 'koda-island.abito-backup-20260101T000000000Z');
   assert.equal(await piwin.applyPi(rm, { backupPath: bk, out: () => {}, err: () => {} }), 0);
   assert.equal(fs.existsSync(target), false);
 });
@@ -93,11 +93,11 @@ test('Windows flow (verifier M1): the saved status-line file is read only throug
   const file = path.join(d, '.abito', 'statusline-previous.json');
   fs.writeFileSync(file, '{"type":"command","command":"evil"}\n', { mode: 0o666 }); // not private: the helper contract refuses it
   const settings = path.join(d, 'settings.json');
-  fs.writeFileSync(settings, '{"statusLine":{"type":"command","command":"node /x/abito-statusline.cjs"}}\n', { mode: 0o600 });
-  const plan = statusline.planStatusLine({ settingsPath: settings, remove: true, home: d, binPath: '/x/abito-statusline.cjs', execPath: process.execPath, uid: 'win' });
+  fs.writeFileSync(settings, '{"statusLine":{"type":"command","command":"node /x/koda-statusline.cjs"}}\n', { mode: 0o600 });
+  const plan = statusline.planStatusLine({ settingsPath: settings, remove: true, home: d, binPath: '/x/koda-statusline.cjs', execPath: process.execPath, uid: 'win' });
   assert.ok(!/evil/.test(plan.after), 'a non-private side file must never be restored into settings');
   fs.chmodSync(file, 0o600);
-  const ok = statusline.planStatusLine({ settingsPath: settings, remove: true, home: d, binPath: '/x/abito-statusline.cjs', execPath: process.execPath, uid: 'win' });
+  const ok = statusline.planStatusLine({ settingsPath: settings, remove: true, home: d, binPath: '/x/koda-statusline.cjs', execPath: process.execPath, uid: 'win' });
   assert.match(ok.after, /evil/, 'a private side file is still honoured');
 });
 
@@ -107,9 +107,9 @@ test('L6: on Windows the status-line command is double-quoted for cmd and a path
   const statusline = require('../src/install-statusline.cjs');
   const settings = path.join(d, 'settings.json');
   fs.writeFileSync(settings, '{}\n', { mode: 0o600 });
-  const plan = statusline.planStatusLine({ settingsPath: settings, home: d, binPath: 'C:\\Users\\O\'Neil\\Abito\\abito-statusline.cjs', execPath: 'C:\\Program Files\\nodejs\\node.exe', uid: 'win' });
-  assert.match(plan.after, /"command": "\\"C:\\\\Program Files\\\\nodejs\\\\node.exe\\" \\"C:\\\\Users\\\\O'Neil\\\\Abito\\\\abito-statusline.cjs\\""/);
-  assert.throws(() => statusline.planStatusLine({ settingsPath: settings, home: d, binPath: 'C:\\a"b\\abito-statusline.cjs', execPath: 'C:\\n.exe', uid: 'win' }), /refused|unsafe/);
+  const plan = statusline.planStatusLine({ settingsPath: settings, home: d, binPath: 'C:\\Users\\O\'Neil\\Abito\\koda-statusline.cjs', execPath: 'C:\\Program Files\\nodejs\\node.exe', uid: 'win' });
+  assert.match(plan.after, /"command": "\\"C:\\\\Program Files\\\\nodejs\\\\node.exe\\" \\"C:\\\\Users\\\\O'Neil\\\\Abito\\\\koda-statusline.cjs\\""/);
+  assert.throws(() => statusline.planStatusLine({ settingsPath: settings, home: d, binPath: 'C:\\a"b\\koda-statusline.cjs', execPath: 'C:\\n.exe', uid: 'win' }), /refused|unsafe/);
 });
 
 test('L7: mismatch/busy/io/exists/missing helper reasons get their own Ajustes detail instead of unsafe_target', async t => {

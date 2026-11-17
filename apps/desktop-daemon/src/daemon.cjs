@@ -5,13 +5,14 @@
  * account manager (auth.cjs), the profile store (profiles.cjs) and the island
  * server (server.cjs) from `<island>/config.json`.
  *
- * Host handoff: after everything is up, `<island>/runtime/session.json`
- * (0600, atomic) carries `{protocol, endpoint, token, pid, procStart, startedAt}`. The
+ * Host handoff: once the server listens, `<island>/runtime/session.json`
+ * (0600, atomic) carries `{protocol, endpoint, token, pid, procStart, startedAt}` — before
+ * the engine is ready, like Gentle Dot (daemon.ts:470-481): clients read the engine's
+ * "starting"/"restarting" state meanwhile. The
  * token is generated per launch, lives only in memory and that file, and is
  * never logged. The file is removed on stop.
  */
 
-const crypto = require("node:crypto");
 const { EventEmitter } = require("node:events");
 const fs = require("node:fs");
 const net = require("node:net");
@@ -25,20 +26,29 @@ const { createAgentHooks } = require("./agent-hooks.cjs");
 const { ConnectorsControl, ConnectorsView } = require("./connectors.cjs");
 const { AgentsManager } = require("./agents.cjs");
 const { ConnectorHostSupervisor } = require("./connector-host.cjs");
-const { ensureIsland, ensurePrivateDir, islandPaths, writePrivateFile, windowsIslandRootViolation } = require("./isolation.cjs");
+const { ensureIsland, ensurePrivateDir, islandPaths, privateMemory, writePrivateFile, windowsIslandRootViolation } = require("./isolation.cjs");
 const { ProfileStore } = require("./profiles.cjs");
 const { scanSessions, sessionScope } = require("./sessions.cjs");
 const { runPs } = require("./procinfo.cjs");
-const { AgentEngine } = require("./runtime.cjs");
+const { AgentEngine, DEFAULT_COMMAND } = require("./runtime.cjs");
 const { defaultIslandRoot } = require("./isolation.cjs");
-// #386: continuous conversation rotation (opt-in via config `rotation`).
+// K2-05 T3 (S2): Gentle Dot's transparent rotation (rotation on by default).
 const { SessionRotator } = require("./rotation.cjs");
 const { IslandServer } = require("./server.cjs");
+// K2-13: Minikodas (recipes, runs in their own engine roots, scheduler) and the «Hoy» inbox.
+const { Minikodas } = require("./minikodas/index.cjs");
+// K2-13 (S6-S9, S15, S16): video/audio transcription for the Minikodas (bundled ffmpeg + koda-transcribe helper).
+const { Transcriber, TranscriptionError, bundledTools } = require("./minikodas/transcribe.cjs");
+const { YouTubeReader, bundledYtDlp, bundledNode } = require("./minikodas/youtube.cjs");
+// K2-13 (S10/S20): the daemon's one Telegram session (login over the island protocol, keychain session, no file).
+const { createTelegram } = require("./minikodas/telegram.cjs");
+// K2-06 (S1/S2/S3): the host's window-capture endpoint and the extension that keeps only the last screenshot.
+const windowCapture = require("./window-capture.cjs");
 
 const PROTOCOL = "island-agent/1";
 const SESSION_FILE = "session.json";
 /** What a daemon process's command line contains (Linux /proc ownership check). */
-const DAEMON_CMDLINE = /(abito-island-daemon|cli\.cjs)/;
+const DAEMON_CMDLINE = /(koda-daemon|abito-island-daemon|cli\.cjs)/;
 
 /** stdin size bound and timeout for the native session helper (Windows). */
 const SESSION_HELPER_LIMIT = 4096;
@@ -70,8 +80,8 @@ function findSessionHelper(deps = {}) {
  * temp file with an explicit protected owner-only DACL AT CREATION and replaces
  * the target atomically. The token travels on the helper's STDIN only: never
  * argv, never the environment, never a log. The daemon root is passed as
- * ABITO_ISLAND_DIR (the same var the daemon itself honours); the helper refuses
- * any root that bypasses the canonical protected %LOCALAPPDATA%\Abito root.
+ * KODA_ISLAND_DIR (the same var the daemon itself honours); the helper refuses
+ * any root that bypasses the canonical protected %LOCALAPPDATA%\Koda root.
  * Fails closed: without the helper or without a zero exit, NO session is
  * published and the boot fails.
  */
@@ -95,10 +105,10 @@ function publishSessionWindows(root, payload, deps = {}) {
 /**
  * The helper's environment (K2-01b): the process env plus the daemon root, with %LOCALAPPDATA% taken from the env the
  * daemon validated its root against (`daemonEnv`, i.e. `options.env`) — the helper re-checks the same canonical-root
- * policy, so it must see the same LOCALAPPDATA. Without an injected env this is exactly process.env + ABITO_ISLAND_DIR.
+ * policy, so it must see the same LOCALAPPDATA. Without an injected env this is exactly process.env + KODA_ISLAND_DIR.
  */
 function helperEnv(root, daemonEnv) {
-	const env = { ...process.env, ABITO_ISLAND_DIR: path.resolve(root) };
+	const env = { ...process.env, KODA_ISLAND_DIR: path.resolve(root) };
 	if (daemonEnv && daemonEnv !== process.env) {
 		delete env.LOCALAPPDATA;
 		if (typeof daemonEnv.LOCALAPPDATA === "string") env.LOCALAPPDATA = daemonEnv.LOCALAPPDATA;
@@ -325,12 +335,15 @@ async function classifySession(root, deps = {}) {
 class Daemon extends EventEmitter {
 	/**
 	 * @param {object} [options]
-	 * @param {string} [options.root]           island root (default ABITO_ISLAND_DIR / ~/.abito-island)
+	 * @param {string} [options.root]           island root (default KODA_ISLAND_DIR / ~/.koda)
 	 * @param {object} [options.env]            environment (default process.env)
 	 * @param {(line:string)=>void} [options.log]
 	 * @param {object} [options.engineOptions]  extra AgentEngine options (tests: fake command)
 	 * @param {object} [options.accountsOptions]
 	 * @param {object} [options.serverOptions]  extra IslandServer options (limits)
+	 * @param {object} [options.minikodasOptions]  extra Minikodas options (tests: fake engine command, minEveryMs)
+	 * @param {object} [options.transcriberOptions]  tests only: {ffmpeg, helper, limits, ytdlp, jsRuntime, youtubeLimits} instead of the bundled tools
+	 * @param {object} [options.telegramOptions]   extra Telegram session options (tests: a fake client library, log)
 	 */
 	constructor(options = {}) {
 		super();
@@ -343,18 +356,30 @@ class Daemon extends EventEmitter {
 		this.state = "stopped";
 		this.changing = Promise.resolve();
 		this.connectorsControl = undefined;
+		// K2-05 T1c (S5/L11): the private memory handle, taken at boot for Koda's
+		// own default engine only (see boot).
+		this.memory = undefined;
 	}
 
 	get sessionFile() {
 		return sessionPath(this.root);
 	}
 
-	async start() {
-		if (this.state !== "stopped") throw new Error("daemon already started");
+	start() {
+		if (this.state !== "stopped") return Promise.reject(new Error("daemon already started"));
 		this.state = "starting";
+		this.engineStarting = false;
+		const starting = this.startOnce();
+		this.starting = starting;
+		starting.catch(() => {});
+		return starting;
+	}
+
+	async startOnce() {
 		try {
 			await this.boot();
-			this.state = "running";
+			// A stop() that raced the boot (the engine may still be starting) keeps its verdict.
+			if (this.state === "starting") this.state = "running";
 			return { endpoint: this.endpoint, pid: process.pid };
 		} catch (error) {
 			await this.teardown();
@@ -363,14 +388,23 @@ class Daemon extends EventEmitter {
 		}
 	}
 
+	/**
+	 * K2-05 boot follow-up = Gentle Dot close() (daemon.ts:410-458, `if (!stopping)` before
+	 * supervisor.start): once a stop() was asked for, the boot creates and publishes nothing more.
+	 * Checked after each of the boot's short awaits; start() then tears down what the boot made.
+	 */
+	assertBooting() {
+		if (this.state !== "starting") throw new Error("daemon stopped during boot");
+	}
+
 	async boot() {
 		// Windows (B5/S6): validate the island root against the canonical
-		// protected %LOCALAPPDATA%\Abito root BEFORE ensureIsland, config or ANY
+		// protected %LOCALAPPDATA%\Koda root BEFORE ensureIsland, config or ANY
 		// directory write — a forbidden root must never get files created in it.
 		const violation = windowsIslandRootViolation(this.root, this.env, this.platform);
 		if (violation) throw new Error(`refusing island root: ${violation}`);
 		ensureIsland(this.root);
-		const cfg = config.loadConfig(this.root, { env: this.env }); // fail-closed before anything spawns
+		const cfg = config.loadConfig(this.root, { env: this.env, log: (line) => this.log(line) }); // fail-closed before anything spawns
 		const existing = readSession(this.root);
 		// #390 GD029 arbitration: NEVER replace a session whose endpoint answers
 		// `ready`; replace only when the endpoint refuses AND the pid is confirmed
@@ -378,6 +412,7 @@ class Daemon extends EventEmitter {
 		let replaced = false;
 		if (existing) {
 			const verdict = await classifySession(this.root, { env: this.env });
+			this.assertBooting();
 			if (verdict.ready) {
 				this.recordLaunch({ reason: "endpoint_ready", outcome: "refused", incumbentPid: existing.pid });
 				throw new Error("daemon already running");
@@ -389,9 +424,12 @@ class Daemon extends EventEmitter {
 			}
 			replaced = true; // endpoint refuses AND pid confirmed dead: the only replaceable case
 		}
-		const mcp = config.writeMcpProjection(this.root, cfg.mcpConfigPath);
+		const mcp = config.writeMcpProjection(this.root, cfg.mcpConfigPath, { env: this.env, log: (line) => this.log(line) });
 		this.wroteMcp = true;
 		this.mcpServers = Object.keys(mcp.mcpServers).length;
+		// K2-06 T1/T3: the host configured its window-capture endpoint, so the extension that keeps only the
+		// last screenshot and refuses a blind capture is in place before the engine reads it.
+		windowCapture.install(this.root, this.env);
 		this.cfg = cfg;
 
 		const engine = new AgentEngine({
@@ -403,6 +441,20 @@ class Daemon extends EventEmitter {
 			...(this.options.engineOptions ?? {}),
 		});
 		this.engine = engine;
+		// K2-05 boot order = Gentle Dot (config.ts loadConfig → bundledGentleShell): a missing or
+		// broken bundled engine fails the boot here, before anything listens or is published —
+		// the one engine failure that is not retried (it is «Sin motor», not «arrancando»).
+		engine.spawnCommandPrefix();
+		// K2-05 T1c (S5/L11): Koda's memory is ALWAYS private, and the daemon owns
+		// its lifecycle — the port state is confirmed BEFORE the engine spawns, so
+		// cleanup is only ever taken for a port that was empty (a pre-existing
+		// listener is never claimed, an unknown state refuses ownership, and stop
+		// verifies the island identity + /health before any SIGTERM). Only Koda's
+		// own default engine gets private memory: a custom `command` never does.
+		this.memory = engine.command === DEFAULT_COMMAND
+			? await privateMemory(this.env, this.root, (line) => this.log(line), this.options.memoryOptions ?? {})
+			: undefined;
+		this.assertBooting();
 		this.accounts = new AccountManager({
 			accountsRoot: path.join(this.root, "accounts"),
 			env: this.env,
@@ -421,8 +473,6 @@ class Daemon extends EventEmitter {
 				engine.request({ type: "set_thinking_level", level: this.cfg.thinking }).catch(() => this.log("could not apply the thinking default"));
 			}
 		});
-		await engine.start();
-		if (cfg.profile) await this.profiles.select(cfg.profile).catch(() => this.log("could not activate the configured profile"));
 
 		this.connectorHost = undefined;
 		this.connectorHostUnavailable = false;
@@ -440,6 +490,7 @@ class Daemon extends EventEmitter {
 				this.connectorHostUnavailable = true;
 				this.log("connector host unavailable");
 			}
+			this.assertBooting();
 		}
 
 		const runtimeDir = ensurePrivateDir(path.join(this.root, "runtime"));
@@ -457,18 +508,26 @@ class Daemon extends EventEmitter {
 		}
 		this.agents = this.makeAgents(cfg);
 		this.agentHooks = this.makeAgentHooks();
+		this.telegram = this.makeTelegram();
+		this.minikodas = this.makeMinikodas(cfg);
 		this.token = IslandServer.generateToken();
-		// #386: rotation runs only when the user opted in; the summary travels
-		// with the user's NEXT prompt, never as a daemon-issued model request.
-		this.rotator = cfg.rotation?.enabled === true
-			? new SessionRotator({
-				engine,
+		// K2-05 T3 (S2): Gentle Dot's transparent rotation, ON by default (config
+		// `rotation.enabled: false` opts out). When the open session file passes the
+		// size/compaction limits, the rotator writes a new session seeded with ONE
+		// hidden handoff message, switches the engine to it and verifies the handoff
+		// reached the engine's context. The island keeps ONE continuous chat: no
+		// visible frame, no extra user message, nothing to decorate a prompt with.
+		if (cfg.rotation?.enabled === true) {
+			this.rotator = new SessionRotator(engine, {
+				limits: { bytes: cfg.rotation.bytes, compactions: cfg.rotation.compactions },
+				// The island's pause holds the rotation back, like every other turn.
+				canRotate: () => this.server?.paused !== true,
+				// The engine refuses to open a session whose stored cwd is missing; a
+				// previous session always carries its own cwd, this is only a fallback.
+				cwd: cfg.workspace,
 				log: (line) => this.log(line),
-				isPaused: () => this.server?.paused === true,
-				...(cfg.rotation.thresholdPercent !== undefined ? { thresholdPercent: cfg.rotation.thresholdPercent } : {}),
-				...(cfg.rotation.keepTurns !== undefined ? { keepTurns: cfg.rotation.keepTurns } : {}),
-			})
-			: undefined;
+			});
+		}
 		this.server = new IslandServer({
 			runtimeDir,
 			token: this.token,
@@ -480,19 +539,23 @@ class Daemon extends EventEmitter {
 			connectorsControl: this.connectorsControl,
 			agents: this.agents,
 			agentHooks: this.agentHooks,
+			minikodas: this.minikodas,
+			transcription: { get: () => this.transcriber.status(), set: (value) => this.persistTranscription(value) },
+			telegram: this.telegram,
 			sessions: { snapshot: async () => scanSessions({ scopePid: sessionScope(this.env) }) }, // #360: read-only /proc discovery (L52: was never wired)
 			settings: { get: () => ({ hotkey: this.getHotkey() }), setHotkey: (value) => this.persistHotkey(value) },
 			paused: cfg.paused === true, // #379: the persisted pause is restored at every boot
 			pausedStore: { get: () => this.cfg?.paused === true, set: (value) => this.persistPaused(value) },
-			promptDecorator: (message) => this.rotator?.beginPrompt(message) ?? message, // #386 (R6: committed only after the engine accepts the prompt)
 			interruptedRecord: () => this.readInterruptedSummary(), // R5: bounded closed summary of the unconsumed record
 			onInterruptedAck: () => this.consumeInterruptedRecord(), // R5: consumption happens only after a client ack
-			onNewConversation: () => this.rotator?.discardPending(), // #386
 			log: (line) => this.log(line),
 			...(this.options.serverOptions ?? {}),
 		});
 		const { endpoint } = await this.server.start();
+		this.assertBooting();
 		this.endpoint = endpoint;
+		// K2-13: schedules arm only once the server is up; nothing runs before an approved recipe.
+		this.minikodas.start();
 		this.startedAt = Date.now();
 		// R8: the boot-time parent pid lets a later launch detect reparenting
 		// (an orphan under systemd --user lands on the user subreaper, ppid != 1).
@@ -518,6 +581,41 @@ class Daemon extends EventEmitter {
 		void this.agents?.removeLegacyRecap?.();
 		// R5: a boot never consumes the interrupted-work record; it is exposed
 		// once through the ready frame and consumed only after interrupted_ack.
+
+		// K2-05 boot order = Gentle Dot (daemon.ts:470-481): the server already listens and the
+		// session is published, so the island's health check and its clients are answered while
+		// the engine starts (they read "starting"/"restarting", sends are refused unavailable).
+		// A failed first start is logged, never fatal: the runtime keeps retrying with its backoff.
+		if (cfg.profile) this.activateProfileWhenReady(cfg.profile);
+		// From here a stop() does not wait for the boot: it tears down at once and stops the
+		// starting engine (Gentle Dot close() during supervisor.start()).
+		this.engineStarting = true;
+		await engine.start().catch((error) => {
+			if (this.state === "stopping" || this.state === "stopped") return;
+			// Koda deviation: a spawn that could not even be prepared (the private identity file
+			// refused) is not retried by the runtime, so the line does not promise a retry.
+			this.log(`agent failed to start: ${error.message}${engine.status === "stopped" ? "" : "; retrying"}`);
+		});
+	}
+
+	/**
+	 * The configured profile is activated the first time the engine is ready (it restarts the
+	 * engine on the profile's model), exactly once per boot. Before K2-05's boot order this ran
+	 * right after an awaited engine start; now the engine may still be starting when boot returns.
+	 */
+	activateProfileWhenReady(profileId) {
+		const engine = this.engine;
+		const activate = () => {
+			if (this.state === "stopping" || this.state === "stopped" || this.engine !== engine) return;
+			this.profiles.select(profileId).catch(() => this.log("could not activate the configured profile"));
+		};
+		if (engine.status === "ready") return activate();
+		const onStatus = ({ state }) => {
+			if (state !== "ready") return;
+			engine.off("status", onStatus);
+			activate();
+		};
+		engine.on("status", onStatus);
 	}
 
 	/**
@@ -706,6 +804,127 @@ class Daemon extends EventEmitter {
 		return createAgentHooks({ home, agents: this.agents, nodeExe: process.execPath, log: (line) => this.log(line), ...(this.options.agentHooksOptions ?? {}) });
 	}
 
+	/**
+	 * K2-13 (S10/S20): the daemon's Telegram session. One client, always mtcute's MemoryStorage: the session lives in the
+	 * island's keychain and in memory only, never in a file. Options come from `telegramOptions` (tests inject a fake
+	 * client library, so no test ever logs in to Telegram).
+	 */
+	makeTelegram() {
+		return createTelegram({ log: (line) => this.log(line), ...(this.options.telegramOptions ?? {}) });
+	}
+
+	/**
+	 * K2-13 Minikodas. Each Minikoda runs in its own engine root under `<island>/minikodas/engines/<id>` with
+	 * the same engine command as the chat (`cfg.command`: after K2-05 merged into release/0.2 that is Koda's
+	 * bundled Gentle Shell, resolved by the runtime; the engine stays injectable for tests). The model is validated
+	 * against the accounts Koda already has; the default is the chat's active profile. The global pause (#379)
+	 * refuses launches and skips scheduled ticks.
+	 */
+	makeMinikodas(cfg) {
+		const { engine: engineOverrides, ...rest } = this.options.minikodasOptions ?? {};
+		this.transcriber = this.makeTranscriber();
+		this.youtube = this.makeYouTube(this.transcriber);
+		return new Minikodas({
+			islandRoot: this.root,
+			accountsRoot: path.join(this.root, "accounts"),
+			accounts: this.accounts,
+			profiles: this.profiles,
+			// S11: the chat's live credential (freshest wins) receives a Minikoda's refreshed OAuth token.
+			chat: { agentDir: path.join(this.root, "agent"), activeAccountPath: path.join(this.root, "active-account.json") },
+			engine: { command: cfg.command, commandArgs: [], env: this.env, ...(engineOverrides ?? {}) },
+			isPaused: () => this.server?.paused === true,
+			transcriber: this.transcriber,
+			// S19: YouTube links are read with the bundled yt-dlp; the transcripts go through that same transcriber.
+			youtube: this.youtube,
+			log: (line) => this.log(line),
+			...rest,
+		});
+	}
+
+	/**
+	 * K2-13 (S6-S9, S15, S16): the transcriber. The tools are the BUNDLED ones beside this daemon package
+	 * (`<install>/runtime/ffmpeg[.exe]`, `<install>/koda-transcribe[.exe]`), never PATH; absent (a development
+	 * checkout, or macOS where ffmpeg is not bundled yet) they are reported unavailable and every media transcription
+	 * fails with a clear «Hoy» error. The setting is read live from the config (`transcription`). The helper gets the
+	 * user's HOME/XDG_DATA_HOME so it finds the model store dictation shares; nothing else from the environment.
+	 */
+	makeTranscriber() {
+		const tools = bundledTools({ installRoot: path.resolve(__dirname, "..", ".."), platform: this.platform });
+		const overrides = this.options.transcriberOptions ?? {};
+		const asTool = (file) => (file ? { command: file, commandArgs: [] } : undefined);
+		return new Transcriber({
+			islandRoot: this.root,
+			setting: () => this.transcriptionSetting(),
+			ffmpeg: "ffmpeg" in overrides ? overrides.ffmpeg : asTool(tools.ffmpeg),
+			helper: "helper" in overrides ? overrides.helper : asTool(tools.helper),
+			remoteAccount: (accountId) => this.transcriptionAccount(accountId),
+			env: overrides.env ?? this.toolEnv(),
+			limits: overrides.limits,
+			log: (line) => this.log(line),
+		});
+	}
+
+	/** The global transcription setting, read live from the config (S7, S18). */
+	transcriptionSetting() {
+		return this.cfg?.transcription ?? config.loadConfig(this.root, { env: this.env }).transcription;
+	}
+
+	/**
+	 * The environment of the bundled tools: the user's HOME/XDG_DATA_HOME (the helper finds the model store it shares
+	 * with dictation), the platform's own variables and a locale. Nothing else from the daemon's environment.
+	 */
+	toolEnv() {
+		const env = {};
+		for (const key of ["HOME", "XDG_DATA_HOME", "USERPROFILE", "LOCALAPPDATA", "APPDATA", "SystemRoot", "TEMP", "TMP", "LANG"]) {
+			if (typeof this.env[key] === "string") env[key] = this.env[key];
+		}
+		return env;
+	}
+
+	/**
+	 * K2-13 (S19): the YouTube reader of the Minikodas. `yt-dlp` is the BUNDLED binary at `<install>/runtime/yt-dlp[.exe]`
+	 * — never PATH, never a shell — and the audio it downloads is transcribed by the same transcriber as any other
+	 * media. macOS ships neither ffmpeg nor yt-dlp yet (pending for the Mac session), so there every YouTube link
+	 * answers `youtube_unavailable` and the rest of the post is still read. YouTube extraction needs a JavaScript
+	 * runtime, so yt-dlp gets Koda's own bundled Node (`--js-runtimes node:<absolute path>`); never PATH.
+	 */
+	makeYouTube(transcriber) {
+		const overrides = this.options.transcriberOptions ?? {};
+		const installRoot = path.resolve(__dirname, "..", "..");
+		const file = bundledYtDlp({ installRoot, platform: this.platform });
+		return new YouTubeReader({
+			islandRoot: this.root,
+			ytdlp: "ytdlp" in overrides ? overrides.ytdlp : file ? { command: file, commandArgs: [] } : undefined,
+			jsRuntime: "jsRuntime" in overrides ? overrides.jsRuntime : bundledNode({ installRoot, platform: this.platform }),
+			transcriber,
+			setting: () => this.transcriptionSetting(),
+			env: overrides.env ?? this.toolEnv(),
+			limits: overrides.youtubeLimits,
+			log: (line) => this.log(line),
+		});
+	}
+
+	/**
+	 * K2-13 (S7): the remote transcription account must be one Koda already has, signed in, and OpenAI-compatible
+	 * (a custom gateway account: its Base URL and key are the account's own). Anything else is remote_unavailable.
+	 */
+	async transcriptionAccount(accountId) {
+		const meta = this.accounts?.readMeta(accountId);
+		if (!meta || meta.kind !== "custom" || meta.configured !== true) throw new TranscriptionError("remote_unavailable");
+		try {
+			return { baseUrl: this.accounts.customConfig(meta).baseUrl, apiKey: this.accounts.storedApiKey(meta) };
+		} catch {
+			throw new TranscriptionError("remote_unavailable");
+		}
+	}
+
+	/** Validates + persists the transcription setting (no engine restart: the next transcription reads it). */
+	persistTranscription(value) {
+		const result = config.setTranscription(this.root, value);
+		this.cfg = { ...(this.cfg ?? {}), transcription: result.transcription };
+		return result;
+	}
+
 	/** The persisted global hotkey (canonical) or null. */
 	getHotkey() {
 		return this.cfg?.hotkey ?? null;
@@ -763,7 +982,7 @@ class Daemon extends EventEmitter {
 	}
 
 	async teardown() {
-		this.rotator?.stop(); // #386: detach before the engine goes down
+		this.rotator?.stop(); // K2-05 T3: detach the settle listener before the engine goes down
 		if (this.wroteSession) {
 			try {
 				const current = readSession(this.root);
@@ -779,8 +998,19 @@ class Daemon extends EventEmitter {
 		this.connectorsControl = undefined;
 		// The connector host removes its MCP source before the engine and daemon projection stop.
 		await this.connectorHost?.stop().catch(() => {});
+		// K2-13: timers stop and runs in flight are cancelled (recorded as failed runs) before the server goes.
+		await this.minikodas?.stop().catch(() => {});
+		this.minikodas = undefined;
+		// K2-13: the Telegram client is torn down (in memory only; the island keeps the session in the keychain).
+		await this.telegram?.stop().catch(() => {});
+		this.telegram = undefined;
 		await this.server?.close().catch(() => {});
 		await this.engine?.stop().catch(() => {});
+		// K2-05 T1c: the private memory server stops AFTER the engine is gone (its
+		// last user), and only when it was proven to be Koda's own (instance id +
+		// /health + stable pid): a foreign server is never touched.
+		await this.memory?.stop().catch(() => {});
+		this.memory = undefined;
 		// After the engine stop, so pi is gone before its MCP capability file is.
 		if (this.wroteMcp) {
 			config.removeMcpProjection(this.root);
@@ -792,7 +1022,16 @@ class Daemon extends EventEmitter {
 
 	async stop() {
 		if (this.state === "stopped") return;
+		// K2-05 boot follow-up = Gentle Dot close() (daemon.ts:410-458): a stop while the boot waits
+		// for the engine's first start acts at once (session.json withdrawn, the starting engine
+		// stopped). Earlier in the boot (short, bounded steps) the boot itself stops at its next
+		// check and tears down; this stop waits for that.
+		const booting = this.state === "starting" && !this.engineStarting ? this.starting : undefined;
 		this.state = "stopping";
+		if (booting) {
+			await booting.catch(() => {});
+			if (this.state === "stopped") return;
+		}
 		await this.teardown();
 		this.state = "stopped";
 	}
@@ -865,7 +1104,7 @@ class Daemon extends EventEmitter {
 	}
 
 	async restartIfWorkspaceMoved() {
-		const next = config.loadConfig(this.root, { env: this.env });
+		const next = config.loadConfig(this.root, { env: this.env, log: (line) => this.log(line) });
 		const engine = this.engine;
 		const overrides = this.options.engineOptions ?? {};
 		const effective = (workspace) => engine.cwdOption ?? workspace ?? engine.island.workspace;
@@ -875,7 +1114,8 @@ class Daemon extends EventEmitter {
 		if (mcpMoved) {
 			// Validates and writes before anything stops; throws leave the engine untouched.
 			this.wroteMcp = true;
-			this.mcpServers = Object.keys(config.writeMcpProjection(this.root, next.mcpConfigPath).mcpServers).length;
+			this.mcpServers = Object.keys(config.writeMcpProjection(this.root, next.mcpConfigPath, { env: this.env, log: (line) => this.log(line) }).mcpServers).length;
+			windowCapture.install(this.root, this.env);
 		}
 		if (!cwdMoved && !commandMoved && !mcpMoved) {
 			this.cfg = { ...this.cfg, ...next };
@@ -886,6 +1126,14 @@ class Daemon extends EventEmitter {
 		if (cwdMoved) config.clearSessionPointer(this.root);
 		engine.workspacePath = next.workspace;
 		if (commandMoved) engine.command = next.command;
+		// F6: switching a custom command BACK to Koda's own engine starts private
+		// memory inside the engine's spawn — without claiming the port's ownership
+		// here, that server was left running at daemon stop. Claim it exactly like
+		// the boot path does (empty port, or a proven-Koda orphan via the F2
+		// reclaim; an unproven port stays unowned and is never stopped).
+		if (commandMoved && engine.command === DEFAULT_COMMAND && !this.memory) {
+			this.memory = await privateMemory(this.env, this.root, (line) => this.log(line), this.options.memoryOptions ?? {});
+		}
 		this.cfg = { ...this.cfg, ...next };
 		await engine.start();
 		return true;

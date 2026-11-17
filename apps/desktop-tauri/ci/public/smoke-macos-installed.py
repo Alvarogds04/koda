@@ -6,7 +6,7 @@ Usage: python3 ci/public/smoke-macos-installed.py <path/to/Koda.dmg> <work-dir>
 
 Prints one line per criterion part and exits non-zero if any part fails:
   (a) install: mount the .dmg read-only, copy the .app with ditto into <work-dir>/Applications, detach;
-  (b) start:   the INSTALLED binary, Finder-minimal environment, reaches «abito-island-daemon: running»
+  (b) start:   the INSTALLED binary, Finder-minimal environment, reaches «koda-daemon: running»
                and publishes its endpoint handoff;
   (c-island)   the installed app owns an on-screen window with a real size, read from the window server
                (CGWindowListCopyWindowInfo through JXA: owner pid, bounds and on-screen state need no
@@ -26,7 +26,7 @@ import subprocess
 import sys
 import time
 
-APP_ID = "com.abitog.AbitoTauri"
+APP_ID = "com.abitog.Koda"
 # K2-03: the island's one content-free line per accepted settled notice (src/protocol.rs SETTLED_NOTICE_LOG_LINE).
 SETTLED_LINE = "island: settled notice accepted"
 results = []
@@ -110,8 +110,8 @@ def main():
     # (a) install the way a person does: from the dmg into an Applications folder.
     try:
         app = install(dmg, work / "Applications")
-        binary = app / "Contents/MacOS/abito-island"
-        hook = app / "Contents/Resources/desktop-harness/bin/abito-hook.cjs"
+        binary = app / "Contents/MacOS/koda"
+        hook = app / "Contents/Resources/desktop-harness/bin/koda-hook.cjs"
         daemon = app / "Contents/Resources/desktop-daemon/src/cli.cjs"
         missing = [p.name for p in (binary, hook, daemon) if not p.is_file()]
         report("a", not missing, f"installed {app} from {dmg.name}" if not missing else f"installed app lacks {missing}")
@@ -129,7 +129,7 @@ def main():
             env[key] = os.environ[key]
     if not env.get("TMPDIR"):
         sys.exit("TMPDIR is not set: a Finder launch always has one, so this runner is not a normal macOS session")
-    runtime = pathlib.Path(os.path.realpath(env["TMPDIR"])) / "abito-island"
+    runtime = pathlib.Path(os.path.realpath(env["TMPDIR"])) / "koda"
     log_path = work / "installed-island.log"
 
     with log_path.open("w") as log:
@@ -137,7 +137,7 @@ def main():
                                    start_new_session=True)
         try:
             # (b) the installed app starts its daemon and publishes the handoff hooks and Pi read.
-            ready = wait_for(lambda: "abito-island-daemon: running (pid " in log_path.read_text(), 90)
+            ready = wait_for(lambda: "koda-daemon: running (pid " in log_path.read_text(), 90)
             handoff = runtime / "endpoint.json"
             published = wait_for(handoff.is_file, 30)
             alive = process.poll() is None

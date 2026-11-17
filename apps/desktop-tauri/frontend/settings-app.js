@@ -15,7 +15,7 @@ import './settings-nusa-mount.js';
 import './island-nusa.js';
 import './settings-isla.js';
 import './settings-isla-mount.js';
-import { renderAccounts, renderModels } from './vendor/coucou/hub/accounts.js';
+import { renderAccounts } from './vendor/coucou/hub/accounts.js';
 import { renderAgentSettings } from './vendor/coucou/hub/agents.js';
 import { renderChatSettings } from './vendor/coucou/hub/chat.js';
 import { renderIntegrations } from './vendor/coucou/hub/integrations.js';
@@ -32,7 +32,7 @@ import { renderGeneral } from './vendor/coucou/hub/general.js';
 import { card, row } from './vendor/coucou/hub/ui.js';
 import { hero } from './vendor/coucou/hub/hero.js';
 const rawInvoke = window.__TAURI__?.core?.invoke || window.__TAURI_INTERNALS__?.invoke;
-const allowed = new Set(['prefs_action', 'hotkey_action', 'settings_window_action', 'agent_action', 'secret_action', 'oauth_action', 'models_action', 'specialists_action', 'daemon_action', 'plan_action', 'monitor_action', 'sound_action', 'dictation_action', 'voice_action', 'failure_action']);
+const allowed = new Set(['prefs_action', 'hotkey_action', 'settings_window_action', 'agent_action', 'secret_action', 'oauth_action', 'models_action', 'specialists_action', 'daemon_action', 'plan_action', 'monitor_action', 'sound_action', 'dictation_action', 'voice_action', 'failure_action', 'phone_link_action']);
 // The host answers these commands through ONE shared limiter: 30 calls per fixed 1 s window (src/bridge.rs RATE_LIMIT_PER_WINDOW),
 // shared with the island window. A page that reads a lot at load (the combined «Integraciones y agentes» makes ~34 calls) used to get
 // `rate-exceeded` on its tail calls and paint «No se pudo completar» before the human touched anything (#503 S32 gate). So they leave
@@ -70,6 +70,8 @@ const invoke = (command, args) => {
   }
   if (command === 'prefs_action' && args?.payload?.action === 'set_window_context' &&
     (Object.keys(args).length !== 1 || Object.keys(args.payload).length !== 2 || typeof args.payload.window_context !== 'boolean')) return Promise.reject(new Error('No disponible'));
+  if (command === 'prefs_action' && args?.payload?.action === 'set_window_capture' &&
+    (Object.keys(args).length !== 1 || Object.keys(args.payload).length !== 2 || typeof args.payload.window_capture !== 'boolean')) return Promise.reject(new Error('No disponible'));
   if (command === 'prefs_action' && args?.payload?.action === 'set_live_context' &&
     (Object.keys(args).length !== 1 || Object.keys(args.payload).length !== 2 || typeof args.payload.live_context !== 'boolean')) return Promise.reject(new Error('No disponible'));
   if (command === 'monitor_action' && (Object.keys(args || {}).length !== 1 || Object.keys(args?.payload || {}).length !== 1 || args.payload.action !== 'list')) return Promise.reject(new Error('No disponible'));
@@ -91,6 +93,9 @@ const invoke = (command, args) => {
           ['bottom', 'left', 'right'].includes(p.prefs.edge) && typeof p.prefs.mic === 'string' && new TextEncoder().encode(p.prefs.mic).length <= 200 &&
           [0, 7, 30, 365, -1].includes(p.prefs.keepDays) && typeof p.prefs.cleanup === 'boolean' && ['verbatim', 'natural', 'polished'].includes(p.prefs.defaultStyle)))) return Promise.reject(new Error('No disponible'));
   }
+  // The Teléfono page's one command: exactly {payload:{action}} with the four actions the host parses (src/phonehost.rs parse_action).
+  if (command === 'phone_link_action' && (Object.keys(args || {}).length !== 1 || Object.keys(args?.payload || {}).length !== 1 ||
+    !['status', 'enable', 'disable', 'unlink'].includes(args.payload.action))) return Promise.reject(new Error('No disponible'));
   if (command === 'failure_action') {
     const p = args?.payload, ks = Object.keys(p || {}).sort().join(',');
     const fp = v => typeof v === 'string' && /^[0-9a-f]{12}$/.test(v);
@@ -136,7 +141,7 @@ startHub(root, {
         container.append(general, personalization);
         return () => { for (const stop of stops) stop?.(); general.dispose?.(); personalization.dispose?.(); };
       }
-      catch { container.append(card(row('No disponible', 'No se pudieron leer los ajustes. Vuelve a abrir esta página.'))); }
+      catch { container.append(card(row('No disponible', 'No se pudieron leer los ajustes. Volvé a abrir esta página.'))); }
     } else {
       const mounted = [];
       // Each renderer retains its closed IPC planner and per-mount cleanup.
@@ -152,11 +157,6 @@ startHub(root, {
           const chat = await renderChatSettings(options);
           const accounts = await renderAccounts({ ...options, page: 'chat', slotFor: chat.slotFor });
           mounted.push(accounts, chat); // Engine line BEFORE the provider cards; rows use the cards' slots.
-          const models = await renderModels({ ...options, connected: false }); // #503 S4: one list; the cards own the model choice
-          // Preserve Abito's verified model controls inside Coucou's Local models section.
-          chat.querySelector?.('#chat-local-models')?.append(models);
-          const disposeChat = chat.dispose;
-          chat.dispose = () => { models.dispose(); disposeChat(); };
         }
         if (page === 'integrations') mounted.push(await renderIntegrations(personal));
         if (page === 'shortcuts') mounted.push(await renderShortcuts(options));
@@ -164,7 +164,7 @@ startHub(root, {
         else container.append(renderUnavailable(page));
       } catch {
         for (const ui of mounted) ui.dispose();
-        container.append(card(row('No disponible', 'No se pudieron leer los ajustes. Vuelve a abrir esta página.')));
+        container.append(card(row('No disponible', 'No se pudieron leer los ajustes. Volvé a abrir esta página.')));
       }
       return () => { for (const ui of mounted) ui.dispose(); };
     }

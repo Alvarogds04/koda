@@ -1,5 +1,5 @@
 #![cfg(target_os = "linux")]
-use abito_island::daemonhost::{discover, Host};
+use koda_island::daemonhost::{discover, Host};
 use std::{fs, os::unix::fs::PermissionsExt, path::Path, process::Command};
 
 // A concurrent fork can inherit a script's writable fd until exec, even with
@@ -36,16 +36,16 @@ fn discovery_orders_session_path_before_canonical_fallbacks() {
     // The canonical fallbacks are tried in this order; the runner decides which exist (hosted Ubuntu has
     // /usr/local/bin/node, many desktops only /usr/bin/node). Assert the ORDER, never one machine's layout (K2-01b CI).
     // No version-manager environment (the runner's NVM_DIR etc. must not decide this either).
-    let no_managers = abito_island::nodefinder::Env::default();
+    let no_managers = koda_island::nodefinder::Env::default();
     let canonical = [Path::new("/usr/local/bin/node"), Path::new("/usr/bin/node")];
     let runnable = |p: &Path| fs::metadata(p).map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0).unwrap_or(false);
-    let found = abito_island::daemonhost::discover_in("node", Some(std::ffi::OsStr::new("/not-present")), None, &no_managers);
+    let found = koda_island::daemonhost::discover_in("node", Some(std::ffi::OsStr::new("/not-present")), None, &no_managers);
     match canonical.iter().copied().find(|p| runnable(p)) {
         Some(first) => assert_eq!(found.unwrap(), first, "the first runnable canonical location wins"),
         None => assert!(found.is_err(), "no canonical node on this machine: discovery reports it missing"),
     }
     assert!(discover("missing-runtime", Some(bin.as_os_str()), Some(home.as_os_str())).unwrap_err().contains("missing-runtime missing"));
-    let child_path = abito_island::daemonhost::runtime_path(
+    let child_path = koda_island::daemonhost::runtime_path(
         Some(std::ffi::OsStr::new(".:relative::/usr/bin")), Path::new("/usr/bin/node"), Path::new("/canonical/pi"),
     ).unwrap();
     assert_eq!(child_path, std::ffi::OsString::from("/usr/bin:/canonical"));
@@ -73,7 +73,7 @@ fn discovery_orders_session_path_before_canonical_fallbacks() {
 
 #[test]
 fn named_runtime_failure_is_in_existing_no_daemon_state_channel() {
-    use abito_island::{agentclient::{ClientState, Reason}, daemonhost::StartupFailure};
+    use koda_island::{agentclient::{ClientState, Reason}, daemonhost::StartupFailure};
     for (failure, code) in [(StartupFailure::NodeMissing, "node_missing"), (StartupFailure::PiMissing, "pi_missing")] {
         let mut state = ClientState::disconnected(Reason::NoDaemon);
         state.note_startup_failure(failure);
@@ -137,7 +137,7 @@ fn crash_helper() {
     let Some(dir) = std::env::var_os("ISLAND_HOST_TEST_HELPER") else { return };
     let dir = std::path::PathBuf::from(dir);
     if std::env::var_os("ISLAND_HOST_TEST_RESTART").is_some() {
-        use abito_island::daemonhost::HostSlot;
+        use koda_island::daemonhost::HostSlot;
         let pids = dir.join("pids");
         let read = || fs::read_to_string(&pids).unwrap_or_default().lines().count();
         let wait_lines = |n: usize| {
@@ -172,7 +172,7 @@ fn crash_helper() {
         return;
     }
     if std::env::var_os("ISLAND_HOST_TEST_PATH").is_some() {
-        let slot = abito_island::daemonhost::HostSlot::default();
+        let slot = koda_island::daemonhost::HostSlot::default();
         slot.start(); assert_eq!(slot.failure(), None);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         while !dir.join("path-stop").exists() {
@@ -273,7 +273,7 @@ fn early_child_exit_is_reaped_at_runtime_and_reported() {
     executable(&script, "#!/bin/sh\nexit 17\n");
     let host = Host::spawn_command(Command::new(script)).unwrap();
     let pid = host.pid();
-    let slot = abito_island::daemonhost::HostSlot::default();
+    let slot = koda_island::daemonhost::HostSlot::default();
     slot.adopt(host);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     // 1) the early exit is observed and reported
@@ -307,7 +307,7 @@ fn early_child_exit_is_reaped_at_runtime_and_reported() {
 // success that left it set would keep the chat reading «Falta Pi» after a good install. (The manual «Reiniciar» had the same flaw.)
 #[test]
 fn a_successful_start_forgets_the_failure_of_an_earlier_one() {
-    use abito_island::daemonhost::{HostSlot, StartupFailure};
+    use koda_island::daemonhost::{HostSlot, StartupFailure};
     let _guard = PROCESS_TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let root = TestDir::new().unwrap();
     let script = root.path().join("host.sh");

@@ -1,20 +1,25 @@
 'use strict';
-/* #370 F103 — the Mail service card: a read-list, an open message and a compose
-   form inside the island. ONE file, the house pattern (integrations-view.js):
-   pure view-model, textContent-only renderer, a FAKE provider, browser-only
-   mount at the tail.
+/* K2-10 T4 (S4, S8, S10, S11) — the Gmail card of Ajustes → Conexiones.
+   ONE file, the house pattern (integrations-view.js): a pure view-model, a textContent-only
+   renderer and a browser-only mount at the tail.
 
-   SEND IS LIVE (#490): `send` validates the draft and then calls the closed host verb
-   `mail_action {action:'send', to, subject, body, attachment?}` (src/mailcmd.rs: Resend, or the user's
-   own SMTP account, with credentials from the keychain). The page never sees a key. The READ-LIST is the user's own IMAP inbox
-   through `mail_action {action:'inbox'|'mark_read'|'reply'|'open_client'}` (src/imapcmd.rs); `fakeFrame` survives
-   only for the pure checks and is never mounted.
+   WHAT IT IS NOW: the SETUP of the user's own Gmail. Nothing here reads mail (the island card does,
+   K2-10 T5) and nothing here sends: this card saves the desktop client the user created in Google
+   Cloud, connects with Google (desktop loopback + PKCE + the system browser), says whether the
+   connection is alive and disconnects. Every call goes through the ONE closed host verb
+   `gmail_action` (src/gmailcmd.rs); the token lives in the system keychain and the page never sees
+   it, nor the client secret, nor a whole client id — at most the masked prefix the host returns.
+   S8: IMAP/SMTP/Resend are gone from this card (the island's mail is Gmail now, and Resend was
+   dropped by decision L1-8); the compose form and «Marcar como leído» are gone too (S5: read-only).
+   S10: the help block guides the user to PUBLISH their own app (option B) and explains the «Google
+   no verificó esta app → Configuración avanzada → Ir a … (no seguro)» warning, which appears
+   because the app is the user's own — so the connection does not expire.
 
-   ---- MOUNT CONTRACT (index.html wiring — coordinator's approval needed) ----
-   1. one container inside the Ajustes body:  <section id="integrations-mail" hidden></section>
+   ---- MOUNT CONTRACT (index.html wiring) ----
+   1. one container inside Ajustes:  <section id="integrations-mail" hidden></section>
    2. one script tag after integrations-view.js:  <script src="integrations-mail.js" defer></script>
-   With the container absent the module costs nothing. Styling: the append-only
-   `.ml-*` block in style.css uses theme tokens only (light + dark).
+   With the container absent the module costs nothing. Styling: theme tokens only (`.snote`,
+   `.sfield`, `.sbtn`, `.sform`: the classes every other Ajustes row already uses).
 
    Loaded as a classic script (window.AbitoMail) and by
    test-node/integrations-mail-check.cjs through `module.exports`. */
@@ -24,234 +29,192 @@
   root.AbitoMail = Object.freeze(api);
   mount(api);
 })(typeof self !== 'undefined' ? self : this, () => {
-  const SCHEMA = 'abito-mail/view/1';
-  const MAX_MESSAGES = 20;
-  const MAX_FROM = 40;
-  const MAX_SUBJECT = 120;
-  const MAX_BODY = 4000;
-  const MAX_PREVIEW = 90;
-  const MAX_TO = 254;
-  const MAX_AGO = 60 * 24 * 365; // minutes
-  const FAKE_BANNER = 'Datos de ejemplo — nada está conectado todavía.';
-  const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
-  const SENT = 'Mensaje enviado.';
-  const REFUSALS = Object.freeze({
-    not_configured: 'Falta configurar el envío: guardá tu clave de Resend y el remitente, o tu cuenta SMTP, en Ajustes.',
-    smtp_config: 'La cuenta SMTP no es válida: revisá el servidor y el remitente en Ajustes.',
-    no_sender: 'Falta el remitente: guardalo en Ajustes.',
-    keychain_unavailable: 'No se pudo leer el llavero del sistema.',
-    rejected: 'El servicio de correo rechazó el mensaje: revisá las credenciales y el remitente.',
-    network: 'No se pudo conectar con el servicio de correo.',
-    failed: 'No se pudo enviar el mensaje.',
+  const MAX_CLIENT_ID = 256;
+  const MAX_SECRET = 128;
+  const CLIENT_SUFFIX = '.apps.googleusercontent.com';
+  const POLL_MS = 1000;
+  const POLL_TIMEOUT_MS = 10 * 60 * 1000;
+  const MAX_POLLS = Math.ceil(POLL_TIMEOUT_MS / POLL_MS);
+  const MAX_MASK = 16;
+  const CONTROL = /[\u0000-\u001f\u007f-\u009f]/;
+
+  // The four states the host answers and the words the card shows for them (S4, S11).
+  const STATES = Object.freeze(['no_client', 'signed_out', 'connected', 'reconnect']);
+  const STATE_LABELS = Object.freeze({
+    no_client: 'Sin configurar',
+    signed_out: 'Sin conectar',
+    connected: 'Conectado',
+    reconnect: 'Volvé a conectar Gmail',
   });
-  const INBOX_REFUSALS = Object.freeze({
-    imap_not_configured: 'Falta configurar la bandeja: guardá el servidor IMAP, el usuario y la contraseña en Ajustes.',
-    imap_config: 'La cuenta IMAP no es válida: revisá el servidor en Ajustes.',
-    imap_auth: 'El servidor IMAP rechazó el usuario o la contraseña.',
-    imap_tls: 'No se pudo establecer una conexión segura con el servidor IMAP.',
-    imap_network: 'No se pudo conectar con el servidor IMAP.',
-    imap_protocol: 'El servidor IMAP respondió algo inesperado.',
-    keychain_unavailable: 'No se pudo leer el llavero del sistema.',
-    failed: 'No se pudo leer la bandeja.',
+  const FLOW_STATES = Object.freeze(['waiting', 'done', 'none']);
+
+  // One Spanish sentence per stable host code. An unknown code is a plain «no se pudo», never the
+  // raw code shown to a person.
+  const MESSAGES = Object.freeze({
+    no_client: 'Falta guardar tu client ID de Google Cloud: pegálo arriba y tocá «Guardar».',
+    needs_sign_in: 'Volvé a conectar Gmail: tocá «Conectar con Google».',
+    denied: 'Cancelaste el permiso en Google. Podés volver a intentarlo cuando quieras.',
+    expired: 'El inicio de sesión tardó demasiado. Volvé a tocar «Conectar con Google».',
+    used: 'Ese inicio de sesión ya se usó. Volvé a tocar «Conectar con Google».',
+    rejected: 'Google rechazó la conexión: revisá el client ID y el secreto en Google Cloud.',
+    state: 'La respuesta de Google no era la esperada. Volvé a tocar «Conectar con Google».',
+    scope_missing: 'Faltó el permiso de solo lectura: agregá gmail.readonly en la pantalla de consentimiento.',
+    network: 'No se pudo conectar con Google. Revisá tu conexión e intentá de nuevo.',
+    keychain: 'No se pudo leer el llavero del sistema.',
+    invalid: 'Los datos no son válidos: revisá el client ID y el secreto.',
+    port_busy: 'No se pudo abrir el puerto local donde Google devuelve la respuesta. Intentá de nuevo.',
+    forbidden: 'Google no dejó leer el correo con ese permiso.',
+    rate_limited: 'Gmail pidió esperar un momento. Probá de nuevo en un rato.',
+    server: 'Gmail falló del lado de Google. Probá de nuevo en un rato.',
+    opener_unavailable: 'No se pudo abrir tu navegador.',
+    prefs: 'No se pudo guardar el estado del contador de correos nuevos.',
+    timeout: 'Pasaron 10 minutos sin respuesta de Google. Volvé a tocar «Conectar con Google».',
+    cancelled: 'Cancelaste la conexión.',
+    failed: 'No se pudo completar la acción.',
   });
-  const UID_MAX = 4294967295;
-  const ID_RE = /^[a-z0-9][a-z0-9-]{0,15}$/;
-  const FIELDS = Object.freeze(['to', 'subject', 'body']);
-  const FIELD_MAX = Object.freeze({ to: MAX_TO, subject: MAX_SUBJECT, body: MAX_BODY });
-  // One plain address: no whitespace, one @, a dotted domain. Not a deliverability check.
-  const ADDRESS_RE = /^[^\s@,;<>]+@[^\s@,;<>.]+(\.[^\s@,;<>.]+)+$/;
-  const CONTROL = /[\u0000-\u001f\u007f-\u009f]/; // refuses line breaks too
-  const BODY_CONTROL = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/; // keeps \n and \t
+
+  // S10 (L4, human: «publicar la app sin verificar»): the steps of the user's own Google Cloud
+  // project, and why the unverified warning appears — and why that does not expire.
+  const HELP_TITLE = 'Cómo conectar tu Gmail (gratis)';
+  const HELP_STEPS = Object.freeze([
+    'Entrá a console.cloud.google.com con tu cuenta y creá un proyecto (por ejemplo «Koda»).',
+    'Habilitá la API de Gmail: «APIs y servicios» → «Biblioteca» → «Gmail API» → «Habilitar».',
+    'En «Pantalla de consentimiento de OAuth» elegí tipo «Externo» y completá el nombre de la app y tu correo.',
+    'Agregá el permiso https://www.googleapis.com/auth/gmail.readonly — es de solo lectura: Koda no puede escribir, borrar ni marcar como leído.',
+    'En «Credenciales» → «Crear credenciales» → «ID de cliente de OAuth», elegí «App de escritorio» y copiá el client ID (y el secreto, si te lo muestra).',
+    'Pegá el client ID acá, tocá «Guardar» y después «Conectar con Google».',
+    'Publicá la app: en «Pantalla de consentimiento» tocá «Publicar app». Así la conexión queda tuya y no vence (en «Prueba» Google la corta a los 7 días).',
+    'Google va a decir «Google no verificó esta app». Es tu propia app, así que tocá «Configuración avanzada» → «Ir a … (no seguro)». Ese aviso aparece justamente porque la app es tuya y no está publicada para todo el mundo.',
+    'Todo esto es gratis: el proyecto de Google Cloud y el permiso de solo lectura no se cobran.',
+  ]);
+  const HELP_FOOT = 'Koda nunca ve tu contraseña: el acceso queda en el llavero de tu sistema y podés cortarlo con «Desconectar».';
+  const LOCAL_INVALID = 'Pegá el client ID completo: termina en «' + CLIENT_SUFFIX + '».';
 
   const isObject = v => v !== null && typeof v === 'object' && !Array.isArray(v);
   const isStr = v => typeof v === 'string';
   const chars = s => Array.from(s).length;
-  const onlyKeys = (o, keys) => Object.keys(o).every(k => keys.includes(k));
 
-  function agoLabel(minutes) {
-    if (!Number.isInteger(minutes) || minutes < 0) return null;
-    if (minutes === 0) return 'ahora';
-    if (minutes < 60) return `hace ${minutes} min`;
-    if (minutes < 60 * 24) return `hace ${Math.floor(minutes / 60)} h`;
-    return `hace ${Math.floor(minutes / (60 * 24))} d`;
+  // ---- the closed payloads -------------------------------------------------------
+  /** Google's own shape for a pasted desktop client: `<digits>-….apps.googleusercontent.com`. */
+  function clientOk(id) {
+    if (!isStr(id) || chars(id) > MAX_CLIENT_ID || CONTROL.test(id)) return false;
+    const trimmed = id.trim();
+    if (trimmed !== id || !trimmed.endsWith(CLIENT_SUFFIX)) return false;
+    const head = trimmed.slice(0, -CLIENT_SUFFIX.length);
+    return head.length > 0 && /^[A-Za-z0-9-]+$/.test(head);
   }
 
-  // ---- store ------------------------------------------------------------------
-  /** A closed `mail` frame to a frozen store; anything off-shape is null. */
-  function storeFromFrame(frame) {
-    if (!isObject(frame) || frame.type !== 'mail' || frame.schema !== SCHEMA) return null;
-    if (!onlyKeys(frame, ['type', 'schema', 'fake', 'messages'])) return null;
-    if (typeof frame.fake !== 'boolean' || !Array.isArray(frame.messages) || frame.messages.length > MAX_MESSAGES) return null;
-    const seen = new Set();
-    const messages = [];
-    for (const m of frame.messages) {
-      if (!isObject(m) || Object.keys(m).length !== 6 || !onlyKeys(m, ['id', 'from', 'subject', 'body', 'minutesAgo', 'read'])) return null;
-      if (!isStr(m.id) || !ID_RE.test(m.id) || seen.has(m.id)) return null;
-      if (!isStr(m.from) || !m.from.trim() || chars(m.from) > MAX_FROM || CONTROL.test(m.from)) return null;
-      if (!isStr(m.subject) || !m.subject.trim() || chars(m.subject) > MAX_SUBJECT || CONTROL.test(m.subject)) return null;
-      if (!isStr(m.body) || chars(m.body) > MAX_BODY || BODY_CONTROL.test(m.body)) return null;
-      if (!Number.isInteger(m.minutesAgo) || m.minutesAgo < 0 || m.minutesAgo > MAX_AGO) return null;
-      if (typeof m.read !== 'boolean') return null;
-      seen.add(m.id);
-      messages.push(Object.freeze({ id: m.id, from: m.from, subject: m.subject, body: m.body, minutesAgo: m.minutesAgo, read: m.read }));
-    }
-    return Object.freeze({ fake: frame.fake, messages: Object.freeze(messages), openId: null });
+  /** The secret is OPTIONAL (Google issues one for desktop clients and treats it as public). */
+  function secretOk(secret) {
+    if (!isStr(secret) || chars(secret) > MAX_SECRET || CONTROL.test(secret)) return false;
+    const trimmed = secret.trim();
+    return trimmed === secret && (trimmed === '' || /^[A-Za-z0-9_-]+$/.test(trimmed));
   }
 
-  const isStore = s => isObject(s) && typeof s.fake === 'boolean' && Array.isArray(s.messages) &&
-    (s.openId === null || isStr(s.openId));
-
-  /** Opens one message. Like NotchBuddy, opening does NOT mark it read: that is the explicit «Marcar como leído». Unknown ids change nothing (null). */
-  function openMessage(store, id) {
-    if (!isStore(store) || !isStr(id)) return null;
-    const at = store.messages.findIndex(m => m.id === id);
-    if (at < 0) return null;
-    return Object.freeze({ fake: store.fake, messages: store.messages, openId: id });
+  /** `{action:'set_client', clientId, clientSecret?}`, or null when the fields are not usable. */
+  function setClientPayload(id, secret) {
+    if (!clientOk(id)) return null;
+    const s = secret === undefined || secret === null ? '' : secret;
+    if (!secretOk(s)) return null;
+    const payload = { action: 'set_client', clientId: id.trim() };
+    if (s !== '') payload.clientSecret = s;
+    return payload;
   }
 
-  /** Marks one message read in the store (after the host confirmed it). Unknown ids change nothing (null). */
-  function setRead(store, id) {
-    if (!isStore(store) || !isStr(id)) return null;
-    const at = store.messages.findIndex(m => m.id === id);
-    if (at < 0) return null;
-    const messages = store.messages.map((m, i) => (i === at ? Object.freeze({ ...m, read: true }) : m));
-    return Object.freeze({ fake: store.fake, messages: Object.freeze(messages), openId: store.openId });
+  // ---- closed answers ------------------------------------------------------------
+  /** The status/set_client answer: `{state, clientId, hasSecret}`, or null if off-shape. */
+  function statusAnswer(a) {
+    if (!isObject(a) || a.ok !== true || !STATES.includes(a.state) || typeof a.hasSecret !== 'boolean') return null;
+    const id = a.clientId === undefined ? null : a.clientId;
+    if (id !== null && !(isStr(id) && id.length > 0 && id.length <= MAX_MASK && !CONTROL.test(id))) return null;
+    return Object.freeze({ state: a.state, clientId: id, hasSecret: a.hasSecret });
   }
 
-  /** Back to the list; the read state stays. */
-  function closeMessage(store) {
-    if (!isStore(store)) return null;
-    return Object.freeze({ fake: store.fake, messages: store.messages, openId: null });
+  /** A begin/poll/cancel answer: `{state, browserOpened, authUrl}`, or null if off-shape. */
+  function flowAnswer(a) {
+    if (!isObject(a) || a.ok !== true || !FLOW_STATES.includes(a.state)) return null;
+    if (a.state !== 'waiting') return Object.freeze({ state: a.state, browserOpened: null, authUrl: null });
+    // `begin` says whether a browser was opened; `poll` answers waiting with nothing else.
+    const opened = a.browserOpened === undefined || a.browserOpened === null ? null : a.browserOpened;
+    if (opened !== null && typeof opened !== 'boolean') return null;
+    const url = a.authUrl === undefined || a.authUrl === null ? null : a.authUrl;
+    // Without a browser the host hands the URL back so the human can open it: only Google's own.
+    if (url !== null && !(isStr(url) && url.startsWith('https://accounts.google.com/') && !CONTROL.test(url))) return null;
+    return Object.freeze({ state: 'waiting', browserOpened: opened, authUrl: url });
   }
 
-  const previewOf = body => {
-    const flat = body.replace(/\s+/g, ' ').trim();
-    const cps = Array.from(flat);
-    return cps.length > MAX_PREVIEW ? `${cps.slice(0, MAX_PREVIEW - 1).join('')}…` : flat;
-  };
+  const reasonOf = a => (isObject(a) && a.ok === false && isStr(a.reason) && Object.prototype.hasOwnProperty.call(MESSAGES, a.reason) && a.reason !== 'failed' ? a.reason : 'failed');
+  const refusal = reason => Object.freeze({ ok: false, reason, message: MESSAGES[reason] });
+  const statusView = view => Object.freeze({ ok: true, state: view.state, label: STATE_LABELS[view.state], clientId: view.clientId, hasSecret: view.hasSecret });
+  const flowView = a => Object.freeze({ ok: true, state: a.state, browserOpened: a.browserOpened, authUrl: a.authUrl });
 
-  /** The closed projection for the renderer; null for anything that is not a store. */
-  function view(store) {
-    if (!isStore(store)) return null;
-    const rows = store.messages.map(m => Object.freeze({
-      id: m.id, from: m.from, subject: m.subject, preview: previewOf(m.body),
-      ago: agoLabel(m.minutesAgo), read: m.read, open: m.id === store.openId }));
-    const opened = store.messages.find(m => m.id === store.openId);
-    return Object.freeze({
-      fake: store.fake, banner: store.fake ? FAKE_BANNER : null,
-      unread: rows.filter(r => !r.read).length, rows: Object.freeze(rows),
-      open: opened ? Object.freeze({ id: opened.id, read: opened.read, from: opened.from, subject: opened.subject,
-        body: opened.body, ago: agoLabel(opened.minutesAgo) }) : null,
-    });
-  }
-
-  // ---- compose: a pure form model --------------------------------------------------
-  const isDraft = d => isObject(d) && FIELDS.every(f => isStr(d[f])) && Object.keys(d).length === FIELDS.length;
-  function createDraft() { return Object.freeze({ to: '', subject: '', body: '' }); }
-
-  /** One field, immutably. Unknown fields, non-strings and over-long text are refused (null). */
-  function setField(draft, field, value) {
-    if (!isDraft(draft) || !FIELDS.includes(field) || !isStr(value) || chars(value) > FIELD_MAX[field]) return null;
-    return Object.freeze({ ...draft, [field]: value });
-  }
-
-  /** `{ ok, errors }` with one Spanish message per failing field. */
-  function validateDraft(draft) {
-    const errors = {};
-    if (!isDraft(draft)) return Object.freeze({ ok: false, errors: Object.freeze({ to: 'El borrador no es válido.' }) });
-    const to = draft.to.replace(/^ +| +$/g, ''); // only plain spaces are forgiven; a pasted line break is an error
-    // NotchBuddy only requires the recipient: an empty subject falls back to the file name, an empty body is sent as a space.
-    if (!to.trim()) errors.to = 'Falta el destinatario.';
-    else if (to.length > MAX_TO || CONTROL.test(to) || !ADDRESS_RE.test(to)) errors.to = 'El destinatario no es una dirección válida.';
-    if (CONTROL.test(draft.subject)) errors.subject = 'El asunto no admite saltos de línea ni caracteres de control.';
-    if (BODY_CONTROL.test(draft.body)) errors.body = 'El mensaje contiene caracteres de control.';
-    return Object.freeze({ ok: Object.keys(errors).length === 0, errors: Object.freeze(errors) });
-  }
-
-  /** A picked file to the closed `{name,data}` (base64 of the bytes); empty, oversized or unnamed → null. */
-  function attachmentFromBytes(name, bytes) {
-    if (!isStr(name) || !name.trim() || !bytes || !Number.isInteger(bytes.length) || bytes.length < 1 || bytes.length > MAX_ATTACHMENT_BYTES) return null;
-    const base = name.split(/[\\/]/).pop();
-    if (!base.trim() || typeof btoa !== 'function' && typeof Buffer === 'undefined') return null;
-    let data;
-    if (typeof Buffer !== 'undefined') data = Buffer.from(bytes).toString('base64');
-    else { let bin = ''; for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000)); data = btoa(bin); }
-    return Object.freeze({ name: base, data });
-  }
-
-  const refusal = reason => Object.freeze({ ok: false, reason, message: REFUSALS[reason] });
-
-  /**
-   * Validates, then asks the host to send. `invoke` is Tauri's; the answer is closed
-   * ({ok:true} or {ok:false, reason}); anything else, or a throw, is a plain «failed».
-   * An invalid draft never reaches the host.
-   */
-  async function send(draft, attachment, invoke) {
-    const v = validateDraft(draft);
-    if (!v.ok) return Object.freeze({ ok: false, reason: 'invalid', errors: v.errors });
-    if (typeof invoke !== 'function') return refusal('failed');
-    const payload = { action: 'send', to: draft.to.replace(/^ +| +$/g, ''), subject: draft.subject, body: draft.body };
-    if (attachment) payload.attachment = { name: attachment.name, data: attachment.data };
-    let answer;
-    try { answer = await invoke('mail_action', { payload }); } catch (_) { return refusal('failed'); }
-    if (isObject(answer) && answer.ok === true && Object.keys(answer).length === 1) return Object.freeze({ ok: true, message: SENT });
-    if (isObject(answer) && answer.ok === false && Object.keys(answer).length === 2 && isStr(answer.reason) &&
-      Object.prototype.hasOwnProperty.call(REFUSALS, answer.reason) && answer.reason !== 'failed') return refusal(answer.reason);
-    return refusal('failed');
-  }
-
-  // ---- live inbox (IMAP through the closed host verb) ---------------------------------------
-  const isUid = u => Number.isInteger(u) && u >= 1 && u <= UID_MAX;
-  /** A closed `inbox` answer → { frame (real, not fake), meta: id → { uid, address } }; anything off-shape is null. */
-  function inboxFromAnswer(a) {
-    if (!isObject(a) || a.ok !== true || !onlyKeys(a, ['ok', 'messages']) || !Array.isArray(a.messages) || a.messages.length > MAX_MESSAGES) return null;
-    const meta = {};
-    const messages = [];
-    for (const m of a.messages) {
-      if (!isObject(m) || Object.keys(m).length !== 7 || !onlyKeys(m, ['uid', 'from', 'address', 'subject', 'preview', 'minutesAgo', 'read'])) return null;
-      if (!isUid(m.uid) || !isStr(m.address) || chars(m.address) > MAX_TO || CONTROL.test(m.address) || typeof m.read !== 'boolean') return null;
-      const id = `u${m.uid}`;
-      if (Object.prototype.hasOwnProperty.call(meta, id)) return null;
-      meta[id] = Object.freeze({ uid: m.uid, address: m.address });
-      messages.push({ id, from: m.from, subject: m.subject, body: m.preview, minutesAgo: m.minutesAgo, read: m.read });
-    }
-    const frame = { type: 'mail', schema: SCHEMA, fake: false, messages };
-    return storeFromFrame(frame) ? Object.freeze({ frame, meta: Object.freeze(meta) }) : null;
-  }
-  const inboxRefusal = reason => Object.freeze({ ok: false, reason, message: INBOX_REFUSALS[reason] });
+  // ---- the one closed host verb --------------------------------------------------
   async function call(invoke, payload) {
     if (typeof invoke !== 'function') return undefined;
-    try { return await invoke('mail_action', { payload }); } catch (_) { return undefined; }
-  }
-  async function loadInbox(invoke) {
-    const a = await call(invoke, { action: 'inbox' });
-    const live = inboxFromAnswer(a);
-    if (live) return Object.freeze({ ok: true, frame: live.frame, meta: live.meta });
-    if (isObject(a) && a.ok === false && Object.keys(a).length === 2 && isStr(a.reason) &&
-      Object.prototype.hasOwnProperty.call(INBOX_REFUSALS, a.reason) && a.reason !== 'failed') return inboxRefusal(a.reason);
-    return inboxRefusal('failed');
-  }
-  const okAnswer = a => Object.freeze({ ok: isObject(a) && a.ok === true && Object.keys(a).length === 1 });
-  async function markRead(invoke, uid) { return isUid(uid) ? okAnswer(await call(invoke, { action: 'mark_read', uid })) : okAnswer(null); }
-  async function reply(invoke, to, subject) {
-    if (!isStr(to) || !ADDRESS_RE.test(to) || !isStr(subject) || chars(subject) > MAX_SUBJECT || CONTROL.test(subject)) return okAnswer(null);
-    return okAnswer(await call(invoke, { action: 'reply', to, subject }));
-  }
-  async function openClient(invoke) { return okAnswer(await call(invoke, { action: 'open_client' })); }
-
-  // ---- fake provider (LOUD, deterministic, no network) ------------------------
-  const FAKE_MESSAGES = Object.freeze([
-    ['m1', 'Lucía Fernández', 'Reunión del jueves', 'Hola, te confirmo la reunión del jueves a las 10. Llevá el resumen del trimestre así lo repasamos juntos.', 6, false],
-    ['m2', 'Equipo de Facturación', 'Tu factura de ejemplo está lista', 'Adjuntamos la factura de ejemplo del mes. Este mensaje es de muestra y no corresponde a ninguna cuenta real.', 52, false],
-    ['m3', 'Martín Gómez', 'Re: presupuesto', 'Gracias por la propuesta. Lo charlamos con el equipo y te respondo mañana.', 190, true],
-    ['m4', 'Soporte Ejemplo', 'Tu consulta fue recibida', 'Recibimos tu consulta y la estamos revisando. Mensaje de muestra.', 1500, true],
-  ]);
-  function fakeFrame() {
-    return { type: 'mail', schema: SCHEMA, fake: true,
-      messages: FAKE_MESSAGES.map(([id, from, subject, body, minutesAgo, read]) => ({ id, from, subject, body, minutesAgo, read })) };
+    try { return await invoke('gmail_action', { payload }); } catch { return undefined; }
   }
 
-  // ---- renderer (textContent only; events live in mount) -----------------------
+  async function status(invoke) {
+    const answer = await call(invoke, { action: 'status' });
+    const view = statusAnswer(answer);
+    return view ? statusView(view) : refusal(reasonOf(answer));
+  }
+
+  /** Saves the pasted client. The host keeps it in the keychain: the page keeps nothing. */
+  async function saveClient(invoke, id, secret) {
+    const payload = setClientPayload(id, secret);
+    if (!payload) return Object.freeze({ ok: false, reason: 'invalid', message: LOCAL_INVALID });
+    const answer = await call(invoke, payload);
+    const view = statusAnswer(answer);
+    return view ? statusView(view) : refusal(reasonOf(answer));
+  }
+
+  async function begin(invoke) {
+    const answer = await call(invoke, { action: 'begin' });
+    const flow = flowAnswer(answer);
+    return flow ? flowView(flow) : refusal(reasonOf(answer));
+  }
+
+  async function poll(invoke) {
+    const answer = await call(invoke, { action: 'poll' });
+    const flow = flowAnswer(answer);
+    return flow ? flowView(flow) : refusal(reasonOf(answer));
+  }
+
+  async function cancel(invoke) { await call(invoke, { action: 'cancel' }); return Object.freeze({ ok: true }); }
+
+  async function forget(invoke) {
+    const a = await call(invoke, { action: 'forget' });
+    const view = statusAnswer(a);
+    if (view) return statusView(view);
+    if (isObject(a) && a.ok === true && a.state === 'no_client') return Object.freeze({ ok: true, state: 'no_client', label: STATE_LABELS.no_client, clientId: null, hasSecret: false });
+    return refusal(reasonOf(a));
+  }
+
+  /**
+   * The whole sign-in: open Google, then ask the host every second until it is done, fails, is
+   * cancelled or ten minutes pass. `deps` ({wait, now}) exists so the whole loop is testable with
+   * no browser, no network and no real time.
+   */
+  async function connect(invoke, deps) {
+    const wait = (deps && deps.wait) || (ms => new Promise(resolve => setTimeout(resolve, ms)));
+    const now = (deps && deps.now) || (() => Date.now());
+    const started = now();
+    const begun = await begin(invoke);
+    if (!begun.ok) return begun;
+    for (let i = 0; i < MAX_POLLS; i += 1) {
+      await wait(POLL_MS);
+      const next = await poll(invoke);
+      if (!next.ok) { await cancel(invoke); return next; }
+      if (next.state === 'done') return Object.freeze({ ok: true, state: 'done', browserOpened: begun.browserOpened, authUrl: begun.authUrl });
+      if (next.state === 'none') { await cancel(invoke); return refusal('cancelled'); }
+      if (now() - started >= POLL_TIMEOUT_MS) break;
+    }
+    await cancel(invoke);
+    return refusal('timeout');
+  }
+
+  // ---- renderer (textContent only; events live in mount) -------------------------
   const el = (tag, cls, text) => {
     const n = document.createElement(tag);
     if (cls) n.className = cls;
@@ -262,175 +225,180 @@
     const b = el('button', cls, label);
     b.type = 'button';
     b.dataset.action = action;
-    if (id) b.dataset.id = id;
+    if (id) b.id = id;
     return b;
   };
-  const field = (name, label, control, error) => {
-    const wrap = el('div', 'ml-field');
-    const lab = el('label', 'ml-label', label);
-    control.id = `ml-${name}`;
-    control.name = name;
-    control.dataset.field = name;
-    lab.htmlFor = control.id;
+  const field = (id, label, control) => {
+    const wrap = el('div', 'sform');
+    const lab = el('label', 'snote', label);
+    lab.htmlFor = id;
+    control.id = id;
     wrap.append(lab, control);
-    if (error) {
-      const err = el('p', 'ml-error', error);
-      err.id = `ml-${name}-error`;
-      control.setAttribute('aria-invalid', 'true');
-      control.setAttribute('aria-describedby', err.id);
-      wrap.append(err);
-    }
     return wrap;
   };
 
-  /** `result` is the last send() outcome (or null); the draft re-fills the form. */
-  function render(host, v, draft, result, attachment, sending, inbox, canReply) {
+  /** Draws the whole card. `model` = {state, clientId, hasSecret, connecting, saving, note, authUrl, draft}. */
+  function render(host, model) {
     if (!(host && typeof host.appendChild === 'function')) return;
+    const m = isObject(model) ? model : {};
+    const state = STATES.includes(m.state) ? m.state : null;
     host.textContent = '';
-    if (!v || !Array.isArray(v.rows)) { host.hidden = true; return; }
     host.hidden = false;
-    const d = isDraft(draft) ? draft : createDraft();
-    const errors = result && result.reason === 'invalid' ? result.errors : {};
+
     const head = el('div', 'ml-head');
-    head.append(el('span', 'ml-title', 'Mail'), el('span', 'ml-unread', `${v.unread} sin leer`), button('ml-refresh', 'refresh', 'Actualizar'));
+    head.append(el('span', 'ml-title', 'Gmail'), el('span', 'ml-unread', state ? STATE_LABELS[state] : 'Estado desconocido'));
     host.append(head);
-    if (inbox && inbox.note) { const n = el('p', 'ml-refusal', inbox.note); n.setAttribute('role', 'status'); host.append(n); }
-    if (v.banner) host.append(el('p', 'ml-fake', v.banner));
-    else if (!v.rows.length && !(inbox && inbox.note)) host.append(el('p', 'ml-empty', inbox && inbox.loading ? 'Cargando…' : 'No hay mensajes.'));
-    if (v.open) {
-      const art = el('article', 'ml-open');
-      art.append(el('h3', 'ml-open-subject', v.open.subject),
-        el('p', 'ml-open-meta', `${v.open.from} · ${v.open.ago}`),
-        el('p', 'ml-open-body', v.open.body));
-      if (!v.open.read && canReply) art.append(button('ml-markread', 'markread', 'Marcar como leído'));
-      if (canReply) art.append(button('ml-reply', 'reply', 'Responder'));
-      art.append(button('ml-client', 'client', 'Abrir el correo'), button('ml-back', 'close', 'Volver a la lista'));
-      host.append(art);
-    } else {
-      const list = el('ul', 'ml-list');
-      for (const r of v.rows) {
-        const li = el('li', 'ml-item');
-        const b = button(`ml-row${r.read ? '' : ' ml-row--unread'}`, 'open', null, r.id);
-        b.append(el('span', 'ml-row-from', r.from), el('span', 'ml-row-ago', r.ago),
-          el('span', 'ml-row-subject', r.subject), el('span', 'ml-row-preview', r.preview));
-        li.append(b);
-        list.append(li);
-      }
-      host.append(list);
-    }
-    const form = el('form', 'ml-compose');
+    host.append(el('p', 'snote', 'La isla muestra tus últimos correos y cuántos no leíste. Solo lectura: Koda no escribe, no borra y no marca como leído.'));
+
+    const form = el('form', 'mail-client');
     form.noValidate = true;
-    form.setAttribute('aria-label', 'Redactar mensaje');
-    form.append(el('h3', 'ml-compose-title', 'Redactar'));
-    const to = el('input'); to.type = 'text'; to.value = d.to; to.maxLength = MAX_TO; to.autocomplete = 'off';
-    const subject = el('input'); subject.type = 'text'; subject.value = d.subject; subject.maxLength = MAX_SUBJECT;
-    const body = el('textarea'); body.value = d.body; body.maxLength = MAX_BODY; body.rows = 4;
-    form.append(field('to', 'Para', to, errors.to), field('subject', 'Asunto', subject, errors.subject),
-      field('body', 'Mensaje', body, errors.body));
-    const pick = el('input'); pick.type = 'file'; pick.dataset.field = 'attachment'; pick.id = 'ml-attachment';
-    const pickLabel = el('label', 'ml-label', 'Adjunto'); pickLabel.htmlFor = pick.id;
-    const pickWrap = el('div', 'ml-field'); pickWrap.append(pickLabel, pick);
-    if (attachment) pickWrap.append(el('p', 'ml-attached', attachment.name));
-    form.append(pickWrap);
-    const send = el('button', 'ml-send', sending ? 'Enviando…' : 'Enviar');
-    send.type = 'submit';
-    send.disabled = !!sending;
-    form.append(send);
-    if (result && result.message) {
-      const note = el('p', result.ok ? 'ml-sent' : 'ml-refusal', result.message);
-      note.setAttribute('role', 'status');
-      form.append(note);
-    }
+    form.dataset.form = 'client';
+    form.setAttribute('aria-label', 'Client de Google Cloud');
+    const idInput = el('input', 'sfield');
+    idInput.type = 'text';
+    idInput.name = 'clientId';
+    idInput.autocomplete = 'off';
+    idInput.spellcheck = false;
+    idInput.maxLength = MAX_CLIENT_ID;
+    idInput.placeholder = CLIENT_SUFFIX;
+    // What is typed (not yet saved) lives in the model so a repaint never loses it.
+    idInput.value = isObject(m.draft) && isStr(m.draft.id) ? m.draft.id : '';
+    const secretInput = el('input', 'sfield');
+    secretInput.type = 'password';
+    secretInput.name = 'clientSecret';
+    secretInput.autocomplete = 'off';
+    secretInput.maxLength = MAX_SECRET;
+    secretInput.placeholder = 'Opcional';
+    secretInput.value = isObject(m.draft) && isStr(m.draft.secret) ? m.draft.secret : '';
+    form.append(field('mail-client-id', 'Client ID de Google Cloud', idInput));
+    form.append(field('mail-client-secret', 'Secreto del cliente (opcional)', secretInput));
+    const save = el('button', 'sbtn primary', m.saving ? 'Guardando…' : 'Guardar');
+    save.type = 'submit';
+    save.dataset.action = 'save';
+    save.disabled = !!m.saving;
+    form.append(save);
     host.append(form);
+
+    if (state === 'no_client') {
+      host.append(el('p', 'snote', 'Sin configurar: todavía no hay ningún client ID guardado.'));
+    } else if (isStr(m.clientId) && m.clientId) {
+      host.append(el('p', 'snote', `Client ID guardado: ${m.clientId}${m.hasSecret ? ' · con secreto guardado' : ''}`));
+    } else if (state) {
+      host.append(el('p', 'snote', 'Hay un client ID guardado.'));
+    }
+
+    const actions = el('div', 'sform');
+    if (m.connecting) {
+      actions.append(el('span', 'snote', 'Esperando a Google en tu navegador…'));
+      actions.append(button('sbtn', 'cancel', 'Cancelar', 'mail-cancel'));
+    } else {
+      const go = button('sbtn primary', 'connect', 'Conectar con Google', 'mail-connect');
+      go.disabled = state === null || state === 'no_client';
+      actions.append(go);
+    }
+    if (state !== null && state !== 'no_client' && !m.connecting) {
+      actions.append(button('sbtn', 'forget', 'Desconectar', 'mail-forget'));
+    }
+    host.append(actions);
+
+    if (isObject(m.note) && isStr(m.note.text)) {
+      const note = el('p', 'snote', m.note.text);
+      note.setAttribute('role', 'status');
+      note.dataset.tone = m.note.ok ? 'ok' : 'problem';
+      host.append(note);
+    }
+    if (isStr(m.authUrl) && m.authUrl) {
+      // No browser could be opened: the URL is shown so the human can open it by hand.
+      host.append(el('p', 'snote', 'Abrí esta dirección en tu navegador para terminar de conectar:'));
+      const url = el('p', 'sline', m.authUrl);
+      url.dataset.field = 'authUrl';
+      host.append(url);
+    }
+
+    const help = el('details', 'mail-help');
+    help.append(el('summary', 'snote', HELP_TITLE));
+    const steps = el('ol', 'snote');
+    for (const step of HELP_STEPS) steps.append(el('li', 'sline', step));
+    help.append(steps, el('p', 'snote', HELP_FOOT));
+    host.append(help);
   }
 
-  return { SCHEMA, MAX_MESSAGES, MAX_FROM, MAX_SUBJECT, MAX_BODY, MAX_PREVIEW, MAX_TO,
-    storeFromFrame, openMessage, setRead, closeMessage, view, createDraft, setField, validateDraft, send, attachmentFromBytes, MAX_ATTACHMENT_BYTES, inboxFromAnswer, loadInbox, markRead, reply, openClient, fakeFrame, render };
+  return { MAX_CLIENT_ID, MAX_SECRET, CLIENT_SUFFIX, POLL_MS, POLL_TIMEOUT_MS, MAX_POLLS, STATES, STATE_LABELS,
+    HELP_TITLE, HELP_STEPS, HELP_FOOT, MESSAGES, clientOk, secretOk, setClientPayload, statusAnswer, flowAnswer,
+    status, saveClient, begin, poll, cancel, forget, connect, render };
 });
 
-// ---- browser-only wiring: self-mount into #integrations-mail, FAKE provider only ----
+// ---- browser-only wiring: self-mount into #integrations-mail --------------------------------
 function mount(V) {
   if (typeof document === 'undefined') return;
   const host = document.getElementById('integrations-mail');
   if (!host) return; // inert until index.html carries the container (mount contract)
-  let store = V.storeFromFrame({ type: 'mail', schema: V.SCHEMA, fake: false, messages: [] });
-  let meta = {};
-  let inbox = { note: '', loading: true };
-  let polling = false;
-  let draft = V.createDraft();
-  let result = null;
-  let attachment = null;
-  let sending = false;
   const internals = typeof window !== 'undefined' ? window.__TAURI_INTERNALS__ : undefined;
   const invoke = (window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke) || (internals && internals.invoke);
-  const paint = () => V.render(host, V.view(store), draft, result, attachment, sending, inbox, !!(store.openId && meta[store.openId] && meta[store.openId].address));
+  // The card only holds what is on screen; the client id and the token live in the keychain.
+  let model = { state: null, clientId: null, hasSecret: false, connecting: false, saving: false, note: null, authUrl: null, draft: { id: '', secret: '' } };
+  const paint = () => V.render(host, model);
+  const note = (outcome) => ({
+    ok: !!outcome.ok,
+    text: outcome.ok ? (outcome.state === 'done' ? 'Gmail quedó conectado.' : null) : outcome.message,
+  });
   async function refresh() {
-    if (polling) return;
-    polling = true;
-    const r = await V.loadInbox(invoke);
-    polling = false;
-    if (r.ok) {
-      const next = V.storeFromFrame(r.frame);
-      const keep = store.openId && next.messages.some(m => m.id === store.openId) ? store.openId : null;
-      store = keep ? V.openMessage(next, keep) : next;
-      meta = r.meta; inbox = { note: '', loading: false };
-    } else {
-      inbox = { note: r.message, loading: false, stop: r.reason === 'imap_not_configured' };
-    }
+    const r = await V.status(invoke);
+    model = r.ok
+      ? { ...model, state: r.state, clientId: r.clientId, hasSecret: r.hasSecret }
+      : { ...model, state: null, note: { ok: false, text: r.message } };
     paint();
   }
-  const visible = () => !host.hidden && typeof document !== 'undefined' && document.visibilityState !== 'hidden' && host.offsetParent !== null;
-  setInterval(() => { if (visible() && !(inbox && inbox.stop)) refresh(); }, 60000);
-  setTimeout(() => { if (visible()) refresh(); }, 0);
-
-  host.addEventListener('click', e => {
-    if (!e || e.isTrusted !== true) return; // only trusted gestures change anything
-    const t = e.target && typeof e.target.closest === 'function' ? e.target.closest('[data-action]') : null;
-    if (!t || !host.contains(t)) return;
-    const action = t.dataset.action;
-    if (action === 'refresh') { inbox = { note: '', loading: true }; refresh(); return; }
-    if (action === 'markread') {
-      const id = store.openId;
-      if (id && meta[id]) V.markRead(invoke, meta[id].uid).then(r => { if (r.ok) { const n = V.setRead(store, id); if (n) { store = n; paint(); } } });
-      return;
-    }
-    if (action === 'client') { V.openClient(invoke); return; }
-    if (action === 'reply') {
-      const m = store.messages.find(x => x.id === store.openId);
-      const info = m && meta[m.id];
-      if (info && info.address) V.reply(invoke, info.address, m.subject);
-      return;
-    }
-    const next = action === 'open' ? V.openMessage(store, t.dataset.id)
-      : action === 'close' ? V.closeMessage(store) : null;
-    if (next) { store = next; paint(); }
-  });
-  host.addEventListener('input', e => {
-    if (!e || e.isTrusted !== true || !e.target || !e.target.dataset) return;
-    const next = V.setField(draft, e.target.dataset.field, e.target.value);
-    if (next) draft = next;
-  });
-  host.addEventListener('change', e => {
-    if (!e || e.isTrusted !== true || !e.target || !e.target.dataset || e.target.dataset.field !== 'attachment') return;
-    const file = e.target.files && e.target.files[0];
-    if (!file) { attachment = null; paint(); return; }
-    if (file.size < 1 || file.size > V.MAX_ATTACHMENT_BYTES) { attachment = null; result = { ok: false, reason: 'failed', message: 'El adjunto está vacío o supera los 10 MB.' }; paint(); return; }
-    file.arrayBuffer().then(buf => {
-      attachment = V.attachmentFromBytes(file.name, new Uint8Array(buf));
-      result = attachment ? null : { ok: false, reason: 'failed', message: 'No se pudo leer el adjunto.' };
-      if (!draft.subject.trim() && attachment) draft = V.setField(draft, 'subject', attachment.name.slice(0, V.MAX_SUBJECT)) || draft;
-      paint();
-    }, () => { attachment = null; paint(); });
-  });
+  async function save() {
+    if (model.saving) return;
+    const idField = host.querySelector('input[name="clientId"]');
+    const secretField = host.querySelector('input[name="clientSecret"]');
+    const draft = { id: idField ? idField.value : '', secret: secretField ? secretField.value : '' };
+    model = { ...model, draft, saving: true, note: null };
+    paint();
+    const r = await V.saveClient(invoke, draft.id, draft.secret);
+    // Once it is saved nothing secret stays in the DOM: the fields are emptied and only the state
+    // is drawn. A failed save keeps what the human typed so it can be corrected.
+    model = r.ok
+      ? { ...model, saving: false, draft: { id: '', secret: '' }, state: r.state, clientId: r.clientId, hasSecret: r.hasSecret, note: { ok: true, text: 'Client ID guardado.' } }
+      : { ...model, saving: false, note: { ok: false, text: r.message } };
+    paint();
+  }
+  async function startConnect() {
+    if (model.connecting) return;
+    model = { ...model, connecting: true, note: null, authUrl: null };
+    paint();
+    const r = await V.connect(invoke);
+    model = { ...model, connecting: false, authUrl: r.ok ? r.authUrl : null, note: note(r) };
+    paint();
+    if (r.ok) await refresh();
+  }
+  async function disconnect() {
+    if (model.connecting) return;
+    const r = await V.forget(invoke);
+    model = r.ok
+      ? { ...model, state: r.state || 'no_client', clientId: null, hasSecret: false, note: { ok: true, text: 'Gmail quedó desconectado.' }, authUrl: null }
+      : { ...model, note: { ok: false, text: r.message } };
+    paint();
+  }
   host.addEventListener('submit', e => {
     if (e) e.preventDefault(); // never a navigation
-    if (!e || e.isTrusted !== true || sending) return;
-    sending = true; result = null; paint();
-    V.send(draft, attachment, invoke).then(r => {
-      sending = false; result = r;
-      if (r.ok) { draft = V.createDraft(); attachment = null; }
-      paint();
-    });
+    if (!e || e.isTrusted !== true) return;
+    save();
+  });
+  host.addEventListener('input', e => {
+    if (!e || e.isTrusted !== true || !e.target || !e.target.name) return;
+    if (e.target.name !== 'clientId' && e.target.name !== 'clientSecret') return;
+    model = { ...model, draft: { ...(isObject(model.draft) ? model.draft : {}), [e.target.name]: e.target.value } };
+  });
+  host.addEventListener('click', e => {
+    if (!e || e.isTrusted !== true) return;
+    const target = e.target && typeof e.target.closest === 'function' ? e.target.closest('[data-action]') : null;
+    if (!target || !host.contains(target)) return;
+    if (target.dataset.action === 'cancel') { V.cancel(invoke).then(() => { model = { ...model, connecting: false, note: { ok: true, text: 'Cancelaste la conexión.' } }; paint(); }); return; }
+    if (target.dataset.action === 'connect') { startConnect(); return; }
+    if (target.dataset.action === 'forget') { disconnect(); return; }
   });
   paint();
+  refresh();
 }

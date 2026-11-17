@@ -19,8 +19,8 @@ use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use abito_island::protocol::{self, Message, READY_LINE};
-use abito_island::transport::{self, Transport, TransportOptions};
+use koda_island::protocol::{self, Message, READY_LINE};
+use koda_island::transport::{self, Transport, TransportOptions};
 use serde_json::{json, Value};
 
 // --- helpers ----------------------------------------------------------------
@@ -710,7 +710,7 @@ fn unchanged_node_producer_connects_and_settles() {
 #[cfg(target_os = "linux")]
 #[test]
 fn r21_socket_peer_notice_origin_is_host_only_bounded_and_revoked() {
-    use abito_island::{focushost::{OriginRequest, OriginKind}, sessionterm};
+    use koda_island::{focushost::{OriginRequest, OriginKind}, sessionterm};
     let runtime = runtime_root("r21-origin");
     let proc_root = runtime.join("proc");
     let peer = sessionterm::read_proc(Path::new("/proc"), std::process::id()).unwrap();
@@ -750,7 +750,7 @@ fn r21_socket_peer_notice_origin_is_host_only_bounded_and_revoked() {
     assert!(transport.origin_for(&last).is_none(), "app dismissal revokes the origin");
     // QP/1 is unchanged; questions capture the same socket peer, never wire identity.
     send(&mut stream, &json!({"v":1,"type":"questions_hello","questionVersion":1,"project":project,"sessionId":"session-1","at":now_ms()})).unwrap();
-    assert_eq!(read_some(&stream, Duration::from_secs(2)).unwrap(), abito_island::question::QUESTIONS_READY_LINE);
+    assert_eq!(read_some(&stream, Duration::from_secs(2)).unwrap(), koda_island::question::QUESTIONS_READY_LINE);
     send(&mut stream, &json!({"v":1,"type":"question","questionVersion":1,"project":project,"sessionId":"session-1","at":now_ms(),"id":id,
         "kind":"question","text":"Choose","options":[{"value":"a","label":"A","description":""},{"value":"b","label":"B","description":""}],"allowFreeText":false,"expiresAt":now_ms()+30000})).unwrap();
     assert!(events.wait(|_| transport.question_snapshot().pending.is_some(), Duration::from_secs(2)));
@@ -781,7 +781,7 @@ fn r21_review_origin_resolution_does_not_hold_the_question_mutex() {
     let mut stream = connect(transport.endpoint());
     send(&mut stream,&hello(&project)).unwrap(); assert!(expect_ready(&stream));
     send(&mut stream,&json!({"v":1,"type":"questions_hello","questionVersion":1,"project":project,"sessionId":"session-1","at":now_ms()})).unwrap();
-    assert_eq!(read_some(&stream,Duration::from_secs(2)).unwrap(),abito_island::question::QUESTIONS_READY_LINE);
+    assert_eq!(read_some(&stream,Duration::from_secs(2)).unwrap(),koda_island::question::QUESTIONS_READY_LINE);
     send(&mut stream,&json!({"v":1,"type":"question","questionVersion":1,"project":project,"sessionId":"session-1","at":now_ms(),
         "id":"3f2b8a40-1c2d-4e5f-8a6b-7c8d9e0f1a2b","kind":"question","text":"Choose",
         "options":[{"value":"a","label":"A","description":""},{"value":"b","label":"B","description":""}],"allowFreeText":false,"expiresAt":now_ms()+30000})).unwrap();
@@ -801,7 +801,7 @@ fn r21_review_origin_resolution_does_not_hold_the_question_mutex() {
 #[cfg(target_os = "macos")]
 #[test]
 fn macos_origin_is_never_invented_even_for_an_accepted_notice() {
-    use abito_island::focushost::{OriginKind, OriginRequest};
+    use koda_island::focushost::{OriginKind, OriginRequest};
     let runtime = runtime_root("mac-origin");
     let project = protocol::project_id("mac-origin");
     let events = Arc::new(Events::default());

@@ -43,9 +43,10 @@ export const NOTCH_PAGES: PageDef[] = [
 
 const ALL = [...FLOW_PAGES, ...NOTCH_PAGES];
 // abito-pausa (human 0.1.2: «vale todo lo que este en pausa se puede ocultar?» → yes; supersedes 26-oct «Visibles en gris y apagadas»):
-// this version works on Chat and Agentes. Every other page is HIDDEN from the menu and never opened; a request for one
-// (hub-page, abito:hub-select, initialPage) lands on General. This list stays the single source of truth.
-export const ACTIVE_PAGES: readonly string[] = Object.freeze(["general", "agents", "chat", "shortcuts", "privacy"]);
+// a paused page is HIDDEN from the menu and never opened; a request for one (hub-page, abito:hub-select, initialPage) lands on
+// General. This list stays the single source of truth. K2 T1 (S2, S3) unpauses `phone`: the live Teléfono page, with the link off
+// until the human turns it on there.
+export const ACTIVE_PAGES: readonly string[] = Object.freeze(["general", "agents", "chat", "phone", "shortcuts", "privacy"]);
 export const PAUSED_PAGES: readonly string[] = Object.freeze(ALL.map((p) => p.id).filter((id) => !ACTIVE_PAGES.includes(id)));
 export const PAUSED_LABEL = "En pausa · próxima versión";
 const isPaused = (id: string) => PAUSED_PAGES.includes(id);

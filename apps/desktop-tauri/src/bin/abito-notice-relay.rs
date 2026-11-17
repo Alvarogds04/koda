@@ -21,7 +21,7 @@
 
 #[cfg(windows)]
 mod imp {
-    use abito_island::winipc;
+    use koda_island::winipc;
     use std::io::{Read, Write};
     use std::os::windows::io::AsRawHandle;
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -52,7 +52,7 @@ mod imp {
         // location. The path is never trusted: the ACL/owner checks always run.
         match std::env::args().nth(1) {
             Some(path) => std::path::PathBuf::from(path),
-            None => abito_island::transport::resolve_runtime()
+            None => koda_island::transport::resolve_runtime()
                 .map(|runtime| runtime.join(winipc::ffi::ENDPOINT_FILE))
                 .unwrap_or_else(|_| std::path::PathBuf::from(winipc::ffi::ENDPOINT_FILE)),
         }

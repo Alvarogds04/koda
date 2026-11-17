@@ -124,9 +124,48 @@ fn the_secret_value_never_reaches_debug_or_errors() {
 }
 
 #[test]
-fn the_service_name_is_abitos_own() {
-    assert_eq!(SERVICE, "com.abitog.AbitoTauri");
+fn the_service_name_is_kodas_own() {
+    assert_eq!(SERVICE, "com.abitog.Koda");
     assert!(!SERVICE.to_lowercase().contains("coucou"));
+}
+
+/// L4 (13 Nov, human): the keychain service is Koda's, with no alias and no fallback, so a 0.1
+/// entry under the old service is simply not read. Exactly ONE thing may still target the old
+/// service: a one-time cleanup of 0.1 entries (K2-10 T8 deletes the seven imap-*/smtp-* keys).
+/// That constant is pinned here so the cleanup can never silently follow the rename.
+#[test]
+fn the_legacy_service_is_pinned_for_one_time_cleanups_only() {
+    assert_eq!(super::LEGACY_KEYCHAIN_SERVICE, "com.abitog.AbitoTauri");
+    assert_ne!(SERVICE, LEGACY_KEYCHAIN_SERVICE, "the migration must name the old service explicitly");
+    assert!(SERVICE.starts_with("com.abitog."), "still Abito's own reverse-DNS namespace (the bundle id is T6)");
+}
+
+/// K2-01c S1: on macOS a saved value lands in the login Keychain under Abito's own service and is
+/// still there for a fresh store (a reopened Koda). Checked through the public store and through
+/// `security`, so it cannot pass against any other backend. Uses a throwaway probe entry only.
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_keeps_secrets_in_the_login_keychain() {
+    let key = format!("k2-01c-test-probe-{}", std::process::id());
+    let value = "probe-value-not-a-secret";
+    assert_eq!(Keychain.write(&key, value), Ok(()));
+    // a new store instance, like a second launch of Koda, reads the same entry back
+    let fresh = Keychain;
+    assert_eq!(fresh.read(&key), Ok(Some(value.to_owned())));
+    // Attributes only (no -w): reading the password from another binary would hit the item's
+    // ACL and a prompt; the attributes prove the entry is in the Keychain under Abito's service.
+    let out = std::process::Command::new("security")
+        .args(["find-generic-password", "-s", SERVICE, "-a", &key])
+        .output()
+        .expect("security(1) runs");
+    assert!(out.status.success(), "the entry is in the macOS Keychain");
+    let attrs = String::from_utf8_lossy(&out.stdout);
+    assert!(attrs.contains(SERVICE) && attrs.contains(&key), "service and account match");
+    assert!(!attrs.contains(value), "attributes never carry the value");
+    assert_eq!(fresh.delete(&key), Ok(()));
+    assert_eq!(fresh.read(&key), Ok(None));
+    // deleting a missing entry stays Ok (same contract as Linux/Windows)
+    assert_eq!(fresh.delete(&key), Ok(()));
 }
 
 /// #503 S3: NaN and OpenCode Go keys live in the closed keychain list like every other chat key.
@@ -136,4 +175,16 @@ fn nan_and_opencode_go_keys_are_known() {
         assert!(KNOWN_KEYS.contains(&key), "{key}");
         assert!(parse_command(&json!({"action":"set","key":key,"value":"v"})).is_some(), "{key}");
     }
+}
+
+/// K2-04 L4: the one-time 0.1 cleanup runs through its OWN store. It must target the old service
+/// (the retired imap-*/smtp-* keys live there), only delete, and refuse to read or write, so
+/// nothing can start using the 0.1 service as an alias or fallback.
+#[test]
+fn the_legacy_cleanup_store_targets_the_old_service_and_only_deletes() {
+    use super::{LegacyKeychain, SecretStore, StoreError};
+    assert_eq!(LegacyKeychain::service(), super::LEGACY_KEYCHAIN_SERVICE);
+    assert_ne!(LegacyKeychain::service(), SERVICE);
+    assert_eq!(LegacyKeychain.read("anthropic-api-key"), Err(StoreError::Failed));
+    assert_eq!(LegacyKeychain.write("anthropic-api-key", "x"), Err(StoreError::Failed));
 }

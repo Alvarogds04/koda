@@ -1,18 +1,37 @@
 [package]
-name = "abito-island"
-version = "0.1.0"
+# K2-04 T7: the package (and so the library, `koda_island`) is named after the app; the INSTALLED main binary is `koda`
+# (the `[[bin]]` below). The library is NOT called `koda`: the bin is, and two targets named alike would emit the same
+# `koda.*` artifacts (koda.pdb on Windows) and collide in the docs output.
+name = "koda-island"
+version = "0.2.1"
 edition = "2021"
-description = "Abito island — Electron to Rust+Tauri migration, unit M2 (host/bridge + Pi transport receiver)"
+description = "Koda island — Electron to Rust+Tauri migration, unit M2 (host/bridge + Pi transport receiver)"
 publish = false
-default-run = "abito-island"
+default-run = "koda"
+
+# The shipped binary is `koda` (K2-04 T6). Autobins stays on, so the two helper binaries
+# (src/bin/abito-notice-relay.rs, src/bin/abito-private-session.rs) are still discovered and
+# keep their names: the helper rename is a separate unit.
+[[bin]]
+name = "koda"
+path = "src/main.rs"
 
 [features]
 # Test/probe scaffolding (fake backend/model, read-back probe). Always on in debug
-# builds; OFF in the packaged release so `--probe`/ABITO_PROBE cannot do anything.
+# builds; OFF in the packaged release so `--probe`/KODA_PROBE cannot do anything.
 probe = []
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+# K2-13 (S8, S15; decisions L22/L23): build.rs stages sherpa-onnx's own v1.13.8 libraries built without TTS
+# (-DSHERPA_ONNX_ENABLE_TTS=OFF) over the TTS build sherpa-onnx-sys downloads, so the shipped binaries contain no
+# espeak-ng (GPL-3.0) and no piper_phonemize. It reuses what Cargo.lock already resolves — ureq 2.12, tar, bzip2 and
+# sha2 are exactly the crates sherpa-onnx-sys's own build script uses to fetch and unpack its native libraries — so
+# this adds build edges only: no new packages, and the same rustls client (no native-tls, no openssl).
+ureq = { version = "2.12", features = ["proxy-from-env"] }
+tar = "0.4"
+bzip2 = "0.4"
+sha2 = "0.10"
 
 [dependencies]
 # Dependency policy (#467, owner decision): new crates are allowed only for functions Abito
@@ -59,21 +78,18 @@ sherpa-onnx = { version = "1.13.8", default-features = false, features = ["stati
 # PulseAudio server) for the device list on Linux.
 cpal = "0.18"
 
-# #490 mail: SMTP + MIME for sending from the island with the user's own account (owner decision:
-# a mature implementation beats a hand-written one for AUTH, TLS and MIME encoding). rustls only
-# (no native-tls/openssl), no default features.
-lettre = { version = "0.11", default-features = false, features = ["smtp-transport", "builder", "tokio1", "tokio1-rustls-tls"] }
-
-# #490 IMAP inbox: a hand-written minimal client over TLS (the Rust IMAP crates are alpha or
-# native-tls based). rustls with the ring provider and webpki roots are ALREADY resolved through
-# reqwest/lettre; these are direct edges only. Implicit TLS (993) only, no plaintext.
+# #490 IMAP inbox and SMTP sending retired in the 0.2 (K2-10 T7, L21/L22): their crates left with
+# them (lettre and webpki-roots are gone; reqwest brings its own roots). The rustls edges stay
+# because the phone link serves and pins TLS: rustls with the ring provider and tokio-rustls are
+# used by `phone_link`.
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
-webpki-roots = "1"
 # #490 phone link (LAN only, off by default): the self-signed pinned certificate and the pairing QR.
 # rcgen was a dev-dependency for the mail tests; the phone link needs it at run time. qrcode renders
 # the pairing link as SVG (no image crates). ring is already resolved (rustls); direct edge only.
 rcgen = { version = "0.13", default-features = false, features = ["ring"] }
+# K2-06: PNG encoding of the captured window. png 0.18.1 is ALREADY in Cargo.lock (tauri); direct edge only.
+png = "0.18"
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 ring = "0.17"
 # The phone finds this computer again when its address changes: announced on the local network only
@@ -85,7 +101,7 @@ mdns-sd = { version = "0.21", default-features = false }
 # was uncompilable there). XTest (synthetic input) is deliberately NOT here: it lives in the
 # dev set below so the shipped binary never compiles the input-injection module.
 [target.'cfg(target_os = "linux")'.dependencies]
-x11rb = { version = "0.13", features = ["xkb"] }
+x11rb = { version = "0.13", features = ["xkb", "composite"] }
 # #305b: the XDG GlobalShortcuts portal client. NOT ashpd (absent from the
 # offline registry, downloads are forbidden): zbus is ALREADY compiled in via
 # tauri-plugin-single-instance, so this declares the same crate/version/features
@@ -101,12 +117,28 @@ keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
 cpal = { version = "0.18", features = ["pulseaudio"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-# #503 key store on macOS: the Keychain (same `keyring` API as Linux/Windows; this build is not compiled in CI yet).
+# #503 / K2-01c key store on macOS: the login Keychain (same `keyring` API and service name as Linux/Windows).
 keyring = { version = "3", features = ["apple-native"] }
 # HU-049/HU-050: frontmost app (NSWorkspace) and activate (NSRunningApplication); already in Cargo.lock via tauri/tao.
 core-foundation = "0.10"
 core-graphics = "0.25"
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "libc", "NSWorkspace", "NSRunningApplication"] }
+# K2-06 (S6): the consent alert is an AppKit NSAlert run modally. NSAlert + NSApplication to show it
+# and run it, and the button chain (NSButton over NSControl/NSView/NSResponder) to add the refusing
+# button first with Return as its key equivalent. Feature flags only: every one of these crates is
+# ALREADY in Cargo.lock.
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "libc", "NSAlert", "NSApplication", "NSButton", "NSControl", "NSResponder", "NSView", "NSWorkspace", "NSRunningApplication"] }
+# K2-06 (S1/S7): ScreenCaptureKit window capture, macOS 14+. objc2-screen-capture-kit 0.3.2 is the
+# only NEW package (Zlib OR Apache-2.0 OR MIT); it resolves onto the objc2 0.6.5, objc2-foundation
+# 0.3.2, objc2-core-foundation 0.3.2, objc2-core-graphics 0.3.2 and block2 0.6.2 ALREADY in
+# Cargo.lock, so nothing else is added and no second objc2 version appears. The features are the
+# ones Koda uses (Gentle Dot enables the same set): SCShareableContent for the SCWindow by id,
+# SCStream for SCContentFilter/SCStreamConfiguration, SCScreenshotManager for the shot itself.
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSError"] }
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFCGTypes", "CFData"] }
+objc2-core-graphics = { version = "0.3", default-features = false, features = ["std", "CGDataProvider", "CGImage"] }
+block2 = "0.6"
+objc2-screen-capture-kit = { version = "0.3", default-features = false, features = ["std", "block2", "objc2-core-foundation", "objc2-core-graphics", "SCScreenshotManager", "SCShareableContent", "SCStream"] }
 
 [target.'cfg(windows)'.dependencies]
 # #467 key store: Windows Credential Manager.
@@ -125,7 +157,20 @@ keyring = { version = "3", features = ["windows-native"] }
 # OVERLAPPED/GetOverlappedResult/CancelIoEx, Storage_FileSystem for
 # ReadFile/WriteFile/MoveFileExW, Security_Cryptography for BCryptGenRandom
 # (128-bit pipe instance). Symbols verified against the cached 0.61.2 source.
-windows-sys = { version = "0.61.2", default-features = false, features = ["Win32_Foundation", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging", "Win32_System_Threading", "Win32_Graphics_Gdi", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Diagnostics_ToolHelp", "Win32_System_SystemInformation", "Win32_Security_Authorization", "Win32_System_Pipes", "Win32_System_IO", "Win32_Storage_FileSystem", "Win32_Security_Cryptography", "Win32_Graphics_Dwm"] }
+# K2-06 (S1, S6) additions, same crate and still feature gates only: Storage_Xps for
+# PrintWindow (it lives there in windows-sys 0.61.2; PW_RENDERFULLCONTENT itself is NOT
+# declared there and comes from winuser.h as a local constant) and UI_Controls for the consent
+# task dialog (TaskDialogIndirect). Both verified against the cached 0.61.2 source.
+windows-sys = { version = "0.61.2", default-features = false, features = ["Win32_Foundation", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging", "Win32_System_Threading", "Win32_Graphics_Gdi", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Diagnostics_ToolHelp", "Win32_System_SystemInformation", "Win32_Security_Authorization", "Win32_System_Pipes", "Win32_System_IO", "Win32_Storage_FileSystem", "Win32_Security_Cryptography", "Win32_Graphics_Dwm", "Win32_Storage_Xps", "Win32_UI_Controls"] }
+# K2-09 T3: Spotify on Windows is read from the system media transport controls, and that is the
+# WinRT `windows` crate, not windows-sys: the session manager, its change events and the transport
+# requests are COM/WinRT interfaces windows-sys does not generate. `windows` 0.62.2 is ALREADY in
+# Cargo.lock (Tauri's own stack depends on it), so this declares the same crate and version and adds
+# only this crate's edge: the lock gains its dependency line, no package, no checksum, no version
+# change. Features are the minimal set — Foundation (the typed event handlers), Media + Media_Control
+# (the SMTC session and its properties) and Win32_System_Com (CoInitializeEx on the listener thread,
+# which WinRT needs). Every symbol was checked against the cached 0.62.2 source before declaring it.
+windows = { version = "0.62", features = ["Foundation", "Media", "Media_Control", "Win32_System_Com"] }
 
 [target.'cfg(unix)'.dev-dependencies]
 # tests only: fake key presses on a PRIVATE Xvfb (tests/hotkey_x11.rs). Never shipped.

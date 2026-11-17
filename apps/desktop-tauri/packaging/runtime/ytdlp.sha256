@@ -1,0 +1,23 @@
+# K2-13 T2c-8 (S19): the standalone yt-dlp Koda bundles to read the YouTube links of a post. One asset per shipped
+# target, from https://github.com/yt-dlp/yt-dlp/releases/download/<tag>/<asset>, and the sha256 of every download.
+# The hashes are the official SHA2-256SUMS of that release (verified when pinned, 2026-11-12), not a hash of our own
+# copy: the file below is the one GitHub serves. darwin-arm64 has no pin yet (pending for the Mac session): there the
+# daemon answers `youtube_unavailable` and the rest of the post is still read.
+#
+# yt-dlp is Unlicense (public domain), but the official standalone executables are PyInstaller bundles that carry
+# Python and a set of third-party components — including copyleft ones (GNU Readline GPL-3.0-or-later, mutagen
+# GPL-2.0-or-later). yt-dlp publishes their texts in THIRD_PARTY_LICENSES.txt, and that file plus yt-dlp's own
+# Unlicense travel next to the binary (see the last two pins below). Koda runs yt-dlp as a separate, unmodified
+# program, so its own code is not linked with it; the source-access record is in the runtime notices.
+#
+# YouTube breaks yt-dlp regularly: a release that stops extracting a video is a normal event, not a bug of ours. Keep
+# this pin fresh — update the tag, both sha256 values from the new release's SHA2-256SUMS, and the licence texts, and
+# regenerate the runtime — instead of shipping a binary that no longer works.
+#
+# sha256                                                            asset
+767ba9dce7052aa196f8b12652f433d76de128ba168966fa84b6394d5e6c6795  2026.10.26/yt-dlp_linux
+f5389d3698ecde4ef06f4e6b1ce0294fe9ac1396228c8990b8d3416d6d177a7d  2026.10.26/yt-dlp.exe
+#
+# Licence texts shipped beside it, from the same release (paths under packaging/runtime/).
+7e12e5df4bae12cb21581ba157ced20e1986a0508dd10d0e8a4ab9a4cf94e85c  ytdlp/unlicense.txt
+472aefe951c7db35e1657c1d13fd337140511ed6f2b329205105ad441c5a02b7  ytdlp/third-party-licenses.txt

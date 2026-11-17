@@ -2,7 +2,7 @@
 # as the AbitoPortPoll scheduled task (every minute, as SYSTEM).
 #
 # Why a CD poll instead of sshd: the guest never has to accept an inbound
-# connection. The host rewrites a small ISO (ABITO_SETUP) and hot-swaps it as
+# connection. The host rewrites a small ISO (KODA_SETUP) and hot-swaps it as
 # the second CD-ROM; this script notices a new number and runs it. Results come
 # back over HTTP POST to the host's collect listener (192.168.122.1, the libvirt
 # NAT gateway), and are echoed to COM1, which the host logs.
@@ -16,7 +16,7 @@ $lastfile = Join-Path $state 'last.txt'
 if (Test-Path $lastfile) { [int]::TryParse((Get-Content $lastfile -Raw).Trim(), [ref]$last) | Out-Null }
 
 $cd = Get-CimInstance -ClassName Win32_LogicalDisk -Filter 'DriveType=5' |
-  Where-Object { $_.VolumeName -eq 'ABITO_SETUP' } | Select-Object -First 1
+  Where-Object { $_.VolumeName -eq 'KODA_SETUP' } | Select-Object -First 1
 if (-not $cd) { exit 0 }
 $root = $cd.DeviceID + '\'
 $cmds = Get-ChildItem -Path $root -Filter 'command-*.bat' -ErrorAction SilentlyContinue |

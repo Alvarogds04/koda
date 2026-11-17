@@ -1,0 +1,7 @@
+# K2-13 T2c-2 (S9): the ffmpeg Koda bundles to extract and split the audio of Minikoda videos. One BtbN/FFmpeg-Builds
+# LGPL asset per target, from release <tag>/<asset> (https://github.com/BtbN/FFmpeg-Builds/releases/download/...),
+# sha256 of the archive. Verified when pinned (2026-11-12): `ffmpeg -version` shows --enable-version3 and neither
+# --enable-gpl nor --enable-nonfree; LICENSE.txt is the LGPL v3 text. darwin-arm64 has no pin: no LGPL macOS build
+# is published (pending for the Mac session, decision L12). build-runtime.cjs re-checks all of it at build time.
+622b19ded1beff6acc2eb3f1ebe22a358fee932691791b481c883fae46508b94  autobuild-2026-11-11-12-39/ffmpeg-n9.0.2-49-gc179411bbb-linux64-lgpl-9.0.tar.xz
+9ccd65428fb0e60a0d574b76145df41f402b754edd2d06c2e24fa506fc1c2b02  autobuild-2026-11-11-12-39/ffmpeg-n9.0.2-49-gc179411bbb-win64-lgpl-9.0.zip

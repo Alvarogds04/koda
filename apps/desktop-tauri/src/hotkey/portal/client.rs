@@ -19,8 +19,8 @@ const IFACE: &str = "org.freedesktop.portal.GlobalShortcuts";
 const REQUEST_IFACE: &str = "org.freedesktop.portal.Request";
 /// `org.freedesktop.host.portal.Registry`: how an app that is NOT sandboxed tells the portal its app id.
 const REGISTRY_IFACE: &str = "org.freedesktop.host.portal.Registry";
-/// The id of Abito's installed `.desktop` (`com.abitog.AbitoTauri.desktop`, the tauri identifier).
-const APP_ID: &str = "com.abitog.AbitoTauri";
+/// The id of Abito's installed `.desktop` (`com.abitog.Koda.desktop`, the tauri identifier).
+const APP_ID: &str = "com.abitog.Koda";
 
 /// GNOME's portal refuses a `GlobalShortcuts.CreateSession` from a connection with no app id ("An app id is
 /// required"), and a process started from a `.desktop` file is not given one. Without this the session was

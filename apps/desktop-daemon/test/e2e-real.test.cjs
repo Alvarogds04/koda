@@ -1,6 +1,6 @@
 "use strict";
 
-// REAL offline smoke: the installed `pi` in a temporary island. Skipped unless ABITO_E2E_PI=1.
+// REAL offline smoke: the installed `pi` in a temporary island. Skipped unless KODA_E2E_PI=1.
 // No prompt is sent and no model/provider is contacted (PI_OFFLINE=1 is set by the engine).
 
 const test = require("node:test");
@@ -12,9 +12,9 @@ const path = require("node:path");
 
 const { Daemon, readSession } = require("../src/daemon.cjs");
 
-const enabled = process.env.ABITO_E2E_PI === "1";
+const enabled = process.env.KODA_E2E_PI === "1";
 
-test("real pi: daemon start, handshake, status, stop (no prompt)", { skip: !enabled && "set ABITO_E2E_PI=1 to run", timeout: 90_000 }, async () => {
+test("real pi: daemon start, handshake, status, stop (no prompt)", { skip: !enabled && "set KODA_E2E_PI=1 to run", timeout: 90_000 }, async () => {
 	const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "abito-e2e-")));
 	const root = path.join(base, "i");
 	const daemon = new Daemon({

@@ -658,9 +658,11 @@ test('§9.2 motion table in CSS: view enter spring after 160ms delay, exit 160ms
   for (const m of css.replace(/\.dcapsule \{[^}]*\}/, '').matchAll(/transition:([^;]*);/g)) assert.doesNotMatch(m[1], /\b(width|height|left|top|right|bottom|margin|padding)\b/, m[1]);
   assert.match(css, /#clay \{[^}]*scale\(var\(--hover, 1\)\)[^}]*transition: transform var\(--dur-state\)/);
   assert.match(css, /:where\(button, textarea\) \{[^}]*outline: 2px solid transparent[^}]*var\(--dur-focus\)/);
-  assert.match(css, /#models-list \.choose\[aria-pressed="true"\] \.ico \{ animation: control-pop var\(--dur-control\) var\(--spring\)/);
+  // K2-05 U5c (L72): `control-pop` animated the chosen model of the removed Ajustes model list, so it and its
+  // only consumer are gone with it (the control timing token --dur-control is still asserted above).
+  assert.doesNotMatch(css, /control-pop/);
   const reduced = [...css.matchAll(/html\[data-motion="reduce"\][^{]*\{[^}]*\}/g)].map(m => m[0]).join('\n');
-  assert.match(reduced, /html\[data-motion="reduce"\] #notices, html\[data-motion="reduce"\] #permission, html\[data-motion="reduce"\] #open-chat, html\[data-motion="reduce"\] #chat, html\[data-motion="reduce"\] #models, html\[data-motion="reduce"\] #chat-body, html\[data-motion="reduce"\] #question \{ transition: none !important; transform: none !important/);
+  assert.match(reduced, /html\[data-motion="reduce"\] #notices, html\[data-motion="reduce"\] #permission, html\[data-motion="reduce"\] #open-chat, html\[data-motion="reduce"\] #chat, html\[data-motion="reduce"\] #chat-body, html\[data-motion="reduce"\] #question \{ transition: none !important; transform: none !important/);
   assert.match(reduced, /html\[data-motion="reduce"\] #clay \{ transition: none !important/);
 });
 
@@ -747,24 +749,21 @@ test('night review: the bridge is shown (chip «Sin puente», compact triangle) 
 test('night review: views are NOT display:none while animating (inert instead), so the §9.2 motion actually runs', () => {
   const html = fs.readFileSync(path.join(frontend, 'index.html'), 'utf8');
   assert.match(html, /<section id="chat" inert/); assert.doesNotMatch(html, /<section id="chat"[^>]*\shidden/);
-  assert.match(html, /<div id="models" inert/); assert.doesNotMatch(html, /<div id="models"[^>]*\shidden/);
+  // K2-05 U5c (L72): the Ajustes model panel, its script tag and its styles are gone; #chat keeps the contract above.
+  assert.doesNotMatch(html, /id="models"/); assert.doesNotMatch(html, /src="models\.js"/);
   const chatSrc = fs.readFileSync(path.join(frontend, 'chat.js'), 'utf8');
-  const modelsSrc = fs.readFileSync(path.join(frontend, 'models.js'), 'utf8');
   assert.doesNotMatch(chatSrc, /\bchat\.hidden\s*=/);
-  assert.doesNotMatch(modelsSrc, /panel\.hidden\s*=/);
   assert.match(chatSrc, /chat\.inert = false/); assert.match(chatSrc, /chat\.inert = true; \}, 220\)/);
-  assert.match(css, /#models\[data-open="true"\] \{[^}]*var\(--dur-view-delay\)/);
-  assert.doesNotMatch(css, /#models\[hidden\]/);
-  assert.doesNotMatch(css, /#capsule\[data-models="open"\] #chat-body \{ display: none/);
+  assert.doesNotMatch(css, /#models/);
 });
 
-test('N8 vertical chat entrance: the chat (and its models panel) travel along the docked edge, with the contract timing, no display:none', () => {
+test('N8 vertical chat entrance: the chat travels along the docked edge, with the contract timing, no display:none', () => {
   const root = css.slice(css.indexOf(':root'), css.indexOf('}', css.indexOf(':root')));
   // a variable distance, a direction per docked edge
   assert.match(root, /--view-shift:\s*16px/);
   assert.match(css, /#capsule\[data-edge="top"\]\s*\{[^}]*--view-dir:\s*-1/);
   assert.match(css, /#capsule\[data-edge="bottom"\]\s*\{[^}]*--view-dir:\s*1/);
-  for (const sel of ['#chat', '#models']) {
+  for (const sel of ['#chat']) {
     const rule = new RegExp(`\\n${sel} \\{([^}]*)\\}`).exec(css);
     assert.ok(rule, sel);
     assert.match(rule[1], /transform: translateY\(calc\(var\(--view-dir\) \* var\(--view-shift\)\)\)/, `${sel} starts displaced along the edge`);
@@ -777,7 +776,7 @@ test('N8 vertical chat entrance: the chat (and its models panel) travel along th
   const chatRule = /\n#chat \{([^}]*)\}/.exec(css)[1];
   assert.doesNotMatch(chatRule, /translateY\(6px\)/);
   // reduced motion still jumps
-  assert.match(css, /html\[data-motion="reduce"\] #chat, html\[data-motion="reduce"\] #models/);
+  assert.match(css, /html\[data-motion="reduce"\] #chat/);
 });
 
 test('#304 motionState: Abito animates ALWAYS by default; the system preference counts only when the human opted to honor it', () => {
@@ -858,8 +857,8 @@ test('L34 mini grid: up to four small characters on the bar, 13px cells 3px apar
 test('fixed-window gestures retain click reporting and character pick-up without frontend docking policy', () => {
   assert.doesNotMatch(islandSrc, /snap_to_edge|nearest_vertical_edge|anchor_toggle/);
   assert.match(islandSrc, /send\('drag_press'/); assert.match(islandSrc, /send\('drag_release'/);
-  // HU-057: the borderRadius source line is now `${rTopUsed}… ${rBottom}…`; «square top corners, rounded bottom» is asserted on the rendered island
-  // (browser block at the end of this file), compact and expanded.
+  // isla-cualquier-lado S1: the borderRadius source line is `${radius}px` on all four corners; «r26 all round» is asserted on the rendered
+  // island (browser block at the end of this file), compact and expanded.
 });
 
 test('CSS structure: braces balance (no stray «}» swallowing the next rule) and every critical top-level rule exists', () => {
@@ -876,7 +875,7 @@ test('CSS structure: braces balance (no stray «}» swallowing the next rule) an
     if (plain[i] === '{') { if (d === 0) top.push(plain.slice(start, i).trim()); d += 1; }
     else if (plain[i] === '}') { d -= 1; if (d === 0) start = i + 1; }
   }
-  for (const sel of ['.sr-only', '#clay', '#island', '#compact-flag', '#open-chat', '#chat', '#models', '#question']) assert.ok(top.includes(sel), `top-level rule ${sel} must exist; got ${top.length} rules`);
+  for (const sel of ['.sr-only', '#clay', '#island', '#compact-flag', '#open-chat', '#chat', '#question']) assert.ok(top.includes(sel), `top-level rule ${sel} must exist; got ${top.length} rules`);
   assert.ok(top.some(t => t.startsWith('html[data-motion="reduce"] #notices')), 'the reduced-motion rules are top-level rules');
 });
 
@@ -996,7 +995,10 @@ test('Pi status row (Coucou idle card): one short line + one link per real faili
   const down = O.connectionView({ connections: 0 }), up = O.connectionView({ connections: 1 });
   const acct = [{ configured: true, local: false }];
   // not connected (existing): the Agentes row
-  assert.deepEqual(O.engineRowView(down), { kind: 'down', label: 'Sin motor', link: 'Conectar', target: 'accounts:agentes', aria: 'Conectar Pi: abrir Ajustes → Agentes' });
+  assert.deepEqual(O.engineRowView(down), { kind: 'down', label: 'Sin motor', link: 'Conectar', target: 'accounts:agentes', aria: 'Conectar: abrir Ajustes → Agentes' });
+  // K2-05 T4 U4: the island engine row never names the engine vendor in its accessible text
+  for (const r of [O.engineRowView(down), O.engineRowView(up, { connection: 'lost', accounts: null, sessions: 'error' }), O.engineRowView(up, { connection: 'connected', accounts: [], sessions: 'ready' }), O.engineRowView(up, { connection: 'connected', accounts: acct, sessions: 'error' }), O.engineRowView(down, { connection: 'no_daemon', last_error: { code: 'pi_missing' } })])
+    assert.doesNotMatch(r.aria, /\bPi\b/, r.aria);
   assert.deepEqual(O.engineRowView(down, { connection: 'connected', accounts: acct, sessions: 'ready' }).kind, 'down');
   // engine failures the agent state really reports -> the Motor card (Reiniciar)
   for (const [connection, label] of [['lost', 'Motor caído'], ['refused', 'Motor no responde'], ['bad_session', 'Sesión no válida'], ['no_daemon', 'Sin motor']]) {
@@ -1046,7 +1048,7 @@ test('T7.3 approval card markup: «Espera tu respuesta» caption, fold inside th
     const [isl] = await ui.measure('#island');
     const radii = await ui.page.evaluate(() => { const c = getComputedStyle(document.getElementById('island')); return [c.borderTopLeftRadius, c.borderTopRightRadius, c.borderBottomRightRadius, c.borderBottomLeftRadius].map(parseFloat); });
     assert.deepEqual([Math.round(isl.w), Math.round(isl.h)], [720, 150], 'HU-057 plain overview is the 720x150 Nusa notch');
-    assert.deepEqual(radii, [0, 0, 26, 26], 'HU-057 notch: square top, r26 bottom');
+    assert.deepEqual(radii, [26, 26, 26, 26], 'isla-cualquier-lado S1: the floating card is r26 on all four corners (was the notch [0,0,26,26])');
     // island-free-drag S3: compact is the disc (40x32, r16 on ALL four corners), so it reads as a circle wherever it floats
     await ui.page.evaluate(() => window.__islandSetState('compact')); await ui.page.waitForTimeout(1500);
     const compactRadii = await ui.page.evaluate(() => { const c = getComputedStyle(document.getElementById('island')); return [c.borderTopLeftRadius, c.borderTopRightRadius, c.borderBottomRightRadius, c.borderBottomLeftRadius].map(parseFloat); });
@@ -1058,8 +1060,9 @@ test('T7.3 approval card markup: «Espera tu respuesta» caption, fold inside th
     assert.equal(kodas.length, 1, 'only Koda is drawn in the plain overview: ' + JSON.stringify(kodas));
     const k = kodas[0], relX = k.left - isl.left, relY = k.top - isl.top;
     assert.deepEqual([Math.round(k.w), Math.round(k.h)], [64, 64], 'Koda is 64px (OVERVIEW.clay)');
-    assert.ok(Math.abs(relX - 598) <= 2, 'Koda column: box left 598 from the island edge, measured ' + relX);
-    assert.ok(Math.abs(relY - 49) <= 2, 'Koda sits in the notch body (box top ~49), measured ' + relY);
+    // welcome-home (human, 16-nov): the plain Inicio is Koda CENTRED ((720 - 64) / 2 = 328 from the island edge), no longer the right-hand column at 598
+    assert.ok(Math.abs(relX - 328) <= 2, 'Koda is centred: box left 328 from the island edge, measured ' + relX);
+    assert.ok(Math.abs(relY - 28) <= 2, 'Koda sits at the top of the Inicio body (welcome-home: body top 28), measured ' + relY);
     assert.ok(relX + k.w <= isl.w - 20 && relY + k.h <= isl.h - 20, 'Koda keeps >=20px of air to the right/bottom edge of the notch');
   } finally { await ui.close(); }
   console.log('overview-view-check (HU-057 real layout): ok');

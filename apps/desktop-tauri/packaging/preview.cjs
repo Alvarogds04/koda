@@ -32,20 +32,20 @@ async function main(args = process.argv.slice(2)) {
     const built = cp.spawnSync('cargo',['build','--release','--locked','--offline','--features','tauri/custom-protocol','--target-dir',target],{cwd:crate,stdio:'inherit',timeout:1800000,env:{...process.env,RUSTFLAGS:remap,CARGO_ENCODED_RUSTFLAGS:undefined}});
     if (built.status !== 0) throw Error('compilación de preview falló; no se prepara la preview');
     if (fingerprint !== validator.inputs() || JSON.stringify(before) !== JSON.stringify(L.provenance(crate))) throw Error('árbol cambió durante la validación');
-    const binary = path.join(target,'release','abito-island');
+    const binary = path.join(target,'release','koda');
     const bytes = fs.readFileSync(binary);
-    for (const marker of ['ABITO_PROBE','AbitoValidate','validation_scene','validation_observation','validate-result','XTEST']) if (bytes.includes(Buffer.from(marker))) throw Error(`binario contiene marcador de prueba: ${marker}`);
+    for (const marker of ['KODA_PROBE','AbitoValidate','validation_scene','validation_observation','validate-result','XTEST']) if (bytes.includes(Buffer.from(marker))) throw Error(`binario contiene marcador de prueba: ${marker}`);
     if (fs.realpathSync(path.dirname(out)) !== parent) throw Error('destino cambió durante la validación');
     fs.mkdirSync(out,{mode:0o700});
-    fs.copyFileSync(binary,path.join(out,'abito-island'));
-    fs.chmodSync(path.join(out,'abito-island'),0o700);
-    fs.copyFileSync(path.join(crate,'icons/icon.png'),path.join(out,'abito-island.png'));
-    fs.writeFileSync(path.join(out,'abito-island-launcher'),L.launcherText(),{mode:0o700});
+    fs.copyFileSync(binary,path.join(out,'koda'));
+    fs.chmodSync(path.join(out,'koda'),0o700);
+    fs.copyFileSync(path.join(crate,'icons/icon.png'),path.join(out,'koda.png'));
+    fs.writeFileSync(path.join(out,'koda-launcher'),L.launcherText(),{mode:0o700});
     for (const [dir,files] of [['desktop-daemon',L.DAEMON_FILES],['desktop-harness',L.HARNESS_FILES], ['desktop-pi', L.PI_FILES]]) for (const file of files) {
       const dest = path.join(out,dir,file); fs.mkdirSync(path.dirname(dest),{recursive:true,mode:0o700}); fs.copyFileSync(path.join(crate,'..',dir,file),dest);
     }
     fs.writeFileSync(path.join(out,'preview.json'),JSON.stringify({provenance:before,sha256:L.sha256File(binary),features:'tauri/custom-protocol (no probe)',inputs:fingerprint,validated:true},null,2));
-    console.log(`Preview validada. No se ha iniciado. Ejecutar:\n${JSON.stringify(path.join(out,'abito-island-launcher'))}`);
+    console.log(`Preview validada. No se ha iniciado. Ejecutar:\n${JSON.stringify(path.join(out,'koda-launcher'))}`);
   });
 }
 if (require.main === module) main().then(code=>{process.exitCode=code;}).catch(e=>{console.error(e.message);process.exitCode=1;});

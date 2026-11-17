@@ -147,7 +147,7 @@ async function voicePage(page, ctx) {
       }
       list.append(row(`${m.name} · ${m.sizeMb} MB`, `${m.note} Idiomas: ${m.languages.join(", ")}. Licencia: ${m.license}. ${state}.`, actions));
     }
-    const words = trusted(h("textarea", { id: "voice-words", rows: "3", "aria-label": "Palabras personalizadas", placeholder: "Una por línea. «Abito» ya está incluida.", text: sp.words.join("\n") }));
+    const words = trusted(h("textarea", { id: "voice-words", rows: "3", "aria-label": "Palabras personalizadas", placeholder: "Una por línea. «Koda» ya está incluida.", text: sp.words.join("\n") }));
     words.addEventListener("change", () => apply2((s) => {
       s.words = words.value.split("\n").map((w) => w.trim()).filter(Boolean);
     }));

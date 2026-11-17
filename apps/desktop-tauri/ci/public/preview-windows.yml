@@ -114,7 +114,7 @@ jobs:
       - name: Actual foreign-SID receiver, relay and private-file probes
         timeout-minutes: 10
         env:
-          ABITO_FOREIGN_USER_TEST: '1'
+          KODA_FOREIGN_USER_TEST: '1'
         run: |
           cargo test --locked --test windows_foreign_user -- `
             --test-threads=1 --nocapture
@@ -143,7 +143,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node packaging/windows/stage-runtime.cjs --runtime-archive "$runtimeArchive"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $bins = @('abito-island', 'abito-notice-relay',
+          $bins = @('koda', 'abito-notice-relay',
             'abito-private-session')
           foreach ($bin in $bins) {
             Copy-Item "target/release/$bin.exe" "dist/$bin.exe"

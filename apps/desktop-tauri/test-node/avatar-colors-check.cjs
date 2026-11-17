@@ -379,7 +379,7 @@ test('wiring: the panel offers the palette and writes through the existing prefe
   const view = fs.readFileSync(path.join(frontend, 'settings-view.js'), 'utf8');
   assert.match(src, /V\.colorRows\(/, 'the panel renders the colour model');
   assert.match(src, /set_avatar_color/);
-  assert.match(src, /id: AVATAR\.PRINCIPAL_ID, name: 'Abito'[^\n]*\.\.\.identities\.identities/, 'identities come from the contract plus the real owner projection');
+  assert.match(src, /id: AVATAR\.PRINCIPAL_ID, name: 'Koda'[^\n]*\.\.\.identities\.identities/, 'identities come from the contract plus the real owner projection');
   assert.match(src, /AbitoSpecialistsPanel\?\.identityView\(\)/, 'no invented specialist identity');
   assert.doesNotMatch(src, /call\('specialists_action'/, 'Settings never loads a second role cache');
   assert.match(view, /avatarColors/, 'the view-model reads the stored map');

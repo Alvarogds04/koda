@@ -1,4 +1,5 @@
-// Abito-owned migration of settings.js/accounts and models.js; rendered with MIT hub/ui.ts.
+// Abito-owned migration of settings.js/accounts; rendered with MIT hub/ui.ts. K2-05 U5c (L72): the model lists
+// this file used to render are gone — the engine owns the model, Ajustes does not choose it.
 import { h, clear } from '../views/dom.js';
 import { card, row, select, label } from './ui.js';
 import { notchCard, notchRow } from './notch.js';
@@ -105,7 +106,7 @@ export async function renderAccounts({ invoke, V, listen, timers, page = 'all', 
     if (ev?.message) flow.append(note(ev.message));
     if (ev?.userCode) flow.append(h('code', { class: 'path', text: ev.userCode }));
     // open_chat_url is main-only. Plain text is safe; never navigate the settings webview.
-    if (ev?.link) flow.append(note(ev.link), note('Abre este enlace en tu navegador. Abrir enlaces no está disponible en esta ventana.'));
+    if (ev?.link) flow.append(note(ev.link), note('Abrí este enlace en tu navegador. Abrir enlaces no está disponible en esta ventana.'));
     else if (ev?.linkRejected) flow.append(note('No se pudo abrir el enlace desde acá.'));
     if (prompt) {
       flow.append(note(prompt.message));
@@ -232,35 +233,4 @@ export async function renderAccounts({ invoke, V, listen, timers, page = 'all', 
     }
   };
   return ui;
-}
-
-export async function renderModels({ invoke, V, C, listen, connected = true }: any) {
-  const s = session(invoke, listen), { root, message, call, work, watch } = s;
-  let state: any = null, prefs: any = {}, listing: any = null, busy = false;
-  const apply = (next: any) => { listing = next; paint(); };
-  function change(cmd: string, p: any, done: any) { if (busy) return; busy = true; paint(); work(() => call(cmd, p), done).finally(() => { busy = false; if (s.alive()) paint(); }); }
-  function paint() {
-    const restore = preserveFocus(root); clear(root);
-    // #503 S4: the chat cards already own each provider's model choice; `connected:false` leaves only the local models.
-    const providers = section('Cuentas conectadas'), view = V.modelsTabView(state, prefs.chosenModels || {});
-    if (view.kind !== 'ready') providers.append(status(view));
-    else for (const g of view.groups) if (g.connected) for (const m of g.models) {
-      const detail = [g.name, m.sub, m.contextWindow > 0 ? `Contexto ${m.contextWindow}` : '', m.reasoning ? 'Razonamiento' : ''].filter(Boolean).join(' · ');
-      providers.append(row(m.name, detail, action(m.chosen ? 'Elegido' : 'Elegir', () => change('prefs_action', V.chosenModelsPayload(V.chosenToggle(prefs.chosenModels || {}, g.id, m.id), g.id), (p: any) => { prefs = p; }), busy)));
-    }
-    const locals = section('Locales', row('Modelos locales', listing ? C.modelsInfo(listing) : 'Leyendo…', action('Actualizar', () => change('models_action', { action: 'refresh' }, apply), busy)));
-    if (C) locals.append(row('Modelos verificados', String(C.modelsCount(listing))));
-    if (listing?.resources_text) locals.append(note(`Recursos: ${listing.resources_text}`));
-    if (C) for (const meter of C.modelMeters(listing)) locals.append(row(meter.label, meter.aria));
-    if (C) for (const m of C.modelRows(listing)) locals.append(row(m.title, [m.word, m.facts, m.message, m.note, ...m.chips.map((c: any) => c.text)].filter(Boolean).join(' · '), action(m.selected ? 'Elegido' : 'Elegir', () => change('models_action', { action: 'select', profile_id: m.id }, apply), busy || !m.selectable || m.selected)));
-    if (connected) root.append(providers);
-    root.append(locals, message); restore();
-  }
-  paint(); watch('agent:state', p => { state = { ...state, ...p }; paint(); }); watch('prefs:state', p => { prefs = p; paint(); }); watch('models:state', apply);
-  work(() => call('agent_action', { action: 'view' }), p => { state = p; paint(); });
-  work(() => call('prefs_action', { action: 'view' }), p => { prefs = p; paint(); });
-  work(() => call('agent_action', { action: 'models_list' }), p => { state = { ...state, ...p }; paint(); });
-  s.later(() => { if (state === null) { state = { connection: 'no_daemon' }; paint(); } }, V.CONNECT_WAIT_MS);
-  work(async () => { apply(await call('models_action', { action: 'list' })); return call('models_action', { action: 'refresh' }); }, apply);
-  return s.finish();
 }

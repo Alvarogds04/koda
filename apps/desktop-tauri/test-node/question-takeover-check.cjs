@@ -11,7 +11,6 @@ const { open } = require('./island-geometry-harness.cjs');
         window.__emit('question:state', { available: true, pending: null });
         window.__islandSetView('chat', 720, 240);
         document.getElementById('chat-input').value = 'draft: no enviar';
-        document.getElementById('conversations').hidden = false;
         document.getElementById('settings').dataset.open = 'true';
         document.getElementById('capsule').dataset.settings = 'open';
       });

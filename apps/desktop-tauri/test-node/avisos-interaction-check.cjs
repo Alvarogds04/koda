@@ -6,9 +6,30 @@ if (!H.findPlaywright()) { console.log('SKIPPED avisos-interaction: no real layo
 const id = '3f2b8a40-1c2d-4e5f-8a6b-7c8d9e0f1a2b';
 const second = '4f2b8a40-1c2d-4e5f-8a6b-7c8d9e0f1a2b';
 const notice = (id, kind, title) => ({id,kind,title,detail:'Resultado',severity:'info',at:Date.now(),expiresAt:Date.now()+600000});
+
+// CI 43319173068 (island shard 3, Windows): the THIRD page of this check failed to navigate with
+// net::ERR_NO_BUFFER_SPACE (Chromium out of network buffers while the other Windows shards loaded the same runner; this
+// check takes 12-17 s when it passes, so 420 s was not slowness). The harness cannot close the browser and the http server
+// it never returned from open(), so that server kept the event loop alive and the bounded runner reported FAIL(timeout 420s)
+// instead of the real error. Two rules keep it honest: a page that never loaded is SETUP, not an assertion, so opening it is
+// retried once (every assertion below still runs, twice if needed, and a broken layout fails both times), and the process
+// always closes explicitly once the verdict is known.
+async function openHarness(scenario) {
+  let last;
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try { return await H.open(scenario); } catch (error) {
+      last = error;
+      if (attempt === 1) { console.error(`retrying after a failed page open: ${(error && error.message) || error}`); await new Promise(resolve => setTimeout(resolve, 1500)); }
+    }
+  }
+  throw last;
+}
+// unref'd: with nothing left alive the process exits on its own (and flushes); with a harness leaked by a failed open, this
+// is what ends the run with the real error instead of hanging until the runner's cap (run-node-checks.cjs:49, 420 s).
+const finish = code => { process.exitCode = code; setTimeout(() => process.exit(code), 100).unref(); };
 (async () => {
   for (const theme of ['light','dark']) {
-    const r = await H.open({theme, noticeRows:[notice('transport-1','transport','Conexión caída')], quick:true});
+    const r = await openHarness({theme, noticeRows:[notice('transport-1','transport','Conexión caída')], quick:true});
     try {
       assert.equal(await r.page.locator('#notice-title').textContent(), 'Avisos · 1');
       const fits = await r.page.locator('#notice-title').evaluate(el => el.scrollWidth <= el.clientWidth + 1);
@@ -36,7 +57,7 @@ const notice = (id, kind, title) => ({id,kind,title,detail:'Resultado',severity:
       assert.equal(await r.page.locator('#notice-list').isVisible(),false,'last dismissal closes the list');
     } finally { await r.close(); }
   }
-  const identity = await H.open({noticeRows: ['repo', 'api'].map((projectName, i) => ({
+  const identity = await openHarness({noticeRows: ['repo', 'api'].map((projectName, i) => ({
     ...notice(i ? second : id, 'settled', 'Codex terminó'), projectName, agent: 'codex',
   })), quick:true});
   try {
@@ -55,7 +76,7 @@ const notice = (id, kind, title) => ({id,kind,title,detail:'Resultado',severity:
     }
   } finally { await identity.close(); }
   const long = 'Codex terminó: ' + 'resultado largo que pasa a la línea siguiente '.repeat(3);
-  const r = await H.open({noticeRows:[notice(id,'settled','Pi terminó su turno'),notice(second,'settled',long),notice('transport-2','transport','Conexión caída')],quick:true});
+  const r = await openHarness({noticeRows:[notice(id,'settled','Pi terminó su turno'),notice(second,'settled',long),notice('transport-2','transport','Conexión caída')],quick:true});
   try {
     await r.page.locator('#notice-action').click();
     const target = r.page.locator('button.notice-list-open').nth(1);
@@ -75,4 +96,5 @@ const notice = (id, kind, title) => ({id,kind,title,detail:'Resultado',severity:
     assert.equal(await r.page.locator('#notice-list').isVisible(),false);
   } finally { await r.close(); }
   console.log('PASS avisos-interaction: single transport in light/dark, readable count, wrap, exact UUID click, exact dismiss and clear-all');
-})().catch(e => {console.error(e);process.exitCode=1;});
+  finish(0);
+})().catch(e => {console.error(e);finish(1);});

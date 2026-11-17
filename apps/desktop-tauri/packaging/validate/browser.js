@@ -102,33 +102,37 @@
     const pill=document.querySelector('.dpill'), css=getComputedStyle(pill), rect=pill.getBoundingClientRect();
     return {ok:pill.hidden && css.display==='none' && rect.width===0 && rect.height===0,reason:'pill de dictado visible en idle con función habilitada',hidden:pill.hidden,display:css.display,rect:[rect.width,rect.height],phase:byId('capsule').dataset.dictation||'idle'};
   }
+  // isla-cualquier-lado S2 (human: «solo el círculo con koda pero sin que esté oculto»): the folded island is Koda's disc and it never
+  // hides at the screen edge any more. The disc is shown when nothing marks it hidden and its full 32px height is on screen.
+  const discShown=()=>byId('capsule').dataset.edgeHidden!=='true' && byId('island').getBoundingClientRect().top>=-0.1 && byId('island').getBoundingClientRect().bottom>=31.9;
   let edgeIdlePrefs;
   async function edgeIdle() {
     edgeIdlePrefs=await invoke('prefs_action',{action:'view'});
-    // human decision: «Ocultar tras» is SECONDS (5..300); 5 s keeps the scene short. Restored by edgeWake.
-    await invoke('prefs_action',{action:'set_absence_seconds',seconds:5});
     await invoke('prefs_action',{action:'sound_on'});
     await emit('validate-input',{kind:'move',x:20,y:500});
     await invoke('desktop_action',{action:'close'});
-    const began=performance.now();
-    await wait(()=>byId('capsule').dataset.edgeHidden==='true' && byId('island').getBoundingClientRect().bottom<=8.1,'ausencia de 5 s deja franja',15000);
+    await wait(()=>byId('capsule').dataset.phase==='compact','plegada antes de esperar');
+    // past the retired 10 s default (and the 1 s muted hide): the disc must still be fully on screen, every 500 ms
+    const began=performance.now(); let shown=true;
+    while(performance.now()-began<12000){ shown=shown && discShown(); await new Promise(resolve=>setTimeout(resolve,500)); }
     const native=await invoke('desktop_action',{action:'snapshot'});
-    const elapsed=performance.now()-began;
-    return {ok:native.state==='compact' && elapsed>=4000 && elapsed<=15000,elapsed,native:native.state,bottom:byId('island').getBoundingClientRect().bottom};
+    return {ok:native.state==='compact' && shown && discShown(),neverHidden:shown,native:native.state,bottom:byId('island').getBoundingClientRect().bottom};
   }
   async function edgeWake() {
     const o=window.__validateOrigin, r=byId('island').getBoundingClientRect();
     const x=Math.round(o.x+(r.x+r.width/2)*o.scale);
-    await emit('validate-input',{kind:'move',x,y:Math.round(o.y+12*o.scale)});
+    // below the disc the input reaches the window underneath: the folded island is not hovered there
+    await emit('validate-input',{kind:'move',x,y:Math.round(o.y+(r.bottom+12)*o.scale)});
     await new Promise(resolve=>setTimeout(resolve,350));
-    const through=byId('capsule').dataset.edgeHidden==='true';
-    await emit('validate-input',{kind:'move',x,y:Math.round(o.y+2*o.scale)});
-    await wait(()=>byId('capsule').dataset.edgeHidden==='false' && byId('island').getBoundingClientRect().bottom>=31.9,'mouse en franja restaura barra');
-    await invoke('prefs_action',{action:'set_absence_seconds',seconds:edgeIdlePrefs.absenceSeconds});
+    const through=!byId('island').matches(':hover');
+    // over the disc it is the island's own surface, still the visible disc
+    await emit('validate-input',{kind:'move',x,y:Math.round(o.y+(r.y+r.height/2)*o.scale)});
+    await wait(()=>byId('island').matches(':hover'),'el puntero llega al disco');
+    const shown=discShown();
     await invoke('prefs_action',{action:edgeIdlePrefs.sound ? 'sound_on':'sound_off'});
     await emit('validate-input',{kind:'move',x:20,y:500});
     await invoke('desktop_action',{action:'expand'});
-    return {ok:through,inputBelowStripPassedThrough:through};
+    return {ok:through && shown,inputBelowDiscPassedThrough:through,discShown:shown};
   }
   async function islandHoverPin() {
     const original = await invoke('prefs_action',{action:'view'});
@@ -138,7 +142,7 @@
     const outside = () => move(20,500);
     const inside = async () => {
       const r=byId('capsule').getBoundingClientRect(), o=window.__validateOrigin;
-      await move(o.x+(r.x+r.width/2)*o.scale,o.y+(byId('capsule').dataset.edgeHidden==='true' ? 2 : r.y+8)*o.scale);
+      await move(o.x+(r.x+r.width/2)*o.scale,o.y+(r.y+8)*o.scale);
     };
     try {
       await invoke('prefs_action',{action:'set_island_interaction',auto_close_seconds:5,open_on_hover:false});
@@ -168,12 +172,12 @@
       await wait(()=>!byId('island-countdown').hidden,'cuenta atrás visible');
       await wait(()=>phase()==='compact','cierre tras desfijar',7000);
       const closed=await invoke('desktop_action',{action:'snapshot'});
+      // muted, the folded disc used to hide after 1 s: it now stays on screen
       await invoke('prefs_action',{action:'sound_off'});
-      await wait(()=>byId('capsule').dataset.edgeHidden==='true' && byId('island').getBoundingClientRect().bottom<=8.1,'mute oculta hacia borde');
-      const mutedStrip=byId('island').getBoundingClientRect().bottom;
-      await inside(); await wait(()=>byId('capsule').dataset.edgeHidden==='false','mouse despierta isla silenciada');
-      return {mutedStrip,ok:hoverOff.state==='compact' && entered.state==='expanded' && grace.state==='expanded' && held.state==='expanded' && noCountdown && closed.state==='compact',hoverOff:hoverOff.state,entered:entered.state,grace:grace.state,held:held.state,noCountdown,closed:closed.state,
-        coverage:'XTest immediate hover-on/off, leave grace, pin/countdown, mute slides up leaving the 8px zone (24px hidden offset) and pointer wakes it; absence/mask covered in edgeIdle/edgeWake'};
+      await delay(2000);
+      const mutedDiscShown=discShown();
+      return {mutedDiscShown,ok:hoverOff.state==='compact' && entered.state==='expanded' && grace.state==='expanded' && held.state==='expanded' && noCountdown && closed.state==='compact' && mutedDiscShown,hoverOff:hoverOff.state,entered:entered.state,grace:grace.state,held:held.state,noCountdown,closed:closed.state,
+        coverage:'XTest immediate hover-on/off, leave grace, pin/countdown, and the muted folded disc stays on screen; idle/pass-through covered in edgeIdle/edgeWake'};
     } finally {
       await outside();
       await invoke('prefs_action',{action:original.sound ? 'sound_on':'sound_off'});
@@ -286,8 +290,9 @@
     const elapsed=performance.now()-began;
     const folded=await invoke('desktop_action',{action:'snapshot'});
     await invoke('prefs_action',{action:'sound_off'});
-    // human decision: only a pending question blocks the edge hide, so the retained notices do NOT keep the island out of the edge
-    const retainedDoesNotBlockEdge=await wait(()=>byId('capsule').dataset.edgeHidden==='true','avisos retenidos no frenan ocultar',5000).then(()=>true,()=>false);
+    // isla-cualquier-lado S2: with retained notices and muted, the folded disc stays on screen (it never hides at the edge)
+    await new Promise(resolve=>setTimeout(resolve,2000));
+    const foldedDiscShown=discShown();
     await invoke('prefs_action',{action:cyclePrefs.sound ? 'sound_on':'sound_off'});
     await invoke('desktop_action',{action:'expand'});
     await wait(()=>byId('capsule').dataset.phase==='expanded','reabre historial sin reiniciar terminado');
@@ -299,7 +304,7 @@
     await wait(async()=> (await invoke('desktop_action',{action:'snapshot'})).notices.length===before-1,'descarta exactamente una fila');
     await click(byId('notice-clear'));
     await wait(async()=> !(await invoke('desktop_action',{action:'snapshot'})).notices.length,'descarta todos conserva el contrato');
-    return {ok:held && elapsed>=5000 && folded.state==='compact' && folded.notices.length>=2 && historical && retainedDoesNotBlockEdge,held,elapsed,native:folded.state,retained:folded.notices.length,historical,retainedDoesNotBlockEdge,groupedDismissal:true};
+    return {ok:held && elapsed>=5000 && folded.state==='compact' && folded.notices.length>=2 && historical && foldedDiscShown,held,elapsed,native:folded.state,retained:folded.notices.length,historical,foldedDiscShown,groupedDismissal:true};
     } finally {
       await invoke('prefs_action',{action:'set_island_interaction',auto_close_seconds:cyclePrefs.autoCloseSeconds,open_on_hover:cyclePrefs.openOnHover});
       await invoke('prefs_action',{action:cyclePrefs.sound ? 'sound_on':'sound_off'});
@@ -318,14 +323,14 @@
     await emit('validate-input',{kind:'move',x:20,y:500});
     await wait(()=>!byId('capsule').matches(':hover'),'puntero fuera antes de plegar');
     await invoke('desktop_action',{action:'close'});
-    await wait(()=>byId('capsule').dataset.edgeHidden==='true','oculta antes de aviso real');
+    await wait(()=>byId('capsule').dataset.phase==='compact' && discShown(),'disco plegado y visible antes del aviso real');
     return {ok:true};
   }
   async function notice() {
     await wait(()=>byId('notices').textContent.includes('Validador'),'aviso Pi visible');
-    await wait(()=>byId('capsule').dataset.edgeHidden==='false' && byId('capsule').dataset.phase==='expanded','aviso real despierta borde');
+    await wait(()=>byId('capsule').dataset.phase==='expanded','aviso real abre la isla plegada');
     await invoke('prefs_action',{action:noticeEdgeSound ? 'sound_on':'sound_off'});
-    return {ok:true,text:byId('notices').textContent,edgeRevealed:true};
+    return {ok:true,text:byId('notices').textContent,revealed:true};
   }
   async function shortcutDispatch() {
     for(const id of ['openChat','goToAlert','muteToggle','jumpToTerminal']) {
@@ -560,57 +565,47 @@
         }
         finally {document.removeEventListener('abito:integration-opened',received);}
       }
-      if(id==='integration_calcom' && state==='ready') {
-        const button=text=>[...document.querySelectorAll('.int-host button')].find(b=>b.textContent===text);
-        await click(button('Día'));
-        await wait(()=>document.querySelector('.int-host [data-calendar="day"]'),'agenda diaria');
-        const booking=[...document.querySelectorAll('.int-host button')].find(b=>b.textContent.startsWith('fixture ·'));
-        await click(booking);
-        await wait(()=>document.querySelector('.int-host [data-calendar="detail"]')?.textContent.includes('Validador'),'detalle de reserva');
-        if(!document.querySelector('.int-host').textContent.includes('Consulta fixture')) throw Error('faltan notas de reserva');
-        await click(button('Volver a la agenda'));
-        await wait(()=>document.querySelector('.int-host [data-calendar="day"]'),'volver al día');
-        await click(button('Semana'));
-        await wait(()=>document.querySelector('.int-host [data-calendar="week"]'),'agenda semanal');
-      }
-      results.push({id,state,refresh:true,open:state==='ready',calendar:id==='integration_calcom'&&state==='ready'?'week/day/detail':null});
+      results.push({id,state,refresh:true,open:state==='ready'});
     }
     const host=document.querySelector('.int-host'); if(host) host.scrollTop=0;
     return {ok:true,results};
   }
+  // K2-11 S5/S6: GitHub is a card of the shortcuts row (island-shortcuts.js, K2-09), not a pill of the column and not the overview's left
+  // card. The scene drives what the cards render today: the row's icon, the #nusa-card host, the three .gh-tile counters, a .gh-row list,
+  // 「‹ Pulso」 and the contribution strip. Every number checked here also comes from the fake gh's own answer (github_action).
   async function github() {
     await invoke('desktop_action',{action:'expand'});
-    const prefs=await invoke('prefs_action',{action:'view'});
-    if(!prefs.declaredPills.includes('integration_github')) await invoke('prefs_action',{action:'toggle_declared_pill',id:'integration_github'});
     const data=await invoke('github_action',{action:'refresh',section:'activity'});
     // The island ignores blob clicks while it is busy (pills-view `onScreen`): right after «pi-pregunta» the answered question's outcome
-    // («Recibida») is on screen for 3-4 s and a click then is dropped silently. Wait for the calm overview before choosing the row.
+    // («Recibida») is on screen for 3-4 s and a click then is dropped silently. Wait for the calm overview before choosing the icon.
     const calm=()=>{const d=byId('capsule')?.dataset||{};return d.phase==='expanded' && d.view==='overview' && !d.card && d.settings!=='open' && !['pending','expired','outcome'].includes(d.question) && d.noticeView!=='notices';};
     await wait(calm,'isla en calma antes de elegir GitHub',10000);
-    let pill;
-    try {pill=await wait(()=>{const p=byId('pill-choice-integration_github');return visible(p) && p;},'pill GitHub declarada con gh falso');}
-    catch {return {ok:false,reason:'GitHub devuelve datos del gh falso pero la pill declarada no aparece en la isla',data,prefs:await invoke('prefs_action',{action:'view'})};}
-    await click(pill);
-    // A click that landed in the instant the island turned busy again is repeated once the overview is calm (the row is still there then).
-    const card=await wait(async()=>{const c=document.querySelector('.gh-card');if(visible(c) && c.textContent.includes('GitHub') && !c.textContent.includes('Cargando')) return c;const p=byId('pill-choice-integration_github');if(visible(p) && calm()) await click(p);return false;},'tarjeta GitHub desde gh falso',12000);
-    const text=card.textContent;
+    const icon=()=>document.querySelector('#nusa-apps button[data-go="github"]');
+    let row;
+    try {row=await wait(()=>{const b=icon();return visible(b) && b;},'icono GitHub en la fila de atajos del gh falso',12000);}
+    catch {return {ok:false,reason:'GitHub devuelve datos del gh falso pero su icono no aparece en la fila de atajos de la isla',data};}
+    await click(row);
+    const host=await wait(()=>{const h=document.querySelector('#nusa-card .gh-host');return visible(h) && h;},'hueco de la tarjeta GitHub',12000);
+    await wait(()=>host.querySelector('.gh-pulse-card'),'pulso GitHub dibujado');
+    const text=host.textContent;
     const stats=await invoke('github_action',{action:'refresh',section:'pulse'});
-    // Design 16 (option A): the card IS the PR list with CI state and an explicit [Abrir]; CI of the default branch and activity keep their detail.
-    await wait(()=>card.textContent.includes('18') && card.textContent.includes('Fixture PR') && card.querySelector('.gh-row') && card.querySelector('.gh-open'),'lista de PR con estado y Abrir');
-    await click(card.querySelector('.gh-ci-main'));
-    await wait(()=>card.textContent.includes('main') && card.querySelector('.gh-row'),'detalle CI');
-    await click(card.querySelector('.gh-back'));
-    await wait(()=>card.querySelector('.gh-spark'),'volver al pulso CI');
-    await click(card.querySelector('.gh-spark'));
-    await wait(()=>card.textContent.includes('23 repos'),'actividad y repositorios');
-    await click(card.querySelector('.gh-back'));
-    await wait(()=>card.textContent.includes('Fixture PR') && card.querySelector('.gh-open'),'lista de PR visible para captura');
-    // Keep the PR list visible for its native PNG; Spotify releases focus.
-    return {ok:data.available===true && data.activity.total===17 && stats.stats.totalStars===18 && stats.stats.totalRepos===23,text,data,stats,details:['PR','CI','activity']};
+    const tiles=()=>[...host.querySelectorAll('.gh-tile')];
+    await wait(()=>tiles().length===3 && tiles().every(t=>visible(t)),'los tres contadores del pulso (revisión, PR, issues)');
+    // A counter opens ITS list inside the same card, with its CI state, and 「‹ Pulso」 comes back.
+    await click(tiles().find(t=>t.getAttribute('data-tile')==='pr'));
+    await wait(()=>host.querySelector('.gh-row') && host.textContent.includes('Fixture PR'),'lista de PR dentro de la misma tarjeta');
+    await click(host.querySelector('.gh-back'));
+    await wait(()=>tiles().length===3 && !host.querySelector('.gh-row'),'«‹ Pulso» vuelve a los contadores');
+    await wait(()=>host.querySelector('.gh-strip'),'tira de contribuciones del pulso');
+    // The pulse stays on screen for its native PNG, exactly as the user leaves it; the Spotify scene sends the row back to Koda.
+    return {ok:data.available===true && data.activity?.total===17 && stats.stats?.totalStars===18 && stats.stats?.totalRepos===23,text,data,stats,details:['pulse','PR','activity']};
   }
   async function mail() {
-    const answer=await invoke('mail_action',{action:'inbox'});
-    return {ok:answer.ok===false && answer.reason==='keychain_unavailable',reason:'correo no explicó la falta de keyring privado',answer,unverifiable:'IMAP/SMTP requieren claves en keyring; sin servicio de secretos privado ni credenciales del usuario'};
+    // K2-10 T7 (L21/L22): mail by IMAP/SMTP is retired; the one mail verb is Gmail's closed
+    // `gmail_action`, whose `status` answers `{ok,state,…}` or a stable `{ok:false,reason}`.
+    const answer=await invoke('gmail_action',{payload:{action:'status'}});
+    const closed=!!answer && typeof answer.ok==='boolean' && (answer.ok===true ? typeof answer.state==='string' : typeof answer.reason==='string');
+    return {ok:closed,reason:'el correo no respondió una forma cerrada',answer,unverifiable:'Gmail exige el client id propio del usuario y el llavero del sistema; sin servicio de secretos privado ni credenciales del usuario' };
   }
   async function sounds() {
     const before=await invoke('sound_action',{action:'list'});
@@ -639,8 +634,9 @@
     } finally {off();}
   }
   async function spotify() {
-    const gh=document.querySelector('.gh-card');
-    if(visible(gh)) { await click(byId('pill-choice-abito')); await wait(()=>!visible(gh),'GitHub desenfocado antes de Spotify'); }
+    // K2-11: GitHub's card lives in the shortcuts row now, so the row goes back to Koda before Spotify is examined.
+    const githubCard=()=>document.querySelector('#nusa-card .gh-host');
+    if(visible(githubCard())) { await click(document.querySelector('#nusa-apps button[data-go="koda"]')); await wait(()=>!visible(githubCard()),'GitHub desenfocado antes de Spotify'); }
     const prefs=await invoke('prefs_action',{action:'view'});
     if(!prefs.declaredPills.includes('integration_spotify')) {
       if(prefs.declaredPills.length>=4) await invoke('prefs_action',{action:'toggle_declared_pill',id:prefs.declaredPills[0]});

@@ -126,9 +126,6 @@ function boot({ prefs = {}, failView = false, deferView = false, store = null, s
   const intervals = new Map(); let nextInterval = 1;
   const leftCard = new Element();
   get('overview-view').querySelector = selector => selector === '.card-left' ? leftCard : null;
-  window.testGithubView = { hooks: {}, githubPulseCard: (_p, _e, activity) => {
-    const card = new Element(); card.textContent = 'GitHub ' + (activity?.total ?? ''); return card;
-  } };
   const ctx = vm.createContext({ setInterval(fn) { const id = nextInterval++; intervals.set(id, fn); return id; }, clearInterval(id) { intervals.delete(id); }, MutationObserver: class { constructor(fn) { this.fn = fn; } observe(target) { observers.push({ target, fn: this.fn }); } }, matchMedia: () => ({ matches: false, addEventListener() {} }), addEventListener() {}, performance: { now: () => frameAt }, cancelAnimationFrame(id) { frames.delete(id); }, window, self: window, document: doc, navigator: { userAgent: 'Linux' },
     DOMParser: class { parseFromString() { const n = new Element('svg'); n.nodeName = 'svg'; return { documentElement: n }; } },
     crypto: require('node:crypto').webcrypto, requestAnimationFrame: fn => { const id = nextFrame++; if (fn.name === 'frame') frames.set(id, fn); else fn(frameAt); return id; }, setTimeout: () => 1, clearTimeout() {}, queueMicrotask,
@@ -136,7 +133,7 @@ function boot({ prefs = {}, failView = false, deferView = false, store = null, s
     Event: class { constructor(type) { this.type = type; } }, console });
   const load = file => {
     if (file === 'settings.js') window.__TAURI_INTERNALS__ = { metadata: { currentWindow: { label: settingsLabel } } };
-    const source = file === 'island-github.js' ? read(file).replace("import('./vendor/coucou/views/github.js')", 'Promise.resolve(window.testGithubView)') : file === 'sessions-ticker.js' ? read(file).replace("import('./vendor/coucou/views/ticker.js')", 'Promise.resolve({Ticker:class {constructor(){this.el=document.createElement("div");this.animating=false;} sync(task){this.task=task;} tick(){} }})') : read(file);
+    const source = file === 'sessions-ticker.js' ? read(file).replace("import('./vendor/coucou/views/ticker.js')", 'Promise.resolve({Ticker:class {constructor(){this.el=document.createElement("div");this.animating=false;} sync(task){this.task=task;} tick(){} }})') : read(file);
     return vm.runInContext(source, ctx, { filename: file });
   };
   for (const file of ['clay-engine.js', 'pill-catalog.js', 'avatar-colors.js', 'pills.js', 'icons.js', 'pills-view.js', 'specialists-view.js']) load(file);
@@ -578,7 +575,7 @@ test('#409 T2 «Quitar conexión» lives on the owned-account row: exact sentenc
   assert.ok(buttons(b).includes('Quitar conexión'), 'the owned-account row offers deletion'); // RED before T2
   b.get('owned-accounts').querySelectorAll('button').find(x => allText(x) === 'Quitar conexión').fire('click'); await flush();
   assert.deepEqual(store.removes, ['nan'], 'abito_account_remove carries the accountId');
-  assert.equal(b.get('settings-live').textContent, 'Conexión quitada. La clave se borró del almacén de Abito.');
+  assert.equal(b.get('settings-live').textContent, 'Conexión quitada. La clave se borró del almacén de Koda.');
   assert.ok(!buttons(b).includes('Quitar conexión'), 'the row is gone after a successful removal');
   // failure: OUR sentence, the store untouched, the row still there
   const failing = fakeStore({ accounts: [account], failRemove: true });
@@ -799,7 +796,10 @@ test('#442 Ajustes → Blobs paints the principal (Abito), the agent tiles from 
 test('#442 the Especialistas tab is gone and its deep link lands on Blobs', async () => {
   const b = await settingsBoot({ specs: SPECS });
   assert.equal(b.get('settings-tab-specialists'), null);
-  assert.deepEqual(['general', 'accounts', 'models', 'pills', 'appearance'].map(id => !!b.get('settings-tab-' + id)), [true, true, true, true, true]);
+  assert.deepEqual(['general', 'accounts', 'pills', 'appearance'].map(id => !!b.get('settings-tab-' + id)), [true, true, true, true]);
+  // K2-05 U5c (L72): the «Modelos» tab and its panel are gone from Ajustes
+  assert.equal(b.get('settings-tab-models'), null);
+  assert.equal(b.get('models'), null);
 });
 
 test('#442 editing an agent sends the closed specialists update with the unchanged fields; a refusal keeps the previous one and says so', async () => {
@@ -872,7 +872,7 @@ for (const existing of [0, 1]) {
   });
 }
 
-test('abito-pausa 0.1.2: the island «Del catálogo» chooser hides paused services (GitHub, n8n, …, Spotify); stored declarations are untouched', async () => {
+test('abito-pausa 0.1.2: the island «Del catálogo» chooser hides paused services (GitHub, n8n, …); Spotify is offered again (K2-09); stored declarations are untouched', async () => {
   const b = boot({ prefs: { declaredPills: ['integration_resend'] }, specs: SPECS }); await flush();
   b.load('paused.js');
   for (const file of ['avatar-colors.js', 'settings-view.js', 'pill-settings.js', 'settings.js', 'specialists.js']) b.load(file);
@@ -881,8 +881,9 @@ test('abito-pausa 0.1.2: the island «Del catálogo» chooser hides paused servi
   const rows = () => b.get('pill-catalog-list').children.map(r => r.dataset.pillId);
   const shown = rows();
   assert.ok(shown.length > 0, 'the chooser still lists the active ones');
-  for (const id of ['integration_github', 'integration_n8n', 'integration_vercel', 'integration_stripe', 'integration_resend', 'integration_notion', 'integration_calcom', 'integration_spotify'])
+  for (const id of ['integration_github', 'integration_n8n', 'integration_vercel', 'integration_stripe', 'integration_resend', 'integration_notion', 'integration_calcom'])
     assert.ok(!shown.includes(id), `${id} is paused: not offered on the island`);
+  assert.ok(shown.includes('integration_spotify'), 'K2-09: Spotify is no longer paused, so the chooser offers it (no switch that does nothing: S2)');
   b.get('pill-catalog-search').value = 'n8n'; b.get('pill-catalog-search').fire('input');
   assert.deepEqual(rows().filter(Boolean), [], 'searching does not bring a paused one back');
   assert.deepEqual(b.backend.prefs.declaredPills, ['integration_resend'], 'the stored declaration is never rewritten');
@@ -1149,9 +1150,9 @@ test('S13 unrelated prefs preserve Blobs nodes, editor caret and actual continui
   assert.ok(after.t > before.t); assert.notEqual(after.d, before.d, 'actual scheduled frames change the live SVG geometry');
 });
 
-test('S13 Blobs disposes real instances on Models and Connections exits and remounts on return', async () => {
+test('S13 Blobs disposes real instances on Connections exits and remounts on return', async () => {
   const b = await settingsBoot({ specs: SPECS });
-  for (const tab of ['models', 'accounts']) {
+  for (const tab of ['accounts']) {
     const instances = b.clayStatus().filter(i => !i.testDestroyed && b.get('settings-body').contains(i.svg));
     assert.ok(instances.length > 0);
     b.advanceFrames(8);
@@ -1192,62 +1193,36 @@ test('#489 declared integration pills with a live poller show with their colour;
   assert.deepEqual(ids(), base);
 });
 
-test('GitHub declared + connected shows a pill; trusted focus opens its card without changing the chat target', async () => {
-  const b = boot({ github: true, prefs: { declaredPills: ['integration_github', 'integration_n8n'] } });
-  b.load('island-github.js'); await flush();
-  const ids = () => b.get('pill-choices').children.map(n => n.dataset.pillId);
-  const card = b.leftCard.children[0];
-  assert.deepEqual(ids(), ['abito', 'integration_github'], 'a gh pulse discovers the declared integration without mainPill');
-  assert.equal(card.hidden, true, 'discovery does not focus');
-  b.doc.dispatchEvent({ type: 'abito:integration-seen', detail: { ids: ['integration_n8n'] } });
-  assert.deepEqual(ids(), ['abito', 'integration_github', 'integration_n8n'], 'the other poller snapshot must not erase GitHub');
-  b.click('pill-choice-integration_github', { isTrusted: false }); assert.equal(card.hidden, true);
-  b.click('pill-choice-integration_github'); await flush();
-  assert.equal(card.hidden, false); assert.match(card.textContent, /GitHub 17/);
-  assert.equal(b.get('overview-view').dataset.github, 'on');
-  assert.deepEqual(ids(), ['abito', 'integration_github', 'integration_n8n'], 'the focused pill is the left card and its row stays IN PLACE, marked active');
-  assert.equal(b.get('pill-choice-integration_github').getAttribute('aria-pressed'), 'true'); assert.equal(b.get('pill-choice-integration_github').dataset.centre, 'true');
-  assert.equal(b.backend.specCalls.length, 0); assert.equal(b.backend.writes, 0);
-  b.click('pill-choice-integration_n8n'); assert.equal(card.hidden, true, 'focusing another integration hides GitHub');
-  b.click('pill-choice-integration_github');
-  b.get('capsule').dataset.view = 'chat'; b.mutate(b.get('capsule')); assert.equal(card.hidden, true);
-  b.get('capsule').dataset.view = 'overview'; b.mutate(b.get('capsule')); await flush();
-  assert.equal(card.hidden, false);
-  b.click('pill-choice-abito'); await flush(); assert.equal(card.hidden, true, 'chat target releases focus');
-  b.click('pill-choice-integration_github'); b.backend.githubAvailable = false;
-  for (const refresh of [...b.intervals.values()]) refresh(); await flush();
-  assert.equal(card.hidden, true, 'lost gh connection releases the focused card');
-  assert.deepEqual(ids(), ['abito', 'integration_n8n'], 'disconnect only removes GitHub');
-  b.backend.githubAvailable = true;
-  for (const refresh of [...b.intervals.values()]) refresh(); await flush();
-  assert.ok(ids().includes('integration_github'), 'polling discovers reconnection');
-  b.click('pill-choice-integration_github');
-  b.emit({ declaredPills: ['integration_n8n'] }); await flush();
-  assert.equal(card.hidden, true, 'undeclaring hides the card');
-  assert.deepEqual(ids(), ['abito', 'integration_n8n']);
-  assert.equal(b.intervals.size, 0, 'undeclared GitHub stops polling');
-  assert.ok(b.calls.filter(c => c.cmd === 'github_action').every(c => c.payload.action === 'refresh' && ['pulse', 'activity'].includes(c.payload.section)));
-});
-
-test('GitHub without a declaration or a successful gh answer never enters the grid', async () => {
+test('K2-11 S6: GitHub is no longer a pill of the right column nor the overview card — its card is the shortcuts row', async () => {
   for (const declared of [false, true]) {
     const b = boot({ github: true, prefs: { declaredPills: declared ? ['integration_github'] : [] } });
-    b.backend.githubAvailable = false; b.load('island-github.js'); await flush();
-    assert.deepEqual(b.get('pill-choices').children.map(n => n.dataset.pillId), ['abito']);
-    assert.equal(b.leftCard.children[0].hidden, true);
-    if (!declared) assert.equal(b.calls.filter(c => c.cmd === 'github_action').length, 0);
+    b.load('island-github.js'); await flush();
+    assert.deepEqual(b.get('pill-choices').children.map(n => n.dataset.pillId), ['abito'], 'the gh pulse claims no pill row');
+    assert.deepEqual(b.leftCard.children, [], 'and it never paints into the overview left card');
+    assert.deepEqual(b.calls.filter(c => c.cmd === 'github_action'), [], 'without the shortcuts model it does not even ask the host');
+    assert.equal(b.intervals.size, 0, 'and it owns no poller of its own here');
   }
 });
 
+test('K2-11 S6: GitHub registers with AbitoShortcuts and nothing else (one card, one verb, one poll)', () => {
+  const src = fs.readFileSync(path.join(__dirname, '../frontend/island-github.js'), 'utf8');
+  assert.match(src, /registerCard\(\{/);
+  assert.match(src, /id: 'github'/);
+  // the only trace left of the focused-pill path is a data-attribute mirror (island-geometry-check pins it): no pill row,
+  // no card in the overview's left card and no stock of «seen» news any more
+  assert.doesNotMatch(src, /abito:integration-seen|abito:integration-badge|pill-choice|card-left/, 'the pill column and the left card are not its surface any more');
+  assert.equal(src.includes('githubPulseCard'), false);
+});
+
 test('A+E: the right column has NO four-cell cap (every declared pill stays); the focused one still moves to the card', async () => {
-  const b = boot({ github: true, specs: SPECS, prefs: { declaredPills: ['integration_github', 'integration_n8n', 'integration_vercel'] } });
-  b.load('specialists.js'); b.load('island-github.js'); await flush();
+  const b = boot({ specs: SPECS, prefs: { declaredPills: ['integration_n8n', 'integration_vercel'] } });
+  b.load('specialists.js'); await flush();
   b.doc.dispatchEvent({ type: 'abito:integration-seen', detail: { ids: ['integration_n8n', 'integration_vercel'] } });
   // human (A+E): «las sesiones empujan las pastillas declaradas» — the column scrolls instead of dropping anything
-  assert.deepEqual(b.get('pill-choices').children.map(n => n.dataset.pillId), ['abito', 'esp-a', 'esp-b', 'integration_github', 'integration_n8n', 'integration_vercel']);
-  b.click('pill-choice-integration_github');
-  assert.deepEqual(b.get('pill-choices').children.map(n => n.dataset.pillId), ['abito', 'esp-a', 'esp-b', 'integration_github', 'integration_n8n', 'integration_vercel'], 'design 16: the focused pill is the card AND keeps its (marked) row');
-  assert.equal(b.leftCard.children[0].hidden, false, 'the focused card still shows');
+  assert.deepEqual(b.get('pill-choices').children.map(n => n.dataset.pillId), ['abito', 'esp-a', 'esp-b', 'integration_n8n', 'integration_vercel']);
+  b.click('pill-choice-integration_n8n');
+  assert.deepEqual(b.get('pill-choices').children.map(n => n.dataset.pillId), ['abito', 'esp-a', 'esp-b', 'integration_n8n', 'integration_vercel'], 'design 16: the focused pill is the card AND keeps its (marked) row');
+  assert.deepEqual(b.leftCard.children, [], 'no GitHub card takes the left card any more (K2-11 S6: it lives in the shortcuts row)');
 });
 
 test('#489 an unseen event puts a badge on an unfocused integration pill; focusing clears it', async () => {

@@ -60,7 +60,6 @@
     ['payments', 'Pagos'],
     ['notion', 'Notion'],
     ['n8n', 'n8n'],
-    ['calendar', 'Calendario'],
     ['slack', 'Slack'],
     ['finance', 'Finanzas'],
   ].map(([id, name]) => Object.freeze({ id, name })));
@@ -81,7 +80,6 @@
     payments: 'https://stripe.com',
     notion: 'https://www.notion.so',
     n8n: 'https://n8n.io',
-    calendar: 'https://cal.com',
     slack: 'https://slack.com',
   });
 

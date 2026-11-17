@@ -25,7 +25,7 @@ test('multiSelect is planned and a real socket returns multiple original labels'
     rcv.send({ v: 1, type: 'answer', questionVersion: 1, project: frame.project, sessionId: frame.sessionId,
       at: Date.now(), id: frame.id, source: 'human', answer: picks });
   });
-  const result = await run(questions, { env: { ABITO_DESKTOP_SOCKET: rcv.endpoint, ABITO_SOCKET_DIR: rcv.runtime } });
+  const result = await run(questions, { env: { KODA_DESKTOP_SOCKET: rcv.endpoint, KODA_SOCKET_DIR: rcv.runtime } });
   await reply;
   assert.deepEqual(JSON.parse(result.stdout).hookSpecificOutput.decision.updatedInput.answers, { 'Question 0?': 'Beta, Alpha' });
   assert.equal(rcv.frames.find(f => f.type === 'questions_hello').structured, 1);
@@ -55,7 +55,7 @@ test('questionnaire crosses the real socket as one frame and receives positional
       at: Date.now(), id: frame.id, source: 'human', answer: { type: 'form', answers: [
         { type: 'option', value: 'o1' }, picks, { type: 'option', value: 'o0' }, { type: 'option', value: 'o1' }] } });
   });
-  const result = await run(questions, { env: { ABITO_DESKTOP_SOCKET: rcv.endpoint, ABITO_SOCKET_DIR: rcv.runtime } });
+  const result = await run(questions, { env: { KODA_DESKTOP_SOCKET: rcv.endpoint, KODA_SOCKET_DIR: rcv.runtime } });
   await reply; await rcv.seen('question_resolved');
   assert.deepEqual(JSON.parse(result.stdout).hookSpecificOutput.decision.updatedInput.answers,
     { 'Question 0?': 'Beta', 'Question 1?': 'Beta, Alpha', 'Question 2?': 'Alpha', 'Question 3?': 'Beta' });
@@ -63,7 +63,7 @@ test('questionnaire crosses the real socket as one frame and receives positional
 });
 test('legacy receiver never gets a downgraded structured question', async t => {
   const rcv = await fakeReceiver(t, { questions: true });
-  const result = await run([q(0, true)], { env: { ABITO_DESKTOP_SOCKET: rcv.endpoint, ABITO_SOCKET_DIR: rcv.runtime } });
+  const result = await run([q(0, true)], { env: { KODA_DESKTOP_SOCKET: rcv.endpoint, KODA_SOCKET_DIR: rcv.runtime } });
   assert.equal(result.stdout, ''); assert.match(result.stderr, /unsupported_receiver/);
   assert.equal(rcv.frames.filter(f => f.type === 'question').length, 0);
 });
@@ -73,7 +73,7 @@ for (const mode of ['skip', 'invalid', 'incomplete']) test(`${mode} over the soc
     questionVersion: 1, project: frame.project, sessionId: frame.sessionId, at: Date.now(), id: frame.id, source: 'human',
     ...(mode === 'skip' ? { reason: 'cancelled' } : { answer: { type: 'form', answers: mode === 'incomplete' ? [] :
       [{ type: 'option', value: 'o0' }, { type: 'options', values: ['o9'] }] } }) }));
-  const result = await run([q(), q(1, true)], { env: { ABITO_DESKTOP_SOCKET: rcv.endpoint, ABITO_SOCKET_DIR: rcv.runtime } });
+  const result = await run([q(), q(1, true)], { env: { KODA_DESKTOP_SOCKET: rcv.endpoint, KODA_SOCKET_DIR: rcv.runtime } });
   await reply;
   assert.equal(result.stdout, ''); assert.match(result.stderr, mode === 'skip' ? /human_cancelled/ : /protocol_error/);
 });

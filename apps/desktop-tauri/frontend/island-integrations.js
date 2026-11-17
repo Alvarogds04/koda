@@ -16,10 +16,11 @@
   root.AbitoIntegrationCard = Object.freeze(api);
   mount(api);
 })(typeof self !== 'undefined' ? self : this, () => {
-  const IDS = Object.freeze(['integration_n8n', 'integration_vercel', 'integration_stripe', 'integration_resend', 'integration_notion', 'integration_calcom']);
-  const NAMES = Object.freeze({ integration_n8n: 'n8n', integration_vercel: 'Vercel', integration_stripe: 'Stripe', integration_resend: 'Resend', integration_notion: 'Notion', integration_calcom: 'Cal.com' });
-  const COLORS = Object.freeze({ integration_n8n: '#F29B38', integration_vercel: '#7C5CFF', integration_stripe: '#0570DE', integration_resend: '#22C55E', integration_notion: '#E8E8E8', integration_calcom: '#C9956A' });
-  const KINDS = Object.freeze({ integration_n8n: 'Workflow', integration_vercel: 'Despliegues', integration_stripe: 'Pagos', integration_resend: 'Correos', integration_notion: 'Recientes', integration_calcom: 'Agenda' });
+  // K2-11 S5: Cal.com's fake agenda card left the island (the real calendar is calendar-view.js in the shortcuts row).
+  const IDS = Object.freeze(['integration_n8n', 'integration_vercel', 'integration_stripe', 'integration_resend', 'integration_notion']);
+  const NAMES = Object.freeze({ integration_n8n: 'n8n', integration_vercel: 'Vercel', integration_stripe: 'Stripe', integration_resend: 'Resend', integration_notion: 'Notion' });
+  const COLORS = Object.freeze({ integration_n8n: '#F29B38', integration_vercel: '#7C5CFF', integration_stripe: '#0570DE', integration_resend: '#22C55E', integration_notion: '#E8E8E8' });
+  const KINDS = Object.freeze({ integration_n8n: 'Workflow', integration_vercel: 'Despliegues', integration_stripe: 'Pagos', integration_resend: 'Correos', integration_notion: 'Recientes' });
   const GREEN = '#22C55E', RED = '#F4505E';
   const isObject = v => v !== null && typeof v === 'object' && !Array.isArray(v);
   const clean = (v, max = 200) => (typeof v === 'string' ? [...v.replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, ' ').trim()].slice(0, max).join('') : '');
@@ -75,12 +76,6 @@
       }));
       return rows.length ? { ...base, kind: 'pages', rows } : base;
     }
-    if (id === 'integration_calcom') {
-      const rows = (Array.isArray(data.bookings) ? data.bookings : []).filter(isObject)
-        .map(b => ({ at: Date.parse(String(b.start)), title: clean(b.title, 100) || 'Reunión' })).filter(b => Number.isFinite(b.at))
-        .sort((a, b) => a.at - b.at).slice(0, 3).map(b => ({ when: whenOf(b.at), title: b.title }));
-      return { ...base, kind: 'bookings', rows };
-    }
     const ev = isObject(update.event) ? update.event : null;
     if (!ev && typeof data.workflow !== 'string') return base;
     return {
@@ -88,23 +83,14 @@
       workflow: clean(ev ? ev.label : data.workflow, 120) || 'Workflow', detail: ev ? text(ev.detail) : '',
     };
   }
-  const TARGETS = Object.freeze(['https://n8n.io','https://vercel.com','https://stripe.com','https://resend.com','https://www.notion.so','https://cal.com']);
+  const TARGETS = Object.freeze(['https://n8n.io','https://vercel.com','https://stripe.com','https://resend.com','https://www.notion.so']);
   const openTarget = id => TARGETS[IDS.indexOf(id)] || null;
   function view(id, update, now = Date.now()) {
     const current = isObject(update) && update.id === id ? update : null;
     if (current?.state === 'missing_key') return {id,name:NAMES[id],kind:'missing_key',status:'Falta configurar la clave en Ajustes',error:''};
-    const stale = current?.state === 'stale' || (Number.isFinite(current?.updatedAt) && now-current.updatedAt > (['integration_notion','integration_calcom'].includes(id)?600000:120000));
+    const stale = current?.state === 'stale' || (Number.isFinite(current?.updatedAt) && now-current.updatedAt > (id === 'integration_notion'?600000:120000));
     const result = dataView(id, stale ? {...current,error:null} : current, now);
     return {...result,stale,refreshing:current?.state === 'refreshing',error:stale?clean(current?.error):result.error};
-  }
-  function calendarView(bookings, mode, at, selected) {
-    const d=new Date(at), day=Date.UTC(d.getUTCFullYear(),d.getUTCMonth(),d.getUTCDate());
-    const start=mode==='day'?day:day-((d.getUTCDay()+6)%7)*86400000;
-    const days=Array.from({length:mode==='day'?1:7},(_,i)=>start+i*86400000);
-    const rows=(Array.isArray(bookings)?bookings:[]).filter(isObject).slice(0,100)
-      .map(b=>({id:clean(String(b.id),80),at:Date.parse(b.start),title:clean(b.title,100)||'Reunión',attendee:clean(b.attendeeName,100),notes:text(b.attendeeNotes)}))
-      .filter(b=>Number.isFinite(b.at)&&b.at>=start&&b.at<start+days.length*86400000).sort((a,b)=>a.at-b.at);
-    return {days,rows,detail:rows.find(b=>b.id===selected)||null};
   }
   /** Only https pages on notion.so / notion.site leave the island (the host re-validates). */
   function notionUrl(raw) {
@@ -112,10 +98,8 @@
     let u; try { u = new URL(raw); } catch { return null; }
     return u.protocol === 'https:' && !u.username && !u.password && /(^|\.)notion\.(so|site)$/.test(u.hostname) ? u.href : null;
   }
-  const pad = n => String(n).padStart(2, '0');
-  const whenOf = ms => { const d = new Date(ms); return pad(d.getDate()) + '/' + pad(d.getMonth() + 1) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes()); };
   const STATE_LABEL = Object.freeze({ READY: 'Listo', CANCELED: 'Cancelado', ERROR: 'Error' });
-  return { calendarView, openTarget, IDS, NAMES, COLORS, KINDS, notionUrl, GREEN, RED, view, timeAgo, vercelUrl, STATE_LABEL, clean };
+  return { openTarget, IDS, NAMES, COLORS, KINDS, notionUrl, GREEN, RED, view, timeAgo, vercelUrl, STATE_LABEL, clean };
 });
 
 function mount(api) {
@@ -135,7 +119,7 @@ function mount(api) {
   if (!invoke || label === 'settings') return;
 
   const host = doc.createElement('div'); host.className = 'int-host'; host.hidden = true; leftCard.append(host);
-  let focus = null, detail = false, calMode='week', calDate=Date.now(), calSelected=null, rendered=null; const updates = {}, refreshing = new Set();
+  let focus = null, detail = false, rendered=null; const updates = {}, refreshing = new Set();
   const onScreen = () => {
     const d = capsule.dataset;
     return d.phase === 'expanded' && d.view === 'overview' && !d.card && d.settings !== 'open' &&
@@ -163,7 +147,6 @@ function mount(api) {
       });
       c.append(rows); return c;
     }
-    if(v.id==='integration_calcom' && v.kind==='bookings') return calendarCard(c,v);
     if (v.id !== 'integration_n8n') return simpleCard(c, v);
     c.append(head('#F29B38', 'n8n', 'Workflow'));
     if (v.kind !== 'workflow') { c.append(statusLine(v)); return c; }
@@ -173,30 +156,6 @@ function mount(api) {
     pill.append(dot(color), el('span', 'int-name', v.workflow), el('span', '', '…'));
     pill.addEventListener('click', e => { if (e.isTrusted === true) { detail = true; draw(); } });
     const actions = el('div', 'int-actions'); actions.append(pill); c.append(actions); return c;
-  }
-  function calendarCard(c,v) {
-    c.append(head(api.COLORS[v.id],v.name,'Agenda · UTC'));
-    const model=api.calendarView(updates[v.id]?.data?.bookings,calMode,calDate,calSelected);
-    c.dataset.calendar=calSelected&&model.detail?'detail':calMode;
-    const action=(label,fn)=>{
-      const b=el('button','int-link',label);b.type='button';
-      b.addEventListener('click',e=>{e.stopPropagation();if(e.isTrusted===true){fn();draw();}});return b;
-    };
-    const nav=el('div','int-actions');
-    nav.append(action('‹',()=>{calDate-=(calMode==='day'?1:7)*86400000;calSelected=null;}),
-      action('Semana',()=>{calMode='week';calSelected=null;}),action('Día',()=>{calMode='day';calSelected=null;}),
-      action('›',()=>{calDate+=(calMode==='day'?1:7)*86400000;calSelected=null;}));c.append(nav);
-    if(model.detail) {
-      const b=model.detail;
-      c.append(el('b','int-name',b.title),el('div','int-status',new Date(b.at).toISOString().slice(0,16).replace('T',' ')+' UTC'),
-        el('div','int-status',b.attendee||'Sin invitado'),el('div','int-status',b.notes),action('Volver a la agenda',()=>{calSelected=null;}));
-      return c;
-    }
-    const days=el('div','int-actions');
-    for(const day of model.days) days.append(action(new Date(day).toISOString().slice(5,10),()=>{calDate=day;calMode='day';}));c.append(days);
-    if(!model.rows.length)c.append(el('div','int-empty','No hay llamadas agendadas'));
-    for(const b of model.rows) c.append(action(b.title+' · '+new Date(b.at).toISOString().slice(11,16),()=>{calSelected=b.id;}));
-    return c;
   }
   function simpleCard(c, v) {
     let extra = null;
@@ -215,9 +174,6 @@ function mount(api) {
         b.addEventListener('click', e => { if (e.isTrusted === true) open(p.url); });
         rows.append(b);
       }
-    } else if (v.kind === 'bookings') {
-      if (!v.rows.length) rows.append(el('div', 'int-empty', 'No hay llamadas agendadas'));
-      for (const b of v.rows) { const r = el('div', 'int-row'); r.append(dot('#C9956A'), el('span', 'int-time', b.when), el('span', 'int-name', b.title)); rows.append(r); }
     } else { c.append(statusLine(v)); return c; }
     c.append(rows); return c;
   }
@@ -249,8 +205,7 @@ function mount(api) {
     v.refreshing = refreshing.has(focus);
     // Same-value lifecycle writes and snapshots for other services are not
     // content changes. Detaching a pressed button loses its trusted click.
-    const calendar=focus==='integration_calcom' ? [calMode,api.calendarView(updates[focus]?.data?.bookings,calMode,calDate,calSelected)] : null;
-    const next=JSON.stringify([v,detail,calendar]);
+    const next=JSON.stringify([v,detail]);
     if(next===rendered) return;
     rendered=next;
     const hasDetail = (v.kind === 'list') || (v.kind === 'workflow');

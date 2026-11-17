@@ -2,7 +2,7 @@
 "use strict";
 
 /**
- * abito-island-daemon — foreground CLI for the island agent daemon (U4).
+ * koda-daemon — foreground CLI for the island agent daemon (U4).
  *
  *   run [--app-owned]           start in foreground; app-owned adds a stdin lifetime lease
  *   status                      sanitized JSON incl. the health verdict {state,reason,ready} (never
@@ -20,14 +20,14 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const config = require("./config.cjs");
-const { Daemon, classifySession, isDaemonProcess, pidAlive, pidState, readSession, sessionPath } = require("./daemon.cjs");
+const { Daemon, classifySession, isDaemonProcess, pidState, readSession, sessionPath } = require("./daemon.cjs");
 const { ensureIsland, defaultIslandRoot, windowsIslandRootViolation } = require("./isolation.cjs");
 
-const USAGE = "usage: abito-island-daemon run [--app-owned] | status | stop | config get | config set-workspace <absolute-path> | config set-hotkey <combo>|--clear";
+const USAGE = "usage: koda-daemon run [--app-owned] | status | stop | config get | config set-workspace <absolute-path> | config set-hotkey <combo>|--clear";
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function fail(code, message) {
-	process.stderr.write(`abito-island-daemon: ${message}\n`);
+	process.stderr.write(`koda-daemon: ${message}\n`);
 	return code;
 }
 
@@ -62,13 +62,13 @@ function liveSession(root) {
 }
 
 /**
- * The hook installer that ships NEXT TO this daemon: <package>/desktop-daemon/src -> <package>/desktop-harness/bin/abito-hook.cjs
+ * The hook installer that ships NEXT TO this daemon: <package>/desktop-daemon/src -> <package>/desktop-harness/bin/koda-hook.cjs
  * (the same relative layout in the repo and in the installed package). Only when the file is there: a package without it
  * keeps every agent "unavailable" instead of a guessed path. It is a DEFAULT: `hookInstallerBin` in config.json wins, and
  * nothing here comes from the page.
  */
 function packagedInstallerBin(srcDir = __dirname) {
-	const file = path.resolve(srcDir, "..", "..", "desktop-harness", "bin", "abito-hook.cjs");
+	const file = path.resolve(srcDir, "..", "..", "desktop-harness", "bin", "koda-hook.cjs");
 	try {
 		return fs.statSync(file).isFile() ? file : undefined;
 	} catch {
@@ -77,16 +77,26 @@ function packagedInstallerBin(srcDir = __dirname) {
 }
 
 async function run(root, appOwned = false) {
-	const daemon = new Daemon({ root, log: (line) => process.stderr.write(`[abito] ${line}\n`), defaultInstallerBin: packagedInstallerBin() });
+	const daemon = new Daemon({ root, log: (line) => process.stderr.write(`[koda] ${line}\n`), defaultInstallerBin: packagedInstallerBin() });
 	let closing = false;
+	let closed;
 	let finish;
 	const stopped = new Promise((resolve) => { finish = resolve; });
 	// Install the lifetime handlers BEFORE boot: parent EOF/signals during startup
 	// must not turn into a host which finishes boot after its owner has gone.
-	const shutdown = () => { closing = true; finish(); };
+	// K2-05 boot follow-up = Gentle Dot close() (daemon.ts:410-458): the stop starts AT ONCE,
+	// even while the boot still waits for the engine's first start — session.json is withdrawn
+	// and the starting engine is stopped now, not after that start settles.
+	const shutdown = () => {
+		if (closing) return;
+		closing = true;
+		closed = daemon.stop();
+		closed.catch(() => {});
+		finish();
+	};
 	const cleanup = () => daemon.cleanupSync();
 	const reload = () => {
-		if (!closing) daemon.applyConfig().catch((error) => process.stderr.write(`[abito] config reload refused: ${genericError(error)}\n`));
+		if (!closing) daemon.applyConfig().catch((error) => process.stderr.write(`[koda] config reload refused: ${genericError(error)}\n`));
 	};
 	process.on("exit", cleanup);
 	process.on("SIGTERM", shutdown);
@@ -106,15 +116,17 @@ async function run(root, appOwned = false) {
 		ppidWatch.unref();
 	}
 	try {
-		await daemon.start();
+		if (!closing) await daemon.start();
 		if (!closing) {
-			process.stderr.write(`abito-island-daemon: running (pid ${process.pid}); session.json in ${path.join(daemon.root, "runtime")}\n`);
+			process.stderr.write(`koda-daemon: running (pid ${process.pid}); session.json in ${path.join(daemon.root, "runtime")}\n`);
 			await stopped;
 		}
-		await daemon.stop();
+		await (closed ?? daemon.stop());
 		return 0;
 	} catch (error) {
 		await daemon.stop().catch(() => {});
+		// A stop asked for during the boot ends the boot early: that is a clean shutdown.
+		if (closing) return 0;
 		return fail(1, genericError(error));
 	} finally {
 		if (ppidWatch) clearInterval(ppidWatch);

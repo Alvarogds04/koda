@@ -20,13 +20,13 @@ async function mount({ present = {}, accounts = [], failPresent = false, oauth =
     if (cmd === 'secret_action') { if ((failPresent || failOnce) && p.action === 'present') { failOnce = false; throw new Error('keychain'); } return { present: p.action === 'set' ? true : p.action === 'clear' ? false : present[p.key] === true }; }
     if (cmd === 'oauth_action') {
       if (p.action === 'status') return { provider: p.provider, state: oauthStates[p.provider] || 'absent' };
-      if (p.action === 'begin') { if (oauth.fail) throw { message: 'No se pudo completar el inicio de sesión. Vuelve a intentarlo.' }; return { state: 'waiting', manual: p.provider === 'claude', browserOpened: oauth.browserOpened !== false, ...(oauth.browserOpened === false ? { authUrl: 'https://claude.ai/oauth/authorize?fixture' } : {}) }; }
+      if (p.action === 'begin') { if (oauth.fail) throw { message: 'No se pudo completar el inicio de sesión. Volvé a intentarlo.' }; return { state: 'waiting', manual: p.provider === 'claude', browserOpened: oauth.browserOpened !== false, ...(oauth.browserOpened === false ? { authUrl: 'https://claude.ai/oauth/authorize?fixture' } : {}) }; }
       if (p.action === 'poll') { const state = oauth.poll || 'waiting'; if (state === 'done') oauthStates[p.provider] = 'present'; return { state }; }
       if (p.action === 'complete') { assert.equal(field(ui, 'chat-oauth-code-claude').value, '', 'code cleared BEFORE invoke'); oauthStates[p.provider] = 'present'; return { state: 'done' }; }
       if (p.action === 'sign_out') { oauthStates[p.provider] = 'absent'; return { state: 'absent' }; }
       return { state: 'none' };
     }
-    if (cmd === 'prefs_action') return { chosenModels: {}, windowContext: false, windowContextAvailable: true };
+    if (cmd === 'prefs_action') return { windowContext: false, windowContextAvailable: true };
     if (cmd === 'models_action') return { profiles: [] };
     return structuredClone(state);
   };
@@ -61,7 +61,7 @@ test('S2 manual code cleared before IPC, fallback URL plain text, generic error'
   const sent = calls.findIndex(([cmd,p]) => cmd === 'oauth_action' && p.action === 'complete'); assert(sent >= 0); assert(!JSON.stringify(calls.slice(sent+1)).includes('code-secret'));
   btn(c,'Cerrar sesión').fire('click'); await ui.settled(); btn(c,'Iniciar sesión con suscripción').fire('click'); await ui.settled(); code.value='draft'; ui.dispose(); assert.equal(code.value,''); assert.equal(timeouts.size,0);
   const failed = await mount({ oauth: { fail:true } }); const fc = card(failed.ui,'Claude'); btn(fc,'Iniciar sesión con suscripción').fire('click'); await failed.ui.settled();
-  assert(all(fc).some(e => e.attrs.role === 'alert' && text(e).includes('No se pudo completar el inicio de sesión. Vuelve a intentarlo.')));
+  assert(all(fc).some(e => e.attrs.role === 'alert' && text(e).includes('No se pudo completar el inicio de sesión. Volvé a intentarlo.')));
 });
 
 test('S21 Chat: the page is cards in the wireframe order, each provider with its own state badge (icon + word)', async () => {
@@ -97,7 +97,7 @@ test('S21 Chat: «Probar» only where a key exists; it checks locally through cl
   // key stored but no chat account yet
   const noAccount = await mount({ present: { 'openai-api-key': true }, accounts: [] });
   btn(card(noAccount.ui, 'OpenAI'), 'Probar').fire('click'); await noAccount.ui.settled();
-  assert(text(card(noAccount.ui, 'OpenAI')).includes('El chat aún no tiene cuenta para este proveedor. Vuelve a guardar la clave.'));
+  assert(text(card(noAccount.ui, 'OpenAI')).includes('El chat aún no tiene cuenta para este proveedor. Volvé a guardar la clave.'));
   // the keychain failing while testing is reported, never a green tick
   const failing = await mount({ present: { 'google-api-key': true }, accounts: [{ accountId: 'key-google' }] });
   const probe = btn(card(failing.ui, 'Google AI'), 'Probar'); failing.failNext();
@@ -126,7 +126,7 @@ test('S21 Chat: inline validation sits next to the field, blocks the write, and 
   const error = () => all(c).find(e => e.className.split(' ').includes('field-error'));
   calls.length = 0; input.value = '   '; btn(c, 'Guardar').fire('click'); await ui.settled();
   assert.deepEqual(calls.filter(([cmd]) => cmd === 'secret_action'), [], 'nothing is written');
-  assert.equal(error().textContent, 'Pega la clave antes de guardar.'); assert.equal(error().attrs.role, 'alert');
+  assert.equal(error().textContent, 'Pegá la clave antes de guardar.'); assert.equal(error().attrs.role, 'alert');
   assert.equal(input.attrs['aria-invalid'], 'true'); assert.equal(input.attrs['aria-describedby'], error().attrs.id);
   assert(rowOf(c, input).parent === undefined || all(c).indexOf(error()) > all(c).indexOf(input), 'the message comes right after the field, inside the same card');
   input.value = 'sk-or-x'; input.fire('input'); assert.equal(error().textContent, ''); assert.equal(input.attrs['aria-invalid'], 'false');
@@ -135,25 +135,26 @@ test('S21 Chat: inline validation sits next to the field, blocks the write, and 
   assert.deepEqual(calls.filter(([cmd]) => cmd === 'secret_action' && true).filter(([, p]) => p.action === 'set'), []);
 });
 
-test('S21 Chat: every control and closed command that existed survives: keys, model, local models, window context, account sync', async () => {
+test('S21 Chat: every control and closed command that existed survives: keys, local addresses, window context, account sync (K2-05 U5c: no model <select>)', async () => {
   const { ui, calls } = await mount({ present: { 'anthropic-api-key': true } });
   for (const id of ['anthropic-api-key', 'google-api-key', 'openai-api-key', 'openrouter-api-key']) assert(field(ui, `chat-key-${id}`), id);
-  assert(field(ui, 'chat-anthropic-model')); assert(all(ui).some(e => e.attrs.id === 'chat-url-ollama') && all(ui).some(e => e.attrs.id === 'chat-url-lmstudio') && all(ui).some(e => e.attrs.id === 'chat-url-custom'));
+  assert.equal(field(ui, 'chat-anthropic-model'), undefined, 'no model <select>: the engine owns the model'); assert(all(ui).some(e => e.attrs.id === 'chat-url-ollama') && all(ui).some(e => e.attrs.id === 'chat-url-lmstudio') && all(ui).some(e => e.attrs.id === 'chat-url-custom'));
   assert(text(ui).includes('Contexto de la ventana activa')); assert(all(ui).some(e => e.className.split(' ').includes('switch')), 'the window-context switch');
-  assert(all(ui).some(e => e.attrs.id === 'chat-local-models'), 'the local models card is addressable (the models list mounts into it)');
+  assert(all(ui).some(e => e.attrs.id === 'chat-local-models'), 'the local card survives: it hosts the Ollama / LM Studio / OpenAI-compatible addresses');
   const claude = card(ui, 'Claude'); calls.length = 0;
   field(claude, 'chat-key-anthropic-api-key').value = 'sk-ant-fixture'; btn(claude, 'Guardar clave').fire('click'); await ui.settled();
   assert(calls.some(([c, p]) => c === 'agent_action' && p.action === 'abito_account_create' && p.accountId === 'key-anthropic'), 'the key still becomes a chat account');
   const fs = require('node:fs'), path = require('node:path');
   const entry = fs.readFileSync(path.join(__dirname, '../frontend/settings-app.js'), 'utf8');
-  assert.match(entry, /chat\.querySelector\?\.\('#chat-local-models'\)/, 'the models list mounts by id, not by child index');
+  assert.doesNotMatch(entry, /chat-local-models/, 'nothing mounts into the local card any more: it renders only its own rows');
 });
 
-test('S3 Chat: NaN and OpenCode Go are cards with a key, state, model and Probar; saving creates their HTTPS chat account', async () => {
+test('S3 Chat: NaN and OpenCode Go are cards with a key, state and Probar, and no model select (K2-05 U5c); saving creates their HTTPS chat account', async () => {
   const { ui, calls } = await mount({ present: { 'nan-api-key': true } });
   assert.equal(stateOf(card(ui, 'NaN')), '✓ lista'); assert.equal(stateOf(card(ui, 'OpenCode Go')), '✗ sin clave');
   for (const [title, id] of [['NaN', 'nan-api-key'], ['OpenCode Go', 'opencode-go-api-key']]) {
-    const c = card(ui, title); assert(field(c, `chat-key-${id}`), id); assert(btn(c, 'Probar'), `${title}: Probar`); assert(all(c).some(e => e.tagName === 'select'), `${title}: model`);
+    const c = card(ui, title); assert(field(c, `chat-key-${id}`), id); assert(btn(c, 'Probar'), `${title}: Probar`);
+    assert(!all(c).some(e => e.tagName === 'select'), `${title}: no model select`);
   }
   const go = card(ui, 'OpenCode Go'); calls.length = 0;
   field(go, 'chat-key-opencode-go-api-key').value = 'fixture-secret-value'; btn(go, 'Guardar').fire('click'); await ui.settled();

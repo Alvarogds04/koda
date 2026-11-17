@@ -2,11 +2,11 @@
 
 Linux/macOS Settings → Agents → Pi uses the same app-owned adapter, preview/hash, human click, per-target lock and audit as the other installers. Pi and the chat daemon need not be running. Restart Pi after installing, updating or removing the extension.
 
-The only target is `~/.pi/agent/extensions/abito-island/`. `--settings`, `--timeout-sec` and interactive `--apply` are not supported for Pi. The row always warns that a different `PI_CODING_AGENT_DIR` is not covered; installing the default is not evidence that a custom-dir session loads it.
+The only target is `~/.pi/agent/extensions/koda-island/`. `--settings`, `--timeout-sec` and interactive `--apply` are not supported for Pi. The row always warns that a different `PI_CODING_AGENT_DIR` is not covered; installing the default is not evidence that a custom-dir session loads it.
 
 ```text
-abito-hook install pi --user [--remove] --json
-abito-hook install pi --user [--remove] --json --apply-plan <shown-hash> --audit-dir <private-audit-dir>
+koda-hook install pi --user [--remove] --json
+koda-hook install pi --user [--remove] --json --apply-plan <shown-hash> --audit-dir <private-audit-dir>
 ```
 
 Apply remains restricted to the app-owned adapter context; these are protocol examples, not a terminal bypass. Windows returns `unsupported_platform` before reads or writes. The old terminal installer shares Windows filesystem limitations and is not a workaround.

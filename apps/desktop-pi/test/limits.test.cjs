@@ -13,13 +13,13 @@ const choice = { kind: 'question', text: 'Choose', options: [
 
 test('configuration rejects invalid opt-ins and timeout outside bounds', () => {
   // Human, 30-oct («Arreglarlo en Abito: preguntas activadas por defecto»): the extension Abito installs asks the island by
-  // default (level 3); Pi needs no environment variable. ABITO_QUESTIONS=0 still turns questions off (notices only).
+  // default (level 3); Pi needs no environment variable. KODA_QUESTIONS=0 still turns questions off (notices only).
   assert.deepEqual(resolveQuestionConfig({}), { questionLevel: 3, questionTimeoutMs: 300000 });
-  assert.equal(resolveQuestionConfig({ ABITO_QUESTIONS: '0' }).questionLevel, 0);
-  assert.equal(resolveQuestionConfig({ ABITO_QUESTIONS: '1', ABITO_QUESTION_TIMEOUT_MS: '30000' }).questionLevel, 1);
-  for (const value of ['true', '', '4']) assert.throws(() => resolveQuestionConfig({ ABITO_QUESTIONS: value }));
+  assert.equal(resolveQuestionConfig({ KODA_QUESTIONS: '0' }).questionLevel, 0);
+  assert.equal(resolveQuestionConfig({ KODA_QUESTIONS: '1', KODA_QUESTION_TIMEOUT_MS: '30000' }).questionLevel, 1);
+  for (const value of ['true', '', '4']) assert.throws(() => resolveQuestionConfig({ KODA_QUESTIONS: value }));
   for (const value of ['0', '29999', '900001', '1e5', '', 'NaN']) {
-    assert.throws(() => resolveQuestionConfig({ ABITO_QUESTION_TIMEOUT_MS: value }));
+    assert.throws(() => resolveQuestionConfig({ KODA_QUESTION_TIMEOUT_MS: value }));
   }
 });
 test('choice/text-only/mixed legal; approval exactly two unique tokens, no free text', () => {
@@ -118,7 +118,7 @@ test('Windows: a restarted island (same endpoint.json path, new pipe inside) is 
   // The Windows endpoint file never moves; only its content (the pipe) changes on restart. Exercised through the public
   // adapter with an injected win32 connection, so it runs on every OS (the native relay is covered by the Windows CI).
   const { EventEmitter } = require('node:events');
-  const runtime = 'C:\\Users\\t\\AppData\\Local\\Abito\\notices', endpoint = runtime + '\\endpoint.json';
+  const runtime = 'C:\\Users\\t\\AppData\\Local\\Koda\\notices', endpoint = runtime + '\\endpoint.json';
   let content = JSON.stringify({ v: 1, pipe: 'abito-' + 'a'.repeat(32) });
   const opened = [];
   const open = () => { const c = new EventEmitter(); Object.assign(c, { destroyed: false, setTimeout() {}, write(b, cb) { if (String(b).includes('questions_hello')) setImmediate(() => c.destroy()); cb?.(); return true; },

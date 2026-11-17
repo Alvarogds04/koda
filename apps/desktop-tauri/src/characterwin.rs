@@ -99,7 +99,8 @@ pub fn default_spot(d: &Display, size: f64, margin: f64) -> (f64, f64) {
 pub fn is_home_drop(cursor: (f64, f64), island: Rect) -> bool {
     island.contains(cursor)
 }
-/// Window top-left when the character sits in the island: centred under its top edge.
+/// Window top-left when the character sits in the island: centred under the island's VISIBLE top edge — the top of the disc
+/// folded, of the card open (geometry::visible_top) — never the top of its transparent native window.
 pub fn island_spot(island_center_x: f64, island_top: f64, size: f64, scale: f64) -> (f64, f64) {
     (island_center_x - size * scale / 2.0, island_top)
 }

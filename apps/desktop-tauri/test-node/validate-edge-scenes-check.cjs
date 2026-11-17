@@ -1,7 +1,7 @@
 'use strict';
-/* The screen validator's edge scenes must follow the product decisions: «Ocultar tras» is SECONDS (5..300), and only a pending
-   question blocks the edge hide (status/retained notices do not). Source-level contract on the scene driver: the scenes themselves
-   drive the shared desktop and are run by the parent, never here. Run: node test-node/validate-edge-scenes-check.cjs */
+/* The screen validator's edge scenes must follow the product decision isla-cualquier-lado S2: the folded island is Koda's disc and
+   it NEVER hides at the screen edge (no «Ocultar tras» delay, no hidden thread). Source-level contract on the scene driver: the
+   scenes themselves drive the shared desktop and are run by the parent, never here. Run: node test-node/validate-edge-scenes-check.cjs */
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -10,41 +10,49 @@ const between = (from, to) => { const a = src.indexOf(from), b = src.indexOf(to,
 let passed = 0;
 const test = (_n, fn) => { fn(); passed += 1; };
 
-test('no scene uses the retired minutes command or reads absenceMinutes', () => {
-  assert.doesNotMatch(src, /set_absence_minutes/);
-  assert.doesNotMatch(src, /absenceMinutes/);
+test('no scene uses a retired edge-hide command or reads the retired delay', () => {
+  assert.doesNotMatch(src, /set_absence_(minutes|seconds)/);
+  assert.doesNotMatch(src, /absence(Minutes|Seconds)/);
 });
-test('S1 hidden geometry: the scenes wait for the island bottom <= 8.1 px (compact 32 high, hidden 24 px up = bottom 8), never the old 4 px strip', () => {
-  assert.doesNotMatch(src, /bottom<=4\.1/, 'the 4px slice is gone (S1: 24px up, 8px activation zone)');
-  assert.equal((src.match(/bottom<=8\.1,'(ausencia de 5 s deja franja|mute oculta hacia borde)'/g) || []).length, 2, 'both scenes use the 8px bound');
+test('S2 geometry: no scene waits for the island to slide into the edge; «shown» is the full 32px disc on screen', () => {
+  assert.doesNotMatch(src, /bottom<=(4|8)\.1/, 'no hidden 4px/8px slice is awaited any more');
+  assert.doesNotMatch(src, /edgeHidden==='true'/, 'no scene waits for the hidden state');
+  assert.match(src, /const discShown=\(\)=>byId\('capsule'\)\.dataset\.edgeHidden!=='true' && [^\n]*\.top>=-0\.1 && [^\n]*\.bottom>=31\.9;/);
   const through = between('async function edgeWake()', 'async function islandHoverPin()');
-  assert.match(through, /o\.y\+12\*o\.scale/, 'the pass-through probe sits 12px down: below the 8px zone, so a click there must reach the window underneath');
-  assert.match(through, /o\.y\+2\*o\.scale/, 'the wake probe sits 2px down: inside the 8px zone');
+  assert.match(through, /o\.y\+\(r\.bottom\+12\)\*o\.scale/, 'the pass-through probe sits 12px below the disc: input there reaches the window underneath');
+  assert.match(through, /ok:through && shown/);
   const isl = fs.readFileSync(path.join(__dirname, '../frontend/island.js'), 'utf8');
-  assert.match(isl, /24 \* conceal\.x/, 'the page hides the island 24px up');
+  assert.doesNotMatch(isl, /conceal/, 'the page never slides the island up');
 });
 test('S31: no validator scene holds an expanded island untouched for 30 s or more (the island now folds after 30 s idle)', () => {
-  const hold = between('async function islandHoverPin()', 'return {mutedStrip');
+  const hold = between('async function islandHoverPin()', 'return {mutedDiscShown');
   const waits = [...hold.matchAll(/delay\((\d+)\)/g)].map(m => +m[1]);
   assert.ok(waits.length > 0 && Math.max(...waits) < 30000, `the pinned-hold waits stay under 30 s: ${waits}`);
   assert.doesNotMatch(src, /delay\((?:[3-9]\d{4}|\d{6,})\)|setTimeout\(resolve,(?:[3-9]\d{4}|\d{6,})\)/, 'no scene sleeps 30 s or more');
 });
-test('edgeIdle sets 5 seconds, waits at most 15 s, asserts the elapsed window, and edgeWake restores the previous seconds', () => {
+test('edgeIdle folds the island and samples the disc past the retired 10 s default, inside the probe\'s 80 s budget; edgeWake restores the sound', () => {
   const idle = between('async function edgeIdle()', 'async function edgeWake()');
-  assert.match(idle, /action:'set_absence_seconds',seconds:5/);
-  assert.match(idle, /,15000\)/, 'the wait gives up after 15 s');
-  assert.match(idle, /const elapsed=performance\.now\(\)-began;/);
-  assert.match(idle, /elapsed>=4000/, 'not before ~5 s (1 s tolerance for the fold settling)');
-  assert.match(idle, /elapsed<=15000/);
-  assert.doesNotMatch(idle, /66000|59000|un minuto/);
+  assert.match(idle, /performance\.now\(\)-began<12000/, 'sampled for 12 s: past the old 10 s default and the 1 s muted hide');
+  assert.match(idle, /shown=shown && discShown\(\)/, 'every sample must show the disc');
+  assert.match(idle, /ok:native\.state==='compact' && shown && discShown\(\)/);
   const wake = between('async function edgeWake()', 'async function islandHoverPin()');
-  assert.match(wake, /action:'set_absence_seconds',seconds:edgeIdlePrefs\.absenceSeconds/);
+  assert.match(wake, /action:edgeIdlePrefs\.sound \? 'sound_on':'sound_off'/);
 });
-test('the retained-notices scene now asserts the NEW rule: retained notices do not block the edge hide', () => {
+test('the muted hover scene asserts the NEW rule: muted, the folded disc stays on screen', () => {
+  const hold = between('async function islandHoverPin()', 'return {mutedDiscShown');
+  assert.match(hold, /const mutedDiscShown=discShown\(\);/);
+});
+test('the retained-notices scene asserts the NEW rule: with retained notices the folded disc stays on screen', () => {
   const cycle = between('async function noticeCycle()', 'let noticeEdgeSound');
-  assert.doesNotMatch(cycle, /retainedBlocksEdge/);
-  assert.match(cycle, /retainedDoesNotBlockEdge/);
-  assert.match(cycle, /edgeHidden==='true'/);
+  assert.doesNotMatch(cycle, /retainedDoesNotBlockEdge|retainedBlocksEdge/);
+  assert.match(cycle, /const foldedDiscShown=discShown\(\);/);
+  assert.match(cycle, /historical && foldedDiscShown/);
+});
+test('the real-notice scene folds to a visible disc first, then the notice opens the island', () => {
+  const prep = between('async function prepareNoticeEdge()', 'async function notice()');
+  assert.match(prep, /dataset\.phase==='compact' && discShown\(\)/);
+  const notice = between('async function notice()', 'async function shortcutDispatch()');
+  assert.match(notice, /dataset\.phase==='expanded'/);
 });
 test('the pending-question scene still asserts a pending question is never concealed', () => {
   const alert = between('async function shortcutAlert()', 'async function ');

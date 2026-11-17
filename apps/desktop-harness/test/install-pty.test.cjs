@@ -7,7 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
-const BIN = path.resolve(__dirname, '../bin/abito-hook.cjs');
+const BIN = path.resolve(__dirname, '../bin/koda-hook.cjs');
 const hasPy = spawnSync('python3', ['-c', 'import pty'], { timeout: 10000 }).status === 0;
 
 const PY = `
@@ -87,7 +87,7 @@ test('pty: text then Ctrl-D (no Enter) cannot hang the installer; prompt timeout
   const p = path.join(dir, 'settings.json');
   const orig = '{\n  "a": 1\n}\n';
   fs.writeFileSync(p, orig, { mode: 0o600 });
-  const r = run('inst^D', ['install', 'claude', '--settings', p, '--apply'], home, { ABITO_INSTALL_PROMPT_TIMEOUT_MS: '300' });
+  const r = run('inst^D', ['install', 'claude', '--settings', p, '--apply'], home, { KODA_INSTALL_PROMPT_TIMEOUT_MS: '300' });
   assert.deepEqual(r, { code: 1, sent: true });
   assert.equal(fs.readFileSync(p, 'utf8'), orig);
   assert.deepEqual(fs.readdirSync(dir), ['settings.json']);

@@ -55,6 +55,38 @@ export const FlowBridge = Object.freeze({
   removeModels: (): Promise<ModelsStatus> => call({action:'remove_model'}),
 });
 
+// K2 T1 (S2-S4): the one closed phone-link command. The link opens a port on the LAN, so it starts OFF (S3) and only
+// Ajustes › Teléfono turns it on; the reply and the `phone:state` event carry this same object. Nothing else crosses.
+export interface PhoneStatus {
+  enabled: boolean; running: boolean; port: number; host: string | null; name: string;
+  /** `abito://pair?v=1&…`, or null while there is no link to show. */
+  link: string | null;
+  /** The host's SVG markup for the pairing QR, or null while there is nothing to scan. */
+  qrSvg: string | null;
+  clients: number;
+  error: 'keystore' | 'port_in_use' | 'tls' | 'unsupported' | null;
+}
+const phoneCall = (action: 'status' | 'enable' | 'disable' | 'unlink') =>
+  invoke ? invoke('phone_link_action', { payload: { action } }) : Promise.reject(new Error('No disponible todavía'));
+export const PhoneBridge = Object.freeze({
+  // The rejection is NOT swallowed: a host that cannot answer (another OS, a missing command) is not the same as «off».
+  status: (): Promise<PhoneStatus> => phoneCall('status'),
+  enable: (): Promise<PhoneStatus> => phoneCall('enable'),
+  disable: (): Promise<PhoneStatus> => phoneCall('disable'),
+  unlink: (): Promise<PhoneStatus> => phoneCall('unlink'),
+});
+
+// K2 T6 (S11/§11): the Ajustes preferences the phone page owns, through the SAME closed `prefs_action` command every
+// other switch in Ajustes uses — the phone link is no reason to invent a second channel for a preference.
+export interface PrefsView { phoneUsage?: boolean; [key: string]: any }
+const prefsCall = (payload: any) => invoke ? invoke('prefs_action', { payload }) : Promise.reject(new Error('No disponible todavía'));
+export const PrefsBridge = Object.freeze({
+  /** The stored prefs, as the page is shown them (`phoneUsage` is the phone's plan-usage switch). */
+  view: (): Promise<PrefsView> => prefsCall({ action: 'view' }),
+  /** «Uso de los planes»: exactly the two keys the host parses, `action` + the boolean. */
+  setPhoneUsage: (on: boolean): Promise<PrefsView> => prefsCall({ action: 'set_phone_usage', phone_usage: on === true }),
+});
+
 // #488: the one closed voice command (OK Koda).
 export interface VoicePrefs { enabled: boolean; output: 'system' | 'elevenlabs' | 'off'; gender: 'female' | 'male'; sensitivity: number }
 const voiceCall = (payload: any) => invoke ? invoke('voice_action', { payload }) : Promise.reject(new Error('No disponible todavía'));

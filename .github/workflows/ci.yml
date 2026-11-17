@@ -7,12 +7,12 @@ name: CI (Linux, macOS, Windows)
 # Suites: desktop-daemon, desktop-harness (agent hooks), desktop-pi (Pi extension), desktop-sound, the island's
 # Node checks (apps/desktop-tauri/test-node) and the island's Rust tests (cargo test).
 # A skip is allowed only where a test names its OS mechanism and its twin runs on the other OS (see each suite).
-# Also on every branch push (except preview/**, which only triggers preview-windows.yml), so a feature branch is proven on
-# the 3 OS before its PR.
-# workflow_dispatch only works once this file is on the default branch.
+# Also on every push to main and release/**, so the integration branches stay proven; a feature branch is proven on the 3 OS by
+# its pull request (one run per commit, not push + pull_request twice). preview/** only triggers preview-windows.yml.
+# workflow_dispatch runs any branch on demand once this file is on the default branch.
 on:
   push:
-    branches-ignore: ['preview/**']
+    branches: ['main', 'release/**']
   pull_request:
   workflow_dispatch:
 
@@ -60,6 +60,33 @@ jobs:
           ROOT="$(npm root -g)/@earendil-works/pi-coding-agent"
           test -f "$ROOT/dist/core/extensions/loader.js"
           echo "PI_CODING_AGENT_ROOT=$ROOT" >> "$GITHUB_ENV"
+      - name: Install the real engine (Gentle Shell, pinned by Koda's own runtime lockfile; the offline proof must run, never skip)
+        shell: bash
+        run: |
+          # K2-05 T2: the daemon's engine is Koda's bundled Gentle Shell, so CI proves the real engine
+          # with the exact pins the shipped runtime carries (gentle-pi 4.3.0 + Pi 1.4.0 and every peer,
+          # sha512-pinned in packaging/runtime/package-lock.json). npm ci installs exactly that closure
+          # (install scripts not run, as in the runtime build itself); GENTLE_PI_ROOT points the
+          # real-engine tests at it and KODA_REQUIRE_GENTLE=1 (below) makes absence fail the job.
+          DIR="$RUNNER_TEMP/gentle-engine"
+          mkdir -p "$DIR"
+          cp apps/desktop-tauri/packaging/runtime/package.json apps/desktop-tauri/packaging/runtime/package-lock.json "$DIR/"
+          cp -r apps/desktop-tauri/packaging/runtime/stubs "$DIR/stubs"
+          # Retried ONLY on registry/network errors; any other npm failure fails at once (same policy as the Pi install above).
+          for attempt in 1 2 3 4 5 6; do
+            if (cd "$DIR" && npm ci --install-links --ignore-scripts --omit=dev --no-audit --no-fund 2>&1 | tee "$RUNNER_TEMP/npm-gentle.log"); then break; fi
+            if ! grep -qE 'npm error code (ETARGET|ETIMEDOUT|ECONNRESET|ECONNREFUSED|EAI_AGAIN|ENOTFOUND|E5[0-9][0-9]|ESOCKETTIMEDOUT|EPIPE)|network (timeout|socket)' \
+              "$RUNNER_TEMP/npm-gentle.log"; then
+              echo "npm failed with a non-network error: not retrying"; exit 1
+            fi
+            if [ "$attempt" = 6 ]; then echo "npm install of the engine kept failing on network errors"; exit 1; fi
+            echo "registry/network error on attempt $attempt; retrying in $((attempt * 20))s"; sleep $((attempt * 20))
+          done
+          ROOT="$DIR/node_modules/gentle-pi"
+          test -f "$ROOT/bin/gentle-shell.mjs"
+          test -d "$DIR/node_modules/@earendil-works/pi-coding-agent"
+          test "$(ROOT="$ROOT" node -p "require(require('path').join(process.env.ROOT, 'package.json')).version")" = 4.3.0
+          echo "GENTLE_PI_ROOT=$ROOT" >> "$GITHUB_ENV"
       - name: Windows install layout for the harness suite (real ACL helper + manifest)
         if: runner.os == 'Windows'
         working-directory: apps/desktop-tauri
@@ -70,13 +97,14 @@ jobs:
           cargo build --locked --bin abito-private-session
           cp target/debug/abito-private-session.exe ../abito-private-session.exe
           node packaging/windows/install-manifest.cjs --dist ../
-          echo "ABITO_TEST_HELPER=$(cd .. && pwd -W)/abito-private-session.exe" >> "$GITHUB_ENV"
+          echo "KODA_TEST_HELPER=$(cd .. && pwd -W)/abito-private-session.exe" >> "$GITHUB_ENV"
       - name: desktop-daemon
         if: ${{ !cancelled() }}
         working-directory: apps/desktop-daemon
         shell: bash
         env:
-          ABITO_REQUIRE_PI: '1'
+          KODA_REQUIRE_PI: '1'
+          KODA_REQUIRE_GENTLE: '1'
         run: npm test
       - name: desktop-harness (agent hooks)
         if: ${{ !cancelled() }}
@@ -102,13 +130,16 @@ jobs:
         run: npm test
 
   island-checks:
-    name: Island Node checks (${{ matrix.os }})
+    name: Island Node checks (${{ matrix.os }}, shard ${{ matrix.shard }}/3)
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-26, windows-latest]
+        # The 195 checks ran in series for ~46-54 min per OS, 40 of them in 26 browser checks; 3 round-robin shards bring each
+        # job to ~15-18 min (run-node-checks.cjs --shard). Keep the shard count in sync with the --shard N below.
+        shard: [1, 2, 3]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 90
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with:
@@ -145,7 +176,7 @@ jobs:
             --user-data-dir="$RUNNER_TEMP/shared-chrome" about:blank > "$RUNNER_TEMP/shared-chrome.log" 2>&1 &
           for i in $(seq 1 30); do curl -sf http://127.0.0.1:9222/json/version > /dev/null && break; sleep 1; done
           curl -sf http://127.0.0.1:9222/json/version
-          node run-node-checks.cjs
+          node run-node-checks.cjs --shard ${{ matrix.shard }}/3
 
   rust:
     name: Island Rust tests (${{ matrix.os }})
@@ -169,6 +200,20 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - name: Install the real Pi (tests/agent_daemon.rs lists providers through the daemon's real Pi SDK; Linux only)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          # Same retry policy as the Node suites: ONLY registry/network errors are retried.
+          for attempt in 1 2 3 4 5 6; do
+            if npm i -g "@earendil-works/pi-coding-agent@$PI_VERSION" 2>&1 | tee "$RUNNER_TEMP/npm-pi.log"; then break; fi
+            if ! grep -qE 'npm error code (ETARGET|ETIMEDOUT|ECONNRESET|ECONNREFUSED|EAI_AGAIN|ENOTFOUND|E5[0-9][0-9]|ESOCKETTIMEDOUT|EPIPE)|network (timeout|socket)' "$RUNNER_TEMP/npm-pi.log"; then
+              echo "npm failed with a non-network error: not retrying"; exit 1
+            fi
+            if [ "$attempt" = 6 ]; then echo "npm install of Pi kept failing on network errors"; exit 1; fi
+            echo "registry/network error on attempt $attempt; retrying in $((attempt * 20))s"; sleep $((attempt * 20))
+          done
+          command -v pi
       - name: Pinned esbuild 0.28.2 (the coucou build check needs it; never downloaded by the build itself)
         shell: bash
         run: |
@@ -283,7 +328,7 @@ jobs:
       - name: "No Node, no Pi: install and run on Koda's own runtime (K2-02 S1, S3; removes the runner's Node)"
         if: ${{ !cancelled() }}
         run: |
-          STAGE=$(find "$RUNNER_TEMP/koda-smoke/stage/abito-island" -mindepth 1 -maxdepth 1 -type d | head -n 1)
+          STAGE=$(find "$RUNNER_TEMP/koda-smoke/stage/koda" -mindepth 1 -maxdepth 1 -type d | head -n 1)
           sh apps/desktop-tauri/ci/public/smoke-linux-no-node.sh --app "$GITHUB_WORKSPACE/apps/desktop-tauri" \
             --stage "$STAGE" --work "$RUNNER_TEMP/koda-no-node"
       - name: Upload smoke logs

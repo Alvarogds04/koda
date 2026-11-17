@@ -14,9 +14,9 @@ const fs = require('node:fs');
 
 // The producer under test is the SHIPPED Pi adapter of this repository (apps/desktop-pi), not a machine-specific checkout of the
 // retired Electron app (the old default path only existed on one developer machine, so the test failed everywhere else).
-// ABITO_LEGACY_DESKTOP still points the harness at another adapter.cjs/core.cjs pair.
+// KODA_LEGACY_DESKTOP still points the harness at another adapter.cjs/core.cjs pair.
 const SHIPPED = path.resolve(__dirname, '../../desktop-pi');
-const LEGACY = process.env.ABITO_LEGACY_DESKTOP || SHIPPED;
+const LEGACY = process.env.KODA_LEGACY_DESKTOP || SHIPPED;
 const [endpoint, runtime, cwd] = process.argv.slice(2);
 if (!endpoint || !runtime || !cwd) {
   console.error('usage: producer-check.cjs <endpoint> <runtime> <cwd>');
@@ -24,7 +24,7 @@ if (!endpoint || !runtime || !cwd) {
 }
 
 const { registerAdapter } = require(path.join(LEGACY, 'adapter.cjs'));
-const { projectId } = process.env.ABITO_LEGACY_DESKTOP ? require(path.join(LEGACY, 'core.cjs')) : require(path.join(LEGACY, 'adapter.cjs'));
+const { projectId } = process.env.KODA_LEGACY_DESKTOP ? require(path.join(LEGACY, 'core.cjs')) : require(path.join(LEGACY, 'adapter.cjs'));
 
 const handlers = new Map();
 const fakePi = { on: (name, handler) => handlers.set(name, handler) };

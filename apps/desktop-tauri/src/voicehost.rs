@@ -7,12 +7,12 @@
 //! `voice-wake` {} when the phrase is heard, then `voice-command` {text} with what was
 //! said after it (or `voice-timeout` {} when nothing was).
 use crate::{now_ms, AppState};
-use abito_island::bridge::{self, BridgeError};
-use abito_island::speech::{self, audio, catalog, train, wake};
-use abito_island::prefs::Command as PrefsCommand;
-use abito_island::voicecmd::{self, Command, VoicePrefs};
-use abito_island::voiceintent::{self, Effect, Hands, MusicOp, Outcome, Session, World};
-use abito_island::voicespeak::{self, Engine, Voices};
+use koda_island::bridge::{self, BridgeError};
+use koda_island::speech::{self, audio, catalog, train, wake};
+use koda_island::prefs::Command as PrefsCommand;
+use koda_island::voicecmd::{self, Command, VoicePrefs};
+use koda_island::voiceintent::{self, Effect, Hands, MusicOp, Outcome, Session, World};
+use koda_island::voicespeak::{self, Engine, Voices};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use serde_json::{json, Value};
@@ -38,7 +38,7 @@ impl Hands for AppHands {
             Effect::Music(op) => music_control(&self.app, op),
             Effect::TogglePill(id) => crate::settingshost::voice_prefs_command(&self.app, &PrefsCommand::ToggleDeclaredPill(id.clone())).is_some(),
             Effect::SetMainPill(id) => crate::settingshost::voice_prefs_command(&self.app, &PrefsCommand::SetMainPill(id.clone())).is_some(),
-            Effect::OpenUrl(url) => url.starts_with("https://") && spawn_detached("xdg-open", Some(url)),
+            Effect::OpenUrl(url) => url.starts_with("https://") && koda_island::opener::open_detached(koda_island::opener::Target::Web(url)).is_ok(),
             Effect::OpenApp(bin) => spawn_detached(bin, None),
             Effect::AskChat(text) => self.app.emit("voice-ask", json!({ "text": text })).is_ok(),
         }
@@ -62,22 +62,17 @@ fn spawn_detached(program: &str, arg: Option<&str>) -> bool {
     }
 }
 
-#[cfg(target_os = "linux")]
+// K2-09 (S1, S5): all three systems answer now — `spotifyhost` picks MPRIS, SMTC or AppleScript.
 fn music_state(app: &AppHandle) -> (bool, bool, u8, Option<(String, Option<String>)>) {
-    let s = crate::spotifyhost::state_of(app);
-    (s.0, s.1, s.2, s.3)
-}
-#[cfg(not(target_os = "linux"))]
-fn music_state(_app: &AppHandle) -> (bool, bool, u8, Option<(String, Option<String>)>) {
-    (false, false, 50, None)
+    crate::spotifyhost::state_of(app)
 }
 
 fn music_control(app: &AppHandle, op: &MusicOp) -> bool {
     let action = match op {
-        MusicOp::PlayPause => abito_island::spotify::Action::PlayPause,
-        MusicOp::Next => abito_island::spotify::Action::Next,
-        MusicOp::Previous => abito_island::spotify::Action::Previous,
-        MusicOp::Volume(v) => abito_island::spotify::Action::Volume(*v),
+        MusicOp::PlayPause => koda_island::spotify::Action::PlayPause,
+        MusicOp::Next => koda_island::spotify::Action::Next,
+        MusicOp::Previous => koda_island::spotify::Action::Previous,
+        MusicOp::Volume(v) => koda_island::spotify::Action::Volume(*v),
     };
     crate::spotifyhost::control(app, action)
 }
@@ -99,7 +94,7 @@ impl Voices for RealVoices {
     }
 
     fn eleven(&self, text: &str, gender: voicecmd::Gender) -> bool {
-        use abito_island::secrets::{Keychain, SecretStore};
+        use koda_island::secrets::{Keychain, SecretStore};
         let Some(key) = Keychain.read(voicespeak::KEY_NAME).ok().flatten().filter(|k| !k.is_empty()) else { return false };
         let run = async {
             let client = reqwest::Client::builder()
@@ -203,9 +198,9 @@ fn slot_prefs(app: &AppHandle) -> VoicePrefs {
 }
 
 /// Wake-phrase diagnostics are opt-in: the heard text is private and is logged only when
-/// Abito was started with `ABITO_VOICE_DEBUG=1`.
+/// Abito was started with `KODA_VOICE_DEBUG=1`.
 fn voice_debug() -> bool {
-    voice_debug_from(std::env::var("ABITO_VOICE_DEBUG").ok().as_deref())
+    voice_debug_from(std::env::var("KODA_VOICE_DEBUG").ok().as_deref())
 }
 
 fn voice_debug_from(value: Option<&str>) -> bool {
@@ -240,7 +235,7 @@ fn command_reply(handle: &AppHandle, session: &mut Session, hands: &AppHands, te
     let _ = handle.emit("voice-result", json!({ "outcome": outcome, "message": reply.message, "lang": if reply.lang == voiceintent::Lang::En { "en" } else { "es" } }));
     let prefs = slot_prefs(handle);
     let engine = {
-        use abito_island::secrets::{Keychain, SecretStore};
+        use koda_island::secrets::{Keychain, SecretStore};
         let has_key = Keychain.read(voicespeak::KEY_NAME).ok().flatten().is_some_and(|k| !k.is_empty());
         voicespeak::engine_for(prefs.output, has_key)
     };
@@ -305,7 +300,7 @@ fn start_listener(app: &AppHandle, sensitivity: u8) -> Result<Listener, String> 
                         eprintln!("abito voice: {:.1}s segment transcribed in {:?}", seg.len() as f32 / speech::SAMPLE_RATE as f32, started.elapsed());
                         let tolerance = wake::params(slot_prefs(&handle).sensitivity).tolerance;
                         // Diagnostics for wake-phrase tests only: the heard text is private, so it is
-                        // logged ONLY when the developer starts Abito with ABITO_VOICE_DEBUG=1.
+                        // logged ONLY when the developer starts Abito with KODA_VOICE_DEBUG=1.
                         if voice_debug() {
                             eprintln!("abito voice: heard {:?} (normalised {:?}, tolerance {})", text, voiceintent::normalise(&text), tolerance);
                         }
@@ -346,14 +341,14 @@ fn sync(app: &AppHandle) {
     let (want, running) = {
         let h = slot.lock().expect("voice host");
         // abito-pausa: «OK Abito» is paused in this version — the microphone listener never starts (the stored preference is kept)
-        (abito_island::paused::effective(abito_island::paused::Feature::Voice, h.prefs.enabled) && wake::VAD.is_present() && speech::is_ready(), h.listener.is_some())
+        (koda_island::paused::effective(koda_island::paused::Feature::Voice, h.prefs.enabled) && wake::VAD.is_present() && speech::is_ready(), h.listener.is_some())
     };
     if want && !running {
         let sens = slot.lock().expect("voice host").prefs.sensitivity;
         let result = start_listener(app, sens);
         let mut h = slot.lock().expect("voice host");
         match result {
-            Ok(l) if abito_island::paused::effective(abito_island::paused::Feature::Voice, h.prefs.enabled) => {
+            Ok(l) if koda_island::paused::effective(koda_island::paused::Feature::Voice, h.prefs.enabled) => {
                 h.listener = Some(l);
                 h.last_error = None;
             }
@@ -363,8 +358,8 @@ fn sync(app: &AppHandle) {
             }
             Err(e) => {
                 // #503 S1: a local failure record with a CLOSED class only; the error text (`e`) is never passed on.
-                let class = if wake::VAD.is_present() { abito_island::failure::ModelError::Other } else { abito_island::failure::ModelError::MissingFile };
-                abito_island::failure::report("voice", "model-load-failed", abito_island::failure::Reason::ModelLoadFailed(class), None);
+                let class = if wake::VAD.is_present() { koda_island::failure::ModelError::Other } else { koda_island::failure::ModelError::MissingFile };
+                koda_island::failure::report("voice", "model-load-failed", koda_island::failure::Reason::ModelLoadFailed(class), None);
                 h.last_error = Some(e);
             }
         }
@@ -375,12 +370,13 @@ fn sync(app: &AppHandle) {
 }
 
 fn speech_json(h: &Host) -> Value {
-    let root = speech::models_dir();
+    // Read-only: with no data folder the list says «not installed» instead of panicking (see voicehost::start).
+    let root = speech::try_models_dir();
     let models: Vec<Value> = catalog::entries()
         .iter()
         .map(|e| json!({
             "id": e.id, "name": e.name, "sizeMb": e.size_mb(), "languages": e.languages, "forcesLanguage": e.forces_language,
-            "license": e.license, "note": e.note, "state": speech::model_state(e.id), "installed": catalog::state_in(e, &root) == catalog::Installed::Yes,
+            "license": e.license, "note": e.note, "state": speech::model_state(e.id), "installed": root.as_deref().is_some_and(|root| catalog::state_in(e, root) == catalog::Installed::Yes),
             "active": e.id == h.speech.model,
         }))
         .collect();
@@ -388,10 +384,17 @@ fn speech_json(h: &Host) -> Value {
 }
 
 pub fn start(app: &AppHandle) {
-    let speech_prefs = catalog::load_prefs_in(&voicecmd::prefs_dir());
+    // No absolute data folder in the environment (LOCALAPPDATA/USERPROFILE on Windows, XDG_DATA_HOME/HOME elsewhere):
+    // the voice store cannot be located, so voice is disabled here with ONE log line instead of panicking on the first
+    // read. No host is managed, and every voice command answers `unavailable` (voice_action checks for it).
+    let Ok(folder) = speech::try_data_dir().map(|dir| dir.join("Voice")) else {
+        eprintln!("abito voice: disabled, {} — nothing is read or written", speech::NoDataDir);
+        return;
+    };
+    let speech_prefs = catalog::load_prefs_in(&folder);
     speech::set_active(&speech_prefs.model, &speech_prefs.language);
     speech::set_custom_words(&speech_prefs.words);
-    app.manage(Mutex::new(Host { prefs: voicecmd::load_prefs_in(&voicecmd::prefs_dir()), listener: None, last_error: None, learned: train::load_in(&voicecmd::prefs_dir()), trainer: train::Trainer::default(), speech: speech_prefs }));
+    app.manage(Mutex::new(Host { prefs: voicecmd::load_prefs_in(&folder), listener: None, last_error: None, learned: train::load_in(&folder), trainer: train::Trainer::default(), speech: speech_prefs }));
     let app = app.clone();
     std::thread::spawn(move || sync(&app));
 }
@@ -422,6 +425,11 @@ pub async fn voice_action(
     bridge::sender_ok(webview.label(), &url)?;
     state.chat_rate.lock().expect("chat rate lock").check(now_ms())?;
     let command = voicecmd::parse_command(&payload).ok_or_else(|| err("invalid_schema"))?;
+    // No managed host: voicehost::start could not locate the data folder and disabled voice with one log line.
+    // Answering `unavailable` keeps every store read and write out of a working-directory-relative path.
+    if app.try_state::<Mutex<Host>>().is_none() {
+        return Err(err("unavailable"));
+    }
     tauri::async_runtime::spawn_blocking(move || match command.clone() {
         Command::Status => Ok(status_json(&app)),
         Command::SetPrefs(prefs) => {

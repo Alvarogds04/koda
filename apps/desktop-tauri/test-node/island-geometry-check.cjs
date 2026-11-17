@@ -37,10 +37,10 @@ async function hiddenByDesign(r, sel) {
   }).map(el => el.id || el.className), sel);
 }
 const LEGACY = '#session-jump, .pill-choice, #pill-choices, #blobs, .see-all, #blobs-footer, .mini, #mini-grid';
-const NUSA_BASE = '.nusa-input, .nusa-send, #nusa-next, #nusa-tab-inicio, #nusa-tab-agentes, #nusa-tab-avisos';
+const NUSA_BASE = '.nusa-dock-btn, #nusa-next, #nusa-tab-inicio, #nusa-tab-agentes, #nusa-tab-avisos';
 async function nusaBoxes(r) {
   const out = [];
-  for (const sel of ['.nusa-input', '.nusa-send', '#nusa-next', '#nusa-prev', '.nusa-agent', '.nusa-all', '#nusa-tab-inicio', '#nusa-tab-agentes', '#nusa-tab-avisos', '#engine-band-link', '#engine-band-skip'])
+  for (const sel of ['.nusa-dock-btn', '#nusa-next', '#nusa-prev', '.nusa-agent', '.nusa-all', '#nusa-tab-inicio', '#nusa-tab-agentes', '#nusa-tab-avisos', '#engine-band-link', '#engine-band-skip'])
     for (const b of await r.measure(sel)) if (b.shown && b.w >= 4) out.push({ ...b, sel });
   return out;
 }
@@ -50,6 +50,7 @@ function noOverlaps(list, why) {
   assert.deepEqual(bad, [], `${why}: ${bad.join(' | ')}`);
 }
 async function realClick(r, sel) { const b = (await r.measure(sel)).find(x => x.shown); assert.ok(b, `${sel} is shown`); await r.page.mouse.click(b.left + b.w / 2, b.top + b.h / 2); await r.page.waitForTimeout(700); }
+async function goAgentes(r) { const d = '.nusa-dock-btn[aria-label="Agentes"]'; return realClick(r, (await r.measure(d)).some(b => b.shown) ? d : '#nusa-tab-agentes'); } // welcome-home: the dock replaces the dots in the Inicio
 
 (async () => {
   let passed = 0;
@@ -81,8 +82,8 @@ async function realClick(r, sel) { const b = (await r.measure(sel)).find(x => x.
         return hits;
       };
       const inicio = await sweep('Inicio');
-      assert.ok(['nusa-input', 'nusa-fbtn nusa-send', 'nusa-tab-inicio', 'nusa-tab-agentes', 'nusa-tab-avisos'].every(id => inicio.some(h => h.id === id)), `${name}: the ask field, send and the three tabs were hit-tested: ${inicio.map(h => h.id)}`);
-      await realClick(r, '#nusa-tab-agentes'); // a real click on the dot opens Agentes
+      assert.equal(inicio.filter(h => h.id === 'nusa-dock-btn').length, 3, `${name}: the three dock icons were hit-tested: ${inicio.map(h => h.id)}`); // welcome-home: the ask field, send and the pager dots left the Inicio (the dock is the navigation there)
+      await realClick(r, '.nusa-dock-btn[aria-label="Agentes"]'); // a real click on the dock's Agentes icon opens Agentes (the dots are hidden in the Inicio)
       const agentes = await sweep('Agentes');
       if (!empty) {
         assert.ok(agentes.filter(h => h.id === 'nusa-agent').length >= 1, `${name}: Agentes lists the session rows`);
@@ -104,7 +105,7 @@ async function realClick(r, sel) { const b = (await r.measure(sel)).find(x => x.
   {
     const r = await H.open({ manyPi: true, github: true });
     try {
-      await realClick(r, '#nusa-tab-agentes');
+      await goAgentes(r);
       const panel = (await r.measure('#nusa-panel'))[0], isl = (await r.measure('#island'))[0];
       const rows = (await r.measure('.nusa-agent')).filter(b => b.shown), all = (await r.measure('.nusa-all')).filter(b => b.shown);
       assert.ok(rows.length >= 2, `at least two whole agent rows, got ${rows.length}`);
@@ -238,7 +239,7 @@ async function realClick(r, sel) { const b = (await r.measure(sel)).find(x => x.
   {
     const r = await H.open({ manyPi: true, notices: 4, engine: 'account', theme: 'light' });
     try {
-      await realClick(r, '#nusa-tab-agentes');
+      await goAgentes(r);
       const probe = await r.page.evaluate(async () => {
         const moved = [], band0 = document.getElementById('notices').getBoundingClientRect().top;
         for (const sel of ['.nusa-jump', '.nusa-all', '.nusa-agent']) {
@@ -309,7 +310,7 @@ async function realClick(r, sel) { const b = (await r.measure(sel)).find(x => x.
       assert.equal(sub.disp, 'none', 'the capsule carries NO secondary text: it cannot fit the 174px column whatever the font, and the real window showed «Hace…»');
       assert.ok(sub.aria, 'the detail stays reachable through the accessible name');
       // HU-057: the blobs column is gone; with the strip showing, the Agentes rows stay whole and above it (>= 2 rows, none under the strip)
-      await realClick(r, '#nusa-tab-agentes');
+      await goAgentes(r);
       const rows = (await r.measure('.nusa-agent')).filter(b => b.shown), strip = (await r.measure('#notice-pill'))[0], panel = (await r.measure('#nusa-panel'))[0];
       const whole = rows.filter(b => b.top >= panel.top - 0.5 && b.bottom <= panel.bottom + 0.5 && b.bottom <= strip.top + 0.5);
       assert.ok(whole.length >= 2, `with a notice strip the Agentes tab still shows >= 2 whole rows above it, got ${whole.length}`);

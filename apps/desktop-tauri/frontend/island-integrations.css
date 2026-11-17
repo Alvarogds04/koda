@@ -320,3 +320,36 @@
 #capsule[data-integration="on"] #clay, #capsule[data-integration="on"] #clay-badge { visibility: hidden; pointer-events: none; }
 
 #capsule[data-integration="on"] #spotify-card, #capsule[data-integration="on"] #spotify-card * { visibility: hidden !important; pointer-events: none; }
+
+/* K2-11 S1/S6 — the GitHub card of the island's shortcuts row (design 08 F4/F4b: «el pulso de Coucou dentro de la misma tarjeta»).
+   The rows reuse Coucou's .gh-row/.gh-list/.gh-ref/.gh-title/.gh-back from vendor/coucou/island/island.css; these rules add the
+   pulse (three tiles of the design, 44 high), the 14-day contribution strip and the plain [button] row of our own card. */
+.gh-host,
+.cal-host { display: block; min-width: 0; padding: 8px 10px; pointer-events: auto; overflow: auto; max-height: 100%; }
+.int-head > .gh-dot { background: var(--dot-purple-2); }
+.gh-tiles { display: flex; gap: 4px; padding-top: 6px; }
+.gh-tile {
+  display: flex; flex: 1 1 0; min-width: 0; height: 44px; flex-direction: column; align-items: flex-start; justify-content: center;
+  gap: 1px; padding: 0 8px; border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 10px;
+  background: rgba(255, 255, 255, 0.04); cursor: default; text-align: left;
+}
+.gh-tile:hover { background: rgba(255, 255, 255, 0.1); }
+.gh-tile[data-tile="review"] { border-color: rgba(255, 255, 255, 0.28); } /* the urgent one carries the ring, never only colour */
+.gh-tile-count { font: 600 13px var(--mono); color: var(--ink); font-variant-numeric: tabular-nums; }
+.gh-tile-label { font: 400 10px var(--font); color: var(--dim-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+.gh-strip { display: flex; align-items: center; gap: 2px; padding-top: 7px; }
+.gh-strip-label { padding-left: 6px; font: 400 10px var(--font); color: var(--dim-3); white-space: nowrap; }
+.gh-pulse-card .gh-cell.l1 { background: var(--dot-purple-1); }
+.gh-pulse-card .gh-cell.l2 { background: var(--dot-purple-2); }
+.gh-pulse-card .gh-cell.l3,
+.gh-pulse-card .gh-cell.l4 { background: var(--dot-purple-3); }
+.gh-pulse-card .gh-cell.l0 { background: rgba(255, 255, 255, 0.06); }
+button.gh-row { border: 0; background: transparent; width: 100%; padding: 0 2px 0 0; text-align: left; cursor: default; }
+.gh-meta { margin-left: auto; padding-left: 6px; font: 400 10px var(--font); color: var(--dim-3); white-space: nowrap; flex: 0 0 auto; }
+.gh-list-title { margin-left: 2px; font: 600 11px var(--font); color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* K2-11 S2 — the calendar card: one row per event of today and tomorrow, with its day and its time. */
+.cal-row { display: flex; align-items: center; gap: 6px; min-height: 24px; min-width: 0; }
+.cal-day { flex: 0 0 auto; width: 46px; font: 500 10px var(--font); color: var(--dim-2); }
+.cal-time { flex: 0 0 44px; font: 500 10px var(--mono); color: var(--ink); font-variant-numeric: tabular-nums; }
+.cal-where { font: 400 10px var(--font); color: var(--dim-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

@@ -34,7 +34,7 @@ test("Windows native-healthy CLI status never cleans up and stop still refuses",
     } else {
       assert.equal(result.status, 1);
       assert.equal(result.stdout, "");
-      assert.equal(result.stderr, "abito-island-daemon: session.json does not belong to a confirmed daemon; refusing to signal it\n");
+      assert.equal(result.stderr, "koda-daemon: session.json does not belong to a confirmed daemon; refusing to signal it\n");
     }
   }
 });
@@ -60,13 +60,13 @@ test("CLI startup diagnostics name failures without paths or secrets", () => {
       `;
       const result = spawnSync(process.execPath, ["-e", source], {
         cwd: path.join(__dirname, ".."), encoding: "utf8",
-        env: { ...process.env, LOCALAPPDATA: root, ABITO_ISLAND_DIR: path.join(root, "Abito") },
+        env: { ...process.env, LOCALAPPDATA: root, KODA_ISLAND_DIR: path.join(root, "Koda") },
       });
       assert.equal(result.status, 1, result.stderr);
       assert.equal(result.stdout, "");
       assert.equal(result.stderr, expected === null
-        ? "abito-island-daemon: daemon already running\n"
-        : `abito-island-daemon: failed (see the island directory permissions and the daemon log) [${expected}]\n`);
+        ? "koda-daemon: daemon already running\n"
+        : `koda-daemon: failed (see the island directory permissions and the daemon log) [${expected}]\n`);
       assert.deepEqual(fs.readdirSync(root), [], "rejected startup must not write state");
     }
   } finally { fs.rmSync(root, { recursive: true, force: true }); }

@@ -761,13 +761,13 @@ fn f032_optional_defaults_and_saved_normalization() {
     let loaded = Prefs::from_text(Some(raw));
     let v: Value = serde_json::from_str(&loaded.to_text()).unwrap();
     // The offered catalog is per-OS BY DESIGN (`pill_offered`): claude-desktop
-    // is offered on Windows only, spotify on Linux only. `ai_google` is not a
+    // is offered on Windows only; spotify on every desktop OS since K2-09 (MPRIS, SMTC, AppleScript). `ai_google` is not a
     // MAIN_PILL, so the stored main_pill falls back to the default
     // `integration_claude`, which drops the stored "integration_claude" twin.
     // What survives, in first-occurrence order:
     //   Linux   [gemini, ai_google, amp, notion, spotify, resend]
-    //   Windows [gemini, ai_google, amp, notion, claude-desktop, resend]
-    //   macOS   [gemini, ai_google, amp, notion, resend]
+    //   Windows [gemini, ai_google, amp, notion, spotify, claude-desktop, resend]
+    //   macOS   [gemini, ai_google, amp, notion, spotify, resend]
     // Every OS keeps a real fifth id — S32's point (the fifth is kept, not
     // dropped for being the fifth) is asserted on all three, never weakened:
     // `integration_resend` is offered everywhere and closes the macOS gap.
@@ -776,10 +776,10 @@ fn f032_optional_defaults_and_saved_normalization() {
             ["agent_gemini", "ai_google", "agent_amp", "integration_notion", "integration_spotify", "integration_resend"].to_vec()
         }
         _ if cfg!(target_os = "windows") => {
-            ["agent_gemini", "ai_google", "agent_amp", "integration_notion", "agent_claude-desktop", "integration_resend"].to_vec()
+            ["agent_gemini", "ai_google", "agent_amp", "integration_notion", "integration_spotify", "agent_claude-desktop", "integration_resend"].to_vec()
         }
         _ => {
-            ["agent_gemini", "ai_google", "agent_amp", "integration_notion", "integration_resend"].to_vec()
+            ["agent_gemini", "ai_google", "agent_amp", "integration_notion", "integration_spotify", "integration_resend"].to_vec()
         }
     };
     assert_eq!(v["declared_pills"], json!(expected), "S32: the fifth is kept, not dropped for being the fifth");
@@ -1095,191 +1095,43 @@ fn theme_transact_persists_before_publish_and_a_failed_save_publishes_nothing() 
     assert_eq!(events.lock().unwrap().len(), 2);
 }
 
-// ---- #414: the chosen models of the connected providers (Ajustes → Modelos) ------------------------------
+// ---- L72: the per-provider model allowlist pref is gone; old files still load -------------------
 
-mod chosen_models {
-    use super::*;
-    use serde_json::json;
+/// L72: an old `prefs.json` that still carries `chosen_models` loads without error, keeps every
+/// other pref intact, and the next save drops the key for good.
+#[test]
+fn an_old_file_with_chosen_models_still_loads_and_the_next_save_drops_the_key() {
+    let old = r#"{"v":1,"sound":false,"gain":0.12,"display_name":"Ana","avatar_colors":{"abito":"mint"},"theme":"dark","chosen_models":{"anthropic":["claude-x"]},"auto_close_seconds":30}"#;
+    let p = Prefs::from_text(Some(old));
+    assert!(!p.sound, "sound survives");
+    assert_eq!(p.gain(), 0.12, "gain survives");
+    assert_eq!(p.display_name.as_deref(), Some("Ana"), "display_name survives");
+    assert_eq!(p.avatar_colors["abito"], "#2DD4BF", "avatar_colors survive");
+    assert_eq!(p.theme(), Theme::Dark, "theme survives");
+    assert_eq!(p.auto_close_seconds(), 30, "auto_close_seconds survives");
+    // The next save writes those same prefs without the removed key.
+    let saved = p.to_text();
+    assert!(!saved.contains("chosen_models"), "the removed key is never written again: {saved}");
+    assert!(
+        serde_json::from_str::<Value>(&saved).unwrap().get("chosen_models").is_none(),
+        "no key at all: {saved}"
+    );
+    let reread = Prefs::from_text(Some(&saved));
+    assert_eq!(reread, p, "the other prefs round-trip");
+    assert_eq!(reread.to_text(), saved, "the drop is idempotent");
+}
 
-    fn set(provider: &str, models: &[&str]) -> Command {
-        Command::SetChosenModels { provider: provider.into(), models: models.iter().map(|m| m.to_string()).collect() }
-    }
-
-    #[test]
-    fn the_choice_round_trips_as_an_optional_v1_field_and_untouched_files_keep_their_bytes() {
-        let saved = Prefs { chosen_models: Some([("anthropic".to_string(), vec!["claude-sonnet-4-5".to_string(), "claude-opus-4-6".to_string()])].into()), ..Prefs::default() };
-        let text = saved.to_text();
-        assert!(!text.contains('\n'), "the file stays one line: {text}");
-        assert_eq!(Prefs::from_text(Some(&text)), saved, "order is the page's, not sorted");
-        assert_eq!(serde_json::from_str::<Value>(&text).unwrap()["v"], 1, "the file stays v1");
-        // A file nobody customised never grows the key.
-        let minimal = Prefs::from_text(Some(r#"{"v":1,"sound":true}"#)).to_text();
-        assert!(!minimal.contains("chosen_models"), "{minimal}");
-    }
-
-    #[test]
-    fn the_command_schema_is_closed_and_exact() {
-        for payload in [
-            json!({"action":"set_chosen_models"}),
-            json!({"action":"set_chosen_models","provider":"anthropic"}),
-            json!({"action":"set_chosen_models","models":["claude-sonnet-4-5"]}),
-            json!({"action":"set_chosen_models","provider":"anthropic","models":"x"}),
-            json!({"action":"set_chosen_models","provider":"anthropic","models":[1]}),
-            json!({"action":"set_chosen_models","provider":"anthropic","models":[],"extra":1}),
-            json!({"action":"set_chosen_models","provider":"anthropic","models":["m"],"provider2":"x"}),
-            json!({"action":"choose_models","provider":"anthropic","models":[]}),
-            json!({"action":"set_chosen_models","provider":1,"models":[]}),
-        ] {
-            assert_eq!(parse_command(&payload), Err(CommandError), "{payload} is not a valid command shape");
-        }
-        let ok = parse_command(&json!({"action":"set_chosen_models","provider":"anthropic","models":["claude-sonnet-4-5"]})).unwrap();
-        assert_eq!(ok, set("anthropic", &["claude-sonnet-4-5"]));
-    }
-
-    #[test]
-    fn identifiers_are_a_closed_slug_shape_and_hosts_are_bounded() {
-        // providers: the engine's strict_id shape (<=64, lowercase slug); model ids keep
-        // their catalogue spelling, bounded, no whitespace or control characters.
-        for provider in ["", "Anthropic", "ANTHROPIC", "with space", "slash/ed", "ünicode", "dot.", "a\nb", &"a".repeat(65)] {
-            assert_eq!(apply(&Prefs::default(), &set(provider, &["m"])), Err(CommandError), "{provider:?}");
-        }
-        for model in ["", "with space", "tab\tid", "new\nline", "ünicode", &"m".repeat(201)] {
-            assert_eq!(apply(&Prefs::default(), &set("anthropic", &[model])), Err(CommandError), "{model:?}");
-        }
-        // The model id keeps slashes and dots: several engines key theirs "vendor/model".
-        let kept = apply(&Prefs::default(), &set("openrouter", &["Vendor/Model-2.0"])).unwrap();
-        assert_eq!(kept.chosen_models.as_ref().unwrap()["openrouter"], vec!["Vendor/Model-2.0".to_string()]);
-        // The provider slug admits exactly the engine's alphabet.
-        let ok = apply(&Prefs::default(), &set("nan-gpt.local_2", &["m"])).unwrap();
-        assert!(ok.chosen_models.as_ref().unwrap().contains_key("nan-gpt.local_2"));
-    }
-
-    #[test]
-    fn the_store_is_bounded_and_deduplicates() {
-        let many: Vec<String> = (0..65).map(|i| format!("m{i}")).collect();
-        let refs: Vec<&str> = many.iter().map(String::as_str).collect();
-        assert_eq!(apply(&Prefs::default(), &set("anthropic", &refs)), Err(CommandError), "65 models exceed the cap");
-        let dup = apply(&Prefs::default(), &set("anthropic", &["m1", "m2", "m1"])).unwrap();
-        assert_eq!(dup.chosen_models.as_ref().unwrap()["anthropic"], vec!["m1".to_string(), "m2".to_string()], "a repeated id is stored once");
-        let many_providers: Vec<(String, Vec<String>)> = (0..33).map(|i| (format!("p{i}"), vec!["m".to_string()])).collect();
-        let flooded = Prefs { chosen_models: Some(many_providers.into_iter().collect()), ..Prefs::default() };
-        assert_eq!(flooded.chosen_models.as_ref().unwrap().len(), 33, "the raw struct keeps what it is given…");
-        let reloaded = Prefs::from_text(Some(&flooded.to_text()));
-        assert_eq!(reloaded.chosen_models.as_ref().map(|m| m.len()), Some(32), "…and load caps the map, dropping the rest one by one");
-        // a single provider past the per-provider cap is dropped whole on load
-        let fat = Prefs { chosen_models: Some([("anthropic".to_string(), many)].into()), ..Prefs::default() };
-        assert_eq!(Prefs::from_text(Some(&fat.to_text())).chosen_models, None, "65 ids never become a stored choice");
-    }
-
-    #[test]
-    fn a_hostile_or_damaged_file_never_costs_the_other_fields() {
-        let old = r#"{"v":1,"sound":true,"gain":0.12,"chosen_models":{"anthropic":["claude-sonnet-4-5"],"BAD":["x"],"anthropic2":["", "ok" ]}}"#;
-        let p = Prefs::from_text(Some(old));
-        let map = p.chosen_models.as_ref().unwrap();
-        assert_eq!(map.get("anthropic").map(Vec::as_slice), Some(&["claude-sonnet-4-5".to_string()][..]));
-        assert!(!map.contains_key("BAD"), "an invalid provider key is dropped");
-        assert_eq!(map.get("anthropic2").map(Vec::as_slice), Some(&["ok".to_string()][..]), "invalid ids drop one by one");
-        assert!(p.sound && p.gain() == 0.12, "the established fields survive a damaged map");
-        // An empty (fully dropped) map reads as absent and never re-writes the key.
-        let damaged = r#"{"v":1,"sound":true,"chosen_models":{}}"#;
-        let clean = Prefs::from_text(Some(damaged)).to_text();
-        assert!(!clean.contains("chosen_models"), "{clean}");
-        assert!(clean.contains(r#""sound":true"#));
-        // A value the parser refuses never reaches the transaction: no state, disk or event moves.
-    }
-
-    #[test]
-    fn replacing_and_clearing_one_provider_never_touches_another_and_the_command_round_trips() {
-        let current = Prefs { chosen_models: Some([("anthropic".to_string(), vec!["a1".to_string(), "a2".to_string()]), ("openai".to_string(), vec!["gpt-5.2".to_string()])].into()), ..Prefs::default() };
-        // A second set REPLACES that provider's list (the page sends the whole list).
-        let replaced = apply(&current, &set("anthropic", &["a3"])).unwrap();
-        assert_eq!(replaced.chosen_models.as_ref().unwrap()["anthropic"], vec!["a3".to_string()]);
-        assert_eq!(replaced.chosen_models.as_ref().unwrap()["openai"], vec!["gpt-5.2".to_string()], "the other provider is untouched");
-        // An empty list clears that provider; the last one gone drops the whole field.
-        let cleared = apply(&current, &set("openai", &[])).unwrap();
-        assert!(!cleared.chosen_models.as_ref().unwrap().contains_key("openai"));
-        assert!(cleared.chosen_models.as_ref().unwrap().contains_key("anthropic"));
-        let last = apply(&cleared, &set("anthropic", &[])).unwrap();
-        assert_eq!(last.chosen_models, None, "an empty choice is absent, not an empty map");
-        // The command path (not just apply) does the same, and the file round-trips.
-        let cmd = parse_command(&json!({"action":"set_chosen_models","provider":"anthropic","models":["a3"]})).unwrap();
-        let via_ipc = update(&current, &cmd, |_| true).unwrap();
-        assert_eq!(via_ipc.chosen_models.as_ref().unwrap()["anthropic"], vec!["a3".to_string()]);
-        assert_eq!(Prefs::from_text(Some(&via_ipc.to_text())), via_ipc);
-    }
-
-    #[test]
-    fn transact_persists_before_publish_and_a_failed_save_publishes_nothing() {
-        use std::sync::Mutex;
-        let state = Mutex::new(Prefs::default());
-        let serial = Mutex::new(());
-        let disk = Mutex::new(Prefs::default().to_text());
-        let events = Mutex::new(Vec::new());
-        let command = set("anthropic", &["claude-sonnet-4-5"]);
-        let next = transact(&serial, &state, &command,
-            |p| { *disk.lock().unwrap() = p.to_text(); true },
-            |p| events.lock().unwrap().push(p.chosen_models.clone())).unwrap();
-        assert_eq!(next.chosen_models.as_ref().unwrap()["anthropic"], vec!["claude-sonnet-4-5".to_string()]);
-        assert_eq!(events.lock().unwrap().len(), 1);
-        assert!(disk.lock().unwrap().contains("\"chosen_models\""));
-        // A failed save installs nothing and publishes nothing.
-        let before = state.lock().unwrap().clone();
-        let bytes = disk.lock().unwrap().clone();
-        assert_eq!(transact(&serial, &state, &set("openai", &["gpt-5.2"]), |_| false, |_| panic!("failed event")), Err(CommandError));
-        assert_eq!(*state.lock().unwrap(), before);
-        assert_eq!(*disk.lock().unwrap(), bytes);
-        // Clearing to nothing is a real change (publishes); clearing again is a no-op.
-        transact(&serial, &state, &set("anthropic", &[]),
-            |p| { *disk.lock().unwrap() = p.to_text(); true },
-            |p| events.lock().unwrap().push(p.chosen_models.clone())).unwrap();
-        assert_eq!(*events.lock().unwrap(), vec![next.chosen_models.clone(), None]);
-        transact(&serial, &state, &set("anthropic", &[]), |_| panic!("no-op write"), |_| panic!("no-op event")).unwrap();
-        assert_eq!(events.lock().unwrap().len(), 2);
-        // An invalid command is refused before the transaction: nothing moves.
-        let refused = disk.lock().unwrap().clone();
-        assert_eq!(transact(&serial, &state, &set("Anthropic", &["m"]), |_| panic!("invalid write"), |_| panic!("invalid event")), Err(CommandError));
-        assert_eq!(*disk.lock().unwrap(), refused);
-        assert_eq!(events.lock().unwrap().len(), 2);
-    }
-
-    #[test]
-    fn the_projection_and_the_schema_do_not_leak_the_choice_into_other_fields() {
-        // The other typed optional fields keep their round-trip through a file that also
-        // carries a choice (the "all existing known fields survive" promise).
-        let full = Prefs {
-            sound: true,
-            gain: Some(0.2),
-            display_name: Some("Ana".into()),
-            avatar_colors: [("abito".to_string(), "#2DD4BF".to_string())].into(),
-            position: Some((10, 20)),
-            main_pill: Some("agent_codex".into()),
-            declared_pills: Some(vec!["integration_github".into()]),
-            pill_colors: [("agent_amp".to_string(), "#2DD4BF".to_string())].into(),
-            theme: Some(Theme::Dark),
-            chosen_models: Some([("anthropic".to_string(), vec!["claude-sonnet-4-5".to_string()])].into()),
-            auto_close_seconds: Some(30),
-            open_on_hover: Some(true),
-            absence_seconds: Some(30),
-            custom_blobs: Some(vec![CustomBlob { name: "Abito GitHub".into(), color: Some("#2DD4BF".into()) }]),
-            monitor: Some("DP-1".into()),
-            settings_window: None,
-            open_settings_at_launch: Some(true),
-            settings_window_size: Some((960, 640)),
-            island_agents: Some(vec!["esp-a1".into(), "esp-b2".into()]),
-            abito_instructions: Some("Ordena mis notas.".into()),
-            show_plan_in_notch: Some(true),
-            show_codex_plan_in_notch: Some(true),
-            window_context: Some(true),
-            live_context: None,
-            desktop_character: Some(DesktopCharacter { on: true, spot: Some((5, -6)) }),
-            island_size: None,
-        };
-        let text = full.to_text();
-        let re = Prefs::from_text(Some(&text));
-        assert_eq!(re, full);
-        for key in ["sound", "gain", "display_name", "avatar_colors", "position", "main_pill", "declared_pills", "pill_colors", "theme", "chosen_models", "auto_close_seconds", "open_on_hover", "custom_blobs", "monitor", "settings_window_size", "island_agents", "abito_instructions", "show_plan_in_notch", "show_codex_plan_in_notch"] {
-            assert!(serde_json::from_str::<Value>(&text).unwrap().as_object().unwrap().contains_key(key), "{key} survived");
-        }
+/// L72: the removed `set_chosen_models` action is refused exactly like any unknown action.
+#[test]
+fn set_chosen_models_is_refused_exactly_like_any_unknown_command() {
+    let unknown = parse_command(&json!({"action":"choose_models","provider":"anthropic","models":["claude-x"]}));
+    assert_eq!(unknown, Err(CommandError), "an unknown action is refused");
+    for payload in [
+        json!({"action":"set_chosen_models","provider":"anthropic","models":["claude-x"]}),
+        json!({"action":"set_chosen_models","provider":"anthropic","models":[]}),
+        json!({"action":"set_chosen_models"}),
+    ] {
+        assert_eq!(parse_command(&payload), Err(CommandError), "{payload} is an unknown command now");
     }
 }
 
@@ -2001,19 +1853,19 @@ fn island_agents_projection_is_null_when_absent_and_the_stored_order_otherwise()
     assert_eq!(p.island_agents_view(), json!(["esp-a"]));
 }
 
-// ---- #442 T7.4: abito_instructions — the principal's «Qué hace» (declarative, not applied yet) -----------
+// ---- #442 T7.4: koda_instructions — the principal's «Qué hace» (declarative, not applied yet) -----------
 
 fn instructions(text: &str) -> Command {
     parse_command(&json!({"action":"set_abito_instructions","text":text})).unwrap()
 }
 
 #[test]
-fn abito_instructions_is_absent_by_default_and_an_untouched_file_keeps_its_bytes() {
-    assert_eq!(Prefs::default().abito_instructions, None);
+fn koda_instructions_is_absent_by_default_and_an_untouched_file_keeps_its_bytes() {
+    assert_eq!(Prefs::default().koda_instructions, None);
     let p = Prefs::from_text(Some(r#"{"v":1,"sound":true}"#));
-    assert_eq!(p.abito_instructions, None);
+    assert_eq!(p.koda_instructions, None);
     assert!(!p.to_text().contains("abito_instructions"));
-    assert_eq!(Prefs::default().abito_instructions_view(), Value::Null);
+    assert_eq!(Prefs::default().koda_instructions_view(), Value::Null);
 }
 
 #[test]
@@ -2039,27 +1891,27 @@ fn set_abito_instructions_is_an_exact_closed_command_with_the_specialist_text_bo
 fn set_abito_instructions_stores_trimmed_text_round_trips_and_clears_by_removing_the_key() {
     let start = Prefs { sound: true, ..Prefs::default() };
     let next = update(&start, &instructions("  Ordena mis notas.  "), |_| true).unwrap();
-    assert_eq!(next.abito_instructions.as_deref(), Some("Ordena mis notas."));
+    assert_eq!(next.koda_instructions.as_deref(), Some("Ordena mis notas."));
     assert_eq!(Prefs::from_text(Some(&next.to_text())), next);
-    assert_eq!(next.abito_instructions_view(), json!("Ordena mis notas."));
+    assert_eq!(next.koda_instructions_view(), json!("Ordena mis notas."));
     let cleared = update(&next, &instructions("   "), |_| true).unwrap();
-    assert_eq!(cleared.abito_instructions, None);
+    assert_eq!(cleared.koda_instructions, None);
     assert!(!cleared.to_text().contains("abito_instructions"), "no empty key is ever written");
     // the same text skips the disk, a failed write installs nothing, direct callers hit the same gate
     assert_eq!(update(&next, &instructions("Ordena mis notas."), |_| panic!("idempotent")).unwrap(), next);
     assert_eq!(update(&next, &instructions("otra"), |_| false), Err(CommandError));
-    assert_eq!(apply(&next, &Command::SetAbitoInstructions("x".repeat(2001))), Err(CommandError));
-    assert_eq!(apply(&next, &Command::SetAbitoInstructions("a\u{0007}".into())), Err(CommandError));
+    assert_eq!(apply(&next, &Command::SetKodaInstructions("x".repeat(2001))), Err(CommandError));
+    assert_eq!(apply(&next, &Command::SetKodaInstructions("a\u{0007}".into())), Err(CommandError));
 }
 
 #[test]
 fn hostile_stored_abito_instructions_read_as_absent() {
     for raw in [r#"{"v":1,"abito_instructions":7}"#, r#"{"v":1,"abito_instructions":null}"#, r#"{"v":1,"abito_instructions":"   "}"#,
                 r#"{"v":1,"abito_instructions":"a\u0007b"}"#] {
-        assert_eq!(Prefs::from_text(Some(raw)).abito_instructions, None, "{raw}");
+        assert_eq!(Prefs::from_text(Some(raw)).koda_instructions, None, "{raw}");
     }
     let long = format!(r#"{{"v":1,"abito_instructions":"{}"}}"#, "x".repeat(2001));
-    assert_eq!(Prefs::from_text(Some(&long)).abito_instructions, None);
+    assert_eq!(Prefs::from_text(Some(&long)).koda_instructions, None);
 }
 
 // ---- S10 (L30): the plan-usage pill pref `showPlanInNotch` ---------------------------------------
@@ -2214,6 +2066,84 @@ fn window_context_failed_save_changes_nothing() {
     assert!(update(&Prefs::default(), &Command::SetWindowContext(true), |_| false).is_err());
 }
 
+// ---- K2 phone link: `phone_link`, the switch that opens the LAN port (S3) ----------------------------
+#[test]
+fn phone_link_is_an_exact_closed_two_key_command() {
+    assert_eq!(parse_command(&json!({"action":"set_phone_link","phone_link":true})), Ok(Command::SetPhoneLink(true)));
+    assert_eq!(parse_command(&json!({"action":"set_phone_link","phone_link":false})), Ok(Command::SetPhoneLink(false)));
+    for bad in [
+        json!({"action":"set_phone_link"}),
+        json!({"action":"set_phone_link","phone_link":"true"}),
+        json!({"action":"set_phone_link","phone_link":1}),
+        json!({"action":"set_phone_link","phone_link":null}),
+        json!({"action":"set_phone_link","phone_link":true,"port":47821}),
+        json!({"action":"set_phone_link","window_context":true}),
+    ] {
+        assert_eq!(parse_command(&bad), Err(CommandError), "{bad}");
+    }
+}
+
+#[test]
+fn phone_link_is_off_by_default_persists_and_false_drops_the_key() {
+    assert!(!Prefs::default().phone_link(), "S3: the link starts OFF, nothing listens on the LAN");
+    let on = update(&Prefs::default(), &Command::SetPhoneLink(true), |_| true).unwrap();
+    assert!(on.phone_link());
+    assert_eq!(serde_json::from_str::<serde_json::Value>(&on.to_text()).unwrap()["phone_link"], json!(true));
+    assert!(Prefs::from_text(Some(&on.to_text())).phone_link());
+    let off = update(&on, &Command::SetPhoneLink(false), |_| true).unwrap();
+    assert_eq!(off.phone_link, None);
+    assert!(!off.to_text().contains("phone_link"), "the default writes no key");
+    assert!(!on.window_context() && !on.show_plan_in_notch(), "independent of the other switches");
+    for hostile in ["1", "\"true\"", "null", "[true]"] {
+        let text = format!(r#"{{"v":1,"phone_link":{hostile}}}"#);
+        assert!(!Prefs::from_text(Some(&text)).phone_link(), "{hostile}");
+    }
+}
+
+#[test]
+fn phone_link_failed_save_changes_nothing() {
+    assert!(update(&Prefs::default(), &Command::SetPhoneLink(true), |_| false).is_err());
+}
+
+// ---- K2 T6 (S11, §11): `phone_usage`, the switch that puts the plan pills on the phone -----------------
+#[test]
+fn phone_usage_is_an_exact_closed_two_key_command() {
+    assert_eq!(parse_command(&json!({"action":"set_phone_usage","phone_usage":true})), Ok(Command::SetPhoneUsage(true)));
+    assert_eq!(parse_command(&json!({"action":"set_phone_usage","phone_usage":false})), Ok(Command::SetPhoneUsage(false)));
+    for bad in [
+        json!({"action":"set_phone_usage"}),
+        json!({"action":"set_phone_usage","phone_usage":"true"}),
+        json!({"action":"set_phone_usage","phone_usage":1}),
+        json!({"action":"set_phone_usage","phone_usage":null}),
+        json!({"action":"set_phone_usage","phone_usage":true,"codex":true}),
+        json!({"action":"set_phone_usage","phoneUsage":true}),
+    ] {
+        assert_eq!(parse_command(&bad), Err(CommandError), "{bad}");
+    }
+}
+
+#[test]
+fn phone_usage_is_off_by_default_persists_and_false_drops_the_key() {
+    assert!(!Prefs::default().phone_usage(), "S11: nothing of the plans leaves this computer until the human says so");
+    let on = update(&Prefs::default(), &Command::SetPhoneUsage(true), |_| true).unwrap();
+    assert!(on.phone_usage());
+    assert_eq!(serde_json::from_str::<serde_json::Value>(&on.to_text()).unwrap()["phone_usage"], json!(true));
+    assert!(Prefs::from_text(Some(&on.to_text())).phone_usage());
+    let off = update(&on, &Command::SetPhoneUsage(false), |_| true).unwrap();
+    assert_eq!(off.phone_usage, None);
+    assert!(!off.to_text().contains("phone_usage"), "the default writes no key");
+    assert!(!on.phone_link() && !on.show_plan_in_notch() && !on.show_codex_plan_in_notch(), "independent of the other switches");
+    for hostile in ["1", "\"true\"", "null", "[true]", "{}"] {
+        let text = format!(r#"{{"v":1,"phone_usage":{hostile}}}"#);
+        assert!(!Prefs::from_text(Some(&text)).phone_usage(), "{hostile}");
+    }
+}
+
+#[test]
+fn phone_usage_failed_save_changes_nothing() {
+    assert!(update(&Prefs::default(), &Command::SetPhoneUsage(true), |_| false).is_err());
+}
+
 // ---- #486 W2: the desktop character's saved state (Coucou's `desktopMochi`) ----
 
 /// Absent, or any malformed shape, reads as "lives in the island" (off); an untouched
@@ -2286,56 +2216,31 @@ fn launch_settings_is_a_closed_persisted_opt_in() {
 }
 
 #[test]
-fn absence_seconds_round_trip_through_the_prefs_command_in_the_5_to_300_range() {
-    let command = parse_command(&json!({"action":"set_absence_seconds","seconds":30})).expect("G16 setting accepted");
-    let next = apply(&Prefs::default(), &command).unwrap();
-    let wire: Value = serde_json::from_str(&next.to_text()).unwrap();
-    assert_eq!(wire["absence_seconds"], 30);
-    assert!(wire.get("absence_minutes").is_none(), "the old key is never written again");
-    assert_eq!(Prefs::from_text(Some(&next.to_text())), next);
-    for ok in [5, 10, 300] {
-        assert!(parse_command(&json!({"action":"set_absence_seconds","seconds":ok})).is_ok(), "{ok}");
+fn an_old_prefs_file_with_the_retired_edge_hide_delay_still_loads() {
+    // isla-cualquier-lado S2: the folded island never hides at the edge any more, so the G16 delay is retired. A file written
+    // before carries `absence_seconds` (or the even older `absence_minutes`): it MUST still load with every other setting intact.
+    let old = r##"{"v":1,"sound":false,"gain":0.2,"display_name":"Ana","theme":"dark","auto_close_seconds":30,"open_on_hover":true,"island_size":"m","absence_seconds":45,"absence_minutes":2}"##;
+    let p = Prefs::from_text(Some(old));
+    let expected = Prefs {
+        sound: false, gain: Some(0.2), display_name: Some("Ana".into()), theme: Some(Theme::Dark),
+        auto_close_seconds: Some(30), open_on_hover: Some(true), island_size: Some("m".into()),
+        ..Prefs::default()
+    };
+    assert_eq!(p, expected, "the retired keys are tolerated and ignored; nothing else is lost");
+    for retired in [r#"{"v":1,"absence_seconds":999}"#, r#"{"v":1,"absence_seconds":"10"}"#, r#"{"v":1,"absence_minutes":null}"#] {
+        assert_eq!(Prefs::from_text(Some(retired)), Prefs::default(), "{retired}");
     }
-    for bad in [json!(0), json!(4), json!(301), json!(1.5), json!("10"), json!(null), json!(-5)] {
-        assert!(parse_command(&json!({"action":"set_absence_seconds","seconds":bad})).is_err(), "{bad}");
-    }
-    assert!(parse_command(&json!({"action":"set_absence_seconds","seconds":10,"extra":true})).is_err());
-    assert!(parse_command(&json!({"action":"set_absence_seconds"})).is_err());
-    assert!(parse_command(&json!({"action":"set_absence_minutes","minutes":3})).is_err(), "the old command is retired");
+    // the next write drops the retired keys: the file converts the first time it is saved
+    let wire: Value = serde_json::from_str(&p.to_text()).unwrap();
+    assert!(wire.get("absence_seconds").is_none() && wire.get("absence_minutes").is_none());
+    assert_eq!(Prefs::from_text(Some(&p.to_text())), p, "stable after the conversion");
 }
 
 #[test]
-fn absence_defaults_to_ten_seconds() {
-    assert_eq!(Prefs::default().absence_seconds(), 10);
-    assert_eq!(Prefs::from_text(Some(r#"{"v":1}"#)).absence_seconds(), 10);
-    assert_eq!(Prefs { absence_seconds: Some(4), ..Prefs::default() }.absence_seconds(), 10, "out of range reads as the default");
-    assert_eq!(Prefs { absence_seconds: Some(301), ..Prefs::default() }.absence_seconds(), 10);
-}
-
-#[test]
-fn a_stored_absence_in_minutes_migrates_to_seconds_and_the_next_write_uses_the_new_key() {
-    // minutes x 60, clamped to 300
-    for (stored, seconds) in [(1, 60), (2, 120), (3, 180), (5, 300), (6, 300), (120, 300)] {
-        let p = Prefs::from_text(Some(&format!(r#"{{"v":1,"absence_minutes":{stored}}}"#)));
-        assert_eq!(p.absence_seconds(), seconds, "{stored} min");
+fn the_edge_hide_delay_command_is_retired() {
+    for payload in [json!({"action":"set_absence_seconds","seconds":30}), json!({"action":"set_absence_minutes","minutes":3})] {
+        assert!(parse_command(&payload).is_err(), "{payload}");
     }
-    // an invalid old value is not a setting: the default
-    for bad in ["0", "121", "1.5", "\"3\"", "null", "-1"] {
-        assert_eq!(Prefs::from_text(Some(&format!(r#"{{"v":1,"absence_minutes":{bad}}}"#))).absence_seconds(), 10, "{bad}");
-    }
-    // the new key wins over the old one; an invalid new key falls back to a valid old one
-    assert_eq!(Prefs::from_text(Some(r#"{"v":1,"absence_seconds":45,"absence_minutes":2}"#)).absence_seconds(), 45);
-    assert_eq!(Prefs::from_text(Some(r#"{"v":1,"absence_seconds":4,"absence_minutes":2}"#)).absence_seconds(), 120);
-    assert_eq!(Prefs::from_text(Some(r#"{"v":1,"absence_seconds":999}"#)).absence_seconds(), 10);
-    // writing: only the new key, so the file converts the first time it is saved
-    let migrated = Prefs::from_text(Some(r#"{"v":1,"absence_minutes":2}"#));
-    let wire: Value = serde_json::from_str(&migrated.to_text()).unwrap();
-    assert_eq!(wire["absence_seconds"], 120);
-    assert!(wire.get("absence_minutes").is_none());
-    assert_eq!(Prefs::from_text(Some(&migrated.to_text())), migrated, "stable after the conversion");
-    // a file with neither key writes neither
-    let none: Value = serde_json::from_str(&Prefs::default().to_text()).unwrap();
-    assert!(none.get("absence_seconds").is_none() && none.get("absence_minutes").is_none());
 }
 
 // ---- S5 (#503): `liveContext`, the chat's live-state context switch (default ON) ------------------
@@ -2451,4 +2356,106 @@ fn old_prefs_with_both_island_lists_round_trip_byte_identical_and_no_new_key_app
     assert_eq!(v["island_agents"], json!(["esp-b2", "esp-a1"]));
     assert_eq!(v.as_object().unwrap().keys().filter(|k| k.contains("island")).count(), 1, "no merged island key is invented");
     assert_eq!(Prefs::from_text(Some(&p.to_text())).to_text(), p.to_text(), "idempotent re-read");
+}
+
+// ---- K2-06 S3: `windowCapture`, the opt-in for «ask Koda about my window» ----------------------------
+#[test]
+fn window_capture_is_an_exact_closed_two_key_command() {
+    assert_eq!(parse_command(&json!({"action":"set_window_capture","window_capture":true})), Ok(Command::SetWindowCapture(true)));
+    assert_eq!(parse_command(&json!({"action":"set_window_capture","window_capture":false})), Ok(Command::SetWindowCapture(false)));
+    for bad in [
+        json!({"action":"set_window_capture"}),
+        json!({"action":"set_window_capture","window_capture":"true"}),
+        json!({"action":"set_window_capture","window_capture":null}),
+        json!({"action":"set_window_capture","window_capture":true,"x":1}),
+    ] {
+        assert_eq!(parse_command(&bad), Err(CommandError), "{bad}");
+    }
+}
+
+#[test]
+fn window_capture_is_off_by_default_persists_and_is_independent_of_window_context() {
+    assert!(!Prefs::default().window_capture(), "off by default: Koda captures nothing");
+    let on = update(&Prefs::default(), &Command::SetWindowCapture(true), |_| true).unwrap();
+    assert!(on.window_capture() && !on.window_context());
+    assert!(Prefs::from_text(Some(&on.to_text())).window_capture());
+    let off = update(&on, &Command::SetWindowCapture(false), |_| true).unwrap();
+    assert!(!off.to_text().contains("window_capture"), "the default writes no key");
+    for hostile in ["1", "\"true\"", "null", "[true]"] {
+        assert!(!Prefs::from_text(Some(&format!(r#"{{"v":1,"window_capture":{hostile}}}"#))).window_capture(), "{hostile}");
+    }
+}
+
+// ---- K2-10 T4 (S5): the mail counter's last visit -----------------------------------------
+
+/// Absent by default and never written, so a file that never showed the mail card keeps its
+/// bytes; a hostile value reads as absent (the counter then counts everything as new).
+#[test]
+fn k2_10_the_mail_seen_mark_is_absent_by_default_and_an_old_file_keeps_its_bytes() {
+    assert_eq!(Prefs::default().gmail_last_seen_ms, None);
+    assert!(!Prefs::default().to_text().contains("gmail_last_seen_ms"));
+    let untouched = Prefs::from_text(Some(r#"{"v":1,"sound":true}"#));
+    assert_eq!(untouched.to_text(), r#"{"sound":true,"v":1}"#);
+    for bad in [
+        Some(r#"{"v":1,"gmail_last_seen_ms":0}"#),
+        Some(r#"{"v":1,"gmail_last_seen_ms":-5}"#),
+        Some(r#"{"v":1,"gmail_last_seen_ms":"5"}"#),
+        Some(r#"{"v":1,"gmail_last_seen_ms":null}"#),
+        Some(r#"{"v":1,"gmail_last_seen_ms":{}}"#),
+    ] {
+        let p = Prefs::from_text(bad);
+        assert_eq!(p.gmail_last_seen_ms, None, "{bad:?}");
+        assert!(!p.to_text().contains("gmail_last_seen_ms"), "{bad:?} leaves no key behind");
+    }
+}
+
+/// The mark round-trips through the v1 file and only ever moves FORWARDS: a stale write is
+/// accepted as a no-op (never stored), and zero is no visit at all.
+#[test]
+fn k2_10_the_mail_seen_mark_round_trips_and_never_moves_backwards() {
+    let at = |ms| update(&Prefs::default(), &Command::SetGmailLastSeen(ms), |_| true).unwrap();
+    let first = at(1_760_000_000_000);
+    assert_eq!(first.gmail_last_seen_ms, Some(1_760_000_000_000));
+    assert_eq!(Prefs::from_text(Some(&first.to_text())), first);
+    let later = update(&first, &Command::SetGmailLastSeen(1_760_000_600_000), |_| true).unwrap();
+    assert_eq!(later.gmail_last_seen_ms, Some(1_760_000_600_000));
+    let stale = update(&later, &Command::SetGmailLastSeen(1_760_000_000_000), |_| true).unwrap();
+    assert_eq!(stale.gmail_last_seen_ms, Some(1_760_000_600_000), "an earlier visit never wins");
+    assert_eq!(stale, later, "a stale write is a no-op, not a rewrite");
+    assert!(update(&Prefs::default(), &Command::SetGmailLastSeen(0), |_| true).is_err());
+    assert!(update(&Prefs::default(), &Command::SetGmailLastSeen(5), |_| false).is_err());
+}
+
+/// The page never supplies it: the closed wire command has no such action, and no spelling of
+/// it is accepted.
+#[test]
+fn k2_10_the_page_can_never_supply_the_mail_seen_mark() {
+    for bad in [
+        json!({"action":"set_gmail_last_seen","atMs":5}),
+        json!({"action":"set_gmail_last_seen","gmail_last_seen_ms":5}),
+        json!({"action":"set_gmail_last_seen"}),
+        json!({"action":"set_gmail_last_seen","atMs":"5"}),
+    ] {
+        assert_eq!(parse_command(&bad), Err(CommandError), "{bad} must be refused");
+    }
+}
+
+/// K2-10 T8 (L23, L24): the «0.1 mail accounts removed» mark. Absent by default and never
+/// written while unset; once set it round-trips and cannot be unset; the page never sets it.
+#[test]
+fn k2_10_the_mail_migration_mark_is_host_only_and_sticks() {
+    assert!(!Prefs::default().mail_migration_done());
+    assert!(!Prefs::default().to_text().contains("mail_migration_done"), "an untouched file keeps its bytes");
+    let done = update(&Prefs::default(), &Command::SetMailMigrationDone, |_| true).unwrap();
+    assert!(done.mail_migration_done());
+    assert_eq!(Prefs::from_text(Some(&done.to_text())), done);
+    assert!(Prefs::from_text(Some(&done.to_text())).mail_migration_done());
+    assert_eq!(update(&done, &Command::SetMailMigrationDone, |_| true).unwrap(), done, "setting it again is a no-op");
+    assert!(update(&Prefs::default(), &Command::SetMailMigrationDone, |_| false).is_err(), "a failed save is not done");
+    for bad in [json!({"action":"set_mail_migration_done"}), json!({"action":"set_mail_migration_done","on":true})] {
+        assert_eq!(parse_command(&bad), Err(CommandError), "{bad} must be refused");
+    }
+    // a hand-edited non-true value reads as not done (the migration runs again; it is idempotent)
+    let text = done.to_text().replace("\"mail_migration_done\":true", "\"mail_migration_done\":\"yes\"");
+    assert!(!Prefs::from_text(Some(&text)).mail_migration_done());
 }

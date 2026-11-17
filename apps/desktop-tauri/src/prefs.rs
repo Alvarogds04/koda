@@ -38,13 +38,13 @@ const ISLAND_AGENTS: &str = "island_agents";
 /// (1..=2000 chars, `\n`/`\t` allowed, every other control refused). DECLARATIVE ONLY: like
 /// the specialists' instructions of #375 nothing applies it yet. Absent = none; an empty
 /// command clears it and no empty key is ever written.
-pub const MAX_ABITO_INSTRUCTIONS_CHARS: usize = 2000;
-const ABITO_INSTRUCTIONS: &str = "abito_instructions";
+pub const MAX_KODA_INSTRUCTIONS_CHARS: usize = 2000;
+const KODA_INSTRUCTIONS: &str = "abito_instructions";
 
 fn clean_instructions(text: &str) -> Result<Option<String>, CommandError> {
     if text.chars().any(|c| c.is_control() && c != '\n' && c != '\t') { return Err(CommandError); }
     let t = text.trim();
-    if t.chars().count() > MAX_ABITO_INSTRUCTIONS_CHARS { return Err(CommandError); }
+    if t.chars().count() > MAX_KODA_INSTRUCTIONS_CHARS { return Err(CommandError); }
     Ok((!t.is_empty()).then(|| t.to_owned()))
 }
 
@@ -119,8 +119,8 @@ pub const PILL_IDS: [&str; 25] = [
 ];
 pub fn pill_offered(id: &str) -> bool {
     PILL_IDS.contains(&id) && id != "integration_music" &&
-        (id != "agent_claude-desktop" || cfg!(target_os = "windows")) &&
-        (id != "integration_spotify" || cfg!(target_os = "linux"))
+        (id != "agent_claude-desktop" || cfg!(target_os = "windows"))
+    // K2-09: integration_spotify is offered on every desktop OS (MPRIS, SMTC, AppleScript)
 }
 
 /// Closed stored chosen-colour catalog. Defaults remain absent and are painted by CSS.
@@ -158,43 +158,24 @@ pub fn normalize_chosen_color(raw: &str) -> Option<String> {
 /// `prefs.json` keeps exactly the bytes it had before #384.
 const AVATAR_COLORS: &str = "avatar_colors";
 
-/// #264 (GD049): the optional remembered island position (physical px). Absent from a
-/// file nobody has dragged, so an untouched `prefs.json` keeps exactly the bytes it had
-/// before #264 as well.
+/// #264 (GD049): the optional remembered island position (physical px): the disc's spot — x is the island window's left, y is
+/// the disc's top edge on screen (isla-cualquier-lado T6c; the very value the window top-left gave while the island hung from
+/// its top, so every stored file still means what it did). Absent from a file nobody has dragged, so an untouched `prefs.json`
+/// keeps exactly the bytes it had before #264 as well.
 const POSITION: &str = "position";
 
 /// A plausible virtual-desktop coordinate in physical px: no real monitor
 /// arrangement reaches this, so a larger value is corrupt data, never a desktop.
 const POSITION_LIMIT: u32 = 1_000_000;
-/// G16: whole seconds the folded island waits before hiding at the edge.
-const ABSENCE_SECONDS: std::ops::RangeInclusive<u16> = 5..=300;
-const ABSENCE_DEFAULT_SECONDS: u16 = 10;
 /// HU-057 S9: the closed island-size set.
 fn valid_island_size(s: &str) -> bool { matches!(s, "s" | "m" | "l" | "auto") }
 
-fn valid_absence_seconds(v: u16) -> bool { ABSENCE_SECONDS.contains(&v) }
-/// The new key wins; an invalid or absent one falls back to the pre-change `absence_minutes` (1–120 minutes, x 60, clamped to 300).
-fn absence_seconds_from(v: &Value) -> Option<u16> {
-    let new = v.get("absence_seconds").and_then(Value::as_u64).and_then(|s| u16::try_from(s).ok()).filter(|s| valid_absence_seconds(*s));
-    new.or_else(|| {
-        let minutes = v.get("absence_minutes").and_then(Value::as_u64).and_then(|m| u16::try_from(m).ok()).filter(|m| (1..=120).contains(m))?;
-        Some((minutes * 60).min(*ABSENCE_SECONDS.end()))
-    })
-}
+// isla-cualquier-lado S2: the folded island never hides at the edge any more, so the G16 delay (`absence_seconds`, and the
+// older `absence_minutes`) is retired. A file that still carries either key loads as before: like every unknown key it is
+// ignored on read and dropped on the next write.
 
 /// The optional theme mode key (#380). Absent = `system`, and absence is preserved.
 const THEME: &str = "theme";
-
-/// #414: the chosen models of the connected providers (Ajustes → Modelos), per provider.
-/// Absent from a file nobody customised, so an untouched `prefs.json` keeps exactly the
-/// bytes it had.
-const CHOSEN_MODELS: &str = "chosen_models";
-/// The provider key is the engine's own strict_id shape; ids keep their catalogue spelling.
-const MAX_PROVIDER_ID: usize = 64;
-const MAX_MODEL_ID: usize = 200;
-/// Bounds so the preference can never outgrow the panel that renders it.
-const MAX_MODELS_PER_PROVIDER: usize = 64;
-const MAX_PROVIDERS: usize = 32;
 
 /// #389 (GD012): the monitor the human chose for the island (Ajustes → Panel), stored as
 /// the platform's stable monitor name (see `workarea::monitor_key`). Absent = the island's
@@ -278,9 +259,6 @@ pub struct Prefs {
     /// #380 optional theme mode. `None` means the default (`system`) and is never written,
     /// so an untouched or unknown-valued file keeps the bytes it had.
     pub theme: Option<Theme>,
-    /// #414: per provider, the model ids the human chose in Ajustes → Modelos. `None`
-    /// means nothing was chosen, and nothing is written for it.
-    pub chosen_models: Option<BTreeMap<String, Vec<String>>>,
     /// #336 T1b-a: the configured inactivity delay in seconds: 0 is «Nunca»
     /// (#438) and the rest is 5..=120. `None` means the default 15 and is never
     /// written, so an untouched file keeps its bytes.
@@ -290,10 +268,6 @@ pub struct Prefs {
     pub open_on_hover: Option<bool>,
     /// HU-057 S9: island size `s|m|l|auto`; `None` means `auto` and is never written.
     pub island_size: Option<String>,
-    /// G16: optional whole seconds the folded island waits before it hides at the edge (5–300); absent means ten seconds.
-    /// A file written before this change carries `absence_minutes` instead: it is still READ (minutes x 60, clamped to 300) and
-    /// never written again, so the file converts the first time it is saved.
-    pub absence_seconds: Option<u16>,
     /// #415 WU2: the blobs the human created by hand (label + optional palette colour),
     /// in creation order. `None` means none, and nothing is written for it, so an
     /// untouched file keeps its bytes.
@@ -318,7 +292,7 @@ pub settings_window: Option<bool>,
     /// the default and is never written, so an untouched file keeps its bytes.
     pub island_agents: Option<Vec<String>>,
     /// #442 T7.4: the principal's declarative «Qué hace». `None` is the default, never written.
-    pub abito_instructions: Option<String>,
+    pub koda_instructions: Option<String>,
     /// S10 (L30): whether the Claude plan-usage pill shows in the island header (Coucou's `showPlanInNotch`).
     /// `None` means the default (off) and is never written, so an untouched file keeps its bytes.
     pub show_plan_in_notch: Option<bool>,
@@ -328,11 +302,27 @@ pub settings_window: Option<bool>,
     /// #487: opt-in to read the previous window's app and title for the chat (NotchBuddy feature 8).
     /// `None` means off and is never written.
     pub window_context: Option<bool>,
+    /// K2-06 S3: lets the chat agent capture the user's window when asked. `None` means off and is never written.
+    pub window_capture: Option<bool>,
+    /// K2 phone link (S3/D3): the switch that makes the desktop listen for the phone on the LAN.
+    /// `None` means OFF — nothing listens, nothing is announced — and is never written.
+    pub phone_link: Option<bool>,
+    /// K2 T6 (S11/§11): whether the phone is sent the Claude and Codex plan usage (`usage`). `None` means OFF and is
+    /// never written; while it is off no plan is read for the phone at all.
+    pub phone_usage: Option<bool>,
     /// S5 (#503): the chat's live-state context (sessions + integrations). `None` means ON; only `false` is written.
     pub live_context: Option<bool>,
     /// #486 W2 (Coucou `desktopMochi`): the character lives on the desktop and where it
     /// sits, physical px. `None` = lives in the island (off) and is never written.
     pub desktop_character: Option<DesktopCharacter>,
+    /// K2-10 T4 (S5): the last time the mail counter counted «nuevos», in ms since the epoch.
+    /// Non-secret and HOST-ONLY: written by the mail host, never by the page. `None` means
+    /// never counted and is never written, so an untouched file keeps its bytes.
+    pub gmail_last_seen_ms: Option<u64>,
+    /// K2-10 T8 (L23, L24): the 0.1 IMAP/SMTP mail accounts were removed from the keychain.
+    /// HOST-ONLY: set by the startup migration once all seven keys are gone, never by the page.
+    /// `None` means not yet and is never written, so an untouched file keeps its bytes.
+    pub mail_migration_done: Option<bool>,
 }
 
 /// #486 W2: the saved state of the desktop character. Written by the native drop path
@@ -344,6 +334,11 @@ pub struct DesktopCharacter {
 }
 
 const DESKTOP_CHARACTER: &str = "desktop_character";
+/// K2-10 T4 (S5): the mail counter's last visit, ms since the epoch. Written by the mail host
+/// only; absent from a file whose mail card was never shown.
+const GMAIL_LAST_SEEN_MS: &str = "gmail_last_seen_ms";
+/// K2-10 T8: the one-time removal of the 0.1 mail accounts finished. Written by the host only.
+const MAIL_MIGRATION_DONE: &str = "mail_migration_done";
 
 /// A closed shape: `{"on":bool}` plus an optional bounded `{"x","y"}` spot; anything else
 /// reads as absent (the character stays in the island).
@@ -371,23 +366,26 @@ impl Default for Prefs {
             declared_pills: None,
             pill_colors: BTreeMap::new(),
             theme: None,
-            chosen_models: None,
             auto_close_seconds: None,
             open_on_hover: None,
             island_size: None,
-            absence_seconds: None,
             custom_blobs: None,
             monitor: None,
             settings_window: None,
             open_settings_at_launch: None,
             settings_window_size: None,
             island_agents: None,
-            abito_instructions: None,
+            koda_instructions: None,
             show_plan_in_notch: None,
             show_codex_plan_in_notch: None,
             window_context: None,
+            window_capture: None,
+            phone_link: None,
+            phone_usage: None,
             live_context: None,
             desktop_character: None,
+            gmail_last_seen_ms: None,
+            mail_migration_done: None,
         }
     }
 }
@@ -417,59 +415,6 @@ fn valid_identity(identity: &str) -> bool {
         return false;
     }
     bytes.all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'.' || b == b'_' || b == b'-')
-}
-
-/// The provider key of a chosen-models entry: the engine's own strict_id shape — bounded,
-/// lowercase slug, never a prototype key.
-fn valid_provider_id(id: &str) -> bool {
-    if id.is_empty() || id.len() > MAX_PROVIDER_ID || RESERVED.contains(&id) {
-        return false;
-    }
-    let bytes = id.as_bytes();
-    // the last byte is alphanumeric too: a trailing separator ("dot.") is not a slug
-    if !(bytes[bytes.len() - 1].is_ascii_lowercase() || bytes[bytes.len() - 1].is_ascii_digit()) {
-        return false;
-    }
-    let mut bytes = id.bytes();
-    let Some(first) = bytes.next() else { return false };
-    (first.is_ascii_lowercase() || first.is_ascii_digit())
-        && bytes.all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'.' | b'_' | b'-'))
-}
-
-/// A model id keeps its catalogue spelling (several engines key theirs "vendor/model"),
-/// bounded ASCII with no whitespace or control characters.
-fn valid_model_id(id: &str) -> bool {
-    !id.is_empty() && id.chars().count() <= MAX_MODEL_ID && id.trim() == id
-        && id.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-' | b'/' | b':'))
-}
-
-/// The chosen-models entries that survive validation, deduplicated, one provider at a time.
-/// A provider past the per-provider cap is dropped whole (a catalogue that big is not a
-/// human choice); the map overall is capped by dropping the rest one by one.
-fn chosen_models_from(value: Option<&Value>) -> BTreeMap<String, Vec<String>> {
-    let mut out = BTreeMap::new();
-    let Some(map) = value.and_then(Value::as_object) else { return out };
-    for (provider, models) in map {
-        if !valid_provider_id(provider) || out.len() >= MAX_PROVIDERS {
-            continue;
-        }
-        let Some(list) = models.as_array() else { continue };
-        let mut clean: Vec<String> = Vec::new();
-        for id in list {
-            if let Some(id) = id.as_str() {
-                if valid_model_id(id) && !clean.iter().any(|x| x == id) {
-                    clean.push(id.to_string());
-                }
-            }
-        }
-        if clean.len() > MAX_MODELS_PER_PROVIDER {
-            continue;
-        }
-        if !clean.is_empty() {
-            out.insert(provider.clone(), clean);
-        }
-    }
-    out
 }
 
 /// The stored monitor key is the platform monitor name verbatim: bounded, trimmed,
@@ -590,8 +535,8 @@ impl Prefs {
         }
     }
     /// #442 T7.4: the WebView projection of the principal's «Qué hace»; absent is null.
-    pub fn abito_instructions_view(&self) -> Value {
-        match &self.abito_instructions {
+    pub fn koda_instructions_view(&self) -> Value {
+        match &self.koda_instructions {
             Some(text) => json!(text),
             None => Value::Null,
         }
@@ -612,14 +557,24 @@ impl Prefs {
     pub fn island_size(&self) -> &str {
         self.island_size.as_deref().filter(|s| valid_island_size(s)).unwrap_or("auto")
     }
-    pub fn absence_seconds(&self) -> u16 { self.absence_seconds.filter(|v| valid_absence_seconds(*v)).unwrap_or(ABSENCE_DEFAULT_SECONDS) }
 
     /// S10 (L30): the effective plan-pill policy — absent means off.
     pub fn show_plan_in_notch(&self) -> bool { self.show_plan_in_notch.unwrap_or(false) }
     /// S10 (L30): the effective Codex pill policy — absent means off (no `codex app-server` is ever started).
     pub fn show_codex_plan_in_notch(&self) -> bool { self.show_codex_plan_in_notch.unwrap_or(false) }
     pub fn window_context(&self) -> bool { self.window_context.unwrap_or(false) }
+    pub fn window_capture(&self) -> bool { self.window_capture.unwrap_or(false) }
+    /// K2 phone link: OFF unless the human turned it on in Ajustes (S3).
+    pub fn phone_link(&self) -> bool { self.phone_link.unwrap_or(false) }
+    /// K2 T6: OFF unless the human asked the phone to show the plan usage (S11/§11).
+    pub fn phone_usage(&self) -> bool { self.phone_usage.unwrap_or(false) }
     pub fn live_context(&self) -> bool { self.live_context.unwrap_or(true) }
+
+    /// K2-10 T4 (S5): the stored mail mark, ms since the epoch; 0 means «never visited», which
+    /// makes every unread message count as new.
+    pub fn gmail_last_seen_ms(&self) -> u64 { self.gmail_last_seen_ms.unwrap_or(0) }
+    /// K2-10 T8: the 0.1 mail accounts were already removed from the keychain.
+    pub fn mail_migration_done(&self) -> bool { self.mail_migration_done == Some(true) }
 
     /// #366 F093: the effective Ajustes placement — absent means in-island (#408).
     pub fn settings_window_on(&self) -> bool { self.settings_window.unwrap_or(false) }
@@ -644,12 +599,10 @@ impl Prefs {
                 .map(|ids| ids.iter().filter_map(Value::as_str).map(str::to_owned).collect()),
             pill_colors: pill_colors_from(v.get("pill_colors")),
             theme: v.get(THEME).and_then(Value::as_str).and_then(Theme::parse),
-            chosen_models: Some(chosen_models_from(v.get(CHOSEN_MODELS))),
             auto_close_seconds: v.get("auto_close_seconds").and_then(Value::as_u64)
                 .and_then(|s| u16::try_from(s).ok()).filter(|s| *s == 0 || (5..=120).contains(s)),
             open_on_hover: v.get("open_on_hover").and_then(Value::as_bool),
             island_size: v.get("island_size").and_then(Value::as_str).filter(|s| valid_island_size(s)).map(str::to_string),
-            absence_seconds: absence_seconds_from(&v),
             custom_blobs: {
                 let blobs = custom_blobs_from(v.get(CUSTOM_BLOBS));
                 (!blobs.is_empty()).then_some(blobs)
@@ -660,19 +613,20 @@ impl Prefs {
             open_settings_at_launch: v.get("open_settings_at_launch").and_then(Value::as_bool).filter(|on| *on),
             settings_window_size: settings_window_size_from(v.get(SETTINGS_WINDOW_SIZE)),
             island_agents: island_agents_from(v.get(ISLAND_AGENTS)),
-            abito_instructions: v.get(ABITO_INSTRUCTIONS).and_then(Value::as_str)
+            koda_instructions: v.get(KODA_INSTRUCTIONS).and_then(Value::as_str)
                 .and_then(|text| clean_instructions(text).ok()).flatten(),
             show_plan_in_notch: v.get("show_plan_in_notch").and_then(Value::as_bool),
             show_codex_plan_in_notch: v.get("show_codex_plan_in_notch").and_then(Value::as_bool),
             window_context: v.get("window_context").and_then(Value::as_bool),
+            window_capture: v.get("window_capture").and_then(Value::as_bool),
+            phone_link: v.get("phone_link").and_then(Value::as_bool),
+            phone_usage: v.get("phone_usage").and_then(Value::as_bool),
             live_context: v.get("live_context").and_then(Value::as_bool),
             desktop_character: desktop_character_from(v.get(DESKTOP_CHARACTER)),
+            gmail_last_seen_ms: v.get(GMAIL_LAST_SEEN_MS).and_then(Value::as_u64).filter(|ms| *ms > 0),
+            mail_migration_done: v.get(MAIL_MIGRATION_DONE).and_then(Value::as_bool).filter(|done| *done),
         };
         if prefs.declared_pills.is_some() { prefs.declared_pills = Some(prefs.declared_pills()); }
-        // A map whose every entry was dropped reads as absent: an untouched file keeps its bytes.
-        if prefs.chosen_models.as_ref().is_some_and(|m| m.is_empty()) {
-            prefs.chosen_models = None;
-        }
         prefs
     }
 
@@ -696,15 +650,9 @@ impl Prefs {
         if let Some(theme) = self.theme {
             v[THEME] = json!(theme.as_str());
         }
-        if let Some(map) = &self.chosen_models {
-            if !map.is_empty() {
-                v[CHOSEN_MODELS] = json!(map);
-            }
-        }
         if let Some(seconds) = self.auto_close_seconds.filter(|s| *s == 0 || (5..=120).contains(s)) {
             v["auto_close_seconds"] = json!(seconds);
         }
-        if let Some(seconds) = self.absence_seconds.filter(|v| valid_absence_seconds(*v)) { v["absence_seconds"] = json!(seconds); }
         if let Some(hover) = self.open_on_hover {
             v["open_on_hover"] = json!(hover);
         }
@@ -732,8 +680,8 @@ impl Prefs {
         if let Some(ids) = &self.island_agents {
             v[ISLAND_AGENTS] = json!(ids);
         }
-        if let Some(text) = &self.abito_instructions {
-            v[ABITO_INSTRUCTIONS] = json!(text);
+        if let Some(text) = &self.koda_instructions {
+            v[KODA_INSTRUCTIONS] = json!(text);
         }
         if let Some(on) = self.show_plan_in_notch {
             v["show_plan_in_notch"] = json!(on);
@@ -744,8 +692,23 @@ impl Prefs {
         if let Some(on) = self.window_context {
             v["window_context"] = json!(on);
         }
+        if let Some(on) = self.window_capture {
+            v["window_capture"] = json!(on);
+        }
+        if let Some(on) = self.phone_link {
+            v["phone_link"] = json!(on);
+        }
+        if let Some(on) = self.phone_usage {
+            v["phone_usage"] = json!(on);
+        }
         if let Some(on) = self.live_context {
             v["live_context"] = json!(on);
+        }
+        if let Some(ms) = self.gmail_last_seen_ms.filter(|ms| *ms > 0) {
+            v[GMAIL_LAST_SEEN_MS] = json!(ms);
+        }
+        if self.mail_migration_done == Some(true) {
+            v[MAIL_MIGRATION_DONE] = json!(true);
         }
         if let Some(c) = self.desktop_character.filter(|c| c.spot.is_none_or(|(x, y)| valid_position(x, y))) {
             v[DESKTOP_CHARACTER] = match c.spot {
@@ -801,15 +764,12 @@ pub enum Command {
     /// #435: the persisted created-blob order — exactly the stored names (exact,
     /// case-sensitive), reordered. A strict permutation is the only accepted input.
     ReorderBlobs(Vec<String>),
-    /// #414: the WHOLE list of one provider replaces what is stored; an empty list clears it.
-    SetChosenModels { provider: String, models: Vec<String> },
     /// #336 T1b-a: the island's inactivity interaction as one exact closed
     /// shape — integer `auto_close_seconds` 0 («Nunca», #438) or 5..=120 and
     /// `open_on_hover`.
     SetIslandInteraction { auto_close_seconds: u16, open_on_hover: bool },
     /// HU-057 S9: the island size, closed set `s|m|l|auto`.
     SetIslandSize(String),
-    SetAbsenceSeconds(u16),
     /// #389: the platform monitor name the island is pinned to (Ajustes → Panel).
     /// A choice is only ever one of the keys the island itself saw and offered;
     /// falling back when a stored key is no longer connected is placement's job.
@@ -828,6 +788,11 @@ pub enum Command {
     /// S10 (L30): show or hide the Codex plan-usage pill (an opt-in to `codex app-server`). `false` stores no key.
     SetShowCodexPlanInNotch(bool),
     SetWindowContext(bool),
+    SetWindowCapture(bool),
+    /// K2 phone link (S3): the switch that opens the LAN port; `false` stores no key at all.
+    SetPhoneLink(bool),
+    /// K2 T6 (S11): whether the phone is sent the plan usage (§11).
+    SetPhoneUsage(bool),
     SetLiveContext(bool),
     /// #486 W2: the desktop character left or returned to the island, and the spot it sits
     /// at. Deliberately NOT produced by [`parse_command`]: only the native drop path saves
@@ -845,7 +810,14 @@ pub enum Command {
     /// host sends it after a delete): deliberately NOT produced by [`parse_command`].
     PruneIslandAgent(String),
     /// #442 T7.4: the principal's «Qué hace»; an empty (or blank) text clears it.
-    SetAbitoInstructions(String),
+    SetKodaInstructions(String),
+    /// K2-10 T4 (S5): the mail counter's last visit, ms since the epoch. Deliberately NOT
+    /// produced by [`parse_command`]: the counter is the mail host's business, and the page
+    /// must never be able to move it forwards (hiding new mail) or backwards.
+    SetGmailLastSeen(u64),
+    /// K2-10 T8 (L23, L24): the startup migration removed the 0.1 mail accounts. Deliberately
+    /// NOT produced by [`parse_command`]: only the host records it, and it can never be unset.
+    SetMailMigrationDone,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -975,30 +947,6 @@ pub fn parse_command(payload: &Value) -> Result<Command, CommandError> {
                 Ok(Command::ReorderBlobs(order))
             }
         }
-        Some("set_chosen_models") if map.len() == 3 => {
-            let provider = map.get("provider").and_then(Value::as_str).ok_or(CommandError)?;
-            let models = map.get("models").and_then(Value::as_array).ok_or(CommandError)?;
-            if !valid_provider_id(provider) || models.len() > MAX_MODELS_PER_PROVIDER {
-                return Err(CommandError);
-            }
-            let mut clean: Vec<String> = Vec::new();
-            for id in models {
-                let id = id.as_str().ok_or(CommandError)?;
-                if !valid_model_id(id) {
-                    return Err(CommandError);
-                }
-                if !clean.iter().any(|x| x == id) {
-                    clean.push(id.to_string());
-                }
-            }
-            Ok(Command::SetChosenModels { provider: provider.to_string(), models: clean })
-        }
-        Some("set_absence_seconds") if map.len() == 2 => {
-            let seconds = map.get("seconds").and_then(Value::as_u64).ok_or(CommandError)?;
-            let seconds = u16::try_from(seconds).map_err(|_| CommandError)?;
-            if !valid_absence_seconds(seconds) { return Err(CommandError); }
-            Ok(Command::SetAbsenceSeconds(seconds))
-        }
         // #336 T1b-a: exactly action + auto_close_seconds + open_on_hover.
         // `as_u64` already refuses floats, strings, null and negatives; the
         // accepted set is {0} («Nunca», #438) ∪ 5..=120, matching the public
@@ -1045,6 +993,21 @@ pub fn parse_command(payload: &Value) -> Result<Command, CommandError> {
             let on = map.get("window_context").and_then(Value::as_bool).ok_or(CommandError)?;
             Ok(Command::SetWindowContext(on))
         }
+        // K2-06 S3: exactly action + window_capture (a bool); no coercion.
+        Some("set_window_capture") if map.len() == 2 => {
+            let on = map.get("window_capture").and_then(Value::as_bool).ok_or(CommandError)?;
+            Ok(Command::SetWindowCapture(on))
+        }
+        // K2 phone link (S3): exactly action + phone_link (a bool); no coercion.
+        Some("set_phone_link") if map.len() == 2 => {
+            let on = map.get("phone_link").and_then(Value::as_bool).ok_or(CommandError)?;
+            Ok(Command::SetPhoneLink(on))
+        }
+        // K2 T6 (S11, §11): exactly action + phone_usage (a bool); no coercion.
+        Some("set_phone_usage") if map.len() == 2 => {
+            let on = map.get("phone_usage").and_then(Value::as_bool).ok_or(CommandError)?;
+            Ok(Command::SetPhoneUsage(on))
+        }
         // S5 (#503): exactly action + live_context (a bool); no coercion.
         Some("set_live_context") if map.len() == 2 => {
             let on = map.get("live_context").and_then(Value::as_bool).ok_or(CommandError)?;
@@ -1060,7 +1023,7 @@ pub fn parse_command(payload: &Value) -> Result<Command, CommandError> {
         Some("set_abito_instructions") if map.len() == 2 => {
             let text = map.get("text").and_then(Value::as_str).ok_or(CommandError)?;
             clean_instructions(text)?;
-            Ok(Command::SetAbitoInstructions(text.to_owned()))
+            Ok(Command::SetKodaInstructions(text.to_owned()))
         }
         _ => Err(CommandError),
     }
@@ -1078,7 +1041,16 @@ pub fn apply(current: &Prefs, command: &Command) -> Result<Prefs, CommandError> 
     match command {
         Command::View => {}
         Command::AutostartView | Command::SetAutostart(_) => return Err(CommandError),
-        Command::SetOpenSettingsAtLaunch(on) => next.open_settings_at_launch = on.then_some(true),
+        Command::SetMailMigrationDone => next.mail_migration_done = Some(true),
+        Command::SetGmailLastSeen(ms) => {
+            if *ms == 0 {
+                return Err(CommandError);
+            }
+            // K2-10 T4 (S5): monotonic by construction — a stale visit is a no-op (the stored
+            // mark is kept), so a late answer can never make already-seen mail «new» again.
+            let at = (*ms).max(current.gmail_last_seen_ms.unwrap_or(0));
+            next.gmail_last_seen_ms = (at > 0).then_some(at);
+        }        Command::SetOpenSettingsAtLaunch(on) => next.open_settings_at_launch = on.then_some(true),
         Command::SoundOn => next.sound = true,
         Command::SoundOff => next.sound = false,
         Command::SetSoundGain(gain) => {
@@ -1119,32 +1091,6 @@ pub fn apply(current: &Prefs, command: &Command) -> Result<Prefs, CommandError> 
             next.declared_pills = Some(ids);
         }
         Command::SetTheme(theme) => next.theme = Some(*theme),
-        Command::SetChosenModels { provider, models } => {
-            if !valid_provider_id(provider) {
-                return Err(CommandError);
-            }
-            // Deduplicate here too: apply is the direct-caller boundary as well as the
-            // IPC one (parse_command already deduplicates for the wire).
-            let mut clean: Vec<String> = Vec::new();
-            for m in models {
-                if !valid_model_id(m) {
-                    return Err(CommandError);
-                }
-                if !clean.contains(m) {
-                    clean.push(m.clone());
-                }
-            }
-            if clean.len() > MAX_MODELS_PER_PROVIDER {
-                return Err(CommandError);
-            }
-            let mut map = current.chosen_models.clone().unwrap_or_default();
-            if clean.is_empty() {
-                map.remove(provider);
-            } else {
-                map.insert(provider.clone(), clean);
-            }
-            next.chosen_models = if map.is_empty() { None } else { Some(map) };
-        }
         Command::SetPillColor { id, color } => {
             if !pill_offered(id) || !normalize_chosen_color(color).is_some() {
                 return Err(CommandError);
@@ -1154,10 +1100,6 @@ pub fn apply(current: &Prefs, command: &Command) -> Result<Prefs, CommandError> 
         Command::ClearPillColor(id) => {
             if !pill_offered(id) { return Err(CommandError); }
             next.pill_colors.remove(id);
-        }
-        Command::SetAbsenceSeconds(seconds) => {
-            if !valid_absence_seconds(*seconds) { return Err(CommandError); }
-            next.absence_seconds = Some(*seconds);
         }
         // #336 T1b-a: both fields commit together under the same gate; the
         // range/type checks already ran at parse and run again here for
@@ -1245,6 +1187,9 @@ pub fn apply(current: &Prefs, command: &Command) -> Result<Prefs, CommandError> 
         Command::SetShowPlanInNotch(on) => next.show_plan_in_notch = on.then_some(true),
         Command::SetShowCodexPlanInNotch(on) => next.show_codex_plan_in_notch = on.then_some(true),
         Command::SetWindowContext(on) => next.window_context = on.then_some(true),
+        Command::SetWindowCapture(on) => next.window_capture = on.then_some(true),
+        Command::SetPhoneLink(on) => next.phone_link = on.then_some(true),
+        Command::SetPhoneUsage(on) => next.phone_usage = on.then_some(true),
         Command::SetLiveContext(on) => next.live_context = (!on).then_some(false),
         Command::SetDesktopCharacter { on, spot } => {
             if spot.is_some_and(|(x, y)| !valid_position(x, y)) { return Err(CommandError); }
@@ -1260,7 +1205,7 @@ pub fn apply(current: &Prefs, command: &Command) -> Result<Prefs, CommandError> 
             if !valid_island_order(order) { return Err(CommandError); }
             next.island_agents = Some(order.clone());
         }
-        Command::SetAbitoInstructions(text) => next.abito_instructions = clean_instructions(text)?,
+        Command::SetKodaInstructions(text) => next.koda_instructions = clean_instructions(text)?,
         Command::PruneIslandAgent(id) => {
             if let Some(ids) = next.island_agents.as_mut() { ids.retain(|x| x != id); }
         }

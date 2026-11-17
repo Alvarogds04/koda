@@ -5,17 +5,17 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
-use abito_island::bridge::{self, BridgeError};
-use abito_island::chat::ChatError;
-use abito_island::chatlane::Target;
-use abito_island::models::{self, Entry};
+use koda_island::bridge::{self, BridgeError};
+use koda_island::chat::ChatError;
+use koda_island::chatlane::Target;
+use koda_island::models::{self, Entry};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::specialists::{self, Command, Specialist, Store};
 use crate::{modelshost, now_ms, probe_requested, AppState, QUITTING};
 
-pub const CONFIG_ENV: &str = "ABITO_SPECIALISTS_CONFIG_DIR";
+pub const CONFIG_ENV: &str = "KODA_SPECIALISTS_CONFIG_DIR";
 
 #[derive(Debug, Default)]
 pub struct SpecialistsHost {
@@ -42,6 +42,8 @@ impl SpecialistsHost {
         self.store.lock().expect("specialists lock").clone()
     }
 
+    /// Kept for specialists until U5d (K2-05 L59): the turn snapshot below reads it.
+    #[allow(dead_code)]
     pub fn role(&self) -> Option<Specialist> {
         self.store.lock().expect("specialists lock").active().cloned()
     }
@@ -98,6 +100,16 @@ impl SpecialistsHost {
     }
 }
 
+/// The specialist a turn was created with (id + name only, never instructions or a model).
+/// Kept for specialists until U5d (K2-05 L59): it was `conversations::SpecialistRef`, stored
+/// with every 0.1 conversation; the store is gone (U5b) and the role snapshot still reports it.
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpecialistRef {
+    pub id: String,
+    pub name: String,
+}
+
 fn err(code: &str, message: &str) -> BridgeError {
     BridgeError { code: code.into(), message: message.into() }
 }
@@ -126,6 +138,7 @@ fn check_model(registry: &[Entry], model: &Option<String>) -> Result<(), BridgeE
 
 /// Resolve BOTH values from ONE immutable role snapshot. A subsequent edit/selection cannot
 /// combine a previous role's model with a new role's instructions. No network or file writes.
+#[allow(dead_code)]
 fn resolve_turn(
     role: Option<&Specialist>,
     fallback: Option<Target>,
@@ -141,6 +154,7 @@ fn resolve_turn(
     Ok((target, specialists::system_prompt_with_principal(base, role, principal_instructions)))
 }
 
+#[allow(dead_code)]
 pub fn turn_configuration(state: &AppState, base: &str) -> Result<(Option<Target>, String), ChatError> {
     turn_snapshot(state, base).map(|(target, system, _)| (target, system))
 }
@@ -148,29 +162,32 @@ pub fn turn_configuration(state: &AppState, base: &str) -> Result<(Option<Target
 /// #341 uses the SAME role snapshot for the prompt, target and conversation association.
 /// Copy prefs while holding the role lock: both values coexist at the prefs read, and
 /// subsequent edits cannot mix a new role or new principal instructions into this turn.
-pub fn turn_snapshot(state: &AppState, base: &str) -> Result<(Option<Target>, String, Option<abito_island::conversations::SpecialistRef>), ChatError> {
+#[allow(dead_code)]
+pub fn turn_snapshot(state: &AppState, base: &str) -> Result<(Option<Target>, String, Option<SpecialistRef>), ChatError> {
     turn_snapshot_selected(state, base).map(|(target, system, specialist, _)| (target, system, specialist))
 }
 
 /// Freeze the role and cloud selection together; an explicitly local role always wins.
-pub fn turn_snapshot_selected(state: &AppState, base: &str) -> Result<(Option<Target>, String, Option<abito_island::conversations::SpecialistRef>, Option<abito_island::cloudprofiles::CloudSelection>), ChatError> {
+#[allow(dead_code)]
+pub fn turn_snapshot_selected(state: &AppState, base: &str) -> Result<(Option<Target>, String, Option<SpecialistRef>, Option<koda_island::cloudprofiles::CloudSelection>), ChatError> {
     let (role, principal_instructions) = {
         let store = state.specialists.store.lock().expect("specialists lock");
-        let instructions = crate::settingshost::abito_instructions(&state.settings);
+        let instructions = crate::settingshost::koda_instructions(&state.settings);
         (store.active().cloned(), instructions)
     };
     let fallback = state.chat_target.lock().expect("chat target lock").clone();
     let registry = modelshost::registry(state);
     let cloud = if role.as_ref().is_some_and(|r| r.model.is_some()) { None } else { *state.chat_cloud.lock().expect("cloud selection lock") };
-    let cloud_base = base.replace("Funcionas con un modelo local de esta máquina. ", abito_island::chatlane::CLOUD_MODEL_PROMPT);
+    let cloud_base = base.replace("Funcionas con un modelo local de esta máquina. ", koda_island::chatlane::CLOUD_MODEL_PROMPT);
     let base = if cloud.is_some() { &cloud_base } else { base };
     let (target, system) = resolve_turn(role.as_ref(), fallback, &registry, base, principal_instructions.as_deref())?;
-    let specialist = role.map(|s| abito_island::conversations::SpecialistRef { id: s.id, name: s.name });
+    let specialist = role.map(|s| SpecialistRef { id: s.id, name: s.name });
     Ok((target, system, specialist, cloud))
 }
 
 /// Restore a conversation's creation-time role identity without inventing a replacement role.
 /// Missing roles fall back to the principal; existing roles keep the normal local-model checks.
+#[allow(dead_code)]
 pub fn select_conversation_role(app: &AppHandle, state: &AppState, id: Option<&str>) -> Result<bool, BridgeError> {
     let store = state.specialists.snapshot();
     let missing = id.is_some_and(|id| store.find(id).is_none());
@@ -181,8 +198,9 @@ pub fn select_conversation_role(app: &AppHandle, state: &AppState, id: Option<&s
     Ok(missing)
 }
 
+#[allow(dead_code)]
 pub fn effective_target(state: &AppState) -> Result<Option<Target>, ChatError> {
-    turn_configuration(state, abito_island::chatlane::SYSTEM_PROMPT).map(|(target, _)| target)
+    turn_configuration(state, koda_island::chatlane::SYSTEM_PROMPT).map(|(target, _)| target)
 }
 
 #[tauri::command]

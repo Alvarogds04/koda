@@ -14,7 +14,9 @@
    Page cue contract (no bubbling required):
    document.dispatchEvent(new CustomEvent('abito:cue', { detail: 'snd.pop' }));
    detail is the exact cue-id string, not an object. Use snd.pop after picking an option,
-   snd.tick on attachment progress / shortcut toggle-on. Producers are not installed here.
+   snd.tick on attachment progress / shortcut toggle-on. notify.js is the producer for a new question
+   (snd.question), a new permission (snd.approval) and an expiry (snd.expired); this file plays snd.finish
+   for a finished turn and snd.approval for the island's permission card (K2-07).
    All cues pass through engine preference, gain, quiet, priority and rate gates.
    Loaded as a classic script (window.AbitoSoundWiring) and by test-node/sound-wiring-check.cjs. */
 (function (root, factory) {
@@ -78,10 +80,17 @@
           && (payload.v === undefined || payload.v === 1);
         const gain = valid && typeof payload.gain === 'number' && Number.isFinite(payload.gain)
           && payload.gain >= 0 && payload.gain <= 0.2 ? payload.gain : 0.12;
+        const wasOn = soundOn();
         engine.setGain(gain);
         engine.applyPrefs({ v: 1, sound: !!valid && payload.sound === true });
+        // K2-07 S2/S3: the user's files are read and decoded only once sound is ON (no AudioContext while off)
+        if (!wasOn && soundOn() && samplesWired) queueSamples();
       } catch { /* no audio capability: silence */ }
     };
+    // An engine without isEnabled (a test double) counts as on; the real engine starts off.
+    function soundOn() {
+      try { return typeof engine.isEnabled !== 'function' || engine.isEnabled() === true; } catch { return false; }
+    }
     if (listen) {
       try { listen('prefs:state', e => applyPrefs(e && e.payload)); } catch { /* no event bus: stays silent */ }
     }
@@ -93,10 +102,12 @@
       'gulp', 'send', 'proud', 'wink', 'yawn', 'attach', 'search', 'rate', 'sleep', 'greeting'];
     const invoke = typeof o.invoke === 'function' ? o.invoke : null;
     let sampleLoad = Promise.resolve();
+    let samplesWired = false;
     async function reloadSamples() {
       if (disposed) return;
       try {
         engine.clearSamples(); // removal, read/decode/list failure all restore built-ins
+        if (!soundOn()) return; // sound off: no file read, no AudioContext; turning sound on reloads
         const c = o.getAudioContext();
         if (!c || typeof c.decodeAudioData !== 'function') return;
         const listed = await invoke('sound_action', { payload: { action: 'list' } });
@@ -123,6 +134,7 @@
     // Serialize reloads so a slow earlier decode cannot resurrect a removed override.
     function queueSamples() { sampleLoad = sampleLoad.then(reloadSamples, reloadSamples); }
     if (invoke && typeof o.getAudioContext === 'function' && typeof o.decodeBase64 === 'function') {
+      samplesWired = true;
       queueSamples();
       if (listen) {
         try {
@@ -134,7 +146,7 @@
 
     // ---- 3) start-up / reconnect --------------------------------------------------------------------------------
     let chatSeen = null;   // turn_id -> last state we saw; null = no baseline yet
-    let noticeTop;         // undefined = no baseline yet
+    let noticeSeen;        // undefined = no baseline yet; then the Set of notice ids already observed
     let cardSeen;          // undefined = no baseline yet
     let desktopSeen;
     let cancelHover = () => {};
@@ -146,7 +158,7 @@
     }
     function reconnected() {
       try { engine.quiet(RECONNECT_QUIET_MS); engine.resetTransitions(); } catch { /* silence */ }
-      chatSeen = null; noticeTop = undefined; cardSeen = undefined; desktopSeen = undefined;
+      chatSeen = null; noticeSeen = undefined; cardSeen = undefined; desktopSeen = undefined;
       cancelHover();
     }
 
@@ -222,20 +234,29 @@
       return modelCue;
     }
 
-    // ---- 5) a NEW notice in the overview (never the ones that were there at start-up) --------------------------
+    // ---- 5) a NEW notice (never the ones that were there at start-up, never one that moves up after a dismiss) ------
+    // K2-07 L10: a finished turn (kind `settled`) plays snd.finish; any other new notice (an agent asking in its own
+    // terminal, `attention`; a transport failure) keeps snd.notice. The host list is oldest first and an attention or
+    // transport notice is inserted at the front, so a new arrival is a new id anywhere in the list, not a new top.
+    const NOTICE_SEEN_MAX = 200;
     function observeNotices(notices) {
-      const list = Array.isArray(notices) ? notices : [];
-      const top = list.length && list[0] && typeof list[0].id === 'string' ? list[0].id : null;
-      if (noticeTop === undefined) { noticeTop = top; return; }
-      if (top !== null && top !== noticeTop) request('snd.notice');
-      noticeTop = top;
+      const list = (Array.isArray(notices) ? notices : []).filter(n => n && typeof n.id === 'string');
+      if (noticeSeen === undefined) { noticeSeen = new Set(list.map(n => n.id)); return; }
+      const fresh = list.filter(n => !noticeSeen.has(n.id));
+      for (const n of list) noticeSeen.add(n.id);
+      if (noticeSeen.size > NOTICE_SEEN_MAX) {
+        const keep = new Set(list.map(n => n.id));
+        for (const id of noticeSeen) { if (noticeSeen.size <= NOTICE_SEEN_MAX / 2) break; if (!keep.has(id)) noticeSeen.delete(id); }
+      }
+      if (!fresh.length) return;
+      request(fresh.some(n => n.kind === 'settled') ? 'snd.finish' : 'snd.notice'); // one cue per snapshot
     }
 
-    // ---- 6) an approval card that becomes pending (a question is handled by notify.js through soundFor) ---------
+    // ---- 6) a permission card that arrives (K2-07 L10: snd.approval; a question is handled by notify.js through soundFor)
     function observeCard(cardId) {
       const id = typeof cardId === 'string' && cardId ? cardId : null;
       if (cardSeen === undefined) { cardSeen = id; return; }
-      if (id !== null && id !== cardSeen) request('snd.attention');
+      if (id !== null && id !== cardSeen) request('snd.approval');
       cardSeen = id;
     }
 

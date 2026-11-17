@@ -105,9 +105,9 @@ function originOf(root, pid) {
  * `{ sessions, truncated }`; a missing or unreadable proc dir is an empty result.
  */
 const MAX_PID = 4194304; // Linux pid_max ceiling
-/** `ABITO_SESSIONS_SCOPE_PID` as a pid, or null. Digits only: anything else never narrows the scan. */
+/** `KODA_SESSIONS_SCOPE_PID` as a pid, or null. Digits only: anything else never narrows the scan. */
 function sessionScope(env) {
-	const raw = env?.ABITO_SESSIONS_SCOPE_PID;
+	const raw = env?.KODA_SESSIONS_SCOPE_PID;
 	if (typeof raw !== "string" || !/^[1-9][0-9]{0,6}$/.test(raw)) return null;
 	const pid = Number(raw);
 	return pid <= MAX_PID ? pid : null;

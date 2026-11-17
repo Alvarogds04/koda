@@ -7,8 +7,8 @@
 //! * Input: ONE bounded JSON object on stdin. The token NEVER travels on the
 //!   command line, in the environment or in a log.
 //! * Output path: exactly `<island>/runtime/session.json`, where `<island>` is
-//!   the canonical protected `%LOCALAPPDATA%\Abito` root — or an
-//!   `ABITO_ISLAND_DIR` override INSIDE it (`winpolicy::island_root` refuses
+//!   the canonical protected `%LOCALAPPDATA%\Koda` root — or an
+//!   `KODA_ISLAND_DIR` override INSIDE it (`winpolicy::island_root` refuses
 //!   anything else). No path ever comes from the input.
 //! * Write: `winipc::ffi::private_file_bytes` — CREATE_NEW temp with an
 //!   explicit protected owner-only DACL AT CREATION (O:<sid>D:P(A;;GA;;;<sid>)),
@@ -25,8 +25,8 @@
 use std::io::Read as _;
 use std::io::Write as _;
 #[cfg(windows)]
-use abito_island::winipc;
-use abito_island::winpolicy;
+use koda_island::winipc;
+use koda_island::winpolicy;
 use serde_json::Value;
 
 const PROTOCOL: &str = "island-agent/1";
@@ -180,7 +180,7 @@ fn run() -> i32 {
     if let Some(cmd) = winpolicy::parse_fs_args(&args) {
         #[cfg(windows)]
         {
-            return match abito_island::winfs::ffi::run(&cmd, &mut std::io::stdin()) {
+            return match koda_island::winfs::ffi::run(&cmd, &mut std::io::stdin()) {
                 Ok(json) => { println!("{json}"); 0 }
                 Err(reason) => { println!("{{\"schema\":\"abito-fs/1\",\"ok\":false,\"reason\":\"{reason}\"}}"); 1 }
             };
@@ -224,14 +224,14 @@ fn run_windows(verify: bool) -> i32 {
     // Canonical root only: an unsafe override is refused here (never bypasses
     // the protected LOCALAPPDATA root), matching the Rust reader's policy.
     let root = match winpolicy::island_root(
-        std::env::var("ABITO_ISLAND_DIR").ok().as_deref(),
+        std::env::var("KODA_ISLAND_DIR").ok().as_deref(),
         std::env::var("LOCALAPPDATA").ok().as_deref(),
     ) {
         Some(root) => root,
         None => return if verify { 1 } else { fail("island root is not the canonical protected one") },
     };
     if verify {
-        return if abito_island::agentconn::verify_session(&root).is_ok() { 0 } else { 1 };
+        return if koda_island::agentconn::verify_session(&root).is_ok() { 0 } else { 1 };
     }
     let runtime = root.join("runtime");
     // The daemon creates the runtime directory; this helper only ever fills

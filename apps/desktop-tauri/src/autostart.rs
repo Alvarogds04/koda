@@ -1,7 +1,7 @@
 //! #315 — user-local XDG autostart entry for the island (F095/T02).
 //!
 //! Launch Abito automatically at session login by installing or removing
-//! `autostart/abito-island.desktop` under `$XDG_CONFIG_HOME` (default
+//! `autostart/koda.desktop` under `$XDG_CONFIG_HOME` (default
 //! `$HOME/.config`). The toggle's persistent state IS the file's presence:
 //! the same mechanism Coucou's T02 uses, no parallel preference store to
 //! desync. The entry is the closed template below; enabling again is
@@ -14,7 +14,7 @@
 use std::path::{Path, PathBuf};
 
 /// Fixed name of the autostart entry (one app, one entry, no surprises).
-pub const ENTRY_FILE_NAME: &str = "abito-island.desktop";
+pub const ENTRY_FILE_NAME: &str = "koda.desktop";
 
 /// Why an autostart change can fail. `Unsupported` is the honest non-Unix
 /// answer; `Io` carries the OS reason verbatim.
@@ -47,13 +47,13 @@ mod tests;
 // --- pure template -----------------------------------------------------------
 
 /// The closed autostart template for `exe`. The Icon is the packaging-staged
-/// `abito-island.png` beside the binary, mirroring `packaging/lib.cjs`
-/// desktopText (`Icon` is a plain string value, unquoted — only `Exec` is a
-/// quoted argument list). Returns `None` for a path that can never be quoted
+/// `koda.png` beside the binary, mirroring `packaging/lib.cjs` desktopText
+/// (`Icon` is a plain string value, unquoted — only `Exec` is a quoted
+/// argument list). Returns `None` for a path that can never be quoted
 /// honestly (relative, empty, or carrying control characters).
 pub fn desktop_entry(exe: &Path) -> Option<String> {
     let exec = quote_exec(exe)?;
-    let icon = exe.parent()?.join("abito-island.png");
+    let icon = exe.parent()?.join("koda.png");
     let icon = plain_value(&icon)?;
     Some(format!(
         "[Desktop Entry]\n\
@@ -64,7 +64,7 @@ pub fn desktop_entry(exe: &Path) -> Option<String> {
          Icon={icon}\n\
          Terminal=false\n\
          Categories=Utility;\n\
-         StartupWMClass=Abito-island\n\
+         StartupWMClass=Koda\n\
          X-GNOME-Autostart-enabled=true\n"
     ))
 }
@@ -107,7 +107,8 @@ fn quote_exec(path: &Path) -> Option<String> {
 /// `$HOME/.config/autostart` when XDG is unset or empty (spec fallback).
 /// Both must be absolute; anything else is `None` (no honest path, no toggle).
 pub fn autostart_dir(xdg_config_home: Option<&str>, home: Option<&str>) -> Option<PathBuf> {
-    let root = match xdg_config_home.filter(|v| !v.is_empty()) {
+    // XDG Base Directory spec: a relative XDG_CONFIG_HOME is invalid and must be ignored (falling back to $HOME/.config).
+    let root = match xdg_config_home.filter(|v| !v.is_empty() && v.starts_with('/')) {
         Some(xdg) => PathBuf::from(xdg),
         None => PathBuf::from(home.filter(|h| !h.is_empty() && h.starts_with('/'))?)
             .join(".config"),
@@ -124,6 +125,108 @@ pub fn entry_path(xdg_config_home: Option<&str>, home: Option<&str>) -> Option<P
 /// presence IS the enabled state (Coucou T02 semantics, no desync).
 pub fn is_enabled_at(path: &Path) -> bool {
     path.is_file()
+}
+
+// --- the Koda 0.1 entry (K2-04 T6) -------------------------------------------
+
+/// The file the Koda 0.1 wrote in the XDG autostart directory.
+pub const LEGACY_ENTRY_FILE_NAME: &str = "abito-island.desktop";
+
+/// What [`retire_legacy_entry`] did. Nothing here carries a path or any file content.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LegacyOutcome {
+    /// There was no 0.1 entry (or no autostart directory).
+    NotThere,
+    /// The 0.1 entry was ours and is gone.
+    Removed,
+    /// Something is at the name but it is not the file the 0.1 wrote (edited by the user, a link, a directory): untouched.
+    Kept,
+    /// It was ours but could not be removed; the next start retries.
+    Failed,
+}
+
+impl LegacyOutcome {
+    /// A log line without any path or file content; `None` when nothing happened.
+    pub fn log_line(self) -> Option<String> {
+        match self {
+            LegacyOutcome::Removed => Some("legacy autostart entry removed".into()),
+            LegacyOutcome::Failed => Some("legacy autostart entry could not be removed; will retry on the next start".into()),
+            LegacyOutcome::NotThere | LegacyOutcome::Kept => None,
+        }
+    }
+}
+
+/// The Koda 0.1 wrote this file with `desktop_entry`: ONE exact shape per binary path. Rebuild that shape from the binary path
+/// found in the file's own `Exec` line and require the whole text to match it BYTE FOR BYTE. Anything that is not exactly what the
+/// 0.1 wrote is the user's (a comment, a blank line, a changed Name or Icon, autostart switched off, an env prefix, another
+/// program, a duplicated or extra key, CRLF endings, a missing trailing newline) and stays.
+fn is_legacy_template(text: &str) -> bool {
+    let Some(exec) = text.lines().find_map(|line| line.strip_prefix("Exec=")) else { return false };
+    let Some(quoted) = exec.strip_suffix(" --autostart") else { return false };
+    let Some(inner) = quoted.strip_prefix('"').and_then(|rest| rest.strip_suffix('"')) else { return false };
+    // undo the 0.1's quoting: a backslash escapes exactly one of \ " $ `
+    let mut path = String::with_capacity(inner.len());
+    let mut chars = inner.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => match chars.next() {
+                Some(escaped @ ('\\' | '"' | '$' | '`')) => path.push(escaped),
+                _ => return false,
+            },
+            '"' | '$' | '`' => return false, // the 0.1 always escaped these
+            c => path.push(c),
+        }
+    }
+    let exe = Path::new(&path);
+    if !exe.is_absolute() || exe.file_name().and_then(|n| n.to_str()) != Some("abito-island") { return false; }
+    let Some(dir) = exe.parent() else { return false };
+    let Some(expected) = legacy_entry_text(exe, dir) else { return false };
+    text == expected
+}
+
+/// The 0.1's closed template, byte for byte, for `exe` (the 0.1 binary `.../abito-island`) with its icon beside it.
+fn legacy_entry_text(exe: &Path, dir: &Path) -> Option<String> {
+    let exec = quote_exec(exe)?;
+    let icon = plain_value(&dir.join("abito-island.png"))?;
+    Some(format!(
+        "[Desktop Entry]\n\
+         Type=Application\n\
+         Name=Koda\n\
+         Comment=Koda\n\
+         Exec={exec} --autostart\n\
+         Icon={icon}\n\
+         Terminal=false\n\
+         Categories=Utility;\n\
+         StartupWMClass=Abito-island\n\
+         X-GNOME-Autostart-enabled=true\n"
+    ))
+}
+
+/// Removes the Koda 0.1 autostart entry from `autostart_dir` and nothing else: that ONE exact file name, only when it is a
+/// regular file (never a link or a directory, never followed), small, and the closed template the 0.1 wrote. It does not turn
+/// the 0.2 autostart on in its place (the human decided nothing from 0.1 is migrated; preferences start from zero).
+#[cfg(unix)]
+pub fn retire_legacy_entry(autostart_dir: &Path) -> LegacyOutcome {
+    const MAX_ENTRY: u64 = 4096;
+    let path = autostart_dir.join(LEGACY_ENTRY_FILE_NAME);
+    let meta = match std::fs::symlink_metadata(&path) {
+        Ok(meta) => meta,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return LegacyOutcome::NotThere,
+        Err(_) => return LegacyOutcome::Failed,
+    };
+    if !meta.file_type().is_file() || meta.len() > MAX_ENTRY { return LegacyOutcome::Kept; }
+    let Ok(text) = std::fs::read_to_string(&path) else { return LegacyOutcome::Kept };
+    if !is_legacy_template(&text) { return LegacyOutcome::Kept; }
+    match std::fs::remove_file(&path) {
+        Ok(()) => LegacyOutcome::Removed,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => LegacyOutcome::NotThere,
+        Err(_) => LegacyOutcome::Failed,
+    }
+}
+
+#[cfg(not(unix))]
+pub fn retire_legacy_entry(_autostart_dir: &Path) -> LegacyOutcome {
+    LegacyOutcome::NotThere
 }
 
 // --- enable / disable (platform seam) ----------------------------------------

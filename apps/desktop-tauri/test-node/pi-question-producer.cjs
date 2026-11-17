@@ -6,8 +6,8 @@ const path = require('node:path');
 const net = require('node:net');
 const assert = require('node:assert/strict');
 const readline = require('node:readline');
-const source = process.env.ABITO_PI_PRODUCER_DIR;
-assert(source && path.isAbsolute(source), 'ABITO_PI_PRODUCER_DIR is required');
+const source = process.env.KODA_PI_PRODUCER_DIR;
+assert(source && path.isAbsolute(source), 'KODA_PI_PRODUCER_DIR is required');
 assert.equal(fs.realpathSync(source), source, 'explicit canonical producer directory required');
 for (const name of ['adapter.cjs', 'questions.cjs']) {
   const file = fs.lstatSync(path.join(source, name));
@@ -70,9 +70,9 @@ const events = new Map();
 const pi = { on(name, callback) { assert(!events.has(name)); events.set(name, callback); } };
 const ctx = { cwd, sessionManager: { getSessionId: () => sessionId } };
 const config = require(path.join(source, 'config.cjs'));
-const options = { ...config.resolveConfig({ ABITO_DESKTOP_SOCKET: endpoint, ABITO_SOCKET_DIR: runtime }, process.getuid()),
-  ...config.resolveQuestionConfig({ ...(enabled ? { ABITO_QUESTIONS: String(questionLevel) } : {}),
-    ABITO_QUESTION_TIMEOUT_MS: '30000' }) };
+const options = { ...config.resolveConfig({ KODA_DESKTOP_SOCKET: endpoint, KODA_SOCKET_DIR: runtime }, process.getuid()),
+  ...config.resolveQuestionConfig({ ...(enabled ? { KODA_QUESTIONS: String(questionLevel) } : {}),
+    KODA_QUESTION_TIMEOUT_MS: '30000' }) };
 const adapter = registerAdapter(pi, { ...options, retryMs: 10000, heartbeatMs: 200,
   onDiagnostic: d => diagnostics.push(d), onTransportError: error => { transportError = error; } });
 const watchdog = setTimeout(() => { process.stderr.write('pi-question-producer: deadline\n'); process.exit(2); }, 8000);

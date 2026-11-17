@@ -200,15 +200,16 @@ ausente sí la bloquean.
 El validador usa **otra pantalla Xvfb, nunca `DISPLAY=:0`**, con WM, bus D-Bus,
 HOME y XDG privados. Los sockets Pi viven sólo en
 `/run/user/1000/abito-validator-pi/<aleatorio>` (0700, retirado al terminar);
-no toca `/run/user/1000/abito-island`. Los clics XTest pertenecen al proceso de
+no toca `/run/user/1000/koda`. Los clics XTest pertenecen al proceso de
 validación, nunca al binario entregado. El atajo comprueba el callback compartido,
 no la entrega física de teclas por GNOME; el menú se activa por su exportación
 D-Bus, no por un panel GNOME.
 
 ### Qué significa «no verificable aquí»
 
-- **Correo y cuentas:** no hay keyring privado. Se exige la respuesta honesta
-  `keychain_unavailable`; no se leen claves reales ni se afirma que IMAP/SMTP funcionen.
+- **Correo y cuentas:** no hay keyring privado. `gmail_action` (`status`) solo tiene que
+  responder con su forma cerrada (`{ok:false, reason:"keychain"}` sin llavero); no se leen
+  claves reales ni se afirma que Gmail funcione.
 - **Audio audible:** list/reload no demuestra que una persona oye el sonido.
 - **Reconocimiento y micrófono:** sin modelos ni micrófono privado no se demuestra
   transcripción, wake word ni voz hablada. El portal de GNOME y la integración
@@ -254,7 +255,7 @@ initialises), because the launcher alone cannot cover every entry point.
 ```sh
 cd apps/desktop-tauri
 DISPLAY=:0 XAUTHORITY=/run/user/1000/.mutter-Xwaylandauth.UV9RW3 \
-  GDK_BACKEND=x11 ABITO_PROBE=1 timeout 120 cargo run
+  GDK_BACKEND=x11 KODA_PROBE=1 timeout 120 cargo run
 # (equivalent: cargo run -- --probe)
 ```
 
@@ -286,7 +287,7 @@ line per step with:
   the REAL snapshot path, with `connections_while_connected` →
   `connections_after_disconnect`. `preview_roots_detected_only` lists the
   installed Preview's reserved socket roots READ-ONLY — detected and
-  reported, never connected, never unlinked (an `ABITO_SOCKET_DIR` override
+  reported, never connected, never unlinked (an `KODA_SOCKET_DIR` override
   keeps the probe in its own directory).
 
 Exits only this app (`std::process::exit(0)`).
@@ -394,7 +395,7 @@ IPC path (observed 2026-10-09, this stack):
   launch hands its argv to the first instance, which restores (→ compact,
   clamp), shows and focuses the island; the second process exits before
   `Builder::run`. Observed: second instance exit 0 in 0.06 s, exactly one
-  `abito-island` process remained.
+  `koda` process remained.
 - **Work-area re-clamp**: Tauri/Tao expose no display events, so
   `workarea::current` (same source Electron's `display-*` handlers used) is
   polled every second and a CHANGED rect re-clamps the window through the
@@ -413,7 +414,9 @@ IPC path (observed 2026-10-09, this stack):
   go through the app's own commands, which Tauri gates by origin (a remote
   origin cannot reach them — enforced by Tauri's ACL, not by us).
 - **CSP** (`tauri.conf.json`): `default-src 'self'` plus explicit
-  `script-src/style-src/img-src/font-src 'self'`,
+  `script-src/style-src/font-src 'self'` and `img-src 'self' data:` (the `data:`
+  is for the phone-pairing QR, an `<img>` of an inline SVG: without it the QR is
+  a blank box; an SVG used as an image runs no script and loads nothing remote),
   `connect-src 'self' ipc: http://ipc.localhost` (Tauri IPC), `object-src
   'none'; base-uri 'none'; form-action 'none'; frame-src 'none'`. No remote
   origins, no `unsafe-eval`, **no inline script or style at all** (the page
@@ -467,7 +470,7 @@ re-interpretation (the receiver tests were written first: RED → GREEN):
 | `onNotice` gated by a store before the app | `transport.cjs:83` | `Inner.store` — `src/transport.rs:801` handler |
 | `dismiss` drops the first notice | `main.cjs:461-463` | `main.rs:752` |
 | transport wiring + callbacks + publish | `main.cjs:488-491` | `start_transport` — `main.rs:138` |
-| `ABITO_DESKTOP_SOCKET=…` stdout line | `main.cjs:493` | `main.rs:182` |
+| `KODA_DESKTOP_SOCKET=…` stdout line | `main.cjs:493` | `main.rs:182` |
 | `unavailable = true` only when the receiver fails to start | `main.cjs:495-497` | `start_transport` — `main.rs:138` |
 | cleanup refusal line on quit | `main.cjs:383-384` | `main.rs:108,119` |
 | SIGINT/SIGTERM run the clean quit | `main.cjs:393` | `install_shutdown_handlers` — `main.rs:71` |
@@ -493,9 +496,9 @@ Deliberate, documented deltas (no wire change):
 - Default runtime root: `apps/desktop-tauri/.runtime` — the dev layout
   `apps/desktop/.runtime` had — created 0700; endpoint
   `<root>/p-XXXXXX/s` (`XXXXXX` = six alphanumerics per launch), generated
-  dir 0700, socket 0600. Startup prints `ABITO_DESKTOP_SOCKET=<endpoint>`
+  dir 0700, socket 0600. Startup prints `KODA_DESKTOP_SOCKET=<endpoint>`
   (`main.rs:182`), byte-for-byte the legacy line.
-- Override: `ABITO_SOCKET_DIR=<absolute, normalized dir>` for tests/probe.
+- Override: `KODA_SOCKET_DIR=<absolute, normalized dir>` for tests/probe.
   Relative or unnormalized paths fail closed; anything resolving into the
   installed Preview's reserved roots is refused (`resolve_runtime_from`,
   `src/transport.rs:199`). **A socket this process did not create is never
@@ -556,7 +559,7 @@ sha256 equals the receiver's, the connection is counted, and the settlement
 becomes exactly one notice. `pi-extension.ts` and `adapter.cjs` are
 unmodified. (The adapter's own opt-in loader would only accept the legacy
 `.runtime` or the Preview's root; the harness passes the runtime explicitly,
-which is what a Pi session wiring would do through `ABITO_DESKTOP_SOCKET`.)
+which is what a Pi session wiring would do through `KODA_DESKTOP_SOCKET`.)
 
 ## What M3 proves (and what it does not)
 
@@ -597,8 +600,8 @@ by the tests or the probe.
 ### What the approval evidence shows (probe, `approval_evidence` line)
 
 - The lane starts against the **in-process fake backend** through the
-  `ABITO_BRIDGE_BASE` override (set before the lane is built): the probe
-  never talks to a real backend, and when `ABITO_BRIDGE_BASE` was set from
+  `KODA_BRIDGE_BASE` override (set before the lane is built): the probe
+  never talks to a real backend, and when `KODA_BRIDGE_BASE` was set from
   OUTSIDE, the probe reads snapshots but refuses to decide.
 - `posts_before_choice: 0` — nothing (notice, snapshot, poll) ever writes;
   only the explicit `allow` dispatch reaches `/execute`, and then
@@ -619,7 +622,78 @@ by the tests or the probe.
   from the state root with the legacy descriptor discipline. It is never
   printed and never committed (`.runtime*/` is gitignored).
 
+## K2-05 — the chat is the daemon's engine (Gentle Shell with Koda identity)
+
+Since K2-05 (merged into `release/0.2`) the island chat is **not** answered by a model lane inside this
+app any more. What answers is the **engine**: Gentle Shell (Pi) with Koda's identity, run and supervised
+by the daemon (`apps/desktop-daemon`, see its README and `docs/PROTOCOL.md`). This app is a client of
+the daemon's socket (`island-agent/1`):
+
+- **`src/chatclient.rs`** is the PURE half: the closed set of commands the chat may send to the daemon
+  (`send`, `steer`, `abort`, `ui_response`, `get_history`, `get_earlier`, `status`) and the allowlisted
+  `ChatState` the page receives as `chat:state`. It never sees the socket path or the token, and refuses
+  every caller whose window label is not `main`.
+- **`src/chathost.rs`** is the impure half: the `chat_action`, `chat_attach` and `chat_attach_data`
+  Tauri commands, one reconnecting connection to the daemon, the native drop set and the `chat:state`
+  projection.
+- **The page's verbs are a closed set** (`chat_action`, exact keys each, in `chat.rs`):
+  `view`, `open`, `back`, `height`, `check`, `submit` (text, a client request id and up to 5 attachment
+  ids), `answer` (an agent question), `discard` (an unsent attachment), `cancel` and `history`. The
+  conversation verbs of the 0.1 chat (`new`, `new_with`, `list`, `restore`) still parse but are answered
+  with `conversations_off` («Koda tiene un solo chat continuo.»): there is no new-conversation button.
+  A page cannot name a model, an endpoint, a key or a path.
+
+**One continuous chat.** There is a single conversation, the engine's. When it grows, the daemon rotates
+the session (rotation is on) and the island keeps showing the whole chain: the history is read from the
+daemon, the newest page on every connect and earlier pages one request per page with the daemon's
+cursor, and a reopen after a restart shows the same chat, like Gentle Dot. While the daemon is
+booting the chat says «Koda está arrancando…» (or «Koda se está reiniciando…» on a restart) instead of
+failing.
+
+**Attachments.** Any file, up to 25 MB and up to 5 per message (the daemon enforces its own quota; Gentle
+Dot allows 10, Koda says «hasta 5»). The app never stores an upload: a dropped, picked or pasted file is
+read here and sent to the daemon as `upload` chunks; the daemon stages it in `<island>/uploads-staging`,
+**outside the engine's workspace**, and moves it into `<workspace>/uploads` only when a send naming it is
+accepted. The page refers to a file only by the opaque id the daemon issued. Hardening of a **dropped
+path** (`chathost.rs`): it must be one the OS reported through the main window's native drop event
+(one-shot, 16 entries, 60 s), it is looked at with `symlink_metadata` first and only a regular file goes
+on (a link, FIFO or device is refused with «Eso no es un archivo.»), it is opened without following a link
+(`O_NOFOLLOW | O_NONBLOCK` on Unix; on Windows the reparse point is opened itself and refused), and size
+and type are judged on the open handle.
+
+**The model line.** The chat shows, read-only, which model the engine answers with, taken from the
+engine's own `get_state` through the daemon; it is hidden when unknown. See «K2-05 U5c» below.
+
+**What is gone.** The old Rust chat lane for the chat (`run_turn`, the direct local/cloud path), the
+local-model-only rule and its per-turn preflight, the island-side upload store, the 0.1 local
+conversations store (#341), the model picker in the chat, Ajustes → Modelos, the per-provider and local
+model lists in the Ajustes hub, and the `chosen_models` preference (an old `prefs.json` that still
+carries the key loads normally; the key is dropped on the next save). The 0.1 conversation files are
+**deleted on upgrade**: `legacy_conversations::cleanup` runs once per start, before the chat connects, and
+removes only the exact 0.1 files (`<id>.jsonl` and its `.tmp`) in `<app_data_dir>/conversations/`; that
+folder is opened once without following a link (a symlink or anything not a real directory is refused) and
+every look and delete is relative to that opened handle. No running path opens or writes the 0.1 format.
+
+**What stays, for specialists.** `models_action`, the `chatlane`, `localmodel` and `cloudprofiles` support
+modules and the `models` registry are still compiled and registered because the manual specialists
+(#327) choose a model through them; they are marked «kept for specialists/models until U5b/U5d» in the
+sources and leave with the specialists removal (U5d), which is a separate feature. The sections «What U1
+proves» and «What U2 proves» below describe that old lane and are historical.
+
 ## What U1 proves — chat inside the island, answered by the LOCAL model
+
+> **SUPERSEDED by K2-05 — kept as historical evidence of the M-series milestone; the chat is no longer
+> answered by a local model lane. See the K2-05 section.**
+>
+> Of this section, these no longer apply: the **local-model-only rule** and the per-turn lane preflight
+> (`/health`, `/props`, `/slots`, `/v1/models`; «Local model only — never a silent fallback»); the
+> **Rust-side upload store** and the `chat_attach` / `chat_attach_data` semantics (they now forward the
+> file to the daemon: 25 MB, 5 per message, nothing stored by the app; the «≤10 MiB» and «`uploads/`
+> directory» statements are wrong); the **local conversations** store and its IPC verbs (#341; replaced by
+> the engine's one continuous chat); the lane-specific parts of the closed `chat_action` set (it is now
+> `view|open|back|height|check|submit|answer|discard|cancel|history`, and the conversation verbs answer
+> `conversations_off`); and the greeting that says the local model answers. The window sizes, placement,
+> accessibility and motion paragraphs still describe the chat column.
 
 **One table of logical sizes per view (#337 F009).** Every native window size the
 island ever takes — compact dot (#302), overview (#309 contract), chat column
@@ -770,7 +844,7 @@ History uses append-only JSONL in `app_data_dir/conversations/` (Unix directory
 reported, and interrupted turns restore as cancelled without resuming inference.
 Accepted message text is persisted as written; app credentials, headers, account
 state and system/specialist instructions are not copied. Files are not encrypted.
-Probe mode is memory-only unless `ABITO_CONVERSATIONS_DATA_DIR` names an absolute
+Probe mode is memory-only unless `KODA_CONVERSATIONS_DATA_DIR` names an absolute
 isolated test directory. Deletion, retention limits, cloud sync and import are
 out of scope. See [Local conversations](../../docs/conversations.md) for IPC,
 paging, privacy and the **partial final verification evidence**. No live app
@@ -858,7 +932,7 @@ node apps/desktop-tauri/test-node/chat-view-check.cjs
 node apps/desktop-tauri/tests/composer-ime-check.cjs
 
 # opt-in: one short real turn against 127.0.0.1:11002 (local, free)
-ABITO_REAL_LOCAL_MODEL=1 cargo test --manifest-path apps/desktop-tauri/Cargo.toml \
+KODA_REAL_LOCAL_MODEL=1 cargo test --manifest-path apps/desktop-tauri/Cargo.toml \
   --test chat_local_model real_local -- --nocapture
 
 # probe: adds chat_open (672x256 from the X server), chat_evidence (one turn
@@ -866,11 +940,18 @@ ABITO_REAL_LOCAL_MODEL=1 cargo test --manifest-path apps/desktop-tauri/Cargo.tom
 # unreachable target), chat_back_to_overview (672x176), chat_collapse
 cd apps/desktop-tauri
 DISPLAY=:0 XAUTHORITY=/run/user/1000/.mutter-Xwaylandauth.UV9RW3 \
-  GDK_BACKEND=x11 ABITO_PROBE=1 ABITO_SOCKET_DIR="$PWD/.runtime-probe" \
+  GDK_BACKEND=x11 KODA_PROBE=1 KODA_SOCKET_DIR="$PWD/.runtime-probe" \
   timeout 200 cargo run
 ```
 
 ## What U2 proves — choosing a self-hosted model (local only, no keys)
+
+> **SUPERSEDED by K2-05 — kept as historical evidence of the M-series milestone; the chat is no longer
+> answered by a local model lane. See the K2-05 section.**
+>
+> None of this section applies to the chat any more: the **model picker** (the «Modelo» button and
+> internal panel), Ajustes → Modelos and the saved chat selection (`chosen_models`) were removed in K2-05
+> (U5c). Only `models_action` and the registry behind it survive, for the specialists, until U5d.
 
 The chat header's **Modelo** button opens an internal panel of the SAME chat
 view (the transcript is replaced while it is open). It lists the verified
@@ -912,7 +993,7 @@ turn keeps its frozen target. It is persisted as
 checks). Absent → the approved initial `local-abito-gpt`; corrupt, foreign
 or unknown → **no model selected** (the chat says so, nothing substituted).
 The probe never writes it (`persisted_config_dir: null`); tests use a temp
-dir; `ABITO_MODELS_CONFIG_DIR=<abs dir>` overrides.
+dir; `KODA_MODELS_CONFIG_DIR=<abs dir>` overrides.
 
 ### Verifying U2
 
@@ -927,50 +1008,48 @@ cargo test --manifest-path apps/desktop-tauri/Cargo.toml
 #   smuggled origin refused, selection effective, fake router saw only GETs
 ```
 
-## #339 / F024 — the model row above the composer
+## K2-05 U5c — which model answers (read-only line above the composer)
 
-The chat column carries one row between «Respuesta nueva» and the composer: a
-button with the availability dot, the effective local model's name and a
-caret, plus an inline picker above it. Upstream Coucou's “Click model name
-above composer” (`windows/src/views/chat.ts:216-254`); the macOS popover
-itself (`IslandViewContent.swift:1345-1375`) is not ported, per the 0.2 scope
-rule.
+The F024 model picker is gone (human decision L72, 12 Nov 2026), together with
+Ajustes → Modelos, the per-provider/local model lists in the Ajustes hub and the
+`chosen_models` preference. The ENGINE (Gentle Shell, run by the daemon) owns the
+model; the chat only SHOWS it.
 
-**What it shows (R1/R4):** the EFFECTIVE target of the next turn — Rust has
-already resolved the active specialist into `chat:state.target`
-(`chathost::current_target` → `specialistshost::turn_snapshot`), so the row
-names exactly the model that will answer. The alias, or the profile id when it
-has none; «Sin modelo local elegido» when there is no target; and the role's
-name appended («Abito-gpt · Investigación») only when that role is what
-supplies this exact model, with a one-line note inside the picker. Plain text
-only (`textContent`), the origin rides in the accessible name without its
-scheme, and never an endpoint, key, account or provider (S5).
+The chat column carries one plain-text line between «Respuesta nueva» and the
+composer (`#chat-model-line`): the name of the model the engine will answer with
+(its `name`, or its `id` when it has none). No button, no picker, nothing to
+click or choose; it is hidden while the model is unknown — never a placeholder
+name — and while the engine is not ready.
 
-**What a click does (R2/R3):** toggles the picker over the SAME closed
-`models_action` set Ajustes → Modelos uses — `list` on open,
-`select{profile_id}` on a row — so a selection applies from the NEXT message
-(a running turn keeps its frozen target) and nothing new reached the wire: no
-new verb, no new preference, no Rust change, and `chat_action`'s closed set is
-untouched. Escape closes the picker first; a running turn freezes the row; a
-CHOSEN target that is down or blocked disables it, while no target chosen (or
-no preflight verdict yet) keeps it enabled — otherwise the picker would be a
-dead end exactly when the human needs it.
-
-**What it is not:** not a per-turn override; not a provider picker (the chat
-lane is local-only, `src/chatlane.rs`; cloud chips would need a new wire verb
-plus a daemon round trip and engine restart, out of 0.2); and it never writes
-a role. `chat.js` may invoke exactly `chat_action`, `open_chat_url`,
-`models_action {list,select}` and `specialists_action {view}` — a check pins
-that set so a later edit cannot grow it silently.
-
-### Verifying #339
+**Where it comes from:** Pi's own `get_state` `data.model`, read by the daemon
+(`runtime.cjs` `modelIdentity`, refreshed after a model switch) and published in the
+`ready` / `agent_state` status as `model: { provider?, id, name? }` (closed
+identity; the key is absent when the engine reported none). Rust folds it
+(`chatclient.rs` `engine_model`: bounded plain strings, no control characters) and
+projects it as `chat:state.engine_model` (`null` when unknown or when the engine
+is not `ready`). `chat-view.js` `engineModelLine` turns it into text; the page writes
+it with `textContent`. Specialists keep choosing their own model exactly as before
+(`specialists_action` / `models_action`, untouched).
 
 ```sh
-node apps/desktop-tauri/test-node/chat-view-check.cjs         # 52 checks (5 pure F024: label/aria/note/enabled/markup)
-node apps/desktop-tauri/test-node/chat-model-picker-check.cjs # 10 checks, fake DOM driving the REAL chat.js
+node apps/desktop-tauri/test-node/chat-view-check.cjs         # pure helpers + the K2-05 U5c read-only model line (text, unknown → hidden, no picker)
 node apps/desktop-tauri/tests/composer-ime-check.cjs          # 10 checks: the keyboard contract still holds
 # cargo test runs both harnesses through tests/frontend_chat_view.rs
 ```
+
+## K2-06 — ask Koda about my window
+
+In the chat you can ask about the window you are using and Koda answers from **one picture of it**, if the model
+sees images. It is the agent's tool `screenshot_my_window`, served by a loopback MCP server in this app
+(`src/windowcapture/`) and projected by the daemon into the engine's `mcp.json` (`KODA_WINDOW_MCP_URL` /
+`KODA_WINDOW_MCP_TOKEN`). **Off by default**: Ajustes → Chat → «Dejar que Koda vea mi ventana» (`window_capture`
+pref). The first capture asks for a 30-minute permission; sensitive apps (password managers, system settings,
+login and authorization prompts, Koda itself) are refused with Gentle Dot's list; only the last screenshot
+travels as an image; a model without vision gets a clear message and nothing is captured. Linux X11, GNOME
+Wayland (through Koda's GNOME extension), macOS 14+ (ScreenCaptureKit) and Windows (`PrintWindow`).
+Nothing of it has been run live yet on GNOME, macOS or Windows. Full description, per-OS details and what is not
+verified: [docs/desktop/window-capture.md](../../docs/desktop/window-capture.md); the extension's privacy contract and
+known limits: [docs/desktop/context-extension.md](../../docs/desktop/context-extension.md).
 
 ## #327 — manual specialists (roles the human creates and chooses)
 
@@ -994,7 +1073,7 @@ mutations with code `load_error` and message
 No success event, auto-reset, repair, quarantine or overwrite occurs; recovery
 is outside this feature and requires an explicit decision. Moving a bad file
 after startup does not clear the latch. `active: null` IS the principal (Abito).
-`ABITO_SPECIALISTS_CONFIG_DIR=<abs dir>` overrides; without that override,
+`KODA_SPECIALISTS_CONFIG_DIR=<abs dir>` overrides; without that override,
 the probe keeps it in memory only. Unix permissions/owner checks are not a
 verified Windows security guarantee.
 
@@ -1076,7 +1155,7 @@ and no capability widens. The UI says so («Declarativo: todavía no se aplica»
 ### Verifying #327
 
 ```sh
-cargo test --manifest-path apps/desktop-tauri/Cargo.toml --bin abito-island specialists
+cargo test --manifest-path apps/desktop-tauri/Cargo.toml --bin koda specialists
 #   Store/host contracts: opaque/reserved ids, bounds and controls, fail-closed
 #   store, closed command set, invalid input never mutates, principal prompt
 #   unchanged, 0600/O_NOFOLLOW/atomic file, failed write keeps the store,
@@ -1095,7 +1174,7 @@ node apps/desktop-tauri/test-node/specialists-view-check.cjs   # 21 checks
   (second launch) shows the island without `set_focus`. Probe
   `a11y_evidence`: `window_focused_at_start/after_restore/after_expand:
   false`, `document_has_focus: false`. The ONLY focusing path is the
-  deliberate second launch `abito-island --chat` (exact argv, pure
+  deliberate second launch `koda --chat` (exact argv, pure
   `desktop::launch_intent`, tested): opens the chat and puts the caret in the
   composer — bind it to a GNOME shortcut yourself; Abito installs no global
   hook.
@@ -1113,12 +1192,55 @@ node apps/desktop-tauri/test-node/specialists-view-check.cjs   # 21 checks
   `role=status` region (`Aviso: <title>. <detail>`), never on dismissal;
   the chat has its own polite region (per state change, not per token).
 
+## K2-13 T6b-1 — «Hoy» inside the island
+
+The island's day, per `design/k2-13-minikodas/02-hoy-todo-en-la-isla.html` (the human's choice, L38): three tabs
+(Propuestas · Resultados · Errores) over the items the daemon really stored in `<island>/minikodas/hoy/`, the notch grown to
+**300** — the height the chat already reaches (`geometry::CHAT_MAX_H`), so no new measure is invented.
+
+- **Bridge.** `agentclient.rs` allowlists exactly three commands — `hoy_list`, `hoy_approve {id}`, `hoy_reject {id}` — and
+  folds the daemon's `hoy` / `hoy_decided` / `hoy_approved` frames into ONE bounded closed view (`{items, truncated}`, 100
+  rows, 4 000 chars of text). A row is rebuilt field by field: an off-vocabulary kind, status, action, id or provenance
+  drops the row (never sanitised into a lie), and text loses control characters, the whole Unicode `Cf` set and
+  U+2028/U+2029. A decision is final in the fold too: only a `pending` row can become `approved` or `rejected`, and a
+  second frame never re-decides it. The command payload is exact: `pin` — or any other stray field — is not a command, so
+  there is no PIN to carry (human decision L17 removed it).
+- **View.** `#hoy` is a sibling of the notch body (`island-nusa-bodies.js`, model in `island-nusa.js`), opened from the
+  fourth disc in the header's visible control cluster and shown only in the idle expanded overview. Rows are built with
+  `textContent` from the model: item text comes from models and Telegram posts, so it is never markup. A proposal carries
+  Aprobar / Rechazar (`24`, the artboard), and its TARGET is drawn whole (the daemon's 200 characters, wrapped, never
+  ellipsised) because that is what is being approved — including who a `send` goes to.
+- **A click never announces its own success.** `AgentConn::command` answers with the state at WRITE time, so the outcome
+  only exists in a later `agent:state` (the path `settings.js` documents). One decision is therefore held until that state
+  shows the row moved (`hoyDecision`) or the daemon's error counter moved (`last_error.n`), with a 3 s deadline that says
+  the outcome is unknown and asks the day again; silence is never a success and never a failure. Every Aprobar / Rechazar
+  is disabled while a decision is in flight, rows keep the order they were first drawn in (`hoyOrder`, so a decided row
+  never sinks under the cursor), clicks are ignored for 400 ms after a repaint that moved rows, a refusal is shown from the
+  daemon's closed code, and a read that could not be answered says so. Aprobar is never the default focus and Enter on a
+  row never approves.
+- **Height and clicks.** `#island` is sized inline by `island.js`, so the grown box is declarative (`data-hoy="open"`,
+  `height: 300px !important`) and the page reports it to the host itself (`island_shape`, destination then settled). Without
+  that report the lower half of `Hoy` would take no clicks. An empty day gives the room back (150).
+- **Not wired here.** «Tus Minikodas ›» and the footer's next-run line need the Minikodas list (its island view is not
+  designed yet); the S19 provenance chip is rendered when an item carries `provenance` and the daemon does not send it yet.
+
+### Verifying K2-13 T6b-1
+
+```
+cd apps/desktop-tauri
+node test-node/hoy-view-check.cjs           # the pure model: tabs, counts, rows, text safety, decisions, refusals
+node test-node/island-hoy-check.cjs         # structure, wiring, tokens (no browser)
+node test-node/island-hoy-visual-check.cjs  # the REAL island in headless Chromium (skips loudly without Playwright)
+cargo test --test hoy_client                # the closed command set and the fold
+cargo test --lib agentclient                # the client state the page is given
+```
+
 ## Configuration: pointing at the real backend later
 
 Nothing to do for the shipped default: the lane targets
 `http://127.0.0.1:11003` (`security.cjs BRIDGE_ORIGIN`) and reads
 `<stateRoot>/bridge.json` — the dev state root is `apps/desktop-tauri/.runtime`
-(`ABITO_SOCKET_DIR` overrides the whole state root, as for M2). To enable the
+(`KODA_SOCKET_DIR` overrides the whole state root, as for M2). To enable the
 real lane:
 
 1. Create `.runtime/bridge.json` (mode **0600** — the descriptor gate
@@ -1126,7 +1248,7 @@ real lane:
    `{"v":1,"login":"your-login@tailnet.ts.net"}` — the same tailnet login
    the backend allows.
 2. Start the Second Brain bridge on `127.0.0.1:11003`. If it lives
-   elsewhere, set `ABITO_BRIDGE_BASE=http://127.0.0.1:<port>` (origin shape
+   elsewhere, set `KODA_BRIDGE_BASE=http://127.0.0.1:<port>` (origin shape
    only: `http://host:port`, no path/query/fragment). **Only point this at a
    backend you intend the app to drive** — it is the approval authority.
 3. Without `bridge.json` the lane reports `bridgeStatus: disabled` and makes
@@ -1143,10 +1265,10 @@ cargo build --manifest-path apps/desktop-tauri/Cargo.toml
 sha256sum apps/desktop-tauri/frontend/clay-engine.js   # R6 frozen, unchanged
 
 # probe WITH the socket override; the approval step spawns its own fake
-# backend and sets ABITO_BRIDGE_BASE itself (in-process, loopback only):
+# backend and sets KODA_BRIDGE_BASE itself (in-process, loopback only):
 cd apps/desktop-tauri
 DISPLAY=:0 XAUTHORITY=/run/user/1000/.mutter-Xwaylandauth.UV9RW3 \
-  GDK_BACKEND=x11 ABITO_PROBE=1 ABITO_SOCKET_DIR="$PWD/.runtime-probe" \
+  GDK_BACKEND=x11 KODA_PROBE=1 KODA_SOCKET_DIR="$PWD/.runtime-probe" \
   timeout 150 cargo run
 # → approval_evidence line:
 #     base_origin_env "http://127.0.0.1:<fake>", fake_backend_spawned true,
@@ -1193,15 +1315,15 @@ cargo test --manifest-path apps/desktop-tauri/Cargo.toml
 # read-back probe: geometry + facade verbs + typed rejections + rate limit
 cd apps/desktop-tauri
 DISPLAY=:0 XAUTHORITY=/run/user/1000/.mutter-Xwaylandauth.UV9RW3 \
-  GDK_BACKEND=x11 ABITO_PROBE=1 timeout 120 cargo run
+  GDK_BACKEND=x11 KODA_PROBE=1 timeout 120 cargo run
 # → check the `facade_evidence` line: verbs_match_preload true,
 #   invalid_call.rejected true with code "denied",
 #   rate.rejections == 10 of 40 with code "rate-exceeded"
 
 # single instance
-DISPLAY=:0 XAUTHORITY=… GDK_BACKEND=x11 nohup ./target/debug/abito-island &
-DISPLAY=:0 XAUTHORITY=… GDK_BACKEND=x11 ./target/debug/abito-island  # exits 0 at once
-pgrep -c -x abito-island   # → 1
+DISPLAY=:0 XAUTHORITY=… GDK_BACKEND=x11 nohup ./target/debug/koda &
+DISPLAY=:0 XAUTHORITY=… GDK_BACKEND=x11 ./target/debug/koda  # exits 0 at once
+pgrep -c -x koda   # → 1
 ```
 
 ## Verifying M2
@@ -1217,13 +1339,13 @@ sha256sum apps/desktop-tauri/frontend/clay-engine.js   # R6 frozen, unchanged
 # probe WITH the socket override (its own dir — never the Preview's root):
 cd apps/desktop-tauri
 DISPLAY=:0 XAUTHORITY=/run/user/1000/.mutter-Xwaylandauth.UV9RW3 \
-  GDK_BACKEND=x11 ABITO_PROBE=1 ABITO_SOCKET_DIR="$PWD/.runtime-probe" \
+  GDK_BACKEND=x11 KODA_PROBE=1 KODA_SOCKET_DIR="$PWD/.runtime-probe" \
   timeout 120 cargo run
 # → transport_evidence line:
 #     ready_ok true, frames_sent 2, notice_count 1,
 #     connections_while_connected 1 → connections_after_disconnect 0,
 #     preview_roots_detected_only[].connected_or_removed false
-# → stdout also prints ABITO_DESKTOP_SOCKET=<endpoint> (legacy line)
+# → stdout also prints KODA_DESKTOP_SOCKET=<endpoint> (legacy line)
 ```
 
 ## Behaviour notes
@@ -1463,14 +1585,19 @@ apps/desktop-tauri/
 │   ├── fakebridge.rs     # M3: in-process fake api.py backend (tests + probe only)
 │   ├── transport.rs      # M2: UDS receiver (perms, owner, quotas, cleanup) (+policy tests)
 │   ├── workarea.rs       # X11 _NET_WORKAREA ∩ monitor, fallbacks
-│   ├── chat.rs           # PURE U1: abito.chat.v1 turn machine, limits, prompt budget, IPC commands (+tests)
-│   ├── localmodel.rs     # U1: loopback-only endpoint, SSE/chunked decoders, one-request streaming client
-│   ├── chatlane.rs       # U1: preflight (no-load/no-substitute), one turn, cancel, availability
-│   ├── chathost.rs       # U1: chat_action command, chat:state, overview<->chat resize
-│   ├── fakemodel.rs      # U1: in-process fake llama.cpp router (tests + probe only)
-│   ├── models.rs         # PURE U2: verified local registry, metadata, resource gate, listing, saved selection
-│   ├── modelshost.rs     # U2: models_action command, models:state, selection → chat target
-│   ├── probe.rs          # ABITO_PROBE read-back script (geometry + facade + transport + approval + chat)
+│   ├── chat.rs           # PURE: the closed chat_action verb set, draft/answer validators, typed safe errors (K2-05 removed the turn machine)
+│   ├── chatclient.rs     # K2-05 PURE: the island's chat client of the daemon protocol: closed command set + ChatState view
+│   ├── chathost.rs       # K2-05: chat_action / chat_attach / chat_attach_data, the reconnecting daemon connection, chat:state, drop set
+│   ├── chatsnapshot.rs   # pure bounded snapshot of live state (see its header; predates K2-05)
+│   ├── uploads.rs        # K2-05: only the native DropSet and raw-body helpers (the island upload store is gone)
+│   ├── legacy_conversations.rs # K2-05: deletes the 0.1 conversation files on upgrade
+│   ├── windowcapture/    # K2-06: ask Koda about my window (see docs/desktop/window-capture.md)
+│   ├── localmodel.rs     # kept for specialists until U5d (was U1: loopback-only local endpoint client)
+│   ├── chatlane.rs       # kept for specialists until U5d (was U1: lane types, availability)
+│   ├── fakemodel.rs      # in-process fake llama.cpp router (tests + probe only)
+│   ├── models.rs         # PURE U2: verified local registry, resource gate, listing; kept for specialists until U5d
+│   ├── modelshost.rs     # U2: models_action command; kept for specialists until U5d
+│   ├── probe.rs          # KODA_PROBE read-back script (geometry + facade + transport + approval + chat)
 │   └── main.rs           # wiring, commands, publish, lifecycle, transport/signal, approval, placement
 └── frontend/
     ├── index.html        # island markup + M3 approval card (display-only)
@@ -1479,7 +1606,6 @@ apps/desktop-tauri/
     ├── island.js         # motion, pointer forwarding, notices + approval card (M2/M3), chat view motion (U1)
     ├── chat-view.js      # PURE U1 helpers (labels, send gate, announcements) — node-tested
     ├── chat.js           # U1 chat surface (composer, transcript, live region)
-    ├── models.js         # U2 model picker panel (inside the chat view)
     └── clay-engine.js    # frozen R6, byte-for-byte, DO NOT EDIT
 ```
 
@@ -1490,7 +1616,7 @@ launches an installed app.
 
 ```sh
 node packaging/build.cjs --out "$PWD/dist"   # offline release build + stage + receipt
-node packaging/verify.cjs dist/abito-island/<version>   # re-hash vs receipt, no launch
+node packaging/verify.cjs dist/koda/<version>   # re-hash vs receipt, no launch
 ```
 
 - Build: `cargo build --release --locked --offline --features tauri/custom-protocol`
@@ -1498,16 +1624,16 @@ node packaging/verify.cjs dist/abito-island/<version>   # re-hash vs receipt, no
   the build-tree path as a dev build). Gates before building: engine pin (public `checkR6`, now R7)
   (`b699ebbc…`), curated `frontend/` list, CSP without remote/unsafe sources,
   capabilities = listen/unlisten only, no `devtools`/shell/fs/http features.
-- Stage: `abito-island` (release binary), `abito-island-launcher` (no args;
-  refuses the whole `LD_*` family, `GDK_DEBUG`/`GTK_*` debug, WebKit inspector vars and every `ABITO_*` knob except `ABITO_PROJECT_ROOT`; forces X11),
-  `com.abitog.AbitoTauri.desktop` (template, `@INSTALL_DIR@`), `receipt.json`
+- Stage: `koda` (release binary), `koda-launcher` (no args;
+  refuses the whole `LD_*` family, `GDK_DEBUG`/`GTK_*` debug, WebKit inspector vars and every `KODA_*` knob except `KODA_PROJECT_ROOT`; forces X11),
+  `com.abitog.Koda.desktop` (template, `@INSTALL_DIR@`), `receipt.json`
   (sha256 of every file, `Cargo.lock`, config, frontend, rustc, git HEAD and a
   clean-tree attestation). `build.cjs` REFUSES to build when the product paths
   have uncommitted or untracked changes: build from a clean checkout
   (`git worktree add ../abito-m4-clean <commit>`).
-- Identity: `com.abitog.AbitoTauri`; installed runtime root
-  `$XDG_RUNTIME_DIR/abito-island` (never `abito-desktop*`); the project root of
-  an installed build comes only from `ABITO_PROJECT_ROOT` (absolute,
+- Identity: `com.abitog.Koda`; installed runtime root
+  `$XDG_RUNTIME_DIR/koda` (never `abito-desktop*`); the project root of
+  an installed build comes only from `KODA_PROJECT_ROOT` (absolute,
   normalized, existing dir) — otherwise the transport reports unavailable.
   Debug builds keep the dev layout. Tests: `tests/install_root.rs`
   (also under `cargo test --release`), `test-node/packaging-check.cjs`.
@@ -1516,7 +1642,7 @@ node packaging/verify.cjs dist/abito-island/<version>   # re-hash vs receipt, no
   path or devtools markers; a smoke run of the release binary (probe, private
   roots) reached `ready_ok: true`, 18 SVG R6 elements, exit 0. Smoke script
   (`packaging/smoke.sh <stage-dir>`) is versioned: it runs the binary with
-  `ABITO_PROBE=1 ABITO_PROJECT_ROOT=<private dir> ABITO_SOCKET_DIR=<private dir>/sock`
+  `KODA_PROBE=1 KODA_PROJECT_ROOT=<private dir> KODA_SOCKET_DIR=<private dir>/sock`
   directly (not through the launcher, which refuses those knobs).
 - NOT verified: reproducibility across different checkout paths; behaviour
   of an actually installed copy; Pi session against the new root.
@@ -1524,17 +1650,17 @@ node packaging/verify.cjs dist/abito-island/<version>   # re-hash vs receipt, no
 ## N9 — one-command install (user-local)
 
 ```sh
-sh packaging/install.sh artifacts/abito-island-0.1.0-<commit>   # or dist/abito-island/<version>
+sh packaging/install.sh artifacts/koda-0.1.0-<commit>   # or dist/koda/<version>
 sh packaging/install.sh --uninstall
 ```
 
 Verifies EVERY file against `receipt.json` first (any mismatch, extra file, symlink,
 non-clean provenance or foreign identity aborts without touching anything), then
 installs binary + launcher + icon (+ template and receipt) into
-`~/.local/share/abito-island` (`--prefix` to override) via temp-file + rename (a
+`~/.local/share/koda` (`--prefix` to override) via temp-file + rename (a
 running binary can be replaced), and writes
-`~/.local/share/applications/com.abitog.AbitoTauri.desktop` with
-`Exec=env ABITO_PROJECT_ROOT=<root> "<launcher>"`. The project root is required:
+`~/.local/share/applications/com.abitog.Koda.desktop` with
+`Exec=env KODA_PROJECT_ROOT=<root> "<launcher>"`. The project root is required:
 `--project-root DIR` (the folder your agent sessions run in). Idempotent; `--uninstall`
 removes exactly our files and the entry. Tests: `test-node/install-check.cjs`
 (11, toy stage in temp dirs). Never touches `com.abitog.Abito*` roots.
@@ -1542,8 +1668,8 @@ removes exactly our files and the entry. Tests: `test-node/install-check.cjs`
 ## #408 — Unified Ajustes with sub-tabs and an island that grows to fit
 
 - **One entry:** the gear (overview and chat header) opens **Ajustes**. The separate Cuentas, Conectores and Modelo header buttons are gone; the old open events (`abito:settings-select` with a tab id) still deep-link into the matching tab.
-- **Sub-tabs** (a real `role="tablist"`: arrows wrap, Home/End, roving tabindex, `aria-selected`, 44 px, visible focus): Cuentas · Conectores · Modelos · Especialistas · Pills · Apariencia · General. Names, order, icons and hints live in one table, `settings-view.js` `TABS`; rename or reorder there.
-- **Where things went:** atajo + sonido → General; saludo, movimiento, tema, colores → Apariencia; the local-models picker (`#models`, same `models.js`) → Modelos.
+- **Sub-tabs** (a real `role="tablist"`: arrows wrap, Home/End, roving tabindex, `aria-selected`, 44 px, visible focus): General · Conexiones · Blobs · Apariencia (K2-05 U5c: «Modelos» is gone). Names, order, icons and hints live in one table, `settings-view.js` `TABS`; rename or reorder there.
+- **Where things went:** atajo + sonido → General; saludo, movimiento, tema, colores → Apariencia. K2-05 U5c: the local-models picker (`#models`, `models.js`) was removed; the engine owns the chat model.
 - **Cuentas / providers (#410 r2):** one compact LIST row per provider (`providerRows`): the provider name, its status **Conectado / No conectado / En curso / Error**, and two connect buttons — `API` (manual key) and `Auth` (account sign-in) — only for a method the provider offers. Nothing else per row by default: a live login collapses the row to «Cancelar» with the device code / URL / masked prompt under it, a connected row adds «Cerrar sesión», an error or cancel stays on the row that caused it. Errors are the UI's own sentences; engine text is never rendered. Same daemon protocol and the same masked-field → `auth_reply` → cleared path; approvals stay UI-only.
 - **Auto-expand (S4):** opening Ajustes calls `settings_view {open:true}`; Rust (`geometry::settings_visible`: 720 wide, height `min(680, work area − gaps)`, ≥ 240, narrower on small screens) stages the resize on the docked edge and clamps it to the work area. Closing sends `{open:false}` and the previous chat rectangle is restored. The page never sends a size; the payload is exactly one boolean. Compact and overview sizes are untouched.
 - **Tests:** `test-node/settings-view-check.cjs` (tabs table, tablist keys, provider rows), `test-node/pills-check.cjs` (tab routing, size request), `src/core.rs` tests (grow, exact restore, small work areas, forget on leave) and `settingshost` payload test.
@@ -1571,7 +1697,7 @@ removes exactly our files and the entry. Tests: `test-node/install-check.cjs`
   step fails soft: a host without a working tray service runs tray-less and
   says why on stderr. Non-Unix builds compile honest no-op stubs.
 - **Autostart (user-local XDG):** `src/autostart.rs` installs or removes
-  `autostart/abito-island.desktop` under `$XDG_CONFIG_HOME` (default
+  `autostart/koda.desktop` under `$XDG_CONFIG_HOME` (default
   `$HOME/.config`), mirroring the packaging `.desktop` template (quoted
   `Exec`, unquoted `Icon`). The entry file IS the toggle's state — no
   parallel preference store; enabling is idempotent (temp file + rename,

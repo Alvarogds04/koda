@@ -49,17 +49,18 @@ test('S5 ronronear on hover, amasar on click; both yield to a working state', ()
   assert.equal(fresh({ pointerOver: true, running: true }), 'trabaja');
   const w = make(); w.step({ running: true }); w.b.click(); assert.equal(w.step({ running: true }), 'trabaja');
 });
-test('S6 travesura: after 20 s of calm with no agent, once a minute at most', () => {
+test('S6 travesura: from 8 s of calm with no agent (welcome-home: it used to wait 20 s), never sooner, and spaced out', () => {
   const m = make(); m.step(); m.adv(21000);
   const a = m.step(); assert.ok(['jugueton', 'perseguir-cola'].includes(a), a);
   m.adv(3000); assert.notEqual(['jugueton', 'perseguir-cola'].includes(m.step()), true);
   const r = make(); r.step({ running: true }); r.adv(21000); assert.equal(r.step({ running: true }), 'trabaja');
-  const q = make(); q.step(); q.adv(19000); assert.notEqual(['jugueton', 'perseguir-cola'].includes(q.step()), true);
+  const q = make(); q.step(); q.adv(7000); assert.notEqual(['jugueton', 'perseguir-cola'].includes(q.step()), true);
 });
-test('S6 travesura: a second one waits a full minute', () => {
+test('S6 travesura: a second one waits ~9 s (welcome-home: it used to wait a full minute)', () => {
   const m = make(); m.step(); m.adv(21000); m.step(); m.adv(3000);
-  let seen = 0; for (let i = 0; i < 40; i++) { m.adv(500); m.b.poke(); m.adv(21000); if (['jugueton', 'perseguir-cola'].includes(m.step())) seen++; }
-  assert.ok(seen <= 14, 'rate limited: ' + seen);
+  // one calm stretch (8 s to the yawn at 30 s): a play starts at most every ~9 s, so three at the very most, never a constant loop
+  const n = make(); n.step(); let starts = 0, prev = null; for (let t = 0; t < 29000; t += 250) { n.adv(250); const a = n.step(); if (['jugueton', 'perseguir-cola'].includes(a) && a !== prev) starts++; prev = a; }
+  assert.ok(starts >= 2 && starts <= 3, 'rate limited: ' + starts);
 });
 test('S7 variety: awake rest also stretches, licks and sits, never sleeping rows', () => {
   const seen = new Set();

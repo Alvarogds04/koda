@@ -95,7 +95,8 @@ test("K2-01b D1: an absent file is still `null` (defaults apply), as on POSIX; a
 	const root = tmp();
 	const absent = scripted((p) => facts(p, { exists: false, kind: "none", private: false, nlink: 0, size: 0 }));
 	const cfg = withBackend(absent.backend, () => config.loadConfig(root, { env: {} }));
-	assert.equal(cfg.command, "pi", "defaults when config.json is absent");
+	// T2: the default engine is Koda's bundled Gentle Shell (config.json overrides).
+	assert.equal(cfg.command, "gentle-shell", "defaults when config.json is absent");
 	const gone = path.join(root, "gone.json");
 	const lying = scripted((p) => facts(p, { size: 10 }));
 	rejects(() => withBackend(lying.backend, () => config.projectMcpConfig(gone)), "mcpConfigPath");
@@ -110,7 +111,7 @@ test("K2-01b D1: the bytes read are bounded even if the file grew after the help
 
 test("K2-01b D1 (Windows, real helper): config.json written by the product is read back", { skip: process.platform !== "win32" && "real HU-047 helper (Windows CI layout); the scripted tests above cover this branch on every OS" }, () => {
 	const local = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "abito-cfgpriv-local-")));
-	const root = path.join(local, "Abito", "i");
+	const root = path.join(local, "Koda", "i");
 	const { ensureIsland } = require("../src/isolation.cjs");
 	ensureIsland(root);
 	const ws = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "abito-cfgpriv-ws-")));

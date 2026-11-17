@@ -1,7 +1,6 @@
 /* HU-056 Koda skin. The Dot keeps running underneath, invisible: layout and hit areas stay exactly as the app built them.
    Pixel art stays crisp: integer scale only (koda-skin.js), nearest-neighbour sampling. */
 html[data-koda] #clay { visibility: hidden !important; }
-html[data-koda] .q-toast-abito,
 html[data-koda] .pill-choice[data-pill-id="abito"] svg.island-agent-clay { display: none !important; }
 .koda-sprite { position: absolute; z-index: 4; pointer-events: none; background-repeat: no-repeat; image-rendering: crisp-edges; image-rendering: pixelated; transform: none; }
 /* T7 (island-free-drag S4): on the OPEN island the drawn Koda is the character a human grabs to pull the desktop pet out. */

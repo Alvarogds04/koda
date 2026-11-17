@@ -1,10 +1,12 @@
 'use strict';
-// #341: production chat scripts driven through their public DOM + IPC surface.
+// #341 → K2-05 T4 U4: production chat scripts driven through their public DOM + IPC surface. One continuous chat
+// (L3/L4/L11): no conversation list, no «new», no specialists; earlier turns load by scrolling up or with «Cargar anteriores».
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const assert = require('node:assert/strict');
 const frontend = path.join(__dirname, '..', 'frontend');
+const V = require(path.join(frontend, 'chat-view.js'));
 const turn = n => ({ turn_id: `t-${n}`, user_text: `question ${n}`, reply: `reply ${n}`, state: 'completed', seq: 2 });
 async function page() {
   const nodes = new Map(), calls = [], listeners = {};
@@ -16,6 +18,7 @@ async function page() {
       setAttribute(k,v) { this.attributes[k] = String(v); }, getAttribute(k) { return this.attributes[k] || null; }, removeAttribute(k) { delete this.attributes[k]; },
       addEventListener(k,fn) { (this.listeners[k] ||= []).push(fn); },
       append(...items) { for (const n of items) { n.parent = this; this.children.push(n); } }, appendChild(n) { this.append(n); return n; },
+      prepend(...items) { for (const n of items) n.parent = this; this.children.unshift(...items); },
       replaceChildren(...items) { this.children = []; this.append(...items); },
       remove() { if (this.parent) this.parent.children.splice(this.parent.children.indexOf(this),1); },
       querySelector(sel) { return sel === 'li.empty' ? this.children.find(n => n.className === 'empty') || null : null; }, querySelectorAll() { return []; },
@@ -25,49 +28,273 @@ async function page() {
     Object.defineProperty(e,'lastElementChild',{get:()=>e.children.at(-1)}); return e;
   };
   document = { ...make(), activeElement: null, body: make(), getElementById(id) { if (!nodes.has(id)) nodes.set(id,make(id)); return nodes.get(id); }, createElement: tag=>make(null,tag), importNode:n=>n, dispatchEvent(e) { fire(this,e); } };
-  let state = { conversation_id:'c-first', active_turn:null, availability:{state:'ready',message:'ready'}, turns:[turn(36),turn(37)], history_before:36 };
+  const pages = [];
+  let state = { conversation_id:'c-koda', active_turn:null, availability:{state:'ready',message:'ready'}, turns:[turn(36),turn(37)], history_before:36 };
   const settle = () => new Promise(resolve=>setImmediate(resolve));
+  let hostAnswer=null;
   const invoke = async (_command, {payload:p}) => {
-    calls.push(JSON.parse(JSON.stringify(p)));
-    if(p.action === 'new') state={...state, conversation_id:'c-new', turns:[],history_before:null};
-    if(p.action === 'restore') state={...state,conversation_id:p.conversation_id,turns:[turn(36),turn(37)],history_before:36};
-    if(p.action === 'list') return {conversations:[{id:'c-first',title:'<img onerror=evil>',specialist:{name:'Writer'},last_activity:10}],skipped:1};
-    if(p.action === 'history') return {conversation_id:p.conversation_id,turns:[turn(34),turn(35)],before:null,skipped:0};
-    return JSON.parse(JSON.stringify(state));
+    calls.push(structuredClone(p));
+    if(hostAnswer){const a=hostAnswer(p,clock);if(a!==undefined)return a;}
+    if(p.action === 'history') return pages.shift() || {conversation_id:p.conversation_id,turns:[],before:null,skipped:0};
+    return structuredClone(state);
   };
-  const sandbox={document,console,crypto:{getRandomValues:b=>b},setTimeout:()=>0,clearTimeout(){},requestAnimationFrame:f=>f(),CustomEvent:class{constructor(type,o){this.type=type;this.detail=o.detail;}},DOMParser:class{parseFromString(){return {documentElement:null};}},__TAURI__:{core:{invoke},event:{listen:async(k,f)=>{listeners[k]=f;}}}};
+  // a controllable clock: timers fire only when the test advances it
+  let clock=1000000,timerId=0;const timers=[];
+  const advance=async ms=>{clock+=ms;for(;;){const due=timers.filter(t=>t.at<=clock).sort((a,b)=>a.at-b.at)[0];if(!due)break;timers.splice(timers.indexOf(due),1);due.fn();await settle();}};
+  const sandbox={document,console,structuredClone,crypto:{getRandomValues:b=>b},Date:{now:()=>clock},setTimeout:(fn,ms)=>{timers.push({fn,at:clock+(Number(ms)||0),id:++timerId});return timerId;},clearTimeout(id){const at=timers.findIndex(t=>t.id===id);if(at>=0)timers.splice(at,1);},requestAnimationFrame:f=>f(),CustomEvent:class{constructor(type,o){this.type=type;this.detail=o.detail;}},DOMParser:class{parseFromString(){return {documentElement:null};}},__TAURI__:{core:{invoke},event:{listen:async(k,f)=>{listeners[k]=f;}}}};
   sandbox.window=sandbox; sandbox.self=sandbox; vm.createContext(sandbox);
+  document.__json=vm.runInContext('JSON',sandbox);
   for(const file of ['chat-view.js','chat.js']) vm.runInContext(fs.readFileSync(path.join(frontend,file),'utf8'),sandbox,{filename:file});
   document.getElementById('capsule').dataset.view='chat'; document.getElementById('capsule').dataset.phase='expanded'; await settle();
-  return {nodes,document,calls,fire,settle,push:async s=>{state={...state,...s}; listeners['chat:state']({payload:state});await settle();},el:id=>document.getElementById(id)};
+  return {nodes,document,calls,pages,fire,settle,advance,setInvoke:f=>{hostAnswer=f;},push:async s=>{state={...state,...s}; listeners['chat:state']({payload:state});await settle();},el:id=>document.getElementById(id)};
 }
 (async()=>{
   let passed=0;
   async function check(name, fn) { await fn(); passed++; console.log(`ok ${passed} - ${name}`); }
-  await check('New button clears draft and visible context; Ctrl+N uses the same IPC and respects IME',async()=>{
-    const p=await page(); p.el('chat-input').value='draft'; p.el('chat-create').click();await p.settle();
-    assert.equal(p.calls.filter(x=>x.action==='new').length,1);assert.equal(p.el('chat-input').value,'');assert.equal(p.el('chat-log').children.length,1);
-    const event=p.fire(p.document,{type:'keydown',key:'n',ctrlKey:true});await p.settle();assert.equal(event.defaultPrevented,true);assert.equal(p.calls.filter(x=>x.action==='new').length,2);
-    p.fire(p.document,{type:'keydown',key:'n',ctrlKey:true,isComposing:true});await p.settle();assert.equal(p.calls.filter(x=>x.action==='new').length,2);
+  const chatSrc=fs.readFileSync(path.join(frontend,'chat.js'),'utf8');
+  const html=fs.readFileSync(path.join(frontend,'index.html'),'utf8');
+  const page2=(n,before)=>({conversation_id:'c-koda',turns:[turn(n),turn(n+1)],before,skipped:0});
+  await check('one continuous chat: the page never calls new/new_with/list/restore, and Ctrl+N does nothing',async()=>{
+    // the chat verb set only (`action(...)` = chat_action; modelsAction({action:'list'}) is the model picker's own closed verb)
+    for(const verb of ['new','new_with','list','restore'])assert.doesNotMatch(chatSrc,new RegExp(`\\baction\\(\\{\\s*action:\\s*'${verb}'`),verb);
+    assert.doesNotMatch(chatSrc,/createConversation|conversationRows|specialistRows|conversationsPanel/);
+    const p=await page();p.el('chat-input').value='draft';
+    const event=p.fire(p.document,{type:'keydown',key:'n',ctrlKey:true});await p.settle();
+    assert.notEqual(event.defaultPrevented,true,'Ctrl+N is not taken');assert.equal(p.el('chat-input').value,'draft','the draft stays');
+    assert.deepEqual(p.calls.map(c=>c.action).filter(a=>['new','new_with','list','restore'].includes(a)),[],JSON.stringify(p.calls));
   });
-  await check('List shows plain title, specialist and activity; selecting restores and closes it',async()=>{
-    const p=await page();p.el('chat-conversations').click();await p.settle();assert.equal(p.calls.at(-1).action,'list');assert.equal(p.el('conversations').hidden,false);
-    const row=p.el('conversations-list').children[0];assert.ok(row);assert.match(row.children[0].textContent,/<img onerror=evil>/);assert.match(row.children[0].getAttribute('aria-label'),/Writer/);
-    row.children[0].click();await p.settle();assert.ok(p.calls.some(x=>x.action==='restore'&&x.conversation_id==='c-first'));assert.equal(p.el('conversations').hidden,true);
+  await check('no saved-conversations dialog, no «Hablar con…», no «+»/clock buttons, no Ctrl+N help',async()=>{
+    for(const id of ['conversations','conversations-list','conversations-close','conversations-note','specialists-list','specialists-title','chat-create','chat-conversations'])assert.ok(!html.includes(`id="${id}"`),id);
+    assert.ok(!html.includes('Hablar con'));assert.ok(!html.includes('Ctrl+N'));
+    assert.ok(html.indexOf('id="chat-load-earlier"')>html.indexOf('id="chat-history-controls"'),'«Cargar anteriores» lives in the history row');
   });
-  await check('Scroll-up pages older turns, preserves the scroll anchor and does not duplicate snapshots',async()=>{
-    const p=await page();const log=p.el('chat-log');Object.defineProperty(log,'scrollHeight',{get:()=>log.children.length*100});log.scrollTop=0;p.fire(log,{type:'scroll'});await p.settle();
-    assert.deepEqual(p.calls.find(x=>x.action==='history'),{action:'history',conversation_id:'c-first',before:36});assert.equal(log.children.length,8);assert.equal(log.scrollTop,400);
-    await p.push({turns:[turn(36),turn(37)]});assert.equal(log.children.length,8);p.fire(log,{type:'scroll'});await p.settle();assert.equal(p.calls.filter(x=>x.action==='history').length,1);
-    p.el('chat-conversations').click();await p.settle();p.el('conversations-list').children[0].children[0].click();await p.settle();assert.equal(log.children.length,4,'reopening the same ID resets loaded presentation pages');
-    await p.push({conversation_id:'c-other',turns:[turn(1)],history_before:null});assert.equal(log.children.length,2);
+  await check('F2: a cursor published AFTER the first view still pages older turns on scroll-up (the id never changes)',async()=>{
+    const p=await page();await p.push({history_before:null});
+    await p.push({history_before:36});
+    const log=p.el('chat-log');Object.defineProperty(log,'scrollHeight',{get:()=>log.children.length*100});
+    p.pages.push(page2(34,null));log.scrollTop=0;p.fire(log,{type:'scroll'});await p.settle();
+    assert.deepEqual(p.calls.find(x=>x.action==='history'),{action:'history',conversation_id:'c-koda',before:36});
+    assert.equal(log.children.length,8);assert.equal(log.scrollTop,400,'the same message stays under the eye');
+    await p.push({turns:[turn(36),turn(37)]});assert.equal(log.children.length,8,'a live push never duplicates loaded pages');
+    p.fire(log,{type:'scroll'});await p.settle();assert.equal(p.calls.filter(x=>x.action==='history').length,1,'nothing older: no more requests');
+  });
+  await check('«Cargar anteriores» is a visible keyboard control that pages without scrolling and hides at the start of the chat',async()=>{
+    const p=await page();const b=p.el('chat-load-earlier');const log=p.el('chat-log');log.scrollTop=500;
+    assert.equal(b.hidden,false,'shown while older turns exist');
+    p.pages.push(page2(34,34),page2(32,null));
+    b.click();await p.settle();
+    assert.deepEqual(p.calls.filter(x=>x.action==='history').map(x=>x.before),[36]);
+    assert.equal(b.hidden,false);b.click();await p.advance(V.PAGE_GAP_MS); // F3: presses share the scroll coalescing
+    assert.deepEqual(p.calls.filter(x=>x.action==='history').map(x=>x.before),[36,34],'the next page uses the cursor the last page returned');
+    assert.equal(b.hidden,true,'nothing older: the control goes away');
+    assert.equal(log.children.length,12);
+  });
+  await check('a sliding live window never drops loaded history: turns that leave the window stay on the page',async()=>{
+    const p=await page();p.pages.push(page2(34,null));p.el('chat-load-earlier').click();await p.settle();
+    await p.push({turns:[turn(37),turn(38)],history_before:37});
+    const log=p.el('chat-log');assert.equal(log.children.length,10,'34..38 all still drawn');
+    assert.equal(p.el('chat-load-earlier').hidden,true,'the loaded pages already reach the start');
+  });
+  // ---- K2-05 T4 S2 paging redesign: the re-verifier's cases against the real chat.js + chat-view.js -----------------
+  // The fake host answers exactly what chatclient.rs ChatHost answers for DAEMON-shaped pages (conversations.cjs
+  // pageHistory: ids s0-<i>, at most `max(end)` messages and 192 KiB counted back from the end, hasEarlier = more
+  // before): a turn id is its prompt's record position, a page answer carries only the WHOLE turns of that one daemon
+  // page and the daemon's own cursor (its first prompt), a page that is only a lone reply answers no turn but moves
+  // the cursor, and that reply completes the last turn of the next page. Never «exactly 50 turns».
+  const daemonChat=(total,{max=()=>48,noReply=()=>false,big=()=>0,ask=()=>0}={})=>{
+    const log=[];
+    const q=k=>`q${k}`+(ask(k)?' '+'p'.repeat(ask(k)):'');
+    for(let k=0;k<total;k++){log.push({role:'user',text:q(k)});if(!noReply(k))log.push({role:'assistant',text:`r${k}`+(big(k)?' '+'x'.repeat(big(k)):'')});}
+    const msg=i=>({id:`s0-${i+1}`,role:log[i].role,text:log[i].text});
+    const pos=id=>Number(id.slice(3))+1, idAt=p=>`s0-${p-1}`;
+    const page=end=>{let from=end,bytes=0;while(from>0&&end-from<max(end)){const size=JSON.stringify(msg(from-1)).length;if(from<end&&bytes+size>192*1024)break;bytes+=size;from--;}return {messages:Array.from({length:end-from},(_,j)=>msg(from+j)),hasEarlier:from>0};};
+    const heads=new Map();
+    const rows=(messages,hasEarlier,answered)=>{
+      const first=messages.findIndex(m=>m.role==='user');let cursor=null;
+      if(first<0){if(hasEarlier&&messages.length){heads.set(messages[0].id,messages.map(m=>m.text).join('\n\n'));cursor=pos(messages[0].id);}return {turns:[],cursor};}
+      if(hasEarlier)cursor=pos(messages[first].id);
+      const turns=[];let prev=null;
+      for(const m of messages.slice(first)){
+        if(m.role==='user')turns.push({turn_id:`t-${pos(m.id)}`,user_text:m.text,reply:'',state:'completed',seq:2});
+        else if(prev&&prev.role==='user'&&pos(m.id)===pos(prev.id)+1)turns.at(-1).reply=m.text;
+        prev=m;
+      }
+      const last=messages.at(-1);
+      if(answered&&heads.has(answered)&&last.role==='user'&&pos(answered)===pos(last.id)+1)turns.at(-1).reply=heads.get(answered);
+      return {turns,cursor};
+    };
+    const newest=()=>{const p=page(log.length);const {turns,cursor}=rows(p.messages,p.hasEarlier,null);const cut=Math.max(0,turns.length-50);
+      return {turns:turns.slice(cut),history_before:cut?Number(turns[cut].turn_id.slice(2)):cursor};};
+    const earlier=before=>{const id=idAt(before);const p=page(Number(id.slice(3))-1);const {turns,cursor}=rows(p.messages,p.hasEarlier,id);return {conversation_id:'c-koda',turns,before:cursor,skipped:0};};
+    const expected=Array.from({length:total},(_,k)=>noReply(k)?[q(k)]:[q(k),`r${k}`+(big(k)?' '+'x'.repeat(big(k)):'')]).flat();
+    return {newest,earlier,expected};
+  };
+  // the page wired to a daemon chat; rows on screen, in DOM order
+  async function pagedChat(chat){
+    const p=await page();
+    const stamps=[];
+    p.setInvoke((q,now)=>{if(q.action!=='history'||q.before===null)return undefined;stamps.push(now);return chat.earlier(q.before);});
+    await p.push(chat.newest());
+    const log=p.el('chat-log');Object.defineProperty(log,'scrollHeight',{get:()=>log.children.length*100});
+    const rows=()=>log.children.filter(li=>li.className!=='empty').map(li=>li.textContent);
+    const reads=()=>p.calls.filter(c=>c.action==='history');
+    // scroll to the top and let the coalescing timer fire: one page per scroll
+    const up=async()=>{log.scrollTop=0;p.fire(log,{type:'scroll'});await p.advance(V.PAGE_GAP_MS);};
+    const toTop=async label=>{let guard=0;while(!p.el('chat-load-earlier').hidden){assert.ok(++guard<=4*chat.expected.length,`${label}: paging terminates`);await up();}};
+    return {p,log,rows,reads,up,toTop,stamps};
+  }
+  const uneven=end=>[48,47,45,48,31,48][end%6];
+  const some=k=>k%7===3||k%11===5;
+  await check('S2: 600 turns, 48-message and uneven daemon pages: up to the first turn and back down, twice — every turn once, in order, own reply, no gap',async()=>{
+    for(const [label,opts] of [['48/page',{}],['48/page some unanswered',{noReply:some}],['uneven',{max:uneven,noReply:some}]]){
+      for(const pass of [1,2]){
+        const chat=daemonChat(600,opts);const c=await pagedChat(chat);
+        assert.deepEqual(c.rows(),chat.expected.slice(chat.expected.length-c.rows().length),`${label} pass ${pass}: the newest window`);
+        await c.toTop(`${label} pass ${pass}`);
+        assert.deepEqual(c.rows(),chat.expected,`${label} pass ${pass}: every turn once, in order, each reply under its own question`);
+        assert.equal(c.p.el('chat-new').hidden,false,'away from the newest message: «Ir al final» is offered');
+        // back down to the newest: everything stays loaded (Gentle Dot keeps it), so no request and no gap
+        const before=c.reads().length;
+        for(let top=0;top<=c.log.scrollHeight;top+=300){c.log.scrollTop=top;c.p.fire(c.log,{type:'scroll'});}
+        await c.p.advance(V.PAGE_GAP_MS);
+        assert.equal(c.reads().length,before,'scrolling down needs no request');
+        assert.equal(c.p.el('chat-new').hidden,true,'at the bottom «Ir al final» goes away');
+        assert.deepEqual(c.rows(),chat.expected,`${label} pass ${pass}: still every turn once, in order, after the way down`);
+      }
+    }
+  });
+  await check('S2: one-message daemon pages (lone replies) still advance and every reply stays under its own question',async()=>{
+    const chat=daemonChat(72,{max:end=>end===144?48:1});const c=await pagedChat(chat);
+    await c.toTop('one-message pages');
+    assert.deepEqual(c.rows(),chat.expected);
+  });
+  await check('S2: a newest page holding only a lone reply (prompt ~9 KB, reply ~190 KB) still offers and pages the history',async()=>{
+    const chat=daemonChat(3,{max:()=>100,big:k=>k===2?185*1024:0,ask:k=>k===2?9*1024:0});
+    const view=chat.newest();assert.deepEqual(view.turns,[],'the daemon\'s newest page is the lone reply');assert.ok(view.history_before,'with a cursor');
+    const c=await pagedChat(chat);await c.p.settle();
+    // F1 follow-up: the page asks for the one earlier page that holds the reply's prompt by itself
+    assert.equal(c.reads().length,1,'one read, by itself');
+    await c.toTop('lone newest reply');
+    assert.deepEqual(c.rows(),chat.expected);
+  });
+  await check('S2: a reconnect (the same window pushed again) while a page is in flight never shifts or repeats the run',async()=>{
+    const chat=daemonChat(350,{noReply:some});const c=await pagedChat(chat);
+    for(let k=0;k<4;k++)await c.up();
+    let release;const held=new Promise(r=>{release=r;});
+    c.p.setInvoke(q=>q.action==='history'&&q.before!==null?held.then(()=>chat.earlier(q.before)):undefined);
+    c.log.scrollTop=0;c.p.fire(c.log,{type:'scroll'});await c.p.advance(V.PAGE_GAP_MS);
+    await c.p.push({connection:'lost',turns:[]});await c.p.push(chat.newest()); // the newest page arrives again
+    release();await c.p.settle();await c.p.settle();
+    c.p.setInvoke(q=>q.action==='history'&&q.before!==null?chat.earlier(q.before):undefined);
+    await c.toTop('after the reconnect');
+    assert.deepEqual(c.rows(),chat.expected,'every turn once, in order, never renumbered');
+  });
+  await check('S2: a fast 1,500-turn pass stays inside the island read share (≤100 per minute) and a send goes through at the end',async()=>{
+    const chat=daemonChat(1500,{noReply:some});const c=await pagedChat(chat);
+    let guard=0;
+    while(!c.p.el('chat-load-earlier').hidden){ // the reader flings the wheel: a scroll event every 16 ms
+      assert.ok(++guard<200000,'paging terminates');
+      c.log.scrollTop=0;c.p.fire(c.log,{type:'scroll'});await c.p.advance(16);
+    }
+    assert.deepEqual(c.rows(),chat.expected,'every turn once, in order');
+    for(let top=c.log.scrollHeight;top>=0;top-=50){c.log.scrollTop=top;c.p.fire(c.log,{type:'scroll'});await c.p.advance(16);}
+    for(let top=0;top<=c.log.scrollHeight;top+=50){c.log.scrollTop=top;c.p.fire(c.log,{type:'scroll'});await c.p.advance(16);}
+    const pages=c.stamps.length;
+    const perMinute=Math.max(...c.stamps.map(t=>c.stamps.filter(s=>s>=t&&s<t+60000).length));
+    console.log(`  1,500 turns: ${pages} page requests for the whole up-and-down pass, at most ${perMinute} in any minute`);
+    assert.ok(perMinute<=100,`inside the read share of the island's 120/min (20 reserved for send/abort): ${perMinute}`);
+    assert.equal(c.reads().length,pages,'one request per daemon page, nothing more');
+    c.p.setInvoke(()=>undefined);
+    c.p.el('chat-input').value='al final';c.p.fire(c.p.el('chat-input'),{type:'input'});c.p.fire(c.p.el('chat-composer'),{type:'submit'});await c.p.settle();
+    assert.equal(c.p.calls.filter(x=>x.action==='submit').length,1,'the send goes out');
+  });
+  await check('S2: «Ir al final» has a real name and the page announces leaving and reaching the newest message',async()=>{
+    assert.match(html,/<button id="chat-new"[^>]*aria-label="Ir al final"/);
+    const chat=daemonChat(120);const c=await pagedChat(chat);
+    const live=c.p.el('chat-live');
+    await c.up();
+    assert.equal(c.p.el('chat-new').hidden,false);assert.match(live.textContent,/Ya no estás viendo lo último/);
+    c.p.el('chat-new').click();await c.p.settle();
+    assert.equal(c.p.el('chat-new').hidden,true);assert.match(live.textContent,/Estás viendo lo último/);
+    assert.equal(c.log.scrollTop,c.log.scrollHeight,'the log is at the newest message');
+  });
+  // ---- K2-05 S2 paging follow-ups (verifier mwb2ywag-6-bm3h on ccbeab4: F1, F2, F3, F5, F7) ---------------------------
+  await check('F1: a newest page that is only a lone reply never shows the empty greeting and asks for the ONE earlier page that holds it',async()=>{
+    const chat=daemonChat(3,{max:()=>100,big:k=>k===2?185*1024:0,ask:k=>k===2?9*1024:0});
+    const p=await page();
+    const log=p.el('chat-log');Object.defineProperty(log,'scrollHeight',{get:()=>log.children.length*100});
+    let release;const held=new Promise(r=>{release=r;});
+    p.setInvoke(q=>q.action==='history'&&q.before!==null?held.then(()=>chat.earlier(q.before)):undefined);
+    await p.push(chat.newest());
+    assert.equal(log.children.some(li=>li.className==='empty'),false,'no empty greeting while history exists');
+    assert.equal(p.el('chat-history-label').hidden,true,'not «Conversación nueva» while history exists');
+    assert.equal(p.calls.filter(c=>c.action==='history').length,1,'the one earlier page is asked for by itself');
+    release();await p.settle();await p.settle();
+    assert.deepEqual(log.children.filter(li=>li.className!=='empty').map(li=>li.textContent),chat.expected,'the reply under its own prompt');
+    await p.push(chat.newest());await p.advance(V.PAGE_GAP_MS*3);
+    assert.equal(p.calls.filter(c=>c.action==='history').length,1,'one read, never a loop');
+  });
+  await check('F1: an auto page that brings nothing never loops',async()=>{
+    const p=await page();
+    p.setInvoke(q=>q.action==='history'&&q.before!==null?{conversation_id:'c-koda',turns:[],before:q.before-1,skipped:0}:undefined);
+    await p.push({turns:[],history_before:50});await p.settle();
+    for(let k=0;k<5;k++){await p.push({turns:[],history_before:50});await p.advance(V.PAGE_GAP_MS);}
+    assert.equal(p.calls.filter(c=>c.action==='history').length,1,'one read for the lone newest reply');
+    assert.equal(p.el('chat-log').children.some(li=>li.className==='empty'),false,'still no greeting while history exists');
+  });
+  await check('F2: a scroll page that adds no rows asks for the next earlier page once more by itself (at most one extra per scroll)',async()=>{
+    const p=await page();const log=p.el('chat-log');Object.defineProperty(log,'scrollHeight',{get:()=>log.children.length*100});
+    const answers=[{turns:[],before:30},{turns:[],before:28},page2(26,24)];
+    p.setInvoke(q=>q.action==='history'&&q.before!==null?{conversation_id:'c-koda',skipped:0,...answers.shift()}:undefined);
+    log.scrollTop=0;p.fire(log,{type:'scroll'});await p.settle();
+    assert.deepEqual(p.calls.filter(c=>c.action==='history').map(c=>c.before),[36]);
+    await p.advance(V.PAGE_GAP_MS);
+    assert.deepEqual(p.calls.filter(c=>c.action==='history').map(c=>c.before),[36,30],'the empty page is followed by the next one, inside the rate limit');
+    await p.advance(V.PAGE_GAP_MS*4);
+    assert.deepEqual(p.calls.filter(c=>c.action==='history').map(c=>c.before),[36,30],'one extra per user action, never a loop');
+    log.scrollTop=0;p.fire(log,{type:'scroll'});await p.settle();
+    assert.deepEqual(p.calls.filter(c=>c.action==='history').map(c=>c.before),[36,30,28],'the next scroll pages again');
+    await p.advance(V.PAGE_GAP_MS*3);
+    assert.deepEqual(p.calls.filter(c=>c.action==='history').map(c=>c.before),[36,30,28],'a page that added rows asks nothing more by itself');
+    assert.equal(log.children.length,8,'the rows that finally came are drawn');
+  });
+  await check('F3: rapid «Cargar anteriores» presses use the same coalescing as scroll loads',async()=>{
+    const p=await page();const b=p.el('chat-load-earlier');
+    let n=36;p.setInvoke(q=>q.action==='history'&&q.before!==null?(n-=2,page2(n,n)):undefined);
+    for(let k=0;k<100;k++){b.click();await p.advance(50);}
+    const reads=p.calls.filter(c=>c.action==='history').length;
+    assert.ok(reads<=Math.ceil(5000/V.PAGE_GAP_MS)+1,`100 presses in 5 s: ${reads} reads`);
+    assert.ok(reads>=2,'presses still page');
+  });
+  await check('F7: «No se pudo cargar el historial anterior.» goes away after a successful retry',async()=>{
+    const p=await page();const b=p.el('chat-load-earlier');
+    let fail=true;p.setInvoke(q=>q.action==='history'&&q.before!==null?(fail?(fail=false,Promise.reject({message:'No se pudo cargar el historial anterior.'})):page2(34,null)):undefined);
+    b.click();await p.settle();await p.settle();
+    assert.equal(p.el('chat-problem').textContent,'No se pudo cargar el historial anterior.');
+    await p.advance(V.PAGE_GAP_MS);b.click();await p.settle();await p.settle();
+    assert.equal(p.el('chat-problem').textContent,'','the retry worked: the error is gone');
+  });
+  await check('F5: a chat:state push re-keys only the turns that changed, not every loaded row',async()=>{
+    const chat=daemonChat(1500,{max:()=>100,big:()=>4096});const c=await pagedChat(chat);
+    await c.toTop('1,500 turns, 4 KB replies');
+    assert.equal(c.rows().length,chat.expected.length);
+    const sandboxJSON=c.p.document.__json;
+    const view=chat.newest();const last=view.turns.at(-1);
+    let calls=0;const stringify=sandboxJSON.stringify;sandboxJSON.stringify=(...a)=>{calls+=1;return stringify.apply(sandboxJSON,a);};
+    const times=[];
+    for(let k=0;k<20;k++){
+      const turns=view.turns.slice(0,-1).concat({...last,reply:last.reply+' '+k,seq:3+k});
+      const t0=process.hrtime.bigint();await c.p.push({turns});times.push(Number(process.hrtime.bigint()-t0)/1e6);
+    }
+    sandboxJSON.stringify=stringify;
+    times.sort((a,b)=>a-b);
+    console.log(`  1,500 turns, 4 KB replies: push median ${times[10].toFixed(2)} ms, ${calls/20} row keys per push`);
+    assert.ok(calls/20<=10,`a push keys the changed turn's rows only: ${calls/20} per push`);
+    assert.deepEqual(c.rows().slice(0,-1),chat.expected.slice(0,-1),'the rest is untouched');
+    assert.equal(c.rows().at(-1),`${chat.expected.at(-1)} 19`,'the changed reply is drawn');
   });
   await check('Existing send wiring still invokes submit with exact draft',async()=>{
     const p=await page();p.el('chat-input').value='hello';p.fire(p.el('chat-input'),{type:'input'});p.fire(p.el('chat-composer'),{type:'submit'});await p.settle();assert.equal(p.calls.find(x=>x.action==='submit').text,'hello');
   });
-  const html=fs.readFileSync(path.join(frontend,'index.html'),'utf8');for(const id of ['chat-create','chat-conversations','conversations','conversations-list'])assert.ok(html.includes(`id="${id}"`),id);
-  assert.ok(html.indexOf('id="chat-create"')>html.indexOf('id="chat-body"'),'controls cannot live in the calm-state hidden status strip');
-  const icons=require('../frontend/icons.js');
-  for(const name of ['bubble','clock'])assert.ok(icons.NAMES.includes(name),name);
   console.log(`conversations-check: ${passed} passed`);
 })().catch(e=>{console.error(e);process.exitCode=1;});

@@ -1,10 +1,12 @@
 #![cfg(target_os = "linux")]
 // Linux-only integration: Unix agent sockets and the Linux session/daemon policy.
 
-//! #306: the island-agent client against the REAL `abito-island-daemon` (apps/desktop-daemon)
-//! running a FAKE agent in a private temp island. No Pi, no provider, no network, no
-//! credential. A daemon that is not running must read as `no_daemon`, never hang.
-use abito_island::agentconn::{island_root, AgentConn};
+//! #306: the island-agent client against the REAL `koda-daemon` (apps/desktop-daemon)
+//! running a FAKE agent in a private temp island. No provider account, no network, no credential.
+//! The fake agent replaces only the engine: listing providers goes through the daemon's real Pi SDK
+//! helper, so a `pi` on PATH is required (CI installs the pinned Pi in the Rust job; never skip).
+//! A daemon that is not running must read as `no_daemon`, never hang.
+use koda_island::agentconn::{island_root, AgentConn};
 use serde_json::{json, Value};
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
@@ -42,7 +44,7 @@ impl Island {
         std::fs::write(root.join("config.json"), config.to_string()).unwrap();
         { use std::os::unix::fs::PermissionsExt; std::fs::set_permissions(root.join("config.json"), std::fs::Permissions::from_mode(0o600)).unwrap(); }
         let child = Command::new(node.trim()).arg(daemon_dir().join("src/cli.cjs")).arg("run")
-            .env_clear().env("PATH", std::env::var("PATH").unwrap()).env("HOME", &base).env("ABITO_ISLAND_DIR", &root)
+            .env_clear().env("PATH", std::env::var("PATH").unwrap()).env("HOME", &base).env("KODA_ISLAND_DIR", &root)
             .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().expect("node is required (no skip, no fake)");
         let island = Island { root: root.clone(), child: Some(child) };
         let end = Instant::now() + Duration::from_secs(20);
@@ -155,8 +157,8 @@ fn wait_for(conn: &AgentConn, what: &str, pred: impl Fn(&Value) -> bool) -> Valu
 #[test]
 fn island_root_comes_from_the_environment_only() {
     assert_eq!(island_root(Some("/x/y"), Some("/home/u")), Some(PathBuf::from("/x/y")));
-    assert_eq!(island_root(None, Some("/home/u")), Some(PathBuf::from("/home/u/.abito-island")));
-    assert_eq!(island_root(Some(""), Some("/home/u")), Some(PathBuf::from("/home/u/.abito-island")));
+    assert_eq!(island_root(None, Some("/home/u")), Some(PathBuf::from("/home/u/.koda")));
+    assert_eq!(island_root(Some(""), Some("/home/u")), Some(PathBuf::from("/home/u/.koda")));
     assert_eq!(island_root(Some("relative"), Some("/home/u")), None, "a relative override is refused, never guessed");
     assert_eq!(island_root(None, None), None);
     assert_eq!(island_root(None, Some("home")), None);
@@ -317,10 +319,10 @@ fn the_change_callback_may_read_the_view_while_connect_is_running_no_self_deadlo
 }
 
 /// Against a daemon that is ALREADY running (the probe's), same sequence the host runs on first open.
-/// Opt-in: only when `ABITO_PROBE_ISLAND_DIR` names a live island; otherwise it is a no-op.
+/// Opt-in: only when `KODA_PROBE_ISLAND_DIR` names a live island; otherwise it is a no-op.
 #[test]
 fn live_island_first_open_sequence_returns_promptly() {
-    let Some(dir) = std::env::var_os("ABITO_PROBE_ISLAND_DIR") else { return };
+    let Some(dir) = std::env::var_os("KODA_PROBE_ISLAND_DIR") else { return };
     let conn = AgentConn::new(|_| {});
     let t0 = Instant::now();
     conn.connect(Path::new(&dir));
@@ -334,7 +336,7 @@ fn live_island_first_open_sequence_returns_promptly() {
 /// mutex to emit `agent:state`. That is a self-deadlock unless the callback never re-locks it.
 #[test]
 fn the_host_pattern_connect_under_the_slot_mutex_with_a_callback_that_reads_the_slot_does_not_deadlock() {
-    use abito_island::agentconn::AgentConn as Conn;
+    use koda_island::agentconn::AgentConn as Conn;
     let island = Island::start();
     let slot: Arc<std::sync::Mutex<Option<Conn>>> = Arc::new(std::sync::Mutex::new(None));
     let emitted = Arc::new(AtomicU32::new(0));
@@ -411,7 +413,7 @@ fn strict_harness_copy(into: &Path) -> PathBuf {
     }
     let root = into.join("harness");
     copy(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../desktop-harness"), &root);
-    let bin = root.join("bin/abito-hook.cjs");
+    let bin = root.join("bin/koda-hook.cjs");
     std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
     bin
 }
@@ -447,7 +449,7 @@ fn the_real_daemon_lists_agents_with_a_plan_the_page_can_carry_back() {
     let claude = list.iter().find(|a| a["id"] == json!("claude-code")).unwrap_or_else(|| panic!("claude-code missing: {list:?}"));
     assert_eq!(claude["state"], json!("not_connected"), "an empty private home has no hooks: {claude}");
     let hash = claude["plan_hash"].as_str().expect("a plan_hash for a button state");
-    assert!(abito_island::agentclient::plan_hash_ok(hash), "{hash}");
+    assert!(koda_island::agentclient::plan_hash_ok(hash), "{hash}");
     assert_eq!(claude["reviewable"], json!(true));
     // the page's pure view turns exactly this real frame into a one-click row carrying the hash it shows
     let js = format!("const S=require('{}/frontend/settings-view.js'); const st={}; const r=S.agentsView(st).rows.find(x=>x.id==='claude-code'); process.stdout.write(JSON.stringify({{label:r.primary&&r.primary.label,hash:r.primary&&r.primary.command.plan_hash,summary:r.summary}}));", env!("CARGO_MANIFEST_DIR"), v);
@@ -456,7 +458,7 @@ fn the_real_daemon_lists_agents_with_a_plan_the_page_can_carry_back() {
     // #436 design: the connect word is «Agregar hooks» (was «Conectar»)
     assert_eq!(row["label"], json!("Agregar hooks"));
     assert_eq!(row["hash"], json!(hash), "the click carries the hash the human saw");
-    assert!(row["summary"].as_str().unwrap().starts_with("Agrega los hooks de Abito"), "{row}");
+    assert!(row["summary"].as_str().unwrap().starts_with("Agrega los hooks de Koda"), "{row}");
     if let Some(o) = list.iter().find(|a| a["id"] == json!("opencode")) { assert_eq!(o["state"], json!("unavailable")); }
 }
 

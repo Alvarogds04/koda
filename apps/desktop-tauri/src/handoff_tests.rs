@@ -253,14 +253,14 @@ fn the_real_node_reader_finds_the_endpoint_in_the_file_publish_writes() {
     std::fs::set_permissions(&endpoint, std::fs::Permissions::from_mode(0o600)).unwrap();
     publish(&root, &endpoint).unwrap();
     let reader = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../desktop-harness/src/config.cjs");
-    let js = format!("const {{resolveConfig}}=require({:?}); const r=resolveConfig({{ABITO_SOCKET_DIR:{:?}}}, process.getuid()); process.stdout.write(r.endpoint||'');", reader, root);
+    let js = format!("const {{resolveConfig}}=require({:?}); const r=resolveConfig({{KODA_SOCKET_DIR:{:?}}}, process.getuid()); process.stdout.write(r.endpoint||'');", reader, root);
     let out = std::process::Command::new("node").arg("-e").arg(js).output().expect("node");
     assert_eq!(String::from_utf8_lossy(&out.stdout), endpoint.to_str().unwrap(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
     // and a recycled pid (another life of the same number) is refused by THEM too
     let real = proc_start(std::process::id()).unwrap();
     let forged = format!("{{\"endpoint\":{:?},\"pid\":{},\"procStart\":\"{}1\",\"v\":1}}\n", endpoint.to_str().unwrap(), std::process::id(), real);
     std::fs::write(path(&root), forged).unwrap();
-    let out = std::process::Command::new("node").arg("-e").arg(format!("const {{resolveConfig}}=require({:?}); const r=resolveConfig({{ABITO_SOCKET_DIR:{:?}}}, process.getuid()); process.stdout.write(r.endpoint||'none');", reader, root)).output().expect("node");
+    let out = std::process::Command::new("node").arg("-e").arg(format!("const {{resolveConfig}}=require({:?}); const r=resolveConfig({{KODA_SOCKET_DIR:{:?}}}, process.getuid()); process.stdout.write(r.endpoint||'none');", reader, root)).output().expect("node");
     assert_eq!(String::from_utf8_lossy(&out.stdout), "none");
 }
 

@@ -255,10 +255,10 @@ test("scopePid is exact and safe: a cycle in the parent chain, a bad value or no
 	}
 });
 
-test("sessionScope(env): only a plain pid from ABITO_SESSIONS_SCOPE_PID counts", () => {
+test("sessionScope(env): only a plain pid from KODA_SESSIONS_SCOPE_PID counts", () => {
 	const { sessionScope } = require("../src/sessions.cjs");
-	assert.equal(sessionScope({ ABITO_SESSIONS_SCOPE_PID: "1234" }), 1234);
-	for (const bad of [undefined, "", "0", "-5", "12.5", "abc", "1234 ", "99999999", " 7"]) assert.equal(sessionScope({ ABITO_SESSIONS_SCOPE_PID: bad }), null, String(bad));
+	assert.equal(sessionScope({ KODA_SESSIONS_SCOPE_PID: "1234" }), 1234);
+	for (const bad of [undefined, "", "0", "-5", "12.5", "abc", "1234 ", "99999999", " 7"]) assert.equal(sessionScope({ KODA_SESSIONS_SCOPE_PID: bad }), null, String(bad));
 	assert.equal(sessionScope({}), null);
 });
 

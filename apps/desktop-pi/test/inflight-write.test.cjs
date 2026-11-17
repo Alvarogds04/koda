@@ -27,7 +27,7 @@ function slowSocket({ flushMs, questions = false }) {
 }
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
 // The `win32` platform + `open` seam runs the same adapter write path on every OS without a real transport.
-const RUNTIME = 'C:\\u\\Abito\\notices', META = RUNTIME + '\\endpoint.json';
+const RUNTIME = 'C:\\u\\Koda\\notices', META = RUNTIME + '\\endpoint.json';
 function start(t, flushMs) {
   const box = {};
   const { handlers, ctx } = harness(registerAdapter, { runtime: RUNTIME, endpoint: META, platform: 'win32',

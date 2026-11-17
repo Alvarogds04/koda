@@ -230,8 +230,8 @@ test("child environment: allowlist only, private HOME, no PI_*/provider keys", n
 		OPENAI_API_KEY: "sk-OPENAISECRET",
 		ANTHROPIC_API_KEY: "sk-ANTHROPICSECRET",
 		GITHUB_TOKEN: "ghp_SECRET",
-		ABITO_WORKSPACE: "/ws",
-		ABITO_PROXY_CAPABILITY: "CAP",
+		KODA_WORKSPACE: "/ws",
+		KODA_PROXY_CAPABILITY: "CAP",
 	};
 	await view(s, { env: base }).snapshot();
 	const dumped = JSON.parse(fs.readFileSync(s.evidence.env, "utf8"));

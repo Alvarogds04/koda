@@ -2,7 +2,7 @@
 //! (so no `_NET_CLIENT_LIST`): it falls back to walking the window tree for our `_NET_WM_PID`.
 //! A window of ANOTHER pid with our title is still never ours.
 #![cfg(target_os = "linux")] // Requires a private Linux Xvfb server.
-use abito_island::workarea::{x11_find_own_window, OwnWindowError};
+use koda_island::workarea::{x11_find_own_window, OwnWindowError};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 use x11rb::connection::Connection;
@@ -29,13 +29,13 @@ fn finds_own_window_without_a_window_manager_and_never_a_foreign_one() {
         w
     };
     // 1) only a foreign window carries our title: refuse, never guess
-    let foreign = make(std::process::id().wrapping_add(1), abito_island::workarea::WINDOW_TITLE);
+    let foreign = make(std::process::id().wrapping_add(1), koda_island::workarea::WINDOW_TITLE);
     conn.flush().unwrap();
-    assert_eq!(x11_find_own_window(abito_island::workarea::WINDOW_TITLE).err(), Some(OwnWindowError::NotFound), "a foreign window titled like ours is not ours");
+    assert_eq!(x11_find_own_window(koda_island::workarea::WINDOW_TITLE).err(), Some(OwnWindowError::NotFound), "a foreign window titled like ours is not ours");
     // 2) our own window appears: found by pid on a WM-less server
-    let own = make(std::process::id(), abito_island::workarea::WINDOW_TITLE);
+    let own = make(std::process::id(), koda_island::workarea::WINDOW_TITLE);
     conn.flush().unwrap();
-    let found = x11_find_own_window(abito_island::workarea::WINDOW_TITLE).expect("own window found without _NET_CLIENT_LIST");
+    let found = x11_find_own_window(koda_island::workarea::WINDOW_TITLE).expect("own window found without _NET_CLIENT_LIST");
     assert_eq!(found.id, own);
     assert_ne!(found.id, foreign);
     let _ = xvfb.kill();

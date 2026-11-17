@@ -66,7 +66,7 @@ impl fmt::Display for HumanReplyError {
 impl std::error::Error for HumanReplyError {}
 
 /// Override env: transport runtime root (tests/probe).
-pub const SOCKET_DIR_ENV: &str = "ABITO_SOCKET_DIR";
+pub const SOCKET_DIR_ENV: &str = "KODA_SOCKET_DIR";
 
 /// Runtime leaf names reserved by the packaged identities (packaged.cjs
 /// `IDENTITIES`): the installed Preview owns `abito-desktop`, the technical
@@ -97,7 +97,7 @@ pub enum TransportError {
     PathTooLong,
     /// Refused: path resolves into a reserved Preview runtime root.
     ReservedPreviewRoot,
-    /// Refused: `ABITO_SOCKET_DIR` is not an absolute normalized path.
+    /// Refused: `KODA_SOCKET_DIR` is not an absolute normalized path.
     InvalidOverride,
     /// No runtime root could be determined (no manifest dir).
     NoRuntimeRoot,
@@ -189,7 +189,7 @@ impl TransportOptions {
 
 /// Own leaf of the installed app inside `$XDG_RUNTIME_DIR` (M4 packaging
 /// plan §3): never one of [`RESERVED_RUNTIME_NAMES`].
-pub const INSTALLED_RUNTIME_LEAF: &str = "abito-island";
+pub const INSTALLED_RUNTIME_LEAF: &str = "koda";
 
 /// Read-only report of one runtime root: socket files under generated
 /// `p-XXXXXX` dirs. Never connects, never unlinks, never follows symlinks.

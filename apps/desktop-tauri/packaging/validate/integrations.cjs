@@ -14,7 +14,7 @@ exports.start = async (out, env) => {
     setTimeout(()=>{res.writeHead(error?503:200,{'Content-Type':'application/json'});res.end(JSON.stringify(error?{}:body));},250);
   });
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
-  env.ABITO_VALIDATE_INTEGRATIONS = `http://127.0.0.1:${server.address().port}`;
+  env.KODA_VALIDATE_INTEGRATIONS = `http://127.0.0.1:${server.address().port}`;
   const opener = path.join(out,'xdg-open');
   fs.writeFileSync(opener,'#!/usr/bin/python3\nimport os,sys\nwith open(os.path.join(os.environ["HOME"],"opened-urls"),"a") as f: f.write(sys.argv[1]+"\\n")\n',{mode:0o700});
   return {requests,close:()=>new Promise(resolve=>server.close(resolve))};

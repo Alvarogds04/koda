@@ -8,10 +8,10 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const winfs = require('../src/win-fs.cjs');
 
-test('Windows: the install layout and the real ACL helper are present and hash-verified (ABITO_TEST_HELPER)', { skip: process.platform !== 'win32' && 'Windows only; Linux/macOS have no helper' }, () => {
-  assert.ok(process.env.ABITO_TEST_HELPER, 'ABITO_TEST_HELPER must be set by the CI step that builds abito-private-session.exe');
-  assert.ok(fs.statSync(process.env.ABITO_TEST_HELPER).isFile());
+test('Windows: the install layout and the real ACL helper are present and hash-verified (KODA_TEST_HELPER)', { skip: process.platform !== 'win32' && 'Windows only; Linux/macOS have no helper' }, () => {
+  assert.ok(process.env.KODA_TEST_HELPER, 'KODA_TEST_HELPER must be set by the CI step that builds abito-private-session.exe');
+  assert.ok(fs.statSync(process.env.KODA_TEST_HELPER).isFile());
   const trusted = winfs.trustedHelper();
-  assert.equal(fs.realpathSync(trusted).toLowerCase(), fs.realpathSync(process.env.ABITO_TEST_HELPER).toLowerCase());
+  assert.equal(fs.realpathSync(trusted).toLowerCase(), fs.realpathSync(process.env.KODA_TEST_HELPER).toLowerCase());
   assert.ok(winfs.active(), 'the real backend is active');
 });

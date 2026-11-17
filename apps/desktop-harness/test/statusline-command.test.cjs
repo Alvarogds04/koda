@@ -14,10 +14,10 @@ const { fakeBackend } = require('./win-fake-backend.cjs');
 
 const BASH = { file: 'C:\\Program Files\\Git\\bin\\bash.exe', args: ['-c'] };
 const PS = { file: 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe', args: ['-NoProfile', '-NonInteractive', '-Command'] };
-const NODE = 'C:\\Program Files\\nodejs\\node.exe', BIN = 'C:\\Program Files\\Abito\\desktop-harness\\bin\\abito-statusline.cjs';
+const NODE = 'C:\\Program Files\\nodejs\\node.exe', BIN = 'C:\\Program Files\\Abito\\desktop-harness\\bin\\koda-statusline.cjs';
 
 test('Git Bash form uses forward slashes; PowerShell form starts with the call operator and keeps backslashes', () => {
-  assert.equal(statusLineCommand(NODE, BIN, BASH), '"C:/Program Files/nodejs/node.exe" "C:/Program Files/Abito/desktop-harness/bin/abito-statusline.cjs"');
+  assert.equal(statusLineCommand(NODE, BIN, BASH), '"C:/Program Files/nodejs/node.exe" "C:/Program Files/Abito/desktop-harness/bin/koda-statusline.cjs"');
   assert.equal(statusLineCommand(NODE, BIN, PS), `& "${NODE}" "${BIN}"`);
 });
 test('L6 refusals stay and `$` / backtick are refused too; no shell found => refuse, nothing generated', () => {

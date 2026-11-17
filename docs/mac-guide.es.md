@@ -24,10 +24,10 @@ A partir de ahí abre normalmente.
 **Si macOS dice que la app «está dañada»:** abrí la Terminal y ejecutá
 
 ```sh
-xattr -dr com.apple.quarantine /Applications/abito-island.app
+xattr -dr com.apple.quarantine /Applications/Koda.app
 ```
 
-y volvé a abrirla. (El archivo de la app todavía tiene el nombre interno `abito-island.app`; en el Finder se ve como Koda).
+y volvé a abrirla. (La app se llama `Koda.app` tanto en el Finder como en el disco).
 
 ## 3. Node.js y Pi
 

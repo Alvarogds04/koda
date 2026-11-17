@@ -23,11 +23,18 @@ function runtimeDir(argv) {
   try { manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')); } catch (e) { fail(`cannot read the runtime manifest ${manifestPath}: ${e.message}`); }
   const dir = fs.realpathSync(path.resolve(argv[1]));
   if (!manifest || manifest.target !== TARGET) fail(`${dir} is a ${manifest && manifest.target} runtime, expected ${TARGET}`);
-  for (const name of ['node', 'pi']) {
+  for (const name of ['node', 'pi', 'gentle-shell']) {
     const st = fs.lstatSync(path.join(dir, name), { throwIfNoEntry: false });
     // Windows reports no execute bits at all (libuv); the bundle is only ever built on macOS, where the bit is checked.
     if (!st || !st.isFile() || (process.platform !== 'win32' && !(st.mode & 0o111))) fail(`${dir} lacks the executable file ${name}`);
   }
+  // K2-05 T2 (T4/T6 follow-up): the daemon's engine is the bundled Gentle Shell, and the memory
+  // companion is the pinned Engram binary (T1/T1b) at bin/engram — a runtime without them is not
+  // what Koda ships. Fail closed like the launcher checks above; every path segment must be real.
+  const binSt = fs.lstatSync(path.join(dir, 'bin'), { throwIfNoEntry: false });
+  if (!binSt || !binSt.isDirectory() || binSt.isSymbolicLink()) fail(`${dir} lacks the real directory bin`);
+  const engramSt = fs.lstatSync(path.join(dir, 'bin', 'engram'), { throwIfNoEntry: false });
+  if (!engramSt || !engramSt.isFile() || engramSt.isSymbolicLink() || (process.platform !== 'win32' && !(engramSt.mode & 0o111))) fail(`${dir} lacks the executable file bin/engram`);
   return dir;
 }
 

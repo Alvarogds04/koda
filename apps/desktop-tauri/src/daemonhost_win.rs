@@ -165,7 +165,7 @@ pub fn discover_pi_with(node: Option<PathBuf>, app_data: Option<&std::ffi::OsStr
         .iter()
         .filter_map(|prefix| package_cli_js(&prefix.join("node_modules").join(PI_PACKAGE), "pi"))
         .next()
-        .ok_or_else(|| "pi missing (npm install -g @earendil-works/pi-coding-agent)".to_owned())
+        .ok_or_else(|| "pi missing (no Pi package in the npm global prefixes)".to_owned())
 }
 
 /// The Windows lookup behind `daemonhost::discover` (cfg(windows) dispatch):

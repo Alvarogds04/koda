@@ -6,24 +6,47 @@
 //! The daemon is NOT started here (that is the MCP/daemon spawner unit, not this one):
 //! when no daemon is running the state is `no_daemon` and the UI says so honestly.
 use crate::agentclient::{parse_ui_command, ClientState, CommandError, FrameBuffer, Reason, Session, UiCommand};
+use crate::chatclient::{ChatCommand, ChatState, CommandError as ChatCommandError};
 use serde_json::Value;
 use std::io::{Read, Write};
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const HELLO_WAIT: Duration = Duration::from_secs(3);
+
+/// K2-13 (S20): handed the ONE `telegram_session` this connection received, on the reader thread, before the new view is
+/// published. The host stores it in the OS keychain. The value is a credential: it is never logged, never published and
+/// never sent back to the daemon inside any other frame.
+pub type SessionSink = Arc<dyn Fn(&str) + Send + Sync>;
+
+/// The reader's exit guard, shared shape for both connections: a reader may wipe the
+/// writer and report the loss only when its OWN flag is still false AND its connection
+/// epoch is still the current one. An old reader can then never touch a newer
+/// connection, even when a reconnect reset a flag it shares by accident.
+fn reader_may_finalize(stop: &AtomicBool, epochs: &AtomicU64, epoch: u64) -> bool {
+    !stop.load(Ordering::SeqCst) && epochs.load(Ordering::SeqCst) == epoch
+}
 
 pub struct AgentConn {
     state: Arc<Mutex<ClientState>>,
     writer: Arc<Mutex<Option<UnixStream>>>,
-    stop: Arc<AtomicBool>,
+    /// The CURRENT connection's stop flag, replaced on every connect. A reader keeps
+    /// its own clone, which is never reset — a reconnect's new flag can never revive
+    /// an old reader.
+    stop: Mutex<Arc<AtomicBool>>,
+    /// Monotone connection generation: an old reader whose epoch is no longer current
+    /// may never touch the writer or the state of a newer connection.
+    epoch: Arc<AtomicU64>,
     /// Told whenever the state moves, HANDED the new view: a callback must never need to re-lock
     /// anything the caller may hold (the host once re-locked its own slot here and deadlocked).
     changed: Arc<dyn Fn(Value) + Send + Sync>,
+    /// K2-13 (S20): where a `telegram_session` reply goes (the keychain, through the host). A no-op by default, so a
+    /// connection created without a keychain never holds a session either.
+    session_sink: SessionSink,
 }
 
 /// `<island>/runtime/session.json` for the configured island root.
@@ -31,12 +54,12 @@ pub fn session_path(island_root: &Path) -> PathBuf {
     island_root.join("runtime").join("session.json")
 }
 
-/// Island root: `ABITO_ISLAND_DIR` (absolute) or `~/.abito-island`.
+/// Island root: `KODA_ISLAND_DIR` (absolute) or `~/.koda`.
 pub fn island_root(env_dir: Option<&str>, home: Option<&str>) -> Option<PathBuf> {
     if let Some(d) = env_dir.filter(|d| !d.is_empty()) {
         return d.starts_with('/').then(|| PathBuf::from(d));
     }
-    home.filter(|h| h.starts_with('/')).map(|h| Path::new(h).join(".abito-island"))
+    home.filter(|h| h.starts_with('/')).map(|h| Path::new(h).join(".koda"))
 }
 
 /// The session file must be OURS, a regular file, not group/world accessible.
@@ -80,11 +103,18 @@ fn pid_exists(pid: u32) -> bool {
 
 impl AgentConn {
     pub fn new(changed: impl Fn(Value) + Send + Sync + 'static) -> AgentConn {
+        AgentConn::with_session_sink(changed, Arc::new(|_: &str| {}))
+    }
+
+    /// K2-13 (S20): a connection whose `telegram_session` reply is handed to `sink` (the keychain bridge).
+    pub fn with_session_sink(changed: impl Fn(Value) + Send + Sync + 'static, sink: SessionSink) -> AgentConn {
         AgentConn {
             state: Arc::new(Mutex::new(ClientState::disconnected(Reason::NoDaemon))),
             writer: Arc::new(Mutex::new(None)),
-            stop: Arc::new(AtomicBool::new(false)),
+            stop: Mutex::new(Arc::new(AtomicBool::new(false))),
+            epoch: Arc::new(AtomicU64::new(0)),
             changed: Arc::new(changed),
+            session_sink: sink,
         }
     }
 
@@ -120,66 +150,117 @@ impl AgentConn {
             crate::failure::report("island", "agent-refused", crate::failure::Reason::AgentRefused, None);
             return self.set(ClientState::disconnected(Reason::Refused));
         }
-        // the daemon answers `ready` or closes without detail
+        // the daemon answers `ready` — and may already follow it with state frames in the
+        // SAME write. Every complete line after the handshake must reach the fold: the
+        // pending ask registered on only 27/30 connects was lost exactly here. Oversized
+        // or malformed lines are skipped (lenient), the connection stays up; only a
+        // handshake whose FIRST frame is not `ready` is refused.
         let _ = stream.set_read_timeout(Some(HELLO_WAIT));
+        let deadline = Instant::now() + HELLO_WAIT;
         let mut buf = FrameBuffer::default();
         let mut chunk = [0u8; 4096];
-        let first = loop {
+        let after_ready: Vec<Value>;
+        loop {
+            if Instant::now() >= deadline {
+                crate::failure::report("island", "agent-no-answer", crate::failure::Reason::AgentNoAnswer, None);
+                return self.set(ClientState::disconnected(Reason::Refused));
+            }
             match stream.read(&mut chunk) {
                 Ok(0) | Err(_) => {
                     crate::failure::report("island", "agent-no-answer", crate::failure::Reason::AgentNoAnswer, None);
                     return self.set(ClientState::disconnected(Reason::Refused));
                 }
-                Ok(n) => match buf.push(&chunk[..n]) {
-                    Ok(frames) if !frames.is_empty() => break frames,
-                    Ok(_) => continue,
-                    Err(_) => return self.set(ClientState::disconnected(Reason::Refused)),
-                },
+                Ok(n) => {
+                    let (frames, _skipped) = buf.push_lenient(&chunk[..n]);
+                    if frames.is_empty() {
+                        continue; // only noise so far: keep waiting for the handshake
+                    }
+                    if frames[0].get("type").and_then(Value::as_str) != Some("ready") {
+                        return self.set(ClientState::disconnected(Reason::Refused));
+                    }
+                    after_ready = frames;
+                    // the `ready` frame itself folds too (its carried state): apply ignores it where there is nothing to fold
+                    break;
+                }
             }
-        };
-        if first[0].get("type").and_then(Value::as_str) != Some("ready") {
-            return self.set(ClientState::disconnected(Reason::Refused));
         }
-        self.stop.store(false, Ordering::SeqCst);
+        let stop = Arc::new(AtomicBool::new(false));
+        *self.stop.lock().expect("agent stop lock") = stop.clone();
+        let epoch = self.epoch.fetch_add(1, Ordering::SeqCst) + 1;
         let reader = match stream.try_clone() {
             Ok(r) => r,
             Err(_) => return self.set(ClientState::disconnected(Reason::Lost)),
         };
         *self.writer.lock().expect("agent writer lock") = Some(stream);
         self.set(ClientState::connected());
-        self.spawn_reader(reader, buf);
+        self.spawn_reader(reader, buf, after_ready, stop, self.epoch.clone(), epoch);
         let _ = self.send(&UiCommand::Refresh);
     }
 
-    fn spawn_reader(&self, mut reader: UnixStream, mut buf: FrameBuffer) {
-        let (state, changed, stop, writer) = (self.state.clone(), self.changed.clone(), self.stop.clone(), self.writer.clone());
+    fn spawn_reader(&self, mut reader: UnixStream, mut buf: FrameBuffer, pending: Vec<Value>, stop: Arc<AtomicBool>, epochs: Arc<AtomicU64>, epoch: u64) {
+        let (state, changed, writer, sink) = (self.state.clone(), self.changed.clone(), self.writer.clone(), self.session_sink.clone());
         let _ = reader.set_read_timeout(Some(Duration::from_millis(500)));
         std::thread::spawn(move || {
             let mut chunk = [0u8; 8192];
+            // the handshake burst: frames that arrived in the same read as `ready`
+            if !pending.is_empty() {
+                let (emit, session) = {
+                    let mut st = state.lock().expect("agent state lock");
+                    let before = serde_json::to_value(&*st).unwrap_or(Value::Null);
+                    for f in &pending {
+                        let _ = st.apply(f);
+                    }
+                    let after = serde_json::to_value(&*st).unwrap_or(Value::Null);
+                    ((before != after).then_some(after), st.take_session())
+                };
+                // K2-13 S20: the keychain write happens BEFORE the view that says «connected» is published
+                if let Some(session) = session {
+                    sink(&session);
+                }
+                if let Some(view) = emit {
+                    changed(view);
+                }
+            }
             loop {
                 if stop.load(Ordering::SeqCst) {
                     return;
                 }
                 match reader.read(&mut chunk) {
                     Ok(0) => break,
-                    Ok(n) => match buf.push(&chunk[..n]) {
-                        Ok(frames) => {
-                            let view = {
-                                let mut st = state.lock().expect("agent state lock");
-                                for f in &frames {
-                                    let _ = st.apply(f);
-                                }
-                                serde_json::to_value(&*st).unwrap_or(Value::Null)
-                            };
+                    Ok(n) => {
+                        let (frames, skipped) = buf.push_lenient(&chunk[..n]);
+                        if skipped > 0 {
+                            // one log line per noisy read, never per byte: oversized and
+                            // malformed lines were skipped, the connection stays up
+                            crate::failure::report("island", "agent-frame-skipped", crate::failure::Reason::Manual, None);
+                        }
+                        if frames.is_empty() {
+                            continue;
+                        }
+                        // emit the view only when at least one complete frame CHANGED the
+                        // state — bursts coalesce into one emission, idle reads into none
+                        let (emit, session) = {
+                            let mut st = state.lock().expect("agent state lock");
+                            let before = serde_json::to_value(&*st).unwrap_or(Value::Null);
+                            for f in &frames {
+                                let _ = st.apply(f);
+                            }
+                            let after = serde_json::to_value(&*st).unwrap_or(Value::Null);
+                            ((before != after).then_some(after), st.take_session())
+                        };
+                        // K2-13 S20: stored in the keychain BEFORE the «connected» view is published
+                        if let Some(session) = session {
+                            sink(&session);
+                        }
+                        if let Some(view) = emit {
                             changed(view);
                         }
-                        Err(_) => break,
-                    },
+                    }
                     Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => continue,
                     Err(_) => break,
                 }
             }
-            if !stop.load(Ordering::SeqCst) {
+            if reader_may_finalize(&stop, &epochs, epoch) {
                 *writer.lock().expect("agent writer lock") = None;
                 crate::failure::report("island", "agent-lost", crate::failure::Reason::AgentLost, None);
                 let lost = ClientState::disconnected(Reason::Lost);
@@ -218,7 +299,7 @@ impl AgentConn {
     }
 
     pub fn close(&self) {
-        self.stop.store(true, Ordering::SeqCst);
+        self.stop.lock().expect("agent stop lock").store(true, Ordering::SeqCst);
         if let Some(w) = self.writer.lock().expect("agent writer lock").take() {
             let _ = w.shutdown(std::net::Shutdown::Both);
         }
@@ -226,6 +307,217 @@ impl AgentConn {
 }
 
 impl Drop for AgentConn {
+    fn drop(&mut self) {
+        self.close();
+    }
+}
+
+// ---- K2-05 T4 U2: the SECOND connection (the chat) --------------------------------
+
+/// The island's chat connection: a SECOND connection to the same daemon endpoint
+/// (the settings window keeps its own through `AgentConn`; the daemon allows 2
+/// clients, PROTOCOL.md). It reuses the session.json / hello / reader-thread
+/// machinery of [`AgentConn`] unchanged, but folds frames into [`ChatState`]
+/// through its OWN callback, and sends only the closed chat command set
+/// ([`ChatCommand`], window-gated at parse time).
+pub struct ChatConn {
+    state: Arc<Mutex<ChatState>>,
+    writer: Arc<Mutex<Option<UnixStream>>>,
+    /// The CURRENT connection's stop flag, replaced on every connect: an old reader
+    /// keeps its own flag, which is never reset. Same contract as `AgentConn`.
+    stop: Mutex<Arc<AtomicBool>>,
+    /// Monotone connection generation: an old reader can never touch a newer connection.
+    epoch: Arc<AtomicU64>,
+    changed: Arc<dyn Fn(Value) + Send + Sync>,
+}
+
+impl ChatConn {
+    pub fn new(changed: impl Fn(Value) + Send + Sync + 'static) -> ChatConn {
+        ChatConn {
+            state: Arc::new(Mutex::new(ChatState::disconnected(Reason::NoDaemon))),
+            writer: Arc::new(Mutex::new(None)),
+            stop: Mutex::new(Arc::new(AtomicBool::new(false))),
+            epoch: Arc::new(AtomicU64::new(0)),
+            changed: Arc::new(changed),
+        }
+    }
+
+    pub fn view(&self) -> Value {
+        serde_json::to_value(&*self.state.lock().expect("chat state lock")).unwrap_or(Value::Null)
+    }
+
+    fn set(&self, s: ChatState) {
+        let view = serde_json::to_value(&s).unwrap_or(Value::Null);
+        *self.state.lock().expect("chat state lock") = s;
+        (self.changed)(view);
+    }
+
+    /// (Re)connect from the session file: read session.json, connect the second
+    /// socket, handshake, then fold `ready`-and-onward frames into the chat view.
+    /// Same handshake discipline as `AgentConn::connect` (keep in sync): the burst
+    /// after `ready` reaches the fold, oversized/malformed lines are skipped.
+    pub fn connect(&self, island_root: &Path) {
+        self.close();
+        let session = match read_session(&session_path(island_root)) {
+            Ok(s) => s,
+            Err(reason) => return self.set(ChatState::disconnected(reason)),
+        };
+        let mut stream = match UnixStream::connect(&session.endpoint) {
+            Ok(s) => s,
+            Err(_) => return self.set(ChatState::disconnected(Reason::NoDaemon)),
+        };
+        let _ = stream.set_write_timeout(Some(HELLO_WAIT));
+        if stream.write_all(session.hello().as_bytes()).is_err() {
+            crate::failure::report("island", "agent-refused", crate::failure::Reason::AgentRefused, None);
+            return self.set(ChatState::disconnected(Reason::Refused));
+        }
+        let _ = stream.set_read_timeout(Some(HELLO_WAIT));
+        let deadline = Instant::now() + HELLO_WAIT;
+        let mut buf = FrameBuffer::default();
+        let mut chunk = [0u8; 4096];
+        let after_ready: Vec<Value>;
+        loop {
+            if Instant::now() >= deadline {
+                crate::failure::report("island", "agent-no-answer", crate::failure::Reason::AgentNoAnswer, None);
+                return self.set(ChatState::disconnected(Reason::Refused));
+            }
+            match stream.read(&mut chunk) {
+                Ok(0) | Err(_) => {
+                    crate::failure::report("island", "agent-no-answer", crate::failure::Reason::AgentNoAnswer, None);
+                    return self.set(ChatState::disconnected(Reason::Refused));
+                }
+                Ok(n) => {
+                    let (frames, _skipped) = buf.push_lenient(&chunk[..n]);
+                    if frames.is_empty() {
+                        continue;
+                    }
+                    if frames[0].get("type").and_then(Value::as_str) != Some("ready") {
+                        return self.set(ChatState::disconnected(Reason::Refused));
+                    }
+                    after_ready = frames;
+                    // the `ready` frame itself folds too (its carried state): apply ignores it where there is nothing to fold
+                    break;
+                }
+            }
+        }
+        let stop = Arc::new(AtomicBool::new(false));
+        *self.stop.lock().expect("chat stop lock") = stop.clone();
+        let epoch = self.epoch.fetch_add(1, Ordering::SeqCst) + 1;
+        let reader = match stream.try_clone() {
+            Ok(r) => r,
+            Err(_) => return self.set(ChatState::disconnected(Reason::Lost)),
+        };
+        *self.writer.lock().expect("chat writer lock") = Some(stream);
+        self.set(ChatState::connected());
+        self.spawn_reader(reader, buf, after_ready, stop, self.epoch.clone(), epoch);
+        // the late client asks for the newest history page and the agent status once
+        // it has handshook (the `ready` state may already be stale)
+        let _ = self.send_line(&ChatCommand::History.line());
+        let _ = self.send_line(&ChatCommand::Status.line());
+    }
+
+    fn spawn_reader(&self, mut reader: UnixStream, mut buf: FrameBuffer, pending: Vec<Value>, stop: Arc<AtomicBool>, epochs: Arc<AtomicU64>, epoch: u64) {
+        // The chat connection never receives a `telegram_session` (that frame is the reply to the connection that asked
+        // for the login), so it has no session sink and its fold stays exactly as it was.
+        let (state, changed, writer) = (self.state.clone(), self.changed.clone(), self.writer.clone());
+        let _ = reader.set_read_timeout(Some(Duration::from_millis(500)));
+        std::thread::spawn(move || {
+            let mut chunk = [0u8; 8192];
+            // the handshake burst: frames that arrived in the same read as `ready`
+            if !pending.is_empty() {
+                // L3 (U2 re-verify): the fold bumps `ChatState::revision` only when the view
+                // changed, so the emit decision is one integer comparison — the whole chat
+                // state is serialized at most once per read, never twice.
+                let emit = {
+                    let mut st = state.lock().expect("chat state lock");
+                    let before = st.revision();
+                    for f in &pending {
+                        st.apply(f);
+                    }
+                    (st.revision() != before).then(|| serde_json::to_value(&*st).unwrap_or(Value::Null))
+                };
+                if let Some(view) = emit {
+                    changed(view);
+                }
+            }
+            loop {
+                if stop.load(Ordering::SeqCst) {
+                    return;
+                }
+                match reader.read(&mut chunk) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        let (frames, skipped) = buf.push_lenient(&chunk[..n]);
+                        if skipped > 0 {
+                            // one log line per noisy read, never per byte: oversized and
+                            // malformed lines were skipped, the connection stays up
+                            crate::failure::report("island", "agent-frame-skipped", crate::failure::Reason::Manual, None);
+                        }
+                        if frames.is_empty() {
+                            continue;
+                        }
+                        // emit the view only when at least one complete frame CHANGED the
+                        // state — bursts coalesce into one emission, idle reads into none.
+                        // L3 (U2 re-verify): the change signal is `ChatState::revision`,
+                        // bumped by every fold that changes the view; the whole state is
+                        // serialized at most ONCE per read, only on an actual change.
+                        let emit = {
+                            let mut st = state.lock().expect("chat state lock");
+                            let before = st.revision();
+                            for f in &frames {
+                                st.apply(f);
+                            }
+                            (st.revision() != before).then(|| serde_json::to_value(&*st).unwrap_or(Value::Null))
+                        };
+                        if let Some(view) = emit {
+                            changed(view);
+                        }
+                    }
+                    Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => continue,
+                    Err(_) => break,
+                }
+            }
+            if reader_may_finalize(&stop, &epochs, epoch) {
+                *writer.lock().expect("chat writer lock") = None;
+                crate::failure::report("island", "agent-lost", crate::failure::Reason::AgentLost, None);
+                let lost = ChatState::disconnected(Reason::Lost);
+                let view = serde_json::to_value(&lost).unwrap_or(Value::Null);
+                *state.lock().expect("chat state lock") = lost;
+                changed(view);
+            }
+        });
+    }
+
+    fn send_line(&self, line: &str) -> Result<(), ChatCommandError> {
+        let mut guard = self.writer.lock().expect("chat writer lock");
+        let stream = guard.as_mut().ok_or(ChatCommandError)?;
+        stream.write_all(line.as_bytes()).map_err(|_| ChatCommandError)
+    }
+
+    /// Parse one chat command for the given caller window (the gate lives in the
+    /// parser: only the exact main island window may chat) and send its wire line.
+    pub fn command(&self, caller: &str, payload: &Value) -> Result<Value, ChatCommandError> {
+        let cmd = {
+            let state = self.state.lock().expect("chat state lock");
+            state.command(caller, payload)?
+        };
+        if self.send_line(&cmd.line()).is_err() {
+            // U4b verifier F3: a line that never left is no answer: un-mark it (keep in sync)
+            self.state.lock().expect("chat state lock").unsent(&cmd);
+            return Err(ChatCommandError);
+        }
+        Ok(self.view())
+    }
+
+    pub fn close(&self) {
+        self.stop.lock().expect("chat stop lock").store(true, Ordering::SeqCst);
+        if let Some(w) = self.writer.lock().expect("chat writer lock").take() {
+            let _ = w.shutdown(std::net::Shutdown::Both);
+        }
+    }
+}
+
+impl Drop for ChatConn {
     fn drop(&mut self) {
         self.close();
     }

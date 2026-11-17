@@ -71,12 +71,17 @@ const covered = list => list.filter(c => !c.ok);
   {
     const r = await H.open({ engine: 'down' });
     try {
-      const c = await controls(r, '#engine-band'); const words = c.map(x => x.text);
-      assert.deepEqual(words.sort(), ['Omitir', 'Revisar'], 'engine band: Revisar + Omitir');
-      assert.deepEqual(covered(c), [], 'engine band: no control covered');
-      const ik = await r.page.evaluate(() => { const k = document.querySelector('.koda-sprite[data-koda-slot="nusa"]'); const b = k && k.getBoundingClientRect(), i = document.getElementById('island').getBoundingClientRect(); return b && { w: b.width, h: b.height, right: b.left > i.left + i.width / 2 }; });
-      assert.deepEqual(ik, { w: 64, h: 64, right: true }, 'Inicio keeps Koda k=2 on the right');
-      await r.page.waitForTimeout(500); assert.equal(await r.page.evaluate(() => window.__koda.current), 'error', 'engine band: Koda error');
+      // welcome-home (human, 16-nov): the Inicio has NO engine band (it confuses a new user) and keeps Koda k=2 centred, not in the error pose;
+      // nor does it show on the other tabs.
+      await r.page.waitForTimeout(800);
+      const ik = await r.page.evaluate(() => { const k = document.querySelector('.koda-sprite[data-koda-slot="nusa"]'); const b = k && k.getBoundingClientRect(), i = document.getElementById('island').getBoundingClientRect(); return b && { w: b.width, h: b.height, centred: Math.abs((b.left + b.right) / 2 - (i.left + i.right) / 2) <= 3 }; }); // welcome-home: Koda is centred in the Inicio
+      assert.deepEqual(ik, { w: 64, h: 64, centred: true }, 'Inicio keeps Koda k=2, now centred');
+      assert.equal(await r.page.evaluate(() => getComputedStyle(document.getElementById('engine-band')).display), 'none', 'Inicio: no engine band');
+      assert.notEqual(await r.page.evaluate(() => window.__koda.current), 'error', 'Inicio: Koda is not in the error pose');
+      // the band is never drawn now, on any tab (human, 16-nov): Agentes keeps no engine control and Koda is still not in the error pose
+      await H.goTab(r.page, 'agentes'); await r.page.waitForTimeout(1500);
+      assert.equal(await r.page.evaluate(() => getComputedStyle(document.getElementById('engine-band')).display), 'none', 'Agentes: no engine band either');
+      assert.notEqual(await r.page.evaluate(() => window.__koda.current), 'error', 'Agentes: Koda is not in the error pose');
       await r.screenshot('/tmp/nusa-t4-engine.png');
     } finally { await r.close(); }
   }

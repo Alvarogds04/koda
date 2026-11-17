@@ -42,23 +42,17 @@ function koda(m, name) {
     const name = `${engine}/${theme}`, r = await H.open({ engine, theme });
     try {
       await r.page.waitForTimeout(600);
-      const m = await measure(r);
-      assert.deepEqual(m.btns.map(b => b.text), words, `${name}: band buttons`);
-      assert.equal(m.island.h, 186, `${name}: island height frozen`); assert.equal(m.band.h, 32, `${name}: band height frozen`);
-      assert.ok(m.band.t >= m.island.t && m.band.b <= m.island.t + m.island.h && m.band.l >= m.island.l && m.band.r <= m.island.r, `${name}: band inside the island`);
-      const [a, b] = m.btns; assert.ok(b.vis.l - a.vis.r >= 8, `${name}: gap ${b.vis.l - a.vis.r}px between buttons < 8`);
-      for (const x of m.btns) {
-        assert.ok(x.ok, `${name}: ${x.text} covered`); assert.ok(x.hitH >= 44, `${name}: ${x.text} hit area ${x.hitH}px < 44`);
-        assert.ok(x.vis.r <= m.island.r - 8 && x.vis.b <= m.island.t + m.island.h, `${name}: ${x.text} clipped by the island edge`);
-        const air = x.vis.t - m.dots.b; assert.ok(air >= 8, `${name}: ${x.text} only ${air}px below the dots box (dots ${m.dots.t}-${m.dots.b}, button ${x.vis.t}-${x.vis.b})`);
+      // welcome-home (human, 16-nov): the island never draws the engine band («Sin motor», «Sin cuenta» confuse a new user; that notice belongs in the chat):
+      // not on the Inicio, not on Agentes, not on Avisos. The island stays 150, Koda is never put in the error pose by it and never overlaps a control.
+      for (const tab of ['inicio', 'agentes', 'avisos']) {
+        if (tab !== 'inicio') { await H.goTab(r.page, tab); await r.page.waitForTimeout(1500); }
+        const m = await measure(r), at = `${name}/${tab}`;
+        assert.equal(await r.page.evaluate(() => getComputedStyle(document.getElementById('engine-band')).display), 'none', `${at}: no engine band`);
+        assert.equal(await r.page.evaluate(() => document.getElementById('capsule').dataset.engineBand), 'hidden', `${at}: the problem is known but not drawn`);
+        assert.equal(m.island.h, 150, `${at}: the island stays 150`);
+        assert.notEqual(await r.page.evaluate(() => window.__koda.current), 'error', `${at}: Koda is not put in the error pose by the engine problem`);
+        koda(m, at); assert.deepEqual(m.kodaHits, [], `${at}: Koda overlaps controls`);
       }
-      // (A) Koda
-      assert.ok(m.kodaOp > 0, `${name}: Koda visible`);
-      assert.deepEqual([m.koda.w, m.koda.h], [64, 64], `${name}: Koda k=2`);
-      koda(m, name);
-      assert.equal(m.bandHit, false, `${name}: Koda overlaps the band`); assert.deepEqual(m.kodaHits, [], `${name}: Koda overlaps controls`);
-      assert.equal(await r.page.evaluate(() => window.__koda.current), 'error', `${name}: Koda error`);
-      for (const tab of ['agentes', 'avisos']) { await r.page.click(`#nusa-tab-${tab}`); await r.page.waitForTimeout(500); const t = await measure(r); koda(t, `${name}/${tab}`, false); assert.deepEqual(t.kodaHits, [], `${name}/${tab}: Koda overlaps controls`); }
       await r.page.click('#nusa-tab-inicio'); await r.page.waitForTimeout(300);
       await r.screenshot(`/tmp/nusa-engine-${engine === 'down' ? 'down' : 'no-account'}-${theme}.png`);
     } finally { await r.close(); }

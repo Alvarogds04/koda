@@ -75,6 +75,38 @@ fn frames_are_split_on_lf_only_and_bounded() {
     assert_eq!(b5.push(b"[1,2]\n"), Err(FrameError::Malformed), "a frame is an object");
 }
 
+// ---- the lenient post-handshake read path: oversized and malformed lines are skipped ---
+#[test]
+fn lenient_reads_skip_oversized_and_malformed_lines_and_stay_alive() {
+    let mut buf = FrameBuffer::default();
+    // a line over the island's 256 KiB bound (a hooks broadcast up to the daemon's own
+    // 1 MiB history bound) is skipped, never fatal; the next line still arrives
+    let mut oversized = vec![b'x'; 280 * 1024];
+    oversized.push(b'\n');
+    let (frames, skipped) = buf.push_lenient(&oversized);
+    assert!(frames.is_empty() && skipped == 1, "the oversized line was skipped once");
+    let (frames, skipped) = buf.push_lenient(b"not json\n{\"type\":\"b\"}\n");
+    assert_eq!(skipped, 1, "a malformed line is skipped too");
+    assert_eq!(frames.len(), 1);
+    assert_eq!(frames[0]["type"], "b");
+    // an oversized line split across pushes never grows the buffer unbounded
+    let mut buf2 = FrameBuffer::default();
+    buf2.push_lenient(&vec![b'y'; 300 * 1024]); // no LF yet: past the bound, discarding starts
+    let (frames, skipped) = buf2.push_lenient(b"tail without newline yet");
+    assert!(frames.is_empty() && skipped == 0, "still discarding");
+    let (frames, skipped) = buf2.push_lenient(b"more noise\n{\"type\":\"c\"}\n");
+    assert_eq!(skipped, 1, "the discarded line ends at its newline");
+    assert_eq!(frames.len(), 1);
+    assert_eq!(frames[0]["type"], "c");
+    // a line exactly at the bound still travels
+    let mut buf3 = FrameBuffer::default();
+    let at_bound = format!("{{\"type\":\"d\",\"pad\":\"{}\"}}\n", "p".repeat(MAX_FRAME_BYTES - 30));
+    let (frames, skipped) = buf3.push_lenient(at_bound.as_bytes());
+    assert_eq!(skipped, 0);
+    assert_eq!(frames.len(), 1);
+    assert_eq!(frames[0]["type"], "d");
+}
+
 // ---- closed command set (what the UI may ask) -----------------------------------------------------
 #[test]
 fn ui_commands_are_a_closed_exact_set() {
@@ -235,6 +267,24 @@ fn an_unknown_or_hostile_error_code_never_reaches_the_page_as_text() {
     assert_eq!(v["last_error"]["code"], json!("failed"), "anything outside the daemon's closed set reads as plain `failed`");
     let text = v["last_error"].to_string();
     assert!(!text.contains("script") && text.len() < 60, "{text}");
+}
+
+// ---- K2-05 boot order (Gentle Dot agent_state): Ajustes knows when the engine is still starting ----
+#[test]
+fn the_engine_status_folds_from_ready_and_agent_state_in_a_closed_vocabulary() {
+    let mut st = ClientState::connected();
+    assert_eq!(serde_json::to_value(&st).unwrap()["engine"], json!(null), "unknown until the daemon says so");
+    st.apply(&json!({"type":"ready","protocol":"island-agent/1","state":{"busy":false,"status":"starting","paused":false}})).unwrap();
+    assert_eq!(serde_json::to_value(&st).unwrap()["engine"], json!("starting"));
+    for status in ["restarting", "ready", "stopped", "starting"] {
+        st.apply(&json!({"type":"agent_state","busy":false,"status":status,"paused":false})).unwrap();
+        assert_eq!(serde_json::to_value(&st).unwrap()["engine"], json!(status));
+    }
+    for bad in [json!("<script>"), json!(7), json!(null), json!("unavailable!")] {
+        st.apply(&json!({"type":"agent_state","status":bad})).unwrap();
+        assert_eq!(serde_json::to_value(&st).unwrap()["engine"], json!(null), "{bad}");
+    }
+    assert_eq!(serde_json::to_value(ClientState::disconnected(Reason::Lost)).unwrap()["engine"], json!(null));
 }
 
 #[test]

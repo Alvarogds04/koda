@@ -15,7 +15,7 @@
 //! whether a session cookie was present, whether the confirmation header was
 //! present, and the payload hash a POST carried (a hash, not a secret).
 //!
-//! This module exists for `tests/` and the `ABITO_PROBE` approval step only;
+//! This module exists for `tests/` and the `KODA_PROBE` approval step only;
 //! it is never started unless a test or the probe explicitly starts it, and
 //! it binds only a loopback ephemeral port.
 
@@ -106,7 +106,7 @@ struct Inner {
     accept_thread: Mutex<Option<JoinHandle<()>>>,
 }
 
-/// The running fake: `origin()` is what `ABITO_BRIDGE_BASE` points at.
+/// The running fake: `origin()` is what `KODA_BRIDGE_BASE` points at.
 pub struct FakeBackend {
     inner: Arc<Inner>,
 }

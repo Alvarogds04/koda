@@ -10,6 +10,26 @@ const http = require('node:http');
 const path = require('node:path');
 const frontend = path.join(__dirname, '..', 'frontend');
 
+/** isla-cualquier-lado (L21, human «1»): a NEW question opens the folded (compact) island by itself, like a notice, so the Sileo
+ *  toast is the signal only in the one case `revealByToast` leaves open — a phase the toast cannot classify (no ctx / unknown phase).
+ *  The real island rewrites `data-phase` on every render (its own sync loop), so a forged value is gone within a second: this makes
+ *  the phase unreadable to SCRIPTS while the attribute keeps its real value for the stylesheet, i.e. exactly that case and no other.
+ *  Call it after the island is folded and BEFORE feeding the event, and never for a behaviour a classified phase decides. */
+function unknownPhaseInPage() {
+  const capsule = document.getElementById('capsule'), real = capsule.dataset;
+  const view = new Proxy(real, {
+    get: (target, key) => (key === 'phase' ? undefined : Reflect.get(target, key)),
+    set: (target, key, value) => (key === 'phase' ? true : Reflect.set(target, key, value)),
+  });
+  Object.defineProperty(capsule, 'dataset', { configurable: true, get: () => view });
+}
+
+/** Undo unknownPhaseInPage: the element goes back to its real data-* map (a page shared by many scenarios needs this). */
+function knownPhaseInPage() {
+  // the own accessor shadows Element.prototype's `dataset`, so deleting it restores the real map
+  if (Object.getOwnPropertyDescriptor(document.getElementById('capsule'), 'dataset')) delete document.getElementById('capsule').dataset;
+}
+
 function findPlaywright() {
   const candidates = [process.env.PLAYWRIGHT_PATH, path.join(process.env.HOME || '', '.local/lib/node_modules/playwright'), 'playwright', 'playwright-core'].filter(Boolean);
   for (const c of candidates) { try { return require(c); } catch { /* next */ } }
@@ -20,6 +40,12 @@ const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css
 // measure are switched off by the real product. A scenario that exercises them (`github`, `declared`) serves paused.js with
 // `integrations` removed from PAUSED, so the layout is still verified for the version that turns them back on. Nothing else changes.
 const needsIntegrations = scenario => Boolean(scenario.github || scenario.declared || scenario.focusGithub);
+const unknownPhase = async page => {
+  await page.evaluate(unknownPhaseInPage);
+  // the toast repaints on its own events: re-emit the page's OWN question snapshot (the fake host answers `view`) so the new phase
+  // takes effect now and nothing else in the page is touched.
+  await page.evaluate(() => window.__TAURI__.core.invoke('question_action', { payload: { action: 'view' } }).then(v => window.__emit('question:state', v)));
+};
 function serve(scenario = {}) {
   const server = http.createServer((req, res) => {
     const f = path.join(frontend, decodeURIComponent(req.url.split('?')[0]).replace(/^\/+/, '') || 'index.html');
@@ -27,7 +53,7 @@ function serve(scenario = {}) {
     res.writeHead(200, { 'content-type': MIME[path.extname(f)] || 'application/octet-stream' });
     let body = fs.readFileSync(f);
     if (path.basename(f) === 'paused.js' && needsIntegrations(scenario)) {
-      const text = body.toString('utf8'), live = text.replace("'integrations', ", '');
+      const text = body.toString('utf8'), live = text.replace(/,\s*'integrations'(?=\s*\])|'integrations',\s*/, '');
       if (live === text) throw new Error('paused.js no longer lists integrations: update the harness unpause rule');
       body = Buffer.from(live);
     }
@@ -46,13 +72,47 @@ const SESSIONS = [
 const UUID = '0b3a5c9e-8f27-4d11-9a0e-1c2d3e4f5a6b';
 
 /** scenario = { sessions: [...]|[], notices: n, engine: 'down'|'account'|null, github: bool, question: 'plain'|'approval'|null, finished: text|null } */
+/* CI 43338707770 (island node shard 3, Windows): island-geometry-check failed opening its page with
+   net::ERR_NO_BUFFER_SPACE, the same Chromium network-buffer error test-node/avisos-interaction-check.cjs already
+   retries (a95d396): three Windows shards drive one runner's Chromium at once, and a page that cannot be fetched is
+   SETUP, never a verdict. Opening is retried once and every assertion still runs (twice if needed); a broken layout
+   fails both times, exactly as before. A failed attempt also releases its server and its browser HERE: a leaked http
+   server is what made the avisos twin hang until the 420 s shard cap instead of reporting the real error. */
+const TRANSIENT_PAGE_OPEN = /net::ERR_NO_BUFFER_SPACE|net::ERR_NETWORK_CHANGED|net::ERR_CONNECTION_RESET/;
+
 async function open(scenario = {}) {
+  let last;
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    try { return await openOnce(scenario); } catch (error) {
+      last = error;
+      if (attempt === 2 || !TRANSIENT_PAGE_OPEN.test(String((error && error.message) || error))) throw error;
+      console.error(`island-geometry harness: retrying a page that failed to load: ${(error && error.message) || error}`);
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+    }
+  }
+  throw last;
+}
+
+/** One attempt: the server, the browser and every SETUP step. It owns no verdict, and a failed attempt frees what it opened. */
+async function openOnce(scenario) {
   const pw = findPlaywright();
   if (!pw) return null;
   const server = await serve(scenario);
-  const base = `http://127.0.0.1:${server.address().port}`;
-  const browser = await pw.chromium.launch({ args: ['--no-sandbox'] });
-  const page = await browser.newPage({ viewport: { width: 752, height: 340 } });
+  let browser;
+  try {
+    const base = `http://127.0.0.1:${server.address().port}`;
+    browser = await pw.chromium.launch({ args: ['--no-sandbox'] });
+    const page = await browser.newPage({ viewport: { width: 752, height: 340 } });
+    return await setup({ scenario, server, base, browser, page });
+  } catch (error) {
+    await browser?.close().catch(() => {});
+    server.close();
+    throw error;
+  }
+}
+
+/** Everything once the page exists: init script, navigation and the waits the island needs. Still setup, never an assertion. */
+async function setup({ scenario, server, base, browser, page }) {
   await page.addInitScript(({ scenario, SESSIONS, UUID }) => {
     const listeners = {};
     const sessions = scenario.manyPi ? Array.from({ length: 14 }, (_, i) => ({ id: 's-' + (0x100 + i).toString(16).padStart(8, '0'), kind: 'pi', cwd: 'proyecto-' + i, state: i === 0 ? 'running' : 'sleeping', origin: null })) : scenario.sessions === undefined ? SESSIONS : scenario.sessions;
@@ -91,11 +151,53 @@ async function open(scenario = {}) {
             snap.revision += 1; queueMicrotask(() => window.__emit('desktop:state', structuredClone(snap)));
           }
           if (a === 'autoClose') { (window.__autoCloses = window.__autoCloses || []).push(performance.now()); if (!window.__refuseClose) { snap.state = 'compact'; snap.revision += 1; queueMicrotask(() => window.__islandSetState && window.__islandSetState('compact')); } else throw new Error('pendiente'); }
+          // opt-in (island-koda-open-check): the real host folds on `close`, which the fold button sends; the fake otherwise ignores it
+          if (a === 'close' && scenario.closeFolds) { snap.state = 'compact'; snap.revision += 1; queueMicrotask(() => window.__islandSetState && window.__islandSetState('compact')); }
           if (a === 'expand') { snap.state = 'expanded'; snap.revision += 1; queueMicrotask(() => window.__islandSetState && window.__islandSetState('overview')); }
           return structuredClone(snap);
         }
-        if (cmd === 'agent_action') return a === 'sessions_list' ? { connection, accounts, sessions: { rows: sessions, truncated: false } } : { connection, accounts };
-        if (cmd === 'prefs_action') return { sound: true, declaredPills: scenario.declared ? scenario.declared : scenario.github ? ['integration_github'] : [], mainPill: 'abito', pillColors: {}, avatarColors: {}, autoCloseSeconds: 0, openOnHover: false, absenceSeconds: 600 };
+        if (cmd === 'agent_action') {
+          // welcome-minikodas T3: the folded `minikodas` view the Rust client hands the page for the read-only `minikodas_list` ask
+          if (a === 'minikodas_list' && scenario.minikodas) return { connection, accounts, minikodas: { items: structuredClone(scenario.minikodas), truncated: false } };
+          if (a === 'sessions_list') return { connection, accounts, sessions: { rows: sessions, truncated: false } };
+          // K2-13 T6b-1 «Hoy»: the folded `hoy` view the Rust client hands the page, plus the daemon's closed refusal.
+          // A decision is ASYNCHRONOUS, like the real path (AgentConn::command in agentconn.rs hands back the view at
+          // WRITE time and the daemon's answer arrives later as `agent:state`, which settings.js documents too):
+          // `hoy_approve` / `hoy_reject` answer with the state BEFORE the decision, then mutate the stored item and push
+          // the new state out after `hoyReplyDelay` ms. `hoySilent` is a daemon that never answers.
+          if (scenario.hoy && (a === 'view' || a === 'hoy_list' || a === 'hoy_approve' || a === 'hoy_reject')) {
+            const hoy = window.__hoy || (window.__hoy = { items: (scenario.hoy || []).map(i => ({ ...i })), truncated: scenario.hoyTruncated === true });
+            const err = window.__hoyErr || (window.__hoyErr = scenario.hoyError ? { ...scenario.hoyError } : { code: null, n: 0 });
+            if (scenario.hoyDown) return { connection: 'no_daemon', accounts: [], hoy: structuredClone(hoy), last_error: { ...err } };
+            const state = () => ({ connection, accounts, hoy: structuredClone(hoy), last_error: { ...err } });
+            if (a === 'hoy_list' && scenario.hoyListRefuse) {
+              err.code = scenario.hoyListRefuse; err.n = (err.n || 0) + 1;
+              return state();
+            }
+            if (a === 'hoy_approve' || a === 'hoy_reject') {
+              const want = a === 'hoy_approve' ? 'approved' : 'rejected';
+              const id = args.payload && args.payload.id;
+              const reply = state();
+              const apply = () => {
+                const item = hoy.items.find(i => i.id === id);
+                if (scenario.hoyRefuse) { err.code = scenario.hoyRefuse; err.n = (err.n || 0) + 1; }
+                else if (item && item.status === 'pending') {
+                  item.status = want; item.decidedAt = new Date().toISOString();
+                  // the daemon's next `hoy` frame is sorted pending-first: a decided row SINKS. A page that re-sorts on
+                  // it puts a different proposal under the cursor (the verifier's B1).
+                  if (scenario.hoyResort !== false) hoy.items.sort((x, y) => (x.status === 'pending' ? 0 : 1) - (y.status === 'pending' ? 0 : 1));
+                } else { err.code = 'not_pending'; err.n = (err.n || 0) + 1; }
+                window.__emit('agent:state', state());
+              };
+              const delay = Number.isFinite(scenario.hoyReplyDelay) ? scenario.hoyReplyDelay : 15;
+              if (!scenario.hoySilent) setTimeout(apply, delay);
+              return reply;
+            }
+            return state();
+          }
+          return { connection, accounts };
+        }
+        if (cmd === 'prefs_action') return { sound: true, declaredPills: scenario.declared ? scenario.declared : scenario.github ? ['integration_github'] : [], mainPill: 'abito', pillColors: {}, avatarColors: {}, autoCloseSeconds: 0, openOnHover: false };
         if (cmd === 'github_action' && scenario.githubData === 'real') {
           // the shape src/github.rs serialises (what the validator's fake `gh` produces): PRs carry `repo`/`isDraft`/`review`, mainCI rows carry repo+branch
           const pr = { id: 'fixture/repo#42', title: 'Fixture PR', url: 'https://github.com/fixture/repo/pull/42', repo: 'fixture/repo', number: 42, isDraft: false, ci: 'failure', review: 'pending', headSha: null };
@@ -139,6 +241,14 @@ async function open(scenario = {}) {
   if (scenario.github) await page.evaluate(() => document.dispatchEvent(new CustomEvent('abito:integration-seen', { detail: { ids: ['integration_github'], source: 'github' } })));
   if (scenario.focusGithub) { await page.waitForTimeout(600); await page.evaluate(() => document.getElementById('pill-choice-integration_github')?.click()); }
   await page.waitForTimeout(scenario.quick ? 1800 : 4200); // spring + the ticker's first poll (`quick`: measurements that only need the card, not the first ticker poll)
+  // K2-13 T6b-1: «Hoy» opens from its header tab once the island finished expanding (the header is only shown then).
+  // Playwright's click is a trusted input event, which is what the mount requires.
+  if (scenario.hoyTab) {
+    await page.waitForFunction(() => document.getElementById('capsule').dataset.phase === 'expanded', null, { timeout: 15000 });
+    await page.waitForTimeout(200);
+    await page.click('#open-hoy');
+    await page.waitForTimeout(scenario.hoyWait || 700);
+  }
   if (scenario.finishedCard && !scenario.noLane) { await page.evaluate(id => window.__emit('desktop:notice-open', { id, kind: 'finished' }), UUID); await page.waitForTimeout(1500); }
   if (scenario.question) {
     await page.waitForTimeout(600);
@@ -191,7 +301,15 @@ async function open(scenario = {}) {
       return hits;
     }, sel),
     screenshot: file => page.screenshot({ path: file }),
-    close: async () => { await browser.close(); server.close(); },
+    close: async () => { try { await browser.close(); } finally { server.close(); } },
   };
 }
-module.exports = { open, findPlaywright };
+/** Go to the Agentes / Avisos tab with a REAL click. On the Inicio the pager dots are hidden (welcome-home: the dock below Koda is the navigation there),
+ *  so use the dock icon when it is on screen and the dot everywhere else. */
+async function goTab(page, id, opts) {
+  const label = { agentes: 'Agentes', avisos: 'Avisos' }[id];
+  const dock = label && page.locator(`#nusa-panel .nusa-dock button[aria-label="${label}"]`);
+  if (dock && await dock.count() && await dock.first().isVisible()) return page.click(`#nusa-panel .nusa-dock button[aria-label="${label}"]`);
+  return page.click(`#nusa-tab-${id}`, opts);
+}
+module.exports = { open, findPlaywright, unknownPhase, unknownPhaseInPage, knownPhaseInPage, goTab };

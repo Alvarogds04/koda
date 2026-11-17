@@ -7,12 +7,21 @@
   const nusa = doc.getElementById('nusa');
   if (!N || !nusa) return;
   const $ = id => doc.getElementById(id);
-  const capsule = $('capsule'), island = $('island');
+  const capsule = $('capsule');
   let current = 0, tabTitle = 'Inicio';
   // T5: the state a Pregunta / Permiso / Terminó / Error takes over, read from the data the island already publishes
   const qEl = $('question'), noticeCardEl = $('notice-card');
   const takeoverData = () => ({ ...capsule.dataset, look: qEl ? qEl.dataset.look : '', outcomeWord: ($('question-state-word') || {}).textContent || '', severity: noticeCardEl ? noticeCardEl.dataset.severity : '', cardShown: !!noticeCardEl && !noticeCardEl.hidden });
-  function paintTitle() { $('nusa-title').textContent = (capsule && N.takeoverTitle(takeoverData())) || tabTitle; }
+  // K2-09 S7 (option A): while an app of the icon row is focused (island-shortcuts-mount.js writes #nusa data-app) the island is named
+  // after the app and the tabs' arrows step aside; «Hablar con Koda» brings the tab title and the arrows back.
+  const appItem = () => (nusa.dataset.app && window.AbitoShortcuts ? window.AbitoShortcuts.row().find(it => it.id === nusa.dataset.app) : null);
+  const appFocused = () => !!appItem();
+  // K2-13 T6b-1: while «Hoy» is open the notch is the day, so its title says so (the panel's own line says how many wait).
+  function paintTitle() {
+    const app = appItem();
+    $('nusa-title').textContent = capsule.dataset.hoy === 'open' ? 'Hoy' : app ? app.label : (capsule && N.takeoverTitle(takeoverData())) || tabTitle;
+  }
+  function paintArrows() { const a = N.arrows(current); $('nusa-prev').hidden = appFocused() || !a.prev; $('nusa-next').hidden = appFocused() || !a.next; }
 
   // hover icons (20px grid, stroke), one per tab id
   const ICONS = {
@@ -44,28 +53,72 @@
       if (on && focus) b.focus();
     }
     const panel = $('nusa-panel'); if (panel) panel.setAttribute('aria-labelledby', `nusa-tab-${tab.id}`);
-    const a = N.arrows(next);
-    $('nusa-prev').hidden = !a.prev; $('nusa-next').hidden = !a.next;
+    paintArrows();
     doc.dispatchEvent(new CustomEvent('abito:nusa-tab', { detail: { tab: tab.id, index: next } }));
   }
-  const go = (delta, focus) => { const to = N.step(current, delta); if (to !== current) select(to, focus); };
+  const go = (delta, focus) => { if (appFocused()) return; const to = N.step(current, delta); if (to !== current) select(to, focus); };
+  const tabOf = b => N.TABS.findIndex(t => t.id === b.dataset.tab);
+
+  // nusa-home (human, 16-nov: «cuando este navegando por pantallas de koda que tenga el boton home en el medio»; «abajo al centro»): away from the Inicio
+  // (Agentes, Avisos, or Hoy open) a house disc, bottom and centred, goes back to the Inicio. The pager dots step to its left (CSS, #nusa[data-home]).
+  // select(0) also closes Hoy: island-nusa-bodies.js listens for abito:nusa-tab. A script's click is never a decision: only a trusted click moves.
+  const island = $('island');
+  const homeBtn = doc.createElement('button');
+  homeBtn.id = 'nusa-home'; homeBtn.type = 'button'; homeBtn.hidden = true; homeBtn.setAttribute('aria-label', 'Inicio'); homeBtn.setAttribute('data-tip', 'Inicio');
+  (() => {
+    const svg = doc.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 20 20'); svg.setAttribute('width', '14'); svg.setAttribute('height', '14'); svg.setAttribute('aria-hidden', 'true');
+    svg.setAttribute('fill', 'none'); svg.setAttribute('stroke', 'currentColor'); svg.setAttribute('stroke-width', '1.8');
+    svg.setAttribute('stroke-linecap', 'round'); svg.setAttribute('stroke-linejoin', 'round');
+    for (const d of ['M3.5 9.5 10 4l6.5 5.5', 'M5 8.5V16h10V8.5']) { const path = doc.createElementNS('http://www.w3.org/2000/svg', 'path'); path.setAttribute('d', d); svg.append(path); }
+    homeBtn.append(svg);
+  })();
+  if (island) island.append(homeBtn);
+  homeBtn.addEventListener('click', e => { if (e.isTrusted !== true) return; select(0, false); });
+  function paintHome() {
+    if (!capsule) return;
+    const calm = capsule.dataset.phase === 'expanded' && capsule.dataset.view === 'overview' && !capsule.dataset.card
+      && !['pending', 'expired', 'outcome'].includes(capsule.dataset.question || '') && !['waiting', 'finished', 'error'].includes(capsule.dataset.takeover || '');
+    const away = capsule.dataset.hoy === 'open' || (nusa.dataset.tab !== 'inicio' && !appFocused());
+    const on = calm && away;
+    homeBtn.hidden = !on;
+    if (on) nusa.dataset.home = 'on'; else delete nusa.dataset.home;
+  }
+  doc.addEventListener('abito:nusa-tab', paintHome);
+  doc.addEventListener('abito:nusa-app', paintHome);
+  if (typeof MutationObserver === 'function' && capsule) {
+    const watch = new MutationObserver(paintHome);
+    watch.observe(capsule, { attributes: true, attributeFilter: ['data-hoy', 'data-takeover', 'data-card', 'data-question', 'data-view', 'data-phase'] });
+    watch.observe(nusa, { attributes: true, attributeFilter: ['data-tab', 'data-app'] });
+  }
+  paintHome();
+  // the Inicio dock (island-nusa-bodies.js) asks for a tab by id: the same guard as a dot click, then the same select()
 
   nusa.querySelectorAll('[role="tab"]').forEach(b => b.addEventListener('click', e => {
-    if (e.isTrusted !== true) return;
-    select(N.TABS.findIndex(t => t.id === b.dataset.tab));
+    if (e.isTrusted !== true || appFocused()) return;
+    select(tabOf(b));
   }));
   $('nusa-prev').addEventListener('click', e => { if (e.isTrusted === true) go(-1); });
   $('nusa-next').addEventListener('click', e => { if (e.isTrusted === true) go(1); });
   nusa.addEventListener('wheel', e => { const d = N.wheelStep(e); if (d) { e.preventDefault(); go(d); } }, { passive: false });
 
   const active = () => capsule && capsule.dataset.phase === 'expanded' && capsule.dataset.view === 'overview' && !capsule.dataset.card
+    && capsule.dataset.hoy !== 'open' /* the pager is behind Hoy: an arrow key must never walk hidden tabs */
     && !['pending', 'expired', 'outcome'].includes(capsule.dataset.question || '');
   const typingIn = el => !!el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName));
+  // The Inicio dock asks for a tab by id. A script's CustomEvent is never trusted, so the listener is gated by STATE instead: only while the plain
+  // idle overview (the one that shows the dock) is on screen, the same `active()` the keyboard uses and no take-over card.
+  doc.addEventListener('abito:nusa-go', e => {
+    const to = N.TABS.findIndex(t => e.detail && t.id === e.detail.tab);
+    if (to >= 0 && active() && !['waiting', 'finished'].includes(capsule.dataset.takeover || '') && !appFocused()) select(to);
+  });
   doc.addEventListener('keydown', e => {
     if (!active()) return;
     const d = N.keyStep(e, { typing: typingIn(doc.activeElement) });
     if (d) { e.preventDefault(); go(d, nusa.contains(doc.activeElement)); }
   });
+  // K2-09 S7: the app's label replaces the tab title while its card is up, and back
+  doc.addEventListener('abito:nusa-app', () => { paintTitle(); paintArrows(); });
 
   // clock: progress ring of the day + date + bold time, refreshed every 30 s
   function paintClock() {
@@ -128,24 +181,6 @@
   if (capsule) new MutationObserver(paintVeil).observe(capsule, { attributes: true });
   for (const el of [qEl, noticeCardEl]) if (el) new MutationObserver(paintVeil).observe(el, { attributes: true, attributeFilter: ['data-look', 'data-severity'] });
 
-  // ears: #island clips its children, so the concave corners live in a sibling of #island, positioned from its box
-  if (capsule && island) {
-    const ear = doc.createElement('div'); ear.id = 'nusa-ear'; ear.setAttribute('aria-hidden', 'true');
-    ear.append(doc.createElement('i'), doc.createElement('i'));
-    island.after(ear);
-    const place = () => {
-      // human, 29-oct: the island is the Nusa notch in EVERY expanded phase (chat included), so it wears the ears whenever it hangs expanded from the top
-      const on = active() || !!capsule.dataset.takeover || capsule.dataset.phase === 'expanded';
-      ear.dataset.on = on ? 'true' : 'false';
-      if (!on) return;
-      const r = { left: island.offsetLeft, top: island.offsetTop, width: island.offsetWidth };
-      const rect = island.getBoundingClientRect(), cr = capsule.getBoundingClientRect();
-      ear.style.left = `${rect.left - cr.left - 12}px`; ear.style.top = `${rect.top - cr.top}px`; ear.style.width = `${(r.width || rect.width) + 24}px`;
-    };
-    new MutationObserver(place).observe(capsule, { attributes: true });
-    new MutationObserver(place).observe(island, { attributes: true, attributeFilter: ['style'] });
-    window.addEventListener('resize', place);
-    place();
-  }
+  // isla-cualquier-lado S1: the floating card has no concave ears; the #nusa-ear sibling that drew them is gone.
   select(0);
 })();

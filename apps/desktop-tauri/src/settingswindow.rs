@@ -9,7 +9,7 @@
 //! limiter. No secret, token or path crosses to the WebView here.
 
 use crate::AppState;
-use abito_island::bridge::{self, BridgeError};
+use koda_island::bridge::{self, BridgeError};
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Once;
@@ -36,8 +36,8 @@ pub(crate) const MIN_INNER_SIZE: (f64, f64) = (720.0, 480.0);
 /// below the window minimum: on a screen smaller than the minimum, the minimum
 /// wins — the WM enforces `min_inner_size` anyway.
 pub(crate) fn opening_size(stored: Option<(u32, u32)>, work: (u32, u32)) -> (f64, f64) {
-    let (min_w, min_h) = abito_island::prefs::SETTINGS_WINDOW_SIZE_MIN;
-    let (max_w, max_h) = abito_island::prefs::SETTINGS_WINDOW_SIZE_MAX;
+    let (min_w, min_h) = koda_island::prefs::SETTINGS_WINDOW_SIZE_MIN;
+    let (max_w, max_h) = koda_island::prefs::SETTINGS_WINDOW_SIZE_MAX;
     let usable = |(w, h): (u32, u32)| {
         w >= min_w && w <= max_w && h >= min_h && h <= max_h && w <= work.0 && h <= work.1
     };
@@ -373,12 +373,12 @@ mod tests {
         assert_ne!(env!("CARGO_PKG_VERSION"), "0.1.2", "never the stale 0.1.2 label");
     }
 
-    /// Koda 0.1 — Human 30-oct («Vamosa a cerrar esta version cambiar el nombre del repo por Koda y apartir de aqui empezaremos esta sera la version 0.1» → «Todo se llama Koda, repo nuevo desde 0.1» + «Solo lo visible»): the first Koda release is 0.1.0 stable (no preview label).
+    /// Koda 0.2.1 (14-nov: the welcome Inicio, the phone-link switch fix and the QR while off; stable, no preview label). Koda 0.2.0 (13-nov, human «Saca la versión de Linux y Windows»), stable, no preview label. Koda 0.1 — Human 30-oct («Vamosa a cerrar esta version cambiar el nombre del repo por Koda y apartir de aqui empezaremos esta sera la version 0.1» → «Todo se llama Koda, repo nuevo desde 0.1» + «Solo lo visible»): the first Koda release is 0.1.0 stable (no preview label).
     #[test]
-    fn koda_first_release_is_0_1_0_stable() {
-        assert_eq!(env!("CARGO_PKG_VERSION"), "0.1.0");
+    fn koda_release_is_0_2_1_stable() {
+        assert_eq!(env!("CARGO_PKG_VERSION"), "0.2.1");
         assert_eq!(super::RELEASE_CHANNEL.trim(), "", "a stable release has no preview label");
-        assert_eq!(super::display_version(), "0.1.0");
+        assert_eq!(super::display_version(), "0.2.1");
     }
 
     /// #366 F093: island-window commands refuse every label but the exact `main`.
@@ -432,15 +432,19 @@ mod tests {
     /// never silently become reachable from the settings window.
     #[test]
     fn f093_the_commands_reachable_from_settings_are_pinned_exactly() {
-        const REACHABLE: [&str; 15] = [
+        // K2-10 T4 (S11): `gmail_action` joins this list on purpose — the Gmail card lives in Ajustes,
+        // so it must answer in the own settings window too (shared sender gate, like prefs_action).
+        const REACHABLE: [&str; 17] = [
             "agent_action",
             "daemon_action",
             "dictation_action",
             "failure_action",
+            "gmail_action",
             "hotkey_action",
             "models_action",
             "monitor_action",
             "oauth_action",
+            "phone_link_action",
             "plan_action",
             "prefs_action",
             "secret_action",
@@ -505,6 +509,26 @@ mod tests {
     #[test]
     fn f093_the_label_is_the_exact_string_the_gate_admits() {
         assert_eq!(SETTINGS_LABEL, "settings");
+    }
+
+    /// K2-10 T4 (S11): «lo que se configure en Ajustes tiene que andar también en su ventana
+    /// propia». The Gmail card lives in Ajustes, so its command gates on the SHARED sender gate and
+    /// never on `main_window_only` — otherwise the card would answer in the island and fail in the
+    /// own window it is drawn in.
+    #[test]
+    fn k2_10_the_gmail_command_answers_in_the_island_and_in_the_own_settings_window() {
+        let src = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/gmailhost.rs"),
+        )
+        .expect("gmailhost.rs");
+        assert!(src.contains("bridge::sender_ok(webview.label(), &url)"), "the shared sender gate is the one that admits both windows");
+        assert!(!src.contains("main_window_only("), "the Gmail card is configured in Ajustes: it must work there");
+        // The gate itself, as the command uses it: both labels and both pages.
+        assert!(koda_island::bridge::sender_ok("main", "tauri://localhost/index.html").is_ok());
+        assert!(koda_island::bridge::sender_ok(SETTINGS_LABEL, "tauri://localhost/settings.html").is_ok());
+        assert!(koda_island::bridge::sender_ok("settings", "tauri://localhost/index.html").is_ok(), "the island page is served under both labels");
+        assert!(koda_island::bridge::sender_ok("main", "tauri://localhost/settings.html").is_err(), "the Ajustes page belongs to the settings window alone");
+        assert!(koda_island::bridge::sender_ok("foreign", "tauri://localhost/index.html").is_err());
     }
 
     // ---- T6.2: the opening size of the own window (pure, no window system) ---

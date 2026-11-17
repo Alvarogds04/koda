@@ -1,5 +1,5 @@
 'use strict';
-// Parity with the harness hooks (apps/desktop-harness/src/config.cjs): with no explicit ABITO_DESKTOP_SOCKET, an
+// Parity with the harness hooks (apps/desktop-harness/src/config.cjs): with no explicit KODA_DESKTOP_SOCKET, an
 // ordinary Pi session finds the running island through `<runtime>/endpoint.json`, with the same closed checks.
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
@@ -21,7 +21,7 @@ function put(rcv, over = {}, mode = 0o600) {
   fs.chmodSync(file, mode);
   return file;
 }
-const resolve = (rcv, options, uid = owner) => resolveConfig({ ABITO_SOCKET_DIR: rcv.runtime }, uid, options);
+const resolve = (rcv, options, uid = owner) => resolveConfig({ KODA_SOCKET_DIR: rcv.runtime }, uid, options);
 function ownStart() {
   // macOS has no /proc: the pid start identity comes from the same `ps` probe production uses
   if (process.platform === 'darwin') return require('../config.cjs').darwinProc.start(process.pid);
@@ -29,34 +29,34 @@ function ownStart() {
   return stat.slice(stat.lastIndexOf(')') + 2).split(' ')[22 - 3];
 }
 
-unix('absent ABITO_DESKTOP_SOCKET: a valid handoff endpoint is resolved', async t => {
+unix('absent KODA_DESKTOP_SOCKET: a valid handoff endpoint is resolved', async t => {
   const rcv = await fakeReceiver(t);
   put(rcv);
   assert.deepEqual(resolve(rcv), { runtime: rcv.runtime, endpoint: rcv.endpoint, source: 'handoff' });
-  assert.equal(resolveEndpoint({ ABITO_SOCKET_DIR: rcv.runtime }, owner), rcv.endpoint);
+  assert.equal(resolveEndpoint({ KODA_SOCKET_DIR: rcv.runtime }, owner), rcv.endpoint);
   // the island emits the key order serde_json uses, with the optional procStart identity
   const file = path.join(rcv.runtime, 'endpoint.json');
   fs.writeFileSync(file, JSON.stringify({ endpoint: rcv.endpoint, pid: process.pid, procStart: ownStart(), v: 1 }) + '\n');
   assert.equal(resolve(rcv).endpoint, rcv.endpoint);
   // a fresh call reads the file again: an island restart publishes a new endpoint
   fs.rmSync(file);
-  assert.equal(resolveEndpoint({ ABITO_SOCKET_DIR: rcv.runtime }, owner), undefined);
+  assert.equal(resolveEndpoint({ KODA_SOCKET_DIR: rcv.runtime }, owner), undefined);
   put(rcv);
-  assert.equal(resolveEndpoint({ ABITO_SOCKET_DIR: rcv.runtime }, owner), rcv.endpoint);
+  assert.equal(resolveEndpoint({ KODA_SOCKET_DIR: rcv.runtime }, owner), rcv.endpoint);
 });
 
-unix('explicit ABITO_DESKTOP_SOCKET still wins and the handoff is never read', async t => {
+unix('explicit KODA_DESKTOP_SOCKET still wins and the handoff is never read', async t => {
   const rcv = await fakeReceiver(t);
   put(rcv);
   const originalOpen = fs.openSync;
   let opened = 0;
   fs.openSync = (...args) => { opened++; return originalOpen.apply(fs, args); };
   try {
-    assert.deepEqual(resolveConfig({ ABITO_SOCKET_DIR: rcv.runtime, ABITO_DESKTOP_SOCKET: rcv.endpoint }, owner),
+    assert.deepEqual(resolveConfig({ KODA_SOCKET_DIR: rcv.runtime, KODA_DESKTOP_SOCKET: rcv.endpoint }, owner),
       { runtime: rcv.runtime, endpoint: rcv.endpoint, source: 'env' });
   } finally { fs.openSync = originalOpen; }
   assert.equal(opened, 0);
-  assert.throws(() => resolveConfig({ ABITO_SOCKET_DIR: rcv.runtime, ABITO_DESKTOP_SOCKET: '/other/p-abc123/s' }, owner),
+  assert.throws(() => resolveConfig({ KODA_SOCKET_DIR: rcv.runtime, KODA_DESKTOP_SOCKET: '/other/p-abc123/s' }, owner),
     /Unexpected endpoint/);
 });
 
@@ -93,8 +93,8 @@ unix('stale, foreign or malformed handoffs yield no connection', async t => {
   fs.unlinkSync(rcv.endpoint);
   assert.equal(resolve(rcv).endpoint, undefined, 'no socket at the published endpoint');
   // unknown runtime root stays a hard configuration error, exactly as before
-  assert.throws(() => resolveConfig({ ABITO_SOCKET_DIR: 'relative' }, owner), /Invalid ABITO_SOCKET_DIR/);
-  assert.equal(resolveEndpoint({ ABITO_SOCKET_DIR: 'relative' }, owner), undefined);
+  assert.throws(() => resolveConfig({ KODA_SOCKET_DIR: 'relative' }, owner), /Invalid KODA_SOCKET_DIR/);
+  assert.equal(resolveEndpoint({ KODA_SOCKET_DIR: 'relative' }, owner), undefined);
 });
 
 unix('an ordinary Pi session reaches an island it did not know at start, and a restarted one', async t => {
@@ -102,7 +102,7 @@ unix('an ordinary Pi session reaches an island it did not know at start, and a r
   const runtime = first.runtime;
   // no endpoint.json yet: the island is not up when Pi starts, so nothing connects
   const { handlers, ctx } = harness(adapter.registerAdapter, {
-    runtime, resolveEndpoint: () => resolveEndpoint({ ABITO_SOCKET_DIR: runtime }, owner) });
+    runtime, resolveEndpoint: () => resolveEndpoint({ KODA_SOCKET_DIR: runtime }, owner) });
   handlers.get('session_start')({}, ctx);
   assert.equal(first.frames.length, 0, 'no connection without a published endpoint');
   // the island comes up: the next retry finds the handoff, exactly like the Claude Code hook
@@ -125,7 +125,7 @@ unix('an ordinary Pi session reaches an island it did not know at start, and a r
 test('Windows twin: metadata handoff is found after Pi started, followed across an island restart, and absent means no connection', {
   skip: process.platform !== 'win32' && 'Windows-only mechanism; the Unix tests above cover the same behaviour' }, async t => {
   const local = fs.mkdtempSync(path.join(path.resolve(__dirname, '..'), '.test-local-'));
-  const notices = path.join(local, 'Abito', 'notices');
+  const notices = path.join(local, 'Koda', 'notices');
   fs.mkdirSync(notices, { recursive: true });
   t.after(() => fs.rmSync(local, { recursive: true, force: true }));
   const first = await fakeReceiver(t, { runtime: notices });

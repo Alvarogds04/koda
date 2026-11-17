@@ -169,7 +169,8 @@ console.log(`island-nusa-model-check: ${passed} passed`);
   assert.deepEqual(await N.dismissAll(null, ['a']), { done: 0, failed: 1, snapshot: null }, 'no facade: honest failure');
   const fs = require('node:fs');
   const src = fs.readFileSync(path.join(__dirname, '..', 'frontend', 'island-nusa-bodies.js'), 'utf8');
-  assert.match(src, /home\.input\.addEventListener\('input', \(\) => \{[^}]*pendingId = null/, 'editing the text drops the retry id');
+  // welcome-home: the ask field (and its retry id) left the Inicio; nothing in the bodies may build a chat request any more
+  assert.doesNotMatch(src, /client_request_id|pendingId|chat_action/, 'the Inicio no longer submits a chat request');
   assert.doesNotMatch(src, /abito:sessions-view[\s\S]{0,400}paintNotices\(/, 'session events never repaint Avisos');
   console.log('island-nusa-model-check (RDD): ok');
 })().catch(e => { console.error(e); process.exit(1); });

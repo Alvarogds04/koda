@@ -2,7 +2,7 @@
 //!   voice_compare download whisper-small     explicit, pinned SHA-256, official source
 //!   voice_compare [N]                        say «OK Abito, ¿qué hora es?» N times (default 5)
 //! The clips stay in memory only and are gone when the program ends. Nothing is sent anywhere.
-use abito_island::speech::{self, audio, catalog, wake, ModelState};
+use koda_island::speech::{self, audio, catalog, wake, ModelState};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 

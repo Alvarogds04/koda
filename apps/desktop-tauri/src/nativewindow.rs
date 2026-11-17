@@ -83,7 +83,7 @@ pub(crate) fn set_size(win: &WebviewWindow, w: i32, h: i32) -> tauri::Result<()>
 /// Only normal IPC view verbs: no geometry overrides, answers, sends or focus.
 #[cfg(debug_assertions)]
 pub(crate) fn start_view_test(win: &WebviewWindow) {
-    if std::env::var("ABITO_NATIVE_VIEW_TEST").as_deref() != Ok("1") {
+    if std::env::var("KODA_NATIVE_VIEW_TEST").as_deref() != Ok("1") {
         return;
     }
     let window = win.clone();

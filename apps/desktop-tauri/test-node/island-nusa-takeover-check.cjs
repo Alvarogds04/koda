@@ -54,7 +54,8 @@ test('veil colour of a takeover keeps its role (S13): waiting=--sun, error=--red
 });
 test('css: notch shell, hidden legacy chrome, veil shown for every takeover state', () => {
   for (const s of ['waiting', 'finished', 'error']) assert.ok(css.includes(`[data-takeover="${s}"]`), s);
-  assert.ok(/data-takeover[^{]*#island\s*\{[^}]*background:\s*#000[^}]*border-radius:\s*0 0 26px 26px/.test(css), 'notch shell on #island');
+  // isla-cualquier-lado S1: the take-over shell is the floating card too, r26 on all four corners
+  assert.ok(/data-takeover[^{]*#island\s*\{[^}]*background:\s*#000[^}]*border-radius:\s*26px;/.test(css), 'card shell on #island');
   // HU-073 (human choice «02»): the legacy header is NO LONGER hidden wholesale in the Nusa states (that also hid Ajustes · Silenciar · Plegar, a regression of HU-057).
   // Blobs / minibots / overview stay hidden, and inside the header only the three action nodes show: its tabs, pin and plan pills are hidden. The real-layout
   // proof that the three controls are visible and clickable is island-nusa-header-controls-check.
@@ -64,7 +65,9 @@ test('css: notch shell, hidden legacy chrome, veil shown for every takeover stat
   assert.ok(/data-takeover[^{]*#island-header[^{]*\{[^}]*visibility:\s*visible/.test(css), 'the header shows its three action nodes in the take-over states (HU-073)');
   assert.ok(/data-takeover[^{]*#nusa-veil/.test(css) && /data-takeover[^{]*#nusa-head/.test(css), 'veil + header strip shown');
   assert.ok(/data-takeover[^{]*:is\(#nusa-panel, #nusa-state, #nusa-dots[^{]*\{[^}]*display:\s*none/.test(css), 'tab body hidden in takeover');
-  assert.ok(/#nusa-ear/.test(css) && /dataset\.takeover/.test(mount), 'ears follow the takeover');
+  // the shell (hairline + centred shadow) is declared for EVERY expanded phase, take-overs included, and no ears are drawn any more
+  assert.ok(/#capsule\[data-phase="expanded"\] #island \{ background: #000; box-shadow: 0 0 0 1px var\(--win-line\), 0 12px 40px rgba\(0,0,0,\.45\) !important; \}/.test(css), 'card shadow on every expanded phase');
+  assert.ok(!/nusa-ear/.test(css.replace(/\/\*[\s\S]*?\*\//g, '')) && !/nusa-ear/.test(mount.replace(/^\s*\/\/.*$/gm, '')) && /dataset\.takeover/.test(mount), 'no ears; the mount still follows the takeover');
 });
 test('css: finished lane band sits inside the 150 notch (top 144 no longer 178)', () => {
   assert.ok(/data-notice-view="notices"\] #notices[^{]*\{[^}]*top:\s*(144|\d{2})px/.test(css) || /data-takeover="finished"[^{]*#notices[^{]*\{[^}]*top:/.test(css));

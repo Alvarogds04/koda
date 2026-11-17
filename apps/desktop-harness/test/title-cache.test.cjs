@@ -20,7 +20,7 @@ function state(t) {
   return d;
 }
 test('Windows path (helper backend, no getuid): a title is stored privately and read back; a symlink or foreign file is not trusted', t => {
-  const dir = state(t), env = { ABITO_STATE_DIR: dir };
+  const dir = state(t), env = { KODA_STATE_DIR: dir };
   const realUid = process.getuid; process.getuid = undefined; t.after(() => { process.getuid = realUid; });
   winfs.useForTests(fakeBackend());
   assert.equal(titles.saveTitle(env, 'claude-titles', 'tok1', 'Migrar la base'), true);
@@ -31,21 +31,21 @@ test('Windows path (helper backend, no getuid): a title is stored privately and 
   assert.equal(titles.loadTitle(env, 'claude-titles', 'tok1'), null);
 });
 test('Windows path: an untrusted helper means no title, never a crash', t => {
-  const dir = state(t), env = { ABITO_STATE_DIR: dir };
+  const dir = state(t), env = { KODA_STATE_DIR: dir };
   winfs.useForTests({ checkPath() { throw new winfs.WinFsError('helper_untrusted'); }, readPrivate() { throw new winfs.WinFsError('helper_untrusted'); },
     writePrivate() { throw new winfs.WinFsError('helper_untrusted'); }, makeDir() { throw new winfs.WinFsError('helper_untrusted'); } });
   assert.equal(titles.saveTitle(env, 'claude-titles', 'tok1', 'x1'), false);
   assert.equal(titles.loadTitle(env, 'claude-titles', 'tok1'), null);
 });
-test('default Windows location is %LOCALAPPDATA%\\Abito\\state and the chain below LOCALAPPDATA is created level by level', () => {
+test('default Windows location is %LOCALAPPDATA%\\Koda\\state and the chain below LOCALAPPDATA is created level by level', () => {
   const win = process.platform === 'win32';
   const dir = titles.stateDir({ LOCALAPPDATA: 'C:\\Users\\dev\\AppData\\Local', HOME: '/h' });
-  assert.equal(dir, win ? 'C:\\Users\\dev\\AppData\\Local\\Abito\\state' : '/h/.local/state/abito-island');
+  assert.equal(dir, win ? 'C:\\Users\\dev\\AppData\\Local\\Koda\\state' : '/h/.local/state/koda');
 });
 // Judge recheck warnings (HU-062): the Windows branch must also prune titles older than 14 days (parity with Unix), and a LOCALAPPDATA
 // with a trailing separator / forward slashes must still create the chain from it.
 test('Windows path prunes titles older than 14 days through the helper, keeps recent ones', t => {
-  const dir = state(t), env = { ABITO_STATE_DIR: dir };
+  const dir = state(t), env = { KODA_STATE_DIR: dir };
   winfs.useForTests(fakeBackend());
   assert.equal(titles.saveTitle(env, 'claude-titles', 'old1', 'Vieja'), true);
   assert.equal(titles.saveTitle(env, 'claude-titles', 'new1', 'Nueva'), true);
@@ -56,6 +56,6 @@ test('Windows path prunes titles older than 14 days through the helper, keeps re
   assert.equal(fs.existsSync(path.join(dir, 'claude-titles', 'new1')), true);
 });
 test('dirChain starts at LOCALAPPDATA even when it carries a trailing separator or forward slashes', () => {
-  const chain = titles.dirChain('C:\\Users\\dev\\AppData\\Local\\Abito\\state\\claude-titles', { LOCALAPPDATA: 'C:/Users/dev/AppData/Local/' });
-  assert.deepEqual(chain, ['C:\\Users\\dev\\AppData\\Local\\Abito', 'C:\\Users\\dev\\AppData\\Local\\Abito\\state', 'C:\\Users\\dev\\AppData\\Local\\Abito\\state\\claude-titles']);
+  const chain = titles.dirChain('C:\\Users\\dev\\AppData\\Local\\Koda\\state\\claude-titles', { LOCALAPPDATA: 'C:/Users/dev/AppData/Local/' });
+  assert.deepEqual(chain, ['C:\\Users\\dev\\AppData\\Local\\Koda', 'C:\\Users\\dev\\AppData\\Local\\Koda\\state', 'C:\\Users\\dev\\AppData\\Local\\Koda\\state\\claude-titles']);
 });

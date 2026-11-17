@@ -2,7 +2,12 @@
 
 Transport: Unix-domain socket `<runtimeDir>/p-XXXXXX/s` (dir 0700, socket 0600, path ≤ 107 bytes).
 Framing: one JSON object per line, split on LF (0x0A) only. Inbound ≤ 256 KiB (hello ≤ 4 KiB),
-max 240 frames/min per client, max 2 clients, outbound queue ≤ 1 MiB (slow client is dropped).
+max 240 frames/min per client, max 4 clients (see "Client slots"), outbound queue ≤ 1 MiB (slow client is dropped).
+Outbound text invariant (K2-05 U2 follow-up): NO outbound line ever carries a lone UTF-16 surrogate —
+`encodeServerFrame`, the single outbound encoder, replaces any lone surrogate in any string with U+FFFD
+(a `\udXXX` escape for a lone half is what the island's serde_json rejects, dropping the connection),
+and every chunk/clip of outbound text (`message_delta` chunking, history clips) cuts on whole code points,
+never between the two halves of a surrogate pair.
 Implementation: `src/protocol.cjs` (codec/validators/translation), `src/server.cjs` (`IslandServer`).
 
 ## Handshake
@@ -16,14 +21,18 @@ Implementation: `src/protocol.cjs` (codec/validators/translation), `src/server.c
 
 | type | fields | notes |
 |---|---|---|
-| `send` | `text`, `images?[{data(base64),mimeType}]` | `busy` error while a turn runs; completion is `agent_settled`, not the prompt response |
-| `steer` | `text` | only while busy (`not_busy` otherwise) |
+| `send` | `text`, `images?[{data(base64),mimeType}]`, `requestId?`, `attachments?` | `busy` error while a turn runs; completion is `agent_settled`, not the prompt response. `requestId` (`[A-Za-z0-9_-]{1,64}`, anything else is `bad_request`): see "Recorded prompts". `attachments`: 1–10 distinct upload ids (`a-<16 hex>`) this client received in `uploaded` (the wire accepts up to 10, but the store refuses more than 5 per message: `message_too_large`); with attachments `text` may be empty. See "Attachments" |
+| `upload` | `requestId`, `name`, `size`, `offset`, `data` (base64) | one chunk of one file, in order; see "Attachments" |
+| `upload_discard` | `id` | deletes an unsent file this client uploaded (silent; another client's id is a no-op) |
+| `steer` | `text`, `requestId?` | only while busy (`not_busy` otherwise); `requestId` as for `send` |
 | `abort` | – | Cancels a running turn; its child is recycled before another prompt. An ACK alone never frees busy. Idle abort still reaches Pi. |
 | `set_paused` | `paused: bool` | Global pause switch (#379); see "Global pause" |
-| `new_conversation` | – | refused while busy |
+| `new_conversation` | – | **Refused** with a fixed `error{conversations_off}` (K2-05 T4 U1): the island keeps ONE continuous chat (L3/L4/L7, Gentle Dot's `conversationsOn` gate). The refusal precedes every other gate (busy, paused included) and no command ever reaches the engine |
+| `get_history` | – | replies `history{messages,hasEarlier}` — the newest page of the open chat; see "History frames". Asked while the engine starts or restarts, it waits until the engine is ready (Gentle Dot `whenReady`, up to 60 s); `unavailable` when the engine stops instead, does not start in time, or holds no open session |
+| `get_earlier` | `before: s<file>-<turn>` | replies `earlier{before,messages,hasEarlier}` — the page ending just before that message id. Ids are canonical (no leading zeros): a non-canonical or non-page-id `before` is `bad_request`; a canonical id that names no turn — `sN-0`, a turn beyond what that file ever held, or an index past the chain — yields an EMPTY page with `hasEarlier:false` (the island keeps what it shows) |
 | `status` | – | replies `agent_state` |
 | `interrupted_ack` | – | acknowledges the interrupted-work record exposed in `ready.interrupted` (#385/R5): the daemon marks it consumed (never at boot) and replies `interrupted_acknowledged`; idempotent, allowed while paused; if persisting the record fails it replies the `error`/`failed` frame and the record stays pending so a retry can persist it (R4) |
-| `ui_response` | `id`, one of `value` / `confirmed` / `cancelled` | answers an `ask`; validated against the pending ask |
+| `ui_response` | `id`, one of `value` / `confirmed` / `cancelled` | answers an `ask`; validated against the pending ask. Only the FIRST answer is accepted: it reaches the engine once and closes the ask, and every other answer is refused `unknown_ask` |
 | `accounts_list` / `providers_list` / `profiles_list` | – | reply `accounts` / `providers` / `profiles` |
 | `connectors_list` | – | reply `connectors` (read-only, persisted; see "Connectors frames") |
 | `mcp_import_preview` | – | reply `mcp_import` (read-only scan of OTHER clients' MCP configs; see "MCP import preview frames") |
@@ -69,12 +78,15 @@ One global switch, backend only this round (a UI card comes later):
 Setting the same value again replies the current `agent_state` and changes nothing. While `paused` is true the
 daemon admits nothing new:
 
-- REFUSED with a new closed error code `error{paused}`: `send`, `steer`, `new_conversation` (agent-turn admission)
+- REFUSED with a new closed error code `error{paused}`: `send`, `steer` (agent-turn admission)
   and `agent_connect`, `connectors_list`, `agents_list` (each spawns a process: a tool/connector call).
+  `new_conversation` is NOT on this list since K2-05 T4 U1: it is refused `conversations_off` regardless of the
+  pause state (the refusal precedes every gate).
 - STILL ALLOWED: `abort` and `agent_disconnect` (stopping work is always possible), every read-only query
   (`status`, `accounts_list`, `providers_list`, `models_list`, `profiles_list`, `settings_get`, `mcp_import_preview`,
-  `agents_list` while unpaused, `auth_state`), and all account/profile/settings/auth verbs. Scheduled tasks have no
-  admission path in the daemon yet; when one exists it must honor this switch.
+  `agents_list` while unpaused, `auth_state`), and all account/profile/settings/auth verbs. K2-13 Minikodas honor it:
+  `minikoda_launch` is refused with `paused`, scheduled ticks are skipped, and turning the pause on cancels the
+  Minikodas that are running (see «Minikodas and «Hoy» frames»).
 - In-flight work is interrupted at the next safe point (#378): pausing while a turn is active cancels the turn
   through the engine's cancellation path (reason `paused`): admission closes, open asks resolve, one sanitized
   warning `toast` explains the pause ("La pausa interrumpió el turno del agente."), the child is recycled and the
@@ -289,9 +301,15 @@ The hooks catalogue also accepts `statusline` in `hooks_install`/`hooks_remove`,
 **Hooks catalogue addendum (#467, `hooks_preview` / `hooks_install` / `hooks_remove`, `src/agent-hooks.cjs`).** `clientId` also accepts `cursor`
 (closed set: `claude-code, codex, statusline, gemini-cli, copilot-cli, opencode, amp, cursor`). Cursor is the one MERGED client: `~/.cursor/hooks.json` belongs to the
 user, so install adds three marker-tagged notify-only entries (`sessionStart`, `sessionEnd`, `stop`; `{version:1,hooks:{<event>:[{command}]}}`) next to their
-hooks and creates the file with `version: 1` only when absent; remove deletes only the entries carrying `abito-island-hooks/1` (and the file only if nothing
+hooks and creates the file with `version: 1` only when absent; remove deletes only the entries carrying `koda-island-hooks/1` (and the file only if nothing
 but our stub remains). Unparseable JSON or an unexpected `hooks` shape is `foreign_file` (never rewritten). Backup first, hash-bound plan, shared notify
-script `~/.abito/agent-hooks/island-notify.mjs` kept while another dependent client (gemini-cli, copilot-cli, cursor) still uses it. Cursor needs a restart.
+script `~/.koda/agent-hooks/island-notify.mjs` kept while another dependent client (gemini-cli, copilot-cli, cursor) still uses it. Cursor needs a restart.
+
+**Koda 0.1 artifacts (K2-04, S2/S4).** A Koda 0.1 install left `abito-island-hooks/1`, `abito-island*` names and `~/.abito/agent-hooks/island-notify.mjs`
+behind. Both markers are ours: install retires the 0.1 file/dir into the existing dated-backup flow (a file that only held our entries is deleted, one
+that also holds other entries is rewritten without ours) and remove takes it out, so each client keeps exactly ONE artifact and the human sees one card
+per notice. A file at an old name without either marker stays `foreign_file` and is never rewritten nor retired; the 0.1 notify script is kept while
+another dependent client's 0.1 artifact still carries our marker.
 
 **Invariants.** `agent_connect` / `agent_disconnect` and all `connectors_*` control commands are reachable ONLY through the authenticated
 `island-agent/1` channel: there is NO MCP tool, engine tool or CLI path that triggers them. They are rate-limited by the per-client limiter and each
@@ -302,15 +320,15 @@ inherited socket (no discoverable session file): a security follow-up, NOT done.
 
 **Grave same-UID limit for approvals:** `connectors_approve` is a privileged command reachable only through the authenticated island channel (not an MCP/engine tool, not a CLI); but the channel token lives in `<island>/runtime/session.json` (0600) and the Abito engine agent, Claude Code and Codex run as the same user and can read it: an approval card the agent can click is NOT a human gate. This matters MORE for approvals than for agents. Closing it needs the daemon launched by the island with an inherited socket (security follow-up, not done).
 
-**How the installer is run.** `hookInstallerBin` (absolute normalized path of `apps/desktop-harness/bin/abito-hook.cjs`, no default) is checked before every
+**How the installer is run.** `hookInstallerBin` (absolute normalized path of `apps/desktop-harness/bin/koda-hook.cjs`, no default) is checked before every
 spawn (regular non-symlink file owned by you/root, not group/world-writable, secure parent chain; a checkout with mode 664 is refused) and spawned as
 `[node, installer, install <claude|codex|statusline> --user [--remove] --json]` (preview) / `... --apply-plan <hash> --audit-dir <island>/audit --json` (apply):
 shell:false, own process group killed whole after 10 s, stdout capped at 256 KiB, stderr drained and never surfaced. The removal-only legacy
 profile `install recap --user --remove [--apply]` (Koda 0.1 recap-hook cleanup; install without `--remove` is a usage error) runs through this same
 spawn path once per daemon start. The env is an ALLOWLIST
-(`PATH=/usr/bin:/bin`, `HOME` = the daemon's REAL home, `LANG`) plus `ABITO_ISLAND_EXE` = realpath of the daemon's node; no agent markers, `PI_*` or provider vars.
+(`PATH=/usr/bin:/bin`, `HOME` = the daemon's REAL home, `LANG`) plus `KODA_ISLAND_EXE` = realpath of the daemon's node; no agent markers, `PI_*` or provider vars.
 The daemon is the authenticated caller, so installer guard (i) becomes "the parent is the daemon's node" (guard (ii) is satisfied by the scrubbed env).
-**Endpoint handoff consumed by hooks (enforced rules).** An explicit `ABITO_DESKTOP_SOCKET` wins after endpoint-shape validation and causes no `endpoint.json` read. Otherwise runtime selection is ordered: `ABITO_SOCKET_DIR` (when set, absolute, normalized and non-root), else `$XDG_RUNTIME_DIR/abito-island` only when `XDG_RUNTIME_DIR` is absolute, normalized and non-root, else `/run/user/<uid>/abito-island`.
+**Endpoint handoff consumed by hooks (enforced rules).** An explicit `KODA_DESKTOP_SOCKET` wins after endpoint-shape validation and causes no `endpoint.json` read. Otherwise runtime selection is ordered: `KODA_SOCKET_DIR` (when set, absolute, normalized and non-root), else `$XDG_RUNTIME_DIR/koda` only when `XDG_RUNTIME_DIR` is absolute, normalized and non-root, else `/run/user/<uid>/koda`.
 
 The reader accepts `<runtime>/endpoint.json` only as a regular, non-symlink file owned by you, mode exactly `0600` including no special bits, a single hard link, and at most 4096 bytes. Its complete text must equal `JSON.stringify(parsed)` or that exact compact serialization plus one LF; it has exactly `v`, `endpoint`, `pid` (with `v: 1`). Duplicate keys, escaped key names, pretty printing, other whitespace and CRLF are refused. The Rust producer at `apps/desktop-tauri/src/handoff.rs` writes compact one-line `serde_json` plus LF as `{"endpoint":"<..>","pid":N,"v":1}\n`; the alternate `v,endpoint,pid` order is accepted as well.
 
@@ -341,13 +359,14 @@ Unknown/invalid post-handshake frames get `error{code:"bad_request"}`.
 
 | type | fields |
 |---|---|
-| `ready` | `protocol`, `state{busy,status,paused}`, `limits`, `features{history:false}`, `interrupted?` (`{at, turnActive, asks}` — bounded closed fields of the unconsumed interrupted-work record, counts and time only, never titles/ids/prompts/args/secrets; present until a client sends `interrupted_ack`) |
-| `agent_state` | `busy`, `status` (`ready`, `restarting`, `stopped`…), `paused` |
-| `message_delta` | `messageId`, `text` (≤ 16 K chars each) |
+| `ready` | `protocol`, `state{busy,status,paused,model?}` (`model` only while the engine is ready, see "Model readout"), `limits`, `features{history:true,conversations:false}`, `interrupted?` (`{at, turnActive, asks}` — bounded closed fields of the unconsumed interrupted-work record, counts and time only, never titles/ids/prompts/args/secrets; present until a client sends `interrupted_ack`) |
+| `agent_state` | `busy`, `status` (`starting`, `ready`, `restarting`, `stopped`), `paused`, `model?` (see "Model readout") — `starting` also while the daemon listens but has not launched its engine yet (Gentle Dot `deriveState`) |
+| `user_message` | `messageId` (`s<file>-<turn>`, the history id of that prompt), `text`, `attachments?`, `clipped?`, `requestId?` — a prompt the engine recorded; see "Recorded prompts" |
+| `message_delta` | `messageId`, `text` (≤ 16 K chars each; long texts are split into several deltas, every chunk cut on a whole code point — never inside a surrogate pair) |
 | `message_done` | `messageId` |
 | `activity` | `name` (sanitized tool name), `state: running\|done\|error`, optional `callId` (SAFE_ID, present only when the engine names the call) and optional closed `summary` (error only) — never arguments/results |
 | `queue` | `steering`, `followUp` (counts) |
-| `ask` / `ask_resolved` | `id`, `kind: select\|confirm\|input`, `title`, `options` / `id` |
+| `ask` / `ask_resolved` | `id`, `kind: select\|confirm\|input`, `title`, `options` / `id`. A `select` ask's `options` are the SHOWN labels: white-labelled, unique, non-empty, ≤ 200 chars, and free of C0/C1 control characters (each control run becomes a space; a label that is only controls presents as `Option <position>`). The island MUST answer a `select` ask with `ui_response{value}` set to the EXACT option string as sent in the ask frame — the daemon maps the answer back to the engine's original option BY POSITION; an answer matching no shown option is refused. K2-05 U4b (additive, optional — Gentle Dot `Ask.message`/`Ask.placeholder`): `message` (any kind; what the user approves, ≤ 2000 UTF-16 units) and `placeholder` (`input` only, ≤ 200) travel only when the engine sent a non-empty string; both are harness text, white-labelled (`presentText`, rewrite first, clip second), control characters other than tab/newline removed, on the live frame and on the connect replay alike. The user's `ui_response{value}` is never rewritten. K2-05 R1-001 (additive, optional): `ask_resolved` carries `answered:true` ONLY in the copy sent to the client whose own accepted `ui_response` closed the ask; every other client gets the plain `ask_resolved{id}` (another client's answer, a cancel, an engine restart or the 120 s expiry closed it). A client MUST NOT read a plain `ask_resolved` as its own answer having been sent, and `unknown_ask` means the answer it sent was discarded |
 | `toast` | `level`, `message` |
 | `settings` | `hotkey: string\|null` |
 | `connectors` | `schema`, `catalog[]`, `connectors[]` — see "Connectors frames" |
@@ -355,18 +374,21 @@ Unknown/invalid post-handshake frames get `error{code:"bad_request"}`.
 | `agents` | `agents[]` of `{id,name,state,backup,detail,plan_hash?,summary?,reviewable?,trust_review?}` — see "Agents frames" |
 | `accounts`, `providers`, `models`, `profiles` | allowlisted DTOs only (no keys, baseUrl, headers, env) |
 | `auth_started`, `auth_prompt`, `auth_event`, `auth_done` | passthrough from AccountManager, rebuilt from an allowlist; the daemon never answers prompts |
-| `error` | `code` ∈ `bad_request, busy, not_busy, unavailable, rate_limited, unknown_ask, paused, failed`, plus the H2c connector codes below — generic only |
+| `uploaded` | `requestId`, `attachment{id,name,size,mime}` — the last chunk of this client's upload was stored (sender only; see "Attachments") |
+| `error` | `code` ∈ `bad_request, busy, not_busy, unavailable, rate_limited, unknown_ask, paused, failed`, the attachment codes `file_too_large, message_too_large, too_many_files, upload_failed, attachment_not_found`, plus the H2c connector codes below — generic only; `requestId?` — the `send`/`steer` it answers (see "Recorded prompts") |
 
 ## Event translation (Pi RPC → frames)
 
-Allowlist: `agent_start`/`agent_settled` (busy state), `message_update` with `text_delta`,
+Allowlist: `agent_start`/`agent_settled` (busy state), `message_start` with role `user` (→ `user_message`,
+see "Recorded prompts"), `message_update` with `text_delta`,
 `message_end` (assistant), `tool_execution_start|end`, `queue_update`, `extension_ui_request`
 (`select`/`confirm`/`input` → `ask`; `notify` → `toast`; `editor` auto-cancelled; other UI chrome dropped).
 Everything else (thinking deltas, `turn_end`, `tool_execution_update`, unknown) is dropped, never forwarded raw.
 
 ## Semantics and limits
 
-- Pending asks: max 16, answered once; unanswered asks are cancelled toward the agent after 120 s.
+- Pending asks: max 16, answered once; unanswered asks are cancelled toward the agent after 120 s. Every pending ask is
+  replayed to a client right after its `ready` (a reconnecting island shows and answers it again).
 - Engine restart/exit: `agent_state{status:"restarting"}`, open asks closed, no half-answer replay. Ordinary crash clears busy. A cancelled turn remains busy/unavailable until its replacement generation is ready.
 - Full-turn technical defaults (Pi adaptation, not AG-UI/TanStack parity): 300,000 ms
   monotonic elapsed time from prompt submission and 32 observed Pi `turn_start`
@@ -382,10 +404,13 @@ Everything else (thinking deltas, `turn_end`, `tool_execution_update`, unknown) 
   guarded until the replacement is actually ready. The private session persists,
   but no prompt is automatically replayed, including after ambiguous prompt ACK loss.
   Healthy natural `agent_settled` clears the timer without forced recycling.
-- `new_conversation` acquires the single-flight busy gate before sending Pi
-  `new_session`. Concurrent send/profile/workspace/config changes retain their
-  existing `busy` rejection and do not modify stored config or action counters.
-  The runtime also gates direct `new_session`/`switch_session` requests.
+- The island's `new_conversation` is REFUSED outright with the fixed `error{conversations_off}`
+  before every gate (busy, paused included): Koda keeps ONE continuous chat and no reset ever
+  reaches the engine from the island. The RUNTIME-level single-flight busy gate remains for the
+  engine's own `new_session`/`switch_session` requests (the rotation and its fallback): a request
+  during a cut-off generation or a session switch in flight is refused with `busy`/`not ready`, and
+  concurrent send/profile/workspace/config changes retain their existing `busy` rejection without
+  modifying stored config or action counters.
   A successful reset/switch response is checked against Pi's owned session
   identity via `get_state` before admission reopens; ordinary state reads remain
   usable. Lost ACK/timeout/failed response/child failure is ambiguous: the gate
@@ -406,39 +431,303 @@ Everything else (thinking deltas, `turn_end`, `tool_execution_update`, unknown) 
   replay. The `account_logout` permission change is applied only AFTER the safe point (the canonical `state().busy`
   guard clears, bounded by `interruptSafePointMs`, default 30000 ms): on timeout it answers `busy` and the credential
   and the active profile are untouched. `profile_deactivate` and `agent_disconnect` keep their existing guards.
-- History/replay: **not implemented** (`features.history=false`); a late client only gets current state and open asks.
+- History/replay (K2-05 T4 U1): **implemented** as read-only pages of the open chat — see "History frames".
+  A late client asks `get_history` once it has Handshook; the daemon never pushes an unrequested full history
+  except after a rotation (below).
 - Stale `p-*` socket dirs of dead servers (connection refused) are removed at start, with dev/ino checks.
-- `ui_response` and `send` are not tied to the originating client; all clients share one session (max 2).
+- `ui_response` and `send` are not tied to the originating client; all clients share one session (a
+  `send`'s `requestId` is echoed only to its sender, on the `user_message` of the prompt recorded for it).
 
-## Continuous conversation rotation (additive, #386)
+### Client slots (K2-05 U2 follow-up, re-verified)
 
-Opt-in via the strict `rotation` config key (`enabled` strict boolean, default **false**; `thresholdPercent`
-50..100, default 85; `keepTurns` 1..100, default 12). Disabled by default: zero-config behavior is unchanged.
+The cap is **4 clients**: the island's settings window, the chat, and one reconnect overlap, with the
+daemon's own health probe (`classifySession`'s hello→ready exchange, used by `koda-daemon
+status` and by the island to decide the daemon is alive) always answered. Three rules (F1, re-verify):
 
-- **Trigger.** After every natural `agent_settled`, the daemon reads Pi `get_session_stats`; when
-  `contextUsage.percent >= thresholdPercent` it rotates to a fresh session (`new_session`) seeded by the
-  NEXT user prompt. Rotation itself issues NO model request: only `get_session_stats`, `get_messages`
-  and `new_session`.
-- **Summary.** Deterministic and bounded (`buildSummary` over `get_messages`): only `user`/`assistant`
-  visible text becomes turns; the last `keepTurns` turns are ALWAYS retained (per-message truncation
-  only); older turns are dropped newest-first while the total character cap holds, and the dropped count
-  is stated in the summary. Same messages in, same summary out.
-- **Delivery.** The summary is stored pending and prepended (with a Spanish voseo framing block) to the
-  user's NEXT `send` frame by the server's `promptDecorator`, exactly once, then cleared. A deliberate
-  `new_conversation` drops an undelivered summary. No new frames: the summary travels inside the
-  existing `prompt` message.
-- **Failure keeps history.** Any summary failure (request error, unexpected shape, empty result) aborts
-  the rotation and keeps the old session. A failed `new_session` recovers the previous session through
-  the engine's existing reset recovery; nothing is left pending. Missing/null `contextUsage.percent`
-  (no model, or right after a compaction) never rotates.
-- **Guards.** Rotation is skipped while the engine is busy or not ready, while the global pause (#379)
-  is active, while a summary is still pending (never overwritten), and for a session file that was
-  already rotated (loop protection). Rotation runs at most once per settled turn, serialized.
+- **The cap counts ONLY authenticated live clients** — a set filled when a handshake is admitted and
+  removed synchronously on close/destroy, so a dropped socket frees its slot immediately. Pre-hello
+  connections (the separate bound below) never count against the cap.
+- **The `ready` reply goes on the wire BEFORE the cap is evaluated.** A client the cap refuses
+  receives its `ready` frame first and is then closed silently, like every other refusal — so its
+  classification (the probe reads only that first frame) can never be `refused` by the cap while
+  settings and chat are connected, not even under a burst of concurrent probes.
+- **Pre-hello connections are bounded at connect time by a separate `maxHandshakes` bound (16)**,
+  each also bounded by the handshake timeout: a surplus connect is destroyed silently at connect and
+  is never counted anywhere. A hello'd client admitted by the cap releases its handshake-window
+  bound at admission.
+
+### History frames (additive, read-only, K2-05 T4 U1)
+
+One continuous chat, read from the engine's whole rotated session chain (`engine.previousSessions` + the
+open `sessionFile`, oldest file first). Port of the projection half of Gentle Dot's
+`packages/daemon/src/conversations.ts` (MIT): user and assistant `type:"message"` records become display
+turns; hidden `custom_message` handoffs and every other context-only entry NEVER appear; tool calls become
+activities (closed kind `read/edit/run/search/memory/delegate/other`, title without tool names or
+arguments, status `done`/`failed` from the engine's failed results); consecutive assistant messages join
+into ONE turn; a user message's `<attachments>` block is split back into `text` and attachment chips.
+ALL assistant text passes the white-label rewriter (`presentText`); the user's own text never does.
+
+| frame | fields |
+|---|---|
+| `history` | `messages: HistoryMessage[]`, `hasEarlier: bool` |
+| `earlier` | `before: string`, `messages: HistoryMessage[]`, `hasEarlier: bool` (the page ends just BEFORE the requested id) |
+
+`HistoryMessage` = `{ id: "s<file>-<turn>", role: "user"\|"assistant", text, activities: Activity[],
+attachments?: [{name,size,mime}], earlier?: true, clipped?: true }`. Ids are per-file (`s0-…` = the oldest file) and stay
+STABLE while the chain grows, so `get_earlier` cursors survive a rotation. Messages of every file but the
+last carry `earlier:true`.
+
+- **Bounds.** A page is at most 100 messages (Gentle Dot's `HISTORY_PAGE`) and at most **192 KiB** of
+  serialized frame — a named ceiling tied to the island reader's per-frame limit of 256 KiB
+  (`FrameError::TooLarge` in `apps/desktop-tauri/src/agentclient.rs`), kept safely below it. The page is
+  built from the newest message backwards and stops before the budget is exceeded; a single message
+  larger than the budget is CLIPPED (its text, always already white-labelled, cut on whole code points;
+  never a partial hidden name or a split surrogate), so one page always fits and size never becomes
+  `error{failed}`. The frame rebuild clips each text to 64 KiB (the same ceiling the `send` verb
+  accepts), caps activities at 100 (closed vocabulary, non-conforming entries dropped) and attachments
+  at 16, and THROWS — the server answers `error{failed}` — if a rebuilt page still exceeds 1 MiB (a
+  defense-in-depth ceiling the byte-bounded build never reaches). A message whose text was clipped — by
+  the 64 KiB rebuild ceiling or by the page budget — carries `clipped: true` (K2-05 U2 follow-up: the
+  clip is MARKED, never silent, so the island can show that history shows less than the live stream did;
+  a text cut by the page budget is additionally marked `clipped: true` there too) — the cut always lands
+  on a whole code point. A chain file that is missing or
+  unreadable is skipped with a one-line daemon log (one over 64 MiB is skipped instead of blocking the
+  read); torn/corrupt lines inside a file are skipped (the engine rewrites them as it appends).
+- **Readiness.** `get_history` asked while the engine starts or restarts waits for it (K2-05 boot order, Gentle
+  Dot `bridge.ts` `whenReady`, 60 s); an engine that stops, does not start in time or holds no open session
+  answers `error{unavailable}` (retryable), and so does `get_earlier` while the engine is not `ready` — never
+  an empty page, which would clear what the island shows.
+- **Chain files are owned.** A chain file is read only when it is a regular, non-symlink, owned file
+  directly inside the engine's private sessions dir (the runtime's `isOwnedSessionFile` rule) — a
+  planted symlink or an outside path is dropped with a one-line log, never read — and `linkSessions`
+  refuses such paths BEFORE a chain entry is persisted to `state.json`.
+- **Freshness.** `get_history` carries Gentle Dot's `currentHistory` round trip (bridge.ts:1131-1145):
+  one engine `get_state` round trip makes sure every message announced so far is already on disk, and
+  the page is read again (bounded) when a message was announced during that round trip. `get_earlier`
+  reads directly, as upstream does.
+- **Rotation re-broadcast.** When a rotation (or its fallback `new_session`) replaces the open session and
+  the new one already carries its chain, the daemon re-broadcasts ONE `history` frame per confirmed
+  session change to every connected client: the same chat, now marked earlier (Gentle Dot
+  bridge.ts:1124-1129). The broadcast fires on the engine's `session_changed` (chain present, engine
+  ready — including a crash-recovery reopen, whose emit now fires only once ready) and `sessions_linked`
+  (linked file == open session) events, so the fallback's confirmed-but-unlinked window never
+  broadcasts an empty page. When the rotation's switch CONFIRMS but its verification fails and the
+  fallback runs, TWO frames are broadcast: the confirmed seed's session change, then the fallback's
+  linked fresh session.
+
+### Recorded prompts (additive, K2-05 bind by id)
+
+Port of Gentle Dot's `send{requestId}` dedupe (bridge.ts:399, 500 remembered ids) and its
+`user_message` broadcast (bridge.ts onMessageStart, MIT). A client never has to infer which recorded
+prompt is its own — not by counting engine cycles, not by matching text.
+
+- **`requestId` on `send`/`steer`** (optional, closed grammar `[A-Za-z0-9_-]{1,64}`). A requestId the
+  daemon has already seen (the last 500) makes the frame a silent no-op — no error, nothing reaches the
+  engine — so a client never sends the same prompt twice. The check runs right after the `/gentle:`
+  refusal, before every other gate, but an id is only REMEMBERED once its request passed the transient
+  gates (engine ready, no session switch, `busy`/`not_busy`, pause): dispatched to the engine or held for
+  a rotation. A request those gates refused (or the `/gentle:` refusal) leaves its id unspent, so the
+  client may retry with the same id; a request the engine itself rejected stays spent (a lost ACK may
+  already have started work). Each `error` answering a `send`/`steer` that carried a `requestId` echoes
+  it, to its sender only, so the client never guesses which of its commands a refusal answers (frame-
+  level refusals — `rate_limited` drops, undecodable frames — carry none).
+- **`user_message`** is broadcast to EVERY client each time the engine starts recording a user message
+  (Pi's `message_start`, role `user`): the island's own prompts, other clients' prompts, held prompts
+  delivered after a rotation, consumed steers, and an extension's own user messages alike.
+  - `messageId` is the page id the history frames give that same prompt (`s<open file index>-<row>`), so
+    it joins with `history`/`earlier` exactly. The daemon counts the open file's display rows from the
+    engine's message events since its last idle read of the file — never by reading the file while the
+    engine writes it — and sends no `user_message` when that count is not known (after a cancelled turn,
+    an engine restart or a session change, until the next prompt it dispatches).
+  - `requestId` is echoed ONLY on the copy sent to the client whose `send`/`steer` the engine recorded
+    (not a secret, but nobody else's correlation). The dispatched prompt is the run's first recorded
+    user message whose text is its own; steers are matched by text in order (Pi removes a consumed
+    steer from its queue by text); a recorded text that matches no pending steer falls back to the
+    dispatched prompt (a template expansion changes the recorded text), and once no prompt is pending,
+    to the oldest pending steer (a steer's template expansion; Pi records its queue in order) — only
+    while every pending steer is the same client's: with steers of two clients waiting, an unmatched
+    record is announced without any `requestId` rather than risk naming another client's request. Prompts
+    held during a rotation are dispatched one after another when the switch settles; each keeps its own
+    request, so the engine refusing a later one (it runs one turn at a time) forgets only that one: the
+    delivered prompt keeps its sender's `requestId`, the refused sender gets `failed` and no `requestId`.
+    A request the engine refused (the `prompt`/`steer` request failed), and every request still pending
+    when the run settles or the engine goes away, is forgotten: it never names a later record. An
+    unmatched record (an extension's own message) carries no `requestId`.
+  - `text` is the user's own text (never white-labelled), split from its `<attachments>` block like
+    history and clipped the same way (64 Ki chars, `clipped:true`). The frame is byte-bounded like one
+    history page (192 KiB, measured with every field in place: `clipped`, `requestId`, the largest
+    `seq` and the LF; under the island reader's 256 KiB): a longer text is cut on whole code points and
+    marked `clipped:true`.
+
+### Attachments (additive, K2-05, L11 2a — Gentle Dot's uploads)
+
+Port of Gentle Dot's `packages/daemon/src/uploads.ts` + bridge.ts `attachedFiles`/`composePrompt`
+(MIT; `src/uploads.cjs`). Any file; images reach a vision model. Koda difference (RDD review of the
+first version): a file that has not been sent yet is NOT in the engine's workspace. It is staged in
+`<island>/uploads-staging/<id>/<name>` (outside `<island>/workspace`, so the engine cannot read it and
+no other client can make it read it); only an ACCEPTED send moves it to
+`<island>/workspace/uploads/<id>/<name>` (never a user-chosen folder), where the agent reads it.
+
+- **Upload.** `upload{requestId, name, size, offset, data}` carries one chunk: `data` is standard
+  base64 (≤ 192 Ki chars = 144 KiB, a multiple of 4; an empty file is one empty chunk with `size:0`),
+  `offset` is where it goes (chunks in order), `size` the whole declared size (same on every chunk),
+  `name` ≤ 255 chars on the wire, a display name only: the daemon keeps its last path segment, without
+  control/invisible/direction marks, a leading dot or a reserved name (a reserved name becomes `file`),
+  cut on whole characters to 120 characters / 240 bytes with an extension of at most 16 characters
+  (`sanitizeName`). Files are created `0600` with O_EXCL|O_NOFOLLOW in a fresh `0700` folder named by
+  the id under `uploads-staging`; that folder must be a private directory (a planted link is refused,
+  and a stored file is read back only through its own real `a-…` folder, on the open handle: regular
+  file, declared size, one link (`nlink` 1), same device/inode as before the open; Windows has no
+  O_NOFOLLOW, so there an `lstat` check on the file and every folder up to the root stands in for it). The last chunk is answered, to the sender
+  only, with `uploaded{requestId, attachment:{id, name, size, mime}}` — never the path. `mime` is
+  sniffed from content (PNG/JPEG/GIF/WebP/PDF, else `application/octet-stream`). A refused upload
+  answers ONE `error{code, requestId}` (`file_too_large`, `message_too_large`, `too_many_files`,
+  `upload_failed`, `bad_request`), leaves nothing on disk, and its later chunks are ignored.
+- **Limits (daemon-enforced).** 25 MB per file; per client, the files waiting to be sent (finished
+  plus the declared size of unfinished ones) are at most **5** files and 50 MB (Gentle Dot allows 10
+  files; Koda's refusal says «hasta 5»: `too_many_files` at upload, `message_too_large` at send). Upload chunks have their own budget of 720 frames/min per client (over it the client is
+  dropped, like the 240 frames/min limit that every other frame keeps). Uploads are allowed while
+  paused (they are not a turn).
+- **Refs.** The id `a-<16 hex>` is random, issued by the daemon, and OWNED by the uploading client
+  connection: a `send` naming an id this client did not upload, already sent, unknown or twice is
+  refused `attachment_not_found` before any other effect (the `requestId` is not spent). Ids never
+  name a path; a path or a name in `attachments` is `bad_request`.
+- **Send.** The prompt is Gentle Dot's: the user's text, a blank line, then
+  `<attachments>`, the fixed intro line, one JSON line per file `{name,size,type,path}` (absolute
+  stored path — the agent reads it with its tools, as the engine), `</attachments>`. An image ≤ 3.75 MB
+  is ALSO passed as an RPC image when the engine's model accepts images (`get_state` →
+  `model.input` includes `image`); otherwise the line says it was saved but the model cannot see
+  images. The image bytes are read back as stored (no link, same size). Once the engine accepted the
+  prompt the files are moved into `<workspace>/uploads` and spent: they stay on disk for the agent but
+  no message can send them again. A prompt held during a rotation keeps its files and spends them when
+  delivered. A file reserved by a send that is in flight is NOT deleted when the uploading client goes
+  away (otherwise the engine would be told about a file that no longer exists); if the send fails the
+  reservation is released and the file is an unsent upload again (same discard rules).
+- **Cleanup.** `upload_discard`, the uploading client going away (unless a send reserved the file), and
+  one hour without being sent delete an unsent file (from `uploads-staging`, never through a folder that
+  was swapped for a link); an unfinished upload idle 2 minutes is dropped. Sent files are kept.
+- **Display.** `user_message` and history split the block back into `text` + `attachments`
+  (`[{name,size,mime}]`), so the live frame, reconnects and reloads show the same chips.
+
+### Model readout (additive, K2-05 U5c)
+
+`ready.state` and every `agent_state` may carry `model: {provider?, id, name?}`: the model the engine
+answers with, shown by the island as a read-only line (there is no way to change it from the chat).
+Each field is a trimmed string of at most 128 characters; the daemon reads it ONLY from Pi's own
+`get_state` `data.model` (`modelIdentity`, `src/runtime.cjs`), and nothing else in that object (input
+kinds, costs, keys) leaves the daemon. The key is absent (unknown, never a guess) while the engine is
+not `ready`, when the state has no usable `id`, and after the engine child exits. It is read again
+after a confirmed session switch or rotation and after a profile/role activation, and an
+`agent_state` is broadcast only when the value really changed.
+
+## Window-capture MCP projection (K2-06)
+
+When the Tauri app starts the daemon it may set `KODA_WINDOW_MCP_URL` and `KODA_WINDOW_MCP_TOKEN`
+(the host's loopback screenshot endpoint and its per-launch bearer token). The daemon writes them into
+the engine's private `<island>/agent/mcp.json` (mode `0600`) as one more server, id `computer`,
+through the same proxy-only validator as any other entry (plain `http` to a loopback host, exactly one
+`Authorization: Bearer` header); half-set or unsafe values project nothing and log one fixed line
+without the token. The agent then sees the tool as `mcp__computer__screenshot_my_window`. The daemon
+also installs a fixed extension, `<island>/agent/extensions/koda-window-capture.js`, which keeps only
+the LAST screenshot as an image (earlier ones become a one-line note) and blocks the tool, before any
+capture, when the engine's model has no image input. Nothing of this travels on the socket. See
+`docs/desktop/window-capture.md` in the repository root for the whole feature.
+
+## Private memory (K2-05 T1c, the only mode)
+
+Koda's memory is ALWAYS private — Gentle Dot's private mode (its `packages/daemon/src/isolation.ts`,
+`privateMemory`, MIT), with no user-store mode. The engine child gets `ENGRAM_PORT` = Koda's own
+port **7439** (`KODA_ENGRAM_PORT` in the parent env overrides it for tests/embeddings),
+`ENGRAM_BIN` = ONLY the pinned binary the bundled runtime manifest names, `ENGRAM_NO_UPDATE_CHECK=1`,
+and NO `ENGRAM_URL`/`ENGRAM_DATA_DIR`/inherited `ENGRAM_PORT`: the store follows the engine's island
+`HOME` (`<island>/home/.engram`), so the user's own Engram server and store (`7437`/`7438`,
+`~/.engram`) are never read, probed or inherited. The memory project stays `koda`
+(`<workspace>/.engram/config.json`, `KODA_MEMORY_PROJECT` + identity pin). The daemon confirms the
+private port is EMPTY before the engine spawns and owns cleanup only then; a failed or ambiguous
+lookup refuses ownership (logged, the engine still starts); on daemon stop the listener is verified
+against the island's `.instance-id` + `GET /health` with a stable PID before any SIGTERM — a server
+that is not Koda's is never touched. **Koda 0.1 memories saved in the user's own Engram are NOT
+migrated** into the island store (human decision L11); the island memory starts empty. Only Koda's
+own default engine gets private memory: a custom `command` gets no memory env and no ownership.
+
+## Continuous conversation rotation (K2-05 T3, on by default)
+
+One continuous chat that never grows unbounded: when the open session file passes a limit, the daemon
+replaces it the way Gentle Dot does (its `packages/daemon/src/rotation.ts`, MIT) and the island sees
+nothing. There is no opt-in step and no visible summary frame — #386's opt-in rotation
+(`thresholdPercent`/`keepTurns`, Spanish framing block prepended to the next prompt by
+`promptDecorator`) is GONE: a v0.1.0 config with those keys still boots (they are ignored, with a
+one-line log notice), and any other unknown `rotation` subkey is still refused.
+
+- **Config.** The strict `rotation` key: `enabled` (strict boolean, default **true**), `bytes`
+  (1024..2147483647, default 20971520 = 20 MB) and `compactions` (1..1000000, default 10). The env
+  `KODA_ROTATE_BYTES` / `KODA_ROTATE_COMPACTIONS` overrides win over the file; only plain positive
+  decimal integers are accepted (no `1e3`, `0x10` or spaces), and `KODA_ROTATE_BYTES` keeps the same
+  1024-byte minimum. An invalid env value never wins; the file/default stands.
+- **Trigger.** After every natural `agent_settled` (while idle, not paused, nothing in flight) the
+  daemon checks the open session file: past `bytes` of file size OR `compactions` compaction entries
+  it rotates. Rotation itself issues NO model request: only `switch_session`, `get_messages` and, on
+  failure, one fallback `new_session`.
+- **Handoff.** The daemon writes a NEW session file next to the open one holding ONE hidden custom
+  message (`customType: "abito.handoff"`, `display: false`) that carries the earlier conversation:
+  the latest engine compaction summary, or — before any compaction or with an empty summary — the
+  previous handoff plus the last 12 user/assistant messages truncated at 2000 chars. The seed links
+  the previous file (`parentSession`), the daemon links the chain (`previousSessions`/`state.json`),
+  and history keeps reading across the rotation. The engine is switched with `switch_session` and
+  the daemon verifies the handoff is in the engine's context before it calls the rotation done.
+  state.json only ever names a session the engine actually holds: a failed switch never leaves the
+  persisted pointer at the seed.
+- **Reopen on boot/restart (L44, L51: Gentle Dot's).** The engine reopens the session named in
+  state.json with `switch_session` only when that file exists (Gentle Dot `supervisor.ts:317`
+  `existsSync(wanted)`; Koda's check is the stricter owned-file rule), then adopts what `get_state`
+  reports, and only then writes state.json. A cut-off turn, a crash or an unconfirmed reset reopen
+  the same saved session the same way: there is no separate «recovery» session (Gentle Dot keeps
+  none), so a session file the engine never wrote (a first prompt refused with no account: real Pi
+  writes its file only after a message) is skipped and never blocks the engine (K2-05 F1). Any error
+  kills the child (no late switch can land), leaves state.json untouched, never reports `ready` on
+  another session, and a fresh child retries with the restart backoff, with no attempt limit, until
+  the saved session reopens or the daemon stops. Two deviations from Gentle Dot: the switch budget is
+  `requestTimeoutMs` (the rotation switch's, 300 s), not 30 s, because Windows CI 43025727185 showed
+  the real engine's switch can take longer; and a switch the engine ACKs without applying it is an
+  error (Gentle Dot's `refreshSession` would adopt the other session and overwrite the saved pointer).
+- **Known gap shared with Gentle Dot (F2).** A rotation that falls back to `new_session` names the
+  fresh session in state.json with its chain (`rotation.ts:212-214`, here `rotation.cjs:311-317`),
+  but the engine writes that session's file only with its first message. A daemon or engine restart
+  right after such a fallback, before the next message, finds no file to reopen (the `existsSync`
+  skip above), boots a new empty session and the chain link to the earlier conversation is lost (the
+  earlier session files stay on disk). Gentle Dot has the same window; Koda keeps that behaviour for
+  parity.
+- **Failure.** A seed-write failure, an unparseable or wrong-version session header (fail closed),
+  or a failed fallback leaves the chat where it was and logs it. A failed switch or verification
+  falls back to `new_session` seeded the same way (Gentle Dot's fallback), removes the orphan handoff
+  file the attempt created (exactly that file), and links the fresh session into the chain — no retry
+  storm: never more than one orphan seed per attempt window, and the fresh session is not oversized.
+- **Prompt during a rotation.** A `send` that arrives while the switch is in flight is HELD (one per
+  client, in order) and delivered once the rotation settles or fails — the user is never told to
+  resend; a second prompt while one is already held still answers `busy`.
+- **Guards.** Rotation is skipped while the engine is busy or not ready and while the global pause
+  (#379) is active; at most one rotation runs at a time, at most one per settled turn.
 
 ## Obtaining endpoint and token (U4)
 
-The host does not generate the token: `abito-island-daemon run` does, and publishes `{protocol, endpoint, token, pid, procStart, startedAt}`
-in `<island>/runtime/session.json` (0600, removed on stop). The endpoint and token stay valid across engine restarts
+The host does not generate the token: `koda-daemon run` does, and publishes `{protocol, endpoint, token, pid, procStart, startedAt}`
+in `<island>/runtime/session.json` (0600, removed on stop).
+
+**Boot order (K2-05, Gentle Dot `daemon.ts:470-481`).** The daemon validates its config and the bundled
+engine (a missing or broken bundled runtime still fails the boot, like Gentle Dot's `loadConfig`), opens
+its server, publishes `session.json` and only then starts the engine. Like Gentle Dot (`daemon.ts:477-481`
+`await supervisor.start().catch(log)`), the boot awaits that first engine start, but a stop does not:
+SIGTERM/SIGINT, stdin EOF of an app-owned `run` and `koda-daemon stop` act at once even while the
+engine is still starting (Gentle Dot `close()`, `daemon.ts:410-458`): the server closes and `session.json` is
+withdrawn immediately — never after that first start settles — and the starting engine is asked to stop at
+once (its stdin closed). The PROCESS then exits when that starting engine answers or the stop timers fire
+(`stopTimeoutMs`, 5 s → SIGTERM, two seconds later → SIGKILL), so an engine still loading can keep the
+process alive for a few seconds after `session.json` is already gone, exactly like Gentle Dot's `close()`; a
+stop asked for before the server listens lets the boot publish nothing.
+Clients that connect meanwhile get `ready{state.status:"starting"}` (then `agent_state` as it changes);
+`send`/`steer` answer `unavailable` until the engine is `ready`. A first engine start that fails is logged
+(`agent failed to start: …; retrying`) and retried by the runtime with its backoff; the daemon stays up. The
+configured `profile` is activated the first time the engine is ready. The endpoint and token stay valid across engine restarts
 (crash, workspace change, profile switch); a new daemon launch means a new token. See README "User config, CLI and host handoff".
 
 #### Local OpenAI-compatible endpoints (v0.2)
@@ -496,7 +785,7 @@ The daemon does not automatically assign `<island>/connectors/mcp-source.json` t
 
 ## Connectors control frames (H2c)
 
-These additive commands are available only after the authenticated `island-agent/1` hello. They are separate from `connectors_list`: that command still returns the persisted CLI view; control snapshots use the running host and their `connectors` frame has `live:true`. All newly defined request/result keys below use snake_case. Existing auth frames retain their shipped `flowId`/`promptId`/`accountId` spelling. Unknown request fields are dropped, except the forbidden setup-value keys on `connectors_connect`, which reject the entire frame as `bad_request`. Every request counts against the existing 240-frames/minute per-client limit (max two clients).
+These additive commands are available only after the authenticated `island-agent/1` hello. They are separate from `connectors_list`: that command still returns the persisted CLI view; control snapshots use the running host and their `connectors` frame has `live:true`. All newly defined request/result keys below use snake_case. Existing auth frames retain their shipped `flowId`/`promptId`/`accountId` spelling. Unknown request fields are dropped, except the forbidden setup-value keys on `connectors_connect`, which reject the entire frame as `bad_request`. Every request counts against the existing 240-frames/minute per-client limit (max four clients).
 
 ### Client → server
 
@@ -559,3 +848,142 @@ Only one setup flow may be active. Catalog setup has at most eight fields; promp
 The error enum also retains existing codes such as `not_busy` and `unknown_ask`; error strings and raw host detail are never sent.
 
 **Grave same-UID note (next to the agents invariant).** `connectors_approve` is a privileged command reachable only through the authenticated island channel (not an MCP/engine tool, not a CLI); but the channel token lives in `<island>/runtime/session.json` (0600) and the Abito engine agent, Claude Code and Codex run as the same user and can read it: an approval card the agent can click is NOT a human gate. This matters MORE for approvals than for agents. Closing it needs the daemon launched by the island with an inherited socket (security follow-up, not done).
+
+## Telegram frames (additive, K2-13: S10/S20)
+
+Implementation: `src/protocol.cjs` (allowlist, closed frames), `src/server.cjs` (`handleTelegram`),
+`src/minikodas/telegram.cjs` (the one client). Without a Telegram session every verb answers `unavailable`.
+
+The daemon holds **one** Telegram client, always with mtcute's `MemoryStorage`. The `api_id`/`api_hash` are entered in
+Ajustes (S10), the login happens here, and the **session is a credential**: it is returned to the island only in the one
+frame `telegram_session`, only as the reply to the connection that asked for it, and the island stores it in the OS
+keychain. No file is ever written by the daemon (`client.session` and every sqlite path are impossible: the storage is
+never a default). `apiHash`, phone, code, password and session never appear in a log line, in a broadcast, in «Hoy» or
+in an error.
+
+### Client → server
+
+| type | fields (validated exactly; unknown fields dropped) | reply |
+| --- | --- | --- |
+| `telegram_status` | – | `telegram_status` (this client) |
+| `telegram_login_start` | `apiId` (positive integer), `apiHash` (exactly 32 lowercase hex), `phone` (E.164: `+`, non-zero, 7–15 digits) | `telegram_status{state:"awaiting_code"}`; the code request's outcome arrives as a broadcast `telegram_status` with `notice` (and `retryAfterMinutes` on FLOOD_WAIT) |
+| `telegram_login_code` | `code` (1–32 chars, no control characters) | `telegram_status` (next step: `awaiting_password`, or `awaiting_code` again after a refused code) or `telegram_session` when the login finished |
+| `telegram_login_password` | `password` (1–1024 chars) | `telegram_status` or `telegram_session` |
+| `telegram_logout` | – | `telegram_status{state:"disconnected"}`; the auth key is revoked on Telegram when reachable, and always forgotten locally. Allowed while the global pause is on (account safety, like `agent_disconnect`) |
+| `telegram_session_restore` | `apiId`, `apiHash`, `session` (1–4096 **printable ASCII** chars; anything else is `bad_request`) | `telegram_status{state:"connected"}`; `telegram_session` **only** when Telegram rotated the session (an unchanged one is never echoed back) |
+
+Error codes (closed set; each has a fixed Spanish sentence in `src/minikodas/telegram.cjs`):
+`telegram_unavailable`, `telegram_already_connected`, `telegram_not_awaiting_code`, `telegram_not_awaiting_password`,
+`telegram_credentials_invalid`, `telegram_code_invalid`, `telegram_password_invalid`, `telegram_password_required`,
+`telegram_flood_wait`, `telegram_session_invalid`, `telegram_cancelled`, `telegram_login_other_connection`,
+`telegram_failed`. Telegram's own text is never forwarded (it can echo a phone number); an unrecognised failure is
+`telegram_failed`.
+
+### Server → client
+
+| type | fields |
+| --- | --- |
+| `telegram_status` | `state: disconnected\|awaiting_code\|awaiting_password\|connected`, `account?{name (≤80), username (≤32) \| null}`, `notice?` (Koda's Spanish sentence, ≤300), `retryAfterMinutes?` (1–1440) |
+| `telegram_session` | `session` (the exported session string) — **reply only, never broadcast**. The island must store it in the keychain and must never echo it back inside any other frame |
+
+`telegram_status` is broadcast on every state change (that frame carries no secret) so every connected client shows the
+same account state.
+
+### Semantics
+
+- **Phone → code → 2FA, driven by frames, never readline.** `telegram_login_start` sends the code request and returns at
+  once; the person's answers arrive later as their own frames. A refused code or password keeps the login where it was
+  (`awaiting_code` / `awaiting_password`) instead of restarting it, so the island can ask again.
+- **FLOOD_WAIT.** mtcute absorbs waits up to 10 s. A longer one surfaces as `telegram_flood_wait` with
+  `retryAfterMinutes` (rounded up, minimum 1) and «Telegram pidió esperar N minutos». No frame retries in a loop.
+- **`AUTH_KEY_UNREGISTERED` and friends** mean the keychain session died: the daemon answers `telegram_session_invalid`
+  and goes `disconnected`, never pretending to be connected.
+- **One client.** A second `telegram_login_start` while connected is `telegram_already_connected`; a new start while a
+  login is pending replaces the pending attempt (the old client is destroyed) — but only from the connection that
+  started it.
+- **A login belongs to its connection.** `telegram_login_start` tags the flow with the connection that sent it; a
+  `telegram_login_code` or `telegram_login_password` from ANY other connection is refused with
+  `telegram_login_other_connection`, and so is a `telegram_login_start` from another connection while a flow is pending
+  (two windows starting at once used to both receive the session). After the login lands there is nothing left to own:
+  the verbs answer `telegram_not_awaiting_code` / `telegram_not_awaiting_password`. `telegram_logout` is not bound: any
+  connection may revoke the session, and it may do so while paused.
+- **A session that cannot travel does not connect.** The exported session leaves in the one `telegram_session` frame, so
+  it must be printable ASCII and at most 4096 chars (a real mtcute session is ~350). A client that answers anything else
+  fails the login with `telegram_failed` and its client is destroyed, instead of the daemon looking connected with a
+  session the island could never store or restore.
+- **Global pause (#379).** `telegram_login_start`, `telegram_login_code` and `telegram_login_password` answer `paused`
+  while the switch is on: they change the user's account state. `telegram_status` (read only), `telegram_logout`
+  (account safety, like `agent_disconnect`) and `telegram_session_restore` (the island's start-up hand-off of a session it
+  already holds, no new work) still answer, so a paused daemon can still report whether the stored session is valid and
+  the person can still disconnect.
+- **Same-UID limit**, as for «Hoy»: any process of the same OS user could send these frames on the daemon's socket. The
+  keychain session is what protects the account off-machine, and K2-14 criterion 3 (agent as its own OS user) is the
+  durable fix.
+
+## Minikodas and «Hoy» frames (additive, K2-13)
+
+Implementation: `src/protocol.cjs` (allowlist and DTOs), `src/server.cjs` (`handleMinikodas`), `src/minikodas/` (service, runner, kit, scheduler, «Hoy»). Without a Minikodas service every verb answers `unavailable`.
+
+### Client → server
+
+| type | fields | reply |
+| --- | --- | --- |
+| `minikodas_list` | – | `minikodas` (no prompts) |
+| `minikoda_get` | `id` | `minikoda` (with prompt) |
+| `minikoda_create` | `recipe{id?, name, when, reads{source}, kit[], prompt, model?{provider, id, accountId?}, never[]}` | `minikoda` with `status: "draft"`; broadcast `minikodas`. `reads.source` is validated here: `telegram:@canal` must be a channel, and a channel typed without the prefix (`@canal`, `t.me/canal`) is `bad_request` — the daemon never stores it as a text file name that every run would read as empty |
+| `minikoda_approve_create` | `id` | `minikoda` with `status: "active"` (the schedule is armed); broadcast `minikodas` |
+| `minikoda_delete` | `id` | `minikoda_deleted{id}`; broadcast `minikodas` (its run is cancelled, its engine root removed; «Hoy» items stay). `failed` when a refreshed credential kept in its root still cannot be written back: the Minikoda stays (README «Minikodas», S11) |
+| `minikoda_launch` | `id` | `minikoda_launched{id, started, reason?: running\|busy\|paused\|stopped}`; the run lands later as a `hoy` broadcast. Refused with `paused` while the global pause is on |
+| `hoy_list` | – | `hoy` |
+| `hoy_approve` | `id` (uuid) | `hoy_decided{id, status: "approved"}` and ONE broadcast `hoy_approved`; or `error` (`unknown_item`, `not_pending`) |
+| `hoy_reject` | `id` | `hoy_decided{id, status: "rejected"}`; never executes |
+
+`id` of a Minikoda: `[a-z0-9][a-z0-9-]{0,39}`. A recipe is validated twice: shape in `protocol.cjs`, then fully in the daemon (minimum period 60 s, `at` in the future, model against the configured accounts). A `kit` outside `source_read, inbox_propose`, a `never` other than exactly `buy, sell, send, delete`, or any unknown field is `bad_request`, and the store is left unchanged.
+
+### Server → client
+
+| type | fields |
+| --- | --- |
+| `minikodas` | `minikodas[]` of `{id, name, when, reads, kit, model, never, status: draft\|active, running, createdAt, lastRun?{at, outcome: done\|failed, reason?}}`; a draft also carries `summary` |
+| `minikoda` | `minikoda` = the same plus `prompt`, and `summary?{sections: [{key, title, text}], text}` on a `draft` |
+| `hoy` | `items[]` of `{id, minikoda, kind: result\|proposal\|error, status: pending\|approved\|rejected, text, createdAt, action?: buy\|sell\|send, target?, decidedAt?, provenance?}` (pending proposals first, then newest; ≤ 100 items and ≤ 200 KiB per frame, below the island's 256 KiB line limit), `truncated` (true when items were left out by either bound) |
+| `hoy_approved` | `id, minikoda, action, target, executedAt`: broadcast once per executed approval |
+| `hoy_decided` | `id, status` |
+| `minikoda_launched`, `minikoda_deleted` | see above |
+
+New error codes: `unknown_minikoda, not_active, not_pending, exists, limit, model_unavailable, unknown_item`.
+
+### Transcription setting (K2-13, S7/S18)
+
+| type | fields | reply |
+| --- | --- | --- |
+| `transcription_get` | – | `transcription` |
+| `transcription_set` | `setting{mode, language?, remote?{accountId, model}}` | broadcast `transcription`; `bad_request` for anything off-contract (unknown mode or key, a `baseUrl`, a malformed account id) |
+
+`transcription` (server → client): `setting{mode: local-parakeet\|remote, language: es\|en\|fr\|de\|it\|pt\|ca, remote?{accountId, model}}`, `ffmpeg: available\|unavailable`, `local: available\|unavailable`. S18 (L32): `local-parakeet` is the only local mode; `local-whisper-turbo` was removed from the contract, so a client that still sends it is answered `bad_request`, while a stored setting from that build is migrated to `local-parakeet` (keeping its language) when the daemon reads its config. The frame never carries a Base URL or a key: the remote account's are read from the account store when a transcription runs. `ffmpeg` is always `unavailable` on macOS in this version (darwin-arm64 does not bundle ffmpeg yet). Without a transcriber both verbs answer `unavailable`.
+
+S6 (`telegram-source.cjs` + `service.cjs`): the video, audio and voice posts of a Telegram channel read are transcribed by the same service and with the same rules before the engine starts. Each transcript is placed right after its own post in the source text, under a marker that names the post by id and, when Telegram reports one, its date («[Transcripción de la publicación 12 del 2026-11-10]»); no file name, folder or run id ever reaches the model. The media of one read share ONE 30-minute budget (S17). A media that cannot be transcribed (too long, unreadable, no ffmpeg or helper, no voice) is a short Spanish note in that same post plus a «Hoy» `error` item in Spanish, and the run continues: one bad video never loses the other posts and never fails the run. A pause or a delete still cancels the transcription (`reason: paused` / `cancelled`), and the exhausted budget is still `reason: "transcription"`. The run's media folder is deleted in every outcome. No new frames: this happens while the daemon prepares the run.
+
+S19 (`youtube.cjs`): the source the daemon prepares for a run is scanned for YouTube video links (`youtube.com/watch?v=`, `/shorts/`, `youtu.be/`; every other site and shape ignored; at most three different videos). Each one is read from YouTube's own subtitles first — manual tracks before automatic ones, in the video's language — and, only when there are none, by downloading its audio (`bestaudio`, refused above 3 h of duration and above 200 MB) and transcribing it with the setting's transcription, inside the same 30-minute budget (S17). The text joins the source behind `[Video de YouTube <url> · subtítulos de YouTube]` or `[Video de YouTube <url> · transcripto]`. A video that cannot be read is a «Hoy» `error` item in Spanish and the run still happens; more videos than the cap is also said there. No new frames: this happens while the daemon prepares the run.
+
+A failed transcription ends the Minikoda's run before its engine starts: a «Hoy» `error` item «La corrida de «X» falló (transcripción: <why>)» and `lastRun.reason: "transcription"`. A pause or a delete during the transcription cancels it (`reason: paused` / `cancelled`). Transcription has its own 30-minute budget (S17): it does not count toward the run's 300 s engine budget, whose clock starts only after the transcript is ready, and when it runs out the item says «el video tardó más de 30 minutos en transcribirse; no se resumió». A transcribing run still holds its run slot (at most two runs at once, transcription included).
+
+### Semantics
+
+- **«Hoy» is built only from what the daemon stored.** It is never built from the Minikoda's text. A proposal exists only if the kit's `inbox_propose` parked it, and the runner re-validated it (buy, sell or send only). Whatever the model claims in its final text stays plain `result` text.
+- **`provenance` (S19 / F4): where a result's text came from.** An OPTIONAL field of a `result` item, absent when the daemon cannot say it, and never present on a proposal or an error. Closed list: `youtube_subtitles` (YouTube's own subtitles), `local_transcription` (Parakeet on this PC), `remote_transcription` (the account the user configured to transcribe). The daemon stores it with the item (`hoy.cjs`) and validates it here: a value outside the list, or one on a non-result item, fails the whole frame instead of reaching the island, where the chip would be invented. `agentclient.rs` (`HOY_PROVENANCE`) and `island-nusa.js` keep the same list and label it («subtítulos de YouTube», «transcripto en esta PC», «transcripto con tu cuenta»); an unknown value draws no chip.
+  - **The rule** (`dominantProvenance` in `service.cjs`): each phase counts the characters it contributed to the text the run read — the source's own text (the channel's posts, the plain-text file), YouTube's subtitles, and each transcription (local or remote). The result carries the value with the MOST characters only when it is STRICTLY the biggest. A tie between values, a tie with the run's own text, the own text on top, or nothing marked at all means no `provenance`: the daemon cannot say, so it says nothing.
+- **The draft's summary (S1, S7).** `minikoda_create` stores the draft and its reply carries `summary`; `minikoda_get` of a draft carries it too, and the `minikodas` broadcast includes it for drafts. An `active` Minikoda never carries one (it is the approval preview).
+  - Built by the daemon from the VALIDATED recipe alone (`src/minikodas/summary.cjs`), with no model call: the same recipe always renders the same text. Plain Rioplatense Spanish with the fixed sections «Cuándo corre», «Qué lee», «Qué hace», «Dónde te lo muestra», «Qué nunca hará solo» and «Con qué modelo» (S7: «Podemos hacer que el usuario escoja el modelo»).
+  - `key` is one of `when, reads, does, shows, never, model`; `title` is the section's heading; `text` is the whole summary as one block, the six lines joined by LF.
+  - Every field is one plain line: Unicode format characters (Cf: bidi overrides, zero-width), control and separator characters are removed, and lengths are capped in bytes (each section ≤ 512, the block ≤ 3600, at most 8 sections). The daemon fails the frame instead of sending an off-contract summary; nothing is repaired or truncated inside `protocol.cjs`.
+  - It never carries the accountId, a credential, a file path or prompt internals. «Con qué modelo» shows the account's VISIBLE label plus the model id, or «el mismo del chat» when the recipe kept the chat's current model; without a label it falls back to `provider/id`.
+  - Getting the summary changes nothing: `minikoda_approve_create` stays the only way to activate a draft (criterion 1: «solo lo crea si lo apruebo»).
+- **Approve-later.** A proposal executes only on `hoy_approve {id}`. There is no PIN (human decision L17); a `pin` field, like any unknown field, is dropped by the allowlist.
+  - The decision (`approved`) is persisted before the execution record, so a crash between the two can lose an execution, never repeat one.
+  - Approvals run one at a time; a second approval of the same item is `not_pending` and never executes again.
+  - `hoy_reject` never executes.
+- **What «execute» means in K2-13.** The item is marked `approved`, one line is appended to `<island>/minikodas/hoy/approved.jsonl` and `hoy_approved` is broadcast. Real buy, sell or send integrations do not exist yet; nothing leaves the machine.
+- **Failed runs.** A crash, timeout, start failure, unavailable model or cancelled run (daemon stop, delete, or `set_paused{paused:true}`, reason `paused`) lands as a `kind: "error"` item and in `lastRun`. It is never silent. Proposals the kit parked before the failure are stored as `pending` proposals next to it (S13). A one-time scheduled (`at`) run that was due while paused, busy or already running lands as an `error` item too.
+- **Proposal `target`** is one plain line: Unicode format characters (Cf, e.g. U+202E) are stripped, and a line break or control character is refused.
+- **Same-UID limit.** The kit has no tool that reads files. The «Hoy» store and the daemon token live outside every Minikoda engine root, so a Minikoda cannot reach them through its kit. But any process of the same OS user can read them, and any process holding the session token can send `hoy_approve` and approve a proposal. That holds until the agent runs as a separate OS user (K2-14 criterion 3), as with the `connectors_approve` note above.

@@ -3,8 +3,8 @@
 //! SELECTABLE origins (a diagnostic entry's port is never contacted), and
 //! the gate distinguishes listed from ready without loading anything.
 
-use abito_island::fakemodel::{closed_port, FakeModel, FakeModelConfig};
-use abito_island::models::{self, Entry, Kind};
+use koda_island::fakemodel::{closed_port, FakeModel, FakeModelConfig};
+use koda_island::models::{self, Entry, Kind};
 
 fn leak(s: String) -> &'static str {
     Box::leak(s.into_boxed_str())

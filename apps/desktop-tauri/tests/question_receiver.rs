@@ -3,7 +3,7 @@
 
 //! QP.2: owner-only fake producers, real private UDS, no app or model.
 mod common;
-use abito_island::{protocol, question, transport::{self, Transport, TransportOptions}};
+use koda_island::{protocol, question, transport::{self, Transport, TransportOptions}};
 use serde_json::{json, Value};
 use std::io::{Read, Write, ErrorKind};
 use std::os::unix::net::UnixStream;
@@ -135,7 +135,7 @@ fn r0_same_uid_foreign_project_reaches_question_and_routes_answer() {
 
 #[test]
 fn r24_manual_folds_keep_the_pending_snapshot_deadline_and_live_answer() {
-    use abito_island::{core::{Core, WindowIo, ReleaseOutcome}, geometry::Rect, questioncmd};
+    use koda_island::{core::{Core, WindowIo, ReleaseOutcome}, geometry::Rect, questioncmd};
     struct Io;
     impl WindowIo for Io {
         fn outer_position(&self) -> (i32, i32) { (0, 0) }
@@ -182,7 +182,7 @@ fn question_level2_busy_stays_minimal_with_fixed_native_geometry() {
     let f = Fixture::new();
     let mut old = f.connect("same-session", true); let mut new = f.connect_level2("same-session");
     send(&mut new, &f.question("same-session", ID)); pending(&f, ID);
-    assert_eq!(f.transport.question_snapshot().native_transition, abito_island::questioncmd::NativeTransition::Idle);
+    assert_eq!(f.transport.question_snapshot().native_transition, koda_island::questioncmd::NativeTransition::Idle);
     // the same connection asking again gets the minimal busy frame (no busyReason)
     send(&mut new, &f.question("same-session", OTHER)); let busy = reply(&mut new);
     assert_eq!(busy["reason"], "busy"); assert_eq!(busy["source"], "system");
@@ -508,10 +508,10 @@ fn structured_multi_select_and_questionnaire_roundtrip_and_old_clients_are_refus
     let v = serde_json::to_value(f.transport.question_snapshot()).unwrap();
     assert_eq!(v["pending"]["form"].as_array().unwrap().len(), 2);
     assert_eq!(v["pending"]["form"][1]["multi_select"], json!(true)); assert_eq!(v["queued_count"], json!(0));
-    assert!(f.transport.answer_form(OTHER, vec![abito_island::question::ItemAnswer::Option { index: 0 }]).is_err(), "partial answer refused");
+    assert!(f.transport.answer_form(OTHER, vec![koda_island::question::ItemAnswer::Option { index: 0 }]).is_err(), "partial answer refused");
     pending(&f, OTHER);
-    f.transport.answer_form(OTHER, vec![abito_island::question::ItemAnswer::Option { index: 1 },
-        abito_island::question::ItemAnswer::Options { indexes: vec![2], text: Some("y más".into()) }]).unwrap();
+    f.transport.answer_form(OTHER, vec![koda_island::question::ItemAnswer::Option { index: 1 },
+        koda_island::question::ItemAnswer::Options { indexes: vec![2], text: Some("y más".into()) }]).unwrap();
     let got = reply(&mut b);
     assert_eq!(got["answer"], json!({"type":"form","answers":[{"type":"option","value":"v2"},{"type":"options","values":["v3"],"text":"y más"}]}));
     // a connection that did NOT negotiate it is closed on a structured field (old behaviour for unknown shapes)

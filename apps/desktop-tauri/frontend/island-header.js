@@ -22,7 +22,7 @@
       : { on: false, icon: 'speakerOff', label: 'Activar sonido', pressed: true, action: 'sound_on' };
   }
   /** The closed icon names the header may draw (the paths come from the vendored module, never from the page). */
-  const ICON_NAMES = Object.freeze(['house', 'bubble', 'plus', 'gear', 'speakerOn', 'speakerOff', 'chevronUp']);
+  const ICON_NAMES = Object.freeze(['house', 'bubble', 'plus', 'gear', 'speakerOn', 'speakerOff', 'chevronUp', 'stack']);
   /** Coucou draws chevrons as strokes (views.ts foldButton: svg(ICONS.chevronUp, 8, {stroke: 2.4})); every other glyph is a fill. */
   const STROKE = Object.freeze({ chevronUp: 2.4 });
   return { soundView, ICON_NAMES, STROKE };
@@ -50,7 +50,7 @@ function mount(api) {
     else path.setAttribute('fill', 'currentColor');
     svg.append(path); slot.replaceChildren(svg);
   }
-  const SIZE = { house: 13, bubble: 13, plus: 13, gear: 14, speakerOn: 14, speakerOff: 14, chevronUp: 8 };
+  const SIZE = { house: 13, bubble: 13, plus: 13, gear: 14, speakerOn: 14, speakerOff: 14, chevronUp: 8, stack: 13 };
   const paint = () => { for (const slot of doc.querySelectorAll('[data-cc-icon]')) draw(slot, slot.dataset.ccIcon, SIZE[slot.dataset.ccIcon] || 14); };
 
   const mute = doc.getElementById('toggle-sound');
@@ -85,12 +85,12 @@ function mount(api) {
     invoke('prefs_action', { payload: { action: 'view' } }).then(apply, () => {});
     if (listen) listen('prefs:state', e => apply(e && e.payload)).catch(() => {});
   }
-  // «+»: open the chat and start a new conversation there (the buttons' own handlers do the work).
+  // «+»: open the chat (K2-05 T4 U4: ONE continuous chat, L3/L4/L11 — there is no «new conversation»; the
+  // chat button's own handler does the work).
   const plus = doc.getElementById('open-new');
   if (plus) plus.addEventListener('click', e => {
     if (e.isTrusted !== true) return;
-    const chat = doc.getElementById('open-chat'), create = doc.getElementById('chat-create');
+    const chat = doc.getElementById('open-chat');
     if (chat) chat.click();
-    if (create) setTimeout(() => create.click(), 0);
   });
 }

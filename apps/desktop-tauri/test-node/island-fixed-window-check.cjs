@@ -213,3 +213,22 @@ test('T7: the open island lets a real pointer reach the Koda sprite (the compact
   assert.match(css, /\.koda-sprite \{[^}]*pointer-events: none/, 'every other sprite (compact disc, toast, pill) stays pointer-transparent');
   assert.match(source, /const onCharacter = e => [^\n]*closest\('#clay, \.koda-sprite'\)/, 'a press on the sprite counts as the character');
 });
+
+test('isla-cualquier-lado S1: the open card keeps 12 px from the work-area edges, grows toward the free half, and a drag of it does not jump', () => {
+  const geometry = fs.readFileSync(path.join(__dirname, '../src/geometry.rs'), 'utf8');
+  const main = fs.readFileSync(path.join(__dirname, '../src/main.rs'), 'utf8');
+  const shape = fs.readFileSync(path.join(__dirname, '../src/islandshape.rs'), 'utf8');
+  assert.match(geometry, /pub const EDGE_GAP: i32 = 12;/, 'artboard 02: a 12 px margin to every edge');
+  assert.match(geometry, /pub fn growth_edge\(card: Rect, area: Rect\) -> Edge \{/, 'one pure growth rule');
+  const placed = geometry.slice(geometry.indexOf('pub fn island_window_rect_placed('), geometry.indexOf('pub fn island_window_rect_where('));
+  assert.match(placed, /inset\(area, edge_gap\(scale\)\)/, 'the open card is kept EDGE_GAP inside the work area');
+  assert.match(placed, /growth_edge_at\(placed\.origin\.1, area, scale\)/, 'the open window stands on the disc in the lower half');
+  // the drag release saves the disc spot read back for the edge the card was laid out with (geometry::drop_spot), so it does not jump
+  const end = main.slice(main.indexOf('fn island_move_end('), main.indexOf('fn open_chat_url'));
+  assert.match(end, /geometry::drop_spot\(Rect \{ x, y, w, h \}, expanded, edge, card_h, area, io\.scale\(\)\)/);
+  assert.match(end, /push_phase\(&app, "overview", edge\)/, 'the page re-anchors the card for the new edge');
+  // the click region follows the anchor on every platform
+  assert.match(shape, /let bottom = anchor_bottom\(&app_state\);/, 'Linux GDK region');
+  assert.match(fs.readFileSync(path.join(__dirname, '../src/islandclick.rs'), 'utf8'), /current_rects\(logical_window, protected, crate::islandshape::anchor_bottom\(&state\)\)/, 'Windows/macOS click-through');
+  assert.doesNotMatch(fs.readFileSync(path.join(__dirname, '../src/core.rs'), 'utf8'), /edge: Edge::Top \}/, 'core no longer hard-codes Top');
+});

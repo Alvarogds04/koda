@@ -35,13 +35,16 @@
     ['integration_calcom', 'Cal.com', 'service', 'both'],
     ['integration_stripe', 'Stripe', 'service', 'both'],
     ['integration_music', 'Apple Music', 'service', 'excluded'],
-    ['integration_spotify', 'Spotify', 'service', 'linux'],
+    ['integration_spotify', 'Spotify', 'service', 'both'],
   ].map(([id, name, category, platform]) => Object.freeze({ id, name, category, platform })));
-  const HOST_OS = typeof navigator !== 'undefined' && /Windows/.test(navigator.userAgent || '') ? 'windows' : 'linux';
+  // K2-09: three systems. 'both' in the table means «every desktop OS except where a row names one»; macOS used to read as «linux».
+  const osOf = ua => (/Windows/.test(ua || '') ? 'windows' : /Macintosh|Mac OS X/.test(ua || '') ? 'macos' : 'linux');
+  const HOST_OS = osOf(typeof navigator !== 'undefined' ? navigator.userAgent : '');
+  const asTable = os => (os === 'macos' ? 'linux' : os);
   const definition = id => CATALOG.find(def => def.id === id) || null;
   const offered = (id, os = HOST_OS) => {
     const def = definition(id);
-    return !!def && ['linux', 'windows'].includes(os) && (def.platform === 'both' || def.platform === os);
+    return !!def && ['linux', 'windows', 'macos'].includes(os) && (def.platform === 'both' || def.platform === os || def.platform === asTable(os));
   };
   const available = (os = HOST_OS) => CATALOG.filter(def => offered(def.id, os));
   // 0.2.1 (S3): «Herramienta principal» offers the CLIs only. What a stored file may already hold stays ACCEPTED (src/prefs.rs MAIN_PILLS),
@@ -50,5 +53,5 @@
   const ACCEPTED_MAIN = Object.freeze(['integration_claude', 'agent_cursor', 'agent_antigravity', 'agent_codex', 'agent_gemini', 'agent_hermes']);
   const mainChoices = (os = HOST_OS) => CLI_MAIN.map(id => available(os).find(def => def.id === id)).filter(Boolean);
   const acceptedMain = (os = HOST_OS) => ACCEPTED_MAIN.map(id => available(os).find(def => def.id === id)).filter(Boolean);
-  return { CATEGORIES, CATALOG, HOST_OS, definition, offered, available, mainChoices, acceptedMain };
+  return { CATEGORIES, CATALOG, HOST_OS, osOf, definition, offered, available, mainChoices, acceptedMain };
 });

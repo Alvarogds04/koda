@@ -28,19 +28,18 @@ function dom() { global.document = { createElement: t => new Element(t), createE
 module.exports = { Element, all, text, dom };
 if (require.main === module) (async () => {
   dom();
-  const { renderAccounts, renderModels } = await import(pathToFileURL(path.resolve(__dirname, '../frontend/vendor/coucou/hub/accounts.js')));
+  const { renderAccounts } = await import(pathToFileURL(path.resolve(__dirname, '../frontend/vendor/coucou/hub/accounts.js')));
   const V = require('../frontend/settings-view.js');
   let state = { connection: 'connected', ownedAccounts: { accounts: [] }, providers: [], accounts: [], auth: {}, connectors: { items: [] } };
   const calls = [], events = {}, timers = [];
-  let ui, modelListing = {profiles:[]};
+  let ui;
   const invoke = async (cmd, {payload}) => {
     if (payload.action === 'abito_account_create') assert.equal(all(ui).find(e => e.attrs.id === 'account-secret').value, '', 'account key cleared BEFORE invoke');
     if (payload.action === 'set' && cmd === 'secret_action') assert.equal(all(ui).find(e => e.attrs.id === `key-input-${payload.key}`).value, '', 'keychain field cleared BEFORE invoke');
     calls.push([cmd, payload]);
     if (cmd === 'secret_action') return { present: payload.action === 'set' };
     if (cmd === 'daemon_action') return { outcome: 'restarted' };
-    if (cmd === 'prefs_action') return { chosenModels: {} };
-    if (cmd === 'models_action') return structuredClone(modelListing);
+    if (cmd === 'prefs_action') return {};
     return structuredClone(state);
   };
   const options = { invoke, V, page: 'all', listen: async (name,f) => { events[name] = f; return () => { delete events[name]; }; }, timers: { setTimeout: (f,ms) => { timers.push({f,ms}); return timers.length; }, clearTimeout() {} } };
@@ -121,22 +120,13 @@ if (require.main === module) (async () => {
   state.auth={flowId:'flow-two',prompt:{flowId:'flow-two',promptId:'confirm',kind:'confirm',message:'Confirmar'}};events['agent:state']({payload:structuredClone(state)});click('Sí');await ui.settled();assert.deepEqual(calls.pop(),['agent_action',{action:'auth_reply',flowId:'flow-two',promptId:'confirm',value:'yes'}]);
   state.auth={last:{ok:true}};state.providers[0].configured=true;state.accounts[0].configured=true;events['agent:state']({payload:structuredClone(state)});click(V.LOGOUT_WORD);await ui.settled();assert.deepEqual(calls.pop(),['agent_action',{action:'account_logout',accountId:'new-account'}]);
   ui.dispose();
-  modelListing={profiles:[{profile_id:'local-one',alias:'Local uno',selectable:true,gate:{state:'ready'}}]};
-  calls.length = 0;
-  ui = await renderModels({ ...options, C: require('../frontend/chat-view.js') }); await ui.settled();
-  assert(calls.some(([c,p]) => c === 'models_action' && p.action === 'refresh'));
-  assert(calls.some(([c,p]) => c === 'agent_action' && p.action === 'models_list'));
-  calls.length = 0; click('Actualizar', false); await ui.settled(); assert.deepEqual(calls, []);
-  click('Actualizar'); await ui.settled(); assert.deepEqual(calls.pop(), ['models_action', {action:'refresh'}]);
-  calls.length=0;click('Elegir',false);await ui.settled();assert.deepEqual(calls,[]);click('Elegir');await ui.settled();assert.deepEqual(calls.pop(),['models_action',{action:'select',profile_id:'local-one'}]);
-  state.models=[{provider:'anthropic',id:'model-one',name:'Modelo uno'}];events['agent:state']({payload:structuredClone(state)});calls.length=0;
-  const modelRow=all(ui).find(e=>e.className==='hub-row'&&text(e).includes('Modelo uno'));assert(modelRow);all(modelRow).find(e=>e.tagName==='button').fire('click');await ui.settled();assert.deepEqual(calls.pop(),['prefs_action',V.chosenModelsPayload(V.chosenToggle({},'anthropic','model-one'),'anthropic')]);
-  ui.dispose();
+  // K2-05 U5c (L72): the model lists of the Ajustes hub are gone, so nothing here renders or chooses a
+  // model; specialists keep `models_action`, still in the entry's allow-list below.
   // Execute the entry's actual allow-list without loading any legacy DOM renderer.
   const fs = require('node:fs'), vm = require('node:vm');
   const entry = fs.readFileSync(path.resolve(__dirname,'../frontend/settings-app.js'),'utf8');
   const forwarded=[];
-  const context={window:{__TAURI__:{core:{invoke:async(c,a)=>{forwarded.push([c,a]);}}}},document:{getElementById:()=>new Element('div')},startHub:async()=>{},inactivePages:{},renderUnavailable(){},renderAccounts(){},renderModels(){},renderPills(){},renderAppearance(){},setInvoke(){},dictationPage(){},flowSettingsPage(){},dictionaryPage(){},snippetsPage(){},stylesPage(){},insightsPage(){},voicePage(){}};
+  const context={window:{__TAURI__:{core:{invoke:async(c,a)=>{forwarded.push([c,a]);}}}},document:{getElementById:()=>new Element('div')},startHub:async()=>{},inactivePages:{},renderUnavailable(){},renderAccounts(){},renderPills(){},renderAppearance(){},setInvoke(){},dictationPage(){},flowSettingsPage(){},dictionaryPage(){},snippetsPage(){},stylesPage(){},insightsPage(){},voicePage(){}};
   vm.runInNewContext(entry.replace(/^import .*;\n/gm,'')+'\nglobalThis.closedInvoke=invoke;',context);
   await context.closedInvoke('daemon_action',{payload:{action:'restart'}});assert.equal(forwarded.length,1);
   for(const args of [{payload:{action:'status'}},{payload:{action:'restart',extra:true}},{payload:{action:'restart'},extra:true},{}]) await assert.rejects(context.closedInvoke('daemon_action',args),/No disponible/);
@@ -145,5 +135,5 @@ if (require.main === module) (async () => {
   for(const [cmd,file] of [['models_action','modelshost.rs'],['specialists_action','specialistshost.rs'],['secret_action','secretshost.rs'],['daemon_action','settingshost.rs']]) {
     const src=fs.readFileSync(path.resolve(__dirname,'../src',file),'utf8'); const body=src.slice(src.indexOf(`async fn ${cmd}(`));assert(body.includes('bridge::sender_ok(webview.label(), &url)?'));assert(!body.split('#[tauri::command]')[0].includes('main_window_only'));
   }
-  console.log('PASS settings-accounts: account/key clearing, exact payloads, trusted guards, asks/timers, lifecycle, models');
+  console.log('PASS settings-accounts: account/key clearing, exact payloads, trusted guards, asks/timers, lifecycle');
 })().catch(e => { console.error(e); process.exitCode = 1; });

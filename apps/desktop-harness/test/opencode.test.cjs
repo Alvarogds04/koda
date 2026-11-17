@@ -15,7 +15,7 @@ const handleOpencodeHook = viaPipe(raw_handleOpencodeHook);
 
 const cwd = path.resolve(__dirname, '..');
 const perm = (over = {}) => JSON.stringify({ sessionID: 'ses_1', directory: cwd, type: 'bash', title: 'Run: ls', pattern: 'ls', metadata: { command: 'ls' }, ...over });
-const envOf = r => ({ ABITO_DESKTOP_SOCKET: r.endpoint, ABITO_SOCKET_DIR: r.runtime });
+const envOf = r => ({ KODA_DESKTOP_SOCKET: r.endpoint, KODA_SOCKET_DIR: r.runtime });
 const answerer = (rcv, value) => rcv.next('question').then(q => rcv.send({ v: 1, type: 'answer', questionVersion: 1, project: q.project,
   sessionId: q.sessionId, at: Date.now(), id: q.id, source: 'human', answer: { type: 'option', value } }));
 const stub = status => () => ({ ask: async () => ({ status }), notify: async () => ({ status: 'sent' }) });
@@ -122,7 +122,7 @@ test('a Windows process (no getuid) reaches the island client: ask and stop both
   const platform = Object.getOwnPropertyDescriptor(process, 'platform'), getuid = process.getuid;
   Object.defineProperty(process, 'platform', { value: 'win32' }); process.getuid = undefined;
   t.after(() => { Object.defineProperty(process, 'platform', platform); process.getuid = getuid; });
-  const env = { ABITO_DESKTOP_SOCKET: 'C:\\opencode-win\\endpoint.json' };
+  const env = { KODA_DESKTOP_SOCKET: 'C:\\opencode-win\\endpoint.json' };
   let asked = 0, notified = 0;
   const clientFactory = () => ({ ask: async () => { asked++; return { status: 'answered', answer: { type: 'option', value: 'allow' } }; }, notify: async () => { notified++; return { status: 'sent' }; } });
   const r = await handleOpencodeHook({ event: 'permission-request', input: perm(), env, argv: [], clientFactory });

@@ -17,7 +17,7 @@
 //!   impersonate an admitted client.
 //! * Discovery metadata (`pipe`/`pid`/`sid`/`v`) is published atomically with
 //!   an explicit protected owner-only ACL under
-//!   `%LOCALAPPDATA%\Abito\notices\endpoint.json`; there is NO arbitrary env
+//!   `%LOCALAPPDATA%\Koda\notices\endpoint.json`; there is NO arbitrary env
 //!   override on Windows. `close()` removes it only when it still names us.
 //! * Same protocol, quotas and question semantics as `transport.rs`
 //!   (`protocol`, `question`, `questioncmd` helpers are reused verbatim):
@@ -158,7 +158,7 @@ fn write_line(writer: &Mutex<Arc<ClientPipe>>, line: &[u8]) -> std::io::Result<(
 
 // --- endpoint policy ---------------------------------------------------------
 
-/// The per-user metadata root: `%LOCALAPPDATA%\Abito\notices`. There is NO
+/// The per-user metadata root: `%LOCALAPPDATA%\Koda\notices`. There is NO
 /// arbitrary env override on Windows (the approved design): the location is
 /// canonical and its directory chain is ACL-verified before use.
 pub fn resolve_runtime() -> Result<PathBuf, TransportError> {
@@ -326,7 +326,7 @@ impl Transport {
         &self.inner.endpoint
     }
 
-    /// `%LOCALAPPDATA%\Abito\notices` — the discovery-metadata root.
+    /// `%LOCALAPPDATA%\Koda\notices` — the discovery-metadata root.
     pub fn runtime(&self) -> &Path {
         &self.inner.runtime
     }

@@ -1,8 +1,8 @@
 "use strict";
 
-// REAL end-to-end: AgentsManager drives the actual apps/desktop-harness/bin/abito-hook.cjs against a
+// REAL end-to-end: AgentsManager drives the actual apps/desktop-harness/bin/koda-hook.cjs against a
 // temp HOME (fake .claude/.codex with third-party hooks). The real ~/.claude, ~/.codex and
-// ~/.abito-island are never written: only their mtimes are READ (stat) before/after to prove it.
+// ~/.koda are never written: only their mtimes are READ (stat) before/after to prove it.
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
@@ -22,6 +22,11 @@ const HARNESS = path.join(__dirname, "..", "..", "desktop-harness");
 // therefore stages the real helper + a manifest naming it into the layout root — exactly what the
 // Windows CI layout provides at apps/. Without the compiled exe the live tests skip (the POSIX twin
 // is the real ownership/mode trust check, which stays the only mechanism on Linux/macOS).
+// The layout root must also be its canonical LONG path: win-fs's manifest check refuses any `~`
+// component (pathOk), while plain fs.realpathSync only resolves links and does NOT expand the 8.3
+// name os.tmpdir() returns on the Windows runners (…\RUNNER~1\AppData\Local\Temp), so the staged
+// helper was refused as install_unverified and tests 44/45/46 failed with state 'error'
+// (CI 43263659882). setup() therefore resolves with realpathSync.native, the rule tmpBase() applies.
 const HELPER_SRC = path.join(__dirname, "..", "..", "abito-private-session.exe");
 const hasHelper = () => fs.existsSync(HELPER_SRC);
 const helperSkip = "needs Windows + the compiled, manifest-trusted abito-private-session.exe (present on the Windows CI runner); POSIX twin: the real ownership/mode trust check exercised by these same tests";
@@ -61,13 +66,16 @@ function copyInstaller(dest) {
 	};
 	walk(path.join(dest, "desktop-harness", "bin"));
 	walk(path.join(dest, "desktop-harness", "src"));
-	return path.join(dest, "desktop-harness", "bin", "abito-hook.cjs");
+	return path.join(dest, "desktop-harness", "bin", "koda-hook.cjs");
 }
 
 const THIRD = { hooks: { PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "/usr/bin/true" }] }] }, theme: "dark" };
 
 function setup(t) {
-	const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "abito-agents-e2e-")));
+	// native: os.tmpdir() is the 8.3 short form on the Windows runners (…\RUNNER~1\…) and the helper's
+	// manifest/path policy refuses a `~` component, so the layout root must be the canonical long path
+	// (see the header note).
+	const base = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "abito-agents-e2e-")));
 	t.after(() => fs.rmSync(base, { recursive: true, force: true }));
 	fs.chmodSync(base, 0o700);
 	const home = path.join(base, "home");
@@ -112,7 +120,7 @@ test('packaged installer: Claude preview in a private HOME never reports install
   else assert.equal(fs.statSync(dest).mode & 0o777, 0o644);
  }
  if (win && hasHelper()) stageHelper(path.join(s.base, 'package')); // the packaged layout resolves its own helper through desktop-harness/src/../.. — see stageHelper
- const manager = new AgentsManager({installerBin:path.join(packaged, 'bin/abito-hook.cjs'), home, islandDir:s.islandDir, ...(win ? { verifyBundled: () => {} } : {})});
+ const manager = new AgentsManager({installerBin:path.join(packaged, 'bin/koda-hook.cjs'), home, islandDir:s.islandDir, ...(win ? { verifyBundled: () => {} } : {})});
  const list = await manager.list();
  const claude = byId(list, 'claude-code');
  assert.notEqual(claude.detail, 'install_failed');
@@ -138,7 +146,7 @@ test('real statusline CLI: preview is read-only, coexist, hash-bound apply and m
   assert.equal(byId(await s.manager.connect(id, hash), id).state, 'connected');
  }
  const installed = JSON.parse(fs.readFileSync(s.claudeFile));
- assert.match(installed.statusLine.command, /abito-statusline\.cjs/);
+ assert.match(installed.statusLine.command, /koda-statusline\.cjs/);
  assert.equal(JSON.parse(fs.readFileSync(path.join(s.home, '.abito/statusline-previous.json'))).command, 'mine');
  for (const id of ['statusline']) assert.equal(byId(await s.manager.disconnect(id), id).state, id === 'statusline' ? 'outdated' : 'not_connected');
  assert.deepEqual(JSON.parse(fs.readFileSync(s.claudeFile)), original);

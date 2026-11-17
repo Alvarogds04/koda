@@ -108,11 +108,11 @@ pub fn runtime() -> Runtime {
         }
     }
     let island = crate::agentconn::island_root(
-        std::env::var("ABITO_ISLAND_DIR").ok().as_deref(),
+        std::env::var("KODA_ISLAND_DIR").ok().as_deref(),
         home.as_deref().and_then(|h| h.to_str()),
     );
     if let Some(dir) = island.and_then(|d| d.to_str().map(str::to_owned)) {
-        env.push(("ABITO_ISLAND_DIR".into(), dir));
+        env.push(("KODA_ISLAND_DIR".into(), dir));
     }
     Runtime { node, script, env }
 }

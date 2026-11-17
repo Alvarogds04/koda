@@ -108,11 +108,11 @@ test('outcomes: every host outcome has icon+word; «Enviada» is NEUTRAL (live p
 });
 
 // ---- sound cues (pure; no audio exists) ------------------------------------------
-test('sound cues follow the catalog: attention on a NEW pending question, expired once; «Enviada»/«Sin confirmar» NEVER sound', () => {
+test('sound cues follow the catalog: question on a NEW pending question, expired once; «Enviada»/«Sin confirmar» NEVER sound', () => {
   const none = snap(null);
-  assert.equal(N.soundFor(none, snap(pending())), 'snd.attention');
+  assert.equal(N.soundFor(none, snap(pending())), 'snd.question', 'K2-07 L10: a question plays its own cue');
   assert.equal(N.soundFor(snap(pending()), snap(pending())), null, 'same question: no repeat');
-  assert.equal(N.soundFor(snap(pending({ id: ID })), snap(pending({ id: '4a2b8a40-1c2d-4e5f-8a6b-7c8d9e0f1a2c' }))), 'snd.attention', 'a different question is new');
+  assert.equal(N.soundFor(snap(pending({ id: ID })), snap(pending({ id: '4a2b8a40-1c2d-4e5f-8a6b-7c8d9e0f1a2c' }))), 'snd.question', 'a different question is new');
   assert.equal(N.soundFor(null, snap(pending())), null, 'nothing sounds at start-up (no previous snapshot)');
   assert.equal(N.soundFor(snap(pending()), snap(null, { notice: 'expired' })), 'snd.expired');
   assert.equal(N.soundFor(snap(null, { notice: 'expired' }), snap(null, { notice: 'expired' })), null, 'a persisting condition sounds once');
@@ -122,6 +122,26 @@ test('sound cues follow the catalog: attention on a NEW pending question, expire
   assert.equal(N.soundFor(snap(null, { notice: 'sent' }), snap(null, { notice: 'ack_lost' })), null);
   // the cue is only an id: playing it is a separate switch, ON by default and the human can turn it off
   assert.equal(N.SOUND_ENABLED_DEFAULT, true);
+});
+
+test('K2-07 S1/L10: a permission plays snd.approval — Pi\'s kind=approval, and a question the island SHOWS as a permission', () => {
+  const none = snap(null);
+  const approval = pending({ kind: 'approval', text: '¿Me das permiso para ejecutar: git push?',
+    options: [{ index: 0, label: 'Aprobar', description: '' }, { index: 1, label: 'Rechazar', description: '' }] });
+  assert.equal(N.soundFor(none, snap(approval)), 'snd.approval', 'kind=approval is a permission');
+  assert.equal(N.soundFor(none, snap(approval), () => false), 'snd.approval', 'kind=approval never needs the look');
+  // a harness permission arrives as kind=question; the island decides it is a permission (approval look) and so does its cue
+  const harness = pending({ text: 'Codex pide permiso para Bash: cargo test',
+    options: [{ index: 0, label: 'Aprobar una vez', description: '' }, { index: 1, label: 'Rechazar', description: '' }] });
+  const seen = [];
+  assert.equal(N.soundFor(none, snap(harness), n => { seen.push(n.id); return n.kind === 'question'; }), 'snd.approval');
+  assert.deepEqual(seen, [ID], 'the classifier gets the validated notification');
+  assert.equal(N.soundFor(none, snap(harness), () => false), 'snd.question', 'not shown as a permission: a question');
+  assert.equal(N.soundFor(none, snap(harness)), 'snd.question', 'no classifier: a question');
+  assert.equal(N.soundFor(none, snap(harness), () => { throw new Error('layout'); }), 'snd.question', 'a throwing classifier never breaks the cue');
+  assert.equal(N.soundFor(snap(harness), snap(harness), () => true), null, 'the same permission never repeats');
+  assert.equal(N.soundFor(null, snap(approval)), null, 'nothing sounds at start-up');
+  assert.equal(N.soundFor(snap(approval), snap(null, { notice: 'expired' })), 'snd.expired');
 });
 
 test('rate limit: at most one cue per 250 ms and the same cue once per 2 s; bursts are dropped, not queued', () => {
@@ -221,6 +241,22 @@ test('onScreen: expanded questions are answerable in every view, with no coverin
 });
 
 // ---- BEHAVIOUR: run the real notify.js against a tiny fake DOM --------------------------------
+test('hiddenExpired (K2-08 S6): announced only when the «expired» notice is fresh, or the hidden request\'s own deadline passed', () => {
+  const P = (n, exp = 2000000) => pending({ id: `3f2b8a40-1c2d-4e5f-8a6b-7c8d9e0f1a${String(n).padStart(2, '0')}`, expires_at: exp });
+  const S = (queued, notice) => snap(P(1), { queued, queued_count: queued.length, notice });
+  // fresh: the notice turned into «expired» on this transition
+  assert.deepEqual(N.hiddenExpired(S([P(2), P(3)], null), S([P(3)], 'expired'), 1000).map(q => q.id), [P(2).id]);
+  // stale: «expired» was already there, and the request left before its deadline (a disconnect): no announcement
+  assert.deepEqual(N.hiddenExpired(S([P(3)], 'expired'), S([], 'expired'), 1000), []);
+  // stale notice, but the request's own deadline passed: it really expired
+  assert.deepEqual(N.hiddenExpired(S([P(3, 900)], 'expired'), S([], 'expired'), 1000).map(q => q.id), [P(3).id]);
+  // stale notice and the host did not list who left: never guessed
+  assert.deepEqual(N.hiddenExpired({ ...S([], 'expired'), queued_count: 2 }, { ...S([], 'expired'), queued_count: 1 }, 1000), []);
+  // a fresh notice with an unlisted queue still counts
+  assert.deepEqual(N.hiddenExpired({ ...S([], null), queued_count: 2 }, { ...S([], 'expired'), queued_count: 1 }, 1000), [null]);
+});
+
+// ---- BEHAVIOUR: run the real notify.js against a tiny fake DOM --------------------------------
 function harness(dataset) {
   const vm = require('node:vm');
   const calls = [];
@@ -240,14 +276,18 @@ function harness(dataset) {
     'question-approval', 'question-approval-title', 'question-approval-cmd', 'question-approval-note', 'question-approval-actions'];
   const nodes = Object.fromEntries(ids.map(id => [id, node(id)]));
   Object.assign(nodes.capsule.dataset, dataset);
+  const focusedList = { tagName: 'OL' }; // the focus sits on the card's own options list (inside #question)
+  nodes.question.contains = e => e === focusedList;
   const doc = { getElementById: id => nodes[id] || null, createElement: tag => node(tag), addEventListener(t, f) { (listeners[t] = listeners[t] || []).push(f); },
-    dispatchEvent() {}, activeElement: { tagName: 'OL' } };
-  const win = { AbitoNotify: N, AbitoIcons: { svg: () => '' }, __TAURI__: { core: { invoke: (name, args) => { calls.push(args.payload); return Promise.resolve(args.payload.action === 'view' ? view : {}); } } } };
+    dispatchEvent() {}, activeElement: focusedList };
+  const win = { AbitoNotify: N, AbitoIcons: { svg: () => '' }, __TAURI__: { core: { invoke: (_name, args) => { calls.push(args.payload); return Promise.resolve(args.payload.action === 'view' ? view : {}); } } } };
   const view = snap(pending({ expires_at: Date.now() + 120000 }));
+  // K2-08 S4: a head is guarded for a moment when it first becomes visible; the monotonic clock lets the check step past that guard
+  const mono = { t: 0 };
   const ctx = vm.createContext({ window: win, document: doc, setInterval: () => 0, clearInterval() {}, requestAnimationFrame: f => f(), MutationObserver: class { observe() {} },
-    CustomEvent: class { constructor(t, o) { this.type = t; this.detail = o && o.detail; } }, Date });
+    CustomEvent: class { constructor(t, o) { this.type = t; this.detail = o && o.detail; } }, Date, performance: { now: () => mono.t } });
   vm.runInContext(fs.readFileSync(path.join(frontend, 'notify.js'), 'utf8'), ctx);
-  return { calls, nodes, key: (k, extra) => { for (const f of listeners.keydown || []) f({ key: k, isTrusted: true, ctrlKey: false, altKey: false, metaKey: false, isComposing: false, repeat: false, preventDefault() {}, stopPropagation() {}, ...extra }); } };
+  return { calls, nodes, pastGuard: () => { mono.t += 1000; }, key: (k, extra) => { for (const f of listeners.keydown || []) f({ key: k, isTrusted: true, ctrlKey: false, altKey: false, metaKey: false, isComposing: false, repeat: false, preventDefault() {}, stopPropagation() {}, ...extra }); } };
 }
 const settle = () => new Promise(r => setImmediate(r));
 
@@ -265,6 +305,7 @@ test('BEHAVIOUR: a real digit answers ONLY while the notification is on screen (
     await settle(); await settle();
     h.nodes.question.inert = !expected ? h.nodes.question.inert : h.nodes.question.inert; // the guard must NOT rely on inert alone
     h.nodes.question.inert = false; // worst case: inert says «live»
+    h.pastGuard();
     h.key('1');
     await settle();
     const answered = h.calls.some(c => c.action === 'answer');
@@ -273,7 +314,7 @@ test('BEHAVIOUR: a real digit answers ONLY while the notification is on screen (
   }
   // typing / modifiers / untrusted never answer even when visible
   for (const extra of [{ isTrusted: false }, { ctrlKey: true }, { repeat: true }]) {
-    const h = harness({ phase: 'expanded', view: 'overview' }); await settle(); await settle(); h.nodes.question.inert = false;
+    const h = harness({ phase: 'expanded', view: 'overview' }); await settle(); await settle(); h.nodes.question.inert = false; h.pastGuard();
     h.key('1', extra); await settle();
     assert.equal(h.calls.some(c => c.action === 'answer'), false, JSON.stringify(extra));
   }

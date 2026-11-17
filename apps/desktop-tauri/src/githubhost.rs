@@ -3,8 +3,8 @@
 //! Gate, validate and spend the rate budget on the caller's thread; `gh` runs off it,
 //! holding only the cache lock (never the shared rate lock) while it waits.
 use crate::{now_ms, AppState};
-use abito_island::bridge::{self, BridgeError};
-use abito_island::githubcmd::{self, Cache};
+use koda_island::bridge::{self, BridgeError};
+use koda_island::githubcmd::{self, Cache};
 use serde_json::{json, Value};
 use std::sync::Mutex;
 use tauri::State;
@@ -31,7 +31,7 @@ pub async fn github_action(
     state.rate.lock().expect("rate lock").check(now_ms())?;
     tauri::async_runtime::spawn_blocking(move || {
         let mut slot = CACHE.lock().unwrap_or_else(|e| e.into_inner());
-        use abito_island::secrets::{Keychain, SecretStore};
+        use koda_island::secrets::{Keychain, SecretStore};
         let token = Keychain.read("github-token").ok().flatten().filter(|t| !t.is_empty());
         if slot.0 != token { slot.0 = token.clone(); slot.1 = None; }
         let cache = slot.1.get_or_insert_with(Cache::default);
