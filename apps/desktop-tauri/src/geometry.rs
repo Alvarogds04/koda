@@ -224,6 +224,17 @@ pub fn compact_disc_shift(placed: Placed, area: Rect, scale: f64, height: i32) -
     let (kept, side, _) = placed_kept(placed, area, scale, height);
     (kept.x - side) - clamp_x(kept.x - side, w, area)
 }
+/// A folded drag (island_move): the pointer asks for the window at `virtual_x` (physical px, may leave the area); the native window
+/// stays inside the work area and the disc goes on inside it, up to the area's edge. Returns (window x, disc shift). It is the
+/// placement's own rule, so what the release saves (window x + shift) places back to this same window and shift.
+pub fn folded_drag_x(virtual_x: i32, area: Rect, scale: f64, height: i32) -> (i32, i32) {
+    let placed = Placed { origin: (virtual_x, area.y), expanded: false };
+    (island_window_rect_placed(placed, area, scale, height).x, compact_disc_shift(placed, area, scale, height))
+}
+/// The disc shift as the page and the input region read it: logical px of the window (GDK and the webview scale it).
+pub fn logical_shift(shift: i32, scale: f64) -> i32 {
+    (f64::from(shift) / valid_scale(scale)).round() as i32
+}
 /// The box the placement keeps on screen (the disc folded, the open card's column expanded), the transparent air beside it inside the
 /// window, and the growth edge: the one place island_window_rect_placed and compact_disc_shift agree on.
 fn placed_kept(placed: Placed, area: Rect, scale: f64, height: i32) -> (Rect, i32, Edge) {
@@ -390,6 +401,38 @@ mod tests {
         let placed = Placed { origin: (100, 200), expanded: false };
         assert_eq!(island_window_rect_placed(placed, narrow, 1.0, ISLAND_WINDOW.1).x, 0);
         assert_eq!(disc_on_screen(placed.origin, narrow, 1.0), 100 + side);
+    }
+    // compact-anywhere T2 (S4/S5): the drag is the app's, not the system's. While the folded disc is dragged the window follows the
+    // pointer up to the work area's edge and the disc goes on inside it; the release saves the VIRTUAL window left (window + shift), so
+    // the saved spot means what it always meant and the disc does not snap 356 px back at the release (it did when the clamped window
+    // left was saved).
+    #[test]
+    fn a_folded_drag_keeps_the_window_inside_and_moves_the_disc_on_inside_it() {
+        let area = human_area();
+        let side = (ISLAND_WINDOW.0 - COMPACT_DOT.0) / 2;
+        assert_eq!(folded_drag_x(500, area, 1.0, ISLAND_WINDOW.1), (500, 0), "away from the sides the window follows the pointer");
+        assert_eq!(folded_drag_x(47 - 100, area, 1.0, ISLAND_WINDOW.1), (47, -100), "past the left edge the window stops, the disc goes on");
+        assert_eq!(folded_drag_x(-5000, area, 1.0, ISLAND_WINDOW.1), (47, -side), "the disc stops at the work area's edge");
+        assert_eq!(folded_drag_x(1920 - 752 + 80, area, 1.0, ISLAND_WINDOW.1), (1920 - 752, 80), "right edge");
+        assert_eq!(folded_drag_x(5000, area, 1.0, ISLAND_WINDOW.1), (1920 - 752, side), "the disc stops at the screen's right edge");
+        // the drag and the placement agree: what the release saves (window + shift) is placed back to the same window and shift
+        for virtual_x in [-5000, -200, 0, 47, 500, 1300, 1500, 5000] {
+            for scale in [1.0, 2.0] {
+                let a = if scale == 1.0 { area } else { Rect { x: 0, y: 0, w: 3840, h: 2160 } };
+                let (window_x, shift) = folded_drag_x(virtual_x, a, scale, ISLAND_WINDOW.1);
+                let placed = Placed { origin: (window_x + shift, 400), expanded: false };
+                assert_eq!(island_window_rect_placed(placed, a, scale, ISLAND_WINDOW.1).x, window_x, "x {virtual_x} scale {scale}: the release keeps the window");
+                assert_eq!(compact_disc_shift(placed, a, scale, ISLAND_WINDOW.1), shift, "x {virtual_x} scale {scale}: and the shift");
+            }
+        }
+    }
+    #[test]
+    fn the_page_and_the_click_region_get_the_shift_in_logical_px() {
+        assert_eq!(logical_shift(-356, 1.0), -356);
+        assert_eq!(logical_shift(-712, 2.0), -356);
+        assert_eq!(logical_shift(-445, 1.25), -356);
+        assert_eq!(logical_shift(0, 1.5), 0);
+        assert_eq!(logical_shift(-100, f64::NAN), -100, "a junk scale reads as 1 like everywhere else");
     }
     #[test]
     fn without_a_dragged_origin_the_island_is_placed_top_centre_as_before() {

@@ -51,7 +51,7 @@ test('island-free-drag S4: a press on #clay pulls the pet out ONLY on the open i
       character: { dragStart() {}, dragEnd() {}, dragMove() {} },
       desktopCharacter: { canPickUp: () => true, pickUp: (...p) => picked.push(p), carry: (...p) => carried.push(p), carryEnd: (...p) => ended.push(p) },
       interaction: null, O: null, syncInteraction() {}, capsule: { dataset: {} }, current: { state },
-      invoke: (cmd, args) => { commands.push(cmd); return Promise.resolve(); }, console,
+      invoke: (cmd) => { commands.push(cmd); return Promise.resolve(); }, console,
     });
     vm.runInContext(source.slice(start, end), context);
     const target = { closest: selector => String(selector).split(',').map(x => x.trim()).includes('#clay') ? target : null, setPointerCapture() {} };
@@ -122,7 +122,7 @@ test('Koda: a press inside a scrolling area never moves the island; the bare pil
       getComputedStyle: el => ({ userSelect: 'none', webkitUserSelect: 'none', ...el.style }),
       character: { dragStart() {}, dragEnd() {}, dragMove() {} }, desktopCharacter: null,
       interaction: null, O: null, syncInteraction() {}, current: { state: 'expanded' },
-      invoke: (cmd, args) => { commands.push(cmd); return Promise.resolve(); }, console,
+      invoke: (cmd) => { commands.push(cmd); return Promise.resolve(); }, console,
     });
     vm.runInContext(source.slice(start, end), context);
     handlers.pointerdown({ button: 0, isPrimary: true, clientX: 10, clientY: 10, screenX: 500, screenY: 300, target: row });
@@ -225,7 +225,7 @@ test('isla-cualquier-lado S1: the open card keeps 12 px from the work-area edges
   assert.match(placed, /growth_edge_at\(placed\.origin\.1, area, scale\)/, 'the open window stands on the disc in the lower half');
   // the drag release saves the disc spot read back for the edge the card was laid out with (geometry::drop_spot), so it does not jump
   const end = main.slice(main.indexOf('fn island_move_end('), main.indexOf('fn open_chat_url'));
-  assert.match(end, /geometry::drop_spot\(Rect \{ x, y, w, h \}, expanded, edge, card_h, area, io\.scale\(\)\)/);
+  assert.match(end, /geometry::drop_spot\(Rect \{ x(?:: x \+ shift)?, y, w, h \}, expanded, edge, card_h, area, io\.scale\(\)\)/);
   assert.match(end, /push_phase\(&app, "overview", edge\)/, 'the page re-anchors the card for the new edge');
   // the click region follows the anchor on every platform
   assert.match(shape, /let bottom = anchor_bottom\(&app_state\);/, 'Linux GDK region');
