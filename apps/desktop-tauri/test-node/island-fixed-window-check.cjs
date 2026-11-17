@@ -229,6 +229,6 @@ test('isla-cualquier-lado S1: the open card keeps 12 px from the work-area edges
   assert.match(end, /push_phase\(&app, "overview", edge\)/, 'the page re-anchors the card for the new edge');
   // the click region follows the anchor on every platform
   assert.match(shape, /let bottom = anchor_bottom\(&app_state\);/, 'Linux GDK region');
-  assert.match(fs.readFileSync(path.join(__dirname, '../src/islandclick.rs'), 'utf8'), /current_rects\(logical_window, protected, crate::islandshape::anchor_bottom\(&state\)\)/, 'Windows/macOS click-through');
+  assert.match(fs.readFileSync(path.join(__dirname, '../src/islandclick.rs'), 'utf8'), /current_rects\(logical_window, protected, crate::islandshape::anchor_bottom\(&state\)[,)]/, 'Windows/macOS click-through');
   assert.doesNotMatch(fs.readFileSync(path.join(__dirname, '../src/core.rs'), 'utf8'), /edge: Edge::Top \}/, 'core no longer hard-codes Top');
 });
