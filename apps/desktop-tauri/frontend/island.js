@@ -407,6 +407,12 @@
     if (!raf) raf = requestAnimationFrame(tick);
   }
   window.__islandSetState = setPhase;
+  // compact-anywhere T4: called from Rust (main.rs push_shift) with how far the folded disc sits from its window's centre, logical px.
+  // The native window stays inside the work area and the disc reaches the screen edge inside it; only the folded disc reads it (CSS).
+  window.__islandSetShift = (shift) => {
+    const n = Number(shift);
+    capsule.style.setProperty('--disc-shift', `${Number.isFinite(n) ? Math.round(n) : 0}px`);
+  };
   // U1: called from Rust (chathost::apply_view) with the chat height from
   // geometry::CHAT_VISIBLE — the frontend never owns that number.
   window.__islandSetView = (view, vw, vh) => {
