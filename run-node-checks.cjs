@@ -3,10 +3,14 @@
 // Cross-platform runner for apps/desktop-tauri/test-node/*-check.cjs (K2-01): the same checks on Linux, macOS and Windows.
 // Each check runs in its own process with a wall-clock cap and a V8 heap cap; on timeout its whole process tree is killed
 // (process group on Unix, taskkill /T on Windows). run-node-checks.sh stays as the Linux-local runner with a memory cap.
-// Usage: node run-node-checks.cjs [--shard <i>/<N>] [--list [--caps]] [check.cjs ...]   (paths relative to apps/desktop-tauri;
-// default: every *-check.cjs except producer-check.cjs, which is not a test). `--shard i/N` keeps every N-th file of the sorted
-// list starting at the i-th (1-based), so N jobs run the set in parallel and together cover it exactly once. `--list` prints
-// the selected files and exits; with `--caps` each line is `<file>\t<cap seconds>`. Exit code = number of failed checks.
+// Usage: node run-node-checks.cjs [--shard <i>/<N>] [--jobs <N>] [--list [--caps]] [check.cjs ...]   (paths relative to
+// apps/desktop-tauri; default: every *-check.cjs except producer-check.cjs, which is not a test). `--shard i/N` keeps every N-th
+// file of the sorted list starting at the i-th (1-based), so N shard jobs run the set in parallel and together cover it exactly once.
+// `--jobs N` runs N checks at once (default 1 = one at a time, in the selected order, exactly as before; RUN_NODE_CHECKS_JOBS
+// sets that default for a shell). Each check keeps its own process, wall-clock cap and process-tree kill. `--list` prints the
+// selected files and exits; with `--caps` each line is `<file>\t<cap seconds>`. Exit code = number of failed checks.
+// Output under --jobs N: one line per check as it finishes (completion order), and a failing check prints its captured output
+// in its own contiguous block, so two checks' output never interleave; the summary line closes the run either way.
 // Caps: 120 s per check, 420 s for a browser check; doubled on macOS, whose hosted runners take about twice as long on the
 // browser checks (RUN_NODE_CHECKS_PLATFORM overrides process.platform for tests only).
 const { spawn, spawnSync } = require('node:child_process');
@@ -19,10 +23,19 @@ const argv = process.argv.slice(2);
 let shard = null;
 let listOnly = false;
 let withCaps = false;
+// The default pool size may also come from the shell (RUN_NODE_CHECKS_JOBS); CI sets nothing, so CI keeps 1.
+const envJobs = /^[0-9]+$/.test(process.env.RUN_NODE_CHECKS_JOBS || '') ? Number(process.env.RUN_NODE_CHECKS_JOBS) : 0;
+let jobs = envJobs >= 1 ? envJobs : 1;
 const args = [];
 for (let i = 0; i < argv.length; i++) {
   if (argv[i] === '--list') { listOnly = true; continue; }
   if (argv[i] === '--caps') { withCaps = true; continue; }
+  if (argv[i] === '--jobs') {
+    const raw = argv[++i];
+    if (!/^[0-9]+$/.test(raw || '') || Number(raw) < 1) { console.error('--jobs expects an integer >= 1'); process.exit(2); }
+    jobs = Number(raw);
+    continue;
+  }
   if (argv[i] === '--shard') {
     const m = /^([0-9]+)\/([0-9]+)$/.exec(argv[++i] || '');
     if (!m || Number(m[1]) < 1 || Number(m[1]) > Number(m[2])) { console.error('--shard expects <i>/<N> with 1 <= i <= N'); process.exit(2); }
@@ -69,22 +82,35 @@ function runOne(file) {
   });
 }
 
+/** The whole failure report of one check as a single block: its FAIL line, every failing line, then the tail, so a CI failure
+ *  can be diagnosed from the log alone. Built as one string and written once, so a concurrent check cannot interleave into it. */
+function failureBlock(file, code, cap, out, secs) {
+  const lines = [`FAIL(${code === 124 ? `timeout ${cap}s` : code}) ${file} (${secs}s)`];
+  const all = out.split(/\r?\n/);
+  const hits = all.filter((l) => /FAIL|Error|FATAL|not ok|assert/i.test(l)).slice(0, 40);
+  for (const l of hits) lines.push(`    ${l.slice(0, 600)}`);
+  lines.push('    --- last lines ---');
+  for (const l of all.slice(-15)) lines.push(`    ${l.slice(0, 600)}`);
+  return lines.join('\n');
+}
+
 (async () => {
   let failed = 0;
-  for (const file of files) {
-    const started = Date.now();
-    const { code, out, cap } = await runOne(file);
-    const secs = ((Date.now() - started) / 1000).toFixed(1);
-    if (code === 0) { console.log(`ok   ${file} (${secs}s)`); continue; }
-    failed += 1;
-    console.log(`FAIL(${code === 124 ? `timeout ${cap}s` : code}) ${file} (${secs}s)`);
-    // Every failing line, then the tail, so a CI failure can be diagnosed from the log alone.
-    const all = out.split(/\r?\n/);
-    const lines = all.filter((l) => /FAIL|Error|FATAL|not ok|assert/i.test(l)).slice(0, 40);
-    for (const l of lines) console.log(`    ${l.slice(0, 600)}`);
-    console.log('    --- last lines ---');
-    for (const l of all.slice(-15)) console.log(`    ${l.slice(0, 600)}`);
-  }
+  let cursor = 0;
+  // Simple worker pool over the selected files: `jobs` workers, each taking the next file until the list is empty. With the
+  // default of 1 there is a single worker, so the output is byte for byte the run this runner has always printed.
+  const worker = async () => {
+    while (cursor < files.length) {
+      const file = files[cursor++];
+      const started = Date.now();
+      const { code, out, cap } = await runOne(file);
+      const secs = ((Date.now() - started) / 1000).toFixed(1);
+      if (code === 0) { process.stdout.write(`ok   ${file} (${secs}s)\n`); continue; }
+      failed += 1;
+      process.stdout.write(`${failureBlock(file, code, cap, out, secs)}\n`);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(jobs, files.length) }, worker));
   console.log(`node-checks: ${files.length} run, ${failed} failed`);
   process.exit(Math.min(failed, 125));
 })();

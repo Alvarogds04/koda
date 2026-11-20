@@ -189,8 +189,14 @@ test('this check runs in CI on all 3 OS: run-node-checks.cjs (no file arguments)
   // The runner really partitions: every default file lands in exactly one of the N shards (`--list` prints the selection).
   const run = (args, env = {}) => require('node:child_process').execFileSync(process.execPath, [path.join(repo, 'run-node-checks.cjs'), ...args], { encoding: 'utf8', env: { ...process.env, ...env } });
   const all = run(['--list']).trim().split(/\r?\n/);
+  // ONE snapshot, three invocations. The round-robin in the runner is positional over the list it selected, so the shards
+  // must be computed over the same list: passing this snapshot explicitly is what makes the partition reproducible.
+  // Reading the directory again in each invocation was racy and it showed during the whole-set run of 20-nov (K3-06): a
+  // `*-check.cjs` that appears or disappears between two invocations (the runner itself selected 221 files while the
+  // directory held 222 later in the same run) shifts every index after it, so two shards overlapped with a duplicate
+  // entry and one check fell out of the union. Alone, in 0.3 s and with no concurrent writer, it never failed.
   const seen = [];
-  for (let i = 1; i <= n; i++) seen.push(...run(['--shard', `${i}/${n}`, '--list']).trim().split(/\r?\n/));
+  for (let i = 1; i <= n; i++) seen.push(...run(['--shard', `${i}/${n}`, '--list', ...all]).trim().split(/\r?\n/));
   assert.deepEqual(seen.sort(), [...all].sort(), 'the N shards cover the default set exactly once');
   assert.ok(all.includes(path.join('test-node', 'no-node-smoke-check.cjs')), 'this check is in the default set');
   // macOS runners are about twice as slow as ubuntu on the browser checks (install-check 56 s vs the 120 s cap on

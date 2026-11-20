@@ -19,6 +19,10 @@ Focused check: `node test-node/character-states-check.cjs`. Debug-only browser p
 `tests/character-preview.html` (not shipped); use its manual next-frame control or each static pose.
 Node tests are not native clipping, motion/CPU or real producer-roundtrip proof.
 
+Every check at once, from the repo root: `node run-node-checks.cjs` — `--jobs N` runs N checks at once (default 1, in the
+selected order; each check keeps its own process, wall-clock cap and process-tree kill), and `--shard i/N` splits the set
+for CI. Exit code = number of failed checks.
+
 Unit **M1b** adds the host/bridge layer on top of the M1a skeleton: the
 `window.desktop.*` facade over Tauri invoke/events, the Electron validation
 gate ported to Rust with unit tests, lifecycle (single instance, work-area
