@@ -782,22 +782,28 @@ test("REAL pi RPC: the activated extension loads and a prompt streams through th
 	assert.equal(r.gw.hits.length, 1, `no request other than the single chat completion: ${describeHits(r.gw.hits)} retries=${describeRetries(records)}`);
 });
 
-test("REAL pi RPC: 301/302/307/308 redirects (cross-origin and same-origin) are refused; the destination is never contacted", { skip: PI_SKIP, timeout: 240_000 }, async (t) => {
+// The full 4x2 redirect matrix (301/302/307/308 x cross-origin/same-origin: fixed
+// refusal, state.reason === "redirect", destination hit count 0) is already proven
+// at unit level right above («guarded fetch: 301/302/307/308 cross-origin send
+// nothing to the destination; same-origin redirects are refused too»). Spawning the
+// real `pi --mode rpc` 8 times only proved again that Pi surfaces that same refusal,
+// so the real proof keeps ONE representative per class (K3-05 T4, S5): 302 rewrites
+// the method on redirect and 307 preserves it, one cross-origin and one same-origin.
+// No rule is lost: the wire-level matrix stays complete in the unit test.
+test("REAL pi RPC: representative cross-origin 302 and same-origin 307 redirects are refused; the destination is never contacted", { skip: PI_SKIP, timeout: 240_000 }, async (t) => {
 	const dest = await listen((req, res) => okStream(res));
 	t.after(() => close(dest.server));
-	for (const status of [301, 302, 307, 308]) {
-		for (const kind of ["cross", "same"]) {
-			const r = await realSetup(t, (req, res) => {
-				res.writeHead(status, { location: kind === "cross" ? `${dest.base}/chat/completions` : "/v1/chat/completions" });
-				res.end();
-			});
-			const { records } = await runPi(r.agentDir, r.home, "custom-gw", "model-a", "ping");
-			const msg = assistantEnd(records);
-			assert.equal(msg?.stopReason, "error", `${status}/${kind}: ${JSON.stringify(msg)}`);
-			assert.match(msg.errorMessage, /^Custom gateway request refused \(redirect\)$/, `${status}/${kind}`);
-			assert.equal(msg.errorMessage.includes(SECRET), false);
-			assert.equal(r.gw.hits.length, 1, `${status}/${kind}: the redirect was not followed (no retry either): ${describeHits(r.gw.hits)} retries=${describeRetries(records)} msgs=${JSON.stringify(records.filter((x) => x.type === "message_end" && x.message?.role === "assistant").map((x) => x.message.errorMessage))}`);
-		}
+	for (const [status, kind] of [[302, "cross"], [307, "same"]]) {
+		const r = await realSetup(t, (req, res) => {
+			res.writeHead(status, { location: kind === "cross" ? `${dest.base}/chat/completions` : "/v1/chat/completions" });
+			res.end();
+		});
+		const { records } = await runPi(r.agentDir, r.home, "custom-gw", "model-a", "ping");
+		const msg = assistantEnd(records);
+		assert.equal(msg?.stopReason, "error", `${status}/${kind}: ${JSON.stringify(msg)}`);
+		assert.match(msg.errorMessage, /^Custom gateway request refused \(redirect\)$/, `${status}/${kind}`);
+		assert.equal(msg.errorMessage.includes(SECRET), false);
+		assert.equal(r.gw.hits.length, 1, `${status}/${kind}: the redirect was not followed (no retry either): ${describeHits(r.gw.hits)} retries=${describeRetries(records)} msgs=${JSON.stringify(records.filter((x) => x.type === "message_end" && x.message?.role === "assistant").map((x) => x.message.errorMessage))}`);
 	}
 	assert.equal(dest.hits.length, 0, "cross-origin destination hit count 0");
 });
