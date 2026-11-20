@@ -130,14 +130,46 @@ jobs:
         run: npm test
 
   island-checks:
-    name: Island Node checks (${{ matrix.os }}, shard ${{ matrix.shard }}/3)
+    name: Island Node checks (${{ matrix.os }}, shard ${{ matrix.shard }})
+    # K3-06 T3 (S6, human decision of 20-nov-2026): the browser checks — 67 of the 222, ~84% of the serial time — run on Linux
+    # only. macOS and Windows keep every non-browser check plus the one browser check that is platform-specific on purpose
+    # (`--no-browser`), so they no longer install Playwright or start the shared Chromium and their job drops from ~15 min a
+    # shard to ~2.5 min of measured work.
+    # Shards are balanced by MEASURED time over apps/desktop-tauri/test-node/check-timings.json (see README, «Every check at
+    # once»): refresh that table with `node run-node-checks.cjs --jobs 1` on 32 Linux cores when checks are added or move.
+    env:
+      # The runner takes these three from the environment because the command line below must stay exactly `--shard <i>/N`
+      # (no-node-smoke-check freezes that line as the proof that the shards cover the whole default set). The two selection
+      # flags are not passed on to the checks, so a check that calls the runner itself still sees the default selection.
+      RUN_NODE_CHECKS_BALANCED: '1'
+      RUN_NODE_CHECKS_NO_BROWSER: ${{ matrix.os == 'ubuntu-latest' && '0' || '1' }}
+      RUN_NODE_CHECKS_JOBS: ${{ matrix.os == 'ubuntu-latest' && '2' || '1' }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-26, windows-latest]
-        # The 195 checks ran in series for ~46-54 min per OS, 40 of them in 26 browser checks; 3 round-robin shards bring each
-        # job to ~15-18 min (run-node-checks.cjs --shard). Keep the shard count in sync with the --shard N below.
-        shard: [1, 2, 3]
+        # One shard list for every OS, so the `--shard <matrix.shard>/6` below and this list cannot drift apart: Linux runs
+        # all 6 (~50 min of measured serial work, ~8.3 min per shard, two checks at a time) and the excludes below drop 3..6
+        # on macOS/Windows, where `--no-browser` leaves 156 checks and ~4.6 min of measured work, i.e. ~2.3 min per shard.
+        # Those seconds are Linux measurements: the macOS and Windows runners are slower on the same checks.
+        shard: [1, 2, 3, 4, 5, 6]
+        exclude:
+          - os: macos-26
+            shard: 3
+          - os: macos-26
+            shard: 4
+          - os: macos-26
+            shard: 5
+          - os: macos-26
+            shard: 6
+          - os: windows-latest
+            shard: 3
+          - os: windows-latest
+            shard: 4
+          - os: windows-latest
+            shard: 5
+          - os: windows-latest
+            shard: 6
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     steps:
@@ -158,7 +190,8 @@ jobs:
           if [ "$RUNNER_OS" = Windows ]; then BIN="$(cygpath -w "$BIN")"; fi
           test "$("$BIN" --version)" = 0.28.2
           echo "ESBUILD_BINARY_PATH=$BIN" >> "$GITHUB_ENV"
-      - name: Install pinned Playwright and its Chromium (the browser checks need it)
+      - name: 'Install pinned Playwright and its Chromium (Linux only: the browser checks run only there)'
+        if: matrix.os == 'ubuntu-latest'
         shell: bash
         run: |
           npm i -g "playwright@$PLAYWRIGHT_VERSION"
@@ -167,16 +200,23 @@ jobs:
           else npx --yes "playwright@$PLAYWRIGHT_VERSION" install chromium; fi
           echo "PLAYWRIGHT_PATH=$ROOT/playwright" >> "$GITHUB_ENV"
           echo "NODE_PATH=$ROOT" >> "$GITHUB_ENV"
-      - name: apps/desktop-tauri/test-node checks (with a shared headless Chromium on 127.0.0.1:9222)
+      - name: 'apps/desktop-tauri/test-node checks (Linux: with a shared headless Chromium on 127.0.0.1:9222)'
         shell: bash
         run: |
-          # notification-card-shared-browser-check ATTACHES over CDP and never launches a browser, like on a dev machine.
-          CHROME="$(node -p "require(process.env.PLAYWRIGHT_PATH).chromium.executablePath()")"
-          "$CHROME" --headless=new --no-sandbox --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222 \
-            --user-data-dir="$RUNNER_TEMP/shared-chrome" about:blank > "$RUNNER_TEMP/shared-chrome.log" 2>&1 &
-          for i in $(seq 1 30); do curl -sf http://127.0.0.1:9222/json/version > /dev/null && break; sleep 1; done
-          curl -sf http://127.0.0.1:9222/json/version
-          node run-node-checks.cjs --shard ${{ matrix.shard }}/3
+          if [ "$RUNNER_OS" = Linux ]; then
+            # notification-card-shared-browser-check ATTACHES over CDP and never launches a browser, like on a dev machine.
+            CHROME="$(node -p "require(process.env.PLAYWRIGHT_PATH).chromium.executablePath()")"
+            "$CHROME" --headless=new --no-sandbox --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222 \
+              --user-data-dir="$RUNNER_TEMP/shared-chrome" about:blank > "$RUNNER_TEMP/shared-chrome.log" 2>&1 &
+            for i in $(seq 1 30); do curl -sf http://127.0.0.1:9222/json/version > /dev/null && break; sleep 1; done
+            curl -sf http://127.0.0.1:9222/json/version
+          else
+            # macOS/Windows: `--no-browser` keeps only the ~155 non-browser checks plus the two that need a browser only for
+            # part of their verdict (overview-view-check.cjs, island-nusa-spacing-check.cjs): both print a loud SKIPPED and
+            # exit 0 when Playwright is absent, so no Playwright, no Chromium and no shared browser are set up here.
+            echo "no browser checks on $RUNNER_OS: no Playwright, no Chromium"
+          fi
+          node run-node-checks.cjs --shard ${{ matrix.shard }}/6
 
   rust:
     name: Island Rust tests (${{ matrix.os }})

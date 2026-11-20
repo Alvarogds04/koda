@@ -7,6 +7,10 @@
    default selection is never touched (which would recurse into this very check).
    Group B is a rendezvous: every check waits until all four have started, so they can only pass when the pool really runs
    them at once; run one at a time they would time out and fail.
+   K3-06 T3 (S6): `--no-browser` drops the checks that drive a real browser (a platform-specific one is kept) and
+   `--balanced` splits the selection over the shards by MEASURED time (test-node/check-timings.json, greedy longest first),
+   so the CI shards finish together; `--shard i/N` WITHOUT `--balanced` still splits positionally, exactly as before, and
+   the two env aliases the CI job uses reach the same selections as the flags.
    Run: node test-node/run-node-checks-check.cjs */
 const assert = require('node:assert/strict');
 const { spawnSync } = require('node:child_process');
@@ -25,10 +29,14 @@ const test = (name, fn) => {
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'k3-06-node-checks-'));
 const write = (name, source) => { const file = path.join(tmp, name); fs.writeFileSync(file, source); return file; };
-// RUN_NODE_CHECKS_JOBS is cleared so an ambient value cannot stand in for the flag under test.
-const run = (args, ms = 30000) => spawnSync(process.execPath, [runner, ...args], {
-  cwd: crate, encoding: 'utf8', timeout: ms, env: { ...process.env, RUN_NODE_CHECKS_JOBS: '' },
+// RUN_NODE_CHECKS_JOBS / NO_BROWSER / BALANCED are cleared so an ambient value cannot stand in for the flag under test
+// (the CI job sets the last two). `extra` re-adds them for the env-alias cases only.
+const run = (args, ms = 30000, extra = {}) => spawnSync(process.execPath, [runner, ...args], {
+  cwd: crate, encoding: 'utf8', timeout: ms,
+  env: { ...process.env, RUN_NODE_CHECKS_JOBS: '', RUN_NODE_CHECKS_NO_BROWSER: '', RUN_NODE_CHECKS_BALANCED: '', ...extra },
 });
+/** The `--list` selection as an array of lines. */
+const listed = (args, extra = {}) => run([...args, '--list'], 30000, extra).stdout.trim().split(/\r?\n/);
 /** `ok   <file> (1.2s)` / `FAIL(1) <file> (0.3s)` → ['ok <file>', 'FAIL <file>'] in the order they were printed. */
 const outcomes = (stdout) => stdout.split(/\r?\n/)
   .map((l) => /^(ok|FAIL(?:\(\d+\))?)\s+(\S+) /.exec(l))
@@ -126,6 +134,95 @@ try {
       assert.equal(r.status, 2, `${args.join(' ')} → exit 2 (${r.stdout}${r.stderr})`);
       assert.match(r.stderr, /--jobs expects an integer >= 1/, 'the usage error names --jobs');
     }
+  });
+
+  /* ---- Group C: --no-browser (K3-06 T3, S6: the human decided the browser checks run only on Linux) ---- */
+  const plain = write('plain-fake-check.cjs', `setTimeout(() => { console.log('plain: fine'); process.exit(0); }, 60);\n`);
+  const browserOnly = write('drives-chromium-check.cjs', `// drives a real chromium through playwright\nsetTimeout(() => { console.log('browser: fine'); process.exit(0); }, 60);\n`);
+  const platformBrowser = write('per-platform-check.cjs', `// a chromium check whose verdict is per platform\nconst onWin = process.platform === 'win32';\nsetTimeout(() => { console.log('platform: ' + onWin); process.exit(0); }, 60);\n`);
+  const groupC = [plain, browserOnly, platformBrowser];
+
+  test('--no-browser skips the browser check, and keeps the plain one and the platform-specific browser check', () => {
+    const r = run(['--no-browser', ...groupC]);
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.deepEqual(outcomes(r.stdout), [`ok ${plain}`, `ok ${platformBrowser}`], 'the browser check is not even started');
+    assert.equal(r.stdout.split('drives-chromium-check.cjs').length - 1, 0, 'no line at all for the skipped check');
+    assert.match(r.stdout, /node-checks: 2 run, 0 failed/, 'the summary counts what really ran');
+  });
+  test('--no-browser shows up in --list, and without it nothing is dropped', () => {
+    assert.deepEqual(listed(['--no-browser', ...groupC]), [plain, platformBrowser]);
+    assert.deepEqual(listed(groupC), groupC, 'the browser check is still selected without the flag');
+  });
+  test('RUN_NODE_CHECKS_NO_BROWSER is the same selection as --no-browser (the CI job cannot put flags on its frozen `--shard i/N` line)', () => {
+    assert.deepEqual(listed(groupC, { RUN_NODE_CHECKS_NO_BROWSER: '1' }), listed(['--no-browser', ...groupC]));
+    assert.deepEqual(listed([], { RUN_NODE_CHECKS_NO_BROWSER: '1' }), listed(['--no-browser']), 'same on the real default set');
+    assert.deepEqual(listed([], { RUN_NODE_CHECKS_NO_BROWSER: '0' }), listed([]), "'0' is off");
+  });
+  test('the runner does not pass its own selection env on to the checks it spawns', () => {
+    // no-node-smoke-check calls the runner itself to prove the shards partition the DEFAULT set: a check that inherits
+    // RUN_NODE_CHECKS_NO_BROWSER would see a different set and its proof would be about the wrong list.
+    const countFile = path.join(tmp, 'nested-count.txt');
+    const nested = write('nested-default-check.cjs', `
+      const { spawnSync } = require('node:child_process');
+      const fs = require('node:fs');
+      const r = spawnSync(process.execPath, [${JSON.stringify(runner)}, '--list'], { encoding: 'utf8' });
+      fs.writeFileSync(${JSON.stringify(countFile)}, String(r.stdout.trim().split(/\\r?\\n/).length));
+      process.exit(r.status === 0 ? 0 : 1);
+    `);
+    fs.rmSync(countFile, { force: true });
+    const r = run(['--no-browser', nested], 60000, { RUN_NODE_CHECKS_NO_BROWSER: '1' });
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    const nestedCount = Number(fs.readFileSync(countFile, 'utf8'));
+    assert.equal(nestedCount, listed([]).length, 'the nested run sees the whole default set, not the filtered one');
+  });
+
+  /* ---- Group D: --balanced (K3-06 T3, S6: shards by measured time) ---- */
+  const table = JSON.parse(fs.readFileSync(path.join(crate, 'test-node', 'check-timings.json'), 'utf8'));
+  const secs = (file) => (Number.isFinite(table[file]) && table[file] > 0 ? table[file] : 5); // same default as the runner
+  const shardOf = (n, i, extra = {}) => listed(['--balanced', '--shard', `${i}/${n}`], extra);
+
+  test('--shard i/N without --balanced keeps the positional split, byte for byte', () => {
+    const all = listed([]);
+    for (const [i, n] of [[1, 3], [2, 3], [1, 6]]) {
+      assert.deepEqual(listed(['--shard', `${i}/${n}`]), all.filter((_, idx) => idx % n === i - 1), `shard ${i}/${n} unchanged`);
+    }
+  });
+  test('--balanced covers every selected check exactly once across i = 1..6, and is deterministic', () => {
+    const all = listed([]);
+    const first = [];
+    for (let i = 1; i <= 6; i += 1) {
+      const shard = shardOf(6, i);
+      assert.ok(shard.length > 0, `shard ${i}/6 is not empty`);
+      first.push(shard);
+    }
+    const seen = first.flat();
+    assert.deepEqual([...seen].sort(), [...all].sort(), 'the 6 shards partition the default set exactly once');
+    assert.equal(new Set(seen).size, seen.length, 'no check lands in two shards');
+    assert.deepEqual(shardOf(6, 3), first[2], 'the same input gives the same shard (greedy is deterministic)');
+    assert.deepEqual(shardOf(2, 1), shardOf(2, 1), 'twice');
+  });
+  test('--balanced puts the measured time of the real table within 15% of the ideal for N = 6', () => {
+    const total = listed([]).reduce((sum, f) => sum + secs(f), 0);
+    const sums = Array.from({ length: 6 }, (_, k) => shardOf(6, k + 1).reduce((sum, f) => sum + secs(f), 0));
+    const max = Math.max(...sums);
+    const ideal = total / 6;
+    assert.ok(max <= 1.15 * ideal, `the slowest shard is ${max}s against an ideal of ${ideal.toFixed(0)}s (shards ${sums.join(', ')})`);
+    assert.equal(sums.reduce((a, b) => a + b, 0), total, 'the shards add up to the whole table');
+  });
+  test('--balanced uses the 5 s default for a check the table does not know, and still partitions', () => {
+    // the temp checks are not in check-timings.json: with every entry at the default the split is still exact and stable.
+    const many = Array.from({ length: 7 }, (_, i) => write(`balance-${i}-check.cjs`, `process.exit(0);\n`));
+    const seen = [];
+    for (let i = 1; i <= 3; i += 1) seen.push(...listed(['--balanced', '--shard', `${i}/3`, ...many]));
+    assert.deepEqual([...seen].sort(), [...many].sort(), 'every unknown check lands in exactly one shard');
+  });
+  test('RUN_NODE_CHECKS_BALANCED is the same split as --balanced', () => {
+    assert.deepEqual(listed(['--shard', '2/6'], { RUN_NODE_CHECKS_BALANCED: '1' }), listed(['--balanced', '--shard', '2/6']));
+  });
+  test('--balanced without --shard is a usage error (exit 2)', () => {
+    const r = run(['--balanced', ...groupA]);
+    assert.equal(r.status, 2, r.stdout + r.stderr);
+    assert.match(r.stderr, /--balanced needs --shard/);
   });
 } finally {
   fs.rmSync(tmp, { recursive: true, force: true });
