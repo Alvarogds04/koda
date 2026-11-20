@@ -1162,7 +1162,7 @@ cargo test --manifest-path apps/desktop-tauri/Cargo.toml --bin koda specialists
 #   concurrent update/event ordering, stale model rejection, coherent frozen role,
 #   maximum Unicode+IDs+models roundtrip, escaped JSON and exact/over-limit bytes,
 #   corrupt/oversized startup mutation block, original bytes preserved, absence
-cargo test --manifest-path apps/desktop-tauri/Cargo.toml --test frontend_specialists
+cargo test --manifest-path apps/desktop-tauri/Cargo.toml --test node_checks specialists_view
 node apps/desktop-tauri/test-node/specialists-view-check.cjs   # 21 checks
 # Previous visual probe produced neither settings_section evidence nor PNGs.
 # It was stopped; visual acceptance belongs to the frontend review.
@@ -1231,7 +1231,7 @@ cd apps/desktop-tauri
 node test-node/hoy-view-check.cjs           # the pure model: tabs, counts, rows, text safety, decisions, refusals
 node test-node/island-hoy-check.cjs         # structure, wiring, tokens (no browser)
 node test-node/island-hoy-visual-check.cjs  # the REAL island in headless Chromium (skips loudly without Playwright)
-cargo test --test hoy_client                # the closed command set and the fold
+cargo test --test agentclient_frames hoy_client   # the closed command set and the fold
 cargo test --lib agentclient                # the client state the page is given
 ```
 
