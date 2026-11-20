@@ -89,7 +89,8 @@ if (listOnly) { for (const f of files) console.log(withCaps ? `${f}\t${capSecond
 function balancedSplit(list, n) {
   let table = {};
   try { table = JSON.parse(fs.readFileSync(timingsFile, 'utf8')); } catch { /* no table yet: every check costs the default */ }
-  const secs = (file) => (Number.isFinite(table[file]) && table[file] > 0 ? table[file] : 5);
+  // The table is keyed with forward slashes; on Windows the selected path has backslashes, so normalise before the lookup.
+  const secs = (file) => { const t = table[String(file).replace(/\\/g, '/')]; return Number.isFinite(t) && t > 0 ? t : 5; };
   const ordered = [...list].sort((a, b) => secs(b) - secs(a) || (a < b ? -1 : a > b ? 1 : 0));
   const bins = Array.from({ length: n }, () => ({ total: 0, files: [] }));
   for (const file of ordered) {

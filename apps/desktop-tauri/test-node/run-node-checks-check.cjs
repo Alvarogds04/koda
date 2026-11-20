@@ -224,6 +224,20 @@ try {
     assert.equal(r.status, 2, r.stdout + r.stderr);
     assert.match(r.stderr, /--balanced needs --shard/);
   });
+  test('--balanced finds a check in the timings table when it is named with backslashes (the Windows form of the path)', () => {
+    // On Windows path.join gives `test-node\\x.cjs` while the table is keyed `test-node/x.cjs`. Without normalising, every check costs
+    // the 5 s default and the heavy one shares its shard with light ones; with it, the heavy check sits alone against the lights.
+    const entries = Object.entries(table).filter(([f]) => !f.includes('run-node-checks-check'));
+    const heavy = entries.reduce((a, b) => (b[1] > a[1] ? b : a))[0];
+    const lights = entries.filter(([, s]) => s <= 1).map(([f]) => f).slice(0, 8);
+    assert.equal(lights.length, 8, 'the table has at least eight 1 s checks');
+    const named = [heavy.replace(/\//g, '\\'), ...lights];
+    const shards = [1, 2].map((i) => listed(['--balanced', '--shard', `${i}/2`, ...named]));
+    const withHeavy = shards.find((s) => s.some((f) => f.replace(/\\/g, '/') === heavy));
+    assert.ok(withHeavy, 'the heavy check is in one of the shards');
+    assert.equal(withHeavy.length, 1, `the heavy check is alone in its shard (got ${withHeavy.join(', ')})`);
+    assert.equal(shards.flat().length, 9, 'the two shards still cover every named check exactly once');
+  });
 } finally {
   fs.rmSync(tmp, { recursive: true, force: true });
 }
