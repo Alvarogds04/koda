@@ -43,7 +43,6 @@ function serve() {
 }
 
 const HASH = '8f3c1d9ae2b74c05d61fa8b3c0e7d294';
-const ACCOUNTS = [{ accountId: 'nan', label: 'NaN', provider: 'custom', configured: true }];
 
 /** The fake host: the panel runs with the `settings` window label, so settings.js paints its own panel and island.js stays inert. */
 function initScript({ scenario }) {
@@ -95,9 +94,9 @@ function initScript({ scenario }) {
   };
   window.__TAURI__ = {
     core: { invoke: (cmd, args) => invoke(cmd, args) },
-    event: { listen: async (name, fn) => { (listeners[name] ||= []).push(fn); return () => {}; } },
+    event: { listen: async (name, fn) => { if (!listeners[name]) listeners[name] = []; listeners[name].push(fn); return () => {}; } },
   };
-  window.__emit = (name, payload) => (listeners[name] || []).forEach(fn => fn({ payload }));
+  window.__emit = (name, payload) => { for (const fn of listeners[name] || []) fn({ payload }); };
 }
 
 async function openPanel(pw, base) {
@@ -234,8 +233,9 @@ async function sideBySide(pw, shots, theme) {
         assert.equal(m.remoteFields, true, `${theme}: the remote fields stay hidden while Parakeet is chosen`);
         assert.match(m.localNote, /Parakeet está instalado/, `${theme}: the local state is what the daemon reported`);
         assert.deepEqual(m.overflow, [], `${theme}: nothing overflows the panel (${m.overflow.join(', ')})`);
-        // the closed verbs the card used: one read at open, nothing else on its own
-        assert.deepEqual([...new Set(m.calls)], ['view'], `${theme}: the card reads once and sends nothing by itself (${m.calls})`);
+        // the closed verbs the card used: its own list and the view at open, nothing else on its own (K3-06: the card asks
+        // `minikodas_list` when Island Minikodas mounts, so the old «only view» expectation was stale, not the card broken)
+        assert.deepEqual([...new Set(m.calls)].sort(), ['minikodas_list', 'view'], `${theme}: the card reads its list and the view once and sends nothing by itself (${m.calls})`);
         await page.locator('#settings').screenshot({ path: path.join(EVIDENCE, `ajustes-minikodas-${theme}.png`) });
         await page.screenshot({ path: path.join(EVIDENCE, `ajustes-minikodas-${theme}-full.png`) });
 
@@ -301,8 +301,8 @@ async function sideBySide(pw, shots, theme) {
 
     // 4 · the side-by-side evidence against the approved artboard (SKIPPED loudly when the workspace design/ is not there)
     const art = await artboardShots(pw, EVIDENCE);
-    if (!art) console.log('minikodas-settings-visual-check: artboard not found above this worktree — the side-by-side is NOT generated');
-    else for (const theme of ['dark', 'light']) await sideBySide(pw, EVIDENCE, theme);
+    if (art) for (const theme of ['dark', 'light']) await sideBySide(pw, EVIDENCE, theme);
+    else console.log('minikodas-settings-visual-check: artboard not found above this worktree — the side-by-side is NOT generated');
     console.log(`minikodas-settings-visual-check: ok — screenshots in ${EVIDENCE}`);
   } finally {
     server.close();
