@@ -93,21 +93,16 @@ test('trustedHelper accepts only the receipt-listed sha256 of the sibling helper
   assert.throws(() => wf.trustedHelper({ ...deps, root: 'rel' }), /helper_untrusted/);
 });
 
-test('verifyScript checks a registered script against the manifest hash', () => {
-  const script = Buffer.from('console.log(1)');
-  const manifest = { schema: 'abito-install/1', files: { 'abito-private-session.exe': 'a'.repeat(64), 'desktop-harness/bin/koda-hook.cjs': sha(script) } };
-  const deps = { readFile: f => (f.endsWith('.json') ? Buffer.from(JSON.stringify(manifest)) : script), root: 'C:\\Abito' };
-  assert.doesNotThrow(() => wf.verifyScript('desktop-harness/bin/koda-hook.cjs', deps));
-  assert.throws(() => wf.verifyScript('desktop-harness/bin/koda-hook.cjs', { ...deps, readFile: f => (f.endsWith('.json') ? Buffer.from(JSON.stringify(manifest)) : Buffer.from('evil')) }), /script_untrusted/);
-  assert.throws(() => wf.verifyScript('desktop-harness/bin/unknown.cjs', deps), /script_untrusted/);
-});
-
 test('readVerified returns manifest-matching bytes only; verifyBundled maps an absolute script into the install root', () => {
   const script = Buffer.from('hook');
   const manifest = { schema: 'abito-install/1', files: { 'abito-private-session.exe': 'a'.repeat(64), 'desktop-harness/bin/koda-hook.cjs': sha(script) } };
   const deps = { readFile: f => (f.endsWith('.json') ? Buffer.from(JSON.stringify(manifest)) : script), root: 'C:\\Abito' };
   assert.ok(wf.readVerified('desktop-harness/bin/koda-hook.cjs', deps).equals(script));
   assert.throws(() => wf.readVerified('desktop-harness/bin/../x', deps), /script_untrusted/);
+  // K3-05 T3: the tamper and not-listed refusals that the caller-less verifyScript test used to prove are proven here,
+  // on the live reader (single read, no check/use gap).
+  assert.throws(() => wf.readVerified('desktop-harness/bin/koda-hook.cjs', { ...deps, readFile: f => (f.endsWith('.json') ? Buffer.from(JSON.stringify(manifest)) : Buffer.from('evil')) }), /script_untrusted/);
+  assert.throws(() => wf.readVerified('desktop-harness/bin/unknown.cjs', deps), /script_untrusted/);
   assert.doesNotThrow(() => wf.verifyBundled('C:\\Abito\\desktop-harness\\bin\\koda-hook.cjs', deps));
   assert.throws(() => wf.verifyBundled('C:\\Other\\koda-hook.cjs', deps), /script_untrusted/);
 });

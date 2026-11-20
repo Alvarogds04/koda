@@ -1588,7 +1588,6 @@ apps/desktop-tauri/
 │   ├── chat.rs           # PURE: the closed chat_action verb set, draft/answer validators, typed safe errors (K2-05 removed the turn machine)
 │   ├── chatclient.rs     # K2-05 PURE: the island's chat client of the daemon protocol: closed command set + ChatState view
 │   ├── chathost.rs       # K2-05: chat_action / chat_attach / chat_attach_data, the reconnecting daemon connection, chat:state, drop set
-│   ├── chatsnapshot.rs   # pure bounded snapshot of live state (see its header; predates K2-05)
 │   ├── uploads.rs        # K2-05: only the native DropSet and raw-body helpers (the island upload store is gone)
 │   ├── legacy_conversations.rs # K2-05: deletes the 0.1 conversation files on upgrade
 │   ├── windowcapture/    # K2-06: ask Koda about my window (see docs/desktop/window-capture.md)

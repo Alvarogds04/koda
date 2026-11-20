@@ -56,6 +56,21 @@ test('a label longer than the wire allows is shortened on screen but answers wit
   assert.ok([...frame.options[0].label].length <= 60); assert.ok([...frame.options[0].description].length <= 160);
   assert.equal(JSON.parse(r.stdout).hookSpecificOutput.decision.updatedInput.answers[q.question], long);
 });
+// K3-05 T3: the spoof strip of QUESTION option labels lives on this LIVE path (claude-ask plan -> sanitizeText).
+// The projection `buildOptions` unit that also covered it had no caller and was removed; the coverage stays here.
+test('a bidi/hidden character in a question, label or description is stripped on the live card path only', async t => {
+  const q = { ...QUESTION, question: 'Base de datos\u202e', options: [{ label: 'Postgres\u202e', description: 'Relacional\u200b' },
+    { label: 'Redis', description: '' }] };
+  const rcv = await fakeReceiver(t, { questions: true });
+  const p = answerer(rcv, 'o0');
+  const r = await run(perm({}, { questions: [q] }), rcv); await p;
+  const frame = rcv.frames.find(f => f.type === 'question');
+  assert.equal(frame.text, 'Claude Code pregunta: Base de datos');
+  assert.equal(frame.options[0].label, 'Postgres');
+  assert.equal(frame.options[0].description, 'Relacional');
+  // the answer still carries the ORIGINAL label: stripping is display-only, never echoed back
+  assert.equal(JSON.parse(r.stdout).hookSpecificOutput.decision.updatedInput.answers[q.question], 'Postgres\u202e');
+});
 test('other tools keep the permission path: AskUserQuestion is dispatched by tool_name, not by a second hook entry', async t => {
   const rcv = await fakeReceiver(t, { questions: true });
   const p = answerer(rcv, 'deny');

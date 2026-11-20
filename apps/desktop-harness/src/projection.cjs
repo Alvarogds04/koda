@@ -32,29 +32,6 @@ function sanitizeText(value, { max = 500, home } = {}) {
   const chars = [...s];
   return chars.length <= max ? s : chars.slice(0, Math.max(0, max - 1)).join('') + '…';
 }
-function uniqueToken(raw, used) {
-  let base = typeof raw === 'string' ? raw.slice(0, 100).replace(/[^A-Za-z0-9_-]/g, '-') : '';
-  if (!base) base = 'opt';
-  let token = base, n = 1;
-  while (used.has(token)) token = `${base}-${++n}`;
-  used.add(token);
-  return token;
-}
-// Returns at most `limit` QP/1-valid option objects with unique tokens.
-function buildOptions(list, { limit = 4, home } = {}) {
-  if (!Array.isArray(list)) return [];
-  const used = new Set(), out = [];
-  for (const item of list.slice(0, limit)) {
-    let o;
-    try { o = item && typeof item === 'object' ? item : {}; } catch { o = {}; }
-    let value, label, description;
-    try { value = o.value; label = o.label; description = o.description; } catch { /* ignore */ }
-    const token = uniqueToken(value, used);
-    out.push({ value: token, label: sanitizeText(label, { max: 60, home }) || token.slice(0, 60),
-      description: sanitizeText(description, { max: 160, home }) });
-  }
-  return out;
-}
 const FILE_TOOLS = new Set(['Edit', 'Write', 'Read', 'MultiEdit', 'NotebookEdit', 'apply_patch']);
 const FILE_KEYS = ['file_path', 'path', 'notebook_path', 'filePath'];
 const prop = (obj, key) => { try { return obj[key]; } catch { return undefined; } };
@@ -147,4 +124,4 @@ function describeToolDetailed(name, input, { home } = {}) {
     return { text, lossy: !emptyInput(input) };
   } catch { return { text, lossy: true }; }
 }
-module.exports = { sanitizeText, buildOptions, describeTool, describeToolDetailed };
+module.exports = { sanitizeText, describeTool, describeToolDetailed };

@@ -160,16 +160,6 @@ function trustedHelper(deps = {}) {
   if (files[HELPER_NAME] !== sha256(bytes)) throw new WinFsError('helper_untrusted', 'helper does not match the install manifest');
   return file;
 }
-// A script path (relative to the install root, forward slashes) the installer registers must be the manifest-listed bytes.
-function verifyScript(rel, deps = {}) {
-  let parsed;
-  try { parsed = manifestFiles({ root: defaultRoot(), ...deps }); } catch (e) { throw new WinFsError('script_untrusted', e.message); }
-  const want = Object.prototype.hasOwnProperty.call(parsed.files, rel) ? parsed.files[rel] : null;
-  if (!want || rel.includes('..')) throw new WinFsError('script_untrusted', 'script is not part of the install manifest');
-  let bytes;
-  try { bytes = parsed.readFile(path.win32.join(parsed.root, ...rel.split('/'))); } catch { throw new WinFsError('script_untrusted', 'script unreadable'); }
-  if (sha256(bytes) !== want) throw new WinFsError('script_untrusted', 'script does not match the install manifest');
-}
 // Reads a bundled file and returns its bytes ONLY if they hash to the manifest entry (single read: no check/use gap).
 function readVerified(rel, deps = {}) {
   let parsed;
@@ -208,4 +198,4 @@ function active() {
 function useForTests(backend) { forced = backend; }
 const uidOf = () => (active() ? 'win' : process.getuid());
 
-module.exports = { resolveHelper, quoteWindowsCommandPath, readVerified, verifyBundled, relativeToRoot, WinFsError, createWinFs, trustedHelper, verifyScript, pathOk, longPath, active, useForTests, uidOf, sha256, MANIFEST_FILE, MANIFEST_SCHEMA, HELPER_NAME, MAX_FILE };
+module.exports = { resolveHelper, quoteWindowsCommandPath, readVerified, verifyBundled, relativeToRoot, WinFsError, createWinFs, trustedHelper, pathOk, longPath, active, useForTests, uidOf, sha256, MANIFEST_FILE, MANIFEST_SCHEMA, HELPER_NAME, MAX_FILE };
