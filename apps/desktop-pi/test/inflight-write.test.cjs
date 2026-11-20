@@ -32,21 +32,30 @@ const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
 const GRACE = 50;
 // The `win32` platform + `open` seam runs the same adapter write path on every OS without a real transport.
 const RUNTIME = 'C:\\u\\Koda\\notices', META = RUNTIME + '\\endpoint.json';
-function start(t, flushMs) {
+function start(t, flushMs, graceOption = { inflightGraceMs: GRACE }) {
   const box = {};
-  const { handlers, ctx } = harness(registerAdapter, { runtime: RUNTIME, endpoint: META, platform: 'win32', inflightGraceMs: GRACE,
+  const { handlers, ctx } = harness(registerAdapter, { runtime: RUNTIME, endpoint: META, platform: 'win32', ...graceOption,
     heartbeatMs: 10000, open: () => (box.socket = slowSocket({ flushMs })) });
   t.after(() => handlers.get('session_shutdown')());
   handlers.get('session_start')({}, ctx);
   return { box, handlers, ctx };
 }
 test('settled is not dropped while a heartbeat is still in flight (slow pipe write completion)', async t => {
-  const { box, handlers, ctx } = start(t, 30);
+  // A roomy grace (500 ms) on purpose: this test must not depend on the event loop landing inside a 50 ms window on a loaded runner.
+  const { box, handlers, ctx } = start(t, 30, { inflightGraceMs: 500 });
   await wait(10);
   assert.equal(box.socket.frames[0].type, 'hello');
   // the hello write has not completed yet (flush 30ms): a small frame is genuinely in flight
   handlers.get('agent_settled')({}, ctx);
   assert.equal(box.socket.frames.some(f => f.type === 'settled'), true, 'settled must be written');
+});
+test('with no grace option the production default applies: a write stuck for 150 ms does not yet block settled', async t => {
+  // flushMs null: the hello write never completes. With the 1000 ms default it is still inside the grace after 150 ms, so settled
+  // is written. A default that ignored the option or was tiny (<= 150 ms) would refuse it.
+  const { box, handlers, ctx } = start(t, null, {});
+  await wait(150);
+  handlers.get('agent_settled')({}, ctx);
+  assert.equal(box.socket.frames.some(f => f.type === 'settled'), true, 'settled is written inside the default grace');
 });
 test('a stalled receiver (oldest write unflushed beyond the grace period) is refused promptly', async t => {
   const { box, handlers, ctx } = start(t, null);
