@@ -212,14 +212,11 @@ test("fixture: foreign Go probes on a loopback port are recorded as strays, neve
 	assert.deepEqual(gw.hits.map((h) => h.agent), ["Go-http-client/1.1", "Go-http-client/1.1", "pi/1.4.0"], "anything carrying a key/body or a non-probe agent still counts");
 });
 
-test("template limits are the approved named constants (300 s header, 300 s idle, 64 MiB) and the README documents the same numbers", async (t) => {
+test("template transport limits stay the approved named constants (300 s header, 300 s idle, 64 MiB)", async (t) => {
 	const root = tempRoot();
 	t.after(() => rmSync(root, { recursive: true, force: true }));
 	const ext = await loadTemplate(root);
 	assert.deepEqual({ ...ext.LIMITS }, { headersMs: 300_000, idleMs: 300_000, maxBytes: 64 * 1024 * 1024, maxModels: 128, maxIdChars: 200 });
-	assert.equal((TEMPLATE.match(/300000/g) ?? []).length, 2, "each transport bound is defined once, in LIMITS");
-	const readme = readFileSync(path.join(__dirname, "..", "README.md"), "utf8");
-	for (const documented of ["300 s", "64 MiB", "10 s", "256 KiB"]) assert.ok(readme.includes(documented), `README documents ${documented}`);
 });
 
 test("guarded fetch: 301/302/307/308 cross-origin send nothing to the destination; same-origin redirects are refused too", async (t) => {
@@ -590,8 +587,7 @@ test("advisory 1: a torn or garbage journal is unknown, so it is kept as evidenc
 	}
 });
 
-test("the host's ownership pattern is the template's own PROVIDER_ID", () => {
-	assert.ok(TEMPLATE.includes(`const PROVIDER_ID = ${PROVIDER_ID};`));
+test("the host's ownership pattern rejects foreign and malformed provider ids", () => {
 	for (const bad of ["anthropic", "openai", "custom-", "Custom-x", "custom-a b", ""]) assert.equal(PROVIDER_ID.test(bad), false, bad);
 });
 

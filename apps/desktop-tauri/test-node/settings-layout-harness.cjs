@@ -46,7 +46,7 @@ async function open(scenario = {}) {
     const delay = ms => new Promise(r => setTimeout(r, ms));
     const prefs = { sound: true, gain: .12, autoCloseSeconds: 15, absenceSeconds: 10, openOnHover: false, declaredPills: ['agent_codex', 'ai_google', 'integration_github', 'integration_vercel'], pillColors: {}, avatarColors: {}, mainPill: 'integration_claude', theme: 'system', displayName: 'Alvaro', monitor: null, windowContext: false, windowContextAvailable: true, abitoInstructions: '', islandAgents: [], showPlanInNotch: false, showCodexPlanInNotch: false, openSettingsAtLaunch: false };
     const dictation = { prefs: { enabled: true, key: 'right_ctrl', edge: 'bottom', mic: '', keepDays: 30, cleanup: false, defaultStyle: 'natural' }, models: { parakeet: { state: 'ready' }, downloadMb: 612 }, keys: 'ok', hasClaudeKey: false, mics: [{ name: 'Micrófono USB', default: true }], platform: 'linux', autostarted: false };
-    const agentIds = ['claude-code', 'codex', 'copilot-cli', 'opencode', 'recap', 'statusline'];
+    const agentIds = ['claude-code', 'codex', 'copilot-cli', 'opencode', 'statusline']; // K2-03: no 'recap' id — the host has none
     const noAccounts = scenario.noAccounts === true; // a fresh install: the account store answers but holds nothing
     const agents = agentIds.map(id => ({ id, state: scenario.agentsOk ? 'not_connected' : 'error', ...(scenario.agentsOk ? { plan_hash: 'a'.repeat(64), summary: 'Add managed hooks', reviewable: true } : {}) })); // the real daemon in the validation run answered `error` for every agent
     const failInstall = scenario.failInstall === true;
@@ -72,7 +72,6 @@ async function open(scenario = {}) {
         if (cmd === 'dictation_action') { if (a === 'status') { await delay(scenario.statusDelayMs || 0); return structuredClone(dictation); } return a === 'history' ? [] : a === 'stats' ? { all: { words: 0, wordsPerMinute: 0 }, streak: 0 } : { ok: true }; }
         if (cmd === 'prefs_action') return a === 'autostart_view' ? { enabled: false } : structuredClone(prefs);
         if (cmd === 'hotkey_action') { if (a === 'suspend') { suspended = true; for (const id of Object.keys(COMBOS)) window.__emit(id === 'toggleIsland' ? 'hotkey:state' : id === 'desktopToggle' ? 'hotkey-desktop:state' : `hotkey-${id}:state`, binding(id)); } if (a === 'resume') suspended = false; return binding(p.id || 'toggleIsland'); }
-        if (cmd === 'recap_action') return a === 'prefs' ? { enabled: true } : { ok: true };
         if (cmd === 'monitor_action') return { monitors: [{ key: 'DP-1' }] };
         if (cmd === 'sound_action') return a === 'list' ? { names: [] } : { ok: true };
         if (cmd === 'secret_action') { if (scenario.keychainDown) throw new Error('keychain_unavailable'); return { present: false }; }

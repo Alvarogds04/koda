@@ -101,15 +101,20 @@ test('Windows flow (verifier M1): the saved status-line file is read only throug
   assert.match(ok.after, /evil/, 'a private side file is still honoured');
 });
 
-test('L6: on Windows the status-line command is double-quoted for cmd and a path with an apostrophe or quote stays safe', t => {
+// L6 (HU-062): on Windows the command must use the form of the shell Claude Code really runs it with. For PowerShell that is the
+// call operator (`& "node" "bin"`), because a leading quoted path there is a string expression (src/install-statusline.cjs
+// statusLineCommand, pinned by test/statusline-command.test.cjs). The shell is passed explicitly so the assertion does not depend
+// on the machine running the suite; the `unsafe` refusal for a path with a double quote stays.
+test('L6: on Windows the status-line command is the PowerShell call-operator form, and a path with an apostrophe or a quote stays safe', t => {
   const d = tmp(t);
   winfs.useForTests(fakeBackend());
   const statusline = require('../src/install-statusline.cjs');
   const settings = path.join(d, 'settings.json');
   fs.writeFileSync(settings, '{}\n', { mode: 0o600 });
-  const plan = statusline.planStatusLine({ settingsPath: settings, home: d, binPath: 'C:\\Users\\O\'Neil\\Abito\\koda-statusline.cjs', execPath: 'C:\\Program Files\\nodejs\\node.exe', uid: 'win' });
-  assert.match(plan.after, /"command": "\\"C:\\\\Program Files\\\\nodejs\\\\node.exe\\" \\"C:\\\\Users\\\\O'Neil\\\\Abito\\\\koda-statusline.cjs\\""/);
-  assert.throws(() => statusline.planStatusLine({ settingsPath: settings, home: d, binPath: 'C:\\a"b\\koda-statusline.cjs', execPath: 'C:\\n.exe', uid: 'win' }), /refused|unsafe/);
+  const PS = { file: 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe', args: ['-NoProfile', '-NonInteractive', '-Command'] };
+  const plan = statusline.planStatusLine({ settingsPath: settings, home: d, binPath: 'C:\\Users\\O\'Neil\\Abito\\koda-statusline.cjs', execPath: 'C:\\Program Files\\nodejs\\node.exe', uid: 'win', shell: PS });
+  assert.match(plan.after, /"command": "& \\"C:\\\\Program Files\\\\nodejs\\\\node.exe\\" \\"C:\\\\Users\\\\O'Neil\\\\Abito\\\\koda-statusline.cjs\\""/);
+  assert.throws(() => statusline.planStatusLine({ settingsPath: settings, home: d, binPath: 'C:\\a"b\\koda-statusline.cjs', execPath: 'C:\\n.exe', uid: 'win', shell: PS }), /refused|unsafe/);
 });
 
 test('L7: mismatch/busy/io/exists/missing helper reasons get their own Ajustes detail instead of unsafe_target', async t => {

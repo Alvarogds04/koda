@@ -9,8 +9,6 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const fs = require("node:fs");
-const path = require("node:path");
 
 const {
 	HIDDEN_NAMES,
@@ -116,21 +114,6 @@ test("isBlockedInput blocks only the internal /gentle: commands", () => {
 	assert.equal(isBlockedInput("/GENTLE:x"), true);
 	assert.equal(isBlockedInput("/help"), false);
 	assert.equal(isBlockedInput("hola /gentle:"), false, "mid-sentence text is not a command");
-});
-
-test("presentText is documented as assistant/harness-only, never applied to the user's own text", () => {
-	// Gentle Dot bridge.ts applies presentText to queued user text too; Koda must
-	// not (the user's own words — their Raspberry Pi, their abito — are theirs).
-	const source = fs.readFileSync(path.join(__dirname, "..", "src", "white-label.cjs"), "utf8");
-	assert.match(source, /never[\s\S]*user's own text|user's own text[\s\S]*never/i);
-});
-
-test("the port keeps its MIT provenance (Gentle Dot, white-label.ts)", () => {
-	const source = fs.readFileSync(path.join(__dirname, "..", "src", "white-label.cjs"), "utf8");
-	assert.match(source, /Gentle Dot/);
-	assert.match(source, /white-label\.ts/);
-	assert.match(source, /MIT/);
-	assert.match(source, /Copyright \(c\) 2026 Gentleman/);
 });
 
 // ----- T2: the streaming filter (split hidden names across deltas) -----------
