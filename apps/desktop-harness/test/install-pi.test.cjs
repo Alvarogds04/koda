@@ -47,7 +47,7 @@ function fixture(t) {
   fs.mkdirSync(path.join(bundle, 'desktop-daemon/src'), {recursive:true});
   fs.copyFileSync(path.resolve(__dirname, '../../desktop-daemon/src/procinfo.cjs'), path.join(bundle, 'desktop-daemon/src/procinfo.cjs'));
   fs.mkdirSync(path.join(bundle, 'desktop-pi'));
-  for (const file of ['pi-extension.ts','adapter.cjs','ask-tool.cjs','config.cjs','native-ask.cjs','questions.cjs','security.cjs','windows-transport.cjs']) {
+  for (const file of ['pi-extension.ts','adapter.cjs','config.cjs','native-ask.cjs','questions.cjs','security.cjs','windows-transport.cjs']) {
     const target = path.join(bundle, 'desktop-pi', file);
     fs.copyFileSync(path.resolve(__dirname, '../../desktop-pi', file), target); fs.chmodSync(target, 0o644);
   }
@@ -210,8 +210,8 @@ test('installed Pi payload loads through the real offline Pi extension loader', 
     {on:()=>()=>{},emit:()=>{}},loader.createExtensionRuntime());
   assert.deepEqual(result.errors,[]); assert.deepEqual(result.warnings,[]);
   assert.equal(result.extensions.length,1);
-  assert.equal(result.extensions[0].tools.has('abito_ask'),true);
-  assert.equal(result.extensions[0].tools.size,1);
+  assert.equal(result.extensions[0].tools.size,0);
+  assert.equal(result.extensions[0].tools.has('abito_ask'),false);
 });
 
 test('Pi discovery sees one extension after upgrade and zero after removal, never backups', async t => {
@@ -222,7 +222,7 @@ test('Pi discovery sees one extension after upgrade and zero after removal, neve
   const discover = async count => {
     const r = await loader.discoverAndLoadExtensions([], f.home, path.join(f.home,'.pi/agent'), {on:()=>()=>{},emit:()=>{}});
     assert.deepEqual(r.errors,[]); assert.equal(r.extensions.length,count);
-    for (const ext of r.extensions) assert.equal(ext.tools.has('abito_ask'),true);
+    for (const ext of r.extensions) { assert.equal(ext.tools.size,0); assert.equal(ext.tools.has('abito_ask'),false); }
   };
   assert.equal(f.apply(f.run().value.plan_hash).code,0); await discover(1);
   for (let i=0;i<2;i++) {

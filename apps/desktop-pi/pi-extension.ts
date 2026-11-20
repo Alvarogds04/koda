@@ -1,11 +1,15 @@
 /** Explicit opt-in: pi -e /absolute/path/to/pi-extension.ts */
-import { Type } from '@earendil-works/pi-ai';
-import { defineTool, type ExtensionAPI } from '@earendil-works/pi-coding-agent';
+import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import config from './config.cjs';
 import adapter from './adapter.cjs';
-import askTool from './ask-tool.cjs';
 import nativeAsk from './native-ask.cjs';
 
+// K3-04 (human, 19-nov, permanent requirement): NO custom ask tool. Every question, permission or confirmation the
+// human answers goes through the agent's GENERIC mechanism. In Pi that is Pi's own ask tools (`ask_user_choice` /
+// `ask_user_question`, intercepted below by `native-ask.cjs`) and Pi's own `ctx.ui.confirm`; nothing is added to the
+// model's tool list, so the old `abito_ask` no longer exists and no id can call it. This file is loaded as TypeScript
+// by Pi's own jiti loader (there is no tsconfig or node_modules in this directory); `test/pi-loader.test.cjs` proves
+// the registrations through Pi's real extension loader.
 export default function (pi: ExtensionAPI) {
   let options;
   try { options = { ...config.resolveConfig(process.env, process.getuid?.()),
@@ -18,6 +22,7 @@ export default function (pi: ExtensionAPI) {
     options.resolveEndpoint = () => config.resolveEndpoint(process.env, process.getuid?.());
   }
   let notify: ((message: string) => void) | undefined;
+  // Adapter contract (adapter.cjs): endpoint discovery, notices and the QP/1 broker. The extension only wires it.
   const controller = adapter.registerAdapter(pi, { ...options, onTransportError: (error: { runtime: string }) => {
     notify?.(`The receiver at ${error.runtime} does not support the requested question capability level (handshake failed). Notices also stopped; no silent downgrade.`);
   } });
@@ -33,42 +38,4 @@ export default function (pi: ExtensionAPI) {
     uninstallConfirm = nativeAsk.installConfirmRouter({ ctx, controller, env: process.env });
   });
   pi.on('session_shutdown', () => { notify = undefined; uninstallConfirm(); uninstallConfirm = () => {}; });
-  const Option = Type.Object({
-    value: Type.Optional(Type.String({ pattern: '^[A-Za-z0-9_-]{1,128}$' })),
-    label: Type.String({ minLength: 1, maxLength: 120 }),
-    description: Type.Optional(Type.String({ maxLength: 400 })),
-  }, { additionalProperties: false });
-  pi.registerTool(defineTool({
-    name: 'abito_ask',
-    label: 'Ask through Koda',
-    exposure: 'model-only',
-    description: 'Ask a human through the local Koda island and wait for their answer. This blocks this tool until an answer, cancellation or deadline. Only a human answer decides; expiry is NOT approval. If the bridge is unavailable, ask through the normal chat instead. Does not intercept Pi tool permissions or provider consent. Approval requests must have explicit closed options and no free text. '
-      + 'Three shapes: (1) ONE question, single choice: kind, text, options[{value,label,description}]. (2) ONE question where several options may be ticked: the same plus multiSelect:true; the answer lists every ticked option. '
-      + '(3) A QUESTIONNAIRE (1-4 steps asked together, one answer per step): questions[{header (<=32 chars), question, options[2-4]{label,description?,value?}, multiSelect?, allowFreeText?}] — the same shape as Claude Code\'s AskUserQuestion; omit kind/options. '
-      + 'Multi-select and questionnaires need the island to support structured questions; otherwise the call says so and you ask through normal chat. The answer reports the chosen labels per step (selected) and any free text.',
-    parameters: Type.Object({
-      kind: Type.Optional(Type.Union([Type.Literal('question'), Type.Literal('approval')])),
-      text: Type.Optional(Type.String({ minLength: 1, maxLength: 2000 })),
-      options: Type.Optional(Type.Array(Type.Object({
-        value: Type.String({ pattern: '^[A-Za-z0-9_-]{1,128}$' }),
-        label: Type.String({ minLength: 1, maxLength: 120 }),
-        description: Type.String({ maxLength: 400 }),
-      }, { additionalProperties: false }), { maxItems: 4 })),
-      multiSelect: Type.Optional(Type.Boolean()),
-      questions: Type.Optional(Type.Array(Type.Object({
-        header: Type.String({ minLength: 1, maxLength: 32 }),
-        question: Type.String({ minLength: 1, maxLength: 2000 }),
-        options: Type.Array(Option, { minItems: 2, maxItems: 4 }),
-        multiSelect: Type.Optional(Type.Boolean()),
-        allowFreeText: Type.Optional(Type.Boolean()),
-      }, { additionalProperties: false }), { minItems: 1, maxItems: 4 })),
-      allowFreeText: Type.Optional(Type.Boolean()),
-      timeoutMs: Type.Optional(Type.Integer({ minimum: 30000, maximum: 900000 })),
-    }, { additionalProperties: false }),
-    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-      const out = await askTool.runAsk(controller, params, ctx, signal);
-      if (out.isError && ctx.hasUI) ctx.ui.notify(out.text, 'warning');
-      return { content: [{ type: 'text', text: out.text }], details: out.details, isError: out.isError };
-    },
-  }));
 }

@@ -13,7 +13,7 @@ Apply remains restricted to the app-owned adapter context; these are protocol ex
 
 ## Ownership and replacement
 
-The shipped `desktop-pi/pi-extension.ts` becomes `index.ts`, with `adapter.cjs`, `ask-tool.cjs`, `config.cjs`, `native-ask.cjs`, `questions.cjs`, `security.cjs` and `windows-transport.cjs`. Pi supplies its own API modules; there are no npm downloads. Linux receipts, macOS resources and Windows staging include this closed payload (shipping it does not enable Windows installation).
+The shipped `desktop-pi/pi-extension.ts` becomes `index.ts`, with `adapter.cjs`, `config.cjs`, `native-ask.cjs`, `questions.cjs`, `security.cjs` and `windows-transport.cjs` — seven files, no ask tool of its own (K3-04: every question uses Pi's generic mechanism). Pi supplies its own API modules; there are no npm downloads. Linux receipts, macOS resources and Windows staging include this closed payload (shipping it does not enable Windows installation).
 
 `.abito-manifest.json` has schema `abito-pi-extension/1` and an exact filename→SHA-256 map. A foreign directory, unknown entry, modified owned file, symlink, hard-linked file, unsafe owner/mode or missing payload refuses. Preview writes nothing. The shown hash binds current manifest/content and bundled replacement bytes; apply recomputes it under the shared lock.
 

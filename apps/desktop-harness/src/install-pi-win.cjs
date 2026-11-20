@@ -15,7 +15,7 @@ const SCHEMA = 'abito-pi-extension/1';
 const TARGET = 'koda-island';
 const LEGACY_TARGET = 'abito-island';
 const BACKUP_RE = /^(?:koda|abito)-island\.abito-backup-[0-9TZ]+(?:-[1-9])?$/;
-const FILES = Object.freeze(['adapter.cjs', 'ask-tool.cjs', 'config.cjs', 'index.ts', 'native-ask.cjs', 'questions.cjs', 'security.cjs', 'windows-transport.cjs']);
+const FILES = Object.freeze(['adapter.cjs', 'config.cjs', 'index.ts', 'native-ask.cjs', 'questions.cjs', 'security.cjs', 'windows-transport.cjs']);
 const hash = b => crypto.createHash('sha256').update(b).digest('hex');
 const refuse = () => core.InstallErrorRefuse('Pi extension ownership or path could not be verified');
 const listing = files => JSON.stringify(files);

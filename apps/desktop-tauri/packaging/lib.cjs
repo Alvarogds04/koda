@@ -202,7 +202,7 @@ const HARNESS_FILES = ['bin/koda-hook.cjs', 'bin/koda-statusline.cjs', 'package.
   'src/install-claude.cjs', 'src/install-codex.cjs', 'src/install-copilot.cjs', 'src/install-opencode.cjs', 'src/install-pi.cjs', 'src/install-pi-win.cjs', 'src/win-fs.cjs', 'src/install-recap.cjs', 'src/install-statusline.cjs', 'src/install-ui.cjs', 'src/installer-platform.cjs',
   'src/opencode.cjs', 'src/projection.cjs', 'src/redact.cjs', 'src/security.cjs', 'src/statusline.cjs', 'src/title-cache.cjs', 'src/windows-transport.cjs'];
 // Host modules come from Pi; no npm payload or dependency installation.
-const PI_FILES = ['pi-extension.ts', 'adapter.cjs', 'ask-tool.cjs', 'config.cjs', 'native-ask.cjs', 'questions.cjs', 'security.cjs', 'windows-transport.cjs'];
+const PI_FILES = ['pi-extension.ts', 'adapter.cjs', 'config.cjs', 'native-ask.cjs', 'questions.cjs', 'security.cjs', 'windows-transport.cjs'];
 // K2-02 T2 (decision A): the bundled runtime ships as ONE tar.gz, staged and hashed like every
 // other file; the Linux installer verifies its sha256 and its members before extracting it to
 // PREFIX/runtime. Windows stages the same archive; macOS ships the extracted folder instead.

@@ -1,6 +1,6 @@
 # Ask a human through the local Abito island
 
-This directory is the **Pi-side producer**, not a desktop app. The explicit `abito_ask` tool sends a typed question to an opted-in local receiver and awaits the human's answer as its tool result. Tool permissions, provider consent and ordinary chat are **not intercepted or replaced**. Pi's own ask tools (`ask_user_choice`, and `ask_user_question` with exactly one single-select question) are answerable from Abito too: see *Answering Pi's native ask tools from Abito* below.
+This directory is the **Pi-side producer**, not a desktop app. It carries **no ask tool of its own** (K3-04: `abito_ask` was removed by human decision, 19-nov): a typed question reaches an opted-in local receiver through Pi's **generic mechanism** — its own `ask_user_choice` / `ask_user_question` tools and its own `ctx.ui.confirm` — and the human's answer comes back to that same Pi call. Tool permissions, provider consent and ordinary chat are **not intercepted or replaced**: see *Answering Pi's native ask tools from Abito* below.
 
 **Verified layers:** offline Pi extension loading and fake-socket unit tests; the opt-in cross-integration below compiles and runs the **real Rust UDS receiver with the real Node producer**, without a GUI. **Not verified here:** rendered island/trusted UI clicks, a live model choosing the tool, or live Pi/provider turn duration. The receiver/UI belong to the `apps/desktop-tauri/` workstream, which this directory does not modify.
 
@@ -21,9 +21,9 @@ Other opt-in loading mechanisms (not managed by the Settings installer):
 | Project extensions | copy it to `<project>/.pi/extensions/koda-island/` | One repository, with Pi's project trust. |
 
 Pi loads TypeScript directly (jiti), so no build step is needed. Only the Pi API and Node builtins are imported; there
-are no npm dependencies. The managed installer uses an exact eight-file manifest, refuses foreign/modified/unlisted files and symlinks, binds the shown hash to the current and bundled bytes, and makes a directory backup before replacement/removal. It never recursively removes unrelated files. See [the installer contract](../desktop-harness/docs/PI-INSTALL.md).
+are no npm dependencies. The managed installer uses an exact seven-file manifest, refuses foreign/modified/unlisted files and symlinks, binds the shown hash to the current and bundled bytes, and makes a directory backup before replacement/removal. It never recursively removes unrelated files. See [the installer contract](../desktop-harness/docs/PI-INSTALL.md).
 
-Questions are ON by default (level 3): Pi's `ask_user_choice` / `ask_user_question` and `abito_ask` reach the island
+Questions are ON by default (level 3): Pi's `ask_user_choice` / `ask_user_question` and `ctx.ui.confirm` reach the island
 with no environment variable. Set `KODA_QUESTIONS=0` in the environment Pi runs in to keep the island notice-only.
 
 ## Quick path — a new receiver only
@@ -81,36 +81,28 @@ custom installation directories are not discovered automatically.
 
 Observed packaged identities are **production `com.abitog.Abito` → `abito-desktop`**, and **technical Preview `com.abitog.Abito.Preview` → `abito-desktop-preview`**, both below `/run/user/<uid>/`. These names are not interchangeable. The loader's default is the Tauri island's own leaf (`koda`); the two Electron roots above need an explicit `KODA_SOCKET_DIR`. Development roots, including a receiver's `.runtime`, require an explicit override; no arbitrary endpoint is used to infer a trusted root.
 
-Paths must be absolute and normalized: no `..`, repeated separators, trailing slash, NUL or root `/`. Endpoint names use exactly six ASCII alphanumerics after `p-`; endpoint byte length is at most 107. Root and generated directory must be owned by the current Linux UID and exactly `0700`; socket must be owned by that UID and exactly `0600`. Every ancestor is a non-symlink directory owned by root or this UID, not world-writable. Endpoint ownership, mode and inode are checked before and after connecting. Configuration resolution is read-only. Invalid configuration fails closed without registering the extension's tools/transport.
+Paths must be absolute and normalized: no `..`, repeated separators, trailing slash, NUL or root `/`. Endpoint names use exactly six ASCII alphanumerics after `p-`; endpoint byte length is at most 107. Root and generated directory must be owned by the current Linux UID and exactly `0700`; socket must be owned by that UID and exactly `0600`. Every ancestor is a non-symlink directory owned by root or this UID, not world-writable. Endpoint ownership, mode and inode are checked before and after connecting. Configuration resolution is read-only. Invalid configuration fails closed without registering the extension's transport or intercepts.
 
 Owner-only files are a local trust boundary, **not an attestation of the human or process**. A malicious same-UID process can impersonate a receiver. The real receiver must check peer UID and scope and expose no automatic-answer path. `source: "human"` is a protocol claim, not proof; actual human origin must be enforced by the island's trusted-click gate.
 
-## The tool and the waiting turn
+## The generic mechanism and the waiting turn
 
-`abito_ask` is `model-only`, not callable from codemode. Its parameters are:
+K3-04 (human, 19-nov; permanent requirement): **this extension registers no ask tool of its own.** `abito_ask` was removed, so what reaches the island is always the agent's own generic mechanism — nothing depends on a Koda-specific tool:
 
-```json
-{
-  "kind": "question",
-  "text": "Which route should we use?",
-  "options": [
-    {"value":"route-a","label":"Route A","description":"First route"},
-    {"value":"route-b","label":"Route B","description":"Second route"}
-  ],
-  "allowFreeText": true,
-  "timeoutMs": 300000
-}
-```
+- Pi's `ask_user_choice` and `ask_user_question` (gentle-pi): a generic `tool_call` hook (`native-ask.cjs`) races each one between the island and the terminal.
+- Pi's `ctx.ui.confirm` (any extension, e.g. gentle-pi's «Allow guarded forced git branch deletion?»): the same race, in approval shape (`native-ask.cjs`, HU-042).
+- Everything else — ordinary chat, provider consent, `select`/`input`/`editor` prompts, and every sensitive confirmation — is **not** intercepted: Pi's own dialog runs untouched.
 
-- `kind`, `text`, `options` are required. `allowFreeText` defaults to false; `timeoutMs` defaults to configuration. Unknown fields are invalid.
-- Common questions have 2–4 options, or `options: []` with `allowFreeText: true`. Choices **and** free text are permitted together ("Other answer"). Neither is invalid.
-- `kind: "approval"` requires **exactly two unique opaque tokens**, never free text. Yes/no is represented by two explicit options, not an inferred boolean or label. No extra "always allow" option. These requests **do not authorize Pi tools or backend proposals** by themselves.
-- Question text is 1–500 Unicode code points; labels 1–60; required descriptions 0–160. Text/labels must not be whitespace-only. Plain text may include newline/tab; other ASCII control characters are refused. Option values match `[A-Za-z0-9_-]{1,128}` and are unique. Values are never inferred from display labels or indexes.
+The island sees ONE question request per race, in the wire shape QP/1 already defines; the broker's limits therefore apply to native questions exactly as they did before:
+
+- A question has 2–4 options, or no options with free text. Choices **and** free text are permitted together (the terminal row is «Other…» / «Type something.»).
+- An approval is **exactly two unique opaque tokens**, never free text. Yes/no is two explicit options (`yes`/`no` for `ctx.ui.confirm`), not an inferred boolean or label. No extra "always allow" option. These requests **do not authorize Pi tools or backend proposals** by themselves.
+- Question text is 1–500 Unicode code points; labels 1–60; required descriptions 0–160. Text/labels must not be whitespace-only. Plain text may include newline/tab; other ASCII control characters are refused. Option values match `[A-Za-z0-9_-]{1,128}` and are unique. Native option values never leave Pi: they are mapped to synthetic `o1..o4` and back.
 - Answer text must be non-whitespace, 1–2000 Unicode code points **and** fit the byte cap below. It is preserved as entered, not used to interpret a token or approve a permission.
 
 ### Several options and questionnaires (structured, level 3)
 
-With `KODA_QUESTIONS=3` and a receiver that negotiates `structured:1`, `abito_ask` also takes the shape Claude Code's `AskUserQuestion` uses, so the island's «casillas + Hecho» (S7) and «pasos + resumen» (S8) are reachable from Pi:
+With `KODA_QUESTIONS=3` and a receiver that negotiates `structured:1`, a native `ask_user_question` with **1–4 questions** (Claude Code's `AskUserQuestion` shape) is raced too, so the island's «casillas + Hecho» (S7) and «pasos + resumen» (S8) are reachable from Pi. The request the island receives is:
 
 ```json
 {"questions":[
@@ -119,18 +111,17 @@ With `KODA_QUESTIONS=3` and a receiver that negotiates `structured:1`, `abito_as
 ]}
 ```
 
-- `questions[1..4]`: each `header` (≤32), `question`, `options` (2–4, `label` required, `description`/`value` optional — missing values are synthesised `o1..o4`), `multiSelect`, `allowFreeText`. One frame, one queue slot, ONE answer per step, all-or-nothing. `kind`, `options` and `allowFreeText` stay out of a questionnaire; `text` is an optional title (default: the headers joined).
-- One question with several ticked options: the classic shape plus `multiSelect: true` (2–4 options).
-- The result text is the usual JSON plus `selected: [{header?, question?, selected:[labels…], text?}]` — every ticked option, in the order given, with the labels, one entry per step. `details.answer` keeps the wire answer (`form` / `options` / `option`).
-- A single legacy question is byte-for-byte what it was: same parameters, same result text.
-- Without level 3 a questionnaire or `multiSelect` is refused BEFORE anything is sent (`invalid_request`, `reasonCode: structured_unavailable`, text names `KODA_QUESTIONS=3`); with no connection at all it is `unavailable`. Never a downgrade to a different question. Structured limits (text 2000, label 120, description 400) apply only on a structured connection; on a legacy one the old 500/60/160 are enforced by the broker.
-- Mapping and answer reporting live in `ask-tool.cjs` (`test/ask-tool.test.cjs`); the wire already carried all of it (`questions.cjs`, `question.rs`).
+- `questions[1..4]`: each `header` (≤32), `question`, `options` (2–4, `label` required, `description`/`value` optional — missing values are synthesised `o1..o4`), `multiSelect`, `allowFreeText`. One frame, one queue slot, ONE answer per step, all-or-nothing.
+- One native question with several ticked options: the simple shape plus `multiSelect: true` (2–4 options).
+- The decision text handed back to the native tool is the native wording (`User selected: 2. Beta (value: val-beta)`, `User responded: …`, `User cancelled the choice`, or the questionnaire's numbered line); the island's answer carries the labels per step.
+- Without level 3 a multi-question or `multiSelect` native ask is **left alone** (`structured: unavailable`): the terminal asks it, natively, exactly as without the extension. Never a downgrade to a different question. Structured limits (text 2000, label 120, description 400) apply only on a structured connection; on a legacy one the 500/60/160 above are enforced by the broker.
+- Mapping and decision wording live in `native-ask.cjs` (`test/native-ask.test.cjs`, `test/native-confirm.test.cjs`); the wire already carried all of it (`questions.cjs`, `question.rs`).
 
-**The tool blocks its own execution while awaiting a reply.** Pi receives the result of that exact call, never a later injected chat message. Other tools in a parallel tool batch may still run; this is not a process-wide scheduler lock. No endpoint, missing socket, unfinished handshake or missing capability returns `unavailable` immediately rather than waiting the question deadline. There is **no terminal fallback**; the tool description tells the agent it may ask through normal chat instead.
+**A raced question blocks the originating Pi call while it waits for a reply.** The model receives the answer as that call's result (or as the native tool-error text the block carries), never as a later injected chat message. Other tools in a parallel tool batch may still run; this is not a process-wide scheduler lock. With no endpoint, no socket, an unfinished handshake or a missing capability, **nothing is intercepted**: the native dialog keeps waiting in the terminal, so a question is never lost and never auto-answered.
 
-The producer admits one live call within its session; another returns `busy` immediately. The receiver holds questions from every session in **one FIFO queue of up to 8** (`QUEUE_CAP`, `apps/desktop-tauri/src/question.rs`): the island shows the oldest, with «1 de N» while others wait, and each keeps its own deadline. A 9th request, or a second one from a connection that already has one pending, gets `busy` and goes to the terminal. **No replay**. Approval cards are a separate lane with visual priority; a card must not cancel a question, and a question must not cover a card.
+The producer admits one live call within its session; another goes to the terminal at once. The receiver holds questions from every session in **one FIFO queue of up to 8** (`QUEUE_CAP`, `apps/desktop-tauri/src/question.rs`): the island shows the oldest, with «1 de N» while others wait, and each keeps its own deadline. A 9th request, or a second one from a connection that already has one pending, gets `busy` and stays in the terminal. **No replay**. Approval cards are a separate lane with visual priority; a card must not cancel a question, and a question must not cover a card.
 
-The producer owns the deadline. Expiration returns `expired`, with **no answer, default or implicit denial/approval**. AbortSignal, end of the owning turn, shutdown or session replacement cancel the live call; disconnect ends it without replay. Every accepted reply is checked against the current session/project and the original deadline even if a timer callback was delayed. A late, duplicate, foreign-session or invalid response never decides the next question.
+The producer owns the deadline. Expiry answers nobody: the island question ends as `expired`, with **no answer, default or implicit denial/approval**, and the terminal dialog keeps waiting. AbortSignal, end of the owning turn, shutdown or session replacement cancel the live call; disconnect ends it without replay. Every accepted reply is checked against the current session/project and the original deadline even if a timer callback was delayed. A late, duplicate, foreign-session or invalid response never decides the next question.
 
 ## Stable endpoint handoff (P2)
 
@@ -175,11 +166,11 @@ still decide whether the socket is usable.
 | Question kind | Path | Needs |
 | --- | --- | --- |
 | Notice «`<project>` Pi terminó» | `agent_settled` → `settled`, with optional `projectName` + `agent` display keys | a connection (level 0 is enough) |
-| One question, 2–4 options, single choice | `abito_ask`, or Pi's `ask_user_choice` / single-question `ask_user_question` raced against the terminal | `KODA_QUESTIONS>=1` |
-| One question, free text (with or without options) | `abito_ask` with `allowFreeText` | `KODA_QUESTIONS>=1` |
-| Approval (exactly two opaque tokens, no free text) | `abito_ask` `kind:"approval"` | `KODA_QUESTIONS>=1` |
-| One question, several ticked options | `abito_ask` `multiSelect: true` | `KODA_QUESTIONS=3` + `structured:1` receiver |
-| 1–4 questions with steps and a summary (Claude Code's `AskUserQuestion` shape) | `abito_ask` `questions[]`, or a native multi-question `ask_user_question` raced at level 3 | `KODA_QUESTIONS=3` + `structured:1` receiver |
+| One question, 2–4 options, single choice | Pi's `ask_user_choice` / single-question `ask_user_question`, raced against the terminal | `KODA_QUESTIONS>=1` |
+| One question, free text (with or without options) | the same native tools with `allowCustomResponse` | `KODA_QUESTIONS>=1` |
+| Approval (exactly two opaque tokens, no free text) | any `ctx.ui.confirm` (yes/no), raced against the terminal | `KODA_QUESTIONS>=1` |
+| One question, several ticked options | a native `ask_user_question` question with `multiSelect` | `KODA_QUESTIONS=3` + `structured:1` receiver |
+| 1–4 questions with steps and a summary (Claude Code's `AskUserQuestion` shape) | a native multi-question `ask_user_question`, raced at level 3 | `KODA_QUESTIONS=3` + `structured:1` receiver |
 | Pi's own yes/no confirmation (`ctx.ui.confirm`, e.g. gentle-pi's «Allow guarded forced git branch deletion?») | raced against the terminal, first answer wins (see below) | `KODA_QUESTIONS>=1` |
 | Sensitive confirmations (credentials, tokens, keys, passwords, login/OAuth/auth, consent, provider consent, permission grants, review/RDD consent, maintenance authorization, opaque tokens), and every select/input/editor prompt | **nothing** — not intercepted, the terminal dialog runs untouched | — |
 
@@ -345,17 +336,16 @@ These cases run against the **current integrated Rust receiver**, in both wire d
 | Level 2 capability declaration + question | Exact ready with `busyReason:1`; same real host answer and ACK round trip. No downgrade. |
 | Level 1 during native transition and degraded state | Real receiver sends **exactly nine closure keys**, plain system/busy without `busyReason`; Node returns plain busy, no answer and no ACK. |
 | Level 2 during native transition and degraded state | Real receiver sends ten closure keys including negotiated `native_transition_busy` / `native_transition_degraded`; Node returns matching `reasonCode` and the actual model-facing normal-chat suggestion. No human decision or ACK. Native states use the real barrier with a deterministic test clock/inert resize callback, never a window. |
-| Flag off / level 0 | Exact v1 hello/heartbeat/settled field set, order, newline and ≤512-byte body; real receiver emits only ready, no unsolicited QP capability. `abito_ask` returns unavailable and notice delivery remains live. |
+| Flag off / level 0 | Exact v1 hello/heartbeat/settled field set, order, newline and ≤512-byte body; real receiver emits only ready, no unsolicited QP capability. No question is raced (the native dialog stays in charge) and notice delivery remains live. |
 | Two real Node sessions at each QP level | Global second question gets plain busy routed to its own ID/session, no native detail or ACK; the first question stays live and its subsequent answer/ACK routes only to its owner. |
 | Real producer in a foreign real working directory | Its real hash differs from the receiver project; Rust closes before ready, no admission/notices, Node returns unavailable rather than inventing an answer. |
 | Same-UID cross-origin/session probes while real owner waits | Additional UDS probe connections, even with a cloned session label, cannot cancel/ACK/reject the owner's ID. A wrong-session frame closes the probe; the real owner's pending ID survives and its eventual real response/ACK succeeds once. These probes are adversarial test inputs, not substitutes for either real component. |
 
 Scope limits: different operating-system UID rejection is **not exercised** (no privilege changes/sudo). The historical level-2 → minimal-only receiver row is **still fake-only**, as agreed with the parent: there is no real published peer for it. No old code is materialized or fake called a real receiver. Rendered UI, trusted clicks and a live model/provider turn remain separate checks.
 
-## Troubleshooting `unavailable`
+## Troubleshooting: the island never asks
 
-`abito_ask` returning «No human answer: unavailable» means no connection was ever established; nothing was sent and
-nothing is queued. It is **not** an answer, a denial or an expiry. Check, in this order:
+Since K3-04 there is no tool to return «No human answer: unavailable». The symptom is the opposite: a native question (or a confirm) is **asked only in the terminal** and never appears in the island, because nothing was sent and nothing is queued. That is **not** an answer, a denial or an expiry. Check, in this order:
 
 1. **The level switch.** With `KODA_QUESTIONS` absent or `0` the producer asks the island nothing, so every question
    is `unavailable` while notices still work. Export `KODA_QUESTIONS=1` (or `3`) in the environment Pi itself runs in:
@@ -368,13 +358,13 @@ nothing is queued. It is **not** an answer, a denial or an expiry. Check, in thi
    it. Pi re-reads it on every retry, so a session started before the island connects within one retry interval
    (5 s by default) — no restart of Pi needed.
 4. **Explicit override.** If `KODA_DESKTOP_SOCKET` is set, it is used verbatim and `endpoint.json` is ignored; an
-   endpoint from an older island instance fails the socket check and yields `unavailable`. Unset it to use the handoff.
+   endpoint from an older island instance fails the socket check and nothing is raced. Unset it to use the handoff.
 5. **Handshake level.** A receiver without the negotiated capability answers `unsupported_receiver` (naming the root)
    and notices stop too; that is not `unavailable` and there is no silent downgrade. Level `0`/`1` against an old
    receiver is the documented compatibility hazard: set `KODA_QUESTIONS=0` there.
 6. **Not injected wrong.** An invalid configuration (`KODA_SOCKET_DIR` not absolute/normalized, a malformed
    `KODA_QUESTIONS`, an out-of-bounds `KODA_QUESTION_TIMEOUT_MS`) makes the extension register **nothing** — no
-   `abito_ask` tool at all, so the model cannot even report `unavailable`.
+   transport and no interception at all, so every question stays in the terminal.
 
 `busy`, `expired`, `cancelled`, `human_cancelled`, `disconnected`, `protocol_error` and `invalid_request` are
 different outcomes with different meanings; see the next section. Only `answered` carries a human decision.
@@ -388,25 +378,29 @@ its own tool call, so it reports the failure to the model instead.
 
 Run `node --test apps/desktop-pi/test/*.test.cjs`. The fake receiver uses real AF_UNIX sockets under this directory only, cleans its own temporary paths, and never contacts installed roots. Tests cover level-1 QP handshake/busy bytes unchanged in both directions, negotiated level-2 transition/degraded reasons through the real Pi-loaded tool's model-facing content, unsupported level without downgrade, immediate protocol errors for illegal/unnegotiated detail, unchanged legacy bytes with flag off, config/security, opt-in failure without downgrade, busy, deadline boundaries, cancellation/disconnect/session changes, duplicate/stale/foreign/invalid answers, explicit human non-response, text-only, two-token approvals, multibyte byte limits and ACK loss. The offline loader test uses the **installed Pi loader** without launching a model/session or discovering ambient extensions. It explicitly skips when Pi cannot be located; do not call that skip proof of compatibility.
 
-Observed final producer verification (this change, on a clean worktree): **76 tests, 75 pass, 0 fail, 1 skipped** — the
-skip is the offline loader check (`Installed Pi not found; set PI_CODING_AGENT_ROOT`) and is **not** proof of
-compatibility. The new `test/handoff.test.cjs` covers the endpoint handoff: absent `KODA_DESKTOP_SOCKET` resolves the
+Observed final producer verification (K3-04, on a clean worktree): **195 tests, 191 pass, 0 fail, 4 skipped** — the
+skips are the Windows-only twins and the two offline loader checks (`Installed Pi not found; set
+PI_CODING_AGENT_ROOT`), which are **not** proof of compatibility; run them with `PI_CODING_AGENT_ROOT=<installed Pi
+package>` to exercise the real loader. `test/pi-loader.test.cjs` pins the K3-04 contract in two layers: a source guard
+that the extension registers **no tool** (`registerTool`/`defineTool` never appear, `ask-tool.cjs` is gone) and, through
+the real loader, that the loaded extension exposes zero tools while Pi's own `ask_user_choice` is still answered from a
+fake receiver with exactly the native text. `test/handoff.test.cjs` covers the endpoint handoff: absent
+`KODA_DESKTOP_SOCKET` resolves the
 published endpoint; an explicit one still wins and never opens the file; a stale pid, wrong owner, `0644` file, foreign
 root, bad endpoint shape, zombie state, recycled `procStart`, extra key, symlinked file or missing socket each yield no
 connection; and a real Pi session connects to an island that started **after** Pi, and again to a **restarted** one
 with a new endpoint under the same root. The earlier integration matrix above is unchanged and still headless
-host/wire evidence, not real-island-click evidence. Native review is disabled by clone-local RDD policy. No live
-provider turn, installed socket or screenshot was exercised.
+host/wire evidence, not real-island-click evidence. No live provider turn, installed socket or screenshot was exercised.
 
-Next human verification, only on the new root: load this extension, have a session call `abito_ask`, choose an option, enter permitted text, click "Do not answer", wait for expiry, disconnect, and attempt a double click/second session. Verify Pi sees exactly the matching result and the island shows the proper closure/rejection without altering permission cards. Verify the intended model actually selects `abito_ask`; merely registering it does not redirect other prompts.
+Next human verification, only on the new root: load this extension, have a Pi session call `ask_user_choice` (or trigger a `ctx.ui.confirm`), choose an option in the island, enter permitted text, click "Do not answer", wait for expiry, disconnect, and attempt a double click/second session. Verify Pi receives exactly the matching native result and the island shows the proper closure/rejection without altering permission cards.
 
 ## Lo que el humano debe decidir
 
 The handshake, FIFO admission (up to 8 pending, busy beyond that or for a duplicate connection), no defaults, exactly two approval tokens, free-text support and default/bounded expiry above are the **current parent-confirmed contract**, not unanswered choices. Remaining decisions and gaps are:
 
-1. **Which Pi prompts should use `abito_ask`?** Explicit calls, plus the native `ask_user_choice` / single-question
-   `ask_user_question` race described below. Nothing else is redirected, and that must not be simulated by observing
-   assistant prose.
+1. **Which Pi prompts race the island?** Pi's own `ask_user_choice` / `ask_user_question` and any non-sensitive
+   `ctx.ui.confirm`, described below. Nothing else is redirected, and that must not be simulated by observing
+   assistant prose. (K3-04 removed the last exception: the old explicit `abito_ask` tool.)
 2. **The `KODA_QUESTIONS` default.** Claude Code has questions **on** once its hooks are installed (no equivalent
    switch in `apps/desktop-harness`), while Pi defaults to `0`, notice-only. Raising it is a product decision, not a
    documentation fix: level ≥ 1 changes the shared socket's handshake, and a receiver that does not support it stops
@@ -427,7 +421,7 @@ The handshake, FIFO admission (up to 8 pending, busy beyond that or for a duplic
 
 ## Answering Pi's native ask tools from Abito
 
-When Abito is connected, a call to Pi's own `ask_user_choice` (gentle-pi), or to `ask_user_question` with **exactly one single-select question**, is raced between Abito and the terminal. The question reaches Abito through the same queue as `abito_ask` (agent «Pi» plus the project name). **The first human answer wins; the other side is withdrawn** (`question_cancel` to Abito, an abort signal to the terminal dialog) and is never applied twice. gentle-pi is **not modified**: this is a generic `tool_call` hook (`native-ask.cjs`).
+When Abito is connected, a call to Pi's own `ask_user_choice` (gentle-pi), or to `ask_user_question` with **exactly one single-select question**, is raced between Abito and the terminal. The question reaches Abito through the island's question queue (agent «Pi» plus the project name). **The first human answer wins; the other side is withdrawn** (`question_cancel` to Abito, an abort signal to the terminal dialog) and is never applied twice. gentle-pi is **not modified**: this is a generic `tool_call` hook (`native-ask.cjs`).
 
 **Trade-offs (read before enabling in your workflow):**
 
