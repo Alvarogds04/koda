@@ -144,3 +144,72 @@ test('audit: a log already past the helper 1 MiB cap is rotated before any read,
   ui.appendAudit(dir, { ts: 8 });
   assert.equal(fs.readFileSync(f, 'utf8').trim().split('\n').length, 2, 'below the cap: no rotation');
 });
+
+// K3-04: the Windows twin of the POSIX legacy-listing tests. A folder written by the PREVIOUS release has eight files
+// (it still carries `ask-tool.cjs`); it stays a verified Koda install, so it is retired (old name) or replaced (new name)
+// instead of being read as foreign. Built here exactly as that release left it: eight files, a manifest with every hash.
+const PI_INSTALLED = ['adapter.cjs', 'config.cjs', 'index.ts', 'native-ask.cjs', 'questions.cjs', 'security.cjs', 'windows-transport.cjs'];
+const PI_LEGACY = [...PI_INSTALLED, 'ask-tool.cjs'].sort();
+const PI_SOURCE = name => path.resolve(__dirname, '../../desktop-pi', name === 'index.ts' ? 'pi-extension.ts' : name);
+function legacyPiFolder(dir) {
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 }); fs.chmodSync(dir, 0o700);
+  const files = {};
+  for (const name of PI_LEGACY) {
+    const body = name === 'ask-tool.cjs' ? "'use strict';\n// abito_ask: what the previous release shipped (K3-04)\n"
+      : fs.readFileSync(PI_SOURCE(name));
+    fs.writeFileSync(path.join(dir, name), body, { mode: 0o600 });
+    files[name] = sha(fs.readFileSync(path.join(dir, name)));
+  }
+  const manifest = '.abito-manifest.json';
+  fs.writeFileSync(path.join(dir, manifest), JSON.stringify({ schema: 'abito-pi-extension/1', files }) + '\n', { mode: 0o600 });
+  return dir;
+}
+
+test('Windows flow (K3-04): an 8-file folder from the previous release is retired at the old name and replaced at the new one', async t => {
+  const d = tmp(t); const home = path.join(d, 'home'); fs.mkdirSync(home, { mode: 0o700 });
+  winfs.useForTests(fakeBackend());
+  const verified = winfs.readVerified;
+  winfs.readVerified = rel => fs.readFileSync(path.resolve(__dirname, '../..', rel));
+  t.after(() => { winfs.readVerified = verified; });
+  const piwin = require('../src/install-pi-win.cjs');
+  const parent = path.join(home, '.pi', 'agent', 'extensions');
+  fs.mkdirSync(path.join(home, '.pi', 'agent'), { recursive: true, mode: 0o700 });
+  const plan = () => piwin.planPi({ home, remove: false, execPath: process.execPath, binPath: '/x' });
+  // (a) the previous release's folder at the 0.1 name: retired into the backup flow, one extension left.
+  const legacy = legacyPiFolder(path.join(parent, 'abito-island'));
+  const first = plan();
+  assert.equal(first.changed, true);
+  assert.equal(first.legacyExists, true, 'the eight files are recognised as a Koda install, not as foreign');
+  let msg = '';
+  assert.equal(await piwin.applyPi(first, { backupPath: null, out: () => {}, err: s => { msg += s; } }), 0, msg);
+  assert.equal(fs.existsSync(legacy), false, 'the 0.1 folder leaves extensions');
+  assert.deepEqual(fs.readdirSync(parent), ['koda-island'], 'one extension folder');
+  const backups = path.join(home, '.pi', 'agent', 'abito-backups');
+  const retired = fs.readdirSync(backups).filter(n => /^abito-island\.abito-backup-/.test(n));
+  assert.equal(retired.length, 1, JSON.stringify(fs.readdirSync(backups)));
+  assert.deepEqual(fs.readdirSync(path.join(backups, retired[0])).sort(), [...PI_LEGACY, '.abito-manifest.json'].sort(), 'retired whole');
+  // (b) the previous release's folder at the CURRENT name: an upgrade, never a refusal.
+  const target = path.join(parent, 'koda-island');
+  fs.rmSync(target, { recursive: true, force: true });
+  legacyPiFolder(target);
+  const upgrade = plan();
+  assert.equal(upgrade.changed, true);
+  const bk = path.join(upgrade.backupRoot, 'koda-island.abito-backup-20260101T000000001Z');
+  msg = '';
+  assert.equal(await piwin.applyPi(upgrade, { backupPath: bk, out: () => {}, err: s => { msg += s; } }), 0, msg);
+  assert.deepEqual(fs.readdirSync(target).sort(), [...piwin.FILES, piwin.MANIFEST].sort(), 'the ask tool is gone');
+  assert.equal(plan().changed, false, 'and that is the exact current payload');
+  // (c) remove works on it too.
+  fs.rmSync(target, { recursive: true, force: true });
+  legacyPiFolder(target);
+  const rm = piwin.planPi({ home, remove: true, execPath: process.execPath, binPath: '/x' });
+  assert.equal(rm.changed, true);
+  const rmBackup = path.join(rm.backupRoot, 'koda-island.abito-backup-20260101T000000002Z');
+  assert.equal(await piwin.applyPi(rm, { backupPath: rmBackup, out: () => {}, err: () => {} }), 0);
+  assert.equal(fs.existsSync(target), false, 'removed');
+  // (d) anything else stays refused: a changed byte in an eight-file folder is not ours.
+  const tampered = legacyPiFolder(target);
+  fs.writeFileSync(path.join(tampered, 'config.cjs'), '// edited by hand', { mode: 0o600 });
+  assert.throws(() => plan(), error => error.code === 'refused' || /refused/i.test(String(error.message)));
+  assert.equal(fs.existsSync(path.join(tampered, 'config.cjs')), true, 'and it is left alone');
+});

@@ -22,6 +22,8 @@
     ['agent_amp', 'Amp', 'agent', 'both'],
     ['agent_hermes', 'Hermes', 'agent', 'both'],
     ['agent_claude-desktop', 'Claude Desktop', 'agent', 'windows'],
+    // K3-04: Pi has a pill of its own, in the Agents section, offered on every desktop.
+    ['agent_pi', 'Pi', 'agent', 'both'],
     ['ai_anthropic', 'Anthropic', 'ai', 'both'],
     ['ai_google', 'Google AI', 'ai', 'both'],
     ['ai_openai', 'OpenAI', 'ai', 'both'],

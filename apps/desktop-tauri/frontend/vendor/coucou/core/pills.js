@@ -135,6 +135,20 @@ const PILL_CATALOG = [
     support: "windows",
     connect: none
   },
+  // Pi itself (K3-04: «que ambos muestren a pi, claude code y el resto»). Its connector is not a
+  // hand-copied extension: the Koda harness installer owns and installs it (Settings → Agentes → Pi,
+  // `install pi`), the same managed payload path as Claude Code's hooks — so `hooks` is the closest
+  // connect kind. Nothing here comes from the credential store or a model server.
+  {
+    id: "agent_pi",
+    name: "Pi",
+    color: "#8B5CF6",
+    category: "agent",
+    subtitle: N_("Agent"),
+    source: "agent",
+    support: "yes",
+    connect: hooks
+  },
   // ── AI for the chat ────────────────────────────────────────────────────────
   {
     id: "ai_anthropic",
@@ -314,6 +328,8 @@ function sessionSubtitle(id) {
       return "Hermes";
     case "agent_claude-desktop":
       return "Claude Desktop";
+    case "agent_pi":
+      return "Pi";
     default:
       return N_("Agent");
   }

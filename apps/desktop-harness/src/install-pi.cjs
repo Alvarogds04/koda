@@ -13,7 +13,14 @@ const SCHEMA = 'abito-pi-extension/1';
 const TARGET = 'koda-island';
 const LEGACY_TARGET = 'abito-island';
 const BACKUP_RE = /^(?:koda|abito)-island\.abito-backup-[0-9TZ]+(?:-[1-9])?$/;
-const FILES = Object.freeze(['adapter.cjs', 'ask-tool.cjs', 'config.cjs', 'index.ts', 'native-ask.cjs', 'questions.cjs', 'security.cjs', 'windows-transport.cjs']);
+const FILES = Object.freeze(['adapter.cjs', 'config.cjs', 'index.ts', 'native-ask.cjs', 'questions.cjs', 'security.cjs', 'windows-transport.cjs']);
+// K3-04: `ask-tool.cjs` was removed from the payload (every question now uses Pi's generic mechanism), so a folder
+// installed by the PREVIOUS release has EIGHT files and a manifest that lists those eight. That folder was a verified
+// Koda install when it was written and it still is one, so `owned()` accepts exactly TWO closed listings: the current
+// seven and this legacy eight. Nothing else widens: the entries, the manifest shape, the closed encoding and every
+// per-file hash are checked with the same strictness, and the entry listing and the manifest must describe the SAME one.
+const LEGACY_FILES = Object.freeze([...FILES, 'ask-tool.cjs'].sort());
+const LISTINGS = Object.freeze([[...FILES].sort(), LEGACY_FILES]);
 const SOURCE = path.resolve(__dirname, '../../desktop-pi');
 const hash = b => crypto.createHash('sha256').update(b).digest('hex');
 const refuse = () => core.InstallErrorRefuse('Pi extension ownership or path could not be verified');
@@ -58,17 +65,19 @@ function bytes(file, uid, source = false, max = 1024 * 1024) {
 function owned(target, uid) {
   try { dirCheck(target, uid); } catch (e) { if (e.code === 'ENOENT') return null; throw e; }
   if (!fs.readdirSync(target).includes(MANIFEST)) throw foreign();
-  if (listing(fs.readdirSync(target).sort()) !== listing([...FILES, MANIFEST].sort())) throw refuse();
+  const entries = fs.readdirSync(target).sort();
+  const layout = LISTINGS.find(files => listing(entries) === listing([...files, MANIFEST].sort()));
+  if (!layout) throw refuse();
   const raw = bytes(path.join(target, MANIFEST), uid, false, 16384);
   let manifest;
   try { manifest = JSON.parse(raw.toString('utf8')); } catch { throw refuse(); }
   // Closed encoding also rejects duplicate JSON keys and non-UTF8 byte sequences.
   if (![JSON.stringify(manifest), JSON.stringify(manifest) + '\n'].includes(raw.toString('utf8')) || !Buffer.from(raw.toString('utf8')).equals(raw)) throw refuse();
-  if (!manifest || Object.keys(manifest).sort().join(',') !== 'files,schema' || manifest.schema !== SCHEMA || !manifest.files || listing(Object.keys(manifest.files).sort()) !== listing(FILES)) throw refuse();
-  for (const name of FILES) {
+  if (!manifest || Object.keys(manifest).sort().join(',') !== 'files,schema' || manifest.schema !== SCHEMA || !manifest.files || listing(Object.keys(manifest.files).sort()) !== listing(layout)) throw refuse();
+  for (const name of layout) {
     if (!/^[a-f0-9]{64}$/.test(manifest.files[name]) || hash(bytes(path.join(target, name), uid)) !== manifest.files[name]) throw refuse();
   }
-  return { files:manifest.files, signature:hash(Buffer.concat([raw, Buffer.from(listing(manifest.files))])) };
+  return { files:manifest.files, layout, signature:hash(Buffer.concat([raw, Buffer.from(listing(manifest.files))])) };
 }
 function payload(uid) {
   if (fs.realpathSync(SOURCE) !== SOURCE) throw refuse();
@@ -98,7 +107,7 @@ function pruneBackups(root, keep, uid, alsoKeep = null) {
     if (!BACKUP_RE.test(name)) continue;
     const dir = path.join(root, name);
     if (dir === keep || dir === alsoKeep) continue;
-    try { if (owned(dir, uid)) cleanStage(dir); } catch { /* preserve foreign/modified backup */ }
+    try { const entry = owned(dir, uid); if (entry) cleanStage(dir, entry.layout); } catch { /* preserve foreign/modified backup */ }
   }
 }
 function planPi({home, uid, remove, execPath, binPath}) {
@@ -135,10 +144,10 @@ function write(file, data) {
   try { fs.fchmodSync(fd, 0o600); fs.writeFileSync(fd, data); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
 }
 // Only this closed staging payload may be cleaned; never recurse through arbitrary entries.
-function cleanStage(dir) {
+function cleanStage(dir, files = FILES) {
   if (!dir) return;
   try {
-    for (const name of [...FILES, MANIFEST]) {
+    for (const name of [...files, MANIFEST]) {
       const file = path.join(dir, name);
       try { const st = fs.lstatSync(file); if (st.isFile() && !st.isSymbolicLink()) fs.unlinkSync(file); } catch { /* own missing file */ }
     }
@@ -203,4 +212,4 @@ async function applyPi(plan, {backupPath, out, err, now = () => new Date()}) {
     return 70;
   } finally { cleanStage(stage); if (!done) removeMade(made, d => fs.rmdirSync(d)); }
 }
-module.exports = { removeMade, FILES, MANIFEST, SCHEMA, TARGET, LEGACY_TARGET, ownedIfOurs, planPi, applyPi};
+module.exports = { removeMade, FILES, LEGACY_FILES, MANIFEST, SCHEMA, TARGET, LEGACY_TARGET, ownedIfOurs, planPi, applyPi};

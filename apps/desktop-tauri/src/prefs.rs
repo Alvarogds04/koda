@@ -109,10 +109,10 @@ fn custom_blobs_from(value: Option<&Value>) -> Vec<CustomBlob> {
     }
     out
 }
-pub const PILL_IDS: [&str; 25] = [
+pub const PILL_IDS: [&str; 26] = [
     "integration_claude", "agent_cursor", "agent_antigravity", "agent_codex",
     "agent_gemini", "agent_copilot", "agent_muse", "agent_opencode", "agent_amp",
-    "agent_hermes", "agent_claude-desktop", "ai_anthropic", "ai_google", "ai_openai",
+    "agent_hermes", "agent_claude-desktop", "agent_pi", "ai_anthropic", "ai_google", "ai_openai",
     "ai_ollama", "ai_lmstudio", "integration_resend", "integration_n8n",
     "integration_vercel", "integration_github", "integration_notion",
     "integration_calcom", "integration_stripe", "integration_music", "integration_spotify",

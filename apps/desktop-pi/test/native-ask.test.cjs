@@ -134,7 +134,7 @@ test('not intercepted (undefined, no Abito question, no terminal dialog): off sw
     ['Abito not available', rig({ available: false }), {}, choiceEvent()],
     ['no UI', Object.assign(rig(), {}), {}, choiceEvent()],
     ['another tool', rig(), {}, { ...choiceEvent(), toolName: 'bash' }],
-    ['abito_ask itself', rig(), {}, { ...choiceEvent(), toolName: 'abito_ask' }],
+    ['a tool that is not an ask tool', rig(), {}, { ...choiceEvent(), toolName: 'koda_not_a_tool' }],
     ['malformed input', rig(), {}, { ...choiceEvent(), input: { question: 7, options: 'x' } }],
     ['one option only', rig(), {}, choiceEvent({ options: [OPTIONS[0]] })],
     ['five options', rig(), {}, choiceEvent({ options: Array.from({ length: 5 }, (_, i) => ({ label: `L${i}`, description: '', value: `v${i}` })) })],

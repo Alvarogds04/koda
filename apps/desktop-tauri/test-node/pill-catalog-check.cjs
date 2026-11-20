@@ -10,40 +10,56 @@ const M = () => require(modelPath);
 const ids = [
   'integration_claude', 'agent_cursor', 'agent_antigravity', 'agent_codex',
   'agent_gemini', 'agent_copilot', 'agent_muse', 'agent_opencode', 'agent_amp',
-  'agent_hermes', 'agent_claude-desktop', 'ai_anthropic', 'ai_google', 'ai_openai',
+  'agent_hermes', 'agent_claude-desktop', 'agent_pi', 'ai_anthropic', 'ai_google', 'ai_openai',
   'ai_ollama', 'ai_lmstudio', 'integration_resend', 'integration_n8n',
   'integration_vercel', 'integration_github', 'integration_notion',
   'integration_calcom', 'integration_stripe', 'integration_music', 'integration_spotify',
 ];
 const names = ['VS Code', 'Cursor', 'Antigravity', 'Codex', 'Gemini CLI', 'Copilot CLI',
-  'Muse Code', 'OpenCode', 'Amp', 'Hermes', 'Claude Desktop', 'Anthropic', 'Google AI',
+  'Muse Code', 'OpenCode', 'Amp', 'Hermes', 'Claude Desktop', 'Pi', 'Anthropic', 'Google AI',
   'OpenAI', 'Ollama', 'LM Studio', 'Resend', 'n8n', 'Vercel', 'GitHub', 'Notion',
   'Cal.com', 'Stripe', 'Apple Music', 'Spotify'];
 const defaults = ['integration_resend', 'integration_n8n', 'integration_vercel', 'integration_github'];
 
-test('S3 exact25 identities, names, category order and immutable closed definitions', () => {
+test('S3 exact26 identities, names, category order and immutable closed definitions', () => {
   const c = C();
   assert.deepEqual(c.CATALOG.map(x => x.id), ids);
   assert.deepEqual(c.CATALOG.map(x => x.name), names);
   assert.deepEqual(c.CATALOG.map(x => x.category), [
-    ...Array(4).fill('workspace'), ...Array(7).fill('agent'),
+    ...Array(4).fill('workspace'), ...Array(8).fill('agent'),
     ...Array(5).fill('ai'), ...Array(9).fill('service'),
   ]);
   assert.deepEqual(c.CATEGORIES.map(x => x.id), ['workspace', 'agent', 'ai', 'service']);
-  assert.equal(new Set(ids).size, 25);
+  assert.equal(new Set(ids).size, 26);
   assert.ok(Object.isFrozen(c.CATALOG));
   for (const def of c.CATALOG) assert.ok(Object.isFrozen(def));
   for (const id of [null, '', '__proto__', 'constructor', 'unknown', 1]) assert.equal(c.definition(id), null);
 });
 
-test('S6 only23 Linux declarations; Apple Music excluded and desktop unsupported', () => {
+// K3-04: «que ambos muestren a pi, claude code y el resto» — Pi is an agent pill of its own (human, 19-nov).
+// This check reads the island-side bridge (`frontend/pill-catalog.js`), which carries identities and OS support only;
+// colour, subtitle and connect kind are asserted against the vendored catalog in `coucou-vendor-check.cjs`.
+test('K3-04 agent_pi: «Pi» is an agent pill, offered on every desktop', () => {
   const c = C();
-  assert.equal(c.available('linux').length, 23);
+  const pi = c.definition('agent_pi');
+  assert.ok(pi, 'agent_pi exists');
+  assert.equal(pi.name, 'Pi');
+  assert.equal(pi.category, 'agent');
+  assert.equal(c.offered('agent_pi', 'linux'), true);
+  assert.equal(c.offered('agent_pi', 'windows'), true);
+  assert.equal(c.offered('agent_pi', 'macos'), true);
+  assert.ok(c.CATALOG.findIndex(x => x.id === 'agent_pi') > c.CATALOG.findIndex(x => x.id === 'agent_claude-desktop'),
+    'agent_pi sits in the Agents section');
+});
+
+test('S6 only24 Linux declarations; Apple Music excluded and desktop unsupported', () => {
+  const c = C();
+  assert.equal(c.available('linux').length, 24);
   assert.equal(c.offered('integration_music', 'linux'), false);
   assert.equal(c.offered('agent_claude-desktop', 'linux'), false);
   assert.equal(c.offered('integration_spotify', 'linux'), true);
   // K2-09 S5: Spotify has a backend on all three desktop systems now (MPRIS / SMTC / AppleScript).
-  assert.equal(c.available('windows').length, 24);
+  assert.equal(c.available('windows').length, 25);
   assert.equal(c.offered('integration_music', 'windows'), false);
   assert.equal(c.offered('integration_spotify', 'windows'), true);
   assert.equal(c.offered('integration_spotify', 'macos'), true);
