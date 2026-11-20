@@ -1,7 +1,7 @@
 'use strict';
 const { tmpBase, assertMode, unixOnly } = require('./platform-env.cjs');
 // End-to-end tests of `abito-hook install <claude|codex> ... --json / --apply-plan` through REAL child processes.
-// The CLI is started by a wrapper node process, so its parent executable is node (KODA_ISLAND_EXE = realpath(node)).
+// The CLI's parent executable is node (KODA_ISLAND_EXE = realpath(node)): one child per call, no extra wrapper process.
 // Temp dirs only; the real ~/.claude and ~/.codex are never touched.
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
@@ -40,17 +40,21 @@ Promise.all(lists.map(a => new Promise(res => {
   let o = '', e = ''; c.stdout.on('data', d => { o += d; }); c.stderr.on('data', d => { e += d; });
   c.on('close', s => res({ status: s, stdout: o, stderr: e }));
 }))).then(r => process.stdout.write(JSON.stringify(r)));`;
+// One real child process per CLI call. A single call needs no extra wrapper: the CLI's parent executable is node either way
+// (the runner itself is node, which is what KODA_ISLAND_EXE = realpath(node) means), so a batch wrapper would only add a
+// second process to every case. runMany keeps the wrapper for the case that really runs several CLIs at once (concurrency).
+function parsed(r) {
+  assert.equal(r.stderr, '', 'stderr must be empty in --json mode');
+  const lines = r.stdout.split('\n');
+  assert.equal(lines.length, 2); assert.equal(lines[1], '');
+  return { code: r.status, json: JSON.parse(lines[0]), raw: lines[0] };
+}
 function runMany(lists, env) {
   const w = spawnSync(process.execPath, ['-e', WRAP, BIN, JSON.stringify(lists)], { env, encoding: 'utf8', timeout: 60000 });
   assert.equal(w.status, 0, w.stderr);
-  return JSON.parse(w.stdout).map(r => {
-    assert.equal(r.stderr, '', 'stderr must be empty in --json mode');
-    const lines = r.stdout.split('\n');
-    assert.equal(lines.length, 2); assert.equal(lines[1], '');
-    return { code: r.status, json: JSON.parse(lines[0]), raw: lines[0] };
-  });
+  return JSON.parse(w.stdout).map(parsed);
 }
-const cli = (args, env) => runMany([['install', ...args]], env)[0];
+const cli = (args, env) => parsed(spawnSync(process.execPath, [BIN, 'install', ...args], { env, encoding: 'utf8', timeout: 60000, stdio: ['ignore', 'pipe', 'pipe'] }));
 
 test('Windows UI install with an unverifiable install manifest refuses before reading settings or creating audit/backup/lock files (HU-047 fail closed)', t => {
   const dir = tmp(t);

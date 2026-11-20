@@ -18,11 +18,14 @@ function displayFields(cwd) {
 const sessionToken = value => typeof value === 'string' && value.length <= 128 &&
   /^[a-zA-Z0-9](?:[a-zA-Z0-9._-]*[a-zA-Z0-9])?$/.test(value);
 
+// K3-05/S5: the stalled-receiver grace is a fixed production constant; it is an OPTIONAL option only so a test can shrink the
+// wall-clock wait. Production callers pass nothing, so the behaviour is exactly the same 1000 ms.
+const INFLIGHT_GRACE_MS = 1000;
 // Factory has no resources; disconnected notices/questions are never replayed.
 // No history or lifecycle event payload is inspected. Questions are explicit.
 function registerAdapter(pi, { endpoint, runtime, retryMs = 5000, heartbeatMs = 10000,
   questionTimeoutMs, questionClock, onDiagnostic, questionLevel = 0, onTransportError = () => {}, resolveEndpoint,
-  platform = process.platform, open, readFile = fs.readFileSync }) {
+  platform = process.platform, open, readFile = fs.readFileSync, inflightGraceMs = INFLIGHT_GRACE_MS }) {
   if (![0, 1, 2, 3].includes(questionLevel)) throw new Error('Invalid question capability level');
   let socket, retry, heartbeat, stopped = true, ready = false, questionsReady = false, structuredReady = false, identity, transportError;
   function isCurrent(ctx) {
@@ -46,7 +49,6 @@ function registerAdapter(pi, { endpoint, runtime, retryMs = 5000, heartbeatMs = 
   // Unflushed writes of the CURRENT connection, oldest first: { bytes, at }. Exact UTF-8 byte accounting (the stream's own
   // `writableLength` counts UTF-16 units for strings, so it cannot bound bytes). A write callback fires in FIFO order.
   let inflight = [];
-  const INFLIGHT_GRACE_MS = 1000;
   function write(type, extra = {}, at = Date.now()) {
     // Not a one-frame lock: a pipe/relay completes a write a moment after the peer read it, so a small frame in flight (e.g. a
     // heartbeat) must not drop the next `settled`/`question`. Order is the stream's own FIFO (every frame goes through this one
@@ -56,7 +58,7 @@ function registerAdapter(pi, { endpoint, runtime, retryMs = 5000, heartbeatMs = 
     // callers destroy the connection (reconnect), and a refused `settled` is dropped without a result, as it always was.
     if (!socket || socket.destroyed || !identity) return false;
     const now = Date.now();
-    if (inflight.length > 0 && (now - inflight[0].at > INFLIGHT_GRACE_MS ||
+    if (inflight.length > 0 && (now - inflight[0].at > inflightGraceMs ||
         inflight.reduce((sum, entry) => sum + entry.bytes, 0) > STRUCTURED_FRAME_BYTES)) return false;
     const bytes = JSON.stringify({ v: 1, type, project: identity.project, sessionId: identity.sessionId, at, ...extra });
     if (Buffer.byteLength(bytes) > (extra.questionVersion ? (structuredReady ? STRUCTURED_FRAME_BYTES : FRAME_BYTES) : 512)) return false;
@@ -193,4 +195,4 @@ function registerAdapter(pi, { endpoint, runtime, retryMs = 5000, heartbeatMs = 
     structured: () => Boolean(questionLevel === 3 && structuredReady && questionsReady),
     canAsk: () => Boolean(!transportError && !stopped && ready && questionsReady && socket && !socket.destroyed && !broker.live) };
 }
-module.exports = { registerAdapter, projectId };
+module.exports = { registerAdapter, projectId, INFLIGHT_GRACE_MS };

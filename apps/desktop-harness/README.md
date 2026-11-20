@@ -229,6 +229,8 @@ Claude and Codex (K2-08 T1) use this projection for their cards. The screenshot 
 
 `npm test` (node:test, fake receiver over real AF_UNIX sockets under a mkdtemp 0700 directory).
 
+`npm run test:slow` runs the slow lane that waits a real 30 s question budget (`test/abito-hook-slow.test.cjs`, K3-05/S5); it is kept out of `npm test` on purpose.
+
 ## Notify-only Claude integrations
 
 Recap was removed in Koda 0.2. `install recap` is a REMOVAL-ONLY legacy profile (`src/install-recap.cjs`): it

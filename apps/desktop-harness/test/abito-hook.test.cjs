@@ -78,14 +78,8 @@ test('missing stdin close cannot hang: exits by itself within the stdin timeout'
   assert.equal(r.code, 0); assert.equal(r.stdout, '');
   assert.ok(Date.now() - started < 8000);
 });
-test('e2e receiver that never answers: question expires after the 30 s budget, exit 0, empty stdout, cancel sent', { timeout: 60000 }, async t => {
-  const rcv = await fakeReceiver(t, { questions: true });
-  const started = Date.now();
-  const r = await run(['claude', 'permission-request', '--timeout-sec', '35'], permission, envOf(rcv));
-  assert.equal(r.code, 0); assert.equal(r.stdout, '');
-  assert.ok(Date.now() - started < 40000);
-  assert.ok(rcv.frames.some(f => f.type === 'question_cancel'));
-});
+// K3-05/S5: the 'receiver that never answers: question expires after the 30 s budget' e2e MOVED unchanged to
+// test/abito-hook-slow.test.cjs (`npm run test:slow`): it waits the island's real 30 s budget, so it is the slow lane.
 test('async throw inside a socket callback => exit 0, empty stdout, nothing printed', async t => {
   const fs = require('node:fs'), os = require('node:os');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'abito-throw-'));
