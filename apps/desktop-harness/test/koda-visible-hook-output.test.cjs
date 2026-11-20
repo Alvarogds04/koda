@@ -34,7 +34,7 @@ for (const [name, handle, input, event] of AGENTS) {
   test(`${name}: failure paths print «Koda island», never «Abito»`, async () => {
     const run = (env, extra = {}) => { stub.built = 0; return handle({ event, input, env, argv: [], ...extra }); };
     // 1. no endpoint discovered at all (a runtime directory with no handoff): nothing on stdout, the CLI's prompt stays in charge
-    const noEndpoint = await run(offlineDir('nonexistent-koda-test'));
+    const noEndpoint = await run(offlineDir('nonexistent-koda-test'), { clientFactory: stub('expired') });
     assert.equal(noEndpoint.stdout, ''); assert.equal(noEndpoint.exitCode, 0);
     assert.equal(noEndpoint.stderr, 'Koda island unavailable. Answer in the terminal.\n');
     koda(noEndpoint.stderr);
