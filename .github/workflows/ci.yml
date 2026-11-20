@@ -132,7 +132,8 @@ jobs:
   island-checks:
     name: Island Node checks (${{ matrix.os }}, shard ${{ matrix.shard }})
     # K3-06 T3 (S6, human decision of 20-nov-2026): the browser checks — 67 of the 222, ~84% of the serial time — run on Linux
-    # only. macOS and Windows keep every non-browser check plus the one browser check that is platform-specific on purpose
+    # only. macOS and Windows keep every non-browser check plus the one check that mentions a platform (`overview-view-check`, it only skips its
+    # browser half loudly there)
     # (`--no-browser`), so they no longer install Playwright or start the shared Chromium and each of their six shards is a
     # few minutes of mostly runner setup instead of ~15 min.
     # Shards are balanced by MEASURED time over apps/desktop-tauri/test-node/check-timings.json (see README, «Every check at
@@ -151,7 +152,7 @@ jobs:
         # One shard list for every OS, so the `--shard <matrix.shard>/6` below and this list cannot drift apart. EVERY OS runs all
         # six shards: dropping shards here without changing the `/6` would silently skip those checks (the review of 20-Nov-2026
         # caught exactly that). Linux: ~50 min of measured serial work, ~8.3 min per shard, two checks at a time. macOS and
-        # Windows: `--no-browser` leaves 156 checks, ~26 per shard and under a minute of measured work each, so those jobs are
+        # Windows: `--no-browser` leaves 156 checks, 4 to 38 per shard (balanced by measured time, not by count) and about 46 s of measured work each, so those jobs are
         # dominated by runner setup. Those seconds are Linux measurements; macOS and Windows runners are slower.
         shard: [1, 2, 3, 4, 5, 6]
     runs-on: ${{ matrix.os }}
