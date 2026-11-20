@@ -24,7 +24,13 @@ const WIN_POSIX_INSTALLER = new Set([
   "K2-04: the retired 0.1 folder stays in the backup folder after a successful install (the backup prune never removes it)",
   "K2-04: a failed replacement puts the 0.1 folder back (retired, never deleted outright)",
   "K2-04: a folder at the old name that is not a Koda install is never touched",
-  "K2-04: --remove also retires a 0.1 extension folder"
+  "K2-04: --remove also retires a 0.1 extension folder",
+  // K3-04: the previous release's eight-file layout is the POSIX installer's listing too; the Windows twin mirrors it in
+  // win-install-fake.test.cjs.
+  "K3-04: an 8-file abito-island from the previous release is still retired, and Pi discovery sees ONE extension with no tools",
+  "K3-04: an 8-file koda-island from the previous release is upgraded to the current seven files",
+  "K3-04: --remove takes out an 8-file koda-island from the previous release",
+  "K3-04: a legacy-looking folder with a changed file, an extra entry or a short manifest is still refused and untouched"
 ]);
 const test = (name, ...rest) => (process.platform === 'win32' && WIN_POSIX_INSTALLER.has(name)
   ? baseTest(name, { skip: 'POSIX Pi installer; Windows: registered gap «Windows: Pi installer tests» (install-pi-win.cjs, twin win-install-fake.test.cjs)' }, rest[rest.length - 1])
@@ -395,4 +401,120 @@ test('K2-04: --remove also retires a 0.1 extension folder', t => {
   assert.equal(removed.code, 0, JSON.stringify(removed.value));
   assert.equal(fs.existsSync(f.target), false, 'the Koda folder is gone');
   assert.equal(fs.existsSync(legacy), false, 'and so is the 0.1 folder');
+});
+
+// --- K3-04: a folder installed by the PREVIOUS release has eight files (it still carries `ask-tool.cjs`) ------------
+// `ask-tool.cjs` is gone from today's payload, so the closed listing widened from one exact set to two: the current
+// seven files and the eight the previous release wrote. Both are verified the same way (manifest listing + per-file
+// hash), so an old folder stays a known Koda install: it is retired (old name), replaced (new name) or removed instead
+// of being read as foreign. Nothing else is accepted.
+const INSTALLED_FILES = ['adapter.cjs', 'config.cjs', 'index.ts', 'native-ask.cjs', 'questions.cjs', 'security.cjs', 'windows-transport.cjs'];
+const LEGACY_INSTALLED_FILES = [...INSTALLED_FILES, 'ask-tool.cjs'].sort();
+const LEGACY_ASK_TOOL = "'use strict';\n// abito_ask: what the previous release shipped and this one removed (K3-04)\nmodule.exports = { toRequest() {}, runAsk() {} };\n";
+function ensureExtensions(f) {
+  for (const part of ['.pi', '.pi/agent', '.pi/agent/extensions']) {
+    const dir = path.join(f.home, part);
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 }); fs.chmodSync(dir, 0o700);
+  }
+}
+// Exactly what the previous release left behind: its eight files and a manifest whose every hash matches its bytes.
+function legacyInstall(f, dir) {
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 }); fs.chmodSync(dir, 0o700);
+  for (const name of LEGACY_INSTALLED_FILES) {
+    const body = name === 'ask-tool.cjs' ? LEGACY_ASK_TOOL
+      : fs.readFileSync(path.join(f.bundle, 'desktop-pi', name === 'index.ts' ? 'pi-extension.ts' : name));
+    const file = path.join(dir, name);
+    fs.writeFileSync(file, body, { mode: 0o600 }); fs.chmodSync(file, 0o600);
+  }
+  const files = Object.fromEntries(LEGACY_INSTALLED_FILES.map(name => [name, digest(fs.readFileSync(path.join(dir, name)))]));
+  fs.writeFileSync(path.join(dir, MANIFEST), JSON.stringify({ schema: 'abito-pi-extension/1', files }) + '\n', { mode: 0o600 });
+  return dir;
+}
+const rehash = (dir, names) => Object.fromEntries(names.map(name => [name, digest(fs.readFileSync(path.join(dir, name)))]));
+function writeManifest(dir, files) {
+  fs.writeFileSync(path.join(dir, MANIFEST), JSON.stringify({ schema: 'abito-pi-extension/1', files }) + '\n', { mode: 0o600 });
+}
+
+test('K3-04: an 8-file abito-island from the previous release is still retired, and Pi discovery sees ONE extension with no tools', async t => {
+  const f = fixture(t); ensureExtensions(f);
+  const legacy = legacyInstall(f, legacyPath(f));
+  const preview = f.run();
+  assert.equal(preview.code, 0, JSON.stringify(preview.value));
+  assert.equal(preview.value.changed, true);
+  const applied = f.apply(preview.value.plan_hash);
+  assert.equal(applied.code, 0, JSON.stringify(applied.value));
+  assert.equal(fs.existsSync(legacy), false, 'the previous folder leaves the extensions folder');
+  assert.deepEqual(fs.readdirSync(extensions(f)), ['koda-island'], 'one extension folder: one card per notice');
+  assert.deepEqual(fs.readdirSync(f.target).sort(), [...INSTALLED_FILES, MANIFEST].sort(), 'and it is the current seven files');
+  const backups = path.join(f.home, '.pi/agent/abito-backups');
+  const retired = fs.readdirSync(backups).filter(n => /^abito-island\.abito-backup-/.test(n));
+  assert.equal(retired.length, 1, `the previous folder is in the backup flow, got ${JSON.stringify(fs.readdirSync(backups))}`);
+  assert.deepEqual(fs.readdirSync(path.join(backups, retired[0])).sort(), [...LEGACY_INSTALLED_FILES, MANIFEST].sort(),
+    'retired whole: every byte of the previous install is kept');
+  const root = process.env.PI_CODING_AGENT_ROOT;
+  if (!root) { t.diagnostic('Real Pi root unavailable; discovery assertion needs PI_CODING_AGENT_ROOT'); return; }
+  const loader = await import(require('node:url').pathToFileURL(path.join(root, 'dist/core/extensions/loader.js')));
+  const found = await loader.discoverAndLoadExtensions([], f.home, path.join(f.home, '.pi/agent'), { on: () => () => {}, emit: () => {} });
+  assert.deepEqual(found.errors, []);
+  assert.equal(found.extensions.length, 1, 'the retired folder is not discovered: the old ask tool cannot come back');
+  assert.equal(found.extensions[0].tools.size, 0);
+  assert.equal(found.extensions[0].tools.has('abito_ask'), false);
+});
+
+test('K3-04: an 8-file koda-island from the previous release is upgraded to the current seven files', t => {
+  const f = fixture(t); ensureExtensions(f);
+  legacyInstall(f, f.target);
+  const preview = f.run();
+  assert.equal(preview.code, 0, JSON.stringify(preview.value));
+  assert.equal(preview.value.changed, true, 'one file fewer is a change');
+  const applied = f.apply(preview.value.plan_hash);
+  assert.equal(applied.code, 0, JSON.stringify(applied.value));
+  assert.deepEqual(fs.readdirSync(f.target).sort(), [...INSTALLED_FILES, MANIFEST].sort(), 'the ask tool is gone, the rest is the current payload');
+  const manifest = JSON.parse(fs.readFileSync(path.join(f.target, MANIFEST), 'utf8'));
+  assert.deepEqual(Object.keys(manifest.files).sort(), [...INSTALLED_FILES].sort());
+  assert.equal(fs.existsSync(f.target + '.abito-backup'), false);
+  const backups = path.join(f.home, '.pi/agent/abito-backups');
+  const saved = fs.readdirSync(backups).filter(n => /^koda-island\.abito-backup-/.test(n));
+  assert.equal(saved.length, 1, 'the previous payload is kept in the backup flow, not deleted');
+  assert.ok(fs.existsSync(path.join(backups, saved[0], 'ask-tool.cjs')), 'including the removed ask tool');
+  assert.equal(f.run().value.changed, false, 'and the result is the exact current payload');
+});
+
+test('K3-04: --remove takes out an 8-file koda-island from the previous release', t => {
+  const f = fixture(t); ensureExtensions(f);
+  legacyInstall(f, f.target);
+  const preview = f.run('--remove');
+  assert.equal(preview.code, 0, JSON.stringify(preview.value));
+  assert.equal(preview.value.changed, true);
+  const removed = f.apply(preview.value.plan_hash, '--remove');
+  assert.equal(removed.code, 0, JSON.stringify(removed.value));
+  assert.equal(fs.existsSync(f.target), false, 'the folder is gone from Pi discovery');
+});
+
+test('K3-04: a legacy-looking folder with a changed file, an extra entry or a short manifest is still refused and untouched', t => {
+  // (d) a file whose bytes no longer match the manifest, and (d) an extra unknown entry.
+  for (const kind of ['changed-file', 'extra-entry']) {
+    const f = fixture(t); ensureExtensions(f);
+    const dir = legacyInstall(f, f.target);
+    if (kind === 'changed-file') fs.appendFileSync(path.join(dir, 'config.cjs'), '\n// edited by hand');
+    else fs.writeFileSync(path.join(dir, 'user.txt'), 'keep me');
+    const before = snapshot(f.home), preview = f.run();
+    assert.equal(preview.code, 65, kind); assert.equal(preview.value.ok, false, kind);
+    assert.equal(preview.value.code, 'refused', kind);
+    assert.deepEqual(snapshot(f.home), before, `${kind}: not a byte changed`);
+    const remove = f.run('--remove');
+    assert.equal(remove.code, 65, kind); assert.equal(remove.value.code, 'refused', kind);
+    assert.deepEqual(snapshot(f.home), before, `${kind}: neither preview nor remove touches it`);
+  }
+  // (e) ask-tool.cjs is there but the manifest lists only the current seven: never adopted as the legacy layout.
+  {
+    const f = fixture(t); ensureExtensions(f);
+    const dir = legacyInstall(f, f.target);
+    writeManifest(dir, rehash(dir, INSTALLED_FILES));
+    const before = snapshot(f.home), preview = f.run();
+    assert.equal(preview.code, 65, 'short manifest'); assert.equal(preview.value.code, 'refused');
+    assert.deepEqual(snapshot(f.home), before);
+    const remove = f.run('--remove');
+    assert.equal(remove.code, 65); assert.deepEqual(snapshot(f.home), before);
+  }
 });

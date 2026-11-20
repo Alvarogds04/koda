@@ -16,6 +16,11 @@ const TARGET = 'koda-island';
 const LEGACY_TARGET = 'abito-island';
 const BACKUP_RE = /^(?:koda|abito)-island\.abito-backup-[0-9TZ]+(?:-[1-9])?$/;
 const FILES = Object.freeze(['adapter.cjs', 'config.cjs', 'index.ts', 'native-ask.cjs', 'questions.cjs', 'security.cjs', 'windows-transport.cjs']);
+// K3-04: same two closed listings as the POSIX twin. `ask-tool.cjs` was removed from the payload, so a folder installed by
+// the PREVIOUS release has EIGHT files and a manifest that lists those eight; it stays a verified Koda install. Nothing
+// else widens: entries, manifest shape and every per-file hash are checked as before, for the listing the folder shows.
+const LEGACY_FILES = Object.freeze([...FILES, 'ask-tool.cjs'].sort());
+const LISTINGS = Object.freeze([[...FILES].sort(), LEGACY_FILES]);
 const hash = b => crypto.createHash('sha256').update(b).digest('hex');
 const refuse = () => core.InstallErrorRefuse('Pi extension ownership or path could not be verified');
 const listing = files => JSON.stringify(files);
@@ -47,19 +52,21 @@ function parents(w, home, create = false, made = []) {
 function owned(w, target) {
   if (dirFact(w, target) === null) return null;
   if (!fs.readdirSync(target).includes(MANIFEST)) throw foreign();
-  if (listing(fs.readdirSync(target).sort()) !== listing([...FILES, MANIFEST].sort())) throw refuse();
+  const entries = fs.readdirSync(target).sort();
+  const layout = LISTINGS.find(files => listing(entries) === listing([...files, MANIFEST].sort()));
+  if (!layout) throw refuse();
   const rawFile = w.readPrivate(path.join(target, MANIFEST));
   if (!rawFile || rawFile.size > 16384) throw refuse();
   const raw = rawFile.buf;
   let manifest;
   try { manifest = JSON.parse(raw.toString('utf8')); } catch { throw refuse(); }
   if (![JSON.stringify(manifest), JSON.stringify(manifest) + '\n'].includes(raw.toString('utf8'))) throw refuse();
-  if (!manifest || Object.keys(manifest).sort().join(',') !== 'files,schema' || manifest.schema !== SCHEMA || !manifest.files || listing(Object.keys(manifest.files).sort()) !== listing(FILES)) throw refuse();
-  for (const name of FILES) {
+  if (!manifest || Object.keys(manifest).sort().join(',') !== 'files,schema' || manifest.schema !== SCHEMA || !manifest.files || listing(Object.keys(manifest.files).sort()) !== listing(layout)) throw refuse();
+  for (const name of layout) {
     const got = w.readPrivate(path.join(target, name));
     if (!got || !/^[a-f0-9]{64}$/.test(manifest.files[name]) || got.sha256 !== manifest.files[name]) throw refuse();
   }
-  return { files: manifest.files, signature: hash(Buffer.concat([raw, Buffer.from(listing(manifest.files))])) };
+  return { files: manifest.files, layout, signature: hash(Buffer.concat([raw, Buffer.from(listing(manifest.files))])) };
 }
 function payload() {
   const data = {}, files = {};
@@ -78,10 +85,10 @@ function backupRoot(w, home, create = false, made = []) {
   }
   return root;
 }
-function cleanStage(w, dir) {
+function cleanStage(w, dir, files = FILES) {
   if (!dir) return;
   try {
-    for (const name of [...FILES, MANIFEST]) { try { if (w.checkPath(path.join(dir, name)).exists) w.remove(path.join(dir, name)); } catch { /* own missing file */ } }
+    for (const name of [...files, MANIFEST]) { try { if (w.checkPath(path.join(dir, name)).exists) w.remove(path.join(dir, name)); } catch { /* own missing file */ } }
     w.remove(dir);
   } catch { /* leave evidence, never recurse */ }
 }
@@ -91,7 +98,7 @@ function pruneBackups(w, root, keep, alsoKeep = null) {
     if (!BACKUP_RE.test(name)) continue;
     const dir = path.join(root, name);
     if (dir === keep || dir === alsoKeep) continue;
-    try { if (owned(w, dir)) cleanStage(w, dir); } catch { /* preserve foreign/modified backup */ }
+    try { const entry = owned(w, dir); if (entry) cleanStage(w, dir, entry.layout); } catch { /* preserve foreign/modified backup */ }
   }
 }
 function ownedIfOurs(w, dir) {
@@ -166,4 +173,4 @@ async function applyPi(plan, { backupPath, out, err, now = () => new Date() }) {
     return 70;
   } finally { cleanStage(w, stage); if (!done) require('./install-pi.cjs').removeMade(made, d => w.remove(d)); }
 }
-module.exports = { planPi, applyPi, FILES, MANIFEST, SCHEMA, TARGET, LEGACY_TARGET, ownedIfOurs };
+module.exports = { planPi, applyPi, FILES, LEGACY_FILES, MANIFEST, SCHEMA, TARGET, LEGACY_TARGET, ownedIfOurs };
