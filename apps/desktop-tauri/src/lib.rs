@@ -42,7 +42,6 @@ pub mod card;
 pub mod characterwin;
 pub mod chat;
 pub mod chatlane;
-pub mod chatsnapshot;
 pub mod core;
 pub mod desktop;
 pub mod failure;

@@ -31,7 +31,7 @@ Only Claude's `PermissionRequest` reads `permission_suggestions`. These are perm
 | `src/config.cjs` | `resolveConfig(env, uid)` -> `{runtime, endpoint}`; `KODA_PROJECT_ROOT` is not read. |
 | `src/security.cjs` | `verifyEndpoint(endpoint, runtime)`. |
 | `src/identity.cjs` | `projectId(cwd)` (sha256 of realpath); `sessionToken(raw)` (QP token rule, `h-<hash>` fallback). |
-| `src/projection.cjs` | `sanitizeText` (also strips bidi/format/C1 controls and lone surrogates), `buildOptions`, `describeTool` (Bash: first token only; file tools: basename only), `describeBash` logic inside `describeToolDetailed` (Bash: full REDACTED command), `describeToolDetailed(name, input)` -> `{text, lossy}` (lossy whenever the short text drops material). |
+| `src/projection.cjs` | `sanitizeText` (also strips bidi/format/C1 controls and lone surrogates), `describeTool` (Bash: first token only; file tools: basename only), `describeBash` logic inside `describeToolDetailed` (Bash: full REDACTED command), `describeToolDetailed(name, input)` -> `{text, lossy}` (lossy whenever the short text drops material). |
 | `src/redact.cjs` | `redactCommand(cmd)` -> `{text, redactions, spans}` and `PATTERNS`; see `docs/REDACTION.md`. |
 | `src/deadline.cjs` | `computeDeadline({cliTimeoutMs, maxMs, marginMs})` (marginMs clamped to >= 1000) -> `ask` (30000..900000) or `notice-only`. |
 | `src/client.cjs` | `IslandClient.notify()` / `.ask()` / `.attention()` / `.clearAttention()`, `formatNoDecision()`. |
@@ -228,6 +228,8 @@ Claude and Codex (K2-08 T1) use this projection for their cards. The screenshot 
 ## Tests
 
 `npm test` (node:test, fake receiver over real AF_UNIX sockets under a mkdtemp 0700 directory).
+
+`npm run test:slow` runs the slow lane that waits a real 30 s question budget (`test/abito-hook-slow.test.cjs`, K3-05/S5); it is kept out of `npm test` on purpose.
 
 ## Notify-only Claude integrations
 

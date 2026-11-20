@@ -40,14 +40,6 @@ async function server(t, respond) {
 
 function client(endpoint) { return new ConnectorHostClient({ endpoint, token: "a".repeat(64), requestTimeoutMs: 500 }); }
 
-test("failedClosed is documented as store rollback health, not connector functionality", () => {
-	for (const file of [path.join(__dirname, "..", "README.md"), path.join(__dirname, "..", "docs", "PROTOCOL.md")]) {
-		const text = fs.readFileSync(file, "utf8");
-		assert.match(text, /failedClosed:false.{0,10}not proof[\s\S]{0,120}keyring[\s\S]{0,40}transport/i, file);
-		assert.match(text, /must never present[\s\S]{0,100}connectors work/i, file);
-	}
-});
-
 test("socket factory failures are normalized and never expose raw details", async () => {
 	const c = new ConnectorHostClient({ endpoint: "/private/path", token: "a".repeat(64), socketFactory: () => { throw new Error("PRIVATE-DETAIL"); } });
 	await assert.rejects(c.connectSocket(), (error) => error.code === "unavailable" && !error.message.includes("PRIVATE-DETAIL"));

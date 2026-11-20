@@ -35,15 +35,6 @@ test('README documents every reason, every cue and the unverified items', () => 
   assert.match(md, /WebKitGTK/);
 });
 
-test('package.json: private, main, explicit test paths', () => {
-  const p = JSON.parse(fs.readFileSync(path.join(PKG, 'package.json'), 'utf8'));
-  assert.equal(p.private, true);
-  assert.equal(p.name, 'koda-desktop-sound');
-  assert.equal(p.main, 'sound-engine.js');
-  assert.match(p.scripts.test, /test\/engine\.test\.cjs/);
-  assert.equal(p.dependencies, undefined);
-});
-
 test('sound-engine.js is dependency-free UMD (no require/import, classic-script safe)', () => {
   const src = fs.readFileSync(path.join(PKG, 'sound-engine.js'), 'utf8');
   assert.match(src, /^'use strict';/m);

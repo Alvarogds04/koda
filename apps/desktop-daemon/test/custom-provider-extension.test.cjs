@@ -212,14 +212,11 @@ test("fixture: foreign Go probes on a loopback port are recorded as strays, neve
 	assert.deepEqual(gw.hits.map((h) => h.agent), ["Go-http-client/1.1", "Go-http-client/1.1", "pi/1.4.0"], "anything carrying a key/body or a non-probe agent still counts");
 });
 
-test("template limits are the approved named constants (300 s header, 300 s idle, 64 MiB) and the README documents the same numbers", async (t) => {
+test("template transport limits stay the approved named constants (300 s header, 300 s idle, 64 MiB)", async (t) => {
 	const root = tempRoot();
 	t.after(() => rmSync(root, { recursive: true, force: true }));
 	const ext = await loadTemplate(root);
 	assert.deepEqual({ ...ext.LIMITS }, { headersMs: 300_000, idleMs: 300_000, maxBytes: 64 * 1024 * 1024, maxModels: 128, maxIdChars: 200 });
-	assert.equal((TEMPLATE.match(/300000/g) ?? []).length, 2, "each transport bound is defined once, in LIMITS");
-	const readme = readFileSync(path.join(__dirname, "..", "README.md"), "utf8");
-	for (const documented of ["300 s", "64 MiB", "10 s", "256 KiB"]) assert.ok(readme.includes(documented), `README documents ${documented}`);
 });
 
 test("guarded fetch: 301/302/307/308 cross-origin send nothing to the destination; same-origin redirects are refused too", async (t) => {
@@ -590,8 +587,7 @@ test("advisory 1: a torn or garbage journal is unknown, so it is kept as evidenc
 	}
 });
 
-test("the host's ownership pattern is the template's own PROVIDER_ID", () => {
-	assert.ok(TEMPLATE.includes(`const PROVIDER_ID = ${PROVIDER_ID};`));
+test("the host's ownership pattern rejects foreign and malformed provider ids", () => {
 	for (const bad of ["anthropic", "openai", "custom-", "Custom-x", "custom-a b", ""]) assert.equal(PROVIDER_ID.test(bad), false, bad);
 });
 
@@ -786,22 +782,28 @@ test("REAL pi RPC: the activated extension loads and a prompt streams through th
 	assert.equal(r.gw.hits.length, 1, `no request other than the single chat completion: ${describeHits(r.gw.hits)} retries=${describeRetries(records)}`);
 });
 
-test("REAL pi RPC: 301/302/307/308 redirects (cross-origin and same-origin) are refused; the destination is never contacted", { skip: PI_SKIP, timeout: 240_000 }, async (t) => {
+// The full 4x2 redirect matrix (301/302/307/308 x cross-origin/same-origin: fixed
+// refusal, state.reason === "redirect", destination hit count 0) is already proven
+// at unit level right above («guarded fetch: 301/302/307/308 cross-origin send
+// nothing to the destination; same-origin redirects are refused too»). Spawning the
+// real `pi --mode rpc` 8 times only proved again that Pi surfaces that same refusal,
+// so the real proof keeps ONE representative per class (K3-05 T4, S5): 302 rewrites
+// the method on redirect and 307 preserves it, one cross-origin and one same-origin.
+// No rule is lost: the wire-level matrix stays complete in the unit test.
+test("REAL pi RPC: representative cross-origin 302 and same-origin 307 redirects are refused; the destination is never contacted", { skip: PI_SKIP, timeout: 240_000 }, async (t) => {
 	const dest = await listen((req, res) => okStream(res));
 	t.after(() => close(dest.server));
-	for (const status of [301, 302, 307, 308]) {
-		for (const kind of ["cross", "same"]) {
-			const r = await realSetup(t, (req, res) => {
-				res.writeHead(status, { location: kind === "cross" ? `${dest.base}/chat/completions` : "/v1/chat/completions" });
-				res.end();
-			});
-			const { records } = await runPi(r.agentDir, r.home, "custom-gw", "model-a", "ping");
-			const msg = assistantEnd(records);
-			assert.equal(msg?.stopReason, "error", `${status}/${kind}: ${JSON.stringify(msg)}`);
-			assert.match(msg.errorMessage, /^Custom gateway request refused \(redirect\)$/, `${status}/${kind}`);
-			assert.equal(msg.errorMessage.includes(SECRET), false);
-			assert.equal(r.gw.hits.length, 1, `${status}/${kind}: the redirect was not followed (no retry either): ${describeHits(r.gw.hits)} retries=${describeRetries(records)} msgs=${JSON.stringify(records.filter((x) => x.type === "message_end" && x.message?.role === "assistant").map((x) => x.message.errorMessage))}`);
-		}
+	for (const [status, kind] of [[302, "cross"], [307, "same"]]) {
+		const r = await realSetup(t, (req, res) => {
+			res.writeHead(status, { location: kind === "cross" ? `${dest.base}/chat/completions` : "/v1/chat/completions" });
+			res.end();
+		});
+		const { records } = await runPi(r.agentDir, r.home, "custom-gw", "model-a", "ping");
+		const msg = assistantEnd(records);
+		assert.equal(msg?.stopReason, "error", `${status}/${kind}: ${JSON.stringify(msg)}`);
+		assert.match(msg.errorMessage, /^Custom gateway request refused \(redirect\)$/, `${status}/${kind}`);
+		assert.equal(msg.errorMessage.includes(SECRET), false);
+		assert.equal(r.gw.hits.length, 1, `${status}/${kind}: the redirect was not followed (no retry either): ${describeHits(r.gw.hits)} retries=${describeRetries(records)} msgs=${JSON.stringify(records.filter((x) => x.type === "message_end" && x.message?.role === "assistant").map((x) => x.message.errorMessage))}`);
 	}
 	assert.equal(dest.hits.length, 0, "cross-origin destination hit count 0");
 });

@@ -12,21 +12,6 @@ test('home collapse, control strip, whitespace, truncation by code points', () =
   assert.equal([...p.sanitizeText('x'.repeat(100000), { max: 500 })].length, 500);
   for (const bad of [undefined, null, 5, {}, [], Symbol('s')]) assert.equal(p.sanitizeText(bad, { max: 10 }), '');
 });
-test('options: limits, tokens unique and valid', () => {
-  const opts = p.buildOptions([
-    { value: 'Allow once!', label: 'L'.repeat(100), description: 'd'.repeat(300) },
-    { value: 'Allow once?', label: 'Two', description: '' },
-    { value: '', label: 'Three' }]);
-  assert.equal(new Set(opts.map(o => o.value)).size, 3);
-  for (const o of opts) {
-    assert.match(o.value, /^[A-Za-z0-9_-]{1,128}$/);
-    assert.ok([...o.label].length <= 60 && o.label.length > 0);
-    assert.ok([...o.description].length <= 160);
-    assert.deepEqual(Object.keys(o), ['value', 'label', 'description']);
-  }
-  assert.deepEqual(p.buildOptions('nope'), []);
-  assert.equal(p.buildOptions(Array.from({ length: 50 }, (_, i) => ({ value: 'a', label: 'x' + i }))).length, 4);
-});
 test('describeTool: Bash first token only', () => {
   const d = p.describeTool('Bash', { command: 'git push https://x.com/?token=SECRET --force' }, { home: HOME });
   assert.equal(d, 'Bash: git');
@@ -61,8 +46,6 @@ test('sanitizeText strips bidi/format/C1 and lone surrogates; describeTool hints
   const spoof = ['\u200b', '\u200f', '\u202a', '\u202e', '\u2060', '\u2064', '\u2066', '\u2069', '\ufeff', '\u0080', '\u009f'];
   for (const ch of spoof) assert.equal(p.sanitizeText(`a${ch}b`, { max: 10 }), 'ab', ch.charCodeAt(0).toString(16));
   assert.equal(p.sanitizeText('a\ud800b\udc00c😀', { max: 10 }), 'abc😀');
-  assert.equal(p.buildOptions([{ value: 'a', label: 'l\u202eab', description: 'd\u200bx' }])[0].label, 'lab');
-  assert.equal(p.buildOptions([{ value: 'a', label: 'l', description: 'd\u200bx' }])[0].description, 'dx');
   assert.equal(p.describeTool('Edit', { file_path: '/tmp/\u202egpj.exe' }), 'Edit: gpj.exe');
   assert.equal(p.describeTool('Bash', { command: 'r\u200bm\u2060 -rf /' }), 'Bash: rm');
 });

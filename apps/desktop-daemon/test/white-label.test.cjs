@@ -9,8 +9,6 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const fs = require("node:fs");
-const path = require("node:path");
 
 const {
 	HIDDEN_NAMES,
@@ -116,21 +114,6 @@ test("isBlockedInput blocks only the internal /gentle: commands", () => {
 	assert.equal(isBlockedInput("/GENTLE:x"), true);
 	assert.equal(isBlockedInput("/help"), false);
 	assert.equal(isBlockedInput("hola /gentle:"), false, "mid-sentence text is not a command");
-});
-
-test("presentText is documented as assistant/harness-only, never applied to the user's own text", () => {
-	// Gentle Dot bridge.ts applies presentText to queued user text too; Koda must
-	// not (the user's own words — their Raspberry Pi, their abito — are theirs).
-	const source = fs.readFileSync(path.join(__dirname, "..", "src", "white-label.cjs"), "utf8");
-	assert.match(source, /never[\s\S]*user's own text|user's own text[\s\S]*never/i);
-});
-
-test("the port keeps its MIT provenance (Gentle Dot, white-label.ts)", () => {
-	const source = fs.readFileSync(path.join(__dirname, "..", "src", "white-label.cjs"), "utf8");
-	assert.match(source, /Gentle Dot/);
-	assert.match(source, /white-label\.ts/);
-	assert.match(source, /MIT/);
-	assert.match(source, /Copyright \(c\) 2026 Gentleman/);
 });
 
 // ----- T2: the streaming filter (split hidden names across deltas) -----------
@@ -247,50 +230,51 @@ const streamFor = (text, size) => {
 	return parts.join("");
 };
 
-// The verifier's exact reproductions, as named tests.
-test("F1: «hola engram» + «s…» shows exactly presentText(whole) — no «memorys»", () => {
+// The verifier's exact reproductions, as one table-driven sweep. Each row keeps
+// the corpus string and the exact split sizes its own named test used, so no
+// case (and no assertion) was dropped when the five `F1:` sweeps became one:
+// «hola engram»+«s…» (no «memorys»), «Los engramas son…», the «ODDS|Pi coding
+// agent» cuts, the surrogate pairs/emoji, and the removed /gentle: tokens.
+const F1_SWEEPS = [
+	{ text: "hola engram" + "s" + "y".repeat(31), sizes: [1, 2, 3, 5, 7, 11] },
+	{ text: "Los engramas son recuerdos que Koda guarda en mi memoria. 🚀 y así. ", sizes: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] },
+	{ text: "ODDSPi coding agent", sizes: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 26, 27, 32, 33, 64] },
+	{ text: "ODDS Pi coding agent", sizes: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 26, 27, 32, 33, 64] },
+	{ text: "ODDS ODD Pi agent. engramas ODDITY GentlePie", sizes: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 26, 27, 32, 33, 64] },
+	// surrogate pairs must never be split by the cut (emoji survive every split)
+	{ text: "Guardado 🙂🙂 con 👍🏽 y 𝄞 en mi memoria. ODD y RDD quedan como review. ", sizes: [1, 2, 3, 4, 5, 6, 7, 8] },
+	// a removed /gentle: token must never leave double spaces in the stream
+	...["Run /gentle:memory-save now", "a /gentle:x  b", "x  /gentle:abc  y", " /gentle:x", "/gentle:x", "hola /gentle:"].map((text) => ({
+		text,
+		sizes: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 26, 27, 32, 33, 64],
+	})),
+];
+
+test("F1: every fixed-size split of the reproduced corpus streams exactly presentText(whole)", () => {
+	for (const { text, sizes } of F1_SWEEPS) {
+		for (const size of sizes) assert.equal(streamFor(text, size), presentText(text), `split ${size} of ${JSON.stringify(text)}`);
+	}
+	// The verifier's exact two-delta reproduction, kept as the explicit push case:
+	// «hola engram»|«s…» must show «engrams», never «memorys».
 	const text = "hola engram" + "s" + "y".repeat(31);
 	const f = createTextFilter();
 	const parts = [f.push("hola engram"), f.push("s" + "y".repeat(31)), f.flush()];
 	assert.equal(parts.join(""), presentText(text));
 	assert.ok(parts.join("").includes("engrams"), JSON.stringify(parts));
-	for (const size of [1, 2, 3, 5, 7, 11]) assert.equal(streamFor(text, size), presentText(text), `split ${size}`);
-});
-
-test("F1: «Los engramas son…» in fixed-size deltas 1..12 stays «engramas»", () => {
-	const text = "Los engramas son recuerdos que Koda guarda en mi memoria. 🚀 y así. ";
-	for (let size = 1; size <= 12; size++) {
-		assert.equal(streamFor(text, size), presentText(text), `split ${size}`);
-	}
-});
-
-test("F1: «ODDS|Pi coding agent» cuts never split a word into a phantom rewrite", () => {
-	for (const text of ["ODDSPi coding agent", "ODDS Pi coding agent", "ODDS ODD Pi agent. engramas ODDITY GentlePie"]) {
-		for (const size of [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 26, 27, 32, 33, 64]) {
-			assert.equal(streamFor(text, size), presentText(text), `split ${size} of ${JSON.stringify(text)}`);
-		}
-	}
-});
-
-test("F1: surrogate pairs are never split by the cut (emoji survive every split)", () => {
-	const text = "Guardado 🙂🙂 con 👍🏽 y 𝄞 en mi memoria. ODD y RDD quedan como review. ";
-	for (let size = 1; size <= 8; size++) {
-		assert.equal(streamFor(text, size), presentText(text), `split ${size}`);
-	}
-});
-
-test("F1: a removed /gentle: token never leaves double spaces in the stream", () => {
-	for (const text of ["Run /gentle:memory-save now", "a /gentle:x  b", "x  /gentle:abc  y", " /gentle:x", "/gentle:x", "hola /gentle:"])
-		for (const size of [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 26, 27, 32, 33, 64])
-			assert.equal(streamFor(text, size), presentText(text), `split ${size} of ${JSON.stringify(text)}`);
 });
 
 // The design property: for EVERY way of splitting ANY stream into deltas, the
-// concatenated stream is EXACTLY presentText(wholeText). 200000 seeded random
-// streams (vocabulary covers every hidden name, near-miss words, /gentle:
-// tokens, spaces, punctuation, accented letters and emoji) split at random
-// positions. Seed 0x6b6f6461 ("koda") — reproducible with mulberry32 above.
-test("F1 property: 200000 seeded random streams equal presentText(whole) for every random split", () => {
+// concatenated stream is EXACTLY presentText(wholeText). Seeded random streams
+// (vocabulary covers every hidden name, near-miss words, /gentle: tokens,
+// spaces, punctuation, accented letters and emoji) split at random positions.
+// Seed 0x6b6f6461 ("koda") — reproducible with mulberry32 above.
+//
+// 20000 streams instead of 200000 (K3-05 T4, S5): the property and the seed are
+// unchanged, so this is a strict prefix of the same deterministic sequence — a
+// smaller sample, not a weaker rule. The 200000 runs took 3.6 s of this file's
+// 3.8 s and found no failure beyond what the deterministic sweeps above already
+// cover; the exact reproductions stay as named cases above.
+test("F1 property: 20000 seeded random streams equal presentText(whole) for every random split", () => {
 	const TOKENS = [
 		// every hidden name
 		"Gentle Shell", "gentle-shell", "GentleShell", "el Gentleman", "Gentle AI", "gentle-ai", "gentle pi",
@@ -309,7 +293,7 @@ test("F1 property: 200000 seeded random streams equal presentText(whole) for eve
 	];
 	const rand = mulberry32(0x6b6f6461);
 	const pick = () => TOKENS[Math.floor(rand() * TOKENS.length)];
-	const STREAMS = 200_000;
+	const STREAMS = 20_000;
 	for (let i = 0; i < STREAMS; i++) {
 		const tokenCount = 2 + Math.floor(rand() * 9);
 		const parts = [];

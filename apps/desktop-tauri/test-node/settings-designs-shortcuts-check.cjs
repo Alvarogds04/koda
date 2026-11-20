@@ -16,7 +16,6 @@ async function mount({ status = {}, dup = false } = {}) {
   const calls = [], events = {}, bindings = {};
   const invoke = async (cmd, { payload: p }) => {
     calls.push([cmd, p]);
-    if (cmd === 'recap_action') return p.action === 'prefs' ? { enabled: true } : { ok: true };
     if (cmd === 'hotkey_action') {
       const id = p.id || 'toggleIsland';
       const b = bindings[id] ||= { combo: dup && ['toggleIsland', 'desktopToggle'].includes(id) ? 'Ctrl+Space' : id === 'toggleIsland' ? 'Ctrl+Space' : `Ctrl+Alt+${id.length}${id}`, enabled: true, status: status[id] || 'active' };
@@ -91,15 +90,14 @@ test('S25 Atajos: Restablecer asks first; only the trusted confirmation resets, 
   click(reset); click(yes, false); await ui.settled(); assert.deepEqual(calls, [], 'a synthetic confirmation does nothing');
   click(yes); await ui.settled();
   const ported = SHORTCUTS.filter(d => d.ported);
-  assert.deepEqual(calls.map(([c, p]) => `${c}:${p.action}:${p.id ?? ''}`).filter(x => !x.startsWith('recap')),
+  assert.deepEqual(calls.map(([c, p]) => `${c}:${p.action}:${p.id ?? ''}`),
     ['clear', 'reset'].flatMap(action => ported.map(d => `hotkey_action:${action}:${d.id === 'toggleIsland' ? '' : d.id}`)), 'the same closed commands in the same order');
   assert.equal(confirm.hidden, true, 'it closes when done');
 });
 
-test('S25 Atajos: every control that existed survives: switches, keycaps, recap rows and the shared backend note', async () => {
+test('S25 Atajos: every control that existed survives: switches, keycaps and the shared backend note', async () => {
   const { ui, SHORTCUTS } = await mount();
   for (const d of SHORTCUTS.filter(d => d.ported)) { const row = find(ui, `shortcut-${d.id}`); assert(row.children[0].className.split(' ').includes('switch'), `${d.id}: switch first`); assert(row.children.at(-1).className.split(' ').includes('keycap'), `${d.id}: keycap last`); }
-  assert(!all(ui).some(e => e.attrs.id === 'hub-recap' || e.attrs.id === 'hub-recap-clear'), '0.2.1 (propuesta Atajos): the weekly recap rows live ONLY in General (same controls, same recap_action)');
   assert.equal((text(ui).match(/Atajo de X11/g) || []).length, 1, 'the shared backend footer appears once');
 });
 

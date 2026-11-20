@@ -6,7 +6,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
-const { registerAdapter } = require('../adapter.cjs');
+const { registerAdapter, INFLIGHT_GRACE_MS } = require('../adapter.cjs');
 const { harness } = require('./fake-receiver.cjs');
 
 function slowSocket({ flushMs, questions = false }) {
@@ -26,28 +26,42 @@ function slowSocket({ flushMs, questions = false }) {
   return socket;
 }
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+// K3-05/S5: the production grace is 1000 ms; the tests inject a small one so the same refusal/acceptance rules run in
+// milliseconds instead of seconds. The rules themselves (throttle only when the OLDEST unflushed write is older than the
+// grace; a stalled receiver is refused and torn down) are unchanged.
+const GRACE = 50;
 // The `win32` platform + `open` seam runs the same adapter write path on every OS without a real transport.
 const RUNTIME = 'C:\\u\\Koda\\notices', META = RUNTIME + '\\endpoint.json';
-function start(t, flushMs) {
+function start(t, flushMs, graceOption = { inflightGraceMs: GRACE }) {
   const box = {};
-  const { handlers, ctx } = harness(registerAdapter, { runtime: RUNTIME, endpoint: META, platform: 'win32',
+  const { handlers, ctx } = harness(registerAdapter, { runtime: RUNTIME, endpoint: META, platform: 'win32', ...graceOption,
     heartbeatMs: 10000, open: () => (box.socket = slowSocket({ flushMs })) });
   t.after(() => handlers.get('session_shutdown')());
   handlers.get('session_start')({}, ctx);
   return { box, handlers, ctx };
 }
 test('settled is not dropped while a heartbeat is still in flight (slow pipe write completion)', async t => {
-  const { box, handlers, ctx } = start(t, 30);
-  await wait(20);
+  // A roomy grace (500 ms) on purpose: this test must not depend on the event loop landing inside a 50 ms window on a loaded runner.
+  const { box, handlers, ctx } = start(t, 30, { inflightGraceMs: 500 });
+  await wait(10);
   assert.equal(box.socket.frames[0].type, 'hello');
   // the hello write has not completed yet (flush 30ms): a small frame is genuinely in flight
   handlers.get('agent_settled')({}, ctx);
   assert.equal(box.socket.frames.some(f => f.type === 'settled'), true, 'settled must be written');
 });
+test('with no grace option the production default applies: a write stuck for 150 ms does not yet block settled', async t => {
+  // flushMs null: the hello write never completes. With the 1000 ms default it is still inside the grace after 150 ms, so settled
+  // is written. A default that ignored the option or was tiny (<= 150 ms) would refuse it.
+  const { box, handlers, ctx } = start(t, null, {});
+  await wait(150);
+  handlers.get('agent_settled')({}, ctx);
+  assert.equal(box.socket.frames.some(f => f.type === 'settled'), true, 'settled is written inside the default grace');
+});
 test('a stalled receiver (oldest write unflushed beyond the grace period) is refused promptly', async t => {
   const { box, handlers, ctx } = start(t, null);
   await wait(20);
-  await wait(1100); // hello never completes (flushMs null) and is older than the grace period
+  await wait(GRACE * 2); // hello never completes (flushMs null) and is older than the grace period
+  assert.equal(INFLIGHT_GRACE_MS, 1000, 'the production default grace is still one second (production callers pass no option)');
   handlers.get('agent_settled')({}, ctx);
   assert.equal(box.socket.frames.some(f => f.type === 'settled'), false);
 });
@@ -69,22 +83,22 @@ test('frames keep their order: a settled written while a heartbeat is in flight 
 });
 test('a refused frame is not silent: a question reports disconnected and the next heartbeat tears the connection down', async t => {
   const box = {};
-  const { handlers, ctx, controller } = harness(registerAdapter, { runtime: RUNTIME, endpoint: META, platform: 'win32',
-    heartbeatMs: 1200, questionLevel: 1, open: () => (box.socket = slowSocket({ flushMs: null, questions: true })) });
+  const { handlers, ctx, controller } = harness(registerAdapter, { runtime: RUNTIME, endpoint: META, platform: 'win32', inflightGraceMs: GRACE,
+    heartbeatMs: GRACE * 4, questionLevel: 1, open: () => (box.socket = slowSocket({ flushMs: null, questions: true })) });
   t.after(() => handlers.get('session_shutdown')());
   handlers.get('session_start')({}, ctx);
-  await wait(1100); // stalled: nothing the adapter wrote ever completes
+  await wait(GRACE * 2); // stalled: nothing the adapter wrote ever completes (older than the grace)
   const result = await controller.ask({ kind: 'question', text: 'Q', options: [
     { value: 'a', label: 'A', description: '' }, { value: 'b', label: 'B', description: '' }] }, ctx);
   assert.equal(result.status, 'disconnected');
-  await wait(300);
+  await wait(GRACE * 5);
   assert.equal(box.socket.destroyed, true, 'the stalled connection is destroyed at the next heartbeat');
 });
 test('stall is detected organically within the grace period, not after a 16 KiB backlog (non-ASCII too)', async t => {
   const { box, handlers, ctx } = start(t, null);
   await wait(20);
   const before = box.socket.frames.length;
-  await wait(1100);
+  await wait(GRACE * 2);
   handlers.get('agent_settled')({}, ctx);
-  assert.equal(box.socket.frames.length, before, 'no frame is queued behind a write stuck for over a second');
+  assert.equal(box.socket.frames.length, before, 'no frame is queued behind a write stuck past the grace period');
 });

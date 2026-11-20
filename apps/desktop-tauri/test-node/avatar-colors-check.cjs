@@ -240,8 +240,8 @@ test('overrides: hostile keys and provider identities are not assignable', () =>
 test('provider/CLI identities are not sub-Abitos and never get a specialist colour', () => {
   const notify = fs.readFileSync(path.join(frontend, 'notify-view.js'), 'utf8');
   assert.match(notify, /KNOWN_AGENTS = \{ pi: 'Pi'/, 'the repo still names Pi as the default agent identity');
-  // recap/statusline are installable integrations (L32e), not chat identities: they are not in the guard list.
-  const known = S.AGENT_IDS.filter(id => id !== 'recap' && id !== 'statusline');
+  // statusline is an installable integration (L32e), not a chat identity: it is not in the guard list (K2-03 removed recap).
+  const known = S.AGENT_IDS.filter(id => id !== 'statusline');
   assert.deepEqual([...A.PROVIDERS].sort(), known.slice().sort(),
     'the guard list is exactly the connectors/providers the repo already names, not a second list');
   for (const id of A.PROVIDERS) {
