@@ -478,7 +478,8 @@ fn the_islands_session_rows_become_one_phone_session_per_agent() {
         {"id":"s-0000000c","kind":"codex","cwd":null,"state":"stopped","origin":null},
         {"id":"s-0000000d","kind":"gemini","cwd":"g","state":"zombie","origin":null},
         {"id":"s-0000000e","kind":"opencode","cwd":"o","state":"unknown","origin":null},
-        {"id":"s-0000000f","kind":"pi","cwd":"p","state":"running","origin":null}
+        {"id":"s-0000000f","kind":"pi","cwd":"p","state":"running","origin":null},
+        {"id":"s-00000010","kind":"future-engine","cwd":"f","state":"running","origin":null}
     ]));
     let got = source::sessions_from_view(&view);
     let by = |p: &str| got.iter().find(|s| s.pill_id == p).unwrap_or_else(|| panic!("{p} in {got:?}"));
@@ -489,7 +490,11 @@ fn the_islands_session_rows_become_one_phone_session_per_agent() {
     assert_eq!(by("agent_gemini").state, "dizzy");
     assert_eq!(by("agent_opencode").state, "idle");
     assert_eq!(by("agent_codex").status_text, "");
-    assert!(got.iter().all(|s| s.pill_id != "agent_pi" && !s.pill_id.is_empty()), "an agent with no pill is not invented: {got:?}");
+    // K3-04 gave Pi a pill of its own (`agent_pi`, in the Agents section), but this phone-side mapping has no arm for
+    // `kind: "pi"` yet: the row is dropped instead of being attributed to Pi by guess. The row below is the genuine
+    // pill-less case — an engine the catalogue does not know at all — so this still proves what it was written to prove.
+    assert!(got.iter().all(|s| s.pill_id != "agent_pi"), "a kind this mapping does not know is not invented: {got:?}");
+    assert!(got.iter().all(|s| s.pill_id != "future-engine" && !s.pill_id.is_empty()), "an agent with no pill is not invented: {got:?}");
     assert_eq!(got.len(), 4);
 }
 

@@ -2459,3 +2459,18 @@ fn k2_10_the_mail_migration_mark_is_host_only_and_sticks() {
     let text = done.to_text().replace("\"mail_migration_done\":true", "\"mail_migration_done\":\"yes\"");
     assert!(!Prefs::from_text(Some(&text)).mail_migration_done());
 }
+
+/// K3-04: Pi has a pill of its own (`agent_pi`, in the Agents section of the vendored catalog). The backend must know
+/// the id like every other one: it is offered on every desktop, so a stored declaration and a chosen colour survive a
+/// load, while an id the catalog does not know is still dropped.
+#[test]
+fn k3_04_agent_pi_is_an_offered_pill_the_backend_keeps() {
+    assert!(PILL_IDS.contains(&"agent_pi"), "the closed id list carries agent_pi");
+    assert!(pill_offered("agent_pi"), "and it is offered on every desktop, unlike agent_claude-desktop");
+    let raw = r#"{"v":1,"declared_pills":["agent_pi","integration_music","agent_pi","future_pill"]}"#;
+    assert_eq!(Prefs::from_text(Some(raw)).declared_pills(), ["agent_pi".to_string()],
+        "agent_pi survives; an unoffered id, a duplicate and an unknown id are still dropped");
+    let colored = Prefs::from_text(Some(r#"{"v":1,"pill_colors":{"agent_pi":"mint"}}"#));
+    assert_eq!(colored.pill_colors.get("agent_pi").map(String::as_str), Some("#2DD4BF"),
+        "a chosen colour for agent_pi round-trips through the closed palette");
+}

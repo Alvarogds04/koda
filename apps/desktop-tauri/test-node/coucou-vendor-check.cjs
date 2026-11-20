@@ -95,10 +95,26 @@ function hashTree() {
   assert(!/MAX_DECLARED_PILLS/.test(prefs), 'S32: nor in Rust');
   for (const os of ['windows', 'linux']) {
     const ids = pills.availablePills(os).map(p => p.id);
-    assert.equal(ids.length, os === 'windows' ? 24 : 23);
+    assert.equal(ids.length, os === 'windows' ? 25 : 24);
     assert.equal(ids.includes('agent_claude-desktop'), os === 'windows');
     assert(!ids.includes('integration_music'));
     assert(ids.includes('integration_spotify'));
+  }
+  // K3-04: Pi has a pill of its own, in the Agents section and offered on every desktop. Its connector is installed
+  // by the Koda harness installer (the same managed payload path as Claude Code's hooks), so `connect` is `hooks`.
+  {
+    const pi = pills.PILL_CATALOG.find(p => p.id === 'agent_pi');
+    assert(pi, 'agent_pi is in the vendored catalog');
+    assert.equal(pi.name, 'Pi');
+    assert.equal(pi.category, 'agent');
+    assert.equal(pi.subtitle, 'Agent');
+    assert.equal(pi.source, 'agent');
+    assert.equal(pi.support, 'yes');
+    assert.match(pi.color, /^#[0-9A-F]{6}$/i, 'a sober hex colour');
+    assert.deepEqual(pi.connect, { kind: 'hooks' });
+    assert.equal(pills.sessionSubtitle('agent_pi'), 'Pi');
+    assert(pills.PILL_CATALOG.findIndex(p => p.id === 'agent_pi') > pills.PILL_CATALOG.findIndex(p => p.id === 'agent_claude-desktop'),
+      'agent_pi sits in the Agents section');
   }
   assert(!/Coucou|Mochi/i.test(JSON.stringify(pills.PILL_CATALOG)));
   global.document = document; global.window = Object.assign(new Target(), { innerWidth: 320 });
