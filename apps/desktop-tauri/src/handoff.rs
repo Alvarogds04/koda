@@ -115,9 +115,27 @@ fn io(msg: &str) -> std::io::Error {
     std::io::Error::new(std::io::ErrorKind::InvalidInput, msg.to_string())
 }
 
-/// Publish `endpoint` for local consumers. Refuses anything that is not the exact receiver socket
+/// What [`publish`] did.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Published {
+    /// `endpoint.json` now names our socket.
+    Written,
+    /// A different LIVE process (the engine, jesscore) owns `endpoint.json`: nothing was written or removed.
+    Standby { owner_pid: u32 },
+}
+
+/// The pid of a LIVE foreign owner of the handoff (same life of that pid), if any.
+fn foreign_owner(runtime: &Path) -> Option<u32> {
+    let text = read_text(runtime)?;
+    parse(runtime, &text)?; // live pid, same start time, valid shape
+    let pid = serde_json::from_str::<Value>(&text).ok()?.get("pid")?.as_u64()? as u32;
+    (pid != std::process::id()).then_some(pid)
+}
+
+/// Publish `endpoint` for local consumers. AC-08: a live foreign owner keeps the file ([`Published::Standby`]).
+/// Refuses anything that is not the exact receiver socket
 /// of `runtime`, a non-private `runtime`, and a symlink at the target path.
-pub fn publish(runtime: &Path, endpoint: &Path) -> std::io::Result<()> {
+pub fn publish(runtime: &Path, endpoint: &Path) -> std::io::Result<Published> {
     if !endpoint_shape_ok(endpoint, runtime) {
         return Err(io("endpoint is not <runtime>/p-XXXXXX/s"));
     }
@@ -129,6 +147,9 @@ pub fn publish(runtime: &Path, endpoint: &Path) -> std::io::Result<()> {
     let me = uid();
     if !dir.file_type().is_dir() || dir.uid() != me || dir.permissions().mode() & 0o777 != 0o700 {
         return Err(io("runtime root must be a private (0700) directory of ours"));
+    }
+    if let Some(owner_pid) = foreign_owner(runtime) {
+        return Ok(Published::Standby { owner_pid });
     }
     let target = path(runtime);
     if let Ok(existing) = std::fs::symlink_metadata(&target) {
@@ -157,7 +178,7 @@ pub fn publish(runtime: &Path, endpoint: &Path) -> std::io::Result<()> {
     if written.is_err() {
         let _ = std::fs::remove_file(&tmp);
     }
-    written
+    written.map(|()| Published::Written)
 }
 
 /// Contents of a handoff file, parsed and shape-checked; `None` for anything that is not ours.
