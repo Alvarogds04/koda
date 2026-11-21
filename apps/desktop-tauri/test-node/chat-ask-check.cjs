@@ -110,6 +110,12 @@ const answering = (asks, id) => asks.map(a => (a.id === id ? { ...a, answering: 
     assert.equal(V.askCards({ asks: many }).length, 16);
     assert.equal(V.askCards({ asks: [{ id: 'a-1', kind: 'select', title: 't', options: ['x', 7] }] })[0].options.length, 1, 'a non-string option is dropped');
   });
+  await check('AC-08 multi-select: askCards flags it only on a select; picks travel as one closed verb', () => {
+    const cards = V.askCards({ asks: [{ id: 'm-1', kind: 'select', title: 't', options: ['a', 'b'], multiSelect: true }, { id: 'c-1', kind: 'confirm', title: 't', multiSelect: true }, ASKS[0]] });
+    assert.deepEqual(cards.map(c => c.multiSelect === true), [true, false, false]);
+    assert.deepEqual(V.askPayload('m-1', { picks: ['a', 'b'] }), { action: 'answer', ask_id: 'm-1', picks: ['a', 'b'] });
+    assert.equal(V.askOutcome({ kind: 'select' }, { picks: ['a', 'b'] }), 'Elegiste: a, b');
+  });
   await check('askPayload builds exactly one closed answer verb; the typed value is sent as typed', () => {
     assert.deepEqual(V.askPayload('a-sel', { value: 'dev' }), { action: 'answer', ask_id: 'a-sel', value: 'dev' });
     assert.deepEqual(V.askPayload('a-yes', { confirmed: false }), { action: 'answer', ask_id: 'a-yes', confirmed: false });

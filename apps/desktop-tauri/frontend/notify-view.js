@@ -12,6 +12,15 @@
 })(typeof self !== 'undefined' ? self : this, () => {
   const MAX_OPTIONS = 4; // QP/1 wire cap
   const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+  // AC-08 (K-B2): an island-agent/1 `ask` travels with the DAEMON's own SAFE_ID grammar (chatclient.rs `valid_ask_id`), never a
+  // UUID. Only a chat-sourced entry may use it: every QP/1 pending keeps the strict UUID gate, and the two never mix.
+  const SAFE_ID = /^[A-Za-z0-9_.:-]{1,128}$/;
+  const CHAT_ASK_MS = 120000; // the daemon closes an ask 120 s after it opened: the card's deadline is that same promise
+  const CHAT_MAX_OPTIONS = 50; // what a chat select may show (never trimmed: a shown option is never dropped)
+  const CHAT_MAX_PICKS = 8; // chatclient.rs: a multi pick set is 1..=8 distinct SHOWN labels
+  const CHAT_KINDS = new Set(['select', 'confirm', 'input']);
+  const CHAT_TEXT_FALLBACK = 'Koda necesita tu respuesta';
+  const chatSourced = p => !!p && typeof p === 'object' && p.source === 'chat';
   const SOUND_ENABLED_DEFAULT = true; // sound is ON by default (human decision); the stored preference, if any, wins
 
   // ---- model -----------------------------------------------------------------
@@ -85,6 +94,12 @@
   }
   // Structured questions (contract fix/seguridad-app 5a57a4d): multi_select, a questionnaire `form`, free_text_max (2000 | 4000).
   const FORM_MAX_ITEMS = 4, HEADER_MAX = 32;
+  // A chat select may carry up to 50 options and ONE of them is never dropped from the card: the list the human reads is exactly
+  // the list the daemon takes back (a label that is not shown is never sent, and no shown option disappears).
+  const chatOptionsOf = raw => (Array.isArray(raw) ? raw.slice(0, CHAT_MAX_OPTIONS) : [])
+    .filter(o => o && typeof o.label === 'string' && o.label.length > 0)
+    .map((o, i) => ({ index: Number.isInteger(o.index) ? o.index : i, key: String(i + 1), label: o.label,
+      description: typeof o.description === 'string' ? o.description : '' }));
   const optionsOf = raw => (Array.isArray(raw) ? raw.slice(0, MAX_OPTIONS) : []).map((o, i) => ({
     index: Number.isInteger(o && o.index) ? o.index : i,
     key: String(i + 1),
@@ -104,11 +119,99 @@
     }
     return items;
   }
+  // ---- AC-08 (K-B2): island-agent/1 asks (chat:state.asks) are answered on this same card -------------------------------
+  // The daemon's `ask` (select / confirm / input, `multiSelect`) is mapped onto the `pending` shape fromPending/phase already
+  // consume, so there is ONE card, ONE expiry rule and ONE answering path. Everything below is pure except createChatChannel,
+  // which only remembers the 120 s sentinel and the outcome of an ask that left.
+  /** One ask as the pending shape: a confirm wears the approval look (the exact «Aprobar»/«Rechazar» pair matched by LABEL),
+   *  every other kind is a question. `expiresAt` is supplied by the caller so it stays put while the ask is open. */
+  function chatAskPending(ask, expiresAt) {
+    if (!ask || typeof ask !== 'object' || typeof ask.id !== 'string' || !SAFE_ID.test(ask.id) || !CHAT_KINDS.has(ask.kind)) return null;
+    const title = typeof ask.title === 'string' && ask.title.trim() ? ask.title
+      : typeof ask.message === 'string' && ask.message.trim() ? ask.message : CHAT_TEXT_FALLBACK;
+    const at = Number.isFinite(expiresAt) ? expiresAt : 0;
+    if (ask.kind === 'confirm') {
+      return { id: ask.id, kind: 'approval', source: 'chat', agent: 'pi', text: title, expires_at: at, allow_free_text: false,
+        options: [{ index: 0, label: 'Aprobar', description: '' }, { index: 1, label: 'Rechazar', description: '' }] };
+    }
+    if (ask.kind === 'input') {
+      return { id: ask.id, kind: 'question', source: 'chat', agent: 'pi', text: title, expires_at: at, allow_free_text: true, options: [] };
+    }
+    const options = chatOptionsOf(Array.isArray(ask.options) ? ask.options.map(label => ({ label })) : []);
+    if (!options.length) return null; // a select with nothing to choose is no card at all
+    return { id: ask.id, kind: 'question', source: 'chat', agent: 'pi', text: title, expires_at: at, allow_free_text: false, options,
+      ...(ask.multiSelect === true ? { multi_select: true } : {}) };
+  }
+  /** The chat:state payload as the snapshot this view consumes: the FIRST pending ask is the card, an ask that left into
+   *  `answered_asks` shows its «Recibida», and one that just closed is withdrawn without a word (S4: answered elsewhere).
+   *  Identical states are the SAME object, so a repeated push re-fires nothing (sound, reveal, outcome timers). */
+  function createChatChannel() {
+    const seen = new Map(); // ask id -> its 120 s sentinel, fixed the moment it is first seen
+    let shown = null;       // the ask id the card was showing
+    let notice = null;      // the outcome word after that ask left
+    let key = null, memo = null;
+    function view(chat, now) {
+      const at = Number.isFinite(now) ? now : Date.now();
+      const asks = chat && Array.isArray(chat.asks) ? chat.asks : [];
+      const live = new Set();
+      let pending = null, head = null;
+      for (const ask of asks) {
+        if (!ask || typeof ask.id !== 'string' || !SAFE_ID.test(ask.id)) continue;
+        live.add(ask.id);
+        if (!seen.has(ask.id)) seen.set(ask.id, at + CHAT_ASK_MS);
+        const p = chatAskPending(ask, seen.get(ask.id));
+        if (p && !pending) { pending = p; head = ask.id; }
+      }
+      for (const id of [...seen.keys()]) if (!live.has(id)) seen.delete(id); // a re-issue of the same id gets a fresh sentinel
+      if (pending) { shown = head; notice = null; }
+      else if (shown !== null) { notice = answeredChatAsks(chat).has(shown) ? 'answered' : null; shown = null; }
+      const next = JSON.stringify([pending, notice]);
+      if (next === key) return memo;
+      key = next;
+      memo = { available: true, pending, notice, queued_count: 0, native_transition: 'idle', deliveries: [], ready_connections: 1 };
+      return memo;
+    }
+    return Object.freeze({ view });
+  }
+  /** The ask ids whose answer the daemon accepted (`chat:state.answered_asks`), bounded by the id grammar. */
+  function answeredChatAsks(chat) {
+    const list = chat && Array.isArray(chat.answered_asks) ? chat.answered_asks : [];
+    return new Set(list.filter(id => typeof id === 'string' && SAFE_ID.test(id)));
+  }
+  /** The ONE closed `chat_action` answer verb for a chat-sourced ask (the chat card sends the same one): an index becomes the
+   *  SHOWN label (a confirm's becomes its boolean), a draft becomes its shown pick labels, and `cancelled` skips it. A label
+   *  the ask never showed is never sent, and nothing is sent outside the card's own options. */
+  function chatReply(n, answer) {
+    if (!n || n.source !== 'chat' || typeof n.id !== 'string' || !SAFE_ID.test(n.id) || !answer || typeof answer !== 'object') return null;
+    if (answer.cancelled === true) return { action: 'answer', ask_id: n.id, cancelled: true };
+    if (Array.isArray(answer.picks)) {
+      const picks = [];
+      for (const label of answer.picks) {
+        if (typeof label === 'string' && n.options.some(o => o.label === label) && !picks.includes(label)) picks.push(label);
+      }
+      return picks.length >= 1 && picks.length <= CHAT_MAX_PICKS ? { action: 'answer', ask_id: n.id, picks } : null;
+    }
+    if (typeof answer.text === 'string') return textFits(answer.text, n.freeTextMax) ? { action: 'answer', ask_id: n.id, value: answer.text } : null;
+    if (!Number.isInteger(answer.index)) return null;
+    if (n.kind === 'approval') {
+      if (answer.index !== 0 && answer.index !== 1) return null;
+      return { action: 'answer', ask_id: n.id, confirmed: answer.index === 0 };
+    }
+    const shown = n.options.find(o => o.index === answer.index);
+    return shown ? { action: 'answer', ask_id: n.id, value: shown.label } : null;
+  }
+  /** The draft's picks as the labels the card shows, in the card's own order (never one it does not show). */
+  function pickedLabels(n, draft) {
+    if (!n || !Array.isArray(n.options) || !draft || !Array.isArray(draft.picked)) return [];
+    return n.options.filter(o => draft.picked.includes(o.index)).map(o => o.label);
+  }
   function fromPending(p) {
-    if (!p || typeof p !== 'object' || typeof p.id !== 'string' || !UUID_V4.test(p.id)) return null;
+    if (!p || typeof p !== 'object' || typeof p.id !== 'string') return null;
+    const chat = chatSourced(p);
+    if (!(chat ? SAFE_ID.test(p.id) : UUID_V4.test(p.id))) return null;
     const kind = p.kind === 'approval' ? 'approval' : p.kind === 'question' ? 'question' : null;
     if (!kind || typeof p.text !== 'string' || !p.text) return null;
-    const options = optionsOf(p.options);
+    const options = chat ? chatOptionsOf(p.options) : optionsOf(p.options);
     const allowFreeText = p.allow_free_text === true;
     const multiSelect = p.multi_select === true;
     const hasForm = p.form !== undefined && p.form !== null;
@@ -123,6 +226,8 @@
     const projectName = typeof p.project_name === 'string' ? p.project_name : null;
     const freeTextMax = p.free_text_max === 4000 ? 4000 : 2000;
     return { id: p.id, kind, agent, projectName, text: p.text, options, allowFreeText, multiSelect, form, freeTextMax,
+      // AC-08 (K-B2): which lane carries the answer. 'chat' = island-agent/1 `ask` (chat_action); null = a QP/1 question
+      source: chat ? 'chat' : null,
       expiresAt: Number.isFinite(p.expires_at) ? p.expires_at : 0,
       // a Pi-session answer: it authorizes nothing in the backend and never uses the approval card
       approvesProposal: false };
@@ -133,7 +238,8 @@
   // Display-only opener. No normalization, answer, decline, or fallback expand:
   // the native adapter alone admits the current live UUID/kind pair.
   function openPayload(event, notice, kind) {
-    if (!trusted(event) || !notice || typeof notice.id !== 'string' || !UUID_V4.test(notice.id) ||
+    if (!trusted(event) || !notice || typeof notice.id !== 'string' ||
+      !(chatSourced(notice) ? SAFE_ID.test(notice.id) : UUID_V4.test(notice.id)) ||
       (kind !== 'question' && kind !== 'finished')) return null;
     return { id: notice.id, kind };
   }
@@ -453,10 +559,13 @@
   }
   const multiItem = n => ({ header: '', text: n.text, options: n.options, multiSelect: true, allowFreeText: n.allowFreeText });
   const multiView = (n, draft) => {
-    const canDone = draftAnswered(multiItem(n), draft, n.freeTextMax);
+    // AC-08: a chat multiSelect takes 1..8 distinct shown labels (chatclient.rs), so a ninth pick is not donable — refused here,
+    // visibly, instead of being answered with a truncated set the human never chose
+    const over = !!n && n.source === 'chat' && draft.picked.length > CHAT_MAX_PICKS;
+    const canDone = !over && draftAnswered(multiItem(n), draft, n.freeTextMax);
     const count = draft.picked.length + (draft.other && draft.text.trim() ? 1 : 0);
     // S7: «Hecho (N)» counts what is marked; at 0 it stays «Hecho», disabled, with the reason as its accessible/tooltip text
-    return { label: count > 0 ? `Hecho (${count})` : 'Hecho', canDone, reason: canDone ? '' : 'Marcá al menos una' };
+    return { label: count > 0 ? `Hecho (${count})` : 'Hecho', canDone, reason: canDone ? '' : over ? `Hasta ${CHAT_MAX_PICKS}` : 'Marcá al menos una' };
   };
   function manyPayload(n, draft) {
     if (!n || !n.multiSelect || n.form) return null;
@@ -538,5 +647,6 @@
   const outcomeDismissible = d => !!d && d.question === 'outcome';
 
   return { projectLabel, outcomeDismissible, sizeSync, optionRows, singleItem, toggleOther, OTHER_LABEL, newDraft, toggleOption, setDraftText, textFits, draftAnswered, itemPayload, multiView, manyPayload, formStart, formReduce, formView, formPayload, keyIntent, windowHeightFor, questionLayout, textareaHeight, QUESTION_MAX_ISLAND_H, QUESTION_MIN_CARD_H, replyIsCurrent, regressesToSent, MAX_OPTIONS, SOUND_ENABLED_DEFAULT, fromPending, askedBy, askerName, askerLine, queueLabel, whoSays, headAnnouncement, nextAnnouncement, hiddenExpired, hiddenExpiredAnnouncement, agentLabel, trusted, openPayload, onScreen, optionForKey, expired, expiryWord, fraction,
+    SAFE_ID, CHAT_ASK_MS, CHAT_MAX_OPTIONS, CHAT_MAX_PICKS, chatAskPending, createChatChannel, answeredChatAsks, chatReply, pickedLabels,
     outcomeView, phase, soundFor, outcomeEvent, createCueLimiter, createRevealGate, createFinishedCycle, FINISHED_MS, revealAction, NOTICE_SEEN_MAX, utf8Bytes, textWord, canSendText };
 });

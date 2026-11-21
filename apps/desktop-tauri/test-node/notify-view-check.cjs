@@ -257,14 +257,19 @@ test('hiddenExpired (K2-08 S6): announced only when the «expired» notice is fr
 });
 
 // ---- BEHAVIOUR: run the real notify.js against a tiny fake DOM --------------------------------
-function harness(dataset) {
+// `opts.question` selects the QP/1 view the boot `question_action {view}` answers with (default: one live Pi question); the
+// island-agent lane is fed by `push('chat:state', …)` (AC-08 K-B2).
+function harness(dataset, opts = {}) {
   const vm = require('node:vm');
   const calls = [];
+  const commands = [];
   const listeners = {};
+  const events = {};      // event.listen registry (chat-ask-check.cjs style): event name -> handler
+  let respond = () => null; // (command, payload) -> promise | null (null: the default answer)
   const node = (id) => {
     const n = { id, dataset: {}, style: {}, offsetHeight: 148, scrollHeight: 20, hidden: false, inert: true, disabled: false, value: '', textContent: '', title: '', children: [],
       listeners: {}, classList: { add() {}, remove() {}, toggle() {} },
-      setAttribute() {}, getAttribute() { return null; }, append(...k) { this.children.push(...k); }, appendChild(k) { this.children.push(k); },
+      setAttribute() {}, getAttribute() { return null; }, removeAttribute() {}, hasAttribute() { return false; }, append(...k) { this.children.push(...k); }, appendChild(k) { this.children.push(k); },
       addEventListener(t, f) { (this.listeners[t] = this.listeners[t] || []).push(f); },
       querySelectorAll() { return []; }, requestSubmit() {}, blur() {}, focus() {}, innerHTML: '' };
     Object.defineProperty(n, 'textContent', { get() { return this._t || ''; }, set(v) { this._t = v; if (v === '') this.children = []; } });
@@ -272,22 +277,45 @@ function harness(dataset) {
   };
   const ids = ['question', 'capsule', 'question-body', 'question-options', 'question-freeform', 'question-text', 'question-word', 'question-send',
     'question-skip', 'question-live', 'question-expiry', 'question-state', 'question-expiry-word', 'question-state-icon', 'question-state-word',
-    'question-step', 'question-step-header', 'question-summary', 'question-nav', 'question-prev', 'question-primary', 'question-queue',
+    'question-step', 'question-step-header', 'question-summary', 'question-nav', 'question-prev', 'question-primary', 'question-queue', 'question-reason',
     'question-approval', 'question-approval-title', 'question-approval-cmd', 'question-approval-note', 'question-approval-actions'];
   const nodes = Object.fromEntries(ids.map(id => [id, node(id)]));
   Object.assign(nodes.capsule.dataset, dataset);
+  for (const n of Object.values(nodes)) n.parentNode = { insertBefore() {} }; // the outcome note is inserted beside #question-state
   const focusedList = { tagName: 'OL' }; // the focus sits on the card's own options list (inside #question)
   nodes.question.contains = e => e === focusedList;
   const doc = { getElementById: id => nodes[id] || null, createElement: tag => node(tag), addEventListener(t, f) { (listeners[t] = listeners[t] || []).push(f); },
     dispatchEvent() {}, activeElement: focusedList };
-  const win = { AbitoNotify: N, AbitoIcons: { svg: () => '' }, __TAURI__: { core: { invoke: (_name, args) => { calls.push(args.payload); return Promise.resolve(args.payload.action === 'view' ? view : {}); } } } };
-  const view = snap(pending({ expires_at: Date.now() + 120000 }));
+  const invoke = (_name, args) => {
+    calls.push(args.payload); commands.push(_name);
+    const custom = respond(_name, args.payload);
+    if (custom) return custom;
+    return Promise.resolve(args.payload.action === 'view' ? view : {});
+  };
+  const win = { AbitoNotify: N, AbitoIcons: { svg: () => '' }, __TAURI__: { core: { invoke },
+    event: { listen: async (name, fn) => { events[name] = fn; } } } };
+  const view = opts.question !== undefined ? opts.question : snap(pending({ expires_at: Date.now() + 120000 }));
   // K2-08 S4: a head is guarded for a moment when it first becomes visible; the monotonic clock lets the check step past that guard
   const mono = { t: 0 };
-  const ctx = vm.createContext({ window: win, document: doc, setInterval: () => 0, clearInterval() {}, requestAnimationFrame: f => f(), MutationObserver: class { observe() {} },
+  const ctx = vm.createContext({ window: win, self: win, document: doc, setInterval: () => 0, clearInterval() {}, setTimeout: () => 0, clearTimeout() {}, requestAnimationFrame: f => f(),
+    MutationObserver: class { observe() {} },
+    getComputedStyle: () => ({ getPropertyValue: () => '' }),
     CustomEvent: class { constructor(t, o) { this.type = t; this.detail = o && o.detail; } }, Date, performance: { now: () => mono.t } });
+  vm.runInContext(fs.readFileSync(path.join(frontend, 'island-layout.js'), 'utf8'), ctx, { filename: 'island-layout.js' });
   vm.runInContext(fs.readFileSync(path.join(frontend, 'notify.js'), 'utf8'), ctx);
-  return { calls, nodes, pastGuard: () => { mono.t += 1000; }, key: (k, extra) => { for (const f of listeners.keydown || []) f({ key: k, isTrusted: true, ctrlKey: false, altKey: false, metaKey: false, isComposing: false, repeat: false, preventDefault() {}, stopPropagation() {}, ...extra }); } };
+  // a click as the browser delivers it: a disabled control never fires
+  const click = (at, extra = {}) => {
+    if (!at || at.disabled === true) return null;
+    for (const f of (at.listeners && at.listeners.click) || []) f({ isTrusted: true, preventDefault() {}, stopPropagation() {}, target: at, ...extra });
+    return at;
+  };
+  return { calls, commands, nodes, events, pastGuard: () => { mono.t += 1000 },
+    chatCalls: () => calls.filter((_, i) => commands[i] === 'chat_action'),
+    push: (name, payload) => { const f = events[name]; return f ? f({ payload }) : null; },
+    respond: f => { respond = f; },
+    click,
+    fire: (at, type, extra = {}) => { for (const f of (at.listeners && at.listeners[type]) || []) f({ type, isTrusted: true, preventDefault() {}, stopPropagation() {}, target: at, ...extra }); },
+    key: (k, extra) => { for (const f of listeners.keydown || []) f({ key: k, isTrusted: true, ctrlKey: false, altKey: false, metaKey: false, isComposing: false, repeat: false, preventDefault() {}, stopPropagation() {}, ...extra }); } };
 }
 const settle = () => new Promise(r => setImmediate(r));
 
@@ -383,7 +411,7 @@ test('T2 shared code pinned: soundFor and phase keep their question/expiry seman
   assert.equal(N.phase(snap(pending()), { now: 1 }).kind, 'pending');
 });
 
-Promise.all(pendingTests).then(() => console.log(`notify-view-check: ${passed} passed`), e => { console.error(e); process.exit(1); });
+// The async behaviour checks are gathered here and awaited ONCE at the end of this file (the last checks below are async too).
 
 // ---- S3: «Agente · proyecto» and «1 de N» ---------------------------------
 test('S3 askerLine: agent and project name, the project only when it is a well-formed name', () => {
@@ -434,7 +462,7 @@ test('race: a terminal outcome never regresses to «sent» (answered/human_cance
 test('race wiring: notify.js counts pushed states, ignores stale replies and never lets apply() regress a terminal outcome', () => {
   const src = fs.readFileSync(path.join(frontend, 'notify.js'), 'utf8');
   assert.match(src, /let pushSeq = 0;/);
-  assert.match(src, /listen\('question:state', event => \{ pushSeq \+= 1; apply\(event && event\.payload\); \}\)/);
+  assert.match(src, /listen\('question:state', event => \{ pushSeq \+= 1; questionSnap = event && event\.payload; refresh\(\); \}\)/);
   assert.match(src, /N\.replyIsCurrent\(sent, pushSeq\)/);
   assert.match(src, /N\.regressesToSent\(snapshot, next\)/);
   for (const fn of ['choose', 'decline', 'submitText']) {
@@ -808,3 +836,278 @@ test('L5 wiring: notify.js dismisses the outcome on the island\'s request, pills
   assert.match(pv, /const clickable = \(\) =>/, 'the click gate is one function: on screen OR a dismissible outcome');
 });
 
+// ---- AC-08 (K-B2): the SAME card answers the daemon's island-agent/1 asks carried by `chat:state` ------------------------
+// `chat:state.asks` is [{id, kind select|confirm|input, title, message, placeholder, options, multiSelect?, answering}] and
+// `answered_asks` the ids the daemon accepted. The card maps an ask onto the pending shape it already draws, and answers
+// through `chat_action` with the same closed verb frontend/chat-view.js askPayload builds (S1, S4, S5).
+const ASK_CONFIRM = { id: 'a-yes', kind: 'confirm', title: '¿Borrar notas.md?', message: 'Se borra notas.md', placeholder: null, options: [], answering: false };
+const ASK_SELECT = { id: 'a-sel', kind: 'select', title: '¿Qué rama?', message: null, placeholder: null, options: ['main', 'dev', 'prod'], answering: false };
+const ASK_INPUT = { id: 'a-txt', kind: 'input', title: 'Tu nombre', message: null, placeholder: 'tu nombre', options: [], answering: false };
+const ASK_MULTI = { id: 'a-multi', kind: 'select', title: '¿Qué extras?', message: null, placeholder: null, options: ['ESLint', 'Tailwind', 'Vitest'], multiSelect: true, answering: false };
+const chatState = (asks, extra = {}) => ({ asks, answered_asks: [], turns: [], availability: { state: 'busy', message: 'x' }, ...extra });
+
+test('AC-08 K-B2 chatAskPending: an ask becomes the pending shape this card already draws (confirm = the approval look)', () => {
+  const confirm = N.chatAskPending(ASK_CONFIRM, 5000);
+  assert.equal(confirm.kind, 'approval');
+  assert.equal(confirm.text, '¿Borrar notas.md?');
+  assert.deepEqual(confirm.options.map(o => o.label), ['Aprobar', 'Rechazar'], 'the pair the approval look matches BY LABEL');
+  assert.deepEqual([confirm.source, confirm.agent, confirm.expires_at, confirm.allow_free_text], ['chat', 'pi', 5000, false]);
+  // what the card finally reads: the chat id is enough for a chat-sourced entry, and the mapping survives fromPending
+  const n = N.fromPending(confirm);
+  assert.deepEqual([n.id, n.kind, n.source, n.agent], ['a-yes', 'approval', 'chat', 'pi']);
+  const sel = N.fromPending(N.chatAskPending(ASK_SELECT, 1));
+  assert.deepEqual([sel.kind, sel.source, sel.multiSelect, sel.allowFreeText], ['question', 'chat', false, false]);
+  assert.deepEqual(sel.options.map(o => [o.index, o.label]), [[0, 'main'], [1, 'dev'], [2, 'prod']]);
+  assert.equal(N.fromPending(N.chatAskPending(ASK_MULTI, 1)).multiSelect, true, 'multi_select only when the ask says so');
+  const input = N.fromPending(N.chatAskPending(ASK_INPUT, 1));
+  assert.deepEqual([input.kind, input.allowFreeText, input.options.length], ['question', true, 0], 'an input ask takes only text');
+  // the title is what is shown; the message and then the fallback cover an untitled ask
+  assert.equal(N.fromPending(N.chatAskPending({ ...ASK_SELECT, title: '', message: 'Detalle' }, 1)).text, 'Detalle');
+  assert.equal(N.fromPending(N.chatAskPending({ ...ASK_SELECT, title: '  ', message: null }, 1)).text, 'Koda necesita tu respuesta');
+  // never a card for something unanswerable
+  assert.equal(N.chatAskPending({ ...ASK_SELECT, id: 'a sel' }, 1), null, 'the daemon SAFE_ID grammar');
+  assert.equal(N.chatAskPending({ ...ASK_SELECT, kind: 'editor' }, 1), null, 'a kind this card cannot answer');
+  assert.equal(N.chatAskPending({ ...ASK_SELECT, options: [] }, 1), null, 'a select with nothing to choose');
+  assert.equal(N.chatAskPending({ ...ASK_SELECT, options: ['ok', 7, null] }, 1).options.length, 1, 'a non-label is dropped, never renamed');
+  assert.equal(N.chatAskPending(null, 1), null);
+});
+
+test('AC-08 K-B2 options: QP/1 stays capped at 4; a chat select carries up to 50 and never drops a shown option', () => {
+  assert.equal(N.fromPending(pending({ options: Array.from({ length: 6 }, (_, i) => ({ index: i, label: `o${i}`, description: '' })) })).options.length, 4, 'QP/1: MAX_OPTIONS');
+  const many = Array.from({ length: 60 }, (_, i) => `opción ${i}`);
+  const n = N.fromPending(N.chatAskPending({ id: 'a-big', kind: 'select', title: 't', options: many }, 1));
+  assert.equal(n.options.length, N.CHAT_MAX_OPTIONS);
+  assert.equal(N.CHAT_MAX_OPTIONS, 50);
+  assert.deepEqual(n.options.slice(0, 3).map(o => o.label), ['opción 0', 'opción 1', 'opción 2']);
+  assert.equal(n.options.at(-1).label, 'opción 49', 'the shown list is the whole list: no option disappears');
+  assert.equal(N.CHAT_MAX_PICKS, 8);
+});
+
+test('AC-08 K-B2 channel: the 120 s sentinel is fixed the first time an ask is seen, and an identical state re-fires nothing', () => {
+  const ch = N.createChatChannel();
+  const a = ch.view(chatState([ASK_SELECT]), 1000);
+  assert.equal(a.pending.expires_at, 1000 + N.CHAT_ASK_MS, 'the daemon closes the ask at 120 s: the card shows that same deadline');
+  assert.equal(N.CHAT_ASK_MS, 120000);
+  const b = ch.view(chatState([ASK_SELECT], { turns: [{ turn_id: 't-9' }] }), 5000);
+  assert.equal(b, a, 'the same state is the SAME object (no repeat cue, no reveal, no restarted outcome)');
+  assert.equal(b.pending.expires_at, a.pending.expires_at, 'the sentinel never moves while the ask is open');
+  assert.equal(ch.view(chatState([ASK_CONFIRM]), 9000).pending.expires_at, 9000 + N.CHAT_ASK_MS, 'a new ask gets its own');
+});
+
+test('AC-08 K-B2 channel: an ask that left withdraws the card; one the daemon answered shows «Recibida»', () => {
+  const closed = N.createChatChannel();
+  closed.view(chatState([ASK_SELECT]), 1000);
+  const gone = closed.view(chatState([]), 2000);
+  assert.equal(gone.pending, null, 'answered in another surface, expired or closed: the card goes away (S4)');
+  assert.equal(gone.notice, null, 'no word for a question this card never answered nor the daemon called answered');
+  const answered = N.createChatChannel();
+  answered.view(chatState([ASK_SELECT]), 1000);
+  const done = answered.view(chatState([], { answered_asks: ['a-sel'] }), 2000);
+  assert.equal(done.notice, 'answered');
+  assert.equal(N.phase(done, { now: 2000 }).outcome.word, 'Recibida', 'the outcome the card shows');
+  // a fresh ask after the outcome clears it
+  assert.equal(answered.view(chatState([ASK_CONFIRM]), 3000).notice, null);
+  // another client's answer leaves this card unanswerable, never merely «gone»
+  const theirs = N.createChatChannel();
+  theirs.view(chatState([ASK_CONFIRM]), 1000);
+  assert.equal(theirs.view(chatState([], { answered_asks: ['a-confirm-otro'] }), 2000).notice, null);
+});
+
+test('AC-08 K-B2 chatReply: the ONE closed chat_action verb the chat card also sends — labels exactly as shown', () => {
+  const confirm = N.fromPending(N.chatAskPending(ASK_CONFIRM, 1));
+  assert.deepEqual(N.chatReply(confirm, { index: 0 }), { action: 'answer', ask_id: 'a-yes', confirmed: true });
+  assert.deepEqual(N.chatReply(confirm, { index: 1 }), { action: 'answer', ask_id: 'a-yes', confirmed: false });
+  assert.equal(N.chatReply(confirm, { index: 2 }), null, 'a confirm has two answers, never a third');
+  const sel = N.fromPending(N.chatAskPending(ASK_SELECT, 1));
+  assert.deepEqual(N.chatReply(sel, { index: 1 }), { action: 'answer', ask_id: 'a-sel', value: 'dev' }, 'the SHOWN label, never the index');
+  assert.equal(N.chatReply(sel, { index: 9 }), null, 'never a label the ask did not show');
+  assert.deepEqual(N.chatReply(sel, { cancelled: true }), { action: 'answer', ask_id: 'a-sel', cancelled: true });
+  const multi = N.fromPending(N.chatAskPending(ASK_MULTI, 1));
+  assert.deepEqual(N.chatReply(multi, { picks: ['Tailwind', 'ESLint', 'Tailwind'] }), { action: 'answer', ask_id: 'a-multi', picks: ['Tailwind', 'ESLint'] }, 'shown labels, once each');
+  assert.equal(N.chatReply(multi, { picks: ['No existe'] }), null, 'a label the ask never showed is never sent');
+  assert.equal(N.chatReply(multi, { picks: [] }), null, 'a pick set is 1..8');
+  const wide = N.fromPending(N.chatAskPending({ id: 'a-10', kind: 'select', title: 't', multiSelect: true, options: Array.from({ length: 10 }, (_, i) => `o${i}`) }, 1));
+  assert.equal(N.chatReply(wide, { picks: Array.from({ length: 9 }, (_, i) => `o${i}`) }), null, 'at most 8 distinct shown labels');
+  assert.equal(N.chatReply(wide, { picks: Array.from({ length: 8 }, (_, i) => `o${i}`) }).picks.length, 8, 'eight is allowed');
+  const input = N.fromPending(N.chatAskPending(ASK_INPUT, 1));
+  assert.deepEqual(N.chatReply(input, { text: 'mi nombre' }), { action: 'answer', ask_id: 'a-txt', value: 'mi nombre' }, 'typed text, verbatim');
+  assert.equal(N.chatReply(input, { text: '   ' }), null, 'blank is not an answer');
+  assert.equal(N.chatReply(N.fromPending(pending()), { index: 0 }), null, 'a QP/1 question never answers through chat_action');
+  assert.equal(N.chatReply(confirm, null), null);
+  // the draft's picks are read in the order the card shows them
+  assert.deepEqual(N.pickedLabels(multi, { picked: [2, 0], text: '', other: false }), ['ESLint', 'Vitest']);
+  assert.deepEqual(N.pickedLabels(sel, { picked: [7], text: '', other: false }), []);
+});
+
+test('AC-08 K-B2 gate: SAFE_ID is admitted only for a chat-sourced entry; every QP/1 gate keeps its UUID strictness', () => {
+  assert.equal(N.fromPending(pending({ id: 'a-sel' })), null, 'QP/1: a daemon ask id is still not a UUID');
+  assert.equal(N.fromPending({ ...pending({ id: 'a-sel' }), source: 'chat' }).id, 'a-sel');
+  for (const bad of ['a sel', 'a<script>', 'x'.repeat(129), '', 'a\nb', 7]) {
+    assert.equal(N.fromPending({ ...pending({ id: bad }), source: 'chat' }), null, JSON.stringify(bad));
+  }
+  // the transport-notice opener keeps its own gate: only a chat-sourced notice may carry a SAFE_ID
+  assert.equal(N.openPayload({ isTrusted: true }, { id: 'a-sel' }, 'finished'), null);
+  assert.deepEqual(N.openPayload({ isTrusted: true }, { id: 'a-sel', source: 'chat' }, 'finished'), { id: 'a-sel', kind: 'finished' });
+  assert.equal(N.openPayload({ isTrusted: true }, { id: 'a sel', source: 'chat' }, 'question'), null);
+});
+
+test('AC-08 K-B2 multiselect cap: a chat pick set of more than 8 is refused on the card, never truncated', () => {
+  const n = N.fromPending(N.chatAskPending({ id: 'a-10', kind: 'select', title: 't', multiSelect: true, options: Array.from({ length: 10 }, (_, i) => `o${i}`) }, 1));
+  const ok = { picked: [0, 1], text: '', other: false };
+  assert.equal(N.multiView(n, ok).canDone, true);
+  const nine = { picked: [0, 1, 2, 3, 4, 5, 6, 7, 8], text: '', other: false };
+  assert.deepEqual(N.multiView(n, nine), { label: 'Hecho (9)', canDone: false, reason: 'Hasta 8' });
+  assert.equal(N.chatReply(n, { picks: N.pickedLabels(n, nine) }), null, 'the refused draft has no verb at all');
+  // Pi\'s own structured questions keep their rule
+  assert.equal(N.multiView(N.fromPending(multiP()), { picked: [0, 1, 2], text: '', other: false }).canDone, true);
+});
+
+// ---- BEHAVIOUR: the real notify.js answers the daemon's asks through chat_action ----------------------------------------
+const askRows = h => h.nodes['question-options'].children.filter(b => b.dataset && b.dataset.kind === 'option');
+const askPrimary = h => h.nodes['question-primary'];
+
+test('BEHAVIOUR K-B2: a confirm ask wears the approval look and answers chat_action once with the boolean', async () => {
+  const h = harness({ phase: 'expanded', view: 'overview' }, { question: snap(null) });
+  await settle(); await settle(); h.pastGuard();
+  h.push('chat:state', chatState([ASK_CONFIRM]));
+  await settle(); h.pastGuard();
+  assert.equal(h.nodes.capsule.dataset.question, 'pending', 'the card is on screen');
+  assert.equal(h.nodes.question.dataset.look, 'approval');
+  const buttons = h.nodes['question-approval-actions'].children;
+  assert.deepEqual(buttons.map(b => b.dataset.index), ['1', '0'], 'Rechazar N | Aprobar Y: the approval look');
+  const labelOf = b => b.children.map(c => c.textContent).join(' ');
+  assert.deepEqual(buttons.map(labelOf), ['Rechazar N', 'Aprobar Y'], 'the look\'s own labels and keys, never a chat word');
+  h.click(buttons.find(b => b.dataset.index === '0'));
+  h.click(buttons.find(b => b.dataset.index === '0')); // a double click sends nothing more
+  await settle(); await settle();
+  assert.deepEqual(h.chatCalls(), [{ action: 'answer', ask_id: 'a-yes', confirmed: true }], 'one closed chat_action verb');
+  // the daemon accepted it and the ask leaves the list: «Recibida», nothing else sent
+  h.push('chat:state', chatState([], { answered_asks: ['a-yes'] }));
+  await settle();
+  assert.equal(h.nodes['question-state-word'].textContent, 'Recibida');
+  assert.equal(h.chatCalls().length, 1, 'a second answer never leaves the page');
+});
+
+test('BEHAVIOUR K-B2: a select answers with the SHOWN label through chat_action; «Omitir» cancels', async () => {
+  const h = harness({ phase: 'expanded', view: 'overview' }, { question: snap(null) });
+  await settle(); await settle(); h.pastGuard();
+  h.push('chat:state', chatState([ASK_SELECT]));
+  await settle(); h.pastGuard();
+  const rows = askRows(h);
+  assert.deepEqual(rows.map(b => b.title), ['main', 'dev', 'prod'], 'every shown option is a row, in the daemon\'s order');
+  h.click(rows[1]);
+  await settle(); await settle();
+  assert.deepEqual(h.chatCalls(), [{ action: 'answer', ask_id: 'a-sel', value: 'dev' }]);
+  // a fresh island: «Omitir» is the daemon's cancelled
+  const q = harness({ phase: 'expanded', view: 'overview' }, { question: snap(null) });
+  await settle(); await settle(); q.pastGuard();
+  q.push('chat:state', chatState([ASK_SELECT]));
+  await settle(); q.pastGuard();
+  q.click(q.nodes['question-skip']);
+  await settle(); await settle();
+  assert.deepEqual(q.chatCalls(), [{ action: 'answer', ask_id: 'a-sel', cancelled: true }]);
+});
+
+test('BEHAVIOUR K-B2: a multiSelect ask sends the picked labels as picks; a 9th pick is refused on the card', async () => {
+  const h = harness({ phase: 'expanded', view: 'overview' }, { question: snap(null) });
+  await settle(); await settle(); h.pastGuard();
+  h.push('chat:state', chatState([ASK_MULTI]));
+  await settle(); h.pastGuard();
+  const rows = () => askRows(h);
+  h.click(rows()[2]); h.click(rows()[0]); // Vitest, then ESLint
+  await settle(); h.pastGuard();
+  assert.equal(askPrimary(h).textContent, 'Hecho (2)');
+  assert.equal(askPrimary(h).dataset.kind, 'done');
+  h.click(askPrimary(h));
+  await settle(); await settle();
+  assert.deepEqual(h.chatCalls(), [{ action: 'answer', ask_id: 'a-multi', picks: ['ESLint', 'Vitest'] }], 'the SHOWN labels, in the card\'s order');
+  // a ninth pick is refused ON THE CARD (never truncated to eight and sent): the daemon takes 1..8 distinct labels
+  const wide = harness({ phase: 'expanded', view: 'overview' }, { question: snap(null) });
+  await settle(); await settle(); wide.pastGuard();
+  wide.push('chat:state', chatState([{ ...ASK_MULTI, id: 'a-10', options: Array.from({ length: 10 }, (_, i) => `o${i}`) }]));
+  await settle(); wide.pastGuard();
+  for (let i = 0; i < 9; i += 1) { wide.click(askRows(wide)[i]); await settle(); wide.pastGuard(); }
+  assert.equal(askPrimary(wide).textContent, 'Hecho (9)');
+  assert.equal(askPrimary(wide).disabled, true, 'nine picks: «Hecho» is not pressable');
+  assert.equal(wide.nodes['question-reason'].textContent, 'Hasta 8', 'the card says why, in words');
+  wide.click(askPrimary(wide));
+  await settle(); await settle();
+  assert.deepEqual(wide.chatCalls(), [], 'nothing was sent');
+});
+
+test('BEHAVIOUR K-B2: an input ask shows the field at once and sends the typed text as value, with no QP/1 byte budget', async () => {
+  const h = harness({ phase: 'expanded', view: 'overview' }, { question: snap(null) });
+  await settle(); await settle(); h.pastGuard();
+  h.push('chat:state', chatState([ASK_INPUT]));
+  await settle(); h.pastGuard();
+  assert.equal(h.nodes['question-freeform'].hidden, false, 'the field is there without opening «Otra cosa…»');
+  h.nodes['question-text'].value = 'mi nombre';
+  h.nodes['question-text'].maxLength = 2000;
+  h.fire(h.nodes['question-freeform'], 'submit');
+  await settle(); await settle();
+  assert.deepEqual(h.chatCalls(), [{ action: 'answer', ask_id: 'a-txt', value: 'mi nombre' }], 'the user\'s own words, untouched');
+  assert.equal(h.calls.some(c => c && c.action === 'budget'), false, 'an island-agent ask has no QP/1 byte budget to ask for');
+});
+
+test('BEHAVIOUR K-B2: an ask that closes elsewhere withdraws the card; nothing is sent and no word is invented', async () => {
+  const h = harness({ phase: 'expanded', view: 'overview' }, { question: snap(null) });
+  await settle(); await settle(); h.pastGuard();
+  h.push('chat:state', chatState([ASK_SELECT]));
+  await settle(); h.pastGuard();
+  assert.equal(askRows(h).length, 3);
+  h.push('chat:state', chatState([]));
+  await settle();
+  assert.equal(h.nodes.capsule.dataset.question, '', 'the card is withdrawn (S4)');
+  assert.equal(h.nodes['question-options'].children.length, 0);
+  assert.equal(h.nodes['question-state'].hidden, true, 'no «Recibida» for a question the daemon never called answered');
+  assert.deepEqual(h.chatCalls(), []);
+});
+
+test('BEHAVIOUR K-B2: a refused answer shows as refused and changes nothing else; the card waits for the daemon', async () => {
+  const refused = { code: 'ask_closed', message: 'Esa pregunta ya no está abierta.' };
+  const h = harness({ phase: 'expanded', view: 'overview' }, { question: snap(null) });
+  await settle(); await settle(); h.pastGuard();
+  h.push('chat:state', chatState([ASK_CONFIRM]));
+  await settle(); h.pastGuard();
+  h.respond((cmd, p) => (cmd === 'chat_action' && p.action === 'answer' ? Promise.reject(refused) : null));
+  const approve = h.nodes['question-approval-actions'].children.find(b => b.dataset.index === '0');
+  h.click(approve);
+  await settle(); await settle(); await settle();
+  assert.equal(h.nodes['question-live'].textContent, 'Esa pregunta ya no está abierta.', 'the refusal is announced');
+  assert.equal(h.nodes['question-state-word'].textContent, 'Rechazada', 'and shown, without pretending it was answered');
+  assert.equal(h.nodes.capsule.dataset.question, 'pending', 'nothing else changed: the daemon closes it');
+  assert.equal(h.chatCalls().length, 1);
+  // the daemon then closes the ask: the card leaves without inventing an outcome
+  h.push('chat:state', chatState([]));
+  await settle();
+  assert.equal(h.nodes.capsule.dataset.question, '');
+  assert.equal(h.chatCalls().length, 1, 'a refusal never retries by itself');
+});
+
+test('BEHAVIOUR K-B2: when both lanes carry a request the QP/1 question stays head and the chat ask waits its turn', async () => {
+  const h = harness({ phase: 'expanded', view: 'overview' }); // the boot view: one live Pi question
+  await settle(); await settle(); h.pastGuard();
+  assert.equal(h.nodes['question-body'].textContent, '¿Qué rama uso?');
+  h.push('chat:state', chatState([ASK_SELECT]));
+  await settle(); h.pastGuard();
+  assert.equal(h.nodes['question-body'].textContent, '¿Qué rama uso?', 'the QP/1 question keeps the head, unchanged');
+  assert.deepEqual(h.chatCalls(), [], 'nothing of the chat ask was answered');
+  // the Pi question resolves (the old lane, unchanged) and the chat ask becomes the head
+  h.push('question:state', snap(null, { notice: 'answered' }));
+  await settle(); h.pastGuard();
+  assert.equal(askRows(h).length, 3, 'the chat ask is on screen now');
+  assert.equal(h.nodes.question.dataset.look, '');
+});
+
+test('AC-08 K-B2 wiring: notify.js listens to chat:state next to question:state and only answers chat asks through chat_action', () => {
+  const src = fs.readFileSync(path.join(frontend, 'notify.js'), 'utf8');
+  assert.match(src, /listen\('chat:state'/, 'the island-agent lane is a second source of the same card');
+  assert.match(src, /invoke\('chat_action'/, 'the answer goes through the daemon chat lane');
+  assert.match(src, /function headSnap|const headSnap/, 'one head: the QP/1 question stays first while it is pending');
+  assert.match(src, /N\.chatReply\(/, 'the verb is the shared pure mapper, never built in the page');
+  assert.match(src, /N\.createChatChannel\(/, 'the 120 s sentinel and the outcome live in the pure channel');
+  assert.doesNotMatch(src, /innerHTML[^\n]*(title|message|label|options)/, 'ask text stays plain text');
+});
+
+// ONE summary for the whole file, after every async behaviour check has settled (a failure fails the run).
+Promise.all(pendingTests).then(() => console.log(`notify-view-check: ${passed} passed`), e => { console.error(e && e.stack ? e.stack : e); process.exit(1); });

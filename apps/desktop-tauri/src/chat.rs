@@ -215,6 +215,8 @@ pub enum AskAnswer {
     Value(String),
     Confirmed(bool),
     Cancelled,
+    /// AC-08: the shown labels picked on a `multiSelect` ask (1..=8, distinct; checked by the chat client).
+    Picks(Vec<String>),
 }
 
 /// K2-05 U4b: the daemon's bound of an answer `value` (`LIMITS.maxAnswerChars`, UTF-16 units).
@@ -327,8 +329,17 @@ pub fn parse_command(payload: &Value) -> Result<Command, ChatError> {
                 attachments,
             })
         }
-        "answer" if keys(&["action", "ask_id", "value"]) || keys(&["action", "ask_id", "confirmed"]) || keys(&["action", "ask_id", "cancelled"]) => {
+        "answer" if keys(&["action", "ask_id", "value"]) || keys(&["action", "ask_id", "confirmed"]) || keys(&["action", "ask_id", "cancelled"]) || keys(&["action", "ask_id", "picks"]) => {
             let ask_id = text_of("ask_id").filter(|id| valid_ask_id(id)).ok_or_else(bad)?;
+            if let Some(picks) = map.get("picks") {
+                let list = picks.as_array().filter(|l| !l.is_empty() && l.len() <= 8).ok_or_else(bad)?;
+                let mut labels = Vec::with_capacity(list.len());
+                for l in list {
+                    let l = l.as_str().filter(|l| valid_answer_value(l)).ok_or_else(bad)?;
+                    labels.push(l.to_owned());
+                }
+                return Ok(Command::Answer { ask_id, answer: AskAnswer::Picks(labels) });
+            }
             let answer = match (map.get("value"), map.get("confirmed"), map.get("cancelled")) {
                 (Some(Value::String(v)), None, None) if valid_answer_value(v) => AskAnswer::Value(v.clone()),
                 (None, Some(Value::Bool(b)), None) => AskAnswer::Confirmed(*b),

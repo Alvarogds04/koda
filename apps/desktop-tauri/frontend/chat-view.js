@@ -472,11 +472,13 @@
     for (const a of list) {
       if (out.length >= MAX_ASK_CARDS) break;
       if (!a || typeof a !== 'object' || typeof a.id !== 'string' || !ASK_ID.test(a.id) || !ASK_KINDS.has(a.kind)) continue;
-      out.push({
+      const card = {
         id: a.id, kind: a.kind, title: askText(a.title), message: askText(a.message), placeholder: askText(a.placeholder),
         options: a.kind === 'select' && Array.isArray(a.options) ? a.options.filter(o => typeof o === 'string') : [],
         answering: a.answering === true,
-      });
+      };
+      if (a.kind === 'select' && a.multiSelect === true) card.multiSelect = true; // AC-08: only when it is one
+      out.push(card);
     }
     return out;
   }
@@ -487,6 +489,7 @@
   }
   /** The ONE closed `answer` verb for an answer: `{value}` (select/input), `{confirmed}` or `{cancelled}`. */
   function askPayload(askId, answer) {
+    if (answer && Array.isArray(answer.picks)) return { action: 'answer', ask_id: askId, picks: answer.picks.slice() };
     if (answer && typeof answer.value === 'string') return { action: 'answer', ask_id: askId, value: answer.value };
     if (answer && typeof answer.confirmed === 'boolean') return { action: 'answer', ask_id: askId, confirmed: answer.confirmed };
     return { action: 'answer', ask_id: askId, cancelled: true };
@@ -497,6 +500,7 @@
     if (sent.answered === true) return 'Se envió tu respuesta.';
     if (sent.cancelled) return 'Omitiste la pregunta.';
     if (typeof sent.confirmed === 'boolean') return `Respondiste: ${sent.confirmed ? 'Sí' : 'No'}`;
+    if (Array.isArray(sent.picks)) return `Elegiste: ${cleanLine(sent.picks.join(', '), ASK_OUTCOME_MAX)}`;
     const shown = cleanLine(sent.value, ASK_OUTCOME_MAX);
     if (ask && ask.kind === 'select') return `Elegiste: ${shown}`;
     return shown ? `Respondiste: ${shown}` : 'Respondiste sin texto.';

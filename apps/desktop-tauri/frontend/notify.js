@@ -27,6 +27,10 @@
     || (window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke) || null;
   const listen = (window.__TAURI__ && window.__TAURI__.event && window.__TAURI__.event.listen) || null;
   const action = payload => (invoke ? invoke('question_action', { payload }) : Promise.reject(new Error('no ipc')));
+  // AC-08 (K-B2): the island-agent/1 asks travel on the daemon CHAT lane and are answered through `chat_action` — the same closed
+  // verb the chat card sends (`{action:'answer', ask_id, value|confirmed|cancelled|picks}`). `chat_action` admits the main window
+  // (the island) and the window gate lives in Rust, never here.
+  const chatAction = payload => (invoke ? invoke('chat_action', { payload }) : Promise.reject(new Error('no ipc')));
   const icon = name => ICONS.svg(name);
   // Icons are DOM NODES parsed from the CLOSED own registry's literal markup (never data), like island.js: no markup sink in this file.
   const svgParser = typeof DOMParser === 'function' ? new DOMParser() : null;
@@ -63,7 +67,16 @@
     if (active && expiryTimer === null) expiryTimer = setInterval(() => render(), 5000);
     else if (!active && expiryTimer !== null) { clearInterval(expiryTimer); expiryTimer = null; }
   }
+  // AC-08 (K-B2): TWO sources, ONE card. `question:state` (the QP/1 lane, K-C removes it later) and `chat:state` (the daemon's
+  // island-agent/1 asks). `snapshot` is always the HEAD the card draws; the two lanes are kept and the head is recomputed.
   let snapshot = null;
+  let questionSnap = null; // the QP/1 lane, byte for byte the one it always was
+  let chatSnap = null;     // the island-agent lane, mapped by the pure channel below
+  const chatChannel = N.createChatChannel ? N.createChatChannel() : null;
+  // an ask answered from this card sends ONCE: the id is marked before the write and a second gesture sends nothing
+  const MAX_CHAT_SENT = 32;
+  const chatSent = new Set();
+  let refused = null; // the ask whose answer the daemon refused (ask_closed / ask_answered): shown, and nothing else changes
   let previous = null;
   let inFlight = false;
   let budget = null;
@@ -114,6 +127,8 @@
   function current() {
     const view = N.phase(snapshot, { inFlight, now: Date.now() });
     if (view.kind === 'outcome' && Date.now() >= outcomeUntil) return { kind: 'none', controlsEnabled: false };
+    // AC-08: the answer already left this card: it waits for the daemon (the card stays, the controls are dead)
+    if (view.notification && view.notification.source === 'chat' && chatSent.has(view.notification.id)) return { ...view, controlsEnabled: false };
     return view;
   }
   // Every answering path (click, key, text, skip) requires the notification to be
@@ -328,8 +343,42 @@
     if (intent.type === 'move') { moveFocus(intent.delta); return; }
     if (intent.type === 'next' || intent.type === 'back' || intent.type === 'prev') { wizard = N.formReduce(n, wizard, { type: intent.type }); render(); return; }
     if (intent.type === 'text') { if (!sendEl.disabled) freeform.requestSubmit(); return; }
-    if (intent.type === 'done') sendStructured(event, N.manyPayload(n, multiDraft));
+    if (intent.type === 'done') sendDone(event, n);
     if (intent.type === 'send') sendStructured(event, N.formPayload(n, wizard));
+  }
+  // AC-08: the closed `answer_many` verb is the QP/1 lane's; an island-agent ask takes its SHOWN labels as `picks`
+  function sendDone(event, n) {
+    if (!n) return;
+    if (n.source === 'chat') { sendChat(event, n, N.chatReply(n, { picks: N.pickedLabels(n, multiDraft) })); return; }
+    sendStructured(event, N.manyPayload(n, multiDraft));
+  }
+  // AC-08: one answer per ask, through the daemon chat lane. A refused answer (ask_closed / ask_answered) is SHOWN as refused and
+  // changes nothing else — the card stays until the daemon's own next state closes it; any other refusal frees the card again.
+  function sendChat(event, n, payload) {
+    if (!N.trusted(event) || !n || n.source !== 'chat' || !payload) return;
+    if (!onScreen() || inHeadGuard() || n.id !== renderedId || chatSent.has(n.id) || inFlight) return;
+    const view = current();
+    if (!view.notification || !view.controlsEnabled || view.notification.id !== n.id) return;
+    chatSent.add(n.id);
+    if (chatSent.size > MAX_CHAT_SENT) chatSent.delete(chatSent.values().next().value);
+    answered = { id: n.id, role: 'option' };
+    inFlight = true; render();
+    chatAction(payload).then(() => {
+      inFlight = false; refused = null;
+      if (typeof payload.value === 'string') textEl.value = '';
+      render(); // the daemon publishes chat:state right after: the card leaves, or shows «Recibida»
+    }, error => {
+      inFlight = false;
+      const code = error && error.code;
+      if (code === 'ask_closed' || code === 'ask_answered') {
+        refused = n.id; render();
+        say((error && error.message) || 'Esa pregunta ya no está disponible.');
+        return;
+      }
+      chatSent.delete(n.id); // a failed write was never an answer: the card is answerable again
+      render();
+      say((error && error.message) || 'No se pudo enviar.');
+    });
   }
   function sendStructured(event, payload) {
     if (!N.trusted(event) || !onScreen() || !payload || inHeadGuard() || payload.id !== renderedId) return;
@@ -377,7 +426,9 @@
     if (n) {
       const fresh = renderedId !== n.id, swapped = fresh && renderedId !== null;
       if (fresh) {
-        renderedId = n.id; textEl.value = ''; budget = null; multiDraft = N.newDraft(); wizard = n.form ? N.formStart(n) : null; rowsKey = '';
+        renderedId = n.id; textEl.value = ''; budget = null; refused = null; wizard = n.form ? N.formStart(n) : null; rowsKey = '';
+        // AC-08: an island-agent `input` ask IS a text field — «Otra cosa…» is already open (there are no options to pick first)
+        multiDraft = n.source === 'chat' && n.allowFreeText ? { ...N.newDraft(), other: true } : N.newDraft();
         say(headSay(n));
       }
       body.textContent = n.text;
@@ -399,7 +450,7 @@
       expiryEl.setAttribute('aria-label', `Vence en ${N.expiryWord(n.expiresAt, Date.now())}`);
       expiryEl.dataset.tone = view.kind === 'expired' ? 'faint' : 'sun';
     } else {
-      answered = null; focusedId = null; visibleId = null; delete root.dataset.enter;
+      answered = null; focusedId = null; visibleId = null; refused = null; delete root.dataset.enter;
       renderedId = null; rowsKey = ''; rowsFor = null; approvalFor = null; body.textContent = ''; if (askerName) askerName.textContent = ''; if (queueEl) { queueEl.textContent = ''; queueEl.hidden = true; } optionsEl.textContent = ''; freeform.hidden = true; expiryEl.hidden = true; skipEl.disabled = true;
     }
     paintCard(n, view);
@@ -410,8 +461,11 @@
     fitCard();
   }
 
+  // AC-08: a refused answer (the question was already closed or answered elsewhere) is shown where an outcome is shown, while the
+  // card itself stays exactly as it was: nothing else changes, and the daemon's own next state decides what happens.
+  const refusalOf = view => (refused !== null && view && view.notification && view.notification.id === refused ? N.outcomeView('rejected') : null);
   function paintState(view) {
-    const o = view.outcome || null;
+    const o = view.outcome || refusalOf(view);
     stateEl.hidden = !o;
     if (!o) return;
     stateEl.dataset.tone = o.tone;
@@ -480,14 +534,15 @@
     textEl.dataset.invalid = word ? 'true' : 'false';
     const sn = snapshot && N.fromPending(snapshot.pending);
     sendEl.hidden = !!(sn && (sn.form || sn.multiSelect));
-    sendEl.disabled = sendEl.hidden || !(view.controlsEnabled && N.canSendText(budget, text));
+    const canSend = sn && sn.source === 'chat' ? text.trim().length > 0 : N.canSendText(budget, text);
+    sendEl.disabled = sendEl.hidden || !(view.controlsEnabled && canSend);
   }
 
   // ---- answering: trusted gestures only -------------------------------------
   function finish(next, sent) {
     inFlight = false;
     // a state pushed while the send was in flight is newer than this reply: keep it (the ack can beat the invoke)
-    if (next && typeof next === 'object' && N.replyIsCurrent(sent, pushSeq)) apply(next); else render();
+    if (next && typeof next === 'object' && N.replyIsCurrent(sent, pushSeq)) { questionSnap = next; refresh(); } else render();
   }
   let pushSeq = 0;
   function choose(event, index) {
@@ -495,6 +550,7 @@
     if (!onScreen() || inHeadGuard()) return;
     const view = current();
     if (!view.notification || !view.controlsEnabled) return;
+    if (view.notification.source === 'chat') { sendChat(event, view.notification, N.chatReply(view.notification, { index })); return; }
     const sent = pushSeq;
     const look = approvalOf(view.notification), act = look && look.actions.find(a => a.index === index);
     answered = { id: view.notification.id, role: act ? act.role : 'option' };
@@ -507,6 +563,7 @@
     if (!onScreen() || inHeadGuard()) return;
     const view = current();
     if (!view.notification || !view.controlsEnabled) return;
+    if (view.notification.source === 'chat') { sendChat(event, view.notification, N.chatReply(view.notification, { cancelled: true })); return; }
     const sent = pushSeq;
     answered = { id: view.notification.id, role: 'decline' };
     inFlight = true; render();
@@ -516,7 +573,10 @@
     event.preventDefault();
     if (!N.trusted(event) || !onScreen() || inHeadGuard()) return;
     const view = current();
-    if (!view.notification || !view.controlsEnabled || view.notification.id !== renderedId || !N.canSendText(budget, textEl.value)) return;
+    if (!view.notification || !view.controlsEnabled || view.notification.id !== renderedId) return;
+    // AC-08: an island-agent `input` ask takes the typed text as its `value`; the QP/1 byte budget does not exist on that lane
+    if (view.notification.source === 'chat') { sendChat(event, view.notification, N.chatReply(view.notification, { text: textEl.value })); return; }
+    if (!N.canSendText(budget, textEl.value)) return;
     const text = textEl.value;
     const sent = pushSeq;
     inFlight = true; render();
@@ -538,6 +598,7 @@
     const view = current();
     if (!view.notification) return;
     const sn = snapshot && N.fromPending(snapshot.pending);
+    if (sn && sn.source === 'chat') { paintText(view); return; } // AC-08: that lane has no byte budget to ask
     if (sn) { // the draft lives in the page; a structured answer is validated again by the host on send (all-or-nothing)
       if (sn.form) wizard = N.formReduce(sn, wizard, { type: 'text', text: textEl.value });
       else multiDraft = N.setDraftText(stepItem(sn), multiDraft, textEl.value);
@@ -576,6 +637,33 @@
   });
 
   // ---- state stream ------------------------------------------------------------------
+  // AC-08 (K-B2): ONE head out of two sources. A live QP/1 question always keeps the card (that lane is unchanged, and K-C removes
+  // it later); a live island-agent ask is next; otherwise whichever lane has an outcome to show, the QP/1 one first.
+  function headSnap() {
+    const q = questionSnap, c = chatSnap;
+    if (!q) return c;
+    if (!c) return q;
+    const live = s => !!s && s.available !== false && !!N.fromPending(s.pending); // an unavailable lane holds nothing
+    if (live(q)) return q;
+    if (live(c)) return c;
+    return (q.notice ? q : null) || (c.notice ? c : null) || q;
+  }
+  // A channel moved: re-derive the head. An IDENTICAL push is not a repaint either: the card already shows that state, and the
+  // chat lane pushes on every streamed chunk (the pure channel hands back the very same object when nothing changed).
+  function refresh() {
+    const next = headSnap();
+    if (next === snapshot) return;
+    if (!next) { render(); return; }
+    apply(next);
+  }
+  // AC-08: `chat:state` is the island-agent lane. An ask that left the list frees its once-only mark, so a genuine re-issue of the
+  // same id can be answered again, and never a stale one.
+  function chatPushed(payload) {
+    const live = new Set((payload && Array.isArray(payload.asks) ? payload.asks : []).map(a => a && a.id));
+    for (const id of [...chatSent]) if (!live.has(id)) chatSent.delete(id);
+    chatSnap = chatChannel ? chatChannel.view(payload, Date.now()) : null;
+    if (chatSnap) refresh();
+  }
   function apply(next) {
     if (!next || typeof next !== 'object') return;
     if (N.regressesToSent(snapshot, next)) return; // never roll a delivered answer back to «Enviada»
@@ -604,6 +692,7 @@
   });
   document.addEventListener('island:view', render);
   new MutationObserver(render).observe(capsule, { attributes: true, attributeFilter: ['data-card', 'data-view', 'data-phase'] });
-  if (listen) listen('question:state', event => { pushSeq += 1; apply(event && event.payload); }).catch(() => {});
-  action({ action: 'view' }).then(apply, () => {});
+  if (listen) listen('question:state', event => { pushSeq += 1; questionSnap = event && event.payload; refresh(); }).catch(() => {});
+  if (listen && chatChannel) listen('chat:state', event => { chatPushed(event && event.payload); }).catch(() => {});
+  action({ action: 'view' }).then(view => { questionSnap = view; refresh(); }, () => {});
 })();

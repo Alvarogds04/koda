@@ -1442,3 +1442,47 @@ fn attachments_history_messages_keep_their_chips() {
     ]}));
     assert_eq!(view(&st)["messages"][0]["attachments"], json!([{"name":"foto.png","size":12,"mime":"image/png"}]));
 }
+
+// ---- AC-08 K-B: multi-select asks answer with `picks` (island-agent/1 `ui_response`) -------------------------
+
+fn multi() -> ChatState {
+    let mut st = ChatState::connected();
+    st.apply(&json!({"type":"ask","id":"m-1","kind":"select","title":"¿Cuáles?","options":["Uno","Dos\u{7}","Tres"],"multiSelect":true}));
+    st.apply(&json!({"type":"ask","id":"s-1","kind":"select","title":"¿Una?","options":["A","B"]}));
+    st.apply(&json!({"type":"ask","id":"c-1","kind":"confirm","title":"¿Seguro?","multiSelect":true}));
+    st
+}
+
+#[test]
+fn a_multi_select_ask_is_answered_with_picks_of_the_exact_labels() {
+    let st = multi();
+    let cmd = st.command(CHAT_WINDOW_LABEL, &json!({"action":"chat_ui_response","askId":"m-1","answer":["Uno","Dos"]})).unwrap();
+    assert_eq!(cmd.line(), "{\"type\":\"ui_response\",\"id\":\"m-1\",\"picks\":[[\"Uno\",\"Dos\u{7}\"]]}\n".replace("\u{7}", "\\u0007"));
+    let shown = serde_json::to_value(&st).unwrap();
+    let asks = shown["asks"].as_array().unwrap();
+    assert_eq!(asks.iter().find(|a| a["id"] == "m-1").unwrap()["multi_select"], true);
+    assert!(asks.iter().find(|a| a["id"] == "s-1").unwrap().get("multi_select").is_none());
+    assert!(asks.iter().find(|a| a["id"] == "c-1").unwrap().get("multi_select").is_none(), "multiSelect only counts on a select");
+}
+
+#[test]
+fn picks_are_refused_unless_the_ask_is_multi_and_every_label_was_shown_once() {
+    let ans = |id: &str, a: Value| multi().command(CHAT_WINDOW_LABEL, &json!({"action":"chat_ui_response","askId":id,"answer":a})).is_ok();
+    assert!(!ans("s-1", json!(["A"])), "single-select takes a value, not picks");
+    assert!(!ans("c-1", json!(["x"])), "multiSelect is only for select asks; a confirm never takes picks");
+    assert!(!ans("m-1", json!([])), "at least one pick");
+    assert!(!ans("m-1", json!(["Uno","Uno"])), "distinct");
+    assert!(!ans("m-1", json!(["Cuatro"])), "only shown labels");
+    assert!(!ans("m-1", json!(["Uno", 3])), "strings only");
+    assert!(!ans("m-1", json!((0..9).map(|i| format!("o{i}")).collect::<Vec<_>>())), "at most 8");
+    // a multi ask still takes a single value (degrades to one pick) and a cancel
+    assert!(ans("m-1", json!("Tres")));
+    assert!(ans("m-1", Value::Null));
+}
+
+#[test]
+fn a_confirm_never_registers_as_multi_and_single_select_stays_as_before() {
+    let st = multi();
+    let cmd = st.command(CHAT_WINDOW_LABEL, &json!({"action":"chat_ui_response","askId":"s-1","answer":"B"})).unwrap();
+    assert_eq!(cmd.line(), "{\"type\":\"ui_response\",\"id\":\"s-1\",\"value\":\"B\"}\n");
+}
