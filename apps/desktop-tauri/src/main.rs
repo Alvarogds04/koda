@@ -325,8 +325,12 @@ fn start_transport(app: &AppHandle) {
             // Local address only; no received payloads or labels are logged.
             println!("KODA_DESKTOP_SOCKET={}", transport.endpoint().display());
             // P2: a stable `<runtime>/endpoint.json` so local hooks need no exported env.
-            if let Err(error) = koda_island::handoff::publish(transport.runtime(), transport.endpoint()) {
-                eprintln!("endpoint handoff not published: {error}");
+            match koda_island::handoff::publish(transport.runtime(), transport.endpoint()) {
+                Ok(koda_island::handoff::Published::Standby { owner_pid }) => {
+                    eprintln!("endpoint handoff kept by the running engine (pid {owner_pid}); Koda stays in standby");
+                }
+                Ok(koda_island::handoff::Published::Written) => {}
+                Err(error) => eprintln!("endpoint handoff not published: {error}"),
             }
             *state.transport.lock().expect("transport lock") = Some(transport);
         }

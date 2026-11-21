@@ -287,3 +287,65 @@ fn the_socket_path_limit_matches_this_kernel() {
     #[cfg(target_os = "macos")]
     assert_eq!(super::SUN_PATH_MAX, 103);
 }
+
+// ---- AC-08 K-A: one owner of endpoint.json — the engine (jesscore) keeps it, Koda stays in standby -------------
+
+/// A live process that is not us: our parent (the test runner's launcher).
+fn foreign_live_pid() -> u32 { std::os::unix::process::parent_id() }
+
+fn engine_file(root: &Path, endpoint: &Path, pid: u32) -> String {
+    let text = format!("{{\"v\":1,\"endpoint\":{:?},\"pid\":{pid}}}\n", endpoint.to_str().unwrap());
+    std::fs::write(path(root), &text).unwrap();
+    std::fs::set_permissions(path(root), std::fs::Permissions::from_mode(0o600)).unwrap();
+    text
+}
+
+#[test]
+fn engine_first_then_koda_leaves_the_engine_endpoint_untouched() {
+    let root = fresh_root();
+    let (engine_ep, _e) = bound(&root, "p-engine");
+    let (koda_ep, _k) = bound(&root, "p-koda11");
+    let before = engine_file(&root, &engine_ep, foreign_live_pid());
+    let out = publish(&root, &koda_ep).unwrap();
+    assert_eq!(out, Published::Standby { owner_pid: foreign_live_pid() });
+    assert_eq!(std::fs::read_to_string(path(&root)).unwrap(), before, "byte for byte the engine's file");
+    assert_eq!(read(&root), Some(engine_ep.clone()), "hooks still reach the engine");
+    clear(&root, &koda_ep);
+    assert_eq!(read(&root), Some(engine_ep), "Koda's clear never removes the engine's file");
+}
+
+#[test]
+fn koda_first_then_engine_the_engine_replaces_it_and_koda_does_not_take_it_back_on_exit() {
+    let root = fresh_root();
+    let (koda_ep, _k) = bound(&root, "p-koda11");
+    assert_eq!(publish(&root, &koda_ep).unwrap(), Published::Written);
+    assert_eq!(read(&root), Some(koda_ep.clone()));
+    // the engine's own rule (engine/src/notices/handoff.cjs): it stays standby while a LIVE foreign pid owns the
+    // file, so the cession on Koda's side is: a file naming a dead Koda is replaceable, and Koda's clear only removes its own.
+    let (engine_ep, _e) = bound(&root, "p-engine");
+    engine_file(&root, &engine_ep, foreign_live_pid());
+    clear(&root, &koda_ep);
+    assert_eq!(read(&root), Some(engine_ep), "Koda's exit leaves the engine's file in place");
+}
+
+#[test]
+fn a_dead_or_our_own_previous_owner_is_replaced() {
+    let root = fresh_root();
+    let (old, l) = bound(&root, "p-old111");
+    engine_file(&root, &old, 4194999);
+    drop(l);
+    let (ours, _k) = bound(&root, "p-koda11");
+    assert_eq!(publish(&root, &ours).unwrap(), Published::Written);
+    assert_eq!(read(&root), Some(ours));
+}
+
+#[test]
+fn a_live_foreign_pid_with_another_start_time_is_a_recycled_pid_and_is_replaced() {
+    let root = fresh_root();
+    let (old, _o) = bound(&root, "p-old111");
+    let text = format!("{{\"v\":1,\"endpoint\":{:?},\"pid\":{},\"procStart\":\"1\"}}\n", old.to_str().unwrap(), foreign_live_pid());
+    std::fs::write(path(&root), text).unwrap();
+    let (ours, _k) = bound(&root, "p-koda11");
+    assert_eq!(publish(&root, &ours).unwrap(), Published::Written);
+    assert_eq!(read(&root), Some(ours));
+}
