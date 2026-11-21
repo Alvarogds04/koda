@@ -337,7 +337,7 @@
   function askSig(rec) {
     const a = rec.ask;
     return JSON.stringify([rec.phase, !!rec.waiting, rec.problem || '', rec.closedText || '', rec.phase === 'closed' ? V.askOutcome(a, rec.sent) : '',
-      a.kind, a.title, a.message, a.placeholder, a.options]);
+      a.kind, a.title, a.message, a.placeholder, a.options, !!a.multiSelect, [...(rec.picks || [])]]);
   }
   function paintAsk(rec) {
     const sig = askSig(rec);
@@ -366,7 +366,33 @@
       m.tabIndex = 0; m.setAttribute('aria-label', `Detalles: ${ask.message}`);
       li.append(m);
     }
-    if (ask.kind === 'select') {
+    if (ask.kind === 'select' && ask.multiSelect) {
+      // AC-08: several picks (1..8 of the shown labels); the toggles are plain buttons, «Enviar elección» sends once
+      const picks = rec.picks || (rec.picks = new Set());
+      const group = document.createElement('div');
+      group.className = 'ask-options';
+      group.dataset.askControl = 'options';
+      group.setAttribute('role', 'group');
+      group.setAttribute('aria-label', 'Opciones (puedes elegir varias)');
+      ask.options.forEach((option, i) => {
+        const b = askControl('button', 'pick', rec);
+        b.textContent = option;
+        b.dataset.index = String(i);
+        b.setAttribute('aria-pressed', picks.has(option) ? 'true' : 'false');
+        b.addEventListener('click', () => {
+          if (picks.has(option)) picks.delete(option); else if (picks.size < 8) picks.add(option);
+          rec.paintSig = ''; paintAsk(rec);
+        });
+        group.append(b);
+      });
+      li.append(group);
+      const submit = askControl('button', 'submit', rec);
+      submit.className = 'primary';
+      submit.textContent = 'Enviar elección';
+      submit.disabled = submit.disabled || picks.size === 0;
+      submit.addEventListener('click', () => sendAsk(rec, { picks: ask.options.filter(o => picks.has(o)) }));
+      li.append(submit);
+    } else if (ask.kind === 'select') {
       const group = document.createElement('div');
       group.className = 'ask-options';
       group.dataset.askControl = 'options';

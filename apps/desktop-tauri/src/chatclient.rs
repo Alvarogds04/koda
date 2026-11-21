@@ -189,6 +189,8 @@ pub enum ChatAnswer {
     Confirmed(bool),
     /// Cancel the ask (always valid, for every kind).
     Cancelled,
+    /// AC-08: the EXACT labels picked on a `multiSelect` ask, sent as `picks:[[…]]` (one inner list).
+    Picks(Vec<String>),
 }
 
 impl ChatAnswer {
@@ -197,6 +199,7 @@ impl ChatAnswer {
             ChatAnswer::Value(v) => ordered(&[("type", "ui_response"), ("id", id), ("value", v)]),
             // the boolean and the cancellation must travel as bare JSON literals, never quoted strings
             ChatAnswer::Confirmed(b) => format!("{{\"type\":\"ui_response\",\"id\":{},\"confirmed\":{}}}\n", serde_json::to_string(id).unwrap_or_default(), b),
+            ChatAnswer::Picks(labels) => format!("{{\"type\":\"ui_response\",\"id\":{},\"picks\":[{}]}}\n", serde_json::to_string(id).unwrap_or_default(), serde_json::to_string(labels).unwrap_or_default()),
             ChatAnswer::Cancelled => format!("{{\"type\":\"ui_response\",\"id\":{},\"cancelled\":true}}\n", serde_json::to_string(id).unwrap_or_default()),
         }
     }
@@ -268,6 +271,9 @@ pub struct ChatAsk {
     /// K2-05 U4b: an input's hint (Gentle Dot `Ask.placeholder`), white-labelled by the daemon.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub placeholder: Option<String>,
+    /// AC-08: a `select` that takes several picks (`multiSelect:true`; ignored on any other kind).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub multi_select: bool,
     /// The EXACT strings the ask frame carried, position-matched to `options`:
     /// an answer travels as received — control characters are stripped for display
     /// only, never in the answer (the daemon matches its pending ask against what
@@ -1065,7 +1071,8 @@ fn ask_view(frame: &Value) -> Option<ChatAsk> {
     let detail = |key: &str, max: usize| frame.get(key).and_then(Value::as_str).map(|t| clip_utf16(t, max)).filter(|t| !t.is_empty());
     let message = detail("message", MAX_ASK_MESSAGE_CHARS);
     let placeholder = if kind == "input" { detail("placeholder", MAX_ASK_PLACEHOLDER_CHARS) } else { None };
-    Some(ChatAsk { id: id.to_owned(), kind: kind.to_owned(), title, options, message, placeholder, wire_options })
+    let multi_select = kind == "select" && frame.get("multiSelect").and_then(Value::as_bool) == Some(true);
+    Some(ChatAsk { id: id.to_owned(), kind: kind.to_owned(), title, options, message, placeholder, multi_select, wire_options })
 }
 
 /// The closed rebuild of one history message (the daemon already allowlisted its
@@ -1179,6 +1186,19 @@ fn parse_chat_command(asks: &[ChatAsk], payload: &Value) -> Result<ChatCommand, 
                     // a confirm ask takes the closed boolean; no other kind does
                     if ask.kind != "confirm" { return Err(CommandError); }
                     ChatAnswer::Confirmed(*b)
+                }
+                Some(Value::Array(list)) => {
+                    // AC-08 picks: only a multiSelect ask, 1..=8 DISTINCT shown labels, sent as received
+                    if !ask.multi_select || list.is_empty() || list.len() > 8 { return Err(CommandError); }
+                    let mut exact: Vec<String> = Vec::with_capacity(list.len());
+                    for pick in list {
+                        let Some(label) = pick.as_str() else { return Err(CommandError) };
+                        let Some(at) = ask.options.iter().position(|o| o == label) else { return Err(CommandError) };
+                        let Some(wire) = ask.wire_options.get(at) else { return Err(CommandError) };
+                        if exact.contains(wire) { return Err(CommandError); }
+                        exact.push(wire.clone());
+                    }
+                    ChatAnswer::Picks(exact)
                 }
                 Some(Value::String(v)) => {
                     if utf16_len(v) > MAX_ANSWER_CHARS { return Err(CommandError); }
@@ -1613,7 +1633,7 @@ fn asks_view(chat: &Value) -> Value {
             .filter_map(|a| {
                 let id = a.get("id")?.as_str()?;
                 let field = |k: &str| a.get(k).filter(|v| v.is_string()).cloned().unwrap_or(Value::Null);
-                Some(json!({
+                let mut view = json!({
                     "id": id,
                     "kind": a.get("kind")?.as_str()?,
                     "title": a.get("title").and_then(Value::as_str).unwrap_or(""),
@@ -1621,7 +1641,12 @@ fn asks_view(chat: &Value) -> Value {
                     "placeholder": field("placeholder"),
                     "options": a.get("options").filter(|o| o.is_array()).cloned().unwrap_or(json!([])),
                     "answering": answering.iter().any(|x| x.as_str() == Some(id)),
-                }))
+                });
+                // AC-08: present only on a multi-select ask, so every other ask's view is unchanged
+                if a.get("multi_select").and_then(Value::as_bool) == Some(true) {
+                    view["multiSelect"] = json!(true);
+                }
+                Some(view)
             })
             .collect(),
     )
@@ -2502,6 +2527,7 @@ impl ChatHost {
             AskAnswer::Value(v) => json!(v),
             AskAnswer::Confirmed(b) => json!(b),
             AskAnswer::Cancelled => Value::Null,
+            AskAnswer::Picks(labels) => json!(labels),
         };
         match link.command(caller, &json!({"action": "chat_ui_response", "askId": ask_id, "answer": value})) {
             Ok(_) => Ok(Routed::Answer(json!({"answered": true}))),
