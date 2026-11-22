@@ -77,6 +77,13 @@ fn read_session(path: &Path) -> Result<Session, Reason> {
     Ok(session)
 }
 
+/// AC-08/K-G: the pid of an ENGINE (jesscore, or any island daemon) that already runs on this island root,
+/// read from its `session.json` through the same checks the client uses (ours, 0600, a live pid). `None` when
+/// there is no session, it is stale or unsafe: then nothing owns the island and Koda may start its own daemon.
+pub fn engine_session_pid(island_root: &Path) -> Option<u32> {
+    read_session(&session_path(island_root)).ok().map(|s| s.pid)
+}
+
 #[cfg(target_os = "linux")]
 fn unsafe_uid() -> u32 {
     std::fs::metadata("/proc/self").map(|m| m.uid()).unwrap_or(u32::MAX)

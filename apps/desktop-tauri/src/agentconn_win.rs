@@ -67,6 +67,12 @@ pub fn session_path(island_root: &Path) -> PathBuf {
     island_root.join("runtime").join("session.json")
 }
 
+/// AC-08/K-G: whether an engine already runs on this island root. This target does not read the session file
+/// here, so it never claims one (Koda keeps its previous behaviour on this target).
+pub fn engine_session_pid(_island_root: &Path) -> Option<u32> {
+    None
+}
+
 /// Island root: an `KODA_ISLAND_DIR` override INSIDE the canonical protected
 /// `%LOCALAPPDATA%\Koda` root, or that root itself (`winpolicy::island_root`).
 /// `home` is unused here.
