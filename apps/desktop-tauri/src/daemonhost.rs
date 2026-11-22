@@ -44,8 +44,24 @@ pub struct HostSlot {
     /// #390: the exit status of a host child that died ON ITS OWN while the app lived.
     exited: Arc<Mutex<Option<std::process::ExitStatus>>>,
 }
+/// AC-08/K-G: Koda must not start its OWN daemon on an island root where an engine (jesscore) already runs: that
+/// daemon would validate the engine's config (`invalid config: link`) and exit. Pure decision: `Some(pid)` of a live
+/// session means skip, cleanly and with one clear line; it is not a failure (the chat and settings connections read
+/// the engine's `session.json` themselves).
+pub fn skip_own_daemon(engine_pid: Option<u32>) -> Option<String> {
+    engine_pid.map(|pid| format!("island host: an engine already runs on this island directory (pid {pid}); Koda uses it and does not start its own daemon"))
+}
+
 impl HostSlot {
     pub fn start(&self) {
+        #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+        {
+            let root = crate::agentconn::island_root(std::env::var("KODA_ISLAND_DIR").ok().as_deref(), std::env::var("HOME").ok().as_deref());
+            if let Some(line) = skip_own_daemon(root.and_then(|r| crate::agentconn::engine_session_pid(&r))) {
+                eprintln!("{line}");
+                return;
+            }
+        }
         #[cfg(any(target_os = "linux", target_os = "macos", windows))]
         self.start_with(start);
         #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
@@ -359,6 +375,40 @@ impl Drop for Host {
         // Never block app exit in wait(). In an uninterruptible kernel wait,
         // PDEATHSIG remains the final backstop when this app process exits.
         eprintln!("island host: bounded reap expired; kernel parent-death protection remains active");
+    }
+}
+
+#[cfg(test)]
+mod engine_owns_island_tests {
+    use super::*;
+
+    #[test]
+    fn a_live_engine_session_skips_our_own_daemon_with_one_clear_line() {
+        let line = skip_own_daemon(Some(4242)).expect("an engine runs: skip");
+        assert!(line.contains("4242") && line.contains("already runs") && line.contains("does not start its own daemon"), "{line}");
+        assert!(skip_own_daemon(None).is_none(), "no engine: Koda starts its own daemon as before");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn engine_session_pid_reads_a_live_private_session_and_ignores_stale_unsafe_or_missing_ones() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("abito-kg-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let runtime = root.join("runtime");
+        std::fs::create_dir_all(&runtime).unwrap();
+        let session = |pid: u32| format!("{{\"protocol\":\"island-agent/1\",\"endpoint\":\"{}/runtime/p-abcdef/s\",\"token\":\"{}\",\"pid\":{pid},\"startedAt\":1}}", root.display(), "x".repeat(43));
+        let file = runtime.join("session.json");
+        assert_eq!(crate::agentconn::engine_session_pid(&root), None, "no session file");
+        std::fs::write(&file, session(std::process::id())).unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(crate::agentconn::engine_session_pid(&root), Some(std::process::id()), "a live pid owns the island");
+        std::fs::write(&file, session(4_194_999)).unwrap();
+        assert_eq!(crate::agentconn::engine_session_pid(&root), None, "a dead pid is a stale file, never an owner");
+        std::fs::write(&file, session(std::process::id())).unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(crate::agentconn::engine_session_pid(&root), None, "a group/world readable session is not trusted");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
 

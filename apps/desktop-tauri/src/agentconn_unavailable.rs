@@ -27,6 +27,12 @@ pub fn island_root(env_dir: Option<&str>, home: Option<&str>) -> Option<PathBuf>
     home.filter(|h| h.starts_with('/')).map(|h| Path::new(h).join(".koda"))
 }
 
+/// AC-08/K-G: whether an engine already runs on this island root. This target does not read the session file
+/// here, so it never claims one (Koda keeps its previous behaviour on this target).
+pub fn engine_session_pid(_island_root: &Path) -> Option<u32> {
+    None
+}
+
 impl AgentConn {
     pub fn new(changed: impl Fn(Value) + Send + Sync + 'static) -> AgentConn {
         AgentConn {
