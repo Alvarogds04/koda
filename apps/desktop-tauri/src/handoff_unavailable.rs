@@ -19,6 +19,21 @@ use std::path::{Path, PathBuf};
 
 pub const FILE_NAME: &str = "endpoint.json";
 
+/// What [`publish`] did — the same type as the Unix `handoff.rs` (the callers in `main.rs` match on it on every
+/// target; AC-08/K-A added it and this stub missed it, so the Windows binary stopped compiling).
+/// Here `Written` and `Standby` can never be returned: no receiver exists, `publish` only ever refuses.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Published {
+    /// `endpoint.json` now names our socket.
+    Written,
+    /// A different LIVE process owns `endpoint.json`: nothing was written or removed.
+    Standby { owner_pid: u32 },
+}
+
+/// Same constant as `handoff.rs` (the standby watcher is spawned only after a `Standby`, which this target never
+/// produces, but `main.rs` names it on every target).
+pub const STANDBY_RETRY_MS: u64 = 2000;
+
 /// `<runtime>/endpoint.json`.
 // keep in sync with handoff.rs
 pub fn path(runtime: &Path) -> PathBuf {
@@ -28,11 +43,17 @@ pub fn path(runtime: &Path) -> PathBuf {
 /// Publish `endpoint` for local consumers. The Linux implementation refuses anything that is not
 /// the exact receiver socket of `runtime`, a non-private `runtime`, and a symlink at the target path.
 /// This backend always returns `Unsupported` because it has no receiver.
-pub fn publish(_runtime: &Path, _endpoint: &Path) -> io::Result<()> {
+pub fn publish(_runtime: &Path, _endpoint: &Path) -> io::Result<Published> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "endpoint handoff is a Unix-socket handoff; this target has no receiver",
     ))
+}
+
+/// The standby watcher's step. No receiver exists here, so there is no socket of ours to publish: always `None` (STOP),
+/// exactly what the Unix twin returns once our transport is gone.
+pub fn retry_publish(_runtime: &Path, _endpoint: &Path) -> Option<io::Result<Published>> {
+    None
 }
 
 /// The endpoint a consumer should connect to. No receiver can have published on this target.

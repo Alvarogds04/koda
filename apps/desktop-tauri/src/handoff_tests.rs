@@ -423,3 +423,26 @@ fn the_standby_retry_stops_when_our_own_transport_is_gone() {
 fn the_retry_interval_is_the_documented_two_seconds() {
     assert_eq!(STANDBY_RETRY_MS, 2000, "a killed engine is noticed within ~2 s, never later than the hook's own timeout");
 }
+
+// ---- AC-08 K-E: the non-Unix stub must expose the same API the callers in main.rs use ---------------------------
+
+/// `handoff_unavailable.rs` is compiled only off Unix, so this guard reads its text: every name `main.rs` uses from
+/// `koda_island::handoff` on every target has to exist in the stub with the same shape (the Windows build broke
+/// once because it did not; `cargo check --target x86_64-pc-windows-msvc` is the compile proof).
+#[test]
+fn the_non_unix_stub_defines_the_api_main_rs_calls() {
+    let stub = include_str!("handoff_unavailable.rs");
+    for needle in [
+        "pub enum Published",
+        "Written,",
+        "Standby { owner_pid: u32 }",
+        "pub const STANDBY_RETRY_MS: u64 = 2000;",
+        "pub fn publish(_runtime: &Path, _endpoint: &Path) -> io::Result<Published>",
+        "pub fn retry_publish(_runtime: &Path, _endpoint: &Path) -> Option<io::Result<Published>>",
+        "pub fn clear(",
+        "pub fn read(",
+    ] {
+        assert!(stub.contains(needle), "handoff_unavailable.rs lost: {needle}");
+    }
+    assert_eq!(STANDBY_RETRY_MS, 2000, "the stub's constant must equal the Unix one");
+}
