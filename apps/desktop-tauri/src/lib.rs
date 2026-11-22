@@ -13,6 +13,34 @@
 //! headless); `main.rs` is the Tauri wiring and `probe.rs` its read-back
 //! script.
 
+/// AC-08/K-C (S2, S6): the switch for the OLD engine path of agent requests — the QP/1 question lane
+/// inside the receiver plus the `<runtime>/endpoint.json` handoff that installed hooks and producers
+/// read. The human decided (21 Nov) that this path is DISABLED, not deleted: nothing is removed and
+/// nothing is uninstalled, so setting this to exactly `1` restores every part of it.
+///
+/// It lives at the crate root because both halves are target-specific (`handoff` is the Unix socket
+/// handoff on Unix and an inert stub elsewhere) and one switch must decide them the same way.
+pub const LEGACY_AGENT_REQUESTS_ENV: &str = "KODA_LEGACY_AGENT_REQUESTS";
+
+/// The switch as a pure function of one value: unit-testable without touching the process environment.
+/// Only the exact value `1` turns the legacy path on; unset, empty, `0` and `true` are off.
+pub fn legacy_agent_requests_switch(value: Option<&str>) -> bool {
+    value == Some("1")
+}
+
+/// Is the legacy agent-request path enabled on this run? OFF by default: Koda answers agent requests
+/// through jesscore, and the old path is disabled (not deleted) behind this one reversible switch.
+pub fn legacy_agent_requests_enabled() -> bool {
+    legacy_agent_requests_switch(std::env::var(LEGACY_AGENT_REQUESTS_ENV).ok().as_deref())
+}
+
+/// AC-08/K-C: publish `<runtime>/endpoint.json` only while the legacy path is on. With it off, an
+/// installed hook or producer must find no endpoint at all, so it keeps its own terminal prompt
+/// instead of connecting to a receiver that no longer answers questions.
+pub fn should_publish_handoff(legacy_agent_requests: bool) -> bool {
+    legacy_agent_requests
+}
+
 pub mod agentclient;
 pub mod agents_direct;
 /// K2-05 T4 U2: the island chat client (closed chat commands + the allowlisted

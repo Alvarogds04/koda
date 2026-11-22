@@ -16,6 +16,13 @@
 //! It is a pointer, not an authority: the consumer still connects to the socket, which checks the
 //! peer uid, and [`read`] refuses a stale file (socket gone, wrong shape). Nothing here makes a
 //! path, a pid or a label trusted.
+//!
+//! AC-08/K-C (S2, S6): the OLD engine path for agent requests is DISABLED, not deleted. One reversible
+//! switch, `KODA_LEGACY_AGENT_REQUESTS=1` ([`legacy_agent_requests_enabled`]), turns it back on; while it is
+//! off [`publish`] is never called ([`should_publish_handoff`]), so an installed hook or producer finds no
+//! `endpoint.json` and stays on its own terminal prompt. The file itself, its readers and the QP/1 question
+//! lane stay in the tree: nothing is removed, nothing is uninstalled, and turning the switch on restores the
+//! previous behaviour exactly.
 use serde_json::{json, Value};
 use std::io::Write;
 use std::os::unix::ffi::OsStrExt;
@@ -27,10 +34,21 @@ use std::path::{Component, Path, PathBuf};
 mod tests;
 
 pub const FILE_NAME: &str = "endpoint.json";
+
+/// AC-08/K-C: the switch and the publish decision live at the crate root ([`crate::legacy_agent_requests_enabled`],
+/// [`crate::should_publish_handoff`]) so the SAME switch decides the QP/1 question lane and this handoff on every
+/// target; they are re-exported here, next to the file they gate.
+pub use crate::{legacy_agent_requests_enabled, legacy_agent_requests_switch, should_publish_handoff, LEGACY_AGENT_REQUESTS_ENV};
+
 /// Write `procStart` into the handoff. On since `desktop-harness` accepts and verifies the key (2ece2c3): the
 /// engine's hook reader used to accept exactly `endpoint,pid,v`, so this was held back until both sides moved.
 pub const WRITE_PROC_START: bool = true;
 const MAX_FILE: u64 = 4096;
+
+/// AC-08/K-D (native review of K-A): while a live engine owns the handoff a standby Koda re-checks this often,
+/// so the file becomes ours the moment that engine exits instead of staying theirs until a restart. The step
+/// itself ([`retry_publish`]) is pure; only `main.rs` sleeps and loops.
+pub const STANDBY_RETRY_MS: u64 = 2000;
 
 /// `<runtime>/endpoint.json`.
 /// Longest socket path the kernel accepts (sockaddr_un.sun_path minus the NUL): 107 on Linux, 103 on macOS.
@@ -130,6 +148,17 @@ fn foreign_owner(runtime: &Path) -> Option<u32> {
     parse(runtime, &text)?; // live pid, same start time, valid shape
     let pid = serde_json::from_str::<Value>(&text).ok()?.get("pid")?.as_u64()? as u32;
     (pid != std::process::id()).then_some(pid)
+}
+
+/// One step of the standby watcher, taken every [`STANDBY_RETRY_MS`] while a live foreign owner keeps the file.
+///
+/// `None` means STOP: our own transport is gone (the socket we published is no longer a socket), so there is
+/// nothing left to publish and a dead endpoint must never be written. Otherwise it is exactly [`publish`], so a
+/// foreign owner that died (its pid is gone, or it is another life of that pid) is replaced at once, a live one
+/// keeps the file (`Standby`), and any other refusal is reported as the error it is. Pure: no sleep, no thread.
+pub fn retry_publish(runtime: &Path, endpoint: &Path) -> Option<std::io::Result<Published>> {
+    let ours = std::fs::symlink_metadata(endpoint).is_ok_and(|meta| meta.file_type().is_socket());
+    ours.then(|| publish(runtime, endpoint))
 }
 
 /// Publish `endpoint` for local consumers. AC-08: a live foreign owner keeps the file ([`Published::Standby`]).

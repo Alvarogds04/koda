@@ -430,8 +430,9 @@ if grep -q 'island host: no_daemon' "$WORK/island.log"; then
 fi
 SOCKET=$(sed -n 's/^KODA_DESKTOP_SOCKET=//p' "$WORK/island.log" | head -n 1)
 HANDOFF="$XDG_RUNTIME/koda/endpoint.json"
-if [ -S "$SOCKET" ] && [ -f "$HANDOFF" ] && [ "$(stat -c %a "$HANDOFF")" = 600 ]; then
-  pass "(b) start: the installed launcher started the app-owned daemon (ready line received) and published $HANDOFF (0600) for socket $SOCKET"
+# AC-08: the legacy agent-request path is off by default, so Koda must NOT publish the handoff (the engine owns it)
+if [ -S "$SOCKET" ] && [ ! -e "$HANDOFF" ]; then
+  pass "(b) start: the installed launcher started the app-owned daemon (ready line received) for socket $SOCKET and left $HANDOFF to the engine (legacy path off)"
 else
   fail "(b) start — no notice socket/handoff published (socket='$SOCKET' handoff='$HANDOFF')"
   fail_rest "(b)" "(c-island) show" "(c-tray) tray" "(d) notice"

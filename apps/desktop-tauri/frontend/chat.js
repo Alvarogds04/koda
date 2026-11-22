@@ -425,7 +425,7 @@
       const field = askControl('input', 'input', rec);
       field.type = 'text';
       field.value = rec.draft || ''; // what the human typed survives a repaint
-      field.maxLength = 8192; // chat.rs ANSWER_MAX_UNITS (UTF-16 units, like maxlength)
+      field.maxLength = V.ANSWER_MAX_UNITS; // chat.rs ANSWER_MAX_UNITS (UTF-16 units, like maxlength)
       field.placeholder = ask.placeholder || '';
       field.setAttribute('aria-label', ask.title || 'Tu respuesta');
       field.addEventListener('input', () => { rec.draft = field.value; });
@@ -474,6 +474,15 @@
   }
   function sendAsk(rec, answer) {
     if (rec.phase !== 'open' || rec.waiting || rec.inflight) return; // answered once: a double click sends nothing
+    // AC-08/K-D: an answer over the daemon's bound says so HERE, in the card and in the live region — never a silent
+    // no-op and never a truncation. The bound is counted in UTF-16 units, like the daemon and Rust.
+    const oversized = V.answerProblem(answer);
+    if (oversized) {
+      rec.problem = oversized;
+      paintAsk(rec);
+      setLive(oversized);
+      return;
+    }
     rec.hadFocus = rec.li.contains(document.activeElement);
     rec.phase = 'sending'; rec.inflight = true; rec.sent = answer; rec.problem = '';
     paintAsk(rec);

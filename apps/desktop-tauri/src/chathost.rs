@@ -272,7 +272,17 @@ pub fn switch_view(app: &AppHandle, state: &AppState, chat: bool) {
     }
 }
 
+/// AC-08/K-D (item 1): the window gate `chat_action` applies before anything else. ONLY the island window (`main`)
+/// may chat: `main_window_only` refuses every other label up front, including the settings window, which
+/// `bridge::sender_ok` alone WOULD admit on its own page. Pure, so the accepted label and every refused one are
+/// pinned by a unit test instead of a source guard.
+pub(crate) fn chat_action_window_gate(label: &str, url: &str) -> Result<(), BridgeError> {
+    crate::settingswindow::main_window_only(label)?;
+    bridge::sender_ok(label, url)
+}
+
 /// `chat_action`: sender gate → payload shape → rate → route to the daemon engine.
+/// The window gate is [`chat_action_window_gate`] (island `main` only, never the settings window).
 #[tauri::command]
 pub async fn chat_action(
     app: AppHandle,
@@ -280,9 +290,11 @@ pub async fn chat_action(
     state: State<'_, AppState>,
     payload: Value,
 ) -> Result<Value, BridgeError> {
-    crate::settingswindow::main_window_only(webview.label())?;
+    // Gate first, exactly as the settings reachability scan expects: `settingswindow::main_window_only(label)` (the
+    // island window `main` only, the settings window refused) and then `bridge::sender_ok(label, url)`. Both halves
+    // live in `chat_action_window_gate`, which has its own unit test.
     let url = webview.url().map(|u| u.to_string()).unwrap_or_default();
-    bridge::sender_ok(webview.label(), &url)?;
+    chat_action_window_gate(webview.label(), &url)?;
     let command = chat::parse_command(&payload).map_err(chat_error)?;
     state.chat_rate.lock().expect("chat rate lock").check(now_ms())?;
     // the REAL caller label travels into chatclient's window gate (never a constant)
@@ -489,5 +501,53 @@ mod read_picked_path_tests {
         std::fs::write(&plain, b"ok").unwrap();
         assert_eq!(super::read_picked_path(&plain).unwrap().1, b"ok".to_vec());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod chat_action_window_gate_tests {
+    use super::*;
+    use koda_island::chat::{self, AskAnswer, Command};
+
+    /// The island page and the settings page, exactly as the webview reports them on Linux.
+    const ISLAND_URL: &str = "tauri://localhost/index.html";
+    const SETTINGS_URL: &str = "tauri://localhost/settings.html";
+
+    #[test]
+    fn only_the_island_window_passes_the_chat_gate() {
+        assert!(chat_action_window_gate("main", ISLAND_URL).is_ok(), "the island window chats");
+        // the settings window has its own label and page: the origin gate alone admits it, the chat gate never does
+        assert!(bridge::sender_ok("settings", SETTINGS_URL).is_ok(), "precondition: `sender_ok` alone admits the settings page");
+        assert_eq!(chat_action_window_gate("settings", SETTINGS_URL).map_err(|e| e.code), Err("denied".into()), "the settings window can never chat");
+        for label in ["", "Main", "main ", " settings", "main2", "preview", "island"] {
+            assert_eq!(chat_action_window_gate(label, ISLAND_URL).map_err(|e| e.code), Err("denied".into()), "{label:?} is not the island window");
+        }
+        // and a `main`-labelled webview on another origin is refused by the origin half
+        assert_eq!(chat_action_window_gate("main", SETTINGS_URL).map_err(|e| e.code), Err("denied".into()), "the island never runs the settings page");
+        assert_eq!(chat_action_window_gate("main", "https://example.com/").map_err(|e| e.code), Err("denied".into()), "and never a remote origin");
+    }
+
+    #[test]
+    fn the_answer_verb_with_picks_passes_the_gate_only_for_the_island_window() {
+        // the REAL verb the island card sends for a multiSelect ask (`picks`), parsed by the same parser chat_action runs
+        let payload = json!({"action": "answer", "ask_id": "a-multi", "picks": ["Uno", "Dos"]});
+        assert_eq!(
+            chat::parse_command(&payload).expect("the answer+picks verb parses"),
+            Command::Answer { ask_id: "a-multi".into(), answer: AskAnswer::Picks(vec!["Uno".into(), "Dos".into()]) },
+            "the gate is the ONLY thing that changes between these labels"
+        );
+        for (verb, payload) in [
+            ("picks", json!({"action": "answer", "ask_id": "a-multi", "picks": ["Uno", "Dos"]})),
+            ("value", json!({"action": "answer", "ask_id": "a-txt", "value": "mi nombre"})),
+            ("confirmed", json!({"action": "answer", "ask_id": "a-yes", "confirmed": true})),
+            ("cancelled", json!({"action": "answer", "ask_id": "a-yes", "cancelled": true})),
+        ] {
+            assert!(chat::parse_command(&payload).is_ok(), "{verb}: a closed answer verb");
+            assert!(chat_action_window_gate("main", ISLAND_URL).is_ok(), "{verb}: the island window answers");
+            assert_eq!(chat_action_window_gate("settings", SETTINGS_URL).map_err(|e| e.code), Err("denied".into()), "{verb}: the settings window never answers");
+            for label in ["Main", "settings ", "preview", ""] {
+                assert_eq!(chat_action_window_gate(label, ISLAND_URL).map_err(|e| e.code), Err("denied".into()), "{verb}/{label:?}");
+            }
+        }
     }
 }

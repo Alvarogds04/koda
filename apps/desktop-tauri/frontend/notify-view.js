@@ -18,6 +18,11 @@
   const CHAT_ASK_MS = 120000; // the daemon closes an ask 120 s after it opened: the card's deadline is that same promise
   const CHAT_MAX_OPTIONS = 50; // what a chat select may show (never trimmed: a shown option is never dropped)
   const CHAT_MAX_PICKS = 8; // chatclient.rs: a multi pick set is 1..=8 distinct SHOWN labels
+  // AC-08/K-D: the daemon's `ui_response` bound, in UTF-16 code units exactly like its `String.length` and Rust's
+  // `utf16_len` (chat.rs ANSWER_MAX_UNITS / chatclient MAX_ANSWER_CHARS). The QP/1 text bounds (2000/4000) belong to
+  // the other lane and never applied here; the ONE sentence below is the same one chat-view.js and Rust use.
+  const CHAT_ANSWER_UNITS = 8192;
+  const CHAT_ANSWER_TOO_LONG = 'La respuesta es demasiado larga (máx. 8192 caracteres).';
   const CHAT_KINDS = new Set(['select', 'confirm', 'input']);
   const CHAT_TEXT_FALLBACK = 'Koda necesita tu respuesta';
   const chatSourced = p => !!p && typeof p === 'object' && p.source === 'chat';
@@ -191,7 +196,7 @@
       }
       return picks.length >= 1 && picks.length <= CHAT_MAX_PICKS ? { action: 'answer', ask_id: n.id, picks } : null;
     }
-    if (typeof answer.text === 'string') return textFits(answer.text, n.freeTextMax) ? { action: 'answer', ask_id: n.id, value: answer.text } : null;
+    if (typeof answer.text === 'string') return chatTextFits(answer.text) ? { action: 'answer', ask_id: n.id, value: answer.text } : null;
     if (!Number.isInteger(answer.index)) return null;
     if (n.kind === 'approval') {
       if (answer.index !== 0 && answer.index !== 1) return null;
@@ -199,6 +204,16 @@
     }
     const shown = n.options.find(o => o.index === answer.index);
     return shown ? { action: 'answer', ask_id: n.id, value: shown.label } : null;
+  }
+  /** AC-08/K-D: a chat-sourced typed answer fits the DAEMON's bound (UTF-16 units, `.length`), not the QP/1 one. */
+  const chatTextFits = text => typeof text === 'string' && text.trim().length > 0 && !CONTROL.test(text) && text.length <= CHAT_ANSWER_UNITS;
+  /** AC-08/K-D: why a chat answer was refused before the wire, so the card says it instead of doing nothing. Only the
+   *  length case has a sentence here: a blank or malformed draft keeps the card's own disabled/refused look. */
+  function chatReplyProblem(n, answer) {
+    if (!n || n.source !== 'chat' || !answer || typeof answer !== 'object') return '';
+    if (typeof answer.text !== 'string') return '';
+    if (answer.text.trim().length === 0 || CONTROL.test(answer.text)) return '';
+    return answer.text.length > CHAT_ANSWER_UNITS ? CHAT_ANSWER_TOO_LONG : '';
   }
   /** The draft's picks as the labels the card shows, in the card's own order (never one it does not show). */
   function pickedLabels(n, draft) {
@@ -647,6 +662,7 @@
   const outcomeDismissible = d => !!d && d.question === 'outcome';
 
   return { projectLabel, outcomeDismissible, sizeSync, optionRows, singleItem, toggleOther, OTHER_LABEL, newDraft, toggleOption, setDraftText, textFits, draftAnswered, itemPayload, multiView, manyPayload, formStart, formReduce, formView, formPayload, keyIntent, windowHeightFor, questionLayout, textareaHeight, QUESTION_MAX_ISLAND_H, QUESTION_MIN_CARD_H, replyIsCurrent, regressesToSent, MAX_OPTIONS, SOUND_ENABLED_DEFAULT, fromPending, askedBy, askerName, askerLine, queueLabel, whoSays, headAnnouncement, nextAnnouncement, hiddenExpired, hiddenExpiredAnnouncement, agentLabel, trusted, openPayload, onScreen, optionForKey, expired, expiryWord, fraction,
-    SAFE_ID, CHAT_ASK_MS, CHAT_MAX_OPTIONS, CHAT_MAX_PICKS, chatAskPending, createChatChannel, answeredChatAsks, chatReply, pickedLabels,
+    SAFE_ID, CHAT_ASK_MS, CHAT_MAX_OPTIONS, CHAT_MAX_PICKS, CHAT_ANSWER_UNITS, CHAT_ANSWER_TOO_LONG, chatAskPending, createChatChannel,
+    answeredChatAsks, chatReply, chatReplyProblem, pickedLabels,
     outcomeView, phase, soundFor, outcomeEvent, createCueLimiter, createRevealGate, createFinishedCycle, FINISHED_MS, revealAction, NOTICE_SEEN_MAX, utf8Bytes, textWord, canSendText };
 });

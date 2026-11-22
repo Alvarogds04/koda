@@ -939,6 +939,29 @@ test('AC-08 K-B2 chatReply: the ONE closed chat_action verb the chat card also s
   assert.deepEqual(N.pickedLabels(sel, { picked: [7], text: '', other: false }), []);
 });
 
+test('AC-08 K-D bound: a chat input answer takes up to 8192 UTF-16 units (an emoji is two), counted like the daemon', () => {
+  const n = N.fromPending(N.chatAskPending(ASK_INPUT, 1));
+  assert.equal(n.source, 'chat');
+  assert.equal(N.CHAT_ANSWER_UNITS, 8192, 'chat.rs ANSWER_MAX_UNITS / chatclient MAX_ANSWER_CHARS');
+  assert.equal(N.CHAT_ANSWER_TOO_LONG, 'La respuesta es demasiado larga (máx. 8192 caracteres).');
+  const atLimit = 'ñ'.repeat(8192);
+  assert.deepEqual(N.chatReply(n, { text: atLimit }), { action: 'answer', ask_id: 'a-txt', value: atLimit }, 'exactly 8192 units is an answer');
+  const emoji = '😀'.repeat(4096); // 4096 × 2 UTF-16 units
+  assert.equal(emoji.length, 8192);
+  assert.deepEqual(N.chatReply(n, { text: emoji }), { action: 'answer', ask_id: 'a-txt', value: emoji }, 'an emoji is two units, never one');
+  for (const over of [`${atLimit}x`, `${emoji}x`, 'a'.repeat(8193)]) {
+    assert.equal(over.length, 8193);
+    assert.equal(N.chatReply(n, { text: over }), null, 'over the bound nothing travels');
+    assert.equal(N.chatReplyProblem(n, { text: over }), N.CHAT_ANSWER_TOO_LONG, 'and it says why, never a silent no-op');
+  }
+  // the QP/1 free-text bound (2000/4000) does not apply to the chat lane at all
+  assert.ok(N.chatReply(n, { text: 'a'.repeat(5000) }), '5000 units travel: it is the chat lane');
+  assert.equal(N.chatReplyProblem(n, { text: 'hola' }), '');
+  assert.equal(N.chatReplyProblem(N.fromPending(N.chatAskPending(ASK_SELECT, 1)), { index: 0 }), '', 'a length problem only');
+  assert.equal(N.chatReplyProblem(N.fromPending(N.chatAskPending(ASK_MULTI, 1)), { picks: ['Tailwind'] }), '', 'a pick set has no text bound here');
+  assert.equal(N.chatReplyProblem(n, { text: '   ' }), '', 'blank is not a length problem');
+});
+
 test('AC-08 K-B2 gate: SAFE_ID is admitted only for a chat-sourced entry; every QP/1 gate keeps its UUID strictness', () => {
   assert.equal(N.fromPending(pending({ id: 'a-sel' })), null, 'QP/1: a daemon ask id is still not a UUID');
   assert.equal(N.fromPending({ ...pending({ id: 'a-sel' }), source: 'chat' }).id, 'a-sel');
@@ -960,6 +983,34 @@ test('AC-08 K-B2 multiselect cap: a chat pick set of more than 8 is refused on t
   assert.equal(N.chatReply(n, { picks: N.pickedLabels(n, nine) }), null, 'the refused draft has no verb at all');
   // Pi\'s own structured questions keep their rule
   assert.equal(N.multiView(N.fromPending(multiP()), { picked: [0, 1, 2], text: '', other: false }).canDone, true);
+});
+
+test('BEHAVIOUR K-D: a chat input answer travels up to the daemon bound, and over it the card says why (never a silent no-op)', async () => {
+  const open = async () => {
+    const h = harness({ phase: 'expanded', view: 'overview' }, { question: snap(null) });
+    await settle(); await settle(); h.pastGuard();
+    h.push('chat:state', chatState([ASK_INPUT]));
+    await settle(); h.pastGuard();
+    return h;
+  };
+  // the island field itself accepts the daemon's bound, never the QP/1 2000-character one
+  const ok = await open();
+  assert.equal(ok.nodes['question-text'].maxLength, N.CHAT_ANSWER_UNITS, 'the field stops at 8192 units, like the daemon');
+  // 1) inside the bound: it travels (the QP/1 2000-character travel bound used to swallow it silently)
+  ok.nodes['question-text'].value = 'a'.repeat(3000);
+  ok.fire(ok.nodes['question-freeform'], 'submit');
+  await settle(); await settle();
+  const sent = ok.chatCalls();
+  assert.equal(sent.length, 1, JSON.stringify(sent));
+  assert.deepEqual([sent[0].action, sent[0].ask_id, sent[0].value.length], ['answer', 'a-txt', 3000]);
+  // 2) over 8192 UTF-16 units: nothing leaves the page and the sentence is announced
+  const over = await open();
+  over.nodes['question-text'].value = `${'😀'.repeat(4096)}x`; // 8193 UTF-16 units
+  assert.equal(over.nodes['question-text'].value.length, 8193);
+  over.fire(over.nodes['question-freeform'], 'submit');
+  await settle(); await settle();
+  assert.deepEqual(over.chatCalls(), [], 'the over-limit answer is never sent');
+  assert.equal(over.nodes['question-live'].textContent, N.CHAT_ANSWER_TOO_LONG, 'and the human is told why in Spanish');
 });
 
 // ---- BEHAVIOUR: the real notify.js answers the daemon's asks through chat_action ----------------------------------------

@@ -274,7 +274,9 @@
     const structured = isStructured(n);
     stepEl.hidden = !(structured && n.form); summaryEl.hidden = !(structured && n.form && wizard && wizard.review);
     navEl.hidden = !structured;
-    textEl.maxLength = n ? n.freeTextMax : 2000;
+    // AC-08/K-D: a chat-sourced ask answers under the DAEMON's bound (UTF-16 units); the QP/1 free-text bound of
+    // 2000/4000 belongs to the other lane. Without this the island silently stopped the human at 2000 characters.
+    textEl.maxLength = n && n.source === 'chat' ? N.CHAT_ANSWER_UNITS : n ? n.freeTextMax : 2000;
     const item = n ? stepItem(n) : null, draft = n ? stepDraft(n) : null;
     const showText = !!(item && N.optionRows(item, draft).showText);
     freeform.hidden = !showText;
@@ -349,8 +351,17 @@
   // AC-08: the closed `answer_many` verb is the QP/1 lane's; an island-agent ask takes its SHOWN labels as `picks`
   function sendDone(event, n) {
     if (!n) return;
-    if (n.source === 'chat') { sendChat(event, n, N.chatReply(n, { picks: N.pickedLabels(n, multiDraft) })); return; }
+    if (n.source === 'chat') { sendChatAnswer(event, n, { picks: N.pickedLabels(n, multiDraft) }); return; }
     sendStructured(event, N.manyPayload(n, multiDraft));
+  }
+  // AC-08/K-D: a chat answer that cannot travel says WHY instead of doing nothing. `chatReply` refuses silently by design
+  // (a label the ask never showed is never sent); the ONE case with a sentence is an over-limit typed answer, and the
+  // card announces it in Spanish. A plain no-verb answer keeps the card as it is.
+  function sendChatAnswer(event, n, answer) {
+    const payload = N.chatReply(n, answer);
+    if (payload) { sendChat(event, n, payload); return; }
+    const why = N.chatReplyProblem(n, answer);
+    if (why) say(why);
   }
   // AC-08: one answer per ask, through the daemon chat lane. A refused answer (ask_closed / ask_answered) is SHOWN as refused and
   // changes nothing else — the card stays until the daemon's own next state closes it; any other refusal frees the card again.
@@ -550,7 +561,7 @@
     if (!onScreen() || inHeadGuard()) return;
     const view = current();
     if (!view.notification || !view.controlsEnabled) return;
-    if (view.notification.source === 'chat') { sendChat(event, view.notification, N.chatReply(view.notification, { index })); return; }
+    if (view.notification.source === 'chat') { sendChatAnswer(event, view.notification, { index }); return; }
     const sent = pushSeq;
     const look = approvalOf(view.notification), act = look && look.actions.find(a => a.index === index);
     answered = { id: view.notification.id, role: act ? act.role : 'option' };
@@ -563,7 +574,7 @@
     if (!onScreen() || inHeadGuard()) return;
     const view = current();
     if (!view.notification || !view.controlsEnabled) return;
-    if (view.notification.source === 'chat') { sendChat(event, view.notification, N.chatReply(view.notification, { cancelled: true })); return; }
+    if (view.notification.source === 'chat') { sendChatAnswer(event, view.notification, { cancelled: true }); return; }
     const sent = pushSeq;
     answered = { id: view.notification.id, role: 'decline' };
     inFlight = true; render();
@@ -575,7 +586,7 @@
     const view = current();
     if (!view.notification || !view.controlsEnabled || view.notification.id !== renderedId) return;
     // AC-08: an island-agent `input` ask takes the typed text as its `value`; the QP/1 byte budget does not exist on that lane
-    if (view.notification.source === 'chat') { sendChat(event, view.notification, N.chatReply(view.notification, { text: textEl.value })); return; }
+    if (view.notification.source === 'chat') { sendChatAnswer(event, view.notification, { text: textEl.value }); return; }
     if (!N.canSendText(budget, textEl.value)) return;
     const text = textEl.value;
     const sent = pushSeq;

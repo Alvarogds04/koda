@@ -2523,6 +2523,15 @@ impl ChatHost {
         if !matches!(ask_state(&before, ask_id), (true, false)) {
             return Err(why(&before));
         }
+        // AC-08/K-D: an answer past the daemon's bound (UTF-16 units, like its `String.length`) is refused HERE with
+        // its own reason, never as the generic `answer_refused` of a write that failed: an over-limit answer can
+        // never travel, and the card must be able to say why. The sentence is owned by chat.rs.
+        let over = |v: &str| utf16_len(v) > MAX_ANSWER_CHARS;
+        match answer {
+            AskAnswer::Value(v) if over(v) => return Err(crate::chat::ChatError::answer_too_long()),
+            AskAnswer::Picks(labels) if labels.iter().any(|l| over(l)) => return Err(crate::chat::ChatError::answer_too_long()),
+            _ => {}
+        }
         let value = match answer {
             AskAnswer::Value(v) => json!(v),
             AskAnswer::Confirmed(b) => json!(b),
