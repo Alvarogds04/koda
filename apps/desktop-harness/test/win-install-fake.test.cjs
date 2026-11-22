@@ -11,6 +11,9 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const winfs = require('../src/win-fs.cjs');
 const ui = require('../src/install-ui.cjs');
+// AC-08/K-F (S2, S6): the Windows Pi installer is retired behind the same one switch as the POSIX twin (default OFF).
+// This suite is its coverage, so it opts in; the default-off behaviour is pinned in test/legacy-pi-extension.test.cjs.
+process.env.KODA_LEGACY_PI_EXTENSION = '1';
 
 const sha = b => crypto.createHash('sha256').update(b).digest('hex');
 const { fakeBackend } = require('./win-fake-backend.cjs');

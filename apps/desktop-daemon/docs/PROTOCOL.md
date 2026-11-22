@@ -278,6 +278,11 @@ the last outcome (frame or failure) is served from memory, so clients cannot mak
 - `state` ∈ `not_connected, connected, outdated, working, unavailable, error`. `detail` is `null` or the CLOSED set
   `config_invalid, not_writable, backup_failed, plan_changed, audit_unavailable, install_failed, unsupported_platform`. Windows automatic hook installation returns `unavailable` with `unsupported_platform` without spawning the installer; this is not evidence that hooks are installed. **Tauri lane: `plan_changed`,
   `audit_unavailable` and `install_failed` are new members of that set and must render.** Extra fields are additive.
+- **AC-08/K-F: `legacy_pi_extension_off`.** Koda stopped installing the Pi extension, so `pi` is `unavailable` with this
+  detail while the one reversible switch `KODA_LEGACY_PI_EXTENSION` is off (the default; ON only for the exact value `1`).
+  No installer call is made for that id — `agent_connect` and `agent_disconnect` both answer with the row unchanged — and
+  nothing writes, restores, updates or removes `~/.pi/agent/extensions/koda-island`. The row is NOT hidden: the island
+  renders it as disabled with its own sentence and no button. With the switch on, `pi` behaves exactly as before.
 - Ids/names are a fixed table (`claude-code` "Claude Code", `codex` "Codex", `statusline` "Uso del plan (relay)", `opencode` "OpenCode"). `opencode` is ALWAYS `unavailable`
   (not installable yet) and never spawns anything. Without `hookInstallerBin` every agent is `unavailable` (`detail: null`).
 - `plan_hash`, `summary`, `reviewable`, `trust_review` appear only for `not_connected` / `outdated` (and on `error/plan_changed`, which hands back the NEW plan to re-show).

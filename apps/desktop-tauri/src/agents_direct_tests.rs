@@ -177,3 +177,38 @@ mod run {
         assert_eq!(std::fs::read_to_string(&counter).unwrap().lines().count(), 2, "the mutation ran (never cached) and its fresh answer is what the next list reuses");
     }
 }
+
+// --- AC-08/K-F (S2, S6): the daemon-free route learns the retired Pi install from this process ------------------
+// Koda stopped installing `~/.pi/agent/extensions/koda-island` behind ONE reversible switch, exactly like K-C. The node
+// entry it spawns (agents-direct.cjs → AgentsManager) reads that switch from its own environment, so the host must
+// forward it — and only while it is ON, so the child's closed allowlist does not grow a variable to flip.
+
+#[test]
+fn the_legacy_pi_extension_switch_is_on_only_for_the_exact_value_one() {
+    assert!(!crate::legacy_pi_extension_switch(None), "unset: off");
+    assert!(!crate::legacy_pi_extension_switch(Some("")), "empty: off");
+    assert!(!crate::legacy_pi_extension_switch(Some("0")), "explicit zero: off");
+    assert!(!crate::legacy_pi_extension_switch(Some("true")), "only \"1\" is the switch");
+    assert!(!crate::legacy_pi_extension_switch(Some(" 1")), "no trimming, no near-misses");
+    assert!(crate::legacy_pi_extension_switch(Some("1")), "the documented value: on");
+}
+
+#[test]
+fn the_direct_route_forwards_the_pi_switch_only_while_it_is_on() {
+    // `runtime()` reads the real process environment, so the variable is set, read and removed inside this ONE test.
+    let saved = std::env::var_os(crate::LEGACY_PI_EXTENSION_ENV);
+    std::env::remove_var(crate::LEGACY_PI_EXTENSION_ENV);
+    let off = runtime();
+    assert!(!off.env.iter().any(|(k, _)| k == crate::LEGACY_PI_EXTENSION_ENV), "off (the default): the child's closed allowlist is unchanged");
+    std::env::set_var(crate::LEGACY_PI_EXTENSION_ENV, "1");
+    let on = runtime();
+    // a value that is not exactly "1" is off, so it is not forwarded either
+    std::env::set_var(crate::LEGACY_PI_EXTENSION_ENV, "true");
+    let near_miss = runtime();
+    match saved {
+        Some(v) => std::env::set_var(crate::LEGACY_PI_EXTENSION_ENV, v),
+        None => std::env::remove_var(crate::LEGACY_PI_EXTENSION_ENV),
+    }
+    assert!(on.env.iter().any(|(k, v)| k == crate::LEGACY_PI_EXTENSION_ENV && v == "1"), "on: exactly \"1\" reaches the manager");
+    assert!(!near_miss.env.iter().any(|(k, _)| k == crate::LEGACY_PI_EXTENSION_ENV), "a near-miss is not forwarded");
+}

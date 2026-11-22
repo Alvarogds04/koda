@@ -8,6 +8,11 @@ const os = require("node:os");
 const path = require("node:path");
 const { parseArgs, main, packagedInstallerBin } = require("../src/agents-direct.cjs");
 const { win } = require("./platform-env.cjs");
+// AC-08/K-F (S2, S6): Koda retired the Pi extension install behind ONE switch, `KODA_LEGACY_PI_EXTENSION` (default OFF).
+// The daemon-free route drives the very same AgentsManager, which reads the switch from this process's environment — the
+// Tauri host forwards it (apps/desktop-tauri/src/agents_direct.rs). This suite covers the pre-retirement behaviour, so it
+// opts in; the default-off route is pinned by its own test at the end of this file and by agents.test.cjs.
+process.env.KODA_LEGACY_PI_EXTENSION = '1';
 
 const HASH = "a".repeat(64);
 const SCHEMA = "abito-hook-install/1";
@@ -157,4 +162,25 @@ test("plan-less connect is refused before any installer or user-state write", as
 test("the installer is the harness next to the daemon, never from argv/env", () => {
 	const bin = packagedInstallerBin();
 	assert.ok(bin && bin.endsWith(path.join("desktop-harness", "bin", "koda-hook.cjs")));
+});
+
+// AC-08/K-F: with the switch off (the default) the daemon-free route — the one Settings uses when the chat engine is down —
+// reports Pi as DISABLED with its own detail and never spawns the installer, for `list` and for `disconnect` alike. The
+// folder on disk is never touched: Koda no longer owns it.
+test("AC-08/K-F: with the switch off the daemon-free route disables the Pi row and never spawns", async (t) => {
+	const s = setup(t);
+	const seen = [];
+	delete process.env.KODA_LEGACY_PI_EXTENSION;
+	try {
+		const listed = await s.run(["list"], {}, seen);
+		const pi = row(listed.json.agents, "pi");
+		assert.equal(pi.state, "unavailable");
+		assert.equal(pi.detail, "legacy_pi_extension_off");
+		assert.ok(!seen.some((argv) => argv[2] === "pi"), "the installer never ran for Pi");
+		const gone = await s.run(["disconnect", "pi"], {}, seen);
+		assert.equal(row(gone.json.agents, "pi").detail, "legacy_pi_extension_off", "disconnect is refused too: not our folder");
+		assert.ok(!seen.some((argv) => argv[2] === "pi"));
+	} finally {
+		process.env.KODA_LEGACY_PI_EXTENSION = "1";
+	}
 });

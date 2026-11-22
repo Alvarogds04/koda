@@ -285,7 +285,7 @@ function buildPlan(parsed, opts) {
   const o = parsed.o;
   if (parsed.harness === 'pi') {
     const target = core.resolveUserSettings(env, opts.homedir || os.homedir, ['.pi', 'agent', 'extensions', 'koda-island']);
-    const plan = pi.planPi({home:env.HOME, uid:opts.uid === undefined ? winfs.uidOf() : opts.uid, remove:o.remove,
+    const plan = pi.planPi({home:env.HOME, uid:opts.uid === undefined ? winfs.uidOf() : opts.uid, remove:o.remove, env,
       execPath:opts.execPath || process.execPath, binPath:opts.binPath || core.BIN_PATH});
     if (plan.settingsPath !== target) throw new core.InstallError(65, 'Pi default path mismatch');
     const action = o.remove ? 'remove' : 'install';
@@ -321,7 +321,7 @@ function unsafeFolderMessage({ dir, reason }) {
   if (reason === 'foreign_owner') return `La carpeta ${dir} pertenece a otro usuario y Koda solo escribe en carpetas tuyas; cambiale el dueño a tu usuario (con permisos de administrador) y volvé a intentar.`;
   return `La carpeta ${dir} tiene permisos de Windows (ACL) que dan acceso a otros usuarios o no es tuya; dejala accesible solo para tu usuario (Propiedades > Seguridad) y volvé a intentar.`;
 }
-const fixedMessage = { foreignExtension: 'Ya hay una extensión de Pi en ~/.pi/agent/extensions/koda-island que Koda no instaló: borrala o renombrala y volvé a conectar.', unverified: 'the installed Koda files could not be verified; nothing was written', unsafe: 'the target or its folder is not private to this user or goes through a link; nothing was written', usage: 'invalid arguments', refused: 'input or settings file refused', internal: 'unexpected failure; nothing was written' };
+const fixedMessage = { foreignExtension: 'Ya hay una extensión de Pi en ~/.pi/agent/extensions/koda-island que Koda no instaló: borrala o renombrala y volvé a conectar.', unverified: 'the installed Koda files could not be verified; nothing was written', unsafe: 'the target or its folder is not private to this user or goes through a link; nothing was written', usage: 'invalid arguments', refused: 'input or settings file refused', internal: 'unexpected failure; nothing was written', legacyPiOff: 'Koda no longer installs the Pi extension; nothing was written' };
 
 // argv: arguments after `install`. Always prints exactly one JSON line through opts.out; returns the exit code.
 async function runInstallUi(argv, opts = {}) {
@@ -343,6 +343,13 @@ async function runInstallUi(argv, opts = {}) {
   try {
     const parsed = parseUiArgs(argv);
     if (!parsed) return fail(64, 'usage', fixedMessage.usage);
+    // AC-08/K-F (S2, S6): Koda no longer installs or manages ~/.pi/agent/extensions/koda-island. While
+    // `KODA_LEGACY_PI_EXTENSION` is off (the default) the Pi plan producer answers no plan at all — install AND
+    // remove/disconnect — so nothing can be previewed, applied or written, and the folder on disk is never touched.
+    // The check comes before the island guards and before any audit write: a refusal here does not create a file.
+    if (parsed.harness === 'pi' && !core.legacyPiExtensionEnabled(opts.env || process.env)) {
+      return fail(65, 'legacy_pi_extension_off', fixedMessage.legacyPiOff);
+    }
     // Windows (HU-047): audit, side files, locks and every write go through the native ACL helper, which must match the
     // install manifest. If it cannot be trusted the plan is refused up front and nothing is read or written.
     if (!['linux', 'darwin', 'win32'].includes(process.platform)) return fail(77, 'unsupported_platform', 'Automatic hook installation is not available on this platform yet.');
@@ -363,6 +370,8 @@ async function runInstallUi(argv, opts = {}) {
     return await applyPlanned(parsed, opts, emit, fail);
   } catch (e) {
     if (e instanceof UiError) return fail(e.exitCode, e.code, e.message);
+    // AC-08/K-F: defence in depth — the planner (or the apply) refused because the legacy Pi install is retired.
+    if (e instanceof core.InstallError && e.legacyPiExtensionOff) return fail(65, 'legacy_pi_extension_off', fixedMessage.legacyPiOff);
     if (e instanceof core.InstallError && e.unsafeFolder) return fail(65, 'unsafe_folder', unsafeFolderMessage(e.unsafeFolder), { folder: e.unsafeFolder.dir, folder_reason: e.unsafeFolder.reason });
     if (e instanceof winfs.WinFsError) return winFailure(e.reason, fail);
     if (e instanceof core.InstallError && e.foreignExtension) return fail(65, 'foreign_extension', fixedMessage.foreignExtension);
@@ -399,7 +408,7 @@ async function applyPlanned(parsed, opts, emit, fail) {
         try { statusline.writeSaved(plan.home, plan.savePrevious); previousSaved = true; }
         catch { rc = 70; }
       }
-      if (rc === 0) rc = await (parsed.harness === 'pi' ? pi.applyPi : core.applyPlan)(plan, { backupPath, now,
+      if (rc === 0) rc = await (parsed.harness === 'pi' ? pi.applyPi : core.applyPlan)(plan, { backupPath, now, env,
         verify: parsed.harness === 'statusline' ? statusline.verify(plan) : (plan.profile && plan.profile.verify ? plan.profile.verify(plan) : undefined),
         out: () => {}, err: s => { msg += s; } });
       if (parsed.harness === 'statusline' && ((rc !== 0 && previousSaved) || (rc === 0 && plan.restorePrevious))) {

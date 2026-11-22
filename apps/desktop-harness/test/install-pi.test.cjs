@@ -1,5 +1,10 @@
 'use strict';
 const { tmpBase } = require('./platform-env.cjs');
+// AC-08/K-F (S2, S6): Koda retired this install behind ONE reversible switch, `KODA_LEGACY_PI_EXTENSION` (default OFF).
+// This suite IS that installer's own coverage — the POSIX one and the in-process planPi/applyPi cases — so it opts in
+// explicitly, exactly as a human restoring the old behaviour would. The default-off behaviour (nothing planned, nothing
+// written, not even a `--remove`) is pinned in test/legacy-pi-extension.test.cjs, which never sets the variable.
+process.env.KODA_LEGACY_PI_EXTENSION = '1';
 // HU-015 unit B: exercise the shipped installer CLI on isolated user directories only.
 const { test: baseTest } = require('node:test');
 // K2-01b: these tests drive the POSIX Pi installer (mode bits, rename publication, POSIX folders); on Windows the
@@ -63,7 +68,7 @@ function fixture(t) {
   const extraEnv = {};
   const run = (...args) => {
     const result = spawnSync(process.execPath, [cli, 'install', 'pi', '--user', '--json', ...args], {
-      env: { HOME: home, USERPROFILE: home, PATH: '/usr/bin:/bin', KODA_ISLAND_EXE: process.execPath, ...extraEnv }, encoding: 'utf8', timeout: 10000,
+      env: { HOME: home, USERPROFILE: home, PATH: '/usr/bin:/bin', KODA_ISLAND_EXE: process.execPath, KODA_LEGACY_PI_EXTENSION: '1', ...extraEnv }, encoding: 'utf8', timeout: 10000,
     });
     assert.ifError(result.error);
     assert.equal(result.stderr, '', 'machine mode uses one JSON line, never stderr');

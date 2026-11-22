@@ -208,6 +208,11 @@ try {
     if (@(Get-ChildItem -LiteralPath (Join-Path $openDir 'hooks') -Force).Count -ne 0) { throw 'Users-writable refusal wrote a file' }
     Write-Host 'PASS Windows refusals: junction and Users-writable targets write nothing, report unsafe_folder or unsafe_target'
     # Pi extension: install, verify the closed payload, then refuse after a bundled file is tampered.
+    # AC-08/K-F: Koda no longer installs that extension by default (one reversible switch, OFF). This step keeps
+    # exercising the legacy installer on purpose, so it opts in exactly as the product's own suites do; the default
+    # (nothing planned, nothing written, not even a --remove) is pinned on every OS by desktop-harness
+    # test/legacy-pi-extension.test.cjs.
+    $env:KODA_LEGACY_PI_EXTENSION = '1'
     $pv = Invoke-Install @('pi', '--user', '--json')
     if ($pv.Code -ne 0 -or -not $pv.Json.ok) { throw "Windows Pi preview failed: $($pv.Json | ConvertTo-Json -Compress)" }
     $ap = Invoke-Install @('pi', '--user', '--json', '--apply-plan', $pv.Json.plan_hash, '--audit-dir', $auditDir)
@@ -225,7 +230,8 @@ try {
     $rm = Invoke-Install @('pi', '--user', '--json', '--remove', '--apply-plan', $rm.Json.plan_hash, '--audit-dir', $auditDir)
     if ($rm.Code -ne 0 -or (Test-Path -LiteralPath $ext)) { throw 'Windows Pi removal failed' }
     Write-Host 'PASS Windows Pi extension: installed, tamper refused (install_unverified), removed'
-    foreach ($key in @('HOME', 'USERPROFILE', 'KODA_ISLAND_EXE')) { [Environment]::SetEnvironmentVariable($key, $originalEnv[$key], 'Process') }
+    # KODA_LEGACY_PI_EXTENSION was not set before this block: restoring it to its captured (null) value removes it.
+    foreach ($key in @('HOME', 'USERPROFILE', 'KODA_ISLAND_EXE', 'KODA_LEGACY_PI_EXTENSION')) { [Environment]::SetEnvironmentVariable($key, $originalEnv[$key], 'Process') }
 
     Start-Island 'explicit-root'
     Wait-For { (Get-Content -Raw -LiteralPath (Join-Path $root 'explicit-root.stderr.log')) -match 'koda-daemon: running' } 'explicit Windows root daemon startup'

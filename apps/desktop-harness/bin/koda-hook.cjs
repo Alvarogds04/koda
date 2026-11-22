@@ -49,7 +49,7 @@ function readStdin() {
 //  - a stray crash after the verdict is known exits with that verdict's code, silently;
 //  - a stray crash before any verdict prints ONE fixed JSON error (best effort) and exits 70.
 const INTERNAL_LINE = '{"schema":"abito-hook-install/1","ok":false,"code":"internal","message":"internal error"}\n';
-const EXIT_OF = { usage: 64, refused: 65, foreign_extension: 65, unsafe_folder: 65, not_writable: 65, unsafe_target: 65, install_unverified: 65, apply_failed: 70, plan_changed: 70, audit_unavailable: 73, not_island: 77, unsupported_platform: 77 };
+const EXIT_OF = { usage: 64, refused: 65, foreign_extension: 65, legacy_pi_extension_off: 65, unsafe_folder: 65, not_writable: 65, unsafe_target: 65, install_unverified: 65, apply_failed: 70, plan_changed: 70, audit_unavailable: 73, not_island: 77, unsupported_platform: 77 };
 const exitOfJson = o => (o && o.ok === true ? 0 : o && EXIT_OF[o.code] !== undefined ? EXIT_OF[o.code] : 70);
 async function runIsland(argv) {
   let verdict = null;

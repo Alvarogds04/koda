@@ -928,7 +928,9 @@ function pendingFrame(data) {
 /** Fixed agent table: names never come from the dependency. */
 const AGENT_NAMES = Object.freeze({ pi: "Pi", "claude-code": "Claude Code", codex: "Codex", statusline: "Uso del plan (relay)", "copilot-cli": "Copilot CLI", opencode: "OpenCode" });
 const AGENT_STATES = new Set(["not_connected", "connected", "outdated", "working", "unavailable", "error"]);
-const AGENT_DETAILS = new Set(["config_invalid", "not_writable", "foreign_extension", "unsafe_folder", "backup_failed", "plan_changed", "audit_unavailable", "install_failed", "unsupported_platform", "unsafe_target", "install_unverified"]);
+// AC-08/K-F: `legacy_pi_extension_off` is the Pi row's own reason — Koda stopped installing that extension behind one
+// reversible switch, so the row is disabled instead of pretending a click could install it.
+const AGENT_DETAILS = new Set(["config_invalid", "not_writable", "foreign_extension", "unsafe_folder", "backup_failed", "plan_changed", "audit_unavailable", "install_failed", "unsupported_platform", "unsafe_target", "install_unverified", "legacy_pi_extension_off"]);
 const AGENT_SUMMARY_MAX = 400;
 /**
  * Reply/broadcast `agents`: rebuilt field by field from closed vocabularies. THROWS on invalid data

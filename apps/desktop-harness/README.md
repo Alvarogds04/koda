@@ -297,6 +297,12 @@ so after an update each agent shows **one card per notice** (S2) and the human d
 | Status line | a `statusLine.command` naming `abito-statusline.cjs` | the relay naming `koda-statusline.cjs`; `--remove` still restores your saved line |
 | Daemon catalogue (`cursor`, `gemini-cli`, `amp`, …) | `abito-island-hooks/1`, `abito-island*` names and `~/.abito/agent-hooks/island-notify.mjs` | the Koda artifact only; the 0.1 one is retired into the same dated backup flow |
 
+AC-08/K-F (S2, S6; 22 Nov): the Pi row of that table is now only reachable with the reversible switch
+`KODA_LEGACY_PI_EXTENSION=1`. By default Koda neither installs, updates, restores nor removes
+`~/.pi/agent/extensions/koda-island` (or a 0.1 `abito-island`): `install pi` answers the closed code
+`legacy_pi_extension_off` with no plan, and the folder on disk is left untouched. Nothing is deleted, so the switch restores
+the installer exactly as documented here; see `docs/PI-INSTALL.md`.
+
 Nothing of yours is rewritten on the way: an entry or file that only LOOKS like ours (for example `my-abito-hook.cjs`, or a
 file at an old name without our marker) stays third-party, exactly as before. Backups, temporary files, lock names, the Pi
 manifest and the protocol schemas (`abito-hook-install/1`, `abito-hook-installer/1`, `abito-pi-extension/1`) keep their names:

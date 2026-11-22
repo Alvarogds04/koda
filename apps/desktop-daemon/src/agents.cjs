@@ -31,6 +31,10 @@ const { EventEmitter } = require("node:events");
 const fs = require("node:fs");
 const path = require("node:path");
 const { assertSecurePath, pathWithNodeFirst } = require("./isolation.cjs");
+// AC-08/K-F (S2, S6): the ONE switch that decides whether Koda still installs the Pi extension. It lives in the harness
+// installer's shared core module (apps/desktop-harness/src/install-claude.cjs, already part of the closed packaging file
+// list), so the daemon and the installer read the same rule and can never disagree.
+const legacyPi = require("../../desktop-harness/src/install-claude.cjs");
 
 const SCHEMA = "abito-hook-install/1";
 const DEFAULTS = Object.freeze({ timeoutMs: 10_000, maxBytes: 256 * 1024, cacheMs: 1000 });
@@ -58,6 +62,9 @@ const REFUSAL_DETAIL = Object.freeze({
 	audit_unavailable: "audit_unavailable",
 	unsafe_target: "unsafe_target",
 	install_unverified: "install_unverified",
+	// AC-08/K-F: the installer refuses the Pi extension when the legacy switch is off. The manager refuses it before
+	// spawning (below), so this mapping is the defence in depth the installer itself answers.
+	legacy_pi_extension_off: "legacy_pi_extension_off",
 });
 
 const AGENTS = Object.freeze([
@@ -153,6 +160,7 @@ class AgentsManager extends EventEmitter {
 	 * @param {number} [options.timeoutSec]    forwarded as --timeout-sec when set
 	 * @param {number} [options.timeoutMs]     hard timeout per installer call (default 10 s)
 	 * @param {number} [options.maxBytes]      stdout/stderr cap (default 256 KiB)
+	 * @param {object} [options.env]           the environment the switches are read from and forwarded into (default process.env)
 	 * @param {(argv:string[], env:object)=>Promise<{exit:number, stdout:Buffer}>} [options.run]  test seam replacing the spawn
 	 * @param {()=>number} [options.now]
 	 * @param {(line:string)=>void} [options.log]  fixed strings only
@@ -169,6 +177,7 @@ class AgentsManager extends EventEmitter {
 		this.timeoutMs = options.timeoutMs ?? DEFAULTS.timeoutMs;
 		this.maxBytes = options.maxBytes ?? DEFAULTS.maxBytes;
 		this.runner = options.run ?? ((argv, env) => this.spawnInstaller(argv, env));
+		this.env = options.env ?? process.env;
 		this.now = options.now ?? Date.now;
 		this.log = options.log ?? (() => {});
 		this.op = undefined; // the single global in-flight operation: {id}
@@ -265,6 +274,7 @@ class AgentsManager extends EventEmitter {
 		if (!agent || (planHash !== undefined && !HASH.test(planHash))) throw new AgentsError("bad_request");
 		if (!remove && id === "statusline" && planHash === undefined) throw new AgentsError("bad_request");
 		if (!["linux", "darwin", "win32"].includes(this.platform)) return this.list();
+		if (this.legacyPiOff(agent)) return this.list(); // AC-08/K-F: connect AND disconnect refused, nothing spawned
 		if (!agent.harness || !this.available) return this.list(); // nothing to run: the agent reads unavailable
 		if (this.op) throw new AgentsError("busy");
 		this.op = { id: agent.id };
@@ -348,9 +358,19 @@ class AgentsManager extends EventEmitter {
 		}
 	}
 
+	/**
+	 * AC-08/K-F (S2, S6): Koda stopped installing `~/.pi/agent/extensions/koda-island`. While `KODA_LEGACY_PI_EXTENSION` is
+	 * off (the default) the Pi row is honestly DISABLED — not hidden, and never `not_connected` as if a click could install
+	 * it — and nothing is spawned for it, so no plan, backup, restore or removal of that folder can ever happen.
+	 */
+	legacyPiOff(agent) {
+		return agent.harness === "pi" && !legacyPi.legacyPiExtensionEnabled(this.env);
+	}
+
 	/** The state entry of one agent (read-only preview). Never throws. */
 	async entry(agent) {
 		if (!["linux", "darwin", "win32"].includes(this.platform)) return this.plain(agent, "unavailable", "unsupported_platform");
+		if (this.legacyPiOff(agent)) return this.plain(agent, "unavailable", "legacy_pi_extension_off");
 		if (!agent.harness || !this.available) return this.plain(agent, "unavailable");
 		try {
 			const pv = await this.inspect(agent, false);
@@ -469,10 +489,14 @@ class AgentsManager extends EventEmitter {
 	// ----- subprocess ------------------------------------------------------------------
 
 	childEnv() {
+		const source = this.env;
 		const env = this.platform === "win32"
-			? { HOME: this.home, USERPROFILE: this.home, ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot, PATH: path.win32.join(process.env.SystemRoot, "System32") } : {}) }
+			? { HOME: this.home, USERPROFILE: this.home, ...(source.SystemRoot ? { SystemRoot: source.SystemRoot, PATH: path.win32.join(source.SystemRoot, "System32") } : {}) }
 			: { PATH: pathWithNodeFirst(path.dirname(this.nodeExe), CHILD_PATH, ":"), HOME: this.home }; // K2-02: the Node running the installer leads PATH
-		if (typeof process.env.LANG === "string" && process.env.LANG !== "") env.LANG = process.env.LANG;
+		if (typeof source.LANG === "string" && source.LANG !== "") env.LANG = source.LANG;
+		// AC-08/K-F: the installer reads the SAME switch, so it is forwarded — but only while it is ON, which keeps the
+		// allowlist exactly as closed as before (off is the absence of the variable, not a value somebody could flip).
+		if (legacyPi.legacyPiExtensionEnabled(source)) env[legacyPi.LEGACY_PI_EXTENSION_ENV] = "1";
 		env.KODA_ISLAND_EXE = fs.realpathSync(this.nodeExe);
 		return env;
 	}

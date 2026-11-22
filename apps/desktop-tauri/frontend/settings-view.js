@@ -527,7 +527,11 @@
     not_connected: ['Sin conectar', 'plug-off', 'faint'], connected: ['Conectado', 'check', 'go'], outdated: ['Desactualizado', 'info', 'sun'],
     working: ['En curso', 'ring', 'live'], unavailable: ['No encontrado', 'plug-off', 'faint'], error: ['No se pudo', 'triangle', 'red'],
   });
+  // AC-08/K-F (S2, S6): Koda stopped installing the Pi extension (one reversible switch, OFF by default). The row says
+  // what is true and who manages it now; it is never hidden and never pretends a click could install it.
+  const PI_LEGACY_OFF = 'Pi ya no se instala desde Koda: lo gestiona jesscore.';
   const AGENT_ERRORS = Object.freeze({
+    legacy_pi_extension_off: PI_LEGACY_OFF,
     config_invalid: 'La configuración actual no es válida; no se tocó nada.',
     not_writable: 'No hay permiso de escritura en la configuración; no se tocó nada.',
     backup_failed: 'No se pudo hacer el respaldo; no se tocó nada.',
@@ -622,7 +626,9 @@
       const st = Object.prototype.hasOwnProperty.call(AGENT_STATES, a.state) ? a.state : 'error';
       const [defaultWord, icon, tone] = AGENT_STATES[st];
       const platformUnavailable = st === 'unavailable' && a.detail === 'unsupported_platform';
-      const word = platformUnavailable ? 'No disponible en esta plataforma todavía' : a.id === 'pi' && st === 'connected' ? 'Instalado en carpeta predeterminada' : defaultWord;
+      // AC-08/K-F: the Pi install is retired, so its row is DISABLED (its own word, no button) instead of «No encontrado».
+      const legacyPiOff = a.detail === 'legacy_pi_extension_off';
+      const word = platformUnavailable ? 'No disponible en esta plataforma todavía' : st === 'unavailable' && legacyPiOff ? 'Deshabilitado' : a.id === 'pi' && st === 'connected' ? 'Instalado en carpeta predeterminada' : defaultWord;
       const cmd = action => ({ action, agentId: a.id });
       const hash = typeof a.plan_hash === 'string' && PLAN_HASH.test(a.plan_hash) ? a.plan_hash : null;
       const reviewable = a.reviewable !== false;
@@ -642,13 +648,13 @@
         secondary = { label: 'Desconectar', command: cmd('agent_disconnect') };
         if (a.backup === true) note = 'Con respaldo.'; // #436 design: the design's own subtitle
       }
-      if (st === 'unavailable') note = platformUnavailable ? 'La instalación automática todavía no está disponible en Windows.' : 'No está instalado en esta computadora.';
+      if (st === 'unavailable') note = platformUnavailable ? 'La instalación automática todavía no está disponible en Windows.' : legacyPiOff ? PI_LEGACY_OFF : 'No está instalado en esta computadora.';
       if (st === 'error') {
         primary = { label: 'Reintentar', command: hash ? connectCmd() : cmd('agent_connect') };
         note = a.detail === 'unsafe_folder' ? unsafeFolderNote(a.folder, a.folder_reason)
           : Object.prototype.hasOwnProperty.call(AGENT_ERRORS, a.detail) ? AGENT_ERRORS[a.detail] : 'No se pudo completar; no se tocó nada.';
       }
-      if (a.id === 'pi' && !platformUnavailable) note += `${note ? ' ' : ''}Solo ~/.pi/agent. Si usás otro PI_CODING_AGENT_DIR, esa sesión no carga esta instalación. Reiniciá Pi después de cambiar los hooks.`;
+      if (a.id === 'pi' && !platformUnavailable && !legacyPiOff) note += `${note ? ' ' : ''}Solo ~/.pi/agent. Si usás otro PI_CODING_AGENT_DIR, esa sesión no carga esta instalación. Reiniciá Pi después de cambiar los hooks.`;
       const trust = a.trust_review === true;
       if (trust) note = `${note ? note + ' ' : ''}Ahora confiá en los hooks desde /hooks dentro de ${AGENT_NAMES[a.id]}: hasta entonces no se activan.`;
       rows.push({ id: a.id, name: AGENT_NAMES[a.id], state: st, word, icon, tone, primary, secondary, note, summary, reviewable, trust, busy: st === 'working',
