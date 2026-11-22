@@ -41,6 +41,26 @@ pub fn should_publish_handoff(legacy_agent_requests: bool) -> bool {
     legacy_agent_requests
 }
 
+/// AC-08/K-F (S2, S6; human decision, 22 Nov, carried from jesscore): the switch for the OLD Pi extension install — the
+/// `~/.pi/agent/extensions/koda-island` folder (and a 0.1 `abito-island` beside it) that the harness installer owns.
+/// Koda stopped installing and managing it, and it is retired REVERSIBLY, exactly like [`LEGACY_AGENT_REQUESTS_ENV`]:
+/// no code is deleted and the folder on disk is never touched, so setting this to exactly `1` restores the installer.
+///
+/// The installer itself (`apps/desktop-harness/src/install-claude.cjs`) and the daemon (`src/agents.cjs`) read the
+/// same variable; here it only has to reach the node child that Settings spawns (`agents_direct::runtime`).
+pub const LEGACY_PI_EXTENSION_ENV: &str = "KODA_LEGACY_PI_EXTENSION";
+
+/// The switch as a pure function of one value: only the exact value `1` turns the legacy Pi install on; unset, empty,
+/// `0`, `true` and every near-miss are off. Same rule as [`legacy_agent_requests_switch`].
+pub fn legacy_pi_extension_switch(value: Option<&str>) -> bool {
+    value == Some("1")
+}
+
+/// Is the legacy Pi extension install enabled on this run? OFF by default: Koda no longer installs that extension.
+pub fn legacy_pi_extension_enabled() -> bool {
+    legacy_pi_extension_switch(std::env::var(LEGACY_PI_EXTENSION_ENV).ok().as_deref())
+}
+
 pub mod agentclient;
 pub mod agents_direct;
 /// K2-05 T4 U2: the island chat client (closed chat commands + the allowlisted

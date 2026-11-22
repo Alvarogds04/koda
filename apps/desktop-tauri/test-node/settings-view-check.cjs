@@ -1028,6 +1028,26 @@ test('Pi row depends on extension installation and always names the default dire
   assert.deepEqual(r.secondary.command,{action:'agent_disconnect',agentId:'pi'});
 });
 
+// AC-08/K-F (S2, S6): Koda stopped installing the Pi extension behind ONE reversible switch, so the row says exactly
+// that: DISABLED, with its own sentence and the name of who manages it now. Never hidden, never «No encontrado», never a
+// button, and neither the order nor the number of rows changes.
+test('K-F: the Pi row is disabled with its own sentence and never offers a button', () => {
+  const ids = (list) => S.agentsView(agentsState(list)).rows.map((r) => r.id);
+  const disabled = [{ id: 'pi', state: 'unavailable', backup: false, detail: 'legacy_pi_extension_off' }];
+  const pi = S.agentsView(agentsState(disabled)).rows.find((r) => r.id === 'pi');
+  assert.equal(pi.state, 'unavailable');
+  assert.equal(pi.word, 'Deshabilitado');
+  assert.equal(pi.note, 'Pi ya no se instala desde Koda: lo gestiona jesscore.');
+  assert.deepEqual([pi.primary, pi.secondary], [null, null]);
+  assert.equal(pi.busy, false);
+  assert.ok(!/PI_CODING_AGENT_DIR/.test(pi.note), 'the retired install advice is not repeated');
+  assert.deepEqual(ids(disabled), ids([{ id: 'pi', state: 'connected', backup: false, detail: null }]), 'row order and count are unchanged');
+  // the same detail in an error state says the same thing, never the generic sentence
+  const err = S.agentsView(agentsState([{ id: 'pi', state: 'error', backup: false, detail: 'legacy_pi_extension_off' }])).rows.find((r) => r.id === 'pi');
+  assert.equal(err.note, 'Pi ya no se instala desde Koda: lo gestiona jesscore.');
+  assert.ok(!/terminal|comando/i.test(JSON.stringify(pi)), 'no word sends the human to a terminal');
+});
+
 test('Windows unavailable installer has an explicit state and help, never an action', () => {
   const r = rowOf(plan({state:'unavailable', detail:'unsupported_platform', plan_hash:null, summary:null}));
   assert.equal(r.word, 'No disponible en esta plataforma todavía');

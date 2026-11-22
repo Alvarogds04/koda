@@ -139,6 +139,9 @@ const PILL_CATALOG = [
   // hand-copied extension: the Koda harness installer owns and installs it (Settings → Agentes → Pi,
   // `install pi`), the same managed payload path as Claude Code's hooks — so `hooks` is the closest
   // connect kind. Nothing here comes from the credential store or a model server.
+  // AC-08/K-F (22 Nov): that managed install is RETIRED behind one reversible switch
+  // (`KODA_LEGACY_PI_EXTENSION`, default off) — jesscore owns the extension now — so the pill is
+  // shown, but the row behind it reads «Deshabilitado» instead of offering a button.
   {
     id: "agent_pi",
     name: "Pi",

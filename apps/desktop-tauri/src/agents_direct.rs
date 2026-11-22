@@ -114,6 +114,12 @@ pub fn runtime() -> Runtime {
     if let Some(dir) = island.and_then(|d| d.to_str().map(str::to_owned)) {
         env.push(("KODA_ISLAND_DIR".into(), dir));
     }
+    // AC-08/K-F (S2, S6): the manager behind the daemon-free route reads the retired Pi install's switch from this
+    // child's environment, so it is forwarded — only while it is ON, which keeps the allowlist above exactly as closed
+    // as it was (off is the ABSENCE of the variable, not a value somebody could flip).
+    if crate::legacy_pi_extension_enabled() {
+        env.push((crate::LEGACY_PI_EXTENSION_ENV.into(), "1".into()));
+    }
     Runtime { node, script, env }
 }
 

@@ -15,7 +15,9 @@
  *   node agents-direct.cjs connect <agentId> <planHash>
  *   node agents-direct.cjs disconnect <agentId>
  *
- * Env: KODA_ISLAND_DIR (absolute; audit goes to <dir>/audit), HOME or USERPROFILE.
+ * Env: KODA_ISLAND_DIR (absolute; audit goes to <dir>/audit), HOME or USERPROFILE. AC-08/K-F: the Tauri host forwards
+ * KODA_LEGACY_PI_EXTENSION (only when it is exactly "1"); the shared AgentsManager reads it from this process's
+ * environment, so the daemon-free route retires the Pi extension install exactly like the daemon does.
  */
 
 const fs = require("node:fs");

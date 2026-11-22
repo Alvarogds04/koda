@@ -15,7 +15,7 @@ Two calls, both direct children of Abito's Node adapter (or compatibility daemon
 
 **Guarantee: exactly what was shown is applied.** `plan_hash` binds the target, the original bytes (sha256 + size), the exact bytes that would be written, the timeout, the node path, the hook script path and `INSTALLER_VERSION`. The apply step recomputes the plan from scratch and refuses (exit 70, `plan_changed`) on any difference.
 
-Pi uses this same guarded JSON protocol with a directory payload rather than a settings-file patch; see [Managed Pi installation](PI-INSTALL.md). It accepts only `pi --user [--remove] --json` with the optional shown-plan/audit pair. No custom target or timeout is accepted. Restart Pi after a change.
+Pi uses this same guarded JSON protocol with a directory payload rather than a settings-file patch; see [Managed Pi installation](PI-INSTALL.md). It accepts only `pi --user [--remove] --json` with the optional shown-plan/audit pair. No custom target or timeout is accepted. AC-08b: unless `KODA_LEGACY_PI_EXTENSION=1` is set, it refuses with the closed code `legacy_pi_extension_off` and writes nothing (the Pi extension is no longer managed by Koda). Restart Pi after a change.
 
 ## Output rules
 

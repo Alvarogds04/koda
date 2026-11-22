@@ -595,6 +595,43 @@ binary prints one line saying the legacy path is off and how to re-enable it.
 file that names our own socket). Deletion is a later step, after the migration
 to jesscore is complete.
 
+### AC-08b (K-F) — Koda no longer installs the Pi extension (same reversible shape)
+
+Human decision (22 Nov, carried from jesscore): Koda stops installing and
+managing `~/.pi/agent/extensions/koda-island` (and retiring a 0.1
+`abito-island`). **Retired, not deleted**, exactly like the switch above — one
+variable, `KODA_LEGACY_PI_EXTENSION`, ON only for the exact value `1`:
+
+- **Off (default).** `koda-hook install pi` answers the closed code
+  `legacy_pi_extension_off` and produces **no plan**, so no plan hash exists and
+  nothing can be applied; install **and** `--remove` are refused, which means
+  nothing writes, restores, updates or **removes** that folder and nothing
+  creates `~/.pi/agent/abito-backups`. The folder on disk is left byte-identical
+  (jesscore removes it after its live test). The daemon reports the Pi row as
+  `unavailable` with `detail: "legacy_pi_extension_off"` and refuses connect and
+  disconnect before spawning anything; Settings shows the row **disabled**
+  («Deshabilitado», «Pi ya no se instala desde Koda: lo gestiona jesscore.»), never
+  hidden and never with a button, in the same position and count as before.
+- **`KODA_LEGACY_PI_EXTENSION=1`.** The installer, its Windows twin and the
+  daemon-free route behave exactly as before. The daemon forwards the variable
+  into the installer's allowlisted environment, and
+  `agents_direct::runtime` forwards it into the daemon-free node child, both
+  only while it is on — off is the absence of the variable, so the child
+  environment never grows a value somebody could flip.
+- **Nothing is removed.** No code, payload or packaging changes; the shipped
+  `desktop-pi/` payload stays as it is, and `KODA_LEGACY_PI_EXTENSION=1`
+  restores the whole install path.
+
+Tests: `apps/desktop-harness/test/legacy-pi-extension.test.cjs` (the exact-value
+switch, the default refusal with a byte-identical folder and no plan hash, and
+the opt-in end to end), the `legacy Pi extension` cases in
+`apps/desktop-daemon/test/agents.test.cjs` and `test/agents-direct.test.cjs`, and
+`src/agents_direct_tests.rs` for the forwarding. The legacy suites
+(`test/install-pi.test.cjs`, `test/win-install-fake.test.cjs`,
+`apps/desktop-daemon/test/agents.test.cjs`) opt in explicitly instead of being
+weakened. The Windows smoke step still exercises the installer with the switch
+set to `1`; that step is UNVERIFIED on Windows from here.
+
 Tests: `tests/transport_receiver.rs` covers the default refusal, the untouched
 notice lane and the explicit opt-in; `src/handoff_tests.rs` covers the switch
 values and the publish decision. The QP/1 suites (`question_receiver`,

@@ -70,6 +70,24 @@ class InstallError extends Error {
   constructor(exitCode, message) { super(message); this.exitCode = exitCode; }
 }
 const refuse = m => new InstallError(65, 'refused: ' + m);
+
+// AC-08/K-F (S2, S6; human decision 22 Nov, carried from jesscore): ONE switch decides whether Koda still installs and
+// manages the Pi extension folder `~/.pi/agent/extensions/koda-island`. Retired REVERSIBLY, exactly like K-C's
+// `KODA_LEGACY_AGENT_REQUESTS`: no code is deleted, the folder on disk is never touched while this is off, and the exact
+// value `1` restores the whole installer. It lives here, in the installer family's shared core module, because that is a
+// module the closed packaging list already ships (`apps/desktop-tauri/packaging/lib.cjs` HARNESS_FILES) and every
+// installer plus the daemon can require it: a new src file would not be packaged, and a packaged install must never fail
+// to load an installer. Only the exact value `1` turns it on; unset, empty, `0`, `true` and near-misses are off, the same
+// rule `apps/desktop-tauri/src/lib.rs` applies on the Rust side.
+const LEGACY_PI_EXTENSION_ENV = 'KODA_LEGACY_PI_EXTENSION';
+/** The switch as a pure function of one value: unit-testable without touching the process environment. */
+function legacyPiExtensionSwitch(value) {
+  return value === '1';
+}
+/** Is the legacy Pi extension install enabled on this run? OFF by default. */
+function legacyPiExtensionEnabled(env = process.env) {
+  return legacyPiExtensionSwitch(env ? env[LEGACY_PI_EXTENSION_ENV] : undefined);
+}
 // HU-047: a folder that is the problem (another user/group can change it, it is not ours, its Windows ACL is not private).
 // Carries the exact folder and a reason so every surface can name it; never used for links (those keep the generic refusal).
 function unsafeFolder(dir, reason) {
@@ -725,4 +743,4 @@ async function runInstall(argv, opts = {}) {
   }
 }
 
-module.exports = { isFormerScript, isHookScript, SCRIPT_NAME, LEGACY_SCRIPT_NAMES, retireFresh, retireAside, retireBack, retireOf, freeBackupName, winRefuse, numberIsLossless, readTarget, checkParent, detectStyle, sameSig, DIFF_LINES, diffLines, changedOutsidePatch, checkTimeout, CLAUDE_PROFILE, InstallErrorRefuse: refuse, unsafeFolder, shq, isObj, askLine, promptTimeoutFromEnv, scanSettings, defaultVerify, BIN_PATH, USAGE, InstallError, planClaudeSettings, renderPreview, runInstall, applyPlan, resolveUserSettings, checkSettingsSyntax, parseInstallArgs, backupPathFor, MAX_BYTES };
+module.exports = { LEGACY_PI_EXTENSION_ENV, legacyPiExtensionSwitch, legacyPiExtensionEnabled, isFormerScript, isHookScript, SCRIPT_NAME, LEGACY_SCRIPT_NAMES, retireFresh, retireAside, retireBack, retireOf, freeBackupName, winRefuse, numberIsLossless, readTarget, checkParent, detectStyle, sameSig, DIFF_LINES, diffLines, changedOutsidePatch, checkTimeout, CLAUDE_PROFILE, InstallErrorRefuse: refuse, unsafeFolder, shq, isObj, askLine, promptTimeoutFromEnv, scanSettings, defaultVerify, BIN_PATH, USAGE, InstallError, planClaudeSettings, renderPreview, runInstall, applyPlan, resolveUserSettings, checkSettingsSyntax, parseInstallArgs, backupPathFor, MAX_BYTES };

@@ -104,7 +104,13 @@ function pruneBackups(w, root, keep, alsoKeep = null) {
 function ownedIfOurs(w, dir) {
   try { return owned(w, dir); } catch { return null; }
 }
-function planPi({ home, remove, execPath, binPath }) {
+// AC-08/K-F (S2, S6): same one switch as the POSIX twin. Off (the default) refuses before any helper call or write;
+// nothing is deleted, so `KODA_LEGACY_PI_EXTENSION=1` restores this installer exactly as it is.
+function legacyOff() {
+  return Object.assign(core.InstallErrorRefuse('the Koda Pi extension install is retired'), { legacyPiExtensionOff: true });
+}
+function planPi({ home, remove, execPath, binPath, env = process.env }) {
+  if (!core.legacyPiExtensionEnabled(env)) throw legacyOff();
   const w = winfs.active();
   const parent = parents(w, home);
   const target = path.join(parent, TARGET);
@@ -129,7 +135,9 @@ function same(w, plan) {
   if ((now?.signature || '') !== (plan.sig?.sha256 || '')) return false;
   return (ownedIfOurs(w, plan.legacyPath)?.signature || '') === (plan.legacySig || '');
 }
-async function applyPi(plan, { backupPath, out, err, now = () => new Date() }) {
+async function applyPi(plan, { backupPath, out, err, now = () => new Date(), env = process.env }) {
+  // Defence in depth: a plan made while the switch was on cannot be applied after it was turned off.
+  if (!core.legacyPiExtensionEnabled(env)) throw legacyOff();
   const w = winfs.active();
   let stage = null, saved = false, published = false, done = false, retired = null;
   const made = [];

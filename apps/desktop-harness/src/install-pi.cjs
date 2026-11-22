@@ -110,8 +110,16 @@ function pruneBackups(root, keep, uid, alsoKeep = null) {
     try { const entry = owned(dir, uid); if (entry) cleanStage(dir, entry.layout); } catch { /* preserve foreign/modified backup */ }
   }
 }
-function planPi({home, uid, remove, execPath, binPath}) {
-  if (winfs.active()) return require('./install-pi-win.cjs').planPi({home, remove, execPath, binPath});
+// AC-08/K-F (S2, S6): Koda stopped owning this folder. While `KODA_LEGACY_PI_EXTENSION` is off (the default) the plan
+// refuses before ANY read or write — no staging, no backup, no rename, no removal — and the refusal carries the closed
+// marker install-ui.cjs turns into its JSON code. Nothing is deleted: `KODA_LEGACY_PI_EXTENSION=1` restores the
+// installer exactly as it is.
+function legacyOff() {
+  return Object.assign(core.InstallErrorRefuse('the Koda Pi extension install is retired'), { legacyPiExtensionOff: true });
+}
+function planPi({home, uid, remove, execPath, binPath, env = process.env}) {
+  if (!core.legacyPiExtensionEnabled(env)) throw legacyOff();
+  if (winfs.active()) return require('./install-pi-win.cjs').planPi({home, remove, execPath, binPath, env});
   const parent = parents(home, uid);
   const target = path.join(parent, TARGET);
   const legacyPath = path.join(parent, LEGACY_TARGET);
@@ -158,8 +166,10 @@ function cleanStage(dir, files = FILES) {
 function removeMade(made, rmdir) {
   for (const dir of [...made].reverse()) { try { rmdir(dir); } catch { /* not empty or not ours any more: leave it */ } }
 }
-async function applyPi(plan, {backupPath, out, err, now = () => new Date()}) {
-  if (winfs.active()) return require('./install-pi-win.cjs').applyPi(plan, {backupPath, out, err, now});
+async function applyPi(plan, {backupPath, out, err, now = () => new Date(), env = process.env}) {
+  // Defence in depth: a plan made while the switch was on cannot be applied after it was turned off.
+  if (!core.legacyPiExtensionEnabled(env)) throw legacyOff();
+  if (winfs.active()) return require('./install-pi-win.cjs').applyPi(plan, {backupPath, out, err, now, env});
   let stage = null, saved = false, published = false, done = false, retired = null;
   const made = [];
   const freeDir = base => core.freeBackupName(base, now(), p => { try { fs.lstatSync(p); return true; } catch { return false; } });

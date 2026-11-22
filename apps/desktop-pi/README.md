@@ -8,9 +8,9 @@ This directory is the **Pi-side producer**, not a desktop app. It carries **no a
 
 ## Install and enable
 
-Abito ships the closed Pi runtime beside its harness. On Linux/macOS, **Settings → Agents → Pi → Install** previews and installs it into `~/.pi/agent/extensions/koda-island/index.ts` without downloading dependencies. Restart Pi afterwards. The row reflects this extension's manifest, never a running session or the presence of Pi itself.
+Abito ships the closed Pi runtime beside its harness, but **Koda no longer installs it** (AC-08b/K-F, 22 Nov): Settings → Agents → Pi reads **Deshabilitado** with «Pi ya no se instala desde Koda: lo gestiona jesscore.», the installer answers `legacy_pi_extension_off` with no plan, and nothing writes, restores, updates or removes `~/.pi/agent/extensions/koda-island` — the folder already on disk is left exactly as it is, and jesscore removes it after its live test. `KODA_LEGACY_PI_EXTENSION=1` restores the old install reversibly (no code was deleted): **Settings → Agents → Pi → Install** then previews and installs into `~/.pi/agent/extensions/koda-island/index.ts` without downloading dependencies. Restart Pi afterwards. The row reflects this extension's manifest, never a running session or the presence of Pi itself.
 
-Only the default `~/.pi/agent` directory is supported. A Pi session using another `PI_CODING_AGENT_DIR` will not load this installation; the row always states that limitation. Windows automatic installation remains explicitly unavailable, and the terminal installer is not a workaround.
+Only the default `~/.pi/agent` directory is supported. A Pi session using another `PI_CODING_AGENT_DIR` will not load such an installation; the row always stated that limitation. Windows automatic installation remains explicitly unavailable, and the terminal installer is not a workaround.
 
 Other opt-in loading mechanisms (not managed by the Settings installer):
 

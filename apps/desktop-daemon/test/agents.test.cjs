@@ -122,7 +122,10 @@ function setup(t, scenario = {}, extra = {}) {
 	// The product's Windows trust path verifies the script against the install manifest (HU-047); a test
 	// fixture is never in that manifest, so on Windows the tests inject the product's own verifier seam.
 	// The POSIX ownership/mode trust check below stays the real one on Linux/macOS.
-	const manager = new AgentsManager({ installerBin, home, islandDir, ...(win ? { verifyBundled: () => {} } : {}), ...extra });
+	// AC-08/K-F: the manager retires the Pi extension install behind ONE switch (`KODA_LEGACY_PI_EXTENSION`, default OFF).
+	// These tests are the legacy behaviour's coverage, so the fixture opts in; a test that wants the default passes
+	// `env: {}` in `extra` (see the legacy-Pi tests at the end of this file).
+	const manager = new AgentsManager({ installerBin, home, islandDir, ...(win ? { verifyBundled: () => {} } : {}), env: { ...process.env, KODA_LEGACY_PI_EXTENSION: "1" }, ...extra });
 	const calls = () => (fs.existsSync(`${scenarioFile}.calls`) ? fs.readFileSync(`${scenarioFile}.calls`, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
 	return { base, home, islandDir, manager, write, calls, installerBin, scenarioFile };
 }
@@ -201,8 +204,9 @@ for (const [id, events] of [['statusline', ['statusLine']]]) {
   const call = calls.find(c => c.argv[2] === id);
   assert.deepEqual(call.argv, [s.installerBin, 'install', id, '--user', '--json']);
   // The recorded child env is each platform's own closed allowlist: POSIX PATH+HOME (+LANG), the Windows
-  // SystemRoot-shaped env with USERPROFILE (the product's HU-047 contract, asserted the same way above).
-  const allowedEnv = win ? ['HOME', 'USERPROFILE', 'SystemRoot', 'PATH', 'LANG', 'KODA_ISLAND_EXE'] : ['PATH', 'HOME', 'LANG', 'KODA_ISLAND_EXE'];
+  // SystemRoot-shaped env with USERPROFILE (the product's HU-047 contract, asserted the same way above), plus the ONE
+  // switch AC-08/K-F forwards to the installer while the legacy Pi install is on (this fixture opts in).
+  const allowedEnv = win ? ['HOME', 'USERPROFILE', 'SystemRoot', 'PATH', 'LANG', 'KODA_ISLAND_EXE', 'KODA_LEGACY_PI_EXTENSION'] : ['PATH', 'HOME', 'LANG', 'KODA_ISLAND_EXE', 'KODA_LEGACY_PI_EXTENSION'];
   assert.ok(Object.keys(call.env).every(k => allowedEnv.includes(k)));
   await assert.rejects(s.manager.connect(id), e => e.code === 'bad_request');
   for (const entries of [events.slice(1).map(event => ({ event, op: 'add' })), events.map(event => ({ event, op: 'execute' })), events.map(() => ({ event: 'PermissionRequest', op: 'add' }))]) {
@@ -290,7 +294,8 @@ test("legacy recap: never rejects — garbage, a throwing run and a throwing log
 });
 
 test("installerBin unset: every agent unavailable, no spawn", async () => {
-	const m = new AgentsManager({ home: os.tmpdir(), islandDir: os.tmpdir(), run: () => { assert.fail('must never spawn without installerBin'); } });
+	// AC-08/K-F: the Pi install is retired behind its own switch; this test is about a missing installer, so it opts in.
+	const m = new AgentsManager({ home: os.tmpdir(), islandDir: os.tmpdir(), env: { KODA_LEGACY_PI_EXTENSION: '1' }, run: () => { assert.fail('must never spawn without installerBin'); } });
 	for (const id of ['statusline']) {
 		assert.equal(byId(await m.connect(id, HASH_A), id).state, 'unavailable');
 		assert.equal(byId(await m.disconnect(id), id).state, 'unavailable');
@@ -464,8 +469,14 @@ test("child env: allowlist + KODA_ISLAND_EXE only, HOME is the real home passed 
 	// Review (non-tautological): the CLOSED set is pinned here as literals per OS. A key added to childEnv() itself must
 	// fail this test, not widen it; the derived set must equal the pinned one, and the recorded child env stays inside it.
 	const PINNED_ENV = (win ? ["HOME", "USERPROFILE", "SystemRoot", "PATH", "KODA_ISLAND_EXE"] : ["PATH", "HOME", "KODA_ISLAND_EXE"]).concat(process.env.LANG ? ["LANG"] : []);
-	assert.deepEqual(Object.keys(s.manager.childEnv()).sort(), [...PINNED_ENV].sort(), "the product's child env is exactly the pinned closed set");
-	const allowedEnv = [...PINNED_ENV, ...OS_INJECTED_ENV];
+	// AC-08/K-F: this fixture opts in to the legacy Pi install, so ONE more key travels — the switch the installer reads.
+	// The pinned set is not widened by it: a manager that does not have the switch on keeps exactly the old closed set.
+	assert.deepEqual(Object.keys(s.manager.childEnv()).sort(), [...PINNED_ENV, "KODA_LEGACY_PI_EXTENSION"].sort(), "the product's child env is the pinned set plus that one switch");
+	const withoutSwitch = { ...process.env };
+	delete withoutSwitch.KODA_LEGACY_PI_EXTENSION;
+	const off = new AgentsManager({ installerBin: s.installerBin, home: s.home, islandDir: s.islandDir, env: withoutSwitch }).childEnv();
+	assert.deepEqual(Object.keys(off).sort(), [...PINNED_ENV].sort(), "off (the default): exactly the pinned closed set, no new key");
+	const allowedEnv = [...PINNED_ENV, "KODA_LEGACY_PI_EXTENSION", ...OS_INJECTED_ENV];
 	for (const call of s.calls()) {
 		for (const k of Object.keys(call.env)) assert.ok(allowedEnv.includes(k), `unexpected env ${k}`);
 		assert.equal(call.env.HOME, s.home);
@@ -729,4 +740,65 @@ test("K2-04: a backup of the Koda 0.1 artifact counts as this agent's backup", a
 	assert.equal(byId(list, "pi").backup, true, "a 0.1 extension backup in the backup root counts");
 	assert.equal(byId(list, "opencode").backup, false, "an unrelated agent keeps its honest false");
 	for (const agent of ["copilot-cli", "pi", "opencode"]) assert.notEqual(byId(list, agent).state, "error");
+});
+
+// ----- AC-08/K-F (S2, S6): Koda stopped installing the Pi extension ------------------------------------------------
+// The human decided (22 Nov, carried from jesscore) that Koda no longer installs or manages
+// `~/.pi/agent/extensions/koda-island`. Retired REVERSIBLY like K-C: one switch, `KODA_LEGACY_PI_EXTENSION`, ON only for
+// the exact value "1". While it is off the Pi row is DISABLED with its own detail and NOTHING is spawned for it — so no
+// plan, backup, restore or removal of that folder can happen — connect and disconnect included. Nothing is deleted.
+test('legacy Pi extension OFF (default): the row is disabled with its own detail and the installer is never asked', async t => {
+	const P = require('../src/protocol.cjs');
+	const seen = [];
+	const s = setup(t, {}, { env: {}, run: async (argv) => {
+		seen.push(argv[2]);
+		const harness = argv[2];
+		return { exit: 0, stdout: Buffer.from(JSON.stringify(preview({ harness, target: path.join(s.home, '.claude', 'settings.json') }))) };
+	} });
+	const list = await s.manager.list();
+	const pi = byId(list, 'pi');
+	assert.equal(pi.state, 'unavailable', 'not hidden, and never not_connected as if a click could install it');
+	assert.equal(pi.detail, 'legacy_pi_extension_off');
+	assert.equal(pi.backup, false);
+	assert.equal(pi.plan_hash, undefined, 'no plan hash: there is nothing to click');
+	assert.ok(!seen.includes('pi'), 'the installer never runs for Pi');
+	assert.doesNotThrow(() => P.agentsFrame(list), 'the closed detail is valid on the wire');
+
+	seen.length = 0;
+	const connected = byId(await s.manager.connect('pi', HASH_A), 'pi');
+	assert.deepEqual([connected.state, connected.detail], ['unavailable', 'legacy_pi_extension_off'], 'connect refused');
+	const removed = byId(await s.manager.disconnect('pi'), 'pi');
+	assert.deepEqual([removed.state, removed.detail], ['unavailable', 'legacy_pi_extension_off'], 'disconnect refused: the folder is not ours to remove');
+	assert.deepEqual(seen.filter((h) => h === 'pi'), [], 'neither connect nor disconnect spawned anything');
+	assert.doesNotThrow(() => P.agentsFrame([connected]));
+});
+
+test('legacy Pi extension = "1" restores the old path: the row is planned again and the switch reaches the installer', async t => {
+	const seen = [];
+	const env = [];
+	const s = setup(t, {}, { env: { KODA_LEGACY_PI_EXTENSION: '1' }, run: async (argv, childEnv) => {
+		seen.push(argv[2]);
+		env.push(childEnv);
+		const harness = argv[2];
+		const target = path.join(s.home, '.pi/agent/extensions/koda-island');
+		const body = harness === 'pi'
+			? { ...preview({ harness: 'pi', target }), entries: [{ event: 'extension', op: 'add' }] }
+			: preview({ harness, target: path.join(s.home, '.claude', 'settings.json') });
+		return { exit: 0, stdout: Buffer.from(JSON.stringify(body)) };
+	} });
+	const pi = byId(await s.manager.list(), 'pi');
+	assert.equal(pi.state, 'not_connected', 'the legacy install is back, exactly as before');
+	assert.ok(pi.plan_hash);
+	assert.ok(seen.includes('pi'), 'the switch let the installer run again');
+	assert.ok(env.some((e) => e.KODA_LEGACY_PI_EXTENSION === '1'), 'the installer reads the same switch');
+});
+
+test('the child environment keeps its closed allowlist: the Pi switch is forwarded only while it is ON', () => {
+	const base = { installerBin: path.join(os.tmpdir(), 'installer.cjs'), home: os.tmpdir(), islandDir: os.tmpdir(), nodeExe: process.execPath };
+	const off = new AgentsManager({ ...base, env: { KODA_LEGACY_PI_EXTENSION: '0', LANG: 'es_ES.UTF-8' } }).childEnv();
+	assert.ok(!('KODA_LEGACY_PI_EXTENSION' in off), 'off is the ABSENCE of the variable, not a value to flip');
+	assert.equal(off.LANG, 'es_ES.UTF-8', 'the rest of the allowlist is unchanged');
+	const on = new AgentsManager({ ...base, env: { KODA_LEGACY_PI_EXTENSION: '1' } }).childEnv();
+	assert.equal(on.KODA_LEGACY_PI_EXTENSION, '1', 'on: the installer is told, and told exactly "1"');
+	for (const key of Object.keys(on)) assert.ok(['PATH', 'HOME', 'USERPROFILE', 'SystemRoot', 'LANG', 'KODA_ISLAND_EXE', 'KODA_LEGACY_PI_EXTENSION'].includes(key), `unexpected key ${key}`);
 });
