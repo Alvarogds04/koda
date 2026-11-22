@@ -341,6 +341,12 @@ fn start_transport(app: &AppHandle) {
                 match koda_island::handoff::publish(transport.runtime(), transport.endpoint()) {
                     Ok(koda_island::handoff::Published::Standby { owner_pid }) => {
                         eprintln!("endpoint handoff kept by the running engine (pid {owner_pid}); Koda stays in standby");
+                        // AC-08/K-D (native review of K-A): the engine owns the file while it lives, but it can exit
+                        // at any moment and a standby Koda used to keep waiting until the next restart. One bounded
+                        // watcher retries the publish every ~2 s and stops on success, on quit and when our own
+                        // transport is gone. It is spawned HERE, inside the K-C gate, so with the switch off no
+                        // publish is attempted and no watcher can exist.
+                        spawn_standby_watcher(transport.runtime().to_path_buf(), transport.endpoint().to_path_buf());
                     }
                     Ok(koda_island::handoff::Published::Written) => {}
                     Err(error) => eprintln!("endpoint handoff not published: {error}"),
@@ -350,6 +356,35 @@ fn start_transport(app: &AppHandle) {
         }
         Err(error) => fail(error.to_string()),
     }
+}
+
+/// AC-08/K-D (native review of K-A): the standby watcher. While a live engine owns `<runtime>/endpoint.json`
+/// Koda re-checks it every [`koda_island::handoff::STANDBY_RETRY_MS`], so the file becomes OURS the moment that
+/// engine exits instead of staying theirs until the next restart. It stops on success (`Written`), on a quit, when
+/// our own transport is gone (`retry_publish` → `None`) and on a refusal that cannot ever succeed. Started ONLY
+/// from the `Standby` arm inside the legacy-path gate (`KODA_LEGACY_AGENT_REQUESTS=1`), so nothing of it exists
+/// while the switch is off.
+fn spawn_standby_watcher(runtime: std::path::PathBuf, endpoint: std::path::PathBuf) {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_millis(koda_island::handoff::STANDBY_RETRY_MS));
+        if QUITTING.load(Ordering::SeqCst) {
+            return;
+        }
+        match koda_island::handoff::retry_publish(&runtime, &endpoint) {
+            // our own socket is gone: nothing is left to publish, and a dead endpoint is never written
+            None => return,
+            Some(Ok(koda_island::handoff::Published::Written)) => {
+                eprintln!("endpoint handoff taken over: the engine that owned it is gone");
+                return;
+            }
+            Some(Ok(koda_island::handoff::Published::Standby { .. })) => {}
+            Some(Err(error)) => {
+                // a refusal that repeated every 2 s would be noise: report it once and stop
+                eprintln!("endpoint handoff retry stopped: {error}");
+                return;
+            }
+        }
+    });
 }
 
 /// Last values we asked the window manager for, reported by the probe.

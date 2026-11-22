@@ -498,11 +498,16 @@ fn chat_action_body() -> &'static str {
 #[test]
 fn chathost_chat_action_keeps_its_gates_and_passes_the_real_window_label() {
     let body = chat_action_body();
-    let gate = body.find("main_window_only(webview.label())").expect("the island gate stays");
-    let origin = body.find("bridge::sender_ok(webview.label(), &url)").expect("the origin gate stays");
+    // AC-08/K-D: the island-label gate and the origin gate are ONE tested function (chathost.rs's
+    // `chat_action_window_gate_tests`), applied before anything else. The settings window is refused by the
+    // label half even though the origin half would admit its page.
+    let gate = body.find("chat_action_window_gate(webview.label(), &url)").expect("the one window gate stays");
     let rate = body.find("chat_rate").expect("the rate gate stays");
     let route = body.find(".route(").expect("chat_action routes through ChatHost::route");
-    assert!(gate < origin && origin < rate && rate < route, "gates run before anything is routed");
+    assert!(gate < rate && rate < route, "gates run before anything is routed");
+    for half in ["main_window_only(label)", "bridge::sender_ok(label, url)"] {
+        assert!(include_str!("chathost.rs").contains(half), "the gate keeps its {half} half");
+    }
     assert!(body.contains("let caller = webview.label().to_string();"), "the REAL window label is what the route sees");
     assert!(body.contains("&caller"), "and it is passed into the chatclient parse");
     assert!(!include_str!("chathost.rs").contains("CHAT_WINDOW_LABEL"), "never a constant label");
@@ -2601,8 +2606,13 @@ fn chathost_u4b_answer_is_a_closed_verb_that_sends_one_ui_response() {
     assert_eq!(parse_command(&answer("a-txt", "value", json!(""))).unwrap(), Command::Answer { ask_id: "a-txt".into(), answer: AskAnswer::Value(String::new()) }, "an empty input answer is an answer");
     let max: String = "ñ".repeat(crate::chat::ANSWER_MAX_UNITS);
     assert!(parse_command(&answer("a-txt", "value", json!(max))).is_ok());
+    // AC-08/K-D: an answer past the daemon's bound is no longer the generic `invalid_input` — it has its own code
+    // and sentence so the cards can say why (see `chathost_kd_an_over_limit_answer_is_refused_with_its_own_reason`).
+    assert_eq!(
+        parse_command(&answer("a-txt", "value", json!("x".repeat(crate::chat::ANSWER_MAX_UNITS + 1)))).map_err(|e| e.code),
+        Err("answer_too_long".into())
+    );
     for bad in [
-        answer("a-txt", "value", json!("x".repeat(crate::chat::ANSWER_MAX_UNITS + 1))),
         answer("a-txt", "value", json!("a\u{0000}b")),
         answer("a-txt", "value", json!(7)),
         answer("a-yes", "confirmed", json!("true")),
@@ -2864,4 +2874,104 @@ fn chathost_attachments_the_glue_never_writes_uploads_island_side() {
     assert!(!src.contains("uploads::attach"), "the island never stores an attachment itself");
     assert!(!src.contains("attachments_dir"), "no island-side uploads folder");
     assert!(src.contains("NATIVE_DROPS"), "a dropped path is honoured only from the native drop set");
+}
+
+// ---- AC-08 K-D: the four non-blocking warnings of the native review of K-A + K-B ---------------------------
+
+/// K-D / item 2: the TWO exact JSON key names are pinned at the FULL view path, not only inside `ChatState`:
+/// the client's own serialization carries `multi_select` (the field `asks_view` reads) and the `chat:state`
+/// projection carries `multiSelect` (the key frontend/chat-view.js and notify-view.js read), and BOTH are
+/// present ONLY for a `select` ask whose frame said `multiSelect:true` — absent, never `false`, otherwise.
+#[test]
+fn chathost_kd_multi_select_is_pinned_at_the_full_view_path() {
+    let link = FakeLink::new();
+    link.frame(json!({"type":"ask","id":"m-1","kind":"select","title":"¿Cuáles?","options":["Uno","Dos"],"multiSelect":true}));
+    link.frame(json!({"type":"ask","id":"s-1","kind":"select","title":"¿Una?","options":["A","B"]}));
+    link.frame(json!({"type":"ask","id":"c-1","kind":"confirm","title":"¿Seguro?","message":"Se borra","multiSelect":true}));
+    link.frame(json!({"type":"ask","id":"i-1","kind":"input","title":"Nombre","multiSelect":true}));
+    let raw = link.view();
+    let in_raw = |id: &str| raw["asks"].as_array().unwrap().iter().find(|a| a["id"] == id).unwrap().clone();
+    // 1) what ChatState serializes: the snake_case field `asks_view` reads from
+    assert_eq!(in_raw("m-1")["multi_select"], json!(true), "ChatAsk's serde key is multi_select");
+    for id in ["s-1", "c-1", "i-1"] {
+        assert!(in_raw(id).get("multi_select").is_none(), "{id}: absent, never `false`");
+    }
+    // 2) what the page actually receives: the camelCase key the frontends read
+    let v = ChatHost::new().project(&raw, T0);
+    let shown = |id: &str| v["asks"].as_array().unwrap().iter().find(|a| a["id"] == id).unwrap().clone();
+    assert_eq!(shown("m-1")["multiSelect"], json!(true), "the page's key is multiSelect");
+    assert_eq!(keys(&shown("m-1")), ["answering", "id", "kind", "message", "multiSelect", "options", "placeholder", "title"], "the closed key set of a multi select ask");
+    assert_eq!(keys(&shown("s-1")), ["answering", "id", "kind", "message", "options", "placeholder", "title"], "a single select is unchanged");
+    for id in ["s-1", "c-1", "i-1"] {
+        assert!(shown(id).get("multiSelect").is_none(), "{id}: absent, never `false`");
+        assert!(shown(id).get("multi_select").is_none(), "{id}: the snake_case field never leaks to the page");
+    }
+    // the frontends' two sources agree on the pair of names they read
+    let chat_view = include_str!("../frontend/chat-view.js");
+    assert!(chat_view.contains("a.multiSelect === true"), "chat-view.js reads camelCase from the projection");
+    let notify_view = include_str!("../frontend/notify-view.js");
+    assert!(notify_view.contains("ask.multiSelect === true"), "notify-view.js reads camelCase from the projection");
+}
+
+/// K-D / item 3: the daemon's answer bound (8192 UTF-16 units) is a DISTINGUISHABLE refusal, never the generic
+/// `invalid_input` and never a silent truncation: 8192 units pass, 8193 do not, and an emoji counts as two.
+#[test]
+fn chathost_kd_an_over_limit_answer_is_refused_with_its_own_reason() {
+    use crate::chat::parse_command;
+    let units = |s: &str| s.encode_utf16().count();
+    let at_limit = "ñ".repeat(crate::chat::ANSWER_MAX_UNITS);
+    assert_eq!(units(&at_limit), crate::chat::ANSWER_MAX_UNITS);
+    assert!(parse_command(&answer("a-txt", "value", json!(at_limit))).is_ok(), "exactly 8192 units is an answer");
+    // 4096 emoji = 8192 UTF-16 units: the bound is counted in UTF-16 like the daemon's String.length
+    let emoji = "😀".repeat(crate::chat::ANSWER_MAX_UNITS / 2);
+    assert_eq!(units(&emoji), crate::chat::ANSWER_MAX_UNITS);
+    assert!(parse_command(&answer("a-txt", "value", json!(emoji))).is_ok(), "an emoji is two units, not one");
+    for over in [format!("{at_limit}x"), format!("{emoji}x")] {
+        let err = parse_command(&answer("a-txt", "value", json!(over))).expect_err("8193 units never travels");
+        assert_eq!(err.code, "answer_too_long", "its own code, not invalid_input: {err:?}");
+        assert_eq!(err.safe_message, crate::chat::ANSWER_TOO_LONG_MESSAGE, "one sentence the cards show verbatim");
+        assert_eq!(err.safe_message, "La respuesta es demasiado larga (máx. 8192 caracteres).");
+    }
+    // a pick's label answers under the same bound
+    let long = json!([at_limit.clone(), format!("{at_limit}x")]);
+    assert_eq!(parse_command(&answer("a-multi", "picks", long)).map_err(|e| e.code), Err("answer_too_long".into()));
+    // the route says the same thing BEFORE the wire, where it used to say only «answer_refused»
+    let host = ChatHost::new();
+    let at_limit_link = FakeLink::new();
+    at_limit_link.frame(json!({"type":"ask","id":"a-txt","kind":"input","title":"Nombre"}));
+    let at_limit_cmd = parse_command(&answer("a-txt", "value", json!(at_limit))).unwrap();
+    assert!(host.route(&at_limit_link, "main", &at_limit_cmd, T0).is_ok(), "at the bound it travels");
+    assert_eq!(at_limit_link.sent().len(), 1, "exactly one ui_response");
+    // the route guards the bound too (defence in depth: a caller that skipped chat.rs's parser still cannot send it)
+    let link = FakeLink::new();
+    link.frame(json!({"type":"ask","id":"a-txt","kind":"input","title":"Nombre"}));
+    let over = Command::Answer { ask_id: "a-txt".into(), answer: crate::chat::AskAnswer::Value(format!("{at_limit}x")) };
+    let err = host.route(&link, "main", &over, T0 + 1).expect_err("8193 units is refused");
+    assert_eq!(err.code, "answer_too_long", "the card can say why: {err:?}");
+    assert_eq!(err.safe_message, crate::chat::ANSWER_TOO_LONG_MESSAGE);
+    assert!(link.sent().is_empty(), "nothing over the bound ever reaches the daemon");
+    assert_eq!(host.project(&link.view(), T0 + 2)["asks"][0]["answering"], json!(false), "the ask stays answerable");
+}
+
+/// K-D / item 4: the standby watcher exists ONLY inside the K-C gate. The handoff (and so a Standby outcome)
+/// is published only while the legacy path is on, and the watcher is spawned from that same arm: with the
+/// switch off there is no publish, no Standby and no thread.
+#[test]
+fn chathost_kd_the_standby_watcher_lives_inside_the_legacy_path_gate() {
+    let main = include_str!("main.rs");
+    assert_eq!(main.matches("spawn_standby_watcher(").count(), 2, "one definition and exactly one call site");
+    let gate = main.find("if koda_island::should_publish_handoff(legacy_agent_requests)").expect("the K-C gate stays");
+    let inside = &main[gate..];
+    let publish = inside.find("koda_island::handoff::publish(").expect("the publish inside the gate");
+    let spawn = inside.find("spawn_standby_watcher(").expect("the watcher is started inside the gate");
+    assert!(publish < spawn, "the watcher only starts after a publish actually returned Standby");
+    let standby = inside.find("Published::Standby").expect("the Standby arm");
+    assert!(standby < spawn, "and only for the Standby outcome");
+    // the loop itself stops on the documented conditions and sleeps the documented interval
+    let watcher = &main[main.find("fn spawn_standby_watcher").expect("the watcher fn")..];
+    let body = &watcher[..watcher.find("\n}\n").expect("its body")];
+    assert!(body.contains("handoff::STANDBY_RETRY_MS"), "the interval is the handoff constant: {body}");
+    assert!(body.contains("QUITTING.load"), "stops on quit");
+    assert!(body.contains("handoff::retry_publish("), "uses the pure step");
+    assert_eq!(body.matches("return;").count(), 3, "stops on quit, on Written and on a gone transport");
 }

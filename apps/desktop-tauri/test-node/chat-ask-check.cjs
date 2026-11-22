@@ -123,6 +123,24 @@ const answering = (asks, id) => asks.map(a => (a.id === id ? { ...a, answering: 
     const typed = 'mi Raspberry Pi con engram y Gentle Shell';
     assert.deepEqual(V.askPayload('a-txt', { value: typed }), { action: 'answer', ask_id: 'a-txt', value: typed }, 'never white-labelled');
   });
+  await check('AC-08 K-D: an answer over 8192 UTF-16 units is refused with a sentence, never truncated', () => {
+    // chat.rs ANSWER_MAX_UNITS / chatclient MAX_ANSWER_CHARS: UTF-16 code units, exactly like JS .length
+    assert.equal(V.ANSWER_MAX_UNITS, 8192);
+    assert.equal(V.ANSWER_MAX_UNITS, 8 * 1024);
+    assert.equal(V.ANSWER_TOO_LONG, 'La respuesta es demasiado larga (máx. 8192 caracteres).');
+    const atLimit = 'ñ'.repeat(8192);
+    assert.equal(V.answerProblem({ value: atLimit }), null, '8192 units is an answer');
+    assert.equal(V.answerProblem({ value: atLimit + 'x' }), V.ANSWER_TOO_LONG, '8193 units does not fit');
+    const emoji = '😀'.repeat(4096); // one emoji is TWO UTF-16 units: 4096 of them are exactly 8192
+    assert.equal(emoji.length, 8192);
+    assert.equal(V.answerProblem({ value: emoji }), null, 'an emoji counts two units, like the daemon');
+    assert.equal(V.answerProblem({ value: emoji + 'x' }), V.ANSWER_TOO_LONG, '8193 units with emoji');
+    assert.equal(V.answerProblem({ picks: ['ok', 'x'.repeat(8193)] }), V.ANSWER_TOO_LONG, 'a pick label answers under the same bound');
+    assert.equal(V.answerProblem({ picks: ['ok'] }), null);
+    assert.equal(V.answerProblem({ confirmed: true }), null, 'a boolean has no length');
+    assert.equal(V.answerProblem({ cancelled: true }), null);
+    assert.equal(V.answerProblem(null), null);
+  });
   await check('askOutcome says in Spanish what happened to the question', () => {
     assert.equal(V.askOutcome({ kind: 'select' }, { value: 'dev' }), 'Elegiste: dev');
     assert.equal(V.askOutcome({ kind: 'confirm' }, { confirmed: true }), 'Respondiste: Sí');
@@ -321,6 +339,38 @@ const answering = (asks, id) => asks.map(a => (a.id === id ? { ...a, answering: 
     q.control(q.cards()[0], 'confirm')[1].click();
     await q.settle();
     assert.equal(q.answers().length, 2);
+  });
+  await check('AC-08 K-D: an over-limit input answer says so in Spanish and never leaves the page', async () => {
+    const p = await page();
+    await p.push({ asks: [ASKS[2]] });
+    const input = p.control(p.cards()[0], 'input')[0];
+    input.value = 'x'.repeat(8193);
+    p.fire(input, { type: 'input' });
+    p.fire(input, { type: 'keydown', key: 'Enter' });
+    await p.settle();
+    assert.deepEqual(p.answers(), [], 'nothing is sent: no silent truncation and no silent no-op');
+    assert.ok(p.cards()[0].textContent.includes(V.ANSWER_TOO_LONG), p.cards()[0].textContent);
+    assert.equal(p.document.getElementById('chat-live').textContent, V.ANSWER_TOO_LONG, 'the live region says it too');
+    // the bound is inclusive and counted in UTF-16 units: 4096 emoji = 8192 units travel untouched
+    const atLimit = '😀'.repeat(4096);
+    const again = p.control(p.cards()[0], 'input')[0]; // the refusal repainted the card: the old field is gone
+    again.value = atLimit;
+    p.fire(again, { type: 'input' });
+    p.fire(again, { type: 'keydown', key: 'Enter' });
+    await p.settle();
+    assert.deepEqual(p.answers(), [{ action: 'answer', ask_id: 'a-txt', value: atLimit }], 'at the bound the answer travels');
+  });
+  await check('AC-08 K-D: the daemon refusal answer_too_long is shown on the card, which stays answerable', async () => {
+    const p = await page();
+    await p.push({ asks: [ASKS[2]] });
+    p.setAnswer(() => Promise.reject({ code: 'answer_too_long', message: V.ANSWER_TOO_LONG }));
+    const input = p.control(p.cards()[0], 'input')[0];
+    input.value = 'hola';
+    p.fire(input, { type: 'input' });
+    p.fire(input, { type: 'keydown', key: 'Enter' });
+    await p.settle(); await p.settle();
+    assert.ok(p.cards()[0].textContent.includes(V.ANSWER_TOO_LONG), p.cards()[0].textContent);
+    assert.ok(p.control(p.cards()[0], 'submit').every(b => !b.disabled), 'refused is not answered: the card accepts another try');
   });
   await check('focus: a new card takes the focus only when the human is not typing; the answer returns it to the composer', async () => {
     const p = await page();

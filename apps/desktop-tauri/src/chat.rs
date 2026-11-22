@@ -96,6 +96,11 @@ impl ChatError {
             false,
         )
     }
+    /// AC-08/K-D: an answer past the daemon's bound ([`ANSWER_MAX_UNITS`]). Its OWN code and its own sentence,
+    /// so both cards can say what happened instead of a silent truncation or a generic refusal.
+    pub fn answer_too_long() -> Self {
+        Self::new("answer_too_long", ANSWER_TOO_LONG_MESSAGE, false)
+    }
 }
 
 /// Validate and normalize a draft: CRLF/CR → LF, no control characters other
@@ -222,6 +227,10 @@ pub enum AskAnswer {
 /// K2-05 U4b: the daemon's bound of an answer `value` (`LIMITS.maxAnswerChars`, UTF-16 units).
 pub const ANSWER_MAX_UNITS: usize = 8 * 1024;
 
+/// AC-08/K-D: the ONE sentence a human reads when an answer does not fit [`ANSWER_MAX_UNITS`]. Both cards show it
+/// verbatim (frontend/chat-view.js and frontend/notify-view.js own the same text) and it is never a truncation.
+pub const ANSWER_TOO_LONG_MESSAGE: &str = "La respuesta es demasiado larga (máx. 8192 caracteres).";
+
 /// K2-05 U4b: the daemon's ask-id grammar (`SAFE_ID`: `[A-Za-z0-9_.:-]{1,128}`).
 fn valid_ask_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= 128 && id.bytes().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'.' | b':' | b'-'))
@@ -230,9 +239,17 @@ fn valid_ask_id(id: &str) -> bool {
 /// K2-05 U4b: an answer value is the user's own text, sent as typed (never rewritten): bounded
 /// in UTF-16 units like the daemon, and free of control characters other than tab and newline
 /// (the same rule as a draft). Empty is a valid answer.
-fn valid_answer_value(v: &str) -> bool {
-    v.encode_utf16().count() <= ANSWER_MAX_UNITS
-        && !v.chars().any(|c| c.is_control() && c != '\n' && c != '\t')
+///
+/// AC-08/K-D: too long is its OWN refusal ([`ChatError::answer_too_long`]), never the generic
+/// `invalid_input`: the card can then say exactly why instead of failing silently.
+fn valid_answer_value(v: &str) -> Result<(), ChatError> {
+    if v.encode_utf16().count() > ANSWER_MAX_UNITS {
+        return Err(ChatError::answer_too_long());
+    }
+    if v.chars().any(|c| c.is_control() && c != '\n' && c != '\t') {
+        return Err(ChatError::invalid_input("Pedido de chat inválido."));
+    }
+    Ok(())
 }
 
 fn valid_turn_id(id: &str) -> bool {
@@ -335,13 +352,17 @@ pub fn parse_command(payload: &Value) -> Result<Command, ChatError> {
                 let list = picks.as_array().filter(|l| !l.is_empty() && l.len() <= 8).ok_or_else(bad)?;
                 let mut labels = Vec::with_capacity(list.len());
                 for l in list {
-                    let l = l.as_str().filter(|l| valid_answer_value(l)).ok_or_else(bad)?;
+                    let l = l.as_str().ok_or_else(bad)?;
+                    valid_answer_value(l)?; // AC-08/K-D: a label past the bound says so, never a silent drop
                     labels.push(l.to_owned());
                 }
                 return Ok(Command::Answer { ask_id, answer: AskAnswer::Picks(labels) });
             }
             let answer = match (map.get("value"), map.get("confirmed"), map.get("cancelled")) {
-                (Some(Value::String(v)), None, None) if valid_answer_value(v) => AskAnswer::Value(v.clone()),
+                (Some(Value::String(v)), None, None) => {
+                    valid_answer_value(v)?;
+                    AskAnswer::Value(v.clone())
+                }
                 (None, Some(Value::Bool(b)), None) => AskAnswer::Confirmed(*b),
                 (None, None, Some(Value::Bool(true))) => AskAnswer::Cancelled,
                 _ => return Err(bad()),

@@ -487,6 +487,17 @@
     const list = view && Array.isArray(view.answered_asks) ? view.answered_asks : [];
     return new Set(list.filter(id => typeof id === 'string' && ASK_ID.test(id)).slice(0, MAX_ASK_CARDS));
   }
+  // AC-08/K-D: the daemon's answer bound, in UTF-16 code units exactly like its `String.length` and Rust's
+  // `utf16_len` (chat.rs ANSWER_MAX_UNITS / chatclient MAX_ANSWER_CHARS), and the ONE sentence both surfaces show.
+  const ANSWER_MAX_UNITS = 8192;
+  const ANSWER_TOO_LONG = 'La respuesta es demasiado larga (máx. 8192 caracteres).';
+  /** AC-08/K-D: an answer past the bound is refused HERE, with that sentence, never sent and never silently dropped. */
+  function answerProblem(answer) {
+    const over = v => typeof v === 'string' && v.length > ANSWER_MAX_UNITS; // .length is UTF-16, like the daemon
+    if (answer && typeof answer.value === 'string' && over(answer.value)) return ANSWER_TOO_LONG;
+    if (answer && Array.isArray(answer.picks) && answer.picks.some(over)) return ANSWER_TOO_LONG;
+    return null;
+  }
   /** The ONE closed `answer` verb for an answer: `{value}` (select/input), `{confirmed}` or `{cancelled}`. */
   function askPayload(askId, answer) {
     if (answer && Array.isArray(answer.picks)) return { action: 'answer', ask_id: askId, picks: answer.picks.slice() };
@@ -516,5 +527,5 @@
   }
   const askAria = ask => (ask && ask.title ? `Koda necesita tu respuesta: ${ask.title}` : 'Koda necesita tu respuesta');
   const askClosedAria = (ask, outcome) => `Pregunta de Koda${ask && ask.title ? `: ${ask.title}` : ''}. ${outcome}`;
-  return { askCards, answeredAsks, askPayload, askOutcome, askNextOption, askAria, askClosedAria, staleSnapshot, messageCount, chatHeight, CHAT_MIN_H, CHAT_MAX_H, mergeHistory, leftWindow, PAGE_GAP_MS, pageWait, reconcileRows, rowKey, sameTurn, poseFor, statusView, draftWord, targetAria, noticeAnnouncement, activates, engineModelLine, emptyGreeting, cleanDisplayName, cleanLine, CARD_NAME_MAX, CARD_SUMMARY_MAX, DRAFT_MAX, stateLabel, scalarCount, draftProblem, canSend, sendState, needsCheck, checkPlan, statusLine, announcement, atBottom, newRequestId, turnRows, toolRows, approvalRows, activeTurn, formatSize, attachmentChips };
+  return { askCards, answeredAsks, askPayload, askOutcome, askNextOption, askAria, askClosedAria, ANSWER_MAX_UNITS, ANSWER_TOO_LONG, answerProblem, staleSnapshot, messageCount, chatHeight, CHAT_MIN_H, CHAT_MAX_H, mergeHistory, leftWindow, PAGE_GAP_MS, pageWait, reconcileRows, rowKey, sameTurn, poseFor, statusView, draftWord, targetAria, noticeAnnouncement, activates, engineModelLine, emptyGreeting, cleanDisplayName, cleanLine, CARD_NAME_MAX, CARD_SUMMARY_MAX, DRAFT_MAX, stateLabel, scalarCount, draftProblem, canSend, sendState, needsCheck, checkPlan, statusLine, announcement, atBottom, newRequestId, turnRows, toolRows, approvalRows, activeTurn, formatSize, attachmentChips };
 });

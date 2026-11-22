@@ -371,3 +371,55 @@ fn the_handoff_is_published_only_while_the_legacy_path_is_on() {
     assert!(!should_publish_handoff(false), "legacy path off: nothing is published");
     assert!(should_publish_handoff(true), "legacy path on: the handoff is published as before");
 }
+
+// ---- AC-08 K-D (native review of K-A): a standby Koda must take the file when the engine exits ------
+// The engine owns `endpoint.json` while it lives, but it can exit at any moment. One bounded watcher
+// retries the publish every ~2 s; [`retry_publish`] is its ONE step, pure, so the three outcomes are
+// pinned here instead of in a thread.
+
+#[test]
+fn the_standby_retry_takes_the_file_over_the_moment_the_engine_is_gone() {
+    let root = fresh_root();
+    let (engine_ep, _e) = bound(&root, "p-engine");
+    let (koda_ep, _k) = bound(&root, "p-koda11");
+    // the file a killed engine leaves behind: same shape, its pid no longer alive
+    engine_file(&root, &engine_ep, 4_194_999);
+    assert_eq!(retry_publish(&root, &koda_ep).expect("our socket is alive").unwrap(), Published::Written, "a dead owner is replaceable");
+    // the retry wrote OUR endpoint and our pid: the same file `publish` writes
+    let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path(&root)).unwrap()).unwrap();
+    assert_eq!(v["endpoint"], json!(koda_ep.to_str().unwrap()));
+    assert_eq!(v["pid"], json!(std::process::id()));
+    assert_eq!(read(&root), Some(koda_ep));
+}
+
+#[test]
+fn while_the_engine_lives_the_standby_retry_stays_in_standby_and_never_touches_the_file() {
+    let root = fresh_root();
+    let (engine_ep, _e) = bound(&root, "p-engine");
+    let (koda_ep, _k) = bound(&root, "p-koda11");
+    let before = engine_file(&root, &engine_ep, foreign_live_pid());
+    assert_eq!(
+        retry_publish(&root, &koda_ep).expect("our socket is alive").unwrap(),
+        Published::Standby { owner_pid: foreign_live_pid() },
+        "a live foreign owner keeps the file"
+    );
+    assert_eq!(std::fs::read_to_string(path(&root)).unwrap(), before, "byte for byte the engine's file");
+    assert_eq!(read(&root), Some(engine_ep), "hooks still reach the engine");
+}
+
+#[test]
+fn the_standby_retry_stops_when_our_own_transport_is_gone() {
+    let root = fresh_root();
+    let (koda_ep, listener) = bound(&root, "p-koda11");
+    drop(listener);
+    std::fs::remove_file(&koda_ep).unwrap(); // our transport closed: the socket is gone
+    let (engine_ep, _e) = bound(&root, "p-engine");
+    engine_file(&root, &engine_ep, foreign_live_pid());
+    assert!(retry_publish(&root, &koda_ep).is_none(), "nothing to publish any more: the watcher must stop, never publish a dead endpoint");
+    assert_eq!(read(&root), Some(engine_ep), "and it never touches the engine's file on the way out");
+}
+
+#[test]
+fn the_retry_interval_is_the_documented_two_seconds() {
+    assert_eq!(STANDBY_RETRY_MS, 2000, "a killed engine is noticed within ~2 s, never later than the hook's own timeout");
+}

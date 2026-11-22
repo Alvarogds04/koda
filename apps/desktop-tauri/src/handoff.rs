@@ -45,6 +45,11 @@ pub use crate::{legacy_agent_requests_enabled, legacy_agent_requests_switch, sho
 pub const WRITE_PROC_START: bool = true;
 const MAX_FILE: u64 = 4096;
 
+/// AC-08/K-D (native review of K-A): while a live engine owns the handoff a standby Koda re-checks this often,
+/// so the file becomes ours the moment that engine exits instead of staying theirs until a restart. The step
+/// itself ([`retry_publish`]) is pure; only `main.rs` sleeps and loops.
+pub const STANDBY_RETRY_MS: u64 = 2000;
+
 /// `<runtime>/endpoint.json`.
 /// Longest socket path the kernel accepts (sockaddr_un.sun_path minus the NUL): 107 on Linux, 103 on macOS.
 #[cfg(target_os = "linux")]
@@ -143,6 +148,17 @@ fn foreign_owner(runtime: &Path) -> Option<u32> {
     parse(runtime, &text)?; // live pid, same start time, valid shape
     let pid = serde_json::from_str::<Value>(&text).ok()?.get("pid")?.as_u64()? as u32;
     (pid != std::process::id()).then_some(pid)
+}
+
+/// One step of the standby watcher, taken every [`STANDBY_RETRY_MS`] while a live foreign owner keeps the file.
+///
+/// `None` means STOP: our own transport is gone (the socket we published is no longer a socket), so there is
+/// nothing left to publish and a dead endpoint must never be written. Otherwise it is exactly [`publish`], so a
+/// foreign owner that died (its pid is gone, or it is another life of that pid) is replaced at once, a live one
+/// keeps the file (`Standby`), and any other refusal is reported as the error it is. Pure: no sleep, no thread.
+pub fn retry_publish(runtime: &Path, endpoint: &Path) -> Option<std::io::Result<Published>> {
+    let ours = std::fs::symlink_metadata(endpoint).is_ok_and(|meta| meta.file_type().is_socket());
+    ours.then(|| publish(runtime, endpoint))
 }
 
 /// Publish `endpoint` for local consumers. AC-08: a live foreign owner keeps the file ([`Published::Standby`]).
