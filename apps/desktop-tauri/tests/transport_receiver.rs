@@ -722,7 +722,8 @@ fn r21_socket_peer_notice_origin_is_host_only_bounded_and_revoked() {
     let project = protocol::project_id("r21");
     let events = Arc::new(Events::default());
     let e = events.clone();
-    let options = TransportOptions::new(&runtime, &project).on_notice(move |message| e.notice(message));
+    // AC-08/K-C: QP/1 is OFF by default; this case exercises the legacy lane, so it opts in.
+    let options = TransportOptions::new(&runtime, &project).legacy_questions(true).on_notice(move |message| e.notice(message));
     let transport = transport::create_transport_with_origin_resolver(options, |_| {}, move |kernel_peer| {
         assert_eq!((kernel_peer.pid, kernel_peer.starttime), (peer.pid, peer.starttime));
         sessionterm::capture_origin(&proc_root, kernel_peer, &mut |_| panic!("no herdr"))
@@ -773,7 +774,8 @@ fn r21_review_origin_resolution_does_not_hold_the_question_mutex() {
     let (release_tx, release_rx) = mpsc::channel();
     let release_rx = Mutex::new(release_rx);
     let transport = Arc::new(transport::create_transport_with_origin_resolver(
-        TransportOptions::new(&runtime,&project), |_| {}, move |_| {
+        // AC-08/K-C: QP/1 is OFF by default; this case needs the legacy lane, so it opts in.
+        TransportOptions::new(&runtime,&project).legacy_questions(true), |_| {}, move |_| {
             entered_tx.send(()).unwrap();
             release_rx.lock().unwrap().recv_timeout(Duration::from_secs(3)).unwrap();
             None
@@ -819,4 +821,63 @@ fn macos_origin_is_never_invented_even_for_an_accepted_notice() {
     for key in ["pid", "ppid", "starttime", "tty", "pane", "terminal", "origin"] { assert!(view.get(key).is_none(), "{key}"); }
     transport.close().expect("close");
     let _ = std::fs::remove_dir_all(&runtime);
+}
+
+// --- AC-08 / K-C: the legacy QP/1 question lane is OFF unless the host opts in -------------------------------
+// Decided by the human (21 Nov): the old engine path is DISABLED, not deleted. Koda answers agent requests
+// through jesscore; a producer that still asks over QP/1 must find no `questions_ready` and fall back to its own
+// terminal prompt, while the v1 notice lane on the same socket keeps working untouched.
+
+/// AC-08 (a): by default a `questions_hello` is refused exactly like an unsubscribed question — no
+/// `questions_ready` is ever written and the connection is closed (fail closed), so a producer cannot believe
+/// Koda is answering.
+#[test]
+fn ac08_default_receiver_refuses_the_qp1_question_lane() {
+    let fixture = Fixture::start("ac08-lane-off");
+    let mut stream = connect(fixture.transport.endpoint());
+    send(&mut stream, &hello(&fixture.project)).unwrap();
+    assert!(expect_ready(&stream), "the v1 handshake is unchanged");
+    send(&mut stream, &json!({"v":1,"type":"questions_hello","questionVersion":1,"project":fixture.project,
+        "sessionId":"session-1","at":now_ms()})).unwrap();
+    let answer = read_some(&stream, Duration::from_secs(2));
+    assert!(answer.is_none(), "a refused questions_hello gets no answer, got {answer:?}");
+    assert!(wait_closed(&stream, Duration::from_secs(2)), "a refused questions_hello closes the connection");
+    assert_eq!(fixture.transport.question_snapshot().ready_connections, 0, "no connection is marked question-ready");
+}
+
+/// AC-08 (b): the v1 notices on the same socket are untouched by the switch — a `settled` notice is still
+/// accepted and reported, and the connection stays open.
+#[test]
+fn ac08_default_receiver_keeps_the_v1_notice_lane() {
+    let fixture = Fixture::start("ac08-notices-on");
+    let mut stream = connect(fixture.transport.endpoint());
+    send(&mut stream, &hello(&fixture.project)).unwrap();
+    assert!(expect_ready(&stream));
+    let id = "5c1f0f52-7a1b-4c3d-9e8f-a1b2c3d4e5f6";
+    send(&mut stream, &json!({"v":1,"type":"settled","project":fixture.project,"sessionId":"session-1",
+        "at":now_ms(),"id":id})).unwrap();
+    assert!(fixture.events.wait(|e| e.notice_count() == 1, Duration::from_secs(2)), "the settled notice is accepted");
+    assert!(still_open(&stream, Duration::from_millis(300)), "the notice lane is not closed by the switch");
+}
+
+/// AC-08 (c): an explicit opt-in keeps the legacy lane exactly as before — `questions_hello` is answered with
+/// `questions_ready` and a question is admitted. This is the escape hatch (`KODA_LEGACY_AGENT_REQUESTS=1`),
+/// not a second behaviour.
+#[test]
+fn ac08_opt_in_still_answers_the_qp1_handshake() {
+    let fixture = Fixture::start_with("ac08-lane-on", |options| options.legacy_questions(true));
+    let mut stream = connect(fixture.transport.endpoint());
+    send(&mut stream, &hello(&fixture.project)).unwrap();
+    assert!(expect_ready(&stream));
+    send(&mut stream, &json!({"v":1,"type":"questions_hello","questionVersion":1,"project":fixture.project,
+        "sessionId":"session-1","at":now_ms()})).unwrap();
+    assert_eq!(read_some(&stream, Duration::from_secs(2)).unwrap(), koda_island::question::QUESTIONS_READY_LINE);
+    assert_eq!(fixture.transport.question_snapshot().ready_connections, 1, "the opting-in connection is question-ready");
+    let id = "5c1f0f52-7a1b-4c3d-9e8f-a1b2c3d4e5f7";
+    send(&mut stream, &json!({"v":1,"type":"question","questionVersion":1,"project":fixture.project,
+        "sessionId":"session-1","at":now_ms(),"id":id,"kind":"question","text":"Choose",
+        "options":[{"value":"a","label":"A","description":""},{"value":"b","label":"B","description":""}],
+        "allowFreeText":false,"expiresAt":now_ms()+30000})).unwrap();
+    assert!(fixture.events.wait(|_| fixture.transport.question_snapshot().pending.is_some(), Duration::from_secs(2)),
+        "the opted-in lane still admits a question");
 }

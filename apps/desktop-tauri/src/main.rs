@@ -277,7 +277,17 @@ fn start_transport(app: &AppHandle) {
     let connections_app = app.clone();
     let failure_app = app.clone();
     let question_app = app.clone();
+    // AC-08/K-C (S2, S6): the OLD engine path for agent requests is DISABLED, not deleted (human decision,
+    // 21 Nov). One reversible switch at the crate root decides both halves — the QP/1 question lane inside the
+    // receiver and the `endpoint.json` handoff that installed hooks and producers read — so turning it off
+    // leaves nothing of the old path reachable and KODA_LEGACY_AGENT_REQUESTS=1 brings all of it back.
+    // No code is removed here: only this decision.
+    let legacy_agent_requests = koda_island::legacy_agent_requests_enabled();
+    if !legacy_agent_requests {
+        eprintln!("Agent requests are answered through jesscore; the legacy agent-request path is OFF (set KODA_LEGACY_AGENT_REQUESTS=1 to re-enable it).");
+    }
     let options = transport::TransportOptions::new(runtime, state.project.clone())
+        .legacy_questions(legacy_agent_requests)
         .on_notice(move |message| {
             if QUITTING.load(Ordering::SeqCst) {
                 return; // main.cjs: `if (!quitting)`
@@ -325,12 +335,16 @@ fn start_transport(app: &AppHandle) {
             // Local address only; no received payloads or labels are logged.
             println!("KODA_DESKTOP_SOCKET={}", transport.endpoint().display());
             // P2: a stable `<runtime>/endpoint.json` so local hooks need no exported env.
-            match koda_island::handoff::publish(transport.runtime(), transport.endpoint()) {
-                Ok(koda_island::handoff::Published::Standby { owner_pid }) => {
-                    eprintln!("endpoint handoff kept by the running engine (pid {owner_pid}); Koda stays in standby");
+            // AC-08/K-C: published ONLY while the legacy path is on; with it off a hook finds no endpoint and
+            // stays on its own terminal prompt. `clear` stays harmless: it removes only a file that names us.
+            if koda_island::should_publish_handoff(legacy_agent_requests) {
+                match koda_island::handoff::publish(transport.runtime(), transport.endpoint()) {
+                    Ok(koda_island::handoff::Published::Standby { owner_pid }) => {
+                        eprintln!("endpoint handoff kept by the running engine (pid {owner_pid}); Koda stays in standby");
+                    }
+                    Ok(koda_island::handoff::Published::Written) => {}
+                    Err(error) => eprintln!("endpoint handoff not published: {error}"),
                 }
-                Ok(koda_island::handoff::Published::Written) => {}
-                Err(error) => eprintln!("endpoint handoff not published: {error}"),
             }
             *state.transport.lock().expect("transport lock") = Some(transport);
         }

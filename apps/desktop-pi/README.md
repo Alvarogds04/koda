@@ -26,6 +26,11 @@ are no npm dependencies. The managed installer uses an exact seven-file manifest
 Questions are ON by default (level 3): Pi's `ask_user_choice` / `ask_user_question` and `ctx.ui.confirm` reach the island
 with no environment variable. Set `KODA_QUESTIONS=0` in the environment Pi runs in to keep the island notice-only.
 
+**AC-08 (Koda 0.2):** Koda answers agent requests through **jesscore**, so Koda's legacy QP/1 receiver is **off by default**
+(one reversible switch, `KODA_LEGACY_AGENT_REQUESTS=1`, in `apps/desktop-tauri/README.md` §AC-08). Against a default Koda
+the island's `questions_hello` is refused — no `questions_ready`, connection closed — so a Pi ask stays in Pi's own terminal.
+Notices are unaffected.
+
 ## Quick path — a new receiver only
 
 Use an already installed Pi; no package installation, downloads, service or keys are needed. From the repository root:
@@ -138,6 +143,9 @@ The island binds a fresh `<runtime>/p-XXXXXX/s` on every start. So local consume
 - **A consumer must not trust it blindly.** Refuse the file unless: it is a regular file you own (not a symlink, ≤ 4096 bytes), `v` is `1`, `endpoint` has the exact shape `<runtime>/p-<6 alphanumerics>/s`, `pid` is alive (`/proc/<pid>`), and the endpoint is a socket. A crashed island (SIGKILL) leaves the file behind, which is why the pid and socket checks exist. The Rust reference is `handoff::read`.
 - It is a **pointer, not authority**: you still connect to the socket, which checks the peer uid, and the QP/1 handshake above still applies. An explicit `KODA_DESKTOP_SOCKET` keeps winning when set.
 - Not published (and never a fallback to some other socket) when the runtime root is not a private `0700` directory of the current user.
+- **AC-08 (Koda 0.2):** the installed Koda publishes it **only** while the legacy agent-request path is on (`KODA_LEGACY_AGENT_REQUESTS=1`).
+  By default there is no `endpoint.json` at all, so a hook/producer that is still installed finds no endpoint and stays on its own
+  terminal prompt. Koda's agent requests are answered through jesscore; see `apps/desktop-tauri/README.md` §AC-08.
 
 ### How this producer consumes it
 

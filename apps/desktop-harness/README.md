@@ -2,6 +2,8 @@
 
 Standalone Node CJS package, no runtime dependencies, `private`. It gives **short-lived harness hook processes** (Claude Code, Codex, OpenCode) a safe client for the Abito island over the local QP/1 level-1 socket protocol. The Claude Code and Codex adapters are built (`koda-hook claude <permission-request|session-start|stop>`, `koda-hook codex <permission-request|pre-tool-use|post-tool-use|stop>`, `koda-hook install claude|codex`); the OpenCode adapter (U4) is not. Code is mirrored (copied with a header comment) from `apps/desktop-pi/`; nothing is required across apps.
 
+**AC-08 (Koda 0.2):** Koda now answers agent requests through **jesscore**, so the installed Koda runs with its legacy agent-request path off by default (one reversible switch, `KODA_LEGACY_AGENT_REQUESTS=1`; see `apps/desktop-tauri/README.md` §AC-08). Nothing here is removed or uninstalled: a hook that still runs simply finds no `endpoint.json`, gets no `questions_ready`, and leaves every decision to its own terminal prompt, exactly as it does when no island is running.
+
 ## Security contract
 
 - **The island never approves or denies for a CLI.** It shows, and relays the human's answer only inside the hook response the CLI itself requested. There is no `approval` kind in this client: `kind` is always `question`, anything else is `invalid_request`.
@@ -78,6 +80,11 @@ custom installation directories are not discovered automatically.
 An explicit `KODA_DESKTOP_SOCKET` wins after endpoint-shape validation; when set, the consumer does not read `endpoint.json`. Otherwise runtime selection is ordered: `KODA_SOCKET_DIR` (if set, it must be absolute, normalized and non-root), else `$XDG_RUNTIME_DIR/koda` only when `XDG_RUNTIME_DIR` is absolute, normalized and non-root, else `/run/user/<uid>/koda`.
 
 The reader accepts `<runtime>/endpoint.json` only as a regular, non-symlink file owned by you, with mode exactly `0600` (including no special bits), one hard link and at most 4096 bytes. Its complete text must be canonical compact JSON: exactly the keys `v`, `endpoint`, and `pid`, with `v: 1`, and raw text equal to `JSON.stringify(parsed)` or that exact string plus one LF. No duplicate or escaped key names, pretty printing, leading/trailing spaces or CRLF are accepted. The Rust producer in `apps/desktop-tauri/src/handoff.rs` writes compact one-line `serde_json` output plus LF (`{"endpoint":"<..>","pid":N,"v":1}\n`); the compact `v,endpoint,pid` key order is accepted too.
+
+**AC-08 (Koda 0.2):** Koda answers agent requests through jesscore, so the installed Koda publishes this file **only** while
+its legacy agent-request path is on (`KODA_LEGACY_AGENT_REQUESTS=1`). By default there is no `endpoint.json` at all: a hook that
+is still installed finds no endpoint and leaves the decision to its own terminal prompt. The reader below is unchanged — it
+simply finds no file. See `apps/desktop-tauri/README.md` §AC-08.
 
 `pid` must be a valid positive pid whose `/proc/<pid>` exists and whose `/proc/<pid>/stat` can be read within 512 bytes; the state field after the last `)` must not be `Z` or `X`. Missing or unreadable state fails closed. The key set is closed: `v`, `endpoint`, `pid` and, optionally, `procStart`. When `procStart` is present it must be a decimal string equal to field 22 of `/proc/<pid>/stat` (the process start time, parsed after the last `)`): a different value means the pid was recycled and the handoff is refused; a malformed value or an unreadable start time fails closed. When it is absent the check stays existence/alive only (the island starts writing it once the Tauri lane flips its `WRITE_PROC_START` switch), so until then pid reuse is the documented residual risk.
 

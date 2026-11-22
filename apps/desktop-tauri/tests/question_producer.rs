@@ -41,6 +41,8 @@ impl Fixture {
         let connections = Arc::new(AtomicU32::new(0)); let notices = Arc::new(AtomicU32::new(0));
         let c = connections.clone(); let n = notices.clone();
         let options = TransportOptions::new(&runtime, &project)
+            // AC-08/K-C: QP/1 is OFF by default; this suite drives the real legacy producer, so it opts in.
+            .legacy_questions(true)
             .on_connections(move |count| { c.store(count, Ordering::SeqCst); })
             .on_notice(move |_| { n.fetch_add(1, Ordering::SeqCst); });
         let receiver = transport::create_transport(options).unwrap();

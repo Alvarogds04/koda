@@ -349,3 +349,25 @@ fn a_live_foreign_pid_with_another_start_time_is_a_recycled_pid_and_is_replaced(
     assert_eq!(publish(&root, &ours).unwrap(), Published::Written);
     assert_eq!(read(&root), Some(ours));
 }
+
+// --- AC-08 / K-C: the one reversible switch --------------------------------------------------------------
+// The human decided (21 Nov) that the OLD engine path for agent requests is DISABLED, not deleted: nothing is
+// removed and nothing is uninstalled, so `KODA_LEGACY_AGENT_REQUESTS=1` must bring the whole legacy path back.
+
+#[test]
+fn legacy_agent_requests_switch_is_on_only_for_the_exact_value_one() {
+    assert!(!legacy_agent_requests_switch(None), "unset: off");
+    assert!(!legacy_agent_requests_switch(Some("")), "empty: off");
+    assert!(!legacy_agent_requests_switch(Some("0")), "explicit zero: off");
+    assert!(!legacy_agent_requests_switch(Some("true")), "only \"1\" is the switch");
+    assert!(!legacy_agent_requests_switch(Some(" 1")), "no trimming, no near-misses");
+    assert!(legacy_agent_requests_switch(Some("1")), "the documented value: on");
+}
+
+#[test]
+fn the_handoff_is_published_only_while_the_legacy_path_is_on() {
+    // With the switch off, an installed hook/producer must find NO `endpoint.json` and stay on its own
+    // terminal prompt: the gate is the frozen decision, and main.rs publishes exactly through it.
+    assert!(!should_publish_handoff(false), "legacy path off: nothing is published");
+    assert!(should_publish_handoff(true), "legacy path on: the handoff is published as before");
+}

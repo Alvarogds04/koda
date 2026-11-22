@@ -146,6 +146,9 @@ pub struct TransportOptions {
     pub on_connections: Box<dyn Fn(u32) + Send + Sync>,
     /// Invalidation only; callbacks run after all transport locks are dropped.
     pub on_question_change: Box<dyn Fn() + Send + Sync>,
+    /// AC-08/K-C: serve the legacy QP/1 question lane. OFF by default — Koda answers agent requests
+    /// through jesscore, and the old engine path is disabled (not deleted) behind this switch.
+    pub legacy_questions: bool,
 }
 
 impl TransportOptions {
@@ -158,6 +161,7 @@ impl TransportOptions {
             on_notice: Box::new(|_| {}),
             on_connections: Box::new(|_| {}),
             on_question_change: Box::new(|| {}),
+            legacy_questions: false,
         }
     }
 
@@ -183,6 +187,14 @@ impl TransportOptions {
 
     pub fn on_question_change(mut self, callback: impl Fn() + Send + Sync + 'static) -> Self {
         self.on_question_change = Box::new(callback);
+        self
+    }
+
+    /// AC-08/K-C: opt in to the legacy QP/1 question lane (default OFF). Without it a
+    /// `questions_hello` is refused like an unsubscribed question: no `questions_ready`, connection
+    /// closed, and the producer keeps its own terminal prompt. The v1 notice lane is unaffected.
+    pub fn legacy_questions(mut self, enabled: bool) -> Self {
+        self.legacy_questions = enabled;
         self
     }
 }

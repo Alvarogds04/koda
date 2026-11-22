@@ -254,6 +254,8 @@ struct Inner {
     reporting: Mutex<()>,
     questions: Mutex<Questions>,
     on_question_change: Box<dyn Fn() + Send + Sync>,
+    /// AC-08/K-C: serve the legacy QP/1 question lane (`TransportOptions::legacy_questions`).
+    legacy_questions: bool,
     own_sid: String,
 }
 
@@ -494,6 +496,7 @@ pub fn create_transport_with_origin_resolver(options: TransportOptions,
         on_notice,
         on_connections,
         on_question_change,
+        legacy_questions,
     } = options;
 
     let sid = crate::winipc::ffi::current_user_sid()
@@ -550,6 +553,7 @@ pub fn create_transport_with_origin_resolver(options: TransportOptions,
         reporting: Mutex::new(()),
         on_question_change,
         questions: Mutex::new(Questions::default()),
+        legacy_questions,
         own_sid: sid,
     });
 
@@ -969,7 +973,14 @@ fn handle_connection(inner: Arc<Inner>, id: u64, stream: Arc<ClientPipe>, peer: 
                             }
                         }
                         Err(_) => {
-                            let inbound = identity.as_ref().and_then(|bound| question::decode_with(frame, bound, now_ms(), structured_supported).ok());
+                            // AC-08/K-C: the legacy QP/1 question lane is OFF unless the host opted in.
+                            // The frame is never decoded, so it is refused exactly like an unsubscribed
+                            // question (fail closed): no `questions_ready` is written and the pipe is
+                            // disconnected, which leaves the producer on its own terminal prompt. The v1
+                            // notice lane above is untouched.
+                            let inbound = if inner.legacy_questions {
+                                identity.as_ref().and_then(|bound| question::decode_with(frame, bound, now_ms(), structured_supported).ok())
+                            } else { None };
                             if let Some(inbound) = inbound {
                                 let Some(bound) = identity.as_ref() else {
                                     rejected = true;

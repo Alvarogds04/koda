@@ -569,6 +569,38 @@ unmodified. (The adapter's own opt-in loader would only accept the legacy
 `.runtime` or the Preview's root; the harness passes the runtime explicitly,
 which is what a Pi session wiring would do through `KODA_DESKTOP_SOCKET`.)
 
+### AC-08 — the legacy agent-request path is OFF by default (one reversible switch)
+
+AC-08 (S2, S6; human decision, 21 Nov): Koda answers agent requests through
+**jesscore**, so the OLD engine path is **disabled, not deleted**. One switch
+decides both halves of it — the QP/1 question lane inside the receiver
+(`TransportOptions::legacy_questions`, default `false`) and the
+`<runtime>/endpoint.json` handoff that installed hooks and producers read
+(`handoff::should_publish_handoff`):
+
+- **Off (default).** A `questions_hello` is never decoded and is refused
+exactly like an unsubscribed question — no `questions_ready`, connection
+closed — and `endpoint.json` is not published, so a hook that is still
+installed finds no endpoint and stays on its own terminal prompt. The v1
+notice lane (`hello` → `ready` → `settled`/`attention`) on the same socket is
+untouched, so notices keep working. The frontend needs no switch of its own:
+with no question ever admitted there is no pending card, no toast and no tray
+indicator to change.
+- **`KODA_LEGACY_AGENT_REQUESTS=1`.** The whole old path comes back exactly as
+it was (QP/1 handshake, question admission, published handoff). Only the exact
+value `1` turns it on; unset, empty, `0` or `true` are off. At startup the
+binary prints one line saying the legacy path is off and how to re-enable it.
+- **Nothing is removed.** No code, hook, producer or install is deleted, and
+`handoff::clear` stays harmless when nothing was published (it removes only the
+file that names our own socket). Deletion is a later step, after the migration
+to jesscore is complete.
+
+Tests: `tests/transport_receiver.rs` covers the default refusal, the untouched
+notice lane and the explicit opt-in; `src/handoff_tests.rs` covers the switch
+values and the publish decision. The QP/1 suites (`question_receiver`,
+`question_producer`, the QP cases in `transport_receiver`) opt in with
+`.legacy_questions(true)` so the legacy lane keeps its own coverage.
+
 ## What M3 proves (and what it does not)
 
 The approval lane is a behaviour-equivalent port of the Electron host's HTTP

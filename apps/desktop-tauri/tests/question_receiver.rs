@@ -32,7 +32,10 @@ impl Fixture {
         let notices = Arc::new(Mutex::new(protocol::NoticeStore::new(&project)));
         let counts = Arc::new(Mutex::new(Vec::new()));
         let observed_notices = notices.clone(); let observed_counts = counts.clone();
-        let options = TransportOptions::new(&root, &project).idle_ms(idle_ms).on_connections(move |count| {
+        let options = TransportOptions::new(&root, &project).idle_ms(idle_ms)
+            // AC-08/K-C: QP/1 is OFF by default; this suite IS the legacy lane, so it opts in explicitly.
+            .legacy_questions(true)
+            .on_connections(move |count| {
             observed_notices.lock().unwrap().connections_changed(count, now());
             observed_counts.lock().unwrap().push(count);
         }).on_question_change(move || {

@@ -4,6 +4,8 @@ Linux/macOS Settings → Agents → Pi uses the same app-owned adapter, preview/
 
 The only target is `~/.pi/agent/extensions/koda-island/`. `--settings`, `--timeout-sec` and interactive `--apply` are not supported for Pi. The row always warns that a different `PI_CODING_AGENT_DIR` is not covered; installing the default is not evidence that a custom-dir session loads it.
 
+**AC-08 (Koda 0.2):** installing this extension does not make Koda answer asks any more — Koda answers agent requests through **jesscore**, and its legacy QP/1 receiver is off by default (one reversible switch, `KODA_LEGACY_AGENT_REQUESTS=1`; see `apps/desktop-tauri/README.md` §AC-08). Against a default Koda a Pi ask finds no `questions_ready` and stays in Pi's own terminal prompt. The installation, the manifest and the files are unchanged; nothing is removed here.
+
 ```text
 koda-hook install pi --user [--remove] --json
 koda-hook install pi --user [--remove] --json --apply-plan <shown-hash> --audit-dir <private-audit-dir>
