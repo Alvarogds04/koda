@@ -396,6 +396,19 @@ fn a_hooks_frame_is_folded_into_a_bounded_closed_view() {
 }
 
 #[test]
+fn the_engines_own_hooks_frame_folds_with_its_cursor_row() {
+    // K3-09/M2: jesscore's `hooks` frame names eight clients (engine/src/protocol.cjs HOOK_CLIENT_IDS), the page's list
+    // already knows `cursor`; a client that drops it reads as «unknown» although the engine answered honestly.
+    let mut st = ClientState::connected();
+    let rows: Vec<Value> = ["claude-code", "codex", "gemini-cli", "copilot-cli", "opencode", "amp", "cursor"]
+        .iter().map(|id| json!({"id": id, "name": "x", "mechanism": "artifact", "state": "connected", "detail": null, "backup": false})).collect();
+    st.apply(&json!({"type": "hooks", "clients": rows})).unwrap();
+    let v = serde_json::to_value(&st).unwrap();
+    let ids: Vec<&str> = v["hooks"].as_array().unwrap().iter().map(|r| r["id"].as_str().unwrap()).collect();
+    assert_eq!(ids, ["claude-code", "codex", "gemini-cli", "copilot-cli", "opencode", "amp", "cursor"]);
+}
+
+#[test]
 fn hostile_hook_entries_are_dropped_never_invented() {
     let mut st = ClientState::connected();
     st.apply(&json!({"type":"hooks","clients":[

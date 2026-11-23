@@ -780,7 +780,7 @@ pub const AGENT_IDS: [&str; 6] = ["pi", "claude-code", "codex", "copilot-cli", "
 /// #436 T6.5: the six hook clients the daemon's `hooks` frame may name (its own closed
 /// list). Wider than AGENT_IDS on purpose: the page shows their state, and installs
 /// nothing (read-only preview, UI install/remove is out of scope).
-pub const HOOK_IDS: [&str; 6] = ["claude-code", "codex", "gemini-cli", "copilot-cli", "opencode", "amp"];
+pub const HOOK_IDS: [&str; 7] = ["claude-code", "codex", "gemini-cli", "copilot-cli", "opencode", "amp", "cursor"];
 const HOOK_MECHANISMS: [&str; 2] = ["harness", "artifact"];
 const HOOK_DETAILS: [&str; 10] = ["config_invalid", "not_writable", "backup_failed", "plan_changed", "audit_unavailable", "install_failed", "foreign_file", "unsafe_target", "unexpected_content", "unsupported_platform"];
 
