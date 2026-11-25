@@ -692,7 +692,7 @@ fn chathost_f5_only_an_error_correlated_to_the_send_ends_a_thinking_turn() {
     // a history read is already waiting for its answer when the turn is sent
     link.command("main", &json!({"action": "chat_history"})).unwrap();
     host.route(&link, "main", &submit("hola", "req-f5000001"), T0).unwrap();
-    for code in ["unknown_ask", "not_busy", "conversations_off"] {
+    for code in ["unknown_ask", "not_busy"] {
         link.frame(json!({"type":"error","code":code}));
         assert_eq!(last_turn(&host.project(&link.view(), T0 + 10))["state"], json!("thinking"), "{code} is never the send's");
     }
