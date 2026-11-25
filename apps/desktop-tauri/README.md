@@ -246,8 +246,10 @@ Pi and the daemon are not involved: with no Pi (or no daemon) Claude Code and Co
   closed frames, folded by `agentclient::fold_direct` into `directAgents` / `directHooks` / `agentsRuntime`.
 - Bounds: 60 s, 512 KiB of stdout, whole process tree killed on timeout, oversize, or a descendant keeping stdout open.
 - Missing engine reads a closed `agentsRuntime` value the page already renders: `node_missing` when `<lib>/runtime/node` is not
-  there, `failed` when it is but the entry is not. A failed run reads «No se pudo». Never «Falta Pi» on this screen. The
-  chat/engine diagnostics (`connectionView`) are unchanged.
+  there, `failed` when it is but the entry is not. `node_missing` reads «Falta jesscore» on every Agentes row (and «Falta jesscore para
+  cambiar los hooks…» after an action): Koda and jesscore ship together, so the person is never sent to install Node.js. A failed
+  run reads «No se pudo». Never «Falta Pi» on this screen. The chat/engine diagnostics (`connectionView`, which still speak of
+  Koda's own daemon) are unchanged.
 - AC-08/K-F stays Koda's: the engine has no Pi policy (`PROTOCOL.md`, «Pi policy»), so while `KODA_LEGACY_PI_EXTENSION` is off
   (the default) a `pi` connect/disconnect runs NOTHING and the Pi row always reads `unavailable` / `legacy_pi_extension_off`.
   That shim is retired with AC-08b (`abito-island` → `abito-pi`).
