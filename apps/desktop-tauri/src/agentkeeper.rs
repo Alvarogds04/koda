@@ -112,6 +112,20 @@ pub fn tick(link: &impl Link, island_root: &Path, backoff: &mut Backoff, now: In
     }
 }
 
+/// Whole seconds until the next attempt, rounded UP (a wait that is left never reads «0 s»); `None` when nothing is scheduled.
+pub fn countdown_secs(remaining: Option<Duration>) -> Option<u64> {
+    remaining.map(|d| d.as_secs() + u64::from(d.subsec_nanos() > 0))
+}
+
+/// Put the countdown on an agent view: `retry_in` is the seconds to the keeper's next attempt while the connection is down,
+/// and an explicit `null` otherwise (so a page that merges partial states drops an older number). Anything that is not a
+/// JSON object is left alone.
+pub fn decorate(view: &mut serde_json::Value, secs: Option<u64>) {
+    let Some(map) = view.as_object_mut() else { return };
+    let down = map.get("connection").and_then(serde_json::Value::as_str) != Some("connected");
+    map.insert("retry_in".into(), if down { secs.map_or(serde_json::Value::Null, Into::into) } else { serde_json::Value::Null });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -202,5 +216,29 @@ mod tests {
         assert_eq!(tick(&link, &root(), &mut b, t0 + Duration::from_secs(3)), Tick::Tried(false));
         assert_eq!(b.failed(), 3, "the count was kept");
         assert_eq!(b.remaining(t0 + Duration::from_secs(3)), Some(Duration::from_secs(8)), "and the next wait is the 3rd step, not 2 s");
+    }
+
+    #[test]
+    fn the_countdown_is_whole_seconds_rounded_up_and_absent_when_nothing_is_scheduled() {
+        assert_eq!(countdown_secs(None), None);
+        assert_eq!(countdown_secs(Some(Duration::from_millis(1))), Some(1), "never shows 0 s while a wait is left");
+        assert_eq!(countdown_secs(Some(Duration::from_millis(1500))), Some(2));
+        assert_eq!(countdown_secs(Some(Duration::from_secs(30))), Some(30));
+    }
+
+    #[test]
+    fn a_view_carries_the_countdown_only_while_it_is_not_connected() {
+        let mut down = serde_json::json!({"connection": "lost", "last_error": null});
+        decorate(&mut down, Some(4));
+        assert_eq!(down["retry_in"], serde_json::json!(4));
+        let mut gone = serde_json::json!({"connection": "no_daemon"});
+        decorate(&mut gone, None);
+        assert_eq!(gone["retry_in"], serde_json::Value::Null, "nothing scheduled: an explicit null clears an older number");
+        let mut up = serde_json::json!({"connection": "connected"});
+        decorate(&mut up, Some(4));
+        assert_eq!(up["retry_in"], serde_json::Value::Null, "a live connection never shows a countdown");
+        let mut odd = serde_json::json!("not an object");
+        decorate(&mut odd, Some(4)); // must not panic or invent a shape
+        assert_eq!(odd, serde_json::json!("not an object"));
     }
 }

@@ -45,11 +45,17 @@
 
   // ---- connection to the island agent (the daemon) ------------------------------------
   const CONNECTION = Object.freeze({
-    no_daemon: ['Sin motor', 'plug-off', 'faint', 'El motor del agente no está corriendo; las cuentas y los proveedores no están disponibles.'],
-    lost: ['Motor caído', 'triangle', 'red', 'Se perdió la conexión con el motor del agente.'],
+    no_daemon: ['Sin motor', 'plug-off', 'faint', 'Koda no encuentra el motor (jesscore) en marcha; sin él no hay chat, cuentas ni proveedores. Revisá que jesscore esté instalado y arrancado.'],
+    lost: ['Motor caído', 'triangle', 'red', 'Se perdió la conexión con el motor.'],
     bad_session: ['Sesión no válida', 'triangle', 'red', 'El archivo de sesión del motor no es de fiar (permisos o formato); no se usó.'],
     refused: ['Motor no responde', 'triangle', 'red', 'El motor rechazó o no completó la conexión.'],
   });
+  // K3-09 M5c (U1): «Reintentar» is the closed `refresh` of the agent connection (it connects at once when the connection
+  // is down, `settingshost::agent_action`); the keeper keeps its own schedule and sees the connection when it lands.
+  const RETRY = Object.freeze({ label: 'Reintentar', aria: 'Reintentar la conexión con el motor ahora' });
+  const retryPayload = () => ({ action: 'refresh' });
+  // `retry_in` comes from the Rust keeper: the whole seconds to its next attempt. Anything else is not a countdown.
+  const countdown = state => (state && Number.isInteger(state.retry_in) && state.retry_in >= 0 && state.retry_in <= 3600 ? state.retry_in : null);
   const CONNECT_WAIT_MS = 4000; // how long the page may show «Conectando» before it stops waiting for a first state
   function connectionView(state) {
     // No state at all = the engine has not answered yet. That is a WAIT, not «Sin motor»: saying the engine is
@@ -62,8 +68,16 @@
     // a connected daemon whose engine starts or restarts is a WAIT said in Spanish, never «Sin motor».
     // kind `no_daemon` + `starting: true`: the Ajustes banner (vendor hub/accounts.js) gives `no_daemon` its
     // quiet «○» look and the red «✗» to every other kind; `starting` tells this one apart.
-    if (c === 'connected' && (state.engine === 'starting' || state.engine === 'restarting')) {
+    if (c === 'connected' && state.engine === 'starting') {
       return { kind: 'no_daemon', starting: true, word: 'Arrancando…', icon: 'ring', tone: 'live', aria: 'Arrancando…: Koda está arrancando… abriendo tu conversación.' };
+    }
+    // K3-09 M5c (U1): a restart is its own word (the human pressed «Reiniciar», or the engine restarted by itself).
+    if (c === 'connected' && state.engine === 'restarting') {
+      return { kind: 'no_daemon', starting: true, word: 'Reiniciando…', icon: 'ring', tone: 'live', aria: 'Reiniciando…: El motor se está reiniciando…' };
+    }
+    // K3-09 M5c (U1): the engine answered and then stopped (or says it is unavailable): not a wait, so «Reintentar».
+    if (c === 'connected' && (state.engine === 'stopped' || state.engine === 'unavailable')) {
+      return { kind: 'lost', word: 'Motor detenido', icon: 'triangle', tone: 'red', aria: 'Motor detenido: El motor se detuvo; probá reintentar.', retry: RETRY };
     }
     if (c === 'connected') return null;
     const missing = c === 'no_daemon' && state.last_error && state.last_error.code;
@@ -79,8 +93,15 @@
     if (missing === 'bundled_runtime_invalid') {
       return { kind: c, word: 'Instalación dañada', icon: 'plug-off', tone: 'faint', aria: 'Instalación dañada: La instalación de Koda está dañada: volvé a instalar Koda.' };
     }
+    const secs = countdown(state);
+    // K3-09 M5c (U1): a lost connection the keeper is already retrying reads as a wait with its countdown.
+    if (c === 'lost' && secs !== null) {
+      const word = `Reconectando… ${secs} s`;
+      return { kind: 'lost', word, icon: 'ring', tone: 'live', aria: `${word}: Se perdió la conexión con el motor; reintento automático en ${secs} s.`, retry: RETRY };
+    }
     const row = Object.prototype.hasOwnProperty.call(CONNECTION, c) ? CONNECTION[c] : CONNECTION.no_daemon;
-    return { kind: c in CONNECTION ? c : 'no_daemon', word: row[0], icon: row[1], tone: row[2], aria: `${row[0]}: ${row[3]}` };
+    const more = c === 'no_daemon' && secs !== null ? ` Reintento automático en ${secs} s.` : '';
+    return { kind: c in CONNECTION ? c : 'no_daemon', word: row[0], icon: row[1], tone: row[2], aria: `${row[0]}: ${row[3]}${more}`, retry: RETRY };
   }
   // Island status-row deep links (abito:settings-select) -> the section id inside Ajustes -> Conexiones.
   const PI_SECTIONS = Object.freeze({ 'accounts:agentes': 'connections-agents', 'accounts:motor': 'daemon-restart', 'accounts:proveedores': 'provider-list' });
@@ -838,6 +859,6 @@
   return { PI_SECTIONS, KEY_IDS, keyRows, keyPayload, keyError, ownedAccounts, colorRows, soundGainProblem, gainPercent, autoCloseSegments, islandSizeSegments, islandSizeProblem, isSettingsWindow, settingsWindowView, quickPanelView, displayNameProblem, islandInteractionView, autoCloseProblem, commandOutcome, hotkeySetOutcome, makeDrafts, providerRows, cancelPlan, TABS, tabById, tabAlias, servicesGroupVisible, tabKeyTarget, METHOD_CARDS, providerList, loginPlan, pendingLogin, pendingLoginReady, connectedAccounts, AGENT_IDS, agentsView, directOutcome, agentActionFailure, planSummary, AGENTS_WAIT_MS, CONNECT_WAIT_MS, LOGOUT_WORD, SOUND_DEFAULT: false, connectionView, accountRows, loginMethods, createValidity,
     maskInput, promptView, replyValid, eventView, safeWebUrl, flowOutcome, connectorsView, soundDefault, generalView, captureCombo,
     maskInput, promptView, replyValid, eventView, safeWebUrl, flowOutcome, connectorsView, soundDefault, generalView, captureCombo,
-    daemonRestartView, daemonRestartOutcome,
+    daemonRestartView, daemonRestartOutcome, retryPayload,
     THEME_MODES, THEME_LABELS, themeView };
 });

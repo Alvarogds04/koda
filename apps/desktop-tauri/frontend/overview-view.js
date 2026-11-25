@@ -357,6 +357,8 @@
         return view;
       }
     }
+    // K3-09 M5c (U1): a loss the keeper is already retrying is a wait, not a failure (the countdown lives in Ajustes → Motor).
+    if (p && p.connection === 'lost' && Number.isInteger(p.retry_in) && p.retry_in >= 0) return row('engine', 'Reconectando…', 'Revisar', 'accounts:motor', 'Motor');
     if (p && Object.prototype.hasOwnProperty.call(ENGINE_BAD, p.connection)) return row('engine', ENGINE_BAD[p.connection], 'Revisar', 'accounts:motor', 'Motor');
     if (p && p.connection === 'connected' && Array.isArray(p.accounts) && !p.accounts.some(a => a && (a.configured === true || a.local === true))) {
       return row('account', 'Sin cuenta', 'Configurar', 'accounts:proveedores', 'Proveedores');
