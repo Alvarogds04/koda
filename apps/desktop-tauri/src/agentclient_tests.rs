@@ -730,6 +730,19 @@ mod direct {
     }
 
     #[test]
+    fn fold_direct_keeps_the_k_f_reason_of_a_retired_pi_row_and_offers_no_plan() {
+        // K3-09 M1b: the Pi row's reason (AC-08/K-F) is part of the closed detail set, so a row folded from ANY
+        // source keeps it; it is a state without a button, so no plan hash or summary can ride along.
+        let out = json!({
+            "agents": {"type":"agents","agents":[{"id":"pi","state":"unavailable","backup":false,"detail":"legacy_pi_extension_off","plan_hash":H,"summary":"Adds the Abito hooks to ~/.pi/agent/extensions."}]},
+            "hooks": {"type":"hooks","clients":[]},
+        });
+        let view = fold_direct(&out).expect("folds");
+        assert_eq!(view["directAgents"][0]["detail"], "legacy_pi_extension_off");
+        assert!(view["directAgents"][0]["plan_hash"].is_null(), "an unavailable row never carries a plan: {}", view["directAgents"][0]);
+    }
+
+    #[test]
     fn fold_direct_refuses_garbage_instead_of_inventing_state() {
         for bad in [json!(null), json!({}), json!({"agents":{"type":"agents"},"hooks":{"type":"hooks","clients":[]}}), json!({"error":"failed"}), json!({"agents":"x","hooks":"y"})] {
             assert!(fold_direct(&bad).is_none(), "{bad}");
