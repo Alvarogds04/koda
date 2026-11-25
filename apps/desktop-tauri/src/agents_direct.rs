@@ -5,12 +5,20 @@
 //! takes `agents_list`, `hooks_preview`, `agent_connect` and `agent_disconnect` HERE, whether the daemon is up or
 //! down, so there is exactly ONE owner of those operations (no daemon/direct race): the page never asks the engine.
 //!
-//! No installer logic lives here. Rust runs the bundled `desktop-daemon/src/agents-direct.cjs` with node, which
-//! drives the SAME `AgentsManager` (preview → human confirm → plan-hash check → backup → apply, audit) the daemon
-//! used. Trust: node comes from `daemonhost::discover("node")` (session PATH absolute entries + canonical
-//! locations, never CWD); the script is the one beside the installed daemon (`installed_daemon_cli` layout), never
-//! a path from the page, PATH or env; no shell; cleared environment; stdin closed; bounded time and output;
-//! unix process group killed whole on timeout. The page only sends the closed `parse_ui_command` grammar.
+//! K3-09 M1 (S1): the entry this host runs is the ENGINE's (`jesscore`), not a Koda copy. `engine/docs/PROTOCOL.md`
+//! («Engine locator and island directory») fixes where it lives, and everything here is derived from that one root:
+//! `<lib>` = `ABITO_ENGINE_DIR` when it is an absolute path, else `<home>/.local/lib/abito-core`; node is
+//! `<lib>/runtime/node` (never PATH's node); the entry is `<lib>/engine/src/agents-direct.cjs` (never a path from the
+//! CWD, the page, PATH or the engine's own environment). The engine derives its own hooks installer from its own
+//! location (`<lib>/engine/harness/bin/abito-hook.cjs`), so Koda passes none.
+//!
+//! No installer logic lives here. The engine entry drives its own `AgentsManager` (preview → human confirm → plan-hash
+//! check → backup → apply, audit) and prints the same two closed one-line JSON frames as before (`{agents,hooks}`).
+//! Rust keeps the same defences: no shell; cleared environment; stdin closed; bounded time and output; unix process
+//! group killed whole on timeout. The page only sends the closed `parse_ui_command` grammar.
+//!
+//! The ONE rule the engine does not have is Koda's K-F Pi policy (PROTOCOL.md, «Pi policy»), so it is enforced HERE
+//! while the switch is off — see [`force_pi_row`]. It is retired together with that switch (AC-08b).
 use crate::agentclient::{fold_direct, parse_ui_command, CommandError, UiCommand};
 use serde_json::{json, Value};
 use std::io::Read;
@@ -25,6 +33,9 @@ pub const TIMEOUT: Duration = Duration::from_secs(60);
 /// Answer cap: two closed frames are a few KiB; anything bigger is garbage and is discarded.
 pub const MAX_OUTPUT: usize = 512 * 1024;
 const LIST_CACHE: Duration = Duration::from_millis(1500);
+/// The one reason a Pi row can carry on this route while the legacy install is retired (K-F). The page already knows
+/// this word (`frontend/settings-view.js`, `AGENT_ERRORS.legacy_pi_extension_off`); nothing new is invented here.
+const PI_OFF: &str = "legacy_pi_extension_off";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DirectOp {
@@ -36,7 +47,15 @@ impl DirectOp {
     pub fn mutates(&self) -> bool {
         !matches!(self, DirectOp::List)
     }
-    /// The closed argv grammar of `agents-direct.cjs` (it re-validates every word).
+    /// Is this operation about the Pi ROW? That row is the only one whose install Koda's K-F switch owns (see
+    /// [`force_pi_row`]); every other agent is the engine's business.
+    pub fn targets_pi(&self) -> bool {
+        match self {
+            DirectOp::List => false,
+            DirectOp::Connect { id, .. } | DirectOp::Disconnect { id } => id == "pi",
+        }
+    }
+    /// The closed argv grammar of the engine's `agents-direct.cjs` (it re-validates every word).
     pub fn args(&self) -> Vec<String> {
         match self {
             DirectOp::List => vec!["list".into()],
@@ -66,35 +85,52 @@ pub fn parse(payload: &Value) -> Option<Result<DirectOp, CommandError>> {
     })
 }
 
-/// `agents-direct.cjs` beside the installed daemon's `cli.cjs` (same layout the daemon launch uses).
-pub fn script_beside(exe: &Path) -> Option<PathBuf> {
-    crate::daemonhost::installed_daemon_cli(exe).map(|cli| cli.with_file_name("agents-direct.cjs"))
+/// The engine's install root `<lib>` — the directory that holds `engine/` and `runtime/` (PROTOCOL.md, «Engine locator
+/// and island directory»). `ABITO_ENGINE_DIR` wins when it is an ABSOLUTE path; a relative or empty value is IGNORED and
+/// the documented default prefix (`<home>/.local/lib/abito-core`) is used instead, because resolving it against the CWD
+/// is exactly the path-from-outside hole this module closes. `None` = no engine to run (the page then reads a closed
+/// `agentsRuntime` value; nothing is guessed).
+pub fn install_root(engine_dir: Option<&Path>, home: Option<&Path>) -> Option<PathBuf> {
+    if let Some(dir) = engine_dir.filter(|d| d.is_absolute()) {
+        return Some(dir.to_path_buf());
+    }
+    home.map(|h| h.join(".local").join("lib").join("abito-core"))
 }
 
-/// What a run needs. `node: None` = Node.js not found.
+/// The node the engine ships: `<lib>/runtime/node`. Never PATH, never the app's own runtime discovery.
+pub fn runtime_node(lib: &Path) -> PathBuf {
+    lib.join("runtime").join(format!("node{}", std::env::consts::EXE_SUFFIX))
+}
+
+/// The engine's daemon-free entry: `<lib>/engine/src/agents-direct.cjs`.
+pub fn direct_script(lib: &Path) -> PathBuf {
+    lib.join("engine").join("src").join("agents-direct.cjs")
+}
+
+/// What a run needs. `node: None` = the engine's runtime is not there (or no engine at all).
 pub struct Runtime {
     pub node: Option<PathBuf>,
     pub script: Option<PathBuf>,
     pub env: Vec<(String, String)>,
+    /// Koda's K-F switch, resolved ONCE when the runtime is built (`crate::legacy_pi_extension_enabled`). OFF (the
+    /// default) means the retired Pi extension install is never touched — see [`force_pi_row`].
+    pub legacy_pi: bool,
 }
 
-/// Resolves node and the script the same way the daemon launch does, from the real process environment.
-pub fn runtime() -> Runtime {
-    let path = std::env::var_os("PATH");
-    #[cfg(windows)]
-    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"));
-    #[cfg(not(windows))]
-    let home = std::env::var_os("HOME");
-    let node = crate::daemonhost::discover("node", path.as_deref(), home.as_deref()).ok();
-    let script = std::env::current_exe().ok().and_then(|exe| {
-        #[allow(unused_mut)]
-        let mut script = script_beside(&exe)?;
-        #[cfg(debug_assertions)]
-        if !script.is_file() {
-            script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../desktop-daemon/src/agents-direct.cjs");
-        }
-        script.is_file().then_some(script)
-    });
+/// One variable in the closed allowlist: last value wins, never two entries for the same name.
+fn keep_env(env: &mut Vec<(String, String)>, key: &str, value: &str) {
+    match env.iter_mut().find(|(k, _)| k == key) {
+        Some(slot) => slot.1 = value.to_owned(),
+        None => env.push((key.to_owned(), value.to_owned())),
+    }
+}
+
+/// [`runtime`] from explicit inputs: the engine override, the home the ENGINE reads, and the K-F switch. `runtime()`
+/// passes the process's own; tests pass their own, so nobody has to mutate the process environment to pin the locator.
+pub fn runtime_at(engine_dir: Option<&Path>, home: Option<&Path>, legacy_pi: bool) -> Runtime {
+    let lib = install_root(engine_dir, home);
+    let node = lib.as_deref().map(runtime_node).filter(|p| p.is_file());
+    let script = lib.as_deref().map(direct_script).filter(|p| p.is_file());
     let mut env: Vec<(String, String)> = Vec::new();
     #[allow(unused_mut)]
     let mut keep = vec!["HOME", "LANG"];
@@ -107,20 +143,33 @@ pub fn runtime() -> Runtime {
             }
         }
     }
-    let island = crate::agentconn::island_root(
-        std::env::var("KODA_ISLAND_DIR").ok().as_deref(),
-        home.as_deref().and_then(|h| h.to_str()),
-    );
+    let home = home.and_then(|h| h.to_str()).filter(|h| !h.is_empty());
+    // The child's HOME must be the home the locator (and the island dir) used: on this machine they are the same value,
+    // and with an explicit home no test or caller can make the engine read somebody else's `~/.pi` or `~/.claude`.
+    if let Some(home) = home {
+        keep_env(&mut env, "HOME", home);
+    }
+    let island = crate::agentconn::island_root(std::env::var("KODA_ISLAND_DIR").ok().as_deref(), home);
     if let Some(dir) = island.and_then(|d| d.to_str().map(str::to_owned)) {
         env.push(("KODA_ISLAND_DIR".into(), dir));
     }
-    // AC-08/K-F (S2, S6): the manager behind the daemon-free route reads the retired Pi install's switch from this
-    // child's environment, so it is forwarded — only while it is ON, which keeps the allowlist above exactly as closed
-    // as it was (off is the ABSENCE of the variable, not a value somebody could flip).
-    if crate::legacy_pi_extension_enabled() {
+    // AC-08/K-F (S2, S6): the switch is forwarded — only while it is ON, which keeps the allowlist above exactly as closed
+    // as it was (off is the ABSENCE of the variable, not a value somebody could flip). The engine does not read it; it is
+    // kept because the installer that K-F owns still does, and because ON is the path that must stay reachable.
+    if legacy_pi {
         env.push((crate::LEGACY_PI_EXTENSION_ENV.into(), "1".into()));
     }
-    Runtime { node, script, env }
+    Runtime { node, script, env, legacy_pi }
+}
+
+/// The runtime the app runs with, from the real process environment.
+pub fn runtime() -> Runtime {
+    #[cfg(windows)]
+    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"));
+    #[cfg(not(windows))]
+    let home = std::env::var_os("HOME");
+    let engine_dir = std::env::var_os("ABITO_ENGINE_DIR").map(PathBuf::from);
+    runtime_at(engine_dir.as_deref(), home.as_deref().map(Path::new), crate::legacy_pi_extension_enabled())
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -264,9 +313,38 @@ fn runtime_view(kind: &str) -> Value {
     json!({"agentsRuntime": kind, "directAgents": [], "directHooks": []})
 }
 
-/// Never fails: a missing Node.js / a failed run is a closed `agentsRuntime` value the page renders PER ROW.
+/// K3-09 M1 — K-F in Rust. The engine has NO Pi policy (PROTOCOL.md, «Pi policy»), so while the switch is OFF the Pi
+/// row is the one the retired Koda manager published: `unavailable` with its own reason, no backup, and no plan — a
+/// disabled row can never offer «Agregar hooks»/«Reintentar» for `~/.pi/agent/extensions/koda-island`. Left alone, the
+/// engine's row reads `error`/`install_failed` and the page would offer that install as a retry. The row is REPLACED
+/// field by field from the closed vocabulary the page already knows; nothing is invented and no other row is touched.
+/// A frame that does not name Pi is left exactly as it is (this adds no row the engine did not send).
+///
+/// K3-09 M1 note (human decision, 25 Nov): keep the switch and this shim until AC-08b replaces the legacy
+/// `abito-island` Pi extension with `abito-pi`.
+fn force_pi_row(view: &mut Value) {
+    let Some(rows) = view.get_mut("directAgents").and_then(Value::as_array_mut) else { return };
+    let Some(slot) = rows.iter_mut().find(|r| r.get("id").and_then(Value::as_str) == Some("pi")) else { return };
+    *slot = json!({
+        "id": "pi", "state": "unavailable", "backup": false, "detail": PI_OFF,
+        "plan_hash": Value::Null, "summary": Value::Null, "reviewable": true, "trust_review": false,
+    });
+}
+
+/// Never fails: a missing engine (no `<lib>/runtime/node` or no entry) or a failed run is a closed `agentsRuntime` value
+/// the page renders PER ROW.
 pub fn perform_with(gate: &Gate, op: &DirectOp, rt: &Runtime) -> Value {
     let mut slot = gate.0.lock().unwrap_or_else(|p| p.into_inner());
+    // K3-09 M1 — K-F shim (retirar con AC-08b (abito-island -> abito-pi)): with the switch OFF a `pi` mutation runs
+    // NOTHING at all — no node, no engine, no installer — because the engine has no Pi policy and would preview (or
+    // apply) the retired folder. The answer is the last table the page already shows, with the Pi row disabled; the page
+    // asks `agents_list` before it renders any row, so that table exists. Nothing else is muted: every other agent is
+    // a real operation on this same route.
+    if !rt.legacy_pi && op.targets_pi() {
+        let mut view = slot.as_ref().map(|(_, view)| view.clone()).unwrap_or_else(|| runtime_view("ok"));
+        force_pi_row(&mut view);
+        return view;
+    }
     if !op.mutates() {
         if let Some((at, view)) = slot.as_ref() {
             if at.elapsed() < LIST_CACHE {
@@ -284,7 +362,10 @@ pub fn perform_with(gate: &Gate, op: &DirectOp, rt: &Runtime) -> Value {
         .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
         .and_then(|answer| fold_direct(&answer));
     match folded {
-        Some(view) => {
+        Some(mut view) => {
+            if !rt.legacy_pi {
+                force_pi_row(&mut view);
+            }
             *slot = Some((Instant::now(), view.clone()));
             view
         }

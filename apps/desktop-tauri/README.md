@@ -237,13 +237,22 @@ Pi and the daemon are not involved: with no Pi (or no daemon) Claude Code and Co
 - `agent_action` takes `agents_list`, `hooks_preview`, `agent_connect`, `agent_disconnect` in `src/agents_direct.rs`
   (the page never asks the daemon for these; one owner, no daemon/direct race). Validation is the existing closed grammar
   (`agentclient::parse_ui_command`: allowlisted id, 64-hex plan hash).
-- Rust runs the bundled `desktop-daemon/src/agents-direct.cjs` with node (`daemonhost::discover("node")`; script beside the
-  installed daemon; never PATH/CWD/page paths; no shell; cleared environment). It drives the same `AgentsManager`
-  (preview → human confirm → plan-hash check → backup → apply → audit) and prints two closed frames, folded by
-  `agentclient::fold_direct` into `directAgents` / `directHooks` / `agentsRuntime`.
+- Rust runs the ENGINE's entry (`jesscore`), never a Koda copy: `<lib>/engine/src/agents-direct.cjs` with the node the
+  engine ships, `<lib>/runtime/node` (K3-09 M1). `<lib>` is `ABITO_ENGINE_DIR` when it is an absolute path, else the
+  documented prefix `~/.local/lib/abito-core` (`engine/docs/PROTOCOL.md`, «Engine locator and island directory»); a relative
+  or empty override is ignored rather than resolved against the CWD. Nothing here is a path from PATH, the CWD or the page,
+  and the engine derives its own hooks installer, so Koda passes none. No shell; cleared environment.
+  It drives the engine's `AgentsManager` (preview → human confirm → plan-hash check → backup → apply → audit) and prints two
+  closed frames, folded by `agentclient::fold_direct` into `directAgents` / `directHooks` / `agentsRuntime`.
 - Bounds: 60 s, 512 KiB of stdout, whole process tree killed on timeout, oversize, or a descendant keeping stdout open.
-- Missing Node.js reads «Falta Node.js» on each row (hooks are Node scripts); a failed run reads «No se pudo». Never «Falta Pi»
-  on this screen. The chat/engine diagnostics (`connectionView`) are unchanged.
+- Missing engine reads a closed `agentsRuntime` value the page already renders: `node_missing` when `<lib>/runtime/node` is not
+  there, `failed` when it is but the entry is not. `node_missing` reads «Falta jesscore» on every Agentes row (and «Falta jesscore para
+  cambiar los hooks…» after an action): Koda and jesscore ship together, so the person is never sent to install Node.js. A failed
+  run reads «No se pudo». Never «Falta Pi» on this screen. The chat/engine diagnostics (`connectionView`, which still speak of
+  Koda's own daemon) are unchanged.
+- AC-08/K-F stays Koda's: the engine has no Pi policy (`PROTOCOL.md`, «Pi policy»), so while `KODA_LEGACY_PI_EXTENSION` is off
+  (the default) a `pi` connect/disconnect runs NOTHING and the Pi row always reads `unavailable` / `legacy_pi_extension_off`.
+  That shim is retired with AC-08b (`abito-island` → `abito-pi`).
 
 ## Run
 
@@ -611,7 +620,11 @@ variable, `KODA_LEGACY_PI_EXTENSION`, ON only for the exact value `1`:
   `unavailable` with `detail: "legacy_pi_extension_off"` and refuses connect and
   disconnect before spawning anything; Settings shows the row **disabled**
   («Deshabilitado», «Pi ya no se instala desde Koda: lo gestiona jesscore.»), never
-  hidden and never with a button, in the same position and count as before.
+  hidden and never with a button, in the same position and count as before. Since
+  K3-09 M1 the Settings rows come from the ENGINE's entry, which has no Pi policy
+  at all, so the same rule is enforced in Rust on that route: a `pi`
+  connect/disconnect spawns nothing and the Pi row is published disabled whatever
+  the engine says (`agents_direct::perform_with`).
 - **`KODA_LEGACY_PI_EXTENSION=1`.** The installer, its Windows twin and the
   daemon-free route behave exactly as before. The daemon forwards the variable
   into the installer's allowlisted environment, and
@@ -625,8 +638,11 @@ variable, `KODA_LEGACY_PI_EXTENSION`, ON only for the exact value `1`:
 Tests: `apps/desktop-harness/test/legacy-pi-extension.test.cjs` (the exact-value
 switch, the default refusal with a byte-identical folder and no plan hash, and
 the opt-in end to end), the `legacy Pi extension` cases in
-`apps/desktop-daemon/test/agents.test.cjs` and `test/agents-direct.test.cjs`, and
-`src/agents_direct_tests.rs` for the forwarding. The legacy suites
+`apps/desktop-daemon/test/agents.test.cjs`, and `src/agents_direct_tests.rs` for
+the forwarding AND for the Rust-side rule the engine does not have (switch off:
+a `pi` mutation runs nothing and the row reads disabled), plus
+`tests/agents_direct_engine.rs`, which spawns the real engine entry and proves
+the retired folder is untouched. The legacy suites
 (`test/install-pi.test.cjs`, `test/win-install-fake.test.cjs`,
 `apps/desktop-daemon/test/agents.test.cjs`) opt in explicitly instead of being
 weakened. The Windows smoke step still exercises the installer with the switch

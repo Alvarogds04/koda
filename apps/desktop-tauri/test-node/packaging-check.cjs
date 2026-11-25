@@ -235,15 +235,21 @@ test('L42 F1: the package ships the hook installer and everything it requires, a
   fs.rmSync(path.join(d, 'desktop-harness/src/install-ui.cjs'));
   assert(L.verifyStage(d, { sourceCrate: crate }).length > 0, 'a missing harness file fails verification');
 });
-test('HU-015: the daemon-free Agentes entry ships, closed under require(), beside the harness it drives', () => {
-  assert(L.DAEMON_FILES.includes('src/agents-direct.cjs'), 'Ajustes → Agentes runs src/agents-direct.cjs with no daemon: it must be packaged');
-  assert(L.STAGED.includes('desktop-daemon/src/agents-direct.cjs'));
+test('K3-09 M1: Ajustes → Agentes runs the ENGINE entry, so no duplicate of it ships in the daemon stage', () => {
+  // K3-09 M1 (S1): the route runs `<lib>/engine/src/agents-direct.cjs`, located by ABITO_ENGINE_DIR or the documented
+  // prefix (engine/docs/PROTOCOL.md, «Engine locator and island directory»). A Koda copy staged here would be a SECOND
+  // owner of the same install path, so it must neither exist nor ship.
+  assert(!L.DAEMON_FILES.includes('src/agents-direct.cjs'), 'K3-09 M1: the daemon-free agent entry lives in the engine, it is not a Koda file');
+  assert(!L.STAGED.includes('desktop-daemon/src/agents-direct.cjs'));
+  assert(!fs.existsSync(path.join(crate, '..', 'desktop-daemon', 'src', 'agents-direct.cjs')), 'the duplicate is DELETED, not only unstaged');
   // K2-13 T2c-2: the transcription helper ships beside the island, and the daemon modules that spawn it ship too.
   assert(L.STAGED.includes('koda-transcribe'));
   assert(L.STAGED.includes('desktop-daemon/src/minikodas/transcribe.cjs') && L.STAGED.includes('desktop-daemon/src/minikodas/transcribe-setting.cjs'));
   // K2-13 T2c-8 (S19): the daemon module that reads YouTube links ships with it (it spawns the bundled runtime/yt-dlp).
   assert(L.STAGED.includes('desktop-daemon/src/minikodas/youtube.cjs'), 'the YouTube reader must be packaged');
-  for (const rel of ['src/agents-direct.cjs', 'src/agents.cjs', 'src/agent-hooks.cjs']) {
+  // The daemon path still drives its own agent manager and the installer that ships beside it: that stays shipped, and
+  // its requires stay closed under the same rule.
+  for (const rel of ['src/agents.cjs', 'src/agent-hooks.cjs']) {
     const src = fs.readFileSync(path.join(crate, '..', 'desktop-daemon', rel), 'utf8');
     for (const m of src.matchAll(/require\(['"](\.{1,2}\/[^'"]+)['"]\)/g)) {
       const target = path.posix.normalize(path.posix.join(path.posix.dirname(rel), m[1]));
@@ -255,8 +261,8 @@ test('HU-015: the daemon-free Agentes entry ships, closed under require(), besid
   }
   const d = fakeStage();
   assert.deepEqual(L.verifyStage(d, { sourceCrate: crate }), []);
-  fs.rmSync(path.join(d, 'desktop-daemon/src/agents-direct.cjs'));
-  assert(L.verifyStage(d, { sourceCrate: crate }).length > 0, 'a package without the entry fails verification');
+  fs.rmSync(path.join(d, 'desktop-daemon/src/agents.cjs'));
+  assert(L.verifyStage(d, { sourceCrate: crate }).length > 0, 'a package without the daemon agent manager fails verification');
 });
 test('verify: a pristine stage passes; tampering is caught without launching anything', () => {
   const d = fakeStage();

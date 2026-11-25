@@ -583,13 +583,15 @@
   const errorSeqOf = st => (st && st.last_error && Number.isInteger(st.last_error.n) ? st.last_error.n : 0);
   // opts.askedAtError: the engine error counter when `agents_list` was sent; opts.timedOut: the wait ran out.
   // HU-015: Ajustes → Agentes is read and written through the daemon-free host route, whose answer carries
+  // K3-09: `node_missing` now means the ENGINE (jesscore: its runtime/node or its agents-direct entry) is not where Koda looks,
+  // so the rows say «Falta jesscore», never «Falta Node.js». The code keeps its name: it is the host's closed value.
   // `agentsRuntime` ('ok' | 'node_missing' | 'failed') + `directAgents` / `directHooks`. The chat engine's connection
   // (Pi, daemon) plays NO part in these rows: each row's state is its own hooks, never «Falta el motor de Koda» / «Sin motor».
   const directRuntimeRow = (id, word, tone, icon) => displayRow(id, 'unknown', word, icon, tone, '');
   function directAgentsView(state) {
     const kind = state.agentsRuntime;
     if (kind === 'node_missing' || kind === 'failed') {
-      const [word, icon, tone] = kind === 'node_missing' ? ['Falta Node.js', 'plug-off', 'faint'] : ['No se pudo', 'triangle', 'red'];
+      const [word, icon, tone] = kind === 'node_missing' ? ['Falta jesscore', 'plug-off', 'faint'] : ['No se pudo', 'triangle', 'red'];
       return { kind: 'ready', rows: [...HOOK_IDS, 'statusline', 'pi'].map(id => directRuntimeRow(id, word, tone, icon)) };
     }
     const own = { agents: state.directAgents, hooks: state.directHooks };
@@ -669,7 +671,7 @@
   function directOutcome(next, agentId, okSay) {
     const fail = { ok: false, say: agentActionFailure(agentId) };
     if (!next || typeof next !== 'object' || next.agentsRuntime === 'failed') return fail;
-    if (next.agentsRuntime === 'node_missing') return { ok: false, say: 'Falta Node.js para cambiar los hooks.' };
+    if (next.agentsRuntime === 'node_missing') return { ok: false, say: 'Falta jesscore para cambiar los hooks: Koda y jesscore se instalan juntos; volvé a instalar Koda.' };
     const row = Array.isArray(next.directAgents) ? next.directAgents.find(a => a && a.id === agentId) : null;
     if (!row || row.state === 'error' || row.state === 'unavailable') return fail;
     return { ok: true, say: okSay };

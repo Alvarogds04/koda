@@ -1740,10 +1740,11 @@ test('HU-015: Pi missing never alters another row, whatever the engine connectio
     for (const last_error of [null, { code: 'pi_missing', n: 1 }, { code: 'node_missing', n: 2 }])
       assert.equal(JSON.stringify(S.agentsView({ ...direct(list), connection, last_error })), base, `${connection}/${last_error && last_error.code}`);
 });
-test('HU-015: missing Node.js is said per row (the only runtime message), never as Pi or as a whole-screen engine error', () => {
+test('HU-015 / K3-09: a missing engine (jesscore) is said per row (the only runtime message), never as Node.js, Pi or a whole-screen engine error', () => {
   const v = S.agentsView({ connection: 'no_daemon', agentsRuntime: 'node_missing', directAgents: [], directHooks: [] });
   assert.equal(v.kind, 'ready');
-  assert.ok(v.rows.length >= 6 && v.rows.every(r => r.word === 'Falta Node.js' && !r.primary && !r.secondary));
+  assert.ok(v.rows.length >= 6 && v.rows.every(r => r.word === 'Falta jesscore' && !r.primary && !r.secondary));
+  assert.ok(!/Node/.test(JSON.stringify(v)), 'Koda no longer asks the person to install Node.js: it is jesscore that is missing');
   assert.ok(!/Falta el motor de Koda/.test(JSON.stringify(v))); // the engine-missing word never reaches a row (Pi's bare NAME is a valid independent row).
   const failed = S.agentsView({ agentsRuntime: 'failed' });
   assert.ok(failed.rows.every(r => r.word === 'No se pudo'));
@@ -1763,7 +1764,10 @@ test('HU-015: directOutcome reports only the host answer for THAT agent', () => 
   assert.equal(S.directOutcome(direct([{ id: 'codex', state: 'error', detail: 'plan_changed' }]), 'codex', 'ok').ok, false);
   assert.equal(S.directOutcome(direct([{ id: 'claude-code', state: 'connected' }]), 'codex', 'ok').ok, false);
   assert.equal(S.directOutcome({ agentsRuntime: 'failed' }, 'codex', 'ok').ok, false);
-  assert.match(S.directOutcome({ agentsRuntime: 'node_missing' }, 'codex', 'ok').say, /Node\.js/);
+  const missingEngine = S.directOutcome({ agentsRuntime: 'node_missing' }, 'codex', 'ok');
+  assert.equal(missingEngine.ok, false);
+  assert.match(missingEngine.say, /jesscore/);
+  assert.doesNotMatch(missingEngine.say, /Node/);
   assert.equal(S.directOutcome(null, 'codex', 'ok').ok, false);
 });
 
