@@ -697,6 +697,34 @@ test('M-INST3: --uninstall leaves a symlink and a non-empty directory sitting at
   assert.match(r.stdout, /Kept .* it still holds files that are not ours/);
 });
 
+// K3-09 M-INST4 (human «dale»): --uninstall refuses the SAME ancestor chain the install refuses (checkInstalledLayout /
+// the install-time walk): a PREFIX that is a symlink, or any parent of it, is never followed. Before any removal.
+test('M-INST4: --uninstall refuses a PREFIX that is a symlink, or whose parent is one, and the target is byte-identical', () => {
+  for (const mode of ['prefix', 'parent', 'apps', 'apps-parent']) {
+    const st = stage(), e = env(); assert.equal(install(st, e).status, 0);
+    const real = path.join(e.home, 'elsewhere'); fs.mkdirSync(real);
+    let prefix = e.prefix, apps = e.apps, moved;
+    if (mode === 'prefix') { moved = path.join(real, 'koda'); fs.renameSync(e.prefix, moved); fs.symlinkSync(moved, e.prefix); }
+    if (mode === 'parent') { moved = path.join(real, 'share'); fs.renameSync(path.dirname(e.prefix), moved); fs.symlinkSync(moved, path.dirname(e.prefix)); apps = path.join(path.dirname(e.prefix), 'applications'); }
+    if (mode === 'apps') { moved = path.join(real, 'applications'); fs.renameSync(e.apps, moved); fs.symlinkSync(moved, e.apps); }
+    if (mode === 'apps-parent') { moved = path.join(real, 'sharedapps'); fs.mkdirSync(path.join(moved, 'applications'), { recursive: true });
+      fs.renameSync(path.join(e.apps, `${L.IDENTIFIER}.desktop`), path.join(moved, 'applications', `${L.IDENTIFIER}.desktop`));
+      fs.rmSync(e.apps, { recursive: true }); fs.symlinkSync(moved, path.join(e.home, 'appslink')); apps = path.join(e.home, 'appslink', 'applications'); }
+    const before = treeBytes(real);
+    const r = run(['--uninstall', '--prefix', prefix, '--applications-dir', apps], e);
+    assert.equal(r.status, 1, `${mode}: ${r.stderr}${r.stdout}`);
+    assert.match(r.stderr, /unsafe installed layout.*nothing was removed/, mode);
+    assert.equal(treeBytes(real), before, `${mode}: the external destination is byte-identical`);
+  }
+});
+test('M-INST4: a plain --uninstall (no link anywhere in the chain) still removes the install', () => {
+  const st = stage(), e = env(); assert.equal(install(st, e).status, 0);
+  const r = run(['--uninstall', '--prefix', e.prefix, '--applications-dir', e.apps], e);
+  assert.equal(r.status, 0, `${r.stderr}${r.stdout}`);
+  assert.equal(fs.existsSync(e.prefix), false);
+  assert.equal(fs.existsSync(path.join(e.apps, `${L.IDENTIFIER}.desktop`)), false);
+});
+
 test('uninstall → install round trip restores a verifying install', () => {
   const st = stage(), e = env();
   assert.equal(install(st, e).status, 0);

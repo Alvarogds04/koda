@@ -155,6 +155,18 @@ trap cleanup EXIT INT TERM
 # ---- uninstall ------------------------------------------------------------------------
 if [ "$UNINSTALL" -eq 1 ]; then
   [ -z "$STAGE" ] || die "--uninstall takes no stage directory"
+  # K3-09 M-INST4: the install refuses a PREFIX or applications dir that is a symlink or has a symlinked parent
+  # (checkInstalledLayout + the install-time walk); the uninstall refuses the very same chain, BEFORE it reads or removes
+  # anything, so it never deletes inside a folder the symlink points to.
+  for chain in "$PREFIX" "$APPS"; do
+    walk="$chain"
+    while :; do
+      if [ -L "$walk" ]; then die "unsafe installed layout: $walk is a symlink (in the path of $chain): nothing was removed"; fi
+      parent="$(dirname "$walk")"
+      [ "$parent" != "$walk" ] || break
+      walk="$parent"
+    done
+  done
   # The file list comes from the bundled runtime's node, or from the installed
   # receipt; without either, only what is surely ours is removed.
   UN_FILES=""
