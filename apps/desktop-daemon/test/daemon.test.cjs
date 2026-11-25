@@ -1002,7 +1002,14 @@ test("agents: a legacy recap cleanup whose installer answers garbage leaves the 
 	}
 });
 
-test("agents: no hookInstallerBin -> agentsAvailable false, every agent unavailable (no execution)", async () => {
+test("agents: no hookInstallerBin -> agentsAvailable false, every agent unavailable (no execution)", async (t) => {
+	// The expectation below is the DEFAULT (switch OFF); pin it so a developer's shell cannot change the outcome.
+	const savedSwitch = process.env.KODA_LEGACY_PI_EXTENSION;
+	delete process.env.KODA_LEGACY_PI_EXTENSION;
+	t.after(() => {
+		if (savedSwitch === undefined) delete process.env.KODA_LEGACY_PI_EXTENSION;
+		else process.env.KODA_LEGACY_PI_EXTENSION = savedSwitch;
+	});
 	const { daemon, root } = make();
 	await daemon.start();
 	try {
@@ -1013,7 +1020,9 @@ test("agents: no hookInstallerBin -> agentsAvailable false, every agent unavaila
 		await waitFor(() => frames.some((f) => f.type === "agents" || f.type === "error"));
 		const frame = frames.find((f) => f.type === "agents");
 		assert.ok(frame, JSON.stringify(frames));
-		assert.ok(frame.agents.every((a) => a.state === "unavailable" && a.detail === null));
+		// AC-08/K-F: with no installer every agent is unavailable; the retired Pi row alone carries its own reason
+		// (the legacy switch is OFF by default), the rest carry none.
+		assert.ok(frame.agents.every((a) => a.state === "unavailable" && a.detail === (a.id === "pi" ? "legacy_pi_extension_off" : null)), JSON.stringify(frame.agents));
 		socket.destroy();
 	} finally {
 		await daemon.stop();
