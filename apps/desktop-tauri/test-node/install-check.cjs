@@ -521,6 +521,65 @@ test('an audit/ that is not a plain private folder of regular files is still ref
   }
 });
 
+// K3-09 M-INST: an install laid down by Koda 0.2.0-0.2.2 still holds files that later releases retired
+// (`desktop-daemon/src/agents-direct.cjs`, `desktop-pi/ask-tool.cjs`). Updating over it used to abort with
+// «unsafe installed layout: nothing was installed». The installer now removes exactly the closed list `L.RETIRED_FILES`.
+const planted = (e, rel, body = '// retired by an earlier release\n') => {
+  const file = path.join(e.prefix, ...rel.split('/'));
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, body, { mode: 0o644 });
+  return file;
+};
+test('M-INST: the retired files are a closed, relative, regular-file list that the current release no longer stages', () => {
+  assert.deepEqual([...L.RETIRED_FILES].sort(), ['desktop-daemon/src/agents-direct.cjs', 'desktop-pi/ask-tool.cjs']);
+  for (const rel of L.RETIRED_FILES) assert.ok(!path.isAbsolute(rel) && !rel.split('/').includes('..') && !L.STAGED.includes(rel), rel);
+});
+test('M-INST: updating over a real 0.2.x install (retired files present) succeeds, removes exactly them and leaves a verifying layout', () => {
+  const st = stage(), e = env();
+  assert.equal(install(st, e).status, 0);
+  const files = L.RETIRED_FILES.map(rel => planted(e, rel));
+  const keep = path.join(e.prefix, 'desktop-daemon', 'src', 'cli.cjs');
+  const keepBytes = fs.readFileSync(keep);
+  for (const f of files) assert.ok(fs.statSync(f).isFile(), 'precondition: the retired file is on disk before the update');
+  const r = install(st, e);
+  assert.equal(r.status, 0, r.stderr + r.stdout);
+  for (const f of files) assert.equal(fs.existsSync(f), false, `${f} removed`);
+  assert.deepEqual(fs.readFileSync(keep), keepBytes, 'the current files are untouched by the cleanup');
+  assert.deepEqual(L.checkInstalledLayout(e.prefix), []);
+  assert.match(r.stdout + r.stderr, /agents-direct\.cjs/, 'the update says what it removed');
+});
+test('M-INST: a retired path that is a symlink or a directory is refused, nothing is installed and the link target is never touched', () => {
+  const outside = tmp(); const target = path.join(outside, 'precious'); fs.writeFileSync(target, 'keep');
+  const cases = {
+    'symlink': p => { fs.mkdirSync(path.dirname(p), { recursive: true }); fs.symlinkSync(target, p); },
+    'directory': p => { fs.mkdirSync(p, { recursive: true }); },
+  };
+  for (const [name, plant] of Object.entries(cases)) {
+    const st = stage(), e = env(); assert.equal(install(st, e).status, 0);
+    plant(path.join(e.prefix, 'desktop-pi', 'ask-tool.cjs'));
+    const before = fs.readFileSync(path.join(e.prefix, 'receipt.json'));
+    const r = install(st, e);
+    assert.equal(r.status, 1, `${name}: ${r.stderr}`); assert.match(r.stderr, /unsafe installed layout/, name);
+    assert.deepEqual(fs.readFileSync(path.join(e.prefix, 'receipt.json')), before, name);
+    assert.equal(fs.readFileSync(target, 'utf8'), 'keep', `${name}: the link target is never touched`);
+  }
+});
+test('M-INST: only the closed list is tolerated — a lookalike or an unknown file is still an unsafe layout and stays', () => {
+  for (const rel of ['desktop-daemon/src/agents-direct.cjs.bak', 'desktop-daemon/src/other.cjs', 'desktop-pi/ask-tool.js']) {
+    const st = stage(), e = env(); assert.equal(install(st, e).status, 0);
+    const f = planted(e, rel);
+    const r = install(st, e);
+    assert.equal(r.status, 1, `${rel}: ${r.stderr}`); assert.match(r.stderr, /unsafe installed layout/, rel);
+    assert.equal(fs.existsSync(f), true, `${rel} is never deleted generically`);
+  }
+});
+test('M-INST: --uninstall also takes the retired files away', () => {
+  const st = stage(), e = env(); assert.equal(install(st, e).status, 0);
+  const files = L.RETIRED_FILES.map(rel => planted(e, rel));
+  assert.equal(run(['--uninstall', '--prefix', e.prefix, '--applications-dir', e.apps], e).status, 0);
+  for (const f of files) assert.equal(fs.existsSync(f), false, `${f} removed on uninstall`);
+});
+
 test('uninstall → install round trip restores a verifying install', () => {
   const st = stage(), e = env();
   assert.equal(install(st, e).status, 0);

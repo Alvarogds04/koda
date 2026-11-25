@@ -164,6 +164,15 @@ if [ "$UNINSTALL" -eq 1 ]; then
     UN_FILES="$(awk '/^  "files": \{$/{f=1;next} f&&/^  \}/{f=0} f' "$PREFIX/receipt.json" | sed -n 's/^    "\([^"]*\)": "\([0-9a-f]\{64\}\)",\{0,1\}$/\1/p')" || UN_FILES=""
   fi
   removed=""
+  # K3-09 M-INST: the files an earlier release staged and this one retired (same closed list as the update path; the
+  # uninstaller reads it from the installed runtime's node, the only place it exists, and skips it when that is gone).
+  UN_RETIRED=""
+  if [ -d "$PREFIX/runtime" ] && [ ! -L "$PREFIX/runtime" ] && [ -f "$PREFIX/runtime/node" ] && [ ! -L "$PREFIX/runtime/node" ]; then
+    UN_RETIRED="$("$PREFIX/runtime/node" -e 'process.stdout.write(require(process.argv[1]).RETIRED_FILES.join(" "))' "$LIB" 2>/dev/null)" || UN_RETIRED=""
+  fi
+  for f in $UN_RETIRED; do
+    if [ -f "$PREFIX/$f" ] && [ ! -L "$PREFIX/$f" ]; then rm -f "$PREFIX/$f"; removed="$removed $f"; fi
+  done
   for f in $UN_FILES receipt.json; do
     if [ -e "$PREFIX/$f" ] || [ -L "$PREFIX/$f" ]; then rm -f "$PREFIX/$f"; removed="$removed $f"; fi
   done
@@ -275,6 +284,8 @@ tar -xzf "$STAGE/$RUNTIME_ARCHIVE" -C "$RUNTIME_TMP" || die "cannot extract the 
 # chain only; PREFIX must not contain any undeclared installed entry (runtime/ aside).
 "$RUNTIME_TMP/node" -e 'const L=require(process.argv[1]);const fs=require("node:fs"),path=require("node:path");const p=L.checkInstalledLayout(process.argv[2]);for(let d=path.resolve(process.argv[3]);;d=path.dirname(d)){try{if(fs.lstatSync(d).isSymbolicLink())p.push(d+" is a symlink")}catch(e){if(e.code!=="ENOENT")throw e}if(path.dirname(d)===d)break}if(p.length){console.error(p.join("\n"));process.exit(1)}' "$LIB" "$PREFIX" "$APPS" || die "unsafe installed layout: nothing was installed"
 
+RETIRED="$("$RUNTIME_TMP/node" -e 'process.stdout.write(require(process.argv[1]).RETIRED_FILES.join(" "))' "$LIB")" || die "cannot read the retired file list: nothing was installed"
+
 # the closed set is now proven: the receipt names exactly lib.cjs' STAGED files
 INSTALL_FILES=""
 for f in $names; do [ "$f" = "$RUNTIME_ARCHIVE" ] || INSTALL_FILES="$INSTALL_FILES $f"; done
@@ -302,6 +313,19 @@ done
 chmod 644 "$APPS/.new.$$.$DESKTOP"
 
 for f in $INSTALL_FILES receipt.json; do mv -f "$PREFIX/$f$TMP_SUFFIX" "$PREFIX/$f"; done
+
+# K3-09 M-INST: take away what an earlier release staged and this one retired (lib.cjs RETIRED_FILES: a closed list of
+# relative paths). Only a plain regular file at exactly that path inside PREFIX is removed: a link or a directory was
+# already refused by the layout check above, and the check here repeats it so the rm can never follow anything.
+remove_retired() {
+  for rel in $RETIRED; do
+    victim="$PREFIX/$rel"
+    if [ -f "$victim" ] && [ ! -L "$victim" ]; then
+      rm -f "$victim" && echo "removed the retired file $rel"
+    fi
+  done
+}
+remove_retired
 mv -f "$APPS/.new.$$.$DESKTOP" "$APPS/$DESKTOP"
 
 # K2-04 T6: the Koda 0.1 left its own menu entry (com.abitog.AbitoTauri.desktop) and its install stays in place, so after
