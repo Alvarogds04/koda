@@ -660,6 +660,43 @@ test('M-INST2: remove_retired itself only unlinks plain regular files (the layou
   assert.equal(fs.existsSync(path.join(prefix, 'd', 'plain.cjs')), false, 'the plain file is removed');
 });
 
+// K3-09 M-INST3 (verifier: three guard mutants survived the 40 tests). They pin the three guards that delete files.
+test('M-INST3: a tampered receipt.json naming «..» paths aborts --uninstall and the file OUTSIDE the prefix survives', () => {
+  for (const evil of ['../victim.txt', 'desktop-pi/../../victim.txt']) {
+    const st = stage(), e = env(); assert.equal(install(st, e).status, 0);
+    fs.rmSync(path.join(e.prefix, 'runtime'), { recursive: true }); // no runtime: the list comes from the RECEIPT
+    const victim = path.join(path.dirname(e.prefix), 'victim.txt');   // what `<prefix>/<evil>` resolves to
+    fs.writeFileSync(victim, 'precious');
+    const rp = path.join(e.prefix, 'receipt.json');
+    const rec = JSON.parse(fs.readFileSync(rp, 'utf8'));
+    rec.files[evil] = 'a'.repeat(64);
+    fs.writeFileSync(rp, JSON.stringify(rec, null, 2) + '\n', { mode: 0o644 });
+    const beforePrefix = treeBytes(e.prefix), beforeApps = treeBytes(e.apps);
+    const r = run(['--uninstall', '--prefix', e.prefix, '--applications-dir', e.apps], e);
+    assert.equal(r.status, 1, `${evil}: ${r.stderr}${r.stdout}`);
+    assert.match(r.stderr, /unsafe installed layout/, evil);
+    assert.equal(fs.readFileSync(victim, 'utf8'), 'precious', `${evil}: the file outside the prefix is untouched`);
+    assert.equal(treeBytes(e.prefix), beforePrefix, `${evil}: nothing inside the prefix was deleted`);
+    assert.equal(treeBytes(e.apps), beforeApps, `${evil}: the menu entry stays`);
+  }
+});
+test('M-INST3: --uninstall leaves a symlink and a non-empty directory sitting at retired paths, and never touches what the link points to', () => {
+  const st = stage(), e = env(); assert.equal(install(st, e).status, 0);
+  const outside = path.join(tmp(), 'external.txt'); fs.writeFileSync(outside, 'precious');
+  const linkAt = path.join(e.prefix, 'desktop-pi', 'ask-tool.cjs');           // a retired path that is a symlink to an external FILE
+  fs.symlinkSync(outside, linkAt);
+  const dirAt = path.join(e.prefix, 'desktop-daemon', 'src', 'agents-direct.cjs'); // a retired path that is a directory WITH content
+  fs.mkdirSync(dirAt, { recursive: true }); fs.writeFileSync(path.join(dirAt, 'keep.txt'), 'user data');
+  const r = run(['--uninstall', '--prefix', e.prefix, '--applications-dir', e.apps], e);
+  assert.equal(r.status, 0, `the uninstall finishes (it removes what is ours and leaves the rest): ${r.stderr}${r.stdout}`);
+  assert.ok(fs.lstatSync(linkAt).isSymbolicLink(), 'the symlink at a retired path is kept (guard «! -L»)');
+  assert.equal(fs.readFileSync(outside, 'utf8'), 'precious', 'the external file is untouched');
+  assert.equal(fs.readFileSync(path.join(dirAt, 'keep.txt'), 'utf8'), 'user data', 'the directory with content is kept (guard «-f», never rm on a directory)');
+  assert.equal(fs.existsSync(path.join(e.prefix, 'koda')), false, 'what IS ours is gone');
+  assert.equal(fs.existsSync(path.join(e.apps, `${L.IDENTIFIER}.desktop`)), false, 'and so is the menu entry');
+  assert.match(r.stdout, /Kept .* it still holds files that are not ours/);
+});
+
 test('uninstall → install round trip restores a verifying install', () => {
   const st = stage(), e = env();
   assert.equal(install(st, e).status, 0);
