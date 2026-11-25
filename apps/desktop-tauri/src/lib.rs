@@ -63,6 +63,7 @@ pub fn legacy_pi_extension_enabled() -> bool {
 
 pub mod agentclient;
 pub mod agents_direct;
+pub mod agentkeeper;
 /// K2-05 T4 U2: the island chat client (closed chat commands + the allowlisted
 /// chat view) — separate from agentclient by design; its transport is
 /// `agentconn::ChatConn`, a second connection with its own fold callback.

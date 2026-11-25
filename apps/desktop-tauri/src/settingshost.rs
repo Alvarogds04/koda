@@ -854,6 +854,52 @@ pub(crate) fn parse_daemon_action(payload: &Value) -> Option<&'static str> {
 /// expires. Holds the agent slot (the same rule as `agent_action`): the state
 /// callback only emits, it never re-locks. Returns `(connection, own_child_gone)`
 /// for the restart verdict; the page only ever sees `{action, ready, connection, outcome}`.
+/// K3-09 M5a: the keeper's backoff, shared with the «Reintentar» action (M5c) so a human retry is due at once.
+static KEEPER: Mutex<koda_island::agentkeeper::Backoff> = Mutex::new(koda_island::agentkeeper::Backoff::new());
+
+/// «Reintentar»: the keeper's next tick connects now (the failure count is kept, so an engine that is still missing keeps
+/// backing off).
+pub(crate) fn keeper_retry_now() {
+    KEEPER.lock().expect("keeper lock").retry_now();
+}
+
+/// Seconds until the keeper tries again, for the page's countdown; `None` when connected or when an attempt is due.
+pub(crate) fn keeper_countdown() -> Option<u64> {
+    KEEPER.lock().expect("keeper lock").remaining(Instant::now()).map(|d| d.as_secs_f64().ceil() as u64)
+}
+
+/// K3-09 M5a: ONE background keeper for the settings/agents connection. Before it, a lost `AgentConn` came back only on
+/// the next page action (or the one 600 ms startup attempt). The policy (2, 4, 8, 15, 30 s backoff) lives in
+/// `koda_island::agentkeeper` and is tested there; this thread only feeds it the real connection. It never blocks a page
+/// action (`try_lock`), never runs while the app quits, and stands aside while a start failure of OUR OWN daemon is shown
+/// (that state is the page's to explain, and is cleared by the same «Reintentar»/action path as before).
+pub(crate) fn start_agent_keeper(handle: &AppHandle) {
+    let handle = handle.clone();
+    std::thread::spawn(move || {
+        while !crate::quitting() {
+            std::thread::sleep(Duration::from_millis(500));
+            if crate::quitting() {
+                break;
+            }
+            if handle.state::<koda_island::daemonhost::HostSlot>().failure().is_some() {
+                continue;
+            }
+            let Some(root) = island_root(std::env::var("KODA_ISLAND_DIR").ok().as_deref(), std::env::var("HOME").ok().as_deref()) else { continue };
+            let state = handle.state::<AppState>();
+            let Ok(mut guard) = state.settings.agent.try_lock() else { continue };
+            let conn = guard.get_or_insert_with(|| agent_conn(&handle));
+            // the backoff is copied out and written back, so a connect (up to the 3 s handshake) never holds its lock
+            let mut backoff = KEEPER.lock().expect("keeper lock").clone();
+            let step = koda_island::agentkeeper::tick(&*conn, &root, &mut backoff, Instant::now());
+            *KEEPER.lock().expect("keeper lock") = backoff;
+            if step == koda_island::agentkeeper::Tick::Tried(true) {
+                drop(guard);
+                crate::publish(&handle, &state);
+            }
+        }
+    });
+}
+
 pub(crate) fn daemon_connect(
     handle: &AppHandle,
     state: &AppState,

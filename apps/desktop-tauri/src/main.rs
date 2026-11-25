@@ -2358,6 +2358,8 @@ fn main() {
             // K2-05 T4 U3: the island chat talks to the daemon engine through ONE reconnecting
             // chat connection (the settings window keeps its own AgentConn).
             chathost::start_conn(&handle);
+            // K3-09 M5a: the settings/agents connection gets its own keeper too (it used to reconnect only on a page action).
+            settingshost::start_agent_keeper(&handle);
             // K2-03 T3 (S2, S4): delete the removed weekly Recap's data (exact files only), off the startup path.
             // K2-04 T6: that 0.1 file lives under the OLD identifier's folder, next to the new one.
             let data_dir = handle.path().app_local_data_dir().ok()
