@@ -245,7 +245,7 @@ function stageEntries(dir, problems, prefix = '', prune = '') {
 }
 // K3-09 M-INST: files an EARLIER Koda release (0.2.0-0.2.2) staged and a later one retired. An update over such an install
 // meets them in the prefix: they are tolerated ONLY as regular files and ONLY at these exact relative paths, and
-// install.sh/--uninstall remove exactly these (never a pattern, never a directory, never through a link). A new
+// install.sh/--uninstall remove exactly these (never a pattern, never a directory; a link at the path is left alone, and --uninstall lstat-checks EVERY directory component below the prefix first and aborts untouched if one is a link). A new
 // retirement is one more line here, with the release that dropped the file.
 //   desktop-daemon/src/agents-direct.cjs  K3-09 M1  (Ajustes → Agentes runs the engine's agents-direct)
 //   desktop-pi/ask-tool.cjs               AC-08/K-F (Koda stopped shipping the Pi ask tool)

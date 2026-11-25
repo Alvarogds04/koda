@@ -580,6 +580,86 @@ test('M-INST: --uninstall also takes the retired files away', () => {
   for (const f of files) assert.equal(fs.existsSync(f), false, `${f} removed on uninstall`);
 });
 
+// K3-09 M-INST2 (verifier FAIL on de5b4d7): --uninstall used to look only at the LAST path component, so a directory INSIDE
+// the prefix that is a symlink to an outside folder (desktop-pi -> /elsewhere) made it delete the OUTSIDE file. Now every
+// directory component between the prefix and each file it would remove is lstat-checked first, and a link anywhere aborts
+// before anything is touched (both the retired and the STAGED loops).
+const treeBytes = d => { // every path + bytes + link target under d, sorted: «byte-identical» means this string is equal
+  const out = [];
+  const walk = (dir, rel) => { for (const n of fs.readdirSync(dir).sort()) {
+    const f = path.join(dir, n), r = rel + '/' + n, st = fs.lstatSync(f);
+    if (st.isSymbolicLink()) out.push(`${r} -> ${fs.readlinkSync(f)}`);
+    else if (st.isDirectory()) { out.push(r + '/'); walk(f, r); }
+    else out.push(`${r} ${sha(fs.readFileSync(f))}`);
+  } };
+  walk(d, ''); return out.join('\n');
+};
+test('M-INST2: --uninstall refuses a symlinked directory inside the prefix: the outside file is NOT touched and nothing is deleted', () => {
+  for (const dirName of ['desktop-pi', 'desktop-daemon/src']) {   // a STAGED-only dir and a dir that holds a retired file
+    const st = stage(), e = env(); assert.equal(install(st, e).status, 0);
+    for (const rel of L.RETIRED_FILES) planted(e, rel);
+    const outside = tmp();
+    const real = path.join(e.prefix, ...dirName.split('/'));
+    fs.cpSync(real, outside, { recursive: true });              // the outside folder holds the same file names
+    fs.rmSync(real, { recursive: true }); fs.symlinkSync(outside, real);
+    const beforeOutside = treeBytes(outside), beforePrefix = treeBytes(e.prefix), beforeApps = treeBytes(e.apps);
+    const r = run(['--uninstall', '--prefix', e.prefix, '--applications-dir', e.apps], e);
+    assert.equal(r.status, 1, `${dirName}: ${r.stderr}${r.stdout}`);
+    assert.match(r.stderr, /unsafe installed layout/, dirName);
+    assert.equal(treeBytes(outside), beforeOutside, `${dirName}: the outside files are untouched`);
+    assert.equal(treeBytes(e.prefix), beforePrefix, `${dirName}: nothing inside the prefix was deleted`);
+    assert.equal(treeBytes(e.apps), beforeApps, `${dirName}: the menu entry stays`);
+  }
+});
+test('M-INST2: an unreadable retired list refuses the update and leaves prefix and applications byte-identical', () => {
+  const st = stage(), e = env(); assert.equal(install(st, e).status, 0);
+  planted(e, L.RETIRED_FILES[0]);
+  // a copy of the installer whose lib.cjs does not export RETIRED_FILES (the list «cannot be read»)
+  const pk = tmp();
+  fs.copyFileSync(SCRIPT, path.join(pk, 'install.sh'));
+  fs.writeFileSync(path.join(pk, 'lib.cjs'), fs.readFileSync(path.join(path.dirname(SCRIPT), 'lib.cjs'), 'utf8').replace('checkInstalledLayout, RETIRED_FILES,', 'checkInstalledLayout,'));
+  const before = [treeBytes(e.prefix), treeBytes(e.apps)];
+  const r = cp.spawnSync('sh', [path.join(pk, 'install.sh'), st, '--prefix', e.prefix, '--applications-dir', e.apps, '--project-root', e.root], { encoding: 'utf8', env: { PATH: process.env.PATH, HOME: e.home } });
+  assert.equal(r.status, 1, r.stderr + r.stdout);
+  assert.match(r.stderr, /cannot read the retired file list/);
+  assert.deepEqual([treeBytes(e.prefix), treeBytes(e.apps)], before, 'nothing was touched');
+  assert.deepEqual(runtimeTempLeftovers(e), [], 'no temp leftovers');
+});
+test('M-INST2: a failing rm of a retired file warns and the update still completes (no mixed state)', () => {
+  const st = stage(), e = env(); assert.equal(install(st, e).status, 0);
+  const files = L.RETIRED_FILES.map(rel => planted(e, rel));
+  // a PATH shim whose rm fails for the retired files only (the real rm for everything else)
+  const bin = tmp(); const realRm = fs.existsSync('/usr/bin/rm') ? '/usr/bin/rm' : '/bin/rm';
+  fs.writeFileSync(path.join(bin, 'rm'), `#!/bin/sh\ncase "$*" in *agents-direct.cjs*|*ask-tool.cjs*) echo "rm: cannot remove: Permission denied" >&2; exit 1;; esac\nexec ${realRm} "$@"\n`, { mode: 0o755 });
+  const r = cp.spawnSync('sh', [SCRIPT, st, '--prefix', e.prefix, '--applications-dir', e.apps, '--project-root', e.root], { encoding: 'utf8', env: { PATH: `${bin}:${process.env.PATH}`, HOME: e.home } });
+  assert.equal(r.status, 0, r.stderr + r.stdout);
+  assert.match(r.stdout + r.stderr, /could not remove the retired file/, 'the failure is reported');
+  for (const f of files) assert.ok(fs.existsSync(f), 'the file that could not be removed is still there (tolerated by the layout check)');
+  assert.ok(fs.existsSync(path.join(e.apps, `${L.IDENTIFIER}.desktop`)), 'the menu entry was installed: the update ran to its end');
+  assert.deepEqual(L.checkInstalledLayout(e.prefix), []);
+  // and the next update (a working rm) removes them
+  assert.equal(install(st, e).status, 0);
+  for (const f of files) assert.equal(fs.existsSync(f), false);
+});
+test('M-INST2: remove_retired itself only unlinks plain regular files (the layout check cannot mask a mutation of its guard)', () => {
+  const src = fs.readFileSync(SCRIPT, 'utf8');
+  const m = /^remove_retired\(\) \{\n[\s\S]*?^\}\n/m.exec(src);
+  assert.ok(m, 'remove_retired is defined at the top level of install.sh');
+  const base = tmp(); const prefix = path.join(base, 'p'); const outside = path.join(base, 'outside.txt');
+  fs.mkdirSync(path.join(prefix, 'd'), { recursive: true });
+  fs.writeFileSync(outside, 'keep');
+  fs.symlinkSync(outside, path.join(prefix, 'd', 'link.cjs'));      // a symlink at a retired path
+  fs.mkdirSync(path.join(prefix, 'd', 'dir.cjs'));                  // a directory at a retired path
+  fs.writeFileSync(path.join(prefix, 'd', 'plain.cjs'), 'x');       // a plain file
+  const script = `set -eu\nPREFIX=${JSON.stringify(prefix)}\nRETIRED="d/link.cjs d/dir.cjs d/plain.cjs d/absent.cjs"\nnote() { printf '%s\\n' "$*"; }\n${m[0]}\nremove_retired\n`;
+  const r = cp.spawnSync('sh', ['-c', script], { encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stderr + r.stdout);
+  assert.ok(fs.lstatSync(path.join(prefix, 'd', 'link.cjs')).isSymbolicLink(), 'the symlink is left alone (guard `[ ! -L ]`)');
+  assert.equal(fs.readFileSync(outside, 'utf8'), 'keep');
+  assert.ok(fs.statSync(path.join(prefix, 'd', 'dir.cjs')).isDirectory(), 'the directory is left alone (guard `[ -f ]`)');
+  assert.equal(fs.existsSync(path.join(prefix, 'd', 'plain.cjs')), false, 'the plain file is removed');
+});
+
 test('uninstall → install round trip restores a verifying install', () => {
   const st = stage(), e = env();
   assert.equal(install(st, e).status, 0);
