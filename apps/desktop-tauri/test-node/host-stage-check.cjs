@@ -133,7 +133,7 @@ function checkTree(tree, reviewed = REVIEWED) {
     }
   };
   // Entry points, then every shipped daemon/harness module (an unreached module is checked too).
-  for (const rel of ['desktop-daemon/src/cli.cjs', 'desktop-daemon/src/daemon.cjs', 'desktop-daemon/src/agents-direct.cjs',
+  for (const rel of ['desktop-daemon/src/cli.cjs', 'desktop-daemon/src/daemon.cjs',
     ...L.DAEMON_FILES.map((f) => `desktop-daemon/${f}`), ...L.HARNESS_FILES.map((f) => `desktop-harness/${f}`)]) {
     if (MODULE.test(rel)) walk(rel);
   }
@@ -142,19 +142,23 @@ function checkTree(tree, reviewed = REVIEWED) {
 }
 {
   const { problems, seen } = checkTree(realTree);
-  assert.deepEqual(problems, [], 'daemon/harness load problems:\n' + problems.join('\n'));
+  assert.deepEqual(problems, [], `daemon/harness load problems:\n${problems.join('\n')}`);
   assert.ok(seen.has('desktop-daemon/src/sdk-helper.mjs') && seen.has('desktop-daemon/src/minikodas/kit-extension.js'), 'the module walk must see path-loaded files and subfolders');
   // Every folder that holds a shipped file is a declared staged directory (the closed layout check refuses others).
   const dirs = new Set(L.DAEMON_FILES.map((f) => path.posix.dirname(`desktop-daemon/${f}`)));
   const undeclared = [...dirs].filter((d) => !L.STAGED_DIRS.includes(d));
-  assert.deepEqual(undeclared, [], 'staged daemon folders missing from STAGED_DIRS: ' + undeclared.join(', '));
+  assert.deepEqual(undeclared, [], `staged daemon folders missing from STAGED_DIRS: ${undeclared.join(', ')}`);
   // RED regressions: each way of loading an unshipped file (or an unreviewable dynamic load) must be refused.
   // The ghost files EXIST in the virtual tree, so only the shipping rule can refuse them.
   const GHOSTS = ['desktop-daemon/src/ghost.cjs', 'desktop-daemon/src/ghost.mjs', 'desktop-daemon/src/ghost.js', 'desktop-daemon/src/minikodas/ghost.js', 'desktop-harness/src/ghost.cjs'];
-  const withLine = (file, line) => ({
-    read: (rel) => (rel === file ? `${realTree.read(rel)}\n${line}\n` : GHOSTS.includes(rel) ? '"use strict";\n' : realTree.read(rel)),
-    exists: (rel) => GHOSTS.includes(rel) || realTree.exists(rel),
-  });
+  const withLine = (file, line) => {
+    const read = (rel) => {
+      if (rel === file) return `${realTree.read(rel)}\n${line}\n`;
+      if (GHOSTS.includes(rel)) return '"use strict";\n';
+      return realTree.read(rel);
+    };
+    return { read, exists: (rel) => GHOSTS.includes(rel) || realTree.exists(rel) };
+  };
   const SVC = 'desktop-daemon/src/minikodas/service.cjs';
   const REGRESSIONS = [
     ['createRequire(...)("./x")', 'desktop-daemon/src/sdk-helper.mjs', 'const g = createRequire(import.meta.url)("./ghost.cjs");'],
@@ -179,7 +183,7 @@ function checkTree(tree, reviewed = REVIEWED) {
     ['unrecognised: createRequire alias', 'desktop-daemon/src/sdk-helper.mjs', 'const req = createRequire(import.meta.url); req("./ghost.cjs");'],
   ];
   const missed = REGRESSIONS.filter(([, file, line]) => checkTree(withLine(file, line)).problems.length === 0).map(([name]) => name);
-  assert.deepEqual(missed, [], 'load patterns the walker does not refuse: ' + missed.join('; '));
+  assert.deepEqual(missed, [], `load patterns the walker does not refuse: ${missed.join('; ')}`);
   // Not vacuous: shipped targets reached through the new patterns are accepted.
   const fine = [
     [SVC, 'const g = require("./recipe");'],
@@ -223,16 +227,16 @@ try {
     provenance: { head: 'a'.repeat(40), clean: true, dirty_entries: 0 },
     files: Object.fromEntries(L.STAGED.map(f => [f, L.sha256File(path.join(stage, f))])),
   };
-  fs.writeFileSync(path.join(stage, 'receipt.json'), JSON.stringify(receipt, null, 2) + '\n', { mode: 0o644 });
+  fs.writeFileSync(path.join(stage, 'receipt.json'), `${JSON.stringify(receipt, null, 2)}\n`, { mode: 0o644 });
   assert.deepEqual(L.verifyStage(stage), []);
   console.log(receipt.fixture);
-  console.log('STAGED=' + JSON.stringify(L.STAGED));
+  console.log(`STAGED=${JSON.stringify(L.STAGED)}`);
   for (const file of [...L.STAGED, 'receipt.json']) console.log(`${(fs.lstatSync(path.join(stage, file)).mode & 0o777).toString(8)} ${file}`);
-  console.log('RECEIPT=' + JSON.stringify(receipt, null, 2));
+  console.log(`RECEIPT=${JSON.stringify(receipt, null, 2)}`);
   const result = cp.spawnSync(process.execPath, [path.join(crate, 'packaging/verify.cjs'), stage], { encoding: 'utf8' });
   process.stdout.write(result.stdout); process.stderr.write(result.stderr);
   assert.equal(result.status, 0);
-  console.log('verify_exit=' + result.status);
+  console.log(`verify_exit=${result.status}`);
 
   // Exercise the public CLI from the shipped tree, not the source checkout. A valid
   // receipt alone cannot prove that every transitively required module was shipped.

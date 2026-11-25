@@ -47,20 +47,84 @@ fn argv_is_the_closed_grammar_of_the_node_entry() {
     assert!(!DirectOp::List.mutates() && DirectOp::Disconnect { id: "codex".into() }.mutates());
 }
 
+// K3-09 M1: the route runs the ENGINE's `agents-direct.cjs`, located exactly as `engine/docs/PROTOCOL.md`
+// («Engine locator and island directory») fixes it: `<lib>` = `ABITO_ENGINE_DIR` when it is an absolute path, else
+// `<home>/.local/lib/abito-core`; node is `<lib>/runtime/node`; the entry is `<lib>/engine/src/agents-direct.cjs`.
+// Nothing here is a path from PATH, the CWD, the page or the engine's own environment. `[obs]`
 #[test]
-fn the_script_is_the_one_beside_the_installed_daemon_never_a_path_from_outside() {
-    let exe = PathBuf::from("/opt/abito/koda");
-    let got = script_beside(&exe).unwrap();
-    #[cfg(not(target_os = "macos"))]
-    assert_eq!(got, PathBuf::from("/opt/abito/desktop-daemon/src/agents-direct.cjs"));
-    #[cfg(target_os = "macos")]
-    assert!(got.ends_with("Resources/desktop-daemon/src/agents-direct.cjs"));
+fn the_engine_is_located_by_the_protocol_contract_never_a_path_from_outside() {
+    let home = Path::new("/home/u");
+    // The override wins, and it needs no home of its own.
+    assert_eq!(install_root(Some(Path::new("/opt/abito/lib")), Some(home)), Some(PathBuf::from("/opt/abito/lib")));
+    assert_eq!(install_root(Some(Path::new("/opt/abito/lib")), None), Some(PathBuf::from("/opt/abito/lib")));
+    // The documented default prefix otherwise.
+    assert_eq!(install_root(None, Some(home)), Some(PathBuf::from("/home/u/.local/lib/abito-core")));
+    // A relative or empty value is IGNORED and the default is used: resolving it against the CWD is exactly the
+    // path-from-outside hole this module closes, and a front that guessed would run an engine nobody installed.
+    for bad in ["", ".", "./", "./engine", "../engine", "engine", "~/.local/lib/abito-core"] {
+        assert_eq!(install_root(Some(Path::new(bad)), Some(home)), Some(PathBuf::from("/home/u/.local/lib/abito-core")), "{bad:?}");
+    }
+    // No engine at all: no path is invented.
+    assert_eq!(install_root(None, None), None);
+    assert_eq!(install_root(Some(Path::new("rel")), None), None);
+    // The two things the route runs are DERIVED from <lib>, never discovered.
+    let lib = Path::new("/home/u/.local/lib/abito-core");
+    assert_eq!(runtime_node(lib), lib.join("runtime").join(format!("node{}", std::env::consts::EXE_SUFFIX)));
+    assert_eq!(direct_script(lib), lib.join("engine").join("src").join("agents-direct.cjs"));
+}
+
+fn empty_dir(tag: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("abito-engine-{}-{tag}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+/// K3-09 M1 (S2): with no engine installed the user gets a CLOSED `agentsRuntime` value the page already renders —
+/// `node_missing` when `<lib>/runtime/node` is not there, `failed` when it is but the entry is not. No new vocabulary,
+/// and Ajustes never blocks on it.
+#[test]
+fn a_missing_engine_reads_the_closed_runtime_vocabulary() {
+    let lib = empty_dir("nothing");
+    let rt = runtime_at(Some(&lib), Some(&lib), false);
+    assert_eq!((rt.node.is_none(), rt.script.is_none()), (true, true));
+    let view = perform_with(&Gate::new(), &DirectOp::List, &rt);
+    assert_eq!(view["agentsRuntime"], "node_missing");
+    assert_eq!(view["directAgents"], json!([]));
+    assert_eq!(view["directHooks"], json!([]));
+
+    // runtime/node present, the entry absent: the node runs nothing, the view says so.
+    std::fs::create_dir_all(lib.join("runtime")).unwrap();
+    std::fs::write(lib.join(format!("runtime/node{}", std::env::consts::EXE_SUFFIX)), b"not really node").unwrap();
+    let rt = runtime_at(Some(&lib), Some(&lib), false);
+    assert!(rt.node.is_some() && rt.script.is_none());
+    assert_eq!(perform_with(&Gate::new(), &DirectOp::List, &rt)["agentsRuntime"], "failed");
+}
+
+#[test]
+fn a_node_and_an_entry_found_under_the_install_root_are_the_ones_the_route_runs() {
+    let lib = empty_dir("complete");
+    std::fs::create_dir_all(lib.join("runtime")).unwrap();
+    std::fs::create_dir_all(lib.join("engine/src")).unwrap();
+    std::fs::write(lib.join(format!("runtime/node{}", std::env::consts::EXE_SUFFIX)), b"node").unwrap();
+    std::fs::write(lib.join("engine/src/agents-direct.cjs"), b"entry").unwrap();
+    let rt = runtime_at(Some(&lib), Some(&lib), false);
+    assert_eq!(rt.node.as_deref(), Some(runtime_node(&lib).as_path()));
+    assert_eq!(rt.script.as_deref(), Some(direct_script(&lib).as_path()));
+    // the child's HOME is the home the locator used, and the island dir follows the same home (on Windows the island
+    // root is the documented %LOCALAPPDATA% policy, so only its absoluteness is claimed here)
+    let env: std::collections::HashMap<_, _> = rt.env.iter().cloned().collect();
+    assert_eq!(env.get("HOME").map(String::as_str), lib.to_str());
+    #[cfg(not(windows))]
+    assert_eq!(env.get("KODA_ISLAND_DIR").map(String::as_str), lib.join(".koda").to_str());
+    #[cfg(windows)]
+    assert!(env.get("KODA_ISLAND_DIR").map_or(true, |d| Path::new(d.as_str()).is_absolute()));
+    assert!(!env.contains_key(crate::LEGACY_PI_EXTENSION_ENV), "off is the absence of the variable");
 }
 
 #[test]
 fn missing_node_is_a_per_row_runtime_view_not_an_engine_error() {
     let gate = Gate::new();
-    let view = perform_with(&gate, &DirectOp::List, &Runtime { node: None, script: Some("/x".into()), env: vec![] });
+    let view = perform_with(&gate, &DirectOp::List, &Runtime { node: None, script: Some("/x".into()), env: vec![], legacy_pi: false });
     assert_eq!(view["agentsRuntime"], "node_missing");
     assert_eq!(view["directAgents"], json!([]));
     assert!(view.get("connection").is_none(), "never touches the engine connection state");
@@ -70,7 +134,7 @@ fn missing_node_is_a_per_row_runtime_view_not_an_engine_error() {
 #[test]
 fn missing_script_reads_failed() {
     let gate = Gate::new();
-    let view = perform_with(&gate, &DirectOp::List, &Runtime { node: Some("/bin/sh".into()), script: None, env: vec![] });
+    let view = perform_with(&gate, &DirectOp::List, &Runtime { node: Some("/bin/sh".into()), script: None, env: vec![], legacy_pi: false });
     assert_eq!(view["agentsRuntime"], "failed");
 }
 
@@ -78,12 +142,15 @@ fn missing_script_reads_failed() {
 mod run {
     use super::*;
     use std::time::Duration;
-    fn sh(body: &str) -> Runtime {
+    fn sh_with(body: &str, legacy_pi: bool) -> Runtime {
         let dir = std::env::temp_dir().join(format!("abito-direct-{}-{:x}", std::process::id(), body.len() ^ body.bytes().map(u64::from).sum::<u64>() as usize));
         std::fs::create_dir_all(&dir).unwrap();
         let script = dir.join("fake.sh");
         std::fs::write(&script, body).unwrap();
-        Runtime { node: Some("/bin/sh".into()), script: Some(script), env: vec![("KODA_TEST".into(), "1".into())] }
+        Runtime { node: Some("/bin/sh".into()), script: Some(script), env: vec![("KODA_TEST".into(), "1".into())], legacy_pi }
+    }
+    fn sh(body: &str) -> Runtime {
+        sh_with(body, false)
     }
     const OK: &str = r#"printf '%s\n' '{"agents":{"type":"agents","agents":[{"id":"codex","state":"not_connected","backup":false,"detail":null}]},"hooks":{"type":"hooks","clients":[]}}'"#;
 
@@ -163,6 +230,97 @@ mod run {
         assert_eq!(String::from_utf8(out).unwrap().trim(), "|yes");
     }
 
+    // --- K3-09 M1 — the K-F shim in Rust (retirar con AC-08b: abito-island -> abito-pi) ---------------------------
+    // The one daemon-side rule the engine does NOT have is K-F: while `KODA_LEGACY_PI_EXTENSION` is off (the default),
+    // the retired `~/.pi/agent/extensions/koda-island` install is never touched. Koda's node entry enforced it inside
+    // its own AgentsManager; the engine has no Pi policy (`engine/docs/PROTOCOL.md`, «Pi policy»), so the switch is now
+    // enforced HERE, on the one route Settings uses: a `pi` mutation spawns nothing at all, and the Pi row always reads
+    // `unavailable` / `legacy_pi_extension_off` — never the engine's own `error`/`install_failed`. `[obs]`
+    const ENGINE_ANSWER: &str = r#"printf '%s\n' '{"agents":{"type":"agents","agents":[{"id":"codex","state":"not_connected","backup":false,"detail":null},{"id":"pi","state":"error","backup":false,"detail":"install_failed"}]},"hooks":{"type":"hooks","clients":[]}}'"#;
+
+    fn marker(tag: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!("abito-direct-{}-{tag}", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        path
+    }
+    fn rows(view: &Value) -> &Vec<Value> {
+        view["directAgents"].as_array().unwrap()
+    }
+    fn row<'a>(view: &'a Value, id: &str) -> &'a Value {
+        rows(view).iter().find(|r| r["id"] == json!(id)).unwrap_or_else(|| panic!("no {id} row in {view}"))
+    }
+
+    #[test]
+    fn while_the_pi_switch_is_off_a_pi_mutation_runs_nothing_and_the_pi_row_stays_disabled() {
+        let ran = marker("pi-mutation");
+        let rt = sh(&format!("echo ran >> {}\n{ENGINE_ANSWER}\n", ran.display()));
+        assert!(!rt.legacy_pi, "the product default is OFF");
+        // the page asks `agents_list` before it renders a row, so this is the table the human is looking at
+        let gate = Gate::new();
+        assert_eq!(rows(&perform_with(&gate, &DirectOp::List, &rt)).len(), 2);
+        for op in [DirectOp::Connect { id: "pi".into(), plan_hash: Some(H.into()) }, DirectOp::Disconnect { id: "pi".into() }] {
+            let view = perform_with(&gate, &op, &rt);
+            assert_eq!(std::fs::read_to_string(&ran).unwrap().lines().count(), 1, "{op:?} spawned the engine: the shim must refuse it before any child runs");
+            assert_eq!(view["agentsRuntime"], "ok", "nothing failed: the action is refused, not broken");
+            assert_eq!(rows(&view).len(), 2, "no row is lost by the refusal");
+            assert_eq!(row(&view, "codex")["state"], "not_connected");
+            assert_eq!(row(&view, "pi")["state"], "unavailable");
+            assert_eq!(row(&view, "pi")["detail"], "legacy_pi_extension_off");
+            assert_eq!(row(&view, "pi")["backup"], json!(false));
+        }
+        // even with nothing cached the refusal never spawns: it answers the closed 'ok' view with no rows to offer
+        let fresh = marker("pi-mutation-cold");
+        let cold = sh(&format!("echo ran >> {}\n{ENGINE_ANSWER}\n", fresh.display()));
+        let view = perform_with(&Gate::new(), &DirectOp::Connect { id: "pi".into(), plan_hash: Some(H.into()) }, &cold);
+        assert!(!fresh.exists(), "a cold refusal never spawns either");
+        assert_eq!(view["agentsRuntime"], "ok");
+        assert_eq!(rows(&view).len(), 0, "nothing is invented for a table nobody read");
+        // every other agent is a real operation on the same route: nothing was muted for them
+        let ran = marker("codex-mutation");
+        let rt = sh(&format!("echo ran >> {}\n{ENGINE_ANSWER}\n", ran.display()));
+        perform_with(&Gate::new(), &DirectOp::Disconnect { id: "codex".into() }, &rt);
+        assert!(ran.exists(), "a codex mutation still runs the engine");
+    }
+
+    #[test]
+    fn a_refused_pi_mutation_republishes_the_last_list_so_no_row_is_lost() {
+        // the same claim as above, from the page's point of view: the rows it rendered survive the refusal verbatim
+        let ran = marker("pi-cached");
+        let rt = sh(&format!("echo ran >> {}\n{ENGINE_ANSWER}\n", ran.display()));
+        let gate = Gate::new();
+        let listed = perform_with(&gate, &DirectOp::List, &rt);
+        let view = perform_with(&gate, &DirectOp::Connect { id: "pi".into(), plan_hash: Some(H.into()) }, &rt);
+        assert_eq!(listed["directHooks"], view["directHooks"]);
+        assert_eq!(rows(&listed).len(), rows(&view).len());
+        assert_eq!(row(&view, "pi")["detail"], "legacy_pi_extension_off");
+    }
+
+    #[test]
+    fn while_the_pi_switch_is_off_the_list_publishes_the_disabled_pi_row_whatever_the_engine_says() {
+        let view = perform_with(&Gate::new(), &DirectOp::List, &sh(ENGINE_ANSWER));
+        assert_eq!(view["agentsRuntime"], "ok");
+        let pi = row(&view, "pi");
+        // the engine has no Pi policy: left alone its row reads error/install_failed, and the human would be offered a
+        // «Reintentar» button that runs that install. The shim publishes the one true row instead.
+        assert_eq!(pi["state"], "unavailable");
+        assert_eq!(pi["detail"], "legacy_pi_extension_off");
+        assert_eq!(pi["backup"], json!(false));
+        assert_eq!(pi["plan_hash"], Value::Null, "a disabled row never carries a plan");
+        assert_eq!(pi["summary"], Value::Null);
+        assert_eq!(row(&view, "codex")["state"], "not_connected");
+    }
+
+    #[test]
+    fn with_the_pi_switch_on_the_engine_row_and_the_real_run_are_back() {
+        // ON is the old path: the engine's own answer is published untouched and a pi mutation really runs.
+        let view = perform_with(&Gate::new(), &DirectOp::List, &sh_with(ENGINE_ANSWER, true));
+        assert_eq!(row(&view, "pi")["state"], "error");
+        let ran = marker("pi-on");
+        let rt = sh_with(&format!("echo ran >> {}\n{ENGINE_ANSWER}\n", ran.display()), true);
+        perform_with(&Gate::new(), &DirectOp::Connect { id: "pi".into(), plan_hash: Some(H.into()) }, &rt);
+        assert!(ran.exists(), "switch ON: the legacy install is reachable again");
+    }
+
     #[test]
     fn a_fresh_list_is_reused_briefly_but_a_mutation_always_runs() {
         let gate = Gate::new();
@@ -178,10 +336,12 @@ mod run {
     }
 }
 
-// --- AC-08/K-F (S2, S6): the daemon-free route learns the retired Pi install from this process ------------------
-// Koda stopped installing `~/.pi/agent/extensions/koda-island` behind ONE reversible switch, exactly like K-C. The node
-// entry it spawns (agents-direct.cjs → AgentsManager) reads that switch from its own environment, so the host must
-// forward it — and only while it is ON, so the child's closed allowlist does not grow a variable to flip.
+// --- AC-08/K-F (S2, S6): the retired Pi install behind ONE switch, enforced by this host ---------------------------
+// Koda stopped installing `~/.pi/agent/extensions/koda-island` behind ONE reversible switch, exactly like K-C.
+// K3-09 M1: the entry this route runs is the ENGINE's, and the engine has no Pi policy, so the switch is read HERE and
+// the rule is applied HERE (`perform_with` refuses a `pi` mutation and [`force_pi_row`] publishes the disabled row).
+// It is still forwarded to the child while it is ON — that is the path the installer itself reads — and only while it is
+// ON, so the child's closed allowlist does not grow a variable to flip.
 
 #[test]
 fn the_legacy_pi_extension_switch_is_on_only_for_the_exact_value_one() {
