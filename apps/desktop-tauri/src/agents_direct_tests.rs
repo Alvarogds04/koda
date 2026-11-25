@@ -143,7 +143,10 @@ mod run {
     use super::*;
     use std::time::Duration;
     fn sh_with(body: &str, legacy_pi: bool) -> Runtime {
-        let dir = std::env::temp_dir().join(format!("abito-direct-{}-{:x}", std::process::id(), body.len() ^ body.bytes().map(u64::from).sum::<u64>() as usize));
+        // One directory per CALL: tests run in parallel and `fs::write` truncates, so two tests that happen to share a
+        // body must never share a script path (a half-written script would read as a spurious `failed`).
+        static CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!("abito-direct-{}-{}", std::process::id(), CALLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst)));
         std::fs::create_dir_all(&dir).unwrap();
         let script = dir.join("fake.sh");
         std::fs::write(&script, body).unwrap();

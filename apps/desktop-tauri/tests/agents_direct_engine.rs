@@ -7,8 +7,10 @@
 //! does not have, enforced on this route while the switch is off.
 //!
 //! The engine tree is taken from the first of: `ABITO_ENGINE_DIR`, `~/Apps/abito-core/repo`, `~/.local/lib/abito-core`.
-//! Nothing here is faked: no marker, no stub answer, no weakened assertion. Without a current tree the test fails
-//! loudly and says how to point it at one.
+//! Nothing here is faked: no marker, no stub answer, no weakened assertion. Without a current tree the two engine-backed
+//! tests SKIP, loudly (a `SKIPPED` line on stderr, visible with `--nocapture`), so a plain `cargo test` stays hermetic on
+//! a machine or runner that has no engine. `KODA_REQUIRE_ENGINE=1` turns that skip into a failure (use it wherever the
+//! engine is supposed to be there).
 use koda_island::agents_direct::{self, DirectOp, Gate, Runtime};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -23,7 +25,7 @@ fn temp_dir(tag: &str) -> PathBuf {
 /// derives from its own location (`engine/harness/bin/abito-hook.cjs`). A tree with the entry but no harness is an
 /// OUTDATED install (no `install.sh` can produce it: it refuses an archive without the harness) and would read every
 /// agent `unavailable`, so it is skipped, never used as a fixture.
-fn engine_root() -> PathBuf {
+fn engine_root() -> Option<PathBuf> {
     let mut candidates: Vec<PathBuf> = Vec::new();
     if let Some(dir) = std::env::var_os("ABITO_ENGINE_DIR") {
         candidates.push(PathBuf::from(dir));
@@ -32,18 +34,21 @@ fn engine_root() -> PathBuf {
         candidates.push(home.join("Apps/abito-core/repo"));
         candidates.push(home.join(".local/lib/abito-core"));
     }
-    candidates
+    let found = candidates
         .iter()
         .find(|candidate| {
             candidate.join("engine/src/agents-direct.cjs").is_file() && candidate.join("engine/harness/bin/abito-hook.cjs").is_file()
         })
-        .cloned()
-        .unwrap_or_else(|| {
-            panic!(
-                "no current engine tree found: set ABITO_ENGINE_DIR to a directory holding engine/src/agents-direct.cjs \
-                 and engine/harness/bin/abito-hook.cjs (checked {candidates:?})"
-            )
-        })
+        .cloned();
+    if found.is_none() {
+        let say = format!(
+            "no current engine tree found: set ABITO_ENGINE_DIR to a directory holding engine/src/agents-direct.cjs and \
+             engine/harness/bin/abito-hook.cjs (checked {candidates:?})"
+        );
+        assert!(std::env::var_os("KODA_REQUIRE_ENGINE").is_none_or(|v| v.is_empty() || v == "0"), "{say}");
+        eprintln!("SKIPPED (engine-backed test did not run): {say}");
+    }
+    found
 }
 
 fn copy_tree(from: &Path, to: &Path) {
@@ -67,8 +72,8 @@ fn copy_tree(from: &Path, to: &Path) {
 }
 
 /// A fixture install root with the real engine and the real node the engine ships.
-fn fixture(tag: &str) -> (PathBuf, PathBuf) {
-    let source = engine_root();
+fn fixture(tag: &str) -> Option<(PathBuf, PathBuf)> {
+    let source = engine_root()?;
     let lib = temp_dir(&format!("lib-{tag}"));
     copy_tree(&source.join("engine"), &lib.join("engine"));
     std::fs::create_dir_all(lib.join("runtime")).expect("runtime dir");
@@ -82,7 +87,7 @@ fn fixture(tag: &str) -> (PathBuf, PathBuf) {
     std::os::unix::fs::symlink(node, lib.join("runtime/node")).expect("fixture runtime node");
     // HOME is the home the engine reads: a private temp one, never the machine's own hooks
     let home = temp_dir(&format!("home-{tag}"));
-    (lib, home)
+    Some((lib, home))
 }
 
 fn rows(view: &Value) -> &Vec<Value> {
@@ -95,7 +100,7 @@ fn row<'a>(view: &'a Value, id: &str) -> &'a Value {
 
 #[test]
 fn the_real_engine_answers_the_list_and_kodas_pi_row_is_forced_while_the_switch_is_off() {
-    let (lib, home) = fixture("list");
+    let Some((lib, home)) = fixture("list") else { return };
     let off: Runtime = agents_direct::runtime_at(Some(&lib), Some(&home), false);
     let view = agents_direct::perform_with(&Gate::new(), &DirectOp::List, &off);
 
@@ -122,7 +127,7 @@ fn the_real_engine_answers_the_list_and_kodas_pi_row_is_forced_while_the_switch_
 
 #[test]
 fn a_pi_mutation_with_the_switch_off_touches_the_retired_pi_folder_not_at_all() {
-    let (lib, home) = fixture("pi-off");
+    let Some((lib, home)) = fixture("pi-off") else { return };
     // the retired folder the switch exists for, with content that must survive byte for byte
     let folder = home.join(".pi/agent/extensions/koda-island");
     std::fs::create_dir_all(&folder).expect("pi folder");
