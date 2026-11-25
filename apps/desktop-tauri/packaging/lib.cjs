@@ -243,6 +243,13 @@ function stageEntries(dir, problems, prefix = '', prune = '') {
   }
   return { files: files.sort(), dirs: dirs.sort() };
 }
+// K3-09 M-INST: files an EARLIER Koda release (0.2.0-0.2.2) staged and a later one retired. An update over such an install
+// meets them in the prefix: they are tolerated ONLY as regular files and ONLY at these exact relative paths, and
+// install.sh/--uninstall remove exactly these (never a pattern, never a directory; a link at the path is left alone, and --uninstall lstat-checks EVERY directory component below the prefix first and aborts untouched if one is a link). A new
+// retirement is one more line here, with the release that dropped the file.
+//   desktop-daemon/src/agents-direct.cjs  K3-09 M1  (Ajustes → Agentes runs the engine's agents-direct)
+//   desktop-pi/ask-tool.cjs               AC-08/K-F (Koda stopped shipping the Pi ask tool)
+const RETIRED_FILES = Object.freeze(['desktop-daemon/src/agents-direct.cjs', 'desktop-pi/ask-tool.cjs']);
 function checkInstalledLayout(dir) {
   const problems = [];
   // Do not write through a symlink anywhere in the destination's ancestor chain.
@@ -260,7 +267,7 @@ function checkInstalledLayout(dir) {
   try { keepAudit = isUserAuditDir(audit); } catch { keepAudit = false; }
   const entries = stageEntries(dir, problems, '', 'runtime'); // PREFIX/runtime is the one unenumerated dir
   const ours = file => keepAudit && (file === USER_AUDIT_DIR || file.startsWith(USER_AUDIT_DIR + '/'));
-  for (const file of entries.files) if (![...STAGED, 'receipt.json'].includes(file) && !ours(file)) problems.push(`unexpected installed file: ${file}`);
+  for (const file of entries.files) if (![...STAGED, 'receipt.json', ...RETIRED_FILES].includes(file) && !ours(file)) problems.push(`unexpected installed file: ${file}`);
   for (const sub of entries.dirs) if (!STAGED_DIRS.includes(sub) && sub !== 'runtime' && !ours(sub)) problems.push(`unexpected installed directory: ${sub}`);
   return problems;
 }
@@ -389,5 +396,5 @@ function requireClean(crate) {
   return p;
 }
 
-module.exports = { provenance, requireClean, FORBIDDEN_ENV_PATTERN, ALLOWED_ABITO, R6_PREFIX, IDENTIFIER, FRONTEND_FILES, EXPECTED_PERMISSIONS, DAEMON_FILES, HARNESS_FILES, PI_FILES, RUNTIME_ARCHIVE, TRANSCRIBE_BIN, STAGED, STAGED_DIRS, checkInstalledLayout, sha256, sha256File, verifyTtsFree, ttsSymbolsIn,
+module.exports = { provenance, requireClean, FORBIDDEN_ENV_PATTERN, ALLOWED_ABITO, R6_PREFIX, IDENTIFIER, FRONTEND_FILES, EXPECTED_PERMISSIONS, DAEMON_FILES, HARNESS_FILES, PI_FILES, RUNTIME_ARCHIVE, TRANSCRIBE_BIN, STAGED, STAGED_DIRS, checkInstalledLayout, RETIRED_FILES, sha256, sha256File, verifyTtsFree, ttsSymbolsIn,
   checkR6, checkFrontend, checkConfig, launcherText, desktopText, verifyStage };

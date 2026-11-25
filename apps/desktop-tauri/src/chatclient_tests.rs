@@ -283,6 +283,26 @@ fn asks_queue_toasts_and_agent_state_fold_into_closed_views() {
     assert_eq!(v["lastError"], json!({"code":"failed","n":3}), "an unknown code reads as plain failed, never free text");
 }
 
+// K3-09 M4b: the engine serves several conversations; Koda keeps ONE continuous chat (c0) and never sends a `conversation_*`
+// verb. The frames the engine broadcasts about its list must leave the chat view exactly as it was, and
+// `conversations_off` (a Koda-daemon code the engine no longer emits) is no longer a recognised daemon error.
+#[test]
+fn engine_conversation_frames_leave_the_chat_view_untouched() {
+    let mut st = ChatState::connected();
+    st.apply(&json!({"type":"history","messages":[{"role":"user","text":"hola","id":"s1-1"}],"hasEarlier":false}));
+    let before = view(&st);
+    st.apply(&json!({"type":"conversations","open":"c0","items":[{"id":"c0","title":"Conversación","updatedAt":1,"open":true},{"id":"c1","title":"Otra","updatedAt":2,"open":false}]}));
+    st.apply(&json!({"type":"conversation","id":"c1"}));
+    assert_eq!(view(&st), before, "the list frames change nothing the page can see");
+}
+
+#[test]
+fn conversations_off_is_not_a_daemon_error_code_any_more() {
+    let mut st = ChatState::connected();
+    st.apply(&json!({"type":"error","code":"conversations_off"}));
+    assert_eq!(view(&st)["lastError"], json!({"code":"failed","n":1}), "the engine never emits it: it reads as plain failed");
+}
+
 #[test]
 fn live_activities_pair_by_call_id_and_land_on_the_message() {
     let mut st = ChatState::connected();

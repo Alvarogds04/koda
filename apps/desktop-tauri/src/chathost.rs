@@ -7,7 +7,7 @@
 //! verbs are routed by `chatclient::ChatHost` over ONE `agentconn::ChatConn`
 //! per app (started at setup, reconnecting), with the caller's REAL window
 //! label passed into chatclient's window gate. One continuous chat: the
-//! conversation-list verbs are refused (`conversations_off`), attachments go to
+//! conversation-list verbs are refused by the host itself (`conversations_off`, Koda policy), attachments go to
 //! the daemon (`chat_attach`/`chat_attach_data` → `ChatHost::upload`). The direct Rust chat (local/cloud lanes,
 //! the private conversation store) is GONE with K2-05 U5a: nothing here opens, writes or
 //! reads `<app_data_dir>/conversations/`. Nothing in this file touches the desktop snapshot

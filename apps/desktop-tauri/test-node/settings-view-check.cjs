@@ -267,7 +267,7 @@ test('the daemon connection is one icon + one word; a problem is never hidden', 
   assert.equal(S.connectionView({ connection: 'connected' }), null, 'a working connection shows nothing');
   const none = S.connectionView({ connection: 'no_daemon' });
   assert.deepEqual([none.word, none.icon, none.tone], ['Sin motor', 'plug-off', 'faint']);
-  assert.match(none.aria, /no está corriendo/);
+  assert.match(none.aria, /jesscore/, 'K3-09 M5c: the missing engine is named (jesscore), not «Node» or «corriendo»');
   assert.equal(S.connectionView({ connection: 'lost' }).word, 'Motor caído');
   assert.equal(S.connectionView({ connection: 'lost' }).tone, 'red');
   assert.equal(S.connectionView({ connection: 'bad_session' }).word, 'Sesión no válida');
@@ -1773,19 +1773,19 @@ test('HU-015: directOutcome reports only the host answer for THAT agent', () => 
 
 // K2-05 boot order = Gentle Dot (ChatSurface: starting/restarting is a wait; the daemon answers first):
 // Ajustes says Koda is starting, never «Sin motor»; «Sin motor» stays for a daemon that is really absent.
-test('K2-05 boot order: a connected daemon whose engine starts or restarts reads «Arrancando…», a wait in Spanish', () => {
-  for (const engine of ['starting', 'restarting']) {
+test('K2-05 boot order: a connected daemon whose engine starts or restarts is a WAIT in Spanish («Arrancando…» / K3-09 M5c «Reiniciando…»)', () => {
+  for (const [engine, word, aria] of [['starting', 'Arrancando…', 'Arrancando…: Koda está arrancando… abriendo tu conversación.'], ['restarting', 'Reiniciando…', 'Reiniciando…: El motor se está reiniciando…']]) {
     const v = S.connectionView({ connection: 'connected', engine });
     assert.ok(v, engine);
     assert.equal(v.starting, true, engine);
-    assert.equal(v.word, 'Arrancando…', engine);
+    assert.equal(v.word, word, engine);
     assert.deepEqual([v.icon, v.tone], ['ring', 'live'], `${engine}: a wait, not an error`);
-    assert.equal(v.aria, 'Arrancando…: Koda está arrancando… abriendo tu conversación.');
+    assert.equal(v.aria, aria);
     assert.notEqual(v.word, 'Sin motor');
     // the vendor Ajustes banner (hub/accounts.js) maps only connecting/no_daemon to a non-error look
     assert.equal(v.kind, 'no_daemon', 'quiet «○» look in the vendor banner, never its red «✗»');
   }
-  for (const engine of ['ready', 'stopped', null, undefined, 'nope']) assert.equal(S.connectionView({ connection: 'connected', engine }), null, String(engine));
+  for (const engine of ['ready', null, undefined, 'nope']) assert.equal(S.connectionView({ connection: 'connected', engine }), null, String(engine));
   assert.equal(S.connectionView({ connection: 'no_daemon' }).word, 'Sin motor', 'a REAL no_daemon still says so');
   assert.equal(S.connectionView({ connection: 'no_daemon', engine: 'starting' }).word, 'Sin motor', 'only a connected daemon can report its engine');
 });

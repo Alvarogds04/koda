@@ -139,6 +139,17 @@ mod frontend_settings {
     }
 }
 
+/// K3-09 M5c (U1): the engine connection states (absent / reconnecting with a countdown / restarting / stopped) and
+/// «Reintentar» (`test-node/engine-connection-states-check.cjs`) under plain `node`. Fails when node is absent.
+mod frontend_engine_states {
+    use super::check;
+
+    #[test]
+    fn engine_connection_states_checks_pass() {
+        check("test-node/engine-connection-states-check.cjs", "passed");
+    }
+}
+
 /// #313: the sound wiring checks (`test-node/sound-wiring-check.cjs`) under plain `node` (no npm, no network). Fails
 /// when node is absent.
 mod frontend_sound {

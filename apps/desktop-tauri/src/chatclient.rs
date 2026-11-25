@@ -359,9 +359,9 @@ const MAX_AWAITING: usize = 32;
 pub const MAX_RECORDED: usize = 64;
 
 /// The daemon's recognized error codes (anything else folds to `failed`).
-const ERROR_CODES: [&str; 20] = [
+const ERROR_CODES: [&str; 19] = [
     "bad_request", "busy", "not_busy", "unavailable", "rate_limited", "unknown_ask", "paused", "failed",
-    "unknown_proposal", "digest_mismatch", "needs_setup", "signin_failed", "store_not_private", "conversations_off",
+    "unknown_proposal", "digest_mismatch", "needs_setup", "signin_failed", "store_not_private",
     "interrupted",
     // K2-05 attachments (uploads.cjs refusals)
     "file_too_large", "message_too_large", "too_many_files", "upload_failed", "attachment_not_found",
@@ -1279,7 +1279,10 @@ fn chat_err(code: &str, message: &str, retryable: bool) -> crate::chat::ChatErro
     crate::chat::ChatError { code: code.into(), safe_message: message.into(), retryable }
 }
 
-/// The fixed refusal of every conversation-list verb: one continuous chat.
+/// The fixed refusal of every conversation-list verb: one continuous chat. K3-09 M4b: this is Koda's OWN policy, answered
+/// by the host before anything reaches the daemon. The engine has several conversations (`c0`, `c1`, …) and Koda keeps
+/// using the open one (`c0`) with fieldless `get_history`/`send`; no `conversation_*` verb is ever sent, and the engine no
+/// longer emits a `conversations_off` error, so the code is not a recognised daemon error any more.
 pub fn conversations_off() -> crate::chat::ChatError {
     chat_err("conversations_off", "Koda tiene un solo chat continuo.", false)
 }

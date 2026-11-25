@@ -623,6 +623,7 @@ pub(crate) fn agent_conn(handle: &AppHandle) -> AgentConn {
         move |mut view: Value| {
             // F3: the same two booleans the command reply carries, so the page's flags never flip on an event.
             telegram_flags(&mut view);
+            koda_island::agentkeeper::decorate(&mut view, retry_in());
             #[cfg(target_os = "linux")]
             crate::phonehost::publish_sessions(&phone, &view);
             let _ = emitter.emit("agent:state", view);
@@ -846,6 +847,68 @@ pub(crate) fn parse_daemon_action(payload: &Value) -> Option<&'static str> {
         "restart" => Some("restart"),
         _ => None,
     }
+}
+
+/// K3-09 M5a/M5c: unix ms at which the keeper's next attempt is due (`0` = nothing scheduled). Written ONLY by the keeper
+/// thread (which owns the backoff), read by every view that is sent to the page, so a human «Reintentar» (the page's own
+/// `refresh` action, which connects at once) can never be overwritten by a stale copy of the schedule.
+static RETRY_AT_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn retry_in() -> Option<u64> {
+    let at = RETRY_AT_MS.load(Ordering::SeqCst);
+    if at == 0 {
+        return None;
+    }
+    koda_island::agentkeeper::countdown_secs(Some(Duration::from_millis(at.saturating_sub(now_ms() as u64))))
+}
+
+/// K3-09 M5a: ONE background keeper for the settings/agents connection. Before it, a lost `AgentConn` came back only on
+/// the next page action (or the one 600 ms startup attempt). The policy (2, 4, 8, 15, 30 s backoff) lives in
+/// `koda_island::agentkeeper` and is tested there; this thread owns the backoff and feeds it the real connection. It
+/// never runs while the app quits and stands aside while a start failure of OUR OWN daemon is shown (that state is the
+/// page's to explain). It takes the agent slot with `try_lock` (a page action in flight wins and the keeper tries on its
+/// next tick); the slot is held for the connect itself (≤ the 3 s handshake), during which a page action waits for it. While
+/// the connection is down it publishes the countdown (`retry_in`) so the page can say «Reconectando… (3 s)».
+pub(crate) fn start_agent_keeper(handle: &AppHandle) {
+    let handle = handle.clone();
+    std::thread::spawn(move || {
+        let mut backoff = koda_island::agentkeeper::Backoff::new();
+        let mut was_connected = false;
+        while !crate::quitting() {
+            std::thread::sleep(Duration::from_millis(500));
+            if crate::quitting() {
+                break;
+            }
+            if handle.state::<koda_island::daemonhost::HostSlot>().failure().is_some() {
+                continue;
+            }
+            let Some(root) = island_root(std::env::var("KODA_ISLAND_DIR").ok().as_deref(), std::env::var("HOME").ok().as_deref()) else { continue };
+            let state = handle.state::<AppState>();
+            let Ok(mut guard) = state.settings.agent.try_lock() else { continue };
+            let conn = guard.get_or_insert_with(|| agent_conn(&handle));
+            let step = koda_island::agentkeeper::tick(&*conn, &root, &mut backoff, Instant::now());
+            let now = Instant::now();
+            let remaining = backoff.remaining(now);
+            RETRY_AT_MS.store(remaining.map_or(0, |d| now_ms() as u64 + d.as_millis() as u64), Ordering::SeqCst);
+            drop(guard);
+            match step {
+                koda_island::agentkeeper::Tick::Tried(true) => {
+                    was_connected = true;
+                    crate::publish(&handle, &state);
+                }
+                koda_island::agentkeeper::Tick::Connected => was_connected = true,
+                koda_island::agentkeeper::Tick::Tried(false) => {
+                    eprintln!("agents: the engine is not reachable (attempt {}); next try in {} s", backoff.failed(), retry_in().unwrap_or(0));
+                    let _ = handle.emit("agent:state", json!({"retry_in": retry_in()}));
+                }
+                koda_island::agentkeeper::Tick::Waiting => {
+                    // the countdown ticks down on the page; nothing else changed
+                    let _ = handle.emit("agent:state", json!({"retry_in": retry_in()}));
+                }
+            }
+            let _ = was_connected;
+        }
+    });
 }
 
 /// The truth of the daemon is the CONNECTION: lazily create the client (like

@@ -519,7 +519,7 @@
         auth: agentState.auth, unavailable: agentState.unavailable },
       agentsAsk ? [agentsAsk.at, agentsAsk.timedOut] : null,
       keyPresence, keyLoad, keyBusy, keyNotes,
-      loginTarget, pendingLogin, daemonBusy, daemonNote,
+      loginTarget, pendingLogin, daemonBusy, daemonNote, retryBusy, agentState && agentState.retry_in, agentState && agentState.engine,
       nameSaving, nameError, gainSaving, gainError, autoSaving, autoError, capturing,
       themeError, colorErrors, pillSaving, pillError,
       specialistIdentities(), screen === 'pills' ? ownerState() : null, failureTimer !== 0,
@@ -709,6 +709,8 @@
     const conn = V.connectionView(agentState);
     if (conn) row.append(chipNode({ tone: conn.tone, icon: conn.icon, word: conn.word, aria: conn.aria }));
     const actions = el('span', 'srow-actions');
+    // K3-09 M5c (U1): «Reintentar» asks the connection to try again NOW (the closed `refresh`); the keeper keeps its schedule.
+    if (conn && conn.retry) actions.append(wordBtn(conn.retry.label, () => retryEngine(), { icon: 'refresh', disabled: retryBusy, aria: conn.retry.aria }));
     actions.append(wordBtn(v.action.label, () => restartDaemon(), { icon: 'refresh', disabled: v.action.disabled, aria: v.action.aria }));
     row.append(actions);
     sec.append(row);
@@ -719,6 +721,12 @@
       sec.append(note);
     }
     body.append(sec);
+  }
+  let retryBusy = false;
+  function retryEngine() {
+    if (retryBusy) return;
+    retryBusy = true; render();
+    agent(V.retryPayload()).then(state => { if (state && typeof state === 'object') applyAgent(state); }, () => {}).finally(() => { retryBusy = false; render(); });
   }
   function restartDaemon() {
     if (daemonBusy) return;

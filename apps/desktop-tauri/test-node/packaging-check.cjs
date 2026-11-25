@@ -294,6 +294,18 @@ function asWindows(fn) {
   Object.defineProperty(process, 'platform', { value: 'win32' });
   try { return fn(); } finally { fs.lstatSync = real.lstat; fs.statSync = real.stat; Object.defineProperty(process, 'platform', real.platform); }
 }
+test('M-INST (lib, platform independent): checkInstalledLayout tolerates a retired REGULAR file and nothing else, symlinks stay flagged', () => {
+  const d = fakeStage();
+  fs.rmSync(path.join(d, L.RUNTIME_ARCHIVE));
+  fs.mkdirSync(path.join(d, 'runtime'), { mode: 0o700 });
+  const retired = path.join(d, 'desktop-pi', 'ask-tool.cjs');
+  fs.mkdirSync(path.dirname(retired), { recursive: true });
+  fs.writeFileSync(retired, 'x', { mode: 0o644 }); fs.chmodSync(retired, 0o644); fs.chmodSync(path.dirname(retired), 0o755);
+  assert.deepEqual(L.checkInstalledLayout(d).filter((p) => /ask-tool/.test(p)), [], 'a retired regular file is not an unexpected one');
+  assert.deepEqual(asWindows(() => L.checkInstalledLayout(d).filter((p) => /ask-tool/.test(p))), [], 'same on the Windows rules');
+  fs.rmSync(retired); fs.symlinkSync('/etc/passwd', retired);
+  assert.match(L.checkInstalledLayout(d).join(), /ask-tool\.cjs is a symlink/);
+});
 test('Windows (NTFS modes 0o666, no exec bits): a valid stage verifies and its installed layout is accepted', () => {
   const d = fakeStage();
   assert.deepEqual(asWindows(() => L.verifyStage(d, { sourceCrate: crate })), []);
