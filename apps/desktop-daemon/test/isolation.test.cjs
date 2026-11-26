@@ -23,6 +23,7 @@ const {
 	writePrivateFile,
 } = require("../src/isolation.cjs");
 const { win, assertMode, unixOnly } = require("./platform-env.cjs");
+const { execFileSync } = require("node:child_process");
 
 function tmpBase(t) {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "abito-island-test-"));
@@ -137,19 +138,44 @@ test("pathWithNodeFirst uses the right separator on every platform", () => {
 	assert.equal(pathWithNodeFirst("/koda/runtime", undefined), `/koda/runtime${path.delimiter}/usr/bin:/bin`);
 });
 
-test("defaultIslandRoot honours KODA_ISLAND_DIR and defaults to ~/.koda", () => {
+// K3-09 M5b (human decision, 26 Nov): the island contract is the ENGINE's
+// (abito-core `engine/src/isolation.cjs` `defaultIslandRoot`): `ABITO_ISLAND_DIR`, then the honoured
+// `KODA_ISLAND_DIR`, then `~/.abito`. Both are truthiness-checked exactly like the engine, so an unset or
+// empty value falls through to the next level.
+test("defaultIslandRoot honours ABITO_ISLAND_DIR then KODA_ISLAND_DIR and defaults to ~/.abito", () => {
+	assert.equal(defaultIslandRoot({ ABITO_ISLAND_DIR: "/a/b" }), "/a/b");
 	assert.equal(defaultIslandRoot({ KODA_ISLAND_DIR: "/x/y" }), "/x/y");
-	assert.equal(defaultIslandRoot({ HOME: "/home/user" }), path.join("/home/user", ".koda"));
+	// ABITO wins when both are set: the Koda name is never an override of the engine's.
+	assert.equal(defaultIslandRoot({ ABITO_ISLAND_DIR: "/a/b", KODA_ISLAND_DIR: "/x/y" }), "/a/b");
+	assert.equal(defaultIslandRoot({ HOME: "/home/user" }), path.join("/home/user", ".abito"));
 });
 
-// L4 (13 Nov, human): no ABITO_* alias and no fallback to a 0.1 variable. The 0.1 name is
-// written out literally here on purpose (the only place the old name survives): it must not be
-// read at all, so setting only it leaves the default root in place.
-test("the 0.1 ABITO_ISLAND_DIR is no longer honoured (no alias, no fallback)", () => {
-	const legacy = { HOME: "/home/user", ABITO_ISLAND_DIR: "/legacy/root" };
-	assert.equal(defaultIslandRoot(legacy), path.join("/home/user", ".koda"));
-	// and the new name still wins, even with the old one set beside it
-	assert.equal(defaultIslandRoot({ ...legacy, KODA_ISLAND_DIR: "/x/y" }), "/x/y");
+// The precedence above is what the engine documents (engine/README.md, PROTOCOL.md): the Koda name is the
+// LEGACY one, kept so the extracted tests and Koda's own embeddings keep working. This deliberately reverses
+// the 13 Nov L4 rule ("no ABITO_* alias") on the 26 Nov human decision that made Koda's island the engine's.
+test("an empty or unset override falls through to the next level, never to a guessed path", () => {
+	assert.equal(defaultIslandRoot({ HOME: "/home/user", ABITO_ISLAND_DIR: "" }), path.join("/home/user", ".abito"));
+	assert.equal(defaultIslandRoot({ HOME: "/home/user", ABITO_ISLAND_DIR: "", KODA_ISLAND_DIR: "/x/y" }), "/x/y");
+});
+
+// K3-09 M5b point 4: with a temporary HOME and NO island variable at all, the daemon's own default island
+// code paths create `$HOME/.abito` and never the legacy `$HOME/.koda` (the human deleted that directory on
+// 26 Nov and no Koda start may bring it back). Run as a CHILD process so the real process environment and
+// the real home are untouched.
+test("a daemon start under a bare temporary HOME creates ~/.abito and never ~/.koda", (t) => {
+	const home = tmpBase(t);
+	const script = `
+		const isolation = require(${JSON.stringify(path.join(__dirname, "..", "src", "isolation.cjs"))});
+		const root = isolation.defaultIslandRoot();
+		isolation.ensureIsland(root);
+		process.stdout.write(JSON.stringify({ root }));
+	`;
+	const env = { PATH: process.env.PATH };
+	if (process.platform === "win32") Object.assign(env, { SystemRoot: process.env.SystemRoot });
+	const out = execFileSync(process.execPath, ["-e", script], { env: { ...env, HOME: home }, encoding: "utf8" });
+	assert.equal(JSON.parse(out).root, path.join(home, ".abito"), "the bare default island is ~/.abito");
+	assert.ok(fs.existsSync(path.join(home, ".abito")), "the island was created under the new name");
+	assert.ok(!fs.existsSync(path.join(home, ".koda")), "the legacy ~/.koda is never created again");
 });
 
 // Windows (Gentle Dot isolatedAgentEnv): the engine and its tools resolve the

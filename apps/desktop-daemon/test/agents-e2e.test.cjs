@@ -2,7 +2,7 @@
 
 // REAL end-to-end: AgentsManager drives the actual apps/desktop-harness/bin/koda-hook.cjs against a
 // temp HOME (fake .claude/.codex with third-party hooks). The real ~/.claude, ~/.codex and
-// ~/.koda are never written: only their mtimes are READ (stat) before/after to prove it.
+// ~/.abito are never written: only their mtimes are READ (stat) before/after to prove it.
 
 const test = require("node:test");
 const assert = require("node:assert/strict");

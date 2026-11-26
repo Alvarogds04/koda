@@ -115,7 +115,7 @@ fn a_node_and_an_entry_found_under_the_install_root_are_the_ones_the_route_runs(
     let env: std::collections::HashMap<_, _> = rt.env.iter().cloned().collect();
     assert_eq!(env.get("HOME").map(String::as_str), lib.to_str());
     #[cfg(not(windows))]
-    assert_eq!(env.get("KODA_ISLAND_DIR").map(String::as_str), lib.join(".koda").to_str());
+    assert_eq!(env.get("KODA_ISLAND_DIR").map(String::as_str), lib.join(".abito").to_str());
     #[cfg(windows)]
     assert!(env.get("KODA_ISLAND_DIR").map_or(true, |d| Path::new(d.as_str()).is_absolute()));
     assert!(!env.contains_key(crate::LEGACY_PI_EXTENSION_ENV), "off is the absence of the variable");

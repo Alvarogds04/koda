@@ -24,10 +24,12 @@ pub fn dacl_private(owner: &str, current_user: &str, allowed_entries: Option<&[S
 }
 
 /// Default island root on Windows: `%LOCALAPPDATA%\Koda`, which inherits a
-/// user-only profile DACL. `KODA_ISLAND_DIR` is honoured ONLY as a
-/// parallel-island/test seam INSIDE that canonical protected root: an
-/// override pointing anywhere else would bypass the profile ACLs that guard
-/// the token file, so it is refused (`None`), never guessed.
+/// user-only profile DACL. `ABITO_ISLAND_DIR` (the engine's name) and `KODA_ISLAND_DIR`
+/// (the Koda name, lower precedence) are honoured ONLY as parallel-island/test seams
+/// INSIDE that canonical protected root: an override pointing anywhere else would
+/// bypass the profile ACLs that guard the token file, so it is refused (`None`), never guessed.
+/// Windows keeps the `Koda` name on purpose: the engine does the same there
+/// (`engine/src/isolation.cjs`), so both read one island.
 /// OS-free containment (these verdicts run on Linux CI too): `candidate` is
 /// accepted only when it IS the canonical root or sits inside it, with no
 /// `.`/`..` and no empty path component that could climb out textually.
@@ -43,14 +45,17 @@ fn within_canonical(candidate: &str, canonical: &str) -> bool {
     rest.split('/').all(|part| !part.is_empty() && part != "." && part != "..")
 }
 
-pub fn island_root(env_dir: Option<&str>, local_app_data: Option<&str>) -> Option<std::path::PathBuf> {
+pub fn island_root(abito: Option<&str>, koda: Option<&str>, local_app_data: Option<&str>) -> Option<std::path::PathBuf> {
     let absolute = |s: &str| {
         let b = s.as_bytes();
         (b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b[2] == b'\\' || b[2] == b'/'))
             && !s.chars().any(char::is_control)
     };
     let canonical = local_app_data.filter(|d| absolute(d)).map(|d| std::path::Path::new(d).join("Koda"))?;
-    if let Some(d) = env_dir.filter(|d| !d.is_empty()) {
+    // The engine's order: the Abito name first, then the honoured Koda name. An unset or empty value falls
+    // through to the next level; an override outside the canonical root is refused (fail closed, never guessed).
+    let override_dir = abito.filter(|d| !d.is_empty()).or_else(|| koda.filter(|d| !d.is_empty()));
+    if let Some(d) = override_dir {
         return (absolute(d) && within_canonical(d, &canonical.to_string_lossy()))
             .then(|| std::path::PathBuf::from(d));
     }
@@ -156,23 +161,33 @@ mod tests {
     #[test]
     fn island_root_is_absolute_and_defaults_under_local_app_data() {
         let local = r"C:\Users\a\AppData\Local";
-        assert_eq!(island_root(None, Some(local)).unwrap(), std::path::Path::new(local).join("Koda"));
-        // An KODA_ISLAND_DIR override is honoured ONLY inside the canonical
+        assert_eq!(island_root(None, None, Some(local)).unwrap(), std::path::Path::new(local).join("Koda"));
+        // An ABITO_ISLAND_DIR / KODA_ISLAND_DIR override is honoured ONLY inside the canonical
         // protected root: anything else would bypass the profile ACLs that
         // guard the token file, so it is refused, never guessed.
         assert_eq!(
-            island_root(Some(r"C:\Users\a\AppData\Local\Koda\test-island"), Some(local)).unwrap(),
+            island_root(Some(r"C:\Users\a\AppData\Local\Koda\test-island"), None, Some(local)).unwrap(),
             std::path::PathBuf::from(r"C:\Users\a\AppData\Local\Koda\test-island")
         );
         assert_eq!(
-            island_root(Some(r"C:\Users\a\AppData\Local\Koda"), Some(local)).unwrap(),
+            island_root(None, Some(r"C:\Users\a\AppData\Local\Koda"), Some(local)).unwrap(),
             std::path::PathBuf::from(r"C:\Users\a\AppData\Local\Koda")
         );
+        // The engine's order: the Abito name wins when both are set, and an empty one falls through.
+        assert_eq!(
+            island_root(Some(r"C:\Users\a\AppData\Local\Koda\a"), Some(r"C:\Users\a\AppData\Local\Koda\k"), Some(local)).unwrap(),
+            std::path::PathBuf::from(r"C:\Users\a\AppData\Local\Koda\a")
+        );
+        assert_eq!(
+            island_root(Some(""), Some(r"C:\Users\a\AppData\Local\Koda\k"), Some(local)).unwrap(),
+            std::path::PathBuf::from(r"C:\Users\a\AppData\Local\Koda\k")
+        );
         for bad in [r"D:\x", r"rel\x", r"C:\Users\a\AppData\Local\KodaEvil", r"C:\other\Koda", r"C:\Users\a\AppData\Local\Abito", r"C:\Users\a\AppData\Local\Koda\\.."] {
-            assert!(island_root(Some(bad), Some(local)).is_none(), "{bad}");
+            assert!(island_root(Some(bad), None, Some(local)).is_none(), "{bad}");
         }
-        assert!(island_root(None, Some("rel")).is_none());
-        assert!(island_root(None, None).is_none());
+        assert!(island_root(None, Some("rel"), Some(local)).is_none());
+        assert!(island_root(None, None, Some("rel")).is_none());
+        assert!(island_root(None, None, None).is_none());
     }
     #[test]
     fn install_owner_admins_only_when_elevated() {

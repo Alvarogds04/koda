@@ -5,7 +5,7 @@
 //! Jesscore engine daemon (`engine/src/daemon.cjs`, abito-core `release/0.2`) on a TEMPORARY island seeded exactly like a
 //! Koda 0.2 island (`state.json` + a rotation chain of two session files), with the engine's FAKE agent child
 //! (`engine/test/fixtures/fake-agent.cjs`): no provider, no network, no credential, never the installed engine and never the
-//! real `~/.koda`.
+//! real `~/.abito` (or the legacy `~/.koda`).
 //!
 //! What it proves for the migration (the engine now has several conversations, Koda keeps ONE continuous chat):
 //!   * `ready` arrives and Koda's fieldless `get_history` returns the WHOLE old chat (both chain files);

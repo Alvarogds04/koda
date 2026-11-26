@@ -154,14 +154,23 @@ fn wait_for(conn: &AgentConn, what: &str, pred: impl Fn(&Value) -> bool) -> Valu
     }
 }
 
+// K3-09 M5b (human decision, 26 Nov): Koda's island contract IS the engine's
+// (abito-core `engine/src/isolation.cjs` `defaultIslandRoot`): `ABITO_ISLAND_DIR`, then the honoured
+// `KODA_ISLAND_DIR`, then `<home>/.abito`. The default moved off the legacy `~/.koda`, so no Koda
+// start can recreate that directory again.
 #[test]
 fn island_root_comes_from_the_environment_only() {
-    assert_eq!(island_root(Some("/x/y"), Some("/home/u")), Some(PathBuf::from("/x/y")));
-    assert_eq!(island_root(None, Some("/home/u")), Some(PathBuf::from("/home/u/.koda")));
-    assert_eq!(island_root(Some(""), Some("/home/u")), Some(PathBuf::from("/home/u/.koda")));
-    assert_eq!(island_root(Some("relative"), Some("/home/u")), None, "a relative override is refused, never guessed");
-    assert_eq!(island_root(None, None), None);
-    assert_eq!(island_root(None, Some("home")), None);
+    // ABITO_ISLAND_DIR first (the engine's name), then the honoured KODA_ISLAND_DIR, then <home>/.abito.
+    assert_eq!(island_root(Some("/a/b"), Some("/x/y"), Some("/home/u")), Some(PathBuf::from("/a/b")), "ABITO wins");
+    assert_eq!(island_root(None, Some("/x/y"), Some("/home/u")), Some(PathBuf::from("/x/y")));
+    assert_eq!(island_root(None, None, Some("/home/u")), Some(PathBuf::from("/home/u/.abito")));
+    // An empty or relative value falls through to the next level instead of being guessed.
+    assert_eq!(island_root(Some(""), Some(""), Some("/home/u")), Some(PathBuf::from("/home/u/.abito")));
+    assert_eq!(island_root(Some(""), Some("/x/y"), Some("/home/u")), Some(PathBuf::from("/x/y")));
+    assert_eq!(island_root(Some("relative"), Some("/x/y"), Some("/home/u")), Some(PathBuf::from("/x/y")));
+    assert_eq!(island_root(Some("relative"), None, Some("/home/u")), Some(PathBuf::from("/home/u/.abito")));
+    assert_eq!(island_root(None, None, None), None);
+    assert_eq!(island_root(None, None, Some("home")), None, "a relative home is never guessed either");
 }
 
 #[test]

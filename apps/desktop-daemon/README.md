@@ -48,9 +48,11 @@ packaging receipts and the non-Linux limitation are documented in
 
 ## Island layout
 
-Everything private lives under one root: `~/.koda` by default, moved with
-`KODA_ISLAND_DIR` (tests and embeddings use this). Created with mode `0700`, owned by
-the current user:
+Everything private lives under one root: `~/.abito` by default, moved with
+`ABITO_ISLAND_DIR` (`KODA_ISLAND_DIR` is still honoured with lower precedence; tests and
+embeddings use either). This is the SAME contract as the engine
+(`abito-core` `engine/src/isolation.cjs` `defaultIslandRoot`), so Koda and the engine read one
+island. Created with mode `0700`, owned by the current user:
 
 | Path | Purpose |
 |---|---|
@@ -109,7 +111,7 @@ const { AgentEngine } = require("@koda/desktop-daemon/runtime.cjs");
 
 const engine = new AgentEngine({
   command: "pi",              // configurable executable; never a direct model HTTP client
-  root: "~/.koda",    // island root
+  root: "~/.abito",   // island root
   identityPath: "identity.md" // source identity copied into the island before each spawn
 });
 await engine.start();                          // stopped -> starting -> ready
@@ -444,7 +446,8 @@ never echoed) and the daemon refuses to start. Writes go through `writePrivateFi
 
 | Variable | Effect |
 |---|---|
-| `KODA_ISLAND_DIR` | island root (default `~/.koda`) |
+| `ABITO_ISLAND_DIR` | island root (default `~/.abito`); wins when both names are set |
+| `KODA_ISLAND_DIR` | island root, the Koda name: still honoured, lower precedence |
 | `KODA_WORKSPACE` | overrides `workspace` from the file; validated identically (analogue of `GENTLE_DOT_WORKSPACE`) |
 | `KODA_MEMORY_PROJECT` | set by the engine to `koda` for the child; with the identity prompt it is the memory pin |
 | `KODA_SDK_MODULE` | SDK entry for the auth helper (U2) |

@@ -308,7 +308,10 @@ The hooks catalogue also accepts `statusline` in `hooks_install`/`hooks_remove`,
 user, so install adds three marker-tagged notify-only entries (`sessionStart`, `sessionEnd`, `stop`; `{version:1,hooks:{<event>:[{command}]}}`) next to their
 hooks and creates the file with `version: 1` only when absent; remove deletes only the entries carrying `koda-island-hooks/1` (and the file only if nothing
 but our stub remains). Unparseable JSON or an unexpected `hooks` shape is `foreign_file` (never rewritten). Backup first, hash-bound plan, shared notify
-script `~/.koda/agent-hooks/island-notify.mjs` kept while another dependent client (gemini-cli, copilot-cli, cursor) still uses it. Cursor needs a restart.
+script `~/.koda/agent-hooks/island-notify.mjs` kept while another dependent client (gemini-cli, copilot-cli, cursor) still uses it.
+The `.koda` name there is the hook ARTIFACT path under the user's HOME, not the island root (which is `~/.abito`
+since K3-09 M5b): renaming it would silently break the hooks already written into those client configs, so the hook
+lane keeps its name until M5e/JC-10 replaces it. Cursor needs a restart.
 
 **Koda 0.1 artifacts (K2-04, S2/S4).** A Koda 0.1 install left `abito-island-hooks/1`, `abito-island*` names and `~/.abito/agent-hooks/island-notify.mjs`
 behind. Both markers are ours: install retires the 0.1 file/dir into the existing dated-backup flow (a file that only held our entries is deleted, one

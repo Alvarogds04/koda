@@ -253,10 +253,7 @@ fn spawn_initial_connect(app: &AppHandle) {
         if crate::QUITTING.load(Ordering::SeqCst) {
             return;
         }
-        let root = koda_island::agentconn::island_root(
-            std::env::var("KODA_ISLAND_DIR").ok().as_deref(),
-            std::env::var("HOME").ok().as_deref(),
-        );
+        let root = koda_island::agentconn::island_root_now();
         let Some(root) = root else { return };
         let state = handle.state::<AppState>();
         let _ = crate::settingshost::daemon_connect(

@@ -146,7 +146,7 @@ fn a_pi_mutation_with_the_switch_off_touches_the_retired_pi_folder_not_at_all() 
     }
     // nothing was planned, backed up, removed or audited for it
     assert!(!home.join(".pi/agent/abito-backups").exists(), "no backup was made for the retired folder");
-    assert!(!home.join(".koda/audit/hook-installs.jsonl").exists(), "nothing was applied, so nothing was audited");
+    assert!(!home.join(".abito/audit/hook-installs.jsonl").exists(), "nothing was applied, so nothing was audited");
 }
 
 #[test]

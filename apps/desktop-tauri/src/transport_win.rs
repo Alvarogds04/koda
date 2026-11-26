@@ -162,7 +162,7 @@ fn write_line(writer: &Mutex<Arc<ClientPipe>>, line: &[u8]) -> std::io::Result<(
 /// arbitrary env override on Windows (the approved design): the location is
 /// canonical and its directory chain is ACL-verified before use.
 pub fn resolve_runtime() -> Result<PathBuf, TransportError> {
-    let root = crate::winpolicy::island_root(None, std::env::var("LOCALAPPDATA").ok().as_deref())
+    let root = crate::winpolicy::island_root(None, None, std::env::var("LOCALAPPDATA").ok().as_deref())
         .ok_or(TransportError::NoRuntimeRoot)?;
     Ok(root.join(crate::winipc::NOTICES_LEAF))
 }

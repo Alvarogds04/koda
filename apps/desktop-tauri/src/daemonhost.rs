@@ -56,7 +56,7 @@ impl HostSlot {
     pub fn start(&self) {
         #[cfg(any(target_os = "linux", target_os = "macos", windows))]
         {
-            let root = crate::agentconn::island_root(std::env::var("KODA_ISLAND_DIR").ok().as_deref(), std::env::var("HOME").ok().as_deref());
+            let root = crate::agentconn::island_root_now();
             if let Some(line) = skip_own_daemon(root.and_then(|r| crate::agentconn::engine_session_pid(&r))) {
                 eprintln!("{line}");
                 return;
@@ -409,6 +409,53 @@ mod engine_owns_island_tests {
         std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
         assert_eq!(crate::agentconn::engine_session_pid(&root), None, "a group/world readable session is not trusted");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// K3-09 M5b (human decision, 26 Nov): Koda's island is the ENGINE's, so Koda's own daemon and the engine share
+    /// `<home>/.abito` by default. K-G has to hold THERE: a healthy engine `session.json` (a live pid, the engine's own
+    /// shape with `ppid`/`link`) stops Koda's own daemon, and a stale, unsafe or unreadable one never blocks it. The
+    /// legacy `~/.koda` is never derived nor created.
+    #[cfg(unix)]
+    #[test]
+    fn k_g_holds_on_the_default_island_and_the_legacy_dot_koda_is_never_derived() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = std::env::temp_dir().join(format!("abito-kg-default-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        let home_s = home.to_str().expect("a utf-8 temp home");
+        // No override: the default island is the engine's `~/.abito`.
+        let root = crate::agentconn::island_root(None, None, Some(home_s)).expect("a default island under HOME");
+        assert_eq!(root, home.join(".abito"), "the default island is the engine's, not the legacy ~/.koda");
+        assert!(!home.join(".koda").exists(), "deriving the island never creates the legacy directory");
+        let runtime = root.join("runtime");
+        std::fs::create_dir_all(&runtime).unwrap();
+        let file = runtime.join("session.json");
+        // The engine's own session shape (`engine/src/daemon.cjs`): extra keys Koda's parser tolerates.
+        let engine_session = |pid: u32| {
+            format!(
+                "{{\"protocol\":\"island-agent/1\",\"endpoint\":\"{}/p-abc123/s\",\"token\":\"{}\",\"pid\":{pid},\"procStart\":\"1\",\"startedAt\":1,\"ppid\":1,\"link\":null}}",
+                runtime.display(),
+                "x".repeat(43)
+            )
+        };
+        let write = |body: &str, mode: u32| {
+            std::fs::write(&file, body).unwrap();
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(mode)).unwrap();
+            skip_own_daemon(crate::agentconn::engine_session_pid(&root))
+        };
+        // A healthy engine session (live pid, owner-only): Koda does NOT start its own daemon on the shared island.
+        let skipped = write(&engine_session(std::process::id()), 0o600).expect("a live engine owns ~/.abito");
+        assert!(skipped.contains("already runs") && skipped.contains("does not start its own daemon"), "{skipped}");
+        // A dead pid: stale file, not an owner — Koda may start its own daemon.
+        assert!(write(&engine_session(4_194_999), 0o600).is_none(), "a stale session never blocks Koda");
+        // Group/world readable: not trusted, never an owner.
+        assert!(write(&engine_session(std::process::id()), 0o644).is_none(), "an unsafe session never blocks Koda");
+        // Unreadable / malformed: never an owner.
+        assert!(write("not json", 0o600).is_none(), "an unreadable session never blocks Koda");
+        std::fs::remove_file(&file).unwrap();
+        assert!(skip_own_daemon(crate::agentconn::engine_session_pid(&root)).is_none(), "no session: Koda starts its own");
+        assert!(!home.join(".koda").exists(), "the whole guard ran without creating the legacy directory");
+        let _ = std::fs::remove_dir_all(&home);
     }
 }
 
