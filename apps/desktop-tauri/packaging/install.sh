@@ -141,9 +141,18 @@ TMP_SUFFIX=".new.$$"
 TMPBASE="$(dirname "$PREFIX")"
 RUNTIME_TMP="$TMPBASE/.runtime.new.$$"
 RUNTIME_OLD="$TMPBASE/.runtime.old.$$"
+# K3-09 M-INST5 (verifier F1 on M-INST4): this trap is armed before any check runs, so it must not reach anything under
+# PREFIX or APPS until the layout chain has been proven safe. A refused symlinked PREFIX/applications dir (or a symlinked
+# parent) would otherwise be FOLLOWED here, unlinking receipt.json.new.$$ / .new.$$.com.abitog.Koda.desktop inside the very
+# folder the run just refused to touch — and «nothing was removed» / «nothing was installed» would not be strictly true.
+#   0: the chain is not proven → the trap only sweeps the private temp dir IT created (nothing through PREFIX/APPS)
+#   1: the chain passed → the temp files and the old runtime are ours to remove or put back
+CLEAN_OK=0
+RUNTIME_TMP_OWNED=0
 cleanup() {
   trap - EXIT INT TERM
-  if [ -d "$RUNTIME_TMP" ]; then rm -rf "$RUNTIME_TMP"; fi
+  if [ "$RUNTIME_TMP_OWNED" -eq 1 ] && [ -d "$RUNTIME_TMP" ]; then rm -rf "$RUNTIME_TMP"; fi
+  [ "$CLEAN_OK" -eq 1 ] || return 0
   # a crash after the old runtime was moved aside but before the new one moved in:
   # put the old one back, nothing is lost.
   if [ -d "$RUNTIME_OLD" ]; then mv "$RUNTIME_OLD" "$PREFIX/runtime" 2>/dev/null || true; fi
@@ -301,6 +310,7 @@ MEMBERS
 # ---- 3. extract into a private temp dir, then verify with THAT node ----------------------
 mkdir -p "$TMPBASE" || die "cannot create $TMPBASE"
 mkdir -m 700 "$RUNTIME_TMP" || die "cannot create the private runtime temp dir: $RUNTIME_TMP"
+RUNTIME_TMP_OWNED=1 # the temp dir is ours from here on: only now may the trap rm -rf it
 got="$(sha_of "$STAGE/$RUNTIME_ARCHIVE")"
 [ "$got" = "$ARCHIVE_WANT" ] || die "the runtime archive changed while installing: aborting before extracting anything"
 tar -xzf "$STAGE/$RUNTIME_ARCHIVE" -C "$RUNTIME_TMP" || die "cannot extract the runtime archive into $RUNTIME_TMP"
@@ -311,6 +321,10 @@ tar -xzf "$STAGE/$RUNTIME_ARCHIVE" -C "$RUNTIME_TMP" || die "cannot extract the 
 # Applications may contain unrelated desktop entries, so validate its ancestor
 # chain only; PREFIX must not contain any undeclared installed entry (runtime/ aside).
 "$RUNTIME_TMP/node" -e 'const L=require(process.argv[1]);const fs=require("node:fs"),path=require("node:path");const p=L.checkInstalledLayout(process.argv[2]);for(let d=path.resolve(process.argv[3]);;d=path.dirname(d)){try{if(fs.lstatSync(d).isSymbolicLink())p.push(d+" is a symlink")}catch(e){if(e.code!=="ENOENT")throw e}if(path.dirname(d)===d)break}if(p.length){console.error(p.join("\n"));process.exit(1)}' "$LIB" "$PREFIX" "$APPS" || die "unsafe installed layout: nothing was installed"
+# K3-09 M-INST5: PREFIX, APPS and every parent are proven to be real directories (no link anywhere in the chain), so the
+# trap may now clean up after a later failure. The uninstall path above never sets this: it creates no temp file at all, so
+# a refusal there must leave PREFIX and APPS untouched.
+CLEAN_OK=1
 
 RETIRED="$("$RUNTIME_TMP/node" -e 'process.stdout.write(require(process.argv[1]).RETIRED_FILES.join(" "))' "$LIB")" || die "cannot read the retired file list: nothing was installed"
 

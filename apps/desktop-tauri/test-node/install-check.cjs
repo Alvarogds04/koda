@@ -725,6 +725,123 @@ test('M-INST4: a plain --uninstall (no link anywhere in the chain) still removes
   assert.equal(fs.existsSync(path.join(e.apps, `${L.IDENTIFIER}.desktop`)), false);
 });
 
+// K3-09 M-INST5 (verifier F1 on M-INST4): install.sh arms its EXIT/INT/TERM trap long BEFORE the layout checks run, so a
+// run that the symlink chain refuses still had its pid-named temp files unlinked THROUGH the link — receipt.json.new.$$,
+// .new.$$.com.abitog.Koda.desktop and <staged>.new.$$ — inside the very folder the run just refused to touch: «nothing was
+// removed» / «nothing was installed» were not strictly true. The cleanup is now armed only once the chain has passed.
+const probePid = () => Number(cp.spawnSync('sh', ['-c', 'printf "%s\\n" $$'], { encoding: 'utf8' }).stdout.trim());
+/* The staged-file temp names, planted for a few pids after a probe (insurance: at either refusal INSTALL_FILES is still
+   empty, so the trap names only receipt.json and the .desktop — and those two use the EXACT pid, planted by the wrapper). */
+function plantStagedTempDecoys(dir, base) {
+  const names = [];
+  for (let n = base; n <= base + 2; n += 1) for (const f of L.STAGED) if (f !== ARCHIVE) names.push(`${f}.new.${n}`);
+  for (const name of names) {
+    const p = path.join(dir, name);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, `decoy ${name}\n`, { mode: 0o644 });
+  }
+  return names.length;
+}
+/* `sh -c 'printf %s $$ > pidfile; plant the two temp names the trap uses for $$; exec sh install.sh …'`: exec keeps the
+   pid, so the decoys carry the exact name the refused run will reach for (no pid window, nothing planted is guessed). */
+function runWithPid(args, e, plantDirs = []) {
+  const pidFile = path.join(e.home, 'installer.pid');
+  const script = 'pidfile=$1; dirs=$2; shift 2\n'
+    + 'printf "%s\\n" $$ > "$pidfile" || exit 1\n'
+    + 'IFS=,\n'
+    + 'for d in $dirs; do\n'
+    + `  for n in receipt.json.new.$$ .new.$$.${L.IDENTIFIER}.desktop; do\n`
+    + '    printf "decoy %s\\n" "$n" > "$d/$n" || exit 1\n'
+    + '  done\n'
+    + 'done\n'
+    + 'unset IFS\n'
+    + 'exec sh "$@"\n';
+  const r = cp.spawnSync('sh', ['-c', script, 'sh', pidFile, plantDirs.join(','), SCRIPT, ...args], { encoding: 'utf8', env: { PATH: process.env.PATH, HOME: e.home } });
+  let pid = null;
+  try { pid = Number(fs.readFileSync(pidFile, 'utf8').trim()); } catch { pid = null; }
+  const planted = pid === null ? [] : [`/.new.${pid}.${L.IDENTIFIER}.desktop`, `/receipt.json.new.${pid}`]
+    .map(line => `${line} ${sha(Buffer.from(`decoy ${line.slice(1)}\n`))}`);
+  return { r, pid, planted };
+}
+/* treeBytes before/after reported as the lines that changed: the run may only ADD the decoys the wrapper planted. */
+function assertOnlyPlanted(before, after, planted, msg) {
+  const a = new Set(before.split('\n')), b = new Set(after.split('\n'));
+  const removed = [...a].filter(x => !b.has(x)), added = [...b].filter(x => !a.has(x));
+  assert.deepEqual({ removed, added: added.sort() }, { removed: [], added: [...planted].sort() }, msg);
+}
+const tempsLeftIn = d => { // every «<name>.new.<pid>» still sitting under d (runtime/ skipped: it never holds temps)
+  const out = [];
+  const walk = dir => { for (const n of fs.readdirSync(dir).sort()) {
+    const f = path.join(dir, n), st = fs.lstatSync(f);
+    if (st.isDirectory() && !st.isSymbolicLink()) { if (n !== 'runtime') walk(f); } else if (/\.new\.\d+(\.|$)/.test(n)) out.push(path.relative(d, f));
+  } };
+  if (fs.existsSync(d)) walk(d);
+  return out;
+};
+
+test('M-INST5: a --uninstall refused by the symlink chain unlinks no temp name through the link (or anywhere else)', () => {
+  for (const mode of ['prefix', 'apps']) {
+    const st = stage(), e = env(); assert.equal(install(st, e).status, 0);
+    const real = path.join(e.home, 'elsewhere'); fs.mkdirSync(real);
+    let prefix = e.prefix, apps = e.apps;
+    if (mode === 'prefix') { fs.renameSync(e.prefix, path.join(real, 'koda')); fs.symlinkSync(path.join(real, 'koda'), e.prefix); }
+    else { fs.renameSync(e.apps, path.join(real, 'applications')); fs.symlinkSync(path.join(real, 'applications'), e.apps); }
+    const realPrefix = mode === 'prefix' ? path.join(real, 'koda') : e.prefix;
+    const realApps = mode === 'apps' ? path.join(real, 'applications') : e.apps;
+    const base = probePid();
+    plantStagedTempDecoys(realPrefix, base); plantStagedTempDecoys(realApps, base); // both sides of the refused chain
+    const before = [treeBytes(realPrefix), treeBytes(realApps)];
+    const { r, pid, planted } = runWithPid(['--uninstall', '--prefix', prefix, '--applications-dir', apps], e, [realPrefix, realApps]);
+    assert.equal(r.status, 1, `${mode}: ${r.stderr}${r.stdout}`);
+    assert.match(r.stderr, /unsafe installed layout.*nothing was removed/, mode);
+    assert.equal(planted.length, 2, `${mode}: the wrapper planted both temp names for pid ${pid}`);
+    assertOnlyPlanted(before[0], treeBytes(realPrefix), planted, `${mode}: no temp name under the prefix was unlinked (pid ${pid})`);
+    assertOnlyPlanted(before[1], treeBytes(realApps), planted, `${mode}: no temp name under the applications dir was unlinked (pid ${pid})`);
+  }
+});
+
+test('M-INST5: an INSTALL refused by the layout check unlinks no temp name through the link either', () => {
+  for (const mode of ['prefix', 'apps']) {   // the two dies that refuse the chain: checkInstalledLayout and the applications walk
+    const st = stage(), e = env();
+    const real = path.join(e.home, 'elsewhere'); fs.mkdirSync(real);
+    fs.mkdirSync(path.dirname(e.apps), { recursive: true }); // nothing is installed yet: the share dir must exist for the link
+    let prefix = e.prefix, apps = e.apps;
+    if (mode === 'prefix') { fs.mkdirSync(path.join(real, 'koda')); fs.symlinkSync(path.join(real, 'koda'), e.prefix); }
+    else { fs.mkdirSync(path.join(real, 'applications')); fs.symlinkSync(path.join(real, 'applications'), e.apps); }
+    const dest = path.join(real, mode === 'prefix' ? 'koda' : 'applications');
+    // only the link target (and, for a linked prefix, the real applications dir): decoys inside a REAL prefix would trip
+    // the «unexpected installed file» complaint instead of the symlink refusal this test is about
+    const dirs = mode === 'prefix' ? [dest, e.apps] : [dest];
+    if (mode === 'prefix') fs.mkdirSync(e.apps, { recursive: true });
+    const base = probePid();
+    for (const d of dirs) plantStagedTempDecoys(d, base);
+    const before = dirs.map(treeBytes);
+    const { r, pid, planted } = runWithPid([st, '--prefix', prefix, '--applications-dir', apps, '--project-root', e.root], e, dirs);
+    assert.equal(r.status, 1, `${mode}: ${r.stderr}${r.stdout}`);
+    assert.match(r.stderr, /unsafe installed layout: nothing was installed/, mode);
+    dirs.forEach((d, i) => assertOnlyPlanted(before[i], treeBytes(d), planted, `${mode}: no temp name under ${d} was unlinked (pid ${pid})`));
+    // the temp dir the run made BESIDE the prefix (never through it) is still swept: no litter, no half-run
+    assert.deepEqual(runtimeTempLeftovers({ prefix }), [], `${mode}: the private runtime temp dir is swept`);
+  }
+});
+
+test('M-INST5: a legitimate mid-install failure, after the chain passed, still sweeps its own temp files', () => {
+  const st = stage(), e = env();
+  // a PATH shim whose mv fails on ONE staged rename: every temp copy already exists when the script aborts (set -eu)
+  const bin = tmp(); const realMv = fs.existsSync('/usr/bin/mv') ? '/usr/bin/mv' : '/bin/mv';
+  fs.writeFileSync(path.join(bin, 'mv'), `#!/bin/sh\ncase "$*" in *koda-launcher.new.*) echo "mv: cannot move: Permission denied" >&2; exit 1;; esac\nexec ${realMv} "$@"\n`, { mode: 0o755 });
+  const r = cp.spawnSync('sh', [SCRIPT, st, '--prefix', e.prefix, '--applications-dir', e.apps, '--project-root', e.root], { encoding: 'utf8', env: { PATH: `${bin}:${process.env.PATH}`, HOME: e.home } });
+  assert.equal(r.status, 1, r.stderr + r.stdout);
+  assert.match(r.stderr, /Permission denied/, 'the run aborted inside the staging loop');
+  assert.deepEqual(tempsLeftIn(e.prefix), [], 'no <file>.new.<pid> is left under the prefix');
+  assert.deepEqual(tempsLeftIn(e.apps), [], 'the generated .desktop temp is swept too');
+  assert.deepEqual(runtimeTempLeftovers(e), [], 'and the private runtime temp dir');
+  // what was already renamed stays (a real failed install, not a rollback), and the install is still installable
+  assert.ok(fs.existsSync(path.join(e.prefix, 'koda')), 'the file renamed before the failure stays');
+  assert.equal(install(st, e).status, 0, 'a plain run afterwards succeeds');
+  assert.deepEqual(L.checkInstalledLayout(e.prefix), []);
+});
+
 test('uninstall → install round trip restores a verifying install', () => {
   const st = stage(), e = env();
   assert.equal(install(st, e).status, 0);
