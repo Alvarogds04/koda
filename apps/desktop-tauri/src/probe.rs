@@ -1276,7 +1276,7 @@ fn column_transition_scenes(app: &AppHandle) {
 }
 
 /// #306 evidence (opt-in visual run): the settings panel in each section, driven through the
-/// page's own gear/tabs. The daemon state comes from `KODA_ISLAND_DIR` (a REAL daemon with a
+/// page's own gear/tabs. The daemon state comes from the island (`ABITO_ISLAND_DIR`/`KODA_ISLAND_DIR`, a REAL daemon with a
 /// fake agent when the caller started one, or nothing running = honest «Sin motor»).
 fn settings_scenes(app: &AppHandle, tag: &str) {
     if std::env::var("KODA_PROBE_VISUAL").as_deref() != Ok("1") {

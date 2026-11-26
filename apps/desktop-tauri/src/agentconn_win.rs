@@ -2,7 +2,7 @@
 //! NAMED PIPE. Same contract as `agentconn.rs` (keep in sync), different gate:
 //!
 //! * `session.json` lives under `%LOCALAPPDATA%\Koda\runtime` (or an
-//!   `KODA_ISLAND_DIR` override INSIDE that canonical protected root); before
+//!   `ABITO_ISLAND_DIR`/`KODA_ISLAND_DIR` override INSIDE that canonical protected root); before
 //!   reading it the island root, the runtime directory AND THE FILE ITSELF are
 //!   verified by owner and DACL — the file must be strictly owner-only (as the
 //!   native `abito-private-session` helper writes it), bounded and a plain
@@ -73,11 +73,32 @@ pub fn engine_session_pid(_island_root: &Path) -> Option<u32> {
     None
 }
 
-/// Island root: an `KODA_ISLAND_DIR` override INSIDE the canonical protected
-/// `%LOCALAPPDATA%\Koda` root, or that root itself (`winpolicy::island_root`).
-/// `home` is unused here.
-pub fn island_root(env_dir: Option<&str>, _home: Option<&str>) -> Option<PathBuf> {
-    winpolicy::island_root(env_dir, std::env::var("LOCALAPPDATA").ok().as_deref())
+/// Island root environment variable: the engine's name wins (keep in sync with `agentconn.rs`).
+pub const ISLAND_DIR_ENV: &str = "ABITO_ISLAND_DIR";
+/// The Koda name: still honoured, lower precedence (keep in sync with `agentconn.rs`).
+pub const ISLAND_DIR_LEGACY_ENV: &str = "KODA_ISLAND_DIR";
+
+/// Island root: `ABITO_ISLAND_DIR`, then the honoured `KODA_ISLAND_DIR` — each honoured ONLY as an override INSIDE
+/// the canonical protected `%LOCALAPPDATA%\Koda` root — then that root itself (`winpolicy::island_root`).
+/// `home` is unused here: on Windows the island is the profile-guarded app-data root, never `<home>/.abito`.
+pub fn island_root(abito: Option<&str>, koda: Option<&str>, _home: Option<&str>) -> Option<PathBuf> {
+    winpolicy::island_root(abito, koda, std::env::var("LOCALAPPDATA").ok().as_deref())
+}
+
+/// [`island_root`] with both override variables read from the process environment — the ONE place they are read
+/// (keep in sync with `agentconn.rs`).
+pub fn island_root_from_env(_home: Option<&str>) -> Option<PathBuf> {
+    winpolicy::island_root(
+        std::env::var(ISLAND_DIR_ENV).ok().as_deref(),
+        std::env::var(ISLAND_DIR_LEGACY_ENV).ok().as_deref(),
+        std::env::var("LOCALAPPDATA").ok().as_deref(),
+    )
+}
+
+/// [`island_root_from_env`] with `$HOME` read from the process environment (unused on Windows; parity with
+/// `agentconn.rs` so shared callers compile unchanged).
+pub fn island_root_now() -> Option<PathBuf> {
+    island_root_from_env(std::env::var("HOME").ok().as_deref())
 }
 
 // ---- tokens / SIDs / ACL verdicts: REUSED from `winipc::ffi` (T2) -----------

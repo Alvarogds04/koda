@@ -4,7 +4,8 @@
  * Abito island isolation (U1).
  *
  * Everything the island agent touches lives under one private root
- * (`~/.koda` by default, overridable with `KODA_ISLAND_DIR`):
+ * (`~/.abito` by default, overridable with `ABITO_ISLAND_DIR`, with the Koda
+ * name `KODA_ISLAND_DIR` still honoured):
  * its own HOME, XDG directories, the engine home for the bundled Gentle Shell
  * (passed to the engine as `--home`; T2), private sessions and a private temp
  * directory. The user's own Pi/Gentle Shell setup, extensions, auth and
@@ -43,8 +44,18 @@ const path = require("node:path");
 // win32 install, and a THROW when the helper cannot be trusted — never a fall-back to loose Node writes.
 const winfs = require("./win-fs.cjs");
 
-/** Environment variable that moves the island root (used by tests and embeddings). */
-const ISLAND_ROOT_ENV = "KODA_ISLAND_DIR";
+/**
+ * Environment variable that moves the island root (used by tests and embeddings).
+ * Abito-core's own name wins; `KODA_ISLAND_DIR` is still honoured so the extracted tests,
+ * Koda's own code and existing embeddings keep working (K3-09 M5b, 26 Nov: the island
+ * contract is the ENGINE's, `engine/src/isolation.cjs` `defaultIslandRoot`).
+ */
+const ISLAND_ROOT_ENV = "ABITO_ISLAND_DIR";
+/** The Koda name: lower precedence, never an override of the Abito one. */
+const ISLAND_ROOT_LEGACY_ENV = "KODA_ISLAND_DIR";
+
+/** Directory name of the island under `$HOME` when no variable moves it. */
+const ISLAND_DIRNAME = ".abito";
 
 /** The memory project every memory the island assistant saves belongs to. */
 const MEMORY_PROJECT = "koda";
@@ -76,13 +87,20 @@ function currentUid() {
 	return typeof process.getuid === "function" ? process.getuid() : undefined;
 }
 
-/** The island root: `KODA_ISLAND_DIR` or `~/.koda`. */
+/**
+ * The island root: `ABITO_ISLAND_DIR`, then the honoured `KODA_ISLAND_DIR`, then `~/.abito`.
+ * Byte-for-byte the engine's order and truthiness rule (`abito-core` `engine/src/isolation.cjs`
+ * `defaultIslandRoot`): an unset or empty value falls through to the next level, and both-levels
+ * unset falls to `<home>/.abito` (`%LOCALAPPDATA%\\Koda` on Windows, where the profile ACL is the
+ * only privacy node can rely on and the Rust host verifies owner and DACL). Never `~/.koda` again.
+ */
 function defaultIslandRoot(env = process.env) {
 	if (env[ISLAND_ROOT_ENV]) return env[ISLAND_ROOT_ENV];
+	if (env[ISLAND_ROOT_LEGACY_ENV]) return env[ISLAND_ROOT_LEGACY_ENV];
 	// Windows (W1): %LOCALAPPDATA%\\Koda is user-private by default (inherited ACL), which is the
 	// only privacy node can rely on there; the Rust host verifies owner and DACL before trusting it.
 	if (process.platform === "win32" && env.LOCALAPPDATA) return path.join(env.LOCALAPPDATA, "Koda");
-	return path.join(env.HOME || homedir(), ".koda");
+	return path.join(env.HOME || homedir(), ISLAND_DIRNAME);
 }
 
 /**

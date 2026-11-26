@@ -383,7 +383,7 @@ pub mod ffi {
         // Profile ancestors are not ours: their ACLs may contain legitimate
         // domain/capability entries. Only Abito and its descendants use our
         // private policy; every path component still rejects reparse points.
-        let canonical = winpolicy::island_root(None, std::env::var("LOCALAPPDATA").ok().as_deref());
+        let canonical = winpolicy::island_root(None, None, std::env::var("LOCALAPPDATA").ok().as_deref());
         let boundary = canonical.as_deref().filter(|base| root.starts_with(base)).unwrap_or(root);
         if boundary != root { prepare_private_directory(boundary, sid, boundary)?; }
         prepare_private_directory(root, sid, boundary)
@@ -776,7 +776,7 @@ pub mod ffi {
     /// owner, SYSTEM, Administrators). Reusable seam for the daemon session
     /// ACL hardening. `None` when LOCALAPPDATA is missing/relative.
     pub fn prepare_runtime_leaf(leaf: &str, sid: &str) -> Option<std::path::PathBuf> {
-        let root = winpolicy::island_root(None, std::env::var("LOCALAPPDATA").ok().as_deref())?;
+        let root = winpolicy::island_root(None, None, std::env::var("LOCALAPPDATA").ok().as_deref())?;
         let dir = root.join(leaf);
         prepare_runtime(&dir, sid).ok()?;
         Some(dir)

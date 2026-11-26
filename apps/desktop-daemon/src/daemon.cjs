@@ -335,7 +335,7 @@ async function classifySession(root, deps = {}) {
 class Daemon extends EventEmitter {
 	/**
 	 * @param {object} [options]
-	 * @param {string} [options.root]           island root (default KODA_ISLAND_DIR / ~/.koda)
+	 * @param {string} [options.root]           island root (default ABITO_ISLAND_DIR / KODA_ISLAND_DIR / ~/.abito)
 	 * @param {object} [options.env]            environment (default process.env)
 	 * @param {(line:string)=>void} [options.log]
 	 * @param {object} [options.engineOptions]  extra AgentEngine options (tests: fake command)

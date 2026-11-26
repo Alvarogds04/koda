@@ -149,7 +149,7 @@ pub fn runtime_at(engine_dir: Option<&Path>, home: Option<&Path>, legacy_pi: boo
     if let Some(home) = home {
         keep_env(&mut env, "HOME", home);
     }
-    let island = crate::agentconn::island_root(std::env::var("KODA_ISLAND_DIR").ok().as_deref(), home);
+    let island = crate::agentconn::island_root_from_env(home);
     if let Some(dir) = island.and_then(|d| d.to_str().map(str::to_owned)) {
         env.push(("KODA_ISLAND_DIR".into(), dir));
     }

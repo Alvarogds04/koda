@@ -291,10 +291,7 @@ fn ensure_agent(app: &AppHandle) {
         conn.startup_failed(reason);
         return;
     }
-    let root = koda_island::agentconn::island_root(
-        std::env::var("KODA_ISLAND_DIR").ok().as_deref(),
-        std::env::var("HOME").ok().as_deref(),
-    );
+    let root = koda_island::agentconn::island_root_now();
     if let Some(root) = root {
         conn.connect(&root);
     }

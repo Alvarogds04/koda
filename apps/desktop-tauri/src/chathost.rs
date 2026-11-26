@@ -76,10 +76,7 @@ pub struct ChatRoute {
 }
 
 fn island_dir() -> Option<PathBuf> {
-    koda_island::agentconn::island_root(
-        std::env::var("KODA_ISLAND_DIR").ok().as_deref(),
-        std::env::var("HOME").ok().as_deref(),
-    )
+    koda_island::agentconn::island_root_now()
 }
 
 /// F7: the keeper's question is answered from the view the reader handed over, never by

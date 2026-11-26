@@ -10,7 +10,7 @@
 //! per-launch token and socket path never cross to the WebView (`agentclient`).
 use crate::{now_ms, AppState};
 use koda_island::agentclient::{is_account_action, AccountStore};
-use koda_island::agentconn::{island_root, AgentConn};
+use koda_island::agentconn::{island_root_now, AgentConn};
 use koda_island::bridge::{self, BridgeError};
 use koda_island::prefs::{self, Command, Prefs};
 use koda_island::secrets::{self, LoginGuard, SessionReply};
@@ -706,10 +706,7 @@ pub async fn agent_action(
                 conn.startup_failed(reason);
                 return Ok(conn.view());
             }
-            let root = island_root(
-                std::env::var("KODA_ISLAND_DIR").ok().as_deref(),
-                std::env::var("HOME").ok().as_deref(),
-            );
+            let root = island_root_now();
             match root {
                 Some(root) => {
                     // N2: a new connection's `last_error` starts over at `{code: null, n: 0}` and its counter restarts with
@@ -882,7 +879,7 @@ pub(crate) fn start_agent_keeper(handle: &AppHandle) {
             if handle.state::<koda_island::daemonhost::HostSlot>().failure().is_some() {
                 continue;
             }
-            let Some(root) = island_root(std::env::var("KODA_ISLAND_DIR").ok().as_deref(), std::env::var("HOME").ok().as_deref()) else { continue };
+            let Some(root) = island_root_now() else { continue };
             let state = handle.state::<AppState>();
             let Ok(mut guard) = state.settings.agent.try_lock() else { continue };
             let conn = guard.get_or_insert_with(|| agent_conn(&handle));
@@ -962,7 +959,7 @@ pub(crate) fn daemon_connect(
 /// «pi_missing» failure on success. Returns whether the host is running.
 pub(crate) fn start_host_after_install(handle: &AppHandle) -> bool {
     let state = handle.state::<AppState>();
-    let Some(root) = island_root(std::env::var("KODA_ISLAND_DIR").ok().as_deref(), std::env::var("HOME").ok().as_deref()) else { return false };
+    let Some(root) = island_root_now() else { return false };
     let old = state.settings.agent.lock().expect("agent lock").take();
     drop(old);
     let slot = handle.state::<koda_island::daemonhost::HostSlot>();
@@ -1034,8 +1031,7 @@ pub async fn daemon_action(
     let handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let state = handle.state::<AppState>();
-        let root = island_root(std::env::var("KODA_ISLAND_DIR").ok().as_deref(), std::env::var("HOME").ok().as_deref())
-            .ok_or_else(|| err("no_island_root"))?;
+        let root = island_root_now().ok_or_else(|| err("no_island_root"))?;
         if action == "restart" {
             // K2-05 (L51, copy Gentle Dot): like its tray «Restart assistant» (shell.rs:743-745 →
             // restart_daemon), «Reiniciar» always restarts, even while the engine is starting; the

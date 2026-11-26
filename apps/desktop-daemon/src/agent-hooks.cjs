@@ -94,6 +94,9 @@ const CLIENTS = Object.freeze([
 	Object.freeze({ id: "amp", name: "Amp", script: false }),
 	Object.freeze({ id: "cursor", name: "Cursor", script: true }),
 ]);
+// NOT the island root: this is the hook artifact path under the USER's home, and it keeps the `.koda` name on
+// purpose. Renaming it would silently break the hooks already written into the gemini/copilot/cursor configs, and
+// the hook lane (endpoint.json -> the engine's notices receiver) is M5e/JC-10, not this unit.
 const SCRIPT_REL = ".koda/agent-hooks/island-notify.mjs";
 /** The clients whose generated hooks reference the shared notify script. */
 const SCRIPT_DEPENDENTS = Object.freeze(["gemini-cli", "copilot-cli", "cursor"]);

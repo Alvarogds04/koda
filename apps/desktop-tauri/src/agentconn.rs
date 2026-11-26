@@ -18,6 +18,14 @@ use std::time::{Duration, Instant};
 
 const HELLO_WAIT: Duration = Duration::from_secs(3);
 
+/// Environment variable that moves the island root. Abito-core's own name wins; this is the engine's contract
+/// (`abito-core` `engine/src/isolation.cjs` `defaultIslandRoot`), not a Koda-local decision (K3-09 M5b).
+pub const ISLAND_DIR_ENV: &str = "ABITO_ISLAND_DIR";
+/// The Koda name: still honoured, LOWER precedence, never an override of the Abito one.
+pub const ISLAND_DIR_LEGACY_ENV: &str = "KODA_ISLAND_DIR";
+/// Directory name of the island under `$HOME` when no variable moves it.
+pub const ISLAND_DIRNAME: &str = ".abito";
+
 /// K2-13 (S20): handed the ONE `telegram_session` this connection received, on the reader thread, before the new view is
 /// published. The host stores it in the OS keychain. The value is a credential: it is never logged, never published and
 /// never sent back to the daemon inside any other frame.
@@ -54,12 +62,31 @@ pub fn session_path(island_root: &Path) -> PathBuf {
     island_root.join("runtime").join("session.json")
 }
 
-/// Island root: `KODA_ISLAND_DIR` (absolute) or `~/.koda`.
-pub fn island_root(env_dir: Option<&str>, home: Option<&str>) -> Option<PathBuf> {
-    if let Some(d) = env_dir.filter(|d| !d.is_empty()) {
-        return d.starts_with('/').then(|| PathBuf::from(d));
-    }
-    home.filter(|h| h.starts_with('/')).map(|h| Path::new(h).join(".koda"))
+/// Island root: `ABITO_ISLAND_DIR`, then `KODA_ISLAND_DIR`, then `<home>/.abito` — the ENGINE's contract
+/// (`abito-core` `engine/src/isolation.cjs` `defaultIslandRoot`), so Koda and the engine read one island.
+/// An unset, empty or non-absolute override falls through to the next level instead of being guessed: this host
+/// has no `path.resolve` stage, so a relative value is treated as absent (the engine would resolve it against its
+/// cwd), and the default stays `<home>/.abito` — never the legacy `~/.koda` (K3-09 M5b, human decision 26 Nov).
+pub fn island_root(abito: Option<&str>, koda: Option<&str>, home: Option<&str>) -> Option<PathBuf> {
+    let absolute = |d: Option<&str>| d.filter(|d| d.starts_with('/')).map(PathBuf::from);
+    absolute(abito).or_else(|| absolute(koda)).or_else(|| {
+        home.filter(|h| h.starts_with('/')).map(|h| Path::new(h).join(ISLAND_DIRNAME))
+    })
+}
+
+/// [`island_root`] with the two override variables read from the process environment — the ONE place they are
+/// read, so no caller re-implements the precedence — and the home injected.
+pub fn island_root_from_env(home: Option<&str>) -> Option<PathBuf> {
+    island_root(
+        std::env::var(ISLAND_DIR_ENV).ok().as_deref(),
+        std::env::var(ISLAND_DIR_LEGACY_ENV).ok().as_deref(),
+        home,
+    )
+}
+
+/// [`island_root_from_env`] with `$HOME` read from the process environment: what every production caller wants.
+pub fn island_root_now() -> Option<PathBuf> {
+    island_root_from_env(std::env::var("HOME").ok().as_deref())
 }
 
 /// The session file must be OURS, a regular file, not group/world accessible.

@@ -18,13 +18,33 @@ pub fn session_path(island_root: &Path) -> PathBuf {
     island_root.join("runtime").join("session.json")
 }
 
-/// Island root: `KODA_ISLAND_DIR` (absolute) or `~/.koda`.
+/// Island root: `ABITO_ISLAND_DIR`, then `KODA_ISLAND_DIR`, then `<home>/.abito` (the engine's contract).
 // keep in sync with agentconn.rs
-pub fn island_root(env_dir: Option<&str>, home: Option<&str>) -> Option<PathBuf> {
-    if let Some(d) = env_dir.filter(|d| !d.is_empty()) {
-        return d.starts_with('/').then(|| PathBuf::from(d));
-    }
-    home.filter(|h| h.starts_with('/')).map(|h| Path::new(h).join(".koda"))
+pub const ISLAND_DIR_ENV: &str = "ABITO_ISLAND_DIR";
+/// The Koda name: still honoured, lower precedence (keep in sync with agentconn.rs).
+pub const ISLAND_DIR_LEGACY_ENV: &str = "KODA_ISLAND_DIR";
+/// Directory name of the island under `$HOME` when no variable moves it (keep in sync with agentconn.rs).
+pub const ISLAND_DIRNAME: &str = ".abito";
+
+/// [`island_root`] with the two override variables read from the process environment (keep in sync with agentconn.rs).
+pub fn island_root_from_env(home: Option<&str>) -> Option<PathBuf> {
+    island_root(
+        std::env::var(ISLAND_DIR_ENV).ok().as_deref(),
+        std::env::var(ISLAND_DIR_LEGACY_ENV).ok().as_deref(),
+        home,
+    )
+}
+
+/// [`island_root_from_env`] with `$HOME` read from the process environment (keep in sync with agentconn.rs).
+pub fn island_root_now() -> Option<PathBuf> {
+    island_root_from_env(std::env::var("HOME").ok().as_deref())
+}
+
+pub fn island_root(abito: Option<&str>, koda: Option<&str>, home: Option<&str>) -> Option<PathBuf> {
+    let absolute = |d: Option<&str>| d.filter(|d| d.starts_with('/')).map(PathBuf::from);
+    absolute(abito).or_else(|| absolute(koda)).or_else(|| {
+        home.filter(|h| h.starts_with('/')).map(|h| Path::new(h).join(ISLAND_DIRNAME))
+    })
 }
 
 /// AC-08/K-G: whether an engine already runs on this island root. This target does not read the session file
